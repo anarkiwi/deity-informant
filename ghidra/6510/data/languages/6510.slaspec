@@ -1,0 +1,7 @@
+# SLEIGH spec for the NMOS 6510 (6502 + undocumented opcodes), as used on the
+# Commodore 64. The stock 6502 legal-instruction spec is pulled in verbatim, then
+# the illegal opcodes are layered on. 6502.slaspec is NOT committed here (it is
+# Ghidra's, Apache-2.0); build.py copies it beside this file from either
+# $GHIDRA_INSTALL_DIR or a pypcode install before invoking the SLEIGH compiler.
+@include "6502.slaspec"
+@include "6510_illegal.sinc"

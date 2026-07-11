@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+.coverage.*
+build/
+dist/
+
+# SLEIGH build artifacts (base spec is Ghidra's, fetched at build time; .sla is generated)
+ghidra/6510/data/languages/6502.slaspec
+ghidra/6510/data/languages/*.sla
+
+# fetched fixtures / reference material (never committed)
+*.sid
+*.prg
+*.pdf
+nomoresecrets.pdf
+
+# oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed;
+# no trailing slash, so a symlink to a shared cache is ignored as well as a dir)
+.oracle-cache
+
+# local artifacts
+.sweep-cache
+.venv/
+out/
+core
+core.*
+
+# agent worktrees / local harness state
+.claude/
+.nfs*

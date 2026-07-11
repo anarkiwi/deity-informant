@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Format
+        run: black --check deity_informant/ tests/ examples/ ghidra/
+      - name: Lint
+        run: pylint deity_informant/ examples/ ghidra/6510/build.py
+      - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
+        run: python ghidra/6510/build.py
+      - name: Test
+        run: pytest tests/ -m "not oracle" -n auto --cov=deity_informant --cov-fail-under=85
+
+  oracle:
+    # Byte-exact SID register-grid comparison of deity's VM against the
+    # Dockerized sidplayfp/sidtrace oracle. Separate job so a flaky oracle or
+    # HVSC fetch never blocks the hermetic unit CI above. HVSC .sid tunes and
+    # the sidtrace CSVs are cached, never committed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev,oracle]"
+      - name: Cache HVSC tunes
+        uses: actions/cache@v6
+        with:
+          path: .oracle-cache/hvsc
+          key: hvsc-${{ hashFiles('tests/test_oracle.py') }}
+      - name: Pull sidtrace oracle image
+        run: docker pull anarkiwi/sidtrace:latest
+      - name: Cache oracle CSVs
+        uses: actions/cache@v6
+        with:
+          path: .oracle-cache/csv
+          key: oracle-csv-${{ hashFiles('tests/test_oracle.py') }}
+      - name: Oracle test
+        run: pytest tests/ -m oracle -n auto
+
+  ghidra-integration:
+    # End-to-end test under the actual Ghidra headless analyzer (not just libsla/
+    # pypcode): imports the hello-world demo as 6510:LE:16:default and asserts the
+    # illegal LAX/ISC opcodes decode and yield P-Code. Ghidra + JDK live in a
+    # multistage image (Dockerfile.ghidra); the ~500MB Ghidra layer is GHA-cached.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build Ghidra integration image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.ghidra
+          tags: di-ghidra:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run Ghidra headless integration test
+        run: docker run --rm di-ghidra:ci
