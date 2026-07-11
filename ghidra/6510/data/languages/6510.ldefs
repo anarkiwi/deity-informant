@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<language_definitions>
+
+  <language processor="6510"
+            endian="little"
+            size="16"
+            variant="default"
+            version="1.0"
+            slafile="6510.sla"
+            processorspec="6510.pspec"
+            id="6510:LE:16:default">
+    <description>MOS 6510 (6502 + undocumented NMOS opcodes; Commodore 64)</description>
+    <compiler name="default" spec="6510.cspec" id="default"/>
+    <external_name tool="IDA-PRO" name="m6502"/>
+  </language>
+
+</language_definitions>
