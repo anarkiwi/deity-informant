@@ -8,7 +8,6 @@ also compiles+loads the 6510 spec and asserts it decodes every illegal opcode
 """
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -55,37 +54,8 @@ def test_sinc_opcode_set_equals_python_illegal_set():
 
 
 # ---- pypcode-gated: the spec actually compiles and decodes the illegals ------
+# The ctx6510 fixture (session-scoped: build once) lives in tests/conftest.py.
 pypcode = pytest.importorskip("pypcode")
-
-
-@pytest.fixture(scope="module")
-def ctx6510(tmp_path_factory):
-    """Compile+install the 6510 module into a scratch pypcode processors tree."""
-    procs = tmp_path_factory.mktemp("procs")
-    # copy the bundled processors tree so pypcode discovers the stock languages
-    src = Path(pypcode.__file__).parent / "processors"
-    langdir = procs / "6510" / "data" / "languages"
-    langdir.mkdir(parents=True)
-    build = ROOT / "ghidra" / "6510" / "build.py"
-    r = subprocess.run(
-        ["python3", str(build), "--install", str(langdir)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if r.returncode != 0:
-        pytest.skip("6510 build failed: " + r.stdout + r.stderr)
-    # point pypcode at a merged tree (stock + our 6510)
-    import shutil
-
-    for p in src.iterdir():
-        if p.is_dir():
-            shutil.copytree(p, procs / p.name, dirs_exist_ok=True)
-    pypcode.SPECFILES_DIR = str(procs)
-    try:
-        return pypcode.Context("6510:LE:16:default")
-    except Exception as e:  # pragma: no cover - environment dependent
-        pytest.skip("cannot load 6510 context: %r" % e)
 
 
 def test_6510_decodes_every_illegal(ctx6510):

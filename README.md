@@ -54,6 +54,10 @@ python ghidra/6510/build.py --install "$GHIDRA_INSTALL_DIR/Ghidra/Processors/651
 
 Compiles `6510.sla`, resolving the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` (or a `pypcode` install). Restart Ghidra, import the C64 image as Raw Binary language `6510:LE:16:default` at base `$0000`; illegals now decode instead of BadData. Full steps: [docs/ghidra.md](docs/ghidra.md).
 
+## Example / demo
+
+`python examples/hello_world.py` prints `HELLO, WORLD!` from a self-contained 33-byte C64 program that uses two load-bearing illegal opcodes (`LAX`, `ISC`) and genuine self-modifying code (`ISC`'s `INC` rewrites the `STA` operand each pass). CI verifies both the VM output and that the `LAX`/`ISC` bytes decode through the 6510 SLEIGH engine (where stock 6502 throws `BadDataError`). Walkthrough: [docs/hello-world.md](docs/hello-world.md).
+
 ## Illegal opcodes
 
 All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), semantics/cycles per "No More Secrets — NMOS 6510 Unintended Opcodes" ([csdb.dk/release/?id=258111](https://csdb.dk/release/?id=258111)). Full table: [docs/illegal-opcodes.md](docs/illegal-opcodes.md).

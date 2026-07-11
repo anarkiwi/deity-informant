@@ -1,6 +1,15 @@
-# Examples — historical prototype / oracle harness
+# Examples
 
-These scripts are the original prototype and oracle-validation harness that
+## Self-contained demo
+
+`hello_world.py` depends only on `deity_informant` (no external fixtures). It runs a
+33-byte C64 program that prints `HELLO, WORLD!` using illegal opcodes (`LAX`, `ISC`)
+and self-modifying code, and is verified end to end by `tests/test_hello_world.py`.
+Run `python examples/hello_world.py`; walkthrough in [docs/hello-world.md](../docs/hello-world.md).
+
+## Historical prototype / oracle harness
+
+The remaining scripts are the original prototype and oracle-validation harness that
 proved out the lifter + VM against the sidplayfp hardware oracle. They are **not**
 part of the shippable package (package discovery is scoped to `deity_informant*`,
 so they are excluded from the wheel).
