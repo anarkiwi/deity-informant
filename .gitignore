@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+build/
+dist/
+
+# SLEIGH build artifacts (base spec is Ghidra's, fetched at build time; .sla is generated)
+ghidra/6510/data/languages/6502.slaspec
+ghidra/6510/data/languages/*.sla
+
+# fetched fixtures / reference material (never committed)
+*.sid
+*.prg
+*.pdf
+nomoresecrets.pdf

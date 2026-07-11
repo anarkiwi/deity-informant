@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deity-informant"
+version = "0.1.0"
+description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Josh Bailey", email = "josh@overlyspecific.com" }]
+keywords = ["6502", "6510", "c64", "ghidra", "sleigh", "pcode", "illegal-opcodes", "decompiler"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Software Development :: Disassemblers",
+    "Topic :: System :: Emulators",
+]
+dependencies = []
+
+[project.optional-dependencies]
+oracle = ["py65"]
+ghidra = ["pypcode"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode"]
+
+[project.urls]
+Homepage = "https://github.com/anarkiwi/deity-informant"
+Repository = "https://github.com/anarkiwi/deity-informant"
+
+[project.scripts]
+deity-informant = "deity_informant.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["deity_informant*"]
+
+[tool.coverage.run]
+source = ["deity_informant"]
+
+[tool.black]
+line-length = 100
+
+[tool.pylint.main]
+jobs = 0
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.basic]
+good-names = ["A", "X", "Y", "S", "SP", "C", "e", "vm", "op", "mn", "md", "t", "v", "r", "pc", "L"]
+
+[tool.pylint."messages control"]
+# missing-docstring off: short helpers (C/e/nz) and tests carry no docstrings.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-return-statements",
+    "invalid-name",
+    "consider-using-f-string",
+    "too-many-instance-attributes",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-lines",
+    "consider-using-in",
+    "consider-using-max-builtin",
+    "protected-access",
+    "unused-argument",
+    "exec-used",
+    "duplicate-code",
+]
