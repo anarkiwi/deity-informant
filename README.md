@@ -58,9 +58,35 @@ Compiles `6510.sla`, resolving the stock `6502.slaspec` + SLEIGH compiler from `
 
 `python examples/hello_world.py` prints `HELLO, WORLD!` from a self-contained 33-byte C64 program that uses two load-bearing illegal opcodes (`LAX`, `ISC`) and genuine self-modifying code (`ISC`'s `INC` rewrites the `STA` operand each pass). CI verifies both the VM output and that the `LAX`/`ISC` bytes decode through the 6510 SLEIGH engine (where stock 6502 throws `BadDataError`). Walkthrough: [docs/hello-world.md](docs/hello-world.md).
 
+### Decompiled to P-Code
+
+The two illegal opcodes through Ghidra's decompiler engine (`6510:LE:16:default`,
+libsla — same engine as `pypcode.Context(...).translate(...)`). Stock 6502 raises
+`BadDataError` on both bytes; the 6510 module emits real P-Code:
+
+```
+$1002  BF 13 10   LAX $1013,Y      ; illegal — one instruction loads A and X and sets Z
+  unique[11b00:2] = zext(Y)                 # Y widened to 16-bit index
+  unique[11d00:2] = 0x1013 + unique[11b00:2]# effective address $1013 + Y
+  A = *[RAM]unique[11d00:2]                  # A <- data[Y]
+  X = A                                      #   ...and X too (the "LAX" fork)
+  Z = A == 0x0                               # Z flag the BEQ terminator rides on
+  N = A s< 0x0                               # N flag
+
+$100C  EF 0A 10   ISC $100A        ; illegal RMW — INC $100A then SBC (discarded)
+  unique[f400:1] = RAM[100a:1] + 0x1         # INC the byte at $100A ...
+  RAM[100a:1]    = unique[f400:1]            #   ...= the STA operand -> self-modification
+  unique[f500:1] = A - unique[f400:1]        # SBC A,mem: borrow-chain subtract ...
+  unique[f800:1] = unique[f500:1] - !C       #   ...minus carry-complement
+  ... V/N/Z/C flag algebra elided ...
+  A = unique[f800:1]                         # SBC result -> A (overwritten by next LAX)
+```
+
+`RAM[100a:1] = ...` is Ghidra rendering a **store into code space** — the self-modification made visible in P-Code. The full instruction-by-instruction dump (and how CI asserts it under headless Ghidra) is in [docs/hello-world.md](docs/hello-world.md).
+
 ## Illegal opcodes
 
-All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), semantics/cycles per "No More Secrets — NMOS 6510 Unintended Opcodes" ([csdb.dk/release/?id=258111](https://csdb.dk/release/?id=258111)). Full table: [docs/illegal-opcodes.md](docs/illegal-opcodes.md).
+All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), semantics/cycles per "No More Secrets — NMOS 6510 Unintended Opcodes" (V1.0, 24 Dec 2025) ([csdb.dk/release/?id=258111](https://csdb.dk/release/?id=258111)), independently validated byte-exact against the sidplayfp hardware oracle. Full table: [docs/illegal-opcodes.md](docs/illegal-opcodes.md).
 
 ## Docs
 

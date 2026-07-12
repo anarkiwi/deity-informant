@@ -14,6 +14,7 @@ into ``DIR`` so Ghidra or pypcode can discover the ``6510:LE:16:default``
 language (e.g. ``$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages`` or
 ``<pypcode>/processors/6510/data/languages``).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -97,6 +98,19 @@ def main(argv=None):
         dst.mkdir(parents=True, exist_ok=True)
         for name in ("6510.sla", "6510.ldefs", "6510.pspec", "6510.cspec"):
             shutil.copy(LANGDIR / name, dst / name)
+        # Ghidra (unlike pypcode) compiles the .slaspec at load time and validates
+        # the .sla against it, so the SLEIGH sources must be installed too -- ours
+        # plus the stock 6502 @include sources. Copy .slaspec/.sinc only, never the
+        # stock .ldefs (that would register a duplicate 6502 language).
+        for name in ("6510.slaspec", "6510_illegal.sinc"):
+            shutil.copy(LANGDIR / name, dst / name)
+        for src in list(base.parent.glob("*.slaspec")) + list(base.parent.glob("*.sinc")):
+            shutil.copy(src, dst / src.name)
+        # Ghidra discovers a Processor module only via a Module.manifest at the
+        # module root (`.../<name>/data/languages` -> root is two levels up); without
+        # it analyzeHeadless reports "Unsupported language". pypcode ignores it.
+        if dst.parts[-2:] == ("data", "languages"):
+            (dst.parents[1] / "Module.manifest").touch()
         print(f"installed 6510:LE:16:default into {dst}")
     return 0
 

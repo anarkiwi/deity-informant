@@ -118,7 +118,91 @@ pypcode.BadDataError: r0x1000: Unable to resolve constructor
 this: `6510` decodes LAX at `$1002` and ISC at `$100C`, while stock `6502` raises on
 both -- the gap this project closes.
 
-### (b) Manual -- Ghidra GUI
+### (b) P-Code -- under the actual Ghidra headless analyzer
+
+`tests/` and the pypcode path above exercise **libsla** (Ghidra's engine). The
+`ghidra-integration` CI job goes one step further and runs the real
+**`analyzeHeadless`** binary from a full Ghidra install (multistage
+[`Dockerfile.ghidra`](../Dockerfile.ghidra)): it imports the demo as
+`6510:LE:16:default` and runs [`ghidra/6510/headless/DumpPcode.java`](../ghidra/6510/headless/DumpPcode.java),
+which disassembles from `$1000`, asserts `LAX`@`$1002` and `ISC`@`$100C` decoded,
+and dumps each instruction's P-Code. Reproduce locally:
+
+```bash
+docker build -f Dockerfile.ghidra -t di-ghidra . && docker run --rm di-ghidra
+```
+
+The full P-Code for the 19-byte code region, straight from Ghidra's engine
+(`IMARK` marks each instruction boundary). `DumpPcode.java` emits the same ops in
+raw varnode notation (`(register, 0x0, 1) LOAD ...`); this is the pretty-printed
+equivalent:
+
+```
+IMARK RAM[1000:2]                    ; LDY #$00
+unique[5000:1] = 0x0
+Y = unique[5000:1]
+Z = Y == 0x0
+N = Y s< 0x0
+IMARK RAM[1002:3]                    ; LAX $1013,Y  (illegal)
+unique[11b00:2] = zext(Y)
+unique[11d00:2] = 0x1013 + unique[11b00:2]
+A = *[RAM]unique[11d00:2]            ; A <- data[Y]
+X = A                                ; X <- data[Y]  (the LAX fork)
+Z = A == 0x0                         ; terminator flag for the BEQ
+N = A s< 0x0
+IMARK RAM[1005:2]                    ; BEQ $1012
+if (Z) goto RAM[1012:2]
+IMARK RAM[1007:2]                    ; EOR #$FF  (decrypt)
+unique[3500:1] = 0xff
+A = A ^ unique[3500:1]
+Z = A == 0x0
+N = A s< 0x0
+IMARK RAM[1009:3]                    ; STA $0400  (operand self-modified by ISC)
+RAM[400:1] = A
+IMARK RAM[100c:3]                    ; ISC $100A  (illegal RMW)
+unique[f400:1] = RAM[100a:1] + 0x1   ; INC the byte at $100A ...
+RAM[100a:1] = unique[f400:1]         ;   ...= the STA operand  -> self-modification
+unique[f500:1] = A - unique[f400:1]  ; SBC A,mem borrow chain ...
+unique[f600:1] = !C
+unique[f800:1] = unique[f500:1] - unique[f600:1]
+unique[2100:1] = ~A                  ; V-flag algebra
+unique[2200:1] = ~unique[f400:1]
+unique[2300:1] = A & unique[2200:1]
+unique[2400:1] = ~unique[f800:1]
+unique[2500:1] = unique[2300:1] & unique[2400:1]
+unique[2600:1] = unique[2100:1] & unique[f400:1]
+unique[2700:1] = unique[2600:1] & unique[f800:1]
+unique[2800:1] = unique[2500:1] | unique[2700:1]
+unique[2900:1] = unique[2800:1] & 0x80
+V = unique[2900:1] != 0x0
+N = unique[f800:1] s< 0x0
+Z = unique[f800:1] == 0x0
+unique[2d00:1] = unique[2100:1] & unique[f400:1]   ; C-flag algebra
+unique[2e00:1] = unique[f400:1] & unique[f800:1]
+unique[2f00:1] = unique[2d00:1] | unique[2e00:1]
+unique[3000:1] = unique[f800:1] & unique[2100:1]
+unique[3100:1] = unique[2f00:1] | unique[3000:1]
+unique[3200:1] = unique[3100:1] & 0x80
+C = unique[3200:1] != 0x0
+A = unique[f800:1]                   ; SBC result -> A (overwritten by next LAX)
+IMARK RAM[100f:1]                    ; INY
+Y = Y + 0x1
+Z = Y == 0x0
+N = Y s< 0x0
+IMARK RAM[1010:2]                    ; BNE $1002
+unique[7c00:1] = Z == 0x0
+if (unique[7c00:1]) goto RAM[1002:2]
+IMARK RAM[1012:1]                    ; RTS
+SP = SP + 0x1
+unique[b500:2] = *[RAM]SP
+SP = SP + 0x1
+return unique[b500:2]
+```
+
+The store `RAM[100a:1] = ...` inside `ISC` is Ghidra emitting a **write into code
+space** -- the self-modification, made visible in P-Code.
+
+### (c) Manual -- Ghidra GUI
 
 1. Build + install the module, then restart Ghidra:
    ```bash
@@ -133,8 +217,10 @@ both -- the gap this project closes.
    store into screen RAM. Because `ISC` writes into the `STA` operand at `$100A`, the
    decompiler renders a store *into code space* -- the self-modification made visible.
 
-Honest scope: CI verifies the disassembly and P-Code through pypcode (the same libsla
-engine); the full GUI decompile is the manual step above.
+Honest scope: CI verifies disassembly and P-Code both through pypcode (libsla) and
+through the real `analyzeHeadless` binary of a full Ghidra install (the
+`ghidra-integration` job, section (b)); only the interactive GUI decompile is a
+manual step.
 
 ## See also
 

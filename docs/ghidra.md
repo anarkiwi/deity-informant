@@ -12,8 +12,17 @@ The `6510` SLEIGH module makes Ghidra's disassembler and decompiler illegal-awar
    ```
 
    `build.py` resolves the stock `6502.slaspec` and the SLEIGH compiler from
-   `$GHIDRA_INSTALL_DIR`, compiles `6510.sla`, and copies `6510.sla` +
-   `6510.ldefs`/`.pspec`/`.cspec` into the target directory.
+   `$GHIDRA_INSTALL_DIR`, compiles `6510.sla`, and installs a complete Ghidra
+   processor module into the target: `6510.sla` + `6510.ldefs`/`.pspec`/`.cspec`,
+   the SLEIGH sources (`6510.slaspec`, `6510_illegal.sinc`, and the stock 6502
+   `@include` sources) that Ghidra re-validates the `.sla` against at load time,
+   and an empty `Module.manifest` at the module root so Ghidra discovers it.
+   (pypcode needs only the `.ldefs`/`.sla`; Ghidra needs all three.)
+
+   A headless integration test exercises exactly this install under a full Ghidra
+   (`analyzeHeadless`): [`Dockerfile.ghidra`](../Dockerfile.ghidra) +
+   [`ghidra/6510/headless/`](../ghidra/6510/headless/), run in CI as the
+   `ghidra-integration` job.
 
 2. **Restart Ghidra** so it re-scans processor languages.
 

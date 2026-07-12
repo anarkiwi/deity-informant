@@ -1,6 +1,6 @@
 # NMOS 6510 illegal opcodes
 
-All 105 documented undocumented ("illegal") NMOS 6510 opcodes, lifted to genuine P-Code by `deity_informant.lift` and decoded by the `6510` SLEIGH spec (`ghidra/6510/data/languages/6510_illegal.sinc`). Semantics and cycle counts follow "No More Secrets — NMOS 6510 Unintended Opcodes" v0.91 (see [nms-provenance.md](nms-provenance.md)). Page numbers cite NMS where a page comment exists in the `.sinc`; `—` = covered under NMS's combined-ops chapter without a per-opcode page comment.
+All 105 documented undocumented ("illegal") NMOS 6510 opcodes, lifted to genuine P-Code by `deity_informant.lift` and decoded by the `6510` SLEIGH spec (`ghidra/6510/data/languages/6510_illegal.sinc`). Semantics and cycle counts follow "No More Secrets — NMOS 6510 Unintended Opcodes" (current edition **V1.0**, 24 Dec 2025; page citations below are to the v0.91 edition consulted — see [nms-provenance.md](nms-provenance.md)). Page numbers cite NMS where a page comment exists in the `.sinc`; `—` = covered under NMS's combined-ops chapter without a per-opcode page comment.
 
 Opcode bytes are taken from `deity_informant/lifter.py` `_build_ops()`.
 
