@@ -32,7 +32,7 @@ from .vm import (
     run_irq_driven,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "OPS",
