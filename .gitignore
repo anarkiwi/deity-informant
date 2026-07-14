@@ -16,3 +16,6 @@ ghidra/6510/data/languages/*.sla
 *.prg
 *.pdf
 nomoresecrets.pdf
+
+# oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed)
+.oracle-cache/
