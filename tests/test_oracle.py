@@ -23,10 +23,12 @@ from deity_informant import PcodeVM, lift, run_irq, run_sub  # noqa: E402
 _CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache"))
 _PW = set(reg.PW_HI_REGS)
 
+FRAMES = 3000
+
 CASES = [
-    ("monty", "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 250),
-    ("commando", "MUSICIANS/H/Hubbard_Rob/Commando.sid", 250),
-    ("A_Mind_Is_Born", "MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 3000),
+    ("monty", "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid"),
+    ("commando", "MUSICIANS/H/Hubbard_Rob/Commando.sid"),
+    ("A_Mind_Is_Born", "MUSICIANS/L/Lft/A_Mind_Is_Born.sid"),
 ]
 
 
@@ -62,23 +64,23 @@ def render(data, nframes):
 
 
 @pytest.mark.oracle
-@pytest.mark.parametrize("tune_id,relpath,frames", CASES, ids=[c[0] for c in CASES])
-def test_render_matches_oracle(tune_id, relpath, frames):
-    """deity's grid matches the oracle over ``frames`` frames.
+@pytest.mark.parametrize("tune_id,relpath", CASES, ids=[c[0] for c in CASES])
+def test_render_matches_oracle(tune_id, relpath):
+    """deity's grid matches the oracle byte-exact over ``FRAMES`` frames.
 
-    ``A_Mind_Is_Born`` is a full-length N>=3000 guard; the Hubbard tunes are
-    header-play smoke checks. The length assert fails loud on a short/stale
+    Header-play (``monty``/``commando``) and handler-driven (``A_Mind_Is_Born``)
+    RSID all reproduce full-length. The length assert fails loud on a short/stale
     oracle render rather than silently under-validating.
     """
     path = resolve_tune(relpath, cache_dir=_CACHE / "hvsc")
     if path is None:
         raise TuneFetchError(f"tune {tune_id} unavailable (offline, not cached)")
     expected = oracle_grid(
-        path, oracle_cache=_CACHE / "csv", seconds=frames // 50 + 2, frames=frames
+        path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES
     )
     assert (
-        len(expected) >= frames
-    ), f"{tune_id}: oracle only {len(expected)} frames (< {frames}) -- short/stale render"
+        len(expected) >= FRAMES
+    ), f"{tune_id}: oracle only {len(expected)} frames (< {FRAMES}) -- short/stale render"
     rendered = render(Path(path).read_bytes(), len(expected))
     assert aligned_match(
         expected, rendered, max_lead=4
