@@ -25,7 +25,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-oracle = ["py65"]
+oracle = ["py65", "pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
 dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "numpy"]
 
@@ -38,6 +38,11 @@ deity-informant = "deity_informant.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["deity_informant*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "oracle: byte-exact SID grid vs the Dockerized sidtrace oracle (needs Docker + HVSC)",
+]
 
 [tool.coverage.run]
 source = ["deity_informant"]

@@ -22,7 +22,35 @@ jobs:
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
         run: python ghidra/6510/build.py
       - name: Test
-        run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
+        run: pytest tests/ -m "not oracle" -n auto --cov=deity_informant --cov-fail-under=85
+
+  oracle:
+    # Byte-exact SID register-grid comparison of deity's VM against the
+    # Dockerized sidplayfp/sidtrace oracle. Separate job so a flaky oracle or
+    # HVSC fetch never blocks the hermetic unit CI above. HVSC .sid tunes and
+    # the sidtrace CSVs are cached, never committed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev,oracle]"
+      - name: Cache HVSC tunes
+        uses: actions/cache@v4
+        with:
+          path: .oracle-cache/hvsc
+          key: hvsc-${{ hashFiles('tests/test_oracle.py') }}
+      - name: Pull sidtrace oracle image
+        run: docker pull anarkiwi/sidtrace:latest
+      - name: Cache oracle CSVs
+        uses: actions/cache@v4
+        with:
+          path: .oracle-cache/csv
+          key: oracle-csv-${{ hashFiles('tests/test_oracle.py') }}
+      - name: Oracle test
+        run: pytest tests/ -m oracle -n auto
 
   ghidra-integration:
     # End-to-end test under the actual Ghidra headless analyzer (not just libsla/
