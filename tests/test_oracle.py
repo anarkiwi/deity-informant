@@ -12,22 +12,22 @@ import pytest
 
 pytest.importorskip("pysidtracker")
 
-from pysidtracker import make_oracle_fixtures  # noqa: E402
 from pysidtracker import registers as reg  # noqa: E402
 from pysidtracker.image import SidImage  # noqa: E402
 from pysidtracker.trace import trace_init  # noqa: E402
+from pysidtracker.oracle import aligned_match  # noqa: E402
+from pysidtracker.testing import TuneFetchError, oracle_grid, resolve_tune  # noqa: E402
 
-from deity_informant import PcodeVM, run_irq, run_sub, lift  # noqa: E402
+from deity_informant import PcodeVM, lift, run_irq, run_sub  # noqa: E402
 
 _CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache"))
 _PW = set(reg.PW_HI_REGS)
 
-# monty/commando: header-play (run_sub). A_Mind_Is_Born: handler-driven RSID (run_irq).
-TUNES = {
-    "monty": "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid",
-    "commando": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
-    "A_Mind_Is_Born": "MUSICIANS/L/Lft/A_Mind_Is_Born.sid",
-}
+CASES = [
+    ("monty", "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid", 250),
+    ("commando", "MUSICIANS/H/Hubbard_Rob/Commando.sid", 250),
+    ("A_Mind_Is_Born", "MUSICIANS/L/Lft/A_Mind_Is_Born.sid", 3000),
+]
 
 
 def _snapshot(vm):
@@ -40,12 +40,11 @@ def render(data, nframes):
 
     Header-play tunes drive one ``run_sub(play)`` per frame; handler-driven
     tunes (``play == 0``) drive ``run_irq`` on the init trace's IRQ vector.
-    Pulse-width-high regs are nibble-masked (the oracle grid masks them itself).
     """
     img = SidImage.from_bytes(data)
     header = img.header
     vm = PcodeVM(bytes(img.mem))
-    vm.mem[0xD418] = 0x0F  # PSID driver cold-start: maximum volume
+    vm.mem[0xD418] = 0x0F  # PSID cold-start: maximum volume
     cache = {}
     run_sub(vm, header.init_address, cache, lift)
     rows = []
@@ -62,15 +61,25 @@ def render(data, nframes):
     return rows
 
 
-tune_id, oracle_match = make_oracle_fixtures(
-    TUNES,
-    hvsc_cache=_CACHE / "hvsc",
-    oracle_cache=_CACHE / "csv",
-    render=render,
-    frames=250,
-)
-
-
 @pytest.mark.oracle
-def test_render_matches_oracle(oracle_match):  # noqa: F811
-    oracle_match()
+@pytest.mark.parametrize("tune_id,relpath,frames", CASES, ids=[c[0] for c in CASES])
+def test_render_matches_oracle(tune_id, relpath, frames):
+    """deity's grid matches the oracle over ``frames`` frames.
+
+    ``A_Mind_Is_Born`` is a full-length N>=3000 guard; the Hubbard tunes are
+    header-play smoke checks. The length assert fails loud on a short/stale
+    oracle render rather than silently under-validating.
+    """
+    path = resolve_tune(relpath, cache_dir=_CACHE / "hvsc")
+    if path is None:
+        raise TuneFetchError(f"tune {tune_id} unavailable (offline, not cached)")
+    expected = oracle_grid(
+        path, oracle_cache=_CACHE / "csv", seconds=frames // 50 + 2, frames=frames
+    )
+    assert (
+        len(expected) >= frames
+    ), f"{tune_id}: oracle only {len(expected)} frames (< {frames}) -- short/stale render"
+    rendered = render(Path(path).read_bytes(), len(expected))
+    assert aligned_match(
+        expected, rendered, max_lead=4
+    ), f"{tune_id}: deity render != sidtrace oracle over {len(expected)} frames"
