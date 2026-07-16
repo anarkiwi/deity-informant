@@ -31,6 +31,8 @@ from .vm import (
     run_irq,
     run_irq_driven,
 )
+from .recorder import record, Recording, RecVM
+from . import expr
 
 __version__ = "0.2.0"
 
@@ -48,5 +50,9 @@ __all__ = [
     "run_sub",
     "run_irq",
     "run_irq_driven",
+    "record",
+    "Recording",
+    "RecVM",
+    "expr",
     "__version__",
 ]

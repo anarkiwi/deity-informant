@@ -13,10 +13,11 @@ Working on C64 code requires the NMOS 6510 illegal opcodes, and no existing back
 - The known community 6510 Ghidra fork adds illegal *disassembly* only, with uncertain P-Code semantics — not trustworthy for decompilation or execution.
 - deity-informant supplies both missing pieces: a compiled 6510 SLEIGH module (illegal-aware Ghidra/pypcode decompilation) and a hardware-validated lifter + VM (byte-exact vs sidplayfp) executing all 105 illegals.
 
-## Two products
+## Products
 
 - **standalone lifter + VM** — `lift` (6510 -> raw P-Code), the `PcodeVM` interpreter, and the `run_sub`/`run_irq`/`run_irq_driven` drivers. Pure Python, no Ghidra, no py65.
 - **`6510` SLEIGH module** (`ghidra/6510/`) — stock 6502 legal spec + generated `6510_illegal.sinc` that makes Ghidra's disassembler *and* decompiler, and pypcode, illegal-aware. Language id `6510:LE:16:default`.
+- **symbolic window recorder** — `record` runs a driver over repeated invocations, executing bit-identically to `PcodeVM` while residualising data flow over the entry state and recording every control-flow / placement fold as a fact; replay reproduces observable writes byte-exact. Sound under self-modifying code; a record-time assertion gates every artifact. See [docs/symbolic-recorder.md](docs/symbolic-recorder.md).
 
 ## Install
 
