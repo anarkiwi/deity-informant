@@ -118,7 +118,13 @@ class PcodeVM:
         return f
 
     def run_record(self, rec, pc):
+        self._exec(rec, pc)
+        return self._resolve(rec)
+
+    def _exec(self, rec, pc):
         (rec.get("_f") or self.compile_record(rec))(self.reg, self.uniq, self._rd, self._wr)
+
+    def _resolve(self, rec):
         cyc = rec["cyc"]
         ctrl = rec["ctrl"]
         nxt = None
@@ -227,6 +233,14 @@ class PcodeVM:
         r[13] = (p >> 6) & 1
         r[14] = (p >> 7) & 1
 
+    def _push(self, val):
+        """Push one byte to the stack (driver synthetic frames); recorder-overridable seam."""
+        self.mem[0x100 + self.reg[3]] = val & 0xFF
+        self.reg[3] = (self.reg[3] - 1) & 0xFF
+
+    def _push_status(self):
+        self._push(self._status())
+
 
 # ---- control-flow drivers ----------------------------------------------------
 _GUARD = 8_000_000
@@ -236,10 +250,8 @@ def run_sub(vm, pc, cache, lifter):
     """Run a subroutine to its balancing RTS (dummy-return convention)."""
     reg = vm.reg
     start = reg[3]
-    vm.mem[0x100 + reg[3]] = 0x00
-    reg[3] = (reg[3] - 1) & 0xFF
-    vm.mem[0x100 + reg[3]] = 0x01
-    reg[3] = (reg[3] - 1) & 0xFF
+    vm._push(0x00)
+    vm._push(0x01)
     n = 0
     while reg[3] < start:
         pc = vm.step(pc, cache, lifter)
@@ -257,12 +269,9 @@ def run_irq(vm, handler, cache, lifter):
     """
     reg = vm.reg
     start = reg[3]
-    vm.mem[0x100 + reg[3]] = 0x00  # sentinel return hi
-    reg[3] = (reg[3] - 1) & 0xFF
-    vm.mem[0x100 + reg[3]] = 0x00  # sentinel return lo
-    reg[3] = (reg[3] - 1) & 0xFF
-    vm.mem[0x100 + reg[3]] = vm._status()  # pushed status
-    reg[3] = (reg[3] - 1) & 0xFF
+    vm._push(0x00)  # sentinel return hi
+    vm._push(0x00)  # sentinel return lo
+    vm._push_status()
     reg[10] = 1  # I set on IRQ entry
     pc = handler
     n = 0
@@ -276,12 +285,9 @@ def run_irq(vm, handler, cache, lifter):
 
 def _take_irq(vm, handler, ret_pc, enter):
     reg = vm.reg
-    vm.mem[0x100 + reg[3]] = (ret_pc >> 8) & 0xFF
-    reg[3] = (reg[3] - 1) & 0xFF
-    vm.mem[0x100 + reg[3]] = ret_pc & 0xFF
-    reg[3] = (reg[3] - 1) & 0xFF
-    vm.mem[0x100 + reg[3]] = vm._status()
-    reg[3] = (reg[3] - 1) & 0xFF
+    vm._push((ret_pc >> 8) & 0xFF)
+    vm._push(ret_pc & 0xFF)
+    vm._push_status()
     reg[10] = 1  # I set on IRQ entry
     enter(vm)
     return handler

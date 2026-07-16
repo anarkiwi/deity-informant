@@ -145,26 +145,39 @@ MODE_LEN = {
 MEM_MODES = {"zp", "zpx", "zpy", "abs", "absx", "absy", "indx", "indy"}
 
 
-def _ea(e, mem, pc, mode):
-    """Emit P-Code computing the effective address; return its varnode."""
+def _ea(e, mem, pc, mode, pmap=None):
+    """Emit P-Code computing the effective address; return its varnode.
+
+    ``pmap`` (optional) collects ``{id(const): (srcs, fn)}`` recording which
+    operand-derived address constants come from which instruction-byte offsets;
+    purely additive (emitted ops and return value are identical without it).
+    """
     lo = mem[(pc + 1) & 0xFFFF]
     hi = mem[(pc + 2) & 0xFFFF]
     word = lo | (hi << 8)
+
+    def reg(vn, srcs, fn):
+        if pmap is not None:
+            pmap[id(vn)] = (srcs, fn)
+        return vn
+
     if mode == "zp":
-        return C(lo, 2)
+        return reg(C(lo, 2), [1], "id")
     if mode == "zpx":
-        return e.op("INT_ZEXT", e.tmp(2), e.op("INT_ADD", e.tmp(), C(lo), X))
+        return e.op("INT_ZEXT", e.tmp(2), e.op("INT_ADD", e.tmp(), reg(C(lo), [1], "id"), X))
     if mode == "zpy":
-        return e.op("INT_ZEXT", e.tmp(2), e.op("INT_ADD", e.tmp(), C(lo), Y))
+        return e.op("INT_ZEXT", e.tmp(2), e.op("INT_ADD", e.tmp(), reg(C(lo), [1], "id"), Y))
     if mode == "abs":
-        return C(word, 2)
+        return reg(C(word, 2), [1, 2], "word")
     if mode == "absx":
-        return e.op("INT_ADD", e.tmp(2), C(word, 2), e.op("INT_ZEXT", e.tmp(2), X))
+        base = reg(C(word, 2), [1, 2], "word")
+        return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), X))
     if mode == "absy":
-        return e.op("INT_ADD", e.tmp(2), C(word, 2), e.op("INT_ZEXT", e.tmp(2), Y))
+        base = reg(C(word, 2), [1, 2], "word")
+        return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), Y))
     if mode == "indy":
-        plo = e.op("LOAD", e.tmp(), C(lo, 2))
-        phi = e.op("LOAD", e.tmp(), C((lo + 1) & 0xFF, 2))
+        plo = e.op("LOAD", e.tmp(), reg(C(lo, 2), [1], "id"))
+        phi = e.op("LOAD", e.tmp(), reg(C((lo + 1) & 0xFF, 2), [1], "hi1"))
         base = e.op(
             "INT_OR",
             e.tmp(2),
@@ -173,7 +186,7 @@ def _ea(e, mem, pc, mode):
         )
         return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), Y))
     if mode == "indx":
-        pa = e.op("INT_ADD", e.tmp(), C(lo), X)
+        pa = e.op("INT_ADD", e.tmp(), reg(C(lo), [1], "id"), X)
         pa1 = e.op("INT_ADD", e.tmp(), pa, C(1))
         plo = e.op("LOAD", e.tmp(), e.op("INT_ZEXT", e.tmp(2), pa))
         phi = e.op("LOAD", e.tmp(), e.op("INT_ZEXT", e.tmp(2), pa1))
@@ -984,12 +997,15 @@ def lift(mem, pc):
     length = MODE_LEN[mode]
     e = Emit()
     ctrl = ("next",)
-    eav = _ea(e, mem, pc, mode) if mode in MEM_MODES else None
+    pmap = {}
+    eav = _ea(e, mem, pc, mode, pmap) if mode in MEM_MODES else None
     imm = mem[(pc + 1) & 0xFFFF]
 
     def rd():
         if mode == "imm":
-            return C(imm)
+            vn = C(imm)
+            pmap[id(vn)] = ([1], "id")
+            return vn
         if mode == "acc":
             return A
         return e.op("LOAD", e.tmp(), eav)
@@ -1195,6 +1211,8 @@ def lift(mem, pc):
             zp = mem[(pc + 1) & 0xFFFF]
             base = mem[zp] | (mem[(zp + 1) & 0xFF] << 8)
         h1 = C(((base >> 8) + 1) & 0xFF)
+        if mode in ("absy", "absx"):
+            pmap[id(h1)] = ([2], "hi1")
         if mn == "SHA":
             val = e.op("INT_AND", e.tmp(), e.op("INT_AND", e.tmp(), A, X), h1)
         elif mn == "SHX":
@@ -1218,4 +1236,37 @@ def lift(mem, pc):
         pen = ("ay", mem[(pc + 1) & 0xFFFF] | (mem[(pc + 2) & 0xFFFF] << 8))
     elif ex and mode == "indy":
         pen = ("iy", mem[(pc + 1) & 0xFFFF])
-    return {"ops": e.ops, "len": length, "cyc": CYCLETIME[op], "pen": pen, "ctrl": ctrl}
+    prov = _provenance(e.ops, pmap, ctrl, op)
+    stk = ctrl[0] if ctrl[0] in ("jsr", "brk", "rts", "rti") else None
+    return {
+        "ops": e.ops,
+        "len": length,
+        "cyc": CYCLETIME[op],
+        "pen": pen,
+        "ctrl": ctrl,
+        "prov": prov,
+        "stk": stk,
+    }
+
+
+def _provenance(ops, pmap, ctrl, op):
+    """Byte-provenance metadata for the recorder (inert for other users).
+
+    ``op0`` is the opcode byte (record-identity fold). ``ops`` links op-list
+    const varnodes to instruction-byte offsets ``{(i, arg): (srcs, fn)}`` for
+    residualization. ``ctrl`` describes an operand-derived control target
+    ``(srcs, fn, value)`` for jmp/jsr/jmpind/branch when applicable.
+    """
+    opmap = {}
+    for i, (_mn, _out, ins) in enumerate(ops):
+        for j, vn in enumerate(ins):
+            p = pmap.get(id(vn))
+            if p is not None:
+                opmap[(i, j)] = p
+    ctrlp = None
+    kind = ctrl[0]
+    if kind in ("jmp", "jsr", "jmpind"):
+        ctrlp = ([1, 2], "word", ctrl[1])
+    elif kind == "br":
+        ctrlp = ([1], "rel", ctrl[3])
+    return {"op0": op, "ops": opmap, "ctrl": ctrlp}

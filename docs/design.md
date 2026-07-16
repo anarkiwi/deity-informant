@@ -62,6 +62,24 @@ illegals and has no catch-all, so every illegal is `BadDataError`. Therefore a
 compiled SLEIGH language extension is the sole way to make Ghidra's disassembler
 *and* decompiler (and pypcode) illegal-aware. That is exactly this module.
 
+## Product 3 — the symbolic window recorder
+
+`deity_informant/recorder.py` (`record`) and `deity_informant/expr.py` add a
+*recording decompiler*: a per-invocation partial evaluation of the interpreter.
+`RecVM` subclasses `PcodeVM`, so a driver runs unchanged; each op executes
+concretely (bit-identically) while a parallel pass residualises data flow over
+the invocation-entry state and records every control-flow / placement fold as a
+fact. A concrete pre-pass fixes the exact mutable-cell set the recording pass
+residualises against.
+
+The output is sound under self-modifying code: any concrete byte folded from a
+mutable cell is either residualised into an entry-pure expression or pinned by a
+recorded case fact, and evolved-state (`cur`) templates keep artifact size flat
+across advancing data. A record-time assertion re-evaluates every fact and store
+against the entry snapshot before the artifacts are returned. `lift` gains inert
+`prov`/`stk` provenance keys that drive residualisation without changing its
+existing output. Full contract in [symbolic-recorder.md](symbolic-recorder.md).
+
 ## Raw P-Code vs high P-Code
 
 - **Raw** P-Code is the literal per-instruction lowering (Product 1's `lift`, or
