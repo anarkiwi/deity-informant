@@ -213,6 +213,26 @@ def test_channel_load_placement_alias():
             assert any(f[3] == 0x1050 for f in place)
 
 
+def test_channel_load_placement_unconditional():
+    """LDA table,Y aliases the same-frame STA table+2 only at idx==2, yet a
+    placement fact is recorded every frame with its concrete load address."""
+    prog = bytes.fromhex("A9008D0220AC0021B900208D0004AD002118690129038D002160")
+    tbl = {0x2000: 0x10, 0x2001: 0x20, 0x2002: 0x30, 0x2003: 0x40, 0x2100: 0x00}
+    n = 4
+    rec = _rec(prog, 0x1000, {0x0400}, n=n, data=tbl)
+    _replay_matches(rec, _oracle(prog, 0x1000, {0x0400}, n=n, data=tbl))
+    assert [rec.replay(i) for i in range(n)] == [
+        [(0x0400, 0x10)],
+        [(0x0400, 0x20)],
+        [(0x0400, 0x00)],
+        [(0x0400, 0x40)],
+    ]
+    for i in range(n):
+        place = [f for f in rec.facts[i] if f[1] == "place"]
+        assert len(place) == 1, (i, place)
+        assert place[0][0] == 0x1008 and place[0][3] == 0x2000 + i
+
+
 def test_channel_store_placement_alias():
     prog = bytes.fromhex("AE3010A9999D2010AD50108D000460")
     for seed, want in ((0x30, 0x99), (0x00, 0x00)):
