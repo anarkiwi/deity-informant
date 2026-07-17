@@ -53,6 +53,7 @@ class RecVM(PcodeVM):
         super().__init__(mem_bytes)
         self.outputs = set()
         self.mutable = set()
+        self.alias_sites = set()
         self.collect = False
         self.assertion = True
         self.reset_invocation()
@@ -167,11 +168,13 @@ class RecVM(PcodeVM):
             if mn == "LOAD":
                 addr, sz = cvals[0] & 0xFFFF, out[2]
                 cval = self._rd(cvals[0], sz)
-                sexpr = (
-                    None
-                    if self.collect
-                    else self._loadsym(addr, self._sval(ins[0], i, 0, pmap, pc), sz, cval)
-                )
+                if self.collect:
+                    if self._aliases(addr, sz):
+                        self.alias_sites.add((pc, i))
+                    sexpr = None
+                else:
+                    saddr = self._sval(ins[0], i, 0, pmap, pc)
+                    sexpr = self._loadsym((pc, i), addr, saddr, sz, cval)
                 self._setout(out, cval, sexpr)
                 continue
             cval = E._apply(mn, cvals, [vn[2] for vn in ins], out[2])
@@ -186,15 +189,20 @@ class RecVM(PcodeVM):
         for k in range(sz):
             self.written.add((addr + k) & 0xFFFF)
 
-    def _loadsym(self, addr, saddr, sz, cval):
+    def _aliases(self, addr, sz):
+        return sz == 1 and not (self.volatile and _volatile(addr)) and addr in self.written
+
+    def _loadsym(self, site, addr, saddr, sz, cval):
         if sz != 1:
             return E.uni(self._newuni(cval, sz), sz)
         if self.volatile and _volatile(addr):
             return E.uni(self._newuni(cval, 1), 1)
         if addr in self.written:
             if not E.is_const(saddr):
-                self._fact(addr, "place", saddr, addr)
+                self._fact(site[0], "place", saddr, addr)
             return E.cur(E.konst(addr, 2), 1, self.cell_ver[addr], self.cell_expr[addr])
+        if site in self.alias_sites and not E.is_const(saddr):
+            self._fact(site[0], "place", saddr, addr)
         return E.mem(saddr, 1)
 
     def _newuni(self, cval, sz):
@@ -408,6 +416,7 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
     if init_reg is not None:
         vm.reg = list(init_reg)
     vm.outputs, vm.mutable, vm.collect, vm.assertion = outset, mutable, False, assertion
+    vm.alias_sites = set(pre.alias_sites)
     res = Recording(outset)
     cache = {}
     for _ in range(invocations):

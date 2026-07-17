@@ -43,7 +43,13 @@ is residualised over the entry state.
   `(lo+1) mod 256` pointer-high, the 16-bit `abs` word), branch/`jmp`/`jsr`
   targets, `jmpind` vectors, `rts`/`rti` return targets, and **placement** (a
   load/store whose address may land on a cell written earlier records
-  `addr_expr == addr`).
+  `addr_expr == addr`). Store placement is per-frame conditional on the concrete
+  alias; a **computed load** whose address aliases a written cell on any frame is
+  flagged (by `(pc, op_index)`) in the pre-pass and records a placement fact on
+  **every** frame, keyed on the load `pc`, with the frame's concrete address as
+  the case constant — the fact's presence is site-stable while its constant
+  distinguishes which cell was read. This keeps a downstream walk model's guard
+  path deterministic regardless of whether a given frame actually aliases.
 - **Rule 2 (mutations).** Every mutation appears in the store log and `F`,
   including stack traffic performed outside P-Code (`jsr`/`brk` pushes,
   `rts`/`rti` pulls, the status byte, driver sentinel pushes). Flags restored by
@@ -140,7 +146,8 @@ at record time. Pass `assertion=False` for production runs.
 `tests/test_recorder.py` covers: `hello_world` full run replayed byte-exact; one
 program per fold channel (SMC opcode/operand `zp`/`abs`/`indy` incl. the derived
 `+1`, SMC branch target, `jmpind` rewrite, push/push/`rts` dispatch, load- and
-store-placement alias, `brk`, mid-invocation `rti` with modified status); the
+store-placement alias, unconditional load placement at a flagged alias site,
+`brk`, mid-invocation `rti` with modified status); the
 `abs,Y` mod-256 width wrap; pointer-walk template stability; stale-`cur`
 fallback; bounded stack-tower node count; determinism; and concrete fidelity
 (`wlog` and end memory bit-identical to a plain `PcodeVM` run).
