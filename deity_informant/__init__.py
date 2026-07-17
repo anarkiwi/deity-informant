@@ -35,7 +35,7 @@ from .recorder import record, Recording, RecVM
 from .expr import ExprTooComplex
 from . import expr
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 __all__ = [
     "OPS",

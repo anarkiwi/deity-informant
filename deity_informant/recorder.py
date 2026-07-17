@@ -59,8 +59,6 @@ class RecVM(PcodeVM):
         self.reset_invocation()
 
     def reset_invocation(self):
-        E.clear_simplify_cache()
-        E.clear_form_caches()
         self.entry_mem = bytes(self.mem)
         self.entry_reg = list(self.reg)
         self.sreg = [E.reg(i) for i in range(16)]
@@ -395,6 +393,8 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
     observable address set. A concrete pre-pass fixes the exact mutable-cell set
     before the recording pass residualises against it.
     """
+    E.clear_simplify_cache()
+    E.clear_form_caches()
     if isinstance(vm_or_mem, (bytes, bytearray)):
         init_mem, init_reg = bytes(vm_or_mem), None
     else:

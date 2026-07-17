@@ -144,7 +144,7 @@ _DEPTH = {}
 
 
 def clear_simplify_cache():
-    """Drop the per-run ``simplify`` memo (call between recorder invocations)."""
+    """Drop the structural ``simplify`` memo (call once per ``record`` run)."""
     _SIMP_CACHE.clear()
     _DEPTH.clear()
 
@@ -163,8 +163,7 @@ def _children(n):
 def _dep(n):
     if n[0] in ("const", "reg", "uni"):
         return 1
-    hit = _DEPTH.get(id(n))
-    return hit[1] if hit is not None and hit[0] is n else 1
+    return _DEPTH.get(n, 1)
 
 
 def _simplify(n):
@@ -186,22 +185,25 @@ def _simplify(n):
 
 
 def simplify(n):
-    """Canonicalise ``n``; memoised by identity so an already-simplified child
-    (a prior result, cached as its own fixpoint) is not re-descended."""
+    """Canonicalise ``n``, memoised **structurally** (value-keyed).
+
+    Identical nodes built at different sites/frames dedup, and a canonical result
+    is its own fixpoint. The working set is bounded by the tune's expression
+    vocabulary, so the memo persists across frames within one ``record`` run.
+    """
     if n[0] in ("const", "reg", "uni"):
         return n
-    hit = _SIMP_CACHE.get(id(n))
-    if hit is not None and hit[0] is n:
-        return hit[1]
+    r = _SIMP_CACHE.get(n)
+    if r is not None:
+        return r
     r = _simplify(n)
-    if r[0] not in ("const", "reg", "uni") and id(r) not in _DEPTH:
+    if r[0] not in ("const", "reg", "uni") and r not in _DEPTH:
         d = 1 + max((_dep(c) for c in _children(r)), default=0)
         if d > MAX_DEPTH:
             raise ExprTooComplex(f"expression depth {d} exceeds {MAX_DEPTH}")
-        _DEPTH[id(r)] = (r, d)
-    _SIMP_CACHE[id(n)] = (n, r)
-    if r is not n:
-        _SIMP_CACHE[id(r)] = (r, r)
+        _DEPTH[r] = d
+    _SIMP_CACHE[n] = r
+    _SIMP_CACHE[r] = r
     return r
 
 
@@ -215,16 +217,16 @@ _ENTRY_CACHE = {}
 
 
 def clear_form_caches():
-    """Drop the per-run ``_has_cur``/``to_entry`` memos."""
+    """Drop the structural ``_has_cur``/``to_entry`` memos (once per ``record`` run)."""
     _HASCUR_CACHE.clear()
     _ENTRY_CACHE.clear()
 
 
 def _has_cur(n):
-    """Whether ``n`` contains a ``cur`` leaf (identity-memoised)."""
-    hit = _HASCUR_CACHE.get(id(n))
-    if hit is not None and hit[0] is n:
-        return hit[1]
+    """Whether ``n`` contains a ``cur`` leaf (value-keyed memo)."""
+    r = _HASCUR_CACHE.get(n)
+    if r is not None:
+        return r
     k = n[0]
     if k == "cur":
         r = True
@@ -234,7 +236,7 @@ def _has_cur(n):
         r = any(_has_cur(c) for c in n[2])
     else:
         r = False
-    _HASCUR_CACHE[id(n)] = (n, r)
+    _HASCUR_CACHE[n] = r
     return r
 
 
@@ -246,9 +248,9 @@ def to_entry(n):
     """
     if not _has_cur(n):
         return n
-    hit = _ENTRY_CACHE.get(id(n))
-    if hit is not None and hit[0] is n:
-        return hit[1]
+    r = _ENTRY_CACHE.get(n)
+    if r is not None:
+        return r
     k = n[0]
     if k == "cur":
         r = to_entry(n[4])
@@ -256,7 +258,7 @@ def to_entry(n):
         r = ("mem", to_entry(n[1]), n[2])
     else:
         r = ("op", n[1], tuple(to_entry(c) for c in n[2]), n[3])
-    _ENTRY_CACHE[id(n)] = (n, r)
+    _ENTRY_CACHE[n] = r
     return r
 
 
