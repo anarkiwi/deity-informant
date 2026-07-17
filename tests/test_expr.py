@@ -62,3 +62,13 @@ def test_depth_guard_raises_on_runaway():
     with pytest.raises(E.ExprTooComplex):
         for i in range(E.MAX_DEPTH + 50):
             acc = E.op("INT_SUB", [acc, E.mem(E.konst(0x2000 + i, 2), 1)], 1)
+
+
+def test_simplify_memo_is_structural_and_persistent():
+    E.clear_simplify_cache()
+    a = E.op("INT_ADD", [E.mem(E.konst(0x40, 2), 1), E.konst(5, 1)], 1)
+    n = len(E._SIMP_CACHE)  # pylint: disable=protected-access
+    # a distinct object with identical structure reuses the memo (no new entries)
+    b = E.op("INT_ADD", [E.mem(E.konst(0x40, 2), 1), E.konst(5, 1)], 1)
+    assert b == a
+    assert len(E._SIMP_CACHE) == n  # pylint: disable=protected-access
