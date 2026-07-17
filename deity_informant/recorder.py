@@ -12,6 +12,7 @@ from .lifter import lift
 from .vm import PcodeVM
 
 _VOL = frozenset({0xD019, 0xDC0D})
+_SIG_MASK = (1 << 64) - 1
 
 
 def _volatile(addr):
@@ -55,7 +56,9 @@ class RecVM(PcodeVM):
         self.mutable = set()
         self.alias_sites = set()
         self.collect = False
+        self.emit = True
         self.assertion = True
+        self.sig = 0
         self.reset_invocation()
 
     def reset_invocation(self):
@@ -71,6 +74,18 @@ class RecVM(PcodeVM):
         self.out_seq = []
         self.uni_vals = {}
         self.F = {}
+        self.sig = 0xCBF29CE484222325
+
+    def _mix(self, x):
+        """Fold a control-flow/address quantity into the per-invocation signature.
+
+        The signature abstracts the concrete run to (executed instruction
+        identities + effective addresses of every memory access). Two invocations
+        with equal signatures took the identical control-flow path over the
+        identical addresses, so they residualise to the byte-identical symbolic
+        template -- only the entry snapshot and volatile reads differ.
+        """
+        self.sig = ((self.sig ^ (x & _SIG_MASK)) * 0x100000001B3) & _SIG_MASK
 
     # ---- symbolic memory leaves --------------------------------------------
     def _byte(self, addr):
@@ -139,22 +154,24 @@ class RecVM(PcodeVM):
     def _setout(self, out, cval, sexpr):
         cval &= E.mask(out[2])
         (self.reg if out[0] == "r" else self.uniq)[out[1]] = cval
-        if not self.collect:
+        if self.emit:
             (self.sreg if out[0] == "r" else self.suni)[out[1]] = sexpr
 
     def _exec(self, rec, pc):
         prov = rec["prov"]
         pmap = prov["ops"]
-        if not self.collect:
+        emit = self.emit
+        if emit:
             self._justify(pc, prov)
         for i, (mn, out, ins) in enumerate(rec["ops"]):
             cvals = [self._cval(vn) for vn in ins]
             if mn == "STORE":
                 sz = ins[1][2]
+                self._mix(0x51E0000 ^ (cvals[0] & 0xFFFF))
                 self._wr(cvals[0], cvals[1], sz)
                 if self.collect:
                     self._mark(cvals[0] & 0xFFFF, sz)
-                else:
+                elif emit:
                     self._store(
                         cvals[0] & 0xFFFF,
                         self._sval(ins[0], i, 0, pmap, pc),
@@ -165,18 +182,23 @@ class RecVM(PcodeVM):
                 continue
             if mn == "LOAD":
                 addr, sz = cvals[0] & 0xFFFF, out[2]
+                self._mix(0x10AD0000 ^ addr)
                 cval = self._rd(cvals[0], sz)
                 if self.collect:
                     if self._aliases(addr, sz):
                         self.alias_sites.add((pc, i))
                     sexpr = None
-                else:
+                elif emit:
                     saddr = self._sval(ins[0], i, 0, pmap, pc)
                     sexpr = self._loadsym((pc, i), addr, saddr, sz, cval)
+                else:  # repeat frame: mirror the emit path's uni allocation order
+                    if sz != 1 or (self.volatile and _volatile(addr)):
+                        self._newuni(cval, sz)
+                    sexpr = None
                 self._setout(out, cval, sexpr)
                 continue
             cval = E._apply(mn, cvals, [vn[2] for vn in ins], out[2])
-            if self.collect:
+            if not emit:
                 self._setout(out, cval, None)
                 continue
             svals = [self._sval(vn, i, j, pmap, pc) for j, vn in enumerate(ins)]
@@ -230,6 +252,7 @@ class RecVM(PcodeVM):
     def step(self, pc, cache, lifter):
         mem = self.mem
         k = (pc, mem[pc], mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF])
+        self._mix((pc << 24) ^ (k[1] << 16) ^ (k[2] << 8) ^ k[3])
         rec = cache.get(k)
         if rec is None:
             rec = lifter(mem, pc)
@@ -239,7 +262,7 @@ class RecVM(PcodeVM):
         if t == "next":
             return (pc + rec["len"]) & 0xFFFF
         if t == "br":
-            if not self.collect:
+            if self.emit:
                 self._branch(pc, ctrl[1][1], ctrl[2])
             return nxt
         if t == "jmp":
@@ -265,24 +288,24 @@ class RecVM(PcodeVM):
         self.mem[addr] = cval & 0xFF
         if self.collect:
             self.written.add(addr & 0xFFFF)
-        else:
+        elif self.emit:
             self._store(addr, E.konst(addr, 2), sexpr, 1, cval)
         self.reg[3] = (self.reg[3] - 1) & 0xFF
-        if not self.collect:
+        if self.emit:
             self.sreg[3] = E.op("INT_SUB", [self.sreg[3], E.konst(1, 1)], 1)
 
     def _push(self, val):
         self._pushb(val, E.konst(val, 1))
 
     def _push_status(self):
-        self._pushb(self._status(), None if self.collect else self._status_expr(0))
+        self._pushb(self._status(), self._status_expr(0) if self.emit else None)
 
     def _pull(self):
         self.reg[3] = (self.reg[3] + 1) & 0xFF
-        if not self.collect:
+        if self.emit:
             self.sreg[3] = E.op("INT_ADD", [self.sreg[3], E.konst(1, 1)], 1)
         addr = 0x100 + self.reg[3]
-        return self.mem[addr], (None if self.collect else self._byte(addr))
+        return self.mem[addr], (self._byte(addr) if self.emit else None)
 
     def _jsr(self, pc, rec, target):
         ret = (pc + rec["len"] - 1) & 0xFFFF
@@ -294,7 +317,7 @@ class RecVM(PcodeVM):
         lo_c, lo_e = self._pull()
         hi_c, hi_e = self._pull()
         target = (((hi_c << 8) | lo_c) + 1) & 0xFFFF
-        if not self.collect:
+        if self.emit:
             tex = E.op("INT_ADD", [self._word(lo_e, hi_e), E.konst(1, 2)], 2)
             self._fact(pc, "target", tex, target)
         return target
@@ -304,7 +327,7 @@ class RecVM(PcodeVM):
         lo_c, lo_e = self._pull()
         hi_c, hi_e = self._pull()
         self._set_flags(st_c)
-        if not self.collect:
+        if self.emit:
             self._restore_flags(st_e)
             self._fact(pc, "target", self._word(lo_e, hi_e), ((hi_c << 8) | lo_c) & 0xFFFF)
         return ((hi_c << 8) | lo_c) & 0xFFFF
@@ -315,10 +338,10 @@ class RecVM(PcodeVM):
         self._pushb(ret & 0xFF, E.konst(ret & 0xFF, 1))
         self._pushb(self._status(brk=1), None if self.collect else self._status_expr(1))
         self.reg[10] = 1
-        if not self.collect:
+        if self.emit:
             self.sreg[10] = E.konst(1, 1)
         target = self.mem[0xFFFE] | (self.mem[0xFFFF] << 8)
-        if not self.collect and (0xFFFE in self.mutable or 0xFFFF in self.mutable):
+        if self.emit and (0xFFFE in self.mutable or 0xFFFF in self.mutable):
             vex = self._word(self._byte(0xFFFE), self._byte(0xFFFF))
             self._fact(pc, "target", vex, target)
         return target
@@ -327,7 +350,7 @@ class RecVM(PcodeVM):
         a_lo = ptr
         a_hi = (ptr & 0xFF00) | ((ptr + 1) & 0xFF)
         target = self.mem[a_lo] | (self.mem[a_hi] << 8)
-        if not self.collect and (a_lo in self.mutable or a_hi in self.mutable):
+        if self.emit and (a_lo in self.mutable or a_hi in self.mutable):
             vex = self._word(self._byte(a_lo), self._byte(a_hi))
             self._fact(pc, "target", vex, target)
         return target
@@ -404,13 +427,15 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
     pre = RecVM(init_mem)
     if init_reg is not None:
         pre.reg = list(init_reg)
-    pre.outputs, pre.collect, pre.assertion = outset, True, False
+    pre.outputs, pre.collect, pre.emit, pre.assertion = outset, True, False, False
     mutable = set()
+    sigs = []
     cache = {}
     for _ in range(invocations):
         pre.reset_invocation()
         driver(pre, entry, cache, lifter)
         mutable |= pre.written
+        sigs.append(pre.sig)
 
     vm = RecVM(init_mem)
     if init_reg is not None:
@@ -419,14 +444,20 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
     vm.alias_sites = set(pre.alias_sites)
     res = Recording(outset)
     cache = {}
-    for _ in range(invocations):
+    tmpl = {}
+    for idx in range(invocations):
+        cached = tmpl.get(sigs[idx])
+        vm.emit = cached is None
         vm.reset_invocation()
         driver(vm, entry, cache, lifter)
-        vm._finalize()
-        res.F.append(dict(vm.F))
-        res.facts.append(vm.public_facts())
-        res.slog.append(vm.public_slog())
-        res.out_seq.append(list(vm.out_seq))
+        if cached is None:
+            vm._finalize()
+            cached = (dict(vm.F), vm.public_facts(), vm.public_slog(), list(vm.out_seq))
+            tmpl[sigs[idx]] = cached
+        res.F.append(cached[0])
+        res.facts.append(cached[1])
+        res.slog.append(cached[2])
+        res.out_seq.append(cached[3])
         res.entry.append((vm.entry_mem, tuple(vm.entry_reg)))
         res._uni.append(dict(vm.uni_vals))
     return res
