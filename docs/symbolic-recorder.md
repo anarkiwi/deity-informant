@@ -60,6 +60,20 @@ invocations collects the exact written-address set. Because the pre-pass and the
 recording pass execute byte-identical deterministic traces, the set is exact for
 the recorded window, not an approximation.
 
+## Per-invocation template memoization
+
+The symbolic artifacts of an invocation (`facts`/`slog`/`out_seq`/`F`) are a pure
+function of its concrete path: the executed instruction identities (`pc` + opcode
+bytes, so SMC is captured) and the effective address of every load/store. The
+pre-pass folds that path into a 64-bit signature per invocation; the recording
+pass builds the symbolic template only for the first invocation of each signature
+and reuses it for later matches. Repeat invocations still execute concretely (for
+state carry and their own entry/`uni` snapshots) but skip all expression building.
+Looping players retrace few distinct paths, so this bounds symbolic work by the
+path vocabulary rather than the window length. The signature is sufficient by the
+same determinism argument as the mutable set: equal path ⇒ byte-identical
+template, so reuse is exact, not an approximation.
+
 ## Lifter provenance metadata
 
 `lift` returns two extra keys (inert for other users; `ops`/`len`/`cyc`/`pen`/
