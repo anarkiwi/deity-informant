@@ -34,8 +34,10 @@ from .vm import (
 from .recorder import record, Recording, RecVM
 from .expr import ExprTooComplex
 from . import expr
+from . import c64
+from .c64 import poweron_ram, installed_handler, install_kernal_irq_stubs
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 __all__ = [
     "OPS",
@@ -56,5 +58,9 @@ __all__ = [
     "RecVM",
     "ExprTooComplex",
     "expr",
+    "c64",
+    "poweron_ram",
+    "installed_handler",
+    "install_kernal_irq_stubs",
     "__version__",
 ]
