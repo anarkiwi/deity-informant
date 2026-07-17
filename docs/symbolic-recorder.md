@@ -74,7 +74,12 @@ Nodes (tuples): `("const", v, sz)`, `("reg", i)` (entry register, width 1),
 `("uni", n, sz)` (opaque — volatile reads / unmodelled), `("mem", addr, sz)`
 (entry-image read), `("cur", addr, sz, ver, fb)` (evolving-image read carrying
 the cell's load-time store-version and its entry-pure fallback), and
-`("op", MN, kids, sz)` over the P-Code mnemonics the VM interprets.
+`("op", MN, kids, sz)` over the P-Code mnemonics the VM interprets. The
+associative ops `INT_ADD`/`INT_OR`/`INT_AND`/`INT_XOR` are **flat**: one node
+with `N >= 2` operands. An accumulator (`acc = acc op x` over an unrolled loop)
+is therefore a single depth-`~2` node, never an `N`-deep chain, so every
+traversal (`simplify`, `to_entry`, `to_evolved`, `evaluate`) recurses only to an
+expression's logical depth and never needs a raised recursion limit.
 
 **Evolved-state templates are required, not optional.** Substituting a
 producer's whole entry-pure composition into every downstream consumer mints a
@@ -92,13 +97,23 @@ per-invocation transition function); facts and stores carry evolved forms
 ### Simplification laws
 
 - **Width law:** a narrower arithmetic node wraps at its own width and stays
-  nested when flattened into a wider parent (truncation distributes over addition
-  only for same-or-wider children). This keeps an index register's `mod 256` wrap
-  correct inside a 16-bit address.
-- **Subtraction law:** `INT_SUB` by a constant folds into additive flattening as
-  its same-width two's complement, so nested `jsr`/`rts` stack arithmetic
-  canonicalises to a single `SP + k` form — node count bounded in nesting depth,
-  not linear.
+  whole when spliced into a wider parent (only same-width same-op children flatten
+  in). This keeps an index register's `mod 256` wrap correct inside a 16-bit
+  address.
+- **Subtraction law:** `INT_SUB` by a constant folds into the flat sum as its
+  same-width two's complement, so nested `jsr`/`rts` stack arithmetic canonicalises
+  to a single `SP + k` node — bounded in nesting depth, not linear.
+- **Flat associative folding:** same-op same-width operands splice into one node
+  and constants fold; `simplify` is identity-memoised so an already-canonical
+  child is not re-descended (accumulation is O(1) per step, not O(N²)).
+
+### Complexity guard
+
+`simplify` tracks each result's depth and raises `ExprTooComplex` once it exceeds
+`expr.MAX_DEPTH` (256). Flat folding keeps genuine playroutine arithmetic far
+below that, so the guard fires only on a runaway — e.g. a mis-driven interrupt
+executing uninitialised RAM — converting an unbounded walk into a clean,
+catchable skip instead of a hang.
 
 Lifter invariants the algebra relies on: `LOAD`/`STORE` are 1-byte; widening is
 only via `INT_ZEXT`.

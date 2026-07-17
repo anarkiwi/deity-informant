@@ -32,9 +32,10 @@ from .vm import (
     run_irq_driven,
 )
 from .recorder import record, Recording, RecVM
+from .expr import ExprTooComplex
 from . import expr
 
-__version__ = "0.2.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "OPS",
@@ -53,6 +54,7 @@ __all__ = [
     "record",
     "Recording",
     "RecVM",
+    "ExprTooComplex",
     "expr",
     "__version__",
 ]
