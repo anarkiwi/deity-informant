@@ -27,3 +27,7 @@ jobs:
           python -m build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A tag push and its GitHub release both fire this workflow; skip-existing
+          # makes the second a no-op instead of a "File already exists" failure.
+          skip-existing: true
