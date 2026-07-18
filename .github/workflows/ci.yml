@@ -38,14 +38,14 @@ jobs:
       - name: Install
         run: pip install -e ".[dev,oracle]"
       - name: Cache HVSC tunes
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .oracle-cache/hvsc
           key: hvsc-${{ hashFiles('tests/test_oracle.py') }}
       - name: Pull sidtrace oracle image
         run: docker pull anarkiwi/sidtrace:latest
       - name: Cache oracle CSVs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .oracle-cache/csv
           key: oracle-csv-${{ hashFiles('tests/test_oracle.py') }}
