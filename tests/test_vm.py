@@ -5,11 +5,11 @@ import pytest
 import deity_informant as P
 from deity_informant import PcodeVM, run_sub, run_irq, run_irq_driven, lift
 
+import _common as H
+
 
 def _vm(prog, org=0x1000):
-    mem = bytearray(0x10000)
-    mem[org : org + len(prog)] = prog
-    return PcodeVM(mem)
+    return PcodeVM(H.image(prog, org))
 
 
 def test_jsr_rts_roundtrip():
@@ -102,7 +102,7 @@ def test_run_irq_driven_fires_source():
 def _run1(prog, a=0, x=0, y=0, sp=0xFF, p=0x20, org=0x1000):
     vm = _vm(prog, org)
     vm.volatile = False
-    vm.reg[0], vm.reg[1], vm.reg[2], vm.reg[3] = a, x, y, sp
+    H.load_regs(vm, a, x, y, sp, p)
     vm.step(org, {}, lift)
     return vm
 

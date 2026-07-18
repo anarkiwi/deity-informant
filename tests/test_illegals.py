@@ -13,34 +13,20 @@ import pytest
 
 import deity_informant as P
 
+import _common as H
+
 py65 = pytest.importorskip("py65.devices.mpu6502")
 
-PC = 0x0800
+PC = H.PC
 ZP = 0x50  # a zero-page cell clear of I/O
-
-
-def _flags(p):
-    return (p & 1, (p >> 1) & 1, (p >> 2) & 1, (p >> 3) & 1, (p >> 6) & 1, (p >> 7) & 1)
-
-
-def _mk_p(rng):
-    b = rng.integers(0, 2, 6)  # C,Z,I,D,V,N with D forced 0 (no decimal on C64)
-    return int(b[0] | (b[1] << 1) | (b[2] << 2) | 0x20 | (b[4] << 6) | (b[5] << 7))
-
-
-def _vm_state(vm):
-    r = vm.reg
-    return (r[0], r[1], r[2], r[3], r[8], r[9], r[10], r[11], r[13], r[14])
 
 
 def _run_vm(mem, a, x, y, sp, p):
     vm = P.PcodeVM(mem)
     vm.volatile = False
-    r = vm.reg
-    r[0], r[1], r[2], r[3] = a, x, y, sp
-    r[8], r[9], r[10], r[11], r[13], r[14] = _flags(p)
+    H.load_regs(vm, a, x, y, sp, p)
     vm.step(PC, {}, P.lift)
-    return _vm_state(vm), bytes(vm.mem)
+    return H.arch_state(vm), bytes(vm.mem)
 
 
 def _run_py65(mem, a, x, y, sp, p, nsteps):
@@ -49,15 +35,13 @@ def _run_py65(mem, a, x, y, sp, p, nsteps):
     mpu.a, mpu.x, mpu.y, mpu.sp, mpu.p, mpu.pc = a, x, y, sp, p, PC
     for _ in range(nsteps):
         mpu.step()
-    st = (mpu.a, mpu.x, mpu.y, mpu.sp) + _flags(mpu.p)
+    st = (mpu.a, mpu.x, mpu.y, mpu.sp) + H.flags(mpu.p)
     return st, bytes(mpu.memory)
 
 
 def _img(seq):
     """A zeroed 64K image with ``seq`` bytes placed at PC (for immediate ops)."""
-    m = bytearray(0x10000)
-    m[PC : PC + len(seq)] = seq
-    return bytes(m)
+    return H.image(seq, PC)
 
 
 # illegal zp opcode -> its two-instruction legal-equivalent zp opcodes (NMS).
@@ -78,7 +62,7 @@ def test_rmw_matches_legal_decomposition(ill, legal):
     for _ in range(300):
         mem = bytearray(bytes(rng.integers(0, 256, 0x10000, dtype=np.uint8)))
         a, x, y, sp = (int(v) for v in rng.integers(0, 256, 4))
-        p = _mk_p(rng)
+        p = H.mk_p(rng)
         ill_mem = bytearray(mem)
         ill_mem[PC] = ill
         ill_mem[PC + 1] = ZP
@@ -110,7 +94,7 @@ def test_alr_matches_and_then_lsr():
     for _ in range(300):
         imm = int(rng.integers(0, 256))
         a, x, y, sp = (int(v) for v in rng.integers(0, 256, 4))
-        p = _mk_p(rng)
+        p = H.mk_p(rng)
         mem = bytearray(0x10000)
         mem[PC] = 0x4B
         mem[PC + 1] = imm  # ALR #imm
@@ -124,7 +108,7 @@ def test_illegal_sbc_matches_legal_sbc():
     for _ in range(300):
         imm = int(rng.integers(0, 256))
         a, x, y, sp = (int(v) for v in rng.integers(0, 256, 4))
-        p = _mk_p(rng)
+        p = H.mk_p(rng)
         mem = bytearray(0x10000)
         mem[PC] = 0xEB
         mem[PC + 1] = imm  # illegal SBC #imm
@@ -138,7 +122,7 @@ def test_anc_and_carry_from_bit7():
     for _ in range(300):
         imm = int(rng.integers(0, 256))
         a = int(rng.integers(0, 256))
-        p = _mk_p(rng)
+        p = H.mk_p(rng)
         mem = bytearray(0x10000)
         mem[PC] = 0x0B
         mem[PC + 1] = imm  # ANC #imm
@@ -188,14 +172,14 @@ def test_sax_stores_a_and_x_no_flags():
     rng = np.random.default_rng(0x5A4)
     for _ in range(200):
         a, x = int(rng.integers(0, 256)), int(rng.integers(0, 256))
-        p = _mk_p(rng)
+        p = H.mk_p(rng)
         mem = bytearray(0x10000)
         mem[PC] = 0x87
         mem[PC + 1] = ZP  # SAX $ZP
         vst, vmem = _run_vm(bytes(mem), a, x, 0, 0xFF, p)
         assert vmem[ZP] == (a & x)
         assert vst[:4] == (a, x, 0, 0xFF)  # A/X/Y/SP unchanged
-        assert vst[4:] == _flags(p)  # flags unchanged
+        assert vst[4:] == H.flags(p)  # flags unchanged
 
 
 def test_sbx_x_equals_ax_minus_imm():

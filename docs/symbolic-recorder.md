@@ -9,6 +9,10 @@ byte-exactly, in order. Soundness is checked at record time.
 Modules: `deity_informant/expr.py` (expression algebra) and
 `deity_informant/recorder.py` (`record`, `Recording`, `RecVM`).
 
+This page is the normative contract. For the operational pipeline walk-through —
+the two concrete passes, the residualise-vs-case-fact decision, and replay's
+machine order, with ASCII diagrams — see [smc-recovery.md](smc-recovery.md).
+
 ## API
 
 ```python

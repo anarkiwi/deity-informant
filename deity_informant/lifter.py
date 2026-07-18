@@ -37,6 +37,9 @@ FB = ["r", 12, 1]
 FV = ["r", 13, 1]
 FN = ["r", 14, 1]
 
+# P (status) register NV-BDIZC as (reg-file index, bit); shared by VM/recorder/lifter.
+STATUS_BITS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
+
 
 class Emit:
     __slots__ = ("ops", "_u")
@@ -984,10 +987,6 @@ EXTRACYCLES = (
 )
 
 
-def load_cycle_tables():
-    """No-op kept for backward compatibility; cycle tables are now static."""
-
-
 # ---- the lifter --------------------------------------------------------------
 def lift(mem, pc):
     op = mem[pc]
@@ -1078,9 +1077,12 @@ def lift(mem, pc):
             e.op("LOAD", e.tmp(), eav)  # NMS p.40: NOP zp/abs still reads memory
     elif mn in ("PHA", "PHP"):
         if mn == "PHP":
-            val = e.op("INT_OR", e.tmp(), C(0x30), FC)
-            for f, sh in ((FZ, 1), (FI, 2), (FD, 3), (FV, 6), (FN, 7)):
-                val = e.op("INT_OR", e.tmp(), val, e.op("INT_LEFT", e.tmp(), f, C(sh)))
+            val = C(0x30)  # B + unused bits set on a pushed status byte
+            for idx, sh in STATUS_BITS:
+                f = ["r", idx, 1]
+                val = e.op(
+                    "INT_OR", e.tmp(), val, f if sh == 0 else e.op("INT_LEFT", e.tmp(), f, C(sh))
+                )
         else:
             val = A
         addr = e.op("INT_OR", e.tmp(2), e.op("INT_ZEXT", e.tmp(2), SP), C(0x100, 2))
@@ -1094,9 +1096,9 @@ def lift(mem, pc):
             e.op("COPY", A, val)
             e.nz(A)
         else:
-            e.op("INT_AND", FC, val, C(1))
-            for f, sh in ((FZ, 1), (FI, 2), (FD, 3), (FV, 6), (FN, 7)):
-                e.op("INT_AND", f, e.op("INT_RIGHT", e.tmp(), val, C(sh)), C(1))
+            for idx, sh in STATUS_BITS:
+                src = val if sh == 0 else e.op("INT_RIGHT", e.tmp(), val, C(sh))
+                e.op("INT_AND", ["r", idx, 1], src, C(1))
     elif mn in ("BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"):
         flag, pol = {
             "BPL": (FN, 0),
