@@ -14,6 +14,8 @@ Unintended Opcodes" (v0.91); see ``docs/illegal-opcodes.md``.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .lifter import (
     OPS,
     MODE_LEN,
@@ -21,7 +23,6 @@ from .lifter import (
     ILLEGAL_OPCODES,
     MAGIC,
     lift,
-    load_cycle_tables,
     CYCLETIME,
     EXTRACYCLES,
 )
@@ -37,7 +38,10 @@ from . import expr
 from . import c64
 from .c64 import poweron_ram, installed_handler, install_kernal_irq_stubs
 
-__version__ = "0.3.4"
+try:
+    __version__ = version("deity-informant")
+except PackageNotFoundError:  # pragma: no cover - source tree without install metadata
+    __version__ = "0+unknown"
 
 __all__ = [
     "OPS",
@@ -46,7 +50,6 @@ __all__ = [
     "ILLEGAL_OPCODES",
     "MAGIC",
     "lift",
-    "load_cycle_tables",
     "CYCLETIME",
     "EXTRACYCLES",
     "PcodeVM",

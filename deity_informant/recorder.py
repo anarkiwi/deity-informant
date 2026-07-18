@@ -8,7 +8,7 @@ state and recording folds as facts. See docs/symbolic-recorder.md.
 from __future__ import annotations
 
 from . import expr as E
-from .lifter import lift
+from .lifter import STATUS_BITS, lift
 from .vm import PcodeVM
 
 _VOL = frozenset({0xD019, 0xDC0D})
@@ -356,23 +356,17 @@ class RecVM(PcodeVM):
         return target
 
     def _restore_flags(self, st):
-        self.sreg[8] = E.op("INT_AND", [st, E.konst(1, 1)], 1)
-        for idx, sh in ((9, 1), (10, 2), (11, 3), (13, 6), (14, 7)):
-            self.sreg[idx] = E.op(
-                "INT_AND", [E.op("INT_RIGHT", [st, E.konst(sh, 1)], 1), E.konst(1, 1)], 1
-            )
+        for idx, sh in STATUS_BITS:
+            src = st if sh == 0 else E.op("INT_RIGHT", [st, E.konst(sh, 1)], 1)
+            self.sreg[idx] = E.op("INT_AND", [src, E.konst(1, 1)], 1)
 
     def _status_expr(self, brk):
         s = self.sreg
         parts = [
-            s[8],
-            E.op("INT_LEFT", [s[9], E.konst(1, 1)], 1),
-            E.op("INT_LEFT", [s[10], E.konst(2, 1)], 1),
-            E.op("INT_LEFT", [s[11], E.konst(3, 1)], 1),
-            E.konst(0x20 | (brk << 4), 1),
-            E.op("INT_LEFT", [s[13], E.konst(6, 1)], 1),
-            E.op("INT_LEFT", [s[14], E.konst(7, 1)], 1),
+            s[i] if sh == 0 else E.op("INT_LEFT", [s[i], E.konst(sh, 1)], 1)
+            for i, sh in STATUS_BITS
         ]
+        parts.append(E.konst(0x20 | (brk << 4), 1))
         node = parts[0]
         for p in parts[1:]:
             node = E.op("INT_OR", [node, p], 1)

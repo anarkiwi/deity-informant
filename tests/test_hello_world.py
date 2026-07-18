@@ -1,22 +1,20 @@
 """CI integration test for the self-contained hello-world demo.
 
-Verifies three things end to end: the VM produces the exact HELLO, WORLD! screen
-codes; the two load-bearing illegal opcodes actually execute; the self-modifying
-STA re-lifts once per store target; and the 6510 SLEIGH engine (pypcode = libsla,
-Ghidra's own engine) disassembles the illegals that stock 6502 rejects.
+Verifies end to end: the VM produces the exact HELLO, WORLD! screen codes; the two
+load-bearing illegal opcodes actually execute; the self-modifying STA re-lifts once
+per store target; and the 6510 SLEIGH engine (pypcode = libsla, Ghidra's own engine)
+decodes the demo's illegals (stock-6502 rejection is covered in test_coverage).
 """
-
-import pytest
 
 from deity_informant import ILLEGAL_OPCODES, PcodeVM, lift, run_sub
 
 from examples.hello_world import EXPECTED, ORG, PROGRAM, STA_PC
 
+import _common as H
+
 
 def _run():
-    mem = bytearray(0x10000)
-    mem[ORG : ORG + len(PROGRAM)] = PROGRAM
-    vm = PcodeVM(mem)
+    vm = PcodeVM(H.image(PROGRAM, ORG))
     cache = {}
     run_sub(vm, ORG, cache, lift)
     return vm, cache
@@ -46,11 +44,4 @@ def test_disassembles_through_ghidra_sleigh(ctx6510):
     by_addr = {i.addr.offset: i.mnem for i in d.instructions}
     assert by_addr.get(0x1002) == "LAX"  # $BF
     assert by_addr.get(0x100C) == "ISC"  # $EF
-
-    # The exact gap this project closes: stock 6502 cannot even decode $BF/$EF.
-    import pypcode  # noqa: PLC0415
-
-    stock = pypcode.Context("6502:LE:16:default")
-    for op in (0xBF, 0xEF):
-        with pytest.raises(Exception):
-            stock.disassemble(bytes([op, 0x13, 0x10]), 0x1000, 0)
+    # Stock-6502 rejection of these bytes is test_coverage::test_stock_6502_rejects_illegals.

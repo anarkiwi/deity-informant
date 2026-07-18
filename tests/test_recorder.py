@@ -9,6 +9,8 @@ from deity_informant import PcodeVM, RecVM, lift, record, run_sub
 
 from examples.hello_world import EXPECTED, ORG, PROGRAM
 
+import _common as H
+
 
 class _Log(PcodeVM):
     """PcodeVM that records ordered writes to ``outs`` (independent oracle)."""
@@ -26,12 +28,7 @@ class _Log(PcodeVM):
         super()._wr(addr, val, sz)
 
 
-def _mem(prog, org, data=None):
-    m = bytearray(0x10000)
-    m[org : org + len(prog)] = prog
-    for a, b in (data or {}).items():
-        m[a] = b
-    return m
+_mem = H.image
 
 
 def _rec(prog, org, outputs, n=1, data=None, assertion=True):

@@ -78,7 +78,9 @@ recorded case fact, and evolved-state (`cur`) templates keep artifact size flat
 across advancing data. A record-time assertion re-evaluates every fact and store
 against the entry snapshot before the artifacts are returned. `lift` gains inert
 `prov`/`stk` provenance keys that drive residualisation without changing its
-existing output. Full contract in [symbolic-recorder.md](symbolic-recorder.md).
+existing output. See [smc-recovery.md](smc-recovery.md) for the two-pass pipeline
+walk-through (ASCII diagrams) and [symbolic-recorder.md](symbolic-recorder.md) for
+the full node/evaluation contract.
 
 ## Raw P-Code vs high P-Code
 

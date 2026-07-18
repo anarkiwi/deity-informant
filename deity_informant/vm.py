@@ -8,6 +8,8 @@ frame play, and interrupt-driven cadence exactly as a real 6510 would.
 
 from __future__ import annotations
 
+from .lifter import STATUS_BITS
+
 # ---- P-Code -> Python source (per-op line; exec'd into a closure) ------------
 _BINOP = {
     "INT_ADD": "+",
@@ -213,25 +215,12 @@ class PcodeVM:
 
     def _status(self, brk=0):
         r = self.reg
-        return (
-            r[8]
-            | (r[9] << 1)
-            | (r[10] << 2)
-            | (r[11] << 3)
-            | 0x20
-            | ((brk or 0) << 4)
-            | (r[13] << 6)
-            | (r[14] << 7)
-        )
+        return sum(r[i] << s for i, s in STATUS_BITS) | 0x20 | ((brk or 0) << 4)
 
     def _set_flags(self, p):
         r = self.reg
-        r[8] = p & 1
-        r[9] = (p >> 1) & 1
-        r[10] = (p >> 2) & 1
-        r[11] = (p >> 3) & 1
-        r[13] = (p >> 6) & 1
-        r[14] = (p >> 7) & 1
+        for i, s in STATUS_BITS:
+            r[i] = (p >> s) & 1
 
     def _push(self, val):
         """Push one byte to the stack (driver synthetic frames); recorder-overridable seam."""
