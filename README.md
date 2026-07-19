@@ -95,3 +95,4 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
 - [docs/nms-provenance.md](docs/nms-provenance.md) — reference-source provenance.
 - [docs/ghidra.md](docs/ghidra.md) — using the 6510 module with Ghidra / pypcode.
+- [docs/differential-fuzz.md](docs/differential-fuzz.md) — byte-exactness differential fuzzer (VM / recorder / sidtrace oracle over synthetic-player idiom classes).
