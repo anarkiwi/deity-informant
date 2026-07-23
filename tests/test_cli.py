@@ -15,9 +15,9 @@ def test_disasm_flags_illegals(tmp_path, capsys):
     rc = cli.main(["disasm", _prg(tmp_path), "--org", "0x1000"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "SRE  $4F" in out and "; illegal" in out
-    assert "LAX  $2000,Y" in out
-    assert "LDA  #$0F" in out  # legal ones are not flagged
+    assert "SRE $4f" in out and "; illegal" in out
+    assert "LAX $2000,Y" in out
+    assert "LDA #$0f" in out  # legal ones are not flagged
     assert out.count("; illegal") == 2
 
 

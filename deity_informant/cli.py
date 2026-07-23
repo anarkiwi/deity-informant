@@ -14,39 +14,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jennings.devices.mpu6502 import MPU as _MPU
+from jennings.disassembler import Disassembler as _Disassembler
+
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
 from .vm import PcodeVM, run_sub
 
 
-# operand rendering per addressing mode (mnemonic already comes from OPS)
-def _operand(mode, mem, pc):
-    lo = mem[(pc + 1) & 0xFFFF]
-    hi = mem[(pc + 2) & 0xFFFF]
-    word = lo | (hi << 8)
-    return {
-        "impl": "",
-        "acc": "A",
-        "imm": "#$%02X" % lo,
-        "zp": "$%02X" % lo,
-        "zpx": "$%02X,X" % lo,
-        "zpy": "$%02X,Y" % lo,
-        "abs": "$%04X" % word,
-        "absx": "$%04X,X" % word,
-        "absy": "$%04X,Y" % word,
-        "indx": "($%02X,X)" % lo,
-        "indy": "($%02X),Y" % lo,
-        "ind": "($%04X)" % word,
-        "rel": "$%04X" % ((pc + 2 + (lo - 256 if lo & 0x80 else lo)) & 0xFFFF),
-    }[mode]
-
-
 def format_insn(mem, pc):
-    """Return ``(length, text)`` for the instruction at ``pc``."""
+    """Return ``(length, text)`` for the instruction at ``pc`` via jennings."""
     op = mem[pc]
-    mn, mode = OPS[op]
-    text = "%-4s %s" % (mn, _operand(mode, mem, pc))
+    _length, text = _Disassembler(_MPU(memory=mem)).instruction_at(pc)
     tag = "  ; illegal" if op in ILLEGAL_OPCODES else ""
-    return MODE_LEN[mode], "$%04X: %02X  %s%s" % (pc, op, text.rstrip(), tag)
+    return MODE_LEN[OPS[op][1]], "$%04X: %02X  %s%s" % (pc, op, text, tag)
 
 
 def _load(path, org):
