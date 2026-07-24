@@ -1,24 +1,18 @@
 """Structured decompiler: full-length real-tune acceptance (cycle-stamped
 bit-exact, text round-trip, size), fuzz-corpus development checks, loud faults."""
 
-import hashlib
-import re
 from pathlib import Path
 
 import pytest
 
 from deity_informant import stext
 from deity_informant import structured as S
-from deity_informant.c64 import load_psid, psid_songs
+from deity_informant.c64 import load_psid
 from deity_informant.cli import format_insn
 
 import _fuzzgen as G
 
-try:  # declared corpus (relpaths) + pysidtracker fetch machinery; optional/offline
-    from _corpus import CORPUS
-    from pysidtracker.testing import resolve_tune
-except ImportError:
-    CORPUS, resolve_tune = [], None
+from _corpus import corpus_params
 
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 SONGLENGTHS = HVSC / "Songlengths.md5"
@@ -86,39 +80,8 @@ def test_cia_icr_read_modeled_as_zero_source():
     assert w.run(2) == ev.wlog
 
 
-def _song_lengths():
-    """md5 -> [seconds per subtune] from Songlengths.md5."""
-    out = {}
-    for line in SONGLENGTHS.read_text(encoding="latin-1").splitlines():
-        if "=" not in line or not re.match(r"^[0-9a-f]{32}=", line):
-            continue
-        md5, times = line.split("=", 1)
-        secs = []
-        for t in times.split():
-            mm, _, ss = t.partition(":")
-            secs.append(int(mm) * 60 + int(float(ss)))
-        out[md5] = secs
-    return out
-
-
 def _tunes():
-    if not SONGLENGTHS.is_file() or resolve_tune is None:
-        return []
-    lengths = _song_lengths()
-    out = []
-    for rel in CORPUS:  # the declared 128-tune corpus, fetched on demand (§1)
-        path = resolve_tune(rel, cache_dir=HVSC)
-        if path is None:
-            continue
-        data = Path(path).read_bytes()
-        _mem, _load, _init_, play = load_psid(data)
-        _songs, startsong = psid_songs(data)
-        secs_list = lengths.get(hashlib.md5(data).hexdigest())
-        if play and secs_list:
-            sub = startsong - 1  # 0-based; play the tune's default subtune
-            secs = secs_list[sub] if sub < len(secs_list) else secs_list[0]
-            out.append(pytest.param(Path(path), sub, secs, id=Path(rel).stem))
-    return out
+    return [pytest.param(path, sub, secs, id=path.stem) for path, sub, secs in corpus_params(HVSC)]
 
 
 def _disasm_size(mem):
@@ -153,12 +116,13 @@ def test_evidence_bounded_dispatch_faults_on_unobserved_target():
     """A computed-dispatch site static analysis cannot bound is scoped to its
     observed targets; the standalone text walker faults on any other target
     (the guarded evidence envelope, identical to opcode-SMC dispatch)."""
-    sid = next((s for s in HVSC.rglob("Bionic_Commando.sid")), None)
-    if sid is None:
+    entry = next((t for t in corpus_params(HVSC) if t[0].stem == "Bionic_Commando"), None)
+    if entry is None:
         pytest.skip("corpus tune absent")
+    sid, sub, secs = entry
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, 400)
+    model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     assert model.evidence_sites, "expected at least one evidence-bounded site"
     tm = stext.parse(stext.emit(model))
     _site, targets = next(iter(model.evidence_sites.items()))

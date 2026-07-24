@@ -145,3 +145,33 @@ CORPUS = [
     "MUSICIANS/X/X-Jammer/Bird_Flu.sid",
     "MUSICIANS/X/X-Jammer/Citroen_Xantia_98.sid",
 ]
+
+
+def corpus_params(hvsc):
+    """``[(path, subtune, secs)]`` at full Songlengths duration for every cached
+    v1 (play != 0) corpus tune; empty when the cache or fetcher is absent."""
+    from pathlib import Path
+
+    from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
+
+    try:
+        from pysidtracker.testing import resolve_tune
+    except ImportError:
+        return []
+    songlengths = Path(hvsc) / "Songlengths.md5"
+    if not songlengths.is_file():
+        return []
+    lengths = song_lengths(songlengths.read_text(encoding="latin-1"))
+    out = []
+    for rel in CORPUS:
+        path = resolve_tune(rel, cache_dir=hvsc)
+        if path is None:
+            continue
+        data = Path(path).read_bytes()
+        _mem, _load, _init, play = load_psid(data)
+        _songs, startsong = psid_songs(data)
+        sub = startsong - 1
+        secs = song_seconds(data, lengths, sub)
+        if play and secs:
+            out.append((Path(path), sub, secs))
+    return out
