@@ -131,7 +131,7 @@ class Kernel:
     def _symbolic_slog(self, i):
         pm = self._place_map(self.rec.facts[i])
         return [
-            (pm.get(addr, E.konst(addr, 2)), ex, sz, addr in self.outputs)
+            (pm.get(addr, E.konst(addr, 2)), ex, sz, addr in self.outputs, addr)
             for _p, addr, ex, sz in self.rec.slog[i]
         ]
 
@@ -200,7 +200,7 @@ class Kernel:
     def _apply_sym(self, sslog, frozen, regs, image, uni):
         """Apply a variant's symbolic store list, evaluating each address per frame."""
         out = []
-        for saddr, ex, sz, _is_out in sslog:
+        for saddr, ex, sz, _is_out, _rep in sslog:
             addr = E.evaluate(saddr, frozen, regs, image, uni) & 0xFFFF
             v = E.evaluate(ex, frozen, regs, image, uni)
             for k in range(sz):
@@ -270,7 +270,7 @@ class Kernel:
                 lines.append("  guard %s@%04X: %s == $%X" % (kind, site, self._s(ex), obs))
             for a in sorted(v.transition):
                 lines.append("  S[$%04X]' = %s" % (a, self._s(E.to_entry(v.transition[a]))))
-            for saddr, ex, _sz, is_out in v.sslog:
+            for saddr, ex, _sz, is_out, _rep in v.sslog:
                 if is_out:
                     lines.append("  OUT[%s] = %s" % (self._s(saddr), self._s(E.to_entry(ex))))
         return "\n".join(lines)
