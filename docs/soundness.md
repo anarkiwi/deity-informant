@@ -32,12 +32,29 @@ Without `--sound` the guarded evidence envelope is kept (the standalone walker
 still faults on any unobserved target), so the default build is unchanged while
 the report makes every non-proven site auditable.
 
-## Open lemma
+## Open lemmas
 
-Corpus-wide the remaining `evidence` sites (Bionic Commando, Comic Bakery,
-Wizball) are **self-modified `JMP` vectors**: the target is
-`mem[p] | (mem[p+1] << 8)` with the two operand bytes patched from parallel
-tables indexed by a shared register. Independent per-cell resolution takes the
-Cartesian `{lo} × {hi}` product and overflows; the sound closure is
-**relational evaluation over the shared index** (joint enumeration), which
-proves the exact reachable pair set when the index is bounded.
+Corpus-wide the remaining `evidence` sites (Bionic Commando ×3, Comic Bakery
+×4, Wizball ×2) are all **self-modified `JMP` vectors**: the target is
+`mem[p] | (mem[p+1] << 8)` with the two operand bytes patched in one block from
+parallel tables indexed by a shared register `A`. Independent per-cell
+resolution takes the Cartesian `{lo} × {hi}` product and overflows the budget.
+Closing them soundly needs two composed lemmas, diagnosed from the traces:
+
+1. **Relational vector closure.** `A`'s value set is already bounded by table
+   analysis; the fix is to substitute each operand cell's unique in-block store
+   and jointly enumerate over `A` (evaluating the whole target expression per
+   value) instead of the per-cell product — correlated, so the pair set is
+   `|A|`, not `|A|²`. Sound because the register set over-approximates and the
+   table reads are immutable.
+2. **Bounded-recurrence store-pointer analysis.** Lemma 1's soundness needs
+   proof that no computed store aliases the operand cells `p`, `p+1`. In these
+   tunes the aliasing writer is a page-incrementing buffer fill
+   (`STA (ptr)` with `ptr`'s high byte `INC`-ed each pass); its address widens
+   to ⊤ under the value-set fixpoint, so it *could* reach `p`. Proving its
+   destination stays in its buffer range requires bounding the increment by the
+   loop's trip count.
+
+Until lemma 2 lands, lemma 1 must refuse (the immutability precondition is
+unproven), so these sites stay `evidence` — precisely diagnosed, not silently
+accepted.
