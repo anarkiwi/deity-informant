@@ -1970,6 +1970,12 @@ def decompile(mem, init, play, frames, subtune=0, sound=False):
     """
     ev = trace(bytearray(mem), init, play, frames, subtune)
     model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
+    from . import codec  # deferred: codec imports render
+
+    try:
+        codec.verify(model)  # flatten(structure(model)) == CFG, per procedure
+    except codec.CodecError as e:
+        raise DecompileError("structurer codec: %s" % e) from e
     return model, ev
 
 
