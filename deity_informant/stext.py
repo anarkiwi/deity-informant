@@ -12,7 +12,7 @@ import re
 from . import expr as E
 from . import structured as C
 
-SIDC_VERSION = 0
+SIDC_VERSION = 1  # 1: play-phase program (post-init image + sid-init prologue)
 
 
 class SidcVersionError(ValueError):
@@ -313,6 +313,11 @@ def emit(model):
     out = ["sidc %d" % SIDC_VERSION, "init $%04X" % model.init, "play $%04X" % model.play]
     if getattr(model, "subtune", 0):
         out.append("subtune %d" % model.subtune)
+    prologue = getattr(model, "prologue", ())
+    if prologue:
+        out.append("sid-init {")
+        out.extend("  $%02X = $%02X" % (r, v) for r, v in prologue)
+        out.append("}")
     for pc in sorted(model.dispatch_sets):
         out.append(
             "dispatch $%04X: %s"
@@ -349,11 +354,12 @@ def emit(model):
 class TextModel:
     """Parsed SIDC program; duck-types ``structured.Model`` for the Walker."""
 
-    def __init__(self, mem0, init, play, blocks, dispatch_sets, subtune=0):
+    def __init__(self, mem0, init, play, blocks, dispatch_sets, subtune=0, prologue=()):
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
         self.subtune = subtune
+        self.prologue = list(prologue)
         self.blocks = blocks
         self.dispatch_sets = dispatch_sets
         self.written = set(dispatch_sets)
@@ -486,6 +492,7 @@ def parse(text):
     mem0 = bytearray(0x10000)
     dispatch_sets = {}
     blocks = {}
+    prologue = []
     pending = []  # (accumulator, terminator-pending) in order, resolved per proc
 
     def close_proc():
@@ -509,6 +516,14 @@ def parse(text):
             dispatch_sets[int(head.strip().lstrip("$"), 16)] = {
                 int(v.lstrip("$"), 16) for v in vals.split()
             }
+        elif line == "sid-init {":
+            i += 1
+            while lines[i] != "}":
+                reg, val = lines[i].split("=")
+                prologue.append(
+                    (int(reg.strip().lstrip("$"), 16), int(val.strip().lstrip("$"), 16))
+                )
+                i += 1
         elif line == "image {":
             i += 1
             while lines[i] != "}":
@@ -536,7 +551,7 @@ def parse(text):
     close_proc()
     if init is None or play is None:
         raise ValueError("missing init/play header")
-    return TextModel(mem0, init, play, blocks, dispatch_sets, subtune)
+    return TextModel(mem0, init, play, blocks, dispatch_sets, subtune, prologue)
 
 
 dumps = emit  # spec vocabulary (docs/sidc-language.md); loads/dumps are inverses

@@ -42,12 +42,14 @@ def _init(p):
 
 def _verify(mem, init, play, frames, subtune=0):
     model, ev = S.decompile(mem, init, play, frames, subtune)
+    assert model.prologue == ev.prologue  # init's SID writes, order-preserved
     w = S.Walker(model)
-    assert w.run(frames) == ev.wlog
+    assert w.run(frames) == ev.wlog  # play-phase log from the post-init image
     assert bytes(w.m) == ev.end_mem
     text = stext.emit(model)
     tm = stext.parse(text)
     assert stext.emit(tm) == text  # canonical text is a parse/emit fixpoint
+    assert tm.prologue == model.prologue
     tw = S.Walker(tm)
     assert tw.run(frames) == ev.wlog  # standalone text replay, cycle-stamped
     assert bytes(tw.m) == ev.end_mem

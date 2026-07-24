@@ -94,13 +94,16 @@ This is the spec's core value-set rewrite (§4.1–4.3); each step is
 soundness-critical, so it is tracked as the missing lemma rather than
 approximated from the trace.
 
-## Re-scope: the play boundary likely retires lemma 2
+## Re-scope: the play boundary retires lemma 2, blocker 3 remains
 
 The deliverable is the play-phase program only (spec §0.5): init executes
-concretely and its writes become the snapshot. VM measurement: Bionic's
-aliasing writer (the page-incrementing copy loop lemma 2 exists to bound) is
-**init-phase** — `$65A1` is constant `$82` for the whole play run — and
-Ghouls_n_Ghosts' `$7316` opcode cell is likewise init-only. Under the
-re-based analysis (post-init snapshot, play-phase facts only) the alias
-premise disappears and lemma 1 should apply directly; blockers 2–3 must be
-re-evaluated against play-phase evidence before any further lemma work.
+concretely and its writes become the snapshot. Measured under the re-based
+analysis: Bionic's aliasing writer (the page-incrementing copy loop lemma 2
+exists to bound) is **init-phase** — `$65A1` is constant `$82` for the whole
+play run — so lemma 2 and its machinery are no longer on the critical path.
+The vector sites themselves are play-phase and stay `evidence` (Bionic ×3,
+Comic Bakery ×4, Wizball ×3): the residual obstruction is blocker 3 alone,
+dispatch-index value-set precision. Ghouls_n_Ghosts' `$7316` opcode cell is
+init-only; under the boundary the tune decompiles and replays bit-exact
+(its remaining gate failure is text size — expression-sharing in emission —
+a breadth item, not a soundness one).

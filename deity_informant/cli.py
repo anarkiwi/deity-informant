@@ -129,7 +129,8 @@ def cmd_decompile(args):
 def cmd_sidc_run(args):
     tm = stext.parse(Path(args.file).read_text(encoding="utf-8"))
     w = structured.Walker(tm)
-    w._run_entry(tm.init)
+    for r, v in tm.prologue:
+        w.m[0xD400 + r] = v
     for f in range(args.frames):
         w._run_entry(tm.play)
         row = " ".join("%02X" % w.m[0xD400 + i] for i in range(25))
