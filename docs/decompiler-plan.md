@@ -130,12 +130,32 @@ unbounded stream pointer, evidence-bounded), Commando, Monty on the Run,
 Grid Runner, Cybernoid, Crazy Comets, International Karate, Thing on a Spring,
 Freeze, Wizball. Decompile+verify runs 5–50s per tune (full song length).
 
-Remaining: P5 region sugar (while/if nesting — emission is currently
-procedures + labeled blocks with fallthrough elision), a SIDC annotation
-marking evidence-bounded dispatch sites explicitly in the text, P7 naming
-polish, P0 corpus growth to >= 30 tunes, P9 tunes that install their own
-interrupt scheduling (PSID `play == 0`/RSID). Note: Wizball's `Songlengths`
-entry is 0:05 (a stub), so its full-length gate is only 250 frames.
+P5 structuring is prototyped (`render.py`): the verified block/edge model is
+re-nested into `loop`/`if`/`else` regions via dominators + natural loops +
+immediate post-dominators (single-entry regions inline; shared handlers stay
+labelled `goto`), over named state — SID voice/filter registers by role
+(`sid.v1.ctrl`, `filter.mode_vol`), indexed voice state as arrays
+(`m_54EC[X]`), loads inlined to their source, two's-complement decrements and
+comparison polarity normalised. The readable view is a human-facing lens on the
+same model the walker replays byte-exact; the executable artifact stays the
+lossless SIDC. `decompile --structured` emits it.
+
+**Definitive structure-capture evidence** (`tests/test_render.py`): (a) the view
+is faithful — every reachable block in every procedure is emitted exactly once,
+corpus-wide; (b) ~70% of blocks land nested inside structure, not flat; (c) the
+decisive result — Hubbard's *Commando* and *Monty on the Run*, two different SID
+images built on his reused engine, recover the **same** high-level skeleton
+(frame counter, mute-flag voice-silence branch, per-voice clear loop,
+tempo-decrement gating a pattern read). Two binaries converging on one structure
+is capture, not transliteration; a transliterator cannot do it.
+`out/Commando.structured.txt` and `out/Monty_on_the_Run.structured.txt` are the
+rendered play routines.
+
+Remaining: switch/dispatch recovery for the shared-handler `goto` tails (the
+note/effect dispatchers), a SIDC annotation marking evidence-bounded dispatch
+sites explicitly in the text, semantic naming beyond mechanical (P7), P0 corpus
+growth to >= 30 tunes, P9 tunes that install their own interrupt scheduling
+(PSID `play == 0`/RSID).
 
 ## Earlier prototype status (superseded)
 

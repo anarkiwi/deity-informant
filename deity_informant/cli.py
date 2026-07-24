@@ -19,6 +19,7 @@ from pathlib import Path
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
+from . import render as render_mod
 from . import stext
 from . import structured
 from .c64 import load_psid, psid_songs
@@ -99,10 +100,9 @@ def cmd_decompile(args):
         return 1
     mem[0xD418] = 0x0F
     model, ev = structured.decompile(mem, init, play, args.frames, subtune)
-    text = stext.emit(model)
     if args.verify:
-        tm = stext.parse(text)
-        if stext.emit(tm) != text:
+        tm = stext.parse(stext.emit(model))
+        if stext.emit(tm) != stext.emit(model):
             sys.stderr.write("verify FAILED: text is not a parse/emit fixpoint\n")
             return 1
         if structured.Walker(tm).run(args.frames) != ev.wlog:
@@ -112,6 +112,7 @@ def cmd_decompile(args):
             "verify ok: %d frames, %d cycle-stamped writes bit-exact\n"
             % (args.frames, len(ev.wlog))
         )
+    text = render_mod.render(model) if args.structured else stext.emit(model)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:
@@ -183,6 +184,7 @@ def main(argv=None):
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
+    p.add_argument("--structured", action="store_true", help="emit the readable structured view")
     p.add_argument("--frames", type=int, default=3000, help="evidence/verify window")
     p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
