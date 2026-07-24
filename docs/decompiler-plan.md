@@ -87,6 +87,30 @@ guard that could fire is by definition an unclosed set: the build must have
 failed instead. Recorder evidence (P1) *seeds and cross-checks* value sets; it
 never substitutes for the static closure proof.
 
+## Prototype status
+
+`deity_informant/structured.py` implements the P1–P3 core (evidence trace,
+per-pc blocks with per-opcode-byte SMC variants, compiled symbolic summaries
+with machine-order loads and cycle/penalty events, standalone walker), designed
+against Goto80's *Automatas* (90 self-modified code bytes incl. its own play
+entry operand, 3 opcode-patched sites, $D012/$D41B reads, ANC/ALR/SAX/LAX/SBX).
+Full-length cycle-stamped `(cycle, reg, value)` logs, end memory, and end
+registers are bit-exact on every cached driver-compatible tune, with the walker
+4-5x faster than `PcodeVM`:
+
+| Tune | length | frames | writes | blocks | walk |
+|---|---|---|---|---|---|
+| Goto80, Automatas | 5:23 | 16,150 | 387,628 | 166 | 1.8s |
+| Hubbard, Commando | 3:55 | 11,750 | 132,635 | 85 | 1.5s |
+| Hubbard, Monty on the Run | 5:50 | 17,500 | 162,327 | 82 | 2.2s |
+| Jammer, Grid Runner | 5:13 | 15,650 | 391,250 | 119 | 2.8s |
+
+Volatile reads are computed from the walker's own cycle counter (no recorded
+values). Remaining for G1–G3 proper: corpus expansion (P0), evidence-fixpoint
+demonstration, and value-set closure proofs replacing the evidence-set
+dispatch guards (P4). `tests/test_structured.py` carries the full-length
+acceptance tests (auto-skip where the tune cache is absent).
+
 ## Phases and gates
 
 Every gate runs on the full corpus, full length, cycle-stamped. A gate is a CI
