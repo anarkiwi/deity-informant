@@ -43,6 +43,15 @@ statically closed. The complete implementation MUST be:
 4. **Structurally faithful and readable.** The structuring is a total,
    goto-minimal, *invertible* re-nesting: flattening the parsed region tree
    reproduces the block model, checked at build time (§5).
+5. **Play-phase scope.** The program decompiled is the **playroutine**: the
+   code reachable from the play boundary on. `init` (decompression, memory
+   relocation, table building) executes concretely in the evidence VM and is
+   NEVER decompiled; its result is the artifact's data image (the post-init
+   memory snapshot) plus a `sid-init` prologue — init's SID writes,
+   order-preserved, replayed before frame 0. Cycle-exactness is normative from
+   the first play-frame entry. This is a deliberate simplification: init-time
+   unpackers/copy loops are the worst static-analysis subjects and their
+   self-modification becomes snapshot data with zero proof obligation.
 
 ## 1. Input class and corpus
 
@@ -82,7 +91,10 @@ typed interface and its own test surface.
 
 - `evidence` (replaces the `RecVM`/trace parts of `structured.py`): concrete
   full-length run producing the oracle log, written-cell set, executed
-  instruction identities, taken control edges. Seeds analysis; is the oracle.
+  instruction identities, taken control edges. Runs init concretely to the
+  play boundary — the post-init snapshot is the artifact's `image`, init's
+  SID writes its prologue; only play-phase facts feed analysis. Seeds
+  analysis; is the oracle.
 - `lift`/`cfg`: the existing lifter, plus a CFG builder keyed on **block
   identity `(pc, opcode)`** (not pc) so self-modified variants are first-class.
 - `block IR`: per-block ordered events (`ld`/`st`/`cyc`/`pen`) + terminator +
@@ -109,7 +121,9 @@ typed interface and its own test surface.
   artifact. (Prototype: done; keep.)
 - **Gate C:** for every corpus tune, the model walker AND the walker running
   the parsed *structured* text (the only text) reproduce the full-length
-  `(cycle, reg, value)` log, end memory, and end registers bit-exact.
+  play-phase `(cycle, reg, value)` log, end memory, and end registers
+  bit-exact, after replaying the `sid-init` prologue (order-preserved) before
+  frame 0.
 
 ## 4. Analysis — from observational to sound (the core work)
 
@@ -139,9 +153,12 @@ Requirements, each with a proof obligation the build MUST discharge or fail:
 
 ### 4.3 SMC closure (the doctrine, enforced)
 Each self-modification class MUST close with a proof (see the doctrine table in
-the prototype plan). Operand patches: total, no obligation. Opcode patches,
-vector rewrites, stack-dispatch, code-copy: value-set/region closure MUST prove
-the exact reachable set; observed ⊆ proven is a **check**, never the definition.
+the prototype plan) — **for play-phase modification only**: init-time SMC
+(decompression, relocation, code copy) is baked into the snapshot and carries
+no obligation. Operand patches: total, no obligation. Opcode patches,
+vector rewrites, stack-dispatch, play-time code-copy: value-set/region closure
+MUST prove the exact reachable set; observed ⊆ proven is a **check**, never the
+definition.
 Runtime guards remain as defense-in-depth; a guard that *could* fire means the
 proof was incomplete and the build MUST have failed instead.
 
@@ -178,12 +195,14 @@ total, **invertible** structural analysis:
   be performed. Readability transforms that lose information are forbidden;
   readability is achieved by naming and nesting, not by dropping semantics.
 - **Completeness of content:** the structured text carries the program header
-  (`init`/`play`/`subtune`, driver cadence, outputs), the data image, explicit
-  register state (A/X/Y/SP/flags are language-level state — Hubbard's CLV/BVC
-  `if V != 0` idiom is real code), per-block cycle costs with penalty
-  predicates and per-store cycle stamps (compact annotation syntax; they parse),
-  volatile-read semantics, and dispatch/SMC guard sets. ALL procedures are
-  structured, init included — not just the play routine.
+  (`play`/`subtune`, driver cadence, outputs, the `sid-init` prologue), the
+  post-init data image, explicit register state (A/X/Y/SP/flags are
+  language-level state — Hubbard's CLV/BVC `if V != 0` idiom is real code),
+  per-block cycle costs with penalty predicates and per-store cycle stamps
+  (compact annotation syntax; they parse), volatile-read semantics, and
+  dispatch/SMC guard sets. ALL play-phase procedures are structured —
+  everything reachable from the play boundary; init is concrete evidence, not
+  program (§0.5).
 
 - **Reducible regions MUST fully structure** to `if`/`else`/`while`/`loop` with
   `break`/`continue`; irreducible regions MUST use the minimal labelled-`goto`
@@ -262,7 +281,9 @@ disassembly listing.
 implementation MUST:
 - Decompile the installed handler(s) (via `$0314`/`$FFFE`/NMI discovery), model
   timer/raster state as first-class, and represent the **driver cadence** (CIA
-  periods, raster positions, nesting, idle) in a SIDC header the walker honors —
+  periods, raster positions, nesting, idle) in the structured header the walker
+  honors. The play boundary (§0.5) is where the installed scheduler first
+  fires: installation code is init-phase, concrete, snapshot —
   the VM already has `run_irq_driven`; the language and walker MUST gain the
   declaration and scheduler.
 - Gate C/L/S extend to this class unchanged (cycle-exact, faithful, specified).
@@ -271,9 +292,13 @@ implementation MUST:
 
 Ordered, each step gated and independently shippable:
 
-1. **Freeze the oracle.** Lock the prototype's byte-exact full-length logs
-   (content-hashed) for the current corpus as regression fixtures; the complete
-   implementation MUST reproduce them.
+1. **Freeze the oracle at the play boundary.** Re-cut the reference logs to
+   play-phase (`sid-init` prologue + frame-0-onward cycle-stamped log),
+   content-hash them as regression fixtures; the complete implementation MUST
+   reproduce them. Re-evaluate every evidence site and missing lemma under the
+   boundary — init-phase SMC and init-only patched cells drop out (measured:
+   Ghouls_n_Ghosts $7316 and Bionic's copy-loop aliasing writer are
+   init-phase).
 2. **Block IR + CFG on `(pc,opcode)` identity.** Replace tuple blocks with a
    dataclass; make SMC variants first-class nodes. No behavior change; re-green
    Gate C.
@@ -284,7 +309,7 @@ Ordered, each step gated and independently shippable:
 4. **Structurer → invertible codec (§5).** Lift the region-tree builder out of
    `render.py` into a codec module; implement `flatten` and the build-time
    equivalence check; make every emitter rewrite reversible; structure ALL
-   procedures (init included).
+   play-phase procedures.
 5. **Structured language (§6).** Grow the grammar to carry header/image/regs/
    cycles/dispatch (migrating `stext.py`'s serializers); parser + `flatten` +
    the one walker core; move Gate C/L acceptance onto the structured text
@@ -304,9 +329,9 @@ committed synthetic-corpus coverage or the frozen oracle.
 
 - Every v1-class corpus tune: proof-backed decompile (no evidence-only sites),
   and ONE artifact — a round-trip-canonical structured program (≥95%
-  structured, flatten-verified) whose text alone replays the cycle-stamped log
-  bit-exact — or a precise build failure naming the missing lemma, with that
-  lemma on a tracked list.
+  structured, flatten-verified) whose text alone plays the song: prologue +
+  play-phase cycle-stamped log bit-exact — or a precise build failure naming
+  the missing lemma, with that lemma on a tracked list.
 - v2/P-INT class meets the same bar.
 - Grammar, proof-report format, and CLI documented; synthetic corpus carries all
   gates with HVSC absent; real corpus job green and recorded.
