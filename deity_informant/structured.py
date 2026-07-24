@@ -464,6 +464,7 @@ class Analysis:
         self._rts_cache = {}
         self._opt = set()
         self._forced = set()
+        self._pinned = {}  # cell -> affine-proven value set (not recomputed/widened)
 
     # -- store indexing -----------------------------------------------------
     def _stores(self):
@@ -814,6 +815,8 @@ class Analysis:
             self._fixpoint()
             self._memo = {}
             self._imemo = {}
+            if self._refine_affine():
+                continue  # a monotone cell narrowed from TOP: re-close with it pinned
             pending = [
                 s
                 for s in self._opt
@@ -822,6 +825,42 @@ class Analysis:
             if not pending:
                 return self.S
             self._forced.update(pending)
+
+    def _refine_affine(self):
+        """Narrow TOP monotone-increment cells to their affine trip bound and pin
+        them (§4 lemma 2). Returns whether any cell narrowed."""
+        if not self.idom:
+            return False
+        changed = False
+        for cell in list(self.S):
+            if cell in self._pinned or self.S[cell] is not TOP:
+                continue
+            try:
+                bound = self._affine_cell_bound(cell)
+            except (DecompileError, _Need):
+                bound = None
+            if bound is None:
+                continue
+            saved = self.S[cell]  # tentatively pin, then discharge the alias premise
+            self._pinned[cell] = set(bound)
+            self.S[cell] = set(bound)
+            self._memo = {}
+            self._imemo = {}
+            if self._cell_aliased(cell):  # a computed store may write it under the bound
+                del self._pinned[cell]
+                self.S[cell] = saved
+                self._memo = {}
+                self._imemo = {}
+                continue
+            self._widen.pop(cell, None)
+            changed = True
+        return changed
+
+    def _cell_aliased(self, cell):
+        for skey, rng, aexpr, _v in self._stores()[1]:
+            if rng[0] <= cell <= rng[1] and self._store_may_hit(skey, aexpr, cell):
+                return True
+        return False
 
     def _fixpoint(self):
         changed = True
@@ -841,6 +880,8 @@ class Analysis:
             self._imemo = {}
             const, dyn = self._stores()
             for cell in list(self.S):
+                if cell in self._pinned:
+                    continue  # affine-proven bound: not recomputed (would re-widen)
                 try:
                     vals = {self.model.mem0[cell]}
                     for key, vexpr in const.get(cell, ()):
@@ -1166,6 +1207,171 @@ class Analysis:
                         stack.extend(preds.get(n, ()))
         return loops
 
+    def _cfg_preds(self, hdr):
+        return [k for k in self.model.blocks if hdr in self._cfg_succ_keys(k)]
+
+    # -- affine trip-bound of a monotone-increment cell (lemma 2) -----------
+    @staticmethod
+    def _reg_delta(expr, i):
+        """Signed constant delta if ``expr`` is ``reg(i) (+|-) k``; 0 if identity."""
+        if expr == E.reg(i):
+            return 0
+        if expr[0] == "op" and expr[1] == "INT_ADD" and len(expr[2]) == 2:
+            a, b = expr[2]
+            if a == E.reg(i) and E.is_const(b):
+                return _signed8(b[1])
+        return None
+
+    @staticmethod
+    def _incr_delta(vexpr, cell):
+        """Positive constant ``d`` if ``vexpr`` is ``mem[cell] + d`` (1..127)."""
+        if vexpr[0] != "op" or vexpr[1] != "INT_ADD":
+            return None
+        memkid, delta = None, 0
+        for k in vexpr[2]:
+            if k[0] == "mem" and E.is_const(k[1]) and k[1][1] == cell:
+                if memkid is not None:
+                    return None
+                memkid = k
+            elif E.is_const(k):
+                delta += k[1]
+            else:
+                return None
+        d = delta & 0xFF
+        return d if memkid is not None and 1 <= d <= 127 else None
+
+    def _cell_stores_of(self, cell):
+        """``(const_values, [(block_key, d)])`` for stores to ``cell``; ``None`` if
+        any store is neither a constant nor a ``mem[cell] + d`` increment."""
+        consts, incrs = set(), []
+        for key, blk in self.model.blocks.items():
+            for ev in blk.events:
+                if ev[0] != "st" or not E.is_const(ev[1]) or ev[1][1] != cell:
+                    continue
+                if E.is_const(ev[2]):
+                    consts.add(ev[2][1])
+                    continue
+                d = self._incr_delta(ev[2], cell)
+                if d is None:
+                    return None
+                incrs.append((key, d))
+        return consts, incrs
+
+    def _within_block_const(self, key, cell):
+        """``cell``'s constant value at ``key``'s exit if a constant store to it is
+        followed only by increments in the block, else ``None``."""
+        val = None
+        for ev in self.model.blocks[key].events:
+            if ev[0] != "st" or not E.is_const(ev[1]) or ev[1][1] != cell:
+                continue
+            if E.is_const(ev[2]):
+                val = ev[2][1]
+            else:
+                d = self._incr_delta(ev[2], cell)
+                val = None if d is None or val is None else (val + d) & 0xFF
+        return val
+
+    def _bpl_counter(self, blk, body):
+        """If ``blk`` is a loop-exit branch on a decremented counter's sign
+        (``BPL``: continue while ``ctr - k >= 0``), return that register."""
+        term = blk.term
+        if term[0] != "br" or term[2] is None:
+            return None
+        cont, exit_ = (term[2], term[3]) if term[1] == 0 else (term[3], term[2])
+        if any(k in body for k in self.model.variants(cont)) == (
+            any(k in body for k in self.model.variants(exit_))
+        ):
+            return None  # need exactly one edge staying in the loop
+        if not any(k in body for k in self.model.variants(cont)):
+            return None
+        flag = term[4]
+        if flag[0] != "op" or flag[1] != "INT_NOTEQUAL" or not E.is_const(flag[2][1]):
+            return None
+        if flag[2][1][1] != 0 or flag[2][0][0] != "op" or flag[2][0][1] != "INT_AND":
+            return None
+        band = flag[2][0][2]
+        if len(band) != 2 or not E.is_const(band[1]) or band[1][1] != 0x80:
+            return None
+        regs = set()
+        _regs_of(band[0], regs)
+        return next(iter(regs)) if len(regs) == 1 else None
+
+    def _affine_cell_bound(self, cell):
+        """A bounded value set for a monotone-increment ``cell`` proven via the
+        loop invariant ``H + Y = K`` (H the cell, Y a co-decremented counter),
+        or ``None`` when any premise is unproven (§4 lemma 2)."""
+        got = self._cell_stores_of(cell)
+        if got is None:
+            return None
+        consts, incrs = got
+        if not consts or not incrs or len({d for _k, d in incrs}) != 1:
+            return None
+        d = incrs[0][1]
+        incr_keys = {k for k, _ in incrs}
+        model = self.model
+        for hdr, body in self.natural_loops().items():
+            body_incr = incr_keys & body
+            if not body_incr:
+                continue
+            counters = None
+            for key in body_incr:
+                ys = {i for i in range(16) if self._reg_delta(model.blocks[key].regs[i], i) == -d}
+                counters = ys if counters is None else counters & ys
+            for y in sorted(counters or ()):
+                bound = self._affine_bound_for(cell, hdr, body, y, d, consts, incr_keys)
+                if bound is not None:
+                    return bound
+        return None
+
+    def _affine_bound_for(self, cell, hdr, body, y, d, consts, incr_keys):
+        model = self.model
+        exits = [k for k in body if self._bpl_counter(model.blocks[k], body) == y]
+        if not exits:
+            return None  # no proven BPL exit on this counter -> unbounded
+        for key in body:  # invariant H + Y = K: every body block cancels dH, dY
+            blk = model.blocks[key]
+            dh = 0
+            for ev in blk.events:
+                if ev[0] == "st" and E.is_const(ev[1]) and ev[1][1] == cell:
+                    inc = self._incr_delta(ev[2], cell)
+                    if inc is None:
+                        return None
+                    dh += inc
+            dy = self._reg_delta(blk.regs[y], y)
+            if dy is None or dh + dy != 0:
+                return None
+        pre = [p for p in self._cfg_preds(hdr) if p not in body]
+        if not pre or not incr_keys <= (body | set(pre)):
+            return None  # an increment outside the loop and its pre-header: unaccounted
+        const_blocks = [
+            k
+            for k, blk in model.blocks.items()
+            for ev in blk.events
+            if ev[0] == "st" and E.is_const(ev[1]) and ev[1][1] == cell and E.is_const(ev[2])
+        ]
+        for k, blk in model.blocks.items():  # definite assignment: image byte is dead
+            if any(_contains_memcell(e, cell) for e in _block_exprs(blk)):
+                if not any(self._dominates(cb, k) for cb in const_blocks):
+                    return None
+        h0 = {self._within_block_const(p, cell) for p in pre}
+        if len(h0) != 1 or None in h0:
+            return None
+        h0 = next(iter(h0))
+        ymax = 0
+        for p in pre:
+            try:
+                vals = self._pred_contrib(p, y, hdr)
+            except DecompileError:
+                return None
+            if not vals or max(vals) > 128:
+                return None
+            ymax = max([ymax, *vals])
+        hi = h0 + (ymax + 1) * d
+        if hi > 0xFF:  # byte cell wrap: not proven disjoint
+            return None
+        lo = min(consts)
+        return frozenset(range(lo, hi + 1))
+
 
 class _NotPure(Exception):
     pass
@@ -1255,6 +1461,7 @@ def _close_once(model):
                     seeds.add(ev[2][1])
     if seeds:
         ana.close(seeds)
+    ana.dominators()  # loop structure for affine trip bounds during dispatch closure
     model.unproven = []
     model.evidence_sites = {}
     model.proofs = {}
@@ -1407,6 +1614,17 @@ def _regs_of(n, out):
     elif k == "op":
         for c in n[2]:
             _regs_of(c, out)
+
+
+def _contains_memcell(n, cell):
+    """Whether expression ``n`` reads ``mem[cell]`` (a constant-address load)."""
+    if not isinstance(n, tuple):
+        return False
+    if n[0] == "mem":
+        return (E.is_const(n[1]) and n[1][1] == cell) or _contains_memcell(n[1], cell)
+    if n[0] == "op":
+        return any(_contains_memcell(c, cell) for c in n[2])
+    return False
 
 
 def _block_exprs(blk):

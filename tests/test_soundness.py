@@ -180,6 +180,16 @@ def test_natural_loops_finds_counted_loop():
         assert hdr in body and model.blocks[hdr].term[0] == "br"
 
 
+def test_affine_bound_narrows_monotone_loop_cell():
+    model, _ev = S.decompile(_counted_loop_image(), INIT, ORG, 2)
+    ana = model.analysis
+    ana.close({0x2000})
+    v = ana.S.get(0x2000)
+    assert v is not S.TOP  # was widened to TOP without the trip bound
+    assert v <= set(range(0x78, 0x7F))  # H in [$78, $7E] via H + Y = K, Y0 = 5
+    assert 0x2000 in ana._pinned
+
+
 def test_proof_report_shape_and_sound_tag():
     p = next(q for q in G.players(1) if q.name == "jump_table")
     proven, _ev = S.decompile(_img_from_player(p), _player_init(p), p.org, p.frames)
