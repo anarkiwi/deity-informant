@@ -28,14 +28,16 @@ class Recording:
         self.facts = []
         self.slog = []
         self.out_seq = []
+        self.events = []
+        self.regs = []
         self.entry = []
-        self._uni = []
+        self.uni = []
 
     def replay(self, i):
         """Reconstruct invocation ``i``'s observable write sequence from ``slog``
         + the entry snapshot (evaluates the recorded templates)."""
         emem, ereg = self.entry[i]
-        uni = self._uni[i]
+        uni = self.uni[i]
         image = bytearray(emem)
         out = []
         for _pos, addr, ex, sz in self.slog[i]:
@@ -74,6 +76,7 @@ class RecVM(PcodeVM):
         self.out_seq = []
         self.uni_vals = {}
         self.F = {}
+        self.regs_out = []
         self.sig = 0xCBF29CE484222325
 
     def _mix(self, x):
@@ -376,6 +379,7 @@ class RecVM(PcodeVM):
     def _finalize(self):
         for addr in self.written:
             self.F[addr] = (self.cell_expr[addr], 1)
+        self.regs_out[:] = [E.simplify(E.to_evolved(s, self.cell_ver)) for s in self.sreg]
         if self.assertion:
             self._check()
 
@@ -395,12 +399,23 @@ class RecVM(PcodeVM):
         for addr, (fe, _sz) in self.F.items():
             v = E.evaluate(fe, self.entry_mem, self.entry_reg, image, self.uni_vals)
             assert v == self.mem[addr], ("F", hex(addr), v, self.mem[addr])
+        for i, ex in enumerate(self.regs_out):
+            v = E.evaluate(ex, self.entry_mem, self.entry_reg, image, self.uni_vals)
+            assert v == self.reg[i] & 0xFF, ("reg", i, v, self.reg[i], ex)
 
     def public_facts(self):
         return [(e[2], e[3], e[5], e[6]) for e in self.events if e[0] == "fact"]
 
     def public_slog(self):
         return [(e[1], e[2], e[3], e[4]) for e in self.events if e[0] == "store"]
+
+    def public_events(self):
+        """Facts and stores interleaved in machine order (evolved forms):
+        ``("ck", site, kind, expr, observed)`` | ``("st", addr, expr, sz)``."""
+        return [
+            ("st", e[2], e[3], e[4]) if e[0] == "store" else ("ck", e[2], e[3], e[5], e[6])
+            for e in self.events
+        ]
 
 
 def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertion=True):
@@ -446,12 +461,21 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
         driver(vm, entry, cache, lifter)
         if cached is None:
             vm._finalize()
-            cached = (dict(vm.F), vm.public_facts(), vm.public_slog(), list(vm.out_seq))
+            cached = (
+                dict(vm.F),
+                vm.public_facts(),
+                vm.public_slog(),
+                list(vm.out_seq),
+                vm.public_events(),
+                list(vm.regs_out),
+            )
             tmpl[sigs[idx]] = cached
         res.F.append(cached[0])
         res.facts.append(cached[1])
         res.slog.append(cached[2])
         res.out_seq.append(cached[3])
+        res.events.append(cached[4])
+        res.regs.append(cached[5])
         res.entry.append((vm.entry_mem, tuple(vm.entry_reg)))
-        res._uni.append(dict(vm.uni_vals))
+        res.uni.append(dict(vm.uni_vals))
     return res

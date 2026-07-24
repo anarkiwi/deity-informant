@@ -36,6 +36,35 @@ def test_run_grid(tmp_path, capsys):
     assert "0F" in out  # $D418 volume nibble set by the routine
 
 
+def _player_prg(tmp_path):
+    # INC $1010 ; LDA $1010 ; STA $D400 ; RTS ; ... ; $1010: counter
+    prog = bytes([0xEE, 0x10, 0x10, 0xAD, 0x10, 0x10, 0x8D, 0x00, 0xD4, 0x60]) + bytes(7)
+    p = tmp_path / "player.prg"
+    p.write_bytes(prog)
+    return str(p)
+
+
+def test_sidl_emit_verify_and_run(tmp_path, capsys):
+    prg = _player_prg(tmp_path)
+    out_file = tmp_path / "player.sidl"
+    rc = cli.main(
+        ["sidl", prg, "--org", "0x1000", "--play", "0x1000", "--frames", "4", "--verify"]
+        + ["-o", str(out_file)]
+    )
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "verify ok" in err
+    text = out_file.read_text()
+    assert text.startswith("sidl 0\n") and "seg S0 {" in text and "template T0 = " in text
+
+    rc = cli.main(["sidl-run", str(out_file), "--frames", "3"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    rows = [line.split(":")[1].split() for line in out.splitlines()]
+    assert [r[0] for r in rows] == ["01", "02", "03"]  # $D400 counts up per frame
+    assert all(r[24] == "0F" for r in rows)  # driver volume visible in the grid
+
+
 def test_run_frames(tmp_path, capsys):
     rc = cli.main(
         [

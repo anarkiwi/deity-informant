@@ -36,6 +36,7 @@ from .recorder import record, Recording, RecVM
 from .expr import ExprTooComplex
 from . import expr
 from . import c64
+from . import sidl
 from .c64 import poweron_ram, installed_handler, install_kernal_irq_stubs
 
 try:
@@ -62,6 +63,7 @@ __all__ = [
     "ExprTooComplex",
     "expr",
     "c64",
+    "sidl",
     "poweron_ram",
     "installed_handler",
     "install_kernal_irq_stubs",
