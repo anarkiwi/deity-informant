@@ -190,6 +190,34 @@ def test_affine_bound_narrows_monotone_loop_cell():
     assert 0x2000 in ana._pinned
 
 
+def _nested_loop_image():
+    """An outer DEY/BPL loop incrementing $2000, with an inner DEX/BNE loop that
+    touches neither (Bionic's copy-loop shape, constant outer counter)."""
+    a = G.Asm(ORG)
+    a.i("LDY", "imm", 0x03).i("LDA", "imm", 0x78).i("STA", "abs", 0x2000)
+    a.label("outer").i("LDX", "imm", 0x04)
+    a.label("inner").i("DEX").i("BNE", "rel", ("L", "inner"))
+    a.i("INC", "abs", 0x2000).i("DEY").i("BPL", "rel", ("L", "outer"))
+    a.i("LDA", "abs", 0x2000).i("STA", "abs", SID + 4).i("RTS")
+    mem = bytearray(0x10000)
+    for k, b in enumerate(a.assemble()):
+        mem[ORG + k] = b
+    mem[INIT] = 0x60
+    return mem
+
+
+def test_affine_bound_handles_nested_loop():
+    """Leader-split loop detection recovers the outer loop past the overlapping
+    entry and inner loop, so the trip bound applies to the nested case."""
+    model, _ev = S.decompile(_nested_loop_image(), INIT, ORG, 2)
+    ana = model.analysis
+    loops = {tuple(sorted(hex(b[0]) for b in body)) for body in ana.natural_loops().values()}
+    assert any(len(body) > 1 for body in loops)  # a nested (multi-block) loop found
+    ana.close({0x2000})
+    v = ana.S.get(0x2000)
+    assert v is not S.TOP and v <= set(range(0x78, 0x7D))  # H in [$78, $7C], Y0 = 3
+
+
 def test_proof_report_shape_and_sound_tag():
     p = next(q for q in G.players(1) if q.name == "jump_table")
     proven, _ev = S.decompile(_img_from_player(p), _player_init(p), p.org, p.frames)

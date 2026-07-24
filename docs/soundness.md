@@ -60,19 +60,25 @@ correctly refuses — these sites stay `evidence`, precisely diagnosed.
 Discharging it soundly (bounding the store pointer away from `p`) needs a stack
 of composed analyses, worked out from the traces:
 
-1. **Loop-trip bound.** *Implemented for single (non-nested) loops.* The
-   increment `H = H + 1` and a counter `Y = Y − 1` share a block, so `H + Y = K`
-   is a loop invariant; `Analysis._affine_cell_bound` anchors `K` at the loop
-   header (the block overlap preserves `H + Y`), verifies every body block
-   cancels `δH + δY = 0`, reads `Y`'s entry bound `Y₀` from the non-loop
-   predecessors and the `BPL` sign-exit, checks definite assignment (the image
-   byte is dead) and no-wrap, and pins `H ∈ [c, H₀ + (Y₀+1)]`. The aliasing
-   premise is discharged by assume-guarantee (pin the bound, then prove no
-   computed store — including the pointer that reads `H` itself — reaches `H`).
-   *Open (nested loops, e.g. Bionic's copy loop):* the decompiler's blocks
-   overlap, so the setup block reaches the outer tail directly and block-level
-   dominance misses the outer back-edge; this needs instruction-granularity loop
-   detection feeding the same bound.
+1. **Loop-trip bound.** *Implemented, including nested loops.* The increment
+   `H = H + 1` and a counter `Y = Y − 1` share a block, so `H + Y = K` is a loop
+   invariant; `Analysis._affine_cell_bound` anchors `K` at the loop header (the
+   block overlap preserves `H + Y`), verifies every body block cancels
+   `δH + δY = 0`, reads `Y`'s entry bound `Y₀` from the non-loop predecessors and
+   the `BPL` sign-exit, checks definite assignment (the image byte is dead) and
+   no-wrap, and pins `H ∈ [c, H₀ + (Y₀+1)]`. Nested and overlapping-block loops
+   (Bionic's copy loop: an inner `DEX/BNE` copy inside an outer `DEY/BPL`) are
+   recovered by **leader-split** dominance (`_split_idom` / `natural_loops`): a
+   block that spans a later leader flows *into* it, and each procedure is rooted
+   so `JSR`-called loops get dominators. The aliasing premise is discharged by
+   assume-guarantee (pin the bound, then prove no computed store — including the
+   pointer that reads `H` itself — reaches `H`).
+   *Open (auto-closure ordering):* the bound is verified end-to-end on single
+   and nested synthetic loops and, post-closure, on Bionic (`$65A1 → [$78,$82]`,
+   which un-aliases the JMP operand). Driving the corpus evidence count down
+   still needs step 3 below to land *before* the vector's alias check during the
+   iterative dispatch closure — `Y₀` is the song-index table read, so a tight
+   `Y₀ ≤ 128` requires the interprocedural index bound first.
 2. **Definite assignment.** The interval must exclude `H`'s initial image byte:
    prove the `c` store dominates every read of `H` (else the image value is
    live-in and re-widens the bound past `p`).

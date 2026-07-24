@@ -465,6 +465,7 @@ class Analysis:
         self._opt = set()
         self._forced = set()
         self._pinned = {}  # cell -> affine-proven value set (not recomputed/widened)
+        self._sidom = None  # cached leader-split immediate dominators (blocks are fixed)
 
     # -- store indexing -----------------------------------------------------
     def _stores(self):
@@ -1184,11 +1185,90 @@ class Analysis:
             pcs = []
         return [s for pc in pcs for s in self.model.variants(pc)]
 
+    def _split_succ(self, key):
+        """Successors on the leader-split CFG: a block that spans a later leader
+        flows *into* that leader (instruction-level control), so an overlapping
+        setup block cannot bypass an inner loop's header."""
+        blk = self.model.blocks[key]
+        for pc in blk.pcs[1:]:
+            if self.model.variants(pc):
+                return list(self.model.variants(pc))
+        return self._cfg_succ_keys(key)
+
+    def _split_idom(self):
+        """Immediate dominators over the leader-split static CFG (Cooper-Harvey-
+        Kennedy), rooted at every procedure; the basis for nested-loop back-edges.
+        Cached: an ``Analysis`` sees a fixed block set."""
+        if self._sidom is not None:
+            return self._sidom
+        model = self.model
+        succ = {k: self._split_succ(k) for k in model.blocks}
+        root = ("root", None)
+        entries = [model.init, model.play]  # root every procedure so callees get dominators
+        entries += [b.term[1] for b in model.blocks.values() if b.term[0] == "jsr" and b.term[1]]
+        succ[root] = [s for e in entries for s in model.variants(e)]
+        order, seen, stack = [], {root}, [(root, iter(succ[root]))]
+        while stack:
+            node, it = stack[-1]
+            adv = next(it, None)
+            if adv is None:
+                order.append(node)
+                stack.pop()
+            elif adv not in seen:
+                seen.add(adv)
+                stack.append((adv, iter(succ.get(adv, ()))))
+        order.reverse()
+        rpo = {n: i for i, n in enumerate(order)}
+        preds = {n: [] for n in order}
+        for n in order:
+            for s in succ.get(n, ()):
+                if s in preds:
+                    preds[s].append(n)
+        idom = {root: root}
+        changed = True
+        while changed:
+            changed = False
+            for n in order:
+                if n == root:
+                    continue
+                cands = [p for p in preds[n] if p in idom]
+                if not cands:
+                    continue
+                new = cands[0]
+                for p in cands[1:]:
+                    a, b = new, p
+                    while a != b:
+                        while rpo[a] > rpo[b]:
+                            a = idom[a]
+                        while rpo[b] > rpo[a]:
+                            b = idom[b]
+                    new = a
+                if idom.get(n) != new:
+                    idom[n] = new
+                    changed = True
+        self._sidom = idom
+        return idom
+
+    @staticmethod
+    def _dom(idom, a, b):
+        n = b
+        while n in idom:
+            if n == a:
+                return True
+            p = idom[n]
+            if p == n:
+                return False
+            n = p
+        return False
+
     def natural_loops(self):
-        """``{header_key: body_set}`` for each dominator back-edge (an edge whose
-        target dominates its source). Requires ``dominators()``; sound and total
-        over the static intraprocedural CFG (the foundation for trip bounds)."""
-        succ = {k: self._cfg_succ_keys(k) for k in self.model.blocks}
+        """``{header_key: body_set}`` for each back-edge (an edge whose target
+        dominates its source) over the leader-split CFG, so nested and
+        overlapping-block loops are recovered. Sound; the trip-bound foundation."""
+        return self._loops_from(self._split_idom())
+
+    def _loops_from(self, idom):
+        succ = {k: self._split_succ(k) for k in self.model.blocks}
         preds = {}
         for k, outs in succ.items():
             for s in outs:
@@ -1196,7 +1276,7 @@ class Analysis:
         loops = {}
         for tail, outs in succ.items():
             for hdr in outs:
-                if not self._dominates(hdr, tail):
+                if not self._dom(idom, hdr, tail):
                     continue
                 body = loops.setdefault(hdr, {hdr})
                 stack = [tail]
@@ -1208,7 +1288,7 @@ class Analysis:
         return loops
 
     def _cfg_preds(self, hdr):
-        return [k for k in self.model.blocks if hdr in self._cfg_succ_keys(k)]
+        return [k for k in self.model.blocks if hdr in self._split_succ(k)]
 
     # -- affine trip-bound of a monotone-increment cell (lemma 2) -----------
     @staticmethod
@@ -1309,7 +1389,8 @@ class Analysis:
         d = incrs[0][1]
         incr_keys = {k for k, _ in incrs}
         model = self.model
-        for hdr, body in self.natural_loops().items():
+        sidom = self._split_idom()
+        for hdr, body in self._loops_from(sidom).items():
             body_incr = incr_keys & body
             if not body_incr:
                 continue
@@ -1318,12 +1399,12 @@ class Analysis:
                 ys = {i for i in range(16) if self._reg_delta(model.blocks[key].regs[i], i) == -d}
                 counters = ys if counters is None else counters & ys
             for y in sorted(counters or ()):
-                bound = self._affine_bound_for(cell, hdr, body, y, d, consts, incr_keys)
+                bound = self._affine_bound_for(cell, hdr, body, y, d, consts, incr_keys, sidom)
                 if bound is not None:
                     return bound
         return None
 
-    def _affine_bound_for(self, cell, hdr, body, y, d, consts, incr_keys):
+    def _affine_bound_for(self, cell, hdr, body, y, d, consts, incr_keys, sidom):
         model = self.model
         exits = [k for k in body if self._bpl_counter(model.blocks[k], body) == y]
         if not exits:
@@ -1351,7 +1432,7 @@ class Analysis:
         ]
         for k, blk in model.blocks.items():  # definite assignment: image byte is dead
             if any(_contains_memcell(e, cell) for e in _block_exprs(blk)):
-                if not any(self._dominates(cb, k) for cb in const_blocks):
+                if not any(self._dom(sidom, cb, k) for cb in const_blocks):
                     return None
         h0 = {self._within_block_const(p, cell) for p in pre}
         if len(h0) != 1 or None in h0:
