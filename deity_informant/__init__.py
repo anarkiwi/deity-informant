@@ -33,6 +33,7 @@ from .vm import (
     run_irq_driven,
 )
 from .recorder import record, Recording, RecVM
+from .kernel import lift_kernel, Kernel, Variant
 from .expr import ExprTooComplex
 from . import expr
 from . import c64
@@ -59,6 +60,9 @@ __all__ = [
     "record",
     "Recording",
     "RecVM",
+    "lift_kernel",
+    "Kernel",
+    "Variant",
     "ExprTooComplex",
     "expr",
     "c64",

@@ -18,6 +18,7 @@ Working on C64 code requires the NMOS 6510 illegal opcodes, and no existing back
 - **standalone lifter + VM** — `lift` (6510 -> raw P-Code), the `PcodeVM` interpreter, and the `run_sub`/`run_irq`/`run_irq_driven` drivers. Pure Python, no Ghidra, no py65.
 - **`6510` SLEIGH module** (`ghidra/6510/`) — stock 6502 legal spec + generated `6510_illegal.sinc` that makes Ghidra's disassembler *and* decompiler, and pypcode, illegal-aware. Language id `6510:LE:16:default`.
 - **symbolic window recorder** — `record` runs a driver over repeated invocations, executing bit-identically to `PcodeVM` while residualising data flow over the entry state and recording every control-flow / placement fold as a fact; replay reproduces observable writes byte-exact. Sound under self-modifying code; a record-time assertion gates every artifact. See [docs/smc-recovery.md](docs/smc-recovery.md) (pipeline + ASCII diagrams) and [docs/symbolic-recorder.md](docs/symbolic-recorder.md) (contract).
+- **state-machine kernel lift** — `lift_kernel` collapses the recorder's `N` per-frame templates into one canonical `(tables, S0, variants)` model: it partitions memory into constant seed tables and persistent state, dedups the frames to their distinct control paths, and proves the model by re-iterating from `S0` alone (byte-exact). See [docs/kernel.md](docs/kernel.md).
 
 ## Install
 
@@ -42,9 +43,11 @@ deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                   # build/in
 ## Python API
 
 ```python
-from deity_informant import lift, PcodeVM, run_sub
+from deity_informant import lift, PcodeVM, run_sub, record, lift_kernel
 insn = lift(mem, pc)                 # {"ops", "len", "cyc", "pen", "ctrl"}
 vm = PcodeVM(mem); run_sub(vm, entry, {}, lift)   # execute a subroutine to its RTS
+rec = record(mem, run_sub, entry, outputs, N)     # per-frame symbolic model
+kern = lift_kernel(rec); kern.verify()            # canonical (tables, S0, variants) state machine
 ```
 
 ## Use with Ghidra
@@ -92,6 +95,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 ## Docs
 
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
+- [docs/kernel.md](docs/kernel.md) — state-machine kernel lift (cross-frame partition + closed-loop verification).
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
 - [docs/nms-provenance.md](docs/nms-provenance.md) — reference-source provenance.
 - [docs/ghidra.md](docs/ghidra.md) — using the 6510 module with Ghidra / pypcode.
