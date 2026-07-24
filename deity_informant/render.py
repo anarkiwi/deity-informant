@@ -142,6 +142,18 @@ def _inline(n, smap):
 
 
 # ---- CFG (intra-procedural; a call is one node) -------------------------------
+def _dyn_targets(model, blk):
+    """Resolved in-procedure successors of a computed jump (jump-table dispatch)."""
+    tg = model.dyn_targets.get(blk.pcs[-1])
+    if tg:
+        return list(tg)
+    t = blk.term
+    if t[0] == "jmpind" and t[1] is not None:  # static indirect: read the vector
+        m, ptr = model.mem0, t[1]
+        return [m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)]
+    return []
+
+
 def _succs(model, blk):
     t = blk.term
     if t[0] in ("goto", "jmp"):
@@ -149,8 +161,10 @@ def _succs(model, blk):
     if t[0] == "br":
         return ([t[2]] if t[2] is not None else []) + [t[3]]
     if t[0] == "jsr":
-        return [(t[2] + 1) & 0xFFFF]
-    return []  # rts / computed transfer: procedure exit for structuring
+        return [(t[2] + 1) & 0xFFFF]  # a call returns; its targets are separate subs
+    if t[0] in ("jmpd", "jmpind"):
+        return _dyn_targets(model, blk)
+    return []  # rts: procedure exit
 
 
 def _proc_cfg(model, entry):
@@ -319,29 +333,28 @@ def _structure(model, entry):
                 pc = ex
                 continue
             emitted.add(pc)
-            blk = model.blocks[model.variants(pc)[0]]
-            seq.append(Region("block", blk, pc))
-            term = blk.term
-            if term[0] == "br":
+            variants = model.variants(pc)
+            if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                t_pc, f_pc = term[2], term[3]
-                if t_pc is None:
-                    labels.add(term[3])
-                    seq.append(Region("goto", term[3]))
+                ctx = (build, owned, labels, nodeset)
+                cases = [
+                    ("$%02X" % key[1], _case(ctx, model, key, join, loops))
+                    for key in sorted(variants)
+                ]
+                seq.append(Region("switch", ("code[$%04X]" % pc, cases), pc))
+                if join is None:
                     return Region("seq", seq)
-                then_r = _side(build, t_pc, join, loops, owned, pc, labels)
-                else_r = _side(build, f_pc, join, loops, owned, pc, labels)
-                cond = _inline(term[4], _slotmap(blk))
-                seq.append(Region("if", (cond, term[1]), then_r, else_r))
                 pc = join
-            elif term[0] in ("goto", "jmp"):
-                pc = term[1]
-            elif term[0] == "jsr":
-                pc = (term[2] + 1) & 0xFFFF
-            else:
-                seq.append(Region("exit", term))
+                continue
+            blk = model.blocks[variants[0]]
+            seq.append(Region("block", blk, pc))
+            ctx = (build, owned, labels, nodeset)
+            extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
+            seq.extend(extra)
+            if nxt is None:
                 return Region("seq", seq)
+            pc = nxt
         if pc is not None and pc not in nodeset and pc != stop:
             labels.add(pc)
             seq.append(Region("goto", pc))
@@ -359,6 +372,51 @@ def _structure(model, entry):
     return Region("seq", top), labels
 
 
+def _term_flow(ctx, model, blk, pc, loops, ipdom):
+    """Regions + continuation pc for a block's terminator (branch, call, jump-
+    table switch, or return)."""
+    build, owned, labels, nodeset = ctx
+    term = blk.term
+    if term[0] == "br":
+        join = ipdom.get(pc)
+        join = join if join in nodeset else None
+        if term[2] is None:  # dynamic branch target
+            labels.add(term[3])
+            return [Region("goto", term[3])], None
+        cond = _inline(term[4], _slotmap(blk))
+        then_r = _side(build, term[2], join, loops, owned, pc, labels)
+        else_r = _side(build, term[3], join, loops, owned, pc, labels)
+        return [Region("if", (cond, term[1]), then_r, else_r)], join
+    if term[0] in ("goto", "jmp"):
+        return [], term[1]
+    if term[0] == "jsr":
+        if term[1] is None:  # computed call: dispatch over the handler set
+            targets = model.dyn_targets.get(blk.pcs[-1], [])
+            cases = [("$%04X" % t, Region("call", t)) for t in targets]
+            return [Region("switch", ("call", cases))], (term[2] + 1) & 0xFFFF
+        return [], (term[2] + 1) & 0xFFFF
+    if term[0] in ("jmpd", "jmpind"):
+        targets = _dyn_targets(model, blk)
+        cases = []
+        for t in targets:
+            arm = _side(build, t, None, loops, owned, pc, labels)
+            cases.append(("$%04X" % t, arm))
+        return [Region("switch", ("goto", cases))], None
+    return [Region("exit", term)], None
+
+
+def _case(ctx, model, key, join, loops):
+    """One arm of an opcode-dispatch switch: the variant's body then its flow."""
+    build, owned, labels, nodeset = ctx
+    blk = model.blocks[key]
+    seq = [Region("block", blk, None)]
+    extra, nxt = _term_flow(ctx, model, blk, key[0], loops, {key[0]: join})
+    seq.extend(extra)
+    if nxt is not None and nxt != join and nxt in nodeset:
+        seq.append(_side(build, nxt, join, loops, owned, key[0], labels))
+    return Region("seq", seq)
+
+
 def _has_stmts(region):
     """Whether a region emits any visible statement (for empty-arm collapse)."""
     if region is None:
@@ -368,7 +426,9 @@ def _has_stmts(region):
         return any(_has_stmts(r) for r in region.a)
     if k == "block":
         return bool(_block_stmts(region.a)) or region.a.term[0] == "jsr"
-    return k in ("loop", "if", "goto", "cont", "brk", "exit")
+    if k == "switch":
+        return True
+    return k in ("loop", "if", "goto", "cont", "brk", "exit", "call")
 
 
 def _side(build, target, join, loops, owned, parent, labels):
@@ -426,8 +486,8 @@ def _emit(region, model, lines, depth, labels):
         for s in _block_stmts(region.a):
             lines.append(pad + s)
         term = region.a.term
-        if term[0] == "jsr":
-            lines.append("%scall sub_%04X()" % (pad, term[1] if term[1] is not None else 0))
+        if term[0] == "jsr" and term[1] is not None:
+            lines.append("%scall sub_%04X()" % (pad, term[1]))
     elif k == "loop":
         lines.append(pad + "loop {")
         _emit(region.a, model, lines, depth + 1, labels)
@@ -450,6 +510,20 @@ def _emit(region, model, lines, depth, labels):
                 lines.append(pad + "} else {")
                 _emit(region.c, model, lines, depth + 1, labels)
             lines.append(pad + "}")
+    elif k == "switch":
+        sel, cases = region.a
+        if sel == "call":  # computed call: compact list of handler subs
+            subs = ", ".join("sub_%04X" % body.a for _lbl, body in cases)
+            lines.append("%scall one of { %s }" % (pad, subs))
+        else:
+            head = "switch %s {" % ("(computed goto)" if sel == "goto" else sel)
+            lines.append(pad + head)
+            for label, body in cases:
+                lines.append("%s    case %s:" % (pad, label))
+                _emit(body, model, lines, depth + 2, labels)
+            lines.append(pad + "}")
+    elif k == "call":
+        lines.append("%scall sub_%04X()" % (pad, region.a))
     elif k == "cont":
         lines.append(pad + "continue")
     elif k == "brk":

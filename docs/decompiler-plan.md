@@ -151,11 +151,24 @@ is capture, not transliteration; a transliterator cannot do it.
 `out/Commando.structured.txt` and `out/Monty_on_the_Run.structured.txt` are the
 rendered play routines.
 
-Remaining: switch/dispatch recovery for the shared-handler `goto` tails (the
-note/effect dispatchers), a SIDC annotation marking evidence-bounded dispatch
-sites explicitly in the text, semantic naming beyond mechanical (P7), P0 corpus
-growth to >= 30 tunes, P9 tunes that install their own interrupt scheduling
-(PSID `play == 0`/RSID).
+Dispatch recovery: the two genuine dispatcher mechanisms render as explicit
+`switch` constructs. **Self-modified opcode dispatch** (a cell rewritten to
+different opcodes) becomes `switch code[$XXXX] { case $69: <ADC>; case $E9:
+<SBC> }` — Automatas' four sites, previously showing only one hidden variant.
+**Computed jump/call tables** (the note/effect command interpreter) become a
+dispatch over the resolved handler set: Krakout renders the handler-address
+table lookup and the call together —
+`m_E096 = m_E644[A << $01]; call one of { sub_E201, sub_E205, ... }`. The
+jump-table handlers are now first-class CFG successors, so the structured view
+covers them (they were previously dropped); `render.dyn_targets` carries the
+resolved successor set from P4 closure.
+
+Remaining: the shared-handler `goto` tails from conditional (CMP/BEQ) chains —
+these are not computed dispatch but reconverging control the region structurer
+leaves labelled; recovering the note-command CMP chains as switches is the next
+step. Also: a SIDC annotation marking evidence-bounded dispatch sites in the
+text, semantic naming beyond mechanical (P7), P0 corpus growth to >= 30 tunes,
+P9 tunes that install their own interrupt scheduling (PSID `play == 0`/RSID).
 
 ## Earlier prototype status (superseded)
 

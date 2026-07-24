@@ -1125,6 +1125,8 @@ def _close_once(model):
         ana.close(needs)
         pending = still
     for blk in dyn_blocks:  # materialize liftable members of the proven target sets
+        site = blk.pcs[-1]
+        model.dyn_targets[site] = sorted(targets_map.get(blk, ()))
         for pc in targets_map.get(blk, ()):
             if pc in model.written:
                 continue  # dispatch boundary: its variants come from cell closure
@@ -1389,6 +1391,7 @@ class Model:
         self.analysis = None
         self.unproven = []
         self.evidence_sites = {}  # pc -> observed target set, where static didn't bound
+        self.dyn_targets = {}  # transfer-site pc -> resolved successor pcs
         self._by_pc = {}
 
     def build(self, pc, op0):

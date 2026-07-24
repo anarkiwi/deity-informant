@@ -33,13 +33,19 @@ def _emitted(root):
             for x in r.a:
                 walk(x)
         elif r.kind == "block":
-            out.append(r.b)
+            if r.b is not None:  # variant blocks (switch cases) carry pc via the switch
+                out.append(r.b)
         elif r.kind == "loop":
             walk(r.a)
         elif r.kind == "if":
             walk(r.b)
             if r.c is not None:
                 walk(r.c)
+        elif r.kind == "switch":
+            if r.b is not None:
+                out.append(r.b)
+            for _lbl, body in r.a[1]:
+                walk(body)
 
     walk(root)
     return out
