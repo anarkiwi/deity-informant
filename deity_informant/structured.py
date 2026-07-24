@@ -7,6 +7,7 @@ machine-order loads and cycle/penalty events -> compiled standalone walker.
 
 from __future__ import annotations
 
+import itertools
 from collections import namedtuple
 
 from . import expr as E
@@ -900,6 +901,103 @@ class Analysis:
             raise DecompileError(
                 "control target at $%04X depends on unclosed cell $%04X" % (blk.pc, need.cell)
             ) from need
+        except DecompileError:
+            return self._relational_targets(blk, ex)  # sound joint-index closure or re-raise
+
+    # -- relational (joint-index) closure of self-modified vector targets ----
+    def _relational_targets(self, blk, ex):
+        """Prove a computed target set by substituting each self-modified operand
+        cell's unique in-block store, then jointly enumerating the shared index
+        registers over their value sets (correlated, not the Cartesian per-cell
+        product). Sound: register sets over-approximate and the substituted table
+        reads are immutable; raises a precise diagnostic where either fails."""
+        key = (blk.pc, blk.op0)
+        live = self._live_expr(blk, ex)
+        regs = set()
+        _regs_of(live, regs)
+        doms = []
+        for i in sorted(regs):
+            if self.R.get((key, i)) is TOP:
+                raise DecompileError("relational index reg r%d is TOP at $%04X" % (i, blk.pc))
+            dom = self._reg_set(key, i)
+            if not dom or len(dom) > 256:
+                raise DecompileError(
+                    "relational index reg r%d unbounded (%d) at $%04X" % (i, len(dom), blk.pc)
+                )
+            doms.append((i, sorted(dom)))
+        total = 1
+        for _, d in doms:
+            total *= len(d)
+        if total > 4096:
+            raise DecompileError("relational domain too large (%d) at $%04X" % (total, blk.pc))
+        idx = [i for i, _ in doms]
+        out = set()
+        for combo in itertools.product(*[d for _, d in doms]):
+            out.add(self._eval_live(live, dict(zip(idx, combo))) & 0xFFFF)
+        return out
+
+    def _unique_store(self, blk, cell):
+        model = self.model
+        hits = [
+            (bkey, ev[2])
+            for bkey, b in model.blocks.items()
+            for ev in b.events
+            if ev[0] == "st" and E.is_const(ev[1]) and ev[1][1] == cell
+        ]
+        for skey, rng, aexpr, _v in self._stores()[1]:
+            if rng[0] <= cell <= rng[1] and self._store_may_hit(skey, aexpr, cell):
+                raise DecompileError("cell $%04X may be reached by a computed store" % cell)
+        in_blk = [v for bkey, v in hits if bkey == (blk.pc, blk.op0)]
+        if len(hits) != 1 or len(in_blk) != 1:
+            raise DecompileError("cell $%04X is not a unique in-block store" % cell)
+        return in_blk[0]
+
+    def _store_may_hit(self, skey, aexpr, cell):
+        """Whether a computed store at ``skey`` can reach ``cell`` (tight interval
+        set; a bounded pointer that excludes the cell discharges the alias)."""
+        for lo, hi in self._ivals(aexpr, skey):
+            if lo <= cell <= hi:
+                return True
+        return False
+
+    def _live_expr(self, blk, n, depth=0):
+        if depth > 40:
+            raise DecompileError("live expression too deep at $%04X" % blk.pc)
+        k = n[0]
+        if k in ("const", "reg"):
+            return n
+        if k == "uni":
+            ld = next((e for e in blk.events if e[0] == "ld" and e[1] == n[1]), None)
+            if ld is None:
+                raise DecompileError("u%d has no load in block $%04X" % (n[1], blk.pc))
+            addr = ld[2]
+            if E.is_const(addr) and (addr[1] in _VOL or addr[1] in _VOL0):
+                raise DecompileError("volatile load u%d in block $%04X" % (n[1], blk.pc))
+            return ("mem", self._live_expr(blk, addr, depth + 1), n[2])
+        if k == "mem":
+            addr = n[1]
+            if E.is_const(addr) and addr[1] in self.model.written:
+                return self._live_expr(blk, self._unique_store(blk, addr[1]), depth + 1)
+            return ("mem", self._live_expr(blk, addr, depth + 1), n[2])
+        return ("op", n[1], tuple(self._live_expr(blk, c, depth + 1) for c in n[2]), n[3])
+
+    def _eval_live(self, n, env):
+        k = n[0]
+        if k == "const":
+            return n[1]
+        if k == "reg":
+            return env[n[1]]
+        if k == "mem":
+            a = self._eval_live(n[1], env) & 0xFFFF
+            v = 0
+            for j in range(n[2]):
+                aj = (a + j) & 0xFFFF
+                if aj in self.model.written or aj in _VOL or aj in _VOL0:
+                    raise DecompileError("relational read hits mutable/IO cell $%04X" % aj)
+                v |= self.model.mem0[aj] << (8 * j)
+            return v
+        vals = [self._eval_live(c, env) for c in n[2]]
+        return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
 
     # -- SP-constant forward flow -------------------------------------------
     def sp_flow(self):

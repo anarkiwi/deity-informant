@@ -1,8 +1,11 @@
-"""§4 soundness accounting: per-site proof records, the evidence-only tracked
-lemma, strict (sound) mode, and the proof report. Corpus-absent (synthetic)."""
+"""§4 soundness: per-site proof records, the evidence-only tracked lemma, strict
+(sound) mode, the proof report, and relational vector closure. Corpus-absent."""
+
+import types
 
 import pytest
 
+from deity_informant import expr as E
 from deity_informant import structured as S
 
 import _fuzzgen as G
@@ -83,6 +86,63 @@ def test_sound_mode_fails_loudly_on_evidence_site():
     with pytest.raises(S.DecompileError) as exc:
         S.decompile(_smc_vector_image(), INIT, ORG, FRAMES, sound=True)
     assert "$1017" in str(exc.value) and "sound mode" in str(exc.value)
+
+
+def _vector_analysis(idx_addr):
+    """Analysis over one block that patches a JMP vector from split tables at
+    $2000/$2100 indexed by ``idx_addr`` (an address expr in register A)."""
+    tlo, thi, ptr = 0x2000, 0x2100, 0x1010
+    mem = bytearray(0x10000)
+    for i in range(256):
+        mem[tlo + i], mem[thi + i] = i, (0x30 + (i >> 1)) & 0xFF
+    lo_addr = E.op("INT_ADD", (idx_addr, E.konst(tlo, 2)), 2)
+    hi_addr = E.op("INT_ADD", (idx_addr, E.konst(thi, 2)), 2)
+    events = [
+        ("ld", 0, lo_addr),
+        ("st", E.konst(ptr, 2), E.uni(0, 1)),
+        ("ld", 1, hi_addr),
+        ("st", E.konst(ptr + 1, 2), E.uni(1, 1)),
+    ]
+    lo_byte = E.mem(E.konst(ptr, 2), 1)
+    hi_byte = E.mem(E.konst(ptr + 1, 2), 1)
+    vec = E.op(
+        "INT_OR",
+        (
+            E.op("INT_ZEXT", (lo_byte,), 2),
+            E.op("INT_LEFT", (E.op("INT_ZEXT", (hi_byte,), 2), E.konst(8, 1)), 2),
+        ),
+        2,
+    )
+    blk = S.Block(0x1000, 0x4C, [0x1000], events, ("jmpd", vec), [E.reg(i) for i in range(16)])
+    model = types.SimpleNamespace(
+        blocks={(0x1000, 0x4C): blk}, written={ptr, ptr + 1}, mem0=bytes(mem)
+    )
+    ana = S.Analysis(model)
+    return ana, blk, vec, mem, tlo, thi
+
+
+def test_relational_closure_enumerates_correlated_pairs():
+    idx = E.op("INT_ZEXT", (E.reg(0),), 2)  # tables indexed by A
+    ana, blk, vec, mem, tlo, thi = _vector_analysis(idx)
+    aset = {0, 5, 17, 200, 255}
+    ana.R[((0x1000, 0x4C), 0)] = set(aset)
+    got = ana._relational_targets(blk, vec)  # pylint: disable=protected-access
+    assert got == {mem[tlo + a] | (mem[thi + a] << 8) for a in aset}
+
+
+def test_relational_closure_refuses_top_index():
+    idx = E.op("INT_ZEXT", (E.reg(0),), 2)
+    ana, blk, vec, _m, _l, _h = _vector_analysis(idx)
+    ana.R[((0x1000, 0x4C), 0)] = S.TOP
+    with pytest.raises(S.DecompileError):
+        ana._relational_targets(blk, vec)  # pylint: disable=protected-access
+
+
+def test_relational_closure_refuses_volatile_index():
+    ana, blk, vec, _m, _l, _h = _vector_analysis(E.mem(E.konst(0xD41B, 2), 2))  # osc3: volatile
+    ana.R[((0x1000, 0x4C), 0)] = {0, 1, 2}
+    with pytest.raises(S.DecompileError):
+        ana._relational_targets(blk, vec)  # pylint: disable=protected-access
 
 
 def test_proof_report_shape_and_sound_tag():
