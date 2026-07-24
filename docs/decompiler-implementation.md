@@ -6,10 +6,13 @@ production implementation**. The prototype proved the approach: 14 HVSC tunes
 across 8 composers decompile to standalone SIDC text that replays each original's
 full-length cycle-stamped `(cycle, reg, value)` SID write log bit-exact, and to a
 structured view that recovers playroutine architecture (two Hubbard tunes on his
-reused engine yield the same skeleton). What remains is turning
-proof-of-concept passes into a system with proven soundness, complete coverage,
-and a specified language. The prototype's phase/gate history is archived in
-[decompiler-plan-prototype.md](decompiler-plan-prototype.md).
+reused engine yield the same skeleton). The prototype's central conceptual
+error: it made the flat SIDC text the lossless artifact and the structured
+program an advisory view. **The deliverable is the structured program itself —
+canonical, standalone, byte-exact (§0.3)**; SIDC is scaffolding to be deleted.
+What remains is inverting that split, then proven soundness, complete coverage,
+and the specified structured language. The prototype's phase/gate history is
+archived in [decompiler-plan-prototype.md](decompiler-plan-prototype.md).
 
 The contract below is normative. "MUST" is a gate; "prototype:" notes what the
 current code does and why it is not yet sufficient.
@@ -29,13 +32,17 @@ statically closed. The complete implementation MUST be:
 2. **Total over the input class.** Every tune in the declared class (§1)
    decompiles or fails with a precise, actionable diagnostic. No silent
    drop, no partial artifact, no "unsupported" carve-out inside the class.
-3. **Losslessly executable and canonically textual.** The SIDC language is
-   fully specified (§6), `loads`/`dumps` are exact inverses, and the standalone
-   walker reproduces the cycle-stamped log without the original binary or any
-   recorded values.
-4. **Structurally faithful and readable.** The structured view is a total,
-   goto-minimal re-nesting whose every construct is verified against the model
-   (§5).
+3. **One artifact: the structured program IS the deliverable.** There is a
+   single output — structured text (procedures of `loop`/`if`/`else`/`switch`
+   over named state) that is canonical, parses back exactly, and executes
+   standalone cycle-exact. It is NOT an advisory "view" beside a flat lossless
+   text; the flat SIDC block language is a prototype scaffold and is deleted
+   (§6, §9). Everything execution needs — header/driver, data image, cycle and
+   penalty semantics, register state, dispatch guard sets — lives in the
+   structured text itself.
+4. **Structurally faithful and readable.** The structuring is a total,
+   goto-minimal, *invertible* re-nesting: flattening the parsed region tree
+   reproduces the block model, checked at build time (§5).
 
 ## 1. Input class and corpus
 
@@ -64,11 +71,13 @@ typed interface and its own test surface.
 ```
   image + entry ─► evidence ─► lifter/CFG ─► block IR ─► analysis ─► model
                                                                        │
-                        ┌──────────────────────────────────────────────┤
-                        ▼                                              ▼
-                   SIDC text  ◄────────  emitter ◄─ model      structured view ◄─ structurer
-                        │                                              (render)
-                   parser ─► walker (standalone, cycle-exact)
+                                              structurer (region tree) ┤
+                                                                       ▼
+                                                          structured text (canonical)
+                                                                       │
+                                       parser ─► region tree ─► flatten ─► block model
+                                                                       │
+                                                        walker (standalone, cycle-exact)
 ```
 
 - `evidence` (replaces the `RecVM`/trace parts of `structured.py`): concrete
@@ -83,7 +92,11 @@ typed interface and its own test surface.
   dominators/post-dominators, SMC closure, dispatch resolution — all producing
   **proof objects**, not booleans.
 - `model`: blocks + resolved edges + proof artifacts + the transition function.
-- `emitter`/`parser`/`walker` (§6), `structurer`/`view` (§5).
+- `structurer` (§5): model ⇄ region tree, an invertible codec — `flatten` is its
+  exact inverse and a build-time check.
+- `emitter`/`parser`/`walker` (§6): region tree ⇄ canonical structured text;
+  the parsed text lowers through `flatten` to the block model, and ONE walker
+  core executes it. No second interpreter, no flat sibling format.
 
 ## 3. Cycle and IO model (unchanged contract, hardened)
 
@@ -94,9 +107,9 @@ typed interface and its own test surface.
   identical formulas to `PcodeVM._rd` ($D011/$D012 raster, $D41B/$D41C
   osc/env, $D019 write-ack, $DC0D read-clear). No recorded values in the
   artifact. (Prototype: done; keep.)
-- **Gate C:** for every corpus tune, the model walker AND the parsed-text walker
-  reproduce the full-length `(cycle, reg, value)` log, end memory, and end
-  registers bit-exact.
+- **Gate C:** for every corpus tune, the model walker AND the walker running
+  the parsed *structured* text (the only text) reproduce the full-length
+  `(cycle, reg, value)` log, end memory, and end registers bit-exact.
 
 ## 4. Analysis — from observational to sound (the core work)
 
@@ -151,20 +164,36 @@ every build failure has a site-specific diagnostic. A tune that the prototype
 only closed via evidence MUST either close statically or appear on a tracked
 **"needs analysis" list with the exact missing lemma** — not silently pass.
 
-## 5. Structuring & the readable view (P5, completed)
+## 5. Structuring — the canonical artifact (not a view)
 
-Replace the prototype's dominator/post-dominator + single-entry-inline heuristic
-with a specified, total structural analysis:
+The structured program is the deliverable. Replace the prototype's
+dominator/post-dominator + single-entry-inline heuristic with a specified,
+total, **invertible** structural analysis:
+
+- **Invertibility MUST be a build-time assertion:** `flatten(structure(model))`
+  reproduces the block model (blocks, edges, dispatch, cycle semantics) up to
+  naming. Every rewrite the emitter performs — load inlining, CMP-idiom
+  normalization (`(A±k)==0` ⇒ `A==c`), switch collapse, two's-complement
+  decrements — MUST be exactly reversible by the parser/flattener or MUST NOT
+  be performed. Readability transforms that lose information are forbidden;
+  readability is achieved by naming and nesting, not by dropping semantics.
+- **Completeness of content:** the structured text carries the program header
+  (`init`/`play`/`subtune`, driver cadence, outputs), the data image, explicit
+  register state (A/X/Y/SP/flags are language-level state — Hubbard's CLV/BVC
+  `if V != 0` idiom is real code), per-block cycle costs with penalty
+  predicates and per-store cycle stamps (compact annotation syntax; they parse),
+  volatile-read semantics, and dispatch/SMC guard sets. ALL procedures are
+  structured, init included — not just the play routine.
 
 - **Reducible regions MUST fully structure** to `if`/`else`/`while`/`loop` with
   `break`/`continue`; irreducible regions MUST use the minimal labelled-`goto`
   set (node splitting or controlled goto per a documented algorithm, e.g. the
   "No More Gotos" DREAM approach or Havlak intervals). Goto count MUST be a
   reported metric with a per-tune budget, not incidental.
-- **Faithfulness MUST be a build-time assertion**, not a test-only walk: the
-  region tree emits each reachable block exactly once; a checker runs in the
-  pipeline and fails the build otherwise. (Prototype: faithfulness is only a
-  pytest walk; promote it into the structurer.)
+- **Faithfulness is subsumed by invertibility**: the flatten check is strictly
+  stronger than "each reachable block emitted once" and runs in the pipeline,
+  failing the build on any mismatch. (Prototype: faithfulness is only a pytest
+  walk over an advisory view; the view concept is abolished.)
 - **Dispatch recovery** (done in prototype, keep + extend): opcode-SMC →
   `switch code[$XXXX]`; computed jump/call → dispatch over the proven target
   set; same-subject comparison chains → `switch subject { case c: … }` with the
@@ -173,33 +202,42 @@ with a specified, total structural analysis:
   voice-indexed state as named arrays (`voice.note[v]`), classify cells by
   role from access patterns (sequence pointer, tempo counter, envelope index),
   and accept an optional user symbol map that overrides names and round-trips.
-- The structured view MAY drop cycle annotations for readability but MUST remain
-  derivable from — and consistent with — the exact model; a `--verify-view`
-  mode MUST check that the view's control/data flow matches the model.
+- The structured text MUST NOT drop cycle annotations or any other semantics:
+  it is the executable. Rendering/pretty-printing options MAY elide annotations
+  for *display only*; the canonical file always carries them.
 
-**Gate S:** corpus-wide, the view is faithful (built-in checker), ≥ 95% of
-blocks structured (nested, non-goto), goto budget met per tune, and every
-emitted construct verified against the model.
+**Gate S:** corpus-wide, `flatten(parse(emit(model)))` ≡ model (built-in
+checker), ≥ 95% of blocks structured (nested, non-goto), goto budget met per
+tune. Gotos over labelled blocks are legal language (totality never depends on
+structuring quality); the budget is the readability metric.
 
-## 6. SIDC language specification (P6, completed)
+## 6. The structured language specification (SIDC is deleted)
 
-The prototype's `stext.py` is an ad-hoc emit/parse pair. The complete
-implementation MUST ship a **specified language**:
+The flat SIDC block language (`stext.py`) was a prototype scaffold that
+mistook the deliverable: it made the lossless artifact flat and demoted the
+structured program to a lens. The complete implementation ships exactly ONE
+language — the structured program of §5 — and deletes `stext.py`, the `.sidc`
+output, and the `sidc-run` CLI. SIDC's serialization payloads (header, image
+section, cycle/penalty annotation syntax, dispatch guard sets, versioning)
+migrate into the structured grammar; its flat-block statement form does not.
 
-- A written grammar (EBNF) for the document: header (`init`/`play`/`subtune`/
-  `outputs`/`dispatch`), `image`, `regs`, procedures, blocks, the expression
-  algebra, and dispatch/switch constructs.
-- **Round-trip law:** `loads(dumps(m)) ≡ m` and `dumps` is a canonical fixpoint;
-  MUST be a property test over generated models, not just corpus samples.
-- **Versioned:** `sidc <major>` with a compatibility policy; unknown
-  future-version constructs MUST fail cleanly.
-- The walker MUST be the single execution semantics for the text; the model
-  walker and text walker MUST share one interpreter core (no drift).
+- A written grammar (EBNF) for the structured document: header, `image`,
+  `regs`, symbol map, procedures of nested regions (`loop`/`if`/`else`/
+  `switch`/`goto`/labels), the expression algebra, cycle/penalty annotations,
+  and dispatch/guard constructs.
+- **Round-trip law:** `emit(parse(t)) ≡ t` (canonical fixpoint) and
+  `flatten(parse(emit(model))) ≡ model`; MUST be a property test over generated
+  models, not just corpus samples.
+- **Versioned**, with a compatibility policy; unknown future-version constructs
+  MUST fail cleanly.
+- Execution path: parse → region tree → `flatten` → block model → the ONE
+  walker core (shared with the model walker; no drift, no second interpreter).
 - Evidence-bounded sites are removed (§4.4); any remaining dispatch is annotated
   with its proven set in the text.
 
-**Gate L:** grammar published; property-based round-trip law green; text-only
-walker cycle-exact corpus-wide; text smaller than the disassembly listing.
+**Gate L:** grammar published; property-based round-trip laws green; the
+structured text alone replays cycle-exact corpus-wide; text smaller than the
+disassembly listing.
 
 ## 7. Verification, tooling, performance
 
@@ -210,8 +248,9 @@ walker cycle-exact corpus-wide; text smaller than the disassembly listing.
   logs as content hashes) are recorded.
 - **Differential oracle:** keep the existing byte-exactness fuzzer and the
   sidplayfp oracle; extend to assert the proof-report invariants.
-- **CLI:** `decompile` (SIDC or `--structured`), `sidc-run`, `--verify`,
-  `--subtune`, `--report` (proof artifacts). Stable, documented.
+- **CLI:** `decompile` (emits the structured program), `run` on a structured
+  file, `--verify`, `--subtune`, `--report` (proof artifacts). Stable,
+  documented. (`sidc-run` and `.sidc` output are deleted in §9 step 6.)
 - **Performance:** any single process ≤ 60 s CPU (windowed parallel recording
   exists); whole-corpus decompile within the CI budget; the walker ≥ `PcodeVM`
   replay speed (it executes folded summaries).
@@ -242,12 +281,20 @@ Ordered, each step gated and independently shippable:
    fallback available but *counting* every use. Success = zero evidence uses on
    the corpus; each remaining use is a tracked missing lemma. Then delete the
    fallback and `evidence_sites`.
-4. **Structurer rewrite (§5)** with the built-in faithfulness checker and the
-   goto-minimal algorithm; promote naming to semantic.
-5. **SIDC spec (§6):** write the grammar, add the property-based round-trip law,
-   unify the two walkers.
-6. **v2/P-INT (§8).**
-7. **Delete prototype scaffolding**, retire `decompiler-plan-prototype.md`,
+4. **Structurer → invertible codec (§5).** Lift the region-tree builder out of
+   `render.py` into a codec module; implement `flatten` and the build-time
+   equivalence check; make every emitter rewrite reversible; structure ALL
+   procedures (init included).
+5. **Structured language (§6).** Grow the grammar to carry header/image/regs/
+   cycles/dispatch (migrating `stext.py`'s serializers); parser + `flatten` +
+   the one walker core; move Gate C/L acceptance onto the structured text
+   against the frozen oracle logs.
+6. **Delete SIDC.** Remove `stext.py`, `.sidc` emission, `sidc-run`; update
+   CLI/README/docs. Gate C green on the structured artifact is the
+   precondition.
+7. **Goto-minimal structuring + semantic naming** to the Gate S bar.
+8. **v2/P-INT (§8).**
+9. **Delete prototype scaffolding**, retire `decompiler-plan-prototype.md`,
    fold this document into the shipped `docs/`.
 
 Each step MUST leave the tree green (Gate C at minimum) and MUST NOT regress the
@@ -256,9 +303,10 @@ committed synthetic-corpus coverage or the frozen oracle.
 ## 10. Definition of done
 
 - Every v1-class corpus tune: proof-backed decompile (no evidence-only sites),
-  cycle-exact standalone replay from text, faithful ≥95%-structured view,
-  round-trip-canonical SIDC — or a precise build failure naming the missing
-  lemma, with that lemma on a tracked list.
+  and ONE artifact — a round-trip-canonical structured program (≥95%
+  structured, flatten-verified) whose text alone replays the cycle-stamped log
+  bit-exact — or a precise build failure naming the missing lemma, with that
+  lemma on a tracked list.
 - v2/P-INT class meets the same bar.
 - Grammar, proof-report format, and CLI documented; synthetic corpus carries all
   gates with HVSC absent; real corpus job green and recorded.
