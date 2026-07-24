@@ -105,6 +105,11 @@ artifacts.
   SID-semantic data-flow view — registers named, per-cell state update, shared
   subexpressions factored into `let` bindings, table contents never emitted. See
   [transcribe.md](transcribe.md).
+- **Canonical IR** (`canonical.py`) is the tune's canonical form: the variant
+  event streams are merged into a per-frame **decision tree**, serialized to a
+  parseable S-expression grammar (tables + `S0` + tree). `parse_ir(to_ir(kern))`
+  executes to the SID writes byte-exact — a lossless, round-tripping form, unlike
+  the readable transcription. See [canonical.md](canonical.md).
 
 ## Raw P-Code vs high P-Code
 

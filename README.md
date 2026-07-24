@@ -20,6 +20,7 @@ Working on C64 code requires the NMOS 6510 illegal opcodes, and no existing back
 - **symbolic window recorder** — `record` runs a driver over repeated invocations, executing bit-identically to `PcodeVM` while residualising data flow over the entry state and recording every control-flow / placement fold as a fact; replay reproduces observable writes byte-exact. Sound under self-modifying code; a record-time assertion gates every artifact. See [docs/smc-recovery.md](docs/smc-recovery.md) (pipeline + ASCII diagrams) and [docs/symbolic-recorder.md](docs/symbolic-recorder.md) (contract).
 - **state-machine kernel lift** — `lift_kernel` collapses the recorder's `N` per-frame templates into one canonical `(tables, S0, variants)` model: it partitions memory into constant seed tables and persistent state, dedups the frames to their distinct control paths, and proves the model by re-iterating from `S0` alone (byte-exact). See [docs/kernel.md](docs/kernel.md).
 - **readable transcription** — `transcribe` renders the kernel as a SID-semantic data-flow view: registers named (`V1.FREQ_LO`, `V2.CTRL`, …), per-cell state update, shared subexpressions factored into `let` bindings, table contents never emitted. See [docs/transcribe.md](docs/transcribe.md).
+- **canonical IR** — `to_ir`/`parse_ir` are the tune's canonical form: a parseable S-expression program (tables + initial state + a per-frame decision tree) that **round-trips** — `parse_ir(to_ir(kern)).run(N)` reproduces the SID register writes byte-exact. See [docs/canonical.md](docs/canonical.md).
 
 ## Install
 
@@ -98,6 +99,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
 - [docs/kernel.md](docs/kernel.md) — state-machine kernel lift (cross-frame partition + closed-loop verification).
 - [docs/transcribe.md](docs/transcribe.md) — readable transcription (SID-semantic data-flow view of the kernel).
+- [docs/canonical.md](docs/canonical.md) — canonical round-tripping IR (parseable S-expression program + decision-tree executor).
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
 - [docs/nms-provenance.md](docs/nms-provenance.md) — reference-source provenance.
 - [docs/ghidra.md](docs/ghidra.md) — using the 6510 module with Ghidra / pypcode.

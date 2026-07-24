@@ -30,6 +30,8 @@ class Recording:
         self.out_seq = []
         self.entry = []
         self._uni = []
+        self.events = []
+        self.reads = set()
 
     def replay(self, i):
         """Reconstruct invocation ``i``'s observable write sequence from ``slog``
@@ -59,6 +61,7 @@ class RecVM(PcodeVM):
         self.emit = True
         self.assertion = True
         self.sig = 0
+        self.reads = set()
         self.reset_invocation()
 
     def reset_invocation(self):
@@ -187,6 +190,8 @@ class RecVM(PcodeVM):
                 if self.collect:
                     if self._aliases(addr, sz):
                         self.alias_sites.add((pc, i))
+                    if not (self.volatile and _volatile(addr)):
+                        self.reads.update((addr + k) & 0xFFFF for k in range(sz))
                     sexpr = None
                 elif emit:
                     saddr = self._sval(ins[0], i, 0, pmap, pc)
@@ -399,6 +404,16 @@ class RecVM(PcodeVM):
     def public_facts(self):
         return [(e[2], e[3], e[5], e[6]) for e in self.events if e[0] == "fact"]
 
+    def public_events(self):
+        """Interleaved store/guard stream in execution (``pos``) order."""
+        out = []
+        for e in self.events:
+            if e[0] == "fact":
+                out.append(("guard", e[2], e[3], e[5], e[6]))
+            else:
+                out.append(("store", e[2], e[3], e[4]))
+        return out
+
     def public_slog(self):
         return [(e[1], e[2], e[3], e[4]) for e in self.events if e[0] == "store"]
 
@@ -446,12 +461,20 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
         driver(vm, entry, cache, lifter)
         if cached is None:
             vm._finalize()
-            cached = (dict(vm.F), vm.public_facts(), vm.public_slog(), list(vm.out_seq))
+            cached = (
+                dict(vm.F),
+                vm.public_facts(),
+                vm.public_slog(),
+                list(vm.out_seq),
+                vm.public_events(),
+            )
             tmpl[sigs[idx]] = cached
         res.F.append(cached[0])
         res.facts.append(cached[1])
         res.slog.append(cached[2])
         res.out_seq.append(cached[3])
+        res.events.append(cached[4])
         res.entry.append((vm.entry_mem, tuple(vm.entry_reg)))
         res._uni.append(dict(vm.uni_vals))
+    res.reads = pre.reads - mutable
     return res

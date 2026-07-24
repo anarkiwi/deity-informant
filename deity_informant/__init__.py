@@ -35,6 +35,7 @@ from .vm import (
 from .recorder import record, Recording, RecVM
 from .kernel import lift_kernel, Kernel, Variant
 from .transcribe import transcribe, sid_name
+from .canonical import to_ir, parse_ir, Program, roundtrip
 from .expr import ExprTooComplex
 from . import expr
 from . import c64
@@ -66,6 +67,10 @@ __all__ = [
     "Variant",
     "transcribe",
     "sid_name",
+    "to_ir",
+    "parse_ir",
+    "Program",
+    "roundtrip",
     "ExprTooComplex",
     "expr",
     "c64",
