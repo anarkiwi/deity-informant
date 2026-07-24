@@ -19,3 +19,7 @@ nomoresecrets.pdf
 
 # oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed)
 .oracle-cache/
+
+# local artifacts
+.venv/
+out/

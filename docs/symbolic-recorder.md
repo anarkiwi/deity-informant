@@ -25,9 +25,20 @@ rec.F[i]        # {addr: (entry_pure_expr, sz)} end-of-invocation values
 rec.facts[i]    # [(site, kind, expr, observed)] control-flow / placement folds
 rec.slog[i]     # [(pos, addr, expr, sz)] position-attributed store log
 rec.out_seq[i]  # [(addr, expr)] ordered writes to `outputs`
+rec.events[i]   # facts+stores interleaved in machine order (evolved forms):
+                #   ("ck", site, kind, expr, observed) | ("st", addr, expr, sz)
+rec.regs[i]     # [16] end-of-invocation register templates (evolved forms)
 rec.entry[i]    # (entry_mem, entry_reg) snapshot
+rec.uni[i]      # {n: value} opaque (volatile) reads observed this invocation
 rec.replay(i)   # reconstruct the observable write sequence from slog + entry
 ```
+
+`events`/`regs` complete the per-invocation state transition: `F` is the memory
+transition, `regs` the register transition, and `events` the position-faithful
+guard/store stream a downstream walk model (docs/sidl.md) dispatches on. The
+record-time assertion also gates `regs`: each end-of-invocation register
+template is evaluated against the entry snapshot + final image and must equal
+the concrete register byte.
 
 `driver` is any VM driver called as `driver(vm, entry, cache, lifter)`
 (`run_sub`, or a closure adapting `run_irq` / `run_irq_driven`). `outputs` is the

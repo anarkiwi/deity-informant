@@ -7,6 +7,8 @@ RAM, installed interrupt-vector discovery, and the KERNAL IRQ-return stub.
 
 from __future__ import annotations
 
+import struct
+
 IRQ_VEC = (0x0314, 0x0315)  # CINV (KERNAL A/X/Y-save ABI)
 NMI_VEC = (0x0318, 0x0319)  # NMINV
 HW_IRQ_VEC = (0xFFFE, 0xFFFF)  # hardware IRQ/BRK vector
@@ -62,3 +64,27 @@ def install_kernal_irq_stubs(vm):
     """Write the KERNAL IRQ-return stub ($EA31->$EA81, pull Y/X/A, RTI) into ``vm``."""
     for addr, code in _STUBS:
         vm.mem[addr : addr + len(code)] = code
+
+
+def load_psid(data):
+    """Parse a PSID/RSID image: ``(mem64k, load, init, play)``.
+
+    Subtune count/default live in the header; see :func:`psid_songs`.
+    """
+    if data[:4] not in (b"PSID", b"RSID"):
+        raise ValueError("not a SID file")
+    off = struct.unpack(">H", data[6:8])[0]
+    load, init, play = struct.unpack(">HHH", data[8:14])
+    body = data[off:]
+    if load == 0:
+        load = body[0] | (body[1] << 8)
+        body = body[2:]
+    mem = bytearray(0x10000)
+    mem[load : load + len(body)] = body[: 0x10000 - load]
+    return mem, load, init, play
+
+
+def psid_songs(data):
+    """``(songs, startsong)`` from the PSID header (both 1-based)."""
+    songs, startsong = struct.unpack(">HH", data[0x0E:0x12])
+    return songs, startsong
