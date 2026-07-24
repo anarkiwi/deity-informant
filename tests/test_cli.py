@@ -55,7 +55,7 @@ def test_decompile_verify_and_sidc_run(tmp_path, capsys):
     assert rc == 0
     assert "verify ok" in err
     text = out_file.read_text()
-    assert text.startswith("sidc 0\n") and "proc $1000 {" in text and "image {" in text
+    assert text.startswith("sidc 1\n") and "proc $1000 {" in text and "image {" in text
 
     rc = cli.main(["sidc-run", str(out_file), "--frames", "3"])
     out = capsys.readouterr().out

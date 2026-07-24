@@ -64,9 +64,10 @@ class _EvidenceVM(PcodeVM):
 
 
 class Evidence:
-    """Executed instruction identities, block leaders, written cells, oracle log."""
+    """Play-phase executed identities, leaders, written cells, oracle log;
+    init ran concretely into the ``mem0`` snapshot + SID-write ``prologue``."""
 
-    def __init__(self, pcs, leaders, targets, written, wlog, end_mem, end_reg):
+    def __init__(self, pcs, leaders, targets, written, wlog, end_mem, end_reg, prologue, mem0):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
         self.targets = targets  # {pc: set(taken successor pc)} at transfer sites
@@ -74,12 +75,16 @@ class Evidence:
         self.wlog = wlog
         self.end_mem = end_mem
         self.end_reg = end_reg
+        self.prologue = prologue  # [(reg, val)] order-preserved, timing non-normative
+        self.mem0 = mem0  # post-init snapshot: the play program's initial image
 
 
 def trace(mem, init, play, frames, subtune=0):
-    """Run init + ``frames`` play calls concretely, recording evidence.
+    """Run init concretely to the play boundary, then record play-phase
+    evidence over ``frames`` play calls from the post-init snapshot.
 
-    ``subtune`` (0-based) is passed to init in A, selecting the tune.
+    ``subtune`` (0-based) is passed to init in A. The cycle counter (and so
+    the volatile-read model) is zeroed at the boundary.
     """
     vm = _EvidenceVM(mem)
     vm.wlog = []
@@ -109,9 +114,20 @@ def trace(mem, init, play, frames, subtune=0):
                 raise RuntimeError("runaway at %04X" % pc)
 
     run_entry(init, subtune)
+    prologue = [(r, v) for _c, r, v in vm.wlog]
+    mem0 = bytes(vm.mem)
+    pcs.clear()
+    targets.clear()
+    leaders.clear()
+    leaders.add(play)
+    vm.written.clear()
+    vm.wlog = []
+    vm.cycles = 0
     for _ in range(frames):
         run_entry(play)
-    return Evidence(pcs, leaders, targets, vm.written, vm.wlog, bytes(vm.mem), list(vm.reg))
+    return Evidence(
+        pcs, leaders, targets, vm.written, vm.wlog, bytes(vm.mem), list(vm.reg), prologue, mem0
+    )
 
 
 # ---- expression -> python source ----------------------------------------------
@@ -1890,6 +1906,7 @@ class Model:
         self.init = init
         self.play = play
         self.subtune = subtune
+        self.prologue = list(evidence.prologue)
         self.sound = sound  # strict mode: any evidence-only site is a build failure
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
@@ -1952,7 +1969,7 @@ def decompile(mem, init, play, frames, subtune=0, sound=False):
     the build on any evidence-only (non-statically-proven) dispatch site.
     """
     ev = trace(bytearray(mem), init, play, frames, subtune)
-    model = Model(mem, init, play, ev, subtune, sound).build_all()
+    model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
     return model, ev
 
 
@@ -2022,7 +2039,6 @@ class Walker:
                 raise WalkError("runaway at %04X" % pc)
 
     def run(self, frames):
-        self._run_entry(self.model.init, getattr(self.model, "subtune", 0))
         for _ in range(frames):
             self._run_entry(self.model.play)
         return self.wlog

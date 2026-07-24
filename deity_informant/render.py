@@ -638,7 +638,7 @@ def _emit(region, model, lines, depth, labels):
 
 
 def _procedures(model):
-    entries = [("play", model.play), ("init", model.init)]
+    entries = [("play", model.play)]
     for blk in model.blocks.values():
         if blk.term[0] == "jsr" and blk.term[1] is not None:
             entries.append(("sub_%04X" % blk.term[1], blk.term[1]))
