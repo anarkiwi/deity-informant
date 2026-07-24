@@ -27,7 +27,7 @@ dependencies = ["jennings>=0.1.0"]
 [project.optional-dependencies]
 oracle = ["py65", "pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "numpy"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"

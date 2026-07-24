@@ -1,8 +1,8 @@
-"""SIDC: canonical structured text for decompiled playroutines (plan P5-P6).
+"""SIDC: canonical structured text for decompiled playroutines.
 
-``emit`` renders a decompiled model as procedures of labeled blocks over an
-initial image; ``parse`` is its exact inverse; the parsed model drives the
-same compiled-block walker, standalone and cycle-exact.
+``emit``/``dumps`` renders a model as procedures of labeled blocks over an
+initial image; ``parse``/``loads`` is its exact inverse and drives the same
+walker, standalone and cycle-exact. Grammar/laws: docs/sidc-language.md.
 """
 
 from __future__ import annotations
@@ -11,6 +11,17 @@ import re
 
 from . import expr as E
 from . import structured as C
+
+SIDC_VERSION = 0
+
+
+class SidcVersionError(ValueError):
+    """A document's ``sidc <major>`` header is not this reader's major.
+
+    Majors are incompatible; an unknown future-version document fails here at
+    the header rather than mis-parsing later constructs (docs/sidc-language.md).
+    """
+
 
 _REG_NAMES = {
     0: "A",
@@ -299,7 +310,7 @@ def _proc_layout(model):
 
 def emit(model):
     """Canonical SIDC text (``parse`` is its exact inverse)."""
-    out = ["sidc 0", "init $%04X" % model.init, "play $%04X" % model.play]
+    out = ["sidc %d" % SIDC_VERSION, "init $%04X" % model.init, "play $%04X" % model.play]
     if getattr(model, "subtune", 0):
         out.append("subtune %d" % model.subtune)
     for pc in sorted(model.dispatch_sets):
@@ -463,8 +474,13 @@ def parse(text):
         s = raw.split(";", 1)[0].strip()
         if s:
             lines.append(s)
-    if not lines or lines.pop(0) != "sidc 0":
-        raise ValueError("not a sidc 0 document")
+    head = lines.pop(0).split() if lines else []
+    if len(head) != 2 or head[0] != "sidc" or not head[1].isdigit():
+        raise ValueError("not a sidc document")
+    if int(head[1]) != SIDC_VERSION:
+        raise SidcVersionError(
+            "sidc major %s: this reader speaks major %d" % (head[1], SIDC_VERSION)
+        )
     init = play = None
     subtune = 0
     mem0 = bytearray(0x10000)
@@ -521,3 +537,7 @@ def parse(text):
     if init is None or play is None:
         raise ValueError("missing init/play header")
     return TextModel(mem0, init, play, blocks, dispatch_sets, subtune)
+
+
+dumps = emit  # spec vocabulary (docs/sidc-language.md); loads/dumps are inverses
+loads = parse

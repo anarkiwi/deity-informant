@@ -96,6 +96,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
 - [docs/decompiler-implementation.md](docs/decompiler-implementation.md) — specification for completing the structured decompiler (soundness, structuring, SIDC language, corpus gates).
+- [docs/sidc-language.md](docs/sidc-language.md) — SIDC language: EBNF grammar, version policy, and property-tested round-trip laws.
 - [docs/decompiler-plan-prototype.md](docs/decompiler-plan-prototype.md) — the prototype's phase/gate history (superseded).
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
 - [docs/nms-provenance.md](docs/nms-provenance.md) — reference-source provenance.
