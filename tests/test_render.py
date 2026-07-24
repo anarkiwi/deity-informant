@@ -42,8 +42,7 @@ def _emitted(root):
             if r.c is not None:
                 walk(r.c)
         elif r.kind == "switch":
-            if r.b is not None:
-                out.append(r.b)
+            out.extend(pc for pc in (r.b or []) if pc is not None)
             for _lbl, body in r.a[1]:
                 walk(body)
 
@@ -62,6 +61,7 @@ def test_structured_view_is_faithful(sid):
     model, _ev = S.decompile(mem, init, play, 300, start - 1)
     for _name, pc in render._procedures(model):
         root, _labels = render._structure(model, pc)
+        root = render._switchify(root)  # command-chain collapse must stay faithful
         emitted = _emitted(root)
         reach = set(render._proc_cfg(model, pc)[0])
         assert len(emitted) == len(set(emitted)), "%s $%04X: block emitted twice" % (sid.stem, pc)

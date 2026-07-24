@@ -342,7 +342,7 @@ def _structure(model, entry):
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
                 ]
-                seq.append(Region("switch", ("code[$%04X]" % pc, cases), pc))
+                seq.append(Region("switch", ("code[$%04X]" % pc, cases), [pc]))
                 if join is None:
                     return Region("seq", seq)
                 pc = join
@@ -393,7 +393,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
         if term[1] is None:  # computed call: dispatch over the handler set
             targets = model.dyn_targets.get(blk.pcs[-1], [])
             cases = [("$%04X" % t, Region("call", t)) for t in targets]
-            return [Region("switch", ("call", cases))], (term[2] + 1) & 0xFFFF
+            return [Region("switch", ("call", cases), [])], (term[2] + 1) & 0xFFFF
         return [], (term[2] + 1) & 0xFFFF
     if term[0] in ("jmpd", "jmpind"):
         targets = _dyn_targets(model, blk)
@@ -401,7 +401,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
         for t in targets:
             arm = _side(build, t, None, loops, owned, pc, labels)
             cases.append(("$%04X" % t, arm))
-        return [Region("switch", ("goto", cases))], None
+        return [Region("switch", ("goto", cases), [])], None
     return [Region("exit", term)], None
 
 
@@ -415,6 +415,102 @@ def _case(ctx, model, key, join, loops):
     if nxt is not None and nxt != join and nxt in nodeset:
         seq.append(_side(build, nxt, join, loops, owned, key[0], labels))
     return Region("seq", seq)
+
+
+# ---- comparison-chain -> switch (note/command dispatch) -----------------------
+def _norm_eq(cond):
+    """``(subject, const)`` for an equality test, normalising the CMP idiom
+    ``(subject +/- k) == 0`` (subtract-then-test-zero) back to ``subject == c``."""
+    a, b = cond[2]
+    if b[0] == "const" and a[0] != "const":
+        subj, const = a, b[1]
+    elif a[0] == "const" and b[0] != "const":
+        subj, const = b, a[1]
+    else:
+        return None
+    if const == 0 and subj[0] == "op" and subj[1] in ("INT_ADD", "INT_SUB"):
+        kids = subj[2]
+        consts = [c for c in kids if c[0] == "const"]
+        rest = [c for c in kids if c[0] != "const"]
+        if len(consts) == 1 and len(rest) == 1:
+            k = consts[0][1]
+            base = rest[0]
+            const = k if subj[1] == "INT_SUB" else (-k) & E.mask(subj[3])
+            return base, const
+    return subj, const
+
+
+def _eq_case(region):
+    """Normalise an equality test to ``(subject, const, case_body, continuation)``
+    where ``case_body`` runs when ``subject == const`` (any op/polarity)."""
+    if region is None or region.kind != "if":
+        return None
+    cond, pol = region.a
+    if cond[0] != "op" or cond[1] not in ("INT_EQUAL", "INT_NOTEQUAL"):
+        return None
+    sc = _norm_eq(cond)
+    if sc is None:
+        return None
+    subj, const = sc
+    eq_is_then = (cond[1] == "INT_EQUAL") == bool(pol)  # does subject==const take `then`?
+    if eq_is_then:
+        return subj, const, region.b, region.c
+    return subj, const, region.c, region.b
+
+
+def _peel_else(els):
+    """Skip statement-less comparison blocks, returning ``(skipped_pcs, next_if)``
+    when the else reduces to a single trailing ``if``, else ``next_if`` is None."""
+    if els is None:
+        return [], None
+    items = els.a if els.kind == "seq" else [els]
+    pcs = []
+    i = 0
+    while i < len(items) and items[i].kind == "block" and not _has_stmts(items[i]):
+        if items[i].b is not None:
+            pcs.append(items[i].b)
+        i += 1
+    rest = items[i:]
+    if len(rest) == 1 and rest[0].kind == "if":
+        return pcs, rest[0]
+    return pcs, None
+
+
+def _switchify(region):
+    """Rewrite a same-subject equality chain into one ``switch`` (note/command
+    dispatch); recurse everywhere else. Every subsumed block pc is preserved."""
+    if region is None:
+        return None
+    k = region.kind
+    if k == "seq":
+        return Region("seq", [_switchify(r) for r in region.a])
+    if k == "loop":
+        return Region("loop", _switchify(region.a))
+    if k == "switch":
+        sel, cases = region.a
+        return Region("switch", (sel, [(l, _switchify(b)) for l, b in cases]), region.b)
+    if k != "if":
+        return region
+    first = _eq_case(region)
+    if first is None:
+        return Region("if", region.a, _switchify(region.b), _switchify(region.c))
+    subj = first[0]
+    cases = [("$%02X" % first[1], _switchify(first[2]))]
+    subsumed = []
+    els = first[3]
+    while True:
+        pcs, nxt = _peel_else(els)
+        ec = _eq_case(nxt) if nxt is not None else None
+        if ec is None or ec[0] != subj:
+            default = _switchify(els)
+            break
+        subsumed += pcs
+        cases.append(("$%02X" % ec[1], _switchify(ec[2])))
+        els = ec[3]
+    if len(cases) < 2:
+        return Region("if", region.a, _switchify(region.b), _switchify(region.c))
+    cases.append(("default", default))
+    return Region("switch", (fmt(subj), cases), subsumed)
 
 
 def _has_stmts(region):
@@ -516,10 +612,17 @@ def _emit(region, model, lines, depth, labels):
             subs = ", ".join("sub_%04X" % body.a for _lbl, body in cases)
             lines.append("%scall one of { %s }" % (pad, subs))
         else:
+            for pc in region.b or ():  # subsumed comparison-block labels, if referenced
+                if pc in labels:
+                    lines.append("  " * depth + "L_%04X:" % pc)
             head = "switch %s {" % ("(computed goto)" if sel == "goto" else sel)
             lines.append(pad + head)
             for label, body in cases:
-                lines.append("%s    case %s:" % (pad, label))
+                if label == "default" and not _has_stmts(body):
+                    continue
+                lines.append(
+                    "%s    %s" % (pad, "default:" if label == "default" else "case %s:" % label)
+                )
                 _emit(body, model, lines, depth + 2, labels)
             lines.append(pad + "}")
     elif k == "call":
@@ -554,6 +657,7 @@ def render(model):
     lines = [head]
     for name, pc in _procedures(model):
         root, labels = _structure(model, pc)
+        root = _switchify(root)
         body = []
         _emit(root, model, body, 1, labels)
         lines.append("")

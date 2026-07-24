@@ -163,10 +163,23 @@ jump-table handlers are now first-class CFG successors, so the structured view
 covers them (they were previously dropped); `render.dyn_targets` carries the
 resolved successor set from P4 closure.
 
-Remaining: the shared-handler `goto` tails from conditional (CMP/BEQ) chains —
-these are not computed dispatch but reconverging control the region structurer
-leaves labelled; recovering the note-command CMP chains as switches is the next
-step. Also: a SIDC annotation marking evidence-bounded dispatch sites in the
+Comparison-chain switches: a same-subject equality chain collapses to
+`switch subject { case c: ... default: ... }`, normalising the CMP idiom
+(`(A + k) == 0`, subtract-then-test-zero) back to `A == c` and every op/polarity
+to a case body. A region-tree post-pass that preserves every subsumed
+comparison-block pc, so the faithfulness invariant (every reachable block
+emitted once) holds through the collapse.
+
+Honest finding from the corpus: these players do **not** use large CMP/BEQ
+command chains. Their note/effect dispatch is the computed **jump table**
+(already recovered — 26 across the corpus), and the CMP chains that exist are
+short (2–3 way, 8 recovered). The bulk of the remaining `goto` tails are
+genuine reconverging state-machine control — independent bit-flag effect gates
+(`ctrl & $80`, `ctrl & $10`), correctly rendered as `if`, not a hidden switch.
+So the dispatchers are recovered; the residual gotos are not unrecovered
+dispatch.
+
+Remaining: a SIDC annotation marking evidence-bounded dispatch sites in the
 text, semantic naming beyond mechanical (P7), P0 corpus growth to >= 30 tunes,
 P9 tunes that install their own interrupt scheduling (PSID `play == 0`/RSID).
 
