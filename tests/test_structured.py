@@ -14,6 +14,12 @@ from deity_informant.cli import format_insn
 
 import _fuzzgen as G
 
+try:  # declared corpus (relpaths) + pysidtracker fetch machinery; optional/offline
+    from _corpus import CORPUS
+    from pysidtracker.testing import resolve_tune
+except ImportError:
+    CORPUS, resolve_tune = [], None
+
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 SONGLENGTHS = HVSC / "Songlengths.md5"
 
@@ -94,19 +100,22 @@ def _song_lengths():
 
 
 def _tunes():
-    if not SONGLENGTHS.is_file():
+    if not SONGLENGTHS.is_file() or resolve_tune is None:
         return []
     lengths = _song_lengths()
     out = []
-    for sid in sorted(HVSC.rglob("*.sid")):
-        data = sid.read_bytes()
+    for rel in CORPUS:  # the declared 128-tune corpus, fetched on demand (§1)
+        path = resolve_tune(rel, cache_dir=HVSC)
+        if path is None:
+            continue
+        data = Path(path).read_bytes()
         _mem, _load, _init_, play = load_psid(data)
         _songs, startsong = psid_songs(data)
         secs_list = lengths.get(hashlib.md5(data).hexdigest())
         if play and secs_list:
             sub = startsong - 1  # 0-based; play the tune's default subtune
             secs = secs_list[sub] if sub < len(secs_list) else secs_list[0]
-            out.append(pytest.param(sid, sub, secs, id=sid.stem))
+            out.append(pytest.param(Path(path), sub, secs, id=Path(rel).stem))
     return out
 
 
