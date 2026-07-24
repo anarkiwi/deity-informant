@@ -87,7 +87,36 @@ guard that could fire is by definition an unclosed set: the build must have
 failed instead. Recorder evidence (P1) *seeds and cross-checks* value sets; it
 never substitutes for the static closure proof.
 
-## Prototype status
+## Implementation status
+
+P1–P6 implemented end-to-end (`structured.py` + `stext.py`): evidence trace,
+leader blocks with proven per-byte opcode-SMC dispatch variants, compiled
+symbolic summaries (machine-order loads, cycle/penalty events), P4 value-set
+closure (interblock register propagation with branch-edge filtering for counted
+loops, SP-constant flow with precise call-return edges, stack save/restore via
+dominator-gated reaching stores, interval-bounded computed addressing with
+widening), liveness pruning, slot inlining, and the SIDC text language
+(`emit`/`parse` exact inverses; the parsed text alone drives the walker).
+
+14-tune corpus (PSID `play != 0`, 8 composers, full `Songlengths` durations):
+**9 pass every gate** — cycle-stamped `(cycle, reg, value)` log, end memory and
+registers bit-exact from the model *and* from parsed text, text a parse/emit
+fixpoint and smaller than the disassembly listing — including Automatas (all 4
+opcode-patched cells close to exact minimal sets, e.g. $10B8 = {$69,$E9}),
+Commando, Monty on the Run, Grid Runner, Cybernoid, Crazy Comets,
+International Karate, Thing on a Spring, Freeze. **5 fail loudly** with
+per-site diagnostics (open P4 bugs, tracked as asserted xfails in
+`tests/test_structured.py::_OPEN_P4`): Krakout, Trap, Bionic Commando,
+Comic Bakery, Wizball — command-dispatch players whose jump-table pointer
+value sets the closure cannot yet bound (replay itself is byte-exact; the
+static proof obligation fails, and per the failure policy no artifact is
+emitted). Decompile+verify runs 2–9s per tune.
+
+Remaining: the 5 closure bugs above, P5 region sugar (while/if nesting —
+emission is currently procedures + labeled blocks with fallthrough elision),
+P7 naming polish, P0 corpus growth to >= 30 tunes, P9 interrupt-driven tunes.
+
+## Earlier prototype status (superseded)
 
 `deity_informant/structured.py` implements the P1–P3 core (evidence trace,
 per-pc blocks with per-opcode-byte SMC variants, compiled symbolic summaries

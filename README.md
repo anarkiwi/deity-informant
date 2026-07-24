@@ -18,7 +18,7 @@ Working on C64 code requires the NMOS 6510 illegal opcodes, and no existing back
 - **standalone lifter + VM** — `lift` (6510 -> raw P-Code), the `PcodeVM` interpreter, and the `run_sub`/`run_irq`/`run_irq_driven` drivers. Pure Python, no Ghidra, no py65.
 - **`6510` SLEIGH module** (`ghidra/6510/`) — stock 6502 legal spec + generated `6510_illegal.sinc` that makes Ghidra's disassembler *and* decompiler, and pypcode, illegal-aware. Language id `6510:LE:16:default`.
 - **symbolic window recorder** — `record` runs a driver over repeated invocations, executing bit-identically to `PcodeVM` while residualising data flow over the entry state and recording every control-flow / placement fold as a fact; replay reproduces observable writes byte-exact. Sound under self-modifying code; a record-time assertion gates every artifact. See [docs/smc-recovery.md](docs/smc-recovery.md) (pipeline + ASCII diagrams) and [docs/symbolic-recorder.md](docs/symbolic-recorder.md) (contract).
-- **SIDL decompiler** — `sidl` lifts a recorded playroutine to a text-based lossless representation (guarded frame templates + only the data cells they read, no 6502 code); the text parses back and re-emits the original write stream byte-exact, generalizing past the recorded window for looping players. See [docs/sidl.md](docs/sidl.md).
+- **structured decompiler (SIDC)** — `decompile` lifts a playroutine to standalone structured text: procedures of labeled blocks with folded expressions, SMC modeled (operand patches become live-image reads, opcode patches become statically *proven* per-byte dispatch variants), cycle costs and page-cross penalties explicit, volatile reads computed from the cycle counter. The text parses back and replays the original's cycle-stamped `(cycle, reg, value)` write log bit-exact for the full song. See [docs/decompiler-plan.md](docs/decompiler-plan.md).
 
 ## Install
 
@@ -37,8 +37,8 @@ Console script `deity-informant`:
 deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]  # 6510 disassembly (illegal-aware)
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                   # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]     # execute in PcodeVM, dump $D400.. grid
-deity-informant sidl   IMAGE --play ADDR [--init ADDR --frames N --verify -o FILE]  # decompile to SIDL text
-deity-informant sidl-run FILE [--frames N]                            # interpret a SIDL file, dump the grid
+deity-informant decompile TUNE [.sid or raw] [--frames N --verify -o FILE]  # decompile to SIDC text
+deity-informant sidc-run FILE [--frames N]                            # run a SIDC program, dump the grid
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                   # build/install the 6510 SLEIGH module
 ```
 
@@ -95,7 +95,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 ## Docs
 
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
-- [docs/sidl.md](docs/sidl.md) — SIDL: the text-based lossless guarded-frame-template decompiler output.
+- [docs/decompiler-plan.md](docs/decompiler-plan.md) — structured decompiler: phases, gates, SMC doctrine, corpus status.
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
 - [docs/nms-provenance.md](docs/nms-provenance.md) — reference-source provenance.
 - [docs/ghidra.md](docs/ghidra.md) — using the 6510 module with Ghidra / pypcode.

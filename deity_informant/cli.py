@@ -4,8 +4,8 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
-  sidl         lift a playroutine to the SIDL guarded-frame-template text
-  sidl-run     interpret a SIDL file and print the $D400.. grid
+  decompile    decompile a tune (.sid or raw) to SIDC structured text
+  sidc-run     execute a SIDC program standalone and print the $D400.. grid
   emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
 """
 
@@ -19,7 +19,9 @@ from pathlib import Path
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
-from . import sidl
+from . import stext
+from . import structured
+from .c64 import load_psid
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
 from .vm import PcodeVM, run_sub
 
@@ -78,18 +80,33 @@ def cmd_run(args):
     return 0
 
 
-def cmd_sidl(args):
-    mem, _ = _load(args.file, args.org)
+def cmd_decompile(args):
+    data = Path(args.file).read_bytes()
+    if data[:4] in (b"PSID", b"RSID"):
+        mem, _l, init, play = load_psid(data)
+        init = args.init if args.init is not None else init
+        play = args.play if args.play is not None else play
+    else:
+        mem, _n = _load(args.file, args.org)
+        init, play = args.init, args.play
+    if not play:
+        sys.stderr.write("no play address (interrupt-driven tune?): pass --play\n")
+        return 1
     mem[0xD418] = 0x0F
-    prog = sidl.build(mem, args.play, args.frames, init=args.init, window=args.window)
-    text = sidl.dumps(prog)
+    model, ev = structured.decompile(mem, init, play, args.frames)
+    text = stext.emit(model)
     if args.verify:
-        got = sidl.loads(text).run()
-        want = sidl.reference_log(mem, args.play, args.frames, init=args.init)
-        if got != want:
-            sys.stderr.write("sidl verify FAILED\n")
+        tm = stext.parse(text)
+        if stext.emit(tm) != text:
+            sys.stderr.write("verify FAILED: text is not a parse/emit fixpoint\n")
             return 1
-        sys.stderr.write("sidl verify ok: %d frames byte-exact\n" % args.frames)
+        if structured.Walker(tm).run(args.frames) != ev.wlog:
+            sys.stderr.write("verify FAILED: text replay diverges from the VM\n")
+            return 1
+        sys.stderr.write(
+            "verify ok: %d frames, %d cycle-stamped writes bit-exact\n"
+            % (args.frames, len(ev.wlog))
+        )
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:
@@ -97,16 +114,13 @@ def cmd_sidl(args):
     return 0
 
 
-def cmd_sidl_run(args):
-    prog = sidl.loads(Path(args.file).read_text(encoding="utf-8"))
-    frames = args.frames if args.frames is not None else prog.frames
-    _, frame_writes = prog.run(frames)
-    grid = {a: prog.cells.get(a, 0) for a in range(0xD400, 0xD419)}
-    for f, writes in enumerate(frame_writes):
-        for a, v in writes:
-            if a in grid:
-                grid[a] = v
-        row = " ".join("%02X" % grid[0xD400 + i] for i in range(25))
+def cmd_sidc_run(args):
+    tm = stext.parse(Path(args.file).read_text(encoding="utf-8"))
+    w = structured.Walker(tm)
+    w._run_entry(tm.init)
+    for f in range(args.frames):
+        w._run_entry(tm.play)
+        row = " ".join("%02X" % w.m[0xD400 + i] for i in range(25))
         print("frame %4d: %s" % (f, row))
     return 0
 
@@ -159,20 +173,19 @@ def main(argv=None):
     p.add_argument("--frames", type=int, default=1)
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("sidl", help="lift a playroutine to SIDL text")
+    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to SIDC text")
     org(p)
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
-    p.add_argument("--play", type=lambda x: int(x, 0), required=True)
-    p.add_argument("--frames", type=int, default=64)
-    p.add_argument("--window", type=int, default=None, help="record in parallel N-frame windows")
-    p.add_argument("-o", "--out", help="write SIDL text to FILE (default stdout)")
-    p.add_argument("--verify", action="store_true", help="round-trip + replay vs the VM")
-    p.set_defaults(fn=cmd_sidl)
+    p.add_argument("--play", type=lambda x: int(x, 0), default=None)
+    p.add_argument("--frames", type=int, default=3000, help="evidence/verify window")
+    p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
+    p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
+    p.set_defaults(fn=cmd_decompile)
 
-    p = sub.add_parser("sidl-run", help="interpret a SIDL file, print the $D400.. grid")
+    p = sub.add_parser("sidc-run", help="execute a SIDC program, print the $D400.. grid")
     p.add_argument("file")
-    p.add_argument("--frames", type=int, default=None)
-    p.set_defaults(fn=cmd_sidl_run)
+    p.add_argument("--frames", type=int, default=60)
+    p.set_defaults(fn=cmd_sidc_run)
 
     p = sub.add_parser("emit-sleigh", help="build the 6510 SLEIGH module")
     p.add_argument("-o", "--out", help="languages dir to install the built module into")
