@@ -65,6 +65,17 @@ def test_decompile_verify_and_sidc_run(tmp_path, capsys):
     assert all(r[24] == "0F" for r in rows)  # driver volume visible in the grid
 
 
+def test_decompile_report_flag(tmp_path, capsys):
+    prg = _player_prg(tmp_path)
+    rc = cli.main(
+        ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
+        + ["--frames", "4", "--report", "--sound", "-o", str(tmp_path / "p.sidc")]
+    )
+    err = capsys.readouterr().err
+    assert rc == 0  # no dynamic dispatch: sound build succeeds
+    assert "proof report" in err and "[SOUND]" in err
+
+
 def test_run_frames(tmp_path, capsys):
     rc = cli.main(
         [

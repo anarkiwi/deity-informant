@@ -7,9 +7,16 @@ machine-order loads and cycle/penalty events -> compiled standalone walker.
 
 from __future__ import annotations
 
+from collections import namedtuple
+
 from . import expr as E
 from .lifter import MODE_LEN, OPS, lift
 from .vm import PcodeVM
+
+Proof = namedtuple("Proof", "site kind status targets lemma")
+"""Per-site closure evidence (§4.5). ``status`` is ``proven`` (statically
+bounded target/opcode set), ``evidence`` (only the trace-observed set bounds it;
+``lemma`` names the missing static argument), or ``failed``."""
 
 _VOL = frozenset((0xD011, 0xD012, 0xD41B, 0xD41C))
 _VOL0 = frozenset((0xD019, 0xDC0D))  # constant-0 sources under the per-frame driver
@@ -1077,6 +1084,17 @@ def _sp_eval(n, sp):
     return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
 
 
+_TERM_KIND = {"jmpd": "jump", "jmpind": "vector", "br": "branch", "jsr": "call"}
+
+
+def _dyn_proof(term0, site, targets, model, lemma):
+    kind = _TERM_KIND.get(term0, term0)
+    if lemma is None:
+        return Proof(site, kind, "proven", targets, "")
+    status = "evidence" if site in model.evidence_sites else "failed"
+    return Proof(site, kind, status, targets, lemma)
+
+
 def _close_once(model):
     """One closure round: control cells, proven dyn targets, SP flow, stack
     concretization, dominators, opcode-cell sets + variant blocks."""
@@ -1103,7 +1121,10 @@ def _close_once(model):
     if seeds:
         ana.close(seeds)
     model.unproven = []
+    model.evidence_sites = {}
+    model.proofs = {}
     targets_map = {}
+    lemmas = {}
     pending = list(dyn_blocks)
     for _round in range(8):
         needs = set()
@@ -1111,13 +1132,15 @@ def _close_once(model):
         for blk in pending:
             try:
                 targets_map[blk] = ana.term_targets(blk)
+                lemmas.pop(blk.pcs[-1], None)
             except _Need as need:
                 needs.add(need.cell)
                 still.append(blk)
-            except DecompileError:
+            except DecompileError as exc:
                 site = blk.pcs[-1]  # static can't bound: use observed successors
                 obs = model.ev_targets.get(site)
                 targets_map[blk] = sorted(obs) if obs else []
+                lemmas[site] = str(exc)
                 if obs:  # a site never taken in the trace is an unreachable
                     model.evidence_sites[site] = set(obs)  # over-approximation; skip
         if not needs:
@@ -1126,7 +1149,9 @@ def _close_once(model):
         pending = still
     for blk in dyn_blocks:  # materialize liftable members of the proven target sets
         site = blk.pcs[-1]
-        model.dyn_targets[site] = sorted(targets_map.get(blk, ()))
+        tgts = tuple(sorted(targets_map.get(blk, ())))
+        model.proofs[site] = _dyn_proof(blk.term[0], site, tgts, model, lemmas.get(site))
+        model.dyn_targets[site] = list(tgts)
         for pc in targets_map.get(blk, ()):
             if pc in model.written:
                 continue  # dispatch boundary: its variants come from cell closure
@@ -1183,7 +1208,58 @@ def close_dispatch(model):
         for op0 in observed:
             if (pc, op0) not in model.blocks:
                 raise DecompileError("observed variant $%02X at $%04X failed to build" % (op0, pc))
+        model.proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
+    unsound = sorted(model.evidence_sites)
+    if model.sound and unsound:
+        raise DecompileError(
+            "sound mode: %d evidence-only site(s): %s"
+            % (len(unsound), "; ".join("$%04X (%s)" % (s, model.proofs[s].lemma) for s in unsound))
+        )
     return closed
+
+
+def proof_report(model):
+    """Serialisable per-site closure report (§4.5): proofs sorted by site plus a
+    status tally. ``evidence`` entries are tracked missing lemmas (Gate A)."""
+    proofs = [model.proofs[s] for s in sorted(model.proofs)]
+    tally = {}
+    for p in proofs:
+        tally[p.status] = tally.get(p.status, 0) + 1
+    return {
+        "tally": tally,
+        "sites": [
+            {
+                "site": "$%04X" % p.site,
+                "kind": p.kind,
+                "status": p.status,
+                "targets": ["$%04X" % t for t in p.targets],
+                "lemma": p.lemma,
+            }
+            for p in proofs
+        ],
+    }
+
+
+def format_report(model):
+    """Human-readable proof report for the CLI (``--report``)."""
+    rep = proof_report(model)
+    tally = rep["tally"]
+    lines = [
+        "proof report: "
+        + ", ".join("%s=%d" % (k, tally[k]) for k in sorted(tally))
+        + (" [SOUND]" if not tally.get("evidence") and not tally.get("failed") else "")
+    ]
+    for s in rep["sites"]:
+        line = "  %s %-7s %-8s %d target(s)" % (
+            s["site"],
+            s["kind"],
+            s["status"],
+            len(s["targets"]),
+        )
+        if s["lemma"]:
+            line += " :: " + s["lemma"]
+        lines.append(line)
+    return "\n".join(lines) + "\n"
 
 
 # ---- passes: flag liveness + single-use slot inlining -------------------------
@@ -1375,11 +1451,12 @@ def inline_slots(blk):
 class Model:
     """Decompiled program: block variants over an initial image (standalone)."""
 
-    def __init__(self, mem0, init, play, evidence, subtune=0):
+    def __init__(self, mem0, init, play, evidence, subtune=0, sound=False):
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
         self.subtune = subtune
+        self.sound = sound  # strict mode: any evidence-only site is a build failure
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
         self.pcs = evidence.pcs
@@ -1392,6 +1469,7 @@ class Model:
         self.unproven = []
         self.evidence_sites = {}  # pc -> observed target set, where static didn't bound
         self.dyn_targets = {}  # transfer-site pc -> resolved successor pcs
+        self.proofs = {}  # site pc -> Proof (dispatch/vector/opcode closure record)
         self._by_pc = {}
 
     def build(self, pc, op0):
@@ -1433,13 +1511,14 @@ class Model:
         return blk
 
 
-def decompile(mem, init, play, frames, subtune=0):
+def decompile(mem, init, play, frames, subtune=0, sound=False):
     """Full-length evidence trace + closed, passed model: ``(model, evidence)``.
 
-    ``subtune`` (0-based) selects the tune init installs.
+    ``subtune`` (0-based) selects the tune init installs. ``sound=True`` fails
+    the build on any evidence-only (non-statically-proven) dispatch site.
     """
     ev = trace(bytearray(mem), init, play, frames, subtune)
-    model = Model(mem, init, play, ev, subtune).build_all()
+    model = Model(mem, init, play, ev, subtune, sound).build_all()
     return model, ev
 
 

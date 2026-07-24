@@ -99,7 +99,13 @@ def cmd_decompile(args):
         sys.stderr.write("no play address (interrupt-driven tune?): pass --play\n")
         return 1
     mem[0xD418] = 0x0F
-    model, ev = structured.decompile(mem, init, play, args.frames, subtune)
+    try:
+        model, ev = structured.decompile(mem, init, play, args.frames, subtune, args.sound)
+    except structured.DecompileError as e:
+        sys.stderr.write("decompile failed: %s\n" % e)
+        return 1
+    if args.report:
+        sys.stderr.write(structured.format_report(model))
     if args.verify:
         tm = stext.parse(stext.emit(model))
         if stext.emit(tm) != stext.emit(model):
@@ -188,6 +194,10 @@ def main(argv=None):
     p.add_argument("--frames", type=int, default=3000, help="evidence/verify window")
     p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
+    p.add_argument(
+        "--report", action="store_true", help="print the per-site proof report to stderr"
+    )
+    p.add_argument("--sound", action="store_true", help="fail on any evidence-only dispatch site")
     p.set_defaults(fn=cmd_decompile)
 
     p = sub.add_parser("sidc-run", help="execute a SIDC program, print the $D400.. grid")
