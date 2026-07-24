@@ -1,6 +1,8 @@
 # Architecture
 
-deity-informant is one 6510 opcode model exposed as two products.
+deity-informant is one 6510 opcode model exposed as four products: a standalone
+lifter + VM, the `6510` SLEIGH module, the symbolic window recorder, and the
+state-machine kernel lift.
 
 ## Product 1 — standalone lifter + P-Code VM
 
@@ -81,6 +83,24 @@ against the entry snapshot before the artifacts are returned. `lift` gains inert
 existing output. See [smc-recovery.md](smc-recovery.md) for the two-pass pipeline
 walk-through (ASCII diagrams) and [symbolic-recorder.md](symbolic-recorder.md) for
 the full node/evaluation contract.
+
+## Product 4 — the state-machine kernel lift
+
+`deity_informant/kernel.py` (`lift_kernel`) lifts a `Recording` one altitude
+higher: from `N` per-frame, entry-relative templates to one canonical
+`(tables, S0, variants)` model of the tune. It consumes only the recorder's public
+artifacts.
+
+- **Partition.** `mem` leaves are the cross-frame reads; intersected with the
+  written set they give persistent state `S`, and the complement gives the constant
+  seed tables `T`.
+- **Dedup.** Frames are regrouped by structural expression equality (abstracting
+  only state-dependent placement addresses), collapsing `N` frames to the `K`
+  distinct control paths; a variant's `guard` is its true branch structure.
+- **Closed-loop proof.** `verify` re-iterates from `S0`, carrying the image forward
+  with no per-frame snapshot, and asserts byte-exact outputs plus closure — the
+  same soundness discipline as the record-time assertion, one level up. See
+  [kernel.md](kernel.md).
 
 ## Raw P-Code vs high P-Code
 
