@@ -101,6 +101,10 @@ artifacts.
   with no per-frame snapshot, and asserts byte-exact outputs plus closure — the
   same soundness discipline as the record-time assertion, one level up. See
   [kernel.md](kernel.md).
+- **Readable transcription** (`transcribe.py`) renders the kernel as a
+  SID-semantic data-flow view — registers named, per-cell state update, shared
+  subexpressions factored into `let` bindings, table contents never emitted. See
+  [transcribe.md](transcribe.md).
 
 ## Raw P-Code vs high P-Code
 
