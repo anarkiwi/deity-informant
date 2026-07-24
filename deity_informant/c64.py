@@ -67,7 +67,10 @@ def install_kernal_irq_stubs(vm):
 
 
 def load_psid(data):
-    """Parse a PSID/RSID image: ``(mem64k, load, init, play)``."""
+    """Parse a PSID/RSID image: ``(mem64k, load, init, play)``.
+
+    Subtune count/default live in the header; see :func:`psid_songs`.
+    """
     if data[:4] not in (b"PSID", b"RSID"):
         raise ValueError("not a SID file")
     off = struct.unpack(">H", data[6:8])[0]
@@ -79,3 +82,9 @@ def load_psid(data):
     mem = bytearray(0x10000)
     mem[load : load + len(body)] = body[: 0x10000 - load]
     return mem, load, init, play
+
+
+def psid_songs(data):
+    """``(songs, startsong)`` from the PSID header (both 1-based)."""
+    songs, startsong = struct.unpack(">HH", data[0x0E:0x12])
+    return songs, startsong

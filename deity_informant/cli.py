@@ -21,7 +21,7 @@ from jennings.disassembler import Disassembler as _Disassembler
 
 from . import stext
 from . import structured
-from .c64 import load_psid
+from .c64 import load_psid, psid_songs
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
 from .vm import PcodeVM, run_sub
 
@@ -82,18 +82,23 @@ def cmd_run(args):
 
 def cmd_decompile(args):
     data = Path(args.file).read_bytes()
+    subtune = args.subtune
     if data[:4] in (b"PSID", b"RSID"):
         mem, _l, init, play = load_psid(data)
+        _songs, startsong = psid_songs(data)
         init = args.init if args.init is not None else init
         play = args.play if args.play is not None else play
+        if subtune is None:
+            subtune = startsong - 1
     else:
         mem, _n = _load(args.file, args.org)
         init, play = args.init, args.play
+        subtune = subtune or 0
     if not play:
         sys.stderr.write("no play address (interrupt-driven tune?): pass --play\n")
         return 1
     mem[0xD418] = 0x0F
-    model, ev = structured.decompile(mem, init, play, args.frames)
+    model, ev = structured.decompile(mem, init, play, args.frames, subtune)
     text = stext.emit(model)
     if args.verify:
         tm = stext.parse(text)
@@ -177,6 +182,7 @@ def main(argv=None):
     org(p)
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
+    p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
     p.add_argument("--frames", type=int, default=3000, help="evidence/verify window")
     p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")

@@ -300,6 +300,8 @@ def _proc_layout(model):
 def emit(model):
     """Canonical SIDC text (``parse`` is its exact inverse)."""
     out = ["sidc 0", "init $%04X" % model.init, "play $%04X" % model.play]
+    if getattr(model, "subtune", 0):
+        out.append("subtune %d" % model.subtune)
     for pc in sorted(model.dispatch_sets):
         out.append(
             "dispatch $%04X: %s"
@@ -336,10 +338,11 @@ def emit(model):
 class TextModel:
     """Parsed SIDC program; duck-types ``structured.Model`` for the Walker."""
 
-    def __init__(self, mem0, init, play, blocks, dispatch_sets):
+    def __init__(self, mem0, init, play, blocks, dispatch_sets, subtune=0):
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
+        self.subtune = subtune
         self.blocks = blocks
         self.dispatch_sets = dispatch_sets
         self.written = set(dispatch_sets)
@@ -463,6 +466,7 @@ def parse(text):
     if not lines or lines.pop(0) != "sidc 0":
         raise ValueError("not a sidc 0 document")
     init = play = None
+    subtune = 0
     mem0 = bytearray(0x10000)
     dispatch_sets = {}
     blocks = {}
@@ -482,6 +486,8 @@ def parse(text):
             init = int(line.split()[1].lstrip("$"), 16)
         elif line.startswith("play "):
             play = int(line.split()[1].lstrip("$"), 16)
+        elif line.startswith("subtune "):
+            subtune = int(line.split()[1])
         elif line.startswith("dispatch "):
             head, vals = line[9:].split(":")
             dispatch_sets[int(head.strip().lstrip("$"), 16)] = {
@@ -514,4 +520,4 @@ def parse(text):
     close_proc()
     if init is None or play is None:
         raise ValueError("missing init/play header")
-    return TextModel(mem0, init, play, blocks, dispatch_sets)
+    return TextModel(mem0, init, play, blocks, dispatch_sets, subtune)

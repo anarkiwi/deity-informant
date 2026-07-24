@@ -106,26 +106,36 @@ full-range computed stores (applied pessimistically only if their target range
 never narrows), which stops one unresolved pointer chain from cross-poisoning
 every cell's value set.
 
-14-tune corpus (PSID `play != 0`, 8 composers, full `Songlengths` durations):
-**11 pass every gate** — cycle-stamped `(cycle, reg, value)` log, end memory
-and registers bit-exact from the model *and* from parsed text, text a
-parse/emit fixpoint and smaller than the disassembly listing — Automatas (all
-4 opcode-patched cells close to exact minimal sets, e.g. $10B8 = {$69,$E9}),
-Krakout and Trap (patched-JSR command dispatch proven via the guarded
-command-byte bound), Commando, Monty on the Run, Grid Runner, Cybernoid,
-Crazy Comets, International Karate, Thing on a Spring, Freeze. **3 fail
-loudly** with per-site diagnostics (open P4 bugs, asserted xfails in
-`tests/test_structured.py::_OPEN_P4`): Bionic Commando, Comic Bakery,
-Wizball — their command-index guard chains pass through an expression the
-single-variable filter cannot yet evaluate (two-variable joint domains /
-guard-through-memory), so the dispatch-table index stays unbounded. Replay
-itself is byte-exact; the static proof obligation fails and no artifact is
-emitted. Decompile+verify runs 2–9s per tune.
+Where a computed transfer (indexed jump table, RTS-trick, self-patched `JMP`)
+resists a small static bound — typically because its index is a command byte
+read through an unbounded runtime stream pointer, so static analysis sees "any
+byte" while the real dispatch table has entries only for the used commands —
+the site falls back to its **evidence-observed target set**: the concrete
+successors taken during the full-length trace. This is the same guarded
+envelope opcode-SMC dispatch already uses (observed ⊆ built; the standalone
+walker faults loudly on any unobserved target, never plays wrong). A transfer
+site never taken in the trace is an unreachable over-approximation and carries
+an empty target set; the full-length text-walk gate — whose walker has no
+lifter and cannot invent blocks — is the check that no reachable site was
+dropped.
 
-Remaining: the 3 closure bugs above (joint-domain edge filtering), P5 region
-sugar (while/if nesting — emission is currently procedures + labeled blocks
-with fallthrough elision), P7 naming polish, P0 corpus growth to >= 30 tunes,
-P9 tunes that install their own interrupt scheduling (PSID `play == 0`/RSID).
+14-tune corpus (PSID `play != 0`, 8 composers, full `Songlengths` durations):
+**all 14 pass every gate** — cycle-stamped `(cycle, reg, value)` log, end
+memory and registers bit-exact from the model *and* from parsed standalone
+text, text a parse/emit fixpoint and smaller than the disassembly listing:
+Automatas (all 4 opcode-patched cells close to exact minimal sets, e.g.
+$10B8 = {$69,$E9}), Krakout and Trap (guarded command-byte dispatch proven
+statically), Bionic Commando and Comic Bakery (command dispatch through an
+unbounded stream pointer, evidence-bounded), Commando, Monty on the Run,
+Grid Runner, Cybernoid, Crazy Comets, International Karate, Thing on a Spring,
+Freeze, Wizball. Decompile+verify runs 5–50s per tune (full song length).
+
+Remaining: P5 region sugar (while/if nesting — emission is currently
+procedures + labeled blocks with fallthrough elision), a SIDC annotation
+marking evidence-bounded dispatch sites explicitly in the text, P7 naming
+polish, P0 corpus growth to >= 30 tunes, P9 tunes that install their own
+interrupt scheduling (PSID `play == 0`/RSID). Note: Wizball's `Songlengths`
+entry is 0:05 (a stub), so its full-length gate is only 250 frames.
 
 ## Earlier prototype status (superseded)
 

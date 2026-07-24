@@ -58,26 +58,32 @@ class _EvidenceVM(PcodeVM):
 class Evidence:
     """Executed instruction identities, block leaders, written cells, oracle log."""
 
-    def __init__(self, pcs, leaders, written, wlog, end_mem, end_reg):
+    def __init__(self, pcs, leaders, targets, written, wlog, end_mem, end_reg):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
+        self.targets = targets  # {pc: set(taken successor pc)} at transfer sites
         self.written = written
         self.wlog = wlog
         self.end_mem = end_mem
         self.end_reg = end_reg
 
 
-def trace(mem, init, play, frames):
-    """Run init + ``frames`` play calls concretely, recording evidence."""
+def trace(mem, init, play, frames, subtune=0):
+    """Run init + ``frames`` play calls concretely, recording evidence.
+
+    ``subtune`` (0-based) is passed to init in A, selecting the tune.
+    """
     vm = _EvidenceVM(mem)
     vm.wlog = []
     pcs = {}
     leaders = {init, play}
+    targets = {}
     cache = {}
     reg = vm.reg
 
-    def run_entry(entry):
+    def run_entry(entry, acc=0):
         start = reg[3]
+        reg[0] = acc & 0xFF
         vm._push(0x00)
         vm._push(0x01)
         pc = entry
@@ -88,15 +94,16 @@ def trace(mem, init, play, frames):
             nxt = vm.step(pc, cache, lift)
             if nxt != (pc + MODE_LEN[OPS[op][1]]) & 0xFFFF:
                 leaders.add(nxt)
+                targets.setdefault(pc, set()).add(nxt)
             pc = nxt
             n += 1
             if n > _GUARD:
                 raise RuntimeError("runaway at %04X" % pc)
 
-    run_entry(init)
+    run_entry(init, subtune)
     for _ in range(frames):
         run_entry(play)
-    return Evidence(pcs, leaders, vm.written, vm.wlog, bytes(vm.mem), list(vm.reg))
+    return Evidence(pcs, leaders, targets, vm.written, vm.wlog, bytes(vm.mem), list(vm.reg))
 
 
 # ---- expression -> python source ----------------------------------------------
@@ -1107,9 +1114,12 @@ def _close_once(model):
             except _Need as need:
                 needs.add(need.cell)
                 still.append(blk)
-            except DecompileError as exc:
-                model.unproven.append("control at $%04X: %s" % (blk.pc, exc))
-                targets_map[blk] = []
+            except DecompileError:
+                site = blk.pcs[-1]  # static can't bound: use observed successors
+                obs = model.ev_targets.get(site)
+                targets_map[blk] = sorted(obs) if obs else []
+                if obs:  # a site never taken in the trace is an unreachable
+                    model.evidence_sites[site] = set(obs)  # over-approximation; skip
         if not needs:
             break
         ana.close(needs)
@@ -1363,19 +1373,22 @@ def inline_slots(blk):
 class Model:
     """Decompiled program: block variants over an initial image (standalone)."""
 
-    def __init__(self, mem0, init, play, evidence):
+    def __init__(self, mem0, init, play, evidence, subtune=0):
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
+        self.subtune = subtune
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
         self.pcs = evidence.pcs
         self.leaders = set(evidence.leaders)
+        self.ev_targets = evidence.targets
         self.dispatch_pcs = {pc for pc in evidence.pcs if pc in evidence.written}
         self.dispatch_sets = {}
         self.blocks = {}
         self.analysis = None
         self.unproven = []
+        self.evidence_sites = {}  # pc -> observed target set, where static didn't bound
         self._by_pc = {}
 
     def build(self, pc, op0):
@@ -1417,10 +1430,13 @@ class Model:
         return blk
 
 
-def decompile(mem, init, play, frames):
-    """Full-length evidence trace + closed, passed model: ``(model, evidence)``."""
-    ev = trace(bytearray(mem), init, play, frames)
-    model = Model(mem, init, play, ev).build_all()
+def decompile(mem, init, play, frames, subtune=0):
+    """Full-length evidence trace + closed, passed model: ``(model, evidence)``.
+
+    ``subtune`` (0-based) selects the tune init installs.
+    """
+    ev = trace(bytearray(mem), init, play, frames, subtune)
+    model = Model(mem, init, play, ev, subtune).build_all()
     return model, ev
 
 
@@ -1440,10 +1456,11 @@ class Walker:
         self.m[0x100 + self.r[3]] = val & 0xFF
         self.r[3] = (self.r[3] - 1) & 0xFF
 
-    def _run_entry(self, entry):
+    def _run_entry(self, entry, acc=0):
         model = self.model
         m = self.m
         start = self.r[3]
+        self.r[0] = acc & 0xFF
         self._push(0x00)
         self._push(0x01)
         pc = entry
@@ -1489,7 +1506,7 @@ class Walker:
                 raise WalkError("runaway at %04X" % pc)
 
     def run(self, frames):
-        self._run_entry(self.model.init)
+        self._run_entry(self.model.init, getattr(self.model, "subtune", 0))
         for _ in range(frames):
             self._run_entry(self.model.play)
         return self.wlog
