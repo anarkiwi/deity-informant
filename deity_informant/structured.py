@@ -421,6 +421,11 @@ class _Need(Exception):
         self.cell = cell
 
 
+def _wide_ivals(ivals, aexpr):
+    m = E.mask(E.width(aexpr))
+    return any(lo <= 0 and hi >= m for lo, hi in ivals)
+
+
 TOP = "top"  # lattice top: value set unknown (contained; fatal only where proof is required)
 _ANYBYTE = frozenset(range(256))
 
@@ -442,6 +447,8 @@ class Analysis:
         self._memo = {}
         self._imemo = {}
         self._rts_cache = {}
+        self._opt = set()
+        self._forced = set()
 
     # -- store indexing -----------------------------------------------------
     def _stores(self):
@@ -461,7 +468,14 @@ class Analysis:
     def _hits(self, key, rng, aexpr, cell):
         if not rng[0] <= cell <= rng[1]:
             return False
-        return any(lo <= cell <= hi for lo, hi in self._ivals(aexpr, key))
+        ivals = self._ivals(aexpr, key)
+        if _wide_ivals(ivals, aexpr):
+            sid_ = (key, aexpr)
+            if sid_ not in self._forced:
+                self._opt.add(sid_)  # optimistic: defer until validated post-fixpoint
+                return False
+            return True
+        return any(lo <= cell <= hi for lo, hi in ivals)
 
     def _ivals(self, n, key, depth=0):
         """Sound interval set for an address expression (singletons when the
@@ -657,26 +671,41 @@ class Analysis:
 
     def _pred_contrib(self, p, i, key):
         """Values reg ``i`` can carry from pred ``p`` into ``key``, filtered by
-        ``p``'s branch condition when both expressions are pure in reg ``i``."""
+        ``p``'s branch condition where the taken edge constrains them."""
         blk = self.model.blocks[p]
         out = blk.regs[i]
         term = blk.term
         if term[0] == "br" and term[2] is not None:
-            tgt, ft, flag = term[2], term[3], term[4]
+            tgt, ft = term[2], term[3]
             pc = key[0]
             if (pc == tgt) != (pc == ft):
                 want = term[1] if pc == tgt else 1 - term[1]
-                refs = set()
-                _regs_of(flag, refs)
-                orefs = set()
-                _regs_of(out, orefs)
-                if refs <= {i} and orefs <= {i} and _pure(flag) and _pure(out):
-                    vals = set()
-                    for v in self._reg_set(p, i):
-                        if _pure_eval(flag, i, v) == want:
-                            vals.add(_pure_eval(out, i, v))
-                    return vals
+                got = self._edge_filter(p, term[4], out, want)
+                if got is not None:
+                    return got
         return self._resolve(out, p)
+
+    def _edge_filter(self, p, flag, out, want):
+        """``{out(v) : flag(v) == want}`` when both expressions are functions of
+        one shared variable (a register or a block-local slot), else None."""
+        varset = set()
+        _leaf_vars(flag, varset)
+        _leaf_vars(out, varset)
+        if len(varset) != 1:
+            return None
+        var = next(iter(varset))
+        try:
+            if var[0] == "reg":
+                dom = self._reg_set(p, var[1])
+            else:
+                dom = self._resolve(E.uni(var[1], 1), p)
+        except DecompileError:
+            dom = set(_ANYBYTE)  # the filter itself still bounds the result
+        model = self.model
+        try:
+            return {_eval1(out, var, v, model) for v in dom if _eval1(flag, var, v, model) == want}
+        except _NotPure:
+            return None
 
     def _resolve(self, n, key, depth=0, budget=4096):
         if depth > 32:
@@ -761,10 +790,25 @@ class Analysis:
         return out
 
     def close(self, seeds):
-        """Fixpoint value sets for ``seeds`` (auto-extending to referenced cells
-        and to the register/load sets they depend on)."""
+        """Fixpoint value sets for ``seeds``: optimistic rounds (full-range
+        stores deferred) each validated; stores that never narrow re-enter
+        pessimistically and the fixpoint reruns."""
         for c in seeds:
             self.S.setdefault(c, set())
+        while True:
+            self._fixpoint()
+            self._memo = {}
+            self._imemo = {}
+            pending = [
+                s
+                for s in self._opt
+                if s not in self._forced and _wide_ivals(self._ivals(s[1], s[0]), s[1])
+            ]
+            if not pending:
+                return self.S
+            self._forced.update(pending)
+
+    def _fixpoint(self):
         changed = True
         sweeps = 0
         while changed:
@@ -804,7 +848,6 @@ class Analysis:
                 self.S.setdefault(need.cell, set())
                 changed = True
             changed = changed or self._r_grew
-        return self.S
 
     # -- proven successor sets ---------------------------------------------
     def term_targets(self, blk):
@@ -975,23 +1018,37 @@ class Analysis:
             n = p
 
 
-def _pure(n):
-    """Whether ``n`` is a pure function of registers and constants."""
+class _NotPure(Exception):
+    pass
+
+
+def _leaf_vars(n, out):
+    """Collect register/slot variables (immutable mem leaves count as consts)."""
     k = n[0]
-    if k in ("const", "reg"):
-        return True
-    if k == "op":
-        return all(_pure(c) for c in n[2])
-    return False
+    if k == "reg":
+        out.add(("reg", n[1]))
+    elif k == "uni":
+        out.add(("uni", n[1]))
+    elif k == "op":
+        for c in n[2]:
+            _leaf_vars(c, out)
 
 
-def _pure_eval(n, i, v):
+def _eval1(n, var, v, model):
+    """Evaluate ``n`` with the single variable ``var`` bound to ``v``."""
     k = n[0]
     if k == "const":
         return n[1]
-    if k == "reg":
-        return v if n[1] == i else 0
-    vals = [_pure_eval(c, i, v) for c in n[2]]
+    if k in ("reg", "uni"):
+        if var == (k, n[1]):
+            return v
+        raise _NotPure()
+    if k == "mem":
+        a = n[1]
+        if E.is_const(a) and a[1] not in model.written:
+            return model.mem0[a[1]]
+        raise _NotPure()
+    vals = [_eval1(c, var, v, model) for c in n[2]]
     return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
 
 

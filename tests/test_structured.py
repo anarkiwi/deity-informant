@@ -111,8 +111,6 @@ def _disasm_size(mem):
 
 
 _OPEN_P4 = {  # open P4 bugs (docs/decompiler-plan.md): diagnostics asserted so drift surfaces
-    "Krakout": "unproven control targets",
-    "Trap": "unproven control targets",
     "Bionic_Commando": "unproven control targets",
     "Comic_Bakery": "unproven control targets",
     "Wizball": "unproven control targets",
