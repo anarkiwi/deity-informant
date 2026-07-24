@@ -1129,6 +1129,43 @@ class Analysis:
                 return False
             n = p
 
+    # -- natural loops (lemma-2 foundation) ---------------------------------
+    def _cfg_succ_keys(self, key):
+        """Intraprocedural successor block keys (static control edges only)."""
+        t = self.model.blocks[key].term
+        if t[0] in ("goto", "jmp"):
+            pcs = [t[1]]
+        elif t[0] == "br":
+            pcs = ([t[2]] if t[2] is not None else []) + ([t[3]] if t[3] is not None else [])
+        elif t[0] == "jsr":
+            pcs = [(t[2] + 1) & 0xFFFF]
+        else:  # rts / jmpd / jmpind: continuation not a static intraprocedural edge
+            pcs = []
+        return [s for pc in pcs for s in self.model.variants(pc)]
+
+    def natural_loops(self):
+        """``{header_key: body_set}`` for each dominator back-edge (an edge whose
+        target dominates its source). Requires ``dominators()``; sound and total
+        over the static intraprocedural CFG (the foundation for trip bounds)."""
+        succ = {k: self._cfg_succ_keys(k) for k in self.model.blocks}
+        preds = {}
+        for k, outs in succ.items():
+            for s in outs:
+                preds.setdefault(s, []).append(k)
+        loops = {}
+        for tail, outs in succ.items():
+            for hdr in outs:
+                if not self._dominates(hdr, tail):
+                    continue
+                body = loops.setdefault(hdr, {hdr})
+                stack = [tail]
+                while stack:
+                    n = stack.pop()
+                    if n not in body:
+                        body.add(n)
+                        stack.extend(preds.get(n, ()))
+        return loops
+
 
 class _NotPure(Exception):
     pass

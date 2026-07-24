@@ -145,6 +145,41 @@ def test_relational_closure_refuses_volatile_index():
         ana._relational_targets(blk, vec)  # pylint: disable=protected-access
 
 
+def _counted_loop_image():
+    """A DEY/BPL counted loop that increments a cell $2000 each pass."""
+    a = G.Asm(ORG)
+    a.i("LDY", "imm", 0x05)
+    a.i("LDA", "imm", 0x78).i("STA", "abs", 0x2000)
+    a.label("loop")
+    a.i("INC", "abs", 0x2000)
+    a.i("DEY")
+    a.i("BPL", "rel", ("L", "loop"))
+    a.i("LDA", "abs", 0x2000).i("STA", "abs", SID + 4).i("RTS")
+    mem = bytearray(0x10000)
+    for k, b in enumerate(a.assemble()):
+        mem[ORG + k] = b
+    mem[INIT] = 0x60
+    return mem
+
+
+def test_natural_loops_finds_counted_loop():
+    model, _ev = S.decompile(_counted_loop_image(), INIT, ORG, 2)
+    loops = model.analysis.natural_loops()
+    assert loops, "expected a natural loop"
+    dec = ("op", "INT_ADD", (E.reg(2), E.konst(0xFF, 1)), 1)  # DEY: Y = Y - 1
+    counters = [
+        i
+        for _hdr, body in loops.items()
+        for bkey in body
+        for i in range(16)
+        if model.blocks[bkey].regs[i] == ("op", "INT_ADD", (E.reg(i), E.konst(0xFF, 1)), 1)
+    ]
+    assert dec in [model.blocks[b].regs[2] for body in loops.values() for b in body]
+    assert counters, "expected a decremented loop counter"
+    for hdr, body in loops.items():
+        assert hdr in body and model.blocks[hdr].term[0] == "br"
+
+
 def test_proof_report_shape_and_sound_tag():
     p = next(q for q in G.players(1) if q.name == "jump_table")
     proven, _ev = S.decompile(_img_from_player(p), _player_init(p), p.org, p.frames)

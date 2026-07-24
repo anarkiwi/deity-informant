@@ -63,7 +63,10 @@ of composed analyses, worked out from the traces:
 1. **Loop-trip bound.** The increment `H = H + 1` and a counter `Y = Y − 1` live
    in one block, so `H + Y` is loop-invariant; with the back-edge and header
    from the dominator tree and `Y`'s entry value `Y₀` from the non-loop
-   predecessors, `H ∈ [c, c + Y₀ + 1]`.
+   predecessors, `H ∈ [c, c + Y₀ + 1]`. *Foundation landed:*
+   `Analysis.natural_loops` recovers the dominator back-edges and loop bodies
+   (and so the counter's decrement site); the trip-count derivation from `Y₀`
+   and the branch semantics, plus the value-set wiring, is the next step.
 2. **Definite assignment.** The interval must exclude `H`'s initial image byte:
    prove the `c` store dominates every read of `H` (else the image value is
    live-in and re-widens the bound past `p`).
