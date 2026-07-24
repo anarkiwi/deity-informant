@@ -81,7 +81,7 @@ def cmd_run(args):
 def cmd_sidl(args):
     mem, _ = _load(args.file, args.org)
     mem[0xD418] = 0x0F
-    prog = sidl.build(mem, args.play, args.frames, init=args.init)
+    prog = sidl.build(mem, args.play, args.frames, init=args.init, window=args.window)
     text = sidl.dumps(prog)
     if args.verify:
         got = sidl.loads(text).run()
@@ -164,6 +164,7 @@ def main(argv=None):
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
     p.add_argument("--play", type=lambda x: int(x, 0), required=True)
     p.add_argument("--frames", type=int, default=64)
+    p.add_argument("--window", type=int, default=None, help="record in parallel N-frame windows")
     p.add_argument("-o", "--out", help="write SIDL text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="round-trip + replay vs the VM")
     p.set_defaults(fn=cmd_sidl)

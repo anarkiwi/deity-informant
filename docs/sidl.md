@@ -44,7 +44,10 @@ entry-pure expression (residualised — stays symbolic in SIDL) or a case fact
   on frames the recorder never saw.
 - Two distinct templates cannot both match: their paths diverge at some first
   control decision, which appears as a `ck` with different observed values
-  after an identical event prefix. First-match dispatch is deterministic.
+  after an identical event prefix. The interpreter exploits exactly this shape:
+  templates dispatch through a decision trie (shared prefixes evaluate once per
+  frame; each diverging check branches on its value), so a frame costs one
+  template's events, independent of the template count.
 - If no template matches (state left the recorded path vocabulary) or an
   expression reads a cell outside the captured image, the interpreter raises
   `DispatchError` — a loud fault, never a silent wrong write.
@@ -183,7 +186,9 @@ and cycle-stamped writes.
 ```python
 from deity_informant import sidl
 
-prog = sidl.build(mem, play, frames, init=init, outputs=sidl.SID_OUTPUTS)
+prog = sidl.build(mem, play, frames, init=init, outputs=sidl.SID_OUTPUTS,
+                  window=None)   # window=N: parallel N-frame recording windows,
+                                 # byte-identical output by concrete determinism
 text = sidl.dumps(prog)            # canonical text; loads() is its exact inverse
 prog2 = sidl.loads(text)
 prog2.run()                        # (init_writes, frame_writes) — byte-exact
@@ -191,7 +196,7 @@ sidl.reference_log(mem, play, frames, init=init)   # concrete-VM oracle, same sh
 ```
 
 ```bash
-deity-informant sidl IMAGE --play ADDR [--init ADDR] [--frames N] [--verify] [-o FILE]
+deity-informant sidl IMAGE --play ADDR [--init ADDR] [--frames N] [--window W] [--verify] [-o FILE]
 deity-informant sidl-run FILE [--frames N]      # interpret; prints the $D400.. grid
 ```
 

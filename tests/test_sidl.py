@@ -59,6 +59,21 @@ def test_generalizes_past_recorded_window(name):
     assert prog.run(total) == _reference(p, total)
 
 
+def test_windowed_build_identical_to_monolithic():
+    """Parallel windowed recording is a pure CPU-budget device: same text."""
+    p = next(q for q in _PLAYERS if q.name == "dec_timer")
+    mono = _build(p)
+    windowed = sidl.build(
+        _image(p.image_data()),
+        p.org,
+        p.frames,
+        init=p.init_org,
+        outputs=p.outputs,
+        window=max(1, p.frames // 3),
+    )
+    assert sidl.dumps(windowed) == sidl.dumps(mono)
+
+
 def test_volatile_carries_uni_rows():
     p = next(q for q in _PLAYERS if q.name == "volatile")
     prog = _build(p)
@@ -74,6 +89,24 @@ def test_data_bounded_player_faults_past_stream():
     assert prog.run() == _reference(p)
     with pytest.raises(sidl.DispatchError):
         prog.run(p.frames * 3)
+
+
+def test_trie_dispatch_equals_linear_first_match():
+    """Decision-trie dispatch selects the same template a linear first-match
+    scan would, frame by frame."""
+    p = next(q for q in _PLAYERS if q.name == "dec_timer")
+    prog = _build(p)
+    cells = dict(prog.cells)
+    regs = list(prog.regs0)
+    trie = sidl._build_trie(prog.templates)
+    for _ in range(p.frames * 2):
+        linear = next(
+            r for r in (prog._try(t, cells, regs, {}) for t in prog.templates) if r is not None
+        )
+        via_trie = prog._dispatch(trie, cells, regs, {})
+        assert via_trie == linear
+        overlay, _writes, regs = via_trie
+        cells.update(overlay)
 
 
 def test_dispatch_fault_is_loud():

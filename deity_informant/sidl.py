@@ -8,6 +8,8 @@ frame templates (checks + stores) plus only the data cells they read; ``dumps``/
 from __future__ import annotations
 
 import re
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 
 from . import expr as E
 from .lifter import lift
@@ -273,6 +275,43 @@ class _ImageBuf:
         return self.entry[a] if v is None else v
 
 
+def _build_trie(tpls):
+    """Dispatch decision trie so shared event prefixes evaluate once per frame.
+
+    Nodes: ``("tail", tpl, start)``, ``("branch", ref, start, j, {obs: child})``
+    (shared events start..j-1, branch on event j's check value), ``("alts",
+    templates)`` (indistinguishable by events; first-match fallback).
+    """
+
+    def rec(group, idx):
+        if len(group) == 1:
+            return ("tail", group[0], idx)
+        j = idx
+        while True:
+            evs = [t.events[j] if j < len(t.events) else None for t in group]
+            first = evs[0]
+            if any(e != first for e in evs[1:]):
+                break
+            if first is None:
+                return ("alts", group)
+            j += 1
+        key = None
+        for e in evs:
+            if e is None or e[0] != "ck":
+                return ("alts", group)
+            if key is None:
+                key = e[1:4]
+            elif e[1:4] != key:
+                return ("alts", group)
+        buckets = {}
+        for t in group:
+            buckets.setdefault(t.events[j][4], []).append(t)
+        children = {obs: rec(g, j + 1) for obs, g in buckets.items()}
+        return ("branch", group[0], idx, j, children)
+
+    return rec(list(tpls), 0) if tpls else None
+
+
 class Program:
     """A playroutine as guarded frame templates over a sparse cell image."""
 
@@ -286,54 +325,84 @@ class Program:
         self.frames = frames
         self.uni = uni
 
-    def _try(self, tpl, cells, regs, uni):
-        entry = _EntryBuf(cells)
-        overlay = {}
-        img = _ImageBuf(entry, overlay)
-        writes = []
-        for ev in tpl.events:
+    def _events(self, events, entry, regs, img, overlay, writes, uni, verify):
+        """Apply an event run; a failing check returns False (verify) or raises."""
+        for ev in events:
             if ev[0] == "st":
                 _, addr, ex = ev
                 v = E.evaluate(ex, entry, regs, img, uni) & 0xFF
                 overlay[addr] = v
                 if addr in self.outputs:
                     writes.append((addr, v))
-            else:
-                if E.evaluate(ev[3], entry, regs, img, uni) != ev[4]:
-                    return None
+            elif E.evaluate(ev[3], entry, regs, img, uni) != ev[4]:
+                if verify:
+                    return False
+                raise DispatchError("check %s@$%04X failed" % (ev[2], ev[1]))
+        return True
+
+    def _try(self, tpl, cells, regs, uni):
+        entry = _EntryBuf(cells)
+        overlay = {}
+        img = _ImageBuf(entry, overlay)
+        writes = []
+        if not self._events(tpl.events, entry, regs, img, overlay, writes, uni, True):
+            return None
+        return self._commit(tpl, entry, regs, img, overlay, writes, uni)
+
+    def _commit(self, tpl, entry, regs, img, overlay, writes, uni):
         nregs = list(regs)
         for i, ex in tpl.regs.items():
             nregs[i] = E.evaluate(ex, entry, regs, img, uni) & 0xFF
         return overlay, writes, nregs
 
+    def _dispatch(self, node, cells, regs, uni):
+        entry = _EntryBuf(cells)
+        overlay = {}
+        img = _ImageBuf(entry, overlay)
+        writes = []
+        while True:
+            kind = node[0]
+            if kind == "tail":
+                _, tpl, start = node
+                self._events(tpl.events[start:], entry, regs, img, overlay, writes, uni, False)
+                return self._commit(tpl, entry, regs, img, overlay, writes, uni)
+            if kind == "alts":
+                for tpl in node[1]:
+                    fired = self._try(tpl, cells, regs, uni)
+                    if fired is not None:
+                        return fired
+                raise DispatchError("no alternative matches")
+            _, ref, start, j, children = node
+            self._events(ref.events[start:j], entry, regs, img, overlay, writes, uni, False)
+            ev = ref.events[j]
+            v = E.evaluate(ev[3], entry, regs, img, uni)
+            node = children.get(v)
+            if node is None:
+                raise DispatchError("unrecorded value %s for %s@$%04X" % (v, ev[2], ev[1]))
+
     def run(self, frames=None):
         """Interpret the program: ``(init_writes, [per-frame write lists])``.
 
-        Each frame, the first template whose checks all hold (evaluated in
-        machine order against the current state) fires; its stores advance the
-        state, and stores to ``outputs`` are emitted in order.
+        Each frame, decision-trie dispatch selects the unique template whose
+        checks all hold in machine order against the current state; its stores
+        advance the state, and stores to ``outputs`` are emitted in order.
         """
         if frames is None:
             frames = self.frames
+        trie = _build_trie(self.templates)
         cells = dict(self.cells)
         regs = list(self.regs0)
         frame_writes = []
         for f in range(frames):
             uni = self.uni[f] if self.uni and f < len(self.uni) else {}
-            fired = None
-            misses = []
-            for tpl in self.templates:
-                try:
-                    fired = self._try(tpl, cells, regs, uni)
-                except KeyError as exc:
-                    misses.append("%s missing %s" % (tpl.name, exc))
-                    continue
-                if fired is not None:
-                    break
-            if fired is None:
-                why = " (%s)" % "; ".join(misses) if misses else ""
-                raise DispatchError("frame %d: no template matches the current state%s" % (f, why))
-            overlay, writes, regs = fired
+            try:
+                if trie is None:
+                    raise DispatchError("program has no templates")
+                overlay, writes, regs = self._dispatch(trie, cells, regs, uni)
+            except (DispatchError, KeyError) as exc:
+                raise DispatchError(
+                    "frame %d: no template matches the current state (%s)" % (f, exc)
+                ) from exc
             cells.update(overlay)
             frame_writes.append(writes)
         return list(self.init_writes), frame_writes
@@ -387,7 +456,7 @@ def _regs_used(n, out):
             _regs_used(c, out)
 
 
-def _templates(rec, frames):
+def _strip_frames(rec, frames):
     raw = []
     for i in range(frames):
         events = []
@@ -403,7 +472,12 @@ def _templates(rec, frames):
                 events.append(("ck", e[1], e[2], ex, e[4]))
         regs = {j: _strip(x) for j, x in enumerate(rec.regs[i]) if _strip(x) != ("reg", j)}
         raw.append((events, regs))
-    # a register template is live only if some expression consumes it at frame entry
+    return raw
+
+
+def _dedup(raw):
+    """Prune register templates no expression consumes at frame entry (to a
+    fixpoint), then dedup per-frame templates by content in frame order."""
     used = set()
     for events, _regs in raw:
         for ev in events:
@@ -428,9 +502,31 @@ def _templates(rec, frames):
     return tpls
 
 
-def build(mem, play, frames, init=None, outputs=SID_OUTPUTS):
-    """Record ``frames`` play calls (after an optional concrete ``init`` call)
-    and lift them into a :class:`Program`."""
+def _window_worker(args):
+    """Record play frames [skip, skip+frames): concretely fast-forward ``skip``
+    calls, record, then re-run the window collecting the read set."""
+    mem, regs, cycles, play, outputs, skip, frames = args
+    tvm = _TraceVM(mem, outputs)
+    tvm.reg = list(regs)
+    tvm.cycles = cycles
+    cache = {}
+    for _ in range(skip):
+        run_sub(tvm, play, cache, lift)
+    rec = record(tvm, run_sub, play, outputs, frames)
+    tvm.reads = set()
+    for _ in range(frames):
+        run_sub(tvm, play, cache, lift)
+    raw = _strip_frames(rec, frames)
+    return raw, tvm.reads, [dict(u) for u in rec.uni], tuple(rec.entry[0][1])
+
+
+def build(mem, play, frames, init=None, outputs=SID_OUTPUTS, window=None):
+    """Record ``frames`` play calls (after an optional ``init``) into a Program.
+
+    ``window``: record in parallel windows of that many frames (one process
+    each); concrete determinism makes the result identical to a monolithic
+    record, so windows are purely a wall-clock/CPU-budget device.
+    """
     outputs = frozenset(outputs)
     tvm = _TraceVM(bytes(mem), outputs)
     cache = {}
@@ -438,13 +534,27 @@ def build(mem, play, frames, init=None, outputs=SID_OUTPUTS):
         run_sub(tvm, init, cache, lift)
     init_writes = list(tvm.writes)
     post = bytes(tvm.mem)
-    rec = record(tvm, run_sub, play, outputs, frames)
-    tvm.reads = set()
-    for _ in range(frames):
-        run_sub(tvm, play, cache, lift)
+    step = window or frames
+    spans = [(s, min(step, frames - s)) for s in range(0, frames, step)]
+    args = [(post, list(tvm.reg), tvm.cycles, play, outputs, s, n) for s, n in spans]
+    if len(args) == 1:
+        results = [_window_worker(args[0])]
+    else:
+        with ProcessPoolExecutor(mp_context=get_context("fork")) as pool:
+            results = list(pool.map(_window_worker, args))
 
-    tpls = _templates(rec, frames)
-    addrs = set(tvm.reads)
+    raw = []
+    reads = set()
+    uni_rows = []
+    regs0 = None
+    for wraw, wreads, wuni, weregs in results:
+        raw.extend(wraw)
+        reads |= wreads
+        uni_rows.extend(wuni)
+        if regs0 is None:
+            regs0 = weregs
+    tpls = _dedup(raw)
+    addrs = reads
     flags = set()
     for tpl in tpls:
         for ev in tpl.events:
@@ -453,8 +563,8 @@ def build(mem, play, frames, init=None, outputs=SID_OUTPUTS):
             _scan(ex, addrs, flags)
     addrs |= outputs
     cells = {a: post[a] for a in sorted(addrs)}
-    uni = [dict(rec.uni[i]) for i in range(frames)] if "uni" in flags else None
-    return Program(play, outputs, list(rec.entry[0][1]), cells, init_writes, tpls, frames, uni)
+    uni = uni_rows if "uni" in flags else None
+    return Program(play, outputs, list(regs0), cells, init_writes, tpls, frames, uni)
 
 
 def reference_log(mem, play, frames, init=None, outputs=SID_OUTPUTS):
