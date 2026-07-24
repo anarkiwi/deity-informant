@@ -73,19 +73,22 @@ of composed analyses, worked out from the traces:
    so `JSR`-called loops get dominators. The aliasing premise is discharged by
    assume-guarantee (pin the bound, then prove no computed store — including the
    pointer that reads `H` itself — reaches `H`).
-   *Open (auto-closure ordering):* the bound is verified end-to-end on single
-   and nested synthetic loops and, post-closure, on Bionic (`$65A1 → [$78,$82]`,
-   which un-aliases the JMP operand). Driving the corpus evidence count down
-   still needs step 3 below to land *before* the vector's alias check during the
-   iterative dispatch closure — `Y₀` is the song-index table read, so a tight
-   `Y₀ ≤ 128` requires the interprocedural index bound first.
-2. **Definite assignment.** The interval must exclude `H`'s initial image byte:
-   prove the `c` store dominates every read of `H` (else the image value is
-   live-in and re-widens the bound past `p`).
-3. **Interprocedural index bound.** `Y₀ = table[X]` needs `X` (the caller's song
-   index) bounded to read the immutable page-count table.
-4. **No-wrap.** `c + d·trips ≤ mask`, else the high byte wraps below `c` and can
-   reach `p` again.
+   Verified end-to-end on single and nested synthetic loops and, post-closure,
+   on Bionic (`$65A1 → [$78,$82]`, which un-aliases the JMP operand).
+2. **Closure ordering (validated).** The dyn-target pass evidences a vector
+   before `close(dispatch_pcs)` bounds the interprocedural index, so the affine
+   bound must run again *after* full closure. A post-closure retry (refine the
+   monotone pointer cells with the index now bound, then re-attempt each evidence
+   site) was prototyped and confirmed to discharge the alias premise — the vector
+   then advances past aliasing. Not landed yet because it exposes blocker 3.
+3. **Index value-set precision (the current blocker).** With aliasing
+   discharged, the relational enumeration (lemma 1) reads `table_lo[A] |
+   table_hi[A]<<8`. Bionic's index `A` is over-approximated to 128 values
+   `[$80,$FF]`, so some `table[A]` reads spill past the real (≈7-entry) table
+   into *written* memory (`$6A23`), and the sound relational read refuses
+   (`relational read hits mutable/IO cell`). Closing the corpus needs `A` bounded
+   tightly enough that every `table[A]` read is immutable — a value-set precision
+   improvement on the dispatch index itself.
 
 This is the spec's core value-set rewrite (§4.1–4.3); each step is
 soundness-critical, so it is tracked as the missing lemma rather than
