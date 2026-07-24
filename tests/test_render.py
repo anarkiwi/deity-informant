@@ -1,5 +1,8 @@
 """Structured readable view (plan P5): faithfulness (every reachable block
-emitted exactly once), real control recovery, named state, cross-tune structure."""
+emitted exactly once), real control recovery, named state, cross-tune structure.
+
+Real-tune tests need the (uncommitted, copyrighted) HVSC cache; the synthetic
+``_fuzzgen`` corpus runs everywhere and carries the CI coverage of render/P4."""
 
 from pathlib import Path
 
@@ -8,7 +11,19 @@ import pytest
 from deity_informant import render, structured as S
 from deity_informant.c64 import load_psid, psid_songs
 
+import _fuzzgen as G
+
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
+
+_FUZZ = G.players(2)
+_FUZZ_IDS = [f"{p.name}-{p.seed[1]}" for p in _FUZZ]
+
+
+def _image(cells):
+    m = bytearray(0x10000)
+    for a, v in cells.items():
+        m[a] = v
+    return m
 
 
 def _driver_tunes():
@@ -48,6 +63,99 @@ def _emitted(root):
 
     walk(root)
     return out
+
+
+def _faithful(model, note):
+    """Every reachable block in every procedure emitted exactly once."""
+    for _name, pc in render._procedures(model):
+        root, _labels = render._structure(model, pc)
+        root = render._switchify(root)
+        emitted = _emitted(root)
+        reach = set(render._proc_cfg(model, pc)[0])
+        assert len(emitted) == len(set(emitted)), "%s $%04X: block emitted twice" % (note, pc)
+        assert set(emitted) == reach, "%s $%04X: %d blocks dropped" % (
+            note,
+            pc,
+            len(reach - set(emitted)),
+        )
+
+
+@pytest.mark.parametrize("p", _FUZZ, ids=_FUZZ_IDS)
+def test_fuzz_render_faithful_and_structured(p):
+    """Every idiom class renders faithfully with real control constructs; the
+    dispatch idioms (opcode SMC, jump table, indirect) exercise P4 + switch
+    recovery in CI, where the HVSC corpus is absent."""
+    init = p.init_org if p.init is not None else None
+    mem = _image(p.image_data())
+    if init is None:
+        mem[0x0F00] = 0x60  # RTS: empty init
+        init = 0x0F00
+    model, _ev = S.decompile(mem, init, p.org, max(p.frames, 2))
+    _faithful(model, p.name)
+    txt = render.render(model)
+    assert txt.startswith("; structured view")
+    assert render._switchify(render._structure(model, p.org)[0]) is not None
+
+
+def test_comparison_chain_renders_as_value_switch():
+    """A CMP #c / BEQ chain over a command byte collapses to a value switch,
+    exercising the normalise-and-collapse path (P5) without the HVSC corpus."""
+    a = G.Asm(0x1000)
+    a.i("LDA", "abs", 0x1400)  # command byte
+    for cmd, reg in ((0x01, 0), (0x02, 1), (0x03, 2)):
+        a.i("CMP", "imm", cmd).i("BNE", "rel", ("L", "n%d" % cmd))
+        a.i("LDA", "imm", 0x80 + reg).i("STA", "abs", 0xD400 + reg).i("RTS")
+        a.label("n%d" % cmd)
+    a.i("RTS")
+    mem = _image({0x1400: 0x02})
+    mem[0x1000 : 0x1000 + len(a.assemble())] = a.assemble()
+    mem[0x0F00] = 0x60
+    model, _ev = S.decompile(mem, 0x0F00, 0x1000, 2)
+    _faithful(model, "cmp_chain")
+    txt = render.render(model)
+    assert "switch A {" in txt and "case $" in txt
+
+
+def test_indexed_jump_table_renders_dispatch():
+    """A JMP (vector) dispatch whose vector is written from a selector-indexed
+    table resolves its target set (P4 closure) and structures the handlers."""
+    a = G.Asm(0x1000)
+    a.i("LDX", "abs", 0x1400)  # selector: 0 or 2
+    a.i("LDA", "absx", 0x1420).i("STA", "zp", 0x02)  # vector lo from table[X]
+    a.i("LDA", "absx", 0x1421).i("STA", "zp", 0x03)  # vector hi
+    a.i("JMP", "ind", 0x02)
+    data = {0x1400: 0x02, 0x1420: 0x00, 0x1421: 0x13, 0x1422: 0x20, 0x1423: 0x13}
+    mem = _image(data)
+    prog = a.assemble()
+    mem[0x1000 : 0x1000 + len(prog)] = prog
+    for base, reg, val in ((0x1300, 3, 0x11), (0x1320, 4, 0x22)):
+        h = G.Asm(base).i("LDA", "imm", val).i("STA", "abs", 0xD400 + reg).i("RTS").assemble()
+        mem[base : base + len(h)] = h
+    mem[0x0F00] = 0x60
+    model, _ev = S.decompile(mem, 0x0F00, 0x1000, 2)
+    _faithful(model, "jump_table")
+    txt = render.render(model)
+    assert "sub_" in txt or "goto L_" in txt or "switch" in txt
+
+
+def test_fuzz_dispatch_idioms_render_switches():
+    """The generated dispatch idioms surface as switch / call-one-of / jump
+    tables in the readable view (P5 dispatcher recovery, HVSC-free)."""
+    kinds = {}
+    for p in G.players(2):
+        init = p.init_org if p.init is not None else None
+        mem = _image(p.image_data())
+        if init is None:
+            mem[0x0F00] = 0x60
+            init = 0x0F00
+        model, _ev = S.decompile(mem, init, p.org, max(p.frames, 2))
+        txt = render.render(model)
+        if "switch code[" in txt:
+            kinds["opcode"] = True
+        if "call one of" in txt or "switch (computed goto)" in txt:
+            kinds["computed"] = True
+    assert "opcode" in kinds, "smc_opcode player should yield an opcode switch"
+    assert "computed" in kinds, "dispatch players should yield a computed jump/call"
 
 
 @pytest.mark.parametrize("sid", _CORPUS, ids=[s.stem for s in _CORPUS])
