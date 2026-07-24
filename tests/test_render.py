@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 from deity_informant import render, structured as S
-from deity_informant.c64 import load_psid, psid_songs
+from deity_informant.c64 import load_psid
 
 import _fuzzgen as G
+from _corpus import corpus_params
 
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 
@@ -26,18 +27,7 @@ def _image(cells):
     return m
 
 
-def _driver_tunes():
-    if not HVSC.is_dir():
-        return []
-    out = []
-    for sid in sorted(HVSC.rglob("*.sid")):
-        _mem, _load, _init, play = load_psid(sid.read_bytes())
-        if play:  # per-frame driver; play==0 (RSID) is P9 scope
-            out.append(sid)
-    return out
-
-
-_CORPUS = _driver_tunes()
+_CORPUS = corpus_params(HVSC)  # (path, subtune, secs): always full Songlengths length
 
 
 def _emitted(root):
@@ -158,16 +148,16 @@ def test_fuzz_dispatch_idioms_render_switches():
     assert "computed" in kinds, "dispatch players should yield a computed jump/call"
 
 
-@pytest.mark.parametrize("sid", _CORPUS, ids=[s.stem for s in _CORPUS])
-def test_structured_view_is_faithful(sid):
+@pytest.mark.parametrize("sid,sub,secs", _CORPUS, ids=[t[0].stem for t in _CORPUS])
+def test_structured_view_is_faithful(sid, sub, secs):
     """Every block reachable in each procedure is emitted exactly once — the
-    readable view is a lossless re-nesting of the model, not a lossy sketch."""
+    readable view is a lossless re-nesting of the model, not a lossy sketch.
+    Full Songlengths duration: short windows under-trace the playroutine."""
     data = sid.read_bytes()
     mem, _load, init, play = load_psid(data)
-    _songs, start = psid_songs(data)
     mem[0xD418] = 0x0F
     try:
-        model, _ev = S.decompile(mem, init, play, 300, start - 1)
+        model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     except S.DecompileError as e:
         pytest.skip("decompile fails (tracked breadth failure, not a render bug): %s" % e)
     for _name, pc in render._procedures(model):
@@ -186,12 +176,13 @@ def test_structured_view_is_faithful(sid):
 def test_recovers_control_and_names_sid():
     """The play routine renders real loops/ifs and names SID registers rather
     than transliterating raw stores."""
-    sid = next((s for s in _CORPUS if s.stem == "Commando"), None)
-    if sid is None:
+    entry = next((t for t in _CORPUS if t[0].stem == "Commando"), None)
+    if entry is None:
         pytest.skip("corpus tune absent")
+    sid, sub, secs = entry
     mem, _l, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, 400)
+    model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     txt = render.render(model)
     assert "loop {" in txt and "if " in txt
     assert "sid.v1.ctrl" in txt  # SID voice registers named
@@ -224,12 +215,13 @@ def test_reused_player_yields_matching_structure():
     shape from different machine code -- structure capture, not transliteration."""
     got = {}
     for name in ("Commando", "Monty_on_the_Run"):
-        sid = next((s for s in _CORPUS if s.stem == name), None)
-        if sid is None:
+        entry = next((t for t in _CORPUS if t[0].stem == name), None)
+        if entry is None:
             pytest.skip("corpus tune absent")
+        sid, sub, secs = entry
         mem, _l, init, play = load_psid(sid.read_bytes())
         mem[0xD418] = 0x0F
-        model, _ev = S.decompile(mem, init, play, 400)
+        model, _ev = S.decompile(mem, init, play, secs * 50, sub)
         root, _ = render._structure(model, play)
         # skeleton: the sequence of construct kinds at the top two levels
         skel = []

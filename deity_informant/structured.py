@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 from collections import namedtuple
 
+from . import codec
 from . import expr as E
 from .lifter import MODE_LEN, OPS, lift
 from .vm import PcodeVM
@@ -1970,6 +1971,10 @@ def decompile(mem, init, play, frames, subtune=0, sound=False):
     """
     ev = trace(bytearray(mem), init, play, frames, subtune)
     model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
+    try:
+        codec.verify(model)  # flatten(structure(model)) == CFG, per procedure
+    except codec.CodecError as e:
+        raise DecompileError("structurer codec: %s" % e) from e
     return model, ev
 
 

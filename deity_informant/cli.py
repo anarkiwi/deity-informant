@@ -19,6 +19,7 @@ from pathlib import Path
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
+from . import c64
 from . import render as render_mod
 from . import stext
 from . import structured
@@ -81,6 +82,18 @@ def cmd_run(args):
     return 0
 
 
+_SONGLENGTHS = Path(".oracle-cache/hvsc/Songlengths.md5")
+
+
+def _full_frames(data, subtune):
+    """Full-Songlengths frame count (50Hz), or None when unresolvable."""
+    if data[:4] not in (b"PSID", b"RSID") or not _SONGLENGTHS.is_file():
+        return None
+    lengths = c64.song_lengths(_SONGLENGTHS.read_text(encoding="latin-1"))
+    secs = c64.song_seconds(data, lengths, subtune)
+    return secs * 50 if secs else None
+
+
 def cmd_decompile(args):
     data = Path(args.file).read_bytes()
     subtune = args.subtune
@@ -94,7 +107,15 @@ def cmd_decompile(args):
     else:
         mem, _n = _load(args.file, args.org)
         init, play = args.init, args.play
-        subtune = subtune or 0
+    subtune = subtune or 0
+    if args.frames is None:
+        args.frames = _full_frames(data, subtune)
+        if args.frames is None:
+            sys.stderr.write(
+                "no Songlengths duration for this input: pass --frames FULL_SONG_FRAMES\n"
+                "(short evidence windows under-trace playroutines; use the full length)\n"
+            )
+            return 1
     if not play:
         sys.stderr.write("no play address (interrupt-driven tune?): pass --play\n")
         return 1
@@ -192,7 +213,12 @@ def main(argv=None):
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
     p.add_argument("--structured", action="store_true", help="emit the readable structured view")
-    p.add_argument("--frames", type=int, default=3000, help="evidence/verify window")
+    p.add_argument(
+        "--frames",
+        type=int,
+        default=None,
+        help="evidence/verify window (default: the tune's full Songlengths duration)",
+    )
     p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
     p.add_argument(
