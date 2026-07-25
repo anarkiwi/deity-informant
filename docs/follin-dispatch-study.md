@@ -6,8 +6,7 @@ region (Ghouls_n_Ghosts 36.1% structured, 997 of 3,103 blocks with no static
 predecessor) and M4 musical L2 recovery for pointer-sequencer players. All
 numbers measured full-Songlengths on `Follin_Tim/Ghouls_n_Ghosts.sid` (subtune
 0, 12,950 frames), confirmed on `Follin_Tim/Agent_X_II_The_Mad_Profs_Back.sid`
-(subtune 1, 3,450 frames). Probes: `tools/study/follin_dispatch_probe.py`
-(instrumented `PcodeVM`, 6.5 s), `follin_model_scan.py` (full decompile +
+(subtune 1, 3,450 frames). (probe scripts retired with the study prototypes; findings and numbers herein are the record).5 s), `follin_model_scan.py` (full decompile +
 block/closure census, 74 s — decompile-pipeline-bound), `follin_script_decode.py`
 (stream decoder + tick simulator, < 1 s). Artifacts in `out/study/*.json`.
 
@@ -196,8 +195,8 @@ handler arms return as switch cases and the structured share stays ≥ ~97%.
   log layer (L1 delta-runs already capture them).
 - **Naming/provenance**: freq table $6D35/$6D96 (97 entries), handler tables,
   song-base tables $730E-$7337 and the zp stream pointers all get names from
-  the program layer, as in the hybrid design of
-  docs/musical-structure-study.md §3.3.
+  the program layer (program-layer naming,
+  now landed as sidprog data/symbols declarations).
 
 ## 6. Worked example: v1 script, top-level + one called pattern
 
