@@ -1637,18 +1637,22 @@ def close_dispatch(model):
         observed = model.pcs[pc]
         vals = closed.get(pc, set())
         if vals is TOP or len(vals) > 32 or not observed <= vals:
-            raise DecompileError(
-                "opcode cell $%04X: observed %s outside proven set %s"
-                % (
-                    pc,
-                    sorted(observed),
-                    "TOP" if vals is TOP or len(vals) > 32 else sorted(vals),
-                )
+            # unproven value set: guarded evidence envelope (dispatch doctrine)
+            closed[pc] = set(observed)
+            vals = observed
+            model.evidence_sites[pc] = set(observed)
+            model.proofs[pc] = Proof(
+                pc,
+                "opcode",
+                "evidence",
+                tuple(sorted(observed)),
+                "opcode-cell value set unproven (aliasing computed store or TOP)",
             )
+        else:
+            model.proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
         for op0 in observed:
             if (pc, op0) not in model.blocks:
                 raise DecompileError("observed variant $%02X at $%04X failed to build" % (op0, pc))
-        model.proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
     unsound = sorted(model.evidence_sites)
     if model.sound and unsound:
         raise DecompileError(
