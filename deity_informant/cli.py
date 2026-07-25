@@ -4,8 +4,8 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
-  decompile    decompile a tune (.sid or raw) to SIDC structured text
-  sidc-run     execute a SIDC program standalone and print the $D400.. grid
+  decompile    decompile a tune (.sid or raw) to sidprog structured text
+  prog-run     execute a sidprog program standalone and print the $D400.. grid
   emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
 """
 
@@ -21,7 +21,7 @@ from jennings.disassembler import Disassembler as _Disassembler
 
 from . import c64
 from . import render as render_mod
-from . import stext
+from . import sidprog
 from . import structured
 from .c64 import load_psid, psid_songs
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
@@ -128,8 +128,8 @@ def cmd_decompile(args):
     if args.report:
         sys.stderr.write(structured.format_report(model))
     if args.verify:
-        tm = stext.parse(stext.emit(model))
-        if stext.emit(tm) != stext.emit(model):
+        tm = sidprog.parse(sidprog.emit(model))
+        if sidprog.emit(tm) != sidprog.emit(model):
             sys.stderr.write("verify FAILED: text is not a parse/emit fixpoint\n")
             return 1
         if structured.Walker(tm).run(args.frames) != ev.wlog:
@@ -139,7 +139,7 @@ def cmd_decompile(args):
             "verify ok: %d frames, %d cycle-stamped writes bit-exact\n"
             % (args.frames, len(ev.wlog))
         )
-    text = render_mod.render(model) if args.structured else stext.emit(model)
+    text = render_mod.render(model) if args.structured else sidprog.emit(model)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:
@@ -147,8 +147,8 @@ def cmd_decompile(args):
     return 0
 
 
-def cmd_sidc_run(args):
-    tm = stext.parse(Path(args.file).read_text(encoding="utf-8"))
+def cmd_prog_run(args):
+    tm = sidprog.parse(Path(args.file).read_text(encoding="utf-8"))
     w = structured.Walker(tm)
     for r, v in tm.prologue:
         w.m[0xD400 + r] = v
@@ -207,7 +207,7 @@ def main(argv=None):
     p.add_argument("--frames", type=int, default=1)
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to SIDC text")
+    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to sidprog text")
     org(p)
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
@@ -219,7 +219,7 @@ def main(argv=None):
         default=None,
         help="evidence/verify window (default: the tune's full Songlengths duration)",
     )
-    p.add_argument("-o", "--out", help="write SIDC text to FILE (default stdout)")
+    p.add_argument("-o", "--out", help="write sidprog text to FILE (default stdout)")
     p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
     p.add_argument(
         "--report", action="store_true", help="print the per-site proof report to stderr"
@@ -227,10 +227,10 @@ def main(argv=None):
     p.add_argument("--sound", action="store_true", help="fail on any evidence-only dispatch site")
     p.set_defaults(fn=cmd_decompile)
 
-    p = sub.add_parser("sidc-run", help="execute a SIDC program, print the $D400.. grid")
+    p = sub.add_parser("prog-run", help="execute a sidprog program, print the $D400.. grid")
     p.add_argument("file")
     p.add_argument("--frames", type=int, default=60)
-    p.set_defaults(fn=cmd_sidc_run)
+    p.set_defaults(fn=cmd_prog_run)
 
     p = sub.add_parser("emit-sleigh", help="build the 6510 SLEIGH module")
     p.add_argument("-o", "--out", help="languages dir to install the built module into")

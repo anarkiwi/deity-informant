@@ -1,11 +1,12 @@
 """Structured decompiler: full-length real-tune acceptance (cycle-stamped
-bit-exact, text round-trip, size), fuzz-corpus development checks, loud faults."""
+bit-exact model replay), fuzz-corpus development checks, loud faults.
+Text-layer laws live in test_sidprog."""
 
 from pathlib import Path
 
 import pytest
 
-from deity_informant import stext
+from deity_informant import sidprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
@@ -39,14 +40,7 @@ def _verify(mem, init, play, frames, subtune=0):
     w = S.Walker(model)
     assert w.run(frames) == ev.wlog  # play-phase log from the post-init image
     assert bytes(w.m) == ev.end_mem
-    text = stext.emit(model)
-    tm = stext.parse(text)
-    assert stext.emit(tm) == text  # canonical text is a parse/emit fixpoint
-    assert tm.prologue == model.prologue
-    tw = S.Walker(tm)
-    assert tw.run(frames) == ev.wlog  # standalone text replay, cycle-stamped
-    assert bytes(tw.m) == ev.end_mem
-    return model, text
+    return model
 
 
 @pytest.mark.parametrize("p", _PLAYERS, ids=_IDS)
@@ -85,12 +79,12 @@ def _tunes():
 
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())
 def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
-    """Legacy SIDC acceptance until deletion: bit-exact log from model and
-    parsed text. The size gate lives on the canonical artifact (test_sidprog)."""
+    """Model-level acceptance: bit-exact full-length log from the walker.
+    Text round-trip and the size gate live on the canonical artifact (test_sidprog)."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     frames = int(secs * 50)
-    model, _text = _verify(mem, init, play, frames, subtune)
+    model = _verify(mem, init, play, frames, subtune)
     assert model.dispatch_sets is not None
 
 
@@ -106,7 +100,7 @@ def test_evidence_bounded_dispatch_faults_on_unobserved_target():
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     assert model.evidence_sites, "expected at least one evidence-bounded site"
-    tm = stext.parse(stext.emit(model))
+    tm = sidprog.parse(sidprog.emit(model))
     _site, targets = next(iter(model.evidence_sites.items()))
     unobserved = next(a for a in range(0x0200, 0xCF00) if (a, tm.mem0[a]) not in tm.blocks)
     assert unobserved not in targets
