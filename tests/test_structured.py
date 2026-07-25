@@ -100,9 +100,9 @@ def test_evidence_bounded_dispatch_faults_on_unobserved_target():
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     assert model.evidence_sites, "expected at least one evidence-bounded site"
-    tm = sidprog.parse(sidprog.emit(model))
+    tm = sidprog.parse(sidprog.emit(model)).link()
     _site, targets = next(iter(model.evidence_sites.items()))
-    unobserved = next(a for a in range(0x0200, 0xCF00) if (a, tm.mem0[a]) not in tm.blocks)
+    unobserved = next(a for a in range(0x0200, 0xCF00) if a not in tm.pcmap)
     assert unobserved not in targets
     with pytest.raises(S.WalkError):
-        tm.lookup(unobserved, tm.mem0)
+        tm.node_at(unobserved)

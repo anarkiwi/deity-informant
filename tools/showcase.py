@@ -51,8 +51,7 @@ def one(rel):
     exact = w.run(frames) == ev.wlog
     text = sidprog.emit(model)
     tm = sidprog.parse(text)
-    tw = S.Walker(tm)
-    exact = exact and tw.run(frames) == ev.wlog and sidprog.emit(tm) == text
+    exact = exact and tm.run(frames) == ev.wlog and sidprog.emit(tm) == text
     met = sidprog.metrics(model)
     (ROOT / "out" / ("%s.sidprog.txt" % sid.stem)).write_text(text, encoding="utf-8")
     return {
