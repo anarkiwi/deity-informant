@@ -30,13 +30,15 @@ Ghouls_n_Ghosts 627 blocks (556 executed + 71 static branch sides) /
 unchanged. The remaining lemma is dispatch-index precision
 (docs/soundness.md; 3 evidence sites per Follin tune unchanged).
 
-## Tracked model bogon (surfaced by the tree walker)
+## Retired model bogon (fixed by the commit-phase coverage rule)
 
 Army_Moves `igoto` site $E093: `dyn_targets=[]` with a `proven` proof while
-evidence observes 4 targets -- the pc walker never consults these sets so it
-replayed regardless; the text layer now falls back to serialized landings
-with the same fault guard. The closure defect needs a fix in
-`close_dispatch`/`term_targets`.
+evidence observed 4 targets — a resolution still pending when the closure
+rounds exhausted was accepted as an empty proven set. The commit-phase
+uniform coverage rule (docs/soundness.md) now downgrades any such site to the
+guarded evidence envelope; $E093 commits as `evidence` with the observed set,
+alongside six sibling sites corpus-wide (Aces_High, Commando_High-Score,
+Jammer-424 ×3, Bird_Flu) whose "proven" sets omitted observed targets.
 
 ## Class 1 — retired: guarded evidence envelope for unproven opcode cells
 

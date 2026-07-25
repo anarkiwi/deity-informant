@@ -1548,17 +1548,11 @@ def _sp_eval(n, sp):
 _TERM_KIND = {"jmpd": "jump", "jmpind": "vector", "br": "branch", "jsr": "call"}
 
 
-def _dyn_proof(term0, site, targets, model, lemma):
-    kind = _TERM_KIND.get(term0, term0)
-    if lemma is None:
-        return Proof(site, kind, "proven", targets, "")
-    status = "evidence" if site in model.evidence_sites else "failed"
-    return Proof(site, kind, status, targets, lemma)
-
-
 def _close_once(model):
-    """One closure round: control cells, proven dyn targets, SP flow, stack
-    concretization, dominators, opcode-cell sets + variant blocks."""
+    """One closure round over the analysis workspace: control cells, dyn-target
+    resolution, SP flow, stack concretization, dominators, opcode-cell sets +
+    variant blocks. Returns ``(closed, sites)``: dispatch value sets and per-site
+    ``(term kind, targets, lemma)`` results; final tables are built at commit."""
     ana = Analysis(model)
     seeds = set()
     dyn_blocks = []
@@ -1582,9 +1576,6 @@ def _close_once(model):
     if seeds:
         ana.close(seeds)
     ana.dominators()  # loop structure for affine trip bounds during dispatch closure
-    model.unproven = []
-    model.evidence_sites = {}
-    model.proofs = {}
     targets_map = {}
     lemmas = {}
     pending = list(dyn_blocks)
@@ -1598,23 +1589,30 @@ def _close_once(model):
             except _Need as need:
                 needs.add(need.cell)
                 still.append(blk)
+                lemmas[blk.pcs[-1]] = "control target at $%04X depends on unclosed cell $%04X" % (
+                    blk.pcs[-1],
+                    need.cell,
+                )
             except DecompileError as exc:
                 site = blk.pcs[-1]  # static can't bound: use observed successors
                 obs = model.ev_targets.get(site)
                 targets_map[blk] = sorted(obs) if obs else []
                 lemmas[site] = str(exc)
-                if obs:  # a site never taken in the trace is an unreachable
-                    model.evidence_sites[site] = set(obs)  # over-approximation; skip
         if not needs:
             break
         ana.close(needs)
         pending = still
-    for blk in dyn_blocks:  # materialize liftable members of the proven target sets
+    sites = {}
+    for blk in dyn_blocks:  # materialize liftable members of the resolved target sets
         site = blk.pcs[-1]
-        tgts = tuple(sorted(targets_map.get(blk, ())))
-        model.proofs[site] = _dyn_proof(blk.term[0], site, tgts, model, lemmas.get(site))
-        model.dyn_targets[site] = list(tgts)
-        for pc in targets_map.get(blk, ()):
+        if blk not in targets_map:  # closure rounds exhausted: never a proven set
+            obs = model.ev_targets.get(site)
+            targets_map[blk] = sorted(obs) if obs else []
+            lemmas.setdefault(
+                site, "control target at $%04X unresolved after closure rounds" % site
+            )
+        sites[site] = (blk.term[0], tuple(sorted(targets_map[blk])), lemmas.get(site))
+        for pc in targets_map[blk]:
             if pc in model.written:
                 continue  # dispatch boundary: its variants come from cell closure
             op0 = next(iter(model.pcs[pc])) if pc in model.pcs else model.mem0[pc]
@@ -1639,31 +1637,53 @@ def _close_once(model):
                 except (DecompileError, NotImplementedError):
                     pass  # junk member (e.g. pre-generation byte): loud fault if selected
     model.analysis = ana
-    return closed
+    return closed, sites
 
 
-def close_dispatch(model):
-    """P4 driver: iterate closure and block materialization to a fixpoint, then
-    verify every observed opcode byte lies in its proven set (else fail)."""
-    closed = {}
+def _analyze(model):
+    """ANALYSIS phase: iterate closure and speculative block materialization over
+    the workspace to a fixpoint. Returns the final round's ``(closed, sites)``;
+    no final tables or blocks are constructed here."""
     while True:
         materialize(model)
         n = len(model.blocks)
-        closed = _close_once(model)
+        closed, sites = _close_once(model)
         materialize(model)
         if len(model.blocks) == n:
-            break
-    if model.unproven:
-        raise DecompileError("unproven control targets: " + "; ".join(model.unproven))
+            return closed, sites
+
+
+def _commit_tables(model, closed, sites):
+    """Final site tables under the uniform coverage rule: at every site the
+    observed set must lie inside the proven set or the site drops to the guarded
+    evidence envelope (observed set, tracked lemma); an empty resolution at an
+    executed site is never ``proven``; unexecuted unproven sites are ``failed``."""
+    proofs, dyn_targets, evidence_sites, dispatch_sets = {}, {}, {}, {}
+    for site in sorted(sites):
+        term0, tgts, lemma = sites[site]
+        obs = set(model.ev_targets.get(site, ()))
+        if lemma is None and obs and not obs <= set(tgts):
+            lemma = "proven target set omits observed targets" + (
+                " (empty resolution)" if not tgts else ""
+            )
+            tgts = tuple(sorted(obs))
+        kind = _TERM_KIND.get(term0, term0)
+        if lemma is None:
+            proofs[site] = Proof(site, kind, "proven", tgts, "")
+        elif obs:
+            evidence_sites[site] = obs
+            proofs[site] = Proof(site, kind, "evidence", tgts, lemma)
+        else:
+            proofs[site] = Proof(site, kind, "failed", tgts, lemma)
+        dyn_targets[site] = list(tgts)
     for pc in sorted(model.dispatch_pcs):
         observed = model.pcs[pc]
         vals = closed.get(pc, set())
         if vals is TOP or len(vals) > 32 or not observed <= vals:
             # unproven value set: guarded evidence envelope (dispatch doctrine)
-            closed[pc] = set(observed)
-            vals = observed
-            model.evidence_sites[pc] = set(observed)
-            model.proofs[pc] = Proof(
+            dispatch_sets[pc] = set(observed)
+            evidence_sites[pc] = set(observed)
+            proofs[pc] = Proof(
                 pc,
                 "opcode",
                 "evidence",
@@ -1671,17 +1691,133 @@ def close_dispatch(model):
                 "opcode-cell value set unproven (aliasing computed store or TOP)",
             )
         else:
-            model.proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
-        for op0 in observed:
-            if (pc, op0) not in model.blocks:
-                raise DecompileError("observed variant $%02X at $%04X failed to build" % (op0, pc))
+            dispatch_sets[pc] = set(vals)
+            proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
+    return proofs, dyn_targets, evidence_sites, dispatch_sets
+
+
+def _commit(model, closed, sites):
+    """COMMIT phase: construct the final site tables and final block set in one
+    step from the analysis results (resplit at final entries, keep only blocks
+    final-reachable from play, then the intra-block passes). Blocks are immutable
+    afterwards; only ``lookup`` may lazily add static continuations."""
+    tables = _commit_tables(model, closed, sites)
+    model.proofs, model.dyn_targets, model.evidence_sites, model.dispatch_sets = tables
     unsound = sorted(model.evidence_sites)
     if model.sound and unsound:
         raise DecompileError(
             "sound mode: %d evidence-only site(s): %s"
             % (len(unsound), "; ".join("$%04X (%s)" % (s, model.proofs[s].lemma) for s in unsound))
         )
-    return closed
+    model._resplit()
+    collect_unreachable(model)
+    prune_dead_flags(model)
+    for blk in model.blocks.values():
+        inline_slots(blk)
+
+
+def _dyn_site(model, blk):
+    """Whether ``blk``'s terminator is a dynamic-dispatch site (proof required)."""
+    term = blk.term
+    if term[0] == "jmpd" or (term[0] in ("br", "jmpind", "jsr") and term[-1] is not None):
+        return True
+    if term[0] == "jmpind":
+        ptr = term[1]
+        return ptr in model.written or (ptr + 1) & 0xFFFF in model.written
+    return False
+
+
+def _site_envelope(model, blk):
+    """Committed successor set of a terminator: static edges plus dyn targets;
+    ``None`` for rts (runtime-stack continuation, walker-guarded)."""
+    term = blk.term
+    t = term[0]
+    if t == "rts":
+        return None
+    out = set(model.dyn_targets.get(blk.pcs[-1], ()))
+    if t in ("goto", "jmp"):
+        out.add(term[1])
+    elif t == "br":
+        if term[2] is not None:
+            out.add(term[2])
+        out.add(term[3])
+    elif t == "jsr":
+        if term[1] is not None:
+            out.add(term[1])
+    elif t == "jmpind" and term[2] is None:
+        m, ptr = model.mem0, term[1]
+        out.add(m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8))
+    return out
+
+
+def check_commit(model):
+    """Uniform coverage checker at the commit boundary (§4.5), one rule for
+    every site class: observed evidence inside the committed proven-or-evidence
+    set, every kept block final-reachable from play, every observed variant
+    built, and site records only for kept sites. Violations are fatal."""
+    errs = []
+    live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
+    seen = set()
+    work = [model.play]
+    while work:
+        pc = work.pop()
+        if pc in seen:
+            continue
+        seen.add(pc)
+        for key in model.variants(pc):
+            work.extend(_walk_edges(model, model.blocks[key]))
+    site_env = {}  # per-site union over variants; None once any variant is rts
+    for key, blk in sorted(model.blocks.items()):
+        if key[0] not in seen:
+            errs.append("block $%04X/$%02X not reachable from play" % key)
+        site = blk.pcs[-1]
+        if _dyn_site(model, blk) and site not in model.proofs:
+            errs.append("dyn site $%04X has no proof record" % site)
+        env = _site_envelope(model, blk)
+        cur = site_env.get(site, set())
+        site_env[site] = None if env is None or cur is None else cur | env
+    for site in sorted(s for s, env in site_env.items() if env is not None):
+        extra = (
+            set(model.ev_targets.get(site, ()))
+            - site_env[site]
+            - set(model.evidence_sites.get(site, ()))
+        )
+        if extra:
+            errs.append(
+                "site $%04X: observed target(s) %s outside the committed set"
+                % (site, " ".join("$%04X" % t for t in sorted(extra)))
+            )
+    for site, pr in sorted(model.proofs.items()):
+        obs = model.pcs.get(site, ()) if pr.kind == "opcode" else model.ev_targets.get(site, ())
+        if pr.status == "proven" and (
+            site in model.evidence_sites or not set(obs) <= set(pr.targets)
+        ):
+            errs.append(
+                "site $%04X (%s): 'proven' proof does not cover the observed set" % (site, pr.kind)
+            )
+    for pc in sorted(model.dispatch_pcs):
+        if pc not in model.proofs or pc not in model.dispatch_sets:
+            errs.append("dispatch cell $%04X has no committed set" % pc)
+            continue
+        for op0 in sorted(model.pcs[pc]):
+            if op0 not in model.dispatch_sets[pc]:
+                errs.append(
+                    "dispatch cell $%04X: opcode $%02X outside the committed set" % (pc, op0)
+                )
+            if (pc, op0) not in model.blocks:
+                errs.append("observed variant $%02X at $%04X failed to build" % (op0, pc))
+    for name, table in (
+        ("proof", model.proofs),
+        ("evidence", model.evidence_sites),
+        ("dyn-target", model.dyn_targets),
+    ):
+        errs.extend(
+            "%s record for nonexistent site $%04X" % (name, site)
+            for site in sorted(table)
+            if site not in live
+        )
+    if errs:
+        raise DecompileError("commit check: " + "; ".join(errs))
 
 
 def proof_report(model):
@@ -2017,15 +2153,14 @@ class Model:
         return self._by_pc.get(pc, ())
 
     def build_all(self):
+        """ANALYSIS over the workspace, then one immutable COMMIT, then the
+        boundary coverage check."""
         for pc in sorted(self.leaders | self.dispatch_pcs):
             for op0 in sorted(self.pcs.get(pc, ())):
                 self.build(pc, op0)
-        self.dispatch_sets = close_dispatch(self)
-        self._resplit()
-        collect_unreachable(self)
-        prune_dead_flags(self)
-        for blk in self.blocks.values():
-            inline_slots(blk)
+        closed, sites = _analyze(self)
+        _commit(self, closed, sites)
+        check_commit(self)
         return self
 
     def _resplit(self):
