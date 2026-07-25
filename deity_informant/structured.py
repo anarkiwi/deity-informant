@@ -213,8 +213,8 @@ class _BlockBuilder:
             if self.term is not None:
                 break
             pc = (pc + rec["len"]) & 0xFFFF
-            if pc in model.written or len(self.pcs) >= _BLOCK_CAP:
-                self.term = ("goto", pc)  # mutable opcode cell: dispatch boundary
+            if pc in model.written or pc in model.cut or len(self.pcs) >= _BLOCK_CAP:
+                self.term = ("goto", pc)  # dispatch boundary or another block's entry
                 break
         self.block = Block(entry, op0, self.pcs, self.events, self.term, self.sreg)
 
@@ -1913,6 +1913,7 @@ class Model:
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
         self.pcs = evidence.pcs
         self.leaders = set(evidence.leaders)
+        self.cut = set(evidence.leaders)  # block boundaries: no suffix duplication
         self.ev_targets = evidence.targets
         self.dispatch_pcs = {pc for pc in evidence.pcs if pc in evidence.written}
         self.dispatch_sets = {}
@@ -1941,10 +1942,19 @@ class Model:
             for op0 in sorted(self.pcs.get(pc, ())):
                 self.build(pc, op0)
         self.dispatch_sets = close_dispatch(self)
+        self._resplit()
         prune_dead_flags(self)
         for blk in self.blocks.values():
             inline_slots(blk)
         return self
+
+    def _resplit(self):
+        """Cut every block at any other block's entry: closure-materialized
+        entries arrive after the first build, so shared suffixes re-lift short."""
+        self.cut = {pc for pc, _op in self.blocks}
+        for key, blk in list(self.blocks.items()):
+            if any(p in self.cut for p in blk.pcs[1:]):
+                self.blocks[key] = _BlockBuilder(self, key[0], key[1]).block
 
     def lookup(self, pc, m):
         if pc in self.written:

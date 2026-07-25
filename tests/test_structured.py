@@ -8,7 +8,6 @@ import pytest
 from deity_informant import stext
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
-from deity_informant.cli import format_insn
 
 import _fuzzgen as G
 
@@ -84,32 +83,15 @@ def _tunes():
     return [pytest.param(path, sub, secs, id=path.stem) for path, sub, secs in corpus_params(HVSC)]
 
 
-def _disasm_size(mem):
-    nz = [a for a in range(0x10000) if mem[a]]
-    lo, hi = min(nz), max(nz)
-    total = 0
-    pc = lo
-    while pc <= hi:
-        try:
-            length, text = format_insn(mem, pc)
-        except Exception:  # pylint: disable=broad-except
-            length, text = 1, "$%04X: .byte" % pc
-        total += len(text) + 1
-        pc += length
-    return total
-
-
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())
 def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
-    """Acceptance: the default subtune at full song length, cycle-stamped
-    (cycle, reg, value) log bit-exact from model and from parsed text; text is
-    smaller than the disassembly listing (docs/decompiler-plan.md G3/G6)."""
+    """Legacy SIDC acceptance until deletion: bit-exact log from model and
+    parsed text. The size gate lives on the canonical artifact (test_sidprog)."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     frames = int(secs * 50)
-    model, text = _verify(mem, init, play, frames, subtune)
+    model, _text = _verify(mem, init, play, frames, subtune)
     assert model.dispatch_sets is not None
-    assert len(text) < _disasm_size(model.mem0)
 
 
 def test_evidence_bounded_dispatch_faults_on_unobserved_target():
