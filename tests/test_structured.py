@@ -102,7 +102,7 @@ def test_evidence_bounded_dispatch_faults_on_unobserved_target():
     assert model.evidence_sites, "expected at least one evidence-bounded site"
     tm = sidprog.parse(sidprog.emit(model)).link()
     _site, targets = next(iter(model.evidence_sites.items()))
-    unobserved = next(a for a in range(0x0200, 0xCF00) if a not in tm.pcmap)
+    unobserved = next(a for a in range(0x0200, 0xCF00) if a not in tm.pcmap and a not in tm.contmap)
     assert unobserved not in targets
     with pytest.raises(S.WalkError):
         tm.node_at(unobserved)

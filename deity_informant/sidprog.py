@@ -1037,7 +1037,8 @@ class TextModel:
         self.procs = None  # [(entry, seq region)] when parsed from text
         self.labels = set()
         self.prog = None  # linked flat program: [block-or-None, ctrl] rows
-        self.pcmap = None  # serialized pc -> prog index
+        self.pcmap = None  # serialized pc -> prog index (nodes that ARE the pc)
+        self.contmap = None  # call-return pc -> continuation index (flow nodes)
         by_pc = {}
         for key in sorted(blocks):
             by_pc.setdefault(key[0], []).append(key)
@@ -1054,19 +1055,25 @@ class TextModel:
             raise ValueError("not a tree model: construct via parse()")
         self.prog = []
         self.pcmap = {}
+        self.contmap = {}
         gotos = []
         for entry, root in self.procs:
             idx = self._lseq(_items(root), None, [], gotos)
             if idx is not None:
                 self.pcmap.setdefault(entry, idx)
-        for j, pc in gotos:
+        for j, pc in gotos:  # authoritative nodes only: a flow node never aliases a pc
             self.prog[j][1] = ("next", self.pcmap.get(pc))
         return self
+
+    def resolve_pc(self, pc):
+        """Program index a run-time pc lands on, else None (loud-fault guard)."""
+        idx = self.pcmap.get(pc)
+        return self.contmap.get(pc) if idx is None else idx
 
     def node_at(self, pc):
         """Linked program index of a serialized pc; WalkError outside the program."""
         self.link()
-        idx = self.pcmap.get(pc)
+        idx = self.resolve_pc(pc)
         if idx is None:
             raise C.WalkError("pc $%04X outside program" % pc)
         return idx
@@ -1129,8 +1136,8 @@ class TextModel:
             ctrl = ("ret",)
         elif k == "jsr":
             ctrl = ("call", term[1], term[2], nxt)
-            if nxt is not None:  # ret pc is serialized: RTS-trick may land there
-                self.pcmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+            if nxt is not None:  # ret pc is serialized: rts resolves through it
+                self.contmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
         elif k == "br":
             if term[5] is None:
                 raise ValueError("static branch without an if region")
@@ -1170,7 +1177,7 @@ class TextModel:
                     if ai is not None:
                         self.pcmap.setdefault(int(lbl[1:], 16), ai)
             if nxt is not None:
-                self.pcmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+                self.contmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
             return ("call", None, term[2], nxt)
         cmap = {}
         for lbl, arm in cases:  # arm entries are flow, not the pc's block: no pcmap
@@ -1214,7 +1221,6 @@ class TreeWalker:
         self._push(0x00)
         self._push(0x01)
         idx = self.tm.pcmap.get(entry)
-        stack = []
         n = 0
         while self.r[3] < start:
             if idx is None:
@@ -1227,12 +1233,12 @@ class TreeWalker:
                 self.c, self.r, x = blk.fn(
                     m, self.r, self.c, self.wlog, C.volatile_read, C._dyn_read, C._sid_log
                 )
-            idx = self._step(ctrl, x, stack)
+            idx = self._step(ctrl, x)
             n += 1
             if n > C._GUARD:
                 raise C.WalkError("runaway tree walk")
 
-    def _step(self, ctrl, x, stack):
+    def _step(self, ctrl, x):
         op = ctrl[0]
         if op == "next":
             return ctrl[1]
@@ -1241,28 +1247,21 @@ class TreeWalker:
                 self.c += ctrl[2]
                 return ctrl[3]
             return ctrl[4]
-        if op == "ret":
+        if op == "ret":  # the return address is real memory; the pc maps are the truth
             m = self.m
             sp = (self.r[3] + 1) & 0xFF
             lo = m[0x100 + sp]
             sp = (sp + 1) & 0xFF
             hi = m[0x100 + sp]
             self.r[3] = sp
-            tgt = (hi << 8) | lo
-            for k in range(len(stack) - 1, -1, -1):
-                if stack[k][1] == tgt:  # innermost frame match (outer after pops)
-                    cont = stack[k][0]
-                    del stack[k:]
-                    return cont
-            return self.tm.pcmap.get((tgt + 1) & 0xFFFF)  # rts trick / driver sentinel
+            return self.tm.resolve_pc((((hi << 8) | lo) + 1) & 0xFFFF)
         if op == "call":
-            _o, tgt, ret, cont = ctrl
+            _o, tgt, ret, _cont = ctrl
             if tgt is None:
                 tgt = x
             self._push(ret >> 8)
             self._push(ret & 0xFF)
-            stack.append((cont, ret))
-            idx = self.tm.pcmap.get(tgt)
+            idx = self.tm.resolve_pc(tgt)
             if idx is None:
                 raise C.WalkError("call target $%04X outside program" % tgt)
             return idx
@@ -1275,7 +1274,7 @@ class TreeWalker:
         if op == "jmpd":
             idx = ctrl[1].get(x)
             if idx is None:
-                idx = self.tm.pcmap.get(x)
+                idx = self.tm.resolve_pc(x)
             if idx is None:
                 raise C.WalkError("goto target $%04X outside program" % x)
             return idx
@@ -1285,7 +1284,7 @@ class TreeWalker:
             tgt = m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
             idx = ctrl[3].get(tgt)
             if idx is None:
-                idx = self.tm.pcmap.get(tgt)
+                idx = self.tm.resolve_pc(tgt)
             if idx is None:
                 raise C.WalkError("vector target $%04X outside program" % tgt)
             return idx
@@ -1293,9 +1292,9 @@ class TreeWalker:
         if flag != ctrl[1]:
             return ctrl[3]
         self.c += 1 + ((ctrl[2] & 0xFF00) != (tgt & 0xFF00))
-        idx = self.tm.pcmap.get(tgt)
+        idx = self.tm.resolve_pc(tgt)
         if idx is None:
-            raise C.WalkError("branch target $%04X outside serialized labels" % tgt)
+            raise C.WalkError("branch target $%04X outside program" % tgt)
         return idx
 
 

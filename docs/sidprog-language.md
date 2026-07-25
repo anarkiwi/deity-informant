@@ -222,9 +222,11 @@ with *synthetic* block keys — pcs exist only where the text serialises them
 and `TextModel.link()` resolves the trees to a flat control program that
 `sidprog.TreeWalker` (`TextModel.run(frames)`) executes: same compiled block
 payloads (`structured.compile_block`), same volatile-read/cycle model, `call`
-pushes the real return bytes, `ret` pops and unwinds (an RTS-trick mismatch
-re-enters via the serialized-pc map), `igoto` reads its vector from memory.
-Gate C requires both executors to reproduce the evidence log bit-exactly.
+pushes the real return bytes, `ret` pops the real bytes from stack memory and
+resolves the popped pc through the serialized-pc map (call continuations are
+indexed by their serialized `ret` operands; RTS-trick landings are labelled),
+`igoto` reads its vector from memory. Gate C requires both executors to
+reproduce the evidence log bit-exactly.
 
 ## Laws
 
