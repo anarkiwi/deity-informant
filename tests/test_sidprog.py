@@ -484,13 +484,81 @@ def test_metrics_reporting():
         "structured_pct",
         "goto_count",
         "labels",
+        "frontier",
         "dup_blocks",
         "proc_count",
         "cross_proc_gotos",
     }
-    assert mt["blocks"] == 1 and mt["goto_count"] == 0
+    assert mt["blocks"] == 1 and mt["goto_count"] == 0 and mt["frontier"] == 0
     assert mt["proc_count"] == 1 and mt["cross_proc_gotos"] == 0
     assert 0.0 <= mt["structured_pct"] <= 100.0
+
+
+def test_frontier_edge_faults_with_pc():
+    """A forced walk into an ``unobserved`` marker faults carrying the pc."""
+    text = sidprog.emit(
+        sidprog.parse(
+            "sidprog 1\nplay $1000\ninit $1000\nimage {\n $1000: A9\n}\n"
+            "proc $1000 {\n if @t1 (A == $00) unobserved $2000\n ret\n}\n"
+        )
+    )
+    tm = sidprog.parse(text)
+    assert sidprog.emit(tm) == text
+    assert "if @t1 (A == $00) unobserved $2000" in text
+    with pytest.raises(S.WalkError, match=r"unobserved edge \$2000"):
+        tm.run(1)  # play enters with A=0: the branch is taken into the marker
+
+
+def test_frontier_flow_line_faults_with_pc():
+    text = sidprog.emit(
+        sidprog.parse(
+            "sidprog 1\nplay $1000\ninit $1000\nimage {\n $1000: A9\n}\n"
+            "proc $1000 {\n sid.v1.freq_lo = $01\n unobserved $3000\n}\n"
+        )
+    )
+    tm = sidprog.parse(text)
+    assert sidprog.emit(tm) == text
+    with pytest.raises(S.WalkError, match=r"\$3000"):
+        tm.run(1)
+
+
+def test_frontier_emission_replaces_goto_and_label():
+    """A never-serialized branch side emits the marker: no goto, no label."""
+    mem0 = bytearray(0x10000)
+    mem0[0x1000] = 0xD0
+    cond = ("op", "INT_EQUAL", (E.reg(0), ("const", 1, 1)), 1)
+    regs = [E.reg(i) for i in range(16)]
+    blocks = {
+        (0x1000, 0xD0): Block(
+            0x1000, 0xD0, [0x1000], [], ("br", 1, 0x2000, 0x1002, cond, None), regs
+        ),
+        (0x1002, 0x60): Block(0x1002, 0x60, [0x1002], [], ("rts",), regs),
+    }
+    m = sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {})
+    text = sidprog.emit(m)
+    assert "unobserved $2000" in text
+    assert "goto $2000" not in text and "$2000:" not in text
+    assert sidprog.emit(sidprog.parse(text)) == text
+    assert sidprog.metrics(m)["frontier"] == 1
+
+
+def test_frontier_else_arm_collapses_onto_closer():
+    """An always-taken branch: the never-observed fallthrough is the closer."""
+    mem0 = bytearray(0x10000)
+    mem0[0x1000] = 0xD0
+    cond = ("op", "INT_EQUAL", (E.reg(0), ("const", 1, 1)), 1)
+    regs = [E.reg(i) for i in range(16)]
+    blocks = {
+        (0x1000, 0xD0): Block(
+            0x1000, 0xD0, [0x1000], [], ("br", 1, 0x1002, 0x2000, cond, None), regs
+        ),
+        (0x1002, 0x60): Block(0x1002, 0x60, [0x1002], [], ("rts",), regs),
+    }
+    m = sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {})
+    text = sidprog.emit(m)
+    assert "} else unobserved $2000" in text
+    assert sidprog.emit(sidprog.parse(text)) == text
+    assert sidprog.metrics(m)["frontier"] == 1
 
 
 def _flow_blk(pc, term):
