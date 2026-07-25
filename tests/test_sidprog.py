@@ -60,14 +60,10 @@ def test_fuzz_walker_bit_exact(p):
 
 
 # ---- real tunes (full Songlengths duration; skip when the cache is absent) -----
-_STEMS = {"Commando", "Automatas", "Krakout", "Ghouls_n_Ghosts"}
-
-
 def _tunes():
     return [
         pytest.param(path, sub, secs, id=f"{path.parent.name}-{path.stem}")
         for path, sub, secs in corpus_params(HVSC)
-        if path.stem in _STEMS
     ]
 
 
@@ -88,15 +84,14 @@ def _disasm_size(mem):
 
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())
 def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
-    """Full-length (cycle, reg, value) log bit-exact from model and parsed text;
-    Ghouls_n_Ghosts additionally proves CSE beats the disassembly listing."""
+    """Acceptance: full-length (cycle, reg, value) log bit-exact from model and
+    from parsed standalone text; text smaller than the disassembly listing."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     frames = int(secs * 50)
     model, text = _verify(mem, init, play, frames, subtune)
     assert model.dispatch_sets is not None
-    if sid.stem == "Ghouls_n_Ghosts":
-        assert len(text) < _disasm_size(model.mem0)
+    assert len(text) < _disasm_size(model.mem0)
 
 
 # ---- property-based round-trip laws over generated models ----------------------
