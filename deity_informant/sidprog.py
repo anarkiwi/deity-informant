@@ -904,13 +904,19 @@ def _model_trees(model):
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
         left = still
-    need = set()  # call / dynamic-branch targets must resolve by pc at run time
+    need = set()  # pcs dynamic control can land on must resolve at run time
+    rets = {(b.term[2] + 1) & 0xFFFF for b in model.blocks.values() if b.term[0] == "jsr"}
+    ev_tg = getattr(model, "ev_targets", {})
     for blk in model.blocks.values():
         t = blk.term
+        site = blk.pcs[-1]
         if t[0] == "jsr" and t[1] is not None:
             need.add(t[1])
-        elif (t[0] == "br" and t[5] is not None) or (t[0] == "jsr" and t[1] is None):
-            need.update(model.dyn_targets.get(blk.pcs[-1], ()))
+        elif t[0] in ("jsr", "jmpd", "jmpind") or (t[0] == "br" and t[5] is not None):
+            need.update(model.dyn_targets.get(site, ()))
+            need.update(ev_tg.get(site, ()))
+        elif t[0] == "rts":  # observed RTS-trick landings (call returns excluded)
+            need.update(set(ev_tg.get(site, ())) - rets)
     labels |= need - _inlined_arms(trees)
     return trees, labels - owners, view
 
@@ -1122,15 +1128,22 @@ class TextModel:
         elif k == "rts":
             ctrl = ("ret",)
         elif k == "jsr":
-            allowed = None if term[1] is not None else frozenset()
-            ctrl = ("call", term[1], term[2], allowed, nxt)
+            ctrl = ("call", term[1], term[2], nxt)
+            if nxt is not None:  # ret pc is serialized: RTS-trick may land there
+                self.pcmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
         elif k == "br":
             if term[5] is None:
                 raise ValueError("static branch without an if region")
             ctrl = ("dbr", term[1], term[3], nxt)
         elif k == "jmpd":
             ctrl = ("jmpd", {})
-        else:  # goto fallthrough; jmpind with an image-derived vector
+        elif k == "jmpind":  # inline arm: the vector's image value falls through
+            ptr = term[1]
+            v = None
+            if ptr is not None and term[2] is None:
+                v = self.mem0[ptr] | (self.mem0[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
+            ctrl = ("vec", ptr, term[2] is not None, {} if v is None else {v: nxt})
+        else:  # goto fallthrough
             ctrl = ("next", nxt)
         self.prog.append([blk, ctrl])
         idx = len(self.prog) - 1
@@ -1150,16 +1163,15 @@ class TextModel:
         if sel == "call":
             if k != "jsr":
                 raise ValueError("switch call without a call terminator")
-            allowed = set()
             for lbl, arm in cases:
-                t = int(lbl[1:], 16)
-                allowed.add(t)
                 body = arm.b if arm is not None and arm.kind == "call" else None
                 if body is not None:  # inlined handler: the callee's own tree
                     ai = self._lseq(_items(body), None, [], gotos)
                     if ai is not None:
-                        self.pcmap.setdefault(t, ai)
-            return ("call", None, term[2], frozenset(allowed), nxt)
+                        self.pcmap.setdefault(int(lbl[1:], 16), ai)
+            if nxt is not None:
+                self.pcmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+            return ("call", None, term[2], nxt)
         cmap = {}
         for lbl, arm in cases:  # arm entries are flow, not the pc's block: no pcmap
             cmap[int(lbl[1:], 16)] = self._lseq(_items(arm), None, loops, gotos)
@@ -1237,19 +1249,23 @@ class TreeWalker:
             hi = m[0x100 + sp]
             self.r[3] = sp
             tgt = (hi << 8) | lo
-            if stack and stack[-1][1] == tgt:
-                return stack.pop()[0]
+            for k in range(len(stack) - 1, -1, -1):
+                if stack[k][1] == tgt:  # innermost frame match (outer after pops)
+                    cont = stack[k][0]
+                    del stack[k:]
+                    return cont
             return self.tm.pcmap.get((tgt + 1) & 0xFFFF)  # rts trick / driver sentinel
         if op == "call":
-            _o, tgt, ret, allowed, cont = ctrl
+            _o, tgt, ret, cont = ctrl
             if tgt is None:
                 tgt = x
-                if tgt not in allowed:
-                    raise C.WalkError("call target $%04X outside proven set" % tgt)
             self._push(ret >> 8)
             self._push(ret & 0xFF)
             stack.append((cont, ret))
-            return self.tm.pcmap.get(tgt)
+            idx = self.tm.pcmap.get(tgt)
+            if idx is None:
+                raise C.WalkError("call target $%04X outside program" % tgt)
+            return idx
         if op == "op":
             b = self.m[ctrl[1]]
             idx = ctrl[2].get(b)
@@ -1259,7 +1275,9 @@ class TreeWalker:
         if op == "jmpd":
             idx = ctrl[1].get(x)
             if idx is None:
-                raise C.WalkError("goto target $%04X outside proven set" % x)
+                idx = self.tm.pcmap.get(x)
+            if idx is None:
+                raise C.WalkError("goto target $%04X outside program" % x)
             return idx
         if op == "vec":
             m = self.m
@@ -1267,7 +1285,9 @@ class TreeWalker:
             tgt = m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
             idx = ctrl[3].get(tgt)
             if idx is None:
-                raise C.WalkError("vector target $%04X outside proven set" % tgt)
+                idx = self.tm.pcmap.get(tgt)
+            if idx is None:
+                raise C.WalkError("vector target $%04X outside program" % tgt)
             return idx
         flag, tgt = x  # dbr: dynamic-target branch escape hatch
         if flag != ctrl[1]:

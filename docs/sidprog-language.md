@@ -200,8 +200,11 @@ byte and carry no `:n`; `mem` loads are one byte; a lone `-$k` inside an
   single-site handlers as `case` arms (their `ret` unwinds to the call's
   continuation) and leaving shared handlers as bare pcs resolved to their
   `proc`s. An `igoto $addr` whose vector cell is image-derived emits its sole
-  arm as plain continuation (the vector cannot change). Executing any
-  unlisted target faults (`WalkError`).
+  arm as plain continuation. At run time a computed target resolves through
+  the case arms first, then the serialized-pc map (the emitter labels every
+  proven and evidence-observed landing); a pc outside the serialized program
+  faults (`WalkError`) — the same guard the pc-driven walker's block lookup
+  applies.
 - **Opcode dispatch.** A `dispatch` cell's variants appear under
   `switch code[$addr] { case $op: {…} }` — also for a single proven variant,
   so the run-time opcode guard is always explicit; an opcode outside the
