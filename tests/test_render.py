@@ -215,7 +215,7 @@ def test_reused_player_yields_matching_structure():
     shape from different machine code -- structure capture, not transliteration."""
     got = {}
     for name in ("Commando", "Monty_on_the_Run"):
-        entry = next((t for t in _CORPUS if t[0].stem == name), None)
+        entry = next((t for t in _CORPUS if t[0].stem == name and "Hubbard" in str(t[0])), None)
         if entry is None:
             pytest.skip("corpus tune absent")
         sid, sub, secs = entry
