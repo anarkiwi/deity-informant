@@ -119,6 +119,44 @@ This is the spec's core value-set rewrite (§4.1–4.3); each step is
 soundness-critical, so it is tracked as the missing lemma rather than
 approximated from the trace.
 
+## Paired-index closure (cross-block single-writer-pair lemma, implemented)
+
+For a computed transfer whose target is `m[C_lo] | m[C_hi] << 8` over a
+written operand/vector cell pair (SMC'd `JMP` operands, `jmp (ind)` vector
+cells — per resolved pointer), `Analysis._paired_cell_targets` proves the
+target set from four premises, tried before per-cell resolution:
+
+1. **No alias**: no computed store's interval set may reach either cell
+   (`_cell_aliased`); stack-page cells refuse outright (jsr/rts traffic
+   bypasses store events).
+2. **Cross-block single-writer pair**: every block that stores one cell stores
+   the other in the same block (the last store per block is the pair live at
+   exit; blocks are straight-line, so no transfer observes a half-updated
+   pair). A cell play never writes contributes its post-init constant.
+3. **Same-index pairing**: per writer, the lo/hi stored values in writer-live
+   form (loads of written cells stay symbolic; repeated loads of an unstored
+   cell unify) must share one index variable set — writer-entry registers
+   and/or written-cell loads — or be constants. Enumeration is joint over the
+   guard-refined value sets (`R`/`S`), so the set is the zip
+   `{T_lo[i] | T_hi[i]<<8 : i ∈ D}` per writer plus the post-init pair —
+   never the per-cell Cartesian product.
+4. **Table immutability**: every table read under `D` must land outside
+   `model.written`; a domain spilling into a mutable cell refuses (the domain
+   is never clipped without a static guard).
+
+Proven sites carry the derivation (cells, writer blocks, |D|) in the Proof
+lemma. Unobserved members of a paired-proven envelope are **not**
+materialized: they emit as faulting `unobserved` frontier edges. This is what
+makes the closure a stable fixpoint — materializing over-approximate envelope
+members (index over-approximation lifts junk words as blocks) plants wild
+computed stores in the workspace that would correctly refute premise 1 for
+the very site that created them on the next round. An unswept writer index
+register retries via re-closure (bounded) rather than refusing, which also
+prevents the transient Cartesian junk sets the retry replaces. Backstop: a
+sole-pair enumeration that omits observed targets refuses — a premise the
+trace refutes is never trusted (Wizball's naive pairing is exactly that
+case).
+
 ## Opcode-cell envelope (Athena lemma)
 
 Unproven opcode-cell value sets take the guarded evidence envelope (observed
@@ -136,9 +174,40 @@ concretely and its writes become the snapshot. Measured under the re-based
 analysis: Bionic's aliasing writer (the page-incrementing copy loop lemma 2
 exists to bound) is **init-phase** — `$65A1` is constant `$82` for the whole
 play run — so lemma 2 and its machinery are no longer on the critical path.
-The vector sites themselves are play-phase and stay `evidence` (Bionic ×3,
-Comic Bakery ×4, Wizball ×3): the residual obstruction is blocker 3 alone,
-dispatch-index value-set precision. Ghouls_n_Ghosts' `$7316` opcode cell is
-init-only; under the boundary the tune decompiles and replays bit-exact
-(its remaining gate failure is text size — expression-sharing in emission —
-a breadth item, not a soundness one).
+Ghouls_n_Ghosts' `$7316` opcode cell is init-only; under the boundary the
+tune decompiles and replays bit-exact.
+
+## Corpus state under the paired-index lemma (full Songlengths)
+
+Proof tally moved from proven=94/evidence=60 (110 of 138 tunes `--sound`) to
+proven=126/evidence=29 (123 tunes `--sound`): 34 sites converted, all
+replays bit-exact. Converted: the operand-SMC `jmp`/`jsr` family — Ghouls ×3,
+Agent_X_II v2, Aiginas ×3, Chester_Field ×3, Cosmic_Storm ×3, Gauntlet_III
+×3, Baby_Blues ×3, Comic Bakery ×4, Commando_High-Score ×3 via the paired
+zip; 424 ×3, All_Points_Bulletin, Amulet_of_Yendor, Soccer_Skills,
+ATV_Simulator, Amaurote recovered from committed stale per-cell sets. One
+tune regressed (Attitune ×3: a formerly stale-but-covering Cartesian pair
+now commits as the guarded envelope with a precise spill refusal).
+
+Remaining refusal taxonomy (each site keeps the guarded envelope with the
+refined per-site reason):
+
+- **Mutable-table spill** (Bionic ×3, Agent_X_II v1/v3, Bird_Flu, Attitune
+  ×3): `table read hits mutable/IO cell $XXXX (writer $YYYY)` — the index
+  domain (e.g. `[$80,$FF]` from the `BPL` guard) over-approximates the real
+  table extent and some `T[i]` lands in a play-written cell; blocker 3
+  (dispatch-index precision) is the remaining lemma.
+- **Index never closes** (Athena ×3): the writer's index registers sit
+  behind the never-narrowing `(zp,X)` store family (§4.2, the same blocker
+  as its opcode cells); pairing defers and the per-cell fallback keeps the
+  256-wide proven Cartesian case lists.
+- **Unpaired writers / vector alias** (Wizball `$492C` / `$4EAC`,`$4FFB`):
+  `writer block $4D8D stores $0013 but not $0014` — the zp vector cells are
+  genuinely written independently, so zip enumeration would be unsound —
+  and `a computed store may reach cell $4680`.
+- **Observation backstop** (Aces_High `$113A`): `enumeration omits N observed
+  target(s)` — the pairing premise held syntactically but the trace refutes
+  the enumeration, so an unmodelled writer exists; refused.
+- **Stack-page vector** (Army_Moves `$E093`): `operand cell $0107 is a stack
+  cell` — jsr/rts traffic bypasses store events, so the writer census cannot
+  be complete there.

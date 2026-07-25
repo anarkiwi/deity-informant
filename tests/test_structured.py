@@ -94,6 +94,85 @@ def test_cia_icr_read_modeled_as_zero_source():
     assert w.run(2) == ev.wlog
 
 
+# ---- paired-index lemma (cross-block single-writer-pair) -----------------------
+def _paired_base():
+    """Dispatch skeleton: SMC'd ``JMP`` at $1020 (operands $1021/$1022), five
+    handlers, split lo/hi tables at $1100/$1108."""
+    m = bytearray(0x10000)
+    m[0x0F00] = 0x60
+    for k in range(5):
+        m[0x1030 + 8 * k : 0x1036 + 8 * k] = bytes((0xA9, 0x11 * (k + 1), 0x8D, k, 0xD4, 0x60))
+    m[0x1020:0x1023] = bytes((0x4C, 0x30, 0x10))
+    m[0x1100:0x1108] = bytes((0x30, 0x38, 0x40, 0x48) * 2)
+    m[0x1108:0x1110] = bytes((0x10,) * 8)
+    return m
+
+
+def _paired_verify(m, frames):
+    model, ev = S.decompile(m, 0x0F00, 0x1000, frames)
+    w = S.Walker(model)
+    assert w.run(frames) == ev.wlog and bytes(w.m) == ev.end_mem
+    return model
+
+
+def test_paired_cross_block_writer_pair_proves():
+    """Operand stores in a predecessor block of the dispatch block: the paired
+    lemma zips the tables over the index domain (4 targets, not 16)."""
+    m = _paired_base()
+    code = [0xE6, 0xF0, 0xA5, 0xF0, 0x29, 0x03, 0xAA, 0xBD, 0x00, 0x11, 0x8D, 0x21, 0x10]
+    code += [0xBD, 0x08, 0x11, 0x8D, 0x22, 0x10, 0xA5, 0xF0, 0x29, 0x01, 0xF0, 0x07]
+    code += [0x4C, 0x20, 0x10]
+    m[0x1000 : 0x1000 + len(code)] = bytes(code)
+    model = _paired_verify(m, 12)
+    pr = model.proofs[0x1020]
+    assert pr.status == "proven" and pr.lemma.startswith("paired-index")
+    assert set(pr.targets) == {0x1030, 0x1038, 0x1040, 0x1048}
+
+
+def test_paired_unpaired_stores_refuse():
+    """lo and hi stored in different blocks: the pairing premise refuses with
+    the per-site diagnostic (the site falls back to per-cell closure)."""
+    m = _paired_base()
+    code = [0xE6, 0xF0, 0xA5, 0xF0, 0x29, 0x03, 0xAA, 0xBD, 0x00, 0x11, 0x8D, 0x21, 0x10]
+    code += [0xA5, 0xF0, 0x29, 0x01, 0xF0, 0x00, 0xBD, 0x08, 0x11, 0x8D, 0x22, 0x10]
+    code += [0x4C, 0x20, 0x10]
+    m[0x1000 : 0x1000 + len(code)] = bytes(code)
+    model = _paired_verify(m, 12)
+    assert "stores $1021 but not $1022" in model.analysis.pair_refusals[0x1020]
+    assert not model.proofs[0x1020].lemma.startswith("paired-index")
+    obs = model.ev_targets[0x1020]
+    assert obs <= set(model.proofs[0x1020].targets)
+
+
+def test_paired_mutable_table_spill_refuses():
+    """A value-preserving self-write makes a table cell mutable: the
+    immutability gate refuses rather than reading through model.written."""
+    m = _paired_base()
+    code = [0xE6, 0xF0, 0xAD, 0x03, 0x11, 0x8D, 0x03, 0x11, 0xA5, 0xF0, 0x29, 0x03, 0xAA]
+    code += [0xBD, 0x00, 0x11, 0x8D, 0x21, 0x10, 0xBD, 0x08, 0x11, 0x8D, 0x22, 0x10]
+    code += [0xF0, 0x05, 0x4C, 0x20, 0x10]
+    m[0x1000 : 0x1000 + len(code)] = bytes(code)
+    model = _paired_verify(m, 12)
+    assert "table read hits mutable/IO cell $1103" in model.analysis.pair_refusals[0x1020]
+    assert not model.proofs[0x1020].lemma.startswith("paired-index")
+
+
+def test_paired_constant_pair_and_indexed_mix_proves():
+    """One writer stores a constant pair, another an indexed pair: both satisfy
+    the premise and the target set is their union."""
+    m = _paired_base()
+    code = [0xE6, 0xF0, 0xA5, 0xF0, 0x29, 0x01, 0xF0, 0x58, 0xA5, 0xF0, 0x4A, 0x29, 0x03]
+    code += [0xAA, 0xBD, 0x00, 0x11, 0x8D, 0x21, 0x10, 0xBD, 0x08, 0x11, 0x8D, 0x22, 0x10]
+    code += [0x4C, 0x20, 0x10]
+    m[0x1000 : 0x1000 + len(code)] = bytes(code)
+    arm = [0xA9, 0x50, 0x8D, 0x21, 0x10, 0xA9, 0x10, 0x8D, 0x22, 0x10, 0x4C, 0x20, 0x10]
+    m[0x1060 : 0x1060 + len(arm)] = bytes(arm)
+    model = _paired_verify(m, 16)
+    pr = model.proofs[0x1020]
+    assert pr.status == "proven" and pr.lemma.startswith("paired-index")
+    assert set(pr.targets) == {0x1030, 0x1038, 0x1040, 0x1048, 0x1050}
+
+
 def _tunes():
     return [pytest.param(path, sub, secs, id=path.stem) for path, sub, secs in corpus_params(HVSC)]
 

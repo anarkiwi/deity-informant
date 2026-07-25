@@ -505,6 +505,11 @@ class Analysis:
         self._forced = set()
         self._pinned = {}  # cell -> affine-proven value set (not recomputed/widened)
         self._sidom = None  # cached leader-split immediate dominators (blocks are fixed)
+        self._pair_memo = {}
+        self._pair_active = set()
+        self.pair_enabled = True
+        self.derivations = {}  # site -> paired-index proof derivation (proven sites)
+        self.pair_refusals = {}  # site -> paired-index refusal diagnostic
 
     # -- store indexing -----------------------------------------------------
     def _stores(self):
@@ -855,13 +860,20 @@ class Analysis:
             self._fixpoint()
             self._memo = {}
             self._imemo = {}
+            self._pair_memo = {}
             if self._refine_affine():
                 continue  # a monotone cell narrowed from TOP: re-close with it pinned
-            pending = [
-                s
-                for s in self._opt
-                if s not in self._forced and _wide_ivals(self._ivals(s[1], s[0]), s[1])
-            ]
+            pending = []
+            for s in self._opt:
+                if s in self._forced:
+                    continue
+                try:
+                    wide = _wide_ivals(self._ivals(s[1], s[0]), s[1])
+                except _Need as need:
+                    self.S.setdefault(need.cell, set())
+                    wide = True  # unclosed cell: treat as unresolved (pessimistic)
+                if wide:
+                    pending.append(s)
             if not pending:
                 return self.S
             self._forced.update(pending)
@@ -886,11 +898,13 @@ class Analysis:
             self.S[cell] = set(bound)
             self._memo = {}
             self._imemo = {}
+            self._pair_memo = {}
             if self._cell_aliased(cell):  # a computed store may write it under the bound
                 del self._pinned[cell]
                 self.S[cell] = saved
                 self._memo = {}
                 self._imemo = {}
+                self._pair_memo = {}
                 continue
             self._widen.pop(cell, None)
             changed = True
@@ -918,6 +932,7 @@ class Analysis:
             self._r_grew = False
             self._memo = {}
             self._imemo = {}
+            self._pair_memo = {}
             const, dyn = self._stores()
             for cell in list(self.S):
                 if cell in self._pinned:
@@ -962,9 +977,17 @@ class Analysis:
             key = (blk.pc, blk.op0)
             ptrs = {term[1]} if term[1] is not None else self._resolve(term[2], key, budget=16384)
             out = set()
-            for ptr in ptrs:
-                los = self._cell_set(ptr, key)
-                his = self._cell_set((ptr & 0xFF00) | ((ptr + 1) & 0xFF), key)
+            sole = len(ptrs) == 1
+            for ptr in sorted(ptrs):
+                cells = (ptr, (ptr & 0xFF00) | ((ptr + 1) & 0xFF))
+                if self.pair_enabled and any(c in self.model.written for c in cells):
+                    try:
+                        out |= self._paired_targets(blk, cells[0], cells[1], sole)
+                        continue
+                    except DecompileError:
+                        pass  # refusal recorded per site; per-cell closure below
+                los = self._cell_set(cells[0], key)
+                his = self._cell_set(cells[1], key)
                 if len(out) + len(los) * len(his) > 1024:
                     raise DecompileError("jmpind vector set too large at $%04X" % blk.pc)
                 out |= {lo | (hi << 8) for lo in los for hi in his}
@@ -976,14 +999,24 @@ class Analysis:
         return []
 
     def _dyn_targets(self, blk, ex):
+        """Paired-index lemma first (its refusals roll back cleanly), then
+        per-cell resolution, then relational closure; refusals chain."""
+        pexc = None
+        cells = self._operand_cells(blk, ex) if self.pair_enabled else None
+        if cells is not None:
+            try:
+                return self._paired_targets(blk, *cells)
+            except DecompileError as exc:
+                pexc = exc
         try:
             return set(self._resolve(ex, (blk.pc, blk.op0), budget=16384))
-        except _Need as need:
-            raise DecompileError(
-                "control target at $%04X depends on unclosed cell $%04X" % (blk.pc, need.cell)
-            ) from need
         except DecompileError:
-            return self._relational_targets(blk, ex)  # sound joint-index closure or re-raise
+            try:
+                return self._relational_targets(blk, ex)  # sound joint-index closure
+            except DecompileError as exc:
+                if pexc is not None:
+                    raise DecompileError("%s; %s" % (exc, pexc)) from exc
+                raise
 
     # -- relational (joint-index) closure of self-modified vector targets ----
     def _relational_targets(self, blk, ex):
@@ -1079,6 +1112,251 @@ class Analysis:
             return v
         vals = [self._eval_live(c, env) for c in n[2]]
         return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
+
+    # -- paired-index closure: cross-block single-writer-pair lemma ----------
+    def _operand_cells(self, blk, ex):
+        """``(c_lo, c_hi)`` when ``ex`` is ``m[c_lo] | m[c_hi] << 8`` over
+        constant operand cells, else ``None``."""
+        if ex[0] != "op" or ex[1] != "INT_OR" or len(ex[2]) != 2:
+            return None
+        parts = []
+        for kid in ex[2]:
+            shift = 0
+            if kid[0] == "op" and kid[1] == "INT_LEFT" and E.is_const(kid[2][1]):
+                shift = kid[2][1][1]
+                kid = kid[2][0]
+            if kid[0] == "op" and kid[1] == "INT_ZEXT":
+                kid = kid[2][0]
+            cell = self._leaf_cell(blk, kid)
+            if cell is None:
+                return None
+            parts.append((shift, cell))
+        parts.sort()
+        if [s for s, _c in parts] != [0, 8]:
+            return None
+        return parts[0][1], parts[1][1]
+
+    def _leaf_cell(self, blk, n):
+        """Constant address behind a byte leaf (uni load or mem), else None."""
+        if n[0] == "uni":
+            ld = next((e for e in blk.events if e[0] == "ld" and e[1] == n[1]), None)
+            if ld is not None and E.is_const(ld[2]):
+                return ld[2][1]
+            return None
+        if n[0] == "mem" and E.is_const(n[1]) and n[2] == 1:
+            return n[1][1]
+        return None
+
+    @staticmethod
+    def _uni_alias(blk):
+        """uni -> canonical uni for repeated loads of one constant cell with no
+        intervening store that may hit it (equal-value normalization)."""
+        alias, first = {}, {}
+        for ev in blk.events:
+            if ev[0] == "st":
+                if E.is_const(ev[1]):
+                    first.pop(ev[1][1], None)
+                else:
+                    first.clear()
+            elif ev[0] == "ld" and E.is_const(ev[2]):
+                a = ev[2][1]
+                if a in _VOL or a in _VOL0:
+                    continue
+                if a in first:
+                    alias[ev[1]] = first[a]
+                else:
+                    first[a] = ev[1]
+        return alias
+
+    def _pair_live(self, blk, n, alias, unis, depth=0):
+        """Writer-block live form: loads of written constant cells stay
+        symbolic ``uni`` variables (``unis`` maps them to their source cell)."""
+        if depth > 40:
+            raise DecompileError("value expression too deep at writer $%04X" % blk.pc)
+        k = n[0]
+        if k in ("const", "reg"):
+            return n
+        if k == "uni":
+            u = alias.get(n[1], n[1])
+            ld = next((e for e in blk.events if e[0] == "ld" and e[1] == u), None)
+            if ld is None:
+                raise DecompileError("u%d has no load in writer $%04X" % (u, blk.pc))
+            addr = ld[2]
+            if E.is_const(addr):
+                a = addr[1]
+                if a in _VOL or a in _VOL0:
+                    raise DecompileError("volatile load u%d in writer $%04X" % (u, blk.pc))
+                if a in self.model.written:
+                    unis[u] = a
+                    return E.uni(u, n[2])
+                return ("mem", addr, n[2])
+            return ("mem", self._pair_live(blk, addr, alias, unis, depth + 1), n[2])
+        if k == "mem":
+            return ("mem", self._pair_live(blk, n[1], alias, unis, depth + 1), n[2])
+        kids = tuple(self._pair_live(blk, c, alias, unis, depth + 1) for c in n[2])
+        return ("op", n[1], kids, n[3])
+
+    def _eval_pair(self, n, env):
+        """Evaluate a writer live expression under ``env`` (reg/uni variables);
+        refuses reads of mutable/IO cells (the table-immutability gate)."""
+        k = n[0]
+        if k == "const":
+            return n[1]
+        if k in ("reg", "uni"):
+            return env[(k, n[1])]
+        if k == "mem":
+            a = self._eval_pair(n[1], env) & 0xFFFF
+            v = 0
+            for j in range(n[2]):
+                aj = (a + j) & 0xFFFF
+                if aj in self.model.written or aj in _VOL or aj in _VOL0:
+                    raise DecompileError("table read hits mutable/IO cell $%04X" % aj)
+                v |= self.model.mem0[aj] << (8 * j)
+            return v
+        vals = [self._eval_pair(c, env) for c in n[2]]
+        return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
+
+    def _paired_targets(self, blk, c_lo, c_hi, sole=True):
+        """Memoized ``_paired_cell_targets``; refusals are recorded per site."""
+        key = (blk.pc, blk.op0, c_lo, c_hi, sole)
+        site = blk.pcs[-1]
+        hit = self._pair_memo.get(key)
+        if hit is not None:
+            if isinstance(hit, DecompileError):
+                raise hit
+            return set(hit)
+        if key in self._pair_active:  # pred-map recursion: refuse, don't record
+            raise DecompileError("paired: recursive closure at $%04X" % blk.pc)
+        self._pair_active.add(key)
+        try:
+            out = self._paired_cell_targets(blk, c_lo, c_hi, sole)
+        except DecompileError as exc:
+            self._pair_memo[key] = exc
+            self.pair_refusals[site] = str(exc)
+            self.derivations.get(site, {}).pop((c_lo, c_hi), None)
+            raise
+        finally:
+            self._pair_active.discard(key)
+        self._pair_memo[key] = frozenset(out)
+        self.pair_refusals.pop(site, None)
+        return out
+
+    def _pair_writers(self, cells):
+        """{writer block key: {cell: last stored expr}} over constant stores;
+        refuses aliasing computed stores, stack cells, and unpaired writers."""
+        model = self.model
+        for c in cells:
+            if 0x100 <= c <= 0x1FF:
+                raise DecompileError("paired: operand cell $%04X is a stack cell" % c)
+            if c in model.written and self._cell_aliased(c):
+                raise DecompileError("paired: a computed store may reach cell $%04X" % c)
+        writers = {}
+        const, _dyn = self._stores()
+        for c in cells:
+            if c not in model.written:
+                continue
+            for key, vexpr in const.get(c, ()):  # event order: last store wins
+                writers.setdefault(key, {})[c] = vexpr
+        for key, pair in sorted(writers.items()):
+            for c in cells:
+                if c in model.written and c not in pair:
+                    raise DecompileError(
+                        "paired: writer block $%04X stores $%04X but not $%04X"
+                        % (key[0], next(iter(pair)), c)
+                    )
+        return writers
+
+    def _paired_cell_targets(self, blk, c_lo, c_hi, sole=True):
+        """Targets of ``m[c_lo] | m[c_hi] << 8`` via the cross-block single-
+        writer-pair lemma: each writer stores both cells in one state, so
+        targets zip per writer over the shared index domain (never the
+        per-cell Cartesian product), plus the post-init pair."""
+        site = blk.pcs[-1]
+        model = self.model
+        writers = self._pair_writers((c_lo, c_hi))
+        out = {model.mem0[c_lo] | (model.mem0[c_hi] << 8)}
+        deriv = []
+        for key, pair in sorted(writers.items()):
+            wblk = model.blocks[key]
+            alias = self._uni_alias(wblk)
+            unis = {}
+            lives = {
+                c: (
+                    E.konst(model.mem0[c], 1)
+                    if pair.get(c) is None
+                    else self._pair_live(wblk, pair[c], alias, unis)
+                )
+                for c in (c_lo, c_hi)
+            }
+            vlo, vhi = set(), set()
+            _pair_vars(lives[c_lo], vlo)
+            _pair_vars(lives[c_hi], vhi)
+            if vlo and vhi and vlo != vhi:
+                raise DecompileError("paired: writer $%04X indexes lo and hi differently" % key[0])
+            vars_ = sorted(vlo | vhi)
+            doms = self._pair_doms(key, vars_, unis)
+            total = 1
+            for d in doms:
+                total *= len(d)
+            if total > 4096:
+                raise DecompileError(
+                    "paired: index domain too large (%d) at writer $%04X" % (total, key[0])
+                )
+            try:
+                for combo in itertools.product(*doms):
+                    env = dict(zip(vars_, combo))
+                    lo = self._eval_pair(lives[c_lo], env)
+                    hi = self._eval_pair(lives[c_hi], env)
+                    out.add((lo & 0xFF) | ((hi & 0xFF) << 8))
+            except DecompileError as exc:
+                raise DecompileError("paired: %s (writer $%04X)" % (exc, key[0])) from exc
+            deriv.append("$%04X(|D|=%d)" % (key[0], total))
+        obs = set(model.ev_targets.get(site, ()))
+        if sole and not obs <= out:
+            raise DecompileError(
+                "paired: enumeration omits %d observed target(s) at $%04X" % (len(obs - out), site)
+            )
+        self.derivations.setdefault(site, {})[(c_lo, c_hi)] = (
+            "paired-index: cells $%04X/$%04X; writers %s + post-init pair"
+            % (c_lo, c_hi, " ".join(deriv) or "none")
+        )
+        return out
+
+    def _pair_doms(self, key, vars_, unis):
+        """Guard-refined value domains for a writer's index variables; refuses
+        on TOP, empty, or over-wide domains (unswept registers fill on demand)."""
+        doms = []
+        for var in vars_:
+            if var[0] == "reg":
+                if self.R.get((key, var[1])) is TOP:
+                    raise DecompileError(
+                        "paired: index reg r%d is TOP at writer $%04X" % (var[1], key[0])
+                    )
+                dom = self._reg_set(key, var[1]) or self._demand_reg(key, var[1])
+            else:
+                dom = self._cell_set(unis[var[1]], key)
+            if not dom or len(dom) > 256:
+                raise DecompileError(
+                    "paired: index %s%d unbounded (%d values) at writer $%04X"
+                    % (var[0][0], var[1], len(dom), key[0])
+                )
+            doms.append(sorted(dom))
+        return doms
+
+    def _demand_reg(self, key, i):
+        """Predecessor-contribution union for a register the demand-driven sweep
+        has not visited yet; ``_Need`` propagates so the closure seeds the cells
+        the sweep actually requires before the next retry."""
+        vals = set()
+        for p in self._pred_map().get(key, ()):
+            if p == "cold":
+                vals.add(0xFF if i == 3 else 0)
+                continue
+            try:
+                vals |= self._pred_contrib(p, i, key)
+            except DecompileError:
+                return set()
+        return vals if len(vals) <= 256 else set()
 
     # -- SP-constant forward flow -------------------------------------------
     def sp_flow(self):
@@ -1493,6 +1771,18 @@ class Analysis:
         return frozenset(range(lo, hi + 1))
 
 
+def _pair_vars(n, out):
+    """Collect reg/uni variables of a writer live expression (into mem addrs)."""
+    k = n[0]
+    if k in ("reg", "uni"):
+        out.add((k, n[1]))
+    elif k == "mem":
+        _pair_vars(n[1], out)
+    elif k == "op":
+        for c in n[2]:
+            _pair_vars(c, out)
+
+
 class _NotPure(Exception):
     pass
 
@@ -1602,6 +1892,24 @@ def _close_once(model):
             break
         ana.close(needs)
         pending = still
+    ana.pair_enabled = False  # rounds spent: pending sites resolve without pairing
+    for blk in pending:
+        if blk in targets_map:
+            continue
+        site = blk.pcs[-1]
+        try:
+            targets_map[blk] = ana.term_targets(blk)
+            lemmas.pop(site, None)
+        except _Need as need:
+            lemmas[site] = "control target at $%04X depends on unclosed cell $%04X" % (
+                site,
+                need.cell,
+            )
+        except DecompileError as exc:
+            obs = model.ev_targets.get(site)
+            targets_map[blk] = sorted(obs) if obs else []
+            lemmas[site] = str(exc)
+    ana.pair_enabled = True
     sites = {}
     for blk in dyn_blocks:  # materialize liftable members of the resolved target sets
         site = blk.pcs[-1]
@@ -1612,9 +1920,13 @@ def _close_once(model):
                 site, "control target at $%04X unresolved after closure rounds" % site
             )
         sites[site] = (blk.term[0], tuple(sorted(targets_map[blk])), lemmas.get(site))
+        paired = lemmas.get(site) is None and site in ana.derivations
+        obs = model.ev_targets.get(site, ())
         for pc in targets_map[blk]:
             if pc in model.written:
                 continue  # dispatch boundary: its variants come from cell closure
+            if paired and pc not in obs:
+                continue  # paired envelope member: stays a faulting frontier edge
             op0 = next(iter(model.pcs[pc])) if pc in model.pcs else model.mem0[pc]
             try:
                 model.build(pc, op0)
@@ -1659,6 +1971,9 @@ def _commit_tables(model, closed, sites):
     evidence envelope (observed set, tracked lemma); an empty resolution at an
     executed site is never ``proven``; unexecuted unproven sites are ``failed``."""
     proofs, dyn_targets, evidence_sites, dispatch_sets = {}, {}, {}, {}
+    ana = model.analysis
+    derivs = ana.derivations if ana is not None else {}
+    refusals = ana.pair_refusals if ana is not None else {}
     for site in sorted(sites):
         term0, tgts, lemma = sites[site]
         obs = set(model.ev_targets.get(site, ()))
@@ -1667,9 +1982,12 @@ def _commit_tables(model, closed, sites):
                 " (empty resolution)" if not tgts else ""
             )
             tgts = tuple(sorted(obs))
+        if lemma is not None and site in refusals and refusals[site] not in lemma:
+            lemma += "; " + refusals[site]
         kind = _TERM_KIND.get(term0, term0)
         if lemma is None:
-            proofs[site] = Proof(site, kind, "proven", tgts, "")
+            deriv = "; ".join(txt for _cells, txt in sorted(derivs.get(site, {}).items()))
+            proofs[site] = Proof(site, kind, "proven", tgts, deriv)
         elif obs:
             evidence_sites[site] = obs
             proofs[site] = Proof(site, kind, "evidence", tgts, lemma)
