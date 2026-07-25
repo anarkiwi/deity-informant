@@ -12,7 +12,7 @@ import re
 from . import codec
 from . import expr as E
 from . import structured as C
-from .render import sid_name
+from .render import _static_preds, sid_name
 
 SIDPROG_VERSION = 1  # 1: play-phase structured program (spec section 6)
 
@@ -826,6 +826,15 @@ class _SortedView:
         return () if pc in self.hidden else self._by_pc.get(pc, ())
 
 
+def _left_entry(view, left):
+    """Next leftover-fragment entry: prefer a chain head (no unserialized pred)."""
+    gp = _static_preds(view)
+    for key in left:
+        if all(q in view.hidden for q in gp.get(key[0], ())):
+            return key[0]
+    return left[0][0]
+
+
 def _tree_keys(root):
     """Block keys a region tree serializes (dispatch and call arms included)."""
     keys = set()
@@ -1077,7 +1086,7 @@ def _model_trees(model):
         build(entry)
     left = sorted(k for k in model.blocks if k not in done)
     while left:
-        build(left[0][0])
+        build(_left_entry(view, left))
         still = sorted(k for k in model.blocks if k not in done)
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
@@ -1168,7 +1177,7 @@ def metrics(model):
         proc(entry)
     left = sorted(k for k in model.blocks if k not in done)
     while left:
-        proc(left[0][0])
+        proc(_left_entry(view, left))
         still = sorted(k for k in model.blocks if k not in done)
         if len(still) == len(left):
             break
