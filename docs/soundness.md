@@ -94,6 +94,16 @@ This is the spec's core value-set rewrite (§4.1–4.3); each step is
 soundness-critical, so it is tracked as the missing lemma rather than
 approximated from the trace.
 
+## Opcode-cell envelope (Athena lemma)
+
+Unproven opcode-cell value sets take the guarded evidence envelope (observed
+set only; walker faults otherwise; `--sound` fails; proof status `evidence`).
+Athena's cells `$6083`/`$C325` close correctly in isolation (self-referential
+EOR toggles iterate to their 2-sets), but two never-narrowing `(zp,X)`
+computed stores alias everything with unresolvable values, forcing ⊤. The
+missing lemma: bound those store pointers (zp pair value-set recovery under
+widening), spec §4.2.
+
 ## Re-scope: the play boundary retires lemma 2, blocker 3 remains
 
 The deliverable is the play-phase program only (spec §0.5): init executes

@@ -77,7 +77,7 @@ class _Flatten:
 
     def _follow(self, items, i, follow, loops):
         for r in items[i:]:
-            pc = _leaf_pc(r, loops)
+            pc = _entry(r, None, loops) if r.kind == "seq" else _leaf_pc(r, loops)
             if pc is not None:
                 return pc
             if r.kind in ("if", "exit", "switch"):

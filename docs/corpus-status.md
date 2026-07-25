@@ -13,11 +13,20 @@ tunes up to 74 MB; e.g. Ghouls_n_Ghosts 4.2 MB -> 505 KB, Artura 74 MB ->
 86 KB) and its runtime breaches (Artura 336s -> 94s, Chester_Field 242s ->
 95s). Remaining:
 
-## Class 1 — opcode-SMC value-set closure to ⊤ (1 tune)
+## Class 1 — retired: guarded evidence envelope for unproven opcode cells
 
-- **Athena** (Galway): play-phase `$6083` toggles `$2C`/`$4C` (BIT/JMP skip
-  idiom); the stores reaching the cell don't close. Same two-value class the
-  closure already proves on Automatas — a precision bug, not a new mechanism.
+**Athena** (Galway) now decompiles bit-exact. Diagnosis: the closure computes
+the `$6083` toggle's `{$2C,$4C}` correctly, but two `STA/SLO (zp,X)` computed
+stores in the player never narrow (range `[0,FFFF]`) and statically may-hit
+the cell with an unresolvable value, forcing ⊤. Unproven opcode-cell value
+sets now fall back to the observed set under the same guarded envelope as
+dispatch targets (walker faults on any other byte, `--sound` fails, proof
+status `evidence`); the missing lemma — bounding the `(zp,X)` store pointers —
+is tracked in docs/soundness.md. The envelope also surfaced a second Galway
+toggle at `$C325` (`{$60,$A9}`) the hard failure had masked, and Athena was
+the first tune whose SMC variants diverge in control flow, exposing (and
+fixing) a first-variant-only successor bug in the CFG builder that the codec
+check caught.
 
 ## Class 2 — size-gate straggler (1 tune)
 

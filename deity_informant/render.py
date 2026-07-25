@@ -186,10 +186,11 @@ def _proc_cfg(model, entry):
         seen.add(pc)
         nodes.append(pc)
         outs = []
-        for s in _succs(model, model.blocks[model.variants(pc)[0]]):
-            if rep(s) is not None:
-                outs.append(s)
-                stack.append(s)
+        for key in model.variants(pc):  # all SMC variants extend the CFG
+            for s in _succs(model, model.blocks[key]):
+                if rep(s) is not None and s not in outs:
+                    outs.append(s)
+                    stack.append(s)
         succ[pc] = outs
     pred = {pc: [] for pc in nodes}
     for pc in nodes:

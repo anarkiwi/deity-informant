@@ -227,3 +227,40 @@ def test_proof_report_shape_and_sound_tag():
     ev_model, _ = S.decompile(_smc_vector_image(), INIT, ORG, FRAMES)
     text = S.format_report(ev_model)
     assert "[SOUND]" not in text and "evidence" in text and "$1017" in text
+
+
+def _opcode_top_image():
+    """Opcode cell aliased by a computed store through a TOP pointer whose value
+    also cannot resolve (the Athena shape): closure must give TOP for the cell,
+    and the evidence envelope scopes it to the observed opcode set."""
+    cell = 0x1030
+    m = bytearray(0x10000)
+    m[INIT] = 0x60
+    a = G.Asm(ORG)
+    a.i("INC", "abs", CTR)  # widens to TOP across frames
+    a.i("LDA", "abs", CTR).i("STA", "zp", 0xFB).i("STA", "zp", 0xFC)
+    a.i("LDY", "imm", 0x00)
+    a.i("LDA", "indy", 0xFB).i("STA", "indy", 0xFB)  # unresolvable value, TOP range
+    a.i("LDA", "imm", 0xEA).i("STA", "abs", cell)
+    a.i("JMP", "abs", cell)
+    code = a.assemble()
+    m[ORG : ORG + len(code)] = code
+    m[cell] = 0xEA
+    m[cell + 1] = 0x60
+    return m, cell
+
+
+def test_opcode_cell_top_falls_back_to_guarded_evidence():
+    m, cell = _opcode_top_image()
+    model, ev = S.decompile(bytearray(m), INIT, ORG, FRAMES)
+    pr = model.proofs[cell]
+    assert pr.status == "evidence" and pr.kind == "opcode"
+    assert model.evidence_sites[cell] == model.pcs[cell] == {0xEA}
+    w = S.Walker(model)
+    assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
+    bad = bytearray(model.mem0)
+    bad[cell] = 0x02  # JAM: outside the observed envelope
+    with pytest.raises(S.WalkError):
+        model.lookup(cell, bad)
+    with pytest.raises(S.DecompileError, match="sound mode"):
+        S.decompile(bytearray(m), INIT, ORG, FRAMES, sound=True)
