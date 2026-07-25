@@ -57,6 +57,14 @@ class _EvidenceVM(PcodeVM):
     def __init__(self, mem):
         super().__init__(mem)
         self.written = set()
+        self.reads = set()
+        self.pc = 0
+
+    def _rd(self, addr, sz):
+        self.reads.add((self.pc, addr & 0xFFFF))
+        if sz > 1:
+            self.reads.add((self.pc, (addr + 1) & 0xFFFF))
+        return super()._rd(addr, sz)
 
     def _wr(self, addr, val, sz):
         for i in range(sz):
@@ -68,11 +76,14 @@ class Evidence:
     """Play-phase executed identities, leaders, written cells, oracle log;
     init ran concretely into the ``mem0`` snapshot + SID-write ``prologue``."""
 
-    def __init__(self, pcs, leaders, targets, written, wlog, end_mem, end_reg, prologue, mem0):
+    def __init__(
+        self, pcs, leaders, targets, written, wlog, end_mem, end_reg, prologue, mem0, reads=()
+    ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
         self.targets = targets  # {pc: set(taken successor pc)} at transfer sites
         self.written = written
+        self.reads = frozenset(reads)  # play-phase (site pc, read address) pairs
         self.wlog = wlog
         self.end_mem = end_mem
         self.end_reg = end_reg
@@ -105,6 +116,7 @@ def trace(mem, init, play, frames, subtune=0):
         while reg[3] < start:
             op = vm.mem[pc]
             pcs.setdefault(pc, set()).add(op)
+            vm.pc = pc
             nxt = vm.step(pc, cache, lift)
             if nxt != (pc + MODE_LEN[OPS[op][1]]) & 0xFFFF:
                 leaders.add(nxt)
@@ -122,12 +134,22 @@ def trace(mem, init, play, frames, subtune=0):
     leaders.clear()
     leaders.add(play)
     vm.written.clear()
+    vm.reads.clear()
     vm.wlog = []
     vm.cycles = 0
     for _ in range(frames):
         run_entry(play)
     return Evidence(
-        pcs, leaders, targets, vm.written, vm.wlog, bytes(vm.mem), list(vm.reg), prologue, mem0
+        pcs,
+        leaders,
+        targets,
+        vm.written,
+        vm.wlog,
+        bytes(vm.mem),
+        list(vm.reg),
+        prologue,
+        mem0,
+        vm.reads,
     )
 
 
@@ -1967,6 +1989,7 @@ class Model:
         self.sound = sound  # strict mode: any evidence-only site is a build failure
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
+        self.reads = evidence.reads  # play-phase (site pc, read address) pairs
         self.pcs = evidence.pcs
         self.leaders = set(evidence.leaders)
         self.cut = set(evidence.leaders)  # block boundaries: no suffix duplication

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from . import codec
+from . import datadecl
 from . import expr as E
 from . import structured as C
 from .render import _static_preds, sid_name
@@ -779,12 +780,13 @@ def _shadow(blk, cse):
 
 
 # ---- emission -------------------------------------------------------------------
-def _image_lines(mem0):
-    """``image { .. }``: runs of nonzero bytes, 16 per row, packed hex pairs."""
+def _image_lines(mem0, cov):
+    """``image { .. }``: runs of nonzero bytes outside the declared data
+    regions (``cov`` marks carved addresses), 16 per row, packed hex pairs."""
     out = ["image {"]
     row = []
     for a in range(0x10000):
-        if mem0[a]:
+        if mem0[a] and not cov[a]:
             if row and (a != row[0] + len(row) - 1 or len(row) - 1 >= 16):
                 out.append(" $%04X: %s" % (row[0], "".join(row[1:])))
                 row = []
@@ -795,6 +797,152 @@ def _image_lines(mem0):
         out.append(" $%04X: %s" % (row[0], "".join(row[1:])))
     out.append("}")
     return out
+
+
+# ---- data + symbols sections (song-data declarations, role aliases) -------------
+def _decl_attrs(d):
+    parts = []
+    if d["stride"] > 1:
+        parts.append("stride %d" % d["stride"])
+    parts.extend("+%s" % _addr_name(b) for b in d["cobases"])
+    if d["role"] is not None:
+        parts.append("%s %s" % (d["role"][0], _addr_name(d["role"][1])))
+    if d["via"] is not None:
+        parts.append("via %s" % _addr_name(d["via"]))
+    if d["targets"] is not None:
+        parts.append("-> $%04X..$%04X" % d["targets"])
+    if d["cmp"]:
+        parts.append("cmp " + " ".join("$%02X" % v for v in d["cmp"]))
+    if d["dispatch"]:
+        parts.append("dispatch " + " ".join("$%04X" % v for v in d["dispatch"]))
+    if d["observed"]:
+        parts.append("observed")
+    return "".join(" " + p for p in parts)
+
+
+def _data_lines(decls, mem0):
+    """``data { .. }`` plus the carved-address mask; declarations partition
+    their regions out of the image (asserted disjoint, bytes attached)."""
+    cov = bytearray(0x10000)
+    if not decls:
+        return [], cov
+    out = ["data {"]
+    end = 0
+    for d in decls:
+        assert end <= d["base"] and len(d["data"]) == d["size"] > 0
+        end = d["base"] + d["size"]
+        assert bytes(mem0[d["base"] : end]) == d["data"]
+        cov[d["base"] : end] = b"\x01" * d["size"]
+        out.append(" %s %s[%d]%s:" % (d["kind"], _addr_name(d["base"]), d["size"], _decl_attrs(d)))
+        out.extend("  " + d["data"][k : k + 16].hex().upper() for k in range(0, d["size"], 16))
+    out.append("}")
+    return out, cov
+
+
+_DECL_HEAD = re.compile(r"(table|stream) (\S+)\[(\d+)\]( [^:]*)?:$")
+_TARGETS = re.compile(r"\$([0-9A-F]{4})\.\.\$([0-9A-F]{4})$")
+
+
+def _req_name(name):
+    addr = _name_addr(name)
+    if addr is None:
+        raise ValueError("not a canonical cell name: %r" % name)
+    return addr
+
+
+def _parse_decl(line):
+    m = _DECL_HEAD.match(line)
+    if not m:
+        raise ValueError("bad data declaration %r" % line)
+    d = {
+        "kind": m.group(1),
+        "base": _req_name(m.group(2)),
+        "size": int(m.group(3)),
+        "stride": 1,
+        "cobases": [],
+        "role": None,
+        "via": None,
+        "targets": None,
+        "cmp": [],
+        "dispatch": [],
+        "observed": False,
+        "data": b"",
+    }
+    toks = (m.group(4) or "").split()
+    j = 0
+    while j < len(toks):
+        t = toks[j]
+        if t == "stride":
+            d["stride"] = int(toks[j + 1])
+            j += 2
+        elif t.startswith("+"):
+            d["cobases"].append(_req_name(t[1:]))
+            j += 1
+        elif t in ("lo", "hi"):
+            d["role"] = (t, _req_name(toks[j + 1]))
+            j += 2
+        elif t == "via":
+            d["via"] = _req_name(toks[j + 1])
+            j += 2
+        elif t == "->":
+            tm = _TARGETS.match(toks[j + 1])
+            if not tm:
+                raise ValueError("bad target span %r" % toks[j + 1])
+            d["targets"] = (int(tm.group(1), 16), int(tm.group(2), 16))
+            j += 2
+        elif t in ("cmp", "dispatch"):
+            j += 1
+            vals = []
+            while j < len(toks) and toks[j].startswith("$"):
+                vals.append(int(toks[j][1:], 16))
+                j += 1
+            d[t] = vals
+        elif t == "observed":
+            d["observed"] = True
+            j += 1
+        else:
+            raise ValueError("unknown data attribute %r" % t)
+    return d
+
+
+_ALIAS_LINE = re.compile(r"alias ([A-Za-z]\w*) = (\S+)$")
+_RESERVED = re.compile(r"[ut]\d+$|r\d+$|mem$|carry$|zext[12]$|goto$|if$|ifnot$|loop$")
+
+
+def _check_alias(name):
+    if _name_addr(name) is not None or name in _NAME_REGS or _RESERVED.match(name):
+        raise ValueError("alias %r shadows a reserved name" % name)
+    return name
+
+
+def _symbol_lines(aliases):
+    if not aliases:
+        return []
+    out = ["symbols {"]
+    out.extend(" alias %s = %s" % (aliases[c], _addr_name(c)) for c in sorted(aliases))
+    out.append("}")
+    return out
+
+
+def _alias_res(aliases):
+    """``(apply, strip)`` body-line substitutions for the {cell: alias} table;
+    the table is the only mapping (strict bijection, checked here)."""
+    if not aliases:
+        return None, None
+    fwd = {}
+    rev = {}
+    for cell, name in aliases.items():
+        _check_alias(name)
+        fwd[_addr_name(cell)] = name
+        rev[name] = _addr_name(cell)
+    if len(rev) != len(fwd):
+        raise ValueError("alias table is not a bijection")
+    fpat = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, fwd)))
+    rpat = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, rev)))
+    return (
+        lambda s: fpat.sub(lambda m: fwd[m.group(0)], s),
+        lambda s: rpat.sub(lambda m: rev[m.group(0)], s),
+    )
 
 
 def _items(region):
@@ -1146,7 +1294,14 @@ def emit(model):
             "dispatch $%04X: %s"
             % (pc, " ".join("$%02X" % v for v in sorted(model.dispatch_sets[pc])))
         )
-    out.extend(_image_lines(model.mem0))
+    decls = getattr(model, "data_decls", None)
+    aliases = getattr(model, "symbols", None)
+    if decls is None:
+        decls, aliases = datadecl.declarations(model)
+    data_out, cov = _data_lines(decls, model.mem0)
+    out.extend(_image_lines(model.mem0, cov))
+    out.extend(data_out)
+    out.extend(_symbol_lines(aliases))
     procs = getattr(model, "procs", None)
     if procs is not None:
         w = _Writer(set(model.labels), set(model.dispatch_sets), None)
@@ -1157,7 +1312,8 @@ def emit(model):
         w = _Writer(labels, set(model.dispatch_sets), view)
         for entry, root in trees:
             w.proc(entry, root)
-    out.extend(w.out)
+    to_alias, _strip = _alias_res(aliases)
+    out.extend(w.out if to_alias is None else map(to_alias, w.out))
     return "\n".join(out) + "\n"
 
 
@@ -1261,6 +1417,8 @@ class TextModel:
         self.dyn_targets = dict(dyn or {})
         self.procs = None  # [(entry, seq region)] when parsed from text
         self.labels = set()
+        self.data_decls = []  # data { } declarations (bytes carved from mem0)
+        self.symbols = {}  # {cell: alias} role-alias bijection
         self.prog = None  # linked flat program: [block-or-None, ctrl] rows
         self.pcmap = None  # serialized pc -> prog index (nodes that ARE the pc)
         self.contmap = None  # call-return pc -> continuation index (flow nodes)
@@ -1754,12 +1912,18 @@ def parse(text):
     mem0 = bytearray(0x10000)
     dispatch_sets = {}
     prologue = []
+    data_decls = []
+    symbols = {}
+    unalias = None
     p = _Parser()
     i = 0
     while i < len(lines):
         line = lines[i]
         i += 1
         if p.stack:
+            if unalias is None:
+                unalias = _alias_res(symbols)[1] or str
+            line = unalias(line)
             if not (p.structural(line) or p.terminator(line)):
                 p.payload(line)
             continue
@@ -1791,6 +1955,32 @@ def parse(text):
                     mem0[a + k // 2] = int(run[k : k + 2], 16)
                 i += 1
             i += 1
+        elif line == "data {":
+            while lines[i] != "}":
+                if _DECL_HEAD.match(lines[i]):
+                    data_decls.append(_parse_decl(lines[i]))
+                else:
+                    data_decls[-1]["data"] += bytes.fromhex(lines[i])
+                i += 1
+            i += 1
+            for d in data_decls:
+                if len(d["data"]) != d["size"]:
+                    raise ValueError(
+                        "data region %s[%d] carries %d bytes"
+                        % (_addr_name(d["base"]), d["size"], len(d["data"]))
+                    )
+                mem0[d["base"] : d["base"] + d["size"]] = d["data"]
+        elif line == "symbols {":
+            while lines[i] != "}":
+                m = _ALIAS_LINE.match(lines[i])
+                if not m:
+                    raise ValueError("bad alias line %r" % lines[i])
+                cell = _req_name(m.group(2))
+                if cell in symbols:
+                    raise ValueError("duplicate alias for %s" % m.group(2))
+                symbols[cell] = _check_alias(m.group(1))
+                i += 1
+            i += 1
         elif line.startswith("proc "):
             p.stack.append(["proc", int(line.split()[1].lstrip("$"), 16), []])
         else:
@@ -1802,6 +1992,8 @@ def parse(text):
     tm = TextModel(mem0, init, play, {}, dispatch_sets, subtune, prologue)
     tm.procs = p.procs
     tm.labels = p.labels
+    tm.data_decls = data_decls
+    tm.symbols = symbols
     return tm
 
 

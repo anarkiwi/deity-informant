@@ -82,6 +82,57 @@ def _disasm_size(mem):
     return total
 
 
+# expected data/symbols declaration fragments per tune id (ground-truth studies)
+_DECL_TRUTH = {
+    "Hubbard_Rob-Commando": [
+        "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:",
+        "table m_56F9[3] lo m_56FC -> $576B..$57EC observed:",
+        "table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:",
+        " stride 8 ",  # instrument records at m_5591
+        "stream m_576B[",
+        "via zp_5D cmp $FE $FF observed:",
+        "alias ptr_005D_lo = zp_5D",
+        "alias ptr_005D_hi = zp_5E",
+        "alias pos_54EC = m_54EC",
+        "alias pos_54ED = m_54ED",
+        "alias pos_54EE = m_54EE",
+    ],
+    "Cadaver-Aces_High": [
+        "table m_155C[52] lo m_1590",
+        "stream m_15C4[",
+        "via zp_FB cmp $00 $FE $FF observed:",
+        "alias ptr_00FB_lo = zp_FB",
+    ],
+    "Follin_Tim-Ghouls_n_Ghosts": [
+        "stream m_7338[",
+        "stream m_75F7[",
+        "stream m_77A8[",
+        "via zp_21 ",
+        "via zp_23 ",
+        "via zp_25 ",
+        "alias ptr_0021_lo = zp_21",
+    ],
+}
+
+
+def _check_partition(model, text, tm):
+    """Data regions and image rows partition mem0 exactly (no byte in both)."""
+    assert tm.mem0 == model.mem0
+    cov = set()
+    for d in tm.data_decls:
+        span = set(range(d["base"], d["base"] + d["size"]))
+        assert not cov & span
+        cov |= span
+    lines = text.splitlines()
+    for row in lines[lines.index("image {") + 1 :]:
+        if row == "}":
+            break
+        addr, run = row.split(":", 1)
+        a = int(addr.strip().lstrip("$"), 16)
+        n = len(run.strip()) // 2
+        assert not cov & set(range(a, a + n))
+
+
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())
 def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
     """Acceptance: full-length (cycle, reg, value) log bit-exact from model and
@@ -94,6 +145,9 @@ def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
     assert len(text) < _disasm_size(model.mem0)
     mt = sidprog.metrics(model)  # reporting only: no structuring threshold yet
     assert mt["blocks"] > 0 and 0.0 <= mt["structured_pct"] <= 100.0
+    _check_partition(model, text, sidprog.parse(text))
+    for frag in _DECL_TRUTH.get("%s-%s" % (sid.parent.name, sid.stem), ()):
+        assert frag in text, frag
 
 
 # ---- property-based round-trip laws over generated models ----------------------
@@ -452,3 +506,117 @@ def test_future_major_fails_cleanly():
 def test_non_sidprog_document_rejected(bad):
     with pytest.raises(ValueError):
         sidprog.loads(bad)
+
+
+# ---- data { } declarations + symbols { } aliases (serialization only) ----------
+_D_ORG, _D_TBL, _D_WTBL, _D_CNT, _D_PTR = 0x1000, 0x1400, 0x1480, 0x1440, 0x60
+_D_PLO, _D_PHI, _D_PATA, _D_PATB = 0x1500, 0x1508, 0x1520, 0x1530
+
+
+def _decl_player():
+    """Counter-indexed tables (proven + record stride), a reloaded pointer
+    pair walking command streams, and role-classified state cells."""
+    a = G.Asm(_D_ORG)
+    a.i("LDX", "abs", _D_CNT)
+    a.i("LDA", "absx", _D_PLO).i("STA", "zp", _D_PTR)
+    a.i("LDA", "absx", _D_PHI).i("STA", "zp", _D_PTR + 1)
+    a.i("LDY", "abs", _D_CNT + 1)
+    a.i("LDA", "indy", _D_PTR).i("CMP", "imm", 1).i("BNE", "rel", ("L", "n1"))
+    a.i("LDA", "imm", 0x41)
+    a.label("n1").i("STA", "abs", G.SID + 4)
+    a.i("LDA", "abs", _D_CNT + 2).i("CLC").i("ADC", "imm", 1).i("STA", "abs", _D_CNT + 2)
+    a.i("AND", "imm", 3).i("TAX")
+    a.i("LDA", "absx", _D_TBL).i("STA", "abs", G.SID)
+    a.i("LDA", "abs", _D_CNT + 2).i("AND", "imm", 3).i("ASL", "acc").i("TAX")
+    a.i("LDA", "absx", _D_WTBL).i("STA", "abs", G.SID + 2)
+    a.i("LDA", "absx", _D_WTBL + 1).i("STA", "abs", G.SID + 3)
+    a.i("INC", "abs", _D_CNT + 1).i("LDA", "abs", _D_CNT + 1).i("CMP", "imm", 3)
+    a.i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", 0).i("STA", "abs", _D_CNT + 1)
+    a.i("INC", "abs", _D_CNT).i("LDA", "abs", _D_CNT).i("CMP", "imm", 2)
+    a.i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", 0).i("STA", "abs", _D_CNT)
+    a.label("out").i("RTS")
+    data = {
+        _D_PLO: _D_PATA & 0xFF,
+        _D_PLO + 1: _D_PATB & 0xFF,
+        _D_PHI: _D_PATA >> 8,
+        _D_PHI + 1: _D_PATB >> 8,
+    }
+    data.update({_D_PATA + k: v for k, v in enumerate((1, 2, 1))})
+    data.update({_D_PATB + k: 0x11 + k for k in range(3)})
+    data.update({_D_TBL + k: 0x30 + k for k in range(4)})
+    data.update({_D_WTBL + k: 0x50 + k for k in range(8)})
+    mem = bytearray(0x10000)
+    mem[0x0F00] = 0x60  # init: RTS
+    for k, b in enumerate(a.assemble()):
+        mem[_D_ORG + k] = b
+    for addr, v in data.items():
+        mem[addr] = v
+    return S.decompile(mem, 0x0F00, _D_ORG, 14)
+
+
+def test_data_declarations_and_aliases():
+    """Typed declarations carve the song data (extent-honest) and the alias
+    bijection renames classified state; all serialization laws hold."""
+    model, ev = _decl_player()
+    text = sidprog.emit(model)
+    assert "table m_1400[4]:" in text  # proven index domain: no observed marker
+    assert "table m_1480[8] stride 2 +m_1481:" in text
+    assert "table m_1500[2] lo m_1508 -> $1520..$1530 observed:" in text
+    assert "table m_1508[2] hi m_1500 -> $1520..$1530 observed:" in text
+    assert "stream m_1520[3] via zp_60 cmp $01 observed:" in text
+    assert "alias ptr_0060_lo = zp_60" in text and "alias ptr_0060_hi = zp_61" in text
+    assert "alias pos_1441 = m_1441" in text  # row position of the deref index
+    assert "ptr_0060_lo = " in text and "zp_60 = " not in text  # body uses aliases
+    tm = sidprog.parse(text)
+    assert sidprog.emit(tm) == text
+    _check_partition(model, text, tm)
+    assert sidprog.TreeWalker(tm).run(14) == ev.wlog  # declarations move bytes only
+
+
+def test_data_symbols_handwritten_roundtrip():
+    """A handwritten data/symbols document parses, reconstructs mem0 from the
+    declared bytes, and re-emits as a fixpoint (dispatch/cmp attrs included)."""
+    doc = "\n".join(
+        (
+            "sidprog 1",
+            "play $1000",
+            "init $0F00",
+            "image {",
+            " $1000: A900",
+            "}",
+            "data {",
+            " stream m_2000[4] via zp_60 cmp $01 $02 dispatch $1234 observed:",
+            "  0102FF00",
+            "}",
+            "symbols {",
+            " alias ctr_1440 = m_1440",
+            "}",
+            "proc $1000 {",
+            "  @2 A = $00",
+            "  ctr_1440 = $05",
+            "  ret",
+            "}",
+        )
+    )
+    tm = sidprog.loads(doc)
+    assert tm.mem0[0x2000:0x2004] == b"\x01\x02\xff\x00"
+    assert tm.symbols == {0x1440: "ctr_1440"}
+    (d,) = tm.data_decls
+    assert d["cmp"] == [1, 2] and d["dispatch"] == [0x1234] and d["via"] == 0x60
+    text = sidprog.dumps(tm)
+    assert sidprog.dumps(sidprog.loads(text)) == text
+    assert "ctr_1440 = $05" in text
+
+
+def test_alias_shadowing_rejected():
+    doc = "sidprog 1\nplay $1000\ninit $0F00\nsymbols {\n alias m_1234 = m_1240\n}\n"
+    with pytest.raises(ValueError):
+        sidprog.loads(doc)
+
+
+def test_data_byte_count_mismatch_rejected():
+    doc = "sidprog 1\nplay $1000\ninit $0F00\ndata {\n table m_2000[4]:\n  0102\n}\n"
+    with pytest.raises(ValueError):
+        sidprog.loads(doc)
