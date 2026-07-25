@@ -23,3 +23,6 @@ nomoresecrets.pdf
 # local artifacts
 .venv/
 out/
+
+# agent worktrees / local harness state
+.claude/
