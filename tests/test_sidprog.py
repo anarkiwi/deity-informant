@@ -164,13 +164,31 @@ _event = st.one_of(
     st.tuples(st.sampled_from(("ax", "iy")), _expr, _expr).map(lambda t: ("pen", t[0], t[1], t[2])),
 )
 
+# zero-compare conditions: the emit-side canonicalization must stay a fixpoint
+_byte_atom = st.one_of(
+    st.integers(0, 15).map(lambda i: ("reg", i)),
+    st.integers(0, 31).map(lambda n: ("uni", n, 1)),
+    _named_mem,
+)
+_zero_cmp = st.builds(
+    lambda mn, lhs: ("op", mn, (lhs, ("const", 0, 1)), 1),
+    st.sampled_from(("INT_EQUAL", "INT_NOTEQUAL")),
+    st.one_of(
+        st.tuples(_byte_atom, _byte_atom).map(lambda t: ("op", "INT_SUB", t, 1)),
+        st.tuples(_byte_atom, st.integers(0, 255)).map(
+            lambda t: ("op", "INT_ADD", (t[0], ("const", t[1], 1)), 1)
+        ),
+    ),
+)
+_cond = st.one_of(_expr, _zero_cmp)
+
 # calls stay dynamic: static jsr targets would become codec-verified entries
 _TERM = st.one_of(
     _ADDR.map(lambda a: ("goto", a)),
-    st.tuples(st.integers(0, 1), _ADDR, _ADDR, _expr).map(
+    st.tuples(st.integers(0, 1), _ADDR, _ADDR, _cond).map(
         lambda t: ("br", t[0], t[1], t[2], t[3], None)
     ),
-    st.tuples(st.integers(0, 1), _ADDR, _expr, _expr).map(
+    st.tuples(st.integers(0, 1), _ADDR, _cond, _expr).map(
         lambda t: ("br", t[0], None, t[1], t[2], t[3])
     ),
     _expr.map(lambda e: ("jmpd", e)),
@@ -297,7 +315,8 @@ def test_named_and_indexed_forms(e, text):
 
 
 def test_named_store_and_load_lines_roundtrip():
-    """A block whose payload uses every memref form survives dumps/loads."""
+    """A block whose payload uses every memref form survives dumps/loads;
+    the single-use load inlines, the store-crossing load keeps its line."""
     zx = ("op", "INT_ZEXT", (("reg", 1),), 2)
     idx = ("op", "INT_ADD", (zx, ("const", 0x1500, 2)), 2)
     blk = Block(
@@ -317,11 +336,86 @@ def test_named_store_and_load_lines_roundtrip():
     mem0[0x1000] = 0xA9
     m = sidprog.TextModel(mem0, 0x0F00, 0x1000, {(0x1000, 0xA9): blk}, {})
     text = sidprog.dumps(m)
-    assert "u0 = zp_FB" in text
-    assert "u1 = m_1500[X]" in text
-    assert "sid.v1.ctrl = u0" in text
+    assert "sid.v1.ctrl = zp_FB" in text  # single use, no store between: inlined
+    assert "u1 = m_1500[X]" in text  # crosses the SID store: keeps its line
     assert "m_1500[X] = u1" in text
     assert sidprog.dumps(sidprog.loads(text)) == text
+
+
+def _one_block_text(events, term=("rts",), regs=None):
+    blk = Block(0x1000, 0xA9, [0x1000], events, term, regs or [E.reg(i) for i in range(16)])
+    mem0 = bytearray(0x10000)
+    mem0[0x1000] = 0xA9
+    m = sidprog.TextModel(mem0, 0x0F00, 0x1000, {(0x1000, 0xA9): blk}, {})
+    text = sidprog.dumps(m)
+    assert sidprog.dumps(sidprog.loads(text)) == text
+    return text
+
+
+def _indexed(base, reg):
+    zx = ("op", "INT_ZEXT", (("reg", reg),), 2)
+    return ("op", "INT_ADD", (zx, ("const", base, 2)), 2)
+
+
+def test_single_use_load_inlines_across_cyc_and_pen():
+    """The load line vanishes; its cycle stamp coalesces into the consumer's."""
+    idx = _indexed(0x5591, 2)
+    text = _one_block_text(
+        [
+            ("cyc", 2),
+            ("ld", 0, idx),
+            ("cyc", 4),
+            ("pen", "ax", ("const", 0x5591, 2), ("reg", 2)),
+            ("cyc", 4),
+            ("st", ("const", 0x01FD, 2), ("op", "INT_SUB", (("uni", 0, 1), ("reg", 0)), 1)),
+        ]
+    )
+    assert "u0" not in text
+    assert "@6 @x($5591, Y)" in text
+    assert "@4 m_01FD = (m_5591[Y] - A)" in text
+
+
+def test_volatile_and_near_volatile_loads_keep_their_lines():
+    t1 = _one_block_text(
+        [("ld", 0, ("const", 0xD012, 2)), ("st", ("const", 0x00FB, 2), ("uni", 0, 1))]
+    )
+    assert "u0 = m_D012" in t1  # volatile cell
+    t2 = _one_block_text(
+        [("ld", 0, _indexed(0xD400, 1)), ("st", ("const", 0x00FB, 2), ("uni", 0, 1))]
+    )
+    assert "u0 = sid.v1.freq_lo[X]" in t2  # index window reaches $D41B/$D41C
+
+
+def test_multi_use_load_keeps_its_line():
+    u0 = ("uni", 0, 1)
+    text = _one_block_text(
+        [("ld", 0, _indexed(0x1500, 1)), ("st", ("const", 0xFB, 2), u0)],
+        regs=[u0] + [E.reg(i) for i in range(1, 16)],
+    )
+    assert "u0 = m_1500[X]" in text
+
+
+def test_condition_canonicalizes_to_direct_compare():
+    """Sub/add compare-to-zero in condition position becomes a direct compare."""
+    a, b = ("mem", ("const", 0xFB, 2), 1), ("reg", 0)
+    sub0 = ("op", "INT_EQUAL", (("op", "INT_SUB", (a, b), 1), ("const", 0, 1)), 1)
+    add0 = (
+        "op",
+        "INT_NOTEQUAL",
+        (("op", "INT_ADD", (b, ("const", 0xF8, 1)), 1), ("const", 0, 1)),
+        1,
+    )
+    t1 = _one_block_text([], term=("br", 1, None, 0x1005, sub0, ("const", 0x1000, 2)))
+    assert "if (zp_FB == A) goto ($1000) else $1005" in t1
+    t2 = _one_block_text([], term=("br", 0, None, 0x1005, add0, ("const", 0x1000, 2)))
+    assert "ifnot (A != $08) goto ($1000) else $1005" in t2
+
+
+def test_condition_width_mismatch_not_canonicalized():
+    wide = ("op", "INT_SUB", (("uni", 0, 2), ("uni", 1, 2)), 2)
+    cond = ("op", "INT_EQUAL", (wide, ("const", 0, 1)), 1)
+    text = _one_block_text([], term=("br", 1, None, 0x1005, cond, ("const", 0x1000, 2)))
+    assert "((u0:2 - u1:2):2 == $00)" in text
 
 
 def test_metrics_reporting():

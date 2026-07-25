@@ -35,6 +35,11 @@ Pre-release changes within major 1 (never released, no bump):
   and labels appear only on goto/dynamic-branch targets (plus rare payload
   boundary markers). Earlier emitters wrote a labelled block per pc with
   explicit `goto`/`if … goto … else …` terminator lines.
+- statement cleanup: a single-use non-volatile machine load serialises as its
+  memref at the use site instead of a `uN =` line, and `if`/`ifnot` condition
+  positions canonicalise sub/add compare-to-zero to direct compares (see
+  "Statement sugar" below). Earlier emitters wrote every machine load as a
+  `uN =` line and every condition verbatim.
 
 ## Grammar (EBNF)
 
@@ -212,6 +217,35 @@ byte and carry no `:n`; `mem` loads are one byte; a lone `-$k` inside an
 - **CSE bindings are textual sugar.** `tN = expr` lines name subtrees the
   emitter chose to share (bound iff the binding prints shorter than inlining);
   `parse` inlines every `tN` back, so the model never contains binding nodes.
+  A binding always has at least two references; a subtree used once is never
+  bound (bind-site elimination is implied by the shorter-print rule).
+
+## Statement sugar (emit-time, walker-equivalent)
+
+- **Single-use load inlining.** A machine load (`uN = memref` line) whose slot
+  is consumed exactly once serialises as its `memref` at the use site — the
+  `uN =` line and the slot number disappear from the text — iff the move is
+  provably semantics-free: no `st` event lies between the load and its
+  consumer in the block's event stream, and every address the load can read
+  is non-volatile (a constant cell outside the volatile set, or a
+  byte-bounded index over a constant base whose 256-byte window is disjoint
+  from it; anything unprovable keeps its line). The load's leading `@n` cycle
+  stamp coalesces into the following statement's stamp, so the cycle sum at
+  every remaining event is unchanged. `parse` rebuilds an expression-level
+  memory read at the consumer's machine position; execution is bit-identical
+  because the cell's value cannot change across the move (no intervening
+  store) and does not depend on the cycle count (non-volatile), and a load
+  contributes no cycles of its own. Volatile-address loads are never inlined.
+- **Condition canonicalisation.** In `if`/`ifnot` condition positions only
+  (the `if @tP` region header and the dynamic-branch escape hatch), the
+  emitter rewrites `(a - b) == $00` to `(a == b)` and the CMP idiom
+  `(a + k) == $00` (a two's-complement added constant) to `(a == $konst)`
+  with `konst = (-k) & mask` — likewise the `!=` forms — when the operand,
+  result and constant widths all agree (skipped otherwise; `<`, `<=` and
+  sign-bit tests are untouched). This is a canonicalisation, not a bijection:
+  `parse` builds the direct-compare tree, which is walker-equivalent to the
+  sub/add-compare on equal widths, and re-emission is a fixpoint because the
+  direct form matches no rewrite pattern.
 
 ## Two executors, one semantics
 

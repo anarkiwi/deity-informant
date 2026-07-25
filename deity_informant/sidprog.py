@@ -466,6 +466,184 @@ def _rename(line):
     return _U_REF.sub(sub, line)
 
 
+# ---- emit-side statement cleanup (single-use load inlining, canonical conds) ---
+_VOLS = C._VOL | C._VOL0
+
+
+def _canon_cond(n):
+    """``(a - b) == $00`` -> ``a == b`` and ``(a + k) == $00`` -> ``a == -k``
+    (also ``!=``), equal widths only; walker-equivalent direct compares."""
+    if n[0] != "op" or n[1] not in ("INT_EQUAL", "INT_NOTEQUAL"):
+        return n
+    lhs, rhs = n[2]
+    if lhs[0] != "op" or rhs != ("const", 0, lhs[3]):
+        return n
+    sz = lhs[3]
+    if lhs[1] == "INT_SUB" and E.width(lhs[2][0]) == sz and E.width(lhs[2][1]) == sz:
+        return ("op", n[1], lhs[2], n[3])
+    if lhs[1] == "INT_ADD" and len(lhs[2]) == 2:
+        a, k = lhs[2]
+        if k[0] == "const" and k[2] == sz and E.width(a) == sz and (-k[1]) & E.mask(sz):
+            return ("op", n[1], (a, ("const", (-k[1]) & E.mask(sz), sz)), n[3])
+    return n
+
+
+def _bytev(n):
+    """True iff ``n`` provably evaluates to one byte under ``compile_block``."""
+    while n[0] == "op" and n[1] == "INT_ZEXT":
+        n = n[2][0]
+    if n[0] != "op":
+        return E.width(n) == 1
+    if n[1] in ("INT_ADD", "INT_SUB", "INT_LEFT"):
+        return n[3] == 1  # masked to their width at evaluation
+    if n[1] == "INT_RIGHT":
+        return _bytev(n[2][0])
+    if n[1] == "INT_CARRY" or n[1] in _CMPS:
+        return True
+    return all(_bytev(k) for k in n[2])  # AND/OR/XOR: closed over byte operands
+
+
+def _ld_safe(addr):
+    """True iff every run-time address of this load avoids the volatile cells."""
+    if addr[0] == "const":
+        return addr[1] & 0xFFFF not in _VOLS
+    if addr[0] == "op" and addr[1] == "INT_ADD" and addr[3] == 2 and len(addr[2]) == 2:
+        a, b = addr[2]
+        base, idx = (a, b) if a[0] == "const" else (b, a)
+        if base[0] == "const" and idx[0] != "const" and _bytev(idx):
+            return all((v - base[1]) & 0xFFFF > 0xFF for v in _VOLS)
+    return False
+
+
+def _uni_refs(n, memo):
+    """slot -> [paths, wide-ref] reference multiplicities over the DAG of ``n``."""
+    if id(n) not in memo:
+        stack = [(n, False)]
+        while stack:
+            x, done = stack.pop()
+            if id(x) in memo:
+                continue
+            if x[0] == "uni":
+                memo[id(x)] = {x[1]: [1, x[2] != 1]}
+            elif not done:
+                stack.append((x, True))
+                stack.extend((k, False) for k in _kids(x))
+            else:
+                acc = {}
+                for k in _kids(x):
+                    for s, (c, w) in memo[id(k)].items():
+                        cur = acc.setdefault(s, [0, False])
+                        cur[0] += c
+                        cur[1] |= w
+                memo[id(x)] = acc
+    return memo[id(n)]
+
+
+def _pos_roots(events, term, regs):
+    out = []
+    for i, ev in enumerate(events):
+        if ev[0] == "ld":
+            out.append((i, ev[2]))
+        elif ev[0] == "st":
+            out.extend(((i, ev[1]), (i, ev[2])))
+        elif ev[0] == "pen":
+            out.extend(((i, ev[2]), (i, ev[3])))
+    end = len(events)
+    out.extend((end, r) for i, r in enumerate(regs) if r != ("reg", i))
+    out.extend((end, x) for x in _term_exprs(term))
+    return out
+
+
+def _inline_pick(events, term, regs):
+    """(index, slot) of the first single-use load safe to inline, else None."""
+    defs = {}
+    for i, ev in enumerate(events):
+        if ev[0] == "ld":
+            defs[ev[1]] = None if ev[1] in defs else i
+    uses = {}
+    memo = {}
+    for pos, x in _pos_roots(events, term, regs):
+        for s, (c, w) in _uni_refs(x, memo).items():
+            u = uses.setdefault(s, [0, -1, False])
+            u[0] += c
+            u[1] = pos
+            u[2] |= w
+    for i, ev in enumerate(events):
+        if ev[0] != "ld" or defs[ev[1]] != i:
+            continue
+        u = uses.get(ev[1])
+        if u is None or u[0] != 1 or u[2] or u[1] <= i or not _ld_safe(ev[2]):
+            continue
+        span = events[i + 1 : u[1]]
+        if any(e[0] == "st" for e in span):
+            continue  # the moved read must not cross any store
+        moved = set(_uni_refs(ev[2], memo))
+        if any(e[0] == "ld" and e[1] in moved for e in span):
+            continue  # nor a redefinition of a slot its address reads
+        return i, ev[1]
+    return None
+
+
+def _subst_slot(n, slot, repl, memo):
+    stack = [n]
+    while stack:
+        x = stack[-1]
+        if id(x) in memo:
+            stack.pop()
+            continue
+        if x == ("uni", slot, 1):
+            memo[id(x)] = repl
+            stack.pop()
+            continue
+        todo = [k for k in _kids(x) if id(k) not in memo]
+        if todo:
+            stack.extend(todo)
+            continue
+        stack.pop()
+        memo[id(x)] = _rebuild(x, [memo[id(k)] for k in _kids(x)])
+    return memo[id(n)]
+
+
+def _apply_inline(events, term, regs, i):
+    repl = ("mem", events[i][2], 1)
+    slot = events[i][1]
+    memo = {}
+
+    def sub(x):
+        return _subst_slot(x, slot, repl, memo)
+
+    del events[i]
+    for j, ev in enumerate(events):
+        if ev[0] == "ld":
+            events[j] = ("ld", ev[1], sub(ev[2]))
+        elif ev[0] == "st":
+            events[j] = ("st", sub(ev[1]), sub(ev[2]))
+        elif ev[0] == "pen":
+            events[j] = ("pen", ev[1], sub(ev[2]), sub(ev[3]))
+    return events, _map_term(term, sub), [sub(r) for r in regs]
+
+
+def _stmt_view(blk):
+    """Emit-side copy of a block with canonical branch conditions and every
+    single-use non-volatile load inlined at its use site (docs section on
+    statement sugar); the model block is never mutated."""
+    term = blk.term
+    if term[0] == "br":
+        cond = _canon_cond(term[4])
+        if cond is not term[4]:
+            term = term[:4] + (cond, term[5])
+    events, regs = list(blk.events), list(blk.regs)
+    changed = False
+    pick = _inline_pick(events, term, regs)
+    while pick is not None:
+        events, term, regs = _apply_inline(events, term, regs, pick[0])
+        changed = True
+        pick = _inline_pick(events, term, regs)
+    if not changed and term is blk.term:
+        return blk
+    return C.Block(blk.pc, blk.op0, blk.pcs, events, term, regs)
+
+
 class _Cse:
     """Hash-consed sharing over one block's expressions: any op/mem subtree
     referenced more than once binds to ``tN``, making emission O(DAG size)."""
@@ -744,7 +922,7 @@ class _Writer:
         return self._leaf(r, nxt, d, True)
 
     def _leaf(self, r, nxt, d, labelled):
-        blk = r.a
+        blk = _stmt_view(r.a)
         cse = _Cse(_roots(blk))
         shadow = _shadow(blk, cse)
         lines = cse.binding_lines()
