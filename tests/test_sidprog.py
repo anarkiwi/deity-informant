@@ -232,6 +232,12 @@ def test_roundtrip_identity_and_fixpoint(m):
     assert sidprog.dumps(back) == text
 
 
+@settings(max_examples=100, deadline=None)
+@given(_expr)
+def test_expr_roundtrip(e):
+    assert sidprog.parse_expr(sidprog.fmt_expr(e)) == e
+
+
 def test_dumps_loads_are_emit_parse():
     assert sidprog.dumps is sidprog.emit and sidprog.loads is sidprog.parse
 

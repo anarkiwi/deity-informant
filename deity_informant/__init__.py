@@ -37,7 +37,7 @@ from .expr import ExprTooComplex
 from . import expr
 from . import c64
 from . import render
-from . import stext
+from . import sidprog
 from . import structured
 from .c64 import poweron_ram, installed_handler, install_kernal_irq_stubs
 
@@ -66,7 +66,7 @@ __all__ = [
     "expr",
     "c64",
     "render",
-    "stext",
+    "sidprog",
     "structured",
     "poweron_ram",
     "installed_handler",

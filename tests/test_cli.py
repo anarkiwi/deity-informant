@@ -44,9 +44,9 @@ def _player_prg(tmp_path):
     return str(p)
 
 
-def test_decompile_verify_and_sidc_run(tmp_path, capsys):
+def test_decompile_verify_and_prog_run(tmp_path, capsys):
     prg = _player_prg(tmp_path)
-    out_file = tmp_path / "player.sidc"
+    out_file = tmp_path / "player.sidprog"
     rc = cli.main(
         ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
         + ["--frames", "4", "--verify", "-o", str(out_file)]
@@ -55,9 +55,9 @@ def test_decompile_verify_and_sidc_run(tmp_path, capsys):
     assert rc == 0
     assert "verify ok" in err
     text = out_file.read_text()
-    assert text.startswith("sidc 1\n") and "proc $1000 {" in text and "image {" in text
+    assert text.startswith("sidprog 1\n") and "proc $1000 {" in text and "image {" in text
 
-    rc = cli.main(["sidc-run", str(out_file), "--frames", "3"])
+    rc = cli.main(["prog-run", str(out_file), "--frames", "3"])
     out = capsys.readouterr().out
     assert rc == 0
     rows = [line.split(":")[1].split() for line in out.splitlines()]
@@ -69,7 +69,7 @@ def test_decompile_report_flag(tmp_path, capsys):
     prg = _player_prg(tmp_path)
     rc = cli.main(
         ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
-        + ["--frames", "4", "--report", "--sound", "-o", str(tmp_path / "p.sidc")]
+        + ["--frames", "4", "--report", "--sound", "-o", str(tmp_path / "p.sidprog")]
     )
     err = capsys.readouterr().err
     assert rc == 0  # no dynamic dispatch: sound build succeeds
