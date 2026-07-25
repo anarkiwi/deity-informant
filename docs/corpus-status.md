@@ -15,11 +15,17 @@ Structural flow landed: region nesting IS the text's control semantics
 (`if`/`else`/`loop`/`switch` with implicit fallthrough; labels only on
 genuine dynamic landings; parsed text executes by tree, faster than the pc
 walker). Computed-call handler bodies nest inside their dispatch arms.
-`sidprog.metrics`: Commando 94.5% structured -- 5 gotos / 6 labels in the
-whole text (was 49/110); Krakout 96.7% (was 32.6%); Athena 96.6%; Trap
-79.5%; Ghouls_n_Ghosts 33.8% / 1,794 gotos. Remaining Gate-S (>=95%) work:
-the Follin-class reconverging state machines (goto-minimal structuring /
-node splitting).
+`sidprog.metrics` after the goto-minimal pass (layout saturated to within
+3 gotos of the single-emission floor; bounded <=3-store tail duplication
+under the covered-with-verified-duplicates codec law): Commando 4 gotos /
+3 labels; Krakout 96.7% / 112 gotos; Athena 97.0% / 509; Wizball 107
+gotos; Ghouls_n_Ghosts 36.1% / 1,714. The measured Ghouls/Follin ceiling
+is NOT layout: (1) 43% of its gotos are evidence-frontier edges (never-
+executed branch sides have no block; the language mandates a goto) --
+needs an explicit unobserved-frontier terminator form; (2) 997 of 3,103
+blocks are RTS-trick/computed landings with no static predecessor --
+needs RTS-dispatch modeled as a structured region like the opcode-SMC
+switch. Both are tracked design items, not tuning.
 
 ## Tracked model bogon (surfaced by the tree walker)
 
