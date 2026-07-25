@@ -224,7 +224,8 @@ def test_real_tune_streams_ghouls_pointers():
     update-code classification finds reload/advance pointer pairs statically."""
     model = _real_model("Follin_Tim/Ghouls_n_Ghosts.sid")
     cls = ST.classify(model)
-    ptrs = [r for r in cls.values() if r["class"] == "pointer"]
-    assert len(ptrs) >= 10
+    names = {r["name"] for r in cls.values() if r["class"] == "pointer"}
+    # the three per-voice script pairs confirmed by docs/follin-dispatch-study.md
+    assert {"zp_21", "zp_22", "zp_23", "zp_24", "zp_25", "zp_26"} <= names
     assert any(r["reload_tables"] for r in ptrs)
     assert any(r["advance"] for r in ptrs)

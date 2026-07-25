@@ -1794,6 +1794,58 @@ def materialize(model):
                 pass  # unreachable junk continuation: walker faults if reached
 
 
+def _walk_edges(model, blk):
+    """Successor pcs the walker can traverse from ``blk`` under the final
+    closure: static terms, call returns, and final dyn/observed target sets."""
+    term = blk.term
+    t = term[0]
+    out = []
+    if t in ("goto", "jmp"):
+        out.append(term[1])
+    elif t == "br":
+        if term[2] is not None:
+            out.append(term[2])
+        out.append(term[3])
+    elif t == "jsr":
+        if term[1] is not None:
+            out.append(term[1])
+        out.append((term[2] + 1) & 0xFFFF)
+    elif t == "jmpind" and term[2] is None:
+        m, ptr = model.mem0, term[1]
+        out.append(m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8))
+    if t in ("br", "jmpd", "jmpind", "jsr", "rts"):
+        site = blk.pcs[-1]
+        out.extend(model.dyn_targets.get(site, ()))
+        out.extend(model.ev_targets.get(site, ()))
+    return out
+
+
+def collect_unreachable(model):
+    """Drop blocks unreachable from play under the final closure (transient
+    fixpoint-round materialization residue), plus their stale site records.
+    ``cut`` is preserved so lazily rebuilt continuations keep their shape."""
+    seen = set()
+    work = [model.play]
+    while work:
+        pc = work.pop()
+        if pc in seen:
+            continue
+        seen.add(pc)
+        for key in model.variants(pc):
+            work.extend(_walk_edges(model, model.blocks[key]))
+    if all(key[0] in seen for key in model.blocks):
+        return
+    model.blocks = {key: blk for key, blk in model.blocks.items() if key[0] in seen}
+    by_pc = {}
+    for key in model.blocks:
+        by_pc.setdefault(key[0], []).append(key)
+    model._by_pc = by_pc
+    live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
+    for table in (model.dyn_targets, model.evidence_sites, model.proofs):
+        for site in [s for s in table if s not in live]:
+            del table[site]
+
+
 def prune_dead_flags(model):
     """Backward liveness over the block graph; dead register out-exprs become
     identity. Unknown continuations (rts, computed targets) keep all live."""
@@ -1947,6 +1999,7 @@ class Model:
                 self.build(pc, op0)
         self.dispatch_sets = close_dispatch(self)
         self._resplit()
+        collect_unreachable(self)
         prune_dead_flags(self)
         for blk in self.blocks.values():
             inline_slots(blk)

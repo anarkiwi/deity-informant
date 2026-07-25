@@ -148,10 +148,15 @@ hygiene**:
   extent / stream-byte value set). Until proven, the **existing guarded
   evidence envelope** applies unchanged: targets = observed pairs, walker
   faults on any other operand word, proof status `evidence`.
-- **Materialization fix (the measured win)**: only blocks in the **final**
-  fixpoint target set may persist; round-transient over-approximations must
-  be dropped (today round-1's 16,128/5,040/3,364-member sets materialize
-  2,547 junk blocks that the final `evidence` 14/17/14 sets disown).
+- **Materialization fix (the measured win — LANDED)**: only blocks in the
+  **final** fixpoint target set may persist; round-transient
+  over-approximations must be dropped (round-1's 16,128/5,040/3,364-member
+  sets materialize 2,547 junk blocks that the final `evidence` 14/17/14 sets
+  disown). `structured.collect_unreachable` now GCs `model.blocks` to the
+  set reachable from play through static terms, call targets/returns and the
+  final dyn/observed target sets, after the last fixpoint + resplit
+  (measured: Ghouls 3,103 -> 627 blocks, 36.1% -> 99.8%, 1,714 -> 82 gotos;
+  Agent_X_II 1,809 -> 344, 54.7% -> 99.1%, 777 -> 61).
 
 Measured impact (`pruned_metrics`: drop never-executed blocks, keep the
 already-present switch nesting): Ghouls goes from **3,103 blocks / 36.1%
@@ -251,4 +256,10 @@ blocks total) are **never-executed materialization residue of transient
 dispatch-closure over-approximation** at the three operand-SMC `jmp` sites;
 the player performs no RTS dispatch at all. The needed work items are the
 paired-index closure lemma (soundness.md blocker 3) and final-fixpoint-only
-block materialization — not a new terminator form.
+block materialization — not a new terminator form. The materialization item
+is done (§4 `collect_unreachable`); the paired-index lemma remains open —
+probed against the final analysis state, it does not follow from the
+in-block relational machinery alone: the Ghouls operand stores land in a
+predecessor block of the resplit jmp block (no in-block single-writer pair),
+Bionic's handler tables are themselves mutable, and Wizball's naive pairing
+does not even cover the observed target set.
