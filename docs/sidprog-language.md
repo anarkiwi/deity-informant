@@ -40,6 +40,11 @@ Pre-release changes within major 1 (never released, no bump):
   positions canonicalise sub/add compare-to-zero to direct compares (see
   "Statement sugar" below). Earlier emitters wrote every machine load as a
   `uN =` line and every condition verbatim.
+- typed song data + role aliases: classified data regions move from anonymous
+  `image { }` hex into a `data { }` section (bytes inline, exact partition),
+  and classified state cells gain `symbols { }` aliases used throughout the
+  procedure bodies (see "Data declarations" and "Symbols" below). Earlier
+  emitters wrote the whole image anonymously and only canonical cell names.
 
 ## Grammar (EBNF)
 
@@ -51,7 +56,7 @@ Indentation is insignificant (the emitter indents one space per nesting depth
 for readability only).
 
 ```ebnf
-document    = version , { header } , image , { proc } ;
+document    = version , { header } , image , [ data ] , [ symbols ] , { proc } ;
 version     = "sidprog" , ws , integer , newline ;
 
 header      = play | init | subtune | sidinit | dispatch ;
@@ -67,6 +72,26 @@ dispatch    = "dispatch" , ws , hex , ":" , { ws , bytehex } , newline ;
 image       = "image" , ws , "{" , newline ,
               { hex , ":" , ws , { hexpair } , newline } ,   (* <=16 bytes/row *)
               "}" , newline ;   (* runs of non-zero cells, packed hex pairs *)
+
+data        = "data" , ws , "{" , newline , { decl } , "}" , newline ;
+decl        = ws , kind , ws , cellname , "[" , integer , "]" , { ws , attr } ,
+              ":" , newline , { ws , { hexpair } , newline } ;
+                              (* extent bytes inline, <=16 bytes/row *)
+kind        = "table" | "stream" ;
+attr        = "stride" , ws , integer          (* record size in bytes *)
+            | "+" , cellname                   (* co-base read inside the region *)
+            | ( "lo" | "hi" ) , ws , cellname  (* pointer-table pairing: partner *)
+            | "via" , ws , cellname            (* stream: the walking pair's lo cell *)
+            | "->" , ws , hex , ".." , hex     (* pointer-table entry value span *)
+            | "cmp" , { ws , bytehex }         (* stream byte-class compare alphabet *)
+            | "dispatch" , { ws , hex }        (* dispatch sites consuming the bytes *)
+            | "observed" ;                     (* extent observed, not proven *)
+
+symbols     = "symbols" , ws , "{" , newline ,
+              { ws , "alias" , ws , aliasname , ws , "=" , ws , cellname , newline } ,
+              "}" , newline ;
+aliasname   = letter , { letter | digit | "_" } ;   (* must not shadow any
+              canonical cell name, register, or uN/tN/rN slot *)
 
 proc        = "proc" , ws , hex , ws , "{" , newline , { item } , "}" , newline ;
 item        = block | ifregion | loop | opswitch | gotoswitch | callswitch
@@ -171,6 +196,48 @@ byte and carry no `:n`; `mem` loads are one byte; a lone `-$k` inside an
   order). Any other shape — const-first, non-reg index, other widths, a CSE
   `tN` in the address — is not sugared and round-trips as raw `mem[expr]`.
 
+## Data declarations (typed song data)
+
+`data { }` carves classified song-data regions out of the post-init image,
+derived mechanically from the streams classification
+(`deity_informant.datadecl.declarations` over `streams.classify`/`streams`):
+
+- **Partition law.** Every declared region carries its bytes inline and the
+  regions are mutually disjoint; `image { }` holds exactly the residue.
+  `parse` writes declarations and image rows into one 64 KB buffer, so mem0
+  reconstructs BYTE-EXACT (the emitter asserts the partition; declarations
+  move bytes, never duplicate them). Zero page, the stack page and executed
+  code bytes are never carved.
+- **Forms.** `table` covers byte tables, parallel pointer-table pairs
+  (`lo`/`hi` name the partner and `->` spans the entry values) and
+  fixed-stride record arrays (`stride`, with `+name` co-bases for the other
+  fields read inside the region). `stream` covers pointer-walked
+  command/script/pattern byte streams (`via` names the walking pair's lo
+  cell; `cmp`/`dispatch` attach the proven byte-class alphabet and consuming
+  dispatch sites where the analysis found them).
+- **Extent honesty.** A declared extent without a marker is proven: every
+  index expression reaching the region is statically bounded below its width
+  mask and the domain fits before the next boundary. Anything else is emitted
+  with the `observed` marker and the extent of the full-length evidence reads
+  attributed to the region's own read sites — the text never claims more than
+  the analysis knows. Ambiguous or overlapping classifications stay in
+  `image { }`.
+- Declarations are serialization only: both executors read the same mem0, so
+  walker semantics are byte-identical with or without the section.
+
+## Symbols (role aliases)
+
+`symbols { }` is a strict bijection `alias NAME = cell` generated from the
+state-cell classification: pointer pairs alias to `ptr_XXXX_lo`/`ptr_XXXX_hi`
+(XXXX = the pair's lo address), counters to `pos_XXXX` when they position a
+pointer-pair deref else `ctr_XXXX`, index cells to `idx_XXXX` — mechanical,
+address-embedding names, so collisions are impossible by construction and an
+alias may never shadow a canonical cell name, register or `uN`/`tN` slot
+(`parse` rejects it). Procedure bodies use the aliases; the alias table is
+the ONLY mapping and `parse` resolves body names through it before the
+expression grammar, so the memref bijection above is untouched. This table is
+also the hook for a future user-supplied symbol map.
+
 ## Structure semantics
 
 - **The nesting IS the flow.** A block with no terminator line falls through
@@ -266,8 +333,9 @@ reproduce the evidence log bit-exactly.
 
 - **Canonical fixpoint.** `dumps(loads(dumps(m))) == dumps(m)` for every
   model `m` (property-tested over generated models, `tests/test_sidprog.py`).
-- **Header identity.** `loads(dumps(m))` preserves the image, play/init/
-  subtune, prologue and dispatch sets exactly; block pcs are intentionally
+- **Header identity.** `loads(dumps(m))` preserves the image (data regions +
+  residue reassembled byte-exact), play/init/subtune, prologue, dispatch sets,
+  data declarations and the alias table exactly; block pcs are intentionally
   not round-tripped (structure replaces them).
 - **Executable equivalence (Gate C).** `TextModel.run(frames)` equals
   `structured.Walker(model).run(frames)` equals the evidence log — cycle-
