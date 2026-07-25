@@ -12,6 +12,7 @@ import re
 from . import codec
 from . import expr as E
 from . import structured as C
+from .render import sid_name
 
 SIDPROG_VERSION = 1  # 1: play-phase structured program (spec section 6)
 
@@ -57,6 +58,65 @@ def _reg_index(name):
     raise ValueError("unknown register %r" % name)
 
 
+# ---- named machine state (bijection; render.sid_name is the normative table) ---
+_SID_NAMES = {a: sid_name(a) for a in range(0xD400, 0xD419)}
+_SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
+_CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
+
+
+def _addr_name(v):
+    """Canonical cell name for a 2-byte const address (total on 0..$FFFF)."""
+    return _SID_NAMES.get(v) or ("zp_%02X" % v if v < 0x100 else "m_%04X" % v)
+
+
+def _name_addr(name):
+    """Address named by a canonical cell name, else None (inverse of _addr_name)."""
+    a = _SID_ADDRS.get(name)
+    if a is None:
+        m = _CELL_NAME.match(name)
+        if m:
+            a = int(m.group(2), 16)
+            if a > 0xFFFF or _addr_name(a) != name:
+                return None
+    return a
+
+
+def _split_index(addr):
+    """``(base, reg)`` iff ``addr`` is the canonical zext2(reg) + const2 >= $100."""
+    if addr[0] == "op" and addr[1] == "INT_ADD" and addr[3] == 2 and len(addr[2]) == 2:
+        idx, base = addr[2]
+        if (
+            base[0] == "const"
+            and base[2] == 2
+            and base[1] >= 0x100
+            and idx[0] == "op"
+            and idx[1] == "INT_ZEXT"
+            and idx[3] == 2
+            and idx[2][0][0] == "reg"
+        ):
+            return base[1], idx[2][0][1]
+    return None
+
+
+def _mem_body(addr):
+    """Named text for a memory reference address, else None (raw mem[] only)."""
+    if addr[0] == "const" and addr[2] == 2:
+        return _addr_name(addr[1])
+    bi = _split_index(addr)
+    if bi is not None:
+        return "%s[%s]" % (_addr_name(bi[0]), _reg_name(bi[1]))
+    return None
+
+
+def _mem_ref(addr):
+    body = _mem_body(addr)
+    return body if body is not None else "mem[%s]" % fmt_expr(addr)
+
+
+def _zext_reg(n):
+    return n[0] == "op" and n[1] == "INT_ZEXT" and n[3] == 2 and n[2][0][0] == "reg"
+
+
 # ---- expression text (exact round trip) ---------------------------------------
 def _hex(v, sz):
     return "$%0*X" % (2 * sz, v)
@@ -76,7 +136,7 @@ def fmt_expr(n):
     if k == "uni":
         return "u%d%s" % (n[1], _wsuf(n[2]))
     if k == "mem":
-        return "mem[%s]" % fmt_expr(n[1])
+        return _mem_ref(n[1])
     mn, kids, sz = n[1], n[2], n[3]
     if mn == "INT_ZEXT":
         return "zext%d(%s)" % (sz, fmt_expr(kids[0]))
@@ -102,7 +162,9 @@ def fmt_expr(n):
     return "(%s)%s" % (body, _wsuf(sz))
 
 
-_TOKEN = re.compile(r"\$[0-9A-Fa-f]+|u\d+|[A-Za-z]\w*|<<|>>|<=|==|!=|[-()\[\],:+|^&<=]|\S")
+_TOKEN = re.compile(
+    r"\$[0-9A-Fa-f]+|u\d+|[A-Za-z]\w*(?:\.\w+)*|<<|>>|<=|==|!=|[-()\[\],:+|^&<=]|\S"
+)
 _ADDSUB = frozenset("+-")
 _CHAINOPS = {"|": "INT_OR", "^": "INT_XOR", "&": "INT_AND"}
 _BINOPS = {"<<": "INT_LEFT", ">>": "INT_RIGHT"}
@@ -201,6 +263,15 @@ def _atom(ts):
         return ("op", "INT_CARRY", (a, b), 1)
     if re.fullmatch(r"u\d+", t):
         return ("uni", int(t[1:]), _suffix(ts))
+    addr = _name_addr(t)
+    if addr is not None:
+        if ts.peek() == "[":
+            ts.next()
+            r = _reg_index(ts.next())
+            ts.expect("]")
+            idx = ("op", "INT_ZEXT", (("reg", r),), 2)
+            return ("mem", ("op", "INT_ADD", (idx, ("const", addr, 2)), 2), 1)
+        return ("mem", ("const", addr, 2), 1)
     return ("reg", _reg_index(t))
 
 
@@ -253,9 +324,9 @@ def _block_lines(blk):
             out.append("@%d" % cyc)
             cyc = 0
         if ev[0] == "ld":
-            out.append("u%d = mem[%s]" % (ev[1], fmt_expr(ev[2])))
+            out.append("u%d = %s" % (ev[1], _mem_ref(ev[2])))
         elif ev[0] == "st":
-            out.append("mem[%s] = %s" % (fmt_expr(ev[1]), fmt_expr(ev[2])))
+            out.append("%s = %s" % (_mem_ref(ev[1]), fmt_expr(ev[2])))
         else:
             _, kind, aux, idx = ev
             tag = "@xi" if kind == "iy" else "@x"
@@ -295,13 +366,12 @@ def _parse_line(acc, line):
         else:
             acc.events.append(("cyc", int(line[1:])))
         return
-    if line.startswith("mem["):
-        lhs, rhs = line.split(" = ", 1)
-        acc.events.append(("st", parse_expr(lhs[4:-1]), parse_expr(rhs)))
-        return
-    m = re.match(r"u(\d+) = mem\[(.*)\]$", line)
+    m = re.match(r"u(\d+) = (.*)$", line)
     if m:
-        acc.events.append(("ld", int(m.group(1)), parse_expr(m.group(2))))
+        src = parse_expr(m.group(2))
+        if src[0] != "mem":
+            raise ValueError("load line without a memory source: %r" % line)
+        acc.events.append(("ld", int(m.group(1)), src[1]))
         return
     if line.startswith(("if ", "ifnot ")):
         pol = 0 if line.startswith("ifnot ") else 1
@@ -332,7 +402,14 @@ def _parse_line(acc, line):
         acc.term = ("rts",)
         return
     name, rhs = line.split(" = ", 1)
-    acc.regs[_reg_index(name.strip())] = parse_expr(rhs)
+    name = name.strip()
+    if name in _NAME_REGS or (name.startswith("r") and name[1:].isdigit()):
+        acc.regs[_reg_index(name)] = parse_expr(rhs)
+        return
+    dst = parse_expr(name)
+    if dst[0] != "mem":
+        raise ValueError("store line without a memory target: %r" % line)
+    acc.events.append(("st", dst[1], parse_expr(rhs)))
 
 
 # ---- per-block common-subexpression bindings (textual only) --------------------
@@ -468,15 +545,22 @@ class _Cse:
             stack.extend((k, False) for k in self._kid[nid])
 
     def _bind(self, nid):
-        """Bind iff the tN definition + references print shorter than inlining."""
+        """Bind iff the tN definition + references print shorter than inlining;
+        named cells/arrays and their address shapes stay inline (they ARE names)."""
         n = self._rep[nid]
         kids = self._kid[nid]
         if not kids:
             self._len[nid] = len(fmt_expr(n))
             return False
+        body = _mem_body(n[1]) if n[0] == "mem" else None
+        if body is not None:
+            self._len[nid] = len(body)
+            return False
         base = {"INT_ZEXT": 7, "INT_CARRY": 9}.get(n[1], 3 * len(kids) + 1) if n[0] == "op" else 5
         plen = base + sum(3 if k in self._name else self._len[k] for k in kids)
         self._len[nid] = plen
+        if _split_index(n) is not None or _zext_reg(n):
+            return False
         refs = self._ref[nid]
         if refs > 1 and (refs - 1) * plen > 12 + 3 * refs:
             self._name[nid] = len(self._name)
@@ -728,6 +812,58 @@ def emit(model):
         left = still
     out.extend(_resolve_fallthrough(w.out))
     return "\n".join(out) + "\n"
+
+
+def metrics(model):
+    """Structuring metrics: {blocks, nested_blocks, structured_pct, goto_count,
+    labels} over the codec region trees (block leaves at nesting depth > 0 are
+    structured; goto regions and label targets are counted, not judged)."""
+    view = _SortedView(model)
+    done = set()
+    labels = set()
+    counts = {"blocks": 0, "nested": 0, "gotos": 0}
+
+    def proc(entry):
+        root, labs = codec.structure(view, entry)
+        labels.update(labs)
+        seen = set(done)
+        stack = [(root, 0)]
+        while stack:
+            r, d = stack.pop()
+            k = r.kind
+            if k == "seq":
+                stack.extend((c, d) for c in r.a)
+            elif k == "block":
+                counts["blocks"] += 1
+                counts["nested"] += 1 if d else 0
+                done.add((r.a.pc, r.a.op0))
+            elif k == "loop":
+                stack.append((r.a, d + 1))
+            elif k == "if":
+                stack.extend((c, d + 1) for c in (r.b, r.c) if c is not None)
+            elif k == "switch":
+                stack.extend((body, d + 1) for _lbl, body in r.a[1])
+            elif k == "goto":
+                counts["gotos"] += 1
+        view.hidden.update(key[0] for key in done - seen)
+
+    for entry in _entries(model):
+        proc(entry)
+    left = sorted(k for k in model.blocks if k not in done)
+    while left:
+        proc(left[0][0])
+        still = sorted(k for k in model.blocks if k not in done)
+        if len(still) == len(left):
+            break
+        left = still
+    blocks, nested = counts["blocks"], counts["nested"]
+    return {
+        "blocks": blocks,
+        "nested_blocks": nested,
+        "structured_pct": 100.0 * nested / blocks if blocks else 100.0,
+        "goto_count": counts["gotos"],
+        "labels": len(labels),
+    }
 
 
 def _resolve_fallthrough(lines):

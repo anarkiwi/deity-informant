@@ -19,7 +19,8 @@ _FILTER = {
 }
 
 
-def _sid_name(addr):
+def sid_name(addr):
+    """Canonical SID register name for $D400-$D418, else None (normative table)."""
     if 0xD400 <= addr <= 0xD414:
         v, r = divmod(addr - 0xD400, 7)
         return "sid.v%d.%s" % (v + 1, _VOICE[r])
@@ -28,7 +29,7 @@ def _sid_name(addr):
 
 def name_addr(addr):
     """Readable name for a concrete memory address."""
-    sid = _sid_name(addr)
+    sid = sid_name(addr)
     if sid:
         return sid
     if addr < 0x0100:
