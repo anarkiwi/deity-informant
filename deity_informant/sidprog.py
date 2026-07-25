@@ -85,15 +85,9 @@ def _split_index(addr):
     """``(base, reg)`` iff ``addr`` is the canonical zext2(reg) + const2 >= $100."""
     if addr[0] == "op" and addr[1] == "INT_ADD" and addr[3] == 2 and len(addr[2]) == 2:
         idx, base = addr[2]
-        if (
-            base[0] == "const"
-            and base[2] == 2
-            and base[1] >= 0x100
-            and idx[0] == "op"
-            and idx[1] == "INT_ZEXT"
-            and idx[3] == 2
-            and idx[2][0][0] == "reg"
-        ):
+        base_ok = base[0] == "const" and base[2] == 2 and base[1] >= 0x100
+        idx_ok = idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2
+        if base_ok and idx_ok and idx[2][0][0] == "reg":
             return base[1], idx[2][0][1]
     return None
 
