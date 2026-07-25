@@ -37,6 +37,10 @@ def _init(p):
 def _verify(mem, init, play, frames, subtune=0):
     model, ev = S.decompile(mem, init, play, frames, subtune)
     assert model.prologue == ev.prologue  # init's SID writes, order-preserved
+    for site, pr in model.proofs.items():
+        obs = model.pcs.get(site) if pr.kind == "opcode" else model.ev_targets.get(site)
+        if pr.status == "proven" and obs:
+            assert set(obs) <= set(pr.targets), "bogus 'proven' proof at $%04X" % site
     w = S.Walker(model)
     assert w.run(frames) == ev.wlog  # play-phase log from the post-init image
     assert bytes(w.m) == ev.end_mem

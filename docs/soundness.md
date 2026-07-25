@@ -32,6 +32,31 @@ Without `--sound` the guarded evidence envelope is kept (the standalone walker
 still faults on any unobserved target), so the default build is unchanged while
 the report makes every non-proven site auditable.
 
+## Commit phase and the uniform coverage rule (§2 step 2, §4.5)
+
+`Model.build_all` separates ANALYSIS from program construction:
+
+- **ANALYSIS** (`_analyze`/`_close_once`): hypothesis CFG + fixpoint closure;
+  may speculate and materialize freely in the workspace block set; produces
+  per-site `(kind, targets, lemma)` results and dispatch value sets only.
+- **COMMIT** (`_commit`): constructs `proofs`/`dyn_targets`/`evidence_sites`/
+  `dispatch_sets` and the final block set in one step — resplit at final
+  entries, keep only blocks reachable from play under final edges — then the
+  intra-block passes. Blocks are immutable afterwards (only `lookup` lazily
+  adds static continuations).
+- **Checker** (`check_commit`): one rule for every site class (opcode cells,
+  vectors, computed jumps/calls/branches, rts-dispatch): observed evidence ⊆
+  committed proven-or-evidence set; an empty or incomplete resolution at an
+  executed site is never `proven` — it commits as the guarded evidence
+  envelope with a tracked lemma; unexecuted+unprovable stays `failed`. Plus:
+  every kept block final-reachable, every observed opcode variant built, no
+  site record for a nonexistent site. Violations are `DecompileError`s.
+
+First corpus-wide run of the rule downgraded seven bogus `proven` sites:
+Army_Moves $E093 (vector, empty resolution vs 4 observed), Aces_High $113A,
+Commando_High-Score $091A (stale $FFFF vs 7 observed), Jammer-424
+$11F7/$1203/$124B, Bird_Flu $121B — all replay bit-exact under the envelope.
+
 ## Relational vector closure (lemma 1, implemented)
 
 Corpus-wide the remaining `evidence` sites (Bionic Commando ×3, Comic Bakery

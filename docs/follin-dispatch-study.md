@@ -63,7 +63,8 @@ A later fixpoint round downgrades the sites to `evidence` status
 (observed 14/17/14), but the junk blocks are never garbage-collected and
 serialize as top-level orphan procedures. This is the measured face of the
 tracked dispatch-index-precision blocker (docs/soundness.md) plus a
-materialization-lifecycle defect in `close_dispatch`.
+materialization-lifecycle defect in the closure driver, since retired by the
+commit-phase split (analysis residue is cut at commit; docs/soundness.md).
 
 ## 2. Script streams
 

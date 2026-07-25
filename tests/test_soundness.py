@@ -6,6 +6,7 @@ import types
 import pytest
 
 from deity_informant import expr as E
+from deity_informant import sidprog
 from deity_informant import structured as S
 
 import _fuzzgen as G
@@ -86,6 +87,58 @@ def test_sound_mode_fails_loudly_on_evidence_site():
     with pytest.raises(S.DecompileError) as exc:
         S.decompile(_smc_vector_image(), INIT, ORG, FRAMES, sound=True)
     assert "$1017" in str(exc.value) and "sound mode" in str(exc.value)
+
+
+PBUF = 0x1500
+
+
+def _pending_vector_image():
+    """Self-patched indirect JMP whose pointer value set spans 12 play-written
+    pointer pairs: cell resolution outruns the closure rounds (Army_Moves shape).
+    Returns ``(mem, vector site pc)``."""
+    a = G.Asm(ORG)
+    a.i("LDA", "imm", 0x2A).i("STA", "abs", SID + REG)
+    a.i("INC", "abs", CTR)
+    a.i("LDX", "abs", CTR)
+    a.i("LDA", "absx", TLO).i("STA", "abs", ("L", "vec", 1))
+    a.i("LDA", "absx", THI).i("STA", "abs", ("L", "vec", 2))
+    a.i("LDA", "imm", STUB & 0xFF)
+    for k in range(12):
+        a.i("STA", "abs", PBUF + 2 * k)
+    a.i("LDA", "imm", STUB >> 8)
+    for k in range(12):
+        a.i("STA", "abs", PBUF + 2 * k + 1)
+    a.label("vec").i("JMP", "ind", PBUF)
+    prog = a.assemble()
+    mem = bytearray(0x10000)
+    for k, b in enumerate(prog):
+        mem[ORG + k] = b
+    mem[INIT] = 0x60
+    mem[STUB] = 0x60
+    for i in range(256):
+        mem[TLO + i] = (PBUF + 2 * (i % 12)) & 0xFF
+        mem[THI + i] = PBUF >> 8
+    for k in range(12):
+        mem[PBUF + 2 * k], mem[PBUF + 2 * k + 1] = STUB & 0xFF, STUB >> 8
+    return mem, a.labels["vec"]
+
+
+def test_pending_vector_resolution_commits_as_evidence_not_proven():
+    """A resolution still pending when closure rounds exhaust must commit as the
+    observed evidence envelope with a tracked lemma, never a 'proven' empty set;
+    the standalone text walker stays guarded to the observed targets."""
+    mem, site = _pending_vector_image()
+    model, ev = S.decompile(mem, INIT, ORG, FRAMES)
+    pr = model.proofs[site]
+    assert pr.status == "evidence" and pr.kind == "vector"
+    assert set(pr.targets) == {STUB} == model.evidence_sites[site]
+    assert "unclosed cell" in pr.lemma or "unresolved" in pr.lemma
+    w = S.Walker(model)
+    assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
+    tm = sidprog.parse(sidprog.emit(model)).link()
+    unobserved = next(a for a in range(0x4000, 0x5000) if a not in tm.pcmap and a not in tm.contmap)
+    with pytest.raises(S.WalkError):
+        tm.node_at(unobserved)
 
 
 def _vector_analysis(idx_addr):
