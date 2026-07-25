@@ -19,13 +19,16 @@ walker). Computed-call handler bodies nest inside their dispatch arms.
 3 gotos of the single-emission floor; bounded <=3-store tail duplication
 under the covered-with-verified-duplicates codec law): Commando 4 gotos /
 3 labels; Krakout 96.7% / 112 gotos; Athena 97.0% / 509; Wizball 107
-gotos; Ghouls_n_Ghosts 36.1% / 1,714. The measured Ghouls/Follin ceiling
-is NOT layout: (1) 43% of its gotos are evidence-frontier edges (never-
-executed branch sides have no block; the language mandates a goto) --
-needs an explicit unobserved-frontier terminator form; (2) 997 of 3,103
-blocks are RTS-trick/computed landings with no static predecessor --
-needs RTS-dispatch modeled as a structured region like the opcode-SMC
-switch. Both are tracked design items, not tuning.
+gotos. The former Ghouls/Follin ceiling (36.1% / 1,714 gotos over 3,103
+blocks) was closure-materialization residue, not layout: transient
+fixpoint-round dispatch target sets materialized blocks the final
+envelope disowned (docs/follin-dispatch-study.md §1).
+`collect_unreachable` now garbage-collects the model to the
+final-closure reachable set after the last fixpoint + resplit:
+Ghouls_n_Ghosts 627 blocks (556 executed + 71 static branch sides) /
+99.8% / 82 gotos; Agent_X_II 344 blocks / 99.1% / 61 gotos; other tunes
+unchanged. The remaining lemma is dispatch-index precision
+(docs/soundness.md; 3 evidence sites per Follin tune unchanged).
 
 ## Tracked model bogon (surfaced by the tree walker)
 

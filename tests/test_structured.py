@@ -61,6 +61,23 @@ def test_opcode_byte_outside_proven_set_faults():
         model.lookup(site, m)
 
 
+def test_collect_unreachable_drops_residue_blocks_and_site_records():
+    """Blocks outside the final-closure reachable set are dropped along with
+    their stale dyn_targets/proofs entries; replay is untouched."""
+    p = next(q for q in _PLAYERS if q.name == "jump_table")
+    model, ev = S.decompile(_image(p), _init(p), p.org, p.frames)
+    baseline = set(model.blocks)
+    model.build(0x0F00, 0x60)  # init RTS: never reachable from play
+    model.dyn_targets[0x0F00] = []
+    model.proofs[0x0F00] = S.Proof(0x0F00, "jump", "evidence", (), "residue")
+    S.collect_unreachable(model)
+    assert (0x0F00, 0x60) not in model.blocks and not model.variants(0x0F00)
+    assert 0x0F00 not in model.dyn_targets and 0x0F00 not in model.proofs
+    assert set(model.blocks) == baseline
+    w = S.Walker(model)
+    assert w.run(p.frames) == ev.wlog
+
+
 def test_cia_icr_read_modeled_as_zero_source():
     """$DC0D reads are constant-0 under the per-frame driver, exactly as in
     PcodeVM; the decompiled model replays them rather than refusing."""
