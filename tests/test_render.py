@@ -185,8 +185,10 @@ def test_computed_call_dispatch_nests_handler_bodies():
 
 
 def test_fuzz_dispatch_idioms_render_switches():
-    """The generated dispatch idioms surface as switch / call-one-of / jump
-    tables in the readable view (P5 dispatcher recovery, HVSC-free)."""
+    """Dispatch idioms surface as switch / call-one-of / jump tables in the
+    readable view. Observed-primary doctrine: an opcode switch renders only
+    when the trace observes several opcodes at the cell, so a toggling SMC
+    cell (both variants executed) supplies the opcode case."""
     kinds = {}
     for p in G.players(2):
         init = p.init_org if p.init is not None else None
@@ -196,11 +198,22 @@ def test_fuzz_dispatch_idioms_render_switches():
             init = 0x0F00
         model, _ev = S.decompile(mem, init, p.org, max(p.frames, 2))
         txt = render.render(model)
-        if "switch code[" in txt:
-            kinds["opcode"] = True
         if "call one of" in txt or "switch (computed goto)" in txt:
             kinds["computed"] = True
-    assert "opcode" in kinds, "smc_opcode player should yield an opcode switch"
+    a = G.Asm(0x1000)
+    a.i("LDA", "abs", ("L", "site")).i("EOR", "imm", 0x22).i("STA", "abs", ("L", "site"))
+    a.i("LDX", "imm", 0x05)
+    a.label("site").i("INX")  # toggles INX <-> DEX ($E8 ^ $22 = $CA)
+    a.i("STX", "abs", 0xD400).i("RTS")
+    mem = _image({})
+    prog = a.assemble()
+    mem[0x1000 : 0x1000 + len(prog)] = prog
+    mem[0x0F00] = 0x60
+    model, _ev = S.decompile(mem, 0x0F00, 0x1000, 2)
+    txt = render.render(model)
+    if "switch code[" in txt:
+        kinds["opcode"] = True
+    assert "opcode" in kinds, "toggling SMC cell should yield an opcode switch"
     assert "computed" in kinds, "dispatch players should yield a computed jump/call"
 
 

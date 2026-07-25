@@ -1,5 +1,7 @@
-"""§4 soundness: per-site proof records, the evidence-only tracked lemma, strict
-(sound) mode, the proof report, and relational vector closure. Corpus-absent."""
+"""Observed-primary soundness: every committed site set is the trace-observed
+set (runtime guards cover the rest); static analysis only certifies a guard
+dead when its set EQUALS the observed set. Strict (--sound) mode, the
+certification report, and relational vector closure. Corpus-absent."""
 
 import types
 
@@ -62,32 +64,76 @@ def _smc_vector_image():
     "name,kind",
     [("jump_table", "vector"), ("jmp_indirect", "vector"), ("smc_opcode", "opcode")],
 )
-def test_dispatch_sites_carry_proven_proofs(name, kind):
+def test_dispatch_sites_commit_observed_sets(name, kind):
+    """Observed-primary doctrine: the committed set at every site is exactly the
+    trace-observed set; a static set wider than observed keeps the guard live
+    (status ``observed``) and is recorded in the lemma, never serialized."""
     p = next(q for q in G.players(1) if q.name == name)
     model, _ev = S.decompile(_img_from_player(p), _player_init(p), p.org, p.frames)
     assert model.proofs, "expected a dispatch/opcode proof site"
-    assert all(pr.status == "proven" for pr in model.proofs.values())
     assert any(pr.kind == kind for pr in model.proofs.values())
-    assert not model.evidence_sites
+    for site, pr in model.proofs.items():
+        obs = model.pcs[site] if pr.kind == "opcode" else model.ev_targets[site]
+        assert set(pr.targets) == set(obs)
+        assert pr.status == "certified" or pr.lemma
 
 
-def test_evidence_site_recorded_with_lemma_and_replays():
+def test_uncertified_site_keeps_live_guard_and_replays():
+    """Static closure gives up: the site commits its observed set with a live
+    guard and a lemma naming the static refusal; replay stays bit-exact."""
     mem = _smc_vector_image()
     model, ev = S.decompile(mem, INIT, ORG, FRAMES)
-    assert len(model.evidence_sites) == 1
-    site = next(iter(model.evidence_sites))
-    pr = model.proofs[site]
-    assert pr.status == "evidence" and pr.kind == "jump"
-    assert pr.lemma and ("too large" in pr.lemma or "cell" in pr.lemma)
-    assert model.evidence_sites[site] == {STUB}
+    live = {s: p for s, p in model.proofs.items() if p.status == "observed"}
+    assert len(live) == 1
+    site, pr = next(iter(live.items()))
+    assert pr.kind == "jump"
+    assert pr.lemma and ("too large" in pr.lemma or "cell" in pr.lemma or "observed" in pr.lemma)
+    assert set(pr.targets) == {STUB} == set(model.dyn_targets[site])
     w = S.Walker(model)
     assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
 
 
-def test_sound_mode_fails_loudly_on_evidence_site():
+def test_sound_mode_fails_loudly_on_guard_live_site():
     with pytest.raises(S.DecompileError) as exc:
         S.decompile(_smc_vector_image(), INIT, ORG, FRAMES, sound=True)
     assert "$1017" in str(exc.value) and "sound mode" in str(exc.value)
+
+
+def _certified_image():
+    """SMC'd JMP fully driven over its 4-entry table: static set == observed."""
+    m = bytearray(0x10000)
+    m[0x0F00] = 0x60
+    for k in range(5):
+        m[0x1030 + 8 * k : 0x1036 + 8 * k] = bytes((0xA9, 0x11 * (k + 1), 0x8D, k, 0xD4, 0x60))
+    m[0x1020:0x1023] = bytes((0x4C, 0x30, 0x10))
+    m[0x1100:0x1108] = bytes((0x30, 0x38, 0x40, 0x48) * 2)
+    m[0x1108:0x1110] = bytes((0x10,) * 8)
+    code = [0xE6, 0xF0, 0xA5, 0xF0, 0x29, 0x03, 0xAA, 0xBD, 0x00, 0x11, 0x8D, 0x21, 0x10]
+    code += [0xBD, 0x08, 0x11, 0x8D, 0x22, 0x10, 0x4C, 0x20, 0x10]
+    m[0x1000 : 0x1000 + len(code)] = bytes(code)
+    return m
+
+
+def test_certified_guard_dead_passes_sound_mode():
+    """Certification: the static (paired-index) set equals the observed set, so
+    the guard is provably dead and --sound succeeds."""
+    model, ev = S.decompile(_certified_image(), INIT, ORG, 12, sound=True)
+    pr = model.proofs[0x1020]
+    assert pr.status == "certified" and pr.lemma.startswith("paired-index")
+    assert set(pr.targets) == set(model.ev_targets[0x1020])
+    w = S.Walker(model)
+    assert w.run(12) == ev.wlog
+
+
+def test_walker_guard_faults_outside_observed_target_set():
+    """The model walker's dynamic-transfer guard fires for an out-of-set target,
+    carrying the site pc and the target."""
+    model, _ev = S.decompile(_certified_image(), INIT, ORG, 12)
+    site = 0x1020
+    blk = model.blocks[next(k for k in model.blocks if model.blocks[k].pcs[-1] == site)]
+    w = S.Walker(model)
+    with pytest.raises(S.WalkError, match=r"\$2345 at \$1020 outside observed set"):
+        w._guard(blk, 0x2345)  # pylint: disable=protected-access
 
 
 PBUF = 0x1500
@@ -126,16 +172,16 @@ def _pending_vector_image():
     return mem, a.labels["vec"]
 
 
-def test_pending_vector_resolution_commits_as_evidence_not_proven():
-    """A resolution still pending when closure rounds exhaust must commit as the
-    observed evidence envelope with a tracked lemma, never a 'proven' empty set;
-    the standalone text walker stays guarded to the observed targets."""
+def test_pending_vector_resolution_commits_observed_with_live_guard():
+    """A resolution still pending when closure rounds exhaust commits the
+    observed set with a live guard and a tracked lemma; the standalone text
+    walker stays guarded to the observed targets."""
     mem, site = _pending_vector_image()
     model, ev = S.decompile(mem, INIT, ORG, FRAMES)
     pr = model.proofs[site]
-    assert pr.status == "evidence" and pr.kind == "vector"
-    assert set(pr.targets) == {STUB} == model.evidence_sites[site]
-    assert "unclosed cell" in pr.lemma or "unresolved" in pr.lemma
+    assert pr.status == "observed" and pr.kind == "vector"
+    assert set(pr.targets) == {STUB} == set(model.dyn_targets[site])
+    assert "unclosed cell" in pr.lemma or "unresolved" in pr.lemma or "observed" in pr.lemma
     w = S.Walker(model)
     assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
     tm = sidprog.parse(sidprog.emit(model)).link()
@@ -275,20 +321,19 @@ def test_affine_bound_handles_nested_loop():
 
 
 def test_proof_report_shape_and_sound_tag():
-    p = next(q for q in G.players(1) if q.name == "jump_table")
-    proven, _ev = S.decompile(_img_from_player(p), _player_init(p), p.org, p.frames)
-    rep = S.proof_report(proven)
-    assert rep["tally"].get("proven") and "evidence" not in rep["tally"]
-    assert "[SOUND]" in S.format_report(proven)
-    ev_model, _ = S.decompile(_smc_vector_image(), INIT, ORG, FRAMES)
-    text = S.format_report(ev_model)
-    assert "[SOUND]" not in text and "evidence" in text and "$1017" in text
+    certified, _ev = S.decompile(_certified_image(), INIT, ORG, 12)
+    rep = S.proof_report(certified)
+    assert rep["tally"].get("certified") and "observed" not in rep["tally"]
+    assert "[SOUND]" in S.format_report(certified)
+    live_model, _ = S.decompile(_smc_vector_image(), INIT, ORG, FRAMES)
+    text = S.format_report(live_model)
+    assert "[SOUND]" not in text and "observed" in text and "$1017" in text
 
 
 def _opcode_top_image():
     """Opcode cell aliased by a computed store through a TOP pointer whose value
     also cannot resolve (the Athena shape): closure must give TOP for the cell,
-    and the evidence envelope scopes it to the observed opcode set."""
+    so the committed observed set keeps its guard live."""
     cell = 0x1030
     m = bytearray(0x10000)
     m[INIT] = 0x60
@@ -306,16 +351,16 @@ def _opcode_top_image():
     return m, cell
 
 
-def test_opcode_cell_top_falls_back_to_guarded_evidence():
+def test_opcode_cell_top_commits_observed_set_with_live_guard():
     m, cell = _opcode_top_image()
     model, ev = S.decompile(bytearray(m), INIT, ORG, FRAMES)
     pr = model.proofs[cell]
-    assert pr.status == "evidence" and pr.kind == "opcode"
-    assert model.evidence_sites[cell] == model.pcs[cell] == {0xEA}
+    assert pr.status == "observed" and pr.kind == "opcode"
+    assert model.dispatch_sets[cell] == model.pcs[cell] == {0xEA}
     w = S.Walker(model)
     assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
     bad = bytearray(model.mem0)
-    bad[cell] = 0x02  # JAM: outside the observed envelope
+    bad[cell] = 0x02  # JAM: outside the observed set
     with pytest.raises(S.WalkError):
         model.lookup(cell, bad)
     with pytest.raises(S.DecompileError, match="sound mode"):

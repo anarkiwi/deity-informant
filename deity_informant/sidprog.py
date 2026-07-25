@@ -1019,7 +1019,6 @@ def _need_pcs(model, blocks):
             need.add(t[1])
         elif t[0] in ("jsr", "jmpd", "jmpind") or (t[0] == "br" and t[5] is not None):
             need.update(model.dyn_targets.get(site, ()))
-            need.update(ev_tg.get(site, ()))
         elif t[0] == "rts":  # observed RTS-trick landings (call returns excluded)
             need.update(set(ev_tg.get(site, ())) - rets)
     return need
@@ -1528,7 +1527,7 @@ class TextModel:
                 prog.append([None, None])
                 gotos.append((len(prog) - 1, r.a))
                 nxt = len(prog) - 1
-            elif k == "frontier":  # proven, never observed: reaching it faults
+            elif k == "frontier":  # outside the observed program: reaching it faults
                 prog.append([None, ("fault", r.a)])
                 nxt = len(prog) - 1
             elif k == "cont":
@@ -1695,7 +1694,7 @@ class TreeWalker:
             b = self.m[ctrl[1]]
             idx = ctrl[2].get(b)
             if idx is None:
-                raise C.WalkError("opcode $%02X at $%04X outside proven set" % (b, ctrl[1]))
+                raise C.WalkError("opcode $%02X at $%04X outside observed set" % (b, ctrl[1]))
             return idx
         if op == "jmpd":
             idx = ctrl[1].get(x)
