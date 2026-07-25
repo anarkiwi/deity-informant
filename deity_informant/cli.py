@@ -239,7 +239,9 @@ def main(argv=None):
     p.add_argument(
         "--report", action="store_true", help="print the per-site proof report to stderr"
     )
-    p.add_argument("--sound", action="store_true", help="fail on any evidence-only dispatch site")
+    p.add_argument(
+        "--sound", action="store_true", help="fail unless every control guard is certified dead"
+    )
     p.set_defaults(fn=cmd_decompile)
 
     p = sub.add_parser("prog-run", help="execute a sidprog program, print the $D400.. grid")

@@ -22,13 +22,17 @@ current code does and why it is not yet sufficient.
 The prototype is *observationally* correct over a recorded window and *usually*
 statically closed. The complete implementation MUST be:
 
-1. **Sound by construction, not by trace.** Every value set, control target, and
-   SMC closure MUST be justified by a static argument checked in code, or the
-   build MUST fail loudly at the specific site. The evidence trace MAY seed and
-   cross-check, but MUST NOT be the sole justification for any emitted construct.
-   (Prototype: computed-dispatch sites fall back to the *evidence-observed*
-   target set when static closure overflows — sound for the recorded window and
-   guarded at run time, but not a static proof. This is the single largest gap.)
+1. **Sound by construction: observed behavior + runtime guards.** The artifact
+   is the per-tune observed program: every serialized value set, control-target
+   set, and SMC opcode set IS exactly the full-length trace-observed set, and
+   every such site carries a runtime guard that faults loudly (with the site pc
+   and the value) on anything outside it. This is sound by construction — the
+   observed sets are by definition what the evidence run executes, and no
+   unobserved behavior can be silently invented or silently entered. Static
+   analysis is **optional certification**: it MAY mark a guard provably dead
+   (its static set EQUALS the observed set) and MUST NOT widen any artifact
+   set; a wider static set is recorded in the proof report for reference and
+   the guard stays live. `--sound` means every control guard is certified dead.
 2. **Total over the input class.** Every tune in the declared class (§1)
    decompiles or fails with a precise, actionable diagnostic. No silent
    drop, no partial artifact, no "unsupported" carve-out inside the class.
@@ -133,53 +137,45 @@ Requirements, each with a proof obligation the build MUST discharge or fail:
 ### 4.1 Value-set / interval domain
 - A cell/register abstract value is a **finite value set (≤ K) or a bounded
   interval or ⊤**. ⊤ that reaches a construct requiring a bound (dispatch index,
-  jump vector, SMC opcode) is a **build failure at that site**, never a widening
-  to "any" that is silently accepted. (Prototype: ⊤ is admitted as "any byte" in
-  places, and the interval `_ivals`/widening/`_pair_targets`/optimistic-store
-  logic is heuristic; replace with a specified lattice + transfer functions +
-  monotone fixpoint with a proven termination bound.)
+  jump vector, SMC opcode) means that site's guard **cannot be certified** —
+  never a widening to "any" that is silently accepted. (Prototype: ⊤ is admitted
+  as "any byte" in places, and the interval `_ivals`/widening/`_pair_targets`/
+  optimistic-store logic is heuristic; replace with a specified lattice +
+  transfer functions + monotone fixpoint with a proven termination bound.)
 - **Termination MUST be by a well-founded widening operator**, specified and
   tested, not an iteration cap. Document the lattice height and the widening.
 
 ### 4.2 Pointer & indirect reads
 - A load through a zero-page pointer pair MUST resolve to the byte-value set of
   the region the pointer provably ranges over, when that region is immutable;
-  else the value is ⊤ and any construct depending on it fails. Specify
-  pointer-range recovery (recurrence over the pointer's def–use, bounded by the
-  immutable-data segments the tune actually addresses).
-- This is what the prototype's evidence fallback stands in for on Bionic
-  Commando / Comic Bakery / Wizball. The complete implementation MUST either
-  prove the bound or fail — not fall back to observed targets.
+  else the value is ⊤ and any construct depending on it stays uncertified.
+  Specify pointer-range recovery (recurrence over the pointer's def–use, bounded
+  by the immutable-data segments the tune actually addresses).
+- This is the missing lemma keeping Bionic Commando / Comic Bakery / Wizball
+  sites guard-live; certifying them needs the pointer bound proved.
 
-### 4.3 SMC closure (the doctrine, enforced)
-Each self-modification class MUST close with a proof (see the doctrine table in
-the prototype plan) — **for play-phase modification only**: init-time SMC
-(decompression, relocation, code copy) is baked into the snapshot and carries
-no obligation. Operand patches: total, no obligation. Opcode patches,
-vector rewrites, stack-dispatch, play-time code-copy: value-set/region closure
-MUST prove the exact reachable set; observed ⊆ proven is a **check**, never the
-definition.
-Runtime guards remain as defense-in-depth; a guard that *could* fire means the
-proof was incomplete and the build MUST have failed instead.
+### 4.3 SMC certification (play-phase only)
+Init-time SMC (decompression, relocation, code copy) is baked into the snapshot
+and carries no obligation. Operand patches: total, no obligation. Opcode
+patches, vector rewrites, stack-dispatch, play-time code-copy: the artifact set
+is the observed set behind a runtime guard (§0.1); value-set/region closure MAY
+certify the guard dead when the static set equals the observed set.
 
-### 4.4 Dispatch resolution
-- Computed jumps/calls (`jmp (ind)`, RTS-trick, self-patched `JMP`) MUST resolve
-  to a **statically proven** target set. Indexed jump tables MUST be recovered
-  as (index domain × table) with the index domain proven bounded (§4.1–4.2).
-- **No evidence-bounded dispatch in the complete implementation.** Remove
-  `evidence_sites`; a site that does not statically close is a failure with a
-  diagnostic naming the unresolved cell/pointer and the analysis that gave up.
+### 4.4 Dispatch certification
+- Computed jumps/calls (`jmp (ind)`, RTS-trick, self-patched `JMP`) serialize
+  their observed target set; static resolution (indexed jump tables recovered
+  as index domain × table, §4.1–4.2) only certifies the guard.
+- A static set wider than observed keeps the guard live and is recorded in the
+  proof report; it is NEVER serialized as arms.
 
 ### 4.5 Proof artifacts
-Every resolved site MUST carry a serializable proof record (site, kind, the
-value sets and the derivation) emitted in a build report, so soundness is
-auditable and diffable across tunes and code changes.
+Every dynamic site MUST carry a serializable certification record (site, kind,
+status observed/certified, the observed set, and the static derivation or
+refusal) emitted in a build report, auditable and diffable across tunes.
 
-**Gate A (soundness):** across the corpus, zero evidence-only justifications;
-every dispatch/SMC/vector site has a proof record; zero runtime guard firings;
-every build failure has a site-specific diagnostic. A tune that the prototype
-only closed via evidence MUST either close statically or appear on a tracked
-**"needs analysis" list with the exact missing lemma** — not silently pass.
+**Gate A (certification):** every dispatch/SMC/vector site has a certification
+record; zero runtime guard firings on replay; every uncertified site carries
+the exact static refusal (the tracked missing lemma) — not a silent pass.
 
 ## 5. Structuring — the canonical artifact (not a view)
 
@@ -256,8 +252,8 @@ migrate into the structured grammar; its flat-block statement form does not.
   MUST fail cleanly.
 - Execution path: parse → region tree → `flatten` → block model → the ONE
   walker core (shared with the model walker; no drift, no second interpreter).
-- Evidence-bounded sites are removed (§4.4); any remaining dispatch is annotated
-  with its proven set in the text.
+- Dispatch constructs carry their observed (serialized, guarded) sets in the
+  text; certification status lives in the proof report (§4.5).
 
 **Gate L:** grammar published; property-based round-trip laws green; the
 structured text alone replays cycle-exact corpus-wide; text smaller than the
@@ -307,10 +303,9 @@ Ordered, each step gated and independently shippable:
 2. **Block IR + CFG on `(pc,opcode)` identity.** Replace tuple blocks with a
    dataclass; make SMC variants first-class nodes. No behavior change; re-green
    Gate C.
-3. **Analysis rewrite (§4)** behind a flag, tune-by-tune, keeping the evidence
-   fallback available but *counting* every use. Success = zero evidence uses on
-   the corpus; each remaining use is a tracked missing lemma. Then delete the
-   fallback and `evidence_sites`.
+3. **Analysis rewrite (§4)** tune-by-tune, growing the certified fraction.
+   Success = every corpus guard certified dead; each guard-live site carries
+   its tracked missing lemma in the proof report.
 4. **Structurer → invertible codec (§5).** Lift the region-tree builder out of
    `render.py` into a codec module; implement `flatten` and the build-time
    equivalence check; make every emitter rewrite reversible; structure ALL

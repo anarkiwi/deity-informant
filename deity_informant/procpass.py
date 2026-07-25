@@ -125,12 +125,10 @@ def _graph(model):
                 targets.update(dyn)
                 for d in dyn:
                     dyn_sites.setdefault(d, set()).add(pc)
-                outs.extend(sorted(dyn | set(ev.get(site, ()))))
+                outs.extend(sorted(dyn))
         else:
             if t[0] == "br" and t[5] is not None:
-                outs.extend(sorted(set(model.dyn_targets.get(site, ())) | set(ev.get(site, ()))))
-            elif t[0] in ("jmpd", "jmpind"):
-                outs.extend(sorted(set(ev.get(site, ()))))
+                outs.extend(sorted(model.dyn_targets.get(site, ())))
             elif t[0] == "rts":
                 roots.extend(sorted(set(ev.get(site, ())) - rets))
             intra[pc].update(outs)

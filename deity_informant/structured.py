@@ -1,8 +1,8 @@
 """Structured decompiler core (docs/decompiler-plan.md P1-P4).
 
-Evidence trace -> per-pc blocks (opcode-SMC sites become per-byte variants,
-closed by static value-set analysis) -> symbolic event summaries with
-machine-order loads and cycle/penalty events -> compiled standalone walker.
+Evidence trace -> per-pc blocks (opcode-SMC sites become per-byte variants) ->
+compiled standalone walker. Every committed site set is the trace-observed set,
+guarded at run time; static analysis only certifies guards dead, never widens.
 """
 
 from __future__ import annotations
@@ -16,9 +16,11 @@ from .lifter import MODE_LEN, OPS, lift
 from .vm import PcodeVM
 
 Proof = namedtuple("Proof", "site kind status targets lemma")
-"""Per-site closure evidence (§4.5). ``status`` is ``proven`` (statically
-bounded target/opcode set), ``evidence`` (only the trace-observed set bounds it;
-``lemma`` names the missing static argument), or ``failed``."""
+"""Per-site certification record. ``targets`` is always the serialized
+(trace-observed) set. ``status`` is ``certified`` (the static set equals the
+observed set: the runtime guard is provably dead; ``lemma`` carries the
+derivation) or ``observed`` (guard live; ``lemma`` names why static did not
+certify — a refusal diagnostic or a wider static set)."""
 
 _VOL = frozenset((0xD011, 0xD012, 0xD41B, 0xD41C))
 _VOL0 = frozenset((0xD019, 0xDC0D))  # constant-0 sources under the per-frame driver
@@ -117,8 +119,12 @@ def trace(mem, init, play, frames, subtune=0):
             op = vm.mem[pc]
             pcs.setdefault(pc, set()).add(op)
             vm.pc = pc
+            key = (pc, op, vm.mem[(pc + 1) & 0xFFFF], vm.mem[(pc + 2) & 0xFFFF])
             nxt = vm.step(pc, cache, lift)
-            if nxt != (pc + MODE_LEN[OPS[op][1]]) & 0xFFFF:
+            kind = cache[key]["ctrl"][0]
+            fall = (pc + MODE_LEN[OPS[op][1]]) & 0xFFFF
+            # a transfer landing on its own fallthrough is still an observed edge
+            if kind != "next" and (kind != "br" or nxt != fall):
                 leaders.add(nxt)
                 targets.setdefault(pc, set()).add(nxt)
             pc = nxt
@@ -1839,10 +1845,10 @@ _TERM_KIND = {"jmpd": "jump", "jmpind": "vector", "br": "branch", "jsr": "call"}
 
 
 def _close_once(model):
-    """One closure round over the analysis workspace: control cells, dyn-target
-    resolution, SP flow, stack concretization, dominators, opcode-cell sets +
-    variant blocks. Returns ``(closed, sites)``: dispatch value sets and per-site
-    ``(term kind, targets, lemma)`` results; final tables are built at commit."""
+    """One certification round over the analysis workspace: control cells,
+    dyn-target resolution, SP flow, stack concretization, dominators. Returns
+    ``(closed, sites)``: static dispatch value sets and per-site ``(term kind,
+    static targets, lemma)`` — certification input; committed sets are observed."""
     ana = Analysis(model)
     seeds = set()
     dyn_blocks = []
@@ -1884,10 +1890,8 @@ def _close_once(model):
                     need.cell,
                 )
             except DecompileError as exc:
-                site = blk.pcs[-1]  # static can't bound: use observed successors
-                obs = model.ev_targets.get(site)
-                targets_map[blk] = sorted(obs) if obs else []
-                lemmas[site] = str(exc)
+                targets_map[blk] = []  # static gave up: the guard stays live
+                lemmas[blk.pcs[-1]] = str(exc)
         if not needs:
             break
         ana.close(needs)
@@ -1906,32 +1910,18 @@ def _close_once(model):
                 need.cell,
             )
         except DecompileError as exc:
-            obs = model.ev_targets.get(site)
-            targets_map[blk] = sorted(obs) if obs else []
+            targets_map[blk] = []
             lemmas[site] = str(exc)
     ana.pair_enabled = True
     sites = {}
-    for blk in dyn_blocks:  # materialize liftable members of the resolved target sets
+    for blk in dyn_blocks:
         site = blk.pcs[-1]
-        if blk not in targets_map:  # closure rounds exhausted: never a proven set
-            obs = model.ev_targets.get(site)
-            targets_map[blk] = sorted(obs) if obs else []
+        if blk not in targets_map:
+            targets_map[blk] = []
             lemmas.setdefault(
                 site, "control target at $%04X unresolved after closure rounds" % site
             )
         sites[site] = (blk.term[0], tuple(sorted(targets_map[blk])), lemmas.get(site))
-        paired = lemmas.get(site) is None and site in ana.derivations
-        obs = model.ev_targets.get(site, ())
-        for pc in targets_map[blk]:
-            if pc in model.written:
-                continue  # dispatch boundary: its variants come from cell closure
-            if paired and pc not in obs:
-                continue  # paired envelope member: stays a faulting frontier edge
-            op0 = next(iter(model.pcs[pc])) if pc in model.pcs else model.mem0[pc]
-            try:
-                model.build(pc, op0)
-            except (DecompileError, NotImplementedError):
-                pass  # over-approximated member: walker faults loudly if reached
     ana.sp_flow()
     ana.concretize_stack()
     ana.dominators()
@@ -1941,13 +1931,6 @@ def _close_once(model):
         sets = ana.close(set(model.dispatch_pcs))
         for pc in sorted(model.dispatch_pcs):
             closed[pc] = sets[pc]
-            if sets[pc] is TOP or len(sets[pc]) > 32:
-                continue  # verified (and failed) once the fixpoint stabilizes
-            for op0 in sorted(sets[pc]):
-                try:
-                    model.build(pc, op0)
-                except (DecompileError, NotImplementedError):
-                    pass  # junk member (e.g. pre-generation byte): loud fault if selected
     model.analysis = ana
     return closed, sites
 
@@ -1965,53 +1948,44 @@ def _analyze(model):
             return closed, sites
 
 
+def _static_lemma(tgts, lemma, obs):
+    """Guard-live reason: the static refusal, or the static/observed mismatch."""
+    if lemma is not None:
+        return lemma
+    return "static set %d target(s) != %d observed" % (len(tgts), len(obs))
+
+
 def _commit_tables(model, closed, sites):
-    """Final site tables under the uniform coverage rule: at every site the
-    observed set must lie inside the proven set or the site drops to the guarded
-    evidence envelope (observed set, tracked lemma); an empty resolution at an
-    executed site is never ``proven``; unexecuted unproven sites are ``failed``."""
-    proofs, dyn_targets, evidence_sites, dispatch_sets = {}, {}, {}, {}
+    """Observed-primary site tables: every committed set is exactly the
+    trace-observed set; static results only certify a guard dead (static set
+    equals observed) and are otherwise recorded as the guard-live reason."""
+    proofs, dyn_targets, dispatch_sets = {}, {}, {}
     ana = model.analysis
     derivs = ana.derivations if ana is not None else {}
-    refusals = ana.pair_refusals if ana is not None else {}
     for site in sorted(sites):
         term0, tgts, lemma = sites[site]
-        obs = set(model.ev_targets.get(site, ()))
-        if lemma is None and obs and not obs <= set(tgts):
-            lemma = "proven target set omits observed targets" + (
-                " (empty resolution)" if not tgts else ""
-            )
-            tgts = tuple(sorted(obs))
-        if lemma is not None and site in refusals and refusals[site] not in lemma:
-            lemma += "; " + refusals[site]
+        obs = tuple(sorted(model.ev_targets.get(site, ())))
         kind = _TERM_KIND.get(term0, term0)
-        if lemma is None:
+        if lemma is None and tuple(sorted(tgts)) == obs:
             deriv = "; ".join(txt for _cells, txt in sorted(derivs.get(site, {}).items()))
-            proofs[site] = Proof(site, kind, "proven", tgts, deriv)
-        elif obs:
-            evidence_sites[site] = obs
-            proofs[site] = Proof(site, kind, "evidence", tgts, lemma)
+            proofs[site] = Proof(site, kind, "certified", obs, deriv)
         else:
-            proofs[site] = Proof(site, kind, "failed", tgts, lemma)
-        dyn_targets[site] = list(tgts)
+            proofs[site] = Proof(site, kind, "observed", obs, _static_lemma(tgts, lemma, obs))
+        dyn_targets[site] = list(obs)
     for pc in sorted(model.dispatch_pcs):
-        observed = model.pcs[pc]
+        obs = tuple(sorted(model.pcs[pc]))
         vals = closed.get(pc, set())
-        if vals is TOP or len(vals) > 32 or not observed <= vals:
-            # unproven value set: guarded evidence envelope (dispatch doctrine)
-            dispatch_sets[pc] = set(observed)
-            evidence_sites[pc] = set(observed)
-            proofs[pc] = Proof(
-                pc,
-                "opcode",
-                "evidence",
-                tuple(sorted(observed)),
-                "opcode-cell value set unproven (aliasing computed store or TOP)",
-            )
+        if vals is not TOP and tuple(sorted(vals)) == obs:
+            proofs[pc] = Proof(pc, "opcode", "certified", obs, "")
         else:
-            dispatch_sets[pc] = set(vals)
-            proofs[pc] = Proof(pc, "opcode", "proven", tuple(sorted(vals)), "")
-    return proofs, dyn_targets, evidence_sites, dispatch_sets
+            lemma = (
+                "opcode-cell value set TOP (aliasing computed store)"
+                if vals is TOP
+                else "static set %d value(s) != %d observed" % (len(vals), len(obs))
+            )
+            proofs[pc] = Proof(pc, "opcode", "observed", obs, lemma)
+        dispatch_sets[pc] = set(model.pcs[pc])
+    return proofs, dyn_targets, dispatch_sets
 
 
 def _commit(model, closed, sites):
@@ -2019,13 +1993,12 @@ def _commit(model, closed, sites):
     step from the analysis results (resplit at final entries, keep only blocks
     final-reachable from play, then the intra-block passes). Blocks are immutable
     afterwards; only ``lookup`` may lazily add static continuations."""
-    tables = _commit_tables(model, closed, sites)
-    model.proofs, model.dyn_targets, model.evidence_sites, model.dispatch_sets = tables
-    unsound = sorted(model.evidence_sites)
-    if model.sound and unsound:
+    model.proofs, model.dyn_targets, model.dispatch_sets = _commit_tables(model, closed, sites)
+    live = sorted(s for s, p in model.proofs.items() if p.status != "certified")
+    if model.sound and live:
         raise DecompileError(
-            "sound mode: %d evidence-only site(s): %s"
-            % (len(unsound), "; ".join("$%04X (%s)" % (s, model.proofs[s].lemma) for s in unsound))
+            "sound mode: %d guard-live site(s): %s"
+            % (len(live), "; ".join("$%04X (%s)" % (s, model.proofs[s].lemma) for s in live))
         )
     model._resplit()
     collect_unreachable(model)
@@ -2045,34 +2018,11 @@ def _dyn_site(model, blk):
     return False
 
 
-def _site_envelope(model, blk):
-    """Committed successor set of a terminator: static edges plus dyn targets;
-    ``None`` for rts (runtime-stack continuation, walker-guarded)."""
-    term = blk.term
-    t = term[0]
-    if t == "rts":
-        return None
-    out = set(model.dyn_targets.get(blk.pcs[-1], ()))
-    if t in ("goto", "jmp"):
-        out.add(term[1])
-    elif t == "br":
-        if term[2] is not None:
-            out.add(term[2])
-        out.add(term[3])
-    elif t == "jsr":
-        if term[1] is not None:
-            out.add(term[1])
-    elif t == "jmpind" and term[2] is None:
-        m, ptr = model.mem0, term[1]
-        out.add(m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8))
-    return out
-
-
 def check_commit(model):
-    """Uniform coverage checker at the commit boundary (§4.5), one rule for
-    every site class: observed evidence inside the committed proven-or-evidence
-    set, every kept block final-reachable from play, every observed variant
-    built, and site records only for kept sites. Violations are fatal."""
+    """Commit-boundary checker, one rule for every site class: every committed
+    set IS the observed set, every kept block is final-reachable from play,
+    every observed variant is built, and site records exist only for kept
+    sites. Violations are fatal."""
     errs = []
     live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
     seen = set()
@@ -2084,51 +2034,27 @@ def check_commit(model):
         seen.add(pc)
         for key in model.variants(pc):
             work.extend(_walk_edges(model, model.blocks[key]))
-    site_env = {}  # per-site union over variants; None once any variant is rts
     for key, blk in sorted(model.blocks.items()):
         if key[0] not in seen:
             errs.append("block $%04X/$%02X not reachable from play" % key)
         site = blk.pcs[-1]
         if _dyn_site(model, blk) and site not in model.proofs:
             errs.append("dyn site $%04X has no proof record" % site)
-        env = _site_envelope(model, blk)
-        cur = site_env.get(site, set())
-        site_env[site] = None if env is None or cur is None else cur | env
-    for site in sorted(s for s, env in site_env.items() if env is not None):
-        extra = (
-            set(model.ev_targets.get(site, ()))
-            - site_env[site]
-            - set(model.evidence_sites.get(site, ()))
-        )
-        if extra:
-            errs.append(
-                "site $%04X: observed target(s) %s outside the committed set"
-                % (site, " ".join("$%04X" % t for t in sorted(extra)))
-            )
     for site, pr in sorted(model.proofs.items()):
         obs = model.pcs.get(site, ()) if pr.kind == "opcode" else model.ev_targets.get(site, ())
-        if pr.status == "proven" and (
-            site in model.evidence_sites or not set(obs) <= set(pr.targets)
-        ):
-            errs.append(
-                "site $%04X (%s): 'proven' proof does not cover the observed set" % (site, pr.kind)
-            )
+        committed = (
+            model.dispatch_sets.get(site) if pr.kind == "opcode" else (model.dyn_targets.get(site))
+        )
+        if set(pr.targets) != set(obs) or set(committed or ()) != set(obs):
+            errs.append("site $%04X (%s): committed set is not the observed set" % (site, pr.kind))
     for pc in sorted(model.dispatch_pcs):
         if pc not in model.proofs or pc not in model.dispatch_sets:
             errs.append("dispatch cell $%04X has no committed set" % pc)
             continue
         for op0 in sorted(model.pcs[pc]):
-            if op0 not in model.dispatch_sets[pc]:
-                errs.append(
-                    "dispatch cell $%04X: opcode $%02X outside the committed set" % (pc, op0)
-                )
             if (pc, op0) not in model.blocks:
                 errs.append("observed variant $%02X at $%04X failed to build" % (op0, pc))
-    for name, table in (
-        ("proof", model.proofs),
-        ("evidence", model.evidence_sites),
-        ("dyn-target", model.dyn_targets),
-    ):
+    for name, table in (("proof", model.proofs), ("dyn-target", model.dyn_targets)):
         errs.extend(
             "%s record for nonexistent site $%04X" % (name, site)
             for site in sorted(table)
@@ -2139,8 +2065,8 @@ def check_commit(model):
 
 
 def proof_report(model):
-    """Serialisable per-site closure report (§4.5): proofs sorted by site plus a
-    status tally. ``evidence`` entries are tracked missing lemmas (Gate A)."""
+    """Serialisable per-site certification report: proofs sorted by site plus a
+    status tally. ``observed`` entries are live guards with the static reason."""
     proofs = [model.proofs[s] for s in sorted(model.proofs)]
     tally = {}
     for p in proofs:
@@ -2167,7 +2093,7 @@ def format_report(model):
     lines = [
         "proof report: "
         + ", ".join("%s=%d" % (k, tally[k]) for k in sorted(tally))
-        + (" [SOUND]" if not tally.get("evidence") and not tally.get("failed") else "")
+        + (" [SOUND]" if not tally.get("observed") else "")
     ]
     for s in rep["sites"]:
         line = "  %s %-7s %-8s %d target(s)" % (
@@ -2289,10 +2215,11 @@ def _walk_edges(model, blk):
     elif t == "jmpind" and term[2] is None:
         m, ptr = model.mem0, term[1]
         out.append(m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8))
-    if t in ("br", "jmpd", "jmpind", "jsr", "rts"):
-        site = blk.pcs[-1]
+    site = blk.pcs[-1]
+    if t in ("br", "jmpd", "jmpind", "jsr"):
         out.extend(model.dyn_targets.get(site, ()))
-        out.extend(model.ev_targets.get(site, ()))
+    elif t == "rts":
+        out.extend(model.ev_targets.get(site, ()))  # RTS-trick landings
     return out
 
 
@@ -2319,7 +2246,7 @@ def collect_unreachable(model):
     model.__dict__.pop("_static_preds", None)  # graph memos: now stale
     model.__dict__.pop("_proc_plan", None)
     live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
-    for table in (model.dyn_targets, model.evidence_sites, model.proofs):
+    for table in (model.dyn_targets, model.proofs):
         for site in [s for s in table if s not in live]:
             del table[site]
 
@@ -2442,7 +2369,7 @@ class Model:
         self.play = play
         self.subtune = subtune
         self.prologue = list(evidence.prologue)
-        self.sound = sound  # strict mode: any evidence-only site is a build failure
+        self.sound = sound  # strict mode: any guard-live (uncertified) site fails the build
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
         self.reads = evidence.reads  # play-phase (site pc, read address) pairs
@@ -2454,10 +2381,8 @@ class Model:
         self.dispatch_sets = {}
         self.blocks = {}
         self.analysis = None
-        self.unproven = []
-        self.evidence_sites = {}  # pc -> observed target set, where static didn't bound
-        self.dyn_targets = {}  # transfer-site pc -> resolved successor pcs
-        self.proofs = {}  # site pc -> Proof (dispatch/vector/opcode closure record)
+        self.dyn_targets = {}  # transfer-site pc -> observed successor pcs
+        self.proofs = {}  # site pc -> Proof (certification record)
         self._by_pc = {}
 
     def build(self, pc, op0):
@@ -2496,7 +2421,7 @@ class Model:
             key = (pc, m[pc])
             blk = self.blocks.get(key)
             if blk is None:
-                raise WalkError("opcode $%02X at $%04X outside proven set" % (key[1], pc))
+                raise WalkError("opcode $%02X at $%04X outside observed set" % (key[1], pc))
         else:
             ops = self.pcs.get(pc)
             key = (pc, next(iter(ops)) if ops is not None else self.mem0[pc])
@@ -2509,10 +2434,10 @@ class Model:
 
 
 def decompile(mem, init, play, frames, subtune=0, sound=False):
-    """Full-length evidence trace + closed, passed model: ``(model, evidence)``.
+    """Full-length evidence trace + committed, passed model: ``(model, evidence)``.
 
     ``subtune`` (0-based) selects the tune init installs. ``sound=True`` fails
-    the build on any evidence-only (non-statically-proven) dispatch site.
+    the build unless every control guard is certified dead (static == observed).
     """
     ev = trace(bytearray(mem), init, play, frames, subtune)
     model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
@@ -2539,6 +2464,13 @@ class Walker:
         self.m[0x100 + self.r[3]] = val & 0xFF
         self.r[3] = (self.r[3] - 1) & 0xFF
 
+    def _guard(self, blk, pc):
+        """Fault when a dynamic transfer leaves its committed (observed) set."""
+        tg = self.model.dyn_targets.get(blk.pcs[-1])
+        if tg is not None and pc not in tg:
+            raise WalkError("target $%04X at $%04X outside observed set" % (pc, blk.pcs[-1]))
+        return pc
+
     def _run_entry(self, entry, acc=0):
         model = self.model
         m = self.m
@@ -2563,20 +2495,22 @@ class Walker:
                 if dynx is not None:
                     tgt = xtgt
                 if flag == pol:
+                    if dynx is not None and tgt != ft:  # branch onto ft: static edge
+                        self._guard(blk, tgt)
                     self.c += 1 + ((ft & 0xFF00) != (tgt & 0xFF00))
                     pc = tgt
                 else:
                     pc = ft
             elif kind == "jmpd":
-                pc = x
+                pc = self._guard(blk, x)
             elif kind == "jmpind":
                 ptr = term[1] if term[2] is None else x
-                pc = m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
+                pc = self._guard(blk, m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8))
             elif kind == "jsr":
                 _, tgt, ret, dynx = term
                 self._push(ret >> 8)
                 self._push(ret & 0xFF)
-                pc = tgt if dynx is None else x
+                pc = tgt if dynx is None else self._guard(blk, x)
             else:  # rts
                 sp = (self.r[3] + 1) & 0xFF
                 lo = m[0x100 + sp]

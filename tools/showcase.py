@@ -62,7 +62,10 @@ def one(rel):
         "writes": len(ev.wlog),
         "bit_exact_standalone": exact,
         "text_bytes": len(text),
-        "evidence_sites": sorted("$%04X" % pc for pc in model.evidence_sites),
+        "guard_live": sorted(
+            "$%04X" % s for s, p in model.proofs.items() if p.status != "certified"
+        ),
+        "certified": sum(p.status == "certified" for p in model.proofs.values()),
         "build_s": build_s,
         **met,
     }

@@ -73,7 +73,7 @@ sidinit     = "sid-init" , ws , "{" , newline ,
               { bytehex , ws , "=" , ws , bytehex , newline } ,
               "}" , newline ;   (* init-phase SID register writes, in order *)
 dispatch    = "dispatch" , ws , hex , ":" , { ws , bytehex } , newline ;
-                                        (* proven opcode set for an SMC cell *)
+                                        (* observed opcode set for an SMC cell *)
 
 image       = "image" , ws , "{" , newline ,
               { hex , ":" , ws , { hexpair } , newline } ,   (* <=16 bytes/row *)
@@ -91,7 +91,7 @@ attr        = "stride" , ws , integer          (* record size in bytes *)
             | "->" , ws , hex , ".." , hex     (* pointer-table entry value span *)
             | "cmp" , { ws , bytehex }         (* stream byte-class compare alphabet *)
             | "dispatch" , { ws , hex }        (* dispatch sites consuming the bytes *)
-            | "observed" ;                     (* extent observed, not proven *)
+            | "observed" ;                 (* extent observed, not certified *)
 
 symbols     = "symbols" , ws , "{" , newline ,
               { ws , "alias" , ws , aliasname , ws , "=" , ws , cellname , newline } ,
@@ -104,7 +104,7 @@ item        = block | ifregion | loop | opswitch | gotoswitch | callswitch
             | flow ;
 loop        = "loop" , ws , "{" , newline , { item } , "}" , newline ;
 flow        = "goto" , ws , hex , newline            (* to a labelled block *)
-            | "unobserved" , ws , hex , newline      (* proven, never-observed edge *)
+            | "unobserved" , ws , hex , newline      (* edge outside the observed program *)
             | "continue" , newline                   (* back to loop header *)
             | "break" , newline ;                    (* to loop exit *)
 
@@ -141,7 +141,7 @@ igoto       = "igoto" , ws , ( hex | "(" , expr , ")" ) ;   (* jmp (indirect) *)
 call        = "call" , ws , target , ws , "ret" , ws , hex ;
                        (* ret = the address the jsr pushes (real memory) *)
 ret         = "ret" ;
-target      = hex | "(" , expr , ")" ;   (* "(expr)" is a proven dynamic target *)
+target      = hex | "(" , expr , ")" ;   (* "(expr)" is a computed dynamic target *)
 
 ifregion    = ( "if" | "ifnot" ) , ws , "@t" , integer , ws , expr , ws ,
               ( "{" , newline , { item } ,
@@ -153,13 +153,13 @@ ifregion    = ( "if" | "ifnot" ) , ws , "@t" , integer , ws , expr , ws ,
 gotoswitch  = "switch goto {" , newline ,
               { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
                 "}" , newline } ,
-              "}" , newline ;   (* proven targets of the preceding cgoto/igoto *)
+              "}" , newline ;   (* observed targets of the preceding cgoto/igoto *)
 callswitch  = "switch call { " , [ hex , { ws , hex } ] , " }" , newline
             | "switch call {" , newline , [ hex , { ws , hex } , newline ] ,
               { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
                 "}" , newline } ,
               "}" , newline ;
-              (* proven targets of the preceding dynamic call; a case arm is
+              (* observed targets of the preceding dynamic call; a case arm is
                  that handler's tree inlined, bare targets are procs *)
 opswitch    = [ label , newline ] ,
               "switch code[" , hex , "] {" , newline ,
@@ -223,9 +223,9 @@ derived mechanically from the streams classification
   fixed-stride record arrays (`stride`, with `+name` co-bases for the other
   fields read inside the region). `stream` covers pointer-walked
   command/script/pattern byte streams (`via` names the walking pair's lo
-  cell; `cmp`/`dispatch` attach the proven byte-class alphabet and consuming
+  cell; `cmp`/`dispatch` attach the certified byte-class alphabet and consuming
   dispatch sites where the analysis found them).
-- **Extent honesty.** A declared extent without a marker is proven: every
+- **Extent honesty.** A declared extent without a marker is certified: every
   index expression reaching the region is statically bounded below its width
   mask and the domain fits before the next boundary. Anything else is emitted
   with the `observed` marker and the extent of the full-length evidence reads
@@ -294,12 +294,12 @@ also the hook for a future user-supplied symbol map.
   is self-modified keeps the explicit line
   `if|ifnot expr goto (dynexpr) else $FT`: the taken target is computed at
   run time (resolved against the serialized-pc map; fault when absent, and
-  the emitter labels every proven target), the `else` pc exists solely for
+  the emitter labels every observed target), the `else` pc exists solely for
   the run-time page-cross penalty, and the structural continuation after the
   line is the fallthrough edge.
 - **Dynamic flow is evidence-scoped.** `switch goto { case $XXXX: {…} }`
-  lists the proven targets of the preceding computed jump with each arm's
-  tree inline; `switch call` lists a dynamic call's proven targets, inlining
+  lists the observed targets of the preceding computed jump with each arm's
+  tree inline; `switch call` lists a dynamic call's observed targets, inlining
   single-site handlers as `case` arms (their `ret` unwinds to the call's
   continuation) and leaving shared handlers as bare pcs resolved to their
   `proc`s. An `igoto $addr` whose vector cell is image-derived emits its sole

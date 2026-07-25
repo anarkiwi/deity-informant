@@ -39,8 +39,7 @@ def _verify(mem, init, play, frames, subtune=0):
     assert model.prologue == ev.prologue  # init's SID writes, order-preserved
     for site, pr in model.proofs.items():
         obs = model.pcs.get(site) if pr.kind == "opcode" else model.ev_targets.get(site)
-        if pr.status == "proven" and obs:
-            assert set(obs) <= set(pr.targets), "bogus 'proven' proof at $%04X" % site
+        assert set(pr.targets) == set(obs or ()), "committed set != observed at $%04X" % site
     w = S.Walker(model)
     assert w.run(frames) == ev.wlog  # play-phase log from the post-init image
     assert bytes(w.m) == ev.end_mem
@@ -54,13 +53,15 @@ def test_fuzz_walker_bit_exact(p):
     _verify(_image(p), _init(p), p.org, p.frames)
 
 
-def test_opcode_byte_outside_proven_set_faults():
+def test_opcode_byte_outside_observed_set_faults():
+    """Observed-primary: the committed dispatch set IS the observed opcode set;
+    any other byte at the cell faults in the walker."""
     p = next(q for q in _PLAYERS if q.name == "smc_opcode")
     model, _ev = S.decompile(_image(p), _init(p), p.org, p.frames)
     (site,) = {pc for pc in model.dispatch_pcs if pc >= p.org}
-    assert model.dispatch_sets[site] >= model.pcs[site]
+    assert model.dispatch_sets[site] == model.pcs[site]
     m = bytearray(model.mem0)
-    m[site] = 0x02  # JAM: not in any proven store value set
+    m[site] = 0x02  # JAM: never observed at the cell
     with pytest.raises(S.WalkError):
         model.lookup(site, m)
 
@@ -73,13 +74,46 @@ def test_collect_unreachable_drops_residue_blocks_and_site_records():
     baseline = set(model.blocks)
     model.build(0x0F00, 0x60)  # init RTS: never reachable from play
     model.dyn_targets[0x0F00] = []
-    model.proofs[0x0F00] = S.Proof(0x0F00, "jump", "evidence", (), "residue")
+    model.proofs[0x0F00] = S.Proof(0x0F00, "jump", "observed", (), "residue")
     S.collect_unreachable(model)
     assert (0x0F00, 0x60) not in model.blocks and not model.variants(0x0F00)
     assert 0x0F00 not in model.dyn_targets and 0x0F00 not in model.proofs
     assert set(model.blocks) == baseline
     w = S.Walker(model)
     assert w.run(p.frames) == ev.wlog
+
+
+def test_dynamic_jump_onto_fallthrough_is_observed():
+    """A patched JMP landing exactly on the next instruction is an observed
+    edge (recorded despite equalling fallthrough): the committed set carries
+    it and the standalone text replays without a guard fault."""
+    mem = bytearray(0x10000)
+    mem[0x0F00] = 0x60
+    code = [0xA9, 0x0A, 0x8D, 0x08, 0x10, 0xA9, 0x41]  # patch JMP operand lo
+    code += [0x4C, 0x0A, 0x10]  # $1007: JMP $100A == fallthrough
+    code += [0x8D, 0x00, 0xD4, 0x60]  # $100A: STA $D400; RTS
+    mem[0x1000 : 0x1000 + len(code)] = bytes(code)
+    model, ev = S.decompile(mem, 0x0F00, 0x1000, 3)
+    assert 0x100A in model.ev_targets[0x1007] and 0x100A in model.dyn_targets[0x1007]
+    w = S.Walker(model)
+    assert w.run(3) == ev.wlog
+    tm = sidprog.parse(sidprog.emit(model))
+    assert tm.run(3) == ev.wlog
+
+
+def test_dynamic_branch_onto_fallthrough_replays():
+    """A patched branch whose displacement resolves to zero lands on its own
+    fallthrough — a static edge, so the dynamic-target guard admits it."""
+    mem = bytearray(0x10000)
+    mem[0x0F00] = 0x60
+    code = [0xA9, 0x00, 0x8D, 0x08, 0x10, 0xA9, 0x01, 0xD0, 0x00]  # BNE +0 (patched)
+    code += [0x8D, 0x00, 0xD4, 0x60]
+    mem[0x1000 : 0x1000 + len(code)] = bytes(code)
+    model, ev = S.decompile(mem, 0x0F00, 0x1000, 3)
+    w = S.Walker(model)
+    assert w.run(3) == ev.wlog
+    tm = sidprog.parse(sidprog.emit(model))
+    assert tm.run(3) == ev.wlog
 
 
 def test_cia_icr_read_modeled_as_zero_source():
@@ -125,7 +159,7 @@ def test_paired_cross_block_writer_pair_proves():
     m[0x1000 : 0x1000 + len(code)] = bytes(code)
     model = _paired_verify(m, 12)
     pr = model.proofs[0x1020]
-    assert pr.status == "proven" and pr.lemma.startswith("paired-index")
+    assert pr.status == "certified" and pr.lemma.startswith("paired-index")
     assert set(pr.targets) == {0x1030, 0x1038, 0x1040, 0x1048}
 
 
@@ -140,8 +174,7 @@ def test_paired_unpaired_stores_refuse():
     model = _paired_verify(m, 12)
     assert "stores $1021 but not $1022" in model.analysis.pair_refusals[0x1020]
     assert not model.proofs[0x1020].lemma.startswith("paired-index")
-    obs = model.ev_targets[0x1020]
-    assert obs <= set(model.proofs[0x1020].targets)
+    assert set(model.proofs[0x1020].targets) == set(model.ev_targets[0x1020])
 
 
 def test_paired_mutable_table_spill_refuses():
@@ -169,7 +202,7 @@ def test_paired_constant_pair_and_indexed_mix_proves():
     m[0x1060 : 0x1060 + len(arm)] = bytes(arm)
     model = _paired_verify(m, 16)
     pr = model.proofs[0x1020]
-    assert pr.status == "proven" and pr.lemma.startswith("paired-index")
+    assert pr.status == "certified" and pr.lemma.startswith("paired-index")
     assert set(pr.targets) == {0x1030, 0x1038, 0x1040, 0x1048, 0x1050}
 
 
@@ -188,10 +221,10 @@ def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
     assert model.dispatch_sets is not None
 
 
-def test_evidence_bounded_dispatch_faults_on_unobserved_target():
-    """A computed-dispatch site static analysis cannot bound is scoped to its
-    observed targets; the standalone text walker faults on any other target
-    (the guarded evidence envelope, identical to opcode-SMC dispatch)."""
+def test_guard_live_dispatch_faults_on_unobserved_target():
+    """A computed-dispatch site static analysis cannot certify serializes its
+    observed set with a live guard; the standalone text walker faults on any
+    other target (observed-primary doctrine)."""
     entry = next((t for t in corpus_params(HVSC) if t[0].stem == "Bionic_Commando"), None)
     if entry is None:
         pytest.skip("corpus tune absent")
@@ -199,10 +232,11 @@ def test_evidence_bounded_dispatch_faults_on_unobserved_target():
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, secs * 50, sub)
-    assert model.evidence_sites, "expected at least one evidence-bounded site"
+    live = {s: p for s, p in model.proofs.items() if p.status == "observed"}
+    assert live, "expected at least one guard-live site"
     tm = sidprog.parse(sidprog.emit(model)).link()
-    _site, targets = next(iter(model.evidence_sites.items()))
+    _site, pr = next(iter(live.items()))
     unobserved = next(a for a in range(0x0200, 0xCF00) if a not in tm.pcmap and a not in tm.contmap)
-    assert unobserved not in targets
+    assert unobserved not in pr.targets
     with pytest.raises(S.WalkError):
         tm.node_at(unobserved)
