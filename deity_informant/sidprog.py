@@ -1,8 +1,8 @@
 """sidprog: the canonical structured text for decompiled playroutines.
 
-``emit`` renders a model as procedures of nested regions (loop/if/switch over
-labeled block leaves); ``parse`` is its exact inverse and re-verifies the
-structurer codec. Grammar/laws: docs/sidprog-language.md.
+``emit`` renders a model as region-tree procedures whose nesting IS the flow
+(implicit fallthrough; labels only on goto targets); ``parse`` rebuilds the
+trees and ``TextModel.run`` walks them. Grammar: docs/sidprog-language.md.
 """
 
 from __future__ import annotations
@@ -279,22 +279,15 @@ def parse_expr(text):
 
 
 # ---- block payload lines (exact round trip) ------------------------------------
-def _label(key, dispatch):
-    pc, op0 = key
-    return "$%04X/$%02X" % (pc, op0) if pc in dispatch else "$%04X" % pc
-
-
-def _term_lines(term, next_pc):
+def _term_lines(term):
+    """Explicit terminator lines; goto/jmp fallthrough is implicit (structure)
+    and a static branch serializes as its if region, not here."""
     if term[0] in ("goto", "jmp"):
-        return [] if term[1] == next_pc else ["goto $%04X" % term[1]]
-    if term[0] == "br":
-        _, pol, tgt, ft, flag, dyn = term
+        return []
+    if term[0] == "br":  # dynamic-target branch escape hatch
+        _, pol, _tgt, ft, flag, dyn = term
         word = "if" if pol else "ifnot"
-        dst = "(%s)" % fmt_expr(dyn) if dyn is not None else "$%04X" % tgt
-        line = "%s %s goto %s" % (word, fmt_expr(flag), dst)
-        if ft != next_pc:
-            line += " else $%04X" % ft
-        return [line]
+        return ["%s %s goto (%s) else $%04X" % (word, fmt_expr(flag), fmt_expr(dyn), ft)]
     if term[0] == "jmpd":
         return ["goto (%s)" % fmt_expr(term[1])]
     if term[0] == "jmpind":
@@ -630,6 +623,11 @@ def _items(region):
     return region.a if region.kind == "seq" else [region]
 
 
+def _br_pen(term):
+    """Static taken penalty of a branch: 1 + page-cross(target, fallthrough)."""
+    return 1 + ((term[2] & 0xFF00) != (term[3] & 0xFF00))
+
+
 class _SortedView:
     """Model facade with canonical (sorted) variant order for structuring;
     ``hidden`` pcs (already serialized by an earlier proc) become goto labels."""
@@ -637,6 +635,7 @@ class _SortedView:
     def __init__(self, model):
         self.blocks = model.blocks
         self.mem0 = model.mem0
+        self.play = getattr(model, "play", None)
         self.dyn_targets = model.dyn_targets
         self.dispatch_pcs = set(model.dispatch_sets)
         self.hidden = set()
@@ -649,31 +648,62 @@ class _SortedView:
         return () if pc in self.hidden else self._by_pc.get(pc, ())
 
 
-class _Writer:
-    """Serializes each procedure's region tree; term lines carry the flow."""
+def _tree_keys(root):
+    """Block keys a region tree serializes (dispatch and call arms included)."""
+    keys = set()
+    stack = [root]
+    while stack:
+        r = stack.pop()
+        k = r.kind
+        if k == "block":
+            keys.add((r.a.pc, r.a.op0))
+        elif k == "seq":
+            stack.extend(r.a)
+        elif k == "loop":
+            stack.append(r.a)
+        elif k == "if":
+            stack.extend(c for c in (r.b, r.c) if c is not None)
+        elif k == "switch":
+            for _lbl, body in r.a[1]:
+                if body is None:
+                    continue
+                if body.kind == "call":
+                    if body.b is not None:
+                        stack.append(body.b)
+                else:
+                    stack.append(body)
+    return keys
 
-    def __init__(self, model):
-        self.model = _SortedView(model)
-        self.dispatch = set(model.dispatch_sets)
+
+class _Writer:
+    """Serializes region trees; the nesting carries the flow (no goto soup).
+    ``view`` is the model facade when emitting from a block model, else None."""
+
+    def __init__(self, labels, dispatch, view):
+        self.labels = labels
+        self.dispatch = dispatch
+        self.view = view
         self.out = []
-        self.done = set()
+        self.open = False  # last emitted line is another block's payload
 
     def line(self, text, d):
         self.out.append(" " * d + text)
+        self.open = False
 
-    def proc(self, entry):
-        root, _labels = codec.structure(self.model, entry)
-        seen = set(self.done)
-        self.out.append("proc $%04X {" % entry)
-        for r in _items(root):
-            self.seq(_items(r), 1)
-        self.out.append("}")
-        self.model.hidden.update(k[0] for k in self.done - seen)
+    def payline(self, text, d):
+        self.out.append(" " * d + text)
+        self.open = True
+
+    def proc(self, entry, root):
+        self.line("proc $%04X {" % entry, 0)
+        self.seq(_items(root), 1)
+        self.line("}", 0)
 
     def capture(self, items, d):
-        keep, self.out = self.out, []
+        keep, flag = self.out, self.open
+        self.out, self.open = [], False
         self.seq(items, d)
-        buf, self.out = self.out, keep
+        buf, self.out, self.open = self.out, keep, flag
         return buf
 
     def seq(self, items, d):
@@ -682,7 +712,7 @@ class _Writer:
             r = items[i]
             k = r.kind
             if k == "block":
-                i += self.block(r.a, items[i + 1] if i + 1 < len(items) else None, d)
+                i += self.block(r, items[i + 1] if i + 1 < len(items) else None, d)
                 continue
             if k == "seq":
                 self.seq(r.a, d)
@@ -693,54 +723,75 @@ class _Writer:
             elif k == "switch":
                 self.opcode_switch(r, d)
             elif k == "goto":
-                echo = "goto $%04X" % r.a
-                if not self.out or self.out[-1].lstrip("\x00 ") != echo:
-                    self.line(echo, d)
+                self.line("goto $%04X" % r.a, d)
             elif k in ("cont", "brk"):
                 self.line("continue" if k == "cont" else "break", d)
             else:
                 raise ValueError("unexpected %s region in sequence" % k)
             i += 1
 
-    def block(self, blk, nxt, d):
-        self.done.add((blk.pc, blk.op0))
+    def block(self, r, nxt, d):
+        blk = r.a
+        if self.view is not None and r.b is not None and blk.pc in self.dispatch:
+            if r.b in self.labels:
+                self.line("$%04X:" % r.b, d)
+            self.line("switch code[$%04X] {" % blk.pc, d)
+            self.line("case $%02X: {" % blk.op0, d + 1)
+            consumed = self._leaf(r, nxt, d + 2, False)
+            self.line("}", d + 1)
+            self.line("}", d)
+            return consumed
+        return self._leaf(r, nxt, d, True)
+
+    def _leaf(self, r, nxt, d, labelled):
+        blk = r.a
         cse = _Cse(_roots(blk))
-        self.line(_label((blk.pc, blk.op0), self.dispatch) + ":", d)
         shadow = _shadow(blk, cse)
-        for l in cse.binding_lines():
-            self.line(l, d + 1)
+        lines = cse.binding_lines()
         pend = None
         for l in _block_lines(shadow):
             l = _rename(l)
             if _CYC_LINE.fullmatch(l):
                 pend = l
                 continue
-            self.line(pend + " " + l if pend else l, d + 1)
+            lines.append(pend + " " + l if pend else l)
             pend = None
         if pend:
-            self.line(pend, d + 1)
-        term = [_rename(l) for l in _term_lines(shadow.term, None)]
+            lines.append(pend)
+        lbl = r.b if labelled and r.b is not None and r.b in self.labels else None
+        if lbl is None and labelled and self.open and lines and r.b is not None:
+            lbl = r.b  # boundary label: separates adjacent fallthrough payloads
+        if lbl is not None:
+            self.line("$%04X:" % lbl, d)
+        for l in lines:
+            self.payline(l, d + 1)
+        return self._flow(blk, shadow.term, nxt, d, bool(lines))
+
+    def _flow(self, blk, term, nxt, d, has_payload):
+        k = term[0]
         if nxt is not None and nxt.kind == "if":
-            self.line(term[0] + " {", d)
+            if k != "br" or term[5] is not None:
+                raise ValueError("if region without a static branch terminator")
+            pen = nxt.a if isinstance(nxt.a, int) else _br_pen(blk.term)
+            head = "if" if term[1] else "ifnot"
+            self.line("%s @t%d %s {" % (head, pen, _rename(fmt_expr(term[4]))), d)
             self.seq(_items(nxt.b), d + 1)
-            els = self.capture(_items(nxt.c), d + 1)
+            els = self.capture(_items(nxt.c), d + 1) if nxt.c is not None else []
             if els:
                 self.line("} else {", d)
                 self.out.extend(els)
             self.line("}", d)
             return 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
-            for l in term:
-                self.line(l, d + 1)
+            for l in _term_lines(term):
+                self.line(_rename(l), d + 1)
             sel, cases = nxt.a
-            t = blk.term
-            vector = t[0] == "jmpind" and t[1] is not None
-            if vector and not self.model.dyn_targets.get(blk.pcs[-1]):
+            vector = k == "jmpind" and term[1] is not None
+            if vector and self.view is not None and not self.view.dyn_targets.get(blk.pcs[-1]):
                 for _lbl, arm in cases:  # image-derived target: never recorded
                     self.seq(_items(arm), d)
             elif sel == "call":
-                body = " ".join(lbl for lbl, _r in cases)
-                self.line("switch call { %s }" % body if body else "switch call { }", d)
+                self.call_switch(cases, d)
             else:
                 self.line("switch goto {", d)
                 for lbl, arm in cases:
@@ -749,15 +800,36 @@ class _Writer:
                     self.line("}", d + 1)
                 self.line("}", d)
             return 2
-        if blk.term[0] in ("goto", "jmp"):
-            self.out.append("\x00" + " " * (d + 1) + term[0])  # elidable fallthrough
-        else:
-            for l in term:
-                self.line(l, d + 1)
+        if k == "br" and term[5] is None:
+            raise ValueError("static branch terminator without an if region")
+        printed = _term_lines(term)
+        for l in printed:
+            self.line(_rename(l), d + 1)
+        if not printed and has_payload:
+            self.open = True  # implicit fallthrough: payload stays the last line
         return 2 if nxt is not None and nxt.kind == "exit" else 1
+
+    def call_switch(self, cases, d):
+        """``switch call``: bare-target list plus case arms for inlined handlers."""
+        bare = [lbl for lbl, arm in cases if arm is None or arm.b is None]
+        bodied = [(lbl, arm.b) for lbl, arm in cases if arm is not None and arm.b is not None]
+        if not bodied:
+            body = " ".join(bare)
+            self.line("switch call { %s }" % body if body else "switch call { }", d)
+            return
+        self.line("switch call {", d)
+        if bare:
+            self.line(" ".join(bare), d + 1)
+        for lbl, body in bodied:
+            self.line("case %s: {" % lbl, d + 1)
+            self.seq(_items(body), d + 2)
+            self.line("}", d + 1)
+        self.line("}", d)
 
     def opcode_switch(self, r, d):
         sel, cases = r.a
+        if r.b and r.b[0] in self.labels:
+            self.line("$%04X:" % r.b[0], d)
         self.line("switch %s {" % sel, d)
         for lbl, body in cases:
             self.line("case %s: {" % lbl, d + 1)
@@ -778,8 +850,79 @@ def _entries(model):
     return [model.play] + sorted(extra - {model.play})
 
 
+def _inlined_arms(trees):
+    """Call targets whose handler tree is inlined as a switch-call case arm."""
+    out = set()
+    stack = [root for _e, root in trees]
+    while stack:
+        r = stack.pop()
+        k = r.kind
+        if k == "seq":
+            stack.extend(r.a)
+        elif k == "loop":
+            stack.append(r.a)
+        elif k == "if":
+            stack.extend(c for c in (r.b, r.c) if c is not None)
+        elif k == "switch":
+            for _lbl, body in r.a[1]:
+                if body is None:
+                    continue
+                if body.kind == "call":
+                    if body.b is not None:
+                        out.add(body.a)
+                        stack.append(body.b)
+                else:
+                    stack.append(body)
+    return out
+
+
+def _model_trees(model):
+    """``(trees, labels, view)``: region trees for every procedure and the full
+    label set (goto + dynamic-branch targets; proc entries need no label)."""
+    view = _SortedView(model)
+    trees = []
+    labels = set()
+    done = set()
+    owners = set()  # proc entries whose own tree serializes their entry block
+
+    def build(entry):
+        root, labs = codec.structure(view, entry)
+        labels.update(labs)
+        keys = _tree_keys(root)
+        if any(k[0] == entry for k in keys):
+            owners.add(entry)
+        done.update(keys)
+        trees.append((entry, root))
+        view.hidden.update(k[0] for k in keys)
+
+    for entry in _entries(model):
+        build(entry)
+    left = sorted(k for k in model.blocks if k not in done)
+    while left:
+        build(left[0][0])
+        still = sorted(k for k in model.blocks if k not in done)
+        if len(still) == len(left):
+            raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
+        left = still
+    need = set()  # pcs dynamic control can land on must resolve at run time
+    rets = {(b.term[2] + 1) & 0xFFFF for b in model.blocks.values() if b.term[0] == "jsr"}
+    ev_tg = getattr(model, "ev_targets", {})
+    for blk in model.blocks.values():
+        t = blk.term
+        site = blk.pcs[-1]
+        if t[0] == "jsr" and t[1] is not None:
+            need.add(t[1])
+        elif t[0] in ("jsr", "jmpd", "jmpind") or (t[0] == "br" and t[5] is not None):
+            need.update(model.dyn_targets.get(site, ()))
+            need.update(ev_tg.get(site, ()))
+        elif t[0] == "rts":  # observed RTS-trick landings (call returns excluded)
+            need.update(set(ev_tg.get(site, ())) - rets)
+    labels |= need - _inlined_arms(trees)
+    return trees, labels - owners, view
+
+
 def emit(model):
-    """Canonical sidprog text (``parse`` is its exact inverse)."""
+    """Canonical sidprog text (``emit(parse(emit(m))) == emit(m)``)."""
     out = ["sidprog %d" % SIDPROG_VERSION, "play $%04X" % model.play, "init $%04X" % model.init]
     if getattr(model, "subtune", 0):
         out.append("subtune %d" % model.subtune)
@@ -794,17 +937,17 @@ def emit(model):
             % (pc, " ".join("$%02X" % v for v in sorted(model.dispatch_sets[pc])))
         )
     out.extend(_image_lines(model.mem0))
-    w = _Writer(model)
-    for entry in _entries(model):
-        w.proc(entry)
-    left = sorted(k for k in model.blocks if k not in w.done)
-    while left:
-        w.proc(left[0][0])
-        still = sorted(k for k in model.blocks if k not in w.done)
-        if len(still) == len(left):
-            raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
-        left = still
-    out.extend(_resolve_fallthrough(w.out))
+    procs = getattr(model, "procs", None)
+    if procs is not None:
+        w = _Writer(set(model.labels), set(model.dispatch_sets), None)
+        for entry, root in procs:
+            w.proc(entry, root)
+    else:
+        trees, labels, view = _model_trees(model)
+        w = _Writer(labels, set(model.dispatch_sets), view)
+        for entry, root in trees:
+            w.proc(entry, root)
+    out.extend(w.out)
     return "\n".join(out) + "\n"
 
 
@@ -837,6 +980,8 @@ def metrics(model):
                 stack.extend((c, d + 1) for c in (r.b, r.c) if c is not None)
             elif k == "switch":
                 stack.extend((body, d + 1) for _lbl, body in r.a[1])
+            elif k == "call" and r.b is not None:
+                stack.append((r.b, d))
             elif k == "goto":
                 counts["gotos"] += 1
         view.hidden.update(key[0] for key in done - seen)
@@ -860,24 +1005,22 @@ def metrics(model):
     }
 
 
-def _resolve_fallthrough(lines):
-    """Drop an elidable ``goto`` whose target label is the very next line."""
-    out = []
-    for i, l in enumerate(lines):
-        if not l.startswith("\x00"):
-            out.append(l)
-            continue
-        tgt = l.rsplit("$", 1)[1]
-        nxt = lines[i + 1].lstrip() if i + 1 < len(lines) else ""
-        if nxt.startswith("$%s" % tgt) and nxt.endswith(":") and nxt[len(tgt) + 1] in ":/":
-            continue
-        out.append(l[1:])
-    return out
+# ---- parsed model, linker, tree walker ------------------------------------------
+class _R:
+    """Parsed region node, duck-typing the structurer's Region (kind/a/b/c)."""
+
+    __slots__ = ("kind", "a", "b", "c")
+
+    def __init__(self, kind, a=None, b=None, c=None):
+        self.kind = kind
+        self.a = a
+        self.b = b
+        self.c = c
 
 
-# ---- parsing ----------------------------------------------------------------------
 class TextModel:
-    """Parsed sidprog program; duck-types ``structured.Model`` for walker+codec."""
+    """Parsed sidprog program: region-tree procedures over compiled block
+    payloads. Also constructible from pc-keyed blocks (``emit`` restructures)."""
 
     def __init__(self, mem0, init, play, blocks, dispatch, subtune=0, prologue=(), dyn=None):
         self.mem0 = bytes(mem0)
@@ -891,6 +1034,11 @@ class TextModel:
         self.written = set(dispatch)
         self.pcs = {pc: {op} for pc, op in blocks if pc not in dispatch}
         self.dyn_targets = dict(dyn or {})
+        self.procs = None  # [(entry, seq region)] when parsed from text
+        self.labels = set()
+        self.prog = None  # linked flat program: [block-or-None, ctrl] rows
+        self.pcmap = None  # serialized pc -> prog index (nodes that ARE the pc)
+        self.contmap = None  # call-return pc -> continuation index (flow nodes)
         by_pc = {}
         for key in sorted(blocks):
             by_pc.setdefault(key[0], []).append(key)
@@ -899,30 +1047,270 @@ class TextModel:
     def variants(self, pc):
         return self._by_pc.get(pc, ())
 
-    def lookup(self, pc, m):
-        """The block keyed ``(pc, opcode)``, compiled on first use."""
-        if pc in self.written:
-            key = (pc, m[pc])
-        else:
-            ops = self.pcs.get(pc)
-            if ops is None:
-                raise C.WalkError("pc $%04X outside program" % pc)
-            key = (pc, next(iter(ops)))
-        blk = self.blocks.get(key)
-        if blk is None:
-            raise C.WalkError("opcode $%02X at $%04X outside proven set" % (key[1], pc))
-        if blk.fn is None:
-            blk.fn = C.compile_block(blk)
-        return blk
+    def link(self):
+        """Resolve the region trees to a flat control program (idempotent)."""
+        if self.prog is not None:
+            return self
+        if self.procs is None:
+            raise ValueError("not a tree model: construct via parse()")
+        self.prog = []
+        self.pcmap = {}
+        self.contmap = {}
+        gotos = []
+        for entry, root in self.procs:
+            idx = self._lseq(_items(root), None, [], gotos)
+            if idx is not None:
+                self.pcmap.setdefault(entry, idx)
+        for j, pc in gotos:  # authoritative nodes only: a flow node never aliases a pc
+            self.prog[j][1] = ("next", self.pcmap.get(pc))
+        return self
+
+    def resolve_pc(self, pc):
+        """Program index a run-time pc lands on, else None (loud-fault guard)."""
+        idx = self.pcmap.get(pc)
+        return self.contmap.get(pc) if idx is None else idx
+
+    def node_at(self, pc):
+        """Linked program index of a serialized pc; WalkError outside the program."""
+        self.link()
+        idx = self.resolve_pc(pc)
+        if idx is None:
+            raise C.WalkError("pc $%04X outside program" % pc)
+        return idx
+
+    def run(self, frames):
+        """Execute the tree program standalone; the (cycle, reg, value) SID log."""
+        return TreeWalker(self).run(frames)
+
+    def _lseq(self, items, follow, loops, gotos):
+        prog = self.prog
+        nxt = follow
+        pend = None
+        for r in reversed(items):
+            k = r.kind
+            if k == "block":
+                nxt = self._lblock(r, pend, nxt, loops, gotos)
+                pend = None
+                continue
+            if pend is not None:
+                raise ValueError("flow region %s not attached to a block" % pend.kind)
+            if k == "if" or (k == "switch" and not r.b):
+                pend = r
+            elif k == "switch":
+                omap = {
+                    int(lbl[1:], 16): self._lseq(_items(arm), nxt, loops, gotos)
+                    for lbl, arm in r.a[1]
+                }
+                prog.append([None, ("op", r.b[0], omap)])
+                nxt = len(prog) - 1
+                self.pcmap.setdefault(r.b[0], nxt)
+            elif k == "seq":
+                nxt = self._lseq(r.a, nxt, loops, gotos)
+            elif k == "loop":
+                prog.append([None, None])
+                ti = len(prog) - 1
+                body = self._lseq(_items(r.a), None, loops + [(ti, nxt)], gotos)
+                prog[ti][1] = ("next", body)
+                nxt = ti
+            elif k == "goto":
+                prog.append([None, None])
+                gotos.append((len(prog) - 1, r.a))
+                nxt = len(prog) - 1
+            elif k == "cont":
+                nxt = loops[-1][0]
+            elif k == "brk":
+                nxt = loops[-1][1]
+            elif k != "exit":
+                raise ValueError("unexpected %s region" % k)
+        if pend is not None:
+            raise ValueError("flow region %s not attached to a block" % pend.kind)
+        return nxt
+
+    def _lblock(self, r, pend, nxt, loops, gotos):
+        blk = r.a
+        term = blk.term
+        k = term[0]
+        if pend is not None:
+            ctrl = self._lpend(term, pend, nxt, loops, gotos)
+        elif k == "rts":
+            ctrl = ("ret",)
+        elif k == "jsr":
+            ctrl = ("call", term[1], term[2], nxt)
+            if nxt is not None:  # ret pc is serialized: rts resolves through it
+                self.contmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+        elif k == "br":
+            if term[5] is None:
+                raise ValueError("static branch without an if region")
+            ctrl = ("dbr", term[1], term[3], nxt)
+        elif k == "jmpd":
+            ctrl = ("jmpd", {})
+        elif k == "jmpind":  # inline arm: the vector's image value falls through
+            ptr = term[1]
+            v = None
+            if ptr is not None and term[2] is None:
+                v = self.mem0[ptr] | (self.mem0[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
+            ctrl = ("vec", ptr, term[2] is not None, {} if v is None else {v: nxt})
+        else:  # goto fallthrough
+            ctrl = ("next", nxt)
+        self.prog.append([blk, ctrl])
+        idx = len(self.prog) - 1
+        if r.b is not None:
+            self.pcmap.setdefault(r.b, idx)
+        return idx
+
+    def _lpend(self, term, pend, nxt, loops, gotos):
+        k = term[0]
+        if pend.kind == "if":
+            if k != "br" or term[5] is not None:
+                raise ValueError("if region without a static branch terminator")
+            ti = self._lseq(_items(pend.b), nxt, loops, gotos)
+            ei = self._lseq(_items(pend.c), nxt, loops, gotos) if pend.c is not None else nxt
+            return ("br", term[1], pend.a, ti, ei)
+        sel, cases = pend.a
+        if sel == "call":
+            if k != "jsr":
+                raise ValueError("switch call without a call terminator")
+            for lbl, arm in cases:
+                body = arm.b if arm is not None and arm.kind == "call" else None
+                if body is not None:  # inlined handler: the callee's own tree
+                    ai = self._lseq(_items(body), None, [], gotos)
+                    if ai is not None:
+                        self.pcmap.setdefault(int(lbl[1:], 16), ai)
+            if nxt is not None:
+                self.contmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+            return ("call", None, term[2], nxt)
+        cmap = {}
+        for lbl, arm in cases:  # arm entries are flow, not the pc's block: no pcmap
+            cmap[int(lbl[1:], 16)] = self._lseq(_items(arm), None, loops, gotos)
+        if k == "jmpd":
+            return ("jmpd", cmap)
+        if k == "jmpind":
+            return ("vec", term[1], term[2] is not None, cmap)
+        raise ValueError("switch goto without a computed-jump terminator")
 
 
+class TreeWalker:
+    """Executes a parsed tree program from its initial image alone, reproducing
+    ``structured.Walker`` semantics (cycle-stamped SID write log) bit-exactly."""
+
+    def __init__(self, tm):
+        self.tm = tm.link()
+        self.m = bytearray(tm.mem0)
+        self.r = [0] * 16
+        self.r[3] = 0xFF
+        self.c = 0
+        self.wlog = []
+
+    def _push(self, val):
+        self.m[0x100 + self.r[3]] = val & 0xFF
+        self.r[3] = (self.r[3] - 1) & 0xFF
+
+    def run_frame(self):
+        self._entry(self.tm.play)
+
+    def run(self, frames):
+        for _ in range(frames):
+            self._entry(self.tm.play)
+        return self.wlog
+
+    def _entry(self, entry, acc=0):
+        prog = self.tm.prog
+        m = self.m
+        start = self.r[3]
+        self.r[0] = acc & 0xFF
+        self._push(0x00)
+        self._push(0x01)
+        idx = self.tm.pcmap.get(entry)
+        n = 0
+        while self.r[3] < start:
+            if idx is None:
+                raise C.WalkError("control left the serialized program")
+            blk, ctrl = prog[idx]
+            x = None
+            if blk is not None:
+                if blk.fn is None:
+                    blk.fn = C.compile_block(blk)
+                self.c, self.r, x = blk.fn(
+                    m, self.r, self.c, self.wlog, C.volatile_read, C._dyn_read, C._sid_log
+                )
+            idx = self._step(ctrl, x)
+            n += 1
+            if n > C._GUARD:
+                raise C.WalkError("runaway tree walk")
+
+    def _step(self, ctrl, x):
+        op = ctrl[0]
+        if op == "next":
+            return ctrl[1]
+        if op == "br":
+            if x[0] == ctrl[1]:
+                self.c += ctrl[2]
+                return ctrl[3]
+            return ctrl[4]
+        if op == "ret":  # the return address is real memory; the pc maps are the truth
+            m = self.m
+            sp = (self.r[3] + 1) & 0xFF
+            lo = m[0x100 + sp]
+            sp = (sp + 1) & 0xFF
+            hi = m[0x100 + sp]
+            self.r[3] = sp
+            return self.tm.resolve_pc((((hi << 8) | lo) + 1) & 0xFFFF)
+        if op == "call":
+            _o, tgt, ret, _cont = ctrl
+            if tgt is None:
+                tgt = x
+            self._push(ret >> 8)
+            self._push(ret & 0xFF)
+            idx = self.tm.resolve_pc(tgt)
+            if idx is None:
+                raise C.WalkError("call target $%04X outside program" % tgt)
+            return idx
+        if op == "op":
+            b = self.m[ctrl[1]]
+            idx = ctrl[2].get(b)
+            if idx is None:
+                raise C.WalkError("opcode $%02X at $%04X outside proven set" % (b, ctrl[1]))
+            return idx
+        if op == "jmpd":
+            idx = ctrl[1].get(x)
+            if idx is None:
+                idx = self.tm.resolve_pc(x)
+            if idx is None:
+                raise C.WalkError("goto target $%04X outside program" % x)
+            return idx
+        if op == "vec":
+            m = self.m
+            ptr = x if ctrl[2] else ctrl[1]
+            tgt = m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)
+            idx = ctrl[3].get(tgt)
+            if idx is None:
+                idx = self.tm.resolve_pc(tgt)
+            if idx is None:
+                raise C.WalkError("vector target $%04X outside program" % tgt)
+            return idx
+        flag, tgt = x  # dbr: dynamic-target branch escape hatch
+        if flag != ctrl[1]:
+            return ctrl[3]
+        self.c += 1 + ((ctrl[2] & 0xFF00) != (tgt & 0xFF00))
+        idx = self.tm.resolve_pc(tgt)
+        if idx is None:
+            raise C.WalkError("branch target $%04X outside program" % tgt)
+        return idx
+
+
+# ---- parsing ----------------------------------------------------------------------
 class _Acc:
-    def __init__(self, pc, op0):
-        self.key = (pc, op0)
+    def __init__(self, label):
+        self.label = label
         self.events = []
         self.regs = [E.reg(i) for i in range(16)]
         self.term = None
         self.bind = {}
+
+    def empty(self):
+        return not (self.events or self.bind or self.term) and all(
+            r == ("reg", i) for i, r in enumerate(self.regs)
+        )
 
 
 def _t2u(line):
@@ -949,7 +1337,7 @@ def _expand(n, bind, memo):
     return memo[id(n)]
 
 
-def _finish(acc, blocks):
+def _acc_block(acc):
     memo = {}
 
     def x(n):
@@ -966,24 +1354,164 @@ def _finish(acc, blocks):
         else:
             events.append(ev)
     regs = [r if r == ("reg", i) else x(r) for i, r in enumerate(acc.regs)]
-    if acc.term is None:
-        raise ValueError("block $%04X has no terminator" % acc.key[0])
-    term = _map_term(acc.term, x)
-    if term[0] == "br" and term[3] is None:
-        raise ValueError("block $%04X falls through nowhere" % acc.key[0])
-    pc, op0 = acc.key
-    blocks[acc.key] = C.Block(pc, op0, [pc], events, term, regs)
+    term = _map_term(acc.term if acc.term is not None else ("goto", None), x)
+    pc = acc.label if acc.label is not None else 0
+    return C.Block(pc, 0, [pc], events, term, regs)
 
 
-_LABEL = re.compile(r"\$([0-9A-Fa-f]{1,4})(?:/\$([0-9A-Fa-f]{1,2}))?:$")
+_LABEL = re.compile(r"\$([0-9A-Fa-f]{1,4}):$")
 _BINDING = re.compile(r"t(\d+) = (.*)$")
 _CASE = re.compile(r"case \$([0-9A-Fa-f]+): \{$")
-_SW_CODE = re.compile(r"switch code\[\$[0-9A-Fa-f]{4}\] \{$")
+_IF_HDR = re.compile(r"(if|ifnot) @t(\d+) (.*) \{$")
+_SW_CODE = re.compile(r"switch code\[\$([0-9A-Fa-f]{4})\] \{$")
 _SW_CALL = re.compile(r"switch call \{ ?(.*?) ?\}$")
+_PC_LIST = re.compile(r"\$[0-9A-Fa-f]{1,4}( \$[0-9A-Fa-f]{1,4})*$")
+
+
+class _Parser:
+    """Stack-based reader of proc bodies into region trees + block payloads."""
+
+    def __init__(self):
+        self.labels = set()
+        self.procs = []
+        self.stack = []
+        self.cur = None
+
+    def top_items(self):
+        return self.stack[-1][-1]
+
+    def ensure(self):
+        if self.cur is None:
+            self.cur = _Acc(None)
+        return self.cur
+
+    def flush(self):
+        if self.cur is not None:
+            self.top_items().append(_R("block", _acc_block(self.cur), self.cur.label))
+            self.cur = None
+
+    def close(self):
+        self.flush()
+        f = self.stack.pop()
+        k = f[0]
+        if k == "proc":
+            self.procs.append((f[1], _R("seq", f[2])))
+        elif k == "loop":
+            self.top_items().append(_R("loop", _R("seq", f[1])))
+        elif k == "then":
+            self.top_items().append(_R("if", f[1], _R("seq", f[2]), None))
+        elif k == "else":
+            self.top_items().append(_R("if", f[1], f[2], _R("seq", f[3])))
+        elif k == "case":
+            self.stack[-1][-1].append((f[1], _R("seq", f[2])))
+        elif k == "swg":
+            self.top_items().append(_R("switch", ("goto", f[1]), []))
+        elif k == "swcl":
+            cases = [(lbl, _R("call", int(lbl[1:], 16))) for lbl in f[1]]
+            cases += [(lbl, _R("call", int(lbl[1:], 16), arm)) for lbl, arm in f[2]]
+            self.top_items().append(_R("switch", ("call", cases), []))
+        else:  # swc
+            self.top_items().append(_R("switch", ("code[$%04X]" % f[1], f[2]), [f[1]]))
+
+    def else_arm(self):
+        self.flush()
+        f = self.stack.pop()
+        if f[0] != "then":
+            raise ValueError("'} else {' outside an if region")
+        self.stack.append(["else", f[1], _R("seq", f[2]), []])
+
+    def structural(self, line):
+        """Handle one flow-structure line; False when it is block payload."""
+        if self.stack[-1][0] == "swcl" and line != "}" and not line.startswith("case "):
+            if not _PC_LIST.match(line):
+                raise ValueError("bad switch call target list %r" % line)
+            self.stack[-1][1].extend(line.split())
+            return True
+        if line == "}":
+            self.close()
+        elif line == "} else {":
+            self.else_arm()
+        elif line == "loop {":
+            self.flush()
+            self.stack.append(["loop", []])
+        elif line in ("continue", "break"):
+            self.flush()
+            self.top_items().append(_R("cont" if line == "continue" else "brk"))
+        elif line == "switch goto {":
+            self.flush()
+            self.stack.append(["swg", []])
+        elif line == "switch call {":
+            self.flush()
+            self.stack.append(["swcl", [], []])
+        else:
+            return self._structural2(line)
+        return True
+
+    def _structural2(self, line):
+        m = _LABEL.match(line)
+        if m:
+            self.flush()
+            pc = int(m.group(1), 16)
+            self.labels.add(pc)
+            self.cur = _Acc(pc)
+            return True
+        m = _SW_CODE.match(line)
+        if m:
+            if self.cur is not None and self.cur.empty():
+                self.cur = None  # a label line here names the switch subject
+            self.flush()
+            self.stack.append(["swc", int(m.group(1), 16), []])
+            return True
+        m = _SW_CALL.match(line)
+        if m:
+            self.flush()
+            tgts = [int(v.lstrip("$"), 16) for v in m.group(1).split()]
+            cases = [("$%04X" % t, _R("call", t)) for t in tgts]
+            self.top_items().append(_R("switch", ("call", cases), []))
+            return True
+        m = _CASE.match(line)
+        if m:
+            wide = self.stack[-1][0] in ("swg", "swcl")
+            self.stack.append(["case", ("$%04X" if wide else "$%02X") % int(m.group(1), 16), []])
+            return True
+        m = _IF_HDR.match(line)
+        if m:
+            acc = self.ensure()
+            pol = 1 if m.group(1) == "if" else 0
+            acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
+            self.flush()
+            self.stack.append(["then", int(m.group(2)), []])
+            return True
+        if line.startswith("goto $"):
+            self.flush()
+            self.top_items().append(_R("goto", int(line[6:], 16)))
+            return True
+        return False
+
+    def terminator(self, line):
+        """Handle an explicit terminator line; False when it is not one."""
+        if line == "ret" or line.startswith(("if ", "ifnot ", "call ", "igoto ", "goto (")):
+            _parse_line(self.ensure(), _t2u(line))
+            self.flush()
+            return True
+        return False
+
+    def payload(self, line):
+        acc = self.ensure()
+        m = _BINDING.match(line)
+        if m:
+            node = parse_expr(_t2u(m.group(2)))
+            acc.bind[int(m.group(1))] = _expand(node, acc.bind, {})
+            return
+        m = _CYC_FUSED.match(line)
+        if m:
+            _parse_line(acc, "@" + m.group(1))
+            line = m.group(2)
+        _parse_line(acc, _t2u(line))
 
 
 def parse(text):
-    """Parse canonical sidprog text into a walkable, codec-verified model."""
+    """Parse canonical sidprog text into a tree-walkable ``TextModel``."""
     lines = []
     for raw in text.splitlines():
         s = raw.split(";", 1)[0].strip()
@@ -1000,17 +1528,16 @@ def parse(text):
     subtune = 0
     mem0 = bytearray(0x10000)
     dispatch_sets = {}
-    blocks = {}
     prologue = []
-    dyn_targets = {}
-    accs = []
-    cur = None
-    fall = None  # acc that may adopt an immediately following label as fallthrough
-    stack = []  # open braces; a list value collects a goto-switch's case targets
+    p = _Parser()
     i = 0
     while i < len(lines):
         line = lines[i]
-        adjacent, fall = fall, None
+        i += 1
+        if p.stack:
+            if not (p.structural(line) or p.terminator(line)):
+                p.payload(line)
+            continue
         if line.startswith("play "):
             play = int(line.split()[1].lstrip("$"), 16)
         elif line.startswith("init "):
@@ -1023,15 +1550,14 @@ def parse(text):
                 int(v.lstrip("$"), 16) for v in vals.split()
             }
         elif line == "sid-init {":
-            i += 1
             while lines[i] != "}":
                 reg, val = lines[i].split("=")
                 prologue.append(
                     (int(reg.strip().lstrip("$"), 16), int(val.strip().lstrip("$"), 16))
                 )
                 i += 1
-        elif line == "image {":
             i += 1
+        elif line == "image {":
             while lines[i] != "}":
                 addr, bytestr = lines[i].split(":", 1)
                 a = int(addr.strip().lstrip("$"), 16)
@@ -1039,68 +1565,18 @@ def parse(text):
                 for k in range(0, len(run), 2):
                     mem0[a + k // 2] = int(run[k : k + 2], 16)
                 i += 1
-        elif line.startswith("proc ") or line == "loop {":
-            stack.append(None)
-        elif line in ("}", "} else {"):
-            if stack:
-                stack.pop()
-            if line == "} else {":
-                stack.append(None)
-        elif line in ("continue", "break"):
-            pass
-        elif line == "switch goto {":
-            dyn_targets[cur.key[0]] = tgts = []
-            stack.append(tgts)
-        elif _SW_CODE.match(line):
-            stack.append(None)
+            i += 1
+        elif line.startswith("proc "):
+            p.stack.append(["proc", int(line.split()[1].lstrip("$"), 16), []])
         else:
-            m = _SW_CALL.match(line)
-            if m:
-                dyn_targets[cur.key[0]] = [int(t.lstrip("$"), 16) for t in m.group(1).split()]
-                i += 1
-                continue
-            m = _CASE.match(line)
-            if m:
-                if stack and isinstance(stack[-1], list):
-                    stack[-1].append(int(m.group(1), 16))
-                stack.append(None)
-                i += 1
-                continue
-            m = _LABEL.match(line)
-            if m:
-                pc = int(m.group(1), 16)
-                op0 = int(m.group(2), 16) if m.group(2) else mem0[pc]
-                if adjacent is not None and adjacent.term is None:
-                    adjacent.term = ("goto", pc)  # elided fallthrough goto
-                cur = _Acc(pc, op0)
-                accs.append(cur)
-                fall = cur
-                i += 1
-                continue
-            m = _BINDING.match(line)
-            if m:
-                node = parse_expr(_t2u(m.group(2)))
-                cur.bind[int(m.group(1))] = _expand(node, cur.bind, {})
-                fall = cur
-            elif line.endswith(" {"):  # if/ifnot header: the block's terminator line
-                _parse_line(cur, _t2u(line[:-2]))
-                stack.append(None)
-            elif cur is not None and cur.term is not None and line.startswith("goto "):
-                pass  # region-flow echo; the terminator line already recorded it
-            else:
-                m = _CYC_FUSED.match(line)
-                if m:
-                    _parse_line(cur, "@" + m.group(1))
-                    line = m.group(2)
-                _parse_line(cur, _t2u(line))
-                fall = cur
-        i += 1
-    for acc in accs:
-        _finish(acc, blocks)
+            raise ValueError("unexpected top-level line %r" % line)
+    if p.stack or p.cur is not None:
+        raise ValueError("unbalanced braces at end of document")
     if init is None or play is None:
         raise ValueError("missing init/play header")
-    tm = TextModel(mem0, init, play, blocks, dispatch_sets, subtune, prologue, dyn_targets)
-    codec.verify(tm)
+    tm = TextModel(mem0, init, play, {}, dispatch_sets, subtune, prologue)
+    tm.procs = p.procs
+    tm.labels = p.labels
     return tm
 
 

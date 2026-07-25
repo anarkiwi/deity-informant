@@ -132,7 +132,7 @@ def cmd_decompile(args):
         if sidprog.emit(tm) != sidprog.emit(model):
             sys.stderr.write("verify FAILED: text is not a parse/emit fixpoint\n")
             return 1
-        if structured.Walker(tm).run(args.frames) != ev.wlog:
+        if tm.run(args.frames) != ev.wlog:
             sys.stderr.write("verify FAILED: text replay diverges from the VM\n")
             return 1
         sys.stderr.write(
@@ -160,11 +160,11 @@ def cmd_decompile(args):
 
 def cmd_prog_run(args):
     tm = sidprog.parse(Path(args.file).read_text(encoding="utf-8"))
-    w = structured.Walker(tm)
+    w = sidprog.TreeWalker(tm)
     for r, v in tm.prologue:
         w.m[0xD400 + r] = v
     for f in range(args.frames):
-        w._run_entry(tm.play)
+        w.run_frame()
         row = " ".join("%02X" % w.m[0xD400 + i] for i in range(25))
         print("frame %4d: %s" % (f, row))
     return 0

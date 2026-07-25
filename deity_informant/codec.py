@@ -127,6 +127,9 @@ class _Flatten:
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
             sel, cases = nxt.a
             if sel == "call":
+                for _label, arm in cases:  # inlined handler: an independent sub-CFG
+                    if arm.b is not None:
+                        self.seq(arm.b.a if arm.b.kind == "seq" else [arm.b], None, [])
                 self._record(blk, pc, {self._follow(items, i + 2, follow, loops)})
                 return i + 2
             self._record(blk, pc, {self._arm(body, None, loops) for _l, body in cases})

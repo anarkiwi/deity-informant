@@ -9,13 +9,25 @@ from parsed standalone sidprog text, parse/emit fixpoint, in-pipeline
 **140/140 pass every gate** (574 tests, zero failures, zero skips). History
 of the retired failure classes and the remaining tracked lemmas:
 
-## Gate S baseline (readability metrics, no threshold gated yet)
+## Gate S status (readability)
 
-`sidprog.metrics`: Commando 94.5% structured / 5 gotos (110 blocks); Athena
-96.6% / 532 gotos (526 blocks); Agent_X_II 52.0% / 839 (1,809 blocks);
-Ghouls_n_Ghosts 33.8% / 1,794 (3,103 blocks). The Follin-family players are
-the Gate-S (>=95%) work: goto-minimal structuring over their reconverging
-state machines.
+Structural flow landed: region nesting IS the text's control semantics
+(`if`/`else`/`loop`/`switch` with implicit fallthrough; labels only on
+genuine dynamic landings; parsed text executes by tree, faster than the pc
+walker). Computed-call handler bodies nest inside their dispatch arms.
+`sidprog.metrics`: Commando 94.5% structured -- 5 gotos / 6 labels in the
+whole text (was 49/110); Krakout 96.7% (was 32.6%); Athena 96.6%; Trap
+79.5%; Ghouls_n_Ghosts 33.8% / 1,794 gotos. Remaining Gate-S (>=95%) work:
+the Follin-class reconverging state machines (goto-minimal structuring /
+node splitting).
+
+## Tracked model bogon (surfaced by the tree walker)
+
+Army_Moves `igoto` site $E093: `dyn_targets=[]` with a `proven` proof while
+evidence observes 4 targets -- the pc walker never consults these sets so it
+replayed regardless; the text layer now falls back to serialized landings
+with the same fault guard. The closure defect needs a fix in
+`close_dispatch`/`term_targets`.
 
 ## Class 1 — retired: guarded evidence envelope for unproven opcode cells
 

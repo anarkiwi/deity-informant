@@ -44,10 +44,10 @@ def _verify(mem, init, play, frames, subtune=0):
     assert w.run(frames) == ev.wlog
     assert bytes(w.m) == ev.end_mem
     text = sidprog.emit(model)
-    tm = sidprog.parse(text)  # parse re-runs codec.verify on the rebuilt model
+    tm = sidprog.parse(text)
     assert sidprog.emit(tm) == text  # canonical text is a parse/emit fixpoint
     assert tm.prologue == model.prologue
-    tw = S.Walker(tm)
+    tw = sidprog.TreeWalker(tm)  # tree-driven executor over the parsed structure
     assert tw.run(frames) == ev.wlog  # standalone text replay, cycle-stamped
     assert bytes(tw.m) == ev.end_mem
     return model, text
@@ -223,26 +223,18 @@ def _model(draw):
     )
 
 
-def _key(m):
-    return (
-        m.init,
-        m.play,
-        m.subtune,
-        tuple(m.prologue),
-        tuple((a, m.mem0[a]) for a in range(0x10000) if m.mem0[a]),
-        {pc: frozenset(s) for pc, s in m.dispatch_sets.items()},
-        {k: (tuple(b.events), b.term, tuple(b.regs)) for k, b in m.blocks.items()},
-    )
-
-
 @settings(max_examples=100, deadline=None)
 @given(_model())
-def test_roundtrip_identity_and_fixpoint(m):
-    """loads(dumps(m)) == m structurally, and dumps is a canonical fixpoint."""
+def test_roundtrip_fixpoint(m):
+    """dumps is a canonical fixpoint: loads(dumps(m)) re-emits byte-identically,
+    and the parsed tree model preserves every header field."""
     text = sidprog.dumps(m)
     back = sidprog.loads(text)
-    assert _key(back) == _key(m)
     assert sidprog.dumps(back) == text
+    assert (back.init, back.play, back.subtune) == (m.init, m.play, m.subtune)
+    assert back.prologue == m.prologue and back.mem0 == bytes(m.mem0)
+    assert back.dispatch_sets == m.dispatch_sets
+    back.link()  # every parsed tree resolves to a flat control program
 
 
 @settings(max_examples=100, deadline=None)
@@ -329,7 +321,7 @@ def test_named_store_and_load_lines_roundtrip():
     assert "u1 = m_1500[X]" in text
     assert "sid.v1.ctrl = u0" in text
     assert "m_1500[X] = u1" in text
-    assert _key(sidprog.loads(text)) == _key(m)
+    assert sidprog.dumps(sidprog.loads(text)) == text
 
 
 def test_metrics_reporting():

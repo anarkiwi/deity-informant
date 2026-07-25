@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from deity_informant import render, structured as S
+from deity_informant import codec, render, structured as S
 from deity_informant.c64 import load_psid
 
 import _fuzzgen as G
@@ -126,6 +126,62 @@ def test_indexed_jump_table_renders_dispatch():
     _faithful(model, "jump_table")
     txt = render.render(model)
     assert "sub_" in txt or "goto L_" in txt or "switch" in txt
+
+
+def _call_arms(root):
+    out = []
+
+    def walk(r):
+        if r.kind == "seq":
+            for x in r.a:
+                walk(x)
+        elif r.kind == "loop":
+            walk(r.a)
+        elif r.kind == "if":
+            walk(r.b)
+            if r.c is not None:
+                walk(r.c)
+        elif r.kind == "switch":
+            sel, cases = r.a
+            for _lbl, body in cases:
+                if sel == "call":
+                    out.append(body)
+                    if body.b is not None:
+                        walk(body.b)
+                else:
+                    walk(body)
+
+    walk(root)
+    return out
+
+
+def test_computed_call_dispatch_nests_handler_bodies():
+    """A jump-table-patched JSR dispatch nests each single-entry handler body
+    inside its switch arm (not as a stranded top-level procedure), and the
+    inlined tree stays codec-lossless."""
+    a = G.Asm(0x1000)
+    a.i("LDX", "abs", 0x1400)  # selector: 0 or 2, toggled per frame
+    a.i("LDA", "absx", 0x1420).i("STA", "abs", 0x1101)  # patch JSR operand lo
+    a.i("LDA", "absx", 0x1421).i("STA", "abs", 0x1102)  # patch JSR operand hi
+    a.i("LDA", "abs", 0x1400).i("EOR", "imm", 0x02).i("STA", "abs", 0x1400)
+    a.i("JMP", "abs", 0x1100)
+    site = G.Asm(0x1100).i("JSR", "abs", 0x1300).i("RTS").assemble()
+    mem = _image({0x1400: 0x00, 0x1420: 0x00, 0x1421: 0x13, 0x1422: 0x20, 0x1423: 0x13})
+    prog = a.assemble()
+    mem[0x1000 : 0x1000 + len(prog)] = prog
+    mem[0x1100 : 0x1100 + len(site)] = site
+    for base, reg, val in ((0x1300, 0, 0x41), (0x1320, 1, 0x42)):
+        h = G.Asm(base).i("LDA", "imm", val).i("STA", "abs", 0xD400 + reg).i("RTS").assemble()
+        mem[base : base + len(h)] = h
+    mem[0x0F00] = 0x60
+    model, _ev = S.decompile(mem, 0x0F00, 0x1000, 4)
+    _faithful(model, "call_dispatch")
+    codec.verify(model)
+    root, _labels = render._structure(model, 0x1000)
+    bodied = {arm.a for arm in _call_arms(root) if arm.b is not None}
+    assert {0x1300, 0x1320} <= bodied, "handler bodies not nested in their arms"
+    txt = render.render(model)
+    assert "case sub_1300:" in txt and "case sub_1320:" in txt
 
 
 def test_fuzz_dispatch_idioms_render_switches():

@@ -1,13 +1,17 @@
 # sidprog language specification
 
 sidprog is the canonical structured text a decompiled playroutine serialises
-to — the ONE language of the decompiler (spec §6). It is *specified*:
-the grammar below is normative, `dumps`/`loads` (aliases of `emit`/`parse` in
-`deity_informant.sidprog`) are exact inverses on canonical models, and one
-interpreter core (`structured.Walker` over `structured.compile_block`) is the
-single execution semantics for the text. `parse` additionally re-verifies the
-structurer codec: the region nesting of the document must flatten back to
-exactly the block CFG it carries (`codec.verify`).
+to — the ONE language of the decompiler (spec §6). It is *specified*: the
+grammar below is normative and `dumps`/`loads` (aliases of `emit`/`parse` in
+`deity_informant.sidprog`) satisfy the canonical-fixpoint law
+`dumps(loads(dumps(m))) == dumps(m)`. The REGION STRUCTURE of the text *is*
+the control flow: a block that ends without an explicit terminator falls
+through to the next item its nesting dictates (next sibling, if-join, loop
+header via `continue`, loop exit via `break`). Two executors share one
+semantics: the pc-driven `structured.Walker` runs the in-memory block model;
+the tree-driven `sidprog.TreeWalker` (via `TextModel.run`) runs the parsed
+region trees. Gate C enforces their bit-exact equality (cycle-stamped SID
+write log + end memory) corpus-wide at full Songlengths duration.
 
 ## Versioning
 
@@ -20,11 +24,17 @@ growth within a major is additive (new optional header directives a reader may
 ignore); any change that alters the meaning of existing constructs bumps the
 major.
 
-Pre-release change within major 1: memory references over 2-byte constant
-addresses serialise as canonical cell names (`sid.vN.*`/`filter.*`/`zp_XX`/
-`m_XXXX`) and canonical indexed addresses as `name[REG]`; raw `mem[expr]`
-remains for every other address shape. Emitters before this change wrote
-`mem[$hhhh]` for those forms; major 1 was never released, so no bump.
+Pre-release changes within major 1 (never released, no bump):
+
+- memory references over 2-byte constant addresses serialise as canonical cell
+  names (`sid.vN.*`/`filter.*`/`zp_XX`/`m_XXXX`), canonical indexed addresses
+  as `name[REG]`; raw `mem[expr]` remains for every other address shape.
+- structural flow: per-block terminator `goto` lines and universal block
+  labels are gone. Fallthrough is implicit in the region nesting, a static
+  branch serialises as an `if @tP` region whose then-arm is the taken edge,
+  and labels appear only on goto/dynamic-branch targets (plus rare payload
+  boundary markers). Earlier emitters wrote a labelled block per pc with
+  explicit `goto`/`if … goto … else …` terminator lines.
 
 ## Grammar (EBNF)
 
@@ -54,14 +64,15 @@ image       = "image" , ws , "{" , newline ,
               "}" , newline ;   (* runs of non-zero cells, packed hex pairs *)
 
 proc        = "proc" , ws , hex , ws , "{" , newline , { item } , "}" , newline ;
-item        = block | loop | opswitch | flow ;
+item        = block | ifregion | loop | opswitch | gotoswitch | callswitch
+            | flow ;
 loop        = "loop" , ws , "{" , newline , { item } , "}" , newline ;
-flow        = "goto" , ws , hex , newline            (* region-flow echo *)
+flow        = "goto" , ws , hex , newline            (* to a labelled block *)
             | "continue" , newline                   (* back to loop header *)
             | "break" , newline ;                    (* to loop exit *)
 
-block       = label , newline , { binding } , { stmt } , tail ;
-label       = hex , [ "/" , bytehex ] , ":" ;  (* "/op" iff pc is a dispatch cell *)
+block       = [ label , newline ] , { binding } , { stmt } , [ term , newline ] ;
+label       = hex , ":" ;   (* only on goto/dyn-branch targets + boundaries *)
 binding     = tref , ws , "=" , ws , expr , newline ;  (* per-block CSE binding *)
 
 stmt        = [ cyc , ws ] , ( pen | load | store | regset ) , newline
@@ -83,28 +94,35 @@ voicereg    = "freq_lo" | "freq_hi" | "pw_lo" | "pw_hi" | "ctrl"
             | "attack_decay" | "sustain_release" ;
 filterreg   = "cutoff_lo" | "cutoff_hi" | "resonance" | "mode_vol" ;
 
-tail        = ifregion | term , newline , [ dynswitch ] ;
-term        = goto | branch | cgoto | igoto | call | ret ;
-goto        = "goto" , ws , hex ;   (* elided iff the target label is next *)
+term        = dynbranch | cgoto | igoto | call | ret ;
+                       (* an unconditional goto is never written: implicit *)
+dynbranch   = ( "if" | "ifnot" ) , ws , expr , ws , "goto" , ws ,
+              "(" , expr , ")" , ws , "else" , ws , hex ;
+                       (* escape hatch: SMC branch displacement; see below *)
 cgoto       = "goto" , ws , "(" , expr , ")" ;        (* computed jump *)
-branch      = ( "if" | "ifnot" ) , ws , expr , ws , "goto" , ws , target ,
-              ws , "else" , ws , hex ;
 igoto       = "igoto" , ws , ( hex | "(" , expr , ")" ) ;   (* jmp (indirect) *)
 call        = "call" , ws , target , ws , "ret" , ws , hex ;
+                       (* ret = the address the jsr pushes (real memory) *)
 ret         = "ret" ;
 target      = hex | "(" , expr , ")" ;   (* "(expr)" is a proven dynamic target *)
 
-ifregion    = branch , ws , "{" , newline , { item } ,
+ifregion    = ( "if" | "ifnot" ) , ws , "@t" , integer , ws , expr , ws ,
+              "{" , newline , { item } ,
               [ "} else {" , newline , { item } ] , "}" , newline ;
-                          (* then-arm = branch taken; else-arm = fallthrough *)
-dynswitch   = gotoswitch | callswitch ;
+              (* then-arm = branch taken; @tP = static taken-cycle penalty *)
 gotoswitch  = "switch goto {" , newline ,
               { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
                 "}" , newline } ,
-              "}" , newline ;   (* recorded targets of the preceding cgoto/igoto *)
-callswitch  = "switch call {" , [ ws , hex , { ws , hex } ] , ws , "}" , newline ;
-                          (* recorded targets of the preceding dynamic call *)
-opswitch    = "switch code[" , hex , "] {" , newline ,
+              "}" , newline ;   (* proven targets of the preceding cgoto/igoto *)
+callswitch  = "switch call { " , [ hex , { ws , hex } ] , " }" , newline
+            | "switch call {" , newline , [ hex , { ws , hex } , newline ] ,
+              { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
+                "}" , newline } ,
+              "}" , newline ;
+              (* proven targets of the preceding dynamic call; a case arm is
+                 that handler's tree inlined, bare targets are procs *)
+opswitch    = [ label , newline ] ,
+              "switch code[" , hex , "] {" , newline ,
               { "case" , ws , bytehex , ":" , ws , "{" , newline , { item } ,
                 "}" , newline } ,
               "}" , newline ;   (* opcode-SMC dispatch over a `dispatch` cell *)
@@ -150,37 +168,75 @@ byte and carry no `:n`; `mem` loads are one byte; a lone `-$k` inside an
 
 ## Structure semantics
 
-- **Regions carry no semantics of their own** — every edge is stated by a
-  block's terminator line; `loop`/`ifregion`/`continue`/`break`/`goto` echoes
-  are a *verified rearrangement* of those edges. `parse` rebuilds the block
-  CFG from the terminator lines alone and `codec.verify` re-checks that
-  structuring the rebuilt model reproduces the same nesting.
+- **The nesting IS the flow.** A block with no terminator line falls through
+  to the continuation its tree position dictates: the next sibling item, the
+  join after its enclosing `if` arm, or wherever an explicit `goto`/
+  `continue`/`break` flow item says. Only returns (`ret`), calls, computed
+  jumps and the SMC-branch escape hatch are written as lines.
+- **`if @tP expr { … } else { … }`.** Replaces the branch terminator. The
+  then-arm is always the **taken** edge; `if` means taken when the flag is 1,
+  `ifnot` when it is 0 (branch polarity is a keyword, never folded into the
+  flag expression, which serialises unchanged). `@tP` is the static
+  taken-cycle penalty `P = 1 + page-cross(target, fallthrough)` computed at
+  emit time from the two static pcs; the executor adds `P` cycles when the
+  branch is taken and nothing otherwise. An empty `else` arm is omitted.
+- **Labels.** `$XXXX:` appears only where a pc must be addressable: `goto`
+  targets (including cross-procedure "hidden" chains), call and
+  dynamic-branch targets whose blocks serialize inside another procedure's
+  tree, and the rare *boundary label* that separates two adjacent fallthrough
+  payloads (e.g. a block split at the 64-instruction cap) so `parse` cannot
+  merge them. Proc entries, `switch` subjects and inlined call arms carry
+  their pcs in their own syntax and are never labelled redundantly.
+- **Dynamic-target branch (escape hatch).** A branch whose displacement byte
+  is self-modified keeps the explicit line
+  `if|ifnot expr goto (dynexpr) else $FT`: the taken target is computed at
+  run time (resolved against the serialized-pc map; fault when absent, and
+  the emitter labels every proven target), the `else` pc exists solely for
+  the run-time page-cross penalty, and the structural continuation after the
+  line is the fallthrough edge.
+- **Dynamic flow is evidence-scoped.** `switch goto { case $XXXX: {…} }`
+  lists the proven targets of the preceding computed jump with each arm's
+  tree inline; `switch call` lists a dynamic call's proven targets, inlining
+  single-site handlers as `case` arms (their `ret` unwinds to the call's
+  continuation) and leaving shared handlers as bare pcs resolved to their
+  `proc`s. An `igoto $addr` whose vector cell is image-derived emits its sole
+  arm as plain continuation. At run time a computed target resolves through
+  the case arms first, then the serialized-pc map (the emitter labels every
+  proven and evidence-observed landing); a pc outside the serialized program
+  faults (`WalkError`) — the same guard the pc-driven walker's block lookup
+  applies.
+- **Opcode dispatch.** A `dispatch` cell's variants appear under
+  `switch code[$addr] { case $op: {…} }` — also for a single proven variant,
+  so the run-time opcode guard is always explicit; an opcode outside the
+  proven set faults.
 - **CSE bindings are textual sugar.** `tN = expr` lines name subtrees the
   emitter chose to share (bound iff the binding prints shorter than inlining);
   `parse` inlines every `tN` back, so the model never contains binding nodes.
-- **Fallthrough elision.** A block whose terminator is an unconditional `goto`
-  to the very next emitted label omits the `goto` line; a `branch` header
-  always carries its `else` target (terminator lines are position-independent).
-- **Dynamic flow is evidence-scoped.** `switch goto`/`switch call` list the
-  recorded targets of a computed jump/call; an `igoto $addr` whose pointer
-  cell is image-derived emits its arms inline with no switch wrapper. A
-  `dispatch` cell's block variants appear under `switch code[$addr]` with
-  `$pc/$op` labels; executing an opcode outside the proven set faults.
+
+## Two executors, one semantics
+
+`structured.Walker` executes the in-memory model pc-by-pc (terminator tuples
+carry the pcs). `sidprog.parse` produces a `TextModel` holding region trees
+with *synthetic* block keys — pcs exist only where the text serialises them
+(labels, proc entries, switch subjects and case pcs, `call … ret` values) —
+and `TextModel.link()` resolves the trees to a flat control program that
+`sidprog.TreeWalker` (`TextModel.run(frames)`) executes: same compiled block
+payloads (`structured.compile_block`), same volatile-read/cycle model, `call`
+pushes the real return bytes, `ret` pops the real bytes from stack memory and
+resolves the popped pc through the serialized-pc map (call continuations are
+indexed by their serialized `ret` operands; RTS-trick landings are labelled),
+`igoto` reads its vector from memory. Gate C requires both executors to
+reproduce the evidence log bit-exactly.
 
 ## Laws
 
-- **Canonical fixpoint.** `dumps` is idempotent after one round trip:
-  `dumps(loads(dumps(m))) == dumps(m)` for every model `m`.
-- **Round-trip identity.** On a canonical model, `loads(dumps(m))` reproduces
-  `m` structurally (image, header, prologue, dispatch sets, and every block's
-  events, terminator and register out-expressions).
-- **Codec inversion.** `loads` re-verifies `flatten(structure(model)) ≡ CFG`
-  on the rebuilt model (build-time structurer check, spec §5).
-- **Executable equivalence.** The parsed `TextModel` drives the same `Walker`
-  as the in-memory `Model`; both reproduce the original's cycle-stamped
-  `(cycle, reg, value)` write log and end memory bit-exact for the full
-  Songlengths duration (Gate C), and the text is smaller than the disassembly
-  listing (Gate L).
-
-The serialisation laws are property-tested over generated models
-(`tests/test_sidprog.py`), not only corpus samples.
+- **Canonical fixpoint.** `dumps(loads(dumps(m))) == dumps(m)` for every
+  model `m` (property-tested over generated models, `tests/test_sidprog.py`).
+- **Header identity.** `loads(dumps(m))` preserves the image, play/init/
+  subtune, prologue and dispatch sets exactly; block pcs are intentionally
+  not round-tripped (structure replaces them).
+- **Executable equivalence (Gate C).** `TextModel.run(frames)` equals
+  `structured.Walker(model).run(frames)` equals the evidence log — cycle-
+  stamped `(cycle, reg, value)` writes and end memory bit-exact for the full
+  Songlengths duration, on the fuzz corpus and real tunes.
+- **Size (Gate L).** The text is smaller than the disassembly listing.
