@@ -637,6 +637,7 @@ class _SortedView:
     def __init__(self, model):
         self.blocks = model.blocks
         self.mem0 = model.mem0
+        self.play = getattr(model, "play", None)
         self.dyn_targets = model.dyn_targets
         self.dispatch_pcs = set(model.dispatch_sets)
         self.hidden = set()
@@ -741,6 +742,9 @@ class _Writer:
             elif sel == "call":
                 body = " ".join(lbl for lbl, _r in cases)
                 self.line("switch call { %s }" % body if body else "switch call { }", d)
+                for _lbl, arm in cases:  # inlined handler bodies follow, label-keyed
+                    if arm.b is not None:
+                        self.seq(_items(arm.b), d)
             else:
                 self.line("switch goto {", d)
                 for lbl, arm in cases:
@@ -837,6 +841,8 @@ def metrics(model):
                 stack.extend((c, d + 1) for c in (r.b, r.c) if c is not None)
             elif k == "switch":
                 stack.extend((body, d + 1) for _lbl, body in r.a[1])
+            elif k == "call" and r.b is not None:
+                stack.append((r.b, d))
             elif k == "goto":
                 counts["gotos"] += 1
         view.hidden.update(key[0] for key in done - seen)

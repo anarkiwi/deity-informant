@@ -269,10 +269,51 @@ class Region:
         self.c = c
 
 
+def _dispatch_gates(model):
+    """Handler-inlining gates: dyn-site multiplicity per target and the static
+    call targets (real procedures are never inlined into a dispatch arm)."""
+    count = {}
+    for tgts in model.dyn_targets.values():
+        for t in set(tgts):
+            count[t] = count.get(t, 0) + 1
+    static = {
+        b.term[1] for b in model.blocks.values() if b.term[0] == "jsr" and b.term[1] is not None
+    }
+    return count, static
+
+
 def _structure(model, entry):
-    nodes, succ, pred = _proc_cfg(model, entry)
+    emitted = set()
+    labels = set()
+    sites, static_subs = _dispatch_gates(model)
+    play = getattr(model, "play", None)
+
+    def handler(target, callers):
+        """Region for a computed-call handler nested in its dispatch arm, or
+        None: shared site, static sub, play entry, already emitted, or a
+        handler region overlapping any enclosing procedure."""
+        shared_entry = sites.get(target) != 1 or target in static_subs or target == play
+        if shared_entry or target in emitted or target in callers:
+            return None
+        if not model.variants(target):
+            return None
+        cfg = _proc_cfg(model, target)
+        if set(cfg[0]) & callers:
+            return None
+        top = _proc(model, target, cfg, (emitted, labels, handler), callers)
+        return Region("seq", top) if top else None
+
+    top = _proc(model, entry, _proc_cfg(model, entry), (emitted, labels, handler), frozenset())
+    return Region("seq", top), labels
+
+
+def _proc(model, entry, cfg, shared, outer):
+    """Top regions for one procedure or inlined-handler CFG; ``shared`` carries
+    the emitted/label bookkeeping across nested handler regions."""
+    nodes, succ, pred = cfg
+    emitted, labels, handler = shared
     if not nodes:
-        return Region("seq", []), set()
+        return []
     idom, rpo = _idoms(entry, succ, nodes)
     exits = [n for n in nodes if not succ.get(n)]
     ipdom = _postdoms(nodes, succ, pred, exits)
@@ -307,12 +348,12 @@ def _structure(model, entry):
         outs = {t for n in headers[h] for t in succ.get(n, ()) if t not in headers[h]}
         return min(outs, key=lambda x: rpo.get(x, 1 << 30)) if outs else None
 
-    emitted = set()
-    labels = set()
-
     def owned(child, parent):
         """A successor we may inline: dominated by the branch (sole entry)."""
         return idom.get(child) == parent and child not in emitted
+
+    def sub(target):
+        return handler(target, nodeset | outer)
 
     def build(pc, stop, loops):
         seq = []
@@ -339,7 +380,7 @@ def _structure(model, entry):
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, labels, nodeset)
+                ctx = (build, owned, labels, nodeset, sub)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
@@ -351,7 +392,7 @@ def _structure(model, entry):
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, labels, nodeset)
+            ctx = (build, owned, labels, nodeset, sub)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
@@ -371,13 +412,13 @@ def _structure(model, entry):
         for pc in sorted(pending):
             if pc not in emitted:
                 top.append(build(pc, None, []))
-    return Region("seq", top), labels
+    return top
 
 
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    build, owned, labels, nodeset = ctx
+    build, owned, labels, nodeset, sub = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
@@ -394,7 +435,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
     if term[0] == "jsr":
         if term[1] is None:  # computed call: dispatch over the handler set
             targets = model.dyn_targets.get(blk.pcs[-1], [])
-            cases = [("$%04X" % t, Region("call", t)) for t in targets]
+            cases = [("$%04X" % t, Region("call", t, sub(t))) for t in targets]
             return [Region("switch", ("call", cases), [])], (term[2] + 1) & 0xFFFF
         return [], (term[2] + 1) & 0xFFFF
     if term[0] in ("jmpd", "jmpind"):
@@ -409,7 +450,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
 
 def _case(ctx, model, key, join, loops):
     """One arm of an opcode-dispatch switch: the variant's body then its flow."""
-    build, owned, labels, nodeset = ctx
+    build, owned, labels, nodeset, _sub = ctx
     blk = model.blocks[key]
     seq = [Region("block", blk, None)]
     extra, nxt = _term_flow(ctx, model, blk, key[0], loops, {key[0]: join})
@@ -491,6 +532,8 @@ def _switchify(region):
     if k == "switch":
         sel, cases = region.a
         return Region("switch", (sel, [(l, _switchify(b)) for l, b in cases]), region.b)
+    if k == "call":
+        return region if region.b is None else Region("call", region.a, _switchify(region.b))
     if k != "if":
         return region
     first = _eq_case(region)
@@ -610,9 +653,24 @@ def _emit(region, model, lines, depth, labels):
             lines.append(pad + "}")
     elif k == "switch":
         sel, cases = region.a
-        if sel == "call":  # computed call: compact list of handler subs
-            subs = ", ".join("sub_%04X" % body.a for _lbl, body in cases)
-            lines.append("%scall one of { %s }" % (pad, subs))
+        if sel == "call":  # computed call: nested handler arms + bare handler subs
+            bare = [body.a for _lbl, body in cases if body.b is None]
+            bodied = [body for _lbl, body in cases if body.b is not None]
+            if not bodied:
+                lines.append(
+                    "%scall one of { %s }" % (pad, ", ".join("sub_%04X" % t for t in bare))
+                )
+            else:
+                lines.append(pad + "switch call {")
+                for body in bodied:
+                    lines.append("%s    case sub_%04X:" % (pad, body.a))
+                    _emit(body.b, model, lines, depth + 2, labels)
+                if bare:
+                    lines.append(
+                        "%s    default: one of { %s }"
+                        % (pad, ", ".join("sub_%04X" % t for t in bare))
+                    )
+                lines.append(pad + "}")
         else:
             for pc in region.b or ():  # subsumed comparison-block labels, if referenced
                 if pc in labels:
