@@ -127,6 +127,13 @@ class _Flatten:
             outs = {self._arm(nxt.b, join, loops), self._arm(nxt.c, join, loops)}
             self._record(blk, pc, outs)
             return i + 2
+        if nxt is not None and nxt.kind == "call":
+            if blk.term[0] != "jsr":  # inlined callee body: an independent sub-CFG
+                raise CodecError("$%04X: call body without a call terminator" % pc)
+            if nxt.b is not None:
+                self.seq(nxt.b.a if nxt.b.kind == "seq" else [nxt.b], None, [])
+            self._record(blk, pc, {self._follow(items, i + 2, follow, loops)})
+            return i + 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
             sel, cases = nxt.a
             if sel == "call":
