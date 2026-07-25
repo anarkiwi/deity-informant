@@ -62,7 +62,8 @@ class _Flatten:
     def __init__(self, model):
         self.model = model
         self.edges = {}  # block-leaf key -> successor pc set implied by the tree
-        self.visited = []  # block pcs in emission order
+        self.visited = []  # primary block pcs in emission order
+        self.dups = []  # duplicate-copy pcs (flow verified like any leaf)
 
     def _record(self, blk, key_pc, outs):
         if None in outs:
@@ -118,6 +119,8 @@ class _Flatten:
         pc = blk.pc
         if r.b is not None:  # dispatch-arm leaves (b None) are owned by their switch
             self.visited.append(pc)
+        elif r.c is not None:  # duplicate copy of a labelled-elsewhere tail
+            self.dups.append(pc)
         nxt = items[i + 1] if i + 1 < len(items) else None
         if nxt is not None and nxt.kind == "if":
             join = self._follow(items, i + 2, follow, loops)
@@ -155,8 +158,10 @@ class _Flatten:
 
 
 def flatten(model, entry, root):
-    """Successor sets implied by tree position for every block leaf, checked
-    against each block's terminator on the way; raises :class:`CodecError`."""
+    """Successor sets implied by tree position for every block leaf, each
+    checked against its block's terminator; every reachable block is covered
+    by exactly one primary or by verified duplicate copies alone, else
+    :class:`CodecError`."""
     f = _Flatten(model)
     top = root.a if root.kind == "seq" else [root]
     for r in top:
@@ -165,10 +170,10 @@ def flatten(model, entry, root):
     once = {}
     for pc in f.visited:
         once[pc] = once.get(pc, 0) + 1
-    dup = sorted(pc for pc, n in once.items() if n > 1)
-    if dup:
-        raise CodecError("blocks emitted twice: %s" % ["$%04X" % p for p in dup])
-    missing = sorted(set(nodes) - set(once))
+    twice = sorted(pc for pc, n in once.items() if n > 1)
+    if twice:
+        raise CodecError("blocks emitted twice: %s" % ["$%04X" % p for p in twice])
+    missing = sorted(set(nodes) - set(once) - set(f.dups))
     if missing:
         raise CodecError("reachable blocks dropped: %s" % ["$%04X" % p for p in missing])
     return f.edges

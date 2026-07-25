@@ -209,10 +209,15 @@ total, **invertible** structural analysis:
   set (node splitting or controlled goto per a documented algorithm, e.g. the
   "No More Gotos" DREAM approach or Havlak intervals). Goto count MUST be a
   reported metric with a per-tune budget, not incidental.
-- **Faithfulness is subsumed by invertibility**: the flatten check is strictly
-  stronger than "each reachable block emitted once" and runs in the pipeline,
-  failing the build on any mismatch. (Prototype: faithfulness is only a pytest
-  walk over an advisory view; the view concept is abolished.)
+- **Faithfulness is subsumed by invertibility**: the flatten check verifies
+  every emitted leaf — primary or duplicate copy — against its block's
+  terminator, in the pipeline, failing the build on any mismatch. Coverage
+  law: every reachable block appears at least once, as exactly one labelled
+  primary or as verified duplicate copies alone. Duplication is bounded to
+  tiny reconvergence tails (single variant, ≤ 3 stores, rts or static-jump
+  terminator, no loop membership) replacing gotos; the copy count is the
+  `dup_blocks` metric. (Prototype: faithfulness was only a pytest walk over
+  an advisory view; the view concept is abolished.)
 - **Dispatch recovery** (done in prototype, keep + extend): opcode-SMC →
   `switch code[$XXXX]`; computed jump/call → dispatch over the proven target
   set; same-subject comparison chains → `switch subject { case c: … }` with the

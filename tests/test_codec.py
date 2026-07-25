@@ -54,6 +54,43 @@ def test_dropped_leaf_is_caught():
         codec.flatten(model, entry, root)
 
 
+def test_duplicate_copy_covers_block():
+    """Coverage law: a block emitted only as a duplicate copy (b None, c pc)
+    still counts as covered; its flow is verified like any leaf."""
+    model = _model(_PLAYERS[0])
+    entry = codec.procedures(model)[0]
+    root, _labels = codec.structure(model, entry)
+    path = _first_leaf(root)
+    seq = root
+    for i in path[:-1]:
+        seq = seq.a[i]
+    leaf = seq.a[path[-1]]
+    leaf.c, leaf.b = leaf.b, None  # demote the primary to a duplicate copy
+    codec.flatten(model, entry, root)
+
+
+def test_duplicate_flow_still_verified():
+    """A duplicate copy with a diverging terminator fails the flatten check."""
+    model = _model(_PLAYERS[0])
+    entry = codec.procedures(model)[0]
+    root, _labels = codec.structure(model, entry)
+    path = _first_leaf(root)
+    seq = root
+    for i in path[:-1]:
+        seq = seq.a[i]
+    leaf = seq.a[path[-1]]
+    leaf.c, leaf.b = leaf.b, None
+    term = leaf.a.term
+    if term[0] in ("goto", "jmp"):
+        leaf.a.term = (term[0], (term[1] + 2) & 0xFFFF)
+    elif term[0] == "br" and term[3] is not None:
+        leaf.a.term = term[:3] + (((term[3] + 2) & 0xFFFF),) + term[4:]
+    else:
+        pytest.skip("entry leaf has no static-target terminator to tamper")
+    with pytest.raises(codec.CodecError):
+        codec.flatten(model, entry, root)
+
+
 def test_diverging_terminator_is_caught():
     model = _model(_PLAYERS[0])
     entry = codec.procedures(model)[0]

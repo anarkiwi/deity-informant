@@ -825,6 +825,9 @@ class _SortedView:
     def variants(self, pc):
         return () if pc in self.hidden else self._by_pc.get(pc, ())
 
+    def all_variants(self, pc):
+        return self._by_pc.get(pc, ())
+
 
 def _left_entry(view, left):
     """Next leftover-fragment entry: prefer a chain head (no unserialized pred)."""
@@ -835,15 +838,38 @@ def _left_entry(view, left):
     return left[0][0]
 
 
-def _tree_keys(root):
-    """Block keys a region tree serializes (dispatch and call arms included)."""
+def _need_pcs(model):
+    """Pcs dynamic control can land on at run time (must stay resolvable)."""
+    need = set()
+    rets = {(b.term[2] + 1) & 0xFFFF for b in model.blocks.values() if b.term[0] == "jsr"}
+    ev_tg = getattr(model, "ev_targets", {})
+    for blk in model.blocks.values():
+        t = blk.term
+        site = blk.pcs[-1]
+        if t[0] == "jsr" and t[1] is not None:
+            need.add(t[1])
+        elif t[0] in ("jsr", "jmpd", "jmpind") or (t[0] == "br" and t[5] is not None):
+            need.update(model.dyn_targets.get(site, ()))
+            need.update(ev_tg.get(site, ()))
+        elif t[0] == "rts":  # observed RTS-trick landings (call returns excluded)
+            need.update(set(ev_tg.get(site, ())) - rets)
+    return need
+
+
+def _tree_keys(root, dups=None):
+    """Primary block keys a region tree serializes (dispatch and call arms
+    included); duplicate-copy keys collect into ``dups`` instead."""
     keys = set()
     stack = [root]
     while stack:
         r = stack.pop()
         k = r.kind
         if k == "block":
-            keys.add((r.a.pc, r.a.op0))
+            if r.b is None and r.c is not None:
+                if dups is not None:
+                    dups.add((r.a.pc, r.a.op0))
+            else:
+                keys.add((r.a.pc, r.a.op0))
         elif k == "seq":
             stack.extend(r.a)
         elif k == "loop":
@@ -946,8 +972,9 @@ class _Writer:
         if pend:
             lines.append(pend)
         lbl = r.b if labelled and r.b is not None and r.b in self.labels else None
-        if lbl is None and labelled and self.open and lines and r.b is not None:
-            lbl = r.b  # boundary label: separates adjacent fallthrough payloads
+        boundary = r.b if r.b is not None else r.c
+        if lbl is None and labelled and self.open and lines and boundary is not None:
+            lbl = boundary  # boundary label: separates adjacent fallthrough payloads
         if lbl is not None:
             self.line("$%04X:" % lbl, d)
         for l in lines:
@@ -1070,40 +1097,36 @@ def _model_trees(model):
     trees = []
     labels = set()
     done = set()
+    dupped = set()
     owners = set()  # proc entries whose own tree serializes their entry block
+    need = _need_pcs(model)  # dynamic landings must resolve at run time
 
     def build(entry):
         root, labs = codec.structure(view, entry)
         labels.update(labs)
-        keys = _tree_keys(root)
+        keys = _tree_keys(root, dupped)
         if any(k[0] == entry for k in keys):
             owners.add(entry)
         done.update(keys)
         trees.append((entry, root))
         view.hidden.update(k[0] for k in keys)
 
+    def left_keys():
+        return sorted(
+            k
+            for k in model.blocks
+            if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
+        )
+
     for entry in _entries(model):
         build(entry)
-    left = sorted(k for k in model.blocks if k not in done)
+    left = left_keys()
     while left:
         build(_left_entry(view, left))
-        still = sorted(k for k in model.blocks if k not in done)
+        still = left_keys()
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
         left = still
-    need = set()  # pcs dynamic control can land on must resolve at run time
-    rets = {(b.term[2] + 1) & 0xFFFF for b in model.blocks.values() if b.term[0] == "jsr"}
-    ev_tg = getattr(model, "ev_targets", {})
-    for blk in model.blocks.values():
-        t = blk.term
-        site = blk.pcs[-1]
-        if t[0] == "jsr" and t[1] is not None:
-            need.add(t[1])
-        elif t[0] in ("jsr", "jmpd", "jmpind") or (t[0] == "br" and t[5] is not None):
-            need.update(model.dyn_targets.get(site, ()))
-            need.update(ev_tg.get(site, ()))
-        elif t[0] == "rts":  # observed RTS-trick landings (call returns excluded)
-            need.update(set(ev_tg.get(site, ())) - rets)
     labels |= need - _inlined_arms(trees)
     return trees, labels - owners, view
 
@@ -1140,12 +1163,15 @@ def emit(model):
 
 def metrics(model):
     """Structuring metrics: {blocks, nested_blocks, structured_pct, goto_count,
-    labels} over the codec region trees (block leaves at nesting depth > 0 are
-    structured; goto regions and label targets are counted, not judged)."""
+    labels, dup_blocks} over the codec region trees (block leaves at nesting
+    depth > 0 are structured; gotos, labels and duplicate copies are counted,
+    not judged)."""
     view = _SortedView(model)
     done = set()
+    dupped = set()
     labels = set()
-    counts = {"blocks": 0, "nested": 0, "gotos": 0}
+    counts = {"blocks": 0, "nested": 0, "gotos": 0, "dups": 0}
+    need = _need_pcs(model)
 
     def proc(entry):
         root, labs = codec.structure(view, entry)
@@ -1158,9 +1184,13 @@ def metrics(model):
             if k == "seq":
                 stack.extend((c, d) for c in r.a)
             elif k == "block":
-                counts["blocks"] += 1
-                counts["nested"] += 1 if d else 0
-                done.add((r.a.pc, r.a.op0))
+                if r.b is None and r.c is not None:
+                    counts["dups"] += 1
+                    dupped.add((r.a.pc, r.a.op0))
+                else:
+                    counts["blocks"] += 1
+                    counts["nested"] += 1 if d else 0
+                    done.add((r.a.pc, r.a.op0))
             elif k == "loop":
                 stack.append((r.a, d + 1))
             elif k == "if":
@@ -1173,12 +1203,19 @@ def metrics(model):
                 counts["gotos"] += 1
         view.hidden.update(key[0] for key in done - seen)
 
+    def left_keys():
+        return sorted(
+            k
+            for k in model.blocks
+            if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
+        )
+
     for entry in _entries(model):
         proc(entry)
-    left = sorted(k for k in model.blocks if k not in done)
+    left = left_keys()
     while left:
         proc(_left_entry(view, left))
-        still = sorted(k for k in model.blocks if k not in done)
+        still = left_keys()
         if len(still) == len(left):
             break
         left = still
@@ -1189,6 +1226,7 @@ def metrics(model):
         "structured_pct": 100.0 * nested / blocks if blocks else 100.0,
         "goto_count": counts["gotos"],
         "labels": len(labels),
+        "dup_blocks": counts["dups"],
     }
 
 

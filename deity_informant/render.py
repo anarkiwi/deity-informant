@@ -381,6 +381,11 @@ def _proc(model, entry, cfg, shared, outer):
     def sub(target):
         return handler(target, nodeset | outer)
 
+    loop_pcs = set().union(*headers.values()) if headers else set()
+
+    def dup(pc):
+        return None if pc in loop_pcs else _dup_tail(model, pc)
+
     def build(pc, stop, loops):
         seq = []
         while pc is not None and pc in nodeset and pc != stop:
@@ -391,6 +396,10 @@ def _proc(model, entry, cfg, shared, outer):
                 seq.append(Region("brk"))
                 return Region("seq", seq)
             if pc in emitted:
+                copy = dup(pc)
+                if copy is not None and copy[1] is not None:
+                    seq.extend(copy)
+                    return Region("seq", seq)
                 labels.add(pc)
                 seq.append(Region("goto", pc))
                 return Region("seq", seq)
@@ -406,7 +415,7 @@ def _proc(model, entry, cfg, shared, outer):
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, claim, merge_join, labels, nodeset, sub)
+                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
@@ -418,13 +427,17 @@ def _proc(model, entry, cfg, shared, outer):
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, claim, merge_join, labels, nodeset, sub)
+            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
                 return Region("seq", seq)
             pc = nxt
         if pc is not None and pc not in nodeset and pc != stop:
+            copy = dup(pc)
+            if copy is not None and copy[1] is not None:
+                seq.extend(copy)
+                return Region("seq", seq)
             labels.add(pc)
             seq.append(Region("goto", pc))
         return Region("seq", seq)
@@ -464,10 +477,26 @@ def _static_preds(model):
     return gp
 
 
+def _dup_tail(model, pc):
+    """Duplicable tiny tail block (single variant, <= 3 stores, rts or static
+    jump terminator): ``[copy, flow]`` regions with flow None for a jump whose
+    continuation the caller must place, else None."""
+    variants = getattr(model, "all_variants", model.variants)(pc)
+    if len(variants) != 1 or pc in getattr(model, "dispatch_pcs", ()):
+        return None
+    blk = model.blocks[variants[0]]
+    if blk.term[0] not in ("rts", "goto", "jmp") or sum(ev[0] == "st" for ev in blk.events) > 3:
+        return None
+    copy = Region("block", blk, None, pc)
+    if blk.term[0] == "rts":
+        return [copy, Region("exit", blk.term)]
+    return [copy, None]
+
+
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    _build, _owned, _claim, merge_join, labels, nodeset, sub = ctx
+    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
@@ -501,7 +530,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
 
 def _case(ctx, model, key, join, loops):
     """One arm of an opcode-dispatch switch: the variant's body then its flow."""
-    nodeset = ctx[5]
+    nodeset = ctx[6]
     blk = model.blocks[key]
     seq = [Region("block", blk, None)]
     extra, nxt = _term_flow(ctx, model, blk, key[0], loops, {key[0]: join})
@@ -625,8 +654,8 @@ def _has_stmts(region):
 
 def _side(ctx, target, join, loops, parent):
     """A conditional arm: continue/break for loop edges, an inlined region when
-    owned or last-claimable, else a goto to a labelled block."""
-    build, owned, claim, _mj, labels, nodeset, _sub = ctx
+    owned or last-claimable, a duplicated tiny tail, else a labelled goto."""
+    build, owned, claim, _mj, dup, labels, nodeset, _sub = ctx
     if target == join:
         return Region("seq", [])
     if loops and target == loops[-1][0]:
@@ -635,6 +664,17 @@ def _side(ctx, target, join, loops, parent):
         return Region("seq", [Region("brk")])
     if target in nodeset and (owned(target, parent) or claim(target, parent)):
         return build(target, join, loops)
+    copy = dup(target)
+    if copy is not None:
+        if copy[1] is not None:
+            return Region("seq", copy)
+        nxt = copy[0].a.term[1]  # jump tail: its continuation must place here
+        if nxt == join:
+            return Region("seq", copy[:1])
+        if loops and nxt == loops[-1][0]:
+            return Region("seq", copy[:1] + [Region("cont")])
+        if loops and nxt == loops[-1][1]:
+            return Region("seq", copy[:1] + [Region("brk")])
     labels.add(target)
     return Region("seq", [Region("goto", target)])
 

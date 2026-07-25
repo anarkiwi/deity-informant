@@ -424,7 +424,14 @@ def test_metrics_reporting():
     blk = Block(0x1000, 0xA9, [0x1000], [], ("rts",), [E.reg(i) for i in range(16)])
     m = sidprog.TextModel(mem0, 0x0F00, 0x1000, {(0x1000, 0xA9): blk}, {})
     mt = sidprog.metrics(m)
-    assert set(mt) == {"blocks", "nested_blocks", "structured_pct", "goto_count", "labels"}
+    assert set(mt) == {
+        "blocks",
+        "nested_blocks",
+        "structured_pct",
+        "goto_count",
+        "labels",
+        "dup_blocks",
+    }
     assert mt["blocks"] == 1 and mt["goto_count"] == 0
     assert 0.0 <= mt["structured_pct"] <= 100.0
 
