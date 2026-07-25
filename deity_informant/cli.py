@@ -139,6 +139,17 @@ def cmd_decompile(args):
             "verify ok: %d frames, %d cycle-stamped writes bit-exact\n"
             % (args.frames, len(ev.wlog))
         )
+        mt = sidprog.metrics(model)
+        sys.stderr.write(
+            "metrics: blocks=%d nested=%d structured=%.1f%% gotos=%d labels=%d\n"
+            % (
+                mt["blocks"],
+                mt["nested_blocks"],
+                mt["structured_pct"],
+                mt["goto_count"],
+                mt["labels"],
+            )
+        )
     text = render_mod.render(model) if args.structured else sidprog.emit(model)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")

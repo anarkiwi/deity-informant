@@ -20,6 +20,12 @@ growth within a major is additive (new optional header directives a reader may
 ignore); any change that alters the meaning of existing constructs bumps the
 major.
 
+Pre-release change within major 1: memory references over 2-byte constant
+addresses serialise as canonical cell names (`sid.vN.*`/`filter.*`/`zp_XX`/
+`m_XXXX`) and canonical indexed addresses as `name[REG]`; raw `mem[expr]`
+remains for every other address shape. Emitters before this change wrote
+`mem[$hhhh]` for those forms; major 1 was never released, so no bump.
+
 ## Grammar (EBNF)
 
 Lexical: `hex = "$" , hexdigit , { hexdigit }`. A hex literal's **width in
@@ -63,9 +69,19 @@ stmt        = [ cyc , ws ] , ( pen | load | store | regset ) , newline
 cyc         = "@" , integer ;                         (* cycle cost, >=1 *)
 pen         = ( "@x" | "@xi" ) , "(" , expr , "," , ws , expr , ")" ;
                                         (* indexed / (ind),Y page-cross penalty *)
-load        = uni , ws , "=" , ws , "mem[" , expr , "]" ;
-store       = "mem[" , expr , "]" , ws , "=" , ws , expr ;
+load        = uni , ws , "=" , ws , memref ;
+store       = memref , ws , "=" , ws , expr ;
 regset      = reg , ws , "=" , ws , expr ;            (* out-expr != identity *)
+
+memref      = cellname                       (* mem[const:2], named *)
+            | cellname , "[" , reg , "]"     (* mem[zext2(reg) + const:2 >= $100] *)
+            | "mem[" , expr , "]" ;          (* any other address shape *)
+cellname    = sidname | "zp_" , 2 * hexdigit | "m_" , 4 * hexdigit ;
+sidname     = "sid.v" , ( "1" | "2" | "3" ) , "." , voicereg
+            | "filter." , filterreg ;
+voicereg    = "freq_lo" | "freq_hi" | "pw_lo" | "pw_hi" | "ctrl"
+            | "attack_decay" | "sustain_release" ;
+filterreg   = "cutoff_lo" | "cutoff_hi" | "resonance" | "mode_vol" ;
 
 tail        = ifregion | term , newline , [ dynswitch ] ;
 term        = goto | branch | cgoto | igoto | call | ret ;
@@ -94,8 +110,7 @@ opswitch    = "switch code[" , hex , "] {" , newline ,
               "}" , newline ;   (* opcode-SMC dispatch over a `dispatch` cell *)
 
 expr        = atom ;
-atom        = hex | reg | uni | tref | mem | zext | carry | group ;
-mem         = "mem[" , expr , "]" ;                   (* 1-byte load *)
+atom        = hex | reg | uni | tref | memref | zext | carry | group ;
 zext        = ( "zext1" | "zext2" ) , "(" , expr , ")" ;
 carry       = "carry" , "(" , expr , "," , ws , expr , ")" ;
 group       = "(" , chain , ")" , [ ":" , integer ] ; (* :n = result width *)
@@ -116,6 +131,22 @@ Node/width correspondences (the `expr` algebra of `deity_informant.expr`):
 canonicalises to `INT_ADD` of its negation); `compare`/`carry` results are one
 byte and carry no `:n`; `mem` loads are one byte; a lone `-$k` inside an
 `addsub` is the two's-complement of an added constant.
+
+## Named machine state (normative bijection)
+
+`memref` names are a **bijection with exact address expression trees**, so
+`parse` reconstructs the tree byte-for-byte and re-`emit` is a fixpoint:
+
+- `cellname` ⇔ `("mem", ("const", addr, 2), 1)`. The name of a 16-bit `addr`
+  is total and unique: the SID table (`$D400`-`$D414` ⇒ `sid.v{1,2,3}.<reg>`
+  seven registers per voice, `$D415`-`$D418` ⇒ `filter.*`; the table in
+  `render.sid_name` is normative), else `zp_XX` for `addr < $100`, else
+  `m_XXXX` (uppercase hex, fixed width). Non-canonical spellings (`m_D400`,
+  `m_00FB`, `zp_5`) are rejected; a 1-byte const address stays raw `mem[$XX]`.
+- `cellname[REG]` ⇔ `("mem", INT_ADD:2(INT_ZEXT:2(reg), const:2), 1)` with
+  the constant `>= $100` and **last** (the `expr.simplify` canonical operand
+  order). Any other shape — const-first, non-reg index, other widths, a CSE
+  `tN` in the address — is not sugared and round-trips as raw `mem[expr]`.
 
 ## Structure semantics
 
