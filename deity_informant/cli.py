@@ -142,13 +142,14 @@ def cmd_decompile(args):
         mt = sidprog.metrics(model)
         sys.stderr.write(
             "metrics: blocks=%d nested=%d structured=%.1f%% gotos=%d labels=%d "
-            "procs=%d cross-gotos=%d\n"
+            "frontier=%d procs=%d cross-gotos=%d\n"
             % (
                 mt["blocks"],
                 mt["nested_blocks"],
                 mt["structured_pct"],
                 mt["goto_count"],
                 mt["labels"],
+                mt["frontier"],
                 mt["proc_count"],
                 mt["cross_proc_gotos"],
             )

@@ -192,10 +192,15 @@ class Region:
     __slots__ = ("kind", "a", "b", "c")
 
     def __init__(self, kind, a=None, b=None, c=None):
-        self.kind = kind  # block | seq | if | loop | goto | brk | cont | exit
+        self.kind = kind  # block | seq | if | loop | goto | frontier | brk | cont | exit
         self.a = a
         self.b = b
         self.c = c
+
+
+def _is_frontier(model, pc):
+    """A statically proven edge target with no serialized block anywhere."""
+    return not getattr(model, "all_variants", model.variants)(pc)
 
 
 def _dispatch_gates(model):
@@ -323,6 +328,9 @@ def _proc(model, entry, cfg, shared, outer):
         ]
         return max(cands, key=lambda t: (len(pred[t]), -rpo.get(t, 0)), default=None)
 
+    def fr(pc):
+        return _is_frontier(model, pc)
+
     def sub(target):
         return handler(target, nodeset | outer)
 
@@ -363,7 +371,7 @@ def _proc(model, entry, cfg, shared, outer):
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc)
+                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
@@ -375,13 +383,16 @@ def _proc(model, entry, cfg, shared, outer):
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc)
+            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
                 return Region("seq", seq)
             pc = nxt
         if pc is not None and pc not in nodeset and pc != stop:
+            if fr(pc):
+                seq.append(Region("frontier", pc))
+                return Region("seq", seq)
             copy = dup(pc)
             if copy is not None and copy[1] is not None:
                 seq.extend(copy)
@@ -444,12 +455,14 @@ def _dup_tail(model, pc):
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc = ctx
+    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc, fr = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
         join = join if join in nodeset else None
         if term[2] is None:  # dynamic branch target
+            if fr(term[3]):
+                return [Region("frontier", term[3])], None
             labels.add(term[3])
             return [Region("goto", term[3])], None
         if join is None:
@@ -606,7 +619,7 @@ def _has_stmts(region):
 def _side(ctx, target, join, loops, parent):
     """A conditional arm: continue/break for loop edges, an inlined region when
     owned or last-claimable, a duplicated tiny tail, else a labelled goto."""
-    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc = ctx
+    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc, fr = ctx
     if target == join:
         return Region("seq", [])
     if loops and target == loops[-1][0]:
@@ -626,6 +639,8 @@ def _side(ctx, target, join, loops, parent):
             return Region("seq", copy[:1] + [Region("cont")])
         if loops and nxt == loops[-1][1]:
             return Region("seq", copy[:1] + [Region("brk")])
+    if fr(target):
+        return Region("seq", [Region("frontier", target)])
     labels.add(target)
     return Region("seq", [Region("goto", target)])
 
@@ -741,6 +756,8 @@ def _emit(region, model, lines, depth, labels):
         lines.append(pad + "break")
     elif k == "goto":
         lines.append("%sgoto L_%04X" % (pad, region.a))
+    elif k == "frontier":
+        lines.append("%sunobserved $%04X" % (pad, region.a))
     elif k == "exit":
         lines.append(pad + ("return" if region.a[0] == "rts" else "dispatch %s" % region.a[0]))
 

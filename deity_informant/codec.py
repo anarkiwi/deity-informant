@@ -34,7 +34,7 @@ def _leaf_pc(region, loops):
     k = region.kind
     if k == "block":
         return region.b if region.b is not None else region.a.pc
-    if k == "goto":
+    if k in ("goto", "frontier"):  # frontier: a verified edge to a never-observed pc
         return region.a
     if k == "cont":
         return loops[-1][0]
@@ -103,7 +103,7 @@ class _Flatten:
                 i += 1
             elif k == "switch":
                 i = self._dispatch(items, i, follow, loops)
-            elif k in ("goto", "cont", "brk"):
+            elif k in ("goto", "cont", "brk", "frontier"):
                 i += 1  # pure flow: consumed as a predecessor's continuation
             else:
                 raise CodecError("unexpected %s region in sequence" % k)

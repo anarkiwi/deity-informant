@@ -907,7 +907,7 @@ def _parse_decl(line):
 
 
 _ALIAS_LINE = re.compile(r"alias ([A-Za-z]\w*) = (\S+)$")
-_RESERVED = re.compile(r"[ut]\d+$|r\d+$|mem$|carry$|zext[12]$|goto$|if$|ifnot$|loop$")
+_RESERVED = re.compile(r"[ut]\d+$|r\d+$|mem$|carry$|zext[12]$|goto$|if$|ifnot$|loop$|unobserved$")
 
 
 def _check_alias(name):
@@ -957,17 +957,19 @@ def _br_pen(term):
 
 class _SortedView:
     """Model facade with canonical (sorted) variant order for structuring;
-    ``hidden`` pcs (already serialized by an earlier proc) become goto labels."""
+    ``hidden`` pcs (already serialized by an earlier proc) become goto labels
+    and unkept blocks drop to the evidence frontier (keep rule: ``_kept_pcs``)."""
 
     def __init__(self, model):
-        self.blocks = model.blocks
         self.mem0 = model.mem0
         self.play = getattr(model, "play", None)
         self.dyn_targets = model.dyn_targets
         self.dispatch_pcs = set(model.dispatch_sets)
         self.hidden = set()
+        kept, self.need = _kept_pcs(model)
+        self.blocks = {key: blk for key, blk in model.blocks.items() if key[0] in kept}
         by_pc = {}
-        for key in sorted(model.blocks):
+        for key in sorted(self.blocks):
             by_pc.setdefault(key[0], []).append(key)
         self._by_pc = by_pc
 
@@ -987,12 +989,30 @@ def _left_entry(view, left):
     return left[0][0]
 
 
-def _need_pcs(model):
+def _kept_pcs(model):
+    """``(kept pcs, dynamic-landing need)`` of the serialization keep rule:
+    evidence-executed pcs plus the dynamic-landing closure over kept blocks;
+    every other block's edges serialize as ``unobserved`` frontier markers."""
+    all_pcs = {key[0] for key in model.blocks}
+    pcs = getattr(model, "pcs", None)
+    if pcs is None:
+        return all_pcs, _need_pcs(model, model.blocks.values())
+    kept = {pc for pc in all_pcs if pc in pcs or pc in model.dispatch_sets}
+    while True:
+        need = _need_pcs(model, (b for k, b in model.blocks.items() if k[0] in kept))
+        grow = (need & all_pcs) - kept
+        if not grow:
+            return kept, need
+        kept |= grow
+
+
+def _need_pcs(model, blocks):
     """Pcs dynamic control can land on at run time (must stay resolvable)."""
+    blocks = list(blocks)
     need = set()
-    rets = {(b.term[2] + 1) & 0xFFFF for b in model.blocks.values() if b.term[0] == "jsr"}
+    rets = {(b.term[2] + 1) & 0xFFFF for b in blocks if b.term[0] == "jsr"}
     ev_tg = getattr(model, "ev_targets", {})
-    for blk in model.blocks.values():
+    for blk in blocks:
         t = blk.term
         site = blk.pcs[-1]
         if t[0] == "jsr" and t[1] is not None:
@@ -1089,6 +1109,8 @@ class _Writer:
                 self.opcode_switch(r, d)
             elif k == "goto":
                 self.line("goto $%04X" % r.a, d)
+            elif k == "frontier":
+                self.line("unobserved $%04X" % r.a, d)
             elif k in ("cont", "brk"):
                 self.line("continue" if k == "cont" else "break", d)
             else:
@@ -1140,9 +1162,20 @@ class _Writer:
                 raise ValueError("if region without a static branch terminator")
             pen = nxt.a if isinstance(nxt.a, int) else _br_pen(blk.term)
             head = "if" if term[1] else "ifnot"
+            then_items = _items(nxt.b)
+            if len(then_items) == 1 and then_items[0].kind == "frontier":
+                cond = _rename(fmt_expr(term[4]))
+                self.line("%s @t%d %s unobserved $%04X" % (head, pen, cond, then_items[0].a), d)
+                if nxt.c is not None:  # the marker never joins: else IS the continuation
+                    self.seq(_items(nxt.c), d)
+                return 2
             self.line("%s @t%d %s {" % (head, pen, _rename(fmt_expr(term[4]))), d)
             self.seq(_items(nxt.b), d + 1)
-            els = self.capture(_items(nxt.c), d + 1) if nxt.c is not None else []
+            els_items = _items(nxt.c) if nxt.c is not None else []
+            if len(els_items) == 1 and els_items[0].kind == "frontier":
+                self.line("} else unobserved $%04X" % els_items[0].a, d)
+                return 2
+            els = self.capture(els_items, d + 1)
             if els:
                 self.line("} else {", d)
                 self.out.extend(els)
@@ -1257,7 +1290,7 @@ def _model_trees(model):
     dupped = set()
     owners = set()  # proc entries whose own tree serializes their entry block
     placed = set()
-    need = _need_pcs(model)  # dynamic landings must resolve at run time
+    need = view.need  # dynamic landings must resolve at run time
 
     def build(entry, foreign):
         view.hidden = foreign | placed
@@ -1275,7 +1308,7 @@ def _model_trees(model):
     def left_keys():
         return sorted(
             k
-            for k in model.blocks
+            for k in view.blocks
             if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
         )
 
@@ -1289,7 +1322,7 @@ def _model_trees(model):
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
         left = still
-    labels |= need - _inlined_arms(trees)
+    labels |= (need & set(view._by_pc)) - _inlined_arms(trees)
     return trees, labels - owners, view
 
 
@@ -1333,15 +1366,15 @@ def emit(model):
 
 def metrics(model):
     """Structuring metrics over the emission trees: {blocks, nested_blocks,
-    structured_pct, goto_count, labels, dup_blocks, proc_count,
-    cross_proc_gotos} (block leaves at nesting depth > 0 are structured;
-    a goto is cross-proc when its target block lives in another proc)."""
+    structured_pct, goto_count, labels, frontier, dup_blocks, proc_count,
+    cross_proc_gotos}; nested = block leaves at depth > 0, frontier counts
+    ``unobserved`` markers, cross = gotos whose target block lives elsewhere."""
     trees, labels, _view = _model_trees(model)
     owner = {}
     for i, (_entry, root) in enumerate(trees):
         for key in _tree_keys(root):
             owner[key[0]] = i
-    counts = {"blocks": 0, "nested": 0, "gotos": 0, "dups": 0, "cross": 0}
+    counts = {"blocks": 0, "nested": 0, "gotos": 0, "dups": 0, "cross": 0, "frontier": 0}
     for i, (_entry, root) in enumerate(trees):
         stack = [(root, 0)]
         while stack:
@@ -1366,6 +1399,8 @@ def metrics(model):
             elif k == "goto":
                 counts["gotos"] += 1
                 counts["cross"] += 1 if owner.get(r.a) != i else 0
+            elif k == "frontier":
+                counts["frontier"] += 1
     blocks, nested = counts["blocks"], counts["nested"]
     return {
         "blocks": blocks,
@@ -1373,6 +1408,7 @@ def metrics(model):
         "structured_pct": 100.0 * nested / blocks if blocks else 100.0,
         "goto_count": counts["gotos"],
         "labels": len(labels),
+        "frontier": counts["frontier"],
         "dup_blocks": counts["dups"],
         "proc_count": len(trees),
         "cross_proc_gotos": counts["cross"],
@@ -1491,6 +1527,9 @@ class TextModel:
             elif k == "goto":
                 prog.append([None, None])
                 gotos.append((len(prog) - 1, r.a))
+                nxt = len(prog) - 1
+            elif k == "frontier":  # proven, never observed: reaching it faults
+                prog.append([None, ("fault", r.a)])
                 nxt = len(prog) - 1
             elif k == "cont":
                 nxt = loops[-1][0]
@@ -1627,6 +1666,8 @@ class TreeWalker:
         op = ctrl[0]
         if op == "next":
             return ctrl[1]
+        if op == "fault":
+            raise C.WalkError("unobserved edge $%04X reached" % ctrl[1])
         if op == "br":
             if x[0] == ctrl[1]:
                 self.c += ctrl[2]
@@ -1749,6 +1790,7 @@ _BINDING = re.compile(r"t(\d+) = (.*)$")
 _CASE = re.compile(r"case \$([0-9A-Fa-f]+): \{$")
 _CALL_BODY = re.compile(r"call \$([0-9A-Fa-f]{1,4}) ret \$[0-9A-Fa-f]{1,4} \{$")
 _IF_HDR = re.compile(r"(if|ifnot) @t(\d+) (.*) \{$")
+_IF_FRONT = re.compile(r"(if|ifnot) @t(\d+) (.*) unobserved \$([0-9A-Fa-f]{1,4})$")
 _SW_CODE = re.compile(r"switch code\[\$([0-9A-Fa-f]{4})\] \{$")
 _SW_CALL = re.compile(r"switch call \{ ?(.*?) ?\}$")
 _PC_LIST = re.compile(r"\$[0-9A-Fa-f]{1,4}( \$[0-9A-Fa-f]{1,4})*$")
@@ -1819,6 +1861,10 @@ class _Parser:
             self.close()
         elif line == "} else {":
             self.else_arm()
+        elif line.startswith("} else unobserved $"):
+            self.else_arm()
+            self.top_items().append(_R("frontier", int(line[19:], 16)))
+            self.close()
         elif line == "loop {":
             self.flush()
             self.stack.append(["loop", []])
@@ -1869,6 +1915,19 @@ class _Parser:
             acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
             self.flush()
             self.stack.append(["then", int(m.group(2)), []])
+            return True
+        m = _IF_FRONT.match(line)
+        if m:
+            acc = self.ensure()
+            pol = 1 if m.group(1) == "if" else 0
+            acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
+            self.flush()
+            arm = _R("seq", [_R("frontier", int(m.group(4), 16))])
+            self.top_items().append(_R("if", int(m.group(2)), arm, None))
+            return True
+        if line.startswith("unobserved $"):
+            self.flush()
+            self.top_items().append(_R("frontier", int(line[12:], 16)))
             return True
         m = _CALL_BODY.match(line)
         if m:

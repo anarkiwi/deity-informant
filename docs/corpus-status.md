@@ -43,6 +43,19 @@ envelope case lists, bounded by dispatch-index precision, not layout);
 Krakout 522 -> 4 procs, Automatas 5 -> 2, Army_Moves 16 -> 4;
 Ghouls/Commando gotos unchanged (82 / 4).
 
+Evidence-frontier form (`unobserved $XXXX`, docs/sidprog-language.md):
+proven-but-never-observed edges no longer degrade to goto+label, and
+evidence-unexecuted blocks outside the dynamic-landing closure drop their
+serialization behind the marker (reaching one faults with the pc);
+`sidprog.metrics` gains `frontier`. Ghouls 627 -> 556 blocks (the 71
+static branch sides), 82 -> 59 gotos, 28 frontier, text -7.6 KB;
+Agent_X_II 344 -> 233 blocks, 61 -> 29 gotos, 24 frontier, -19.4 KB;
+Wizball 110 -> 44 gotos, 72 frontier, -15.1 KB; Bionic_Commando
+54 -> 28 gotos, 35 frontier, -7.3 KB; Athena 506 -> 437 gotos, 71
+frontier, -4.1 KB (the 256-wide envelope case lists keep their blocks:
+dynamic landings stay serialized and resolvable); Hubbard Commando
+4 -> 2 gotos, 8 frontier, -4.6 KB.
+
 ## Retired model bogon (fixed by the commit-phase coverage rule)
 
 Army_Moves `igoto` site $E093: `dyn_targets=[]` with a `proven` proof while

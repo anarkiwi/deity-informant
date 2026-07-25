@@ -45,6 +45,12 @@ Pre-release changes within major 1 (never released, no bump):
   and classified state cells gain `symbols { }` aliases used throughout the
   procedure bodies (see "Data declarations" and "Symbols" below). Earlier
   emitters wrote the whole image anonymously and only canonical cell names.
+- evidence frontier: an edge the static terminator proves but the evidence
+  never took serialises as an `unobserved $XXXX` marker instead of a `goto`
+  to a label that leads nowhere real, and evidence-unexecuted blocks outside
+  the dynamic-landing closure drop their serialization behind the marker (see
+  "Evidence frontier" below). Earlier emitters wrote `goto`+label for every
+  such edge and serialised statically materialized never-executed blocks.
 
 ## Grammar (EBNF)
 
@@ -98,6 +104,7 @@ item        = block | ifregion | loop | opswitch | gotoswitch | callswitch
             | flow ;
 loop        = "loop" , ws , "{" , newline , { item } , "}" , newline ;
 flow        = "goto" , ws , hex , newline            (* to a labelled block *)
+            | "unobserved" , ws , hex , newline      (* proven, never-observed edge *)
             | "continue" , newline                   (* back to loop header *)
             | "break" , newline ;                    (* to loop exit *)
 
@@ -137,9 +144,12 @@ ret         = "ret" ;
 target      = hex | "(" , expr , ")" ;   (* "(expr)" is a proven dynamic target *)
 
 ifregion    = ( "if" | "ifnot" ) , ws , "@t" , integer , ws , expr , ws ,
-              "{" , newline , { item } ,
-              [ "} else {" , newline , { item } ] , "}" , newline ;
-              (* then-arm = branch taken; @tP = static taken-cycle penalty *)
+              ( "{" , newline , { item } ,
+                ( [ "} else {" , newline , { item } ] , "}"
+                | "} else unobserved" , ws , hex )
+              | "unobserved" , ws , hex ) , newline ;
+              (* then-arm = branch taken; @tP = static taken-cycle penalty;
+                 the unobserved forms are pure-frontier arms *)
 gotoswitch  = "switch goto {" , newline ,
               { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
                 "}" , newline } ,
@@ -258,7 +268,28 @@ also the hook for a future user-supplied symbol map.
   tree, and the rare *boundary label* that separates two adjacent fallthrough
   payloads (e.g. a block split at the 64-instruction cap) so `parse` cannot
   merge them. Proc entries, `switch` subjects and inlined call arms carry
-  their pcs in their own syntax and are never labelled redundantly.
+  their pcs in their own syntax and are never labelled redundantly. A label
+  appears only where a REAL serialized block is targeted: an edge whose
+  target has no serialized block is an `unobserved` marker, never a label.
+- **Evidence frontier (`unobserved $XXXX`).** An edge the static terminator
+  proves but the evidence never took, whose target has no serialized block.
+  The marker replaces `goto` + label: the pc stays in the text (nothing is
+  dropped silently), and if control ever reaches it the walker faults with a
+  `WalkError` carrying that pc — the guarded-envelope doctrine applied to
+  control flow. A pure-frontier taken edge collapses into the branch header
+  (`if @t1 (cond) unobserved $XXXX`; the else arm, when present, simply
+  continues after the line, since the marker never joins); a pure-frontier
+  fallthrough arm collapses onto the closer (`} else unobserved $XXXX`); a
+  frontier fallthrough or arm interior is the standalone flow line. The
+  codec treats the marker as a verified edge to its pc, so tree flow still
+  equals terminator flow exactly. *Keep rule* (which blocks serialize): a
+  block is kept iff any variant of its pc executed in the evidence, or its
+  pc is in the dynamic-landing closure of the kept set (committed dynamic
+  dispatch/call target sets, static call targets, RTS-trick landings — the
+  pcs run-time control can resolve to, which must stay readable and
+  resolvable). Every other block — statically materialized code reachable
+  only through never-taken edges — drops its serialization, and each edge
+  into that set serialises as the marker recording the pc.
 - **Dynamic-target branch (escape hatch).** A branch whose displacement byte
   is self-modified keeps the explicit line
   `if|ifnot expr goto (dynexpr) else $FT`: the taken target is computed at
@@ -326,8 +357,9 @@ payloads (`structured.compile_block`), same volatile-read/cycle model, `call`
 pushes the real return bytes, `ret` pops the real bytes from stack memory and
 resolves the popped pc through the serialized-pc map (call continuations are
 indexed by their serialized `ret` operands; RTS-trick landings are labelled),
-`igoto` reads its vector from memory. Gate C requires both executors to
-reproduce the evidence log bit-exactly.
+`igoto` reads its vector from memory. An `unobserved` marker links to a fault
+node: reaching it raises `WalkError` carrying the marker's pc. Gate C requires
+both executors to reproduce the evidence log bit-exactly.
 
 ## Laws
 
