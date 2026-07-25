@@ -257,9 +257,9 @@ dispatch-closure over-approximation** at the three operand-SMC `jmp` sites;
 the player performs no RTS dispatch at all. The needed work items are the
 paired-index closure lemma (soundness.md blocker 3) and final-fixpoint-only
 block materialization — not a new terminator form. The materialization item
-is done (§4 `collect_unreachable`); the paired-index lemma remains open —
-probed against the final analysis state, it does not follow from the
-in-block relational machinery alone: the Ghouls operand stores land in a
-predecessor block of the resplit jmp block (no in-block single-writer pair),
-Bionic's handler tables are themselves mutable, and Wizball's naive pairing
-does not even cover the observed target set.
+is done (§4 `collect_unreachable`); the paired-index lemma has now landed as
+the cross-block single-writer-pair closure (docs/soundness.md): Ghouls'
+predecessor-block store pairs prove (three sites, |D|=128 zip sets, the tune
+builds `--sound`), Bionic's mutable-table reads refuse with the per-site
+spill diagnostic, and Wizball's non-covering pairing refuses on the unpaired
+zp writer / observation backstop.

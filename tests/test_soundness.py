@@ -36,7 +36,8 @@ def _player_init(p):
 
 def _smc_vector_image():
     """Self-modified JMP vector indexed by a counter that widens to TOP; the
-    Cartesian {lo}x{hi} overflows the budget so static closure must give up."""
+    Cartesian {lo}x{hi} overflows the budget and the stub mutates a table byte
+    (paired-index immutability refuses), so static closure must give up."""
     a = G.Asm(ORG)
     a.i("LDA", "imm", 0x2A).i("STA", "abs", SID + REG)
     a.i("INC", "abs", CTR)
@@ -49,7 +50,7 @@ def _smc_vector_image():
     for k, b in enumerate(prog):
         mem[ORG + k] = b
     mem[INIT] = 0x60
-    mem[STUB] = 0x60  # RTS: every traced target returns cleanly
+    mem[STUB : STUB + 4] = bytes((0xEE, 0x80, 0x20, 0x60))  # INC TLO+$80; RTS
     mem[CTR] = 0x00
     for i in range(256):  # traced indices 1..FRAMES hit the stub; rest diverge
         lo, hi = (STUB & 0xFF, STUB >> 8) if 1 <= i <= FRAMES else (i, i)
@@ -105,6 +106,7 @@ def _pending_vector_image():
     a.i("LDA", "imm", STUB & 0xFF)
     for k in range(12):
         a.i("STA", "abs", PBUF + 2 * k)
+    a.i("JSR", "abs", STUB + 8)  # block split: lo/hi pointer stores never pair
     a.i("LDA", "imm", STUB >> 8)
     for k in range(12):
         a.i("STA", "abs", PBUF + 2 * k + 1)
@@ -115,6 +117,7 @@ def _pending_vector_image():
         mem[ORG + k] = b
     mem[INIT] = 0x60
     mem[STUB] = 0x60
+    mem[STUB + 8] = 0x60
     for i in range(256):
         mem[TLO + i] = (PBUF + 2 * (i % 12)) & 0xFF
         mem[THI + i] = PBUF >> 8
