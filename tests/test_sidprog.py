@@ -485,9 +485,49 @@ def test_metrics_reporting():
         "goto_count",
         "labels",
         "dup_blocks",
+        "proc_count",
+        "cross_proc_gotos",
     }
     assert mt["blocks"] == 1 and mt["goto_count"] == 0
+    assert mt["proc_count"] == 1 and mt["cross_proc_gotos"] == 0
     assert 0.0 <= mt["structured_pct"] <= 100.0
+
+
+def _flow_blk(pc, term):
+    return Block(pc, 0, [pc], [], term, [E.reg(i) for i in range(16)])
+
+
+def _call_model(callers):
+    mem0 = bytearray(0x10000)
+    blocks = {(0x2000, 0): _flow_blk(0x2000, ("rts",))}
+    for i, pc in enumerate(callers):
+        blocks[(pc, 0)] = _flow_blk(pc, ("jsr", 0x2000, pc + 2, None))
+        nxt = callers[i + 1] if i + 1 < len(callers) else None
+        term = ("goto", nxt) if nxt is not None else ("rts",)
+        blocks[(pc + 3, 0)] = _flow_blk(pc + 3, term)
+    return sidprog.TextModel(mem0, 0x0F00, callers[0], blocks, {})
+
+
+def test_single_caller_sub_inlines_at_call_site():
+    """A sole static call site owns the callee body: the call line opens an
+    inlined region, the callee entry resolves through it, one proc remains."""
+    m = _call_model([0x1000])
+    text = sidprog.emit(m)
+    assert "call $2000 ret $1002 {" in text and "proc $2000" not in text
+    tm = sidprog.parse(text)
+    assert sidprog.emit(tm) == text
+    assert tm.link().resolve_pc(0x2000) is not None
+    tm.run(1)  # play -> inlined body -> ret via real stack bytes -> rts
+    mt = sidprog.metrics(m)
+    assert mt["proc_count"] == 1 and mt["cross_proc_gotos"] == 0
+
+
+def test_multi_caller_sub_stays_a_procedure():
+    m = _call_model([0x1000, 0x1100])
+    text = sidprog.emit(m)
+    assert "proc $2000 {" in text and "call $2000 ret $1002" in text
+    assert "call $2000 ret $1002 {" not in text
+    assert sidprog.metrics(m)["proc_count"] == 2
 
 
 def test_header_carries_current_version():

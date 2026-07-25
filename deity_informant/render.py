@@ -8,6 +8,8 @@ state -- a human-facing view of the same model the walker replays byte-exact
 from __future__ import annotations
 
 from . import expr as E
+from . import procpass
+from .procpass import _dyn_targets, _idoms, _succs
 
 # ---- named machine state ------------------------------------------------------
 _VOICE = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "attack_decay", "sustain_release")
@@ -143,31 +145,6 @@ def _inline(n, smap):
 
 
 # ---- CFG (intra-procedural; a call is one node) -------------------------------
-def _dyn_targets(model, blk):
-    """Resolved in-procedure successors of a computed jump (jump-table dispatch)."""
-    tg = model.dyn_targets.get(blk.pcs[-1])
-    if tg:
-        return list(tg)
-    t = blk.term
-    if t[0] == "jmpind" and t[1] is not None:  # static indirect: read the vector
-        m, ptr = model.mem0, t[1]
-        return [m[ptr] | (m[(ptr & 0xFF00) | ((ptr + 1) & 0xFF)] << 8)]
-    return []
-
-
-def _succs(model, blk):
-    t = blk.term
-    if t[0] in ("goto", "jmp"):
-        return [t[1]]
-    if t[0] == "br":
-        return ([t[2]] if t[2] is not None else []) + [t[3]]
-    if t[0] == "jsr":
-        return [(t[2] + 1) & 0xFFFF]  # a call returns; its targets are separate subs
-    if t[0] in ("jmpd", "jmpind"):
-        return _dyn_targets(model, blk)
-    return []  # rts: procedure exit
-
-
 def _proc_cfg(model, entry):
     """``(nodes, succ, pred)`` over block pcs reachable from ``entry`` without
     leaving the procedure; the first variant of each pc represents it."""
@@ -198,54 +175,6 @@ def _proc_cfg(model, entry):
         for s in succ[pc]:
             pred[s].append(pc)
     return nodes, succ, pred
-
-
-def _postorder(entry, succ):
-    order = []
-    seen = {entry}
-    stack = [(entry, iter(succ.get(entry, ())))]
-    while stack:
-        node, it = stack[-1]
-        nxt = next(it, None)
-        if nxt is None:
-            order.append(node)
-            stack.pop()
-        elif nxt not in seen:
-            seen.add(nxt)
-            stack.append((nxt, iter(succ.get(nxt, ()))))
-    return order
-
-
-def _idoms(entry, succ, nodes):
-    po = _postorder(entry, succ)
-    rpo_num = {n: i for i, n in enumerate(reversed(po))}
-    pred = {n: [] for n in nodes}
-    for n in nodes:
-        for s in succ.get(n, ()):
-            if s in pred:
-                pred[s].append(n)
-    idom = {entry: entry}
-    order = [n for n in reversed(po) if n != entry]
-    changed = True
-    while changed:
-        changed = False
-        for n in order:
-            ps = [p for p in pred[n] if p in idom]
-            if not ps:
-                continue
-            new = ps[0]
-            for p in ps[1:]:
-                a, b = new, p
-                while a != b:
-                    while rpo_num[a] > rpo_num[b]:
-                        a = idom[a]
-                    while rpo_num[b] > rpo_num[a]:
-                        b = idom[b]
-                new = a
-            if idom.get(n) != new:
-                idom[n] = new
-                changed = True
-    return idom, rpo_num
 
 
 def _postdoms(nodes, succ, pred, exits):
@@ -286,6 +215,7 @@ def _structure(model, entry):
     emitted = set()
     labels = set()
     sites, static_subs = _dispatch_gates(model)
+    inline = procpass.plan(model).inline
     play = getattr(model, "play", None)
 
     def handler(target, callers):
@@ -300,10 +230,25 @@ def _structure(model, entry):
         cfg = _proc_cfg(model, target)
         if set(cfg[0]) & callers:
             return None
-        top = _proc(model, target, cfg, (emitted, labels, handler), callers)
+        top = _proc(model, target, cfg, (emitted, labels, handler, callee), callers)
         return Region("seq", top) if top else None
 
-    top = _proc(model, entry, _proc_cfg(model, entry), (emitted, labels, handler), frozenset())
+    def callee(target, site, callers):
+        """Region for a single-call-site static callee owned by its call line,
+        or None: not planned for this site, recursive, already emitted, or a
+        callee region overlapping any enclosing procedure."""
+        if inline.get(target) != site or target in callers or target in emitted:
+            return None
+        if not model.variants(target):
+            return None
+        cfg = _proc_cfg(model, target)
+        if set(cfg[0]) & callers:
+            return None
+        top = _proc(model, target, cfg, (emitted, labels, handler, callee), callers)
+        return Region("seq", top) if top else None
+
+    shared = (emitted, labels, handler, callee)
+    top = _proc(model, entry, _proc_cfg(model, entry), shared, frozenset())
     return Region("seq", top), labels
 
 
@@ -311,7 +256,7 @@ def _proc(model, entry, cfg, shared, outer):
     """Top regions for one procedure or inlined-handler CFG; ``shared`` carries
     the emitted/label bookkeeping across nested handler regions."""
     nodes, succ, pred = cfg
-    emitted, labels, handler = shared
+    emitted, labels, handler, callee = shared
     if not nodes:
         return []
     idom, rpo = _idoms(entry, succ, nodes)
@@ -381,6 +326,9 @@ def _proc(model, entry, cfg, shared, outer):
     def sub(target):
         return handler(target, nodeset | outer)
 
+    def subc(target, site):
+        return callee(target, site, nodeset | outer)
+
     loop_pcs = set().union(*headers.values()) if headers else set()
 
     def dup(pc):
@@ -415,7 +363,7 @@ def _proc(model, entry, cfg, shared, outer):
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub)
+                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
@@ -427,7 +375,7 @@ def _proc(model, entry, cfg, shared, outer):
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub)
+            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
@@ -496,7 +444,7 @@ def _dup_tail(model, pc):
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub = ctx
+    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
@@ -517,6 +465,9 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
             targets = model.dyn_targets.get(blk.pcs[-1], [])
             cases = [("$%04X" % t, Region("call", t, sub(t))) for t in targets]
             return [Region("switch", ("call", cases), [])], (term[2] + 1) & 0xFFFF
+        body = subc(term[1], pc)
+        if body is not None:  # single-site callee: owned region after the call line
+            return [Region("call", term[1], body)], (term[2] + 1) & 0xFFFF
         return [], (term[2] + 1) & 0xFFFF
     if term[0] in ("jmpd", "jmpind"):
         targets = _dyn_targets(model, blk)
@@ -655,7 +606,7 @@ def _has_stmts(region):
 def _side(ctx, target, join, loops, parent):
     """A conditional arm: continue/break for loop edges, an inlined region when
     owned or last-claimable, a duplicated tiny tail, else a labelled goto."""
-    build, owned, claim, _mj, dup, labels, nodeset, _sub = ctx
+    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc = ctx
     if target == join:
         return Region("seq", [])
     if loops and target == loops[-1][0]:
@@ -778,7 +729,12 @@ def _emit(region, model, lines, depth, labels):
                 _emit(body, model, lines, depth + 2, labels)
             lines.append(pad + "}")
     elif k == "call":
-        lines.append("%scall sub_%04X()" % (pad, region.a))
+        if region.b is None:
+            lines.append("%scall sub_%04X()" % (pad, region.a))
+        else:  # the block's call line precedes; the owned body nests after it
+            lines.append("%sinlined sub_%04X {" % (pad, region.a))
+            _emit(region.b, model, lines, depth + 1, labels)
+            lines.append(pad + "}")
     elif k == "cont":
         lines.append(pad + "continue")
     elif k == "brk":

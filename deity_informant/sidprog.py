@@ -12,6 +12,7 @@ import re
 from . import codec
 from . import datadecl
 from . import expr as E
+from . import procpass
 from . import structured as C
 from .render import _static_preds, sid_name
 
@@ -1024,6 +1025,9 @@ def _tree_keys(root, dups=None):
             stack.append(r.a)
         elif k == "if":
             stack.extend(c for c in (r.b, r.c) if c is not None)
+        elif k == "call":
+            if r.b is not None:
+                stack.append(r.b)
         elif k == "switch":
             for _lbl, body in r.a[1]:
                 if body is None:
@@ -1144,6 +1148,13 @@ class _Writer:
                 self.out.extend(els)
             self.line("}", d)
             return 2
+        if nxt is not None and nxt.kind == "call":
+            if k != "jsr" or term[3] is not None:
+                raise ValueError("call body without a static call terminator")
+            self.line("call $%04X ret $%04X {" % (term[1], term[2]), d + 1)
+            self.seq(_items(nxt.b), d + 2)
+            self.line("}", d + 1)
+            return 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
             for l in _term_lines(term):
                 self.line(_rename(l), d + 1)
@@ -1200,20 +1211,8 @@ class _Writer:
         self.line("}", d)
 
 
-def _entries(model):
-    """Procedure entries: play, then every static or proven-dynamic call target."""
-    extra = set()
-    for blk in model.blocks.values():
-        if blk.term[0] == "jsr":
-            if blk.term[1] is not None:
-                extra.add(blk.term[1])
-            else:
-                extra.update(model.dyn_targets.get(blk.pcs[-1], ()))
-    return [model.play] + sorted(extra - {model.play})
-
-
 def _inlined_arms(trees):
-    """Call targets whose handler tree is inlined as a switch-call case arm."""
+    """Call targets whose body tree is inlined at a call line or case arm."""
     out = set()
     stack = [root for _e, root in trees]
     while stack:
@@ -1225,6 +1224,10 @@ def _inlined_arms(trees):
             stack.append(r.a)
         elif k == "if":
             stack.extend(c for c in (r.b, r.c) if c is not None)
+        elif k == "call":
+            if r.b is not None:
+                out.add(r.a)
+                stack.append(r.b)
         elif k == "switch":
             for _lbl, body in r.a[1]:
                 if body is None:
@@ -1239,25 +1242,35 @@ def _inlined_arms(trees):
 
 
 def _model_trees(model):
-    """``(trees, labels, view)``: region trees for every procedure and the full
-    label set (goto + dynamic-branch targets; proc entries need no label)."""
+    """``(trees, labels, view)``: region trees for every planned procedure
+    (block homes per :mod:`procpass`, leftovers as fragment procs) and the
+    full label set (goto + dynamic-branch targets; proc entries need no label)."""
     view = _SortedView(model)
+    plan = procpass.plan(view)
+    by_home = {}
+    for pc, home in plan.homes.items():
+        by_home.setdefault(home, set()).add(pc)
+    homed = set(plan.homes)
     trees = []
     labels = set()
     done = set()
     dupped = set()
     owners = set()  # proc entries whose own tree serializes their entry block
+    placed = set()
     need = _need_pcs(model)  # dynamic landings must resolve at run time
 
-    def build(entry):
+    def build(entry, foreign):
+        view.hidden = foreign | placed
         root, labs = codec.structure(view, entry)
-        labels.update(labs)
         keys = _tree_keys(root, dupped)
+        if not keys and not _items(root):
+            return  # fully inlined or blockless entry: nothing to serialize
+        labels.update(labs)
         if any(k[0] == entry for k in keys):
             owners.add(entry)
         done.update(keys)
+        placed.update(k[0] for k in keys)
         trees.append((entry, root))
-        view.hidden.update(k[0] for k in keys)
 
     def left_keys():
         return sorted(
@@ -1266,11 +1279,12 @@ def _model_trees(model):
             if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
         )
 
-    for entry in _entries(model):
-        build(entry)
+    for entry in plan.entries:
+        build(entry, homed - by_home.get(entry, set()))
     left = left_keys()
     while left:
-        build(_left_entry(view, left))
+        view.hidden = set(placed)
+        build(_left_entry(view, left), set())
         still = left_keys()
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
@@ -1318,21 +1332,17 @@ def emit(model):
 
 
 def metrics(model):
-    """Structuring metrics: {blocks, nested_blocks, structured_pct, goto_count,
-    labels, dup_blocks} over the codec region trees (block leaves at nesting
-    depth > 0 are structured; gotos, labels and duplicate copies are counted,
-    not judged)."""
-    view = _SortedView(model)
-    done = set()
-    dupped = set()
-    labels = set()
-    counts = {"blocks": 0, "nested": 0, "gotos": 0, "dups": 0}
-    need = _need_pcs(model)
-
-    def proc(entry):
-        root, labs = codec.structure(view, entry)
-        labels.update(labs)
-        seen = set(done)
+    """Structuring metrics over the emission trees: {blocks, nested_blocks,
+    structured_pct, goto_count, labels, dup_blocks, proc_count,
+    cross_proc_gotos} (block leaves at nesting depth > 0 are structured;
+    a goto is cross-proc when its target block lives in another proc)."""
+    trees, labels, _view = _model_trees(model)
+    owner = {}
+    for i, (_entry, root) in enumerate(trees):
+        for key in _tree_keys(root):
+            owner[key[0]] = i
+    counts = {"blocks": 0, "nested": 0, "gotos": 0, "dups": 0, "cross": 0}
+    for i, (_entry, root) in enumerate(trees):
         stack = [(root, 0)]
         while stack:
             r, d = stack.pop()
@@ -1342,39 +1352,20 @@ def metrics(model):
             elif k == "block":
                 if r.b is None and r.c is not None:
                     counts["dups"] += 1
-                    dupped.add((r.a.pc, r.a.op0))
                 else:
                     counts["blocks"] += 1
                     counts["nested"] += 1 if d else 0
-                    done.add((r.a.pc, r.a.op0))
             elif k == "loop":
                 stack.append((r.a, d + 1))
             elif k == "if":
                 stack.extend((c, d + 1) for c in (r.b, r.c) if c is not None)
             elif k == "switch":
-                stack.extend((body, d + 1) for _lbl, body in r.a[1])
+                stack.extend((body, d + 1) for _lbl, body in r.a[1] if body is not None)
             elif k == "call" and r.b is not None:
-                stack.append((r.b, d))
+                stack.append((r.b, d + 1))
             elif k == "goto":
                 counts["gotos"] += 1
-        view.hidden.update(key[0] for key in done - seen)
-
-    def left_keys():
-        return sorted(
-            k
-            for k in model.blocks
-            if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
-        )
-
-    for entry in _entries(model):
-        proc(entry)
-    left = left_keys()
-    while left:
-        proc(_left_entry(view, left))
-        still = left_keys()
-        if len(still) == len(left):
-            break
-        left = still
+                counts["cross"] += 1 if owner.get(r.a) != i else 0
     blocks, nested = counts["blocks"], counts["nested"]
     return {
         "blocks": blocks,
@@ -1383,6 +1374,8 @@ def metrics(model):
         "goto_count": counts["gotos"],
         "labels": len(labels),
         "dup_blocks": counts["dups"],
+        "proc_count": len(trees),
+        "cross_proc_gotos": counts["cross"],
     }
 
 
@@ -1477,7 +1470,7 @@ class TextModel:
                 continue
             if pend is not None:
                 raise ValueError("flow region %s not attached to a block" % pend.kind)
-            if k == "if" or (k == "switch" and not r.b):
+            if k in ("if", "call") or (k == "switch" and not r.b):
                 pend = r
             elif k == "switch":
                 omap = {
@@ -1543,6 +1536,15 @@ class TextModel:
 
     def _lpend(self, term, pend, nxt, loops, gotos):
         k = term[0]
+        if pend.kind == "call":
+            if k != "jsr" or term[3] is not None:
+                raise ValueError("call body without a static call terminator")
+            ai = self._lseq(_items(pend.b), None, [], gotos)
+            if ai is not None:  # the callee entry resolves to its inlined body
+                self.pcmap.setdefault(term[1], ai)
+            if nxt is not None:
+                self.contmap.setdefault((term[2] + 1) & 0xFFFF, nxt)
+            return ("call", term[1], term[2], nxt)
         if pend.kind == "if":
             if k != "br" or term[5] is not None:
                 raise ValueError("if region without a static branch terminator")
@@ -1745,6 +1747,7 @@ def _acc_block(acc):
 _LABEL = re.compile(r"\$([0-9A-Fa-f]{1,4}):$")
 _BINDING = re.compile(r"t(\d+) = (.*)$")
 _CASE = re.compile(r"case \$([0-9A-Fa-f]+): \{$")
+_CALL_BODY = re.compile(r"call \$([0-9A-Fa-f]{1,4}) ret \$[0-9A-Fa-f]{1,4} \{$")
 _IF_HDR = re.compile(r"(if|ifnot) @t(\d+) (.*) \{$")
 _SW_CODE = re.compile(r"switch code\[\$([0-9A-Fa-f]{4})\] \{$")
 _SW_CALL = re.compile(r"switch call \{ ?(.*?) ?\}$")
@@ -1787,6 +1790,8 @@ class _Parser:
             self.top_items().append(_R("if", f[1], f[2], _R("seq", f[3])))
         elif k == "case":
             self.stack[-1][-1].append((f[1], _R("seq", f[2])))
+        elif k == "callb":
+            self.top_items().append(_R("call", f[1], _R("seq", f[2])))
         elif k == "swg":
             self.top_items().append(_R("switch", ("goto", f[1]), []))
         elif k == "swcl":
@@ -1864,6 +1869,12 @@ class _Parser:
             acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
             self.flush()
             self.stack.append(["then", int(m.group(2)), []])
+            return True
+        m = _CALL_BODY.match(line)
+        if m:
+            _parse_line(self.ensure(), line[: line.rindex(" {")])
+            self.flush()
+            self.stack.append(["callb", int(m.group(1), 16), []])
             return True
         if line.startswith("goto $"):
             self.flush()

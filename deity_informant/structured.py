@@ -1998,6 +1998,8 @@ def collect_unreachable(model):
     for key in model.blocks:
         by_pc.setdefault(key[0], []).append(key)
     model._by_pc = by_pc
+    model.__dict__.pop("_static_preds", None)  # graph memos: now stale
+    model.__dict__.pop("_proc_plan", None)
     live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
     for table in (model.dyn_targets, model.evidence_sites, model.proofs):
         for site in [s for s in table if s not in live]:

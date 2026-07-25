@@ -30,6 +30,19 @@ Ghouls_n_Ghosts 627 blocks (556 executed + 71 static branch sides) /
 unchanged. The remaining lemma is dispatch-index precision
 (docs/soundness.md; 3 evidence sites per Follin tune unchanged).
 
+Proc/ownership pass (`procpass.plan`, between the committed model and the
+structurer): the call graph decides the proc structure — a sub with exactly
+one call site whose entry the site dominates inlines at its call line
+(`call $T ret $R { .. }`, the switch-call arm precedent generalized), dyn
+single-site handlers keep the arm shape, and every block homes in the proc
+whose entry dominates it over all callers (dominance-shared tails become
+fragment procs with cross-refs). `sidprog.metrics` gains
+proc_count/cross_proc_gotos. Athena 267 procs -> 2, cross-proc gotos -> 67,
+97.0 -> 99.0% (506 total gotos remain: the two 256-wide guarded SMC-JMP
+envelope case lists, bounded by dispatch-index precision, not layout);
+Krakout 522 -> 4 procs, Automatas 5 -> 2, Army_Moves 16 -> 4;
+Ghouls/Commando gotos unchanged (82 / 4).
+
 ## Retired model bogon (fixed by the commit-phase coverage rule)
 
 Army_Moves `igoto` site $E093: `dyn_targets=[]` with a `proven` proof while
