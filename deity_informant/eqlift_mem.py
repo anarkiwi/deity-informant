@@ -1,0 +1,1061 @@
+"""Unified value+memory e-graph: McCarthy select/store axioms + interval disjointness.
+
+Memory becomes a first-class sort over eqlift's value algebra: store-to-load
+forwarding, spill elimination, disjoint read-through and dead-store removal fall
+out of one saturation + root extraction as Z3-proven rewrites.
+"""
+
+from __future__ import annotations
+
+import z3
+from egglog import EGraph, Expr, function, i64, rewrite, rule, ruleset, set_, union
+from egglog import eq as egg_eq
+
+from . import eqlift as E
+from . import frameprog
+
+
+class Mem(Expr):
+    """Memory (array) sort: a chain of stores over an opaque initial memory."""
+
+
+@function
+def mem0() -> Mem: ...
+
+
+@function
+def memk(n: i64) -> Mem: ...
+
+
+@function
+def store(m: Mem, a: E.T, v: E.T, w: i64) -> Mem: ...
+
+
+@function
+def sel(m: Mem, a: E.T, w: i64) -> E.T: ...
+
+
+@function(merge=lambda old, new: old.min(new))
+def lo(x: E.T) -> i64: ...
+
+
+@function(merge=lambda old, new: old.max(new))
+def hi(x: E.T) -> i64: ...
+
+
+@ruleset
+def mem_rules(
+    m: Mem, a: E.T, b: E.T, u: E.T, v: E.T, s: E.T, n: i64, p: i64, q: i64, w: i64, wa: i64, wb: i64
+):
+    """Address-interval analysis plus the Z3-proven McCarthy array axioms."""
+    yield rule(egg_eq(a).to(E.num(n, w))).then(set_(lo(a)).to(n), set_(hi(a)).to(n))
+    yield rule(egg_eq(a).to(E.zext(b))).then(set_(lo(a)).to(i64(0)), set_(hi(a)).to(i64(255)))
+    yield rule(egg_eq(a).to(E.band(b, E.num(n, w), w))).then(
+        set_(lo(a)).to(i64(0)), set_(hi(a)).to(n)
+    )
+    yield rule(egg_eq(s).to(E.add(a, b, w)), egg_eq(lo(a)).to(n), egg_eq(lo(b)).to(q)).then(
+        set_(lo(s)).to(n + q)
+    )
+    yield rule(egg_eq(s).to(E.add(a, b, w)), egg_eq(hi(a)).to(p), egg_eq(hi(b)).to(q)).then(
+        set_(hi(s)).to(p + q)
+    )
+    yield rule(
+        egg_eq(s).to(E.shl(a, E.num(n, w), w)), egg_eq(lo(a)).to(p), egg_eq(hi(a)).to(q)
+    ).then(set_(lo(s)).to(p << n), set_(hi(s)).to(q << n))
+    yield rewrite(sel(store(m, a, v, w), a, w)).to(v)
+    yield rule(
+        egg_eq(s).to(sel(store(m, a, v, wa), b, wb)),
+        egg_eq(hi(a)).to(p),
+        egg_eq(lo(b)).to(q),
+        p + wa <= q,
+    ).then(union(s).with_(sel(m, b, wb)))
+    yield rule(
+        egg_eq(s).to(sel(store(m, a, v, wa), b, wb)),
+        egg_eq(hi(b)).to(p),
+        egg_eq(lo(a)).to(q),
+        p + wb <= q,
+    ).then(union(s).with_(sel(m, b, wb)))
+    yield rewrite(store(store(m, a, u, w), a, v, w)).to(store(m, a, v, w))
+    yield rewrite(store(m, a, sel(m, a, w), w)).to(m)
+
+
+_AX = z3.Array("m", z3.BitVecSort(16), z3.BitVecSort(8))
+_A, _B = z3.BitVec("a", 16), z3.BitVec("b", 16)
+
+
+def _store_w(m, a, v, w):
+    for i in range(w):
+        m = z3.Store(m, a + i, z3.Extract(8 * i + 7, 8 * i, v))
+    return m
+
+
+def _sel_w(m, a, w):
+    parts = [z3.Select(m, a + i) for i in range(w)]
+    return parts[0] if w == 1 else z3.Concat(list(reversed(parts)))
+
+
+def _disjoint(a, wa, b, wb):
+    return z3.And([a + i != b + j for i in range(wa) for j in range(wb)])
+
+
+def _axioms():
+    m, a, b = _AX, _A, _B
+    out = []
+    for w in (1, 2):
+        v = z3.BitVec("v%d" % w, 8 * w)
+        u = z3.BitVec("u%d" % w, 8 * w)
+        out.append(("sel_store_same/w%d" % w, _sel_w(_store_w(m, a, v, w), a, w) == v))
+        out.append(
+            (
+                "store_overwrite/w%d" % w,
+                _store_w(_store_w(m, a, u, w), a, v, w) == _store_w(m, a, v, w),
+            )
+        )
+        out.append(("store_redundant/w%d" % w, _store_w(m, a, _sel_w(m, a, w), w) == m))
+    for wa in (1, 2):
+        for wb in (1, 2):
+            v = z3.BitVec("vd%d%d" % (wa, wb), 8 * wa)
+            goal = z3.Implies(
+                _disjoint(a, wa, b, wb), _sel_w(_store_w(m, a, v, wa), b, wb) == _sel_w(m, b, wb)
+            )
+            out.append(("sel_store_diff/w%d%d" % (wa, wb), goal))
+    return out
+
+
+def verify_axioms():
+    """Z3-prove every (width-aware) memory axiom valid over the byte array; names."""
+    proved = []
+    for name, goal in _axioms():
+        s = z3.Solver()
+        s.add(z3.Not(goal))
+        if s.check() != z3.unsat:
+            raise AssertionError("memory axiom %s is not valid" % name)
+        proved.append(name)
+    return proved
+
+
+_UNIFIED = None
+
+
+def unified_rules():
+    """(ruleset, names) for value + memory, after both admission gates pass."""
+    global _UNIFIED  # pylint: disable=global-statement
+    if _UNIFIED is None:
+        verify_axioms()
+        valrs, names = E.admitted_rules()
+        _UNIFIED = (mem_rules | valrs, names)
+    return _UNIFIED
+
+
+def build(ops, w=1):
+    """Fold ``ops`` [(addr_ir, val_ir), ...] into a ``w``-byte store chain."""
+    m = mem0()
+    for addr, val in ops:
+        m = store(m, E._egg_of(addr, {}), E._egg_of(val, {}), w)
+    return m
+
+
+def extract(term, iters=30):
+    """Saturate value+memory rules over ``term`` and return its extracted form."""
+    rs, _names = unified_rules()
+    eg = EGraph()
+    h = eg.let("h", term)
+    eg.run(rs * iters)
+    return str(eg.extract(h))
+
+
+def extract_load(ops, addr, w=1, iters=30):
+    """Saturate value+memory rules and return the extracted term reading ``addr``."""
+    return extract(sel(build(ops, w), E._egg_of(addr, {}), w), iters)
+
+
+_OP = {
+    "INT_ADD": E.add,
+    "INT_SUB": E.sub,
+    "INT_AND": E.band,
+    "INT_OR": E.bor,
+    "INT_XOR": E.bxor,
+    "INT_LEFT": E.shl,
+    "INT_RIGHT": E.shr,
+    "INT_EQUAL": E.eq,
+    "INT_NOTEQUAL": E.ne,
+    "INT_LESS": E.ult,
+    "INT_LESSEQUAL": E.ule,
+    "INT_CARRY": E.carry,
+}
+_CMP = frozenset(("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"))
+
+
+def render_block(stmts, aliases=None):
+    """Render a straight-line block to text via the unified graph + eqlift's printer.
+
+    Value locals stay named (SSA + def-equations, so simplification still fires);
+    memory forwards through the store chain. Returns the printed lines."""
+    env, defs, sk, ver = {}, [], [], [0]
+    memref = [mem0()]
+
+    def conv(e):
+        k = e[0]
+        if k == "const":
+            return E.num(e[1] & E._mask(e[2]), e[2])
+        if k == "loc":
+            return env.get(e[1], E.loc(e[1] + ".0"))
+        if k == "mem":
+            return sel(memref[0], conv(e[1]), e[2])
+        mn, kids, w = e[1], e[2], e[3]
+        if mn == "INT_ZEXT":
+            return E.zext(conv(kids[0]))
+        fn = _OP[mn]
+        if mn in _CMP:
+            return fn(conv(kids[0]), conv(kids[1]))
+        r = conv(kids[0])
+        for kid in kids[1:]:
+            r = fn(r, conv(kid), w)
+        return r
+
+    avail = set()
+    for s in stmts:
+        if s[0] == "asg":
+            rhs = conv(s[2])
+            ver[0] += 1
+            name = "%s.%d" % (s[1], ver[0])
+            leaf = E.loc(name)
+            defs.append((leaf, rhs))
+            sk.append(("asg", s[1], rhs, ("loc", name), set(avail)))
+            env[s[1]] = leaf
+            avail.add(name)
+        elif s[0] == "st":
+            v = conv(s[2])
+            a = s[1]
+            memref[0] = store(memref[0], E.num(a[1] & E._mask(a[2]), a[2]), v, _ew(s[2]))
+            own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0)
+            sk.append(("st", a, v, own, set(avail)))
+
+    rs, _names = unified_rules()
+    eg = EGraph()
+    for leaf, rhs in defs:
+        eg.register(union(leaf).with_(rhs))
+    handles = [
+        (kind, ref, own, av, eg.let("h%d" % i, t)) for i, (kind, ref, t, own, av) in enumerate(sk)
+    ]
+    eg.run(rs * 30)
+    pr = E._Printer(aliases or {})
+    for kind, ref, own, av, h in handles:
+        cands = [to_ir(str(x)) for x in eg.extract_multiple(h, 12)]
+        cands = [c for c in cands if c != own and _defined_at(c, av)] or cands
+        text = pr.fmt(min(cands, key=E._cost))
+        dest = ref if kind == "asg" else pr.name(ref[1]) + E.sidprog._wsuf(ref[2])
+        pr.line("%s = %s" % (dest, text), 0)
+    return pr.out
+
+
+def _defined_at(ir, avail):
+    """True if every named-local leaf of ``ir`` is a block input or already defined."""
+    if not isinstance(ir, tuple):
+        return True
+    if ir[0] == "loc":
+        return ir[1].endswith(".0") or ir[1] in avail
+    return all(_defined_at(a, avail) for a in ir[1:] if isinstance(a, tuple))
+
+
+_WILD = frozenset(("call", "dcall", "dbr", "dgoto", "igoto", "label", "swc", "swg", "opsw"))
+
+
+def _mem_writes(stmts):
+    """(const (addr,w) written, wild) memory footprint of a statement list."""
+    addrs, wild = set(), [False]
+
+    def rec(sl):
+        for s in sl:
+            if s[0] == "st":
+                if s[1][0] == "const":
+                    addrs.add((s[1][1], _ew(s[2])))
+                else:
+                    wild[0] = True
+            elif s[0] in _WILD:
+                wild[0] = True
+            for b in E.frameproc._stmt_bodies(s):
+                rec(b)
+
+    rec(stmts)
+    return addrs, wild[0]
+
+
+def _reg_bases(ir, out):
+    if isinstance(ir, tuple):
+        if ir[0] == "loc":
+            base = ir[1].rpartition(".")[0]
+            if base in E.frameproc._ALL_REG_LOCALS:
+                out.add(base)
+        else:
+            for a in ir[1:]:
+                _reg_bases(a, out)
+    return out
+
+
+def _child_bodies(nd):
+    if nd[0] == "if":
+        return (nd[2], nd[3])
+    if nd[0] in ("loop", "callb"):
+        return (nd[1 if nd[0] == "loop" else 3],)
+    if nd[0] == "switch":
+        return [arm for _lbl, arm in nd[1]]
+    return ()
+
+
+def _loc_names(ir, out):
+    if isinstance(ir, tuple):
+        if ir[0] == "loc":
+            out.add(ir[1])
+        else:
+            for a in ir[1:]:
+                _loc_names(a, out)
+    return out
+
+
+def _node_terms(nd):
+    if nd[0] == "asg":
+        return (nd[2],)
+    if nd[0] == "st":
+        return (nd[2],) if nd[3] is None else (nd[2], nd[3])
+    if nd[0] in ("if", "dcall", "dgoto"):
+        return (nd[1],)
+    if nd[0] == "dbr":
+        return (nd[2], nd[3])
+    if nd[0] == "igoto":
+        return () if nd[2] is None else (nd[2],)
+    return ()
+
+
+def _has_mem(ir):
+    if not isinstance(ir, tuple):
+        return False
+    if ir[0] in ("cell", "load"):
+        return True
+    return any(_has_mem(a) for a in ir[1:])
+
+
+def _count_locs(ir, out):
+    if isinstance(ir, tuple):
+        if ir[0] == "loc":
+            out.append(ir[1])
+        else:
+            for a in ir[1:]:
+                _count_locs(a, out)
+
+
+def _subst_loc(ir, name, repl):
+    if not isinstance(ir, tuple):
+        return ir
+    if ir[0] == "loc":
+        return repl if ir[1] == name else ir
+    return (ir[0],) + tuple(
+        _subst_loc(a, name, repl) if isinstance(a, tuple) else a for a in ir[1:]
+    )
+
+
+def _inline_single_use(tree, dead, chosen, terms):
+    """Inline a non-register temp read exactly once into its use, then drop its
+    def (single-use inlining -- what root extraction implies). Site-validity of
+    the inlined value at the use is required, so no stale version is printed."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    by_name = {}
+
+    def gather(nodes):
+        for nd in nodes:
+            if nd[0] == "asg":
+                by_name[nd[3]] = nd
+            for b in _child_bodies(nd):
+                gather(b)
+
+    gather(tree)
+    changed = True
+    while changed:
+        changed = False
+        count, site = {}, {}
+
+        def scan(nodes):
+            for nd in nodes:
+                if nd[0] == "asg" and id(nd) in dead:
+                    continue
+                for ti in _node_terms(nd):
+                    names = []
+                    _count_locs(chosen[ti], names)
+                    for nm in names:
+                        count[nm] = count.get(nm, 0) + 1
+                        site[nm] = ti
+                for b in _child_bodies(nd):
+                    scan(b)
+
+        scan(tree)
+        for name, nd in list(by_name.items()):
+            if id(nd) in dead or nd[1] in reg or count.get(name) != 1:
+                continue
+            ti = site[name]
+            defval = chosen[nd[2]]
+            if _has_mem(defval) or not _defined_at(defval, terms[ti][1]):
+                continue  # a cell/load value could be stale at the use -- keep it named
+            chosen[ti] = _subst_loc(chosen[ti], name, defval)
+            dead.add(id(nd))
+            changed = True
+
+
+def _temp_sweep(tree, dead, chosen):
+    """Drop non-register asgs whose versioned local no consumer reads (all-local
+    DCE by SSA name); iterate, since a drop can free another. Mutates ``dead``."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    asgs = []
+
+    def gather(nodes):
+        for nd in nodes:
+            if nd[0] == "asg":
+                asgs.append(nd)
+            for b in _child_bodies(nd):
+                gather(b)
+
+    gather(tree)
+    while True:
+        used = set()
+
+        def collect(nodes):
+            for nd in nodes:
+                if nd[0] == "asg" and id(nd) in dead:
+                    continue
+                for ti in _node_terms(nd):
+                    _loc_names(chosen[ti], used)
+                for b in _child_bodies(nd):
+                    collect(b)
+
+        collect(tree)
+        progress = False
+        for nd in asgs:
+            if nd[1] not in reg and id(nd) not in dead and nd[3] not in used:
+                dead.add(id(nd))
+                progress = True
+        if not progress:
+            return
+
+
+def _dce(tree, info, entry, chosen):
+    """Backward register liveness over the render tree; ids of dead reg-local asgs.
+
+    Uses the interprocedural ``_Info`` for call/goto/dynamic/return live-out, so a
+    flag no consumer reads is dropped -- the deletion root extraction implies."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    labmap, liveout, brk, cont = {}, {}, [], []
+
+    def uses(i):
+        return _reg_bases(chosen[i], set())
+
+    def node(nd, live):
+        k = nd[0]
+        if k == "asg":
+            if nd[1] in reg:
+                if nd[1] not in live:
+                    return live
+                live = set(live)
+                live.discard(nd[1])
+            return live | uses(nd[2])
+        if k == "st":
+            return live | uses(nd[2]) | (uses(nd[3]) if nd[3] is not None else set())
+        if k == "if":
+            return seq(nd[2], set(live)) | seq(nd[3], set(live)) | uses(nd[1])
+        if k == "loop":
+            head = set()
+            for _i in range(24):
+                h = loop(nd[1], live, head)
+                if h <= head:
+                    break
+                head |= h
+            loop(nd[1], live, head)
+            return head
+        if k == "label":
+            labmap[nd[1]] = labmap.get(nd[1], set()) | live
+            return live
+        if k == "goto":
+            if nd[1] in info.own_labels[entry]:
+                return set(labmap.get(nd[1], set()))
+            return set(info.livein[nd[1]]) if nd[1] in info.procs else set(info.G)
+        if k == "call":
+            t = nd[1]
+            return (
+                (live - info.must.get(t, set())) | info.livein[t]
+                if t in info.procs
+                else live | set(info.G)
+            )
+        if k == "callb":
+            return seq(nd[3], set(live))
+        if k == "ret":
+            return set(info.ret_live(entry))
+        if k == "cont":
+            return set(cont[-1]) if cont else set(info.G)
+        if k == "brk":
+            return set(brk[-1]) if brk else set(info.G)
+        if k == "unobs":
+            return set()
+        if k == "switch":
+            out = set()
+            for _lbl, arm in nd[1]:
+                brk.append(set(live))
+                out |= seq(arm, set())
+                brk.pop()
+            return out | set(info.G)
+        if k in ("dcall", "dgoto"):
+            return set(info.G) | uses(nd[1])
+        if k == "dbr":
+            return set(info.G) | uses(nd[2]) | uses(nd[3])
+        if k == "igoto":
+            return set(info.G) | (uses(nd[2]) if nd[2] is not None else set())
+        return set(info.G)
+
+    def seq(nodes, live):
+        for nd in reversed(nodes):
+            liveout[id(nd)] = set(live)
+            live = node(nd, live)
+        return live
+
+    def loop(body, brk_live, head):
+        brk.append(set(brk_live))
+        cont.append(set(head))
+        out = seq(body, set(head))
+        brk.pop()
+        cont.pop()
+        return out
+
+    for _i in range(24):
+        before = {p: set(v) for p, v in labmap.items()}
+        liveout.clear()
+        seq(tree, set(info.ret_live(entry)))
+        if all(labmap.get(p) == before.get(p) for p in labmap):
+            break
+    dead = set()
+
+    def mark(nodes):
+        for nd in nodes:
+            if nd[0] == "asg" and nd[1] in reg and nd[1] not in liveout.get(id(nd), reg):
+                dead.add(id(nd))
+            for b in _child_bodies(nd):
+                mark(b)
+
+    mark(tree)
+    return dead
+
+
+def render_proc(stmts, aliases=None, entry=0, info=None):
+    """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
+
+    Memory forwards intra-block; at a branch join or loop head only the addresses
+    written under the branch are havoced, so cells invariant across it still
+    forward. Value locals stay named with def-equations."""
+    stt = {"env": {}, "mem": mem0(), "ver": 0, "k": 0}
+    defs, terms, avail = [], [], set()
+
+    def bump(key):
+        stt[key] += 1
+        return stt[key]
+
+    def join_mem(pre_mem, bodies):
+        addrs, wild = set(), False
+        for b in bodies:
+            a, w = _mem_writes(b)
+            addrs |= a
+            wild = wild or w
+        if wild:
+            return memk(i64(bump("k")))
+        base = memk(i64(bump("k")))  # opaque post-branch memory; written cells read from it
+        m = pre_mem
+        for a, w in sorted(addrs):
+            m = store(m, E.num(a & E._mask(w), w), sel(base, E.num(a & E._mask(w), w), w), w)
+        return m
+
+    def conv(e):
+        k = e[0]
+        if k == "const":
+            return E.num(e[1] & E._mask(e[2]), e[2])
+        if k == "loc":
+            return stt["env"].get(e[1], E.loc(e[1] + ".0"))
+        if k == "mem":
+            return sel(stt["mem"], conv(e[1]), e[2])
+        mn, kids, w = e[1], e[2], e[3]
+        if mn == "INT_ZEXT":
+            return E.zext(conv(kids[0]))
+        fn = _OP[mn]
+        if mn in _CMP:
+            return fn(conv(kids[0]), conv(kids[1]))
+        r = conv(kids[0])
+        for kid in kids[1:]:
+            r = fn(r, conv(kid), w)
+        return r
+
+    def add(t, own=None):
+        terms.append((t, set(avail), own))
+        return len(terms) - 1
+
+    def havoc(names):
+        for n in names:
+            name = "%s.%d" % (n, bump("k"))
+            stt["env"][n] = E.loc(name)
+            avail.add(name)
+
+    def havoc_all():
+        havoc(list(stt["env"]))
+        stt["mem"] = memk(i64(bump("k")))
+
+    def walk(sl):
+        nodes = []
+        for s in sl:
+            k = s[0]
+            if k == "asg":
+                rhs = conv(s[2])
+                name = "%s.%d" % (s[1], bump("ver"))
+                defs.append((E.loc(name), rhs))
+                nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
+                stt["env"][s[1]] = E.loc(name)
+                avail.add(name)
+            elif k == "st":
+                v = conv(s[2])
+                a = s[1]
+                addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else conv(a)
+                stt["mem"] = store(stt["mem"], addr, v, _ew(s[2]))
+                ai = None if a[0] == "const" else add(addr)
+                own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
+                nodes.append(("st", a, add(v, own), ai, _ew(s[2])))
+            elif k == "if":
+                cond = conv(s[2])
+                if s[1] == "ifnot":
+                    cond = E.bnot(cond)
+                ci = add(cond)
+                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
+                then = walk(s[3])
+                then_env = dict(stt["env"])
+                stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                els = walk(s[4])
+                els_env = dict(stt["env"])
+                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, [s[3], s[4]])
+                for n in set(pre_env) | set(then_env) | set(els_env):
+                    c = pre_env.get(n)
+                    if not (then_env.get(n) is c and els_env.get(n) is c):
+                        name = "%s.%d" % (n, bump("k"))
+                        stt["env"][n] = E.loc(name)
+                        avail.add(name)
+                nodes.append(("if", ci, then, els))
+            elif k == "loop":
+                pre_mem = stt["mem"]
+                havoc(_written(s[1]))
+                stt["mem"] = join_mem(pre_mem, [s[1]])
+                body = walk(s[1])
+                havoc(_written(s[1]))
+                stt["mem"] = join_mem(pre_mem, [s[1]])
+                nodes.append(("loop", body))
+            elif k == "label":
+                havoc_all()
+                nodes.append(("label", s[1]))
+            elif k in ("goto", "cont", "brk", "ret", "unobs"):
+                nodes.append((k, s[1] if len(s) > 1 else None))
+            elif k == "call":
+                havoc_all()
+                nodes.append(("call", s[1], s[2]))
+            elif k == "callb":
+                body = walk(s[3])
+                havoc_all()
+                nodes.append(("callb", s[1], s[2], body))
+            elif k == "dcall":
+                ix = add(conv(s[1]))
+                havoc_all()
+                nodes.append(("dcall", ix, s[2]))
+            elif k in ("swc", "opsw", "swg"):
+                cases = s[1] if k == "swg" else s[2]
+                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
+                arms = []
+                for lbl, body in cases:
+                    stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                    arms.append((lbl, walk(body)))
+                havoc_all()
+                nodes.append(("switch", arms))
+            elif k == "dbr":
+                pair = (add(conv(s[2])), add(conv(s[3])))
+                havoc_all()
+                nodes.append(("dbr", s[1], pair[0], pair[1], s[4]))
+            elif k == "dgoto":
+                ix = add(conv(s[1]))
+                havoc_all()
+                nodes.append(("dgoto", ix))
+            elif k == "igoto":
+                ix = add(conv(s[2])) if s[2] is not None else None
+                havoc_all()
+                nodes.append(("igoto", s[1], ix))
+        return nodes
+
+    tree = walk(stmts)
+    rs, _names = unified_rules()
+    eg = EGraph()
+    for leaf, rhs in defs:
+        eg.register(union(leaf).with_(rhs))
+    handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
+    eg.run(rs * 30)
+    pr = E._Printer(aliases or {})
+
+    def pick_ir(i):
+        _t, av, own = terms[i]
+        cands = [to_ir(str(x)) for x in eg.extract_multiple(handles[i], 12)]
+        cands = [c for c in cands if c != own and _defined_at(c, av)] or cands
+        return min(cands, key=E._cost)
+
+    chosen = [pick_ir(i) for i in range(len(terms))]
+    if info is None:
+        info = E.frameproc._Info([(entry, stmts)], entry)
+        info.summarize()
+    dead = _dce(tree, info, entry, chosen)
+    _inline_single_use(tree, dead, chosen, terms)
+    _temp_sweep(tree, dead, chosen)
+
+    def pick(i):
+        return pr.fmt(chosen[i])
+
+    def render(nodes, d):
+        for nd in nodes:
+            if nd[0] == "asg":
+                if id(nd) in dead:
+                    continue
+                pr.line("%s = %s" % (nd[1], pick(nd[2])), d)
+            elif nd[0] == "st":
+                a = nd[1]
+                if a[0] == "const":
+                    dest = pr.name(a[1]) + E.sidprog._wsuf(nd[4])
+                else:
+                    dest = pr._loadref(("load", chosen[nd[3]], nd[4], 0))
+                pr.line("%s = %s" % (dest, pick(nd[2])), d)
+            elif nd[0] == "if":
+                pr.line("if %s {" % pick(nd[1]), d)
+                render(nd[2], d + 1)
+                if nd[3]:
+                    pr.line("} else {", d)
+                    render(nd[3], d + 1)
+                pr.line("}", d)
+            elif nd[0] == "loop":
+                pr.line("loop {", d)
+                render(nd[1], d + 1)
+                pr.line("}", d)
+            elif nd[0] == "label":
+                pr.line("$%04X:" % nd[1], d)
+            elif nd[0] == "goto":
+                pr.line("goto $%04X" % nd[1], d)
+            elif nd[0] in ("ret", "cont", "brk"):
+                pr.line({"ret": "ret", "cont": "continue", "brk": "break"}[nd[0]], d)
+            elif nd[0] == "unobs":
+                pr.line("unobserved $%04X" % nd[1], d)
+            elif nd[0] == "call":
+                pr.line("call $%04X ret $%04X" % (nd[1], nd[2]), d)
+            elif nd[0] == "callb":
+                pr.line("call $%04X ret $%04X {" % (nd[1], nd[2]), d)
+                render(nd[3], d + 1)
+                pr.line("}", d)
+            elif nd[0] == "dcall":
+                pr.line("call (%s) ret $%04X" % (pick(nd[1]), nd[2]), d)
+            elif nd[0] == "switch":
+                pr.line("switch {", d)
+                for lbl, arm in nd[1]:
+                    pr.line("case %s: {" % lbl, d + 1)
+                    render(arm, d + 2)
+                    pr.line("}", d + 1)
+                pr.line("}", d)
+            elif nd[0] == "dbr":
+                pr.line("%s %s goto (%s) else $%04X" % (nd[1], pick(nd[2]), pick(nd[3]), nd[4]), d)
+            elif nd[0] == "dgoto":
+                pr.line("goto (%s)" % pick(nd[1]), d)
+            elif nd[0] == "igoto":
+                ptr = "(%s)" % pick(nd[2]) if nd[2] is not None else "$%04X" % nd[1]
+                pr.line("igoto %s" % ptr, d)
+
+    render(tree, 0)
+    return pr.out
+
+
+def render_roots(roots, aliases=None):
+    """Print a forest of root terms with common subterms shared as named temps.
+
+    roots is [(dest, term)]. Subterms used more than once become ``t<k>`` locals
+    (let-binding); a subterm in no root never prints -- dead code drops out."""
+    rs, _names = unified_rules()
+    eg = EGraph()
+    handles = [(dest, eg.let("r%d" % i, t)) for i, (dest, t) in enumerate(roots)]
+    eg.run(rs * 30)
+    irs = [(dest, to_ir(str(eg.extract(h)))) for dest, h in handles]
+    counts = {}
+    for _dest, ir in irs:
+        _count(ir, counts)
+    shared = {}
+    for k, ir in enumerate(
+        sorted((t for t, c in counts.items() if c >= 2 and _nameable(t)), key=_size)
+    ):
+        shared[ir] = "t%d" % k
+    pr = E._Printer(aliases or {})
+    for sub in sorted(shared, key=_size):
+        pr.line("%s = %s" % (shared[sub], pr.fmt(_share(sub, shared, True))), 0)
+    for dest, ir in irs:
+        pr.line("%s = %s" % (dest, pr.fmt(_share(ir, shared, False))), 0)
+    return pr.out
+
+
+def _nameable(ir):
+    return isinstance(ir, tuple) and ir[0] not in ("num", "loc", "cell")
+
+
+def _count(ir, counts):
+    if isinstance(ir, tuple):
+        counts[ir] = counts.get(ir, 0) + 1
+        for a in ir[1:]:
+            _count(a, counts)
+
+
+def _size(ir):
+    return 1 + sum(_size(a) for a in ir[1:] if isinstance(a, tuple)) if isinstance(ir, tuple) else 1
+
+
+def _share(ir, shared, top):
+    if not top and ir in shared:
+        return ("loc", shared[ir] + ".0")
+    if not isinstance(ir, tuple) or ir[0] in ("num", "loc", "cell"):
+        return ir
+    return (ir[0],) + tuple(_share(a, shared, False) if isinstance(a, tuple) else a for a in ir[1:])
+
+
+def to_ir(egg_str):
+    """Translate an extracted unified-graph term into eqlift printer IR.
+
+    A forwarded value maps straight across; an unresolved ``sel(mem, addr, w)``
+    becomes a ``load`` (the opaque memory is the heap), and bare locals get a
+    ``.0`` version so the printer's name logic applies."""
+    return _to_ir(E._parse_ir(egg_str))
+
+
+def _to_ir(ir):
+    if not isinstance(ir, tuple):
+        return ir
+    if ir[0] == "sel":
+        addr = _to_ir(ir[2])
+        if addr[0] == "num":  # a constant-address load prints as the named cell
+            return ("cell", addr[1], ir[3], 0)
+        return ("load", addr, ir[3], 0)
+    if ir[0] == "loc" and "." not in ir[1]:
+        return ("loc", ir[1] + ".0")
+    return tuple(_to_ir(a) if isinstance(a, tuple) else a for a in ir)
+
+
+def _ew(e):
+    """Byte width of a pass-1 expression value (locals default to 1)."""
+    k = e[0]
+    if k in ("const", "mem"):
+        return e[2]
+    if k == "op":
+        mn = e[1]
+        if mn == "INT_ZEXT":
+            return 2
+        return 1 if mn in _CMP or mn == "INT_CARRY" else e[3]
+    return 1
+
+
+class Straight:
+    """Straight-line lift over the unified graph: a load reads the current store
+    chain (McCarthy forwarding does the aliasing), a store extends it. No SSA
+    versioning -- memory position in the chain is the only state."""
+
+    def __init__(self):
+        self.env = {}
+        self.mem = mem0()
+
+    def run(self, stmts):
+        for s in stmts:
+            if s[0] == "asg":
+                self.env[s[1]] = self._conv(s[2])
+            elif s[0] == "st":
+                self.mem = store(self.mem, self._addr(s[1]), self._conv(s[2]), _ew(s[2]))
+            else:
+                break
+        return self
+
+    def _addr(self, a):
+        return E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else self._conv(a)
+
+    def _conv(self, e):
+        k = e[0]
+        if k == "const":
+            return E.num(e[1] & E._mask(e[2]), e[2])
+        if k == "loc":
+            return self.env.get(e[1], E.loc(e[1]))
+        if k == "mem":
+            return sel(self.mem, self._conv(e[1]), e[2])
+        if k != "op":
+            raise ValueError("unencodable %r" % (k,))
+        mn, kids, w = e[1], e[2], e[3]
+        if mn == "INT_ZEXT":
+            return E.zext(self._conv(kids[0]))
+        fn = _OP[mn]
+        if mn in _CMP:
+            return fn(self._conv(kids[0]), self._conv(kids[1]))
+        r = self._conv(kids[0])
+        for kid in kids[1:]:
+            r = fn(r, self._conv(kid), w)
+        return r
+
+
+_READS = {"dcall": (1,), "dbr": (2, 3), "dgoto": (1,), "igoto": (2,)}
+_NOEFFECT = frozenset(("goto", "cont", "brk", "ret", "unobs"))
+
+
+class Proc(Straight):
+    """Whole-procedure lift: intra-block store-chain forwarding, with memory and
+    written locals reset to fresh opaque terms (the algebraic havoc) at branch
+    joins, loop heads, labels, calls and dynamic control. Records per-site terms."""
+
+    def __init__(self):
+        super().__init__()
+        self.sites = []
+        self._k = 0
+
+    def _fresh(self):
+        self._k += 1
+        return self._k
+
+    def _havoc_locs(self, names):
+        for n in names:
+            self.env[n] = E.loc("%s@%d" % (n, self._fresh()))
+
+    def _havoc_all(self):
+        self._havoc_locs(list(self.env))
+        self.mem = memk(i64(self._fresh()))
+
+    def run(self, stmts):
+        for s in stmts:
+            self._stmt(s)
+        return self
+
+    def _stmt(self, s):
+        k = s[0]
+        if k == "asg":
+            t = self._conv(s[2])
+            self.env[s[1]] = t
+            self.sites.append(("asg", s[1], t))
+        elif k == "st":
+            v = self._conv(s[2])
+            self.mem = store(self.mem, self._addr(s[1]), v, _ew(s[2]))
+            self.sites.append(("st", s[1], v))
+        elif k == "if":
+            cond = self._conv(s[2])
+            if s[1] == "ifnot":
+                cond = E.bnot(cond)
+            self.sites.append(("if", cond))
+            self._branch([s[3], s[4]])
+        elif k == "loop":
+            self._loop(s[1])
+        elif k == "callb":
+            self.run(s[3])
+            self._havoc_all()
+        elif k in ("swc", "opsw"):
+            self._branch([b for _l, b in s[2]])
+        elif k == "swg":
+            self._branch([b for _l, b in s[1]])
+        elif k not in _NOEFFECT:
+            for i in _READS.get(k, ()):
+                if s[i] is not None:
+                    self.sites.append((k, self._conv(s[i])))
+            self._havoc_all()
+
+    def _branch(self, bodies):
+        pre_env, pre_mem = dict(self.env), self.mem
+        ends = []
+        for b in bodies:
+            self.env, self.mem = dict(pre_env), pre_mem
+            self.run(b)
+            ends.append((self.env, self.mem))
+        self.env, self.mem = dict(pre_env), pre_mem
+        if any(m is not pre_mem for _e, m in ends):
+            self.mem = memk(i64(self._fresh()))
+        names = set(pre_env).union(*(e for e, _m in ends))
+        for n in names:
+            terms = [e.get(n) for e, _m in ends] + [pre_env.get(n)]
+            if any(t is not terms[0] for t in terms):
+                self.env[n] = E.loc("%s@%d" % (n, self._fresh()))
+
+    def _loop(self, body):
+        w = _written(body)
+        self._havoc_locs(w)
+        self.mem = memk(i64(self._fresh()))
+        self.run(body)
+        self._havoc_locs(w)
+        self.mem = memk(i64(self._fresh()))
+
+
+def _written(stmts):
+    out = set()
+    for s in stmts:
+        if s[0] in ("asg", "for"):
+            out.add(s[1])
+        elif s[0] == "pcall":
+            out.update(s[3])
+        for b in E.frameproc._stmt_bodies(s):
+            out |= _written(b)
+    return out
+
+
+def emit_mem(model):
+    """Whole-artifact text with procedure bodies rendered via ``render_proc``.
+
+    Reuses eqlift's header/state/data/symbol assembly verbatim; only the per-proc
+    body is the memory-graph lift. Interprocedural liveness feeds every proc."""
+    decls = getattr(model, "data_decls", None)
+    aliases = getattr(model, "symbols", None)
+    if decls is None:
+        decls, aliases = E.datadecl.declarations(model)
+    trees, labels, view = E.sidprog._model_trees(model)
+    head = ["eqlift 0"]
+    head.extend(E._EMIT_NOTES)
+    head.append("play $%04X" % model.play)
+    head.append("init $%04X" % model.init)
+    if getattr(model, "subtune", 0):
+        head.append("subtune %d" % model.subtune)
+    prologue = getattr(model, "prologue", ())
+    if prologue:
+        head.append("sid-init {")
+        head.extend("  $%02X = $%02X" % (r, v) for r, v in prologue)
+        head.append("}")
+    state, inputs = frameprog._state_lines(view, decls, model.dispatch_sets)
+    if inputs:
+        head.append("inputs { %s }" % " ".join(inputs))
+    header_body, _cov = E.sidprog._data_lines(decls, model.mem0)
+    header_body = state + header_body
+    to_alias, _strip = E.sidprog._alias_res(aliases)
+    if to_alias is not None:
+        header_body = list(map(to_alias, header_body))
+    procs = []
+    for entry, root in trees:
+        conv = E.frameproc._Conv(E.frameproc._Names(aliases))
+        builder = E.frameproc._Builder(labels, set(model.dispatch_sets), view, conv)
+        procs.append((entry, builder.proc(root)))
+    info = E.frameproc._Info(procs, model.play)
+    info.summarize()
+    for _round in range(3):
+        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
+        info.summarize()
+        if before == (info.params, info.rets):
+            break
+    proc_lines = []
+    for entry, stmts in procs:
+        proc_lines.append("sub_%04X {" % entry)
+        proc_lines.extend(" " + ln for ln in render_proc(stmts, aliases, entry, info))
+        proc_lines.append("}")
+    from . import eqlift_annotate  # pylint: disable=import-outside-toplevel
+
+    tr = eqlift_annotate.aggregate([s for _e, s in procs], model)
+    header_body = eqlift_annotate.annotate_lines(header_body, tr, model, aliases)
+    lines = head + header_body + E.sidprog._symbol_lines(aliases) + proc_lines
+    return "\n".join(lines) + "\n"
+
+
+def emit(model):
+    """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
+
+    Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
+    unpack a second value keep working. Soundness is the rule/axiom admission gate
+    (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
+    return emit_mem(model), None

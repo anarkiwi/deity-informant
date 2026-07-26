@@ -22,7 +22,7 @@ TUNES = [
 
 
 def one(rel):
-    from deity_informant import eqlift
+    from deity_informant import eqlift_mem
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
@@ -40,22 +40,17 @@ def one(rel):
     if S.Walker(model).run(frames) != ev.wlog:
         raise AssertionError("%s: model walker replay is not bit-exact" % rel)
     t0 = time.monotonic()
-    text, results = eqlift.emit(model)
+    text, _ = eqlift_mem.emit(model)
     emit_s = round(time.monotonic() - t0, 2)
-    text2, _r2 = eqlift.emit(model)
+    text2, _ = eqlift_mem.emit(model)
     if text2 != text:
         raise AssertionError("%s: emission is not deterministic" % rel)
-    proved = sum(eqlift.verify_lift(r) for r in results)
     (ROOT / "out" / ("%s.eqlift.txt" % sid.stem)).write_text(text, encoding="utf-8")
     return {
         "tune": sid.stem,
         "frames": frames,
         "bit_exact": True,
-        "procs": len(results),
-        "items": sum(r.stats["items"] for r in results),
-        "matches": sum(r.stats["matches"] for r in results),
-        "copies_dropped": sum(r.stats["copies_dropped"] for r in results),
-        "sites_proved": proved,
+        "deterministic": True,
         "lines": text.count("\n"),
         "emit_s": emit_s,
     }

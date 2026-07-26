@@ -227,778 +227,647 @@ symbols {
  alias idx_00FE = zp_FE
 }
 sub_E001 {
-  a = m_E000
-  zflag = (m_E000 == $00)
-  nflag = (m_E000 <s $00)
+ a = m_E000
+ zflag = (a == $00)
  if zflag {
  } else {
-   call $E01F ret $E012 {
-     m_E69B = (m_E59C + m_E69B)
-     a = m_E69B
-     cflag = ($07 <= m_E69B)
-    ifnot cflag {
+  call $E01F ret $E012 {
+   a0 = m_E69B
+   m_E69B = (a0 + m_E59C)
+   a = (a0 + m_E59C)
+   cflag = ($07 <= a)
+   if !cflag {
+   } else {
+    unobserved $E02D
+   }
+   m_E69C = (cflag + m_E69C + m_E59D)
+   x = $00
+   loop {
+    w0 = m_E621[x]
+    idx_00FD = w0
+    idx_00FE = x
+    a1 = m_E5C3[x]
+    a = (a1 + $01)
+    if (a < m_E58B[w0]) {
     } else {
-     unobserved $E02D
+     m_E5C6[x] = ($01 + m_E5C6[x])
+     a2 = m_E5B4[x]
+     a = ($01 + a2)
+     if (a < $03) {
+     } else {
+      a = $00
+     }
+     m_E5B4[x] = a
+     a = $00
     }
-     m_E69C = (m_E69C + m_E59D + cflag)
-     x = $00
+    m_E5C3[x] = a
+    m_E5AB[x] = ($01 + m_E5AB[x])
+    ptr_00FB_lo = m_E61B[x]
+    ptr_00FB_hi = m_E618[x]
     loop {
-      w0 = m_E621[x]
-      idx_00FD = w0
-      idx_00FE = x
-      a1 = m_E5C3[x]
-      a = (a1 + $01)
-     ifnot (m_E58B[w0] <= a) {
-     } else {
-       mem[($E5C6 + zext2(idx_00FE)):2] = (m_E5C6[x] + $01)
-       a2 = m_E5B4[x]
-       a = (a2 + $01)
-      if (a < $03) {
-      } else {
-        a = $00
-      }
-       m_E5B4[x] = a
-       a = $00
-     }
-      m_E5C3[x] = a
-      m_E5AB[x] = (m_E5AB[x] + $01)
-      ptr_00FB_lo = m_E61B[x]
-      ptr_00FB_hi = m_E618[x]
-     loop {
-       a3 = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
-       a = (a3 - $01)
-       cflag = ($21 <= a)
-       vflag = (((a3 ^ $01) & (a3 ^ a)) <s $00)
-      if cflag {
-      } else {
-        t0 = zext2((a << $01))
-        m_E096 = mem[(t0 - $19BC):2]
-        m_E097 = mem[(t0 - $19BB):2]
-        a4 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
-        a5 = a
-        a = a4
-        x = idx_00FE
-        y = idx_00FD
-        cflag = (a5 <s $00)
-        zflag = (idx_00FE == $00)
-        nflag = (idx_00FE <s $00)
-        call ((zext2(m_E096) | (zext2(m_E097) << $08):2):2) ret $E097
-       switch call {
-        case $E23C: {
-          m_E000 = $00
-          x = $17
-         loop {
-           m_E686[x] = $09
-           m_E686[x] = $00
-           a = $00
-           x = (x - $01)
-           zflag = (x == $00)
-           nflag = (x <s $00)
-          ifnot nflag {
-           continue
-          }
-          break
-         }
-          ret
-        }
-        case $E251: {
-          m_E69E = a
-          ret
-        }
-        case $E255: {
-          m_E5F3[x] = a
-          ret
-        }
-        case $E259: {
-          m_E5F9[x] = a
-          ret
-        }
-        case $E25D: {
-          m_E5F0[x] = a
-          ret
-        }
-        case $E261: {
-          m_E611 = a
-         ifnot (m_E5E1[x] == $00) {
-         } else {
-           m_E5E1[x] = (m_E5E1[x] + $01)
-           m_E5FF[x] = m_E611
-         }
-          m_E5FF[x] = (m_E5FF[x] - $01)
-          a = m_E5FF[x]
-         if (a == $00) {
-           w1 = m_E5E1[x]
-           t1 = (w1 - $01)
-           m_E5E1[x] = t1
-           zflag = (t1 == $00)
-           nflag = (t1 <s $00)
-           ret
-         } else {
-           ptr_00FB_lo = m_E605[x]
-           a = m_E608[x]
-           ptr_00FB_hi = a
-           zflag = (ptr_00FB_hi == $00)
-           nflag = (ptr_00FB_hi <s $00)
-           ret
-         }
-        }
-        case $E289: {
-          m_E605[x] = ptr_00FB_lo
-          a = ptr_00FB_hi
-          m_E608[x] = ptr_00FB_hi
-          zflag = (a == $00)
-          nflag = (a <s $00)
-          ret
-        }
-        case $E294: {
-          m_E611 = a
-         ifnot (m_E5E4[x] == $00) {
-         } else {
-           m_E5E4[x] = (m_E5E4[x] + $01)
-           m_E602[x] = m_E611
-         }
-          m_E602[x] = (m_E602[x] - $01)
-          a = m_E602[x]
-         if (a == $00) {
-           w2 = m_E5E4[x]
-           t2 = (w2 - $01)
-           m_E5E4[x] = t2
-           zflag = (t2 == $00)
-           nflag = (t2 <s $00)
-           ret
-         } else {
-           ptr_00FB_lo = m_E60B[x]
-           a = m_E60E[x]
-           ptr_00FB_hi = a
-           zflag = (ptr_00FB_hi == $00)
-           nflag = (ptr_00FB_hi <s $00)
-           ret
-         }
-        }
-        case $E2BC: {
-          m_E60B[x] = ptr_00FB_lo
-          a = ptr_00FB_hi
-          m_E60E[x] = ptr_00FB_hi
-          zflag = (a == $00)
-          nflag = (a <s $00)
-          ret
-        }
-        case $E2C7: {
-          m_E5E7[x] = a
-          ret
-        }
-        case $E2CB: {
-          m_E5FC[x] = a
-          ret
-        }
-        case $E2CF: {
-          m_E5ED[x] = a
-          ret
-        }
-        case $E2D3: {
-          m_E5EA[x] = a
-          ret
-        }
-        case $E2D7: {
-          m_E5F6[x] = a
-          ret
-        }
-        case $E2EE: {
-          cflag = ($63 <= a)
-          zflag = (a == $63)
-          nflag = ((a - $63) <s $00)
-         ifnot cflag {
-         } else {
-          unobserved $E2F2
-         }
-          m_E58C[y] = a
-          ret
-        }
-        case $E2FD: {
-          m_E58D[y] = a
-          ret
-        }
-        case $E301: {
-          m_E59F[x] = a
-          ret
-        }
-        case $E305: {
-          m_E5AE[x] = a
-          ret
-        }
-        case $E309: {
-          m_E5A8[x] = a
-          ret
-        }
-        case $E31E: {
-          m_E61E[x] = a
-          ret
-        }
-        case $E32A: {
-          a6 = m_E5E7[x]
-          t3 = (a + a6)
-          m_E5E7[x] = t3
-          a7 = a
-          a = t3
-          cflag = (carry(a7, a6) | carry(a, $00))
-          zflag = (a == $00)
-          vflag = (((a7 ^ a6 ^ $FF) & (a7 ^ t3)) <s $00)
-          nflag = (t3 <s $00)
-          ret
-        }
-        case $E34E: {
-          m_E5B7[x] = a
-          ret
-        }
-        case $E35A: {
-          a8 = m_E5CF[x]
-          t4 = (a + a8)
-          m_E5CF[x] = t4
-          a9 = a
-          a = t4
-          cflag = (carry(a9, a8) | carry(a, $00))
-          zflag = (a == $00)
-          vflag = (((a9 ^ a8 ^ $FF) & (a9 ^ t4)) <s $00)
-          nflag = (t4 <s $00)
-          ret
-        }
-       }
-        call $E578 ret $E09A
-       continue
-      }
-      break
-     }
-      x = idx_00FD
-      y = idx_00FE
-     if (mem[(zext2(idx_00FD) - $1A79):2] == $00) {
-     } else {
-      if (m_E59F[y] == $00) {
-      } else {
-        call $E362 ret $E0AE {
-          a = m_E5AB[y]
-          w3 = m_E5A8[y]
-          cflag = (w3 <= a)
-          zflag = (a == w3)
-          nflag = ((a - w3) <s $00)
-         ifnot cflag {
-           ret
-         } else {
-           a = m_E59F[y]
-          if (a != $01) {
-           if (a == $03) {
-           } else {
-            unobserved $E524
-           }
-           $E50A:
-            a10 = m_E588[x]
-            a11 = m_E5EA[y]
-            m_E588[x] = (a10 - a11)
-            a12 = m_E587[x]
-            a13 = m_E5ED[y]
-            t5 = ($01 - (zext2(a11) <= zext2(a10)))
-            a = (a12 - (a13 + t5))
-            cflag = ((zext2(a13) + zext2(t5)):2 <= zext2(a12))
-            vflag = (((a12 ^ a13) & (a12 ^ a)) <s $00)
-           $E51A:
-            m_E587[x] = a
-            m_E687[x] = m_E587[x]
-            a = m_E588[x]
-            m_E686[x] = a
-            zflag = (a == $00)
-            nflag = (a <s $00)
-            ret
-          } else {
-            w4 = m_E5A2[y]
-            w5 = m_E587[x]
-            zflag = (w4 == w5)
-           if (w4 < w5) {
-           } else {
-            ifnot zflag {
-            } else {
-              a = m_E5A5[y]
-              w6 = m_E588[x]
-              cflag = (w6 <= a)
-              zflag = (a == w6)
-              nflag = ((a - w6) <s $00)
-             if zflag {
-             } else {
-              ifnot cflag {
-               $E4DE:
-                call $E50A ret $E4E0
-                a = m_E587[x]
-                w7 = m_E5A2[y]
-                cflag = (w7 <= a)
-                zflag = (a == w7)
-                nflag = ((a - w7) <s $00)
-               if zflag {
-               } else {
-                ifnot cflag {
-                } else {
-                 if cflag {
-                 } else {
-                  $E4ED:
-                   a = m_E588[x]
-                   w8 = m_E5A5[y]
-                   cflag = (w8 <= a)
-                   zflag = (a == w8)
-                   nflag = ((a - w8) <s $00)
-                  if cflag {
-                  } else {
-                   ifnot cflag {
-                     m_E588[x] = m_E5A5[y]
-                     m_E587[x] = m_E5A2[y]
-                   } else {
-                    $E4F7:
-                     a14 = m_E588[x]
-                     a15 = m_E5EA[y]
-                     m_E588[x] = (a14 + a15)
-                     a16 = m_E587[x]
-                     a17 = m_E5ED[y]
-                     t6 = (carry(a14, a15) | carry((a14 + a15), $00))
-                     a = (a16 + a17 + t6)
-                     cflag = (carry(a16, a17) | carry((a16 + a17), t6))
-                     vflag = (((a16 ^ a17 ^ $FF) & (a16 ^ a)) <s $00)
-                    goto $E51A
-                   }
-                    m_E687[x] = m_E587[x]
-                    a = m_E588[x]
-                    m_E686[x] = a
-                    zflag = (a == $00)
-                    nflag = (a <s $00)
-                    ret
-                  }
-                 }
-                  ret
-                }
-                $E4CF:
-                 m_E588[x] = m_E5A5[y]
-                 m_E587[x] = m_E5A2[y]
-                 m_E687[x] = m_E587[x]
-                 a = m_E588[x]
-                 m_E686[x] = a
-                 zflag = (a == $00)
-                 nflag = (a <s $00)
-                 ret
-               }
-               goto $E4ED
-              }
-              $E4B8:
-               call $E4F7 ret $E4BA
-               a = m_E587[x]
-               w9 = m_E5A2[y]
-               cflag = (w9 <= a)
-               zflag = (a == w9)
-               nflag = ((a - w9) <s $00)
-              if zflag {
-              } else {
-               if cflag {
-                goto $E4CF
-               } else {
-                ifnot cflag {
-                  ret
-                }
-                $E4C7:
-                 a = m_E588[x]
-                 w10 = m_E5A5[y]
-                 cflag = (w10 <= a)
-                 zflag = (a == w10)
-                 nflag = ((a - w10) <s $00)
-                ifnot cflag {
-                  ret
-                } else {
-                 goto $E4CF
-                }
-               }
-              }
-              goto $E4C7
-             }
-              ret
-            }
-            goto $E4B8
-           }
-           goto $E4DE
-          }
-         }
-        }
-      }
-      if (m_E5AE[y] == $00) {
-      } else {
-        call $E425 ret $E0B6 {
-         ifnot (m_E5CC[y] == $00) {
-         } else {
-           m_E5B1[y] = m_E5AE[y]
-         }
-          a = m_E5D5[y]
-         if (a == $01) {
-           a18 = m_E5B1[y]
-           a19 = m_E5CC[y]
-           a = (a18 + a19)
-          ifnot (m_E5AE[y] <= a) {
-          } else {
-            a = m_E5AE[y]
-          }
-           m_E5B1[y] = a
-          $E453:
-           call $E487 ret $E455 {
-             a20 = m_E588[x]
-             a21 = m_E5B1[y]
-             m_E588[x] = (a20 - a21)
-             m_E686[x] = (a20 - a21)
-             a22 = m_E587[x]
-             t7 = ($01 - (zext2(a21) <= zext2(a20)))
-             a = (a22 - t7)
-             cflag = (zext2(t7) <= zext2(a22))
-             zflag = (a == $00)
-             vflag = ((a22 & (a22 ^ a)) <s $00)
-             nflag = (a <s $00)
-            $E499:
-             m_E587[x] = a
-             m_E687[x] = a
-             ret
-           }
-         } else {
-          if (a == $02) {
-           goto $E453
-          } else {
-            call $E472 ret $E43D {
-              a23 = m_E588[x]
-              a24 = m_E5B1[y]
-              t8 = (a23 + a24)
-              m_E588[x] = t8
-              m_E686[x] = t8
-              a25 = m_E587[x]
-              t9 = (carry(a23, a24) | carry(t8, $00))
-              a = (a25 + t9)
-              cflag = (carry(a25, $00) | carry(a25, t9))
-              zflag = (a == $00)
-              vflag = (((a25 ^ $FF) & (a25 ^ a)) <s $00)
-              nflag = (a <s $00)
-             goto $E499
-            }
-          }
-         }
-          a26 = m_E5D2[y]
-          w11 = m_E61E[y]
-          a = (a26 + $01)
-          cflag = (w11 <= a)
-          zflag = (a == w11)
-          vflag = (((a26 ^ $FE) & (a26 ^ a)) <s $00)
-          nflag = ((a - w11) <s $00)
-         ifnot cflag {
-         } else {
-           w12 = m_E5D5[y]
-           t10 = (w12 + $01)
-           m_E5D5[y] = (t10 & $03)
-           a = $00
-           cflag = (carry(w12, $01) | carry(t10, $00))
-           zflag = $01
-           vflag = (((w12 ^ $FE) & (w12 ^ t10)) <s $00)
-           nflag = $00
-         }
-          m_E5D2[y] = a
-          ret
-        }
-      }
-       a = m_E58C[x]
-      if (a == $00) {
-      } else {
-        call $E3BC ret $E0BE {
-          cflag = ($06 <= a)
-         ifnot cflag {
-          unobserved $E3CF
-         }
-         ifnot ((m_E5C6[y] & $01) == $00) {
-           a = m_E589[x]
-         } else {
-           a27 = m_E58C[x]
-           a = (a27 - $05)
-           cflag = ($0005 <= zext2(a27))
-           vflag = (((a27 ^ $05) & (a27 ^ a)) <s $00)
-          if (a >=s $00) {
-          } else {
-           unobserved $E3CF
-          }
-           a = m_E623[a]
-          if (a != $00) {
-          } else {
-            a = m_E589[x]
-          }
-         }
-          m_E68A[x] = a
-          y = idx_00FE
-          zflag = (idx_00FE == $00)
-          nflag = (idx_00FE <s $00)
-          ret
-        }
-      }
-       a = m_E58D[x]
-      if (a == $00) {
-      } else {
-        call $E3F2 ret $E0C6 {
-          cflag = ($01 <= a)
-         if (a != $01) {
-          unobserved $E40C
-         }
-         ifnot ((m_E5C6[y] & $01) == $00) {
-           m_E687[x] = m_E587[x]
-           a = m_E588[x]
-           m_E686[x] = a
-           zflag = (a == $00)
-           nflag = (a <s $00)
-           ret
-         } else {
-           m_E687[x] = m_E5A2[y]
-           a = m_E5A5[y]
-           m_E686[x] = a
-           zflag = (a == $00)
-           nflag = (a <s $00)
-           m_E686[x] = a
-           ret
-         }
-        }
-      }
-      if (m_E5FC[y] == $00) {
-      } else {
-        call $E371 ret $E0CE {
-          a = m_E5C3[y]
-          zflag = (a == $00)
-          nflag = (a <s $00)
-         ifnot zflag {
-           ret
-         } else {
-          if (m_E5DB[y] == $00) {
-          } else {
-           unobserved $E37B
-          }
-           a28 = m_E688[x]
-           a29 = m_E5FC[y]
-           a = (a28 + a29)
-           m_E688[x] = a
-           cflag = (carry(a28, a29) | carry(a, $00))
-           zflag = (a == $00)
-           vflag = (((a28 ^ a29 ^ $FF) & (a28 ^ a)) <s $00)
-           nflag = (a <s $00)
-          ifnot cflag {
-          } else {
-            w13 = m_E689[x]
-            t11 = (w13 + $01)
-            m_E689[x] = t11
-            zflag = (t11 == $00)
-            nflag = (t11 <s $00)
-          }
-           ret
-         }
-        }
-      }
-     }
-      call $E0E7 ret $E0D1 {
-        x = idx_00FE
-        y = idx_00FD
-        a30 = m_E615[x]
-        mem[($E615 + zext2(idx_00FE)):2] = (a30 - $01)
-        a31 = m_E5CF[x]
-        t12 = ($01 - ($0001 <= zext2(a30)))
-        a = (a31 - t12)
-        m_E5CF[x] = a
-        cflag = (zext2(t12) <= zext2(a31))
-        zflag = (a == $00)
-        vflag = ((a31 & (a31 ^ a)) <s $00)
-        nflag = (a <s $00)
-       ifnot zflag {
-        $E110:
-       } else {
-         a = m_E615[x]
-        if (a == $00) {
-          m_E688[y] = $00
-          m_E5CF[x] = $00
-          m_E5AB[x] = $00
-          m_E5D2[x] = $00
-          m_E5D8[x] = $00
-          m_E5D5[x] = $00
-          m_E5C3[x] = $00
-          m_E5C6[x] = $00
-          m_E5B4[x] = $00
-          m_E5B1[x] = $00
-          a = $00
-         if (x != m_E586) {
-         } else {
-           m_E69B = $00
-           m_E69C = m_E59E
-         }
-          m_E68B[y] = m_E5F9[x]
-          m_E68C[y] = m_E5F0[x]
-          m_E689[y] = m_E5F6[x]
-         loop {
-           a = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
-          if (a != $00) {
-           if (a < $80) {
-           } else {
-             m_E611 = (a + m_E5E7[x])
-             a = m_E5BA[x]
-            if (a == $00) {
-            } else {
-             unobserved $E174
-            }
-             a = m_E5B7[x]
-            if (a == $00) {
-            } else {
-              a = (a + m_E611)
-              call $E536 ret $E192
-              m_E5A2[x] = m_E613
-              m_E5A5[x] = m_E614
-            }
-             a = m_E611
-             call $E536 ret $E1A4
-           }
-          } else {
-            m_E613 = $00
-            m_E614 = $00
-          }
-           idx0 = idx_00FD
-           w14 = m_E613
-           mem[($E687 + zext2(idx_00FD)):2] = m_E613
-           m_E587[idx0] = w14
-           w15 = m_E614
-           m_E686[idx0] = m_E614
-           m_E588[idx0] = w15
-           w16 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
-           y = idx_00FD
-           m_E615[x] = w16
-           call $E578 ret $E1C4
-           w17 = m_E615[x]
-           cflag = ($FF <= w17)
-          if (w17 != $FF) {
-          } else {
-            m_E5A5[x] = m_E588[y]
-            m_E5A2[x] = m_E587[y]
-           continue
-          }
-          break
-         }
-          a = m_E5F3[x]
-          m_E68A[y] = a
-          m_E589[y] = a
-          zflag = (a == $00)
-          nflag = (a <s $00)
-        } else {
-          w18 = m_E641[x]
-          cflag = (w18 <= a)
-          zflag = (a == w18)
-          nflag = ((a - w18) <s $00)
-         if cflag {
-         } else {
-           a32 = m_E68A[y]
-           a = (a32 & $FE)
-           m_E68A[y] = a
-           zflag = (a == $00)
-           nflag = (a32 <s $00)
-         }
-         goto $E110
-        }
-       }
-        ret
-      }
-      idx1 = idx_00FE
-      mem[($E61B + zext2(idx_00FE)):2] = ptr_00FB_lo
-      a = ptr_00FB_hi
-      m_E618[idx1] = ptr_00FB_hi
-      x = (idx1 + $01)
-      cflag = ($03 <= x)
-      zflag = (idx1 == $02)
-      nflag = ((idx1 - $02) <s $00)
+     a3 = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
+     a = (a3 - $01)
+     cflag = ($21 <= a)
      if cflag {
      } else {
+      t0 = zext2((a << $01))
+      m_E096 = mem[(t0 - $19BC):2]
+      m_E097 = mem[(t0 - $19BB):2]
+      a4 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
+      a = a4
+      x = idx_00FE
+      y = idx_00FD
+      cflag = (a <s $00)
+      zflag = (x == $00)
+      nflag = (x <s $00)
+      call ((zext2(mem[(t0 - $19BC):2]) | (zext2(mem[(t0 - $19BB):2]) << $08):2):2) ret $E097
+      switch {
+       case $E23C: {
+        m_E000 = $00
+        x = $17
+        loop {
+         m_E686[x] = $09
+         m_E686[x] = $00
+         x = ($FF + x)
+         nflag = (x <s $00)
+         if !nflag {
+          continue
+         }
+         break
+        }
+        ret
+       }
+       case $E251: {
+        m_E69E = a
+        ret
+       }
+       case $E255: {
+        m_E5F3[x] = a
+        ret
+       }
+       case $E259: {
+        m_E5F9[x] = a
+        ret
+       }
+       case $E25D: {
+        m_E5F0[x] = a
+        ret
+       }
+       case $E261: {
+        m_E611 = a
+        if (m_E5E1[x] != $00) {
+        } else {
+         m_E5E1[x] = ($01 + m_E5E1[x])
+         m_E5FF[x] = m_E611
+        }
+        m_E5FF[x] = m_E5FF[x]
+        a = m_E5FF[x]
+        if (a == $00) {
+         w1 = m_E5E1[x]
+         m_E5E1[x] = ($FF + w1)
+         ret
+        } else {
+         ptr_00FB_lo = m_E605[x]
+         a = m_E608[x]
+         ptr_00FB_hi = a
+         ret
+        }
+       }
+       case $E289: {
+        m_E605[x] = ptr_00FB_lo
+        m_E608[x] = ptr_00FB_hi
+        ret
+       }
+       case $E294: {
+        m_E611 = a
+        if (m_E5E4[x] != $00) {
+        } else {
+         m_E5E4[x] = ($01 + m_E5E4[x])
+         m_E602[x] = m_E611
+        }
+        m_E602[x] = m_E602[x]
+        a = m_E602[x]
+        if (a == $00) {
+         w2 = m_E5E4[x]
+         m_E5E4[x] = ($FF + w2)
+         ret
+        } else {
+         ptr_00FB_lo = m_E60B[x]
+         a = m_E60E[x]
+         ptr_00FB_hi = a
+         ret
+        }
+       }
+       case $E2BC: {
+        m_E60B[x] = ptr_00FB_lo
+        m_E60E[x] = ptr_00FB_hi
+        ret
+       }
+       case $E2C7: {
+        m_E5E7[x] = a
+        ret
+       }
+       case $E2CB: {
+        m_E5FC[x] = a
+        ret
+       }
+       case $E2CF: {
+        m_E5ED[x] = a
+        ret
+       }
+       case $E2D3: {
+        m_E5EA[x] = a
+        ret
+       }
+       case $E2D7: {
+        m_E5F6[x] = a
+        ret
+       }
+       case $E2EE: {
+        cflag = ($63 <= a)
+        if !cflag {
+        } else {
+         unobserved $E2F2
+        }
+        m_E58C[y] = a
+        ret
+       }
+       case $E2FD: {
+        m_E58D[y] = a
+        ret
+       }
+       case $E301: {
+        m_E59F[x] = a
+        ret
+       }
+       case $E305: {
+        m_E5AE[x] = a
+        ret
+       }
+       case $E309: {
+        m_E5A8[x] = a
+        ret
+       }
+       case $E31E: {
+        m_E61E[x] = a
+        ret
+       }
+       case $E32A: {
+        m_E5E7[x] = a
+        ret
+       }
+       case $E34E: {
+        m_E5B7[x] = a
+        ret
+       }
+       case $E35A: {
+        a8 = m_E5CF[x]
+        m_E5CF[x] = (a + a8)
+        ret
+       }
+      }
+      call $E578 ret $E09A
       continue
      }
      break
     }
+    x = idx_00FD
+    y = idx_00FE
+    if (w5 == $00) {
+    } else {
+     if (a == $00) {
+     } else {
+      call $E362 ret $E0AE {
+       a = m_E5AB[y]
+       w3 = m_E5A8[y]
+       cflag = (w3 <= a)
+       nflag = ((a - w3) <s $00)
+       if !cflag {
+        ret
+       } else {
+        a = m_E59F[y]
+        if (a != $01) {
+         if (a == $03) {
+         } else {
+          unobserved $E524
+         }
+         $E50A:
+         a10 = m_E588[x]
+         a11 = m_E5EA[y]
+         m_E588[x] = (a10 - a11)
+         a12 = m_E587[x]
+         a13 = m_E5ED[y]
+         a = (a12 - (a13 + (a10 < a11)))
+         $E51A:
+         m_E587[x] = a
+         m_E687[x] = a
+         a = m_E588[x]
+         m_E686[x] = a
+         ret
+        } else {
+         w4 = m_E5A2[y]
+         w5 = m_E587[x]
+         zflag = (w4 == w5)
+         if (w4 < w5) {
+         } else {
+          if !zflag {
+          } else {
+           a = m_E5A5[y]
+           w6 = m_E588[x]
+           cflag = (w6 <= a)
+           zflag = (a == w6)
+           nflag = ((a - w6) <s $00)
+           if zflag {
+           } else {
+            if !cflag {
+             $E4DE:
+             call $E50A ret $E4E0
+             a = m_E587[x]
+             w7 = m_E5A2[y]
+             cflag = (w7 <= a)
+             zflag = (a == w7)
+             if zflag {
+             } else {
+              if !cflag {
+              } else {
+               if cflag {
+               } else {
+                $E4ED:
+                a = m_E588[x]
+                w8 = m_E5A5[y]
+                cflag = (w8 <= a)
+                if cflag {
+                } else {
+                 if !cflag {
+                  m_E588[x] = w8
+                  m_E587[x] = m_E5A2[y]
+                 } else {
+                  $E4F7:
+                  a14 = m_E588[x]
+                  a15 = m_E5EA[y]
+                  m_E588[x] = (a14 + a15)
+                  a16 = m_E587[x]
+                  a17 = m_E5ED[y]
+                  a = (a16 + a17 + (carry(a14, a15) | carry((a14 + a15), $00)))
+                  goto $E51A
+                 }
+                 m_E687[x] = m_E587[x]
+                 a = m_E588[x]
+                 m_E686[x] = a
+                 ret
+                }
+               }
+               ret
+              }
+              $E4CF:
+              m_E588[x] = m_E5A5[y]
+              m_E587[x] = m_E5A2[y]
+              m_E687[x] = m_E5A2[y]
+              a = m_E588[x]
+              m_E686[x] = a
+              ret
+             }
+             goto $E4ED
+            }
+            $E4B8:
+            call $E4F7 ret $E4BA
+            a = m_E587[x]
+            w9 = m_E5A2[y]
+            cflag = (w9 <= a)
+            zflag = (a == w9)
+            if zflag {
+            } else {
+             if cflag {
+              goto $E4CF
+             } else {
+              if !cflag {
+               ret
+              }
+              $E4C7:
+              a = m_E588[x]
+              w10 = m_E5A5[y]
+              cflag = (w10 <= a)
+              if !cflag {
+               ret
+              } else {
+               goto $E4CF
+              }
+             }
+            }
+            goto $E4C7
+           }
+           ret
+          }
+          goto $E4B8
+         }
+         goto $E4DE
+        }
+       }
+      }
+     }
+     if (m_E5AE[y] == $00) {
+     } else {
+      call $E425 ret $E0B6 {
+       if (m_E5CC[y] != $00) {
+       } else {
+        m_E5B1[y] = m_E5AE[y]
+       }
+       a = m_E5D5[y]
+       if (a == $01) {
+        a18 = m_E5B1[y]
+        a19 = m_E5CC[y]
+        a = (a18 + a19)
+        if (a < a) {
+        } else {
+         a = m_E5AE[y]
+        }
+        m_E5B1[y] = a
+        $E453:
+        call $E487 ret $E455 {
+         a20 = m_E588[x]
+         a21 = m_E5B1[y]
+         m_E588[x] = (a20 - a21)
+         m_E686[x] = (a20 - a21)
+         a22 = m_E587[x]
+         a = (a22 - (a20 < a21))
+         $E499:
+         m_E587[x] = a
+         m_E687[x] = a
+         ret
+        }
+       } else {
+        if (a == $02) {
+         goto $E453
+        } else {
+         call $E472 ret $E43D {
+          a23 = m_E588[x]
+          t8 = (a18 + a23)
+          m_E588[x] = t8
+          m_E686[x] = t8
+          a25 = m_E587[x]
+          a = (a25 + (carry(a23, a18) | carry(t8, $00)))
+          goto $E499
+         }
+        }
+       }
+       a26 = m_E5D2[y]
+       w11 = m_E61E[y]
+       a = ($01 + a26)
+       cflag = (w11 <= a)
+       if !cflag {
+       } else {
+        w12 = m_E5D5[y]
+        m_E5D5[y] = (($01 + w12) & $03)
+        a = $00
+       }
+       m_E5D2[y] = a
+       ret
+      }
+     }
+     a = m_E58C[x]
+     if (a == $00) {
+     } else {
+      call $E3BC ret $E0BE {
+       cflag = ($06 <= a)
+       if !cflag {
+        unobserved $E3CF
+       }
+       if ((m_E5C6[y] & $01) != $00) {
+        a = m_E589[x]
+       } else {
+        a = (a - $05)
+        if (a >=s $00) {
+        } else {
+         unobserved $E3CF
+        }
+        a = m_E623[a]
+        if (a != $00) {
+        } else {
+         a = a
+        }
+       }
+       m_E68A[x] = a
+       ret
+      }
+     }
+     a = m_E58D[x]
+     if (a == $00) {
+     } else {
+      call $E3F2 ret $E0C6 {
+       if (a != $01) {
+        unobserved $E40C
+       }
+       if ((m_E5C6[y] & $01) != $00) {
+        m_E687[x] = m_E587[x]
+        a = m_E588[x]
+        m_E686[x] = a
+        ret
+       } else {
+        m_E687[x] = m_E5A2[y]
+        a = m_E5A5[y]
+        m_E686[x] = a
+        m_E686[x] = a
+        ret
+       }
+      }
+     }
+     if (a29 == $00) {
+     } else {
+      call $E371 ret $E0CE {
+       a = m_E5C3[y]
+       zflag = (a == $00)
+       if !zflag {
+        ret
+       } else {
+        if (m_E5DB[y] == $00) {
+        } else {
+         unobserved $E37B
+        }
+        a28 = m_E688[x]
+        a29 = m_E5FC[y]
+        a = (a28 + a29)
+        m_E688[x] = a
+        cflag = (carry(a28, a29) | carry(a, $00))
+        if !cflag {
+        } else {
+         w13 = m_E689[x]
+         m_E689[x] = ($01 + w13)
+        }
+        ret
+       }
+      }
+     }
+    }
+    call $E0E7 ret $E0D1 {
+     x = idx_00FE
+     y = idx_00FD
+     a30 = m_E615[x]
+     m_E615[x] = ($FF + a30)
+     a31 = m_E5CF[x]
+     a = (a31 - ($01 - ($0001 <= zext2(a30))))
+     m_E5CF[x] = a
+     zflag = (a == $00)
+     if !zflag {
+      $E110:
+     } else {
+      a = m_E615[x]
+      if (a == $00) {
+       m_E688[y] = $00
+       m_E5CF[x] = $00
+       m_E5AB[x] = $00
+       m_E5D2[x] = $00
+       m_E5D8[x] = $00
+       m_E5D5[x] = $00
+       m_E5C3[x] = $00
+       m_E5C6[x] = $00
+       m_E5B4[x] = $00
+       m_E5B1[x] = $00
+       if (x != m_E586) {
+       } else {
+        m_E69B = $00
+        m_E69C = m_E59E
+       }
+       m_E68B[y] = m_E5F9[x]
+       m_E68C[y] = m_E5F0[x]
+       m_E689[y] = m_E5F6[x]
+       loop {
+        a = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
+        if (a != $00) {
+         if (a < $80) {
+         } else {
+          m_E611 = (a + m_E5E7[x])
+          a = m_E5BA[x]
+          if (a == $00) {
+          } else {
+           unobserved $E174
+          }
+          a = m_E5B7[x]
+          if (a == $00) {
+          } else {
+           a = (a + m_E5E7[x] + a)
+           call $E536 ret $E192
+           m_E5A2[x] = m_E613
+           m_E5A5[x] = m_E614
+          }
+          a = m_E611
+          call $E536 ret $E1A4
+         }
+        } else {
+         m_E613 = $00
+         m_E614 = $00
+        }
+        idx0 = idx_00FD
+        m_E687[idx0] = m_E613
+        m_E587[idx0] = m_E613
+        m_E686[idx0] = m_E614
+        m_E588[idx0] = m_E614
+        w16 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
+        y = idx_00FD
+        m_E615[x] = w16
+        call $E578 ret $E1C4
+        w17 = m_E615[x]
+        if (w17 != $FF) {
+        } else {
+         m_E5A5[x] = m_E588[y]
+         m_E5A2[x] = m_E587[y]
+         continue
+        }
+        break
+       }
+       a = m_E5F3[x]
+       m_E68A[y] = a
+       m_E589[y] = a
+      } else {
+       w18 = m_E641[x]
+       cflag = (w18 <= a)
+       if cflag {
+       } else {
+        a32 = m_E68A[y]
+        a = ($FE & a32)
+        m_E68A[y] = a
+       }
+       goto $E110
+      }
+     }
      ret
+    }
+    idx1 = idx_00FE
+    m_E61B[idx1] = ptr_00FB_lo
+    m_E618[idx1] = ptr_00FB_hi
+    x = ($01 + idx1)
+    cflag = ($03 <= x)
+    if cflag {
+    } else {
+     continue
+    }
+    break
    }
-   x = $18
+   ret
+  }
+  x = $18
   loop {
-    a = m_E686[x]
-    sid.v1.freq_lo[x] = a
-    x = (x - $01)
-    zflag = (x == $00)
-    nflag = (x <s $00)
-   ifnot nflag {
+   a = m_E686[x]
+   sid.v1.freq_lo[x] = a
+   x = ($FF + x)
+   nflag = (x <s $00)
+   if !nflag {
     continue
    }
    break
   }
  }
-  ret
+ ret
 }
 sub_E536 {
-  x = $07
+ x = $07
  loop {
-   cflag = ($8C <= a)
-  ifnot cflag {
+  cflag = ($8C <= a)
+  if !cflag {
   } else {
-    a = (a - (($01 - cflag) + $0C))
-    x = (x - $01)
+   a = (a - (($01 - cflag) + $0C))
+   x = (x - $01)
    continue
   }
   break
  }
-  t0 = (a - (($01 - cflag) + $7F))
-  t1 = zext2((t0 << $01))
-  m_E613 = mem[(t1 - $19D7):2]
-  a0 = mem[(t1 - $19D6):2]
-  m_E614 = a0
-  a1 = a
-  a = m_E614
-  cflag = ($00 <= x)
-  vflag = (((a1 ^ $7F) & (a1 ^ t0)) <s $00)
+ m_E613 = mem[(zext2(((a - (($01 - cflag) + $7F)) << $01)) - $19D7):2]
+ a0 = m_E614
+ m_E614 = a0
  if (x == $00) {
-   x = idx_00FE
-   y = idx_00FD
-   zflag = (idx_00FE == $00)
-   nflag = (idx_00FE <s $00)
-   ret
+  x = idx_00FE
+  ret
  } else {
   loop {
-    w0 = m_E613
-    m_E613 = (m_E613 >> $01)
-    m_E614 = ((m_E614 >> $01) | ((w0 & $01) << $07))
-    x0 = x
-    x = (x - $01)
-   if (x0 != $01) {
+   w0 = m_E613
+   m_E613 = (w0 >> $01)
+   m_E614 = ((a0 >> $01) | ((w0 & $01) << $07))
+   x = ($FF + x)
+   if (x != $01) {
     continue
    }
    break
   }
-   a2 = m_E614
-   a3 = mem[(zext2(idx_00FE) - $1A37):2]
-   a = (m_E614 + a3)
-   m_E614 = a
-   x = idx_00FE
-   y = idx_00FD
-   cflag = (carry(a2, a3) | carry(m_E614, $00))
-   zflag = (m_E614 == $00)
-   vflag = (((a2 ^ a3 ^ $FF) & (a2 ^ m_E614)) <s $00)
-   nflag = (m_E614 <s $00)
-  ifnot cflag {
+  a3 = m_E5C9[x]
+  a = (a0 + a3)
+  m_E614 = a
+  x = idx_00FE
+  cflag = (carry(a0, a3) | carry(a, $00))
+  if !cflag {
   } else {
    unobserved $E56F
   }
-   ret
+  ret
  }
 }
 sub_E578 {
-  ptr0 = ptr_00FB_lo
-  a = (ptr_00FB_lo + $02)
-  ptr_00FB_lo = a
-  cflag = (carry(ptr0, $02) | carry(ptr_00FB_lo, $00))
-  zflag = (ptr_00FB_lo == $00)
-  vflag = (((ptr0 ^ $FD) & (ptr0 ^ ptr_00FB_lo)) <s $00)
-  nflag = (ptr_00FB_lo <s $00)
- ifnot cflag {
+ ptr0 = ptr_00FB_lo
+ a = (ptr0 + $02)
+ ptr_00FB_lo = a
+ cflag = (carry(ptr0, $02) | carry(a, $00))
+ if !cflag {
  } else {
-   t0 = (ptr_00FB_hi + $01)
-   ptr_00FB_hi = t0
-   zflag = (ptr_00FB_hi == $00)
-   nflag = (ptr_00FB_hi <s $00)
+  ptr1 = ptr_00FB_hi
+  ptr_00FB_hi = (ptr1 + $01)
  }
-  ret
+ ret
 }

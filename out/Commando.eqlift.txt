@@ -56,7 +56,7 @@ state {
  m_5520: u8[]
 }
 data {
- table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:
+ table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:  role freq_lo ; pitch table: 8 octaves, equal-tempered
   1601270138014B015F0173018A01A101
   BA01D401F0010E022D024E0271029602
   BD02E702130342037403A903E0031B04
@@ -71,7 +71,7 @@ data {
   58AFC8B9E0C498D008DD30EA20F82EFD
  table m_54E8[3] observed:
   00070E
- table m_5591[104] stride 8 +m_5592 +m_5593 +m_5594 +m_5595 +m_5596 +m_5597 +m_5598 observed:
+ table m_5591[104] stride 8 +m_5592 +m_5593 +m_5594 +m_5595 +m_5596 +m_5597 +m_5598 observed:  role pw_hi, pw_lo
   000941295F02E000800141064B000005
   800141099F0016080002810A09000005
   0002430FC400000380084105A900020D
@@ -83,10 +83,10 @@ data {
   6BACEC
  table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:
   575757
- table m_5711[32] lo m_573E -> $5887..$5D7D observed:
+ table m_5711[32] lo m_573E -> $5887..$5D7D observed:  role freq_hi, freq_lo
   87CDE3F90F253B89FA884151D2677D26
   5D7391CDF115395D7D9DBA4A7891AAC3
- table m_573E[32] hi m_5711 -> $5887..$5D7D observed:
+ table m_573E[32] hi m_5711 -> $5887..$5D7D observed:  role freq_hi, freq_lo
   585C5C5C5D5D5D585859595D595D5D5A
   5A5A5A5A5A5B5B5B5B5B5B5C5C5C5C5C
  stream m_576B[64] via ptr_005D_lo cmp $FE $FF observed:
@@ -277,233 +277,207 @@ symbols {
  alias ctr_5525 = m_5525
 }
 sub_5012 {
-  ctr_5525 = (ctr_5525 + $01)
-  vflag = ((m_5519 & $40) != $00)
+ ctr_5525 = (ctr_5525 + $01)
+ vflag = ((m_5519 & $40) != $00)
  if (m_5519 <s $00) {
   unobserved $5038
  }
- ifnot vflag {
+ if !vflag {
  } else {
-   ctr_5525 = $00
-   a = $00
-   x = $02
+  ctr_5525 = $00
+  a = $00
+  x = $02
   loop {
-    pos_54EC[x] = a
-    pos_54EF[x] = a
-    ctr_54F2[x] = a
-    idx_54FB[x] = a
-    x = (x - $01)
+   pos_54EC[x] = $00
+   pos_54EF[x] = $00
+   ctr_54F2[x] = $00
+   idx_54FB[x] = $00
+   x = (x - $01)
    if (x >=s $00) {
     continue
    }
    break
   }
-   m_5519 = a
+  m_5519 = $00
  }
-  ctr_5513 = (ctr_5513 - $01)
-  x = $02
- if (ctr_5513 >=s $00) {
+ ctr0 = ctr_5513
+ ctr_5513 = ($FF + ctr0)
+ x = $02
+ if ((ctr0 - $01) >=s $00) {
  } else {
-   ctr_5513 = m_5517
+  ctr_5513 = m_5517
  }
  loop {
-   m_54EB = m_54E8[x]
-   cflag = (m_5517 <= ctr_5513)
+  m_54EB = m_54E8[x]
   if (ctr_5513 != m_5517) {
    $519B:
    if (m_5528 <s $00) {
    } else {
     unobserved $51A0
    }
-    w0 = idx_54FE[x]
-    t0 = ((w0 << $01) << $01)
-    m_5518 = (t0 << $01)
-    t1 = zext2(m_5518)
-    m_5523 = mem[(t1 + $5598):2]
-    idx_5507 = mem[(t1 + $5597):2]
-    w1 = mem[(t1 + $5596):2]
-    ctr_5506 = w1
-    cflag = (t0 <s $00)
-   if (ctr_5506 == $00) {
+   w0 = idx_54FE[x]
+   t0 = (w0 << $02)
+   m_5518 = (w0 << $03)
+   t1 = zext2((t0 << $01))
+   m_5523 = mem[(t1 + $5598):2]
+   idx_5507 = mem[(t1 + $5597):2]
+   w1 = ctr_5506
+   ctr_5506 = w1
+   cflag = (t0 <s $00)
+   if (w1 == $00) {
    } else {
-     a = (ctr_5525 & $07)
+    a = (ctr_5525 & $07)
     if (a < $04) {
     } else {
-      a = (a ^ $07)
+     a = (a ^ $07)
     }
-     idx_550C = a
-     y0 = idx_54FB[x]
-     t2 = zext2((y0 << $01))
-     a0 = mem[(t2 + $542A):2]
-     a1 = mem[(t2 + $5428):2]
-     idx_5508 = (a0 - a1)
-     a2 = mem[(t2 + $542B):2]
-     a3 = mem[(t2 + $5429):2]
-     a = (a2 - (a3 + ($01 - (zext2(a1) <= zext2(a0)))))
-     y = (y0 << $01)
-     vflag = (((a2 ^ a3) & (a2 ^ a)) <s $00)
+    idx_550C = a
+    y0 = idx_54FB[x]
+    t2 = t2
+    a0 = mem[(t2 + $542A):2]
+    a1 = mem[(t2 + $5428):2]
+    idx_5508 = (a0 - a1)
+    a2 = mem[(t2 + $542B):2]
+    a3 = mem[(t2 + $5429):2]
+    a = (a2 - (a3 + (a0 < a1)))
+    y = (y0 << $01)
     loop {
-      idx_5508 = ((idx_5508 >> $01) | ((a & $01) << $07))
-      ctr_5506 = (ctr_5506 - $01)
-      a = (a >> $01)
-     if (ctr_5506 >=s $00) {
+     idx_5508 = (((a0 - a1) >> $01) | ((a & $01) << $07))
+     ctr_5506 = ($FF + w1)
+     a = (a >> $01)
+     if ((w1 - $01) >=s $00) {
       continue
      }
      break
     }
-     idx_5509 = a
-     idx_550A = m_5428[y]
-     idx_550B = m_5429[y]
-     w2 = m_54F5[x]
-     cflag = ($06 <= (w2 & $1F))
-    ifnot cflag {
+    idx_5509 = a
+    idx_550A = mem[(t2 + $5428):2]
+    idx_550B = mem[(t2 + $5429):2]
+    w2 = m_54F5[x]
+    cflag = ($06 <= (w2 & $1F))
+    if !cflag {
     } else {
-      y = idx_550C
+     y = idx_550C
      loop {
-       y = (y - $01)
+      y = ($FF + y)
       if (y <s $00) {
       } else {
-        idx0 = idx_550A
-        idx_550A = (idx_5508 + idx_550A)
-        idx1 = idx_550B
-        idx_550B = (idx_5509 + (carry(idx0, idx_5508) | carry(idx_550A, $00)) + idx_550B)
-        cflag = (carry(idx1, idx_5509) | carry((idx1 + idx_5509), (carry(idx0, idx_5508) | carry(idx_550A, $00))))
-        vflag = (((idx1 ^ idx_5509 ^ $FF) & (idx1 ^ idx_550B)) <s $00)
+       idx0 = idx_550A
+       idx_550A = ((a0 - a1) + idx0)
+       idx1 = idx_550B
+       idx_550B = (a + idx1 + (carry(idx0, (a0 - a1)) | carry((idx0 + (a0 - a1)), $00)))
+       cflag = (carry(idx1, a) | carry((idx1 + a), (carry(idx0, (a0 - a1)) | carry((idx0 + (a0 - a1)), $00))))
        continue
       }
       break
      }
     }
-     w3 = m_54EB
-     mem[($D400 + zext2(m_54EB)):2] = idx_550A
-     sid.v1.freq_hi[w3] = idx_550B
+    w3 = m_54EB
+    sid.v1.freq_lo[w3] = idx_550A
+    sid.v1.freq_hi[w3] = idx_550B
    }
    if ((m_5523 & $08) == $00) {
-     a = idx_5507
-    if (idx_5507 == $00) {
+    a = idx_5507
+    if (a == $00) {
     } else {
-      y = m_5518
-      w4 = ctr_550D[x]
-      ctr_550D[x] = (w4 - $01)
-      a = (a & $1F)
+     y = m_5518
+     w4 = ctr_550D[x]
+     ctr_550D[x] = ($FF + w4)
+     a = ($1F & a)
      if ((w4 - $01) >=s $00) {
      } else {
-       ctr_550D[x] = a
-       m_5524 = (idx_5507 & $E0)
-      ifnot (ctr_5510[x] == $00) {
-        w5 = m_5591[y]
-        m_01FD = (w5 - m_5524)
-        w6 = m_5592[y]
-        m_01FC = ((w6 - ($01 - (zext2(m_5524) <= zext2(w5)))) & $0F)
-        sp = (sp - $02)
-        cflag = ($08 <= m_01FC)
-        vflag = ((w6 & (w6 ^ (w6 - ($01 - (zext2(m_5524) <= zext2(w5)))))) <s $00)
-       if (m_01FC != $08) {
+      ctr_550D[x] = a
+      m_5524 = (a & $E0)
+      if (ctr_5510[x] != $00) {
+       w5 = m_5591[y]
+       m_01FD = (w5 - (a & $E0))
+       w6 = m_5592[y]
+       m_01FC = ((w6 - (w5 < (a & $E0))) & $0F)
+       if (((w6 - (w5 < (a & $E0))) & $0F) != $08) {
        } else {
-         ctr_5510[x] = (ctr_5510[x] - $01)
+        ctr_5510[x] = ($FF + ctr_5510[x])
        }
       } else {
-        w7 = m_5591[y]
-        m_01FD = (m_5524 + w7)
-        w8 = m_5592[y]
-        m_01FC = ((w8 + (carry(m_5524, w7) | carry(m_01FD, $00))) & $0F)
-        sp = (sp - $02)
-        cflag = ($0E <= m_01FC)
-        vflag = (((w8 ^ $FF) & (w8 ^ (w8 + (carry(m_5524, w7) | carry(m_01FD, $00))))) <s $00)
-       if (m_01FC != $0E) {
+       m_01FD = (w5 + (a & $E0))
+       m_01FC = ($0F & (w6 + (carry((a & $E0), w5) | carry(((a & $E0) + w5), $00))))
+       if (((w6 + (carry((a & $E0), w5) | carry(((a & $E0) + w5), $00))) & $0F) != $0E) {
        } else {
-         ctr_5510[x] = (ctr_5510[x] + $01)
+        ctr_5510[x] = ($01 + ctr_5510[x])
        }
       }
-       idx_5504 = x
-       w9 = m_54EB
-       w10 = m_01FC
-       m_5592[y] = m_01FC
-       sid.v1.pw_hi[w9] = w10
-       w11 = m_01FD
-       m_5591[y] = m_01FD
-       sid.v1.pw_lo[w9] = w11
-       x = idx_5504
-       sp = (sp + $02)
+      idx_5504 = x
+      w9 = m_54EB
+      m_5592[y] = m_01FC
+      sid.v1.pw_hi[w9] = m_01FC
+      m_5591[y] = m_01FD
+      sid.v1.pw_lo[w9] = m_01FD
+      x = idx_5504
      }
     }
    } else {
-     w12 = mem[(zext2(m_5518) + $5591):2]
-     idx2 = idx_5507
-     t3 = (idx_5507 + cflag + w12)
-     mem[(zext2(m_5518) + $5591):2] = t3
-     mem[(zext2(m_54EB) - $2BFE):2] = t3
-     cflag = (carry(w12, idx2) | carry((w12 + idx2), cflag))
-     vflag = (((w12 ^ idx2 ^ $FF) & (w12 ^ t3)) <s $00)
+    w12 = m_5591[y]
+    t3 = (a + w12 + cflag)
+    m_5591[y] = t3
+    sid.v1.pw_lo[m_54EB] = t3
    }
-    a = m_5520[x]
-    y = m_54EB
+   a = m_5520[x]
+   y = m_54EB
    if (a == $00) {
    } else {
-     idx_5504 = (a & $7E)
-    if ((m_5520[x] & $01) == $00) {
-      w13 = m_551D[x]
-      idx3 = idx_5504
-      t4 = (idx_5504 + w13)
-      m_551D[x] = t4
-      sid.v1.freq_lo[y] = t4
-      w14 = ctr_551A[x]
-      t5 = (carry(w13, idx3) | carry(t4, $00))
-      t6 = (w14 + t5)
-      ctr_551A[x] = t6
-      sid.v1.freq_hi[y] = t6
-      cflag = (carry(w14, $00) | carry(w14, t5))
-      vflag = (((w14 ^ $FF) & (w14 ^ t6)) <s $00)
+    idx_5504 = (a & $7E)
+    if ((a & $01) == $00) {
+     w13 = m_551D[x]
+     idx3 = idx_5504
+     t4 = (w13 + idx3)
+     m_551D[x] = t4
+     sid.v1.freq_lo[y] = t4
+     w14 = ctr_551A[x]
+     t6 = (w14 + (carry(w13, idx3) | carry(t4, $00)))
+     ctr_551A[x] = t6
+     sid.v1.freq_hi[y] = t6
     } else {
-      w15 = m_551D[x]
-      idx4 = idx_5504
-      m_551D[x] = (w15 - idx_5504)
-      sid.v1.freq_lo[y] = (w15 - idx4)
-      w16 = ctr_551A[x]
-      t7 = ($01 - (zext2(idx4) <= zext2(w15)))
-      t8 = (w16 - t7)
-      ctr_551A[x] = t8
-      sid.v1.freq_hi[y] = t8
-      cflag = (zext2(t7) <= zext2(w16))
-      vflag = ((w16 & (w16 ^ t8)) <s $00)
+     m_551D[x] = (w13 - idx3)
+     sid.v1.freq_lo[y] = (w13 - idx3)
+     w16 = ctr_551A[x]
+     t8 = (w16 - (w13 < idx3))
+     ctr_551A[x] = t8
+     sid.v1.freq_hi[y] = t8
     }
    }
    if ((m_5523 & $01) == $00) {
    } else {
-    if (ctr_551A[x] == $00) {
+    if (w19 == $00) {
     } else {
-     if (ctr_54F2[x] == $00) {
+     if (w18 == $00) {
      } else {
-       w17 = m_54F5[x]
-       w18 = ctr_54F2[x]
-       t9 = (w17 & $1F)
-       y = m_54EB
-       cflag = (w18 <= (t9 - $01))
-       vflag = (((t9 ^ $01) & (t9 ^ (t9 - $01))) <s $00)
-      ifnot cflag {
+      w17 = m_54F5[x]
+      w18 = ctr_54F2[x]
+      y = m_54EB
+      cflag = (w18 <= (($1F & w17) - $01))
+      if !cflag {
        $532B:
-        sid.v1.freq_hi[y] = ctr_551A[x]
-        a = $80
+       sid.v1.freq_hi[y] = ctr_551A[x]
+       a = $80
       } else {
-        w19 = ctr_551A[x]
-        ctr_551A[x] = (ctr_551A[x] - $01)
-        sid.v1.freq_hi[y] = w19
-        a4 = m_54F8[x]
-        a = (a4 & $FE)
+       w19 = ctr_551A[x]
+       ctr_551A[x] = ($FF + w19)
+       sid.v1.freq_hi[y] = w19
+       a4 = m_54F8[x]
+       a = ($FE & a4)
        if (a != $00) {
        } else {
         goto $532B
        }
       }
-       sid.v1.ctrl[y] = a
+      sid.v1.ctrl[y] = a
      }
     }
    }
    if ((m_5523 & $02) == $00) {
    } else {
-     w20 = m_54F5[x]
-     cflag = ($03 <= (w20 & $1F))
-    ifnot cflag {
+    w20 = m_54F5[x]
+    cflag = ($03 <= (w20 & $1F))
+    if !cflag {
     } else {
      unobserved $5346
     }
@@ -511,117 +485,111 @@ sub_5012 {
    if ((m_5523 & $04) == $00) {
    } else {
     if ((ctr_5525 & $01) == $00) {
-      a = idx_54FB[x]
+     a = idx_54FB[x]
     } else {
-      a5 = idx_54FB[x]
-      a = (a5 + $0C)
-      vflag = (((a5 ^ $F3) & (a5 ^ a)) <s $00)
+     a = (a + $0C)
     }
-     t10 = zext2((a << $01))
-     idx_5503 = mem[(t10 + $5428):2]
-     w21 = m_54EB
-     mem[($D401 + zext2(m_54EB)):2] = mem[(t10 + $5429):2]
-     sid.v1.freq_lo[w21] = idx_5503
-     cflag = (a <s $00)
+    t10 = zext2((a << $01))
+    idx_5503 = mem[(t10 + $5428):2]
+    w21 = m_54EB
+    sid.v1.freq_hi[w21] = mem[(t10 + $5429):2]
+    sid.v1.freq_lo[w21] = idx_5503
    }
   } else {
-    ptr_005D_lo = m_56F9[x]
-    ptr_005D_hi = m_56FC[x]
-    w22 = ctr_54F2[x]
-    ctr_54F2[x] = (w22 - $01)
+   ptr_005D_lo = m_56F9[x]
+   ptr_005D_hi = m_56FC[x]
+   w22 = ctr_54F2[x]
+   ctr_54F2[x] = ($FF + w22)
    if ((w22 - $01) <s $00) {
-     y = pos_54EC[x]
-     a = mem[(((zext2(ptr_005D_hi) << $08):2 | zext2(ptr_005D_lo)):2 + zext2(y)):2]
+    y = pos_54EC[x]
+    a = mem[(((zext2(m_56FC[x]) << $08):2 | zext2(m_56F9[x])):2 + zext2(y)):2]
     if (a == $FF) {
      unobserved $5099
     }
-     cflag = ($FE <= a)
     if (a != $FE) {
     } else {
      unobserved $5093
     }
-     ptr_005F_lo = m_5711[a]
-     ptr_005F_hi = m_573E[a]
-     m_5520[x] = $00
-     y = pos_54EF[x]
-     ctr_5501 = $FF
-     w23 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2(y)):2]
-     m_54F5[x] = w23
-     idx_5502 = w23
-     ctr_54F2[x] = (idx_5502 & $1F)
-     vflag = ((idx_5502 & $40) != $00)
+    ptr_005F_lo = m_5711[a]
+    ptr_005F_hi = m_573E[a]
+    m_5520[x] = $00
+    y = pos_54EF[x]
+    ctr_5501 = $FF
+    w23 = mem[(((zext2(m_573E[a]) << $08):2 | zext2(m_5711[a])):2 + zext2(y)):2]
+    m_54F5[x] = w23
+    idx_5502 = w23
+    ctr_54F2[x] = ($1F & w23)
+    vflag = ((idx_5502 & $40) != $00)
     if vflag {
-      ctr_5501 = (ctr_5501 - $01)
+     ctr_5501 = ($FF + ctr_5501)
     } else {
-      pos_54EF[x] = (pos_54EF[x] + $01)
+     pos_54EF[x] = ($01 + pos_54EF[x])
      if (idx_5502 >=s $00) {
      } else {
-       a = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((y + $01))):2]
-       y = (y + $01)
+      a = a
+      y = ($01 + y)
       if (a >=s $00) {
-        idx_54FE[x] = a
+       idx_54FE[x] = a
       } else {
-        m_5520[x] = a
+       m_5520[x] = a
       }
-       pos_54EF[x] = (pos_54EF[x] + $01)
+      pos_54EF[x] = ($01 + pos_54EF[x])
      }
-      y1 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((y + $01))):2]
-      idx_54FB[x] = y1
-      y = (y1 << $01)
+     y1 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((y + $01))):2]
+     idx_54FB[x] = y1
+     y = (y1 << $01)
      if (m_5528 >=s $00) {
      } else {
-       idx_5503 = m_5428[y]
-       w24 = m_5429[y]
-       w25 = m_54EB
-       mem[($D401 + zext2(m_54EB)):2] = w24
-       ctr_551A[x] = w24
-       idx5 = idx_5503
-       sid.v1.freq_lo[w25] = idx_5503
-       m_551D[x] = idx5
+      idx_5503 = m_5428[y]
+      w24 = m_5429[y]
+      w25 = m_54EB
+      sid.v1.freq_hi[w25] = w24
+      ctr_551A[x] = w24
+      sid.v1.freq_lo[w25] = idx_5503
+      m_551D[x] = idx_5503
      }
     }
-     x0 = idx_54FE[x]
-     idx_5504 = x
-     x = (((x0 << $01) << $01) << $01)
-     idx_5505 = m_5593[x]
-     y = m_54EB
+    x0 = idx_54FE[x]
+    idx_5504 = x
+    x = (x0 << $03)
+    idx_5505 = m_5593[x]
+    y = m_54EB
     if (m_5528 >=s $00) {
     } else {
-      mem[($D404 + zext2(m_54EB)):2] = (m_5593[x] & ctr_5501)
-      sid.v1.pw_lo[y] = m_5591[x]
-      sid.v1.pw_hi[y] = m_5592[x]
-      sid.v1.attack_decay[y] = m_5594[x]
-      sid.v1.sustain_release[y] = m_5595[x]
+     sid.v1.ctrl[y] = (m_5593[x] & ctr_5501)
+     sid.v1.pw_lo[y] = m_5591[x]
+     sid.v1.pw_hi[y] = m_5592[x]
+     sid.v1.attack_decay[y] = m_5594[x]
+     sid.v1.sustain_release[y] = m_5595[x]
     }
-     x = idx_5504
-     mem[($54F8 + zext2(idx_5504)):2] = idx_5505
-     pos_54EF[x] = (pos_54EF[x] + $01)
-     w26 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2(pos_54EF[x])):2]
-     cflag = ($FF <= w26)
+    x = idx_5504
+    m_54F8[x] = idx_5505
+    pos_54EF[x] = pos_54EF[x]
+    w26 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((pos_54EF[x] + $01))):2]
     if (w26 != $FF) {
     } else {
-      pos_54EF[x] = $00
-      pos_54EC[x] = (pos_54EC[x] + $01)
+     pos_54EF[x] = $00
+     pos_54EC[x] = ($01 + pos_54EC[x])
     }
    } else {
     if (m_5528 <s $00) {
     } else {
      unobserved $5179
     }
-     y = m_54EB
-    ifnot ((m_54F5[x] & $20) == $00) {
+    y = m_54EB
+    if ((m_54F5[x] & $20) != $00) {
     } else {
-     ifnot (ctr_54F2[x] == $00) {
+     if (w22 != $01) {
      } else {
-       mem[($D404 + zext2(m_54EB)):2] = (m_54F8[x] & $FE)
-       sid.v1.attack_decay[y] = $00
-       sid.v1.sustain_release[y] = $00
+      sid.v1.ctrl[y] = ($FE & m_54F8[x])
+      sid.v1.attack_decay[y] = $00
+      sid.v1.sustain_release[y] = $00
      }
     }
     goto $519B
    }
   }
-   y = $FF
+  y = $FF
   if (m_5526 != $00) {
   } else {
    if (m_5527 <s $00) {
@@ -629,26 +597,23 @@ sub_5012 {
     unobserved $539B
    }
   }
-   m_5528 = $FF
-   x = (x - $01)
+  m_5528 = $FF
+  x = ($FF + x)
   if (x <s $00) {
   } else {
    continue
   }
   break
  }
-  m_5528 = $FF
-  a = m_5526
-  zflag = (m_5526 == $00)
-  nflag = (m_5526 <s $00)
- ifnot zflag {
+ m_5528 = $FF
+ a = m_5526
+ zflag = (a == $00)
+ if !zflag {
  } else {
-   zflag = ((m_5526 & m_5527) == $00)
-   vflag = ((m_5527 & $40) != $00)
-   nflag = (m_5527 <s $00)
-  ifnot nflag {
+  nflag = (m_5527 <s $00)
+  if !nflag {
    unobserved $53B5
   }
  }
-  ret
+ ret
 }

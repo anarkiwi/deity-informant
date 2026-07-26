@@ -27,7 +27,9 @@ dependencies = ["jennings>=0.1.0"]
 [project.optional-dependencies]
 oracle = ["py65", "pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy"]
+# egglog str-form of extracted exprs is parsed; pin minor so it stays stable.
+eqlift = ["egglog>=13,<14", "z3-solver"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"

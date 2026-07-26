@@ -8,14 +8,12 @@ term. Proof of concept only: no frameproc/frameprog behavior is touched.
 from __future__ import annotations
 
 import ast
-import time
 
 import z3
-from egglog import EGraph, Expr, StringLike, function, i64, i64Like, rewrite, ruleset, union, var
+from egglog import Expr, StringLike, function, i64, i64Like, rewrite, ruleset, var
 
 from . import datadecl
 from . import frameproc
-from . import frameprog
 from . import sidprog
 
 
@@ -140,6 +138,9 @@ class _EggAlg:
 
     def shl(self, x, y, w):
         return shl(x, y, w)
+
+    def shr(self, x, y, w):
+        return shr(x, y, w)
 
     def zext(self, x):
         return zext(x)
@@ -365,6 +366,40 @@ def _r_carry_fuse(A, w):
     return split, A.add(a16, b16, 2)
 
 
+def _r_sbc_borrow(A, w):
+    """SBC borrow ``$01 - (zext(x) <= zext(y)) -> (y < x)`` (bytes)."""
+    del w
+    x, y = A.tvar("x", 1), A.tvar("y", 1)
+    return A.sub(A.num(1, 1), A.ule(A.zext(x), A.zext(y)), 1), A.ult(y, x)
+
+
+def _r_shl_fold(a, b):
+    """Concrete-amount left-shift fold ``(x << a) << b -> x << (a+b)``."""
+
+    def build(A, w):
+        x = A.tvar("x", w)
+        return A.shl(A.shl(x, A.num(a, w), w), A.num(b, w), w), A.shl(x, A.num(a + b, w), w)
+
+    return build
+
+
+def _r_shr_fold(a, b):
+    """Concrete-amount right-shift fold ``(x >> a) >> b -> x >> (a+b)``."""
+
+    def build(A, w):
+        x = A.tvar("x", w)
+        return A.shr(A.shr(x, A.num(a, w), w), A.num(b, w), w), A.shr(x, A.num(a + b, w), w)
+
+    return build
+
+
+_SHIFT_FOLDS = tuple(
+    ("%s_fold_%d_%d" % (nm, a, b), (1, 2), fac(a, b))
+    for nm, fac in (("shl", _r_shl_fold), ("shr", _r_shr_fold))
+    for a, b in ((1, 1), (2, 1), (3, 1))
+)
+
+
 RULES = (
     ("add_comm", (1, 2), _r_add_comm),
     ("add_assoc", (1, 2), _r_add_assoc),
@@ -386,7 +421,8 @@ RULES = (
     ("sub_eq0", (1, 2), _r_sub_eq0),
     ("sub_ne0", (1, 2), _r_sub_ne0),
     ("carry_fuse", (2,), _r_carry_fuse),
-)
+    ("sbc_borrow", (1,), _r_sbc_borrow),
+) + _SHIFT_FOLDS
 
 
 def verify_rules():
@@ -520,22 +556,6 @@ def _cost(ir):
     return c
 
 
-def _leaves(ir, out):
-    if ir[0] in ("num", "cell", "loc"):
-        out.add(ir)
-        return out
-    for a in ir[1:]:
-        if isinstance(a, tuple):
-            _leaves(a, out)
-    return out
-
-
-def _contains(ir, leaf):
-    if ir == leaf:
-        return True
-    return any(isinstance(a, tuple) and _contains(a, leaf) for a in ir[1:])
-
-
 def _ir_width(ir, locw):
     k = ir[0]
     if k in ("num", "cell", "load"):
@@ -547,442 +567,6 @@ def _ir_width(ir, locw):
     if k in _CMP_TAGS or k in ("bnot", "carry"):
         return 1
     return ir[-1]
-
-
-# ---- SSA construction over the pass-1 statement list -----------------------------
-class _Item:
-    """One extractable expression site: original IR + its version environment."""
-
-    __slots__ = ("ir", "locs", "cells", "heap", "def_leaf", "volatile", "chosen", "dropped")
-
-    def __init__(self, ir, locs, cells, heap, volatile):
-        self.ir = ir
-        self.locs = locs
-        self.cells = cells
-        self.heap = heap
-        self.def_leaf = None
-        self.volatile = volatile
-        self.chosen = ir
-        self.dropped = False
-
-
-_CALLISH = frozenset(("call", "pcall", "dcall", "callb", "swc", "swg", "opsw", "dbr", "dgoto"))
-_NOFALL = frozenset(("ret", "goto", "cont", "brk", "unobs", "dbr", "dgoto", "igoto"))
-
-
-def _falls(s):
-    if s[0] in _NOFALL:
-        return False
-    if s[0] == "if":
-        return _falls_list(s[3]) or _falls_list(s[4])
-    return True
-
-
-def _falls_list(stmts):
-    return not stmts or _falls(stmts[-1])
-
-
-def _writes(stmts, out):
-    """Collect (written locals, const-store addresses, wild) under ``stmts``."""
-    for s in stmts:
-        k = s[0]
-        if k in ("asg", "for"):
-            out[0].add(s[1])
-        elif k == "pcall":
-            out[0].update(s[3])
-        elif k == "st":
-            if s[1][0] == "const":
-                out[1].add(s[1][1])
-            else:
-                out[2] = True
-        elif k in _CALLISH or k in ("label", "igoto"):
-            out[2] = True
-        for b in frameproc._stmt_bodies(s):
-            _writes(b, out)
-    return out
-
-
-class _Ssa:
-    """Version environment: unique versions per write, havoc at joins."""
-
-    def __init__(self):
-        self.tick = 0
-        self.locs = {}
-        self.cells = {}
-        self.heap = 0
-        self.locw = {}
-        self.defs = []
-        self.items = []
-        self._vol = False
-
-    def fresh(self):
-        self.tick += 1
-        return self.tick
-
-    def conv(self, e):
-        k = e[0]
-        if k == "const":
-            return ("num", e[1] & _mask(e[2]), e[2])
-        if k == "loc":
-            ver = self.locs.setdefault(e[1], self.fresh())
-            return ("loc", "%s.%d" % (e[1], ver))
-        if k == "mem":
-            return self._conv_mem(e)
-        if k == "op":
-            return self._conv_op(e)
-        raise ValueError("unencodable node %r" % (k,))
-
-    def _conv_mem(self, e):
-        addr, w = e[1], e[2]
-        if addr[0] == "const":
-            a = addr[1]
-            if not sidprog._ld_safe(addr):
-                self._vol = True
-                return ("cell", a, w, self.fresh())
-            return ("cell", a, w, self.cells.setdefault((a, w), self.fresh()))
-        air = self.conv(addr)
-        if sidprog._ld_safe(addr):
-            return ("load", air, w, self.heap)
-        self._vol = True
-        return ("load", air, w, self.fresh())
-
-    def _conv_op(self, e):
-        mn, kids, w = e[1], e[2], e[3]
-        if mn == "INT_ZEXT":
-            return ("zext", self.conv(kids[0]))
-        name = _OPS.get(mn)
-        if name is None:
-            raise ValueError("unencodable op %r" % (mn,))
-        if name in _CMP_TAGS:
-            return (name, self.conv(kids[0]), self.conv(kids[1]))
-        if name == "carry":
-            x = self.conv(kids[0])
-            return ("carry", x, self.conv(kids[1]), _ir_width(x, self.locw))
-        ir = self.conv(kids[0])
-        for kid in kids[1:]:
-            ir = (name, ir, self.conv(kid), w)
-        return ir
-
-    def item(self, e):
-        self._vol = False
-        ir = self.conv(e)
-        it = _Item(ir, dict(self.locs), dict(self.cells), self.heap, self._vol)
-        self.items.append(it)
-        return it
-
-    def define_loc(self, name, rhs_item):
-        ver = self.fresh()
-        self.locs[name] = ver
-        leaf = ("loc", "%s.%d" % (name, ver))
-        self.locw[leaf[1]] = _ir_width(rhs_item.ir, self.locw)
-        rhs_item.def_leaf = leaf
-        self.defs.append((leaf, rhs_item.ir))
-
-    def define_cell(self, a, w, rhs_item):
-        self.bump_cells_at(a, w)
-        self.heap = self.fresh()
-        ver = self.fresh()
-        self.cells[(a, w)] = ver
-        leaf = ("cell", a, w, ver)
-        rhs_item.def_leaf = leaf
-        self.defs.append((leaf, rhs_item.ir))
-
-    def bump_cells_at(self, a, w):
-        for a2, w2 in list(self.cells):
-            if a2 < a + w and a < a2 + w2:
-                self.cells[(a2, w2)] = self.fresh()
-
-    def havoc_all(self):
-        for n in list(self.locs):
-            self.locs[n] = self.fresh()
-        for key in list(self.cells):
-            self.cells[key] = self.fresh()
-        self.heap = self.fresh()
-
-    def snap(self):
-        return dict(self.locs), dict(self.cells), self.heap
-
-    def restore(self, s):
-        self.locs, self.cells, self.heap = dict(s[0]), dict(s[1]), s[2]
-
-    def merge(self, a, b):
-        locs = {}
-        for n in set(a[0]) | set(b[0]):
-            va, vb = a[0].get(n), b[0].get(n)
-            locs[n] = va if va == vb else self.fresh()
-        cells = {}
-        for key in set(a[1]) | set(b[1]):
-            va, vb = a[1].get(key), b[1].get(key)
-            cells[key] = va if va == vb else self.fresh()
-        self.locs, self.cells = locs, cells
-        self.heap = a[2] if a[2] == b[2] else self.fresh()
-
-
-class _Lift:
-    """Builds the SSA skeleton, then saturates, extracts and sweeps."""
-
-    def __init__(self, aliases=None):
-        self.ssa = _Ssa()
-        self.aliases = aliases or {}
-        self.stats = {}
-        self._groups = {}
-
-    def build(self, stmts):
-        return [self._stmt(s) for s in stmts]
-
-    def _stmt(self, s):
-        k = s[0]
-        ssa = self.ssa
-        if k == "asg":
-            it = ssa.item(s[2])
-            ssa.define_loc(s[1], it)
-            return ("asg", s[1], it)
-        if k == "st":
-            return self._store(s)
-        if k == "if":
-            return self._if(s)
-        if k == "loop":
-            written = _writes(s[1], [set(), set(), False])
-            self._loop_havoc(written)
-            body = self.build(s[1])
-            self._loop_havoc(written)
-            return ("loop", body)
-        if k == "label":
-            ssa.havoc_all()
-            return s
-        if k in ("goto", "cont", "brk", "ret", "unobs"):
-            return s
-        if k == "call":
-            ssa.havoc_all()
-            return s
-        if k == "callb":
-            body = self.build(s[3])
-            self._loop_havoc(_writes(s[3], [set(), set(), False]))
-            return ("callb", s[1], s[2], body)
-        if k == "dcall":
-            it = ssa.item(s[1])
-            ssa.havoc_all()
-            return ("dcallx", it, s[2])
-        if k in ("swc", "swg", "opsw"):
-            return self._switch(s)
-        if k == "dbr":
-            return ("dbr", s[1], ssa.item(s[2]), ssa.item(s[3]), s[4])
-        if k == "dgoto":
-            return ("dgotox", ssa.item(s[1]))
-        if k == "igoto":
-            return ("igotox", s[1], None if s[2] is None else ssa.item(s[2]))
-        raise ValueError("unexpected statement %r" % (k,))
-
-    def _switch(self, s):
-        """Arms fork from the dispatch-site environment; havoc joins them."""
-        ssa = self.ssa
-        pre = ssa.snap()
-        arms = []
-        cases = s[2] if s[0] in ("swc", "opsw") else s[1]
-        for lbl, body in cases:
-            ssa.restore(pre)
-            arms.append((lbl, self.build(body)))
-        ssa.havoc_all()
-        if s[0] == "swc":
-            return ("swc", s[1], arms)
-        if s[0] == "opsw":
-            return ("opsw", s[1], arms)
-        return ("swg", arms)
-
-    def _if(self, s):
-        ssa = self.ssa
-        it = ssa.item(s[2])
-        if s[1] == "ifnot":
-            it.ir = ("bnot", it.ir)
-            it.chosen = it.ir
-        pre = ssa.snap()
-        then = self.build(s[3])
-        mid = ssa.snap()
-        ssa.restore(pre)
-        els = self.build(s[4])
-        tf, ef = _falls_list(s[3]), _falls_list(s[4])
-        if tf and ef:
-            ssa.merge(mid, ssa.snap())
-        elif tf:
-            ssa.restore(mid)
-        return ("if", it, then, els)
-
-    def _loop_havoc(self, written):
-        ssa = self.ssa
-        if written[2]:
-            ssa.havoc_all()
-            return
-        for n in written[0]:
-            ssa.locs[n] = ssa.fresh()
-        for a in written[1]:
-            ssa.bump_cells_at(a, 1)
-            ssa.cells[(a, 1)] = ssa.fresh()
-        if written[1]:
-            ssa.heap = ssa.fresh()
-
-    def _store(self, s):
-        addr, e = s[1], s[2]
-        it = self.ssa.item(e)
-        if addr[0] == "const":
-            w = _ir_width(it.ir, self.ssa.locw)
-            self.ssa.define_cell(addr[1], w, it)
-            return ("st", (addr[1], w), it)
-        addr_it = self.ssa.item(addr)
-        for key in list(self.ssa.cells):
-            self.ssa.cells[key] = self.ssa.fresh()
-        self.ssa.heap = self.ssa.fresh()
-        return ("stx", addr_it, it)
-
-    # ---- e-graph phase -----------------------------------------------------
-    def saturate(self, iters=24, k=12):
-        rs, names = admitted_rules()
-        eg = EGraph()
-        memo = {}
-        for it in self.ssa.items:
-            eg.register(_egg_of(it.ir, memo))
-        for leaf, rhs in self.ssa.defs:
-            eg.register(union(_egg_of(leaf, memo)).with_(_egg_of(rhs, memo)))
-        t0 = time.monotonic()
-        rep = eg.run(rs * iters)
-        t1 = time.monotonic()
-        fired = {}
-        for key, n in rep.num_matches_per_rule.items():
-            if n:
-                name = names.get(key, str(key))
-                fired[name] = fired.get(name, 0) + n
-        self._group_leaves(eg, memo)
-        for it in self.ssa.items:
-            pool = [_parse_ir(str(x)) for x in eg.extract_multiple(_egg_of(it.ir, memo), k)]
-            it.chosen = self._select(it, pool)
-        t2 = time.monotonic()
-        self.stats.update(
-            items=len(self.ssa.items),
-            defs=len(self.ssa.defs),
-            fired=fired,
-            matches=sum(fired.values()),
-            saturate_s=round(t1 - t0, 3),
-            extract_s=round(t2 - t1, 3),
-        )
-
-    def _group_leaves(self, eg, memo):
-        """Leaf term -> its e-class mates, keyed by the class's extracted rep."""
-        leaves = set()
-        for it in self.ssa.items:
-            _leaves(it.ir, leaves)
-        for leaf, _rhs in self.ssa.defs:
-            leaves.add(leaf)
-        reps = {}
-        for leaf in leaves:
-            reps.setdefault(str(eg.extract(_egg_of(leaf, memo))), []).append(leaf)
-        self._groups = {}
-        for mates in reps.values():
-            if len(mates) > 1:
-                for leaf in mates:
-                    self._groups[leaf] = sorted(mates, key=lambda t: (_cost(t), repr(t)))
-
-    def _repair(self, ir, it, ok):
-        """Site-valid equivalent of ``ir``: stale leaves swap for class mates."""
-        if ir[0] in ("num", "cell", "loc"):
-            if self._valid(ir, it, ok):
-                return ir
-            for alt in self._groups.get(ir, ()):
-                if alt != it.def_leaf and self._valid(alt, it, ok):
-                    return alt
-            return None
-        out = [ir[0]]
-        for a in ir[1:]:
-            if isinstance(a, tuple):
-                a = self._repair(a, it, ok)
-                if a is None:
-                    return None
-            out.append(a)
-        fixed = tuple(out)
-        return fixed if self._valid(fixed, it, ok) else None
-
-    def _select(self, it, pool):
-        ok = _leaves(it.ir, set())
-        best, best_cost = it.ir, _cost(it.ir)
-        for ir in pool:
-            ir = self._repair(ir, it, ok)
-            if ir is None or ir == it.ir:
-                continue
-            if it.def_leaf is not None and _contains(ir, it.def_leaf):
-                continue
-            c = _cost(ir)
-            if c < best_cost or (c == best_cost and best != it.ir and repr(ir) < repr(best)):
-                best, best_cost = ir, c
-        return best
-
-    def _valid(self, ir, it, ok):
-        k = ir[0]
-        if k in ("num", "cell", "loc"):
-            if k == "num" or ir in ok:
-                return True
-            if k == "cell":
-                return it.cells.get((ir[1], ir[2])) == ir[3]
-            name, _sep, ver = ir[1].rpartition(".")
-            return it.locs.get(name) == int(ver)
-        if k == "load" and ir[3] != it.heap:
-            return False
-        return all(self._valid(a, it, ok) for a in ir[1:] if isinstance(a, tuple))
-
-    def sweep(self, skeleton):
-        """Drop dead non-register temp definitions after extraction."""
-        dropped = 0
-        while True:
-            used = set()
-            defs = self._collect(skeleton, used)
-            dead = [
-                (name, it)
-                for name, it in defs
-                if not it.dropped
-                and not it.volatile
-                and name not in frameproc._ALL_REG_LOCALS
-                and it.def_leaf not in used
-            ]
-            if not dead:
-                break
-            for _name, it in dead:
-                it.dropped = True
-                dropped += 1
-        self.stats["copies_dropped"] = dropped
-        return skeleton
-
-    def _collect(self, nodes, used):
-        out = []
-        for nd in nodes:
-            k = nd[0]
-            if k == "asg":
-                if not nd[2].dropped:
-                    _leaves(nd[2].chosen, used)
-                    out.append((nd[1], nd[2]))
-            elif k == "st":
-                _leaves(nd[2].chosen, used)
-            elif k == "stx":
-                _leaves(nd[1].chosen, used)
-                _leaves(nd[2].chosen, used)
-            elif k == "if":
-                _leaves(nd[1].chosen, used)
-                out.extend(self._collect(nd[2], used))
-                out.extend(self._collect(nd[3], used))
-            elif k == "loop":
-                out.extend(self._collect(nd[1], used))
-            elif k == "callb":
-                out.extend(self._collect(nd[3], used))
-            elif k == "dcallx":
-                _leaves(nd[1].chosen, used)
-            elif k == "dbr":
-                _leaves(nd[2].chosen, used)
-                _leaves(nd[3].chosen, used)
-            elif k == "dgotox":
-                _leaves(nd[1].chosen, used)
-            elif k == "igotox":
-                if nd[2] is not None:
-                    _leaves(nd[2].chosen, used)
-            elif k in ("swc", "swg", "opsw"):
-                for _lbl, b in nd[2] if k != "swg" else nd[1]:
-                    out.extend(self._collect(b, used))
-        return out
 
 
 # ---- printing --------------------------------------------------------------------
@@ -1057,8 +641,14 @@ class _Printer:
     def _loadref(self, ir):
         addr, w = ir[1], ir[2]
         if w == 1 and addr[0] == "add" and addr[3] == 2:
-            idx, base = addr[1], addr[2]
-            if base[0] == "num" and base[1] >= 0x100 and idx[0] == "zext" and idx[1][0] == "loc":
+            a, b = addr[1], addr[2]
+            base, idx = (a, b) if a[0] == "num" else (b, a)  # add is commutative
+            if (
+                base[0] == "num"
+                and base[1] >= 0x100
+                and idx[0] == "zext"
+                and idx[1][0] in ("loc", "cell")
+            ):
                 return "%s[%s]" % (self.name(base[1]), self.fmt(idx[1]))
         return "mem[%s]%s" % (self.fmt(addr), sidprog._wsuf(w))
 
@@ -1152,31 +742,6 @@ class _Printer:
         self.line("}", d)
 
 
-class LiftResult:
-    """Lifted text plus the SSA/extraction record needed for verification."""
-
-    def __init__(self, entry, lines, lifter, skeleton):
-        self.entry = entry
-        self.lines = lines
-        self.text = "\n".join(lines) + "\n"
-        self.lifter = lifter
-        self.skeleton = skeleton
-        self.stats = lifter.stats
-
-
-def lift_stmts(stmts, aliases=None, entry=0, iters=24, k=12):
-    """Equality-saturation lift of one pass-1 statement list."""
-    lifter = _Lift(aliases)
-    skeleton = lifter.build(stmts)
-    lifter.saturate(iters=iters, k=k)
-    lifter.sweep(skeleton)
-    printer = _Printer(lifter.aliases)
-    printer.line("sub_%04X {" % entry, 0)
-    printer.seq(skeleton, 1)
-    printer.line("}", 0)
-    return LiftResult(entry, printer.out, lifter, skeleton)
-
-
 def pass1(model, entry=None):
     """(pass-1 statement list, aliases, entry) for one committed-model procedure."""
     aliases = getattr(model, "symbols", None)
@@ -1189,128 +754,8 @@ def pass1(model, entry=None):
     return builder.proc(dict(trees)[entry]), aliases, entry
 
 
-def lift(model, entry=None, iters=24, k=12):
-    """Lift one procedure of a committed model (default: the play procedure)."""
-    stmts, aliases, entry = pass1(model, entry)
-    return lift_stmts(stmts, aliases, entry, iters=iters, k=k)
-
-
 _EMIT_NOTES = (
     "; eqlift PoC: solver-lifted procedure bodies over the committed sidprog model",
     "; header sections (state/data/symbols) reuse the frameprog emitter verbatim;",
     ";   procedure statements are equality-saturation extraction output",
 )
-
-
-def emit(model, iters=24, k=12):
-    """Whole-artifact eqlift text for a committed model: header + every
-    procedure lifted; returns (text, per-procedure LiftResult list)."""
-    decls = getattr(model, "data_decls", None)
-    aliases = getattr(model, "symbols", None)
-    if decls is None:
-        decls, aliases = datadecl.declarations(model)
-    trees, labels, view = sidprog._model_trees(model)
-    head = ["eqlift 0"]
-    head.extend(_EMIT_NOTES)
-    head.append("play $%04X" % model.play)
-    head.append("init $%04X" % model.init)
-    if getattr(model, "subtune", 0):
-        head.append("subtune %d" % model.subtune)
-    prologue = getattr(model, "prologue", ())
-    if prologue:
-        head.append("sid-init {")
-        head.extend("  $%02X = $%02X" % (r, v) for r, v in prologue)
-        head.append("}")
-    state, inputs = frameprog._state_lines(view, decls, model.dispatch_sets)
-    if inputs:
-        head.append("inputs { %s }" % " ".join(inputs))
-    header_body, _cov = sidprog._data_lines(decls, model.mem0)
-    header_body = state + header_body
-    to_alias, _strip = sidprog._alias_res(aliases)
-    if to_alias is not None:
-        header_body = list(map(to_alias, header_body))
-    lines = head + header_body + sidprog._symbol_lines(aliases)
-    results = []
-    for entry, root in trees:
-        conv = frameproc._Conv(frameproc._Names(aliases))
-        builder = frameproc._Builder(labels, set(model.dispatch_sets), view, conv)
-        res = lift_stmts(builder.proc(root), aliases, entry, iters=iters, k=k)
-        lines.extend(res.lines)
-        results.append(res)
-    return "\n".join(lines) + "\n", results
-
-
-# ---- end-to-end Z3 check: chosen terms equal originals under the SSA equations ---
-_BV16 = z3.BitVecSort(16)
-
-
-class _Z3Env:
-    """Encodes IR terms over QF_BV with shared leaf constants per SSA version."""
-
-    def __init__(self, locw):
-        self.locw = locw
-        self.alg = _Z3Alg()
-        self.leaves = {}
-        self.funcs = {}
-
-    def enc(self, ir):
-        k = ir[0]
-        w = _ir_width(ir, self.locw)
-        if k == "num":
-            return z3.BitVecVal(ir[1], 8 * w)
-        if k in ("cell", "loc"):
-            key = (ir, w)
-            if key not in self.leaves:
-                self.leaves[key] = z3.BitVec("leaf_%d" % len(self.leaves), 8 * w)
-            return self.leaves[key]
-        if k == "load":
-            sort = z3.BitVecSort(8 * w)
-            f = self.funcs.setdefault(
-                (ir[2], ir[3]), z3.Function("ld_%d_%d" % (ir[2], ir[3]), _BV16, sort)
-            )
-            return f(self.enc(ir[1]))
-        return self._enc_op(ir, k, w)
-
-    def _enc_op(self, ir, k, w):
-        alg = self.alg
-        if k == "zext":
-            return alg.zext(self.enc(ir[1]))
-        if k == "bnot":
-            return alg.bnot(self.enc(ir[1]))
-        x, y = self.enc(ir[1]), self.enc(ir[2])
-        if k in _CMP_TAGS:
-            return getattr(alg, k)(x, y)
-        if k == "carry":
-            return alg.carry(x, y, ir[3])
-        return getattr(alg, k)(x, y, w)
-
-
-def _loc_widths(defs):
-    locw = {}
-    for leaf, rhs in defs:
-        if leaf[0] == "loc":
-            locw[leaf[1]] = _ir_width(rhs, locw)
-    return locw
-
-
-def verify_lift(result, limit=None):
-    """Z3-prove original == chosen for every rewritten site; returns the count."""
-    defs = result.lifter.ssa.defs
-    env = _Z3Env(_loc_widths(defs))
-    s = z3.Solver()
-    for leaf, rhs in defs:
-        s.add(env.enc(leaf) == env.enc(rhs))
-    proved = 0
-    for it in result.lifter.ssa.items:
-        if it.dropped or it.chosen == it.ir:
-            continue
-        s.push()
-        s.add(env.enc(it.ir) != env.enc(it.chosen))
-        r = s.check()
-        s.pop()
-        if r != z3.unsat:
-            raise AssertionError("extracted term not equivalent: %r vs %r" % (it.ir, it.chosen))
-        proved += 1
-        if limit is not None and proved >= limit:
-            break
-    return proved
