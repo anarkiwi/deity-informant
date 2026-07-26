@@ -242,13 +242,26 @@ song_model = {
 
 ## PoC status
 
-`song_model.py` implements items 1 and 2, reusing `eqlift_annotate` provenance:
+`song_model.py` implements items 1 and 2, plus a control/envelope **automaton**
+covering items 4–5, reusing `eqlift_annotate` provenance:
 
 - `recover(stmts, model)` / `analyze(model)` return
   `SongModel(counters=[Counter(base, kind, reload)],
-   freq=[FreqDriver(role, source, pitch, slide, kind)])`.
+   freq=[FreqDriver(role, source, pitch, slide, kind)],
+   control=Automaton(states, transitions))`.
 - Counters use the item-1 step/reload pattern; freq drivers use the item-2
   root+pitch classification (`note`/`slide`/`other`).
+- **Automaton.** Each store to `control`/`attack_decay`/`sustain_release` becomes
+  a `Transition(role, action, to, source, guards)`: the guard is the conjunction
+  of enclosing branch conditions on the path (rendered, e.g. `(m_5523 & $01)`,
+  `(m_54F5 & $20) == $00`), `action` classifies the `$D404` value
+  (`gate_off` = mask clears bit 0, `gate_on` = OR bit 0, else `waveform`),
+  `to` is the note-lifecycle state (`off`/`on`), and `source` is the
+  backtraced waveform/AD/SR table base. States are `{off, on}`. This is items
+  4–5 as an extracted finite automaton; the *when* (guards) and *what*
+  (action + table) are recovered together. Commando yields 7 edges: note-on
+  waveform under the `m_5523 & $01` flag bit, note-off `gate_off` under
+  `(m_54F5 & $20)==$00 & (m_54F2==$00)`, and the note-on AD/SR selections.
 
 Verified (`tests/test_song_model.py`, 200-frame decompile, no solver needed):
 
@@ -259,7 +272,8 @@ Verified (`tests/test_song_model.py`, 200-frame decompile, no solver needed):
 | Krakout | Daglish | 5 (incl. 16-bit duration `m_E615`) | other | pitch ROM behind computed base → no `note` |
 
 **Not yet in the PoC (documented above as future work):** sub-classifying
-`slide` into portamento/vibrato/arpeggio by sign source (item 2); the PWM,
-control, AD/SR, and filter recovery (items 3–6), which reuse the same
-counter/backtrace primitives; and following Krakout's computed pitch base (would
-need self-modified-pointer resolution, out of scope for constant-base provenance).
+`slide` into portamento/vibrato/arpeggio by sign source (item 2); PWM and filter
+recovery (items 3, 6), which reuse the same counter/backtrace and automaton
+primitives; merging the per-store automaton edges into a fully minimised per-voice
+state machine; and following Krakout's computed pitch base (would need
+self-modified-pointer resolution, out of scope for constant-base provenance).

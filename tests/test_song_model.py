@@ -38,6 +38,15 @@ def test_step_and_cell_helpers():
     assert sm._cell(0x0027) and sm._cell(0x5513) and not sm._cell(0xD400) and not sm._cell(0x01)
 
 
+def test_control_action_classifier():
+    gate_off = ("op", "INT_AND", (("const", 0xFE, 1), ("mem", ("const", 0x54F8, 2), 1)), 1)
+    gate_on = ("op", "INT_OR", (("mem", ("const", 0x5593, 2), 1), ("const", 0x01, 1)), 1)
+    wave = ("op", "INT_AND", (("mem", ("const", 0x5593, 2), 1), ("loc", "ctr_5501")), 1)
+    assert sm._control_action(gate_off) == "gate_off"
+    assert sm._control_action(gate_on) == "gate_on"
+    assert sm._control_action(wave) == "waveform"
+
+
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Commando", "Hubbard_Rob"))
 def test_commando_cadence_and_freq_drivers(sid, subtune, secs):
     """The global tick divider reloads from the speed cell, note-duration and the
@@ -51,6 +60,15 @@ def test_commando_cadence_and_freq_drivers(sid, subtune, secs):
     kinds = {d.kind for d in m.freq}
     assert "note" in kinds and "slide" in kinds
     assert any(d.pitch for d in m.freq)
+    # control automaton: note-lifecycle states with guarded gate/waveform/AD-SR edges
+    auto = m.control
+    assert auto.states == ("off", "on")
+    acts = {t.action for t in auto.transitions}
+    assert {"gate_off", "waveform", "ad", "sr"} <= acts
+    on = [t for t in auto.transitions if t.action == "waveform"]
+    assert any("(m_5523 & $01)" in g for t in on for g in t.guards)  # flag-bit note trigger
+    off = [t for t in auto.transitions if t.action == "gate_off"]
+    assert off and all(t.to == "off" for t in off) and any(t.guards for t in off)
 
 
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Krakout", "Daglish_Ben"))
