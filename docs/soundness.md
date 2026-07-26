@@ -95,7 +95,59 @@ the aliasing premise is discharged assume-guarantee. Under the play boundary
 this machinery is off the critical path (Bionic's aliasing copy-loop writer is
 init-phase) but remains for certification of play-phase counted loops.
 
-## Guard-live taxonomy (full Songlengths corpus)
+## Run-to-recurrence closure (whole-program certification)
+
+The song data is fixed and the player deterministic, so whole-program closure
+is concrete execution: `decompile(..., close=True)` / CLI `--close` keeps
+playing past the Songlengths window until the play-relevant frame-entry state
+— every play-written cell, the stack page, and the registers — exactly recurs
+(16-byte blake2b digest per frame, `structured.Closure` record). From a
+recurring state the run repeats forever, so at recurrence the observation
+sets (opcode bytes, transfer targets) are complete for the **infinite** run:
+`_commit_tables` marks every control site `certified` with the horizon in the
+lemma (`closure: frame N entry state == frame M`). Committed sets remain the
+observed sets — the extension can only complete them with really-played arms
+(Ghouls_n_Ghosts +2 targets, Athena +1), never widen beyond real behavior.
+`--sound` composes: close, then require all certified.
+
+The cycle counter is excluded from the state: it strictly increases, and its
+only state-visible channel is the volatile-read model. 137/140 corpus tunes
+perform zero volatile reads in play, so their frame transition is a pure
+function of (memory, registers) and the certification argument is exact. The
+3 osc3 readers (Atmosphere, Atmosphere_II, Chameleon; `$D41B`) feed
+cycle-derived values into play-written cells; those cells are in the state,
+which under the deterministic volatile model prevents recurrence — all three
+honestly hit the cap and stay guard-live. (Their reads are pure value-plane
+modulation with zero control/SMC interaction, so control-set closure would
+remain valid even there; the corpus never has to rely on that argument.)
+
+Cap: `close_cap` total frames, default `max(4 × window, 60000)`. No
+recurrence within the cap ⇒ `Closure.note` reports it, guards stay live, and
+`Closure.diag` lists the still-changing cells; certification never fires
+without an exact recurrence. A play fault past the window aborts the scan the
+same way (the window artifact is unaffected).
+
+Corpus (140 tunes, full Songlengths windows, default cap, 2026-07-26):
+
+- **111/140 recur.** Horizon: min 278 / median 9216 / max 55065 frames;
+  median 1.8× the window (min 0.56×, max 17.7×).
+- **Certified sites 20 → 133 of 155**; `--sound` tunes **79 → 129/140**.
+  All closed builds replay bit-exact from model and parsed text over the
+  window. Total closure-build runtime 4296 s CPU for the 140 tunes; worst
+  single tune International_Karate 140 s (129000-frame cap run) vs the 78 s
+  baseline worst.
+- **29/140 hit the cap.** Per-cell period probes find no unbounded counters:
+  every cell is individually periodic (or a slow not-yet-repeated cell), but
+  the joint state period is the alignment of incommensurate components — the
+  song loop (Commando 11808, Monty 17536 frames) against free-running
+  256/192/96/64-frame modulation counters and slow envelope cells — putting
+  exact recurrence astronomically past any cap (Commando joint lcm ≈ 6.4e11
+  frames), plus the 3 osc3 tunes. The capped tunes keep 22 live guards over
+  11 tunes (Arkanoid ×5, Wizball ×4, Footloose ×3, 80squares ×3, and 7
+  single-site tunes); the other 18 have no dynamic sites or were already
+  statically certified.
+
+## Guard-live taxonomy (full Songlengths corpus, closure off)
 
 Measured 2026-07-25 over 140 tunes: 20 sites certified, 135 guard-live,
 79/140 tunes fully certified (`--sound` passes); all 140 replay bit-exact

@@ -7,6 +7,7 @@ guarded at run time; static analysis only certifies guards dead, never widens.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 from collections import namedtuple
 
@@ -21,6 +22,12 @@ Proof = namedtuple("Proof", "site kind status targets lemma")
 observed set: the runtime guard is provably dead; ``lemma`` carries the
 derivation) or ``observed`` (guard live; ``lemma`` names why static did not
 certify — a refusal diagnostic or a wider static set)."""
+
+Closure = namedtuple("Closure", "recur first window cap diag note")
+"""Run-to-recurrence result. ``recur``/``first``: the frame whose entry state
+exactly matched an earlier frame's and that earlier frame (both None without
+recurrence within ``cap`` total frames); ``window`` is the evidence window;
+``diag`` lists still-changing cells ``(addr, at window, at cap)``."""
 
 _VOL = frozenset((0xD011, 0xD012, 0xD41B, 0xD41C))
 _VOL0 = frozenset((0xD019, 0xDC0D))  # constant-0 sources under the per-frame driver
@@ -79,7 +86,18 @@ class Evidence:
     init ran concretely into the ``mem0`` snapshot + SID-write ``prologue``."""
 
     def __init__(
-        self, pcs, leaders, targets, written, wlog, end_mem, end_reg, prologue, mem0, reads=()
+        self,
+        pcs,
+        leaders,
+        targets,
+        written,
+        wlog,
+        end_mem,
+        end_reg,
+        prologue,
+        mem0,
+        reads=(),
+        closure=None,
     ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
@@ -91,14 +109,30 @@ class Evidence:
         self.end_reg = end_reg
         self.prologue = prologue  # [(reg, val)] order-preserved, timing non-normative
         self.mem0 = mem0  # post-init snapshot: the play program's initial image
+        self.closure = closure  # run-to-recurrence Closure record (None: scan off)
 
 
-def trace(mem, init, play, frames, subtune=0):
+def _frame_digest(vm, cells):
+    """16-byte digest of the frame-entry play state: the play-written cells,
+    the stack page, and the registers (cycle counter excluded; the exclusion
+    is justified in docs/soundness.md, closure certifier)."""
+    h = hashlib.blake2b(digest_size=16)
+    h.update(bytes(a & 0xFF for a in cells))
+    h.update(bytes(a >> 8 for a in cells))
+    h.update(bytes(map(vm.mem.__getitem__, cells)))
+    h.update(vm.mem[0x100:0x200])
+    h.update(bytes(v & 0xFF for v in vm.reg))
+    return h.digest()
+
+
+def trace(mem, init, play, frames, subtune=0, cap=0):
     """Run init concretely to the play boundary, then record play-phase
     evidence over ``frames`` play calls from the post-init snapshot.
 
     ``subtune`` (0-based) is passed to init in A. The cycle counter (and so
-    the volatile-read model) is zeroed at the boundary.
+    the volatile-read model) is zeroed at the boundary. ``cap`` > 0 keeps
+    playing past ``frames`` until the frame-entry state recurs (or ``cap``
+    total frames), recording the run-to-recurrence ``Closure``.
     """
     vm = _EvidenceVM(mem)
     vm.wlog = []
@@ -143,19 +177,52 @@ def trace(mem, init, play, frames, subtune=0):
     vm.reads.clear()
     vm.wlog = []
     vm.cycles = 0
-    for _ in range(frames):
-        run_entry(play)
+    seen, cells = {}, []
+    first = recur = None
+    note, boundary, f = "", None, 0
+    while f < frames or (cap and recur is None and not note and f < cap):
+        if cap and recur is None and f < cap:
+            if len(cells) != len(vm.written):
+                cells = sorted(vm.written)
+            prev = seen.setdefault(_frame_digest(vm, cells), f)
+            if prev != f:
+                first, recur = prev, f
+        try:
+            run_entry(play)
+        except (KeyError, RuntimeError) as exc:
+            if f < frames:
+                raise
+            note = "play faulted at frame %d: %s" % (f, exc)
+        f += 1
+        if f == frames:
+            boundary = (len(vm.wlog), bytes(vm.mem), list(vm.reg))
+    if boundary is None:
+        boundary = (len(vm.wlog), bytes(vm.mem), list(vm.reg))
+    closure = None
+    if cap:
+        diag = ()
+        if recur is None:
+            note = note or "no recurrence within %d frames" % cap
+            diag = tuple(
+                (a, boundary[1][a], vm.mem[a])
+                for a in sorted(vm.written)
+                if vm.mem[a] != boundary[1][a]
+            )
+        closure = Closure(recur, first, frames, cap, diag, note)
+    wlen, end_mem, end_reg = boundary
+    del vm.wlog[wlen:]
     return Evidence(
         pcs,
         leaders,
         targets,
         vm.written,
         vm.wlog,
-        bytes(vm.mem),
-        list(vm.reg),
+        end_mem,
+        end_reg,
         prologue,
         mem0,
         vm.reads,
+        closure,
     )
 
 
@@ -1962,6 +2029,14 @@ def _commit_tables(model, closed, sites):
     proofs, dyn_targets, dispatch_sets = {}, {}, {}
     ana = model.analysis
     derivs = ana.derivations if ana is not None else {}
+    clo = model.closure
+    horizon = None
+    if clo is not None and clo.recur is not None:
+        horizon = "closure: frame %d entry state == frame %d (window %d); observed set complete" % (
+            clo.recur,
+            clo.first,
+            clo.window,
+        )
     for site in sorted(sites):
         term0, tgts, lemma = sites[site]
         obs = tuple(sorted(model.ev_targets.get(site, ())))
@@ -1969,6 +2044,8 @@ def _commit_tables(model, closed, sites):
         if lemma is None and tuple(sorted(tgts)) == obs:
             deriv = "; ".join(txt for _cells, txt in sorted(derivs.get(site, {}).items()))
             proofs[site] = Proof(site, kind, "certified", obs, deriv)
+        elif horizon is not None:
+            proofs[site] = Proof(site, kind, "certified", obs, horizon)
         else:
             proofs[site] = Proof(site, kind, "observed", obs, _static_lemma(tgts, lemma, obs))
         dyn_targets[site] = list(obs)
@@ -1977,6 +2054,8 @@ def _commit_tables(model, closed, sites):
         vals = closed.get(pc, set())
         if vals is not TOP and tuple(sorted(vals)) == obs:
             proofs[pc] = Proof(pc, "opcode", "certified", obs, "")
+        elif horizon is not None:
+            proofs[pc] = Proof(pc, "opcode", "certified", obs, horizon)
         else:
             lemma = (
                 "opcode-cell value set TOP (aliasing computed store)"
@@ -2071,8 +2150,20 @@ def proof_report(model):
     tally = {}
     for p in proofs:
         tally[p.status] = tally.get(p.status, 0) + 1
+    clo = model.closure
+    closure = None
+    if clo is not None:
+        closure = {
+            "recur": clo.recur,
+            "first": clo.first,
+            "window": clo.window,
+            "cap": clo.cap,
+            "note": clo.note,
+            "diag": ["$%04X %02X->%02X" % d for d in clo.diag],
+        }
     return {
         "tally": tally,
+        "closure": closure,
         "sites": [
             {
                 "site": "$%04X" % p.site,
@@ -2095,6 +2186,17 @@ def format_report(model):
         + ", ".join("%s=%d" % (k, tally[k]) for k in sorted(tally))
         + (" [SOUND]" if not tally.get("observed") else "")
     ]
+    clo = rep["closure"]
+    if clo is not None:
+        if clo["recur"] is not None:
+            lines.append(
+                "  closure: recurrence at frame %d == frame %d (window %d, cap %d)"
+                % (clo["recur"], clo["first"], clo["window"], clo["cap"])
+            )
+        else:
+            lines.append("  closure: %s; guards stay live" % clo["note"])
+            for d in clo["diag"][:8]:
+                lines.append("    still changing: " + d)
     for s in rep["sites"]:
         line = "  %s %-7s %-8s %d target(s)" % (
             s["site"],
@@ -2377,6 +2479,7 @@ class Model:
         self.leaders = set(evidence.leaders)
         self.cut = set(evidence.leaders)  # block boundaries: no suffix duplication
         self.ev_targets = evidence.targets
+        self.closure = evidence.closure  # run-to-recurrence record (None: scan off)
         self.dispatch_pcs = {pc for pc in evidence.pcs if pc in evidence.written}
         self.dispatch_sets = {}
         self.blocks = {}
@@ -2433,13 +2536,15 @@ class Model:
         return blk
 
 
-def decompile(mem, init, play, frames, subtune=0, sound=False):
+def decompile(mem, init, play, frames, subtune=0, sound=False, close=False, close_cap=None):
     """Full-length evidence trace + committed, passed model: ``(model, evidence)``.
 
-    ``subtune`` (0-based) selects the tune init installs. ``sound=True`` fails
-    the build unless every control guard is certified dead (static == observed).
+    ``subtune`` selects the tune, ``sound=True`` requires every guard certified.
+    ``close=True`` plays on past ``frames`` until the play state recurs (cap
+    ``close_cap``, default ``max(4 * frames, 60000)``); recurrence certifies.
     """
-    ev = trace(bytearray(mem), init, play, frames, subtune)
+    cap = (close_cap or max(4 * frames, 60000)) if close else 0
+    ev = trace(bytearray(mem), init, play, frames, subtune, cap)
     model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
     try:
         codec.verify(model)  # flatten(structure(model)) == CFG, per procedure

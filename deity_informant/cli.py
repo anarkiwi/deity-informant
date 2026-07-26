@@ -121,7 +121,9 @@ def cmd_decompile(args):
         return 1
     mem[0xD418] = 0x0F
     try:
-        model, ev = structured.decompile(mem, init, play, args.frames, subtune, args.sound)
+        model, ev = structured.decompile(
+            mem, init, play, args.frames, subtune, args.sound, args.close, args.close_cap
+        )
     except structured.DecompileError as e:
         sys.stderr.write("decompile failed: %s\n" % e)
         return 1
@@ -241,6 +243,17 @@ def main(argv=None):
     )
     p.add_argument(
         "--sound", action="store_true", help="fail unless every control guard is certified dead"
+    )
+    p.add_argument(
+        "--close",
+        action="store_true",
+        help="run play past the window until the state recurs (certifies every guard)",
+    )
+    p.add_argument(
+        "--close-cap",
+        type=int,
+        default=None,
+        help="closure frame cap (default max(4x window, 60000))",
     )
     p.set_defaults(fn=cmd_decompile)
 

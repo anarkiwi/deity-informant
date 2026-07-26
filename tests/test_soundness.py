@@ -351,6 +351,86 @@ def _opcode_top_image():
     return m, cell
 
 
+# ---- run-to-recurrence closure certifier ---------------------------------------
+CT16 = 0x1600
+TLO2, THI2 = 0x2000, 0x2008
+
+
+def _closure_image(counter16=False):
+    """Masked-counter SMC JMP over cross-page handlers with a value-preserving
+    table self-write: paired refuses, the per-cell Cartesian (16) exceeds the
+    observed set, so only recurrence can certify. ``counter16`` adds a
+    monotone 16-bit counter that prevents recurrence."""
+    m = bytearray(0x10000)
+    m[INIT] = 0x60
+    handlers = (0x1130, 0x1238, 0x1340, 0x1548)
+    for k, h in enumerate(handlers):
+        m[h : h + 6] = bytes((0xA9, 0x11 * (k + 1), 0x8D, k, 0xD4, 0x60))
+        m[TLO2 + k], m[THI2 + k] = h & 0xFF, h >> 8
+    a = G.Asm(ORG)
+    a.i("INC", "abs", CTR)
+    if counter16:
+        a.i("INC", "abs", CT16).i("BNE", "rel", ("L", "skip")).i("INC", "abs", CT16 + 1)
+        a.label("skip")
+    a.i("LDA", "abs", TLO2 + 3).i("STA", "abs", TLO2 + 3)
+    a.i("LDA", "abs", CTR).i("AND", "imm", 0x03).i("TAX")
+    a.i("LDA", "absx", TLO2).i("STA", "abs", ("L", "jmp", 1))
+    a.i("LDA", "absx", THI2).i("STA", "abs", ("L", "jmp", 2))
+    a.label("jmp").i("JMP", "abs", handlers[0])
+    code = a.assemble()
+    m[ORG : ORG + len(code)] = code
+    return m, a.labels["jmp"]
+
+
+def test_closure_recurrence_certifies_and_completes_observed_sets():
+    """Recurrence closes the observed sets for the infinite run: the 2-frame
+    window sees 2 of 4 arms, the extension completes them, and every guard
+    certifies with the horizon in the lemma."""
+    m, site = _closure_image()
+    base, _ev = S.decompile(bytearray(m), INIT, ORG, 2)
+    assert base.closure is None and base.proofs[site].status == "observed"
+    assert len(base.dyn_targets[site]) == 2
+    model, ev = S.decompile(bytearray(m), INIT, ORG, 2, close=True)
+    clo = model.closure
+    assert clo.recur is not None and clo.recur - clo.first == 256
+    assert len(model.dyn_targets[site]) == 4
+    assert all(p.status == "certified" for p in model.proofs.values())
+    assert model.proofs[site].lemma.startswith("closure: frame %d" % clo.recur)
+    w = S.Walker(model)
+    assert w.run(2) == ev.wlog and bytes(w.m) == ev.end_mem
+    assert "closure: recurrence at frame" in S.format_report(model)
+    tm = sidprog.parse(sidprog.emit(model))
+    assert tm.run(2) == ev.wlog  # extension-grown sets round-trip through the text
+
+
+def test_sound_mode_composes_with_closure():
+    m, site = _closure_image()
+    with pytest.raises(S.DecompileError, match="sound mode"):
+        S.decompile(bytearray(m), INIT, ORG, 2, sound=True)
+    model, _ev = S.decompile(bytearray(m), INIT, ORG, 2, sound=True, close=True)
+    assert model.proofs[site].status == "certified"
+
+
+def test_closure_cap_without_recurrence_keeps_guards_live():
+    """A monotone 16-bit counter never recurs within the cap: certification
+    never fires, the diagnosis names the still-changing cells, and sound mode
+    still fails."""
+    m, site = _closure_image(counter16=True)
+    model, ev = S.decompile(bytearray(m), INIT, ORG, 8, close=True, close_cap=600)
+    clo = model.closure
+    assert clo.recur is None and clo.first is None
+    assert "no recurrence within 600" in clo.note
+    changed = {a for a, _w, _e in clo.diag}
+    assert CT16 in changed and CT16 + 1 in changed
+    assert model.proofs[site].status == "observed"
+    w = S.Walker(model)
+    assert w.run(8) == ev.wlog
+    text = S.format_report(model)
+    assert "no recurrence within 600 frames" in text and "still changing" in text
+    with pytest.raises(S.DecompileError, match="sound mode"):
+        S.decompile(bytearray(m), INIT, ORG, 8, sound=True, close=True, close_cap=600)
+
+
 def test_opcode_cell_top_commits_observed_set_with_live_guard():
     m, cell = _opcode_top_image()
     model, ev = S.decompile(bytearray(m), INIT, ORG, FRAMES)

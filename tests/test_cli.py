@@ -76,6 +76,17 @@ def test_decompile_report_flag(tmp_path, capsys):
     assert "proof report" in err and "[SOUND]" in err
 
 
+def test_decompile_close_flag(tmp_path, capsys):
+    prg = _player_prg(tmp_path)
+    rc = cli.main(
+        ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
+        + ["--frames", "4", "--report", "--close", "-o", str(tmp_path / "p.sidprog")]
+    )
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "closure: recurrence at frame" in err  # the 8-bit counter wraps at 256
+
+
 def test_run_frames(tmp_path, capsys):
     rc = cli.main(
         [
