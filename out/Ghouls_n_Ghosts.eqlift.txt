@@ -1,0 +1,1812 @@
+eqlift 0
+; eqlift PoC: solver-lifted procedure bodies over the committed sidprog model
+; header sections (state/data/symbols) reuse the frameprog emitter verbatim;
+;   procedure statements are equality-saturation extraction output
+play $6234
+init $6110
+sid-init {
+  $18 = $08
+  $18 = $00
+  $17 = $08
+  $17 = $00
+  $16 = $08
+  $16 = $00
+  $15 = $08
+  $15 = $00
+  $14 = $08
+  $14 = $00
+  $13 = $08
+  $13 = $00
+  $12 = $08
+  $12 = $00
+  $11 = $08
+  $11 = $00
+  $10 = $08
+  $10 = $00
+  $0F = $08
+  $0F = $00
+  $0E = $08
+  $0E = $00
+  $0D = $08
+  $0D = $00
+  $0C = $08
+  $0C = $00
+  $0B = $08
+  $0B = $00
+  $0A = $08
+  $0A = $00
+  $09 = $08
+  $09 = $00
+  $08 = $08
+  $08 = $00
+  $07 = $08
+  $07 = $00
+  $06 = $08
+  $06 = $00
+  $05 = $08
+  $05 = $00
+  $04 = $08
+  $04 = $00
+  $03 = $08
+  $03 = $00
+  $02 = $08
+  $02 = $00
+  $01 = $08
+  $01 = $00
+  $00 = $08
+  $00 = $00
+}
+state {
+ ptr_0021_lo: u8
+ ptr_0021_hi: u8
+ ptr_0023_lo: u8
+ ptr_0023_hi: u8
+ ptr_0025_lo: u8
+ ptr_0025_hi: u8
+ ctr_0027: u8
+ ctr_0028: u8
+ ctr_0029: u8
+ zp_2A: u8
+ zp_2B: u8
+ zp_2C: u8
+ ctr_002D: u8
+ ctr_002E: u8
+ ctr_002F: u8
+ zp_30: u8
+ zp_31: u8
+ zp_32: u8
+ zp_33: u8
+ zp_34: u8
+ zp_35: u8
+ zp_36: u8
+ zp_37: u8
+ zp_38: u8
+ zp_39: u8
+ zp_3A: u8
+ zp_3B: u8
+ ctr_003C: u8
+ ctr_003D: u8
+ ctr_003E: u8
+ zp_3F: u8
+ zp_40: u8
+ zp_41: u8
+ zp_42: u8
+ zp_43: u8
+ zp_44: u8
+ zp_45: u8
+ zp_46: u8
+ zp_47: u8
+ zp_48: u8
+ zp_49: u8
+ zp_4A: u8
+ zp_4B: u8
+ zp_4C: u8
+ zp_4D: u8
+ idx_004E: u8
+ idx_004F: u8
+ idx_0050: u8
+ zp_51: u8
+ zp_52: u8
+ zp_53: u8
+ zp_55: u8
+ zp_57: u8
+ zp_58: u8
+ zp_59: u8
+ zp_5A: u8
+ zp_5B: u8
+ zp_5C: u8
+ zp_5E: u8
+ zp_5F: u8
+ ctr_0060: u8
+ ctr_0061: u8
+ ctr_0062: u8
+ idx_0063: u8
+ idx_0064: u8
+ idx_0065: u8
+ idx_0066: u8
+ idx_0067: u8
+ idx_0068: u8
+ ctr_0069: u8
+ ctr_006A: u8
+ ctr_006B: u8
+ idx_006C: u8
+ idx_006D: u8
+ idx_006E: u8
+ zp_6F: u8
+ ctr_0070: u8
+ zp_71: u8
+ zp_72: u8
+ zp_73: u8
+ zp_74: u8
+ zp_75: u8
+ zp_76: u8
+ zp_77: u8
+ zp_78: u8
+ zp_79: u8
+ zp_7A: u8
+ ctr_007B: u8
+ zp_7C: u8
+ zp_7D: u8
+ ctr_007E: u8
+ ctr_007F: u8
+ ctr_0080: u8
+ zp_81: u8
+ zp_82: u8
+ zp_83: u8
+ ctr_0084: u8
+ ctr_0085: u8
+ ctr_0086: u8
+ zp_87: u8
+ zp_88: u8
+ zp_89: u8
+ zp_8A: u8
+ zp_8B: u8
+ zp_8C: u8
+ zp_8D: u8
+ ctr_008E: u8
+ zp_8F: u8
+ zp_90: u8
+ zp_91: u8
+ zp_92: u8
+ idx_0094: u8
+ idx_0095: u8
+ zp_96: u8
+ m_6269: u8
+ m_629E: u8
+ ctr_62EE: u8
+ m_6375: u8
+ m_6376: u8
+ m_63D4: u8
+ m_640F: u8
+ m_6456: u8
+ m_648B: u8
+ ctr_64DB: u8
+ m_6562: u8
+ m_6563: u8
+ m_65C1: u8
+ m_65DA: u8
+ m_65FE: u8
+ m_6645: u8
+ m_667A: u8
+ ctr_66CA: u8
+ m_6751: u8
+ m_6752: u8
+ m_67B0: u8
+ m_67ED: u8
+ ctr_6800: u8
+ m_6813: u8
+ m_6819: u8
+ m_682D: u8
+ m_6833: u8
+ m_6A05: u8
+ m_6A06: u8
+ m_6A09: u8
+ m_6A0A: u8
+ m_6BF5: u8
+ m_6BF6: u8
+ m_6C37: u8[]
+ m_6C4C: u8[]
+ m_6C61: u8[]
+ m_6C76: u8[]
+ m_6C8B: u8[]
+}
+data {
+ table m_6CA0[147] observed:
+  238D076AC84C4365B1258D096AC8B125
+  8D096AC84C326799A358D0EE098AD00B
+  A7BC31643F7CC1122A60788ABDB271DA
+  F71B8FF13FAEDD426C5893DC1A3C687E
+  99E1C18AE4002D941273B5FE537471AA
+  F7224E7084A8696868686869696A6A6A
+  6A6B6B696B6B6C6C6C6C6C6968686868
+  69696A6A6A6A6B6B696B6B6C6C6C6C6C
+  696868686969696B6A6A6A6B6B696B6B
+  6C6C6C
+ table m_6D35[96] observed:
+  0C1C2D3E51667B91A9C3DDFA18385A7D
+  A3CCF6235386BBF43070B4FB4798ED47
+  A70C77E961E168F78F30DA8F4E18EFD2
+  C3C3D1EF1F60B51E9C31DFA58786A2DF
+  3EC16B3C3963BE4B0F0C45BF7D83D679
+  73C77C971E188B7EFA06ACF3E68FF82E
+ table m_6D96[109] observed:
+  01010101010101010101010102020202
+  02020203030303030404040405050506
+  06070707080809090A0B0B0C0D0E0E0F
+  10111213151617191A1C1D1F21232527
+  2A2C2F3235383B3F43474B4F54595E64
+  6A70777E868E969FA8B3BDC8D4E1EEFD
+  FF232D31353C404A4E52566067
+ stream m_7338[703] via ptr_0021_lo cmp $00 observed:
+  83FF90FF8505DF064F0C000D0F130014
+  0F140F17F2181FFF8D815F2A850500FF
+  8E013900005F568E013C00005D808E00
+  00000082045A80815AA55AA05AA09001
+  5A508505D0FF5A5085050C060FFF8D14
+  8E010A04005AA05AA08000F00085050C
+  FF8E000000008D508204152821788185
+  0500062F1300141FFF8A847A41088505
+  0006AA130C140F17F4183FFF83028C0C
+  8D50820215141C1421141D501C141514
+  1C1421141D28233C8183FF850500063F
+  0C000D3F17F4FF8D118C008000020890
+  FF82028AEA7A85050B060F0C0B0D0FFF
+  8D51818C078000F4018AEA7A8D011428
+  8D50240A230A2414840A242324262320
+  21232426282C84002D14290A280A2914
+  280A260A2814260A240A2314200A230A
+  240A230C28162618280E260E241C2324
+  248C24148064000083028C008E010F00
+  008D4054A054A0850D2F063FFF83FF8A
+  E47990012F0E8506200D60FF8C248ABB
+  798C0085061FFF90FF8C188E00000000
+  82088A147A818D408000A0008E015A02
+  00900182028505BF060F0CBF0D0F17F6
+  FF1C2885050A0C0A17F4FF5428261424
+  1423288505BF0CBF17F6FF1C2885050A
+  0C0A17F4FF54281D141C141A28818E00
+  0000008C248D1090FF82048AE8752F06
+  8AE8752F042D022B022D022B06290428
+  0229022802260628042402230221021F
+  061D021F021C061D061F048AE8752F06
+  210281900185056B060F0C040D0F17F7
+  FF8A8C79850502060F0D0F1707FF8D10
+  8E01FF0500820E250F252381250D251E
+  250A2519250825142507251225062511
+  252890FF2564840285180EFF3285180D
+  FF3285180CFF3285180BFF3285180AFF
+  32851809FF32851808FF32851807FF32
+  851806FF32851805FF32851804FF3285
+  1803FF32851802FF32851801FF328518
+  001700FF32840032628D0132BC328032
+  5F900283FF8505E006F01801FF32FA84
+  488D108E010A05003C454B545A8D0086
+  21042D042906280221042D0429028B
+ stream m_75F7[430] via ptr_0023_lo cmp $00 observed:
+  83FF9001898801000001000001008D01
+  3C80850CAFFF8D813CFF850CBEFF8800
+  0000000000000090FF32C1850C0DFF90
+  0132C5850C000D7F17F2FF8D1082088A
+  147A81850C050D0F1700FF8F01800028
+  8D1082198A147A818F00000000800002
+  088D1190FF82028A397B8D51818C0780
+  00F4018A397B8D0114508D50840A2826
+  282A2C282A2C2D2F3032840030142F0A
+  2D0A2F142D0A2C0A2D142C0A2A0A2814
+  2C142D0A2C0C2D162F18300E2F0E281C
+  2C24288C2814850500067C0C000D7CFF
+  8D148E010A040083028C005AA05AA08D
+  018E0000000083FF280C8AE47990012F
+  028E000000008C0C82028ABB79818204
+  8D8028288D145A288D10850C01FF910C
+  01FF28142814210A210A211491000000
+  81850C030500061F17F4FF8C0C820228
+  14210A210A280A210A21142814210A29
+  14210A29142814280A280A210A210A29
+  142814210A2814210A290A2B0A910C01
+  FF81910000008C008A8C798D81820485
+  0CB4FF5F2D850C6AFF4B5081850CB5FF
+  5F2D850C5AFF4B41850CA5FF5F23850C
+  59FF4B3C850CC6FF5F3C90FF8D018206
+  328081850CE00DF0FF83FF900232E284
+  488D108E010A05003B414A50595F
+ stream m_77A8[1050] via ptr_0025_lo cmp $00 observed:
+  83FF9001910C01018D01820350288D10
+  321C550F851301FF5A19851300FF572D
+  46143C0F4132503C851301FF50198513
+  00FF3F2D55112C2D161A500F8185130C
+  140FFF91000000806400008D4054A054
+  B48D008000F00085130CFF8D501C281D
+  501C281C281D2823501C281D501C281C
+  281D2823448A847A90018D8082043C50
+  818D10851302140F1700FF910701FF8C
+  2482048A147A81910000008517F41300
+  FF8C0083028D80842885141CFF3C8514
+  2CFF3C85143CFF3C85144CFF3C85145C
+  FF3C85146CFF3C85147CFF3C85148CFF
+  3C85149CFF3C8514ACFF3C8514BCFF3C
+  8514CCFF3C8514DCFF3C8514ECFF3C85
+  14FCFF3C84003CBE851300142F170018
+  1FFF83FF90FF8D01410A8A847A90012D
+  5885130014AB181F17F4FF8C07802800
+  038D4183028A807B84008D508000F401
+  85130B140F1700FF8C1383FF150A140A
+  1514150A140A1514840A151415171410
+  12141517181A84001C141A0A180A1A14
+  180A170A1814170A150A1414100A1A0A
+  1C0A1A0C18161718141C151C10248505
+  0C0C0C130CFF158C8505A00CA013A0FF
+  151485130014BA17F4FF8C0080280003
+  83028D40820D15141C1421141D501C14
+  15141C1421141D28233C8190FF8D0183
+  FF821032808132748513E014F0FF9002
+  32CA84488D108E010A05003940464F55
+  5E8D00868D808C003C123C123CC83C14
+  3C143C153CA03C113C103C103C783C19
+  3C193C963C0F3C0F3C103C113C963C20
+  3CC88B90022D142B142D142B3C292828
+  1429142814263C28282414231421141F
+  3C1D141F141C3C1D3C1F288B8C248D10
+  8E0196020090FF212892012D28293C28
+  1421282D2829142F3C21282D28293C28
+  1421282D2829142F2E92008B84052D28
+  2D282D282A2F34302F3430342F308400
+  8B85050F060FFF8F0181003C8D118E01
+  780000932E0A85050006AFFF8F000000
+  008E000000008D408B85050FFF8F0181
+  00288D119328019204938F0000000001
+  0592008D019301048B8E01FF01018D80
+  850C49FF560A8E000000008B90FF8D15
+  40019201450A8E01170000455092008E
+  013C0000421E8D01410A8E000000008D
+  154201920145058E0121000045199200
+  8E01FA0000430F8D01410F8E00000000
+  8D153E019202450A8E01170000458292
+  008E013C0000411E8D01411D8E000000
+  008B2D1E2C0A2F0F2D05300F2F05321E
+  340A350A370A390A350A340F3505320F
+  3505340F32053B143C1439143814350F
+  34052D142C142F142C142D142F143014
+  34143314341436143C143B2890013428
+  8B211E200A230F2105240F2305840A26
+  28292B2D2F3132302F2D2F2C29282C2D
+  34353432302F2C841424232823242628
+  24840A23272528272A2D2A2C2D2F2D2C
+  292890012C84008B8428158414141584
+  0A0E0C0E1011131511100F1012141517
+  14151415171817151084141514171484
+  0A15141517181A1C1817191B1C1E1C1B
+  171C1E1C1B1C1A18178B
+}
+symbols {
+ alias ptr_0021_lo = zp_21
+ alias ptr_0021_hi = zp_22
+ alias ptr_0023_lo = zp_23
+ alias ptr_0023_hi = zp_24
+ alias ptr_0025_lo = zp_25
+ alias ptr_0025_hi = zp_26
+ alias ctr_0027 = zp_27
+ alias ctr_0028 = zp_28
+ alias ctr_0029 = zp_29
+ alias ctr_002D = zp_2D
+ alias ctr_002E = zp_2E
+ alias ctr_002F = zp_2F
+ alias ctr_003C = zp_3C
+ alias ctr_003D = zp_3D
+ alias ctr_003E = zp_3E
+ alias idx_004E = zp_4E
+ alias idx_004F = zp_4F
+ alias idx_0050 = zp_50
+ alias ctr_0060 = zp_60
+ alias ctr_0061 = zp_61
+ alias ctr_0062 = zp_62
+ alias idx_0063 = zp_63
+ alias idx_0064 = zp_64
+ alias idx_0065 = zp_65
+ alias idx_0066 = zp_66
+ alias idx_0067 = zp_67
+ alias idx_0068 = zp_68
+ alias ctr_0069 = zp_69
+ alias ctr_006A = zp_6A
+ alias ctr_006B = zp_6B
+ alias idx_006C = zp_6C
+ alias idx_006D = zp_6D
+ alias idx_006E = zp_6E
+ alias ctr_0070 = zp_70
+ alias ctr_007B = zp_7B
+ alias ctr_007E = zp_7E
+ alias ctr_007F = zp_7F
+ alias ctr_0080 = zp_80
+ alias ctr_0084 = zp_84
+ alias ctr_0085 = zp_85
+ alias ctr_0086 = zp_86
+ alias ctr_008E = zp_8E
+ alias idx_0094 = zp_94
+ alias idx_0095 = zp_95
+ alias ctr_62EE = m_62EE
+ alias ctr_64DB = m_64DB
+ alias ctr_66CA = m_66CA
+ alias ctr_6800 = m_6800
+}
+sub_6234 {
+ if (ctr_007B <s $00) {
+  if (zp_8D == $00) {
+  } else {
+   unobserved $623F
+  }
+  if (zp_57 == $00) {
+  } else {
+   if (ctr_007E == $00) {
+    $6264:
+     a = zp_75
+     x = zp_78
+     y = m_6269
+    if (m_6269 == $00) {
+     $6274:
+      a0 = a
+      a = (a - zp_8A)
+      vflag = (((a0 ^ zp_8A) & (a0 ^ a)) <s $00)
+     if (zext2(zp_8A) <= zext2(a0)) {
+     } else {
+       x = (x - $01)
+     }
+    } else {
+      a = (zp_75 + zp_8A)
+      vflag = (((zp_75 ^ zp_8A ^ $FF) & (zp_75 ^ a)) <s $00)
+     ifnot (carry(zp_75, zp_8A) | carry(a, $00)) {
+     } else {
+       x = (zp_78 + $01)
+      if (zp_78 != $FF) {
+      } else {
+       goto $6274
+      }
+     }
+    }
+     sid.v1.freq_lo = a
+     sid.v1.freq_hi = x
+     zp_75 = a
+     zp_78 = x
+     ctr0 = ctr_0084
+     ctr_0084 = (ctr_0084 - $01)
+    if (ctr0 != $01) {
+    } else {
+      a = zp_87
+     if (zp_87 == $00) {
+     } else {
+       ctr_0084 = (zp_87 << $01)
+       m_6269 = (y ^ $FF)
+     }
+    }
+   } else {
+     ctr1 = ctr_007E
+     ctr_007E = (ctr_007E - $01)
+    if (ctr1 != $01) {
+    } else {
+     goto $6264
+    }
+   }
+  }
+  if (ctr_0060 == $00) {
+  } else {
+   unobserved $6299
+  }
+  if (idx_0063 == $00) {
+  } else {
+    a = idx_0066
+    cflag = (idx_006C <= idx_0066)
+    zflag = (idx_0066 == idx_006C)
+   ifnot cflag {
+     a = (idx_0066 + idx_0063 + cflag)
+     vflag = (((idx_0066 ^ idx_0063 ^ $FF) & (idx_0066 ^ a)) <s $00)
+    if (a < idx_006C) {
+    } else {
+      a = idx_006C
+    }
+    $62DA:
+     idx_0066 = a
+     w0 = m_6D35[a]
+     sid.v1.freq_lo = w0
+     zp_75 = w0
+     w1 = m_6D96[a]
+     sid.v1.freq_hi = w1
+     zp_78 = w1
+     x = idx_0066
+   } else {
+    if zflag {
+    } else {
+      a = (idx_0066 - (idx_0063 + ($01 - cflag)))
+      cflag = (idx_006C <= a)
+      vflag = (((idx_0066 ^ idx_0063) & (idx_0066 ^ a)) <s $00)
+     if cflag {
+     } else {
+      unobserved $62D0
+     }
+     goto $62DA
+    }
+   }
+  }
+   nflag = (ctr_62EE <s $00)
+  if (ctr_62EE != $00) {
+   $630B:
+   ifnot nflag {
+   } else {
+     w2 = zp_3F
+     zp_3F = (zp_3F + zp_4B)
+     w3 = zp_40
+     zp_40 = ((carry(w2, zp_4B) | carry(zp_3F, $00)) + zp_40)
+     cflag = ($0F <= zp_40)
+     vflag = (((w3 ^ $FF) & (w3 ^ zp_40)) <s $00)
+    if (zp_40 == $0F) {
+     if (zp_3F < $9B) {
+       sid.v1.pw_lo = zp_3F
+       sid.v1.pw_hi = zp_40
+     } else {
+       ctr_62EE = (ctr_62EE + $01)
+      $62F1:
+       w4 = zp_3F
+       zp_3F = (zp_3F - zp_4B)
+       w5 = zp_40
+       zp_40 = (zp_40 - ($01 - (zext2(zp_4B) <= zext2(w4))))
+       zflag = (zp_40 == $00)
+       vflag = ((w5 & (w5 ^ zp_40)) <s $00)
+      if (zp_40 <s $00) {
+       $6308:
+        ctr_62EE = (ctr_62EE - $01)
+        nflag = (ctr_62EE <s $00)
+       goto $630B
+      } else {
+       ifnot zflag {
+         sid.v1.pw_lo = zp_3F
+         sid.v1.pw_hi = zp_40
+       } else {
+        if ($64 <= zp_3F) {
+          sid.v1.pw_lo = zp_3F
+          sid.v1.pw_hi = zp_40
+        } else {
+         goto $6308
+        }
+       }
+      }
+     }
+    } else {
+     ifnot cflag {
+     } else {
+      unobserved $6320
+     }
+      sid.v1.pw_lo = zp_3F
+      sid.v1.pw_hi = zp_40
+    }
+   }
+  } else {
+   goto $62F1
+  }
+   ctr_0027 = (ctr_0027 - $01)
+   cflag = (ctr_0027 <= zp_90)
+  if (zp_90 == ctr_0027) {
+    sid.v1.ctrl = (zp_2A & $FE)
+    ctr_003C = (ctr_003C + $01)
+  } else {
+   if (ctr_003C != $00) {
+   } else {
+     sid.v1.ctrl = (zp_2A & $FE)
+     ctr_003C = (ctr_003C + $01)
+   }
+  }
+   ctr_003C = (ctr_003C - $01)
+  if (ctr_0027 == $00) {
+   loop {
+     a = mem[((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2]
+     y = $00
+     zflag = (a == $00)
+    if (a >=s $00) {
+     if zflag {
+      unobserved $6377
+     }
+     if $01 {
+     } else {
+      unobserved $6385
+     }
+      a = (a + idx_004E)
+      x = a
+     if (idx_0063 == $00) {
+     } else {
+       idx_006C = x
+       x = idx_0066
+     }
+      idx_0066 = x
+      w6 = m_6D35[x]
+      sid.v1.freq_lo = w6
+      zp_75 = w6
+      w7 = m_6D96[x]
+      zp_78 = w7
+      sid.v1.freq_hi = zp_78
+      ctr_0060 = zp_5A
+      a = zp_57
+      y = $01
+     if (zp_57 == $00) {
+     } else {
+       ctr_007E = zp_57
+       m_6269 = zp_81
+       ctr_0084 = zp_87
+       a = $00
+     }
+      m_629E = a
+      ctr_003C = zp_39
+     if ((zp_45 | zp_46) == $00) {
+     } else {
+       zp_3F = zp_45
+       zp_40 = zp_46
+       ctr_62EE = m_63D4
+     }
+     if (zp_74 != $00) {
+     } else {
+      if ((zp_71 | zp_72) == $00) {
+      } else {
+       unobserved $63E2
+      }
+     }
+     if (zp_36 == $00) {
+     } else {
+       a = zp_2A
+       x = zp_51
+      if (zp_51 == $00) {
+      } else {
+       unobserved $63F9
+      }
+       sid.v1.ctrl = (zp_2A | $01)
+     }
+      a = m_640F
+     if (m_640F != $00) {
+     } else {
+       a = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+       y = $02
+     }
+      ctr_0027 = a
+      ptr0 = ptr_0021_lo
+      t0 = (ptr_0021_lo + y)
+      ptr_0021_lo = t0
+      vflag = (((y ^ ptr0 ^ $FF) & (y ^ ptr_0021_lo)) <s $00)
+     ifnot (carry(y, ptr0) | carry(ptr_0021_lo, $00)) {
+     } else {
+       ptr_0021_hi = (ptr_0021_hi + $01)
+     }
+    } else {
+      m_6375 = m_6C37[a]
+      a4 = m_6C76[a]
+      m_6376 = a4
+      a5 = a
+      a = m_6376
+      x = a5
+      y = $01
+      zflag = (m_6376 == $00)
+      nflag = (m_6376 <s $00)
+      goto ((zext2(m_6375) | (zext2(m_6376) << $08):2):2)
+     switch goto {
+      case $6858: {
+       $6858:
+        w8 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        ctr_002D = w8
+        ptr1 = ptr_0021_lo
+        t1 = (ptr_0021_lo + $02)
+        zp_30 = t1
+        ptr_0021_lo = zp_30
+        ptr2 = ptr_0021_hi
+        t2 = (carry(ptr1, $02) | carry(zp_30, $00))
+        t3 = (ptr_0021_hi + t2)
+        zp_31 = t3
+        ptr_0021_hi = zp_31
+        cflag = (carry(ptr2, $00) | carry(ptr2, t2))
+        vflag = (((ptr2 ^ $FF) & (ptr2 ^ zp_31)) <s $00)
+       continue
+      }
+      case $68A3: {
+       $68A3:
+        ctr3 = ctr_002D
+        ctr_002D = (ctr_002D - $01)
+       if (ctr3 == $01) {
+        goto $68D7
+       } else {
+         ptr_0021_lo = zp_30
+         ptr_0021_hi = zp_31
+       }
+       continue
+      }
+      case $68D0: {
+       $68D0:
+        zp_36 = y
+        w9 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        zp_39 = w9
+        y = (zp_36 + $01)
+       $68D7:
+       $6356:
+        ptr3 = ptr_0021_lo
+        t4 = (ptr_0021_lo + y)
+        ptr_0021_lo = t4
+        cflag = (carry(y, ptr3) | carry(ptr_0021_lo, $00))
+        vflag = (((y ^ ptr3 ^ $FF) & (y ^ ptr_0021_lo)) <s $00)
+       ifnot cflag {
+       } else {
+         ptr_0021_hi = (ptr_0021_hi + $01)
+       }
+       continue
+      }
+      case $68EE: {
+       $68EE:
+        w10 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        m_640F = w10
+        y = (y + $01)
+       goto $6356
+      }
+      case $6909: {
+       $6909:
+        a = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+       loop {
+         w11 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $01))):2]
+         sid.v1.freq_lo[a] = w11
+         a6 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $02))):2]
+         a7 = a
+         a = a6
+         x = a7
+         y = (y + $02)
+        if (a6 >=s $00) {
+         continue
+        }
+        break
+       }
+        y = (y + $01)
+       goto $6356
+      }
+      case $693F: {
+       $693F:
+        w12 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        sid.v1.ctrl = w12
+        zp_2A = w12
+        a = $FF
+        y = (y + $01)
+       if (((w12 << $01) & $80) != $00) {
+       } else {
+         a = $01
+       }
+        m_63D4 = a
+        ctr_62EE = m_63D4
+       goto $6356
+      }
+      case $698A: {
+       break
+      }
+      case $6999: {
+       $6999:
+        w13 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        zp_4B = w13
+        w14 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $01))):2]
+        zp_45 = w14
+        zp_3F = zp_45
+        w15 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $02))):2]
+        zp_46 = w15
+        zp_40 = zp_46
+        y = (y + $03)
+       if ((zp_46 | zp_45) != $00) {
+       } else {
+         zp_3F = m_6A05
+         zp_40 = m_6A06
+       }
+       goto $6356
+      }
+      case $6ABC: {
+       $6ABC:
+        ctr4 = ctr_0069
+        ptr4 = ptr_0021_lo
+        mem[($6B1F + zext2(ctr_0069)):2] = (ptr_0021_lo + $03)
+        ptr5 = ptr_0021_hi
+        t5 = (carry(ptr4, $03) | carry((ptr4 + $03), $00))
+        m_6B22[ctr4] = (ptr_0021_hi + t5)
+        ctr_0069 = (ctr4 + $01)
+        x = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        w16 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $01))):2]
+        ptr_0021_hi = w16
+        ptr_0021_lo = x
+        cflag = (carry(ptr5, $00) | carry(ptr5, t5))
+        vflag = (((ptr5 ^ $FF) & (ptr5 ^ (ptr5 + t5))) <s $00)
+       continue
+      }
+      case $6B31: {
+       $6B31:
+        ctr_0069 = (ctr_0069 - $01)
+        ptr_0021_lo = mem[(zext2(ctr_0069) + $6B1F):2]
+        ptr_0021_hi = mem[(zext2(ctr_0069) + $6B22):2]
+        x = ctr_0069
+       continue
+      }
+      case $6B64: {
+       $6B64:
+        w17 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        idx_004E = w17
+        y = (y + $01)
+       goto $6356
+      }
+      case $6B7C: {
+       $6B7C:
+        w18 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        zp_57 = w18
+        w19 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $01))):2]
+        zp_8A = w19
+        w20 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $02))):2]
+        zp_87 = w20
+        w21 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2((y + $03))):2]
+        zp_81 = w21
+        y = (y + $04)
+       goto $6356
+      }
+      case $6C12: {
+       $6C12:
+        w22 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        zp_90 = w22
+        y = (y + $01)
+       goto $6356
+      }
+      case $6C60: {
+       $6C60:
+        w23 = mem[(((zext2(ptr_0021_hi) << $08):2 | zext2(ptr_0021_lo)):2 + zext2(y)):2]
+        idx_0063 = w23
+        y = (y + $01)
+       goto $6356
+      }
+     }
+    }
+    $6421:
+    if (zp_7C <s $00) {
+    } else {
+     unobserved $6425
+    }
+    if (ctr_008E == $00) {
+    } else {
+      ctr5 = ctr_008E
+      ctr_008E = (ctr_008E - $01)
+     if (ctr5 != $01) {
+     } else {
+       sid.v2.freq_lo = zp_76
+       sid.v2.freq_hi = zp_79
+      if (zp_37 == $00) {
+      } else {
+        sid.v2.ctrl = (zp_2B | $01)
+      }
+     }
+    }
+    if (zp_58 == $00) {
+    } else {
+     if (ctr_007F == $00) {
+      $6451:
+       a = zp_76
+       x = zp_79
+       y = m_6456
+      if (m_6456 == $00) {
+       $6461:
+        a8 = a
+        a = (a - zp_8B)
+        vflag = (((a8 ^ zp_8B) & (a8 ^ a)) <s $00)
+       if (zext2(zp_8B) <= zext2(a8)) {
+       } else {
+         x = (x - $01)
+       }
+      } else {
+        a = (zp_76 + zp_8B)
+        vflag = (((zp_76 ^ zp_8B ^ $FF) & (zp_76 ^ a)) <s $00)
+       ifnot (carry(zp_76, zp_8B) | carry(a, $00)) {
+       } else {
+         x = (zp_79 + $01)
+        if (zp_79 != $FF) {
+        } else {
+         goto $6461
+        }
+       }
+      }
+       sid.v2.freq_lo = a
+       sid.v2.freq_hi = x
+       zp_76 = a
+       zp_79 = x
+       ctr6 = ctr_0085
+       ctr_0085 = (ctr_0085 - $01)
+      if (ctr6 != $01) {
+      } else {
+        a = zp_88
+       if (zp_88 == $00) {
+       } else {
+         ctr_0085 = (zp_88 << $01)
+         m_6456 = (y ^ $FF)
+       }
+      }
+     } else {
+       ctr7 = ctr_007F
+       ctr_007F = (ctr_007F - $01)
+      if (ctr7 != $01) {
+      } else {
+       goto $6451
+      }
+     }
+    }
+    if (ctr_0061 == $00) {
+     $64AB:
+     if (idx_0064 == $00) {
+     } else {
+       a = idx_0067
+       cflag = (idx_006D <= idx_0067)
+       zflag = (idx_0067 == idx_006D)
+      ifnot cflag {
+        a = (idx_0064 + cflag + idx_0067)
+        vflag = (((idx_0067 ^ idx_0064 ^ $FF) & (idx_0067 ^ a)) <s $00)
+       if (a < idx_006D) {
+       } else {
+         a = idx_006D
+       }
+       $64C7:
+        idx_0067 = a
+        w24 = m_6D35[a]
+        sid.v2.freq_lo = w24
+        zp_76 = w24
+        w25 = m_6D96[a]
+        sid.v2.freq_hi = w25
+        zp_79 = w25
+        x = idx_0067
+      } else {
+       if zflag {
+       } else {
+         a = (idx_0067 - (idx_0064 + ($01 - cflag)))
+         cflag = (idx_006D <= a)
+         vflag = (((idx_0067 ^ idx_0064) & (idx_0067 ^ a)) <s $00)
+        if cflag {
+        } else {
+         unobserved $64BD
+        }
+        goto $64C7
+       }
+      }
+     }
+    } else {
+      ctr8 = ctr_0061
+      ctr_0061 = (ctr_0061 - $01)
+     if (ctr8 != $01) {
+      goto $64AB
+     } else {
+       m_648B = (m_648B ^ $FF)
+      if (m_648B == $00) {
+        ctr_0061 = zp_5E
+        a = (idx_0067 - idx_0094)
+        vflag = (((idx_0067 ^ idx_0094) & (idx_0067 ^ a)) <s $00)
+      } else {
+        ctr_0061 = zp_5B
+        a = (idx_0067 + idx_0094)
+        vflag = (((idx_0067 ^ idx_0094 ^ $FF) & (idx_0067 ^ a)) <s $00)
+      }
+      goto $64C7
+     }
+    }
+     nflag = (ctr_64DB <s $00)
+    if (ctr_64DB != $00) {
+    } else {
+     unobserved $64DE
+    }
+    ifnot nflag {
+    } else {
+      w27 = zp_41
+      zp_41 = (zp_41 + zp_4C)
+      w28 = zp_42
+      zp_42 = ((carry(w27, zp_4C) | carry(zp_41, $00)) + zp_42)
+      cflag = ($0F <= zp_42)
+      vflag = (((w28 ^ $FF) & (w28 ^ zp_42)) <s $00)
+     if (zp_42 == $0F) {
+      unobserved $650F
+     }
+     ifnot cflag {
+     } else {
+      unobserved $650D
+     }
+      sid.v2.pw_lo = zp_41
+      sid.v2.pw_hi = zp_42
+    }
+     ctr_0028 = (ctr_0028 - $01)
+     cflag = (ctr_0028 <= zp_91)
+    if (zp_91 == ctr_0028) {
+      sid.v2.ctrl = (zp_2B & $FE)
+      ctr_003D = (ctr_003D + $01)
+    } else {
+     if (ctr_003D != $00) {
+     } else {
+       sid.v2.ctrl = (zp_2B & $FE)
+       ctr_003D = (ctr_003D + $01)
+     }
+    }
+     ctr_003D = (ctr_003D - $01)
+    if (ctr_0028 == $00) {
+     loop {
+       a = mem[((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2]
+       y = $00
+       zflag = (a == $00)
+      if (a >=s $00) {
+      } else {
+        m_6562 = m_6C4C[a]
+        a12 = m_6C8B[a]
+        m_6563 = a12
+        a13 = a
+        a = m_6563
+        x = a13
+        y = $01
+        zflag = (m_6563 == $00)
+        nflag = (m_6563 <s $00)
+        goto ((zext2(m_6562) | (zext2(m_6563) << $08):2):2)
+       switch goto {
+        case $6871: {
+         $6871:
+          w29 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          ctr_002E = w29
+          ptr6 = ptr_0023_lo
+          t6 = (ptr_0023_lo + $02)
+          zp_32 = t6
+          ptr_0023_lo = zp_32
+          ptr7 = ptr_0023_hi
+          t7 = (carry(ptr6, $02) | carry(zp_32, $00))
+          t8 = (ptr_0023_hi + t7)
+          zp_33 = t8
+          ptr_0023_hi = zp_33
+          cflag = (carry(ptr7, $00) | carry(ptr7, t7))
+          vflag = (((ptr7 ^ $FF) & (ptr7 ^ zp_33)) <s $00)
+         continue
+        }
+        case $68B2: {
+         $68B2:
+          ctr9 = ctr_002E
+          ctr_002E = (ctr_002E - $01)
+         if (ctr9 == $01) {
+          goto $68E1
+         } else {
+           ptr_0023_lo = zp_32
+           ptr_0023_hi = zp_33
+         }
+         continue
+        }
+        case $68DA: {
+         $68DA:
+          zp_37 = y
+          w30 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_3A = w30
+          y = (zp_37 + $01)
+         $68E1:
+         $6543:
+          ptr8 = ptr_0023_lo
+          t9 = (ptr_0023_lo + y)
+          ptr_0023_lo = t9
+          cflag = (carry(y, ptr8) | carry(ptr_0023_lo, $00))
+          vflag = (((y ^ ptr8 ^ $FF) & (y ^ ptr_0023_lo)) <s $00)
+         ifnot cflag {
+         } else {
+           ptr_0023_hi = (ptr_0023_hi + $01)
+         }
+         continue
+        }
+        case $68F7: {
+         $68F7:
+          w31 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          m_65FE = w31
+          y = (y + $01)
+         goto $6543
+        }
+        case $691B: {
+         $691B:
+          a = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+         loop {
+           w32 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+           sid.v1.freq_lo[a] = w32
+           a14 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+           a15 = a
+           a = a14
+           x = a15
+           y = (y + $02)
+          if (a14 >=s $00) {
+           continue
+          }
+          break
+         }
+          y = (y + $01)
+         goto $6543
+        }
+        case $6958: {
+         $6958:
+          w33 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          sid.v2.ctrl = w33
+          zp_2B = w33
+          a = $FF
+          y = (y + $01)
+         if (((w33 << $01) & $80) != $00) {
+         } else {
+           a = $01
+         }
+          m_65C1 = a
+          ctr_64DB = m_65C1
+         goto $6543
+        }
+        case $69BD: {
+         $69BD:
+          w34 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_4C = w34
+          w35 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          zp_47 = w35
+          zp_41 = zp_47
+          w36 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+          zp_48 = w36
+          zp_42 = zp_48
+          y = (y + $03)
+         if ((zp_48 | zp_47) != $00) {
+         } else {
+          unobserved $69D4
+         }
+         goto $6543
+        }
+        case $6A3F: {
+         $6A3F:
+          w37 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_73 = w37
+          w38 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          m_65DA = w38
+          w39 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+          zp_6F = w39
+          zp_71 = zp_6F
+          w40 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $03))):2]
+          ctr_0070 = w40
+          zp_72 = ctr_0070
+          w41 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $04))):2]
+          m_6819 = w41
+          w42 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $05))):2]
+          m_6813 = w42
+          w43 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $06))):2]
+          m_6833 = w43
+          w44 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $07))):2]
+          m_682D = w44
+          y = (y + $08)
+         goto $6543
+        }
+        case $6AAE: {
+         $6AAE:
+          zp_74 = $01
+         goto $6543
+        }
+        case $6ADD: {
+         $6ADD:
+          ctr10 = ctr_006A
+          ptr9 = ptr_0023_lo
+          mem[($6B25 + zext2(ctr_006A)):2] = (ptr_0023_lo + $03)
+          ptr10 = ptr_0023_hi
+          t10 = (carry(ptr9, $03) | carry((ptr9 + $03), $00))
+          m_6B28[ctr10] = (ptr_0023_hi + t10)
+          ctr_006A = (ctr10 + $01)
+          x = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          w45 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          ptr_0023_hi = w45
+          ptr_0023_lo = x
+          cflag = (carry(ptr10, $00) | carry(ptr10, t10))
+          vflag = (((ptr10 ^ $FF) & (ptr10 ^ (ptr10 + t10))) <s $00)
+         continue
+        }
+        case $6B42: {
+         $6B42:
+          ctr_006A = (ctr_006A - $01)
+          ptr_0023_lo = mem[(zext2(ctr_006A) + $6B25):2]
+          ptr_0023_hi = mem[(zext2(ctr_006A) + $6B28):2]
+          x = ctr_006A
+         continue
+        }
+        case $6B6C: {
+         $6B6C:
+          w46 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          idx_004F = w46
+          y = (y + $01)
+         goto $6543
+        }
+        case $6B93: {
+         $6B93:
+          w47 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_58 = w47
+          w48 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          zp_8B = w48
+          w49 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+          zp_88 = w49
+          w50 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $03))):2]
+          zp_82 = w50
+          y = (y + $04)
+         goto $6543
+        }
+        case $6BDC: {
+         $6BDC:
+          w51 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_52 = w51
+          w52 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          zp_55 = w52
+          w53 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+          m_6BF5 = w53
+          w54 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $03))):2]
+          m_6BF6 = w54
+          y = (y + $04)
+         goto $6543
+        }
+        case $6C1A: {
+         $6C1A:
+          w55 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          zp_91 = w55
+          y = (y + $01)
+         goto $6543
+        }
+        case $6C3C: {
+         $6C3C:
+          w56 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          idx_0094 = w56
+          w57 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $01))):2]
+          zp_5B = w57
+          w58 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2((y + $02))):2]
+          zp_5E = w58
+          y = (y + $03)
+         goto $6543
+        }
+        case $6C68: {
+         $6C68:
+          w59 = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+          idx_0064 = w59
+          y = (y + $01)
+         goto $6543
+        }
+       }
+      }
+      break
+     }
+     if zflag {
+      unobserved $6564
+     }
+     if $01 {
+     } else {
+      unobserved $6572
+     }
+      a = (a + idx_004F)
+      x = a
+     if (idx_0064 == $00) {
+     } else {
+       idx_006D = x
+       x = idx_0067
+     }
+      idx_0067 = x
+      w60 = m_6D35[x]
+      sid.v2.freq_lo = w60
+      zp_76 = w60
+      w61 = m_6D96[x]
+      zp_79 = w61
+      sid.v2.freq_hi = zp_79
+      ctr_0061 = zp_5B
+      a = zp_58
+      y = (y + $01)
+     if (zp_58 == $00) {
+     } else {
+       ctr_007F = zp_58
+       m_6456 = zp_82
+       ctr_0085 = zp_88
+       a = $00
+     }
+      m_648B = a
+      ctr_003D = zp_3A
+     if ((zp_47 | zp_48) == $00) {
+     } else {
+       zp_41 = zp_47
+       zp_42 = zp_48
+       ctr_64DB = m_65C1
+     }
+     if (zp_74 != $01) {
+     } else {
+      if ((zp_71 | zp_72) == $00) {
+      } else {
+        zp_6F = zp_71
+        ctr_0070 = zp_72
+        ctr_6800 = m_65DA
+      }
+     }
+     if (zp_37 == $00) {
+     } else {
+       a = zp_2B
+       x = zp_52
+      if (zp_52 == $00) {
+      } else {
+        ctr_008E = zp_52
+        sid.v2.freq_lo = m_6BF5
+        sid.v2.freq_hi = m_6BF6
+        a = zp_55
+      }
+       sid.v2.ctrl = (a | $01)
+     }
+      a = m_65FE
+     if (m_65FE != $00) {
+     } else {
+       a = mem[(((zext2(ptr_0023_hi) << $08):2 | zext2(ptr_0023_lo)):2 + zext2(y)):2]
+       y = (y + $01)
+     }
+      ctr_0028 = a
+      ptr11 = ptr_0023_lo
+      t11 = (ptr_0023_lo + y)
+      ptr_0023_lo = t11
+      vflag = (((y ^ ptr11 ^ $FF) & (y ^ ptr_0023_lo)) <s $00)
+     ifnot (carry(y, ptr11) | carry(ptr_0023_lo, $00)) {
+     } else {
+       ptr_0023_hi = (ptr_0023_hi + $01)
+     }
+    }
+    if (zp_7D <s $00) {
+    } else {
+     unobserved $6614
+    }
+    if (zp_8F == $00) {
+    } else {
+     unobserved $661B
+    }
+    if (zp_59 == $00) {
+    } else {
+     if (ctr_0080 == $00) {
+      $6640:
+       a = zp_77
+       x = zp_7A
+       y = m_6645
+      if (m_6645 == $00) {
+       $6650:
+        a16 = a
+        a = (a - zp_8C)
+        vflag = (((a16 ^ zp_8C) & (a16 ^ a)) <s $00)
+       if (zext2(zp_8C) <= zext2(a16)) {
+       } else {
+         x = (x - $01)
+       }
+      } else {
+        a = (zp_77 + zp_8C)
+        vflag = (((zp_77 ^ zp_8C ^ $FF) & (zp_77 ^ a)) <s $00)
+       ifnot (carry(zp_77, zp_8C) | carry(a, $00)) {
+       } else {
+         x = (zp_7A + $01)
+        if (zp_7A != $FF) {
+        } else {
+         goto $6650
+        }
+       }
+      }
+       sid.v3.freq_lo = a
+       sid.v3.freq_hi = x
+       zp_77 = a
+       zp_7A = x
+       ctr11 = ctr_0086
+       ctr_0086 = (ctr_0086 - $01)
+      if (ctr11 != $01) {
+      } else {
+        a = zp_89
+       if (zp_89 == $00) {
+       } else {
+         ctr_0086 = (zp_89 << $01)
+         m_6645 = (y ^ $FF)
+       }
+      }
+     } else {
+       ctr12 = ctr_0080
+       ctr_0080 = (ctr_0080 - $01)
+      if (ctr12 != $01) {
+      } else {
+       goto $6640
+      }
+     }
+    }
+    if (ctr_0062 == $00) {
+     $669A:
+     if (idx_0065 == $00) {
+     } else {
+       a = idx_0068
+       cflag = (idx_006E <= idx_0068)
+       zflag = (idx_0068 == idx_006E)
+      ifnot cflag {
+        a = (idx_0065 + cflag + idx_0068)
+        vflag = (((idx_0068 ^ idx_0065 ^ $FF) & (idx_0068 ^ a)) <s $00)
+       if (a < idx_006E) {
+       } else {
+         a = idx_006E
+       }
+       $66B6:
+        idx_0068 = a
+        w62 = m_6D35[a]
+        sid.v3.freq_lo = w62
+        zp_77 = w62
+        w63 = m_6D96[a]
+        sid.v3.freq_hi = w63
+        zp_7A = w63
+        x = idx_0068
+      } else {
+       if zflag {
+       } else {
+        unobserved $66A6
+       }
+      }
+     }
+    } else {
+      ctr13 = ctr_0062
+      ctr_0062 = (ctr_0062 - $01)
+     if (ctr13 != $01) {
+      goto $669A
+     } else {
+       m_667A = (m_667A ^ $FF)
+      if (m_667A == $00) {
+        ctr_0062 = zp_5F
+        a = (idx_0068 - idx_0095)
+        vflag = (((idx_0068 ^ idx_0095) & (idx_0068 ^ a)) <s $00)
+      } else {
+        ctr_0062 = zp_5C
+        a = (idx_0068 + idx_0095)
+        vflag = (((idx_0068 ^ idx_0095 ^ $FF) & (idx_0068 ^ a)) <s $00)
+      }
+      goto $66B6
+     }
+    }
+     nflag = (ctr_66CA <s $00)
+    if (ctr_66CA != $00) {
+     $66E7:
+     ifnot nflag {
+     } else {
+       w65 = zp_43
+       zp_43 = (zp_43 + zp_4D)
+       w66 = zp_44
+       zp_44 = ((carry(w65, zp_4D) | carry(zp_43, $00)) + zp_44)
+       cflag = ($0F <= zp_44)
+       vflag = (((w66 ^ $FF) & (w66 ^ zp_44)) <s $00)
+      if (zp_44 == $0F) {
+       if (zp_43 < $9B) {
+         sid.v3.pw_lo = zp_43
+         sid.v3.pw_hi = zp_44
+       } else {
+         ctr_66CA = (ctr_66CA + $01)
+        $66CD:
+         w67 = zp_43
+         zp_43 = (zp_43 - zp_4D)
+         w68 = zp_44
+         zp_44 = (zp_44 - ($01 - (zext2(zp_4D) <= zext2(w67))))
+         zflag = (zp_44 == $00)
+         vflag = ((w68 & (w68 ^ zp_44)) <s $00)
+        if (zp_44 <s $00) {
+         $66E4:
+          ctr_66CA = (ctr_66CA - $01)
+          nflag = (ctr_66CA <s $00)
+         goto $66E7
+        } else {
+         ifnot zflag {
+           sid.v3.pw_lo = zp_43
+           sid.v3.pw_hi = zp_44
+         } else {
+          if ($64 <= zp_43) {
+            sid.v3.pw_lo = zp_43
+            sid.v3.pw_hi = zp_44
+          } else {
+           goto $66E4
+          }
+         }
+        }
+       }
+      } else {
+       ifnot cflag {
+       } else {
+        unobserved $66FC
+       }
+        sid.v3.pw_lo = zp_43
+        sid.v3.pw_hi = zp_44
+      }
+     }
+    } else {
+     goto $66CD
+    }
+     ctr_0029 = (ctr_0029 - $01)
+     cflag = (ctr_0029 <= zp_92)
+    if (zp_92 == ctr_0029) {
+      sid.v3.ctrl = (zp_2C & $FE)
+      ctr_003E = (ctr_003E + $01)
+    } else {
+     if (ctr_003E != $00) {
+     } else {
+       sid.v3.ctrl = (zp_2C & $FE)
+       ctr_003E = (ctr_003E + $01)
+     }
+    }
+     ctr_003E = (ctr_003E - $01)
+    if (ctr_0029 == $00) {
+     loop {
+       a = mem[((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2]
+       y = $00
+       zflag = (a == $00)
+      if (a >=s $00) {
+      } else {
+        m_6751 = m_6C61[a]
+        a19 = m_6CA0[a]
+        m_6752 = a19
+        a20 = a
+        a = m_6752
+        x = a20
+        y = $01
+        zflag = (m_6752 == $00)
+        nflag = (m_6752 <s $00)
+        goto ((zext2(m_6751) | (zext2(m_6752) << $08):2):2)
+       switch goto {
+        case $688A: {
+         $688A:
+          w69 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          ctr_002F = w69
+          ptr12 = ptr_0025_lo
+          t12 = (ptr_0025_lo + $02)
+          zp_34 = t12
+          ptr_0025_lo = zp_34
+          ptr13 = ptr_0025_hi
+          t13 = (carry(ptr12, $02) | carry(zp_34, $00))
+          t14 = (ptr_0025_hi + t13)
+          zp_35 = t14
+          ptr_0025_hi = zp_35
+          cflag = (carry(ptr13, $00) | carry(ptr13, t13))
+          vflag = (((ptr13 ^ $FF) & (ptr13 ^ zp_35)) <s $00)
+         continue
+        }
+        case $68C1: {
+         $68C1:
+          ctr15 = ctr_002F
+          ctr_002F = (ctr_002F - $01)
+         if (ctr15 == $01) {
+          goto $68EB
+         } else {
+           ptr_0025_lo = zp_34
+           ptr_0025_hi = zp_35
+         }
+         continue
+        }
+        case $68E4: {
+         $68E4:
+          zp_38 = y
+          w70 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          zp_3B = w70
+          y = (zp_38 + $01)
+         $68EB:
+         $6732:
+          ptr14 = ptr_0025_lo
+          t15 = (ptr_0025_lo + y)
+          ptr_0025_lo = t15
+          cflag = (carry(y, ptr14) | carry(ptr_0025_lo, $00))
+          vflag = (((y ^ ptr14 ^ $FF) & (y ^ ptr_0025_lo)) <s $00)
+         ifnot cflag {
+         } else {
+           ptr_0025_hi = (ptr_0025_hi + $01)
+         }
+         continue
+        }
+        case $6900: {
+         $6900:
+          w71 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          m_67ED = w71
+          y = (y + $01)
+         goto $6732
+        }
+        case $692D: {
+         $692D:
+          a = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+         loop {
+           w72 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $01))):2]
+           sid.v1.freq_lo[a] = w72
+           a21 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $02))):2]
+           a22 = a
+           a = a21
+           x = a22
+           y = (y + $02)
+          if (a21 >=s $00) {
+           continue
+          }
+          break
+         }
+          y = (y + $01)
+         goto $6732
+        }
+        case $6971: {
+         $6971:
+          w73 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          sid.v3.ctrl = w73
+          zp_2C = w73
+          a = $FF
+          y = (y + $01)
+         if (((w73 << $01) & $80) != $00) {
+         } else {
+           a = $01
+         }
+          m_67B0 = a
+          ctr_66CA = m_67B0
+         goto $6732
+        }
+        case $69E1: {
+         $69E1:
+          w74 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          zp_4D = w74
+          w75 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $01))):2]
+          zp_49 = w75
+          zp_43 = zp_49
+          w76 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $02))):2]
+          zp_4A = w76
+          zp_44 = zp_4A
+          y = (y + $03)
+         if ((zp_4A | zp_49) != $00) {
+         } else {
+           zp_43 = m_6A09
+           zp_44 = m_6A0A
+         }
+         goto $6732
+        }
+        case $6AFE: {
+         $6AFE:
+          ctr16 = ctr_006B
+          ptr15 = ptr_0025_lo
+          mem[($6B2B + zext2(ctr_006B)):2] = (ptr_0025_lo + $03)
+          ptr16 = ptr_0025_hi
+          t16 = (carry(ptr15, $03) | carry((ptr15 + $03), $00))
+          m_6B2E[ctr16] = (ptr_0025_hi + t16)
+          ctr_006B = (ctr16 + $01)
+          x = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          w77 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $01))):2]
+          ptr_0025_hi = w77
+          ptr_0025_lo = x
+          cflag = (carry(ptr16, $00) | carry(ptr16, t16))
+          vflag = (((ptr16 ^ $FF) & (ptr16 ^ (ptr16 + t16))) <s $00)
+         continue
+        }
+        case $6B53: {
+         $6B53:
+          ctr_006B = (ctr_006B - $01)
+          ptr_0025_lo = mem[(zext2(ctr_006B) + $6B2B):2]
+          ptr_0025_hi = mem[(zext2(ctr_006B) + $6B2E):2]
+          x = ctr_006B
+         continue
+        }
+        case $6B74: {
+         $6B74:
+          w78 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          idx_0050 = w78
+          y = (y + $01)
+         goto $6732
+        }
+        case $6BAA: {
+         $6BAA:
+          w79 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          zp_59 = w79
+          w80 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $01))):2]
+          zp_8C = w80
+          w81 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $02))):2]
+          zp_89 = w81
+          w82 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $03))):2]
+          zp_83 = w82
+          y = (y + $04)
+         goto $6732
+        }
+        case $6C22: {
+         $6C22:
+          w83 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          zp_92 = w83
+          y = (y + $01)
+         goto $6732
+        }
+        case $6C4E: {
+         $6C4E:
+          w84 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          idx_0095 = w84
+          w85 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $01))):2]
+          zp_5C = w85
+          w86 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2((y + $02))):2]
+          zp_5F = w86
+          y = (y + $03)
+         goto $6732
+        }
+        case $6C70: {
+         $6C70:
+          w87 = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+          idx_0065 = w87
+          y = (y + $01)
+         goto $6732
+        }
+       }
+      }
+      break
+     }
+     if zflag {
+      unobserved $6753
+     }
+     if $01 {
+     } else {
+      unobserved $6761
+     }
+      a = (a + idx_0050)
+      x = a
+     if (idx_0065 == $00) {
+     } else {
+       idx_006E = x
+       x = idx_0068
+     }
+      idx_0068 = x
+      w88 = m_6D35[x]
+      sid.v3.freq_lo = w88
+      zp_77 = w88
+      w89 = m_6D96[x]
+      zp_7A = w89
+      sid.v3.freq_hi = zp_7A
+      ctr_0062 = zp_5C
+      a = zp_59
+      y = (y + $01)
+     if (zp_59 == $00) {
+     } else {
+       ctr_0080 = zp_59
+       m_6645 = zp_83
+       ctr_0086 = zp_89
+       a = $00
+     }
+      m_667A = a
+      ctr_003E = zp_3B
+     if ((zp_49 | zp_4A) == $00) {
+     } else {
+       zp_43 = zp_49
+       zp_44 = zp_4A
+       ctr_66CA = m_67B0
+     }
+     if (zp_74 != $02) {
+     } else {
+      unobserved $67BA
+     }
+     if (zp_38 == $00) {
+     } else {
+       a = zp_2C
+       x = zp_53
+      if (zp_53 == $00) {
+      } else {
+       unobserved $67D7
+      }
+       sid.v3.ctrl = (zp_2C | $01)
+     }
+      a = m_67ED
+     if (m_67ED != $00) {
+     } else {
+       a = mem[(((zext2(ptr_0025_hi) << $08):2 | zext2(ptr_0025_lo)):2 + zext2(y)):2]
+       y = (y + $01)
+     }
+      ctr_0029 = a
+      ptr17 = ptr_0025_lo
+      ptr_0025_lo = (ptr_0025_lo + y)
+     ifnot (carry(y, ptr17) | carry(ptr_0025_lo, $00)) {
+     } else {
+      unobserved $67FD
+     }
+    }
+    if (ctr_6800 != $00) {
+     unobserved $681F
+    }
+     w90 = zp_6F
+     zp_6F = (zp_6F - zp_73)
+     vflag = (((w90 ^ zp_73) & (w90 ^ zp_6F)) <s $00)
+    if (zext2(zp_73) <= zext2(w90)) {
+    } else {
+      ctr_0070 = (ctr_0070 - $01)
+     if (ctr_0070 <s $00) {
+      unobserved $681C
+     }
+    }
+    if (ctr_0070 != m_6813) {
+    } else {
+     if (m_6819 <= zp_6F) {
+     } else {
+      unobserved $681C
+     }
+    }
+     filter.cutoff_lo = zp_6F
+     zp_96 = (((zp_6F >> $01) >> $01) >> $01)
+     filter.cutoff_hi = (((((((ctr_0070 >> $01) >> $01) | ((ctr_0070 & $01) << $07)) >> $01) | (((ctr_0070 >> $01) & $01) << $07)) >> $01) | (((((ctr_0070 >> $01) >> $01) | ((ctr_0070 & $01) << $07)) & $01) << $07) | zp_96)
+     a = (ctr_007B | zp_7C | zp_7D)
+     cflag = ((((((ctr_0070 >> $01) >> $01) | ((ctr_0070 & $01) << $07)) >> $01) | (((ctr_0070 >> $01) & $01) << $07)) & $01)
+     zflag = (a == $00)
+     nflag = (a <s $00)
+     ret
+   }
+   $698A:
+    ctr_007B = (ctr_007B + $01)
+  }
+ }
+ goto $6421
+}

@@ -15,6 +15,7 @@ from egglog import EGraph, Expr, StringLike, function, i64, i64Like, rewrite, ru
 
 from . import datadecl
 from . import frameproc
+from . import frameprog
 from . import sidprog
 
 
@@ -482,21 +483,38 @@ def _egg_of(ir, memo):
     return r
 
 
-def _parse_call(node):
+def _parse_call(node, env):
+    if isinstance(node, ast.Name):
+        return env[node.id]
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
         raise ValueError("unexpected extracted syntax: %s" % ast.dump(node))
     out = [node.func.id]
     for a in node.args:
-        out.append(_parse_call(a) if isinstance(a, ast.Call) else ast.literal_eval(a))
+        if isinstance(a, (ast.Call, ast.Name)):
+            out.append(_parse_call(a, env))
+        else:
+            out.append(ast.literal_eval(a))
     return tuple(out)
 
 
 def _parse_ir(text):
-    return _parse_call(ast.parse(text, mode="eval").body)
+    """Parse an extracted egglog str form (optionally let-lifted) into IR."""
+    env, result = {}, None
+    for node in ast.parse(text, mode="exec").body:
+        if isinstance(node, ast.Assign):
+            env[node.targets[0].id] = _parse_call(node.value, env)
+        else:
+            result = _parse_call(node.value, env)
+    return result
+
+
+_SID_LO, _SID_HI = 0xD400, 0xD41C
 
 
 def _cost(ir):
     c = _COSTS.get(ir[0], 1)
+    if ir[0] == "cell" and _SID_LO <= ir[1] <= _SID_HI:
+        c = 9  # SID cells are outputs; never prefer reading one back
     for a in ir[1:]:
         c += _cost(a) if isinstance(a, tuple) else 1
     return c
@@ -549,7 +567,7 @@ class _Item:
 
 
 _CALLISH = frozenset(("call", "pcall", "dcall", "callb", "swc", "swg", "opsw", "dbr", "dgoto"))
-_NOFALL = frozenset(("ret", "goto", "cont", "brk", "unobs"))
+_NOFALL = frozenset(("ret", "goto", "cont", "brk", "unobs", "dbr", "dgoto", "igoto"))
 
 
 def _falls(s):
@@ -734,13 +752,42 @@ class _Lift:
             return s
         if k in ("goto", "cont", "brk", "ret", "unobs"):
             return s
-        if k in _CALLISH or k == "igoto":
-            items = [ssa.item(x) for x in frameproc._stmt_exprs(s)]
+        if k == "call":
             ssa.havoc_all()
-            bodies = [self.build(b) for b in frameproc._stmt_bodies(s)]
+            return s
+        if k == "callb":
+            body = self.build(s[3])
+            self._loop_havoc(_writes(s[3], [set(), set(), False]))
+            return ("callb", s[1], s[2], body)
+        if k == "dcall":
+            it = ssa.item(s[1])
             ssa.havoc_all()
-            return ("opaque", s, items, bodies)
+            return ("dcallx", it, s[2])
+        if k in ("swc", "swg", "opsw"):
+            return self._switch(s)
+        if k == "dbr":
+            return ("dbr", s[1], ssa.item(s[2]), ssa.item(s[3]), s[4])
+        if k == "dgoto":
+            return ("dgotox", ssa.item(s[1]))
+        if k == "igoto":
+            return ("igotox", s[1], None if s[2] is None else ssa.item(s[2]))
         raise ValueError("unexpected statement %r" % (k,))
+
+    def _switch(self, s):
+        """Arms fork from the dispatch-site environment; havoc joins them."""
+        ssa = self.ssa
+        pre = ssa.snap()
+        arms = []
+        cases = s[2] if s[0] in ("swc", "opsw") else s[1]
+        for lbl, body in cases:
+            ssa.restore(pre)
+            arms.append((lbl, self.build(body)))
+        ssa.havoc_all()
+        if s[0] == "swc":
+            return ("swc", s[1], arms)
+        if s[0] == "opsw":
+            return ("opsw", s[1], arms)
+        return ("swg", arms)
 
     def _if(self, s):
         ssa = self.ssa
@@ -920,10 +967,20 @@ class _Lift:
                 out.extend(self._collect(nd[3], used))
             elif k == "loop":
                 out.extend(self._collect(nd[1], used))
-            elif k == "opaque":
-                for it in nd[2]:
-                    _leaves(it.chosen, used)
-                for b in nd[3]:
+            elif k == "callb":
+                out.extend(self._collect(nd[3], used))
+            elif k == "dcallx":
+                _leaves(nd[1].chosen, used)
+            elif k == "dbr":
+                _leaves(nd[2].chosen, used)
+                _leaves(nd[3].chosen, used)
+            elif k == "dgotox":
+                _leaves(nd[1].chosen, used)
+            elif k == "igotox":
+                if nd[2] is not None:
+                    _leaves(nd[2].chosen, used)
+            elif k in ("swc", "swg", "opsw"):
+                for _lbl, b in nd[2] if k != "swg" else nd[1]:
                     out.extend(self._collect(b, used))
         return out
 
@@ -1048,12 +1105,51 @@ class _Printer:
             self.line("break", d)
         elif k == "ret":
             self.line("ret", d + 1)
-        elif k == "opaque":
-            self.line("opaque %s" % (nd[1][0],), d + 1)
-            for b in nd[3]:
-                self.seq(b, d + 1)
+        elif k == "call":
+            self.line("call $%04X ret $%04X" % (nd[1], nd[2]), d + 1)
+        elif k == "callb":
+            self.line("call $%04X ret $%04X {" % (nd[1], nd[2]), d + 1)
+            self.seq(nd[3], d + 2)
+            self.line("}", d + 1)
+        elif k == "dcallx":
+            self.line("call (%s) ret $%04X" % (self.fmt(nd[1].chosen), nd[2]), d + 1)
+        elif k == "dbr":
+            text = "%s %s goto (%s) else $%04X"
+            self.line(text % (nd[1], self.fmt(nd[2].chosen), self.fmt(nd[3].chosen), nd[4]), d + 1)
+        elif k == "dgotox":
+            self.line("goto (%s)" % self.fmt(nd[1].chosen), d + 1)
+        elif k == "igotox":
+            ptr = "(%s)" % self.fmt(nd[2].chosen) if nd[2] is not None else "$%04X" % nd[1]
+            self.line("igoto %s" % ptr, d + 1)
+        elif k == "swg":
+            self._cases("switch goto {", nd[1], d)
+        elif k == "opsw":
+            self._cases("switch %s {" % self.name(nd[1]), nd[2], d)
+        elif k == "swc":
+            self._swc(nd, d)
         else:
             raise ValueError("unprintable node %r" % (k,))
+
+    def _cases(self, head, cases, d):
+        self.line(head, d)
+        self._cases_tail(cases, d)
+
+    def _swc(self, nd, d):
+        if not nd[2]:
+            body = " ".join(nd[1])
+            self.line("switch call { %s }" % body if body else "switch call { }", d)
+            return
+        self.line("switch call {", d)
+        if nd[1]:
+            self.line(" ".join(nd[1]), d + 1)
+        self._cases_tail(nd[2], d)
+
+    def _cases_tail(self, cases, d):
+        for lbl, body in cases:
+            self.line("case %s: {" % lbl, d + 1)
+            self.seq(body, d + 2)
+            self.line("}", d + 1)
+        self.line("}", d)
 
 
 class LiftResult:
@@ -1097,6 +1193,51 @@ def lift(model, entry=None, iters=24, k=12):
     """Lift one procedure of a committed model (default: the play procedure)."""
     stmts, aliases, entry = pass1(model, entry)
     return lift_stmts(stmts, aliases, entry, iters=iters, k=k)
+
+
+_EMIT_NOTES = (
+    "; eqlift PoC: solver-lifted procedure bodies over the committed sidprog model",
+    "; header sections (state/data/symbols) reuse the frameprog emitter verbatim;",
+    ";   procedure statements are equality-saturation extraction output",
+)
+
+
+def emit(model, iters=24, k=12):
+    """Whole-artifact eqlift text for a committed model: header + every
+    procedure lifted; returns (text, per-procedure LiftResult list)."""
+    decls = getattr(model, "data_decls", None)
+    aliases = getattr(model, "symbols", None)
+    if decls is None:
+        decls, aliases = datadecl.declarations(model)
+    trees, labels, view = sidprog._model_trees(model)
+    head = ["eqlift 0"]
+    head.extend(_EMIT_NOTES)
+    head.append("play $%04X" % model.play)
+    head.append("init $%04X" % model.init)
+    if getattr(model, "subtune", 0):
+        head.append("subtune %d" % model.subtune)
+    prologue = getattr(model, "prologue", ())
+    if prologue:
+        head.append("sid-init {")
+        head.extend("  $%02X = $%02X" % (r, v) for r, v in prologue)
+        head.append("}")
+    state, inputs = frameprog._state_lines(view, decls, model.dispatch_sets)
+    if inputs:
+        head.append("inputs { %s }" % " ".join(inputs))
+    header_body, _cov = sidprog._data_lines(decls, model.mem0)
+    header_body = state + header_body
+    to_alias, _strip = sidprog._alias_res(aliases)
+    if to_alias is not None:
+        header_body = list(map(to_alias, header_body))
+    lines = head + header_body + sidprog._symbol_lines(aliases)
+    results = []
+    for entry, root in trees:
+        conv = frameproc._Conv(frameproc._Names(aliases))
+        builder = frameproc._Builder(labels, set(model.dispatch_sets), view, conv)
+        res = lift_stmts(builder.proc(root), aliases, entry, iters=iters, k=k)
+        lines.extend(res.lines)
+        results.append(res)
+    return "\n".join(lines) + "\n", results
 
 
 # ---- end-to-end Z3 check: chosen terms equal originals under the SSA equations ---

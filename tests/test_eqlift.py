@@ -109,9 +109,34 @@ def test_commando_play_exhibit_end_to_end(sid, subtune, secs):
 
 
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Krakout", "Daglish_Ben"))
-def test_krakout_sub_e536_end_to_end(sid, subtune, secs):
+def test_krakout_whole_artifact_emission(sid, subtune, secs):
+    """emit() covers calls/switches; deterministic; every proc's sites proven."""
     model = _model(sid, subtune, secs)
-    res = eqlift.lift(model, 0xE536)
-    assert "if (x0 != $01) {" in res.text  # ifnot(eq) lifts to a direct compare
-    assert "vflag = (((a1 ^ $7F) & (a1 ^ t0)) <s $00)" in res.text
-    assert eqlift.verify_lift(res) >= 5
+    text, results = eqlift.emit(model)
+    assert text.startswith("eqlift 0\n") and "state {" in text
+    assert "sub_E001 {" in text and "sub_E536 {" in text and "sub_E578 {" in text
+    assert "switch call {" in text and "call $" in text
+    assert "if (x0 != $01) {" in text  # ifnot(eq) lifts to a direct compare
+    assert "vflag = (((a1 ^ $7F) & (a1 ^ t0)) <s $00)" in text
+    assert eqlift.emit(model)[0] == text  # emission is deterministic
+    assert sum(eqlift.verify_lift(r) for r in results) >= 50
+
+
+def _regs():
+    return [("reg", i) for i in range(16)]
+
+
+def test_emit_synthetic_model_headers_and_proc():
+    from deity_informant import sidprog
+    from deity_informant.structured import Block
+
+    events = [("ld", 0, ("const", 0x1500, 2)), ("st", ("const", 0x00FB, 2), ("uni", 0, 1))]
+    blocks = {(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], events, ("rts",), _regs())}
+    mem0 = bytearray(0x10000)
+    mem0[0x1000] = 0xA9
+    model = sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {})
+    text, results = eqlift.emit(model)
+    assert text.startswith("eqlift 0\n")
+    assert " m_1500: u8" in text and "sub_1000 {" in text
+    assert "zp_FB = m_1500" in text  # the load's local dies into the store
+    assert len(results) == 1 and eqlift.emit(model)[0] == text
