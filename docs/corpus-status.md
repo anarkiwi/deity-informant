@@ -44,6 +44,16 @@ sound static envelopes whose extra arms the tune never plays; the rest are
 the tracked precision refusals (mutable-table spill, unresolvable vectors,
 unpaired writers; docs/soundness.md taxonomy).
 
+## Run-to-recurrence closure (opt-in, 2026-07-26)
+
+`decompile --close` extends the trace until the play state recurs; recurrence
+certifies every guard for the infinite run (docs/soundness.md). Measured over
+the same 140 tunes: 111 recur (horizon median 9216 frames, 1.8× the window);
+certified sites 20 → 133 of 155, `--sound` tunes 79 → 129/140. The 29
+cap-outs have no unbounded counters — incommensurate periodic components
+(song loop × free-running modulation counters), plus the 3 osc3 readers.
+Default build cost unchanged (closure off by default).
+
 ## Gate S status (readability)
 
 Region nesting IS the text's control semantics (`if`/`else`/`loop`/`switch`
