@@ -1063,6 +1063,17 @@ class _Writer:
     """Serializes region trees; the nesting carries the flow (no goto soup).
     ``view`` is the model facade when emitting from a block model, else None."""
 
+    boundary_labels = True  # dialect hooks: overridden by frameprog's writer
+
+    def switch_sel(self, pc):
+        return "code[$%04X]" % pc
+
+    def if_head(self, word, pen, cond):
+        return "%s @t%d %s" % (word, pen, cond)
+
+    def view_block(self, blk):
+        return _stmt_view(blk)
+
     def __init__(self, labels, dispatch, view):
         self.labels = labels
         self.dispatch = dispatch
@@ -1121,7 +1132,7 @@ class _Writer:
         if self.view is not None and r.b is not None and blk.pc in self.dispatch:
             if r.b in self.labels:
                 self.line("$%04X:" % r.b, d)
-            self.line("switch code[$%04X] {" % blk.pc, d)
+            self.line("switch %s {" % self.switch_sel(blk.pc), d)
             self.line("case $%02X: {" % blk.op0, d + 1)
             consumed = self._leaf(r, nxt, d + 2, False)
             self.line("}", d + 1)
@@ -1130,7 +1141,7 @@ class _Writer:
         return self._leaf(r, nxt, d, True)
 
     def _leaf(self, r, nxt, d, labelled):
-        blk = _stmt_view(r.a)
+        blk = self.view_block(r.a)
         cse = _Cse(_roots(blk))
         shadow = _shadow(blk, cse)
         lines = cse.binding_lines()
@@ -1146,7 +1157,8 @@ class _Writer:
             lines.append(pend)
         lbl = r.b if labelled and r.b is not None and r.b in self.labels else None
         boundary = r.b if r.b is not None else r.c
-        if lbl is None and labelled and self.open and lines and boundary is not None:
+        sep = self.boundary_labels and self.open and lines and boundary is not None
+        if lbl is None and labelled and sep:
             lbl = boundary  # boundary label: separates adjacent fallthrough payloads
         if lbl is not None:
             self.line("$%04X:" % lbl, d)
@@ -1164,11 +1176,13 @@ class _Writer:
             then_items = _items(nxt.b)
             if len(then_items) == 1 and then_items[0].kind == "frontier":
                 cond = _rename(fmt_expr(term[4]))
-                self.line("%s @t%d %s unobserved $%04X" % (head, pen, cond, then_items[0].a), d)
+                self.line(
+                    "%s unobserved $%04X" % (self.if_head(head, pen, cond), then_items[0].a), d
+                )
                 if nxt.c is not None:  # the marker never joins: else IS the continuation
                     self.seq(_items(nxt.c), d)
                 return 2
-            self.line("%s @t%d %s {" % (head, pen, _rename(fmt_expr(term[4]))), d)
+            self.line("%s {" % self.if_head(head, pen, _rename(fmt_expr(term[4]))), d)
             self.seq(_items(nxt.b), d + 1)
             els_items = _items(nxt.c) if nxt.c is not None else []
             if len(els_items) == 1 and els_items[0].kind == "frontier":
@@ -1232,10 +1246,10 @@ class _Writer:
         self.line("}", d)
 
     def opcode_switch(self, r, d):
-        sel, cases = r.a
+        _sel, cases = r.a
         if r.b and r.b[0] in self.labels:
             self.line("$%04X:" % r.b[0], d)
-        self.line("switch %s {" % sel, d)
+        self.line("switch %s {" % self.switch_sel(r.b[0]), d)
         for lbl, body in cases:
             self.line("case %s: {" % lbl, d + 1)
             self.seq(_items(body), d + 2)

@@ -1,0 +1,269 @@
+# frameprog — the frame-program layer (specification)
+
+frameprog is a **derived** artifact level above sidprog. It drops cycle
+exactness: the only normative output is the **canonical frame projection**
+of the SID write stream, one record per play-frame. sidprog remains the
+cycle-exact ground truth (Gate C unchanged); frameprog is generated from the
+committed model and verified against the projection of the walker's log.
+Status: design for review; landed already: the projection + digi rule in the
+pure log domain (`deity_informant/framelog.py`), nothing else. "MUST" is a
+gate. Measurements: 2026-07-25, 140 cached tunes, 1,000-frame windows unless
+noted; scratch probes, numbers herein are the record.
+
+## 1. Verification law (Gate FP)
+
+### 1.1 Canonical frame projection
+
+Input: the play-phase write log (SID offsets $00-$1C by runtime address —
+projection is by address, never by syntax) with per-frame boundaries (one
+play invocation per frame in the v1 class). `framelog.canonical` maps each
+frame to one record of 8 sections, in this order:
+
+- per voice `v` in 1..3 (offsets `7(v-1)+r`):
+  1. `freq_lo`, `freq_hi`, `pw_lo`, `pw_hi` — each last-write-wins, elided
+     when unwritten that frame;
+  2. the voice's `ctrl`/`attack_decay`/`sustain_release` writes as one
+     **order-preserved** section: every write, original relative order,
+     multiples allowed (gate off→on retrigger and hard-restart ADSR
+     sequences are frame-audible and MUST survive);
+- filter tail $15-$18 (cutoff lo/hi, $D417, $D418) — each last-write-wins,
+  elided when unwritten;
+- residual $19-$1C writes, order-preserved.
+
+Intermediate values of last-write-wins registers are non-normative at this
+level by definition — that is the abstraction. `framelog` is the ONE
+projection implementation (§3): `dumps`/`loads` round-trip the record text
+exactly, `diff` reports the first divergence.
+
+### 1.2 Input class: the digi exclusion rule
+
+frameprog is class-scoped like v1/v2 in decompiler-implementation.md §1.
+$D418 stays in the last-write-wins tail; tunes that encode audio in the
+$D418 write sequence are **outside the class**:
+
+- Per frame, collapse consecutive duplicate $D418 volume nibbles
+  (`value & $0F`). FP-class iff every frame's collapsed sequence has at most
+  2 steps (`framelog.digi_frames` empty): three or more steps is two-plus
+  volume-level changes inside one frame — amplitude modulation above the
+  frame rate, i.e. sample playback by definition. Exclusion MUST carry the
+  diagnostic `digi-class: frame F, $D418 volume sequence [n0 n1 ...]`. No
+  tunables beyond this definition.
+- A 2-step frame (single in-frame volume step: mute-click, song restart)
+  stays in class, reported per tune as the `d418_collapsed` metric.
+- Excluded tunes remain fully served by sidprog; the exclusion is a class
+  diagnostic at frameprog generation time, never a sidprog build failure.
+
+Measured: 0 of 140 corpus tunes excluded; 17 write $D418 more than once per
+frame, all volume-nibble-equal except Aztec_Challenge (one frame `00`,`0F` —
+a 2-step restart, in class, 1 `d418_collapsed`). Differing full values are
+filter-mode transients (Alternative_World_Games `0F`,`1F` in 956/1000
+frames): sub-frame mode/routing transients ($D418 high nibble, $D417) are
+declared non-normative — no signal is encoded in their write sequence,
+unlike the volume DAC. A known digi tune (e.g. the A_Mind_Is_Born family)
+MUST be added to the corpus to exercise the exclusion path.
+
+### 1.3 Volatile inputs: the pinned trace
+
+The v1 walker's volatile reads are pure functions of its cycle counter
+($D011/$D012 raster, $D41B osc3, $D41C envelope3) or tiny deterministic
+latches ($D019 write-ack, $DC0D read-clear). frameprog has no cycle counter:
+these become **declared nondeterministic inputs** `raster()`, `raster_hi()`,
+`osc3()`, `envelope3()`, `cia_icr()`; $D019 stays a deterministic
+program-visible latch (reads are a function of prior writes).
+
+The projection **pins** them: while projecting the walker's run, every
+volatile read is also logged as `iota(f, input, k) = value` — the k-th read
+of that input in frame f, valued by the walker's normative cycle formulas.
+The reference evaluator resolves the k-th evaluation of an input in frame f
+to `iota(f, input, k)`; an undeclared volatile read, or a read past the
+trace, faults (guarded-envelope doctrine). There is exactly ONE volatile
+model — the walker's — and frameprog never re-derives cycle positions; both
+sides of the law consume the same `iota` by construction, so the law is
+well-defined. For standalone replay the artifact MAY embed `iota`
+(run-length encoded) as an `inputs` section. Measured: 3 of 140 tunes read
+any volatile input in play (Atmosphere, Atmosphere_II, Chameleon — osc3
+only).
+
+### 1.4 The law
+
+**Gate FP:** for every FP-class corpus tune at full Songlengths length,
+`eval_fp(F, state0, iota)` — the frame program under its reference
+evaluator, whose output semantics is *buffer the frame's SID writes, flush
+one canonical record per frame* — MUST equal
+`framelog.canonical(walker_frames)` frame-for-frame, `walker_frames` being
+the walker's play-phase log (the Gate-C artifact) cut at frame boundaries.
+The law holds at **every** lift rung (§4).
+
+## 2. Language domain: SMC-free by construction
+
+**Principle (normative).** At frame level, self-modification is
+indistinguishable from state mutation: a patched byte is a variable holding
+its byte value, and which code runs next frame is a function of state.
+frameprog therefore has **no SMC concept** — no code image, no addresses, no
+`code[$XXXX]` or dispatch-cell vocabulary, no live-image reads; any
+construct that would need one indicates a **generator bug, not a language
+gap**. The domain is exactly: a `state { }` record, declared `inputs`,
+immutable `const` tables, and procedures over them (rung (f)'s
+`frame(state, in) -> writes` is the terminal shape).
+
+The **generator** (not the language) maps the original's play-phase SMC
+mechanically at entry, consuming the committed model's observed-primary
+artifact sets (docs/soundness.md: every dispatch/opcode/vector site
+serializes exactly its trace-observed set behind a runtime guard):
+
+- **Patched operand bytes** → ordinary state variables; the consuming
+  instruction reads the variable where it read the cell.
+- **Opcode-toggle cells** → enum state variables whose observed values
+  select between the variant behaviors: a plain `switch` with a faulting
+  default — an ordinary language feature, not SMC modeling. A single
+  observed value still emits the one-arm switch (guard explicit; the
+  sidprog opswitch precedent).
+- **Dynamic-dispatch / vector cells** → state variables (u16 after §4(d))
+  switched over observed target labels, faulting default; labels name the
+  observed word values, the variable is ordinary data.
+- **Code cells read as data** → reads of the SAME variables. A variable IS
+  its byte value, so reads-as-data are just variable reads (Automatas reads
+  its own operand bytes back as its voice-state array — under this mapping,
+  nothing but a state array). Nothing needs proving: there is no escape
+  check and no self-reference-elimination stage; the mapping is total by
+  definition.
+
+Refusal boundary (honest): the mapping is total over the model's committed
+variant and target sets. An executed play-phase store into code whose cell
+is not classified operand/opcode/vector — unbounded play-time code copy —
+has no state shape and MUST refuse the tune with a site diagnostic; the
+corpus SMC census found every play-phase SMC class state-shaped, zero tunes
+refuse. At run time a variant or target outside the observed set hits the
+faulting default — the same guarded envelope sidprog serializes. Opcode
+variants diverging only in cycle-visible ways are irrelevant here (cycles
+are gone): their arms project identically and MAY merge after §4(a),
+recorded in the build report.
+
+## 3. Relationship to sidprog
+
+- sidprog is and remains the cycle-exact ground truth and the deliverable of
+  the decompiler; frameprog replaces nothing and relaxes nothing below it.
+- frameprog is **generated from the committed model** (post commit-phase,
+  observed-primary sets), never hand-edited; changes flow from the sidprog
+  side and regeneration is mandatory on any model change.
+- Exactly ONE projection implementation — `framelog` — serves the
+  generator's self-check, the Gate FP harness, and all tooling; a second
+  projection is drift by definition and is forbidden.
+- Guard semantics carry over: frameprog's faulting switch defaults are the
+  sidprog runtime guards under the §2 mapping; certification (static set
+  equals observed) stays upstream report metadata, never changing the arms.
+
+## 4. The lift ladder
+
+The §2 entry translation is applied first and is definitional, not a rung.
+Ordered rungs (a)-(f) then transform the frame program; each carries a
+static premise discharged by proof records (structured.Proof style) and
+re-verifies Gate FP. Refusals are per-site/per-pair/per-procedure with a
+diagnostic; a tune's artifact records its highest rung; every rung is a
+valid, gated artifact.
+
+- **(a) Timing-annotation elimination** (mechanical). Strip `@n`, `@tP`,
+  `@x`/`@xi`. Premise: none — outputs are frame-buffered (§1.4), volatile
+  reads resolve by `(frame, occurrence)` (§1.3), no construct consumes
+  cycles. Switch arms identical after stripping MAY merge (report-noted).
+  Gate: FP unchanged.
+- **(b) Volatile reads → declared inputs.** Rewrite each constant-address
+  volatile load to its input expression; keep the $D019/$DC0D micro-models.
+  Premise: every load that MAY address the volatile range is statically a
+  single volatile cell; a computed address unprovably intersecting the
+  volatile set refuses (site diagnostic). Gate: FP; the declared input set
+  MUST equal the set `iota` actually records.
+- **(c) In-frame dead-store elimination + canonical write section.** Flush
+  semantics is already canonical (§1.4); rung (c) deletes SID stores
+  provably non-final for a last-write-wins register (a later write to the
+  same register dominates every path to frame end); order-preserved
+  registers are never deleted. Premise: the dominance proof per deleted
+  store; unprovable keeps the store (harmless — the buffer collapses it).
+  Gate: FP.
+- **(d) 16-bit fusion.** Fuse lo/hi state-variable pairs — including the §2
+  dispatch words — and render freq/pulse/cutoff as u16 in the canonical
+  section (presentational: the projection emits lo,hi adjacent). Premise
+  per pair: provably written/consumed as a word — the datadecl pointer-pair
+  machinery (`lo`/`hi` partner attrs) plus the paired-index zip invariant
+  (follin-dispatch-study §4), every read using the half only inside
+  `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
+  per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
+- **(e) Per-voice unification.** Replace k code copies with one procedure
+  parameterized by voice `v`. Premise — code isomorphism up to voice index:
+  a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
+  voice-k's after normalization, every leaf difference being one of: SID
+  base `+7(v-1)`; state variable `base + stride*(v-1)` or split-table
+  `+offset*(v-1)` (Follin mirror handlers are `+$0F/+$1E`); a per-voice
+  constant collected into a declared voice parameter record. Check:
+  canonical tree hashes equal after `sigma_v` normalization. ANY residual
+  mismatch — extra block, different guard, voice-3 special case — refuses
+  the whole procedure; synthesizing `if v == 3` guards is forbidden.
+  Index-looped drivers (Hubbard's `sid.v1.*[Y]` voice loop) are already
+  parameterized and need no rung-(e) work. Gate: FP + isomorphism record
+  (`sigma`, parameter table); unification rate is a reported metric, never
+  a gate.
+- **(f) The frame-function form.** The §2 domain closed: `state { }` (named
+  u8/u16 fields, `[3]` voice arrays), declared `inputs`, const tables,
+  `frame(state, in) -> writes`. FP-complete = no raw `mem[expr]` with
+  unproven range remains; otherwise the tune rests at its highest rung.
+  Illustrative excerpt, hand-derived from Commando's decompile (the $52xx
+  slide path: state `m_551D[X]`/`ctr_551A[X]`, flags `m_5520[X]`):
+
+```
+state { freq: u16[3]  fx: u8[3]  step: u8[3]  ... }
+frame(state, in) {
+  for v in 0..2 {
+    if state.fx[v] != 0 {
+      s = zext16(state.fx[v] & $7E)
+      if state.fx[v] & $01 == 0 { state.freq[v] = state.freq[v] + s }
+      else                      { state.freq[v] = state.freq[v] - s }
+      out.freq[v] = state.freq[v]        ; canonical: lo,hi
+    }
+    ...
+  }
+}
+```
+
+## 5. Risk register
+
+| risk | disposition |
+|---|---|
+| Multi-call-per-frame / multispeed drivers | v1 class: frame = the play invocation, settled. v2/P-INT redefines the frame as the driver-cadence tick; the projection then applies per tick and the digi rule re-triggers (fast CIA volume writes). Deferred with v2; frameprog v1 MUST reject `play == 0` inputs. |
+| Digi / $D418 order | Closed by the class rule (§1.2): $D418 is last-write-wins; a >2-step collapsed volume sequence excludes with a precise diagnostic; 2-step frames collapse with a reported metric. Corpus: 0 exclusions; a digi tune MUST be added to exercise the path. |
+| Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
+| Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
+| Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
+| Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
+| Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
+
+## 6. Milestones and corpus gates
+
+Each milestone is independently shippable, gated **full-length,
+full-corpus** on the cached HVSC set (opt-in job, results recorded); the
+committed synthetic corpus (`tests/_fuzzgen.py` extended) independently
+covers every new code path so CI holds its gates and >85% coverage with
+HVSC absent (decompiler-implementation.md §1, §7).
+
+- **M-FP1 — projection + verifier.** Landed: `framelog`
+  (canonical/dumps/loads/digi_frames/diff, walker adapter). Remaining:
+  `iota` extraction, the full-corpus Gate FP harness on unlifted programs
+  (buffered-flush + `iota` evaluator), the class report (exclusions,
+  `d418_collapsed`), mutation tests (dropped write, swapped ctrl order,
+  wrong `iota` index all detected).
+- **M-FP2 — entry translation + mechanical lifts (a)-(c).** The §2 SMC-free
+  generator plus rungs (a)-(c); first `frameprog` text artifact (versioned
+  header, grammar published, canonical fixpoint `dumps(loads(t)) == t`).
+  Gate: FP after translation and after each rung; declared-input set ==
+  `iota` domain; dead-store proofs recorded; the play-time code-copy
+  refusal exercised synthetically.
+- **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
+  refusal exercised synthetically.
+- **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
+  near-miss refusal exercised synthetically; unification-rate metric.
+- **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
+  (no unproven raw `mem[expr]`); the Commando-family excerpt shape achieved
+  on at least the index-looped drivers; per-tune rung recorded in the build
+  report.
+
+Gate FP is the only correctness law at this level; no milestone may weaken
+it, and sidprog's Gates A/C/L/S are untouched throughout.

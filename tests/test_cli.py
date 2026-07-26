@@ -65,6 +65,19 @@ def test_decompile_verify_and_prog_run(tmp_path, capsys):
     assert all(r[24] == "0F" for r in rows)  # driver volume visible in the grid
 
 
+def test_decompile_frameprog_flag(tmp_path, capsys):
+    prg = _player_prg(tmp_path)
+    out_file = tmp_path / "player.frameprog"
+    rc = cli.main(
+        ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
+        + ["--frames", "4", "--frameprog", "-o", str(out_file)]
+    )
+    assert rc == 0
+    text = out_file.read_text()
+    assert text.startswith("frameprog 0\n") and "proc $1000 {" in text
+    assert " ctr_1010: u8" in text and "@" not in text and "image {" not in text
+
+
 def test_decompile_report_flag(tmp_path, capsys):
     prg = _player_prg(tmp_path)
     rc = cli.main(
