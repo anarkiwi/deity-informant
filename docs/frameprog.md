@@ -255,7 +255,13 @@ HVSC absent (decompiler-implementation.md §1, §7).
   header, grammar published, canonical fixpoint `dumps(loads(t)) == t`).
   Gate: FP after translation and after each rung; declared-input set ==
   `iota` domain; dead-store proofs recorded; the play-time code-copy
-  refusal exercised synthetically.
+  refusal exercised synthetically. Landed toward M-FP2: the procedural
+  surface (`deity_informant/frameproc.py`, emit-only): registers and
+  temporaries lift to named locals, procedure parameters/returns are
+  inferred from interprocedural register liveness (`x = sub_XXXX(a)`),
+  counter loops render as `for x in $02..$00` ranges; gated by emission
+  determinism and a mechanical defined-before-use local lint in the
+  emitter.
 - **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
   refusal exercised synthetically.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3

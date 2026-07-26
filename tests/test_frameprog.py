@@ -69,7 +69,8 @@ def test_if_header_without_taken_penalty():
         (0x1002, 0x60): Block(0x1002, 0x60, [0x1002], [], ("rts",), _regs()),
     }
     text = frameprog.emit(_model(blocks))
-    assert "if (A == $01) unobserved $2000" in text
+    assert "if (a == $01) unobserved $2000" in text
+    assert "sub_1000(a) {" in text  # the tested register is a live-in parameter
     assert "@t" not in text
 
 
@@ -139,6 +140,78 @@ def test_fuzz_players_emit_annotation_free_and_project(p):
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
 
 
+def test_emission_deterministic():
+    m1, _ev = _decl_player()
+    m2, _ev = _decl_player()
+    assert frameprog.emit(m1) == frameprog.emit(m1) == frameprog.emit(m2)
+
+
+def test_registers_render_as_locals():
+    model, _ev = _decl_player()
+    text = frameprog.emit(model)
+    body = text[text.index("sub_") :]
+    assert not re.search(r"\n +[AXY] = ", body) and " u0 = " not in body
+    frameprog.lint(text)
+
+
+def test_lint_rejects_dangling_local():
+    good = "frameprog 0\nsub_1000(a) {\n  zp_10 = a\n  ret\n}\n"
+    frameprog.lint(good)
+    with pytest.raises(ValueError, match="used before definition"):
+        frameprog.lint("frameprog 0\nsub_1000() {\n  zp_10 = (y + $01)\n  ret\n}\n")
+
+
+def _counter_loop_model():
+    dec = ("op", "INT_ADD", (E.reg(1), ("const", 0xFF, 1)), 1)
+    sign = ("op", "INT_AND", (dec, ("const", 0x80, 1)), 1)
+    cond = ("op", "INT_NOTEQUAL", (sign, ("const", 0, 1)), 1)
+    arr = ("op", "INT_ADD", (("op", "INT_ZEXT", (E.reg(1),), 2), ("const", 0x1500, 2)), 2)
+    init = _regs()
+    init[1] = ("const", 2, 1)
+    body = _regs()
+    body[1] = dec
+    blocks = {
+        (0x1000, 0xA2): Block(0x1000, 0xA2, [0x1000], [], ("goto", 0x1005), init),
+        (0x1005, 0x99): Block(
+            0x1005,
+            0x99,
+            [0x1005],
+            [("st", arr, ("const", 1, 1))],
+            ("br", 0, 0x1005, 0x100A, cond, None),
+            body,
+        ),
+        (0x100A, 0x60): Block(0x100A, 0x60, [0x100A], [], ("rts",), _regs()),
+    }
+    return _model(blocks)
+
+
+def test_counter_loop_renders_as_for_range():
+    text = frameprog.emit(_counter_loop_model())
+    assert "for x in $02..$00 {" in text
+    assert "m_1500[x] = $01" in text
+
+
+def test_parameter_and_return_inference():
+    inc = ("op", "INT_ADD", (E.reg(0), ("const", 1, 1)), 1)
+    callee = _regs()
+    callee[0] = inc
+    caller = _regs()
+    caller[0] = ("const", 5, 1)
+    blocks = {
+        (0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("jsr", 0x2000, 0x1004, None), caller),
+        (0x1005, 0x20): Block(0x1005, 0x20, [0x1005], [], ("jsr", 0x2000, 0x1007, None), _regs()),
+        (0x1008, 0x85): Block(
+            0x1008, 0x85, [0x1008], [("st", ("const", 0x00FB, 2), E.reg(0))], ("rts",), _regs()
+        ),
+        (0x2000, 0x69): Block(0x2000, 0x69, [0x2000], [], ("rts",), callee),
+    }
+    text = frameprog.emit(_model(blocks))
+    assert "sub_2000(a) -> a {" in text
+    assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
+    assert "zp_FB = a" in text
+    frameprog.lint(text)
+
+
 def _commando():
     return [
         pytest.param(path, sub, secs, id="Hubbard_Rob-Commando")
@@ -165,6 +238,9 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "switch code[" not in text
     assert " ctr_5513: u8" in text and " pos_54EC: u8[]" in text
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
+    assert "for x in $02..$00 {" in text  # voice-state init counter loop
+    assert not re.search(r"\n +[AXY] = ", text) and " u0 = " not in text
+    assert frameprog.emit(model) == text  # emission is deterministic
     canon = F.canonical(frames)
     assert F.loads(F.dumps(frames)) == canon
     assert F.digi_frames(frames) == []

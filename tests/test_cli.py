@@ -74,7 +74,7 @@ def test_decompile_frameprog_flag(tmp_path, capsys):
     )
     assert rc == 0
     text = out_file.read_text()
-    assert text.startswith("frameprog 0\n") and "proc $1000 {" in text
+    assert text.startswith("frameprog 0\n") and "sub_1000(" in text
     assert " ctr_1010: u8" in text and "@" not in text and "image {" not in text
 
 
