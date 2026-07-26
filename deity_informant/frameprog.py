@@ -1,15 +1,17 @@
 """frameprog: emit-only frame-level serializer over the committed model.
 
-Prototype for docs/frameprog.md: sidprog region trees with cycle/penalty
-annotations stripped (rung (a)), opcode cells as state-variable switches
-(spec section 2), declared inputs, and a state/data/symbols header.
+Prototype for docs/frameprog.md: annotation-free region trees (rung (a)),
+opcode cells as state-variable switches, declared inputs, a state/data header,
+and the procedural surface (locals, inferred parameters/returns, for-ranges).
 """
 
 from __future__ import annotations
 
+import re
+
 from . import datadecl
+from . import frameproc
 from . import sidprog
-from . import structured as C
 
 FRAMEPROG_VERSION = 0
 
@@ -27,25 +29,9 @@ _NOTES = (
     "; emit-only prototype: verification is the framelog projection of the",
     ";   model walker; the frameprog parser/evaluator (full Gate FP) is M-FP2",
     "; byte-pair fusion (M-FP3) and per-voice unification (M-FP4) not applied",
+    "; registers/temporaries are procedure locals; parameters, returns and",
+    ";   for-ranges are inferred from register liveness (serialization-layer)",
 )
-
-
-class _Writer(sidprog._Writer):
-    """sidprog writer under the frame-level dialect hooks."""
-
-    boundary_labels = False
-
-    def switch_sel(self, pc):
-        return sidprog._addr_name(pc)
-
-    def if_head(self, word, pen, cond):
-        return "%s %s" % (word, cond)
-
-    def view_block(self, blk):
-        events = [ev for ev in blk.events if ev[0] in ("ld", "st")]
-        if len(events) != len(blk.events):
-            blk = C.Block(blk.pc, blk.op0, blk.pcs, events, blk.term, blk.regs)
-        return sidprog._stmt_view(blk)
 
 
 def _scan(node, scalars, arrays):
@@ -113,6 +99,57 @@ def _state_lines(view, decls, dispatch):
     return out, inputs
 
 
+# ---- no-dangling-local lint (mechanical: defined before use, textual order) -----
+_LINT_HEAD = re.compile(r"sub_[0-9A-F]{4}\(([^)]*)\)( -> [a-z0-9, ]+)? \{$")
+_LINT_TOKEN = re.compile(r"\b[a-z][a-z0-9]*\b")
+_LINT_ASG = re.compile(r" *([a-z][a-z0-9]*) = (.*)$")
+_LINT_PCALL = re.compile(r" *(?:([a-z0-9, ]+) = )?sub_[0-9A-F]{4}\((.*)\)$")
+_LINT_FOR = re.compile(r" *for ([a-z][a-z0-9]*) in ")
+_LINT_WORDS = frozenset(
+    (
+        "if ifnot else loop for in goto igoto call ret switch case break "
+        "continue unobserved mem carry zext1 zext2 sid v1 v2 v3 ctrl filter resonance"
+    ).split()
+)
+
+
+def lint(text):
+    """Assert every local in every emitted procedure is defined before use."""
+    defined = None
+
+    def check(frag, lineno):
+        for tok in _LINT_TOKEN.findall(frag):
+            if tok not in _LINT_WORDS and tok not in defined:
+                raise ValueError("line %d: local %r used before definition" % (lineno, tok))
+
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = _LINT_HEAD.match(line)
+        if m:
+            defined = {p for p in m.group(1).split(", ") if p}
+            continue
+        if defined is None:
+            continue
+        if line == "}":
+            defined = None
+            continue
+        m = _LINT_FOR.match(line)
+        if m:
+            defined.add(m.group(1))
+            continue
+        m = _LINT_PCALL.match(line)
+        if m:
+            check(m.group(2), lineno)
+            if m.group(1):
+                defined.update(m.group(1).split(", "))
+            continue
+        m = _LINT_ASG.match(line)
+        if m:
+            check(m.group(2), lineno)
+            defined.add(m.group(1))
+            continue
+        check(line, lineno)
+
+
 def emit(model):
     """frameprog text for a committed block model (emit-only; parser is M-FP2)."""
     decls = getattr(model, "data_decls", None)
@@ -137,12 +174,13 @@ def emit(model):
     body = list(state)
     data_out, _cov = sidprog._data_lines(decls, model.mem0)
     body.extend(data_out)
-    w = _Writer(labels, set(model.dispatch_sets), view)
-    for entry, root in trees:
-        w.proc(entry, root)
-    body.extend(w.out)
+    body.extend(
+        frameproc.procedures(trees, labels, view, set(model.dispatch_sets), aliases, model.play)
+    )
     to_alias, _strip = sidprog._alias_res(aliases)
     if to_alias is not None:
         body = list(map(to_alias, body))
     n = len(state) + len(data_out)
-    return "\n".join(head + body[:n] + sidprog._symbol_lines(aliases) + body[n:]) + "\n"
+    text = "\n".join(head + body[:n] + sidprog._symbol_lines(aliases) + body[n:]) + "\n"
+    lint(text)
+    return text
