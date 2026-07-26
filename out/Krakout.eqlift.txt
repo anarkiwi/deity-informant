@@ -1,0 +1,873 @@
+eqlift 0
+; eqlift PoC: solver-lifted procedure bodies over the committed sidprog model
+; header sections (state/data/symbols) reuse the frameprog emitter verbatim;
+;   procedure statements are equality-saturation extraction output
+play $E001
+init $F720
+state {
+ ptr_00FB_lo: u8
+ ptr_00FB_hi: u8
+ idx_00FD: u8
+ idx_00FE: u8
+ m_E000: u8
+ m_E096: u8
+ m_E097: u8
+ m_E586: u8
+ m_E59C: u8
+ m_E59D: u8
+ m_E59E: u8
+ m_E611: u8
+ m_E613: u8
+ m_E614: u8
+ m_E69B: u8
+ m_E69C: u8
+ m_E69E: u8
+ m_E587: u8[]
+ m_E588: u8[]
+ m_E589: u8[]
+ m_E5AB: u8[]
+ m_E5AE: u8[]
+ m_E5B1: u8[]
+ m_E5B4: u8[]
+ m_E5C3: u8[]
+ m_E5C6: u8[]
+ m_E5CF: u8[]
+ m_E5D2: u8[]
+ m_E5D5: u8[]
+ m_E5D8: u8[]
+ m_E5E1: u8[]
+ m_E5E4: u8[]
+ m_E5E7: u8[]
+ m_E5F0: u8[]
+ m_E5F3: u8[]
+ m_E5F6: u8[]
+ m_E5F9: u8[]
+ m_E5FC: u8[]
+ m_E5FF: u8[]
+ m_E602: u8[]
+ m_E605: u8[]
+ m_E608: u8[]
+ m_E60B: u8[]
+ m_E60E: u8[]
+ m_E615: u8[]
+ m_E618: u8[]
+ m_E61B: u8[]
+ m_E686: u8[]
+ m_E687: u8[]
+ m_E688: u8[]
+ m_E689: u8[]
+ m_E68A: u8[]
+ m_E68B: u8[]
+ m_E68C: u8[]
+}
+data {
+ table m_E58B[1] observed:
+  00
+ table m_E58C[1] observed:
+  00
+ table m_E58D[15] observed:
+  000000000000000000000000000000
+ table m_E59F[3] observed:
+  000000
+ table m_E5A2[3] observed:
+  000000
+ table m_E5A5[3] observed:
+  000000
+ table m_E5A8[3] observed:
+  000000
+ table m_E5B7[3] observed:
+  000000
+ table m_E5BA[3] observed:
+  000000
+ table m_E5C9[3] observed:
+  000000
+ table m_E5CC[3] observed:
+  000000
+ table m_E5DB[3] observed:
+  000000
+ table m_E5EA[3] observed:
+  000000
+ table m_E5ED[3] observed:
+  000000
+ table m_E61E[3] observed:
+  010101
+ table m_E621[2] observed:
+  0007
+ table m_E623[5] observed:
+  0E41211181
+ table m_E629[24] stride 2 +m_E62A observed:
+  83688B3993809C45A590AF69B9D7C4E3
+  D099DD00EA25F810
+ table m_E641[3] observed:
+  020202
+ table m_E644[62] stride 2 +m_E645 observed:
+  51E259E255E2D7E2DBE2EAE2EEE2FDE2
+  09E35DE205E3CFE2D3E2CBE201E361E2
+  89E294E2BCE2C7E20DE31EE322E326E3
+  5AE32AE332E33AE33EE33CE24EE3
+ stream m_E700[1805] via ptr_00FB_lo cmp $00 observed:
+  C0016A03010F0001034102180A5A0404
+  0E320B1E00A01100980AA80A9C0AA80A
+  9D0AA90AA90A9A14AA0A9E0AAA0A9F0A
+  AB0A9D059B0F100811009B0AA70A9F0A
+  A70AA00AA70AA70A9D14A90AA10AA90A
+  A20AA90AA0059E0F100313001100980A
+  A80A9C0AA80A9D0AA90A960AA90A1002
+  14021209021913001100930A930A9F0A
+  9F05930A930A93059F0A9F0A10041404
+  120214051100930A930593059D059F0A
+  9D0A9A0A980A9705930A140710021100
+  940A940A9405960A980A980A980A9605
+  940A14091002140A1100950AA10A920A
+  9E0A930A9F0A940AA00A100E1407980A
+  A40A950AA40A960AA60A910AA40A8F0A
+  A20A940AA40A910AA40A960AA60A1300
+  980AA40A950AA40A960AA60A970AA60A
+  1202980AA40A950AA40A960AA60A910A
+  A40A8F0AA20A940AA40A910AA40A960A
+  A60A1100910AA40A960AA60A980AA80A
+  8C0AA80A10031100910AA40A960AA60A
+  100211008C0AA80A900AA80A910AA90A
+  A90A8E14AA0A920AAA0A930AAB0A9105
+  8F0F10071A0211008C0AA80A900AA80A
+  910AA90AA90A8E14AA0A920AAA0A930A
+  AB0A91058F0F10041100000AA80A000A
+  A80A000AA90AA90A0014AA0A000AAA0A
+  000AAB0A91058F0F10028C0A00960001
+  00011E010001034102180A5A04040E32
+  0B1E00A01100980AAB0A9C0AAB0A9D0A
+  AD0AAD0A9A14AD0A9E0AAD0A9F0AAF0A
+  AF14100811009B0AAB0A9F0AAB0AA00A
+  AC0AAC0A9D14AD0AA10AAD0AA20AAE0A
+  AE14100313001100980AAB0A9C0AAB0A
+  9D0AAD0A960AAE0A10021402120900F0
+  03110C030F0311001300C10512041AFC
+  1004140002060A0E1100BCFF980A0801
+  07090F00BC05BC05B00ABC05BC059805
+  9805980AB00ABC05BC05100A03410219
+  0A2C140A1100950A08000700A50A920A
+  A50A930AA60A940AA70A100C1407980A
+  A80A950AA80A960AA90A910AA90A8F0A
+  AB0A940AA70A910AA90A960AA90A1300
+  980AA80A950AA80A960AA90A970AAB0A
+  1202980AA80A950AA80A960AA90A910A
+  A90A8F0AAB0A940AA70A910AA90A960A
+  A90A1100910AA90A960AA90A980AAB0A
+  8C0AAB0A10031100910AA90A960AA90A
+  10021100980AAB0A9C0AAB0A9D0AAD0A
+  AD0A9A14AD0A9E0AAD0A9F0AAF0AAF14
+  10071A021100980AAB0A9C0AAB0A9D0A
+  AD0AAD0A9A14AD0A9E0AAD0A9F0AAF0A
+  AF1410041100000AAB0A000AAB0A000A
+  AD0AAD0A0014AD0A000AAD0A000AAF0A
+  AF141002B00A00960020194E00020001
+  0F030C0903110A1211000208D4050203
+  D405D405D4050208D4050203D405D405
+  0208D4050203D4050208D4050203D405
+  0208D405D4050203D405D405D4051008
+  034104000EC81100021B14FC1F040A55
+  0C03C30A0F01C30AC50AC614C514C10A
+  C20AC20AC30AC514C30AC105C00F1400
+  0219980A0F00B00A9C0AB00A9D0AB00A
+  B00A9A14B20A9E0AB20A9F0AB20AB214
+  1002021B14FCC80A0F01C80AC30AC50A
+  C60AC805C60FC514C50AC30AC20AC30A
+  C10ABF05BE0F11009B0AAE0A9F0AAE0A
+  A00AB00AB00A9D14B00AA10AB00AA20A
+  B20AB214C80A0F01CB0AC30AC60AC40A
+  C805C60FC514C30AC10AC50AC60AC10A
+  BF05BE0F9B0AAE0A9F0AAE0AA00AB00A
+  B00A9D14B00AA10AB00AA20AB20AB214
+  1137980AB00A9C0AB00A9D0AB00A960A
+  B20A10020C0404080E3214FE1300C30A
+  0B641602C30AC005C30FC50AC80AC60A
+  C314C30AC80ACC0ACD0ACB0ACA05C60F
+  03411100980A0B14B00A9C0AB00A9D0A
+  B00A960AB20A10020321120203411300
+  C80A0B641602C80AC30AC80AC50AC80A
+  C605C10FC30AC30AC00AC30AC50AC80A
+  C605CA0F03411100980A0B14B00A9C0A
+  B00A9D0AB00A960AB20A100203211202
+  03410C0903110A1211000208D4050F03
+  0203D405D405D4050208D4050203D405
+  D4050208D4050203D4050208D4050203
+  D4050208D405D4050203D405D405D405
+  101003410A2C130002191100140A950A
+  0F00A80A920AAD0A930AAF0A940AAF0A
+  1002021F0C021F030E0A090A1400C714
+  0F01CC28CC0ACA0A1FFECC141FFCC714
+  C514BE05C50F1202130002191100140A
+  950A0F00A80A920AAD0A930AAF0A940A
+  AF0A1002021A09051400C70AC70A1FFE
+  C5140F01C50A0F00C50A1FFDC3140F01
+  BE0A0F00C10AC30AC60AC80AC60A1FFC
+  C5140F01120204040E46021B1100C00A
+  0F00C00AC105C50F09121F0CC3280F01
+  1003BC0A0F00BC0ABC05BE0FC00AC00A
+  C105C50F09000C0903111F000A121100
+  0208D4050F030203D405D405D4050208
+  D4050203D405D4050208D4050203D405
+  0208D4050203D4050208D405D4050203
+  D405D405D4051006034104000C000EC8
+  0D64140713001100021B1FF40A55C30A
+  08010F03C30AC50AC614C514C10AC20A
+  C20AC30AC514C30AC105C00F0219980A
+  08000F00B00A9C0AB00A9D0AB00AB00A
+  9A14B20A9E0AB20A9F0AB20AB2141002
+  1409120214000C0903111F000A121100
+  0208D4050F030203D405D405D4050208
+  D4050203D405D4050208D4050203D405
+  0208D4050203D4050208D405D4050203
+  D405D405D40510060020194E00
+}
+symbols {
+ alias ptr_00FB_lo = zp_FB
+ alias ptr_00FB_hi = zp_FC
+ alias idx_00FD = zp_FD
+ alias idx_00FE = zp_FE
+}
+sub_E001 {
+ a = m_E000
+ zflag = (a == $00)
+ if zflag {
+ } else {
+  call $E01F ret $E012 {
+   a0 = m_E69B
+   m_E69B = (a0 + m_E59C)
+   a = (a0 + m_E59C)
+   cflag = ($07 <= a)
+   if !cflag {
+   } else {
+    unobserved $E02D
+   }
+   m_E69C = (cflag + m_E69C + m_E59D)
+   x = $00
+   loop {
+    w0 = m_E621[x]
+    idx_00FD = w0
+    idx_00FE = x
+    a1 = m_E5C3[x]
+    a = (a1 + $01)
+    if (a < m_E58B[w0]) {
+    } else {
+     m_E5C6[x] = ($01 + m_E5C6[x])
+     a2 = m_E5B4[x]
+     a = ($01 + a2)
+     if (a < $03) {
+     } else {
+      a = $00
+     }
+     m_E5B4[x] = a
+     a = $00
+    }
+    m_E5C3[x] = a
+    m_E5AB[x] = ($01 + m_E5AB[x])
+    ptr_00FB_lo = m_E61B[x]
+    ptr_00FB_hi = m_E618[x]
+    loop {
+     a3 = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
+     a = (a3 - $01)
+     cflag = ($21 <= a)
+     if cflag {
+     } else {
+      t0 = zext2((a << $01))
+      m_E096 = mem[(t0 - $19BC):2]
+      m_E097 = mem[(t0 - $19BB):2]
+      a4 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
+      a = a4
+      x = idx_00FE
+      y = idx_00FD
+      cflag = (a <s $00)
+      zflag = (x == $00)
+      nflag = (x <s $00)
+      call ((zext2(mem[(t0 - $19BC):2]) | (zext2(mem[(t0 - $19BB):2]) << $08):2):2) ret $E097
+      switch {
+       case $E23C: {
+        m_E000 = $00
+        x = $17
+        loop {
+         m_E686[x] = $09
+         m_E686[x] = $00
+         x = ($FF + x)
+         nflag = (x <s $00)
+         if !nflag {
+          continue
+         }
+         break
+        }
+        ret
+       }
+       case $E251: {
+        m_E69E = a
+        ret
+       }
+       case $E255: {
+        m_E5F3[x] = a
+        ret
+       }
+       case $E259: {
+        m_E5F9[x] = a
+        ret
+       }
+       case $E25D: {
+        m_E5F0[x] = a
+        ret
+       }
+       case $E261: {
+        m_E611 = a
+        if (m_E5E1[x] != $00) {
+        } else {
+         m_E5E1[x] = ($01 + m_E5E1[x])
+         m_E5FF[x] = m_E611
+        }
+        m_E5FF[x] = m_E5FF[x]
+        a = m_E5FF[x]
+        if (a == $00) {
+         w1 = m_E5E1[x]
+         m_E5E1[x] = ($FF + w1)
+         ret
+        } else {
+         ptr_00FB_lo = m_E605[x]
+         a = m_E608[x]
+         ptr_00FB_hi = a
+         ret
+        }
+       }
+       case $E289: {
+        m_E605[x] = ptr_00FB_lo
+        m_E608[x] = ptr_00FB_hi
+        ret
+       }
+       case $E294: {
+        m_E611 = a
+        if (m_E5E4[x] != $00) {
+        } else {
+         m_E5E4[x] = ($01 + m_E5E4[x])
+         m_E602[x] = m_E611
+        }
+        m_E602[x] = m_E602[x]
+        a = m_E602[x]
+        if (a == $00) {
+         w2 = m_E5E4[x]
+         m_E5E4[x] = ($FF + w2)
+         ret
+        } else {
+         ptr_00FB_lo = m_E60B[x]
+         a = m_E60E[x]
+         ptr_00FB_hi = a
+         ret
+        }
+       }
+       case $E2BC: {
+        m_E60B[x] = ptr_00FB_lo
+        m_E60E[x] = ptr_00FB_hi
+        ret
+       }
+       case $E2C7: {
+        m_E5E7[x] = a
+        ret
+       }
+       case $E2CB: {
+        m_E5FC[x] = a
+        ret
+       }
+       case $E2CF: {
+        m_E5ED[x] = a
+        ret
+       }
+       case $E2D3: {
+        m_E5EA[x] = a
+        ret
+       }
+       case $E2D7: {
+        m_E5F6[x] = a
+        ret
+       }
+       case $E2EE: {
+        cflag = ($63 <= a)
+        if !cflag {
+        } else {
+         unobserved $E2F2
+        }
+        m_E58C[y] = a
+        ret
+       }
+       case $E2FD: {
+        m_E58D[y] = a
+        ret
+       }
+       case $E301: {
+        m_E59F[x] = a
+        ret
+       }
+       case $E305: {
+        m_E5AE[x] = a
+        ret
+       }
+       case $E309: {
+        m_E5A8[x] = a
+        ret
+       }
+       case $E31E: {
+        m_E61E[x] = a
+        ret
+       }
+       case $E32A: {
+        m_E5E7[x] = a
+        ret
+       }
+       case $E34E: {
+        m_E5B7[x] = a
+        ret
+       }
+       case $E35A: {
+        a8 = m_E5CF[x]
+        m_E5CF[x] = (a + a8)
+        ret
+       }
+      }
+      call $E578 ret $E09A
+      continue
+     }
+     break
+    }
+    x = idx_00FD
+    y = idx_00FE
+    if (w5 == $00) {
+    } else {
+     if (a == $00) {
+     } else {
+      call $E362 ret $E0AE {
+       a = m_E5AB[y]
+       w3 = m_E5A8[y]
+       cflag = (w3 <= a)
+       nflag = ((a - w3) <s $00)
+       if !cflag {
+        ret
+       } else {
+        a = m_E59F[y]
+        if (a != $01) {
+         if (a == $03) {
+         } else {
+          unobserved $E524
+         }
+         $E50A:
+         a10 = m_E588[x]
+         a11 = m_E5EA[y]
+         m_E588[x] = (a10 - a11)
+         a12 = m_E587[x]
+         a13 = m_E5ED[y]
+         a = (a12 - (a13 + (a10 < a11)))
+         $E51A:
+         m_E587[x] = a
+         m_E687[x] = a
+         a = m_E588[x]
+         m_E686[x] = a
+         ret
+        } else {
+         w4 = m_E5A2[y]
+         w5 = m_E587[x]
+         zflag = (w4 == w5)
+         if (w4 < w5) {
+         } else {
+          if !zflag {
+          } else {
+           a = m_E5A5[y]
+           w6 = m_E588[x]
+           cflag = (w6 <= a)
+           zflag = (a == w6)
+           nflag = ((a - w6) <s $00)
+           if zflag {
+           } else {
+            if !cflag {
+             $E4DE:
+             call $E50A ret $E4E0
+             a = m_E587[x]
+             w7 = m_E5A2[y]
+             cflag = (w7 <= a)
+             zflag = (a == w7)
+             if zflag {
+             } else {
+              if !cflag {
+              } else {
+               if cflag {
+               } else {
+                $E4ED:
+                a = m_E588[x]
+                w8 = m_E5A5[y]
+                cflag = (w8 <= a)
+                if cflag {
+                } else {
+                 if !cflag {
+                  m_E588[x] = w8
+                  m_E587[x] = m_E5A2[y]
+                 } else {
+                  $E4F7:
+                  a14 = m_E588[x]
+                  a15 = m_E5EA[y]
+                  m_E588[x] = (a14 + a15)
+                  a16 = m_E587[x]
+                  a17 = m_E5ED[y]
+                  a = (a16 + a17 + (carry(a14, a15) | carry((a14 + a15), $00)))
+                  goto $E51A
+                 }
+                 m_E687[x] = m_E587[x]
+                 a = m_E588[x]
+                 m_E686[x] = a
+                 ret
+                }
+               }
+               ret
+              }
+              $E4CF:
+              m_E588[x] = m_E5A5[y]
+              m_E587[x] = m_E5A2[y]
+              m_E687[x] = m_E5A2[y]
+              a = m_E588[x]
+              m_E686[x] = a
+              ret
+             }
+             goto $E4ED
+            }
+            $E4B8:
+            call $E4F7 ret $E4BA
+            a = m_E587[x]
+            w9 = m_E5A2[y]
+            cflag = (w9 <= a)
+            zflag = (a == w9)
+            if zflag {
+            } else {
+             if cflag {
+              goto $E4CF
+             } else {
+              if !cflag {
+               ret
+              }
+              $E4C7:
+              a = m_E588[x]
+              w10 = m_E5A5[y]
+              cflag = (w10 <= a)
+              if !cflag {
+               ret
+              } else {
+               goto $E4CF
+              }
+             }
+            }
+            goto $E4C7
+           }
+           ret
+          }
+          goto $E4B8
+         }
+         goto $E4DE
+        }
+       }
+      }
+     }
+     if (m_E5AE[y] == $00) {
+     } else {
+      call $E425 ret $E0B6 {
+       if (m_E5CC[y] != $00) {
+       } else {
+        m_E5B1[y] = m_E5AE[y]
+       }
+       a = m_E5D5[y]
+       if (a == $01) {
+        a18 = m_E5B1[y]
+        a19 = m_E5CC[y]
+        a = (a18 + a19)
+        if (a < a) {
+        } else {
+         a = m_E5AE[y]
+        }
+        m_E5B1[y] = a
+        $E453:
+        call $E487 ret $E455 {
+         a20 = m_E588[x]
+         a21 = m_E5B1[y]
+         m_E588[x] = (a20 - a21)
+         m_E686[x] = (a20 - a21)
+         a22 = m_E587[x]
+         a = (a22 - (a20 < a21))
+         $E499:
+         m_E587[x] = a
+         m_E687[x] = a
+         ret
+        }
+       } else {
+        if (a == $02) {
+         goto $E453
+        } else {
+         call $E472 ret $E43D {
+          a23 = m_E588[x]
+          t8 = (a18 + a23)
+          m_E588[x] = t8
+          m_E686[x] = t8
+          a25 = m_E587[x]
+          a = (a25 + (carry(a23, a18) | carry(t8, $00)))
+          goto $E499
+         }
+        }
+       }
+       a26 = m_E5D2[y]
+       w11 = m_E61E[y]
+       a = ($01 + a26)
+       cflag = (w11 <= a)
+       if !cflag {
+       } else {
+        w12 = m_E5D5[y]
+        m_E5D5[y] = (($01 + w12) & $03)
+        a = $00
+       }
+       m_E5D2[y] = a
+       ret
+      }
+     }
+     a = m_E58C[x]
+     if (a == $00) {
+     } else {
+      call $E3BC ret $E0BE {
+       cflag = ($06 <= a)
+       if !cflag {
+        unobserved $E3CF
+       }
+       if ((m_E5C6[y] & $01) != $00) {
+        a = m_E589[x]
+       } else {
+        a = (a - $05)
+        if (a >=s $00) {
+        } else {
+         unobserved $E3CF
+        }
+        a = m_E623[a]
+        if (a != $00) {
+        } else {
+         a = a
+        }
+       }
+       m_E68A[x] = a
+       ret
+      }
+     }
+     a = m_E58D[x]
+     if (a == $00) {
+     } else {
+      call $E3F2 ret $E0C6 {
+       if (a != $01) {
+        unobserved $E40C
+       }
+       if ((m_E5C6[y] & $01) != $00) {
+        m_E687[x] = m_E587[x]
+        a = m_E588[x]
+        m_E686[x] = a
+        ret
+       } else {
+        m_E687[x] = m_E5A2[y]
+        a = m_E5A5[y]
+        m_E686[x] = a
+        m_E686[x] = a
+        ret
+       }
+      }
+     }
+     if (a29 == $00) {
+     } else {
+      call $E371 ret $E0CE {
+       a = m_E5C3[y]
+       zflag = (a == $00)
+       if !zflag {
+        ret
+       } else {
+        if (m_E5DB[y] == $00) {
+        } else {
+         unobserved $E37B
+        }
+        a28 = m_E688[x]
+        a29 = m_E5FC[y]
+        a = (a28 + a29)
+        m_E688[x] = a
+        cflag = (carry(a28, a29) | carry(a, $00))
+        if !cflag {
+        } else {
+         w13 = m_E689[x]
+         m_E689[x] = ($01 + w13)
+        }
+        ret
+       }
+      }
+     }
+    }
+    call $E0E7 ret $E0D1 {
+     x = idx_00FE
+     y = idx_00FD
+     a30 = m_E615[x]
+     m_E615[x] = ($FF + a30)
+     a31 = m_E5CF[x]
+     a = (a31 - ($01 - ($0001 <= zext2(a30))))
+     m_E5CF[x] = a
+     zflag = (a == $00)
+     if !zflag {
+      $E110:
+     } else {
+      a = m_E615[x]
+      if (a == $00) {
+       m_E688[y] = $00
+       m_E5CF[x] = $00
+       m_E5AB[x] = $00
+       m_E5D2[x] = $00
+       m_E5D8[x] = $00
+       m_E5D5[x] = $00
+       m_E5C3[x] = $00
+       m_E5C6[x] = $00
+       m_E5B4[x] = $00
+       m_E5B1[x] = $00
+       if (x != m_E586) {
+       } else {
+        m_E69B = $00
+        m_E69C = m_E59E
+       }
+       m_E68B[y] = m_E5F9[x]
+       m_E68C[y] = m_E5F0[x]
+       m_E689[y] = m_E5F6[x]
+       loop {
+        a = mem[((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2]
+        if (a != $00) {
+         if (a < $80) {
+         } else {
+          m_E611 = (a + m_E5E7[x])
+          a = m_E5BA[x]
+          if (a == $00) {
+          } else {
+           unobserved $E174
+          }
+          a = m_E5B7[x]
+          if (a == $00) {
+          } else {
+           a = (a + m_E5E7[x] + a)
+           call $E536 ret $E192
+           m_E5A2[x] = m_E613
+           m_E5A5[x] = m_E614
+          }
+          a = m_E611
+          call $E536 ret $E1A4
+         }
+        } else {
+         m_E613 = $00
+         m_E614 = $00
+        }
+        idx0 = idx_00FD
+        m_E687[idx0] = m_E613
+        m_E587[idx0] = m_E613
+        m_E686[idx0] = m_E614
+        m_E588[idx0] = m_E614
+        w16 = mem[(((zext2(ptr_00FB_hi) << $08):2 | zext2(ptr_00FB_lo)):2 + $0001):2]
+        y = idx_00FD
+        m_E615[x] = w16
+        call $E578 ret $E1C4
+        w17 = m_E615[x]
+        if (w17 != $FF) {
+        } else {
+         m_E5A5[x] = m_E588[y]
+         m_E5A2[x] = m_E587[y]
+         continue
+        }
+        break
+       }
+       a = m_E5F3[x]
+       m_E68A[y] = a
+       m_E589[y] = a
+      } else {
+       w18 = m_E641[x]
+       cflag = (w18 <= a)
+       if cflag {
+       } else {
+        a32 = m_E68A[y]
+        a = ($FE & a32)
+        m_E68A[y] = a
+       }
+       goto $E110
+      }
+     }
+     ret
+    }
+    idx1 = idx_00FE
+    m_E61B[idx1] = ptr_00FB_lo
+    m_E618[idx1] = ptr_00FB_hi
+    x = ($01 + idx1)
+    cflag = ($03 <= x)
+    if cflag {
+    } else {
+     continue
+    }
+    break
+   }
+   ret
+  }
+  x = $18
+  loop {
+   a = m_E686[x]
+   sid.v1.freq_lo[x] = a
+   x = ($FF + x)
+   nflag = (x <s $00)
+   if !nflag {
+    continue
+   }
+   break
+  }
+ }
+ ret
+}
+sub_E536 {
+ x = $07
+ loop {
+  cflag = ($8C <= a)
+  if !cflag {
+  } else {
+   a = (a - (($01 - cflag) + $0C))
+   x = (x - $01)
+   continue
+  }
+  break
+ }
+ m_E613 = mem[(zext2(((a - (($01 - cflag) + $7F)) << $01)) - $19D7):2]
+ a0 = m_E614
+ m_E614 = a0
+ if (x == $00) {
+  x = idx_00FE
+  ret
+ } else {
+  loop {
+   w0 = m_E613
+   m_E613 = (w0 >> $01)
+   m_E614 = ((a0 >> $01) | ((w0 & $01) << $07))
+   x = ($FF + x)
+   if (x != $01) {
+    continue
+   }
+   break
+  }
+  a3 = m_E5C9[x]
+  a = (a0 + a3)
+  m_E614 = a
+  x = idx_00FE
+  cflag = (carry(a0, a3) | carry(a, $00))
+  if !cflag {
+  } else {
+   unobserved $E56F
+  }
+  ret
+ }
+}
+sub_E578 {
+ ptr0 = ptr_00FB_lo
+ a = (ptr0 + $02)
+ ptr_00FB_lo = a
+ cflag = (carry(ptr0, $02) | carry(a, $00))
+ if !cflag {
+ } else {
+  ptr1 = ptr_00FB_hi
+  ptr_00FB_hi = (ptr1 + $01)
+ }
+ ret
+}

@@ -1,0 +1,619 @@
+eqlift 0
+; eqlift PoC: solver-lifted procedure bodies over the committed sidprog model
+; header sections (state/data/symbols) reuse the frameprog emitter verbatim;
+;   procedure statements are equality-saturation extraction output
+play $5012
+init $5FB2
+sid-init {
+  $04 = $00
+  $0B = $00
+  $04 = $00
+  $0B = $00
+  $12 = $00
+  $18 = $0F
+}
+state {
+ ptr_005D_lo: u8
+ ptr_005D_hi: u8
+ ptr_005F_lo: u8
+ ptr_005F_hi: u8
+ m_01FC: u8
+ m_01FD: u8
+ m_54EB: u8
+ ctr_5501: u8
+ idx_5502: u8
+ idx_5503: u8
+ idx_5504: u8
+ idx_5505: u8
+ ctr_5506: u8
+ idx_5507: u8
+ idx_5508: u8
+ idx_5509: u8
+ idx_550A: u8
+ idx_550B: u8
+ idx_550C: u8
+ ctr_5513: u8
+ m_5517: u8
+ m_5518: u8
+ m_5519: u8
+ m_5523: u8
+ m_5524: u8
+ ctr_5525: u8
+ m_5526: u8
+ m_5527: u8
+ m_5528: u8
+ pos_54EC: u8[]
+ pos_54EF: u8[]
+ ctr_54F2: u8[]
+ m_54F5: u8[]
+ m_54F8: u8[]
+ idx_54FB: u8[]
+ idx_54FE: u8[]
+ ctr_550D: u8[]
+ ctr_5510: u8[]
+ ctr_551A: u8[]
+ m_551D: u8[]
+ m_5520: u8[]
+}
+data {
+ table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:  role freq_lo ; pitch table: 8 octaves, equal-tempered
+  1601270138014B015F0173018A01A101
+  BA01D401F0010E022D024E0271029602
+  BD02E702130342037403A903E0031B04
+  5A049B04E2042C057B05CE0527068506
+  E8065107C1073708B4083709C409570A
+  F50A9C0B4E0C090DD00DA30E820F6E10
+  68116E128813AF14EB1539179C18131A
+  A11B461D041FDC20D022DC2410275E29
+  D62B722E3831263442378C3A083EB841
+  A045B849204EBC52AC57E45C70624C68
+  846E1875107C7083408B7093409C78A5
+  58AFC8B9E0C498D008DD30EA20F82EFD
+ table m_54E8[3] observed:
+  00070E
+ table m_5591[104] stride 8 +m_5592 +m_5593 +m_5594 +m_5595 +m_5596 +m_5597 +m_5598 observed:  role pw_hi, pw_lo
+  000941295F02E000800141064B000005
+  800141099F0016080002810A09000005
+  0002430FC400000380084105A900020D
+  000841387A02E0008001150DFB010005
+  000841495B020308000821046F030005
+  000341096B02010D0002430709010001
+  000841090A000001
+ table m_56F9[3] lo m_56FC -> $576B..$57EC observed:
+  6BACEC
+ table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:
+  575757
+ table m_5711[32] lo m_573E -> $5887..$5D7D observed:  role freq_hi, freq_lo
+  87CDE3F90F253B89FA884151D2677D26
+  5D7391CDF115395D7D9DBA4A7891AAC3
+ table m_573E[32] hi m_5711 -> $5887..$5D7D observed:  role freq_hi, freq_lo
+  585C5C5C5D5D5D585859595D595D5D5A
+  5A5A5A5A5A5B5B5B5B5B5B5C5C5C5C5C
+ stream m_576B[64] via ptr_005D_lo cmp $FE $FF observed:
+  131313130707090C0C101010100F0F11
+  11121717171717171717101010101717
+  1717101017171A1B1C1C1C1C1D1D1D1D
+  1E1E1E1E0F17171F101017111712171F
+ stream m_57AC[63] via ptr_005D_lo cmp $FE $FF observed:
+  0808080A080A08080813131414141415
+  15161618181818181818181313181818
+  18131818131313131313131313131414
+  1414141418181F131815181616181F
+ stream m_57EC[123] via ptr_005D_lo cmp $FE $FF observed:
+  01010203010102030101020304040506
+  0101020304040506010B030101010203
+  0101020301010B0B0D0D0E0E0D0D0E0E
+  0B0B0B0B030303031919191919191919
+  01010B0B19191919010B191901010B0B
+  01010B0B01010B0B01010B0B01010B0B
+  0D0D0E0E0D0D0E0E0D0D0E0E19191F01
+  0B190B0B1903030303191F
+ stream m_5889[113] via ptr_005F_lo cmp $00 $FF observed:
+  81033281003903390339033907390539
+  033901400340034003400740870C2C87
+  004107400741074041013B033B033B03
+  3B073B870C2C81033281003C033C033C
+  033C073C053C033C0143034303430343
+  0743870C2C8700440743074407434101
+  3E033E033E033E073E830C2F012C012C
+  FF
+ stream m_58FA[71] via ptr_005F_lo cmp $00 $FF observed:
+  81046801680168016883013403340535
+  05340332810468016801680168830134
+  03340734478104680168016801688301
+  34033405350534033241810134033403
+  340334073447FF
+ stream m_5941[71] via ptr_005F_lo cmp $00 $FF observed:
+  81046801680168016883013703370538
+  05370335810468016801680168830137
+  03370737478104680168016801688301
+  37033705380537033541810137033703
+  370337073747FF
+ stream m_5988[74] via ptr_005F_lo cmp $00 $FF observed:
+  83033203328300390339013901390339
+  033B033C013E013E033E033E033E073E
+  830C2C81003E0140014101410340033E
+  033C033B033907388103328100390339
+  0339033B0739870C2CFF
+ stream m_59D2[84] via ptr_005F_lo cmp $00 $FF observed:
+  81053C033B013A0339013C033B013A03
+  39013C033B013A0339013C033B013A03
+  39013C033B0139034103400141034001
+  3F033E01410340013F033E0341034001
+  3B033A01390338013B033A0139033803
+  3C033BFF
+ stream m_5A26[55] via ptr_005F_lo cmp $00 $FF observed:
+  8B0642A3CF420740033D033BA3BF3B03
+  3A033A830C2C032C81063A013A033B03
+  3D0B3D033D0540053DA3A83B073D8FD1
+  3D830C2C032CFF
+ stream m_5A5D[22] via ptr_005F_lo cmp $00 $FF observed:
+  81063C033B013A0339013C033B013A03
+  39033C033EFF
+ stream m_5A73[30] via ptr_005F_lo cmp $00 $FF observed:
+  87063E830C2C81063E013E0540053EA3
+  A83C073E830C2F0B2C032F032CFF
+ stream m_5A91[60] via ptr_005F_lo cmp $00 $FF observed:
+  870640830C2C810640014005420540A3
+  A83E0740830C2F0B2C032F032C870640
+  830C2C810640014005420540A3A83E05
+  4005420344054205440345FF
+ stream m_5ACD[36] via ptr_005F_lo cmp $00 $FF observed:
+  83075803518301390339053905390537
+  01390339033903370139013703398307
+  580351FF
+ stream m_5AF1[36] via ptr_005F_lo cmp $00 $FF observed:
+  830755034E830131033105310531052F
+  013103310331032F0131012F03318307
+  55034EFF
+ stream m_5B15[36] via ptr_005F_lo cmp $00 $FF observed:
+  83075D03568301320332053205320530
+  01320332033203300132013003328307
+  5D0356FF
+ stream m_5B39[36] via ptr_005F_lo cmp $00 $FF observed:
+  83075F03588301340334053405340532
+  01340334033403320134013203348307
+  5F0358FF
+ stream m_5B5D[32] via ptr_005F_lo cmp $00 $FF observed:
+  81054601460146014601460146014401
+  460146014403460146014601440144FF
+ stream m_5B7D[32] via ptr_005F_lo cmp $00 $FF observed:
+  81054301430143014301430143014101
+  430143014103430143014301410141FF
+ stream m_5B9D[29] via ptr_005F_lo cmp $00 $FF observed:
+  810527012701270127830C2C81052503
+  27012501270127830C2F032CFF
+ stream m_5BBA[144] via ptr_005F_lo cmp $00 $FF observed:
+  A70637A7A837173903370339033E033C
+  0739273CA7AA3C173E033E0343034203
+  3E07392737A790371739A7A93F033E03
+  3C0739273EA7A93E173C033E03400343
+  0342034303452743A7B4430745014503
+  45014501450345014303450143034201
+  4303420340033E013E033E013C033E01
+  3C033B013C033B033903370139033901
+  370339013B033C013E034003420343FF
+ stream m_5C4A[46] via ptr_005F_lo cmp $00 $FF observed:
+  2747A7B1471745034303450148014803
+  45014A014A0348274CA7D14C1F4A4101
+  4C014C0140014D01400148014AFF
+ stream m_5C78[25] via ptr_005F_lo cmp $00 $FF observed:
+  014C014C0340034A0140034801400347
+  014801400148014AFF
+ stream m_5C91[25] via ptr_005F_lo cmp $00 $FF observed:
+  014C014C0340034B0140034901400347
+  014901400149014BFF
+ stream m_5CAA[25] via ptr_005F_lo cmp $00 $FF observed:
+  01490149033D0347013D0346013D0344
+  0142013D01470149FF
+ stream m_5CC3[10] via ptr_005F_lo cmp $00 $FF observed:
+  8707684F830C2C032CFF
+ stream m_5CCD[22] via ptr_005F_lo cmp $00 $FF observed:
+  850215012183032E830215071583032E
+  81021F0121FF
+ stream m_5CE3[22] via ptr_005F_lo cmp $00 $FF observed:
+  850216012283032E830216071683032E
+  8102210122FF
+ stream m_5CF9[22] via ptr_005F_lo cmp $00 $FF observed:
+  850210011C83032E830210071083032E
+  81021A011CFF
+ stream m_5D0F[22] via ptr_005F_lo cmp $00 $FF observed:
+  850218012483032E830218071883032E
+  8102220124FF
+ stream m_5D25[22] via ptr_005F_lo cmp $00 $FF observed:
+  850219012583032E830219071983032E
+  8102240125FF
+ stream m_5D3B[22] via ptr_005F_lo cmp $00 $FF observed:
+  850213011F83032E830213071383032E
+  81021C011CFF
+ stream m_5D51[22] via ptr_005F_lo cmp $00 $FF observed:
+  85021A012683032E83021A071A83032E
+  8102240126FF
+ stream m_5D67[22] via ptr_005F_lo cmp $00 $FF observed:
+  850212011E83032E830212071283032E
+  81021C011EFF
+ stream m_5D7D[22] via ptr_005F_lo cmp $00 $FF observed:
+  850219012583032E830219071983032E
+  8102230125FF
+}
+symbols {
+ alias ptr_005D_lo = zp_5D
+ alias ptr_005D_hi = zp_5E
+ alias ptr_005F_lo = zp_5F
+ alias ptr_005F_hi = zp_60
+ alias pos_54EC = m_54EC
+ alias pos_54ED = m_54ED
+ alias pos_54EE = m_54EE
+ alias pos_54EF = m_54EF
+ alias pos_54F0 = m_54F0
+ alias pos_54F1 = m_54F1
+ alias ctr_54F2 = m_54F2
+ alias ctr_54F3 = m_54F3
+ alias ctr_54F4 = m_54F4
+ alias idx_54FB = m_54FB
+ alias idx_54FC = m_54FC
+ alias idx_54FD = m_54FD
+ alias idx_54FE = m_54FE
+ alias idx_54FF = m_54FF
+ alias idx_5500 = m_5500
+ alias ctr_5501 = m_5501
+ alias idx_5502 = m_5502
+ alias idx_5503 = m_5503
+ alias idx_5504 = m_5504
+ alias idx_5505 = m_5505
+ alias ctr_5506 = m_5506
+ alias idx_5507 = m_5507
+ alias idx_5508 = m_5508
+ alias idx_5509 = m_5509
+ alias idx_550A = m_550A
+ alias idx_550B = m_550B
+ alias idx_550C = m_550C
+ alias ctr_550D = m_550D
+ alias ctr_5510 = m_5510
+ alias ctr_5513 = m_5513
+ alias ctr_551A = m_551A
+ alias ctr_551B = m_551B
+ alias ctr_551C = m_551C
+ alias ctr_5525 = m_5525
+}
+sub_5012 {
+ ctr_5525 = (ctr_5525 + $01)
+ vflag = ((m_5519 & $40) != $00)
+ if (m_5519 <s $00) {
+  unobserved $5038
+ }
+ if !vflag {
+ } else {
+  ctr_5525 = $00
+  a = $00
+  x = $02
+  loop {
+   pos_54EC[x] = $00
+   pos_54EF[x] = $00
+   ctr_54F2[x] = $00
+   idx_54FB[x] = $00
+   x = (x - $01)
+   if (x >=s $00) {
+    continue
+   }
+   break
+  }
+  m_5519 = $00
+ }
+ ctr0 = ctr_5513
+ ctr_5513 = ($FF + ctr0)
+ x = $02
+ if ((ctr0 - $01) >=s $00) {
+ } else {
+  ctr_5513 = m_5517
+ }
+ loop {
+  m_54EB = m_54E8[x]
+  if (ctr_5513 != m_5517) {
+   $519B:
+   if (m_5528 <s $00) {
+   } else {
+    unobserved $51A0
+   }
+   w0 = idx_54FE[x]
+   t0 = (w0 << $02)
+   m_5518 = (w0 << $03)
+   t1 = zext2((t0 << $01))
+   m_5523 = mem[(t1 + $5598):2]
+   idx_5507 = mem[(t1 + $5597):2]
+   w1 = ctr_5506
+   ctr_5506 = w1
+   cflag = (t0 <s $00)
+   if (w1 == $00) {
+   } else {
+    a = (ctr_5525 & $07)
+    if (a < $04) {
+    } else {
+     a = (a ^ $07)
+    }
+    idx_550C = a
+    y0 = idx_54FB[x]
+    t2 = t2
+    a0 = mem[(t2 + $542A):2]
+    a1 = mem[(t2 + $5428):2]
+    idx_5508 = (a0 - a1)
+    a2 = mem[(t2 + $542B):2]
+    a3 = mem[(t2 + $5429):2]
+    a = (a2 - (a3 + (a0 < a1)))
+    y = (y0 << $01)
+    loop {
+     idx_5508 = (((a0 - a1) >> $01) | ((a & $01) << $07))
+     ctr_5506 = ($FF + w1)
+     a = (a >> $01)
+     if ((w1 - $01) >=s $00) {
+      continue
+     }
+     break
+    }
+    idx_5509 = a
+    idx_550A = mem[(t2 + $5428):2]
+    idx_550B = mem[(t2 + $5429):2]
+    w2 = m_54F5[x]
+    cflag = ($06 <= (w2 & $1F))
+    if !cflag {
+    } else {
+     y = idx_550C
+     loop {
+      y = ($FF + y)
+      if (y <s $00) {
+      } else {
+       idx0 = idx_550A
+       idx_550A = ((a0 - a1) + idx0)
+       idx1 = idx_550B
+       idx_550B = (a + idx1 + (carry(idx0, (a0 - a1)) | carry((idx0 + (a0 - a1)), $00)))
+       cflag = (carry(idx1, a) | carry((idx1 + a), (carry(idx0, (a0 - a1)) | carry((idx0 + (a0 - a1)), $00))))
+       continue
+      }
+      break
+     }
+    }
+    w3 = m_54EB
+    sid.v1.freq_lo[w3] = idx_550A
+    sid.v1.freq_hi[w3] = idx_550B
+   }
+   if ((m_5523 & $08) == $00) {
+    a = idx_5507
+    if (a == $00) {
+    } else {
+     y = m_5518
+     w4 = ctr_550D[x]
+     ctr_550D[x] = ($FF + w4)
+     a = ($1F & a)
+     if ((w4 - $01) >=s $00) {
+     } else {
+      ctr_550D[x] = a
+      m_5524 = (a & $E0)
+      if (ctr_5510[x] != $00) {
+       w5 = m_5591[y]
+       m_01FD = (w5 - (a & $E0))
+       w6 = m_5592[y]
+       m_01FC = ((w6 - (w5 < (a & $E0))) & $0F)
+       if (((w6 - (w5 < (a & $E0))) & $0F) != $08) {
+       } else {
+        ctr_5510[x] = ($FF + ctr_5510[x])
+       }
+      } else {
+       m_01FD = (w5 + (a & $E0))
+       m_01FC = ($0F & (w6 + (carry((a & $E0), w5) | carry(((a & $E0) + w5), $00))))
+       if (((w6 + (carry((a & $E0), w5) | carry(((a & $E0) + w5), $00))) & $0F) != $0E) {
+       } else {
+        ctr_5510[x] = ($01 + ctr_5510[x])
+       }
+      }
+      idx_5504 = x
+      w9 = m_54EB
+      m_5592[y] = m_01FC
+      sid.v1.pw_hi[w9] = m_01FC
+      m_5591[y] = m_01FD
+      sid.v1.pw_lo[w9] = m_01FD
+      x = idx_5504
+     }
+    }
+   } else {
+    w12 = m_5591[y]
+    t3 = (a + w12 + cflag)
+    m_5591[y] = t3
+    sid.v1.pw_lo[m_54EB] = t3
+   }
+   a = m_5520[x]
+   y = m_54EB
+   if (a == $00) {
+   } else {
+    idx_5504 = (a & $7E)
+    if ((a & $01) == $00) {
+     w13 = m_551D[x]
+     idx3 = idx_5504
+     t4 = (w13 + idx3)
+     m_551D[x] = t4
+     sid.v1.freq_lo[y] = t4
+     w14 = ctr_551A[x]
+     t6 = (w14 + (carry(w13, idx3) | carry(t4, $00)))
+     ctr_551A[x] = t6
+     sid.v1.freq_hi[y] = t6
+    } else {
+     m_551D[x] = (w13 - idx3)
+     sid.v1.freq_lo[y] = (w13 - idx3)
+     w16 = ctr_551A[x]
+     t8 = (w16 - (w13 < idx3))
+     ctr_551A[x] = t8
+     sid.v1.freq_hi[y] = t8
+    }
+   }
+   if ((m_5523 & $01) == $00) {
+   } else {
+    if (w19 == $00) {
+    } else {
+     if (w18 == $00) {
+     } else {
+      w17 = m_54F5[x]
+      w18 = ctr_54F2[x]
+      y = m_54EB
+      cflag = (w18 <= (($1F & w17) - $01))
+      if !cflag {
+       $532B:
+       sid.v1.freq_hi[y] = ctr_551A[x]
+       a = $80
+      } else {
+       w19 = ctr_551A[x]
+       ctr_551A[x] = ($FF + w19)
+       sid.v1.freq_hi[y] = w19
+       a4 = m_54F8[x]
+       a = ($FE & a4)
+       if (a != $00) {
+       } else {
+        goto $532B
+       }
+      }
+      sid.v1.ctrl[y] = a
+     }
+    }
+   }
+   if ((m_5523 & $02) == $00) {
+   } else {
+    w20 = m_54F5[x]
+    cflag = ($03 <= (w20 & $1F))
+    if !cflag {
+    } else {
+     unobserved $5346
+    }
+   }
+   if ((m_5523 & $04) == $00) {
+   } else {
+    if ((ctr_5525 & $01) == $00) {
+     a = idx_54FB[x]
+    } else {
+     a = (a + $0C)
+    }
+    t10 = zext2((a << $01))
+    idx_5503 = mem[(t10 + $5428):2]
+    w21 = m_54EB
+    sid.v1.freq_hi[w21] = mem[(t10 + $5429):2]
+    sid.v1.freq_lo[w21] = idx_5503
+   }
+  } else {
+   ptr_005D_lo = m_56F9[x]
+   ptr_005D_hi = m_56FC[x]
+   w22 = ctr_54F2[x]
+   ctr_54F2[x] = ($FF + w22)
+   if ((w22 - $01) <s $00) {
+    y = pos_54EC[x]
+    a = mem[(((zext2(m_56FC[x]) << $08):2 | zext2(m_56F9[x])):2 + zext2(y)):2]
+    if (a == $FF) {
+     unobserved $5099
+    }
+    if (a != $FE) {
+    } else {
+     unobserved $5093
+    }
+    ptr_005F_lo = m_5711[a]
+    ptr_005F_hi = m_573E[a]
+    m_5520[x] = $00
+    y = pos_54EF[x]
+    ctr_5501 = $FF
+    w23 = mem[(((zext2(m_573E[a]) << $08):2 | zext2(m_5711[a])):2 + zext2(y)):2]
+    m_54F5[x] = w23
+    idx_5502 = w23
+    ctr_54F2[x] = ($1F & w23)
+    vflag = ((idx_5502 & $40) != $00)
+    if vflag {
+     ctr_5501 = ($FF + ctr_5501)
+    } else {
+     pos_54EF[x] = ($01 + pos_54EF[x])
+     if (idx_5502 >=s $00) {
+     } else {
+      a = a
+      y = ($01 + y)
+      if (a >=s $00) {
+       idx_54FE[x] = a
+      } else {
+       m_5520[x] = a
+      }
+      pos_54EF[x] = ($01 + pos_54EF[x])
+     }
+     y1 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((y + $01))):2]
+     idx_54FB[x] = y1
+     y = (y1 << $01)
+     if (m_5528 >=s $00) {
+     } else {
+      idx_5503 = m_5428[y]
+      w24 = m_5429[y]
+      w25 = m_54EB
+      sid.v1.freq_hi[w25] = w24
+      ctr_551A[x] = w24
+      sid.v1.freq_lo[w25] = idx_5503
+      m_551D[x] = idx_5503
+     }
+    }
+    x0 = idx_54FE[x]
+    idx_5504 = x
+    x = (x0 << $03)
+    idx_5505 = m_5593[x]
+    y = m_54EB
+    if (m_5528 >=s $00) {
+    } else {
+     sid.v1.ctrl[y] = (m_5593[x] & ctr_5501)
+     sid.v1.pw_lo[y] = m_5591[x]
+     sid.v1.pw_hi[y] = m_5592[x]
+     sid.v1.attack_decay[y] = m_5594[x]
+     sid.v1.sustain_release[y] = m_5595[x]
+    }
+    x = idx_5504
+    m_54F8[x] = idx_5505
+    pos_54EF[x] = pos_54EF[x]
+    w26 = mem[(((zext2(ptr_005F_hi) << $08):2 | zext2(ptr_005F_lo)):2 + zext2((pos_54EF[x] + $01))):2]
+    if (w26 != $FF) {
+    } else {
+     pos_54EF[x] = $00
+     pos_54EC[x] = ($01 + pos_54EC[x])
+    }
+   } else {
+    if (m_5528 <s $00) {
+    } else {
+     unobserved $5179
+    }
+    y = m_54EB
+    if ((m_54F5[x] & $20) != $00) {
+    } else {
+     if (w22 != $01) {
+     } else {
+      sid.v1.ctrl[y] = ($FE & m_54F8[x])
+      sid.v1.attack_decay[y] = $00
+      sid.v1.sustain_release[y] = $00
+     }
+    }
+    goto $519B
+   }
+  }
+  y = $FF
+  if (m_5526 != $00) {
+  } else {
+   if (m_5527 <s $00) {
+   } else {
+    unobserved $539B
+   }
+  }
+  m_5528 = $FF
+  x = ($FF + x)
+  if (x <s $00) {
+  } else {
+   continue
+  }
+  break
+ }
+ m_5528 = $FF
+ a = m_5526
+ zflag = (a == $00)
+ if !zflag {
+ } else {
+  nflag = (m_5527 <s $00)
+  if !nflag {
+   unobserved $53B5
+  }
+ }
+ ret
+}
