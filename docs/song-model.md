@@ -134,6 +134,19 @@ lines 686–695) — recoverable structure, table provenance defeated as in item
 **Schema.** Per voice: `{pw_accumulator: {lo, hi}, rate_counter, step, bounds:
 [lo, hi], direction_cell}`.
 
+**PoC.** `song_model._sweep` backtraces `pw_lo`/`pw_hi` stores to the self-updating
+cell they read (`_self_step` + the written-cell set separate the accumulator from
+the read-only step table), recovering `Sweep{plane, acc, updates:[(dir, step)],
+rate, bounds}`. Commando's subtune drives PWM only through the `m_5523 & $08` *set*
+branch — an additive accumulator `m_5591 += idx_5507` (step `m_5507`, dir `add`);
+the `& $08`-clear triangle branch (step `& $E0`, turnaround at hi-nibble `$08`/`$0E`)
+is unexercised code and never appears in the walked model. Ghouls recovers the
+16-bit triangle `zp_3F:zp_40 ±= zp_4B` with both directions and turnaround bounds
+`$9B`/`$64`. Forward evaluation (`generators.regenerate`) reproduces the observed
+`pw_lo` plane within each note: Commando ≈72–77% bit-exact (short arpeggio notes,
+frequent reseeds), Ghouls 94–99.8%; the residual is the per-note reseed (the
+Trigger reading the instrument seed), i.e. the coverage law.
+
 ## 4. Control ($D404) transition drivers
 
 **Algorithm.** For each store to `control` (`$D404 + 7v`) record its guard and
@@ -225,6 +238,15 @@ report the init constants and "unused in play".
 reseed_at_note_on} | table | static, resonance, routing_voices, mode, volume,
 source_voice_slot}`.
 
+**PoC.** The same `_sweep` recovers Ghouls' cutoff as a downward accumulator
+`zp_6F -= zp_73` (acc `$6F`, step `zp_73`, dir `sub`); `cutoff_hi` is the derived
+assembly `onset-counter rotations | (acc >> 3)` whose recovered "accumulator" is
+the onset counter `ctr_0070`. `FilterModel.static` reads `$D415`–`$D418` from the
+`sid-init` prologue: Commando reports `{$18: $0F}` (filter off, volume 15) and no
+`play` filter store. Forward evaluation regenerates `cutoff_lo` **99.96% bit-exact**
+over the full 259 s songlength (5 reseeds in 12 950 frames) and `cutoff_hi` 99.3%,
+confirming the recovered envelope operator is the driver.
+
 ## Consolidated output schema
 
 ```
@@ -242,13 +264,15 @@ song_model = {
 
 ## PoC status
 
-`song_model.py` implements items 1 and 2, plus a control/envelope **automaton**
-covering items 4–5, reusing `eqlift_annotate` provenance:
+`song_model.py` implements items 1, 2, **3 and 6**, plus a control/envelope
+**automaton** covering items 4–5, reusing `eqlift_annotate` provenance:
 
 - `recover(stmts, model)` / `analyze(model)` return
   `SongModel(counters=[Counter(base, kind, reload)],
    freq=[FreqDriver(role, source, pitch, slide, kind)],
-   control=Automaton(states, transitions))`.
+   control=Automaton(states, transitions),
+   pw=[Sweep(plane, acc, updates, rate, bounds)],
+   filter=FilterModel(cutoff=[Sweep], static={reg: val}))`.
 - Counters use the item-1 step/reload pattern; freq drivers use the item-2
   root+pitch classification (`note`/`slide`/`other`).
 - **Automaton.** Each store to `control`/`attack_decay`/`sustain_release` becomes
@@ -262,8 +286,27 @@ covering items 4–5, reusing `eqlift_annotate` provenance:
   (action + table) are recovered together. Commando yields 7 edges: note-on
   waveform under the `m_5523 & $01` flag bit, note-off `gate_off` under
   `(m_54F5 & $20)==$00 & (m_54F2==$00)`, and the note-on AD/SR selections.
+- **Sweeps (items 3, 6).** `_sweep` turns each `pw_lo`/`pw_hi`/`cutoff_lo`/
+  `cutoff_hi` store into a `Sweep`: the accumulator is the self-updating cell the
+  store reads (`_self_step` detects the `acc ±= step` recurrence, the written-cell
+  set separates it from a read-only step table), the step is inlined through the
+  reaching-def env, and the gating dec-counter / turnaround comparands come from
+  the accumulator's own guard conditions. Bounds populate only when the turnaround
+  is an *enclosing* guard of the update (Ghouls); Commando's additive branch has
+  none, so its bounds are empty rather than guessed.
 
-Verified (`tests/test_song_model.py`, 200-frame decompile, no solver needed):
+`generators.py` lifts these into the operator vocabulary — `Clock`, `TableGen`,
+`Accumulator`, `Trigger` — and **canonicalises each operator's parameter
+expressions by equality saturation** over the value+memory e-graph
+(`eqlift_mem.extract`). The e-graph's load-bearing rewrite here is McCarthy
+store-forwarding: a lifted sweep whose value threads two scratch cells prints as
+`pw_lo = m_01FD` raw, and saturates to `pw_lo = (m_5591 - (m_5507 & $E0))` — the
+accumulator recurrence, from which the `Accumulator{acc, step, direction}`
+descriptor reads off. `generators.regenerate` forward-evaluates each recovered
+accumulator against `framelog.canonical` and reports bit-exact coverage.
+
+Verified (`tests/test_song_model.py`; items 1–2, 4–5 at 200-frame decompile,
+items 3/6 regeneration at full songlength, no solver needed):
 
 | tune | player | counters | freq kinds | notes |
 |------|--------|----------|-----------|-------|
@@ -271,9 +314,20 @@ Verified (`tests/test_song_model.py`, 200-frame decompile, no solver needed):
 | Ghouls | Follin | 11 (per-voice `ctr_0027/28/29`, vibrato/filter counters, ZP) | note, slide, other | inline vibrato → `slide` |
 | Krakout | Daglish | 5 (incl. 16-bit duration `m_E615`) | other | pitch ROM behind computed base → no `note` |
 
+PWM / filter recovery + regeneration (full songlength):
+
+| tune | plane | operator | regeneration |
+|------|-------|----------|-------------|
+| Commando | pw_lo | `Accumulator{m_5591, += m_5507, add}` | v0/v1/v2 72/67/77% bit-exact (short notes → frequent reseeds) |
+| Ghouls | pw_lo | `Accumulator{zp_3F, ±= zp_4B, triangle, bounds $9B/$64}` | v0/v1/v2 99.4/99.8/93.9% |
+| Ghouls | cutoff_lo | `Accumulator{zp_6F, -= zp_73, sub}` | **99.96%** (5 reseeds / 12 950 frames) |
+
 **Not yet in the PoC (documented above as future work):** sub-classifying
-`slide` into portamento/vibrato/arpeggio by sign source (item 2); PWM and filter
-recovery (items 3, 6), which reuse the same counter/backtrace and automaton
-primitives; merging the per-store automaton edges into a fully minimised per-voice
-state machine; and following Krakout's computed pitch base (would need
-self-modified-pointer resolution, out of scope for constant-base provenance).
+`slide` into portamento/vibrato/arpeggio by sign source (item 2); merging the
+per-store automaton edges into a fully minimised per-voice state machine;
+turnaround-bound recovery when the bound sits in a *sibling* rather than an
+enclosing guard (Ghouls' `m_6813`/`m_6819` cutoff targets are read off `cutoff_hi`
+but not attributed as `cutoff_lo` bounds); simulating the per-note Trigger seed so
+regeneration reseeds without consulting the observed value; and following Krakout's
+computed pitch/PW base (would need self-modified-pointer resolution, out of scope
+for constant-base provenance).

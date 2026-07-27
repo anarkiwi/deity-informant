@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from deity_informant import eqlift as E
+from deity_informant import eqlift_mem as M
+from deity_informant import generators as G
 from deity_informant import song_model as sm
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
@@ -26,6 +29,14 @@ def _model(sid, subtune):
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, 200, subtune)
+    return model
+
+
+def _walk_model(sid, subtune, secs):
+    """Full-songlength model whose whole code path is observed and walkable."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, int(secs * 50), subtune)
     return model
 
 
@@ -78,3 +89,64 @@ def test_krakout_freq_provenance_boundary(sid, subtune, secs):
     m = sm.analyze(_model(sid, subtune))
     assert m.counters and any(c.kind == "dec" for c in m.counters)
     assert m.freq and not any(d.kind == "note" for d in m.freq)
+
+
+def test_self_step_and_cell_refs():
+    add = ("op", "INT_ADD", (("mem", ("const", 0x5591, 2), 1), ("mem", ("const", 0x5507, 2), 1)), 1)
+    d, st = sm._self_step(add, 0x5591, {})
+    assert d == "add" and st == ("mem", ("const", 0x5507, 2), 1)
+    sub = ("op", "INT_SUB", (("mem", ("const", 0x6F, 2), 1), ("mem", ("const", 0x73, 2), 1)), 1)
+    assert sm._self_step(sub, 0x6F, {})[0] == "sub"
+    assert sm._self_step(sub, 0x99, {}) is None  # no self read of $99
+    assert sm._cell_refs(add, {}, set()) == {0x5591, 0x5507}
+
+
+def test_verify_series_constant_accumulator():
+    """A constant-step accumulator with mod-256 wrap regenerates every write past
+    the two-sample seed, in a single run."""
+    vals = [(128 + 22 * i) & 0xFF for i in range(20)]
+    interp, total, runs = G.verify_series(vals)
+    assert total == 20 and interp == 18 and runs == 2
+
+
+def test_generator_canon_memory_forwarding():
+    """Equality saturation forwards a PWM sweep's scratch-cell store chain, turning
+    the opaque lifted load into the accumulator recurrence acc-step."""
+    num = E.num
+    m = M.mem0()
+    m = M.store(m, num(0x5524, 1), E.band(E.cell(0x5507, 1, 0), num(0xE0, 1), 1), 1)
+    step = M.sel(m, num(0x5524, 1), 1)
+    m = M.store(m, num(0x01FD, 1), E.sub(E.cell(0x5591, 1, 0), step, 1), 1)
+    pw = M.sel(m, num(0x01FD, 1), 1)
+    pr = E._Printer({})
+    assert pr.fmt(M.to_ir(str(pw))) == "m_01FD"
+    assert pr.fmt(M.to_ir(M.extract(pw))) == "(m_5591 - (m_5507 & $E0))"
+
+
+@pytest.mark.parametrize("sid,subtune,secs", _tune("Commando", "Hubbard_Rob"))
+def test_commando_pwm_recovery(sid, subtune, secs):
+    """PWM recovers as an additive accumulator m_5591 += idx_5507; forward
+    evaluation regenerates the pw_lo plane within each note, filter static."""
+    model = _walk_model(sid, subtune, secs)
+    gens, cov = G.regenerate(model, int(secs * 50))
+    pw = [a for a in gens.pw if a.plane == "pw_lo"]
+    assert pw and pw[0].acc == 0x5591 and pw[0].direction == "add"
+    assert pw[0].step[0][1] == "m_5507"
+    v2 = [c for c in cov if c.plane == "pw_lo" and c.target == "v2"]
+    assert v2 and v2[0].interpreted / v2[0].total >= 0.7
+    assert gens.static.get(0x18) == 0x0F  # filter off, volume 15, static in sid-init
+
+
+@pytest.mark.parametrize("sid,subtune,secs", _tune("Ghouls_n_Ghosts", "Follin_Tim"))
+def test_ghouls_filter_recovery(sid, subtune, secs):
+    """Filter cutoff recovers as a downward accumulator zp_6F -= zp_73; forward
+    evaluation regenerates cutoff_lo bit-exact over the full song, pw is a triangle."""
+    model = _walk_model(sid, subtune, secs)
+    gens, cov = G.regenerate(model, int(secs * 50))
+    cut = [a for a in gens.filter if a.plane == "cutoff_lo"]
+    assert cut and cut[0].acc == 0x6F and cut[0].direction == "sub"
+    assert cut[0].step[0][1] == "zp_73"
+    lo = [c for c in cov if c.plane == "cutoff_lo"]
+    assert lo and lo[0].interpreted / lo[0].total >= 0.99
+    pw = [a for a in gens.pw if a.plane == "pw_lo"]
+    assert pw and pw[0].acc == 0x3F and "sub" in {d for d, _ in pw[0].step}
