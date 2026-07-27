@@ -234,6 +234,39 @@ def _coindexed_bases(model):
     return [g for g in groups.values() if len(g) >= 2]
 
 
+def _extend_et(word_at, words, cap=128, tol=0.3):
+    """Extend a recovered ET run to its true memory extent.
+
+    A declared table size can under-size the physical table (the player reads the
+    whole run); walk the chromatic lattice past the recovered end while memory
+    keeps it. Guarded: only extends an offset-0-aligned run (else returns as-is)."""
+    out = [int(x) for x in words]
+    if not out or out[-1] <= 0 or word_at(len(out) - 1) != out[-1]:
+        return np.asarray(out, dtype=np.int64)
+    while len(out) < cap:
+        w = word_at(len(out))
+        want = min(out[-1] * _SEMI, 65535)
+        if w is None or w <= 0 or abs(12 * np.log2(w / want)) >= tol:
+            break
+        out.append(w)
+    return np.asarray(out, dtype=np.int64)
+
+
+def _split_word(m0, lo, hi, i):
+    """The i-th word of a split lo/hi table, or None past the image."""
+    if lo + i >= len(m0) or hi + i >= len(m0):
+        return None
+    return m0[lo + i] | (m0[hi + i] << 8)
+
+
+def _iw_word(m0, base, endian, i):
+    """The i-th word of a contiguous 16-bit table, or None past the image."""
+    off = base + 2 * i
+    if off + 1 >= len(m0):
+        return None
+    return int(np.frombuffer(bytes(m0[off : off + 2]), dtype=endian + "u2")[0])
+
+
 def _paired_pitch(model, minsize=36, cap=0x100):
     """Split lo/hi pitch table: two co-indexed tables (graph), sized by their decl.
 
@@ -260,11 +293,12 @@ def _paired_pitch(model, minsize=36, cap=0x100):
                         continue
                     if not decl and (len(et) < minsize or abs(lo - hi) < len(et) or len(et) > 108):
                         continue
-                    best_n, best = len(et), (lo, et)
+                    best_n, best = len(et), (lo, hi, et)
     if best is None:
         return None
-    lo, words = best
-    return Pitch(lo, words, best_n // 12, int(words[words > 0][0]), "split", False)
+    lo, hi, words = best
+    words = _extend_et(lambda i: _split_word(m0, lo, hi, i), words)
+    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False)
 
 
 def _freq_bases(model):
@@ -321,11 +355,12 @@ def _role_split_pitch(model, minrun=30, cap=0x100):
             hib = np.frombuffer(bytes(m0[hi : hi + n]), dtype="u1").astype(np.int64)
             et = _sparse_et(lob | (hib << 8), minspan=minrun)
             if et is not None and len(et) > best_n:
-                best_n, best = len(et), (lo, np.asarray(et, dtype=np.int64))
+                best_n, best = len(et), (lo, hi, np.asarray(et, dtype=np.int64))
     if best is None:
         return None
-    lo, words = best
-    return Pitch(lo, words, best_n // 12, int(words[words > 0][0]), "split", False)
+    lo, hi, words = best
+    words = _extend_et(lambda i: _split_word(m0, lo, hi, i), words)
+    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False)
 
 
 def _interleaved_pitch(model, cap=0x100):
@@ -355,6 +390,7 @@ def _interleaved_pitch(model, cap=0x100):
     if best is None:
         return None
     b, w, endian = best
+    w = _extend_et(lambda i: _iw_word(m0, b, endian, i), w)
     return Pitch(b, w, len(w) // 12, int(w[w > 0][0]), endian, False)
 
 

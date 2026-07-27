@@ -254,6 +254,8 @@ def test_automatas_split_block_pitch(sid, subtune):
     p = tracker.lift(model).pitch
     assert p is not None and p.base == 0x1578 and p.endian == "split"
     assert ann.et_check(p.words)["pitch_table"]
+    # extent extends past the under-sized decl (86) to the true 120-note ET run
+    assert len(p.words) == 120 and p.words[-1] == 65535
     assert tracker.gate_t(model, 200) is None
     _r, _gt, cov, _lanes = tracker.render(model, 200)
     assert cov.planes["freq"][0] > 0
