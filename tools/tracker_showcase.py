@@ -84,13 +84,23 @@ def render_tune(rel):
     lines = ["tracker %s  (subtune %d, %d frames)" % (sid.stem, sub, frames), "; ---- engine ----"]
     lines += _engine_lines(t)
     lines.append("; ---- note lanes (frame  note  xcount  detune[lo..hi]) ----")
+    fi, ft = cov.planes.get("freq", (0, 0))
     lines.append(
-        "gate_t: %s   notes interpreted: %d/%d (%.0f%%)"
+        "gate_t: %s   interpreted %d/%d writes (%.0f%%)   freq %d/%d (%.0f%%)"
         % (
             "PASS" if div is None else "FAIL %r" % (div,),
-            cov.notes,
-            cov.planes,
-            100.0 * cov.notes / max(cov.planes, 1),
+            cov.interp,
+            cov.total,
+            100.0 * cov.interp / max(cov.total, 1),
+            fi,
+            ft,
+            100.0 * fi / max(ft, 1),
+        )
+    )
+    lines.append(
+        "residual planes: "
+        + "  ".join(
+            "%s %d/%d" % (p, it, tot) for p, (it, tot) in sorted(cov.planes.items()) if it < tot
         )
     )
     for v in range(3):
@@ -108,10 +118,11 @@ def render_tune(rel):
     (ROOT / "out" / ("%s.tracker.txt" % sid.stem)).write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
-    return "%s: pitch=%s notes=%d scripts=%d gateT=%s" % (
+    return "%s: pitch=%s interp=%d/%d scripts=%d gateT=%s" % (
         sid.stem,
         t.pitch is not None,
-        cov.notes,
+        cov.interp,
+        cov.total,
         len(scripts),
         "PASS" if div is None else "FAIL",
     )

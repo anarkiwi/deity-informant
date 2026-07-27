@@ -229,7 +229,9 @@ def test_commando_notes_and_gate_t(sid, subtune):
     assert t.tempo == 0x5596 and any(c.role == "lfo" for c in t.clocks)
     assert tracker.gate_t(model, 200) is None
     _r, _gt, cov, lanes = tracker.render(model, 200)
-    assert cov.notes / cov.planes > 0.9
+    fi, ft = cov.planes["freq"]
+    assert fi / ft > 0.9  # freq plane mostly interpreted
+    assert cov.interp + cov.residual == cov.total  # partition is complete
     assert all(lanes[v] for v in range(3)) and lanes[0][0][1].name
 
 
@@ -242,7 +244,7 @@ def test_ghouls_separate_block_pitch_notes(sid, subtune):
     assert ann.et_check(p.words)["pitch_table"]  # the lo/hi pairing is ET, not garbage
     assert tracker.gate_t(model, 200) is None
     _r, _gt, cov, lanes = tracker.render(model, 200)
-    assert cov.notes > 0 and any(lanes)
+    assert cov.planes["freq"][0] > 0 and any(lanes)
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Automatas", "Goto80"))
@@ -252,9 +254,11 @@ def test_automatas_split_block_pitch(sid, subtune):
     p = tracker.lift(model).pitch
     assert p is not None and p.base == 0x1578 and p.endian == "split"
     assert ann.et_check(p.words)["pitch_table"]
+    # extent extends past the under-sized decl (86) to the true 120-note ET run
+    assert len(p.words) == 120 and p.words[-1] == 65535
     assert tracker.gate_t(model, 200) is None
     _r, _gt, cov, _lanes = tracker.render(model, 200)
-    assert cov.notes > 0
+    assert cov.planes["freq"][0] > 0
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Athena", "Galway_Martin"))
@@ -275,7 +279,7 @@ def test_krakout_octave_shift_notes(sid, subtune):
     assert p is not None and p.base == 0xE629 and p.endian == ">" and p.shift
     assert tracker.gate_t(model, 200) is None
     _r, _gt, cov, lanes = tracker.render(model, 200)
-    assert cov.notes > 100
+    assert cov.planes["freq"][0] > 100
     detunes = {n.detune for lane in lanes for _f, n in lane}
     assert 0 in detunes and detunes & {30, -30}  # the ±30 vibrato triplets
     assert all(abs(n.detune) <= 30 for lane in lanes for _f, n in lane)  # continuity: no excursions
