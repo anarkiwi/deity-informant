@@ -45,6 +45,16 @@ def _modulated(notes, ref=1793.0, glide=4, hold=8, vib=0.15):
     return series
 
 
+def test_empty_inputs_and_zero_words():
+    """Degenerate inputs return empty bases, a null lattice, and skip zero words."""
+    assert len(P.peel([])) == 0 and len(P.peel([0, 0])) == 0
+    lat = P.induce([])
+    assert lat == P.Lattice(0.0, 0.0, 0)
+    good = P.induce([1793.0 * _SEMI**k for k in range(6)])
+    ln = P.lane(0, [(0, 0), (1, int(1793.0 * _SEMI**7))], good)  # a zero freq is skipped
+    assert ln.frames == 1 and len(ln.notes) == 1
+
+
 def test_peel_drops_slides_keeps_plateaus():
     """A held note survives peeling; a pure monotone ramp yields no base."""
     ref = 1793.0
