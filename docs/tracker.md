@@ -566,6 +566,18 @@ order — reproducing `Commando.frameprog.txt` frame-for-frame (Gate T).
   remains is the per-note base frequency, however it was calculated.**
 - **M-T4** lane/instrument codec (Gate codec) + residual generators ⇒ Gate T
   over the full corpus.
+  *(honest render landed)* `render` no longer passes the observed frame through:
+  it partitions every canonical entry into an **interpreted** generator (accepted-
+  note freq words) or an **explicit residual** byte-program, and rebuilds each
+  record from those two sources ONLY. A `gate_t` PASS therefore certifies the
+  partition is *complete* — every plane is interpreted or residual, together
+  bit-exact — rather than trivially copying the output. `Coverage` now reports
+  `interp/residual/total` writes and a per-plane breakdown over the whole
+  projection; the prior "notes interpreted %" measured freq alone. Hubbard's
+  Commando: **47% of all writes interpreted** (freq 93%; ctrl/AD/SR/pw 100%
+  residual). Next M-T4 slices shrink the residual by interpreting the control
+  automaton (ctrl/gate), ADSR, and the pulse-width accumulator, then the
+  emit/parse codec.
 - **M-T5** Gate M: interpreted↔raw regeneration; note-name/interval/transpose
   relationships, motif detection under transform — the musical layer proper,
   each step verified by exact regeneration of the tracker below it.

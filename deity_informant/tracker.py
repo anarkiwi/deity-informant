@@ -20,7 +20,17 @@ Pitch = namedtuple("Pitch", "base words octaves reference endian shift")
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
 Tracker = namedtuple("Tracker", "pitch clocks tempo instruments")
-Coverage = namedtuple("Coverage", "notes residual planes")
+Coverage = namedtuple("Coverage", "interp residual total planes")
+
+_PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
+_LWW_SECTIONS = (0, 2, 4, 6)  # framelog SECTIONS rebuilt by ascending reg
+
+
+def _plane_of(reg):
+    """Canonical plane class for a SID register offset."""
+    if reg <= 0x14:
+        return _PLANE[reg % 7]
+    return "filter" if reg <= 0x18 else "tail"
 
 
 def _direct_pitch(model):
@@ -424,37 +434,61 @@ def _frame_notes(pitch, rec):
     return notes
 
 
-def render(model, nframes):
-    """Regenerate the canonical projection and score note interpretation.
+def _reconstruct(gen, residual):
+    """Rebuild one canonical record from interpreted freq words and residual only.
 
-    Emits the pitch-table lookup for interpreted notes and observed bytes
-    elsewhere. Returns (rendered, ground_truth, Coverage, lanes)."""
+    lww sections re-sort ascending (canonical order once generated freq bytes
+    are re-inserted); ordered sections replay the residual verbatim."""
+    out = []
+    for si, sec in enumerate(residual):
+        if si in _LWW_SECTIONS:
+            d = dict(sec)
+            d.update((r, v) for r, v in gen.items() if (r // 7) * 2 == si)
+            out.append(tuple(sorted(d.items())))
+        else:
+            out.append(sec)
+    return tuple(out)
+
+
+def render(model, nframes):
+    """Regenerate the projection and measure the interpreted/residual partition.
+
+    Accepted-note freq entries are interpreted; all else is an explicit residual
+    byte-program. Each record is rebuilt from those two sources only (no
+    observed-frame passthrough), so a ``gate_t`` PASS certifies completeness."""
     frames = framelog.frames_from_walker(S.Walker(model), nframes)
     gt = framelog.canonical(frames)
     pitch = _pitch(model)
     lanes = [[], [], []]
     anchor = [None, None, None]
-    interp = total = 0
-    rendered = []
-    for f, (frame, rec) in enumerate(zip(frames, gt)):
-        note_regs = {}
+    generated, residual = [], []
+    planes = {}
+    for f, rec in enumerate(gt):
         notes = _frame_notes(pitch, rec) if pitch else (None, None, None)
+        gen = {}
         for v, note in enumerate(notes):
             b = 7 * v
             if b not in dict(rec[2 * v]):
                 continue
-            total += 1
             # a detuned frame counts only as vibrato on the current note, or a fresh exact anchor
             if note is not None and (note.detune == 0 or note.index == anchor[v]):
                 anchor[v] = note.index
-                interp += 1
+                gen[b], gen[b + 1] = note.word & 0xFF, (note.word >> 8) & 0xFF
                 lanes[v].append((f, note))
-                note_regs[b], note_regs[b + 1] = note.word & 0xFF, (note.word >> 8) & 0xFF
-        rendered.append([(reg, note_regs.get(reg, val)) for reg, val in frame])
-    return rendered, gt, Coverage(interp, total - interp, total), lanes
+        generated.append(gen)
+        residual.append(tuple(tuple(e for e in sec if e[0] not in gen) for sec in rec))
+        for sec in rec:
+            for reg, _val in sec:
+                p = _plane_of(reg)
+                it, tot = planes.get(p, (0, 0))
+                planes[p] = (it + (reg in gen), tot + 1)
+    rendered = [_reconstruct(g, r) for g, r in zip(generated, residual)]
+    interp = sum(it for it, _ in planes.values())
+    total = sum(t for _, t in planes.values())
+    return rendered, gt, Coverage(interp, total - interp, total, planes), lanes
 
 
 def gate_t(model, nframes):
-    """Gate T verdict: None (bit-exact) or the first framelog.Divergence."""
+    """Gate T verdict: None if interpreted + residual reproduce the projection."""
     rendered, gt, _cov, _lanes = render(model, nframes)
-    return framelog.diff(framelog.canonical(rendered), gt)
+    return framelog.diff(rendered, gt)
