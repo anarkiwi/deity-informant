@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from deity_informant import eqlift_annotate as ann
+from deity_informant import song_model as sm
 from deity_informant import structured as S
 from deity_informant import tracker
 from deity_informant.c64 import load_psid
@@ -144,6 +145,79 @@ def test_role_split_pitch(monkeypatch):
     )
     p = tracker._role_split_pitch(mem)
     assert p is not None and not p.shift and p.base == lo and p.octaves >= 3
+
+
+def test_note_direct_and_shift_inversion():
+    """Multi-octave table matches by nearest word, one-octave table by octave shift."""
+    words = np.round(268 * tracker._SEMI ** np.arange(36)).astype(np.int64)
+    p = tracker.Pitch(0x2000, words, 3, 268, "<", False)
+    assert tracker._note_direct(p, int(words[10])) == tracker.Note(10, int(words[10]), "A#0", 0)
+    assert tracker._note_direct(p, int(words[-1]) * 3) is None  # far above the table
+    octave = np.round(8000 * tracker._SEMI ** np.arange(12)).astype(np.int64)
+    ps = tracker.Pitch(0x3000, octave, 1, 8000, ">", True)
+    n = tracker._note_shift(ps, int(octave[5]) >> 2)
+    assert n is not None and n.detune == 0 and n.name == "F6"
+    assert tracker._note_shift(ps, int(octave.max()) * 20) is None  # no octave resolves
+    assert tracker._note_of(p, int(words[10])).index == 10
+    assert tracker._note_of(ps, int(octave[5])).index == 5
+
+
+def test_tempo_picks_reloading_decrementer():
+    counters = [sm.Counter(0x10, "inc", None), sm.Counter(0x20, "dec", 0x99)]
+    assert tracker._tempo(counters) == 0x99
+    assert tracker._tempo([sm.Counter(0x30, "inc", None)]) is None
+
+
+def test_octave_et_and_frame_notes():
+    octave = np.round(8000 * tracker._SEMI ** np.arange(12)).astype(np.int64)
+    mem = bytearray(0x10000)
+    for i, x in enumerate(octave):
+        mem[0x5000 + 2 * i], mem[0x5000 + 2 * i + 1] = int(x) & 0xFF, (int(x) >> 8) & 0xFF
+    assert tracker._octave_et(bytes(mem), 0x5000, "<")
+    assert not tracker._octave_et(bytes(mem), 0x5000, ">")  # wrong endian, not ET
+    words = np.round(268 * tracker._SEMI ** np.arange(36)).astype(np.int64)
+    p = tracker.Pitch(0x2000, words, 3, 268, "<", False)
+    w10 = int(words[10])
+    rec = [[(0, w10 & 0xFF), (1, (w10 >> 8) & 0xFF)], [], [], [], [], []]
+    notes = tracker._frame_notes(p, rec)
+    assert notes[0].index == 10 and notes[1] is None and notes[2] is None
+
+
+def test_read_and_coindexed_bases(monkeypatch):
+    def _rd(base):
+        return ("mem", ("op", "INT_ADD", (("const", base, 2), ("loc", "i")), 2), 1)
+
+    monkeypatch.setattr(
+        tracker.ann, "model_procs", lambda m: [[("st", ("const", 0xD400, 2), _rd(0x3000))]]
+    )
+    assert tracker._read_bases(None) == {0x3000}
+    monkeypatch.setattr(
+        tracker.ann,
+        "model_procs",
+        lambda m: [
+            [("st", ("const", 0xD400, 2), _rd(0x3000)), ("st", ("const", 0xD401, 2), _rd(0x4000))]
+        ],
+    )
+    groups = tracker._coindexed_bases(None)
+    assert len(groups) == 1 and sorted(groups[0]) == [0x3000, 0x4000]
+
+
+def test_paired_pitch_split_tables(monkeypatch):
+    """Two co-indexed byte tables pair into a split lo/hi multi-octave ET table."""
+    words = np.round(560 * tracker._SEMI ** np.arange(48)).astype(np.int64)
+    lo, hi = 0x4000, 0x4100
+    mem = _mem_split(lo, hi, words)
+    monkeypatch.setattr(
+        tracker.ann,
+        "_decls",
+        lambda m: [
+            {"base": lo, "size": 48, "kind": "table"},
+            {"base": hi, "size": 48, "kind": "table"},
+        ],
+    )
+    monkeypatch.setattr(tracker, "_coindexed_bases", lambda m: [{lo, hi}])
+    p = tracker._paired_pitch(mem)
+    assert p is not None and p.base == lo and not p.shift and p.octaves == 4
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
