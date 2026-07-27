@@ -41,12 +41,19 @@ def _role_of(base):
 
 
 def _const_base(addr):
-    """Sum of the constant summands of a pass-1 address expression (table base)."""
+    """Constant base of a pass-1 address expression (table base), 16-bit wrapped.
+
+    ``INT_SUB`` subtracts its trailing summands, so a negative displacement that
+    wraps (``idx - $19D7`` == ``idx + $E629``) resolves to the real base."""
     k = addr[0]
     if k == "const":
         return addr[1]
     if k == "op" and addr[1] in ("INT_ADD", "INT_SUB"):
-        return sum(_const_base(a) for a in addr[2] if isinstance(a, tuple))
+        kids = [_const_base(a) for a in addr[2] if isinstance(a, tuple)]
+        if not kids:
+            return 0
+        base = sum(kids) if addr[1] == "INT_ADD" else kids[0] - sum(kids[1:])
+        return base & 0xFFFF
     return 0
 
 
