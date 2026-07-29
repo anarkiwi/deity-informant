@@ -24,7 +24,7 @@ from test_frameprog import _fuzz_model
 
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 
-_FP_GAP = frozenset({"rts_trick"})  # recorded gap: stack-pushed return target
+_FP_GAP = frozenset()  # no recorded gaps: every player class passes Gate FP
 
 
 def _sid_model(pairs):
@@ -231,6 +231,48 @@ def test_goto_target_is_a_live_consumer_and_its_update_survives():
     for _ in range(4):
         frameproc._inline(info)
     assert any(s[0] == "asg" and s[1] == "y" for s in info.procs[0x900])
+
+
+def test_call_entered_body_keeps_its_updates_live():
+    """A label a ``call`` enters returns to its call sites and may re-enter.
+
+    Its exit therefore carries the machine set; treating it as textual
+    fall-through let ``_prune`` delete an update the next entry consumes."""
+    y = ("loc", "y")
+    addr = ("op", "INT_ADD", (("op", "INT_ZEXT", (y,), 2), ("const", 0x1300, 2)), 2)
+    stmts = [
+        ("call", 0x1100, 0x1005),
+        ("call", 0x1100, 0x1009),
+        ("label", 0x1100),
+        ("st", addr, ("const", 5, 1)),
+        ("asg", "y", ("op", "INT_ADD", (y, ("const", 1, 1)), 1)),
+        ("ret", False),
+    ]
+    info = frameproc._Info([(0x1000, stmts)], 0x1000)
+    info.summarize()
+    assert info.call_labels[0x1000] == {0x1100}
+    for _ in range(4):
+        frameproc._prune(info)
+        frameproc._inline(info)
+    assert any(s[0] == "asg" and s[1] == "y" for s in info.procs[0x1000])
+
+
+def test_stack_pointer_updates_are_never_eliminated():
+    """``sp`` is machine state: call/ret move it and pushed bytes ride on it."""
+    sp = ("loc", "sp")
+    stmts = [
+        ("asg", "sp", ("op", "INT_ADD", (sp, ("const", 0xFF, 1)), 1)),
+        ("call", 0x2000, 0x1005),
+        ("asg", "sp", ("op", "INT_ADD", (sp, ("const", 1, 1)), 1)),
+        ("ret", False),
+    ]
+    info = frameproc._Info([(0x1000, stmts), (0x2000, [("ret", False)])], 0x1000)
+    info.summarize()
+    for _ in range(4):
+        frameproc._prune(info)
+        frameproc._inline(info)
+    kept = [s for s in info.procs[0x1000] if s[0] == "asg" and s[1] == "sp"]
+    assert len(kept) == 2, info.procs[0x1000]
 
 
 def _lot_of_coke():
