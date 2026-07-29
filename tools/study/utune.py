@@ -352,10 +352,13 @@ def render(tune, opt):
     ]
     lines += ["      " + row for row in tune.pitch]
     for v, (seq, loop) in enumerate(tune.orders):
-        refs = ["c%d@%+d" % (opt.inst[p][0], t + opt.inst[p][1]) for p, t in seq if p in opt.inst]
+        # pattern c<id> played with its (C-0-normalized) base note at this pitch
+        refs = [
+            "c%d@%s" % (opt.inst[p][0], _nn(t + opt.inst[p][1])) for p, t in seq if p in opt.inst
+        ]
         lines += [
             "",
-            "gO%d [LOOKUP] pattern_end.v%d -> fire pattern   ; order v%d (loop@%d)"
+            "gO%d [LOOKUP] pattern_end.v%d -> fire pattern @<base note>   ; order v%d (loop@%d)"
             % (v + 1, v + 1, v + 1, loop),
         ]
         lines += ["      " + row for row in _wrap(refs, 12)]
