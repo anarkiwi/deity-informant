@@ -242,6 +242,7 @@ frame(state, in) {
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
+| Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Open, generator-side. The surface serializes the transfer as a bare `ret`, so the evaluator returns machine-faithfully through `sp` and the stack image. That resolves `TXS; RTS`, but a `PHA`-pushed target whose `sp` updates the register-liveness pass pruned is unrecoverable (`_fuzzgen.t_rts_trick`). Per §2 the pushed word is a dispatch cell and belongs in the observed-target switch; `pcall` additionally drops the `ret $R` of the call it rewrites, so its pushed bytes are a stand-in. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
@@ -282,11 +283,13 @@ HVSC absent (decompiler-implementation.md §1, §7).
   volatile reads resolve to `iota(f, input, k)`, SID writes buffer per frame
   and flush through `framelog.canonical`. Gate FP holds on 15 of the 16
   `tests/_fuzzgen` player classes and on Commando at full Songlengths length;
-  measured 2026-07-29 over the 140-tune cached corpus at 300-frame windows,
-  110 pass, 30 do not (17 reach an `unobserved` frontier, 4 leave an observed
-  dispatch set, 2 run away, 7 diverge in value). Every failure is loud; the
-  residual causes are not yet attributed beyond the stack-dispatch row of §5.
-  Outstanding for M-FP2: the rung (a)-(c) proof records and the residual 30.
+  measured 2026-07-29 over a 140-tune cached-corpus sample at 300-frame
+  windows, **111 pass, 29 do not** (21 fault loudly — `unobserved` frontier,
+  a dispatch set left, runaway — and 8 diverge in value). The same sample
+  scored 96 before the goto-liveness fix below (15 tunes recovered, none
+  regressed). Every failure is loud; the residual causes are not attributed
+  beyond the stack-dispatch row of §5. Outstanding for M-FP2: the rung (a)-(c)
+  proof records and the residual 29.
 - **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
   refusal exercised synthetically.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3

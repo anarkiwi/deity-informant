@@ -745,7 +745,23 @@ class _Flow:
         self.liveout = None
 
     def run(self):
-        return self.seq(self.info.procs[self.entry], set())
+        """Backward sweep to a fixpoint over the procedure's label live-sets.
+
+        One pass is unsound: a ``goto`` reaching a label the sweep has not yet
+        visited (a forward branch into a later arm) reads an empty live-set and
+        makes live locals look dead, so seed each round with the last."""
+        seed = self.info.labmap[self.entry]
+        out = set()
+        for _ in range(24):
+            self.labmap = {k: set(v) for k, v in seed.items()}
+            out = self.seq(self.info.procs[self.entry], set())
+            grew = any(not v <= seed.get(k, set()) for k, v in self.labmap.items())
+            for k, v in self.labmap.items():
+                seed[k] = seed.get(k, set()) | v
+            if not grew:
+                break
+        self.labmap = seed
+        return out
 
     def seq(self, stmts, live):
         nxt = None
@@ -933,7 +949,10 @@ def _invis_name(s, name, info, entry):
     elif k == "ret":
         hit = True if s[1] else name in info.ret_live(entry)
     elif k == "goto":
-        hit = s[1] not in info.own_labels[entry] and name in info.livein.get(s[1], info.G)
+        if s[1] in info.own_labels[entry]:
+            hit = name in info.labmap[entry].get(s[1], info.G)  # the target consumes it
+        else:
+            hit = name in info.livein.get(s[1], info.G)
     else:
         hit = False
     return hit or any(_invis_name(s2, name, info, entry) for b in _stmt_bodies(s) for s2 in b)

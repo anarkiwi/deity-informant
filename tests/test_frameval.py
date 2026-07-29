@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from deity_informant import framelog as F
+from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 from deity_informant import structured as S
@@ -190,6 +191,64 @@ def test_unlinkable_targets_fault_at_compile_time():
         frameval.eval_fp(_prog([("goto", 0x9999)]), {}, 1)
     with pytest.raises(FrameFault, match=r"play \$2000 is not a serialized procedure"):
         frameval.eval_fp(_prog([("ret", False)], play=0x2000), {}, 1)
+
+
+def _goto_into_later_arm():
+    """A procedure whose forward goto reaches a label consuming a live local.
+
+    The sweep walks the then-arm before the else-arm, so the goto is seen before
+    its target: without a fixpoint the label's live-set reads empty and ``y``
+    looks dead, and the inliner deletes the update the label still consumes."""
+    y = ("loc", "y")
+    inc = ("op", "INT_ADD", (y, ("const", 2, 1)), 1)
+    addr = ("op", "INT_ADD", (("op", "INT_ZEXT", (y,), 2), ("const", 0x0F95, 2)), 2)
+    stmts = [
+        ("asg", "y", inc),
+        (
+            "if",
+            "ifnot",
+            ("op", "INT_LESSEQUAL", (("const", 1, 1), ("const", 2, 1)), 1),
+            [("asg", "z", ("const", 9, 1))],
+            [("goto", 0x0C63)],
+        ),
+        ("label", 0x0C63),
+        ("st", ("const", 0xD402, 2), ("mem", addr, 1)),
+    ]
+    info = frameproc._Info([(0x900, stmts)], 0x900)
+    info.summarize()
+    return info
+
+
+def test_goto_target_is_a_live_consumer_and_its_update_survives():
+    """An own-procedure goto consumes whatever its target consumes.
+
+    Deleting the update makes the label index the wrong cell, so the local must
+    survive inlining; ``_use_count`` sees no textual use, hence ``_invis_name``."""
+    info = _goto_into_later_arm()
+    assert 0x0C63 in info.own_labels[0x900]
+    assert "y" in info.labmap[0x900][0x0C63]
+    assert frameproc._invis_name(("goto", 0x0C63), "y", info, 0x900)
+    for _ in range(4):
+        frameproc._inline(info)
+    assert any(s[0] == "asg" and s[1] == "y" for s in info.procs[0x900])
+
+
+def _lot_of_coke():
+    return [
+        pytest.param(path, sub, id="Slaygon-A_Lot_of_Coke_part_8")
+        for path, sub, secs in corpus_params(HVSC)
+        if path.stem == "A_Lot_of_Coke_part_8"
+    ]
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("sid,subtune", _lot_of_coke())
+def test_gate_fp_goto_liveness_regression(sid, subtune):
+    """The tune whose voice-2 pulse width diverged by one accumulator step."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, 300, subtune)
+    assert frameval.gate_fp(model, 300) is None
 
 
 def _commando():
