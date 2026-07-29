@@ -70,6 +70,7 @@ def test_if_header_without_taken_penalty():
     }
     text = frameprog.emit(_model(blocks))
     assert "if (a == $01) unobserved $2000" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert "sub_1000(a) {" in text  # the tested register is a live-in parameter
     assert "@t" not in text
 
@@ -82,6 +83,7 @@ def test_opcode_cell_renders_as_state_variable_switch():
     text = frameprog.emit(_model(blocks, dispatch={0x1000: {0xA9, 0xEA}}))
     assert "switch m_1000 {" in text and "code[" not in text
     assert "case $A9: {" in text and "case $EA: {" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert " m_1000: u8 observed $A9 $EA" in text
 
 
@@ -117,6 +119,7 @@ def test_declared_tables_and_aliases_carry_over():
     assert "table m_1400[4]:" in text  # datadecl content reused verbatim
     assert "table m_1480[8] stride 2 +m_1481:" in text
     assert "alias ptr_0060_lo = zp_60" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert " ptr_0060_lo: u8" in text and " zp_60: u8" not in text
     assert "ptr_0060_lo = " in text and "zp_60 = " not in text
     assert " m_1400" not in text.split("data {")[0]  # table cells are not state
@@ -139,6 +142,26 @@ def test_fuzz_players_emit_annotation_free_and_project(p):
     assert frameprog.dumps(frameprog.loads(text)) == text  # M-FP2 canonical fixpoint
     frames = F.frames_from_walker(S.Walker(model), p.frames)
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
+
+
+def test_dynamic_flow_constructs_round_trip():
+    """Computed jump/call surfaces: switch goto/call, bare targets, igoto."""
+    a = E.reg(0)
+    blocks = {
+        (0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("jmpd", a), _regs()),
+        (0x2000, 0x20): Block(0x2000, 0x20, [0x2000], [], ("jsr", None, 0x2002, a), _regs()),
+        (0x2003, 0x4C): Block(0x2003, 0x4C, [0x2003], [], ("jmpind", 0x3000, None), _regs()),
+        (0x2100, 0x60): Block(0x2100, 0x60, [0x2100], [], ("rts",), _regs()),
+        (0x2200, 0x60): Block(0x2200, 0x60, [0x2200], [], ("rts",), _regs()),
+    }
+    mem0 = bytearray(0x10000)
+    mem0[0x3000], mem0[0x3001] = 0x00, 0x21
+    dyn = {0x1000: {0x2000}, 0x2000: {0x2100, 0x2200}}
+    text = frameprog.emit(sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {}, dyn=dyn))
+    for frag in ("goto (a)", "switch goto {", "switch call {", "\n    $2100\n", "igoto $3000"):
+        assert frag in text, frag
+    assert "call (a) ret $2002" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 def test_canonical_fixpoint_and_header_identity():
@@ -205,6 +228,7 @@ def test_counter_loop_renders_as_for_range():
     text = frameprog.emit(_counter_loop_model())
     assert "for x in $02..$00 {" in text
     assert "m_1500[x] = $01" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 def test_parameter_and_return_inference():
@@ -226,6 +250,7 @@ def test_parameter_and_return_inference():
     assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
     assert "zp_FB = a" in text
     frameprog.lint(text)
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 def _commando():
