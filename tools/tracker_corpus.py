@@ -26,7 +26,8 @@ _BYTE = re.compile(r"^([0-9A-Fa-f]{2}|\?\?|AND|END)$")
 def load_sigs():
     """Download/cache sidid.cfg and compile to [(name, [regex, ...])]."""
     if not CFG.exists():
-        CFG.write_bytes(urllib.request.urlopen(CFG_URL, timeout=30).read())
+        with urllib.request.urlopen(CFG_URL, timeout=30) as fh:
+            CFG.write_bytes(fh.read())
     txt = CFG.read_text(encoding="latin-1")
     ents, name, toks = [], None, []
     for line in txt.splitlines():

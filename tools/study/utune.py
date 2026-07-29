@@ -432,7 +432,7 @@ def _local_period(st, i, maxp=12):
 def _onsets(grid, v):
     """Note triggers = gate 0->1 (release is gate 1->0; the note keeps sounding)."""
     b = 7 * v
-    return [f for f in range(1, len(grid)) if (grid[f][b + 4] & 1) and not (grid[f - 1][b + 4] & 1)]
+    return [f for f in range(1, len(grid)) if grid[f][b + 4] & 1 and not grid[f - 1][b + 4] & 1]
 
 
 def _program(st, start, dur):
@@ -548,14 +548,14 @@ def _sync(grid):
         if not locked:
             continue
         semi, (w, csum) = max(locked.items(), key=lambda kv: kv[1][0])
-        octs = round(semi / 12)
+        octs = semi // 12  # floor: round() relabels a fifth as "fourth +1oct" (17 semitones)
         cents = csum / w * 100
         binds.append(
             "v%d.freq = v%d.note %s%s%s   [locked %d frames]"
             % (
                 b + 1,
                 a + 1,
-                IC[abs(semi - 12 * octs)],
+                IC[semi % 12],
                 "" if octs == 0 else " %+doct" % octs,
                 " (detune %+.0f cents)" % cents if abs(cents) >= 3 else "",
                 w,
