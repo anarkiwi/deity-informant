@@ -229,6 +229,15 @@ def test_play_zero_without_an_installed_vector_refuses():
         S.decompile(mem, 0x0F00, 0, 4)
 
 
+def test_play_zero_init_that_never_returns_names_the_driver_cadence(monkeypatch):
+    """The known deferred class: init idles until its own handler fires."""
+    monkeypatch.setattr(S, "_GUARD", 1000)
+    mem = bytearray(0x10000)
+    mem[0x0F00:0x0F03] = bytes((0x4C, 0x00, 0x0F))  # init: JMP * (idle loop)
+    with pytest.raises(RuntimeError, match="init never returned"):
+        S.decompile(mem, 0x0F00, 0, 4)
+
+
 def test_play_zero_with_a_zeroed_vector_refuses():
     mem, init = G.irq_image(handler=0x0000)
     with pytest.raises(S.DecompileError, match=r"vector \$0314 installed as \$0000"):

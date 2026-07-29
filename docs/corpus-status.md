@@ -73,9 +73,13 @@ failed as `control 'brk' at 0000 not modeled` (the header play address *is*
 `$0000`) or as an init runaway; 9 now decompile, replay bit-exact from the
 model and from parsed text, and pass Gate FP. Every discovered vector in the
 sample is CINV `$0314`; the hardware `$FFFE` and NMI `$0318` paths are covered
-by the synthetic corpus. The 7 that remain fail honestly: 5 run away in init
-without ROMs (`runaway in init at $XXXX`) and 2 are BASIC tunes that install no
-vector at all.
+by the synthetic corpus. The 7 that remain fail honestly: 5 inits never return
+(`runaway in init at $XXXX: init never returned`) and 2 BASIC tunes install no
+vector at all. The non-returning inits are the next slice, not a ROM problem:
+they idle until their own handler fires (`Demolix` spins at `$9F89` on a flag
+its IRQ sets; `Cielos_Esfumados` pages both ROMs out, installs `$FFFE`/`$FFFA`
+and loops at `$08E4`), so their frame is a main-loop iteration plus interrupts
+— the v2/P-INT driver cadence, not one handler call per frame.
 
 ## Retired failure classes (history)
 

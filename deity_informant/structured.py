@@ -187,7 +187,15 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if n > _GUARD:
                 raise RuntimeError("runaway in %s at %04X" % (phase, pc))
 
-    run_entry(init, subtune, "init")
+    try:
+        run_entry(init, subtune, "init")
+    except RuntimeError as exc:
+        if play:
+            raise
+        raise RuntimeError(
+            "%s: init never returned; an interrupt-driven tune whose init idles"
+            " until its own handler fires needs the driver cadence (v2/P-INT)" % exc
+        ) from exc
     play = play or irq_entry(vm, img)
     prologue = [(r, v) for _c, r, v in vm.wlog]
     mem0 = bytes(vm.mem)
