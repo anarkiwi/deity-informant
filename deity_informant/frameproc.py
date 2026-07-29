@@ -30,6 +30,7 @@ def _reg_local(i):
 
 
 _ALL_REG_LOCALS = frozenset(_reg_local(i) for i in range(16))
+_SP = _REG_LOCAL[3]  # machine state: call/ret move it and stack bytes land through it
 _LOCAL_ORDER = {_reg_local(i): i for i in range(16)}
 
 
@@ -606,6 +607,7 @@ class _Info:
         self.must = {e: set() for e in self.order}
         self.labmap = {e: {} for e in self.order}
         self.own_labels = {e: set() for e in self.order}
+        self.call_labels = {e: set() for e in self.order}
         self.G = set()
         self.open_flow = False
         self.callable_ = {}
@@ -616,13 +618,14 @@ class _Info:
     def _scan(self):
         blocked = set()
         for e in self.order:
-            gotos = set()
-            self._scan_list(self.procs[e], self.own_labels[e], gotos, blocked)
+            gotos, calls = set(), set()
+            self._scan_list(self.procs[e], self.own_labels[e], gotos, blocked, calls)
             blocked |= {pc for pc in gotos if pc == e or pc not in self.own_labels[e]}
+            self.call_labels[e] = calls & self.own_labels[e]
         for e in self.order:
             self.callable_[e] = not self.open_flow and e not in blocked
 
-    def _scan_list(self, stmts, labels, gotos, blocked):
+    def _scan_list(self, stmts, labels, gotos, blocked, calls):
         for j, s in enumerate(stmts):
             k = s[0]
             nxt = stmts[j + 1][0] if j + 1 < len(stmts) else None
@@ -640,10 +643,12 @@ class _Info:
                 labels.add(s[1])
             elif k == "goto":
                 gotos.add(s[1])
+            elif k in ("call", "callb"):
+                calls.add(s[1])
             for x in _stmt_exprs(s):
                 self.G |= _locset(x) & _ALL_REG_LOCALS
             for b in _stmt_bodies(s):
-                self._scan_list(b, labels, gotos, blocked)
+                self._scan_list(b, labels, gotos, blocked, calls)
 
     def ret_live(self, e):
         out = set(self.returns[e])
@@ -763,9 +768,26 @@ class _Flow:
         self.labmap = seed
         return out
 
+    def _call_body(self, stmts):
+        """First index of an own-label some ``call`` enters, else None.
+
+        Such a body returns to its call sites and may be entered again, so its
+        exit carries the machine set: textual fall-through under-approximates."""
+        labs = self.info.call_labels.get(self.entry)
+        if not labs:
+            return None
+        for i, s in enumerate(stmts):
+            if s[0] == "label" and s[1] in labs:
+                return i
+        return None
+
     def seq(self, stmts, live):
         nxt = None
-        for s in reversed(stmts):
+        cb = self._call_body(stmts)
+        for j in range(len(stmts) - 1, -1, -1):
+            s = stmts[j]
+            if cb is not None and j >= cb:
+                live = live | self.info.G
             if self.liveout is not None:
                 self.liveout[id(s)] = set(live)
             live = self.stmt(s, live, nxt)
@@ -806,7 +828,7 @@ class _Flow:
         k = s[0]
         info = self.info
         if k == "asg":
-            if s[1] not in live and not _reads_vol(s[2]):
+            if s[1] != _SP and s[1] not in live and not _reads_vol(s[2]):
                 return live  # faint: a dead target's operand reads are not uses
             live = set(live)
             live.discard(s[1])
@@ -900,8 +922,12 @@ class _Prune(_Flow):
     def seq(self, stmts, live):
         keep = []
         nxt = None
-        for s in reversed(stmts):
-            if s[0] == "asg" and s[1] not in live and not _reads_vol(s[2]):
+        cb = self._call_body(stmts)
+        for j in range(len(stmts) - 1, -1, -1):
+            s = stmts[j]
+            if cb is not None and j >= cb:
+                live = live | self.info.G
+            if s[0] == "asg" and s[1] != _SP and s[1] not in live and not _reads_vol(s[2]):
                 self.changed = True
                 continue
             live = self.stmt(s, live, nxt)
@@ -1081,7 +1107,7 @@ def _inline_list(items, ctx):
         sub = ctx.enter(s)
         for b in _stmt_bodies(s):
             changed |= _inline_list(b, sub)
-        if s[0] == "asg" and not _reads_vol(s[2]):
+        if s[0] == "asg" and s[1] != _SP and not _reads_vol(s[2]):
             j = _find_use(items, i + 1, s[1], s[2], ctx)
             if j is not None:
                 items[j] = _subst_stmt(items[j], s[1], s[2])
