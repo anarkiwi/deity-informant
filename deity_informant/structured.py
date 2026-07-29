@@ -11,9 +11,10 @@ import hashlib
 import itertools
 from collections import namedtuple
 
+from . import c64
 from . import codec
 from . import expr as E
-from .lifter import MODE_LEN, OPS, lift
+from .lifter import MODE_LEN, OPS, STATUS_BITS, lift
 from .vm import PcodeVM
 
 Proof = namedtuple("Proof", "site kind status targets lemma")
@@ -98,6 +99,7 @@ class Evidence:
         mem0,
         reads=(),
         closure=None,
+        play=None,
     ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
@@ -110,6 +112,7 @@ class Evidence:
         self.prologue = prologue  # [(reg, val)] order-preserved, timing non-normative
         self.mem0 = mem0  # post-init snapshot: the play program's initial image
         self.closure = closure  # run-to-recurrence Closure record (None: scan off)
+        self.play = play  # resolved per-frame entry (the IRQ stub when play == 0)
 
 
 def _frame_digest(vm, cells):
@@ -125,24 +128,42 @@ def _frame_digest(vm, cells):
     return h.digest()
 
 
-def trace(mem, init, play, frames, subtune=0, cap=0):
-    """Run init concretely to the play boundary, then record play-phase
-    evidence over ``frames`` play calls from the post-init snapshot.
+def irq_entry(vm, img):
+    """Per-frame entry pc for a ``play == 0`` tune: the installed vector's stub.
 
-    ``subtune`` (0-based) is passed to init in A. The cycle counter (and so
-    the volatile-read model) is zeroed at the boundary. ``cap`` > 0 keeps
-    playing past ``frames`` until the frame-entry state recurs (or ``cap``
-    total frames), recording the run-to-recurrence ``Closure``.
+    Init has run, so the vector it wrote is discoverable; the dispatch stubs make
+    entering the handler an ordinary subroutine call (:func:`c64.irq_stubs`)."""
+    found = c64.installed_vector(vm.mem, vm.written, img or (0, 0))
+    if found is None:
+        raise DecompileError(
+            "play $0000 and init installed no interrupt vector"
+            " (CINV $0314 / hardware $FFFE / NMI $0318): no per-frame entry exists"
+        )
+    vec, kernal = found
+    if not c64.read_vector(vm.mem, vec):
+        raise DecompileError("interrupt vector $%04X installed as $0000" % vec)
+    try:
+        return c64.install_irq_entry(vm, vec, kernal, img or (0, 0))
+    except ValueError as e:
+        raise DecompileError(str(e)) from e
+
+
+def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
+    """Play-phase evidence over ``frames`` calls from the post-init snapshot.
+
+    ``subtune`` (0-based) is passed to init in A; the cycle counter is zeroed at
+    the boundary. ``cap`` > 0 plays past ``frames`` until the frame-entry state
+    recurs (or ``cap`` frames). ``play == 0`` drives :func:`irq_entry` over ``img``.
     """
     vm = _EvidenceVM(mem)
     vm.wlog = []
     pcs = {}
-    leaders = {init, play}
+    leaders = {init}
     targets = {}
     cache = {}
     reg = vm.reg
 
-    def run_entry(entry, acc=0):
+    def run_entry(entry, acc=0, phase="play"):
         start = reg[3]
         reg[0] = acc & 0xFF
         vm._push(0x00)
@@ -164,9 +185,10 @@ def trace(mem, init, play, frames, subtune=0, cap=0):
             pc = nxt
             n += 1
             if n > _GUARD:
-                raise RuntimeError("runaway at %04X" % pc)
+                raise RuntimeError("runaway in %s at %04X" % (phase, pc))
 
-    run_entry(init, subtune)
+    run_entry(init, subtune, "init")
+    play = play or irq_entry(vm, img)
     prologue = [(r, v) for _c, r, v in vm.wlog]
     mem0 = bytes(vm.mem)
     pcs.clear()
@@ -223,6 +245,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0):
         mem0,
         vm.reads,
         closure,
+        play,
     )
 
 
@@ -443,8 +466,27 @@ class _BlockBuilder:
             self.term = ("jsr", None if dyn is not None else ctrl[1], ret, dyn)
         elif kind == "rts":
             self.term = ("rts",)
+        elif kind == "rti":
+            self.term = ("jmpd", self._rti())
         else:
             raise DecompileError("control %r at %04X not modeled" % (kind, pc))
+
+    def _pull(self, off):
+        """Symbolic stack byte ``off`` above sp (the 6510 pull address)."""
+        a = E.op("INT_ADD", [self.sreg[3], E.konst(off, 1)], 1)
+        return self._slot(E.op("INT_OR", [E.op("INT_ZEXT", [a], 2), E.konst(0x100, 2)], 2))
+
+    def _rti(self):
+        """RTI as data flow: pull P into the flag registers, yield the pulled pc.
+
+        The terminator is then an ordinary dynamic goto, guarded by the observed
+        target set like every other computed transfer."""
+        p, lo, hi = self._pull(1), self._pull(2), self._pull(3)
+        for idx, sh in STATUS_BITS:
+            src = p if sh == 0 else E.op("INT_RIGHT", [p, E.konst(sh, 1)], 1)
+            self.sreg[idx] = E.op("INT_AND", [src, E.konst(1, 1)], 1)
+        self.sreg[3] = E.op("INT_ADD", [self.sreg[3], E.konst(3, 1)], 1)
+        return self._word(lo, hi)
 
 
 # ---- compile a Block to a python closure --------------------------------------
@@ -2536,7 +2578,9 @@ class Model:
         return blk
 
 
-def decompile(mem, init, play, frames, subtune=0, sound=False, close=False, close_cap=None):
+def decompile(
+    mem, init, play, frames, subtune=0, sound=False, close=False, close_cap=None, img=None
+):
     """Full-length evidence trace + committed, passed model: ``(model, evidence)``.
 
     ``subtune`` selects the tune, ``sound=True`` requires every guard certified.
@@ -2544,8 +2588,8 @@ def decompile(mem, init, play, frames, subtune=0, sound=False, close=False, clos
     ``close_cap``, default ``max(4 * frames, 60000)``); recurrence certifies.
     """
     cap = (close_cap or max(4 * frames, 60000)) if close else 0
-    ev = trace(bytearray(mem), init, play, frames, subtune, cap)
-    model = Model(ev.mem0, init, play, ev, subtune, sound).build_all()
+    ev = trace(bytearray(mem), init, play, frames, subtune, cap, img)
+    model = Model(ev.mem0, init, ev.play, ev, subtune, sound).build_all()
     try:
         codec.verify(model)  # flatten(structure(model)) == CFG, per procedure
     except codec.CodecError as e:

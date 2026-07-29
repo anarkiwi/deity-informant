@@ -525,6 +525,32 @@ def t_ram_output(rng):
     )
 
 
+IRQ_HANDLER = 0x1200  # handler-driven player: the installed interrupt handler
+IRQ_IMAGE = (_INIT_ORG, 0x1300)  # its load-image bounds (init + handler)
+
+
+def irq_image(vec=0x0314, kernal=True, reg=0x04, handler=IRQ_HANDLER):
+    """``(mem, init)`` of a handler-driven (``play == 0``) player installing ``vec``.
+
+    The handler bumps a counter into a SID register and returns through the
+    KERNAL epilogue when ``kernal``, else through its own A/X/Y save and RTI."""
+    h = Asm(handler)
+    if not kernal:
+        h.i("PHA").i("TXA").i("PHA").i("TYA").i("PHA")
+    h.i("INC", "abs", CNT).i("LDA", "abs", CNT).i("STA", "abs", SID + reg)
+    if kernal:
+        h.i("JMP", "abs", 0xEA31)
+    else:
+        h.i("PLA").i("TAY").i("PLA").i("TAX").i("PLA").i("RTI")
+    a = Asm(_INIT_ORG)
+    a.i("LDA", "imm", handler & 0xFF).i("STA", "abs", vec)
+    a.i("LDA", "imm", handler >> 8).i("STA", "abs", vec + 1).i("RTS")
+    mem = bytearray(0x10000)
+    for base, code in ((handler, h.assemble()), (_INIT_ORG, a.assemble())):
+        mem[base : base + len(code)] = code
+    return mem, _INIT_ORG
+
+
 TEMPLATES = (
     t_table_index,
     t_smc_operand,

@@ -37,8 +37,8 @@ def _init(p):
     return p.init_org if p.init is not None else 0x0F00
 
 
-def _verify(mem, init, play, frames, subtune=0):
-    model, ev = S.decompile(mem, init, play, frames, subtune)
+def _verify(mem, init, play, frames, subtune=0, img=None):
+    model, ev = S.decompile(mem, init, play, frames, subtune, img=img)
     assert model.prologue == ev.prologue
     w = S.Walker(model)
     assert w.run(frames) == ev.wlog
@@ -57,6 +57,15 @@ def _verify(mem, init, play, frames, subtune=0):
 def test_fuzz_walker_bit_exact(p):
     """Every idiom class replays bit-exact from the model and from parsed text."""
     _verify(_image(p), _init(p), p.org, p.frames)
+
+
+@pytest.mark.parametrize("kernal", [True, False], ids=["cinv", "hw"])
+def test_handler_driven_text_replays_bit_exact(kernal):
+    """A ``play == 0`` entry serializes: the dispatch stub, the vector goto and
+    the RTI's pulled-pc goto all round-trip and replay from the text alone."""
+    mem, init = G.irq_image(0x0314 if kernal else 0xFFFE, kernal)
+    _model, text = _verify(mem, init, 0, 8, img=G.IRQ_IMAGE)
+    assert "play $FF33" in text and "igoto" in text
 
 
 # ---- real tunes (full Songlengths duration; skip when the cache is absent) -----

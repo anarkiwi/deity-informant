@@ -1,4 +1,6 @@
-"""C64 environment helpers: power-on RAM, handler discovery, KERNAL stub."""
+"""C64 environment helpers: power-on RAM, handler discovery, IRQ dispatch stubs."""
+
+import pytest
 
 from deity_informant import PcodeVM, c64
 
@@ -49,8 +51,52 @@ def test_installed_handler_none_when_absent_or_zero():
     assert c64.installed_handler(mem, set(), (0x0300, 0x0400)) is None  # in image but $0000
 
 
+def test_installed_vector_reports_the_vector_not_its_target():
+    mem = bytearray(0x10000)
+    mem[0x0314], mem[0x0315] = 0x00, 0x20
+    assert c64.installed_vector(mem, {0x0315}, (0, 0)) == (0x0314, True)
+    mem[0xFFFE] = 0x00
+    assert c64.installed_vector(mem, {0xFFFE}, (0, 0)) == (0xFFFE, False)
+    assert c64.installed_vector(mem, set(), (0, 0)) is None
+
+
 def test_install_kernal_irq_stubs_writes_return_path():
+    epilogue = bytes((0x68, 0xA8, 0x68, 0xAA, 0x68, 0x40))  # PLA;TAY;PLA;TAX;PLA;RTI
     vm = PcodeVM(bytearray(0x10000))
     c64.install_kernal_irq_stubs(vm)
-    assert vm.mem[0xEA31:0xEA34] == bytes((0x4C, 0x81, 0xEA))  # JMP $EA81
-    assert vm.mem[0xEA81:0xEA87] == bytes((0x68, 0xA8, 0x68, 0xAA, 0x68, 0x40))  # PLA;TAY;...RTI
+    assert set(vm.mem[0xEA31:0xEA81]) == {0xEA}  # handler body: NOP through to $EA81
+    assert vm.mem[0xEA81:0xEA87] == epilogue
+    assert vm.mem[0xFEBC:0xFEC2] == epilogue  # NMI epilogue
+
+
+def test_install_irq_entry_dispatches_through_the_kernal_prologue():
+    vm = PcodeVM(bytearray(0x10000))
+    assert c64.install_irq_entry(vm, 0x0314, True) == c64.IRQ_DISPATCH
+    assert vm.mem[c64.IRQ_DISPATCH] == 0x78  # SEI, then the pushed IRQ frame
+    assert vm.mem[c64.IRQ_DISPATCH + 10 : c64.IRQ_DISPATCH + 13] == bytes((0x4C, 0x48, 0xFF))
+    assert vm.mem[c64.IRQ_RETURN] == 0x60  # the interrupted program: RTS
+    assert vm.mem[c64.KERNAL_IRQ : c64.KERNAL_IRQ + 8] == bytes(
+        (0x48, 0x8A, 0x48, 0x98, 0x48, 0x6C, 0x14, 0x03)
+    )
+
+
+def test_install_irq_entry_without_the_kernal_enters_the_vector_directly():
+    vm = PcodeVM(bytearray(0x10000))
+    c64.install_irq_entry(vm, 0xFFFE, False)
+    assert vm.mem[c64.IRQ_DISPATCH + 10 : c64.IRQ_DISPATCH + 13] == bytes((0x6C, 0xFE, 0xFF))
+    assert vm.mem[c64.KERNAL_IRQ] == 0  # no KERNAL A/X/Y save on this path
+
+
+def test_install_irq_entry_refuses_a_load_image_over_a_stub():
+    vm = PcodeVM(bytearray(0x10000))
+    with pytest.raises(ValueError, match=r"stub at \$FF33"):
+        c64.install_irq_entry(vm, 0x0314, True, (0xFF00, 0x10000))
+
+
+def test_psid_image_bounds_match_the_loaded_cells():
+    body = bytes(range(0x20))
+    data = b"PSID" + bytes(2) + b"\x00\x7c" + b"\x10\x00" + bytes(0x7C - 10) + body
+    mem, load, _init, _play = c64.load_psid(data)
+    lo, hi = c64.psid_image(data)
+    assert (lo, hi) == (load, load + len(body)) == (0x1000, 0x1020)
+    assert bytes(mem[lo:hi]) == body

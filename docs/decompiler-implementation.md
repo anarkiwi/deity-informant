@@ -289,6 +289,37 @@ implementation MUST:
   declaration and scheduler.
 - Gate C/L/S extend to this class unchanged (cycle-exact, faithful, specified).
 
+### 8.1 Landed: the per-frame handler entry (one call per frame)
+
+Handler discovery and decompilation are in, at the v1 cadence (one handler
+invocation per frame). The entry convention is **not** a flag any executor
+carries: after init, `structured.trace` installs the machine facts a hardware
+IRQ supplies as 6510 code in the RAM under the KERNAL (`c64.irq_stubs`) and
+makes `play` the entry stub's address, so every executor — evidence VM,
+`structured.Walker`, `sidprog.TreeWalker`, `frameval` — enters it as the same
+ordinary subroutine they already agree on:
+
+```
+ $FF33  SEI; push $FF41, then P=$20   the frame a 6510 IRQ pushes
+        JMP $FF48 / JMP (vector)      KERNAL CINV path, or the raw vector
+ $FF48  PHA TXA PHA TYA PHA           the KERNAL $FF48 A/X/Y save
+        JMP ($0314)                   re-read every frame: a swapped CINV is followed
+ $EA31  (NOP body) .. $EA81 PLA TAY PLA TAX PLA RTI     the KERNAL epilogue
+ $FF41  RTS                           the interrupted program: balances the frame
+```
+
+`RTI` is modeled without a new terminator kind: `_BlockBuilder` lowers it to
+data flow (pull P into the flag registers, sp += 3) plus a dynamic goto to the
+pulled pc, so it is guarded by the observed target set like every other
+computed transfer and every executor inherits it from the shared block IR.
+Refusals are explicit: no installed vector, a vector installed as `$0000`, or a
+load image that claims a stub address.
+
+Still v2: the driver cadence (multi-speed CIA/raster ticks, nesting, idle) and
+the interrupt-source state a handler polls — `$D019`/`$DC0D` read as the
+constant-0 sources of the per-frame driver, so a handler that dispatches on
+"who fired" sees nothing and plays silently.
+
 ## 9. Migration plan (prototype → complete)
 
 Ordered, each step gated and independently shippable:

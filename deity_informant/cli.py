@@ -103,11 +103,13 @@ def cmd_decompile(args):
         _songs, startsong = psid_songs(data)
         init = args.init if args.init is not None else init
         play = args.play if args.play is not None else play
+        img = c64.psid_image(data)
         if subtune is None:
             subtune = startsong - 1
     else:
-        mem, _n = _load(args.file, args.org)
+        mem, n = _load(args.file, args.org)
         init, play = args.init, args.play
+        img = (args.org, args.org + n)
     subtune = subtune or 0
     if args.frames is None:
         args.frames = _full_frames(data, subtune)
@@ -117,13 +119,10 @@ def cmd_decompile(args):
                 "(short evidence windows under-trace playroutines; use the full length)\n"
             )
             return 1
-    if not play:
-        sys.stderr.write("no play address (interrupt-driven tune?): pass --play\n")
-        return 1
     mem[0xD418] = 0x0F
     try:
         model, ev = structured.decompile(
-            mem, init, play, args.frames, subtune, args.sound, args.close, args.close_cap
+            mem, init, play, args.frames, subtune, args.sound, args.close, args.close_cap, img
         )
     except structured.DecompileError as e:
         sys.stderr.write("decompile failed: %s\n" % e)

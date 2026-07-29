@@ -254,7 +254,8 @@ def run_irq(vm, handler, cache, lifter):
     """Enter ``handler`` like a hardware IRQ; run until its RTI unwinds the frame.
 
     Pushes the CPU interrupt frame (return address then status), sets I, and runs
-    from ``handler`` until the balancing RTI climbs the stack back.
+    from ``handler`` until the balancing RTI climbs the stack back. The ROM-free
+    equivalent, as 6510 code the decompiler can model, is ``c64.irq_stubs``.
     """
     reg = vm.reg
     start = reg[3]
