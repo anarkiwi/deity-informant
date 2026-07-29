@@ -56,23 +56,6 @@ def _nn(note):
     return "%s%d" % (NOTES[note % 12], note // 12) if 0 <= note < 128 else "x%d" % note
 
 
-def _et_extent(mem, lo_base, hi_base, decl, cap=128):
-    """True ET extent of a split lo/hi table: scan past the declared size until the
-    chromatic run breaks. The verifier's capped-checker bounds notes to this."""
-    words = [mem[lo_base + i] | (mem[hi_base + i] << 8) for i in range(min(cap, 256))]
-    anchor_i = decl - 1
-    anchor = words[anchor_i]
-    ext = decl
-    for i in range(decl, len(words)):
-        want = min(anchor * 2 ** ((i - anchor_i) / 12), 65535)
-        got = words[i]
-        if got > 0 and abs(12 * np.log2(max(got, 1) / want)) < 0.5:
-            ext = i + 1
-        else:
-            break
-    return ext, words[:ext]
-
-
 def _wrap(items, per):
     """Group tokens into readable lines of `per`."""
     return ["  ".join(items[i : i + per]) for i in range(0, len(items), per)] or ["(empty)"]
@@ -213,33 +196,24 @@ def _dm_ops(song, slot):
     return ops
 
 
-def _dm_pitch(path):
-    """Recover the true ET extent of the DefMON note table (verifier under-sizes it).
+def _dm_pitch(model):
+    """(extent, words) for the DefMON note table, else the player's own ET table.
 
-    tracker._pitch trusts the declared table size; the real chromatic run in memory
-    runs further. Returns (extent, decl, words) so notes past extent can be capped."""
-    mem, _l, init, play = load_psid(Path(path).read_bytes())
-    mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, 300, 0)
+    ``tracker._pitch`` already extends a split table to its true memory extent
+    and refuses cells the play phase writes, so notes past ``extent`` cap to OOB
+    with no local scan and no byte search for the hi block (``Pitch.hi``)."""
     p = DT._pitch(model)  # pylint: disable=protected-access
     if p is None or p.endian != "split":
-        return 96, 96, [(PD.NOTE_PITCH_HI[i] << 8) | PD.NOTE_PITCH_LO[i] for i in range(96)]
-    m, lo, decl = bytes(model.mem0), int(p.base), len(p.words)
-    hb = bytes((int(w) >> 8) & 0xFF for w in p.words)[decl // 2 :]
-    idx = m.find(hb)
-    hi = idx - decl // 2 if idx >= 0 else lo
-    ext, words = _et_extent(m, lo, hi, decl)
-    return ext, decl, words
+        return 96, [(PD.NOTE_PITCH_HI[i] << 8) | PD.NOTE_PITCH_LO[i] for i in range(96)]
+    return len(p.words), [int(w) for w in p.words]
 
 
 def extract_dm(path):
     """DefMON parse -> raw Tune (pitch table capped to its true recovered extent)."""
     song = PD.DefmonSong.from_sid_bytes(Path(path).read_bytes())
-    ext, decl, words = _dm_pitch(path)
-    pitch = [
-        "extent %d notes (verifier decl=%d; extended by ET scan) -- notes >= %d cap to OOB"
-        % (ext, decl, ext)
-    ]
+    ext, words = _dm_pitch(_model_for(path, 300))  # 300f: a wider window shortens it
+
+    pitch = ["extent %d notes (tracker lift) -- notes >= %d cap to OOB" % (ext, ext)]
     pitch += _wrap(["%s=%d" % (_nn(i), w) for i, w in enumerate(words)], 8)
     orders = [
         ([(x, 0) for x in bytes(a) if x], 0)
@@ -493,12 +467,22 @@ def _program_bank(grid):
     return key_id, [prog[i][1] for i in range(len(prog))]
 
 
-def _grid_sid(path, nframes=2000):
-    """Player-output grid for a .sid via deity-informant's own VM (any player)."""
+def _model_for(path, nframes, subtune=0):
+    """Committed model for a .sid at ``nframes`` of evidence."""
     mem, _l, init, play = load_psid(Path(path).read_bytes())
     mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, nframes, 0)
+    model, _ev = S.decompile(mem, init, play, nframes, subtune)
+    return model
+
+
+def _grid_model(model, nframes):
+    """Player-output grid from a committed model via deity-informant's own VM."""
     return _voice_state(framelog.frames_from_walker(S.Walker(model), nframes))
+
+
+def _grid_sid(path, nframes=2000):
+    """Player-output grid for a .sid via deity-informant's own VM (any player)."""
+    return _grid_model(_model_for(path, nframes), nframes)
 
 
 def _grid_writes(nframes, writes):
@@ -569,11 +553,9 @@ def extract_di(path, subtune=0, nframes=2000):
 
     Instruments are keyed by their note-on identity (waveform, AD, SR); each one's
     program is lifted from its longest note as local-cycle phases."""
-    mem, _l, init, play = load_psid(Path(path).read_bytes())
-    mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, nframes, subtune)
+    model = _model_for(path, nframes, subtune)
     t = DT.lift(model)
-    grid = _voice_state(framelog.frames_from_walker(S.Walker(model), nframes))
+    grid = _grid_model(model, nframes)
     words = np.asarray(t.pitch.words) if t.pitch else np.asarray([])
     key_id, progs = _program_bank(grid)
     lanes_out = []

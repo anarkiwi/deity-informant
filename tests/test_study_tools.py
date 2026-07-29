@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from deity_informant import tracker
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools" / "study"))
 
 import uinventory  # noqa: E402  pylint: disable=wrong-import-position
@@ -214,11 +216,25 @@ def test_render_di_without_a_pitch_table_still_renders():
     assert "g3  [LOOKUP]" not in text and "gT  [TRIGGER]" in text
 
 
+def test_dm_pitch_uses_the_tracker_lift_without_a_local_scan(monkeypatch):
+    """The DefMON table comes from tracker._pitch, already at its true extent.
+
+    utune kept a byte search for the hi block and a second ET scan; ``Pitch.hi``
+    and ``tracker._extend_et`` supersede both."""
+    assert not hasattr(utune, "_et_extent")  # the duplicate scan is gone
+    monkeypatch.setattr(utune.DT, "_pitch", lambda m: None)
+    ext, words = utune._dm_pitch(object())
+    assert ext == 96 and len(words) == 96 and words[12] > words[0]  # player table fallback
+    w = np.round(268 * tracker._SEMI ** np.arange(120)).astype(np.int64)
+    p = tracker.Pitch(0x1578, w, 10, 268, "split", False, 0x1614)
+    monkeypatch.setattr(utune.DT, "_pitch", lambda m: p)
+    ext2, words2 = utune._dm_pitch(object())
+    assert ext2 == 120 and words2 == [int(x) for x in w]  # extent straight from the tracker
+
+
 @pytest.mark.parametrize("bad", [np.zeros(4, dtype=np.int64), np.arange(1, 5, dtype=np.int64)])
-def test_et_extent_rejects_non_chromatic_memory(bad):
-    """The ET extension stops immediately when memory is not a chromatic run."""
-    mem = bytearray(0x10000)
-    for i, w in enumerate(bad):
-        mem[0x1000 + i], mem[0x1100 + i] = int(w) & 0xFF, (int(w) >> 8) & 0xFF
-    ext, words = utune._et_extent(bytes(mem), 0x1000, 0x1100, 2)
-    assert ext == 2 and len(words) == 2
+def test_extend_et_rejects_non_chromatic_memory(bad):
+    """tracker._extend_et stops at once when memory is not a chromatic run."""
+    words = np.asarray([268, 284], dtype=np.int64)
+    got = tracker._extend_et(lambda i: int(bad[i]) if i < len(bad) else None, words)
+    assert len(got) == 2
