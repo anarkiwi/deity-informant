@@ -1,6 +1,6 @@
-"""frameprog emitter: annotation-free surface, state/inputs/data header,
-opcode-cell switches on state variables, and the prototype Gate FP check
-(projection of the verified model walker; the independent evaluator is M-FP2)."""
+"""frameprog dialect: annotation-free surface, state/inputs/data header,
+opcode-cell switches on state variables, the M-FP2 reader (canonical fixpoint
+``dumps(loads(t)) == t``) and the prototype Gate FP projection check."""
 
 import re
 from pathlib import Path
@@ -136,8 +136,22 @@ def test_fuzz_players_emit_annotation_free_and_project(p):
     model, _ev = S.decompile(mem, init, p.org, p.frames)
     text = frameprog.emit(model)
     assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
+    assert frameprog.dumps(frameprog.loads(text)) == text  # M-FP2 canonical fixpoint
     frames = F.frames_from_walker(S.Walker(model), p.frames)
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
+
+
+def test_canonical_fixpoint_and_header_identity():
+    """M-FP2: the text is readable and re-serialises byte-identically."""
+    model, _ev = _decl_player()
+    text = frameprog.emit(model)
+    src, prog = frameprog.program(model), frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+    assert (prog.play, prog.init, prog.subtune) == (src.play, src.init, src.subtune)
+    assert prog.prologue == src.prologue and prog.inputs == src.inputs
+    assert prog.symbols == src.symbols and prog.state == src.state
+    assert prog.data_decls == src.data_decls  # declarations round-trip exactly
+    assert prog.procs == src.procs  # statement trees, parameters and returns too
 
 
 def test_emission_deterministic():
@@ -154,11 +168,13 @@ def test_registers_render_as_locals():
     frameprog.lint(text)
 
 
+_LINT_DOC = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000(%s) {\n  zp_10 = %s\n  ret\n}\n"
+
+
 def test_lint_rejects_dangling_local():
-    good = "frameprog 0\nsub_1000(a) {\n  zp_10 = a\n  ret\n}\n"
-    frameprog.lint(good)
+    frameprog.lint(_LINT_DOC % ("a", "a"))
     with pytest.raises(ValueError, match="used before definition"):
-        frameprog.lint("frameprog 0\nsub_1000() {\n  zp_10 = (y + $01)\n  ret\n}\n")
+        frameprog.lint(_LINT_DOC % ("", "(y + $01)"))
 
 
 def _counter_loop_model():

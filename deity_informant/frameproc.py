@@ -1415,7 +1415,7 @@ class _Printer:
 
 # ---- driver ------------------------------------------------------------------------
 def procedures(trees, labels, view, dispatch, aliases, play):
-    """Text lines for every procedure under passes 1-3."""
+    """``(entry, params, rets, statements)`` per procedure under passes 1-3."""
     cell_aliases = dict(aliases or {})
     procs = []
     for entry, root in trees:
@@ -1435,7 +1435,12 @@ def procedures(trees, labels, view, dispatch, aliases, play):
         if not (pruned or inlined):
             break
     _forloops(info)
+    return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
+
+
+def render(procs):
+    """frameprog text lines for analysed (or parsed) procedures."""
     printer = _Printer()
-    for entry, stmts in procs:
-        printer.proc(entry, stmts, info.params[entry], info.rets[entry])
+    for entry, params, rets, stmts in procs:
+        printer.proc(entry, stmts, params, rets)
     return printer.out

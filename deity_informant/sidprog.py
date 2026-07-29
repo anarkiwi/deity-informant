@@ -1,8 +1,8 @@
 """sidprog: the canonical structured text for decompiled playroutines.
 
 ``emit`` renders a model as region-tree procedures whose nesting IS the flow
-(implicit fallthrough; labels only on goto targets); ``parse`` rebuilds the
-trees and ``TextModel.run`` walks them. Grammar: docs/sidprog-language.md.
+(implicit fallthrough; labels only on goto targets); ``parse`` reads them back
+through the shared grammar (``sidprog.lark``) and ``TextModel.run`` walks them.
 """
 
 from __future__ import annotations
@@ -12,75 +12,32 @@ import re
 from . import codec
 from . import datadecl
 from . import expr as E
+from . import grammar as G
 from . import procpass
 from . import structured as C
-from .render import _static_preds, sid_name
+from .grammar import SIDPROG_VERSION
+from .render import _static_preds
 
-SIDPROG_VERSION = 1  # 1: play-phase structured program (spec section 6)
+# the grammar layer owns the name/address bijection and the parsed region shape
+SidprogVersionError = G.SidprogVersionError
+_BIND_BASE = G.BIND_BASE
+_R = G.Region
+_kids = G.kids
+_rebuild = G.rebuild
+_map_term = G.map_term
+_addr_name = G.addr_name
+_name_addr = G.name_addr
+_reg_name = G.reg_name
+_reg_index = G.reg_index
+_req_name = G.req_name
+_check_alias = G.check_alias
 
-_BIND_BASE = 1 << 20  # tN bindings ride the uni namespace above any real slot
-_T_REF = re.compile(r"\bt(\d+)\b")
 _U_REF = re.compile(r"\bu(\d+)\b")
 _CYC_LINE = re.compile(r"@\d+")
-_CYC_FUSED = re.compile(r"@(\d+) (.+)$")
 
-
-class SidprogVersionError(ValueError):
-    """A document's ``sidprog <major>`` header is not this reader's major."""
-
-
-_REG_NAMES = {
-    0: "A",
-    1: "X",
-    2: "Y",
-    3: "SP",
-    8: "C",
-    9: "Z",
-    10: "I",
-    11: "D",
-    12: "B",
-    13: "V",
-    14: "N",
-}
-_NAME_REGS = {v: k for k, v in _REG_NAMES.items()}
 _CHAINS = {"INT_OR": "|", "INT_XOR": "^", "INT_AND": "&"}
 _BINS = {"INT_LEFT": "<<", "INT_RIGHT": ">>"}
 _CMPS = {"INT_EQUAL": "==", "INT_NOTEQUAL": "!=", "INT_LESS": "<", "INT_LESSEQUAL": "<="}
-
-
-def _reg_name(i):
-    return _REG_NAMES.get(i, "r%d" % i)
-
-
-def _reg_index(name):
-    if name in _NAME_REGS:
-        return _NAME_REGS[name]
-    if name.startswith("r") and name[1:].isdigit():
-        return int(name[1:])
-    raise ValueError("unknown register %r" % name)
-
-
-# ---- named machine state (bijection; render.sid_name is the normative table) ---
-_SID_NAMES = {a: sid_name(a) for a in range(0xD400, 0xD419)}
-_SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
-_CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
-
-
-def _addr_name(v):
-    """Canonical cell name for a 2-byte const address (total on 0..$FFFF)."""
-    return _SID_NAMES.get(v) or ("zp_%02X" % v if v < 0x100 else "m_%04X" % v)
-
-
-def _name_addr(name):
-    """Address named by a canonical cell name, else None (inverse of _addr_name)."""
-    a = _SID_ADDRS.get(name)
-    if a is None:
-        m = _CELL_NAME.match(name)
-        if m:
-            a = int(m.group(2), 16)
-            if a > 0xFFFF or _addr_name(a) != name:
-                return None
-    return a
 
 
 def _split_index(addr):
@@ -158,126 +115,9 @@ def fmt_expr(n):
     return "(%s)%s" % (body, _wsuf(sz))
 
 
-_TOKEN = re.compile(
-    r"\$[0-9A-Fa-f]+|u\d+|[A-Za-z]\w*(?:\.\w+)*|<<|>>|<=|==|!=|[-()\[\],:+|^&<=]|\S"
-)
-_ADDSUB = frozenset("+-")
-_CHAINOPS = {"|": "INT_OR", "^": "INT_XOR", "&": "INT_AND"}
-_BINOPS = {"<<": "INT_LEFT", ">>": "INT_RIGHT"}
-_CMPOPS = {"==": "INT_EQUAL", "!=": "INT_NOTEQUAL", "<": "INT_LESS", "<=": "INT_LESSEQUAL"}
-
-
-class _Toks:
-    def __init__(self, text):
-        self.toks = _TOKEN.findall(text)
-        self.i = 0
-
-    def peek(self):
-        return self.toks[self.i] if self.i < len(self.toks) else None
-
-    def next(self):
-        t = self.peek()
-        if t is None:
-            raise ValueError("unexpected end of expression")
-        self.i += 1
-        return t
-
-    def expect(self, tok):
-        t = self.next()
-        if t != tok:
-            raise ValueError("expected %r, got %r" % (tok, t))
-
-    def done(self):
-        return self.i >= len(self.toks)
-
-
-def _const_tok(t):
-    digits = t[1:]
-    return ("const", int(digits, 16), max(1, len(digits) // 2))
-
-
-def _suffix(ts):
-    if ts.peek() == ":":
-        ts.next()
-        return int(ts.next())
-    return 1
-
-
-def _chain(ts):
-    operands = [_atom(ts)]
-    ops = []
-    while ts.peek() != ")":
-        ops.append(ts.next())
-        operands.append(_atom(ts))
-    ts.expect(")")
-    sz = _suffix(ts)
-    if not ops:
-        raise ValueError("redundant parentheses")
-    if set(ops) <= _ADDSUB:
-        if ops == ["-"] and operands[1][0] != "const":
-            return ("op", "INT_SUB", (operands[0], operands[1]), sz)
-        kids = [operands[0]]
-        for op, o in zip(ops, operands[1:]):
-            if op == "-":
-                if o[0] != "const":
-                    return ("op", "INT_SUB", (operands[0], operands[1]), sz)
-                o = ("const", (-o[1]) & E.mask(sz), sz)
-            kids.append(o)
-        return ("op", "INT_ADD", tuple(kids), sz)
-    if len(ops) == 1 and ops[0] in _CMPOPS:
-        return ("op", _CMPOPS[ops[0]], (operands[0], operands[1]), sz)
-    if len(ops) == 1 and ops[0] in _BINOPS:
-        return ("op", _BINOPS[ops[0]], (operands[0], operands[1]), sz)
-    mns = {_CHAINOPS.get(op) for op in ops}
-    if len(mns) == 1 and None not in mns:
-        return ("op", mns.pop(), tuple(operands), sz)
-    raise ValueError("mixed operators in %r" % ops)
-
-
-def _atom(ts):
-    t = ts.next()
-    if t.startswith("$"):
-        return _const_tok(t)
-    if t == "(":
-        return _chain(ts)
-    if t == "mem":
-        ts.expect("[")
-        addr = _atom(ts)
-        ts.expect("]")
-        return ("mem", addr, 1)
-    if t in ("zext1", "zext2"):
-        ts.expect("(")
-        a = _atom(ts)
-        ts.expect(")")
-        return ("op", "INT_ZEXT", (a,), int(t[4:]))
-    if t == "carry":
-        ts.expect("(")
-        a = _atom(ts)
-        ts.expect(",")
-        b = _atom(ts)
-        ts.expect(")")
-        return ("op", "INT_CARRY", (a, b), 1)
-    if re.fullmatch(r"u\d+", t):
-        return ("uni", int(t[1:]), _suffix(ts))
-    addr = _name_addr(t)
-    if addr is not None:
-        if ts.peek() == "[":
-            ts.next()
-            r = _reg_index(ts.next())
-            ts.expect("]")
-            idx = ("op", "INT_ZEXT", (("reg", r),), 2)
-            return ("mem", ("op", "INT_ADD", (idx, ("const", addr, 2)), 2), 1)
-        return ("mem", ("const", addr, 2), 1)
-    return ("reg", _reg_index(t))
-
-
 def parse_expr(text):
     """Parse one expression; must consume ``text`` entirely."""
-    ts = _Toks(text)
-    n = _atom(ts)
-    if not ts.done():
-        raise ValueError("trailing tokens in %r" % text)
-    return n
+    return G.parse_expression(text)
 
 
 # ---- block payload lines (exact round trip) ------------------------------------
@@ -328,96 +168,7 @@ def _block_lines(blk):
     return out
 
 
-def _parse_two(text):
-    ts = _Toks(text)
-    ts.expect("(")
-    a = _atom(ts)
-    ts.expect(",")
-    b = _atom(ts)
-    ts.expect(")")
-    if not ts.done():
-        raise ValueError("trailing tokens in %r" % text)
-    return a, b
-
-
-def _parse_target(tok):
-    if tok.startswith("("):
-        return None, parse_expr(tok[1:-1])
-    return int(tok.lstrip("$"), 16), None
-
-
-def _parse_line(acc, line):
-    if line.startswith("@"):
-        if line.startswith(("@x(", "@xi(")):
-            kind = "iy" if line.startswith("@xi(") else "ax"
-            aux, idx = _parse_two(line[len("@xi") if kind == "iy" else len("@x") :])
-            acc.events.append(("pen", kind, aux, idx))
-        else:
-            acc.events.append(("cyc", int(line[1:])))
-        return
-    m = re.match(r"u(\d+) = (.*)$", line)
-    if m:
-        src = parse_expr(m.group(2))
-        if src[0] != "mem":
-            raise ValueError("load line without a memory source: %r" % line)
-        acc.events.append(("ld", int(m.group(1)), src[1]))
-        return
-    if line.startswith(("if ", "ifnot ")):
-        pol = 0 if line.startswith("ifnot ") else 1
-        body = line.split(" ", 1)[1]
-        cond, rest = body.rsplit(" goto ", 1)
-        if " else " in rest:
-            dst, ft = rest.split(" else ")
-            ft = int(ft.lstrip("$"), 16)
-        else:
-            dst, ft = rest, None
-        tgt, dyn = _parse_target(dst)
-        acc.term = ("br", pol, tgt, ft, parse_expr(cond), dyn)
-        return
-    if line.startswith("igoto "):
-        ptr, dyn = _parse_target(line[6:])
-        acc.term = ("jmpind", ptr, dyn)
-        return
-    if line.startswith("goto "):
-        tgt, dyn = _parse_target(line[5:])
-        acc.term = ("jmpd", dyn) if dyn is not None else ("goto", tgt)
-        return
-    if line.startswith("call "):
-        body, ret = line[5:].rsplit(" ret ", 1)
-        tgt, dyn = _parse_target(body)
-        acc.term = ("jsr", tgt, int(ret.lstrip("$"), 16), dyn)
-        return
-    if line == "ret":
-        acc.term = ("rts",)
-        return
-    name, rhs = line.split(" = ", 1)
-    name = name.strip()
-    if name in _NAME_REGS or (name.startswith("r") and name[1:].isdigit()):
-        acc.regs[_reg_index(name)] = parse_expr(rhs)
-        return
-    dst = parse_expr(name)
-    if dst[0] != "mem":
-        raise ValueError("store line without a memory target: %r" % line)
-    acc.events.append(("st", dst[1], parse_expr(rhs)))
-
-
 # ---- per-block common-subexpression bindings (textual only) --------------------
-def _kids(n):
-    if n[0] == "mem":
-        return (n[1],)
-    if n[0] == "op":
-        return n[2]
-    return ()
-
-
-def _rebuild(n, kids):
-    if n[0] == "mem":
-        return ("mem", kids[0], n[2])
-    if n[0] == "op":
-        return ("op", n[1], tuple(kids), n[3])
-    return n
-
-
 def _term_exprs(term):
     k = term[0]
     if k == "br":
@@ -445,19 +196,6 @@ def _roots(blk):
             out.append(blk.regs[i])
     out.extend(_term_exprs(blk.term))
     return out
-
-
-def _map_term(term, f):
-    k = term[0]
-    if k == "br":
-        return term[:4] + (f(term[4]), None if term[5] is None else f(term[5]))
-    if k == "jmpd":
-        return ("jmpd", f(term[1]))
-    if k == "jmpind" and term[2] is not None:
-        return ("jmpind", term[1], f(term[2]))
-    if k == "jsr" and term[3] is not None:
-        return ("jsr", term[1], term[2], f(term[3]))
-    return term
 
 
 def _rename(line):
@@ -840,82 +578,6 @@ def _data_lines(decls, mem0):
     return out, cov
 
 
-_DECL_HEAD = re.compile(r"(table|stream) (\S+)\[(\d+)\]( [^:]*)?:$")
-_TARGETS = re.compile(r"\$([0-9A-F]{4})\.\.\$([0-9A-F]{4})$")
-
-
-def _req_name(name):
-    addr = _name_addr(name)
-    if addr is None:
-        raise ValueError("not a canonical cell name: %r" % name)
-    return addr
-
-
-def _parse_decl(line):
-    m = _DECL_HEAD.match(line)
-    if not m:
-        raise ValueError("bad data declaration %r" % line)
-    d = {
-        "kind": m.group(1),
-        "base": _req_name(m.group(2)),
-        "size": int(m.group(3)),
-        "stride": 1,
-        "cobases": [],
-        "role": None,
-        "via": None,
-        "targets": None,
-        "cmp": [],
-        "dispatch": [],
-        "observed": False,
-        "data": b"",
-    }
-    toks = (m.group(4) or "").split()
-    j = 0
-    while j < len(toks):
-        t = toks[j]
-        if t == "stride":
-            d["stride"] = int(toks[j + 1])
-            j += 2
-        elif t.startswith("+"):
-            d["cobases"].append(_req_name(t[1:]))
-            j += 1
-        elif t in ("lo", "hi"):
-            d["role"] = (t, _req_name(toks[j + 1]))
-            j += 2
-        elif t == "via":
-            d["via"] = _req_name(toks[j + 1])
-            j += 2
-        elif t == "->":
-            tm = _TARGETS.match(toks[j + 1])
-            if not tm:
-                raise ValueError("bad target span %r" % toks[j + 1])
-            d["targets"] = (int(tm.group(1), 16), int(tm.group(2), 16))
-            j += 2
-        elif t in ("cmp", "dispatch"):
-            j += 1
-            vals = []
-            while j < len(toks) and toks[j].startswith("$"):
-                vals.append(int(toks[j][1:], 16))
-                j += 1
-            d[t] = vals
-        elif t == "observed":
-            d["observed"] = True
-            j += 1
-        else:
-            raise ValueError("unknown data attribute %r" % t)
-    return d
-
-
-_ALIAS_LINE = re.compile(r"alias ([A-Za-z]\w*) = (\S+)$")
-_RESERVED = re.compile(r"[ut]\d+$|r\d+$|mem$|carry$|zext[12]$|goto$|if$|ifnot$|loop$|unobserved$")
-
-
-def _check_alias(name):
-    if _name_addr(name) is not None or name in _NAME_REGS or _RESERVED.match(name):
-        raise ValueError("alias %r shadows a reserved name" % name)
-    return name
-
-
 def _symbol_lines(aliases):
     if not aliases:
         return []
@@ -925,25 +587,16 @@ def _symbol_lines(aliases):
     return out
 
 
-def _alias_res(aliases):
-    """``(apply, strip)`` body-line substitutions for the {cell: alias} table;
+def _alias_sub(aliases):
+    """Body-line cell-name substitution for the {cell: alias} table, else None;
     the table is the only mapping (strict bijection, checked here)."""
     if not aliases:
-        return None, None
-    fwd = {}
-    rev = {}
-    for cell, name in aliases.items():
-        _check_alias(name)
-        fwd[_addr_name(cell)] = name
-        rev[name] = _addr_name(cell)
-    if len(rev) != len(fwd):
+        return None
+    fwd = {_addr_name(cell): _check_alias(name) for cell, name in aliases.items()}
+    if len(set(fwd.values())) != len(fwd):
         raise ValueError("alias table is not a bijection")
-    fpat = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, fwd)))
-    rpat = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, rev)))
-    return (
-        lambda s: fpat.sub(lambda m: fwd[m.group(0)], s),
-        lambda s: rpat.sub(lambda m: rev[m.group(0)], s),
-    )
+    pat = re.compile(r"\b(?:%s)\b" % "|".join(map(re.escape, fwd)))
+    return lambda s: pat.sub(lambda m: fwd[m.group(0)], s)
 
 
 def _items(region):
@@ -1372,7 +1025,7 @@ def emit(model):
         w = _Writer(labels, set(model.dispatch_sets), view)
         for entry, root in trees:
             w.proc(entry, root)
-    to_alias, _strip = _alias_res(aliases)
+    to_alias = _alias_sub(aliases)
     out.extend(w.out if to_alias is None else map(to_alias, w.out))
     return "\n".join(out) + "\n"
 
@@ -1429,18 +1082,6 @@ def metrics(model):
 
 
 # ---- parsed model, linker, tree walker ------------------------------------------
-class _R:
-    """Parsed region node, duck-typing the structurer's Region (kind/a/b/c)."""
-
-    __slots__ = ("kind", "a", "b", "c")
-
-    def __init__(self, kind, a=None, b=None, c=None):
-        self.kind = kind
-        self.a = a
-        self.b = b
-        self.c = c
-
-
 class TextModel:
     """Parsed sidprog program: region-tree procedures over compiled block
     payloads. Also constructible from pc-keyed blocks (``emit`` restructures)."""
@@ -1737,346 +1378,17 @@ class TreeWalker:
         return idx
 
 
-# ---- parsing ----------------------------------------------------------------------
-class _Acc:
-    def __init__(self, label):
-        self.label = label
-        self.events = []
-        self.regs = [E.reg(i) for i in range(16)]
-        self.term = None
-        self.bind = {}
-
-    def empty(self):
-        return not (self.events or self.bind or self.term) and all(
-            r == ("reg", i) for i, r in enumerate(self.regs)
-        )
-
-
-def _t2u(line):
-    return _T_REF.sub(lambda m: "u%d" % (int(m.group(1)) + _BIND_BASE), line)
-
-
-def _expand(n, bind, memo):
-    stack = [n]
-    while stack:
-        x = stack[-1]
-        if id(x) in memo:
-            stack.pop()
-            continue
-        if x[0] == "uni" and x[1] >= _BIND_BASE:
-            memo[id(x)] = bind[x[1] - _BIND_BASE]
-            stack.pop()
-            continue
-        todo = [k for k in _kids(x) if id(k) not in memo]
-        if todo:
-            stack.extend(todo)
-            continue
-        stack.pop()
-        memo[id(x)] = _rebuild(x, [memo[id(k)] for k in _kids(x)])
-    return memo[id(n)]
-
-
-def _acc_block(acc):
-    memo = {}
-
-    def x(n):
-        return _expand(n, acc.bind, memo)
-
-    events = []
-    for ev in acc.events:
-        if ev[0] == "ld":
-            events.append(("ld", ev[1], x(ev[2])))
-        elif ev[0] == "st":
-            events.append(("st", x(ev[1]), x(ev[2])))
-        elif ev[0] == "pen":
-            events.append(("pen", ev[1], x(ev[2]), x(ev[3])))
-        else:
-            events.append(ev)
-    regs = [r if r == ("reg", i) else x(r) for i, r in enumerate(acc.regs)]
-    term = _map_term(acc.term if acc.term is not None else ("goto", None), x)
-    pc = acc.label if acc.label is not None else 0
-    return C.Block(pc, 0, [pc], events, term, regs)
-
-
-_LABEL = re.compile(r"\$([0-9A-Fa-f]{1,4}):$")
-_BINDING = re.compile(r"t(\d+) = (.*)$")
-_CASE = re.compile(r"case \$([0-9A-Fa-f]+): \{$")
-_CALL_BODY = re.compile(r"call \$([0-9A-Fa-f]{1,4}) ret \$[0-9A-Fa-f]{1,4} \{$")
-_IF_HDR = re.compile(r"(if|ifnot) @t(\d+) (.*) \{$")
-_IF_FRONT = re.compile(r"(if|ifnot) @t(\d+) (.*) unobserved \$([0-9A-Fa-f]{1,4})$")
-_SW_CODE = re.compile(r"switch code\[\$([0-9A-Fa-f]{4})\] \{$")
-_SW_CALL = re.compile(r"switch call \{ ?(.*?) ?\}$")
-_PC_LIST = re.compile(r"\$[0-9A-Fa-f]{1,4}( \$[0-9A-Fa-f]{1,4})*$")
-
-
-class _Parser:
-    """Stack-based reader of proc bodies into region trees + block payloads."""
-
-    def __init__(self):
-        self.labels = set()
-        self.procs = []
-        self.stack = []
-        self.cur = None
-
-    def top_items(self):
-        return self.stack[-1][-1]
-
-    def ensure(self):
-        if self.cur is None:
-            self.cur = _Acc(None)
-        return self.cur
-
-    def flush(self):
-        if self.cur is not None:
-            self.top_items().append(_R("block", _acc_block(self.cur), self.cur.label))
-            self.cur = None
-
-    def close(self):
-        self.flush()
-        f = self.stack.pop()
-        k = f[0]
-        if k == "proc":
-            self.procs.append((f[1], _R("seq", f[2])))
-        elif k == "loop":
-            self.top_items().append(_R("loop", _R("seq", f[1])))
-        elif k == "then":
-            self.top_items().append(_R("if", f[1], _R("seq", f[2]), None))
-        elif k == "else":
-            self.top_items().append(_R("if", f[1], f[2], _R("seq", f[3])))
-        elif k == "case":
-            self.stack[-1][-1].append((f[1], _R("seq", f[2])))
-        elif k == "callb":
-            self.top_items().append(_R("call", f[1], _R("seq", f[2])))
-        elif k == "swg":
-            self.top_items().append(_R("switch", ("goto", f[1]), []))
-        elif k == "swcl":
-            cases = [(lbl, _R("call", int(lbl[1:], 16))) for lbl in f[1]]
-            cases += [(lbl, _R("call", int(lbl[1:], 16), arm)) for lbl, arm in f[2]]
-            self.top_items().append(_R("switch", ("call", cases), []))
-        else:  # swc
-            self.top_items().append(_R("switch", ("code[$%04X]" % f[1], f[2]), [f[1]]))
-
-    def else_arm(self):
-        self.flush()
-        f = self.stack.pop()
-        if f[0] != "then":
-            raise ValueError("'} else {' outside an if region")
-        self.stack.append(["else", f[1], _R("seq", f[2]), []])
-
-    def structural(self, line):
-        """Handle one flow-structure line; False when it is block payload."""
-        if self.stack[-1][0] == "swcl" and line != "}" and not line.startswith("case "):
-            if not _PC_LIST.match(line):
-                raise ValueError("bad switch call target list %r" % line)
-            self.stack[-1][1].extend(line.split())
-            return True
-        if line == "}":
-            self.close()
-        elif line == "} else {":
-            self.else_arm()
-        elif line.startswith("} else unobserved $"):
-            self.else_arm()
-            self.top_items().append(_R("frontier", int(line[19:], 16)))
-            self.close()
-        elif line == "loop {":
-            self.flush()
-            self.stack.append(["loop", []])
-        elif line in ("continue", "break"):
-            self.flush()
-            self.top_items().append(_R("cont" if line == "continue" else "brk"))
-        elif line == "switch goto {":
-            self.flush()
-            self.stack.append(["swg", []])
-        elif line == "switch call {":
-            self.flush()
-            self.stack.append(["swcl", [], []])
-        else:
-            return self._structural2(line)
-        return True
-
-    def _structural2(self, line):
-        m = _LABEL.match(line)
-        if m:
-            self.flush()
-            pc = int(m.group(1), 16)
-            self.labels.add(pc)
-            self.cur = _Acc(pc)
-            return True
-        m = _SW_CODE.match(line)
-        if m:
-            if self.cur is not None and self.cur.empty():
-                self.cur = None  # a label line here names the switch subject
-            self.flush()
-            self.stack.append(["swc", int(m.group(1), 16), []])
-            return True
-        m = _SW_CALL.match(line)
-        if m:
-            self.flush()
-            tgts = [int(v.lstrip("$"), 16) for v in m.group(1).split()]
-            cases = [("$%04X" % t, _R("call", t)) for t in tgts]
-            self.top_items().append(_R("switch", ("call", cases), []))
-            return True
-        m = _CASE.match(line)
-        if m:
-            wide = self.stack[-1][0] in ("swg", "swcl")
-            self.stack.append(["case", ("$%04X" if wide else "$%02X") % int(m.group(1), 16), []])
-            return True
-        m = _IF_HDR.match(line)
-        if m:
-            acc = self.ensure()
-            pol = 1 if m.group(1) == "if" else 0
-            acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
-            self.flush()
-            self.stack.append(["then", int(m.group(2)), []])
-            return True
-        m = _IF_FRONT.match(line)
-        if m:
-            acc = self.ensure()
-            pol = 1 if m.group(1) == "if" else 0
-            acc.term = ("br", pol, None, None, parse_expr(_t2u(m.group(3))), None)
-            self.flush()
-            arm = _R("seq", [_R("frontier", int(m.group(4), 16))])
-            self.top_items().append(_R("if", int(m.group(2)), arm, None))
-            return True
-        if line.startswith("unobserved $"):
-            self.flush()
-            self.top_items().append(_R("frontier", int(line[12:], 16)))
-            return True
-        m = _CALL_BODY.match(line)
-        if m:
-            _parse_line(self.ensure(), line[: line.rindex(" {")])
-            self.flush()
-            self.stack.append(["callb", int(m.group(1), 16), []])
-            return True
-        if line.startswith("goto $"):
-            self.flush()
-            self.top_items().append(_R("goto", int(line[6:], 16)))
-            return True
-        return False
-
-    def terminator(self, line):
-        """Handle an explicit terminator line; False when it is not one."""
-        if line == "ret" or line.startswith(("if ", "ifnot ", "call ", "igoto ", "goto (")):
-            _parse_line(self.ensure(), _t2u(line))
-            self.flush()
-            return True
-        return False
-
-    def payload(self, line):
-        acc = self.ensure()
-        m = _BINDING.match(line)
-        if m:
-            node = parse_expr(_t2u(m.group(2)))
-            acc.bind[int(m.group(1))] = _expand(node, acc.bind, {})
-            return
-        m = _CYC_FUSED.match(line)
-        if m:
-            _parse_line(acc, "@" + m.group(1))
-            line = m.group(2)
-        _parse_line(acc, _t2u(line))
-
-
+# ---- parsing (grammar-driven: deity_informant/sidprog.lark) ----------------------
 def parse(text):
     """Parse canonical sidprog text into a tree-walkable ``TextModel``."""
-    lines = []
-    for raw in text.splitlines():
-        s = raw.split(";", 1)[0].strip()
-        if s:
-            lines.append(s)
-    head = lines.pop(0).split() if lines else []
-    if len(head) != 2 or head[0] != "sidprog" or not head[1].isdigit():
-        raise ValueError("not a sidprog document")
-    if int(head[1]) != SIDPROG_VERSION:
-        raise SidprogVersionError(
-            "sidprog major %s: this reader speaks major %d" % (head[1], SIDPROG_VERSION)
-        )
-    init = play = None
-    subtune = 0
-    mem0 = bytearray(0x10000)
-    dispatch_sets = {}
-    prologue = []
-    data_decls = []
-    symbols = {}
-    unalias = None
-    p = _Parser()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        i += 1
-        if p.stack:
-            if unalias is None:
-                unalias = _alias_res(symbols)[1] or str
-            line = unalias(line)
-            if not (p.structural(line) or p.terminator(line)):
-                p.payload(line)
-            continue
-        if line.startswith("play "):
-            play = int(line.split()[1].lstrip("$"), 16)
-        elif line.startswith("init "):
-            init = int(line.split()[1].lstrip("$"), 16)
-        elif line.startswith("subtune "):
-            subtune = int(line.split()[1])
-        elif line.startswith("dispatch "):
-            site, vals = line[9:].split(":")
-            dispatch_sets[int(site.strip().lstrip("$"), 16)] = {
-                int(v.lstrip("$"), 16) for v in vals.split()
-            }
-        elif line == "sid-init {":
-            while lines[i] != "}":
-                reg, val = lines[i].split("=")
-                prologue.append(
-                    (int(reg.strip().lstrip("$"), 16), int(val.strip().lstrip("$"), 16))
-                )
-                i += 1
-            i += 1
-        elif line == "image {":
-            while lines[i] != "}":
-                addr, bytestr = lines[i].split(":", 1)
-                a = int(addr.strip().lstrip("$"), 16)
-                run = bytestr.strip()
-                for k in range(0, len(run), 2):
-                    mem0[a + k // 2] = int(run[k : k + 2], 16)
-                i += 1
-            i += 1
-        elif line == "data {":
-            while lines[i] != "}":
-                if _DECL_HEAD.match(lines[i]):
-                    data_decls.append(_parse_decl(lines[i]))
-                else:
-                    data_decls[-1]["data"] += bytes.fromhex(lines[i])
-                i += 1
-            i += 1
-            for d in data_decls:
-                if len(d["data"]) != d["size"]:
-                    raise ValueError(
-                        "data region %s[%d] carries %d bytes"
-                        % (_addr_name(d["base"]), d["size"], len(d["data"]))
-                    )
-                mem0[d["base"] : d["base"] + d["size"]] = d["data"]
-        elif line == "symbols {":
-            while lines[i] != "}":
-                m = _ALIAS_LINE.match(lines[i])
-                if not m:
-                    raise ValueError("bad alias line %r" % lines[i])
-                cell = _req_name(m.group(2))
-                if cell in symbols:
-                    raise ValueError("duplicate alias for %s" % m.group(2))
-                symbols[cell] = _check_alias(m.group(1))
-                i += 1
-            i += 1
-        elif line.startswith("proc "):
-            p.stack.append(["proc", int(line.split()[1].lstrip("$"), 16), []])
-        else:
-            raise ValueError("unexpected top-level line %r" % line)
-    if p.stack or p.cur is not None:
-        raise ValueError("unbalanced braces at end of document")
-    if init is None or play is None:
+    doc = G.parse_document(text, "sidprog")
+    if doc.init is None or doc.play is None:
         raise ValueError("missing init/play header")
-    tm = TextModel(mem0, init, play, {}, dispatch_sets, subtune, prologue)
-    tm.procs = p.procs
-    tm.labels = p.labels
-    tm.data_decls = data_decls
-    tm.symbols = symbols
+    tm = TextModel(doc.mem0, doc.init, doc.play, {}, doc.dispatch_sets, doc.subtune, doc.prologue)
+    tm.procs = doc.procs
+    tm.labels = doc.labels
+    tm.data_decls = doc.data_decls
+    tm.symbols = doc.symbols
     return tm
 
 
