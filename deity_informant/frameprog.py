@@ -197,7 +197,7 @@ def dumps(prog):
     data_out, _cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
-    body.extend(frameproc.render(prog.procs))
+    body.extend(frameproc.render_lines(prog.procs))
     to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))

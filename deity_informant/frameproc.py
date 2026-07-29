@@ -1438,7 +1438,7 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
-def render(procs):
+def render_lines(procs):
     """frameprog text lines for analysed (or parsed) procedures."""
     printer = _Printer()
     for entry, params, rets, stmts in procs:
