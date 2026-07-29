@@ -156,10 +156,29 @@ is intrinsic, not a separate schema — DefMON's `_dedup_patterns`/
 
 ## 5. Next steps
 
-1. Extend the tracker's existing generators so `emit` can `Fire` downstream nodes,
-   and add `eval(graph)` over `pysidtracker.register_grid`; wire all four editor
-   players as Gate-U oracles (corpus GoatTracker ×2 + DefMON Automatas/Goto80
-   first; add SID-Wizard/JCH members).
+1. **Landed: the primitive and Gate U0** (`deity_informant/ugraph.py`).
+   `Generator(transfer, trigger, route)` with `DIV`/`LOOKUP`/`RAMP` plus a `RAW`
+   transfer, `trigger ∈ {frame, Event(i)}`, `route ∈ {Plane(reg), Fire, Raw}`;
+   `eval_graph` propagates triggers from the root frame clock and projects
+   through `framelog.canonical` — the ONE projection, as frameprog §3 requires,
+   never a second one. `gate_u0(graph, frames)` returns `framelog.diff`'s first
+   divergence or `None`, matching `tracker.gate_t`'s contract.
+
+   The `RAW` node is §4's guaranteed-complete floor made operational:
+   `from_frames(frames)` yields a graph that passes Gate U0 by construction at
+   0% interpreted coverage, and **refinement moves emits out of RAW** rather
+   than building coverage up from nothing. Because a refined plane is removed
+   from RAW, the two never contend for a register and the interleaving stays
+   well defined; order-preserved sections (ctrl/AD/SR) stay whole in RAW until a
+   generator can reproduce their order. `coverage()` reports the
+   interpreted/RAW split per plane, exactly as `gate_t` reports
+   interpreted/residual. Mutation-tested: a wrong `LOOKUP` value, a dropped
+   ordered write, and two swapped ordered writes are each detected.
+
+   Remaining for this step: wire the four editor players as Gate-U0 oracles
+   (the fuzz players and hand-built frames are covered; corpus GoatTracker ×2 +
+   DefMON Automatas/Goto80 next), and refine the note→freq LOOKUP from the
+   **declared** frameprog `data` tables rather than a scan of `mem0`.
 2. Recover the instrument-program nodes (typed wave/pulse/filter emit, `Raw`
    snapshot otherwise) from the control automaton (song-model items 4–6), seeded
    on `note-on` edges.

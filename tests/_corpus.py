@@ -149,7 +149,11 @@ CORPUS = [
 
 def corpus_params(hvsc):
     """``[(path, subtune, secs)]`` at full Songlengths duration for every cached
-    v1 (play != 0) corpus tune; empty when the cache or fetcher is absent."""
+    v1 (play != 0) corpus tune; empty when the cache or fetcher is absent.
+
+    Empty in CI by design: no job fetches ``Songlengths.md5``, so every test
+    parametrized off this skips there and the hermetic job stays hermetic. A
+    green CI is therefore NOT evidence about corpus-parametrized tests."""
     from pathlib import Path
 
     from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
