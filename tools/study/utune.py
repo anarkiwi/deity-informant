@@ -87,7 +87,8 @@ class Tune:
     pitch: list
     orders: list  # per voice: (list of (pattern_id, transpose), loop)
     patterns: dict  # id -> list of (note|str|None, progrefs tuple)
-    programs: dict  # id -> (signature, display)
+    programs: dict  # id -> (signature, display)  [parse refs; kept for optimize]
+    graph_programs: list = field(default_factory=list)  # from the output-state graph
 
 
 @dataclass
@@ -173,7 +174,8 @@ def extract_gt(path, subtune=0):
         ops = _gt_ops(song, it.wave_ptr)
         sig = (tuple(ops), it.attack_decay, it.sustain_release, it.pulse_ptr, it.filter_ptr)
         programs[k] = (sig, " ; ".join(ops))
-    return Tune(Path(path).stem, "GoatTracker", pitch, orders, patterns, programs)
+    gp = _program_bank(_grid_sid(path))[1]
+    return Tune(Path(path).stem, "GoatTracker", pitch, orders, patterns, programs, gp)
 
 
 _DM_PLANE = {
@@ -261,7 +263,8 @@ def extract_dm(path):
     programs = {
         slot: (tuple(_dm_ops(song, slot)), " ; ".join(_dm_ops(song, slot))) for slot in slots
     }
-    return Tune(Path(path).stem, "DefMON", pitch, orders, patterns, programs)
+    gp = _program_bank(_grid_sid(path))[1]
+    return Tune(Path(path).stem, "DefMON", pitch, orders, patterns, programs, gp)
 
 
 def extract_sw(path):
@@ -309,6 +312,7 @@ def extract_sw(path):
             it.vibrato,
         )
         programs[k] = (sig, disp)
+    gp = _program_bank(_grid_writes(2000, PW.iter_writes(swm, 2000)))[1]
     return Tune(
         Path(path).stem,
         "SID-Wizard",
@@ -316,6 +320,7 @@ def extract_sw(path):
         orders=orders,
         patterns=patterns,
         programs=programs,
+        graph_programs=gp,
     )
 
 
@@ -340,7 +345,8 @@ def render(tune, opt):
         "=" * 80,
         "",
         "OPTIMIZE (universal codec de-dup + transpose-factor)",
-        "  programs   %3d -> %3d canonical" % (len(tune.programs), len(opt.canon_prog)),
+        "  programs   %3d editor entries -> %3d graph programs (output-state cycles, deduped)"
+        % (len(tune.programs), len(tune.graph_programs)),
         "  patterns   %3d -> %3d exact-dup -> %3d transpose-factored"
         % (len(tune.patterns), opt.exact, len(opt.canon_pat)),
         "  (%d patterns were pitch-shifts of another -> 1 canonical + a transpose)"
@@ -377,13 +383,14 @@ def render(tune, opt):
             % (cidx, len(events)),
         ]
         lines += ["      " + row for row in _events_line(norm, prog_disp)]
-    for sig, cidx in sorted(opt.canon_prog.items(), key=lambda kv: kv[1]):
-        disp = next(d for _s, d in tune.programs.values() if _s == sig)
-        lines += [
-            "",
-            "p%d  [LOOKUP/RAMP] note_on + frame -> planes   ; canonical program" % cidx,
-            "      " + disp,
-        ]
+    lines += [
+        "",
+        "; ---- instrument programs (from the output-state graph: local CYCLE = arp/PWM,",
+        ";      RAMP = attack/sweep). %d note-on identities -> %d programs, no table decode."
+        % (len(tune.programs), len(tune.graph_programs)),
+    ]
+    for i, disp in enumerate(tune.graph_programs):
+        lines.append("p%-2d %s" % (i, disp))
     return "\n".join(lines)
 
 
@@ -474,6 +481,48 @@ def _program(st, start, dur):
     return "  ->  ".join(disp), tuple(sig)
 
 
+def _program_bank(grid):
+    """Instrument programs from the player-output graph: local cycles, deduped.
+
+    Universal (no per-format table decode): keyed by note-on identity (waveform,
+    AD, SR) so a format's cascade/table rows collapse to the real instruments that
+    play them; the program is shown from the longest note. Returns (key->id, [disp])."""
+    key_id, prog = {}, {}
+    for v in range(3):
+        b, st, ons = 7 * v, _vstates(grid, v), _onsets(grid, v)
+        for oi, f in enumerate(ons):
+            dur = min((ons[oi + 1] if oi + 1 < len(ons) else len(grid)) - f, 40)
+            iid = key_id.setdefault(
+                (grid[f][b + 4] & 0xF0, grid[f][b + 5], grid[f][b + 6]), len(key_id)
+            )
+            if iid not in prog or dur > prog[iid][0]:
+                prog[iid] = (dur, _program(st, f, dur)[0])
+    return key_id, [prog[i][1] for i in range(len(prog))]
+
+
+def _grid_sid(path, nframes=2000):
+    """Player-output grid for a .sid via deity-informant's own VM (any player)."""
+    mem, _l, init, play = load_psid(Path(path).read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, nframes, 0)
+    return _voice_state(framelog.frames_from_walker(S.Walker(model), nframes))
+
+
+def _grid_writes(nframes, writes):
+    """Player-output grid from (frame, reg, val) writes (SID-Wizard player)."""
+    byf = {}
+    for f, reg, val in writes:
+        byf.setdefault(f, []).append((reg, val))
+    st, out = [0] * 25, []
+    for f in range(nframes):
+        for reg, val in byf.get(f, ()):
+            r = reg - 0xD400 if reg >= 0xD400 else reg
+            if 0 <= r < 25:
+                st[r] = val
+        out.append(st.copy())
+    return out
+
+
 def _sync(grid):
     """Cross-voice trigger coincidence + dominant locked pitch bind per voice pair."""
     ons = [_onsets(grid, v) for v in range(3)]
@@ -533,23 +582,17 @@ def extract_di(path, subtune=0, nframes=2000):
     t = DT.lift(model)
     grid = _voice_state(framelog.frames_from_walker(S.Walker(model), nframes))
     words = np.asarray(t.pitch.words) if t.pitch else np.asarray([])
-    key_id, prog, lanes_out = {}, {}, []
+    key_id, progs = _program_bank(grid)
+    lanes_out = []
     for v in range(3):
         b, st, notes = 7 * v, _vstates(grid, v), []
-        ons = _onsets(grid, v)
-        for oi, f in enumerate(ons):
-            dur = min((ons[oi + 1] if oi + 1 < len(ons) else len(grid)) - f, 40)
-            iid = key_id.setdefault(
-                (grid[f][b + 4] & 0xF0, grid[f][b + 5], grid[f][b + 6]), len(key_id)
-            )
-            if iid not in prog or dur > prog[iid][0]:
-                prog[iid] = (dur, _program(st, f, dur)[0])
-            fq = min((st[k][2] for k in range(f, f + min(dur, 6)) if st[k][2] > 0), default=0)
+        for f in _onsets(grid, v):
+            iid = key_id[(grid[f][b + 4] & 0xF0, grid[f][b + 5], grid[f][b + 6])]
+            fq = min((st[k][2] for k in range(f, f + 6) if st[k][2] > 0), default=0)
             idx = int(np.argmin(np.abs(words - fq))) if len(words) and fq else -1
             notes.append((_nn(idx) if idx >= 0 else "?", iid))
         lanes_out.append(notes)
     trig, binds = _sync(grid)
-    progs = [prog[i][1] for i in range(len(prog))]
     return DiTune(Path(path).stem, t.pitch, t.tempo or 0, t.clocks, lanes_out, progs, trig, binds)
 
 
