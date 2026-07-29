@@ -1024,7 +1024,7 @@ def emit_mem(model):
         head.append("inputs { %s }" % " ".join(inputs))
     header_body, _cov = E.sidprog._data_lines(decls, model.mem0)
     header_body = state + header_body
-    to_alias, _strip = E.sidprog._alias_res(aliases)
+    to_alias = E.sidprog._alias_sub(aliases)
     if to_alias is not None:
         header_body = list(map(to_alias, header_body))
     procs = []

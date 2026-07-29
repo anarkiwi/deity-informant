@@ -2,7 +2,8 @@
 
 sidprog is the canonical structured text a decompiled playroutine serialises
 to — the ONE language of the decompiler (spec §6). It is *specified*: the
-grammar below is normative and `dumps`/`loads` (aliases of `emit`/`parse` in
+normative grammar is `deity_informant/sidprog.lark` ([grammar.md](grammar.md))
+and `dumps`/`loads` (aliases of `emit`/`parse` in
 `deity_informant.sidprog`) satisfy the canonical-fixpoint law
 `dumps(loads(dumps(m))) == dumps(m)`. The REGION STRUCTURE of the text *is*
 the control flow: a block that ends without an explicit terminator falls
@@ -52,137 +53,13 @@ Pre-release changes within major 1 (never released, no bump):
   "Evidence frontier" below). Earlier emitters wrote `goto`+label for every
   such edge and serialised statically materialized never-executed blocks.
 
-## Grammar (EBNF)
+## Grammar
 
-Lexical: `hex = "$" , hexdigit , { hexdigit }`. A hex literal's **width in
-bytes** is `max(1, digits / 2)` (`$05` is 1 byte, `$0005`/`$1234` are 2).
-`bytehex` is a 2-digit `hex`; `hexpair` is two bare hex digits. `ws` is
-spaces; a `;` begins a comment to end-of-line; blank lines are ignored.
-Indentation is insignificant (the emitter indents one space per nesting depth
-for readability only).
-
-```ebnf
-document    = version , { header } , image , [ data ] , [ symbols ] , { proc } ;
-version     = "sidprog" , ws , integer , newline ;
-
-header      = play | init | subtune | sidinit | dispatch ;
-play        = "play" , ws , hex , newline ;          (* required *)
-init        = "init" , ws , hex , newline ;          (* required; provenance *)
-subtune     = "subtune" , ws , integer , newline ;   (* optional; default 0 *)
-sidinit     = "sid-init" , ws , "{" , newline ,
-              { bytehex , ws , "=" , ws , bytehex , newline } ,
-              "}" , newline ;   (* init-phase SID register writes, in order *)
-dispatch    = "dispatch" , ws , hex , ":" , { ws , bytehex } , newline ;
-                                        (* observed opcode set for an SMC cell *)
-
-image       = "image" , ws , "{" , newline ,
-              { hex , ":" , ws , { hexpair } , newline } ,   (* <=16 bytes/row *)
-              "}" , newline ;   (* runs of non-zero cells, packed hex pairs *)
-
-data        = "data" , ws , "{" , newline , { decl } , "}" , newline ;
-decl        = ws , kind , ws , cellname , "[" , integer , "]" , { ws , attr } ,
-              ":" , newline , { ws , { hexpair } , newline } ;
-                              (* extent bytes inline, <=16 bytes/row *)
-kind        = "table" | "stream" ;
-attr        = "stride" , ws , integer          (* record size in bytes *)
-            | "+" , cellname                   (* co-base read inside the region *)
-            | ( "lo" | "hi" ) , ws , cellname  (* pointer-table pairing: partner *)
-            | "via" , ws , cellname            (* stream: the walking pair's lo cell *)
-            | "->" , ws , hex , ".." , hex     (* pointer-table entry value span *)
-            | "cmp" , { ws , bytehex }         (* stream byte-class compare alphabet *)
-            | "dispatch" , { ws , hex }        (* dispatch sites consuming the bytes *)
-            | "observed" ;                 (* extent observed, not certified *)
-
-symbols     = "symbols" , ws , "{" , newline ,
-              { ws , "alias" , ws , aliasname , ws , "=" , ws , cellname , newline } ,
-              "}" , newline ;
-aliasname   = letter , { letter | digit | "_" } ;   (* must not shadow any
-              canonical cell name, register, or uN/tN/rN slot *)
-
-proc        = "proc" , ws , hex , ws , "{" , newline , { item } , "}" , newline ;
-item        = block | ifregion | loop | opswitch | gotoswitch | callswitch
-            | flow ;
-loop        = "loop" , ws , "{" , newline , { item } , "}" , newline ;
-flow        = "goto" , ws , hex , newline            (* to a labelled block *)
-            | "unobserved" , ws , hex , newline      (* edge outside the observed program *)
-            | "continue" , newline                   (* back to loop header *)
-            | "break" , newline ;                    (* to loop exit *)
-
-block       = [ label , newline ] , { binding } , { stmt } , [ term , newline ] ;
-label       = hex , ":" ;   (* only on goto/dyn-branch targets + boundaries *)
-binding     = tref , ws , "=" , ws , expr , newline ;  (* per-block CSE binding *)
-
-stmt        = [ cyc , ws ] , ( pen | load | store | regset ) , newline
-            | cyc , newline ;             (* trailing cost before the terminator *)
-cyc         = "@" , integer ;                         (* cycle cost, >=1 *)
-pen         = ( "@x" | "@xi" ) , "(" , expr , "," , ws , expr , ")" ;
-                                        (* indexed / (ind),Y page-cross penalty *)
-load        = uni , ws , "=" , ws , memref ;
-store       = memref , ws , "=" , ws , expr ;
-regset      = reg , ws , "=" , ws , expr ;            (* out-expr != identity *)
-
-memref      = cellname                       (* mem[const:2], named *)
-            | cellname , "[" , reg , "]"     (* mem[zext2(reg) + const:2 >= $100] *)
-            | "mem[" , expr , "]" ;          (* any other address shape *)
-cellname    = sidname | "zp_" , 2 * hexdigit | "m_" , 4 * hexdigit ;
-sidname     = "sid.v" , ( "1" | "2" | "3" ) , "." , voicereg
-            | "filter." , filterreg ;
-voicereg    = "freq_lo" | "freq_hi" | "pw_lo" | "pw_hi" | "ctrl"
-            | "attack_decay" | "sustain_release" ;
-filterreg   = "cutoff_lo" | "cutoff_hi" | "resonance" | "mode_vol" ;
-
-term        = dynbranch | cgoto | igoto | call | ret ;
-                       (* an unconditional goto is never written: implicit *)
-dynbranch   = ( "if" | "ifnot" ) , ws , expr , ws , "goto" , ws ,
-              "(" , expr , ")" , ws , "else" , ws , hex ;
-                       (* escape hatch: SMC branch displacement; see below *)
-cgoto       = "goto" , ws , "(" , expr , ")" ;        (* computed jump *)
-igoto       = "igoto" , ws , ( hex | "(" , expr , ")" ) ;   (* jmp (indirect) *)
-call        = "call" , ws , target , ws , "ret" , ws , hex ;
-                       (* ret = the address the jsr pushes (real memory) *)
-ret         = "ret" ;
-target      = hex | "(" , expr , ")" ;   (* "(expr)" is a computed dynamic target *)
-
-ifregion    = ( "if" | "ifnot" ) , ws , "@t" , integer , ws , expr , ws ,
-              ( "{" , newline , { item } ,
-                ( [ "} else {" , newline , { item } ] , "}"
-                | "} else unobserved" , ws , hex )
-              | "unobserved" , ws , hex ) , newline ;
-              (* then-arm = branch taken; @tP = static taken-cycle penalty;
-                 the unobserved forms are pure-frontier arms *)
-gotoswitch  = "switch goto {" , newline ,
-              { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
-                "}" , newline } ,
-              "}" , newline ;   (* observed targets of the preceding cgoto/igoto *)
-callswitch  = "switch call { " , [ hex , { ws , hex } ] , " }" , newline
-            | "switch call {" , newline , [ hex , { ws , hex } , newline ] ,
-              { "case" , ws , hex , ":" , ws , "{" , newline , { item } ,
-                "}" , newline } ,
-              "}" , newline ;
-              (* observed targets of the preceding dynamic call; a case arm is
-                 that handler's tree inlined, bare targets are procs *)
-opswitch    = [ label , newline ] ,
-              "switch code[" , hex , "] {" , newline ,
-              { "case" , ws , bytehex , ":" , ws , "{" , newline , { item } ,
-                "}" , newline } ,
-              "}" , newline ;   (* opcode-SMC dispatch over a `dispatch` cell *)
-
-expr        = atom ;
-atom        = hex | reg | uni | tref | memref | zext | carry | group ;
-zext        = ( "zext1" | "zext2" ) , "(" , expr , ")" ;
-carry       = "carry" , "(" , expr , "," , ws , expr , ")" ;
-group       = "(" , chain , ")" , [ ":" , integer ] ; (* :n = result width *)
-chain       = addsub | binop | compare | logic ;
-addsub      = expr , { ( "+" | "-" ) , ws , expr } ;  (* INT_ADD / INT_SUB *)
-binop       = expr , ( "<<" | ">>" ) , ws , expr ;    (* INT_LEFT / INT_RIGHT *)
-compare     = expr , ( "==" | "!=" | "<" | "<=" ) , ws , expr ;  (* 1-byte *)
-logic       = expr , ( "|" | "^" | "&" ) , { same-op , expr } ;  (* N>=2 *)
-
-reg         = "A" | "X" | "Y" | "SP" | "C" | "Z" | "I" | "D" | "B" | "V" | "N"
-            | "r" , integer ;            (* r4-r7,r15: unnamed 6510 status slots *)
-uni         = "u" , integer , [ ":" , integer ] ;    (* per-block load temp *)
-tref        = "t" , integer ;            (* per-block CSE binding reference *)
-```
+The grammar is the file `deity_informant/sidprog.lark` — normative, LALR(1),
+and the ONE parser both this language and its frameprog dialect are read by
+(`deity_informant.grammar`). It is published in [grammar.md](grammar.md),
+generated from that file so the two cannot drift, and the lexical conventions
+(hex widths, comments, insignificant indentation) are stated there.
 
 Node/width correspondences (the `expr` algebra of `deity_informant.expr`):
 `INT_SUB`'s right operand is never a constant (a constant subtrahend
@@ -244,8 +121,8 @@ pointer-pair deref else `ctr_XXXX`, index cells to `idx_XXXX` — mechanical,
 address-embedding names, so collisions are impossible by construction and an
 alias may never shadow a canonical cell name, register or `uN`/`tN` slot
 (`parse` rejects it). Procedure bodies use the aliases; the alias table is
-the ONLY mapping and `parse` resolves body names through it before the
-expression grammar, so the memref bijection above is untouched. This table is
+the ONLY mapping; the grammar's name resolution consults it ahead of the
+canonical cell table, so the memref bijection above is untouched. This table is
 also the hook for a future user-supplied symbol map.
 
 ## Structure semantics

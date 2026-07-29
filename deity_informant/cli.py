@@ -234,9 +234,7 @@ def main(argv=None):
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
     p.add_argument("--structured", action="store_true", help="emit the readable structured view")
-    p.add_argument(
-        "--frameprog", action="store_true", help="emit the frame-level dialect (emit-only)"
-    )
+    p.add_argument("--frameprog", action="store_true", help="emit the frame-level dialect")
     p.add_argument(
         "--frames",
         type=int,

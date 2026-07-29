@@ -1,6 +1,6 @@
-"""frameprog emitter: annotation-free surface, state/inputs/data header,
-opcode-cell switches on state variables, and the prototype Gate FP check
-(projection of the verified model walker; the independent evaluator is M-FP2)."""
+"""frameprog dialect: annotation-free surface, state/inputs/data header,
+opcode-cell switches on state variables, the M-FP2 reader (canonical fixpoint
+``dumps(loads(t)) == t``) and the prototype Gate FP projection check."""
 
 import re
 from pathlib import Path
@@ -70,6 +70,7 @@ def test_if_header_without_taken_penalty():
     }
     text = frameprog.emit(_model(blocks))
     assert "if (a == $01) unobserved $2000" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert "sub_1000(a) {" in text  # the tested register is a live-in parameter
     assert "@t" not in text
 
@@ -82,6 +83,7 @@ def test_opcode_cell_renders_as_state_variable_switch():
     text = frameprog.emit(_model(blocks, dispatch={0x1000: {0xA9, 0xEA}}))
     assert "switch m_1000 {" in text and "code[" not in text
     assert "case $A9: {" in text and "case $EA: {" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert " m_1000: u8 observed $A9 $EA" in text
 
 
@@ -117,6 +119,7 @@ def test_declared_tables_and_aliases_carry_over():
     assert "table m_1400[4]:" in text  # datadecl content reused verbatim
     assert "table m_1480[8] stride 2 +m_1481:" in text
     assert "alias ptr_0060_lo = zp_60" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
     assert " ptr_0060_lo: u8" in text and " zp_60: u8" not in text
     assert "ptr_0060_lo = " in text and "zp_60 = " not in text
     assert " m_1400" not in text.split("data {")[0]  # table cells are not state
@@ -136,8 +139,42 @@ def test_fuzz_players_emit_annotation_free_and_project(p):
     model, _ev = S.decompile(mem, init, p.org, p.frames)
     text = frameprog.emit(model)
     assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
+    assert frameprog.dumps(frameprog.loads(text)) == text  # M-FP2 canonical fixpoint
     frames = F.frames_from_walker(S.Walker(model), p.frames)
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
+
+
+def test_dynamic_flow_constructs_round_trip():
+    """Computed jump/call surfaces: switch goto/call, bare targets, igoto."""
+    a = E.reg(0)
+    blocks = {
+        (0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("jmpd", a), _regs()),
+        (0x2000, 0x20): Block(0x2000, 0x20, [0x2000], [], ("jsr", None, 0x2002, a), _regs()),
+        (0x2003, 0x4C): Block(0x2003, 0x4C, [0x2003], [], ("jmpind", 0x3000, None), _regs()),
+        (0x2100, 0x60): Block(0x2100, 0x60, [0x2100], [], ("rts",), _regs()),
+        (0x2200, 0x60): Block(0x2200, 0x60, [0x2200], [], ("rts",), _regs()),
+    }
+    mem0 = bytearray(0x10000)
+    mem0[0x3000], mem0[0x3001] = 0x00, 0x21
+    dyn = {0x1000: {0x2000}, 0x2000: {0x2100, 0x2200}}
+    text = frameprog.emit(sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {}, dyn=dyn))
+    for frag in ("goto (a)", "switch goto {", "switch call {", "\n    $2100\n", "igoto $3000"):
+        assert frag in text, frag
+    assert "call (a) ret $2002" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_canonical_fixpoint_and_header_identity():
+    """M-FP2: the text is readable and re-serialises byte-identically."""
+    model, _ev = _decl_player()
+    text = frameprog.emit(model)
+    src, prog = frameprog.program(model), frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+    assert (prog.play, prog.init, prog.subtune) == (src.play, src.init, src.subtune)
+    assert prog.prologue == src.prologue and prog.inputs == src.inputs
+    assert prog.symbols == src.symbols and prog.state == src.state
+    assert prog.data_decls == src.data_decls  # declarations round-trip exactly
+    assert prog.procs == src.procs  # statement trees, parameters and returns too
 
 
 def test_emission_deterministic():
@@ -154,11 +191,13 @@ def test_registers_render_as_locals():
     frameprog.lint(text)
 
 
+_LINT_DOC = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000(%s) {\n  zp_10 = %s\n  ret\n}\n"
+
+
 def test_lint_rejects_dangling_local():
-    good = "frameprog 0\nsub_1000(a) {\n  zp_10 = a\n  ret\n}\n"
-    frameprog.lint(good)
+    frameprog.lint(_LINT_DOC % ("a", "a"))
     with pytest.raises(ValueError, match="used before definition"):
-        frameprog.lint("frameprog 0\nsub_1000() {\n  zp_10 = (y + $01)\n  ret\n}\n")
+        frameprog.lint(_LINT_DOC % ("", "(y + $01)"))
 
 
 def _counter_loop_model():
@@ -189,6 +228,7 @@ def test_counter_loop_renders_as_for_range():
     text = frameprog.emit(_counter_loop_model())
     assert "for x in $02..$00 {" in text
     assert "m_1500[x] = $01" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 def test_parameter_and_return_inference():
@@ -210,6 +250,7 @@ def test_parameter_and_return_inference():
     assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
     assert "zp_FB = a" in text
     frameprog.lint(text)
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 def _commando():

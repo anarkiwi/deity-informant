@@ -141,6 +141,14 @@ recorded in the build report.
 
 ## 3. Relationship to sidprog
 
+- frameprog is a **dialect of the sidprog language**, not a second language:
+  both are defined by the one grammar `deity_informant/sidprog.lark`
+  ([grammar.md](grammar.md)) and read by the one parser
+  (`deity_informant.grammar`). The dialect delta is expressed in the grammar
+  itself — the cycle-annotation productions (`CYC`, `CYCT`, `PENTAG`,
+  `code[...]` switch subjects) are absent from the frameprog item alphabet,
+  and `state { }`/`inputs { }`, named locals, procedure calls and `for` ranges
+  are added; every shared construct is one production used by both.
 - sidprog is and remains the cycle-exact ground truth and the deliverable of
   the decompiler; frameprog replaces nothing and relaxes nothing below it.
 - frameprog is **generated from the committed model** (post commit-phase,
@@ -256,12 +264,14 @@ HVSC absent (decompiler-implementation.md §1, §7).
   Gate: FP after translation and after each rung; declared-input set ==
   `iota` domain; dead-store proofs recorded; the play-time code-copy
   refusal exercised synthetically. Landed toward M-FP2: the procedural
-  surface (`deity_informant/frameproc.py`, emit-only): registers and
-  temporaries lift to named locals, procedure parameters/returns are
-  inferred from interprocedural register liveness (`x = sub_XXXX(a)`),
-  counter loops render as `for x in $02..$00` ranges; gated by emission
-  determinism and a mechanical defined-before-use local lint in the
-  emitter.
+  surface (`deity_informant/frameproc.py`): registers and temporaries lift to
+  named locals, procedure parameters/returns are inferred from
+  interprocedural register liveness (`x = sub_XXXX(a)`), counter loops render
+  as `for x in $02..$00` ranges; and the text artifact itself — published
+  grammar, versioned header, `frameprog.parse`/`loads` and the canonical
+  fixpoint `dumps(loads(t)) == t` property-tested over the fuzz corpus, with
+  the defined-before-use local check now running over the parsed statement
+  trees. Outstanding for M-FP2: the reference evaluator and Gate FP.
 - **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
   refusal exercised synthetically.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3

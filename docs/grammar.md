@@ -1,0 +1,207 @@
+# The sidprog grammar (generated)
+
+`deity_informant/sidprog.lark` is the ONE grammar of the decompiler's text
+layers and the normative definition of both dialects. It is parsed LALR(1) by
+`deity_informant.grammar`, the only reader either layer has. The document
+header selects the dialect:
+
+- `sidprog <major>` — the cycle-exact language ([sidprog-language.md](sidprog-language.md)).
+- `frameprog <major>` — the same language with the cycle-annotation
+  productions removed (`CYC`, `CYCT`, `PENTAG`, `code[...]` switch subjects)
+  and the frame-level surface added: `state { }` / `inputs { }` header
+  sections, named locals, procedure calls with inferred parameters and
+  returns, and `for` ranges ([frameprog.md](frameprog.md)).
+
+Everything else — expressions, memrefs, `data { }`/`symbols { }`, loops,
+switches, case arms, flow items — is shared: lark templates parameterise the
+region productions over the two item alphabets (`sitem`, `fitem`), so a
+construct cannot drift between the layers. A block is a run of payload lines
+plus the closers that end it (`ret`, a computed jump, an `if` region, a call
+body, a flow item), so the nesting carries the flow with no lookahead beyond
+LALR(1).
+
+Lexical: a `HEX` literal's **width in bytes** is `max(1, digits / 2)` (`$05`
+is one byte, `$0005`/`$1234` two); `HEXBYTES` rows are packed uppercase byte
+pairs; `;` starts a comment to end-of-line and blank lines are insignificant
+(both are absorbed by the `_NL` terminal); indentation is insignificant (the
+emitters indent one space per nesting depth for readability only).
+
+Reserved words are exactly the grammar's literal identifier terminals
+(`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
+canonical cell name, register or `uN`/`tN`/`rN` slot.
+
+The block below is generated from the grammar file. `tests/test_grammar.py`
+fails when it drifts; regenerate with
+`SYNC_GRAMMAR_DOC=1 pytest tests/test_grammar.py`.
+
+<!-- BEGIN GENERATED GRAMMAR: deity_informant/sidprog.lark -->
+```lark
+// One grammar, two dialects. The document header selects the dialect:
+//   sidprog N   -- the cycle-exact language (docs/sidprog-language.md)
+//   frameprog N -- the same language minus the cycle-annotation productions
+//                  (CYC/CYCT/PENTAG, code[] dispatch subjects), plus the
+//                  state/inputs header, named locals, procedure calls and
+//                  for-ranges (docs/frameprog.md)
+// Everything else -- expressions, memrefs, data/symbols sections, loops,
+// switches, flow items -- is shared. Parsed LALR(1); templates parameterise
+// the shared region productions over the two item alphabets.
+
+start: sidprog_doc
+     | frameprog_doc
+
+sidprog_doc: sphead _sheader* image_sec? data_sec? symbols_sec? proc*
+frameprog_doc: fphead _fheader* state_sec? data_sec? symbols_sec? sub*
+sphead: "sidprog" INT _NL
+fphead: "frameprog" INT _NL
+
+_sheader: play | init | subtune | sidinit | dispatch_set
+_fheader: play | init | subtune | sidinit | inputs_sec
+
+play: "play" HEX _NL
+init: "init" HEX _NL
+subtune: "subtune" INT _NL
+sidinit: _SIDINIT "{" _NL sidwrite* "}" _NL
+sidwrite: HEX "=" HEX _NL
+dispatch_set: "dispatch" HEX ":" HEX* _NL
+inputs_sec: "inputs" "{" NAME* "}" _NL
+
+// ---- image / data / symbols / state sections ---------------------------------
+image_sec: "image" "{" _NL imgrow* "}" _NL
+imgrow: HEX ":" HEXBYTES _NL
+
+data_sec: "data" "{" _NL decl* "}" _NL
+decl: kind NAME "[" INT "]" attr* ":" _NL datarow*
+datarow: HEXBYTES _NL
+kind: "table" -> k_table
+    | "stream" -> k_stream
+attr: "stride" INT      -> at_stride
+    | "+" NAME          -> at_cobase
+    | "lo" NAME         -> at_lo
+    | "hi" NAME         -> at_hi
+    | "via" NAME        -> at_via
+    | "->" HEX ".." HEX -> at_targets
+    | "cmp" HEX*        -> at_cmp
+    | "dispatch" HEX*   -> at_dispatch
+    | "observed"        -> at_observed
+
+symbols_sec: "symbols" "{" _NL aliasdef* "}" _NL
+aliasdef: "alias" NAME "=" NAME _NL
+
+state_sec: "state" "{" _NL statedef* "}" _NL
+statedef: NAME ":" NAME [array] [statobs] _NL
+array: "[" "]"
+statobs: "observed" HEX*
+
+// ---- procedures ----------------------------------------------------------------
+proc: "proc" HEX "{" _NL sitem* "}" _NL
+sub: NAME "(" params ")" [rets] "{" _NL fitem* "}" _NL
+params: (NAME ("," NAME)*)?
+rets: "->" NAME ("," NAME)*
+
+?sitem: sblock | loop{sitem} | swgoto{sitem} | swcall{sitem} | opsw_code
+?fitem: fblock | loop{fitem} | swgoto{fitem} | swcall{fitem} | opsw_cell | forloop
+
+// ---- shared region productions (parameterised over the item alphabet) ----------
+loop{item}: "loop" "{" _NL item* "}" _NL
+case{item}: "case" HEX ":" "{" _NL item* "}" _NL
+swgoto{item}: "switch" "goto" "{" _NL case{item}* "}" _NL
+swcall{item}: "switch" "call" "{" HEX* "}" _NL -> swcall_flat
+            | "switch" "call" "{" _NL [pclist] case{item}* "}" _NL -> swcall_deep
+pclist: HEX+ _NL
+callstmt{item}: "call" target "ret" HEX _NL -> call_flat
+              | "call" target "ret" HEX "{" _NL item* "}" _NL -> call_deep
+selse{item}: "}" _NL -> els_none
+           | "}" "else" "{" _NL item* "}" _NL -> els_body
+           | "}" "else" "unobserved" HEX _NL -> els_unobs
+
+opsw_code: [label] "switch" "code" "[" HEX "]" "{" _NL case{sitem}* "}" _NL
+opsw_cell: [label] "switch" NAME "{" _NL case{fitem}* "}" _NL
+forloop: "for" NAME "in" HEX ".." HEX "{" _NL fitem* "}" _NL
+
+label: HEX ":" _NL
+target: HEX -> tgt_static
+      | "(" expr ")" -> tgt_dyn
+
+// ---- blocks: payload lines plus the closers that end them ----------------------
+sblock: label _sbody?
+      | _sbody
+_sbody: sline+ _scloser*
+      | _scloser+
+sline: [CYC] pen _NL -> s_pen
+     | [CYC] asg _NL -> s_asg
+     | CYC _NL -> s_cyc
+pen: PENTAG "(" expr "," expr ")"
+
+fblock: label _fbody?
+      | _fbody
+_fbody: fline+ _fcloser*
+      | _fcloser+
+fline: asg _NL -> f_asg
+      | pcall _NL -> f_pcall_void
+      | lvalue ("," NAME)* "=" pcall _NL -> f_pcall_ret
+pcall: NAME "(" (expr ("," expr)*)? ")"
+
+_scloser: dynbr | cgoto | igoto | callstmt{sitem} | retline | sif | flowline
+_fcloser: dynbr | cgoto | igoto | callstmt{fitem} | fretline | fif | flowline
+
+sif: ifw CYCT expr "{" _NL sitem* selse{sitem} -> sif_body
+   | ifw CYCT expr "unobserved" HEX _NL -> sif_front
+fif: ifw expr "{" _NL fitem* selse{fitem} -> fif_body
+   | ifw expr "unobserved" HEX _NL -> fif_front
+
+dynbr: ifw expr "goto" "(" expr ")" "else" HEX _NL
+cgoto: "goto" "(" expr ")" _NL
+igoto: "igoto" HEX _NL -> igoto_static
+     | "igoto" "(" expr ")" _NL -> igoto_dyn
+retline: "ret" _NL
+fretline: "ret" (NAME ("," NAME)*)? _NL
+flowline: "goto" HEX _NL -> fl_goto
+        | "unobserved" HEX _NL -> fl_unobs
+        | "continue" _NL -> fl_cont
+        | "break" _NL -> fl_brk
+
+ifw: "if" -> w_if
+   | "ifnot" -> w_ifnot
+
+// ---- statements and expressions (shared) ---------------------------------------
+asg: lvalue "=" expr
+lvalue: NAME -> lv_name
+      | NAME "[" NAME "]" -> lv_index
+      | "mem" "[" expr "]" -> lv_mem
+
+?expr: HEX -> e_hex
+     | NAME [wsuf] -> e_name
+     | NAME "[" NAME "]" -> e_index
+     | "mem" "[" expr "]" -> e_mem
+     | zextw "(" expr ")" -> e_zext
+     | "carry" "(" expr "," expr ")" -> e_carry
+     | "(" chain ")" [wsuf] -> e_group
+wsuf: ":" INT
+chain: expr (op expr)+
+zextw: "zext1" -> z1
+     | "zext2" -> z2
+op: "+" -> o_add
+  | "-" -> o_sub
+  | "<<" -> o_shl
+  | ">>" -> o_shr
+  | "==" -> o_eq
+  | "!=" -> o_ne
+  | "<=" -> o_le
+  | "<" -> o_lt
+  | "|" -> o_or
+  | "^" -> o_xor
+  | "&" -> o_and
+
+HEX: /\$[0-9A-Fa-f]+/
+HEXBYTES: /[0-9A-F]+/
+INT: /\d+/
+NAME: /[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_0-9]+)*/
+CYC: /@\d+/
+CYCT: /@t\d+/
+PENTAG: /@xi?/
+_SIDINIT.5: "sid-init"
+_NL: /(?:;[^\n]*)?\r?\n(?:[ \t]*(?:;[^\n]*)?\r?\n)*/
+
+%ignore /[ \t]+/
+```
+<!-- END GENERATED GRAMMAR -->

@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-dependencies = ["jennings>=0.1.0"]
+dependencies = ["jennings>=0.1.0", "lark>=1.2"]
 
 [project.optional-dependencies]
 oracle = ["py65", "pysidtracker", "zstandard"]
@@ -40,6 +40,9 @@ deity-informant = "deity_informant.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["deity_informant*"]
+
+[tool.setuptools.package-data]
+deity_informant = ["*.lark"]
 
 [tool.pytest.ini_options]
 markers = [
