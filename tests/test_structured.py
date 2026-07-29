@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from deity_informant import c64
 from deity_informant import sidprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
@@ -34,8 +35,8 @@ def _init(p):
     return p.init_org if p.init is not None else 0x0F00
 
 
-def _verify(mem, init, play, frames, subtune=0):
-    model, ev = S.decompile(mem, init, play, frames, subtune)
+def _verify(mem, init, play, frames, subtune=0, img=None):
+    model, ev = S.decompile(mem, init, play, frames, subtune, img=img)
     assert model.prologue == ev.prologue  # init's SID writes, order-preserved
     for site, pr in model.proofs.items():
         obs = model.pcs.get(site) if pr.kind == "opcode" else model.ev_targets.get(site)
@@ -204,6 +205,50 @@ def test_paired_constant_pair_and_indexed_mix_proves():
     pr = model.proofs[0x1020]
     assert pr.status == "certified" and pr.lemma.startswith("paired-index")
     assert set(pr.targets) == {0x1030, 0x1038, 0x1040, 0x1048, 0x1050}
+
+
+@pytest.mark.parametrize(
+    "vec,kernal", [(0x0314, True), (0xFFFE, False), (0x0318, False)], ids=["cinv", "hw", "nmi"]
+)
+def test_handler_driven_entry_replays_bit_exact(vec, kernal):
+    """``play == 0``: the installed vector's dispatch stub is the frame entry, and
+    the handler's RTI is data flow plus a guarded goto (both executors agree)."""
+    mem, init = G.irq_image(vec, kernal)
+    model = _verify(mem, init, 0, 8, img=G.IRQ_IMAGE)
+    assert model.play == c64.IRQ_DISPATCH
+    assert [v for _c, _r, v in S.Walker(model).run(8)] == list(range(1, 9))
+    rti = next(blk for blk in model.blocks.values() if blk.term[0] == "jmpd")
+    assert set(model.dyn_targets[rti.pcs[-1]]) == {c64.IRQ_RETURN}
+
+
+def test_play_zero_without_an_installed_vector_refuses():
+    """No vector, no per-frame entry: the diagnostic names the vectors, not $0000."""
+    mem = bytearray(0x10000)
+    mem[0x0F00] = 0x60  # init: RTS, installing nothing
+    with pytest.raises(S.DecompileError, match="no interrupt vector"):
+        S.decompile(mem, 0x0F00, 0, 4)
+
+
+def test_play_zero_init_that_never_returns_names_the_driver_cadence(monkeypatch):
+    """The known deferred class: init idles until its own handler fires."""
+    monkeypatch.setattr(S, "_GUARD", 1000)
+    mem = bytearray(0x10000)
+    mem[0x0F00:0x0F03] = bytes((0x4C, 0x00, 0x0F))  # init: JMP * (idle loop)
+    with pytest.raises(RuntimeError, match="init never returned"):
+        S.decompile(mem, 0x0F00, 0, 4)
+
+
+def test_play_zero_with_a_zeroed_vector_refuses():
+    mem, init = G.irq_image(handler=0x0000)
+    with pytest.raises(S.DecompileError, match=r"vector \$0314 installed as \$0000"):
+        S.decompile(mem, init, 0, 4, img=G.IRQ_IMAGE)
+
+
+def test_load_image_over_the_dispatch_stub_refuses():
+    """The tune's own bytes live under the stub: refuse rather than fake them."""
+    mem, init = G.irq_image()
+    with pytest.raises(S.DecompileError, match=r"dispatch stub at \$FF33"):
+        S.decompile(mem, init, 0, 4, img=(0xFF00, 0x10000))
 
 
 def _tunes():

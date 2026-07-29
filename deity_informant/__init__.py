@@ -39,7 +39,14 @@ from . import c64
 from . import render
 from . import sidprog
 from . import structured
-from .c64 import poweron_ram, installed_handler, install_kernal_irq_stubs
+from .c64 import (
+    poweron_ram,
+    installed_handler,
+    installed_vector,
+    install_kernal_irq_stubs,
+    install_irq_entry,
+    irq_stubs,
+)
 
 try:
     __version__ = version("deity-informant")
@@ -70,6 +77,9 @@ __all__ = [
     "structured",
     "poweron_ram",
     "installed_handler",
+    "installed_vector",
     "install_kernal_irq_stubs",
+    "install_irq_entry",
+    "irq_stubs",
     "__version__",
 ]

@@ -72,6 +72,17 @@ def test_gate_fp_fuzz_players(p):
         assert d is None, d
 
 
+@pytest.mark.parametrize("kernal", [True, False], ids=["cinv", "hw"])
+def test_gate_fp_handler_driven_entry(kernal):
+    """Gate FP holds for a ``play == 0`` tune: the frame program reproduces the
+    walker across the dispatch stub, the vector goto and the handler's RTI."""
+    mem, init = G.irq_image(0x0314 if kernal else 0xFFFE, kernal)
+    model, _ev = S.decompile(mem, init, 0, 8, img=G.IRQ_IMAGE)
+    prog = frameprog.loads(frameprog.emit(model))
+    assert frameval.gate_fp(model, 8) is None
+    assert frameval.gate_fp(model, 8, prog) is None
+
+
 def test_gate_fp_runs_on_the_parsed_artifact():
     """The law holds against the text artifact, not just the in-memory trees."""
     model = _fuzz_model(G.t_table_index(np.random.default_rng(3)))

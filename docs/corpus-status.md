@@ -64,6 +64,23 @@ reports blocks/structured_pct/gotos/labels/frontier/dups/procs. Current
 showcase numbers: Commando 2 gotos, Athena 14, Krakout 10, Wizball 30,
 Ghouls_n_Ghosts 51 (556-block Follin program).
 
+## Handler-driven tunes (`play == 0`, 2026-07-29)
+
+The v1 manifest above is `play != 0` only. Measured separately over the first
+140 cached `MUSICIANS/*/*/*.sid` at a 300-frame window (decompile + Gate FP):
+**123/140 -> 132/140**. All 16 `play == 0` tunes in that sample previously
+failed as `control 'brk' at 0000 not modeled` (the header play address *is*
+`$0000`) or as an init runaway; 9 now decompile, replay bit-exact from the
+model and from parsed text, and pass Gate FP. Every discovered vector in the
+sample is CINV `$0314`; the hardware `$FFFE` and NMI `$0318` paths are covered
+by the synthetic corpus. The 7 that remain fail honestly: 5 inits never return
+(`runaway in init at $XXXX: init never returned`) and 2 BASIC tunes install no
+vector at all. The non-returning inits are the next slice, not a ROM problem:
+they idle until their own handler fires (`Demolix` spins at `$9F89` on a flag
+its IRQ sets; `Cielos_Esfumados` pages both ROMs out, installs `$FFFE`/`$FFFA`
+and loops at `$08E4`), so their frame is a main-loop iteration plus interrupts
+— the v2/P-INT driver cadence, not one handler call per frame.
+
 ## Retired failure classes (history)
 
 - **Empty-"proven" commits** (Army_Moves `$E093` and six siblings): a

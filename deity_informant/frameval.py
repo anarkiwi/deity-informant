@@ -72,6 +72,7 @@ class _Code:
     program-wide (registers are shared, temporaries never outlive a block)."""
 
     def __init__(self, prog):
+        self.mem0 = prog.mem0
         self.ops = []
         self.idx = {}
         self.pcmap = {}
@@ -142,6 +143,9 @@ class _Code:
                 i += 2
                 continue
             self.stmt(s, ctx)
+            if s[0] == "igoto" and s[2] is None and nxt is not None:
+                p = s[1]  # static vector: the image target's body follows inline
+                self.mark(self.mem0[p] | (self.mem0[(p & 0xFF00) | ((p + 1) & 0xFF)] << 8))
             i += 1
 
     def stmt(self, s, ctx):

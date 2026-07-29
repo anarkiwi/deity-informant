@@ -2,7 +2,8 @@
 
 ``PcodeVM`` already models the C64's VIC/CIA/SID volatile IO; this adds the
 surrounding machine facts a host needs to enter a tune faithfully: power-on
-RAM, installed interrupt-vector discovery, and the KERNAL IRQ-return stub.
+RAM, installed interrupt-vector discovery, and the synthetic ROM-free IRQ
+dispatch path (:func:`irq_stubs`) that makes a handler entry a subroutine call.
 """
 
 from __future__ import annotations
@@ -15,11 +16,17 @@ IRQ_VEC = (0x0314, 0x0315)  # CINV (KERNAL A/X/Y-save ABI)
 NMI_VEC = (0x0318, 0x0319)  # NMINV
 HW_IRQ_VEC = (0xFFFE, 0xFFFF)  # hardware IRQ/BRK vector
 
-# KERNAL IRQ-return stub for no-ROM CINV handlers: $EA31 -> $EA81 pulls Y/X/A, RTI.
+# KERNAL IRQ epilogue for no-ROM handlers: PLA;TAY;PLA;TAX;PLA;RTI ($EA81, NMI $FEBC).
+_EPILOGUE = bytes((0x68, 0xA8, 0x68, 0xAA, 0x68, 0x40))
 _STUBS = (
-    (0xEA31, bytes((0x4C, 0x81, 0xEA))),
-    (0xEA81, bytes((0x68, 0xA8, 0x68, 0xAA, 0x68, 0x40))),
+    (0xEA31, b"\xea" * (0xEA81 - 0xEA31)),  # handler body: any exit entry NOPs to $EA81
+    (0xEA81, _EPILOGUE),
+    (0xFEBC, _EPILOGUE),
 )
+IRQ_DISPATCH = 0xFF33  # entry: set I, push the 6510 IRQ frame, enter the vector
+IRQ_RETURN = 0xFF41  # the interrupted program: its RTS balances the caller's frame
+KERNAL_IRQ = 0xFF48  # KERNAL hardware-IRQ prologue: save A/X/Y, JMP (CINV)
+_P_IRQ = 0x20  # interrupted-program status pushed for the RTI (I clear)
 
 
 def poweron_ram():
@@ -45,8 +52,8 @@ def read_vector(mem, lo):
     return mem[lo] | (mem[(lo + 1) & 0xFFFF] << 8)
 
 
-def installed_handler(mem, written, img):
-    """Installed interrupt handler ``(addr, uses_kernal_cinv)``, or ``None``.
+def installed_vector(mem, written, img):
+    """Installed interrupt vector ``(vector addr, uses_kernal_cinv)``, or ``None``.
 
     Prefers a vector actually written (CINV ``$0314`` / NMINV ``$0318`` /
     hardware ``$FFFE``), else a CINV lifted from the load image. ``written`` is
@@ -54,18 +61,67 @@ def installed_handler(mem, written, img):
     """
     for pair, kernal in ((IRQ_VEC, True), (HW_IRQ_VEC, False), (NMI_VEC, False)):
         if pair[0] in written or pair[1] in written:
-            return (read_vector(mem, pair[0]), kernal)
+            return (pair[0], kernal)
     lo, hi = img
-    if lo <= IRQ_VEC[0] < hi and lo <= IRQ_VEC[1] < hi:
-        civ = read_vector(mem, IRQ_VEC[0])
-        return (civ, True) if civ else None
+    if lo <= IRQ_VEC[0] < hi and lo <= IRQ_VEC[1] < hi and read_vector(mem, IRQ_VEC[0]):
+        return (IRQ_VEC[0], True)
     return None
 
 
+def installed_handler(mem, written, img):
+    """Installed interrupt handler ``(addr, uses_kernal_cinv)``, or ``None``."""
+    found = installed_vector(mem, written, img)
+    return None if found is None else (read_vector(mem, found[0]), found[1])
+
+
 def install_kernal_irq_stubs(vm):
-    """Write the KERNAL IRQ-return stub ($EA31->$EA81, pull Y/X/A, RTI) into ``vm``."""
+    """Write the KERNAL IRQ epilogue ($EA31 body NOPs to $EA81: pull Y/X/A, RTI)."""
     for addr, code in _STUBS:
         vm.mem[addr : addr + len(code)] = code
+
+
+def irq_stubs(vec, kernal):
+    """``[(addr, code)]`` of the ROM-free dispatch path through vector ``vec``.
+
+    ``$FF33`` pushes the frame a 6510 IRQ pushes (return pc ``$FF41``, then P)
+    and enters the vector -- via the ``$FF48`` KERNAL prologue and ``$EA31``
+    return when ``kernal``; ``$FF41`` is the interrupted program's RTS.
+    """
+    tail = (0x4C, KERNAL_IRQ & 0xFF, KERNAL_IRQ >> 8) if kernal else (0x6C, vec & 0xFF, vec >> 8)
+    frame = (0x78, 0xA9, IRQ_RETURN >> 8, 0x48, 0xA9, IRQ_RETURN & 0xFF, 0x48, 0xA9, _P_IRQ, 0x48)
+    stubs = [(IRQ_DISPATCH, bytes(frame + tail)), (IRQ_RETURN, b"\x60")]
+    if kernal:
+        prologue = (0x48, 0x8A, 0x48, 0x98, 0x48, 0x6C, vec & 0xFF, vec >> 8)
+        stubs.append((KERNAL_IRQ, bytes(prologue)))
+        stubs.extend(_STUBS)
+    return stubs
+
+
+def install_irq_entry(vm, vec, kernal, img=(0, 0)):
+    """Install :func:`irq_stubs` into ``vm``; returns the per-frame entry pc.
+
+    Raises ``ValueError`` when the load image ``img`` claims a stub address: the
+    tune's own bytes live there and the host cannot fake the machine under them.
+    """
+    lo, hi = img
+    for addr, code in irq_stubs(vec, kernal):
+        if lo < addr + len(code) and addr < hi:
+            raise ValueError(
+                "load image $%04X-$%04X covers the IRQ dispatch stub at $%04X" % (lo, hi, addr)
+            )
+        vm.mem[addr : addr + len(code)] = code
+    return IRQ_DISPATCH
+
+
+def _psid_body(data):
+    """``(load, body)`` of a PSID/RSID file, honouring an in-body load address."""
+    if data[:4] not in (b"PSID", b"RSID"):
+        raise ValueError("not a SID file")
+    off, load = struct.unpack(">H", data[6:8])[0], struct.unpack(">H", data[8:10])[0]
+    body = data[off:]
+    if load == 0:
+        load, body = body[0] | (body[1] << 8), body[2:]
+    return load, body[: 0x10000 - load]
 
 
 def load_psid(data):
@@ -73,17 +129,17 @@ def load_psid(data):
 
     Subtune count/default live in the header; see :func:`psid_songs`.
     """
-    if data[:4] not in (b"PSID", b"RSID"):
-        raise ValueError("not a SID file")
-    off = struct.unpack(">H", data[6:8])[0]
-    load, init, play = struct.unpack(">HHH", data[8:14])
-    body = data[off:]
-    if load == 0:
-        load = body[0] | (body[1] << 8)
-        body = body[2:]
+    load, body = _psid_body(data)
+    init, play = struct.unpack(">HH", data[10:14])
     mem = bytearray(0x10000)
-    mem[load : load + len(body)] = body[: 0x10000 - load]
+    mem[load : load + len(body)] = body
     return mem, load, init, play
+
+
+def psid_image(data):
+    """``(lo, hi)`` bounds of the cells a PSID/RSID file loads."""
+    load, body = _psid_body(data)
+    return load, load + len(body)
 
 
 def psid_songs(data):
