@@ -6,8 +6,9 @@ of the SID write stream, one record per play-frame. sidprog remains the
 cycle-exact ground truth (Gate C unchanged); frameprog is generated from the
 committed model and verified against the projection of the walker's log.
 Status: design for review; landed already: the projection + digi rule in the
-pure log domain (`deity_informant/framelog.py`), nothing else. "MUST" is a
-gate. Measurements: 2026-07-25, 140 cached tunes, 1,000-frame windows unless
+pure log domain (`deity_informant/framelog.py`), the generator and reader
+(`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
+(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent). "MUST" is a gate. Measurements: 2026-07-25, 140 cached tunes, 1,000-frame windows unless
 noted; scratch probes, numbers herein are the record.
 
 ## 1. Verification law (Gate FP)
@@ -241,6 +242,7 @@ frame(state, in) {
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
+| Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Open, generator-side. The surface serializes the transfer as a bare `ret`, so the evaluator returns machine-faithfully through `sp` and the stack image. That resolves `TXS; RTS`, but a `PHA`-pushed target whose `sp` updates the register-liveness pass pruned is unrecoverable (`_fuzzgen.t_rts_trick`). Per §2 the pushed word is a dispatch cell and belongs in the observed-target switch; `pcall` additionally drops the `ret $R` of the call it rewrites, so its pushed bytes are a stand-in. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
 
@@ -258,10 +260,10 @@ HVSC absent (decompiler-implementation.md §1, §7).
   the frames of the same run, so both sides of the law consume one trace by
   construction — `structured.Walker.vol_read`/`dyn_read` are the hooks). The
   declared-input law of §4(b) is checked against `frameprog.declared_inputs`.
-  Remaining: the full-corpus Gate FP harness on unlifted programs (the
-  buffered-flush `iota` evaluator), the class report (exclusions,
-  `d418_collapsed`), mutation tests (dropped write, swapped ctrl order,
-  wrong `iota` index all detected).
+  Landed since: the buffered-flush reference evaluator and `gate_fp`
+  (`deity_informant/frameval.py`), with the three M-FP1 mutations — dropped
+  write, swapped ctrl order, wrong `iota` index — each shown to fail the gate.
+  Remaining: the class report (exclusions, `d418_collapsed`).
 - **M-FP2 — entry translation + mechanical lifts (a)-(c).** The §2 SMC-free
   generator plus rungs (a)-(c); first `frameprog` text artifact (versioned
   header, grammar published, canonical fixpoint `dumps(loads(t)) == t`).
@@ -275,7 +277,16 @@ HVSC absent (decompiler-implementation.md §1, §7).
   grammar, versioned header, `frameprog.parse`/`loads` and the canonical
   fixpoint `dumps(loads(t)) == t` property-tested over the fuzz corpus, with
   the defined-before-use local check now running over the parsed statement
-  trees. Outstanding for M-FP2: the reference evaluator and Gate FP.
+  trees; and the reference evaluator: statement trees compile to one flat op
+  array over a program-wide local environment and the `mem0` state image,
+  volatile reads resolve to `iota(f, input, k)`, SID writes buffer per frame
+  and flush through `framelog.canonical`. Gate FP holds on 15 of the 16
+  `tests/_fuzzgen` player classes and on Commando at full Songlengths length;
+  measured 2026-07-29 over the 140-tune cached corpus at 300-frame windows,
+  110 pass, 30 do not (17 reach an `unobserved` frontier, 4 leave an observed
+  dispatch set, 2 run away, 7 diverge in value). Every failure is loud; the
+  residual causes are not yet attributed beyond the stack-dispatch row of §5.
+  Outstanding for M-FP2: the rung (a)-(c) proof records and the residual 30.
 - **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
   refusal exercised synthetically.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
