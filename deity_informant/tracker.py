@@ -16,10 +16,10 @@ from . import structured as S
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _SEMI = 2 ** (1 / 12)
 
-Pitch = namedtuple("Pitch", "base words octaves reference endian shift")
+Pitch = namedtuple("Pitch", "base words octaves reference endian shift hi", defaults=(None,))
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
-Tracker = namedtuple("Tracker", "pitch clocks tempo instruments")
+Tracker = namedtuple("Tracker", "pitch clocks tempo instruments unstable", defaults=((),))
 Coverage = namedtuple("Coverage", "interp residual total planes")
 
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
@@ -33,6 +33,31 @@ def _plane_of(reg):
     return "filter" if reg <= 0x18 else "tail"
 
 
+def _written(model):
+    """Cells the play phase writes; ``mem0`` holds their pre-play value only."""
+    return getattr(model, "written", frozenset())
+
+
+def _unsound(mut, n, *lanes):
+    """Entries of an ``n``-entry table whose bytes the play phase writes.
+
+    ``lanes`` are the ``(base, stride)`` byte lanes an entry index walks. A
+    table read out of ``mem0`` is constant data only where nothing mutates it;
+    elsewhere the snapshot is not what the running player indexes."""
+    return sum(1 for i in range(n) if any(b + s * i in mut for b, s in lanes))
+
+
+def _lanes(base, hi, n):
+    """Byte lanes for a table: split lo/hi blocks, else one contiguous 16-bit run."""
+    return ((base, 1), (hi, 1)) if hi is not None else ((base, 2), (base + 1, 2))
+
+
+def _pitch_lanes(p):
+    """``(entries, lanes)`` for a recovered pitch table."""
+    n = len(p.words)
+    return n, _lanes(int(p.base), None if p.hi is None else int(p.hi), n)
+
+
 def _direct_pitch(model):
     """The confirmed multi-octave ET pitch table (provenance path), or None.
 
@@ -41,15 +66,21 @@ def _direct_pitch(model):
     tr = ann.aggregate(list(ann.model_procs(model)), model)
     decls = ann._decls(model)
     his = sorted(b for b, rs in tr.roles.items() if "freq_hi" in rs)
+    mut, fallback = _written(model), None
     for lo, info in sorted(tr.pitch.items()):
         if not info["pitch_table"]:
             continue
         for hi in [lo + 1] + his:
             words = ann._pitch_words(model.mem0, lo, hi, decls)
-            if words is not None and ann.et_check(words)["pitch_table"]:
-                w = np.asarray(words, dtype=np.int64)
-                return Pitch(lo, w, info["octaves"], info["reference"], "<", False)
-    return None
+            if words is None or not ann.et_check(words)["pitch_table"]:
+                continue
+            w = np.asarray(words, dtype=np.int64)
+            split = hi if hi != lo + 1 else None
+            p = Pitch(lo, w, info["octaves"], info["reference"], "<", False, split)
+            if not _unsound(mut, *_pitch_lanes(p)):
+                return p
+            fallback = fallback or p
+    return fallback
 
 
 def _read_bases(model):
@@ -199,11 +230,16 @@ def _et_words(words, minrun=24, bounded=True):
 
 def _octave_pitch(model):
     """A one-octave ET table read from the graph (computed-base drivers), or None."""
-    for base in sorted(_read_bases(model)):
-        for endian in ("<", ">"):
-            if _octave_et(model.mem0, base, endian):
-                w = np.frombuffer(bytes(model.mem0[base : base + 24]), dtype=endian + "u2")
-                return Pitch(base, w.astype(np.int64), 1, int(w[0]), endian, True)
+    mut = _written(model)
+    bases = sorted(_read_bases(model))
+    for want in (True, False):  # a stable table first, a mutated one only if it is all there is
+        for base in bases:
+            if bool(_unsound(mut, 12, *_lanes(base, None, 12))) is want:
+                continue
+            for endian in ("<", ">"):
+                if _octave_et(model.mem0, base, endian):
+                    w = np.frombuffer(bytes(model.mem0[base : base + 24]), dtype=endian + "u2")
+                    return Pitch(base, w.astype(np.int64), 1, int(w[0]), endian, True)
     return None
 
 
@@ -234,16 +270,18 @@ def _coindexed_bases(model):
     return [g for g in groups.values() if len(g) >= 2]
 
 
-def _extend_et(word_at, words, cap=128, tol=0.3):
+def _extend_et(word_at, words, cap=128, tol=0.3, blocked=None):
     """Extend a recovered ET run to its true memory extent.
 
-    A declared table size can under-size the physical table (the player reads the
-    whole run); walk the chromatic lattice past the recovered end while memory
-    keeps it. Guarded: only extends an offset-0-aligned run (else returns as-is)."""
+    Only extends an offset-0-aligned run, and never past a play-written cell:
+    running past a *declaration* is the point, running into *mutable* memory
+    reads a stale snapshot."""
     out = [int(x) for x in words]
     if not out or out[-1] <= 0 or word_at(len(out) - 1) != out[-1]:
         return np.asarray(out, dtype=np.int64)
     while len(out) < cap:
+        if blocked is not None and blocked(len(out)):
+            break
         w = word_at(len(out))
         want = min(out[-1] * _SEMI, 65535)
         if w is None or w <= 0 or abs(12 * np.log2(w / want)) >= tol:
@@ -273,9 +311,9 @@ def _paired_pitch(model, minsize=36, cap=0x100):
     Pairing comes from reads sharing an index; the extent is the declared table
     size, or — for an undeclared pair — the ``_et_words`` run within a capped
     window (still graph-anchored); ``et_check`` only confirms, no byte scan."""
-    m0 = model.mem0
+    m0, mut = model.mem0, _written(model)
     sizes = {d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table"}
-    best_n, best = 0, None
+    best_n, best = (0, 0), None
     for group in _coindexed_bases(model):
         bases = sorted(group)
         for i, a in enumerate(bases):
@@ -289,16 +327,23 @@ def _paired_pitch(model, minsize=36, cap=0x100):
                     lob = np.frombuffer(bytes(m0[lo : lo + k]), dtype="u1").astype(np.int64)
                     hib = np.frombuffer(bytes(m0[hi : hi + k]), dtype="u1").astype(np.int64)
                     et = _et_words(lob | (hib << 8), bounded=decl)
-                    if et is None or len(et) <= best_n:
+                    if et is None:
                         continue
                     if not decl and (len(et) < minsize or abs(lo - hi) < len(et) or len(et) > 108):
                         continue
-                    best_n, best = len(et), (lo, hi, et)
+                    bad = _unsound(mut, len(et), *_lanes(lo, hi, len(et)))
+                    key = (len(et) - bad, len(et))
+                    if key > best_n:
+                        best_n, best = key, (lo, hi, et)
     if best is None:
         return None
     lo, hi, words = best
-    words = _extend_et(lambda i: _split_word(m0, lo, hi, i), words)
-    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False)
+    words = _extend_et(
+        lambda i: _split_word(m0, lo, hi, i),
+        words,
+        blocked=lambda i: bool(_unsound(mut, 1, (lo + i, 1), (hi + i, 1))),
+    )
+    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False, hi)
 
 
 def _freq_bases(model):
@@ -322,16 +367,18 @@ def _octave_split_pitch(model):
 
     Pairing is the graph's shared index; the octave-ratio test over 12 entries
     confirms. Inverted by octave-shift like the contiguous one-octave table."""
-    m0 = model.mem0
-    for group in _coindexed_bases(model):
-        bases = sorted(group)
-        for a in bases:
-            for b in bases:
-                if a == b:
-                    continue
-                w = _split_octave(m0, a, b)
-                if w is not None:
-                    return Pitch(a, w, 1, int(w[0]), "split", True)
+    m0, mut = model.mem0, _written(model)
+    groups = _coindexed_bases(model)
+    for want in (True, False):
+        for group in groups:
+            bases = sorted(group)
+            for a in bases:
+                for b in bases:
+                    if a == b or bool(_unsound(mut, 12, *_lanes(a, b, 12))) is want:
+                        continue
+                    w = _split_octave(m0, a, b)
+                    if w is not None:
+                        return Pitch(a, w, 1, int(w[0]), "split", True, b)
     return None
 
 
@@ -340,12 +387,12 @@ def _role_split_pitch(model, minrun=30, cap=0x100):
 
     A freq_lo-role table and a freq_hi-role table (declared, equal-sized) whose
     byte blocks a gapped ET check (``_sparse_et``) confirms; extent from the run."""
-    m0 = model.mem0
+    m0, mut = model.mem0, _written(model)
     sizes = {d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table"}
     tr = ann.aggregate(list(ann.model_procs(model)), model)
     los = sorted(b for b, rs in tr.roles.items() if "freq_lo" in rs)
     his = sorted(b for b, rs in tr.roles.items() if "freq_hi" in rs)
-    best_n, best = 0, None
+    best_n, best = (0, 0), None
     for lo in los:
         for hi in his:
             if lo == hi or sizes.get(lo) != sizes.get(hi) or sizes.get(lo, 0) < minrun:
@@ -354,13 +401,21 @@ def _role_split_pitch(model, minrun=30, cap=0x100):
             lob = np.frombuffer(bytes(m0[lo : lo + n]), dtype="u1").astype(np.int64)
             hib = np.frombuffer(bytes(m0[hi : hi + n]), dtype="u1").astype(np.int64)
             et = _sparse_et(lob | (hib << 8), minspan=minrun)
-            if et is not None and len(et) > best_n:
-                best_n, best = len(et), (lo, hi, np.asarray(et, dtype=np.int64))
+            if et is None:
+                continue
+            bad = _unsound(mut, len(et), *_lanes(lo, hi, len(et)))
+            key = (len(et) - bad, len(et))
+            if key > best_n:
+                best_n, best = key, (lo, hi, np.asarray(et, dtype=np.int64))
     if best is None:
         return None
     lo, hi, words = best
-    words = _extend_et(lambda i: _split_word(m0, lo, hi, i), words)
-    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False)
+    words = _extend_et(
+        lambda i: _split_word(m0, lo, hi, i),
+        words,
+        blocked=lambda i: bool(_unsound(mut, 1, (lo + i, 1), (hi + i, 1))),
+    )
+    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False, hi)
 
 
 def _interleaved_pitch(model, cap=0x100):
@@ -368,13 +423,13 @@ def _interleaved_pitch(model, cap=0x100):
 
     A declared read table sized by its decl, or an undeclared **freq-role** read
     base within a capped window (extent from ``_et_words``); ``et_check`` confirms."""
-    m0 = model.mem0
+    m0, mut = model.mem0, _written(model)
     sizes = {
         d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table" and d.get("size")
     }
     freq = _freq_bases(model)
     bases = (set(sizes) | freq) & _read_bases(model)
-    best_len, best = 0, None
+    best_len, best = (0, 0), None
     for b in sorted(bases):
         decl = b in sizes and (sizes[b] >= 48 or b not in freq)
         nw = sizes[b] // 2 if decl else cap // 2
@@ -385,17 +440,29 @@ def _interleaved_pitch(model, cap=0x100):
             w = np.frombuffer(bytes(m0[b : b + k]), dtype=endian + "u2").astype(np.int64)
             et = _et_words(w, bounded=decl)
             need = 12 if decl else 48
-            if et is not None and need <= len(et) <= 108 and len(et) > best_len:
-                best_len, best = len(et), (b, et, endian)
+            if et is None or not need <= len(et) <= 108:
+                continue
+            bad = _unsound(mut, len(et), *_lanes(b, None, len(et)))
+            key = (len(et) - bad, len(et))
+            if key > best_len:
+                best_len, best = key, (b, et, endian)
     if best is None:
         return None
     b, w, endian = best
-    w = _extend_et(lambda i: _iw_word(m0, b, endian, i), w)
+    w = _extend_et(
+        lambda i: _iw_word(m0, b, endian, i),
+        w,
+        blocked=lambda i: bool(_unsound(mut, 1, (b + 2 * i, 1), (b + 2 * i + 1, 1))),
+    )
     return Pitch(b, w, len(w) // 12, int(w[w > 0][0]), endian, False)
 
 
 def _pitch(model):
-    """The pitch table: provenance, one-octave shift, split lo/hi, else interleaved."""
+    """The pitch table: provenance, one-octave shift, split lo/hi, else interleaved.
+
+    Every strategy reads ``mem0``, the pre-play snapshot, so each prefers a table
+    in cells the play phase never writes; a mutated one is taken only when it is
+    the sole reading, and ``unstable`` then names the stale bytes."""
     return (
         _direct_pitch(model)
         or _octave_pitch(model)
@@ -404,6 +471,18 @@ def _pitch(model):
         or _octave_split_pitch(model)
         or _role_split_pitch(model)
     )
+
+
+def _unstable(model, p):
+    """Play-written cells inside the accepted pitch table: stale-snapshot reads.
+
+    Non-empty means some note inverts through a byte the player mutates, so the
+    table is sound only up to those entries."""
+    if p is None:
+        return ()
+    mut = _written(model)
+    n, lanes = _pitch_lanes(p)
+    return tuple(sorted({b + s * i for i in range(n) for b, s in lanes if b + s * i in mut}))
 
 
 def _note_direct(pitch, word):
@@ -456,7 +535,8 @@ def lift(model):
         Clock(c.base, c.kind, c.reload, "lfo" if c.kind == "inc" else "divider") for c in m.counters
     ]
     insts = sorted({t.source for t in m.control.transitions if t.source})
-    return Tracker(_pitch(model), clocks, _tempo(m.counters), insts)
+    pitch = _pitch(model)
+    return Tracker(pitch, clocks, _tempo(m.counters), insts, _unstable(model, pitch))
 
 
 def _frame_notes(pitch, rec):

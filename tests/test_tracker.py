@@ -220,6 +220,66 @@ def test_paired_pitch_split_tables(monkeypatch):
     assert p is not None and p.base == lo and not p.shift and p.octaves == 4
 
 
+def _mem_split_written(lo, hi, words, written=()):
+    """Split lo/hi image plus the play-written cell set (SMC / mutable state)."""
+    mem = bytearray(0x10000)
+    for i, w in enumerate(words):
+        mem[lo + i], mem[hi + i] = int(w) & 0xFF, (int(w) >> 8) & 0xFF
+    return type("M", (), {"mem0": bytes(mem), "written": frozenset(written)})()
+
+
+def test_unsound_counts_entries_not_bytes():
+    """An entry is unsound if any of its byte lanes is play-written."""
+    mut = frozenset({0x2005, 0x2006, 0x3007})
+    assert tracker._lanes(0x2000, 0x3000, 8) == ((0x2000, 1), (0x3000, 1))
+    assert tracker._lanes(0x2000, None, 8) == ((0x2000, 2), (0x2001, 2))
+    assert tracker._unsound(mut, 12, *tracker._lanes(0x2000, 0x3000, 12)) == 3
+    assert tracker._unsound(mut, 12, *tracker._lanes(0x4000, 0x5000, 12)) == 0
+    # both lanes of one contiguous-run entry are written: one unsound entry, not two
+    assert tracker._unsound(mut, 8, *tracker._lanes(0x2001, None, 8)) == 1
+
+
+def test_extend_et_stops_at_a_play_written_cell():
+    """Extension runs past a declaration but never into mutable memory."""
+    words = np.round(268 * tracker._SEMI ** np.arange(24)).astype(np.int64)
+    full = np.round(268 * tracker._SEMI ** np.arange(48)).astype(np.int64)
+    got = tracker._extend_et(lambda i: int(full[i]) if i < len(full) else None, words)
+    assert len(got) == 48  # past the declared 24, the whole physical run
+    blocked = tracker._extend_et(
+        lambda i: int(full[i]) if i < len(full) else None, words, blocked=lambda i: i >= 30
+    )
+    assert len(blocked) == 30  # stopped at the first play-written entry
+
+
+def test_pitch_ranks_by_sound_entries_not_by_stability_alone(monkeypatch):
+    """A mutated table wins on sound entries; a clean one wins at equal length."""
+    words = np.round(560 * tracker._SEMI ** np.arange(48)).astype(np.int64)
+    lo, hi = 0x4000, 0x4100
+    decls = [
+        {"base": lo, "size": 48, "kind": "table"},
+        {"base": hi, "size": 48, "kind": "table"},
+    ]
+    monkeypatch.setattr(tracker.ann, "_decls", lambda m: decls)
+    monkeypatch.setattr(tracker, "_coindexed_bases", lambda m: [{lo, hi}])
+    clean = tracker._paired_pitch(_mem_split_written(lo, hi, words))
+    assert clean is not None and clean.hi == hi
+    mem = _mem_split_written(lo, hi, words, written=range(lo + 40, lo + 48))
+    p = tracker._paired_pitch(mem)
+    assert p is not None and p.base == lo  # still the only reading, taken with a diagnostic
+    assert tracker._unstable(mem, p) == tuple(range(lo + 40, lo + 48))
+
+
+def test_lift_reports_stale_pitch_bytes():
+    """``Tracker.unstable`` names exactly the play-written cells inside the table."""
+    words = np.round(560 * tracker._SEMI ** np.arange(48)).astype(np.int64)
+    lo, hi = 0x4000, 0x4100
+    p = tracker.Pitch(lo, words, 4, 560, "split", False, hi)
+    mem = _mem_split_written(lo, hi, words, written={lo + 3, hi + 3, hi + 9, 0x9999})
+    assert tracker._unstable(mem, p) == (lo + 3, hi + 3, hi + 9)  # 0x9999 is outside the table
+    assert tracker._unstable(_mem_split_written(lo, hi, words), p) == ()
+    assert tracker._unstable(mem, None) == ()
+
+
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
 def test_commando_notes_and_gate_t(sid, subtune):
     """Engine lifts, most freq-pairs invert to ET notes, render is bit-exact."""
