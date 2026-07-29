@@ -103,17 +103,21 @@ class Opt:
 
 
 def optimize(tune):
-    """De-dup programs, de-dup + transpose-factor patterns."""
+    """De-dup programs; de-dup + transpose-factor patterns on NOTE content.
+
+    A pattern's identity is its notes, not the instruments played on them -- an
+    instrument is a shared resource reused across notes and voices (the bank),
+    referenced separately, never part of a pattern's identity."""
     o = Opt()
     for pid, (sig, _disp) in tune.programs.items():
         o.prog_map[pid] = o.canon_prog.setdefault(sig, len(o.canon_prog))
     exact = {}
     for pid, events in tune.patterns.items():
-        rem = tuple((n, tuple(o.prog_map.get(p, p) for p in progs)) for n, progs in events)
-        exact.setdefault(rem, len(exact))
-        pitched = [n for n, _ in rem if isinstance(n, int)]
+        notes = tuple(n for n, _progs in events)
+        exact.setdefault(notes, len(exact))
+        pitched = [n for n in notes if isinstance(n, int)]
         base = min(pitched) if pitched else 0
-        norm = tuple(((n - base) if isinstance(n, int) else n, progs) for n, progs in rem)
+        norm = tuple((n - base) if isinstance(n, int) else n for n in notes)
         o.inst[pid] = (o.canon_pat.setdefault(norm, len(o.canon_pat)), base)
     o.exact = len(exact)
     return o
@@ -325,20 +329,8 @@ def extract_sw(path):
 
 
 # ---- render ----------------------------------------------------------------
-def _events_line(events, prog_disp):
-    """Render normalized pattern events as note>prog tokens."""
-    toks = []
-    for note, progs in events:
-        ref = "+".join(prog_disp.get(p, "i%d" % p) for p in progs) if progs else ""
-        toks.append("%s>%s" % (_nn(note), ref) if ref else _nn(note))
-    return _wrap(toks, 10)
-
-
 def render(tune, opt):
     """Optimized universal graph + reduction stats."""
-    prog_ids = {}
-    for _pid, cidx in sorted(opt.prog_map.items(), key=lambda kv: kv[1]):
-        prog_ids.setdefault(cidx, "p%d" % cidx)
     lines = [
         "=" * 80,
         "TUNE: %s   EDITOR: %s" % (tune.stem, tune.editor),
@@ -347,7 +339,7 @@ def render(tune, opt):
         "OPTIMIZE (universal codec de-dup + transpose-factor)",
         "  programs   %3d editor entries -> %3d graph programs (output-state cycles, deduped)"
         % (len(tune.programs), len(tune.graph_programs)),
-        "  patterns   %3d -> %3d exact-dup -> %3d transpose-factored"
+        "  patterns   %3d -> %3d note-dedup -> %3d transpose-factored (instrument factored out)"
         % (len(tune.patterns), opt.exact, len(opt.canon_pat)),
         "  (%d patterns were pitch-shifts of another -> 1 canonical + a transpose)"
         % (opt.exact - len(opt.canon_pat)),
@@ -367,26 +359,24 @@ def render(tune, opt):
             % (v + 1, v + 1, v + 1, loop),
         ]
         lines += ["      " + row for row in _wrap(refs, 12)]
-    prog_disp = {}
-    for pid, cidx in opt.prog_map.items():
-        prog_disp[pid] = prog_ids[cidx]
     seen = set()
     for pid, events in tune.patterns.items():
         cidx, base = opt.inst[pid]
         if cidx in seen:
             continue
         seen.add(cidx)
-        norm = [((n - base) if isinstance(n, int) else n, progs) for n, progs in events]
+        toks = [_nn((n - base) if isinstance(n, int) else n) for n, _p in events]
         lines += [
             "",
-            "c%d  [LOOKUP] row_clock -> fire note_on   ; canonical pattern (%d rows)"
+            "c%d  [LOOKUP] row_clock -> fire note_on   ; canonical pattern, notes only (%d rows)"
             % (cidx, len(events)),
         ]
-        lines += ["      " + row for row in _events_line(norm, prog_disp)]
+        lines += ["      " + row for row in _wrap(toks, 12)]
     lines += [
         "",
-        "; ---- instrument programs (from the output-state graph: local CYCLE = arp/PWM,",
-        ";      RAMP = attack/sweep). %d note-on identities -> %d programs, no table decode."
+        "; ---- instruments: a shared bank, reused across notes and voices (from the",
+        ";      output-state graph: local CYCLE = arp/PWM, RAMP = attack/sweep).",
+        ";      %d editor entries -> %d programs, no table decode."
         % (len(tune.programs), len(tune.graph_programs)),
     ]
     for i, disp in enumerate(tune.graph_programs):
