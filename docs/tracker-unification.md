@@ -168,3 +168,29 @@ is intrinsic, not a separate schema — DefMON's `_dedup_patterns`/
    Re-run Gate U1 on GoatTracker — voice-1 should pass.
 4. Recover the arrangement/pattern/transpose subgraph (shared nodes + back-edges)
    from `streams.py`; DefMON's `_dedup_*` is the reference for subgraph sharing.
+
+## 6. Parked proposal: theme + variation (pattern collapse)
+
+After factoring instruments out of pattern identity (a pattern is notes, an
+instrument is a shared bank reused across notes and voices), a dense tune still
+shows many patterns (6581 Words: 92). Two abstractions do NOT collapse it, measured:
+melodic-motif grammar (80 distinct interval-shapes; top-20 3-note motifs cover only
+27% — through-composed) and rhythm×melody factoring (61 rhythms + 82 melodies = 143
+> 92). The one that does: **theme + variation.**
+
+Most "distinct" patterns are near-copies of a theme differing by a couple of note
+edits. Clustering the transpose-invariant melodies by edit distance: 80 melodies →
+71 themes (edit≤1) → **56 (edit≤2)** → 51 (edit≤3). So:
+
+- a **theme** = a canonical interval-sequence (transpose-invariant phrase);
+- a pattern = **(theme, transpose, patch)**, patch a short edit list; exact and
+  reversible — `apply(patch, theme) == pattern`;
+- collapse: 103 used → 92 note-patterns → **56 themes + variations**.
+
+Fits the generator model: a theme is a LOOKUP (note-sequence generator); a variation
+is that generator plus a tiny patch generator — the same shared-resource + reference
++ small-delta shape as instruments and transpose. Lossless (theme+patch reconstructs
+the pattern), so it never over-compresses distinct music; the edit-distance threshold
+(default ≤2, reported per pattern) only decides how much edit is "the same theme," and
+at edit=0 it degrades to today's behaviour. Statement-and-variation is fundamental to
+music, so verse/chorus tunes compress far more than this through-composed 30%.
