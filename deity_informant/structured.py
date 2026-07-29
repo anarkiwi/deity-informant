@@ -2564,6 +2564,8 @@ class Walker:
         self.r[3] = 0xFF
         self.c = 0
         self.wlog = []
+        self.vol_read = volatile_read  # overridable so a trace can pin the reads
+        self.dyn_read = _dyn_read
 
     def _push(self, val):
         self.m[0x100 + self.r[3]] = val & 0xFF
@@ -2588,7 +2590,7 @@ class Walker:
         while self.r[3] < start:
             blk = model.lookup(pc, m)
             self.c, self.r, x = blk.fn(
-                m, self.r, self.c, self.wlog, volatile_read, _dyn_read, _sid_log
+                m, self.r, self.c, self.wlog, self.vol_read, self.dyn_read, _sid_log
             )
             term = blk.term
             kind = term[0]

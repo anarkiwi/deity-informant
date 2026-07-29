@@ -5,6 +5,7 @@ opcode-cell switches on state variables, the M-FP2 reader (canonical fixpoint
 import re
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from deity_informant import expr as E
@@ -128,20 +129,54 @@ def test_declared_tables_and_aliases_carry_over():
     assert [(r, v) for f in frames for r, v in f] == [(r, v) for _c, r, v in ev.wlog]
 
 
+def _fuzz_model(player):
+    """Decompile a synthetic fuzz player into a committed model."""
+    mem = bytearray(0x10000)
+    for a, v in player.image_data().items():
+        mem[a] = v
+    init = player.init_org if player.init is not None else 0x0F00
+    if player.init is None:
+        mem[0x0F00] = 0x60
+    model, _ev = S.decompile(mem, init, player.org, player.frames)
+    return model
+
+
 @pytest.mark.parametrize("p", G.players(3), ids=lambda p: f"{p.name}-{p.seed[1]}")
 def test_fuzz_players_emit_annotation_free_and_project(p):
-    mem = bytearray(0x10000)
-    for a, v in p.image_data().items():
-        mem[a] = v
-    init = p.init_org if p.init is not None else 0x0F00
-    if p.init is None:
-        mem[0x0F00] = 0x60
-    model, _ev = S.decompile(mem, init, p.org, p.frames)
+    model = _fuzz_model(p)
     text = frameprog.emit(model)
     assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
     assert frameprog.dumps(frameprog.loads(text)) == text  # M-FP2 canonical fixpoint
     frames = F.frames_from_walker(S.Walker(model), p.frames)
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
+
+
+def test_iota_pins_volatile_reads_and_matches_declared_inputs():
+    """Every volatile read is pinned (frame, input, k); the set equals `inputs` (spec 4b)."""
+    model = _fuzz_model(G.t_volatile(np.random.default_rng(7)))
+    trace, frames = frameprog.iota(model, 12)
+    assert trace, "the volatile player must read a modelled source"
+    assert len(frames) == 12
+    assert all(0 <= f < 12 for f, _n, _k in trace)
+    for f, name in {(f, n) for f, n, _k in trace}:
+        ks = sorted(k for g, m, k in trace if (g, m) == (f, name))
+        assert ks == list(range(len(ks)))  # k is the read ordinal within the frame
+    assert frameprog.declared_inputs(trace) == frameprog.program(model).inputs
+
+
+def test_iota_is_empty_without_volatile_reads():
+    """A player reading no volatile source declares none and records none."""
+    model = _fuzz_model(G.t_table_index(np.random.default_rng(3)))
+    trace, _frames = frameprog.iota(model, 8)
+    assert trace == {} and frameprog.declared_inputs(trace) == []
+    assert frameprog.program(model).inputs == []
+
+
+def test_iota_run_reproduces_the_plain_walker_projection():
+    """Pinning must not perturb execution: same frames as an unhooked walker."""
+    model = _fuzz_model(G.t_volatile(np.random.default_rng(11)))
+    _trace, frames = frameprog.iota(model, 10)
+    assert F.canonical(frames) == F.canonical(F.frames_from_walker(S.Walker(model), 10))
 
 
 def test_dynamic_flow_constructs_round_trip():

@@ -253,9 +253,13 @@ covers every new code path so CI holds its gates and >85% coverage with
 HVSC absent (decompiler-implementation.md §1, §7).
 
 - **M-FP1 — projection + verifier.** Landed: `framelog`
-  (canonical/dumps/loads/digi_frames/diff, walker adapter). Remaining:
-  `iota` extraction, the full-corpus Gate FP harness on unlifted programs
-  (buffered-flush + `iota` evaluator), the class report (exclusions,
+  (canonical/dumps/loads/digi_frames/diff, walker adapter); `iota` extraction
+  (`frameprog.iota` returns the pinned `{(frame, input, k): value}` trace *and*
+  the frames of the same run, so both sides of the law consume one trace by
+  construction — `structured.Walker.vol_read`/`dyn_read` are the hooks). The
+  declared-input law of §4(b) is checked against `frameprog.declared_inputs`.
+  Remaining: the full-corpus Gate FP harness on unlifted programs (the
+  buffered-flush `iota` evaluator), the class report (exclusions,
   `d418_collapsed`), mutation tests (dropped write, swapped ctrl order,
   wrong `iota` index all detected).
 - **M-FP2 — entry translation + mechanical lifts (a)-(c).** The §2 SMC-free

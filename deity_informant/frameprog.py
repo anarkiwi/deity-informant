@@ -11,6 +11,7 @@ from . import datadecl
 from . import frameproc
 from . import grammar as G
 from . import sidprog
+from . import structured
 from .grammar import FRAMEPROG_VERSION
 
 _INPUTS = {
@@ -221,6 +222,53 @@ def parse(text):
         doc.subs,
         doc.mem0,
     )
+
+
+class _IotaWalker(structured.Walker):
+    """Walker that pins every declared volatile read as ``iota(f, input, k)``."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.frame = 0
+        self.trace = {}
+        self._k = {}
+        self.vol_read = self._vol
+        self.dyn_read = self._dyn
+
+    def _pin(self, a, v):
+        name = _INPUTS.get(a)
+        if name is not None:
+            key = (self.frame, name)
+            k = self._k.get(key, 0)
+            self._k[key] = k + 1
+            self.trace[(self.frame, name, k)] = v
+        return v
+
+    def _vol(self, m, a, c):
+        return self._pin(a, structured.volatile_read(m, a, c))
+
+    def _dyn(self, m, a, c):
+        return self._pin(a, structured._dyn_read(m, a, c))
+
+
+def iota(model, nframes):
+    """``({(frame, input, k): value}, frames)`` from one walker run (spec 1.3).
+
+    Both sides of Gate FP consume this trace, so the law is well-defined by
+    construction: frameprog never re-derives cycle positions."""
+    w = _IotaWalker(model)
+    frames = []
+    for f in range(nframes):
+        w.frame = f
+        start = len(w.wlog)
+        w.run(1)
+        frames.append([(reg, val) for _c, reg, val in w.wlog[start:]])
+    return w.trace, frames
+
+
+def declared_inputs(trace):
+    """Input names the trace actually records (spec 4(b) compares to ``inputs``)."""
+    return sorted({name for _f, name, _k in trace})
 
 
 def lint(text):
