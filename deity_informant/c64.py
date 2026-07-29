@@ -88,8 +88,8 @@ def irq_stubs(vec, kernal):
     return when ``kernal``; ``$FF41`` is the interrupted program's RTS.
     """
     tail = (0x4C, KERNAL_IRQ & 0xFF, KERNAL_IRQ >> 8) if kernal else (0x6C, vec & 0xFF, vec >> 8)
-    push_p = (0x78, 0xA9, IRQ_RETURN >> 8, 0x48, 0xA9, IRQ_RETURN & 0xFF, 0x48, 0xA9, _P_IRQ, 0x48)
-    stubs = [(IRQ_DISPATCH, bytes(push_p + tail)), (IRQ_RETURN, b"\x60")]
+    frame = (0x78, 0xA9, IRQ_RETURN >> 8, 0x48, 0xA9, IRQ_RETURN & 0xFF, 0x48, 0xA9, _P_IRQ, 0x48)
+    stubs = [(IRQ_DISPATCH, bytes(frame + tail)), (IRQ_RETURN, b"\x60")]
     if kernal:
         prologue = (0x48, 0x8A, 0x48, 0x98, 0x48, 0x6C, vec & 0xFF, vec >> 8)
         stubs.append((KERNAL_IRQ, bytes(prologue)))
