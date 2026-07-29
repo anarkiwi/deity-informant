@@ -173,6 +173,27 @@ dataflow:
 7. Any plane written but not produced by 1–6 ⇒ a `residual` byte-program
    generator over the observed writes (coverage law).
 
+### 7b. Snapshot soundness — tables must not be play-mutated
+
+Every pitch strategy reads `model.mem0`, the **post-init, pre-play** image, so a
+table entry is constant data only where the play phase never writes it;
+elsewhere the snapshot is not what the running player indexes. `structured`
+already enforces this below (it folds a `mem0` read to a constant only when the
+cell is outside `model.written`); the tracker now honours the same set.
+
+Candidates are **ranked by sound entries** (`entries - _unsound`), not filtered
+on stability: a 96-entry table with one mutated byte beats a clean 36-entry one,
+while at equal length the clean reading wins. `_extend_et` still runs past a
+*declaration* — a declared size can under-size the physical table, §10 — but
+never into a mutated cell.
+`Tracker.unstable` names the play-written cells inside the accepted table; a
+non-empty value means those notes invert through bytes the player rewrites.
+
+Cells like these are exactly what frameprog's SMC mapping
+(docs/frameprog.md §2) resolves to state variables: once the tracker consumes a
+frameprog artifact rather than a raw image, the whole class disappears and the
+ranking becomes unnecessary.
+
 ## 7a. Graph-normalization passes (run before lift)
 
 `song_model`'s constant-base provenance runs on the pass-1 approximation
