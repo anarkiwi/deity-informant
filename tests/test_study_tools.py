@@ -157,6 +157,63 @@ def test_umap_svg_builds_a_self_contained_document():
     assert "xlink:href" not in svg and "<image" not in svg  # self-contained, no fetches
 
 
+def _tune_for_render():
+    return utune.Tune(
+        stem="t",
+        editor="GoatTracker",
+        pitch=["C-0=278  C#0=295"],
+        orders=[([(0, 0), (1, 12)], 3), ([], 0), ([], 0)],
+        patterns={0: [(12, (1,)), (None, ()), ("===", ())], 1: [(24, (1,)), (26, (1,))]},
+        programs={1: (("ctrl=1",), "wave 1")},
+        graph_programs=["[8f pulse hold]"],
+    )
+
+
+def test_render_emits_every_generator_and_the_canonical_patterns():
+    """The artifact names each generator; shared patterns render once, with a base."""
+    tune = _tune_for_render()
+    text = utune.render(tune, utune.optimize(tune))
+    assert "TUNE: t" in text and "EDITOR: GoatTracker" in text
+    for gen in ("g0  [DIV", "g1  [LOOKUP", "gO1 [LOOKUP", "gO2 [LOOKUP"):
+        assert gen in text
+    assert "c0  [LOOKUP" in text and "c1  [LOOKUP" in text
+    assert text.count("c0  [LOOKUP") == 1  # a canonical pattern is emitted once
+    assert "p0  [8f pulse hold]" in text
+    assert ".." in text and "===" in text  # rest and gate-off tokens survive
+
+
+def test_render_di_emits_lanes_binds_and_programs():
+    """The lift artifact carries the clocks, pitch table, sync section and lanes."""
+    d = utune.DiTune(
+        stem="x",
+        pitch=utune.DT.Pitch(0x1000, np.array([278, 295, 312]), 1, 278, "<", False),
+        tempo=0x5596,
+        clocks=[
+            utune.DT.Clock(0x54F2, "dec", 4, "divider"),
+            utune.DT.Clock(0x54EC, "inc", None, "lfo"),
+        ],
+        lanes=[[("C-0", 0), ("C#0", 1)], [], []],
+        programs=["[4f pulse hold]", "[2f tri hold]"],
+        trigger=["v1+v2 76%"],
+        binds=["v2.freq = v1.note fifth   [locked 40 frames]"],
+    )
+    text = utune.render_di(d)
+    assert "EDITOR: deity-informant lift" in text
+    assert "tempo $5596" in text and "$54F2" in text and "$54EC" in text
+    assert "g3  [LOOKUP]" in text and "C-0=278" in text
+    assert "gT  [TRIGGER]" in text and "v1+v2 76%" in text
+    assert "gB  [BIND]    v2.freq = v1.note fifth" in text
+    assert "C-0/p0" in text and "C#0/p1" in text
+    assert "p0  [4f pulse hold]" in text and "p1  [2f tri hold]" in text
+
+
+def test_render_di_without_a_pitch_table_still_renders():
+    """A lift with no recovered table omits g3 rather than failing."""
+    d = utune.DiTune("y", None, 0, [], [[], [], []], [], [], [])
+    text = utune.render_di(d)
+    assert "g3  [LOOKUP]" not in text and "gT  [TRIGGER]" in text
+
+
 @pytest.mark.parametrize("bad", [np.zeros(4, dtype=np.int64), np.arange(1, 5, dtype=np.int64)])
 def test_et_extent_rejects_non_chromatic_memory(bad):
     """The ET extension stops immediately when memory is not a chromatic run."""
