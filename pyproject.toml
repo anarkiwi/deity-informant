@@ -29,7 +29,9 @@ oracle = ["py65", "pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
 # egglog str-form of extracted exprs is parsed; pin minor so it stays stable.
 eqlift = ["egglog>=13,<14", "z3-solver"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver"]
+# the editor packages are dev-only: tools/study/* parse their formats, and CI
+# lints tools/, so pylint must be able to resolve them.
+dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pygoattracker", "pydefmon", "pysidwizard"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
