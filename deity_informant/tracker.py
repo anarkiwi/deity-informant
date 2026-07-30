@@ -49,6 +49,16 @@ def ramp(seed, step, bound, trigger, reg):
     return Generator(("RAMP", seed, step, bound), trigger, ("plane", reg))
 
 
+def select(table, rows, trigger, reg):
+    """Emit ``table[rows[i]]`` into a plane: a declared table read at a recovered row."""
+    return Generator(("SELECT", tuple(table), tuple(rows)), trigger, ("plane", reg))
+
+
+def edge(counts):
+    """The trigger floor: fire ``counts[f]`` downstream edges on frame ``f``."""
+    return Generator(("EDGE", tuple(counts)), FRAME, ("fire",))
+
+
 def raw(per_frame):
     """The completeness floor: replay ``per_frame[f]`` writes verbatim, in order."""
     return Generator(("RAW", tuple(tuple(w) for w in per_frame)), FRAME, ("raw",))
@@ -70,17 +80,28 @@ class Graph:
         return None
 
 
+def _ticks(g, frame):
+    """Edges a fired Fire-routed generator emits at ``frame``."""
+    kind = g.transfer[0]
+    if kind == "DIV":
+        n = max(1, g.transfer[1])
+        return 1 if (frame + 1) % n == 0 else 0
+    if kind == "EDGE":
+        seq = g.transfer[1]
+        return seq[frame] if frame < len(seq) else 0
+    raise TrackerError("transfer %r has no edge emit" % (kind,))
+
+
 def _fired(nodes, frame):
     """Trigger counts per node for ``frame``: root clocks and their Fire edges."""
     fires = [1 if g.trigger == FRAME else 0 for g in nodes]
     for i, g in enumerate(nodes):
-        if g.transfer[0] != "DIV" or not fires[i]:
+        if g.route[0] != "fire" or not fires[i]:
             continue
-        n = max(1, g.transfer[1])
-        if (frame + 1) % n == 0:
-            for j, h in enumerate(nodes):
-                if h.trigger == ("event", i):
-                    fires[j] += 1
+        n = _ticks(g, frame)
+        for j, h in enumerate(nodes) if n else ():
+            if h.trigger == ("event", i):
+                fires[j] += n
     return fires
 
 
@@ -90,6 +111,9 @@ def _emit(g, count):
     if kind == "LOOKUP":
         seq = g.transfer[1]
         return seq[(count - 1) % len(seq)] if seq else None
+    if kind == "SELECT":
+        _k, table, rows = g.transfer
+        return table[rows[(count - 1) % len(rows)]] if rows else None
     if kind == "RAMP":
         _k, seed, step, bound = g.transfer
         raw_v = seed + step * (count - 1)
@@ -123,18 +147,22 @@ def _run(graph, nframes):
         for i, g in enumerate(nodes):
             if not fires[i]:
                 continue
-            counts[i] += fires[i]
             if g.transfer[0] == "RAW":
+                counts[i] += fires[i]
                 rows = g.transfer[1]
                 for reg, val in rows[f] if f < len(rows) else ():
                     rawn[reg] = rawn.get(reg, 0) + 1
                     writes.append((reg, val))
             elif g.route[0] == "plane":
-                v = _emit(g, counts[i])
-                if v is not None:
-                    reg = g.route[1]
-                    interp[reg] = interp.get(reg, 0) + 1
-                    writes.append((reg, v & 0xFF))
+                reg = g.route[1]
+                for _t in range(fires[i]):  # one emit per trigger, in order
+                    counts[i] += 1
+                    v = _emit(g, counts[i])
+                    if v is not None:
+                        interp[reg] = interp.get(reg, 0) + 1
+                        writes.append((reg, v & 0xFF))
+            else:
+                counts[i] += fires[i]
         out.append(writes)
     return framelog.canonical(out), interp, rawn
 
@@ -575,10 +603,143 @@ def _instruments(prog):
     return sorted(out)
 
 
-# ---- 4. the law: the graph's projection is frameprog's ---------------------------
+# ---- 4. instrument lanes: ADSR from a declared bank at a recovered row ------------
+_ADSR = (5, 6)
+
+
+def _banks(prog):
+    """Declared const tables as ``(base, size, stride)``, stride at least one."""
+    return [
+        (d["base"], d["size"], max(1, d.get("stride") or 1))
+        for d in prog.data_decls
+        if d["kind"] == "table"
+    ]
+
+
+def _immediates(prog):
+    """``{register class: {value}}``: constants a store site writes to a SID register.
+
+    Keyed by ``reg % 7``: one voice-generic store site serves all three voices
+    behind a dynamic offset, so the class is what the program text fixes."""
+    out = {}
+    for s in _stmts(prog):
+        if s[0] == "st" and s[2][0] == "const":
+            reg = _base(s[1]) - _SID
+            if 0 <= reg <= 0x14:
+                out.setdefault(reg % 7, set()).add(s[2][1] & 0xFF)
+    return out
+
+
+def _classify(w, banks, imm, mem0):
+    """``(stream key, row)`` for one write: a declared lane byte, or an immediate.
+
+    A lane read must agree with the declared image byte, so a cell the play phase
+    mutated is never taken for constant data. None when neither reading holds."""
+    reg, val, src = w
+    if src is None:
+        return (("imm", reg, val), 0) if val in imm.get(reg % 7, ()) else None
+    for base, size, stride in banks:
+        if base <= src < base + size and mem0[src] == val:
+            row, off = divmod(src - base, stride)
+            return ("lane", reg, base, size, stride, off), row
+    return None
+
+
+def _key_table(key, mem0):
+    """A stream key's emitted table: one declared lane of a bank, or one constant."""
+    if key[0] == "imm":
+        return (key[2],)
+    _k, _reg, base, size, stride, off = key
+    return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
+
+
+def _mean_pos(obs, key):
+    """Mean position of a key's writes inside the refined block."""
+    pos = [i for row in obs for i, (k, _r, _v) in enumerate(row) if k == key]
+    return sum(pos) / len(pos) if pos else 0.0
+
+
+def _refine_voice(seq, targets, banks, imm, mem0):
+    """``(relation, streams)`` refining one voice's ``targets`` registers, or None.
+
+    Refuses unless every targeted write is explained, they sit at one end of the
+    order-preserved section in every frame (so one placement against the residual
+    holds), and the node order by mean position reproduces the observed order."""
+    rel = {"pre", "post"}
+    keys, rows, obs = [], {}, []
+    for f, ws in enumerate(seq):
+        at = [i for i, w in enumerate(ws) if w[0] in targets]
+        if at:
+            if at != list(range(len(at))):
+                rel.discard("pre")
+            if at != list(range(len(ws) - len(at), len(ws))):
+                rel.discard("post")
+            if not rel:
+                return None
+        row = []
+        for i in at:
+            got = _classify(ws[i], banks, imm, mem0)
+            if got is None:
+                return None
+            key, r = got
+            if key not in rows:
+                rows[key] = [[] for _g in seq]
+                keys.append(key)
+            rows[key][f].append(r)
+            row.append((key, ws[i][0], ws[i][1]))
+        obs.append(row)
+    tables = {k: _key_table(k, mem0) for k in keys}
+    keys.sort(key=lambda k: _mean_pos(obs, k))
+    for f, row in enumerate(obs):
+        if [(k[1], tables[k][r]) for k in keys for r in rows[k][f]] != [e[1:] for e in row]:
+            return None
+    streams = []
+    for k in keys:
+        flat = tuple(r for fr in rows[k] for r in fr)
+        t = ("LOOKUP", tables[k]) if k[0] == "imm" else ("SELECT", tables[k], flat)
+        streams.append((tuple(len(fr) for fr in rows[k]), t, k[1]))
+    return ("post" if "post" in rel else "pre"), streams
+
+
+def _instr_streams(prog, ords):
+    """``(pre, post, refined)``: ADSR streams, and the registers they take from RAW.
+
+    Per voice the widest explainable register set wins; ``pre``/``post`` place a
+    voice's streams before or after the residual, as its write order requires."""
+    banks, imm, mem0 = _banks(prog), _immediates(prog), prog.mem0
+    pre, post, refined = [], [], set()
+    for v, seq in enumerate(ords):
+        for regs in (_ADSR, (5,), (6,)):
+            targets = {7 * v + r for r in regs}
+            if not any(w[0] in targets for ws in seq for w in ws):
+                continue
+            got = _refine_voice(seq, targets, banks, imm, mem0)
+            if got is not None:
+                rel, streams = got
+                (pre if rel == "pre" else post).extend(streams)
+                refined |= targets
+                break
+    return pre, post, refined
+
+
+# ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
     return frameval.eval_fp(prog, trace, nframes)
+
+
+def _observe(prog, trace, nframes):
+    """``(canonical records, per-voice order-preserved writes with provenance)``.
+
+    One machine run: the projection ``oracle`` defines, plus the cell each
+    order-preserved write loaded its byte from (``frameval.eval_src``)."""
+    frames, srcs = frameval.eval_src(prog, trace, nframes)
+    ords = [[[] for _f in range(nframes)] for _v in range(3)]
+    for f, (fr, sr) in enumerate(zip(frames, srcs)):
+        for (reg, val), src in zip(fr, sr):
+            if reg < 0x15 and reg % 7 >= 4:
+                ords[reg // 7][f].append((reg, val, src))
+    return framelog.canonical(frames), ords
 
 
 def lift(prog, frames=()):
@@ -587,8 +748,8 @@ def lift(prog, frames=()):
     return Tracker(_pitch(prog, _freq_words(frames)), clocks, _tempo(clocks), _instruments(prog))
 
 
-def _graph(pitch, frames):
-    """``(graph, lanes)``: accepted notes as freq generators, everything else RAW.
+def _graph(prog, pitch, frames, ords):
+    """``(graph, lanes)``: notes and instrument lanes as generators, the rest RAW.
 
     A detuned frame counts only as vibrato on the current note, or as a fresh exact
     anchor; an excursion to an unrelated note stays residual."""
@@ -596,6 +757,7 @@ def _graph(pitch, frames):
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
     residual = []
+    pre, post, refined = _instr_streams(prog, ords)
     for f, rec in enumerate(frames):
         gen = {}
         for v in range(3):
@@ -610,8 +772,14 @@ def _graph(pitch, frames):
                 lanes[v].append((f, note))
         for r, seq in seqs.items():
             seq.append(gen.get(r))
-        residual.append([e for sec in rec for e in sec if e[0] not in gen])
-    nodes = [raw(residual)]
+        residual.append([e for sec in rec for e in sec if e[0] not in gen and e[0] not in refined])
+    edges = {}
+    for counts, _t, _r in pre + post:
+        edges.setdefault(counts, len(edges))
+    nodes = [edge(c) for c in edges]
+    fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
+    nodes += fired + [raw(residual)]
+    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     return Graph(nodes, freq_table=pitch), lanes
 
@@ -619,10 +787,11 @@ def _graph(pitch, frames):
 def render(prog, trace, nframes):
     """``(rendered, oracle, Coverage, lanes)`` for the frame program's projection.
 
-    Accepted-note freq entries are interpreted generators; everything else is an
-    explicit RAW residual, so a ``gate`` PASS certifies the partition is complete."""
-    gt = oracle(prog, trace, nframes)
-    graph, lanes = _graph(_pitch(prog, _freq_words(gt)), gt)
+    Accepted-note freq entries and explained ADSR writes are interpreted
+    generators; everything else is an explicit RAW residual, so a ``gate`` PASS
+    certifies the partition is complete."""
+    gt, ords = _observe(prog, trace, nframes)
+    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords)
     recs, interp, rawn = _run(graph, nframes)
     return recs, gt, _coverage(interp, rawn), lanes
 

@@ -84,6 +84,23 @@ def test_refinement_moves_coverage_out_of_raw_and_still_gates():
     assert cov.planes["freq"] == (2, 2) and cov.planes["ctrl"] == (0, 2)
 
 
+def test_edge_stream_fires_downstream_selects_once_per_edge():
+    """An EDGE tick emits one SELECT value; two ticks in a frame emit two, in order."""
+    nodes = [T.edge((0, 2, 1)), T.select((0x11, 0x22, 0x33), (0, 1, 2), ("event", 0), 5)]
+    recs = T.eval_graph(T.Graph(nodes), 3)
+    got = [[w for sec in rec for w in sec] for rec in recs]
+    assert got == [[], [(5, 0x11), (5, 0x22)], [(5, 0x33)]]
+
+
+def test_mutation_wrong_select_row_is_detected():
+    """The row indexes the table: a wrong row emits a wrong byte and the law fails."""
+    frames = _frames([[(5, 0x22)]])
+    ok = T.Graph([T.edge((1,)), T.select((0x11, 0x22), (1,), ("event", 0), 5)])
+    assert _diff(ok, frames) is None
+    d = _diff(T.Graph([T.edge((1,)), T.select((0x11, 0x22), (0,), ("event", 0), 5)]), frames)
+    assert d is not None and d.got == (5, 0x11) and d.want == (5, 0x22)
+
+
 def test_mutation_wrong_lookup_value_is_detected():
     frames = _frames([[(0, 0x10)], [(0, 0x10)]])
     assert _diff(T.Graph([T.lookup([0x10], T.FRAME, 0)]), frames) is None
@@ -114,6 +131,8 @@ def test_dangling_and_unknown_forms_raise():
         T.eval_graph(T.Graph([T.Generator(("LOOKUP", (1,)), T.FRAME, ("nope",))]), 1)
     with pytest.raises(T.TrackerError, match="no value emit"):
         T.eval_graph(T.Graph([T.Generator(("DIV", 1), T.FRAME, ("plane", 0))]), 1)
+    with pytest.raises(T.TrackerError, match="no edge emit"):
+        T.eval_graph(T.Graph([T.Generator(("LOOKUP", (1,)), T.FRAME, ("fire",))]), 1)
     assert T.Graph([T.raw([])]).raw_index() == 0 and T.Graph([T.div(2)]).raw_index() is None
 
 
@@ -247,7 +266,100 @@ def test_note_direct_and_shift_inversion():
     assert T._note_of(ps, int(octave[5])).index == 5
 
 
-# ---- 3. the engine and the law over real tunes -----------------------------------
+# ---- 3. instrument lanes: ADSR from a declared bank ------------------------------
+def _bank(base, rows, stride, lanes):
+    """``(image, declaration)`` for a ``rows`` x ``stride`` instrument bank."""
+    mem = bytearray(0x10000)
+    for off, vals in lanes.items():
+        for i, v in enumerate(vals[:rows]):
+            mem[base + stride * i + off] = v
+    return mem, _table(base, rows * stride, stride=stride)
+
+
+def _sel(base, off, cell):
+    """``mem[base + off + cell]``: an indexed lane read at a pure (local) index."""
+    idx = ("op", "INT_ZEXT", (("loc", cell),), 2)
+    return ("mem", ("op", "INT_ADD", (("const", base + off, 2), idx), 2), 1)
+
+
+def _rowprog(mem, decl, stores, cell=0x0800, step=1):
+    """Frame program whose play reads a row cell, writes ``stores``, then steps it."""
+    load = ("asg", "i", ("mem", ("const", cell, 2), 1))
+    bump = (
+        "st",
+        ("const", cell, 2),
+        ("op", "INT_ADD", (("mem", ("const", cell, 2), 1), ("const", step, 1)), 1),
+    )
+    stmts = [load] + [("st", ("const", 0xD400 + r, 2), v) for r, v in stores] + [bump, ("ret",)]
+    return frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def test_adsr_reads_a_declared_lane_at_a_recovered_row():
+    """The emit is a declared lane byte; ad and sr share one recovered row stream."""
+    ad, sr = [0x11, 0x22, 0x33, 0x44], [0x51, 0x52, 0x53, 0x54]
+    mem, decl = _bank(0x2000, 4, 4, {2: ad, 3: sr})
+    prog = _rowprog(mem, decl, [(5, _sel(0x2000, 2, "i")), (6, _sel(0x2000, 3, "i"))], step=4)
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["ad"] == (4, 4) and cov.planes["sr"] == (4, 4)
+    _gt, ords = T._observe(prog, {}, 4)
+    pre, post, refined = T._instr_streams(prog, ords)
+    assert refined == {5, 6} and not pre
+    got = {r: t for _c, t, r in post}
+    assert got[5] == ("SELECT", tuple(ad), (0, 1, 2, 3))  # the declared lane, by row
+    assert got[6][1] == tuple(sr) and got[6][2] == got[5][2]
+
+
+def test_a_lane_cell_the_play_phase_wrote_is_not_read_as_constant():
+    """Provenance is not enough: the byte must equal the declared image byte."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
+    clean = _rowprog(mem, decl, [(5, ("mem", ("const", 0x2002, 2), 1))])
+    assert T.render(clean, {}, 4)[2].planes["ad"] == (4, 4)
+    write = ("st", ("const", 0x2002, 2), ("const", 0x99, 1))
+    stmts = [write] + list(clean.procs[0][3])
+    dirty = frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+    assert T.render(dirty, {}, 4)[2].planes["ad"] == (0, 4)  # the snapshot disagrees
+    assert T.gate(dirty, {}, 4) is None
+
+
+def test_immediate_writes_split_from_lane_writes_by_provenance():
+    """A constant a store site writes is its own one-entry stream; nothing else is."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
+    prog = frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem)
+    banks = T._banks(prog)
+    seq = [[(5, 0x11, 0x2002)], [(5, 0x00, None)]]
+    rel, streams = T._refine_voice(seq, {5}, banks, {5: {0}}, mem)
+    assert rel == "post" and [s[1][0] for s in streams] == ["SELECT", "LOOKUP"]
+    assert streams[1][1] == ("LOOKUP", (0,)) and streams[1][0] == (0, 1)
+    assert T._refine_voice(seq, {5}, banks, {}, mem) is None  # 0 is no program constant
+
+
+def test_write_order_against_the_residual_is_checked():
+    """ADSR ahead of ctrl places the streams before RAW; interleaved is refused."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
+    banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
+    ahead = [[(5, 0x11, 0x2002), (4, 0x41, None)]]
+    assert T._refine_voice(ahead, {5}, banks, {}, mem)[0] == "pre"
+    mid = [[(4, 0x41, None), (5, 0x11, 0x2002), (4, 0x40, None)]]
+    assert T._refine_voice(mid, {5}, banks, {}, mem) is None
+
+
+def test_immediates_are_read_off_the_program_text_per_register_class():
+    """A voice-generic store site fixes the constant for the register class."""
+    stmts = [
+        ("st", ("const", 0xD405, 2), ("const", 0x00, 1)),
+        ("st", ("const", 0xD40D, 2), ("const", 0xF0, 1)),
+        ("st", ("const", 0x0800, 2), ("const", 0x11, 1)),
+    ]
+    prog = frameprog.FrameProgram(0x1000, 0x0F00, procs=[(0x1000, (), (), stmts)])
+    assert T._immediates(prog) == {5: {0x00}, 6: {0xF0}}
+
+
+# ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
     dec = (
@@ -283,6 +395,25 @@ def test_commando_notes_and_the_law(sid, subtune):
     assert fi / ft > 0.9  # freq plane mostly interpreted
     assert cov.interp + cov.residual == cov.total  # the partition is complete
     assert all(lanes[v] for v in range(3)) and lanes[0][0][1].name
+    assert cov.planes["ad"][0] == cov.planes["ad"][1] > 0  # ADSR wholly interpreted
+    assert cov.planes["sr"][0] == cov.planes["sr"][1] > 0
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
+    """Every ADSR emit is a byte of the declared $5591 bank at a recovered row."""
+    prog, trace, nf = _lifted(sid, subtune)
+    _gt, ords = T._observe(prog, trace, nf)
+    pre, post, refined = T._instr_streams(prog, ords)
+    assert refined == {5, 6, 12, 13, 19, 20} and not pre
+    sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
+    assert len(sel) == 6 and set(T.lift(prog).instruments) >= {0x5594, 0x5595}
+    for off, regs in ((3, (5, 12, 19)), (4, (6, 13, 20))):
+        lane = tuple(prog.mem0[0x5591 + off + 8 * i] for i in range(33))
+        assert all(sel[r][1] == lane for r in regs)  # the AD and SR lanes, as declared
+    for v in range(3):
+        assert sel[7 * v + 5][2] == sel[7 * v + 6][2]  # one row stream per voice
+        assert set(sel[7 * v + 5][2]) <= set(range(13))  # rows are instrument numbers
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Ghouls_n_Ghosts", "Follin_Tim"))
