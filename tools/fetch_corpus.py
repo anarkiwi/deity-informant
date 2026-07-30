@@ -6,10 +6,12 @@ writes the accepted relpaths as ``.sid`` literals for the fetch machinery.
 """
 
 import re
+import sys
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
-from pysidtracker.testing import TuneFetchError, resolve_tune
+from pysidtracker.testing import DEFAULT_MIRROR, TuneFetchError, resolve_tune
 
 from deity_informant.c64 import load_psid
 
@@ -53,11 +55,21 @@ COMPOSERS = [
 ]
 
 
+def songlengths(cache=CACHE, mirror=DEFAULT_MIRROR):
+    """Cached ``Songlengths.md5``, fetched from the mirror when absent."""
+    dst = Path(cache) / "Songlengths.md5"
+    if not dst.is_file():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen("%s/DOCUMENTS/Songlengths.md5" % mirror, timeout=120) as fh:
+            dst.write_bytes(fh.read())
+    return dst
+
+
 def candidates():
     """Round-robin MUSICIANS relpaths across the composer set (diversity first)."""
     by_comp = defaultdict(list)
     pat = re.compile(r"^; (/MUSICIANS/([A-Z]/[^/]+)/.+\.sid)$")
-    for line in (CACHE / "Songlengths.md5").read_text(encoding="latin-1").splitlines():
+    for line in songlengths().read_text(encoding="latin-1").splitlines():
         m = pat.match(line)
         if m and m.group(2) in COMPOSERS:
             by_comp[m.group(2)].append(m.group(1).lstrip("/"))
@@ -80,6 +92,9 @@ def valid_v1(path):
 
 
 def main():
+    if "--songlengths" in sys.argv:
+        print("cached %s" % songlengths(), flush=True)
+        return
     kept = []
     for rel in candidates():
         if len(kept) >= TARGET:

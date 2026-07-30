@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 4 * * *"   # nightly: Gate C over the whole manifest
+  workflow_dispatch:
 
 jobs:
   test:
@@ -74,3 +77,32 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Run Ghidra headless integration test
         run: docker run --rm di-ghidra:ci
+
+  corpus:
+    # Gate C (cycle-exact, full Songlengths) actually executes here. The hermetic
+    # job cannot: corpus_params yields nothing without Songlengths.md5, and
+    # fetching it there would make ~17 corpus-parametrized files non-hermetic.
+    # Per PR a diverse prefix of the composer round-robin runs; the nightly and
+    # manual runs take the whole manifest, where hours are acceptable.
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev,oracle]"
+      - name: Cache HVSC tunes
+        uses: actions/cache@v6
+        with:
+          path: .oracle-cache/hvsc
+          key: hvsc-corpus-${{ hashFiles('tests/_corpus.py') }}
+      - name: Fetch Songlengths.md5
+        run: python tools/fetch_corpus.py --songlengths
+      - name: Gate C / Gate FP / Gate T over the corpus
+        env:
+          DI_CORPUS_LIMIT: ${{ github.event_name == 'pull_request' && '12' || '0' }}
+        run: |
+          pytest tests/test_structured.py tests/test_sidprog.py tests/test_frameval.py \
+                 tests/test_tracker.py -m "not oracle" -n auto -p no:cacheprovider
