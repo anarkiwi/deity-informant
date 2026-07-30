@@ -100,7 +100,7 @@ def test_frame_buffer_flushes_one_canonical_record():
 
 
 def test_eval_src_records_the_cell_each_write_loaded_from():
-    """Provenance: an indexed byte load reports its cell, any other value form none."""
+    """Provenance: every byte load at a pure address reports its cell, in order."""
     mem0 = bytearray(0x10000)
     mem0[0x0803] = 0x5A
     idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
@@ -115,7 +115,7 @@ def test_eval_src_records_the_cell_each_write_loaded_from():
     prog = _prog(stmts, mem0=mem0)
     frames, srcs = frameval.eval_src(prog, {}, 2)
     assert frames[0] == [(5, 0x5A), (6, 0x0A), (4, 0x41)]
-    assert srcs == [[0x0803, None, None]] * 2
+    assert srcs == [[(0x0803,), (0x0803,), ()]] * 2  # the masked load keeps its cell
     assert F.diff(F.canonical(frames), frameval.eval_fp(prog, {}, 2)) is None
     assert frameval._pure(idx) and not frameval._pure(load)
 

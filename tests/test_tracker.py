@@ -331,7 +331,7 @@ def test_immediate_writes_split_from_lane_writes_by_provenance():
     mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
     prog = frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem)
     banks = T._banks(prog)
-    seq = [[(5, 0x11, 0x2002)], [(5, 0x00, None)]]
+    seq = [[(5, 0x11, (0x2002,))], [(5, 0x00, ())]]
     rel, streams = T._refine_voice(seq, {5}, banks, {5: {0}}, mem)
     assert rel == "post" and [s[1][0] for s in streams] == ["SELECT", "LOOKUP"]
     assert streams[1][1] == ("LOOKUP", (0,)) and streams[1][0] == (0, 1)
@@ -342,9 +342,9 @@ def test_write_order_against_the_residual_is_checked():
     """ADSR ahead of ctrl places the streams before RAW; interleaved is refused."""
     mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
     banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
-    ahead = [[(5, 0x11, 0x2002), (4, 0x41, None)]]
+    ahead = [[(5, 0x11, (0x2002,)), (4, 0x41, ())]]
     assert T._refine_voice(ahead, {5}, banks, {}, mem)[0] == "pre"
-    mid = [[(4, 0x41, None), (5, 0x11, 0x2002), (4, 0x40, None)]]
+    mid = [[(4, 0x41, ()), (5, 0x11, (0x2002,)), (4, 0x40, ())]]
     assert T._refine_voice(mid, {5}, banks, {}, mem) is None
 
 
@@ -357,6 +357,83 @@ def test_immediates_are_read_off_the_program_text_per_register_class():
     ]
     prog = frameprog.FrameProgram(0x1000, 0x0F00, procs=[(0x1000, (), (), stmts)])
     assert T._immediates(prog) == {5: {0x00}, 6: {0xF0}}
+
+
+def test_a_constant_reaches_a_ctrl_store_through_a_local():
+    """A hard-restart byte the play code loads in a branch is still a program constant."""
+    stmts = [
+        ("if", "if", ("loc", "c"), [("asg", "a", ("const", 0x80, 1))], []),
+        ("st", ("const", 0xD404, 2), ("loc", "a")),
+        ("asg", "b", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD40B, 2), ("loc", "b")),
+    ]
+    prog = frameprog.FrameProgram(0x1000, 0x0F00, procs=[(0x1000, (), (), stmts)])
+    assert T._immediates(prog) == {4: {0x80}}  # the loaded byte contributes nothing
+
+
+# ---- 3b. ctrl: the waveform lane, and the gate bit over the held row --------------
+_SHADOW = 0x0900
+
+
+def _ctrlprog(mem, decl, arms, cell=0x0800, step=4):
+    """Frame program whose play reads a row cell, runs ``arms``, then steps it."""
+    load = ("asg", "i", ("mem", ("const", cell, 2), 1))
+    bump = (
+        "st",
+        ("const", cell, 2),
+        ("op", "INT_ADD", (("mem", ("const", cell, 2), 1), ("const", step, 1)), 1),
+    )
+    stmts = [load] + arms + [bump, ("ret",)]
+    return frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def _ctrl_arms(base=0x2000, off=2):
+    """Note-on writes the lane byte and shadows it; the gate-off writes it back cleared."""
+    lane = _sel(base, off, "i")
+    cleared = ("op", "INT_AND", (("mem", ("const", _SHADOW, 2), 1), ("const", 0xFE, 1)), 1)
+    return [
+        ("st", ("const", _SHADOW, 2), lane),
+        ("st", ("const", 0xD404, 2), lane),
+        ("st", ("const", 0xD404, 2), cleared),
+    ]
+
+
+def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
+    """Gate-on reads the declared lane; gate-off is the same row with bit 0 cleared."""
+    wave = [0x41, 0x15, 0x81, 0x43]
+    mem, decl = _bank(0x2000, 4, 4, {2: wave})
+    prog = _ctrlprog(mem, decl, _ctrl_arms())
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["ctrl"] == (8, 8)
+    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0}
+    _gt, ords = T._observe(prog, {}, 4)
+    _pre, post, refined = T._instr_streams(prog, ords)
+    assert refined == {4}
+    (t,) = [t for _c, t, r in post if r == 4]
+    w = tuple(wave)
+    gated, on = tuple(b & 0xFE for b in wave), tuple(b | 1 for b in wave)
+    assert t == ("SELECT", w + w + gated + on, (0, 8, 1, 9, 2, 10, 3, 11))
+
+
+def test_a_gate_write_without_a_recovered_row_stays_residual():
+    """The gate bit rides a recovered waveform: with no lane read there is nothing to ride."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x41, 0x15, 0x81, 0x43]})
+    shadow, on, cleared = _ctrl_arms()
+    assert T.render(_ctrlprog(mem, decl, [shadow, on, cleared]), {}, 4)[2].planes["ctrl"] == (8, 8)
+    bare = _ctrlprog(mem, decl, [shadow, cleared])  # the gate-off write, with no note-on
+    assert T.render(bare, {}, 4)[2].planes["ctrl"] == (0, 4) and T.gate(bare, {}, 4) is None
+
+
+def test_a_play_written_waveform_lane_takes_the_gate_writes_down_with_it():
+    """#61 for ctrl: a mutated lane cell is no constant, so its gate image is none either."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x41, 0x15, 0x81, 0x43]})
+    assert T.render(_ctrlprog(mem, decl, _ctrl_arms()), {}, 4)[2].planes["ctrl"] == (8, 8)
+    dirty = [("st", ("const", 0x2002, 2), ("const", 0x99, 1))] + _ctrl_arms()
+    prog = _ctrlprog(mem, decl, dirty)
+    assert T.render(prog, {}, 4)[2].planes["ctrl"] == (0, 8) and T.gate(prog, {}, 4) is None
 
 
 # ---- 4. the engine and the law over real tunes -----------------------------------
@@ -401,16 +478,21 @@ def test_commando_notes_and_the_law(sid, subtune):
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
 def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
-    """Every ADSR emit is a byte of the declared $5591 bank at a recovered row."""
+    """Every ctrl/ADSR emit is a byte of the declared $5591 bank at a recovered row."""
     prog, trace, nf = _lifted(sid, subtune)
     _gt, ords = T._observe(prog, trace, nf)
     pre, post, refined = T._instr_streams(prog, ords)
-    assert refined == {5, 6, 12, 13, 19, 20} and not pre
+    assert refined == {4, 5, 6, 11, 12, 13, 18, 19, 20} and not pre
     sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
-    assert len(sel) == 6 and set(T.lift(prog).instruments) >= {0x5594, 0x5595}
+    assert len(sel) == 9 and set(T.lift(prog).instruments) >= {0x5594, 0x5595}
     for off, regs in ((3, (5, 12, 19)), (4, (6, 13, 20))):
         lane = tuple(prog.mem0[0x5591 + off + 8 * i] for i in range(33))
         assert all(sel[r][1] == lane for r in regs)  # the AD and SR lanes, as declared
+    wave = tuple(prog.mem0[0x5593 + 8 * i] for i in range(33))
+    held = tuple(b & 0xFE for b in wave) + tuple(b | 1 for b in wave)
+    for r in (4, 11, 18):  # the waveform lane at +2, then the three held readings
+        assert sel[r][1] == wave + wave + held
+        assert set(sel[r][2]) <= set(range(66)) | set(range(66, 99))  # no gate-set row
     for v in range(3):
         assert sel[7 * v + 5][2] == sel[7 * v + 6][2]  # one row stream per voice
         assert set(sel[7 * v + 5][2]) <= set(range(13))  # rows are instrument numbers

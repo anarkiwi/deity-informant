@@ -20,7 +20,7 @@ _FREQ_REGS = (0, 1, 7, 8, 14, 15)
 FRAME = ("frame",)
 
 Generator = namedtuple("Generator", "transfer trigger route")
-Coverage = namedtuple("Coverage", "interp residual total planes")
+Coverage = namedtuple("Coverage", "interp residual total planes classes", defaults=(None,))
 Pitch = namedtuple("Pitch", "base words octaves reference endian shift hi", defaults=(None,))
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
@@ -67,10 +67,11 @@ def raw(per_frame):
 class Graph:
     """Generator nodes plus the two distinguished ones every graph carries."""
 
-    def __init__(self, nodes, freq_table=None, cadence=None):
+    def __init__(self, nodes, freq_table=None, cadence=None, classes=None):
         self.nodes = list(nodes)
         self.freq_table = freq_table
         self.cadence = cadence
+        self.classes = classes
 
     def raw_index(self):
         """Index of the RAW floor node, or None."""
@@ -179,7 +180,7 @@ def _plane_of(reg):
     return "filter" if reg <= 0x18 else "tail"
 
 
-def _coverage(interp, rawn):
+def _coverage(interp, rawn, classes=None):
     """The interpreted/residual partition of the emits, split by plane."""
     planes = {}
     for src, gen in ((interp, True), (rawn, False)):
@@ -188,13 +189,13 @@ def _coverage(interp, rawn):
             it, tot = planes.get(p, (0, 0))
             planes[p] = (it + (n if gen else 0), tot + n)
     ni, nr = sum(interp.values()), sum(rawn.values())
-    return Coverage(ni, nr, ni + nr, planes)
+    return Coverage(ni, nr, ni + nr, planes, classes)
 
 
 def coverage(graph, nframes):
     """Interpreted vs residual emit counts, and the per-plane split."""
     _recs, interp, rawn = _run(graph, nframes)
-    return _coverage(interp, rawn)
+    return _coverage(interp, rawn, graph.classes)
 
 
 def from_frames(frames):
@@ -514,14 +515,19 @@ def _base(addr):
     return 0
 
 
-def _stmts(prog):
-    """Every statement of every procedure, nested bodies included."""
-    stack = [list(p[3]) for p in prog.procs]
+def _proc_stmts(proc):
+    """Every statement of one procedure, nested bodies included."""
+    stack = [list(proc[3])]
     while stack:
-        body = stack.pop()
-        for s in body:
+        for s in stack.pop():
             yield s
             stack.extend(list(b) for b in frameproc._stmt_bodies(s))
+
+
+def _stmts(prog):
+    """Every statement of every procedure, nested bodies included."""
+    for proc in prog.procs:
+        yield from _proc_stmts(proc)
 
 
 def _resolve(expr, env):
@@ -603,8 +609,9 @@ def _instruments(prog):
     return sorted(out)
 
 
-# ---- 4. instrument lanes: ADSR from a declared bank at a recovered row ------------
-_ADSR = (5, 6)
+# ---- 4. instrument lanes: ctrl/AD/SR from a declared bank at a recovered row ------
+_CTRL = 4
+_SECT = ((0xFF, 0x00), (0xFE, 0x00), (0xFF, 0x01))  # held: byte, gate cleared, gate set
 
 
 def _banks(prog):
@@ -616,41 +623,85 @@ def _banks(prog):
     ]
 
 
+def _sid_class(addr):
+    """Register class ``reg % 7`` of a SID store address, or None."""
+    reg = _base(addr) - _SID
+    return reg % 7 if 0 <= reg <= 0x14 else None
+
+
+def _const_flow(body, env, out):
+    """``{class: {value}}`` for SID stores in one body; returns the exit ``env``.
+
+    ``env[name]`` is the constant set a local may hold. A nested body inherits the
+    environment and merges back, so a constant a branch loads reaches the store
+    that follows it — the shape a gate-off or hard-restart write takes."""
+    for s in body:
+        if s[0] == "asg":
+            env[s[1]] = {s[2][1] & 0xFF} if s[2][0] == "const" else set()
+        elif s[0] == "st":
+            cls, val = _sid_class(s[1]), s[2]
+            if cls is not None and val[0] in ("const", "loc"):
+                got = {val[1] & 0xFF} if val[0] == "const" else env.get(val[1], ())
+                out.setdefault(cls, set()).update(got)
+        for sub in [_const_flow(list(b), dict(env), out) for b in frameproc._stmt_bodies(s)]:
+            for name, vals in sub.items():
+                env[name] = env.get(name, set()) | vals
+    return env
+
+
 def _immediates(prog):
     """``{register class: {value}}``: constants a store site writes to a SID register.
 
     Keyed by ``reg % 7``: one voice-generic store site serves all three voices
     behind a dynamic offset, so the class is what the program text fixes."""
     out = {}
-    for s in _stmts(prog):
-        if s[0] == "st" and s[2][0] == "const":
-            reg = _base(s[1]) - _SID
-            if 0 <= reg <= 0x14:
-                out.setdefault(reg % 7, set()).add(s[2][1] & 0xFF)
+    for proc in prog.procs:
+        _const_flow(list(proc[3]), {}, out)
     return out
 
 
-def _classify(w, banks, imm, mem0):
-    """``(stream key, row)`` for one write: a declared lane byte, or an immediate.
+def _lane(key, mem0):
+    """The declared bytes of a bank lane, one per row."""
+    _k, _reg, base, size, stride, off = key
+    return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
+
+
+def _classify(w, banks, imm, mem0, held):
+    """``(stream key, row)`` for one write: a lane byte, its gate image, or a constant.
 
     A lane read must agree with the declared image byte, so a cell the play phase
-    mutated is never taken for constant data. None when neither reading holds."""
-    reg, val, src = w
-    if src is None:
-        return (("imm", reg, val), 0) if val in imm.get(reg % 7, ()) else None
-    for base, size, stride in banks:
-        if base <= src < base + size and mem0[src] == val:
-            row, off = divmod(src - base, stride)
-            return ("lane", reg, base, size, stride, off), row
+    mutated is never read as constant. A ctrl write carrying no cell of its own is
+    the gate bit over the lane byte at the voice's held row: only bit 0 moves."""
+    reg, val, srcs = w
+    for src in srcs:
+        for base, size, stride in banks:
+            if base <= src < base + size and mem0[src] == val:
+                row, off = divmod(src - base, stride)
+                key = ("lane", reg, base, size, stride, off)
+                held[reg] = (key, row)
+                return key, row
+    if reg % 7 == _CTRL and reg in held:
+        key, row = held[reg]
+        lane = _lane(key, mem0)
+        for sec, (amask, omask) in enumerate(_SECT):
+            if (lane[row] & amask) | omask == val:
+                return key, row + (1 + sec) * len(lane)
+    if val in imm.get(reg % 7, ()):
+        return ("imm", reg, val), 0
     return None
 
 
 def _key_table(key, mem0):
-    """A stream key's emitted table: one declared lane of a bank, or one constant."""
+    """A stream key's emitted table: one declared lane of a bank, or one constant.
+
+    A ctrl lane is followed by the three held readings of it, so the row says both
+    which byte and how the gate reached it, and every byte emitted is declared."""
     if key[0] == "imm":
         return (key[2],)
-    _k, _reg, base, size, stride, off = key
-    return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
+    lane = _lane(key, mem0)
+    if key[1] % 7 != _CTRL:
+        return lane
+    return lane + tuple((b & a) | o for a, o in _SECT for b in lane)
 
 
 def _mean_pos(obs, key):
@@ -666,7 +717,7 @@ def _refine_voice(seq, targets, banks, imm, mem0):
     order-preserved section in every frame (so one placement against the residual
     holds), and the node order by mean position reproduces the observed order."""
     rel = {"pre", "post"}
-    keys, rows, obs = [], {}, []
+    keys, rows, obs, held = [], {}, [], {}
     for f, ws in enumerate(seq):
         at = [i for i, w in enumerate(ws) if w[0] in targets]
         if at:
@@ -678,7 +729,7 @@ def _refine_voice(seq, targets, banks, imm, mem0):
                 return None
         row = []
         for i in at:
-            got = _classify(ws[i], banks, imm, mem0)
+            got = _classify(ws[i], banks, imm, mem0, held)
             if got is None:
                 return None
             key, r = got
@@ -701,24 +752,51 @@ def _refine_voice(seq, targets, banks, imm, mem0):
     return ("post" if "post" in rel else "pre"), streams
 
 
-def _instr_streams(prog, ords):
-    """``(pre, post, refined)``: ADSR streams, and the registers they take from RAW.
+_SUBSETS = ((4, 5, 6), (4, 5), (4, 6), (5, 6), (4,), (5,), (6,))
 
-    Per voice the widest explainable register set wins; ``pre``/``post`` place a
-    voice's streams before or after the residual, as its write order requires."""
+
+def _classes(streams):
+    """``{plane: {lane, gate, imm}}``: refined emits by the evidence behind them.
+
+    ``lane`` is a declared bank byte at a row that emit's own provenance recovered
+    and ``gate`` the same lane at the row the voice holds — both strong; ``imm`` is
+    a program constant, which passes the law without explaining an index."""
+    out = {}
+    for counts, t, reg in streams:
+        cls = out.setdefault(_plane_of(reg), {"lane": 0, "gate": 0, "imm": 0})
+        if t[0] == "LOOKUP":
+            cls["imm"] += sum(counts)
+        elif reg % 7 == _CTRL:
+            n = len(t[1]) // (1 + len(_SECT))
+            cls["lane"] += sum(r < n for r in t[2])
+            cls["gate"] += sum(r >= n for r in t[2])
+        else:
+            cls["lane"] += len(t[2])
+    return out
+
+
+def _instr_streams(prog, ords):
+    """``(pre, post, refined)``: instrument streams, and the registers they take from RAW.
+
+    Per voice the explainable subset of ctrl/AD/SR covering the most emits wins;
+    ``pre``/``post`` place its streams either side of the residual, as order requires."""
     banks, imm, mem0 = _banks(prog), _immediates(prog), prog.mem0
     pre, post, refined = [], [], set()
     for v, seq in enumerate(ords):
-        for regs in (_ADSR, (5,), (6,)):
-            targets = {7 * v + r for r in regs}
-            if not any(w[0] in targets for ws in seq for w in ws):
+        present, tried, best, bestn = {w[0] for ws in seq for w in ws}, set(), None, 0
+        for regs in _SUBSETS:
+            targets = frozenset(7 * v + r for r in regs) & present
+            if not targets or targets in tried:
                 continue
+            tried.add(targets)
             got = _refine_voice(seq, targets, banks, imm, mem0)
-            if got is not None:
-                rel, streams = got
-                (pre if rel == "pre" else post).extend(streams)
-                refined |= targets
-                break
+            n = sum(w[0] in targets for ws in seq for w in ws)
+            if got is not None and n > bestn:
+                best, bestn = (targets, got), n
+        if best is not None:
+            targets, (rel, streams) = best
+            (pre if rel == "pre" else post).extend(streams)
+            refined |= set(targets)
     return pre, post, refined
 
 
@@ -781,7 +859,7 @@ def _graph(prog, pitch, frames, ords):
     nodes += fired + [raw(residual)]
     nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
-    return Graph(nodes, freq_table=pitch), lanes
+    return Graph(nodes, freq_table=pitch, classes=_classes(pre + post)), lanes
 
 
 def render(prog, trace, nframes):
@@ -793,7 +871,7 @@ def render(prog, trace, nframes):
     gt, ords = _observe(prog, trace, nframes)
     graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords)
     recs, interp, rawn = _run(graph, nframes)
-    return recs, gt, _coverage(interp, rawn), lanes
+    return recs, gt, _coverage(interp, rawn, graph.classes), lanes
 
 
 def gate(prog, trace, nframes):
