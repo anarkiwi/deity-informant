@@ -252,6 +252,15 @@ split goes 2723 → 4351 lane rows and 1683 → 2803 gate rows. 86 tunes improve
 their whole `sr` plane and 3 more their whole `ctrl` plane. Gate FP holds
 623/623 and the tracker law 623/623, both unchanged.
 
+frameprog's indexed-access rendering (docs/frameprog.md §4.2, which cuts raw
+`mem[expr]` by 31% corpus-wide) moves **nothing** here, and that is the record:
+every plane is byte-identical before and after. Coverage at this layer is a
+function of the declarations and of `frameval.eval_src`'s store provenance, not
+of how an address is written; the remaining `ctrl`/`ad`/`sr` residual is 40%
+writes whose value reaches the store through a local (no source cell at all) and
+30% whose source cell falls outside every declaration. Naming an address better
+answers neither.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep

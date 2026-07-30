@@ -128,12 +128,12 @@ ifw: "if" -> w_if
 // ---- statements and expressions (shared) ---------------------------------------
 asg: lvalue "=" expr
 lvalue: NAME -> lv_name
-      | NAME "[" NAME "]" -> lv_index
+      | NAME "[" expr "]" -> lv_index
       | "mem" "[" expr "]" -> lv_mem
 
 ?expr: HEX -> e_hex
      | NAME [wsuf] -> e_name
-     | NAME "[" NAME "]" -> e_index
+     | NAME "[" expr "]" -> e_index
      | "mem" "[" expr "]" -> e_mem
      | zextw "(" expr ")" -> e_zext
      | "carry" "(" expr "," expr ")" -> e_carry

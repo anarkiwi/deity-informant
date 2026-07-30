@@ -1286,15 +1286,30 @@ def _forloops(info):
 
 
 # ---- printing --------------------------------------------------------------------
+def _index_of(addr):
+    """``(base, index expression)`` for a ``const + index`` address, else None.
+
+    The index is whatever the address adds to the base; ``zext2`` is the reader's
+    own widening (grammar ``_index_addr``) and is stripped so the text round trips."""
+    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != 2 or len(addr[2]) != 2:
+        return None
+    at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == 2 and c[1] >= 0x100]
+    if len(at) != 1:
+        return None
+    base, idx = addr[2][at[0]], addr[2][1 - at[0]]
+    if idx[0] == "const":
+        return None
+    if idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2:
+        idx = idx[2][0]
+    return base[1], idx
+
+
 def _membody(addr):
     if addr[0] == "const" and addr[2] == 2:
         return sidprog._addr_name(addr[1])
-    if addr[0] == "op" and addr[1] == "INT_ADD" and addr[3] == 2 and len(addr[2]) == 2:
-        idx, base = addr[2]
-        base_ok = base[0] == "const" and base[2] == 2 and base[1] >= 0x100
-        idx_ok = idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2 and idx[2][0][0] == "loc"
-        if base_ok and idx_ok:
-            return "%s[%s]" % (sidprog._addr_name(base[1]), idx[2][0][1])
+    got = _index_of(addr)
+    if got is not None:
+        return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1]))
     return None
 
 

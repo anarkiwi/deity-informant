@@ -26,6 +26,14 @@ pairs; `;` starts a comment to end-of-line and blank lines are insignificant
 (both are absorbed by the `_NL` terminal); indentation is insignificant (the
 emitters indent one space per nesting depth for readability only).
 
+A memory reference is either `mem[<address>]` or the indexed form
+`<base>[<index>]`, which denotes `base + zext2(index)`: `base` is a canonical
+cell name (a declared table base or one of its lane cobases, a state array, a
+SID register) and `index` is **any expression**, so a computed read against a
+declaration is written as the access it is rather than as address arithmetic.
+The reader supplies the `zext2`, so an emitter may drop it; every other form of
+address stays `mem[...]`.
+
 Reserved words are exactly the grammar's literal identifier terminals
 (`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
 canonical cell name, register or `uN`/`tN`/`rN` slot.
@@ -166,12 +174,12 @@ ifw: "if" -> w_if
 // ---- statements and expressions (shared) ---------------------------------------
 asg: lvalue "=" expr
 lvalue: NAME -> lv_name
-      | NAME "[" NAME "]" -> lv_index
+      | NAME "[" expr "]" -> lv_index
       | "mem" "[" expr "]" -> lv_mem
 
 ?expr: HEX -> e_hex
      | NAME [wsuf] -> e_name
-     | NAME "[" NAME "]" -> e_index
+     | NAME "[" expr "]" -> e_index
      | "mem" "[" expr "]" -> e_mem
      | zextw "(" expr ")" -> e_zext
      | "carry" "(" expr "," expr ")" -> e_carry
