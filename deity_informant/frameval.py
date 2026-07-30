@@ -41,6 +41,17 @@ def _load(n, slot):
     return lambda r, m, rd: sum(rd((fa(r, m, rd) + j) & 0xFFFF) << (8 * j) for j in range(sz))
 
 
+def _pure(n):
+    """True if the expression reads no memory: consts, locals and ops only.
+
+    A pure address re-evaluates with no side effect and consumes no volatile
+    input, so it can be probed again within the statement that used it."""
+    k = n[0]
+    if k in ("const", "loc"):
+        return True
+    return k == "op" and all(_pure(c) for c in n[2])
+
+
 def _expr(n, slot):
     """Closure ``(r, m, rd) -> value`` for one frameprog expression node."""
     k = n[0]
@@ -162,7 +173,16 @@ class _Code:
         self.emit(("asg", self.slot(s[1]), self.expr(s[2])))
 
     def _s_st(self, s, _ctx):
-        self.emit(("st", self.expr(s[1]), self.expr(s[2])))
+        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.source(s[2])))
+
+    def source(self, val):
+        """Address closure of a value that is one byte load at a pure address.
+
+        The store's provenance: which cell the byte came from, evaluable without
+        re-reading memory. None for every other value form."""
+        if val[0] == "mem" and val[2] == 1 and _pure(val[1]):
+            return self.expr(val[1])
+        return None
 
     def _s_ret(self, _s, _ctx):
         self.emit(("ret",))
@@ -319,8 +339,9 @@ class _Code:
 class Evaluator:
     """Executes a ``FrameProgram`` frame by frame against a pinned ``iota``."""
 
-    def __init__(self, prog, trace, state0=None):
+    def __init__(self, prog, trace, state0=None, sources=False):
         self.code = _Code(prog)
+        self.srcs = [] if sources else None
         self.m = bytearray(prog.mem0 if state0 is None else state0)
         self.sp = self.code.slot("sp")
         self.r = [0] * len(self.code.idx)
@@ -373,6 +394,10 @@ class Evaluator:
         self.k.clear()
         if self.acc is not None:
             r[self.acc] = 0
+        srcs = None
+        if self.srcs is not None:
+            srcs = []
+            self.srcs.append(srcs)
         start = r[s] & 0xFF
         push(0x0001)
         buf, stack, dyn, pc, n = [], [], 0, self.play, 0
@@ -387,6 +412,8 @@ class Evaluator:
                 m[a] = op[2](r, m, rd)
                 if C.SID_LO <= a <= C.SID_HI:
                     buf.append((a - C.SID_LO, m[a]))
+                    if srcs is not None:
+                        srcs.append(None if op[3] is None else op[3](r, m, rd) & 0xFFFF)
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
                     pc = op[3]
@@ -461,6 +488,15 @@ def eval_fp(prog, trace, nframes, state0=None):
     Output semantics: buffer the frame's SID writes, flush one canonical
     record per frame through the single projection."""
     return framelog.canonical(Evaluator(prog, trace, state0).frames(nframes))
+
+
+def eval_src(prog, trace, nframes, state0=None):
+    """``(per-frame writes, per-frame source cells)``: ``eval_fp`` before projection.
+
+    ``srcs[f][k]`` is the cell the k-th SID write of frame f loaded its byte from,
+    or None where the value is not one byte load at a pure address."""
+    ev = Evaluator(prog, trace, state0, sources=True)
+    return ev.frames(nframes), ev.srcs
 
 
 def gate_fp(model, nframes, prog=None):

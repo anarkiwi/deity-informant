@@ -95,6 +95,14 @@ one canonical record per frame* — MUST equal
 the walker's play-phase log (the Gate-C artifact) cut at frame boundaries.
 The law holds at **every** lift rung (§4).
 
+`eval_src` is the same run with **store provenance** recorded: the cell each
+SID write loaded its byte from, where the value is one byte load at a pure
+address (consts, locals and ops only — no memory read, so the address
+re-evaluates with no side effect and consumes no volatile input). It buffers
+and flushes exactly as `eval_fp` does, so the projection is byte-identical
+and the law is untouched; the tracker uses it to tell a declared-table read
+from a computed value (docs/tracker.md §5).
+
 ## 2. Language domain: SMC-free by construction
 
 **Principle (normative).** At frame level, self-modification is
