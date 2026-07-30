@@ -41,7 +41,7 @@ def test_header_version_and_notes():
     m = _model({(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("rts",), _regs())})
     text = frameprog.emit(m)
     assert text.startswith("frameprog %d\n" % frameprog.FRAMEPROG_VERSION)
-    assert "M-FP3" in text and "M-FP4" in text  # fusion/unification declared absent
+    assert "fusion" in text and "unification" in text  # declared not applied
     assert "state {" in text
 
 

@@ -61,6 +61,8 @@ def _engine_lines(t):
 def render_tune(rel):
     """Decompile one tune full-length and write its out/<Tune>.tracker.txt."""
     from deity_informant import follin_script as fscript
+    from deity_informant import framelog
+    from deity_informant import frameprog
     from deity_informant import structured as S
     from deity_informant import tracker
     from deity_informant.c64 import load_psid
@@ -76,9 +78,11 @@ def render_tune(rel):
     mem[0xD418] = 0x0F
     frames = secs * 50
     model, _ev = S.decompile(mem, init, play, frames, sub)
-    t = tracker.lift(model)
-    div = tracker.gate_t(model, frames)
-    _r, _gt, cov, lanes = tracker.render(model, frames)
+    prog = frameprog.program(model)
+    trace, _walker = frameprog.iota(model, frames)
+    rendered, gt, cov, lanes = tracker.render(prog, trace, frames)
+    div = framelog.diff(rendered, gt)  # the law, on the projection just rendered
+    t = tracker.lift(prog, gt)
     scripts = fscript.decode(model)
 
     lines = ["tracker %s  (subtune %d, %d frames)" % (sid.stem, sub, frames), "; ---- engine ----"]
@@ -86,7 +90,7 @@ def render_tune(rel):
     lines.append("; ---- note lanes (frame  note  xcount  detune[lo..hi]) ----")
     fi, ft = cov.planes.get("freq", (0, 0))
     lines.append(
-        "gate_t: %s   interpreted %d/%d writes (%.0f%%)   freq %d/%d (%.0f%%)"
+        "gate: %s   interpreted %d/%d writes (%.0f%%)   freq %d/%d (%.0f%%)"
         % (
             "PASS" if div is None else "FAIL %r" % (div,),
             cov.interp,
@@ -118,7 +122,7 @@ def render_tune(rel):
     (ROOT / "out" / ("%s.tracker.txt" % sid.stem)).write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
-    return "%s: pitch=%s interp=%d/%d scripts=%d gateT=%s" % (
+    return "%s: pitch=%s interp=%d/%d scripts=%d gate=%s" % (
         sid.stem,
         t.pitch is not None,
         cov.interp,

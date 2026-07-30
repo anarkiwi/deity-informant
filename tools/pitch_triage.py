@@ -1,8 +1,8 @@
 """Triage remaining pitch-detection misses with graph facts (resumable).
 
 Decompiles each miss in out/tracker_audit.jsonl at full Songlengths and records
-graph-grounded facts (freq-role tables, decl stride/cobases, co-index,
-shadow-zeros, freq kinds) and a representation label. Appends pitch_triage.jsonl.
+graph-grounded facts (freq-role tables, decl stride/cobases, shadow-zeros,
+freq kinds) and a representation label. Appends pitch_triage.jsonl.
 """
 
 import json
@@ -36,7 +36,6 @@ def _facts(item):
     from deity_informant import eqlift_annotate as ann
     from deity_informant import song_model as sm
     from deity_informant import structured as S
-    from deity_informant import tracker
     from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
     from pysidtracker.testing import resolve_tune  # pylint: disable=import-error
 
@@ -52,8 +51,6 @@ def _facts(item):
         m0 = model.mem0
         tr = ann.aggregate(list(ann.model_procs(model)), model)
         decls = {d["base"]: d for d in ann._decls(model)}
-        groups = tracker._coindexed_bases(model)
-        coidx = set().union(*groups) if groups else set()
         info = []
         for b in sorted(b for b, rs in tr.roles.items() if any("freq" in x for x in rs)):
             d = decls.get(b, {})
@@ -63,7 +60,6 @@ def _facts(item):
                     "size": d.get("size"),
                     "stride": d.get("stride"),
                     "cobases": len(d.get("cobases", [])),
-                    "coidx": b in coidx,
                     "zeros": all(x == 0 for x in m0[b : b + 12]),
                 }
             )
