@@ -111,3 +111,33 @@ def test_bad_documents_rejected(bad):
     reader = sidprog.parse if bad.startswith("sidprog") else frameprog.parse
     with pytest.raises(ValueError):
         reader(bad)
+
+
+@pytest.mark.parametrize(
+    "text,base,idx",
+    [
+        ("m_1500[X]", 0x1500, ("reg", 1)),
+        ("m_1500[(X + $01)]", 0x1500, ("op", "INT_ADD", (("reg", 1), ("const", 1, 1)), 1)),
+        ("m_1500[u3]", 0x1500, ("uni", 3, 1)),
+        ("m_1500[m_1600]", 0x1500, ("mem", ("const", 0x1600, 2), 1)),
+        ("sid.v1.freq_hi[X]", 0xD401, ("reg", 1)),
+    ],
+)
+def test_indexed_access_carries_any_index_expression(text, base, idx):
+    """``base[index]`` reads ``base + zext2(index)`` for an arbitrary index."""
+    n = sidprog.parse_expr(text)
+    assert G.addr_name(base) == text.split("[", 1)[0]
+    assert n == (
+        "mem",
+        ("op", "INT_ADD", (("op", "INT_ZEXT", (idx,), 2), ("const", base, 2)), 2),
+        1,
+    )
+
+
+def test_indexed_store_target_carries_an_index_expression():
+    """The same production serves the lvalue: a computed store names its base."""
+    doc = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n  m_1500[(X + $01)] = $07\n  ret\n}\n"
+    prog = frameprog.parse(doc)
+    st = prog.procs[0][3][0]
+    assert st[0] == "st" and st[1][2][1] == ("const", 0x1500, 2)
+    assert frameprog.dumps(frameprog.loads(frameprog.dumps(prog))) == frameprog.dumps(prog)

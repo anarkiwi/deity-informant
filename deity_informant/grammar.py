@@ -445,7 +445,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return self._nameref(str(c[0]), c[1] or 1)
 
     def e_index(self, c):
-        return ("mem", self._index_addr(str(c[0]), str(c[1])), 1)
+        return ("mem", self._index_addr(str(c[0]), c[1]), 1)
 
     def e_mem(self, c):
         return ("mem", c[0], 1)
@@ -518,16 +518,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("reg", reg_index(name))
 
     def _index_addr(self, base, idx):
+        """``base + zext2(idx)``: the declared-base indexed access, any index expression."""
         addr = req_name(self.rev.get(base, base))
-        node = ("loc", idx) if self._frame() else ("reg", reg_index(idx))
-        return ("op", "INT_ADD", (("op", "INT_ZEXT", (node,), 2), ("const", addr, 2)), 2)
+        return ("op", "INT_ADD", (("op", "INT_ZEXT", (idx,), 2), ("const", addr, 2)), 2)
 
     # -- statements ------------------------------------------------------------
     def lv_name(self, c):
         return ("name", str(c[0]))
 
     def lv_index(self, c):
-        return ("index", str(c[0]), str(c[1]))
+        return ("index", str(c[0]), c[1])
 
     def lv_mem(self, c):
         return ("mem", c[0])

@@ -240,7 +240,9 @@ valid, gated artifact.
 - **(f) The frame-function form.** The §2 domain closed: `state { }` (named
   u8/u16 fields, `[3]` voice arrays), declared `inputs`, const tables,
   `frame(state, in) -> writes`. FP-complete = no raw `mem[expr]` with
-  unproven range remains; otherwise the tune rests at its highest rung.
+  unproven range remains; otherwise the tune rests at its highest rung. §4.2
+  names the const-based reads as indexed accesses (16 tunes reach zero raw
+  memrefs); what remains raw is base-less — pointer-pair derefs above all.
   Illustrative excerpt, hand-derived from Commando's decompile (the $52xx
   slide path: state `m_551D[X]`/`ctr_551A[X]`, flags `m_5520[X]`):
 
@@ -298,6 +300,60 @@ other half of the same diagnosis: a "computed" table base is often a 16-bit
 wraparound negative displacement — Krakout reads `mem[idx - $19D7]`, i.e.
 `mem[idx + $E629]`. Folding `base - k` as `(base - k) & $FFFF` recovers it. No
 new information; the base is in the read expression.
+
+### 4.2 Indexed access: the computed read against its declaration
+
+A computed table read was emitted as address arithmetic — Commando's pitch-table
+hi lane read as `sid.v1.freq_hi[w] = mem[(t5 + $5429):2]` — because the indexed
+form `base[index]` only carried a *bare name* as index. The index of a real table
+read is rarely a bare register: it is the record offset the driver computed
+(`zext2((y << 1))` bound to a temporary, a state cell, a lane offset), so every
+such read fell back to `mem[expr]` and the consumer had to notice for itself that
+`t5 + $5429` lands in the declared `$5428` table.
+
+The grammar's index is therefore **any expression** (`e_index`/`lv_index`,
+[grammar.md](grammar.md)): `base[index]` denotes `base + zext2(index)`, `base` is
+the canonical cell name of the const the address adds to — a declared table base
+or one of its `+cobase` lanes, a state array, a SID register — and the reader
+supplies the `zext2`, so the emitter may drop it and the text still round trips.
+Nothing else moves: same cell, same value, no new range claim beyond the
+declaration's own `observed` extent, and the statement trees `frameprog.program`
+hands a consumer are untouched. Commando's read is now
+`sid.v1.freq_hi[w9] = m_5429[t5]` — the hi lane of the split pair, named.
+
+Measured (2026-07-30, 682 cached tunes, PSID start subtune, 200-frame windows;
+645 emit). Raw `mem[` occurrences in the emitted text: **15086 → 10338** (−31%),
+tunes with none at all **6 → 16**; Commando **17 → 5**, the five being the
+pointer-pair derefs `(hi<<8|lo) + y`, which have no const base to name. The
+canonical fixpoint holds 645/645, Gate FP 646/646 and the tracker law 646/646,
+all unchanged.
+
+What this is *not*: a coverage step. Over the same 682 tunes the tracker's
+partition is **byte-identical** before and after (interpreted 425657/1933877;
+ctrl 10558/300573, ad 16890/112534, sr 19105/115963), because tracker reads the
+statement trees and `frameval.eval_src`, neither of which an address *rendering*
+changes. Two probes bound the alternatives: admitting impure load addresses to
+the provenance rule moves nothing (the addresses are already pure), and chasing
+provenance through locals moves `ad` up 446→470 but collapses `ctrl` 402→66 on a
+25-tune sample — an extra source cell mis-binds the held row. The residual is a
+provenance question, not a naming one.
+
+Soundness (#61). The form makes no const claim: `m_5428[y]` has always named the
+address, exactly as `m_1500` names a scalar, and `data { }` remains the only
+place a declaration is asserted. Over the first 25 corpus tunes 176 sites newly
+render indexed, 135 of them at a base inside a declared table; **6** of those
+name a declaration whose span also holds a play-written cell (2 are stores). That
+is pre-existing — `_sound_hi` stops a declaration at the first play-written cell
+only *above* the observed read run, so a cell written inside the run does not
+truncate it — and the indexed form surfaces it rather than causing it. Left
+alone here deliberately: it is a `datadecl` extent question, and narrowing the
+declaration is a soundness change, not a rendering one.
+
+The sidprog dialect keeps the register-index form. Its `tN` bindings are expanded
+into the tree at parse, so a reader-supplied `zext2` around an already-widened
+binding would materialise as `zext2(zext2(t0))` and break the sidprog fixpoint;
+the grammar carries the wider form for both dialects, the sidprog emitter does
+not use it.
 
 ## 5. Risk register
 

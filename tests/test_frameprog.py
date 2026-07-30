@@ -10,7 +10,9 @@ import pytest
 
 from deity_informant import expr as E
 from deity_informant import framelog as F
+from deity_informant import frameproc
 from deity_informant import frameprog
+from deity_informant import frameval
 from deity_informant import sidprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
@@ -315,8 +317,63 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert " ctr_5513: u8" in text and " pos_54EC: u8[]" in text
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
+    assert re.search(r"sid\.v1\.freq_hi\[\w+\] = m_5429\[\w+\]", text)  # the hi lane, indexed
+    assert text.count("mem[") == 5  # only the pointer-pair derefs stay raw
     assert not re.search(r"\n +[AXY] = ", text) and " u0 = " not in text
     assert frameprog.emit(model) == text  # emission is deterministic
     canon = F.canonical(frames)
     assert F.loads(F.dumps(frames)) == canon
     assert F.digi_frames(frames) == []
+
+
+_IDX_DOC = (
+    "frameprog 0\n"
+    "play $1000\n"
+    "init $0F00\n"
+    "data {\n"
+    " table m_1500[4] observed:\n"
+    "  0A141E28\n"
+    "}\n"
+    "sub_1000() {\n"
+    "  t0 = (m_1600 & $03)\n"
+    "  sid.v1.freq_lo = m_1500[t0]\n"
+    "  sid.v1.freq_hi = m_1500[(t0 + $01)]\n"
+    "  sid.v1.pw_lo = m_1500[m_1600]\n"
+    "  ret\n"
+    "}\n"
+)
+
+
+def test_computed_table_read_is_an_indexed_access_not_a_raw_memref():
+    """A computed read against a declaration names the table and its index."""
+    prog = frameprog.loads(_IDX_DOC)
+    text = frameprog.dumps(prog)
+    assert "mem[" not in text
+    assert "m_1500[(t0 + $01)]" in text and "m_1500[m_1600]" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
+    frames = frameval.eval_fp(prog, {}, 1)
+    assert dict(frames[0][0]) == {0: 0x0A, 1: 0x14, 2: 0x0A}  # mem0[$1500], [$1501], [$1500]
+
+
+@pytest.mark.parametrize(
+    "addr,want",
+    [
+        (("op", "INT_ADD", (("loc", "t5"), ("const", 0x5429, 2)), 2), "m_5429[t5]"),
+        (
+            (
+                "op",
+                "INT_ADD",
+                (
+                    ("op", "INT_ZEXT", (("mem", ("const", 0x5518, 2), 1),), 2),
+                    ("const", 0x5591, 2),
+                ),
+                2,
+            ),
+            "m_5591[m_5518]",
+        ),
+        (("op", "INT_ADD", (("const", 0xD402, 2), ("loc", "v")), 2), "sid.v1.pw_lo[v]"),
+        (("op", "INT_ADD", (("loc", "t5"), ("const", 0x00F0, 2)), 2), None),  # zero page: no base
+    ],
+)
+def test_index_rendering_covers_the_computed_shapes(addr, want):
+    assert frameproc._membody(addr) == want

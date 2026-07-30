@@ -52,7 +52,10 @@ def _split_index(addr):
 
 
 def _mem_body(addr):
-    """Named text for a memory reference address, else None (raw mem[] only)."""
+    """Named text for a memory reference address, else None (raw mem[] only).
+
+    The sidprog dialect keeps the register-index form: its ``tN`` bindings expand
+    into the tree at parse, so a reader-supplied ``zext2`` would not be a fixpoint."""
     if addr[0] == "const" and addr[2] == 2:
         return _addr_name(addr[1])
     bi = _split_index(addr)
