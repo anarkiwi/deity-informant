@@ -351,12 +351,27 @@ class _Code:
 
 
 # ---- the machine ----------------------------------------------------------------
+def _derived(f, r, m, rd, prov):
+    """Cells a stored byte derives from: each read cell, and its origin (spec 1.4)."""
+    if f is None:
+        return ()
+    out = []
+    for c in f(r, m, rd):
+        o = prov.get(c)
+        if o is not None and o not in out:
+            out.append(o)
+        if c not in out:
+            out.append(c)
+    return tuple(out)
+
+
 class Evaluator:
     """Executes a ``FrameProgram`` frame by frame against a pinned ``iota``."""
 
     def __init__(self, prog, trace, state0=None, sources=False):
         self.code = _Code(prog)
         self.srcs = [] if sources else None
+        self.prov = {} if sources else None
         self.m = bytearray(prog.mem0 if state0 is None else state0)
         self.sp = self.code.slot("sp")
         self.r = [0] * len(self.code.idx)
@@ -397,14 +412,17 @@ class Evaluator:
         ``sp`` and the pushed return bytes are machine-faithful: call/ret move
         the shared stack register the program itself reads back (TSX/TXS)."""
         ops, r, m, rd, s = self.code.ops, self.r, self.m, self._rd, self.sp
-        rmap = self.code.rmap
+        rmap, prov = self.code.rmap, self.prov
 
         def push(ret):
             p = r[s] & 0xFF
             m[0x100 + p] = (ret >> 8) & 0xFF
-            p = (p - 1) & 0xFF
-            m[0x100 + p] = ret & 0xFF
-            r[s] = (p - 1) & 0xFF
+            q = (p - 1) & 0xFF
+            m[0x100 + q] = ret & 0xFF
+            r[s] = (q - 1) & 0xFF
+            if prov is not None:
+                prov.pop(0x100 + p, None)
+                prov.pop(0x100 + q, None)
 
         self.k.clear()
         if self.acc is not None:
@@ -427,8 +445,14 @@ class Evaluator:
                 m[a] = op[2](r, m, rd)
                 if C.SID_LO <= a <= C.SID_HI:
                     buf.append((a - C.SID_LO, m[a]))
-                    if srcs is not None:
-                        srcs.append(() if op[3] is None else op[3](r, m, rd))
+                    if prov is not None:
+                        srcs.append(_derived(op[3], r, m, rd, prov))
+                elif prov is not None:
+                    cs = () if op[3] is None else op[3](r, m, rd)
+                    if len(cs) == 1:  # a one-cell value carries that cell's origin on
+                        prov[a] = prov.get(cs[0], cs[0])
+                    else:
+                        prov.pop(a, None)
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
                     pc = op[3]
@@ -508,8 +532,10 @@ def eval_fp(prog, trace, nframes, state0=None):
 def eval_src(prog, trace, nframes, state0=None):
     """``(per-frame writes, per-frame source cells)``: ``eval_fp`` before projection.
 
-    ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f read its
-    byte from, empty where the value reads no memory at a pure address."""
+    ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f derives its
+    byte from — each cell the value read and, ahead of it, the cell that byte
+    originated in (spec 1.4) — empty where the value reads no memory at a pure
+    address."""
     ev = Evaluator(prog, trace, state0, sources=True)
     return ev.frames(nframes), ev.srcs
 

@@ -103,6 +103,24 @@ and flushes exactly as `eval_fp` does, so the projection is byte-identical
 and the law is untouched; the tracker uses it to tell a declared-table read
 from a computed value (docs/tracker.md §5).
 
+Each cell is reported with its **origin** ahead of it — the cell that byte came
+from, not merely the cell this value read. Otherwise a driver that stages bytes
+in a RAM register mirror and flushes it to the SID (§4.1) hands the consumer a
+shadow cell and a dataflow problem, and that step is this level's job. The
+evaluator carries a cell → origin map: a non-SID store whose value derives from
+exactly one cell records that cell's origin (path-compressed, so chasing is
+transitive and crosses frames — a mirror is staged in one frame and flushed in
+another); a store deriving from several cells or from none drops the entry,
+because its byte is computed rather than copied; and a pushed return byte drops
+the stack cells it lands on. Reporting is additive — the cell the value read is
+still there — so no reading a consumer had before is taken away.
+
+This is annotation only: no value, no write and no record changes, so `eval_fp`
+and Gate FP are unaffected by construction. It does not weaken the #61
+invariant either — a declaration stops at the first play-written cell
+(`datadecl._sound_hi`), so an origin inside a declaration is const data and the
+consumer's `mem0[cell] == value` check keeps its full strength.
+
 ## 2. Language domain: SMC-free by construction
 
 **Principle (normative).** At frame level, self-modification is
@@ -240,6 +258,46 @@ frame(state, in) {
   }
 }
 ```
+
+### 4.1 Refused rung: SID-shadow relabelling
+
+Drivers stage a frame's register writes in a RAM mirror and flush it to the SID
+(`sid[$D400+i] = B[i]`): Krakout's 25-byte `m_E686`, the per-voice
+`m_10B1[v]`/`m_EFC1[7v]` triples of the tracker-era players, Follin's
+register-poke command. `movefwd.sid_shadows` detects the idiom — a parallel
+indexed flush over a *writable* buffer, so read-only pitch tables are excluded —
+and finds one on 146 of the 623 cached tunes.
+
+Relabelling those stores onto the SID (buffer base → flushed SID base, reads
+included so the flush reads back what it wrote) is **refused as a rung**, with
+the measurement: of the 133 detected tunes that pass Gate FP today, the relabel
+leaves 21 passing and breaks 112. Two structural reasons, neither a gap in the
+proof machinery:
+
+- **The mirror is state, not a redundant move.** It persists across frames — the
+  flush writes every covered register every frame, staged this frame or not.
+  Relabelling turns "written with the retained byte" into "elided", a different
+  canonical record (§1.1).
+- **Order.** A relabelled staging store lands in the order-preserved ctrl/AD/SR
+  section at the staging point instead of the flush point, and a
+  read-modify-write of the mirror lands there twice. Rung (c)'s rule stands:
+  order-preserved registers are never moved and never deleted.
+
+The 21 survivors are exactly the mirrors covering only last-write-wins lanes,
+where the buffer collapses; no static premise bounds the covered register set
+(the flush index is a loop variable), and there the relabel buys a consumer
+nothing, since freq and pw come from the canonical record. Promoting the mirror
+statically into an index into its bank — the only artifact-level way to name the
+row — is available for about 2% of the emits, because the row a mirror holds is
+a run-time quantity. `movefwd` therefore stays **analysis-only**, and what makes
+the mirror transparent to a consumer is the origin rule of §1.4, which annotates
+rather than moves and so cannot disturb the projection.
+
+**Wrap-offset base normalization** (landed, `eqlift_annotate._const_base`). The
+other half of the same diagnosis: a "computed" table base is often a 16-bit
+wraparound negative displacement — Krakout reads `mem[idx - $19D7]`, i.e.
+`mem[idx + $E629]`. Folding `base - k` as `(base - k) & $FFFF` recovers it. No
+new information; the base is in the read expression.
 
 ## 5. Risk register
 

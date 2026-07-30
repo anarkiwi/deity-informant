@@ -144,10 +144,13 @@ stride `s`, one lane per byte offset. The generator for a lane is
 - **Provenance, not proximity** (`frameval.eval_src`). The evaluator records, for
   every SID store, the cells the byte came from: every byte load at a *pure*
   address (consts, locals and ops — no memory read, so re-evaluating it consumes
-  no volatile input and has no side effect) inside the value expression. A bare
-  load reports one cell, `lane & mask` reports both and the declaration picks. That
-  is the address the play code indexed, so the row is `(cell - base) // stride`
-  and the lane is `(cell - base) % stride` — read off the machine, never guessed.
+  no volatile input and has no side effect) inside the value expression, each
+  preceded by the cell that byte originated in, so a byte staged in a RAM
+  register mirror arrives here as the bank cell it was copied from
+  (docs/frameprog.md §1.4). A bare load reports one cell, `lane & mask` reports
+  both and the declaration picks. That is the address the play code indexed, so
+  the row is `(cell - base) // stride` and the lane is `(cell - base) % stride` —
+  read off the machine, never guessed.
 - **The declared byte must agree** (`_classify`). A write is a lane read only if
   the cell lies inside a declared table *and* `mem0[cell] == value`. A cell the
   play phase mutated therefore never passes as constant data (#61), and every
@@ -228,6 +231,27 @@ ctrl gain is **4615 strong** (2907 lane, 1708 gate) and 3378 immediates; 49 tune
 refine ctrl at all, 25 of them on strong evidence and 24 on immediates alone
 (2776 emits, which is why the split is reported rather than a single figure).
 
+Over all 682 cached tunes again, each at its PSID start subtune (623 reach the
+gate; the denominators differ from the paragraph above, which starts every tune
+at subtune 0), against the same tree before frameprog reported a store's
+**origin** cell (docs/frameprog.md §1.4) — a change to frameprog only, with
+`tracker.py` untouched:
+
+| plane | before | after |
+|---|---|---|
+| interpreted | 408262/1895893 = 21.53% | **419595/1895893 = 22.13%** |
+| freq | 373048/587722 | 373048/587722 (unchanged) |
+| ctrl | 7796/295884 = 2.63% | **10558/295884 = 3.57%** |
+| ad | 12338/109997 = 11.22% | **16887/109997 = 15.35%** |
+| sr | 15080/113411 = 13.30% | **19102/113411 = 16.84%** |
+
+Strong evidence carries the gain: declared-lane `SELECT` emits go 23303 → 34518
+while program immediates barely move (11911 → 12029), and the ctrl `SELECT`
+split goes 2723 → 4351 lane rows and 1683 → 2803 gate rows. 86 tunes improve and
+**none regress**; 68 more tunes have their whole `ad` plane explained, 11 more
+their whole `sr` plane and 3 more their whole `ctrl` plane. Gate FP holds
+623/623 and the tracker law 623/623, both unchanged.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -257,16 +281,14 @@ the law green and must move emits out of `RAW`, never widen a declaration:
   all, `pitchind.py` induces the ET lattice from the *observed* freq stream and
   reports a note lane with its fit; that is a diagnostic, not part of this law,
   and it never feeds a generator.
-- ADSR that reaches the register through RAM stays residual. Over the 60-tune
-  sample the two refusal classes are the byte arriving from a cell outside every
-  declaration (5324 emits — a play-written shadow register, or a const region the
-  declarations do not cover) and the value arriving from an expression rather than
-  a load (7643 emits). Following a shadow cell back to the bank is a dataflow
-  step, not this one; reading it as constant anyway would break #61. Only 74
-  emits are refused for write order.
-- ctrl fails the same way, and harder: over the 60-tune sample 12289 of the 30025
-  ctrl emits load from a cell outside every declaration and 15957 carry no
-  pure-address load at all, so no voice there ever establishes a row for the gate
-  to ride and the whole plane stays residual. The gate arm recovers a driver that
-  keeps its waveform in the bank and its per-voice ctrl in a shadow; it recovers
-  nothing for a driver that keeps the waveform in the shadow too.
+- ctrl/ADSR that reaches the register through a **computed** value stays
+  residual: the byte arrives from an expression rather than a load, so there is
+  no cell to name. Over the 60-tune sample that is 7643 ADSR emits, and over the
+  same sample 15957 of the 30025 ctrl emits. Staging in a RAM register mirror is
+  no longer one of the refusal classes — following the copy back to the bank is a
+  dataflow step and it is frameprog's, so a mirror-staged bank read arrives here
+  already declared (docs/frameprog.md §1.4). What still refuses is a byte whose
+  origin is outside every declaration, or inside one but no longer equal to the
+  snapshot (#61), plus 74 emits refused for write order.
+- The gate arm needs a row: a voice that never reads its waveform from a
+  declaration has nothing for the gate to ride and stays residual whole.
