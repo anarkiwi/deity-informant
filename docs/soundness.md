@@ -56,9 +56,17 @@ analysis fell short; the report makes every live guard auditable.
   continuations). Unobserved-but-statically-derived arms are never
   materialized or serialized.
 - **Checker** (`check_commit`): every committed set IS the observed set, every
-  kept block is final-reachable from play, every observed opcode variant
-  built, no site record for a nonexistent site. Violations are
-  `DecompileError`s.
+  kept block is final-reachable from play *and* reached by the SP-flow edge
+  model, every observed opcode variant built, no site record for a nonexistent
+  site. Violations are `DecompileError`s.
+
+The analyses walk the same relation COMMIT installs (`Analysis.succ_targets`:
+static set ∪ observed set), and `sp_flow` additionally follows observed `rts`
+continuations at `sp+2`. Anything narrower is unsound for a forward merge
+analysis: a hidden edge lets `sp_flow` call one entry depth constant for a
+routine entered at two, and `concretize_stack` then folds its push/pull cells
+at the wrong depth. The reachability rule above is the backstop — an edge
+model that cannot reach a kept block refuses rather than concluding from it.
 
 ## Certification machinery
 

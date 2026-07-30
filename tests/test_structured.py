@@ -117,6 +117,57 @@ def test_dynamic_branch_onto_fallthrough_replays():
     assert tm.run(3) == ev.wlog
 
 
+def _two_depth_image(dispatch):
+    """One routine entered at two stack depths: one call deep through a static
+    ``JMP``, two deep through ``dispatch`` (``rts`` push-and-return, or a ``jmp``
+    whose operand another block patches). Returns ``(image, labels)``."""
+    a = G.Asm(0x1000)
+    a.i("INC", "zp", 0x02).i("LDA", "zp", 0x02).i("AND", "imm", 1)
+    a.i("BEQ", "rel", ("L", "pathB")).i("JSR", "abs", ("L", "midA")).i("RTS")
+    a.label("pathB").i("JSR", "abs", ("L", "midB")).i("RTS")
+    a.label("midA").i("JMP", "abs", ("L", "shared"))
+    a.label("midB")
+    if dispatch == "rts":
+        a.i("LDA", "imm", ("HIL", "callR", -1)).i("PHA")
+        a.i("LDA", "imm", ("LOL", "callR", -1)).i("PHA").i("RTS")
+    else:
+        a.i("LDX", "imm", 0)
+        a.i("LDA", "imm", ("LOL", "callR")).i("STA", "absx", ("L", "disp", 1))
+        a.i("LDA", "imm", ("HIL", "callR")).i("STA", "absx", ("L", "disp", 2))
+        a.label("disp").i("JMP", "abs", 0)
+    a.label("callR").i("JSR", "abs", ("L", "shared")).i("RTS")
+    a.label("shared").i("LDA", "zp", 0x02).i("PHA").i("LDA", "imm", 0x55)
+    a.i("STA", "abs", 0xD401).i("PLA").i("STA", "abs", 0xD400).i("RTS")
+    prog = a.assemble()
+    mem = bytearray(0x10000)
+    mem[0x1000 : 0x1000 + len(prog)] = prog
+    mem[0x0F00] = 0x60  # init: RTS
+    return mem, a.labels
+
+
+@pytest.mark.parametrize("dispatch", ("rts", "jmp"))
+def test_shared_routine_entered_at_two_stack_depths(dispatch, monkeypatch):
+    """SP-constant flow runs over the committed successor relation, so a site
+    whose static set is unavailable still contributes its observed targets. Miss
+    that edge and the routine's push/pull cells fold at one depth only: the
+    walker's stack writes land on a return address and it leaves the model."""
+    mem, labels = _two_depth_image(dispatch)
+    if dispatch == "jmp":  # static resolution succeeds here; force the refusal
+        real, site = S.Analysis.term_targets, labels["disp"]
+
+        def refuse(self, blk):
+            if blk.pcs[-1] == site:
+                raise S.DecompileError("forced refusal at $%04X" % site)
+            return real(self, blk)
+
+        monkeypatch.setattr(S.Analysis, "term_targets", refuse)
+    model, ev = S.decompile(mem, 0x0F00, 0x1000, 8)
+    key = (labels["shared"], mem[labels["shared"]])
+    assert model.analysis.sp_in[key] == "bot", "two entry depths must defeat concretization"
+    w = S.Walker(model)
+    assert w.run(8) == ev.wlog and bytes(w.m) == ev.end_mem
+
+
 def test_cia_icr_read_modeled_as_zero_source():
     """$DC0D reads are constant-0 under the per-frame driver, exactly as in
     PcodeVM; the decompiled model replays them rather than refusing."""
@@ -253,6 +304,20 @@ def test_load_image_over_the_dispatch_stub_refuses():
 
 def _tunes():
     return [pytest.param(path, sub, secs, id=path.stem) for path, sub, secs in corpus_params(HVSC)]
+
+
+@pytest.mark.oracle
+def test_two_depth_routine_real_tune():
+    """The tune that found the SP-flow edge-model hole. Outside the composer
+    round-robin of ``_corpus.CORPUS``, so keyed by relpath: Gate C's population
+    is a sample, and a sample cannot be evidence about a tune it omits."""
+    resolve_tune = pytest.importorskip("pysidtracker.testing").resolve_tune
+    path = resolve_tune("MUSICIANS/A/Abbott_Chris/Bangkok.sid", cache_dir=HVSC)
+    if path is None:
+        pytest.skip("tune unavailable")
+    mem, _load, init, play = load_psid(Path(path).read_bytes())
+    mem[0xD418] = 0x0F
+    _verify(mem, init, play, 300, 1)
 
 
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())

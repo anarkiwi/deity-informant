@@ -782,11 +782,8 @@ class Analysis:
             if blk.term[0] == "jsr":
                 work.extend(model.variants((blk.term[2] + 1) & 0xFFFF))
                 continue
-            try:
-                for pc in self.term_targets(blk):
-                    work.extend(model.variants(pc))
-            except (DecompileError, _Need):
-                pass
+            for pc in self.succ_targets(blk):
+                work.extend(model.variants(pc))
         return out
 
     def _pred_map(self):
@@ -796,12 +793,7 @@ class Analysis:
         for key, blk in model.blocks.items():
             term = blk.term
             if term[0] == "jsr":
-                callees = [term[1]] if term[1] is not None else []
-                if term[1] is None:
-                    try:
-                        callees = self.term_targets(blk)
-                    except (DecompileError, _Need):
-                        callees = []
+                callees = [term[1]] if term[1] is not None else self.succ_targets(blk)
                 rets = set()
                 for callee in callees:
                     for skey in model.variants(callee):
@@ -810,11 +802,7 @@ class Analysis:
                 for skey in model.variants((term[2] + 1) & 0xFFFF):
                     preds.setdefault(skey, set()).update(rets)
                 continue
-            try:
-                tgts = self.term_targets(blk)
-            except (DecompileError, _Need):
-                tgts = []
-            for pc in tgts:
+            for pc in self.succ_targets(blk):
                 for skey in model.variants(pc):
                     preds.setdefault(skey, set()).add(key)
         drivers = self._proc_rts(model.play) | self._proc_rts(model.init)
@@ -1120,6 +1108,17 @@ class Analysis:
                 return sorted(self._dyn_targets(blk, term[3]))
             return [term[1]]
         return []
+
+    def succ_targets(self, blk):
+        """Successors over the relation COMMIT installs: the static set, unioned
+        with the trace-observed set. A refusal or an under-approximation must not
+        read as fewer successors -- that hides merge points from the forward
+        analyses and drops predecessor contributions from the value closure."""
+        obs = set(self.model.ev_targets.get(blk.pcs[-1], ()))
+        try:
+            return sorted(obs.union(self.term_targets(blk)))
+        except (DecompileError, _Need):
+            return sorted(obs)
 
     def _dyn_targets(self, blk, ex):
         """Paired-index lemma first (its refusals roll back cleanly), then
@@ -1503,12 +1502,11 @@ class Analysis:
             spo = _sp_eval(blk.regs[3], sp) if isinstance(sp, int) else None
             out = "bot" if spo is None else spo & 0xFF
             term = blk.term
-            try:
-                tgts = self.term_targets(blk)
-            except (DecompileError, _Need):
-                tgts = []
+            rts = term[0] == "rts"  # observed continuations: an rts-dispatch has no other edge
+            tgts = sorted(model.ev_targets.get(blk.pcs[-1], ())) if rts else self.succ_targets(blk)
+            delta = -2 if term[0] == "jsr" else (2 if rts else 0)
             for pc in tgts:
-                push(pc, (out - 2) & 0xFF if term[0] == "jsr" and isinstance(out, int) else out)
+                push(pc, (out + delta) & 0xFF if isinstance(out, int) else out)
             if term[0] == "jsr":
                 push((term[2] + 1) & 0xFFFF, out)  # balanced-call return edge
         return self.sp_in
@@ -2149,10 +2147,16 @@ def _dyn_site(model, blk):
 
 def check_commit(model):
     """Commit-boundary checker, one rule for every site class: every committed
-    set IS the observed set, every kept block is final-reachable from play,
-    every observed variant is built, and site records exist only for kept
-    sites. Violations are fatal."""
+    set IS the observed set, every kept block is final-reachable from play and
+    from the SP-flow entry, every observed variant is built, and site records
+    exist only for kept sites. Violations are fatal."""
     errs = []
+    sp_in = model.analysis.sp_in if model.analysis is not None else {}
+    errs.extend(
+        "block $%04X/$%02X unreachable in the SP-flow edge model" % key
+        for key in sorted(model.blocks)
+        if key not in sp_in
+    )
     live = {blk.pcs[-1] for blk in model.blocks.values()} | {key[0] for key in model.blocks}
     seen = set()
     work = [model.play]
