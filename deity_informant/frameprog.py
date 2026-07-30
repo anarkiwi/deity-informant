@@ -26,7 +26,7 @@ _SID_LO, _SID_HI = 0xD400, 0xD41C
 _NOTES = (
     "; generated from the committed sidprog model (the cycle-exact ground truth)",
     "; the text is grammar-defined (deity_informant/sidprog.lark) and a canonical",
-    ";   fixpoint dumps(loads(t)) == t; the reference evaluator (Gate FP) is M-FP2",
+    ";   fixpoint dumps(loads(t)) == t; frameval.gate_fp is the reference evaluator",
     "; byte-pair fusion (M-FP3) and per-voice unification (M-FP4) not applied",
     "; registers/temporaries are procedure locals; parameters, returns and",
     ";   for-ranges are inferred from register liveness (serialization-layer)",

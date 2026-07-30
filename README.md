@@ -19,6 +19,7 @@ Working on C64 code requires the NMOS 6510 illegal opcodes, and no existing back
 - **`6510` SLEIGH module** (`ghidra/6510/`) — stock 6502 legal spec + generated `6510_illegal.sinc` that makes Ghidra's disassembler *and* decompiler, and pypcode, illegal-aware. Language id `6510:LE:16:default`.
 - **symbolic window recorder** — `record` runs a driver over repeated invocations, executing bit-identically to `PcodeVM` while residualising data flow over the entry state and recording every control-flow / placement fold as a fact; replay reproduces observable writes byte-exact. Sound under self-modifying code; a record-time assertion gates every artifact. See [docs/smc-recovery.md](docs/smc-recovery.md) (pipeline + ASCII diagrams) and [docs/symbolic-recorder.md](docs/symbolic-recorder.md) (contract).
 - **structured decompiler (sidprog)** — `decompile` lifts a playroutine to standalone structured text: procedures of nested `loop`/`if`/`switch` regions over labeled blocks with folded expressions, SMC modeled (operand patches become live-image reads, opcode patches become observed per-byte dispatch variants behind runtime guards), cycle costs and page-cross penalties explicit, volatile reads computed from the cycle counter. The text parses back (re-verifying the structurer codec) and replays the original's cycle-stamped `(cycle, reg, value)` write log bit-exact for the full song; `--structured` renders a display-only readable view. Grammar: [docs/grammar.md](docs/grammar.md); laws: [docs/sidprog-language.md](docs/sidprog-language.md); see [docs/decompiler-implementation.md](docs/decompiler-implementation.md) for the specification to complete it.
+- **frame-program layer (frameprog)** — a derived artifact **above** sidprog, emitted by `decompile --frameprog`. It drops cycle exactness: the only normative output is the canonical per-frame projection of the SID write stream, so cycle annotations are gone, volatile reads become declared `inputs` resolved from a pinned trace, and play-phase SMC is state (patched operand bytes are variables, opcode cells are `switch` arms with faulting defaults — no code image). sidprog remains the cycle-exact ground truth and its Gates A/C/L/S are untouched; frameprog is generated from the same committed model and verified by **Gate FP** — its reference evaluator's records must equal `framelog.canonical` of the walker's log, frame-for-frame. Both dialects share one grammar and one parser, so `dumps(loads(t)) == t` holds for each. Spec and gates: [docs/frameprog.md](docs/frameprog.md).
 
 ## Install
 
@@ -38,6 +39,7 @@ deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]  # 6510 dis
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                   # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]     # execute in PcodeVM, dump $D400.. grid
 deity-informant decompile TUNE [.sid or raw] [--frames N --verify -o FILE]  # decompile to sidprog text
+deity-informant decompile TUNE --frameprog                             # frame-level dialect (Gate FP)
 deity-informant prog-run FILE [--frames N]                            # run a sidprog program, dump the grid
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                   # build/install the 6510 SLEIGH module
 ```
@@ -98,6 +100,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 - [docs/decompiler-implementation.md](docs/decompiler-implementation.md) — specification for completing the structured decompiler (soundness, structuring, the structured language, corpus gates).
 - [docs/grammar.md](docs/grammar.md) — the ONE grammar (`deity_informant/sidprog.lark`, LALR(1)) of the sidprog language and its frameprog dialect, generated from the implementation.
 - [docs/sidprog-language.md](docs/sidprog-language.md) — sidprog language: normative semantics, version policy, and property-tested round-trip laws.
+- [docs/frameprog.md](docs/frameprog.md) — frameprog: the canonical frame projection, the digi input class, the pinned volatile trace, Gate FP, and the lift ladder.
 - [docs/soundness.md](docs/soundness.md) — observed-primary doctrine, per-site certification records, the report, and strict (`--sound`) mode.
 - [docs/decompiler-plan-prototype.md](docs/decompiler-plan-prototype.md) — the prototype's phase/gate history (superseded).
 - [docs/illegal-opcodes.md](docs/illegal-opcodes.md) — illegal-opcode reference.
