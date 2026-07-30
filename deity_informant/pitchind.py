@@ -11,6 +11,7 @@ import numpy as np
 from . import framelog
 from . import song_model as sm
 from . import structured as S
+from . import frameprog
 from . import tracker
 
 _SEMI = 2 ** (1 / 12)
@@ -136,7 +137,7 @@ def agreement(model, nframes):
 
     Inverts each observed freq both ways and returns the share of frames whose
     induced index minus static index equals the modal (constant-octave) offset."""
-    pitch = tracker._pitch(model)
+    pitch = tracker._pitch(frameprog.program(model))
     if pitch is None:
         return None
     voices = observed(model, nframes)
