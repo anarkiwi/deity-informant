@@ -52,6 +52,19 @@ def _pure(n):
     return k == "op" and all(_pure(c) for c in n[2])
 
 
+def _addrs(n):
+    """Addresses of every 1-byte memory load at a pure address inside ``n``."""
+    out = []
+    if n[0] == "mem":
+        if n[2] == 1 and _pure(n[1]):
+            out.append(n[1])
+        out += _addrs(n[1])
+    elif n[0] == "op":
+        for c in n[2]:
+            out += _addrs(c)
+    return out
+
+
 def _expr(n, slot):
     """Closure ``(r, m, rd) -> value`` for one frameprog expression node."""
     k = n[0]
@@ -176,13 +189,15 @@ class _Code:
         self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.source(s[2])))
 
     def source(self, val):
-        """Address closure of a value that is one byte load at a pure address.
+        """Address closure over every byte load at a pure address inside ``val``.
 
-        The store's provenance: which cell the byte came from, evaluable without
-        re-reading memory. None for every other value form."""
-        if val[0] == "mem" and val[2] == 1 and _pure(val[1]):
-            return self.expr(val[1])
-        return None
+        The store's provenance: the cells the value read, each evaluable without
+        re-reading memory. A bare load reports one cell; a value combining a table
+        byte with a mask reports both, and the consumer picks by declaration."""
+        fs = tuple(self.expr(a) for a in _addrs(val))
+        if not fs:
+            return None
+        return lambda r, m, rd: tuple(f(r, m, rd) & 0xFFFF for f in fs)
 
     def _s_ret(self, _s, _ctx):
         self.emit(("ret",))
@@ -413,7 +428,7 @@ class Evaluator:
                 if C.SID_LO <= a <= C.SID_HI:
                     buf.append((a - C.SID_LO, m[a]))
                     if srcs is not None:
-                        srcs.append(None if op[3] is None else op[3](r, m, rd) & 0xFFFF)
+                        srcs.append(() if op[3] is None else op[3](r, m, rd))
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
                     pc = op[3]
@@ -493,8 +508,8 @@ def eval_fp(prog, trace, nframes, state0=None):
 def eval_src(prog, trace, nframes, state0=None):
     """``(per-frame writes, per-frame source cells)``: ``eval_fp`` before projection.
 
-    ``srcs[f][k]`` is the cell the k-th SID write of frame f loaded its byte from,
-    or None where the value is not one byte load at a pure address."""
+    ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f read its
+    byte from, empty where the value reads no memory at a pure address."""
     ev = Evaluator(prog, trace, state0, sources=True)
     return ev.frames(nframes), ev.srcs
 

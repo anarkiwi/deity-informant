@@ -81,17 +81,19 @@ nodes wired by their triggers, with two distinguished members: the pitch table
 
 - **Pitch `LOOKUP` per voice** (§4) — the note lane. Accepted-note freq words
   are emitted by a plane-routed `LOOKUP`; every other write stays in `RAW`.
-- **AD/SR `SELECT` per voice** (§5) — the instrument lane: a declared bank lane
-  read at a recovered row, fired by the voice's note-on `EDGE`.
+- **ctrl/AD/SR `SELECT` per voice** (§5) — the instrument lane: a declared bank
+  lane read at a recovered row, fired by the voice's note-on `EDGE`. For `ctrl`
+  the same lane also supplies the gate images, so the waveform is declared data
+  and only bit 0 moves.
 - **Clocks** (`_clocks`) — cells the play code steps by one, read off the frame
   program's procedures: `dec` + reload is a divider (its reload is
   `frames_per_tick`), a free `inc` is an LFO phase.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
-`ctrl` and `pw` are **not** interpreted yet: they render from `RAW`. The coverage
-numbers in §6 say so plainly; nothing is claimed that a generator does not
-reproduce.
+`pw` is **not** interpreted: it renders from `RAW`, and so does every `ctrl`
+write whose byte never reaches a declaration. The coverage numbers in §6 say so
+plainly; nothing is claimed that a generator does not reproduce.
 
 ## 4. Pitch recovery from declared tables
 
@@ -132,19 +134,20 @@ only where the play phase never writes. That invariant is enforced in
 cell), not compensated for here — which is why the tracker has no `_extend_et`,
 no `mem0` scan and no per-entry stability ranking.
 
-## 5. Instrument lanes: AD/SR from a declared bank at a recovered row
+## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
-ADSR is written once per note-on from an instrument bank: a declared const table
-of stride `s`, one lane per byte offset. The generator for a lane is
+ctrl and ADSR are written from an instrument bank: a declared const table of
+stride `s`, one lane per byte offset. The generator for a lane is
 `SELECT(lane, rows)` — the **declared bytes** of that lane, indexed by a
 **recovered row** — fired by the voice's note-on `EDGE`.
 
 - **Provenance, not proximity** (`frameval.eval_src`). The evaluator records, for
-  every SID store, the cell the byte came from, when the value is one byte load
-  at a *pure* address (consts, locals and ops — no memory read, so re-evaluating
-  it consumes no volatile input and has no side effect). That is the address the
-  play code indexed, so the row is `(cell - base) // stride` and the lane is
-  `(cell - base) % stride` — read off the machine, never guessed from the value.
+  every SID store, the cells the byte came from: every byte load at a *pure*
+  address (consts, locals and ops — no memory read, so re-evaluating it consumes
+  no volatile input and has no side effect) inside the value expression. A bare
+  load reports one cell, `lane & mask` reports both and the declaration picks. That
+  is the address the play code indexed, so the row is `(cell - base) // stride`
+  and the lane is `(cell - base) % stride` — read off the machine, never guessed.
 - **The declared byte must agree** (`_classify`). A write is a lane read only if
   the cell lies inside a declared table *and* `mem0[cell] == value`. A cell the
   play phase mutated therefore never passes as constant data (#61), and every
@@ -152,15 +155,27 @@ of stride `s`, one lane per byte offset. The generator for a lane is
   that emit. The check earns its keep: over the 60-tune sample 916 ADSR emits
   read a cell inside a declaration whose byte no longer matches the snapshot, and
   all 916 stay residual.
-- **Immediates** (`_immediates`). The other half of a typical note lane is the
-  release write, an immediate operand in the play code (`ad = 0`). Those emits
-  are `LOOKUP((c,))` for a constant `c` that the program text stores to that
-  register class (`reg % 7`, since one voice-generic store site serves all three
-  voices behind a dynamic offset). The value comes from the program, not from the
-  observation; the coverage report keeps the two counts apart.
+- **The gate rides the recovered waveform** (`_classify`, `_key_table`). A ctrl
+  write carrying no declared cell of its own is the gate bit applied to the lane
+  byte at the row the voice's last lane read established: the emitted byte is
+  `lane[row]`, `lane[row] & ~gate` or `lane[row] | gate`. The ctrl `SELECT` table
+  is therefore the declared lane followed by those three held readings of it, so a
+  row past the lane length says both which byte and that the row came from the hold
+  rather than from this emit's own provenance — which is exactly the `lane`/`gate`
+  line in `classes`. Every byte emitted is still a declared byte, and a voice that
+  never read its waveform from a declaration has no row to ride and stays residual.
+- **Immediates** (`_immediates`, `_const_flow`). The other half of a typical note
+  lane is the release write, an immediate operand in the play code (`ad = 0`), and
+  the other half of a typical ctrl lane is the hard-restart byte a branch loads
+  before the store. Those emits are `LOOKUP((c,))` for a constant `c` the program
+  text stores to that register class (`reg % 7`, since one voice-generic store site
+  serves all three voices behind a dynamic offset), reached directly or through a
+  local. The value comes from the program, not from the observation; `Coverage.classes`
+  keeps `lane`/`gate` (declared bytes at a recovered index) apart from `imm`.
 - **All or nothing per register** (`_instr_streams`). A refined register is
   removed from `RAW`, so *every* write to it must be explained or the register
-  stays residual whole. Per voice the widest explainable set of `{ad, sr}` wins.
+  stays residual whole. Per voice the explainable subset of `{ctrl, ad, sr}`
+  covering the most emits wins.
 - **Order is checked, not hoped for** (`_refine_voice`). ctrl/AD/SR is the
   order-preserved section. The refined writes must sit at one end of the section
   in every frame — so the voice's streams can be placed before (`pre`) or after
@@ -176,48 +191,58 @@ index; triggers are still the floor.
 
 ## 6. Coverage (measured, 200 frames unless stated)
 
-`Coverage(interp, residual, total, planes)` is the one partition type: emits
-produced by an interpreted generator vs emits replayed from `RAW`, plus the
-per-plane split.
+`Coverage(interp, residual, total, planes, classes)` is the one partition type:
+emits produced by an interpreted generator vs emits replayed from `RAW`, the
+per-plane split, and per plane the evidence behind each interpreted emit —
+`lane` and `gate` are declared bytes at a recovered index (**strong**), `imm` is
+a program constant that passes the law without explaining an index (**shallow**,
+never folded into a strong figure).
 
-| tune | pitch table | interpreted | freq plane | ad | sr |
-|---|---|---|---|---|---|
-| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **1504/2525 = 59.6%** | 1198/1280 = 93.6% | 153/153 | 153/153 |
-| Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 444/1164 = 38.1% | 444/722 = 61.5% | 0/7 | 0/4 |
-| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 798/4800 = 16.6% | 398/1200 = 33.2% | 200/600 | 200/600 |
-| Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/17 | 0/17 |
-| Krakout (Daglish) | `$E629` big-endian, 12, octave-shift | 228/5000 = 4.6% | 228/1200 = 19.0% | 0/600 | 0/600 |
+| tune | pitch table | interpreted | freq plane | ctrl | ad | sr |
+|---|---|---|---|---|---|---|
+| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2080/2525 = 82.4%** | 1198/1280 = 93.6% | 576/576 | 153/153 | 153/153 |
+| Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 444/1164 = 38.1% | 444/722 = 61.5% | 0/29 | 0/7 | 0/4 |
+| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 998/4800 = 20.8% | 398/1200 = 33.2% | 200/600 | 200/600 | 200/600 |
+| Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/48 | 0/17 | 0/17 |
+| Krakout (Daglish) | `$E629` big-endian, 12, octave-shift | 228/5000 = 4.6% | 228/1200 = 19.0% | 0/600 | 0/600 | 0/600 |
 
-`ctrl` and `pw` are 0% interpreted on every tune above. Of Commando's 306 ADSR
-emits, **154 are declared-lane `SELECT` reads** (the `$5591` bank, stride 8, AD at
-`+3` and SR at `+4`, rows 1-7 per voice) and 152 are the `ad = sr = 0` release
-immediate. Automatas' 400 are all immediates — one voice held silent every frame —
-which is why the split is reported and not folded into one number.
+Of Commando's 576 ctrl emits, **75 are declared-lane reads** and **399 are that
+lane with the gate bit cleared** — 474 strong, all from the `$5591` bank's
+waveform lane at `+2`, the same row its AD (`+3`) and SR (`+4`) lanes read — and
+102 are the `$80` hard-restart immediate. Its 306 ADSR emits are 154 lane reads
+and 152 `ad = sr = 0` release immediates. Automatas' 600 refined emits are *all*
+immediates (`ctrl = ad = sr = 0`, one voice held silent every frame), which is
+why the split is reported and never folded into one number.
 
-Over the first 60 cached HVSC tunes (57 decompile; keyed by full relpath): a
-pitch table is recovered for **53**, the law passes for **57/57**, and the
-interpreted share is **23.1%** (39598/171586), from 22.1% (37890) before the
-instrument lanes. Per plane: freq **70.1%** (37890/54067, unchanged), ad **10.3%**
-(723/7019), sr **11.8%** (985/8325), ctrl and pw 0%. Of the 1708 ADSR emits,
-**1473 are declared-lane reads** and 235 are program immediates.
+Over the first 60 cached HVSC tunes (57 decompile; keyed by full relpath) nothing
+moves: a pitch table is recovered for **53**, the law passes for **57/57**, and
+the interpreted share stays **23.1%** (39598/171586) with ctrl at 0/30025 — no
+voice in that prefix reads its waveform from a declaration.
+
+Over all 682 cached tunes (646 decompile), against the same tree before this
+step: the law passes for **646/646** either way, a pitch table is recovered for
+**582** either way, and the interpreted share goes 21.0% (406674/1936217) to
+**21.5%** (416294/1936217). Per plane: freq 63.1% (unchanged), ctrl **0 → 7993**
+of 301790 (2.6%), ad 10758 → 11719 of 112169, sr 14404 → 15070 of 116108. The
+ctrl gain is **4615 strong** (2907 lane, 1708 gate) and 3378 immediates; 49 tunes
+refine ctrl at all, 25 of them on strong evidence and 24 on immediates alone
+(2776 emits, which is why the split is reported rather than a single figure).
 
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
 the law green and must move emits out of `RAW`, never widen a declaration:
 
-1. **ctrl/gate** — the control automaton on the note-on edge the ADSR lanes
-   already carry (the biggest residual plane on Commando).
-2. **pw** — the pulse-width accumulator as a `RAMP` with bounds, and the seed
+1. **pw** — the pulse-width accumulator as a `RAMP` with bounds, and the seed
    lane of the instrument bank, which needs per-lane declaration soundness.
-3. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
+2. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
-4. **Arrangement** — orderlist/pattern/transpose as `LOOKUP` nodes routed to
+3. **Arrangement** — orderlist/pattern/transpose as `LOOKUP` nodes routed to
    `Fire`, with shared subgraphs for reuse and a back-edge for the loop. This is
    what replaces the `EDGE` floors and the recovered row streams: the row a
    note-on selects becomes an emit of the pattern generator, not observed data.
-5. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
+4. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
 
 ## 8. Known limits
 
@@ -239,3 +264,9 @@ the law green and must move emits out of `RAW`, never widen a declaration:
   a load (7643 emits). Following a shadow cell back to the bank is a dataflow
   step, not this one; reading it as constant anyway would break #61. Only 74
   emits are refused for write order.
+- ctrl fails the same way, and harder: over the 60-tune sample 12289 of the 30025
+  ctrl emits load from a cell outside every declaration and 15957 carry no
+  pure-address load at all, so no voice there ever establishes a row for the gate
+  to ride and the whole plane stays residual. The gate arm recovers a driver that
+  keeps its waveform in the bank and its per-voice ctrl in a shadow; it recovers
+  nothing for a driver that keeps the waveform in the shadow too.
