@@ -148,12 +148,12 @@ CORPUS = [
 
 
 def corpus_params(hvsc):
-    """``[(path, subtune, secs)]`` at full Songlengths duration for every cached
-    v1 (play != 0) corpus tune; empty when the cache or fetcher is absent.
+    """``[(path, subtune, secs)]`` at full Songlengths duration, or ``[]``.
 
-    Empty in CI by design: no job fetches ``Songlengths.md5``, so every test
-    parametrized off this skips there and the hermetic job stays hermetic. A
-    green CI is therefore NOT evidence about corpus-parametrized tests."""
+    Empty without ``Songlengths.md5``, which keeps the hermetic job hermetic; the
+    ``corpus`` job fetches it, so THAT job is the evidence. ``DI_CORPUS_LIMIT``
+    caps the count; ``CORPUS`` is composer round-robin so a prefix stays diverse."""
+    import os
     from pathlib import Path
 
     from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
@@ -166,8 +166,9 @@ def corpus_params(hvsc):
     if not songlengths.is_file():
         return []
     lengths = song_lengths(songlengths.read_text(encoding="latin-1"))
+    limit = int(os.environ.get("DI_CORPUS_LIMIT") or 0)
     out = []
-    for rel in CORPUS:
+    for rel in CORPUS[:limit] if limit else CORPUS:
         path = resolve_tune(rel, cache_dir=hvsc)
         if path is None:
             continue
