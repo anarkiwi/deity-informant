@@ -1,8 +1,9 @@
 """Redundant data-move pass: relabel SID-shadow-buffer stores onto the SID.
 
 A driver that stages register writes in a RAM buffer and bulk-flushes it
-(`sid[$D400+i] = B[i]`) hides provenance behind the copy; this relabels stores
-to such a buffer onto the SID base, analysis-only. See docs/tracker.md §7a."""
+(`sid[$D400+i] = B[i]`) hides provenance behind the copy. Analysis-only: the
+mirror is cross-frame state over order-preserved registers, so relabelling is
+refused as a lift rung — docs/frameprog.md §4.1 and §1.4."""
 
 from . import eqlift_annotate as ann
 from . import frameproc

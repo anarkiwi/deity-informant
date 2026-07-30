@@ -498,6 +498,23 @@ def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
         assert set(sel[7 * v + 5][2]) <= set(range(13))  # rows are instrument numbers
 
 
+@pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
+def test_artura_adsr_through_the_sid_register_mirror(sid, subtune):
+    """ADSR staged in a per-voice SID mirror still reads as the declared bank."""
+    prog, trace, nf = _lifted(sid, subtune)
+    assert 0xEFC1 in T.lift(prog).instruments  # the store site reads the mirror cell
+    _gt, ords = T._observe(prog, trace, nf)
+    pre, post, refined = T._instr_streams(prog, ords)
+    assert refined >= {5, 6, 12, 13, 19, 20} and not pre
+    bank = tuple(prog.mem0[0xEF52 + i] for i in range(46))
+    sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
+    assert all(sel[r][1] == bank for r in (5, 6, 12, 13, 19, 20))  # the $EF52 declaration
+    assert T.gate(prog, trace, nf) is None
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.planes["ad"][0] == cov.planes["ad"][1] > 0
+    assert cov.planes["sr"][0] == cov.planes["sr"][1] > 0
+
+
 @pytest.mark.parametrize("sid,subtune", _tune("Ghouls_n_Ghosts", "Follin_Tim"))
 def test_ghouls_separate_block_pitch_notes(sid, subtune):
     """Follin separate lo/hi pitch blocks are two declarations that pair up."""

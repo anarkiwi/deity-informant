@@ -120,6 +120,61 @@ def test_eval_src_records_the_cell_each_write_loaded_from():
     assert frameval._pure(idx) and not frameval._pure(load)
 
 
+def _staged(cell, val_of):
+    return ("st", ("const", cell, 2), val_of)
+
+
+def _cell(addr):
+    return ("mem", ("const", addr, 2), 1)
+
+
+def test_eval_src_chases_a_staged_byte_back_to_the_table_it_came_from():
+    """A byte staged in RAM and flushed reports its origin ahead of the cell read.
+
+    A cell the play phase recomputed from more than one cell starts a new origin."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803], mem0[0x0804] = 0x5A, 0x60
+    idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
+
+    def load(k):
+        return ("mem", ("op", "INT_ADD", (("const", 0x0800 + k, 2), idx), 2), 1)
+
+    stmts = [
+        ("asg", "i", ("const", 3, 1)),
+        _staged(0x00C0, load(0)),
+        _staged(0x00C2, _cell(0x00C0)),
+        _staged(0x00C1, load(1)),
+        _staged(0x00C1, ("op", "INT_OR", (_cell(0x00C1), _cell(0x00C0)), 1)),
+        ("st", ("const", 0xD405, 2), _cell(0x00C2)),
+        ("st", ("const", 0xD406, 2), _cell(0x00C1)),
+        ("ret", False),
+    ]
+    frames, srcs = frameval.eval_src(_prog(stmts, mem0=mem0), {}, 2)
+    assert frames[0] == [(5, 0x5A), (6, 0x7A)]
+    assert srcs == [[(0x0803, 0x00C2), (0x00C1,)]] * 2  # $C2 chases, $C1 has no origin
+
+
+def test_eval_src_forgets_a_cell_the_return_address_overwrote():
+    """A pushed return byte is not the table byte that stood in the cell before it."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803] = 0x5A
+    idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
+    load = ("mem", ("op", "INT_ADD", (("const", 0x0800, 2), idx), 2), 1)
+    stmts = [
+        ("asg", "i", ("const", 3, 1)),
+        _staged(0x01FC, load),
+        _staged(0x00C0, load),
+        ("call", 0x1100, 0x1005),
+        ("st", ("const", 0xD405, 2), _cell(0x01FC)),
+        ("st", ("const", 0xD406, 2), _cell(0x00C0)),
+        ("ret", False),
+    ]
+    prog = _progs([(0x1000, [], [], stmts), (0x1100, [], [], [("ret", False)])], mem0=mem0)
+    frames, srcs = frameval.eval_src(prog, {}, 1)
+    assert frames[0] == [(5, 0x05), (6, 0x5A)]
+    assert srcs == [[(0x01FC,), (0x0803, 0x00C0)]]
+
+
 _MUT = [(4, 0x10), (4, 0x11), (0, 0x22), (1, 0x33)]
 
 
