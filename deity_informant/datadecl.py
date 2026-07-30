@@ -204,13 +204,22 @@ def _sound_hi(base, ceil, mut):
     return next((a for a in range(base, ceil) if a in mut), ceil)
 
 
-def _extent(g, sites, bounds, code, mut=frozenset(), pairtabs=frozenset()):
-    """``(size, observed)`` for a record group; size 0 when nothing is known.
+def _mut_offs(base, size, stride, mut):
+    """Play-written offsets in a region's record: a lane if strided, else the cell.
 
-    An observed run only *floors* the extent (a finite run indexes a prefix), so
-    the region runs on to its ceiling: index cap, next boundary, and the first
-    play-written cell. A pointer reload table stops at the floor: its composed
-    words prove exactly those entries."""
+    Snapshot soundness is per record offset, so a stride-``s`` block keeps the lanes
+    the play phase never writes; a flat region is one record, so an offset is a
+    cell. The const claim is the region minus these offsets."""
+    rec = stride if stride > 1 else size
+    return sorted({(a - base) % rec for a in range(base, base + size) if a in mut})
+
+
+def _extent(g, sites, bounds, code, mut=frozenset(), pairtabs=frozenset()):
+    """``(size, mutable offsets, observed)``; size 0 when nothing is known.
+
+    An observed run only *floors* the extent, so the region runs on to its ceiling
+    (index cap, next boundary, first written cell above the run); a pointer reload
+    table stops at the floor. ``_mut_offs`` carries the writes inside the run."""
     base = g["base"]
     lim = _next_bound(bounds, code, base)
     cap = 0
@@ -221,13 +230,14 @@ def _extent(g, sites, bounds, code, mut=frozenset(), pairtabs=frozenset()):
             cap = max(cap, b - base + hi)
             proven = proven and ok
     if proven and base + cap < lim:
-        return cap + 1, False
+        return cap + 1, _mut_offs(base, cap + 1, g["stride"], mut), False
     ceil = min(base + cap + 1, lim)
     j = bisect.bisect_left(g["reads"], ceil)
     if j == 0 or g["reads"][j - 1] < base:
-        return 0, True
+        return 0, [], True
     floor = g["reads"][j - 1] + 1
-    return (floor if base in pairtabs else _sound_hi(floor, ceil, mut)) - base, True
+    size = (floor if base in pairtabs else _sound_hi(floor, ceil, mut)) - base
+    return size, _mut_offs(base, size, g["stride"], mut), True
 
 
 def _pair_recs(cls):
@@ -284,7 +294,7 @@ def _table_decls(sites, groups, bounds, code, mut=frozenset(), pairtabs=frozense
     """Base-keyed table declarations with extents against the given bounds."""
     out = {}
     for g in groups:
-        size, observed = _extent(g, sites, bounds, code, mut, pairtabs)
+        size, moffs, observed = _extent(g, sites, bounds, code, mut, pairtabs)
         if size <= 0 or g["base"] + size > 0x10000:
             continue
         out[g["base"]] = {
@@ -292,6 +302,7 @@ def _table_decls(sites, groups, bounds, code, mut=frozenset(), pairtabs=frozense
             "base": g["base"],
             "size": size,
             "stride": g["stride"],
+            "mut": moffs,
             "cobases": [b for b in g["fields"] if b != g["base"]],
             "role": None,
             "via": None,
@@ -373,6 +384,8 @@ def declarations(model):
                 continue
             dl["role"], dh["role"] = ("lo", ht), ("hi", lt)
             n = dl["size"] = dh["size"] = min(dl["size"], dh["size"])  # a pair is co-extensive
+            dl["mut"] = _mut_offs(lt, n, dl["stride"], mut)
+            dh["mut"] = _mut_offs(ht, n, dh["stride"], mut)
             words = [model.mem0[lt + i] | (model.mem0[ht + i] << 8) for i in range(n)]
             if words:
                 dl["targets"] = dh["targets"] = (min(words), max(words))
@@ -394,6 +407,7 @@ def declarations(model):
                 "base": a,
                 "size": top - a + 1,
                 "stride": 1,
+                "mut": _mut_offs(a, top - a + 1, 1, mut),
                 "cobases": [],
                 "role": None,
                 "via": pair[0],

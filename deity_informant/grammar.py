@@ -366,6 +366,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def at_stride(self, c):
         return ("stride", int(c[0]))
 
+    def at_mut(self, c):
+        return ("mut", [int(t) for t in c])
+
     def at_cobase(self, c):
         return ("cobases", str(c[0]))
 
@@ -399,6 +402,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             "base": str(c[1]),
             "size": int(c[2]),
             "stride": 1,
+            "mut": [],
             "cobases": [],
             "role": None,
             "via": None,

@@ -102,6 +102,14 @@ derived mechanically from the streams classification
   command/script/pattern byte streams (`via` names the walking pair's lo
   cell; `cmp`/`dispatch` attach the certified byte-class alphabet and consuming
   dispatch sites where the analysis found them).
+- **Snapshot soundness (per record offset).** `mem0` is the post-init image, so a
+  cell the play phase writes carries a stale value and is not const data. `mut`
+  lists the written offsets of the region's record — a lane (offset mod `stride`)
+  for a record array, the cell itself for a flat region, which is one record —
+  and the const claim is the region minus those offsets. An instrument bank whose
+  seed lane the player mutates therefore keeps its immutable lanes declared. The
+  bytes stay inline (the partition law is untouched) and the extent still stops
+  at the first written cell above the observed read run.
 - **Extent honesty.** A declared extent without a marker is certified: every
   index expression reaching the region is statically bounded below its width
   mask and the domain fits before the next boundary. Anything else is emitted

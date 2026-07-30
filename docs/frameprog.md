@@ -117,9 +117,10 @@ still there — so no reading a consumer had before is taken away.
 
 This is annotation only: no value, no write and no record changes, so `eval_fp`
 and Gate FP are unaffected by construction. It does not weaken the #61
-invariant either — a declaration stops at the first play-written cell
-(`datadecl._sound_hi`), so an origin inside a declaration is const data and the
-consumer's `mem0[cell] == value` check keeps its full strength.
+invariant either — a declaration's const claim excludes every play-written
+record offset (`datadecl._mut_offs`, `mut`), so an origin at a declared offset is
+const data and the consumer's `mem0[cell] == value` check keeps its full
+strength; at a `mut` offset the check is the only evidence.
 
 ## 2. Language domain: SMC-free by construction
 
@@ -343,11 +344,12 @@ address, exactly as `m_1500` names a scalar, and `data { }` remains the only
 place a declaration is asserted. Over the first 25 corpus tunes 176 sites newly
 render indexed, 135 of them at a base inside a declared table; **6** of those
 name a declaration whose span also holds a play-written cell (2 are stores). That
-is pre-existing — `_sound_hi` stops a declaration at the first play-written cell
-only *above* the observed read run, so a cell written inside the run does not
-truncate it — and the indexed form surfaces it rather than causing it. Left
-alone here deliberately: it is a `datadecl` extent question, and narrowing the
-declaration is a soundness change, not a rendering one.
+was pre-existing — `_sound_hi` stopped a declaration at the first play-written
+cell only *above* the observed read run, so a cell written inside the run did not
+truncate it — and the indexed form surfaced it rather than causing it. Closed
+since by per-record-offset soundness in `datadecl`: `mut` excludes the written
+lane of a record array and the written cell of a flat region from the const
+claim, at no cost to the extent (sidprog-language.md, §Data declarations).
 
 The sidprog dialect keeps the register-index form. Its `tN` bindings are expanded
 into the tree at parse, so a reader-supplied `zext2` around an already-widened
