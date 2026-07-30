@@ -1,8 +1,8 @@
 """Audit tracker pitch-table detection across the full corpus (resumable).
 
 Decompiles each corpus tune at full Songlengths, runs production
-`tracker.lift(...).pitch`, records hit/miss; misses carry triage data plus a
-permissive DIAGNOSTIC ET search. Appends to out/pitch_audit.jsonl, skips done.
+`tracker.lift(...).pitch` over its frame program, and records hit/miss; a miss
+carries its declared-table inventory. Appends out/pitch_audit.jsonl, skips done.
 """
 
 import json
@@ -16,53 +16,17 @@ sys.path.insert(0, str(ROOT / "tests"))
 OUT = ROOT / "out" / "pitch_audit.jsonl"
 
 
-def _diag_table(model):
-    """Permissive DIAGNOSTIC ET search (interleaved / split-block), or None."""
-    import numpy as np
-
-    from deity_informant import eqlift_annotate as ann
+def _inventory(prog):
+    """Declared const tables the pitch search had to choose from, on a miss."""
     from deity_informant import tracker
 
-    m0 = model.mem0
-    bases = sorted(b for b in tracker._read_bases(model) if 0x100 <= b < 0xFEFF)
-    best, best_oct = [None], [-1]
-
-    def consider(base, kind, words):
-        v = ann.et_check(np.asarray(words, dtype=float))
-        if v["pitch_table"] and v["octaves"] > best_oct[0]:
-            best_oct[0] = v["octaves"]
-            best[0] = {
-                "base": "$%04X" % base,
-                "kind": kind,
-                "octaves": v["octaves"],
-                "n": len(words),
-            }
-
-    for b in bases:
-        for endian in ("<", ">"):
-            for n in (24, 48, 72, 96):
-                if b + 2 * n <= len(m0):
-                    consider(
-                        b,
-                        "interleave" + endian,
-                        np.frombuffer(bytes(m0[b : b + 2 * n]), endian + "u2"),
-                    )
-    byt = {
-        b: np.frombuffer(bytes(m0[b : b + 96]), "u1").astype(np.int64)
-        for b in bases
-        if b + 96 <= len(m0)
-    }
-    for lo, lob in byt.items():
-        for hi, hib in byt.items():
-            if hi != lo:
-                for n in (36, 72):
-                    consider(lo, "split", lob[:n] | (hib[:n] << 8))
-    return best[0]
+    avail = tracker._avail(prog)
+    return ["$%04X[%d]" % (b, n) for b, n in sorted(avail.items()) if n >= 24][:32]
 
 
 def audit_one(entry):
     """Audit one tune; dict with found=True/False/None plus triage on a miss."""
-    from deity_informant import eqlift_annotate as ann
+    from deity_informant import frameprog
     from deity_informant import structured as S
     from deity_informant import tracker
     from deity_informant.c64 import load_psid
@@ -72,8 +36,11 @@ def audit_one(entry):
     try:
         mem, _load, init, play = load_psid(path.read_bytes())
         mem[0xD418] = 0x0F
-        model, _ev = S.decompile(mem, init, play, secs * 50, sub)
-        p = tracker.lift(model).pitch
+        nframes = secs * 50
+        model, _ev = S.decompile(mem, init, play, nframes, sub)
+        prog = frameprog.program(model)
+        trace, _walker = frameprog.iota(model, nframes)
+        p = tracker.lift(prog, tracker.oracle(prog, trace, nframes)).pitch
         if p is not None:
             mode = "shift" if p.shift else ("split" if p.endian == "split" else "direct")
             return {
@@ -85,14 +52,11 @@ def audit_one(entry):
                 "octaves": int(p.octaves),
                 "n": len(p.words),
             }
-        tr = ann.aggregate(list(ann.model_procs(model)), model)
-        roles = {"$%04X" % b: r for b, r in tr.roles.items() if any("freq" in x for x in r)}
         return {
             "tune": stem,
             "composer": composer,
             "found": False,
-            "freq_roles": roles,
-            "diag": _diag_table(model),
+            "declared": _inventory(prog),
         }
     except Exception as exc:  # pylint: disable=broad-except
         return {

@@ -29,9 +29,9 @@ oracle = ["py65", "pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
 # egglog str-form of extracted exprs is parsed; pin minor so it stays stable.
 eqlift = ["egglog>=13,<14", "z3-solver"]
-# the editor packages are dev-only: tools/study/* parse their formats, and CI
-# lints tools/, so pylint must be able to resolve them.
-dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pygoattracker", "pydefmon", "pysidwizard"]
+# pysidtracker is dev-only tooling: tools/fetch_corpus.py imports it at module
+# scope and CI lints tools/, so pylint must be able to resolve it.
+dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pysidtracker"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -57,7 +57,7 @@ source = ["deity_informant"]
 [tool.coverage.report]
 # Corpus/network drivers: they need HVSC or the net, so they cannot run in the
 # hermetic job and would sit at a permanent 0% that only dilutes the signal.
-# black and pylint still cover them; tools/study (the u-code) stays measured.
+# black and pylint still cover them.
 omit = [
     "tools/eqlift_emit.py",
     "tools/fetch_corpus.py",

@@ -191,7 +191,7 @@ handler arms return as switch cases and the structured share stays ≥ ~97%.
   vibrato, porta, gatelen/gateoff, durmode, rawsid}, i.e. a cleaned
   generalization of the player's own grammar. The tick simulator in
   `follin_script_decode.py` is the seed of that tier's reference player;
-  full Gate F additionally needs the per-frame effect engine
+  reproducing the frame projection additionally needs the per-frame effect engine
   (vibrato/slide/pulse curves) carried as instrument frame-programs from the
   log layer (L1 delta-runs already capture them).
 - **Naming/provenance**: freq table $6D35/$6D96 (97 entries), handler tables,

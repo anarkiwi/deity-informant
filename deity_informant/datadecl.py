@@ -1,9 +1,8 @@
 """Typed song-data declarations and state-role aliases (sidprog data/symbols).
 
 ``declarations(model)`` carves disjoint byte-carried data regions out of the
-post-init image from the streams classification (extent-honest: proven index
-domains, else site-attributed observed reads) plus role aliases for state cells.
-"""
+post-init image, plus state-cell role aliases. Extents are honest: a proven index
+domain sizes exactly, else observation floors and the sound ceiling bounds."""
 
 from __future__ import annotations
 
@@ -152,8 +151,66 @@ def _obs_hi(by_pc, pcs, lo, hi):
     return best
 
 
-def _extent(g, sites, rd_pcs, by_pc, bounds, code):
-    """``(size, observed)`` for a record group; size 0 when nothing is known."""
+def _run_reads(g, rd_pcs, by_pc):
+    """Sorted addresses the group's read sites were observed to index."""
+    pcs = set()
+    for b in g["fields"]:
+        pcs |= rd_pcs.get(("t", b), set())
+    return sorted({a for pc in pcs for a in by_pc.get(pc, ())})
+
+
+def _alias(p, g):
+    """True if ``g`` is ``p``'s region read at a shifted base (``tab,x``/``tab+k,x``).
+
+    Same index domain (parallel observed runs) and the runs overlap in more than
+    half their extent, so ``g`` is a field of ``p`` rather than the next block."""
+    d = g["base"] - p["base"]
+    return 0 < 2 * d < p["top"] - p["base"] and g["top"] - p["top"] == d
+
+
+def _witnessed(g, sites):
+    """A read was observed in the group, or its index domain is proven.
+
+    An unwitnessed base declares nothing, so it must not bound its neighbour."""
+    if g["top"] >= g["base"]:
+        return True
+    return all(_bound(ix)[1] for b in g["fields"] for ix in sites[b])
+
+
+def _regions(groups, sites, rd_pcs, by_pc, code):
+    """Witnessed regions, alias bases absorbed into the region they index."""
+    out = []
+    for g in groups:
+        reads = _run_reads(g, rd_pcs, by_pc)
+        g = dict(g, reads=reads, top=reads[-1] if reads else -1)
+        if not _witnessed(g, sites):
+            continue
+        if out and _alias(out[-1], g) and _next_bound((), code, out[-1]["base"]) > g["base"]:
+            p = out[-1]
+            p["fields"] = p["fields"] + g["fields"]
+            p["stride"] = max(p["stride"], g["stride"])
+            p["reads"] = sorted(set(p["reads"]) | set(g["reads"]))
+            p["top"] = g["top"]
+        else:
+            out.append(g)
+    return out
+
+
+def _sound_hi(base, ceil, mut):
+    """First play-written cell in [base, ceil), else ceil: snapshot soundness.
+
+    ``mem0`` holds a written cell's pre-play value only, so a const declaration
+    must stop there."""
+    return next((a for a in range(base, ceil) if a in mut), ceil)
+
+
+def _extent(g, sites, bounds, code, mut=frozenset(), pairtabs=frozenset()):
+    """``(size, observed)`` for a record group; size 0 when nothing is known.
+
+    An observed run only *floors* the extent (a finite run indexes a prefix), so
+    the region runs on to its ceiling: index cap, next boundary, and the first
+    play-written cell. A pointer reload table stops at the floor: its composed
+    words prove exactly those entries."""
     base = g["base"]
     lim = _next_bound(bounds, code, base)
     cap = 0
@@ -165,11 +222,12 @@ def _extent(g, sites, rd_pcs, by_pc, bounds, code):
             proven = proven and ok
     if proven and base + cap < lim:
         return cap + 1, False
-    pcs = set()
-    for b in g["fields"]:
-        pcs |= rd_pcs.get(("t", b), set())
-    top = _obs_hi(by_pc, pcs, base, min(base + cap + 1, lim))
-    return top - base + 1, True
+    ceil = min(base + cap + 1, lim)
+    j = bisect.bisect_left(g["reads"], ceil)
+    if j == 0 or g["reads"][j - 1] < base:
+        return 0, True
+    floor = g["reads"][j - 1] + 1
+    return (floor if base in pairtabs else _sound_hi(floor, ceil, mut)) - base, True
 
 
 def _pair_recs(cls):
@@ -197,6 +255,16 @@ def _pair_streams(strs):
     return out
 
 
+def _avail(tables, addr):
+    """Bytes from ``addr`` to the end of the declared region containing it."""
+    bases = sorted(tables)
+    j = bisect.bisect_right(bases, addr) - 1
+    if j < 0:
+        return 0
+    d = tables[bases[j]]
+    return max(0, d["base"] + d["size"] - addr)
+
+
 def _anchors(model, pairs, tables):
     """``anchor -> (lo, hi)``: pair initial words + reload-table entry words."""
     mem0 = model.mem0
@@ -204,21 +272,19 @@ def _anchors(model, pairs, tables):
     for lo, hi, lts, hts in pairs:
         words = [mem0[lo] | (mem0[hi] << 8)]
         for lt, ht in zip(sorted(lts), sorted(hts)):
-            dl, dh = tables.get(lt), tables.get(ht)
-            if dl is not None and dh is not None:
-                n = min(dl["size"], dh["size"])
-                words += [mem0[lt + i] | (mem0[ht + i] << 8) for i in range(n)]
+            n = min(_avail(tables, lt), _avail(tables, ht))
+            words += [mem0[lt + i] | (mem0[ht + i] << 8) for i in range(n)]
         for w in words:
             if w >= _LOW:
                 out.setdefault(w, (lo, hi))
     return out
 
 
-def _table_decls(sites, groups, rd_pcs, by_pc, bounds, code):
+def _table_decls(sites, groups, bounds, code, mut=frozenset(), pairtabs=frozenset()):
     """Base-keyed table declarations with extents against the given bounds."""
     out = {}
     for g in groups:
-        size, observed = _extent(g, sites, rd_pcs, by_pc, bounds, code)
+        size, observed = _extent(g, sites, bounds, code, mut, pairtabs)
         if size <= 0 or g["base"] + size > 0x10000:
             continue
         out[g["base"]] = {
@@ -279,17 +345,25 @@ def declarations(model):
     by_pc = {}
     for pc, a in getattr(model, "reads", ()):
         by_pc.setdefault(pc, []).append(a)
-    groups = [
-        g
-        for g in _groups(sites)
-        if g["base"] not in codeset and not all(b in model.written for b in g["fields"])
-    ]
+    groups = _regions(
+        [
+            g
+            for g in _groups(sites)
+            if g["base"] not in codeset and not all(b in model.written for b in g["fields"])
+        ],
+        sites,
+        rd_pcs,
+        by_pc,
+        code,
+    )
     starts = [g["base"] for g in groups]
     pairs = _pair_recs(cls)
-    tables = _table_decls(sites, groups, rd_pcs, by_pc, sorted(starts), code)
+    mut = model.written
+    pairtabs = {t for _l, _h, lts, hts in pairs for t in list(lts) + list(hts)}
+    tables = _table_decls(sites, groups, sorted(starts), code, mut, pairtabs)
     anchors = _anchors(model, pairs, tables)  # round 2: anchor-bounded extents
     bounds = sorted(set(starts) | set(anchors))
-    tables = _table_decls(sites, groups, rd_pcs, by_pc, bounds, code)
+    tables = _table_decls(sites, groups, bounds, code, mut, pairtabs)
     anchors = _anchors(model, pairs, tables)
     bounds = sorted(set(starts) | set(anchors))
     for _lo, _hi, lts, hts in pairs:
@@ -298,7 +372,7 @@ def declarations(model):
             if dl is None or dh is None:
                 continue
             dl["role"], dh["role"] = ("lo", ht), ("hi", lt)
-            n = min(dl["size"], dh["size"])
+            n = dl["size"] = dh["size"] = min(dl["size"], dh["size"])  # a pair is co-extensive
             words = [model.mem0[lt + i] | (model.mem0[ht + i] << 8) for i in range(n)]
             if words:
                 dl["targets"] = dh["targets"] = (min(words), max(words))

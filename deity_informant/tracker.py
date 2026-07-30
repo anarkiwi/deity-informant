@@ -1,29 +1,147 @@
-"""tracker (M-T1/T3) — universal tracker layer lifted from the song model.
+"""tracker — the universal tracker layer over a frame program.
 
-Derives each voice note lane from the frame projection: multi-octave tables
-invert by exact match, one-octave tables (computed-base drivers) by
-octave-shift + detune. Gate T checks ``render`` bit-exact. See docs/tracker.md."""
+One primitive: a triggered generator ``(transfer, trigger, route)``; a tune is a
+graph of them. One law: the graph's canonical projection equals frameprog's under
+the same input trace. One input: a ``frameprog.FrameProgram``. See docs/tracker.md."""
 
 from collections import namedtuple
 
 import numpy as np
 
-from . import eqlift_annotate as ann
 from . import framelog
-from . import song_model as sm
-from . import structured as S
+from . import frameproc
+from . import frameval
 
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _SEMI = 2 ** (1 / 12)
+_SID = 0xD400
+_FREQ_REGS = (0, 1, 7, 8, 14, 15)
 
+FRAME = ("frame",)
+
+Generator = namedtuple("Generator", "transfer trigger route")
+Coverage = namedtuple("Coverage", "interp residual total planes")
 Pitch = namedtuple("Pitch", "base words octaves reference endian shift hi", defaults=(None,))
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
-Tracker = namedtuple("Tracker", "pitch clocks tempo instruments unstable", defaults=((),))
-Coverage = namedtuple("Coverage", "interp residual total planes")
+Tracker = namedtuple("Tracker", "pitch clocks tempo instruments")
 
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
-_LWW_SECTIONS = (0, 2, 4, 6)  # framelog SECTIONS rebuilt by ascending reg
+
+
+class TrackerError(ValueError):
+    """The graph is not evaluable (unknown transfer, dangling trigger)."""
+
+
+# ---- 1. the one primitive: a triggered generator ---------------------------------
+def div(n, trigger=FRAME):
+    """Emit one tick per ``n`` input triggers: a clock. Route is always Fire."""
+    return Generator(("DIV", n), trigger, ("fire",))
+
+
+def lookup(seq, trigger, reg):
+    """Emit ``seq[i]`` into a register plane; ``i`` advances per trigger."""
+    return Generator(("LOOKUP", tuple(seq)), trigger, ("plane", reg))
+
+
+def ramp(seed, step, bound, trigger, reg):
+    """Emit ``seed + step*count`` into a plane, wrapped at ``bound``."""
+    return Generator(("RAMP", seed, step, bound), trigger, ("plane", reg))
+
+
+def raw(per_frame):
+    """The completeness floor: replay ``per_frame[f]`` writes verbatim, in order."""
+    return Generator(("RAW", tuple(tuple(w) for w in per_frame)), FRAME, ("raw",))
+
+
+class Graph:
+    """Generator nodes plus the two distinguished ones every graph carries."""
+
+    def __init__(self, nodes, freq_table=None, cadence=None):
+        self.nodes = list(nodes)
+        self.freq_table = freq_table
+        self.cadence = cadence
+
+    def raw_index(self):
+        """Index of the RAW floor node, or None."""
+        for i, g in enumerate(self.nodes):
+            if g.transfer[0] == "RAW":
+                return i
+        return None
+
+
+def _fired(nodes, frame):
+    """Trigger counts per node for ``frame``: root clocks and their Fire edges."""
+    fires = [1 if g.trigger == FRAME else 0 for g in nodes]
+    for i, g in enumerate(nodes):
+        if g.transfer[0] != "DIV" or not fires[i]:
+            continue
+        n = max(1, g.transfer[1])
+        if (frame + 1) % n == 0:
+            for j, h in enumerate(nodes):
+                if h.trigger == ("event", i):
+                    fires[j] += 1
+    return fires
+
+
+def _emit(g, count):
+    """Value a plane-routed generator emits on its ``count``-th trigger."""
+    kind = g.transfer[0]
+    if kind == "LOOKUP":
+        seq = g.transfer[1]
+        return seq[(count - 1) % len(seq)] if seq else None
+    if kind == "RAMP":
+        _k, seed, step, bound = g.transfer
+        raw_v = seed + step * (count - 1)
+        return raw_v % bound if bound else raw_v
+    raise TrackerError("transfer %r has no value emit" % (kind,))
+
+
+def _check(nodes):
+    for g in nodes:
+        if g.trigger != FRAME and g.trigger[0] != "event":
+            raise TrackerError("unknown trigger %r" % (g.trigger,))
+        if g.trigger[0] == "event" and not 0 <= g.trigger[1] < len(nodes):
+            raise TrackerError("dangling trigger %r" % (g.trigger,))
+        if g.route[0] not in ("plane", "fire", "raw"):
+            raise TrackerError("unknown route %r" % (g.route,))
+
+
+def _run(graph, nframes):
+    """``(canonical records, interpreted emits, raw emits)`` per register.
+
+    Refinement removes a write from RAW, so RAW and a plane-routed node never
+    contend for one register and the interleaving stays well defined."""
+    nodes = graph.nodes
+    _check(nodes)
+    counts = [0] * len(nodes)
+    interp, rawn = {}, {}
+    out = []
+    for f in range(nframes):
+        fires = _fired(nodes, f)
+        writes = []
+        for i, g in enumerate(nodes):
+            if not fires[i]:
+                continue
+            counts[i] += fires[i]
+            if g.transfer[0] == "RAW":
+                rows = g.transfer[1]
+                for reg, val in rows[f] if f < len(rows) else ():
+                    rawn[reg] = rawn.get(reg, 0) + 1
+                    writes.append((reg, val))
+            elif g.route[0] == "plane":
+                v = _emit(g, counts[i])
+                if v is not None:
+                    reg = g.route[1]
+                    interp[reg] = interp.get(reg, 0) + 1
+                    writes.append((reg, v & 0xFF))
+        out.append(writes)
+    return framelog.canonical(out), interp, rawn
+
+
+def eval_graph(graph, nframes):
+    """Canonical per-frame records produced by propagating triggers."""
+    return _run(graph, nframes)[0]
 
 
 def _plane_of(reg):
@@ -33,81 +151,30 @@ def _plane_of(reg):
     return "filter" if reg <= 0x18 else "tail"
 
 
-def _written(model):
-    """Cells the play phase writes; ``mem0`` holds their pre-play value only."""
-    return getattr(model, "written", frozenset())
+def _coverage(interp, rawn):
+    """The interpreted/residual partition of the emits, split by plane."""
+    planes = {}
+    for src, gen in ((interp, True), (rawn, False)):
+        for reg, n in src.items():
+            p = _plane_of(reg)
+            it, tot = planes.get(p, (0, 0))
+            planes[p] = (it + (n if gen else 0), tot + n)
+    ni, nr = sum(interp.values()), sum(rawn.values())
+    return Coverage(ni, nr, ni + nr, planes)
 
 
-def _unsound(mut, n, *lanes):
-    """Entries of an ``n``-entry table whose bytes the play phase writes.
-
-    ``lanes`` are the ``(base, stride)`` byte lanes an entry index walks. A
-    table read out of ``mem0`` is constant data only where nothing mutates it;
-    elsewhere the snapshot is not what the running player indexes."""
-    return sum(1 for i in range(n) if any(b + s * i in mut for b, s in lanes))
+def coverage(graph, nframes):
+    """Interpreted vs residual emit counts, and the per-plane split."""
+    _recs, interp, rawn = _run(graph, nframes)
+    return _coverage(interp, rawn)
 
 
-def _lanes(base, hi, n):
-    """Byte lanes for a table: split lo/hi blocks, else one contiguous 16-bit run."""
-    return ((base, 1), (hi, 1)) if hi is not None else ((base, 2), (base + 1, 2))
+def from_frames(frames):
+    """The completeness floor: one RAW node replaying every write, in order."""
+    return Graph([raw([list(fr) for fr in frames])])
 
 
-def _pitch_lanes(p):
-    """``(entries, lanes)`` for a recovered pitch table."""
-    n = len(p.words)
-    return n, _lanes(int(p.base), None if p.hi is None else int(p.hi), n)
-
-
-def _direct_pitch(model):
-    """The confirmed multi-octave ET pitch table (provenance path), or None.
-
-    Tries the interleaved (lo+1) layout then Follin-style separate lo/hi
-    blocks, accepting only a reading ``et_check`` confirms as equal-tempered."""
-    tr = ann.aggregate(list(ann.model_procs(model)), model)
-    decls = ann._decls(model)
-    his = sorted(b for b, rs in tr.roles.items() if "freq_hi" in rs)
-    mut, fallback = _written(model), None
-    for lo, info in sorted(tr.pitch.items()):
-        if not info["pitch_table"]:
-            continue
-        for hi in [lo + 1] + his:
-            words = ann._pitch_words(model.mem0, lo, hi, decls)
-            if words is None or not ann.et_check(words)["pitch_table"]:
-                continue
-            w = np.asarray(words, dtype=np.int64)
-            split = hi if hi != lo + 1 else None
-            p = Pitch(lo, w, info["octaves"], info["reference"], "<", False, split)
-            if not _unsound(mut, *_pitch_lanes(p)):
-                return p
-            fallback = fallback or p
-    return fallback
-
-
-def _read_bases(model):
-    """Every constant base a memory read indexes, across the pass-1 procedures."""
-    bases = set()
-
-    def rec(x):
-        if isinstance(x, tuple):
-            if x and x[0] == "mem":
-                bases.add(ann._const_base(x[1]))
-            for e in x:
-                rec(e)
-        elif isinstance(x, list):
-            for e in x:
-                rec(e)
-
-    for stmts in ann.model_procs(model):
-        rec(stmts)
-    return bases
-
-
-def _octave_et(mem0, base, endian, n=12):
-    """True if ``n`` 16-bit words at ``base`` form one equal-tempered octave."""
-    w = np.frombuffer(bytes(mem0[base : base + 2 * n]), dtype=endian + "u2").astype(float)[:n]
-    return len(w) == n and (w > 0).all() and bool(np.all(np.abs(w[1:] / w[:-1] - _SEMI) < 0.006))
-
-
+# ---- 2. pitch: equal-tempered tables read from the declarations -------------------
 def _sparse_et(words, minspan=24):
     """A gapped semitone-indexed ET table (zeros for unused notes), or None.
 
@@ -158,8 +225,8 @@ def _segmented_et(words, minseg=8, minsegs=3):
 def _longest_run(words, minrun=24, tol=0.02):
     """The longest maximal chromatic semitone run in the window, or None.
 
-    Scans all start points so a leading near-anchor or trailing garbage in an
-    undeclared window does not truncate a real interior ET run."""
+    Scans all start points so a leading near-anchor or a trailing garbage tail in a
+    declared window does not truncate a real interior ET run."""
     w = np.asarray(words, dtype=np.float64)
     best_a = best_b = a = 0
     for k in range(1, len(w)):
@@ -174,7 +241,7 @@ def _longest_run(words, minrun=24, tol=0.02):
 def _lattice_et(words, minspan=24, mindist=12, tol=0.15):
     """The leading monotone run whose values lie on the chromatic ET lattice, or None.
 
-    Values ``ref*2**(k/12)`` (freq up, period down, or diatonic subset) make
+    Values ``ref*2**(k/12)`` (freq up, period down, or a diatonic subset) make
     ``12*log2(v/ref)`` round to a note index; monotonicity rejects arpeggio streams,
     span/distinct floors and whole-window purity reject short or noisy decoys."""
     w = np.asarray(words, dtype=np.float64)
@@ -201,288 +268,172 @@ def _lattice_et(words, minspan=24, mindist=12, tol=0.15):
     return words[: pos[bj] + 1]
 
 
-def _et_words(words, minrun=24, bounded=True):
-    """The pitch table within a window, or None.
+def _median_et(words, minrun=24):
+    """The whole window when its median semitone and octave ratios are ET, else None.
 
-    Prefers the leading semitone-ratio run; a decl-``bounded`` window also accepts
-    a whole-window ``et_check``. Falls back to gapped, segmented, longest interior
-    run, then the monotone ET-lattice run. Graph-anchored."""
+    The declared extent is the table: a run of 24+ words whose median step is a
+    semitone and median 12-step an octave is equal-tempered however gapped."""
+    w = np.asarray(words, dtype=np.float64)
+    if len(w) < minrun:
+        return None
+    nz, oz = w[:-1] > 0, w[:-12] > 0
+    if not nz.any() or not oz.any():
+        return None
+    step = np.median(w[1:][nz] / w[:-1][nz])
+    octr = np.median(w[12:][oz] / w[:-12][oz])
+    return words if abs(step - _SEMI) <= 0.01 and abs(octr - 2.0) <= 0.05 else None
+
+
+def _leading_run(words, minrun=24):
+    """The leading chromatic semitone run of a window, or None."""
     i = 0
     while i < len(words) and words[i] == 0:
         i += 1
     j = i
     while j + 1 < len(words) and words[j + 1] > 0 and abs(words[j + 1] / words[j] - _SEMI) < 0.02:
         j += 1
-    if j - i + 1 >= minrun:
-        return words[: j + 1]
-    if bounded and len(words) >= 24 and ann.et_check(words.astype(float))["pitch_table"]:
-        return words
-    for fb in (
-        _sparse_et(words),
-        _segmented_et(words),
-        _longest_run(words, minrun),
-        _lattice_et(words),
-    ):
-        if fb is not None:
-            return fb
-    return None
+    return words[: j + 1] if j - i + 1 >= minrun else None
 
 
-def _octave_pitch(model):
-    """A one-octave ET table read from the graph (computed-base drivers), or None."""
-    mut = _written(model)
-    bases = sorted(_read_bases(model))
-    for want in (True, False):  # a stable table first, a mutated one only if it is all there is
-        for base in bases:
-            if bool(_unsound(mut, 12, *_lanes(base, None, 12))) is want:
-                continue
-            for endian in ("<", ">"):
-                if _octave_et(model.mem0, base, endian):
-                    w = np.frombuffer(bytes(model.mem0[base : base + 24]), dtype=endian + "u2")
-                    return Pitch(base, w.astype(np.int64), 1, int(w[0]), endian, True)
-    return None
+_VALIDATORS = (_median_et, _leading_run, _sparse_et, _segmented_et, _longest_run, _lattice_et)
 
 
-def _coindexed_bases(model):
-    """Groups of table bases read with the same index expression (the graph pairing)."""
-    groups = {}
+def _et_words(words):
+    """``[(tier, table)]``: every ET reading of a window, strongest evidence first.
 
-    def index_of(addr):
-        if isinstance(addr, tuple) and addr[0] == "op" and addr[1] in ("INT_ADD", "INT_SUB"):
-            var = [k for k in addr[2] if not (isinstance(k, tuple) and k[0] == "const")]
-            return repr(var[0]) if len(var) == 1 else None
+    The tier is the validator's rank — a leading chromatic run is the strongest
+    evidence, the monotone ET lattice the weakest; distinct extents are all kept."""
+    out, seen = [], set()
+    if len(words) < 12:
+        return out
+    for tier, check in enumerate(_VALIDATORS):
+        et = check(words)
+        if et is not None and len(et) not in seen:
+            seen.add(len(et))
+            out.append((len(_VALIDATORS) - tier, np.asarray(et, dtype=np.int64)))
+    return out
+
+
+def _octave_words(words, n=12, tol=0.008):
+    """The first ``n`` words if they form exactly one equal-tempered octave."""
+    w = np.asarray(words[:n], dtype=np.int64)
+    if len(w) < n or not (w > 0).all():
         return None
-
-    def rec(x):
-        if isinstance(x, tuple):
-            if x and x[0] == "mem":
-                base, key = ann._const_base(x[1]), index_of(x[1])
-                if ann._is_table(base) and key is not None:
-                    groups.setdefault(key, set()).add(base)
-            for e in x:
-                rec(e)
-        elif isinstance(x, list):
-            for e in x:
-                rec(e)
-
-    for stmts in ann.model_procs(model):
-        rec(stmts)
-    return [g for g in groups.values() if len(g) >= 2]
+    r = w[1:].astype(float) / w[:-1]
+    return w if bool(np.all(np.abs(r - _SEMI) < tol)) else None
 
 
-def _extend_et(word_at, words, cap=128, tol=0.3, blocked=None):
-    """Extend a recovered ET run to its true memory extent.
+def _avail(prog):
+    """``base -> declared const bytes from base``, per declared table and cobase.
 
-    Only extends an offset-0-aligned run, and never past a play-written cell:
-    running past a *declaration* is the point, running into *mutable* memory
-    reads a stale snapshot."""
-    out = [int(x) for x in words]
-    if not out or out[-1] <= 0 or word_at(len(out) - 1) != out[-1]:
-        return np.asarray(out, dtype=np.int64)
-    while len(out) < cap:
-        if blocked is not None and blocked(len(out)):
-            break
-        w = word_at(len(out))
-        want = min(out[-1] * _SEMI, 65535)
-        if w is None or w <= 0 or abs(12 * np.log2(w / want)) >= tol:
-            break
-        out.append(w)
-    return np.asarray(out, dtype=np.int64)
-
-
-def _split_word(m0, lo, hi, i):
-    """The i-th word of a split lo/hi table, or None past the image."""
-    if lo + i >= len(m0) or hi + i >= len(m0):
-        return None
-    return m0[lo + i] | (m0[hi + i] << 8)
-
-
-def _iw_word(m0, base, endian, i):
-    """The i-th word of a contiguous 16-bit table, or None past the image."""
-    off = base + 2 * i
-    if off + 1 >= len(m0):
-        return None
-    return int(np.frombuffer(bytes(m0[off : off + 2]), dtype=endian + "u2")[0])
-
-
-def _paired_pitch(model, minsize=36, cap=0x100):
-    """Split lo/hi pitch table: two co-indexed tables (graph), sized by their decl.
-
-    Pairing comes from reads sharing an index; the extent is the declared table
-    size, or — for an undeclared pair — the ``_et_words`` run within a capped
-    window (still graph-anchored); ``et_check`` only confirms, no byte scan."""
-    m0, mut = model.mem0, _written(model)
-    sizes = {d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table"}
-    best_n, best = (0, 0), None
-    for group in _coindexed_bases(model):
-        bases = sorted(group)
-        for i, a in enumerate(bases):
-            for b in bases[i + 1 :]:
-                decl = a in sizes and b in sizes
-                n = max(sizes.get(a, 0), sizes.get(b, 0)) if decl else cap
-                if decl and n < minsize:
-                    continue
-                for lo, hi in ((a, b), (b, a)):
-                    k = min(n, len(m0) - lo, len(m0) - hi)
-                    lob = np.frombuffer(bytes(m0[lo : lo + k]), dtype="u1").astype(np.int64)
-                    hib = np.frombuffer(bytes(m0[hi : hi + k]), dtype="u1").astype(np.int64)
-                    et = _et_words(lob | (hib << 8), bounded=decl)
-                    if et is None:
-                        continue
-                    if not decl and (len(et) < minsize or abs(lo - hi) < len(et) or len(et) > 108):
-                        continue
-                    bad = _unsound(mut, len(et), *_lanes(lo, hi, len(et)))
-                    key = (len(et) - bad, len(et))
-                    if key > best_n:
-                        best_n, best = key, (lo, hi, et)
-    if best is None:
-        return None
-    lo, hi, words = best
-    words = _extend_et(
-        lambda i: _split_word(m0, lo, hi, i),
-        words,
-        blocked=lambda i: bool(_unsound(mut, 1, (lo + i, 1), (hi + i, 1))),
+    Adjacent declarations are one contiguous const run: the boundary between them
+    marks another read base, not another data class, so a table may span it."""
+    tabs = sorted(
+        (d["base"], d["size"], list(d.get("cobases", ())))
+        for d in prog.data_decls
+        if d["kind"] == "table"
     )
-    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False, hi)
+    out, end = {}, {}
+    above = (None, None)
+    for base, size, _co in reversed(tabs):
+        stop = above[1] if base + size == above[0] else base + size
+        end[base] = stop
+        above = (base, stop)
+    for base, _size, cobases in tabs:
+        for b in [base] + cobases:
+            out[b] = max(out.get(b, 0), end[base] - b)
+    return out
 
 
-def _freq_bases(model):
-    """Read bases carrying a freq_lo/freq_hi provenance role (graph-labelled)."""
-    tr = ann.aggregate(list(ann.model_procs(model)), model)
-    return {b for b, rs in tr.roles.items() if "freq_lo" in rs or "freq_hi" in rs}
+def _words_at(mem0, base, endian, nbytes):
+    """The 16-bit words of an interleaved table at ``base``, within the image."""
+    k = max(0, min(nbytes, len(mem0) - base))
+    return np.frombuffer(bytes(mem0[base : base + k - k % 2]), dtype=endian + "u2").astype(np.int64)
 
 
-def _split_octave(m0, lo, hi, n=12, tol=0.008):
-    """12 words from split lo/hi bytes if they form one ET octave, else None."""
-    lob = np.frombuffer(bytes(m0[lo : lo + n]), dtype="u1").astype(np.int64)
-    hib = np.frombuffer(bytes(m0[hi : hi + n]), dtype="u1").astype(np.int64)
-    w = lob | (hib << 8)
-    if len(w) == n and (w > 0).all() and bool(np.all(np.abs(w[1:] / w[:-1] - _SEMI) < tol)):
-        return w
-    return None
+def _split_words(mem0, lo, hi, n):
+    """The 16-bit words of a lo/hi split table, within the image."""
+    n = max(0, min(n, len(mem0) - lo, len(mem0) - hi))
+    lob = np.frombuffer(bytes(mem0[lo : lo + n]), dtype="u1").astype(np.int64)
+    hib = np.frombuffer(bytes(mem0[hi : hi + n]), dtype="u1").astype(np.int64)
+    return lob | (hib << 8)
 
 
-def _octave_split_pitch(model):
-    """A one-octave ET table stored as co-indexed split lo/hi byte blocks, or None.
-
-    Pairing is the graph's shared index; the octave-ratio test over 12 entries
-    confirms. Inverted by octave-shift like the contiguous one-octave table."""
-    m0, mut = model.mem0, _written(model)
-    groups = _coindexed_bases(model)
-    for want in (True, False):
-        for group in groups:
-            bases = sorted(group)
-            for a in bases:
-                for b in bases:
-                    if a == b or bool(_unsound(mut, 12, *_lanes(a, b, 12))) is want:
-                        continue
-                    w = _split_octave(m0, a, b)
-                    if w is not None:
-                        return Pitch(a, w, 1, int(w[0]), "split", True, b)
-    return None
+def _pitch_of(base, words, endian, hi):
+    """A multi-octave Pitch over a recovered ET word run."""
+    return Pitch(base, words, len(words) // 12, int(words[words > 0][0]), endian, False, hi)
 
 
-def _role_split_pitch(model, minrun=30, cap=0x100):
-    """Split lo/hi pitch table paired by freq role when reads are not co-indexed.
+def _candidates(prog, cap=0x100):
+    """Every ET reading of the declared tables: interleaved, split, one-octave.
 
-    A freq_lo-role table and a freq_hi-role table (declared, equal-sized) whose
-    byte blocks a gapped ET check (``_sparse_et``) confirms; extent from the run."""
-    m0, mut = model.mem0, _written(model)
-    sizes = {d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table"}
-    tr = ann.aggregate(list(ann.model_procs(model)), model)
-    los = sorted(b for b, rs in tr.roles.items() if "freq_lo" in rs)
-    his = sorted(b for b, rs in tr.roles.items() if "freq_hi" in rs)
-    best_n, best = (0, 0), None
-    for lo in los:
-        for hi in his:
-            if lo == hi or sizes.get(lo) != sizes.get(hi) or sizes.get(lo, 0) < minrun:
-                continue
-            n = min(sizes[lo], cap, len(m0) - lo, len(m0) - hi)
-            lob = np.frombuffer(bytes(m0[lo : lo + n]), dtype="u1").astype(np.int64)
-            hib = np.frombuffer(bytes(m0[hi : hi + n]), dtype="u1").astype(np.int64)
-            et = _sparse_et(lob | (hib << 8), minspan=minrun)
-            if et is None:
-                continue
-            bad = _unsound(mut, len(et), *_lanes(lo, hi, len(et)))
-            key = (len(et) - bad, len(et))
-            if key > best_n:
-                best_n, best = key, (lo, hi, np.asarray(et, dtype=np.int64))
-    if best is None:
-        return None
-    lo, hi, words = best
-    words = _extend_et(
-        lambda i: _split_word(m0, lo, hi, i),
-        words,
-        blocked=lambda i: bool(_unsound(mut, 1, (lo + i, 1), (hi + i, 1))),
-    )
-    return Pitch(lo, words, len(words) // 12, int(words[words > 0][0]), "split", False, hi)
-
-
-def _interleaved_pitch(model, cap=0x100):
-    """A multi-octave interleaved 16-bit ET table, or None.
-
-    A declared read table sized by its decl, or an undeclared **freq-role** read
-    base within a capped window (extent from ``_et_words``); ``et_check`` confirms."""
-    m0, mut = model.mem0, _written(model)
-    sizes = {
-        d["base"]: d["size"] for d in ann._decls(model) if d["kind"] == "table" and d.get("size")
-    }
-    freq = _freq_bases(model)
-    bases = (set(sizes) | freq) & _read_bases(model)
-    best_len, best = (0, 0), None
-    for b in sorted(bases):
-        decl = b in sizes and (sizes[b] >= 48 or b not in freq)
-        nw = sizes[b] // 2 if decl else cap // 2
-        if decl and nw < 24:
-            continue
+    Base, pairing and extent all come from the declarations — nothing is scanned
+    out of the image, and the ET validators only confirm."""
+    mem0, avail = prog.mem0, _avail(prog)
+    out = []
+    for b, n in sorted(avail.items()):
         for endian in ("<", ">"):
-            k = min(2 * nw, len(m0) - b)
-            w = np.frombuffer(bytes(m0[b : b + k]), dtype=endian + "u2").astype(np.int64)
-            et = _et_words(w, bounded=decl)
-            need = 12 if decl else 48
-            if et is None or not need <= len(et) <= 108:
+            w = _words_at(mem0, b, endian, min(n, 2 * cap))
+            out += [(t, _pitch_of(b, ws, endian, None)) for t, ws in _et_words(w)]
+            oc = _octave_words(w)
+            if oc is not None:
+                out.append((1, Pitch(b, oc, 1, int(oc[0]), endian, True)))
+    for lo, nlo in sorted(avail.items()):
+        for hi, nhi in sorted(avail.items()):
+            n = min(nlo, nhi, cap, abs(hi - lo))
+            if lo == hi or n < 12:
                 continue
-            bad = _unsound(mut, len(et), *_lanes(b, None, len(et)))
-            key = (len(et) - bad, len(et))
-            if key > best_len:
-                best_len, best = key, (b, et, endian)
-    if best is None:
-        return None
-    b, w, endian = best
-    w = _extend_et(
-        lambda i: _iw_word(m0, b, endian, i),
-        w,
-        blocked=lambda i: bool(_unsound(mut, 1, (b + 2 * i, 1), (b + 2 * i + 1, 1))),
-    )
-    return Pitch(b, w, len(w) // 12, int(w[w > 0][0]), endian, False)
+            w = _split_words(mem0, lo, hi, n)
+            out += [(t, _pitch_of(lo, ws, "split", hi)) for t, ws in _et_words(w)]
+            oc = _octave_words(w)
+            if oc is not None:
+                out.append((1, Pitch(lo, oc, 1, int(oc[0]), "split", True, hi)))
+    return out
 
 
-def _pitch(model):
-    """The pitch table: provenance, one-octave shift, split lo/hi, else interleaved.
-
-    Every strategy reads ``mem0``, the pre-play snapshot, so each prefers a table
-    in cells the play phase never writes; a mutated one is taken only when it is
-    the sole reading, and ``unstable`` then names the stale bytes."""
-    return (
-        _direct_pitch(model)
-        or _octave_pitch(model)
-        or _paired_pitch(model)
-        or _interleaved_pitch(model)
-        or _octave_split_pitch(model)
-        or _role_split_pitch(model)
-    )
+def _reach(p):
+    """Every freq word the table can produce, octave shifts included."""
+    w = p.words[p.words > 0]
+    if p.shift:
+        w = np.concatenate([w >> oc for oc in range(16)])
+    return np.unique(w[w > 0])
 
 
-def _unstable(model, p):
-    """Play-written cells inside the accepted pitch table: stale-snapshot reads.
+def _explains(p, freqs):
+    """Share of the observed freq words the table produces exactly, per frame.
 
-    Non-empty means some note inverts through a byte the player mutates, so the
-    table is sound only up to those entries."""
-    if p is None:
-        return ()
-    mut = _written(model)
-    n, lanes = _pitch_lanes(p)
-    return tuple(sorted({b + s * i for i in range(n) for b, s in lanes if b + s * i in mut}))
+    Exactness, not proximity: a dense decoy window is within half a semitone of
+    anything, but only the real table holds the words the player wrote. Counted
+    per frame, so the words a tune actually plays outweigh its rarities."""
+    cand = _reach(p)
+    if len(freqs) == 0 or len(cand) == 0:
+        return 0.0
+    return float(np.mean(np.isin(freqs, cand)))
+
+
+def _pitch(prog, freqs=()):
+    """The pitch table best explaining the observed freq words, or None.
+
+    Ranked by explanatory power over the projection, then by ET evidence tier,
+    then by extent — a decoy window holds none of the words the player wrote."""
+    f = np.asarray(freqs, dtype=np.int64)
+    best, key = None, ()
+    for tier, p in _candidates(prog):
+        k = (round(_explains(p, f), 2), tier, len(p.words))
+        if best is None or k > key:
+            best, key = p, k
+    return best
+
+
+def _freq_words(frames):
+    """Every 16-bit freq word the projection writes, per voice per frame."""
+    out = []
+    for rec in frames:
+        for v in range(3):
+            sec, b = dict(rec[2 * v]), 7 * v
+            if b in sec and b + 1 in sec:
+                out.append(sec[b] | (sec[b + 1] << 8))
+    return out
 
 
 def _note_direct(pitch, word):
@@ -520,91 +471,163 @@ def _note_of(pitch, word):
     return _note_shift(pitch, word) if pitch.shift else _note_direct(pitch, word)
 
 
-def _tempo(counters):
+# ---- 3. the engine: clocks and instrument banks, read off the frameprog IR --------
+def _base(addr):
+    """Constant base of an address expression, 16-bit wrapped (SUB subtracts)."""
+    k = addr[0]
+    if k == "const":
+        return addr[1]
+    if k == "op" and addr[1] in ("INT_ADD", "INT_SUB"):
+        kids = [_base(a) for a in addr[2] if isinstance(a, tuple)]
+        if not kids:
+            return 0
+        base = sum(kids) if addr[1] == "INT_ADD" else kids[0] - sum(kids[1:])
+        return base & 0xFFFF
+    return 0
+
+
+def _stmts(prog):
+    """Every statement of every procedure, nested bodies included."""
+    stack = [list(p[3]) for p in prog.procs]
+    while stack:
+        body = stack.pop()
+        for s in body:
+            yield s
+            stack.extend(list(b) for b in frameproc._stmt_bodies(s))
+
+
+def _resolve(expr, env):
+    """Follow ``loc`` defs through ``env`` to the first non-``loc`` expression."""
+    seen = set()
+    while isinstance(expr, tuple) and expr[0] == "loc" and expr[1] not in seen:
+        seen.add(expr[1])
+        nxt = env.get(expr[1])
+        if nxt is None:
+            break
+        expr = nxt
+    return expr
+
+
+def _read_base(expr, env):
+    """Const base of the memory read ``expr`` resolves to, else 0."""
+    root = _resolve(expr, env)
+    return _base(root[1]) if isinstance(root, tuple) and root[0] == "mem" else 0
+
+
+def _step(expr, env, cell):
+    """``"inc"``/``"dec"`` if ``expr`` steps ``cell`` by one, else None."""
+    root = _resolve(expr, env)
+    if not (isinstance(root, tuple) and root[0] == "op" and root[1] in ("INT_ADD", "INT_SUB")):
+        return None
+    imm = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+    var = [k for k in root[2] if not (isinstance(k, tuple) and k[0] == "const")]
+    if len(imm) != 1 or not var or _read_base(var[0], env) != cell:
+        return None
+    v = imm[0][1]
+    if v == 0xFF or (root[1] == "INT_SUB" and v == 1):
+        return "dec"
+    return "inc" if root[1] == "INT_ADD" and v == 1 else None
+
+
+def _clocks(prog):
+    """Cells the play code steps by one, with the source their reload reads.
+
+    ``dec`` + reload is a divider (tempo, note length); a free ``inc`` is an LFO
+    phase. Read off the frameprog procedures, no second dataflow."""
+    steps, reloads, env = {}, {}, {}
+    for s in _stmts(prog):
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+        elif s[0] == "st" and 2 <= _base(s[1]) < _SID:
+            cell = _base(s[1])
+            kind = _step(s[2], env, cell)
+            if kind is not None:
+                steps.setdefault(cell, kind)
+            else:
+                src = _read_base(s[2], env)
+                if src >= 0x100:
+                    reloads.setdefault(cell, src)
+    return [
+        Clock(c, k, reloads.get(c), "lfo" if k == "inc" else "divider")
+        for c, k in sorted(steps.items())
+    ]
+
+
+def _tempo(clocks):
     """frames_per_tick: the decrementing counter that reloads from a cell."""
-    for c in counters:
+    for c in clocks:
         if c.kind == "dec" and c.reload is not None:
             return c.reload
     return None
 
 
-def lift(model):
-    """Lift the tune-independent engine parameters from a committed model."""
-    m = sm.analyze(model)
-    clocks = [
-        Clock(c.base, c.kind, c.reload, "lfo" if c.kind == "inc" else "divider") for c in m.counters
-    ]
-    insts = sorted({t.source for t in m.control.transitions if t.source})
-    pitch = _pitch(model)
-    return Tracker(pitch, clocks, _tempo(m.counters), insts, _unstable(model, pitch))
+def _instruments(prog):
+    """Const table bases feeding a ctrl/AD/SR store: the instrument banks."""
+    out, env = set(), {}
+    for s in _stmts(prog):
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+        elif s[0] == "st" and _SID <= _base(s[1]) <= _SID + 0x14:
+            if (_base(s[1]) - _SID) % 7 in (4, 5, 6):
+                src = _read_base(s[2], env)
+                if src >= 0x100:
+                    out.add(src)
+    return sorted(out)
 
 
-def _frame_notes(pitch, rec):
-    """Per-voice Note (or None) for one canonical frame record ``rec``."""
-    notes = []
-    for v in range(3):
-        sec = dict(rec[2 * v])
-        b = 7 * v
-        word = sec[b] | (sec[b + 1] << 8) if b in sec and b + 1 in sec else None
-        notes.append(_note_of(pitch, word) if word is not None else None)
-    return notes
+# ---- 4. the law: the graph's projection is frameprog's ---------------------------
+def oracle(prog, trace, nframes):
+    """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
+    return frameval.eval_fp(prog, trace, nframes)
 
 
-def _reconstruct(gen, residual):
-    """Rebuild one canonical record from interpreted freq words and residual only.
-
-    lww sections re-sort ascending (canonical order once generated freq bytes
-    are re-inserted); ordered sections replay the residual verbatim."""
-    out = []
-    for si, sec in enumerate(residual):
-        if si in _LWW_SECTIONS:
-            d = dict(sec)
-            d.update((r, v) for r, v in gen.items() if (r // 7) * 2 == si)
-            out.append(tuple(sorted(d.items())))
-        else:
-            out.append(sec)
-    return tuple(out)
+def lift(prog, frames=()):
+    """Lift the tune-independent engine parameters from a frame program."""
+    clocks = _clocks(prog)
+    return Tracker(_pitch(prog, _freq_words(frames)), clocks, _tempo(clocks), _instruments(prog))
 
 
-def render(model, nframes):
-    """Regenerate the projection and measure the interpreted/residual partition.
+def _graph(pitch, frames):
+    """``(graph, lanes)``: accepted notes as freq generators, everything else RAW.
 
-    Accepted-note freq entries are interpreted; all else is an explicit residual
-    byte-program. Each record is rebuilt from those two sources only (no
-    observed-frame passthrough), so a ``gate_t`` PASS certifies completeness."""
-    frames = framelog.frames_from_walker(S.Walker(model), nframes)
-    gt = framelog.canonical(frames)
-    pitch = _pitch(model)
+    A detuned frame counts only as vibrato on the current note, or as a fresh exact
+    anchor; an excursion to an unrelated note stays residual."""
     lanes = [[], [], []]
     anchor = [None, None, None]
-    generated, residual = [], []
-    planes = {}
-    for f, rec in enumerate(gt):
-        notes = _frame_notes(pitch, rec) if pitch else (None, None, None)
+    seqs = {r: [] for r in _FREQ_REGS}
+    residual = []
+    for f, rec in enumerate(frames):
         gen = {}
-        for v, note in enumerate(notes):
-            b = 7 * v
-            if b not in dict(rec[2 * v]):
+        for v in range(3):
+            sec, b = dict(rec[2 * v]), 7 * v
+            if b not in sec or b + 1 not in sec:
                 continue
-            # a detuned frame counts only as vibrato on the current note, or a fresh exact anchor
+            word = sec[b] | (sec[b + 1] << 8)
+            note = _note_of(pitch, word) if pitch else None
             if note is not None and (note.detune == 0 or note.index == anchor[v]):
                 anchor[v] = note.index
                 gen[b], gen[b + 1] = note.word & 0xFF, (note.word >> 8) & 0xFF
                 lanes[v].append((f, note))
-        generated.append(gen)
-        residual.append(tuple(tuple(e for e in sec if e[0] not in gen) for sec in rec))
-        for sec in rec:
-            for reg, _val in sec:
-                p = _plane_of(reg)
-                it, tot = planes.get(p, (0, 0))
-                planes[p] = (it + (reg in gen), tot + 1)
-    rendered = [_reconstruct(g, r) for g, r in zip(generated, residual)]
-    interp = sum(it for it, _ in planes.values())
-    total = sum(t for _, t in planes.values())
-    return rendered, gt, Coverage(interp, total - interp, total, planes), lanes
+        for r, seq in seqs.items():
+            seq.append(gen.get(r))
+        residual.append([e for sec in rec for e in sec if e[0] not in gen])
+    nodes = [raw(residual)]
+    nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
+    return Graph(nodes, freq_table=pitch), lanes
 
 
-def gate_t(model, nframes):
-    """Gate T verdict: None if interpreted + residual reproduce the projection."""
-    rendered, gt, _cov, _lanes = render(model, nframes)
+def render(prog, trace, nframes):
+    """``(rendered, oracle, Coverage, lanes)`` for the frame program's projection.
+
+    Accepted-note freq entries are interpreted generators; everything else is an
+    explicit RAW residual, so a ``gate`` PASS certifies the partition is complete."""
+    gt = oracle(prog, trace, nframes)
+    graph, lanes = _graph(_pitch(prog, _freq_words(gt)), gt)
+    recs, interp, rawn = _run(graph, nframes)
+    return recs, gt, _coverage(interp, rawn), lanes
+
+
+def gate(prog, trace, nframes):
+    """Gate verdict: None if the generator graph reproduces frameprog's projection."""
+    rendered, gt, _cov, _lanes = render(prog, trace, nframes)
     return framelog.diff(rendered, gt)
