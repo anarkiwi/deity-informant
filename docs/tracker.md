@@ -53,13 +53,33 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n)                  # one tick per n input triggers (a clock)
            | LOOKUP(seq)             # emit seq[i]; i advances per trigger
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
+  rows     : (a recovered run)       # the row indices observation yields
+           | Node(j)                 # generated: the row generator j holds
+           | Rel(op, j, base)        # generated and shifted: op(base, j) -- a transpose
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
   route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
+           | Rel(reg, mask, op, base)# the emit is a DELTA op combines with base
+           | Index                   # the emit is another generator's row index
            | Fire | Raw              # a downstream trigger, or the value floor
+  op       : ADD | SUB | XOR         # the store statement's own operator
+  base     : Prev                    # the plane's own previously emitted value
+           | Node(i)                 # generator i's current value
+           | Const(c)                # a declared base byte
 ```
+
+A route is **absolute or relative**. An absolute route's emit *is* the byte; a
+relative route's emit is a **delta**, and the byte is `op(base, delta)`. Every editor
+has at least three tables whose entry offsets a value rather than replacing it —
+GoatTracker's vibrato and its wavetable relative-note column, SID-Wizard's detune and
+`chord_table`, DefMON's `TR` and `AF` — and none of them is a `LOOKUP` (the values
+depend on the base) or a `RAMP` (the step is not constant). §4f is what recovers one
+from a binary, and the base is **named, never inferred**: `Prev` is what the plane
+holds, `Node(i)` is another generator's current value, `Const(c)` a byte of the
+program text. A base read off the observed output is a fitted parameter and is
+refused for the reason §4c refuses a fitted `RAMP` step.
 
 A route names a **bit mask** as well as a plane, because a SID register is not
 always one generator's output: `$18` is a filter mode ORed with a master volume and
@@ -72,6 +92,51 @@ route as it stood. What a masked group emits is one write of the assembled byte,
 the position of the last of its generators to fire, so a register several generators
 drive still takes exactly one write per frame in the order-preserved section and
 counts as exactly one emit (§4e).
+
+**Absolutes settle a register, relatives apply to it in node order** — the composition
+rule, and `_check` enforces it (`_base_ok`). A `Node(i)` base must be an *absolute*
+generator of the same register and the same mask at a smaller index; a `Prev` base
+needs some earlier node that writes that register (a plane generator of the same field,
+or the `RAW` floor); a `Const` base needs nothing. A base generator whose value a
+relative route consumes does **not** write — the relative route writes the combined
+byte — so a relative pair is one emit at one position, exactly as a masked group is.
+A graph that names a base no earlier generator settles is refused outright, and a
+relative route whose base the evaluator cannot supply emits nothing, so a mis-built
+stream drops a write and the law fails rather than a base being invented.
+
+A route carries a **trigger**, a **value**, or an **index**. `Fire` says *when* a
+downstream table advances; `Index` says *which row* it reads. Without the second, an
+orderlist can beat a pattern forward but cannot name the pattern — which is why
+structure recovery read exactly zero on both the recovered and the oracle side, and
+why §7.4's original claim (orderlist and pattern as `LOOKUP` nodes routed to `Fire`)
+could not have worked: a `Fire` edge carries no value. A `SELECT` whose `rows` is
+`Node(j)` reads the row generator `j` currently holds, so the row a note-on selects
+becomes an emit rather than observed data. The source is refused unless it is an
+earlier `Index`-routed node — the value edge runs the way node order already runs, so
+no cycle can form — and an `Index` route no generator reads is refused as dead. An
+index past the end of its table emits nothing, so a mis-built arrangement drops a
+write and the law says so rather than wrapping to a row nobody proved.
+
+A row may be **relative**, for the same reason a plane route may be: an editor's
+transpose shifts the row a pitch table is read at rather than the byte it yields, so
+an absolute index cannot carry it. Measured across the three oracles, an absolute-only
+index refuses **6953 emits over 23 of 141 modules** — GoatTracker's orderlist
+`Transpose` 1690 (2.02% of its freq plane), SID-Wizard's `Transpose`/`octave_shift`
+4738 (6.99%), DefMON's `TR` 525 (7.29%) — every one an emit whose note column *is* the
+composer's datum, held back only by a declared shift. The same object combines two
+index sources, which is what an orderlist entry plus a row within it needs. The
+operation is the store's own (`ADD`/`SUB`/`XOR`, the `Rel` set); both halves must be
+earlier `Index` nodes or a declared constant; a shifted row past the end of its table
+emits nothing, exactly as an absolute one does.
+
+**The loop needs no machinery**: `LOOKUP` and `SELECT` already advance modulo their
+length, so an orderlist wraps to its first entry by construction. What §7.4 called a
+back-edge was there all along.
+
+The phase, though, is real and is **this** layer's. `DIV(n)` fires at `n-1, 2n-1, …`,
+so a graph whose orderlist is clocked by one writes nothing until the first tick — it
+refuses to invent entry 0. That is the settled three-editor verdict of §8 seen from
+the other side: the phase belongs to the arrangement, not to the divider.
 
 `RAW` and `EDGE` are the two floors — the residual in the value domain and in the
 trigger domain. Refinement replaces them: a value moves out of `RAW` into a typed
@@ -117,6 +182,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   bits, each field is its own generator: a declared byte at a recovered row, or that
   statement's own constant. `$18`'s mode and volume are the case that reaches the
   corpus, and it reaches 5 tunes of 649.
+- **The relative route** (§4f) — where the store statement adds, subtracts or XORs a
+  declared byte against a base the same statement names, the emit is that delta and the
+  route combines it. It reaches 316 emits on 6 tunes of 649; the oracles say why that is
+  the small half of the answer.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -309,11 +378,12 @@ apart, so the provenance rule must.
   clock — so it would "explain" every stream that fires on consecutive frames with a
   byte that only happens to be `1`. That is the same refusal §4c makes of a `RAMP`
   whose declared step is zero: a generator that predicts nothing is not one.
-- **The phase is the primitive's, not a parameter** (`_generates`). `DIV(n)` fires at
-  frames `n-1, 2n-1, …` — a counter loaded with its own reload and stepped down. The
-  whole stream must match in both directions: a missing tick refuses as loudly as a
-  spare one. Adding a phase field would buy a per-stream parameter, and §6 measures
-  that it would buy almost nothing besides.
+- **The phase is the primitive's, and it belongs to the arrangement** (`_generates`).
+  `DIV(n)` fires at frames `n-1, 2n-1, …` — a counter loaded with its own reload and
+  stepped down. The whole stream must match in both directions: a missing tick refuses
+  as loudly as a spare one. A phase *field* is not refused on principle — three editors
+  now say the phase is real — but it is not a per-stream parameter to fit either: see
+  the settled verdict in §8.
 - **The law does the verification.** A `DIV` node replaces an `EDGE` in place, so its
   downstream `SELECT`s fire on exactly the frames the divisor says; a wrong divisor
   moves every emit after the first and `tracker.gate` fails
@@ -363,6 +433,68 @@ staged cell `$1056` originates in the declared table based at `$1A13` — the fi
 program, whose row 1 holds the mode byte `$10`. `$18` becomes two generators, a
 `SELECT` over that lane masked `$F0` and a `LOOKUP(($0F,))` masked `$0F`, and the
 register is explained for the first time on that tune.
+
+## 4f. The relative route: a declared delta over a base the statement names
+
+Three independent editors need a generator whose value is a delta combined with a base
+rather than an absolute byte — DefMON's `AF` and `TR` (2421 freq emits, 33.6% of its
+plane, on 6 tunes of 6, docs/dm-oracle.md §4.2), GoatTracker's vibrato and orderlist
+transpose (12744 emits on 28 tunes) and SID-Wizard's detune and chord table (38840
+emits on 64 modules, docs/gt-oracle.md §4.2). That an editor which has never heard of
+the others needs the same object is the argument that it belongs in the primitive, and
+the route of §2 is the general form: a generator supplies the delta, the route names
+the operation and the base.
+
+The recovery holds it to the standard §4b applies to a table, §4c to a step and §4e to
+a mask: **both the operation and the base come from the program text, and the delta is
+a declared byte at the cell the machine actually read.**
+
+- **The store statement is the site** (`_rel_sites`). A SID store whose value expression
+  resolves to `INT_ADD`, `INT_SUB` or `INT_XOR` of exactly two terms is a relative site;
+  one term must reach a declaration (the delta), and the other must *name* a base. A
+  store of anything else is not a site, and that is a count, not a claim.
+- **Three named bases, and nothing else** (`_term_role`, `_is_mirror`).
+  `Const(c)` — the base term is a program constant. `lane − c` is normalised to
+  `lane + (−c)`, which is the same byte and one route rather than two.
+  `Prev` — the base term reads, directly, a cell the program text stores this register
+  class's own value into (`_mirrors`: a non-SID store whose value expression is one a
+  SID store of that class also writes). That cell **is** the plane's previous emit, by
+  the text, not by resemblance to the output.
+  `Node(i)` — the base term reaches a second declaration, so the base is that lane's byte
+  at the row its own read cell recovers, and the graph carries it as a real generator.
+- **The emit is predicted, never solved for** (`_relate`). Per write, the delta
+  candidates are the source cells inside the delta declaration at a non-`mut` offset,
+  and the byte is the **declared** one; the base is the named base's value. The write is
+  claimed only where `op(base, delta)` *equals the byte the register took*. Nothing is
+  ever computed as `emitted − previous`: that is the fitted-parameter failure §4c
+  refuses for a `RAMP` step, and §6 prices it here the same way.
+- **A delta of zero predicts nothing** and is refused, for the reason `DIV(1)` and a
+  `RAMP` of step zero are (§4c, §4d): the plane simply held its value, and a byte that
+  happens to be `0` explains no index.
+- **`lane − prev` is refused**, not re-associated. `SUB` is `base − delta` by the text;
+  a declared lane as the *minuend* over the plane's own value is not `base op delta` and
+  the site is declined rather than bent into one.
+- **Per emit, not per run.** Every relative emit is determined by declared data and a
+  base the graph itself carries, so there is no run to keep or refuse whole and **no
+  observed seed at all** — unlike §4c, a relative stream contributes nothing to the
+  shallow `seed` class. A `Prev` emit whose plane has no previous value is simply not
+  claimed.
+- **The order-preserved section takes none.** ctrl/AD/SR is a sequence of whole-byte
+  writes (§5), not a value composed on one plane, so a relative emit there would have to
+  agree with the section's write count and order; the recovery refuses it and §6
+  measures the 2198 emits that costs.
+- **Last of the value rules.** §4f only sees writes §4b, §4c and §4e have all declined,
+  so no other plane can move; §6 confirms that per tune.
+
+On `MUSICIANS/S/SounDemoN/Arkanoid.sid` the store is `freq_lo = m_15FC[t] + $FA`: the
+declared lane supplies the delta and the store's own constant is the base, and 35 freq
+emits that were an *observed* word matched to an ET table become a *declared* byte over
+a program constant — the same count, strictly better evidence, which is why that tune
+does not appear in the improved list. On `MUSICIANS/B/Bolleman/Geisha_End_Screen.sid`
+the store adds the `$190B` lane to the `$17B0` lane and the base is a second generator.
+tests/test_tracker.py drives all three bases hermetically, plus every refusal: an
+unnamed base, a `mut` delta, a zero delta, the order-preserved section, and an identical
+emitted stream whose delta is staged in an undeclared RAM cell.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
@@ -461,9 +593,10 @@ partitions, one per domain**, and they are never summed.
   replayed from `RAW`, the per-plane split, and per plane the evidence behind each
   interpreted emit — `lane` and `gate` are declared bytes at a recovered index
   (**strong**), `imm` is a program constant that passes the law without explaining an
-  index (**shallow**, never folded into a strong figure), and `mask` is a byte several
-  generators assemble field by field (§4e), part declared and part program constant,
-  folded into neither.
+  index (**shallow**, never folded into a strong figure), `mask` is a byte several
+  generators assemble field by field (§4e), part declared and part program constant, and
+  `rel` is a declared delta over a base the store statement names (§4f), part declared
+  byte and part live value: neither of the last two is folded into a strong figure.
 - The **trigger** partition (`triggers`): `(generated, all)` fires, counted by
   `_run` off the evaluator itself. A generated fire is a `DIV` tick over a divisor the
   play code declares (§4d) — the only strong evidence this domain has, and the only
@@ -1049,6 +1182,110 @@ that names no partition: 131102. And the order-preserved section: 23 emits on 2 
 cleanly but are refused because ctrl/AD/SR is a sequence of whole-byte writes rather
 than a partition of one (§5).
 
+### The relative route, and the gap between what it expresses and what it recovers
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (649 reach the gate),
+against the table above: §4f's relative route, a change to `tracker.py` only.
+
+| plane | before | after |
+|---|---|---|
+| interpreted | 753274/1942809 = 38.77% | **753555/1942809 = 38.79%** |
+| pw | 89850/565009 | **90000** |
+| filter | 22977/240844 | **23104** |
+| freq | 417490/605952 | **417494** |
+| ctrl | 112502/302359 | 112502 (unchanged) |
+| ad | 54436/112608 | 54436 (unchanged) |
+| sr | 56019/116037 | 56019 (unchanged) |
+
+**5 tunes improve and none regresses.** The class split moves by exactly the route's own
+class — `lane` 516682, `gate` 32708, `imm` 25188, `ramp` 25399, `seed` 4152 and `mask`
+676 are all unmoved, and `rel` goes **0 → 316**. The canonical fixpoint holds 649/649,
+Gate FP 649/649 and the tracker law 649/649. The trigger domain's generated figure does
+not move (300 fires, the same three `DIV` nodes); its denominator goes 306953 → 307269,
+one edge stream per relative pair.
+
+316 emits and +281 interpreted are not the same number, and the difference is the
+interesting one: on `MUSICIANS/S/SounDemoN/Arkanoid.sid` 35 freq emits the note lane had
+been matching as *observed* words become a *declared* delta over a program constant, so
+that tune's count does not move while its evidence improves. By base kind the 316 split
+**`Prev` 277, `Const` 35, `Gen` 4** — all three named bases reach the corpus, and the
+plane's own previous value is where nearly all of it is.
+
+**Every refusal, and what it costs.** Sites first (a site is a store statement, so the
+count is of program text, not of emits):
+
+| the store statement | sites |
+|---|---|
+| names a binary op over a declared term and a named base — **the rule** | 316 emits, over 6 tunes |
+| an `ADD`/`SUB`/`XOR` of more than two terms | 315 |
+| an `ADD`/`SUB`/`XOR` whose other term names no base | 177 |
+| an `ADD`/`SUB`/`XOR` with no declared term at all | 520 |
+| a declared lane as the minuend over the plane's own value | 1 |
+
+Then per emit, over the writes a relative class leaves unexplained:
+
+| the emit is | emits |
+|---|---|
+| refused because the named base has no value here (`Gen` names no read cell, or `Prev` has no previous emit) | 35242 |
+| in a relative class, but the declared delta and the named base do not predict the byte | 30143 |
+| refused for a `mut` offset on the delta cell | 3388 |
+| refused because the declared delta is zero, which predicts nothing | 389 |
+| refused because ctrl/AD/SR is a sequence of whole-byte writes, not a composed value | 2198 |
+| **taken: a declared delta over a named base** | **316** |
+
+And the refusal the whole rule rests on, priced: **a delta back-computed as
+`emitted − previous` would take 29559 further emits** — every unexplained write in a
+relative class whose plane moved at all — for 93× the shipped figure. It is refused
+outright. Such a delta is not data: it is the output written back as a parameter, and
+the law cannot tell the two apart, which is exactly why the provenance rule has to. The
+same reasoning refuses a fitted `RAMP` step (§4c), a fitted `DIV` period (§4d) and a
+fitted mask (§4e), and this is the fourth domain to be measured under it.
+
+**A mask on the delta path was tried and returned nothing.** Following the program text's
+`AND`-immediates from the declaration to the store — the reading §4e takes of a field, so
+the delta would be `lane[row] & m` — adds **no emit at all** and only more refused
+candidates, so a narrowed byte is not what stands between the sites and the emits. The
+rule ships without it rather than carrying the machinery for a zero.
+
+The oracles are where this construct is known to exist, and they say the same thing from
+the other side: it is expressible, and a decompiled driver rarely names the delta.
+
+| oracle | admitted interpreted | strict `RAW` | law | strict, full window |
+|---|---|---|---|---|
+| GoatTracker, 71 tunes | 112988 → **113585** of 282516 | 126554 → **122247** | 71/71 → 71/71 | 4 → 4 |
+| SID-Wizard, 64 modules | 105691 → **106034** of 228702 | 123011 → **122668** | 64/64 → 64/64 | 64/64 → 64/64 |
+| DefMON, 6 tunes | 12556 → 12556 of 28800 | 16244 → 16244 | 6/6 → 6/6 | 6/6 → 6/6 |
+
+**4307 GoatTracker emits and 343 SID-Wizard emits leave `RAW`**; 14 GT tunes and 4 SW
+modules improve and none regresses on either. GoatTracker's vibrato is the relative route
+in its purest form — `freq = freq ± speedtable.right[row]`, a `Prev` base and a declared
+delta — and its 12744 refused emits now decompose completely: 4307 interpreted, 6284 the
+*high* byte moving on carry (the wider-accumulator limit of docs/gt-oracle.md §4.4, not
+this one), 1977 a relative cell the composer's own table no longer predicts, and 176 the
+editor's bit-7 escape, where the declared byte is a shift count applied to a note interval
+rather than a step. SID-Wizard's detune is the `Node(i)` base — the pitch lane plus the
+instrument program's own detune column — and it takes 343 of the 38840 its freq plane
+refuses, because the rest carry a vibrato accumulator the module does not declare.
+
+**DefMON recovers zero, and that is the finding to state plainly.** All 2421 of its
+`('slide','detune')` emits stay `RAW`, byte for byte. The route expresses the shape —
+`AF` is documented as "portamento toward `current_note + AF`" and `TR` bit 7 clear as
+"relative, added to the voice's transpose buffer" — but neither yields a *declared delta
+in the value domain*. `TR` shifts the note **index**, and the oracle already reads the
+final index off the replay's address bus, so it costs nothing and gains nothing. `AF`
+selects a slide **mode**, and the per-frame rate comes from a lookup table inside the
+replay's own 6502 code, which is player code and not the composer's song. A delta fitted
+to the emitted stream would take all 2421 and explain none of them, so they stay at the
+floor. What DefMON needs is not this route but the note-index domain (§7.4) and a
+turning `RAMP` bound (§8).
+
+So the construct recovers **316 emits from binaries** and **4650 from two editors' own
+models**, and the two numbers are reported apart because they measure different things:
+the first is what a 6502 driver's program text names, the second is what the format can
+express when the song is in hand. The wall is provenance, as it was for §4e — 35242
+emits sit in a class whose site is named but whose base the write's own read cells do
+not supply.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -1063,6 +1300,14 @@ several generators drive is now expressible, two editors' own songs use it heavi
 come from the store statement, and 27665 emits whose statement does name a partition
 still have a field no declaration holds — the same wall item 2 hit, a parameter staged
 in RAM at init, measured on a second plane. It is not a generator-shape problem.
+
+§4f's relative route is off this list for the same reason and with the same shape of
+answer: three editors need it, the primitive now carries it, two of the three use it
+(4650 emits leave their `RAW`), and our own recovery reaches 316. What stops it is
+again provenance — 35242 emits sit in a class whose site the text names but whose base
+the write's own read cells do not supply, and 30143 more where the declared delta and
+the named base simply do not predict the byte. A delta read back off the output would
+take 29559 of them and is refused (§6).
 
 1. **The instrument planes are now bounded by provenance again** — the finer
    partition shipped (§5, §6): `ctrl`/`ad`/`sr` interpret 37%/48%/48% and their
@@ -1091,10 +1336,19 @@ in RAM at init, measured on a second plane. It is not a generator-shape problem.
 3. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
-4. **Arrangement** — orderlist/pattern/transpose as `LOOKUP` nodes routed to
-   `Fire`, with shared subgraphs for reuse and a back-edge for the loop. This is
-   what replaces the `EDGE` floors and the recovered row streams: the row a
-   note-on selects becomes an emit of the pattern generator, not observed data.
+4. **Arrangement** — orderlist and pattern as an `Index` route (§2), transpose as
+   `Rel`. This is what replaces the `EDGE` floors and the recovered row streams: the
+   row a note-on selects becomes an emit of the pattern generator, not observed data.
+
+   **Corrected.** This item previously read "`LOOKUP` nodes routed to `Fire`, with
+   shared subgraphs for reuse and a back-edge for the loop". That shape cannot
+   express an arrangement: a `Fire` edge carries a trigger and no value, so it
+   advances a pattern without naming it, and `SELECT`'s row index was a recovered
+   tuple nothing could supply from outside. The primitive was missing one route, not
+   a layer — and the back-edge was never needed, because `LOOKUP`/`SELECT` already
+   wrap modulo their length. The arrangement's own **phase** is what the divider
+   lacks (§8): a `DIV(n)`-clocked orderlist emits nothing before frame `n-1` rather
+   than inventing its first entry.
 
    **The population is now measured, and it is almost all of the domain.** §6's
    trigger census leaves **280437 fires over 3798 nodes, 99.89%**, and says what
@@ -1165,8 +1419,27 @@ in RAM at init, measured on a second plane. It is not a generator-shape problem.
   primitive has no phase field either, so a divider whose counter starts anywhere but
   at its own reload stays at the floor — 363 of the 391 divider-shaped streams do.
   Adding the field would open at most their 4961 fires (1.8% of the domain), and only
-  where the divisor is declared as well; the price would be a per-stream parameter
-  fitted to the output.
+  where the divisor is declared as well.
+
+  **The three-editor verdict on that field, settled.** This entry used to price it as
+  "a per-stream parameter fitted to the output". DefMON refines that and the refinement
+  is the useful part: DefMON is the first editor whose divisor is unambiguously
+  *declared song data* — `sidtab_dl[y]` holds a cascade row for `dl + 1` frames, and
+  that byte predicts **817 of 1329** advances across its whole corpus
+  (docs/dm-oracle.md §4.1). So the divisor is not the problem in any of the three
+  editors: GoatTracker's tempo is in the orderlist, SID-Wizard's in `speed`, DefMON's
+  in a table. What breaks is everything after it. **36 of DefMON's 40 periodic chains
+  run at divisor 1**, which `DIV(1)` refuses for the reason above, and of the four left
+  only **2** sit where `DIV(n)` fires — and they sit there by coincidence, because
+  DefMON arms a cascade from a `PatternEvent`'s gate flag at an **arbitrary frame**.
+  GoatTracker primes `mt_initchn` to 1 and SID-Wizard pre-warms `speed_counter` to 2;
+  two editors prime a counter at init, the third arms it from a pattern, and all three
+  land off `n-1 mod n`. The phase is therefore **the arrangement's**, not a per-stream
+  parameter: it is *where the song started the clock*. A phase field fitted per stream
+  would be exactly the refusal §4c, §4d, §4e and §4f each make in their own domain, and
+  a phase field supplied by the arrangement is not a separate step at all. **§7.4 and
+  this field are one problem, and the field is not worth adding before the arrangement
+  is recovered.**
 - The tree walk is per procedure (locals) plus a program-wide staging hop
   (`origins`), so a byte staged across a procedure boundary or through the stack is
   named by no store site. On ctrl/AD/SR the provenance search covers it — 15648
@@ -1180,3 +1453,14 @@ in RAM at init, measured on a second plane. It is not a generator-shape problem.
   emitted as zero, so a byte with a bit nobody owns cannot pass the law and stays
   residual; `_check` refuses overlapping masks outright. The order-preserved section
   takes no masked group at all, which costs 23 emits on 2 tunes.
+- A relative route needs a base the program text names (§4f), and a 6502 driver rarely
+  names one: 316 emits, on 6 tunes of 649, against 4650 the same route takes from two
+  editors' own models. `Prev` needs a cell the text stores the register's own value
+  into, `Node(i)` needs the write's own read cells to reach the base declaration
+  (35242 emits fail exactly there), and `Const(c)` needs the base in the statement.
+  A delta of zero, a delta at a `mut` offset, and a declared lane used as the minuend
+  over the plane's own value are each refused, and a delta back-computed as
+  `emitted − previous` — worth 29559 emits — is refused outright. The order-preserved
+  section takes no relative route at all, which costs 2198 emits. What the route does
+  **not** carry is a base in the *index* domain: DefMON's `TR` shifts a note index
+  rather than a byte, and that is §7.4's, not this route's.

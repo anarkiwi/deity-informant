@@ -189,15 +189,19 @@ GoatTracker's `mt_initchn` and SID-Wizard's `speed_counter` put their streams of
 editors prime a counter at init; the third arms it from a pattern. All three land
 off `n-1 mod n`.
 
-**Verdict: confirmed, and sharpened.** The general extension is unchanged — `DIV`
-carries a phase — but DefMON says the phase is not an init detail: it is where the
-*arrangement* started the clock, so §7.4 and this field are one problem.
+**Verdict: confirmed, sharpened, and settled.** The general extension is unchanged —
+`DIV` carries a phase — but DefMON says the phase is not an init detail: it is where the
+*arrangement* started the clock. docs/tracker.md §8 now records that as the three-editor
+verdict and takes the field off its own list: a phase fitted per stream is the refusal
+every other domain makes, and a phase supplied by the arrangement is not a separate
+step. **§7.4 and this field are one problem, and the field is not worth adding before
+the arrangement is recovered.**
 
 The other 512 unpredicted advances are the same thing again: a pattern event
 re-arming the slot before its delay expires. The clock is declared; when it starts
 is not.
 
-### 4.2 A transfer's emit cannot be relative to another — confirmed, three spellings
+### 4.2 A transfer's emit cannot be relative to another — **route closed, DefMON gains nothing**
 
 | | emits | share of the plane | tunes |
 |---|---|---|---|
@@ -222,9 +226,27 @@ that transfer: the pulse sweep "modulates `pulse_lo` each frame until clamped,
 then **auto-reverses**". The step is declared, the run is real, and the mapping
 refuses all 188 emits because `RAMP`'s bound wraps and this one turns.
 
-**Verdict: confirmed by a third editor, and the turning bound is now reached
-rather than theorized.** The general extension stands: a route that composes with
-the value already on a plane, and a `RAMP` bound that turns rather than wraps.
+**Verdict: the route shipped and DefMON recovers zero of it, measured.**
+docs/tracker.md §2 and §4f answer the first half — a relative route whose generator
+supplies a delta that a named base combines with — and GoatTracker and SID-Wizard take
+4307 and 343 emits out of `RAW` with it (docs/gt-oracle.md §4.2). DefMON's six tunes are
+**byte-identical before and after**: interpreted 12556/28800 either way, `rel` 0, all
+2421 `('slide','detune')` emits still at the floor, law 6/6 and strict 6/6 unchanged.
+
+The reason is worth more than the number, because it says what the route requires. `TR`
+is relative in the **note-index** domain, not the value domain — it shifts
+`current_note`, and §2 reads the final index straight off the replay's address bus, so
+the route has nothing to add and nothing to lose there. `AF` is a slide **mode** byte:
+`$01..$7F` names a portamento *target* (`current_note + AF`) and `$80..$FF` selects a
+rate from a lookup table **inside the replay's own 6502 code**. That LUT is player code,
+not the composer's song, so there is no declared delta to route — and a delta fitted to
+the emitted stream would take all 2421 while explaining none of them, which is the
+refusal docs/tracker.md §4f prices at 29559 emits on our own corpus. Counted, named,
+left residual.
+
+The second half stands open: **a `RAMP` bound that turns rather than wraps**, which
+DefMON's `PS` still reaches (188 emits) and no other editor does. That is the transfer
+domain, not the route domain.
 
 ### 4.3 One register plane, two generators — confirmed three times, and bounded
 

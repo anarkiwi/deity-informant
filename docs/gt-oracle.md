@@ -33,19 +33,22 @@ structure exist in an editor that had never heard of this one?*
 | transpose | orderlist `Transpose` | sequence `Transpose`, `octave_shift` | — (§7.4) |
 | gate-off images | `gateoff_timer` | `gateoff_wf`/`gateoff_pw`/`gateoff_filt` | the gate images of the same lanes, §5 |
 | **two fields in one register** | `$18` = `filtertype & $70` \| `masterfader` | `$18` = mode \| volume; `$17` = resonance \| three voices' routing flags | masked `SELECT`s over disjoint bit fields, §4e |
+| **a value offset rather than replaced** | `_vibrato`: `freq ± speedtable.right[row]` | `WRPITCH`: the pitch lane `+` the WF program's detune column | a relative route over `Prev` or `Node(i)`, §4f |
 
 Three different spellings of the hard restart become **one** node shape: a
 `LOOKUP` of ADSR bytes fired by the note-on `EDGE`, ahead of the instrument's own
 `SELECT`. Nothing editor-specific enters the format. Where a structure has no
 generic reading, that is §4 below — a deficiency, never a new node type.
 
-The last row of that table is the first deficiency this report closed. §4.3 measured
-it, docs/tracker.md §2 and §4e answered it with a **masked route**, and the mapping
+The last two rows are the deficiencies this report has closed. §4.3 measured the
+first, docs/tracker.md §2 and §4e answered it with a **masked route**, and the mapping
 now expresses both editors' shared registers with it: GoatTracker's `$18` as the
 filter program's set row masked `$70` beside the master volume masked `$0F`, and
 SID-Wizard's `$17` as the resonance nibble beside **three** routing generators, one
-per voice, each that voice's own instrument flag. Nothing editor-specific was added
-to do it: the route kind is the same one `tracker` uses on its own recovery.
+per voice, each that voice's own instrument flag. §4.2 measured the second, and §2 and
+§4f answered it with a **relative route**: the generator supplies a delta and the route
+names the operation and the base. Nothing editor-specific was added for either — the
+route kinds are the ones `tracker` uses on its own recovery.
 
 ## 2. Two graphs, two purposes
 
@@ -146,18 +149,19 @@ The same 4 tunes, oracle against recovery, on identical windows:
 
 | plane | oracle (the composer's data) | tracker recovery |
 |---|---|---|
-| freq | 3694/4742 = 78% | 3694/4760 = 78% |
+| freq | 3749/4742 = 79% | 3694/4760 = 78% |
 | ctrl | 1868/2385 = 78% | 0/2400 = 0% |
 | ad | 1362/1816 = 75% | 1287/1825 = 71% |
 | sr | 1362/1816 = 75% | 1460/1825 = 80% |
 | pw | 1001/3576 = 28% | 48/3594 = 1% |
 | filter | 639/2782 = 23% | 0/2796 = 0% |
-| **all** | **9926/17117 = 58.0%** | **6489/17200 = 37.7%** |
+| **all** | **9981/17117 = 58.3%** | **6489/17200 = 37.7%** |
 
-**The freq plane agrees emit for emit** — 3694 either way. The tracker recovers
+**The freq plane agreed emit for emit at 3694 either way** — the tracker recovers
 exactly the note-lane emits the composer's own table accounts for, which is the
 strongest single piece of evidence here that the recovery is structurally right
-and not merely projection-equal.
+and not merely projection-equal. §4.2's relative route then adds **55** vibrato emits
+on the oracle side and none on ours, which is that deficiency's gap in miniature.
 
 The filter row is §4.3's masked route arriving: 448 → 639 on these four, all of it
 `$18` read as two fields. Over all 71 GT tunes the oracle reaches **40.0%** (36.9%
@@ -202,27 +206,66 @@ init and reloaded at zero, and no editor arranges for that load to coincide with
 frame `n-1`. Justified by two independent editors and by the 363 divider-shaped
 streams docs/tracker.md §6 already measures at a non-`DIV` phase.
 
-### 4.2 A transfer's emit cannot be relative to another's
+### 4.2 A transfer's emit cannot be relative to another's — **closed**
 
-| | GoatTracker | SID-Wizard |
-|---|---|---|
-| freq emits the mapping cannot express | 12744 vibrato (4.5%, 28 tunes) + 500 portamento carry (9 tunes) | 38840 detune/vibrato (17.0%, 64 modules) |
+| the strict graph's RAW | measured | after the relative route | tunes |
+|---|---|---|---|
+| GoatTracker vibrato: `freq ± speedtable.right[row]` | 12744 | **4307** interpreted | 28/71 |
+| … of the rest: `freq_hi` moving on carry — a 16-bit accumulator (§4.4) | — | 6284 | — |
+| … of the rest: a relative cell the composer's table no longer predicts | — | 1977 | — |
+| … of the rest: the editor's bit-7 escape, a shift count and not a step | — | 176 | — |
+| SID-Wizard detune: the pitch lane plus the WF program's detune column | 38840 | **343** interpreted, 612 refused | 4/64 |
+| GoatTracker portamento carry (16-bit, §4.4) | 500 | 500 (unchanged) | 9/71 |
 
-Vibrato is a *bipolar offset applied to the note the pitch table holds*: neither
+Vibrato is a *bipolar offset applied to the value the plane already holds*: neither
 `LOOKUP` (the values depend on the base note) nor `RAMP` (the direction reverses
 at a bound). The same shape covers the arpeggio (`wavetable` relative-note column;
 SID-Wizard's `default_chord` + `chord_table`), the orderlist `Transpose`, and
 SID-Wizard's `octave_shift` and `detune` — every one of which is "a table whose
-emit is added to another generator's emit". docs/tracker.md §7.3 names this from
-the recovery side ("an arp step is a downstream generator emit on that edge, so
-it must never appear as a fresh row") and §8 names the triangle case ("a triangle
-sweep that turns around at a declared bound needs a transfer this primitive does
-not have").
+emit is combined with another generator's".
 
-**The general extension**: a route that **composes** with the value already on a
-plane — an additive route, and a `RAMP` bound that turns rather than wraps —
-because every editor has at least three tables that offset a note rather than
-replace it. Both editors, and our own recovery's §7.3/§8.
+**The extension shipped**: `route: Rel(reg, mask, op, base)` (docs/tracker.md §2, §4f).
+A generator supplies a **delta**, the route names the operation, and the base is one of
+three **named** things — the plane's own previous emit (`Prev`), another generator's
+current value (`Node(i)`), or a declared byte (`Const(c)`). Both spellings map onto it
+with nothing editor-specific added:
+
+- GoatTracker's `_vibrato` is `chan.freq ± speedtable.right[idx-1]`: `Prev` plus a
+  declared delta, exact on the low byte, and the high byte moves only on carry — §4.4's
+  limit, not this one. Where `speedtable.left` has bit 7 set the editor *computes* the
+  step from the current note's interval, so the declared byte is a shift count rather
+  than a step and those 176 emits are refused.
+- SID-Wizard's `WRPITCH` is an 8-bit `ADC` of the WF program's detune column onto the
+  pitch lane: `Node(i)`, whose base is a real generator over `NOTE_FREQ_LO`. The route
+  **consumes** the base generator's value instead of letting it write, so the pair is
+  still one emit at one position — the same discipline §4.3's masked group follows.
+
+| | admitted interpreted | strict `RAW` | of it, §4.2's shape |
+|---|---|---|---|
+| GoatTracker, 71 tunes | 112988 → **113585** of 282516 | 126554 → **122247** | 12744 → 8437 |
+| SID-Wizard, 64 modules | 105691 → **106034** of 228702 | 123011 → **122668** | 38840 → 38497 |
+
+**4307 GoatTracker emits and 343 SID-Wizard emits leave `RAW`**, every one a byte of the
+composer's own table at a row the editor's own player reached, combined with a base that
+player's own state supplies. The admitted law still passes 71/71 and 64/64, the strict
+graph still reproduces the whole window on 4 GT tunes and 64/64 SID-Wizard modules, and
+**no tune regresses on either editor** (14 of 71 and 4 of 64 improve). The evidence class
+is `rel`, counted apart from `lane`/`gate`/`mask` and from `imm`, because a relative emit
+is part declared byte and part live value.
+
+Our own recovery closes **316** emits of it, on 6 tunes of 649, and docs/tracker.md §6
+measures why: the base has to come out of the program text, and a 6502 driver that adds
+one RAM-staged byte to another names none. That gap between two editors' own models
+(4650 emits) and what a decompiled driver yields (316) is the honest reading of this
+deficiency, and it is §4.3's reading again: the *format* was the wall for the editors,
+*provenance* is the wall for the recovery.
+
+Two halves of the old entry stay open and are not this route's. The **note-index**
+domain — `chord_table`, `octave_shift`, the orderlist `Transpose` — shifts the row a
+pitch `SELECT` reads rather than the byte it emits; both mappings already take the final
+index off their own player, so it costs nothing here and recovering it is §7.4's
+arrangement. And the **triangle `RAMP`** bound is a transfer, not a route
+(docs/dm-oracle.md §4.2 is where a tune first reaches it).
 
 ### 4.3 One register plane, two generators — **closed**
 
@@ -339,17 +382,19 @@ graph's own residual, whose denominator is that graph's write count.
 | GoatTracker, strict-full 4 | 9926/17117 = 58.0% | 7191 | **1041 = 14.5%** | 5954 = 82.8% | 196 |
 | SID-Wizard, 64 modules | 105691/228702 = 46.2% | 123011 | **46482 = 37.8%** | 75255 = 61.2% | 1274 |
 
-§4.3's closure is the whole movement in that table: what the primitive cannot express
-falls 34265 → 20148 and 63996 → 46482, and the emits it stops accounting for are now
-either interpreted or the ghost. The 316 masked groups whose fields the composer's
-tables no longer reproduce sit in `rest`.
+§4.3's closure and then §4.2's are the whole movement in that table: what the primitive
+cannot express falls 34265 → 20148 → **15841** and 63996 → 46482 → **46139**, and on the
+strict-full four 1041 → **986**; the emits it stops accounting for are now either
+interpreted or the ghost. The 316 masked groups and the 1977 relative cells whose bytes
+the composer's tables no longer reproduce sit in `rest`.
 
 No `RAW` in either graph is padding: the strict graph's residual carries what the
 *native model predicts*, so a `RAW` write is still a claim about the song and the
 law still tests it. Evidence classes are `tracker`'s own and are never summed:
-GoatTracker `lane` 95306 / `gate` 3166 / `mask` 8620 / `ramp` 4620 / `seed` 1276 /
-`imm` 0; SID-Wizard `lane` 72581 / `gate` 7212 / `mask` 16343 / `ramp` 8372 / `seed`
-1183 / `imm` 0. **No emit in either oracle rests on the shallow `imm` class** — every
+GoatTracker `lane` 95306 / `gate` 3166 / `mask` 8620 / `rel` 597 / `ramp` 4620 / `seed`
+1276 / `imm` 0; SID-Wizard `lane` 72581 / `gate` 7212 / `mask` 16343 / `rel` 343 / `ramp`
+8372 / `seed` 1183 / `imm` 0. **No emit in either oracle rests on the shallow `imm`
+class** — every
 interpreted byte is a byte of the composer's table at a row the editor's own player
 reached, and a `mask` emit is one such byte per field, with the editor's own default
 volume as a one-entry table where the song never sets it (the `hr` lane's precedent).

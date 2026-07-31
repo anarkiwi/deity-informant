@@ -318,7 +318,9 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
     assert re.search(r"sid\.v1\.freq_hi\[\w+\] = m_5429\[\w+\]", text)  # the hi lane, indexed
-    assert text.count("mem[") == 5  # only the pointer-pair derefs stay raw
+    assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
+    assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named
+    assert "*ptr_005F[pos_54EF[x]]" in text  # a row index that is itself an indexed read
     assert not re.search(r"\n +[AXY] = ", text) and " u0 = " not in text
     assert frameprog.emit(model) == text  # emission is deterministic
     canon = F.canonical(frames)

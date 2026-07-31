@@ -1,5 +1,6 @@
 """tracker: the generator primitive, declared-table pitch recovery, and the law."""
 
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -469,7 +470,15 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ctrl"] == (8, 8)
-    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0, "mask": 0}
+    assert cov.classes["ctrl"] == {
+        "lane": 4,
+        "gate": 4,
+        "imm": 0,
+        "ramp": 0,
+        "seed": 0,
+        "mask": 0,
+        "rel": 0,
+    }
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
@@ -668,7 +677,15 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
     vals, cov = _pw(prog, 4)
     assert vals == [0x10, 0x20, 0x53, 0x86] and T.gate(prog, {}, 4) is None
     assert cov.planes["pw"] == (4, 4)
-    assert cov.classes["pw"] == {"lane": 0, "gate": 0, "imm": 0, "ramp": 2, "seed": 2, "mask": 0}
+    assert cov.classes["pw"] == {
+        "lane": 0,
+        "gate": 0,
+        "imm": 0,
+        "ramp": 2,
+        "seed": 2,
+        "mask": 0,
+        "rel": 0,
+    }
     assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
 
 
@@ -1062,6 +1079,257 @@ def test_the_order_preserved_section_does_not_take_a_masked_write():
     assert mem[0x2000] == 0x10  # the field is declared; the section is what refuses it
 
 
+# ---- 3g. the relative route: a declared delta over a base the statement names -----
+_DELTA = [0x01, 0x02, 0x03, 0x04]
+_BASE_LANE = [0x40, 0x50, 0x60, 0x70]
+_MIRROR = 0x0900
+_RES = 0x17  # a filter register no other rule claims: not an accumulator, not a partition
+
+
+def _bin(a, b, op="INT_ADD"):
+    """``a op b`` as a frameprog expression."""
+    return ("op", op, (a, b), 1)
+
+
+def _relprog(value, mem=None, decl=None, reg=_RES, lanes=None):
+    """``(image, program)``: one store of a binary-op value into ``reg``, per row."""
+    if mem is None:
+        mem, table = _bank(0x2000, 4, 4, lanes or {0: _DELTA, 1: _BASE_LANE})
+        decl = decl or table
+    return mem, _rowprog(mem, decl, [(reg, value)], step=4)
+
+
+def _prevprog(delta=(0x2000, 0), reg=_RES, lanes=None, cell=_MIRROR):
+    """A store adding a declared byte to a cell the text stores that same value into.
+
+    The cell is then the plane's mirror, so reading it *is* the previous emit."""
+    mem, decl = _bank(0x2000, 4, 4, lanes or {0: _DELTA})
+    mem[cell] = 0x20  # the plane starts where no declared byte stands, so §4b declines it
+    val = _bin(("mem", ("const", cell, 2), 1), _sel(*delta, "i"))
+    step = ("op", "INT_ADD", (("mem", ("const", 0x0800, 2), 1), ("const", 4, 1)), 1)
+    stmts = [
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD400 + reg, 2), val),  # the register takes the value first
+        ("st", ("const", cell, 2), val),
+        ("st", ("const", 0x0800, 2), step),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def _rel_nodes(prog, nframes=4):
+    """The graph's relatively-routed generators, in node order."""
+    nodes = T._graph(prog, None, *T._observe(prog, {}, nframes))[0].nodes
+    return [g for g in nodes if g.route[0] == "rel"]
+
+
+def _diag(prog, nframes=4):
+    """``(Coverage, refusal histogram)`` for a hermetic program."""
+    diag = Counter()
+    return T.render(prog, {}, nframes, diag)[2], diag
+
+
+def test_a_declared_delta_over_a_program_constant_base():
+    """`lane[i] + $10` is a relative route: the delta is declared, the base is the text's."""
+    _mem, prog = _relprog(_bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1)))
+    assert T.gate(prog, {}, 4) is None
+    cov = _diag(prog)[0]
+    assert cov.planes["filter"] == (4, 4) and cov.classes["filter"]["rel"] == 4
+    assert cov.classes["filter"]["lane"] == 0  # a relative emit is neither lane nor imm
+    got = _rel_nodes(prog)
+    assert [g.route[3:] for g in got] == [("ADD", ("const", 0x10))]
+    assert got[0].transfer == ("SELECT", tuple(_DELTA), (0, 1, 2, 3))
+
+
+def test_a_subtracted_constant_base_is_the_same_route_with_the_base_negated():
+    """`lane[i] - $10` and `lane[i] + $F0` are one byte-wide route, not two."""
+    _mem, prog = _relprog(_bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1), "INT_SUB"))
+    assert T.gate(prog, {}, 4) is None
+    assert _diag(prog)[0].classes["filter"]["rel"] == 4
+    assert [g.route[3:] for g in _rel_nodes(prog)] == [("ADD", ("const", 0xF0))]
+
+
+def _genprog():
+    """``base[i] + delta[i]`` over two separate declarations, so the two lanes are distinct."""
+    mem, delta = _bank(0x2000, 4, 4, {0: _DELTA})
+    for i, v in enumerate(_BASE_LANE):
+        mem[0x3000 + 4 * i] = v
+    val = _bin(_sel(0x3000, 0, "i"), _sel(0x2000, 0, "i"))
+    stmts = [
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD400 + _RES, 2), val),
+        ("st", ("const", 0x0800, 2), _bin(("mem", ("const", 0x0800, 2), 1), ("const", 4, 1))),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=[delta, _table(0x3000, 16, stride=4)],
+        mem0=mem,
+        procs=[(0x1000, [], [], stmts)],
+    )
+
+
+def test_a_declared_delta_over_another_generators_value():
+    """`base[i] + delta[i]`: the base generator supplies a value and does not write."""
+    _mem, prog = _genprog()
+    assert T.gate(prog, {}, 4) is None
+    cov = _diag(prog)[0]
+    assert cov.planes["filter"] == (4, 4)  # four writes, not eight: the base is consumed
+    assert cov.classes["filter"]["rel"] == 4 and cov.classes["filter"]["lane"] == 0
+    nodes = T._graph(prog, None, *T._observe(prog, {}, 4))[0].nodes
+    rel = [i for i, g in enumerate(nodes) if g.route[0] == "rel"]
+    assert len(rel) == 1 and nodes[rel[0]].route[3] == "ADD"
+    base = nodes[rel[0]].route[4]
+    assert base[0] == "node" and base[1] < rel[0]  # absolutes settle, relatives follow
+    assert nodes[base[1]].transfer == ("SELECT", tuple(_BASE_LANE), (0, 1, 2, 3))
+
+
+def test_a_declared_delta_over_the_planes_own_previous_value():
+    """A cell the text stores the register's own value into is that plane's mirror."""
+    _mem, prog = _prevprog()
+    assert T.gate(prog, {}, 4) is None
+    cov, diag = _diag(prog)
+    assert T._mirrors(prog)[_MIRROR] == {_RES}
+    assert cov.planes["filter"] == (3, 4)  # frame 0 has no previous value to combine with
+    assert cov.classes["filter"]["rel"] == 3 and diag["rel_no_base"] == 1
+    assert [g.route[3:] for g in _rel_nodes(prog)] == [("ADD", ("prev",))]
+
+
+def _rammed(delta=0x0A00, cell=_MIRROR, reg=_RES):
+    """`_prevprog`'s stream again, with the delta staged in a cell no declaration names."""
+    mem, decl = _bank(0x2000, 4, 4, {0: _DELTA})
+    mem[cell] = 0x20
+    for i, v in enumerate(_DELTA):
+        mem[delta + 4 * i] = v
+    val = _bin(("mem", ("const", cell, 2), 1), _sel(delta, 0, "i"))
+    step = ("op", "INT_ADD", (("mem", ("const", 0x0800, 2), 1), ("const", 4, 1)), 1)
+    stmts = [
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD400 + reg, 2), val),
+        ("st", ("const", cell, 2), val),
+        ("st", ("const", 0x0800, 2), step),
+        ("ret",),
+    ]
+    return frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def test_a_delta_read_back_off_the_output_is_refused():
+    """The same emitted stream, staged from a cell no declaration names, stays residual."""
+    got = [w[1] for r in T.oracle(_prevprog()[1], {}, 4) for w in r[6]]
+    fitted = _rammed()
+    assert [w[1] for r in T.oracle(fitted, {}, 4) for w in r[6]] == got  # the identical stream
+    assert T.gate(fitted, {}, 4) is None
+    cov, diag = _diag(fitted)
+    assert cov.planes["filter"] == (0, 4)  # the bytes agree; no declaration names them
+    assert diag["rel_site_unnamed_base"] + diag["rel_site_no_declared_term"] == 1
+    assert not diag["rel_fitted"]  # the site is refused, so there is nothing left to price
+
+
+def test_what_a_fitted_delta_would_have_taken_is_counted_where_a_site_exists():
+    """A named site whose declared byte predicts nothing prices the refusal it makes."""
+    _mem, moved = _prevprog(lanes={0: [0x01, 0x02, 0x03, 0x04], 1: [9] * 4})
+    cov, diag = _diag(moved)
+    assert cov.planes["filter"] == (3, 4) and not diag["rel_fitted"]
+    _m, zero = _relprog(_bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1)), lanes={0: [0] * 4})
+    cov2, diag2 = _diag(zero)
+    assert cov2.planes["filter"] == (0, 4)  # a delta of zero predicts nothing
+    assert diag2["rel_zero_delta"] == 4 and T.gate(zero, {}, 4) is None
+
+
+def test_a_base_the_program_text_does_not_name_is_refused():
+    """A RAM cell the text never mirrors this register into names no base."""
+    mem, decl = _bank(0x2000, 4, 4, {0: _DELTA})
+    mem[0x0A00] = 0x10
+    val = _bin(("mem", ("const", 0x0A00, 2), 1), _sel(0x2000, 0, "i"))
+    _m, prog = _relprog(val, mem=mem, decl=decl)
+    cov, diag = _diag(prog)
+    assert cov.planes["filter"] == (0, 4) and diag["rel_site_unnamed_base"] == 1
+    assert T.gate(prog, {}, 4) is None
+
+
+def test_a_delta_at_a_mut_offset_is_refused():
+    """A play-written offset is not const data, so its byte is not a declared delta."""
+    mem, table = _bank(0x2000, 4, 4, {0: _DELTA})
+    val = _bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1))
+    _m, prog = _relprog(val, mem=mem, decl=_muted(table, [0]))
+    assert T.render(prog, {}, 4)[2].planes["filter"] == (0, 4)
+    assert T.gate(prog, {}, 4) is None
+
+
+def test_the_order_preserved_section_takes_no_relative_route():
+    """ctrl/AD/SR is a sequence of whole-byte writes, so a relative emit is refused there."""
+    _mem, prog = _relprog(_bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1)), reg=4)
+    cov, diag = _diag(prog)
+    assert cov.planes["ctrl"] == (0, 4) and diag["rel_ord_section"] == 4
+    assert T.gate(prog, {}, 4) is None
+
+
+def test_the_composition_order_of_an_absolute_and_a_relative_route_is_checked():
+    """A relative route names a base an earlier generator settles, or the graph is refused."""
+    ok = [
+        T.raw([[(0, 5)]]),
+        T.lookup(
+            (3,),
+            T.FRAME,
+            0,
+        ),
+    ]
+    ok = [
+        T.raw([[]]),
+        T.lookup((0x40,), T.FRAME, 0),
+        T.Generator(("LOOKUP", (3,)), T.FRAME, T.relative(0, "ADD", ("node", 1))),
+    ]
+    assert T.eval_graph(T.Graph(ok), 1) == F.canonical([[(0, 0x43)]])
+    bad = [
+        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("prev",)))],
+        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "NAND", ("const", 1)))],
+        [T.raw([[]]), T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("node", 1)))],
+        [ok[1], T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(1, "ADD", ("node", 0)))],
+        [ok[1], T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("node", 0), 0x0F))],
+        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("const", 0x100)))],
+    ]
+    for nodes in bad:
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(nodes), 1)
+
+
+def test_mutation_a_delta_on_the_wrong_base_or_a_wrong_delta_is_detected():
+    """The law verifies the combination: move the base or the delta and it fails."""
+    for _mem, prog in (
+        _relprog(_bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1))),
+        _relprog(_bin(_sel(0x2000, 1, "i"), _sel(0x2000, 0, "i"))),
+        _prevprog(),
+    ):
+        graph = T._graph(prog, None, *T._observe(prog, {}, 4))[0]
+        assert F.diff(T.eval_graph(graph, 4), T.oracle(prog, {}, 4)) is None
+        i = next(k for k, g in enumerate(graph.nodes) if g.route[0] == "rel")
+        g, t = graph.nodes[i], graph.nodes[i].transfer
+        wrong = [
+            g._replace(transfer=(t[0], tuple(b ^ 1 for b in t[1])) + t[2:]),
+            g._replace(route=g.route[:4] + (("const", 0x7F),)),
+        ]
+        for bad in wrong:
+            nodes = list(graph.nodes)
+            nodes[i] = bad
+            assert F.diff(T.eval_graph(T.Graph(nodes), 4), T.oracle(prog, {}, 4)) is not None
+
+
+def test_the_relative_stream_is_generated_from_the_declared_byte():
+    """Perturb the declaration and the whole emitted stream moves with it."""
+    val = _bin(_sel(0x2000, 0, "i"), ("const", 0x10, 1))
+    mem, prog = _relprog(val)
+    assert [g.transfer[1] for g in _rel_nodes(prog)] == [tuple(_DELTA)]
+    mem[0x2004] = 0x7E  # row 1 of the declared delta lane
+    moved = _rowprog(mem, _table(0x2000, 16, stride=4), [(_RES, val)], step=4)
+    assert [g.transfer[1] for g in _rel_nodes(moved)] == [(0x01, 0x7E, 0x03, 0x04)]
+    assert T.gate(moved, {}, 4) is None
+
+
 # ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
@@ -1251,6 +1519,7 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
         "ramp": 0,
         "seed": 0,
         "mask": 0,
+        "rel": 0,
     }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
@@ -1259,3 +1528,129 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     cells = [0x19C5 + t[2][0] for t in (got[0x16], got[0x17])]
     assert cells == [0x1A08, 0x1A07]  # two cells of one declared table, recovered per register
     assert [prog.mem0[c] for c in cells] == [0x06, 0xF7]
+
+
+def _arrangement(orderlist, patterns, rows_per_pattern, nframes):
+    """An orderlist indexing a pattern table, the shape §7.4 names.
+
+    n0 the row clock, n1 the orderlist (an index route), n2 the pattern it selects."""
+    beat = T.Generator(("DIV", rows_per_pattern), T.FRAME, ("fire",))
+    order = T.indexer(("LOOKUP", tuple(orderlist)), ("event", 0))
+    pat = T.select(patterns, ("node", 1), T.FRAME, 0x18)
+    return T.Graph([beat, order, pat]), nframes
+
+
+def _emitted(graph, nframes):
+    """Per-frame value written by an arrangement graph, None where none is."""
+    out = []
+    for fr in T.eval_graph(graph, nframes):
+        vals = [v for slot in fr for (_reg, v) in slot]
+        out.append(vals[0] if vals else None)
+    return out
+
+
+def test_index_route_expresses_an_orderlist():
+    """A pattern's row is the orderlist's emit, and the loop is the modulo wrap."""
+    got = _emitted(*_arrangement([3, 5, 1], tuple(range(8)), 4, 16))
+    assert got[3:7] == [3, 3, 3, 3]  # the orderlist holds while rows advance
+    assert got[7:11] == [5, 5, 5, 5] and got[11:15] == [1, 1, 1, 1]
+    assert got[15] == 3  # wrapped by _emit's modulo: no back-edge machinery needed
+
+
+def test_nothing_is_written_before_the_orderlist_speaks():
+    """DIV(n) fires at n-1, so the phase is the arrangement's (docs 8).
+
+    The graph emits nothing rather than inventing entry 0, which is why a phase
+    field belongs to this layer and not to the divider."""
+    assert _emitted(*_arrangement([3, 5, 1], tuple(range(8)), 4, 16))[:3] == [None] * 3
+
+
+def test_index_source_must_precede_its_reader():
+    """A row source later than its reader would need a value the frame has not made."""
+    pat = T.select((1, 2, 3), ("node", 1), T.FRAME, 0x18)
+    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="not an earlier node"):
+        T.eval_graph(T.Graph([pat, order]), 4)
+
+
+def test_row_source_must_route_to_an_index():
+    """A plane generator's write is a byte, not a row: it cannot be an index source."""
+    other = T.lookup((0, 1), T.FRAME, 0x04)
+    pat = T.select((1, 2, 3), ("node", 0), T.FRAME, 0x18)
+    with pytest.raises(T.TrackerError, match="does not route to an index"):
+        T.eval_graph(T.Graph([other, pat]), 4)
+
+
+def test_index_route_without_a_reader_is_dead():
+    """A generator that neither writes a plane nor is read explains nothing."""
+    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="has no reader"):
+        T.eval_graph(T.Graph([order]), 4)
+
+
+def test_generated_row_out_of_range_drops_the_write():
+    """An index past the table emits nothing, so the law fails rather than wrapping."""
+    order = T.indexer(("LOOKUP", (9,)), T.FRAME)
+    pat = T.select((1, 2), ("node", 0), T.FRAME, 0x18)
+    assert T.eval_graph(T.Graph([order, pat]), 3) == F.canonical([[], [], []])
+
+
+def test_mutation_a_moved_orderlist_entry_changes_the_projection():
+    """Mutation evidence: one wrong orderlist entry must move the record."""
+    good, n = _arrangement([3, 5, 1], tuple(range(8)), 4, 16)
+    bad, _n = _arrangement([3, 4, 1], tuple(range(8)), 4, 16)
+    assert T.eval_graph(good, n) != T.eval_graph(bad, n)
+
+
+def _transposed(trans, notes, table, rows_per, nframes):
+    """A pattern note column read at a declared transpose: the index-domain relative."""
+    beat = T.Generator(("DIV", rows_per), T.FRAME, ("fire",))
+    shift = T.indexer(("LOOKUP", tuple(trans)), ("event", 0))
+    note = T.indexer(("LOOKUP", tuple(notes)), T.FRAME)
+    pitch = T.select(table, ("rel", "ADD", 2, ("node", 1)), T.FRAME, 0x01)
+    return T.Graph([beat, shift, note, pitch]), nframes
+
+
+def test_a_relative_row_carries_a_transpose():
+    """A transpose shifts the row a pitch table is read at, not the byte it yields."""
+    got = _emitted(*_transposed([0, 12], [1, 3, 5, 7], tuple(range(100, 140)), 4, 10))
+    assert got[3:7] == [107, 101, 103, 105]  # transpose 0: the note column itself
+    assert got[7:10] == [119, 113, 115]  # transpose 12: every row shifted by an octave
+
+
+def test_a_relative_row_may_shift_by_a_declared_constant():
+    """A fixed transpose needs no generator of its own."""
+    note = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("const", 5)), T.FRAME, 0x01)
+    assert _emitted(T.Graph([note, pitch]), 4) == [5, 6, 5, 6]
+
+
+def test_a_relative_row_refuses_an_unknown_operation():
+    """The operation comes from the store's own operator, not an invented one."""
+    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
+    pitch = T.select((1, 2), ("rel", "MUL", 0, ("const", 0)), T.FRAME, 0x01)
+    with pytest.raises(T.TrackerError, match="unknown relative row operation"):
+        T.eval_graph(T.Graph([note, pitch]), 2)
+
+
+def test_both_sources_of_a_relative_row_must_be_earlier_index_nodes():
+    """Either half arriving late would need a value the frame has not made."""
+    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("node", 2)), T.FRAME, 0x01)
+    shift = T.indexer(("LOOKUP", (1,)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="not an earlier node"):
+        T.eval_graph(T.Graph([note, pitch, shift]), 2)
+
+
+def test_a_transposed_row_past_the_table_drops_the_write():
+    """A shift off the end of the pitch table emits nothing rather than wrapping."""
+    note = T.indexer(("LOOKUP", (1,)), T.FRAME)
+    pitch = T.select((7, 8), ("rel", "ADD", 0, ("const", 40)), T.FRAME, 0x01)
+    assert _emitted(T.Graph([note, pitch]), 2) == [None, None]
+
+
+def test_mutation_a_wrong_transpose_changes_the_projection():
+    """Mutation evidence: the shift must be the declared one."""
+    good, n = _transposed([0, 12], [1, 3], tuple(range(100, 140)), 4, 12)
+    bad, _n = _transposed([0, 11], [1, 3], tuple(range(100, 140)), 4, 12)
+    assert T.eval_graph(good, n) != T.eval_graph(bad, n)
