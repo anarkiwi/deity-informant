@@ -9,8 +9,9 @@ Status: design for review; landed already: the projection + digi rule in the
 pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
 (`frameval.py`, §6 M-FP1/M-FP2 for the measured extent), rung (d)'s 16-bit
-fusion (`framefuse.py`, §4.3 and §6 M-FP3) and rung (f)'s pointer resolution
-(`frameptr.py`, §4.4 and §6 M-FP5). "MUST" is a gate. Measurements:
+fusion (`framefuse.py`, §4.3 and §6 M-FP3), rung (f)'s pointer resolution
+(`frameptr.py`, §4.4 and §6 M-FP5) and the init-copy origin map
+(`initcopy.py`, §4.5). "MUST" is a gate. Measurements:
 2026-07-25, 140 cached tunes, 1,000-frame windows unless noted; scratch probes,
 numbers herein are the record.
 
@@ -146,6 +147,13 @@ rule is unchanged over that set, and the read cells still come first, so a
 consumer that ranks by position sees what it saw before. The evaluator's hop is
 exact where a static one is not: it binds one cell per assignment rather than a
 set of candidate definitions. Measured effect at the tracker: docs/tracker.md §6.
+
+The map does not **start empty**. `decompile` runs the init routine concretely and
+keeps only its flat image, so a byte init copied out of a const table into RAM
+scratch arrives here as a cell with no declaration behind it. §4.5 traces those
+copies as they happen and seeds `prov` with them, so the same chasing rule crosses
+the init/play boundary; everything after that is the play-phase rule unchanged, and
+a play store to a staged cell rebinds or drops it exactly as it always did.
 
 The map is also **queryable**, because reporting it alongside SID store sources
 names only what a SID store reads. An accumulator's step, bound and rate are
@@ -605,8 +613,112 @@ searching banks. The honest caveat is the 84: this is evidence for a layer, not 
 layer, and 466 tunes still resolve nothing — the ceiling is rung (d)'s fusion rate
 and the wild-store rule, in that order.
 
+### 4.5 The init phase's copies, named
+
+`Model.mem0` is init run concretely and snapshotted. A driver that stages a
+parameter at init — copying bytes out of a const table into RAM the play code then
+reads back — leaves the bytes in that image but not their origin, so the play-phase
+map of §1.4 can only ever see an undeclared RAM cell. `deity_informant/initcopy.py`
+records the origin *while init runs*, and it is traced dataflow, never a value
+match: matching a RAM byte against table contents is the failure docs/tracker.md §6
+already prices, and a search that picks between equal bytes explains no index.
+
+**The transfer is static, the addresses are the machine's.** Each lifted record
+carries a one-off `transfer(rec)` derived from its P-Code: walking the ops in order
+over a per-record environment, a `LOAD` binds its output to "the k-th load", `COPY`
+between one-byte varnodes passes a binding on, and **every other op kills it** —
+arithmetic is not a copy, so `mem[a] + 1` names nothing. What survives is a tuple of
+`(register, source)` updates for A/X/Y and one source per `STORE`. At run time the
+tracer resolves a source against the addresses that record's own loads and stores
+used, path-compressed through the map so a copy of a copy names the table cell and
+not the intermediate. The transfer is cached on the record and a record moving no
+byte at all (a branch, a compare, a flag op) is `False` and skipped, so the cost is
+O(stores) with small constants; capture is swapped in for init only
+(`_EvidenceVM.capture`), so the play trace pays nothing. Measured over a 40-tune
+sample single-process: **16.79/17.12 s with, 17.39/17.42 s without** — no
+measurable decompile cost.
+
+**Per cell, and refused per cell.** Last write wins, because that is the byte
+`mem0` holds and the play phase reads; a cell staged twice from different origins
+is counted (`conflict`) and keeps the last. A write whose value the record computed
+drops the cell. A stack cell is never an origin and never gets one — `jsr`/`rts`
+traffic bypasses the P-Code store, the same reason `Model.written` forces that page
+mutable. Each init store *site* leaves one `structured.Proof`
+(`kind == "init-copy"`) carrying the cells it staged and, in its lemma, the two
+refusal counts.
+
+**The origin must be const data, and that is where `mut` is consumed.**
+`initcopy.reduce` keeps a traced origin only where it lands inside a `datadecl`
+declaration at a record offset the declaration does not name `mut` — the #61 const
+claim, unchanged: `mut` is exactly the lane the play phase writes, so a byte staged
+from one is not a const read however well `mem0` agrees. The *destination* needs no
+rule: `prov` is dynamic, so the first play-phase store to a staged cell rebinds or
+drops it by the one-contributor rule and an init origin cannot outlive it (the
+census reports how many staged cells the play phase writes at all). The filter is
+measured from both sides — reporting *every* traced origin instead costs
+**753274 → 749963** interpreted emits, because an undeclared cell reported ahead of
+the read cell displaces the lane the classification picked (the mis-bind §4.2
+measures from the other side).
+
+**The census** (2026-07-31, 682 cached tunes, PSID start subtune, 200-frame
+windows; 650 decompile, 649 reach the gate). Init writes **179984** cells over
+**385512** executed stores, a mean of 277 cells per tune, and **124628** of those
+cells (69%) end with a proven traced copy origin. Then the declaration filter bites:
+
+| the init-written cell | cells |
+|---|---|
+| staged from a cell no declaration names, or a `mut` offset | 122782 |
+| computed — no traced load reaches the store | 54986 |
+| a stack cell | 370 |
+| **a declared const byte at a non-`mut` offset (kept)** | **1846** |
+
+with 491 cells re-staged during init from a different origin (last kept) and 1005
+of the 1846 also written by the play phase, where the dynamic map supersedes them.
+
+**What it buys, and the honest finding.** Gate FP **649/649**, the tracker law
+**649/649** and the canonical fixpoint **649/649**, all unchanged; raw `mem[`
+**9682** and tunes with none **51**, both unchanged — this is annotation, it
+rewrites no tree and no value. The tracker's value partition moves
+**753274 → 753689 of 1942809 (38.77% → 38.79%)**, ctrl 112502 → 112806, sr
+56019 → 56073, ad 54436 → 54490, freq 417490 → 417493; **6 tunes improve and none
+regresses**, and the gain is strong evidence (`lane` +304, `gate` +206, `imm`
+unmoved).
+
+**`pw` and `filter` do not move by a single emit**, and docs/tracker.md §7.2
+predicted they would: its 112539 pw emits "sweep with a constant delta whose step
+the map traces to no declaration — a parameter filled at init". Of the 114082 pw
+and 28103 cutoff emits this partition counts in that row, **0 now trace to one**.
+The diagnosis was wrong, and the same run says what is actually there — classifying
+each refused run by its step pool:
+
+| the refused run's step pool is | pw | cutoff |
+|---|---|---|
+| a declared cell whose byte is not the step | 49606 | 5144 |
+| play-written RAM carrying no declared origin | 47109 | 14004 |
+| empty: the byte reaches the store computed | 14376 | 7323 |
+| RAM carrying an init-traced origin no declaration names | 1474 | 723 |
+| other RAM | 1517 | 909 |
+
+**107785 of the 114082 pw emits (94%) have an accumulator cell the *play* phase
+writes**, against 3775 init staged: the step is copied at note-on, not at init, and
+that copy the play-phase map of §1.4 already sees. The init-attributable slice is
+1474 pw and 723 cutoff emits, 1.3% and 2.6% of their rows.
+
+**One extension is available and is not recommended.** The 122782 refused origins
+are overwhelmingly reads of regions `datadecl` never declares, because `datadecl`
+carves from *play*-phase reads and a table the driver relocates at init is read
+exactly once, by init. Declaring those regions would name them — and the ceiling is
+measured: requiring every stepped emit of a refused run to report an init origin
+whose snapshot byte is the step reaches **570 pw and 255 cutoff emits**, 0.5% of the
+row. That is a change to the declaration set — it moves `data { }`, `state { }`, the
+pitch search's candidate pool and the emitted text — for 825 emits, so it is
+recorded here rather than taken.
+
+## 5. Risk register
+
 | risk | disposition |
 |---|---|
+| An init origin outliving the play write that supersedes it | Closed by construction, not by a check: the init map is only the *initial value* of `frameval`'s `prov`, so the first play-phase store to a staged cell rebinds it to that store's own contributor or drops it (§1.4's one-contributor rule). What the map can still assert is that the source is const data, and that is `datadecl`'s `mut` at the origin — refused per cell and counted (§4.5). `tests/test_initcopy.py` drives both halves: the play write drops the entry, and re-seeding it across that write moves the reported record. |
 | A named deref outliving its proof | Rung (f) names only what it proved, and the name is the proof's shadow: `FrameProgram.resolved` is built by `frameptr.apply_rung` and consumed only by the emitter, so a site with no record renders raw. The reader rebuilds the same map from the `*ptr[i]` text, which is why the fixpoint is the check that the two agree. The residual risk is a consumer reading `*ptr[i]` as "in bounds of one block": it is not — the claim is `address ∈ {T[k]} + [0, row bound]`, a union of intervals, and the block extents are `datadecl`'s own (180 of 366 sites have every block declared). |
 | Multi-call-per-frame / multispeed drivers | v1 class: frame = the play invocation, settled. v2/P-INT redefines the frame as the driver-cadence tick; the projection then applies per tick and the digi rule re-triggers (fast CIA volume writes). Deferred with v2. `play == 0` tunes are in the v1 class as of the handler entry (docs/decompiler-implementation.md §8.1): one handler invocation per frame, entered through a synthetic IRQ dispatch stub, so the frame is still the play invocation and Gate FP holds unchanged. |
 | Digi / $D418 order | Closed by the class rule (§1.2): $D418 is last-write-wins; a >2-step collapsed volume sequence excludes with a precise diagnostic; 2-step frames collapse with a reported metric. Corpus: 0 exclusions; a digi tune MUST be added to exercise the path. |
@@ -674,8 +786,26 @@ HVSC absent (decompiler-implementation.md §1, §7).
   8932 emits and every other tune's row byte-identical. The 140-tune sample
   scored 96 before the three liveness fixes of §5 (goto-into-later-arm,
   `call`-entered inline bodies, `sp` as machine state): 96 → 111 → 123, none
-  regressed. Outstanding for M-FP2: the rung (a)-(c) proof records, and the
-  upstream refusals are a sidprog question.
+  regressed. Landed since: the **init-copy origin map**
+  (`deity_informant/initcopy.py`, §4.5 for the census), which seeds §1.4's cell →
+  origin map with the copies init made, one `structured.Proof` per init store site.
+  Gate: FP 649/649, the tracker law 649/649 and the canonical fixpoint 649/649 over
+  the 682-tune corpus, all unchanged; the partition 753274 → 753689 of 1942809, 6
+  tunes up and none down. `tests/_fuzzgen` carries the `init_param` class (a sweep
+  step staged in RAM at init out of the table the play phase indexes) and
+  `tests/test_initcopy.py` the refusals. **M-FP2 mutation evidence (init copies)**:
+  the rule annotates, so the record each mutation must move is the reported source
+  tuple, and each of the three does — an origin taken from a cell that merely holds
+  the same byte reports that cell instead of the traced one
+  (`test_mutation_an_origin_from_a_value_match_moves_the_record`); an origin kept
+  across the play-phase write that superseded it puts a table cell back into a store
+  the play code computed
+  (`test_mutation_keeping_an_origin_across_a_play_write_moves_the_record`); and a
+  computed staging cell given an origin reports a declared byte where the sound
+  answer is the cell itself
+  (`test_mutation_giving_a_computed_cell_an_origin_moves_the_record`). Outstanding
+  for M-FP2: the rung (a)-(c) proof records, and the upstream refusals are a sidprog
+  question.
 - **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
   measurement): the state-pair fusion with a `structured.Proof` per candidate
   pair, and the SID register pairs analysed and recorded but rewritten only

@@ -434,7 +434,7 @@ class Evaluator:
         self.code = _Code(prog, watch)
         self.srcs = [] if sources else None
         self.watched = [] if sources else None
-        self.prov = {} if sources else None
+        self.prov = dict(getattr(prog, "prov0", ())) if sources else None
         self.ploc = {} if sources else None
         self.m = bytearray(prog.mem0 if state0 is None else state0)
         self.sp = self.code.slot("sp")

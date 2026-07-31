@@ -596,6 +596,36 @@ def t_ram_output(rng):
     )
 
 
+def t_init_param(rng):
+    """A sweep step staged in RAM at init out of the table the play phase indexes.
+
+    Init copies ``TBL+1`` to ``CNT+2``; play reads ``TBL[row]`` into ctrl (which is
+    what declares the table) and accumulates pw by the staged byte, so the step is
+    a declared const byte reachable only through the init copy."""
+    reg = 2  # pw_lo of voice 1
+    tbl = [int(v) for v in rng.integers(1, 8, 4)]
+    a = Asm(_INIT_ORG)
+    a.i("LDA", "abs", TBL + 1).i("STA", "abs", CNT + 2).i("RTS")
+    p = Asm(ORG)
+    p.i("LDX", "abs", CNT + 1).i("LDA", "absx", TBL).i("STA", "abs", SID + 4)
+    p.i("LDA", "abs", CNT).i("CLC").i("ADC", "abs", CNT + 2)
+    p.i("STA", "abs", CNT).i("STA", "abs", SID + reg)
+    p.i("INX").i("TXA").i("AND", "imm", 3).i("STA", "abs", CNT + 1).i("RTS")
+    data = {TBL + k: tbl[k] for k in range(4)}
+    data.update({CNT: 0, CNT + 1: 0, CNT + 2: 0})
+    return Player(
+        "init_param",
+        ORG,
+        p.assemble(),
+        {SID + reg, SID + 4},
+        {"indexed", "init_param"},
+        data=data,
+        frames=8,
+        init=a.assemble(),
+        init_org=_INIT_ORG,
+    )
+
+
 IRQ_HANDLER = 0x1200  # handler-driven player: the installed interrupt handler
 IRQ_IMAGE = (_INIT_ORG, 0x1300)  # its load-image bounds (init + handler)
 
@@ -643,6 +673,7 @@ TEMPLATES = (
     t_lone_half,
     t_ptr_seq,
     t_ram_output,
+    t_init_param,
 )
 
 REQUIRED_CLASSES = frozenset(
