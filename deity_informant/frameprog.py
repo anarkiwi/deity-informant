@@ -14,13 +14,9 @@ from . import sidprog
 from . import structured
 from .grammar import FRAMEPROG_VERSION
 
-_INPUTS = {
-    0xD011: "raster_hi",
-    0xD012: "raster",
-    0xD41B: "osc3",
-    0xD41C: "envelope3",
-    0xDC0D: "cia_icr",
-}
+_NAMES = {0xD011: "raster_hi", 0xD012: "raster", 0xD41B: "osc3", 0xD41C: "envelope3"}
+_INPUTS = {a: _NAMES[a] for a in structured._VOL}  # cycle-derived: what iota pins
+_ZERO = structured._VOL0  # constant-0 sources (spec 1.3): neither input nor state
 _SID_LO, _SID_HI = 0xD400, 0xD41C
 
 _NOTES = (
@@ -78,7 +74,9 @@ def _state_fields(view, decls, dispatch, aliases=None):
     names = dict(aliases or {})
 
     def hidden(a):
-        return a in _INPUTS or _SID_LO <= a <= _SID_HI or any(lo <= a < hi for lo, hi in spans)
+        if a in _INPUTS or a in _ZERO or _SID_LO <= a <= _SID_HI:
+            return True
+        return any(lo <= a < hi for lo, hi in spans)
 
     def name(a):
         return names.get(a) or sidprog._addr_name(a)

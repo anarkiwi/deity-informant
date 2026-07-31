@@ -434,10 +434,14 @@ class Evaluator:
         self.play = self.code.entries[prog.play]
 
     def _rd(self, a):
-        """Volatile-aware state read: declared inputs resolve to iota(f, name, k)."""
+        """Volatile-aware state read: declared inputs resolve to iota(f, name, k).
+
+        The one volatile model is the walker's: its cycle-derived reads are the
+        pinned inputs, its constant-0 sources (``structured._VOL0``) read 0 here
+        exactly as they do there, whatever byte the state image holds."""
         name = frameprog._INPUTS.get(a)
         if name is None:
-            return 0 if a == 0xD019 else self.m[a]
+            return 0 if a in C._VOL0 else self.m[a]
         if name not in self.inputs:
             raise FrameFault("undeclared volatile input %s" % name)
         k = self.k.get(name, 0)
