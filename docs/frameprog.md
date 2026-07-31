@@ -8,8 +8,9 @@ committed model and verified against the projection of the walker's log.
 Status: design for review; landed already: the projection + digi rule in the
 pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
-(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent) and rung (d)'s 16-bit
-fusion (`framefuse.py`, §4.3 and §6 M-FP3). "MUST" is a gate. Measurements:
+(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent), rung (d)'s 16-bit
+fusion (`framefuse.py`, §4.3 and §6 M-FP3) and rung (f)'s pointer resolution
+(`frameptr.py`, §4.4 and §6 M-FP5). "MUST" is a gate. Measurements:
 2026-07-25, 140 cached tunes, 1,000-frame windows unless noted; scratch probes,
 numbers herein are the record.
 
@@ -304,8 +305,13 @@ valid, gated artifact.
   u8/u16 fields, `[3]` voice arrays), declared `inputs`, const tables,
   `frame(state, in) -> writes`. FP-complete = no raw `mem[expr]` with
   unproven range remains; otherwise the tune rests at its highest rung. §4.2
-  names the const-based reads as indexed accesses (16 tunes reach zero raw
-  memrefs); what remains raw is base-less — pointer-pair derefs above all.
+  names the const-based reads as indexed accesses; what remained raw was
+  base-less, pointer-pair derefs above all, and §4.4's pointer resolution
+  (`deity_informant/frameptr.py`) takes those: a deref whose every definition
+  loads a declared `lo`/`hi` pointer table is `*ptr[i]`, row `i` of one of that
+  table's blocks, with the block set proved from the declaration. What stays raw
+  after it is the residue §4.4 measures — pairs rung (d) refused, pointers with a
+  writer the analysis cannot place, computed pointers and SMC operand words.
   Illustrative excerpt, hand-derived from Commando's decompile (the $52xx
   slide path: state `m_551D[X]`/`ctr_551A[X]`, flags `m_5520[X]`):
 
@@ -483,8 +489,125 @@ names one class, so the hi half's class loses its tree-named table and falls bac
 to searching every bank. That is a tracker question, not a fusion one, and it is
 recorded here rather than compensated for.
 
+### 4.4 Pointer resolution: the deref against the table it is reloaded from
+
+Rung (f) is `deity_informant/frameptr.py`. A base-less deref `mem[P + i]` has no
+const base for §4.2 to name, but `P` is not an observation: the pointer state
+field is *reloaded* from a table of pointers `datadecl` already declared with its
+`lo`/`hi` partner attributes. Where every definition of the field is such a read,
+the address is `T[k] + i` — row `i` of whichever block entry `k` names — and both
+levels are named at once: `a = mem[(ptr_005D:2 + zext2(y)):2]` becomes
+`a = *ptr_005D[y]`, with the block set on the proof record.
+
+The premise is discharged **per deref site**, keyed on the address expression
+(same pointer, same index shape = same verdict, so two textual sites of one
+address are one record), against the statement trees and the declarations only:
+
+1. **Every** definition of the pointer word in the play code is a `lo`/`hi`
+   partner-table entry read at one index — `framefuse.unpack` splits the fused
+   word store, `frameproc._index_of` names each half's base, the two must read
+   the same entry, and the two declarations must carry `lo T'` / `hi T` at the
+   same offset. A definition that is not that shape — an advance `P = P + n`, a
+   computed pointer, a store from a non-const source — refuses the site.
+2. The value set `{T[k]}` is read out of `prog.mem0` at the **declared** extent
+   (`min(size_lo, size_hi, index bound + 1)` entries from the definition's own
+   offset), never from the trace, and a table with any `mut` offset refuses:
+   `mut` is exactly the play-written lane the const claim excludes (#61).
+3. The row index's range is bounded by one byte (`streams._idx_hi` over the
+   frameprog local alphabet: a local is a byte unless some assignment gives it a
+   16-bit value). A wider bound is not a row and refuses.
+4. No other store may reach the pair. A store's span is its const address, its
+   declared-base index span, the stack page (`sp | $0100` lies in
+   `[$0100, $01FF]`), or the union over a local address's assignments; a store
+   whose address the analysis cannot place at all refuses **every** pointer in
+   that tune, which is the coarsest rule here and the second-largest refusal
+   class below.
+
+**An advance refuses, and it falls out of premise 1 rather than needing a rule of
+its own.** An advanced pointer is `T[k] + n` for an `n` accumulated across frames
+with no static bound, so neither the (block, row) pair nor a range claim survives
+it; the reload-only pointer keeps both. The corpus cost of that choice is 168
+sites (below), and it is the honest one: `P = P + n` is not a table read.
+
+Like §4.2 this is **naming, not rewriting**. `apply_rung` returns the set of
+resolved addresses and one `structured.Proof` per site; the statement trees, the
+values and the store provenance are untouched, so Gate FP and the tracker cannot
+move by construction — and did not. The grammar carries `*base[index]` (and
+`*base` for row zero) as its own production ([grammar.md](grammar.md)), so the
+text distinguishes a proven deref from an unproven one: a refused site keeps its
+raw `mem[...]` and its diagnostic.
+
+Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows (650
+decompile, 649 reach the gate). **Gate FP 649/649, the tracker law 649/649 and the
+canonical fixpoint 649/649**, every one unchanged, with zero tunes moving in
+either direction. Raw `mem[` occurrences **10280 → 9682** (−598, the 598 textual
+deref reads the rung names); tunes with none at all **17 → 51**; Commando reaches
+zero (its five pointer derefs were the whole residue). Emitted text grows
+9522243 → 9608342 bytes, but 96701 of that is the two new header comment lines
+(149 B × 649): the body is **10602 bytes smaller**. The tracker's value partition
+is **byte-identical** — 752598/1942809 = 38.74%, freq 417490, pw 89850, ctrl
+112502, filter 22301, sr 56019, ad 54436, triggers 300/306277 — as the naming
+argument requires.
+
+The census is the point, and it is modest. Of **3929** distinct deref addresses
+over 628 of the 649 tunes, **366 resolve (9.3%)** and 3563 refuse; by pointer,
+**196 resolve and 1037 refuse**. Per tune: **95 resolve every deref site they
+have, 67 resolve some**, 466 resolve none and 21 have no deref at all. The
+refusal histogram, which is where the work is:
+
+| refusal | sites |
+|---|---|
+| the lo/hi pair did not fuse (rung d) | 2507 |
+| a store at an unproven address may write the pointer | 583 |
+| the halves are not a declared lo/hi partner pair | 175 |
+| a definition is not a partner-table entry read (advance, computed) | 168 |
+| the reload table is not declared | 74 |
+| the row index bound exceeds one row | 52 |
+| another store's span may write the pointer | 4 |
+
+Two thirds of the residue is **rung (d)'s**, not this rung's: 712 of 1296 state
+pairs refuse fusion (§4.3), and an unfused pointer has no word to resolve. The
+next 583 are one coarse rule — a single store the analysis cannot place voids
+every pointer in that tune. Probing the shapes behind it found stack pushes
+(`sp | $0100`) and address temporaries (`mem[t11] = a`), both now proven spans;
+what is left is genuinely computed. Raising either number is upstream work, not a
+loosening here.
+
+**The structural finding.** For each resolved deref the artifact now knows the
+triple (table `T`, entry index `k`, row `i`). Across the 366 sites the target set
+averages **10.06 blocks** (max 82); 46 sites name a single block — a pointer the
+play code never rewrites, i.e. a compile-time constant — and **320 range over two
+or more**. The reload index is non-constant at **366 of 366** (the table is
+indexed by a run-time quantity: 428 of the 519 table references index by a
+machine register, 80 by an expression, 11 by a named cell), and the row index is
+textually distinct from it at **362**. That is the two-level shape an orderlist
+and its patterns have: one counter selects the block, another walks the rows.
+Requiring in addition that every target block lands inside a `datadecl` region —
+i.e. the blocks really are carved song data, not a pointer into code — leaves
+**180** sites, and all four conditions together (≥2 blocks, indexed reload,
+distinct row index, every block declared) hold at **134 sites over 84 tunes**.
+Commando is the clean case: `ptr_005D` ranges over 3 blocks all declared,
+`ptr_005F` over 20 of which 4 are declared at 200 frames (the rest are never
+reached in the window, so `datadecl` carved no region there — an extent question,
+not a resolution one).
+
+The recommendation this evidence supports is in docs/tracker.md's terms and is
+**not implemented here**: the tracker's structure recovery scores exactly zero
+against the native-editor oracles on orderlist and patterns while pitch is 1.0000
+and instruments bijective. What it lacks is a candidate orderlist, and rung (f)
+now hands it one per resolved pointer — the declared pointer table `T` is the
+orderlist's row set, its entry index `k` is the position, the target block is the
+pattern base, and the deref row index `i` is the pattern row. 84 tunes carry that
+shape today. A tracker-side reader would take `FrameProgram.proofs` filtered to
+`kind == "deref"` and `status == "resolved"`, group the sites by pointer, and read
+(pattern table, pattern base set, row index) straight off the record rather than
+searching banks. The honest caveat is the 84: this is evidence for a layer, not a
+layer, and 466 tunes still resolve nothing — the ceiling is rung (d)'s fusion rate
+and the wild-store rule, in that order.
+
 | risk | disposition |
 |---|---|
+| A named deref outliving its proof | Rung (f) names only what it proved, and the name is the proof's shadow: `FrameProgram.resolved` is built by `frameptr.apply_rung` and consumed only by the emitter, so a site with no record renders raw. The reader rebuilds the same map from the `*ptr[i]` text, which is why the fixpoint is the check that the two agree. The residual risk is a consumer reading `*ptr[i]` as "in bounds of one block": it is not — the claim is `address ∈ {T[k]} + [0, row bound]`, a union of intervals, and the block extents are `datadecl`'s own (180 of 366 sites have every block declared). |
 | Multi-call-per-frame / multispeed drivers | v1 class: frame = the play invocation, settled. v2/P-INT redefines the frame as the driver-cadence tick; the projection then applies per tick and the digi rule re-triggers (fast CIA volume writes). Deferred with v2. `play == 0` tunes are in the v1 class as of the handler entry (docs/decompiler-implementation.md §8.1): one handler invocation per frame, entered through a synthetic IRQ dispatch stub, so the frame is still the play invocation and Gate FP holds unchanged. |
 | Digi / $D418 order | Closed by the class rule (§1.2): $D418 is last-write-wins; a >2-step collapsed volume sequence excludes with a precise diagnostic; 2-step frames collapse with a reported metric. Corpus: 0 exclusions; a digi tune MUST be added to exercise the path. |
 | The two sides disagreeing on what a volatile input *is* (fixed) | Closed. `frameprog._INPUTS` declared $DC0D a nondeterministic input `cia_icr()` while the walker's `_VOL0` inlines that read as the constant 0 at block-compile time, never calling the pinning hook: `iota` could not record what the evaluator then demanded, so the first read of frame 0 faulted `past the pinned trace` — the one-model claim of §1.3 violated in the *set* of inputs, not in a value. 3 of 682 cached tunes (`4k_Digi_Competition_Entry`, `Chotmix`, `5_Channels_of_Feekzoid_Noise`), none digi-class. The declared set is now keyed on `structured._VOL`, so an address the walker cannot pin cannot be declared, and the evaluator resolves `structured._VOL0` to 0 exactly as the walker does instead of naming $D019 alone. Repaired frameprog-side by construction: the walker's constant-0 model is the v1 ground truth Gate C already verifies (decompiler-implementation.md §8.1), not an approximation to correct here. |
@@ -569,7 +692,28 @@ HVSC absent (decompiler-implementation.md §1, §7).
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
   (no unproven raw `mem[expr]`); the Commando-family excerpt shape achieved
   on at least the index-looped drivers; per-tune rung recorded in the build
-  report.
+  report. Landed toward it: **pointer resolution**
+  (`deity_informant/frameptr.py`, §4.4 for the measurement) — the base-less
+  pointer-pair deref rung (d) left, named `*ptr[i]` against the declared
+  `lo`/`hi` table its every definition reloads from, with a `structured.Proof`
+  per deref site carrying the table, the definition count, the target block set
+  and the row bound. Gate: FP 649/649, the tracker law 649/649 and the canonical
+  fixpoint 649/649 over the 682-tune corpus, all unchanged, and the tracker's
+  value partition byte-identical; raw `mem[` 10280 → 9682 and tunes with none at
+  all 17 → 51. `tests/_fuzzgen` carries the `ptr_seq` class (a pointer table
+  walked by a position counter, deref'd at a separate row index) and
+  `tests/test_frameptr.py` the refusals. **M-FP5 mutation evidence**: this rung
+  cannot move a canonical record — it rewrites no tree and no value, which is
+  the whole argument of §4.4 — so the record each mutation must move is the
+  *proof*, and every one of the three flips a refusal into a resolution or
+  widens the claim: resolving against a definition not proved (an advance
+  `P = P + n`, a store the analysis cannot place, a half pair with no declared
+  `lo`/`hi` role) turns a `refused` record into `resolved`; reading the target
+  set past the declared extent turns a 1-entry declaration's one block into two
+  (`test_the_target_set_is_the_declared_extent_not_the_image_run`); and dropping
+  the row bound resolves an index whose sound bound is `$FFFF`, a whole-address
+  space claim rather than a row. Outstanding: rungs (e)/(f) proper, and the
+  ceiling on resolution is rung (d)'s fusion rate (§4.4 census).
 
 Gate FP is the only correctness law at this level; no milestone may weaken
 it, and sidprog's Gates A/C/L/S are untouched throughout.

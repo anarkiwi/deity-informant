@@ -10,6 +10,7 @@ from __future__ import annotations
 from . import datadecl
 from . import framefuse
 from . import frameproc
+from . import frameptr
 from . import grammar as G
 from . import sidprog
 from . import structured
@@ -26,6 +27,8 @@ _NOTES = (
     ";   fixpoint dumps(loads(t)) == t; frameval.gate_fp is the reference evaluator",
     "; 16-bit fusion (rung d) makes a proven lo/hi pair one u16 state field; a",
     ";   lone-half access refuses that pair; per-voice unification is not applied",
+    "; *ptr[i] (rung f) is a deref whose every definition loads a declared lo/hi",
+    ";   pointer table, so the address is a row of one of that table's blocks",
     "; registers/temporaries are procedure locals; parameters, returns and",
     ";   for-ranges are inferred from register liveness (serialization-layer)",
 )
@@ -143,6 +146,7 @@ class FrameProgram:
         procs=(),
         mem0=None,
         proofs=(),
+        resolved=(),
     ):
         self.play = play
         self.init = init
@@ -154,11 +158,12 @@ class FrameProgram:
         self.symbols = dict(symbols or {})
         self.procs = list(procs)
         self.mem0 = bytearray(0x10000) if mem0 is None else mem0
-        self.proofs = list(proofs)  # rung (d) fusion records, one per candidate pair
+        self.proofs = list(proofs)  # rung (d) pair records, rung (f) deref-site records
+        self.resolved = dict(resolved)  # rung (f): deref address -> (pointer cell, index)
 
 
 def program(model, sid_fusion=False):
-    """The frame program of a committed block model (entry translation, rungs a-d)."""
+    """The frame program of a committed block model (entry translation, rungs a-f)."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -170,6 +175,7 @@ def program(model, sid_fusion=False):
     state, proofs = framefuse.apply_rung(
         model, decls, procs, state, symbols, G.addr_name, sid_fusion
     )
+    resolved, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     return FrameProgram(
         model.play,
         model.init,
@@ -181,7 +187,8 @@ def program(model, sid_fusion=False):
         symbols,
         procs,
         model.mem0,
-        proofs,
+        proofs + deref_proofs,
+        resolved,
     )
 
 
@@ -205,7 +212,7 @@ def dumps(prog):
     data_out, _cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
-    body.extend(frameproc.render_lines(prog.procs))
+    body.extend(frameproc.render_lines(prog.procs, prog.resolved))
     to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))
@@ -228,6 +235,8 @@ def parse(text):
         doc.symbols,
         doc.subs,
         doc.mem0,
+        (),
+        doc.resolved,
     )
 
 

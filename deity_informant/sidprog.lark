@@ -6,7 +6,8 @@
 //                  for-ranges (docs/frameprog.md)
 // Everything else -- expressions, memrefs, data/symbols sections, loops,
 // switches, flow items -- is shared. Parsed LALR(1); templates parameterise
-// the shared region productions over the two item alphabets.
+// the shared region productions over the two item alphabets. The width suffix
+// and the *ptr[i] deref form are frameprog forms a sidprog document rejects.
 
 start: sidprog_doc
      | frameprog_doc
@@ -130,11 +131,15 @@ ifw: "if" -> w_if
 asg: lvalue "=" expr
 lvalue: NAME [wsuf] -> lv_name
       | NAME "[" expr "]" [wsuf] -> lv_index
+      | "*" NAME [wsuf] -> lv_deref_bare
+      | "*" NAME "[" expr "]" [wsuf] -> lv_deref
       | "mem" "[" expr "]" [wsuf] -> lv_mem
 
 ?expr: HEX -> e_hex
      | NAME [wsuf] -> e_name
      | NAME "[" expr "]" [wsuf] -> e_index
+     | "*" NAME [wsuf] -> e_deref_bare
+     | "*" NAME "[" expr "]" [wsuf] -> e_deref
      | "mem" "[" expr "]" [wsuf] -> e_mem
      | zextw "(" expr ")" -> e_zext
      | "carry" "(" expr "," expr ")" -> e_carry

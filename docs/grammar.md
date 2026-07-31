@@ -34,7 +34,16 @@ declaration is written as the access it is rather than as address arithmetic.
 The reader supplies the `zext2`, so an emitter may drop it; every other form of
 address stays `mem[...]`.
 
-A reference — named, indexed or raw — carries an optional `:N` **width suffix**,
+A third form is the **pointer deref** `*<base>[<index>]` (and `*<base>` for row
+zero), which denotes `mem[base:2] + zext2(index)`: `base` names the cell holding
+the pointer *word*, so the `:2` is the form's own and never written. It is
+rung (f)'s ([frameprog.md](frameprog.md) §4.4), and the emitter writes it only
+where that rung proved every definition of the pointer against a declared
+`lo`/`hi` table — an unproven deref stays `mem[...]`, so the text distinguishes
+the two. Like the width suffix it is a frameprog form; a sidprog document
+carrying one is rejected.
+
+A reference — named, indexed, deref or raw — carries an optional `:N` **width suffix**,
 absent for the one byte a 6502 access moves and `:2` for the 16-bit forms rung
 (d) fuses ([frameprog.md](frameprog.md) §4): `m_0021:2` is the word at `$21`, and
 `m_0021:2 = e` stores it. A store's suffix must equal the width of the value
@@ -60,7 +69,8 @@ fails when it drifts; regenerate with
 //                  for-ranges (docs/frameprog.md)
 // Everything else -- expressions, memrefs, data/symbols sections, loops,
 // switches, flow items -- is shared. Parsed LALR(1); templates parameterise
-// the shared region productions over the two item alphabets.
+// the shared region productions over the two item alphabets. The width suffix
+// and the *ptr[i] deref form are frameprog forms a sidprog document rejects.
 
 start: sidprog_doc
      | frameprog_doc
@@ -184,11 +194,15 @@ ifw: "if" -> w_if
 asg: lvalue "=" expr
 lvalue: NAME [wsuf] -> lv_name
       | NAME "[" expr "]" [wsuf] -> lv_index
+      | "*" NAME [wsuf] -> lv_deref_bare
+      | "*" NAME "[" expr "]" [wsuf] -> lv_deref
       | "mem" "[" expr "]" [wsuf] -> lv_mem
 
 ?expr: HEX -> e_hex
      | NAME [wsuf] -> e_name
      | NAME "[" expr "]" [wsuf] -> e_index
+     | "*" NAME [wsuf] -> e_deref_bare
+     | "*" NAME "[" expr "]" [wsuf] -> e_deref
      | "mem" "[" expr "]" [wsuf] -> e_mem
      | zextw "(" expr ")" -> e_zext
      | "carry" "(" expr "," expr ")" -> e_carry
