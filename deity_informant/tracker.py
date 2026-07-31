@@ -74,8 +74,8 @@ def div(n, trigger=FRAME):
 
 
 def lookup(seq, trigger, reg, mask=_FULL):
-    """Emit ``seq[i]`` into a register plane; ``i`` advances per trigger."""
-    return Generator(("LOOKUP", tuple(seq)), trigger, plane(reg, mask))
+    """Emit ``seq[i]`` into a plane: a ``SELECT`` that recovered no row."""
+    return Generator(("SELECT", tuple(seq), ()), trigger, plane(reg, mask))
 
 
 def ramp(seed, step, bound, trigger, reg, mask=_FULL):
@@ -160,39 +160,39 @@ def _sources(rows):
     """Node indices a generated row source reads, in evaluation order."""
     if not _generated(rows):
         return ()
-    if rows[0] == "node":
-        return (rows[1],)
-    _k, _op, j, base = rows
-    return (j, base[1]) if base[0] == "node" else (j,)
+    return (rows[1],) if rows[0] == "node" else tuple(s[1] for s in rows[2:] if s[0] == "node")
+
+
+def _named(src, cur, prev):
+    """The value a named delta or base holds: a constant, a node's emit, the plane's own."""
+    if src[0] == "const":
+        return src[1]
+    return cur.get(src[1]) if src[0] == "node" else prev
 
 
 def _row(rows, count, cur):
     """The row a ``SELECT`` reads: recovered at its own tick, or another's emit.
 
-    A generated row is what the named generator holds, optionally shifted by a
-    declared base — a transpose is a row offset, not a byte. A source that has not
+    A generated row is what the named generator holds, optionally combined with a
+    named base — a transpose shifts the row, not the byte. A source that has not
     emitted yet supplies nothing, so the read is dropped rather than guessed."""
     if not _generated(rows):
         return rows[(count - 1) % len(rows)]
     if rows[0] == "node":
         return cur.get(rows[1])
-    _k, op, j, base = rows
-    delta = cur.get(j)
-    val = base[1] if base[0] == "const" else cur.get(base[1])
-    return None if delta is None or val is None else _REL[op](val, delta)
+    _k, op, delta, base = rows
+    d, v = _named(delta, cur, None), _named(base, cur, None)
+    return None if d is None or v is None else _REL[op](v, d)
 
 
 def _emit(g, count, cur=()):
     """Value a plane-routed generator emits on its ``count``-th trigger."""
     kind = g.transfer[0]
-    if kind == "LOOKUP":
-        seq = g.transfer[1]
-        return seq[(count - 1) % len(seq)] if seq else None
     if kind == "SELECT":
         _k, table, rows = g.transfer
-        if not rows:
+        if not table:
             return None
-        i = _row(rows, count, cur or {})
+        i = _row(rows, count, cur or {}) if rows else (count - 1) % len(table)
         return table[i] if i is not None and 0 <= i < len(table) else None
     if kind == "RAMP":
         _k, seed, step, bound = g.transfer
@@ -201,44 +201,45 @@ def _emit(g, count, cur=()):
     raise TrackerError("transfer %r has no value emit" % (kind,))
 
 
-def _base_ok(nodes, i, reg, mask, base):
-    """Refuse a relative route whose named base no earlier generator supplies.
+def _field_of(route):
+    """The field a route settles absolutely: a plane's masked byte, an index, or nothing."""
+    return ("plane", route[1], _mask_of(route)) if route[0] == "plane" else route
 
-    Absolutes establish a register's byte and relatives apply to it in node order, so
-    the base must be settled before the delta arrives: ``("node", j)`` is an absolute
-    generator of the same field at ``j < i``, ``("prev",)`` needs any earlier writer."""
-    if base[0] == "const":
-        if not 0 <= base[1] <= _FULL:
-            raise TrackerError("relative base %r is not a byte" % (base,))
-        return
-    if base[0] == "prev":
-        if not any(
-            g.route[0] == "raw" or (g.route[0] == "plane" and g.route[1] == reg) for g in nodes[:i]
-        ):
-            raise TrackerError("relative route on $%02X has no previous value" % (reg,))
-        return
-    if base[0] != "node" or not 0 <= base[1] < i:
-        raise TrackerError("relative base %r is not an earlier node" % (base,))
-    g = nodes[base[1]]
-    if g.route[0] != "plane" or g.route[1] != reg or _mask_of(g.route) != mask:
-        raise TrackerError("relative base %r drives another field" % (base,))
+
+def _rel_ok(nodes, i, op, srcs, field):
+    """Refuse a relative form the graph cannot settle — one rule, both domains.
+
+    Absolutes settle a field and relatives apply to it in node order, so every named
+    source must be settled first: a byte ``Const``, an earlier absolute generator of the
+    same ``field``, or the plane's own ``Prev``, which a row index has no meaning for."""
+    if op is not None and op not in _REL:
+        raise TrackerError("unknown relative operation %r" % (op,))
+    for base in srcs:
+        if base[0] == "const":
+            if not 0 <= base[1] <= _FULL:
+                raise TrackerError("relative base %r is not a byte" % (base,))
+        elif base[0] == "prev":
+            if field == INDEX or not any(
+                g.route[0] == "raw" or (g.route[0] == "plane" and g.route[1] == field[1])
+                for g in nodes[:i]
+            ):
+                raise TrackerError("relative base %r has no previous value" % (base,))
+        elif base[0] != "node" or not 0 <= base[1] < i:
+            raise TrackerError("relative base %r is not an earlier node" % (base,))
+        elif _field_of(nodes[base[1]].route) != field:
+            raise TrackerError("relative base %r drives another field" % (base,))
 
 
 def _index_ok(nodes, i, g):
     """Refuse a generated row index the graph cannot supply before it is read.
 
-    The source must be an earlier ``index``-routed node, so the value edge runs the
-    same way node order already runs and no cycle can form. An ``index`` route with
-    no reader is refused too: a generator that neither writes nor is read is dead."""
-    if g.transfer[0] == "SELECT" and _generated(g.transfer[2]):
-        rows = g.transfer[2]
-        if rows[0] == "rel" and rows[1] not in _REL:
-            raise TrackerError("unknown relative row operation %r" % (rows[1],))
-        for j in _sources(rows):
-            if not isinstance(j, int) or not 0 <= j < i:
-                raise TrackerError("row source %r is not an earlier node" % (j,))
-            if nodes[j].route != INDEX:
-                raise TrackerError("row source node %d does not route to an index" % (j,))
+    The sources must be earlier ``index``-routed nodes, so the value edge runs the same
+    way node order already runs and no cycle can form. An ``index`` route with no reader
+    is refused too: a generator that neither writes nor is read is dead."""
+    rows = g.transfer[2] if g.transfer[0] == "SELECT" else ()
+    if _generated(rows):
+        rel = rows[0] == "rel"
+        _rel_ok(nodes, i, rows[1] if rel else None, rows[2:] if rel else (rows,), INDEX)
     if g.route == INDEX and not any(
         h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]) for h in nodes
     ):
@@ -250,7 +251,7 @@ def _check(nodes):
 
     Two generators sharing a register must own the same bits or disjoint ones: a
     partial overlap is two owners of one bit, which no order resolves. A relative
-    route must further name a base an earlier generator settles (`_base_ok`)."""
+    route must further name a base an earlier generator settles (`_rel_ok`)."""
     owned = {}
     for i, g in enumerate(nodes):
         if g.trigger != FRAME and g.trigger[0] != "event":
@@ -272,9 +273,7 @@ def _check(nodes):
                 )
         owned[g.route[1]].add(m)
         if g.route[0] == "rel":
-            if g.route[3] not in _REL:
-                raise TrackerError("unknown relative operation %r" % (g.route[3],))
-            _base_ok(nodes, i, g.route[1], m, g.route[4])
+            _rel_ok(nodes, i, g.route[3], (g.route[4],), ("plane", g.route[1], m))
 
 
 def _assemble(g, v, held, writes):
@@ -309,13 +308,8 @@ def _combine(route, delta, prev, cur):
     A base the graph has not settled yet emits nothing, so a mis-built relative stream
     drops a write and the law says so rather than inventing a base."""
     _k, reg, mask, op, base = route
-    if delta is None:
-        return None
-    if base[0] == "const":
-        val = base[1]
-    else:
-        val = cur.get(base[1]) if base[0] == "node" else prev.get(reg)
-    return None if val is None else _REL[op](val & mask, delta) & 0xFF
+    val = _named(base, cur, prev.get(reg))
+    return None if delta is None or val is None else _REL[op](val & mask, delta) & 0xFF
 
 
 def _run(graph, nframes):
@@ -1079,6 +1073,13 @@ def _classify(w, tabs, banks, imm, mem0, held):
     return None
 
 
+def _select(key, rows, mem0):
+    """The ``SELECT`` a stream key emits: its declared lane at ``rows``, or its constant.
+
+    An ``imm`` key recovers no row at all — the one-byte table is read straight through."""
+    return ("SELECT", _key_table(key, mem0), () if key[0] == "imm" else tuple(rows))
+
+
 def _key_table(key, mem0):
     """A stream key's emitted table: one declared lane of a bank, or one constant.
 
@@ -1143,10 +1144,10 @@ def _buckets(obs, weight):
 
 
 def _stream(key, rows, table):
-    """One ``(per-frame counts, transfer, register)`` stream for a bucket's emits."""
-    flat = tuple(r for fr in rows for r in fr)
-    t = ("LOOKUP", table) if key[0] == "imm" else ("SELECT", table, flat)
-    return tuple(len(fr) for fr in rows), t, key[1]
+    """One ``(counts, transfer, register, evidence)`` stream: an ``imm`` key recovers no row."""
+    imm = key[0] == "imm"
+    flat = () if imm else tuple(r for fr in rows for r in fr)
+    return tuple(len(fr) for fr in rows), ("SELECT", table, flat), key[1], "imm" if imm else "lane"
 
 
 def _refine_voice(seq, tabs, banks, imm, mem0):
@@ -1198,12 +1199,12 @@ def _classes(streams, groups=(), rels=(), pairs=()):
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["rel"] += sum(counts)
     for counts, _r, _s, reg in pairs:
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["arr"] += sum(counts)
-    for counts, t, reg in streams:
+    for counts, t, reg, ev in streams:
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
-        if t[0] == "RAMP":
+        if ev == "ramp":
             cls["seed"] += 1
             cls["ramp"] += sum(counts) - 1
-        elif t[0] == "LOOKUP":
+        elif ev == "imm":
             cls["imm"] += sum(counts)
         elif reg % 7 == _CTRL:
             n = len(t[1]) // (1 + len(_SECT))
@@ -1253,7 +1254,7 @@ def _lww_streams(lww, tabs, mem0):
             rows.append(row)
             explained[f].add(reg)
     out = [
-        (tuple(counts), ("SELECT", _key_table(k, mem0), tuple(rows)), k[1])
+        (tuple(counts), _select(k, rows, mem0), k[1], "lane")
         for k, (counts, rows) in streams.items()
     ]
     return out, explained
@@ -1399,7 +1400,7 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0):
                 counts[f] = 1
                 claimed.add(f)
                 explained[f].add(reg)
-            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg))
+            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg, "ramp"))
     return streams, explained
 
 
@@ -1525,13 +1526,6 @@ def _decompose(w, parts, pool, mem0):
     return None
 
 
-def _field(key, rows, mem0):
-    """The transfer one masked field emits: a program constant, or a declared lane."""
-    if key[0] == "imm":
-        return ("LOOKUP", (key[2],))
-    return ("SELECT", _key_table(key, mem0), tuple(rows))
-
-
 def _mask_streams(lww, parts, tabs, mem0, done):
     """``(groups, explained)``: one register's byte assembled from several generators.
 
@@ -1558,7 +1552,7 @@ def _mask_streams(lww, parts, tabs, mem0, done):
     groups = [
         (
             tuple(cnt),
-            [(_field(keys[reg][m], rows[(reg, m)], mem0), m) for m in sorted(keys[reg])],
+            [(_select(keys[reg][m], rows[(reg, m)], mem0), m) for m in sorted(keys[reg])],
             reg,
         )
         for reg, cnt in sorted(counts.items())
@@ -1725,14 +1719,10 @@ def _rel_streams(lww, sites, mem0, done, diag):
     out = [
         (
             tuple(counts),
-            ("SELECT", _key_table(key, mem0), tuple(rows)),
+            _select(key, rows, mem0),
             reg,
             site.op,
-            (
-                site.base
-                if bkey is None
-                else ("gen", ("SELECT", _key_table(bkey, mem0), tuple(brows)))
-            ),
+            (site.base if bkey is None else ("gen", _select(bkey, brows, mem0))),
         )
         for (reg, site, key, bkey), (counts, rows, brows) in streams.items()
     ]
@@ -2084,9 +2074,9 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         edges.setdefault(counts, len(edges))
     divisors = _divisors(prog, banks)
     nodes = [_clock_node(c, divisors) for c in edges]
-    fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
+    fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r, _ in pre]
     nodes += fired + [raw(residual)]
-    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws + ramps]
+    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r, _ in post + lwws + ramps]
     nodes += [Generator(t, ("event", edges[c]), plane(r, m)) for c, ps, r in groups for t, m in ps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     for counts, t, reg, op, base in rels:  # absolutes settle a register, relatives follow

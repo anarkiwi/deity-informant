@@ -16,7 +16,7 @@ the tests skip without them and the hermetic job stays hermetic.
 ## 1. The rule: express, never transliterate
 
 Every native structure is stated in `(transfer, trigger, route)` over
-`DIV`/`LOOKUP`/`SELECT`/`RAMP`/`EDGE`/`RAW` — docs/tracker.md §2 exactly as it
+`DIV`/`SELECT`/`RAMP`/`EDGE`/`RAW` — docs/tracker.md §2 exactly as it
 stands. **Editor structures are translated to generic ones before anything is
 compared**, and the test applied to every field translated is: *would this
 structure exist in an editor that had never heard of this one?*
@@ -31,13 +31,13 @@ structure exist in an editor that had never heard of this one?*
 | filter program | `filtertable` left/right | per-instrument `filter_table` | `SELECT` + `RAMP`, §4b/§4c |
 | arpeggio / chord table | wavetable relative-note column | `default_chord` + `chord_table` + `arp_speed` | — (§7.3, not implemented) |
 | transpose | orderlist `Transpose` | sequence `Transpose`, `octave_shift` | — (§4.5, a relative *index*) |
-| **orderlist, pattern, row counter** | `Channel.entries`, `Pattern.rows`, `pattbase + pattptr/4` | `sequences`, `Pattern.rows`, `pattern_row` | an `Index` chain: `RAMP`/`LOOKUP` → the pattern's column → the table, §3.2b |
+| **orderlist, pattern, row counter** | `Channel.entries`, `Pattern.rows`, `pattbase + pattptr/4` | `sequences`, `Pattern.rows`, `pattern_row` | an `Index` chain: `RAMP`/unrolled walk → the pattern's column → the table, §3.2b |
 | gate-off images | `gateoff_timer` | `gateoff_wf`/`gateoff_pw`/`gateoff_filt` | the gate images of the same lanes, §5 |
 | **two fields in one register** | `$18` = `filtertype & $70` \| `masterfader` | `$18` = mode \| volume; `$17` = resonance \| three voices' routing flags | masked `SELECT`s over disjoint bit fields, §4e |
 | **a value offset rather than replaced** | `_vibrato`: `freq ± speedtable.right[row]` | `WRPITCH`: the pitch lane `+` the WF program's detune column | a relative route over `Prev` or `Node(i)`, §4f |
 
 Three different spellings of the hard restart become **one** node shape: a
-`LOOKUP` of ADSR bytes fired by the note-on `EDGE`, ahead of the instrument's own
+`SELECT` of ADSR bytes fired by the note-on `EDGE`, ahead of the instrument's own
 `SELECT`. Nothing editor-specific enters the format. Where a structure has no
 generic reading, that is §4 below — a deficiency, never a new node type.
 
@@ -188,7 +188,7 @@ largest margin yet.
 The same three nodes in all three editors, and none of them is editor-specific:
 
 ```
-row counter   Index  RAMP(row0, step, 0)  or  LOOKUP(the walk)   # which row
+row counter   Index  RAMP(row0, step, 0)  or  SELECT(the walk, ())  # which row
 pattern       Index  SELECT(the pattern's own column, ("node", counter))
 plane         Plane  SELECT(the pitch table or the bank, ("node", pattern))
 ```
@@ -201,13 +201,13 @@ number**: the row a voice's pitch `SELECT` reads is now a byte of the composer's
 pattern, not a row read off the player. The row *of the pattern* is still the walk.
 
 The row counter is a real `RAMP` — seed, step, no wrap — on **9** GoatTracker chains
-and **38** SID-Wizard ones, and the unrolled walk as a `LOOKUP` on the rest. `RAMP`
+and **38** SID-Wizard ones, and the unrolled walk as a rowless `SELECT` on the rest. `RAMP`
 wraps `mod bound`, i.e. always back to **0**, so it is the right back-edge only for a
 walk that starts at row 0; a pattern whose base row is not 0 cannot express its own
 repeat with the wrap, and is carried unrolled instead.
 
 **The wrap and the editor's loop point, measured rather than assumed.** `_emit` wraps
-a `LOOKUP` at `% len(seq)`, which is the back-edge only where the editor's own restart
+a rowless `SELECT` at `% len(table)`, the back-edge only where the editor's own restart
 is the start of the table:
 
 | | wrap IS the loop point | it is not |
@@ -216,7 +216,7 @@ is the start of the table:
 | SID-Wizard sequences (`Loop.position`) | **114** of 171 | 57 |
 | DefMON cascade jumps (`sidtab_jp`, docs/dm-oracle.md §3.2) | **0** of 227 | 227 |
 
-Where it is not, the walk is carried **unrolled to the loop point** by the `LOOKUP`
+Where it is not, the walk is carried **unrolled to the loop point** by the rowless
 form rather than by a wrong back-edge, so no chain is built on a back-edge the editor
 does not have. No back-edge machinery was added; the wrap `_emit` already has is the
 only one used.
@@ -306,7 +306,7 @@ streams docs/tracker.md §6 already measures at a non-`DIV` phase.
 | GoatTracker portamento carry (16-bit, §4.4) | 500 | 500 (unchanged) | 9/71 |
 
 Vibrato is a *bipolar offset applied to the value the plane already holds*: neither
-`LOOKUP` (the values depend on the base note) nor `RAMP` (the direction reverses
+a table read straight through (the values depend on the base note) nor `RAMP` (the direction reverses
 at a bound). The same shape covers the arpeggio (`wavetable` relative-note column;
 SID-Wizard's `default_chord` + `chord_table`), the orderlist `Transpose`, and
 SID-Wizard's `octave_shift` and `detune` — every one of which is "a table whose
@@ -469,6 +469,21 @@ the third use — GoatTracker's wavetable relative-note column costs **10142** e
 here, SID-Wizard's `chord_table` **2621** and DefMON's **1141**, all counted as
 `arpeggio` and all the same shape.
 
+**Status, re-measured: the extension landed and this mapper still refuses.** `Rel` in
+the index domain is in the primitive (docs/tracker.md §2, #102) and the refusal table
+above re-measures to the same 6953. But a census of the mapped graphs by
+`(transfer, route)` — 12 GoatTracker tunes, 12 SID-Wizard modules, 6 DefMON tunes —
+finds **zero** `SELECT[rel]` nodes on any side, because `_patt_src` still prices a
+nonzero shift as `refused_transpose` and returns nothing. So the 6953 is **owed and
+unrealised**, not banked. Emitting it is four changes, and they are stated so nobody
+re-derives them: `_patt_src` compares `column[row] + shift` against the wanted index
+instead of refusing; the shift joins the stream key, so one stream carries one shift;
+`_feeder` validates rows against `column[s] + shift`; and `_arranged` builds
+`Rel("ADD", Node(the counter), Const(shift))` in place of `Node(the counter)`. DefMON
+needs a fifth — `_dm_src` hands `_patt_src` a 0/1 flag today, not `TR`'s amount. Doing
+it adds index nodes to three mappings and moves `tools/graph_diff.py` by construction,
+so it is its own step and not a rename.
+
 ### 4.6 What is not a deficiency, and is reported anyway
 
 **The driver's ghost.** 97152 GoatTracker emits (77% of the strict graph's `RAW`)
@@ -477,7 +492,7 @@ a register the song **never programs**, written every frame from a ghost registe
 holding its power-on value. §4.3's closure grew that share rather than shrinking it,
 and added 13234 of its own: a `$18` whose mode nibble no filter program ever sets is
 two power-on defaults ORed, which is this category exactly.
-It is not a `RAW` the primitive forces: `LOOKUP((0,))` would take every one of
+It is not a `RAW` the primitive forces: `SELECT((0,), ())` would take every one of
 them and pass the law. It is refused for the reason docs/tracker.md §6 refuses
 the filter plane's 34177 program constants — it explains no index, and on a
 register that takes a constant it is the observation, not the song, choosing.
@@ -486,7 +501,7 @@ Counted, named, and left residual.
 **The ADSR preamble's bytes.** `select:('hr','ad')`/`('hr','sr')` stay residual
 on 65 of 71 GT tunes (675 emits) because `gt2reloc` bakes the hard-restart AD/SR
 into player *code* and `pygoattracker.sid.PackedInfo` does not recover them. The
-primitive expresses this fine — it is a `LOOKUP` on the note-on edge, and
+primitive expresses this fine — it is a rowless `SELECT` on the note-on edge, and
 SID-Wizard's per-instrument version maps cleanly. This is a decompiler gap, not a
 format gap, and **our own recovery does get these bytes**: `tracker._immediates`
 reads program constants stored to a SID register class (docs/tracker.md §5),

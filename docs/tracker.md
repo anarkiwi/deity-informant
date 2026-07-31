@@ -24,8 +24,15 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | the arrangement is `LOOKUP` nodes routed to `Fire` with a back-edge for the loop (§7.4) | #99 | **false** — a `Fire` edge carries no value, so it cannot name a pattern; and the loop was already free from `_emit`'s modulo |
 | a `DIV` phase field is a per-stream parameter fitted to the output (§4d, §8) | #94, #96 | **false** — three editors: the phase belongs to the arrangement, not the stream |
 | coverage measures how much of a tune the recovery can reach (§6, everywhere) | #106 | **false** — it measures *justification*; 99680 of the composer's writes are shaped differently by us and **zero** are never produced |
+| the relative row index (#102) opens the 6953 emits an absolute-only index refuses (§2, §4f) | this step | **not yet** — the refusal number re-measures at exactly 6953 (GT 1690, SW 4738, DM 525), but a census of all three editors' own songs finds **zero** `SELECT[rel]` nodes: `gtoracle._patt_src` still *refuses* a shifted row rather than emitting one, and `dmoracle` computes a 0/1 flag where the row needs the shift amount. The element is expressible and unused; what it is owed is an emitter, not a measurement |
+| `LOOKUP` is a transfer of its own (§2, since the start) | this step | **false** — it is `SELECT` with identity rows; the second transfer was carrying *evidence* (`imm` vs `lane`), which `Coverage.classes` already carries. Collapsed: 5 transfers, partition byte-identical |
 
-The last one is the load-bearing correction. **Every value is already produced.** What
+The fifth row is the one to read before adding to the primitive: a refusal count says an
+element *would* be used, never that anything *does* use it. The last is the shape that
+mistake takes inside the primitive — a distinction that is really about evidence,
+spelled as a distinction in the transfer.
+
+The `coverage` row is the load-bearing correction. **Every value is already produced.** What
 this document measures throughout is whether an emit can be *attributed* to a
 declaration, never whether it can be reproduced. A residual emit is not a missing byte.
 
@@ -66,7 +73,7 @@ Two properties make the law meaningful rather than tautological:
   observed frame — so a PASS certifies the partition is complete.
 
 Mutation evidence that the law can fail (tests/test_tracker.py): a wrong
-`LOOKUP` value, a wrong `SELECT` row, a dropped ordered write, and two swapped
+table byte, a wrong `SELECT` row, a dropped ordered write, and two swapped
 ordered writes are each detected.
 
 ## 2. The one primitive
@@ -79,14 +86,14 @@ primitive:
 ```
 Generator = (transfer, trigger, route)
   transfer : DIV(n)                  # one tick per n input triggers (a clock)
-           | LOOKUP(seq)             # emit seq[i]; i advances per trigger
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
-  rows     : (a recovered run)       # the row indices observation yields
-           | Node(j)                 # generated: the row generator j holds
-           | Rel(op, j, base)        # generated and shifted: op(base, j) -- a transpose
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
+  rows     : ()                      # none recovered: read straight through, wrapping
+           | (a recovered run)       # the row indices observation yields
+           | Node(j)                 # generated: the row generator j holds
+           | Rel(op, delta, base)    # generated and combined: op(base, delta)
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
   route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
            | Rel(reg, mask, op, base)# the emit is a DELTA op combines with base
@@ -94,19 +101,38 @@ Generator = (transfer, trigger, route)
            | Fire | Raw              # a downstream trigger, or the value floor
   op       : ADD | SUB | XOR         # the store statement's own operator
   base     : Prev                    # the plane's own previously emitted value
-           | Node(i)                 # generator i's current value
+  delta    | Node(i)                 # generator i's current value
            | Const(c)                # a declared base byte
 ```
+
+**One relative concept, two domains.** `Rel` is a delta combined with a named base
+wherever it appears: in the **value** domain the delta is the generator's own emit and
+the base is a plane's settled byte, in the **index** domain both are named row sources.
+`_rel_ok` is the one validator, over one notion of *field* (`_field_of`: a plane's
+masked byte, or an `Index`) — a named source must be a declared `Const`, an earlier
+absolute generator of the same field, or the plane's own `Prev`, which is a value and so
+has no meaning where the field is a row index. One vocabulary of refusals covers both
+domains: an unknown operation, a base that is not a byte, a base no earlier node
+settles, and a base that drives another field.
+
+**There is no `LOOKUP`.** It was `SELECT` with identity rows —
+`LOOKUP((3,9,4,7))` and `SELECT((3,9,4,7), (0,1,2,3))` emit the same stream, and
+`_emit`'s two branches computed the same function. What the second transfer actually
+carried was *evidence*: `LOOKUP` meant "program constants, no index explained" and
+`SELECT` "a declared table at a recovered row". Evidence has its own home in
+`Coverage.classes`, so the transfer is gone and the empty `rows` production says the
+same thing structurally — **no row was recovered** — which is exactly what the shallow
+`imm` class reports.
 
 A route is **absolute or relative**. An absolute route's emit *is* the byte; a
 relative route's emit is a **delta**, and the byte is `op(base, delta)`. Every editor
 has at least three tables whose entry offsets a value rather than replacing it —
 GoatTracker's vibrato and its wavetable relative-note column, SID-Wizard's detune and
-`chord_table`, DefMON's `TR` and `AF` — and none of them is a `LOOKUP` (the values
-depend on the base) or a `RAMP` (the step is not constant). §4f is what recovers one
-from a binary, and the base is **named, never inferred**: `Prev` is what the plane
-holds, `Node(i)` is another generator's current value, `Const(c)` a byte of the
-program text. A base read off the observed output is a fitted parameter and is
+`chord_table`, DefMON's `TR` and `AF` — and none of them is a table read straight
+through (the values depend on the base) or a `RAMP` (the step is not constant). §4f is
+what recovers one from a binary, and the base is **named, never inferred**: `Prev` is
+what the plane holds, `Node(i)` is another generator's current value, `Const(c)` a byte
+of the program text. A base read off the observed output is a fitted parameter and is
 refused for the reason §4c refuses a fitted `RAMP` step.
 
 A route names a **bit mask** as well as a plane, because a SID register is not
@@ -122,7 +148,7 @@ drive still takes exactly one write per frame in the order-preserved section and
 counts as exactly one emit (§4e).
 
 **Absolutes settle a register, relatives apply to it in node order** — the composition
-rule, and `_check` enforces it (`_base_ok`). A `Node(i)` base must be an *absolute*
+rule, and `_check` enforces it (`_rel_ok`). A `Node(i)` base must be an *absolute*
 generator of the same register and the same mask at a smaller index; a `Prev` base
 needs some earlier node that writes that register (a plane generator of the same field,
 or the `RAW` floor); a `Const` base needs nothing. A base generator whose value a
@@ -154,11 +180,13 @@ index refuses **6953 emits over 23 of 141 modules** — GoatTracker's orderlist
 composer's datum, held back only by a declared shift. The same object combines two
 index sources, which is what an orderlist entry plus a row within it needs. The
 operation is the store's own (`ADD`/`SUB`/`XOR`, the `Rel` set); both halves must be
-earlier `Index` nodes or a declared constant; a shifted row past the end of its table
-emits nothing, exactly as an absolute one does.
+earlier `Index` nodes or a declared constant — the same `_rel_ok` rule the value domain
+takes; a shifted row past the end of its table emits nothing, exactly as an absolute one
+does. **It has no user yet**: 6953 is what the three oracles *refuse*, and each of them
+still refuses it rather than emitting `SELECT[rel]` (§0, §8, docs/gt-oracle.md §4.5).
 
-**The loop needs no machinery**: `LOOKUP` and `SELECT` already advance modulo their
-length, so an orderlist wraps to its first entry by construction. What §7.4 called a
+**The loop needs no machinery**: `SELECT` already advances modulo its length, so an
+orderlist wraps to its first entry by construction. What §7.4 called a
 back-edge was there all along.
 
 The phase, though, is real and is **this** layer's. `DIV(n)` fires at `n-1, 2n-1, …`,
@@ -175,11 +203,11 @@ sums them, so neither can hide behind the other (§6).
 
 Identity is behavioural: two generators with the same triple are the same
 generator, whatever editor structure they came from. A pitch table and an
-arpeggio table are both `LOOKUP`, differing only in trigger and route — so
+arpeggio table are both `SELECT`, differing only in trigger and route — so
 "typed vs raw" is a property of one node's emit, not two kinds of node, and
 interpreting a node means refining its emit. A whole tune is a graph of these
 nodes wired by their triggers, with two distinguished members: the pitch table
-(`Graph.freq_table`, the note→freq `LOOKUP`) and the root frame clock
+(`Graph.freq_table`, the note→freq `SELECT`) and the root frame clock
 (`Graph.cadence`).
 
 `eval_graph` propagates triggers from the root frame clock and projects through
@@ -187,8 +215,9 @@ nodes wired by their triggers, with two distinguished members: the pitch table
 
 ## 3. What is implemented
 
-- **Pitch `LOOKUP` per voice** (§4) — the note lane. Accepted-note freq words
-  are emitted by a plane-routed `LOOKUP`; every other write stays in `RAW`.
+- **Pitch `SELECT` per voice** (§4) — the note lane. Accepted-note freq words
+  are emitted by a plane-routed table read straight through; every other write stays
+  in `RAW`.
 - **ctrl/AD/SR `SELECT` per voice** (§5) — the instrument lane: a declared bank
   lane read at a recovered row, fired by the voice's note-on `EDGE`. For `ctrl`
   the same lane also supplies the gate images, so the waveform is declared data
@@ -462,7 +491,7 @@ On `MUSICIANS/A/AceMan/Lostro.sid` the store is `sid.filter.modevol = (m_1056 | 
 the text gives the constant `$0F` the low nibble and the read the high one, and the
 staged cell `$1056` originates in the declared table based at `$1A13` — the filter
 program, whose row 1 holds the mode byte `$10`. `$18` becomes two generators, a
-`SELECT` over that lane masked `$F0` and a `LOOKUP(($0F,))` masked `$0F`, and the
+`SELECT` over that lane masked `$F0` and a `SELECT(($0F,), ())` masked `$0F`, and the
 register is explained for the first time on that tune.
 
 ## 4f. The relative route: a declared delta over a base the statement names
@@ -641,7 +670,7 @@ stride `s`, one lane per byte offset. The generator for a lane is
 - **Immediates** (`_immediates`, `_const_flow`). The other half of a typical note
   lane is the release write, an immediate operand in the play code (`ad = 0`), and
   the other half of a typical ctrl lane is the hard-restart byte a branch loads
-  before the store. Those emits are `LOOKUP((c,))` for a constant `c` the program
+  before the store. Those emits are `SELECT((c,), ())` for a constant `c` the program
   text stores to that register class (`reg % 7`, since one voice-generic store site
   serves all three voices behind a dynamic offset), reached directly or through a
   local. The value comes from the program, not from the observation; `Coverage.classes`
@@ -737,7 +766,7 @@ The other domain, on the same run and reported apart from that table:
 recovered row, or generated from one. The shallow 29319 are program immediates
 (`ctrl`/`ad`/`sr` releases and hard-restarts) plus the observed seed each sweep run
 starts from; they pass the law without explaining an index and are never folded into
-a strong figure. The freq plane splits 147002 pitch-table `LOOKUP` emits (the note
+a strong figure. The freq plane splits 147002 pitch-table note-lane emits (the note
 lane, §4) and 267064 declared-lane `SELECT` emits (§4b); `ctrl`'s 111659 splits 69178
 lane reads and 32706 gate images of a lane byte (§5); `pw`'s 89376 splits 63093
 declared-lane reads and **26283 swept by a `RAMP`** (22778 generated, 3505 observed
@@ -977,7 +1006,7 @@ between the third column and the fourth is what a blind search over every declar
 would take; on the lww planes the store statement naming the table is the only
 admissible basis (§4b), so those stay residual. The last column is the shallow figure
 this step does **not** claim: 34177 filter emits write a byte the program text stores
-as a constant, over half of them $18, and an `imm` `LOOKUP` would pass the law for
+as a constant, over half of them $18, and an `imm` read would pass the law for
 every one — but it explains no index, and on a register that takes many program
 constants it is the observation, not the program, choosing between them. The filter
 plane carries strong evidence only.
@@ -1569,7 +1598,7 @@ take 29559 of them and is refused (§6).
    express an arrangement: a `Fire` edge carries a trigger and no value, so it
    advances a pattern without naming it, and `SELECT`'s row index was a recovered
    tuple nothing could supply from outside. The primitive was missing one route, not
-   a layer — and the back-edge was never needed, because `LOOKUP`/`SELECT` already
+   a layer — and the back-edge was never needed, because `SELECT` already
    wrap modulo their length. The arrangement's own **phase** is what the divider
    lacks (§8): a `DIV(n)`-clocked orderlist emits nothing before frame `n-1` rather
    than inventing its first entry.
@@ -1626,11 +1655,28 @@ take 29559 of them and is refused (§6).
   seen once more: `base(entry) + counter` is two index sources where `Node(j)` names one,
   which is why the three editors' orderlist entries are represented structurally and not
   as a generator. One extension closes both, and it has landed (#102): a row may now be
-  `op(base row, delta)`. **The recovery still reaches zero with it**, and the census
-  above says why rather than leaving it to be discovered — a relative row composes an
-  orderlist entry with a pattern row, and **zero** corpus sites have both of those in
-  program text. It is built for the editors' own models, where it is worth 6953 emits;
-  building a recovery on top of it here would be code with no measurement behind it.
+  `Rel(op, delta, base)`. **The recovery still reaches zero with it** — a relative row
+  composes an orderlist entry with a pattern row, and **zero** corpus sites have both of
+  those in program text — and so, measured since, **do the editors' own graphs**: a
+  census by `(transfer, route)` over 12 GoatTracker tunes, 12 SID-Wizard modules and 6
+  DefMON tunes finds **0** `SELECT[rel]` nodes on any side. The 6953 is a *refusal*
+  count, not a use: `gtoracle._patt_src` prices a shifted row as `refused_transpose` and
+  returns nothing, and `dmoracle._dm_src` passes it a 0/1 flag rather than DefMON's `TR`
+  amount. Emitting it needs the shift carried into the stream key (one stream, one
+  shift), `_feeder` checking `column[s] + shift == row`, `_arranged` building
+  `Rel("ADD", Node(counter), Const(shift))`, and DefMON computing an amount it does not
+  compute today — three mappings, not a rename, and it moves `graph_diff` by
+  construction. **Until that lands the element is expressible and unused**, which §0
+  records rather than the reader having to discover it.
+- **The transfers we generate and the transfers the editors need are not the same set**,
+  and the census says so in both directions. `DIV -> fire` is used by **no editor's own
+  song** (0 nodes in GT, SW or DM) and is the one transfer the recovery generates that
+  nothing else does — 3 nodes, 300 fires over 3 tunes of 649 (§4d). The relative route's
+  `Const` and `Node` bases are the same inversion one level down: 0 nodes on any editor's
+  side, 36 and 4 emits on ours. `SELECT -> plane+mask` runs the other way — 68 nodes
+  theirs against 676 emits ours — and `SELECT[rel]` and `rel` in the index domain are
+  used by neither. An element with a user on one side only is kept and stated; an element
+  with a user on neither is what §0's fifth row is about.
 - A pitch table whose lo/hi block is never read at a constant base cannot be
   declared, so it cannot be recovered here — the one tune in the 60-tune sample
   that loses its table, `MUSICIANS/A/Aegis/2008.sid`, has no read site at its hi
@@ -1669,7 +1715,7 @@ take 29559 of them and is refused (§6).
   it names no declaration; that is a large part of what §6's refusal table leaves.
 - The filter plane is read by §4b and by nothing else: 77% of it loads a RAM cell or
   computes the byte outright, so no declaration names it (§6). It is refused rather
-  than reached by an `imm` `LOOKUP` over the program's constants — that would take
+  than reached by an `imm` read over the program's constants — that would take
   34177 emits without explaining an index, and $18 in particular takes many program
   constants, so it would be the observation choosing between them.
 - On the lww planes the *table* is transliterated but the *index* is not: the tree

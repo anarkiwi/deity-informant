@@ -43,7 +43,7 @@ into one table. Without it the rendering still stands, each lane its own table.
 Per transfer kind: a `SELECT` names the table and lane it reads and its row stream
 (rows of a pitch table print as notes, rows of an instrument table as `inst NN`, and a
 row past the end of the lane as that row's byte `hold`, `gate-` or `gate+`); a
-`LOOKUP` its constant or its sequence; a `RAMP` its seed, step and wrap with the
+a table read straight through its constant or its sequence; a `RAMP` its seed, step and wrap with the
 values it generates; an `EDGE` when it fires and the histogram of its gaps; `RAW` its
 counts.
 
@@ -52,7 +52,7 @@ folded together: `lane`/`gate`/`ramp` are **strong** (a declared byte at a recov
 row, or generated from one), `imm`/`seed` are **shallow** (they pass the law without
 explaining a row), `mask` is a byte several generators assemble field by field and is
 folded into neither. A last column, `note`, is the plane's generated emits that no class
-covers — the pitch-table `LOOKUP` note lane, which recovers a row for an **observed**
+covers — the pitch-table note lane, which recovers a row for an **observed**
 word (§4).
 
 ## A masked route is a musical object, not an annotation

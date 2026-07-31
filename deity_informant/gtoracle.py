@@ -190,7 +190,7 @@ class _Streams:
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
             elif kind == "imm":
-                out.append((tuple(counts), ("LOOKUP", (lane,)), reg, mask, None, None))
+                out.append((tuple(counts), ("SELECT", (lane,), ()), reg, mask, None, None))
             elif kind == "rel":
                 delta, base = lane
                 out.append(
@@ -346,12 +346,12 @@ def _layout(frames):
 def _counter(walked):
     """The row counter: a `RAMP` where the walk steps evenly, else the unrolled walk.
 
-    `RAMP` wraps at its bound and `LOOKUP` at the end of its sequence, so a walk that
-    restarts inside the window is carried unrolled rather than by a wrong back-edge."""
+    `RAMP` wraps at its bound and a straight-through `SELECT` at the end of its table, so
+    a walk that restarts inside the window is carried unrolled, not by a wrong back-edge."""
     step = walked[1] - walked[0] if len(walked) > 1 else 0
     if step and all(b - a == step for a, b in zip(walked, walked[1:])):
         return ("RAMP", walked[0], step, 0)
-    return ("LOOKUP", tuple(walked))
+    return ("SELECT", tuple(walked), ())
 
 
 def _arranged(nodes, counts, transfer, route, arr, ctx):
@@ -887,7 +887,7 @@ def gt_native(song, info, subtune, nframes, adparam=None):
 def _gt_loops(song, subtune):
     """Where each channel's orderlist loops back to: the table's start, or elsewhere.
 
-    A `LOOKUP` wraps at the end of its sequence, so the wrap IS the back-edge only
+    A `SELECT` wraps at the end of its table, so the wrap IS the back-edge only
     for a channel whose restart is entry 0; any other restart needs the walk unrolled."""
     chans = song.subtunes[subtune].channels
     at_end = sum(1 for c in chans if not c.restart)
