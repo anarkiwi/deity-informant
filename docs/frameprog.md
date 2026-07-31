@@ -906,7 +906,7 @@ declarations at all. Gate FP **649/649**, the tracker law **649/649**, the canon
 fixpoint **649/649**, raw `mem[` **9682**, tunes with none **51**, the emitted text
 **9608342** bytes and the value partition **753971/1942809** are byte-identical, every
 plane, every class, every refusal counter, **zero tunes moving in either direction**.
-Source: `deity_informant` +56/−65, three implementations of one predicate reduced to one.
+Source: `deity_informant` +57/−65, three implementations of one predicate reduced to one.
 
 **Mutation evidence.** The two properties this section rests on are now asserted, and each
 wrong reading of them fails: clearing `prov` per frame breaks
