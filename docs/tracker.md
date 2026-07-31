@@ -1400,6 +1400,18 @@ whole predicted population and it is refused outright, for the reason §4c refus
 This is the fifth domain measured under that rule and the first where it leaves nothing at
 all.
 
+**The other side of the same axis, reported apart.** The oracles now express the
+arrangement in this primitive, so the two numbers finally exist together and they are not
+the same number: the three editors' own models carry **73766 emits at a generated row** —
+GoatTracker 41424 over 71 tunes (185 of 2407 patterns, 997 of 123941 rows, 213 of 6579
+orderlist entries), SID-Wizard 28143 over 64 modules (220 / 1836 / 241), DefMON 4199 over
+6 tunes (20 of 387 patterns, 103 of 5535 rows, 31 of 1476 orderlist entries) — against
+**0** here. That is the largest format-versus-recovery gap this project has measured, and
+it is the third of its shape: §4e's masked route bought 26167 emits from the editors and
+676 from binaries, §4f's relative route 4650 and 316. The format expresses an arrangement;
+a 6502 driver's program text does not name one. See docs/gt-oracle.md §3.2 and
+docs/dm-oracle.md §3.2.
+
 **What would move it is upstream, and it is nameable.** `frameval._addrs` collects the
 addresses of loads at a **pure** address; a deref address reads the pointer word, so it is
 impure and the map reports the pointer's two cells instead of the target. Reporting the
