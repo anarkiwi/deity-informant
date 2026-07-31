@@ -1174,9 +1174,9 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     rebuilding the order-preserved section from it, values included."""
     rows, obs, held, weight = {}, [], {}, {}
     for f, ws in enumerate(seq):
-        row = []
+        row, pairs = [], _pair_at(objs, curs, f)
         for w in ws:
-            got = _classify(w, tabs, banks, imm, mem0, held, _pair_at(objs, curs, f), diag)
+            got = _classify(w, tabs, banks, imm, mem0, held, pairs, diag)
             if got is not None:
                 rows.setdefault(got[0], [[] for _g in seq])[f].append(got[1])
                 weight[got[0]] = weight.get(got[0], 0) + 1
@@ -1260,9 +1260,9 @@ def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None):
     last-write-wins, so only the frames the declaration explains fire."""
     streams, explained = {}, [set() for _f in lww]
     for f, wr in enumerate(lww):
+        pairs = _pair_at(objs, curs, f)
         for reg in sorted(wr):
             val, srcs = wr[reg]
-            pairs = _pair_at(objs, curs, f)
             got = _lane_key((reg, val, srcs), tabs.get(_class_of(reg), ()), mem0, pairs, diag)
             if got is None:
                 continue
@@ -1714,6 +1714,7 @@ def _rel_streams(lww, sites, mem0, done, diag, objs=(), curs=()):
     combination does not reproduce stays residual."""
     streams, explained, prev = {}, [set() for _f in lww], {}
     for f, wr in enumerate(lww):
+        pairs = _pair_at(objs, curs, f)
         for reg in sorted(wr):
             val, srcs = wr[reg]
             got = (
@@ -1725,7 +1726,7 @@ def _rel_streams(lww, sites, mem0, done, diag, objs=(), curs=()):
                     mem0,
                     prev.get(reg),
                     diag,
-                    _pair_at(objs, curs, f),
+                    pairs,
                 )
             )
             prev[reg] = val
