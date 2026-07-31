@@ -478,6 +478,7 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
         "seed": 0,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
@@ -685,6 +686,7 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
         "seed": 2,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
 
@@ -1520,6 +1522,7 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
         "seed": 0,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
@@ -1600,3 +1603,181 @@ def test_mutation_a_moved_orderlist_entry_changes_the_projection():
     good, n = _arrangement([3, 5, 1], tuple(range(8)), 4, 16)
     bad, _n = _arrangement([3, 4, 1], tuple(range(8)), 4, 16)
     assert T.eval_graph(good, n) != T.eval_graph(bad, n)
+
+
+# ---- 4g. the arrangement: a declared pattern at a row the program text walks ------
+_PAT, _LO, _HI = 0x2000, 0x2100, 0x2104  # pattern region, and the pointer table's lanes
+_POS, _ROW = 0x0800, 0x0801  # the orderlist position and the pattern row, in RAM
+
+
+def _cell(a):
+    return ("mem", ("const", a, 2), 1)
+
+
+def _lane(base, name):
+    """``base[name]``: one byte of a declared table at a machine-register index."""
+    idx = ("op", "INT_ZEXT", (("loc", name),), 2)
+    return ("mem", ("op", "INT_ADD", (("const", base, 2), idx), 2), 1)
+
+
+def _bump(cell, name, wrap):
+    """``cell = (cell + 1) & (wrap - 1)``: the counter walk a 6502 driver writes."""
+    step = ("op", "INT_ADD", (("loc", name), ("const", 1, 1)), 1)
+    return ("st", ("const", cell, 2), ("op", "INT_AND", (step, ("const", wrap - 1, 1)), 1))
+
+
+def _arrprog(nblocks=1, wrap=8, patlen=8, reg=0xD400, mut=(), blocks=4, lockstep=False):
+    """``(image, program)``: a pointer reloaded from a declared table, deref'd at a walk.
+
+    The orderlist position selects the block and the row walks inside it, both by cells
+    whose every writer the program text names — rung (f)'s shape, hermetically."""
+    mem = bytearray(0x10000)
+    for k in range(blocks):
+        blk = _PAT + 8 * k
+        mem[_LO + k], mem[_HI + k] = blk & 0xFF, blk >> 8
+    for i in range(32):
+        mem[_PAT + i] = (0x11 * (i + 1)) & 0xFF
+    word = (
+        "op",
+        "INT_OR",
+        (
+            ("op", "INT_ZEXT", (_lane(_LO, "x"),), 2),
+            ("op", "INT_LEFT", (("op", "INT_ZEXT", (_lane(_HI, "x"),), 2), ("const", 8, 1)), 2),
+        ),
+        2,
+    )
+    deref = ("op", "INT_ADD", (("mem", ("const", 0x02, 2), 2), _zext("y")), 2)
+    stmts = [
+        ("asg", "x", _cell(_POS)),
+        ("st", ("const", 0x02, 2), word),
+        ("asg", "y", _cell(_ROW)),
+        ("st", ("const", reg, 2), ("mem", deref, 1)),
+        ("asg", "r", _cell(_ROW)),
+        _bump(_ROW, "r", wrap),
+    ]
+    if nblocks > 1:  # the orderlist advances where the row walk wrapped
+        arm = [("asg", "p", _cell(_POS)), _bump(_POS, "p", nblocks)]
+        cond = ("op", "INT_EQUAL", (_cell(_ROW), ("const", 0, 1)), 1)
+        stmts += arm if lockstep else [("if", "if", cond, arm, [])]
+    decls = [
+        dict(_table(_PAT, patlen), mut=list(mut), role=None),
+        dict(_table(_LO, blocks), mut=[], role=("lo", _HI)),
+        dict(_table(_HI, blocks), mut=[], role=("hi", _LO)),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=decls, mem0=mem, procs=[(0x1000, [], [], stmts + [("ret",)])]
+    )
+
+
+def _zext(name):
+    return ("op", "INT_ZEXT", (("loc", name),), 2)
+
+
+def _arr(prog, n=10):
+    """``(emitted bytes, Coverage, refusals, nodes)`` for one arrangement program."""
+    diag = Counter()
+    recs, gt, cov, _lanes = T.render(prog, {}, n, diag)
+    assert F.diff(recs, gt) is None
+    nodes = T._graph(prog, None, *T._observe(prog, {}, n))[0].nodes
+    return [w[1] for rec in recs for sec in rec for w in sec], cov, diag, nodes
+
+
+def test_the_pattern_is_a_declared_block_at_a_row_the_text_walks():
+    """The row is generated from the post-init byte and the text's own step, not observed."""
+    _mem, prog = _arrprog()
+    vals, cov, _diag, nodes = _arr(prog)
+    assert vals == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x11, 0x22]
+    assert cov.planes["freq"] == (10, 10) and cov.classes["freq"]["arr"] == 10
+    assert [g.transfer for g in nodes if g.route == T.INDEX] == [("RAMP", 0, 1, 8)]
+    assert [g.transfer[2] for g in nodes if g.transfer[0] == "SELECT"] == [("node", 2)]
+
+
+def test_the_pattern_loop_is_the_walk_modulus_and_needs_no_back_edge():
+    """`_emit` wraps, so the row RAMP's own bound is the pattern's loop: frame 8 is row 0."""
+    _mem, prog = _arrprog(wrap=4, patlen=4)
+    vals, _cov, _diag, _nodes = _arr(prog)
+    assert vals == [0x11, 0x22, 0x33, 0x44] * 2 + [0x11, 0x22]
+
+
+def test_an_orderlist_step_shares_the_pattern_node_it_revisits():
+    """Two blocks alternating every four rows: one node per block, refired on the revisit."""
+    _mem, prog = _arrprog(nblocks=2, wrap=4, patlen=32)
+    vals, cov, _diag, nodes = _arr(prog)
+    assert vals == [0x11, 0x22, 0x33, 0x44, 0x99, 0xAA, 0xBB, 0xCC, 0x11, 0x22]
+    assert cov.classes["freq"]["arr"] == 10
+    sel = [g.transfer[1] for g in nodes if g.transfer[0] == "SELECT"]
+    assert sel == [(0x11, 0x22, 0x33, 0x44), (0x99, 0xAA, 0xBB, 0xCC)]
+
+
+def test_a_row_the_program_text_does_not_walk_is_refused():
+    """The row cell is written from a byte the text does not name: no walk, no pattern."""
+    _mem, prog = _arrprog()
+    stmts = list(prog.procs[0][3])
+    stmts[5] = ("st", ("const", _ROW, 2), ("mem", ("const", 0x0900, 2), 1))
+    bad = frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=prog.data_decls, mem0=prog.mem0, procs=[(0x1000, [], [], stmts)]
+    )
+    vals, cov, diag, _nodes = _arr(bad)
+    assert cov.classes == {} and diag["arrange_row_not_walked"] == 1 and len(vals) == 10
+
+
+def test_a_block_outside_every_declaration_is_refused():
+    """A pointer into undeclared memory is not a pattern, whatever byte it holds."""
+    _mem, prog = _arrprog()
+    prog.data_decls = [d for d in prog.data_decls if d["base"] != _PAT]
+    vals, cov, diag, _nodes = _arr(prog)
+    assert cov.classes == {} and diag["arrange_block_undeclared"] == 10 and len(vals) == 10
+
+
+def test_a_pattern_row_the_declaration_names_mut_is_refused():
+    """A play-written offset is not const data, so the block it sits in holds no pattern."""
+    _mem, prog = _arrprog(mut=(3,))
+    _vals, cov, diag, _nodes = _arr(prog)
+    assert cov.classes == {} and diag["arrange_block_undeclared"] == 10
+
+
+def test_a_walk_that_stands_still_predicts_no_row_and_is_refused():
+    """A modulus of one holds the row: it explains no index, as DIV(1) explains no tick."""
+    _mem, prog = _arrprog(wrap=1)
+    _vals, cov, diag, _nodes = _arr(prog)
+    assert cov.classes == {} and diag["arrange_walk_stands_still"] == 1
+
+
+def test_a_block_visited_for_one_row_is_refused():
+    """A run of one row predicts no second one, so the block it names is not a pattern."""
+    _mem, prog = _arrprog(nblocks=4, wrap=8, patlen=32, lockstep=True)
+    _vals, cov, diag, _nodes = _arr(prog)
+    assert cov.classes == {} and diag["arrange_short_run"] == 10
+
+
+def test_the_order_preserved_section_takes_no_pattern_and_it_is_priced():
+    """ctrl/AD/SR is a sequence of whole-byte writes, so a pattern generator is refused."""
+    _mem, prog = _arrprog(reg=0xD404)
+    _vals, cov, diag, _nodes = _arr(prog)
+    assert cov.classes == {} and diag["arrange_ord_section"] == 10
+
+
+def test_mutation_a_pattern_boundary_moved_by_one_row_fails_the_law():
+    """The wrap is the pattern's length: shorten it and the generated stream diverges."""
+    _mem, prog = _arrprog()
+    graph = T._graph(prog, None, *T._observe(prog, {}, 10))[0]
+    nodes = list(graph.nodes)
+    for i, g in enumerate(nodes):
+        if g.route == T.INDEX:
+            nodes[i] = T.indexer(("RAMP", 0, 1, 7), g.trigger)
+    assert F.diff(T.eval_graph(T.Graph(nodes), 10), T.oracle(prog, {}, 10)) is not None
+
+
+def test_mutation_a_wrong_orderlist_entry_fails_the_law():
+    """The block comes off the machine's own address bus; point it elsewhere and it fails."""
+    _mem, prog = _arrprog(nblocks=2, wrap=4, patlen=32)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 10))[0]
+    assert F.diff(T.eval_graph(graph, 10), T.oracle(prog, {}, 10)) is None
+    nodes, sel = list(graph.nodes), [
+        i for i, g in enumerate(graph.nodes) if g.transfer[0] == "SELECT"
+    ]
+    a, b = (nodes[i] for i in sel)  # the two song steps name each other's block
+    nodes[sel[0]], nodes[sel[1]] = a._replace(transfer=b.transfer[:2] + a.transfer[2:]), b._replace(
+        transfer=a.transfer[:2] + b.transfer[2:]
+    )
+    assert F.diff(T.eval_graph(T.Graph(nodes), 10), T.oracle(prog, {}, 10)) is not None

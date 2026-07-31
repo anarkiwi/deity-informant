@@ -10,6 +10,7 @@ import numpy as np
 
 from . import framelog
 from . import frameproc
+from . import frameptr
 from . import frameval
 
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -30,7 +31,7 @@ _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _VOICE_HI = 0x14
 _FILTER_HI = 0x18
 _FULL = 0xFF  # the mask of a route that owns a register's whole byte
-_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel")
+_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel", "arr")
 _REL = {"ADD": lambda b, d: b + d, "SUB": lambda b, d: b - d, "XOR": lambda b, d: b ^ d}
 
 
@@ -768,6 +769,64 @@ def _step(expr, env, cell):
     return "inc" if root[1] == "INT_ADD" and v == 1 else None
 
 
+def _unmask(root, env):
+    """``(expression, wrap modulus)`` peeling one ``AND``-immediate off a stored value."""
+    if isinstance(root, tuple) and root[0] == "op" and root[1] == "INT_AND" and len(root[2]) == 2:
+        cs = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+        vs = [k for k in root[2] if not (isinstance(k, tuple) and k[0] == "const")]
+        if len(cs) == 1 and (cs[0][1] & 0xFF) + 1 & (cs[0][1] & 0xFF) == 0:
+            return _resolve(vs[0], env), (cs[0][1] & 0xFF) + 1
+    return root, 0x100
+
+
+def _walk_of(s, env, cell):
+    """``("step", d, wrap)`` or ``("set", c, wrap)`` where the text fully determines a store.
+
+    A 6502 counter wraps with an ``AND``-immediate, so the modulus is program text too;
+    anything else about the value disqualifies the cell."""
+    root, wrap = _unmask(_resolve(s[2], env), env)
+    if not isinstance(root, tuple):
+        return None
+    if root[0] == "const":
+        return ("set", root[1] % wrap, wrap)
+    if root[0] == "op" and root[1] in ("INT_ADD", "INT_SUB"):
+        imm = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+        var = [k for k in root[2] if not (isinstance(k, tuple) and k[0] == "const")]
+        if len(imm) == 1 and len(var) == 1 and _read_base(var[0], env) == cell:
+            d = imm[0][1] & 0xFF
+            return ("step", (-d if root[1] == "INT_SUB" else d) & 0xFF, wrap)
+    return None
+
+
+def _prog_env(prog):
+    """A program-wide ``{local: definition}`` map, the reading every other rule here uses."""
+    env = {}
+    for s in _stmts(prog):
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+    return env
+
+
+def _walked(prog):
+    """``{base: (rule, ...)}`` for cells the play code only steps or sets by its own text.
+
+    Such a cell's value is the post-init byte plus the updates the text names, in the
+    order the machine ran them — a walk, not an observation. One writer the text does
+    not determine disqualifies the cell outright."""
+    rules, bad, env = {}, set(), {}
+    for s in _stmts(prog):
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+        elif s[0] == "st" and 2 <= _base(s[1]) < _SID:
+            cell = _base(s[1])
+            got = _walk_of(s, env, cell)
+            if got is None:
+                bad.add(cell)
+            else:
+                rules.setdefault(cell, []).append(got)
+    return {c: tuple(v) for c, v in rules.items() if c not in bad}
+
+
 def _clocks(prog):
     """Cells the play code steps by one, with the source their reload reads.
 
@@ -1105,7 +1164,7 @@ def _refine_voice(seq, tabs, banks, imm, mem0):
     )
 
 
-def _classes(streams, groups=(), rels=()):
+def _classes(streams, groups=(), rels=(), pairs=()):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
@@ -1119,6 +1178,8 @@ def _classes(streams, groups=(), rels=()):
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["mask"] += sum(counts)
     for counts, _t, reg, _op, _base in rels:
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["rel"] += sum(counts)
+    for counts, _r, _s, reg in pairs:
+        out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["arr"] += sum(counts)
     for counts, t, reg in streams:
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if t[0] == "RAMP":
@@ -1243,6 +1304,8 @@ def _acc_pools(cells, watched):
     out = [{} for _f in watched]
     for f, ws in enumerate(watched):
         for i, cell, srcs in ws:
+            if i >= len(cells):  # the arrangement's own watches share this one run
+                continue
             pool = [x for x in srcs if x != cell]
             for c in cells[i]:
                 out[f].setdefault(c, []).extend(pool)
@@ -1680,20 +1743,243 @@ def _rel_cost(lww, sites, banks, mem0, done, diag):
                     break
 
 
+# ---- 4g. the arrangement: a declared pattern at a row the program text walks ------
+Arr = namedtuple("Arr", "cell lo hi row step wrap init")
+
+
+def _arr_rule(rules):
+    """``(step, wrap)`` where a walked cell's rules name one step and one modulus."""
+    steps = {r for r in rules if r[0] == "step"}
+    wraps = {r[2] for r in rules}
+    if len(steps) != 1 or len(wraps) != 1:
+        return None
+    step, wrap = steps.pop()[1], wraps.pop()
+    return (step, wrap) if step % wrap and wrap > 1 else ()
+
+
+def _arr_sites(prog, env, walk, diag):
+    """``({pointer cell: Arr}, {address: pointer})`` for derefs read at a walked row.
+
+    Rung (f) proves the address is row ``i`` of block ``T[k]``; what it does not give is
+    ``i``, so the row must be a cell whose every writer the program text names."""
+    out, addrs, bad = {}, {}, set()
+    for s in frameptr.analyse(prog.mem0, prog.data_decls, prog.procs):
+        if s.why is not None or not s.ptr.tables:
+            continue
+        cell = 0 if s.idx is None else _read_base(s.idx, env)
+        rule = _arr_rule(walk[cell]) if cell in walk else None
+        addrs[s.addr] = s.ptr.cell
+        if not rule:  # a walk that stands still predicts no row, as DIV(1) predicts no tick
+            diag["arrange_row_not_walked" if rule is None else "arrange_walk_stands_still"] += 1
+            bad.add(s.ptr.cell)
+            continue
+        got = Arr(s.ptr.cell, s.ptr.tables[0][0], s.ptr.tables[0][1], cell, *rule, s.ptr.init)
+        if out.setdefault(s.ptr.cell, got) != got:
+            diag["arrange_two_rows"] += 1
+            bad.add(s.ptr.cell)
+    return {c: a for c, a in out.items() if c not in bad}, addrs
+
+
+def _arr_reads(expr, envl, addrs, depth=4):
+    """Pointer cells a value expression reaches through a proven deref read."""
+    out, seen, stack = set(), set(), [(expr, depth)]
+    while stack:
+        x, d = stack.pop()
+        if (x, d) in seen:
+            continue
+        seen.add((x, d))
+        if x[0] == "op":
+            stack.extend((c, d) for c in x[2])
+        elif x[0] == "mem":
+            if x[1] in addrs:
+                out.add(addrs[x[1]])
+            stack.append((x[1], d))
+        elif x[0] == "loc":
+            stack.extend((e, d - 1) for e in envl.get(x[1], ()) if d)
+    return out
+
+
+def _arr_classes(prog, addrs):
+    """``{register class: {pointer cell}}``: SID stores whose text names a proven deref.
+
+    The deref address is impure, so ``frameval`` reports the pointer's own cells and
+    never the target; what names the pattern is therefore the statement tree, as §4b."""
+    out = {}
+    for proc in prog.procs:
+        envl, stores = {}, []
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                envl.setdefault(s[1], []).append(s[2])
+            elif s[0] == "st" and _sid_class(s[1]) is not None:
+                stores.append((_sid_class(s[1]), s[2]))
+        for cls, val in stores:
+            for c in _arr_reads(val, envl, addrs):
+                out.setdefault(cls, set()).add(c)
+    return out
+
+
+def _arr_watch(prog, sites, at):
+    """``([statement], {watch index: tag})``: each pointer's reload and each row cell's walk."""
+    keys = {a.cell: ("ptr", a) for a in sites.values()}
+    keys.update({a.row: ("row", a) for a in sites.values()})
+    out, tags, seen = [], {}, set()
+    for s in _stmts(prog):
+        got = keys.get(_base(s[1])) if s[0] == "st" else None
+        if got is not None and id(s) not in seen:
+            seen.add(id(s))
+            tags[at + len(out)] = got
+            out.append(s)
+    return out, tags
+
+
+def _arr_states(sites, tags, wat, mem0, nframes):
+    """``[frame][(pointer, block, row)]``: every state the arrangement's walk passes.
+
+    The block comes off the machine's own address bus and the row off the post-init byte
+    stepped by the text's rule, in the order the machine ran the writers."""
+    block = {c: a.init for c, a in sites.items()}
+    row = {c: mem0[a.row] for c, a in sites.items()}
+    out = []
+    for f in range(nframes):
+        seen = [(c, block[c], row[c]) for c in sites]
+        for i, cell, srcs in wat[f] if f < len(wat) else ():
+            kind, a = tags.get(i, (None, None))
+            if kind == "row" and cell == a.row:
+                row[a.cell] = (row[a.cell] + a.step) % a.wrap
+            elif kind == "ptr" and cell == a.cell:
+                ks = {c - a.lo for c in srcs if 0 <= c - a.lo < 0x100}
+                if len(ks) != 1:
+                    continue
+                k = ks.pop()
+                block[a.cell] = mem0[a.lo + k] | (mem0[a.hi + k] << 8)
+            else:
+                continue
+            seen.append((a.cell, block[a.cell], row[a.cell]))
+        out.append(seen)
+    return out
+
+
+def _arr_table(block, wrap, banks, mem0):
+    """The declared bytes of one pattern block, or None where no declaration holds them."""
+    d = _decl_of(block, banks)
+    if d is None:
+        return None
+    off, rec = block - d[0], _record(d[1], d[2])
+    n = min(wrap, d[1] - off)
+    if n < 1 or any((off + i) % rec in d[3] for i in range(n)):
+        return None
+    return tuple(mem0[block + i] for i in range(n))
+
+
+def _arr_claim(lww, classes, states, tabs, diag):
+    """``{(reg, pointer, block): [(frame, row)]}``: writes the predicted address explains.
+
+    A write is a candidate only where the store statement names that pointer's deref, and
+    is claimed only where the declared byte at the predicted address is the byte the
+    register took — the ``mem0[src] == val`` pair every other lane emit passes."""
+    out = {}
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            val, _srcs = wr[reg]
+            for c in sorted(classes.get(_class_of(reg), ())):
+                if c not in tabs:  # a pointer whose row the program text does not walk
+                    continue
+                tab = tabs[c]
+                at = [(blk, r) for p, blk, r in states[f] if p == c]
+                if not any(tab.get(blk) for blk, _r in at):
+                    diag["arrange_block_undeclared"] += 1
+                    continue
+                hits = {
+                    (blk, r)
+                    for blk, r in at
+                    if tab.get(blk) and r < len(tab[blk]) and tab[blk][r] == val
+                }
+                if not hits:
+                    diag["arrange_unpredicted"] += 1
+                elif len({b + r for b, r in hits}) > 1:
+                    diag["arrange_ambiguous"] += 1
+                else:
+                    blk, row = hits.pop()
+                    out.setdefault((reg, c, blk), []).append((f, row))
+    return out
+
+
+def _arr_pairs(lww, arr, states, banks, mem0, done, diag):
+    """``(pairs, explained)``: a fed pattern ``SELECT`` and the ``RAMP`` that rows it.
+
+    One block is one pattern node, shared by every song step that revisits it, and the row
+    ``RAMP`` wraps at the modulus the text names — the pattern's own loop. A row stream
+    one ramp does not reproduce refuses its block whole, as a sweep run does."""
+    sites, classes = arr
+    tabs = {}
+    for st in states:
+        for p, blk, _r in st:
+            tabs.setdefault(p, {}).setdefault(blk, _arr_table(blk, sites[p].wrap, banks, mem0))
+    claims = _arr_claim(
+        [{r: v for r, v in wr.items() if r not in dn} for wr, dn in zip(lww, done)],
+        classes,
+        states,
+        tabs,
+        diag,
+    )
+    pairs, explained = [], [set() for _f in lww]
+    for (reg, ptr, blk), got in sorted(claims.items()):
+        a = sites[ptr]
+        for run in _arr_runs(got, a.step, a.wrap):
+            if len(run) < 2:  # one row predicts no second one, as DIV(1) predicts no tick
+                diag["arrange_short_run"] += len(run)
+                continue
+            counts = [0] * len(lww)
+            for f, _r in run:
+                counts[f] += 1
+                explained[f].add(reg)
+            pairs.append((tuple(counts), ("RAMP", run[0][1], a.step, a.wrap), tabs[ptr][blk], reg))
+    return pairs, explained
+
+
+def _arr_cost(lww, ords, classes, told, arranged, diag):
+    """Price the refusals: the order-preserved section, and a row taken off the output.
+
+    ``arrange_fitted`` is every write a *segmentation of the observed row stream* would
+    claim — a store the text points at a proven pattern, whose row no walk supplies."""
+    for f, wr in enumerate(lww):
+        for reg in wr:
+            if reg not in told[f] and reg not in arranged[f] and _class_of(reg) in classes:
+                diag["arrange_fitted"] += 1
+    for v in range(3):
+        for ws in ords[v]:
+            diag["arrange_ord_section"] += sum(1 for w in ws if _class_of(w[0]) in classes)
+
+
+def _arr_runs(got, step, wrap):
+    """Maximal runs of one block's emits over which the row walks by the text's own step."""
+    out = []
+    for f, r in got:
+        if out and r == (out[-1][-1][1] + step) % wrap:
+            out[-1].append((f, r))
+        else:
+            out.append([(f, r)])
+    return out
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
     return frameval.eval_fp(prog, trace, nframes)
 
 
-def _observe(prog, trace, nframes):
-    """``(records, order-preserved writes, lww writes, step pools)``, with provenance.
+def _observe(prog, trace, nframes, diag=None):
+    """``(records, order-preserved writes, lww writes, state)``, with provenance.
 
-    One machine run: the projection ``oracle`` defines, the cell each write loaded its
-    byte from, and the origin map queried for the accumulator statements the tree names
-    — cells no SID store reads, so nothing else reports them (docs/frameprog.md §1.4)."""
+    ONE machine run supplies everything the recovery reads: the projection ``oracle``
+    defines, the cell each write loaded its byte from, the origin map at the accumulator
+    statements (§4c) and the arrangement's own reload and row walks (§4g)."""
     watch, cells, signs = _acc_sites(prog)
-    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch)
+    sites, addrs = _arr_sites(
+        prog, _prog_env(prog), _walked(prog), Counter() if diag is None else diag
+    )
+    astmts, tags = _arr_watch(prog, sites, len(watch))
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
@@ -1704,7 +1990,13 @@ def _observe(prog, trace, nframes):
                 ords[reg // 7][f].append((reg, val, src))
             else:
                 lww[f][reg] = (val, src)
-    return framelog.canonical(frames), ords, lww, (_acc_pools(cells, wat), signs)
+    states = _arr_states(sites, tags, wat, prog.mem0, nframes)
+    return (
+        framelog.canonical(frames),
+        ords,
+        lww,
+        (_acc_pools(cells, wat), signs, (sites, _arr_classes(prog, addrs)), states),
+    )  # the arrangement rides the same run: its reload and row walks are watched too
 
 
 def lift(prog, frames=()):
@@ -1734,16 +2026,19 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     residual = []
     pre, post, ires = _instr_streams(prog, ords, tabs, banks)
     lwws, declared = _lww_streams(lww, tabs, prog.mem0)
-    pools, signs = acc
+    pools, signs, arrs, states = acc
     ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
     fields = [d | s for d, s in zip(declared, swept)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     claimed = [d | a for d, a in zip(fields, assembled)]
     sites = _rel_sites(prog, banks, diag)
     rels, related = _rel_streams(lww, sites, prog.mem0, claimed, diag)
-    _rel_cost(lww, sites, banks, prog.mem0, [c | r for c, r in zip(claimed, related)], diag)
+    told = [c | r for c, r in zip(claimed, related)]
+    _rel_cost(lww, sites, banks, prog.mem0, told, diag)
+    pairs, arranged = _arr_pairs(lww, arrs, states, banks, prog.mem0, told, diag)
+    _arr_cost(lww, ords, arrs[1], told, arranged, diag)
     for f, rec in enumerate(frames):
-        gen, done = {}, claimed[f] | related[f]
+        gen, done = {}, told[f] | arranged[f]
         diag["rel_ord_section"] += sum(
             1 for v in range(3) for w in ires[v][f] if _class_of(w[0]) in sites
         )
@@ -1767,7 +2062,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
     edges = {}
-    for counts, *_rest in streams + groups + rels:
+    for counts, *_rest in streams + groups + rels + pairs:
         edges.setdefault(counts, len(edges))
     divisors = _divisors(prog, banks)
     nodes = [_clock_node(c, divisors) for c in edges]
@@ -1781,7 +2076,10 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
             nodes.append(Generator(base[1], ("event", edges[counts]), plane(reg)))
             base = ("node", len(nodes) - 1)
         nodes.append(Generator(t, ("event", edges[counts]), relative(reg, op, base)))
-    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels)), lanes
+    for counts, walk, table, reg in pairs:  # the row generator, then the pattern it rows
+        nodes.append(indexer(walk, ("event", edges[counts])))
+        nodes.append(select(table, ("node", len(nodes) - 1), ("event", edges[counts]), reg))
+    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels, pairs)), lanes
 
 
 def render(prog, trace, nframes, diag=None):
@@ -1790,7 +2088,8 @@ def render(prog, trace, nframes, diag=None):
     Accepted-note freq entries and explained ADSR writes are interpreted
     generators; everything else is an explicit RAW residual, so a ``gate`` PASS
     certifies the partition is complete. ``diag`` collects the refusal histogram."""
-    gt, ords, lww, acc = _observe(prog, trace, nframes)
+    diag = Counter() if diag is None else diag
+    gt, ords, lww, acc = _observe(prog, trace, nframes, diag)
     graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww, acc, diag)
     recs, interp, rawn, trig = _run(graph, nframes)
     return recs, gt, _coverage(interp, rawn, graph.classes, trig), lanes

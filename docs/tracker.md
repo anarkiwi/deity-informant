@@ -172,6 +172,9 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   declared byte against a base the same statement names, the emit is that delta and the
   route combines it. It reaches 316 emits on 6 tunes of 649; the oracles say why that is
   the small half of the answer.
+- **The arrangement** (§4g) — a pattern is the declared block a resolved deref proof
+  names, read at a row an `Index`-routed `RAMP` generates from the counter's own walk.
+  It reaches **0 emits on 649 tunes**, and §6's refusal chain is what that step bought.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -481,6 +484,65 @@ the store adds the `$190B` lane to the `$17B0` lane and the base is a second gen
 tests/test_tracker.py drives all three bases hermetically, plus every refusal: an
 unnamed base, a `mut` delta, a zero delta, the order-preserved section, and an identical
 emitted stream whose delta is staged in an undeclared RAM cell.
+
+## 4g. The arrangement: a declared pattern at a row the program text walks
+
+Rung (f) (docs/frameprog.md §4.4) proves that a base-less deref `mem[P + i]` is **row
+`i` of block `T[k]`** of a declared pointer table — the two-level shape an orderlist and
+its patterns have. What it proves is the *address space*, not the address: `k` and `i`
+are live state. This section recovers the second of them, and §6 measures how far that
+gets on a 6502 driver.
+
+- **The site is a resolved deref proof** (`_arr_sites`). `frameptr` supplies, per pointer,
+  the declared `lo`/`hi` reload table, its extent, and the block set read out of `mem0` at
+  that extent. Nothing is searched: the pattern table is the one the rung proved.
+- **The row must be a cell the program text walks** (`_walked`, `_walk_of`). A cell every
+  play-code writer of which is `cell = cell ± c` or `cell = c` — an `AND`-immediate wrap
+  included, since that is how a 6502 counter wraps — has a value the post-init byte and
+  the *order the machine ran those writers* determine. That is a walk, not an observation:
+  the step and the modulus are program text and the seed is the declared image. One writer
+  the text does not determine disqualifies the cell, and the site with it.
+- **A walk that stands still predicts nothing** and is refused, for the reason `DIV(1)`
+  and a `RAMP` of step zero are (§4c, §4d): a modulus of one, or a step of zero, holds the
+  row and explains no index.
+- **The block comes off the machine's own address bus** (`_arr_states`). The pointer's
+  reload store is watched on the same run everything else uses (`frameval.eval_watch`),
+  and its own read cell inside the declared `lo` lane names the entry `k` — the provenance
+  discipline docs/dm-oracle.md §2 applies to a live replay, applied here to the evaluator.
+  The block is then the **declared** word at that entry.
+- **The store statement names the pattern** (`_arr_classes`, `_arr_reads`). The deref
+  address is impure, so `frameval._addrs` reports the pointer's own cells and never the
+  target: a byte read through a proven pointer arrives at this layer with **no source cell
+  at all**. What names it is therefore the statement tree, exactly as §4b names a table —
+  a SID store whose value expression reaches a `mem` at a resolved deref address.
+- **The emit is predicted, never solved for** (`_arr_claim`). The address is
+  `block + row`, the byte is the **declared** byte there, and the write is claimed only
+  where that byte *is* the byte the register took — the `mem0[src] == val` pair every
+  other lane emit passes. Two states of one frame that both predict the byte refuse it
+  (`arrange_ambiguous`): the watch log and the store log are separate lists, so within a
+  frame the walk's states are ordered but the writes are not placed among them.
+- **A block outside every declaration is not a pattern.** The block must lie in a
+  `datadecl` region, at offsets the declaration does not name `mut`; a pointer into
+  undeclared memory holds no const data whatever byte it agrees with (#61).
+- **The nodes** (`_arr_pairs`). One block is one fed `SELECT` — the declared bytes of that
+  block — shared by every song step that revisits it, and its row is an `Index`-routed
+  `RAMP(row0, step, wrap)` whose step and modulus are the text's. **The pattern's loop is
+  that modulus**: `_emit` already wraps, so no back-edge is built (§2). A run is maximal in
+  the walk, a run of one row is refused for the reason a one-emit `RAMP` is, and a row
+  stream the walk does not reproduce refuses its block whole, as a sweep run does.
+- **Nothing is segmented.** A pattern boundary read off the observed row stream, or an
+  orderlist read off which blocks the run happened to visit, is a fitted parameter and is
+  refused outright; §6 prices what it would have taken. The order-preserved section takes
+  no pattern generator either, for the reason it takes no masked group and no relative
+  route (§4e, §4f), and §6 prices that too.
+
+The layer is exercised hermetically in tests/test_tracker.py: a pointer reloaded from a
+declared table and deref'd at a walked row, whose ten emits are all declared bytes at a
+generated row; the wrap being the pattern's own loop; two blocks alternating, each its own
+node, the first refired on the revisit; and every refusal — a row the text does not walk,
+a walk that stands still, a block no declaration holds, a `mut` row, a one-row run, and the
+order-preserved section. Mutation evidence: a pattern boundary moved by one row and two
+song steps naming each other's block each fail the law.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
@@ -1272,6 +1334,83 @@ express when the song is in hand. The wall is provenance, as it was for §4e —
 emits sit in a class whose site is named but whose base the write's own read cells do
 not supply.
 
+### The arrangement, and what rung (f) actually bought
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (649 reach the gate), against
+the table above: §4g's pattern generator, a change to `tracker.py` only. **The population
+was measured before a line was written**, and the measurement is the result.
+
+| plane | before | after |
+|---|---|---|
+| interpreted | 753555/1942809 = 38.79% | 753555/1942809 = 38.79% |
+| every plane | freq 417494, pw 90000, ctrl 112502, filter 23104, sr 56019, ad 54436 | **byte-identical** |
+
+**The recovery is zero: `arr` 0 over 649 tunes, every plane and every class unmoved,
+and no tune moves in either direction.** The canonical fixpoint holds 649/649, Gate FP
+649/649 and the tracker law 649/649. The trigger domain does not move either — 300 of
+307269, the same three `DIV` nodes — and its denominator does not move, because no
+arrangement node was built to fire one.
+
+That is the honest answer to "what did rung (f) buy the tracker", and the refusal chain
+says exactly where it stops. Of the **366 resolved deref sites over 162 tunes** the rung
+proves, with each site's row index resolved through the locals to the cell it loads:
+
+| the row index of a resolved deref is | sites |
+|---|---|
+| computed — no cell at all | 228 |
+| a cell some writer the program text does not name also writes | 94 |
+| **a cell the play code only steps or sets by its own text** | **42** |
+| absent (a bare `*ptr`) | 2 |
+
+and the orderlist position, the same reading applied to the pointer's own reload index:
+
+| the reload index is | sites |
+|---|---|
+| computed | 233 |
+| a cell, not walked | 83 (+35 mixed) |
+| **a cell the play code only walks** | **15** |
+
+**Both walked at once: zero sites.** So no tune in the corpus carries a two-level
+arrangement whose orderlist *and* pattern row are both program text, and the layer ships
+as a pattern generator only, with the orderlist position taken off the machine's own
+address bus.
+
+Then per emit, over the 42 sites whose row does walk:
+
+| the write is | emits |
+|---|---|
+| in a class no store site names a proven deref for | — (the rule never sees it) |
+| refused: the target block lies outside every `datadecl` region | **794**, on 2 tunes |
+| refused: ctrl/AD/SR is a sequence of whole-byte writes, not a composed value | 71128 |
+| **taken: a declared pattern byte at a generated row** | **0** |
+
+Only **2 of 649 tunes** — `MUSICIANS/C/Crabtree_Ian/Angel_Meadows.sid` (646 emits) and
+`MUSICIANS/H/Hubbard_Rob/Thing_on_a_Spring.sid` (148) — have a last-write-wins store whose
+text points at a proven deref *and* a row the text walks. On both, **every** target block
+falls outside every declaration: `datadecl` carved no region there, so there is no declared
+pattern to read and the byte agreement would be coincidence. The refusal is #61's, reached
+from a third direction.
+
+**The refusal the whole rule rests on, priced: a row read off the observed stream would
+take 54557 emits.** That is every write in a class whose store names a proven deref and
+which no walk explains — the population a segmentation of the observed row stream, or an
+orderlist recovered from the blocks the run happened to visit, would claim. It is 69× the
+whole predicted population and it is refused outright, for the reason §4c refuses a fitted
+`RAMP` step, §4d a fitted `DIV` period, §4e a fitted mask and §4f a back-computed delta.
+This is the fifth domain measured under that rule and the first where it leaves nothing at
+all.
+
+**What would move it is upstream, and it is nameable.** `frameval._addrs` collects the
+addresses of loads at a **pure** address; a deref address reads the pointer word, so it is
+impure and the map reports the pointer's two cells instead of the target. Reporting the
+**resolved** deref address — which rung (f) has already proved lies in
+`{T[k]} + [0, bound]` — as that store's source cell would make every pattern byte a
+declared byte at a recovered `(block, row)`, and the arrangement would then be bounded by
+the walk rather than by provenance. That is the same shape of change as the origin query
+that took `pw` 11.3% → 15.9% ("The accumulator's parameters, queried out of RAM") and the
+locals hop that took the interpreted share 23.8% → 28.8%, and it belongs in frameprog, not
+here.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -1350,10 +1489,39 @@ take 29559 of them and is refused (§6).
    gate-off image placed on either side of an unexplained write, and an arrangement
    generator would place both. Per tune the domain is small — median 412 fires — so
    the work is per-driver structure recovery, not scale.
+
+   **Shipped, and it recovers nothing — measured.** §4g builds the pattern generator on
+   rung (f)'s resolved-deref proofs and §6 reports the result: **0 emits over 649 tunes,
+   the value partition byte-identical and the trigger domain unmoved at 300/307269.** The
+   chain of refusals is the finding. Of 366 resolved deref sites, **324 have a row index
+   the program text does not walk**; of the 42 that do, only 2 tunes have a last-write-wins
+   store whose text points at the deref, and on both **every target block lies outside
+   every `datadecl` region** (794 emits). Both levels walked at once: **zero sites**, so no
+   corpus tune carries a two-level arrangement in program text at all. A row segmented off
+   the observed stream would have taken **54557** emits and is refused outright.
+
+   So the trigger domain is *not* what rung (f) unlocked, and the item stays on this list
+   with its wall named rather than being closed. The wall is a one-hop provenance question
+   in frameprog, not a generator shape: a deref address is impure, so `frameval` reports
+   the pointer's cells and never the target, and every byte a driver reads through a proven
+   pointer arrives here with no source cell at all. Reporting the **resolved** deref
+   address as that store's source — the address rung (f) has already proved lies in
+   `{T[k]} + [0, bound]` — is the change that would move it, and §6 sizes it.
 5. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
 
 ## 8. Known limits
 
+- The arrangement (§4g) needs **two** things the program text must supply, and no corpus
+  tune supplies both: a pattern row that is a cell the play code only walks (42 of 366
+  resolved deref sites) and an orderlist position that is another (15 of 366). Both at
+  once is **zero sites**, so the orderlist position is taken off the machine's own address
+  bus rather than generated, and the layer ships as a pattern generator only. A row read
+  off the observed stream — worth 54557 emits — and an orderlist read off the blocks the
+  run visited are both refused outright. What the route does **not** carry is a *relative*
+  index: an orderlist transpose shifting a pattern's note index is `op(row, delta)` in the
+  index domain, which is `Rel` moved one domain over, and all three editors need it
+  (docs/gt-oracle.md §4.2, docs/dm-oracle.md §4.2). It is not added on a strong prior:
+  the oracles measure what an absolute-only index refuses first.
 - A pitch table whose lo/hi block is never read at a constant base cannot be
   declared, so it cannot be recovered here — the one tune in the 60-tune sample
   that loses its table, `MUSICIANS/A/Aegis/2008.sid`, has no read site at its hi
