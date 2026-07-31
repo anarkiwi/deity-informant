@@ -103,6 +103,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 - [docs/sidprog-language.md](docs/sidprog-language.md) — sidprog language: normative semantics, version policy, and property-tested round-trip laws.
 - [docs/frameprog.md](docs/frameprog.md) — frameprog: the canonical frame projection, the digi input class, the pinned volatile trace, Gate FP, and the lift ladder.
 - [docs/tracker.md](docs/tracker.md) - tracker: the one generator primitive, the one law (frameprog to tracker), declared-table pitch recovery, measured coverage.
+- [docs/gt-oracle.md](docs/gt-oracle.md) - the native-editor oracle: a GoatTracker 2 or SID-Wizard song read out of the editor's own model, mapped onto the same primitive and checked by the same law, with the three-axis comparison against the recovery and the deficiency report.
 - [docs/song-model.md](docs/song-model.md) - song-synthesis model recovery (counters, freq drivers, control automaton) the tracker engine lift builds on.
 - [docs/soundness.md](docs/soundness.md) — observed-primary doctrine, per-site certification records, the report, and strict (`--sound`) mode.
 - [docs/decompiler-plan-prototype.md](docs/decompiler-plan-prototype.md) — the prototype's phase/gate history (superseded).
