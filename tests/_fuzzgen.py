@@ -504,6 +504,28 @@ def t_volatile(rng):
     )
 
 
+def t_zero_source(rng):
+    """Poll the constant-0 interrupt-source latches ($DC0D read-clear, $D019
+    write-ack) -> SID; the image seeds both nonzero, so reading the cell diverges."""
+    reg = int(rng.integers(0, 0x16))
+    a = Asm(ORG)
+    a.i("LDA", "imm", 0x81).i("STA", "abs", 0xD019)
+    a.i("LDA", "abs", 0xDC0D).i("STA", "abs", SID + reg)
+    a.i("LDA", "abs", 0xD019).i("STA", "abs", SID + reg + 1).i("RTS")
+    return Player(
+        "zero_source",
+        ORG,
+        a.assemble(),
+        {SID + reg, SID + reg + 1},
+        {"volatile"},
+        data={0xD019: 0x81, 0xDC0D: 0x5A},
+        frames=int(rng.integers(2, 5)),
+        volatile=True,
+        init=_RTS,
+        init_org=_INIT_ORG,
+    )
+
+
 def t_ram_output(rng):
     """Indexed copy to a couple of RAM output cells (non-SID observable set)."""
     n = 3
@@ -567,6 +589,7 @@ TEMPLATES = (
     t_varlen_row,
     t_multispeed,
     t_volatile,
+    t_zero_source,
     t_ram_output,
 )
 
