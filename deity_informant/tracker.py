@@ -20,11 +20,11 @@ _FREQ_REGS = (0, 1, 7, 8, 14, 15)
 FRAME = ("frame",)
 
 Generator = namedtuple("Generator", "transfer trigger route")
-Coverage = namedtuple("Coverage", "interp residual total planes classes", defaults=(None,))
+Coverage = namedtuple("Coverage", "interp residual total planes classes triggers")
 Pitch = namedtuple("Pitch", "base words octaves reference endian shift hi", defaults=(None,))
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
-Tracker = namedtuple("Tracker", "pitch clocks tempo instruments")
+Tracker = namedtuple("Tracker", "pitch clocks tempo instruments divisors")
 
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _VOICE_HI = 0x14
@@ -143,7 +143,7 @@ def _run(graph, nframes):
     nodes = graph.nodes
     _check(nodes)
     counts = [0] * len(nodes)
-    interp, rawn = {}, {}
+    interp, rawn, trig = {}, {}, {}
     out = []
     for f in range(nframes):
         fires = _fired(nodes, f)
@@ -167,13 +167,21 @@ def _run(graph, nframes):
                         writes.append((reg, v & 0xFF))
             else:
                 counts[i] += fires[i]
+                if g.route[0] == "fire":  # the trigger domain's own census
+                    k = g.transfer[0]
+                    trig[k] = trig.get(k, 0) + _ticks(g, f) * fires[i]
         out.append(writes)
-    return framelog.canonical(out), interp, rawn
+    return framelog.canonical(out), interp, rawn, trig
 
 
 def eval_graph(graph, nframes):
     """Canonical per-frame records produced by propagating triggers."""
     return _run(graph, nframes)[0]
+
+
+def _generates(counts, n):
+    """Does ``DIV(n)`` fire exactly where ``counts`` fires, and nowhere else?"""
+    return all(c == (1 if (f + 1) % n == 0 else 0) for f, c in enumerate(counts))
 
 
 def _plane_of(reg):
@@ -183,8 +191,12 @@ def _plane_of(reg):
     return "filter" if reg <= _FILTER_HI else "tail"
 
 
-def _coverage(interp, rawn, classes=None):
-    """The interpreted/residual partition of the emits, split by plane."""
+def _coverage(interp, rawn, classes=None, trig=None):
+    """The interpreted/residual partition of the emits, split by plane.
+
+    ``triggers`` is the *other* domain's partition: ``(generated, all)`` fires, a
+    generated fire being a ``DIV`` tick over a declared divisor and the rest the
+    ``EDGE`` floor. Two domains, two numbers, never summed."""
     planes = {}
     for src, gen in ((interp, True), (rawn, False)):
         for reg, n in src.items():
@@ -192,13 +204,14 @@ def _coverage(interp, rawn, classes=None):
             it, tot = planes.get(p, (0, 0))
             planes[p] = (it + (n if gen else 0), tot + n)
     ni, nr = sum(interp.values()), sum(rawn.values())
-    return Coverage(ni, nr, ni + nr, planes, classes)
+    fired = sum((trig or {}).values())
+    return Coverage(ni, nr, ni + nr, planes, classes, (fired - (trig or {}).get("EDGE", 0), fired))
 
 
 def coverage(graph, nframes):
-    """Interpreted vs residual emit counts, and the per-plane split."""
-    _recs, interp, rawn = _run(graph, nframes)
-    return _coverage(interp, rawn, graph.classes)
+    """Interpreted vs residual emit counts, the per-plane split, and the trigger census."""
+    _recs, interp, rawn, trig = _run(graph, nframes)
+    return _coverage(interp, rawn, graph.classes, trig)
 
 
 def from_frames(frames):
@@ -1089,6 +1102,41 @@ def _acc_streams(acc, banks, lww, mem0, ords):
     return streams, explained
 
 
+# ---- 4d. the trigger domain: a DIV whose divisor is a declared reload -------------
+def _divisors(prog, banks):
+    """Divisors the play code declares: what it reloads into a cell it steps down.
+
+    A recovered divider (``_clocks``) is reloaded either with a program immediate or
+    from a declared byte at a non-``mut`` offset; nothing else is a divisor. A reload
+    of one divides nothing — that is the root frame clock — and is refused."""
+    clocks = [c for c in _clocks(prog) if c.role == "divider"]
+    out, env = set(), {}
+    for c in clocks:
+        d = None if c.reload is None else _decl_of(c.reload, banks)
+        if d is not None and (c.reload - d[0]) % _record(d[1], d[2]) not in d[3]:
+            out.add(prog.mem0[c.reload])
+    cells = {c.base for c in clocks}
+    for s in _stmts(prog):
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+        elif s[0] == "st" and _base(s[1]) in cells:
+            root = _resolve(s[2], env)
+            if isinstance(root, tuple) and root[0] == "const":
+                out.add(root[1] & 0xFF)
+    return tuple(sorted(n for n in out if n > 1))
+
+
+def _clock_node(counts, divisors):
+    """A ``DIV`` over a declared divisor if one generates this edge stream, else the floor.
+
+    The divisor comes from the program and the stream is checked against it; a period
+    read off the fire pattern would pass the law while explaining nothing (§4c)."""
+    for n in divisors:
+        if _generates(counts, n):
+            return div(n)
+    return edge(counts)
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -1118,7 +1166,13 @@ def _observe(prog, trace, nframes):
 def lift(prog, frames=()):
     """Lift the tune-independent engine parameters from a frame program."""
     clocks = _clocks(prog)
-    return Tracker(_pitch(prog, _freq_words(frames)), clocks, _tempo(clocks), _instruments(prog))
+    return Tracker(
+        _pitch(prog, _freq_words(frames)),
+        clocks,
+        _tempo(clocks),
+        _instruments(prog),
+        _divisors(prog, _banks(prog)),
+    )
 
 
 def _graph(prog, pitch, frames, ords, lww):
@@ -1160,7 +1214,8 @@ def _graph(prog, pitch, frames, ords, lww):
     edges = {}
     for counts, _t, _r in streams:
         edges.setdefault(counts, len(edges))
-    nodes = [edge(c) for c in edges]
+    divisors = _divisors(prog, banks)
+    nodes = [_clock_node(c, divisors) for c in edges]
     fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
     nodes += fired + [raw(residual)]
     nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws + ramps]
@@ -1176,8 +1231,8 @@ def render(prog, trace, nframes):
     certifies the partition is complete."""
     gt, ords, lww = _observe(prog, trace, nframes)
     graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww)
-    recs, interp, rawn = _run(graph, nframes)
-    return recs, gt, _coverage(interp, rawn, graph.classes), lanes
+    recs, interp, rawn, trig = _run(graph, nframes)
+    return recs, gt, _coverage(interp, rawn, graph.classes, trig), lanes
 
 
 def gate(prog, trace, nframes):

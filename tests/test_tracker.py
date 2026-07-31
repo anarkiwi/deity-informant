@@ -729,6 +729,131 @@ def test_mutation_a_wrong_filter_byte_or_row_is_detected():
     assert row is not None and row.section == "filter"
 
 
+# ---- 3e. the trigger domain: a DIV whose divisor is a declared reload -------------
+_COUNTER = 0x0801
+
+
+def _dividerprog(n, reload_=None, decl=None, base=0x2000, nrows=4):
+    """``(image, program)`` ticking every ``n`` frames, reading an AD lane on the tick.
+
+    The counter steps down, reloads with ``reload_`` (the immediate ``n`` by default)
+    and only the tick body writes the register, so the AD stream's edges are the
+    divider's ticks."""
+    mem, table = _bank(base, nrows, 4, {2: list(range(0x11, 0x11 + nrows))})
+    mem[_COUNTER] = n
+    dec = ("op", "INT_SUB", (("mem", ("const", _COUNTER, 2), 1), ("const", 1, 1)), 1)
+    tick = [
+        ("st", ("const", _COUNTER, 2), ("const", n, 1) if reload_ is None else reload_),
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD405, 2), _sel(base, 2, "i")),
+        (
+            "st",
+            ("const", 0x0800, 2),
+            ("op", "INT_ADD", (("mem", ("const", 0x0800, 2), 1), ("const", 4, 1)), 1),
+        ),
+    ]
+    stmts = [
+        ("asg", "c", dec),
+        ("st", ("const", _COUNTER, 2), ("loc", "c")),
+        ("if", "if", ("op", "INT_EQUAL", (("loc", "c"), ("const", 0, 1)), 1), tick, []),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl or table], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def _fires(prog, nframes=8):
+    """``(DIV divisors, EDGE count streams, Coverage)`` for a rendered program."""
+    graph = T._graph(prog, None, *T._observe(prog, {}, nframes))[0]
+    return (
+        [g.transfer[1] for g in graph.nodes if g.transfer[0] == "DIV"],
+        [g.transfer[1] for g in graph.nodes if g.transfer[0] == "EDGE"],
+        T.render(prog, {}, nframes)[2],
+    )
+
+
+def test_a_declared_reload_generates_the_edge_stream_as_a_div():
+    """The divisor is the immediate the play code reloads: the EDGE floor is replaced."""
+    _mem, prog = _dividerprog(2)
+    assert T.lift(prog).divisors == (2,)
+    divs, edges, cov = _fires(prog)
+    assert divs == [2] and not edges
+    assert cov.triggers == (4, 4) and T.gate(prog, {}, 8) is None
+    assert cov.planes["ad"] == (4, 4)  # the value partition is the same either way
+
+
+def test_the_trigger_partition_is_reported_apart_from_the_value_partition():
+    """Two domains, two numbers: fires are never counted among the emits."""
+    frames = _frames([[(0, 1)], [(0, 2)]])
+    assert T.coverage(T.from_frames(frames), 2).triggers == (0, 0)  # RAW fires nothing
+    g = T.Graph([T.edge((1, 1)), T.select((0x11, 0x22), (0, 1), ("event", 0), 5)])
+    cov = T.coverage(g, 2)
+    assert cov.triggers == (0, 2) and cov.interp == 2 and cov.total == 2
+    assert T.coverage(T.Graph([T.div(2), T.lookup([9], ("event", 0), 5)]), 4).triggers == (2, 2)
+
+
+def test_a_divisor_the_play_code_does_not_declare_is_refused():
+    """Same edges, same period — but a divisor no recovered clock reloads is not one."""
+    undeclared = ("mem", ("const", 0x0F00, 2), 1)  # holds 2, but no declaration covers it
+    mem, prog = _dividerprog(2, reload_=undeclared)
+    mem[0x0F00] = 2
+    assert T.lift(prog).divisors == ()
+    divs, edges, cov = _fires(prog)
+    assert not divs and edges == [(0, 1, 0, 1, 0, 1, 0, 1)]  # the floor, unchanged
+    assert cov.triggers == (0, 4) and cov.planes["ad"] == (4, 4)
+
+
+def test_a_reload_at_a_play_written_offset_is_not_a_divisor():
+    """``mut`` holds here too: a reload cell the play phase writes is runtime state."""
+    cell = ("mem", ("const", 0x2001, 2), 1)
+    mem, prog = _dividerprog(2, reload_=cell, decl=_muted(_table(0x2000, 16, stride=4), [1]))
+    mem[0x2001] = 2
+    assert T.lift(prog).divisors == () and _fires(prog)[0] == []
+    clean, prog = _dividerprog(2, reload_=cell)
+    clean[0x2001] = 2  # the same cell, at an offset the declaration does not name `mut`
+    assert T.lift(prog).divisors == (2,) and _fires(prog)[0] == [2]
+
+
+def test_a_divisor_of_one_divides_nothing_and_is_refused():
+    """A stream firing every frame is the root cadence, not a recovered divider."""
+    _mem, prog = _dividerprog(1, nrows=8)
+    assert T.lift(prog).divisors == ()
+    divs, edges, cov = _fires(prog)
+    assert not divs and edges == [(1,) * 8] and cov.triggers == (0, 8)
+
+
+def test_a_div_fires_where_the_divisor_says_and_nowhere_else():
+    """The check is exact in both directions: a missing tick refuses as loudly as a spare."""
+    assert T._generates((0, 1, 0, 1), 2) and not T._generates((0, 1, 1, 1), 2)
+    assert not T._generates((0, 1, 0, 0), 2) and not T._generates((0, 1, 0, 1), 4)
+    assert T._clock_node((0, 1, 0, 1), (2,)) == T.div(2)
+    assert T._clock_node((0, 1, 0, 1), (3, 4)) == T.edge((0, 1, 0, 1))
+
+
+def test_mutation_a_wrong_divisor_is_detected():
+    """The law verifies the divisor: perturb it and the fires move off the observation."""
+    _mem, prog = _dividerprog(2)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 8))[0]
+    assert F.diff(T.eval_graph(graph, 8), T.oracle(prog, {}, 8)) is None
+    i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "DIV")
+    for wrong in (("DIV", 3), ("DIV", 1)):
+        graph.nodes[i] = graph.nodes[i]._replace(transfer=wrong)
+        assert F.diff(T.eval_graph(graph, 8), T.oracle(prog, {}, 8)) is not None
+
+
+def test_an_lfo_phase_is_no_divider_so_its_reload_is_no_divisor():
+    """``_clocks`` separates a free ``inc`` from a ``dec``; only the divider declares one."""
+    inc = ("op", "INT_ADD", (("mem", ("const", 0x1001, 2), 1), ("const", 1, 1)), 1)
+    stmts = [
+        ("st", ("const", 0x1001, 2), inc),
+        ("st", ("const", 0x1001, 2), ("const", 6, 1)),
+    ]
+    prog = frameprog.FrameProgram(0x1000, 0x0F00, procs=[(0x1000, (), (), stmts)])
+    assert [c.role for c in T._clocks(prog)] == ["lfo"]
+    assert not T._divisors(prog, T._banks(prog))
+
+
 # ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
