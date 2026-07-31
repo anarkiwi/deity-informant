@@ -441,7 +441,7 @@ def test_an_evenly_stepped_walk_is_a_row_counter_and_a_broken_one_is_unrolled():
     ramp = G.strict(_arranged(rows=(0, 1, 2)))[0]
     walk = G.strict(_arranged(rows=(0, 1, 0)))[0]
     assert [g.transfer for g in ramp.nodes if g.route == T.INDEX][0] == ("RAMP", 0, 1, 0)
-    assert [g.transfer for g in walk.nodes if g.route == T.INDEX][0] == ("LOOKUP", (0, 1, 0))
+    assert [g.transfer for g in walk.nodes if g.route == T.INDEX][0] == ("SELECT", (0, 1, 0), ())
 
 
 def test_a_row_counter_seeded_at_another_pattern_breaks_the_law():

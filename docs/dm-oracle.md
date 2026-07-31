@@ -150,7 +150,7 @@ DefMON spelling of each is §1's table read one link further:
 - the **row counter** is the walk of that pattern's events. On DefMON it is a `RAMP` on
   **0** of 82 chains: the packed event stream is variable-length, so successive events
   are not an even stride and every counter is the unrolled walk (docs/gt-oracle.md
-  §3.2b's `LOOKUP` form).
+  §3.2b's unrolled-walk form).
 
 Reaching the events at all needed the **packed pattern stream decoded**, because the
 packer does not store 32 fixed four-byte events: it stores each event's flag byte
@@ -256,7 +256,7 @@ is not.
 `TR` is the arpeggio/transpose shape in its purest form — the docstring says it
 outright: "bit 7 clear = relative, added to the voice's transpose buffer" — and
 `AF` is portamento with the target expressed as an offset from the current note.
-Neither is a `LOOKUP` (the values depend on the base note) nor a `RAMP` (the
+Neither is a table read straight through (the values depend on the base note) nor a `RAMP` (the
 direction reverses). GoatTracker spells this as vibrato + the wavetable
 relative-note column, SID-Wizard as `detune` + `chord_table` + `octave_shift`,
 DefMON as `TR` + `AF`. Three editors, one missing route.
@@ -412,6 +412,15 @@ transpose and the orderlist together, on all three editors, for **6953** freq-pl
 emits and 1476 + 7248 + 6579 orderlist entries. It is not §4f with another register:
 §4f combines two values into a byte, this combines two rows into an index.
 
+**Status, re-measured: still owed, not banked.** The object landed in the primitive
+(docs/tracker.md §2, #102) and this mapper still refuses. `_dm_src` computes
+`shift = 1 if tr and not tr & 0x80 else 0` — a *flag*, not `TR`'s amount — and hands it
+to `gtoracle._patt_src`, which prices any nonzero shift as `refused_transpose` and
+returns nothing. A census of the mapped graphs by `(transfer, route)` over 6 DefMON
+tunes (and 12 GoatTracker, 12 SID-Wizard) finds **zero** `SELECT[rel]` nodes. The 525
+is a refusal count, and emitting it needs `_dm_src` to compute the shift `TR` actually
+applies, on top of docs/gt-oracle.md §4.5's four changes to the shared mapper.
+
 ### 4.6 What is not a deficiency, and is reported anyway
 
 **The driver's ghost.** 7911 emits — 48.7% of the strict graph's `RAW` — are a
@@ -419,7 +428,7 @@ register the song never programs, written every frame from a band operand still
 holding its power-on value (6744 `ghost:held`, 1167 `ghost:ctrl` before the first
 note arms a voice). DefMON's driver writes **all 25 registers every frame** in a
 fixed order, so the ghost is structural here rather than incidental. It is not a
-`RAW` the primitive forces — `LOOKUP((0,))` would take every one and pass the law
+`RAW` the primitive forces — `SELECT((0,), ())` would take every one and pass the law
 — and it is refused for the reason docs/tracker.md §6 refuses the filter plane's
 program constants: it explains no index. Counted, named, left residual.
 

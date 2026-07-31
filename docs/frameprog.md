@@ -794,7 +794,7 @@ every refusal counter, on every one of the 649 tunes. The 60 sit on writes that 
 carried a source cell and were already interpreted, so they add no emit. Reporting the
 whole proven target set instead of one member is refused without measuring a ceiling for
 it: it is the observation choosing between blocks, the refusal §4c makes for a fitted
-`RAMP` step and §6 for an `imm` `LOOKUP` over `$18`'s program constants, and its claims
+`RAMP` step and §6 for an `imm` read over `$18`'s program constants, and its claims
 are a superset of the observation-derived ones, which recover nothing.
 
 **The structural finding, which is the point.** The proof supplies the address *space* and

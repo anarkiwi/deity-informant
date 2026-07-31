@@ -67,8 +67,8 @@ def test_raw_floor_passes_by_construction():
     assert cov.interp == 0 and cov.residual == cov.total == 6
 
 
-def test_div_fires_a_downstream_lookup_on_its_edge():
-    """A DIV clock is the root; the LOOKUP advances only on its Fire edge."""
+def test_div_fires_a_downstream_table_on_its_edge():
+    """A DIV clock is the root; the table advances only on its Fire edge."""
     nodes = [T.div(2), T.lookup([0x11, 0x22], ("event", 0), 0)]
     recs = T.eval_graph(T.Graph(nodes), 4)
     got = [[w for sec in rec for w in sec] for rec in recs]
@@ -117,6 +117,30 @@ def test_mutation_wrong_lookup_value_is_detected():
     assert d is not None and d.got == (0, 0x11) and d.want == (0, 0x10)
 
 
+def test_a_table_read_straight_through_is_a_select_at_identity_rows():
+    """`LOOKUP(seq)` was `SELECT(seq, identity)`: one transfer, not two (docs 2)."""
+    seq = (3, 9, 4, 7)
+    straight = T.Graph([T.lookup(seq, T.FRAME, 0)])
+    rowed = T.Graph([T.select(seq, tuple(range(len(seq))), T.FRAME, 0)])
+    assert straight.nodes[0].transfer == ("SELECT", seq, ())
+    assert T.eval_graph(straight, 9) == T.eval_graph(rowed, 9)
+    assert [T._emit(straight.nodes[0], k) for k in range(1, 10)] == [3, 9, 4, 7] * 2 + [3]
+
+
+def test_mutation_the_evidence_split_is_the_class_not_the_transfer():
+    """One transfer serves both, so `imm` vs `lane` must ride the stream's own class."""
+    lane = ((1, 1), ("SELECT", (0x11, 0x22), (0, 1)), 5, "lane")
+    imm = ((1, 1), ("SELECT", (0,), ()), 5, "imm")
+    assert lane[1][0] == imm[1][0]  # the transfer no longer tells the two apart
+    assert (
+        T.select((0x11, 0x22), (0, 1), T.FRAME, 5).transfer[0] == T.lookup((0,), T.FRAME, 5)[0][0]
+    )
+    got = T._classes([lane, imm])["ad"]
+    assert (got["lane"], got["imm"]) == (2, 2)
+    swapped = T._classes([lane[:3] + ("imm",), imm[:3] + ("lane",)])["ad"]
+    assert (swapped["lane"], swapped["imm"]) == (0, 2)
+
+
 def test_mutation_dropped_ordered_write_is_detected():
     """The order-preserved section does not collapse a duplicate ctrl write."""
     frames = _frames([[(4, 0x40), (4, 0x41)]])
@@ -135,13 +159,13 @@ def test_dangling_and_unknown_forms_raise():
     with pytest.raises(T.TrackerError, match="dangling trigger"):
         T.eval_graph(T.Graph([T.lookup([1], ("event", 9), 0)]), 1)
     with pytest.raises(T.TrackerError, match="unknown trigger"):
-        T.eval_graph(T.Graph([T.Generator(("LOOKUP", (1,)), ("nope",), ("plane", 0))]), 1)
+        T.eval_graph(T.Graph([T.Generator(("SELECT", (1,), ()), ("nope",), ("plane", 0))]), 1)
     with pytest.raises(T.TrackerError, match="unknown route"):
-        T.eval_graph(T.Graph([T.Generator(("LOOKUP", (1,)), T.FRAME, ("nope",))]), 1)
+        T.eval_graph(T.Graph([T.Generator(("SELECT", (1,), ()), T.FRAME, ("nope",))]), 1)
     with pytest.raises(T.TrackerError, match="no value emit"):
         T.eval_graph(T.Graph([T.Generator(("DIV", 1), T.FRAME, ("plane", 0))]), 1)
     with pytest.raises(T.TrackerError, match="no edge emit"):
-        T.eval_graph(T.Graph([T.Generator(("LOOKUP", (1,)), T.FRAME, ("fire",))]), 1)
+        T.eval_graph(T.Graph([T.Generator(("SELECT", (1,), ()), T.FRAME, ("fire",))]), 1)
     assert T.Graph([T.raw([])]).raw_index() == 0 and T.Graph([T.div(2)]).raw_index() is None
 
 
@@ -316,7 +340,7 @@ def test_adsr_reads_a_declared_lane_at_a_recovered_row():
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     pre, post, refined = _instr(prog, ords)
     assert refined == {5, 6} and not pre
-    got = {r: t for _c, t, r in post}
+    got = {r: t for _c, t, r, _e in post}
     assert got[5] == ("SELECT", tuple(ad), (0, 1, 2, 3))  # the declared lane, by row
     assert got[6][1] == tuple(sr) and got[6][2] == got[5][2]
 
@@ -342,9 +366,9 @@ def test_immediate_writes_split_from_lane_writes_by_provenance():
     banks = T._banks(prog)
     seq = [[(5, 0x11, (0x2002,))], [(5, 0x00, ())]]
     pre, post, resid = T._refine_voice(seq, {}, banks, {5: {0}}, mem)
-    assert not pre and sorted(s[1][0] for s in post) == ["LOOKUP", "SELECT"]
-    (lk,) = [s for s in post if s[1][0] == "LOOKUP"]
-    assert lk[1] == ("LOOKUP", (0,)) and lk[0] == (0, 1) and resid == [(), ()]
+    assert not pre and sorted(s[3] for s in post) == ["imm", "lane"]
+    (imm,) = [s for s in post if s[3] == "imm"]
+    assert imm[1] == ("SELECT", (0,), ()) and imm[0] == (0, 1) and resid == [(), ()]
     _p, _q, left = T._refine_voice(seq, {}, banks, {}, mem)  # 0 is no program constant
     assert left == [(), ((5, 0x00),)]
 
@@ -483,7 +507,7 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
-    (t,) = [t for _c, t, r in post if r == 4]
+    (t,) = [t for _c, t, r, _e in post if r == 4]
     w = tuple(wave)
     gated, on = tuple(b & 0xFE for b in wave), tuple(b | 1 for b in wave)
     assert t == ("SELECT", w + w + gated + on, (0, 8, 1, 9, 2, 10, 3, 11))
@@ -547,7 +571,7 @@ def test_freq_is_the_declared_table_the_store_names_at_a_recovered_row():
     _gt, _ords, lww, _acc = T._observe(prog, {}, 4)
     banks = T._banks(prog)
     streams, _e = T._lww_streams(lww, T._tree_tables(prog, banks), mem)
-    got = {r: t for _c, t, r in streams}
+    got = {r: t for _c, t, r, _e in streams}
     assert got[0] == ("SELECT", tuple(lo), (0, 1, 2, 3))  # the declared lane, by row
     assert got[1][1] == tuple(hi) and got[1][2] == got[0][2]
 
@@ -744,7 +768,7 @@ def test_filter_is_the_declared_table_the_store_names_at_a_recovered_row():
     assert cov.classes["filter"]["imm"] == 0  # declared bytes only, nothing shallow
     _gt, _ords, lww, _acc = T._observe(prog, {}, 4)
     streams, _e = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), mem)
-    got = {r: t for _c, t, r in streams}
+    got = {r: t for _c, t, r, _e in streams}
     assert got[0x15] == ("SELECT", tuple(_FILTER_LANES[0]), (0, 1, 2, 3))
     assert got[0x17][1] == tuple(_FILTER_LANES[2]) and got[0x17][2] == got[0x15][2]
 
@@ -972,7 +996,7 @@ def test_a_register_two_generators_share_is_split_by_the_masks_the_text_names():
     assert cov.classes["filter"]["lane"] == 0  # a masked write is its own class
     got = [(g.route[2], g.transfer) for g in _mask_nodes(prog)]
     assert [m for m, _t in got] == [0x0F, 0xF0]  # disjoint fields, the whole byte covered
-    assert dict(got)[0x0F] == ("LOOKUP", (0x0F,))
+    assert dict(got)[0x0F] == ("SELECT", (0x0F,), ())
     assert dict(got)[0xF0] == ("SELECT", tuple(_MODE), (0, 1, 2, 3))
 
 
@@ -1271,29 +1295,56 @@ def test_the_order_preserved_section_takes_no_relative_route():
     assert T.gate(prog, {}, 4) is None
 
 
-def test_the_composition_order_of_an_absolute_and_a_relative_route_is_checked():
-    """A relative route names a base an earlier generator settles, or the graph is refused."""
-    ok = [
-        T.raw([[(0, 5)]]),
-        T.lookup(
-            (3,),
-            T.FRAME,
-            0,
-        ),
-    ]
-    ok = [
+def _value_rel(op, base, mask=0xFF):
+    """A relative *value* route: node 0 settles no field, node 1 settles the one it rides."""
+    return [
         T.raw([[]]),
         T.lookup((0x40,), T.FRAME, 0),
-        T.Generator(("LOOKUP", (3,)), T.FRAME, T.relative(0, "ADD", ("node", 1))),
+        T.Generator(("SELECT", (3,), ()), T.FRAME, T.relative(0, op, base, mask)),
     ]
+
+
+def _index_rel(op, base):
+    """The same object one domain over: node 0 settles no row, node 1 supplies the delta."""
+    return [
+        T.lookup((5,), T.FRAME, 4),
+        T.indexer(("SELECT", (1,), ()), T.FRAME),
+        T.select((7, 8, 9), ("rel", op, ("node", 1), base), T.FRAME, 1),
+    ]
+
+
+# one relative concept, one validator, one vocabulary of refusals -- in both domains
+_REL_BAD = [
+    ("unknown relative operation", "NAND", ("const", 1)),
+    ("is not a byte", "ADD", ("const", 0x100)),
+    ("is not an earlier node", "ADD", ("node", 9)),
+    ("drives another field", "ADD", ("node", 0)),
+]
+
+
+@pytest.mark.parametrize("why,op,base", _REL_BAD)
+@pytest.mark.parametrize("build", (_value_rel, _index_rel), ids=("value", "index"))
+def test_one_relative_rule_refuses_the_same_way_in_both_domains(build, why, op, base):
+    """A delta combines with a named base; the base rule and its refusals are shared."""
+    with pytest.raises(T.TrackerError, match=why):
+        T.eval_graph(T.Graph(build(op, base)), 1)
+
+
+def test_prev_is_the_value_domain_s_base_and_a_row_index_has_none():
+    """A row is not a plane, so it has no previous value; nor has a plane nothing writes."""
+    for nodes in (_index_rel("ADD", ("prev",)), _value_rel("ADD", ("prev",))[2:]):
+        with pytest.raises(T.TrackerError, match="has no previous value"):
+            T.eval_graph(T.Graph(nodes), 1)
+    T.eval_graph(T.Graph(_value_rel("ADD", ("prev",))), 1)  # the RAW floor is a writer
+
+
+def test_the_composition_order_of_an_absolute_and_a_relative_route_is_checked():
+    """A relative route names a base an earlier generator settles, or the graph is refused."""
+    ok = _value_rel("ADD", ("node", 1))
     assert T.eval_graph(T.Graph(ok), 1) == F.canonical([[(0, 0x43)]])
     bad = [
-        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("prev",)))],
-        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "NAND", ("const", 1)))],
-        [T.raw([[]]), T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("node", 1)))],
-        [ok[1], T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(1, "ADD", ("node", 0)))],
-        [ok[1], T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("node", 0), 0x0F))],
-        [T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0, "ADD", ("const", 0x100)))],
+        ok[2:],  # the base generator is gone with the floor
+        [ok[1], ok[2]._replace(route=T.relative(0, "ADD", ("node", 0), 0x0F))],
     ]
     for nodes in bad:
         with pytest.raises(T.TrackerError):
@@ -1379,7 +1430,7 @@ def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
     _gt, ords, _lww, _acc = T._observe(prog, trace, nf)
     pre, post, refined = _instr(prog, ords)
     assert refined == {4, 5, 6, 11, 12, 13, 18, 19, 20} and not pre
-    sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
+    sel = {r: t for _c, t, r, _e in post if t[2]}
     assert len(sel) == 9 and set(T.lift(prog).instruments) >= {0x5594, 0x5595}
     for off, regs in ((3, (5, 12, 19)), (4, (6, 13, 20))):
         lane = tuple(prog.mem0[0x5591 + off + 8 * i] for i in range(33))
@@ -1401,7 +1452,7 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
     tabs = T._tree_tables(prog, T._banks(prog))
     assert [b[:3] for b in tabs[0]] == [b[:3] for b in tabs[1]] == [(0x5428, 192, 2)]
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
-    sel = {r: t for _c, t, r in T._lww_streams(lww, tabs, prog.mem0)[0]}
+    sel = {r: t for _c, t, r, _e in T._lww_streams(lww, tabs, prog.mem0)[0]}
     for v in range(3):
         lo, hi = sel[7 * v], sel[7 * v + 1]
         assert lo[1] == tuple(prog.mem0[0x5428 + 2 * i] for i in range(96))
@@ -1419,7 +1470,7 @@ def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, 
     assert decl["stride"] == 8 and decl["mut"] == [0]
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
-    assert {r % 7 for _c, _t, r in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
+    assert {r % 7 for _c, _t, r, _e in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["pw"] == (205, 245)  # 53 lane reads at +1, the rest the swept +0
     pw = cov.classes["pw"]
@@ -1451,7 +1502,7 @@ def test_artura_adsr_through_the_sid_register_mirror(sid, subtune):
     pre, post, refined = _instr(prog, ords)
     assert refined >= {5, 6, 12, 13, 19, 20} and not pre
     bank = tuple(prog.mem0[0xEF52 + i] for i in range(46))
-    sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
+    sel = {r: t for _c, t, r, _e in post if t[2]}
     assert all(sel[r][1] == bank for r in (5, 6, 12, 13, 19, 20))  # the $EF52 declaration
     assert T.gate(prog, trace, nf) is None
     cov = T.render(prog, trace, nf)[2]
@@ -1526,7 +1577,7 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
-    got = {r: t for _c, t, r in streams if r > T._VOICE_HI}
+    got = {r: t for _c, t, r, _e in streams if r > T._VOICE_HI}
     assert set(got) == {0x16, 0x17}  # $15 and $18 name no declaration and stay residual
     cells = [0x19C5 + t[2][0] for t in (got[0x16], got[0x17])]
     assert cells == [0x1A08, 0x1A07]  # two cells of one declared table, recovered per register
@@ -1538,7 +1589,7 @@ def _arrangement(orderlist, patterns, rows_per_pattern, nframes):
 
     n0 the row clock, n1 the orderlist (an index route), n2 the pattern it selects."""
     beat = T.Generator(("DIV", rows_per_pattern), T.FRAME, ("fire",))
-    order = T.indexer(("LOOKUP", tuple(orderlist)), ("event", 0))
+    order = T.indexer(("SELECT", tuple(orderlist), ()), ("event", 0))
     pat = T.select(patterns, ("node", 1), T.FRAME, 0x18)
     return T.Graph([beat, order, pat]), nframes
 
@@ -1571,7 +1622,7 @@ def test_nothing_is_written_before_the_orderlist_speaks():
 def test_index_source_must_precede_its_reader():
     """A row source later than its reader would need a value the frame has not made."""
     pat = T.select((1, 2, 3), ("node", 1), T.FRAME, 0x18)
-    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    order = T.indexer(("SELECT", (0, 1), ()), T.FRAME)
     with pytest.raises(T.TrackerError, match="not an earlier node"):
         T.eval_graph(T.Graph([pat, order]), 4)
 
@@ -1580,20 +1631,20 @@ def test_row_source_must_route_to_an_index():
     """A plane generator's write is a byte, not a row: it cannot be an index source."""
     other = T.lookup((0, 1), T.FRAME, 0x04)
     pat = T.select((1, 2, 3), ("node", 0), T.FRAME, 0x18)
-    with pytest.raises(T.TrackerError, match="does not route to an index"):
+    with pytest.raises(T.TrackerError, match="drives another field"):
         T.eval_graph(T.Graph([other, pat]), 4)
 
 
 def test_index_route_without_a_reader_is_dead():
     """A generator that neither writes a plane nor is read explains nothing."""
-    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    order = T.indexer(("SELECT", (0, 1), ()), T.FRAME)
     with pytest.raises(T.TrackerError, match="has no reader"):
         T.eval_graph(T.Graph([order]), 4)
 
 
 def test_generated_row_out_of_range_drops_the_write():
     """An index past the table emits nothing, so the law fails rather than wrapping."""
-    order = T.indexer(("LOOKUP", (9,)), T.FRAME)
+    order = T.indexer(("SELECT", (9,), ()), T.FRAME)
     pat = T.select((1, 2), ("node", 0), T.FRAME, 0x18)
     assert T.eval_graph(T.Graph([order, pat]), 3) == F.canonical([[], [], []])
 
@@ -1608,9 +1659,9 @@ def test_mutation_a_moved_orderlist_entry_changes_the_projection():
 def _transposed(trans, notes, table, rows_per, nframes):
     """A pattern note column read at a declared transpose: the index-domain relative."""
     beat = T.Generator(("DIV", rows_per), T.FRAME, ("fire",))
-    shift = T.indexer(("LOOKUP", tuple(trans)), ("event", 0))
-    note = T.indexer(("LOOKUP", tuple(notes)), T.FRAME)
-    pitch = T.select(table, ("rel", "ADD", 2, ("node", 1)), T.FRAME, 0x01)
+    shift = T.indexer(("SELECT", tuple(trans), ()), ("event", 0))
+    note = T.indexer(("SELECT", tuple(notes), ()), T.FRAME)
+    pitch = T.select(table, ("rel", "ADD", ("node", 2), ("node", 1)), T.FRAME, 0x01)
     return T.Graph([beat, shift, note, pitch]), nframes
 
 
@@ -1623,32 +1674,32 @@ def test_a_relative_row_carries_a_transpose():
 
 def test_a_relative_row_may_shift_by_a_declared_constant():
     """A fixed transpose needs no generator of its own."""
-    note = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
-    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("const", 5)), T.FRAME, 0x01)
+    note = T.indexer(("SELECT", (0, 1), ()), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", ("node", 0), ("const", 5)), T.FRAME, 0x01)
     assert _emitted(T.Graph([note, pitch]), 4) == [5, 6, 5, 6]
 
 
 def test_a_relative_row_refuses_an_unknown_operation():
     """The operation comes from the store's own operator, not an invented one."""
-    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
-    pitch = T.select((1, 2), ("rel", "MUL", 0, ("const", 0)), T.FRAME, 0x01)
-    with pytest.raises(T.TrackerError, match="unknown relative row operation"):
+    note = T.indexer(("SELECT", (0,), ()), T.FRAME)
+    pitch = T.select((1, 2), ("rel", "MUL", ("node", 0), ("const", 0)), T.FRAME, 0x01)
+    with pytest.raises(T.TrackerError, match="unknown relative operation"):
         T.eval_graph(T.Graph([note, pitch]), 2)
 
 
 def test_both_sources_of_a_relative_row_must_be_earlier_index_nodes():
     """Either half arriving late would need a value the frame has not made."""
-    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
-    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("node", 2)), T.FRAME, 0x01)
-    shift = T.indexer(("LOOKUP", (1,)), T.FRAME)
+    note = T.indexer(("SELECT", (0,), ()), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", ("node", 0), ("node", 2)), T.FRAME, 0x01)
+    shift = T.indexer(("SELECT", (1,), ()), T.FRAME)
     with pytest.raises(T.TrackerError, match="not an earlier node"):
         T.eval_graph(T.Graph([note, pitch, shift]), 2)
 
 
 def test_a_transposed_row_past_the_table_drops_the_write():
     """A shift off the end of the pitch table emits nothing rather than wrapping."""
-    note = T.indexer(("LOOKUP", (1,)), T.FRAME)
-    pitch = T.select((7, 8), ("rel", "ADD", 0, ("const", 40)), T.FRAME, 0x01)
+    note = T.indexer(("SELECT", (1,), ()), T.FRAME)
+    pitch = T.select((7, 8), ("rel", "ADD", ("node", 0), ("const", 40)), T.FRAME, 0x01)
     assert _emitted(T.Graph([note, pitch]), 2) == [None, None]
 
 

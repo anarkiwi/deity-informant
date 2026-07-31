@@ -72,10 +72,10 @@ def test_every_transfer_kind_renders():
     """One entry per node, in graph order, naming its transfer, trigger and route."""
     text = _text()
     kinds = [ln.split()[1] for ln in text.splitlines() if ln.startswith("n0")]
-    assert kinds == ["DIV", "EDGE", "LOOKUP", "SELECT", "SELECT", "RAMP", "RAW", "LOOKUP", "LOOKUP"]
+    assert kinds == ["DIV", "EDGE"] + ["SELECT"] * 3 + ["RAMP", "RAW"] + ["SELECT"] * 2
     assert "one tick per 2" in _line(text, "n00")
-    assert "n02  LOOKUP -> voice 1 waveform          <- n01 x7" in text
-    assert "9 nodes: 1 DIV, 1 EDGE, 3 LOOKUP, 1 RAMP, 1 RAW, 2 SELECT" in text
+    assert "n02  SELECT -> voice 1 waveform          <- n01 x7" in text
+    assert "9 nodes: 1 DIV, 1 EDGE, 1 RAMP, 1 RAW, 5 SELECT" in text
 
 
 def test_nothing_of_the_machine_survives():
@@ -335,17 +335,17 @@ def test_an_index_node_is_named_by_what_it_does_not_by_a_missing_register():
     g = T.Graph(
         [
             T.edge((1, 1)),
-            T.indexer(("LOOKUP", (3,)), ("event", 0)),
+            T.indexer(("SELECT", (3,), ()), ("event", 0)),
             T.select(tuple(range(10)), ("node", 1), ("event", 0), 0),
         ]
     )
     assert X._route(g.nodes[1]) == "-> the row another generator reads"
-    assert X._lookup_str(g.nodes[1], 2).endswith("(see the note lane)")
+    assert X._straight_str(g.nodes[1], 2).endswith("(see the note lane)")
 
 
 def test_a_relative_route_says_it_offsets_its_register():
     """A relative emit is a delta, not the byte the register takes."""
-    g = T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0x01, "ADD", ("prev",)))
+    g = T.Generator(("SELECT", (1,), ()), T.FRAME, T.relative(0x01, "ADD", ("prev",)))
     assert X._route(g) == "-> voice 1 pitch hi, as an offset"
 
 
