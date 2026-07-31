@@ -235,8 +235,8 @@ neither earlier editor used.
 | | emits | share | tunes |
 |---|---|---|---|
 | DefMON `$D404` = `WGh ^ WGl` — a waveform lane and an XOR-mask lane | **546** | 22.4% of the 2433 `ctrl` emits with a bound row | 3/6 |
-| DefMON `$D417` = `RE` resonance nibble `\|` per-voice routing mask | **1131** | **100% of the plane's mapped writes** | 6/6 |
-| DefMON `$D418` = `FV` mode nibble `\|` volume — **expressible** | 1131 | 100% | 6/6 |
+| DefMON `$D417` = `RE` resonance nibble `\|` per-voice routing mask | **1131** | **every `$17` write with a bound row** | 6/6 |
+| DefMON `$D418` = `FV` mode nibble `\|` volume — **expressible** | 1131 | every `$18` write with a bound row | 6/6 |
 | GoatTracker `$18`, SID-Wizard `$18`/`$17` (docs/gt-oracle.md §4.3) | 31631 | — | 135/135 |
 
 Three readings, and the difference between them is the whole finding.
@@ -244,7 +244,8 @@ Three readings, and the difference between them is the whole finding.
 - **`$D417` is the pure case and it is total.** Resonance is a per-instrument byte
   a table holds, but the low nibble is a routing mask the driver assembles from
   three voices' flags, so **not one `$17` write in the corpus is a pure lane
-  read** — 1131 of 1131 refused, on 6 tunes of 6. docs/tracker.md §6 measures
+  read** — all 1131 with a bound row refused, on 6 tunes of 6 (the other 69 of
+  the plane's 1200 writes precede any staging and are ghost). docs/tracker.md §6 measures
   `$17` from the recovery side as "really a table plane", 28.6% naming a declared
   byte; from the composer's side the table is right there and the mask is what
   stands between them.
