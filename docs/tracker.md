@@ -662,6 +662,11 @@ This section is that change, and §6 is its measurement.
   ships, the key does not.
 - **A row searched over the region for the byte is refused outright**, for the reason §4c
   refuses a fitted step and §4g a segmented pattern row. §6 prices that search too.
+- **The law sees the region, not the cursor, and that is stated rather than implied.** The
+  row is the machine's own read index off a base the text names, so reading a region at
+  another region's base fails the law (tests/test_tracker.py) while a wrong cursor *label*
+  changes only what the node is called. Making the cursor load-bearing is exactly what
+  keying the row on its value would have done, and §6 is why that is refused.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
