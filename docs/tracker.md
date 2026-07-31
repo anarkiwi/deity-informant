@@ -88,6 +88,9 @@ nodes wired by their triggers, with two distinguished members: the pitch table
 - **freq/pw `SELECT` per register** (§4b) — the last-write-wins planes,
   transliterated from the store statement: where the value expression names a
   declared table, the emit is that table's lane at the row the read cell recovers.
+- **pw `RAMP` per accumulator** (§4c) — the pulse sweep. Where the pw store reads
+  a cell the play code steps by a declared byte, the sweep is generated from that
+  byte: one observed seed, then every further emit predicted.
 - **Clocks** (`_clocks`) — cells the play code steps by one, read off the frame
   program's procedures: `dec` + reload is a divider (its reload is
   `frames_per_tick`), a free `inc` is an LFO phase.
@@ -180,6 +183,48 @@ every declaration, and measurably so: over the corpus it declines 5693 emits' wo
 of lane classifications a blind search would take. That is the point — a byte whose
 declaration the program text never names is not explained by that declaration.
 
+## 4c. The pulse sweep: a `RAMP` whose step is a declared byte
+
+PWM writes pulse width every frame, which is why `pw` is the largest single
+residual. The sweep is a bounded accumulator, and `RAMP(seed, step, bound)` is the
+primitive for it — but a `pw` register is last-write-wins, so a generator that
+merely reproduces the end-of-frame value passes the law without explaining
+anything. **The claim here is about provenance, not about matching values**: the
+step must be a byte the declarations hold and the statement tree names.
+
+- **The store statement names the accumulator** (`_accumulators`). A non-SID store
+  whose value adds (or subtracts) one term to a read of *its own cell* is an
+  accumulator; a pw store whose value reaches that cell is the sweep. Two
+  accumulators reaching one store refuse it.
+- **The step is a declared byte** (`_step_site`). The accumulator's other addend is
+  walked with locals resolved and staged bytes followed (`_read_bases`, §4b), and
+  must reach exactly one declared cell at an offset the declaration does not name
+  `mut` — `("fix", cell)` for a flat declaration, `("lane", decl, off)` for a
+  strided one, read at the row the voice holds (`_hold_rows`, the same recovered row
+  §5 uses). Ambiguity refuses; a step read at a `mut` offset refuses, because a
+  play-written cell is runtime state and not a parameter.
+- **`bound` is the store width, not a fit**: the accumulator is a byte cell, so the
+  bound is `$100` and the wrap is the register's own.
+- **The seed is observed and reported as such.** The accumulator's value is state
+  it produces, not data it reads — on Commando its lane is exactly the one `mut`
+  offset of the `$5591` bank. One run per step cell takes its seed from the run's
+  first emit and predicts the rest; a run that predicts nothing (one emit, or a
+  declared step of zero) is refused, and `Coverage.classes` keeps `seed` apart from
+  `ramp` so the generated figure never absorbs the observed byte.
+- **The evaluator says which writes step.** A pw write `frameval.eval_src` reports
+  no source cell for is the accumulator store — its value was computed, not loaded
+  — and those are the frames the `RAMP` fires on, one step each. A write that
+  loads a cell is §4b's business. Nothing about the run is fitted: given the seed
+  and the declared step the whole stream is determined, and a run that does not
+  regenerate byte-for-byte is refused whole.
+
+On Commando `m_5591[idx_5518] = (m_5591[idx_5518] + idx_5507 + cflag)` feeding
+`sid.v1.pw_lo` is the sweep; `idx_5507` stages `m_5597[t1]`, the `+6` lane of the
+declared `$5591` bank, so the step is that lane at the instrument row. Perturbing
+the declared byte at `$55A7` from `$16` to `$07` to `$21` moves the `RAMP` node's
+step field and the whole emitted stream with it (`80 96 AC C2 …` → `80 87 8E 95 …`
+→ `80 A1 C2 E3 …`), law green throughout: the sweep is generated, not replayed.
+
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
 ctrl and ADSR are written from an instrument bank: a declared const table of
@@ -255,7 +300,7 @@ never folded into a strong figure).
 
 | tune | pitch table | interpreted | freq plane | pw | ctrl | ad | sr |
 |---|---|---|---|---|---|---|---|
-| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2157/2525 = 85.4%** | 1198/1280 = 93.6% | 77/363 | 576/576 | 153/153 | 153/153 |
+| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2366/2525 = 93.7%** | 1198/1280 = 93.6% | 286/363 | 576/576 | 153/153 | 153/153 |
 | Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 444/1164 = 38.1% | 444/722 = 61.5% | 0/0 | 0/29 | 0/7 | 0/4 |
 | Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 1396/4800 = 29.1% | 796/1200 = 66.3% | 0/1200 | 200/600 | 200/600 | 200/600 |
 | Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/600 | 0/48 | 0/17 | 0/17 |
@@ -265,9 +310,11 @@ Of Commando's 576 ctrl emits, **75 are declared-lane reads** and **399 are that
 lane with the gate bit cleared** — 474 strong, all from the `$5591` bank's
 waveform lane at `+2`, the same row its AD (`+3`) and SR (`+4`) lanes read — and
 102 are the `$80` hard-restart immediate. Its 306 ADSR emits are 154 lane reads
-and 152 `ad = sr = 0` release immediates, its 77 pw emits the `+1` lane of the
-same bank, and **1072 of its 1198 freq emits are the declared `$5428` pitch lanes
-at a recovered row** rather than an observed word matched to an ET table.
+and 152 `ad = sr = 0` release immediates, its 286 pw emits 77 reads of the `+1`
+lane of the same bank plus **208 generated by the sweep `RAMP` from one seed and
+the `+6` lane's step** (§4c), and **1072 of its 1198 freq emits are the declared
+`$5428` pitch lanes at a recovered row** rather than an observed word matched to
+an ET table.
 Automatas' 600 refined instrument emits are *all* immediates (`ctrl = ad = sr = 0`,
 one voice held silent every frame) while its 597 new freq emits are all declared
 lanes, which is why the split is reported and never folded into one number.
@@ -349,13 +396,54 @@ replaces is *identification*. Of the corpus's 8538 SID store sites, 5457 (63.9%)
 name a declared table in the tree — 3223 of the 4526 freq/pw sites (71.2%) — and on
 those planes that naming is now the only admissible basis.
 
+### The pulse sweep, and how little of it is declared
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (646 decompile),
+against the table above. The sweep `RAMP` (§4c) moves `pw` **20161 → 20452** of
+561585 (3.59% → 3.64%) and the interpreted share 459144 → **459435** of 1933877
+(23.74% → 23.76%). Every new emit is a sweep emit: `ramp` **+281**, `seed` +10, and
+`pw`'s `lane` count does not move. **No other plane changes by a single emit**, no
+tune loses an interpreted emit, 3 tunes improve and none regress. The canonical
+fixpoint, Gate FP and the tracker law are all unchanged.
+
+That gain is small on purpose, and the measurement says why. Of the 561585 pw
+emits, **158718 (28%) sit in a constant-nonzero-delta run of two or more** — the
+plane really is accumulator-driven. But the accumulator's *parameters* are almost
+never declared data the tree can name:
+
+| where the pw store's byte comes from | emits |
+|---|---|
+| a cell outside every declaration (a RAM accumulator) | 329792 |
+| a computed value, no source cell at all | 181504 |
+| a declared lane, byte agreeing (§4b) | 21083 |
+| a declared cell at a `mut` offset (the accumulator's own lane) | 17728 |
+
+183 tunes have a pw store reading a cell the play code steps, but only 3 have a
+step the declarations hold: the rest step by a **RAM cell the play code copied from
+a table at note-on**, and so do their bounds and their rate. Ahti_01's sweep is a
+textbook 16-bit triangle — `m_6846[x] ± m_684C[x]`, turning around at `m_6852[x]`
+and `m_684F[x]` — with all four parameters in per-voice RAM. An oracle that is
+*allowed to fit*, taking any declared byte at the voice's held row that equals the
+observed delta, still reaches only 7480 emits, because the held row itself is rare
+(`ctrl` is 3.2% declared corpus-wide). So the ceiling for this step is ~1.3% of the
+plane and the honest yield is 0.05%; the rest is not a `RAMP` problem.
+
+What would move it is a frameprog change, not a tracker one: `eval_src` reports
+origins for **SID** stores only (docs/frameprog.md §1.4), so a parameter staged in
+RAM arrives here as an unnameable cell. Reporting the origin of a named non-SID
+store site would make those steps, bounds and rates declared bytes at recovered
+rows, and the accumulator would then be recoverable wherever the tree finds it.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
 the law green and must move emits out of `RAW`, never widen a declaration:
 
-1. **pw** — the seed lane of the instrument bank is now declared data (§4b); what
-   is left is the accumulator itself, a `RAMP` with bounds whose seed that lane is.
+1. **Parameters staged in RAM** — the sweep is a `RAMP` wherever its step is
+   declared (§4c), and almost never is: step, bounds and rate are copied out of a
+   table into RAM at note-on. Reporting a non-SID store site's origin at the
+   frameprog layer is what makes them nameable, and it unlocks the pw residual,
+   the filter plane and every other parameter the play code stages.
 2. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
@@ -389,6 +477,13 @@ the law green and must move emits out of `RAW`, never widen a declaration:
   snapshot (#61), plus 74 emits refused for write order.
 - The gate arm needs a row: a voice that never reads its waveform from a
   declaration has nothing for the gate to ride and stays residual whole.
+- A sweep whose step is a RAM cell stays residual, and that is most of them (§6):
+  the `RAMP` is refused rather than seeded from an observed delta, since a step
+  fitted to the output would pass the law while explaining nothing. A `RAMP` whose
+  run predicts no emit — one write, or a declared step of zero — is refused for the
+  same reason. Only the wrapping bound is implemented; a triangle sweep that turns
+  around at a declared bound needs a transfer this primitive does not have, and no
+  tune in the corpus reaches that limit before the step blocks it.
 - On the lww planes the *table* is transliterated but the *index* is not: the tree
   names `m_5429[t5]`, and `t5` is a live state value no static reading yields, so
   `frameval.eval_src` still recovers it. That index becomes explained when the

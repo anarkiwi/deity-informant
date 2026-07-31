@@ -414,7 +414,7 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ctrl"] == (8, 8)
-    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0}
+    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0}
     _gt, ords, _lww = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
@@ -496,6 +496,87 @@ def test_the_lww_planes_read_the_table_the_store_names_not_the_one_it_indexes():
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["freq"] == (4, 8)  # freq_hi only; the indexed read names no declaration
     assert T._tree_tables(prog, T._banks(prog)) == {1: ((0x2000, 8, 2, frozenset()),)}
+
+
+# ---- 3c. the pulse sweep: a RAMP over a declared step ----------------------------
+def _sweepprog(step_at=0x2001, decls=None):
+    """``(image, program)`` whose play steps `$2000` by ``mem[step_at]`` into pw_lo."""
+    mem = bytearray(0x10000)
+    mem[step_at] = 0x16
+    acc = ("mem", ("const", 0x2000, 2), 1)
+    add = ("op", "INT_ADD", (acc, ("mem", ("const", step_at, 2), 1)), 1)
+    stmts = [
+        ("asg", "t", add),
+        ("st", ("const", 0x2000, 2), ("loc", "t")),
+        ("st", ("const", 0xD402, 2), ("loc", "t")),
+        ("ret",),
+    ]
+    prog = frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=decls or [dict(_table(0x2000, 4), mut=[0])],
+        mem0=mem,
+        procs=[(0x1000, [], [], stmts)],
+    )
+    return mem, prog
+
+
+def _pw(prog, n=6):
+    """The pw_lo bytes ``render`` emits, and the coverage it reports."""
+    recs, _gt, cov, _lanes = T.render(prog, {}, n)
+    return [w[1] for rec in recs for sec in rec for w in sec if w[0] == 2], cov
+
+
+def _ramps(prog, n=6):
+    """The RAMP transfers the rendered graph carries."""
+    graph = T._graph(prog, None, *T._observe(prog, {}, n))[0]
+    return [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
+
+
+def test_pw_sweep_is_a_ramp_over_the_declared_step():
+    """The sweep is generated: one observed seed plus the declaration's step byte."""
+    _mem, prog = _sweepprog()
+    vals, cov = _pw(prog)
+    assert cov.planes["pw"] == (6, 6) and T.gate(prog, {}, 6) is None
+    assert vals == [0x16, 0x2C, 0x42, 0x58, 0x6E, 0x84]
+    assert cov.classes["pw"]["ramp"] == 5 and cov.classes["pw"]["seed"] == 1
+    assert _ramps(prog) == [("RAMP", 0x16, 0x16, 0x100)]
+
+
+def test_perturbing_the_declared_step_changes_the_generated_sweep():
+    """The emitted stream is a function of the declared byte, not of the observation."""
+    mem, prog = _sweepprog()
+    mem[0x2001] = 0x05
+    vals, cov = _pw(prog)
+    assert cov.planes["pw"] == (6, 6) and vals == [0x05, 0x0A, 0x0F, 0x14, 0x19, 0x1E]
+    assert _ramps(prog) == [("RAMP", 0x05, 0x05, 0x100)]  # seed and step are the declared byte
+
+
+def test_a_sweep_whose_step_is_no_declared_byte_stays_residual():
+    """A step the declarations do not hold is not a parameter: the run stays in RAW."""
+    assert _pw(_sweepprog()[1])[1].planes["pw"] == (6, 6)  # the same sweep, step declared
+    _mem, bare = _sweepprog(step_at=0x0900)
+    assert T._accumulators(bare, T._banks(bare)) == {}
+    assert _pw(bare)[1].planes["pw"] == (0, 6) and T.gate(bare, {}, 6) is None
+
+
+def test_a_step_at_a_play_written_offset_is_not_a_parameter():
+    """``mut`` names the accumulator itself; a step read there is runtime state."""
+    assert _pw(_sweepprog()[1])[1].planes["pw"] == (6, 6)  # the same sweep, step not `mut`
+    _mem, dirty = _sweepprog(decls=[dict(_table(0x2000, 4), mut=[0, 1])])
+    assert T._accumulators(dirty, T._banks(dirty)) == {}
+    assert _pw(dirty)[1].planes["pw"] == (0, 6)
+
+
+def test_mutation_wrong_ramp_step_is_detected():
+    """The law fails on a wrong step, so the sweep is generated rather than replayed."""
+    _mem, prog = _sweepprog()
+    assert _pw(prog)[1].planes["pw"] == (6, 6)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 6))[0]
+    assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is None
+    i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "RAMP")
+    graph.nodes[i] = graph.nodes[i]._replace(transfer=("RAMP", 0x16, 0x17, 0x100))
+    assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is not None
 
 
 # ---- 4. the engine and the law over real tunes -----------------------------------
@@ -587,7 +668,25 @@ def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, 
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
     assert {r % 7 for _c, _t, r in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
     cov = T.render(prog, trace, nf)[2]
-    assert cov.planes["pw"][0] > 0 and cov.classes["pw"]["lane"] == cov.planes["pw"][0]
+    assert cov.planes["pw"] == (192, 245)  # 53 lane reads at +1, the rest the swept +0
+    pw = cov.classes["pw"]
+    assert pw["lane"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
+    assert pw["lane"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_pw_sweep_is_generated_from_the_declared_step_lane(sid, subtune):
+    """The +6 lane of the `$5591` bank is the step; the sweep is a RAMP over it."""
+    prog, trace, nf = _lifted(sid, subtune)
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.planes["pw"][0] > 150  # 53 declared-lane emits before the sweep is generated
+    assert T._accumulators(prog, T._banks(prog)) == {
+        2: (("lane", (0x5591, 263, 8, frozenset({0})), 6), 1)
+    }
+    assert cov.classes["pw"]["ramp"] > 100 and cov.classes["pw"]["seed"] < 10
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    ramps = [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
+    assert ramps and all(t[2] == prog.mem0[0x55A7] for t in ramps)  # the declared step byte
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
