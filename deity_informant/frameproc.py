@@ -7,6 +7,7 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+from . import grammar as G
 from . import sidprog
 from . import structured as C
 
@@ -1313,9 +1314,11 @@ def _membody(addr):
     return None
 
 
-def _memref(addr):
+def _memref(addr, sz=1):
     body = _membody(addr)
-    return body if body is not None else "mem[%s]" % _fmt(addr)
+    if body is None:
+        body = "mem[%s]" % _fmt(addr)
+    return body + sidprog._wsuf(sz)
 
 
 def _fmt(n):
@@ -1325,7 +1328,7 @@ def _fmt(n):
     if k == "loc":
         return n[1]
     if k == "mem":
-        return _memref(n[1])
+        return _memref(n[1], n[2])
     mn, kids, sz = n[1], n[2], n[3]
     if mn == "INT_ZEXT":
         return "zext%d(%s)" % (sz, _fmt(kids[0]))
@@ -1419,7 +1422,7 @@ class _Printer:
         elif k == "asg":
             self.line("%s = %s" % (s[1], _fmt(s[2])), d + 1)
         elif k == "st":
-            self.line("%s = %s" % (_memref(s[1]), _fmt(s[2])), d + 1)
+            self.line("%s = %s" % (_memref(s[1], G.store_width(s[2])), _fmt(s[2])), d + 1)
         elif k == "if":
             self._if(s, d)
         elif k == "loop":

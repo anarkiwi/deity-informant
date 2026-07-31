@@ -8,8 +8,10 @@ committed model and verified against the projection of the walker's log.
 Status: design for review; landed already: the projection + digi rule in the
 pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
-(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent). "MUST" is a gate. Measurements: 2026-07-25, 140 cached tunes, 1,000-frame windows unless
-noted; scratch probes, numbers herein are the record.
+(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent) and rung (d)'s 16-bit
+fusion (`framefuse.py`, §4.3 and §6 M-FP3). "MUST" is a gate. Measurements:
+2026-07-25, 140 cached tunes, 1,000-frame windows unless noted; scratch probes,
+numbers herein are the record.
 
 ## 1. Verification law (Gate FP)
 
@@ -65,12 +67,23 @@ MUST be added to the corpus to exercise the exclusion path.
 
 ### 1.3 Volatile inputs: the pinned trace
 
-The v1 walker's volatile reads are pure functions of its cycle counter
-($D011/$D012 raster, $D41B osc3, $D41C envelope3) or tiny deterministic
-latches ($D019 write-ack, $DC0D read-clear). frameprog has no cycle counter:
-these become **declared nondeterministic inputs** `raster()`, `raster_hi()`,
-`osc3()`, `envelope3()`, `cia_icr()`; $D019 stays a deterministic
-program-visible latch (reads are a function of prior writes).
+The v1 walker's volatile model has exactly two classes, and frameprog's
+vocabulary is that model's, not a second reading of the hardware:
+
+- **cycle-derived** (`structured._VOL`): $D011/$D012 raster, $D41B osc3, $D41C
+  envelope3 — pure functions of the walker's cycle counter. frameprog has no
+  cycle counter, so these and only these become **declared nondeterministic
+  inputs** `raster()`, `raster_hi()`, `osc3()`, `envelope3()`.
+- **constant-0 sources** (`structured._VOL0`): the interrupt-source latches
+  $D019 (VIC, write-ack) and $DC0D (CIA, read-clear). Under the v1 per-frame
+  driver nothing raises those flags, so both read 0 for the whole run
+  (decompiler-implementation.md §8.1) — a constant, not a cycle position. They
+  are therefore **neither declared inputs nor state**: not inputs, because a
+  constant needs no trace and the walker inlines the read rather than calling
+  the pinning hook, so `iota` cannot record one; not state, because their value
+  is independent of the image byte and of any prior write. The evaluator reads
+  them as the walker does. The read-clear/write-ack latches return with the
+  driver cadence of v2 (§5), where a handler can dispatch on who fired.
 
 The projection **pins** them: while projecting the walker's run, every
 volatile read is also logged as `iota(f, input, k) = value` — the k-th read
@@ -80,7 +93,10 @@ to `iota(f, input, k)`; an undeclared volatile read, or a read past the
 trace, faults (guarded-envelope doctrine). There is exactly ONE volatile
 model — the walker's — and frameprog never re-derives cycle positions; both
 sides of the law consume the same `iota` by construction, so the law is
-well-defined. For standalone replay the artifact MAY embed `iota`
+well-defined. That construction is a *set* equality as much as a value one:
+the declared input set is keyed on `structured._VOL` (`frameprog._INPUTS`), so
+what the evaluator demands from the trace is exactly what the walker's pinning
+hooks can put there. For standalone replay the artifact MAY embed `iota`
 (run-length encoded) as an `inputs` section. Measured: 3 of 140 tunes read
 any volatile input in play (Atmosphere, Atmosphere_II, Chameleon — osc3
 only).
@@ -246,11 +262,14 @@ valid, gated artifact.
   cycles. Switch arms identical after stripping MAY merge (report-noted).
   Gate: FP unchanged.
 - **(b) Volatile reads → declared inputs.** Rewrite each constant-address
-  volatile load to its input expression; keep the $D019/$DC0D micro-models.
-  Premise: every load that MAY address the volatile range is statically a
-  single volatile cell; a computed address unprovably intersecting the
-  volatile set refuses (site diagnostic). Gate: FP; the declared input set
-  MUST equal the set `iota` actually records.
+  cycle-derived load to its input expression; a constant-0 source folds to the
+  constant (§1.3), which is why it is not an input. Premise: every load that
+  MAY address the volatile range is statically a single volatile cell; a
+  computed address unprovably intersecting the volatile set refuses (site
+  diagnostic). Gate: FP; the declared input set MUST cover the domain of
+  `iota` and admit no address the walker cannot pin. Equality of the two holds
+  per *executed* read: `inputs` is the statically referenced set, so a read on
+  a path the run never takes is declared and never recorded.
 - **(c) In-frame dead-store elimination + canonical write section.** Flush
   semantics is already canonical (§1.4); rung (c) deletes SID stores
   provably non-final for a last-write-wins register (a later write to the
@@ -258,11 +277,12 @@ valid, gated artifact.
   registers are never deleted. Premise: the dominance proof per deleted
   store; unprovable keeps the store (harmless — the buffer collapses it).
   Gate: FP.
-- **(d) 16-bit fusion.** Fuse lo/hi state-variable pairs — including the §2
-  dispatch words — and render freq/pulse/cutoff as u16 in the canonical
-  section (presentational: the projection emits lo,hi adjacent). Premise
-  per pair: provably written/consumed as a word — the datadecl pointer-pair
-  machinery (`lo`/`hi` partner attrs) plus the paired-index zip invariant
+- **(d) 16-bit fusion** (landed, `deity_informant/framefuse.py`; §4.3 for the
+  measurement). Fuse lo/hi state-variable pairs — including the §2 dispatch
+  words — and render freq/pulse/cutoff as u16 in the canonical section
+  (presentational: the projection emits lo,hi adjacent). Premise per pair:
+  provably written/consumed as a word — the datadecl pointer-pair machinery
+  (`lo`/`hi` partner attrs) plus the paired-index zip invariant
   (follin-dispatch-study §4), every read using the half only inside
   `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
   per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
@@ -399,20 +419,85 @@ binding would materialise as `zext2(zext2(t0))` and break the sidprog fixpoint;
 the grammar carries the wider form for both dialects, the sidprog emitter does
 not use it.
 
-## 5. Risk register
+### 4.3 16-bit fusion: what the evidence buys, per pair
+
+Rung (d) is `deity_informant/framefuse.py`. A candidate pair is named by the
+committed model, never by shape-matching the text: a **pointer pair** from the
+`streams` classifier that `datadecl`'s `lo`/`hi` partner attributes are built on,
+or a **dispatch operand word** the paired-index zip closure proved
+(follin-dispatch-study §4). The premise is then discharged against the statement
+trees — the halves are adjacent cells, every read of a half sits inside a
+`lo | hi<<8` shape, and the two half stores are adjacent statements whose second
+value provably cannot read the first cell — and each candidate leaves a
+`structured.Proof` on `FrameProgram.proofs`, fused or refused, carrying the
+evidence, the counts and the refusal. Fusion is notation over two adjacent cells:
+`m_0021:2` reads and writes exactly the bytes the two halves did, in the same
+order, so **no record can move** and the store provenance `eval_src` reports is
+unchanged (a word load at a pure address contributes both of its cells, exactly
+as the two byte loads did). A fused pair is one `u16` `state { }` field named off
+its `_lo` suffix; the width suffix is the grammar's, now carried by an lvalue and
+by the indexed and raw memref forms as well ([grammar.md](grammar.md)).
+
+**Two granularities, one rule.** A *state* pair is a tune-wide declaration, so
+one lone-half access anywhere refuses it outright and it stays two `u8` fields —
+per pair, never per tune, and the rest of the tune still fuses. A *SID* register
+pair declares nothing beyond the two statements it rewrites: freq, pulse and
+cutoff are last-write-wins and §1.1 emits lo,hi adjacent whatever order the
+driver wrote them in, so its premise is per store site — an adjacent lo/hi pair
+at one index fuses (hi-first included; the packed value keeps the driver's
+evaluation order), and a lone half elsewhere leaves that site alone.
+
+Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
+(650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical
+fixpoint 649/649, both unchanged**, as the argument above requires; the tracker
+law is likewise 649/649.
+
+Of the **1296** state-pair candidates the model named — 1238 pointer pairs and 58
+dispatch operand words — **584 fuse and 712 refuse**: 518 for a lone-half read,
+191 for a half store with no adjacent partner, 2 for the write-order hazard and 1
+with no word access at all. Per tune, of 649: **183 fuse every candidate they
+have, 97 fuse some and refuse others**, 342 refuse all of them and 27 have no
+state pair. Emitted text 9571703 → **9522243** bytes (−0.52%); raw `mem[`
+occurrences are **unchanged at 10280**, because what fusion names is the pointer
+*word* and the deref it feeds still has no const base for §4.2's indexed form to
+name — precisely the residue §4(f) inherits.
+
+The tracker's value partition over the same corpus is **byte-identical** before
+and after — 752598/1942809 = 38.74%, freq 417490, pw 89850, ctrl 112502, filter
+22301, sr 56019, ad 54436, triggers 300/306277 — with **zero** tunes moving in
+either direction. That is the expected result and worth stating as one: the
+tracker reads the SID stores' statement trees and `eval_src`'s per-register
+provenance, and state-pair fusion rewrites neither.
+
+**SID fusion is opt-in** (`frameprog.program(model, sid_fusion=True)`), and off
+by default, because it is presentational and it costs the consumer. Of the
+**2069** SID pairs a store site addresses, 916 fuse every site, 228 fuse some and
+leave the rest split, and 925 have no adjacent lo/hi store site at all; the
+tracker's value partition then falls to **699551/1942809 = 36.01%** on 250 tunes,
+all of it in pw (89850 → 48346), freq (417490 → 407148) and filter (22301 →
+21100), ctrl/sr/ad untouched. Gate FP and the fixpoint still hold 649/649, so
+this is not a correctness cost.
+The tracker keys its last-write-wins planes per register and identifies a lane by
+the declaration the *store statement* names (docs/tracker.md §5); one word store
+names one class, so the hi half's class loses its tree-named table and falls back
+to searching every bank. That is a tracker question, not a fusion one, and it is
+recorded here rather than compensated for.
 
 | risk | disposition |
 |---|---|
 | Multi-call-per-frame / multispeed drivers | v1 class: frame = the play invocation, settled. v2/P-INT redefines the frame as the driver-cadence tick; the projection then applies per tick and the digi rule re-triggers (fast CIA volume writes). Deferred with v2. `play == 0` tunes are in the v1 class as of the handler entry (docs/decompiler-implementation.md §8.1): one handler invocation per frame, entered through a synthetic IRQ dispatch stub, so the frame is still the play invocation and Gate FP holds unchanged. |
 | Digi / $D418 order | Closed by the class rule (§1.2): $D418 is last-write-wins; a >2-step collapsed volume sequence excludes with a precise diagnostic; 2-step frames collapse with a reported metric. Corpus: 0 exclusions; a digi tune MUST be added to exercise the path. |
+| The two sides disagreeing on what a volatile input *is* (fixed) | Closed. `frameprog._INPUTS` declared $DC0D a nondeterministic input `cia_icr()` while the walker's `_VOL0` inlines that read as the constant 0 at block-compile time, never calling the pinning hook: `iota` could not record what the evaluator then demanded, so the first read of frame 0 faulted `past the pinned trace` — the one-model claim of §1.3 violated in the *set* of inputs, not in a value. 3 of 682 cached tunes (`4k_Digi_Competition_Entry`, `Chotmix`, `5_Channels_of_Feekzoid_Noise`), none digi-class. The declared set is now keyed on `structured._VOL`, so an address the walker cannot pin cannot be declared, and the evaluator resolves `structured._VOL0` to 0 exactly as the walker does instead of naming $D019 alone. Repaired frameprog-side by construction: the walker's constant-0 model is the v1 ground truth Gate C already verifies (decompiler-implementation.md §8.1), not an approximation to correct here. |
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
+| Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Closed. The surface serializes the transfer as a bare `ret` and the evaluator returns machine-faithfully through `sp` and the stack image. `PHA`-pushed targets were unrecoverable only because the passes treated `sp` as an ordinary local and eliminated its updates; `sp` is machine state (`call`/`ret` move it, pushed bytes land at addresses derived from it), so it is now exempt from pruning, from inlining and from the faint-assignment rule. `_fuzzgen.t_rts_trick` passes and `_FP_GAP` is empty. |
 | Inline callee body entered by `call` (fixed) | Closed. A label some `call` targets is a mini-procedure: its exit returns to the call sites and may be re-entered, so a local it updates stays live. `_scan_list` collected `goto` targets and labels but never `call` targets, so the sweep treated the body's end as textual fall-through and `_prune` deleted a live update. `_Info.call_labels` now records them and both sweeps keep the machine set live from such a label onward. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
+| A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but costs the tracker 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
 
 ## 6. Milestones and corpus gates
 
@@ -448,18 +533,37 @@ HVSC absent (decompiler-implementation.md §1, §7).
   trees; and the reference evaluator: statement trees compile to one flat op
   array over a program-wide local environment and the `mem0` state image,
   volatile reads resolve to `iota(f, input, k)`, SID writes buffer per frame
-  and flush through `framelog.canonical`. Gate FP holds on **all 16**
+  and flush through `framelog.canonical`. Gate FP holds on **all 19**
   `tests/_fuzzgen` player classes (`_FP_GAP` empty) and on Commando at full
-  Songlengths length; measured 2026-07-29 over a 140-tune cached-corpus sample
-  at 300-frame windows, **123 pass and 0 diverge**. The remaining 17 never
-  reach the gate: sidprog declines to model them (12 `DecompileError`, 5
-  walker `RuntimeError`), so **frameprog-attributable failures are zero** on
-  this sample. The same sample scored 96 before the three liveness fixes of §5
-  (goto-into-later-arm, `call`-entered inline bodies, `sp` as machine state):
-  96 → 111 → 123, none regressed. Outstanding for M-FP2: the rung (a)-(c)
-  proof records, and the 17 upstream refusals are a sidprog question.
-- **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
-  refusal exercised synthetically.
+  Songlengths length. Measured 2026-07-31 over the **whole cached corpus** —
+  682 tunes, PSID start subtune, 200-frame windows: **650 decompile**, of those
+  **Gate FP passes 649** and the tracker law 649. The 32 that never reach the
+  gate are sidprog refusals (19 `runaway in init`, 10 `play $0000` installing
+  no interrupt vector, 3 unmodelled `brk`); **one frameprog-attributable
+  failure remains** — `C64_World`'s inline-parameter `JSR` (§5), one site of
+  one class. The earlier record on this line, "frameprog-attributable failures
+  are zero" over a 140-tune sample at 300-frame windows (2026-07-29, 123 pass
+  and 0 diverge), was true of that sample and **false at 682**: the same sweep
+  found 3 tunes faulting `iota(0, cia_icr, 0) past the pinned trace`, the
+  §1.3 input-set divergence now closed (§5) — Gate FP 646 → 649, the tracker
+  law 646 → 649, and the tracker's value partition 747709/1933877 = 38.66% →
+  752598/1942809 = 38.74%, the whole delta being those three tunes' 4889 of
+  8932 emits and every other tune's row byte-identical. The 140-tune sample
+  scored 96 before the three liveness fixes of §5 (goto-into-later-arm,
+  `call`-entered inline bodies, `sp` as machine state): 96 → 111 → 123, none
+  regressed. Outstanding for M-FP2: the rung (a)-(c) proof records, and the
+  upstream refusals are a sidprog question.
+- **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
+  measurement): the state-pair fusion with a `structured.Proof` per candidate
+  pair, and the SID register pairs analysed and recorded but rewritten only
+  under `sid_fusion=True`. Gate: FP 649/649 and the canonical fixpoint 649/649,
+  both unchanged over the 682-tune corpus. `tests/_fuzzgen` carries the
+  `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
+  synthetic refusals — lone half, unpaired half store, write-order hazard — plus
+  the mutation evidence that a wrongly fused pair moves the record (non-adjacent
+  halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
+  proof records are still M-FP2's debt, and whether SID fusion ships by default
+  is a tracker decision, not a frameprog one.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported

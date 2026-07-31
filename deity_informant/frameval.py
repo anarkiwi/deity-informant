@@ -8,9 +8,11 @@ buffer per frame and flush through the single projection ``framelog.canonical``.
 from __future__ import annotations
 
 from . import expr as E
+from . import framefuse
 from . import framelog
 from . import frameproc
 from . import frameprog
+from . import grammar as G
 from . import sidprog
 from . import structured as C
 
@@ -52,12 +54,21 @@ def _pure(n):
     return k == "op" and all(_pure(c) for c in n[2])
 
 
+def _byte_addr(a, j):
+    """Address of byte ``j`` of a load at ``a`` (a word load reads two cells)."""
+    if j == 0:
+        return a
+    if a[0] == "const":
+        return ("const", (a[1] + j) & 0xFFFF, 2)
+    return ("op", "INT_ADD", (a, ("const", j, 2)), 2)
+
+
 def _addrs(n):
-    """Addresses of every 1-byte memory load at a pure address inside ``n``."""
+    """Addresses of every byte a memory load at a pure address inside ``n`` reads."""
     out = []
     if n[0] == "mem":
-        if n[2] == 1 and _pure(n[1]):
-            out.append(n[1])
+        if _pure(n[1]):
+            out += [_byte_addr(n[1], j) for j in range(n[2])]
         out += _addrs(n[1])
     elif n[0] == "op":
         for c in n[2]:
@@ -212,7 +223,13 @@ class _Code:
         self.emit(("asg", self.slot(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
 
     def _s_st(self, s, _ctx):
-        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
+        sz = G.store_width(s[2])
+        if sz == 1:
+            self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
+            return
+        halves = framefuse.unpack(s[2]) or (s[2],) * sz
+        derv = tuple(self.deriv(h) for h in halves)
+        self.emit(("stw", self.expr(s[1]), self.expr(s[2]), derv, self.tag(s), sz))
 
     def deriv(self, val):
         """``(address closure, taint slots)``: where a stored byte may be copied from.
@@ -434,10 +451,14 @@ class Evaluator:
         self.play = self.code.entries[prog.play]
 
     def _rd(self, a):
-        """Volatile-aware state read: declared inputs resolve to iota(f, name, k)."""
+        """Volatile-aware state read: declared inputs resolve to iota(f, name, k).
+
+        The one volatile model is the walker's: its cycle-derived reads are the
+        pinned inputs, its constant-0 sources (``structured._VOL0``) read 0 here
+        exactly as they do there, whatever byte the state image holds."""
         name = frameprog._INPUTS.get(a)
         if name is None:
-            return 0 if a == 0xD019 else self.m[a]
+            return 0 if a in C._VOL0 else self.m[a]
         if name not in self.inputs:
             raise FrameFault("undeclared volatile input %s" % name)
         k = self.k.get(name, 0)
@@ -505,6 +526,19 @@ class Evaluator:
                     if op[4] is not None:
                         wat.append((op[4], a, _derived(op[3], r, m, rd, prov, ploc)))
                     _bind(prov, a, _copy(op[3], r, m, rd, prov, ploc))
+            elif k == "stw":
+                a, v = op[1](r, m, rd), op[2](r, m, rd)
+                for j in range(op[5]):
+                    c = (a + j) & 0xFFFF
+                    m[c] = (v >> (8 * j)) & 0xFF
+                    if C.SID_LO <= c <= C.SID_HI:
+                        buf.append((c - C.SID_LO, m[c]))
+                        if prov is not None:
+                            srcs.append(_derived(op[3][j], r, m, rd, prov, ploc))
+                    elif prov is not None:
+                        if op[4] is not None:
+                            wat.append((op[4], c, _derived(op[3][j], r, m, rd, prov, ploc)))
+                        _bind(prov, c, _copy(op[3][j], r, m, rd, prov, ploc))
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
                     pc = op[3]

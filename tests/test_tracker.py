@@ -312,7 +312,7 @@ def test_adsr_reads_a_declared_lane_at_a_recovered_row():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ad"] == (4, 4) and cov.planes["sr"] == (4, 4)
-    _gt, ords, _lww = T._observe(prog, {}, 4)
+    _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     pre, post, refined = _instr(prog, ords)
     assert refined == {5, 6} and not pre
     got = {r: t for _c, t, r in post}
@@ -402,7 +402,7 @@ def test_a_voice_whose_section_cannot_be_rebuilt_keeps_every_write(monkeypatch):
     """A refused voice falls all the way back to the RAW floor, so nothing is lost."""
     mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
     prog = _rowprog(mem, decl, [(5, _sel(0x2000, 2, "i"))], step=4)
-    _gt, ords, _lww = T._observe(prog, {}, 4)
+    _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     monkeypatch.setattr(T, "_refine_voice", lambda *a: None)
     pre, post, resid = T._instr_streams(prog, ords, {}, T._banks(prog))
     assert not pre and not post
@@ -469,8 +469,8 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ctrl"] == (8, 8)
-    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0}
-    _gt, ords, _lww = T._observe(prog, {}, 4)
+    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0, "mask": 0}
+    _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
     (t,) = [t for _c, t, r in post if r == 4]
@@ -534,7 +534,7 @@ def test_freq_is_the_declared_table_the_store_names_at_a_recovered_row():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["freq"] == (8, 8) and cov.classes["freq"]["lane"] == 8
-    _gt, _ords, lww = T._observe(prog, {}, 4)
+    _gt, _ords, lww, _acc = T._observe(prog, {}, 4)
     banks = T._banks(prog)
     streams, _e = T._lww_streams(lww, T._tree_tables(prog, banks), mem)
     got = {r: t for _c, t, r in streams}
@@ -554,33 +554,54 @@ def test_the_lww_planes_read_the_table_the_store_names_not_the_one_it_indexes():
     assert T._tree_tables(prog, T._banks(prog)) == {1: ((0x2000, 8, 2, frozenset()),)}
 
 
-# ---- 3c. the pulse sweep: a RAMP over a declared step ----------------------------
-def _sweepprog(step_at=0x2001, decls=None):
-    """``(image, program)`` whose play steps `$2000` by ``mem[step_at]`` into pw_lo."""
-    mem = bytearray(0x10000)
-    mem[step_at] = 0x16
-    acc = ("mem", ("const", 0x2000, 2), 1)
-    add = ("op", "INT_ADD", (acc, ("mem", ("const", step_at, 2), 1)), 1)
-    stmts = [
-        ("asg", "t", add),
-        ("st", ("const", 0x2000, 2), ("loc", "t")),
-        ("st", ("const", 0xD402, 2), ("loc", "t")),
+# ---- 3c. the pulse sweep: a RAMP whose step the origin map names ------------------
+_ACC, _STAGE, _RAM = 0x0800, 0x0900, 0x0A00
+_SWEEP_LANE = (0x16, 0x33)
+
+
+def _sweepstmts(step, reg, extra=()):
+    """Stage ``step`` in RAM, add it to `$0800`, and write the sum to a SID register."""
+    acc = ("mem", ("const", _ACC, 2), 1)
+    return [
+        ("st", ("const", _STAGE, 2), step),
+        ("asg", "t", ("op", "INT_ADD", (acc, ("mem", ("const", _STAGE, 2), 1)), 1)),
+        ("st", ("const", _ACC, 2), ("loc", "t")),
+        ("st", ("const", 0xD400 + reg, 2), ("loc", "t")),
+        *extra,
         ("ret",),
     ]
-    prog = frameprog.FrameProgram(
-        0x1000,
-        0x0F00,
-        decls=decls or [dict(_table(0x2000, 4), mut=[0])],
-        mem0=mem,
-        procs=[(0x1000, [], [], stmts)],
+
+
+def _sweepprog(src=0x2001, decl=None, reg=0x02, lane=_SWEEP_LANE):
+    """``(image, program)`` whose step is staged in RAM from ``src``, then re-staged.
+
+    No SID store reads the staging cell, so only the queried origin map names where the
+    byte came from; the re-stage from row 1 after the step means a frame-end snapshot
+    of that map names the wrong row."""
+    mem, table = _bank(0x2000, len(lane), 4, {1: list(lane)})
+    mem[_RAM] = lane[0]  # an undeclared cell holding the same byte
+    back = ("st", ("const", _STAGE, 2), ("mem", ("const", 0x2005, 2), 1))
+    stmts = _sweepstmts(("mem", ("const", src, 2), 1), reg, (back,))
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl or table], mem0=mem, procs=[(0x1000, [], [], stmts)]
     )
-    return mem, prog
 
 
-def _pw(prog, n=6):
-    """The pw_lo bytes ``render`` emits, and the coverage it reports."""
+def _rowsweepprog(lane, decl=None):
+    """``(image, program)`` re-staging the step from a lane row that advances per frame."""
+    mem, table = _bank(0x2000, len(lane), 4, {1: list(lane)})
+    cell = ("mem", ("const", 0x0801, 2), 1)
+    bump = ("st", ("const", 0x0801, 2), ("op", "INT_ADD", (cell, ("const", 4, 1)), 1))
+    stmts = [("asg", "i", cell)] + _sweepstmts(_sel(0x2000, 1, "i"), 0x02, (bump,))
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl or table], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def _pw(prog, n=6, reg=2):
+    """The bytes ``render`` emits into ``reg``, and the coverage it reports."""
     recs, _gt, cov, _lanes = T.render(prog, {}, n)
-    return [w[1] for rec in recs for sec in rec for w in sec if w[0] == 2], cov
+    return [w[1] for rec in recs for sec in rec for w in sec if w[0] == reg], cov
 
 
 def _ramps(prog, n=6):
@@ -589,14 +610,23 @@ def _ramps(prog, n=6):
     return [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
 
 
-def test_pw_sweep_is_a_ramp_over_the_declared_step():
-    """The sweep is generated: one observed seed plus the declaration's step byte."""
+def test_pw_sweep_is_a_ramp_over_a_ram_staged_declared_step():
+    """The step is a RAM cell; the origin map names the declared byte it was copied from."""
     _mem, prog = _sweepprog()
     vals, cov = _pw(prog)
     assert cov.planes["pw"] == (6, 6) and T.gate(prog, {}, 6) is None
     assert vals == [0x16, 0x2C, 0x42, 0x58, 0x6E, 0x84]
     assert cov.classes["pw"]["ramp"] == 5 and cov.classes["pw"]["seed"] == 1
     assert _ramps(prog) == [("RAMP", 0x16, 0x16, 0x100)]
+
+
+def test_the_step_origin_is_read_per_execution_not_off_a_frame_snapshot():
+    """The cell is re-staged after the step, so the last row written is not the one read."""
+    mem, prog = _sweepprog()
+    pools = T._observe(prog, {}, 6)[3][0]
+    assert [sorted(p[_ACC]) for p in pools] == [sorted((_ACC, _STAGE, 0x2001))] * 6
+    assert mem[0x2005] == 0x33 != mem[0x2001]  # what a frame-end snapshot would name
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (_ACC, 1)}
 
 
 def test_perturbing_the_declared_step_changes_the_generated_sweep():
@@ -611,28 +641,67 @@ def test_perturbing_the_declared_step_changes_the_generated_sweep():
 def test_a_sweep_whose_step_is_no_declared_byte_stays_residual():
     """A step the declarations do not hold is not a parameter: the run stays in RAW."""
     assert _pw(_sweepprog()[1])[1].planes["pw"] == (6, 6)  # the same sweep, step declared
-    _mem, bare = _sweepprog(step_at=0x0900)
-    assert T._accumulators(bare, T._banks(bare)) == {}
+    _mem, bare = _sweepprog(src=_RAM)  # the same stream, staged from an undeclared cell
+    assert T._accumulators(bare, T._acc_sites(bare)[2]) == {2: (_ACC, 1)}
+    assert _pw(bare)[0] == _pw(_sweepprog()[1])[0]
     assert _pw(bare)[1].planes["pw"] == (0, 6) and T.gate(bare, {}, 6) is None
 
 
 def test_a_step_at_a_play_written_offset_is_not_a_parameter():
-    """``mut`` names the accumulator itself; a step read there is runtime state."""
+    """``mut`` names a play-written lane; a step staged from there is runtime state."""
     assert _pw(_sweepprog()[1])[1].planes["pw"] == (6, 6)  # the same sweep, step not `mut`
-    _mem, dirty = _sweepprog(decls=[dict(_table(0x2000, 4), mut=[0, 1])])
-    assert T._accumulators(dirty, T._banks(dirty)) == {}
-    assert _pw(dirty)[1].planes["pw"] == (0, 6)
+    _mem, dirty = _sweepprog(decl=_muted(_table(0x2000, 8, stride=4), [1]))
+    assert _pw(dirty)[1].planes["pw"] == (0, 6) and T.gate(dirty, {}, 6) is None
 
 
-def test_mutation_wrong_ramp_step_is_detected():
-    """The law fails on a wrong step, so the sweep is generated rather than replayed."""
+def test_a_run_that_predicts_nothing_is_refused():
+    """A declared step of zero and a run of one emit each generate no further byte."""
+    _mem, flat = _sweepprog(lane=(0x00, 0x33))
+    assert _pw(flat)[0] == [0] * 6 and _pw(flat)[1].planes["pw"] == (0, 6)
+    _mem, prog = _sweepprog()
+    assert _pw(prog, 1)[1].planes["pw"] == (0, 1) and T.gate(prog, {}, 1) is None
+
+
+def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
+    """A stream that stops regenerating ends its run; the next starts at its own seed."""
+    _mem, prog = _rowsweepprog((0x10, 0x10, 0x33, 0x33))
+    vals, cov = _pw(prog, 4)
+    assert vals == [0x10, 0x20, 0x53, 0x86] and T.gate(prog, {}, 4) is None
+    assert cov.planes["pw"] == (4, 4)
+    assert cov.classes["pw"] == {"lane": 0, "gate": 0, "imm": 0, "ramp": 2, "seed": 2, "mask": 0}
+    assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
+
+
+def test_a_run_the_ramp_cannot_regenerate_is_refused_whole():
+    """One stepped emit whose origin is undeclared refuses the run, not just that emit."""
+    _mem, prog = _rowsweepprog((0x10, 0x10, 0x10))
+    assert _pw(prog, 3)[1].planes["pw"] == (3, 3)  # every step's origin is a declared byte
+    _mem, cut = _rowsweepprog((0x10, 0x10, 0x10), decl=_table(0x2000, 8, stride=4))
+    vals, cov = _pw(cut, 3)  # the same stream, the third row outside the declaration
+    assert vals == [0x10, 0x20, 0x30] and cov.planes["pw"] == (0, 3)
+    assert T.gate(cut, {}, 3) is None and not _ramps(cut, 3)
+
+
+def test_the_cutoff_sweep_is_the_same_accumulator_as_the_pulse_sweep():
+    """$16 is swept by an accumulator too, and takes the filter plane's own class."""
+    _mem, prog = _sweepprog(reg=0x16)
+    vals, cov = _pw(prog, reg=0x16)
+    assert vals == [0x16, 0x2C, 0x42, 0x58, 0x6E, 0x84] and T.gate(prog, {}, 6) is None
+    assert cov.planes["filter"] == (6, 6) and cov.classes["filter"]["ramp"] == 5
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {0x16: (_ACC, 1)}
+
+
+def test_mutation_wrong_ramp_step_or_seed_is_detected():
+    """The law fails on a wrong step and on a wrong seed: the sweep is generated."""
     _mem, prog = _sweepprog()
     assert _pw(prog)[1].planes["pw"] == (6, 6)
     graph = T._graph(prog, None, *T._observe(prog, {}, 6))[0]
     assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is None
     i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "RAMP")
-    graph.nodes[i] = graph.nodes[i]._replace(transfer=("RAMP", 0x16, 0x17, 0x100))
-    assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is not None
+    for bad in (("RAMP", 0x16, 0x17, 0x100), ("RAMP", 0x17, 0x16, 0x100)):
+        nodes = list(graph.nodes)
+        nodes[i] = nodes[i]._replace(transfer=bad)
+        assert F.diff(T.eval_graph(T.Graph(nodes), 6), T.oracle(prog, {}, 6)) is not None
 
 
 # ---- 3d. the filter plane: $15-$18 off the store statement, in its own class ------
@@ -654,7 +723,7 @@ def test_filter_is_the_declared_table_the_store_names_at_a_recovered_row():
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["filter"] == (12, 12) and cov.classes["filter"]["lane"] == 12
     assert cov.classes["filter"]["imm"] == 0  # declared bytes only, nothing shallow
-    _gt, _ords, lww = T._observe(prog, {}, 4)
+    _gt, _ords, lww, _acc = T._observe(prog, {}, 4)
     streams, _e = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), mem)
     got = {r: t for _c, t, r in streams}
     assert got[0x15] == ("SELECT", tuple(_FILTER_LANES[0]), (0, 1, 2, 3))
@@ -729,6 +798,270 @@ def test_mutation_a_wrong_filter_byte_or_row_is_detected():
     assert row is not None and row.section == "filter"
 
 
+# ---- 3e. the trigger domain: a DIV whose divisor is a declared reload -------------
+_COUNTER = 0x0801
+
+
+def _dividerprog(n, reload_=None, decl=None, base=0x2000, nrows=4):
+    """``(image, program)`` ticking every ``n`` frames, reading an AD lane on the tick.
+
+    The counter steps down, reloads with ``reload_`` (the immediate ``n`` by default)
+    and only the tick body writes the register, so the AD stream's edges are the
+    divider's ticks."""
+    mem, table = _bank(base, nrows, 4, {2: list(range(0x11, 0x11 + nrows))})
+    mem[_COUNTER] = n
+    dec = ("op", "INT_SUB", (("mem", ("const", _COUNTER, 2), 1), ("const", 1, 1)), 1)
+    tick = [
+        ("st", ("const", _COUNTER, 2), ("const", n, 1) if reload_ is None else reload_),
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD405, 2), _sel(base, 2, "i")),
+        (
+            "st",
+            ("const", 0x0800, 2),
+            ("op", "INT_ADD", (("mem", ("const", 0x0800, 2), 1), ("const", 4, 1)), 1),
+        ),
+    ]
+    stmts = [
+        ("asg", "c", dec),
+        ("st", ("const", _COUNTER, 2), ("loc", "c")),
+        ("if", "if", ("op", "INT_EQUAL", (("loc", "c"), ("const", 0, 1)), 1), tick, []),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl or table], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def _fires(prog, nframes=8):
+    """``(DIV divisors, EDGE count streams, Coverage)`` for a rendered program."""
+    graph = T._graph(prog, None, *T._observe(prog, {}, nframes))[0]
+    return (
+        [g.transfer[1] for g in graph.nodes if g.transfer[0] == "DIV"],
+        [g.transfer[1] for g in graph.nodes if g.transfer[0] == "EDGE"],
+        T.render(prog, {}, nframes)[2],
+    )
+
+
+def test_a_declared_reload_generates_the_edge_stream_as_a_div():
+    """The divisor is the immediate the play code reloads: the EDGE floor is replaced."""
+    _mem, prog = _dividerprog(2)
+    assert T.lift(prog).divisors == (2,)
+    divs, edges, cov = _fires(prog)
+    assert divs == [2] and not edges
+    assert cov.triggers == (4, 4) and T.gate(prog, {}, 8) is None
+    assert cov.planes["ad"] == (4, 4)  # the value partition is the same either way
+
+
+def test_the_trigger_partition_is_reported_apart_from_the_value_partition():
+    """Two domains, two numbers: fires are never counted among the emits."""
+    frames = _frames([[(0, 1)], [(0, 2)]])
+    assert T.coverage(T.from_frames(frames), 2).triggers == (0, 0)  # RAW fires nothing
+    g = T.Graph([T.edge((1, 1)), T.select((0x11, 0x22), (0, 1), ("event", 0), 5)])
+    cov = T.coverage(g, 2)
+    assert cov.triggers == (0, 2) and cov.interp == 2 and cov.total == 2
+    assert T.coverage(T.Graph([T.div(2), T.lookup([9], ("event", 0), 5)]), 4).triggers == (2, 2)
+
+
+def test_a_divisor_the_play_code_does_not_declare_is_refused():
+    """Same edges, same period — but a divisor no recovered clock reloads is not one."""
+    undeclared = ("mem", ("const", 0x0F00, 2), 1)  # holds 2, but no declaration covers it
+    mem, prog = _dividerprog(2, reload_=undeclared)
+    mem[0x0F00] = 2
+    assert T.lift(prog).divisors == ()
+    divs, edges, cov = _fires(prog)
+    assert not divs and edges == [(0, 1, 0, 1, 0, 1, 0, 1)]  # the floor, unchanged
+    assert cov.triggers == (0, 4) and cov.planes["ad"] == (4, 4)
+
+
+def test_a_reload_at_a_play_written_offset_is_not_a_divisor():
+    """``mut`` holds here too: a reload cell the play phase writes is runtime state."""
+    cell = ("mem", ("const", 0x2001, 2), 1)
+    mem, prog = _dividerprog(2, reload_=cell, decl=_muted(_table(0x2000, 16, stride=4), [1]))
+    mem[0x2001] = 2
+    assert T.lift(prog).divisors == () and _fires(prog)[0] == []
+    clean, prog = _dividerprog(2, reload_=cell)
+    clean[0x2001] = 2  # the same cell, at an offset the declaration does not name `mut`
+    assert T.lift(prog).divisors == (2,) and _fires(prog)[0] == [2]
+
+
+def test_a_divisor_of_one_divides_nothing_and_is_refused():
+    """A stream firing every frame is the root cadence, not a recovered divider."""
+    _mem, prog = _dividerprog(1, nrows=8)
+    assert T.lift(prog).divisors == ()
+    divs, edges, cov = _fires(prog)
+    assert not divs and edges == [(1,) * 8] and cov.triggers == (0, 8)
+
+
+def test_a_div_fires_where_the_divisor_says_and_nowhere_else():
+    """The check is exact in both directions: a missing tick refuses as loudly as a spare."""
+    assert T._generates((0, 1, 0, 1), 2) and not T._generates((0, 1, 1, 1), 2)
+    assert not T._generates((0, 1, 0, 0), 2) and not T._generates((0, 1, 0, 1), 4)
+    assert T._clock_node((0, 1, 0, 1), (2,)) == T.div(2)
+    assert T._clock_node((0, 1, 0, 1), (3, 4)) == T.edge((0, 1, 0, 1))
+
+
+def test_mutation_a_wrong_divisor_is_detected():
+    """The law verifies the divisor: perturb it and the fires move off the observation."""
+    _mem, prog = _dividerprog(2)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 8))[0]
+    assert F.diff(T.eval_graph(graph, 8), T.oracle(prog, {}, 8)) is None
+    i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "DIV")
+    for wrong in (("DIV", 3), ("DIV", 1)):
+        graph.nodes[i] = graph.nodes[i]._replace(transfer=wrong)
+        assert F.diff(T.eval_graph(graph, 8), T.oracle(prog, {}, 8)) is not None
+
+
+def test_an_lfo_phase_is_no_divider_so_its_reload_is_no_divisor():
+    """``_clocks`` separates a free ``inc`` from a ``dec``; only the divider declares one."""
+    inc = ("op", "INT_ADD", (("mem", ("const", 0x1001, 2), 1), ("const", 1, 1)), 1)
+    stmts = [
+        ("st", ("const", 0x1001, 2), inc),
+        ("st", ("const", 0x1001, 2), ("const", 6, 1)),
+    ]
+    prog = frameprog.FrameProgram(0x1000, 0x0F00, procs=[(0x1000, (), (), stmts)])
+    assert [c.role for c in T._clocks(prog)] == ["lfo"]
+    assert not T._divisors(prog, T._banks(prog))
+
+
+# ---- 3f. one plane, two generators: the bit partition the store statement names ---
+_MODE = [0x10, 0x20, 0x30, 0x40]
+
+
+def _or(*terms):
+    """``t0 | t1 | ...`` as a frameprog expression."""
+    return ("op", "INT_OR", tuple(terms), 1)
+
+
+def _maskprog(lane=None, decl=None, vol=("const", 0x0F, 1), base=0x2000, reg=0x18):
+    """``(image, program)``: a declared mode lane ORed with a second field into ``reg``."""
+    mem, table = _bank(base, 4, 4, {0: lane or _MODE})
+    return mem, _rowprog(mem, decl or table, [(reg, _or(_sel(base, 0, "i"), vol))], step=4)
+
+
+def _mask_nodes(prog, reg=0x18, nframes=4):
+    """The graph's masked generators for ``reg``, in node order."""
+    nodes = T._graph(prog, None, *T._observe(prog, {}, nframes))[0].nodes
+    return [g for g in nodes if g.route[:2] == ("plane", reg) and len(g.route) > 2]
+
+
+def test_a_register_two_generators_share_is_split_by_the_masks_the_text_names():
+    """$18 is a declared mode nibble ORed with the store's own volume constant."""
+    _mem, prog = _maskprog()
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["filter"] == (4, 4) and cov.classes["filter"]["mask"] == 4
+    assert cov.classes["filter"]["lane"] == 0  # a masked write is its own class
+    got = [(g.route[2], g.transfer) for g in _mask_nodes(prog)]
+    assert [m for m, _t in got] == [0x0F, 0xF0]  # disjoint fields, the whole byte covered
+    assert dict(got)[0x0F] == ("LOOKUP", (0x0F,))
+    assert dict(got)[0xF0] == ("SELECT", tuple(_MODE), (0, 1, 2, 3))
+
+
+def test_two_generators_of_one_register_must_own_disjoint_bits():
+    """Overlapping masks are two owners of one bit, which no node order resolves."""
+    ok = [
+        T.lookup((0x0F,), FRAME := T.FRAME, 0x18, mask=0x0F),
+        T.lookup((0x10,), FRAME, 0x18, 0xF0),
+    ]
+    assert T.eval_graph(T.Graph(ok), 1) == F.canonical([[(0x18, 0x1F)]])
+    for bad in ((0x0F, 0x18), (0x0F, 0xFF), (0xF0, 0)):
+        nodes = [T.lookup((0,), T.FRAME, 0x18, mask=m) for m in bad]
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(nodes), 1)
+    same = [T.lookup((1,), T.FRAME, 0x18, mask=0x0F) for _k in range(2)]
+    assert T.eval_graph(T.Graph(same), 1) is not None  # equal masks are one owner over time
+
+
+def test_a_masked_write_is_one_emit_at_the_last_field_holders_position():
+    """The order-preserved section takes one write per group, where its last field fires."""
+    order = [
+        T.select((0x41,), (0,), T.FRAME, 4, mask=0xFE),
+        T.lookup((0x00, 0x01), T.FRAME, 4, mask=0x01),
+        T.lookup((0x11, 0x22), T.FRAME, 5),
+    ]
+    assert _diff(T.Graph(order), _frames([[(4, 0x40), (5, 0x11)], [(4, 0x41), (5, 0x22)]])) is None
+    swapped = T.Graph([order[1], order[0], order[2]])  # the ctrl write moves ahead of nothing
+    assert _diff(swapped, _frames([[(4, 0x40), (5, 0x11)], [(4, 0x41), (5, 0x22)]])) is None
+    assert (
+        _diff(T.Graph(order), _frames([[(5, 0x11), (4, 0x40)], [(5, 0x22), (4, 0x41)]])) is not None
+    )
+
+
+def test_the_masks_a_store_statement_names_and_the_ones_it_does_not():
+    """A constant owns its bits, an AND-immediate its mask, a shift moves it."""
+    lane = ("mem", ("const", 0x2000, 2), 1)
+    shift = (
+        "op",
+        "INT_LEFT",
+        (("op", "INT_AND", (lane, ("const", 0x0F, 1)), 1), ("const", 4, 1)),
+        1,
+    )
+    assert T._partition(_or(shift, ("const", 0x0F, 1)), {}) == (
+        (False, 0xF0, None),
+        (True, 0x0F, 0x0F),
+    )
+    assert T._partition(_or(("op", "INT_AND", (lane, ("const", 0xF0, 1)), 1), lane), {}) == (
+        (False, 0xF0, None),
+        (False, 0x0F, None),
+    )
+    for bad in (
+        _or(lane, lane),  # two terms, neither masked
+        _or(("const", 0x0F, 1), ("const", 0x18, 1)),  # overlapping bits
+        _or(("op", "INT_AND", (lane, ("const", 0xF0, 1)), 1), ("const", 0x0C, 1)),  # $03 unowned
+        _or(lane, ("const", 0xFF, 1)),  # the constant leaves the other term nothing
+        lane,  # not an OR at all
+    ):
+        assert T._partition(bad, {}) is None
+
+
+def test_a_mask_the_program_text_does_not_name_is_refused():
+    """Two variable terms name no partition: the write stays whole in RAW."""
+    mem, table = _bank(0x2000, 4, 4, {0: _MODE, 1: [0x0F] * 4})
+    both = _rowprog(mem, table, [(0x18, _or(_sel(0x2000, 0, "i"), _sel(0x2000, 1, "i")))], step=4)
+    assert T.render(both, {}, 4)[2].planes["filter"] == (0, 4) and T.gate(both, {}, 4) is None
+    assert not T._partitions(both)
+    _m, named = _maskprog()  # the same bytes, with the second field a program constant
+    assert T._partitions(named) == {0x18: [((False, 0xF0, None), (True, 0x0F, 0x0F))]}
+    assert T.render(named, {}, 4)[2].planes["filter"] == (4, 4)
+
+
+def test_a_field_no_declaration_holds_leaves_the_register_residual():
+    """Every field must be sourced, over exactly the bits the text gives it."""
+    _mem, moved = _maskprog(decl=_muted(_table(0x2000, 16, stride=4), [0]))
+    assert T.render(moved, {}, 4)[2].planes["filter"] == (0, 4)  # a `mut` lane is not const data
+    _m, spill = _maskprog(lane=[0x11, 0x22, 0x33, 0x44])  # the lane sets bits the constant owns
+    assert T.render(spill, {}, 4)[2].planes["filter"] == (0, 4) and T.gate(spill, {}, 4) is None
+
+
+def test_mutation_a_wrong_mask_or_a_wrong_field_byte_is_detected():
+    """The law verifies the partition: move a mask or a field's byte and it fails."""
+    _mem, prog = _maskprog()
+    graph = T._graph(prog, None, *T._observe(prog, {}, 4))[0]
+    assert F.diff(T.eval_graph(graph, 4), T.oracle(prog, {}, 4)) is None
+    for i, g in enumerate(graph.nodes):
+        if g.route[:2] != ("plane", 0x18) or len(g.route) < 3:
+            continue
+        mask = g.route[2]
+        bit, t = mask & -mask, g.transfer  # the lowest bit this field owns
+        wrong = (
+            g._replace(route=("plane", 0x18, mask & ~bit)),
+            g._replace(transfer=(t[0], tuple(b ^ bit for b in t[1])) + t[2:]),
+        )
+        for bad in wrong:
+            nodes = list(graph.nodes)
+            nodes[i] = bad
+            assert F.diff(T.eval_graph(T.Graph(nodes), 4), T.oracle(prog, {}, 4)) is not None
+
+
+def test_the_order_preserved_section_does_not_take_a_masked_write():
+    """ctrl writes are a sequence, not a partition of one byte: the group is refused there."""
+    mem, prog = _maskprog(reg=0x04)
+    assert T._partitions(prog) == {4: [((False, 0xF0, None), (True, 0x0F, 0x0F))]}
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["ctrl"] == (0, 4) and T.gate(prog, {}, 4) is None
+    assert mem[0x2000] == 0x10  # the field is declared; the section is what refuses it
+
+
 # ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
@@ -773,7 +1106,7 @@ def test_commando_notes_and_the_law(sid, subtune):
 def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
     """Every ctrl/ADSR emit is a byte of the declared $5591 bank at a recovered row."""
     prog, trace, nf = _lifted(sid, subtune)
-    _gt, ords, _lww = T._observe(prog, trace, nf)
+    _gt, ords, _lww, _acc = T._observe(prog, trace, nf)
     pre, post, refined = _instr(prog, ords)
     assert refined == {4, 5, 6, 11, 12, 13, 18, 19, 20} and not pre
     sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
@@ -797,7 +1130,7 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
     prog, trace, nf = _lifted(sid, subtune)
     tabs = T._tree_tables(prog, T._banks(prog))
     assert [b[:3] for b in tabs[0]] == [b[:3] for b in tabs[1]] == [(0x5428, 192, 2)]
-    _gt, _ords, lww = T._observe(prog, trace, nf)
+    _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     sel = {r: t for _c, t, r in T._lww_streams(lww, tabs, prog.mem0)[0]}
     for v in range(3):
         lo, hi = sel[7 * v], sel[7 * v + 1]
@@ -814,11 +1147,11 @@ def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, 
     prog, trace, nf = _lifted(sid, subtune)
     decl = next(d for d in prog.data_decls if d["base"] == 0x5591)
     assert decl["stride"] == 8 and decl["mut"] == [0]
-    _gt, _ords, lww = T._observe(prog, trace, nf)
+    _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
     assert {r % 7 for _c, _t, r in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
     cov = T.render(prog, trace, nf)[2]
-    assert cov.planes["pw"] == (192, 245)  # 53 lane reads at +1, the rest the swept +0
+    assert cov.planes["pw"] == (205, 245)  # 53 lane reads at +1, the rest the swept +0
     pw = cov.classes["pw"]
     assert pw["lane"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
     assert pw["lane"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
@@ -830,13 +1163,13 @@ def test_commando_pw_sweep_is_generated_from_the_declared_step_lane(sid, subtune
     prog, trace, nf = _lifted(sid, subtune)
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["pw"][0] > 150  # 53 declared-lane emits before the sweep is generated
-    assert T._accumulators(prog, T._banks(prog)) == {
-        2: (("lane", (0x5591, 263, 8, frozenset({0})), 6), 1)
-    }
-    assert cov.classes["pw"]["ramp"] > 100 and cov.classes["pw"]["seed"] < 10
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (0x5591, 1)}
+    assert cov.classes["pw"]["ramp"] > 100 and cov.classes["pw"]["seed"] < 20
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
     ramps = [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
     assert ramps and all(t[2] == prog.mem0[0x55A7] for t in ramps)  # the declared step byte
+    lane = {prog.mem0[0x5591 + 8 * r + 6] for r in range(263 // 8)}
+    assert {t[2] for t in ramps} <= lane  # every step is a byte of the declared +6 lane
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
@@ -844,7 +1177,7 @@ def test_artura_adsr_through_the_sid_register_mirror(sid, subtune):
     """ADSR staged in a per-voice SID mirror still reads as the declared bank."""
     prog, trace, nf = _lifted(sid, subtune)
     assert 0xEFC1 in T.lift(prog).instruments  # the store site reads the mirror cell
-    _gt, ords, _lww = T._observe(prog, trace, nf)
+    _gt, ords, _lww, _acc = T._observe(prog, trace, nf)
     pre, post, refined = _instr(prog, ords)
     assert refined >= {5, 6, 12, 13, 19, 20} and not pre
     bank = tuple(prog.mem0[0xEF52 + i] for i in range(46))
@@ -911,8 +1244,15 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     assert T.gate(prog, trace, nf) is None
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["filter"] == (384, 598)
-    assert cov.classes["filter"] == {"lane": 384, "gate": 0, "imm": 0, "ramp": 0, "seed": 0}
-    _gt, _ords, lww = T._observe(prog, trace, nf)
+    assert cov.classes["filter"] == {
+        "lane": 384,
+        "gate": 0,
+        "imm": 0,
+        "ramp": 0,
+        "seed": 0,
+        "mask": 0,
+    }
+    _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
     got = {r: t for _c, t, r in streams if r > T._VOICE_HI}
     assert set(got) == {0x16, 0x17}  # $15 and $18 name no declaration and stay residual
