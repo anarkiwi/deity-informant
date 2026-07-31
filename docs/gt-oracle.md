@@ -32,11 +32,20 @@ structure exist in an editor that had never heard of this one?*
 | arpeggio / chord table | wavetable relative-note column | `default_chord` + `chord_table` + `arp_speed` | — (§7.3, not implemented) |
 | transpose | orderlist `Transpose` | sequence `Transpose`, `octave_shift` | — (§7.4) |
 | gate-off images | `gateoff_timer` | `gateoff_wf`/`gateoff_pw`/`gateoff_filt` | the gate images of the same lanes, §5 |
+| **two fields in one register** | `$18` = `filtertype & $70` \| `masterfader` | `$18` = mode \| volume; `$17` = resonance \| three voices' routing flags | masked `SELECT`s over disjoint bit fields, §4e |
 
 Three different spellings of the hard restart become **one** node shape: a
 `LOOKUP` of ADSR bytes fired by the note-on `EDGE`, ahead of the instrument's own
 `SELECT`. Nothing editor-specific enters the format. Where a structure has no
 generic reading, that is §4 below — a deficiency, never a new node type.
+
+The last row of that table is the first deficiency this report closed. §4.3 measured
+it, docs/tracker.md §2 and §4e answered it with a **masked route**, and the mapping
+now expresses both editors' shared registers with it: GoatTracker's `$18` as the
+filter program's set row masked `$70` beside the master volume masked `$0F`, and
+SID-Wizard's `$17` as the resonance nibble beside **three** routing generators, one
+per voice, each that voice's own instrument flag. Nothing editor-specific was added
+to do it: the route kind is the same one `tracker` uses on its own recovery.
 
 ## 2. Two graphs, two purposes
 
@@ -142,17 +151,19 @@ The same 4 tunes, oracle against recovery, on identical windows:
 | ad | 1362/1816 = 75% | 1287/1825 = 71% |
 | sr | 1362/1816 = 75% | 1460/1825 = 80% |
 | pw | 1001/3576 = 28% | 48/3594 = 1% |
-| filter | 448/2782 = 16% | 0/2796 = 0% |
-| **all** | **9735/17117 = 56.9%** | **6489/17200 = 37.7%** |
+| filter | 639/2782 = 23% | 0/2796 = 0% |
+| **all** | **9926/17117 = 58.0%** | **6489/17200 = 37.7%** |
 
 **The freq plane agrees emit for emit** — 3694 either way. The tracker recovers
 exactly the note-lane emits the composer's own table accounts for, which is the
 strongest single piece of evidence here that the recovery is structurally right
 and not merely projection-equal.
 
-Over all 71 GT tunes the oracle reaches 36.9% and the recovery 42.2%; the
-recovery is ahead there because the oracle is limited by decompiler fidelity on
-the other 60 tunes, not because it explains less.
+The filter row is §4.3's masked route arriving: 448 → 639 on these four, all of it
+`$18` read as two fields. Over all 71 GT tunes the oracle reaches **40.0%** (36.9%
+before that route) and the recovery 42.2%; the recovery is still ahead because the
+oracle is limited by decompiler fidelity on the other 60 tunes, not because it
+explains less.
 
 The trigger domain is **0 generated of 57531 fires** for the oracle and 0 of
 49660 for the recovery. Mapping a real editor's song does not lift one trigger
@@ -162,7 +173,10 @@ off the floor, and §4.1 says why.
 
 Every wall actually hit, with its weight. A wall **both** editors hit is a real
 gap in the primitive; one only a single editor hits is something to normalize
-away instead, and none of the entries below is of that kind.
+away instead, and none of the entries below is of that kind. **§4.3 is closed**: the
+masked route shipped and the numbers below are before-and-after, which is what this
+layer is for — a deficiency measured against two editors' own songs, answered in the
+universal primitive, and re-measured on the same tunes.
 
 ### 4.1 A `DIV` has no phase, and note-on streams never sit at its phase
 
@@ -210,26 +224,57 @@ plane — an additive route, and a `RAMP` bound that turns rather than wraps —
 because every editor has at least three tables that offset a note rather than
 replace it. Both editors, and our own recovery's §7.3/§8.
 
-### 4.3 One register plane, two generators
+### 4.3 One register plane, two generators — **closed**
 
-| | emits | share | tunes |
+| the strict graph's RAW | measured | after the masked route | tunes |
 |---|---|---|---|
-| GoatTracker `$18` = filter mode `|` master volume | 14117 | 5.0% | 71/71 |
-| SID-Wizard `$18` = mode `|` volume | 12800 | 5.6% | 64/64 |
-| SID-Wizard `$17` = resonance `|` per-voice routing | 4714 | 2.1% | 64/64 |
-| our own recovery, `$18` "a declared mode nibble combined with a volume level is not a declared byte" (docs/tracker.md §6) | 16597 | — | — |
+| GoatTracker `$18` = filter mode `|` master volume | 14117 | **4122** + 171 | 71/71 |
+| SID-Wizard `$18` = mode `|` volume | 12800 | **4556** + 138 | 64/64 |
+| SID-Wizard `$17` = resonance `|` per-voice routing | 4714 (+8086 held) | **4556** + 7 | 64/64 |
+| our own recovery, `$18` "a declared mode nibble combined with a volume level is not a declared byte" (docs/tracker.md §6) | 16597 | 15921 | — |
 
 `$18` is a mode nibble ORed with a volume level, and `$17` a resonance nibble
 ORed with a routing mask assembled from three voices' flags. Both are two
-independent generators writing one plane, and the primitive routes one generator
-to one plane. The ctrl plane is the same shape and is only survivable because the
+independent generators writing one plane, and the primitive routed one generator
+to one plane. The ctrl plane is the same shape and was only survivable because the
 gate has three states, so the lane can be **multiplied out** into gate images
 (`_ctrl_table`, and `tracker._key_table` before it); with two varying nibbles the
 product table is 256 rows of nothing.
 
-**The general extension**: a masked route — a plane fed by more than one
-generator, each with a bit mask. Two editors plus our own recovery's measured
-16597 emits.
+**The extension shipped**: `route: Plane(reg, mask)` (docs/tracker.md §2, §4e). A
+generator supplies only the bits its mask names, a register may be driven by several
+whose masks are disjoint — `tracker._check` refuses any overlap — and the last of them
+to fire writes the assembled byte, so a masked group is still one emit at one
+position. What it returns here is the closed loop:
+
+| | admitted interpreted | strict `RAW` | of it, §4.3's shape |
+|---|---|---|---|
+| GoatTracker, 71 tunes | 104368 → **112988** of 282516 (36.9% → **40.0%**) | 136378 → **126554** | 14117 → **4293** |
+| SID-Wizard, 64 modules | 89348 → **105691** of 228702 (39.1% → **46.2%**) | 139354 → **123011** | 25600 → **9257** |
+
+**9824 GoatTracker emits and 16343 SID-Wizard emits leave `RAW`**, every one of them
+a byte of the composer's own table at a row the editor's own player reached, and
+every one under the same law: the admitted graph still passes 71/71 and 64/64, the
+strict graph still reproduces the whole window on 4 GT tunes and 64/64 SID-Wizard
+modules, and **no tune regresses on either editor** (51 of 71 and 43 of 64 improve).
+SID-Wizard's filter plane goes 0/51200 to **16343/51200**; GoatTracker's 11470/42157
+to **20090/42157**.
+
+What is left is named rather than folded away. **13234 emits are the driver's ghost**
+(§4.5): the song never runs a filter program, so the mode nibble is the editor's
+power-on 0 and the volume its power-on `$0F`, and a field no song datum reaches is
+refused — a masked group is admitted only where at least one field is a real table
+row. **316 emits** (171 GT, 145 SW) do form a group whose fields the composer's tables
+no longer reproduce, and stay `RAW` for the reason every other byte does. The
+evidence class is `mask`, counted apart from `lane`/`gate` and from `imm`, because a
+masked write is part declared byte at a row and part editor constant.
+
+Our own recovery closes almost none of its 16597 — **676**, on 5 tunes — and
+docs/tracker.md §6 measures why: the mask has to come out of the program text, and a
+6502 driver that ORs two RAM-staged bytes names none. That gap between two editors'
+own models (26167 emits) and what a decompiled driver yields (676) is the honest
+reading of this deficiency: the *format* was the wall for the editors, and
+*provenance* is the wall for the recovery.
 
 ### 4.4 A byte-plane `RAMP` cannot express a wider accumulator
 
@@ -286,19 +331,26 @@ worth about one tune in seventy, and the rest of the gap is elsewhere.
 Interpreted share is the admitted graph's; the `RAW` breakdown is the strict
 graph's own residual, whose denominator is that graph's write count.
 
-| | admitted interpreted | strict `RAW` | of it: the primitive cannot express (§4.2–§4.4) | of it: driver ghost (§4.5) | rest |
+| | admitted interpreted | strict `RAW` | of it: the primitive cannot express (§4.2, §4.4) | of it: driver ghost (§4.5, §4.3) | rest |
 |---|---|---|---|---|---|
-| GoatTracker, 71 tunes | 104368/282516 = 36.9% | 136378 | **34265 = 25.1%** | 93030 = 68.2% | 9083 |
-| GoatTracker, strict-full 4 | 9735/17117 = 56.9% | 7382 | **1836 = 24.9%** | 5350 = 72.5% | 196 |
-| SID-Wizard, 64 modules | 89348/228702 = 39.1% | 139354 | **63996 = 45.9%** | 74229 = 53.3% | 1129 |
+| GoatTracker, 71 tunes | 112988/282516 = 40.0% | 126554 | **20148 = 15.9%** | 97152 = 76.8% | 9254 |
+| GoatTracker, strict-full 4 | 9926/17117 = 58.0% | 7191 | **1041 = 14.5%** | 5954 = 82.8% | 196 |
+| SID-Wizard, 64 modules | 105691/228702 = 46.2% | 123011 | **46482 = 37.8%** | 75255 = 61.2% | 1274 |
+
+§4.3's closure is the whole movement in that table: what the primitive cannot express
+falls 34265 → 20148 and 63996 → 46482, and the emits it stops accounting for are now
+either interpreted or the ghost. The 316 masked groups whose fields the composer's
+tables no longer reproduce sit in `rest`.
 
 No `RAW` in either graph is padding: the strict graph's residual carries what the
 *native model predicts*, so a `RAW` write is still a claim about the song and the
 law still tests it. Evidence classes are `tracker`'s own and are never summed:
-GoatTracker `lane` 95306 / `gate` 3166 / `ramp` 4620 / `seed` 1276 / `imm` 0;
-SID-Wizard `lane` 72581 / `gate` 7212 / `ramp` 8372 / `seed` 1183 / `imm` 0.
-**No emit in either oracle rests on the shallow `imm` class** — every interpreted
-byte is a byte of the composer's table at a row the editor's own player reached.
+GoatTracker `lane` 95306 / `gate` 3166 / `mask` 8620 / `ramp` 4620 / `seed` 1276 /
+`imm` 0; SID-Wizard `lane` 72581 / `gate` 7212 / `mask` 16343 / `ramp` 8372 / `seed`
+1183 / `imm` 0. **No emit in either oracle rests on the shallow `imm` class** — every
+interpreted byte is a byte of the composer's table at a row the editor's own player
+reached, and a `mask` emit is one such byte per field, with the editor's own default
+volume as a one-entry table where the song never sets it (the `hr` lane's precedent).
 
 ## 5. Known limits
 
@@ -312,9 +364,17 @@ byte is a byte of the composer's table at a row the editor's own player reached.
   within 200 frames.
 - `sw_native` maps SID-Wizard's first subtune only, since `SWMPlayer` reads
   sequences 0-2. Seven of the 64 cached modules have more.
-- The filter plane is unmapped for SID-Wizard (0/51200): its cutoff walk is owned
-  by whichever voice currently holds `filter_controller_voice`, and the mapping
-  names no row for it. That is a mapping gap, not a format one.
+- SID-Wizard's filter plane is mapped for `$17`/`$18` only (16343/51200): the two
+  settings registers come off the filter program's set row through masked routes
+  (§4.3), while the **cutoff** walk at `$15`/`$16` still names no row — it is owned by
+  whichever voice holds `filter_controller_voice`, and the mapping does not follow the
+  sweep. That is a mapping gap, not a format one.
+- A masked group is admitted only where at least one field is a real table row, so a
+  register the song never programs stays `RAW` even though its fields are known
+  constants: 13234 emits, counted with the driver ghost (§4.5). The set row itself is
+  **held** across the frames it still stands for — the editor's own pointer, not a
+  search — and a held row whose byte no longer agrees is refused by the same
+  `mem0[src] == val` pair every other emit passes.
 - Row provenance is taken from the editor's own player — from an instrumented
   subclass for GoatTracker, from the public pointer state for SID-Wizard — and
   every emit is re-checked against the table byte, so a mis-named row costs

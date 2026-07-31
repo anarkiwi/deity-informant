@@ -469,7 +469,7 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ctrl"] == (8, 8)
-    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0}
+    assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0, "ramp": 0, "seed": 0, "mask": 0}
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
@@ -668,7 +668,7 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
     vals, cov = _pw(prog, 4)
     assert vals == [0x10, 0x20, 0x53, 0x86] and T.gate(prog, {}, 4) is None
     assert cov.planes["pw"] == (4, 4)
-    assert cov.classes["pw"] == {"lane": 0, "gate": 0, "imm": 0, "ramp": 2, "seed": 2}
+    assert cov.classes["pw"] == {"lane": 0, "gate": 0, "imm": 0, "ramp": 2, "seed": 2, "mask": 0}
     assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
 
 
@@ -923,6 +923,118 @@ def test_an_lfo_phase_is_no_divider_so_its_reload_is_no_divisor():
     assert not T._divisors(prog, T._banks(prog))
 
 
+# ---- 3f. one plane, two generators: the bit partition the store statement names ---
+_MODE = [0x10, 0x20, 0x30, 0x40]
+
+
+def _or(*terms):
+    """``t0 | t1 | ...`` as a frameprog expression."""
+    return ("op", "INT_OR", tuple(terms), 1)
+
+
+def _maskprog(lane=None, decl=None, vol=("const", 0x0F, 1), base=0x2000, reg=0x18):
+    """``(image, program)``: a declared mode lane ORed with a second field into ``reg``."""
+    mem, table = _bank(base, 4, 4, {0: lane or _MODE})
+    return mem, _rowprog(mem, decl or table, [(reg, _or(_sel(base, 0, "i"), vol))], step=4)
+
+
+def _mask_nodes(prog, reg=0x18, nframes=4):
+    """The graph's masked generators for ``reg``, in node order."""
+    nodes = T._graph(prog, None, *T._observe(prog, {}, nframes))[0].nodes
+    return [g for g in nodes if g.route[:2] == ("plane", reg) and len(g.route) > 2]
+
+
+def test_a_register_two_generators_share_is_split_by_the_masks_the_text_names():
+    """$18 is a declared mode nibble ORed with the store's own volume constant."""
+    _mem, prog = _maskprog()
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["filter"] == (4, 4) and cov.classes["filter"]["mask"] == 4
+    assert cov.classes["filter"]["lane"] == 0  # a masked write is its own class
+    got = [(g.route[2], g.transfer) for g in _mask_nodes(prog)]
+    assert [m for m, _t in got] == [0x0F, 0xF0]  # disjoint fields, the whole byte covered
+    assert dict(got)[0x0F] == ("LOOKUP", (0x0F,))
+    assert dict(got)[0xF0] == ("SELECT", tuple(_MODE), (0, 1, 2, 3))
+
+
+def test_two_generators_of_one_register_must_own_disjoint_bits():
+    """Overlapping masks are two owners of one bit, which no node order resolves."""
+    ok = [
+        T.lookup((0x0F,), FRAME := T.FRAME, 0x18, mask=0x0F),
+        T.lookup((0x10,), FRAME, 0x18, 0xF0),
+    ]
+    assert T.eval_graph(T.Graph(ok), 1) == F.canonical([[(0x18, 0x1F)]])
+    for bad in ((0x0F, 0x18), (0x0F, 0xFF), (0xF0, 0)):
+        nodes = [T.lookup((0,), T.FRAME, 0x18, mask=m) for m in bad]
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(nodes), 1)
+    same = [T.lookup((1,), T.FRAME, 0x18, mask=0x0F) for _k in range(2)]
+    assert T.eval_graph(T.Graph(same), 1) is not None  # equal masks are one owner over time
+
+
+def test_a_masked_write_is_one_emit_at_the_last_field_holders_position():
+    """The order-preserved section takes one write per group, where its last field fires."""
+    order = [
+        T.select((0x41,), (0,), T.FRAME, 4, mask=0xFE),
+        T.lookup((0x00, 0x01), T.FRAME, 4, mask=0x01),
+        T.lookup((0x11, 0x22), T.FRAME, 5),
+    ]
+    assert _diff(T.Graph(order), _frames([[(4, 0x40), (5, 0x11)], [(4, 0x41), (5, 0x22)]])) is None
+    swapped = T.Graph([order[1], order[0], order[2]])  # the ctrl write moves ahead of nothing
+    assert _diff(swapped, _frames([[(4, 0x40), (5, 0x11)], [(4, 0x41), (5, 0x22)]])) is None
+    assert (
+        _diff(T.Graph(order), _frames([[(5, 0x11), (4, 0x40)], [(5, 0x22), (4, 0x41)]])) is not None
+    )
+
+
+def test_a_mask_the_program_text_does_not_name_is_refused():
+    """Two variable terms name no partition: the write stays whole in RAW."""
+    mem, table = _bank(0x2000, 4, 4, {0: _MODE, 1: [0x0F] * 4})
+    both = _rowprog(mem, table, [(0x18, _or(_sel(0x2000, 0, "i"), _sel(0x2000, 1, "i")))], step=4)
+    assert T.render(both, {}, 4)[2].planes["filter"] == (0, 4) and T.gate(both, {}, 4) is None
+    assert not T._partitions(both)
+    _m, named = _maskprog()  # the same bytes, with the second field a program constant
+    assert T._partitions(named) == {0x18: [((False, 0xF0, None), (True, 0x0F, 0x0F))]}
+    assert T.render(named, {}, 4)[2].planes["filter"] == (4, 4)
+
+
+def test_a_field_no_declaration_holds_leaves_the_register_residual():
+    """Every field must be sourced, over exactly the bits the text gives it."""
+    _mem, moved = _maskprog(decl=_muted(_table(0x2000, 16, stride=4), [0]))
+    assert T.render(moved, {}, 4)[2].planes["filter"] == (0, 4)  # a `mut` lane is not const data
+    _m, spill = _maskprog(lane=[0x11, 0x22, 0x33, 0x44])  # the lane sets bits the constant owns
+    assert T.render(spill, {}, 4)[2].planes["filter"] == (0, 4) and T.gate(spill, {}, 4) is None
+
+
+def test_mutation_a_wrong_mask_or_a_wrong_field_byte_is_detected():
+    """The law verifies the partition: move a mask or a field's byte and it fails."""
+    _mem, prog = _maskprog()
+    graph = T._graph(prog, None, *T._observe(prog, {}, 4))[0]
+    assert F.diff(T.eval_graph(graph, 4), T.oracle(prog, {}, 4)) is None
+    for i, g in enumerate(graph.nodes):
+        if g.route[:2] != ("plane", 0x18) or len(g.route) < 3:
+            continue
+        mask = g.route[2]
+        bit, t = mask & -mask, g.transfer  # the lowest bit this field owns
+        wrong = (
+            g._replace(route=("plane", 0x18, mask & ~bit)),
+            g._replace(transfer=(t[0], tuple(b ^ bit for b in t[1])) + t[2:]),
+        )
+        for bad in wrong:
+            nodes = list(graph.nodes)
+            nodes[i] = bad
+            assert F.diff(T.eval_graph(T.Graph(nodes), 4), T.oracle(prog, {}, 4)) is not None
+
+
+def test_the_order_preserved_section_does_not_take_a_masked_write():
+    """ctrl writes are a sequence, not a partition of one byte: the group is refused there."""
+    mem, prog = _maskprog(reg=0x04)
+    assert T._partitions(prog) == {4: [((False, 0xF0, None), (True, 0x0F, 0x0F))]}
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["ctrl"] == (0, 4) and T.gate(prog, {}, 4) is None
+    assert mem[0x2000] == 0x10  # the field is declared; the section is what refuses it
+
+
 # ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
@@ -1105,7 +1217,14 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     assert T.gate(prog, trace, nf) is None
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["filter"] == (384, 598)
-    assert cov.classes["filter"] == {"lane": 384, "gate": 0, "imm": 0, "ramp": 0, "seed": 0}
+    assert cov.classes["filter"] == {
+        "lane": 384,
+        "gate": 0,
+        "imm": 0,
+        "ramp": 0,
+        "seed": 0,
+        "mask": 0,
+    }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
     got = {r: t for _c, t, r in streams if r > T._VOICE_HI}

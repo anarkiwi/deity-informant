@@ -10,7 +10,7 @@ from collections import namedtuple
 from . import framelog
 from . import tracker
 
-Cell = namedtuple("Cell", "kind lane row value step")
+Cell = namedtuple("Cell", "kind lane row value step mask", defaults=(0xFF,))
 Native = namedtuple("Native", "editor tables writes shape notes instrs onsets structure")
 Report = namedtuple("Report", "coverage frames matched divergence offset raw_kinds")
 
@@ -18,7 +18,21 @@ _VOICE_HI = 0x14
 _FILTER_HI = 0x18
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _CTRL = 4
+_FULL = 0xFF
 _GATES = (0xFE, 0x00)  # the gate images a ctrl lane byte is read through
+
+
+def _parts(cell):
+    """The masked generators one register's byte is assembled from, or the one cell."""
+    return (cell,) if isinstance(cell, Cell) else cell
+
+
+def _value(cell):
+    """The byte a cell writes: one generator's, or the fields several assemble."""
+    v = 0
+    for part in _parts(cell):
+        v |= part.value & part.mask
+    return v
 
 
 def _plane_of(reg):
@@ -72,7 +86,7 @@ def _runs(seq):
 
 # ---- 2. the builder: one stream per (register, lane), the rest RAW ----------------
 class _Streams:
-    """Accumulates ``(counts, transfer, reg)`` streams and their evidence classes."""
+    """Accumulates ``(counts, transfer, reg, mask)`` streams and their evidence classes."""
 
     def __init__(self, nframes, tables):
         self.n = nframes
@@ -82,45 +96,48 @@ class _Streams:
 
     def _bump(self, reg, kind, n=1):
         cls = self.classes.setdefault(
-            _plane_of(reg), dict.fromkeys(("lane", "gate", "imm", "ramp", "seed"), 0)
+            _plane_of(reg), dict.fromkeys(("lane", "gate", "imm", "ramp", "seed", "mask"), 0)
         )
         cls[kind] += n
 
-    def add(self, key, frame, cell):
-        """Record one typed emit of stream ``key`` at ``frame``."""
-        counts, rows = self.rows.setdefault(key, ([0] * self.n, []))
-        counts[frame] += 1
-        if cell.kind == "ramp":
-            rows.append(cell.value)
-        elif cell.kind == "imm":
-            rows.append(0)
-            self._bump(key[0], "imm")
-        else:
-            rows.append(cell.row)
-            self._bump(key[0], "gate" if cell.row >= len(self.tables[cell.lane]) else "lane")
+    def add(self, reg, frame, cell, key=None):
+        """Record one typed write at ``frame``: one generator's, or a masked group's."""
+        group = _parts(cell)
+        if len(group) > 1:
+            self._bump(reg, "mask")
+        for part in group:
+            counts, rows = self.rows.setdefault(key or _key(reg, part), ([0] * self.n, []))
+            counts[frame] += 1
+            if part.kind == "ramp":
+                rows.append(part.value)
+                continue
+            rows.append(0 if part.kind == "imm" else part.row)
+            if len(group) > 1:
+                continue
+            if part.kind == "imm":
+                self._bump(reg, "imm")
+            else:
+                self._bump(reg, "gate" if part.row >= len(self.tables[part.lane]) else "lane")
 
     def streams(self):
-        """``[(per-frame counts, transfer, reg)]`` for every stream recorded."""
+        """``[(per-frame counts, transfer, reg, mask)]`` for every stream recorded."""
         out = []
         for key, (counts, rows) in self.rows.items():
-            reg, kind, lane, step = key
+            reg, kind, lane, step, mask = key
             if kind == "ramp":
-                out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg))
+                out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask))
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
             elif kind == "imm":
-                out.append((tuple(counts), ("LOOKUP", (lane,)), reg))
+                out.append((tuple(counts), ("LOOKUP", (lane,)), reg, mask))
             else:
                 table = _ctrl_table(self.tables[lane]) if kind == "ctrl" else self.tables[lane]
-                out.append((tuple(counts), ("SELECT", tuple(table), tuple(rows)), reg))
+                out.append((tuple(counts), ("SELECT", tuple(table), tuple(rows)), reg, mask))
         return out
 
 
-def _typed(cell, value, tables):
-    """Is ``cell`` a generator emit of ``value``, with the declared byte agreeing?
-
-    The pair `tracker._lane_key` applies: the emit must equal what the register
-    took, and the table byte at the recovered row must equal it too."""
+def _one_typed(cell, value, tables):
+    """Is one generator's emit ``value``, with the composer's table byte agreeing?"""
     if cell is None or cell.value != value or cell.kind == "raw":
         return False
     if cell.kind in ("imm", "ramp"):
@@ -129,11 +146,29 @@ def _typed(cell, value, tables):
     return 0 <= cell.row < len(table) and table[cell.row] == value
 
 
+def _typed(cell, value, tables):
+    """Is ``cell`` a generator emit of ``value``, with the declared byte agreeing?
+
+    The pair `tracker._lane_key` applies: the emit must equal what the register
+    took, and the table byte at the recovered row must equal it too. A masked group
+    types where its fields are disjoint and assemble exactly that byte."""
+    if cell is None or value is None:
+        return False
+    parts, owned = _parts(cell), 0
+    for part in parts:
+        if not (0 < part.mask <= _FULL) or owned & part.mask:
+            return False
+        owned |= part.mask
+        if not _one_typed(part, value & part.mask if len(parts) > 1 else value, tables):
+            return False
+    return _value(cell) == value
+
+
 def _key(reg, cell):
-    """The stream key one cell belongs to."""
+    """The stream key one cell belongs to; a masked field owns its own stream."""
     if cell.kind == "imm":
-        return (reg, "imm", cell.value, 0)
-    return (reg, cell.kind, cell.lane, 0)
+        return (reg, "imm", cell.value, 0, cell.mask)
+    return (reg, cell.kind, cell.lane, 0, cell.mask)
 
 
 def _ramp_keys(native, frames, tables):
@@ -144,7 +179,9 @@ def _ramp_keys(native, frames, tables):
     seqs, obs, claimed = {}, {}, {}
     for f, writes in enumerate(frames):
         for reg, val in writes:
-            seqs.setdefault(reg, [None] * len(frames))[f] = native.writes[f].get(reg)
+            cell = native.writes[f].get(reg)
+            one = cell if isinstance(cell, Cell) else None
+            seqs.setdefault(reg, [None] * len(frames))[f] = one
             obs.setdefault(reg, {})[f] = val
     for reg, seq in seqs.items():
         for at, n in _runs(seq):
@@ -209,31 +246,31 @@ def _build(frames, native):
             cell = native.writes[f].get(reg)
             if _is_ord(reg):
                 if ok[reg // 7]:
-                    acc.add(_key(reg, cell), f, cell)
+                    acc.add(reg, f, cell)
                 else:
                     rest.append((reg, val))
             elif (f, reg) in ramps:
                 at, seed = ramps[(f, reg)]
-                acc.add((reg, "ramp", at, cell.step), f, cell._replace(value=seed))
-            elif cell is not None and cell.kind != "ramp" and _typed(cell, val, tables):
-                acc.add(_key(reg, cell), f, cell)
+                acc.add(reg, f, cell._replace(value=seed), key=(reg, "ramp", at, cell.step, _FULL))
+            elif cell is not None and _parts(cell)[0].kind != "ramp" and _typed(cell, val, tables):
+                acc.add(reg, f, cell)
             else:
                 rest.append((reg, val))
         residual.append(tuple(rest))
     streams = acc.streams()
     pos = {r: (v, i) for v in range(3) for i, r in enumerate(layout[v])}
     edges = {}
-    for counts, _t, _r in streams:
+    for counts, _t, _r, _m in streams:
         edges.setdefault(counts, len(edges))
     nodes = [tracker.edge(c) for c in edges]
     nodes += [
-        tracker.Generator(t, ("event", edges[c]), ("plane", r))
-        for c, t, r in sorted((s for s in streams if _is_ord(s[2])), key=lambda s: pos[s[2]])
+        tracker.Generator(t, ("event", edges[c]), tracker.plane(r, m))
+        for c, t, r, m in sorted((s for s in streams if _is_ord(s[2])), key=lambda s: pos[s[2]])
     ]
     nodes.append(tracker.raw(residual))
     nodes += [
-        tracker.Generator(t, ("event", edges[c]), ("plane", r))
-        for c, t, r in streams
+        tracker.Generator(t, ("event", edges[c]), tracker.plane(r, m))
+        for c, t, r, m in streams
         if not _is_ord(r)
     ]
     return tracker.Graph(nodes, classes=acc.classes), residual
@@ -255,7 +292,7 @@ def _predicted(native, records=None, offset=0):
         n = max(0, min(len(records) - offset, len(shapes)))
         shapes = [tuple(r for r, _v in _frames_of([records[offset + f]])[0]) for f in range(n)]
     return [
-        [(r, native.writes[f][r].value) for r in shape if r in native.writes[f]]
+        [(r, _value(native.writes[f][r])) for r in shape if r in native.writes[f]]
         for f, shape in enumerate(shapes)
     ]
 
@@ -266,7 +303,9 @@ def _raw_kinds(native, residual):
     for f, row in enumerate(residual):
         for reg, _v in row:
             cell = native.writes[f].get(reg)
-            key = "unmapped" if cell is None else "%s:%s" % (cell.kind, cell.lane)
+            group = () if cell is None else _parts(cell)
+            kind = "mask" if len(group) > 1 else (group[0].kind if group else None)
+            key = "unmapped" if kind is None else "%s:%s" % (kind, group[0].lane)
             out[key] = out.get(key, 0) + 1
     return out
 
@@ -352,12 +391,19 @@ def _gt_probe_class():
             self.newrow = [0, 0, 0]
             self.pattbase = [0] * gtc.MAX_PATT
             self.reads = []
+            self.lreads = []
             self.onset = [0, 0, 0]
             super()._init(subtune)
+            self.vol0 = self._masterfader  # the editor's own default master volume
 
         def _rt(self, table, ptr):
             val = super()._rt(table, ptr)
             self.reads.append((table, (ptr - 1) & 0xFF, val))
+            return val
+
+        def _lt(self, table, ptr):
+            val = super()._lt(table, ptr)
+            self.lreads.append((table, (ptr - 1) & 0xFF, val))
             return val
 
         @property
@@ -422,6 +468,8 @@ def _gt_probe_class():
             ):
                 if cmd == want:
                     self.src[channel][fld] = (("patt", "data"), self.newrow[channel], 0)
+            if cmd == gtc.CMD_SETMASTERVOL:
+                self.fsrc["vol"] = (("patt", "data"), self.newrow[channel], 0)
 
         def _wave_command(self, channel, chan, command):
             row = chan.wave_table_ptr - 1
@@ -433,6 +481,8 @@ def _gt_probe_class():
             ):
                 if command == want:
                     self.src[channel][fld] = (("wtbl", "right"), row, 0)
+            if command == gtc.CMD_SETMASTERVOL:
+                self.fsrc["vol"] = (("wtbl", "right"), row, 0)
 
         def _wave_exec(self, channel, chan):
             ptr = chan.wave_table_ptr
@@ -467,7 +517,8 @@ def _gt_probe_class():
 
         def _filter_routine(self):
             # pylint: disable=attribute-defined-outside-init
-            self.reads, cut, ctl = [], self._filtercutoff, self._filterctrl
+            self.reads, self.lreads = [], []
+            cut, ctl = self._filtercutoff, self._filterctrl
             super()._filter_routine()
             rd = [(r, v) for t, r, v in self.reads if t == gtc.FTBL]
             got = _pick(rd, self._filterctrl)
@@ -477,6 +528,10 @@ def _gt_probe_class():
             got = _pick(rd, self._filtercutoff) or step
             if got is not None:
                 self.fsrc["cutoff"] = got
+            lt = [(r, v) for t, r, v in self.lreads if t == gtc.FTBL and v >= 0x80]
+            got = _pick([(r, v & 0x70) for r, v in lt], self._filtertype)
+            if got is not None:  # the set row the mode nibble was masked out of
+                self.fsrc["type"] = (("ftbl", "type"),) + got[1:]
 
     return _Probe
 
@@ -495,16 +550,18 @@ def _pick(reads, value, step=False):
 _GT_LANES = (("ad", "attack_decay"), ("sr", "sustain_release"), ("firstwave", "first_wave"))
 
 
-def _gt_tables(song, adparam, freq_table):
+def _gt_tables(song, adparam, freq_table, vol0=0x0F):
     """``(tables, pattern bases)``: the song's byte tables under generic names.
 
     `pitch` is the note→freq table, `ins` the instrument bank, `hr` the ADSR
-    preamble a note-on edge emits, `wtbl`/`ptbl`/`ftbl` the three programs."""
+    preamble a note-on edge emits, `wtbl`/`ptbl`/`ftbl` the three programs, and
+    `ftbl.type`/`vol.master` the two fields of $18 (§4.3)."""
     tables = {
         ("pitch", "lo"): tuple(w & 0xFF for w in freq_table),
         ("pitch", "hi"): tuple((w >> 8) & 0xFF for w in freq_table),
         ("hr", "ad"): ((adparam >> 8) & 0xFF,),
         ("hr", "sr"): (adparam & 0xFF,),
+        ("vol", "master"): (vol0 & 0x0F,),
     }
     for name, attr in _GT_LANES:
         tables[("ins", name)] = tuple(getattr(song.instrument(i), attr) & 0xFF for i in range(64))
@@ -516,6 +573,7 @@ def _gt_tables(song, adparam, freq_table):
         tables[(key, "left")] = tuple(b & 0xFF for b in tab.left)
         tables[(key, "right")] = tuple(b & 0xFF for b in tab.right)
     tables[("wtbl", "silent")] = tuple(b & 0x0F for b in song.wavetable.left)
+    tables[("ftbl", "type")] = tuple(b & 0x70 for b in song.filtertable.left)
     data, base, cur = [], [], 0
     for pat in song.patterns:
         base.append(cur)
@@ -540,7 +598,6 @@ def gt_native(song, info, subtune, nframes, adparam=None):
     from pygoattracker import constants as gtc  # pylint: disable=import-outside-toplevel
 
     par = gtc.DEFAULT_ADPARAM if adparam is None else adparam
-    tables, pattbase = _gt_tables(song, par, info.freq_table or gtc.FREQ_TABLE)
     player = _gt_probe_class()(
         song,
         subtune=subtune,
@@ -549,6 +606,7 @@ def gt_native(song, info, subtune, nframes, adparam=None):
         simplepulse=info.simplepulse,
         live_vibrato=info.live_vibrato,
     )
+    tables, pattbase = _gt_tables(song, par, info.freq_table or gtc.FREQ_TABLE, player.vol0)
     player.pattbase[: len(pattbase)] = pattbase
     writes, notes, instrs, onsets = [], [], [], []
     for _f in range(nframes):
@@ -637,11 +695,26 @@ def _gt_voice_cells(player, tables, v, cells):
         )
 
 
+def _mode_vol(regs, fsrc, reg=0x18):
+    """$18 as two masked generators: the mode nibble and the master volume.
+
+    The mode is the filter program's set row masked as the driver masks it; the
+    volume is the byte a `SETMASTERVOL` names, or the editor's own default. A
+    register no song datum reaches is the driver's ghost and stays RAW (§4.5)."""
+    typ, vol = fsrc.get("type"), fsrc.get("vol", (("vol", "master"), 0, 0))
+    if typ is None:
+        return Cell("raw", ("mode", "vol"), 0, regs[reg], 0)
+    return (
+        Cell("select", typ[0], typ[1], regs[reg] & 0x70, 0, 0x70),
+        Cell("select", vol[0], vol[1], regs[reg] & 0x0F, 0, 0x0F),
+    )
+
+
 def _gt_filter_cells(player, cells):
     """The three global filter registers the driver writes each frame.
 
     $18 is a mode nibble ORed with a volume level — two generators, one plane —
-    so it has no single-lane reading and stays RAW."""
+    which the masked route expresses as two disjoint fields (§4.3)."""
     regs, cut, ctl = player.regs, player.fsrc.get("cutoff"), player.fsrc.get("ctrl")
     cells[0x15] = Cell("raw", ("ghost", "filter"), 0, regs[0x15], 0)
     if cut and cut[2]:
@@ -655,7 +728,7 @@ def _gt_filter_cells(player, cells):
         if ctl
         else Cell("raw", ("ghost", "filter"), 0, regs[0x17], 0)
     )
-    cells[0x18] = Cell("raw", ("mode", "vol"), 0, regs[0x18], 0)
+    cells[0x18] = _mode_vol(regs, player.fsrc)
 
 
 def _gt_structure(song, subtune):
@@ -708,16 +781,73 @@ def _sw_tables(swm, freq_lo, freq_hi):
         ("ins", "firstwave"): tuple(i.first_waveform & 0xFF for i in ins),
         ("chord", "step"): tuple(swm.chord_table),
         ("ins", "octave"): tuple(i.octave_shift & 0xFF for i in ins),
+        ("vol", "master"): (0x0F,),
     }
-    prog, base, cur = [], [], 0
+    prog, base, fbase, cur = [], [], [], 0
     for i in ins:
         base.append(cur)
         img = i.table_image()
+        fbase.append(cur + len(img) - len(i.filter_table))
         prog += list(img)
         cur += len(img)
     tables[("wf", "left")] = tuple(prog)
     tables[("wf", "hi7")] = tuple(b & 0x7F for b in prog)
-    return tables, base
+    tables[("wf", "res")] = tuple((b & 0x0F) << 4 for b in prog)
+    tables[("wf", "mode")] = tuple(b & 0x70 for b in prog)
+    for v in range(3):
+        tables[("ins", "route%d" % v)] = tuple(
+            (1 << v) if i.filter_table and i.filter_table[0] != 0xFF else 0 for i in ins
+        ) + (
+            0,
+        )  # the last row is "no instrument selected": this voice routes nothing
+    return tables, base, fbase
+
+
+def _sw_filter_row(player, tables, fbase, held):
+    """The filter-program set row the resonance and mode nibbles were masked out of.
+
+    The row is the controlling voice's own pointer, held across the frames the set
+    row still stands; a row whose bytes no longer agree is refused by `_typed`."""
+    v = player.filter_controller_voice
+    num = ((v.instrument_idx or 0) - 1) if v is not None else -1
+    if 0 <= num < len(fbase):
+        prog, res = tables[("wf", "left")], tables[("wf", "res")]
+        for cand in (v.filt_pos - 3, v.filt_pos):
+            row = fbase[num] + cand
+            if not 0 <= row < len(prog) or not prog[row] & 0x80:
+                continue
+            if res[row] == player.filter_resonance & 0xF0:
+                held["row"] = row
+                break
+    return held.get("row")
+
+
+def _sw_filter_cells(player, tables, fbase, held, cells):
+    """$17 and $18: four and two generators over one register each (§4.3).
+
+    $17 is the resonance nibble the filter program sets plus one routing bit per
+    voice, each the voice's own instrument flag; $18 is that program's mode nibble
+    plus the master volume."""
+    row = _sw_filter_row(player, tables, fbase, held)
+    res, mvol = player.filter_resonance & 0xFF, player.filter_mode_vol & 0xFF
+    routing = 0
+    for i, voice in enumerate(player.voices):
+        routing |= (1 << i) if voice.voice_in_filter else 0
+    if row is None:
+        cells[0x17] = Cell("raw", ("res", "routing"), 0, (res & 0xF0) | routing, 0)
+        cells[0x18] = Cell("raw", ("mode", "vol"), 0, mvol, 0)
+        return
+    parts = [Cell("select", ("wf", "res"), row, res & 0xF0, 0, 0xF0)]
+    for i, voice in enumerate(player.voices):
+        lane = ("ins", "route%d" % i)
+        num = (voice.instrument_idx or 0) - 1
+        at = num if 0 <= num < len(tables[lane]) - 1 else len(tables[lane]) - 1
+        parts.append(Cell("select", lane, at, routing & (1 << i), 0, 1 << i))
+    cells[0x17] = tuple(parts)
+    cells[0x18] = (
+        Cell("select", ("wf", "mode"), row, mvol & 0x70, 0, 0x70),
+        Cell("select", ("vol", "master"), 0, mvol & 0x0F, 0, 0x0F),
+    )
 
 
 def _sw_pulse(voice, tables, base, num, cells, reg):
@@ -797,9 +927,10 @@ def sw_native(swm, nframes):
         SWMPlayer,
     )
 
-    tables, base = _sw_tables(swm, NOTE_FREQ_LO, NOTE_FREQ_HI)
+    tables, base, fbase = _sw_tables(swm, NOTE_FREQ_LO, NOTE_FREQ_HI)
     player = SWMPlayer(swm)
     writes, notes, instrs, onsets, shape, frames = [], [], [], [], [], []
+    held = {}
     for _f in range(nframes):
         prev = [v.hr_timer for v in player.voices]
         got = [
@@ -813,11 +944,10 @@ def sw_native(swm, nframes):
         _sw_cells(player, tables, base, cells)
         cells[0x15] = Cell("raw", ("ghost", "filter"), 0, player.filter_cutoff_lo & 0xFF, 0)
         cells[0x16] = Cell("raw", ("ghost", "filter"), 0, player.filter_cutoff_hi & 0xFF, 0)
-        cells[0x17] = Cell("raw", ("res", "routing"), 0, player.filter_resonance & 0xFF, 0)
-        cells[0x18] = Cell("raw", ("mode", "vol"), 0, player.filter_mode_vol & 0xFF, 0)
+        _sw_filter_cells(player, tables, fbase, held, cells)
         for reg, val in got:
             cell = cells.get(reg)
-            if cell is None or cell.value != val:
+            if cell is None or _value(cell) != val:
                 cells[reg] = Cell("raw", ("ghost", "held"), 0, val, 0)
         writes.append(cells)
         notes.append(tuple(v.note + v.transpose + v.octave_shift for v in player.voices))

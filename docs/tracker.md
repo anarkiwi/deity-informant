@@ -57,8 +57,21 @@ Generator = (transfer, trigger, route)
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
-  route    : Plane(reg) | Fire | Raw # a SID register plane, or a downstream trigger
+  route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
+           | Fire | Raw              # a downstream trigger, or the value floor
 ```
+
+A route names a **bit mask** as well as a plane, because a SID register is not
+always one generator's output: `$18` is a filter mode ORed with a master volume and
+`$17` a resonance ORed with a routing mask, two independent musical objects sharing
+one address. A generator supplies only the bits its mask names, several generators
+may drive one register, and `_check` **refuses** any two whose masks are neither
+equal nor disjoint — two owners of one bit is a malformed graph, not a race for node
+order to settle. `Plane(reg)` is `Plane(reg, $FF)`: one owner of the whole byte, the
+route as it stood. What a masked group emits is one write of the assembled byte, at
+the position of the last of its generators to fire, so a register several generators
+drive still takes exactly one write per frame in the order-preserved section and
+counts as exactly one emit (§4e).
 
 `RAW` and `EDGE` are the two floors — the residual in the value domain and in the
 trigger domain. Refinement replaces them: a value moves out of `RAW` into a typed
@@ -307,6 +320,46 @@ clocks generate **300 of 305119 fires** over 3 tunes of 646. That number is the 
 of the step — it is the input to scoping §7.4, and it is honest in a way a fitted
 period would not be.
 
+## 4e. One plane, two generators: the bit partition the store statement names
+
+`$18` writes a filter mode and a master volume in one byte, `$17` a resonance and a
+routing mask. Neither is a declared byte, so `_lane_key` refuses both (§5's
+`mem0[src] == val` pair), and the whole write falls to `RAW` — 16597 `$18` emits and
+7105 `$17` emits over the corpus (§6). The masked route of §2 expresses them, under
+the provenance standard §4b applies to a table and §4c to a step:
+
+- **The mask is the program text's** (`_term`, `_partition`). A store whose value is
+  an `OR` of terms partitions the byte where the text names every term's bits but
+  one: a constant owns the bits it sets, an `AND`-immediate owns its mask, a shift
+  moves that mask, and the one term left over takes the rest. Masks that overlap, or
+  that leave a bit unowned, are **not** a partition and the site is refused. A mask
+  read off the observed bytes — "these bits never change, so call them a field" —
+  explains nothing and is never taken.
+- **Every field must be sourced** (`_decompose`). For each field the emitted bits are
+  either that statement's own constant, or a declared byte at the row the read cell
+  recovers — the same `_lane_key` pair as §4b, applied to `val & mask`. One field the
+  declarations do not hold refuses the whole write; a lane byte that spills into
+  another field's bits refuses it too, since the fields would then not be disjoint.
+- **Keyed per register class, like §4b** (`_partitions`). The tree names the partition
+  for a register class, not for a single write, so one voice-generic store site serves
+  its whole class.
+- **A group fires together** (`_mask_streams`). Every field of an explained frame
+  fires, the last of them writes the assembled byte, and the masks a register's fields
+  take are fixed at its first explained frame — one field has one owner. A frame whose
+  decomposition names a different owner for a mask stays residual.
+- **The last-write-wins planes only.** ctrl/AD/SR is a *sequence* of whole-byte writes
+  (§5), not a partition of one byte, so a masked group there would have to agree with
+  the section's write count and order; the recovery refuses it and §6 measures what
+  that costs (23 emits on 2 tunes). The primitive itself handles the section — a group
+  writes once, where its last field fires — and the test drives exactly that.
+
+On `MUSICIANS/A/AceMan/Lostro.sid` the store is `sid.filter.modevol = (m_1056 | $0F)`:
+the text gives the constant `$0F` the low nibble and the read the high one, and the
+staged cell `$1056` originates in the declared filter table at `$1A13`, whose byte
+`$10` is the mode. `$18` becomes two generators — `SELECT` over the `$1A13` lane
+masked `$F0`, and `LOOKUP(($0F,))` masked `$0F` — and the register is explained for
+the first time on that tune.
+
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
 ctrl and ADSR are written from an instrument bank: a declared const table of
@@ -347,6 +400,18 @@ stride `s`, one lane per byte offset. The generator for a lane is
   rather than from this emit's own provenance — which is exactly the `lane`/`gate`
   line in `classes`. Every byte emitted is still a declared byte, and a voice that
   never read its waveform from a declaration has no row to ride and stays residual.
+- **The gate is one owner read three ways, not two owners of one register** — which
+  is why §4e's masked route does not replace it, and the distinction is worth
+  stating because the two look alike. `_SECT` is a 1-bit field enumerated over its
+  three states, and a nibble cannot be enumerated that way (256 rows of nothing),
+  which is what §4e generalizes. But the ctrl plane is not the shape §4e expresses:
+  each ctrl **write** carries all eight bits from one source — a declared byte, or
+  that byte with the gate bit forced — and the next write may be residual, whereas a
+  masked group partitions *one byte* between generators that all fire on it. Splitting
+  ctrl into a waveform field and a gate field would need both to fire on every write
+  the other explains, so one residual write would take the register's whole span with
+  it; the per-write split of this section is strictly better there. The two mechanisms
+  therefore stay apart, and §6 measures the 23 emits that costs.
 - **Immediates** (`_immediates`, `_const_flow`). The other half of a typical note
   lane is the release write, an immediate operand in the play code (`ad = 0`), and
   the other half of a typical ctrl lane is the hard-restart byte a branch loads
@@ -392,7 +457,9 @@ partitions, one per domain**, and they are never summed.
   replayed from `RAW`, the per-plane split, and per plane the evidence behind each
   interpreted emit — `lane` and `gate` are declared bytes at a recovered index
   (**strong**), `imm` is a program constant that passes the law without explaining an
-  index (**shallow**, never folded into a strong figure).
+  index (**shallow**, never folded into a strong figure), and `mask` is a byte several
+  generators assemble field by field (§4e), part declared and part program constant,
+  folded into neither.
 - The **trigger** partition (`triggers`): `(generated, all)` fires, counted by
   `_run` off the evaluator itself. A generated fire is a `DIV` tick over a divisor the
   play code declares (§4d) — the only strong evidence this domain has, and the only
@@ -903,6 +970,81 @@ tune**. The run-level refusal is all-or-nothing by construction — one stepped 
 whose origin no declaration names refuses its whole run — and it fires on 303 tunes for
 `pw` and 251 for `cutoff`.
 
+### One plane, two generators — and how little of it the program text names
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (649 reach the gate here),
+against the table above: §4e's masked route, a change to `tracker.py` only. **The
+population was measured before a line was written**, because the point of the step is
+the size of the answer. Of every SID write the rules above leave unexplained, bucketed
+by whether its register class's store sites name a bit partition at all and whether
+every field of that partition is then sourced:
+
+| the write is | all | $18 | $17 | ctrl | rest |
+|---|---|---|---|---|---|
+| explained already (§4b/§4c/§5) | 576445 | 2321 | 15642 | 73598 | 484884 |
+| the text names a partition and **every field is sourced** | **699** | **676** | **0** | **21** | **2** |
+| the text names a partition, a field is not sourced | 10353 | 8100 | 411 | 1588 | 254 |
+| the text names a partition, no declared byte at all | 17312 | 11081 | 1059 | 2719 | 2453 |
+| no store site of the class names a partition, a declared byte moved | 131102 | 7821 | 6694 | 42430 | 74157 |
+| no partition, and no declared byte either | 1206898 | 44240 | 30965 | 182003 | 949690 |
+| **all** | **1942809** | **74239** | **54771** | **302359** | **1511440** |
+
+The population the extension is *for* — a register written with only some of its bits
+changed, i.e. a declared byte at a non-`mut` offset that is not the byte the register
+took — is **142154** emits (`$18` 16597, `$17` 7105, `ctrl` 44039, the rest 74413), of
+which **35384** hold a declared byte that is a submask of the write, the shape an `OR`
+of two fields leaves.
+
+**The recoverable population is 699 emits — 0.036% of the corpus, and 4.1% of the
+16597 `$18` emits the oracle counted (docs/gt-oracle.md §4.3).** It is far below that
+16597 and the rule was **not** widened to reach it. The rows below the gain are what
+widening would have to take: 27665 emits whose partition the text does name but whose
+fields no declaration holds — the mode nibble was staged in RAM at init or built by
+arithmetic, not copied out of a table at play time — and 131102 whose store site is a
+bare load or an `OR` of two variable terms and names no mask at all. Taking the mask
+off the observed bytes instead (any declared byte that is a submask of the write) would
+reach 35384; that is the fit §4b, §4c and §4d each refuse in their own domain, and it
+is refused here.
+
+`$17` is the sharper result: **zero** of its 7105 are recoverable. Resonance is ORed
+with a routing mask assembled from three voices' flags, and no store site in the corpus
+writes that as a partition the text names — the routing byte is built in RAM.
+
+| plane | before | after |
+|---|---|---|
+| interpreted | 752598/1942809 = 38.74% | **753274/1942809 = 38.77%** |
+| filter | 22301/240844 = 9.26% | **22977/240844 = 9.54%** |
+| freq | 417490/605952 | 417490/605952 (unchanged) |
+| pw | 89850/565009 | 89850/565009 (unchanged) |
+| ctrl | 112502/302359 | 112502/302359 (unchanged) |
+| ad | 54436/112608 | 54436/112608 (unchanged) |
+| sr | 56019/116037 | 56019/116037 (unchanged) |
+
+**5 tunes improve and none regresses**; every other plane is byte-identical per tune,
+class split included, because a masked group is the last rule tried and only sees a
+write §4b and §4c have both declined. The class split moves by exactly the gain —
+`lane` 516682, `gate` 32708, `imm` 25188, `ramp` 25399, `seed` 4152 all unmoved, and
+`mask` **0 → 676**. The canonical fixpoint holds 649/649, Gate FP 649/649 and the
+tracker law 649/649. The trigger domain's generated figure does not move (300 fires,
+the same three `DIV` nodes); its denominator goes 306277 → 306953, one edge stream per
+masked group, exactly as §4c's `RAMP`s moved it.
+
+`mask` is its own class and is never folded into the strong figure. All 676 are a
+declared mode nibble plus the store statement's own volume constant: half the byte is
+a declared byte at a recovered row and half is a program constant, so the write is
+neither `lane` nor `imm` and is counted as neither. What it is **not** is the blanket
+`imm` reading §6 refuses above — the 34177 filter emits whose whole byte is some
+program constant stay refused, because there the observation picks which constant,
+while here the store statement's own text says which bits the constant owns.
+
+**Every refusal, and what it costs.** A mask fitted to the observed bytes: 35384 emits,
+refused outright. A partition whose fields reach no declaration: 10353. A store site
+that names no partition: 131102. And the order-preserved section: 23 emits on 2 tunes
+(`ctrl` 21 on `MUSICIANS/G/Galway_Martin/Commando_High-Score.sid`, whose ctrl store is
+`(m_12EB | $08)`, and `sr` 2 on `MUSICIANS/A/Abynx/Are_Friends_Electric.sid`) decompose
+cleanly but are refused because ctrl/AD/SR is a sequence of whole-byte writes rather
+than a partition of one (§5).
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -910,6 +1052,13 @@ the law green and must move emits out of `RAW`, never widen a declaration. The
 order has changed twice. The origin rule of §6 moved the largest measured gains
 **tracker-side**, to realizing a ceiling provenance already supplied; the finer
 partition of §5 has now taken them. What is left is provenance-bound again.
+
+§4e's masked route is off this list because it has been measured out of it: a register
+several generators drive is now expressible, two editors' own songs use it heavily
+(docs/gt-oracle.md §4.3), and on our own recovery it reaches 699 emits. The mask must
+come from the store statement, and 27665 emits whose statement does name a partition
+still have a field no declaration holds — the same wall item 2 hit, a parameter staged
+in RAM at init, measured on a second plane. It is not a generator-shape problem.
 
 1. **The instrument planes are now bounded by provenance again** — the finer
    partition shipped (§5, §6): `ctrl`/`ad`/`sr` interpret 37%/48%/48% and their
@@ -1019,3 +1168,11 @@ partition of §5 has now taken them. What is left is provenance-bound again.
   named by no store site. On ctrl/AD/SR the provenance search covers it — 15648
   emits' worth; on freq/pw there is no such fallback and those writes stay residual,
   which is 5693 emits a blind search would have taken.
+- A masked route needs a mask the program text names (§4e), and almost no store site
+  names one: 699 emits of 142154 written with only some bits changed. The mask is
+  refused where the store `OR`s two variable terms — the shape a routing byte built in
+  RAM takes, and the reason `$17` recovers **zero** — and a partition whose fields no
+  declaration holds is refused whole. The bits no generator of a register owns are
+  emitted as zero, so a byte with a bit nobody owns cannot pass the law and stays
+  residual; `_check` refuses overlapping masks outright. The order-preserved section
+  takes no masked group at all, which costs 23 emits on 2 tunes.
