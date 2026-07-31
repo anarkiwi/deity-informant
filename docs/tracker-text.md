@@ -117,6 +117,13 @@ never read as complete when it is not.
   against the composer's own song rather than asserting it.
 - **The residual is the point.** The generated share, the per-plane residual and the
   per-part replay counts are always printed.
+- **A residual emit is not a missing byte.** The coverage figures on both sides measure
+  *justification*, never reach: `tools/graph_diff.py` matched the two graphs node by
+  node and found **zero** of the composer's writes are ones the recovery never produces
+  (docs/tracker.md §0). What the side-by-side shows is the same tune expressed as two
+  different partitions of the same writes — 1 to 11 nodes match out of 42 to 575, and
+  the mismatch runs both ways. Read a low `ours` figure as "cannot be attributed to a
+  declaration", never as "cannot be reproduced".
 
 ## Running it, and what it costs
 
