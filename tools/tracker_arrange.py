@@ -31,7 +31,7 @@ def _shape(idx, walk, env, tracker):
 def one(rel):
     """The arrangement census for one cached tune."""
     # pylint: disable=import-outside-toplevel,too-many-locals
-    from deity_informant import frameprog, frameptr, tracker
+    from deity_informant import datadecl, frameprog, frameptr, tracker
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid, psid_songs
 
@@ -48,7 +48,7 @@ def one(rel):
         return out
     walk, env = tracker._walked(prog), tracker._prog_env(prog)
     sites = frameptr.analyse(prog.mem0, prog.data_decls, prog.procs)
-    tabs = frameptr._Tables(prog.data_decls)
+    tabs = datadecl.Regions(prog.data_decls)
     pos = {}
     for s in tracker._stmts(prog):
         if s[0] == "st" and s[1][0] == "const":
