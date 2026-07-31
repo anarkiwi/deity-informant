@@ -85,15 +85,18 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   lane read at a recovered row, fired by the voice's note-on `EDGE`. For `ctrl`
   the same lane also supplies the gate images, so the waveform is declared data
   and only bit 0 moves.
+- **freq/pw `SELECT` per register** (§4b) — the last-write-wins planes,
+  transliterated from the store statement: where the value expression names a
+  declared table, the emit is that table's lane at the row the read cell recovers.
 - **Clocks** (`_clocks`) — cells the play code steps by one, read off the frame
   program's procedures: `dec` + reload is a divider (its reload is
   `frames_per_tick`), a free `inc` is an LFO phase.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
-`pw` is **not** interpreted: it renders from `RAW`, and so does every `ctrl`
-write whose byte never reaches a declaration. The coverage numbers in §6 say so
-plainly; nothing is claimed that a generator does not reproduce.
+Every `ctrl` write whose byte never reaches a declaration renders from `RAW`, and
+so does every freq/pw write whose store statement names none. The coverage numbers
+in §6 say so plainly; nothing is claimed that a generator does not reproduce.
 
 ## 4. Pitch recovery from declared tables
 
@@ -134,13 +137,48 @@ compensated for here — which is why the tracker has no `_extend_et`, no `mem0`
 scan and no per-entry stability ranking. The extent stops at the first
 play-written cell above the observed run (`_sound_hi`) and the writes inside it
 are named per record offset by `mut` (`_mut_offs`): a lane of a record array, a
-cell of a flat region. The tracker does not consult `mut`; it verifies every
-emitted byte against the image, so its bytes are right either way, but over 682
-cached tunes at 200 frames 3505 of 62512 lane classifications sit at a `mut`
-offset, where the evidence is snapshot agreement rather than a const read.
-Refusing those srcs costs 2834 interpreted emits (`sr` −1512, `ctrl` −954,
-`ad` −368), so the strength of that class is a tracker-side question, tracked
-separately.
+cell of a flat region. The tracker **consumes** `mut` (`_lane_key`): a source cell
+at one of those offsets is refused, because a play-written cell is not const data
+and agreement with the snapshot is then coincidence rather than a const read. The
+reading is per record — `(cell − base) mod stride` when strided, `(cell − base)`
+otherwise — and getting it wrong silently matches nothing, so it is asserted
+directly (`test_mut_offsets_are_lanes_when_strided_and_cells_when_flat`). Refusing
+those srcs costs 2834 interpreted emits on the instrument planes (`sr` −1512,
+`ctrl` −954, `ad` −368) and 5926 on the lww planes (`pw` −5322, `freq` −604);
+§6 reports that cost apart from the gain it is paid out of.
+
+## 4b. The last-write-wins planes: the table the store statement names
+
+freq and pw are last-write-wins, so a frame's value stands on its own and there is
+no all-or-nothing register rule to lean on. What replaces it is the **statement
+tree**: `_tree_tables` reads, per register class, the declarations the program text
+stores into that class, and only those are eligible.
+
+- **The store names the table.** A store's value expression is walked with its
+  locals resolved to their in-procedure definitions and a staged byte followed
+  through the cell it was stored to (`_read_bases`) — the same origin hop
+  `frameval` makes at runtime (docs/frameprog.md §1.4), made statically. A read the
+  value only *indexes through* is not followed: an index cell is not the byte's
+  origin, however its byte agrees.
+- **The read cell recovers the row.** The tree names the declaration; it cannot
+  evaluate the index, so `frameval.eval_src` still supplies the cell and the row is
+  `(cell − base) // stride` as in §5. The emitted byte is the declared one.
+- **Per frame, not per register** (`_lww_streams`). Each explained frame fires the
+  lane's `EDGE`; the rest fall through to the note lane (§4) or stay in `RAW`. A
+  declared lane outranks the note reading of the same byte, since the note reading
+  emits the *observed* word and the lane emits a *declared* one.
+
+On Commando `sid.v1.freq_hi[w9] = m_5429[t5]` and its `freq_lo` partner become two
+`SELECT` nodes over the `+1` and `+0` lanes of the declared `m_5428[192] stride 2`
+table, carrying **one shared row stream per voice** — the row is the semitone index,
+so the pitch table and the note lane are finally the same object. `pw_hi` is the
+`+1` lane of the `$5591` instrument bank at the instrument row; `pw_lo` is `mut`
+(the play code writes the pulse accumulator back) and is refused.
+
+Requiring the tree to name the table is stricter than a bare provenance search over
+every declaration, and measurably so: over the corpus it declines 5693 emits' worth
+of lane classifications a blind search would take. That is the point — a byte whose
+declaration the program text never names is not explained by that declaration.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
@@ -159,13 +197,19 @@ stride `s`, one lane per byte offset. The generator for a lane is
   both and the declaration picks. That is the address the play code indexed, so
   the row is `(cell - base) // stride` and the lane is `(cell - base) % stride` —
   read off the machine, never guessed.
-- **The declared byte must agree** (`_classify`). A write is a lane read only if
-  the cell lies inside a declared table *and* `mem0[cell] == value`. A cell the
-  play phase mutated therefore never passes as constant data (#61), and every
-  byte a `SELECT` emits is verified equal to the declared byte at the moment of
-  that emit. The check earns its keep: over the 60-tune sample 916 ADSR emits
-  read a cell inside a declaration whose byte no longer matches the snapshot, and
-  all 916 stay residual.
+- **The declared byte must agree** (`_lane_key`). A write is a lane read only if
+  the cell lies inside a declared table, at an offset the declaration does not
+  name `mut`, *and* `mem0[cell] == value`. A cell the play phase mutated therefore
+  never passes as constant data (#61, #78), and every byte a `SELECT` emits is
+  verified equal to the declared byte at the moment of that emit. The check earns
+  its keep: over the 60-tune sample 916 ADSR emits read a cell inside a declaration
+  whose byte no longer matches the snapshot, and all 916 stay residual.
+- **The tree first, the search behind it** (`_classify`). The declarations the
+  store site names for this register class (§4b) are tried first; the search over
+  every declared bank is the fallback for a value the tree cannot express — a byte
+  staged across a procedure boundary or through the stack, which `frameval`'s
+  program-wide locals carry but a per-procedure walk of the tree does not. Dropping
+  the fallback would cost 15648 emits on these planes, so it stays and is named.
 - **The gate rides the recovered waveform** (`_classify`, `_key_table`). A ctrl
   write carrying no declared cell of its own is the gate bit applied to the lane
   byte at the row the voice's last lane read established: the emitted byte is
@@ -209,21 +253,24 @@ per-plane split, and per plane the evidence behind each interpreted emit —
 a program constant that passes the law without explaining an index (**shallow**,
 never folded into a strong figure).
 
-| tune | pitch table | interpreted | freq plane | ctrl | ad | sr |
-|---|---|---|---|---|---|---|
-| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2080/2525 = 82.4%** | 1198/1280 = 93.6% | 576/576 | 153/153 | 153/153 |
-| Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 444/1164 = 38.1% | 444/722 = 61.5% | 0/29 | 0/7 | 0/4 |
-| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 998/4800 = 20.8% | 398/1200 = 33.2% | 200/600 | 200/600 | 200/600 |
-| Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/48 | 0/17 | 0/17 |
-| Krakout (Daglish) | `$E629` big-endian, 12, octave-shift | 228/5000 = 4.6% | 228/1200 = 19.0% | 0/600 | 0/600 | 0/600 |
+| tune | pitch table | interpreted | freq plane | pw | ctrl | ad | sr |
+|---|---|---|---|---|---|---|---|
+| Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2157/2525 = 85.4%** | 1198/1280 = 93.6% | 77/363 | 576/576 | 153/153 | 153/153 |
+| Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 444/1164 = 38.1% | 444/722 = 61.5% | 0/0 | 0/29 | 0/7 | 0/4 |
+| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 1396/4800 = 29.1% | 796/1200 = 66.3% | 0/1200 | 200/600 | 200/600 | 200/600 |
+| Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/600 | 0/48 | 0/17 | 0/17 |
+| Krakout (Daglish) | `$E629` big-endian, 12, octave-shift | 228/5000 = 4.6% | 228/1200 = 19.0% | 0/1200 | 0/600 | 0/600 | 0/600 |
 
 Of Commando's 576 ctrl emits, **75 are declared-lane reads** and **399 are that
 lane with the gate bit cleared** — 474 strong, all from the `$5591` bank's
 waveform lane at `+2`, the same row its AD (`+3`) and SR (`+4`) lanes read — and
 102 are the `$80` hard-restart immediate. Its 306 ADSR emits are 154 lane reads
-and 152 `ad = sr = 0` release immediates. Automatas' 600 refined emits are *all*
-immediates (`ctrl = ad = sr = 0`, one voice held silent every frame), which is
-why the split is reported and never folded into one number.
+and 152 `ad = sr = 0` release immediates, its 77 pw emits the `+1` lane of the
+same bank, and **1072 of its 1198 freq emits are the declared `$5428` pitch lanes
+at a recovered row** rather than an observed word matched to an ET table.
+Automatas' 600 refined instrument emits are *all* immediates (`ctrl = ad = sr = 0`,
+one voice held silent every frame) while its 597 new freq emits are all declared
+lanes, which is why the split is reported and never folded into one number.
 
 Over the first 60 cached HVSC tunes (57 decompile; keyed by full relpath) nothing
 moves: a pitch table is recovered for **53**, the law passes for **57/57**, and
@@ -269,13 +316,46 @@ writes whose value reaches the store through a local (no source cell at all) and
 30% whose source cell falls outside every declaration. Naming an address better
 answers neither.
 
+### Reading the statement tree, and consuming `mut`
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (646 decompile). Two
+independent effects, reported apart because they pull opposite ways: transliterating
+the last-write-wins planes off the store statement (§4b) **gains**, and refusing
+source cells at a `mut` offset (§4) **costs**. The middle two columns are each
+effect on its own; the last is the shipped combination.
+
+| plane | before | tree only | `mut` only | shipped |
+|---|---|---|---|---|
+| interpreted | 425657/1933877 = 22.01% | 467904 = 24.20% | 422823 = 21.86% | **459144 = 23.74%** |
+| freq | 379104/602528 | 395868 | 379104 | **395264** |
+| pw | 0/561585 | 25483 | 0 | **20161** |
+| ctrl | 10558/300573 | 10558 | 9604 | **9604** |
+| ad | 16890/112534 | 16890 | 16522 | **16522** |
+| sr | 19105/115963 | 19105 | 17593 | **17593** |
+
+The tree gain is **+42247** emits, every one of them `lane` class — declared bytes
+at a recovered row, no immediates — over 330 tunes that grow a declared lww lane.
+The `mut` refusal costs **−2834** on the instrument planes (exactly the residue
+#78 measured from the declaration side: `sr` −1512, `ctrl` −954, `ad` −368) and a
+further **−5926** on the planes the tree gain opened (`pw` −5322, `freq` −604).
+Net **+33487**, 167 tunes improve, 6 regress (all six purely from the refusal).
+Whole planes explained: `pw` 0 → 6 tunes, `freq` 106 → 113; `ctrl` 28 → 25, `ad`
+180 → 177, `sr` 195 → 192, the losses again the refusal's. The canonical fixpoint
+holds 646/646, Gate FP 646/646 and the tracker law 646/646 — all three unchanged.
+
+`eval_src` is **not** removed and cannot be: the tree names the declaration but
+cannot evaluate the index, so the read cell is still what recovers the row. What it
+replaces is *identification*. Of the corpus's 8538 SID store sites, 5457 (63.9%)
+name a declared table in the tree — 3223 of the 4526 freq/pw sites (71.2%) — and on
+those planes that naming is now the only admissible basis.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
 the law green and must move emits out of `RAW`, never widen a declaration:
 
-1. **pw** — the pulse-width accumulator as a `RAMP` with bounds, and the seed
-   lane of the instrument bank, which needs per-lane declaration soundness.
+1. **pw** — the seed lane of the instrument bank is now declared data (§4b); what
+   is left is the accumulator itself, a `RAMP` with bounds whose seed that lane is.
 2. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
@@ -309,3 +389,12 @@ the law green and must move emits out of `RAW`, never widen a declaration:
   snapshot (#61), plus 74 emits refused for write order.
 - The gate arm needs a row: a voice that never reads its waveform from a
   declaration has nothing for the gate to ride and stays residual whole.
+- On the lww planes the *table* is transliterated but the *index* is not: the tree
+  names `m_5429[t5]`, and `t5` is a live state value no static reading yields, so
+  `frameval.eval_src` still recovers it. That index becomes explained when the
+  arrangement does (§7.3), not before.
+- The tree walk is per procedure (locals) plus a program-wide staging hop
+  (`origins`), so a byte staged across a procedure boundary or through the stack is
+  named by no store site. On ctrl/AD/SR the provenance search covers it — 15648
+  emits' worth; on freq/pw there is no such fallback and those writes stay residual,
+  which is 5693 emits a blind search would have taken.

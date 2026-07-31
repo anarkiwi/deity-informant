@@ -615,12 +615,81 @@ _SECT = ((0xFF, 0x00), (0xFE, 0x00), (0xFF, 0x01))  # held: byte, gate cleared, 
 
 
 def _banks(prog):
-    """Declared const tables as ``(base, size, stride)``, stride at least one."""
+    """Declared const tables as ``(base, size, stride, mut)``, stride at least one.
+
+    ``mut`` is the declaration's play-written record offsets: lanes modulo the
+    stride when strided, raw offsets otherwise. Those cells are not const data."""
     return [
-        (d["base"], d["size"], max(1, d.get("stride") or 1))
+        (
+            d["base"],
+            d["size"],
+            max(1, d.get("stride") or 1),
+            frozenset(d.get("mut") or ()),
+        )
         for d in prog.data_decls
         if d["kind"] == "table"
     ]
+
+
+def _record(size, stride):
+    """Record length a declaration's ``mut`` offsets are taken modulo."""
+    return stride if stride > 1 else size
+
+
+def _decl_of(addr, banks):
+    """The declaration containing ``addr``, or None."""
+    for b in banks:
+        if b[0] <= addr < b[0] + b[1]:
+            return b
+    return None
+
+
+def _read_bases(expr, env, origins, depth=4):
+    """Const read bases ``expr`` reaches through local definitions and staging cells.
+
+    A local resolves to its definition and a staged byte to the values stored into
+    the cell it came from — the origin hop the evaluator makes at runtime, made
+    statically off the tree."""
+    out, seen, stack = set(), set(), [(expr, depth)]
+    while stack:
+        x, d = stack.pop()
+        if (x, d) in seen:
+            continue
+        seen.add((x, d))
+        if x[0] == "op":
+            stack.extend((c, d) for c in x[2])
+        elif x[0] == "mem":
+            b = _base(x[1])
+            out.add(b)
+            stack.extend((v, d - 1) for v in origins.get(b, ()) if d)
+        elif x[0] == "loc":
+            stack.extend((e, d - 1) for e in env.get(x[1], ()) if d)
+    return out
+
+
+def _tree_tables(prog, banks):
+    """``{register class: declarations the program text reads into it}``.
+
+    The store statement's value expression *names* the declaration the byte comes
+    from: identification from the artifact, not a search for some bank that happens
+    to hold a provenance cell with an agreeing byte."""
+    origins, out = {}, {}
+    for s in _stmts(prog):
+        if s[0] == "st" and _sid_class(s[1]) is None:
+            origins.setdefault(_base(s[1]), []).append(s[2])
+    for proc in prog.procs:
+        env, stores = {}, []
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env.setdefault(s[1], []).append(s[2])
+            elif s[0] == "st" and _sid_class(s[1]) is not None:
+                stores.append((_sid_class(s[1]), s[2]))
+        for cls, val in stores:
+            for b in _read_bases(val, env, origins):
+                d = _decl_of(b, banks)
+                if d is not None:
+                    out.setdefault(cls, set()).add(d)
+    return {c: tuple(sorted(v)) for c, v in out.items()}
 
 
 def _sid_class(addr):
@@ -666,20 +735,37 @@ def _lane(key, mem0):
     return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
 
 
-def _classify(w, banks, imm, mem0, held):
-    """``(stream key, row)`` for one write: a lane byte, its gate image, or a constant.
+def _lane_key(w, banks, mem0):
+    """``(stream key, row)`` for the first source cell reading a declared lane, else None.
 
-    A lane read must agree with the declared image byte, so a cell the play phase
-    mutated is never read as constant. A ctrl write carrying no cell of its own is
-    the gate bit over the lane byte at the voice's held row: only bit 0 moves."""
+    The byte must equal the declared image byte, and the offset must not be one the
+    play phase writes: ``mut`` says that cell is not const data, so agreement with the
+    snapshot is coincidence rather than a const read."""
     reg, val, srcs = w
     for src in srcs:
-        for base, size, stride in banks:
-            if base <= src < base + size and mem0[src] == val:
-                row, off = divmod(src - base, stride)
-                key = ("lane", reg, base, size, stride, off)
-                held[reg] = (key, row)
-                return key, row
+        for base, size, stride, mut in banks:
+            if not base <= src < base + size or mem0[src] != val:
+                continue
+            if (src - base) % _record(size, stride) in mut:
+                continue
+            row, off = divmod(src - base, stride)
+            return ("lane", reg, base, size, stride, off), row
+    return None
+
+
+def _classify(w, tabs, banks, imm, mem0, held):
+    """``(stream key, row)`` for one write: a lane byte, its gate image, or a constant.
+
+    The declarations the program text reads into this register class come first, so
+    the table is named by the tree; the search over every bank is the fallback for a
+    value the tree cannot express. A ctrl write carrying no cell of its own is the
+    gate bit over the lane byte at the voice's held row: only bit 0 moves."""
+    reg, val, _srcs = w
+    for pool in (tabs.get(reg % 7, ()), banks):
+        got = _lane_key(w, pool, mem0)
+        if got is not None:
+            held[reg] = got
+            return got
     if reg % 7 == _CTRL and reg in held:
         key, row = held[reg]
         lane = _lane(key, mem0)
@@ -710,7 +796,7 @@ def _mean_pos(obs, key):
     return sum(pos) / len(pos) if pos else 0.0
 
 
-def _refine_voice(seq, targets, banks, imm, mem0):
+def _refine_voice(seq, targets, tabs, banks, imm, mem0):
     """``(relation, streams)`` refining one voice's ``targets`` registers, or None.
 
     Refuses unless every targeted write is explained, they sit at one end of the
@@ -729,7 +815,7 @@ def _refine_voice(seq, targets, banks, imm, mem0):
                 return None
         row = []
         for i in at:
-            got = _classify(ws[i], banks, imm, mem0, held)
+            got = _classify(ws[i], tabs, banks, imm, mem0, held)
             if got is None:
                 return None
             key, r = got
@@ -775,12 +861,12 @@ def _classes(streams):
     return out
 
 
-def _instr_streams(prog, ords):
+def _instr_streams(prog, ords, tabs, banks):
     """``(pre, post, refined)``: instrument streams, and the registers they take from RAW.
 
     Per voice the explainable subset of ctrl/AD/SR covering the most emits wins;
     ``pre``/``post`` place its streams either side of the residual, as order requires."""
-    banks, imm, mem0 = _banks(prog), _immediates(prog), prog.mem0
+    imm, mem0 = _immediates(prog), prog.mem0
     pre, post, refined = [], [], set()
     for v, seq in enumerate(ords):
         present, tried, best, bestn = {w[0] for ws in seq for w in ws}, set(), None, 0
@@ -789,7 +875,7 @@ def _instr_streams(prog, ords):
             if not targets or targets in tried:
                 continue
             tried.add(targets)
-            got = _refine_voice(seq, targets, banks, imm, mem0)
+            got = _refine_voice(seq, targets, tabs, banks, imm, mem0)
             n = sum(w[0] in targets for ws in seq for w in ws)
             if got is not None and n > bestn:
                 best, bestn = (targets, got), n
@@ -800,6 +886,32 @@ def _instr_streams(prog, ords):
     return pre, post, refined
 
 
+# ---- 4b. the last-write-wins planes: freq/pw straight off the store statement -----
+def _lww_streams(lww, tabs, mem0):
+    """``(streams, explained)``: declared-lane SELECT nodes for the freq/pw planes.
+
+    The store statement names the declaration and the read cell recovers the row, so
+    the emitted byte is declared data at the index the play code used. The plane is
+    last-write-wins, so only the frames the declaration explains fire."""
+    streams, explained = {}, [set() for _f in lww]
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            val, srcs = wr[reg]
+            got = _lane_key((reg, val, srcs), tabs.get(reg % 7, ()), mem0)
+            if got is None:
+                continue
+            key, row = got
+            counts, rows = streams.setdefault(key, ([0] * len(lww), []))
+            counts[f] += 1
+            rows.append(row)
+            explained[f].add(reg)
+    out = [
+        (tuple(counts), ("SELECT", _key_table(k, mem0), tuple(rows)), k[1])
+        for k, (counts, rows) in streams.items()
+    ]
+    return out, explained
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -807,17 +919,23 @@ def oracle(prog, trace, nframes):
 
 
 def _observe(prog, trace, nframes):
-    """``(canonical records, per-voice order-preserved writes with provenance)``.
+    """``(canonical records, order-preserved writes, last-write-wins writes)``, with provenance.
 
-    One machine run: the projection ``oracle`` defines, plus the cell each
-    order-preserved write loaded its byte from (``frameval.eval_src``)."""
+    One machine run: the projection ``oracle`` defines, plus the cell each write
+    loaded its byte from (``frameval.eval_src``) — the index the store statement's
+    table read used, which the tree names but cannot evaluate."""
     frames, srcs = frameval.eval_src(prog, trace, nframes)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
+    lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
         for (reg, val), src in zip(fr, sr):
-            if reg < 0x15 and reg % 7 >= 4:
+            if reg > 0x14:
+                continue
+            if reg % 7 >= 4:
                 ords[reg // 7][f].append((reg, val, src))
-    return framelog.canonical(frames), ords
+            else:
+                lww[f][reg] = (val, src)
+    return framelog.canonical(frames), ords, lww
 
 
 def lift(prog, frames=()):
@@ -826,18 +944,22 @@ def lift(prog, frames=()):
     return Tracker(_pitch(prog, _freq_words(frames)), clocks, _tempo(clocks), _instruments(prog))
 
 
-def _graph(prog, pitch, frames, ords):
-    """``(graph, lanes)``: notes and instrument lanes as generators, the rest RAW.
+def _graph(prog, pitch, frames, ords, lww):
+    """``(graph, lanes)``: declared lanes and notes as generators, the rest RAW.
 
-    A detuned frame counts only as vibrato on the current note, or as a fresh exact
-    anchor; an excursion to an unrelated note stays residual."""
+    A declared lane the store statement names outranks the note reading of the same
+    byte; a detuned frame counts only as vibrato on the current note, or as a fresh
+    exact anchor, and an excursion to an unrelated note stays residual."""
+    banks = _banks(prog)
+    tabs = _tree_tables(prog, banks)
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
     residual = []
-    pre, post, refined = _instr_streams(prog, ords)
+    pre, post, refined = _instr_streams(prog, ords, tabs, banks)
+    lwws, declared = _lww_streams(lww, tabs, prog.mem0)
     for f, rec in enumerate(frames):
-        gen = {}
+        gen, done = {}, declared[f]
         for v in range(3):
             sec, b = dict(rec[2 * v]), 7 * v
             if b not in sec or b + 1 not in sec:
@@ -849,17 +971,19 @@ def _graph(prog, pitch, frames, ords):
                 gen[b], gen[b + 1] = note.word & 0xFF, (note.word >> 8) & 0xFF
                 lanes[v].append((f, note))
         for r, seq in seqs.items():
-            seq.append(gen.get(r))
-        residual.append([e for sec in rec for e in sec if e[0] not in gen and e[0] not in refined])
+            seq.append(None if r in done else gen.get(r))
+        keep = set(gen) | done | refined
+        residual.append([e for sec in rec for e in sec if e[0] not in keep])
+    streams = pre + post + lwws
     edges = {}
-    for counts, _t, _r in pre + post:
+    for counts, _t, _r in streams:
         edges.setdefault(counts, len(edges))
     nodes = [edge(c) for c in edges]
     fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
     nodes += fired + [raw(residual)]
-    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post]
+    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
-    return Graph(nodes, freq_table=pitch, classes=_classes(pre + post)), lanes
+    return Graph(nodes, freq_table=pitch, classes=_classes(streams)), lanes
 
 
 def render(prog, trace, nframes):
@@ -868,8 +992,8 @@ def render(prog, trace, nframes):
     Accepted-note freq entries and explained ADSR writes are interpreted
     generators; everything else is an explicit RAW residual, so a ``gate`` PASS
     certifies the partition is complete."""
-    gt, ords = _observe(prog, trace, nframes)
-    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords)
+    gt, ords, lww = _observe(prog, trace, nframes)
+    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww)
     recs, interp, rawn = _run(graph, nframes)
     return recs, gt, _coverage(interp, rawn, graph.classes), lanes
 
