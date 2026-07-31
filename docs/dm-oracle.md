@@ -192,6 +192,14 @@ trigger off the floor, and §4.1 says why — this time with the divisor in hand
 Every wall actually hit, with its weight, and for each of docs/gt-oracle.md §4's
 entries an explicit verdict: **does a third, independent editor hit it too?**
 
+**A third editor settles whether a gap is universal — it says nothing about
+recovery.** Each entry below was closed in the primitive and moved the format by
+thousands of emits and the recovery from binaries by hundreds or none (the arrangement:
+73766 against **0**). `tools/graph_diff.py` measured the reason: **zero** of a
+composer's writes are ones the recovery never produces. This report is evidence about
+the *format*, never a work queue for the recovery side — see docs/gt-oracle.md §4's
+preamble and docs/tracker.md §0.
+
 ### 4.1 A `DIV` has no phase — confirmed, and DefMON supplies the divisor
 
 DefMON is the first editor whose clock is **unambiguously declared song data**.
