@@ -595,4 +595,4 @@ def emit(graph, nframes, prog=None, title="graph", law=None):
     out += _generators(graph, scan, keys)
     out += _voices(graph, scan)
     out += _residual(graph, scan)
-    return "\n".join(out + [_RULE, ""])
+    return "\n".join(line.rstrip() for line in out + [_RULE, ""])
