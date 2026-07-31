@@ -98,9 +98,10 @@ def test_a_select_names_the_table_and_the_row_it_reads():
 def test_instruments_are_numbered_by_first_appearance_and_read_musically():
     """The instrument list is the table's rows, decoded as an editor shows them."""
     text = _text()
-    assert "  inst 00   A0 DA               pulse+gate" in text
-    assert "  inst 01   A0 DB               tri+gate" in text
-    assert "  inst 02   A0 DC               saw+gate" in text
+    assert "  entry    attack/decay  waveform" in text
+    assert "  inst 00  A0 DA         pulse+gate" in text
+    assert "  inst 01  A0 DB         tri+gate" in text
+    assert "  inst 02  A0 DC         saw+gate" in text
 
 
 def test_a_repeated_block_is_surfaced_with_its_repeat_count():
@@ -257,6 +258,17 @@ def test_a_masked_group_is_named_with_the_generators_that_share_its_write():
     )
     assert "rows   setting 00  setting 02  setting 04  setting 00" in text
     assert "rows   [setting 01  setting 03] x2" in text
+
+
+def test_a_table_lane_is_decoded_by_the_part_of_the_register_it_drives():
+    """A filter lane is a filter setting, not a waveform: the role picks the decoder."""
+    text = X.emit(_masked(), MF)
+    assert "  entry    filter mode  resonance" in text
+    assert "  filt 00  low-pass     -" in text
+    assert "  filt 01  -            resonance 8" in text
+    assert X._lane_byte("mode/volume", 0x1F) == "voice 3 mute off, low-pass, master volume 15"
+    assert X._lane_byte("cutoff hi", 0x1F) == "31"
+    assert X._lane_byte("waveform", 0x41) == "pulse+gate"
 
 
 def test_a_masked_group_counts_as_one_emit_not_one_per_field():

@@ -531,7 +531,19 @@ def _engine(graph, prog, scan):
     return out
 
 
-_REG_OF_ROLE = {r: i for i, r in enumerate(_VOICE_ROLE)}
+_NO_FIELDS = tracker._FILTER_HI + 1  # a register with no named field: a bare level
+_ROLE_FIELD = {n: (r, m) for r, fs in _FILT_FIELDS.items() for m, n, _k in fs}
+_ROLE_FIELD.update({n: (tracker._CTRL, m) for m, n, _k in _CTRL_FIELDS})
+_ROLE_FIELD.update({n: (r, m) for (r, m), n in _MASK_NAME.items()})
+# a whole-register lane role wins where a field shares its name: the byte carries both
+_ROLE_FIELD.update({r: (i, _FULL) for i, r in enumerate(_VOICE_ROLE)})
+_ROLE_FIELD.update({name: (reg, _FULL) for reg, name in _FILT_ROLE.items()})
+
+
+def _lane_byte(role, b):
+    """One declared byte of a table lane, decoded by the part of the register it drives."""
+    reg, mask = _ROLE_FIELD.get(role, (_NO_FIELDS, _FULL))
+    return _byte_str(reg, b) if mask == _FULL else _field_str(reg, mask, b)
 
 
 def _instruments(scan, cap=48):
@@ -541,18 +553,18 @@ def _instruments(scan, cap=48):
     if not used:
         return []
     roles = sorted({r for _n, (tid, _row) in used for r in tabs.lanes.get(tid, {})})
+    rows = [["  %-4s %02d" % (tabs.role.get(tid, "?")[:4], n)] for n, (tid, _r) in used[:cap]]
+    for k, (_n, (tid, row)) in enumerate(used[:cap]):
+        for r in roles:
+            lane = tabs.lanes.get(tid, {}).get(r)
+            rows[k].append(_lane_byte(r, lane[row]) if lane and row < len(lane) else "-")
+    head = ["  entry  "] + list(roles)
+    wide = [max(len(c[i]) for c in [head] + rows) + 2 for i in range(len(head))]
     out = [
         "",
         "; ---- instruments (rows of the instrument tables, numbered by first appearance) ----",
-        "  entry     " + "".join("%-20s" % r for r in roles),
     ]
-    for n, (tid, row) in used[:cap]:
-        cells = []
-        for r in roles:
-            lane = tabs.lanes.get(tid, {}).get(r)
-            reg = _REG_OF_ROLE.get(r, tracker._CTRL)
-            cells.append("%-20s" % (_byte_str(reg, lane[row]) if lane and row < len(lane) else "-"))
-        out.append("  %-4s %02d   %s" % (tabs.role.get(tid, "?")[:4], n, "".join(cells)))
+    out += ["".join("%-*s" % (w, c) for w, c in zip(wide, r)) for r in [head] + rows]
     if len(used) > cap:
         out.append("  ...(+%d more)" % (len(used) - cap))
     return out
