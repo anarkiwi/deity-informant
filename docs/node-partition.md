@@ -108,6 +108,16 @@ arpeggio (its addressing base landing two bytes low, per (b) below). That is exa
 `Index` chain of docs/tracker.md §3.2b, present in the program text and never built by the
 recovery, whose structure axis reads 0.
 
+**What this does not measure.** The match is at the level of the *object*, not the
+cursor: it asks whether the program indexes the region the editor's node reads, not
+whether the program's cursor is the editor's. The two are in different vocabularies — a
+cell address against a song-model column name — and the only way to compare them is to
+watch the cursor's per-frame values against the editor's row stream, which is precisely
+the change §4 recommends. So this measurement bounds the hypothesis from above: a pair
+per object is necessary for node-per-(region, cursor) to work, and it is present; whether
+each pair's rows *are* the editor's rows is the next measurement, and it is the one the
+implementation itself produces.
+
 ## 3. Where they do not correspond, and why
 
 **(a) The arrangement is pointer-walked, so it has no `base[index]` load at all.** On
