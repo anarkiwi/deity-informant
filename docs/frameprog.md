@@ -768,8 +768,9 @@ ad 54490; classes `lane` 516986, `gate` 32914, `imm` 25188, `ramp` 25399, `seed`
 direction.** (That baseline was re-measured on this tree rather than taken from §4.5's
 753689; the +282 is the lifter's `$CE` cycle-cost fix of #104, not this change.)
 
-**What the rule does move, and where it stops.** On the one pinned site — `*m_C0E0[x]` in `MUSICIANS/B/Bialluch_Dirk/Helden.sid` — **582 SID writes** report the
-proven address instead of the pointer's cells, and the address is right: it equals the
+**What the rule does move, and where it stops.** On the one pinned site — `*m_C0E0[x]` in
+`MUSICIANS/B/Bialluch_Dirk/Helden.sid` — **582 SID writes** report the proven address
+instead of the pointer's cells, and the address is right: it equals the
 address the run read at **582 of 582** writes. All 582 land inside a `datadecl`
 declaration of `kind == "stream"` — the pointer-target anchor `datadecl` carves `via` the
 pointer pair — which `tracker._banks` does not admit (it takes `kind == "table"` only),
@@ -809,8 +810,8 @@ And the address is **not what the consumer was missing**. docs/tracker.md §6 na
 impure deref address as the wall in front of arrangement recovery; handed the address the
 run itself used, recovery is still zero. Two walls stand behind it, both measured above:
 `datadecl` carves the deref's target as a `stream` rather than a table, so the tracker's
-bank pool excludes 3008 of the 3751 addresses; and #61's own check refuses 2106 more whose
-declared byte is not the byte the register took. The only measured headroom anywhere in
+bank pool excludes 3008 of the 3751 addresses; and of the 743 that do land in a table,
+#61's own byte check refuses 683. The only measured headroom anywhere in
 this chain is a **tracker-side** change admitting `stream` declarations as banks, whose
 ceiling is **1585 emits over 28 tunes (0.08% of the partition)** and only under the
 observation-derived address that is itself refused. With the proof-supplied address the
