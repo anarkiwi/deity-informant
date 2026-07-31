@@ -575,6 +575,29 @@ def t_ptr_seq(rng):
     return Player("ptr_seq", ORG, a.assemble(), {SID + reg}, {"indexed"}, data=data, frames=6)
 
 
+def t_ptr_pin(rng):
+    """A pointer table whose every entry names one block, so the proof pins one address.
+
+    The same rows are also read at a const base, which is what declares the block:
+    the deref then carries a declared source cell instead of the pointer's own."""
+    a = Asm(ORG)
+    a.i("LDX", "abs", CNT).i("LDA", "absx", VEC).i("STA", "zp", PTR)
+    a.i("LDA", "absx", VEC + 4).i("STA", "zp", PTR + 1)
+    a.i("LDY", "abs", CNT + 1).i("LDA", "indy", PTR).i("STA", "abs", SID + 4)
+    a.i("LDA", "absy", TBL).i("STA", "abs", SID + 5)
+    for cell in (CNT, CNT + 1):
+        a.i("LDA", "abs", cell).i("CLC").i("ADC", "imm", 1)
+        a.i("AND", "imm", 3).i("STA", "abs", cell)
+    a.i("RTS")
+    data = {CNT: 0, CNT + 1: 0, PTR: TBL & 0xFF, PTR + 1: TBL >> 8}
+    for k in range(4):
+        data[VEC + k], data[VEC + 4 + k] = TBL & 0xFF, TBL >> 8
+        data[TBL + k] = int(rng.integers(0, 256))
+    return Player(
+        "ptr_pin", ORG, a.assemble(), {SID + 4, SID + 5}, {"indexed"}, data=data, frames=6
+    )
+
+
 def t_ram_output(rng):
     """Indexed copy to a couple of RAM output cells (non-SID observable set)."""
     n = 3
@@ -672,6 +695,7 @@ TEMPLATES = (
     t_word_pair,
     t_lone_half,
     t_ptr_seq,
+    t_ptr_pin,
     t_ram_output,
     t_init_param,
 )

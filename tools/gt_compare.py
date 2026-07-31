@@ -30,7 +30,12 @@ def _lifted(path, subtune, nframes):
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, nframes, subtune)
     trace, _walker = frameprog.iota(model, nframes)
-    return frameprog.program(model), trace
+    prog = frameprog.program(model)
+    if os.environ.get("DI_DEREF_SRC") == "off":
+        prog.pinned = {}
+    elif os.environ.get("DI_DEREF_SRC") == "observed":
+        prog.pinned = {a: a for a in prog.resolved}
+    return prog, trace
 
 
 def _fires(graph, node, nframes):

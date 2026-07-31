@@ -43,15 +43,7 @@ def _load(n, slot):
     return lambda r, m, rd: sum(rd((fa(r, m, rd) + j) & 0xFFFF) << (8 * j) for j in range(sz))
 
 
-def _pure(n):
-    """True if the expression reads no memory: consts, locals and ops only.
-
-    A pure address re-evaluates with no side effect and consumes no volatile
-    input, so it can be probed again within the statement that used it."""
-    k = n[0]
-    if k in ("const", "loc"):
-        return True
-    return k == "op" and all(_pure(c) for c in n[2])
+_pure = frameproc.pure  # the ONE purity predicate (spec 1.4); rung (f) uses it too
 
 
 def _byte_addr(a, j):
@@ -63,16 +55,23 @@ def _byte_addr(a, j):
     return ("op", "INT_ADD", (a, ("const", j, 2)), 2)
 
 
-def _addrs(n):
-    """Addresses of every byte a memory load at a pure address inside ``n`` reads."""
+def _addrs(n, pin=None):
+    """Addresses of every byte a memory load inside ``n`` reads at a nameable address.
+
+    Nameable is a pure address, or one ``pin`` carries: rung (f) proved that deref
+    lies in a single declared block, so the proof supplies the base and only the row
+    evaluates (spec 4.6). The pointer's own cells are that address, not the origin."""
     out = []
     if n[0] == "mem":
+        a = pin.get(n[1]) if pin else None
+        if a is not None:
+            return [_byte_addr(a, j) for j in range(n[2])]
         if _pure(n[1]):
             out += [_byte_addr(n[1], j) for j in range(n[2])]
-        out += _addrs(n[1])
+        out += _addrs(n[1], pin)
     elif n[0] == "op":
         for c in n[2]:
-            out += _addrs(c)
+            out += _addrs(c, pin)
     return out
 
 
@@ -118,8 +117,9 @@ class _Code:
     ``call``/``goto`` cross procedures as machine transfers, so locals are
     program-wide (registers are shared, temporaries never outlive a block)."""
 
-    def __init__(self, prog, watch=()):
+    def __init__(self, prog, watch=(), pin=None):
         self.mem0 = prog.mem0
+        self.pin = dict(getattr(prog, "pinned", ()) if pin is None else pin)
         self.watch = {id(s): i for i, s in enumerate(watch)}
         self.tagged = set()
         self.ops = []
@@ -237,7 +237,7 @@ class _Code:
         The cells the value read, each evaluable without re-reading memory, plus the
         locals whose value it reads — a byte staged in a register arrives through the
         local, so the map would drop it where the tree shows no load at all."""
-        fs = tuple(self.expr(a) for a in _addrs(val))
+        fs = tuple(self.expr(a) for a in _addrs(val, self.pin))
         f = (lambda r, m, rd: tuple(g(r, m, rd) & 0xFFFF for g in fs)) if fs else None
         return f, tuple(self.slot(n) for n in _taint(val))
 
@@ -430,8 +430,8 @@ def _derived(d, r, m, rd, prov, ploc):
 class Evaluator:
     """Executes a ``FrameProgram`` frame by frame against a pinned ``iota``."""
 
-    def __init__(self, prog, trace, state0=None, sources=False, watch=()):
-        self.code = _Code(prog, watch)
+    def __init__(self, prog, trace, state0=None, sources=False, watch=(), pin=None):
+        self.code = _Code(prog, watch, pin)
         self.srcs = [] if sources else None
         self.watched = [] if sources else None
         self.prov = dict(getattr(prog, "prov0", ())) if sources else None
@@ -620,24 +620,23 @@ def eval_fp(prog, trace, nframes, state0=None):
     return framelog.canonical(Evaluator(prog, trace, state0).frames(nframes))
 
 
-def eval_src(prog, trace, nframes, state0=None):
+def eval_src(prog, trace, nframes, state0=None, pin=None):
     """``(per-frame writes, per-frame source cells)``: ``eval_fp`` before projection.
 
-    ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f derives its
-    byte from — each cell the value read and, ahead of it, the cell that byte
-    originated in (spec 1.4), then the origins of the locals it read — empty where
-    the byte is computed rather than copied."""
-    ev = Evaluator(prog, trace, state0, sources=True)
+    ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f derives its byte
+    from — each cell the value read, ahead of it that byte's origin (spec 1.4), then the
+    origins of the locals it read. ``pin`` replaces ``prog.pinned`` (measurement only)."""
+    ev = Evaluator(prog, trace, state0, sources=True, pin=pin)
     return ev.frames(nframes), ev.srcs
 
 
-def eval_watch(prog, trace, nframes, watch, state0=None):
+def eval_watch(prog, trace, nframes, watch, state0=None, pin=None):
     """``(writes, source cells, watched stores)``: ``eval_src`` plus named non-SID stores.
 
     ``watch`` is a sequence of ``asg``/``st`` statements; ``watched[f]`` lists
     ``(index into watch, cell or None, source cells)`` per execution, in order —
     a snapshot names a re-staged cell's last row, not each read's (spec 1.4)."""
-    ev = Evaluator(prog, trace, state0, sources=True, watch=watch)
+    ev = Evaluator(prog, trace, state0, sources=True, watch=watch, pin=pin)
     return ev.frames(nframes), ev.srcs, ev.watched
 
 
