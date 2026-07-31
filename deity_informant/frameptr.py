@@ -16,6 +16,7 @@ from . import streams as ST
 from .structured import Proof
 
 _ROW = 0xFF  # a resolved deref reads one byte row of its target block
+_Tables = datadecl.Regions  # the shared declaration index, under the name tools/ reads
 
 
 # ---- the deref shape ---------------------------------------------------------------
