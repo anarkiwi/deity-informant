@@ -154,6 +154,34 @@ def test_eval_src_chases_a_staged_byte_back_to_the_table_it_came_from():
     assert srcs == [[(0x0803, 0x00C2), (0x00C1,)]] * 2  # $C2 chases, $C1 has no origin
 
 
+def test_eval_src_carries_an_origin_through_the_local_that_staged_it():
+    """A byte staged in a register reaches the SID as the table cell it was loaded from.
+
+    A local holding a computed byte carries no origin, so its staged cell stands alone."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803], mem0[0x0804] = 0x5A, 0x60
+    idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
+
+    def load(k):
+        return ("mem", ("op", "INT_ADD", (("const", 0x0800 + k, 2), idx), 2), 1)
+
+    stmts = [
+        ("asg", "i", ("const", 3, 1)),
+        ("asg", "a", load(0)),
+        _staged(0x00C0, ("loc", "a")),
+        ("asg", "y", ("op", "INT_OR", (load(0), load(1)), 1)),
+        _staged(0x00C1, ("loc", "y")),
+        ("st", ("const", 0xD405, 2), _cell(0x00C0)),
+        ("st", ("const", 0xD406, 2), _cell(0x00C1)),
+        ("st", ("const", 0xD407, 2), ("loc", "a")),
+        ("ret", False),
+    ]
+    frames, srcs = frameval.eval_src(_prog(stmts, mem0=mem0), {}, 2)
+    assert frames[0] == [(5, 0x5A), (6, 0x7A), (7, 0x5A)]
+    # the register hop chases, straight to the SID as well as through the staging cell
+    assert srcs == [[(0x0803, 0x00C0), (0x00C1,), (0x0803,)]] * 2
+
+
 def test_eval_src_forgets_a_cell_the_return_address_overwrote():
     """A pushed return byte is not the table byte that stood in the cell before it."""
     mem0 = bytearray(0x10000)

@@ -65,6 +65,18 @@ def _addrs(n):
     return out
 
 
+def _taint(n):
+    """Locals whose VALUE ``n`` reads; one used only inside a mem address is not one."""
+    if n[0] == "loc":
+        return [n[1]]
+    if n[0] == "op":
+        out = []
+        for c in n[2]:
+            out += _taint(c)
+        return out
+    return []
+
+
 def _expr(n, slot):
     """Closure ``(r, m, rd) -> value`` for one frameprog expression node."""
     k = n[0]
@@ -183,21 +195,20 @@ class _Code:
         self.mark(s[1])
 
     def _s_asg(self, s, _ctx):
-        self.emit(("asg", self.slot(s[1]), self.expr(s[2])))
+        self.emit(("asg", self.slot(s[1]), self.expr(s[2]), self.deriv(s[2])))
 
     def _s_st(self, s, _ctx):
-        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.source(s[2])))
+        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2])))
 
-    def source(self, val):
-        """Address closure over every byte load at a pure address inside ``val``.
+    def deriv(self, val):
+        """``(address closure, taint slots)``: where a stored byte may be copied from.
 
-        The store's provenance: the cells the value read, each evaluable without
-        re-reading memory. A bare load reports one cell; a value combining a table
-        byte with a mask reports both, and the consumer picks by declaration."""
+        The cells the value read, each evaluable without re-reading memory, plus the
+        locals whose value it reads — a byte staged in a register arrives through the
+        local, so the map would drop it where the tree shows no load at all."""
         fs = tuple(self.expr(a) for a in _addrs(val))
-        if not fs:
-            return None
-        return lambda r, m, rd: tuple(f(r, m, rd) & 0xFFFF for f in fs)
+        f = (lambda r, m, rd: tuple(g(r, m, rd) & 0xFFFF for g in fs)) if fs else None
+        return f, tuple(self.slot(n) for n in _taint(val))
 
     def _s_ret(self, _s, _ctx):
         self.emit(("ret",))
@@ -240,7 +251,7 @@ class _Code:
     def _s_for(self, s, _ctx):
         _k, name, init, last, body = s
         i = self.slot(name)
-        self.emit(("asg", i, lambda r, m, rd, v=init: v))
+        self.emit(("asg", i, lambda r, m, rd, v=init: v, (None, ())))
         head = len(self.ops)
         conts, brks = [], []
         self.seq(body, (conts, brks))
@@ -276,7 +287,8 @@ class _Code:
 
     def _s_pcall(self, s, _ctx):
         args = tuple(self.expr(a) for a in s[2])
-        i = self.emit(("pcall", None, tuple(self.params[s[1]]), args, 0))
+        derv = tuple(self.deriv(a) for a in s[2])
+        i = self.emit(("pcall", None, tuple(self.params[s[1]]), args, 0, derv))
         self.patch(i, 4, self.synth(i))
         self.ref(s[1])
 
@@ -351,12 +363,31 @@ class _Code:
 
 
 # ---- the machine ----------------------------------------------------------------
-def _derived(f, r, m, rd, prov):
-    """Cells a stored byte derives from: each read cell, and its origin (spec 1.4)."""
-    if f is None:
-        return ()
+def _cells(d, r, m, rd, ploc):
+    """Cells a byte may be copied from: the value's read cells, then its locals' origins."""
+    f, ts = d
+    out = [] if f is None else list(f(r, m, rd))
+    return out + [ploc[t] for t in ts if t in ploc]
+
+
+def _bind(dst, key, cell):
+    """Bind ``key`` to the cell its byte came from, or drop it where none does."""
+    if cell is None:
+        dst.pop(key, None)
+    else:
+        dst[key] = cell
+
+
+def _copy(d, r, m, rd, prov, ploc):
+    """The ONE cell a copied byte came from, or None where the byte is computed."""
+    cs = _cells(d, r, m, rd, ploc)
+    return prov.get(cs[0], cs[0]) if len(cs) == 1 else None
+
+
+def _derived(d, r, m, rd, prov, ploc):
+    """Cells a stored byte derives from: each read cell, its origin, then its locals'."""
     out = []
-    for c in f(r, m, rd):
+    for c in _cells(d, r, m, rd, ploc):
         o = prov.get(c)
         if o is not None and o not in out:
             out.append(o)
@@ -372,6 +403,7 @@ class Evaluator:
         self.code = _Code(prog)
         self.srcs = [] if sources else None
         self.prov = {} if sources else None
+        self.ploc = {} if sources else None
         self.m = bytearray(prog.mem0 if state0 is None else state0)
         self.sp = self.code.slot("sp")
         self.r = [0] * len(self.code.idx)
@@ -412,7 +444,7 @@ class Evaluator:
         ``sp`` and the pushed return bytes are machine-faithful: call/ret move
         the shared stack register the program itself reads back (TSX/TXS)."""
         ops, r, m, rd, s = self.code.ops, self.r, self.m, self._rd, self.sp
-        rmap, prov = self.code.rmap, self.prov
+        rmap, prov, ploc = self.code.rmap, self.prov, self.ploc
 
         def push(ret):
             p = r[s] & 0xFF
@@ -427,6 +459,8 @@ class Evaluator:
         self.k.clear()
         if self.acc is not None:
             r[self.acc] = 0
+            if ploc is not None:
+                ploc.pop(self.acc, None)
         srcs = None
         if self.srcs is not None:
             srcs = []
@@ -440,19 +474,17 @@ class Evaluator:
             pc += 1
             if k == "asg":
                 r[op[1]] = op[2](r, m, rd)
+                if prov is not None:
+                    _bind(ploc, op[1], _copy(op[3], r, m, rd, prov, ploc))
             elif k == "st":
                 a = op[1](r, m, rd)
                 m[a] = op[2](r, m, rd)
                 if C.SID_LO <= a <= C.SID_HI:
                     buf.append((a - C.SID_LO, m[a]))
                     if prov is not None:
-                        srcs.append(_derived(op[3], r, m, rd, prov))
-                elif prov is not None:
-                    cs = () if op[3] is None else op[3](r, m, rd)
-                    if len(cs) == 1:  # a one-cell value carries that cell's origin on
-                        prov[a] = prov.get(cs[0], cs[0])
-                    else:
-                        prov.pop(a, None)
+                        srcs.append(_derived(op[3], r, m, rd, prov, ploc))
+                elif prov is not None:  # a one-cell value carries that cell's origin on
+                    _bind(prov, a, _copy(op[3], r, m, rd, prov, ploc))
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
                     pc = op[3]
@@ -463,6 +495,8 @@ class Evaluator:
                     pc = op[3]
             elif k == "forstep":
                 r[op[1]] = (r[op[1]] + op[2]) & 0xFF
+                if prov is not None:
+                    ploc.pop(op[1], None)
             elif k == "ret":
                 p = r[s] & 0xFF
                 while stack and stack[-1][1] < p:
@@ -483,8 +517,11 @@ class Evaluator:
                 pc = op[1]
             elif k == "pcall":
                 vals = [f(r, m, rd) for f in op[3]]
+                orgs = None if prov is None else [_copy(d, r, m, rd, prov, ploc) for d in op[5]]
                 for i, v in zip(op[2], vals):
                     r[i] = v
+                for i, o in zip(op[2], orgs or ()):
+                    _bind(ploc, i, o)
                 push(op[4])
                 stack.append((pc, r[s]))
                 pc = op[1]
@@ -534,8 +571,8 @@ def eval_src(prog, trace, nframes, state0=None):
 
     ``srcs[f][k]`` is the tuple of cells the k-th SID write of frame f derives its
     byte from — each cell the value read and, ahead of it, the cell that byte
-    originated in (spec 1.4) — empty where the value reads no memory at a pure
-    address."""
+    originated in (spec 1.4), then the origins of the locals it read — empty where
+    the byte is computed rather than copied."""
     ev = Evaluator(prog, trace, state0, sources=True)
     return ev.frames(nframes), ev.srcs
 
