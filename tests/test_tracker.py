@@ -478,6 +478,7 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
         "seed": 0,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
@@ -685,6 +686,7 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
         "seed": 2,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
 
@@ -1520,6 +1522,7 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
         "seed": 0,
         "mask": 0,
         "rel": 0,
+        "arr": 0,
     }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
