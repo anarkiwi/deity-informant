@@ -10,6 +10,34 @@ It reads the frame program's **declared const tables** (docs/frameprog.md,
 the tune as a graph of triggered generators over **notes** (equal-tempered
 semitone indices) instead of register bytes.
 
+## 0. Corrections — read this before proposing work
+
+Predictions in this document have repeatedly been built and measured false, and each
+cost a work cycle. Every one below was stated in prose that read like a finding. **A
+claim about what a change *would* buy is a hypothesis until a number sits beside it;
+mark it as one, and when it is measured, correct it here rather than deleting it.**
+
+| the document claimed | measured | verdict |
+|---|---|---|
+| reporting a resolved deref address makes every pattern byte declared (§6) | #105 | **false** — arrangement recovery stayed 0; `k` is live state at 366/366 sites, one address pins in 3929; even the refused observed address moves the partition by 0 |
+| 112539 pw emits are parameters "filled at init" (§7.2) | #98 | **false** — 0 moved; 94% have an accumulator the *play* phase writes |
+| the arrangement is `LOOKUP` nodes routed to `Fire` with a back-edge for the loop (§7.4) | #99 | **false** — a `Fire` edge carries no value, so it cannot name a pattern; and the loop was already free from `_emit`'s modulo |
+| a `DIV` phase field is a per-stream parameter fitted to the output (§4d, §8) | #94, #96 | **false** — three editors: the phase belongs to the arrangement, not the stream |
+| coverage measures how much of a tune the recovery can reach (§6, everywhere) | #106 | **false** — it measures *justification*; 99680 of the composer's writes are shaped differently by us and **zero** are never produced |
+
+The last one is the load-bearing correction. **Every value is already produced.** What
+this document measures throughout is whether an emit can be *attributed* to a
+declaration, never whether it can be reproduced. A residual emit is not a missing byte.
+
+The second lesson is structural. `graph_diff` shows our node partition and the editor's
+barely intersect — 1 to 11 nodes match out of 42 to 575 — and the mismatch runs **both**
+ways (40 ours vs 575 theirs on one tune, 432 vs 49 on another). Recovery builds nodes
+**register-first**: `_lane_key`, `_tree_tables`, `_acc_sites`, `_divisors` and `_walked`
+are five separate per-register searches. An editor's song is **object-first**: a pattern
+chain, an instrument program, an orderlist, each a declared table advanced by a cursor,
+each feeding whatever registers it feeds. A register-first partition cannot converge on
+an object-first one, and no amount of per-register refinement will make it.
+
 ## 1. The one law
 
 A tracker is a `Graph` of generators consumed by ONE reference evaluator,
@@ -1173,8 +1201,9 @@ Read down it: the binding constraint is no longer the generator but provenance a
 **228054 pw emits (41%)** are written by a store whose byte reaches no cell the play
 code steps — computed some other way, or accumulated behind a store the tree cannot
 follow — and **112539 (20%)** do sit in a genuine constant-delta run whose step the map
-traces to no declaration, because the parameter was filled at init or computed rather
-than copied out of a table. The zero-delta row is the third of the plane that simply
+traces to no declaration. (§7.2 recorded the reason as "filled at init"; #98 built that
+and moved **zero** — 94% have an accumulator the play phase writes.) The zero-delta row
+is the third of the plane that simply
 holds its value; a `RAMP` of step zero would take all 131589 with a byte that predicts
 nothing, which is the refusal `DIV(1)` makes in the other domain (§4d). The `mut`
 refusal is measured rather than assumed and is nearly free here: **14 emits on one
@@ -1439,16 +1468,26 @@ it is the third of its shape: §4e's masked route bought 26167 emits from the ed
 a 6502 driver's program text does not name one. See docs/gt-oracle.md §3.2 and
 docs/dm-oracle.md §3.2.
 
-**What would move it is upstream, and it is nameable.** `frameval._addrs` collects the
-addresses of loads at a **pure** address; a deref address reads the pointer word, so it is
-impure and the map reports the pointer's two cells instead of the target. Reporting the
-**resolved** deref address — which rung (f) has already proved lies in
-`{T[k]} + [0, bound]` — as that store's source cell would make every pattern byte a
-declared byte at a recovered `(block, row)`, and the arrangement would then be bounded by
-the walk rather than by provenance. That is the same shape of change as the origin query
-that took `pw` 11.3% → 15.9% ("The accumulator's parameters, queried out of RAM") and the
-locals hop that took the interpreted share 23.8% → 28.8%, and it belongs in frameprog, not
-here.
+**This paragraph used to predict what would move it. The prediction was built and
+measured false.** It said `frameval._addrs` reports a deref's pointer cells rather than
+its target, so reporting the **resolved** address — proved by rung (f) to lie in
+`{T[k]} + [0, bound]` — would make every pattern byte a declared byte at a recovered
+`(block, row)`. It was built (#105) and arrangement recovery stayed at **0**:
+
+- The proof supplies the address **space**, not the address: the entry `k` is live state
+  at **366 of 366** resolved sites, so a single target block is named exactly **once** in
+  3929 deref addresses.
+- Handed the address the run itself read — the fitted version this document refuses
+  everywhere — recovery is **still zero** and the partition is byte-identical. 3751
+  writes gain an address; 3008 land in a `datadecl` `kind == "stream"` which `_banks`
+  does not admit, 683 more are refused by #61's byte check, and the 60 that pass are
+  already interpreted through another cell.
+
+So the address was never what the consumer lacked. `docs/frameprog.md` §4.6 carries the
+census. **Do not re-propose this change without new evidence**; two walls stand behind
+it, both nameable — `datadecl` carving deref targets as `stream`, and `_banks` admitting
+`table` only, whose measured ceiling is 1585 emits (0.08%) and only under a refused
+address.
 
 ## 7. Where the residual goes next
 
@@ -1489,11 +1528,18 @@ take 29559 of them and is refused (§6).
    remains on those planes is provenance, not generator shape, and §6's refusal table
    sizes each part: **228054 pw emits** are written by a store that links to no stepped
    cell at all, **131589** hold a constant value (a step of zero explains nothing), and
-   **112539** sweep with a constant delta whose step the map traces to no declaration
-   — a parameter filled at init or computed rather than copied out of a table. The
-   cutoff plane repeats the shape at a quarter of the size. Only the third of those is
-   a query problem, and it needs the *init* phase's copies named, not the play phase's;
-   the first is a frameprog dataflow question and the second is not an accumulator.
+   **112539** sweep with a constant delta whose step the map traces to no declaration.
+   The cutoff plane repeats the shape at a quarter of the size.
+
+   **This item used to attribute that 112539 to "a parameter filled at init", and that
+   was measured false.** Naming the init phase's copies was built (#98) and **zero** of
+   those emits moved: **107785 of 114082 (94%) have an accumulator the *play* phase
+   writes**, against 3775 staged at init. The cause is structural — `datadecl` carves
+   declarations from **play** reads, so a table the driver relocates at init is read
+   exactly once, by init, and 122782 init-written cells have no declared source region.
+   Extending `datadecl` to those regions has a measured ceiling of **825 emits** and is
+   recorded as a recommendation *against*. The first row is a frameprog dataflow
+   question and the second is not an accumulator.
    A triangle sweep that turns at a declared bound is a further transfer this
    primitive does not have (§8), and no corpus tune reaches that limit before the step
    blocks it.

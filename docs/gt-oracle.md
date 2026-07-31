@@ -260,6 +260,16 @@ masked route shipped and the numbers below are before-and-after, which is what t
 layer is for — a deficiency measured against two editors' own songs, answered in the
 universal primitive, and re-measured on the same tunes.
 
+**What this report is evidence *for*, and what it is not.** Every deficiency here was
+closed in the primitive and every one moved the **format** by thousands of emits and
+the **recovery from binaries** by hundreds or none: masked route 26167 vs 676, relative
+route 4650 vs 316, arrangement 73766 vs **0**. `tools/graph_diff.py` then measured why —
+**zero** of the composer's writes are ones we never produce; 99680 are produced and
+partitioned differently. So a deficiency closed here proves the format can *express* an
+editor's object. It is **not** evidence that recovering that object from a 6502 binary
+is now reachable, and this report must never be read as a work queue for the recovery
+side. Four extensions were sequenced off that misreading. See docs/tracker.md §0.
+
 ### 4.1 A `DIV` has no phase, and note-on streams never sit at its phase
 
 | | GoatTracker, 71 tunes |
