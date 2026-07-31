@@ -8,6 +8,7 @@ carries none, and the play phase's own store supersedes what init staged.
 import numpy as np
 import pytest
 
+from deity_informant import datadecl
 from deity_informant import frameprog
 from deity_informant import frameval
 from deity_informant import initcopy
@@ -149,7 +150,7 @@ def test_only_a_declared_byte_at_a_non_mut_offset_is_an_origin():
     tr.bind(0x0402, 0x2100, 0x1004)  # past the declaration
     tr.bind(0x0403, 0x1000, 0x1006)  # below every declaration
     decls = [_decl(0x2000, 0x80, stride=2, mut=(1,)), _decl(0x0000, 0, stride=1)]
-    out, sites, cens = initcopy.reduce(tr, decls, played={0x0400})
+    out, sites, cens = initcopy.reduce(tr, datadecl.Regions(decls).const_at, played={0x0400})
     assert out == {0x0400: 0x2000}
     assert cens["origins"] == 1 and cens["undeclared"] == 3 and cens["play_written"] == 1
     assert cens["cells"] == 4 and cens["computed"] == 0
@@ -160,7 +161,7 @@ def test_a_flat_region_takes_its_mut_offsets_as_cells():
     """Snapshot soundness is per record offset; a flat region's record is the region."""
     tr = initcopy.Tracer()
     tr.bind(0x0400, 0x3005, 0x1000)
-    out, _s, cens = initcopy.reduce(tr, [_decl(0x3000, 0x10, mut=(5,))])
+    out, _s, cens = initcopy.reduce(tr, datadecl.Regions([_decl(0x3000, 0x10, mut=(5,))]).const_at)
     assert not out and cens["undeclared"] == 1
 
 

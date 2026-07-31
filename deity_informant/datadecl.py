@@ -204,13 +204,18 @@ def _sound_hi(base, ceil, mut):
     return next((a for a in range(base, ceil) if a in mut), ceil)
 
 
+def _record(size, stride):
+    """Record length a declaration's ``mut`` offsets are taken modulo."""
+    return stride if stride > 1 else size or 1
+
+
 def _mut_offs(base, size, stride, mut):
     """Play-written offsets in a region's record: a lane if strided, else the cell.
 
     Snapshot soundness is per record offset, so a stride-``s`` block keeps the lanes
     the play phase never writes; a flat region is one record, so an offset is a
     cell. The const claim is the region minus these offsets."""
-    rec = stride if stride > 1 else size
+    rec = _record(size, stride)
     return sorted({(a - base) % rec for a in range(base, base + size) if a in mut})
 
 
@@ -265,24 +270,56 @@ def _pair_streams(strs):
     return out
 
 
-def _avail(tables, addr):
-    """Bytes from ``addr`` to the end of the declared region containing it."""
-    bases = sorted(tables)
-    j = bisect.bisect_right(bases, addr) - 1
-    if j < 0:
-        return 0
-    d = tables[bases[j]]
-    return max(0, d["base"] + d["size"] - addr)
+class Regions:
+    """The declarations indexed by containment: which declared datum holds a byte.
+
+    Declarations are disjoint and base-sorted, so one bisect answers it. ``const_at``
+    adds the #61 const claim, which excludes the record offsets ``mut`` names."""
+
+    __slots__ = ("decls", "bases", "recs")
+
+    def __init__(self, decls):
+        self.decls = sorted(decls, key=lambda d: d["base"])
+        self.bases = [d["base"] for d in self.decls]
+        self.recs = [
+            (_record(d["size"], max(1, d.get("stride") or 1)), frozenset(d.get("mut") or ()))
+            for d in self.decls
+        ]
+
+    def _index(self, addr):
+        j = bisect.bisect_right(self.bases, addr) - 1
+        if j < 0 or addr >= self.bases[j] + self.decls[j]["size"]:
+            return None
+        return j
+
+    def at(self, addr):
+        """``(declaration, offset)`` of the region containing ``addr``, else None."""
+        j = self._index(addr)
+        return None if j is None else (self.decls[j], addr - self.bases[j])
+
+    def const_at(self, addr):
+        """True where ``addr`` is a declared byte at an offset ``mut`` does not name."""
+        j = self._index(addr)
+        if j is None:
+            return False
+        rec, mut = self.recs[j]
+        return (addr - self.bases[j]) % rec not in mut
+
+    def avail(self, addr):
+        """Bytes from ``addr`` to the end of the region containing it, else 0."""
+        j = self._index(addr)
+        return 0 if j is None else self.bases[j] + self.decls[j]["size"] - addr
 
 
 def _anchors(model, pairs, tables):
     """``anchor -> (lo, hi)``: pair initial words + reload-table entry words."""
     mem0 = model.mem0
+    regions = Regions(tables.values())
     out = {}
     for lo, hi, lts, hts in pairs:
         words = [mem0[lo] | (mem0[hi] << 8)]
         for lt, ht in zip(sorted(lts), sorted(hts)):
-            n = min(_avail(tables, lt), _avail(tables, ht))
+            n = min(regions.avail(lt), regions.avail(ht))
             words += [mem0[lt + i] | (mem0[ht + i] << 8) for i in range(n)]
         for w in words:
             if w >= _LOW:

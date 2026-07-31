@@ -186,7 +186,9 @@ def _init_copies(model, decls):
     tracer = getattr(model, "init_copy", None)
     if tracer is None:
         return {}, [], {}
-    origins, sites, census = initcopy.reduce(tracer, decls, model.written)
+    origins, sites, census = initcopy.reduce(
+        tracer, datadecl.Regions(decls).const_at, model.written
+    )
     return origins, [_init_proof(pc, *v) for pc, v in sites.items()], census
 
 

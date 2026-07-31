@@ -182,6 +182,55 @@ def test_eval_src_carries_an_origin_through_the_local_that_staged_it():
     assert srcs == [[(0x0803, 0x00C0), (0x00C1,), (0x0803,)]] * 2
 
 
+def _staging_prog(stage_idx, read_idx):
+    """Stages ``tbl[stage_idx]`` in $C0 on frame 0, flushes it to the SID after."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0800:0x0810] = bytes(range(0x40, 0x50))
+    idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
+    load = ("mem", ("op", "INT_ADD", (("const", 0x0800, 2), idx), 2), 1)
+    stmts = [
+        (
+            "if",
+            "if",
+            _cell(0x00D0),
+            [
+                ("asg", "i", ("const", read_idx, 1)),
+                ("st", ("const", 0xD405, 2), _cell(0x00C1)),
+            ],
+            [
+                ("asg", "i", ("const", stage_idx, 1)),
+                _staged(0x00C0, load),
+                _staged(0x00C1, _cell(0x00C0)),
+                _staged(0x00D0, ("const", 1, 1)),
+            ],
+        ),
+        ("ret", False),
+    ]
+    return _prog(stmts, mem0=mem0), mem0
+
+
+def test_the_origin_map_crosses_frames_and_chases_every_hop():
+    """A byte staged in frame 0 and read in frame 3 still names the table cell.
+
+    Two hops, path-compressed: the map is neither one-hop nor per-frame, which is
+    what lets a mirror staged in one frame and flushed in another carry its row."""
+    prog, _mem0 = _staging_prog(3, 3)
+    frames, srcs = frameval.eval_src(prog, {}, 4)
+    assert frames == [[], [(5, 0x43)], [(5, 0x43)], [(5, 0x43)]]
+    assert srcs[1:] == [[(0x0803, 0x00C1)]] * 3  # the table cell, not $C0 and not $C1
+
+
+def test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell():
+    """Why the origin cannot be static: the index is live at the staging site only.
+
+    The relation ``region(tbl, i)`` re-read where the byte is *used* names $0807; the
+    byte came from $0803, so a static reading of the same expression is unsound."""
+    prog, mem0 = _staging_prog(3, 7)
+    frames, srcs = frameval.eval_src(prog, {}, 2)
+    assert srcs[1] == [(0x0803, 0x00C1)] and frames[1] == [(5, mem0[0x0803])]
+    assert mem0[0x0803] != mem0[0x0807]  # the re-read index would name a different byte
+
+
 def test_eval_src_forgets_a_cell_the_return_address_overwrote():
     """A pushed return byte is not the table byte that stood in the cell before it."""
     mem0 = bytearray(0x10000)
