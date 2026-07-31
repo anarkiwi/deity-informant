@@ -579,6 +579,100 @@ def test_mutation_wrong_ramp_step_is_detected():
     assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is not None
 
 
+# ---- 3d. the filter plane: $15-$18 off the store statement, in its own class ------
+_FILTER_LANES = {0: [0x10, 0x21, 0x32, 0x43], 1: [1, 2, 3, 4], 2: [0xF1, 0xF2, 0xF3, 0xF4]}
+
+
+def _filterprog(lanes=None, decl=None, base=0x2000):
+    """``(image, program)`` writing $15-$17 from the ``+0/+1/+2`` lanes of one bank."""
+    lanes = _FILTER_LANES if lanes is None else lanes
+    mem, table = _bank(base, 4, 4, lanes)
+    stores = [(0x15 + off, _sel(base, off, "i")) for off in sorted(lanes)]
+    return mem, _rowprog(mem, decl or table, stores, step=4)
+
+
+def test_filter_is_the_declared_table_the_store_names_at_a_recovered_row():
+    """$15-$18 are last-write-wins like freq/pw: the lane the store names, at its row."""
+    mem, prog = _filterprog()
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["filter"] == (12, 12) and cov.classes["filter"]["lane"] == 12
+    assert cov.classes["filter"]["imm"] == 0  # declared bytes only, nothing shallow
+    _gt, _ords, lww = T._observe(prog, {}, 4)
+    streams, _e = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), mem)
+    got = {r: t for _c, t, r in streams}
+    assert got[0x15] == ("SELECT", tuple(_FILTER_LANES[0]), (0, 1, 2, 3))
+    assert got[0x17][1] == tuple(_FILTER_LANES[2]) and got[0x17][2] == got[0x15][2]
+
+
+def test_the_filter_registers_take_a_register_class_of_their_own():
+    """``reg % 7`` aliases $15-$18 onto freq/pw; the filter is one global, not a voice."""
+    assert [T._class_of(r) for r in (0x00, 0x02, 0x0E, 0x15, 0x16, 0x17, 0x18)] == [
+        0,
+        2,
+        0,
+        0x15,
+        0x16,
+        0x17,
+        0x18,
+    ]
+    assert T._sid_class(("const", 0xD417, 2)) == 0x17 and T._sid_class(("const", 0xD419, 2)) is None
+
+
+def test_a_table_a_pw_store_names_does_not_explain_a_filter_write():
+    """$17 aliases pw_lo under ``reg % 7``, so a shared pool would take an indexed byte."""
+    mem, decl = _bank(0x2000, 4, 4, {0: [0, 1, 2, 3]})
+    mem[0x4000:0x4004] = bytes(range(4))  # undeclared: mem[$4000 + k] == k == the lane byte
+    lane = _sel(0x2000, 0, "i")
+    prog = _rowprog(mem, decl, [(0x02, lane), (0x17, _at(0x4000, lane))], step=4)
+    assert T.gate(prog, {}, 4) is None
+    tabs = T._tree_tables(prog, T._banks(prog))
+    assert set(tabs) == {2}  # named for pw_lo by its store, for the filter by none
+    assert T._lane_key((0x17, 0x02, (0x2008,)), tabs[2], mem) is not None  # the pool would take it
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["pw"] == (4, 4) and cov.planes["filter"] == (0, 4)
+
+
+def test_a_filter_lane_the_play_phase_writes_is_not_const_data():
+    """``mut`` holds here too: a play-written lane is runtime state, not a declaration."""
+    lanes = {0: _FILTER_LANES[0]}
+    assert T.render(_filterprog(lanes)[1], {}, 4)[2].planes["filter"] == (4, 4)
+    _m, dirty = _filterprog(lanes, decl=_muted(_table(0x2000, 16, stride=4), [0]))
+    assert T.render(dirty, {}, 4)[2].planes["filter"] == (0, 4) and T.gate(dirty, {}, 4) is None
+
+
+def test_a_computed_filter_write_is_not_the_pulse_accumulator():
+    """The sweep is a pw generator: $17 must not be swept because ``reg % 7`` says 2."""
+    mem, sweep = _sweepprog()
+    stmts = list(sweep.procs[0][3])
+    stmts.insert(2, ("st", ("const", 0xD417, 2), ("loc", "t")))
+    prog = frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=sweep.data_decls, mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+    cov = T.render(prog, {}, 6)[2]
+    assert cov.planes["pw"] == (6, 6) and cov.planes["filter"] == (0, 6)
+    assert T.gate(prog, {}, 6) is None
+
+
+def _mutated(prog, reg, transfer, nframes=4):
+    """The law's verdict with the plane-``reg`` node's transfer replaced."""
+    nodes = list(T._graph(prog, None, *T._observe(prog, {}, nframes))[0].nodes)
+    i = next(i for i, g in enumerate(nodes) if g.route == ("plane", reg))
+    old = nodes[i].transfer
+    nodes[i] = nodes[i]._replace(transfer=transfer(old))
+    return F.diff(T.eval_graph(T.Graph(nodes), nframes), T.oracle(prog, {}, nframes))
+
+
+def test_mutation_a_wrong_filter_byte_or_row_is_detected():
+    """The filter emit is a declared byte at a recovered row: perturb either and the law fails."""
+    _mem, prog = _filterprog()
+    assert _mutated(prog, 0x15, lambda t: t) is None
+    wrong = _mutated(prog, 0x15, lambda t: ("SELECT", (t[1][0] ^ 0xFF,) + t[1][1:], t[2]))
+    assert wrong is not None and wrong.section == "filter"
+    row = _mutated(prog, 0x15, lambda t: ("SELECT", t[1], t[2][1:] + t[2][:1]))
+    assert row is not None and row.section == "filter"
+
+
 # ---- 4. the engine and the law over real tunes -----------------------------------
 def test_clocks_and_tempo_come_off_the_frameprog_procedures():
     """A dec+reload cell is a divider (its reload is the tempo), a free inc an LFO."""
@@ -752,3 +846,20 @@ def test_krakout_octave_shift_notes(sid, subtune):
     detunes = {n.detune for lane in lanes for _f, n in lane}
     assert 0 in detunes and detunes & {30, -30}  # the +-30 vibrato triplets
     assert all(abs(n.detune) <= 30 for lane in lanes for _f, n in lane)  # no excursions
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("64_Forever", "Linus"))
+def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
+    """A real filter tail off the store statement: cutoff hi and resonance, both declared."""
+    prog, trace, nf = _lifted(sid, subtune)
+    assert T.gate(prog, trace, nf) is None
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.planes["filter"] == (384, 598)
+    assert cov.classes["filter"] == {"lane": 384, "gate": 0, "imm": 0, "ramp": 0, "seed": 0}
+    _gt, _ords, lww = T._observe(prog, trace, nf)
+    streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
+    got = {r: t for _c, t, r in streams if r > T._VOICE_HI}
+    assert set(got) == {0x16, 0x17}  # $15 and $18 name no declaration and stay residual
+    cells = [0x19C5 + t[2][0] for t in (got[0x16], got[0x17])]
+    assert cells == [0x1A08, 0x1A07]  # two cells of one declared table, recovered per register
+    assert [prog.mem0[c] for c in cells] == [0x06, 0xF7]

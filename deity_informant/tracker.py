@@ -27,6 +27,8 @@ Note = namedtuple("Note", "index word name detune")
 Tracker = namedtuple("Tracker", "pitch clocks tempo instruments")
 
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
+_VOICE_HI = 0x14
+_FILTER_HI = 0x18
 
 
 class TrackerError(ValueError):
@@ -175,9 +177,9 @@ def eval_graph(graph, nframes):
 
 def _plane_of(reg):
     """Canonical plane class for a SID register offset."""
-    if reg <= 0x14:
+    if reg <= _VOICE_HI:
         return _PLANE[reg % 7]
-    return "filter" if reg <= 0x18 else "tail"
+    return "filter" if reg <= _FILTER_HI else "tail"
 
 
 def _coverage(interp, rawn, classes=None):
@@ -601,7 +603,7 @@ def _instruments(prog):
     for s in _stmts(prog):
         if s[0] == "asg":
             env[s[1]] = s[2]
-        elif s[0] == "st" and _SID <= _base(s[1]) <= _SID + 0x14:
+        elif s[0] == "st" and _SID <= _base(s[1]) <= _SID + _VOICE_HI:
             if (_base(s[1]) - _SID) % 7 in (4, 5, 6):
                 src = _read_base(s[2], env)
                 if src >= 0x100:
@@ -692,10 +694,18 @@ def _tree_tables(prog, banks):
     return {c: tuple(sorted(v)) for c, v in out.items()}
 
 
+def _class_of(reg):
+    """Register class of a SID offset: ``reg % 7`` per voice, the register itself for filter.
+
+    $15-$18 are one global filter, not a voice, so they take a class of their own —
+    ``reg % 7`` would alias them onto freq/pw."""
+    return reg % 7 if reg <= _VOICE_HI else reg
+
+
 def _sid_class(addr):
-    """Register class ``reg % 7`` of a SID store address, or None."""
+    """Register class of a SID store address, or None."""
     reg = _base(addr) - _SID
-    return reg % 7 if 0 <= reg <= 0x14 else None
+    return _class_of(reg) if 0 <= reg <= _FILTER_HI else None
 
 
 def _const_flow(body, env, out):
@@ -893,9 +903,9 @@ def _instr_streams(prog, ords, tabs, banks):
     return pre, post, refined
 
 
-# ---- 4b. the last-write-wins planes: freq/pw straight off the store statement -----
+# ---- 4b. the last-write-wins planes: freq/pw/filter off the store statement -------
 def _lww_streams(lww, tabs, mem0):
-    """``(streams, explained)``: declared-lane SELECT nodes for the freq/pw planes.
+    """``(streams, explained)``: declared-lane SELECT nodes for the freq/pw/filter planes.
 
     The store statement names the declaration and the read cell recovers the row, so
     the emitted byte is declared data at the index the play code used. The plane is
@@ -904,7 +914,7 @@ def _lww_streams(lww, tabs, mem0):
     for f, wr in enumerate(lww):
         for reg in sorted(wr):
             val, srcs = wr[reg]
-            got = _lane_key((reg, val, srcs), tabs.get(reg % 7, ()), mem0)
+            got = _lane_key((reg, val, srcs), tabs.get(_class_of(reg), ()), mem0)
             if got is None:
                 continue
             key, row = got
@@ -981,7 +991,8 @@ def _hold_rows(ords, lww, banks, nframes):
             for w in ords[v][f]:
                 _hold(cur[v], w[2], banks)
         for reg, (_val, srcs) in lww[f].items():
-            _hold(cur[reg // 7], srcs, banks)
+            if reg <= _VOICE_HI:  # the filter is global: it holds no voice's row
+                _hold(cur[reg // 7], srcs, banks)
         out.append([dict(c) for c in cur])
     return out
 
@@ -1017,7 +1028,7 @@ def _acc_streams(acc, banks, lww, mem0, ords):
     for f, wr in enumerate(lww):
         for reg in sorted(wr):
             val, srcs = wr[reg]
-            if srcs or reg % 7 not in acc:
+            if srcs or reg > _VOICE_HI or reg % 7 not in acc:
                 continue
             site, sign = acc[reg % 7]
             got = _step_byte(site, mem0, rows[f][reg // 7])
@@ -1060,9 +1071,9 @@ def _observe(prog, trace, nframes):
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
         for (reg, val), src in zip(fr, sr):
-            if reg > 0x14:
+            if reg > _FILTER_HI:
                 continue
-            if reg % 7 >= 4:
+            if reg <= _VOICE_HI and reg % 7 >= 4:
                 ords[reg // 7][f].append((reg, val, src))
             else:
                 lww[f][reg] = (val, src)
