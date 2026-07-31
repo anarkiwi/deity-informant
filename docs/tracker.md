@@ -113,6 +113,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   `frames_per_tick`), a free `inc` is an LFO phase.
 - **`DIV` over a declared divisor** (§4d) — the trigger floor's one refinement: an
   `EDGE` stream a recovered divider's own reload generates becomes a `DIV`.
+- **A masked route per field** (§4e) — where a store statement partitions a register's
+  bits, each field is its own generator: a declared byte at a recovered row, or that
+  statement's own constant. `$18`'s mode and volume are the case that reaches the
+  corpus, and it reaches 5 tunes of 649.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
