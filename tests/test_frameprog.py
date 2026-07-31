@@ -121,10 +121,10 @@ def test_declared_tables_and_aliases_carry_over():
     text = frameprog.emit(model)
     assert "table m_1400[4]:" in text  # datadecl content reused verbatim
     assert "table m_1480[8] stride 2 +m_1481:" in text
-    assert "alias ptr_0060_lo = zp_60" in text
+    assert "alias ptr_0060 = zp_60" in text  # rung (d) fused the pair: one name
     assert frameprog.dumps(frameprog.loads(text)) == text
-    assert " ptr_0060_lo: u8" in text and " zp_60: u8" not in text
-    assert "ptr_0060_lo = " in text and "zp_60 = " not in text
+    assert " ptr_0060: u16" in text and " zp_60: u8" not in text
+    assert "ptr_0060:2 = " in text and "zp_60 = " not in text
     assert " m_1400" not in text.split("data {")[0]  # table cells are not state
     assert not _ANNOT.search(text)
     frames = F.frames_from_walker(S.Walker(model), 14)

@@ -526,6 +526,35 @@ def t_zero_source(rng):
     )
 
 
+def _pair_player(name, rng, tail, classes=("indexed",)):
+    """Reload the zp pointer pair from lo/hi partner tables, deref, then ``tail``."""
+    reg = int(rng.integers(0, 0x14))
+    row = int(rng.integers(0, 3))
+    base = TBL + 0x40
+    a = Asm(ORG)
+    a.i("LDX", "imm", row)
+    a.i("LDA", "absx", VEC).i("STA", "zp", PTR)
+    a.i("LDA", "absx", VEC + 4).i("STA", "zp", PTR + 1)
+    tail(a, reg)
+    a.i("LDY", "imm", 0).i("LDA", "indy", PTR).i("STA", "abs", SID + reg).i("RTS")
+    data = {}
+    for k in range(3):
+        data[VEC + k] = (base + 8 * k) & 0xFF
+        data[VEC + 4 + k] = (base + 8 * k) >> 8
+        data[base + 8 * k] = int(rng.integers(0, 256))
+    return Player(name, ORG, a.assemble(), {SID + reg}, set(classes), data=data)
+
+
+def t_word_pair(rng):
+    """A zp pointer pair written as a word from lo/hi tables and read as a word."""
+    return _pair_player("word_pair", rng, lambda a, reg: None)
+
+
+def t_lone_half(rng):
+    """The same pair, plus a lone-half access (INC lo) that must refuse fusion."""
+    return _pair_player("lone_half", rng, lambda a, reg: a.i("INC", "zp", PTR))
+
+
 def t_ram_output(rng):
     """Indexed copy to a couple of RAM output cells (non-SID observable set)."""
     n = 3
@@ -590,6 +619,8 @@ TEMPLATES = (
     t_multispeed,
     t_volatile,
     t_zero_source,
+    t_word_pair,
+    t_lone_half,
     t_ram_output,
 )
 

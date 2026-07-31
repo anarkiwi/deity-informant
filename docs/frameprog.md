@@ -8,8 +8,10 @@ committed model and verified against the projection of the walker's log.
 Status: design for review; landed already: the projection + digi rule in the
 pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
-(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent). "MUST" is a gate. Measurements: 2026-07-25, 140 cached tunes, 1,000-frame windows unless
-noted; scratch probes, numbers herein are the record.
+(`frameval.py`, §6 M-FP1/M-FP2 for the measured extent) and rung (d)'s 16-bit
+fusion (`framefuse.py`, §4.3 and §6 M-FP3). "MUST" is a gate. Measurements:
+2026-07-25, 140 cached tunes, 1,000-frame windows unless noted; scratch probes,
+numbers herein are the record.
 
 ## 1. Verification law (Gate FP)
 
@@ -275,11 +277,12 @@ valid, gated artifact.
   registers are never deleted. Premise: the dominance proof per deleted
   store; unprovable keeps the store (harmless — the buffer collapses it).
   Gate: FP.
-- **(d) 16-bit fusion.** Fuse lo/hi state-variable pairs — including the §2
-  dispatch words — and render freq/pulse/cutoff as u16 in the canonical
-  section (presentational: the projection emits lo,hi adjacent). Premise
-  per pair: provably written/consumed as a word — the datadecl pointer-pair
-  machinery (`lo`/`hi` partner attrs) plus the paired-index zip invariant
+- **(d) 16-bit fusion** (landed, `deity_informant/framefuse.py`; §4.3 for the
+  measurement). Fuse lo/hi state-variable pairs — including the §2 dispatch
+  words — and render freq/pulse/cutoff as u16 in the canonical section
+  (presentational: the projection emits lo,hi adjacent). Premise per pair:
+  provably written/consumed as a word — the datadecl pointer-pair machinery
+  (`lo`/`hi` partner attrs) plus the paired-index zip invariant
   (follin-dispatch-study §4), every read using the half only inside
   `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
   per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
@@ -416,7 +419,69 @@ binding would materialise as `zext2(zext2(t0))` and break the sidprog fixpoint;
 the grammar carries the wider form for both dialects, the sidprog emitter does
 not use it.
 
-## 5. Risk register
+### 4.3 16-bit fusion: what the evidence buys, per pair
+
+Rung (d) is `deity_informant/framefuse.py`. A candidate pair is named by the
+committed model, never by shape-matching the text: a **pointer pair** from the
+`streams` classifier that `datadecl`'s `lo`/`hi` partner attributes are built on,
+or a **dispatch operand word** the paired-index zip closure proved
+(follin-dispatch-study §4). The premise is then discharged against the statement
+trees — the halves are adjacent cells, every read of a half sits inside a
+`lo | hi<<8` shape, and the two half stores are adjacent statements whose second
+value provably cannot read the first cell — and each candidate leaves a
+`structured.Proof` on `FrameProgram.proofs`, fused or refused, carrying the
+evidence, the counts and the refusal. Fusion is notation over two adjacent cells:
+`m_0021:2` reads and writes exactly the bytes the two halves did, in the same
+order, so **no record can move** and the store provenance `eval_src` reports is
+unchanged (a word load at a pure address contributes both of its cells, exactly
+as the two byte loads did). A fused pair is one `u16` `state { }` field named off
+its `_lo` suffix; the width suffix is the grammar's, now carried by an lvalue and
+by the indexed and raw memref forms as well ([grammar.md](grammar.md)).
+
+**Two granularities, one rule.** A *state* pair is a tune-wide declaration, so
+one lone-half access anywhere refuses it outright and it stays two `u8` fields —
+per pair, never per tune, and the rest of the tune still fuses. A *SID* register
+pair declares nothing beyond the two statements it rewrites: freq, pulse and
+cutoff are last-write-wins and §1.1 emits lo,hi adjacent whatever order the
+driver wrote them in, so its premise is per store site — an adjacent lo/hi pair
+at one index fuses (hi-first included; the packed value keeps the driver's
+evaluation order), and a lone half elsewhere leaves that site alone.
+
+Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
+(650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical
+fixpoint 649/649, both unchanged**, as the argument above requires; the tracker
+law is likewise 649/649.
+
+Of the **1296** state-pair candidates the model named — 1238 pointer pairs and 58
+dispatch operand words — **584 fuse and 712 refuse**: 518 for a lone-half read,
+191 for a half store with no adjacent partner, 2 for the write-order hazard and 1
+with no word access at all. Per tune, of 649: **183 fuse every candidate they
+have, 97 fuse some and refuse others**, 342 refuse all of them and 27 have no
+state pair. Emitted text 9571703 → **9522243** bytes (−0.52%); raw `mem[`
+occurrences are **unchanged at 10280**, because what fusion names is the pointer
+*word* and the deref it feeds still has no const base for §4.2's indexed form to
+name — precisely the residue §4(f) inherits.
+
+The tracker's value partition over the same corpus is **byte-identical** before
+and after — 752598/1942809 = 38.74%, freq 417490, pw 89850, ctrl 112502, filter
+22301, sr 56019, ad 54436, triggers 300/306277 — with **zero** tunes moving in
+either direction. That is the expected result and worth stating as one: the
+tracker reads the SID stores' statement trees and `eval_src`'s per-register
+provenance, and state-pair fusion rewrites neither.
+
+**SID fusion is opt-in** (`frameprog.program(model, sid_fusion=True)`), and off
+by default, because it is presentational and it costs the consumer. Of the
+**2069** SID pairs a store site addresses, 916 fuse every site, 228 fuse some and
+leave the rest split, and 925 have no adjacent lo/hi store site at all; the
+tracker's value partition then falls to **699551/1942809 = 36.01%** on 250 tunes,
+all of it in pw (89850 → 48346), freq (417490 → 407148) and filter (22301 →
+21100), ctrl/sr/ad untouched. Gate FP and the fixpoint still hold 649/649, so
+this is not a correctness cost.
+The tracker keys its last-write-wins planes per register and identifies a lane by
+the declaration the *store statement* names (docs/tracker.md §5); one word store
+names one class, so the hi half's class loses its tree-named table and falls back
+to searching every bank. That is a tracker question, not a fusion one, and it is
+recorded here rather than compensated for.
 
 | risk | disposition |
 |---|---|
@@ -432,6 +497,7 @@ not use it.
 | Inline callee body entered by `call` (fixed) | Closed. A label some `call` targets is a mini-procedure: its exit returns to the call sites and may be re-entered, so a local it updates stays live. `_scan_list` collected `goto` targets and labels but never `call` targets, so the sweep treated the body's end as textual fall-through and `_prune` deleted a live update. `_Info.call_labels` now records them and both sweeps keep the machine set live from such a label onward. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
+| A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but costs the tracker 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
 
 ## 6. Milestones and corpus gates
 
@@ -467,7 +533,7 @@ HVSC absent (decompiler-implementation.md §1, §7).
   trees; and the reference evaluator: statement trees compile to one flat op
   array over a program-wide local environment and the `mem0` state image,
   volatile reads resolve to `iota(f, input, k)`, SID writes buffer per frame
-  and flush through `framelog.canonical`. Gate FP holds on **all 17**
+  and flush through `framelog.canonical`. Gate FP holds on **all 19**
   `tests/_fuzzgen` player classes (`_FP_GAP` empty) and on Commando at full
   Songlengths length. Measured 2026-07-31 over the **whole cached corpus** —
   682 tunes, PSID start subtune, 200-frame windows: **650 decompile**, of those
@@ -487,8 +553,17 @@ HVSC absent (decompiler-implementation.md §1, §7).
   `call`-entered inline bodies, `sp` as machine state): 96 → 111 → 123, none
   regressed. Outstanding for M-FP2: the rung (a)-(c) proof records, and the
   upstream refusals are a sidprog question.
-- **M-FP3 — fusion (d).** Gate: FP; fusion proof record per pair; lone-half
-  refusal exercised synthetically.
+- **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
+  measurement): the state-pair fusion with a `structured.Proof` per candidate
+  pair, and the SID register pairs analysed and recorded but rewritten only
+  under `sid_fusion=True`. Gate: FP 649/649 and the canonical fixpoint 649/649,
+  both unchanged over the 682-tune corpus. `tests/_fuzzgen` carries the
+  `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
+  synthetic refusals — lone half, unpaired half store, write-order hazard — plus
+  the mutation evidence that a wrongly fused pair moves the record (non-adjacent
+  halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
+  proof records are still M-FP2's debt, and whether SID fusion ships by default
+  is a tracker decision, not a frameprog one.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported

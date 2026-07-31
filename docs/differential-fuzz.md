@@ -22,21 +22,23 @@ players (`test_class_coverage_exhaustive`).
 
 | class          | players | templates |
 |----------------|--------:|-----------|
-| indexed        | 40 | table_index, jump_table, indy, indx, ram_output |
+| indexed        | 56 | table_index, jump_table, indy, indx, ram_output, word_pair, lone_half |
 | smc            | 24 | smc_operand, smc_opcode, smc_branch |
 | dispatch       | 24 | jmp_indirect, rts_trick, jump_table |
 | dec_timer      | 24 | illegal_dcp_isc, dec_timer, multispeed |
 | illegal        | 16 | illegal_lax_sax, illegal_dcp_isc |
 | variable_row   | 16 | dec_timer, varlen_row |
 | multispeed     |  8 | multispeed |
-| volatile       |  8 | volatile |
+| volatile       | 16 | volatile, zero_source |
 
 Idioms covered per the brief: operand/opcode/branch self-modification;
 `JMP (ind)`, RTS-trick (push addr-1 + RTS), and address-table dispatch;
 `(zp),Y` / `(zp,X)` with 8-bit index/pointer wrap and page-crossing extra-cycle
 cases; illegal `LAX`/`SAX`/`DCP`/`ISC`/`SLO`; `DEC` reload counters;
 ctrl-byte-gated variable-length row decode; multispeed (inner-loop repeated SID
-passes); and modelled volatile-IO reads (`$D41B`/`$D41C`/`$D012`).
+passes); modelled volatile-IO reads (`$D41B`/`$D41C`/`$D012`) and the constant-0
+interrupt-source latches; and the zp pointer pair reloaded from lo/hi partner
+tables, with and without a lone-half access (frameprog rung (d), §4.3).
 
 ## The three legs
 
