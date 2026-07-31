@@ -105,7 +105,22 @@ def test_unwitnessed_base_neither_declares_nor_bounds():
     assert _ext(0x2000, range(0x2000, 0x2060), bounds=[0x2000]) == (0x100, [], True)
 
 
-def test_avail_spans_the_containing_region():
-    tables = {0x2000: {"base": 0x2000, "size": 0x40}}
-    assert D._avail(tables, 0x2000) == 0x40 and D._avail(tables, 0x2010) == 0x30
-    assert D._avail(tables, 0x2040) == 0 and D._avail(tables, 0x1000) == 0
+def _reg(base, size, stride=1, mut=()):
+    return {"base": base, "size": size, "stride": stride, "mut": list(mut)}
+
+
+def test_regions_answer_containment_offset_and_the_bytes_that_follow():
+    """The one declaration index: which datum holds a byte, and where in it."""
+    r = D.Regions([_reg(0x2000, 0x40), _reg(0x1000, 0)])
+    assert r.at(0x1000) is None and r.at(0x0FFF) is None  # a sizeless region holds nothing
+    assert r.at(0x2040) is None and r.at(0x2010)[1] == 0x10
+    assert r.avail(0x2000) == 0x40 and r.avail(0x2010) == 0x30
+    assert r.avail(0x2040) == 0 and r.avail(0x1000) == 0
+
+
+def test_regions_read_mut_as_a_lane_when_strided_and_a_cell_when_flat():
+    """The #61 const claim: ``mut`` names record offsets, so the record must be right."""
+    r = D.Regions([_reg(0x2000, 0x80, stride=2, mut=(1,)), _reg(0x3000, 0x10, mut=(5,))])
+    assert r.const_at(0x2000) and not r.const_at(0x2001) and not r.const_at(0x2003)
+    assert r.const_at(0x3004) and not r.const_at(0x3005) and r.const_at(0x300F)
+    assert not r.const_at(0x2100) and not r.const_at(0x1FFF)

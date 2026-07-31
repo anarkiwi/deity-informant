@@ -817,6 +817,106 @@ ceiling is **1585 emits over 28 tunes (0.08% of the partition)** and only under 
 observation-derived address that is itself refused. With the proof-supplied address the
 ceiling is **0**. That is recorded here as a recommendation and not taken.
 
+### 4.7 The one origin relation: built, measured, and what it cannot carry
+
+Six mechanisms on this side of the artifact answer one question — *which declared datum
+does this byte come from, and at what index?* The recurring proposal is to replace them
+with one abstract relation over the frame program, computed to a fixpoint across frames:
+
+```
+⊥ | const(c) | region(R, i) | cursor(R) | ⊤
+```
+
+`region(R, i)` says the byte is datum `R` read at index `i`; `cursor(R)` says the cell's
+*value* indexes `R`. The relation was built and run against the mechanisms it would
+replace. **It recovers zero emits.** This section is the record of why, because the reason
+is structural rather than a matter of how hard the analysis tries.
+
+**`region(R, i)` is sound only where `i` is closed.** The index of a table read is a live
+value at the site that read it. A driver stages `ram[c] = T[y]` at note-on and the SID
+write consuming `ram[c]` runs an arbitrary number of frames later, by which time `y` holds
+another row, so re-reading the index expression where the byte is *used* names a different
+cell than the byte came from — not a weaker answer but a wrong one
+(`test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell`). The only sound
+static value for a staged byte is `region(R, ⊤)`, which carries no row, and every consumer
+at this level needs the row: `tracker._lane_key` takes `(cell − base) // stride` off the
+cell and checks `mem0[cell] == value`, which is #61's whole const claim.
+
+**The map it would replace is already transitive and already crosses frames.** `prov` is
+built once per evaluator, never cleared between frames, and path-compressed at bind time,
+so a byte staged in frame 0 through two cells is reported in frame 3 as the table cell and
+not as either intermediate (`test_the_origin_map_crosses_frames_and_chases_every_hop`).
+What is one hop is the *reporting*: `_derived` puts the compressed origin ahead of the cell
+the value read. A cross-frame fixpoint is therefore not the missing piece; the static
+relation is the side that stops short.
+
+**Measured** 2026-08-01, 682 cached tunes, PSID start subtune, 200-frame windows (650
+decompile, 649 reach the gate). Three runs of the corpus: the map as it ships, the map
+replaced by the relation, and no map at all.
+
+| | dynamic map | static relation | no map |
+|---|---|---|---|
+| **interpreted emits** | **753971** | **455212** | **455212** |
+| freq | 417498 | 389831 | 389831 |
+| pw | 90000 | 14413 | 14413 |
+| ctrl | 112806 | 15132 | 15132 |
+| filter | 23104 | 1434 | 1434 |
+| sr | 56073 | 19063 | 19063 |
+| ad | 54490 | 15339 | 15339 |
+| `lane` | 516986 | 59569 | 59569 |
+| `gate` | 32914 | 2045 | 2045 |
+| `ramp` | 25399 | 849 | 849 |
+| `imm` | 25188 | 23669 | 23669 |
+| `seed` | 4152 | 188 | 188 |
+| `mask` / `rel` | 676 / 317 | 0 / 0 | 0 / 0 |
+| **triggers** | **300** | **0** | **0** |
+
+The relation's column is **byte-identical to no map at all**, every plane, every class and
+every tune. What the dynamic map carries is **298759 emits, 39.6% of the partition**, and
+the whole trigger domain; 88% of `lane`, the strongest evidence class, arrives through it.
+
+**The relation at its strongest.** Join the origin of every store site of a cell, chase it
+through the locals and through other cells to a fixpoint, and admit an origin only where
+the load's address is closed. It names **3402 state cells over 431 of the 649 tunes**,
+against the **33915** the dynamic map holds at end of run. Cell for cell against that map:
+**1644 agree**, **300 the run chased one hop further** (the static origin is itself a
+staged cell), 67 otherwise differ, and **1391 the run bound to nothing at all**, its
+one-contributor rule having refused what the static join asserted. Right at 1644 of 3402 —
+and those 1644 explain no emit, because a closed address is a scalar copy while what
+carries the tracker's evidence is the indexed read whose row a static reading cannot have.
+Commando and Krakout name **0** cells each.
+
+| mechanism | what it computes | the relation's value | verdict |
+|---|---|---|---|
+| `frameval._addrs` | address expressions of every load at a nameable address | `region(R, i)`, syntactic half | **already this relation's front end**; the row evaluates because §1.4's purity invariant says it may, not because a static value is missing |
+| `frameval.prov`/`ploc` | the origin cell, per execution, transitive, cross-frame | `region(R, ⊤)` for a staged byte | **not subsumable**: 298759 emits and 300/300 triggers |
+| `initcopy` | the cell an init copy staged a byte from | — | **not reachable**: the frame program is the play phase and `decompile` keeps only init's flat image (§4.5), so no pass over it can see the copy. 416 emits |
+| `frameptr` | `cursor(R)` for a pointer state field | `cursor(R)` exactly | **subsumed in kind, not moved**: it is this relation over one cell class, and §4.6 measured what its address buys — 1 site of 3929, 0 emits. A real fixpoint would resolve definitions it refuses today (`P = Q`), moving the resolved set and the artifact text, which a refactor may not do |
+| `framefuse` | lo/hi word pairs | a width-2 cell | **not expressible**: the premise is about *accesses* — every read inside a `lo\|hi<<8` shape, adjacent half stores, the write-order hazard — not about what a cell holds, so a width-2 lattice cell states the conclusion and proves none of it |
+| `datadecl` | the declarations and their `mut` offsets | the `R` every other value names | the one piece that **was** shared |
+
+**What was taken.** One item in that list was duplication rather than a mechanism: the
+containment index over the declarations — which declared datum holds a byte, at what
+offset, and whether that offset is const — stood in three places (`datadecl._avail`,
+`frameptr._Tables`, `initcopy._spans`/`_declared`), with the `mut` record reading in two of
+them and `datadecl._mut_offs` writing it in a third. It is now `datadecl.Regions`
+(`at`/`const_at`/`avail`) in the declarations' own module, `_mut_offs` shares its record
+reading, and `initcopy` takes the const predicate from its caller and stops knowing about
+declarations at all. Gate FP **649/649**, the tracker law **649/649**, the canonical
+fixpoint **649/649**, raw `mem[` **9682**, tunes with none **51**, the emitted text
+**9608342** bytes and the value partition **753971/1942809** are byte-identical, every
+plane, every class, every refusal counter, **zero tunes moving in either direction**.
+Source: `deity_informant` −44 lines, `docs`/`tests` the argument and its evidence.
+
+**Mutation evidence.** The two properties this section rests on are now asserted, and each
+wrong reading of them fails: clearing `prov` per frame breaks
+`test_the_origin_map_crosses_frames_and_chases_every_hop` (the map would be per frame) and
+dropping `_copy`'s path compression breaks it too (the map would be one hop), both also
+taking `test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell`. On the
+shared index, four wrong readings fail their tests: the record taken as the stride for a
+flat region, containment without the extent check, `const_at` ignoring `mut`, and `avail`
+running past the region end.
+
 ## 5. Risk register
 
 | risk | disposition |
@@ -836,6 +936,7 @@ ceiling is **0**. That is recorded here as a recommendation and not taken.
 | Inline callee body entered by `call` (fixed) | Closed. A label some `call` targets is a mini-procedure: its exit returns to the call sites and may be re-entered, so a local it updates stays live. `_scan_list` collected `goto` targets and labels but never `call` targets, so the sweep treated the body's end as textual fall-through and `_prune` deleted a live update. `_Info.call_labels` now records them and both sweeps keep the machine set live from such a label onward. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
+| Replacing the dynamic origin map with a static relation | Refused, priced (§4.7). The lattice's `region(R, i)` is sound only where the index is closed, and a staged byte's index is live at the staging site alone — re-read where the byte is used it names a different cell. Built and run over the corpus, the relation recovers **0** emits against the dynamic map's 298759 and the whole trigger domain, and of the 3402 cells it names it agrees with the run at 1644. What was actually shared — the declaration containment index — is now `datadecl.Regions` and the three copies are gone. |
 | A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but costs the tracker 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
 
 ## 6. Milestones and corpus gates

@@ -8,8 +8,7 @@ that set is one block the address is also a store's source cell (spec 4.6).
 
 from __future__ import annotations
 
-import bisect
-
+from . import datadecl
 from . import framefuse as FU
 from . import frameproc
 from . import grammar as G
@@ -172,24 +171,6 @@ def _entry(val):
     return lo[0], hi[0], lo[1]
 
 
-class _Tables:
-    """The declarations, addressable by containment (a lane is an offset in one)."""
-
-    __slots__ = ("decls", "bases")
-
-    def __init__(self, decls):
-        self.decls = sorted(decls, key=lambda d: d["base"])
-        self.bases = [d["base"] for d in self.decls]
-
-    def at(self, addr):
-        """``(declaration, offset)`` of the region containing ``addr``, else None."""
-        j = bisect.bisect_right(self.bases, addr) - 1
-        if j < 0:
-            return None
-        d = self.decls[j]
-        return (d, addr - d["base"]) if addr < d["base"] + d["size"] else None
-
-
 class _Ptr:
     """One pointer state field: the definitions reaching it and what they prove."""
 
@@ -350,7 +331,7 @@ class _Writes:
 
 def analyse(mem0, decls, procs):
     """Every base-less pointer deref site of ``procs``, premise discharged."""
-    tabs = _Tables(decls)
+    tabs = datadecl.Regions(decls)
     w = _Writes(procs)
     ptrs, seen = {}, {}
     for _e, _p, _r, stmts in procs:

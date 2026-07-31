@@ -7,7 +7,6 @@ is a record's static copy transfer over its own addresses, never a value match.
 
 from __future__ import annotations
 
-import bisect
 from collections import Counter
 
 _TRACKED = (0, 1, 2)  # A, X, Y: the registers a staged byte passes through
@@ -113,48 +112,20 @@ class Tracer:
         self.sites[cell] = pc
 
 
-def _spans(decls):
-    """``(bases, [(base, end, stride, mut)])`` of the declared const regions."""
-    out = [
-        (
-            d["base"],
-            d["base"] + d["size"],
-            max(1, d.get("stride") or 1),
-            frozenset(d.get("mut") or ()),
-        )
-        for d in decls
-        if d["size"]
-    ]
-    out.sort()
-    return [s[0] for s in out], out
-
-
-def _declared(bases, spans, addr):
-    """True where ``addr`` is a declared byte at an offset ``mut`` does not name."""
-    i = bisect.bisect_right(bases, addr) - 1
-    if i < 0:
-        return False
-    base, end, stride, mut = spans[i]
-    if addr >= end:
-        return False
-    return (addr - base) % (stride if stride > 1 else end - base) not in mut
-
-
-def reduce(tracer, decls, played=frozenset()):
+def reduce(tracer, is_const, played=frozenset()):
     """``(cell -> origin, per-site verdicts, census)``: the copies a declaration names.
 
     The map seeds ``frameval``'s play-phase map, so a play-phase store rebinds or
-    drops a staged cell by the same one-contributor rule. The origin must be a
-    declared byte at a non-``mut`` offset -- the const claim #61 already makes.
+    drops a staged cell by the same one-contributor rule. ``is_const`` is the caller's
+    declaration index (``datadecl.Regions.const_at``) -- the const claim #61 makes.
     """
-    bases, spans = _spans(decls)
     cens = Counter(cells=len(tracer.written), stores=tracer.stores, conflict=len(tracer.conflict))
     cens["stack"] = sum(1 for c in tracer.written if _STK_LO <= c <= _STK_HI)
     cens["computed"] = len(tracer.written) - len(tracer.cells) - cens["stack"]
     out, staged, dropped = {}, {}, Counter()
     for cell, org in sorted(tracer.cells.items()):
         pc = tracer.sites[cell]
-        if not _declared(bases, spans, org):
+        if not is_const(org):
             cens["undeclared"] += 1
             dropped[pc] += 1
             continue

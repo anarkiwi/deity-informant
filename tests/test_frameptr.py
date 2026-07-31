@@ -334,13 +334,6 @@ def test_a_definition_that_is_not_a_pair_entry_read_has_no_entry(val):
     assert frameptr._entry(val) is None
 
 
-def test_a_declaration_lookup_is_by_containment():
-    tabs = frameptr._Tables([_decl(0x1500, 2), _decl(0x1600, 2)])
-    assert tabs.at(0x1400) is None  # below every base
-    assert tabs.at(0x1502) is None  # past the region's extent
-    assert tabs.at(0x1501)[1] == 1
-
-
 # ---- the emitted form and its fixpoint ----------------------------------------------
 _DEREF_DOC = (
     "frameprog 0\n"
