@@ -648,6 +648,19 @@ it into the interpreted-emit share.
 
 ## 6. Coverage (measured, 200 frames unless stated)
 
+**What coverage does not measure.** It measures *justification*, never *reach*.
+`tools/graph_diff.py` matches our graph against the editor's own node by node — both
+sides are a `Graph`, so they are directly comparable — keying each node on the writes,
+edges or rows it produces, and it checks its own attribution by rebuilding each side's
+`eval_graph` projection from the per-node signatures. Over nine GoatTracker tunes,
+600 frames each: **99680 of the composer's writes are shaped differently by us, and
+zero are never produced.** Not one byte of any song is missing from our output. The
+node partitions barely agree — 1 to 11 nodes match out of 42 to 575 — and the
+disagreement runs both ways: Autumnness recovers 40 nodes against the song's 575,
+Big_Time_Sensuality 432 against 49. So a residual emit is one we emit but cannot
+attribute to a declaration, and the gap this document measures everywhere below is a
+gap in *partitioning and evidence*, not in what the recovery can reproduce.
+
 `Coverage(interp, residual, total, planes, classes, triggers)` carries **two
 partitions, one per domain**, and they are never summed.
 
