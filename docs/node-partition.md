@@ -15,8 +15,9 @@ registers.
 cell)** pairs corresponding to the editor's node set, and building nodes from those pairs
 instead of from register streams would align the two partitions.
 
-`tools/node_partition.py` is the measurement. **The verdict is: confirmed for every
-object except the arrangement, and the arrangement's failure has one named cause.**
+`tools/node_partition.py` is the measurement — `python tools/node_partition.py 0
+[defmon relpath ...]`, writing `out/node_partition.json`. **The verdict is: confirmed for
+every object except the arrangement, and the arrangement's failure has one named cause.**
 
 ## 1. What is measured, and against what
 

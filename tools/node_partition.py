@@ -559,7 +559,10 @@ def _nodes(rows):
 
 
 def main(argv):
-    """Measure the correspondence over the corpus and print the aggregate."""
+    """Measure the correspondence over the corpus and print the aggregate.
+
+    ``argv[1]`` caps the GoatTracker set (0 for all of out/gt_scan.json); ``argv[2:]``
+    are DefMON relpaths, which carry their own object map and no re-derived node set."""
     limit = int(argv[1]) if len(argv) > 1 else 0
     rels = _scan()
     items = [("gt", r) for r in (rels[:limit] if limit else rels)]
