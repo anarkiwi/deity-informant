@@ -355,10 +355,10 @@ the provenance standard §4b applies to a table and §4c to a step:
 
 On `MUSICIANS/A/AceMan/Lostro.sid` the store is `sid.filter.modevol = (m_1056 | $0F)`:
 the text gives the constant `$0F` the low nibble and the read the high one, and the
-staged cell `$1056` originates in the declared filter table at `$1A13`, whose byte
-`$10` is the mode. `$18` becomes two generators — `SELECT` over the `$1A13` lane
-masked `$F0`, and `LOOKUP(($0F,))` masked `$0F` — and the register is explained for
-the first time on that tune.
+staged cell `$1056` originates in the declared table based at `$1A13` — the filter
+program, whose row 1 holds the mode byte `$10`. `$18` becomes two generators, a
+`SELECT` over that lane masked `$F0` and a `LOOKUP(($0F,))` masked `$0F`, and the
+register is explained for the first time on that tune.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 

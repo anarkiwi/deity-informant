@@ -299,10 +299,12 @@ player), and our own recovery's `pw`/`cutoff`.
 
 ### 4.5 What is not a deficiency, and is reported anyway
 
-**The driver's ghost.** 93030 GoatTracker emits (68% of the strict graph's `RAW`)
-and 74229 SID-Wizard emits (53%) — `ghost:pw` alone is 39440 on 58 GT tunes — are
+**The driver's ghost.** 97152 GoatTracker emits (77% of the strict graph's `RAW`)
+and 75255 SID-Wizard emits (61%) — `ghost:pw` alone is 39440 on 58 GT tunes — are
 a register the song **never programs**, written every frame from a ghost register
-holding its power-on value.
+holding its power-on value. §4.3's closure grew that share rather than shrinking it,
+and added 13234 of its own: a `$18` whose mode nibble no filter program ever sets is
+two power-on defaults ORed, which is this category exactly.
 It is not a `RAW` the primitive forces: `LOOKUP((0,))` would take every one of
 them and pass the law. It is refused for the reason docs/tracker.md §6 refuses
 the filter plane's 34177 program constants — it explains no index, and on a
