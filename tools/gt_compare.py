@@ -7,6 +7,7 @@ checked against that editor's own player. Writes out/gt_compare.json.
 
 import json
 import multiprocessing as mp
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ HVSC = ROOT / ".oracle-cache" / "hvsc"
 SWM = ROOT / ".oracle-cache" / "swm"
 OUT = ROOT / "out" / "gt_compare.json"
 FRAMES = 200
-WORKERS = 5
+WORKERS = int(os.environ.get("WORKERS", "5"))
 
 
 def _lifted(path, subtune, nframes):
@@ -50,6 +51,8 @@ def _rows(graph, nframes):
         if node.route[0] != "plane" or node.transfer[0] != "SELECT":
             continue
         rows, i = node.transfer[2], 0
+        if len(rows) == 2 and rows[0] == "node":  # a generated row is not a recovered one
+            continue
         for f, n in enumerate(_fires(graph, node, nframes)):
             for _k in range(n):
                 if i < len(rows):
@@ -97,34 +100,63 @@ def _instr_axis(ours, native, nframes):
     return share, size, onto, len(pairs)
 
 
-def _struct_axis(graph, native, nframes):
-    """How much of the composer's arrangement the recovery represents at all."""
-    fired = {
-        i: _fires(graph, g, nframes) for i, g in enumerate(graph.nodes) if g.route[0] == "plane"
+def _index_census(graph, nframes, tag):
+    """``index`` nodes, generated-row `SELECT`s and their emits, for either side's graph.
+
+    The same predicate is applied to the oracle's graph and to the recovery's: a row a
+    generator supplies is an arrangement, a row read off the observation is not."""
+    from deity_informant import gtoracle  # pylint: disable=import-outside-toplevel
+
+    nodes, _gen = gtoracle.index_nodes(graph)
+    readers = [
+        g
+        for g in graph.nodes
+        if g.route[0] == "plane"
+        and g.transfer[0] == "SELECT"
+        and len(g.transfer[2]) == 2
+        and g.transfer[2][0] == "node"
+    ]
+    return {
+        "%s_index_nodes" % tag: nodes,
+        "%s_row_counters"
+        % tag: sum(1 for g in graph.nodes if g.route == ("index",) and g.transfer[0] == "RAMP"),
+        "%s_generated_selects" % tag: len(readers),
+        "%s_arranged_emits" % tag: sum(sum(_fires(graph, g, nframes)) for g in readers),
     }
+
+
+def _struct_axis(ours, native, nframes, oracle=None, report=None):
+    """The arrangement axis, format side and recovery side reported apart.
+
+    ``fmt_*`` is what the mapped graph expresses of the composer's own arrangement;
+    ``our_*`` is what the tracker's recovery of the same tune expresses. Never summed."""
+    fired = {i: _fires(ours, g, nframes) for i, g in enumerate(ours.nodes) if g.route[0] == "plane"}
     hit = 0
     for f, row in enumerate(native.onsets):
         for v, on in enumerate(row):
             if on and any(
                 c[f]
                 for i, c in fired.items()
-                if graph.nodes[i].route[1] // 7 == v and graph.nodes[i].route[1] % 7 in (4, 5, 6)
+                if ours.nodes[i].route[1] // 7 == v and ours.nodes[i].route[1] % 7 in (4, 5, 6)
             ):
                 hit += 1
-    return {
+    out = {
         "native_patterns": native.structure["patterns"],
         "native_orderlist": native.structure["orderlist_entries"],
         "native_rows": native.structure["pattern_rows"],
         "native_onsets": sum(sum(fr) for fr in native.onsets),
-        "our_nodes": len(graph.nodes),
-        "our_edge_nodes": sum(1 for g in graph.nodes if g.transfer[0] in ("EDGE", "DIV")),
+        "our_nodes": len(ours.nodes),
+        "our_edge_nodes": sum(1 for g in ours.nodes if g.transfer[0] in ("EDGE", "DIV")),
         "our_fires": sum(sum(c) for c in fired.values()),
-        "our_index_nodes": sum(
-            1 for g in graph.nodes if g.route[0] == "fire" and g.transfer[0] not in ("EDGE", "DIV")
-        ),
         "onsets_on_a_fire": hit,
+        **_index_census(ours, nframes, "our"),
         **_onset_periods(native, nframes),
     }
+    if oracle is not None:
+        out.update(_index_census(oracle, nframes, "fmt"))
+    for k, v in (report.arrangement if report is not None else {}).items():
+        out.setdefault("fmt_%s" % k, v)
+    return out
 
 
 def _onset_periods(native, nframes):
@@ -204,7 +236,7 @@ def gt_one(rel):
             "ours": _cov(ours_cov),
             "pitch": {"share": share, "offset": off, "emits": emits},
             "instruments": {"share": isha, "rows": isize, "bijection": onto, "emits": iemits},
-            "structure": _struct_axis(ours_graph, native, n),
+            "structure": _struct_axis(ours_graph, native, n, _g, admitted),
         }
     )
     return out
@@ -219,7 +251,7 @@ def sw_one(name):
     try:
         swm = read_swm(str(SWM / name))
         native, records = gtoracle.sw_native(swm, FRAMES)
-        _g, admitted = gtoracle.graph(records, native, 0)
+        ograph, admitted = gtoracle.graph(records, native, 0)
         _g2, strict = gtoracle.strict(native, records, 0)
     except Exception as exc:  # pylint: disable=broad-except
         out["error"] = "%s: %s" % (type(exc).__name__, str(exc)[:70])
@@ -233,7 +265,11 @@ def sw_one(name):
             "strict_law": strict.divergence is None,
             "strict_divergence": None if strict.divergence is None else str(strict.divergence),
             "raw_kinds": {str(k): v for k, v in strict.raw_kinds.items()},
-            "structure": {"native_%s" % k: v for k, v in native.structure.items()},
+            "structure": dict(
+                {"native_%s" % k: v for k, v in native.structure.items()},
+                **_index_census(ograph, admitted.frames, "fmt"),
+                **{"fmt_%s" % k: v for k, v in admitted.arrangement.items()},
+            ),
         }
     )
     return out

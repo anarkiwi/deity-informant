@@ -10,10 +10,12 @@ from collections import namedtuple
 from . import framelog
 from . import gtoracle
 
-Sites = namedtuple("Sites", "sig base bands filt acc pitch")
+Sites = namedtuple("Sites", "sig base bands filt acc pitch arr patt")
 
 _BAND_STRIDE = 0x31
 _DATA_BASE = 0x7DE  # the data tables sit a fixed distance above the signature
+_ARR_BASE = 0xADE  # three 256-byte arrangers, one per voice, indexed by song step
+_PATT_BASE = 0xEDE  # the packed pattern stream: one event is its flag plus its gated columns
 _PITCH_PREFIX = 100  # a player variant may differ in the unused tail of the table
 
 # operand offset inside a voice band -> (register offset in the voice, role)
@@ -108,7 +110,37 @@ def dm_sites(mem, sig):
     pitch = (blob.find(NOTE_PITCH_LO[:_PITCH_PREFIX]), blob.find(NOTE_PITCH_HI[:_PITCH_PREFIX]))
     if min(pitch) < 0:
         return None
-    return Sites(sig, sig + _DATA_BASE, tuple(bands), filt, acc, pitch)
+    return Sites(
+        sig, sig + _DATA_BASE, tuple(bands), filt, acc, pitch, sig + _ARR_BASE, sig + _PATT_BASE
+    )
+
+
+def dm_pattern_map(song, mem, base):
+    """``{address: (pattern, event)}`` for the packed pattern stream at ``base``.
+
+    The packer stores an event as its flag byte plus only the columns its gates arm and
+    stops at the last pattern that has one, so the map is rebuilt by replaying that rule
+    and verified byte for byte — a stream that diverges ends the map rather than guessing."""
+    out, at = {}, base
+    for p in range(128):
+        cells, cur, ended = {}, at, False
+        for e, ev in enumerate(song.pattern_events(p)):
+            cols = [ev.flag]
+            cols += [ev.slot_a] if ev.gate_a else []
+            cols += [ev.slot_b] if ev.gate_b else []
+            cols += [ev.note] if ev.gate_n else []
+            if [mem[cur + k] for k in range(len(cols))] != cols:
+                return out
+            cells.update({cur + k: (p, e) for k in range(len(cols))})
+            cur += len(cols)
+            if ev.alt:
+                ended = True
+                break
+        if not ended:  # a pattern with no end event is not one the packer wrote
+            return out
+        out.update(cells)
+        at = cur
+    return out
 
 
 def _operands(sites):
@@ -175,19 +207,32 @@ def _dm_probe_class():
         # pylint: disable=useless-return
         sites = None
         ops = {}
+        pmap = {}
         ev = ()
 
         def _init(self, subtune):
             self.ev = []
             super()._init(subtune)
-            base, lo = self.sites.base, self.sites.pitch[0]
+            base, lo, arr = self.sites.base, self.sites.pitch[0], self.sites.arr
             self._obs.subscribe_to_read(range(base, base + 0x100), self._rd_row)
             self._obs.subscribe_to_read(range(lo, lo + 128), self._rd_note)
+            self._obs.subscribe_to_read(range(arr, arr + 0x300), self._rd_arr)
+            if self.pmap:
+                self._obs.subscribe_to_read(sorted(self.pmap), self._rd_patt)
             self._obs.subscribe_to_write(sorted(self.ops), self._wr_op)
             self._obs.subscribe_to_write(range(0xD400, 0xD419), self._wr_sid)
 
         def _rd_row(self, addr):
             self.ev.append(("row", addr - self.sites.base, 0))
+            return None
+
+        def _rd_arr(self, addr):
+            off = addr - self.sites.arr
+            self.ev.append(("arr", off // 0x100, off % 0x100))
+            return None
+
+        def _rd_patt(self, addr):
+            self.ev.append(("patt",) + self.pmap[addr])
             return None
 
         def _rd_note(self, addr):
@@ -245,7 +290,32 @@ def _stage_note(state, tables, voice, reg, role, val, cur):
     state[reg] = (("slide", "detune"), None, val)
 
 
-def _ctrl_cell(state, tables, voice, val):
+def _dm_src(state, tables, walk, voice, lane, row):
+    """The pattern event whose column names this row, or None with the refusal priced.
+
+    A note column names a row of the pitch table and a slot column a sidTAB row, so one
+    index link covers both; a `TR` with bit 7 clear shifts the note index and is refused."""
+    # pylint: disable=protected-access
+    got = walk["at"].get(voice)
+    if got is None:
+        gtoracle._bump(walk["refused"], "no_pattern_row")
+        return None
+    pat, ev = got
+    at, group, refused = pat * 32 + ev, (voice, pat), walk["refused"]
+    if lane[0] == "pitch":
+        tr = tables[("note", "tr")][state.get(("row", voice)) or 0]
+        shift = 1 if tr and not tr & 0x80 else 0
+        return gtoracle._patt_src(
+            tables, ("patt", "note"), at, row, group, refused, shift, "arpeggio"
+        )
+    for key in (("patt", "slot_a"), ("patt", "slot_b")):
+        if tables[key][at] == row:
+            return (key, at, group)
+    gtoracle._bump(refused, "slot_row")
+    return None
+
+
+def _ctrl_cell(state, tables, voice, val, walk=None):
     """The ctrl emit: the waveform lane read through the gate the XOR mask carries.
 
     DefMON emits ``WGh ^ WGl``. A mask touching only the gate bit is one of the
@@ -259,14 +329,15 @@ def _ctrl_cell(state, tables, voice, val):
     n = len(tables[lane])
     for k in range(3):
         if table[row + k * n] == val:
-            return gtoracle.Cell("ctrl", lane, row + k * n, val, 0)
+            src = _dm_src(state, tables, walk, voice, lane, row) if walk and not k else None
+            return gtoracle.Cell("ctrl", lane, row + k * n, val, 0, src=src)
     return gtoracle.Cell("raw", ("xor", "mask"), 0, val, 0)
 
 
-def _cell(state, tables, rows, reg, val):
+def _cell(state, tables, rows, reg, val, walk=None):
     """The `Cell` one SID write is: the lane and row its staged byte came from."""
     if reg <= 0x14 and reg % 7 == 4:
-        return _ctrl_cell(state, tables, reg // 7, val)
+        return _ctrl_cell(state, tables, reg // 7, val, walk)
     if reg == 0x16:
         return gtoracle.Cell("raw", ("cutoff", "slide"), 0, val, 0)
     lane, row, emitted = state.get(reg, (None, None, None))
@@ -276,7 +347,8 @@ def _cell(state, tables, rows, reg, val):
         return gtoracle.Cell("raw", lane, 0, val, 0)
     if lane == ("pw", "lo") and rows[row].PS is not None:
         return gtoracle.Cell("ramp", ("pw", "step"), row, val, tables[("pw", "step")][row])
-    return gtoracle.Cell("select", lane, row, val, 0)
+    src = _dm_src(state, tables, walk, reg // 7, lane, row) if walk and reg <= 0x14 else None
+    return gtoracle.Cell("select", lane, row, val, 0, src=src)
 
 
 def _instr(state, voice):
@@ -329,9 +401,11 @@ def dm_native(raw, nframes, subtune=None):
     tables, rows = dm_tables(song, sites, image.mem)
     probe = _dm_probe_class()
     probe.sites, probe.ops = sites, _operands(sites)
+    probe.pmap = dm_pattern_map(song, image.mem, sites.patt)
     player = probe(raw) if subtune is None else probe(raw, subtune=subtune)
     writes, notes, instrs, onsets, shape, frames, fetched = [], [], [], [], [], [], []
     state, prev = {}, (None, None, None)
+    walk = {"steps": set(), "rows": set(), "refused": {}, "at": {}, "of": {}, **_dm_loops(song)}
     for _f in range(nframes):
         player.ev = []
         player.play_frame()
@@ -342,11 +416,15 @@ def dm_native(raw, nframes, subtune=None):
                 cur = (ev[1], cur[1])
             elif ev[0] == "note":
                 cur = (cur[0], ev[1])
+            elif ev[0] == "arr":
+                _dm_step(tables, walk, ev[1], ev[2])
+            elif ev[0] == "patt":
+                _dm_event(walk, ev[1], ev[2])
             elif ev[0] == "op":
                 _stage(state, tables, rows, player.ops[ev[1]], ev[2], cur)
             else:
                 got.append((ev[1], ev[2]))
-                cells[ev[1]] = _cell(state, tables, rows, ev[1], ev[2])
+                cells[ev[1]] = _cell(state, tables, rows, ev[1], ev[2], walk)
         frames.append(got)
         shape.append(tuple(r for r, _v in got))
         writes.append(cells)
@@ -357,9 +435,43 @@ def dm_native(raw, nframes, subtune=None):
         instrs.append(tuple(_instr(state, v) for v in range(3)))
         prev = now
     native = gtoracle.Native(
-        "defmon", tables, writes, shape, notes, instrs, onsets, _dm_structure(song, tables, fetched)
+        "defmon",
+        tables,
+        writes,
+        shape,
+        notes,
+        instrs,
+        onsets,
+        _dm_structure(song, tables, fetched),
+        walk,
     )
     return native, framelog.canonical(frames), fetched
+
+
+def _dm_step(tables, walk, voice, step):
+    """One arranger read: the song step names the pattern this voice plays next."""
+    pat = tables[("arr", "v%d" % (voice + 1))][step]
+    walk["steps"].add((voice, step, pat))
+    walk["of"][pat] = voice
+
+
+def _dm_event(walk, pat, ev):
+    """One pattern read: the event index, charged to the voice the arranger gave it to."""
+    voice = walk["of"].get(pat)
+    if voice is None:
+        return
+    walk["at"][voice] = (pat, ev)
+    walk["rows"].add((voice, pat, pat * 32 + ev))
+
+
+def _dm_loops(song):
+    """Where the cascade's jumps land: sidTAB row 0, or a row inside the walk."""
+    at = [song.jp_target(y) for y in range(256)]
+    back = [t for t in at if t is not None]
+    return {
+        "loop_at_end": sum(1 for t in back if not t),
+        "loop_elsewhere": sum(1 for t in back if t),
+    }
 
 
 def dm_decompile(path, nframes, subtune=None):

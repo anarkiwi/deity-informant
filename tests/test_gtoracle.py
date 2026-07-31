@@ -314,7 +314,7 @@ def test_sidwizard_maps_to_the_same_lanes_and_passes_the_law():
 def test_the_sidwizard_preamble_lane_is_the_four_hr_fields_packed_as_adsr():
     """`hr_attack`/`hr_decay`/... are one preamble lane, not four editor fields."""
     swm = _swm()
-    tables, _base, _fbase = G._sw_tables(swm, (0,) * 96, (0,) * 96)
+    tables, _base, _fbase, _pbase = G._sw_tables(swm, (0,) * 96, (0,) * 96)
     ins = swm.instruments[0]
     assert tables[("hr", "ad")][0] == (ins.hr_attack << 4) | ins.hr_decay
     assert tables[("hr", "sr")][0] == (ins.hr_sustain << 4) | ins.hr_release
@@ -406,3 +406,118 @@ def test_a_cached_gt_tune_reproduces_its_own_sid_writes_from_the_song_alone(rel)
     offset = G.align(records, native)
     _g, rep = G.strict(native, records, offset)
     assert rep.divergence is None and rep.matched == rep.frames
+
+
+# ---- 6. the arrangement: a row a generator supplies, not one the player was watched at --
+def _arr(lane, row, value, src):
+    """A cell whose own row the pattern column ``src`` names."""
+    return G.Cell("select", lane, row, value, 0, src=src)
+
+
+def _arranged(rows=(0, 1, 2), notes=(1, 2, 0)):
+    """A `Native` whose freq lane is the pitch table at the note its pattern holds."""
+    pitch = (0x11, 0x22, 0x33)
+    tables = {("pitch", "lo"): pitch, ("patt", "note"): tuple(notes)}
+    writes = [
+        {0: _arr(("pitch", "lo"), notes[r], pitch[notes[r]], (("patt", "note"), r, (0, 7)))}
+        for r in rows
+    ]
+    return _native(tables, writes)
+
+
+def test_a_pattern_column_supplies_the_pitch_tables_row_and_the_law_holds():
+    """The note is the composer's pattern byte, and the pitch table reads it at that row."""
+    graph, rep = G.strict(_arranged())
+    src = [g for g in graph.nodes if g.route == T.INDEX]
+    reader = [g for g in graph.nodes if g.route == ("plane", 0)][0]
+    assert rep.divergence is None and rep.coverage.interp == 3
+    assert len(src) == 2 and reader.transfer[2] == ("node", graph.nodes.index(src[1]))
+    assert src[1].transfer[:2] == ("SELECT", (1, 2, 0))  # the pattern's own note column
+    assert rep.arrangement["patterns"] == 1 and rep.arrangement["pattern_rows"] == 3
+
+
+def test_an_evenly_stepped_walk_is_a_row_counter_and_a_broken_one_is_unrolled():
+    """`RAMP` is the row counter; a walk that restarts is carried unrolled instead."""
+    ramp = G.strict(_arranged(rows=(0, 1, 2)))[0]
+    walk = G.strict(_arranged(rows=(0, 1, 0)))[0]
+    assert [g.transfer for g in ramp.nodes if g.route == T.INDEX][0] == ("RAMP", 0, 1, 0)
+    assert [g.transfer for g in walk.nodes if g.route == T.INDEX][0] == ("LOOKUP", (0, 1, 0))
+
+
+def test_a_row_counter_seeded_at_another_pattern_breaks_the_law():
+    """The orderlist picks which rows the counter walks, so a wrong seed writes wrong bytes."""
+    graph = G.strict(_arranged())[0]
+    records = T.eval_graph(graph, 3)
+    at = [i for i, g in enumerate(graph.nodes) if g.route == T.INDEX][0]
+    graph.nodes[at] = graph.nodes[at]._replace(transfer=("RAMP", 1, 1, 0))
+    assert F.diff(T.eval_graph(graph, 3), records) is not None
+
+
+def test_a_pattern_row_moved_by_one_moves_the_record_it_writes():
+    """The pattern's own column is what is read, so shifting it shifts the emit."""
+    base = T.eval_graph(G.strict(_arranged())[0], 3)
+    moved = T.eval_graph(G.strict(_arranged(notes=(2, 1, 0)))[0], 3)
+    assert F.diff(moved, base) is not None
+
+
+def test_a_row_the_pattern_column_does_not_name_refuses_the_whole_stream():
+    """A generated row past its table drops the write, so a stream that fails is refused."""
+    tables = {("pitch", "lo"): (0x11, 0x22), ("patt", "note"): (0, 1)}
+    writes = [
+        {0: _arr(("pitch", "lo"), 0, 0x11, (("patt", "note"), 0, (0, 7)))},
+        {0: _arr(("pitch", "lo"), 1, 0x22, (("patt", "note"), 0, (0, 7)))},  # row 0 names note 0
+    ]
+    graph, rep = G.strict(_native(tables, writes))
+    assert rep.divergence is None and rep.coverage.interp == 2
+    assert not [g for g in graph.nodes if g.route == T.INDEX]
+    assert rep.arrangement["refused_row_not_declared"] == 1
+
+
+def test_a_transpose_is_a_relative_index_the_route_cannot_carry_and_is_priced():
+    """A shifted note is refused rather than fitted, and counted on its own line."""
+    refused = {}
+    tables = {("patt", "note"): (5, 6)}
+    got = G._patt_src(tables, ("patt", "note"), 0, 8, (0, 0), refused, 3, "arpeggio")
+    assert got is None and refused == {"transpose": 1}
+    assert G._patt_src(tables, ("patt", "note"), 0, 5, (0, 0), refused) == (
+        ("patt", "note"),
+        0,
+        (0, 0),
+    )
+
+
+@GT
+def test_the_goattracker_orderlist_loop_is_the_lookups_own_wrap_only_sometimes():
+    """A channel restarting at entry 0 wraps where `_emit` already wraps; others do not."""
+    # pylint: disable=import-error,import-outside-toplevel
+    from pygoattracker.model import Orderlist, PlayPattern, Song, Subtune
+
+    chans = [Orderlist([PlayPattern(0)] * 3, restart=r) for r in (0, 0, 2)]
+    song = Song(subtunes=[Subtune(channels=chans)])
+    assert G._gt_loops(song, 0) == {"loop_at_end": 2, "loop_elsewhere": 1}
+
+
+@GT
+def test_goattracker_reads_its_pitch_table_at_the_row_its_pattern_names():
+    """The editor's own player, mapped: the note lane's row is the pattern's note column."""
+    # pylint: disable=import-error,import-outside-toplevel
+    from pygoattracker import constants as gtc
+    from pygoattracker.model import Instrument, Pattern, Row, Song
+    from pygoattracker.sid import PackedInfo
+
+    rows = [Row(note=gtc.note_value("C-4"), instrument=1)] + [Row() for _r in range(3)]
+    rows += [Row(note=gtc.note_value("E-4"), instrument=1)] + [Row() for _r in range(3)]
+    song = Song(
+        instruments=[
+            Instrument(attack_decay=0x18, sustain_release=0xF9, first_wave=0x41, wave_ptr=1)
+        ],
+        patterns=[Pattern(rows=rows)],
+    )
+    song.wavetable.left[:] = [0x41, 0xFF]
+    song.wavetable.right[:] = [0x00, 0x01]
+    native = G.gt_native(song, PackedInfo(), 0, 40)
+    assert native.tables[("patt", "note")][0] == gtc.note_value("C-4") - gtc.FIRSTNOTE
+    g, rep = G.strict(native, F.canonical(G._predicted(native)), 0)
+    assert rep.divergence is None
+    assert rep.arrangement["patterns"] == 1 and rep.arrangement["orderlist_entries"] > 0
+    assert [n for n in g.nodes if n.route == T.INDEX]

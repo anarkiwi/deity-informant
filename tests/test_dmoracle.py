@@ -184,7 +184,7 @@ def test_a_song_written_here_decomposes_into_the_same_generic_lanes():
     mem = bytearray(0x10000)
     mem[0x2000 : 0x2000 + 128] = NOTE_PITCH_LO
     mem[0x2100 : 0x2100 + 128] = NOTE_PITCH_HI
-    sites = D.Sites(0, 0, (), {}, 0, (0x2000, 0x2100))
+    sites = D.Sites(0, 0, (), {}, 0, (0x2000, 0x2100), 0x2200, 0x2300)
     tab, rows = D.dm_tables(song, sites, mem)
     assert rows[3].WGh == 0x40 and tab[("sidtab", "wave")][3] == 0x41
     assert (tab[("ins", "ad")][3], tab[("pw", "lo")][3], tab[("filt", "vol")][3]) == (
@@ -215,3 +215,84 @@ def test_a_cached_defmon_tune_reproduces_its_own_sid_writes_from_the_song_alone(
     assert rep.coverage.classes["freq"]["lane"] > 0
     assert rep.coverage.classes["ad"]["imm"] == 0
     assert any(fetched) and native.structure["patterns"] > 0
+
+
+# ---- 7. the arrangement: the pattern's own column names the row --------------------
+def _walk(at=None):
+    """The per-voice pattern position the address bus names."""
+    return {"at": at or {}, "refused": {}, "steps": set(), "rows": set(), "of": {}}
+
+
+def _patt(name=None, at=None):
+    """A flat 4096-entry pattern column table, with one column's entries set."""
+    return {
+        key: tuple((at or {}).get(i, 0) if key[1] == name else 0 for i in range(4096))
+        for key in (("patt", "note"), ("patt", "slot_a"), ("patt", "slot_b"))
+    }
+
+
+def test_a_pattern_events_note_column_names_the_pitch_tables_row():
+    """One index link: the pattern names the note, the note table names the byte."""
+    tab = _tables([Row(WGh=0x40)])
+    tab.update(_patt("note", {32: 2}))
+    got = D._dm_src({("row", 0): 0}, tab, _walk({0: (1, 0)}), 0, ("pitch", "lo"), 2)
+    assert got == (("patt", "note"), 32, (0, 1))
+
+
+def test_a_relative_tr_shifts_the_note_index_and_is_refused_and_counted():
+    """`TR` with bit 7 clear is added to the voice's transpose buffer: a relative index."""
+    tab = _tables([Row(TR=0x05)])
+    tab.update(_patt())
+    walk = _walk({0: (0, 0)})
+    assert D._dm_src({("row", 0): 0}, tab, walk, 0, ("pitch", "lo"), 0) is None
+    assert walk["refused"] == {"transpose": 1}
+
+
+def test_a_slot_column_names_the_sidtab_row_an_instrument_lane_reads():
+    """GATE_A/GATE_B arm a sidTAB row, the index link an instrument lane needs."""
+    tab = _tables([Row(AD=0x18), Row(AD=0x22)])
+    tab.update(_patt("slot_a", {0: 1}))
+    got = D._dm_src({}, tab, _walk({0: (0, 0)}), 0, ("ins", "ad"), 1)
+    assert got == (("patt", "slot_a"), 0, (0, 0))
+
+
+def test_a_pattern_position_the_bus_never_named_is_refused_not_guessed():
+    """No arranger read, no pattern read, no arrangement — and the refusal is priced."""
+    tab = _tables([Row(AD=0x18)])
+    tab.update(_patt())
+    walk = _walk()
+    assert D._dm_src({}, tab, walk, 0, ("ins", "ad"), 0) is None
+    assert walk["refused"] == {"no_pattern_row": 1}
+
+
+@DM
+def test_the_packed_pattern_stream_is_rebuilt_from_the_flag_and_its_gated_columns():
+    """The packer stores an event as its flag plus only the columns its gates arm."""
+    # pylint: disable=import-error,import-outside-toplevel
+    from pydefmon import DefmonSong, PatternEvent
+
+    song = DefmonSong()
+    events = [PatternEvent.note_on(0x40, slot_a=3, duration=2), PatternEvent.alt_end()]
+    song.set_pattern_events(0, events + [PatternEvent.delay(1) for _e in range(30)])
+    mem = bytearray(0x10000)
+    mem[0x3000:0x3004] = bytes([events[0].flag, 3, 0x40, events[1].flag])
+    got = D.dm_pattern_map(song, mem, 0x3000)
+    assert {got[0x3000], got[0x3002]} == {(0, 0)} and got[0x3003] == (0, 1)
+    assert 0x3004 not in got  # the stream ends where the next pattern has no end event
+
+
+@DM
+@pytest.mark.parametrize("rel", ["MUSICIANS/G/Goto80/Automatas.sid"])
+def test_a_cached_defmon_tune_reads_its_tables_at_rows_its_patterns_name(rel):
+    """The arrangement off the address bus: an arranger read and a pattern read."""
+    path = HVSC / rel
+    if not path.is_file():
+        pytest.skip("tune not cached")
+    got = D.dm_decompile(path, 60)
+    assert got is not None
+    native, records, _fetched = got
+    graph, rep = G.strict(native, records, 0)
+    assert rep.divergence is None
+    assert rep.arrangement["patterns"] > 0 and rep.arrangement["orderlist_entries"] > 0
+    assert G.index_nodes(graph)[0] > 0
+    assert rep.arrangement["loop_at_end"] + rep.arrangement["loop_elsewhere"] > 0
