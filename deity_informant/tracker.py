@@ -137,8 +137,9 @@ def _check(nodes):
 def _run(graph, nframes):
     """``(canonical records, interpreted emits, raw emits)`` per register.
 
-    Refinement removes a write from RAW, so RAW and a plane-routed node never
-    contend for one register and the interleaving stays well defined."""
+    Refinement removes a *write* from RAW, so a register may be split across RAW and
+    a plane-routed node; node order then fixes the interleaving, which the partition
+    is constructed and checked against (§5)."""
     nodes = graph.nodes
     _check(nodes)
     counts = [0] * len(nodes)
@@ -614,6 +615,7 @@ def _instruments(prog):
 # ---- 4. instrument lanes: ctrl/AD/SR from a declared bank at a recovered row ------
 _CTRL = 4
 _SECT = ((0xFF, 0x00), (0xFE, 0x00), (0xFF, 0x01))  # held: byte, gate cleared, gate set
+_ORD_SECS = (1, 3, 5)  # the per-voice order-preserved sections of a canonical record
 
 
 def _banks(prog):
@@ -806,49 +808,88 @@ def _mean_pos(obs, key):
     return sum(pos) / len(pos) if pos else 0.0
 
 
-def _refine_voice(seq, targets, tabs, banks, imm, mem0):
-    """``(relation, streams)`` refining one voice's ``targets`` registers, or None.
+_RES = ("raw",)  # the residual bucket: the writes of this voice that stay in RAW
 
-    Refuses unless every targeted write is explained, they sit at one end of the
-    order-preserved section in every frame (so one placement against the residual
-    holds), and the node order by mean position reproduces the observed order."""
-    rel = {"pre", "post"}
-    keys, rows, obs, held = [], {}, [], {}
+
+def _precede(obs, nodes):
+    """Reachability of the bucket digraph adjacent writes in a frame fix.
+
+    Adjacent pairs suffice: the rendered section concatenates whole buckets in node
+    order, so it equals the observed one exactly when every frame's bucket sequence
+    is non-decreasing in that order."""
+    idx = {n: i for i, n in enumerate(nodes)}
+    m = np.zeros((len(nodes),) * 2, bool)
+    for row in obs:
+        for a, b in zip(row, row[1:]):
+            if a[0] != b[0]:
+                m[idx[a[0]], idx[b[0]]] = True
+    for _ in range(len(nodes).bit_length()):
+        m |= m @ m
+    return idx, m
+
+
+def _rank(n, obs, m, idx):
+    """Sort key placing a bucket after its ancestors; an unconstrained key goes post."""
+    return int(m[:, idx[n]].sum()), n != _RES, _mean_pos(obs, n), n
+
+
+def _buckets(obs, weight):
+    """``(obs, pre, post, live)``: a bucket order, demoting keys until one exists.
+
+    A key on a cycle sits neither wholly before nor wholly after the residual, so it
+    is demoted into it, lightest first. The acyclic remainder orders by ancestor
+    count, a linear extension of the closure."""
+    live = set(weight)
+    while True:
+        obs = [[(k if k in live else _RES, r, v) for k, r, v in row] for row in obs]
+        nodes = sorted(live) + [_RES]
+        idx, m = _precede(obs, nodes)
+        loop = [n for n in nodes if n != _RES and m[idx[n], idx[n]]]
+        if not loop:
+            order = sorted(nodes, key=lambda n: _rank(n, obs, m, idx))
+            cut = order.index(_RES)
+            return obs, order[:cut], order[cut + 1 :], live
+        live.discard(min(loop, key=lambda k: (weight[k], k)))
+
+
+def _stream(key, rows, table):
+    """One ``(per-frame counts, transfer, register)`` stream for a bucket's emits."""
+    flat = tuple(r for fr in rows for r in fr)
+    t = ("LOOKUP", table) if key[0] == "imm" else ("SELECT", table, flat)
+    return tuple(len(fr) for fr in rows), t, key[1]
+
+
+def _refine_voice(seq, tabs, banks, imm, mem0):
+    """``(pre, post, residual)`` splitting one voice's ctrl/AD/SR writes, or None.
+
+    Every write ``_classify`` explains is a candidate emit and the rest stay in RAW,
+    so a register is split rather than forfeited; the split is then checked by
+    rebuilding the order-preserved section from it, values included."""
+    rows, obs, held, weight = {}, [], {}, {}
     for f, ws in enumerate(seq):
-        at = [i for i, w in enumerate(ws) if w[0] in targets]
-        if at:
-            if at != list(range(len(at))):
-                rel.discard("pre")
-            if at != list(range(len(ws) - len(at), len(ws))):
-                rel.discard("post")
-            if not rel:
-                return None
         row = []
-        for i in at:
-            got = _classify(ws[i], tabs, banks, imm, mem0, held)
-            if got is None:
-                return None
-            key, r = got
-            if key not in rows:
-                rows[key] = [[] for _g in seq]
-                keys.append(key)
-            rows[key][f].append(r)
-            row.append((key, ws[i][0], ws[i][1]))
+        for w in ws:
+            got = _classify(w, tabs, banks, imm, mem0, held)
+            if got is not None:
+                rows.setdefault(got[0], [[] for _g in seq])[f].append(got[1])
+                weight[got[0]] = weight.get(got[0], 0) + 1
+            row.append((_RES if got is None else got[0], w[0], w[1]))
         obs.append(row)
-    tables = {k: _key_table(k, mem0) for k in keys}
-    keys.sort(key=lambda k: _mean_pos(obs, k))
+    obs, pre, post, live = _buckets(obs, weight)
+    tables = {k: _key_table(k, mem0) for k in live}
+    resid = []
     for f, row in enumerate(obs):
-        if [(k[1], tables[k][r]) for k in keys for r in rows[k][f]] != [e[1:] for e in row]:
+        mid = [e[1:] for e in row if e[0] == _RES]
+        got = [(k[1], tables[k][r]) for k in pre for r in rows[k][f]]
+        got += mid + [(k[1], tables[k][r]) for k in post for r in rows[k][f]]
+        if got != [e[1:] for e in row]:
             return None
-    streams = []
-    for k in keys:
-        flat = tuple(r for fr in rows[k] for r in fr)
-        t = ("LOOKUP", tables[k]) if k[0] == "imm" else ("SELECT", tables[k], flat)
-        streams.append((tuple(len(fr) for fr in rows[k]), t, k[1]))
-    return ("post" if "post" in rel else "pre"), streams
-
-
-_SUBSETS = ((4, 5, 6), (4, 5), (4, 6), (5, 6), (4,), (5,), (6,))
+        resid.append(tuple(mid))
+    return (
+        [_stream(k, rows[k], tables[k]) for k in pre],
+        [_stream(k, rows[k], tables[k]) for k in post],
+        resid,
+    )
 
 
 def _classes(streams):
@@ -879,28 +920,22 @@ def _classes(streams):
 
 
 def _instr_streams(prog, ords, tabs, banks):
-    """``(pre, post, refined)``: instrument streams, and the registers they take from RAW.
+    """``(pre, post, residual)``: instrument streams, and the writes still replayed.
 
-    Per voice the explainable subset of ctrl/AD/SR covering the most emits wins;
-    ``pre``/``post`` place its streams either side of the residual, as order requires."""
+    ``pre``/``post`` place each voice's streams either side of the RAW node, as the
+    order-preserved section requires; a voice whose section cannot be rebuilt keeps
+    every write."""
     imm, mem0 = _immediates(prog), prog.mem0
-    pre, post, refined = [], [], set()
-    for v, seq in enumerate(ords):
-        present, tried, best, bestn = {w[0] for ws in seq for w in ws}, set(), None, 0
-        for regs in _SUBSETS:
-            targets = frozenset(7 * v + r for r in regs) & present
-            if not targets or targets in tried:
-                continue
-            tried.add(targets)
-            got = _refine_voice(seq, targets, tabs, banks, imm, mem0)
-            n = sum(w[0] in targets for ws in seq for w in ws)
-            if got is not None and n > bestn:
-                best, bestn = (targets, got), n
-        if best is not None:
-            targets, (rel, streams) = best
-            (pre if rel == "pre" else post).extend(streams)
-            refined |= set(targets)
-    return pre, post, refined
+    pre, post, resid = [], [], []
+    for seq in ords:
+        got = _refine_voice(seq, tabs, banks, imm, mem0)
+        if got is None:
+            resid.append([tuple(w[:2] for w in ws) for ws in seq])
+            continue
+        pre.extend(got[0])
+        post.extend(got[1])
+        resid.append(got[2])
+    return pre, post, resid
 
 
 # ---- 4b. the last-write-wins planes: freq/pw/filter off the store statement -------
@@ -1098,7 +1133,7 @@ def _graph(prog, pitch, frames, ords, lww):
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
     residual = []
-    pre, post, refined = _instr_streams(prog, ords, tabs, banks)
+    pre, post, ires = _instr_streams(prog, ords, tabs, banks)
     lwws, declared = _lww_streams(lww, tabs, prog.mem0)
     ramps, swept = _acc_streams(_accumulators(prog, banks), banks, lww, prog.mem0, ords)
     for f, rec in enumerate(frames):
@@ -1115,8 +1150,12 @@ def _graph(prog, pitch, frames, ords, lww):
                 lanes[v].append((f, note))
         for r, seq in seqs.items():
             seq.append(None if r in done else gen.get(r))
-        keep = set(gen) | done | refined
-        residual.append([e for sec in rec for e in sec if e[0] not in keep])
+        keep = set(gen) | done
+        secs = [
+            ires[i // 2][f] if i in _ORD_SECS else [e for e in s if e[0] not in keep]
+            for i, s in enumerate(rec)
+        ]
+        residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
     edges = {}
     for counts, _t, _r in streams:

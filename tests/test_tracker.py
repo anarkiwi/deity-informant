@@ -45,9 +45,11 @@ def _frames(rows):
 
 
 def _instr(prog, ords):
-    """``_instr_streams`` with the declaration inputs the renderer passes it."""
+    """``(pre, post, wholly refined registers)`` from ``_instr_streams``."""
     banks = T._banks(prog)
-    return T._instr_streams(prog, ords, T._tree_tables(prog, banks), banks)
+    pre, post, resid = T._instr_streams(prog, ords, T._tree_tables(prog, banks), banks)
+    left = {w[0] for v in resid for ws in v for w in ws}
+    return pre, post, {w[0] for seq in ords for ws in seq for w in ws} - left
 
 
 def _diff(graph, frames):
@@ -338,20 +340,73 @@ def test_immediate_writes_split_from_lane_writes_by_provenance():
     prog = frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem)
     banks = T._banks(prog)
     seq = [[(5, 0x11, (0x2002,))], [(5, 0x00, ())]]
-    rel, streams = T._refine_voice(seq, {5}, {}, banks, {5: {0}}, mem)
-    assert rel == "post" and [s[1][0] for s in streams] == ["SELECT", "LOOKUP"]
-    assert streams[1][1] == ("LOOKUP", (0,)) and streams[1][0] == (0, 1)
-    assert T._refine_voice(seq, {5}, {}, banks, {}, mem) is None  # 0 is no program constant
+    pre, post, resid = T._refine_voice(seq, {}, banks, {5: {0}}, mem)
+    assert not pre and sorted(s[1][0] for s in post) == ["LOOKUP", "SELECT"]
+    (lk,) = [s for s in post if s[1][0] == "LOOKUP"]
+    assert lk[1] == ("LOOKUP", (0,)) and lk[0] == (0, 1) and resid == [(), ()]
+    _p, _q, left = T._refine_voice(seq, {}, banks, {}, mem)  # 0 is no program constant
+    assert left == [(), ((5, 0x00),)]
 
 
 def test_write_order_against_the_residual_is_checked():
-    """ADSR ahead of ctrl places the streams before RAW; interleaved is refused."""
+    """ADSR ahead of ctrl places the streams before RAW; a straddled key is demoted."""
     mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
     banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
     ahead = [[(5, 0x11, (0x2002,)), (4, 0x41, ())]]
-    assert T._refine_voice(ahead, {5}, {}, banks, {}, mem)[0] == "pre"
+    pre, post, resid = T._refine_voice(ahead, {}, banks, {}, mem)
+    assert [s[2] for s in pre] == [5] and not post and resid == [((4, 0x41),)]
     mid = [[(4, 0x41, ()), (5, 0x11, (0x2002,)), (4, 0x40, ())]]
-    assert T._refine_voice(mid, {5}, {}, banks, {}, mem) is None
+    assert T._refine_voice(mid, {}, banks, {}, mem)[2] == [((4, 0x41), (5, 0x11), (4, 0x40))]
+    # mutation evidence for that demotion: neither placement of the key holds.
+    frames = _frames([[(4, 0x41), (5, 0x11), (4, 0x40)]])
+    lane, res = T.select((0x11,), (0,), ("event", 0), 5), T.raw([[(4, 0x41), (4, 0x40)]])
+    for nodes in ([T.edge((1,)), lane, res], [T.edge((1,)), res, lane]):
+        assert _diff(T.Graph(nodes), frames) is not None
+
+
+def test_one_unexplained_write_no_longer_costs_the_whole_register():
+    """The finer partition: the explained writes stream, the odd one out stays RAW."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
+    banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
+    srcs = ((0x11, (0x2002,)), (0x22, (0x2006,)), (0x99, ()), (0x44, (0x200E,)))
+    pre, post, resid = T._refine_voice([[(5, v, s)] for v, s in srcs], {}, banks, {}, mem)
+    assert not pre and [s[1] for s in post] == [("SELECT", (0x11, 0x22, 0x33, 0x44), (0, 1, 3))]
+    assert post[0][0] == (1, 1, 0, 1) and resid == [(), (), ((5, 0x99),), ()]
+
+
+def test_a_voice_splits_across_both_sides_of_the_residual():
+    """One residual ctrl write between two lanes puts ad in ``pre`` and sr in ``post``."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44], 3: [0x51, 0x52, 0x53, 0x54]})
+    banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
+    seq = [
+        [(5, 0x11, (0x2002,)), (4, 0x41, ()), (6, 0x51, (0x2003,))],
+        [(5, 0x22, (0x2006,)), (4, 0x40, ()), (6, 0x52, (0x2007,))],
+    ]
+    pre, post, resid = T._refine_voice(seq, {}, banks, {}, mem)
+    assert [s[2] for s in pre] == [5] and [s[2] for s in post] == [6]
+    assert resid == [((4, 0x41),), ((4, 0x40),)]
+
+
+def test_the_rebuilt_section_refuses_a_bucket_order_that_does_not_hold(monkeypatch):
+    """Mutation evidence for the check: a swapped bucket order refuses the voice whole."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44], 3: [0x51, 0x52, 0x53, 0x54]})
+    banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
+    seq = [[(5, 0x11, (0x2002,)), (6, 0x51, (0x2003,))]]
+    good = T._buckets
+    assert T._refine_voice(seq, {}, banks, {}, mem)[2] == [()]
+    monkeypatch.setattr(T, "_buckets", lambda o, w: good(o, w)[:2] + (good(o, w)[2][::-1], set(w)))
+    assert T._refine_voice(seq, {}, banks, {}, mem) is None
+
+
+def test_a_voice_whose_section_cannot_be_rebuilt_keeps_every_write(monkeypatch):
+    """A refused voice falls all the way back to the RAW floor, so nothing is lost."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
+    prog = _rowprog(mem, decl, [(5, _sel(0x2000, 2, "i"))], step=4)
+    _gt, ords, _lww = T._observe(prog, {}, 4)
+    monkeypatch.setattr(T, "_refine_voice", lambda *a: None)
+    pre, post, resid = T._instr_streams(prog, ords, {}, T._banks(prog))
+    assert not pre and not post
+    assert resid[0] == [((5, v),) for v in (0x11, 0x22, 0x33, 0x44)] and resid[1] == [()] * 4
 
 
 def test_immediates_are_read_off_the_program_text_per_register_class():
@@ -439,7 +494,8 @@ def test_a_play_written_waveform_lane_takes_the_gate_writes_down_with_it():
     assert T.render(_ctrlprog(mem, decl, _ctrl_arms()), {}, 4)[2].planes["ctrl"] == (8, 8)
     dirty = [("st", ("const", 0x2002, 2), ("const", 0x99, 1))] + _ctrl_arms()
     prog = _ctrlprog(mem, decl, dirty)
-    assert T.render(prog, {}, 4)[2].planes["ctrl"] == (0, 8) and T.gate(prog, {}, 4) is None
+    # only the mutated row's pair falls out: the register is split, not forfeited.
+    assert T.render(prog, {}, 4)[2].planes["ctrl"] == (6, 8) and T.gate(prog, {}, 4) is None
 
 
 # ---- 3b. the declaration's mutable offsets, and the lww planes off the tree -------

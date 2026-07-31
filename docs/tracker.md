@@ -29,9 +29,10 @@ Two properties make the law meaningful rather than tautological:
 
 - **Completeness floor.** `from_frames(frames)` is a graph of one `RAW` node
   replaying every write in order. It passes by construction at 0% interpreted
-  coverage. Refinement *moves emits out of RAW* into typed generators; because a
-  refined register is removed from RAW, the two never contend for one register
-  and the interleaving stays well defined.
+  coverage. Refinement *moves emits out of RAW* into typed generators; a refined
+  **write** is removed from RAW, so a register may be split across the two and the
+  interleaving is fixed by node order — constructed and checked per frame, never
+  assumed (§5).
 - **Nothing is passed through.** `render` rebuilds every record from the
   interpreted generators plus the explicit RAW residual only — never from the
   observed frame — so a PASS certifies the partition is complete.
@@ -154,9 +155,9 @@ those srcs costs 2834 interpreted emits on the instrument planes (`sr` −1512,
 ## 4b. The last-write-wins planes: the table the store statement names
 
 freq, pw and the $15-$18 filter tail are last-write-wins, so a frame's value stands
-on its own and there is no all-or-nothing register rule to lean on. What replaces it
-is the **statement tree**: `_tree_tables` reads, per register class, the declarations
-the program text stores into that class, and only those are eligible.
+on its own and there is no ordered section to place a stream against. What carries
+the claim is the **statement tree**: `_tree_tables` reads, per register class, the
+declarations the program text stores into that class, and only those are eligible.
 
 - **The store names the table.** A store's value expression is walked with its
   locals resolved to their in-procedure definitions and a staged byte followed
@@ -282,16 +283,25 @@ stride `s`, one lane per byte offset. The generator for a lane is
   serves all three voices behind a dynamic offset), reached directly or through a
   local. The value comes from the program, not from the observation; `Coverage.classes`
   keeps `lane`/`gate` (declared bytes at a recovered index) apart from `imm`.
-- **All or nothing per register** (`_instr_streams`). A refined register is
-  removed from `RAW`, so *every* write to it must be explained or the register
-  stays residual whole. Per voice the explainable subset of `{ctrl, ad, sr}`
-  covering the most emits wins.
-- **Order is checked, not hoped for** (`_refine_voice`). ctrl/AD/SR is the
-  order-preserved section. The refined writes must sit at one end of the section
-  in every frame — so the voice's streams can be placed before (`pre`) or after
-  (`post`) the residual node — and the node order by mean position must
-  reproduce the observed order in every frame. Anything else is refused, so the
-  law never depends on a lucky interleaving.
+- **Split per write, not forfeited per register** (`_instr_streams`, `_buckets`).
+  What is removed from `RAW` is a *write*, so every write `_classify` explains is a
+  candidate emit and the rest stay residual: one unexplained write no longer costs
+  the register. The old all-or-nothing rule and the subset search it needed are
+  gone, replaced by a **bucket order** that makes the split explicit.
+- **Order is constructed and checked, not hoped for** (`_precede`, `_buckets`,
+  `_refine_voice`). ctrl/AD/SR is the order-preserved section, and the section
+  renders as its buckets — one per stream key, plus the residual — concatenated in
+  node order. So the rendering equals the observation exactly when every frame's
+  bucket sequence is non-decreasing in one global order, and two adjacent writes in
+  a frame fix a precedence between their buckets. `_precede` takes the transitive
+  closure of those precedences; a key on a cycle can sit neither wholly before nor
+  wholly after the residual, and is **demoted into the residual**, lightest first,
+  until the digraph is acyclic. The remainder is ordered by ancestor count — a
+  linear extension of the closure — and cut at the residual into `pre` and `post`.
+  `_refine_voice` then rebuilds the whole section, residual writes in place, and
+  compares it with the observed one *values included*; a mismatch refuses the voice.
+  So the law never depends on a lucky interleaving, and a split that would reorder a
+  register's writes is refused rather than emitted.
 
 The row stream is per voice, not per lane: on Commando the AD and SR `SELECT`
 nodes of a voice carry the *same* rows and share one `EDGE`, which is the
@@ -349,7 +359,7 @@ that never reads its waveform from a declaration has none (§8).
 |---|---|---|---|---|---|---|---|
 | Commando (Hubbard), 300 frames | `$5428` interleaved, 97 words | **2366/2525 = 93.7%** | 1198/1280 = 93.6% | 286/363 | 576/576 | 153/153 | 153/153 |
 | Ghouls_n_Ghosts (Follin) | `$6D35`/`$6D96` split, 97 | 485/1164 = 41.7% | 485/722 = 67.2% | 0/0 | 0/29 | 0/7 | 0/4 |
-| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 1396/4800 = 29.1% | 796/1200 = 66.3% | 0/1200 | 200/600 | 200/600 | 200/600 |
+| Automatas (Goto80/DefMON) | `$1578`/`$1614` split, 120 | 1594/4800 = 33.2% | 796/1200 = 66.3% | 0/1200 | 266/600 | 266/600 | 266/600 |
 | Athena (Galway) | `$C517`/`$C55F` split, 72 | 426/1882 = 22.6% | 426/1200 = 35.5% | 0/600 | 0/48 | 0/17 | 0/17 |
 | Krakout (Daglish) | `$E629` big-endian, 12, octave-shift | 228/5000 = 4.6% | 228/1200 = 19.0% | 0/1200 | 0/600 | 0/600 | 0/600 |
 
@@ -362,7 +372,7 @@ lane of the same bank plus **208 generated by the sweep `RAMP` from one seed and
 the `+6` lane's step** (§4c), and **all 1198 of its freq emits are the declared
 `$5428` pitch lanes at a recovered row** rather than observed words matched to an
 ET table.
-Automatas' 600 refined instrument emits are *all* immediates (`ctrl = ad = sr = 0`,
+Automatas' 798 refined instrument emits are *all* immediates (`ctrl = ad = sr = 0`,
 one voice held silent every frame) while its 597 new freq emits are all declared
 lanes, which is why the split is reported and never folded into one number.
 
@@ -523,9 +533,10 @@ interpreted figure is drawn from, before any all-or-nothing rule — go freq 110
 → 289125, pw 21085 → 87828, ctrl 20915 → 72778, sr 40098 → 51702, ad 43718 →
 52300, filter 15571 → 27785. `ad` and `sr` are the gap to read: ~46% of their
 emits now name a declared byte while ~16% are interpreted, so what holds them back
-is the tracker's own all-or-nothing-per-register rule (§5) and its order check,
-not provenance. `filter` at 11.5% is the opposite reading: even named perfectly,
-most filter writes are not declared-table reads.
+is the tracker's own all-or-nothing-per-register rule (§5 as it then stood) and its
+order check, not provenance — which "Realizing the ceiling" below then measured and
+removed. `filter` at 11.5% is the opposite reading: even named perfectly, most
+filter writes are not declared-table reads.
 
 ### The filter plane, and the 8% of it that is a declared-table read
 
@@ -605,27 +616,88 @@ So the ceiling for this step was ~8% and the step returns ~8%. Raising it is §7
 query for RAM-staged parameters, not a filter generator: the filter plane is one more
 accumulator whose step, bound and rate the play code copied out of a table.
 
+### Realizing the ceiling: a register split, not forfeited
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (646 decompile),
+against the filter table above, and a change to `tracker.py` only. §7.1's finer
+partition (§5): a write, not a register, is what refinement removes from `RAW`, and
+the order-preserved section is rebuilt from the typed buckets and the residual
+bucket in a constructed order rather than being required to have the typed writes
+at one end.
+
+**Measured first, so the ceiling was known before a line was written.** Of the
+ctrl/AD/SR writes in registers the old rule left wholly residual, `_classify`
+already explained 165843 — and the distribution said the rule, not provenance, was
+the binding constraint:
+
+| unexplained writes in the register | registers | emits in them | of those, `_classify` explains |
+|---|---|---|---|
+| 0 (lost to the subset search or the order check alone) | 644 | 23289 | 23289 |
+| 1 | 404 | 31537 | 31133 |
+| 2–5 | 414 | 28544 | 27258 |
+| 6–20 | 521 | 46025 | 40213 |
+| 21+ | 1794 | 319921 | 43950 |
+
+644 registers — 23289 emits — were forfeit with **nothing** unexplained in them,
+and another 404 for a single write apiece. Only in the 21+ row is the residual
+mostly genuine, and even there 43950 emits are explained writes held hostage by
+their neighbours.
+
+| plane | before | after | this step's ceiling |
+|---|---|---|---|
+| interpreted | 576085/1933877 = 29.79% | **718297/1933877 = 37.14%** | 741928 |
+| ctrl | 42789/300573 = 14.24% | **111659/300573 = 37.15%** | 123979 |
+| ad | 17592/112534 = 15.63% | **54362/112534 = 48.31%** | 60824 |
+| sr | 19373/115963 = 16.71% | **55945/115963 = 48.24%** | 61415 |
+| freq | 414066/602528 | 414066/602528 (unchanged) | — |
+| pw | 63232/561585 | 63232/561585 (unchanged) | — |
+| filter | 19033/240694 | 19033/240694 (unchanged) | — |
+
+**419 tunes improve and none regresses**, and `freq`, `pw` and `filter` are
+byte-identical per tune — this step touches the order-preserved section and nothing
+else. The canonical fixpoint holds 646/646, Gate FP 646/646 and the tracker law
+646/646, all unchanged.
+
+The gain is strong evidence, and the split is reported rather than folded: of
++142212 emits, **129660 (91.2%) are strong** — `lane` 405721 → 513283 and `gate`
+10608 → 32706 — and 12552 are program immediates (`imm` 12615 → 25167). Against the
+declared-byte ceiling §6 measured for the *strong* classes, the `lane` counts now
+reach 69178/72778 of `ctrl`, 47010/52300 of `ad` and 47905/51702 of `sr` — 90–95%
+of what provenance names at all, from 39%/26%/28%. Whole planes newly explained:
+`ad` 166 → 285 tunes, `sr` 195 → 268, `ctrl` 52 → 57.
+
+**The cost, named.** 23631 explained emits (14.2% of the 165843 ceiling: `ctrl`
+12320, `ad` 6462, `sr` 4849) are still refused, because their key straddles the
+residual — the same key's writes fall on both sides of an unexplained write across
+frames — and a bucket that cannot sit wholly on one side is demoted back into the
+residual rather than emitted out of order. That is **258 of 1874 voices over 113
+tunes**; the demoted total is exactly the gap between ceiling and gain, measured
+independently from either side. The refusal is the whole guarantee: the law would
+fail if it were skipped, and tests/test_tracker.py shows it failing for both
+placements of a straddled key. The rebuild check behind it (`_refine_voice`
+returning None, the voice back at the RAW floor) fires on **no** corpus voice — the
+bucket order it verifies is constructed to satisfy it — so it is a guard, and the
+test that exercises it drives it from a deliberately swapped order.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
 the law green and must move emits out of `RAW`, never widen a declaration:
 
-The order has changed with the origin rule of §6: the largest measured gains
-available now are **tracker-side**, realizing a ceiling provenance already
-supplies, rather than raising that ceiling further.
+The order has changed twice. The origin rule of §6 moved the largest measured gains
+**tracker-side**, to realizing a ceiling provenance already supplied; the finer
+partition of §5 has now taken them. What is left is provenance-bound again.
 
-1. **Realize the ceiling on the instrument planes** — `ad` and `sr` name a
-   declared byte for 52300/112534 and 51702/115963 emits and interpret 17592 and
-   19373 of them; `ctrl` names 72778/300573 and interprets 42789. The ~67000-emit
-   `ad`/`sr` gap is not provenance: it is the all-or-nothing-per-register rule
-   (§5, a refined register is removed from `RAW`, so one unexplained write costs
-   the whole register) and the order check on top of it. Both exist so the law
-   cannot rest on a lucky interleaving, and neither may be relaxed — what is
-   available is a **finer partition**: a register split across a typed stream and
-   a residual stream that between them still reproduce every write in order. The
-   floor is explicit either way, so nothing is claimed that a generator does not
-   emit; the measurement to make first is how many of those ~67000 sit in
-   registers that are whole but for a handful of writes.
+1. **The instrument planes are now bounded by provenance again** — the finer
+   partition shipped (§5, §6): `ctrl`/`ad`/`sr` interpret 37%/48%/48% and their
+   `lane` counts reach 90–95% of the declared-byte ceiling, so the tracker's own
+   rules are no longer what holds them back. What remains splits three ways, and
+   only the first is a tracker problem: 23631 explained emits refused because the
+   key straddles the residual (a note-on lane read and its gate-off image on either
+   side of an unexplained write — an arrangement generator, §7.3, would place both);
+   writes whose byte reaches the store computed, with no source cell at all; and
+   writes whose source cell falls outside every declaration. The last two are
+   frameprog's, not this layer's.
 2. **Parameters staged in RAM, queried rather than reported** — the sweep is a
    `RAMP` wherever its step is declared (§4c), and Commando's is the only one in
    the corpus. Step, bounds and rate are copied out of a table into RAM at
@@ -676,9 +748,10 @@ supplies, rather than raising that ceiling further.
   so a staged bank read arrives here already declared (docs/frameprog.md §1.4).
   What still refuses is a byte whose origin is outside every declaration, or
   inside one but no longer equal to the snapshot (#61), plus the emits refused
-  for write order.
+  for write order — 23631 of them, whose stream key straddles the residual (§5, §6).
 - The gate arm needs a row: a voice that never reads its waveform from a
-  declaration has nothing for the gate to ride and stays residual whole.
+  declaration has nothing for the gate to ride and stays residual — now for those
+  writes only, not for the whole register.
 - A sweep whose step is a RAM cell stays residual, and that is most of them (§6):
   the `RAMP` is refused rather than seeded from an observed delta, since a step
   fitted to the output would pass the law while explaining nothing. A `RAMP` whose
