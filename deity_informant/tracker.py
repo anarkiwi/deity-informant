@@ -842,15 +842,22 @@ _SUBSETS = ((4, 5, 6), (4, 5), (4, 6), (5, 6), (4,), (5,), (6,))
 
 
 def _classes(streams):
-    """``{plane: {lane, gate, imm}}``: refined emits by the evidence behind them.
+    """``{plane: {lane, gate, imm, ramp, seed}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
-    and ``gate`` the same lane at the row the voice holds — both strong; ``imm`` is
-    a program constant, which passes the law without explaining an index."""
+    and ``gate`` the same lane at the row the voice holds — both strong; ``ramp`` is
+    an emit the accumulator's declared step generates. ``imm`` is a program constant
+    and ``seed`` the one observed byte a ramp starts from: both pass the law without
+    explaining a byte, and neither is ever folded into a strong figure."""
     out = {}
     for counts, t, reg in streams:
-        cls = out.setdefault(_plane_of(reg), {"lane": 0, "gate": 0, "imm": 0})
-        if t[0] == "LOOKUP":
+        cls = out.setdefault(
+            _plane_of(reg), dict.fromkeys(("lane", "gate", "imm", "ramp", "seed"), 0)
+        )
+        if t[0] == "RAMP":
+            cls["seed"] += 1
+            cls["ramp"] += sum(counts) - 1
+        elif t[0] == "LOOKUP":
             cls["imm"] += sum(counts)
         elif reg % 7 == _CTRL:
             n = len(t[1]) // (1 + len(_SECT))
@@ -912,6 +919,130 @@ def _lww_streams(lww, tabs, mem0):
     return out, explained
 
 
+# ---- 4c. the pulse sweep: a RAMP whose step is a declared byte --------------------
+def _step_site(s, env, envl, banks, origins):
+    """``(site, sign)`` if this store steps its own cell by one declared byte.
+
+    ``("fix", cell)`` is a declared scalar and ``("lane", decl, off)`` a lane read at
+    the row the voice holds; a step the tree names no other way is refused, and so is
+    one it names two ways."""
+    addr = _base(s[1])
+    root = _resolve(s[2], env)
+    if not (isinstance(root, tuple) and root[0] == "op" and root[1] in ("INT_ADD", "INT_SUB")):
+        return None
+    held = [t for t in root[2] if _read_base(t, env) == addr]
+    if not held or (root[1] == "INT_SUB" and root[2][0] not in held):
+        return None
+    sites = set()
+    for t in root[2]:
+        for b in () if t in held else _read_bases(t, envl, origins):
+            d = _decl_of(b, banks)
+            if d is None or (b - d[0]) % _record(d[1], d[2]) in d[3]:
+                continue
+            sites.add(("lane", d, (b - d[0]) % d[2]) if d[2] > 1 else ("fix", b))
+    return (sites.pop(), -1 if root[1] == "INT_SUB" else 1) if len(sites) == 1 else None
+
+
+def _accumulators(prog, banks):
+    """``{register class: (site, sign)}``: the pw accumulators the store statement names.
+
+    The pw store reads a cell the play code steps by a declared byte: that cell is the
+    accumulator and the byte is its step. Two accumulators reaching one store refuse it."""
+    origins, out = {}, {}
+    for s in _stmts(prog):
+        if s[0] == "st" and _sid_class(s[1]) is None:
+            origins.setdefault(_base(s[1]), []).append(s[2])
+    for proc in prog.procs:
+        env, envl, steps, reads = {}, {}, {}, []
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+                envl.setdefault(s[1], []).append(s[2])
+            elif s[0] == "st":
+                cls = _sid_class(s[1])
+                if cls is None:
+                    got = _step_site(s, env, envl, banks, origins)
+                    if got is not None:
+                        steps[_base(s[1])] = got
+                elif _PLANE.get(cls) == "pw":
+                    reads.append((cls, _read_bases(s[2], envl, origins)))
+        for cls, bases in reads:
+            hit = {b: steps[b] for b in bases if b in steps}
+            if len(hit) == 1:
+                out.setdefault(cls, hit.popitem()[1])
+    return out
+
+
+def _hold_rows(ords, lww, banks, nframes):
+    """``[frame][voice][declaration base] -> row``, from the source cell of every write."""
+    cur, out = [{} for _v in range(3)], []
+    for f in range(nframes):
+        for v in range(3):
+            for w in ords[v][f]:
+                _hold(cur[v], w[2], banks)
+        for reg, (_val, srcs) in lww[f].items():
+            _hold(cur[reg // 7], srcs, banks)
+        out.append([dict(c) for c in cur])
+    return out
+
+
+def _hold(cur, srcs, banks):
+    """Record the row each source cell recovers in its declaration."""
+    for c in srcs:
+        d = _decl_of(c, banks)
+        if d is not None:
+            cur[d[0]] = (c - d[0]) // d[2]
+
+
+def _step_byte(site, mem0, held):
+    """``(step cell, declared byte)`` for a step site, or None without a row."""
+    if site[0] == "fix":
+        return site[1], mem0[site[1]]
+    _k, (base, size, stride, _mut), off = site
+    row = held.get(base)
+    if row is None:
+        return None
+    cell = base + stride * row + off
+    return (cell, mem0[cell]) if base <= cell < base + size else None
+
+
+def _acc_streams(acc, banks, lww, mem0, ords):
+    """``(streams, explained)``: the pw sweep as a RAMP over its declared step.
+
+    A pw write the evaluator reports no source cell for is the accumulator store; its
+    step is the declared byte the tree named, at the row the voice holds. One run per
+    step cell, kept only if the ramp regenerates every byte of it from its first."""
+    rows = _hold_rows(ords, lww, banks, len(lww))
+    runs, seen = {}, {}
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            val, srcs = wr[reg]
+            if srcs or reg % 7 not in acc:
+                continue
+            site, sign = acc[reg % 7]
+            got = _step_byte(site, mem0, rows[f][reg // 7])
+            if got is None:
+                continue
+            cell, byte = got
+            if seen.get(reg) != cell:
+                seen[reg] = cell
+                seen[reg, "n"] = seen.get((reg, "n"), 0) + 1
+            runs.setdefault((reg, cell, seen[reg, "n"]), []).append((f, val, sign * byte))
+    streams, explained = [], [set() for _f in lww]
+    for (reg, _cell, _n), run in runs.items():
+        seed, step = run[0][1], run[0][2]
+        if step % 0x100 == 0 or len(run) < 2:
+            continue
+        if any((seed + step * i) & 0xFF != v for i, (_f, v, _s) in enumerate(run)):
+            continue
+        counts = [0] * len(lww)
+        for f, _v, _s in run:
+            counts[f] = 1
+            explained[f].add(reg)
+        streams.append((tuple(counts), ("RAMP", seed, step, 0x100), reg))
+    return streams, explained
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -958,8 +1089,9 @@ def _graph(prog, pitch, frames, ords, lww):
     residual = []
     pre, post, refined = _instr_streams(prog, ords, tabs, banks)
     lwws, declared = _lww_streams(lww, tabs, prog.mem0)
+    ramps, swept = _acc_streams(_accumulators(prog, banks), banks, lww, prog.mem0, ords)
     for f, rec in enumerate(frames):
-        gen, done = {}, declared[f]
+        gen, done = {}, declared[f] | swept[f]
         for v in range(3):
             sec, b = dict(rec[2 * v]), 7 * v
             if b not in sec or b + 1 not in sec:
@@ -974,14 +1106,14 @@ def _graph(prog, pitch, frames, ords, lww):
             seq.append(None if r in done else gen.get(r))
         keep = set(gen) | done | refined
         residual.append([e for sec in rec for e in sec if e[0] not in keep])
-    streams = pre + post + lwws
+    streams = pre + post + lwws + ramps
     edges = {}
     for counts, _t, _r in streams:
         edges.setdefault(counts, len(edges))
     nodes = [edge(c) for c in edges]
     fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
     nodes += fired + [raw(residual)]
-    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws]
+    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws + ramps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     return Graph(nodes, freq_table=pitch, classes=_classes(streams)), lanes
 
