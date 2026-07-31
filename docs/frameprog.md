@@ -130,6 +130,33 @@ consumer that ranks by position sees what it saw before. The evaluator's hop is
 exact where a static one is not: it binds one cell per assignment rather than a
 set of candidate definitions. Measured effect at the tracker: docs/tracker.md §6.
 
+The map is also **queryable**, because reporting it alongside SID store sources
+names only what a SID store reads. An accumulator's step, bound and rate are
+copied out of a table into RAM at note-on and no SID write ever loads those
+cells, so the map holds their origins and nothing asks for them. `eval_watch`
+takes statements the consumer names off the tree — by identity, since two equal
+statements in different procedures are different sites, and a watch the program
+never compiles faults rather than silently reporting nothing — and returns, per
+frame, one record per execution of each: `(index into the watch list, the cell
+stored or None for an assignment, the same source tuple a SID store reports)`. It
+is `_derived` over the same `_cells`/`_copy`/`_bind` machinery and no other path,
+so a byte the play code computed carries no origin here either. The statement
+worth watching is often an assignment: where the arithmetic happens in a register
+(`a = ram[x] + step` … `ram[x] = a`) the store's value expression is a bare local
+whose origin the one-contributor rule has already dropped.
+
+The granularity is **per execution**, measured rather than chosen. Over the 682
+cached tunes at 200 frames (646 decompile, PSID start subtune) the query resolves
+an accumulator's step to a declared byte at a non-`mut` offset agreeing with the
+snapshot for **27246 pw and 3353 cutoff emits** over 121 tunes, against **1420
+and 0** over 13 for the same identification requiring the step to reach a
+declaration statically (docs/tracker.md §4c). A per-frame snapshot of the same
+map reaches 17324/3353 and an end-of-run snapshot 17111/2564: a staging cell is
+re-staged mid-run — a new note-on copies a new step byte, and one statement
+serves three voices inside a frame — so any snapshot names the last row written
+rather than the row each step came from, and 36% of the pw figure is exactly that
+difference.
+
 This is annotation only: no value, no write and no record changes, so `eval_fp`
 and Gate FP are unaffected by construction. It does not weaken the #61
 invariant either — a declaration's const claim excludes every play-written
