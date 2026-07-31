@@ -53,12 +53,14 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n)                  # one tick per n input triggers (a clock)
            | LOOKUP(seq)             # emit seq[i]; i advances per trigger
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
+                                     #   rows = a recovered run, or Node(j): generated
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
   route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
            | Rel(reg, mask, op, base)# the emit is a DELTA op combines with base
+           | Index                   # the emit is another generator's row index
            | Fire | Raw              # a downstream trigger, or the value floor
   op       : ADD | SUB | XOR         # the store statement's own operator
   base     : Prev                    # the plane's own previously emitted value
@@ -99,6 +101,28 @@ byte — so a relative pair is one emit at one position, exactly as a masked gro
 A graph that names a base no earlier generator settles is refused outright, and a
 relative route whose base the evaluator cannot supply emits nothing, so a mis-built
 stream drops a write and the law fails rather than a base being invented.
+
+A route carries a **trigger**, a **value**, or an **index**. `Fire` says *when* a
+downstream table advances; `Index` says *which row* it reads. Without the second, an
+orderlist can beat a pattern forward but cannot name the pattern — which is why
+structure recovery read exactly zero on both the recovered and the oracle side, and
+why §7.4's original claim (orderlist and pattern as `LOOKUP` nodes routed to `Fire`)
+could not have worked: a `Fire` edge carries no value. A `SELECT` whose `rows` is
+`Node(j)` reads the row generator `j` currently holds, so the row a note-on selects
+becomes an emit rather than observed data. The source is refused unless it is an
+earlier `Index`-routed node — the value edge runs the way node order already runs, so
+no cycle can form — and an `Index` route no generator reads is refused as dead. An
+index past the end of its table emits nothing, so a mis-built arrangement drops a
+write and the law says so rather than wrapping to a row nobody proved.
+
+**The loop needs no machinery**: `LOOKUP` and `SELECT` already advance modulo their
+length, so an orderlist wraps to its first entry by construction. What §7.4 called a
+back-edge was there all along.
+
+The phase, though, is real and is **this** layer's. `DIV(n)` fires at `n-1, 2n-1, …`,
+so a graph whose orderlist is clocked by one writes nothing until the first tick — it
+refuses to invent entry 0. That is the settled three-editor verdict of §8 seen from
+the other side: the phase belongs to the arrangement, not to the divider.
 
 `RAW` and `EDGE` are the two floors — the residual in the value domain and in the
 trigger domain. Refinement replaces them: a value moves out of `RAW` into a typed
@@ -1298,10 +1322,19 @@ take 29559 of them and is refused (§6).
 3. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
-4. **Arrangement** — orderlist/pattern/transpose as `LOOKUP` nodes routed to
-   `Fire`, with shared subgraphs for reuse and a back-edge for the loop. This is
-   what replaces the `EDGE` floors and the recovered row streams: the row a
-   note-on selects becomes an emit of the pattern generator, not observed data.
+4. **Arrangement** — orderlist and pattern as an `Index` route (§2), transpose as
+   `Rel`. This is what replaces the `EDGE` floors and the recovered row streams: the
+   row a note-on selects becomes an emit of the pattern generator, not observed data.
+
+   **Corrected.** This item previously read "`LOOKUP` nodes routed to `Fire`, with
+   shared subgraphs for reuse and a back-edge for the loop". That shape cannot
+   express an arrangement: a `Fire` edge carries a trigger and no value, so it
+   advances a pattern without naming it, and `SELECT`'s row index was a recovered
+   tuple nothing could supply from outside. The primitive was missing one route, not
+   a layer — and the back-edge was never needed, because `LOOKUP`/`SELECT` already
+   wrap modulo their length. The arrangement's own **phase** is what the divider
+   lacks (§8): a `DIV(n)`-clocked orderlist emits nothing before frame `n-1` rather
+   than inventing its first entry.
 
    **The population is now measured, and it is almost all of the domain.** §6's
    trigger census leaves **280437 fires over 3798 nodes, 99.89%**, and says what

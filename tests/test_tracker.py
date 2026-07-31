@@ -1528,3 +1528,75 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     cells = [0x19C5 + t[2][0] for t in (got[0x16], got[0x17])]
     assert cells == [0x1A08, 0x1A07]  # two cells of one declared table, recovered per register
     assert [prog.mem0[c] for c in cells] == [0x06, 0xF7]
+
+
+def _arrangement(orderlist, patterns, rows_per_pattern, nframes):
+    """An orderlist indexing a pattern table, the shape §7.4 names.
+
+    n0 the row clock, n1 the orderlist (an index route), n2 the pattern it selects."""
+    beat = T.Generator(("DIV", rows_per_pattern), T.FRAME, ("fire",))
+    order = T.indexer(("LOOKUP", tuple(orderlist)), ("event", 0))
+    pat = T.select(patterns, ("node", 1), T.FRAME, 0x18)
+    return T.Graph([beat, order, pat]), nframes
+
+
+def _emitted(graph, nframes):
+    """Per-frame value written by an arrangement graph, None where none is."""
+    out = []
+    for fr in T.eval_graph(graph, nframes):
+        vals = [v for slot in fr for (_reg, v) in slot]
+        out.append(vals[0] if vals else None)
+    return out
+
+
+def test_index_route_expresses_an_orderlist():
+    """A pattern's row is the orderlist's emit, and the loop is the modulo wrap."""
+    got = _emitted(*_arrangement([3, 5, 1], tuple(range(8)), 4, 16))
+    assert got[3:7] == [3, 3, 3, 3]  # the orderlist holds while rows advance
+    assert got[7:11] == [5, 5, 5, 5] and got[11:15] == [1, 1, 1, 1]
+    assert got[15] == 3  # wrapped by _emit's modulo: no back-edge machinery needed
+
+
+def test_nothing_is_written_before_the_orderlist_speaks():
+    """DIV(n) fires at n-1, so the phase is the arrangement's (docs 8).
+
+    The graph emits nothing rather than inventing entry 0, which is why a phase
+    field belongs to this layer and not to the divider."""
+    assert _emitted(*_arrangement([3, 5, 1], tuple(range(8)), 4, 16))[:3] == [None] * 3
+
+
+def test_index_source_must_precede_its_reader():
+    """A row source later than its reader would need a value the frame has not made."""
+    pat = T.select((1, 2, 3), ("node", 1), T.FRAME, 0x18)
+    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="not an earlier node"):
+        T.eval_graph(T.Graph([pat, order]), 4)
+
+
+def test_row_source_must_route_to_an_index():
+    """A plane generator's write is a byte, not a row: it cannot be an index source."""
+    other = T.lookup((0, 1), T.FRAME, 0x04)
+    pat = T.select((1, 2, 3), ("node", 0), T.FRAME, 0x18)
+    with pytest.raises(T.TrackerError, match="does not route to an index"):
+        T.eval_graph(T.Graph([other, pat]), 4)
+
+
+def test_index_route_without_a_reader_is_dead():
+    """A generator that neither writes a plane nor is read explains nothing."""
+    order = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="has no reader"):
+        T.eval_graph(T.Graph([order]), 4)
+
+
+def test_generated_row_out_of_range_drops_the_write():
+    """An index past the table emits nothing, so the law fails rather than wrapping."""
+    order = T.indexer(("LOOKUP", (9,)), T.FRAME)
+    pat = T.select((1, 2), ("node", 0), T.FRAME, 0x18)
+    assert T.eval_graph(T.Graph([order, pat]), 3) == F.canonical([[], [], []])
+
+
+def test_mutation_a_moved_orderlist_entry_changes_the_projection():
+    """Mutation evidence: one wrong orderlist entry must move the record."""
+    good, n = _arrangement([3, 5, 1], tuple(range(8)), 4, 16)
+    bad, _n = _arrangement([3, 4, 1], tuple(range(8)), 4, 16)
+    assert T.eval_graph(good, n) != T.eval_graph(bad, n)
