@@ -300,12 +300,11 @@ def _on(objs, pairs, decls):
     return cover, out
 
 
-def _pairs_on(objs, pairs, decls):
+def _pairs_on(objs, pairs, decls, cover, on):
     """``{object: (declared, paired, strict, cursor kinds)}`` — address containment only.
 
     ``strict`` needs the load base inside the object's own span rather than merely inside
     a declaration overlapping it, so the looser rule cannot flatter the result unchecked."""
-    cover, on = _on(objs, pairs, decls)
     return {
         o.name: (
             bool(cover[o.name]),
@@ -317,9 +316,9 @@ def _pairs_on(objs, pairs, decls):
     }
 
 
-def _unmatched(objs, pairs, decls):
+def _unmatched(pairs, on):
     """Program pairs whose load base no editor object, declared or not, covers."""
-    claimed = {b for bs in _on(objs, pairs, decls)[1].values() for b in bs}
+    claimed = {b for bs in on.values() for b in bs}
     return sum(len(pairs[b]) for b in pairs if b not in claimed), len(set(pairs) - claimed)
 
 
@@ -373,9 +372,10 @@ def _row(prog, objs, keys, lanes):
     from deity_informant import tracker  # pylint: disable=import-outside-toplevel
 
     decls, pairs = prog.data_decls, prog_pairs(prog)
-    per = _pairs_on(objs, pairs, decls)
+    cover, on = _on(objs, pairs, decls)
+    per = _pairs_on(objs, pairs, decls, cover, on)
     walked = tracker._walked(prog)  # pylint: disable=protected-access
-    unpaired, unbases = _unmatched(objs, pairs, decls)
+    unpaired, unbases = _unmatched(pairs, on)
     nodes, groups = collections.defaultdict(lambda: [0, 0]), set()
     for key, emits in keys.items():
         name, cur = _key_object(key, lanes)
@@ -401,7 +401,7 @@ def _row(prog, objs, keys, lanes):
         "decls": len(decls),
         "editor_nodes": len(keys),
         "editor_groups": len(groups),
-        "bases_on_object": sum(len(v) for v in _on(objs, pairs, decls)[1].values()),
+        "bases_on_object": sum(len(v) for v in on.values()),
         "editor_emits": sum(keys.values()),
         "emits_by_object": sorted((list(k), v) for k, v in nodes.items()),
     }
@@ -439,8 +439,9 @@ def dm_one(rel):
     path = HVSC / rel
     raw = path.read_bytes()
     _songs, start = psid_songs(raw)
-    sig = find_signature(SidImage.from_sid(raw).mem)
-    sites = None if sig is None else dmoracle.dm_sites(SidImage.from_sid(raw).mem, sig)
+    mem = SidImage.from_sid(raw).mem
+    sig = find_signature(mem)
+    sites = None if sig is None else dmoracle.dm_sites(mem, sig)
     if sites is None:
         raise ValueError("not a DefMON replay")
     prog, _trace = _lifted(path, start - 1, FRAMES)
@@ -454,7 +455,7 @@ def _run(item):
     try:
         return (gt_one if kind == "gt" else dm_one)(rel)
     except Exception as exc:  # pylint: disable=broad-except
-        return {"editor": kind, "tune": rel, "error": "%s: %s" % (type(exc).__name__, exc)[:120]}
+        return {"editor": kind, "tune": rel, "error": ("%s: %s" % (type(exc).__name__, exc))[:120]}
 
 
 def _scan():

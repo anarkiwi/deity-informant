@@ -77,24 +77,32 @@ def test_walk_descends_into_a_nested_body_without_leaking_its_locals():
 OBJS = [Obj("tbl", 0x1010, 0x10), Obj("far", 0x2000, 0x10)]
 
 
+def _per(objs, pairs):
+    return NP._pairs_on(objs, pairs, DECLS, *NP._on(objs, pairs, DECLS))
+
+
+def _unmatched(objs, pairs):
+    return NP._unmatched(pairs, NP._on(objs, pairs, DECLS)[1])
+
+
 def test_an_object_is_paired_through_the_declaration_that_covers_it():
-    got = NP._pairs_on(OBJS, {0x1000: {0x1102}}, DECLS)
+    got = _per(OBJS, {0x1000: {0x1102}})
     assert got["tbl"] == (True, True, False, ["state"])  # the load is below the object's own base
     assert got["far"] == (False, False, False, [])
 
 
 def test_an_undeclared_object_is_paired_only_by_a_load_inside_its_own_span():
-    assert NP._pairs_on(OBJS, {0x2004: {0x40}}, DECLS)["far"] == (False, True, True, ["cell"])
+    assert _per(OBJS, {0x2004: {0x40}})["far"] == (False, True, True, ["cell"])
 
 
 def test_a_pair_on_no_object_is_counted_unmatched():
-    assert NP._unmatched(OBJS, {0x1000: {0x40}, 0x1100: {0x41, 0x42}}, DECLS) == (2, 1)
+    assert _unmatched(OBJS, {0x1000: {0x40}, 0x1100: {0x41, 0x42}}) == (2, 1)
 
 
 def test_a_base_with_no_cursor_is_not_a_pair():
-    got = NP._pairs_on(OBJS, {0x1000: set()}, DECLS)
+    got = _per(OBJS, {0x1000: set()})
     assert got["tbl"] == (True, True, False, [])
-    assert NP._unmatched(OBJS, {0x1100: set()}, DECLS) == (0, 1)
+    assert _unmatched(OBJS, {0x1100: set()}) == (0, 1)
 
 
 @pytest.mark.parametrize(
