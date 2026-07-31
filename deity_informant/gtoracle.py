@@ -10,7 +10,7 @@ from collections import namedtuple
 from . import framelog
 from . import tracker
 
-Cell = namedtuple("Cell", "kind lane row value step mask", defaults=(0xFF,))
+Cell = namedtuple("Cell", "kind lane row value step mask base", defaults=(0xFF, None))
 Native = namedtuple("Native", "editor tables writes shape notes instrs onsets structure")
 Report = namedtuple("Report", "coverage frames matched divergence offset raw_kinds")
 
@@ -20,6 +20,7 @@ _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _CTRL = 4
 _FULL = 0xFF
 _GATES = (0xFE, 0x00)  # the gate images a ctrl lane byte is read through
+_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel")
 
 
 def _parts(cell):
@@ -86,7 +87,7 @@ def _runs(seq):
 
 # ---- 2. the builder: one stream per (register, lane), the rest RAW ----------------
 class _Streams:
-    """Accumulates ``(counts, transfer, reg, mask)`` streams and their evidence classes."""
+    """Accumulates ``(counts, transfer, reg, mask, rel)`` streams and their evidence classes."""
 
     def __init__(self, nframes, tables):
         self.n = nframes
@@ -95,9 +96,7 @@ class _Streams:
         self.classes = {}
 
     def _bump(self, reg, kind, n=1):
-        cls = self.classes.setdefault(
-            _plane_of(reg), dict.fromkeys(("lane", "gate", "imm", "ramp", "seed", "mask"), 0)
-        )
+        cls = self.classes.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         cls[kind] += n
 
     def add(self, reg, frame, cell, key=None):
@@ -111,6 +110,10 @@ class _Streams:
             if part.kind == "ramp":
                 rows.append(part.value)
                 continue
+            if part.kind == "rel":
+                rows.append((part.row, 0 if part.base is None else part.base[1]))
+                self._bump(reg, "rel")
+                continue
             rows.append(0 if part.kind == "imm" else part.row)
             if len(group) > 1:
                 continue
@@ -120,25 +123,42 @@ class _Streams:
                 self._bump(reg, "gate" if part.row >= len(self.tables[part.lane]) else "lane")
 
     def streams(self):
-        """``[(per-frame counts, transfer, reg, mask)]`` for every stream recorded."""
+        """``[(per-frame counts, transfer, reg, mask, rel)]`` for every stream recorded.
+
+        ``rel`` is ``None`` for an absolute stream, else ``(op, base lane, base rows)``:
+        the emit is a delta the route combines with the base that names."""
         out = []
         for key, (counts, rows) in self.rows.items():
             reg, kind, lane, step, mask = key
             if kind == "ramp":
-                out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask))
+                out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask, None))
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
             elif kind == "imm":
-                out.append((tuple(counts), ("LOOKUP", (lane,)), reg, mask))
+                out.append((tuple(counts), ("LOOKUP", (lane,)), reg, mask, None))
+            elif kind == "rel":
+                delta, base = lane
+                out.append(
+                    (
+                        tuple(counts),
+                        ("SELECT", tuple(self.tables[delta]), tuple(r for r, _b in rows)),
+                        reg,
+                        mask,
+                        ("ADD" if step > 0 else "SUB", base, tuple(b for _r, b in rows)),
+                    )
+                )
             else:
                 table = _ctrl_table(self.tables[lane]) if kind == "ctrl" else self.tables[lane]
-                out.append((tuple(counts), ("SELECT", tuple(table), tuple(rows)), reg, mask))
+                out.append((tuple(counts), ("SELECT", tuple(table), tuple(rows)), reg, mask, None))
         return out
 
 
 def _one_typed(cell, value, tables):
-    """Is one generator's emit ``value``, with the composer's table byte agreeing?"""
-    if cell is None or cell.value != value or cell.kind == "raw":
+    """Is one generator's emit ``value``, with the composer's table byte agreeing?
+
+    A relative cell is never typed here: its byte is a delta over a base, so only
+    `_rel_keys` — which combines the two and checks the result — can admit it."""
+    if cell is None or cell.value != value or cell.kind in ("raw", "rel"):
         return False
     if cell.kind in ("imm", "ramp"):
         return True
@@ -168,7 +188,39 @@ def _key(reg, cell):
     """The stream key one cell belongs to; a masked field owns its own stream."""
     if cell.kind == "imm":
         return (reg, "imm", cell.value, 0, cell.mask)
+    if cell.kind == "rel":  # a relative stream is keyed by both its lanes and its sign
+        base = None if cell.base is None else cell.base[0]
+        return (reg, "rel", (cell.lane, base), cell.step, cell.mask)
     return (reg, cell.kind, cell.lane, 0, cell.mask)
+
+
+def _rel_keys(native, frames, tables):
+    """``{(frame, reg)}`` the relative cells the composer's own tables predict.
+
+    The delta is a byte of the song's table at the row the player read; the base is the
+    plane's own previous byte, or a second table's byte where the cell names one. A
+    delta of zero predicts nothing and is refused, as `_runs` refuses a zero step."""
+    out, prev = set(), {}
+    for f, writes in enumerate(frames):
+        for reg, val in writes:
+            cell, was = native.writes[f].get(reg), prev.get(reg)
+            prev[reg] = val
+            if not isinstance(cell, Cell) or cell.kind != "rel" or cell.value != val:
+                continue
+            lane = tables[cell.lane]
+            if not 0 <= cell.row < len(lane) or not lane[cell.row]:
+                continue
+            if cell.base is None:
+                base = was
+            else:
+                blane, brow = cell.base
+                base = tables[blane][brow] if 0 <= brow < len(tables[blane]) else None
+            if base is None:
+                continue
+            got = base + lane[cell.row] if cell.step > 0 else base - lane[cell.row]
+            if got & _FULL == val:
+                out.add((f, reg))
+    return out
 
 
 def _ramp_keys(native, frames, tables):
@@ -230,6 +282,7 @@ def _build(frames, native):
     are typed per write, because the projection sorts them."""
     tables, n = native.tables, len(frames)
     acc, ramps, layout = _Streams(n, tables), _ramp_keys(native, frames, tables), _layout(frames)
+    rels = _rel_keys(native, frames, tables)
     residual = []
     for f, writes in enumerate(frames):
         sec = [[] for _v in range(3)]
@@ -252,6 +305,8 @@ def _build(frames, native):
             elif (f, reg) in ramps:
                 at, seed = ramps[(f, reg)]
                 acc.add(reg, f, cell._replace(value=seed), key=(reg, "ramp", at, cell.step, _FULL))
+            elif (f, reg) in rels:
+                acc.add(reg, f, cell)
             elif cell is not None and _parts(cell)[0].kind != "ramp" and _typed(cell, val, tables):
                 acc.add(reg, f, cell)
             else:
@@ -260,19 +315,32 @@ def _build(frames, native):
     streams = acc.streams()
     pos = {r: (v, i) for v in range(3) for i, r in enumerate(layout[v])}
     edges = {}
-    for counts, _t, _r, _m in streams:
+    for counts, *_rest in streams:
         edges.setdefault(counts, len(edges))
     nodes = [tracker.edge(c) for c in edges]
     nodes += [
         tracker.Generator(t, ("event", edges[c]), tracker.plane(r, m))
-        for c, t, r, m in sorted((s for s in streams if _is_ord(s[2])), key=lambda s: pos[s[2]])
+        for c, t, r, m, _x in sorted((s for s in streams if _is_ord(s[2])), key=lambda s: pos[s[2]])
     ]
     nodes.append(tracker.raw(residual))
-    nodes += [
-        tracker.Generator(t, ("event", edges[c]), tracker.plane(r, m))
-        for c, t, r, m in streams
-        if not _is_ord(r)
-    ]
+    for c, t, r, m, rel in streams:
+        if _is_ord(r):
+            continue
+        if rel is None:
+            nodes.append(tracker.Generator(t, ("event", edges[c]), tracker.plane(r, m)))
+            continue
+        op, blane, brows = rel
+        base = ("prev",)
+        if blane is not None:  # the base is a generator of its own, consumed not written
+            nodes.append(
+                tracker.Generator(
+                    ("SELECT", tuple(tables[blane]), brows),
+                    ("event", edges[c]),
+                    tracker.plane(r, m),
+                )
+            )
+            base = ("node", len(nodes) - 1)
+        nodes.append(tracker.Generator(t, ("event", edges[c]), tracker.relative(r, op, base, m)))
     return tracker.Graph(nodes, classes=acc.classes), residual
 
 
@@ -513,7 +581,12 @@ def _gt_probe_class():
 
         def _vibrato(self, chan, idx):
             super()._vibrato(chan, idx)
-            self.src[self._voice(chan)]["freq"] = (("vibrato", None), idx, 0)
+            left = self._ltable[gtc.STBL][(idx - 1) & 0xFF] if idx else 0x80
+            self.src[self._voice(chan)]["freq"] = (
+                (("stbl", "right"), (idx - 1) & 0xFF, -1 if chan.vibtime & 1 else 1)
+                if idx and left < 0x80  # bit 7 computes the step off the note interval
+                else (("vibrato", None), idx, 0)
+            )
 
         def _filter_routine(self):
             # pylint: disable=attribute-defined-outside-init
@@ -572,6 +645,7 @@ def _gt_tables(song, adparam, freq_table, vol0=0x0F):
     ):
         tables[(key, "left")] = tuple(b & 0xFF for b in tab.left)
         tables[(key, "right")] = tuple(b & 0xFF for b in tab.right)
+    tables[("stbl", "right")] = tuple(b & 0xFF for b in song.speedtable.right)
     tables[("wtbl", "silent")] = tuple(b & 0x0F for b in song.wavetable.left)
     tables[("ftbl", "type")] = tuple(b & 0x70 for b in song.filtertable.left)
     data, base, cur = [], [], 0
@@ -634,7 +708,10 @@ def gt_native(song, info, subtune, nframes, adparam=None):
 
 
 def _gt_freq_cells(regs, base, freq, cells):
-    """freq_lo/freq_hi: the pitch table at a note row, or a portamento RAMP."""
+    """freq_lo/freq_hi: the pitch table at a note row, a portamento RAMP, or a vibrato step.
+
+    Vibrato adds or subtracts one speedtable byte to the frequency the plane already
+    holds, which is the relative route over ``Prev``; the high byte moves only on carry."""
     for off, lane in ((0, ("pitch", "lo")), (1, ("pitch", "hi"))):
         val = regs[base + off]
         if freq and freq[0] == ("pitch", None):
@@ -644,6 +721,12 @@ def _gt_freq_cells(regs, base, freq, cells):
                 Cell("ramp", ("pitch", "lo"), freq[1], val, freq[2] & 0xFF)
                 if off == 0
                 else Cell("raw", ("porta", "carry"), 0, val, 0)
+            )
+        elif freq and freq[0] == ("stbl", "right"):
+            cells[base + off] = (
+                Cell("rel", ("stbl", "right"), freq[1], val, freq[2])
+                if off == 0
+                else Cell("raw", ("vibrato", "carry"), 0, val, 0)
             )
         else:
             cells[base + off] = Cell("raw", freq[0] if freq else ("ghost", "freq"), 0, val, 0)
@@ -890,19 +973,40 @@ def _sw_ctrl(voice, tables, base, num):
     return Cell("raw", ("ghost", "ctrl"), 0, val, 0)
 
 
-def _sw_cells(player, tables, base, cells):
-    """One frame's voice registers, each named by the lane the player's state holds."""
+def _sw_detune_row(voice, tables, base, num, held):
+    """The instrument program's row whose detune column holds this voice's detune byte.
+
+    The row is the editor's own pointer, held across the frames the byte still stands;
+    ``$FF`` is the model's "inherit" marker and a zero offset predicts nothing."""
+    prog, want = tables[("wf", "left")], voice.detune & 0xFF
+    if want in (0, 0xFF) or not 0 <= num < len(base):
+        return None
+    for cand in (voice.wf_pos - 3, voice.wf_pos):
+        row = base[num] + cand + 2
+        if base[num] <= row < len(prog) and prog[row] == want:
+            held["det"] = row
+    row = held.get("det")
+    return row if row is not None and row < len(prog) and prog[row] == want else None
+
+
+def _sw_cells(player, tables, base, held, cells):
+    """One frame's voice registers, each named by the lane the player's state holds.
+
+    freq_lo is the pitch lane plus the instrument program's detune byte — a second
+    generator's value, combined by the driver's own 8-bit add (§4.2)."""
     for idx, voice in enumerate(player.voices):
         reg, num = 7 * idx, (voice.instrument_idx or 0) - 1
         span = len(tables[("pitch", "lo")]) - 1
         note = max(0, min(span, voice.note + voice.transpose + voice.octave_shift))
+        drow = _sw_detune_row(voice, tables, base, num, held.setdefault(idx, {}))
         for off, lane in ((0, ("pitch", "lo")), (1, ("pitch", "hi"))):
             val = voice.sid_freq_lo if off == 0 else voice.sid_freq_hi
-            cells[reg + off] = (
-                Cell("select", lane, note, val, 0)
-                if tables[lane][note] == val
-                else Cell("raw", ("detune", "vibrato"), 0, val, 0)
-            )
+            if tables[lane][note] == val:
+                cells[reg + off] = Cell("select", lane, note, val, 0)
+            elif off == 0 and drow is not None:
+                cells[reg + off] = Cell("rel", ("wf", "left"), drow, val, 1, _FULL, (lane, note))
+            else:
+                cells[reg + off] = Cell("raw", ("detune", "vibrato"), 0, val, 0)
         _sw_pulse(voice, tables, base, num, cells, reg)
         cells[reg + _CTRL] = _sw_ctrl(voice, tables, base, num)
         for off, val, name in ((5, voice.sid_ad, "ad"), (6, voice.sid_sr, "sr")):
@@ -941,7 +1045,7 @@ def sw_native(swm, nframes):
         frames.append(got)
         shape.append(tuple(r for r, _x in got))
         cells = {}
-        _sw_cells(player, tables, base, cells)
+        _sw_cells(player, tables, base, held, cells)
         cells[0x15] = Cell("raw", ("ghost", "filter"), 0, player.filter_cutoff_lo & 0xFF, 0)
         cells[0x16] = Cell("raw", ("ghost", "filter"), 0, player.filter_cutoff_hi & 0xFF, 0)
         _sw_filter_cells(player, tables, fbase, held, cells)
