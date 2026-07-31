@@ -121,8 +121,10 @@ tunes** — 2 sites each on 14 tunes and **zero on the other 55** — and those 
 **precisely** the 14 whose orderlists and patterns pair. The correspondence between
 "rung (f) proved this driver's deref" and "the arrangement has a (region, cursor) pair" is
 one to one, with no exception in either direction. This is docs/tracker.md §7.4's wall
-arriving from a third direction, now sized against the composer's own object list: it is
-the **only** thing between 85.6% and 100%.
+arriving from a third direction, now sized against the composer's own object list: **220
+of the 239 unpaired objects** are the four arrangement objects on the 55 tunes where
+rung (f) resolves nothing. The other 19 are (d): `stbl.right` on 18 tunes and
+`ptbl.left` on one.
 
 **(b) A declared region is shifted and short relative to the object it holds.** The
 driver addresses a 1-based table as `lda tbl-1,x`, so `datadecl`'s region base is the
@@ -215,7 +217,8 @@ Only after that does the arrangement matter, and its price is already known: it 
 change from the object side, and §3(a)'s one-to-one split says the lever is rung (f)
 itself: where it resolves, the arrangement already pairs (14/14); where it does not, it
 never does (0/55). Widening rung (f) past 28 sites — not a new generator shape — is what
-takes GoatTracker's object coverage from 85.6% to 100%.
+takes 220 of the remaining 239 unpaired objects, and GoatTracker's object coverage from
+85.6% to 98.9%.
 
 ## 5. A tool dependency that produced nothing
 
