@@ -147,12 +147,48 @@ CORPUS = [
 ]
 
 
+PINNED = (  # named by a test; always resolved, since a cap that drops one drops its
+    "MUSICIANS/D/Daglish_Ben/Artura.sid",  # assertions silently. Guarded by
+    "MUSICIANS/D/Daglish_Ben/Krakout.sid",  # test_corpus_selection.py.
+    "MUSICIANS/F/Follin_Tim/Bionic_Commando.sid",
+    "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
+    "MUSICIANS/G/Galway_Martin/Athena.sid",
+    "MUSICIANS/G/Goto80/Automatas.sid",
+    "MUSICIANS/H/Hubbard_Rob/Commando.sid",
+    "MUSICIANS/L/Linus/64_Forever.sid",
+    "MUSICIANS/S/Slaygon/A_Lot_of_Coke_part_8.sid",
+)
+
+
+def _by_composer(rels):
+    """One tune per composer in turn, so any prefix spans the corpus.
+
+    ``CORPUS`` is grouped by composer, so a plain prefix samples the first few
+    composers only; the diversity its own docstring claims comes from this."""
+    from itertools import zip_longest
+    from pathlib import PurePath
+
+    groups = {}
+    for rel in rels:
+        groups.setdefault(PurePath(rel).parent.name, []).append(rel)
+    return [r for turn in zip_longest(*groups.values()) for r in turn if r]
+
+
+def selection(limit):
+    """The relpaths a run covers: every pinned tune, then ``limit`` sampled ones.
+
+    ``limit`` bounds the sweep, not the total: a named tune's assertions must run on
+    every PR, so pinning cannot be something a cap silently takes away."""
+    rest = [r for r in CORPUS if r not in set(PINNED)]
+    return list(PINNED) + (_by_composer(rest)[:limit] if limit else rest)
+
+
 def corpus_params(hvsc):
     """``[(path, subtune, secs)]`` at full Songlengths duration, or ``[]``.
 
     Empty without ``Songlengths.md5``, which keeps the hermetic job hermetic; the
     ``corpus`` job fetches it, so THAT job is the evidence. ``DI_CORPUS_LIMIT``
-    caps the count; ``CORPUS`` is composer round-robin so a prefix stays diverse."""
+    bounds the sampled sweep; ``PINNED`` tunes are always present."""
     import os
     from pathlib import Path
 
@@ -168,7 +204,7 @@ def corpus_params(hvsc):
     lengths = song_lengths(songlengths.read_text(encoding="latin-1"))
     limit = int(os.environ.get("DI_CORPUS_LIMIT") or 0)
     out = []
-    for rel in CORPUS[:limit] if limit else CORPUS:
+    for rel in selection(limit):
         path = resolve_tune(rel, cache_dir=hvsc)
         if path is None:
             continue
