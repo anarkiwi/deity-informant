@@ -582,9 +582,14 @@ def _trig(graph, g):
 
 def _route(g):
     """Where a node's emits go, in musical terms: a register's part, or one field of it."""
-    if g.route[0] == "plane":
-        return "-> " + _role(g.route[1], tracker._mask_of(g.route))
-    return "-> " + ("triggers" if g.route[0] == "fire" else "unexplained writes")
+    if tracker._is_plane(g.route):
+        role = _role(g.route[1], tracker._mask_of(g.route))
+        return "-> " + (role + ", as an offset" if g.route[0] == "rel" else role)
+    if g.route[0] == "fire":
+        return "-> triggers"
+    if g.route == tracker.INDEX:
+        return "-> the row another generator reads"
+    return "-> unexplained writes"
 
 
 def _fires_str(counts, cap=4):
@@ -622,7 +627,7 @@ def _select_lines(g, key, tabs, n_emits, cap=8):
 def _lookup_str(g, n_emits):
     """A ``LOOKUP``: one constant said in its own field's terms, or a sequence."""
     seq = g.transfer[1]
-    if len(seq) == 1:
+    if len(seq) == 1 and tracker._is_plane(g.route):  # an index source names no register
         mask = tracker._mask_of(g.route)
         what = (
             _field_str(g.route[1], mask, seq[0]) if mask != _FULL else _byte_str(g.route[1], seq[0])

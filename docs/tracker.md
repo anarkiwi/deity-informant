@@ -53,7 +53,9 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n)                  # one tick per n input triggers (a clock)
            | LOOKUP(seq)             # emit seq[i]; i advances per trigger
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
-                                     #   rows = a recovered run, or Node(j): generated
+  rows     : (a recovered run)       # the row indices observation yields
+           | Node(j)                 # generated: the row generator j holds
+           | Rel(op, j, base)        # generated and shifted: op(base, j) -- a transpose
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
@@ -114,6 +116,18 @@ earlier `Index`-routed node — the value edge runs the way node order already r
 no cycle can form — and an `Index` route no generator reads is refused as dead. An
 index past the end of its table emits nothing, so a mis-built arrangement drops a
 write and the law says so rather than wrapping to a row nobody proved.
+
+A row may be **relative**, for the same reason a plane route may be: an editor's
+transpose shifts the row a pitch table is read at rather than the byte it yields, so
+an absolute index cannot carry it. Measured across the three oracles, an absolute-only
+index refuses **6953 emits over 23 of 141 modules** — GoatTracker's orderlist
+`Transpose` 1690 (2.02% of its freq plane), SID-Wizard's `Transpose`/`octave_shift`
+4738 (6.99%), DefMON's `TR` 525 (7.29%) — every one an emit whose note column *is* the
+composer's datum, held back only by a declared shift. The same object combines two
+index sources, which is what an orderlist entry plus a row within it needs. The
+operation is the store's own (`ADD`/`SUB`/`XOR`, the `Rel` set); both halves must be
+earlier `Index` nodes or a declared constant; a shifted row past the end of its table
+emits nothing, exactly as an absolute one does.
 
 **The loop needs no machinery**: `LOOKUP` and `SELECT` already advance modulo their
 length, so an orderlist wraps to its first entry by construction. What §7.4 called a

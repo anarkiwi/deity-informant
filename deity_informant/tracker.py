@@ -152,17 +152,33 @@ def _fired(nodes, frame):
 
 def _generated(rows):
     """Is this row source another generator's emit rather than a recovered run?"""
-    return len(rows) == 2 and rows[0] == "node"
+    return bool(rows) and rows[0] in ("node", "rel")
+
+
+def _sources(rows):
+    """Node indices a generated row source reads, in evaluation order."""
+    if not _generated(rows):
+        return ()
+    if rows[0] == "node":
+        return (rows[1],)
+    _k, _op, j, base = rows
+    return (j, base[1]) if base[0] == "node" else (j,)
 
 
 def _row(rows, count, cur):
     """The row a ``SELECT`` reads: recovered at its own tick, or another's emit.
 
-    A generated row is whatever the named generator currently holds; a source that
-    has not emitted yet supplies nothing, so the read is dropped rather than guessed."""
-    if _generated(rows):
+    A generated row is what the named generator holds, optionally shifted by a
+    declared base — a transpose is a row offset, not a byte. A source that has not
+    emitted yet supplies nothing, so the read is dropped rather than guessed."""
+    if not _generated(rows):
+        return rows[(count - 1) % len(rows)]
+    if rows[0] == "node":
         return cur.get(rows[1])
-    return rows[(count - 1) % len(rows)]
+    _k, op, j, base = rows
+    delta = cur.get(j)
+    val = base[1] if base[0] == "const" else cur.get(base[1])
+    return None if delta is None or val is None else _REL[op](val, delta)
 
 
 def _emit(g, count, cur=()):
@@ -214,14 +230,16 @@ def _index_ok(nodes, i, g):
     same way node order already runs and no cycle can form. An ``index`` route with
     no reader is refused too: a generator that neither writes nor is read is dead."""
     if g.transfer[0] == "SELECT" and _generated(g.transfer[2]):
-        j = g.transfer[2][1]
-        if not isinstance(j, int) or not 0 <= j < i:
-            raise TrackerError("row source %r is not an earlier node" % (j,))
-        if nodes[j].route != INDEX:
-            raise TrackerError("row source node %d does not route to an index" % (j,))
+        rows = g.transfer[2]
+        if rows[0] == "rel" and rows[1] not in _REL:
+            raise TrackerError("unknown relative row operation %r" % (rows[1],))
+        for j in _sources(rows):
+            if not isinstance(j, int) or not 0 <= j < i:
+                raise TrackerError("row source %r is not an earlier node" % (j,))
+            if nodes[j].route != INDEX:
+                raise TrackerError("row source node %d does not route to an index" % (j,))
     if g.route == INDEX and not any(
-        h.transfer[0] == "SELECT" and _generated(h.transfer[2]) and h.transfer[2][1] == i
-        for h in nodes
+        h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]) for h in nodes
     ):
         raise TrackerError("index route on node %d has no reader" % (i,))
 
