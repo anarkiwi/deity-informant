@@ -107,8 +107,10 @@ class _Code:
     ``call``/``goto`` cross procedures as machine transfers, so locals are
     program-wide (registers are shared, temporaries never outlive a block)."""
 
-    def __init__(self, prog):
+    def __init__(self, prog, watch=()):
         self.mem0 = prog.mem0
+        self.watch = {id(s): i for i, s in enumerate(watch)}
+        self.tagged = set()
         self.ops = []
         self.idx = {}
         self.pcmap = {}
@@ -127,6 +129,8 @@ class _Code:
         for i, pc in self.barefix:
             self.ops[i][1][pc] = self._link(pc)
         self.rmap = {**self.conts, **self.pcmap}
+        if len(self.tagged) != len(self.watch):
+            raise FrameFault("watched statement outside the program")
 
     def mark(self, pc, i=None):
         """Bind a serialized pc to an op index (sidprog's pcmap, first wins)."""
@@ -194,11 +198,21 @@ class _Code:
     def _s_label(self, s, _ctx):
         self.mark(s[1])
 
+    def tag(self, s):
+        """Index of ``s`` in the caller's watch list, or None where it named none.
+
+        Identity, not equality: two identical statements in different procedures
+        are different sites, and a watch the program never compiles is a fault."""
+        i = self.watch.get(id(s))
+        if i is not None:
+            self.tagged.add(i)
+        return i
+
     def _s_asg(self, s, _ctx):
-        self.emit(("asg", self.slot(s[1]), self.expr(s[2]), self.deriv(s[2])))
+        self.emit(("asg", self.slot(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
 
     def _s_st(self, s, _ctx):
-        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2])))
+        self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
 
     def deriv(self, val):
         """``(address closure, taint slots)``: where a stored byte may be copied from.
@@ -251,7 +265,7 @@ class _Code:
     def _s_for(self, s, _ctx):
         _k, name, init, last, body = s
         i = self.slot(name)
-        self.emit(("asg", i, lambda r, m, rd, v=init: v, (None, ())))
+        self.emit(("asg", i, lambda r, m, rd, v=init: v, (None, ()), None))
         head = len(self.ops)
         conts, brks = [], []
         self.seq(body, (conts, brks))
@@ -399,9 +413,10 @@ def _derived(d, r, m, rd, prov, ploc):
 class Evaluator:
     """Executes a ``FrameProgram`` frame by frame against a pinned ``iota``."""
 
-    def __init__(self, prog, trace, state0=None, sources=False):
-        self.code = _Code(prog)
+    def __init__(self, prog, trace, state0=None, sources=False, watch=()):
+        self.code = _Code(prog, watch)
         self.srcs = [] if sources else None
+        self.watched = [] if sources else None
         self.prov = {} if sources else None
         self.ploc = {} if sources else None
         self.m = bytearray(prog.mem0 if state0 is None else state0)
@@ -461,10 +476,11 @@ class Evaluator:
             r[self.acc] = 0
             if ploc is not None:
                 ploc.pop(self.acc, None)
-        srcs = None
+        srcs = wat = None
         if self.srcs is not None:
-            srcs = []
+            srcs, wat = [], []
             self.srcs.append(srcs)
+            self.watched.append(wat)
         start = r[s] & 0xFF
         push(0x0001)
         buf, stack, dyn, pc, n = [], [], 0, self.play, 0
@@ -475,6 +491,8 @@ class Evaluator:
             if k == "asg":
                 r[op[1]] = op[2](r, m, rd)
                 if prov is not None:
+                    if op[4] is not None:
+                        wat.append((op[4], None, _derived(op[3], r, m, rd, prov, ploc)))
                     _bind(ploc, op[1], _copy(op[3], r, m, rd, prov, ploc))
             elif k == "st":
                 a = op[1](r, m, rd)
@@ -484,6 +502,8 @@ class Evaluator:
                     if prov is not None:
                         srcs.append(_derived(op[3], r, m, rd, prov, ploc))
                 elif prov is not None:  # a one-cell value carries that cell's origin on
+                    if op[4] is not None:
+                        wat.append((op[4], a, _derived(op[3], r, m, rd, prov, ploc)))
                     _bind(prov, a, _copy(op[3], r, m, rd, prov, ploc))
             elif k == "br":
                 if bool(op[1](r, m, rd)) is op[2]:
@@ -575,6 +595,16 @@ def eval_src(prog, trace, nframes, state0=None):
     the byte is computed rather than copied."""
     ev = Evaluator(prog, trace, state0, sources=True)
     return ev.frames(nframes), ev.srcs
+
+
+def eval_watch(prog, trace, nframes, watch, state0=None):
+    """``(writes, source cells, watched stores)``: ``eval_src`` plus named non-SID stores.
+
+    ``watch`` is a sequence of ``asg``/``st`` statements; ``watched[f]`` lists
+    ``(index into watch, cell or None, source cells)`` per execution, in order —
+    a snapshot names a re-staged cell's last row, not each read's (spec 1.4)."""
+    ev = Evaluator(prog, trace, state0, sources=True, watch=watch)
+    return ev.frames(nframes), ev.srcs, ev.watched
 
 
 def gate_fp(model, nframes, prog=None):

@@ -203,6 +203,88 @@ def test_eval_src_forgets_a_cell_the_return_address_overwrote():
     assert srcs == [[(0x01FC,), (0x0803, 0x00C0)]]
 
 
+def _row(k=0):
+    idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
+    return ("mem", ("op", "INT_ADD", (("const", 0x0800 + k, 2), idx), 2), 1)
+
+
+def _accum(stage, cell=0x00C0, acc=0x00D0):
+    """Stage a step byte, add it to a RAM accumulator in a register, flush to pw."""
+    return [
+        _staged(cell, stage),
+        ("asg", "a", ("op", "INT_ADD", (_cell(acc), _cell(cell)), 1)),
+        _staged(acc, ("loc", "a")),
+        ("st", ("const", 0xD402, 2), _cell(acc)),
+    ]
+
+
+def test_eval_watch_names_a_step_no_sid_store_ever_reads():
+    """The map answers for a named statement where the write's own provenance cannot.
+
+    The step is staged in RAM from a table row and added in a register, so the pw
+    write reports the accumulator cell and nothing declared behind it."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803] = 0x16
+    stmts = [("asg", "i", ("const", 3, 1))] + _accum(_row()) + [("ret", False)]
+    prog = _prog(stmts, mem0=mem0)
+    frames, srcs, wat = frameval.eval_watch(prog, {}, 2, [stmts[2]])
+    assert frames == [[(2, 0x16)], [(2, 0x2C)]]
+    assert srcs == [[(0x00D0,)]] * 2
+    assert wat == [[(0, None, (0x00D0, 0x0803, 0x00C0))]] * 2
+
+
+def test_eval_watch_reports_no_origin_for_a_step_the_play_code_computed():
+    """Refusal: a staging cell whose byte derives from two cells carries no origin."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803], mem0[0x0804] = 0x16, 0x03
+    stage = ("op", "INT_OR", (_row(0), _row(1)), 1)
+    stmts = [("asg", "i", ("const", 3, 1))] + _accum(stage) + [("ret", False)]
+    frames, _srcs, wat = frameval.eval_watch(_prog(stmts, mem0=mem0), {}, 2, [stmts[2]])
+    assert frames == [[(2, 0x17)], [(2, 0x2E)]]
+    assert wat == [[(0, None, (0x00D0, 0x00C0))]] * 2
+
+
+def test_eval_watch_answers_per_execution_not_per_frame_or_at_the_end():
+    """Granularity: one staging cell re-staged twice a frame and again the next.
+
+    A per-frame snapshot names the frame's last row for both steps and an
+    end-of-run snapshot the last row of all; the per-execution record is exact."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0800:0x0804] = bytes((1, 2, 3, 4))
+    bump = ("op", "INT_ADD", (("loc", "i"), ("const", 1, 1)), 1)
+    stmts = (
+        [("asg", "i", _cell(0x00C8))]
+        + _accum(_row())
+        + [("asg", "i", bump)]
+        + _accum(_row())
+        + [_staged(0x00C8, ("op", "INT_ADD", (_cell(0x00C8), ("const", 2, 1)), 1)), ("ret", False)]
+    )
+    watch = [stmts[2], stmts[7]]
+    frames, _srcs, wat = frameval.eval_watch(_prog(stmts, mem0=mem0), {}, 2, watch)
+    assert frames == [[(2, 1), (2, 3)], [(2, 6), (2, 10)]]
+    assert [[(i, r[1]) for i, _c, r in fr] for fr in wat] == [
+        [(0, 0x0800), (1, 0x0801)],
+        [(0, 0x0802), (1, 0x0803)],
+    ]
+
+
+def test_eval_watch_changes_no_value_write_or_record():
+    """Annotation only: the projection and the source cells are byte-identical.
+
+    A statement the caller did not name records nothing."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803] = 0x16
+    stmts = [("asg", "i", ("const", 3, 1))] + _accum(_row()) + [("ret", False)]
+    prog = _prog(stmts, mem0=mem0)
+    frames, srcs, wat = frameval.eval_watch(prog, {}, 3, [stmts[0]])
+    assert (frames, srcs) == frameval.eval_src(prog, {}, 3)
+    assert F.diff(F.canonical(frames), frameval.eval_fp(prog, {}, 3)) is None
+    assert wat == [[(0, None, ())]] * 3
+    assert frameval.eval_watch(prog, {}, 3, ())[2] == [[]] * 3
+    with pytest.raises(FrameFault):  # an equal statement is not the same site
+        frameval.eval_watch(prog, {}, 3, [tuple(list(stmts[0]))])
+
+
 _MUT = [(4, 0x10), (4, 0x11), (0, 0x22), (1, 0x33)]
 
 
