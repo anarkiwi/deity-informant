@@ -85,9 +85,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   lane read at a recovered row, fired by the voice's note-on `EDGE`. For `ctrl`
   the same lane also supplies the gate images, so the waveform is declared data
   and only bit 0 moves.
-- **freq/pw `SELECT` per register** (§4b) — the last-write-wins planes,
+- **freq/pw/filter `SELECT` per register** (§4b) — the last-write-wins planes,
   transliterated from the store statement: where the value expression names a
   declared table, the emit is that table's lane at the row the read cell recovers.
+  $15-$18 are one global filter, so they take a register class of their own.
 - **pw `RAMP` per accumulator** (§4c) — the pulse sweep. Where the pw store reads
   a cell the play code steps by a declared byte, the sweep is generated from that
   byte: one observed seed, then every further emit predicted.
@@ -98,7 +99,7 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   ctrl/AD/SR store.
 
 Every `ctrl` write whose byte never reaches a declaration renders from `RAW`, and
-so does every freq/pw write whose store statement names none. The coverage numbers
+so does every freq/pw/filter write whose store statement names none. The coverage numbers
 in §6 say so plainly; nothing is claimed that a generator does not reproduce.
 
 ## 4. Pitch recovery from declared tables
@@ -152,10 +153,10 @@ those srcs costs 2834 interpreted emits on the instrument planes (`sr` −1512,
 
 ## 4b. The last-write-wins planes: the table the store statement names
 
-freq and pw are last-write-wins, so a frame's value stands on its own and there is
-no all-or-nothing register rule to lean on. What replaces it is the **statement
-tree**: `_tree_tables` reads, per register class, the declarations the program text
-stores into that class, and only those are eligible.
+freq, pw and the $15-$18 filter tail are last-write-wins, so a frame's value stands
+on its own and there is no all-or-nothing register rule to lean on. What replaces it
+is the **statement tree**: `_tree_tables` reads, per register class, the declarations
+the program text stores into that class, and only those are eligible.
 
 - **The store names the table.** A store's value expression is walked with its
   locals resolved to their in-procedure definitions and a staged byte followed
@@ -170,6 +171,14 @@ stores into that class, and only those are eligible.
   lane's `EDGE`; the rest fall through to the note lane (§4) or stay in `RAW`. A
   declared lane outranks the note reading of the same byte, since the note reading
   emits the *observed* word and the lane emits a *declared* one.
+- **The filter is its own register class** (`_class_of`, `_sid_class`). A voice store
+  site is keyed by `reg % 7`, because one voice-generic site serves all three voices;
+  $15-$18 are one global filter and that key would alias them onto freq_lo/freq_hi/
+  pw_lo/pw_hi, so a table a pw store names would explain a resonance write. They take
+  a class of their own instead. Nothing else about the plane differs —
+  `framelog.canonical` already projects $15-$18 last-write-wins in a section of their
+  own (docs/frameprog.md §1.1) — so the same `_lww_streams` reads them, and the sweep
+  of §4c and the held rows of §5 stay per voice and skip them.
 
 On Commando `sid.v1.freq_hi[w9] = m_5429[t5]` and its `freq_lo` partner become two
 `SELECT` nodes over the `+1` and `+0` lanes of the declared `m_5428[192] stride 2`
@@ -518,6 +527,84 @@ is the tracker's own all-or-nothing-per-register rule (§5) and its order check,
 not provenance. `filter` at 11.5% is the opposite reading: even named perfectly,
 most filter writes are not declared-table reads.
 
+### The filter plane, and the 8% of it that is a declared-table read
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (646 decompile), against
+the table above. $15-$18 join §4b's last-write-wins planes under a register class of
+their own; no other rule changes.
+
+| plane | before | after |
+|---|---|---|
+| interpreted | 557052/1933877 = 28.80% | **576085/1933877 = 29.79%** |
+| filter | 0/240694 = 0% | **19033/240694 = 7.91%** |
+
+Every one of the 19033 is `lane` class — a declared byte at the row the read cell
+recovers — and **no other plane changes by a single emit**: freq, pw, ctrl, ad and sr
+are byte-identical per tune, as is every other tune's class split. 184 tunes improve,
+**none regress**, and 3 have the whole filter plane explained. The canonical fixpoint,
+Gate FP and the tracker law all hold 646/646, unchanged.
+
+The gain is exactly the ceiling this rule can reach, and the ceiling is the story.
+Per register, over the plane's own denominator — the record after last-write-wins,
+which is what `RAW` counts and what the 240694 above is (the 27785 in the table before
+this one counts every write instead, so it is not the same basis):
+
+| register | emits | names a declared byte | the tree names the table | a program constant |
+|---|---|---|---|---|
+| $15 cutoff lo | 24151 | 247 (1.0%) | 40 (0.2%) | 2361 |
+| $16 cutoff hi | 87533 | 7882 (9.0%) | 7033 (8.0%) | 7907 |
+| $17 resonance/routing | 54771 | 15642 (28.6%) | **10642 (19.4%)** | 2498 |
+| $18 mode/volume | 74239 | 2321 (3.1%) | 1318 (1.8%) | 21411 |
+| **all** | **240694** | **26092 (10.8%)** | **19033 (7.9%)** | **34177** |
+
+Two things are refused, and both are named rather than folded away. The 7059-emit gap
+between the third column and the fourth is what a blind search over every declaration
+would take; on the lww planes the store statement naming the table is the only
+admissible basis (§4b), so those stay residual. The last column is the shallow figure
+this step does **not** claim: 34177 filter emits write a byte the program text stores
+as a constant, over half of them $18, and an `imm` `LOOKUP` would pass the law for
+every one — but it explains no index, and on a register that takes many program
+constants it is the observation, not the program, choosing between them. The filter
+plane carries strong evidence only.
+
+Only **$17** is really a table plane: resonance and the routing mask are
+per-instrument bytes a bank holds, and 28.6% of them name one. Cutoff is not, and the
+split between its two bytes says why — the low byte that carries a sweep's precision
+names a declared byte 1.0% of the time against the high byte's 9.0%.
+
+How much of an index those 19033 rows carry is reported rather than assumed:
+**11461 (60.2%) read one declared cell for the whole tune** — a filter setting in const
+data, over 155 tunes — and **7572 read a lane at two or more rows**, over 43. Both are
+declared bytes at a row `frameval.eval_src` recovered and neither is fitted, but a
+fixed cell explains a value where a moving row also explains an index, so the two are
+not one figure. Per register the single-row share is $15 100%, $17 69%, $18 80% and
+$16 43%.
+
+Where the rest of the byte comes from says what the plane actually is:
+
+| register | computed | outside every declaration | at a `mut` offset | declared, byte moved | a declared lane |
+|---|---|---|---|---|---|
+| $15 cutoff lo | 2011 | 21651 | 173 | 69 | 247 |
+| $16 cutoff hi | 15042 | 59268 | 1868 | 3473 | 7882 |
+| $17 resonance/routing | 3787 | 28137 | 100 | 7105 | 15642 |
+| $18 mode/volume | 22197 | 32824 | 300 | 16597 | 2321 |
+| **all** | **43037 (17.9%)** | **141880 (58.9%)** | **2441 (1.0%)** | **27244 (11.3%)** | **26092 (10.8%)** |
+
+Three fifths of the plane loads a cell no declaration covers — a RAM cell — which is
+the answer `pw` gave and for the same reason: `eval_src` reports origins alongside SID
+store sources, so a parameter staged in RAM at init or at note-on arrives here
+unnameable. The shape confirms it is the same problem: **38872 emits (16%) sit in a
+constant-nonzero-delta run of two or more**, and 38817 of them are cutoff — 39% of the
+$16 emits and 21% of the $15 emits, against 0% of $17 and $18. Cutoff is an accumulator
+sweeping; resonance, routing and mode are settings. A further 11.3% loads a cell that
+*is* declared but no longer holds the byte that reached the register (#61), 16597 of
+them $18, where the low nibble is the volume DAC (docs/frameprog.md §1.2) and a
+declared mode nibble combined with a volume level is not a declared byte.
+
+So the ceiling for this step was ~8% and the step returns ~8%. Raising it is §7.2's
+query for RAM-staged parameters, not a filter generator: the filter plane is one more
+accumulator whose step, bound and rate the play code copied out of a table.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -554,9 +641,10 @@ supplies, rather than raising that ceiling further.
    be measured against — pw's declared-byte ceiling went 21085 → 87828 of 561585
    while its interpreted figure went 20452 → 63232, so the accumulator population
    must be re-counted before any generator work. `filter` is **not** part of this
-   step: its ceiling is 27785 of 240694 even with origins carried (§6), so most
-   filter writes are not declared-table reads and no provenance change reaches
-   them; a filter generator is its own step, with its own measurement.
+   step: its declared-table read is §4b's and has shipped (§6, the filter plane),
+   which leaves a residual with the same shape as pw's — a cutoff swept by an
+   accumulator whose parameters are staged in RAM, so the same query is what would
+   move it.
 2. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
@@ -598,6 +686,11 @@ supplies, rather than raising that ceiling further.
   same reason. Only the wrapping bound is implemented; a triangle sweep that turns
   around at a declared bound needs a transfer this primitive does not have, and no
   tune in the corpus reaches that limit before the step blocks it.
+- The filter plane is read by §4b and by nothing else: 77% of it loads a RAM cell or
+  computes the byte outright, so no declaration names it (§6). It is refused rather
+  than reached by an `imm` `LOOKUP` over the program's constants — that would take
+  34177 emits without explaining an index, and $18 in particular takes many program
+  constants, so it would be the observation choosing between them.
 - On the lww planes the *table* is transliterated but the *index* is not: the tree
   names `m_5429[t5]`, and `t5` is a live state value no static reading yields, so
   `frameval.eval_src` still recovers it. That index becomes explained when the
