@@ -1519,9 +1519,14 @@ take 29559 of them and is refused (§6).
   off the observed stream — worth 54557 emits — and an orderlist read off the blocks the
   run visited are both refused outright. What the route does **not** carry is a *relative*
   index: an orderlist transpose shifting a pattern's note index is `op(row, delta)` in the
-  index domain, which is `Rel` moved one domain over, and all three editors need it
-  (docs/gt-oracle.md §4.2, docs/dm-oracle.md §4.2). It is not added on a strong prior:
-  the oracles measure what an absolute-only index refuses first.
+  index domain, which is `Rel` moved one domain over. It was not added on a prior — the
+  oracles measured what an absolute-only index refuses first, and the answer is **6953
+  emits over 23 modules of 141**: GoatTracker's `Transpose` 1690 (5 of 71, 2.02% of its
+  freq plane), SID-Wizard's `Transpose` + `octave_shift` 4738 (15 of 64, 6.99%) and
+  DefMON's `TR` with bit 7 clear 525 (3 of 6, 7.29%). The orderlist is the same object
+  seen once more: `base(entry) + counter` is two index sources where `Node(j)` names one,
+  which is why the three editors' orderlist entries are represented structurally and not
+  as a generator. One extension closes both, and it is #102's.
 - A pitch table whose lo/hi block is never read at a constant base cannot be
   declared, so it cannot be recovered here — the one tune in the 60-tune sample
   that loses its table, `MUSICIANS/A/Aegis/2008.sid`, has no read site at its hi
