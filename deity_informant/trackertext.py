@@ -582,9 +582,14 @@ def _trig(graph, g):
 
 def _route(g):
     """Where a node's emits go, in musical terms: a register's part, or one field of it."""
-    if g.route[0] == "plane":
-        return "-> " + _role(g.route[1], tracker._mask_of(g.route))
-    return "-> " + ("triggers" if g.route[0] == "fire" else "unexplained writes")
+    if tracker._is_plane(g.route):
+        role = _role(g.route[1], tracker._mask_of(g.route))
+        return "-> " + (role + ", as an offset" if g.route[0] == "rel" else role)
+    if g.route[0] == "fire":
+        return "-> triggers"
+    if g.route == tracker.INDEX:
+        return "-> the row another generator reads"
+    return "-> unexplained writes"
 
 
 def _fires_str(counts, cap=4):
