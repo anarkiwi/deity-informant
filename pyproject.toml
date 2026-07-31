@@ -73,6 +73,7 @@ omit = [
     "tools/gt_compare.py",
     "tools/dm_compare.py",
     "tools/tracker_showcase.py",
+    "tools/tracker_text.py",
 ]
 
 [tool.black]
