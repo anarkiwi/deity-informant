@@ -228,3 +228,8 @@ file is gitignored, so a clean checkout cannot run the GoatTracker comparison at
 and records the verdict, fetching more tunes round-robin across composers first when asked.
 Over the 701 cached tunes it finds **72 GoatTracker**, which is the figure
 docs/gt-oracle.md §3 reports.
+
+The same gap exists one step further out and is *not* closed here: `.oracle-cache/swm`,
+which `tools/gt_compare.py` and `tests/test_gtoracle.py` both read, has no fetcher in the
+tree either. SID-Wizard modules are not redistributable the way an HVSC relpath is, so
+that one needs a source decision rather than a script.
