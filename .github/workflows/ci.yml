@@ -82,10 +82,12 @@ jobs:
     # Gate C (cycle-exact, full Songlengths) actually executes here. The hermetic
     # job cannot: corpus_params yields nothing without Songlengths.md5, and
     # fetching it there would make ~17 corpus-parametrized files non-hermetic.
-    # Per PR a diverse prefix of the composer round-robin runs; the nightly and
-    # manual runs take the whole manifest, where hours are acceptable. The whole
-    # suite runs, not a file list: 16 files parametrize off corpus_params, so a
-    # subset would leave the rest executing nowhere.
+    # Per PR every _corpus.PINNED tune runs plus DI_CORPUS_LIMIT sampled one per
+    # composer; the limit bounds the sweep, not the total, because a tune a test
+    # names must never be capped away (its assertions would then first fail on the
+    # push to main). Nightly and manual runs take the whole manifest, where hours
+    # are acceptable. The whole suite runs, not a file list: 16 files parametrize
+    # off corpus_params, so a subset would leave the rest executing nowhere.
     runs-on: ubuntu-latest
     timeout-minutes: 330
     steps:
