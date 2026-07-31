@@ -219,6 +219,15 @@ composer object, 85.6% of the objects paired and 89.6% of the editor's nodes on 
 object — with the residual concentrated in one place, the arrangement, whose cause
 (docs/tracker.md §7.4) was already named.
 
+**Corrected — this recommendation was built and measured, and it moves nothing.** The
+pairs turn out to be one to one with the lane keys the recovery already builds, so
+`graph_diff`'s matched count stays at 71 of 1648 and the value partition is byte-identical;
+keying the row on the cursor's *observed* value instead costs 26 of those 71, because only
+9.1% of pair emits have a cursor whose value anything but the output names. The pair is a
+better **name** for a node, not a finer partition. docs/tracker.md §4h is the change and
+§6 the measurement, including the ceiling: 795 of the editor's nodes are reachable by
+repartitioning at all, and 523 of those are trigger nodes.
+
 **Node-per-(region, cursor) is the right partition to build.** But the first concrete
 change is not the partition — it is the cursor's rows, and it is small.
 
