@@ -115,6 +115,21 @@ because its byte is computed rather than copied; and a pushed return byte drops
 the stack cells it lands on. Reporting is additive — the cell the value read is
 still there — so no reading a consumer had before is taken away.
 
+The map carries through the **locals** as well as through the cells. A driver
+stages a byte in a register and stores it a statement later (`a = bank[y]` …
+`ram[x] = a`), so a rule reading only the loads inside the store's own value
+expression drops the byte exactly where the tree shows no load at all — and the
+same rule drops the SID write whose value is that bare register. Every local
+therefore carries the cell its byte came from, bound where the local is assigned
+and dropped where the assigned value is computed rather than copied (a `for`
+range and the frame's accumulator reset drop it; a `pcall` binds each parameter
+from the argument's origin in the caller). A store's contributors are its read
+cells *and* the origins of the locals whose value it reads; the one-contributor
+rule is unchanged over that set, and the read cells still come first, so a
+consumer that ranks by position sees what it saw before. The evaluator's hop is
+exact where a static one is not: it binds one cell per assignment rather than a
+set of candidate definitions. Measured effect at the tracker: docs/tracker.md §6.
+
 This is annotation only: no value, no write and no record changes, so `eval_fp`
 and Gate FP are unaffected by construction. It does not weaken the #61
 invariant either — a declaration's const claim excludes every play-written
