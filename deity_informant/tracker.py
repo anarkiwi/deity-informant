@@ -52,6 +52,9 @@ def relative(reg, op, base, mask=_FULL):
     return ("rel", reg, mask, op, base)
 
 
+INDEX = ("index",)  # a value-carrying edge: the emit is another generator's row index
+
+
 def _mask_of(route):
     """The bits a plane route owns; a route that names none owns the byte."""
     if route[0] == "rel":
@@ -80,8 +83,19 @@ def ramp(seed, step, bound, trigger, reg, mask=_FULL):
 
 
 def select(table, rows, trigger, reg, mask=_FULL):
-    """Emit ``table[rows[i]]`` into a plane: a declared table read at a recovered row."""
+    """Emit ``table[rows[i]]`` into a plane: a declared table read at a row.
+
+    ``rows`` is a recovered run of row indices, or ``("node", j)`` — generator ``j``'s
+    emit, so the row is produced rather than observed (§7.4)."""
     return Generator(("SELECT", tuple(table), tuple(rows)), trigger, plane(reg, mask))
+
+
+def indexer(transfer, trigger):
+    """A generator whose emit is another's row index, writing no register itself.
+
+    The value counterpart of a Fire edge: ``Fire`` says *when* a downstream table
+    advances, this says *which row* it reads."""
+    return Generator(transfer, trigger, INDEX)
 
 
 def edge(counts):
@@ -136,7 +150,22 @@ def _fired(nodes, frame):
     return fires
 
 
-def _emit(g, count):
+def _generated(rows):
+    """Is this row source another generator's emit rather than a recovered run?"""
+    return len(rows) == 2 and rows[0] == "node"
+
+
+def _row(rows, count, cur):
+    """The row a ``SELECT`` reads: recovered at its own tick, or another's emit.
+
+    A generated row is whatever the named generator currently holds; a source that
+    has not emitted yet supplies nothing, so the read is dropped rather than guessed."""
+    if _generated(rows):
+        return cur.get(rows[1])
+    return rows[(count - 1) % len(rows)]
+
+
+def _emit(g, count, cur=()):
     """Value a plane-routed generator emits on its ``count``-th trigger."""
     kind = g.transfer[0]
     if kind == "LOOKUP":
@@ -144,7 +173,10 @@ def _emit(g, count):
         return seq[(count - 1) % len(seq)] if seq else None
     if kind == "SELECT":
         _k, table, rows = g.transfer
-        return table[rows[(count - 1) % len(rows)]] if rows else None
+        if not rows:
+            return None
+        i = _row(rows, count, cur or {})
+        return table[i] if i is not None and 0 <= i < len(table) else None
     if kind == "RAMP":
         _k, seed, step, bound = g.transfer
         raw_v = seed + step * (count - 1)
@@ -175,6 +207,25 @@ def _base_ok(nodes, i, reg, mask, base):
         raise TrackerError("relative base %r drives another field" % (base,))
 
 
+def _index_ok(nodes, i, g):
+    """Refuse a generated row index the graph cannot supply before it is read.
+
+    The source must be an earlier ``index``-routed node, so the value edge runs the
+    same way node order already runs and no cycle can form. An ``index`` route with
+    no reader is refused too: a generator that neither writes nor is read is dead."""
+    if g.transfer[0] == "SELECT" and _generated(g.transfer[2]):
+        j = g.transfer[2][1]
+        if not isinstance(j, int) or not 0 <= j < i:
+            raise TrackerError("row source %r is not an earlier node" % (j,))
+        if nodes[j].route != INDEX:
+            raise TrackerError("row source node %d does not route to an index" % (j,))
+    if g.route == INDEX and not any(
+        h.transfer[0] == "SELECT" and _generated(h.transfer[2]) and h.transfer[2][1] == i
+        for h in nodes
+    ):
+        raise TrackerError("index route on node %d has no reader" % (i,))
+
+
 def _check(nodes):
     """Refuse a graph that is not evaluable, masks and relative bases included.
 
@@ -187,8 +238,9 @@ def _check(nodes):
             raise TrackerError("unknown trigger %r" % (g.trigger,))
         if g.trigger[0] == "event" and not 0 <= g.trigger[1] < len(nodes):
             raise TrackerError("dangling trigger %r" % (g.trigger,))
-        if g.route[0] not in ("plane", "fire", "raw", "rel"):
+        if g.route[0] not in ("plane", "fire", "raw", "rel", "index"):
             raise TrackerError("unknown route %r" % (g.route,))
+        _index_ok(nodes, i, g)
         if not _is_plane(g.route):
             continue
         m = _mask_of(g.route)
@@ -283,11 +335,15 @@ def _run(graph, nframes):
                     rawn[reg] = rawn.get(reg, 0) + 1
                     writes.append((reg, val))
                     prev[reg] = val
+            elif g.route == INDEX:  # a value edge: it indexes, it does not write
+                for _t in range(fires[i]):
+                    counts[i] += 1
+                    cur[i] = _emit(g, counts[i], cur)
             elif _is_plane(g.route):
                 reg = g.route[1]
                 for _t in range(fires[i]):  # one emit per trigger, in order
                     counts[i] += 1
-                    cur[i] = v = _emit(g, counts[i])
+                    cur[i] = v = _emit(g, counts[i], cur)
                     if g.route[0] == "rel":
                         v = _combine(g.route, v, prev, cur)
                     if i in eaten:  # a base generator supplies a value, it does not write
