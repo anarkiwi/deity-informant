@@ -4,7 +4,7 @@ One primitive: a triggered generator ``(transfer, trigger, route)``; a tune is a
 graph of them. One law: the graph's canonical projection equals frameprog's under
 the same input trace. One input: a ``frameprog.FrameProgram``. See docs/tracker.md."""
 
-from collections import namedtuple
+from collections import Counter, namedtuple
 
 import numpy as np
 
@@ -30,7 +30,8 @@ _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _VOICE_HI = 0x14
 _FILTER_HI = 0x18
 _FULL = 0xFF  # the mask of a route that owns a register's whole byte
-_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask")
+_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel")
+_REL = {"ADD": lambda b, d: b + d, "SUB": lambda b, d: b - d, "XOR": lambda b, d: b ^ d}
 
 
 class TrackerError(ValueError):
@@ -43,9 +44,24 @@ def plane(reg, mask=_FULL):
     return ("plane", reg) if mask == _FULL else ("plane", reg, mask)
 
 
+def relative(reg, op, base, mask=_FULL):
+    """A relative plane route: the emit is a delta ``op`` combines with ``base``.
+
+    ``base`` is ``("prev",)`` (the plane's own previously emitted value), ``("node", i)``
+    (generator ``i``'s current value) or ``("const", c)`` (a declared base byte)."""
+    return ("rel", reg, mask, op, base)
+
+
 def _mask_of(route):
     """The bits a plane route owns; a route that names none owns the byte."""
+    if route[0] == "rel":
+        return route[2]
     return route[2] if len(route) > 2 else _FULL
+
+
+def _is_plane(route):
+    """Does this route write a SID register plane, absolutely or relatively?"""
+    return route[0] in ("plane", "rel")
 
 
 def div(n, trigger=FRAME):
@@ -136,20 +152,44 @@ def _emit(g, count):
     raise TrackerError("transfer %r has no value emit" % (kind,))
 
 
+def _base_ok(nodes, i, reg, mask, base):
+    """Refuse a relative route whose named base no earlier generator supplies.
+
+    Absolutes establish a register's byte and relatives apply to it in node order, so
+    the base must be settled before the delta arrives: ``("node", j)`` is an absolute
+    generator of the same field at ``j < i``, ``("prev",)`` needs any earlier writer."""
+    if base[0] == "const":
+        if not 0 <= base[1] <= _FULL:
+            raise TrackerError("relative base %r is not a byte" % (base,))
+        return
+    if base[0] == "prev":
+        if not any(
+            g.route[0] == "raw" or (g.route[0] == "plane" and g.route[1] == reg) for g in nodes[:i]
+        ):
+            raise TrackerError("relative route on $%02X has no previous value" % (reg,))
+        return
+    if base[0] != "node" or not 0 <= base[1] < i:
+        raise TrackerError("relative base %r is not an earlier node" % (base,))
+    g = nodes[base[1]]
+    if g.route[0] != "plane" or g.route[1] != reg or _mask_of(g.route) != mask:
+        raise TrackerError("relative base %r drives another field" % (base,))
+
+
 def _check(nodes):
-    """Refuse a graph that is not evaluable, masks of one register included.
+    """Refuse a graph that is not evaluable, masks and relative bases included.
 
     Two generators sharing a register must own the same bits or disjoint ones: a
-    partial overlap is two owners of one bit, which no order resolves."""
+    partial overlap is two owners of one bit, which no order resolves. A relative
+    route must further name a base an earlier generator settles (`_base_ok`)."""
     owned = {}
-    for g in nodes:
+    for i, g in enumerate(nodes):
         if g.trigger != FRAME and g.trigger[0] != "event":
             raise TrackerError("unknown trigger %r" % (g.trigger,))
         if g.trigger[0] == "event" and not 0 <= g.trigger[1] < len(nodes):
             raise TrackerError("dangling trigger %r" % (g.trigger,))
-        if g.route[0] not in ("plane", "fire", "raw"):
+        if g.route[0] not in ("plane", "fire", "raw", "rel"):
             raise TrackerError("unknown route %r" % (g.route,))
-        if g.route[0] != "plane":
+        if not _is_plane(g.route):
             continue
         m = _mask_of(g.route)
         if not 0 < m <= _FULL:
@@ -160,6 +200,10 @@ def _check(nodes):
                     "routes $%02X and $%02X overlap on $%02X" % (other, m, g.route[1])
                 )
         owned[g.route[1]].add(m)
+        if g.route[0] == "rel":
+            if g.route[3] not in _REL:
+                raise TrackerError("unknown relative operation %r" % (g.route[3],))
+            _base_ok(nodes, i, g.route[1], m, g.route[4])
 
 
 def _assemble(g, v, held, writes):
@@ -183,9 +227,24 @@ def _masked(nodes):
     """``{reg: [node index]}`` for the registers a masked route drives."""
     out = {}
     for i, g in enumerate(nodes):
-        if g.route[0] == "plane" and _mask_of(g.route) != _FULL:
+        if _is_plane(g.route) and _mask_of(g.route) != _FULL:
             out.setdefault(g.route[1], []).append(i)
     return out
+
+
+def _combine(route, delta, prev, cur):
+    """The byte a relative route writes: its delta, combined with the named base.
+
+    A base the graph has not settled yet emits nothing, so a mis-built relative stream
+    drops a write and the law says so rather than inventing a base."""
+    _k, reg, mask, op, base = route
+    if delta is None:
+        return None
+    if base[0] == "const":
+        val = base[1]
+    else:
+        val = cur.get(base[1]) if base[0] == "node" else prev.get(reg)
+    return None if val is None else _REL[op](val & mask, delta) & 0xFF
 
 
 def _run(graph, nframes):
@@ -200,10 +259,19 @@ def _run(graph, nframes):
     interp, rawn, trig = {}, {}, {}
     parts = _masked(nodes)
     held = {reg: {} for reg in parts}
+    prev, cur = {}, {}
     out = []
     for f in range(nframes):
         fires = _fired(nodes, f)
-        last = {r: max((i for i in ns if fires[i]), default=None) for r, ns in parts.items()}
+        eaten = {
+            g.route[4][1]
+            for i, g in enumerate(nodes)
+            if fires[i] and g.route[0] == "rel" and g.route[4][0] == "node"
+        }
+        last = {
+            r: max((i for i in ns if fires[i] and i not in eaten), default=None)
+            for r, ns in parts.items()
+        }
         writes = []
         for i, g in enumerate(nodes):
             if not fires[i]:
@@ -214,14 +282,21 @@ def _run(graph, nframes):
                 for reg, val in rows[f] if f < len(rows) else ():
                     rawn[reg] = rawn.get(reg, 0) + 1
                     writes.append((reg, val))
-            elif g.route[0] == "plane":
+                    prev[reg] = val
+            elif _is_plane(g.route):
                 reg = g.route[1]
                 for _t in range(fires[i]):  # one emit per trigger, in order
                     counts[i] += 1
-                    v = _assemble(g, _emit(g, counts[i]), held.get(reg), i == last.get(reg))
+                    cur[i] = v = _emit(g, counts[i])
+                    if g.route[0] == "rel":
+                        v = _combine(g.route, v, prev, cur)
+                    if i in eaten:  # a base generator supplies a value, it does not write
+                        continue
+                    v = _assemble(g, v, held.get(reg), i == last.get(reg))
                     if v is None:
                         continue
                     interp[reg] = interp.get(reg, 0) + 1
+                    prev[reg] = v & 0xFF
                     writes.append((reg, v & 0xFF))
             else:
                 counts[i] += fires[i]
@@ -818,21 +893,32 @@ def _lane(key, mem0):
     return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
 
 
-def _lane_key(w, banks, mem0):
-    """``(stream key, row)`` for the first source cell reading a declared lane, else None.
+def _decl_cells(reg, srcs, banks, mem0):
+    """``[(stream key, row, declared byte)]`` for the source cells reading a declared lane.
 
-    The byte must equal the declared image byte, and the offset must not be one the
-    play phase writes: ``mut`` says that cell is not const data, so agreement with the
-    snapshot is coincidence rather than a const read."""
-    reg, val, srcs = w
+    The offset must not be one the play phase writes: ``mut`` says that cell is not const
+    data, so agreement with the snapshot is coincidence rather than a const read."""
+    out = []
     for src in srcs:
         for base, size, stride, mut in banks:
-            if not base <= src < base + size or mem0[src] != val:
+            if not base <= src < base + size:
                 continue
             if (src - base) % _record(size, stride) in mut:
                 continue
             row, off = divmod(src - base, stride)
-            return ("lane", reg, base, size, stride, off), row
+            out.append((("lane", reg, base, size, stride, off), row, mem0[src]))
+    return out
+
+
+def _lane_key(w, banks, mem0):
+    """``(stream key, row)`` for the first source cell reading a declared lane, else None.
+
+    The declared byte must equal the byte the register took, which is what makes the
+    emit a const read rather than a cell that merely happens to be indexed."""
+    reg, val, srcs = w
+    for key, row, byte in _decl_cells(reg, srcs, banks, mem0):
+        if byte == val:
+            return key, row
     return None
 
 
@@ -963,17 +1049,20 @@ def _refine_voice(seq, tabs, banks, imm, mem0):
     )
 
 
-def _classes(streams, groups=()):
+def _classes(streams, groups=(), rels=()):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
     and ``gate`` the same lane at the row the voice holds — both strong; ``ramp`` is
     an emit the accumulator's declared step generates. ``imm`` is a program constant,
-    ``seed`` the one observed byte a ramp starts from and ``mask`` a byte several
-    generators assemble field by field: none is ever folded into a strong figure."""
+    ``seed`` the one observed byte a ramp starts from, ``mask`` a byte several
+    generators assemble field by field and ``rel`` a declared delta over a live base:
+    none of the last four is ever folded into a strong figure."""
     out = {}
     for counts, _parts, reg in groups:
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["mask"] += sum(counts)
+    for counts, _t, reg, _op, _base in rels:
+        out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["rel"] += sum(counts)
     for counts, t, reg in streams:
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if t[0] == "RAMP":
@@ -1340,6 +1429,201 @@ def _mask_streams(lww, parts, tabs, mem0, done):
     return groups, explained
 
 
+# ---- 4f. the relative route: a declared delta over a base the statement names ------
+_REL_OPS = {"INT_ADD": "ADD", "INT_SUB": "SUB", "INT_XOR": "XOR"}
+Site = namedtuple("Site", "op base pool bpool")
+
+
+def _mirrors(prog):
+    """``{cell: {register class}}``: cells the text stores a register's own value into.
+
+    A non-SID store whose value expression is one a SID store of that class also writes
+    makes its cell that plane's mirror, so a later read of it *is* the previous emit."""
+    out = {}
+    for proc in prog.procs:
+        sid, cells = {}, {}
+        for s in _proc_stmts(proc):
+            if s[0] != "st":
+                continue
+            cls = _sid_class(s[1])
+            if cls is None:
+                cells.setdefault(s[2], set()).add(_base(s[1]))
+            else:
+                sid.setdefault(s[2], set()).add(cls)
+        for expr, clss in sid.items():
+            for cell in cells.get(expr, ()):
+                out.setdefault(cell, set()).update(clss)
+    return out
+
+
+def _term_role(term, env, envl, origins, banks):
+    """``("const", c)``, ``("decl", decls)``, ``("cell", bases)`` or ``("computed", ())``."""
+    root = _resolve(term, env)
+    if isinstance(root, tuple) and root[0] == "const":
+        return ("const", root[1] & _FULL)
+    got = _read_bases(term, envl, origins)
+    lanes = tuple(sorted({d for b in got if (d := _decl_of(b, banks)) is not None}))
+    if lanes:
+        return ("decl", lanes)
+    return ("cell", tuple(sorted(got))) if got else ("computed", ())
+
+
+def _is_mirror(term, env, cls, mirrors):
+    """Does ``term`` read, directly, a cell the text mirrors this register class into?"""
+    root = _resolve(term, env)
+    return isinstance(root, tuple) and root[0] == "mem" and cls in mirrors.get(_base(root[1]), ())
+
+
+def _rel_site(cls, root, roles, ctx, diag):
+    """The `Site` one binary-op store names, or None with the refusal it costs.
+
+    The base is the term the text names — a program constant, this plane's own mirror
+    cell, or a second declared lane — and the delta is the declared byte beside it."""
+    env, mirrors = ctx
+    op, (ka, va), (kb, vb) = _REL_OPS[root[1]], roles[0], roles[1]
+    if ka == "decl" and kb == "const":  # lane - c is lane + (-c): the base is the constant
+        neg = (-vb if op == "SUB" else vb) & _FULL
+        return Site("ADD" if op == "SUB" else op, ("const", neg), va, ())
+    if ka == "const" and kb == "decl":
+        return Site(op, ("const", va), vb, ())
+    mirror = [_is_mirror(t, env, cls, mirrors) for t in root[2]]
+    if mirror[0] and kb == "decl":
+        return Site(op, ("prev",), vb, ())
+    if mirror[1] and ka == "decl":
+        if op == "SUB":  # a declared lane minus the plane's own value is not base-op-delta
+            diag["rel_site_sub_order"] += 1
+            return None
+        return Site(op, ("prev",), va, ())
+    if ka == "decl" and kb == "decl":
+        return Site(op, ("gen",), vb, va)
+    diag["rel_site_unnamed_base" if "decl" in (ka, kb) else "rel_site_no_declared_term"] += 1
+    return None
+
+
+def _rel_sites(prog, banks, diag):
+    """``{register class: [Site]}``: the relative stores the program text names."""
+    mirrors, origins, out = _mirrors(prog), {}, {}
+    for s in _stmts(prog):
+        if s[0] == "st" and _sid_class(s[1]) is None:
+            origins.setdefault(_base(s[1]), []).append(s[2])
+    for proc in prog.procs:
+        env, envl = {}, {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+                envl.setdefault(s[1], []).append(s[2])
+                continue
+            cls = _sid_class(s[1]) if s[0] == "st" else None
+            if cls is None:
+                continue
+            root = _resolve(s[2], env)
+            if not (isinstance(root, tuple) and root[0] == "op" and root[1] in _REL_OPS):
+                continue
+            if len(root[2]) != 2:
+                diag["rel_site_not_binary"] += 1
+                continue
+            roles = [_term_role(t, env, envl, origins, banks) for t in root[2]]
+            got = _rel_site(cls, root, roles, (env, mirrors), diag)
+            if got is not None and got not in out.setdefault(cls, []):
+                out[cls].append(got)
+    return out
+
+
+def _relate(w, sites, mem0, prev, diag):
+    """``(site, delta cell, base cell)`` predicting this write, else None.
+
+    The delta is the declared byte at the cell the machine read and the base is the
+    named one; the write is claimed only where combining them *predicts* the byte the
+    register took. Nothing is solved for: a delta read back off the output is refused."""
+    reg, val, srcs = w
+    for site in sites:
+        if site.base[0] == "gen":
+            bases = _decl_cells(reg, srcs, site.bpool, mem0)
+        else:
+            got = site.base[1] if site.base[0] == "const" else prev
+            bases = () if got is None else ((None, 0, got),)
+        if not bases:
+            diag["rel_no_base"] += 1
+            continue
+        for cell in _decl_cells(reg, srcs, site.pool, mem0):
+            if not cell[2]:  # a zero delta predicts nothing, as DIV(1) and RAMP(0) do not
+                diag["rel_zero_delta"] += 1
+                continue
+            for base in bases:
+                if base[:2] != cell[:2] and _REL[site.op](base[2], cell[2]) & _FULL == val:
+                    return site, cell, base
+        diag["rel_unpredicted"] += 1
+    return None
+
+
+def _rel_streams(lww, sites, mem0, done, diag):
+    """``(streams, explained)``: the relative route, one stream per delta lane.
+
+    Each stream is a declared lane the store statement names, routed relatively over the
+    base that statement names; every emit is predicted rather than fitted, so a write the
+    combination does not reproduce stays residual."""
+    streams, explained, prev = {}, [set() for _f in lww], {}
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            val, srcs = wr[reg]
+            got = (
+                None
+                if reg in done[f]
+                else _relate(
+                    (reg, val, srcs), sites.get(_class_of(reg), ()), mem0, prev.get(reg), diag
+                )
+            )
+            prev[reg] = val
+            if got is None:
+                continue
+            site, cell, base = got
+            diag["rel_over_" + site.base[0]] += 1
+            counts, rows, brows = streams.setdefault(
+                (reg, site, cell[0], base[0]), ([0] * len(lww), [], [])
+            )
+            counts[f] += 1
+            rows.append(cell[1])
+            brows.append(base[1])
+            explained[f].add(reg)
+    out = [
+        (
+            tuple(counts),
+            ("SELECT", _key_table(key, mem0), tuple(rows)),
+            reg,
+            site.op,
+            (
+                site.base
+                if bkey is None
+                else ("gen", ("SELECT", _key_table(bkey, mem0), tuple(brows)))
+            ),
+        )
+        for (reg, site, key, bkey), (counts, rows, brows) in streams.items()
+    ]
+    return out, explained
+
+
+def _rel_cost(lww, sites, banks, mem0, done, diag):
+    """Count what a delta read back off the output would take, and what refuses it.
+
+    ``rel_fitted`` is every unexplained write in a relative class a back-computed
+    ``val - prev`` would "explain"; ``rel_mut`` the ones a `mut` offset alone refuses."""
+    prev = {}
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            val, srcs = wr[reg]
+            was, prev[reg] = prev.get(reg), val
+            if reg in done[f] or _class_of(reg) not in sites:
+                continue
+            diag["rel_fitted"] += int(was is not None and (val - was) & 0xFF != 0)
+            for base, size, stride, mut in banks:
+                if any(
+                    base <= s < base + size and (s - base) % _record(size, stride) in mut
+                    for s in srcs
+                ):
+                    diag["rel_mut"] += 1
+                    break
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -1379,7 +1663,7 @@ def lift(prog, frames=()):
     )
 
 
-def _graph(prog, pitch, frames, ords, lww, acc):
+def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     """``(graph, lanes)``: declared lanes and notes as generators, the rest RAW.
 
     A declared lane the store statement names outranks the note reading of the same
@@ -1387,6 +1671,7 @@ def _graph(prog, pitch, frames, ords, lww, acc):
     exact anchor, and an excursion to an unrelated note stays residual."""
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
+    diag = Counter() if diag is None else diag
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
@@ -1397,8 +1682,15 @@ def _graph(prog, pitch, frames, ords, lww, acc):
     ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
     fields = [d | s for d, s in zip(declared, swept)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
+    claimed = [d | a for d, a in zip(fields, assembled)]
+    sites = _rel_sites(prog, banks, diag)
+    rels, related = _rel_streams(lww, sites, prog.mem0, claimed, diag)
+    _rel_cost(lww, sites, banks, prog.mem0, [c | r for c, r in zip(claimed, related)], diag)
     for f, rec in enumerate(frames):
-        gen, done = {}, fields[f] | assembled[f]
+        gen, done = {}, claimed[f] | related[f]
+        diag["rel_ord_section"] += sum(
+            1 for v in range(3) for w in ires[v][f] if _class_of(w[0]) in sites
+        )
         for v in range(3):
             sec, b = dict(rec[2 * v]), 7 * v
             if b not in sec or b + 1 not in sec:
@@ -1419,7 +1711,7 @@ def _graph(prog, pitch, frames, ords, lww, acc):
         residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
     edges = {}
-    for counts, *_rest in streams + groups:
+    for counts, *_rest in streams + groups + rels:
         edges.setdefault(counts, len(edges))
     divisors = _divisors(prog, banks)
     nodes = [_clock_node(c, divisors) for c in edges]
@@ -1428,17 +1720,22 @@ def _graph(prog, pitch, frames, ords, lww, acc):
     nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws + ramps]
     nodes += [Generator(t, ("event", edges[c]), plane(r, m)) for c, ps, r in groups for t, m in ps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
-    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups)), lanes
+    for counts, t, reg, op, base in rels:  # absolutes settle a register, relatives follow
+        if base[0] == "gen":
+            nodes.append(Generator(base[1], ("event", edges[counts]), plane(reg)))
+            base = ("node", len(nodes) - 1)
+        nodes.append(Generator(t, ("event", edges[counts]), relative(reg, op, base)))
+    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels)), lanes
 
 
-def render(prog, trace, nframes):
+def render(prog, trace, nframes, diag=None):
     """``(rendered, oracle, Coverage, lanes)`` for the frame program's projection.
 
     Accepted-note freq entries and explained ADSR writes are interpreted
     generators; everything else is an explicit RAW residual, so a ``gate`` PASS
-    certifies the partition is complete."""
+    certifies the partition is complete. ``diag`` collects the refusal histogram."""
     gt, ords, lww, acc = _observe(prog, trace, nframes)
-    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww, acc)
+    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww, acc, diag)
     recs, interp, rawn, trig = _run(graph, nframes)
     return recs, gt, _coverage(interp, rawn, graph.classes, trig), lanes
 

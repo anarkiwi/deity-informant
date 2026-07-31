@@ -74,6 +74,7 @@ def test_a_ctrl_byte_is_the_waveform_lane_read_through_its_gate_image():
         "ramp": 0,
         "seed": 0,
         "mask": 0,
+        "rel": 0,
     }
 
 
@@ -91,6 +92,7 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
         "ramp": 3,
         "seed": 1,
         "mask": 0,
+        "rel": 0,
     }
 
 
@@ -159,6 +161,7 @@ def test_two_fields_of_one_register_become_two_masked_generators():
         "ramp": 0,
         "seed": 0,
         "mask": 2,
+        "rel": 0,
     }
 
 
@@ -359,11 +362,16 @@ def test_goattracker_maps_a_hand_built_song_and_passes_the_law():
     native = G.gt_native(song, PackedInfo(), 0, 40)
     assert native.structure["patterns"] == 1 and native.structure["instruments"] == 1
     records = F.canonical(G._predicted(native))
-    _g, rep = G.graph(records, native, offset=0)
+    g, rep = G.graph(records, native, offset=0)
     assert rep.divergence is None
     assert rep.coverage.classes["ad"]["lane"] > 0 and rep.coverage.classes["ctrl"]["lane"] > 0
     assert rep.coverage.classes["filter"]["lane"] > 0
-    assert "raw:('vibrato', None)" in rep.raw_kinds
+    # the CMD_VIBRATO row: freq_lo takes the speedtable's own step over the value it holds
+    assert rep.coverage.classes["freq"]["rel"] > 0
+    rel = [n for n in g.nodes if n.route[0] == "rel"]
+    assert rel and {n.route[3:] for n in rel} == {("ADD", ("prev",)), ("SUB", ("prev",))}
+    assert {n.route[1] % 7 for n in rel} == {0}  # freq_lo only: the high byte moves on carry
+    assert all(b in song.speedtable.right for n in rel for b in n.transfer[1] if b)
 
 
 @GT
