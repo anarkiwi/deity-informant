@@ -44,6 +44,12 @@ def _frames(rows):
     return [list(r) for r in rows]
 
 
+def _instr(prog, ords):
+    """``_instr_streams`` with the declaration inputs the renderer passes it."""
+    banks = T._banks(prog)
+    return T._instr_streams(prog, ords, T._tree_tables(prog, banks), banks)
+
+
 def _diff(graph, frames):
     """The law, applied to a hand-built projection instead of a frame program."""
     return F.diff(T.eval_graph(graph, len(frames)), F.canonical(frames))
@@ -304,8 +310,8 @@ def test_adsr_reads_a_declared_lane_at_a_recovered_row():
     assert T.gate(prog, {}, 4) is None
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ad"] == (4, 4) and cov.planes["sr"] == (4, 4)
-    _gt, ords = T._observe(prog, {}, 4)
-    pre, post, refined = T._instr_streams(prog, ords)
+    _gt, ords, _lww = T._observe(prog, {}, 4)
+    pre, post, refined = _instr(prog, ords)
     assert refined == {5, 6} and not pre
     got = {r: t for _c, t, r in post}
     assert got[5] == ("SELECT", tuple(ad), (0, 1, 2, 3))  # the declared lane, by row
@@ -332,10 +338,10 @@ def test_immediate_writes_split_from_lane_writes_by_provenance():
     prog = frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem)
     banks = T._banks(prog)
     seq = [[(5, 0x11, (0x2002,))], [(5, 0x00, ())]]
-    rel, streams = T._refine_voice(seq, {5}, banks, {5: {0}}, mem)
+    rel, streams = T._refine_voice(seq, {5}, {}, banks, {5: {0}}, mem)
     assert rel == "post" and [s[1][0] for s in streams] == ["SELECT", "LOOKUP"]
     assert streams[1][1] == ("LOOKUP", (0,)) and streams[1][0] == (0, 1)
-    assert T._refine_voice(seq, {5}, banks, {}, mem) is None  # 0 is no program constant
+    assert T._refine_voice(seq, {5}, {}, banks, {}, mem) is None  # 0 is no program constant
 
 
 def test_write_order_against_the_residual_is_checked():
@@ -343,9 +349,9 @@ def test_write_order_against_the_residual_is_checked():
     mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44]})
     banks = T._banks(frameprog.FrameProgram(0x1000, 0x0F00, decls=[decl], mem0=mem))
     ahead = [[(5, 0x11, (0x2002,)), (4, 0x41, ())]]
-    assert T._refine_voice(ahead, {5}, banks, {}, mem)[0] == "pre"
+    assert T._refine_voice(ahead, {5}, {}, banks, {}, mem)[0] == "pre"
     mid = [[(4, 0x41, ()), (5, 0x11, (0x2002,)), (4, 0x40, ())]]
-    assert T._refine_voice(mid, {5}, banks, {}, mem) is None
+    assert T._refine_voice(mid, {5}, {}, banks, {}, mem) is None
 
 
 def test_immediates_are_read_off_the_program_text_per_register_class():
@@ -409,8 +415,8 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
     cov = T.render(prog, {}, 4)[2]
     assert cov.planes["ctrl"] == (8, 8)
     assert cov.classes["ctrl"] == {"lane": 4, "gate": 4, "imm": 0}
-    _gt, ords = T._observe(prog, {}, 4)
-    _pre, post, refined = T._instr_streams(prog, ords)
+    _gt, ords, _lww = T._observe(prog, {}, 4)
+    _pre, post, refined = _instr(prog, ords)
     assert refined == {4}
     (t,) = [t for _c, t, r in post if r == 4]
     w = tuple(wave)
@@ -434,6 +440,62 @@ def test_a_play_written_waveform_lane_takes_the_gate_writes_down_with_it():
     dirty = [("st", ("const", 0x2002, 2), ("const", 0x99, 1))] + _ctrl_arms()
     prog = _ctrlprog(mem, decl, dirty)
     assert T.render(prog, {}, 4)[2].planes["ctrl"] == (0, 8) and T.gate(prog, {}, 4) is None
+
+
+# ---- 3b. the declaration's mutable offsets, and the lww planes off the tree -------
+def _muted(decl, offs):
+    """The declaration with ``offs`` named as the offsets the play phase writes."""
+    return {**decl, "mut": list(offs)}
+
+
+def _at(base, idx):
+    """``mem[base + idx]``: an indexed read whose index is itself an expression."""
+    return ("mem", ("op", "INT_ADD", (("const", base, 2), ("op", "INT_ZEXT", (idx,), 2)), 2), 1)
+
+
+def test_mut_offsets_are_lanes_when_strided_and_cells_when_flat():
+    """``mut`` is per record offset: a lane modulo the stride, a cell in a flat region."""
+    lane = [0x11, 0x22, 0x33, 0x44]
+    mem, decl = _bank(0x2000, 4, 4, {2: lane})
+    read = [(5, _sel(0x2000, 2, "i"))]
+    assert T.render(_rowprog(mem, decl, read, step=4), {}, 4)[2].planes["ad"] == (4, 4)
+    dirty = _rowprog(mem, _muted(decl, [2]), read, step=4)
+    assert T.render(dirty, {}, 4)[2].planes["ad"] == (0, 4)  # the whole +2 lane, every row
+    fmem, flat = _bank(0x3000, 4, 1, {0: lane})
+    fread = [(0, _sel(0x3000, 0, "i"))]
+    assert T.render(_rowprog(fmem, flat, fread), {}, 4)[2].planes["freq"] == (4, 4)
+    cell = _rowprog(fmem, _muted(flat, [2]), fread)
+    assert T.render(cell, {}, 4)[2].planes["freq"] == (3, 4)  # only that one cell
+    assert T.gate(dirty, {}, 4) is None and T.gate(cell, {}, 4) is None
+
+
+def test_freq_is_the_declared_table_the_store_names_at_a_recovered_row():
+    """freq_lo/freq_hi are two lanes of one declaration read at one recovered row."""
+    lo, hi = [0x10, 0x21, 0x32, 0x43], [0x01, 0x02, 0x03, 0x04]
+    mem, decl = _bank(0x2000, 4, 2, {0: lo, 1: hi})
+    stores = [(0, _sel(0x2000, 0, "i")), (1, _sel(0x2000, 1, "i"))]
+    prog = _rowprog(mem, decl, stores, step=2)
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["freq"] == (8, 8) and cov.classes["freq"]["lane"] == 8
+    _gt, _ords, lww = T._observe(prog, {}, 4)
+    banks = T._banks(prog)
+    streams, _e = T._lww_streams(lww, T._tree_tables(prog, banks), mem)
+    got = {r: t for _c, t, r in streams}
+    assert got[0] == ("SELECT", tuple(lo), (0, 1, 2, 3))  # the declared lane, by row
+    assert got[1][1] == tuple(hi) and got[1][2] == got[0][2]
+
+
+def test_the_lww_planes_read_the_table_the_store_names_not_the_one_it_indexes():
+    """A cell the value only indexes through is no source, however its byte agrees."""
+    mem, decl = _bank(0x2000, 4, 2, {0: [0x10, 0x21, 0x32, 0x43], 1: [0, 1, 2, 3]})
+    mem[0x4000:0x4004] = bytes(range(4))  # undeclared: mem[$4000 + k] == k == the index byte
+    stores = [(0, _at(0x4000, _sel(0x2000, 1, "i"))), (1, _sel(0x2000, 0, "i"))]
+    prog = _rowprog(mem, decl, stores, step=2)
+    assert T.gate(prog, {}, 4) is None
+    cov = T.render(prog, {}, 4)[2]
+    assert cov.planes["freq"] == (4, 8)  # freq_hi only; the indexed read names no declaration
+    assert T._tree_tables(prog, T._banks(prog)) == {1: ((0x2000, 8, 2, frozenset()),)}
 
 
 # ---- 4. the engine and the law over real tunes -----------------------------------
@@ -480,8 +542,8 @@ def test_commando_notes_and_the_law(sid, subtune):
 def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
     """Every ctrl/ADSR emit is a byte of the declared $5591 bank at a recovered row."""
     prog, trace, nf = _lifted(sid, subtune)
-    _gt, ords = T._observe(prog, trace, nf)
-    pre, post, refined = T._instr_streams(prog, ords)
+    _gt, ords, _lww = T._observe(prog, trace, nf)
+    pre, post, refined = _instr(prog, ords)
     assert refined == {4, 5, 6, 11, 12, 13, 18, 19, 20} and not pre
     sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
     assert len(sel) == 9 and set(T.lift(prog).instruments) >= {0x5594, 0x5595}
@@ -498,13 +560,43 @@ def test_commando_adsr_is_the_declared_instrument_bank(sid, subtune):
         assert set(sel[7 * v + 5][2]) <= set(range(13))  # rows are instrument numbers
 
 
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtune):
+    """`freq_hi = m_5429[t5]`: the store names $5428, so the row is the semitone index."""
+    prog, trace, nf = _lifted(sid, subtune)
+    tabs = T._tree_tables(prog, T._banks(prog))
+    assert [b[:3] for b in tabs[0]] == [b[:3] for b in tabs[1]] == [(0x5428, 192, 2)]
+    _gt, _ords, lww = T._observe(prog, trace, nf)
+    sel = {r: t for _c, t, r in T._lww_streams(lww, tabs, prog.mem0)[0]}
+    for v in range(3):
+        lo, hi = sel[7 * v], sel[7 * v + 1]
+        assert lo[1] == tuple(prog.mem0[0x5428 + 2 * i] for i in range(96))
+        assert hi[1] == tuple(prog.mem0[0x5429 + 2 * i] for i in range(96))
+        assert lo[2] == hi[2]  # one row stream per voice: the row is the note index
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.classes["freq"]["lane"] > 600 and cov.classes["freq"]["imm"] == 0
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, subtune):
+    """$5591's +0 lane is `mut`: the play code writes it back, so it is not const data."""
+    prog, trace, nf = _lifted(sid, subtune)
+    decl = next(d for d in prog.data_decls if d["base"] == 0x5591)
+    assert decl["stride"] == 8 and decl["mut"] == [0]
+    _gt, _ords, lww = T._observe(prog, trace, nf)
+    streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
+    assert {r % 7 for _c, _t, r in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.planes["pw"][0] > 0 and cov.classes["pw"]["lane"] == cov.planes["pw"][0]
+
+
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
 def test_artura_adsr_through_the_sid_register_mirror(sid, subtune):
     """ADSR staged in a per-voice SID mirror still reads as the declared bank."""
     prog, trace, nf = _lifted(sid, subtune)
     assert 0xEFC1 in T.lift(prog).instruments  # the store site reads the mirror cell
-    _gt, ords = T._observe(prog, trace, nf)
-    pre, post, refined = T._instr_streams(prog, ords)
+    _gt, ords, _lww = T._observe(prog, trace, nf)
+    pre, post, refined = _instr(prog, ords)
     assert refined >= {5, 6, 12, 13, 19, 20} and not pre
     bank = tuple(prog.mem0[0xEF52 + i] for i in range(46))
     sel = {r: t for _c, t, r in post if t[0] == "SELECT"}
