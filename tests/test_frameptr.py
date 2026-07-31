@@ -80,9 +80,11 @@ def _mem0(cells):
 
 
 def _run(stmts, decls=(), cells=None):
-    """``(resolved addresses, proofs)`` of a one-procedure hand-built program."""
+    """``(resolved, rung-(f) proofs, pinned addresses, provenance proofs)``."""
     procs = [(0x1000, [], [], list(stmts))]
-    return frameptr.apply_rung(_mem0(cells or {}), list(decls), procs)
+    resolved, pinned, proofs = frameptr.apply_rung(_mem0(cells or {}), list(decls), procs)
+    kinds = {k: [p for p in proofs if p.kind == k] for k in ("deref", "deref-src")}
+    return resolved, kinds["deref"], pinned, kinds["deref-src"]
 
 
 _TAB = {0x1500: 0x00, 0x1501: 0x40, 0x1502: 0x14, 0x1503: 0x14}  # blocks $1400, $1440
@@ -108,7 +110,7 @@ def _only(proofs):
 # ---- the premise discharged ------------------------------------------------------
 def test_a_reload_from_a_declared_partner_table_resolves_the_deref():
     """Both levels are named: which block (a table entry) and which row (the index)."""
-    resolved, proofs = _sequencer()
+    resolved, proofs = _sequencer()[:2]
     pr = _only(proofs)
     assert pr.status == "resolved" and pr.kind == "deref" and pr.site == PTR
     assert pr.targets == (0x0000, 0x1400, 0x1440)  # the two entries plus the init word
@@ -125,14 +127,14 @@ def test_the_target_set_is_the_declared_extent_not_the_image_run():
 def test_two_sites_on_one_pointer_are_counted_once_per_address():
     """Resolution is per (pointer, index) by value: equal addresses are one record."""
     read = ("st", ("const", 0xD400, 2), ("mem", _deref(PTR, _y()), 1))
-    _res, proofs = _sequencer(extra=[read])
+    _res, proofs = _sequencer(extra=[read])[:2]
     assert "at 2 site(s)" in _only(proofs).lemma
 
 
 def test_a_deref_with_no_index_resolves_at_row_zero():
     stmts = [_st(PTR, _load(0x1500, 0x1502, ("const", 0, 1))), ("st", ("const", 0xD400, 2), 1)]
     stmts[1] = ("st", ("const", 0xD400, 2), ("mem", _word(PTR), 1))
-    resolved, proofs = _run(stmts, _pair(0x1500, 0x1502, 2), _TAB)
+    resolved, proofs = _run(stmts, _pair(0x1500, 0x1502, 2), _TAB)[:2]
     assert _only(proofs).status == "resolved" and set(resolved) == {_word(PTR)}
 
 
@@ -168,7 +170,7 @@ def test_a_lane_offset_into_a_declared_table_is_the_same_declaration():
 )
 def test_an_unproven_writer_refuses_the_site(extra, why):
     """An advance and a store the analysis cannot place both refuse the pointer."""
-    _res, proofs = _sequencer(extra=extra)
+    _res, proofs = _sequencer(extra=extra)[:2]
     pr = _only(proofs)
     assert pr.status == "refused" and pr.targets == () and why in pr.lemma
 
@@ -276,7 +278,7 @@ def test_an_unbounded_row_index_refuses_the_site():
         _st(PTR, _load(0x1500, 0x1502, ("const", 0, 1))),
         ("st", ("const", 0xD400, 2), ("mem", _deref(PTR, ("loc", "t0")), 1)),
     ]
-    resolved, proofs = _run(stmts, _pair(0x1500, 0x1502, 2), _TAB)
+    resolved, proofs = _run(stmts, _pair(0x1500, 0x1502, 2), _TAB)[:2]
     assert resolved == {}
     assert "row index bound $FFFF exceeds one row" in _only(proofs).lemma
 
@@ -425,3 +427,126 @@ def test_resolution_never_moves_a_canonical_record(p):
     text = frameprog.dumps(prog)
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, max(p.frames, 8), prog) is None
+
+
+# ---- the provenance rule: the address the proof supplies (spec 4.6) -------------------
+_PIN_TAB = {**_TAB, 0x1500: 0x00, 0x1501: 0x00, PTR: 0x00, PTR + 1: 0x14}  # one block
+
+
+def _pinned(extra=(), idx=None, tab=None):
+    """The sequencer whose every reload entry, and whose image word, is one block."""
+    stmts = [
+        ("asg", "y", ("mem", ("const", 0x1600, 2), 1)),
+        _st(PTR, _load(0x1500, 0x1502, _y())),
+        *extra,
+        ("st", ("const", 0xD400, 2), ("mem", _deref(PTR, idx or _y()), 1)),
+    ]
+    return _run(stmts, _pair(0x1500, 0x1502, 2), tab or _PIN_TAB)
+
+
+def test_one_target_block_is_one_address_the_proof_supplies():
+    """The base is the proof's constant and the row is pure, so nothing re-evaluates."""
+    _res, _pr, pinned, src = _pinned()
+    assert (
+        _only(src).status == "resolved" and "block $1400, address $1400..$14FF" in _only(src).lemma
+    )
+    assert pinned == {_deref(PTR, _y()): ("op", "INT_ADD", (("const", 0x1400, 2), _zext2(_y())), 2)}
+    assert frameproc.pure(pinned[_deref(PTR, _y())])
+
+
+def test_a_bare_deref_pins_to_the_block_itself():
+    stmts = [
+        _st(PTR, _load(0x1500, 0x1502, _y())),
+        ("st", ("const", 0xD400, 2), ("mem", _word(PTR), 1)),
+    ]
+    _res, _pr, pinned, src = _run(
+        [("asg", "y", ("const", 0, 1))] + stmts, _pair(0x1500, 0x1502, 2), _PIN_TAB
+    )
+    assert pinned == {_word(PTR): ("const", 0x1400, 2)}
+    assert "address $1400..$1400" in _only(src).lemma
+
+
+def test_two_target_blocks_are_an_address_space_and_supply_no_address():
+    """``k`` is live state: the proof names where the address may be, not where it is."""
+    _res, pr, pinned, src = _sequencer()
+    assert pr[0].status == "resolved" and pinned == {}
+    assert "the proof names 3 target blocks, not one address" in _only(src).lemma
+
+
+def test_the_pointers_own_image_word_is_part_of_the_target_set():
+    """A single declared block still refuses where the image word is another block."""
+    tab = {**_PIN_TAB, PTR: 0x30}  # the pointer starts at $1430, not $1400
+    _res, _pr, pinned, src = _pinned(tab=tab)
+    assert pinned == {} and "names 2 target blocks" in _only(src).lemma
+
+
+def test_an_impure_row_index_supplies_no_address():
+    """Substituting the base does not make a memory-reading row pure."""
+    idx = ("mem", ("op", "INT_ADD", (_zext2(_y()), ("const", 0x1600, 2)), 2), 1)
+    _res, pr, pinned, src = _pinned(idx=idx)
+    assert pr[0].status == "resolved" and pinned == {}
+    assert "the row index reads memory" in _only(src).lemma
+
+
+def test_a_site_the_rung_refuses_keeps_the_rungs_own_diagnostic():
+    advance = [_st(PTR, ("op", "INT_ADD", (_word(PTR), ("const", 8, 2)), 2))]
+    _res, pr, pinned, src = _pinned(extra=advance)
+    assert pinned == {} and _only(pr).status == "refused"
+    assert (
+        _only(src).status == "refused"
+        and "not a lo/hi partner-table entry read" in _only(src).lemma
+    )
+
+
+def _srcs(model, prog, nframes, pin=None):
+    """The per-frame SID source tuples of one run under a given address map."""
+    trace, _walker = frameprog.iota(model, nframes)
+    return frameval.eval_src(prog, trace, nframes, pin=pin)[1]
+
+
+def test_a_pinned_deref_reports_the_declared_cell_the_direct_read_reports():
+    """The same block, read twice: through the pointer and at a const base."""
+    model = _fuzz_model(FG.t_ptr_pin(np.random.default_rng(7)))
+    prog = frameprog.program(model)
+    assert len(prog.pinned) == 1 and frameval.gate_fp(model, 6, prog) is None
+    with_pin = _srcs(model, prog, 6)
+    without = _srcs(model, prog, 6, pin={})
+    deref, direct = zip(*[(f[0], f[1]) for f in with_pin])
+    assert all(d == (c[0],) for d, c in zip(deref, direct))  # the deref names the read cell
+    assert all(f[0] == () for f in without)  # and named nothing before
+
+
+def test_mutation_an_address_from_observation_moves_the_record():
+    """Re-evaluating the impure address reports where the run went, not what is proved."""
+    model = _fuzz_model(FG.t_ptr_seq(np.random.default_rng(7)))
+    prog = frameprog.program(model)
+    assert prog.pinned == {} and len(prog.resolved) == 1
+    proved = _srcs(model, prog, 6)
+    watched = _srcs(model, prog, 6, pin={a: a for a in prog.resolved})
+    assert all(f[0] == () for f in proved) and len({f[0] for f in watched}) > 1
+
+
+def test_mutation_an_unresolved_site_given_an_address_moves_the_record():
+    """One block named for a pointer that ranges over four reports the wrong row."""
+    model = _fuzz_model(FG.t_ptr_seq(np.random.default_rng(7)))
+    prog = frameprog.program(model)
+    addr = next(iter(prog.resolved))
+    block = min(next(p for p in prog.proofs if p.kind == "deref").targets[1:])
+    forced = _srcs(model, prog, 6, pin={addr: frameptr._sub(addr, block)})
+    watched = _srcs(model, prog, 6, pin={addr: addr})
+    assert forced != watched
+    assert all(block <= c <= block + 0xFF for f in forced for w in f for c in w)
+
+
+def test_mutation_dropping_the_row_bound_claims_the_address_space():
+    """A row is one block wide; without the bound the claim is every address."""
+    wide = ("asg", "t0", ("mem", ("const", 0x1600, 2), 2))
+    _res, _pr, pinned, src = _pinned(extra=[wide], idx=("loc", "t0"))
+    assert pinned == {} and "row index bound $FFFF exceeds one row" in _only(src).lemma
+    saved = frameptr._ROW
+    try:
+        frameptr._ROW = 0xFFFF
+        _res, _pr, pinned, src = _pinned(extra=[wide], idx=("loc", "t0"))
+    finally:
+        frameptr._ROW = saved
+    assert len(pinned) == 1 and "address $1400..$13FF" in _only(src).lemma

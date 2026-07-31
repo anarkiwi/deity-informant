@@ -10,8 +10,8 @@ pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
 (`frameval.py`, §6 M-FP1/M-FP2 for the measured extent), rung (d)'s 16-bit
 fusion (`framefuse.py`, §4.3 and §6 M-FP3), rung (f)'s pointer resolution
-(`frameptr.py`, §4.4 and §6 M-FP5) and the init-copy origin map
-(`initcopy.py`, §4.5). "MUST" is a gate. Measurements:
+(`frameptr.py`, §4.4 and §6 M-FP5), the init-copy origin map
+(`initcopy.py`, §4.5) and the proven deref's store source (§4.6). "MUST" is a gate. Measurements:
 2026-07-25, 140 cached tunes, 1,000-frame windows unless noted; scratch probes,
 numbers herein are the record.
 
@@ -119,7 +119,10 @@ address (consts, locals and ops only — no memory read, so the address
 re-evaluates with no side effect and consumes no volatile input). It buffers
 and flushes exactly as `eval_fp` does, so the projection is byte-identical
 and the law is untouched; the tracker uses it to tell a declared-table read
-from a computed value (docs/tracker.md §5).
+from a computed value (docs/tracker.md §5). The purity gate has exactly one
+exception and it is not a weakening: a deref rung (f) proved to name a single
+target block reports **the proof's** address — a constant base plus the pure row
+— so no impure expression is ever evaluated twice (§4.6).
 
 Each cell is reported with its **origin** ahead of it — the cell that byte came
 from, not merely the cell this value read. Otherwise a driver that stages bytes
@@ -714,12 +717,112 @@ row. That is a change to the declaration set — it moves `data { }`, `state { }
 pitch search's candidate pool and the emitted text — for 825 emits, so it is
 recorded here rather than taken.
 
+### 4.6 The store's source through a proven deref
+
+`eval_src` reports, per SID write, the cells its byte derives from, and it reports a
+load's address only where that address is **pure** (§1.4): re-evaluating an impure one
+could consume a volatile input twice and volatile reads resolve by `(frame, occurrence)`
+(§1.3), so the report would be paid for with an unsound evaluator. A deref address reads
+the pointer word, so it is impure, and `_addrs` recurses into it and reports the
+*pointer's own two cells* instead of the target. Every byte a driver reads through a
+pointer therefore reaches the consumer with no usable source cell.
+
+Rung (f) already proved what that deref address is: `T[k] + i`, with `{T[k]}` read at the
+declared extent and `i` bounded by one row (§4.4). Where that proof names **one** target
+block, the address is a constant plus a pure row, so the evaluator can report it without
+evaluating anything impure: `frameptr.apply_rung` returns, beside the resolved set, a map
+from the deref address to `("const", block) + i`, and `frameval._addrs` reports that in
+place of the pointer's cells. **The base is the proof's; only the row evaluates**, exactly
+as `m_5429[x]` evaluates today. The pointer's cells are then not reported for that load —
+they are the address, not the byte's origin, which is §4.2's own rule (a read the value
+only indexes through is not followed) applied at the evaluator. That is the one reading
+this takes away, and it is what lets the one-contributor rule bind a staged byte: `a =
+*ptr[i]` … `sid = a` carries the block cell through the local.
+
+The proven set is `{T[k]} ∪ {the pointer's own image word}` — the tuple the rung's proof
+record has always carried — because a deref reached before the first definition reads what
+`mem0` holds. One block is one address; two or more is an **address space** and refuses.
+Per site, with a record (`kind == "deref-src"`, one per deref site, resolved or refused,
+carrying the block and the address range it claims):
+
+| the provenance record says | sites |
+|---|---|
+| refused: rung (f) did not resolve the site | 3563 |
+| refused: the proof names 2 or more target blocks | 365 |
+| refused: the row index reads memory | 0 |
+| **resolved: the proof names one block** | **1** |
+
+**One site of 3929, on one tune of 649.** The block counts behind the 365: two blocks at 48
+sites, three at 36, four at 68, five to nine at 78 and ten or more at 135 (max 82). §4.4's
+census counts 46 sites naming a single *declared* block; the image word is another block at
+45 of them, so the sound set is a singleton exactly once.
+
+**Measured** 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows (650
+decompile, 649 reach the gate). **Gate FP 649/649, the tracker law 649/649 and the canonical
+fixpoint 649/649**, all unchanged; raw `mem[` **9682**, tunes with none **51** and the
+emitted text **9608342** bytes, all unchanged — the rule rewrites no tree, no value and no
+character of the artifact. The tracker's value partition is **byte-identical**:
+**753971/1942809 = 38.81%**, freq 417498, pw 90000, ctrl 112806, filter 23104, sr 56073,
+ad 54490; classes `lane` 516986, `gate` 32914, `imm` 25188, `ramp` 25399, `seed` 4152,
+`mask` 676, `rel` 317, `arr` 0; triggers 300/307060. **Zero tunes move in either
+direction.** (That baseline was re-measured on this tree rather than taken from §4.5's
+753689; the +282 is the lifter's `$CE` cycle-cost fix of #104, not this change.)
+
+**What the rule does move, and where it stops.** On the one pinned site — `*m_C0E0[x]` in `MUSICIANS/B/Bialluch_Dirk/Helden.sid` — **582 SID writes** report the
+proven address instead of the pointer's cells, and the address is right: it equals the
+address the run read at **582 of 582** writes. All 582 land inside a `datadecl`
+declaration of `kind == "stream"` — the pointer-target anchor `datadecl` carves `via` the
+pointer pair — which `tracker._banks` does not admit (it takes `kind == "table"` only),
+and the declared byte there is not the byte the register took. So the recovery is **0
+emits**, and it would still be 0 with streams admitted.
+
+**The refusal the rule rests on, priced.** An address recovered by *watching* the
+execution — re-evaluating the impure address, which is the design this refuses — would
+change **3751** SID writes' source tuples over **28** tunes, 481 of them gaining a cell
+where they had none. Where those addresses land:
+
+| the reported address is | writes |
+|---|---|
+| a declared `stream` (no bank), byte equal to the emit | 1585 |
+| a declared `stream` (no bank), byte the emit does not equal | 1423 |
+| a declared table byte the emit does not equal (#61 refuses) | 683 |
+| **a declared table byte equal to the emit — a lane** | **60** |
+
+and **the tracker's partition is byte-identical under it too**, every plane, every class and
+every refusal counter, on every one of the 649 tunes. The 60 sit on writes that already
+carried a source cell and were already interpreted, so they add no emit. Reporting the
+whole proven target set instead of one member is refused without measuring a ceiling for
+it: it is the observation choosing between blocks, the refusal §4c makes for a fitted
+`RAMP` step and §6 for an `imm` `LOOKUP` over `$18`'s program constants, and its claims
+are a superset of the observation-derived ones, which recover nothing.
+
+**The structural finding, which is the point.** The proof supplies the address *space* and
+not the address, and now the consequence is measured rather than argued: the entry `k` is
+live state at 366 of 366 sites (§4.4 measured the reload index non-constant at all of
+them), so the block is live at 365. What **is** static is the table `T`, its declared
+extent, the target set read out of `mem0` at that extent, the one-byte row bound and the
+row index expression; what is **not** is which entry the pointer was reloaded from, and
+therefore which block. A design that needs the block at run time needs a second evaluation
+of an impure address or a hop through the origin map, and both are outside this rule.
+
+And the address is **not what the consumer was missing**. docs/tracker.md §6 names the
+impure deref address as the wall in front of arrangement recovery; handed the address the
+run itself used, recovery is still zero. Two walls stand behind it, both measured above:
+`datadecl` carves the deref's target as a `stream` rather than a table, so the tracker's
+bank pool excludes 3008 of the 3751 addresses; and #61's own check refuses 2106 more whose
+declared byte is not the byte the register took. The only measured headroom anywhere in
+this chain is a **tracker-side** change admitting `stream` declarations as banks, whose
+ceiling is **1585 emits over 28 tunes (0.08% of the partition)** and only under the
+observation-derived address that is itself refused. With the proof-supplied address the
+ceiling is **0**. That is recorded here as a recommendation and not taken.
+
 ## 5. Risk register
 
 | risk | disposition |
 |---|---|
 | An init origin outliving the play write that supersedes it | Closed by construction, not by a check: the init map is only the *initial value* of `frameval`'s `prov`, so the first play-phase store to a staged cell rebinds it to that store's own contributor or drops it (§1.4's one-contributor rule). What the map can still assert is that the source is const data, and that is `datadecl`'s `mut` at the origin — refused per cell and counted (§4.5). `tests/test_initcopy.py` drives both halves: the play write drops the entry, and re-seeding it across that write moves the reported record. |
 | A named deref outliving its proof | Rung (f) names only what it proved, and the name is the proof's shadow: `FrameProgram.resolved` is built by `frameptr.apply_rung` and consumed only by the emitter, so a site with no record renders raw. The reader rebuilds the same map from the `*ptr[i]` text, which is why the fixpoint is the check that the two agree. The residual risk is a consumer reading `*ptr[i]` as "in bounds of one block": it is not — the claim is `address ∈ {T[k]} + [0, row bound]`, a union of intervals, and the block extents are `datadecl`'s own (180 of 366 sites have every block declared). |
+| A proven address outliving its proof (§4.6) | The reported address is the proof's own: `frameptr` emits it only where the target set — the declared entries **and** the pointer's image word — is a singleton and the row expression is pure, so nothing impure is ever evaluated twice and `_pure` is untouched. What the rule can still get wrong is the *set*: dropping the image word pins 45 more sites whose pointer starts elsewhere, and dropping the row bound turns a row into a whole-address-space claim. Both are mutations `tests/test_frameptr.py` drives, and the third — an address taken from the run instead of the proof — is the design §4.6 prices and refuses. Sites the rung did not resolve keep the pointer's own cells exactly as before. |
 | Multi-call-per-frame / multispeed drivers | v1 class: frame = the play invocation, settled. v2/P-INT redefines the frame as the driver-cadence tick; the projection then applies per tick and the digi rule re-triggers (fast CIA volume writes). Deferred with v2. `play == 0` tunes are in the v1 class as of the handler entry (docs/decompiler-implementation.md §8.1): one handler invocation per frame, entered through a synthetic IRQ dispatch stub, so the frame is still the play invocation and Gate FP holds unchanged. |
 | Digi / $D418 order | Closed by the class rule (§1.2): $D418 is last-write-wins; a >2-step collapsed volume sequence excludes with a precise diagnostic; 2-step frames collapse with a reported metric. Corpus: 0 exclusions; a digi tune MUST be added to exercise the path. |
 | The two sides disagreeing on what a volatile input *is* (fixed) | Closed. `frameprog._INPUTS` declared $DC0D a nondeterministic input `cia_icr()` while the walker's `_VOL0` inlines that read as the constant 0 at block-compile time, never calling the pinning hook: `iota` could not record what the evaluator then demanded, so the first read of frame 0 faulted `past the pinned trace` — the one-model claim of §1.3 violated in the *set* of inputs, not in a value. 3 of 682 cached tunes (`4k_Digi_Competition_Entry`, `Chotmix`, `5_Channels_of_Feekzoid_Noise`), none digi-class. The declared set is now keyed on `structured._VOL`, so an address the walker cannot pin cannot be declared, and the evaluator resolves `structured._VOL0` to 0 exactly as the walker does instead of naming $D019 alone. Repaired frameprog-side by construction: the walker's constant-0 model is the v1 ground truth Gate C already verifies (decompiler-implementation.md §8.1), not an approximation to correct here. |
@@ -842,8 +945,28 @@ HVSC absent (decompiler-implementation.md §1, §7).
   set past the declared extent turns a 1-entry declaration's one block into two
   (`test_the_target_set_is_the_declared_extent_not_the_image_run`); and dropping
   the row bound resolves an index whose sound bound is `$FFFF`, a whole-address
-  space claim rather than a row. Outstanding: rungs (e)/(f) proper, and the
-  ceiling on resolution is rung (d)'s fusion rate (§4.4 census).
+  space claim rather than a row. Landed since: **the store's source through a proven
+  deref** (§4.6 for the census) — where the proof names one target block the evaluator
+  reports that block plus the pure row as the store's source cell instead of the
+  pointer's own cells, with a `structured.Proof` per deref site (`kind == "deref-src"`).
+  Gate FP 649/649, the tracker law 649/649 and the canonical fixpoint 649/649, all
+  unchanged, the emitted text byte-identical, and the tracker's value partition
+  byte-identical at 753971/1942809 with zero tunes moving. The census is the result:
+  **1 site of 3929 pins**, because the proven set is `{T[k]}` together with the pointer's
+  own image word and the entry `k` is live state at 366 of 366 resolved sites.
+  `tests/_fuzzgen` carries the `ptr_pin` class (a pointer table whose every entry names
+  one block, its rows also read at a const base) and `tests/test_frameptr.py` the
+  refusals. **M-FP5 mutation evidence (the provenance rule)**: the rule annotates, so the
+  record each mutation must move is the reported source tuple or the proof, and each of
+  the three does — an address re-derived by evaluating the impure expression reports where
+  the run went rather than what is proved
+  (`test_mutation_an_address_from_observation_moves_the_record`); a site the proof leaves
+  as an address space, pinned to one of its blocks anyway, reports rows of that block
+  while the machine reads three others
+  (`test_mutation_an_unresolved_site_given_an_address_moves_the_record`); and dropping the
+  row bound turns the claim `block + [0, $FF]` into the whole address space
+  (`test_mutation_dropping_the_row_bound_claims_the_address_space`). Outstanding: rungs
+  (e)/(f) proper, and the ceiling on resolution is rung (d)'s fusion rate (§4.4 census).
 
 Gate FP is the only correctness law at this level; no milestone may weaken
 it, and sidprog's Gates A/C/L/S are untouched throughout.

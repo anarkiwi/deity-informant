@@ -50,6 +50,17 @@ def _kids(n):
     return ()
 
 
+def pure(n):
+    """True if the expression reads no memory: consts, locals and ops only.
+
+    A pure address re-evaluates with no side effect and consumes no volatile
+    input, so it can be probed again within the statement that used it."""
+    k = n[0]
+    if k in ("const", "loc"):
+        return True
+    return k == "op" and all(pure(c) for c in n[2])
+
+
 def _rebuild(n, kids):
     if n[0] == "mem":
         return ("mem", kids[0], n[2])

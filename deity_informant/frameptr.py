@@ -2,7 +2,8 @@
 
 ``mem[P + i]`` resolves when every definition of the pointer state field loads its
 halves from a declared ``lo``/``hi`` partner table ``T``: the address is ``T[k] + i``,
-row ``i`` of the block ``k`` names, the target set read from the declared extent.
+row ``i`` of the block ``k`` names, the target set read from the declared extent. Where
+that set is one block the address is also a store's source cell (spec 4.6).
 """
 
 from __future__ import annotations
@@ -55,6 +56,15 @@ def deref(addr):
             if got is not None:
                 return got[0], ST._strip_zext(b), got[1]
     return None
+
+
+def _sub(addr, base):
+    """``addr`` with the block the proof pins substituted for the pointer word it reads."""
+    blk = ("const", base, 2)
+    if _cell_of(addr) is not None:
+        return blk
+    i = next(j for j, c in enumerate(addr[2]) if _cell_of(c) is not None)
+    return ("op", "INT_ADD", tuple(blk if j == i else c for j, c in enumerate(addr[2])), addr[3])
 
 
 def _addrs(stmts):
@@ -262,6 +272,45 @@ class _Site:
         """The row index as the emitter writes it, empty for a bare deref."""
         return "" if self.idx is None else frameproc._fmt(self.idx)
 
+    def blocks(self):
+        """The words the pointer may hold: every declared entry, and the image's own."""
+        return sorted(set(self.ptr.targets) | {self.ptr.init})
+
+    def source(self):
+        """``(the address the proof supplies, refusal)`` for the provenance rule (spec 4.6).
+
+        One target block is one address, so the base is the proof's constant and only
+        the row evaluates; two or more is an address space and refuses."""
+        if self.why is not None:
+            return None, self.why
+        blocks = self.blocks()
+        if len(blocks) != 1:
+            return None, "the proof names %d target blocks, not one address" % len(blocks)
+        expr = _sub(self.addr, blocks[0])
+        if not frameproc.pure(expr):
+            return None, "the row index reads memory"
+        return expr, None
+
+    def src_proof(self):
+        """The provenance record: the proven address, or why the proof supplies none."""
+        body = "deref source *%s[%s] at %d site(s)" % (
+            G.addr_name(self.ptr.cell),
+            self.text(),
+            self.count,
+        )
+        expr, why = self.source()
+        if expr is None:
+            return Proof(self.ptr.cell, "deref-src", "refused", (), "%s; %s" % (body, why))
+        base = self.blocks()[0]
+        return Proof(
+            self.ptr.cell,
+            "deref-src",
+            "resolved",
+            (base,),
+            "%s; block $%04X, address $%04X..$%04X"
+            % (body, base, base, (base + self.bound) & 0xFFFF),
+        )
+
     def proof(self):
         """The rung-(f) proof record: table, definitions, target set, row bound."""
         ptr = self.ptr
@@ -286,7 +335,7 @@ class _Site:
             ptr.init,
             self.bound,
         )
-        return Proof(ptr.cell, "deref", "resolved", tuple(sorted(set(blocks) | {ptr.init})), lemma)
+        return Proof(ptr.cell, "deref", "resolved", tuple(self.blocks()), lemma)
 
 
 class _Writes:
@@ -322,11 +371,13 @@ def analyse(mem0, decls, procs):
 
 
 def apply_rung(mem0, decls, procs):
-    """Rung (f) over ``procs``: ``(resolved addresses, proofs)``, one per site.
+    """Rung (f) over ``procs``: ``(resolved addresses, proven addresses, proofs)``.
 
     Naming only, exactly as the indexed form of spec 4.2: the trees and every value
-    are untouched, so Gate FP cannot move; what the rung adds is the proof that the
-    address lies in ``{T[k]} + [0, bound]`` and the text that says so."""
+    are untouched, so Gate FP cannot move. The second map is the provenance rule of
+    spec 4.6 — the sites whose proof names one block, so it supplies an address."""
     sites = analyse(mem0, decls, procs)
     resolved = {s.addr: (s.ptr.cell, s.idx) for s in sites if s.why is None}
-    return resolved, [s.proof() for s in sites]
+    srcs = {s.addr: s.source()[0] for s in sites}
+    pinned = {a: e for a, e in srcs.items() if e is not None}
+    return resolved, pinned, [s.proof() for s in sites] + [s.src_proof() for s in sites]

@@ -148,6 +148,7 @@ class FrameProgram:
         mem0=None,
         proofs=(),
         resolved=(),
+        pinned=(),
         prov0=(),
         init_census=None,
     ):
@@ -163,6 +164,7 @@ class FrameProgram:
         self.mem0 = bytearray(0x10000) if mem0 is None else mem0
         self.proofs = list(proofs)  # rung (d) pair records, rung (f) deref-site records
         self.resolved = dict(resolved)  # rung (f): deref address -> (pointer cell, index)
+        self.pinned = dict(pinned)  # spec 4.6: deref address -> the address the proof names
         self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
         self.init_census = dict(init_census or {})
 
@@ -201,7 +203,7 @@ def program(model, sid_fusion=False):
     state, proofs = framefuse.apply_rung(
         model, decls, procs, state, symbols, G.addr_name, sid_fusion
     )
-    resolved, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
+    resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(
         model.play,
@@ -216,6 +218,7 @@ def program(model, sid_fusion=False):
         model.mem0,
         proofs + deref_proofs + init_proofs,
         resolved,
+        pinned,
         prov0,
         census,
     )

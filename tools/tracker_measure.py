@@ -18,6 +18,18 @@ HVSC = ROOT / ".oracle-cache" / "hvsc"
 FRAMES = 200
 
 
+def _proofs(prog):
+    """Per-kind ``status``/refusal histograms of the program's proof records."""
+    hist = Counter()
+    for p in prog.proofs:
+        if p.kind not in ("deref", "deref-src"):
+            continue
+        hist["%s/%s" % (p.kind, p.status)] += 1
+        if p.status == "refused":
+            hist["%s: %s" % (p.kind, p.lemma.rsplit("; ", 1)[-1])] += 1
+    return dict(hist)
+
+
 def one(rel):
     """Coverage, refusals and gates for one cached tune, or the error that stopped it."""
     # pylint: disable=import-outside-toplevel
@@ -33,6 +45,10 @@ def one(rel):
         _songs, start = psid_songs(data)
         model, _ev = S.decompile(mem, init, play, FRAMES, start - 1)
         prog = frameprog.program(model)
+        if os.environ.get("DI_DEREF_SRC") == "off":
+            prog.pinned = {}
+        elif os.environ.get("DI_DEREF_SRC") == "observed":
+            prog.pinned = {a: a for a in prog.resolved}
         trace, walker = frameprog.iota(model, FRAMES)
     except Exception as exc:  # pylint: disable=broad-except
         out["error"] = "%s: %s" % (type(exc).__name__, str(exc)[:80])
@@ -40,6 +56,9 @@ def one(rel):
     try:
         text = frameprog.dumps(prog)
         out["fixpoint"] = frameprog.dumps(frameprog.parse(text)) == text
+        out["raw_mem"] = text.count("mem[")
+        out["text"] = len(text)
+        out["proofs"] = _proofs(prog)
         out["gate_fp"] = (
             framelog.diff(frameval.eval_fp(prog, trace, FRAMES), framelog.canonical(walker)) is None
         )
@@ -67,8 +86,10 @@ def tunes():
 def summarize(res):
     """The corpus totals: the partition per plane, the classes, the gates, refusals."""
     ok = [r for r in res if "law" in r]
-    planes, classes, refus = {}, {}, {}
+    planes, classes, refus, proofs = {}, {}, {}, {}
     for r in ok:
+        for k, n in (r.get("proofs") or {}).items():
+            proofs[k] = proofs.get(k, 0) + n
         for p, (i, t) in r["planes"].items():
             a, b = planes.get(p, (0, 0))
             planes[p] = (a + i, b + t)
@@ -85,6 +106,10 @@ def summarize(res):
         "planes": planes,
         "classes": classes,
         "refusals": refus,
+        "proofs": proofs,
+        "raw_mem": sum(r.get("raw_mem", 0) for r in ok),
+        "raw_mem_zero": sum(1 for r in ok if r.get("raw_mem") == 0),
+        "text": sum(r.get("text", 0) for r in ok),
         "triggers": [sum(r["triggers"][i] for r in ok) for i in (0, 1)],
         "gate_fp": sum(1 for r in ok if r["gate_fp"]),
         "law": sum(1 for r in ok if r["law"]),
