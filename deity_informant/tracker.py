@@ -977,128 +977,145 @@ def _lww_streams(lww, tabs, mem0):
     return out, explained
 
 
-# ---- 4c. the pulse sweep: a RAMP whose step is a declared byte --------------------
-def _step_site(s, env, envl, banks, origins):
-    """``(site, sign)`` if this store steps its own cell by one declared byte.
+# ---- 4c. the pulse sweep: a RAMP whose step the origin map names ------------------
+_CUTOFF = (0x15, 0x16)
 
-    ``("fix", cell)`` is a declared scalar and ``("lane", decl, off)`` a lane read at
-    the row the voice holds; a step the tree names no other way is refused, and so is
-    one it names two ways."""
-    addr = _base(s[1])
+
+def _def_stmt(expr, env, defs, fallback):
+    """The statement whose value expression ``expr`` resolves to through the locals."""
+    seen, out = set(), fallback
+    while isinstance(expr, tuple) and expr[0] == "loc" and expr[1] not in seen:
+        seen.add(expr[1])
+        if expr[1] not in env:
+            break
+        out, expr = defs[expr[1]], env[expr[1]]
+    return out
+
+
+def _steps_own(s, env):
+    """``1``/``-1`` if the store adds a term to a read of its own cell, else None."""
     root = _resolve(s[2], env)
     if not (isinstance(root, tuple) and root[0] == "op" and root[1] in ("INT_ADD", "INT_SUB")):
         return None
-    held = [t for t in root[2] if _read_base(t, env) == addr]
+    held = [t for t in root[2] if _read_base(t, env) == _base(s[1])]
     if not held or (root[1] == "INT_SUB" and root[2][0] not in held):
         return None
-    sites = set()
-    for t in root[2]:
-        for b in () if t in held else _read_bases(t, envl, origins):
-            d = _decl_of(b, banks)
-            if d is None or (b - d[0]) % _record(d[1], d[2]) in d[3]:
+    return -1 if root[1] == "INT_SUB" else 1
+
+
+def _acc_sites(prog):
+    """``([statement to watch], [cells per statement], {cell: sign})``: the accumulators.
+
+    Watched is the statement the arithmetic happens in — the store, or the assignment
+    its value resolves through, since a store of a bare local carries no origin at all.
+    Watching is by identity, so one assignment two stores share answers for both."""
+    watch, cells, at, signs = [], [], {}, {}
+    for proc in prog.procs:
+        env, defs = {}, {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env[s[1]], defs[s[1]] = s[2], s
                 continue
-            sites.add(("lane", d, (b - d[0]) % d[2]) if d[2] > 1 else ("fix", b))
-    return (sites.pop(), -1 if root[1] == "INT_SUB" else 1) if len(sites) == 1 else None
+            if s[0] != "st" or _sid_class(s[1]) is not None:
+                continue
+            sign = _steps_own(s, env)
+            if sign is None:
+                continue
+            w = _def_stmt(s[2], env, defs, s)
+            i = at.setdefault(id(w), len(watch))
+            if i == len(watch):
+                watch.append(w)
+                cells.append(set())
+            cells[i].add(_base(s[1]))
+            signs.setdefault(_base(s[1]), sign)
+    return watch, cells, signs
 
 
-def _accumulators(prog, banks):
-    """``{register class: (site, sign)}``: the pw accumulators the store statement names.
+def _acc_pools(cells, watched):
+    """``[frame][accumulator cell] -> candidate step origins``, one entry per execution.
 
-    The pw store reads a cell the play code steps by a declared byte: that cell is the
-    accumulator and the byte is its step. Two accumulators reaching one store refuse it."""
-    origins, out = {}, {}
+    An execution reports the cells its byte derives from with each origin ahead of it;
+    the cell it wrote is the accumulator, so what is left is where the step came from.
+    Per execution: one statement serves three voices and re-stages mid-run."""
+    out = [{} for _f in watched]
+    for f, ws in enumerate(watched):
+        for i, cell, srcs in ws:
+            pool = [x for x in srcs if x != cell]
+            for c in cells[i]:
+                out[f].setdefault(c, []).extend(pool)
+    return out
+
+
+def _accumulators(prog, signs):
+    """``{register class: (accumulator cell, sign)}``: the accumulator a store reads.
+
+    A pw or cutoff store whose value reaches exactly one stepped cell is that
+    accumulator's output; two accumulators reaching one store refuse it."""
+    origins, out, stepped = {}, {}, set(signs)
     for s in _stmts(prog):
         if s[0] == "st" and _sid_class(s[1]) is None:
             origins.setdefault(_base(s[1]), []).append(s[2])
     for proc in prog.procs:
-        env, envl, steps, reads = {}, {}, {}, []
+        envl = {}
         for s in _proc_stmts(proc):
             if s[0] == "asg":
-                env[s[1]] = s[2]
                 envl.setdefault(s[1], []).append(s[2])
-            elif s[0] == "st":
-                cls = _sid_class(s[1])
-                if cls is None:
-                    got = _step_site(s, env, envl, banks, origins)
-                    if got is not None:
-                        steps[_base(s[1])] = got
-                elif _PLANE.get(cls) == "pw":
-                    reads.append((cls, _read_bases(s[2], envl, origins)))
-        for cls, bases in reads:
-            hit = {b: steps[b] for b in bases if b in steps}
+                continue
+            cls = _sid_class(s[1]) if s[0] == "st" else None
+            if cls is None or not (_PLANE.get(cls) == "pw" or cls in _CUTOFF):
+                continue
+            hit = _read_bases(s[2], envl, origins) & stepped
             if len(hit) == 1:
-                out.setdefault(cls, hit.popitem()[1])
+                cell = hit.pop()
+                out.setdefault(cls, (cell, signs[cell]))
     return out
 
 
-def _hold_rows(ords, lww, banks, nframes):
-    """``[frame][voice][declaration base] -> row``, from the source cell of every write."""
-    cur, out = [{} for _v in range(3)], []
-    for f in range(nframes):
-        for v in range(3):
-            for w in ords[v][f]:
-                _hold(cur[v], w[2], banks)
-        for reg, (_val, srcs) in lww[f].items():
-            if reg <= _VOICE_HI:  # the filter is global: it holds no voice's row
-                _hold(cur[reg // 7], srcs, banks)
-        out.append([dict(c) for c in cur])
+def _runs(vals):
+    """``[(start, emits, delta)]``: maximal constant-nonzero-delta runs of two or more."""
+    out, i = [], 0
+    d = [(vals[j + 1] - vals[j]) & 0xFF for j in range(len(vals) - 1)]
+    while i < len(d):
+        j = i
+        while j < len(d) and d[j] == d[i]:
+            j += 1
+        if d[i]:
+            out.append((i, j - i + 1, d[i]))
+        i = j
     return out
 
 
-def _hold(cur, srcs, banks):
-    """Record the row each source cell recovers in its declaration."""
-    for c in srcs:
-        d = _decl_of(c, banks)
-        if d is not None:
-            cur[d[0]] = (c - d[0]) // d[2]
+def _acc_streams(acc, pools, banks, tabs, lww, mem0):
+    """``(streams, explained)``: the sweep as a RAMP whose step the origin map names.
 
-
-def _step_byte(site, mem0, held):
-    """``(step cell, declared byte)`` for a step site, or None without a row."""
-    if site[0] == "fix":
-        return site[1], mem0[site[1]]
-    _k, (base, size, stride, _mut), off = site
-    row = held.get(base)
-    if row is None:
-        return None
-    cell = base + stride * row + off
-    return (cell, mem0[cell]) if base <= cell < base + size else None
-
-
-def _acc_streams(acc, banks, lww, mem0, ords):
-    """``(streams, explained)``: the pw sweep as a RAMP over its declared step.
-
-    A pw write the evaluator reports no source cell for is the accumulator store; its
-    step is the declared byte the tree named, at the row the voice holds. One run per
-    step cell, kept only if the ramp regenerates every byte of it from its first."""
-    rows = _hold_rows(ords, lww, banks, len(lww))
-    runs, seen = {}, {}
+    A maximal constant-delta run of the register's own emits is the candidate; every
+    stepped emit's accumulator execution must report an origin that is a declared byte
+    at a non-``mut`` offset equal to that step, so a fitted step is refused."""
+    seqs = {}
     for f, wr in enumerate(lww):
-        for reg in sorted(wr):
-            val, srcs = wr[reg]
-            if srcs or reg > _VOICE_HI or reg % 7 not in acc:
-                continue
-            site, sign = acc[reg % 7]
-            got = _step_byte(site, mem0, rows[f][reg // 7])
-            if got is None:
-                continue
-            cell, byte = got
-            if seen.get(reg) != cell:
-                seen[reg] = cell
-                seen[reg, "n"] = seen.get((reg, "n"), 0) + 1
-            runs.setdefault((reg, cell, seen[reg, "n"]), []).append((f, val, sign * byte))
+        for reg, (val, srcs) in wr.items():
+            cls = _class_of(reg)
+            if cls in acc and _lane_key((reg, val, srcs), tabs.get(cls, ()), mem0) is None:
+                seqs.setdefault(reg, []).append((f, val))
     streams, explained = [], [set() for _f in lww]
-    for (reg, _cell, _n), run in runs.items():
-        seed, step = run[0][1], run[0][2]
-        if step % 0x100 == 0 or len(run) < 2:
-            continue
-        if any((seed + step * i) & 0xFF != v for i, (_f, v, _s) in enumerate(run)):
-            continue
-        counts = [0] * len(lww)
-        for f, _v, _s in run:
-            counts[f] = 1
-            explained[f].add(reg)
-        streams.append((tuple(counts), ("RAMP", seed, step, 0x100), reg))
+    for reg, seq in sorted(seqs.items()):
+        cell, sign = acc[_class_of(reg)]
+        claimed = set()
+        for at, n, delta in _runs([v for _f, v in seq]):
+            if seq[at][0] in claimed:  # adjacent runs share their boundary emit
+                at, n = at + 1, n - 1
+            step = delta if sign > 0 else (-delta) & 0xFF
+            if n < 2 or not all(
+                _lane_key((reg, step, pools[f].get(cell, ())), banks, mem0) is not None
+                for f, _v in seq[at + 1 : at + n]
+            ):
+                continue
+            counts = [0] * len(lww)
+            for f, _v in seq[at : at + n]:
+                counts[f] = 1
+                claimed.add(f)
+                explained[f].add(reg)
+            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg))
     return streams, explained
 
 
@@ -1144,12 +1161,13 @@ def oracle(prog, trace, nframes):
 
 
 def _observe(prog, trace, nframes):
-    """``(canonical records, order-preserved writes, last-write-wins writes)``, with provenance.
+    """``(records, order-preserved writes, lww writes, step pools)``, with provenance.
 
-    One machine run: the projection ``oracle`` defines, plus the cell each write
-    loaded its byte from (``frameval.eval_src``) — the index the store statement's
-    table read used, which the tree names but cannot evaluate."""
-    frames, srcs = frameval.eval_src(prog, trace, nframes)
+    One machine run: the projection ``oracle`` defines, the cell each write loaded its
+    byte from, and the origin map queried for the accumulator statements the tree names
+    — cells no SID store reads, so nothing else reports them (docs/frameprog.md §1.4)."""
+    watch, cells, signs = _acc_sites(prog)
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
@@ -1160,7 +1178,7 @@ def _observe(prog, trace, nframes):
                 ords[reg // 7][f].append((reg, val, src))
             else:
                 lww[f][reg] = (val, src)
-    return framelog.canonical(frames), ords, lww
+    return framelog.canonical(frames), ords, lww, (_acc_pools(cells, wat), signs)
 
 
 def lift(prog, frames=()):
@@ -1175,7 +1193,7 @@ def lift(prog, frames=()):
     )
 
 
-def _graph(prog, pitch, frames, ords, lww):
+def _graph(prog, pitch, frames, ords, lww, acc):
     """``(graph, lanes)``: declared lanes and notes as generators, the rest RAW.
 
     A declared lane the store statement names outranks the note reading of the same
@@ -1189,7 +1207,8 @@ def _graph(prog, pitch, frames, ords, lww):
     residual = []
     pre, post, ires = _instr_streams(prog, ords, tabs, banks)
     lwws, declared = _lww_streams(lww, tabs, prog.mem0)
-    ramps, swept = _acc_streams(_accumulators(prog, banks), banks, lww, prog.mem0, ords)
+    pools, signs = acc
+    ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
     for f, rec in enumerate(frames):
         gen, done = {}, declared[f] | swept[f]
         for v in range(3):
@@ -1229,8 +1248,8 @@ def render(prog, trace, nframes):
     Accepted-note freq entries and explained ADSR writes are interpreted
     generators; everything else is an explicit RAW residual, so a ``gate`` PASS
     certifies the partition is complete."""
-    gt, ords, lww = _observe(prog, trace, nframes)
-    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww)
+    gt, ords, lww, acc = _observe(prog, trace, nframes)
+    graph, lanes = _graph(prog, _pitch(prog, _freq_words(gt)), gt, ords, lww, acc)
     recs, interp, rawn, trig = _run(graph, nframes)
     return recs, gt, _coverage(interp, rawn, graph.classes, trig), lanes
 

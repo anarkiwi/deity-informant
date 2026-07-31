@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+_CLASSES = ("lane", "gate", "imm", "ramp", "seed")
+
 SHOWCASE = [
     "MUSICIANS/H/Hubbard_Rob/Commando.sid",
     "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid",
@@ -107,6 +109,12 @@ def render_tune(rel):
         + "  ".join(
             "%s %d/%d" % (p, it, tot) for p, (it, tot) in sorted(cov.planes.items()) if it < tot
         )
+    )
+    cls = {k: sum(d[k] for d in (cov.classes or {}).values()) for k in _CLASSES}
+    lines.append(
+        "evidence: "
+        + "  ".join("%s %d" % kv for kv in cls.items())
+        + "   (imm and seed are shallow: they explain no index)"
     )
     tg, tt = cov.triggers  # the trigger domain, reported apart from the value partition
     lines.append(
