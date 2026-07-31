@@ -478,7 +478,6 @@ def test_ctrl_is_the_declared_waveform_lane_and_its_gate_image():
         "seed": 0,
         "mask": 0,
         "rel": 0,
-        "arr": 0,
     }
     _gt, ords, _lww, _acc = T._observe(prog, {}, 4)
     _pre, post, refined = _instr(prog, ords)
@@ -686,7 +685,6 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
         "seed": 2,
         "mask": 0,
         "rel": 0,
-        "arr": 0,
     }
     assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
 
@@ -1522,7 +1520,6 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
         "seed": 0,
         "mask": 0,
         "rel": 0,
-        "arr": 0,
     }
     _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
     streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
@@ -1602,6 +1599,60 @@ def test_mutation_a_moved_orderlist_entry_changes_the_projection():
     """Mutation evidence: one wrong orderlist entry must move the record."""
     good, n = _arrangement([3, 5, 1], tuple(range(8)), 4, 16)
     bad, _n = _arrangement([3, 4, 1], tuple(range(8)), 4, 16)
+    assert T.eval_graph(good, n) != T.eval_graph(bad, n)
+
+
+def _transposed(trans, notes, table, rows_per, nframes):
+    """A pattern note column read at a declared transpose: the index-domain relative."""
+    beat = T.Generator(("DIV", rows_per), T.FRAME, ("fire",))
+    shift = T.indexer(("LOOKUP", tuple(trans)), ("event", 0))
+    note = T.indexer(("LOOKUP", tuple(notes)), T.FRAME)
+    pitch = T.select(table, ("rel", "ADD", 2, ("node", 1)), T.FRAME, 0x01)
+    return T.Graph([beat, shift, note, pitch]), nframes
+
+
+def test_a_relative_row_carries_a_transpose():
+    """A transpose shifts the row a pitch table is read at, not the byte it yields."""
+    got = _emitted(*_transposed([0, 12], [1, 3, 5, 7], tuple(range(100, 140)), 4, 10))
+    assert got[3:7] == [107, 101, 103, 105]  # transpose 0: the note column itself
+    assert got[7:10] == [119, 113, 115]  # transpose 12: every row shifted by an octave
+
+
+def test_a_relative_row_may_shift_by_a_declared_constant():
+    """A fixed transpose needs no generator of its own."""
+    note = T.indexer(("LOOKUP", (0, 1)), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("const", 5)), T.FRAME, 0x01)
+    assert _emitted(T.Graph([note, pitch]), 4) == [5, 6, 5, 6]
+
+
+def test_a_relative_row_refuses_an_unknown_operation():
+    """The operation comes from the store's own operator, not an invented one."""
+    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
+    pitch = T.select((1, 2), ("rel", "MUL", 0, ("const", 0)), T.FRAME, 0x01)
+    with pytest.raises(T.TrackerError, match="unknown relative row operation"):
+        T.eval_graph(T.Graph([note, pitch]), 2)
+
+
+def test_both_sources_of_a_relative_row_must_be_earlier_index_nodes():
+    """Either half arriving late would need a value the frame has not made."""
+    note = T.indexer(("LOOKUP", (0,)), T.FRAME)
+    pitch = T.select(tuple(range(20)), ("rel", "ADD", 0, ("node", 2)), T.FRAME, 0x01)
+    shift = T.indexer(("LOOKUP", (1,)), T.FRAME)
+    with pytest.raises(T.TrackerError, match="not an earlier node"):
+        T.eval_graph(T.Graph([note, pitch, shift]), 2)
+
+
+def test_a_transposed_row_past_the_table_drops_the_write():
+    """A shift off the end of the pitch table emits nothing rather than wrapping."""
+    note = T.indexer(("LOOKUP", (1,)), T.FRAME)
+    pitch = T.select((7, 8), ("rel", "ADD", 0, ("const", 40)), T.FRAME, 0x01)
+    assert _emitted(T.Graph([note, pitch]), 2) == [None, None]
+
+
+def test_mutation_a_wrong_transpose_changes_the_projection():
+    """Mutation evidence: the shift must be the declared one."""
+    good, n = _transposed([0, 12], [1, 3], tuple(range(100, 140)), 4, 12)
+    bad, _n = _transposed([0, 11], [1, 3], tuple(range(100, 140)), 4, 12)
     assert T.eval_graph(good, n) != T.eval_graph(bad, n)
 
 

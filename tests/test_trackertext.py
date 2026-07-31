@@ -330,6 +330,25 @@ def test_a_side_that_starts_later_is_compared_at_its_own_offset():
     assert "ours names a note on 8 frames in all" in text
 
 
+def test_an_index_node_is_named_by_what_it_does_not_by_a_missing_register():
+    """An index source writes no register, so it must not read as unexplained."""
+    g = T.Graph(
+        [
+            T.edge((1, 1)),
+            T.indexer(("LOOKUP", (3,)), ("event", 0)),
+            T.select(tuple(range(10)), ("node", 1), ("event", 0), 0),
+        ]
+    )
+    assert X._route(g.nodes[1]) == "-> the row another generator reads"
+    assert X._lookup_str(g.nodes[1], 2).endswith("(see the note lane)")
+
+
+def test_a_relative_route_says_it_offsets_its_register():
+    """A relative emit is a delta, not the byte the register takes."""
+    g = T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0x01, "ADD", ("prev",)))
+    assert X._route(g) == "-> voice 1 pitch hi, as an offset"
+
+
 def test_the_arrangement_axis_counts_a_generated_row_where_one_exists():
     """A pattern read at a row an index generator supplies is what the axis is looking for."""
     nodes = list(_graph().nodes) + [
