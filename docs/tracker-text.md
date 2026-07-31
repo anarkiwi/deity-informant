@@ -132,11 +132,12 @@ native-editor extras (`pip install -e '.[nativeoracle]'`).
 **The rendering is linear in frames and in nodes.** A whole tune is thousands of nodes —
 Commando at 11750 frames is 1812 — and `tracker._fired` rescans every node per firing
 trigger, which makes a pass quadratic; `_consumers` indexes the trigger fan-out once, so
-`_scan` is one linear pass instead. On Commando that is the difference between 46s and
-~4s of rendering. What dominates the wall clock is **recovering** the graph, which is
-`tracker`'s cost and not this layer's: ~166s for Commando's 11750 frames, against ~4s to
-render it. The driver runs the tunes in a pool, so a whole run is one tune's recovery
-wide, and no tune is windowed.
+`_scan` is one linear pass instead: **45.8s → 17.7s** on that graph, while doing strictly
+more work (the per-frame note index and the instrument map the side-by-side view needs).
+What dominates the wall clock is **recovering** the graph, which is `tracker`'s cost and
+not this layer's: 183s for Commando's 11750 frames against 17.7s to render them, and 11s
+against 0.3s for Ghouls_n_Ghosts. The driver runs the tunes in a pool, so a whole run is
+one tune's recovery wide, and no tune is windowed.
 
 The tests (`tests/test_trackertext.py`) are hermetic: they render hand-built graphs
 carrying every transfer kind and a masked group over two registers, compare two sides,
