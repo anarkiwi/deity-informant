@@ -30,7 +30,8 @@ structure exist in an editor that had never heard of this one?*
 | pulse program: a set row, then a sweep | `pulsetable` left/right | per-instrument `pw_table` | `SELECT` + `RAMP`, §4b/§4c |
 | filter program | `filtertable` left/right | per-instrument `filter_table` | `SELECT` + `RAMP`, §4b/§4c |
 | arpeggio / chord table | wavetable relative-note column | `default_chord` + `chord_table` + `arp_speed` | — (§7.3, not implemented) |
-| transpose | orderlist `Transpose` | sequence `Transpose`, `octave_shift` | — (§7.4) |
+| transpose | orderlist `Transpose` | sequence `Transpose`, `octave_shift` | — (§4.5, a relative *index*) |
+| **orderlist, pattern, row counter** | `Channel.entries`, `Pattern.rows`, `pattbase + pattptr/4` | `sequences`, `Pattern.rows`, `pattern_row` | an `Index` chain: `RAMP`/`LOOKUP` → the pattern's column → the table, §3.2b |
 | gate-off images | `gateoff_timer` | `gateoff_wf`/`gateoff_pw`/`gateoff_filt` | the gate images of the same lanes, §5 |
 | **two fields in one register** | `$18` = `filtertype & $70` \| `masterfader` | `$18` = mode \| volume; `$17` = resonance \| three voices' routing flags | masked `SELECT`s over disjoint bit fields, §4e |
 | **a value offset rather than replaced** | `_vibrato`: `freq ± speedtable.right[row]` | `WRPITCH`: the pitch lane `+` the WF program's detune column | a relative route over `Prev` or `Node(i)`, §4f |
@@ -49,6 +50,11 @@ per voice, each that voice's own instrument flag. §4.2 measured the second, and
 §4f answered it with a **relative route**: the generator supplies a delta and the route
 names the operation and the base. Nothing editor-specific was added for either — the
 route kinds are the ones `tracker` uses on its own recovery.
+
+The last row is the third such answer and the first in the **index** domain: an `Index`
+route carries a row from one generator to another, so all three editors' orderlist,
+pattern and row counter become the same three nodes (§3.2b). What it still cannot carry
+is a row that composes two indices, which is §4.5 and is priced there.
 
 ## 2. Two graphs, two purposes
 
@@ -124,7 +130,7 @@ brackets, the 7 that reach ≥20 frames):
 |---|---|---|
 | **Pitch** | our note-lane `SELECT` row on `freq_lo` vs the pitch-table row the editor's player indexed | **1.0000 over 1847 emits, offset 0** (0.9896 over 3178) |
 | **Instruments** | our `SELECT` rows on the `ad` plane vs the native instrument number | **1.0000 over 1273 emits, a bijection on 4/4 tunes** (1.0000 over 1601, 7/7) |
-| **Structure** | native patterns / orderlist entries the recovery represents at all | **0 of 118 patterns, 0 of 228 orderlist entries, 0 of 7672 rows** |
+| **Structure** | native patterns / orderlist entries / rows each side represents | **format 10 of 118 patterns, 10 of 228 orderlist entries, 63 of 7672 rows; recovery 0, 0, 0** |
 
 The pitch axis compares like with like and says which: the native side is
 `chan.lastnote`, the row the player actually handed the frequency table, **not**
@@ -136,12 +142,84 @@ The instrument axis is a bijection, which is the thing to look for: our recovere
 rows are 1, 3 and 5 distinct values on those tunes and each maps to exactly one
 native instrument number and back.
 
-The structure axis is §7.4's prize, and the answer is zero — measured, not
-asserted. `our_index_nodes`, the count of nodes whose route is `Fire` and whose
-transfer is not `EDGE`/`DIV`, is **0 on every tune**: no generator addresses
-another generator's index, so no orderlist and no pattern is represented. Of the
-native note-ons, only **2 of 75** (562 of 1785 corpus-wide) coincide with a fire
-of one of our instrument-plane `EDGE` streams.
+The structure axis is §7.4's prize, and it now carries **two numbers that must not
+be summed**. `index_nodes` — nodes whose route is `Index`, and `SELECT`s whose rows
+are `("node", j)` rather than a recovered run — is computed on **both** graphs, the
+mapped one and the recovery's:
+
+| the four strict-full tunes | the format (the composer's own model) | the tracker's recovery |
+|---|---|---|
+| `Index` nodes | **51** | **0** |
+| `SELECT`s read at a generated row | **46** | **0** |
+| emits at a generated row | **4811** | **0** |
+| patterns represented | **10** of 12 walked, of 118 in the songs | **0** |
+| pattern rows represented | **63** of 400 walked, of 7672 | **0** |
+| orderlist entries represented | **10** of 12 walked, of 228 | **0** |
+
+Per tune, patterns / rows / orderlist entries the mapped graph represents:
+`Dear_Enemy` 3/12/3, `25_Years_tune_1` 3/17/3, `An_Old_Era` 2/18/2, `86400` 2/16/2.
+The right-hand column is the expected result and not a failure: docs/tracker.md §7.4
+measures the recovery side at **0 emits over 649 tunes** because 324 of 366 resolved
+deref sites refuse — the row index is not a cell the program text walks — and the 42
+left name no declared pattern block. Nothing was loosened to move it.
+
+Corpus-wide the format side reaches **799 `Index` nodes, 737 generated-row `SELECT`s
+and 41424 emits over 71 tunes** — 185 of 2407 patterns, 997 of 123941 rows and 213 of
+6579 orderlist entries — against **0, 0, 0** for the recovery on the same windows. Of
+the native note-ons, **2 of 75** (562 of 1785 corpus-wide) still coincide with a fire
+of one of our instrument-plane `EDGE` streams; the arrangement moves neither the value
+domain (§4.7) nor the trigger domain (§4.1) — it moves the **index** domain, which had
+no measurement at all before this.
+
+**The format-vs-recovery gap is this project's central fact, and this axis is its
+sharpest form.** §4.3's masked route and §4.2's relative route bought 26167 and 4650
+emits out of the editors' own models against 676 and 316 from decompiled binaries. The
+arrangement is the limit of that pattern: **73766 emits at a generated row across three
+editors' own models, against 0 from binaries.** The format expresses an arrangement; a
+6502 driver's program text does not name one, and docs/tracker.md §7.4 prices exactly
+why — 324 of 366 resolved deref sites refuse because the row index is not a cell the
+text walks, and the 42 that remain point at blocks no `datadecl` region covers. The
+right reading is not that the recovery failed: it is that the *format* was the wall for
+the editors and *provenance* is the wall for the recovery, for the third time and by the
+largest margin yet.
+
+### 3.2b What the arrangement is, as node shapes
+
+The same three nodes in all three editors, and none of them is editor-specific:
+
+```
+row counter   Index  RAMP(row0, step, 0)  or  LOOKUP(the walk)   # which row
+pattern       Index  SELECT(the pattern's own column, ("node", counter))
+plane         Plane  SELECT(the pitch table or the bank, ("node", pattern))
+```
+
+One chain per **(voice, pattern)**, shared by every song step that plays that
+pattern and by every register that reads it — that is §7.4's "shared subgraphs for
+reuse", and it is why `SELECT`s read at a generated row (737) outnumber `Index`
+nodes' chains. What moves out of observation is the **note index and the instrument
+number**: the row a voice's pitch `SELECT` reads is now a byte of the composer's own
+pattern, not a row read off the player. The row *of the pattern* is still the walk.
+
+The row counter is a real `RAMP` — seed, step, no wrap — on **9** GoatTracker chains
+and **38** SID-Wizard ones, and the unrolled walk as a `LOOKUP` on the rest. `RAMP`
+wraps `mod bound`, i.e. always back to **0**, so it is the right back-edge only for a
+walk that starts at row 0; a pattern whose base row is not 0 cannot express its own
+repeat with the wrap, and is carried unrolled instead.
+
+**The wrap and the editor's loop point, measured rather than assumed.** `_emit` wraps
+a `LOOKUP` at `% len(seq)`, which is the back-edge only where the editor's own restart
+is the start of the table:
+
+| | wrap IS the loop point | it is not |
+|---|---|---|
+| GoatTracker channel orderlists (`Orderlist.restart`) | **155** of 213 | 58 |
+| SID-Wizard sequences (`Loop.position`) | **114** of 171 | 57 |
+| DefMON cascade jumps (`sidtab_jp`, docs/dm-oracle.md §3.2) | **0** of 227 | 227 |
+
+Where it is not, the walk is carried **unrolled to the loop point** by the `LOOKUP`
+form rather than by a wrong back-edge, so no chain is built on a back-edge the editor
+does not have. No back-edge machinery was added; the wrap `_emit` already has is the
+only one used.
 
 ### 3.3 Coverage, side by side
 
@@ -262,10 +340,11 @@ deficiency, and it is §4.3's reading again: the *format* was the wall for the e
 
 Two halves of the old entry stay open and are not this route's. The **note-index**
 domain — `chord_table`, `octave_shift`, the orderlist `Transpose` — shifts the row a
-pitch `SELECT` reads rather than the byte it emits; both mappings already take the final
-index off their own player, so it costs nothing here and recovering it is §7.4's
-arrangement. And the **triangle `RAMP`** bound is a transfer, not a route
-(docs/dm-oracle.md §4.2 is where a tune first reaches it).
+pitch `SELECT` reads rather than the byte it emits, and it is no longer free: now that
+the arrangement supplies that row (§3.2), a declared shift between the pattern's column
+and the pitch table's index refuses the emit outright, at **6953** emits over three
+editors. That is **§4.5**, measured. And the **triangle `RAMP`** bound is a transfer,
+not a route (docs/dm-oracle.md §4.2 is where a tune first reaches it).
 
 ### 4.3 One register plane, two generators — **closed**
 
@@ -304,7 +383,7 @@ SID-Wizard's filter plane goes 0/51200 to **16343/51200**; GoatTracker's 11470/4
 to **20090/42157**.
 
 What is left is named rather than folded away. **13234 emits are the driver's ghost**
-(§4.5): the song never runs a filter program, so the mode nibble is the editor's
+(§4.6): the song never runs a filter program, so the mode nibble is the editor's
 power-on 0 and the volume its power-on `$0F`, and a field no song datum reaches is
 refused — a masked group is admitted only where at least one field is a real table
 row. **316 emits** (171 GT, 145 SW) do form a group whose fields the composer's tables
@@ -340,7 +419,47 @@ names a byte lane of it. GoatTracker's pulse (12-bit) and frequency (16-bit),
 SID-Wizard's pulse (12-bit, an explicit `(PWHIGHO, PWLOGHO)` 16-bit pair in the
 player), and our own recovery's `pw`/`cutoff`.
 
-### 4.5 What is not a deficiency, and is reported anyway
+### 4.5 An index route is absolute, and every arrangement composes two indices
+
+The index route shipped (docs/tracker.md §2: `indexer(transfer, trigger)`, and a
+`SELECT` whose rows are `("node", j)`), and §3.2 is what it bought. What it cannot
+carry is a row that is **one index plus another**, and both halves of every editor's
+arrangement are exactly that.
+
+**The transpose, priced.** A transpose shifts the *index* the pitch table is read at,
+not the byte it emits, so §4.2's relative route — which is in the value domain — does
+not reach it. Every emit under a nonzero declared shift is refused rather than fitted:
+
+| the shift the editor declares | emits refused | tunes/modules | share of that editor's freq plane |
+|---|---|---|---|
+| GoatTracker orderlist `Transpose` | **1690** | 5 of 71 | 1690/83488 = **2.02%** |
+| SID-Wizard `Transpose` + instrument `octave_shift` | **4738** | 15 of 64 | 4738/67755 = **6.99%** |
+| DefMON `TR` with bit 7 clear (docs/dm-oracle.md §4.2) | **525** | 3 of 6 | 525/7200 = **7.29%** |
+| **three editors** | **6953** | **23 of 141** | — |
+
+On the strict-full four the same refusal is **386** emits on one tune. Every one is a
+byte of the composer's own pattern at a row the editor's own player walked, with one
+declared byte between it and the pitch table's row.
+
+**The orderlist, for the same reason.** A pattern's absolute row is
+`base(the orderlist entry) + the row counter`. `("node", j)` names **one** source, so
+the orderlist cannot be a generator of its own: what ships instead is one chain per
+(voice, pattern), whose row counter's seed *is* the entry's base row, and an orderlist
+entry counts as represented where its pattern's chain exists and fires (§3.2, 213 of
+6579 for GoatTracker). The entry is in the graph as a shared subgraph and its **arrival**
+is a trigger, not a generated index.
+
+**The general extension**: `Rel` in the **index** domain — a row that is a declared
+delta over a named base index, the same three bases §4f already names. One object
+closes both halves, on three independent editors: the orderlist becomes
+`base + counter` and the note becomes `pattern column + transpose`. It is not this
+route with a wider target, and it is not §4f with a different register: §4f combines
+two *values* into a byte, and this combines two *rows* into an index. The arpeggio is
+the third use — GoatTracker's wavetable relative-note column costs **10142** emits
+here, SID-Wizard's `chord_table` **2621** and DefMON's **1141**, all counted as
+`arpeggio` and all the same shape.
+
+### 4.6 What is not a deficiency, and is reported anyway
 
 **The driver's ghost.** 97152 GoatTracker emits (77% of the strict graph's `RAW`)
 and 75255 SID-Wizard emits (61%) — `ghost:pw` alone is 39440 on 58 GT tunes — are
@@ -371,12 +490,18 @@ count **4 → 5** with **10 tunes improving and none regressing**;
 `Fegolhuzz/15_minuter_fraan_Esloev` alone goes **4 → 199 frames**. So the datum is
 worth about one tune in seventy, and the rest of the gap is elsewhere.
 
-### 4.6 How much of the mapped graph is `RAW`
+### 4.7 How much of the mapped graph is `RAW`
 
 Interpreted share is the admitted graph's; the `RAW` breakdown is the strict
 graph's own residual, whose denominator is that graph's write count.
 
-| | admitted interpreted | strict `RAW` | of it: the primitive cannot express (§4.2, §4.4) | of it: driver ghost (§4.5, §4.3) | rest |
+The arrangement (§3.2, §4.5) moves **nothing** in this table and is not in it: it is the
+index domain, so it changes where a `SELECT`'s row comes from and not which emits are
+interpreted. Interpreted counts, per-plane splits and every evidence class are
+byte-identical before and after it, on all three editors — which is the check that it
+added structure and not coverage.
+
+| | admitted interpreted | strict `RAW` | of it: the primitive cannot express (§4.2, §4.4) | of it: driver ghost (§4.6, §4.3) | rest |
 |---|---|---|---|---|---|
 | GoatTracker, 71 tunes | 112988/282516 = 40.0% | 126554 | **20148 = 15.9%** | 97152 = 76.8% | 9254 |
 | GoatTracker, strict-full 4 | 9926/17117 = 58.0% | 7191 | **1041 = 14.5%** | 5954 = 82.8% | 196 |
@@ -418,7 +543,7 @@ volume as a one-entry table where the song never sets it (the `hr` lane's preced
   sweep. That is a mapping gap, not a format one.
 - A masked group is admitted only where at least one field is a real table row, so a
   register the song never programs stays `RAW` even though its fields are known
-  constants: 13234 emits, counted with the driver ghost (§4.5). The set row itself is
+  constants: 13234 emits, counted with the driver ghost (§4.6). The set row itself is
   **held** across the frames it still stands for — the editor's own pointer, not a
   search — and a held row whose byte no longer agrees is refused by the same
   `mem0[src] == val` pair every other emit passes.
@@ -426,3 +551,15 @@ volume as a one-entry table where the song never sets it (the `hr` lane's preced
   subclass for GoatTracker, from the public pointer state for SID-Wizard — and
   every emit is re-checked against the table byte, so a mis-named row costs
   coverage and can never cost correctness.
+- The arrangement is measured over the 200-frame window, so its denominators are
+  three: the whole song (2407 GoatTracker patterns), the part the editor's own player
+  **walked** in the window (252), and the part the graph **represents** (185). Only the
+  middle one is reachable at all in 200 frames, and all three are reported (§3.2).
+- A pattern chain is built only where the walk has one emit per frame: a frame that
+  writes a register twice would be two readers of one index value, and is refused
+  rather than ordered. It costs nothing on these three editors and is counted.
+- The instrument index link needs the pattern row whose instrument column set the
+  voice's current instrument, held across the rows that leave it empty. Where no row
+  has set it yet — the driver's own power-on instrument — there is no pattern row to
+  name: 11826 GoatTracker emits and 3165 SID-Wizard emits, counted as
+  `no_instrument_row` and left with an observed row.

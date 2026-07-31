@@ -318,7 +318,7 @@ def test_the_comparison_reads_off_pitch_instruments_and_the_arrangement():
     assert "ours 00 = theirs 01, ours 01 = theirs 03, ours 02 = theirs 04" in text
     assert "arrange  A 0, B 0 generators addressing another generator's index" in text
     assert "the song itself holds 12 patterns" in text
-    assert "no orderlist, no pattern, no transpose is represented by either graph" in text
+    assert "a row stream is a recovered index on both sides, never a generated one" in text
 
 
 def test_a_side_that_starts_later_is_compared_at_its_own_offset():
@@ -347,3 +347,16 @@ def test_a_relative_route_says_it_offsets_its_register():
     """A relative emit is a delta, not the byte the register takes."""
     g = T.Generator(("LOOKUP", (1,)), T.FRAME, T.relative(0x01, "ADD", ("prev",)))
     assert X._route(g) == "-> voice 1 pitch hi, as an offset"
+
+
+def test_the_arrangement_axis_counts_a_generated_row_where_one_exists():
+    """A pattern read at a row an index generator supplies is what the axis is looking for."""
+    nodes = list(_graph().nodes) + [
+        T.indexer(("RAMP", 0, 1, 4), T.FRAME),
+        T.select((0x11, 0x22, 0x33, 0x44), ("node", len(_graph().nodes)), T.FRAME, 0x15),
+    ]
+    side = X.Side("A", "our recovery", T.Graph(nodes), "PASS", _prog())
+    text = X.compare([side, _sides()[1]], NF)
+    assert "arrange  A 1, B 0 generators addressing another generator's index" in text
+    assert "A 1, B 0 tables read at a generated row" in text
+    assert "a row stream is a recovered index on both sides" not in text

@@ -107,7 +107,7 @@ reproduces a real editor's tune across the 6502 boundary.
 |---|---|---|
 | **Pitch** | our note-lane `SELECT` row on `freq_hi` vs the note the player indexed | **0.9588 over 2746 emits, offset 0, on 6/6 tunes** |
 | **Instruments** | our `SELECT` rows on `ad`/`sr`/`ctrl` vs the sidTAB row | **0 emits — the recovery carries no row on any instrument plane** |
-| **Structure** | native patterns / orderlist entries the recovery represents | **0 of 387 patterns, 0 of 1476 orderlist entries, 0 of 5535 rows** |
+| **Structure** | native patterns / orderlist entries / rows each side represents | **format 20 of 387 patterns, 31 of 1476 orderlist entries, 103 of 5535 rows; recovery 0, 0, 0** |
 
 Per tune the pitch share is 0.9966 (Automatas), 0.9849, 0.9785, 0.9752, 0.9180,
 0.8706, and **the offset is 0 on every one**: our recovered row *is* the
@@ -125,10 +125,45 @@ the other side: `lane` 11725, `gate` 831, **`imm` 0** — no emit in the DefMON
 oracle rests on the shallow class — against the recovery's `lane` 2746 / `imm`
 3301 on the same windows.
 
-The structure axis is §7.4's prize and the answer is again zero, measured:
-`our_index_nodes` is 0 on every tune, so no generator addresses another
-generator's index. 25 of 158 native note-ons coincide with a fire of one of our
-instrument-plane `EDGE` streams.
+The structure axis is §7.4's prize and it now carries **two numbers that must not be
+summed**, one per side, on the same six windows:
+
+| | the format (DefMON's own model) | the tracker's recovery |
+|---|---|---|
+| `Index` nodes | **82** | **0** |
+| `SELECT`s read at a generated row | **62** | **0** |
+| emits at a generated row | **4199** | **0** |
+| patterns represented | **20** of 22 walked, of 387 in the songs | **0** |
+| pattern rows represented | **103** of 160 walked, of 5535 | **0** |
+| orderlist entries represented | **31** of 39 walked, of 1476 | **0** |
+
+The node shapes are docs/gt-oracle.md §3.2b's, unchanged — one chain per (voice,
+pattern), the row counter then the pattern's own column then the table — and the
+DefMON spelling of each is §1's table read one link further:
+
+- the **orderlist** is `arranger_v1/v2/v3`, read at `sig + $ADE + $100·v + step`. That
+  read names the voice and the song step, so the pattern number is off the address bus
+  exactly as §2 takes every other index.
+- the **pattern** is a `PatternEvent` column: `note` names a row of `NOTE_PITCH_LO/HI`,
+  and `slot_a`/`slot_b` name a **sidTAB row**, which is the row every instrument lane
+  already reads. So one index link serves the pitch table and the instrument bank both.
+- the **row counter** is the walk of that pattern's events. On DefMON it is a `RAMP` on
+  **0** of 82 chains: the packed event stream is variable-length, so successive events
+  are not an even stride and every counter is the unrolled walk (docs/gt-oracle.md
+  §3.2b's `LOOKUP` form).
+
+Reaching the events at all needed the **packed pattern stream decoded**, because the
+packer does not store 32 fixed four-byte events: it stores each event's flag byte
+followed by only the columns its gates arm, patterns end-to-end, stopping at the last
+one carrying an end event. `dm_pattern_map` rebuilds that rule and **verifies it byte
+for byte against the mounted image**, ending the map where it diverges rather than
+guessing — the same discipline `dm_sites` applies to the opcodes. It maps 20, 30, 90,
+2, 40 and 118 patterns on the six tunes. Where the map ends, no pattern read is
+observed and no arrangement is claimed: 1756 emits, counted as `no_pattern_row`.
+
+25 of 158 native note-ons still coincide with a fire of one of our instrument-plane
+`EDGE` streams; the arrangement moves the **index** domain, not the trigger domain
+(§4.1) and not the value domain (§4.7).
 
 ### 3.3 Coverage, side by side
 
@@ -155,7 +190,7 @@ trigger off the floor, and §4.1 says why — this time with the divisor in hand
 ## 4. The deficiency report
 
 Every wall actually hit, with its weight, and for each of docs/gt-oracle.md §4's
-four entries an explicit verdict: **does a third, independent editor hit it too?**
+entries an explicit verdict: **does a third, independent editor hit it too?**
 
 ### 4.1 A `DIV` has no phase — confirmed, and DefMON supplies the divisor
 
@@ -333,6 +368,42 @@ drive, not a constant. It is §4.2's composition moved from the value domain to 
 parameter domain, and it is what a second-order envelope needs. One editor so far,
 so it is reported and not proposed.
 
+### 4.5b An index route is absolute — confirmed, and DefMON is the third editor
+
+docs/gt-oracle.md §4.5's wall, hit from a third direction. The index route carries a
+row from one generator to another, which is what §3.2 recovers; what it cannot carry is
+a row that is **one index plus another**, and DefMON needs that in both places the other
+two editors need it.
+
+| | emits refused | tunes | share of the DefMON freq plane |
+|---|---|---|---|
+| `TR` with bit 7 clear — added to the voice's transpose buffer | **525** | 3/6 | 525/7200 = **7.29%** |
+| the arpeggio shape: the pattern's note no longer names the index | 1141 | 6/6 | — |
+| `slot_a`/`slot_b` no longer naming the fetched sidTAB row | 3439 | 6/6 | — |
+| GoatTracker 1690 + SID-Wizard 4738 (docs/gt-oracle.md §4.5) | 6428 | 20/135 | — |
+
+`TR` is the entry docs/dm-oracle.md §4.2 already refused as "relative in the
+**note-index** domain, not the value domain", and it said the cost was zero because
+"§2 reads the final index straight off the replay's address bus, so the route has
+nothing to add and nothing to lose there". **That is no longer true and the number
+says so.** Now that the pattern's own note column supplies the index (§3.2), a `TR`
+between it and the pitch table refuses the emit outright: 525 emits on 3 of 6 tunes,
+7.29% of the plane — the *highest* share of the three editors, on the smallest corpus.
+
+The orderlist half is the same object again. A pattern's absolute event index is
+`base(the arranger's entry) + the event counter`; a generated row names **one** source,
+so the arranger cannot be a generator of its own and an orderlist entry counts as
+represented where its pattern's chain exists and fires (31 of 1476). The
+`sidtab_jp` back-edge is the sharpest case in the corpus: **0 of 227 jump targets are
+row 0**, so the wrap `_emit` already has is never DefMON's loop point, and every walk
+is carried unrolled instead (docs/gt-oracle.md §3.2b).
+
+**Verdict: confirmed on a third independent editor, and it is one object.** `Rel` in
+the index domain — a row that is a declared delta over a named base index — closes the
+transpose and the orderlist together, on all three editors, for **6953** freq-plane
+emits and 1476 + 7248 + 6579 orderlist entries. It is not §4f with another register:
+§4f combines two values into a byte, this combines two rows into an index.
+
 ### 4.6 What is not a deficiency, and is reported anyway
 
 **The driver's ghost.** 7911 emits — 48.7% of the strict graph's `RAW` — are a
@@ -366,15 +437,41 @@ summed: `lane` 11725 / `gate` 831 / `ramp` 0 / `seed` 0 / **`imm` 0**. No emit
 rests on the shallow `imm` class — every interpreted byte is a byte of the
 composer's sidTAB at a row the replay's own address bus named.
 
+The arrangement (§3.2, §4.5b) moves **nothing** in that table and is not in it: it is
+the index domain, so it changes where a `SELECT`'s row comes from and not which emits
+are interpreted. Interpreted 12556/28800, every plane and every class byte-identical
+before and after it — the check that it added structure and not coverage.
+
+**The format-vs-recovery gap, stated in its sharpest form.** §4.3's masked route and
+§4.2's relative route bought two editors 26167 and 4650 emits out of their own models
+against 676 and 316 from decompiled binaries, and DefMON gained nothing from either.
+The arrangement is where the pattern is total: **73766 emits at a generated row across
+three editors' own models — 41424 GoatTracker, 28143 SID-Wizard, 4199 DefMON — against
+0 from binaries** (docs/tracker.md §7.4: 324 of 366 resolved deref sites refuse because
+the row index is not a cell the program text walks, and the 42 that remain point at
+blocks no `datadecl` region covers). DefMON is the cleanest instance of it, because here
+the oracle and frameprog are two executions of the *same* 6502 driver and they agree
+bit for bit (§3.1) — so the gap is not fidelity and is not the tune. The format
+expresses an arrangement; a driver's program text does not name one.
+
 ## 5. Known limits
 
 - Six tunes is the whole DefMON population of the 682-tune cache. Every number
   here is over those six; they are the corpus, not a sample of it.
-- The mapping reads the **cascade**, not the pattern walk. A `PatternEvent`'s
-  `GATE_A`/`GATE_B` re-arms a slot, and the mapping sees the re-armed row without
-  seeing the event that armed it, which is the 512 unpredicted advances of §4.1
-  and the 0-of-387-patterns of §3.2. Reaching those needs §7.4's arrangement
-  generators, not another lane.
+- The mapping now reads the **pattern walk** as well as the cascade: the arranger
+  reads and the packed event reads name the song step, the pattern and the event
+  (§3.2). What it still does not model is the *timing* — a `PatternEvent`'s
+  `GATE_A`/`GATE_B` re-arms a slot at a frame the walk's own duration nibbles would
+  predict, and the mapping takes the re-arm from the bus rather than predicting it.
+  That is the 512 unpredicted advances of §4.1, still open.
+- The event index is charged to the voice the arranger last gave that pattern to.
+  Two voices playing one pattern at different positions would be ambiguous; every
+  emit is re-checked against the declared column, so a mis-named event costs
+  coverage and can never cost correctness — 1141 emits are refused that way.
+- `dm_pattern_map` ends where the packed stream stops matching the rule it replays,
+  so patterns past that point are unreachable (20, 30, 90, 2, 40 and 118 of 128 are
+  mapped on the six tunes). It is a mapping gap, not a format one: 1756 emits, named
+  `no_pattern_row`.
 - `dm_sites` recognises one driver layout, verified opcode by opcode: the three
   `$0x31`-strided write bands and the three global filter stores at fixed offsets
   from the signature. All 6 cached tunes carry it; a variant is refused rather

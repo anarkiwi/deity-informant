@@ -7,6 +7,7 @@ axes. Reuses tools/gt_compare.py's axes. Writes out/dm_compare.json.
 
 import json
 import multiprocessing as mp
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 HVSC = ROOT / ".oracle-cache" / "hvsc"
 OUT = ROOT / "out" / "dm_compare.json"
 FRAMES = 200
-WORKERS = 5
+WORKERS = int(os.environ.get("WORKERS", "5"))
 
 # a RAW lane -> the deficiency it reports (docs/dm-oracle.md §4)
 _DEFECT = {
@@ -39,7 +40,7 @@ def _pair(lane):
 
 
 def _classify(raw_kinds):
-    """Split a strict graph's RAW residual by cause, as docs/gt-oracle.md §4.6 does."""
+    """Split a strict graph's RAW residual by cause, as docs/gt-oracle.md §4.7 does."""
     out = {
         k: 0 for k in ("relative", "two_generators", "wide_accumulator", "ghost", "order", "rest")
     }
@@ -253,7 +254,7 @@ def dm_one(rel):
                 "reg": ireg,
             },
             "structure": dict(
-                GC._struct_axis(ours_graph, native, n),  # pylint: disable=protected-access
+                GC._struct_axis(ours_graph, native, n, _g2, admitted),  # pylint: disable=W0212
                 **{"song_%s" % k: v for k, v in native.structure.items()},
             ),
             "cascade": _cascade(native, fetched, n),
