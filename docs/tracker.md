@@ -1552,7 +1552,12 @@ take 29559 of them and is refused (§6).
   DefMON's `TR` with bit 7 clear 525 (3 of 6, 7.29%). The orderlist is the same object
   seen once more: `base(entry) + counter` is two index sources where `Node(j)` names one,
   which is why the three editors' orderlist entries are represented structurally and not
-  as a generator. One extension closes both, and it is #102's.
+  as a generator. One extension closes both, and it has landed (#102): a row may now be
+  `op(base row, delta)`. **The recovery still reaches zero with it**, and the census
+  above says why rather than leaving it to be discovered — a relative row composes an
+  orderlist entry with a pattern row, and **zero** corpus sites have both of those in
+  program text. It is built for the editors' own models, where it is worth 6953 emits;
+  building a recovery on top of it here would be code with no measurement behind it.
 - A pitch table whose lo/hi block is never read at a constant base cannot be
   declared, so it cannot be recovered here — the one tune in the 60-tune sample
   that loses its table, `MUSICIANS/A/Aegis/2008.sid`, has no read site at its hi
