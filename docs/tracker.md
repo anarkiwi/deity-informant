@@ -1007,8 +1007,9 @@ Where the rest of the byte comes from says what the plane actually is:
 
 Three fifths of the plane loads a cell no declaration covers — a RAM cell — which is
 the answer `pw` gave and for the same reason: `eval_src` reports origins alongside SID
-store sources, so a parameter staged in RAM at init or at note-on arrives here
-unnameable. The shape confirms it is the same problem: **38872 emits (16%) sit in a
+store sources, so a parameter staged in RAM arrives here unnameable. (This said "at
+init or at note-on"; naming the init copies was built in #98 and moved **zero** of
+these — the cell is written by the *play* phase in 94% of the pw cases. §0.) The shape confirms it is the same problem: **38872 emits (16%) sit in a
 constant-nonzero-delta run of two or more**, and 38817 of them are cutoff — 39% of the
 $16 emits and 21% of the $15 emits, against 0% of $17 and $18. Cutoff is an accumulator
 sweeping; resonance, routing and mode are settings. A further 11.3% loads a cell that
@@ -1240,8 +1241,10 @@ of two fields leaves.
 16597 `$18` emits the oracle counted (docs/gt-oracle.md §4.3).** It is far below that
 16597 and the rule was **not** widened to reach it. The rows below the gain are what
 widening would have to take: 27665 emits whose partition the text does name but whose
-fields no declaration holds — the mode nibble was staged in RAM at init or built by
-arithmetic, not copied out of a table at play time — and 131102 whose store site is a
+fields no declaration holds — the mode nibble was staged in RAM or built by arithmetic,
+not copied out of a table at play time; **which** phase staged it is unmeasured on this
+plane, and #98 showed the init reading is false on `pw`/cutoff (§0), so do not assume it
+here — and 131102 whose store site is a
 bare load or an `OR` of two variable terms and names no mask at all. Taking the mask
 off the observed bytes instead (any declared byte that is a submask of the write) would
 reach 35384; that is the fit §4b, §4c and §4d each refuse in their own domain, and it
@@ -1491,18 +1494,29 @@ address.
 
 ## 7. Where the residual goes next
 
-Refinement, in the order that shrinks the residual fastest — each step must keep
-the law green and must move emits out of `RAW`, never widen a declaration. The
-order has changed twice. The origin rule of §6 moved the largest measured gains
-**tracker-side**, to realizing a ceiling provenance already supplied; the finer
-partition of §5 has now taken them. What is left is provenance-bound again.
+**The objective in this section is the wrong one, and the list below is kept for its
+measurements rather than its ordering.** It ranks work by how fast it shrinks the
+residual. The residual is a property of a **register-first** partition — every item
+here refines what drives one SID register — and §0 records the measurement that makes
+that objective misleading: **zero** of a composer's writes are ones the recovery never
+produces, and our node partition barely intersects the editor's (1–11 of 42–575, wrong
+in *both* directions). Shrinking the residual therefore improves the justification of a
+partition that is not the one being recovered.
+
+The measured objective is **node correspondence** — `tools/graph_diff.py`'s matched-node
+count against the editor's own graph — because that is what "universal" means here: the
+same song expressed as the same graph. Every item below has a measured cost and those
+numbers stand; read them as evidence about attribution, not as a queue.
+
+Each step must still keep the law green and must never widen a declaration.
 
 §4e's masked route is off this list because it has been measured out of it: a register
 several generators drive is now expressible, two editors' own songs use it heavily
 (docs/gt-oracle.md §4.3), and on our own recovery it reaches 699 emits. The mask must
 come from the store statement, and 27665 emits whose statement does name a partition
-still have a field no declaration holds — the same wall item 2 hit, a parameter staged
-in RAM at init, measured on a second plane. It is not a generator-shape problem.
+still have a field no declaration holds — the same wall item 2 hit, measured on a second
+plane. (This read "a parameter staged in RAM at init"; #98 built that and moved zero —
+see §0.) It is not a generator-shape problem.
 
 §4f's relative route is off this list for the same reason and with the same shape of
 answer: three editors need it, the primitive now carries it, two of the three use it
