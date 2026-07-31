@@ -139,7 +139,7 @@ bias is largest: `ftbl.right` is inside its own span on 7 of 68 tunes, `stbl.lef
 57, `pitch.hi` on 36 of 69.
 
 **(c) A cursor is live state, not a declaration.** The instrument bank's cursor on
-`Autumnness` is `$1392`, an offset of the region `$138D+15` whose `mut` set marks every
+`Autumnness` is `$1392`, an offset of the region `$138D+15` whose `mut` set marks that
 offset play-written — a per-voice variable block, not const data. Corpus-wide only **65 of
 1763** cursors are cells `tracker._walked` proves the play code only steps or sets by its
 own text, which is the same 42-of-366 shape docs/tracker.md §6 reports for rung (f)'s
