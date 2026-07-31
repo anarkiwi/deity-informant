@@ -197,9 +197,7 @@ def _ea(e, mem, pc, mode, pmap=None):
     raise ValueError(mode)
 
 
-# ---- cycle tables (frozen; NMS-verified; no runtime py65 dependency) ---------
-# Base 6502 counts with the RMW/illegal overrides folded in; EXTRACYCLES is the
-# page-cross / branch-taken penalty added by the interpreter when it applies.
+# ---- cycle tables: base + EXTRACYCLES page-cross/branch penalty (docs/cycle-times.md)
 CYCLETIME = (
     7,
     6,
@@ -407,7 +405,7 @@ CYCLETIME = (
     2,
     4,
     4,
-    3,
+    6,
     6,
     2,
     5,

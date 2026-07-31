@@ -18,6 +18,9 @@ py65 = pytest.importorskip("py65.devices.mpu6502")
 
 ITERS = 200
 
+# py65 charges $CE DEC abs 3 cycles; the NMOS 6502 takes 6 (docs/cycle-times.md).
+PY65_CYCLE_DEFECT = {0xCE: 3}
+
 
 def _legal_ops():
     mpu = py65.MPU(memory=bytearray(0x10000))
@@ -63,6 +66,7 @@ def test_legal_opcodes_match_py65():
             except IndexError:
                 continue  # top-of-memory wrap py65 cannot index; skip both
             vst, vcyc, vmem = _run_vm(mem, a, x, y, sp, p)
+            rcyc += PY65_CYCLE_DEFECT.get(op, 0)
             if rst == vst and rmem == vmem and rcyc == vcyc:
                 continue
             if op not in bad:
