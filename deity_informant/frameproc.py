@@ -7,6 +7,8 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 from . import grammar as G
 from . import sidprog
 from . import structured as C
@@ -1305,61 +1307,73 @@ def _index_of(addr):
     return base[1], idx
 
 
-def _membody(addr):
+_NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
+
+
+def _membody(addr, res=_NORES):
     if addr[0] == "const" and addr[2] == 2:
         return sidprog._addr_name(addr[1])
+    got = res.get(addr)
+    if got is not None:
+        name = "*" + sidprog._addr_name(got[0])
+        return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
     if got is not None:
-        return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1]))
+        return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
     return None
 
 
-def _memref(addr, sz=1):
-    body = _membody(addr)
+def _memref(addr, sz=1, res=_NORES):
+    body = _membody(addr, res)
     if body is None:
-        body = "mem[%s]" % _fmt(addr)
+        body = "mem[%s]" % _fmt(addr, res)
     return body + sidprog._wsuf(sz)
 
 
-def _fmt(n):
+def _fmt(n, res=_NORES):
     k = n[0]
     if k == "const":
         return sidprog._hex(n[1], n[2])
     if k == "loc":
         return n[1]
     if k == "mem":
-        return _memref(n[1], n[2])
+        return _memref(n[1], n[2], res)
     mn, kids, sz = n[1], n[2], n[3]
     if mn == "INT_ZEXT":
-        return "zext%d(%s)" % (sz, _fmt(kids[0]))
+        return "zext%d(%s)" % (sz, _fmt(kids[0], res))
     if mn == "INT_CARRY":
-        return "carry(%s, %s)" % (_fmt(kids[0]), _fmt(kids[1]))
+        return "carry(%s, %s)" % (_fmt(kids[0], res), _fmt(kids[1], res))
     if mn == "INT_ADD":
         half = 1 << (8 * sz - 1)
-        parts = [_fmt(kids[0])]
+        parts = [_fmt(kids[0], res)]
         for c in kids[1:]:
             if c[0] == "const" and c[1] >= half:
                 parts.append("- " + sidprog._hex((-c[1]) & ((1 << (8 * sz)) - 1), sz))
             else:
-                parts.append("+ " + _fmt(c))
+                parts.append("+ " + _fmt(c, res))
         return "(%s)%s" % (" ".join(parts), sidprog._wsuf(sz))
     if mn == "INT_SUB":
-        return "(%s - %s)%s" % (_fmt(kids[0]), _fmt(kids[1]), sidprog._wsuf(sz))
+        return "(%s - %s)%s" % (_fmt(kids[0], res), _fmt(kids[1], res), sidprog._wsuf(sz))
     if mn in sidprog._CHAINS:
-        body = (" %s " % sidprog._CHAINS[mn]).join(_fmt(c) for c in kids)
+        body = (" %s " % sidprog._CHAINS[mn]).join(_fmt(c, res) for c in kids)
         return "(%s)%s" % (body, sidprog._wsuf(sz))
     if mn in sidprog._CMPS:
-        return "(%s %s %s)" % (_fmt(kids[0]), sidprog._CMPS[mn], _fmt(kids[1]))
-    body = "%s %s %s" % (_fmt(kids[0]), sidprog._BINS[mn], _fmt(kids[1]))
+        return "(%s %s %s)" % (_fmt(kids[0], res), sidprog._CMPS[mn], _fmt(kids[1], res))
+    body = "%s %s %s" % (_fmt(kids[0], res), sidprog._BINS[mn], _fmt(kids[1], res))
     return "(%s)%s" % (body, sidprog._wsuf(sz))
 
 
 class _Printer:
     """Statement trees to frameprog text lines."""
 
-    def __init__(self):
+    def __init__(self, res=_NORES):
         self.out = []
         self.rets = []
+        self.res = res
+
+    def e(self, n):
+        """Expression text, resolved deref addresses named (rung (f))."""
+        return _fmt(n, self.res)
 
     def line(self, text, d):
         self.out.append(" " * d + text)
@@ -1388,10 +1402,10 @@ class _Printer:
     def _if(self, s, d):
         _k, word, cond, then, els = s
         if len(then) == 1 and then[0][0] == "unobs":
-            self.line("%s %s unobserved $%04X" % (word, _fmt(cond), then[0][1]), d)
+            self.line("%s %s unobserved $%04X" % (word, self.e(cond), then[0][1]), d)
             self.seq(els, d)
             return
-        self.line("%s %s {" % (word, _fmt(cond)), d)
+        self.line("%s %s {" % (word, self.e(cond)), d)
         self.seq(then, d + 1)
         if len(els) == 1 and els[0][0] == "unobs":
             self.line("} else unobserved $%04X" % els[0][1], d)
@@ -1420,9 +1434,11 @@ class _Printer:
         if k == "label":
             self.line("$%04X:" % s[1], d)
         elif k == "asg":
-            self.line("%s = %s" % (s[1], _fmt(s[2])), d + 1)
+            self.line("%s = %s" % (s[1], self.e(s[2])), d + 1)
         elif k == "st":
-            self.line("%s = %s" % (_memref(s[1], G.store_width(s[2])), _fmt(s[2])), d + 1)
+            self.line(
+                "%s = %s" % (_memref(s[1], G.store_width(s[2]), self.res), self.e(s[2])), d + 1
+            )
         elif k == "if":
             self._if(s, d)
         elif k == "loop":
@@ -1446,18 +1462,20 @@ class _Printer:
         elif k == "call":
             self.line("call $%04X ret $%04X" % (s[1], s[2]), d + 1)
         elif k == "pcall":
-            text = "sub_%04X(%s)" % (s[1], ", ".join(_fmt(a) for a in s[2]))
+            text = "sub_%04X(%s)" % (s[1], ", ".join(self.e(a) for a in s[2]))
             if s[3]:
                 text = "%s = %s" % (", ".join(s[3]), text)
             self.line(text, d + 1)
         elif k == "dcall":
-            self.line("call (%s) ret $%04X" % (_fmt(s[1]), s[2]), d + 1)
+            self.line("call (%s) ret $%04X" % (self.e(s[1]), s[2]), d + 1)
         elif k == "dbr":
-            self.line("%s %s goto (%s) else $%04X" % (s[1], _fmt(s[2]), _fmt(s[3]), s[4]), d + 1)
+            self.line(
+                "%s %s goto (%s) else $%04X" % (s[1], self.e(s[2]), self.e(s[3]), s[4]), d + 1
+            )
         elif k == "dgoto":
-            self.line("goto (%s)" % _fmt(s[1]), d + 1)
+            self.line("goto (%s)" % self.e(s[1]), d + 1)
         elif k == "igoto":
-            ptr = "(%s)" % _fmt(s[2]) if s[2] is not None else "$%04X" % s[1]
+            ptr = "(%s)" % self.e(s[2]) if s[2] is not None else "$%04X" % s[1]
             self.line("igoto %s" % ptr, d + 1)
         elif k == "goto":
             self.line("goto $%04X" % s[1], d)
@@ -1501,9 +1519,9 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
-def render_lines(procs):
+def render_lines(procs, resolved=_NORES):
     """frameprog text lines for analysed (or parsed) procedures."""
-    printer = _Printer()
+    printer = _Printer(resolved)
     for entry, params, rets, stmts in procs:
         printer.proc(entry, stmts, params, rets)
     return printer.out

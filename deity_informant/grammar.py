@@ -290,6 +290,7 @@ class Document:
         self.symbols = {}
         self.state = []
         self.inputs = []
+        self.resolved = {}  # rung (f): deref address -> (pointer cell, index or None)
         self.labels = set()
         self.procs = []  # sidprog: [(entry, seq Region)]
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
@@ -465,6 +466,12 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def e_index(self, c):
         return ("mem", self._index_addr(str(c[0]), c[1]), c[2] or 1)
 
+    def e_deref(self, c):
+        return ("mem", self._deref_addr(str(c[0]), c[1]), c[2] or 1)
+
+    def e_deref_bare(self, c):
+        return ("mem", self._deref_addr(str(c[0]), None), c[1] or 1)
+
     def e_mem(self, c):
         return ("mem", c[0], c[1] or 1)
 
@@ -540,12 +547,28 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         addr = req_name(self.rev.get(base, base))
         return ("op", "INT_ADD", (("op", "INT_ZEXT", (idx,), 2), ("const", addr, 2)), 2)
 
+    def _deref_addr(self, base, idx):
+        """``ptr [+ zext2(idx)]``: rung (f)'s resolved deref, the pointer read as a word."""
+        if not self._frame():
+            raise ValueError("a pointer deref is a frameprog form")
+        cell = req_name(self.rev.get(base, base))
+        word = ("mem", ("const", cell, 2), 2)
+        addr = word if idx is None else ("op", "INT_ADD", (word, ("op", "INT_ZEXT", (idx,), 2)), 2)
+        self.doc.resolved[addr] = (cell, idx)
+        return addr
+
     # -- statements ------------------------------------------------------------
     def lv_name(self, c):
         return ("name", str(c[0]), c[1] or 1)
 
     def lv_index(self, c):
         return ("index", str(c[0]), c[1], c[2] or 1)
+
+    def lv_deref(self, c):
+        return ("deref", str(c[0]), c[1], c[2] or 1)
+
+    def lv_deref_bare(self, c):
+        return ("deref", str(c[0]), None, c[1] or 1)
 
     def lv_mem(self, c):
         return ("mem", c[0], c[1] or 1)
@@ -755,6 +778,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         if lv[0] == "index":
             acc.events.append(("st", self._index_addr(lv[1], lv[2]), rhs))
             return
+        if lv[0] == "deref":
+            acc.events.append(("st", self._deref_addr(lv[1], lv[2]), rhs))
+            return
         if lv[0] == "mem":
             acc.events.append(("st", lv[1], rhs))
             return
@@ -803,6 +829,8 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         lv, rhs = payload[1], payload[2]
         if lv[0] == "index" and _check_store(lv, rhs):
             return ("st", self._index_addr(lv[1], lv[2]), rhs)
+        if lv[0] == "deref" and _check_store(lv, rhs):
+            return ("st", self._deref_addr(lv[1], lv[2]), rhs)
         if lv[0] == "mem" and _check_store(lv, rhs):
             return ("st", lv[1], rhs)
         name = self.rev.get(lv[1], lv[1])

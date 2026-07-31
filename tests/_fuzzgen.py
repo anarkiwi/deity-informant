@@ -555,6 +555,26 @@ def t_lone_half(rng):
     return _pair_player("lone_half", rng, lambda a, reg: a.i("INC", "zp", PTR))
 
 
+def t_ptr_seq(rng):
+    """Pointer table walked by a position counter, deref'd at a separate row index."""
+    reg = int(rng.integers(0, 0x14))
+    a = Asm(ORG)
+    a.i("LDX", "abs", CNT).i("LDA", "absx", VEC).i("STA", "zp", PTR)
+    a.i("LDA", "absx", VEC + 4).i("STA", "zp", PTR + 1)
+    a.i("LDY", "abs", CNT + 1).i("LDA", "indy", PTR).i("STA", "abs", SID + reg)
+    for cell in (CNT, CNT + 1):
+        a.i("LDA", "abs", cell).i("CLC").i("ADC", "imm", 1)
+        a.i("AND", "imm", 3).i("STA", "abs", cell)
+    a.i("RTS")
+    data = {CNT: 0, CNT + 1: 0}
+    for k in range(4):
+        data[VEC + k] = (TBL + 8 * k) & 0xFF
+        data[VEC + 4 + k] = (TBL + 8 * k) >> 8
+        for row in range(4):
+            data[TBL + 8 * k + row] = int(rng.integers(0, 256))
+    return Player("ptr_seq", ORG, a.assemble(), {SID + reg}, {"indexed"}, data=data, frames=6)
+
+
 def t_ram_output(rng):
     """Indexed copy to a couple of RAM output cells (non-SID observable set)."""
     n = 3
@@ -621,6 +641,7 @@ TEMPLATES = (
     t_zero_source,
     t_word_pair,
     t_lone_half,
+    t_ptr_seq,
     t_ram_output,
 )
 
