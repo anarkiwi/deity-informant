@@ -73,6 +73,7 @@ def test_a_ctrl_byte_is_the_waveform_lane_read_through_its_gate_image():
         "imm": 0,
         "ramp": 0,
         "seed": 0,
+        "mask": 0,
     }
 
 
@@ -83,7 +84,14 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
     graph, rep = G.strict(_native({("ptbl", "right"): (step,)}, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 2)][0]
     assert node.transfer == ("RAMP", 0x10, step, 0x100)
-    assert rep.coverage.classes["pw"] == {"lane": 0, "gate": 0, "imm": 0, "ramp": 3, "seed": 1}
+    assert rep.coverage.classes["pw"] == {
+        "lane": 0,
+        "gate": 0,
+        "imm": 0,
+        "ramp": 3,
+        "seed": 1,
+        "mask": 0,
+    }
 
 
 def test_a_step_of_zero_and_a_run_of_one_are_both_refused():
@@ -122,6 +130,57 @@ def test_a_row_outside_the_table_stays_raw():
     writes = [{5: _sel(("ins", "ad"), 7, 0x11)}]
     _g, rep = G.strict(_native({("ins", "ad"): (0x11,)}, writes))
     assert rep.coverage.interp == 0
+
+
+# ---- 2b. one register, two fields: the masked route ------------------------------
+_FIELDS = {("ftbl", "type"): (0x10, 0x20), ("vol", "master"): (0x0F,)}
+
+
+def _modevol(row=0, mode=0x10, vol=0x0F):
+    """$18 as the editor spells it: a mode nibble beside a master volume."""
+    return (
+        G.Cell("select", ("ftbl", "type"), row, mode, 0, 0x70),
+        G.Cell("select", ("vol", "master"), 0, vol, 0, 0x0F),
+    )
+
+
+def test_two_fields_of_one_register_become_two_masked_generators():
+    """$18 is a mode ORed with a volume: two SELECTs, one write, one emit."""
+    writes = [{0x18: _modevol(0)}, {0x18: _modevol(1, 0x20)}]
+    graph, rep = G.strict(_native(_FIELDS, writes))
+    got = sorted((g.route[2], g.transfer) for g in graph.nodes if g.route[:2] == ("plane", 0x18))
+    assert [m for m, _t in got] == [0x0F, 0x70]
+    assert dict(got)[0x70] == ("SELECT", (0x10, 0x20), (0, 1))
+    assert rep.divergence is None and rep.coverage.interp == 2  # two frames, one write each
+    assert rep.coverage.classes["filter"] == {
+        "lane": 0,
+        "gate": 0,
+        "imm": 0,
+        "ramp": 0,
+        "seed": 0,
+        "mask": 2,
+    }
+
+
+def test_a_field_the_composers_table_no_longer_holds_refuses_the_whole_write():
+    """Every field is checked against the table byte, so one wrong field costs the register."""
+    writes = [{0x18: _modevol(0, mode=0x30)}]  # the table holds $10 at row 0
+    _g, rep = G.strict(_native(_FIELDS, writes))
+    assert rep.coverage.interp == 0 and rep.raw_kinds == {"mask:('ftbl', 'type')": 1}
+    over = [{0x18: (_modevol(0)[0], G.Cell("select", ("vol", "master"), 0, 0x0F, 0, 0x1F))}]
+    _g, rep = G.strict(_native(_FIELDS, over))  # $70 and $1F overlap: two owners of one bit
+    assert rep.coverage.interp == 0  # refused by the mapping, before `tracker._check` sees it
+    nodes = [T.select((0x10,), (0,), T.FRAME, 0x18, mask=m) for m in (0x70, 0x1F)]
+    with pytest.raises(T.TrackerError):
+        T.eval_graph(T.Graph(nodes), 1)
+
+
+def test_a_bit_no_field_owns_must_be_zero_in_the_write():
+    """The masks need not cover the byte, but what they leave over is emitted as zero."""
+    writes = [{0x18: _modevol(0)}]
+    records = F.canonical([[(0x18, 0x9F)]])  # bit 7 set, and no generator owns it
+    _g, rep = G.graph(records, _native(_FIELDS, writes), offset=0)
+    assert rep.divergence is None and rep.coverage.interp == 0 and rep.coverage.residual == 1
 
 
 # ---- 3. the order-preserved section ----------------------------------------------
@@ -252,7 +311,7 @@ def test_sidwizard_maps_to_the_same_lanes_and_passes_the_law():
 def test_the_sidwizard_preamble_lane_is_the_four_hr_fields_packed_as_adsr():
     """`hr_attack`/`hr_decay`/... are one preamble lane, not four editor fields."""
     swm = _swm()
-    tables, _base = G._sw_tables(swm, (0,) * 96, (0,) * 96)
+    tables, _base, _fbase = G._sw_tables(swm, (0,) * 96, (0,) * 96)
     ins = swm.instruments[0]
     assert tables[("hr", "ad")][0] == (ins.hr_attack << 4) | ins.hr_decay
     assert tables[("hr", "sr")][0] == (ins.hr_sustain << 4) | ins.hr_release

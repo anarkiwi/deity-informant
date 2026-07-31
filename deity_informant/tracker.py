@@ -29,6 +29,8 @@ Tracker = namedtuple("Tracker", "pitch clocks tempo instruments divisors")
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _VOICE_HI = 0x14
 _FILTER_HI = 0x18
+_FULL = 0xFF  # the mask of a route that owns a register's whole byte
+_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask")
 
 
 class TrackerError(ValueError):
@@ -36,24 +38,34 @@ class TrackerError(ValueError):
 
 
 # ---- 1. the one primitive: a triggered generator ---------------------------------
+def plane(reg, mask=_FULL):
+    """A SID register plane route, over the whole byte or the bits ``mask`` names."""
+    return ("plane", reg) if mask == _FULL else ("plane", reg, mask)
+
+
+def _mask_of(route):
+    """The bits a plane route owns; a route that names none owns the byte."""
+    return route[2] if len(route) > 2 else _FULL
+
+
 def div(n, trigger=FRAME):
     """Emit one tick per ``n`` input triggers: a clock. Route is always Fire."""
     return Generator(("DIV", n), trigger, ("fire",))
 
 
-def lookup(seq, trigger, reg):
+def lookup(seq, trigger, reg, mask=_FULL):
     """Emit ``seq[i]`` into a register plane; ``i`` advances per trigger."""
-    return Generator(("LOOKUP", tuple(seq)), trigger, ("plane", reg))
+    return Generator(("LOOKUP", tuple(seq)), trigger, plane(reg, mask))
 
 
-def ramp(seed, step, bound, trigger, reg):
+def ramp(seed, step, bound, trigger, reg, mask=_FULL):
     """Emit ``seed + step*count`` into a plane, wrapped at ``bound``."""
-    return Generator(("RAMP", seed, step, bound), trigger, ("plane", reg))
+    return Generator(("RAMP", seed, step, bound), trigger, plane(reg, mask))
 
 
-def select(table, rows, trigger, reg):
+def select(table, rows, trigger, reg, mask=_FULL):
     """Emit ``table[rows[i]]`` into a plane: a declared table read at a recovered row."""
-    return Generator(("SELECT", tuple(table), tuple(rows)), trigger, ("plane", reg))
+    return Generator(("SELECT", tuple(table), tuple(rows)), trigger, plane(reg, mask))
 
 
 def edge(counts):
@@ -125,6 +137,11 @@ def _emit(g, count):
 
 
 def _check(nodes):
+    """Refuse a graph that is not evaluable, masks of one register included.
+
+    Two generators sharing a register must own the same bits or disjoint ones: a
+    partial overlap is two owners of one bit, which no order resolves."""
+    owned = {}
     for g in nodes:
         if g.trigger != FRAME and g.trigger[0] != "event":
             raise TrackerError("unknown trigger %r" % (g.trigger,))
@@ -132,21 +149,61 @@ def _check(nodes):
             raise TrackerError("dangling trigger %r" % (g.trigger,))
         if g.route[0] not in ("plane", "fire", "raw"):
             raise TrackerError("unknown route %r" % (g.route,))
+        if g.route[0] != "plane":
+            continue
+        m = _mask_of(g.route)
+        if not 0 < m <= _FULL:
+            raise TrackerError("route mask %r owns no bit" % (g.route,))
+        for other in owned.setdefault(g.route[1], set()):
+            if other != m and other & m:
+                raise TrackerError(
+                    "routes $%02X and $%02X overlap on $%02X" % (other, m, g.route[1])
+                )
+        owned[g.route[1]].add(m)
+
+
+def _assemble(g, v, held, writes):
+    """The byte one emit writes: its own, or the fields its register's masks hold.
+
+    A masked generator latches the bits it owns; the byte is written by the last of
+    them to fire, so a register several generators drive takes one write."""
+    mask = _mask_of(g.route)
+    if v is None or mask == _FULL:
+        return v
+    held[mask] = v & mask
+    if not writes:
+        return None
+    out = 0
+    for b in held.values():
+        out |= b
+    return out
+
+
+def _masked(nodes):
+    """``{reg: [node index]}`` for the registers a masked route drives."""
+    out = {}
+    for i, g in enumerate(nodes):
+        if g.route[0] == "plane" and _mask_of(g.route) != _FULL:
+            out.setdefault(g.route[1], []).append(i)
+    return out
 
 
 def _run(graph, nframes):
     """``(canonical records, interpreted emits, raw emits)`` per register.
 
-    Refinement removes a *write* from RAW, so a register may be split across RAW and
-    a plane-routed node; node order then fixes the interleaving, which the partition
-    is constructed and checked against (§5)."""
+    Refinement removes a *write* from RAW, so node order fixes the interleaving of a
+    split register (§5); a masked generator latches the bits it owns and the last of
+    a register's masked generators to fire writes the byte (§4e)."""
     nodes = graph.nodes
     _check(nodes)
     counts = [0] * len(nodes)
     interp, rawn, trig = {}, {}, {}
+    parts = _masked(nodes)
+    held = {reg: {} for reg in parts}
     out = []
     for f in range(nframes):
         fires = _fired(nodes, f)
+        last = {r: max((i for i in ns if fires[i]), default=None) for r, ns in parts.items()}
         writes = []
         for i, g in enumerate(nodes):
             if not fires[i]:
@@ -161,10 +218,11 @@ def _run(graph, nframes):
                 reg = g.route[1]
                 for _t in range(fires[i]):  # one emit per trigger, in order
                     counts[i] += 1
-                    v = _emit(g, counts[i])
-                    if v is not None:
-                        interp[reg] = interp.get(reg, 0) + 1
-                        writes.append((reg, v & 0xFF))
+                    v = _assemble(g, _emit(g, counts[i]), held.get(reg), i == last.get(reg))
+                    if v is None:
+                        continue
+                    interp[reg] = interp.get(reg, 0) + 1
+                    writes.append((reg, v & 0xFF))
             else:
                 counts[i] += fires[i]
                 if g.route[0] == "fire":  # the trigger domain's own census
@@ -905,19 +963,19 @@ def _refine_voice(seq, tabs, banks, imm, mem0):
     )
 
 
-def _classes(streams):
-    """``{plane: {lane, gate, imm, ramp, seed}}``: refined emits by their evidence.
+def _classes(streams, groups=()):
+    """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
     and ``gate`` the same lane at the row the voice holds — both strong; ``ramp`` is
-    an emit the accumulator's declared step generates. ``imm`` is a program constant
-    and ``seed`` the one observed byte a ramp starts from: both pass the law without
-    explaining a byte, and neither is ever folded into a strong figure."""
+    an emit the accumulator's declared step generates. ``imm`` is a program constant,
+    ``seed`` the one observed byte a ramp starts from and ``mask`` a byte several
+    generators assemble field by field: none is ever folded into a strong figure."""
     out = {}
+    for counts, _parts, reg in groups:
+        out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["mask"] += sum(counts)
     for counts, t, reg in streams:
-        cls = out.setdefault(
-            _plane_of(reg), dict.fromkeys(("lane", "gate", "imm", "ramp", "seed"), 0)
-        )
+        cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if t[0] == "RAMP":
             cls["seed"] += 1
             cls["ramp"] += sum(counts) - 1
@@ -1154,6 +1212,134 @@ def _clock_node(counts, divisors):
     return edge(counts)
 
 
+# ---- 4e. one plane, two generators: the bit partition the store statement names ---
+def _term(expr, env):
+    """``(is a constant, the bits it can set, its value)`` for one OR term.
+
+    The mask is the program text's: a constant owns its own bits, an AND-immediate
+    owns its mask, a shift moves that mask. Anything else names none."""
+    r = _resolve(expr, env)
+    if not isinstance(r, tuple):
+        return None
+    if r[0] == "const":
+        return (True, r[1] & 0xFF, r[1] & 0xFF)
+    if r[0] == "op" and len(r[2]) == 2 and r[1] in ("INT_AND", "INT_LEFT", "INT_RIGHT"):
+        cs = [k for k in r[2] if isinstance(k, tuple) and k[0] == "const"]
+        if len(cs) == 1 and r[1] == "INT_AND":
+            return (False, cs[0][1] & 0xFF, None)
+        if len(cs) == 1 and r[2][1] is cs[0]:
+            sub = _term(r[2][0], env)
+            if sub is not None and sub[1] is not None:
+                m = sub[1] << cs[0][1] if r[1] == "INT_LEFT" else sub[1] >> cs[0][1]
+                return (False, m & 0xFF, None)
+    return (False, None, None)
+
+
+def _partition(expr, env):
+    """The bit partition a store's value expression names, or None.
+
+    An OR of terms partitions the byte where the text names every term's bits but
+    one, which takes the rest; overlapping or uncovered bits are not a partition."""
+    r = _resolve(expr, env)
+    if not (isinstance(r, tuple) and r[0] == "op" and r[1] == "INT_OR"):
+        return None
+    terms = [_term(t, env) for t in r[2]]
+    if any(t is None for t in terms):
+        return None
+    unk = [i for i, t in enumerate(terms) if t[1] is None]
+    known = 0
+    for i, t in enumerate(terms):
+        if i not in unk:
+            if known & t[1]:
+                return None
+            known |= t[1]
+    if len(unk) > 1 or (not unk and known != _FULL):
+        return None
+    if unk:
+        if known == _FULL:
+            return None
+        terms[unk[0]] = (False, _FULL & ~known, None)
+    return tuple(terms)
+
+
+def _partitions(prog):
+    """``{register class: [partition]}``: the bit partitions the program text names."""
+    out = {}
+    for proc in prog.procs:
+        env = {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+                continue
+            cls = _sid_class(s[1]) if s[0] == "st" else None
+            got = None if cls is None else _partition(s[2], env)
+            if got is not None and got not in out.setdefault(cls, []):
+                out[cls].append(got)
+    return out
+
+
+def _decompose(w, parts, pool, mem0):
+    """``[(mask, key, row)]`` assembling one write out of disjoint fields, or None.
+
+    Each field is the store statement's own constant over the bits it names, or a
+    declared byte at the row the read cell recovers over the bits left to it."""
+    reg, val, srcs = w
+    for part in parts:
+        got = []
+        for isconst, mask, c in part:
+            if isconst:
+                got.append((mask, ("imm", reg, c), 0) if c == val & mask else None)
+            else:
+                k = _lane_key((reg, val & mask, srcs), pool, mem0)
+                got.append(None if k is None else (mask, k[0], k[1]))
+            if got[-1] is None:
+                break
+        if len(got) == len(part) and None not in got:
+            return got
+    return None
+
+
+def _field(key, rows, mem0):
+    """The transfer one masked field emits: a program constant, or a declared lane."""
+    if key[0] == "imm":
+        return ("LOOKUP", (key[2],))
+    return ("SELECT", _key_table(key, mem0), tuple(rows))
+
+
+def _mask_streams(lww, parts, tabs, mem0, done):
+    """``(groups, explained)``: one register's byte assembled from several generators.
+
+    A group's parts fire together and own disjoint fields, so the write is the byte
+    they assemble; the keys a register's masks take are fixed at its first explained
+    frame, since one field has one owner."""
+    counts, rows, keys, explained = {}, {}, {}, [set() for _f in lww]
+    for f, wr in enumerate(lww):
+        for reg in sorted(wr):
+            cls = _class_of(reg)
+            val, srcs = wr[reg]
+            if reg in done[f]:
+                continue
+            got = _decompose((reg, val, srcs), parts.get(cls, ()), tabs.get(cls, ()), mem0)
+            if got is None:
+                continue
+            fix = {m: k for m, k, _r in got}
+            if keys.setdefault(reg, fix) != fix:  # one field, one owner, for the whole tune
+                continue
+            counts.setdefault(reg, [0] * len(lww))[f] = 1
+            for m, _k, r in got:
+                rows.setdefault((reg, m), []).append(r)
+            explained[f].add(reg)
+    groups = [
+        (
+            tuple(cnt),
+            [(_field(keys[reg][m], rows[(reg, m)], mem0), m) for m in sorted(keys[reg])],
+            reg,
+        )
+        for reg, cnt in sorted(counts.items())
+    ]
+    return groups, explained
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -1209,8 +1395,10 @@ def _graph(prog, pitch, frames, ords, lww, acc):
     lwws, declared = _lww_streams(lww, tabs, prog.mem0)
     pools, signs = acc
     ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
+    fields = [d | s for d, s in zip(declared, swept)]
+    groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     for f, rec in enumerate(frames):
-        gen, done = {}, declared[f] | swept[f]
+        gen, done = {}, fields[f] | assembled[f]
         for v in range(3):
             sec, b = dict(rec[2 * v]), 7 * v
             if b not in sec or b + 1 not in sec:
@@ -1231,15 +1419,16 @@ def _graph(prog, pitch, frames, ords, lww, acc):
         residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
     edges = {}
-    for counts, _t, _r in streams:
+    for counts, *_rest in streams + groups:
         edges.setdefault(counts, len(edges))
     divisors = _divisors(prog, banks)
     nodes = [_clock_node(c, divisors) for c in edges]
     fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in pre]
     nodes += fired + [raw(residual)]
     nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r in post + lwws + ramps]
+    nodes += [Generator(t, ("event", edges[c]), plane(r, m)) for c, ps, r in groups for t, m in ps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
-    return Graph(nodes, freq_table=pitch, classes=_classes(streams)), lanes
+    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups)), lanes
 
 
 def render(prog, trace, nframes):
