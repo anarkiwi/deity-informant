@@ -12,6 +12,7 @@ from . import framefuse
 from . import frameproc
 from . import frameptr
 from . import grammar as G
+from . import initcopy
 from . import sidprog
 from . import structured
 from .grammar import FRAMEPROG_VERSION
@@ -147,6 +148,8 @@ class FrameProgram:
         mem0=None,
         proofs=(),
         resolved=(),
+        prov0=(),
+        init_census=None,
     ):
         self.play = play
         self.init = init
@@ -160,6 +163,29 @@ class FrameProgram:
         self.mem0 = bytearray(0x10000) if mem0 is None else mem0
         self.proofs = list(proofs)  # rung (d) pair records, rung (f) deref-site records
         self.resolved = dict(resolved)  # rung (f): deref address -> (pointer cell, index)
+        self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
+        self.init_census = dict(init_census or {})
+
+
+def _init_proof(pc, cells, undeclared, computed):
+    """One record per init store site: the cells it staged, and why the rest refuse."""
+    return structured.Proof(
+        pc,
+        "init-copy",
+        "resolved" if cells and not (undeclared or computed) else "refused",
+        cells,
+        "init copy: %d cell(s) staged from a declared const byte, %d from a cell no"
+        " declaration names, %d computed (no traced load)" % (len(cells), undeclared, computed),
+    )
+
+
+def _init_copies(model, decls):
+    """``(cell -> origin, proofs, census)``: the init phase's copies, named (spec 4.5)."""
+    tracer = getattr(model, "init_copy", None)
+    if tracer is None:
+        return {}, [], {}
+    origins, sites, census = initcopy.reduce(tracer, decls, model.written)
+    return origins, [_init_proof(pc, *v) for pc, v in sites.items()], census
 
 
 def program(model, sid_fusion=False):
@@ -176,6 +202,7 @@ def program(model, sid_fusion=False):
         model, decls, procs, state, symbols, G.addr_name, sid_fusion
     )
     resolved, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
+    prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(
         model.play,
         model.init,
@@ -187,8 +214,10 @@ def program(model, sid_fusion=False):
         symbols,
         procs,
         model.mem0,
-        proofs + deref_proofs,
+        proofs + deref_proofs + init_proofs,
         resolved,
+        prov0,
+        census,
     )
 
 

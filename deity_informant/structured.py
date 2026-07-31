@@ -14,6 +14,7 @@ from collections import namedtuple
 from . import c64
 from . import codec
 from . import expr as E
+from . import initcopy
 from .lifter import MODE_LEN, OPS, STATUS_BITS, lift
 from .vm import PcodeVM
 
@@ -64,11 +65,31 @@ def _dyn_read(m, a, c):
 
 # ---- P1: evidence (full-length concrete trace; doubles as the oracle run) ----
 class _EvidenceVM(PcodeVM):
+    """Evidence VM; ``capture`` swaps in the load/store address recorders for init."""
+
     def __init__(self, mem):
         super().__init__(mem)
         self.written = set()
         self.reads = set()
         self.pc = 0
+        self.la = []
+        self.sa = []
+        self.rdf, self.wrf = self._rd, self._wr
+
+    def _exec(self, rec, pc):
+        (rec.get("_f") or self.compile_record(rec))(self.reg, self.uniq, self.rdf, self.wrf)
+
+    def capture(self, on):
+        """Record each record's load/store addresses, or stop (the play phase pays nothing)."""
+        self.rdf, self.wrf = (self._rd_cap, self._wr_cap) if on else (self._rd, self._wr)
+
+    def _rd_cap(self, addr, sz):
+        self.la.append(addr & 0xFFFF)
+        return self._rd(addr, sz)
+
+    def _wr_cap(self, addr, val, sz):
+        self.sa.append(addr & 0xFFFF)
+        self._wr(addr, val, sz)
 
     def _rd(self, addr, sz):
         self.reads.add((self.pc, addr & 0xFFFF))
@@ -100,6 +121,7 @@ class Evidence:
         reads=(),
         closure=None,
         play=None,
+        init_copy=None,
     ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
@@ -113,6 +135,7 @@ class Evidence:
         self.mem0 = mem0  # post-init snapshot: the play program's initial image
         self.closure = closure  # run-to-recurrence Closure record (None: scan off)
         self.play = play  # resolved per-frame entry (the IRQ stub when play == 0)
+        self.init_copy = init_copy  # initcopy.Tracer over the init run (None: off)
 
 
 def _frame_digest(vm, cells):
@@ -163,7 +186,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
     cache = {}
     reg = vm.reg
 
-    def run_entry(entry, acc=0, phase="play"):
+    def run_entry(entry, acc=0, phase="play", tr=None):
         start = reg[3]
         reg[0] = acc & 0xFF
         vm._push(0x00)
@@ -175,7 +198,12 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             pcs.setdefault(pc, set()).add(op)
             vm.pc = pc
             key = (pc, op, vm.mem[(pc + 1) & 0xFFFF], vm.mem[(pc + 2) & 0xFFFF])
+            if tr is not None:
+                del vm.la[:]
+                del vm.sa[:]
             nxt = vm.step(pc, cache, lift)
+            if tr is not None:
+                tr.step(cache[key], pc, vm.la, vm.sa)
             kind = cache[key]["ctrl"][0]
             fall = (pc + MODE_LEN[OPS[op][1]]) & 0xFFFF
             # a transfer landing on its own fallthrough is still an observed edge
@@ -187,8 +215,10 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if n > _GUARD:
                 raise RuntimeError("runaway in %s at %04X" % (phase, pc))
 
+    tracer = initcopy.Tracer()
+    vm.capture(True)
     try:
-        run_entry(init, subtune, "init")
+        run_entry(init, subtune, "init", tracer)
     except RuntimeError as exc:
         if play:
             raise
@@ -196,6 +226,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             "%s: init never returned; an interrupt-driven tune whose init idles"
             " until its own handler fires needs the driver cadence (v2/P-INT)" % exc
         ) from exc
+    vm.capture(False)
     play = play or irq_entry(vm, img)
     prologue = [(r, v) for _c, r, v in vm.wlog]
     mem0 = bytes(vm.mem)
@@ -254,6 +285,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
         vm.reads,
         closure,
         play,
+        tracer,
     )
 
 
@@ -2529,6 +2561,7 @@ class Model:
         # stack page always mutable: jsr/rts traffic bypasses _wr in PcodeVM.step
         self.written = frozenset(evidence.written) | frozenset(range(0x100, 0x200))
         self.reads = evidence.reads  # play-phase (site pc, read address) pairs
+        self.init_copy = evidence.init_copy  # initcopy.Tracer over the init run
         self.pcs = evidence.pcs
         self.leaders = set(evidence.leaders)
         self.cut = set(evidence.leaders)  # block boundaries: no suffix duplication
