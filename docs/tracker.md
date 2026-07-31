@@ -62,9 +62,10 @@ Generator = (transfer, trigger, route)
 
 `RAW` and `EDGE` are the two floors — the residual in the value domain and in the
 trigger domain. Refinement replaces them: a value moves out of `RAW` into a typed
-transfer, and an `EDGE` stream is replaced when the generator that produces the
-edge (the arrangement, §7.4) is recovered. Both are explicit, so the coverage
-numbers never hide what is still observed rather than explained.
+transfer, and an `EDGE` stream is replaced by `DIV` where a divider generates it
+(§4d) or by the arrangement (§7.4) where one does not. Both are explicit, and
+**both are counted**: `Coverage` reports the two domains as two numbers and never
+sums them, so neither can hide behind the other (§6).
 
 Identity is behavioural: two generators with the same triple are the same
 generator, whatever editor structure they came from. A pitch table and an
@@ -96,6 +97,8 @@ nodes wired by their triggers, with two distinguished members: the pitch table
 - **Clocks** (`_clocks`) — cells the play code steps by one, read off the frame
   program's procedures: `dec` + reload is a divider (its reload is
   `frames_per_tick`), a free `inc` is an LFO phase.
+- **`DIV` over a declared divisor** (§4d) — the trigger floor's one refinement: an
+  `EDGE` stream a recovered divider's own reload generates becomes a `DIV`.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -235,6 +238,39 @@ the declared byte at `$55A7` from `$16` to `$07` to `$21` moves the `RAMP` node'
 step field and the whole emitted stream with it (`80 96 AC C2 …` → `80 87 8E 95 …`
 → `80 A1 C2 E3 …`), law green throughout: the sweep is generated, not replayed.
 
+## 4d. The trigger domain: a `DIV` whose divisor is a declared reload
+
+`EDGE` is the trigger floor and `DIV(n)` is the one transfer that can lift a stream
+off it. The rule is §4c's, applied to triggers: **the divisor is program text, never
+a period fitted to the fire pattern.** A period read off the output would pass the
+law while claiming a structure the code does not have — the law cannot tell the two
+apart, so the provenance rule must.
+
+- **The divisor is what the play code reloads** (`_divisors`). A recovered divider
+  (`_clocks`: a cell the play code steps down) is reloaded either with an immediate
+  of the program text or from a declared byte at an offset the declaration does not
+  name `mut`. Nothing else is a divisor: a reload out of a RAM cell is runtime state,
+  and its post-init byte agreeing with an observed period is coincidence, exactly as
+  in §4/#61.
+- **A divisor of one is refused.** `DIV(1)` divides nothing — it is the root frame
+  clock — so it would "explain" every stream that fires on consecutive frames with a
+  byte that only happens to be `1`. That is the same refusal §4c makes of a `RAMP`
+  whose declared step is zero: a generator that predicts nothing is not one.
+- **The phase is the primitive's, not a parameter** (`_generates`). `DIV(n)` fires at
+  frames `n-1, 2n-1, …` — a counter loaded with its own reload and stepped down. The
+  whole stream must match in both directions: a missing tick refuses as loudly as a
+  spare one. Adding a phase field would buy a per-stream parameter, and §6 measures
+  that it would buy almost nothing besides.
+- **The law does the verification.** A `DIV` node replaces an `EDGE` in place, so its
+  downstream `SELECT`s fire on exactly the frames the divisor says; a wrong divisor
+  moves every emit after the first and `tracker.gate` fails
+  (`test_mutation_a_wrong_divisor_is_detected`).
+
+§6 reports what this returns, and the answer is a measured near-zero: the recovered
+clocks generate **300 of 280737 fires** over 3 tunes of 646. That number is the point
+of the step — it is the input to scoping §7.4, and it is honest in a way a fitted
+period would not be.
+
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
 ctrl and ADSR are written from an instrument bank: a declared const table of
@@ -307,16 +343,24 @@ The row stream is per voice, not per lane: on Commando the AD and SR `SELECT`
 nodes of a voice carry the *same* rows and share one `EDGE`, which is the
 instrument selector showing through. What is **not** yet explained is the note-on
 timing: the `EDGE` counts are observed. Values are declared data at a recovered
-index; triggers are still the floor.
+index; triggers are still the floor for 99.89% of fires, and §4d's `DIV` is the only
+thing that lifts any of them off it. §6 counts that domain separately and never folds
+it into the interpreted-emit share.
 
 ## 6. Coverage (measured, 200 frames unless stated)
 
-`Coverage(interp, residual, total, planes, classes)` is the one partition type:
-emits produced by an interpreted generator vs emits replayed from `RAW`, the
-per-plane split, and per plane the evidence behind each interpreted emit —
-`lane` and `gate` are declared bytes at a recovered index (**strong**), `imm` is
-a program constant that passes the law without explaining an index (**shallow**,
-never folded into a strong figure).
+`Coverage(interp, residual, total, planes, classes, triggers)` carries **two
+partitions, one per domain**, and they are never summed.
+
+- The **value** partition: emits produced by an interpreted generator vs emits
+  replayed from `RAW`, the per-plane split, and per plane the evidence behind each
+  interpreted emit — `lane` and `gate` are declared bytes at a recovered index
+  (**strong**), `imm` is a program constant that passes the law without explaining an
+  index (**shallow**, never folded into a strong figure).
+- The **trigger** partition (`triggers`): `(generated, all)` fires, counted by
+  `_run` off the evaluator itself. A generated fire is a `DIV` tick over a divisor the
+  play code declares (§4d) — the only strong evidence this domain has, and the only
+  evidence it admits at all. Every other fire is the `EDGE` floor.
 
 ### Where the tracker stands
 
@@ -324,8 +368,10 @@ Whole cached corpus, PSID start subtune, 200 frames: **682 tunes cached, 646
 decompile**, and of those 646 the **tracker law passes 646/646** and a pitch table
 is recovered for **582**. The 36 that do not decompile never reach this layer (10
 `play $0000` with no interrupt vector installed, 5 init runaways, 3 unmodelled
-`brk`, 3 pinned-trace faults, and the remainder assorted). This is the current
-state, not a delta; the tables after it record how it was reached.
+`brk`, 3 pinned-trace faults, and the remainder assorted). Values are **37.14%**
+explained and triggers **0.107%**; the two are stated apart because they are two
+domains, and the second is smaller by a factor of 350. This is the current state,
+not a delta; the tables after it record how it was reached.
 
 | plane | interpreted | of | share | strong | shallow |
 |---|---|---|---|---|---|
@@ -336,6 +382,13 @@ state, not a delta; the tables after it record how it was reached.
 | sr | 55945 | 115963 | 48.2% | 47905 | 8040 |
 | ad | 54362 | 112534 | 48.3% | 47010 | 7352 |
 | **all** | **718297** | **1933877** | **37.14%** | **693129** | **25168** |
+
+The other domain, on the same run and reported apart from that table:
+
+| domain | generated | of | share |
+|---|---|---|---|
+| values (emits) | 718297 | 1933877 | 37.14% |
+| **triggers (fires)** | **300** | **280737** | **0.107%** |
 
 **96.5% of interpreted emits rest on strong evidence** — a declared byte at a
 recovered row, or generated from one. The shallow 25168 are program immediates
@@ -684,6 +737,67 @@ returning None, the voice back at the RAW floor) fires on **no** corpus voice �
 bucket order it verifies is constructed to satisfy it — so it is a guard, and the
 test that exercises it drives it from a deliberately swapped order.
 
+### The trigger domain, measured — and how little a clock explains
+
+Same 682 cached tunes at the PSID start subtune, 200 frames (646 decompile). Until
+this step the trigger domain had no number anywhere: `Coverage` counted emits and said
+nothing about fires, so the 37.14% headline was silent about the other half of the
+primitive. It now has one, and the one is small.
+
+| the trigger domain | nodes | fires | of all fires |
+|---|---|---|---|
+| all fire-routed nodes | 3801 | 280737 | 100% |
+| strictly periodic (one distinct gap, ≥3 fires) | 836 | 76914 | 27.4% |
+| … of which period 1 (consecutive frames) | 445 | 71076 | 25.3% |
+| … of which period ≥ 2 — the divider-shaped ones | 391 | 5838 | **2.1%** |
+| … of those, at `DIV`'s own phase (`n-1, 2n-1, …`) | 28 | 877 | 0.31% |
+| **generated by a declared divisor (§4d)** | **3** | **300** | **0.107%** |
+| the `EDGE` floor: the arrangement's population | 3798 | 280437 | 99.89% |
+
+Read down that table: the "27% of fires are periodic" figure the output side offers
+collapses at every step where a claim has to be earned. **Nine tenths of the periodic
+fires have period 1** — a stream firing on consecutive frames is not a divider at all,
+it is a store site that runs unconditionally, and 121 nodes (24200 fires) fire on every
+one of the 200 frames. That leaves 2.1% of fires divider-shaped. Of those, only 28
+streams sit at the phase `DIV(n)` fixes, so a *fitted* divisor — a period read straight
+off the fire pattern — would still reach only 0.31% without a phase parameter as well.
+And of those 28, **3** have a divisor the play code actually declares. Each step
+divides the previous by roughly an order of magnitude, and the last one is provenance.
+
+**420 of the 646 tunes declare a divisor and 3 of them generate an edge stream** —
+`MUSICIANS/D/DaFunk/3-Speed.sid`, `MUSICIANS/D/Dr_Piotr/Agonia.sid` and
+`MUSICIANS/D/Dune/Beach.sid`, one node each, 100 fires each. All three are `DIV(2)`,
+the smallest admissible divisor, so the evidence is thin even where it holds: what
+carries it is that `2` is a byte the play code reloads into a cell it steps down, and
+that the law checks all 200 frames of the stream. That is the whole claim, and it is
+0.107% of the domain.
+
+What is refused is named, and each refusal was measured before it was made. A divisor
+fitted to the fire pattern — the obvious way to "explain" 27% — is refused outright.
+A reload out of a RAM cell is refused: its post-init byte is runtime state, and across
+the corpus it adds no stream that the immediates do not (the one period-hit above is
+an immediate).
+
+`DIV(1)` is refused, and that refusal is the expensive one. 121 nodes fire on every
+one of the 200 frames, **217 of the 646 tunes reload a `1` into a divider somewhere**,
+and lifting the refusal would take **36 nodes and 7200 fires** across 36 tunes — 2.6%
+of the domain, twenty-five times the shipped figure. It would be bought with a byte
+that has nothing to do with why those streams fire every frame: they fire every frame
+because their store site is unconditional, which the root frame clock already says.
+
+The residue — **280437 fires over 3798 nodes, 99.89% of the domain** — is precisely
+the population §7.4 has to explain. It is not a divider problem: 2965 of those nodes
+(203823 fires) are not periodic at all, which is what an orderlist and a pattern
+look like from the outside. Per tune the domain is small enough to work with directly:
+the median tune has 412 fires and the largest 1716.
+
+The value partition is **byte-identical** across this step, as it must be — a `DIV`
+that replaces an `EDGE` fires on the same frames and so emits the same bytes. 718297
+of 1933877 interpreted, `freq` 414066, `pw` 63232, `ctrl` 111659, `filter` 19033, `sr`
+55945, `ad` 54362, and the class split `lane` 513283 / `gate` 32706 / `imm` 25167 /
+`ramp` 138 / `seed` 1 — every figure unmoved. The canonical fixpoint holds 646/646,
+Gate FP 646/646 and the tracker law 646/646.
+
 ## 7. Where the residual goes next
 
 Refinement, in the order that shrinks the residual fastest — each step must keep
@@ -728,6 +842,21 @@ partition of §5 has now taken them. What is left is provenance-bound again.
    `Fire`, with shared subgraphs for reuse and a back-edge for the loop. This is
    what replaces the `EDGE` floors and the recovered row streams: the row a
    note-on selects becomes an emit of the pattern generator, not observed data.
+
+   **The population is now measured, and it is almost all of the domain.** §6's
+   trigger census leaves **280437 fires over 3798 nodes, 99.89%**, and says what
+   shape they are: 2965 of those nodes (203823 fires) are not periodic at all, and
+   the 391 that are divider-shaped carry only 5838 fires between them. So a clock is
+   not what is missing — §4d shipped one and it reached 3 tunes. What is missing is
+   the table that decides *which* tick carries a note-on, which is the orderlist and
+   the pattern. This is now the largest single unexplained thing at this layer, and
+   it is the only step that moves the trigger figure at all.
+
+   It also feeds back into the value domain: the 23631 emits §5 refuses because
+   their stream key straddles the residual are exactly a note-on lane read and its
+   gate-off image placed on either side of an unexplained write, and an arrangement
+   generator would place both. Per tune the domain is small — median 412 fires — so
+   the work is per-driver structure recovery, not scale.
 5. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
 
 ## 8. Known limits
@@ -772,6 +901,14 @@ partition of §5 has now taken them. What is left is provenance-bound again.
   names `m_5429[t5]`, and `t5` is a live state value no static reading yields, so
   `frameval.eval_src` still recovers it. That index becomes explained when the
   arrangement does (§7.4), not before.
+- A divisor is refused unless the play code declares it (§4d): a period fitted to
+  the observed fires, a reload out of a RAM cell whose post-init byte merely agrees,
+  and a divisor of one are all refused, and §6 measures each refusal's cost. The
+  primitive has no phase field either, so a divider whose counter starts anywhere but
+  at its own reload stays at the floor — 363 of the 391 divider-shaped streams do.
+  Adding the field would open at most their 4961 fires (1.8% of the domain), and only
+  where the divisor is declared as well; the price would be a per-stream parameter
+  fitted to the output.
 - The tree walk is per procedure (locals) plus a program-wide staging hop
   (`origins`), so a byte staged across a procedure boundary or through the stack is
   named by no store site. On ctrl/AD/SR the provenance search covers it — 15648
