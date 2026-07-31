@@ -71,6 +71,7 @@ omit = [
     "tools/tracker_audit.py",
     "tools/tracker_corpus.py",
     "tools/gt_compare.py",
+    "tools/dm_compare.py",
     "tools/tracker_showcase.py",
 ]
 
