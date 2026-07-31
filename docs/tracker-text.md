@@ -1,0 +1,84 @@
+# tracker-text — the recovered graph, rendered for a human
+
+`deity_informant/trackertext.py` renders a `tracker.Graph` as text.
+`tools/tracker_text.py` writes one file per showcase tune, at its full Songlengths
+duration, to `out/<Tune>.trackertext.txt`. A **prototype view for review**, not the
+codec of docs/tracker.md §7.5: there is no parser and no `parse(emit(t)) == t` claim.
+
+## Two rules
+
+**Render the graph, never the observation.** Every line is derived from the nodes'
+`(transfer, trigger, route)` triples, the **declared tables** those transfers hold,
+and `Graph.classes` — the same discipline `tracker.render` follows (docs/tracker.md
+§1, "Nothing is passed through"). The note lane is inverted from the **generators'
+own** pitch emits, so a frame whose pitch word is still in `RAW` has no note here.
+The one exception is the `RAW` node, whose contents are observed by definition; its
+lines are labelled `(OBSERVED)`, as are the `EDGE` fire patterns (the trigger floor)
+and a sweep's seed.
+
+**Nothing of the machine survives.** Addresses, cells and register numbers belong to
+sidprog and frameprog, the layers whose job is provenance. This artifact is in the
+musical domain: voices, notes, instruments, tables, rows, frames, tempo, waveform,
+attack/decay, sustain/release, pulse width, cutoff, resonance. Entities carry stable
+ordinal names assigned **by first appearance** — `table 0`, `inst 00` — the way an
+editor numbers them, not the way memory lays them out; two runs over one tune assign
+the same names. `emit()` still takes the `frameprog.FrameProgram`, for naming only:
+the clock census, and which declaration a lane belongs to so its sibling lanes group
+into one table. Without it the rendering still stands, each lane its own table.
+
+## The sections
+
+| section | what it shows |
+|---|---|
+| header | tune, frames, the law verdict, the node census, and the value partition per plane with its evidence classes |
+| engine | the pitch table (how many notes, what range, how it inverts), the clock census, and the tables the generators read |
+| instruments | the rows those tables hold, decoded as an editor shows them: waveform bits, attack/decay and sustain/release nibbles |
+| generators | one entry per node in graph order: transfer, trigger, route, and the detail that shows the primitive |
+| note lanes | per voice, the note lane as runs of named notes with frame spans and detune in cents |
+| residual | the replayed writes per plane and per part, the observed trigger count, and the shallow classes |
+
+Per transfer kind: a `SELECT` names the table and lane it reads and its row stream
+(rows of a pitch table print as notes, rows of an instrument table as `inst NN`, and a
+row past the end of the lane as that row's byte `hold`, `gate-` or `gate+`); a
+`LOOKUP` its constant or its sequence; a `RAMP` its seed, step and wrap with the
+values it generates; an `EDGE` when it fires and the histogram of its gaps; `RAW` its
+counts.
+
+Evidence classes come straight from `Graph.classes` (docs/tracker.md §6) and are never
+folded together: `lane`/`gate`/`ramp` are **strong** (a declared byte at a recovered
+row, or generated from one), `imm`/`seed` are **shallow** (they pass the law without
+explaining a row). A sixth column, `note`, is the plane's generated emits that no class
+covers — the pitch-table `LOOKUP` note lane, which recovers a row for an **observed**
+word (§4).
+
+## Compression, and what it costs
+
+A full tune is tens of thousands of frames, so streams are run-length coded **and**
+repeated blocks are factored out: `[inst 00  inst 01  inst 02] x14`. Repetition is the
+arrangement showing through, so it is surfaced rather than trimmed. It is a display
+compression and claims no generator (§7.3, §7.4 are unbuilt).
+
+**No silent caps.** Where a line is cut for width, it ends with the count of what was
+left out — blocks, rows, runs, note frames and the last frame reached — so the view can
+never read as complete when it is not.
+
+## What the view does not claim
+
+- **Not a codec.** Nothing parses this text back; it is not the tune's normal form.
+- **No timing is explained.** Every `EDGE` count is observed: note-on times are the
+  trigger floor (docs/tracker.md §5, §7.4).
+- **No arrangement.** There is no orderlist, pattern or transpose — a row stream is a
+  recovered index, not a generated one (§7.4).
+- **The residual is the point.** The generated share, the per-plane residual and the
+  per-part replay counts are always printed.
+
+## Running it
+
+```
+python tools/tracker_text.py    # writes out/<Tune>.trackertext.txt (out/ is gitignored)
+```
+
+Needs the HVSC cache under `.oracle-cache/hvsc`. Rendering is linear in frames and a
+few seconds per tune; recovering the graph (`tracker`) dominates the wall clock. The
+tests (`tests/test_trackertext.py`) are hermetic: they render a hand-built graph
+carrying every transfer kind.
