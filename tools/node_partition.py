@@ -19,6 +19,7 @@ HVSC = ROOT / ".oracle-cache" / "hvsc"
 OUT = ROOT / "out" / "node_partition.json"
 FRAMES = 200
 WORKERS = int(os.environ.get("WORKERS", "5"))
+SHIFT = int(os.environ.get("SHIFT", "0"))  # null model: move every object off its address
 
 Obj = collections.namedtuple("Obj", "name base size")
 
@@ -424,7 +425,7 @@ def gt_one(rel):
     _graph, keys, lanes, sound = oracle_keys(native, records, align)
     out = {"editor": "goattracker", "tune": rel, "key_sound": sound}
     out["verified"], out["checkable"] = _gt_verify(objs, song, prog.mem0)
-    out.update(_row(prog, objs, keys, lanes))
+    out.update(_row(prog, _shifted(objs), keys, lanes))
     return out
 
 
@@ -446,8 +447,13 @@ def dm_one(rel):
         raise ValueError("not a DefMON replay")
     prog, _trace = _lifted(path, start - 1, FRAMES)
     out = {"editor": "defmon", "tune": rel, "key_sound": None, "verified": 0, "checkable": 0}
-    out.update(_row(prog, dm_objects(sites), collections.Counter(), {}))
+    out.update(_row(prog, _shifted(dm_objects(sites)), collections.Counter(), {}))
     return out
+
+
+def _shifted(objs):
+    """Every object moved by ``SHIFT``: the control run, where nothing should pair."""
+    return [o._replace(base=(o.base + SHIFT) & 0xFFFF) for o in objs] if SHIFT else objs
 
 
 def _run(item):

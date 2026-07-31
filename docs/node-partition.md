@@ -40,11 +40,12 @@ A cursor is classified off the declarations alone — `row` if it lies in a regi
 `mut` offsets (another declared table supplies the index: a generated row), `state` if the
 region is play-written, `cell` if no declaration covers it.
 
-**The match is address containment and nothing else.** An object is *declared* if some
+**The match is address containment and nothing else, and it is controlled.** `SHIFT=n`
+moves every object off its address before matching, so the same rule can be run against a
+map that is wrong by construction (§2.1). An object is *declared* if some
 `prog.data_decls` region overlaps its span, and *paired* if some indexed load base lies in
-its span or in a region overlapping it. A second, stricter figure — the load base inside
-the object's **own** span — is reported beside it so the looser rule cannot flatter the
-result unchecked. No threshold, no tuning, no scoring.
+its span or in a region overlapping it. A stricter figure — the load base inside the
+object's **own** span — is reported beside it. No threshold, no tuning, no scoring.
 
 **Self-checks.**
 
@@ -107,6 +108,31 @@ but a byte of another declared const table, read at an index of its own. On `Aut
 arpeggio (its addressing base landing two bytes low, per (b) below). That is exactly the
 `Index` chain of docs/tracker.md §3.2b, present in the program text and never built by the
 recovery, whose structure axis reads 0.
+
+### 2.1 The control: how much of this is containment being cheap
+
+Address containment is only evidence if it fails when the address is wrong. `SHIFT=n`
+moves every object base by `n` before matching and changes nothing else. Over the first
+30 tunes (687 objects, 714 program pairs):
+
+| every object moved by | declared | paired | paired strictly |
+|---|---|---|---|
+| **0 — the real map** | **667 (97.1%)** | **587 (85.4%)** | **492 (71.6%)** |
+| +$40 | 548 | 458 (66.7%) | 263 |
+| +$100 | 315 | 209 (30.4%) | 106 |
+| +$400 | 47 | **26 (3.8%)** | 3 |
+
+**The resolution of this match is about a page, not a table.** GoatTracker's objects are
+7 to 30 bytes and packed adjacently, and `datadecl` tiles the whole block, so a 64-byte
+shift usually lands on the *neighbouring* object's declaration and still "pairs". Beyond a
+page the match collapses to 3.8%, so the block is found and the objects inside it are not
+individually resolved by containment alone.
+
+That is a real limit on the 85.6% figure, and the results that do **not** depend on it are
+the sharp ones: the arrangement's 14-of-69 split (those objects sit in the same block as
+everything else and still fail), the one-to-one with rung (f) in §3(a), and the cardinality
+agreement — 25.6 pairs per tune against 26.7 editor groups — which containment cannot
+manufacture.
 
 **What this does not measure.** The match is at the level of the *object*, not the
 cursor: it asks whether the program indexes the region the editor's node reads, not
