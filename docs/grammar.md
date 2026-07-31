@@ -34,6 +34,14 @@ declaration is written as the access it is rather than as address arithmetic.
 The reader supplies the `zext2`, so an emitter may drop it; every other form of
 address stays `mem[...]`.
 
+A reference — named, indexed or raw — carries an optional `:N` **width suffix**,
+absent for the one byte a 6502 access moves and `:2` for the 16-bit forms rung
+(d) fuses ([frameprog.md](frameprog.md) §4): `m_0021:2` is the word at `$21`, and
+`m_0021:2 = e` stores it. A store's suffix must equal the width of the value
+stored, so the width is stated once; the suffix is a frameprog form, and a
+sidprog document carrying one is rejected. `state { }` fields are `u8` or `u16`
+accordingly.
+
 Reserved words are exactly the grammar's literal identifier terminals
 (`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
 canonical cell name, register or `uN`/`tN`/`rN` slot.
@@ -174,14 +182,14 @@ ifw: "if" -> w_if
 
 // ---- statements and expressions (shared) ---------------------------------------
 asg: lvalue "=" expr
-lvalue: NAME -> lv_name
-      | NAME "[" expr "]" -> lv_index
-      | "mem" "[" expr "]" -> lv_mem
+lvalue: NAME [wsuf] -> lv_name
+      | NAME "[" expr "]" [wsuf] -> lv_index
+      | "mem" "[" expr "]" [wsuf] -> lv_mem
 
 ?expr: HEX -> e_hex
      | NAME [wsuf] -> e_name
-     | NAME "[" expr "]" -> e_index
-     | "mem" "[" expr "]" -> e_mem
+     | NAME "[" expr "]" [wsuf] -> e_index
+     | "mem" "[" expr "]" [wsuf] -> e_mem
      | zextw "(" expr ")" -> e_zext
      | "carry" "(" expr "," expr ")" -> e_carry
      | "(" chain ")" [wsuf] -> e_group

@@ -114,6 +114,20 @@ def check_alias(name):
     return name
 
 
+def store_width(val):
+    """Byte width of a store whose value expression is ``val`` (2 once fused)."""
+    if val[0] == "op":
+        return val[3]
+    return val[2] if val[0] == "mem" else 1
+
+
+def _check_store(lv, rhs):
+    """A store's lvalue width must be the width of the value stored."""
+    if lv[-1] != store_width(rhs):
+        raise ValueError("lvalue width %d does not match the stored value" % lv[-1])
+    return True
+
+
 # ---- expression-tree utilities -------------------------------------------------
 def kids(n):
     if n[0] == "mem":
@@ -434,9 +448,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return [_hexval(t) for t in c]
 
     def statedef(self, c):
-        if str(c[1]) != "u8":
+        if str(c[1]) not in ("u8", "u16"):
             raise ValueError("unknown state type %r" % str(c[1]))
-        self.doc.state.append((str(c[0]), c[2] is not None, c[3] or []))
+        self.doc.state.append((str(c[0]), int(str(c[1])[1:]) // 8, c[2] is not None, c[3] or []))
 
     # -- expressions -----------------------------------------------------------
     def e_hex(self, c):
@@ -449,10 +463,10 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return self._nameref(str(c[0]), c[1] or 1)
 
     def e_index(self, c):
-        return ("mem", self._index_addr(str(c[0]), c[1]), 1)
+        return ("mem", self._index_addr(str(c[0]), c[1]), c[2] or 1)
 
     def e_mem(self, c):
-        return ("mem", c[0], 1)
+        return ("mem", c[0], c[1] or 1)
 
     def z1(self, c):
         return 1
@@ -509,7 +523,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         name = self.rev.get(name, name)
         if self._frame():
             addr = name_addr(name)
-            return ("mem", ("const", addr, 2), 1) if addr is not None else ("loc", name)
+            return ("mem", ("const", addr, 2), sz) if addr is not None else ("loc", name)
         m = _T_NAME.match(name)
         if m:
             return ("uni", BIND_BASE + int(m.group(1)), 1)
@@ -528,13 +542,13 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     # -- statements ------------------------------------------------------------
     def lv_name(self, c):
-        return ("name", str(c[0]))
+        return ("name", str(c[0]), c[1] or 1)
 
     def lv_index(self, c):
-        return ("index", str(c[0]), c[1])
+        return ("index", str(c[0]), c[1], c[2] or 1)
 
     def lv_mem(self, c):
-        return ("mem", c[0])
+        return ("mem", c[0], c[1] or 1)
 
     def asg(self, c):
         return (c[0], c[1])
@@ -736,6 +750,8 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             acc.events.append(payload)
             return
         lv, rhs = payload[1], payload[2]
+        if lv[-1] != 1:
+            raise ValueError("a width-suffixed lvalue is a frameprog form")
         if lv[0] == "index":
             acc.events.append(("st", self._index_addr(lv[1], lv[2]), rhs))
             return
@@ -785,13 +801,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def _fasg(self, payload):
         lv, rhs = payload[1], payload[2]
-        if lv[0] == "index":
+        if lv[0] == "index" and _check_store(lv, rhs):
             return ("st", self._index_addr(lv[1], lv[2]), rhs)
-        if lv[0] == "mem":
+        if lv[0] == "mem" and _check_store(lv, rhs):
             return ("st", lv[1], rhs)
         name = self.rev.get(lv[1], lv[1])
         addr = name_addr(name)
-        return ("st", ("const", addr, 2), rhs) if addr is not None else ("asg", name, rhs)
+        if addr is None:
+            return ("asg", name, rhs)
+        _check_store(lv, rhs)
+        return ("st", ("const", addr, 2), rhs)
 
     # -- procedures and document -----------------------------------------------
     def proc(self, c):

@@ -117,7 +117,9 @@ def test_bad_expressions_rejected(bad):
         "sidprog 1\nplay $1000\ninit $0F00\nsymbols {\n alias a = nosuch\n}\n",
         "sidprog 1\nplay $1000\ninit $0F00\nsymbols {\n alias p = m_1000\n alias q = m_1000\n}\n",
         "frameprog 0\nplay $1000\ninit $0F00\nsub_XXXX() {\n  ret\n}\n",  # not a sub name
-        "frameprog 0\nplay $1000\ninit $0F00\nstate {\n m_1000: u16\n}\n",  # unknown type
+        "frameprog 0\nplay $1000\ninit $0F00\nstate {\n m_1000: u24\n}\n",  # unknown type
+        "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n m_1000:2 = $01\n ret\n}\n",  # width
+        "sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n m_1000:2 = $0001\n}\n",  # frame form
     ],
 )
 def test_bad_documents_rejected(bad):
