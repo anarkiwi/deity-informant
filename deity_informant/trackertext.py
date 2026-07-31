@@ -1,8 +1,8 @@
 """trackertext — a tracker ``Graph`` rendered as text, in the musical domain, for review.
 
 Every line comes from the graph: node ``(transfer, trigger, route)`` triples, the declared
-tables those transfers hold, and ``Graph.classes``; the observed frames are read only through
-the ``RAW`` node, which is labelled. Voices, notes, instruments and tables, no addresses."""
+tables those transfers hold, and ``Graph.classes``. ``compare`` puts two graphs of one tune
+through this same emitter — ours and a native editor's own song (docs/gt-oracle.md)."""
 
 import math
 from collections import namedtuple
@@ -36,25 +36,93 @@ _PLANE_NAME = {
 }
 _STRONG = ("lane", "gate", "ramp")
 _SHALLOW = ("imm", "seed")
+_ASSEMBLED = ("mask",)  # a byte several generators assemble field by field: neither of those
 _SECT = ("", " hold", " gate-", " gate+")  # ctrl rows: lane byte, held, gate cleared, gate set
-_WAVES = ((0x80, "noise"), (0x40, "pulse"), (0x20, "saw"), (0x10, "tri"))
-_FLAGS = ((0x08, "test"), (0x04, "ring"), (0x02, "sync"))
 _RULE = "=" * 96
+_FULL = tracker._FULL
 
-Scan = namedtuple("Scan", "cov emits gen res notes tabs ramps frames")
+_LEVEL = "level"  # a field kind: a magnitude in its own units (volume 15, resonance 10)
+_FLAG = "flag"  # a field kind: one bit, on or off
+_WAVES = (((0x80, "noise"), (0x40, "pulse"), (0x20, "saw"), (0x10, "tri")), "silent")
+_MODES = (((0x40, "high-pass"), (0x20, "band-pass"), (0x10, "low-pass")), "no filter")
+_FLAGBITS = ((0x08, "test"), (0x04, "ring"), (0x02, "sync"))
+_CTRL_FIELDS = (
+    (0xF0, "waveform", _WAVES),
+    (0x08, "test", _FLAG),
+    (0x04, "ring", _FLAG),
+    (0x02, "sync", _FLAG),
+    (0x01, "gate", _FLAG),
+)
+_FILT_FIELDS = {
+    0x17: (
+        (0xF0, "resonance", _LEVEL),
+        (0x08, "external routing", _FLAG),
+        (0x04, "voice 3 routing", _FLAG),
+        (0x02, "voice 2 routing", _FLAG),
+        (0x01, "voice 1 routing", _FLAG),
+    ),
+    0x18: (
+        (0x80, "voice 3 mute", _FLAG),
+        (0x70, "filter mode", _MODES),
+        (0x0F, "master volume", _LEVEL),
+    ),
+}
+_MASK_NAME = {(0x17, 0x0F): "filter routing"}  # a group whose joined field names read worse
+
+Scan = namedtuple("Scan", "cov emits gen res notes at insts tabs ramps frames groups")
+Side = namedtuple("Side", "label what graph law prog offset frames", defaults=(None, None, 0, None))
 
 
-# ---- 1. musical names: what a register is, what a byte says ----------------------
-def _role(reg):
-    """``voice 1 waveform`` / ``filter cutoff hi``: the part a register plays."""
+# ---- 1. musical names: what a register is, what one field of it says --------------
+def _fields(reg):
+    """The named bit fields of a register, most significant first."""
+    if reg <= tracker._VOICE_HI and reg % 7 == tracker._CTRL:
+        return _CTRL_FIELDS
+    return _FILT_FIELDS.get(reg, ())
+
+
+def _field_name(reg, mask):
+    """The musical object a route's mask names: ``filter mode``, ``master volume``, ``gate``."""
+    got = [n for m, n, _k in _fields(reg) if m & mask]
+    return _MASK_NAME.get((reg, mask)) or (" + ".join(got) if got else _lane_role(reg))
+
+
+def _field_str(reg, mask, v):
+    """One field's value in its own terms: a level, a set of named bits, or on/off."""
+    out = []
+    for m, name, kind in _fields(reg):
+        if not m & mask:
+            continue
+        b = v & m
+        if kind == _LEVEL:
+            out.append("%s %d" % (name, b // (m & -m)))
+        elif kind == _FLAG:
+            out.append("%s %s" % (name, "on" if b else "off"))
+        else:
+            bits, none = kind
+            out.append("+".join(n for k, n in bits if b & k) or none)
+    return ", ".join(out) or "%d" % (v & mask)
+
+
+def _role(reg, mask=_FULL):
+    """``voice 1 waveform`` / ``filter mode``: the part a register, or a field of it, plays."""
+    if mask != _FULL:
+        name = _field_name(reg, mask)
+        return "voice %d %s" % (reg // 7 + 1, name) if reg <= tracker._VOICE_HI else name
     if reg <= tracker._VOICE_HI:
         return "voice %d %s" % (reg // 7 + 1, _VOICE_ROLE[reg % 7])
-    return "filter %s" % _FILT_ROLE.get(reg, "reg %d" % reg)
+    return "filter %s" % _FILT_ROLE.get(reg, "other")
 
 
 def _lane_role(reg):
     """The role of a table lane feeding ``reg``, with the voice dropped."""
-    return _VOICE_ROLE[reg % 7] if reg <= tracker._VOICE_HI else _FILT_ROLE.get(reg, "filter")
+    return _VOICE_ROLE[reg % 7] if reg <= tracker._VOICE_HI else _FILT_ROLE.get(reg, "other")
+
+
+def _part_name(route):
+    """What a lane is a lane *of*: a register's role, or the one field the route owns."""
+    mask = tracker._mask_of(route)
+    return _lane_role(route[1]) if mask == _FULL else _field_name(route[1], mask)
 
 
 def _note_name(idx):
@@ -65,13 +133,13 @@ def _note_name(idx):
 def _byte_str(reg, b):
     """One declared byte in the terms of its register: waveform bits, ADSR nibbles, level."""
     if reg <= tracker._VOICE_HI and reg % 7 == tracker._CTRL:
-        got = [n for m, n in _WAVES if b & m] + [n for m, n in _FLAGS if b & m]
-        return "+".join(got or ["silent"]) + ("+gate" if b & 1 else "")
+        got = [n for m, n in _WAVES[0] if b & m] + [n for m, n in _FLAGBITS if b & m]
+        return "+".join(got or [_WAVES[1]]) + ("+gate" if b & 1 else "")
     if reg <= tracker._VOICE_HI and reg % 7 == 5:
         return "A%X D%X" % (b >> 4, b & 15)
     if reg <= tracker._VOICE_HI and reg % 7 == 6:
         return "S%X R%X" % (b >> 4, b & 15)
-    return "%02X" % b
+    return _field_str(reg, _FULL, b) if _fields(reg) else "%d" % b
 
 
 def _cents(note):
@@ -145,7 +213,7 @@ class _Tables:
             role = {"freq": "pitch", "filter": "filter"}.get(plane, "instrument")
             if key[0] not in self.role or role == "instrument":
                 self.role[key[0]] = role
-            self.lanes.setdefault(key[0], {})[_lane_role(g.route[1])] = key[1]
+            self.lanes.setdefault(key[0], {})[_part_name(g.route)] = key[1]
             self.rows[key[0]] = max(self.rows.get(key[0], 0), len(key[1]))
 
     def see(self, tid, row, n):
@@ -177,49 +245,90 @@ def _run_note(runs, f, note):
         runs.append([f, f, note.index, note.name, 1, c, c])
 
 
+def _consumers(nodes):
+    """``{node: [the nodes it triggers]}``, indexed once so a frame's fires cost no scan.
+
+    ``tracker._fired`` rescans every node per firing trigger, which is quadratic in the
+    graph; a whole tune is thousands of nodes, so the index is what makes a pass linear."""
+    out = {}
+    for j, h in enumerate(nodes):
+        if h.trigger != tracker.FRAME:
+            out.setdefault(h.trigger[1], []).append(j)
+    return out
+
+
+def _fires(nodes, roots, cons, frame):
+    """Trigger counts per node for ``frame``: ``tracker._fired``, without the rescan."""
+    fired = [1 if g.trigger == tracker.FRAME else 0 for g in nodes]
+    for i in roots:
+        n = tracker._ticks(nodes[i], frame) if fired[i] else 0
+        for j in cons.get(i, ()) if n else ():
+            fired[j] += n
+    return fired
+
+
+def _see_select(scan_tabs, key, row, reg, frame, insts):
+    """Name a table and a row at their first emit, and record the instrument it says."""
+    tid, lane = key[0], key[1]
+    scan_tabs.see(tid, row, len(lane))
+    if reg <= tracker._VOICE_HI and reg % 7 == 5:
+        insts[reg // 7][frame] = scan_tabs.inst.get((tid, row % len(lane)))
+
+
 def _scan(graph, nframes, keys, tabs):
     """One streaming pass: counts, first-use ordinals, note runs and sweep samples.
 
-    Linear in frames and constant in memory per node apart from the note runs, so a whole
-    tune renders without materialising its frames."""
+    Linear in frames *and* in nodes. A masked group latches its fields and the last of
+    them to fire writes the assembled byte, exactly as ``tracker._run`` evaluates it, so
+    a register several generators drive counts as one emit and not as one per field."""
     nodes = graph.nodes
+    cons, roots = _consumers(nodes), [i for i, g in enumerate(nodes) if g.route[0] == "fire"]
+    parts = tracker._masked(nodes)
+    held = {reg: {} for reg in parts}
     counts, emits = [0] * len(nodes), [0] * len(nodes)
     gen, res, ramps, notes = {}, {}, {}, [[], [], []]
+    at, insts = [[None] * nframes for _v in range(3)], [{}, {}, {}]
     pitch = graph.freq_table
     for f in range(nframes):
-        fires = tracker._fired(nodes, f)
+        fired = _fires(nodes, roots, cons, f)
+        last = {r: max((i for i in ns if fired[i]), default=None) for r, ns in parts.items()}
         cur = {}
         for i, g in enumerate(nodes):
-            if not fires[i]:
+            if not fired[i]:
                 continue
             if g.transfer[0] == "RAW":
                 for reg, _v in g.transfer[1][f] if f < len(g.transfer[1]) else ():
                     res[reg] = res.get(reg, 0) + 1
                 continue
             if g.route[0] != "plane":
-                counts[i] += fires[i]
+                counts[i] += fired[i]
                 continue
-            for _t in range(fires[i]):
+            reg = g.route[1]
+            for _t in range(fired[i]):
                 counts[i] += 1
                 v = tracker._emit(g, counts[i])
                 if v is None:
                     continue
                 emits[i] += 1
-                gen[g.route[1]] = gen.get(g.route[1], 0) + 1
-                cur[g.route[1]] = v & 0xFF
                 if keys[i] is not None:
                     seq = g.transfer[2]
-                    tabs.see(keys[i][0], seq[(counts[i] - 1) % len(seq)], len(keys[i][1]))
+                    _see_select(tabs, keys[i], seq[(counts[i] - 1) % len(seq)], reg, f, insts)
                 elif g.transfer[0] == "RAMP":
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v & 0xFF)
                     del ramps[i][1][:-4]
+                v = tracker._assemble(g, v, held.get(reg), i == last.get(reg))
+                if v is None:
+                    continue
+                gen[reg] = gen.get(reg, 0) + 1
+                cur[reg] = v & 0xFF
         for v in range(3):
             lo, hi = cur.get(7 * v), cur.get(7 * v + 1)
             note = None if lo is None or hi is None or pitch is None else _word_note(pitch, lo, hi)
             if note is not None:
                 _run_note(notes[v], f, note)
+                at[v][f] = note.index
     cov = tracker._coverage(gen, res, graph.classes)
-    return Scan(cov, emits, gen, res, notes, tabs, ramps, nframes)
+    return Scan(cov, emits, gen, res, notes, at, insts, tabs, ramps, nframes, parts)
 
 
 def _word_note(pitch, lo, hi):
@@ -275,32 +384,64 @@ def _block(toks, width=84):
     return "  ".join(out)
 
 
-def _stream(items, fmt, width=84):
-    """A row stream: run-length tokens with repeated blocks factored out.
-
-    Nothing is dropped silently — a stream cut at ``width`` reports the blocks and the
-    rows left out."""
+def _group_toks(items, fmt):
+    """``(one token per repeating group, the groups, the run-length coding)``."""
     rle = _rle(items)
     groups = _cycles(rle)
-    out, used = [], 0
-    for k, (i, j, p) in enumerate(groups):
-        toks = [fmt(v) + ("" if n == 1 else " x%d" % n) for v, n in rle[i : i + p]]
+    toks = []
+    for i, j, p in groups:
+        body = _block([fmt(v) + ("" if n == 1 else " x%d" % n) for v, n in rle[i : i + p]])
         reps = (j - i) // p
-        tok = _block(toks) if reps == 1 else "[%s] x%d" % (_block(toks), reps)
-        if out and used + len(tok) > width:
-            left = sum(n for _v, n in rle[i:])
-            out.append("...(+%d blocks, %d rows)" % (len(groups) - k, left))
-            break
-        out.append(tok)
-        used += len(tok) + 2
-    return "  ".join(out)
+        toks.append(body if reps == 1 else "[%s] x%d" % (body, reps))
+    return toks, groups, rle
+
+
+def _pack(toks, width=84):
+    """Tokens grouped into lines of at most ``width``, as lists of tokens."""
+    out, cur, used = [], [], 0
+    for t in toks:
+        if cur and used + len(t) > width:
+            out.append(cur)
+            cur, used = [], 0
+        cur.append(t)
+        used += len(t) + 2
+    return out + ([cur] if cur else [])
+
+
+def _stream_lines(items, fmt, width=84, cap=1):
+    """A row stream over at most ``cap`` lines: run-length coded, repeated blocks factored.
+
+    Nothing is dropped silently — a stream cut at ``cap`` lines ends with the blocks and
+    the rows left out."""
+    toks, groups, rle = _group_toks(items, fmt)
+    rows = _pack(toks, width)
+    out = ["  ".join(r) for r in rows[:cap]]
+    shown = sum(len(r) for r in rows[:cap])
+    if shown < len(toks):
+        left = sum(n for _v, n in rle[groups[shown][0] :])
+        out[-1] += "  ...(+%d blocks, %d rows)" % (len(toks) - shown, left)
+    return out
+
+
+def _stream(items, fmt, width=84):
+    """The first line of a row stream, with what it left out counted on the end."""
+    return _stream_lines(items, fmt, width)[0]
 
 
 # ---- 5. header: the law verdict and the coverage partition -----------------------
-_COVFMT = "%-16s %7d %7d  %5.1f%% | %6d %6d %6d | %6d %6d | %6d"
-_COVHDR = "%-16s %7s %7s  %6s | %6s %6s %6s | %6s %6s | %6s" % (
-    ("plane", "gen", "total", "share") + _STRONG + _SHALLOW + ("note",)
+_CLS = _STRONG + _SHALLOW + _ASSEMBLED + ("note",)
+_COVFMT = "%-16s %7d %7d  %5.1f%% | %6d %6d %6d | %6d %6d | %6d | %6d"
+_COVHDR = "%-16s %7s %7s  %6s | %6s %6s %6s | %6s %6s | %6s | %6s" % (
+    ("plane", "gen", "total", "share") + _CLS
 )
+
+
+def _classes(graph, cov, plane):
+    """The evidence classes behind one plane's generated emits, the note lane included."""
+    it, _all = cov.planes.get(plane, (0, 0))
+    cls = dict((graph.classes or {}).get(plane, {}))
+    cls["note"] = it - sum(cls.values())
+    return cls
 
 
 def _header(graph, scan, title, law):
@@ -318,25 +459,25 @@ def _header(graph, scan, title, law):
         "",
         _COVHDR,
     ]
-    keys = _STRONG + _SHALLOW + ("note",)
-    tot = dict.fromkeys(keys, 0)
+    tot = dict.fromkeys(_CLS, 0)
     for p in _PLANES:
         if p not in cov.planes:
             continue
         it, all_ = cov.planes[p]
-        cls = dict((graph.classes or {}).get(p, {}))
-        cls["note"] = it - sum(cls.values())
-        for k in keys:
+        cls = _classes(graph, cov, p)
+        for k in _CLS:
             tot[k] += cls.get(k, 0)
         row = (_PLANE_NAME[p], it, all_, _pct(it, all_))
-        out.append(_COVFMT % (row + tuple(cls.get(k, 0) for k in keys)))
+        out.append(_COVFMT % (row + tuple(cls.get(k, 0) for k in _CLS)))
     all_row = ("all", cov.interp, cov.total, _pct(cov.interp, cov.total))
     return out + [
-        _COVFMT % (all_row + tuple(tot[k] for k in keys)),
+        _COVFMT % (all_row + tuple(tot[k] for k in _CLS)),
         "         strong = a declared table byte at a recovered row (lane/gate), or generated"
         " from one (ramp)",
         "         shallow = imm: a program constant, no row explained; seed: the observed byte"
         " a sweep starts from",
+        "         mask = one byte several generators assemble field by field: part declared,"
+        " part program constant",
         "         note = a pitch-table row recovered for an observed pitch word",
     ]
 
@@ -352,6 +493,18 @@ def _pitch_lines(p):
     return ["pitch    %d notes, %s, %s, equal-tempered" % (n, span, how)]
 
 
+def _field_lines(graph, scan):
+    """The masked groups: which musical objects share one write, and which nodes they are."""
+    out = []
+    for reg, ns in sorted(scan.groups.items()):
+        names = [_role(reg, tracker._mask_of(graph.nodes[i].route)) for i in ns]
+        out.append(
+            "fields   %s: %d generators of disjoint bits, one write between them — %s"
+            % (" + ".join(names), len(ns), " ".join("n%02d" % i for i in ns))
+        )
+    return out
+
+
 def _engine(graph, prog, scan):
     """The tempo/clock census, then the tables the generators read, numbered by first use."""
     out = ["", "; ---- engine ----"] + _pitch_lines(graph.freq_table)
@@ -362,6 +515,7 @@ def _engine(graph, prog, scan):
         out.append(
             "tempo    dividers %d, free-running phases %d, %s" % (div, len(clocks) - div, reload_)
         )
+    out += _field_lines(graph, scan)
     tabs = scan.tabs
     out.append("tables   %d read by the generators, numbered by first use" % len(tabs.num))
     for tid in sorted(tabs.num, key=lambda k: tabs.num[k]):
@@ -415,9 +569,9 @@ def _trig(graph, g):
 
 
 def _route(g):
-    """Where a node's emits go, in musical terms."""
+    """Where a node's emits go, in musical terms: a register's part, or one field of it."""
     if g.route[0] == "plane":
-        return "-> " + _role(g.route[1])
+        return "-> " + _role(g.route[1], tracker._mask_of(g.route))
     return "-> " + ("triggers" if g.route[0] == "fire" else "unexplained writes")
 
 
@@ -434,28 +588,48 @@ def _fires_str(counts, cap=4):
     )
 
 
-def _select_lines(g, key, tabs, n_emits):
+def _select_lines(g, key, tabs, n_emits, cap=8):
     """A ``SELECT``: which table lane it reads, its row stream, and what the bytes say."""
     tid, lane, sections = key
-    reg = g.route[1]
-    return [
-        "     reads  %s %s lane, %d rows%s"
-        % (tabs.name(tid), _lane_role(reg), len(lane), "" if sections == 1 else " + 3 gate images"),
-        "     rows   %s" % _stream(g.transfer[2], lambda r: tabs.row_str(tid, r, len(lane))),
-        "     emits  %d" % n_emits,
-    ]
+    rows = _stream_lines(g.transfer[2], lambda r: tabs.row_str(tid, r, len(lane)), cap=cap)
+    return (
+        [
+            "     reads  %s %s lane, %d rows%s"
+            % (
+                tabs.name(tid),
+                _part_name(g.route),
+                len(lane),
+                "" if sections == 1 else " + 3 images",
+            )
+        ]
+        + ["     %-6s %s" % ("rows" if i == 0 else "", ln) for i, ln in enumerate(rows)]
+        + ["     emits  %d" % n_emits]
+    )
 
 
-def _node_lines(graph, i, scan, keys):
+def _lookup_str(g, n_emits):
+    """A ``LOOKUP``: one constant said in its own field's terms, or a sequence."""
+    seq = g.transfer[1]
+    if len(seq) == 1:
+        mask = tracker._mask_of(g.route)
+        what = (
+            _field_str(g.route[1], mask, seq[0]) if mask != _FULL else _byte_str(g.route[1], seq[0])
+        )
+        return "constant %s, %d times" % (what, n_emits)
+    vals = [v for v in seq if v is not None]
+    return "%d of %d entries, %d distinct (see the note lane)" % (n_emits, len(seq), len(set(vals)))
+
+
+def _node_lines(graph, i, scan, keys, cons):
     """One node: its transfer, what triggers it, where it routes, and its detail."""
     g = graph.nodes[i]
     kind = g.transfer[0]
     head = "n%02d  %-6s %-28s %s" % (i, kind, _route(g), _trig(graph, g))
     if kind == "EDGE":
-        seen = [j for j, h in enumerate(graph.nodes) if h.trigger == ("event", i)]
+        seen = cons.get(i, ())
         return [
             "%s  %d fires over %d frames -> %s"
-            % (head, sum(g.transfer[1]), len(g.transfer[1]), " ".join("n%02d" % j for j in seen)),
+            % (head, sum(g.transfer[1]), len(g.transfer[1]), _block(["n%02d" % j for j in seen])),
             "     when   %s" % _fires_str(g.transfer[1]),
         ]
     if kind == "SELECT" and keys[i] is not None:
@@ -465,25 +639,17 @@ def _node_lines(graph, i, scan, keys):
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
-            "     sweep  starts at %02X (OBSERVED), steps %+d per fire, wraps at %d"
+            "     sweep  starts at %d (OBSERVED), steps %+d per fire, wraps at %d"
             % (seed, step, bound),
             "     values %s%s  (%d emits)"
             % (
-                " ".join("%02X" % v for v in head_v),
-                " .. " + " ".join("%02X" % v for v in tail_v) if tail_v else "",
+                " ".join("%d" % v for v in head_v),
+                " .. " + " ".join("%d" % v for v in tail_v) if tail_v else "",
                 scan.emits[i],
             ),
         ]
     if kind == "LOOKUP":
-        seq = g.transfer[1]
-        vals = [v for v in seq if v is not None]
-        what = (
-            "constant %s, %d times" % (_byte_str(g.route[1], seq[0]), scan.emits[i])
-            if len(seq) == 1
-            else "%d of %d entries, %d distinct (see the note lane)"
-            % (scan.emits[i], len(seq), len(set(vals)))
-        )
-        return [head, "     emits  %s" % what]
+        return [head, "     emits  %s" % _lookup_str(g, scan.emits[i])]
     if kind == "RAW":
         rows = g.transfer[1]
         return [
@@ -493,16 +659,36 @@ def _node_lines(graph, i, scan, keys):
     return ["%s  one tick per %s" % (head, g.transfer[1])]
 
 
-def _generators(graph, scan, keys):
-    """Every node, in graph order, so a rendering is diffable between runs and tunes."""
+def _weight(g, scan, i):
+    """What one node contributes: fires for a trigger stream, emits for a plane one."""
+    return sum(g.transfer[1]) if g.transfer[0] == "EDGE" else scan.emits[i]
+
+
+def _generators(graph, scan, keys, cap=32):
+    """Every node in graph order; past ``cap`` of one kind the rest are counted, not listed.
+
+    A whole tune's sweep is thousands of one-run ``RAMP``s of the same shape, so the
+    listing is capped per transfer kind and what it left out is stated with its weight."""
+    cons = _consumers(graph.nodes)
     out = [
         "",
         "; ---- generators: (transfer, trigger, route) per node ----",
         "; a row past the end of its lane is that row's byte held: 'hold', 'gate-' or 'gate+'",
         "; every EDGE fire time is OBSERVED — the trigger floor, no generator produces them",
+        "; a masked group's generators each own one field and share one write (see 'fields')",
     ]
-    for i in range(len(graph.nodes)):
-        out += _node_lines(graph, i, scan, keys)
+    seen, left = {}, {}
+    for i, g in enumerate(graph.nodes):
+        kind = g.transfer[0]
+        seen[kind] = seen.get(kind, 0) + 1
+        if seen[kind] <= cap:
+            out += _node_lines(graph, i, scan, keys, cons)
+        else:
+            n, w = left.get(kind, (0, 0))
+            left[kind] = (n + 1, w + _weight(g, scan, i))
+    for kind, (n, w) in sorted(left.items()):
+        what = "fires" if kind == "EDGE" else "emits"
+        out.append("...(+%d more %s nodes, %d %s between them, not listed)" % (n, kind, w, what))
     return out
 
 
@@ -513,7 +699,7 @@ def _run_str(r):
     return "%s%s%s" % (r[3], "" if r[4] == 1 else " x%d" % r[4], det)
 
 
-def _voices(graph, scan, cap=24):
+def _voices(graph, scan, cap=200):
     """Per voice, the note lane as runs of named notes, repeated blocks factored out."""
     out = ["", "; ---- note lanes (the generated pitch, read back through the pitch table) ----"]
     if graph.freq_table is None:
@@ -585,14 +771,181 @@ def _residual(graph, scan):
 
 
 # ---- 10. the whole rendering ------------------------------------------------------
+def _rendered(graph, scan, keys, prog, title, law):
+    """The six sections of one graph's rendering, in order."""
+    return (
+        _header(graph, scan, title, law)
+        + _engine(graph, prog, scan)
+        + _instruments(scan)
+        + _generators(graph, scan, keys)
+        + _voices(graph, scan)
+        + _residual(graph, scan)
+    )
+
+
+def _joined(lines):
+    """The text of a rendering: no trailing whitespace on any line."""
+    return "\n".join(line.rstrip() for line in lines + [_RULE, ""])
+
+
+def _scanned(graph, nframes, prog):
+    """``(keys, Scan)``: one pass over the frames, with the tables named by first use."""
+    keys = _keys(graph, _decl_index(prog))
+    return keys, _scan(graph, nframes, keys, _Tables(graph, keys))
+
+
 def emit(graph, nframes, prog=None, title="graph", law=None):
     """The rendering: header, engine, instruments, generators, note lanes, residual."""
-    keys = _keys(graph, _decl_index(prog))
-    scan = _scan(graph, nframes, keys, _Tables(graph, keys))
-    out = _header(graph, scan, title, law)
-    out += _engine(graph, prog, scan)
-    out += _instruments(scan)
-    out += _generators(graph, scan, keys)
-    out += _voices(graph, scan)
-    out += _residual(graph, scan)
-    return "\n".join(line.rstrip() for line in out + [_RULE, ""])
+    keys, scan = _scanned(graph, nframes, prog)
+    return _joined(_rendered(graph, scan, keys, prog, title, law))
+
+
+# ---- 11. two graphs of one tune, and what they agree on ----------------------------
+def _bijection(pairs):
+    """``(agreeing share, modal map as ``[(a, b)]``, is it onto)`` for ``(a, b)`` pairs."""
+    per = {}
+    for a, b in pairs:
+        hist = per.setdefault(a, {})
+        hist[b] = hist.get(b, 0) + 1
+    votes = {a: max(hist, key=hist.get) for a, hist in per.items()}
+    hit = sum(1 for a, b in pairs if votes.get(a) == b)
+    return _pct(hit, len(pairs)), sorted(votes.items()), len(set(votes.values())) == len(votes)
+
+
+def _items(seq):
+    """``(frame, value)`` pairs of a dense per-frame lane or a sparse one."""
+    return enumerate(seq) if isinstance(seq, list) else seq.items()
+
+
+def _at(seq, f):
+    """One frame of a dense or sparse lane, or None off the end."""
+    if isinstance(seq, list):
+        return seq[f] if 0 <= f < len(seq) else None
+    return seq.get(f)
+
+
+def _shared(a, b, off):
+    """``[(ours, theirs)]`` over the frames and voices where both sides name something."""
+    out = []
+    for v in range(3):
+        for f, x in _items(a[v]):
+            y = _at(b[v], f - off)
+            if x is not None and y is not None:
+                out.append((x, y))
+    return out
+
+
+def _note_agreement(left, right, off):
+    """Do the two note lanes name the same pitch, and is there a transposition between them?"""
+    pairs = _shared(left.at, right.at, off)
+    ours = sum(1 for v in range(3) for x in left.at[v] if x is not None)
+    if not pairs:
+        return ["notes    no frame names a note on both sides (ours names %d)" % ours]
+    hist = {}
+    for x, y in pairs:
+        hist[x - y] = hist.get(x - y, 0) + 1
+    best = max(hist, key=hist.get)
+    how = "the same pitch" if best == 0 else "ours transposed %+d semitones" % best
+    return [
+        "notes    %d frames name a note on both sides, %d agree (%.1f%%) — %s"
+        % (len(pairs), hist[best], _pct(hist[best], len(pairs)), how),
+        "         ours names a note on %d frames in all" % ours,
+    ]
+
+
+def _wrap(toks, lead="         ", width=84):
+    """Tokens as indented lines of at most ``width``, nothing dropped."""
+    out, cur = [], []
+    for t in toks:
+        if cur and sum(len(x) + 2 for x in cur) + len(t) > width:
+            out.append(lead + ", ".join(cur))
+            cur = []
+        cur.append(t)
+    return out + ([lead + ", ".join(cur)] if cur else [])
+
+
+def _inst_agreement(left, right, off, cap=32):
+    """Is our instrument numbering a bijection onto the other side's?"""
+    pairs = _shared(left.insts, right.insts, off)
+    if not pairs:
+        return ["instr    no frame names an instrument on both sides"]
+    share, votes, onto = _bijection(pairs)
+    toks = ["ours %02d = theirs %02d" % (a, b) for a, b in votes[:cap]]
+    if len(votes) > cap:
+        toks.append("...(+%d)" % (len(votes) - cap))
+    return [
+        "instr    %d emits name an instrument on both sides, %.1f%% consistent over %d rows, %s"
+        % (len(pairs), share, len(votes), "a bijection" if onto else "NOT a bijection")
+    ] + _wrap(toks)
+
+
+def _index_nodes(graph):
+    """Nodes addressing another generator's index: an orderlist or a pattern, if any."""
+    return sum(
+        1 for g in graph.nodes if g.route[0] == "fire" and g.transfer[0] not in ("EDGE", "DIV")
+    )
+
+
+def _structure(sides, facts):
+    """The arrangement axis: what either side represents of the song's own structure."""
+    out = [
+        "arrange  %s" % ", ".join("%s %d" % (s.label, _index_nodes(s.graph)) for s in sides)
+        + " generators addressing another generator's index"
+    ]
+    if facts:
+        out.append(
+            "         the song itself holds %s" % ", ".join("%d %s" % (n, k) for k, n in facts)
+        )
+    out.append("         a row stream is a recovered index on both sides, never a generated one:")
+    out.append("         no orderlist, no pattern, no transpose is represented by either graph")
+    return out
+
+
+_CMPFMT = "%-16s %7d %7d %5.1f%% | %7d %7d %5.1f%% | %s"
+
+
+def _cov_row(name, left, right):
+    """One plane, both sides, and which way the difference runs."""
+    d = left[0] - right[0]
+    verdict = "same" if d == 0 else ("ours +%d" % d if d > 0 else "theirs +%d" % -d)
+    return _CMPFMT % ((name,) + left + (_pct(*left),) + right + (_pct(*right),) + (verdict,))
+
+
+def compare(sides, nframes, title="graph", facts=()):
+    """Two ``Side``s of one tune through one emitter: what they agree on, then both.
+
+    ``facts`` are the song's own structure counts, which neither graph holds; they are
+    stated so the gap between a reproduced tune and a recovered arrangement is explicit."""
+    left, right = sides
+    scans = [_scanned(s.graph, s.frames or nframes - s.offset, s.prog) for s in sides]
+    out = [_RULE, "compare  %s  %d frames (%s)" % (title, nframes, _mmss(nframes))]
+    for s, (_k, sc) in zip(sides, scans):
+        out.append(
+            "  %-8s %-46s law %-5s %d/%d = %.1f%% generated"
+            % (
+                s.label,
+                s.what or "",
+                s.law or "?",
+                sc.cov.interp,
+                sc.cov.total,
+                _pct(sc.cov.interp, sc.cov.total),
+            )
+        )
+    out += [
+        "",
+        "%-16s %7s %7s %6s | %7s %7s %6s | %s"
+        % ("plane", "ours", "of", "share", "theirs", "of", "share", "difference"),
+    ]
+    a, b = scans[0][1].cov, scans[1][1].cov
+    for p in _PLANES:
+        if p in a.planes or p in b.planes:
+            out.append(_cov_row(_PLANE_NAME[p], a.planes.get(p, (0, 0)), b.planes.get(p, (0, 0))))
+    out.append(_cov_row("all", (a.interp, a.total), (b.interp, b.total)))
+    out += ["", "; ---- what the two agree on ----"]
+    out += _note_agreement(scans[0][1], scans[1][1], right.offset - left.offset)
+    out += _inst_agreement(scans[0][1], scans[1][1], right.offset - left.offset)
+    out += _structure(sides, facts)
+    for s, (keys, sc) in zip(sides, scans):
+        out += ["", _RULE, "; ===== %s: %s =====" % (s.label, s.what or "")]
+        out += _rendered(s.graph, sc, keys, s.prog, "%s  [%s]" % (title, s.label), s.law)
+    return _joined(out)

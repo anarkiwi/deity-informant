@@ -89,7 +89,7 @@ def test_nothing_of_the_machine_survives():
 def test_a_select_names_the_table_and_the_row_it_reads():
     """A lane is named by its table and its part; a ctrl row says how the gate rode it."""
     text = _text()
-    assert "reads  table 0 waveform lane, 3 rows + 3 gate images" in text
+    assert "reads  table 0 waveform lane, 3 rows + 3 images" in text
     assert _line(text, "rows   inst 00  inst 01 hold").endswith("inst 01 gate-  inst 01 gate+")
     assert "reads  table 0 attack/decay lane, 3 rows" in text
     assert "table 0  instrument    3 rows   lanes: attack/decay, waveform" in text
@@ -118,19 +118,30 @@ def test_nothing_is_collapsed_silently():
     assert X._block(["a", "b", "c"], width=1) == "a  ...(+2)"
 
 
+def test_a_kind_with_many_nodes_is_capped_and_the_rest_counted():
+    """A whole tune's sweep is thousands of one-run RAMPs; the listing says what it dropped."""
+    nodes = [T.edge((1,) * NF)] + [T.ramp(16 * i, 1, 0x100, ("event", 0), 2) for i in range(1, 12)]
+    g = T.Graph(nodes)
+    keys, scan = X._scanned(g, NF, None)
+    lines = X._generators(g, scan, keys, cap=3)
+    assert sum(1 for ln in lines if ln.startswith("n")) == 4  # the EDGE, plus three RAMPs
+    assert "...(+8 more RAMP nodes, 64 emits between them, not listed)" in lines
+    assert "12 nodes: 1 EDGE, 11 RAMP" in X.emit(g, NF)
+
+
 def test_the_edge_is_the_observed_trigger_floor():
     """A trigger stream reports when it fires, its consumers, and that it is observed."""
     line = _line(_text(), "when")
     assert "first f0, gaps: 1 apart x5, 2 apart x1" in line
     assert "every EDGE fire time is OBSERVED — the trigger floor" in _text()
-    assert "7 fires over 8 frames -> n02 n03 n04" in _line(_text(), "n01")
+    assert "7 fires over 8 frames -> n02  n03  n04" in _line(_text(), "n01")
 
 
 def test_the_sweep_reports_its_seed_step_and_bound():
     """The seed is the one observed byte; the step and the wrap are the generator's."""
     text = _text()
-    assert "sweep  starts at 80 (OBSERVED), steps +16 per fire, wraps at 256" in text
-    assert "values 80 90 A0 B0  (4 emits)" in text
+    assert "sweep  starts at 128 (OBSERVED), steps +16 per fire, wraps at 256" in text
+    assert "values 128 144 160 176  (4 emits)" in text
 
 
 def test_the_note_lane_names_notes_and_factors_out_the_figure():
@@ -144,7 +155,7 @@ def test_the_note_lane_names_notes_and_factors_out_the_figure():
 def test_the_coverage_split_reports_the_evidence_classes_and_the_residual_share():
     """Strong (lane/gate/ramp), shallow (imm/seed) and the note class are never folded."""
     text = _text()
-    row = ["waveform", "14", "14", "100.0%", "|", "2", "5", "0", "|", "7", "0", "|", "0"]
+    row = ["waveform", "14", "14", "100.0%", "|", "2", "5", "0", "|", "7", "0", "|", "0", "|", "0"]
     assert _line(text, "waveform").split() == row
     assert _line(text, "pitch  ").split()[-1] == "16"  # the note lane: its own class
     assert _line(text, "all").split()[1:4] == ["41", "44", "93.2%"]
@@ -159,7 +170,7 @@ def test_the_residual_is_reported_per_plane_and_per_part():
     assert "filter cutoff lo               2 replayed,       0 generated" in text
     assert "timing   1 trigger streams, 7 fires" in text
     assert "shallow  7 program constants" in text and "1 observed bytes seeding a sweep" in text
-    assert "f00000  filter cutoff lo = 10   (OBSERVED)" in text
+    assert "f00000  filter cutoff lo = 16   (OBSERVED)" in text
 
 
 def test_the_rendering_is_stable():
@@ -202,3 +213,106 @@ def test_detune_is_reported_in_cents():
     note = T.Note(3, 0x014B + 6, "D#0", 6)
     assert X._cents(note) == 31
     assert X._run_str([0, 0, 3, "D#0", 4, -12, 31]) == "D#0 x4 -12..+31c"
+
+
+# ---- the masked route: one register, several generators (docs/tracker.md §4e) ----
+MODE_LANE = (0x10, 0x20, 0x40)  # low-pass, band-pass, high-pass, in the mode field's bits
+RES_LANE = (0x80, 0xA0)
+MF = 4
+
+
+def _masked():
+    """A graph whose $18 and $17 are each partitioned between generators by mask."""
+    nodes = [
+        T.edge((1,) * MF),
+        T.select(MODE_LANE, (0, 1, 2, 0), ("event", 0), 0x18, 0x70),
+        T.lookup((0x0F,), ("event", 0), 0x18, 0x0F),
+        T.select(RES_LANE, (0, 1, 0, 1), ("event", 0), 0x17, 0xF0),
+        T.lookup((0x02,), ("event", 0), 0x17, 0x02),
+        T.raw([[] for _f in range(MF)]),
+    ]
+    return T.Graph(nodes, classes={"filter": {"mask": 8}})
+
+
+def test_a_masked_route_renders_as_the_distinct_musical_objects_it_names():
+    """A mask is a field, not an annotation: mode, volume, resonance and routing each route."""
+    text = X.emit(_masked(), MF)
+    for musical in ("-> filter mode", "-> master volume", "-> resonance", "-> voice 2 routing"):
+        assert musical in text
+    assert "$" not in text and "0x" not in text and "mask" in text
+    assert "constant master volume 15, 4 times" in text
+    assert "constant voice 2 routing on, 4 times" in text
+
+
+def test_a_masked_group_is_named_with_the_generators_that_share_its_write():
+    """The fields of one register are stated together: what assembles the byte, and from where."""
+    text = X.emit(_masked(), MF)
+    assert (
+        "fields   resonance + voice 2 routing: 2 generators of disjoint bits,"
+        " one write between them — n03 n04" in text
+    )
+    assert (
+        "fields   filter mode + master volume: 2 generators of disjoint bits,"
+        " one write between them — n01 n02" in text
+    )
+    assert "rows   setting 00  setting 02  setting 04  setting 00" in text
+    assert "rows   [setting 01  setting 03] x2" in text
+
+
+def test_a_masked_group_counts_as_one_emit_not_one_per_field():
+    """The rendering's own coverage is `tracker.coverage`'s, masked registers included."""
+    g = _masked()
+    mine = X._scan(g, MF, X._keys(g, {}), X._Tables(g, X._keys(g, {}))).cov
+    theirs = T.coverage(g, MF)
+    assert (mine.interp, mine.total, mine.planes) == (theirs.interp, theirs.total, theirs.planes)
+    assert mine.interp == 2 * MF  # two registers, one write each per frame, not four
+    assert "filter                 8       8  100.0%" in X.emit(g, MF)
+
+
+def test_the_fire_index_is_the_evaluator_s_own_propagation():
+    """The linear consumer index must agree with `tracker._fired` frame for frame."""
+    for g in (_masked(), _graph()):
+        nodes = g.nodes
+        cons = X._consumers(nodes)
+        roots = [i for i, n in enumerate(nodes) if n.route[0] == "fire"]
+        for f in range(NF):
+            assert X._fires(nodes, roots, cons, f) == T._fired(nodes, f)
+
+
+# ---- side by side: our recovery against a native editor's own song ----------------
+def _sides():
+    """Two `Side`s of one tune: ours, and a second graph standing in for the oracle's."""
+    return [
+        X.Side("A", "our recovery", _graph(), "PASS", _prog()),
+        X.Side("B", "the composer's own song", _graph(), "PASS", None),
+    ]
+
+
+def test_the_two_sides_are_rendered_by_one_emitter_and_compared_first():
+    """Both graphs render through `emit`'s own sections, behind a difference table."""
+    text = X.compare(_sides(), NF, title="Tune", facts=(("patterns", 12), ("orderlist rows", 40)))
+    assert "compare  Tune  8 frames (0:00)" in text
+    assert text.count("; ---- generators:") == 2 and text.count("; ---- residual:") == 2
+    assert "; ===== A: our recovery =====" in text
+    assert "; ===== B: the composer's own song =====" in text
+    assert _line(text, "waveform").split()[-1] == "same"
+
+
+def test_the_comparison_reads_off_pitch_instruments_and_the_arrangement():
+    """The three axes, in the musical domain: notes, instrument numbering, arrangement."""
+    text = X.compare(_sides(), NF, facts=(("patterns", 12),))
+    assert "8 frames name a note on both sides, 8 agree (100.0%) — the same pitch" in text
+    assert "a bijection" in _line(text, "instr")
+    assert "ours 00 = theirs 01, ours 01 = theirs 03, ours 02 = theirs 04" in text
+    assert "arrange  A 0, B 0 generators addressing another generator's index" in text
+    assert "the song itself holds 12 patterns" in text
+    assert "no orderlist, no pattern, no transpose is represented by either graph" in text
+
+
+def test_a_side_that_starts_later_is_compared_at_its_own_offset():
+    """A packed driver's frame 0 is not the tune's, so a side carries the offset it starts at."""
+    sides = _sides()
+    sides[1] = sides[1]._replace(offset=2)
+    text = X.compare(sides, NF)
+    assert "6 frames name a note on both sides" in text
+    assert "ours names a note on 8 frames in all" in text
