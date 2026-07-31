@@ -4,6 +4,7 @@ One primitive: a triggered generator ``(transfer, trigger, route)``; a tune is a
 graph of them. One law: the graph's canonical projection equals frameprog's under
 the same input trace. One input: a ``frameprog.FrameProgram``. See docs/tracker.md."""
 
+import bisect
 from collections import Counter, namedtuple
 
 import numpy as np
@@ -25,6 +26,8 @@ Coverage = namedtuple("Coverage", "interp residual total planes classes triggers
 Pitch = namedtuple("Pitch", "base words octaves reference endian shift hi", defaults=(None,))
 Clock = namedtuple("Clock", "base kind reload role")
 Note = namedtuple("Note", "index word name detune")
+Region = namedtuple("Region", "base size stride cursors")
+Pairs = namedtuple("Pairs", "regions cursors", defaults=((), None))
 Tracker = namedtuple("Tracker", "pitch clocks tempo instruments divisors")
 
 _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
@@ -1016,13 +1019,20 @@ def _immediates(prog):
 
 def _lane(key, mem0):
     """The declared bytes of a bank lane, one per row."""
-    _k, _reg, base, size, stride, off = key
+    base, size, stride, off = key[2:6]
     return tuple(mem0[base + off + stride * i] for i in range((size - off + stride - 1) // stride))
 
 
-def _decl_cells(reg, srcs, banks, mem0):
+def _pair_at(objs, curs, f):
+    """The pair context one frame reads: the regions, and the states its cursors passed."""
+    return Pairs(objs, curs[f] if f < len(curs) else None)
+
+
+def _decl_cells(reg, srcs, banks, mem0, pairs=Pairs()):
     """``[(stream key, row, declared byte)]`` for the source cells reading a declared lane.
 
+    A region the text indexes at a named cursor keys the read first, so the node is the
+    editor's object; the whole declaration is the fallback where no base names the cell.
     The offset must not be one the play phase writes: ``mut`` says that cell is not const
     data, so agreement with the snapshot is coincidence rather than a const read."""
     out = []
@@ -1032,24 +1042,30 @@ def _decl_cells(reg, srcs, banks, mem0):
                 continue
             if (src - base) % _record(size, stride) in mut:
                 continue
+            o = _object_at(pairs.regions, src)
+            if o is not None and base <= o.base:
+                key = ("lane", reg, o.base, o.size, o.stride, 0, o.cursors)
+                out.append((key, (src - o.base) // o.stride, mem0[src]))
+                continue
             row, off = divmod(src - base, stride)
-            out.append((("lane", reg, base, size, stride, off), row, mem0[src]))
+            out.append((("lane", reg, base, size, stride, off, None), row, mem0[src]))
     return out
 
 
-def _lane_key(w, banks, mem0):
+def _lane_key(w, banks, mem0, pairs=Pairs(), diag=None):
     """``(stream key, row)`` for the first source cell reading a declared lane, else None.
 
     The declared byte must equal the byte the register took, which is what makes the
     emit a const read rather than a cell that merely happens to be indexed."""
     reg, val, srcs = w
-    for key, row, byte in _decl_cells(reg, srcs, banks, mem0):
+    for key, row, byte in _decl_cells(reg, srcs, banks, mem0, pairs):
         if byte == val:
+            _pair_verify(key, row, pairs, diag)
             return key, row
     return None
 
 
-def _classify(w, tabs, banks, imm, mem0, held):
+def _classify(w, tabs, banks, imm, mem0, held, pairs=Pairs(), diag=None):
     """``(stream key, row)`` for one write: a lane byte, its gate image, or a constant.
 
     The declarations the program text reads into this register class come first, so
@@ -1058,7 +1074,7 @@ def _classify(w, tabs, banks, imm, mem0, held):
     gate bit over the lane byte at the voice's held row: only bit 0 moves."""
     reg, val, _srcs = w
     for pool in (tabs.get(reg % 7, ()), banks):
-        got = _lane_key(w, pool, mem0)
+        got = _lane_key(w, pool, mem0, pairs, diag)
         if got is not None:
             held[reg] = got
             return got
@@ -1150,7 +1166,7 @@ def _stream(key, rows, table):
     return tuple(len(fr) for fr in rows), ("SELECT", table, flat), key[1], "imm" if imm else "lane"
 
 
-def _refine_voice(seq, tabs, banks, imm, mem0):
+def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     """``(pre, post, residual)`` splitting one voice's ctrl/AD/SR writes, or None.
 
     Every write ``_classify`` explains is a candidate emit and the rest stay in RAW,
@@ -1158,9 +1174,9 @@ def _refine_voice(seq, tabs, banks, imm, mem0):
     rebuilding the order-preserved section from it, values included."""
     rows, obs, held, weight = {}, [], {}, {}
     for f, ws in enumerate(seq):
-        row = []
+        row, pairs = [], _pair_at(objs, curs, f)
         for w in ws:
-            got = _classify(w, tabs, banks, imm, mem0, held)
+            got = _classify(w, tabs, banks, imm, mem0, held, pairs, diag)
             if got is not None:
                 rows.setdefault(got[0], [[] for _g in seq])[f].append(got[1])
                 weight[got[0]] = weight.get(got[0], 0) + 1
@@ -1176,6 +1192,7 @@ def _refine_voice(seq, tabs, banks, imm, mem0):
         if got != [e[1:] for e in row]:
             return None
         resid.append(tuple(mid))
+    _pair_census(((k, sum(len(fr) for fr in rows[k])) for k in pre + post), diag)
     return (
         [_stream(k, rows[k], tables[k]) for k in pre],
         [_stream(k, rows[k], tables[k]) for k in post],
@@ -1215,7 +1232,7 @@ def _classes(streams, groups=(), rels=(), pairs=()):
     return out
 
 
-def _instr_streams(prog, ords, tabs, banks):
+def _instr_streams(prog, ords, tabs, banks, objs=(), curs=(), diag=None):
     """``(pre, post, residual)``: instrument streams, and the writes still replayed.
 
     ``pre``/``post`` place each voice's streams either side of the RAW node, as the
@@ -1224,7 +1241,7 @@ def _instr_streams(prog, ords, tabs, banks):
     imm, mem0 = _immediates(prog), prog.mem0
     pre, post, resid = [], [], []
     for seq in ords:
-        got = _refine_voice(seq, tabs, banks, imm, mem0)
+        got = _refine_voice(seq, tabs, banks, imm, mem0, objs, curs, diag)
         if got is None:
             resid.append([tuple(w[:2] for w in ws) for ws in seq])
             continue
@@ -1235,7 +1252,7 @@ def _instr_streams(prog, ords, tabs, banks):
 
 
 # ---- 4b. the last-write-wins planes: freq/pw/filter off the store statement -------
-def _lww_streams(lww, tabs, mem0):
+def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None):
     """``(streams, explained)``: declared-lane SELECT nodes for the freq/pw/filter planes.
 
     The store statement names the declaration and the read cell recovers the row, so
@@ -1243,9 +1260,10 @@ def _lww_streams(lww, tabs, mem0):
     last-write-wins, so only the frames the declaration explains fire."""
     streams, explained = {}, [set() for _f in lww]
     for f, wr in enumerate(lww):
+        pairs = _pair_at(objs, curs, f)
         for reg in sorted(wr):
             val, srcs = wr[reg]
-            got = _lane_key((reg, val, srcs), tabs.get(_class_of(reg), ()), mem0)
+            got = _lane_key((reg, val, srcs), tabs.get(_class_of(reg), ()), mem0, pairs, diag)
             if got is None:
                 continue
             key, row = got
@@ -1253,6 +1271,7 @@ def _lww_streams(lww, tabs, mem0):
             counts[f] += 1
             rows.append(row)
             explained[f].add(reg)
+    _pair_census(((k, len(rows)) for k, (_c, rows) in streams.items()), diag)
     out = [
         (tuple(counts), _select(k, rows, mem0), k[1], "lane")
         for k, (counts, rows) in streams.items()
@@ -1660,7 +1679,7 @@ def _rel_sites(prog, banks, diag):
     return out
 
 
-def _relate(w, sites, mem0, prev, diag):
+def _relate(w, sites, mem0, prev, diag, pairs=Pairs()):
     """``(site, delta cell, base cell)`` predicting this write, else None.
 
     The delta is the declared byte at the cell the machine read and the base is the
@@ -1669,14 +1688,14 @@ def _relate(w, sites, mem0, prev, diag):
     reg, val, srcs = w
     for site in sites:
         if site.base[0] == "gen":
-            bases = _decl_cells(reg, srcs, site.bpool, mem0)
+            bases = _decl_cells(reg, srcs, site.bpool, mem0, pairs)
         else:
             got = site.base[1] if site.base[0] == "const" else prev
             bases = () if got is None else ((None, 0, got),)
         if not bases:
             diag["rel_no_base"] += 1
             continue
-        for cell in _decl_cells(reg, srcs, site.pool, mem0):
+        for cell in _decl_cells(reg, srcs, site.pool, mem0, pairs):
             if not cell[2]:  # a zero delta predicts nothing, as DIV(1) and RAMP(0) do not
                 diag["rel_zero_delta"] += 1
                 continue
@@ -1687,7 +1706,7 @@ def _relate(w, sites, mem0, prev, diag):
     return None
 
 
-def _rel_streams(lww, sites, mem0, done, diag):
+def _rel_streams(lww, sites, mem0, done, diag, objs=(), curs=()):
     """``(streams, explained)``: the relative route, one stream per delta lane.
 
     Each stream is a declared lane the store statement names, routed relatively over the
@@ -1695,13 +1714,19 @@ def _rel_streams(lww, sites, mem0, done, diag):
     combination does not reproduce stays residual."""
     streams, explained, prev = {}, [set() for _f in lww], {}
     for f, wr in enumerate(lww):
+        pairs = _pair_at(objs, curs, f)
         for reg in sorted(wr):
             val, srcs = wr[reg]
             got = (
                 None
                 if reg in done[f]
                 else _relate(
-                    (reg, val, srcs), sites.get(_class_of(reg), ()), mem0, prev.get(reg), diag
+                    (reg, val, srcs),
+                    sites.get(_class_of(reg), ()),
+                    mem0,
+                    prev.get(reg),
+                    diag,
+                    pairs,
                 )
             )
             prev[reg] = val
@@ -1970,6 +1995,226 @@ def _arr_runs(got, step, wrap):
     return out
 
 
+# ---- 4h. the node identity: a declared region at a cursor the program text names --
+def _cursors(idx, env, depth=4):
+    """Cursor cells an index expression reads, through the locals defined above it.
+
+    Program text only, never an observed value: the index is followed through its
+    locals and through any table it is itself read out of (tools/node_partition.py §2)."""
+    out, stack, seen = set(), [(idx, depth)], set()
+    while stack:
+        x, k = stack.pop()
+        if not isinstance(x, tuple) or (x, k) in seen:
+            continue
+        seen.add((x, k))
+        if x[0] == "op":
+            stack += [(c, k) for c in x[2]]
+        elif x[0] == "mem":
+            got = frameproc._index_of(x[1])
+            out.add(_base(x[1]))
+            if got is not None and k:
+                stack.append((got[1], k - 1))
+        elif x[0] == "loc" and k and x[1] in env:
+            stack.append((env[x[1]], k - 1))
+    return {c for c in out if c >= 0x100}
+
+
+def _loads(expr, env, out):
+    """Collect one expression's ``base[index]`` loads into ``{load base: {cursor}}``."""
+    stack = [expr]
+    while stack:
+        x = stack.pop()
+        if not isinstance(x, tuple):
+            continue
+        if x[0] == "mem":
+            got = frameproc._index_of(x[1])
+            if got is not None:
+                out.setdefault(got[0], set()).update(_cursors(got[1], env))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack += list(x[2])
+
+
+def _load_walk(stmts, env, out):
+    """Statements in order, each load resolved against the locals live at that point."""
+    for s in stmts:
+        frameproc._map_exprs(s, lambda e: _loads(e, env, out) or e)
+        for body in frameproc._stmt_bodies(s):
+            _load_walk(list(body), dict(env), out)
+        if s[0] == "asg":
+            env[s[1]] = s[2]
+
+
+def _pairs(prog):
+    """``{load base: (cursor cell, ...)}``: every indexed load the program text writes."""
+    out = {}
+    for proc in prog.procs:
+        _load_walk(list(proc[3]), {}, out)
+    return {b: tuple(sorted(cs)) for b, cs in out.items()}
+
+
+def _objects(prog, banks, diag):
+    """``[Region]`` in address order: a declared region split at the bases the text indexes.
+
+    A declaration tiles a whole data block, so containment resolves the block and not the
+    table (docs/node-partition.md §2.1); the text's own load bases resolve it, each running
+    to the next named base or to the end of const data. A base the text names no cursor
+    for is **refused**: without one the read has no identity to partition by."""
+    named = []
+    for b, curs in sorted(_pairs(prog).items()):
+        d = _decl_of(b, banks)
+        if d is None:
+            diag["pair_base_undeclared"] += 1
+        elif not curs:
+            diag["pair_no_cursor"] += 1
+        else:
+            named.append((b, d, curs))
+            diag["pair_multi_cursor"] += len(curs) > 1
+    out = []
+    for i, (b, d, curs) in enumerate(named):
+        nxt = named[i + 1][0] if i + 1 < len(named) else 0x10000
+        end = min(d[0] + d[1], nxt if d[2] == 1 else 0x10000)
+        end = _const_end(b, end, d)
+        if end > b:
+            out.append(Region(b, end - b, d[2], curs))
+        else:
+            diag["pair_region_mut"] += 1
+    diag["pair_objects"] += len(out)
+    return out
+
+
+def _const_end(b, end, d):
+    """Where const data stops above ``b``: the first offset the declaration names ``mut``.
+
+    A strided declaration is a record array, so a base inside it names one lane and the
+    ``mut`` reading is per record offset; a flat one is tiled by the objects themselves."""
+    rec = _record(d[1], d[2])
+    if d[2] > 1:
+        return end if (b - d[0]) % rec not in d[3] else b
+    for off in range(b - d[0], end - d[0]):
+        if off % rec in d[3]:
+            return d[0] + off
+    return end
+
+
+def _cur_watch(prog, objs, at):
+    """``([statement], {watch index: (cursor, walk rule)})``: the play stores to a cursor cell.
+
+    The cursor rides the one ``eval_watch`` run everything else rides, so watching what
+    the text already named costs no second pass."""
+    cells = {c for o in objs for c in o.cursors}
+    env, out, tags, seen = _prog_env(prog), [], {}, set()
+    for s in _stmts(prog):
+        cell = _base(s[1]) if s[0] == "st" else None
+        if cell not in cells or id(s) in seen:
+            continue
+        seen.add(id(s))
+        tags[at + len(out)] = (cell, _walk_of(s, env, cell))
+        out.append(s)
+    return out, tags
+
+
+def _cur_value(rule, was, srcs, banks, mem0, objs):
+    """``(value, source region)`` a cursor store leaves, or None where nothing names it.
+
+    The text's own rule answers where it determines the store; otherwise the byte is the
+    declared one at the cell the machine copied from — §4g's reading of the address bus."""
+    if rule is not None and rule[0] == "set":
+        return (rule[1], -1)
+    if rule is not None:
+        return None if was is None else ((was[0] + rule[1]) % rule[2], was[1])
+    got = set()
+    for s in srcs:
+        d = _decl_of(s, banks)
+        if d is not None and (s - d[0]) % _record(d[1], d[2]) not in d[3]:
+            o = _object_at(objs, s)
+            got.add((mem0[s], o.base if o is not None else d[0]))
+    return got.pop() if len(got) == 1 else None
+
+
+def _cur_states(tags, wat, objs, banks, mem0, nframes):
+    """``[frame][cursor] -> {(value, source region)}``: the states each cursor passes.
+
+    A cursor the text writes through an indexed address is a family of cells, so the
+    states of the whole family stand for it and the read's own address picks."""
+    fam = {c: {c} for o in objs for c in o.cursors}
+    val = {c: (mem0[c], -1) for c in fam}
+    out = []
+    for f in range(nframes):
+        seen = {c: {val[x] for x in xs if val.get(x) is not None} for c, xs in fam.items()}
+        for i, cell, srcs in wat[f] if f < len(wat) else ():
+            got = tags.get(i)
+            if got is None or cell is None:
+                continue
+            c, rule = got
+            fam[c].add(cell)
+            val[cell] = st = _cur_value(rule, val.get(cell), srcs, banks, mem0, objs)
+            if st is not None:
+                seen.setdefault(c, set()).add(st)
+        out.append(seen)
+    return out
+
+
+def _pair_verify(key, row, pairs, diag):
+    """Price the split the cursor's own observed value would make on top of the pair.
+
+    A verified read is one whose named cursor was holding the index the machine read at;
+    the partition is **not** keyed on it, because §6 measures what that split costs."""
+    if diag is None or not _paired(key):
+        return
+    cur, index = pairs.cursors or {}, row * key[4]
+    hits = {g for c in key[6] for v, g in cur.get(c, ()) if v == index}
+    diag["pair_cursor_" + ("verified" if hits else "unverified")] += 1
+    diag["pair_cursor_two_sources"] += len(hits) > 1
+
+
+def _pair_cost(lww, tabs, objs, mem0, told, diag):
+    """Price the refusal the whole rule rests on: a row chosen to fit the byte.
+
+    ``pair_fitted`` is every unclaimed write in a class the tree names a declaration for
+    whose byte some named region holds *somewhere* — the population a search over the
+    region's rows would claim, and which the machine's own read index refuses."""
+    held = {}
+    for cls, decls in tabs.items():
+        held[cls] = {
+            mem0[o.base + i]
+            for o in objs
+            for i in range(o.size)
+            if any(d[0] <= o.base < d[0] + d[1] for d in decls)
+        }
+    for f, wr in enumerate(lww):
+        for reg, (val, _srcs) in wr.items():
+            if reg not in told[f] and val in held.get(_class_of(reg), ()):
+                diag["pair_fitted"] += 1
+
+
+def _object_at(objs, src):
+    """The nearest region below ``src`` that holds it at one of its own rows, or None.
+
+    The lanes of a record array overlap, so containment alone names the wrong one: the
+    region must reach ``src`` at a whole number of its own records."""
+    i = bisect.bisect_right(objs, src, key=lambda o: o.base)
+    for o in reversed(objs[:i]):
+        if src < o.base + o.size and (src - o.base) % o.stride == 0:
+            return o
+    return None
+
+
+def _paired(key):
+    """Is this stream key a region the program text names, rather than a whole declaration?"""
+    return len(key) > 6 and key[6] is not None
+
+
+def _pair_census(items, diag):
+    """Count the nodes and emits the pair partition splits out, against the ones it does not."""
+    for key, n in items if diag is not None else ():
+        if key[0] != "lane":
+            continue
+        tag = "pair" if key[6] else ("pair_unverified" if _paired(key) else "pair_unnamed")
+        diag[tag + "_nodes"] += 1
+        diag[tag + "_emits"] += n
+
+
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
 def oracle(prog, trace, nframes):
     """The frame projection the tracker must reproduce (frameprog, Gate FP-verified)."""
@@ -1981,13 +2226,16 @@ def _observe(prog, trace, nframes, diag=None):
 
     ONE machine run supplies everything the recovery reads: the projection ``oracle``
     defines, the cell each write loaded its byte from, the origin map at the accumulator
-    statements (§4c) and the arrangement's own reload and row walks (§4g)."""
+    statements (§4c), the arrangement's own reload and row walks (§4g) and every cursor
+    the program text indexes a declared region at (§4h)."""
+    diag = Counter() if diag is None else diag
     watch, cells, signs = _acc_sites(prog)
-    sites, addrs = _arr_sites(
-        prog, _prog_env(prog), _walked(prog), Counter() if diag is None else diag
-    )
+    sites, addrs = _arr_sites(prog, _prog_env(prog), _walked(prog), diag)
     astmts, tags = _arr_watch(prog, sites, len(watch))
-    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts)
+    banks = _banks(prog)
+    objs = _objects(prog, banks, diag)
+    cstmts, ctags = _cur_watch(prog, objs, len(watch) + len(astmts))
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
@@ -1999,12 +2247,19 @@ def _observe(prog, trace, nframes, diag=None):
             else:
                 lww[f][reg] = (val, src)
     states = _arr_states(sites, tags, wat, prog.mem0, nframes)
+    curs = _cur_states(ctags, wat, objs, banks, prog.mem0, nframes)
     return (
         framelog.canonical(frames),
         ords,
         lww,
-        (_acc_pools(cells, wat), signs, (sites, _arr_classes(prog, addrs)), states),
-    )  # the arrangement rides the same run: its reload and row walks are watched too
+        (
+            _acc_pools(cells, wat),
+            signs,
+            (sites, _arr_classes(prog, addrs)),
+            states,
+            (objs, curs),
+        ),
+    )  # the arrangement and the cursors ride the same run: their walks are watched too
 
 
 def lift(prog, frames=()):
@@ -2028,21 +2283,22 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
     diag = Counter() if diag is None else diag
+    pools, signs, arrs, states, (objs, curs) = acc
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
     residual = []
-    pre, post, ires = _instr_streams(prog, ords, tabs, banks)
-    lwws, declared = _lww_streams(lww, tabs, prog.mem0)
-    pools, signs, arrs, states = acc
+    pre, post, ires = _instr_streams(prog, ords, tabs, banks, objs, curs, diag)
+    lwws, declared = _lww_streams(lww, tabs, prog.mem0, objs, curs, diag)
     ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
     fields = [d | s for d, s in zip(declared, swept)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     claimed = [d | a for d, a in zip(fields, assembled)]
     sites = _rel_sites(prog, banks, diag)
-    rels, related = _rel_streams(lww, sites, prog.mem0, claimed, diag)
+    rels, related = _rel_streams(lww, sites, prog.mem0, claimed, diag, objs, curs)
     told = [c | r for c, r in zip(claimed, related)]
     _rel_cost(lww, sites, banks, prog.mem0, told, diag)
+    _pair_cost(lww, tabs, objs, prog.mem0, told, diag)
     pairs, arranged = _arr_pairs(lww, arrs, states, banks, prog.mem0, told, diag)
     _arr_cost(lww, ords, arrs[1], told, arranged, diag)
     for f, rec in enumerate(frames):

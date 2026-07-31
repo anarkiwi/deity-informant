@@ -26,6 +26,7 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | coverage measures how much of a tune the recovery can reach (§6, everywhere) | #106 | **false** — it measures *justification*; 99680 of the composer's writes are shaped differently by us and **zero** are never produced |
 | the relative row index (#102) opens the 6953 emits an absolute-only index refuses (§2, §4f) | this step | **not yet** — the refusal number re-measures at exactly 6953 (GT 1690, SW 4738, DM 525), but a census of all three editors' own songs finds **zero** `SELECT[rel]` nodes: `gtoracle._patt_src` still *refuses* a shifted row rather than emitting one, and `dmoracle` computes a 0/1 flag where the row needs the shift amount. The element is expressible and unused; what it is owed is an emitter, not a measurement |
 | `LOOKUP` is a transfer of its own (§2, since the start) | this step | **false** — it is `SELECT` with identity rows; the second transfer was carrying *evidence* (`imm` vs `lane`), which `Coverage.classes` already carries. Collapsed: 5 transfers, partition byte-identical |
+| building nodes per (declared region, cursor) aligns our partition with the editor's (docs/node-partition.md §4) | this step | **false** — the pairs are one-to-one with the lane keys already built, so `graph_diff` matched stays **71/1648** and the value partition is byte-identical; keying the row on the cursor's *observed value* instead **costs 26 of the 71** (§6). The pair is a better *name* for a node, not a finer partition |
 
 The fifth row is the one to read before adding to the primitive: a refusal count says an
 element *would* be used, never that anything *does* use it. The last is the shape that
@@ -246,6 +247,11 @@ nodes wired by their triggers, with two distinguished members: the pitch table
 - **The arrangement** (§4g) — a pattern is the declared block a resolved deref proof
   names, read at a row an `Index`-routed `RAMP` generates from the counter's own walk.
   It reaches **0 emits on 649 tunes**, and §6's refusal chain is what that step bought.
+- **The node identity** (§4h) — a declared-lane node is keyed by the **load base the
+  program text indexes and the cursor cells that index it**, not by the declaration that
+  contains it. A declaration tiles a whole data block, so the text's own bases are what
+  resolve the composer's objects inside it. Every byte and every row is unchanged; §6
+  measures what the finer identity buys, and the answer is nothing yet.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -614,6 +620,53 @@ node, the first refired on the revisit; and every refusal — a row the text doe
 a walk that stands still, a block no declaration holds, a `mut` row, a one-row run, and the
 order-preserved section. Mutation evidence: a pattern boundary moved by one row and two
 song steps naming each other's block each fail the law.
+
+## 4h. The node identity: a declared region at a cursor the program text names
+
+docs/node-partition.md measured that the frame program's **(declared region, cursor cell)**
+pairs are the editor's object set — 1415 of 1654 composer objects named by a pair, 25.6
+pairs per tune against 26.7 editor groups — and recommended building nodes from them.
+This section is that change, and §6 is its measurement.
+
+- **A region is a load base the text indexes** (`_pairs`, `_objects`). Every procedure's
+  statements are walked in order and each load written `base[index]` contributes its base;
+  the const bases the index reads, resolved through the locals defined above it, are its
+  **cursors**. That is `tools/node_partition.py`'s own pairing rule, applied here rather
+  than reinvented.
+- **The text's bases resolve the block a declaration only contains.** `datadecl` tiles a
+  whole data block, and §2.1's `SHIFT` control showed containment resolves the block and
+  not the table. A region therefore runs from its base to the **next named base**, or to
+  the declaration's end, and stops at the first offset the declaration names `mut`. A
+  strided declaration is a record array, so a base inside one names a **lane** of it and
+  the region carries the stride: the lanes overlap and containment alone would name the
+  wrong one.
+- **A base the text names no cursor for is refused**, per base, with a diagnostic
+  (`pair_no_cursor`), as is a base no declaration covers (`pair_base_undeclared`) and one
+  whose own offset is play-written (`pair_region_mut`). A refused base builds no node; its
+  reads fall back to the whole declaration exactly as before, which is a coarser node and
+  never a fabricated row.
+- **Nothing about the emit changes.** The row is still `(cell − base) // stride` off the
+  cell `frameval.eval_src` says the machine read, and the byte is still the declared one
+  checked equal to the byte the register took (§5). Only the *base* the row is counted
+  from moves, from the declaration to the object, so the node's table is the composer's
+  table. The value partition is byte-identical corpus-wide, which is the check that this
+  is a renaming of nodes and not a new claim.
+- **The cursor's own value is watched, and does not key the node** (`_cur_watch`,
+  `_cur_states`, `_pair_verify`). The cursor cells ride the one `frameval.eval_watch` run
+  the recovery already makes. `eval_watch` reports a watched store's **address and origin
+  cells, never its byte**, so a cursor's value is reconstructed the way §4g reconstructs a
+  pattern block: the text's own step/set rule where it names one, else the declared byte at
+  the cell the machine copied from, else nothing at all. A read is *verified* where its
+  named cursor was holding the index the machine read at. **Keying the node on that was
+  built and measured, and it costs matches** (§6), so it is priced and refused: the census
+  ships, the key does not.
+- **A row searched over the region for the byte is refused outright**, for the reason §4c
+  refuses a fitted step and §4g a segmented pattern row. §6 prices that search too.
+- **The law sees the region, not the cursor, and that is stated rather than implied.** The
+  row is the machine's own read index off a base the text names, so reading a region at
+  another region's base fails the law (tests/test_tracker.py) while a wrong cursor *label*
+  changes only what the node is called. Making the cursor load-bearing is exactly what
+  keying the row on its value would have done, and §6 is why that is refused.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
@@ -1521,6 +1574,70 @@ it, both nameable — `datadecl` carving deref targets as `stream`, and `_banks`
 `table` only, whose measured ceiling is 1585 emits (0.08%) and only under a refused
 address.
 
+### The node identity, and what the cursor's own value would cost
+
+§4h's change, measured against the same tree before it on the same 682 cached tunes at the
+PSID start subtune, 200 frames (649 reach the gate), and on `tools/graph_diff.py` over 15
+GoatTracker tunes at 600 frames (14 map; one is an init runaway).
+
+| | before | after |
+|---|---|---|
+| interpreted | 753971/1942809 = 38.81% | **byte-identical**, every plane and every class |
+| `graph_diff` matched nodes | **71** of 1648 theirs, 1801 ours | **71** of 1648, 1801 ours |
+| only ours / only theirs | 1730 / 1577 | 1730 / 1577 |
+| tracker law, Gate FP, canonical fixpoint | 649/649 | 649/649 |
+| triggers | 300/307060 | 300/307225 |
+
+**The matched count does not move, and that is the finding.** Per tune it is identical
+node for node (9, 11, 2, 1, 2, 1, 8, 2, 7, 1, 18, 4, 0, 5). The cause is not subtle: over
+the corpus the pairs are **one to one with the lane keys already built**, because a stream
+key already carries the register, and a register almost never reads two of a declaration's
+objects. The pair is a better *name* for a node — its table is the composer's table rather
+than the whole block, and 5232 of 6645 declared-lane nodes now carry one — but it is not a
+finer partition. The only trace at corpus scale is 165 more fires in the trigger
+denominator, where a register that does read two objects now drives two streams.
+
+**Keying the row on the cursor's observed value was built, and it is worse.** Nodes split
+by which cursor was holding the index (and by where that cursor's own byte came from) take
+`graph_diff` matched from **71 to 45** while adding 99 nodes: the split breaks 26 nodes
+that matched exactly and creates none that do. The census says why — over the corpus only
+**39305 of 432225 pair emits (9.1%)** have a cursor whose value the machine's own map can
+name at all, the other 392920 being live state the origin map cannot reach, which is the
+same 65-of-1763 shape docs/node-partition.md §3(c) reports from the declaration side. A
+split on "could we name this cursor's source" is a split on our own reach, not on the
+composer's objects. It is refused, and the census is what it left.
+
+**The ceiling this metric has, measured before any of it.** Of the editor's 1637 nodes
+that write anything over those tunes, **795** have a write set inside a single *interpreted*
+node of ours — the most any repartition of what we already attribute could match. **523 of those
+795 are `EDGE` trigger nodes**, 7 are row indices and about 265 are plane generators. So
+node correspondence on the value planes is bounded at roughly 265 above today's 71, and
+the larger half of the gap is the trigger domain — the arrangement again (§7.4), not the
+value partition. Counting our `RAW` floor as a candidate raises the figure to 1294, which
+is the same statement as §6's opening: the writes are all produced, in one undifferentiated
+node.
+
+The refusal histogram, corpus-wide (649 tunes):
+
+| the pair is | count |
+|---|---|
+| a load base no declaration covers | 13085 |
+| a declared base the text names no cursor for | **5166** |
+| a declared base whose own offset is play-written | 89 |
+| **a region built: base, extent and cursors all program text** | **7699** |
+| …of which the text names two or more cursors for | 1489 |
+| region nodes / their emits | 5232 / 451314 |
+| declaration fallback nodes / their emits | 1413 / 98586 |
+| a read whose named cursor held the index the machine read | 39305 |
+| a read whose cursor's value nothing names | 392920 |
+
+**And the refusal the identity rests on, priced: a row chosen to fit the byte would have
+taken 413759 emits.** That is every unclaimed write in a class the store statement names a
+declaration for, whose byte some named region holds *somewhere* — a search over the
+region's rows would claim it, and the machine's own read index is what refuses it. It is
+the sixth domain measured under that rule (§4c 1420, §4d, §4e, §4f 29559, §4g 54557), and
+the largest.
+
 ## 7. Where the residual goes next
 
 **The objective in this section is the wrong one, and the list below is kept for its
@@ -1536,6 +1653,12 @@ The measured objective is **node correspondence** — `tools/graph_diff.py`'s ma
 count against the editor's own graph — because that is what "universal" means here: the
 same song expressed as the same graph. Every item below has a measured cost and those
 numbers stand; read them as evidence about attribution, not as a queue.
+
+**What repartitioning alone can reach is now measured, and it is not where the objective
+sends you.** 795 of the editor's 1637 nodes have a write set inside a single interpreted
+node of ours; **523 of them are `EDGE` trigger nodes** and only about 265 are plane
+generators (§6). Naming a value node better is bounded at 265; the trigger domain is twice
+that, and it is item 4.
 
 Each step must still keep the law green and must never widen a declaration.
 

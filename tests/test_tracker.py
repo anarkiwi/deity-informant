@@ -1886,3 +1886,147 @@ def test_mutation_a_wrong_orderlist_entry_fails_the_law():
         transfer=a.transfer[:2] + b.transfer[2:]
     )
     assert F.diff(T.eval_graph(T.Graph(nodes), 10), T.oracle(prog, {}, 10)) is not None
+
+
+# ---- 4h. the node identity: a declared region at a cursor the program text names --
+_CUR = (0x0800, 0x0801)
+
+
+def _pairprog(mem, decls, reads, cells=_CUR, steps=(1, 1), extra=()):
+    """``FrameProgram`` reading one region per cursor cell, then stepping every cursor."""
+    stmts = [("asg", "i%d" % k, ("mem", ("const", c, 2), 1)) for k, c in enumerate(cells)]
+    stmts += [("st", ("const", 0xD400 + reg, 2), val) for reg, val in reads]
+    stmts += [
+        (
+            "st",
+            ("const", c, 2),
+            ("op", "INT_ADD", (("mem", ("const", c, 2), 1), ("const", s, 1)), 1),
+        )
+        for c, s in zip(cells, steps)
+    ]
+    return frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=decls,
+        mem0=mem,
+        procs=[(0x1000, [], [], list(extra) + stmts + [("ret",)])],
+    )
+
+
+def _twoobj(decl=None, base=0x2000, size=16, half=8):
+    """``(image, program)``: one flat declaration holding two objects, a cursor each."""
+    mem = bytearray(0x10000)
+    for i in range(size):
+        mem[base + i] = 0x10 + i
+    reads = [(0x15, _sel(base, 0, "i0")), (0x16, _sel(base + half, 0, "i1"))]
+    return mem, _pairprog(mem, [decl or _table(base, size)], reads)
+
+
+def _regions(prog, diag=None):
+    """The regions the program text names, off the declarations."""
+    return T._objects(prog, T._banks(prog), Counter() if diag is None else diag)
+
+
+def _lww_keys(prog, nframes=4, objs=None):
+    """``{register: transfer}`` for the lww streams, with or without the pair regions."""
+    _gt, _ords, lww, acc = T._observe(prog, {}, nframes)
+    objs = acc[4][0] if objs is None else objs
+    streams, _e = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0, objs)
+    return {reg: t for _c, t, reg, _e in streams}
+
+
+def test_a_region_is_the_load_base_the_text_names_not_the_whole_declaration():
+    """One declaration tiles the block; the bases the text indexes resolve the objects."""
+    mem, prog = _twoobj()
+    assert _regions(prog) == [T.Region(0x2000, 8, 1, (0x0800,)), T.Region(0x2008, 8, 1, (0x0801,))]
+    assert T.gate(prog, {}, 4) is None
+    got = _lww_keys(prog)
+    assert got[0x15] == ("SELECT", tuple(mem[0x2000:0x2008]), (0, 1, 2, 3))
+    assert got[0x16] == ("SELECT", tuple(mem[0x2008:0x2010]), (0, 1, 2, 3))
+    whole = _lww_keys(prog, objs=())  # the declaration alone reads one block at two offsets
+    assert whole[0x15] == ("SELECT", tuple(mem[0x2000:0x2010]), (0, 1, 2, 3))
+    assert whole[0x16] == ("SELECT", tuple(mem[0x2000:0x2010]), (8, 9, 10, 11))
+
+
+def test_the_lanes_of_a_record_array_are_regions_of_their_own():
+    """A strided declaration is a record array, so a named base is one lane of it."""
+    mem, decl = _bank(0x2000, 4, 4, {2: [0x11, 0x22, 0x33, 0x44], 3: [0x51, 0x52, 0x53, 0x54]})
+    prog = _rowprog(mem, decl, [(5, _sel(0x2000, 2, "i")), (6, _sel(0x2000, 3, "i"))], step=4)
+    assert _regions(prog) == [
+        T.Region(0x2002, 14, 4, (0x0800,)),
+        T.Region(0x2003, 13, 4, (0x0800,)),
+    ]
+    assert T.gate(prog, {}, 4) is None and T.render(prog, {}, 4)[2].planes["ad"] == (4, 4)
+
+
+def test_a_base_the_program_text_names_no_cursor_for_is_refused():
+    """The pair has no identity without a cursor cell, so the whole declaration keys it."""
+    mem = bytearray(0x10000)
+    mem[0x2000:0x2010] = bytes(range(0x10, 0x20))
+    const = ("asg", "j", ("const", 2, 1))
+    prog = _pairprog(mem, [_table(0x2000, 16)], [(0x15, _sel(0x2000, 0, "j"))], extra=[const])
+    diag = Counter()
+    assert _regions(prog, diag) == [] and diag["pair_no_cursor"] == 1
+    assert T.gate(prog, {}, 4) is None
+    assert _lww_keys(prog)[0x15] == ("SELECT", tuple(mem[0x2000:0x2010]), (2, 2, 2, 2))
+
+
+def test_a_load_base_outside_every_declaration_is_refused():
+    """A base no declaration covers holds no const data, whatever byte it agrees with."""
+    mem = bytearray(0x10000)
+    mem[0x3000:0x3010] = bytes(range(0x10, 0x20))
+    prog = _pairprog(mem, [_table(0x2000, 16)], [(0x15, _sel(0x3000, 0, "i0"))])
+    diag = Counter()
+    assert _regions(prog, diag) == [] and diag["pair_base_undeclared"] == 1
+    assert T.gate(prog, {}, 4) is None
+
+
+def test_a_region_stops_where_the_declaration_names_a_play_written_offset():
+    """``mut`` bounds the object as it bounds the lane: const data stops at the first one."""
+    mem, prog = _twoobj(decl=_muted(_table(0x2000, 16), [4]))
+    assert _regions(prog)[0] == T.Region(0x2000, 4, 1, (0x0800,))
+    diag = Counter()
+    _mem2, whole = _twoobj(decl=_muted(_table(0x2000, 16), [8]))
+    assert [r.base for r in _regions(whole, diag)] == [0x2000] and diag["pair_region_mut"] == 1
+    assert T.gate(prog, {}, 4) is None and T.gate(whole, {}, 4) is None
+
+
+def test_the_cursor_value_is_counted_but_does_not_key_the_node():
+    """The cursor's own value is watched and priced; keying the node on it costs matches."""
+    _mem, prog = _twoobj()
+    diag = Counter()
+    T.render(prog, {}, 4, diag)
+    assert diag["pair_cursor_verified"] == 8 and not diag["pair_cursor_unverified"]
+    opaque = ("st", ("const", 0x0800, 2), ("mem", ("const", 0x0900, 2), 1))
+    mem, blind = _twoobj()
+    blind = _pairprog(
+        mem,
+        blind.data_decls,
+        [(0x15, _sel(0x2000, 0, "i0")), (0x16, _sel(0x2008, 0, "i1"))],
+        extra=[opaque],
+    )
+    diag2 = Counter()
+    T.render(blind, {}, 4, diag2)
+    assert diag2["pair_cursor_unverified"] == 3 and diag2["pair_cursor_verified"] == 5
+    assert len(_lww_keys(blind)) == 2  # unverified or not, the region is one node
+
+
+def test_mutation_a_region_read_at_another_regions_base_fails_the_law():
+    """The row is the index the machine read off the text's own base: move the base and it fails."""
+    mem, prog = _twoobj()
+    assert _mutated(prog, 0x15, lambda t: t) is None
+    moved = _mutated(prog, 0x15, lambda t: ("SELECT", tuple(mem[0x2008:0x2010]), t[2]))
+    assert moved is not None and moved.section == "filter"
+    row = _mutated(prog, 0x15, lambda t: ("SELECT", t[1], t[2][1:] + t[2][:1]))
+    assert row is not None and row.section == "filter"
+
+
+def test_what_a_row_fitted_to_the_byte_would_have_taken_is_counted():
+    """A row searched over the region for the byte is refused, and §6 prices the search."""
+    mem = bytearray(0x10000)
+    mem[0x2000:0x2010] = bytes(range(0x10, 0x20))
+    reads = [(0, _sel(0x2000, 0, "i0")), (7, ("const", 0x1F, 1))]
+    prog = _pairprog(mem, [_table(0x2000, 16)], reads)
+    diag = Counter()
+    T._graph(prog, None, *T._observe(prog, {}, 4), diag)
+    assert diag["pair_fitted"] == 4 and diag["pair_emits"] == 4
