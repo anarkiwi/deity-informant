@@ -987,6 +987,33 @@ def test_a_masked_write_is_one_emit_at_the_last_field_holders_position():
     )
 
 
+def test_the_masks_a_store_statement_names_and_the_ones_it_does_not():
+    """A constant owns its bits, an AND-immediate its mask, a shift moves it."""
+    lane = ("mem", ("const", 0x2000, 2), 1)
+    shift = (
+        "op",
+        "INT_LEFT",
+        (("op", "INT_AND", (lane, ("const", 0x0F, 1)), 1), ("const", 4, 1)),
+        1,
+    )
+    assert T._partition(_or(shift, ("const", 0x0F, 1)), {}) == (
+        (False, 0xF0, None),
+        (True, 0x0F, 0x0F),
+    )
+    assert T._partition(_or(("op", "INT_AND", (lane, ("const", 0xF0, 1)), 1), lane), {}) == (
+        (False, 0xF0, None),
+        (False, 0x0F, None),
+    )
+    for bad in (
+        _or(lane, lane),  # two terms, neither masked
+        _or(("const", 0x0F, 1), ("const", 0x18, 1)),  # overlapping bits
+        _or(("op", "INT_AND", (lane, ("const", 0xF0, 1)), 1), ("const", 0x0C, 1)),  # $03 unowned
+        _or(lane, ("const", 0xFF, 1)),  # the constant leaves the other term nothing
+        lane,  # not an OR at all
+    ):
+        assert T._partition(bad, {}) is None
+
+
 def test_a_mask_the_program_text_does_not_name_is_refused():
     """Two variable terms name no partition: the write stays whole in RAW."""
     mem, table = _bank(0x2000, 4, 4, {0: _MODE, 1: [0x0F] * 4})
