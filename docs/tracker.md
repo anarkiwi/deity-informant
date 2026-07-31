@@ -129,10 +129,18 @@ read, and the ET validators only confirm.
 ### Snapshot soundness lives upstream
 
 Every table is read from the post-init image, so a declaration is const data
-only where the play phase never writes. That invariant is enforced in
-`datadecl` (`_sound_hi`: a region's extent stops at the first play-written
-cell), not compensated for here — which is why the tracker has no `_extend_et`,
-no `mem0` scan and no per-entry stability ranking.
+only where the play phase never writes. That invariant lives in `datadecl`, not
+compensated for here — which is why the tracker has no `_extend_et`, no `mem0`
+scan and no per-entry stability ranking. The extent stops at the first
+play-written cell above the observed run (`_sound_hi`) and the writes inside it
+are named per record offset by `mut` (`_mut_offs`): a lane of a record array, a
+cell of a flat region. The tracker does not consult `mut`; it verifies every
+emitted byte against the image, so its bytes are right either way, but over 682
+cached tunes at 200 frames 3505 of 62512 lane classifications sit at a `mut`
+offset, where the evidence is snapshot agreement rather than a const read.
+Refusing those srcs costs 2834 interpreted emits (`sr` −1512, `ctrl` −954,
+`ad` −368), so the strength of that class is a tracker-side question, tracked
+separately.
 
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 

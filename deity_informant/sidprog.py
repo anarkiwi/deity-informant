@@ -546,6 +546,8 @@ def _decl_attrs(d):
     parts = []
     if d["stride"] > 1:
         parts.append("stride %d" % d["stride"])
+    if d.get("mut"):
+        parts.append("mut " + " ".join("%d" % o for o in d["mut"]))
     parts.extend("+%s" % _addr_name(b) for b in d["cobases"])
     if d["role"] is not None:
         parts.append("%s %s" % (d["role"][0], _addr_name(d["role"][1])))

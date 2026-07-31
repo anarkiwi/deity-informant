@@ -67,6 +67,19 @@ def test_digit_only_byte_rows_are_not_integers():
     assert sidprog.dumps(sidprog.loads(sidprog.dumps(tm))) == sidprog.dumps(tm)
 
 
+def test_mutable_record_offsets_round_trip():
+    """``mut`` carries the play-written offsets of a declaration's record."""
+    doc = (
+        "sidprog 1\nplay $1000\ninit $0F00\n"
+        "data {\n table m_2000[8] stride 2 mut 0:\n  90210042\n  0102FF00\n"
+        " table m_2008[4] mut 1 3:\n  01020304\n}\n"
+    )
+    tm = sidprog.parse(doc)
+    assert [d["mut"] for d in tm.data_decls] == [[0], [1, 3]]
+    assert sidprog.dumps(sidprog.loads(sidprog.dumps(tm))) == sidprog.dumps(tm)
+    assert "table m_2000[8] stride 2 mut 0:" in sidprog.dumps(tm)
+
+
 def test_keywords_come_from_the_grammar():
     """Keywords are grammar terminals; no layer keeps its own word list."""
     kw = G.keywords()

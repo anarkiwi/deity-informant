@@ -37,6 +37,7 @@ datarow: HEXBYTES _NL
 kind: "table" -> k_table
     | "stream" -> k_stream
 attr: "stride" INT      -> at_stride
+    | "mut" INT*        -> at_mut
     | "+" NAME          -> at_cobase
     | "lo" NAME         -> at_lo
     | "hi" NAME         -> at_hi

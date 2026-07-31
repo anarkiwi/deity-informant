@@ -32,32 +32,59 @@ def _regions(groups, code=()):
     )
 
 
-def _ext(base, reads, sites=None, **kw):
-    g = _grp(base, reads)
+def _ext(base, reads, sites=None, stride=1, **kw):
+    g = _grp(base, reads, stride)
     return D._extent(g, sites or _sites(base), kw.pop("bounds", []), kw.pop("code", []), **kw)
 
 
 def test_observed_run_is_a_floor_not_the_extent():
     """A prefix-indexing run declares the whole region up to the next boundary."""
-    assert _ext(0x2000, [0x2000, 0x2020], bounds=[0x2000, 0x2080]) == (0x80, True)
-    assert _ext(0x2000, [0x2000, 0x2020]) == (0x100, True)  # capped by the 8-bit index
-    assert _ext(0x2000, [0x2000], bounds=[0x2000], code=[0x2040]) == (0x40, True)
-    assert _ext(0x2000, []) == (0, True)  # nothing read: nothing declared
+    assert _ext(0x2000, [0x2000, 0x2020], bounds=[0x2000, 0x2080]) == (0x80, [], True)
+    assert _ext(0x2000, [0x2000, 0x2020]) == (0x100, [], True)  # capped by the 8-bit index
+    assert _ext(0x2000, [0x2000], bounds=[0x2000], code=[0x2040]) == (0x40, [], True)
+    assert _ext(0x2000, []) == (0, [], True)  # nothing read: nothing declared
 
 
 def test_proven_index_domain_sizes_exactly():
-    assert _ext(0x2000, [0x2000], sites=_sites(0x2000, proven=True)) == (4, False)
+    assert _ext(0x2000, [0x2000], sites=_sites(0x2000, proven=True)) == (4, [], False)
 
 
 def test_extension_stops_at_a_play_written_cell():
     """The run past the floor is const only while the play phase never writes."""
-    assert _ext(0x2000, [0x2000, 0x2010], mut=frozenset({0x2040})) == (0x40, True)
-    assert _ext(0x2000, [0x2000, 0x2010], mut=frozenset({0x2011})) == (0x11, True)
+    assert _ext(0x2000, [0x2000, 0x2010], mut=frozenset({0x2040})) == (0x40, [], True)
+    assert _ext(0x2000, [0x2000, 0x2010], mut=frozenset({0x2011})) == (0x11, [], True)
+
+
+def test_flat_region_excludes_the_cells_the_play_phase_writes():
+    """A flat region is one record, so a written offset names that cell alone."""
+    reads, bounds = range(0x2000, 0x2040), [0x2000, 0x2040]
+    assert _ext(0x2000, reads, bounds=bounds, mut=frozenset({0x2010})) == (0x40, [0x10], True)
+    mut = frozenset({0x2000, 0x203F})
+    assert _ext(0x2000, reads, bounds=bounds, mut=mut) == (0x40, [0, 0x3F], True)
+    assert _ext(0x2000, [0x2000, 0x2001], pairtabs={0x2000}, mut=frozenset({0x2001})) == (
+        2,
+        [1],
+        True,
+    )
+
+
+def test_strided_block_keeps_the_lanes_the_play_phase_never_writes():
+    """A record block is const per lane: a written row names its lane, not the block."""
+    reads, bounds = range(0x2000, 0x2040), [0x2000, 0x2040]
+    assert _ext(0x2000, reads, stride=8, bounds=bounds, mut=frozenset({0x2010})) == (
+        0x40,
+        [0],
+        True,
+    )
+    mut = frozenset({0x2013, 0x2028})
+    assert _ext(0x2000, reads, stride=8, bounds=bounds, mut=mut) == (0x40, [0, 3], True)
+    every = frozenset(range(0x2010, 0x2018))  # a whole record: every lane is mutable
+    assert _ext(0x2000, reads, stride=8, bounds=bounds, mut=every) == (0x40, list(range(8)), True)
 
 
 def test_pointer_reload_table_keeps_the_observed_floor():
     """Its composed words prove exactly the reloaded entries, so it never runs on."""
-    assert _ext(0x2000, [0x2000, 0x2001], pairtabs=frozenset({0x2000})) == (2, True)
+    assert _ext(0x2000, [0x2000, 0x2001], pairtabs=frozenset({0x2000})) == (2, [], True)
 
 
 def test_alias_base_is_absorbed_into_the_region_it_indexes():
@@ -75,7 +102,7 @@ def test_unwitnessed_base_neither_declares_nor_bounds():
     """A base with no observed read must not truncate its neighbour to nothing."""
     out = _regions([_grp(0x2000, range(0x2000, 0x2060)), _grp(0x2001)])
     assert [g["base"] for g in out] == [0x2000]
-    assert _ext(0x2000, range(0x2000, 0x2060), bounds=[0x2000]) == (0x100, True)
+    assert _ext(0x2000, range(0x2000, 0x2060), bounds=[0x2000]) == (0x100, [], True)
 
 
 def test_avail_spans_the_containing_region():
