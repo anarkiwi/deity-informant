@@ -7,6 +7,8 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 from . import grammar as G
 from . import sidprog
 from . import structured as C
@@ -1305,7 +1307,7 @@ def _index_of(addr):
     return base[1], idx
 
 
-_NORES = {}  # rung (f) resolutions: deref address -> (pointer cell, index or None)
+_NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
 
 
 def _membody(addr, res=_NORES):
