@@ -173,38 +173,46 @@ def test_a_fused_store_with_its_halves_swapped_fails_gate_fp():
     assert _records(prog, model) != good
 
 
-# ---- the SID pairs: presentational, opt-in --------------------------------------
+# ---- the SID pairs: freq, pulse and cutoff, per store site ------------------------
 def _freq_pair_model():
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0)
     a.i("LDA", "absx", TBL).i("STA", "abs", 0xD400)
     a.i("LDA", "absx", TBL + 4).i("STA", "abs", 0xD401)
+    a.i("LDA", "absx", TBL + 16).i("STA", "abs", 0xD402)
+    a.i("LDA", "absx", TBL + 20).i("STA", "abs", 0xD403)
     a.i("LDA", "absx", TBL + 8).i("STA", "abs", 0xD416)
     a.i("LDA", "absx", TBL + 12).i("STA", "abs", 0xD415).i("RTS")
-    outs = {0xD400, 0xD401, 0xD415, 0xD416}
-    data = {TBL + k: 0x10 + k for k in range(16)}
+    outs = {0xD400, 0xD401, 0xD402, 0xD403, 0xD415, 0xD416}
+    data = {TBL + k: 0x10 + k for k in range(24)}
     return _fuzz_model(_player("freqpair", a.assemble(), data, outs))
 
 
 def test_sid_register_pairs_render_as_u16_without_moving_the_record():
-    """freq and cutoff fuse per site, hi-first included: the section still emits lo,hi."""
+    """freq, pulse and cutoff fuse per site, hi-first included: the section still emits lo,hi."""
     model = _freq_pair_model()
-    plain = frameprog.program(model)
-    fused = frameprog.program(model, sid_fusion=True)
-    assert _records(plain, model) == _records(fused, model)
+    fused = frameprog.program(model)
     assert frameval.gate_fp(model, 8, fused) is None
     text = frameprog.dumps(fused)
-    assert "sid.v1.freq_lo:2 = " in text and "filter.cutoff_lo:2 = " in text
+    lvalues = [ln.split(" = ")[0].strip() for ln in text.splitlines() if " = " in ln]
+    assert lvalues == ["sid.v1.freq_lo:2", "sid.v1.pw_lo:2", "filter.cutoff_lo:2"]
     assert frameprog.dumps(frameprog.loads(text)) == text
-    assert [p.status for p in fused.proofs if p.kind == "sid"] == ["fused", "fused"]
-    assert "sid.v1.freq_lo = " in frameprog.dumps(plain)  # opt-in: off by default
+    sid = [p for p in fused.proofs if p.kind == "sid"]
+    assert [p.targets for p in sid] == [(0xD400, 0xD401), (0xD402, 0xD403), (0xD415, 0xD416)]
+    assert [p.status for p in sid] == ["fused"] * 3
 
 
-def test_sid_fusion_is_recorded_even_where_it_is_not_applied():
-    """The proof record is the gate, so a SID pair is judged whether or not it is used."""
-    sid = [p for p in frameprog.program(_freq_pair_model()).proofs if p.kind == "sid"]
-    assert [p.targets for p in sid] == [(0xD400, 0xD401), (0xD415, 0xD416)]
-    assert {p.status for p in sid} == {"fused"}
+def test_a_lone_sid_half_is_recorded_and_left_split():
+    """A pair with no adjacent lo/hi store site refuses; the byte store stands."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 0).i("LDA", "absx", TBL).i("STA", "abs", 0xD401).i("RTS")
+    model = _fuzz_model(_player("lonehalf", a.assemble(), {TBL: 0x10}, {0xD401}))
+    prog = frameprog.program(model)
+    sid = [p for p in prog.proofs if p.kind == "sid"]
+    assert [(p.targets, p.status) for p in sid] == [((0xD400, 0xD401), "refused")]
+    assert "no word access in the play code" in sid[0].lemma
+    assert "sid.v1.freq_hi = " in frameprog.dumps(prog)
+    assert frameval.gate_fp(model, 8, prog) is None
 
 
 # ---- the store-source annotation is preserved ------------------------------------
@@ -223,13 +231,15 @@ def _by_reg(pair):
 
 
 def test_a_fused_sid_store_keeps_its_per_half_provenance():
-    """Under eval_src each buffered write reports its own half's cells."""
+    """Under eval_src each buffered write reports its own half's cells, hi-first too."""
     model = _freq_pair_model()
     trace, _w = frameprog.iota(model, 4)
-    plain = _by_reg(frameval.eval_src(frameprog.program(model), trace, 4))
-    fused = _by_reg(frameval.eval_src(frameprog.program(model, sid_fusion=True), trace, 4))
-    assert plain == fused  # a hi-first pair fuses lo,hi, so only the write order moves
-    assert plain[0][0][1] and plain[0][0][1] != plain[0][1][1]
+    fused = _by_reg(frameval.eval_src(frameprog.program(model), trace, 4))
+    # register -> the one table cell that half loaded ($15/$16 is written hi first)
+    cells = {0: TBL, 1: TBL + 4, 2: TBL + 16, 3: TBL + 20, 0x15: TBL + 12, 0x16: TBL + 8}
+    assert all(
+        {r: v[1] for r, v in fr.items()} == {r: (c,) for r, c in cells.items()} for fr in fused
+    )
 
 
 # ---- the premise, stated ----------------------------------------------------------
@@ -295,11 +305,11 @@ def test_a_word_store_must_match_its_lvalue_width():
 
 
 @pytest.mark.parametrize("p", G.players(2), ids=lambda p: f"{p.name}-{p.seed[1]}")
-def test_gate_fp_holds_over_the_fuzz_corpus_with_sid_fusion(p):
+def test_gate_fp_holds_over_the_fuzz_corpus_under_fusion(p):
     """Rung (d) at full reach, SID pairs included, moves no record on any class."""
     model = _fuzz_model(p)
     nframes = max(p.frames, 8)
-    prog = frameprog.program(model, sid_fusion=True)
+    prog = frameprog.program(model)
     assert frameval.gate_fp(model, nframes, prog) is None
     text = frameprog.dumps(prog)
     assert frameprog.dumps(frameprog.loads(text)) == text

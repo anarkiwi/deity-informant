@@ -291,8 +291,10 @@ valid, gated artifact.
   Gate: FP.
 - **(d) 16-bit fusion** (landed, `deity_informant/framefuse.py`; §4.3 for the
   measurement). Fuse lo/hi state-variable pairs — including the §2 dispatch
-  words — and render freq/pulse/cutoff as u16 in the canonical section
-  (presentational: the projection emits lo,hi adjacent). Premise per pair:
+  words — and render freq, pulse width and filter cutoff as u16 in the canonical
+  section (the projection emits lo,hi adjacent, so the word is the register's
+  own shape). Unconditional: there is no switch to leave a pair split. Premise
+  per pair:
   provably written/consumed as a word — the datadecl pointer-pair machinery
   (`lo`/`hi` partner attrs) plus the paired-index zip invariant
   (follin-dispatch-study §4), every read using the half only inside
@@ -475,17 +477,25 @@ occurrences are **unchanged at 10280**, because what fusion names is the pointer
 *word* and the deref it feeds still has no const base for §4.2's indexed form to
 name — precisely the residue §4(f) inherits.
 
-**SID fusion is opt-in** (`frameprog.program(model, sid_fusion=True)`), and off
-by default, because it is presentational and it costs the consumer. Of the
-**2069** SID pairs a store site addresses, 916 fuse every site, 228 fuse some and
-leave the rest split, and 925 have no adjacent lo/hi store site at all. Gate FP
-and the fixpoint still hold 649/649, so this is not a correctness cost. The cost
-is naming: a consumer that keys its last-write-wins planes per register and
-identifies a lane by the declaration the *store statement* names sees one word
-store name one class where two byte stores named two, so the hi half's class
-loses its tree-named table and falls back to searching every bank. That is the
-consumer's question, not the rung's, and it is recorded here rather than
-compensated for.
+**SID fusion is unconditional.** Freq, pulse width and cutoff are 16-bit
+registers, the projection emits their halves adjacent, and the frame program is
+the deliverable — so the word is the form, and there is no switch that leaves a
+proven pair split (there was one, `sid_fusion=`; it is gone). Measured 2026-08-01
+on the same corpus and window: **Gate FP 649/649 and the canonical fixpoint
+649/649**, unchanged with the rung at full reach.
+
+Of the **2069** SID pairs a store site addresses, 916 fuse every site, 228 fuse
+some and leave the rest split, and 925 have no adjacent lo/hi store site at all;
+at site granularity 1317 store pairs fuse and 2709 half stores stay bytes.
+Emitted text 9649229 → **9660384** bytes (+0.12%) — the packed word is longer
+than the two byte stores it replaces, so this rung buys shape, not size — and raw
+`mem[` is unchanged at 9682. The 925 are the premise, not a defect of it: a
+pre-fusion scan of the same corpus finds about two thirds (577 of the 931 pairs
+it sees) write both halves and never as adjacent statements — Commando's slide
+path writes `freq_lo`, then the state cell and the carry, then `freq_hi` — and
+the rest write one half only. Reaching those needs statement motion across a
+proven-independent statement, which is a rung above (d), not a licence (d) can
+take for itself.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -907,7 +917,7 @@ running past the region end.
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
 | Replacing the dynamic origin map with a static relation | Refused, priced (§4.7). The lattice's `region(R, i)` is sound only where the index is closed, and a staged byte's index is live at the staging site alone — re-read where the byte is used it names a different cell. Built and run over the corpus, the relation recovers **0** emits against the dynamic map's 298759 and the whole trigger domain, and of the 3402 cells it names it agrees with the run at 1644. What was actually shared — the declaration containment index — is now `datadecl.Regions` and the three copies are gone. |
-| A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but cost the consumer of the day 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
+| A rung that reads well and consumes worse | Rung (d)'s SID half was the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but cost the consumer of the day 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). It was held opt-in for that consumer; the consumer is gone and the frame program is the deliverable, so the rung now applies unconditionally and a downstream reader that keys lanes off the store statement must read a `u16` store as naming both halves. Every later rung MUST still report the consumer partition beside Gate FP. |
 
 ## 6. Milestones and corpus gates
 
@@ -980,15 +990,15 @@ HVSC absent (decompiler-implementation.md §1, §7).
   question.
 - **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
   measurement): the state-pair fusion with a `structured.Proof` per candidate
-  pair, and the SID register pairs analysed and recorded but rewritten only
-  under `sid_fusion=True`. Gate: FP 649/649 and the canonical fixpoint 649/649,
+  pair, and freq, pulse width and cutoff fused on the same footing — per store
+  site, unconditionally. Gate: FP 649/649 and the canonical fixpoint 649/649,
   both unchanged over the 682-tune corpus. `tests/_fuzzgen` carries the
   `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
   synthetic refusals — lone half, unpaired half store, write-order hazard — plus
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
   halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
-  proof records are still M-FP2's debt, and whether SID fusion ships by default
-  is a consumer decision, not a frameprog one.
+  proof records are still M-FP2's debt, and the 925 SID pairs whose halves are
+  written apart wait on a statement-motion rung above (d) (§4.3).
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported

@@ -202,11 +202,6 @@ def candidates(model, decls, procs):
     return out
 
 
-def _applies(kind, sid):
-    """Whether a candidate of this kind is rewritten (SID fusion is opt-in)."""
-    return sid or kind != "sid"
-
-
 # ---- the pass ---------------------------------------------------------------------
 def _rewrite(n, p, count):
     """Fold word shapes to a word load; count lone-half reads on the way."""
@@ -301,12 +296,12 @@ def _fuse_state(state, symbols, pairs, name_of):
     return out
 
 
-def apply_rung(model, decls, procs, state, symbols, name_of, sid=False):
+def apply_rung(model, decls, procs, state, symbols, name_of):
     """Rung (d) in place over ``procs``; returns ``(state fields, proofs)``.
 
     Per pair, never per tune: a pair whose premise fails keeps its two byte
-    halves and every other pair still fuses. ``sid`` also rewrites the SID
-    register pairs, which is presentational only (spec 4d)."""
+    halves and every other pair still fuses. The SID register pairs — freq,
+    pulse and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
         p = _Pair(lo, hi, kind, evidence)
@@ -314,7 +309,7 @@ def apply_rung(model, decls, procs, state, symbols, name_of, sid=False):
             for _e, _pa, _r, stmts in procs:
                 _visit(stmts, p, False)
         proofs.append(p.proof())
-        if p.refusal() is not None or not _applies(kind, sid):
+        if p.refusal() is not None:
             continue
         fused.append(p)
         for _e, _pa, _r, stmts in procs:

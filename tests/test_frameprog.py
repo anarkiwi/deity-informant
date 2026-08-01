@@ -317,7 +317,8 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert " ctr_5513: u8" in text and " pos_54EC: u8[]" in text
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
-    assert re.search(r"sid\.v1\.freq_hi\[\w+\] = m_5429\[\w+\]", text)  # the hi lane, indexed
+    # the note word: the hi lane rides a fused indexed u16 store (rung d, hi-first)
+    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(m_5429\[\w+\]\) << \$08\)", text)
     assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
     assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named
     assert "*ptr_005F[pos_54EF[x]]" in text  # a row index that is itself an indexed read
