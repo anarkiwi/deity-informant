@@ -595,13 +595,19 @@ def _trig(graph, g):
     return "<- n%02d%s" % (g.trigger[1], " x%d" % n if n else "")
 
 
+def _at_str(g):
+    """``at n<k>`` where a generator names the register offset this emit lands at."""
+    at = tracker._at_of(g.route)
+    return "" if at is None else ", at n%02d" % at[1]
+
+
 def _route(g):
     """Where a node's emits go, in musical terms: a register's part, or one field of it."""
     if tracker._is_plane(g.route):
         role = _role(g.route[1], tracker._mask_of(g.route))
-        return "-> " + (role + ", as an offset" if g.route[0] == "rel" else role)
+        return "-> " + (role + ", as an offset" if g.route[0] == "rel" else role) + _at_str(g)
     if g.route[0] == "pair":
-        return "-> %s, as one 16-bit value" % _role(g.route[1], tracker._FULL)
+        return "-> %s, as one 16-bit value%s" % (_role(g.route[1], tracker._FULL), _at_str(g))
     if g.route[0] == "fire":
         return "-> triggers"
     if g.route == tracker.INDEX:
@@ -674,8 +680,14 @@ def _node_lines(graph, i, scan, keys, cons):
         ]
     if kind == "SELECT" and keys[i] is not None:
         return [head] + _select_lines(g, keys[i], scan.tabs, scan.emits[i])
+    if kind == "HOLD":
+        return [
+            "%s  emits what the object n%02d carries, after its %d step this frame"
+            % (head, g.transfer[1], g.transfer[3])
+        ]
     if kind == "RAMP":
         _k, seed, step, bound, turn = g.transfer
+        held = g.route == tracker.INDEX or tracker._at_of(g.route) is not None
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
@@ -683,7 +695,7 @@ def _node_lines(graph, i, scan, keys, cons):
             % (
                 "cursor" if g.route == tracker.INDEX else "sweep ",
                 seed,
-                "DECLARED" if g.route == tracker.INDEX else "OBSERVED",
+                "DECLARED" if held else "OBSERVED",
                 step,
                 (
                     "turns down at high %d and up at high %d (DECLARED), wraps at %d"

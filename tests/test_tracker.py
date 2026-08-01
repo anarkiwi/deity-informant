@@ -1,5 +1,6 @@
 """tracker: the generator primitive, declared-table pitch recovery, and the law."""
 
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -990,6 +991,62 @@ def test_the_step_is_the_declared_byte_under_the_mask_the_text_applies():
     assert T.gate(other, {}, _TURN_N) is None
 
 
+# ---- 3c2. the object: one accumulator, three registers, a declared first value ----
+_OFFS3 = (0, 7, 14)
+
+
+def _obj_graph(seed=0x0800, step=7, at=0):
+    """A stepping object and one reader of it, both routed at an offset generator."""
+    return [
+        T.indexer(("SELECT", _OFFS3, (0, 1, 2)), T.FRAME),
+        T.Generator(("RAMP", seed, step, 0x1000, ()), T.FRAME, T.pair(2, 3, 0x0F, ("node", 0))),
+        T.indexer(("SELECT", _OFFS3, (1,)), T.FRAME),
+        T.Generator(T.hold(1, seed, at), T.FRAME, T.pair(2, 3, 0x0F, ("node", 2))),
+    ]
+
+
+def test_a_route_may_take_its_register_from_a_generator():
+    """`sta $d402,y`: one node writes whichever voice the offset generator names."""
+    recs = T.eval_graph(T.Graph(_obj_graph()[:2]), 3)
+    got = [sorted(w for sec in rec for w in sec) for rec in recs]
+    assert got == [[(2, 0), (3, 8)], [(9, 7), (10, 8)], [(16, 14), (17, 8)]]
+
+
+def test_an_offset_no_earlier_index_node_settles_is_refused():
+    """The offset is a value, so it comes from an index node exactly as a row does."""
+    nodes = _obj_graph()
+    for bad in (("node", 9), ("node", 1), ("const", 7), ("node", 3)):
+        broke = list(nodes)
+        broke[1] = broke[1]._replace(route=T.pair(2, 3, 0x0F, bad))
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(broke), 1)
+
+
+def test_hold_emits_what_the_object_carries_from_a_declared_first_value():
+    """A reader emits the object's value, and the declared seed before it has emitted."""
+    got = dict(w for sec in T.eval_graph(T.Graph(_obj_graph(at=1)), 1)[0] for w in sec)
+    assert got[2] == 0x00 and got[9] == 0x00  # the object's own emit, then the reader's
+    nodes = _obj_graph()
+    nodes[1] = nodes[1]._replace(trigger=("event", 4))
+    nodes[3] = nodes[3]._replace(transfer=T.hold(1, 0x0999, 0))
+    got = dict(w for sec in T.eval_graph(T.Graph(nodes + [T.edge([0, 1])]), 1)[0] for w in sec)
+    assert got[9] == 0x99 and got[10] == 0x09  # nothing held yet: the declared value stands
+
+
+def test_hold_reads_the_object_where_the_frame_order_puts_it():
+    """``at`` is the machine's own order: before this frame's steps, or after the k-th."""
+    base = [
+        T.indexer(("SELECT", _OFFS3, (0, 1)), ("event", 2)),
+        T.indexer(("SELECT", _OFFS3, (2,)), T.FRAME),
+        T.edge([2]),
+    ]
+    step = T.Generator(("RAMP", 10, 5, 0x1000, ()), ("event", 2), T.pair(2, 3, 0xFF, ("node", 0)))
+    for k, want in ((0, 0), (1, 10), (2, 15)):
+        read = T.Generator(T.hold(3, 0, k), T.FRAME, T.pair(2, 3, 0xFF, ("node", 1)))
+        got = dict(w for sec in T.eval_graph(T.Graph(base + [step, read]), 1)[0] for w in sec)
+        assert got[16] == want  # before this frame's steps, after the first, after the second
+
+
 # ---- 3d. the filter plane: $15-$18 off the store statement, in its own class ------
 _FILTER_LANES = {0: [0x10, 0x21, 0x32, 0x43], 1: [1, 2, 3, 4], 2: [0xF1, 0xF2, 0xF3, 0xF4]}
 
@@ -1823,7 +1880,15 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
 # Measured at _LONG frames, which is where Commando's turning pulse sweep and its song
 # chain both run; the 200-frame tests above reach neither. It does NOT cover the whole
 # tune's figures, which docs/tracker.md §6 reports.
-_COMMANDO = {"total": 10489, "residual": 668, "shallow": 991, "observed_fires": 6974, "arr": 598}
+_COMMANDO = {"total": 10489, "residual": 122, "shallow": 938, "generated_fires": 1499, "arr": 598}
+_LEDGER = json.loads((Path(__file__).parent / "universality.json").read_text(encoding="utf-8"))
+
+
+def _ledger(frames, stem="Commando"):
+    """The universality.json entry for one tune at one frame count: bounds live there."""
+    return next(
+        t for t in _LEDGER["tunes"] if t["frames"] == frames and Path(t["rel"]).stem == stem
+    )
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
@@ -1832,19 +1897,18 @@ def test_commando_universality_does_not_regress(sid, subtune):
 
     ``total`` is asserted by **equality**, not by a bound: it is the tune's own write count
     at a fixed frame count, so it is a constant of the ground truth and not a figure the
-    recovery is entitled to move. A denominator that shrinks inflates every share printed
-    over it, which is how a write leaves the books while the law still passes."""
+    recovery is entitled to move. The trigger domain is floored by the *generated* fire
+    count: an observed-fire ceiling falls to any value the layer newly explains (§0)."""
     prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
     cov = T.render(prog, trace, nf)[2]
     shallow = sum(c["imm"] + c["seed"] for c in cov.classes.values())
-    fires = cov.triggers[1] - cov.triggers[0]
     assert cov.total == _COMMANDO["total"]  # ground truth, not ours to move
     assert cov.interp + cov.residual == cov.total  # every write is on one side or the other
     assert cov.residual <= _COMMANDO["residual"]  # bytes replayed, not produced
     assert shallow <= _COMMANDO["shallow"]  # a constant, or a byte a sweep starts from
-    assert fires <= _COMMANDO["observed_fires"]  # fires the EDGE floor carries
+    assert cov.triggers[0] >= _COMMANDO["generated_fires"]  # fires a divider makes, a floor
     assert sum(c["arr"] for c in cov.classes.values()) >= _COMMANDO["arr"]
-    assert cov.triggers[0] > 0 and T.gate(prog, trace, nf) is None
+    assert T.gate(prog, trace, nf) is None
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
@@ -1871,29 +1935,56 @@ def test_the_rendered_header_keeps_the_same_books_as_the_recovery(sid, subtune):
 def test_commando_ablating_raw_leaves_the_generators_reproducing_the_tune(sid, subtune):
     """Deleting the ``RAW`` floor is what measures universality: what the graph *produces*."""
     prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
-    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    got = T._observe(prog, trace, nf)
+    graph = T._graph(prog, T._pitch(prog, T._freq_words(got[0])), *got)[0]
     nodes = list(graph.nodes)  # emptied in place: node indices carry rows and divisors
     nodes[graph.raw_index()] = T.raw([])
     got, want = T.coverage(T.Graph(nodes), nf), T.coverage(graph, nf)
     assert got.residual == 0 and got.total == want.interp  # nothing is carried any more
-    assert got.total / want.total >= 0.80  # the share of the tune the generators produce
+    assert got.total / want.total >= _ledger(_LONG)["ablated_share"]  # a ledger line, not code
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
-def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, subtune):
-    """$5591's +0 lane is `mut`: the play code writes it back, so it is not const data."""
+def test_commando_pw_lanes_are_one_object_the_graph_carries(sid, subtune):
+    """$5591's +0/+1 lanes are `mut`, and that is what makes them an object rather than data.
+
+    A const read of a play-written cell is refused, and rightly; the object is the same
+    cell read as *state* — its first value the declared image, every later one a step."""
     prog, trace, nf = _lifted(sid, subtune)
     decl = next(d for d in prog.data_decls if d["base"] == 0x5591)
     assert decl["stride"] == 8 and decl["mut"] == [0]
-    _gt, _ords, lww, _acc = T._observe(prog, trace, nf)
-    streams = T._lww_streams(lww, T._tree_tables(prog, T._banks(prog)), prog.mem0)[0]
-    assert {r % 7 for _c, _t, r, *_e in streams if r % 7 in (2, 3)} == {3}  # pw_hi at +1 only
+    got = T._observe(prog, trace, nf)
+    graph = T._graph(prog, None, *got)[0]
+    lanes = [g for g in graph.nodes if T._is_plane(g.route) and g.route[1] in (2, 3)]
+    assert lanes and all(T._at_of(g.route) is not None for g in lanes)  # every one an object's
+    assert {g.transfer[0] for g in lanes} == {"RAMP", "HOLD", "SELECT"}
     cov = T.render(prog, trace, nf)[2]
-    assert cov.planes["pw"] == (205, 245)  # 53 lane reads at +1, the rest the swept +0
+    assert cov.planes["pw"] == (245, 245)  # every pw write, and not one observed seed
     pw = cov.classes["pw"]
-    assert pw["arr"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
-    assert pw["lane"] == 0  # the +1 lane's rows are the song's, not the observation's
-    assert pw["arr"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
+    assert pw["seed"] == 0 and pw["imm"] == 0 and pw["arr"] == 0
+    assert pw["lane"] + pw["ramp"] == cov.planes["pw"][0]
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_object_seed_is_the_declared_image_and_the_law_says_so(sid, subtune):
+    """Perturbing the post-init byte at an object's own row moves every emit of it.
+
+    The seed is read from the declaration, never from the stream: with the byte moved the
+    projection no longer matches, which is what an observed seed could never fail at."""
+    prog, trace, nf = _lifted(sid, subtune)
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    holds = {g.transfer[2] for g in graph.nodes if g.transfer[0] == "HOLD"}
+    assert holds  # the note-on reads of an object are what carry its declared first value
+    want = {prog.mem0[0x5591 + 8 * r] | (prog.mem0[0x5592 + 8 * r] << 8) for r in range(13)}
+    assert holds <= want | {w & 0xFF for w in want}  # a declared word, or a byte object's half
+    gt = T.oracle(prog, trace, nf)
+    assert F.diff(T.eval_graph(graph, nf), gt) is None
+    for i, g in enumerate(graph.nodes):  # every declared first value is load-bearing
+        if g.transfer[0] != "HOLD":
+            continue
+        nodes = list(graph.nodes)
+        nodes[i] = g._replace(transfer=("HOLD", g.transfer[1], g.transfer[2] ^ 0x55, g.transfer[3]))
+        assert F.diff(T.eval_graph(T.Graph(nodes), nf), gt) is not None
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
@@ -1922,7 +2013,8 @@ def test_commando_pulse_sweep_turns_where_the_player_compares(sid, subtune):
     assert a.masks == frozenset({0xFF, 0xE0}) and a.signs == frozenset({1, -1})
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
     turns = [g for g in graph.nodes if g.transfer[0] == "RAMP" and g.transfer[4]]
-    assert turns and all(g.route == T.pair(g.route[1], g.route[1] + 1, 0x0F) for g in turns)
+    assert turns and all(g.route[:4] == T.pair(2, 3, 0x0F)[:4] for g in turns)  # the pw pair
+    assert all(T._at_of(g.route)[0] == "node" for g in turns)  # at the voice the text names
     assert {g.transfer[3] for g in turns} == {0x1000} and {g.transfer[4] for g in turns} == {
         (8, 14)
     }

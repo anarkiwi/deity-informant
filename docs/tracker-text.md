@@ -148,14 +148,16 @@ python tools/tracker_text.py compare    # out/<Tune>.sidebyside.txt
 Needs the HVSC cache under `.oracle-cache/hvsc`, and the side-by-side mode needs the
 native-editor extras (`pip install -e '.[nativeoracle]'`).
 
-**The rendering is linear in frames and in nodes.** A whole tune is thousands of nodes —
-Commando at 11750 frames is 1812 — and `tracker._fired` rescans every node per firing
-trigger, which makes a pass quadratic; `_consumers` indexes the trigger fan-out once, so
-`_scan` is one linear pass instead: **45.8s → 17.7s** on that graph, while doing strictly
-more work (the per-frame note index and the instrument map the side-by-side view needs).
-What dominates the wall clock is **recovering** the graph, which is `tracker`'s cost and
-not this layer's: 183s for Commando's 11750 frames against 17.7s to render them, and 11s
-against 0.3s for Ghouls_n_Ghosts. The driver runs the tunes in a pool, so a whole run is
+**The rendering is linear in frames and in nodes.** A whole tune used to be thousands of
+nodes — Commando at 11750 frames was 1812, then 1311, and is **121** since the pulse
+accumulator became one object per instrument row (docs/tracker.md §4l) — and
+`tracker._fired` rescans every node per firing trigger, which makes a pass quadratic;
+`_consumers` indexes the trigger fan-out once, so `_scan` is one linear pass instead:
+**45.8s → 17.7s** on the 1812-node graph, while doing strictly more work (the per-frame
+note index and the instrument map the side-by-side view needs). What dominates the wall
+clock is **recovering** the graph, which is `tracker`'s cost and not this layer's: ~197s
+for Commando's 11750 frames against **1.8s** to render them now that the graph is two
+orders of magnitude smaller, and 11s against 0.3s for Ghouls_n_Ghosts. The driver runs the tunes in a pool, so a whole run is
 one tune's recovery wide, and no tune is windowed.
 
 The tests (`tests/test_trackertext.py`) are hermetic: they render hand-built graphs

@@ -522,6 +522,8 @@ class Evaluator:
                     buf.append((a - C.SID_LO, m[a]))
                     if prov is not None:
                         srcs.append(_derived(op[3], r, m, rd, prov, ploc))
+                        if op[4] is not None:  # a watched store reports its own SID address too
+                            wat.append((op[4], a, srcs[-1]))
                 elif prov is not None:  # a one-cell value carries that cell's origin on
                     if op[4] is not None:
                         wat.append((op[4], a, _derived(op[3], r, m, rd, prov, ploc)))

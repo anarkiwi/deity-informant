@@ -282,6 +282,19 @@ def test_eval_watch_names_a_step_no_sid_store_ever_reads():
     assert wat == [[(0, None, (0x00D0, 0x0803, 0x00C0))]] * 2
 
 
+def test_eval_watch_reports_a_watched_sid_store_at_the_register_it_wrote():
+    """A watched store answers with the address it wrote, SID register or not.
+
+    That is what attributes one write to one line of the program text: several stores
+    drive one plane, and only the address the machine resolved says which ran."""
+    mem0 = bytearray(0x10000)
+    mem0[0x0803] = 0x16
+    stmts = [("asg", "i", ("const", 3, 1))] + _accum(_row()) + [("ret", False)]
+    prog = _prog(stmts, mem0=mem0)
+    _frames, _srcs, wat = frameval.eval_watch(prog, {}, 2, [stmts[-2]])
+    assert wat == [[(0, 0xD402, (0x00D0,))]] * 2  # the pw register, and the cell behind it
+
+
 def test_eval_watch_reports_no_origin_for_a_step_the_play_code_computed():
     """Refusal: a staging cell whose byte derives from two cells carries no origin."""
     mem0 = bytearray(0x10000)

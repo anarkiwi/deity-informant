@@ -37,6 +37,9 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | the trigger domain's residue is an arrangement problem, not a divider one (§4d, §6, §7.4) | #113 | **not where it was aimed** — of the 1101 strictly periodic streams, **989 (13608 fires) have a period no divider's reload declares at all**, and 95 more (1826 fires) only as a *product* of two declared divisors. Before a pattern can decide which tick carries a note, the tick itself has to be nameable, and on 90% of periodic streams it is not |
 | a pattern byte explains 0 SID writes, so §4g's claim is what the corpus does not carry (§4g, §6) | #116 | **the rule was wrong, not the corpus** — §4g asks whether the declared byte *is* the byte a register took, and a note or an instrument column never is: it is the row another table is read at. Routed `Index` instead, Commando's attack/decay and sustain/release lanes on all three voices come out generated — **`arr` 0 -> 6498** — from the orderlist and the patterns alone |
 | the trigger floor falls once the arrangement can decide which tick carries a note (§4d, §7.4, the two rows above) | #116 | **half true, and the other half is priced** — a `DIV` whose divisor is the row's own duration field generates **3249** of Commando's note-on fires and its tick 11751 more, 0 -> 15000. But observed fires still *rise* 81099 -> 84294, because §4c's 13780 newly generated pulse emits each need a trigger a `RAW` replay did not. Explaining a value costs a fire; the floor only falls when the sweep's own gate is generated too, and §8 names what blocks that (run fragmentation, not evidence) |
+| the pulse accumulator's cell is `mut`, so no declaration reaches it and the sweep must seed from an observed byte (§4c, §6) | this step | **false as stated** — the cell is not data, and it is not undeclarable either: it is **state the graph itself produces**, whose first value is the declared post-init image at its own row and whose every later one is a declared step. Expressed as one object per row (§4l), Commando's pulse plane goes `22272/31563` -> **`31563/31563`**, its 597 runs collapse to 4 objects and 3 constants, its 1221 observed seeds retire to **0**, and voice 2 — which generated nothing at all — comes out whole |
+| `trigger_share` cannot be gamed by generating less, so it is the floor that replaces the `observed_fires` ceiling (universality.json, #118) | this step | **half true, and the other half is the same mistake one level down** — it cannot be gamed by generating less, but its *denominator still moves with progress*: a `RAW`-replayed byte carries no trigger and a generated one needs one, so explaining 9291 pulse writes took Commando's fires `99294` -> `105944` while the generated count held at `15000` **exactly**, and the share fell `0.1769` -> `0.1714` on a step that replayed 5.5x less. The floor is now `trigger_fires`, the generated count itself: verbatim replay generates none, and no value the layer explains can lower it |
+| a run whose seed is observed is the best a sweep can do, and the 597 runs are fragmentation the arrangement must fix (§7, §8) | this step | **the fragmentation was the node identity, not the evidence** — the runs are one object per instrument seen through a register-first partition, and merging them needed no new evidence at all: a route whose register an `Index` node offsets (`sta $d402,y`) and a transfer that emits what another generator holds. Corpus-wide `pw` `110842` -> `111356` over 649 tunes with **no tune generating less**, and `seed` `7542` -> `7479` |
 | `Graph.charts` carries the song as declared data beside the generators (#115) | #116 | **a side-car scores zero** — the law passes at 0% generation, so "law PASS, corpus byte-identical" was satisfied perfectly by a change that generated nothing. Every coverage figure was byte-identical to the pre-#115 baseline. What the song is worth is what it *produces*, and §4k is where it began producing |
 
 The `SELECT[rel]` row is the one to read before adding to the primitive: a refusal count
@@ -109,6 +112,7 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n, phase)           # one tick per n input triggers (a clock)
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
+           | HOLD(j, seed, at)       # emit what generator j held after its at-th emit
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
   rows     : ()                      # none recovered: read straight through, wrapping
@@ -116,12 +120,13 @@ Generator = (transfer, trigger, route)
            | Node(j)                 # generated: the row generator j holds
            | Rel(op, delta, base)    # generated and combined: op(base, delta)
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
-  route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
-           | Pair(lo, hi, mask_hi)   # one 16-bit emit: its low byte and its high byte
+  route    : Plane(reg, mask, at)    # a SID register plane, or the bits of one
+           | Pair(lo, hi, mask_hi, at)# one 16-bit emit: its low byte and its high byte
            | Rel(reg, mask, op, base)# the emit is a DELTA op combines with base
            | Index                   # the emit is another generator's row index
            | Fire | Raw              # a downstream trigger, or the value floor
   op       : ADD | SUB | XOR         # the store statement's own operator
+  at       : none | Node(k)          # the register offset a generator holds: sta $d402,y
   base     : Prev                    # the plane's own previously emitted value
   delta    | Node(i)                 # generator i's current value
            | Const(c)                # a declared base byte
@@ -132,6 +137,15 @@ the same number; clocked by another generator's edge it counts what it receives,
 one divider clocks another and a period only the *product* of two declared reloads
 names is `DIV -> DIV` — the shape §8 measured 95 streams (1826 fires) locked out when
 the evaluator read the frame regardless of trigger (`_ticks` before `_Fires`).
+
+**A route may name its register through a generator, and a transfer another's value.**
+An accumulator a driver keeps per instrument is read into whichever voice's registers
+that instrument is playing on, so a node owning one `(voice, register)` plane cannot hold
+it. `at` is that third index — `Node(k)`, the offset generator `k` holds, which for a SID
+voice is its own `(0, 7, 14)` — and `HOLD(j, seed, at)` is the reader: emit what
+generator `j` held, from a declared first value rather than an observed byte. Together
+they are what makes an object expressible as one node (§4l); `_check` refuses an offset
+no earlier `Index` node settles and takes ownership over every offset that node can hold.
 
 **A `Pair` route is the one emit wider than a register.** All three editors keep a
 16-bit accumulator whose sweep carries into its high byte — GoatTracker's pulse and
@@ -315,6 +329,11 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   decoded into the fields the program text's `AND`-immediates name. It reaches **386
   regions over 649 tunes**, and on Commando it is the whole tune — 3 orderlists and 32
   patterns, byte-identical to the composer's own source (§6).
+- **The accumulator as an object** (§4l, `_obj_streams`) — an accumulator cell that lies
+  in a declared region at a cursor-named row is one persistent object per row: its first
+  value the post-init image, its later ones the declared step, and every read of it an
+  emit of what it holds. On Commando it makes the pulse plane whole; corpus-wide it
+  reaches the tunes whose engine keeps one and moves `pw` 110842 -> 111356 over 649.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -533,6 +552,74 @@ same evidence hermetically — a step staged in RAM from a declared byte, an ide
 stream staged from an undeclared cell refused, a step at a `mut` offset refused, a
 zero step and a single-emit run refused, a run one undeclared origin refuses whole,
 and a wrong step and a wrong seed each failing the law.
+
+## 4l. The accumulator as a persistent object the graph carries
+
+§4c reads a sweep as a *run*: a maximal constant-delta stretch of one register's emits,
+seeded by its own first observed byte. That is the right shape for an accumulator in a
+scratch cell and the wrong one for the accumulator every C64 instrument table keeps,
+because such a cell is not a cell at all — it is **one object per instrument row**, and
+the run boundaries are where the song moved to another one.
+
+Commando's is `ins_pwl:ins_pwh`, the `+0`/`+1` lanes of the declared `$5591` bank at
+stride 8. The play phase writes them, so `datadecl` marks both offsets `mut` and the
+declaration rule strips them: a const read of a play-written cell is refused, and rightly.
+What the refusal misses is that the same cell read as **state** is not data at all.
+
+- **The object is the cell, and its rows are the declaration's** (`_obj_voices`,
+  `_obj_named`). A write whose origins name a cell of the accumulator's own declaration
+  at the accumulator's own record offset is a *read of that object*; every other write of
+  the class is a *step*. Both readings are the origin map's, not a segmentation.
+- **Its first value is the declared post-init image** (`_obj_seed`). That is const data at
+  init, mutated only by the play phase whose steps the graph itself produces — so it is a
+  `SELECT` from a declaration, not an observed seed. `Coverage.classes` reports `seed` 0.
+- **Its later values are the declared step** (`_obj_step`). Each execution's own origin
+  pool must name exactly one declared byte at a non-`mut` offset, under the mask the text
+  applies (§4c); two arms disagreeing about an object's step refuse it whole.
+- **Which voice a step belongs to is the machine's own order** (`_obj_walk`). One loop
+  iteration serves one voice, so the k-th execution of the accumulator statement in a
+  frame is the k-th voice whose write that frame names no object. Measured over
+  Commando's 11750 frames the two counts agree on **every frame** (0/1/2/3 executions
+  against 0/1/2/3 unnamed writes, 11750 of 11750).
+- **The carry says which halves are one number, per arm** (`_obj_arms`). A low arm is
+  16-bit where some high root takes the carry out of *this* arm's own arithmetic, its
+  other terms included — so Commando's `fx & 8` byte arm and its 12-bit arm are told
+  apart by the program text rather than by their masks.
+- **Regenerate or refuse whole.** The object is walked from its declared image by its
+  declared steps and every read is *checked* against the byte the register took; one
+  contradiction refuses that object entirely, and its writes stay `RAW`.
+
+### One object, three registers: the destination is an index
+
+The accumulator is keyed by **instrument** (`y = m_5518`), its counters by **voice**
+(`x`), and its destination register by a third index (`w9 = m_54EB`, itself
+`m_54E8[x]`). A node owning one `(voice, register)` plane cannot hold that, which is why
+the recovery could not merge the runs. The primitive gains the missing element:
+
+- **A route may name its register through a generator** — `Plane(reg, mask, at)` and
+  `Pair(lo, hi, mask_hi, at)`, where `at` is `Node(k)` and the emit lands at `reg` plus
+  the offset `k` holds. That is `sta $d402,y` written down. The offsets are the SID's own
+  per-voice layout `(0, 7, 14)`, and `_check` refuses an offset no earlier `Index` node
+  settles and takes register ownership over every offset that node's table can hold.
+- **A transfer may be another generator's value** — `HOLD(j, seed, at)`: emit what
+  generator `j` held after its `at`-th emit of this frame, or the declared `seed` before
+  it has emitted at all. It is the value domain's `Node(j)`, which `rows` and the relative
+  base already name; what it adds is a reader whose emit *is* that value.
+- **`at` is the machine's order, not a fit.** A note-on that lands before the frame's
+  steps must read what the object held then, and one that lands after must read what it
+  holds after. Both are the same datum as the write order the recovery already reads.
+
+**Measured, Commando whole tune (11750 frames, law PASS):** pulse `22272/31563` ->
+**`31563/31563`**, residual `11983` -> **`2692`**, generated `89.8%` -> **`97.7%`**,
+observed sweep seeds `1221` -> **`0`**, sweep runs `597` -> **4 objects and 3 constants**,
+nodes `1311` -> **`121`**, trigger streams `642` -> **`32`**. Voice 2's pulse plane, which
+generated nothing at all because 63.2% of its frames were note-on copies rather than
+sweep steps, is now whole: the copies *are* the object, emitted rather than replayed.
+
+**Corpus-wide the object reaches the tunes that keep one** and no other: 649 tunes at 200
+frames, `pw` `110842/565009` -> `111356/565009`, `seed` `7542` -> `7479`, generated fires
+unchanged at `1140`, and **no tune's generated count falls**. It is one engine's shape,
+and the engine is Rob Hubbard's.
 
 ## 4d. The trigger domain: a `DIV` whose divisor is a declared reload
 
@@ -2278,72 +2365,65 @@ full duration, not 104, because `datadecl`'s extent runs to the next boundary ab
 highest observed read. 263 at stride 8 is 33 records. That is a declaration extent, not a
 tracker claim, and the rendering states the lane it was given.
 
-### Commando, whole tune: the two deliverables measured
+### Commando, whole tune: the accumulator as an object
 
 11750 frames, law PASS throughout, against the same tune before this step:
 
-| figure | before | after |
+| figure | before (#118) | after |
 |---|---|---|
-| values generated | 91268 / 117031 = 78.0% | **105048 / 117031 = 89.8%** |
-| residual (replayed) | 25763 | **11983** |
-| pulse plane | 8492 / 31563 = 26.9% | **22272 / 31563 = 70.6%** |
-| `arr` (a row the arrangement generates) | 0 | **6498** |
-| fires generated | 0 / 81099 | **15000 / 99294** |
-| fires still observed | 81099 | 84294 |
-| nodes | 1812 | 1311 |
+| values generated | 105048 / 117031 = 89.8% | **114339 / 117031 = 97.7%** |
+| residual (replayed) | 11983 | **2692** |
+| pulse plane | 22272 / 31563 = 70.6% | **31563 / 31563 = 100%** |
+| voice 2 pulse (lo, hi) | 0 / 2655, 0 / 1116 | **2655 / 2655, 1116 / 1116** |
+| observed sweep seeds (`seed`) | 1221 | **0** |
+| sweep runs / objects | 597 runs | **4 objects, 3 constants** |
+| nodes | 1311 | **121** |
+| trigger streams | 642 | **32** |
+| fires generated | 15000 / 99294 | **15000 / 105944** |
 
-**§4c is the whole of the value move and §4k buys none of it.** The 12-bit pair sweep
-takes 13780 pulse emits a byte-wide `RAMP` could not reach, and the residual falls by
-53.5%; every emit of the +13780 is §4c's. §4k's **6498 is a reclassification, not new
-coverage** — those attack/decay and sustain/release emits were already generated, as
-`lane`, at a row the observation yielded that a declared byte happened to agree with.
-What changes is the *justification*: the row is now produced by the orderlist and the
-patterns, so the emit no longer rests on a coincidental match. That is a quality gain and
-it is reported in its own class precisely so it cannot be read as a coverage one. §4k's
-only figure that moves a total is in the other domain: the note-on divider of each voice
-is a `DIV` whose divisor is the row's own duration field, 3249 fires off the `EDGE` floor,
-with the tick that clocks it accounting for the rest of the 15000.
+**Every pulse write is now produced and none is replayed**, and the whole of that move is
+§4l's. The three readings it replaces were each a *register-first* reading of one
+object: a note-on copying `ins_pwl:ins_pwh` to `$D402/$D403` was a fresh run at an
+observed byte, a sweep step on another voice was a different run, and an instrument
+whose declared rate byte is zero — so whose accumulator provably never steps — was
+neither. Read as one object per instrument row, the three are one node's emits, and the
+1221 seeds are one declared post-init image apiece.
 
-**The denominator is ground truth and is checked as one.** `Coverage.total` is the tune's
-own write count at a fixed frame count, so `tests/test_tracker.py` asserts it by
-*equality* and asserts `interp + residual == total`; a second test pins the rendered
-artifact's own replay (`trackertext._scan`, a separate evaluator) to `_run`'s books —
-same total, same interp, same per-plane split, same trigger census, no class negative.
-That invariant exists because it was violated: `_scan` built its `_Fires` with no value
-view, a generated divisor therefore found no divisor and never ticked, and 6492 writes
-left the artifact's books entirely while the law still passed. A share printed over a
-shrinking denominator is inflated, and nothing was checking the denominator.
+**Observed fires rise 99294 -> 105944 and the generated count does not move.** That is
+the arithmetic §0's `trigger_share` row is about: every write the layer takes out of
+`RAW` needs a trigger it did not need before, so a *share* of the fires falls exactly
+where the value domain improves. `universality.json` therefore floors
+`Coverage.triggers[0]` — the generated count — and records the share as context.
 
-**Observed fires rise against the pre-#116 baseline and that is measured, not hidden.**
-81099 -> 84294 is +6444 from §4c and -3249 from §4k. A write a `RAW` node replayed carries
-no trigger at all; the moment a generator produces it, it needs one. So the trigger floor
-grows with every value the layer explains until the *sweep's own gate* is generated too —
-and Commando names that gate in program text: `pdelay` reloads from `pulse & $1f`, a
-declared byte under a mask, which is exactly `DIV(Node)` over the rate lane at the song's
-own instrument index. What blocks it today is not evidence but **run fragmentation**: the
-sweep is 597 runs because each run's seed is an observed byte, so no single divider's fire
-stream is any run's. Merging them needs the accumulator expressed relative to `Prev`
-(§4f's route, applied to §4c's transfer), which would also retire the 1221 observed seeds.
-That is one measured piece of work, and it is not done here.
+**The song is unchanged and re-verified byte for byte**: 3 orderlists (65/64/124 bytes
+including their `$FF` terminators), 32 patterns, 571 rows, **0 divergences** against Rob
+Hubbard's own source. §4l touches the value domain only.
 
-**Why one voice's sweep generates nothing, as a number.** Of the frames that write both
-pulse registers, the ones that ran **no accumulator statement at all** are 10.4% on voice
-1, **63.2%** on voice 2 and 75.7% on voice 3: those writes are the note-on copying the
-instrument's own pw bytes to `$D402`/`$D403`, not a sweep step, so the origin map has
-nothing to name and the run is refused rather than fitted. What is left on voice 2 is cut
-into 233 runs, and none has every stepped emit's origin inside a declaration. Voice 2's
-2655 lo and 1116 hi writes are therefore a *correct* refusal, and the same fragmentation
-is what the merged-run work above would address.
+**What is left, and the mechanism of each write.** The residual is 2692 writes, every one
+of them freq, and each is one of four program-text sites (attributed by watching each
+SID store's own execution, `frameval.eval_watch`):
 
-**What §4k does not buy, as a number.** 62696 of the 69194 rows it examined are refused:
-every freq-plane row of the tune. The pitch lane is read at a note-on *and* by vibrato and
-pitch-bend within the same declared table, so the run the machine read is not the song's
-note column and the song does not reproduce it. Splitting that register between a note-on
-generator and a vibrato one needs the note-on's own frames, which is the trigger domain
-again. The ctrl lane is refused for a different reason and a smaller one: its rows carry
-the gate images §5 appends to the lane (`row + k * len(lane)`), so the song's own column is
-the row *plus a section offset*, which is the index-domain `Rel` §2 admits and nothing yet
-builds.
+| site | what the 6502 does | residual / all |
+|---|---|---|
+| the pitch bend | `nfq = m_551D[x] ± (m_5520[x] & $7E)`, its high byte `ctr_551A[x]` taking the carry | 292 / 408 at 5600 frames |
+| the drum | `sta freq_hi, y : dec ctr_551A[x]` on the first frames of a row, with a noise/ctrl arm | 274 / 315 |
+| the arpeggio | `m_5428[(note + 12 * (frc & 1)) * 2]`, the declared pitch table at a shifted row | 408 / 15092 |
+| the note-on | `m_5428[note * 2]` copied through `idx_5503` | 2 / 2786 |
+
+The first two are **one mechanism**: a 16-bit accumulator per voice whose halves are
+`m_551D[x]` and `ctr_551A[x]`, *seeded at every note-on from the declared pitch word at
+the note's own row* and stepped by a declared pattern byte (the bend) or by one (the
+drum). It is not reached today for two reasons, both structural and both nameable:
+`_paired_cells` requires the high byte to be the byte **above** the low one and these two
+arrays are three bytes apart, and §4l's object requires its cell to lie **in a declared
+region** while these are plain per-voice RAM. Neither is a missing declaration; both are
+the same generalisation, of the object to a cell a declared table *reloads*.
+
+The arpeggio's 408 are a provenance gap and not a recovery one: the same store explains
+14684 of its 15092 writes as a declared-table read, and on the other 408 the origin map
+reports the *cursor* the index came from rather than the table cell the read resolved to,
+so `_lane_key` finds no declared byte to match. The note-on's 2 are the first two frames,
+before any cursor has been walked.
 
 ## 8. Known limits
 

@@ -53,13 +53,15 @@ def _shallow(cov):
     return sum(c["imm"] + c["seed"] for c in (cov.classes or {}).values())
 
 
-def _trigger_share(cov):
-    """Generated share of the fires — the floor that replaces an observed-fire ceiling.
+def _ablated_share(graph, nframes):
+    """Share of the tune's writes the graph still *makes* once the ``RAW`` floor is emptied.
 
-    A RAW-replayed byte carries no trigger and a generated one needs one, so turning
-    residual into generation *raises* the observed count wherever the new trigger is an
-    ``EDGE``: a ceiling there penalises the progress this module exists to demand."""
-    return cov.triggers[0] / cov.triggers[1] if cov.triggers[1] else 0.0
+    Not ``_share``: it counts writes made rather than positions agreed, so it overstates.
+    It is here because a floor hardcoded in a test body is quieter to lower than a ledger
+    line, and this one was ``>= 0.80`` in tests/test_tracker.py."""
+    nodes = list(graph.nodes)
+    nodes[graph.raw_index()] = T.raw([])
+    return T.coverage(T.Graph(nodes), nframes).total / T.coverage(graph, nframes).total
 
 
 def _recovered(rel, nframes):
@@ -102,7 +104,7 @@ def test_plane_floor_pins_at_both_ends():
     frames = [[(0, (7 * i) % 256)] for i in range(64)]
     replay = T.coverage(T.from_frames(frames), len(frames))
     assert replay.planes == {"freq": (0, 64)}
-    assert _trigger_share(replay) == 0.0  # replay fires nothing at all, so the floor is vacuous
+    assert replay.triggers[0] == 0  # replay generates no fire at all: the floor's own zero
     assert T.coverage(T.Graph([T.ramp(0, 7, 256, T.FRAME, 0)]), len(frames)).planes == {
         "freq": (64, 64)
     }
@@ -131,7 +133,8 @@ def test_universality_ratchets(tune):
     assert cov.interp + cov.residual == cov.total
     assert _share(graph, gt) >= tune["generative_share"]
     assert cov.residual <= tune["residual"]
-    assert _trigger_share(cov) >= tune["trigger_share"]
+    assert cov.triggers[0] >= tune["trigger_fires"]  # a count, not a share (#119, _doc)
+    assert _ablated_share(graph, nframes) >= tune["ablated_share"]
     assert _shallow(cov) <= tune["shallow"]
     assert set(cov.planes) == set(tune["planes"])
     below = {p: (cov.planes[p][0], f) for p, f in tune["planes"].items() if cov.planes[p][0] < f}
