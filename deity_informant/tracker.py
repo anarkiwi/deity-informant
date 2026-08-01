@@ -2573,6 +2573,26 @@ def _obj_cell(cell, banks, bases, read):
     return any(b <= cell < b + _SPAN for b in bases) and any(b <= cell < b + _SPAN for b in read)
 
 
+def _obj_hits(pools, ctx, read):
+    """``(cell, value, lane key)`` the object one read names, else None.
+
+    The origin map reports each read cell with its own origin *ahead* of it, so the last
+    entry is the address the load used and the ones before it are where that byte came
+    from; a cell whose object the walk has not defined answers nothing."""
+    vs, ls, banks, arrays, mem0, blind = ctx
+    for pool in pools:
+        got = [
+            named
+            for c in pool
+            if _obj_cell(c, banks, arrays, read)
+            for named in ((c,) + _obj_held(vs, ls, c, mem0, blind),)
+            if named[1] is not None
+        ]
+        if got:
+            return got[-1]
+    return None
+
+
 def _reload_walk(tags, wat, lww, banks, mem0, nframes, lanes=()):
     """``(claims, emits, spec, bad)``: every object cell walked in the machine's order.
 
@@ -2620,20 +2640,11 @@ def _reload_walk(tags, wat, lww, banks, mem0, nframes, lanes=()):
                 took = lww[f].get(reg)
                 if took is None or took[1] is not srcs:
                     continue
-                named = []
-                for pool in (srcs, was):  # the store's own cells, then the copy it read
-                    named = [
-                        got
-                        for c in pool
-                        if _obj_cell(c, banks, arrays, base)
-                        for got in ((c,) + _obj_held(vs, ls, c, mem0, blind),)
-                        if got[1] is not None
-                    ]
-                    if named:
-                        break
-                if not named:
+                # the store's own cells first, then the copy it read through
+                got = _obj_hits((srcs, was), (vs, ls, banks, arrays, mem0, blind), base)
+                if got is None:
                     continue
-                obj, cur, key = named[-1]  # the cell the load named, its own origin ahead of it
+                obj, cur, key = got
                 if took[0] != cur:
                     bad.add(obj)
                     continue
