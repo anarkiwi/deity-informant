@@ -1167,12 +1167,14 @@ is recovered for **582**. The 36 that do not decompile never reach this layer (1
 explained and triggers **0.098%**; the two are stated apart because they are two
 domains, and the second is smaller by a factor of 390. This is the current state,
 not a delta; the tables after it record how it was reached. (Current at **649**
-tunes reaching the gate and after §4c's turning pair sweep and §4k's song, the two
-figures are **39.95%** — 776164 of 1942809 — and **0.094%**, 304 of 323947. The value
-figure rises by 22193 emits, all of them `ramp` (25399 -> 44470) and `arr` (0 -> 295);
-the trigger *share* falls because generating a value costs a fire — a byte a `RAW` node
-replayed needed no trigger and a byte a generator produces does — which is the honest
-price of the value domain moving, and §8 records it as the next thing to pay off.)
+tunes reaching the gate and after §4c's turning pair sweep, §4k's song and §4l's object,
+the two figures are **39.98%** — 776678 of 1942809 — and **0.351%**, 1140 of 324756. The
+value figure rose by 22193 emits for the first two, all `ramp` and `arr`, and by a
+further **514** for §4l, all of them `pw` (110842 -> 111356) with `seed` falling 7542 ->
+7479 and **no tune generating less**. The trigger *share* falls throughout because
+generating a value costs a fire — a byte a `RAW` node replayed needed no trigger and a
+byte a generator produces does — which is why `universality.json` floors the generated
+*count* and not the share, and §8 records the domain as the next thing to pay off.)
 
 | plane | interpreted | of | share | strong | shallow |
 |---|---|---|---|---|---|
