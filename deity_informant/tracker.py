@@ -1507,7 +1507,7 @@ def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=()
     for grp in held:  # an object's emits: the step's own, and the reads of what it holds
         for node in ([grp.step] if grp.step else []) + list(grp.reads):
             cls = out.setdefault(_plane_of(node.lo), dict.fromkeys(_CLASSES, 0))
-            cls[node.cls] += sum(node.counts) * (2 if node.hi is not None else 1)
+            cls[node.ev] += sum(node.counts) * (2 if node.hi is not None else 1)
     for counts, _t, route, reg in sweeps:  # one pair emit is two register writes
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         cls["seed"] += _writes_of(route)
@@ -1957,7 +1957,7 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0, done=()):
 
 
 # ---- 4l. the accumulator as a persistent object the graph carries -----------------
-ObjNode = namedtuple("ObjNode", "transfer counts rows lo hi mask cls")
+ObjNode = namedtuple("ObjNode", "transfer counts rows lo hi mask ev")
 ObjGroup = namedtuple("ObjGroup", "cell step reads")
 _OFFS = (0, 7, 14)  # the SID's own per-voice register offsets: what `sta $d402,y` indexes
 
