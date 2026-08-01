@@ -304,13 +304,13 @@ def _dm_src(state, tables, walk, voice, lane, row):
     at, group, refused = pat * 32 + ev, (voice, pat), walk["refused"]
     if lane[0] == "pitch":
         tr = tables[("note", "tr")][state.get(("row", voice)) or 0]
-        shift = 1 if tr and not tr & 0x80 else 0
+        shift = tr if tr and not tr & 0x80 else 0  # bit 7 clear: TR's own amount shifts the note
         return gtoracle._patt_src(
             tables, ("patt", "note"), at, row, group, refused, shift, "arpeggio"
         )
     for key in (("patt", "slot_a"), ("patt", "slot_b")):
         if tables[key][at] == row:
-            return (key, at, group)
+            return (key, at, group, 0)
     gtoracle._bump(refused, "slot_row")
     return None
 

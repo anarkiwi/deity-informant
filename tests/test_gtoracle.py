@@ -67,14 +67,9 @@ def test_a_ctrl_byte_is_the_waveform_lane_read_through_its_gate_image():
     graph, rep = G.strict(_native(tables, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 4)][0]
     assert node.transfer[1] == G._ctrl_table(lane)
-    assert rep.coverage.classes["ctrl"] == {
+    assert rep.coverage.classes["ctrl"] == dict.fromkeys(G._CLASSES, 0) | {
         "lane": 1,
         "gate": 1,
-        "imm": 0,
-        "ramp": 0,
-        "seed": 0,
-        "mask": 0,
-        "rel": 0,
     }
 
 
@@ -85,15 +80,43 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
     graph, rep = G.strict(_native({("ptbl", "right"): (step,)}, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 2)][0]
     assert node.transfer == ("RAMP", 0x10, step, 0x100)
-    assert rep.coverage.classes["pw"] == {
-        "lane": 0,
-        "gate": 0,
-        "imm": 0,
+    assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {
         "ramp": 3,
         "seed": 1,
-        "mask": 0,
-        "rel": 0,
     }
+
+
+def _sweep16(words, step, mask_hi=0xFF):
+    """Writes for a 16-bit sweep over the pw pair, cells as an editor emits them."""
+    return [
+        {
+            2: G.Cell("ramp16", ("t", "r"), 0, w & 0xFF, step, base=(3, mask_hi)),
+            3: G.Cell("raw", ("ghost", "pw"), 0, (w >> 8) & mask_hi, 0),
+        }
+        for w in words
+    ]
+
+
+def test_a_16_bit_sweep_is_one_pair_routed_ramp_carrying_into_its_high_byte():
+    """The carry the byte-wide RAMP refused is the word's own; both writes are one emit."""
+    words = [0x00F0, 0x0110, 0x0130, 0x0150]
+    graph, rep = G.strict(_native({("t", "r"): (0x20,)}, _sweep16(words, 0x20)))
+    node = [g for g in graph.nodes if g.route[0] == "pair"][0]
+    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000) and node.route == ("pair", 2, 3, 0xFF)
+    assert rep.divergence is None and rep.coverage.interp == 8
+    assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {"ramp": 6, "seed": 2}
+
+
+def test_a_high_byte_outside_the_mask_refuses_the_pair_and_reseeds_the_byte_run():
+    """A kbtrack-adjusted high byte is not this emit's; the byte run restarts after it."""
+    writes = _sweep16([0x00F0, 0x0110, 0x0130], 0x20, mask_hi=0x7F)
+    writes[0][3] = G.Cell("raw", ("ghost", "pw"), 0, 0xFF, 0)  # out of mask: no pair seed
+    graph, rep = G.strict(_native({("t", "r"): (0x20,)}, writes))
+    assert rep.divergence is None
+    pairs = [g for g in graph.nodes if g.route[0] == "pair"]
+    assert [g.transfer for g in pairs] == [("RAMP", 0x0110, 0x20, 0x10000)]
+    lows = [g for g in graph.nodes if g.route == ("plane", 2) and g.transfer[0] == "RAMP"]
+    assert not lows  # frame 0's write stays residual, not a stale-seeded byte ramp
 
 
 def test_a_step_of_zero_and_a_run_of_one_are_both_refused():
@@ -154,14 +177,8 @@ def test_two_fields_of_one_register_become_two_masked_generators():
     assert [m for m, _t in got] == [0x0F, 0x70]
     assert dict(got)[0x70] == ("SELECT", (0x10, 0x20), (0, 1))
     assert rep.divergence is None and rep.coverage.interp == 2  # two frames, one write each
-    assert rep.coverage.classes["filter"] == {
-        "lane": 0,
-        "gate": 0,
-        "imm": 0,
-        "ramp": 0,
-        "seed": 0,
+    assert rep.coverage.classes["filter"] == dict.fromkeys(G._CLASSES, 0) | {
         "mask": 2,
-        "rel": 0,
     }
 
 
@@ -414,12 +431,19 @@ def _arr(lane, row, value, src):
     return G.Cell("select", lane, row, value, 0, src=src)
 
 
-def _arranged(rows=(0, 1, 2), notes=(1, 2, 0)):
+def _arranged(rows=(0, 1, 2), notes=(1, 2, 0), shift=0):
     """A `Native` whose freq lane is the pitch table at the note its pattern holds."""
     pitch = (0x11, 0x22, 0x33)
     tables = {("pitch", "lo"): pitch, ("patt", "note"): tuple(notes)}
     writes = [
-        {0: _arr(("pitch", "lo"), notes[r], pitch[notes[r]], (("patt", "note"), r, (0, 7)))}
+        {
+            0: _arr(
+                ("pitch", "lo"),
+                notes[r] + shift,
+                pitch[notes[r] + shift],
+                (("patt", "note"), r, (0, 7), shift),
+            )
+        }
         for r in rows
     ]
     return _native(tables, writes)
@@ -464,8 +488,8 @@ def test_a_row_the_pattern_column_does_not_name_refuses_the_whole_stream():
     """A generated row past its table drops the write, so a stream that fails is refused."""
     tables = {("pitch", "lo"): (0x11, 0x22), ("patt", "note"): (0, 1)}
     writes = [
-        {0: _arr(("pitch", "lo"), 0, 0x11, (("patt", "note"), 0, (0, 7)))},
-        {0: _arr(("pitch", "lo"), 1, 0x22, (("patt", "note"), 0, (0, 7)))},  # row 0 names note 0
+        {0: _arr(("pitch", "lo"), 0, 0x11, (("patt", "note"), 0, (0, 7), 0))},
+        {0: _arr(("pitch", "lo"), 1, 0x22, (("patt", "note"), 0, (0, 7), 0))},  # row 0 names 0
     ]
     graph, rep = G.strict(_native(tables, writes))
     assert rep.divergence is None and rep.coverage.interp == 2
@@ -473,17 +497,40 @@ def test_a_row_the_pattern_column_does_not_name_refuses_the_whole_stream():
     assert rep.arrangement["refused_row_not_declared"] == 1
 
 
-def test_a_transpose_is_a_relative_index_the_route_cannot_carry_and_is_priced():
-    """A shifted note is refused rather than fitted, and counted on its own line."""
+def test_a_transpose_is_a_relative_row_and_emits_select_rel():
+    """The shifted read is `SELECT[rel]`: the column is the base, the shift the delta."""
+    graph, rep = G.strict(_arranged(notes=(0, 1, 0), shift=1))
+    reader = [g for g in graph.nodes if g.route == ("plane", 0)][0]
+    src = [g for g in graph.nodes if g.route == T.INDEX]
+    assert rep.divergence is None and rep.coverage.interp == 3
+    assert reader.transfer[2] == ("rel", "ADD", ("const", 1), ("node", graph.nodes.index(src[1])))
+
+
+def test_a_shift_the_column_does_not_reproduce_is_refused_and_priced():
+    """An arpeggio is not a transpose: a row off the shifted column refuses, counted."""
     refused = {}
     tables = {("patt", "note"): (5, 6)}
     got = G._patt_src(tables, ("patt", "note"), 0, 8, (0, 0), refused, 3, "arpeggio")
-    assert got is None and refused == {"transpose": 1}
+    assert got == (("patt", "note"), 0, (0, 0), 3)  # 5 + 3 == 8: the shift names it
+    assert G._patt_src(tables, ("patt", "note"), 0, 9, (0, 0), refused, 3, "arpeggio") is None
+    assert refused == {"arpeggio": 1}
     assert G._patt_src(tables, ("patt", "note"), 0, 5, (0, 0), refused) == (
         ("patt", "note"),
         0,
         (0, 0),
+        0,
     )
+
+
+def test_mutation_a_wrong_transpose_delta_moves_the_record():
+    """The transpose is generated, not replayed: perturbing the delta fails the law."""
+    graph, _rep = G.strict(_arranged(notes=(0, 1, 0), shift=1))
+    records = T.eval_graph(graph, 3)
+    at = next(i for i, g in enumerate(graph.nodes) if g.route == ("plane", 0))
+    g = graph.nodes[at]
+    rows = ("rel", "ADD", ("const", 2), g.transfer[2][3])
+    graph.nodes[at] = g._replace(transfer=g.transfer[:2] + (rows,))
+    assert F.diff(T.eval_graph(graph, 3), records) is not None
 
 
 @GT

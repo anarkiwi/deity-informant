@@ -1,8 +1,8 @@
 """gtoracle — a native editor's own song, mapped onto the universal primitive.
 
-Reads a song out of a real editor's model and expresses it in the primitive
-`tracker` uses, so the mapped graph is checkable by the same law. Two editors,
-one generic vocabulary; see docs/gt-oracle.md.
+Reads a song out of a real editor's model into the primitive `tracker` uses, so
+the mapped graph is checkable by the same law. The builder (§1-2) knows no editor:
+GT and SID-Wizard feed it here, DefMON from `dmoracle`. docs/gt-oracle.md.
 """
 
 from collections import namedtuple
@@ -18,16 +18,14 @@ Report = namedtuple(
     "Report", "coverage frames matched divergence offset raw_kinds arrangement", defaults=({},)
 )
 
-_VOICE_HI = 0x14
-_FILTER_HI = 0x18
-_PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
+_VOICE_HI = tracker._VOICE_HI
+_FILTER_HI = tracker._FILTER_HI
 _CTRL = 4
 _FULL = 0xFF
 _GATES = (0xFE, 0x00)  # the gate images a ctrl lane byte is read through
-_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel")
+_CLASSES = tracker._CLASSES  # ONE evidence vocabulary, the recovery's own
 _COUNTER = ("row", "counter")  # a row counter's "lane": the row is the emit, not a table byte
 _NONE = 0x1FF  # a pattern column entry no row declares: it matches no table row
-_SW_NOTE_FX = 0x60  # at and above this a SID-Wizard note column is an effect, not a pitch
 
 
 def _parts(cell):
@@ -43,16 +41,12 @@ def _value(cell):
     return v
 
 
-def _plane_of(reg):
-    """Canonical plane class for a SID register offset."""
-    if reg <= _VOICE_HI:
-        return _PLANE[reg % 7]
-    return "filter" if reg <= _FILTER_HI else "tail"
+_plane_of = tracker._plane_of  # ONE plane map, the recovery's own
 
 
 def _is_ord(reg):
     """Is ``reg`` in a voice's order-preserved ctrl/AD/SR section?"""
-    return reg <= _VOICE_HI and 4 <= reg % 7 <= 6
+    return isinstance(reg, int) and reg <= _VOICE_HI and 4 <= reg % 7 <= 6
 
 
 def _ctrl_table(lane):
@@ -69,21 +63,19 @@ def _bump(counter, why):
 
 
 def _patt_src(tables, key, row, want, group, refused, shift=0, why="pattern_row"):
-    """The pattern row whose column ``key`` names ``want``, or None, refusal priced.
+    """``(lane, row, group, shift)`` where column ``key`` plus ``shift`` names ``want``.
 
-    A transpose shifts the pitch table's *index* and an index route carries no delta,
-    so every emit under a nonzero shift is refused rather than fitted, and counted apart."""
+    A transpose shifts the row a table is read at — the index-domain relative of
+    docs/tracker.md §2: the column's value is the base, the shift the delta, the emit
+    ``SELECT[rel]``. A row the shifted column does not reproduce is refused, priced."""
     lane = tables[key]
     if row is None or not 0 <= row < len(lane):
         _bump(refused, "no_" + why)
         return None
-    if shift:
-        _bump(refused, "transpose")
-        return None
-    if lane[row] != want:
+    if lane[row] + shift != want:
         _bump(refused, why)
         return None
-    return (key, row, group)
+    return (key, row, group, shift)
 
 
 def _table_of(tables, cell):
@@ -93,6 +85,9 @@ def _table_of(tables, cell):
 
 
 # ---- 1. runs: a sweep is a RAMP only where its step is a declared byte ------------
+_RAMPS = ("ramp", "ramp16")  # a 16-bit cell's low byte still ramps mod $100
+
+
 def _runs(seq):
     """``[(start, count)]``: maximal runs of ramp cells sharing one nonzero step.
 
@@ -101,17 +96,61 @@ def _runs(seq):
     out, i = [], 0
     while i < len(seq):
         cell = seq[i]
-        if cell is None or cell.kind != "ramp" or not cell.step:
+        if cell is None or cell.kind not in _RAMPS or not cell.step:
             i += 1
             continue
         j = i + 1
-        while j < len(seq) and seq[j] is not None and seq[j].kind == "ramp":
+        while j < len(seq) and seq[j] is not None and seq[j].kind in _RAMPS:
             if seq[j].step != cell.step or seq[j].value != (seq[j - 1].value + cell.step) & 0xFF:
                 break
             j += 1
         if j - i >= 2:
             out.append((i, j - i))
         i = max(j, i + 1)
+    return out
+
+
+def _masked16(word, mask_hi):
+    """A 16-bit accumulator word as its two written bytes see it."""
+    return (word & 0xFF) | (((word >> 8) & mask_hi) << 8)
+
+
+def _pair16_keys(native, frames):
+    """``{(frame, reg): ("emit", key, seed) | ("eat",)}``: 16-bit runs claimed whole.
+
+    A sweep carries into its high byte, which no byte-wide `RAMP` can say; the run
+    is the observation's, the step the recorded read's, and the whole word must
+    advance by it (docs/tracker.md §4c, one register wider). The high write is eaten."""
+    obs = [dict(w) for w in frames]
+    cand = {}
+    for f, cells in enumerate(native.writes[: len(obs)]):
+        for reg, cell in cells.items():
+            one = cell if isinstance(cell, Cell) else None
+            if one is None or one.kind != "ramp16" or not one.step or one.base is None:
+                continue
+            hi_reg, mask_hi = one.base
+            lo, hi = obs[f].get(reg), obs[f].get(hi_reg)
+            if lo is None or hi is None or lo != one.value & 0xFF or hi & ~mask_hi:
+                continue  # a high byte outside the mask is not this emit's (kbtrack, ghost)
+            word = lo | (hi << 8)
+            cand.setdefault(reg, []).append((f, word, one.step, hi_reg, mask_hi))
+    out = {}
+    for reg, seq in cand.items():
+        i = 0
+        while i < len(seq):
+            j = i + 1
+            while j < len(seq) and seq[j][2:] == seq[i][2:]:
+                want = _masked16((seq[j - 1][1] + seq[i][2]) % 0x10000, seq[i][4])
+                if seq[j][1] != want:
+                    break
+                j += 1
+            if j - i >= 2:
+                _f0, seed, step, hi_reg, mask_hi = seq[i]
+                key = (reg, "ramp16", seq[i][0], step, mask_hi, hi_reg)
+                for f, _w, _s, _h, _m in seq[i:j]:
+                    out[(f, reg)] = ("emit", key, seed)
+                    out[(f, hi_reg)] = ("eat",)
+            i = max(j, i + 1)
     return out
 
 
@@ -141,7 +180,7 @@ class _Streams:
             )
             counts[frame] += 1
             srcs.append(None if part.src is None else part.src[1])
-            if part.kind == "ramp":
+            if part.kind in _RAMPS:
                 rows.append(part.value)
                 continue
             if part.kind == "rel":
@@ -165,27 +204,47 @@ class _Streams:
         _reg, kind, _lane, _step, _mask, arr = key
         if arr is None or kind not in ("select", "ctrl"):
             return None
-        src_lane, _grp = arr
+        src_lane, _grp, shift = arr
         tab = () if src_lane == _COUNTER else self.tables[src_lane]
         if max(counts) > 1 or any(s is None for s in srcs):
             _bump(self.refused, "two_emits_one_row")
         elif src_lane == _COUNTER:
             return (_COUNTER, tuple(rows))
-        elif any(not 0 <= s < len(tab) or tab[s] != r for s, r in zip(srcs, rows)):
+        elif any(not 0 <= s < len(tab) or tab[s] + shift != r for s, r in zip(srcs, rows)):
             _bump(self.refused, "row_not_declared")
         else:
             return (src_lane, tuple(srcs))
         return None
 
+    def add16(self, frame, key, seed):
+        """Record one 16-bit accumulator tick: two register writes, one emit."""
+        counts, rows, _srcs = self.rows.setdefault(key, ([0] * self.n, [], []))
+        counts[frame] += 1
+        rows.append(seed)
+
     def streams(self):
         """``[(counts, transfer, reg, mask, rel, arr)]`` for every stream recorded.
 
         ``rel`` is ``None`` for an absolute stream, else ``(op, base lane, base rows)``;
-        ``arr`` is the arrangement generator whose emit is this stream's row index."""
+        ``arr`` is the arrangement generator whose emit is this stream's row index;
+        a ``ramp16`` stream's ``reg`` is the ``(lo, hi, mask_hi)`` pair route."""
         out = []
         for key, (counts, rows, srcs) in self.rows.items():
             reg, kind, lane, step, mask = key[:5]
-            if kind == "ramp":
+            if kind == "ramp16":
+                out.append(
+                    (
+                        tuple(counts),
+                        ("RAMP", rows[0], step, 0x10000),
+                        (reg, key[5], mask),
+                        _FULL,
+                        None,
+                        None,
+                    )
+                )
+                self._bump(reg, "seed", 2)
+                self._bump(reg, "ramp", 2 * (len(rows) - 1))
+            elif kind == "ramp":
                 out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask, None, None))
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
@@ -213,7 +272,7 @@ class _Streams:
                         reg,
                         mask,
                         None,
-                        feeder and feeder + (key[5][1],),
+                        feeder and feeder + key[5][1:],
                     )
                 )
         return out
@@ -226,7 +285,7 @@ def _one_typed(cell, value, tables):
     `_rel_keys` — which combines the two and checks the result — can admit it."""
     if cell is None or cell.value != value or cell.kind in ("raw", "rel"):
         return False
-    if cell.kind in ("imm", "ramp"):
+    if cell.kind in ("imm",) + _RAMPS:
         return True
     table = _table_of(tables, cell)
     return 0 <= cell.row < len(table) and table[cell.row] == value
@@ -260,7 +319,8 @@ def _key(reg, cell):
     if cell.kind == "rel":  # a relative stream is keyed by both its lanes and its sign
         base = None if cell.base is None else cell.base[0]
         return (reg, "rel", (cell.lane, base), cell.step, cell.mask, None)
-    return (reg, cell.kind, cell.lane, 0, cell.mask, cell.src and cell.src[::2])
+    src = cell.src and (cell.src[0], cell.src[2], cell.src[3])  # lane, group, shift
+    return (reg, cell.kind, cell.lane, 0, cell.mask, src)
 
 
 def _rel_keys(native, frames, tables):
@@ -292,16 +352,19 @@ def _rel_keys(native, frames, tables):
     return out
 
 
-def _ramp_keys(native, frames, tables):
+def _ramp_keys(native, frames, tables, taken=frozenset()):
     """``{(frame, reg): (run start, seed)}`` the sweep RAMPs claim.
 
     A run is claimed whole or not at all: one emit whose step no table names, or a
-    value the arithmetic does not predict, refuses the run entire."""
+    value the arithmetic does not predict, refuses the run entire. ``taken`` frames
+    belong to a 16-bit claim already, so a byte run restarts — and reseeds — after them."""
     seqs, obs, claimed = {}, {}, {}
     for f, writes in enumerate(frames):
         for reg, val in writes:
             cell = native.writes[f].get(reg)
             one = cell if isinstance(cell, Cell) else None
+            if (f, reg) in taken:
+                one = None
             seqs.setdefault(reg, [None] * len(frames))[f] = one
             obs.setdefault(reg, {})[f] = val
     for reg, seq in seqs.items():
@@ -357,11 +420,11 @@ def _counter(walked):
 def _arranged(nodes, counts, transfer, route, arr, ctx):
     """Append the arrangement chain that generates a stream's rows, then its plane node.
 
-    The row counter names the pattern row, the pattern generator reads its own column
-    at that row, and the plane generator reads its table at what the pattern names —
-    one index edge per link, and one chain shared by every reader of the same walk."""
+    The row counter names the pattern row, the pattern generator reads its own column at
+    that row, and the plane generator reads its table at what the pattern names — shifted
+    by the transpose where the arrangement carries one, which is ``SELECT[rel]`` (§2)."""
     tables, edges, census, made = ctx
-    src_lane, walked, group = arr
+    src_lane, walked, group, shift = arr
     trig = ("event", edges[counts])
     key = (counts, src_lane, walked)
     if key not in made:
@@ -371,7 +434,10 @@ def _arranged(nodes, counts, transfer, route, arr, ctx):
                 tracker.indexer(("SELECT", tuple(tables[src_lane]), ("node", len(nodes) - 1)), trig)
             )
         made[key] = len(nodes) - 1
-    nodes.append(tracker.Generator(transfer[:2] + (("node", made[key]),), trig, route))
+    rows = ("node", made[key])
+    if shift:  # the transpose: the column is the base, the declared shift the delta
+        rows = ("rel", "ADD" if shift > 0 else "SUB", ("const", abs(shift)), rows)
+    nodes.append(tracker.Generator(transfer[:2] + (rows,), trig, route))
     census["groups"].add(group)
     census["rows"].update((group, r) for r in walked)
     census["emits"] += sum(counts)
@@ -384,7 +450,9 @@ def _build(frames, native):
     streams render as whole buckets in node order; the last-write-wins registers
     are typed per write, because the projection sorts them."""
     tables, n = native.tables, len(frames)
-    acc, ramps, layout = _Streams(n, tables), _ramp_keys(native, frames, tables), _layout(frames)
+    acc, layout = _Streams(n, tables), _layout(frames)
+    pair16 = _pair16_keys(native, frames)
+    ramps = _ramp_keys(native, frames, tables, taken=set(pair16))
     rels = _rel_keys(native, frames, tables)
     residual = []
     for f, writes in enumerate(frames):
@@ -400,11 +468,15 @@ def _build(frames, native):
         rest = []
         for reg, val in writes:
             cell = native.writes[f].get(reg)
+            wide = pair16.get((f, reg))
             if _is_ord(reg):
                 if ok[reg // 7]:
                     acc.add(reg, f, cell)
                 else:
                     rest.append((reg, val))
+            elif wide is not None:  # a 16-bit emit: the low write records, the high is its own
+                if wide[0] == "emit":
+                    acc.add16(f, wide[1], wide[2])
             elif (f, reg) in ramps:
                 at, seed = ramps[(f, reg)]
                 acc.add(
@@ -412,7 +484,11 @@ def _build(frames, native):
                 )
             elif (f, reg) in rels:
                 acc.add(reg, f, cell)
-            elif cell is not None and _parts(cell)[0].kind != "ramp" and _typed(cell, val, tables):
+            elif (
+                cell is not None
+                and _parts(cell)[0].kind not in _RAMPS
+                and _typed(cell, val, tables)
+            ):
                 acc.add(reg, f, cell)
             else:
                 rest.append((reg, val))
@@ -435,6 +511,9 @@ def _build(frames, native):
     nodes.append(tracker.raw(residual))
     for c, t, r, m, rel, arr in streams:
         if _is_ord(r):
+            continue
+        if isinstance(r, tuple):  # a 16-bit accumulator: one emit, a register pair
+            nodes.append(tracker.Generator(t, ("event", edges[c]), tracker.pair(*r)))
             continue
         if arr is not None:
             _arranged(nodes, c, t, tracker.plane(r, m), arr, ctx)
@@ -497,11 +576,7 @@ def index_nodes(built):
     The one predicate the structure axis asks of a graph, and it asks it of the
     recovery's as well as the oracle's — a row is generated or it is observed."""
     nodes = built.nodes
-    gen = sum(
-        1
-        for g in nodes
-        if g.transfer[0] == "SELECT" and len(g.transfer[2]) == 2 and g.transfer[2][0] == "node"
-    )
+    gen = sum(1 for g in nodes if g.transfer[0] == "SELECT" and tracker._generated(g.transfer[2]))
     return sum(1 for g in nodes if g.route == tracker.INDEX), gen
 
 
@@ -905,7 +980,7 @@ def _gt_freq_cells(regs, base, freq, cells, src=None):
             cells[base + off] = Cell("select", lane, freq[1], val, 0, src=src)
         elif freq and freq[0] == ("stbl", None):
             cells[base + off] = (
-                Cell("ramp", ("pitch", "lo"), freq[1], val, freq[2] & 0xFF)
+                Cell("ramp16", ("stbl", None), freq[1], val, freq[2], base=(base + 1, _FULL))
                 if off == 0
                 else Cell("raw", ("porta", "carry"), 0, val, 0)
             )
@@ -920,14 +995,15 @@ def _gt_freq_cells(regs, base, freq, cells, src=None):
 
 
 def _gt_pulse_cells(regs, base, pulse, cells):
-    """pw_lo/pw_hi: a pulse-table set step, or the sweep the same table steps."""
+    """pw_lo/pw_hi: a pulse-table set step, or the 16-bit sweep the same table steps."""
     for off, lane in ((2, ("ptbl", "right")), (3, ("ptbl", "left"))):
         val = regs[base + off]
         if pulse and pulse[0] == "set":
             cells[base + off] = Cell("select", lane, pulse[1], val, 0)
         elif pulse and pulse[0] == "mod":
+            step = pulse[2] - 0x100 if pulse[2] >= 0x80 else pulse[2]
             cells[base + off] = (
-                Cell("ramp", ("ptbl", "right"), pulse[1], val, pulse[2])
+                Cell("ramp16", ("ptbl", "right"), pulse[1], val, step, base=(base + 3, _FULL))
                 if off == 2
                 else Cell("select", lane, pulse[1] - 1, val, 0)
             )
@@ -941,7 +1017,7 @@ def _gt_row_src(tables, lane, row, player, v, group, refused):
     The pattern's data column is walked by a row counter; its instrument column names
     a row of the bank, which is the same index link one step further up."""
     if lane[0] == "patt":
-        return (_COUNTER, row, group)
+        return (_COUNTER, row, group, 0)
     if lane[0] == "ins":
         return _patt_src(
             tables, ("patt", "instr"), player.insrow[v], row, group, refused, 0, "instrument_row"
@@ -957,6 +1033,7 @@ def _gt_voice_cells(player, tables, v, cells, refused=None):
     nsrc = None
     if freq and freq[0] == ("pitch", None):
         row, shift = player.noterow[v]
+        shift -= 0x100 if shift >= 0x80 else 0  # the driver's transpose byte, read signed
         nsrc = _patt_src(tables, ("patt", "note"), row, freq[1], group, refused, shift, "arpeggio")
     _gt_freq_cells(regs, base, freq, cells, nsrc)
     _gt_pulse_cells(regs, base, src.get("pulse"), cells)
@@ -1058,13 +1135,16 @@ def gt_decompile(path, subtune=0):
 
 
 # ---- 4. SID-Wizard: the same generic lanes, a different editor's spelling ---------
+_SW_NOTE_FX = 0x60  # at and above this a SID-Wizard note column is an effect, not a pitch
+
+
 def sw_available():
-    """Is `pysidwizard` importable? The oracle is an optional extra."""
+    """Is `pysidwizard` >= 0.3 importable? The oracle needs the write-capturing player."""
     try:
-        import pysidwizard  # noqa: F401  pylint: disable=import-outside-toplevel,unused-import
+        from pysidwizard.player import SWMPlayer  # pylint: disable=import-outside-toplevel
     except ImportError:
         return False
-    return True
+    return hasattr(SWMPlayer, "_wr")
 
 
 def _sw_tables(swm, freq_lo, freq_hi):
@@ -1190,7 +1270,9 @@ def _sw_pulse(voice, tables, base, num, cells, reg):
             cells[reg + 3] = Cell("select", ("wf", "hi7"), row, hi, 0)
             return
         if not prog[row] & 0x80 and prog[row + 1]:
-            cells[reg + 2] = Cell("ramp", ("wf", "left"), row + 1, lo, prog[row + 1])
+            delta = prog[row + 1]
+            step = delta - 0x100 if delta & 0x80 else delta
+            cells[reg + 2] = Cell("ramp16", ("wf", "left"), row + 1, lo, step, base=(reg + 3, 0x7F))
             return
 
 
@@ -1289,6 +1371,29 @@ def _sw_cells(player, tables, base, held, cells, walk=None):
             cells[reg + off] = got or Cell("raw", ("small_fx", name), 0, val, 0)
 
 
+def _sw_player_class():
+    """The SID-Wizard player with its register writes captured, in driver order.
+
+    The editor's own driver writes freq/pw/ctrl every frame (WRPULS/WRWFGHO), and the
+    capture is that stream — what a decompiled SID-Wizard binary would give frameprog —
+    not ``play_frame``'s nibble-masked snapshot diff. Needs pysidwizard >= 0.3."""
+    from pysidwizard.player import SWMPlayer  # pylint: disable=import-outside-toplevel
+
+    if not hasattr(SWMPlayer, "_wr"):
+        raise ImportError("pysidwizard >= 0.3 required: the write stream is the oracle's input")
+
+    class _Cap(SWMPlayer):
+        """SWMPlayer logging every ``_wr`` this frame, values as written."""
+
+        log = ()
+
+        def _wr(self, addr, val):
+            self.log.append((addr, val))
+            super()._wr(addr, val)  # pylint: disable=no-member  # absent before 0.3, gated above
+
+    return _Cap
+
+
 def sw_native(swm, nframes):
     """``(Native, records)`` for a SID-Wizard module's first subtune.
 
@@ -1299,20 +1404,21 @@ def sw_native(swm, nframes):
         NOTE_FREQ_HI,
         NOTE_FREQ_LO,
         SID_REG_BASE,
-        SWMPlayer,
     )
 
     tables, base, fbase, pbase = _sw_tables(swm, NOTE_FREQ_LO, NOTE_FREQ_HI)
-    player = SWMPlayer(swm)
+    player = _sw_player_class()(swm)
     writes, notes, instrs, onsets, shape, frames = [], [], [], [], [], []
     held = {}
     pnum = {id(p): i for i, p in enumerate(swm.patterns)}
     walk = {"steps": set(), "rows": set(), "refused": {}, **_sw_loops(swm)}
     for _f in range(nframes):
         prev = [v.hr_timer for v in player.voices]
+        player.log = []
+        player.play_frame()
         got = [
             (r - SID_REG_BASE, x & 0xFF)
-            for r, x in player.play_frame()
+            for r, x in player.log
             if 0 <= r - SID_REG_BASE <= _FILTER_HI
         ]
         frames.append(got)

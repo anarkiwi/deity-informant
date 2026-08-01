@@ -56,6 +56,15 @@ def relative(reg, op, base, mask=_FULL):
     return ("rel", reg, mask, op, base)
 
 
+def pair(reg_lo, reg_hi, mask_hi=_FULL):
+    """A register-pair plane route: one emit writes its low byte and its high byte.
+
+    The one route whose value is wider than a register — a 16-bit accumulator's, which
+    all three editors keep (a pulse sweep carries into its high byte). ``mask_hi``
+    names the bits of the emit the high register takes."""
+    return ("pair", reg_lo, reg_hi, mask_hi)
+
+
 INDEX = ("index",)  # a value-carrying edge: the emit is another generator's row index
 
 
@@ -119,12 +128,11 @@ def raw(per_frame):
 
 
 class Graph:
-    """Generator nodes plus the two distinguished ones every graph carries."""
+    """Generator nodes, the distinguished pitch table, and the evidence classes."""
 
-    def __init__(self, nodes, freq_table=None, cadence=None, classes=None):
+    def __init__(self, nodes, freq_table=None, classes=None):
         self.nodes = list(nodes)
         self.freq_table = freq_table
-        self.cadence = cadence
         self.classes = classes
 
     def raw_index(self):
@@ -135,30 +143,49 @@ class Graph:
         return None
 
 
-def _ticks(g, frame):
-    """Edges a fired Fire-routed generator emits at ``frame``."""
-    kind = g.transfer[0]
-    if kind == "DIV":
-        n = max(1, g.transfer[1])
-        p = g.transfer[2] if len(g.transfer) > 2 else n - 1
-        return 1 if frame % n == p % n else 0
-    if kind == "EDGE":
-        seq = g.transfer[1]
-        return seq[frame] if frame < len(seq) else 0
-    raise TrackerError("transfer %r has no edge emit" % (kind,))
+class _Fires:
+    """Trigger propagation with per-node input ordinals, one instance per run.
 
+    A ``DIV`` emits one tick per ``n`` *input* triggers (§2): clocked by the frame it
+    divides the frame number, clocked by an event it divides the ticks it has received,
+    which is what lets one divider clock another. The consumer index keeps a frame linear."""
 
-def _fired(nodes, frame):
-    """Trigger counts per node for ``frame``: root clocks and their Fire edges."""
-    fires = [1 if g.trigger == FRAME else 0 for g in nodes]
-    for i, g in enumerate(nodes):
-        if g.route[0] != "fire" or not fires[i]:
-            continue
-        n = _ticks(g, frame)
-        for j, h in enumerate(nodes) if n else ():
-            if h.trigger == ("event", i):
+    def __init__(self, nodes):
+        self.nodes = nodes
+        self.seen = [0] * len(nodes)  # input ticks a node has received so far
+        self.cons = {}
+        for j, h in enumerate(nodes):
+            if h.trigger != FRAME:
+                self.cons.setdefault(h.trigger[1], []).append(j)
+
+    def _ticks(self, i, g, frame, got):
+        """Edges fire-routed node ``i`` emits at ``frame``, given ``got`` input ticks."""
+        kind = g.transfer[0]
+        if kind == "EDGE":
+            seq = g.transfer[1]
+            return seq[frame] if frame < len(seq) else 0
+        if kind == "DIV":
+            n = max(1, g.transfer[1])
+            p = (g.transfer[2] if len(g.transfer) > 2 else n - 1) % n
+            if g.trigger == FRAME:
+                return 1 if frame % n == p else 0
+            t = self.seen[i]
+            self.seen[i] = t + got
+            return sum(1 for x in range(t, t + got) if x % n == p)
+        raise TrackerError("transfer %r has no edge emit" % (kind,))
+
+    def step(self, frame):
+        """``(fires, ticks)``: triggers per node, and edges each fire node emitted."""
+        nodes = self.nodes
+        fires = [1 if g.trigger == FRAME else 0 for g in nodes]
+        ticks = [0] * len(nodes)
+        for i, g in enumerate(nodes):
+            if g.route[0] != "fire" or not fires[i]:
+                continue
+            ticks[i] = n = self._ticks(i, g, frame, fires[i])
+            for j in self.cons.get(i, ()) if n else ():
                 fires[j] += n
-    return fires
+        return fires, ticks
 
 
 def _generated(rows):
@@ -268,9 +295,18 @@ def _check(nodes):
             raise TrackerError("unknown trigger %r" % (g.trigger,))
         if g.trigger[0] == "event" and not 0 <= g.trigger[1] < len(nodes):
             raise TrackerError("dangling trigger %r" % (g.trigger,))
-        if g.route[0] not in ("plane", "fire", "raw", "rel", "index"):
+        if g.route[0] not in ("plane", "fire", "raw", "rel", "index", "pair"):
             raise TrackerError("unknown route %r" % (g.route,))
         _index_ok(nodes, i, g)
+        if g.route[0] == "pair":  # each half owns its whole byte
+            if not 0 < g.route[3] <= _FULL:
+                raise TrackerError("route mask %r owns no bit" % (g.route,))
+            for reg in g.route[1:3]:
+                for other in owned.setdefault(reg, set()):
+                    if other != _FULL:
+                        raise TrackerError("routes $%02X and $FF overlap on $%02X" % (other, reg))
+                owned[reg].add(_FULL)
+            continue
         if not _is_plane(g.route):
             continue
         m = _mask_of(g.route)
@@ -312,6 +348,11 @@ def _masked(nodes):
     return out
 
 
+def _pair_writes(route, v):
+    """The two byte writes one pair-routed emit makes: its low half, its masked high."""
+    return [(route[1], v & 0xFF), (route[2], (v >> 8) & route[3])]
+
+
 def _combine(route, delta, prev, cur):
     """The byte a relative route writes: its delta, combined with the named base.
 
@@ -322,22 +363,24 @@ def _combine(route, delta, prev, cur):
     return None if delta is None or val is None else _REL[op](val & mask, delta) & 0xFF
 
 
-def _run(graph, nframes):
-    """``(canonical records, interpreted emits, raw emits)`` per register.
+def _run(graph, nframes, trace=None):
+    """``(canonical records, interpreted emits, raw emits, fire census)``.
 
     Refinement removes a *write* from RAW, so node order fixes the interleaving of a
-    split register (§5); a masked generator latches the bits it owns and the last of
-    a register's masked generators to fire writes the byte (§4e)."""
+    split register (§5); a masked generator latches its bits and the last to fire writes
+    the byte (§4e). ``trace`` is ``(per-node acts, per-frame writes)``, filled if given."""
     nodes = graph.nodes
     _check(nodes)
+    acts = None if trace is None else trace[0]
     counts = [0] * len(nodes)
     interp, rawn, trig = {}, {}, {}
     parts = _masked(nodes)
     held = {reg: {} for reg in parts}
     prev, cur = {}, {}
+    firing = _Fires(nodes)
     out = []
     for f in range(nframes):
-        fires = _fired(nodes, f)
+        fires, ticks = firing.step(f)
         eaten = {
             g.route[4][1]
             for i, g in enumerate(nodes)
@@ -358,10 +401,25 @@ def _run(graph, nframes):
                     rawn[reg] = rawn.get(reg, 0) + 1
                     writes.append((reg, val))
                     prev[reg] = val
+                    if acts is not None:
+                        acts[i].append((f, reg, val))
             elif g.route == INDEX:  # a value edge: it indexes, it does not write
                 for _t in range(fires[i]):
                     counts[i] += 1
-                    cur[i] = _emit(g, counts[i], cur)
+                    cur[i] = v = _emit(g, counts[i], cur)
+                    if acts is not None:
+                        acts[i].append((f, v))
+            elif g.route[0] == "pair":  # one emit, two registers: a 16-bit value
+                for _t in range(fires[i]):
+                    counts[i] += 1
+                    cur[i] = v = _emit(g, counts[i], cur)
+                    got = () if v is None else _pair_writes(g.route, v)
+                    writes += got
+                    for reg, b in got:
+                        interp[reg] = interp.get(reg, 0) + 1
+                        prev[reg] = b
+                    if acts is not None:
+                        acts[i].extend((f, reg, b) for reg, b in got)
             elif _is_plane(g.route):
                 reg = g.route[1]
                 for _t in range(fires[i]):  # one emit per trigger, in order
@@ -377,12 +435,18 @@ def _run(graph, nframes):
                     interp[reg] = interp.get(reg, 0) + 1
                     prev[reg] = v & 0xFF
                     writes.append((reg, v & 0xFF))
+                    if acts is not None:
+                        acts[i].append((f, reg, v & 0xFF))
             else:
                 counts[i] += fires[i]
                 if g.route[0] == "fire":  # the trigger domain's own census
                     k = g.transfer[0]
-                    trig[k] = trig.get(k, 0) + _ticks(g, f) * fires[i]
+                    trig[k] = trig.get(k, 0) + ticks[i]
+                    if acts is not None and ticks[i]:
+                        acts[i].append((f, ticks[i]))
         out.append(writes)
+        if trace is not None:
+            trace[1].append(writes)
     return framelog.canonical(out), interp, rawn, trig
 
 
@@ -1459,16 +1523,35 @@ def _divisors(prog, banks):
     return tuple(sorted({n for ns in _reloads(prog, banks).values() for n in ns}))
 
 
-def _clock_node(counts, ticks):
-    """A ``DIV`` where a declared tick generates this edge stream, else the floor.
+def _cascade_fires(dec, n, p):
+    """Per frame, the ticks ``DIV(n, p)`` emits over the input ticks ``dec`` carries."""
+    out, t = [], 0
+    for c in dec:
+        out.append(sum(1 for x in range(t, t + c) if x % n == p))
+        t += c
+    return out
 
-    Divisor and phase are both program text — the reload, and the counter's own
-    post-init byte — and the whole stream is checked against them in both directions;
-    a period or a phase read off the fire pattern would explain nothing (§4c)."""
-    for n, phase in ticks:
+
+def _clock_node(counts, seq, decs=None):
+    """The clock chain that generates this edge stream — one ``DIV``, two, or the floor.
+
+    Divisor and phase are program text (the reload, the counter's post-init byte); a
+    cascade needs machine evidence too — the inner divider's own dec statement must
+    execute exactly on the outer's ticks — and the whole stream matches both ways."""
+    for n, phase in seq.ticks:
         if _generates(counts, n, phase):
-            return div(n, phase=phase)
-    return edge(counts)
+            return [div(n, phase=phase)]
+    for cell, dec in (decs or {}).items():
+        if not sum(counts):
+            break
+        for nb, pb in seq.cells.get(cell, ()):
+            if list(counts) != _cascade_fires(dec, nb, pb):
+                continue
+            for na, pa in seq.ticks:
+                if _generates(dec, na, pa):
+                    inner = Generator(("DIV", nb, pb), ("event", -1), ("fire",))
+                    return [div(na, phase=pa), inner]
+    return [edge(counts)]
 
 
 # ---- 4e. one plane, two generators: the bit partition the store statement names ---
@@ -2127,6 +2210,35 @@ def _cur_watch(prog, objs, at):
     return out, tags
 
 
+def _div_watch(prog, at, taken=frozenset()):
+    """``([statement], {watch index: divider cell})``: each divider's own dec statement.
+
+    A cascade's evidence is the machine's — the inner counter steps exactly on the
+    outer's ticks — so the dec rides the one ``eval_watch`` run everything rides.
+    ``eval_watch`` keys by statement identity, so one already watched is skipped."""
+    clocks = {c.base for c in _clocks(prog) if c.role == "divider"}
+    env, out, tags, seen = _prog_env(prog), [], {}, set(taken)
+    for s in _stmts(prog):
+        if s[0] != "st" or _base(s[1]) not in clocks or id(s) in seen:
+            continue
+        if _step(s[2], env, _base(s[1])) == "dec":
+            seen.add(id(s))
+            tags[at + len(out)] = _base(s[1])
+            out.append(s)
+    return out, tags
+
+
+def _decs(tags, wat, nframes):
+    """``{divider cell: counts}``: the frames each divider's dec statement executed."""
+    out = {}
+    for f in range(nframes):
+        for i, _cell, _srcs in wat[f] if f < len(wat) else ():
+            cell = tags.get(i)
+            if cell is not None:
+                out.setdefault(cell, [0] * nframes)[f] += 1
+    return {c: tuple(v) for c, v in out.items()}
+
+
 def _cur_value(rule, was, srcs, banks, mem0, objs):
     """``(value, source region)`` a cursor store leaves, or None where nothing names it.
 
@@ -2229,7 +2341,7 @@ def _pair_census(items, diag):
 
 
 # ---- 4i. the sequencer: a tick clock, a row cursor, and the table it rows ---------
-Seq = namedtuple("Seq", "ticks cursors")
+Seq = namedtuple("Seq", "ticks cursors cells")
 
 
 def _sequencer(prog, banks):
@@ -2239,15 +2351,17 @@ def _sequencer(prog, banks):
     fixes; a cursor is a cell whose every writer the text names (``_walked``), seeded
     by the post-init image and stepped and wrapped by the text's own rule."""
     walk = _walked(prog)
-    ticks = {
-        (n, (int(prog.mem0[c]) - 1) % n) for c, ns in _reloads(prog, banks).items() for n in ns
-    }
+    cells = {}
+    for c, ns in _reloads(prog, banks).items():
+        for n in ns:
+            cells.setdefault(c, set()).add((n, (int(prog.mem0[c]) - 1) % n))
     curs = {}
     for cell, rules in walk.items():
         got = _arr_rule(rules)
         if got:
             curs[cell] = (int(prog.mem0[cell]) % got[1], got[0], got[1])
-    return Seq(tuple(sorted(ticks)), curs)
+    ticks = {t for ts in cells.values() for t in ts}
+    return Seq(tuple(sorted(ticks)), curs, {c: tuple(sorted(ts)) for c, ts in cells.items()})
 
 
 def _beats(tags, wat, nframes):
@@ -2380,7 +2494,12 @@ def _observe(prog, trace, nframes, diag=None):
     banks = _banks(prog)
     objs = _objects(prog, banks, diag)
     cstmts, ctags = _cur_watch(prog, objs, len(watch) + len(astmts))
-    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts)
+    dstmts, dtags = _div_watch(
+        prog,
+        len(watch) + len(astmts) + len(cstmts),
+        taken={id(s) for s in watch + astmts + cstmts},
+    )
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts + dstmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):
@@ -2402,9 +2521,9 @@ def _observe(prog, trace, nframes, diag=None):
             signs,
             (sites, _arr_classes(prog, addrs)),
             states,
-            (objs, curs, _beats(ctags, wat, nframes)),
+            (objs, curs, _beats(ctags, wat, nframes), _decs(dtags, wat, nframes)),
         ),
-    )  # the arrangement and the cursors ride the same run: their walks are watched too
+    )  # the arrangement, the cursors and the dividers ride the same run, all watched
 
 
 def lift(prog, frames=()):
@@ -2428,7 +2547,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
     diag = Counter() if diag is None else diag
-    pools, signs, arrs, states, (objs, curs, beats) = acc
+    pools, signs, arrs, states, (objs, curs, beats, decs) = acc
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
@@ -2477,23 +2596,32 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         edges.setdefault(counts, len(edges))
     for key in chained.values():
         edges.setdefault(key[2], len(edges))
-    nodes = [_clock_node(c, seq.ticks) for c in edges]
-    rowed = _rowers(chained, edges, nodes)
-    fired = [_planed(i, s, chained, rowed, edges) for i, s in enumerate(streams[: len(pre)])]
+    nodes, clock_at = [], {}
+    for c in edges:  # a clock is one DIV, a cascade of two, or the EDGE floor
+        for g in _clock_node(c, seq, decs):
+            if g.trigger == ("event", -1):
+                g = g._replace(trigger=("event", len(nodes) - 1))
+            nodes.append(g)
+        clock_at[c] = len(nodes) - 1
+    rowed = _rowers(chained, clock_at, nodes)
+    fired = [_planed(i, s, chained, rowed, clock_at) for i, s in enumerate(streams[: len(pre)])]
     nodes += fired + [raw(residual)]
     nodes += [
-        _planed(i + len(pre), s, chained, rowed, edges) for i, s in enumerate(streams[len(pre) :])
+        _planed(i + len(pre), s, chained, rowed, clock_at)
+        for i, s in enumerate(streams[len(pre) :])
     ]
-    nodes += [Generator(t, ("event", edges[c]), plane(r, m)) for c, ps, r in groups for t, m in ps]
+    nodes += [
+        Generator(t, ("event", clock_at[c]), plane(r, m)) for c, ps, r in groups for t, m in ps
+    ]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     for counts, t, reg, op, base in rels:  # absolutes settle a register, relatives follow
         if base[0] == "gen":
-            nodes.append(Generator(base[1], ("event", edges[counts]), plane(reg)))
+            nodes.append(Generator(base[1], ("event", clock_at[counts]), plane(reg)))
             base = ("node", len(nodes) - 1)
-        nodes.append(Generator(t, ("event", edges[counts]), relative(reg, op, base)))
+        nodes.append(Generator(t, ("event", clock_at[counts]), relative(reg, op, base)))
     for counts, walk, table, reg in pairs:  # the row generator, then the pattern it rows
-        nodes.append(indexer(walk, ("event", edges[counts])))
-        nodes.append(select(table, ("node", len(nodes) - 1), ("event", edges[counts]), reg))
+        nodes.append(indexer(walk, ("event", clock_at[counts])))
+        nodes.append(select(table, ("node", len(nodes) - 1), ("event", clock_at[counts]), reg))
     _attrition(seq, streams, chained, pairs, nodes, diag)
     return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels, pairs)), lanes
 

@@ -25,6 +25,10 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | a `DIV` phase field is a per-stream parameter fitted to the output (§4d, §8) | #94, #96 | **false** — three editors: the phase belongs to the arrangement, not the stream |
 | coverage measures how much of a tune the recovery can reach (§6, everywhere) | #106 | **false** — it measures *justification*; 99680 of the composer's writes are shaped differently by us and **zero** are never produced |
 | the relative row index (#102) opens the 6953 emits an absolute-only index refuses (§2, §4f) | this step | **not yet** — the refusal number re-measures at exactly 6953 (GT 1690, SW 4738, DM 525), but a census of all three editors' own songs finds **zero** `SELECT[rel]` nodes: `gtoracle._patt_src` still *refuses* a shifted row rather than emitting one, and `dmoracle` computes a 0/1 flag where the row needs the shift amount. The element is expressible and unused; what it is owed is an emitter, not a measurement |
+| the element is owed an emitter (the row above) | the universal-layer step | **paid** — `_patt_src` carries the shift (GT's transpose byte read signed, DefMON's `TR` amount passed instead of a flag) and `_arranged` builds the relative row. All three editors now emit `SELECT[rel]`, laws green: SW 60 nodes over 15 of 64 modules, GT 20 over 4 of 72 tunes, DM 7 over 3 of 6 |
+| `DIV` fires one tick per n *input triggers* (§2, since the start) | the universal-layer step | **the spec was right and the evaluator wrong** — `_ticks` divided the frame number whatever the trigger was, so a divider could not clock a divider and the 95 product-period streams (1826 fires) of §8 were inexpressible. An event-clocked `DIV` now counts the ticks it receives; frame-clocked behaviour is byte-identical by construction |
+| the 95 product-period streams become recoverable once the cascade is expressible (the row above) | the universal-layer step | **0 recovered** — the cascade rule demands machine evidence (the inner divider's dec watched executing exactly on the outer's ticks, both phases declared) and no corpus stream passes it at 200 frames: generated fires stay 304/307225 and the value partition is byte-identical. §8's 95 was priced from the *arithmetic* of two declared reloads, never from the chain — the same output-side pricing mistake as the §8 phase row, one level up |
+| an accumulator wider than its plane is an editor quirk to price (§8) | the universal-layer step | **it is the primitive's missing route** — all three editors keep one, and the `Pair` route claims it: SW 1060 pair nodes over 64 modules, GT 2478 over 72 tunes, laws green corpus-wide at 200 frames. DefMON's stays refused behind its *turning* bound (the sweep clamps and reverses), which is the §8 triangle limit, not a width one |
 | `LOOKUP` is a transfer of its own (§2, since the start) | this step | **false** — it is `SELECT` with identity rows; the second transfer was carrying *evidence* (`imm` vs `lane`), which `Coverage.classes` already carries. Collapsed: 5 transfers, partition byte-identical |
 | building nodes per (declared region, cursor) aligns our partition with the editor's (docs/node-partition.md §4) | #112 | **false** — the pairs are one-to-one with the lane keys already built, so `graph_diff` matched stays **71/1648** and the value partition is byte-identical; keying the row on the cursor's *observed value* instead **costs 26 of the 71** (§6). The pair is a better *name* for a node, not a finer partition |
 | a `DIV` phase field would open at most the 4961 fires of the 363 divider-shaped streams that sit off `n-1` (§8) | #113 | **false, by 25×** — with the divisor still required to be declared, only **9 streams (196 fires)** have a period a reload declares and a phase `n-1` misses, and the declared counter seed supplies **4** of them. The phase was never the binding link |
@@ -101,6 +105,7 @@ Generator = (transfer, trigger, route)
            | Rel(op, delta, base)    # generated and combined: op(base, delta)
   trigger  : frame | Event(i)        # the root frame clock, or node i's edge
   route    : Plane(reg, mask=$FF)    # a SID register plane, or the bits of one
+           | Pair(lo, hi, mask_hi)   # one 16-bit emit: its low byte and its high byte
            | Rel(reg, mask, op, base)# the emit is a DELTA op combines with base
            | Index                   # the emit is another generator's row index
            | Fire | Raw              # a downstream trigger, or the value floor
@@ -109,6 +114,21 @@ Generator = (transfer, trigger, route)
   delta    | Node(i)                 # generator i's current value
            | Const(c)                # a declared base byte
 ```
+
+**A `DIV` divides its input ticks, not the frame.** Clocked by the frame the two are
+the same number; clocked by another generator's edge it counts what it receives, so
+one divider clocks another and a period only the *product* of two declared reloads
+names is `DIV -> DIV` — the shape §8 measured 95 streams (1826 fires) locked out when
+the evaluator read the frame regardless of trigger (`_ticks` before `_Fires`).
+
+**A `Pair` route is the one emit wider than a register.** All three editors keep a
+16-bit accumulator whose sweep carries into its high byte — GoatTracker's pulse and
+portamento, SID-Wizard's pulse program, DefMON's pulse and cutoff slides — and a
+byte-wide `RAMP` on the low register leaves every carry frame residual. The pair
+writes both halves of one emit, the high byte under its own mask (SID-Wizard masks
+`$7F`), and `_check` refuses a masked owner on either register: the pair owns both
+whole bytes. That an editor which has never heard of the others needs the same
+object is the §4f argument, applied one register wider.
 
 **One relative concept, two domains.** `Rel` is a delta combined with a named base
 wherever it appears: in the **value** domain the delta is the generator's own emit and
@@ -245,6 +265,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   `frames_per_tick`), a free `inc` is an LFO phase.
 - **`DIV` over a declared divisor** (§4d) — the trigger floor's one refinement: an
   `EDGE` stream a recovered divider's own reload generates becomes a `DIV`.
+- **The cascade** (`_clock_node`, `_div_watch`) — a stream whose period only the
+  *product* of two declared reloads names becomes `DIV -> DIV`, admitted only where
+  the inner divider's own dec statement is watched executing exactly on the outer's
+  ticks and the declared phases match both ways. §6 measures what it reaches.
 - **A masked route per field** (§4e) — where a store statement partitions a register's
   bits, each field is its own generator: a declared byte at a recovered row, or that
   statement's own constant. `$18`'s mode and volume are the case that reaches the
@@ -1770,7 +1794,7 @@ fire-routed lane streams, **1101 are strictly periodic** with a period of two or
 | the periodic stream's period is | streams | fires |
 |---|---|---|
 | a byte some divider's reload declares | 17 | — |
-| a **product** of two declared divisors — a cascade `DIV` cannot express | 95 | 1826 |
+| a **product** of two declared divisors — a cascade `DIV -> DIV` since the universal-layer step, and 0 pass its chain evidence (§0) | 95 | 1826 |
 | neither | **989** | **13608** |
 | …of the 17, generated by the shipped rule (period *and* phase) | **5** | **404** |
 | …of the 17, a phase no counter seed supplies | 9 | 196 |
@@ -1796,7 +1820,41 @@ taken from a **walked counter's own modulus** — the obvious way to reach the p
 built and has **no population at all**: **zero** of the corpus's 2198 walked cursors step
 exactly once per frame, so no counter's `AND`-modulus is a frame divider.
 
-## 7. Where the residual goes next
+### The universal layer completed: the primitive's two missing elements, and three whole oracles
+
+The universal-layer step (§0's last five rows) closed the primitive against what the three
+editors' own songs need — the input-tick `DIV`, the `Pair` route, the `SELECT[rel]`
+emitters, one write-captured SID-Wizard player, one comparison harness — and this is its
+measurement. 682 cached tunes, PSID start subtune, 200-frame windows (649 reach the gate);
+oracles at 200 frames; `graph_diff` over the 15-tune set at 600 (14 map).
+
+| | before | after |
+|---|---|---|
+| interpreted | 753971/1942809 = 38.81% | **byte-identical**, every plane, class and tune |
+| triggers (fires) | 304/307225 | **304/307225** — the cascade recovers 0 (§0) |
+| tracker law, Gate FP, canonical fixpoint | 649/649 | 649/649 |
+| GoatTracker law / admitted | 71/71, 113585/282516 | **71/71, 117074/282516 = 41.4%** (+3489: transpose and 16-bit sweeps) |
+| GT `SELECT[rel]` / `Pair` nodes | 0 / — | **20 over 4 tunes / 2478 over 72** |
+| SID-Wizard modules / law | 64, 64/64 | **95, 95/95** — the fetched tarball holds 95, the old cache was partial |
+| SW `SELECT[rel]` / `Pair` nodes | 0 / — | **60 over 15 modules / 1060** |
+| DefMON law / `SELECT[rel]` | 6/6, 0 | **6/6, 7 nodes over 3 tunes** |
+| `graph_diff` matched | 71 of 1648 theirs, 1801 ours | **60 of 1484 theirs, 1801 ours** |
+
+The SID-Wizard row changes basis as well as size: `sw_native` now records the writes the
+editor's driver makes — WRPULS/WRWFGHO write freq, pw and ctrl every frame — instead of
+`play_frame`'s nibble-masked snapshot diff, so its records are what a decompiled
+SID-Wizard binary would give frameprog, and its admitted figure (99654/339269 = 29.4%
+over the 95) is a new baseline, not a move on the old one.
+
+**The matched count *fell*, and that is the structural finding restated from the other
+side.** The oracle graphs got closer to the editors' objects — one pair node where two
+byte streams stood, one shifted `SELECT[rel]` where per-transpose copies stood — so their
+node count dropped 1648 → 1484, and 11 of the 71 matches died with the per-register
+shapes they matched on. A register-first partition loses correspondence every time the
+other side becomes more object-first (§0); the recovery's own partition did not move by
+one byte. The gap is now measured for two editors instead of one — DefMON's first
+number is 2 of 47 on Automatas — and it is the recovery's to close, object-first,
+not the harness's.
 
 **The objective in this section is the wrong one, and the list below is kept for its
 measurements rather than its ordering.** It ranks work by how fast it shrinks the
@@ -1959,17 +2017,22 @@ take 29559 of them and is refused (§6).
   shift), `_feeder` checking `column[s] + shift == row`, `_arranged` building
   `Rel("ADD", Node(counter), Const(shift))`, and DefMON computing an amount it does not
   compute today — three mappings, not a rename, and it moves `graph_diff` by
-  construction. **Until that lands the element is expressible and unused**, which §0
-  records rather than the reader having to discover it.
+  construction. **Those three mappings have landed** (§0, §6's last table): all three
+  oracles emit `SELECT[rel]` — SW 60 nodes over 15 modules, GT 20 over 4 tunes, DM 7
+  over 3 — laws green. **The recovery still emits zero**, for the reason above: no
+  corpus site carries both index sources in program text.
 - **The transfers we generate and the transfers the editors need are not the same set**,
   and the census says so in both directions. `DIV -> fire` is used by **no editor's own
   song** (0 nodes in GT, SW or DM) and is the one transfer the recovery generates that
-  nothing else does — 4 nodes, 304 fires over 4 tunes of 649 (§4d, §4i). The relative route's
-  `Const` and `Node` bases are the same inversion one level down: 0 nodes on any editor's
-  side, 36 and 4 emits on ours. `SELECT -> plane+mask` runs the other way — 68 nodes
-  theirs against 676 emits ours — and `SELECT[rel]` and `rel` in the index domain are
-  used by neither. An element with a user on one side only is kept and stated; an element
-  with a user on neither is what §0's fifth row is about.
+  nothing else does — 4 nodes, 304 fires over 4 tunes of 649 (§4d, §4i); the editors'
+  tempo chains are real dividers, but their oracle graphs carry the trigger domain as
+  observed `EDGE` floors, so building their sequencer chains as `DIV -> RAMP -> SELECT`
+  is the oracle-side half of §7.4. The relative route's `Const` and `Node` bases are the
+  same inversion one level down: 0 nodes on any editor's side, 36 and 4 emits on ours.
+  `SELECT -> plane+mask` runs the other way — 68 nodes theirs against 676 emits ours —
+  and so, since the universal-layer step, do `SELECT[rel]` (87 editor nodes, 0 ours) and
+  the `Pair` route (3538 editor nodes over GT and SW, 0 ours: the recovery's §4c sweeps
+  are byte-wide and its 16-bit candidates are a provenance question first).
 - A pitch table whose lo/hi block is never read at a constant base cannot be
   declared, so it cannot be recovered here — the one tune in the 60-tune sample
   that loses its table, `MUSICIANS/A/Aegis/2008.sid`, has no read site at its hi
@@ -2028,10 +2091,12 @@ take 29559 of them and is refused (§6).
   only **17** have a period some reload declares, **9 of those (196 fires)** need a phase
   other than `n-1`, and the declared counter recovers **4**. The domain's real limit is
   one level up — **989 streams (13608 fires) have a period no reload declares**, and 95
-  more only as the product of two declared divisors, which a `DIV` cannot express because
-  `_ticks` reads the frame and not its input count. A counter's own `AND`-modulus would
-  be the other source and it has **no population**: zero of 2198 walked cursors step once
-  per frame.
+  more only as the product of two declared divisors. The cascade `DIV -> DIV` is
+  expressible since the universal-layer step (an event-clocked `DIV` divides its input
+  ticks), and **0 of the 95 pass its evidence rule** — the inner dec watched executing
+  exactly on the outer's ticks, both phases declared (§0). A counter's own `AND`-modulus
+  would be the other source and it has **no population**: zero of 2198 walked cursors
+  step once per frame.
 
   **The three-editor verdict on that field, settled.** This entry used to price it as
   "a per-stream parameter fitted to the output". DefMON refines that and the refinement

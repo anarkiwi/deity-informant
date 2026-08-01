@@ -286,7 +286,8 @@ and records the verdict, fetching more tunes round-robin across composers first 
 Over the 701 cached tunes it finds **72 GoatTracker**, which is the figure
 docs/gt-oracle.md §3 reports.
 
-The same gap exists one step further out and is *not* closed here: `.oracle-cache/swm`,
-which `tools/gt_compare.py` and `tests/test_gtoracle.py` both read, has no fetcher in the
-tree either. SID-Wizard modules are not redistributable the way an HVSC relpath is, so
-that one needs a source decision rather than a script.
+The same gap existed one step further out and is closed since: `.oracle-cache/swm`,
+which `tools/gt_compare.py` and `tests/test_gtoracle.py` both read, is reproduced by
+`tools/fetch_swm.py` from the SHA-256-verified SID-Wizard 1.94 source tarball on CSDB —
+the source decision this paragraph asked for. The tarball holds **95** modules, so the
+64 this document measured over was itself a partial cache.

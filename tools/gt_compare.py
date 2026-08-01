@@ -76,13 +76,16 @@ def _bijection(pairs):
     return (hit / len(pairs) if pairs else 0.0), len(votes), len(set(votes.values())) == len(votes)
 
 
-def _pitch_axis(ours, native, nframes):
-    """``(share agreeing at the modal offset, that offset, emits)`` for the note lane."""
+def _pitch_axis(ours, native, nframes, off=0):
+    """``(share agreeing at the modal offset, that offset, emits)`` for the note lane.
+
+    The register the recovery carries a row on is a parameter, not an editor's:
+    GoatTracker declares freq_lo, DefMON freq_hi."""
     diffs = [
-        ours[(f, 7 * v)] - native.notes[f][v]
+        ours[(f, 7 * v + off)] - native.notes[f][v]
         for f in range(nframes)
         for v in range(3)
-        if (f, 7 * v) in ours
+        if (f, 7 * v + off) in ours and native.notes[f][v] >= 0
     ]
     if not diffs:
         return 0.0, None, 0
@@ -93,16 +96,26 @@ def _pitch_axis(ours, native, nframes):
     return hist[best] / len(diffs), best, len(diffs)
 
 
-def _instr_axis(ours, native, nframes):
-    """``(consistency, distinct rows, is a bijection, emits)`` for the ad plane."""
+def _instr_axis(ours, native, nframes, off=5):
+    """``(consistency, distinct rows, is a bijection, emits)`` on one instrument plane."""
     pairs = [
-        (ours[(f, 7 * v + 5)], native.instrs[f][v])
+        (ours[(f, 7 * v + off)], native.instrs[f][v])
         for f in range(nframes)
         for v in range(3)
-        if (f, 7 * v + 5) in ours
+        if (f, 7 * v + off) in ours and native.instrs[f][v] >= 0
     ]
     share, size, onto = _bijection(pairs)
     return share, size, onto, len(pairs)
+
+
+def _best(axis, ours, native, nframes, offs):
+    """The register offset the recovery actually carries a row on, and its result."""
+    best, key = None, -1
+    for off in offs:
+        got = axis(ours, native, nframes, off)
+        if got[-1] > key:
+            best, key = (off,) + got, got[-1]
+    return best
 
 
 def _index_census(graph, nframes, tag):
@@ -226,8 +239,8 @@ def gt_one(rel):
         return out
     rows = {(f - offset, r): v for (f, r), v in _rows(ours_graph, FRAMES).items() if f >= offset}
     n = admitted.frames
-    share, off, emits = _pitch_axis(rows, native, n)
-    isha, isize, onto, iemits = _instr_axis(rows, native, n)
+    _preg, share, off, emits = _best(_pitch_axis, rows, native, n, (0, 1))
+    _ireg, isha, isize, onto, iemits = _best(_instr_axis, rows, native, n, (5, 6, 4))
     out.update(
         {
             "frames": n,
@@ -239,8 +252,14 @@ def gt_one(rel):
             "strict_divergence": None if strict.divergence is None else str(strict.divergence),
             "raw_kinds": {str(k): v for k, v in strict.raw_kinds.items()},
             "ours": _cov(ours_cov),
-            "pitch": {"share": share, "offset": off, "emits": emits},
-            "instruments": {"share": isha, "rows": isize, "bijection": onto, "emits": iemits},
+            "pitch": {"share": share, "offset": off, "emits": emits, "reg": _preg},
+            "instruments": {
+                "share": isha,
+                "rows": isize,
+                "bijection": onto,
+                "emits": iemits,
+                "reg": _ireg,
+            },
             "structure": _struct_axis(ours_graph, native, n, _g, admitted),
         }
     )

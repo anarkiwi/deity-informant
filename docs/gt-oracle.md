@@ -84,21 +84,31 @@ than hoped for, and checked by the law.
 ## 3. What it measures
 
 200 frames, PSID start subtune, `tools/gt_compare.py`. 682 cached HVSC tunes,
-**72 decompile as GoatTracker**, 71 also lift to a frame program; 64 cached
-SID-Wizard `.swm` modules.
+**72 decompile as GoatTracker**, 71 also lift to a frame program; **95** cached
+SID-Wizard `.swm` modules — `tools/fetch_swm.py` reproduces the cache from the
+SHA-256-verified SID-Wizard 1.94 source tarball, and the tarball holds 95, so the
+earlier 64-module figure was a partial hand-copy.
 
 ### 3.1 The law
 
-| | admitted law | strict, full window | strict ≥ 20 frames |
-|---|---|---|---|
-| GoatTracker, 71 tunes, vs **frameprog** | **71/71** | **4** | 7 |
-| SID-Wizard, 64 modules, vs **its own player** | **64/64** | **64/64** | 64 |
+Since the universal-layer step (SELECT[rel], the `Pair` route, the write capture):
 
-The two rows are not the same test and the table says so. The SID-Wizard row is
+| | admitted law | admitted interpreted | strict, full window |
+|---|---|---|---|
+| GoatTracker, 71 tunes, vs **frameprog** | **71/71** | 117074/282516 = **41.4%** (113585 before the step) | **4** |
+| SID-Wizard, 95 modules, vs **its own player** | **95/95** | 99654/339269 = **29.4%** (a new basis, below) | **95/95** |
+| DefMON, 6 tunes, vs **frameprog** (docs/dm-oracle.md) | **6/6** | 12556/28800 = **43.6%** | 6/6 |
+
+The rows are not the same test and the table says so. The SID-Wizard row is
 one boundary short: `pysidwizard` reads `.swm` only — it has no packed-`.sid`
 decompiler — so its reference is the editor's own player rather than a frame
-program lifted from 6502. On **that** boundary the result is total: **every one
-of 64 real SID-Wizard modules is reproduced frame for frame, for the whole
+program lifted from 6502. **Its records changed basis at the universal-layer step**:
+`sw_native` now captures the writes the driver makes (`_wr` on a pysidwizard >= 0.3
+`MemPlayer`; WRPULS/WRWFGHO write freq, pw and ctrl every frame) instead of
+`play_frame`'s nibble-masked snapshot diff, so the reference is the stream a
+decompiled SID-Wizard binary would hand frameprog and the interpreted share is a new
+baseline, not a move on 46.2%. On that boundary the result is total: **every one
+of 95 real SID-Wizard modules is reproduced frame for frame, for the whole
 window, from a graph built out of nothing but the module and the universal
 primitive.** The universal format demonstrably expresses a real editor's song end
 to end.
@@ -408,7 +418,9 @@ own models (26167 emits) and what a decompiled driver yields (676) is the honest
 reading of this deficiency: the *format* was the wall for the editors, and
 *provenance* is the wall for the recovery.
 
-### 4.4 A byte-plane `RAMP` cannot express a wider accumulator
+### 4.4 A byte-plane `RAMP` cannot express a wider accumulator — closed by the `Pair` route
+
+The deficiency as it was priced, before the universal-layer step:
 
 | | emits | tunes |
 |---|---|---|
@@ -416,18 +428,20 @@ reading of this deficiency: the *format* was the wall for the editors, and
 | GoatTracker `freq_hi` during a portamento (16-bit) | 500 | 9 |
 | SID-Wizard pw runs the mapping refuses whole | 7642 | 64 |
 
-`RAMP(seed, step, bound)` emits into one register plane, so the *low* byte of an
-accumulator is exact — `lo` advances by `step mod 256` — and the high byte is
-not: it moves only on carry. The mapping takes the low byte as a `RAMP` and the
-high byte as the set row still standing (a declared byte at a recovered row);
-where a carry has moved it, it is residual. docs/tracker.md §4c has the same
-limit from the other side — the sweep is implemented on `pw` and `cutoff` as byte
-accumulators only.
-
-**The general extension**: an accumulator wider than its plane, with a route that
-names a byte lane of it. GoatTracker's pulse (12-bit) and frequency (16-bit),
-SID-Wizard's pulse (12-bit, an explicit `(PWHIGHO, PWLOGHO)` 16-bit pair in the
-player), and our own recovery's `pw`/`cutoff`.
+`RAMP(seed, step, bound)` emitted into one register plane, so the *low* byte of an
+accumulator was exact and the high byte moved only on carry, residual. **The `Pair`
+route closes it** (docs/tracker.md §2): one `RAMP(seed, step, $10000)` emit writes
+both halves, the high byte under its own mask (`$7F` for SID-Wizard, whose player
+keeps an explicit `(PWHIGHO, PWLOGHO)` pair). The claim rule is §4c's one register
+wider — the run is the observation's, the step the recorded read's, the whole word
+must advance by it, and a high byte outside the mask (keyboard tracking) refuses the
+frame; a byte run restarting after a 16-bit claim reseeds at its own first emit.
+Measured at 200 frames, laws green: **GoatTracker 2478 pair nodes over 72 tunes,
+SID-Wizard 1060 over 95 modules**. DefMON's pulse and cutoff slides stay refused —
+its sweep *clamps and reverses* (a turning bound) and its cutoff emits `acc << 1`,
+which are the §4.2/§4.5 single-editor limits, not width ones. The recovery's own
+§4c sweeps remain byte-wide: its 16-bit candidates are a provenance question first
+(docs/tracker.md §8).
 
 ### 4.5 An index route is absolute, and every arrangement composes two indices
 
@@ -469,20 +483,19 @@ the third use — GoatTracker's wavetable relative-note column costs **10142** e
 here, SID-Wizard's `chord_table` **2621** and DefMON's **1141**, all counted as
 `arpeggio` and all the same shape.
 
-**Status, re-measured: the extension landed and this mapper still refuses.** `Rel` in
-the index domain is in the primitive (docs/tracker.md §2, #102) and the refusal table
-above re-measures to the same 6953. But a census of the mapped graphs by
-`(transfer, route)` — 12 GoatTracker tunes, 12 SID-Wizard modules, 6 DefMON tunes —
-finds **zero** `SELECT[rel]` nodes on any side, because `_patt_src` still prices a
-nonzero shift as `refused_transpose` and returns nothing. So the 6953 is **owed and
-unrealised**, not banked. Emitting it is four changes, and they are stated so nobody
-re-derives them: `_patt_src` compares `column[row] + shift` against the wanted index
-instead of refusing; the shift joins the stream key, so one stream carries one shift;
-`_feeder` validates rows against `column[s] + shift`; and `_arranged` builds
-`Rel("ADD", Node(the counter), Const(shift))` in place of `Node(the counter)`. DefMON
-needs a fifth — `_dm_src` hands `_patt_src` a 0/1 flag today, not `TR`'s amount. Doing
-it adds index nodes to three mappings and moves `tools/graph_diff.py` by construction,
-so it is its own step and not a rename.
+**Status: the emitters landed, and the transpose emits.** The five changes stated here
+were made exactly as stated (the universal-layer step): `_patt_src` verifies
+`column[row] + shift` and returns the shift, the shift rides the stream key and the
+src tuple, `_feeder` validates `column[s] + shift`, `_arranged` builds
+`Rel("ADD"/"SUB", Const(|shift|), Node(the counter))`, and `_dm_src` passes `TR`'s own
+amount (GoatTracker's transpose byte is read signed — `$F4` is −12, and the unsigned
+reading was the first thing the law caught). Measured at 200 frames, laws green:
+**SID-Wizard 60 `SELECT[rel]` nodes over 15 of 95 modules, GoatTracker 20 over 4 of
+72 tunes, DefMON 7 over 3 of 6** — the same modules the refusal census named. A shift
+the column does not reproduce (an arpeggio, a clamped note) still refuses, priced as
+`arpeggio`; the `transpose` refusal line is gone because the transpose is no longer
+refused. The orderlist half — `base + counter` as two named index sources — remains
+structural, as above.
 
 ### 4.6 What is not a deficiency, and is reported anyway
 

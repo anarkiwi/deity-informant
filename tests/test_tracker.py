@@ -82,6 +82,34 @@ def test_ramp_wraps_at_its_bound():
     assert vals == [0xFE, 0xFF, 0x00, 0x01]
 
 
+def test_a_pair_routed_ramp_carries_into_its_high_register():
+    """One 16-bit emit writes both halves; the carry is the word's own, mask applied."""
+    nodes = [T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0x7F))]
+    recs = T.eval_graph(T.Graph(nodes), 3)
+    got = [dict(w for sec in rec for w in sec) for rec in recs]
+    assert got == [{2: 0xF0, 3: 0x00}, {2: 0x10, 3: 0x01}, {2: 0x30, 3: 0x01}]
+    cov = T.coverage(T.Graph(nodes), 3)
+    assert cov.interp == 6  # two register writes per tick
+
+
+def test_mutation_a_wrong_pair_step_moves_both_halves():
+    """The pair is generated: perturb the step and the whole stream moves."""
+    good = T.Graph([T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    base = T.eval_graph(good, 3)
+    bad = T.Graph([T.Generator(("RAMP", 0x00F0, 0x21, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    assert F.diff(T.eval_graph(bad, 3), base) is not None
+
+
+def test_a_pair_route_refuses_a_masked_owner_on_either_register():
+    """A pair owns both whole bytes, so a masked generator on one is two owners of a bit."""
+    nodes = [
+        T.Generator(("RAMP", 0, 1, 0x10000), T.FRAME, T.pair(2, 3, 0xFF)),
+        T.lookup([0x0F], T.FRAME, 3, mask=0x0F),
+    ]
+    with pytest.raises(T.TrackerError):
+        T.eval_graph(T.Graph(nodes), 2)
+
+
 def test_refinement_moves_coverage_out_of_raw_and_still_gates():
     """Pulling a last-write-wins plane out of RAW keeps the law green."""
     frames = _frames([[(0, 0x10), (4, 0x41)], [(0, 0x10), (4, 0x41)]])
@@ -889,6 +917,83 @@ def _fires(prog, nframes=8):
     )
 
 
+_COUNTER2 = 0x0802
+
+
+def _cascadeprog(n1, n2, base=0x2000, nrows=8):
+    """``(image, program)``: divider ``n1`` steps divider ``n2``, whose tick reads a lane.
+
+    The inner counter's dec sits inside the outer's tick body, so the machine steps it
+    exactly on the outer's ticks — the chain the cascade rule must see."""
+    mem, table = _bank(base, nrows, 4, {2: list(range(0x11, 0x11 + nrows))})
+    mem[_COUNTER] = n1
+    mem[_COUNTER2] = n2
+    dec1 = ("op", "INT_SUB", (("mem", ("const", _COUNTER, 2), 1), ("const", 1, 1)), 1)
+    dec2 = ("op", "INT_SUB", (("mem", ("const", _COUNTER2, 2), 1), ("const", 1, 1)), 1)
+    body2 = [
+        ("st", ("const", _COUNTER2, 2), ("const", n2, 1)),
+        ("asg", "i", ("mem", ("const", 0x0800, 2), 1)),
+        ("st", ("const", 0xD405, 2), _sel(base, 2, "i")),
+        (
+            "st",
+            ("const", 0x0800, 2),
+            ("op", "INT_ADD", (("mem", ("const", 0x0800, 2), 1), ("const", 4, 1)), 1),
+        ),
+    ]
+    tick = [
+        ("st", ("const", _COUNTER, 2), ("const", n1, 1)),
+        ("asg", "d", dec2),
+        ("st", ("const", _COUNTER2, 2), ("loc", "d")),
+        ("if", "if", ("op", "INT_EQUAL", (("loc", "d"), ("const", 0, 1)), 1), body2, []),
+    ]
+    stmts = [
+        ("asg", "c", dec1),
+        ("st", ("const", _COUNTER, 2), ("loc", "c")),
+        ("if", "if", ("op", "INT_EQUAL", (("loc", "c"), ("const", 0, 1)), 1), tick, []),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[table], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+
+
+def test_a_div_clocked_by_a_div_divides_its_input_ticks():
+    """The inner DIV counts the ticks it receives, not the frames — the cascade's law."""
+    nodes = [
+        T.div(2),
+        T.Generator(("DIV", 3, 2), ("event", 0), ("fire",)),
+        T.lookup([0x11, 0x22], ("event", 1), 5),
+    ]
+    recs = T.eval_graph(T.Graph(nodes), 12)
+    got = [f for f, rec in enumerate(recs) if any(sec for sec in rec)]
+    assert got == [5, 11]  # outer ticks at 1,3,5,7,9,11; inner on its 3rd and 6th input
+
+
+def test_a_cascade_of_two_declared_dividers_is_recovered_and_generates():
+    """A period only the product of two reloads declares becomes DIV -> DIV, law green."""
+    _mem, prog = _cascadeprog(2, 3)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 24))[0]
+    divs = [(i, g) for i, g in enumerate(graph.nodes) if g.transfer[0] == "DIV"]
+    assert [g.transfer[1] for _i, g in divs] == [2, 3]
+    assert divs[1][1].trigger == ("event", divs[0][0])
+    assert T.gate(prog, {}, 24) is None
+    cov = T.render(prog, {}, 24)[2]
+    assert cov.triggers[0] == cov.triggers[1] > 0  # every fire generated, none EDGE
+
+
+def test_mutation_a_wrong_cascade_divisor_is_detected():
+    """Perturbing either divisor of a cascade moves the emits and fails the law."""
+    _mem, prog = _cascadeprog(2, 3)
+    graph = T._graph(prog, None, *T._observe(prog, {}, 24))[0]
+    assert F.diff(T.eval_graph(graph, 24), T.oracle(prog, {}, 24)) is None
+    for which, wrong in ((2, ("DIV", 4, 2)), (3, ("DIV", 2, 1))):
+        idx = next(i for i, g in enumerate(graph.nodes) if g.transfer[:2] == ("DIV", which))
+        was = graph.nodes[idx]
+        graph.nodes[idx] = was._replace(transfer=wrong)
+        assert F.diff(T.eval_graph(graph, 24), T.oracle(prog, {}, 24)) is not None
+        graph.nodes[idx] = was
+
+
 def test_a_declared_reload_generates_the_edge_stream_as_a_div():
     """The divisor is the immediate the play code reloads: the EDGE floor is replaced."""
     _mem, prog = _dividerprog(2)
@@ -943,8 +1048,8 @@ def test_a_div_fires_where_the_divisor_says_and_nowhere_else():
     """The check is exact in both directions: a missing tick refuses as loudly as a spare."""
     assert T._generates((0, 1, 0, 1), 2, 1) and not T._generates((0, 1, 1, 1), 2, 1)
     assert not T._generates((0, 1, 0, 0), 2, 1) and not T._generates((0, 1, 0, 1), 4, 3)
-    assert T._clock_node((0, 1, 0, 1), ((2, 1),)) == T.div(2)
-    assert T._clock_node((0, 1, 0, 1), ((3, 2), (4, 3))) == T.edge((0, 1, 0, 1))
+    assert T._clock_node((0, 1, 0, 1), T.Seq(((2, 1),), {}, {})) == [T.div(2)]
+    assert T._clock_node((0, 1, 0, 1), T.Seq(((3, 2), (4, 3)), {}, {})) == [T.edge((0, 1, 0, 1))]
 
 
 def test_mutation_a_wrong_divisor_is_detected():
