@@ -140,7 +140,10 @@ the read-only step table), recovering `Sweep{plane, acc, updates:[(dir, step)],
 rate, bounds}`. Commando's subtune drives PWM only through the `m_5523 & $08` *set*
 branch — an additive accumulator `m_5591 += idx_5507` (step `m_5507`, dir `add`);
 the `& $08`-clear triangle branch (step `& $E0`, turnaround at hi-nibble `$08`/`$0E`)
-is unexercised code and never appears in the walked model. Ghouls recovers the
+was recorded here as "unexercised code that never appears in the walked model", and
+**that is stale**: at the tune's full Songlengths duration both arms are walked, and
+the triangle arm is `out/Commando.frameprog.txt:373-421`. What is unexercised is the
+*subtune-0 200-frame window* this paragraph was measured on. Ghouls recovers the
 16-bit triangle `zp_3F:zp_40 ±= zp_4B` with both directions and turnaround bounds
 `$9B`/`$64`. Forward evaluation (`generators.regenerate`) reproduces the observed
 `pw_lo` plane within each note: Commando ≈72–77% bit-exact (short arpeggio notes,

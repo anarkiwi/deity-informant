@@ -2248,3 +2248,167 @@ def test_mutation_a_wrong_wrap_or_step_on_the_cursor_fails_the_law():
     assert _mutate_node(prog, pick, lambda t: t) is None
     assert _mutate_node(prog, pick, lambda t: t[:3] + (2,)) is not None  # a wrong wrap
     assert _mutate_node(prog, pick, lambda t: t[:2] + (2, t[3])) is not None  # a wrong step
+
+
+# ---- 4j. the song: terminator-bounded regions at cursors the program text steps ---
+_SONG, _SLO, _SHI, _CUR_ROW, _PARM = 0x3000, 0x3200, 0x3204, 0x0810, 0x0811
+
+
+def _deref(idx):
+    """``*ptr[idx]``: the base-less deref rung (f) proves."""
+    return ("mem", ("op", "INT_ADD", (("mem", ("const", 0x04, 2), 2), idx), 2), 1)
+
+
+def _step1(cell):
+    """``cell = cell + 1``: one walked increment of a cursor."""
+    add = ("op", "INT_ADD", (("mem", ("const", cell, 2), 1), ("const", 1, 1)), 1)
+    return ("st", ("const", cell, 2), add)
+
+
+def _flag(name, mask):
+    return (
+        "op",
+        "INT_NOTEQUAL",
+        (("op", "INT_AND", (("loc", name), ("const", mask, 1)), 1), ("const", 0, 1)),
+        1,
+    )
+
+
+def _songprog(blocks=(0x3000, 0x3010), data=None, term=0xFF, size=4, extra=()):
+    """``(image, program)``: a pointer over terminator-bounded regions a cursor walks.
+
+    Row 0 is the row byte; bit 7 takes a parameter byte and steps the cursor once more;
+    the region ends where the text compares the byte at the cursor against ``term``."""
+    mem = bytearray(0x10000)
+    for k, b in enumerate(blocks):
+        mem[_SLO + k], mem[_SHI + k] = b & 0xFF, b >> 8
+    for b in blocks:
+        for i, v in enumerate(data or (0x81, 0x22, 0x03, term)):
+            mem[b + i] = v
+    word = (
+        "op",
+        "INT_OR",
+        (
+            (
+                "op",
+                "INT_ZEXT",
+                (("mem", ("op", "INT_ADD", (("const", _SLO, 2), _zext("k")), 2), 1),),
+                2,
+            ),
+            (
+                "op",
+                "INT_LEFT",
+                (
+                    (
+                        "op",
+                        "INT_ZEXT",
+                        (("mem", ("op", "INT_ADD", (("const", _SHI, 2), _zext("k")), 2), 1),),
+                        2,
+                    ),
+                    ("const", 8, 1),
+                ),
+                2,
+            ),
+        ),
+        2,
+    )
+    live = ("op", "INT_ZEXT", (("mem", ("const", _CUR_ROW, 2), 1),), 2)
+    stmts = [
+        ("asg", "k", ("const", 0, 1)),
+        ("st", ("const", 0x04, 2), word),
+        ("asg", "y", ("mem", ("const", _CUR_ROW, 2), 1)),
+        ("asg", "b", _deref(_zext("y"))),
+        ("st", ("const", 0xD400, 2), ("loc", "b")),
+        (
+            "if",
+            "if",
+            _flag("b", 0x80),
+            [
+                _step1(_CUR_ROW),
+                ("asg", "p", _deref(live)),
+                ("st", ("const", _PARM, 2), ("loc", "p")),
+            ],
+            [],
+        ),
+        _step1(_CUR_ROW),
+        ("asg", "t", _deref(live)),
+        (
+            "if",
+            "if",
+            ("op", "INT_EQUAL", (("loc", "t"), ("const", term, 1)), 1),
+            [("st", ("const", _CUR_ROW, 2), ("const", 0, 1))],
+            [],
+        ),
+    ]
+    decls = [
+        dict(_table(_SONG, size), mut=[], role=None),
+        dict(_table(_SLO, len(blocks)), mut=[], role=("lo", _SHI)),
+        dict(_table(_SHI, len(blocks)), mut=[], role=("hi", _SLO)),
+    ]
+    prog = frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=decls,
+        mem0=mem,
+        procs=[(0x1000, [], [], list(extra) + stmts + [("ret",)])],
+    )
+    return mem, prog
+
+
+def _charts(prog):
+    diag = Counter()
+    return T._charts(prog, T._banks(prog), None, diag), diag
+
+
+def test_a_region_runs_to_the_byte_the_program_text_compares_for():
+    """The declaration floors the extent; the terminator compare is what ends it."""
+    _mem, prog = _songprog()
+    charts, diag = _charts(prog)
+    assert len(charts) == 1 and charts[0].terms == (0xFF,)
+    assert [b.size for b in charts[0].blocks] == [4, 4] and diag["song_regions"] == 2
+    assert charts[0].cursor == _CUR_ROW
+
+
+def test_a_terminator_past_the_declared_extent_extends_the_region():
+    """The declared size is a floor: the region runs on to the terminator the text names."""
+    _mem, prog = _songprog(data=(0x01, 0x02, 0x01, 0x04, 0x01, 0x06, 0xFF), size=4)
+    charts, _diag = _charts(prog)
+    assert [b.size for b in charts[0].blocks] == [7, 7]
+    assert [len(b.rows) for b in charts[0].blocks] == [6, 6]
+
+
+def test_the_row_cursor_steps_once_per_walked_increment():
+    """A row byte whose parameter bit is set takes three bytes, one per guarded step."""
+    _mem, prog = _songprog(data=(0x81, 0x22, 0x03, 0x05, 0x06, 0xFF), size=6)
+    rows = _charts(prog)[0][0].blocks[0].rows
+    assert [off for off, _f in rows] == [0, 2, 3, 4]
+    assert [[v for _o, v, _c in f] for _off, f in rows] == [[0x81, 0x22], [0x03], [0x05], [0x06]]
+
+
+def test_a_regions_row_fields_are_the_masks_the_text_tests_on_its_own_byte():
+    """The mask whose arm steps the cursor further is what takes a parameter byte."""
+    _mem, prog = _songprog()
+    assert _charts(prog)[0][0].roles[1] == {0x80: "parameter"}
+
+
+def test_a_region_the_text_compares_no_byte_of_is_refused():
+    """Without a walked comparison there is no terminator, so there is no region."""
+    _mem, prog = _songprog()
+    stmts = [s for s in prog.procs[0][3] if not (s[0] == "if" and s[2][1] == "INT_EQUAL")]
+    bad = frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=prog.data_decls,
+        mem0=prog.mem0,
+        procs=[(0x1000, [], [], stmts)],
+    )
+    charts, diag = _charts(bad)
+    assert charts == [] and diag["song_no_terminator"] == 1
+
+
+def test_the_song_rides_the_graph_and_carries_no_observation():
+    """``Graph.charts`` is declared data at program-text offsets: no frame is read."""
+    _mem, prog = _songprog()
+    graph = T._graph(prog, None, *T._observe(prog, {}, 8))[0]
+    assert len(graph.charts) == 1
+    assert graph.charts[0].blocks[0].data == (0x81, 0x22, 0x03, 0xFF)
