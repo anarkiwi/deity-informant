@@ -1438,9 +1438,10 @@ def _reloads(prog, banks):
     A recovered divider (``_clocks``) is reloaded either with a program immediate or
     from a declared byte at a non-``mut`` offset; nothing else is a divisor. A reload
     of one divides nothing — that is the root frame clock — and is refused."""
-    out, env = {c.base: set() for c in _clocks(prog) if c.role == "divider"}, {}
-    for c in _clocks(prog):
-        d = None if c.base not in out or c.reload is None else _decl_of(c.reload, banks)
+    clocks = [c for c in _clocks(prog) if c.role == "divider"]
+    out, env = {c.base: set() for c in clocks}, {}
+    for c in clocks:
+        d = None if c.reload is None else _decl_of(c.reload, banks)
         if d is not None and (c.reload - d[0]) % _record(d[1], d[2]) not in d[3]:
             out[c.base].add(int(prog.mem0[c.reload]))
     for s in _stmts(prog):
