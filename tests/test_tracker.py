@@ -29,6 +29,9 @@ def _tune(stem, parent):
     ]
 
 
+_LONG = 1200  # frames enough for a tune to reach past its opening bars
+
+
 def _lifted(sid, subtune, frames=200):
     """``(prog, trace, nframes)`` for a corpus tune: the tracker's whole input."""
     mem, _load, init, play = load_psid(sid.read_bytes())
@@ -84,7 +87,7 @@ def test_ramp_wraps_at_its_bound():
 
 def test_a_pair_routed_ramp_carries_into_its_high_register():
     """One 16-bit emit writes both halves; the carry is the word's own, mask applied."""
-    nodes = [T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0x7F))]
+    nodes = [T.Generator(("RAMP", 0x00F0, 0x20, 0x10000, ()), T.FRAME, T.pair(2, 3, 0x7F))]
     recs = T.eval_graph(T.Graph(nodes), 3)
     got = [dict(w for sec in rec for w in sec) for rec in recs]
     assert got == [{2: 0xF0, 3: 0x00}, {2: 0x10, 3: 0x01}, {2: 0x30, 3: 0x01}]
@@ -94,16 +97,16 @@ def test_a_pair_routed_ramp_carries_into_its_high_register():
 
 def test_mutation_a_wrong_pair_step_moves_both_halves():
     """The pair is generated: perturb the step and the whole stream moves."""
-    good = T.Graph([T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    good = T.Graph([T.Generator(("RAMP", 0x00F0, 0x20, 0x10000, ()), T.FRAME, T.pair(2, 3, 0xFF))])
     base = T.eval_graph(good, 3)
-    bad = T.Graph([T.Generator(("RAMP", 0x00F0, 0x21, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    bad = T.Graph([T.Generator(("RAMP", 0x00F0, 0x21, 0x10000, ()), T.FRAME, T.pair(2, 3, 0xFF))])
     assert F.diff(T.eval_graph(bad, 3), base) is not None
 
 
 def test_a_pair_route_refuses_a_masked_owner_on_either_register():
     """A pair owns both whole bytes, so a masked generator on one is two owners of a bit."""
     nodes = [
-        T.Generator(("RAMP", 0, 1, 0x10000), T.FRAME, T.pair(2, 3, 0xFF)),
+        T.Generator(("RAMP", 0, 1, 0x10000, ()), T.FRAME, T.pair(2, 3, 0xFF)),
         T.lookup([0x0F], T.FRAME, 3, mask=0x0F),
     ]
     with pytest.raises(T.TrackerError):
@@ -208,6 +211,60 @@ def test_raw_floor_reproduces_frameprog_on_fuzz_players(p):
     assert F.diff(T.eval_graph(g, nframes), T.oracle(prog, trace, nframes)) is None
     cov = T.coverage(g, nframes)
     assert cov.total == sum(len(fr) for fr in frames) and cov.interp == 0
+
+
+def test_a_row_read_is_paired_with_the_edge_that_produced_it():
+    """Three rows cut inside one frame read three rows, not the last one three times."""
+    nodes = [
+        T.edge((3,)),
+        T.indexer(("SELECT", (2, 0, 1), ()), ("event", 0)),
+        T.select((0x11, 0x22, 0x33), ("node", 1), ("event", 0), 5),
+    ]
+    got = [w[1] for rec in T.eval_graph(T.Graph(nodes), 1) for sec in rec for w in sec]
+    assert got == [0x33, 0x11, 0x22]  # the index node's own first, second and third emit
+
+
+def test_an_index_node_that_does_not_fire_holds_what_it_last_emitted():
+    """A cell the machine did not rewrite still holds its byte, and so does an index node."""
+    nodes = [
+        T.edge((1, 0, 1)),
+        T.edge((1, 1, 1)),
+        T.indexer(("SELECT", (0, 2), ()), ("event", 0)),
+        T.select((0x11, 0x22, 0x33), ("node", 2), ("event", 1), 5),
+    ]
+    got = [w[1] for rec in T.eval_graph(T.Graph(nodes), 3) for sec in rec for w in sec]
+    assert got == [0x11, 0x11, 0x33]  # frame 1 reads the row frame 0 left
+
+
+def test_a_divider_whose_divisor_is_another_generators_emit():
+    """A period no constant names: the row's own duration field, reloaded at every tick."""
+    nodes = [
+        T.div(1),
+        T.indexer(("SELECT", (2, 3, 1), ()), ("event", 2)),
+        T.div(("node", 1), ("event", 0), phase=1),
+        T.select((0x10, 0x20, 0x30), (), ("event", 2), 5),
+    ]
+    recs = T.eval_graph(T.Graph(nodes), 20)
+    at = [f for f, r in enumerate(recs) for sec in r for _w in sec]
+    assert [b - a for a, b in zip(at, at[1:])] == [2, 3, 1, 2, 3, 1, 2, 3, 1]
+
+
+def test_a_generated_divisor_must_name_an_index_node():
+    """The divisor is a value, so it comes from an index node exactly as a row does."""
+    good = [T.indexer(("SELECT", (2,), ()), T.FRAME), T.div(("node", 0), T.FRAME)]
+    assert T.eval_graph(T.Graph(good), 4) is not None
+    for bad in (("node", 9), ("node", 1), ("prev",)):
+        nodes = list(good)
+        nodes[1] = nodes[1]._replace(transfer=("DIV", bad, 0))
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(nodes), 4)
+
+
+def test_a_turning_ramp_names_a_bound_to_turn_in():
+    """`RAMP` carries a turn field; a turn with no wrap to turn in is not evaluable."""
+    for bad in (("RAMP", 0, 1, 0x100), ("RAMP", 0, 1, 0, (1, 2)), ("RAMP", 0, 1, 0x100, (1,))):
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph([T.Generator(bad, T.FRAME, T.plane(0))]), 4)
 
 
 # ---- 2. pitch from the declarations ---------------------------------------------
@@ -666,6 +723,11 @@ def _pw(prog, n=6, reg=2):
     return [w[1] for rec in recs for sec in rec for w in sec if w[0] == reg], cov
 
 
+def _byte_acc(cell, signs=(1,)):
+    """A byte-wide accumulator over one cell: no high half, no turn, no step mask."""
+    return T.Acc((cell,), (0x100,), (), frozenset({0xFF}), frozenset(signs))
+
+
 def _ramps(prog, n=6):
     """The RAMP transfers the rendered graph carries."""
     graph = T._graph(prog, None, *T._observe(prog, {}, n))[0]
@@ -679,7 +741,7 @@ def test_pw_sweep_is_a_ramp_over_a_ram_staged_declared_step():
     assert cov.planes["pw"] == (6, 6) and T.gate(prog, {}, 6) is None
     assert vals == [0x16, 0x2C, 0x42, 0x58, 0x6E, 0x84]
     assert cov.classes["pw"]["ramp"] == 5 and cov.classes["pw"]["seed"] == 1
-    assert _ramps(prog) == [("RAMP", 0x16, 0x16, 0x100)]
+    assert _ramps(prog) == [("RAMP", 0x16, 0x16, 0x100, ())]
 
 
 def test_the_step_origin_is_read_per_execution_not_off_a_frame_snapshot():
@@ -688,7 +750,7 @@ def test_the_step_origin_is_read_per_execution_not_off_a_frame_snapshot():
     pools = T._observe(prog, {}, 6)[3][0]
     assert [sorted(p[_ACC]) for p in pools] == [sorted((_ACC, _STAGE, 0x2001))] * 6
     assert mem[0x2005] == 0x33 != mem[0x2001]  # what a frame-end snapshot would name
-    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (_ACC, 1)}
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (_byte_acc(_ACC), 0)}
 
 
 def test_perturbing_the_declared_step_changes_the_generated_sweep():
@@ -697,14 +759,14 @@ def test_perturbing_the_declared_step_changes_the_generated_sweep():
     mem[0x2001] = 0x05
     vals, cov = _pw(prog)
     assert cov.planes["pw"] == (6, 6) and vals == [0x05, 0x0A, 0x0F, 0x14, 0x19, 0x1E]
-    assert _ramps(prog) == [("RAMP", 0x05, 0x05, 0x100)]  # seed and step are the declared byte
+    assert _ramps(prog) == [("RAMP", 0x05, 0x05, 0x100, ())]  # seed and step are the declared byte
 
 
 def test_a_sweep_whose_step_is_no_declared_byte_stays_residual():
     """A step the declarations do not hold is not a parameter: the run stays in RAW."""
     assert _pw(_sweepprog()[1])[1].planes["pw"] == (6, 6)  # the same sweep, step declared
     _mem, bare = _sweepprog(src=_RAM)  # the same stream, staged from an undeclared cell
-    assert T._accumulators(bare, T._acc_sites(bare)[2]) == {2: (_ACC, 1)}
+    assert T._accumulators(bare, T._acc_sites(bare)[2]) == {2: (_byte_acc(_ACC), 0)}
     assert _pw(bare)[0] == _pw(_sweepprog()[1])[0]
     assert _pw(bare)[1].planes["pw"] == (0, 6) and T.gate(bare, {}, 6) is None
 
@@ -740,7 +802,7 @@ def test_a_re_staged_step_cuts_the_run_and_seeds_the_next_one():
         "rel": 0,
         "arr": 0,
     }
-    assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100), ("RAMP", 0x53, 0x33, 0x100)]
+    assert _ramps(prog, 4) == [("RAMP", 0x10, 0x10, 0x100, ()), ("RAMP", 0x53, 0x33, 0x100, ())]
 
 
 def test_a_run_the_ramp_cannot_regenerate_is_refused_whole():
@@ -759,7 +821,7 @@ def test_the_cutoff_sweep_is_the_same_accumulator_as_the_pulse_sweep():
     vals, cov = _pw(prog, reg=0x16)
     assert vals == [0x16, 0x2C, 0x42, 0x58, 0x6E, 0x84] and T.gate(prog, {}, 6) is None
     assert cov.planes["filter"] == (6, 6) and cov.classes["filter"]["ramp"] == 5
-    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {0x16: (_ACC, 1)}
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {0x16: (_byte_acc(_ACC), 1)}
 
 
 def test_mutation_wrong_ramp_step_or_seed_is_detected():
@@ -769,10 +831,163 @@ def test_mutation_wrong_ramp_step_or_seed_is_detected():
     graph = T._graph(prog, None, *T._observe(prog, {}, 6))[0]
     assert F.diff(T.eval_graph(graph, 6), T.oracle(prog, {}, 6)) is None
     i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "RAMP")
-    for bad in (("RAMP", 0x16, 0x17, 0x100), ("RAMP", 0x17, 0x16, 0x100)):
+    for bad in (("RAMP", 0x16, 0x17, 0x100, ()), ("RAMP", 0x17, 0x16, 0x100, ())):
         nodes = list(graph.nodes)
         nodes[i] = nodes[i]._replace(transfer=bad)
         assert F.diff(T.eval_graph(T.Graph(nodes), 6), T.oracle(prog, {}, 6)) is not None
+
+
+_PWL, _PWH, _DIR, _RATE, _SL, _SH = 0x0800, 0x0801, 0x0802, 0x0900, 0x0A00, 0x0A01
+
+
+def _c(v, n=1):
+    return ("const", v, n)
+
+
+def _m(a):
+    return ("mem", _c(a, 2), 1)
+
+
+def _op(name, *kids):
+    return ("op", name, tuple(kids), 1)
+
+
+def _st(addr, val):
+    return ("st", _c(addr, 2), val)
+
+
+def _turnprog(pulse=0xE2, mask=0xE0, wide=0x0F, up=0x0E, down=0x08, decl=None, walk=True):
+    """``(image, program)``: a 12-bit accumulator swept both ways between two bounds.
+
+    The shape every 6502 pulse sweep has: a step masked out of a declared byte, a low byte
+    and the byte above it that takes its carry, and a direction cell the text steps where
+    the new high byte equals an immediate it compares against."""
+    mem = bytearray(0x10000)
+    mem[0x2001] = pulse
+    carry = _op("INT_CARRY", _m(_RATE), _m(_PWL))
+    borrow = _op(
+        "INT_SUB",
+        _c(1),
+        _op(
+            "INT_LESSEQUAL",
+            ("op", "INT_ZEXT", (_m(_RATE),), 2),
+            ("op", "INT_ZEXT", (_m(_PWL),), 2),
+        ),
+    )
+    hi_up = _op("INT_AND", _op("INT_ADD", _m(_PWH), carry), _c(wide))
+    hi_dn = _op("INT_AND", _op("INT_SUB", _m(_PWH), borrow), _c(wide))
+    stmts = [
+        _st(_RATE, _op("INT_AND", _m(0x2001), _c(mask))),
+        (
+            "if",
+            "if",
+            _op("INT_EQUAL", _m(_DIR), _c(0)),
+            [
+                _st(_SL, _op("INT_ADD", _m(_RATE), _m(_PWL))),
+                _st(_SH, hi_up),
+                (
+                    "if",
+                    "if",
+                    _op("INT_EQUAL", hi_up, _c(up)),
+                    [_st(_DIR, _op("INT_ADD", _m(_DIR), _c(1)) if walk else _c(1))],
+                    [],
+                ),
+            ],
+            [
+                _st(_SL, _op("INT_SUB", _m(_PWL), _m(_RATE))),
+                _st(_SH, hi_dn),
+                (
+                    "if",
+                    "if",
+                    _op("INT_EQUAL", hi_dn, _c(down)),
+                    [_st(_DIR, _op("INT_SUB", _m(_DIR), _c(1)) if walk else _c(0))],
+                    [],
+                ),
+            ],
+        ),
+        _st(_PWH, _m(_SH)),
+        _st(0xD403, _m(_SH)),
+        _st(_PWL, _m(_SL)),
+        _st(0xD402, _m(_SL)),
+        ("ret",),
+    ]
+    return mem, frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        decls=[decl or _table(0x2000, 8, stride=4)],
+        mem0=mem,
+        procs=[(0x1000, [], [], stmts)],
+    )
+
+
+_TURN_N = 40  # long enough that the sweep turns at both bounds
+
+
+def test_a_carry_makes_two_cells_one_accumulator_and_the_sweep_a_pair_route():
+    """The high byte takes the low byte's carry, so one emit writes both pw registers."""
+    _mem, prog = _turnprog()
+    acc = T._accumulators(prog, T._acc_sites(prog)[2])
+    a = acc[2][0]
+    assert a.cells == (_PWL, _PWH) and acc[3] == (a, 1)  # the plane's low register, its high
+    assert a.wraps == (0x100, 0x10) and a.turn == (8, 14)  # the AND, and the two compares
+    assert a.masks == frozenset({0xE0}) and a.signs == frozenset({1, -1})
+    graph = T._graph(prog, None, *T._observe(prog, {}, _TURN_N))[0]
+    got = [(g.transfer, g.route) for g in graph.nodes if g.transfer[0] == "RAMP"]
+    assert got == [(("RAMP", 0xE0, 0xE0, 0x1000, (8, 14)), T.pair(2, 3, 0x0F))]
+    cov = T.render(prog, {}, _TURN_N)[2]
+    assert cov.planes["pw"] == (2 * _TURN_N, 2 * _TURN_N) and T.gate(prog, {}, _TURN_N) is None
+    assert cov.classes["pw"]["ramp"] == 2 * _TURN_N - 2  # the two observed bytes are the seed
+
+
+def test_the_sweep_turns_at_both_bounds_and_the_law_sees_it():
+    """The emitted high byte reaches both compared immediates and reverses at each."""
+    _mem, prog = _turnprog()
+    recs = T.render(prog, {}, _TURN_N)[0]
+    highs = [w[1] for rec in recs for sec in rec for w in sec if w[0] == 3]
+    turns = [
+        i
+        for i in range(1, len(highs) - 1)
+        if (highs[i] - highs[i - 1]) * (highs[i + 1] - highs[i]) < 0
+    ]
+    assert len(turns) >= 2 and highs[turns[0]] == 0x0E and highs[turns[1]] == 0x08
+    assert max(highs) == 0x0E and min(highs[turns[0] :]) == 0x08  # neither bound overshot
+
+
+def test_mutation_a_wrong_turn_bound_or_wrap_fails_the_law():
+    """Both bounds and the high byte's own width are load-bearing, and the law says so."""
+    _mem, prog = _turnprog()
+    graph = T._graph(prog, None, *T._observe(prog, {}, _TURN_N))[0]
+    assert F.diff(T.eval_graph(graph, _TURN_N), T.oracle(prog, {}, _TURN_N)) is None
+    i = next(i for i, g in enumerate(graph.nodes) if g.transfer[0] == "RAMP")
+    for bad in (
+        ("RAMP", 0xE0, 0xE0, 0x1000, (8, 13)),  # turns down one high byte early
+        ("RAMP", 0xE0, 0xE0, 0x1000, (9, 14)),  # turns up one high byte early
+        ("RAMP", 0xE0, 0xE0, 0x1000, ()),  # a wrap where the text names a turn
+        ("RAMP", 0xE0, 0xE0, 0x100, (8, 14)),  # the low byte's width, not the pair's
+    ):
+        nodes = list(graph.nodes)
+        nodes[i] = nodes[i]._replace(transfer=bad)
+        assert (
+            F.diff(T.eval_graph(T.Graph(nodes), _TURN_N), T.oracle(prog, {}, _TURN_N)) is not None
+        )
+
+
+def test_a_bound_no_stepped_direction_cell_guards_is_not_a_turn():
+    """A bound is the compare that guards the direction cell's own *step*, not any compare."""
+    _mem, plain = _turnprog(walk=False)  # the same compares, setting the cell instead
+    a = T._accumulators(plain, T._acc_sites(plain)[2])[2][0]
+    assert a.cells == (_PWL, _PWH) and a.turn == ()  # still one 16-bit cell, with no turn
+    assert T.gate(plain, {}, _TURN_N) is None
+
+
+def test_the_step_is_the_declared_byte_under_the_mask_the_text_applies():
+    """`prate = pulse & $e0`: the run is refused where no declared byte holds the step."""
+    _mem, prog = _turnprog(pulse=0xE2)
+    assert T.render(prog, {}, _TURN_N)[2].planes["pw"] == (2 * _TURN_N, 2 * _TURN_N)
+    assert T._accumulators(prog, T._acc_sites(prog)[2])[2][0].masks == frozenset({0xE0})
+    _bad, other = _turnprog(decl=_muted(_table(0x2000, 8, stride=4), [1]))
+    assert T.render(other, {}, _TURN_N)[2].planes["pw"][0] == 0  # a play-written lane
+    assert T.gate(other, {}, _TURN_N) is None
 
 
 # ---- 3d. the filter plane: $15-$18 off the store statement, in its own class ------
@@ -1600,6 +1815,70 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
     assert cov.classes["freq"]["lane"] > 600 and cov.classes["freq"]["imm"] == 0
 
 
+# ---- 3k. universality: what the graph *produces*, ratcheted so it cannot slip back ----
+# The law passes at zero generation — `from_frames` is exactly that floor — so law-PASS is
+# a soundness check and never a universality one. These are the figures that measure the
+# goal: what is replayed rather than produced, what reaches the output shallowly, how many
+# fires no generator makes, and how much is read at a row the arrangement generates.
+# Measured at _LONG frames, which is where Commando's turning pulse sweep and its song
+# chain both run; the 200-frame tests above reach neither. It does NOT cover the whole
+# tune's figures, which docs/tracker.md §6 reports.
+_COMMANDO = {"total": 10489, "residual": 668, "shallow": 991, "observed_fires": 6974, "arr": 598}
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_universality_does_not_regress(sid, subtune):
+    """Residual, shallow emits and observed fires may only fall; generated rows may only rise.
+
+    ``total`` is asserted by **equality**, not by a bound: it is the tune's own write count
+    at a fixed frame count, so it is a constant of the ground truth and not a figure the
+    recovery is entitled to move. A denominator that shrinks inflates every share printed
+    over it, which is how a write leaves the books while the law still passes."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    cov = T.render(prog, trace, nf)[2]
+    shallow = sum(c["imm"] + c["seed"] for c in cov.classes.values())
+    fires = cov.triggers[1] - cov.triggers[0]
+    assert cov.total == _COMMANDO["total"]  # ground truth, not ours to move
+    assert cov.interp + cov.residual == cov.total  # every write is on one side or the other
+    assert cov.residual <= _COMMANDO["residual"]  # bytes replayed, not produced
+    assert shallow <= _COMMANDO["shallow"]  # a constant, or a byte a sweep starts from
+    assert fires <= _COMMANDO["observed_fires"]  # fires the EDGE floor carries
+    assert sum(c["arr"] for c in cov.classes.values()) >= _COMMANDO["arr"]
+    assert cov.triggers[0] > 0 and T.gate(prog, trace, nf) is None
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_the_rendered_header_keeps_the_same_books_as_the_recovery(sid, subtune):
+    """The artifact's own replay must agree with ``_run``: same denominator, no negative class.
+
+    ``trackertext._scan`` is a *second* evaluator, so it can silently disagree — and it did:
+    building ``_Fires`` without a value view left a generated divisor with no divisor, and
+    every stream it triggers fell out of the artifact's books entirely."""
+    from deity_informant import trackertext as X  # pylint: disable=import-outside-toplevel
+
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    got = T._observe(prog, trace, nf)
+    graph = T._graph(prog, T._pitch(prog, T._freq_words(got[0])), *got)[0]
+    cov = T.coverage(graph, nf)  # the recovery's own books, off `_run`
+    _keys, scan = X._scanned(graph, nf, prog)  # the artifact's, off its own replay
+    assert (scan.cov.total, scan.cov.interp) == (cov.total, cov.interp)
+    assert scan.cov.planes == cov.planes and scan.cov.triggers == cov.triggers
+    for plane in scan.cov.planes:
+        assert min(X._classes(graph, scan.cov, plane).values()) >= 0  # a count is never negative
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_ablating_raw_leaves_the_generators_reproducing_the_tune(sid, subtune):
+    """Deleting the ``RAW`` floor is what measures universality: what the graph *produces*."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    nodes = list(graph.nodes)  # emptied in place: node indices carry rows and divisors
+    nodes[graph.raw_index()] = T.raw([])
+    got, want = T.coverage(T.Graph(nodes), nf), T.coverage(graph, nf)
+    assert got.residual == 0 and got.total == want.interp  # nothing is carried any more
+    assert got.total / want.total >= 0.80  # the share of the tune the generators produce
+
+
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
 def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, subtune):
     """$5591's +0 lane is `mut`: the play code writes it back, so it is not const data."""
@@ -1612,8 +1891,9 @@ def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, 
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["pw"] == (205, 245)  # 53 lane reads at +1, the rest the swept +0
     pw = cov.classes["pw"]
-    assert pw["lane"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
-    assert pw["lane"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
+    assert pw["arr"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
+    assert pw["lane"] == 0  # the +1 lane's rows are the song's, not the observation's
+    assert pw["arr"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
@@ -1622,13 +1902,30 @@ def test_commando_pw_sweep_is_generated_from_the_declared_step_lane(sid, subtune
     prog, trace, nf = _lifted(sid, subtune)
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["pw"][0] > 150  # 53 declared-lane emits before the sweep is generated
-    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (0x5591, 1)}
+    assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (_byte_acc(0x5591), 0)}
     assert cov.classes["pw"]["ramp"] > 100 and cov.classes["pw"]["seed"] < 20
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
     ramps = [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
     assert ramps and all(t[2] == prog.mem0[0x55A7] for t in ramps)  # the declared step byte
     lane = {prog.mem0[0x5591 + 8 * r + 6] for r in range(263 // 8)}
     assert {t[2] for t in ramps} <= lane  # every step is a byte of the declared +6 lane
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_pulse_sweep_turns_where_the_player_compares(sid, subtune):
+    """The `pulseup` sweep only plays past the opening, so it is measured where it runs."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    acc = T._accumulators(prog, T._acc_sites(prog)[2])
+    a = acc[2][0]
+    assert a.cells == (0x5591, 0x5592) and acc[3] == (a, 1)  # ins_pwl:ins_pwh, one 16-bit cell
+    assert a.wraps == (0x100, 0x10) and a.turn == (8, 14)  # and #$0f, cmp #8, cmp #$0e
+    assert a.masks == frozenset({0xFF, 0xE0}) and a.signs == frozenset({1, -1})
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    turns = [g for g in graph.nodes if g.transfer[0] == "RAMP" and g.transfer[4]]
+    assert turns and all(g.route == T.pair(g.route[1], g.route[1] + 1, 0x0F) for g in turns)
+    assert {g.transfer[3] for g in turns} == {0x1000} and {g.transfer[4] for g in turns} == {
+        (8, 14)
+    }
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
@@ -1938,7 +2235,7 @@ def test_the_pattern_is_a_declared_block_at_a_row_the_text_walks():
     vals, cov, _diag, nodes = _arr(prog)
     assert vals == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x11, 0x22]
     assert cov.planes["freq"] == (10, 10) and cov.classes["freq"]["arr"] == 10
-    assert [g.transfer for g in nodes if g.route == T.INDEX] == [("RAMP", 0, 1, 8)]
+    assert [g.transfer for g in nodes if g.route == T.INDEX] == [("RAMP", 0, 1, 8, ())]
     assert [g.transfer[2] for g in nodes if g.transfer[0] == "SELECT"] == [("node", 2)]
 
 
@@ -2014,7 +2311,7 @@ def test_mutation_a_pattern_boundary_moved_by_one_row_fails_the_law():
     nodes = list(graph.nodes)
     for i, g in enumerate(nodes):
         if g.route == T.INDEX:
-            nodes[i] = T.indexer(("RAMP", 0, 1, 7), g.trigger)
+            nodes[i] = T.indexer(("RAMP", 0, 1, 7, ()), g.trigger)
     assert F.diff(T.eval_graph(T.Graph(nodes), 10), T.oracle(prog, {}, 10)) is not None
 
 
@@ -2190,7 +2487,7 @@ def test_a_lane_is_read_at_the_row_its_own_cursor_walks():
     """Link 2: the row stops being the observed run and becomes the cursor's own RAMP."""
     mem, prog = _twoobj()
     rows, read = _chain_nodes(prog)
-    assert [g.transfer for g in rows] == [("RAMP", 0, 1, 256)] * 2
+    assert [g.transfer for g in rows] == [("RAMP", 0, 1, 256, ())] * 2
     assert [g.transfer[1] for g in read] == [tuple(mem[0x2000:0x2008]), tuple(mem[0x2008:0x2010])]
     assert [g.transfer[2] for g in read] == [("node", 1), ("node", 2)]
     assert T.gate(prog, {}, 4) is None
@@ -2246,8 +2543,8 @@ def test_mutation_a_wrong_wrap_or_step_on_the_cursor_fails_the_law():
     _mem, prog = _twoobj()
     pick = lambda g: g.route == T.INDEX  # noqa: E731  pylint: disable=unnecessary-lambda-assignment
     assert _mutate_node(prog, pick, lambda t: t) is None
-    assert _mutate_node(prog, pick, lambda t: t[:3] + (2,)) is not None  # a wrong wrap
-    assert _mutate_node(prog, pick, lambda t: t[:2] + (2, t[3])) is not None  # a wrong step
+    assert _mutate_node(prog, pick, lambda t: t[:3] + (2, ())) is not None  # a wrong wrap
+    assert _mutate_node(prog, pick, lambda t: t[:2] + (2,) + t[3:]) is not None  # wrong step
 
 
 # ---- 4j. the song: terminator-bounded regions at cursors the program text steps ---

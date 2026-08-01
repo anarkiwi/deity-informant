@@ -35,6 +35,9 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | no corpus tune carries a two-level arrangement whose orderlist *and* pattern row are both program text (§4g, §8) | this step | **false** — with the index resolved in order, Commando carries both, and the whole song comes out: 3 orderlists (64/63/123 entries) and 32 patterns (571 rows) **byte-identical to Rob Hubbard's own source**, 0 divergences. Corpus-wide the terminator-bounded region recovers **386 regions over the 649 tunes**, and the value partition is byte-identical |
 | a `DIV` phase field would open at most the 4961 fires of the 363 divider-shaped streams that sit off `n-1` (§8) | #113 | **false, by 25×** — with the divisor still required to be declared, only **9 streams (196 fires)** have a period a reload declares and a phase `n-1` misses, and the declared counter seed supplies **4** of them. The phase was never the binding link |
 | the trigger domain's residue is an arrangement problem, not a divider one (§4d, §6, §7.4) | #113 | **not where it was aimed** — of the 1101 strictly periodic streams, **989 (13608 fires) have a period no divider's reload declares at all**, and 95 more (1826 fires) only as a *product* of two declared divisors. Before a pattern can decide which tick carries a note, the tick itself has to be nameable, and on 90% of periodic streams it is not |
+| a pattern byte explains 0 SID writes, so §4g's claim is what the corpus does not carry (§4g, §6) | #116 | **the rule was wrong, not the corpus** — §4g asks whether the declared byte *is* the byte a register took, and a note or an instrument column never is: it is the row another table is read at. Routed `Index` instead, Commando's attack/decay and sustain/release lanes on all three voices come out generated — **`arr` 0 -> 6498** — from the orderlist and the patterns alone |
+| the trigger floor falls once the arrangement can decide which tick carries a note (§4d, §7.4, the two rows above) | #116 | **half true, and the other half is priced** — a `DIV` whose divisor is the row's own duration field generates **3249** of Commando's note-on fires and its tick 11751 more, 0 -> 15000. But observed fires still *rise* 81099 -> 84294, because §4c's 13780 newly generated pulse emits each need a trigger a `RAW` replay did not. Explaining a value costs a fire; the floor only falls when the sweep's own gate is generated too, and §8 names what blocks that (run fragmentation, not evidence) |
+| `Graph.charts` carries the song as declared data beside the generators (#115) | #116 | **a side-car scores zero** — the law passes at 0% generation, so "law PASS, corpus byte-identical" was satisfied perfectly by a change that generated nothing. Every coverage figure was byte-identical to the pre-#115 baseline. What the song is worth is what it *produces*, and §4k is where it began producing |
 
 The `SELECT[rel]` row is the one to read before adding to the primitive: a refusal count
 says an element *would* be used, never that anything *does* use it. The `LOOKUP` row is
@@ -447,8 +450,44 @@ and what says which byte is the machine, not a static reading of the tree.
   determined, so one stepped emit whose origin no declaration names refuses the run
   entire and not that emit. A run that predicts nothing — a single emit, or a step of
   zero — is refused for the reason `DIV(1)` is (§4d).
-- **`bound` is the store width, not a fit**: the accumulator is a byte cell, so the
-  bound is `$100` and the wrap is the register's own.
+- **`bound` is the store width, not a fit**: a byte cell's bound is `$100`, and where the
+  text stages the arithmetic in a scratch byte its own `AND`-immediate is that half's
+  width — `and #$0f` on a high byte makes the pair's bound `$1000`.
+- **Two byte cells are one 16-bit accumulator where the text takes the carry**
+  (`_carries`, `_paired_cells`). The high byte is the byte *above* the low one and its
+  store adds the carry out of the low one's own arithmetic (a 6502 borrow is the same
+  statement written `INT_LESSEQUAL`); that is the program text saying the two are one
+  number, not the two addresses happening to be adjacent and not the values they hold.
+  Such an accumulator emits through a `Pair` route, whose high mask is that
+  `AND`-immediate — §2's one route wider than a register, built by the recovery at last.
+  A byte-wide `RAMP` on the low register leaves every carry frame residual, which is what
+  Commando's whole `$D403` plane was.
+- **A `RAMP` may turn, and both bounds are compare immediates** (`_turn_of`). `RAMP` is
+  `(seed, step, bound, turn)`; `turn` is `()` for a ramp that only wraps, else
+  `(low, high)` in **high-register units** — the step goes negative where the new emit's
+  high register equals `high` and positive where it equals `low`, exactly the 6502's own
+  `cmp`. The two immediates are the ones guarding the *direction cell's own step*: a
+  compare that guards a cell the text merely **sets** names no bound, because a direction
+  that cannot come back is not a turn. **A bound fitted to observed output is refused**,
+  as a fitted step is.
+- **A turn is history-dependent and the evaluation stays linear** (`_turned`, `_value`).
+  `_emit` is a pure function of the trigger count, so a turning ramp recomputed from its
+  seed each fire is O(n^2); `_run` carries `(count, value, direction)` per node and steps
+  forward one fire at a time. docs/tracker-text.md records that same mistake costing
+  45.8s -> 17.7s once already.
+- **One store adds and another subtracts, and the sign is the store's** (`_acc_sites`).
+  The signs a cell is stepped with are a *set*: `signs.setdefault` let the first store seen
+  fix the sign and `_acc_streams` then computed the wrong declared step for every run in
+  the other direction.
+- **The arithmetic can happen in a scratch byte** (`_steps_own`). A store's value is
+  followed through the locals it names *and* through the staging cells it is copied from,
+  so `pwl = scratch` where `scratch = rate + pwl` is an accumulator; the statement watched
+  is the one the arithmetic is in, which is what the origin map can answer for.
+- **The step is a declared byte under a mask the store statement names** (`_step_mask`).
+  `prate = pulse & $e0` puts the rate in the top three bits and the gate's reload in the
+  bottom five, so the declared byte and the step are not equal and byte-equality alone
+  refuses the run. The mask is the `AND`-immediate every store to the staging cell agrees
+  on, and where they do not agree the whole byte stands.
 - **The seed is observed and reported as such.** The accumulator's value is state it
   produces, not data it reads. Each run takes its seed from its own first emit and
   predicts the rest, so a re-staged step starts a new run at a new observed seed;
@@ -476,8 +515,17 @@ declared byte, but the held row is one *another* read established while the quer
 the copy the machine actually made, and where they disagree the machine is right by
 construction.
 
+Commando has **two** accumulators on one register class and the recovery keeps both.
+`fx & 8` set runs `ins_pwl += pulse` and writes `$D402` alone: a byte cell, the sweep
+§6 already reported. `fx & 8` clear runs the 12-bit one — `ins_pwl:ins_pwh`, step
+`pulse & $e0`, gated by a counter reloading from `pulse & $1f`, turning where the masked
+high byte reaches `$0e` going up and `$08` going down, writing `$D403` and `$D402`. A
+frame that writes both registers is a pair emit and a frame that writes only the low one
+is the byte accumulator's, which is the route's own arithmetic and not a segmentation:
+one emit of a `Pair` makes two writes, so a frame with one write is not one.
+
 On Commando `m_5591[idx_5518] = (m_5591[idx_5518] + idx_5507 + cflag)` feeding
-`sid.v1.pw_lo` is the sweep, and the query resolves `idx_5507` to `m_5597[t1]`, the
+`sid.v1.pw_lo` is the byte sweep, and the query resolves `idx_5507` to `m_5597[t1]`, the
 `+6` lane of the declared `$5591` bank. Perturbing the declared byte at `$55A7` moves
 the `RAMP` node's step field and the whole emitted stream with it, law green
 throughout: the sweep is generated, not replayed. tests/test_tracker.py drives the
@@ -736,6 +784,64 @@ cursor `$54EC`, pointer `$005F` over 32 patterns at cursor `$54EF`, terminator `
 fields `$1F` duration / `$20` sustain / `$40` tie / `$80` parameter — and §6 reports the
 diff against Rob Hubbard's own source.
 
+## 4k. The song as generators: a pattern byte is an index, not a register byte
+
+§4j recovers the song whole and §4g reports that a pattern byte explains **0** SID
+writes. Both are true and the reason is one sentence: §4g asks whether the declared byte
+*is* the byte a register took, and a note or instrument column never is — it is the row
+some other table is read at. The primitive already carries the edge for that (`Index`,
+§2); this section is where the recovery finally builds one.
+
+- **A byte is named by the cell it flows into, and that names the table it indexes**
+  (`_row_roles`). §4j already calls a parameter byte copied into the pitch table's cursor
+  a **note** and one copied into an instrument bank's cursor an **instrument**. Here that
+  name becomes the table the byte is the row of, so the row a note-on selects is
+  *generated* rather than observed — §7.4's stated goal, reached.
+- **A voice's rows are the patterns its own orderlist entries name** (`_song_lanes`).
+  §4j's `_chart_source` links one region's entries to another's blocks, so a voice's row
+  stream is those blocks concatenated: declared data at program-text offsets, in the order
+  the program text's own cursor reaches it. Nothing is segmented and nothing is read off
+  the row stream the machine produced.
+- **The loop needs no machinery.** `SELECT` advances modulo its table, so a song whose
+  orderlist restarts wraps by construction (§2). The table is one pass of the orderlist.
+- **Two readings of one datum, both structural** (`_song_lanes`). A row that names no
+  parameter either takes no emit at all or holds the one before it, which is what the
+  player's own cell does — a tied row writes ctrl/AD/SR with the instrument it inherits
+  and writes no pitch at all. Which reading a lane takes is settled by whether it
+  *reproduces that lane's own run*, exactly as §4i settles a cursor's rows, and never by
+  fitting bytes.
+- **Regenerate or refuse whole** (`_song_at`, `_songed`). A stream whose recovered run the
+  song does not reproduce keeps that run and is counted as `lane`; one it does reproduce
+  becomes `SELECT(lane, Node(song))` and is counted as **`arr`**, so the arrangement's
+  contribution can never hide inside the strong figure.
+- **One lane is one node** (`_singers`), however many registers read it: a voice's
+  attack/decay and its sustain/release are two reads of one instrument index, as the
+  player's own cell is one cell.
+
+**A row read must be able to be another generator's emit in the same frame** (`_Held`).
+`_run` was node-major: an index node firing three times in a frame overwrote its own value
+twice and every read of that frame saw the last row. A frame is now settled in dependency
+order — index nodes are earlier than the reads they feed (`_index_ok`) — and an emit is
+paired with the **edge** that produced it, the last value standing where a node did not
+fire that edge, which is what a cell the machine did not rewrite holds. Commando's driver
+cuts up to three rows inside one frame, one per voice.
+
+**A divider's divisor may be an emit** (`_period`, `_counted`). `DIV(n, phase)` takes
+`n = Node(j)`: the trigger domain's counterpart of the value domain's generated row, and
+the one shape a constant cannot name — a tracker row's own duration field. The divisor is
+reloaded at every tick, so the divider is a countdown rather than a modulus and a row that
+lasts one tick and one that lasts sixteen are the same generator with a different reload.
+The reload is the value the tick's own reader emits, which the frame settles *after* the
+triggers, so a tick whose reload is not in yet takes it at the next input trigger: the
+player's own order, the counter running out first and the row it then reads supplying the
+next one. `_divisor_ok` refuses a divisor no `index` node supplies, and an `index` node a
+divider reads is no longer dead.
+
+On Commando this is what it buys, measured over the whole tune: the attack/decay and
+sustain/release lanes of all three voices — **6498 emits** — stop being read at an observed
+row and are read at the row the orderlist and the patterns generate, `arr` 0 -> 6498. §6
+reports what it does not buy, and why, as a number.
+
 ## 4h. The node identity: a declared region at a cursor the program text names
 
 docs/node-partition.md measured that the frame program's **(declared region, cursor cell)**
@@ -952,10 +1058,17 @@ partitions, one per domain**, and they are never summed.
   generators assemble field by field (§4e), part declared and part program constant, and
   `rel` is a declared delta over a base the store statement names (§4f), part declared
   byte and part live value: neither of the last two is folded into a strong figure.
+  `ramp` is an emit the accumulator's declared step generates (§4c) and `seed` the one
+  observed byte a run starts from — a pair emit starts from two, one per register — and
+  `seed` is shallow for that reason. `arr` is a declared byte read at a row the
+  **arrangement generates** (§4k): the strongest evidence in the value domain, because
+  neither the byte nor the index it is read at is observed, and it is kept apart from
+  `lane` so it can never be confused with a row the observation yielded.
 - The **trigger** partition (`triggers`): `(generated, all)` fires, counted by
   `_run` off the evaluator itself. A generated fire is a `DIV` tick over a divisor the
-  play code declares (§4d) — the only strong evidence this domain has, and the only
-  evidence it admits at all. Every other fire is the `EDGE` floor.
+  play code declares (§4d), or over one the arrangement's own duration field emits
+  (§4k) — the only strong evidence this domain has, and the only evidence it admits at
+  all. Every other fire is the `EDGE` floor.
 
 ### Where the tracker stands
 
@@ -967,8 +1080,12 @@ is recovered for **582**. The 36 that do not decompile never reach this layer (1
 explained and triggers **0.098%**; the two are stated apart because they are two
 domains, and the second is smaller by a factor of 390. This is the current state,
 not a delta; the tables after it record how it was reached. (Current at **649**
-tunes reaching the gate and after §4i, the two figures are **38.81%** — 753971 of
-1942809 — and **0.099%**, 304 of 307225.)
+tunes reaching the gate and after §4c's turning pair sweep and §4k's song, the two
+figures are **39.95%** — 776164 of 1942809 — and **0.094%**, 304 of 323947. The value
+figure rises by 22193 emits, all of them `ramp` (25399 -> 44470) and `arr` (0 -> 295);
+the trigger *share* falls because generating a value costs a fire — a byte a `RAW` node
+replayed needed no trigger and a byte a generator produces does — which is the honest
+price of the value domain moving, and §8 records it as the next thing to pay off.)
 
 | plane | interpreted | of | share | strong | shallow |
 |---|---|---|---|---|---|
@@ -2160,6 +2277,73 @@ has the same shape and a different cause: the declaration `$5591` is **263** byt
 full duration, not 104, because `datadecl`'s extent runs to the next boundary above the
 highest observed read. 263 at stride 8 is 33 records. That is a declaration extent, not a
 tracker claim, and the rendering states the lane it was given.
+
+### Commando, whole tune: the two deliverables measured
+
+11750 frames, law PASS throughout, against the same tune before this step:
+
+| figure | before | after |
+|---|---|---|
+| values generated | 91268 / 117031 = 78.0% | **105048 / 117031 = 89.8%** |
+| residual (replayed) | 25763 | **11983** |
+| pulse plane | 8492 / 31563 = 26.9% | **22272 / 31563 = 70.6%** |
+| `arr` (a row the arrangement generates) | 0 | **6498** |
+| fires generated | 0 / 81099 | **15000 / 99294** |
+| fires still observed | 81099 | 84294 |
+| nodes | 1812 | 1311 |
+
+**§4c is the whole of the value move and §4k buys none of it.** The 12-bit pair sweep
+takes 13780 pulse emits a byte-wide `RAMP` could not reach, and the residual falls by
+53.5%; every emit of the +13780 is §4c's. §4k's **6498 is a reclassification, not new
+coverage** — those attack/decay and sustain/release emits were already generated, as
+`lane`, at a row the observation yielded that a declared byte happened to agree with.
+What changes is the *justification*: the row is now produced by the orderlist and the
+patterns, so the emit no longer rests on a coincidental match. That is a quality gain and
+it is reported in its own class precisely so it cannot be read as a coverage one. §4k's
+only figure that moves a total is in the other domain: the note-on divider of each voice
+is a `DIV` whose divisor is the row's own duration field, 3249 fires off the `EDGE` floor,
+with the tick that clocks it accounting for the rest of the 15000.
+
+**The denominator is ground truth and is checked as one.** `Coverage.total` is the tune's
+own write count at a fixed frame count, so `tests/test_tracker.py` asserts it by
+*equality* and asserts `interp + residual == total`; a second test pins the rendered
+artifact's own replay (`trackertext._scan`, a separate evaluator) to `_run`'s books —
+same total, same interp, same per-plane split, same trigger census, no class negative.
+That invariant exists because it was violated: `_scan` built its `_Fires` with no value
+view, a generated divisor therefore found no divisor and never ticked, and 6492 writes
+left the artifact's books entirely while the law still passed. A share printed over a
+shrinking denominator is inflated, and nothing was checking the denominator.
+
+**Observed fires rise against the pre-#116 baseline and that is measured, not hidden.**
+81099 -> 84294 is +6444 from §4c and -3249 from §4k. A write a `RAW` node replayed carries
+no trigger at all; the moment a generator produces it, it needs one. So the trigger floor
+grows with every value the layer explains until the *sweep's own gate* is generated too —
+and Commando names that gate in program text: `pdelay` reloads from `pulse & $1f`, a
+declared byte under a mask, which is exactly `DIV(Node)` over the rate lane at the song's
+own instrument index. What blocks it today is not evidence but **run fragmentation**: the
+sweep is 597 runs because each run's seed is an observed byte, so no single divider's fire
+stream is any run's. Merging them needs the accumulator expressed relative to `Prev`
+(§4f's route, applied to §4c's transfer), which would also retire the 1221 observed seeds.
+That is one measured piece of work, and it is not done here.
+
+**Why one voice's sweep generates nothing, as a number.** Of the frames that write both
+pulse registers, the ones that ran **no accumulator statement at all** are 10.4% on voice
+1, **63.2%** on voice 2 and 75.7% on voice 3: those writes are the note-on copying the
+instrument's own pw bytes to `$D402`/`$D403`, not a sweep step, so the origin map has
+nothing to name and the run is refused rather than fitted. What is left on voice 2 is cut
+into 233 runs, and none has every stepped emit's origin inside a declaration. Voice 2's
+2655 lo and 1116 hi writes are therefore a *correct* refusal, and the same fragmentation
+is what the merged-run work above would address.
+
+**What §4k does not buy, as a number.** 62696 of the 69194 rows it examined are refused:
+every freq-plane row of the tune. The pitch lane is read at a note-on *and* by vibrato and
+pitch-bend within the same declared table, so the run the machine read is not the song's
+note column and the song does not reproduce it. Splitting that register between a note-on
+generator and a vibrato one needs the note-on's own frames, which is the trigger domain
+again. The ctrl lane is refused for a different reason and a smaller one: its rows carry
+the gate images §5 appends to the lane (`row + k * len(lane)`), so the song's own column is
+the row *plus a section offset*, which is the index-domain `Rel` §2 admits and nothing yet
+builds.
 
 ## 8. Known limits
 

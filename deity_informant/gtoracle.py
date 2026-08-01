@@ -235,7 +235,7 @@ class _Streams:
                 out.append(
                     (
                         tuple(counts),
-                        ("RAMP", rows[0], step, 0x10000),
+                        ("RAMP", rows[0], step, 0x10000, ()),
                         (reg, key[5], mask),
                         _FULL,
                         None,
@@ -245,7 +245,9 @@ class _Streams:
                 self._bump(reg, "seed", 2)
                 self._bump(reg, "ramp", 2 * (len(rows) - 1))
             elif kind == "ramp":
-                out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask, None, None))
+                out.append(
+                    (tuple(counts), ("RAMP", rows[0], step, 0x100, ()), reg, mask, None, None)
+                )
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
             elif kind == "imm":
@@ -413,7 +415,7 @@ def _counter(walked):
     a walk that restarts inside the window is carried unrolled, not by a wrong back-edge."""
     step = walked[1] - walked[0] if len(walked) > 1 else 0
     if step and all(b - a == step for a, b in zip(walked, walked[1:])):
-        return ("RAMP", walked[0], step, 0)
+        return ("RAMP", walked[0], step, 0, ())
     return ("SELECT", tuple(walked), ())
 
 

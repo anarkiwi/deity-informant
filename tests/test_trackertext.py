@@ -156,7 +156,8 @@ def test_the_note_lane_names_notes_and_factors_out_the_figure():
 def test_the_coverage_split_reports_the_evidence_classes_and_the_residual_share():
     """Strong (lane/gate/ramp), shallow (imm/seed) and the note class are never folded."""
     text = _text()
-    row = ["waveform", "14", "14", "100.0%", "|", "2", "5", "0", "|", "7", "0", "|", "0", "|", "0"]
+    row = ["waveform", "14", "14", "100.0%"]
+    row += ["|", "0", "2", "5", "0", "|", "7", "0", "|", "0", "|", "0"]  # arr, lane, gate, ramp
     assert _line(text, "waveform").split() == row
     assert _line(text, "pitch  ").split()[-1] == "16"  # the note lane: its own class
     assert _line(text, "all").split()[1:4] == ["41", "44", "93.2%"]
@@ -169,7 +170,7 @@ def test_the_residual_is_reported_per_plane_and_per_part():
     assert "values   3 writes replayed verbatim over 8 frames = 6.8% of all writes" in text
     assert "plane  filter                 3 of       3 not explained (100.0%)" in text
     assert "filter cutoff lo               2 replayed,       0 generated" in text
-    assert "timing   1 trigger streams, 7 fires" in text
+    assert "timing   1 trigger streams carry 7 observed fires; 4 of 11 fires" in text
     assert "shallow  7 program constants" in text and "1 observed bytes seeding a sweep" in text
     assert "f00000  filter cutoff lo = 16   (OBSERVED)" in text
 
@@ -351,7 +352,7 @@ def test_a_relative_route_says_it_offsets_its_register():
 def test_the_arrangement_axis_counts_a_generated_row_where_one_exists():
     """A pattern read at a row an index generator supplies is what the axis is looking for."""
     nodes = list(_graph().nodes) + [
-        T.indexer(("RAMP", 0, 1, 4), T.FRAME),
+        T.indexer(("RAMP", 0, 1, 4, ()), T.FRAME),
         T.select((0x11, 0x22, 0x33, 0x44), ("node", len(_graph().nodes)), T.FRAME, 0x15),
     ]
     side = X.Side("A", "our recovery", T.Graph(nodes), "PASS", _prog())
