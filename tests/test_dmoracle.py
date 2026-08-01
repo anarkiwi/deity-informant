@@ -236,16 +236,18 @@ def test_a_pattern_events_note_column_names_the_pitch_tables_row():
     tab = _tables([Row(WGh=0x40)])
     tab.update(_patt("note", {32: 2}))
     got = D._dm_src({("row", 0): 0}, tab, _walk({0: (1, 0)}), 0, ("pitch", "lo"), 2)
-    assert got == (("patt", "note"), 32, (0, 1))
+    assert got == (("patt", "note"), 32, (0, 1), 0)
 
 
-def test_a_relative_tr_shifts_the_note_index_and_is_refused_and_counted():
-    """`TR` with bit 7 clear is added to the voice's transpose buffer: a relative index."""
+def test_a_relative_tr_shifts_the_note_index_by_its_own_amount():
+    """`TR` with bit 7 clear is added to the note the pattern named: `SELECT[rel]`'s shift."""
     tab = _tables([Row(TR=0x05)])
-    tab.update(_patt())
+    tab.update(_patt("note", {0: 2}))
     walk = _walk({0: (0, 0)})
-    assert D._dm_src({("row", 0): 0}, tab, walk, 0, ("pitch", "lo"), 0) is None
-    assert walk["refused"] == {"transpose": 1}
+    got = D._dm_src({("row", 0): 0}, tab, walk, 0, ("pitch", "lo"), 7)
+    assert got == (("patt", "note"), 0, (0, 0), 5)  # note 2 + TR 5 = index 7
+    assert D._dm_src({("row", 0): 0}, tab, walk, 0, ("pitch", "lo"), 8) is None
+    assert walk["refused"] == {"arpeggio": 1}  # a row the shifted column does not name
 
 
 def test_a_slot_column_names_the_sidtab_row_an_instrument_lane_reads():
@@ -253,7 +255,7 @@ def test_a_slot_column_names_the_sidtab_row_an_instrument_lane_reads():
     tab = _tables([Row(AD=0x18), Row(AD=0x22)])
     tab.update(_patt("slot_a", {0: 1}))
     got = D._dm_src({}, tab, _walk({0: (0, 0)}), 0, ("ins", "ad"), 1)
-    assert got == (("patt", "slot_a"), 0, (0, 0))
+    assert got == (("patt", "slot_a"), 0, (0, 0), 0)
 
 
 def test_a_pattern_position_the_bus_never_named_is_refused_not_guessed():

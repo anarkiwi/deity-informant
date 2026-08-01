@@ -64,21 +64,19 @@ def _bump(counter, why):
 
 
 def _patt_src(tables, key, row, want, group, refused, shift=0, why="pattern_row"):
-    """The pattern row whose column ``key`` names ``want``, or None, refusal priced.
+    """``(lane, row, group, shift)`` where column ``key`` plus ``shift`` names ``want``.
 
-    A transpose shifts the pitch table's *index* and an index route carries no delta,
-    so every emit under a nonzero shift is refused rather than fitted, and counted apart."""
+    A transpose shifts the row a table is read at — the index-domain relative of
+    docs/tracker.md §2: the column's value is the base, the shift the delta, the emit
+    ``SELECT[rel]``. A row the shifted column does not reproduce is refused, priced."""
     lane = tables[key]
     if row is None or not 0 <= row < len(lane):
         _bump(refused, "no_" + why)
         return None
-    if shift:
-        _bump(refused, "transpose")
-        return None
-    if lane[row] != want:
+    if lane[row] + shift != want:
         _bump(refused, why)
         return None
-    return (key, row, group)
+    return (key, row, group, shift)
 
 
 def _table_of(tables, cell):
@@ -160,13 +158,13 @@ class _Streams:
         _reg, kind, _lane, _step, _mask, arr = key
         if arr is None or kind not in ("select", "ctrl"):
             return None
-        src_lane, _grp = arr
+        src_lane, _grp, shift = arr
         tab = () if src_lane == _COUNTER else self.tables[src_lane]
         if max(counts) > 1 or any(s is None for s in srcs):
             _bump(self.refused, "two_emits_one_row")
         elif src_lane == _COUNTER:
             return (_COUNTER, tuple(rows))
-        elif any(not 0 <= s < len(tab) or tab[s] != r for s, r in zip(srcs, rows)):
+        elif any(not 0 <= s < len(tab) or tab[s] + shift != r for s, r in zip(srcs, rows)):
             _bump(self.refused, "row_not_declared")
         else:
             return (src_lane, tuple(srcs))
@@ -208,7 +206,7 @@ class _Streams:
                         reg,
                         mask,
                         None,
-                        feeder and feeder + (key[5][1],),
+                        feeder and feeder + key[5][1:],
                     )
                 )
         return out
@@ -255,7 +253,8 @@ def _key(reg, cell):
     if cell.kind == "rel":  # a relative stream is keyed by both its lanes and its sign
         base = None if cell.base is None else cell.base[0]
         return (reg, "rel", (cell.lane, base), cell.step, cell.mask, None)
-    return (reg, cell.kind, cell.lane, 0, cell.mask, cell.src and cell.src[::2])
+    src = cell.src and (cell.src[0], cell.src[2], cell.src[3])  # lane, group, shift
+    return (reg, cell.kind, cell.lane, 0, cell.mask, src)
 
 
 def _rel_keys(native, frames, tables):
@@ -352,11 +351,11 @@ def _counter(walked):
 def _arranged(nodes, counts, transfer, route, arr, ctx):
     """Append the arrangement chain that generates a stream's rows, then its plane node.
 
-    The row counter names the pattern row, the pattern generator reads its own column
-    at that row, and the plane generator reads its table at what the pattern names —
-    one index edge per link, and one chain shared by every reader of the same walk."""
+    The row counter names the pattern row, the pattern generator reads its own column at
+    that row, and the plane generator reads its table at what the pattern names — shifted
+    by the transpose where the arrangement carries one, which is ``SELECT[rel]`` (§2)."""
     tables, edges, census, made = ctx
-    src_lane, walked, group = arr
+    src_lane, walked, group, shift = arr
     trig = ("event", edges[counts])
     key = (counts, src_lane, walked)
     if key not in made:
@@ -366,7 +365,10 @@ def _arranged(nodes, counts, transfer, route, arr, ctx):
                 tracker.indexer(("SELECT", tuple(tables[src_lane]), ("node", len(nodes) - 1)), trig)
             )
         made[key] = len(nodes) - 1
-    nodes.append(tracker.Generator(transfer[:2] + (("node", made[key]),), trig, route))
+    rows = ("node", made[key])
+    if shift:  # the transpose: the column is the base, the declared shift the delta
+        rows = ("rel", "ADD" if shift > 0 else "SUB", ("const", abs(shift)), rows)
+    nodes.append(tracker.Generator(transfer[:2] + (rows,), trig, route))
     census["groups"].add(group)
     census["rows"].update((group, r) for r in walked)
     census["emits"] += sum(counts)
@@ -495,7 +497,7 @@ def index_nodes(built):
     gen = sum(
         1
         for g in nodes
-        if g.transfer[0] == "SELECT" and len(g.transfer[2]) == 2 and g.transfer[2][0] == "node"
+        if g.transfer[0] == "SELECT" and tracker._generated(g.transfer[2])
     )
     return sum(1 for g in nodes if g.route == tracker.INDEX), gen
 
@@ -936,7 +938,7 @@ def _gt_row_src(tables, lane, row, player, v, group, refused):
     The pattern's data column is walked by a row counter; its instrument column names
     a row of the bank, which is the same index link one step further up."""
     if lane[0] == "patt":
-        return (_COUNTER, row, group)
+        return (_COUNTER, row, group, 0)
     if lane[0] == "ins":
         return _patt_src(
             tables, ("patt", "instr"), player.insrow[v], row, group, refused, 0, "instrument_row"
@@ -952,6 +954,7 @@ def _gt_voice_cells(player, tables, v, cells, refused=None):
     nsrc = None
     if freq and freq[0] == ("pitch", None):
         row, shift = player.noterow[v]
+        shift -= 0x100 if shift >= 0x80 else 0  # the driver's transpose byte, read signed
         nsrc = _patt_src(tables, ("patt", "note"), row, freq[1], group, refused, shift, "arpeggio")
     _gt_freq_cells(regs, base, freq, cells, nsrc)
     _gt_pulse_cells(regs, base, src.get("pulse"), cells)

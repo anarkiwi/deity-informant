@@ -398,12 +398,19 @@ def _arr(lane, row, value, src):
     return G.Cell("select", lane, row, value, 0, src=src)
 
 
-def _arranged(rows=(0, 1, 2), notes=(1, 2, 0)):
+def _arranged(rows=(0, 1, 2), notes=(1, 2, 0), shift=0):
     """A `Native` whose freq lane is the pitch table at the note its pattern holds."""
     pitch = (0x11, 0x22, 0x33)
     tables = {("pitch", "lo"): pitch, ("patt", "note"): tuple(notes)}
     writes = [
-        {0: _arr(("pitch", "lo"), notes[r], pitch[notes[r]], (("patt", "note"), r, (0, 7)))}
+        {
+            0: _arr(
+                ("pitch", "lo"),
+                notes[r] + shift,
+                pitch[notes[r] + shift],
+                (("patt", "note"), r, (0, 7), shift),
+            )
+        }
         for r in rows
     ]
     return _native(tables, writes)
@@ -448,8 +455,8 @@ def test_a_row_the_pattern_column_does_not_name_refuses_the_whole_stream():
     """A generated row past its table drops the write, so a stream that fails is refused."""
     tables = {("pitch", "lo"): (0x11, 0x22), ("patt", "note"): (0, 1)}
     writes = [
-        {0: _arr(("pitch", "lo"), 0, 0x11, (("patt", "note"), 0, (0, 7)))},
-        {0: _arr(("pitch", "lo"), 1, 0x22, (("patt", "note"), 0, (0, 7)))},  # row 0 names note 0
+        {0: _arr(("pitch", "lo"), 0, 0x11, (("patt", "note"), 0, (0, 7), 0))},
+        {0: _arr(("pitch", "lo"), 1, 0x22, (("patt", "note"), 0, (0, 7), 0))},  # row 0 names 0
     ]
     graph, rep = G.strict(_native(tables, writes))
     assert rep.divergence is None and rep.coverage.interp == 2
@@ -457,17 +464,40 @@ def test_a_row_the_pattern_column_does_not_name_refuses_the_whole_stream():
     assert rep.arrangement["refused_row_not_declared"] == 1
 
 
-def test_a_transpose_is_a_relative_index_the_route_cannot_carry_and_is_priced():
-    """A shifted note is refused rather than fitted, and counted on its own line."""
+def test_a_transpose_is_a_relative_row_and_emits_select_rel():
+    """The shifted read is `SELECT[rel]`: the column is the base, the shift the delta."""
+    graph, rep = G.strict(_arranged(notes=(0, 1, 0), shift=1))
+    reader = [g for g in graph.nodes if g.route == ("plane", 0)][0]
+    src = [g for g in graph.nodes if g.route == T.INDEX]
+    assert rep.divergence is None and rep.coverage.interp == 3
+    assert reader.transfer[2] == ("rel", "ADD", ("const", 1), ("node", graph.nodes.index(src[1])))
+
+
+def test_a_shift_the_column_does_not_reproduce_is_refused_and_priced():
+    """An arpeggio is not a transpose: a row off the shifted column refuses, counted."""
     refused = {}
     tables = {("patt", "note"): (5, 6)}
     got = G._patt_src(tables, ("patt", "note"), 0, 8, (0, 0), refused, 3, "arpeggio")
-    assert got is None and refused == {"transpose": 1}
+    assert got == (("patt", "note"), 0, (0, 0), 3)  # 5 + 3 == 8: the shift names it
+    assert G._patt_src(tables, ("patt", "note"), 0, 9, (0, 0), refused, 3, "arpeggio") is None
+    assert refused == {"arpeggio": 1}
     assert G._patt_src(tables, ("patt", "note"), 0, 5, (0, 0), refused) == (
         ("patt", "note"),
         0,
         (0, 0),
+        0,
     )
+
+
+def test_mutation_a_wrong_transpose_delta_moves_the_record():
+    """The transpose is generated, not replayed: perturbing the delta fails the law."""
+    graph, _rep = G.strict(_arranged(notes=(0, 1, 0), shift=1))
+    records = T.eval_graph(graph, 3)
+    at = next(i for i, g in enumerate(graph.nodes) if g.route == ("plane", 0))
+    g = graph.nodes[at]
+    rows = ("rel", "ADD", ("const", 2), g.transfer[2][3])
+    graph.nodes[at] = g._replace(transfer=g.transfer[:2] + (rows,))
+    assert F.diff(T.eval_graph(graph, 3), records) is not None
 
 
 @GT
