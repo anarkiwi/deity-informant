@@ -71,9 +71,15 @@ def _is_plane(route):
     return route[0] in ("plane", "rel")
 
 
-def div(n, trigger=FRAME):
-    """Emit one tick per ``n`` input triggers: a clock. Route is always Fire."""
-    return Generator(("DIV", n), trigger, ("fire",))
+def div(n, trigger=FRAME, phase=None):
+    """Emit one tick per ``n`` input triggers: a clock. Route is always Fire.
+
+    ``phase`` is the frame the first tick lands on modulo ``n``. It belongs to the
+    arrangement, not to the divider (§8): the post-init counter byte says where the
+    count runs out, and an unstaged cell's zero yields the default ``n-1``."""
+    return Generator(
+        ("DIV", n, (n - 1 if phase is None else phase) % max(1, n)), trigger, ("fire",)
+    )
 
 
 def lookup(seq, trigger, reg, mask=_FULL):
@@ -134,7 +140,8 @@ def _ticks(g, frame):
     kind = g.transfer[0]
     if kind == "DIV":
         n = max(1, g.transfer[1])
-        return 1 if (frame + 1) % n == 0 else 0
+        p = g.transfer[2] if len(g.transfer) > 2 else n - 1
+        return 1 if frame % n == p % n else 0
     if kind == "EDGE":
         seq = g.transfer[1]
         return seq[frame] if frame < len(seq) else 0
@@ -384,9 +391,9 @@ def eval_graph(graph, nframes):
     return _run(graph, nframes)[0]
 
 
-def _generates(counts, n):
-    """Does ``DIV(n)`` fire exactly where ``counts`` fires, and nowhere else?"""
-    return all(c == (1 if (f + 1) % n == 0 else 0) for f, c in enumerate(counts))
+def _generates(counts, n, phase):
+    """Does ``DIV(n)`` at ``phase`` fire exactly where ``counts`` fires, and nowhere else?"""
+    return all(c == (1 if f % n == phase else 0) for f, c in enumerate(counts))
 
 
 def _plane_of(reg):
@@ -1160,10 +1167,11 @@ def _buckets(obs, weight):
 
 
 def _stream(key, rows, table):
-    """One ``(counts, transfer, register, evidence)`` stream: an ``imm`` key recovers no row."""
+    """One ``(counts, transfer, register, evidence, key)`` stream: an ``imm`` recovers no row."""
     imm = key[0] == "imm"
     flat = () if imm else tuple(r for fr in rows for r in fr)
-    return tuple(len(fr) for fr in rows), ("SELECT", table, flat), key[1], "imm" if imm else "lane"
+    ev = "imm" if imm else "lane"
+    return tuple(len(fr) for fr in rows), ("SELECT", table, flat), key[1], ev, key
 
 
 def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
@@ -1216,7 +1224,7 @@ def _classes(streams, groups=(), rels=(), pairs=()):
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["rel"] += sum(counts)
     for counts, _r, _s, reg in pairs:
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["arr"] += sum(counts)
-    for counts, t, reg, ev in streams:
+    for counts, t, reg, ev, _key in streams:
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if ev == "ramp":
             cls["seed"] += 1
@@ -1273,7 +1281,7 @@ def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None):
             explained[f].add(reg)
     _pair_census(((k, len(rows)) for k, (_c, rows) in streams.items()), diag)
     out = [
-        (tuple(counts), _select(k, rows, mem0), k[1], "lane")
+        (tuple(counts), _select(k, rows, mem0), k[1], "lane", k)
         for k, (counts, rows) in streams.items()
     ]
     return out, explained
@@ -1419,42 +1427,46 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0):
                 counts[f] = 1
                 claimed.add(f)
                 explained[f].add(reg)
-            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg, "ramp"))
+            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg, "ramp", None))
     return streams, explained
 
 
 # ---- 4d. the trigger domain: a DIV whose divisor is a declared reload -------------
-def _divisors(prog, banks):
-    """Divisors the play code declares: what it reloads into a cell it steps down.
+def _reloads(prog, banks):
+    """``{divider cell: {divisor}}``: what the play code reloads into a cell it steps down.
 
     A recovered divider (``_clocks``) is reloaded either with a program immediate or
     from a declared byte at a non-``mut`` offset; nothing else is a divisor. A reload
     of one divides nothing — that is the root frame clock — and is refused."""
-    clocks = [c for c in _clocks(prog) if c.role == "divider"]
-    out, env = set(), {}
-    for c in clocks:
-        d = None if c.reload is None else _decl_of(c.reload, banks)
+    out, env = {c.base: set() for c in _clocks(prog) if c.role == "divider"}, {}
+    for c in _clocks(prog):
+        d = None if c.base not in out or c.reload is None else _decl_of(c.reload, banks)
         if d is not None and (c.reload - d[0]) % _record(d[1], d[2]) not in d[3]:
-            out.add(prog.mem0[c.reload])
-    cells = {c.base for c in clocks}
+            out[c.base].add(int(prog.mem0[c.reload]))
     for s in _stmts(prog):
         if s[0] == "asg":
             env[s[1]] = s[2]
-        elif s[0] == "st" and _base(s[1]) in cells:
+        elif s[0] == "st" and _base(s[1]) in out:
             root = _resolve(s[2], env)
             if isinstance(root, tuple) and root[0] == "const":
-                out.add(root[1] & 0xFF)
-    return tuple(sorted(n for n in out if n > 1))
+                out[_base(s[1])].add(root[1] & 0xFF)
+    return {c: {n for n in ns if n > 1} for c, ns in out.items()}
 
 
-def _clock_node(counts, divisors):
-    """A ``DIV`` over a declared divisor if one generates this edge stream, else the floor.
+def _divisors(prog, banks):
+    """Every divisor the play code declares, over all its dividers (§4d)."""
+    return tuple(sorted({n for ns in _reloads(prog, banks).values() for n in ns}))
 
-    The divisor comes from the program and the stream is checked against it; a period
-    read off the fire pattern would pass the law while explaining nothing (§4c)."""
-    for n in divisors:
-        if _generates(counts, n):
-            return div(n)
+
+def _clock_node(counts, ticks):
+    """A ``DIV`` where a declared tick generates this edge stream, else the floor.
+
+    Divisor and phase are both program text — the reload, and the counter's own
+    post-init byte — and the whole stream is checked against them in both directions;
+    a period or a phase read off the fire pattern would explain nothing (§4c)."""
+    for n, phase in ticks:
+        if _generates(counts, n, phase):
+            return div(n, phase=phase)
     return edge(counts)
 
 
@@ -2202,7 +2214,7 @@ def _object_at(objs, src):
 
 def _paired(key):
     """Is this stream key a region the program text names, rather than a whole declaration?"""
-    return len(key) > 6 and key[6] is not None
+    return key is not None and len(key) > 6 and key[6] is not None
 
 
 def _pair_census(items, diag):
@@ -2213,6 +2225,138 @@ def _pair_census(items, diag):
         tag = "pair" if key[6] else ("pair_unverified" if _paired(key) else "pair_unnamed")
         diag[tag + "_nodes"] += 1
         diag[tag + "_emits"] += n
+
+
+# ---- 4i. the sequencer: a tick clock, a row cursor, and the table it rows ---------
+Seq = namedtuple("Seq", "ticks cursors")
+
+
+def _sequencer(prog, banks):
+    """``Seq``: the tick clock and the row cursors, both read off the program text.
+
+    A tick is a declared divisor (§4d) at the phase its own counter's post-init byte
+    fixes; a cursor is a cell whose every writer the text names (``_walked``), seeded
+    by the post-init image and stepped and wrapped by the text's own rule."""
+    walk = _walked(prog)
+    ticks = {
+        (n, (int(prog.mem0[c]) - 1) % n) for c, ns in _reloads(prog, banks).items() for n in ns
+    }
+    curs = {}
+    for cell, rules in walk.items():
+        got = _arr_rule(rules)
+        if got:
+            curs[cell] = (int(prog.mem0[cell]) % got[1], got[0], got[1])
+    return Seq(tuple(sorted(ticks)), curs)
+
+
+def _beats(tags, wat, nframes):
+    """``{cursor cell: counts}``: the frames the text's own step rule advanced a cursor.
+
+    A cursor some writer reloads is refused outright — a ``RAMP`` walks and never
+    resets — so what is left is a cell the text only steps, at the frames it stepped it."""
+    out, bad = {}, set()
+    for f in range(nframes):
+        for i, cell, _srcs in wat[f] if f < len(wat) else ():
+            got = tags.get(i)
+            if got is None or cell is None or cell != got[0]:
+                continue
+            if got[1] is None or got[1][0] != "step":
+                bad.add(cell)
+            else:
+                out.setdefault(cell, [0] * nframes)[f] += 1
+    return {c: tuple(n) for c, n in out.items() if c not in bad}
+
+
+def _rows_at(cur, beats, counts):
+    """The rows a cursor stepped by ``beats`` holds at the reads ``counts`` names.
+
+    The cursor emits once per step, so a read sees the value that frame's steps left;
+    a read before the cursor has stepped at all sees nothing and refuses the stream."""
+    seed, step, wrap = cur
+    out, n = [], 0
+    for f, c in enumerate(counts):
+        n += beats[f] if f < len(beats) else 0
+        if c and not n:
+            return None
+        out += [(seed + step * (n - 1)) % wrap] * c
+    return out
+
+
+def _chain_cell(key, counts, rows, ctx, diag):
+    """``(cell, transfer, trigger)`` for the walked cursor whose steps are this row stream.
+
+    The region names its cursors and the text names each cursor's seed, step and modulus,
+    so the rows are *predicted* off the cursor's own beats; a stream the walk does not
+    reproduce keeps its recovered run, as a sweep run whose step is unnamed does."""
+    seq, beats = ctx
+    cells = [c for c in key[6] if c in seq.cursors] if _paired(key) else []
+    if not cells:
+        diag["chain_cursor_not_walked"] += 1
+        return None
+    for cell in cells:
+        if cell not in beats:
+            diag["chain_cursor_reset"] += 1
+        elif _rows_at(seq.cursors[cell], beats[cell], counts) == list(rows):
+            diag["chain_rows_generated"] += len(rows)
+            return (cell, ("RAMP",) + seq.cursors[cell], beats[cell])
+    diag["chain_rows_unwalked"] += len(rows)
+    return None
+
+
+def _chain(streams, ctx, diag):
+    """``{stream index: (cursor cell, transfer, trigger)}``: streams read at a generated row.
+
+    Links 2 and 3 of the chain: the row a table is read at stops being the run the
+    observation yielded and becomes a ``RAMP`` the program text seeds, steps and wraps,
+    beaten by the cursor's own step statement rather than by the read."""
+    out = {}
+    for i, (counts, t, _r, ev, key) in enumerate(streams):
+        if ev != "lane" or t[0] != "SELECT" or not t[2] or _generated(t[2]):
+            continue
+        got = _chain_cell(key, counts, t[2], ctx, diag)
+        if got is not None:
+            out[i] = got
+    diag["chain_cursor_nodes"] += len(set(out.values()))
+    return out
+
+
+def _rowers(chained, edges, nodes):
+    """Append one cursor ``RAMP`` per distinct chain and return where each node sits.
+
+    A cursor several registers read is one node, as the editor's own graph has it: the
+    beats are the cursor's own, so every reader of one cursor shares one row generator."""
+    rowed = {}
+    for key in chained.values():
+        if rowed.setdefault(key, len(nodes)) == len(nodes):
+            nodes.append(indexer(key[1], ("event", edges[key[2]])))
+    return rowed
+
+
+def _planed(i, st, chained, rowed, edges):
+    """One stream's plane generator, read at its recovered run or at its cursor's node."""
+    counts, t, reg, _ev, _key = st
+    if i in chained:
+        t = (t[0], t[1], ("node", rowed[chained[i]]))
+    return Generator(t, ("event", edges[counts]), ("plane", reg))
+
+
+def _attrition(seq, streams, chained, pairs, nodes, diag):
+    """Per-tune presence of each link of the chain, so the binding one is named."""
+    diag["chain_link1_tick"] = int(bool(seq.ticks))
+    diag["chain_link2_cursor"] = int(bool(seq.cursors))
+    diag["chain_link3_region"] = int(
+        any(_paired(k) and any(c in seq.cursors for c in k[6]) for *_r, k in streams)
+    )
+    diag["chain_link4_rowed"] = int(bool(chained) or bool(pairs))
+    diag["chain_link5_ticked"] = int(any(g.transfer[0] == "DIV" for g in nodes))
+    diag["chain_whole"] = int(
+        bool(seq.ticks)
+        and any(
+            g.transfer[0] == "DIV"
+            and any(h.trigger == ("event", i) and h.route == INDEX for h in nodes)
+            for i, g in enumerate(nodes)
+        )
+    )
 
 
 # ---- 5. the law: the graph's projection is frameprog's ---------------------------
@@ -2257,7 +2401,7 @@ def _observe(prog, trace, nframes, diag=None):
             signs,
             (sites, _arr_classes(prog, addrs)),
             states,
-            (objs, curs),
+            (objs, curs, _beats(ctags, wat, nframes)),
         ),
     )  # the arrangement and the cursors ride the same run: their walks are watched too
 
@@ -2283,7 +2427,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
     diag = Counter() if diag is None else diag
-    pools, signs, arrs, states, (objs, curs) = acc
+    pools, signs, arrs, states, (objs, curs, beats) = acc
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
@@ -2325,14 +2469,20 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         ]
         residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
+    seq = _sequencer(prog, banks)
+    chained = _chain(streams, (seq, beats), diag)
     edges = {}
     for counts, *_rest in streams + groups + rels + pairs:
         edges.setdefault(counts, len(edges))
-    divisors = _divisors(prog, banks)
-    nodes = [_clock_node(c, divisors) for c in edges]
-    fired = [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r, _ in pre]
+    for key in chained.values():
+        edges.setdefault(key[2], len(edges))
+    nodes = [_clock_node(c, seq.ticks) for c in edges]
+    rowed = _rowers(chained, edges, nodes)
+    fired = [_planed(i, s, chained, rowed, edges) for i, s in enumerate(streams[: len(pre)])]
     nodes += fired + [raw(residual)]
-    nodes += [Generator(t, ("event", edges[c]), ("plane", r)) for c, t, r, _ in post + lwws + ramps]
+    nodes += [
+        _planed(i + len(pre), s, chained, rowed, edges) for i, s in enumerate(streams[len(pre) :])
+    ]
     nodes += [Generator(t, ("event", edges[c]), plane(r, m)) for c, ps, r in groups for t, m in ps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     for counts, t, reg, op, base in rels:  # absolutes settle a register, relatives follow
@@ -2343,6 +2493,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     for counts, walk, table, reg in pairs:  # the row generator, then the pattern it rows
         nodes.append(indexer(walk, ("event", edges[counts])))
         nodes.append(select(table, ("node", len(nodes) - 1), ("event", edges[counts]), reg))
+    _attrition(seq, streams, chained, pairs, nodes, diag)
     return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels, pairs)), lanes
 
 

@@ -72,12 +72,40 @@ def one(rel):
         )
     out["sites"] = recs
     out["walked"] = sorted(walk)
+    banks = tracker._banks(prog)
+    seq = tracker._sequencer(prog, banks)
+    objs = tracker._objects(prog, banks, Counter())
+    out["chain"] = {
+        "ticks": sorted(seq.ticks),
+        "cursors": len(seq.cursors),
+        "regions": len(objs),
+        "regions_walked": sum(1 for o in objs if any(c in seq.cursors for c in o.cursors)),
+    }
     return out
 
 
 def tunes():
     """Every cached ``.sid``, by relpath."""
     return sorted(str(p.relative_to(HVSC)) for p in HVSC.rglob("*.sid"))
+
+
+def _links(res):
+    """Per-link attrition of the sequencer chain (docs/tracker.md 4i), by tune."""
+    got = Counter()
+    for r in res:
+        c = r.get("chain")
+        if c is None:
+            continue
+        got["decompile"] += 1
+        have = (bool(c["ticks"]), c["cursors"] > 0, c["regions_walked"] > 0)
+        for i, ok in enumerate(have, 1):
+            got["link%d" % i] += ok
+            got["links1..%d" % i] += all(have[:i])
+        got["ticks"] += len(c["ticks"])
+        got["cursors"] += c["cursors"]
+        got["regions"] += c["regions"]
+        got["regions_walked"] += c["regions_walked"]
+    return dict(got)
 
 
 def summarize(res):
@@ -97,6 +125,7 @@ def summarize(res):
         "row_index": dict(rows),
         "orderlist_index": dict(poss),
         "both": {str(k): v for k, v in both.most_common()},
+        "chain_links": _links(res),
     }
 
 

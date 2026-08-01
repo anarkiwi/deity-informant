@@ -141,7 +141,7 @@ def test_the_edge_is_the_observed_trigger_floor():
 def test_the_sweep_reports_its_seed_step_and_bound():
     """The seed is the one observed byte; the step and the wrap are the generator's."""
     text = _text()
-    assert "sweep  starts at 128 (OBSERVED), steps +16 per fire, wraps at 256" in text
+    assert "sweep   starts at 128 (OBSERVED), steps +16 per fire, wraps at 256" in text
     assert "values 128 144 160 176  (4 emits)" in text
 
 
