@@ -117,6 +117,11 @@ never read as complete when it is not.
 - **Not a codec.** Nothing parses this text back; it is not the tune's normal form.
 - **No timing is explained.** Every `EDGE` count is observed: note-on times are the
   trigger floor (docs/tracker.md §5, §7.4).
+- **A row field is named by the cell it flows into, and that naming is only as sharp as
+  `_pairs`.** A byte the text copies into a cell `tools/node_partition.py`'s pairing rule
+  calls a cursor of the pitch table renders as a note; where a row holds two such fields
+  the earlier one is the parameter and prints as `param N`, and a byte past the table's
+  end prints as `note N` rather than a name it does not have.
 - **The arrangement is shown but not generated.** The song section renders the orderlists
   and the patterns the frame program's own walk names (docs/tracker.md §4j) — on Commando
   they are byte-identical to the composer's source — but no generator is fed from them: a

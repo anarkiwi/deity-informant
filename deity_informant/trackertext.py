@@ -776,11 +776,16 @@ def _row_str(chart, row, pitch, tabs):
             out.append("dur %2d" % (val // (mask & -mask)))
         elif val:
             out.append(name)
-    for o, val, cells in fields:
+    roles = [
+        sorted({chart.roles[0][c] for c in cs if c in chart.roles[0]}) for _o, _v, cs in fields
+    ]
+    for k, (o, val, _cells) in enumerate(fields):
         if o == off:
             continue
-        role = sorted({chart.roles[0][c] for c in cells if c in chart.roles[0]})
-        if "note" in role:
+        role = roles[k]
+        if "note" in role and "note" in sum(roles[k + 1 :], []):
+            out.append("param %d" % val)  # a later field is the row's note: this one is not
+        elif "note" in role:
             past = pitch is None or val >= len(pitch.words)
             out.append("note %d" % val if past else _note_name(val))
         elif "instrument" in role:
