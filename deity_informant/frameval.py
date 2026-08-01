@@ -25,8 +25,7 @@ class FrameFault(RuntimeError):
 
 
 # ---- expressions: closures over (locals, state image, volatile reader) ----------
-def _width(n):
-    return 1 if n[0] == "loc" else E.width(n)
+_width = frameproc.loc_width  # loc leaves carry their own width; every other node is E.width
 
 
 def _load(n, slot):

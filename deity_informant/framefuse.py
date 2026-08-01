@@ -24,9 +24,7 @@ def _word(cell):
     return ("mem", ("const", cell, 2), 2)
 
 
-def _w(n):
-    """Value width of a frameprog expression node (a local holds one byte)."""
-    return 1 if n[0] == "loc" else E.width(n)
+_w = frameproc.loc_width  # value width of a frameprog node, loc leaves included
 
 
 def _zext2(n):

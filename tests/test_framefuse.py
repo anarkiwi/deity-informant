@@ -282,7 +282,7 @@ def test_the_hazard_test_is_conservative_about_a_computed_address():
         "  m_1500:2 = (zext2(m_1400) | (zext2(m_1401) << $08):2):2",
         "  mem[(m_1400 + $01):2]:2 = (zext2(m_1401) | (zext2(m_1402) << $08):2):2",
         "  m_1400[a]:2 = (zext2(m_1401) | (zext2(m_1402) << $08):2):2",
-        "  a = m_1500:2",
+        "  a:2 = m_1500:2",  # a word-valued local declares its width at its def
     ],
 )
 def test_word_forms_round_trip(line):

@@ -70,7 +70,8 @@ fails when it drifts; regenerate with
 // Everything else -- expressions, memrefs, data/symbols sections, loops,
 // switches, flow items -- is shared. Parsed LALR(1); templates parameterise
 // the shared region productions over the two item alphabets. The width suffix
-// and the *ptr[i] deref form are frameprog forms a sidprog document rejects.
+// and the *ptr[i] deref form are frameprog forms a sidprog document rejects,
+// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local).
 
 start: sidprog_doc
      | frameprog_doc
@@ -205,12 +206,15 @@ lvalue: NAME [wsuf] -> lv_name
      | "*" NAME "[" expr "]" [wsuf] -> e_deref
      | "mem" "[" expr "]" [wsuf] -> e_mem
      | zextw "(" expr ")" -> e_zext
+     | truncw "(" expr ")" -> e_trunc
      | "carry" "(" expr "," expr ")" -> e_carry
      | "(" chain ")" [wsuf] -> e_group
 wsuf: ":" INT
 chain: expr (op expr)+
 zextw: "zext1" -> z1
      | "zext2" -> z2
+truncw: "trunc1" -> t1
+      | "trunc2" -> t2
 op: "+" -> o_add
   | "-" -> o_sub
   | "<<" -> o_shl

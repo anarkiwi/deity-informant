@@ -247,6 +247,13 @@ recorded in the build report.
   `code[...]` switch subjects) are absent from the frameprog item alphabet,
   and `state { }`/`inputs { }`, named locals, procedure calls and `for` ranges
   are added; every shared construct is one production used by both.
+- A local is a byte unless its name carries the width suffix: `w:2` is a
+  16-bit local (`("loc", name, 2)`; the bare `("loc", name)` stays one byte)
+  and an assignment whose value is two bytes wide states that width on its
+  lvalue. `trunc1(x)`/`trunc2(x)` narrow a value to that width
+  (`("op", "COPY", (x,), w)`). Both are frameprog forms a sidprog document
+  rejects, exactly as the width suffix and the `*ptr[i]` deref are. No pass
+  emits either yet: they are the notation 16-bit arithmetic will be written in.
 - sidprog is and remains the cycle-exact ground truth and the deliverable of
   the decompiler; frameprog replaces nothing and relaxes nothing below it.
 - frameprog is **generated from the committed model** (post commit-phase,

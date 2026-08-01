@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from . import expr as E
 from . import grammar as G
 from . import sidprog
 from . import structured as C
@@ -41,7 +42,18 @@ def _by_reg(names):
     return sorted(names, key=_LOCAL_ORDER.get)
 
 
-# ---- expression helpers (sidprog nodes plus ("loc", name) leaves) ---------------
+# ---- expression helpers (sidprog nodes plus ("loc", name[, width]) leaves) -------
+def loc_width(n):
+    """Value width of a frameprog expression node: the ONE local-width rule.
+
+    ``("loc", name)`` is one byte and ``("loc", name, w)`` is ``w``; every other
+    node states its own width. ``expr.width`` cannot decide a bare local (it reads
+    the name), so a loc width is decided here and nowhere else."""
+    if n[0] == "loc":
+        return n[2] if len(n) > 2 else 1
+    return E.width(n)
+
+
 def _kids(n):
     if n[0] == "mem":
         return (n[1],)
@@ -1346,12 +1358,14 @@ def _fmt(n, res=_NORES):
     if k == "const":
         return sidprog._hex(n[1], n[2])
     if k == "loc":
-        return n[1]
+        return n[1] + sidprog._wsuf(loc_width(n))
     if k == "mem":
         return _memref(n[1], n[2], res)
     mn, kids, sz = n[1], n[2], n[3]
     if mn == "INT_ZEXT":
         return "zext%d(%s)" % (sz, _fmt(kids[0], res))
+    if mn == "COPY":
+        return "trunc%d(%s)" % (sz, _fmt(kids[0], res))
     if mn == "INT_CARRY":
         return "carry(%s, %s)" % (_fmt(kids[0], res), _fmt(kids[1], res))
     if mn == "INT_ADD":
@@ -1445,7 +1459,8 @@ class _Printer:
         if k == "label":
             self.line("$%04X:" % s[1], d)
         elif k == "asg":
-            self.line("%s = %s" % (s[1], self.e(s[2])), d + 1)
+            lv = s[1] + sidprog._wsuf(G.store_width(s[2]))
+            self.line("%s = %s" % (lv, self.e(s[2])), d + 1)
         elif k == "st":
             self.line(
                 "%s = %s" % (_memref(s[1], G.store_width(s[2]), self.res), self.e(s[2])), d + 1
