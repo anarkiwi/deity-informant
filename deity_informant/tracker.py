@@ -447,6 +447,21 @@ def _seed_ok(nodes, i, g):
     return (s[1],)
 
 
+def _step_ok(nodes, i, g):
+    """Refuse a generated ramp step the graph cannot settle where it re-seeds.
+
+    The step is read at the reload, so a ramp whose step is a generator's value must
+    name a reload to read it at: a ramp with no seed edge has no epoch to read one."""
+    d = g.transfer[2] if g.transfer[0] == "RAMP" else None
+    if not isinstance(d, tuple):
+        return ()
+    if d[0] != "node" or not 0 <= d[1] < i or nodes[d[1]].route != INDEX:
+        raise TrackerError("ramp step %r on node %d is not an earlier index node" % (d, i))
+    if not isinstance(g.transfer[1], tuple):
+        raise TrackerError("ramp step %r on node %d has no reload to read it at" % (d, i))
+    return (d[1],)
+
+
 def _offsets(nodes, at):
     """The register offsets an ``at`` generator can hold: the rows of its own table."""
     g = nodes[at[1]]
@@ -477,12 +492,14 @@ def _index_ok(nodes, i, g):
         raise TrackerError("held value %r on node %d is not an earlier node" % (g.transfer, i))
     _divisor_ok(nodes, i, g)
     _seed_ok(nodes, i, g)
+    _step_ok(nodes, i, g)
     _at_ok(nodes, i, g)
     if g.route == INDEX and not any(
         (h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]))
         or (h.transfer[0] == "HOLD" and h.transfer[1] == i)
         or i in _divisor_ok(nodes, j, h)
         or i in _seed_ok(nodes, j, h)
+        or i in _step_ok(nodes, j, h)
         or i in _at_ok(nodes, j, h)
         for j, h in enumerate(nodes)
     ):
@@ -580,25 +597,30 @@ def _combine(route, delta, prev, cur):
     return None if delta is None or val is None else _REL[op](val & mask, delta) & 0xFF
 
 
+def _stepped(step, cur):
+    """The step a ramp takes: its own constant, or the signed value a generator holds."""
+    return step if not isinstance(step, tuple) else (cur.get(step[1]) if cur else None)
+
+
 def _reseeded(g, i, count, cur, state, counts):
     """A ramp whose seed is generator ``j``'s value: it restarts every time ``j`` emits.
 
     ``j``'s emit count *at this edge* is the epoch, so the reload is an event and not a
-    frame number. A ``j`` that emits *nothing* at an edge has not emitted, so the ramp
-    walks on; one whose seed has not arrived at all emits nothing rather than a guess."""
+    frame number, and the step is read where the seed is. A ``j`` that emits *nothing*
+    has not emitted, so the ramp walks on; one that never has emits nothing."""
     _k, seed, step, bound, _turn = g.transfer
     j = seed[1]
     got = cur.seq.get(j, ()) if cur else ()
     epoch = counts[j] - len(got) + min(cur.t + 1, len(got)) if cur else 0
     was = state.get(i)
     if was is None or was[0] != epoch:
-        base = cur.get(j) if cur else None
-        if base is not None:
-            was = (epoch, base, count)
+        base, d = (cur.get(j), _stepped(step, cur)) if cur else (None, None)
+        if base is not None and d is not None:
+            was = (epoch, base, count, d)
         elif was is None:
             return None
     state[i] = was
-    v = was[1] + step * (count - was[2])
+    v = was[1] + was[3] * (count - was[2])
     return v % bound if bound else v
 
 
@@ -1558,7 +1580,9 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     )
 
 
-def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=(), notes=()):
+def _classes(
+    streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=(), notes=(), bends=()
+):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
@@ -1581,6 +1605,10 @@ def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=()
     for obj in notes:  # a driver cell the graph walks, by what its own seed declares (§4n)
         for counts, _at, reg in obj.holds:
             out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))[obj.ev] += sum(counts)
+    for obj in bends:  # a pair the song bends: two register writes per emit (§4o)
+        for counts, _at, arm in obj.holds:
+            cls = out.setdefault(_plane_of(obj.regs[0]), dict.fromkeys(_CLASSES, 0))
+            cls["arr" if arm[0] == "lane" else "ramp"] += 2 * sum(counts)
     for counts, _t, route, reg in sweeps:  # one pair emit is two register writes
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         cls["seed"] += _writes_of(route)
@@ -2416,19 +2444,19 @@ def _reload_reads(prog):
     return out
 
 
-def _reload_watch(walks, others, reads, at, taken):
-    """``([statement], {watch index: tag})``: every writer of a RAM cell, and every reader.
+def _reload_watch(walks, others, reads, bends, at, taken):
+    """``([statement], tags, bend tags)``: every writer of a RAM cell, and every reader.
 
     Every store is watched, object or not, so a cell the run never writes is one that
     provably still holds its post-init image."""
-    out, tags, seen = [], {}, dict(taken)
+    out, tags, btags, seen = [], {}, {}, dict(taken)
 
-    def add(s, tag):
+    def add(s, tag, into=None):
         i = seen.get(id(s))
         if i is None:
             i = seen[id(s)] = at + len(out)
             out.append(s)
-        tags[i] = tag
+        (tags if into is None else into)[i] = tag
         return i
 
     for s in others:
@@ -2443,7 +2471,10 @@ def _reload_watch(walks, others, reads, at, taken):
     for s, read, cap in reads:
         j = None if cap is None else add(cap, ("snap", None, None))
         add(s, ("read", read, j))
-    return out, tags
+    for _lo, (_hi, arms) in sorted(bends.items()):
+        for s, tag in arms:
+            add(s, tag, btags)
+    return out, tags, btags
 
 
 def _reload_seed(srcs, banks, mem0):
@@ -2495,15 +2526,16 @@ def _obj_lane(key, lanes, mem0):
 
 
 def _obj_ev(key, step):
-    """The evidence one object's emits carry: what its seed declares, or the walk itself.
+    """The evidence one object's emits carry: the walk itself, or what its seed declares.
 
-    A stepped object emits what its declared step generates whatever seeded it, so only a
-    constant nobody walks is the shallow reading a program immediate would be."""
+    A stepped object emits what the declared step generates whatever seeded it. Unstepped,
+    the emit is its seed alone: a post-init image byte at an address the provenance named
+    is `lane`'s reading, and only an instruction's own immediate is the shallow one."""
     if key[0] == "song":
         return "arr"
-    if key[0] == "imm":
-        return "ramp" if step else "imm"
-    return "ramp" if step else "lane"
+    if step:
+        return "ramp"
+    return "imm" if key[0] == "imm" else "lane"
 
 
 def _obj_cells(tags, wat):
@@ -2665,7 +2697,251 @@ def _reload_streams(prog, banks, tags, wat, lww, nframes, done=(), lanes=()):
     return out, explained
 
 
-# ---- 4d. the trigger domain: a DIV whose divisor is a declared reload -------------
+# ---- 4o. the accumulator the song bends ------------------------------------------
+BendObj = namedtuple("BendObj", "cell regs table rows fires arms first holds")
+
+
+def _carried(prog, roots):
+    """``{low cell: high cell}``: the two cells the text binds by the carry it takes.
+
+    §4c pairs a cell with the byte *above* it; a driver's halves need not be adjacent —
+    Commando's are three apart — so what says the two are one number is only the high
+    store taking the carry out of the low one's own arithmetic."""
+    env, out = _prog_env(prog), {}
+    for lo in roots:
+        got = [h for h in roots if h != lo and any(_carries(r[1], env, lo) for r in roots[h])]
+        if len(got) == 1:
+            out[lo] = got[0]
+    return out
+
+
+def _masked_read(expr, env):
+    """``(cell, mask)`` for a value that is one memory read under one ``AND``-immediate."""
+    root = _resolve(expr, env)
+    mask = _and_imm(root)
+    if mask is None:
+        return _read_base(root, env), _FULL
+    var = [k for k in root[2] if not (isinstance(k, tuple) and k[0] == "const")]
+    return (_read_base(var[0], env), mask) if len(var) == 1 else (0, mask)
+
+
+def _bend_lane(core, held, env, live, sung):
+    """``(cell, mask)`` the song-named byte one arm steps by, the staging hop included.
+
+    A driver stages the step in a scratch byte it also uses for other things, so the store
+    that names it is the one live *at* the arm — the reading §4j takes of a deref's row."""
+    for term in core[2]:
+        if term in held:
+            continue
+        cell, mask = _masked_read(term, env)
+        if cell in sung:
+            return cell, mask
+        got = live.get(cell)
+        if got is None:
+            continue
+        src, m = _masked_read(got[2], env)
+        if src in sung:
+            return src, m
+    return None
+
+
+def _bend_arms(prog, roots, sung):
+    """``{low cell: (high cell, [(statement, tag)])}``: the arms and reads of a bent pair.
+
+    An arm steps the low half by a byte the song names and the high store takes its carry,
+    so the two are one 16-bit step; a SID store of that arm's own value expression is a
+    read of what the object then holds — the text saying so, not a byte that agrees."""
+    env, staged, out = _prog_env(prog), _staged(prog), {}
+    for lo, hi in sorted(_carried(prog, roots).items()):
+        got, arm, vals = [], None, set()
+        for proc in prog.procs:
+            e, live = {}, {}
+            for s in _in_order(list(proc[3])):
+                if s[0] == "asg":
+                    e[s[1]] = s[2]
+                    continue
+                if s[0] != "st":
+                    continue
+                cell, cls = _base(s[1]), _sid_class(s[1])
+                if cls is None:
+                    live[cell] = s
+                if cls in (0, 1) and arm is not None and _resolve(s[2], e) in vals:
+                    got.append((s, ("bread", lo, (cls, arm))))
+                elif cell == lo:
+                    own = _steps_own(s, e, env, staged)
+                    lane = _bend_lane(own[0][2], own[0][5], e, live, sung) if own else None
+                    arm = None if lane is None else ("lane", own[0][0]) + lane
+                    vals = {_resolve(s[2], e)} if arm is not None else set()
+                    if arm is not None:
+                        got.append((s, ("barm", lo, arm)))
+                elif cell == hi and arm is not None and _carries(_resolve(s[2], e), e, lo):
+                    vals.add(_resolve(s[2], e))
+                    got.append((s, ("bcarry", lo, None)))
+        if any(tag[0] == "bread" for _s, tag in got):
+            out[lo] = (hi, got)
+    return out
+
+
+def _bend_seed(pend, hi, lo_got):
+    """The 16-bit word a pair's two halves declare, where both name one row, else None."""
+    got = pend.pop(hi, None)
+    if got is None or lo_got is None or got[1] != lo_got[1]:
+        return None
+    return (lo_got[0], got[0]), lo_got[1], lo_got[2] | (got[2] << 8)
+
+
+def _bend_step(arm, froze):
+    """The signed 16-bit step one arm takes, from the byte the song holds for it."""
+    if arm[0] == "const":
+        return arm[1]
+    got = (froze or {}).get(arm[2])
+    return None if got is None else arm[1] * (got[1] & arm[3])
+
+
+def _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes):
+    """``(claims, emits, bad)``: every bent pair walked in the machine's own order.
+
+    The pair is reloaded from the two lanes the text names at one row, its step is the song
+    byte in force where that reload landed, and a run two arms step is claimed by neither:
+    the graph's ramp reads one step per epoch, so one arm walks one run."""
+    highs = {hi: lo for lo, (hi, _a) in bends.items()}
+    srcs_of = {lo: {a[2] for _s, (k, _l, a) in ss if k == "barm"} for lo, (_h, ss) in bends.items()}
+    word, wkey, warm, pure, froze = {}, {}, {}, {}, {}
+    lbyte, rows, pend, claims, emits, bad = {}, {}, {}, {}, {}, set()
+    for f in range(nframes):
+        nth = {}
+        for i, at, srcs in wat[f] if f < len(wat) else ():
+            tag, btag = tags.get(i), btags.get(i)
+            cell = None
+            if tag is not None and tag[0] == "load" and tag[1] is not None:
+                got = _obj_seed_of(tag[2], at, tag[1], srcs, banks, mem0, lanes, rows)
+                lbyte[at] = None if got is None else got[1:]
+            if btag is not None and btag[0] == "bcarry":
+                continue
+            if btag is not None and btag[0] == "bread":
+                reg, (half, arm) = at - _SID, btag[2]
+                cell, took = btag[1] + reg // 7, lww[f].get(reg)
+                key, got = wkey.get(cell), word.get(cell)
+                if took is None or took[1] is not srcs or got is None or key is None:
+                    continue
+                if not pure.get(cell) or warm.get(cell) != arm:
+                    continue
+                want = (got >> 8) & _FULL if half else got & _FULL
+                if took[0] != want:
+                    bad.add(cell)
+                    continue
+                at_ = nth.get(cell, 0)
+                claims.setdefault((cell, key, arm, at_), {}).setdefault(half, []).append(f)
+                continue
+            if btag is not None and btag[0] == "barm":
+                cell, arm = at, btag[2]
+            elif tag is not None and tag[0] == "step" and tag[1] in highs:
+                cell, arm = highs[tag[1]] + at - tag[1], ("const", tag[2][0] * _SPAN)
+            elif tag is not None and tag[0] == "load" and tag[1] in highs:
+                pend[at] = _reload_seed(srcs, banks, mem0)
+                continue
+            elif tag is not None and tag[0] == "load" and tag[1] in bends:
+                cell, lo = at, tag[1]
+                seed = _bend_seed(pend, at + bends[lo][0] - lo, _reload_seed(srcs, banks, mem0))
+                if seed is None:
+                    word[cell] = None
+                    continue
+                wkey[cell], word[cell], warm[cell], pure[cell] = seed[0], seed[2], None, True
+                froze[cell] = {s: lbyte.get(s + at - lo) for s in srcs_of[lo]}
+                nth[cell] = nth.get(cell, 0) + 1
+                emits.setdefault((cell, seed[0]), []).append((f, seed[1], froze[cell]))
+                continue
+            elif tag is not None and tag[0] == "dirt" and (at in word or at in highs):
+                word[highs.get(at, at)] = None
+                continue
+            else:
+                continue
+            if word.get(cell) is None:
+                continue
+            step = _bend_step(arm, froze.get(cell))
+            if step is None:
+                word[cell] = None
+                continue
+            if warm.get(cell) not in (None, arm):
+                pure[cell] = False
+            warm[cell] = arm
+            word[cell] = (word[cell] + step) & 0xFFFF
+            nth[cell] = nth.get(cell, 0) + 1
+            emits.setdefault((cell, wkey[cell]), []).append((f, None, froze.get(cell)))
+    return claims, emits, bad
+
+
+def _bend_table(key, mem0):
+    """The 16-bit words a pair's two declared lanes hold, one per row."""
+    lo, hi = _lane(key[0], mem0), _lane(key[1], mem0)
+    return tuple(a | (b << 8) for a, b in zip(lo, hi))
+
+
+def _bend_nodes(cell, key, em, arms, ctx):
+    """One bent pair's ``BendObj``: its reload, one ramp per arm, and the reads they hold."""
+    holds, lanes, mem0, nframes, hi = ctx
+    table = _bend_table(key, mem0)
+    counts = [0] * nframes
+    for f, _r, _b in em:
+        counts[f] += 1
+    out = []
+    for arm in sorted({a for _c, _at, a in holds}):
+        if arm[0] == "const":
+            out.append((arm, arm[1], None, ()))
+            continue
+        lane = lanes.get(cell - arms[0], {}).get(arm[2], ())
+        step = tuple(arm[1] * (b & arm[3]) for b in lane)
+        rws = tuple((b or {}).get(arm[2], (len(step),))[0] for _f, _r, b in em)
+        out.append((arm, None, step, tuple(len(step) if r is None else r for r in rws)))
+    return BendObj(
+        cell,
+        (7 * (cell - arms[0]), 7 * (cell - arms[0]) + 1),
+        table,
+        tuple(len(table) if r is None else r for _f, r, _b in em),
+        tuple(counts),
+        tuple(out),
+        mem0[cell] | (mem0[cell + hi] << 8),
+        tuple(holds),
+    )
+
+
+def _bend_streams(prog, banks, bends, btags, tags, wat, lww, nframes, done=(), lanes=()):
+    """``(objects, explained)``: a driver accumulator the song's own byte bends.
+
+    Both halves of one emit are one ``pair`` write, so a read of one half alone claims
+    nothing; and every read is checked against the byte the register took, one
+    contradiction refusing that pair whole as §4l's containment reading does."""
+    mem0 = prog.mem0
+    claims, emits, bad = _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes)
+    holds, out, explained = {}, [], [set() for _f in range(nframes)]
+    for (cell, key, arm, at), halves in sorted(claims.items()):
+        if cell in bad or set(halves) != {0, 1} or halves[0] != halves[1]:
+            continue  # a read of one half alone is not this object's 16-bit emit
+        regs = (7 * _bend_voice(cell, bends), 7 * _bend_voice(cell, bends) + 1)
+        rest = [f for f in halves[0] if not any(r in done[f] for r in regs)] if done else halves[0]
+        if rest:
+            counts = [0] * nframes
+            for f in rest:
+                counts[f] += 1
+                explained[f].update(regs)
+            holds.setdefault((cell, key), []).append((tuple(counts), at, arm))
+    for cell, key in sorted(holds):
+        lo = _bend_low(cell, bends)
+        ctx = (holds[(cell, key)], lanes, mem0, nframes, bends[lo][0] - lo)
+        out.append(_bend_nodes(cell, key, emits[(cell, key)], (lo,), ctx))
+    return out, explained
+
+
+def _bend_low(cell, bends):
+    """The base of the pair one walked cell belongs to."""
+    return next(lo for lo in bends if 0 <= cell - lo < 3)
+
+
+def _bend_voice(cell, bends):
+    """Which voice a walked pair cell is: its offset in its own base's array."""
+    return cell - _bend_low(cell, bends)
+
+
 def _reloads(prog, banks):
     """``{divider cell: {divisor}}``: what the play code reloads into a cell it steps down.
 
@@ -4348,10 +4624,12 @@ def _observe(prog, trace, nframes, diag=None):
     prior = watch + astmts + cstmts + dstmts
     lanes = _cell_lanes(_charts(prog, banks, None, Counter()))
     walks = _reload_walks(prog, banks, lanes, _cell_reach(prog))
-    rstmts, rtags = _reload_watch(
+    bends = _bend_arms(prog, roots, {c for v in lanes.values() for c in v})
+    rstmts, rtags, btags = _reload_watch(
         walks,
         [s for s in _stmts(prog) if s[0] == "st" and _sid_class(s[1]) is None],
         _reload_reads(prog),
+        bends,
         len(prior),
         {id(s): i for i, s in enumerate(prior)},
     )
@@ -4383,7 +4661,7 @@ def _observe(prog, trace, nframes, diag=None):
             states,
             (objs, curs, _beats(ctags, wat, nframes), _decs(dtags, wat, nframes)),
             (arms, wat, order),
-            (walks, rtags, lanes),
+            (walks, rtags, lanes, bends, btags),
         ),
     )  # the arrangement, the cursors and the dividers ride the same run, all watched
 
@@ -4422,7 +4700,11 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     lwws, declared = _lww_streams(lww, tabs, prog.mem0, objs, curs, diag, held_by, banks)
     taken = [d | h for d, h in zip(declared, held_by)]
     notes, seeded = _reload_streams(prog, banks, rel[1], wat, lww, len(frames), taken, rel[2])
-    fields = [t | n for t, n in zip(taken, seeded)]
+    took = [t | n for t, n in zip(taken, seeded)]
+    bends, bent = _bend_streams(
+        prog, banks, rel[3], rel[4], rel[1], wat, lww, len(frames), took, rel[2]
+    )
+    fields = [t | b for t, b in zip(took, bent)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     claimed = [d | a for d, a in zip(fields, assembled)]
     sites = _rel_sites(prog, banks, diag)
@@ -4471,6 +4753,9 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     for obj in notes:
         got = ((obj.fires,) if sum(obj.fires) else ()) + tuple(h[0] for h in obj.holds)
         for c in got:
+            edges.setdefault(c, len(edges))
+    for obj in bends:
+        for c in (obj.fires,) + tuple(h[0] for h in obj.holds):
             edges.setdefault(c, len(edges))
     for key in chained.values():
         edges.setdefault(key[2], len(edges))
@@ -4541,6 +4826,25 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         for counts, at, reg in obj.holds:
             got = ("HOLD", src, obj.first, at) if src is not None else ("SELECT", (obj.first,), ())
             nodes.append(Generator(got, ("event", clock_at[counts]), plane(reg)))
+    for obj in bends:  # the pair's own reload, one ramp per arm, and the reads they hold
+        nodes.append(indexer(("SELECT", obj.table, obj.rows), ("event", clock_at[obj.fires])))
+        seed, walk = ("node", len(nodes) - 1), {}
+        for arm, step, table, rws in obj.arms:
+            if table is not None:
+                nodes.append(indexer(("SELECT", table, rws), ("event", clock_at[obj.fires])))
+                step = ("node", len(nodes) - 1)
+            nodes.append(
+                Generator(("RAMP", seed, step, 0x10000, ()), ("event", clock_at[obj.fires]), INDEX)
+            )
+            walk[arm] = len(nodes) - 1
+        for counts, at, arm in obj.holds:
+            nodes.append(
+                Generator(
+                    ("HOLD", walk[arm], obj.first, at),
+                    ("event", clock_at[counts]),
+                    pair(*obj.regs),
+                )
+            )
     for at, v in beaten.items():  # the row divider's divisor is the row's own duration
         nodes.append(indexer(("SELECT", durs[v], ()), ("event", at)))
         nodes[at] = nodes[at]._replace(
@@ -4551,7 +4855,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         Graph(
             nodes,
             freq_table=pitch,
-            classes=_classes(streams, groups, rels, pairs, sweeps, songs, held, notes),
+            classes=_classes(streams, groups, rels, pairs, sweeps, songs, held, notes, bends),
             charts=charts,
         ),
         lanes,
