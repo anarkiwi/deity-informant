@@ -31,6 +31,8 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | an accumulator wider than its plane is an editor quirk to price (§8) | the universal-layer step | **it is the primitive's missing route** — all three editors keep one, and the `Pair` route claims it: SW 1060 pair nodes over 64 modules, GT 2478 over 72 tunes, laws green corpus-wide at 200 frames. DefMON's stays refused behind its *turning* bound (the sweep clamps and reverses), which is the §8 triangle limit, not a width one |
 | `LOOKUP` is a transfer of its own (§2, since the start) | this step | **false** — it is `SELECT` with identity rows; the second transfer was carrying *evidence* (`imm` vs `lane`), which `Coverage.classes` already carries. Collapsed: 5 transfers, partition byte-identical |
 | building nodes per (declared region, cursor) aligns our partition with the editor's (docs/node-partition.md §4) | #112 | **false** — the pairs are one-to-one with the lane keys already built, so `graph_diff` matched stays **71/1648** and the value partition is byte-identical; keying the row on the cursor's *observed value* instead **costs 26 of the 71** (§6). The pair is a better *name* for a node, not a finer partition |
+| the arrangement is refused because `_arr_rule` demands a modulus over regions a terminator bounds (this step's brief) | this step | **false — the refusal was one level up.** `_arr_rule` returns `(1, 256)` for both of Commando's cursors. What refused the tune is `_arr_sites` resolving a deref's row index through a **program-wide** local map (`_prog_env`, last definition wins), so three of the four `*ptr[y]` sites read `y` as *some other* definition and land on cell 0; one such site disqualifies the whole pointer. Resolving each site against the locals live at it recovers **both** levels — and §6's "both walked at once: zero sites" was an artefact of the same reading |
+| no corpus tune carries a two-level arrangement whose orderlist *and* pattern row are both program text (§4g, §8) | this step | **false** — with the index resolved in order, Commando carries both, and the whole song comes out: 3 orderlists (64/63/123 entries) and 32 patterns (571 rows) **byte-identical to Rob Hubbard's own source**, 0 divergences. Corpus-wide the terminator-bounded region recovers **386 regions over the 649 tunes**, and the value partition is byte-identical |
 | a `DIV` phase field would open at most the 4961 fires of the 363 divider-shaped streams that sit off `n-1` (§8) | #113 | **false, by 25×** — with the divisor still required to be declared, only **9 streams (196 fires)** have a period a reload declares and a phase `n-1` misses, and the declared counter seed supplies **4** of them. The phase was never the binding link |
 | the trigger domain's residue is an arrangement problem, not a divider one (§4d, §6, §7.4) | #113 | **not where it was aimed** — of the 1101 strictly periodic streams, **989 (13608 fires) have a period no divider's reload declares at all**, and 95 more (1826 fires) only as a *product* of two declared divisors. Before a pattern can decide which tick carries a note, the tick itself has to be nameable, and on 90% of periodic streams it is not |
 
@@ -40,6 +42,13 @@ the shape that mistake takes inside the primitive — a distinction that is real
 evidence, spelled as a distinction in the transfer. The last two rows are the same
 mistake once more, in the other domain: a refusal was priced from the *output* side (363
 divider-shaped streams) and the provenance rule cut it to 9.
+
+The two arrangement rows are a different failure and worth reading as a pair: **a census
+is only as good as the reading that produced it.** "Both levels walked at once: zero
+sites" was measured, published and acted on for two work cycles, and it was an artefact
+of resolving a local against the *last* definition in a procedure rather than the one
+live at the site. Nothing about the corpus changed; a lookup did. Before pricing a
+refusal, check that the thing being counted is the thing the machine did.
 
 The `coverage` row is the load-bearing correction. **Every value is already produced.** What
 this document measures throughout is whether an emit can be *attributed* to a
@@ -214,6 +223,15 @@ still refuses it rather than emitting `SELECT[rel]` (§0, §8, docs/gt-oracle.md
 orderlist wraps to its first entry by construction. What §7.4 called a
 back-edge was there all along.
 
+**A region's extent is a terminator, not always a modulus.** A `RAMP`'s bound is a
+wrap, and a 6502 driver more often ends a region with a *compare*: the cursor is reset
+where the byte it just read equals an immediate the program text names. §4j reads that
+directly — the declaration's own extent floors the region and the compare ends it — so
+a region whose length no `AND`-immediate encodes is still program text. The song a
+`Graph` carries (`Graph.charts`) is those regions and the rows the cursor's own walked
+increments cut them into: **declared data at program-text offsets, with no observation
+in it at all**, which is stronger evidence than any generator in the value domain has.
+
 The phase, though, is real and is **this** layer's. `DIV(n, p)` fires at `p, p+n, …`, so
 a graph whose orderlist is clocked by one writes nothing until the first tick — it
 refuses to invent entry 0. That is the settled three-editor verdict of §8 seen from the
@@ -289,6 +307,11 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   that cursor rows, built *inside* the graph instead of being reported beside it. It
   reaches **1 tune of 649** for the row and **4** for the tick; §6 measures the
   attrition link by link, and the binding link is not the one §7.4 named.
+- **The song** (§4j, `_charts`) — the arrangement itself: every terminator-bounded
+  region a proven pointer names, cut into rows by the cursor's own walked increments and
+  decoded into the fields the program text's `AND`-immediates name. It reaches **386
+  regions over 649 tunes**, and on Commando it is the whole tune — 3 orderlists and 32
+  patterns, byte-identical to the composer's own source (§6).
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -657,6 +680,61 @@ node, the first refired on the revisit; and every refusal — a row the text doe
 a walk that stands still, a block no declaration holds, a `mut` row, a one-row run, and the
 order-preserved section. Mutation evidence: a pattern boundary moved by one row and two
 song steps naming each other's block each fail the law.
+
+## 4j. The song: terminator-bounded regions at cursors the program text steps
+
+§4g asks what a *pattern byte* explains about a SID register and answers 0 (§6). This
+section asks the prior question — **what the song is** — and answers it whole. Nothing
+here is observed: the pointer table is rung (f)'s, the extent is a compare immediate's,
+the row boundaries are the cursor's own walked increments, and every byte is the
+post-init image at an offset the program text reaches. `Graph.charts` carries it.
+
+- **A site's row index is resolved in order** (`_guarded`, `_cursor_of`). §4g read a
+  deref's index through a program-wide `{local: last definition}` map, so a driver that
+  reads `*ptr[y]` at four sites with `y` reassigned between them resolved three of them
+  to some *other* definition — cell 0 — and one such site disqualified the whole pointer.
+  The locals live **at** each site are what the machine used, and reading them that way
+  is what §0's first new row records: it is not a new rule, it is the same rule applied
+  where it was misapplied.
+- **The extent is a terminator, floored by the declaration** (`_extent`, `_terminators`).
+  The region's own declaration is what the machine indexed, so it is a proven *floor*;
+  above it the region runs to the first byte equal to an immediate the program text
+  compares the region's own bytes against. Both halves are evidence — the floor is
+  frameprog's rung, the immediate is program text — and neither is read off the row
+  stream. An extent taken from where the replay happened to stop is refused, as §4c
+  refuses a fitted step.
+- **The terminator is the compare that resets the cursor** (`_term_reads`). A region
+  ends where the text sets its cursor back, guarded by a comparison of the byte just
+  read; that comparison names the byte. Where the reset is unreachable in the walked text
+  — an orderlist whose restart the tune never plays — the region's *first* read is what
+  the text compares instead, and its immediates are the candidates.
+- **The cursor steps once per walked increment** (`_row_walk`). A row is not a fixed
+  number of bytes: each read is placed at the cursor's live value, and between reads the
+  cursor advances by exactly the increment statements whose guards the bytes already read
+  satisfy. So a row that carries a parameter byte is three cursor steps long and a tied
+  row is one, and **which** it is comes from the row byte's own bits, not from where the
+  next row was observed to start.
+- **The fields are the masks the text tests** (`_row_fields`). An arm that steps the
+  cursor no further is a **tie**; one that steps it further and reads again takes a
+  **parameter**; the mask a stepped-down counter is reloaded through is the row's
+  **duration**; a mask whose set arm reaches a ctrl/AD/SR store is a **release** and one
+  whose clear arm does is a **sustain**. Every one of those is an `AND`-immediate
+  `_unmask` peels off the walked text.
+- **A byte is named by the cell it flows into** (`_read_names`, `_cursor_roles`). A
+  parameter byte the text copies into the cursor of the pitch table is a **note**; into
+  the cursor of an instrument bank, an **instrument**. The destinations carry their own
+  guards, which is how one parameter byte reaches two cells under one bit.
+- **Two levels link through the reload index** (`_chart_source`). Where one region's byte
+  is the index another pointer reloads its own table at, that region's entries *name* the
+  other's blocks: an orderlist over patterns, from the text alone.
+- **Refusals, each counted.** A pointer whose reads do not agree on one cursor
+  (`song_no_cursor`), a region no compare bounds (`song_no_terminator`), a block whose
+  terminator lies beyond the deref's proven row bound (`song_block_unbounded`).
+
+On Commando this is the tune: pointer `$005D` over three terminator-bounded orderlists at
+cursor `$54EC`, pointer `$005F` over 32 patterns at cursor `$54EF`, terminator `$FF`, row
+fields `$1F` duration / `$20` sustain / `$40` tie / `$80` parameter — and §6 reports the
+diff against Rob Hubbard's own source.
 
 ## 4h. The node identity: a declared region at a cursor the program text names
 
@@ -1923,8 +2001,14 @@ take 29559 of them and is refused (§6).
    recorded as a recommendation *against*. The first row is a frameprog dataflow
    question and the second is not an accumulator.
    A triangle sweep that turns at a declared bound is a further transfer this
-   primitive does not have (§8), and no corpus tune reaches that limit before the step
-   blocks it.
+   primitive does not have (§8). **This read "and no corpus tune reaches that limit
+   before the step blocks it", and that is false**: Commando's `fx & 8`-clear arm is a
+   12-bit accumulator whose step is the *declared* byte `$E0` (the `+6` lane of the
+   `$5591` bank, masked `& $E0` by the text) and which turns where the masked high
+   register reaches `$0E` going up and `$08` going down — both compare immediates in the
+   walked text, `out/Commando.frameprog.txt:373-421`. The limit is reached, on the
+   showcase tune, and the residue it leaves is **23071 of Commando's 25763 replayed
+   writes**. The transfer is unbuilt, not unreachable.
 3. **Arpeggio and vibrato as generators, not notes** — a note-on carries one
    note; an arp step is a downstream generator emit on that edge, so it must
    never appear as a fresh row.
@@ -1986,14 +2070,106 @@ take 29559 of them and is refused (§6).
    have a period no divider's reload declares**, and 95 more only as a product of two.
    So the next question at this layer is not which tick carries a note but **where the
    driver's tempo byte is** — the same provenance wall as items 1 and 2, one domain over.
+
+   **The song itself is now recovered, and it says the wall is the evaluator** (§4j, §6).
+   Commando's whole arrangement comes out of the program text — 3 orderlists, 32 patterns,
+   571 rows, **0 divergences from the composer's own source** — so "the recovery cannot
+   name the arrangement" is no longer true. What still cannot be *generated* is the row a
+   note-on selects, for three named reasons: the pattern bytes are indices into other
+   tables rather than register bytes (so §4g's byte-equality rule never sees them); a
+   driver reads several pattern bytes and steps its cursor several times **inside one
+   frame**, which `_run`'s node-major loop cannot interleave with a reader of `cur`; and
+   the note-on divider's divisor is the row's own duration byte, which `DIV(n)`'s constant
+   `n` cannot take. Two of those are the primitive's and one is the evaluator's; none is
+   provenance, and that is the change of shape this step makes to the item.
 5. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
+
+### The song, recovered whole — and checked against the composer's own source
+
+§4j's change, measured against the same tree before it on the same 682 cached tunes at the
+PSID start subtune, 200 frames (649 reach the gate), plus Commando at its full Songlengths
+duration (11750 frames).
+
+| | before | after |
+|---|---|---|
+| interpreted | 753971/1942809 = 38.81% | **byte-identical**, every plane, class and tune |
+| triggers (fires) | 304/307225 | 304/307225 |
+| tracker law, Gate FP, canonical fixpoint | 649/649 | 649/649 |
+| terminator-bounded regions recovered | — | **386** |
+| tunes worse / better | — | **0 / 0** |
+
+The value partition cannot move and does not: the song is carried beside the generators,
+not as one, so nothing it names is claimed as an emit. What it adds is a second kind of
+evidence at this layer — declared data at program-text offsets, with no observation in it.
+
+**Commando, against Rob Hubbard's own source.** The `.asm` is the answer key, never an
+input: everything below comes from the walked frame program, and the diff is run against
+the source afterwards.
+
+| what | recovered | divergences from the source |
+|---|---|---|
+| orderlists | 3, of 64 / 63 / 123 entries | **0 bytes** |
+| patterns | 32, of 2 to 144 bytes | **0 bytes** |
+| pattern rows | **571**, cut by the cursor's own increments | **0 boundaries, 0 bytes** |
+| row fields | duration `$1F`, sustain `$20`, tie `$40`, parameter `$80` | — |
+
+Every extent is right including the two that a declaration alone gets wrong: the three
+orderlists, whose `$FF` the tune never reaches and whose declaration therefore stops one
+byte short, and `p00`, a **one-row** pattern (`5f ff`) the song never plays and no
+declaration covers at all. Both come out of the compare immediate.
+
+**What it does not buy, measured.** `arr` stays **0** and the trigger floor stays
+**81099 observed fires on Commando**, and the reason is a property of the primitive
+rather than of the recovery:
+
+- Commando's pattern bytes are **note and instrument indices**, not register bytes, so
+  §4g's rule — a SID write whose byte *is* the declared pattern byte — never sees them.
+  What they index is the pitch table and the instrument bank, whose rows §4b already
+  recovers off the machine's own read cell.
+- Chaining those rows to the pattern needs the row a `SELECT` reads to be another
+  generator's emit **within one frame**, and `_run` is node-major: a node emits all of a
+  frame's values before any later node reads `cur`. A driver that reads three pattern
+  bytes and steps its cursor three times inside one frame cannot be interleaved that way,
+  so a pattern-fed row generator would read the cursor's *end-of-frame* value. That is a
+  property of the evaluator, and it is the wall — not the arrangement's evidence.
+- The note-on trigger is a divider whose divisor is the row's **duration byte**, which
+  changes per row. `DIV(n)` takes a constant `n`, so the 81099 fires are not expressible
+  as a `DIV` at all; a variable-divisor transfer is what that would need, and it is not
+  in the primitive.
+
+Those three are the residue this step leaves, stated as what they are rather than as work
+this step did.
+
+**The lane claim's coincidence, diagnosed and priced.** On Commando **782 of 48004**
+`lane` pitch emits (480 hi, 302 lo) read the instrument bank's `+2` ctrl lane rather than
+the pitch table — which is why the rendered `table 0` showed `pitch hi`/`pitch lo` columns
+holding the waveform byte. The cause is **not** the row: it is `_tree_tables` admitting
+`$5591` for the freq class at all. `_read_bases` resolves a local against **every**
+definition of that name in the procedure, and Commando's play code is one procedure that
+reuses `a`, `y` and `w` throughout, so the freq class reaches every table any of them ever
+read; `eval_src` then reports an unrelated origin cell among the write's sources and
+`mem0[cell] == val` agrees by chance. Resolving each store against the definition **live at
+it** removes exactly those 782 — and it was built and measured: corpus-wide it costs
+**21014 emits over 120 tunes** (`lane` 516986 → 483627, `pw` −14106, `freq` −3444, `filter`
+−3464) and improves **none**. So the narrowing is refused and the coincidence is reported
+as a number instead: it is a provenance question in `_read_bases`, not in §4b's rule, and
+the fix that is available today is 27× more expensive than the thing it fixes.
+
+The reported row count for `table 0` (33 rather than the 13 instruments the block holds)
+has the same shape and a different cause: the declaration `$5591` is **263** bytes at the
+full duration, not 104, because `datadecl`'s extent runs to the next boundary above the
+highest observed read. 263 at stride 8 is 33 records. That is a declaration extent, not a
+tracker claim, and the rendering states the lane it was given.
 
 ## 8. Known limits
 
-- The arrangement (§4g) needs **two** things the program text must supply, and no corpus
-  tune supplies both: a pattern row that is a cell the play code only walks (42 of 366
-  resolved deref sites) and an orderlist position that is another (15 of 366). Both at
-  once is **zero sites**, so the orderlist position is taken off the machine's own address
+- The arrangement (§4g) needs **two** things the program text must supply, and this
+  entry used to read "no corpus tune supplies both": a pattern row that is a cell the
+  play code only walks (42 of 366 resolved deref sites) and an orderlist position that is
+  another (15 of 366), both at once **zero sites**. **That census was taken through a
+  program-wide local map and is wrong** (§0, §4j): resolved against the locals live at
+  each site, Commando supplies both and its whole song comes out. The counts below stand
+  as what the old reading measured, so the orderlist position is taken off the machine's own address
   bus rather than generated, and the layer ships as a pattern generator only. A row read
   off the observed stream — worth 54557 emits — and an orderlist read off the blocks the
   run visited are both refused outright. What the route does **not** carry is a *relative*
@@ -2064,8 +2240,12 @@ take 29559 of them and is refused (§6).
   the same reason, and one stepped emit without a declared origin refuses its whole
   run rather than being dropped from it. The seed is the observed byte and is counted
   shallow. Only the wrapping bound is implemented; a triangle sweep that turns around
-  at a declared bound needs a transfer this primitive does not have, and no tune in the
-  corpus reaches that limit before the step blocks it.
+  at a declared bound needs a transfer this primitive does not have. **This read "and no
+  tune in the corpus reaches that limit before the step blocks it", and that is false** —
+  Commando does, with a declared step (`$E0`) and two declared turning bounds (`$0E` up,
+  `$08` down) in its own walked text (`out/Commando.frameprog.txt:373-421`), over a
+  12-bit accumulator whose halves are the `$5591` bank's `+0`/`+1` lanes. It is worth
+  **23071 of that tune's 25763 replayed writes** and it is not built here.
 - The step is queried at the *play* phase's copies. A parameter a table supplies at
   **init** and the play code only reads back arrives as a RAM cell with no origin, so
   it names no declaration; that is a large part of what §6's refusal table leaves.

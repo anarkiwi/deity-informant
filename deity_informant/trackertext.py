@@ -737,6 +737,111 @@ def _generators(graph, scan, keys, cap=32):
     return out
 
 
+# ---- 7b. the song: the arrangement the frame program's own walk names ---------------
+def _seq_name(chart, charts):
+    """What one chart's regions are: the sequences that name others, or the patterns."""
+    return (
+        "pattern"
+        if chart.source is not None
+        else ("sequence" if any(c.source == chart.pointer for c in charts) else "region")
+    )
+
+
+def _entry_str(chart, charts, byte):
+    """One region entry: the pattern it names, or its own value."""
+    for c in charts:
+        if c.source == chart.pointer:
+            return "pat %02d" % byte if byte < len(c.blocks) else "pat ?"
+    return "%d" % byte
+
+
+def _inst_no(tabs, row):
+    """The instrument ordinal this layer already assigned to an instrument-bank row."""
+    for (tid, r), n in tabs.inst.items():
+        if r == row and tabs.role.get(tid) == "instrument":
+            return n
+    return None
+
+
+def _row_str(chart, row, pitch, tabs):
+    """One pattern row in the musical domain: duration, flags, instrument and note."""
+    off, fields = row
+    byte = next((v for o, v, _c in fields if o == off), None)
+    out, seen = [], chart.roles[1]
+    for mask, name in sorted(seen.items(), key=lambda kv: -kv[0]):
+        if byte is None or name == "parameter":
+            continue
+        val = byte & mask
+        if name == "duration":
+            out.append("dur %2d" % (val // (mask & -mask)))
+        elif val:
+            out.append(name)
+    roles = [
+        sorted({chart.roles[0][c] for c in cs if c in chart.roles[0]}) for _o, _v, cs in fields
+    ]
+    for k, (o, val, _cells) in enumerate(fields):
+        if o == off:
+            continue
+        role = roles[k]
+        if "note" in role and "note" in sum(roles[k + 1 :], []):
+            out.append("param %d" % val)  # a later field is the row's note: this one is not
+        elif "note" in role:
+            past = pitch is None or val >= len(pitch.words)
+            out.append("note %d" % val if past else _note_name(val))
+        elif "instrument" in role:
+            got = _inst_no(tabs, val)
+            out.append("inst %02d" % (val if got is None else got))
+        else:
+            out.append("param %d" % val)
+    return " ".join(out) or "-"
+
+
+def _chart_lines(chart, charts, pitch, tabs, cap=32, rowcap=40):
+    """One chart: its regions, their entries or their decoded rows."""
+    kind = _seq_name(chart, charts)
+    rows = sum(len(b.rows) for b in chart.blocks)
+    out = [
+        "%-9s %d %ss, %d rows, each ending on the byte the player's own compare names"
+        % (kind + "s", len(chart.blocks), kind, rows)
+    ]
+    if chart.roles[1]:
+        out.append(
+            "          row fields: %s"
+            % ", ".join(sorted({n for n in chart.roles[1].values() if n != "flag"}))
+        )
+    for b in chart.blocks[:cap]:
+        head = "  %-8s %3d rows" % (
+            (
+                ("voice %d" % (b.index + 1))
+                if kind == "sequence"
+                else ("%s %02d" % (kind[:3], b.index))
+            ),
+            len(b.rows),
+        )
+        if kind != "pattern":
+            toks = [_entry_str(chart, charts, v) for _o, f in b.rows for _p, v, _c in f[:1]]
+        else:
+            toks = [_row_str(chart, r, pitch, tabs) for r in b.rows]
+        out += [head] + ["    " + ln for ln in _stream_lines(toks, lambda t: t, cap=rowcap)]
+    if len(chart.blocks) > cap:
+        out.append("  ...(+%d more %ss)" % (len(chart.blocks) - cap, kind))
+    return out
+
+
+def _song(graph, scan):
+    """The arrangement: every terminator-bounded region the program text walks."""
+    if not getattr(graph, "charts", ()):
+        return []
+    out = [
+        "",
+        "; ---- song: the arrangement, walked from the frame program's own program text ----",
+        "; every byte here is declared data at an offset the player's own cursor steps to",
+    ]
+    for chart in graph.charts:
+        out += _chart_lines(chart, graph.charts, graph.freq_table, scan.tabs)
+    return out
+
+
 # ---- 8. the note lane, per voice ---------------------------------------------------
 def _run_str(r):
     """One note run: name, length in frames, and its detune in cents."""
@@ -823,6 +928,7 @@ def _rendered(graph, scan, keys, prog, title, law):
         + _engine(graph, prog, scan)
         + _instruments(scan)
         + _generators(graph, scan, keys)
+        + _song(graph, scan)
         + _voices(graph, scan)
         + _residual(graph, scan)
     )

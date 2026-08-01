@@ -128,12 +128,17 @@ def raw(per_frame):
 
 
 class Graph:
-    """Generator nodes, the distinguished pitch table, and the evidence classes."""
+    """Generator nodes, the distinguished pitch table, the song, and the evidence classes.
 
-    def __init__(self, nodes, freq_table=None, classes=None):
+    ``charts`` is the arrangement (§4j): the terminator-bounded regions a proven pointer
+    names, their rows walked by the program text's own cursor steps. It is declared data
+    at program-text offsets, so it carries no observation at all."""
+
+    def __init__(self, nodes, freq_table=None, classes=None, charts=()):
         self.nodes = list(nodes)
         self.freq_table = freq_table
         self.classes = classes
+        self.charts = tuple(charts)
 
     def raw_index(self):
         """Index of the RAW floor node, or None."""
@@ -2091,6 +2096,447 @@ def _arr_runs(got, step, wrap):
     return out
 
 
+# ---- 4j. the song: terminator-bounded regions at cursors the program text steps ---
+Chart = namedtuple("Chart", "pointer cursor terms roles blocks reads source")
+Block = namedtuple("Block", "index base size data rows")
+
+
+def _sub_exprs(x, acc):
+    """One expression and every sub-expression under it."""
+    if isinstance(x, tuple):
+        acc.append(x)
+        if x[0] == "op":
+            for c in x[2]:
+                _sub_exprs(c, acc)
+        elif x[0] == "mem":
+            _sub_exprs(x[1], acc)
+    return acc
+
+
+def _guarded(stmts, env, guards, out, cursors, held):
+    """Deref reads, their destination stores and cursor steps, in order, with their guards.
+
+    A statement's guards are the conditions the machine must satisfy to reach it, over
+    the locals live there. A byte's **destination** carries guards too: that is how one
+    parameter byte reaches two different cells."""
+    for s in stmts:
+        if s[0] in ("asg", "st"):
+            got = None
+            for x in _sub_exprs(s[2], []):
+                if x[0] == "mem" and frameptr.deref(x[1]) is not None:
+                    got = len(out)
+                    out.append(("read", frameptr.deref(x[1])[0], s, tuple(guards), dict(env)))
+            src = got if got is not None else held.get(_loc_of(s[2]))
+            if s[0] == "st":
+                if src is not None:
+                    out.append(("dest", (src, _base(s[1])), s, tuple(guards), dict(env)))
+                if _base(s[1]) in cursors:
+                    out.append(("step", _base(s[1]), s, tuple(guards), dict(env)))
+            else:
+                held[s[1]] = src
+                env[s[1]] = s[2]
+            continue
+        for k, body in enumerate(frameproc._stmt_bodies(s)):
+            g = guards + [(s[2], (s[1] == "if") ^ (k == 1))] if s[0] == "if" else guards
+            _guarded(list(body), env, g, out, cursors, held)
+
+
+def _deref_walk(prog):
+    """``[(kind, what, statement, guards, locals)]`` for every proc, in program order."""
+    out, cursors = [], set(_walked(prog))
+    for proc in prog.procs:
+        _guarded(list(proc[3]), {}, [], out, cursors, {})
+    return out
+
+
+def _loc_of(expr):
+    """The local an expression names outright, else None."""
+    return expr[1] if isinstance(expr, tuple) and expr[0] == "loc" else None
+
+
+def _read_names(events):
+    """``{read: (destination cells, the read's own expression)}``: a deref byte's names.
+
+    A byte's names are what the guards test. The local it lands in is matched by the
+    read expression itself, so two uses of one register name cannot collide."""
+    out = {i: (set(), e[2][2]) for i, e in enumerate(events) if e[0] == "read"}
+    for kind, what, s, _g, _e in events:
+        if kind == "dest" and what[0] in out:
+            out[what[0]][0].add(_base(s[1]))
+    return out
+
+
+def _names_read(expr, key, env, depth=4):
+    """Does this expression read one of a byte's names?"""
+    if not isinstance(expr, tuple) or depth <= 0:
+        return False
+    if expr is key[1]:
+        return True
+    if expr[0] == "mem":
+        return _base(expr[1]) in key[0]
+    if expr[0] == "loc":
+        return _names_read(env.get(expr[1]), key, env, depth - 1)
+    return expr[0] == "op" and any(_names_read(c, key, env, depth - 1) for c in expr[2])
+
+
+_CMP = ("INT_EQUAL", "INT_NOTEQUAL")
+
+
+def _zero_test(cond):
+    """``(value expression, immediate, true when unequal)`` for a compare, else None."""
+    if not (isinstance(cond, tuple) and cond[0] == "op" and cond[1] in _CMP):
+        return None
+    cs = [k for k in cond[2] if isinstance(k, tuple) and k[0] == "const"]
+    vs = [k for k in cond[2] if k not in cs]
+    if len(cs) != 1 or len(vs) != 1:
+        return None
+    return (vs[0], cs[0][1] & 0xFF, cond[1] == "INT_NOTEQUAL")
+
+
+def _mask_test(cond, names, env):
+    """``(mask, true when set)`` for a test of one byte's masked bits, else None."""
+    got = _zero_test(cond)
+    if got is None or got[1] != 0:
+        return None
+    root = _resolve(got[0], env)
+    if not (isinstance(root, tuple) and root[0] == "op" and root[1] == "INT_AND"):
+        return None
+    ms = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+    ts = [k for k in root[2] if k not in ms]
+    if len(ms) != 1 or not ts or not _names_read(ts[0], names, env):
+        return None
+    return (ms[0][1] & 0xFF, got[2])
+
+
+def _const_test(cond, key, env):
+    """``(byte, true when equal)`` for a test of one byte against an immediate, else None."""
+    got = _zero_test(cond)
+    if got is None:
+        return None
+    root = _resolve(got[0], env)
+    named = root is key[1] or (
+        isinstance(root, tuple) and root[0] == "mem" and _base(root[1]) in key[0]
+    )
+    return (got[1], not got[2]) if named else None
+
+
+def _holds(guards, seen, names, env):
+    """Do the guards hold for the bytes read so far? Tests of other values do not bind."""
+    for cond, truth in guards:
+        for i, val in seen.items():
+            got = _mask_test(cond, names[i], env)
+            if got is not None and (bool(val & got[0]) == got[1]) != truth:
+                return False
+            got = _const_test(cond, names[i], env)
+            if got is not None and ((val == got[0]) == got[1]) != truth:
+                return False
+    return True
+
+
+def _conditions(prog):
+    """Every ``if`` condition of the program, with the locals live at it and its arms."""
+    out = []
+
+    def go(stmts, env):
+        for s in stmts:
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+            if s[0] == "if":
+                arms = frameproc._stmt_bodies(s)
+                out.append((s[2], dict(env), (arms[s[1] == "if"], arms[s[1] != "if"])))
+            for b in frameproc._stmt_bodies(s):
+                go(list(b), dict(env))
+
+    for proc in prog.procs:
+        go(list(proc[3]), {})
+    return out
+
+
+def _arm_planes(body):
+    """The register classes the SID stores under one ``if`` arm write."""
+    return {_sid_class(s[1]) for s in _in_order(list(body)) if s[0] == "st"} - {None}
+
+
+def _in_order(stmts):
+    """Every statement, nested bodies in place: the order the machine runs them."""
+    for s in stmts:
+        yield s
+        for body in frameproc._stmt_bodies(s):
+            yield from _in_order(list(body))
+
+
+def _terminators(conds, names):
+    """The immediates the program text compares a region's own bytes against."""
+    return {t for cond, env, _a in conds for t in (_const_test(cond, names, env) or ())[:1]}
+
+
+def _term_reads(gram, names, envs):
+    """The reads whose byte ends the region: the row's first, and the reset's own guard.
+
+    The cursor is reset by a walked comparison against the terminator byte, so that
+    comparison names it; where the reset is unreachable in the walked text the region's
+    first read is what the text compares instead (a stop entry, an end marker)."""
+    out, stepped = set(), False
+    for i, kind, rule, guards, env in gram:
+        if kind == "read" and not stepped:
+            out.add(i)
+        if kind != "step":
+            continue
+        stepped = True
+        if rule is None or rule[0] != "set":
+            continue
+        for cond, _t in guards:
+            out |= {j for j in names if _const_test(cond, names[j], env) is not None}
+    return out
+
+
+def _grammar(events, ptr, cursor):
+    """One region's row walk: cursor steps, its own reads and their destinations.
+
+    It starts at the first read: before that the cursor is not indexing this region, so
+    what the text does to it there — an init clear — is not part of the walk."""
+    at = [i for i, e in enumerate(events) if e[0] == "read" and e[1] == ptr]
+    mine, out = set(at), []
+    for i, (kind, what, s, g, env) in list(enumerate(events))[at[0] if at else 0 :]:
+        if kind == "step" and what == cursor:
+            out.append((i, "step", _walk_of(s, env, cursor), g, env))
+        elif kind == "read" and what == ptr:
+            out.append((i, "read", None, g, env))
+        elif kind == "dest" and what[0] in mine:
+            out.append((i, "dest", what, g, env))
+    return out
+
+
+def _row_walk(data, gram, terms, names, envs):
+    """``[(offset, fields)]``: the rows a terminator-bounded region holds, walked.
+
+    Every read is placed at the cursor's live value and the cursor advances by the steps
+    whose guards the bytes already read satisfy — one step per walked increment — and the
+    terminator's own compare ends the region."""
+    rows, off = [], 0
+    while off < len(data) and data[off] not in terms:
+        cur, seen, got, last = off, {}, {}, False
+        for i, kind, rule, g, env in gram:
+            if not _holds(g, seen, names, env):
+                continue
+            if kind == "step":
+                if rule is None:
+                    return tuple(rows)
+                if rule[0] == "set":  # the cursor's reset: the region ends here
+                    last = True
+                    continue
+                cur = (cur + rule[1]) % rule[2]
+            elif kind == "dest" and rule[0] in got:
+                got[rule[0]][2].add(rule[1])
+            elif kind == "read" and cur < len(data):
+                seen[i] = data[cur]
+                got[i] = (cur, data[cur], set())
+                last = last or data[cur] in terms
+        rows.append(
+            (off, tuple((v[0], v[1], frozenset(v[2])) for v in got.values() if off <= v[0] < cur))
+        )
+        if last or cur <= off:
+            return tuple(rows)
+        off = cur
+    return tuple(rows)
+
+
+def _cursor_roles(prog, banks, pitch):
+    """``{cursor cell: role}``: what a cell a region is indexed by selects.
+
+    A cursor of the pitch table selects a **note**, one of an instrument bank an
+    **instrument**; a cell a divider reloads from carries a **duration**. The names are
+    the roles this layer already knows, not new vocabulary."""
+    out, insts = {}, set(_instruments(prog))
+    base = None if pitch is None else pitch.base
+    for b, curs in _pairs(prog).items():
+        d = _decl_of(b, banks)
+        if d is None:
+            continue
+        role = None
+        if base is not None and d[0] <= base < d[0] + d[1]:
+            role = "note"
+        elif any(d[0] <= i < d[0] + d[1] for i in insts):
+            role = "instrument"
+        for c in curs:
+            if role is not None:
+                out.setdefault(c, role)
+    return out
+
+
+def _row_fields(prog, key, gram, conds):
+    """``{mask: field}`` for the row byte's own bits, named by what each arm does.
+
+    An arm that steps the cursor no further ties the row to the one before it; one that
+    steps it further takes a parameter byte; the mask a stepped counter is reloaded
+    through is the row's own duration."""
+    steps = {}
+    for _i, kind, _rule, guards, genv in gram:
+        for cond, truth in guards:
+            got = _mask_test(cond, key, genv)
+            if got is not None:
+                steps.setdefault(got[0], [0, 0])[int(truth == got[1])] += kind == "step"
+    out = {
+        m: ("tie" if on < off else "parameter" if on > off else "flag")
+        for m, (off, on) in steps.items()
+    }
+    for cond, cenv, arms in conds:
+        got = _mask_test(cond, key, cenv)
+        if got is not None:
+            gated = {_CTRL, 5, 6}
+            on, off = (_arm_planes(arms[int(b)]) & gated for b in (got[1], not got[1]))
+            out.setdefault(got[0], "release" if on else "sustain" if off else "flag")
+    dur = _duration_mask(prog, key)
+    if dur is not None:
+        out[dur] = "duration"
+    return out
+
+
+def _duration_mask(prog, key):
+    """The mask of the row byte a divider's reload takes: the row's own note length."""
+    dividers = {c.base for c in _clocks(prog) if c.role == "divider"}
+    for proc in prog.procs:
+        env = {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+            elif s[0] == "st" and _base(s[1]) in dividers:
+                root = _resolve(s[2], env)
+                if isinstance(root, tuple) and root[0] == "op" and root[1] == "INT_AND":
+                    ms = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+                    ts = [k for k in root[2] if k not in ms]
+                    if len(ms) == 1 and ts and _names_read(ts[0], key, env):
+                        return ms[0][1] & 0xFF
+    return None
+
+
+def _extent(mem0, base, terms, floor, limit=0x100):
+    """The region's size: to the first terminator byte at or above its proven floor.
+
+    The declaration's own extent is what the machine indexed, so it floors the region;
+    the terminator is the immediate the program text compares against, and the byte at
+    that offset is declared data. Neither is read off the row stream."""
+    for i in range(max(0, floor - 1), min(limit, 0x10000 - base)):
+        if mem0[base + i] in terms:
+            return i + 1
+    return 0
+
+
+def _charts(prog, banks, pitch, diag):
+    """``[Chart]``: every pointer whose blocks are terminator-bounded regions the text walks.
+
+    The pointer table is rung (f)'s (docs/frameprog.md §4.4), the extent the terminator
+    compare's, the row grammar the guarded walk's — declared data and program text only,
+    with nothing taken from the row stream the machine happened to read."""
+    events = _deref_walk(prog)
+    names = _read_names(events)
+    envs = {i: e[4] for i, e in enumerate(events) if e[0] == "read"}
+    conds = _conditions(prog)
+    roles = _cursor_roles(prog, banks, pitch)
+    decls = {d["base"]: d for d in prog.data_decls}
+    out, seen = [], set()
+    for site in frameptr.analyse(prog.mem0, prog.data_decls, prog.procs):
+        cell = site.ptr.cell
+        if site.why is not None or not site.ptr.tables or cell in seen:
+            continue
+        seen.add(cell)
+        reads = [i for i, e in enumerate(events) if e[0] == "read" and e[1] == cell]
+        cursor = _cursor_of(events, reads, envs)
+        if cursor is None:
+            diag["song_no_cursor"] += 1
+            continue
+        gram = _grammar(events, cell, cursor)
+        ends = _term_reads(gram, names, envs) & set(reads)
+        terms = set().union(*[_terminators(conds, names[i]) for i in ends]) if ends else set()
+        if not terms:
+            diag["song_no_terminator"] += 1
+            continue
+        got = _blocks(prog, site, terms, decls, gram, names, envs, diag)
+        if not got:
+            continue
+        row = next((i for i, k, _r, _g, _e in gram if k == "read"), None)
+        fields = _row_fields(prog, names[row], gram, conds)
+        src = _chart_source(prog, names, cell)
+        out.append(
+            Chart(
+                cell, cursor, tuple(sorted(terms)), (roles, fields), tuple(got), tuple(reads), src
+            )
+        )
+        diag["song_regions"] += len(got)
+    return [c._replace(source=_chart_ptr(c.source, out)) for c in out]
+
+
+def _chart_source(prog, names, cell):
+    """The deref read whose byte indexes this pointer's own reload table, else None.
+
+    An orderlist entry names a pattern by being the index the pointer reloads at, which
+    is what links one region's rows to another region's blocks."""
+    for proc in prog.procs:
+        env = {}
+        for s in _in_order(list(proc[3])):
+            if s[0] == "asg":
+                env[s[1]] = s[2]
+            elif s[0] == "st" and _base(s[1]) in (cell, cell + 1):
+                got = _indexed_by(_resolve(s[2], env), names, env)
+                if got is not None:
+                    return got
+    return None
+
+
+def _indexed_by(expr, names, env):
+    """The deref read whose byte is the index of some load inside ``expr``, else None."""
+    for x in _sub_exprs(expr, []):
+        got = frameproc._index_of(x[1]) if x[0] == "mem" else None
+        hits = [] if got is None else [i for i in names if _names_read(got[1], names[i], env)]
+        if hits:
+            return hits[0]
+    return None
+
+
+def _chart_ptr(read, charts):
+    """The chart a linking read belongs to, so the link is between charts, not events."""
+    for c in charts:
+        if read in c.reads:
+            return c.pointer
+    return None
+
+
+def _cursor_of(events, reads, envs):
+    """The cell a pointer's own reads index, resolved through the locals live at each."""
+    got = set()
+    for i in reads:
+        expr = frameptr.deref(_deref_addr(events[i]))[1]
+        if expr is not None:
+            cell = _read_base(expr, envs[i])
+            if cell >= 0x100:
+                got.add(cell)
+    return got.pop() if len(got) == 1 else None
+
+
+def _deref_addr(event):
+    """The deref address expression one read event names."""
+    for x in _sub_exprs(event[2][2], []):
+        if x[0] == "mem" and frameptr.deref(x[1]) is not None:
+            return x[1]
+    return None
+
+
+def _blocks(prog, site, terms, decls, gram, names, envs, diag):
+    """``[Block]``: the declared blocks the pointer's own reload table names, walked."""
+    lo, hi, n, _ix = site.ptr.tables[0]
+    out = []
+    for k in range(n):
+        base = prog.mem0[lo + k] | (prog.mem0[hi + k] << 8)
+        d = decls.get(base)
+        size = _extent(prog.mem0, base, terms, d["size"] if d else 1, site.bound + 1)
+        if not size:
+            diag["song_block_unbounded"] += 1
+            continue
+        data = tuple(prog.mem0[base + i] for i in range(size))
+        out.append(Block(k, base, size, data, tuple(_row_walk(data, gram, terms, names, envs))))
+    return out
+
+
 # ---- 4h. the node identity: a declared region at a cursor the program text names --
 def _cursors(idx, env, depth=4):
     """Cursor cells an index expression reads, through the locals defined above it.
@@ -2623,7 +3069,15 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         nodes.append(indexer(walk, ("event", clock_at[counts])))
         nodes.append(select(table, ("node", len(nodes) - 1), ("event", clock_at[counts]), reg))
     _attrition(seq, streams, chained, pairs, nodes, diag)
-    return Graph(nodes, freq_table=pitch, classes=_classes(streams, groups, rels, pairs)), lanes
+    return (
+        Graph(
+            nodes,
+            freq_table=pitch,
+            classes=_classes(streams, groups, rels, pairs),
+            charts=_charts(prog, banks, pitch, diag),
+        ),
+        lanes,
+    )
 
 
 def render(prog, trace, nframes, diag=None):

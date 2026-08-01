@@ -8,7 +8,11 @@ docs/tracker.md §7.5: there is no parser and no `parse(emit(t)) == t` claim.
 
 ## Two rules
 
-**Render the graph, never the observation.** Every line is derived from the nodes'
+**Render the graph, never the observation.** The song section is the strongest case of
+this rule rather than an exception to it: `Graph.charts` is declared data at offsets the
+program text's own cursor steps to, so not one byte of it is read off a frame.
+
+ Every line is derived from the nodes'
 `(transfer, trigger, route)` triples, the **declared tables** those transfers hold,
 and `Graph.classes` — the same discipline `tracker.render` follows (docs/tracker.md
 §1, "Nothing is passed through"). The note lane is inverted from the **generators'
@@ -37,6 +41,7 @@ into one table. Without it the rendering still stands, each lane its own table.
 | engine | the pitch table (how many notes, what range, how it inverts), the clock census, the masked field groups, and the tables the generators read |
 | instruments | the rows those tables hold, decoded as an editor shows them: waveform bits, attack/decay and sustain/release nibbles |
 | generators | one entry per node in graph order: transfer, trigger, route, and the detail that shows the primitive |
+| song | the arrangement (docs/tracker.md §4j): each voice's sequence as named patterns, and each pattern's rows as note, instrument, duration, tie and sustain |
 | note lanes | per voice, the note lane as runs of named notes with frame spans and detune in cents |
 | residual | the replayed writes per plane and per part, the observed trigger count, and the shallow classes |
 
@@ -112,9 +117,16 @@ never read as complete when it is not.
 - **Not a codec.** Nothing parses this text back; it is not the tune's normal form.
 - **No timing is explained.** Every `EDGE` count is observed: note-on times are the
   trigger floor (docs/tracker.md §5, §7.4).
-- **No arrangement.** There is no orderlist, pattern or transpose — a row stream is a
-  recovered index, not a generated one (§7.4), and the side-by-side view measures that
-  against the composer's own song rather than asserting it.
+- **A row field is named by the cell it flows into, and that naming is only as sharp as
+  `_pairs`.** A byte the text copies into a cell `tools/node_partition.py`'s pairing rule
+  calls a cursor of the pitch table renders as a note; where a row holds two such fields
+  the earlier one is the parameter and prints as `param N`, and a byte past the table's
+  end prints as `note N` rather than a name it does not have.
+- **The arrangement is shown but not generated.** The song section renders the orderlists
+  and the patterns the frame program's own walk names (docs/tracker.md §4j) — on Commando
+  they are byte-identical to the composer's source — but no generator is fed from them: a
+  row stream in the *generator* listing is still a recovered index, not a generated one
+  (§7.4), and the side-by-side view measures that rather than asserting it.
 - **The residual is the point.** The generated share, the per-plane residual and the
   per-part replay counts are always printed.
 - **A residual emit is not a missing byte.** The coverage figures on both sides measure
