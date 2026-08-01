@@ -303,7 +303,10 @@ def _scan(graph, nframes, keys, tabs):
             if g.route == tracker.INDEX:  # the arrangement: this emit is a row, not a byte
                 for _t in range(fired[i]):
                     counts[i] += 1
-                    cur[i] = tracker._emit(g, counts[i], cur)
+                    cur[i] = v = tracker._emit(g, counts[i], cur)
+                    emits[i] += v is not None
+                    ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
+                    del ramps[i][1][:-4]
                 continue
             if g.route[0] != "plane":
                 counts[i] += fired[i]
@@ -667,8 +670,14 @@ def _node_lines(graph, i, scan, keys, cons):
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
-            "     sweep  starts at %d (OBSERVED), steps %+d per fire, wraps at %d"
-            % (seed, step, bound),
+            "     %s  starts at %d (%s), steps %+d per fire, wraps at %d"
+            % (
+                "cursor" if g.route == tracker.INDEX else "sweep ",
+                seed,
+                "DECLARED" if g.route == tracker.INDEX else "OBSERVED",
+                step,
+                bound,
+            ),
             "     values %s%s  (%d emits)"
             % (
                 " ".join("%d" % v for v in head_v),
@@ -683,6 +692,13 @@ def _node_lines(graph, i, scan, keys, cons):
         return [
             "%s  %d writes over %d frames  (OBSERVED — see residual)"
             % (head, sum(len(r) for r in rows), len(rows))
+        ]
+    if kind == "DIV":
+        n, phase = g.transfer[1], g.transfer[2] if len(g.transfer) > 2 else g.transfer[1] - 1
+        seen = cons.get(i, ())
+        return [
+            "%s  one tick per %d frames, first at frame %d -> %s"
+            % (head, n, phase, _block(["n%02d" % j for j in seen]))
         ]
     return ["%s  one tick per %s" % (head, g.transfer[1])]
 

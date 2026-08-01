@@ -26,12 +26,16 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | coverage measures how much of a tune the recovery can reach (§6, everywhere) | #106 | **false** — it measures *justification*; 99680 of the composer's writes are shaped differently by us and **zero** are never produced |
 | the relative row index (#102) opens the 6953 emits an absolute-only index refuses (§2, §4f) | this step | **not yet** — the refusal number re-measures at exactly 6953 (GT 1690, SW 4738, DM 525), but a census of all three editors' own songs finds **zero** `SELECT[rel]` nodes: `gtoracle._patt_src` still *refuses* a shifted row rather than emitting one, and `dmoracle` computes a 0/1 flag where the row needs the shift amount. The element is expressible and unused; what it is owed is an emitter, not a measurement |
 | `LOOKUP` is a transfer of its own (§2, since the start) | this step | **false** — it is `SELECT` with identity rows; the second transfer was carrying *evidence* (`imm` vs `lane`), which `Coverage.classes` already carries. Collapsed: 5 transfers, partition byte-identical |
-| building nodes per (declared region, cursor) aligns our partition with the editor's (docs/node-partition.md §4) | this step | **false** — the pairs are one-to-one with the lane keys already built, so `graph_diff` matched stays **71/1648** and the value partition is byte-identical; keying the row on the cursor's *observed value* instead **costs 26 of the 71** (§6). The pair is a better *name* for a node, not a finer partition |
+| building nodes per (declared region, cursor) aligns our partition with the editor's (docs/node-partition.md §4) | #112 | **false** — the pairs are one-to-one with the lane keys already built, so `graph_diff` matched stays **71/1648** and the value partition is byte-identical; keying the row on the cursor's *observed value* instead **costs 26 of the 71** (§6). The pair is a better *name* for a node, not a finer partition |
+| a `DIV` phase field would open at most the 4961 fires of the 363 divider-shaped streams that sit off `n-1` (§8) | #113 | **false, by 25×** — with the divisor still required to be declared, only **9 streams (196 fires)** have a period a reload declares and a phase `n-1` misses, and the declared counter seed supplies **4** of them. The phase was never the binding link |
+| the trigger domain's residue is an arrangement problem, not a divider one (§4d, §6, §7.4) | #113 | **not where it was aimed** — of the 1101 strictly periodic streams, **989 (13608 fires) have a period no divider's reload declares at all**, and 95 more (1826 fires) only as a *product* of two declared divisors. Before a pattern can decide which tick carries a note, the tick itself has to be nameable, and on 90% of periodic streams it is not |
 
-The fifth row is the one to read before adding to the primitive: a refusal count says an
-element *would* be used, never that anything *does* use it. The last is the shape that
-mistake takes inside the primitive — a distinction that is really about evidence,
-spelled as a distinction in the transfer.
+The `SELECT[rel]` row is the one to read before adding to the primitive: a refusal count
+says an element *would* be used, never that anything *does* use it. The `LOOKUP` row is
+the shape that mistake takes inside the primitive — a distinction that is really about
+evidence, spelled as a distinction in the transfer. The last two rows are the same
+mistake once more, in the other domain: a refusal was priced from the *output* side (363
+divider-shaped streams) and the provenance rule cut it to 9.
 
 The `coverage` row is the load-bearing correction. **Every value is already produced.** What
 this document measures throughout is whether an emit can be *attributed* to a
@@ -86,7 +90,7 @@ primitive:
 
 ```
 Generator = (transfer, trigger, route)
-  transfer : DIV(n)                  # one tick per n input triggers (a clock)
+  transfer : DIV(n, phase)           # one tick per n input triggers (a clock)
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
@@ -190,10 +194,15 @@ still refuses it rather than emitting `SELECT[rel]` (§0, §8, docs/gt-oracle.md
 orderlist wraps to its first entry by construction. What §7.4 called a
 back-edge was there all along.
 
-The phase, though, is real and is **this** layer's. `DIV(n)` fires at `n-1, 2n-1, …`,
-so a graph whose orderlist is clocked by one writes nothing until the first tick — it
-refuses to invent entry 0. That is the settled three-editor verdict of §8 seen from
-the other side: the phase belongs to the arrangement, not to the divider.
+The phase, though, is real and is **this** layer's. `DIV(n, p)` fires at `p, p+n, …`, so
+a graph whose orderlist is clocked by one writes nothing until the first tick — it
+refuses to invent entry 0. That is the settled three-editor verdict of §8 seen from the
+other side: **the phase belongs to the arrangement, not to the divider**, and the field
+is therefore the arrangement's to supply. The recovery reads it off the *declared* byte
+the post-init image leaves in the counter (§4i) and never off the fire pattern; `n-1`,
+the reading before the field existed, is what a counter seeded at its own reload gives —
+and what an unstaged cell's zero gives too, since `(0 − 1) mod n = n − 1`. So the field
+is a generalisation of the old behaviour and not a parameter beside it.
 
 `RAW` and `EDGE` are the two floors — the residual in the value domain and in the
 trigger domain. Refinement replaces them: a value moves out of `RAW` into a typed
@@ -252,6 +261,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   contains it. A declaration tiles a whole data block, so the text's own bases are what
   resolve the composer's objects inside it. Every byte and every row is unchanged; §6
   measures what the finer identity buys, and the answer is nothing yet.
+- **The sequencer chain** (§4i) — the tick clock, the row cursor it beats and the table
+  that cursor rows, built *inside* the graph instead of being reported beside it. It
+  reaches **1 tune of 649** for the row and **4** for the tick; §6 measures the
+  attrition link by link, and the binding link is not the one §7.4 named.
 - **Instrument banks** (`_instruments`) — const table bases feeding a
   ctrl/AD/SR store.
 
@@ -444,21 +457,21 @@ apart, so the provenance rule must.
   clock — so it would "explain" every stream that fires on consecutive frames with a
   byte that only happens to be `1`. That is the same refusal §4c makes of a `RAMP`
   whose declared step is zero: a generator that predicts nothing is not one.
-- **The phase is the primitive's, and it belongs to the arrangement** (`_generates`).
-  `DIV(n)` fires at frames `n-1, 2n-1, …` — a counter loaded with its own reload and
-  stepped down. The whole stream must match in both directions: a missing tick refuses
-  as loudly as a spare one. A phase *field* is not refused on principle — three editors
-  now say the phase is real — but it is not a per-stream parameter to fit either: see
-  the settled verdict in §8.
+- **The phase is the primitive's, and it belongs to the arrangement** (`_generates`,
+  `_sequencer`). `DIV(n, p)` fires at frames `p, p+n, …`, and `p` is the *declared*
+  counter: `(mem0[cell] − 1) mod n`, paired with the divisor its own reload names. The
+  whole stream must match in both directions: a missing tick refuses as loudly as a
+  spare one. A phase read off the fires is refused; §4i is where the field comes from
+  and §6 prices it.
 - **The law does the verification.** A `DIV` node replaces an `EDGE` in place, so its
   downstream `SELECT`s fire on exactly the frames the divisor says; a wrong divisor
   moves every emit after the first and `tracker.gate` fails
   (`test_mutation_a_wrong_divisor_is_detected`).
 
 §6 reports what this returns, and the answer is a measured near-zero: the recovered
-clocks generate **300 of 305119 fires** over 3 tunes of 646. That number is the point
-of the step — it is the input to scoping §7.4, and it is honest in a way a fitted
-period would not be.
+clocks generate **300 of 305119 fires** over 3 tunes of 646, and **304 of 307225** over
+4 of 649 once §4i supplies the phase. That number is the point of the step — it is the
+input to scoping §7.4, and it is honest in a way a fitted period would not be.
 
 ## 4e. One plane, two generators: the bit partition the store statement names
 
@@ -668,6 +681,61 @@ This section is that change, and §6 is its measurement.
   changes only what the node is called. Making the cursor load-bearing is exactly what
   keying the row on its value would have done, and §6 is why that is refused.
 
+## 4i. The sequencer: a tick clock, a row cursor, and the table that cursor rows
+
+Until this step the layer **recovered a sequencer and then discarded it**. `_tempo` found
+`frames_per_tick`, `_clocks` the dividers, `_divisors` their reloads and `_walked` the
+cursors — and every one of them went into the `Tracker` namedtuple, which is a *report*.
+`_graph` received none of it and built the `Graph` from per-register write streams plus
+two floors. A tracker song is a chain — `tick clock -> row cursor -> pattern row ->
+note-on -> instrument program -> register` — and only the last link was built, which is
+why 99.89% of fires were the observed `EDGE` floor.
+
+`_sequencer` is that chain, recovered from program text and threaded into `_graph`. Every
+object it uses already existed in the primitive; nothing is invented but the `DIV` phase
+field, which §2 and §8 had already settled as belonging here.
+
+- **Link 1, the tick** (`_reloads`, `_sequencer`, `_clock_node`). A tick is
+  `DIV(n, phase)`: `n` is the divisor §4d's rule declares — what the play code reloads
+  into a cell it steps down, an immediate or a declared byte at a non-`mut` offset — and
+  the **phase is the declared counter**, `(mem0[cell] − 1) mod n`. The counter's post-init
+  byte is what init staged; a counter left at its own reload, and one init never staged at
+  all, both give `n − 1`, which is the reading before the field existed. The divisor and
+  the phase are now paired **per divider**, so a phase can only come from the counter its
+  own reload divides. A phase fitted to the observed fires is refused for the reason a
+  fitted period is (§4d), and §6 prices it.
+- **Link 2, the row cursor** (`_beats`, `_rows_at`). A cursor is a cell `_walked` proves
+  the play code only steps or sets by its own text, with one step and one modulus
+  (`_arr_rule`); its seed is the post-init byte, so `RAMP(seed, step, wrap)` routed `Index`
+  generates its whole walk. **It is beaten by its own step statement, not by the read**:
+  the cursor stores ride the one `frameval.eval_watch` run the recovery already makes, and
+  the frames the text's step rule executed are the cursor's trigger stream. A cell some
+  writer *reloads* is refused outright — a `RAMP` walks and never resets.
+- **Link 3, the table that cursor rows** (`_chain`). A region is §4h's: a declared base
+  the program text indexes, at the cursors the text names for it. Where one of those
+  cursors is walked, the region's rows are **predicted** from the cursor's own beats and
+  compared with the run the machine read; a stream the walk does not reproduce keeps its
+  recovered run, exactly as a sweep run whose step no declaration names is refused whole
+  (§4c). The `SELECT`'s `rows` then becomes `Node(cursor)` — a generated row, not observed
+  data.
+- **Link 4, the note-on.** Because the cursor's trigger is its own beat stream,
+  `_clock_node` sees that stream like any other and lifts it to a `DIV` where a declared
+  tick generates it. That is the whole chain wired: `DIV -> RAMP[Index] -> SELECT`, with
+  no separate mechanism for the note-on and no back-edge for the loop — `_emit` already
+  wraps (§2).
+- **Refuse per link, per tune, and keep today's floor.** Each link names its own refusal
+  (`chain_cursor_not_walked`, `chain_cursor_reset`, `chain_rows_unwalked`) and a tune
+  missing any link keeps exactly the behaviour it had. Nothing is approximated: a cursor
+  whose trigger were fitted to the read stream instead of taken from its own beats is
+  refused, and §6 prices that too.
+
+`MUSICIANS/B/Bonifacio_Robert/Delta_Man.sid` is the tick: the divider `$0079` reloads the
+immediate 48 and the post-init image leaves 32 in it, so the tick is `DIV(48, 31)` — 47
+ticks over the tune, where the divider's own phase 47 generates none of them.
+`MUSICIANS/B/Blanchette_Francois/Bird_on_the_Run_II.sid` is the row: cursor `$C6FF`, seed
+0, step +2, wrap 256, and the voice's pitch-hi lane is read at the row that `RAMP` holds.
+Both render in `out/*.trackertext.txt`.
+
 ## 5. Instrument lanes: ctrl/AD/SR from a declared bank at a recovered row
 
 ctrl and ADSR are written from an instrument bank: a declared const table of
@@ -796,7 +864,9 @@ is recovered for **582**. The 36 that do not decompile never reach this layer (1
 `brk`, 3 pinned-trace faults, and the remainder assorted). Values are **38.66%**
 explained and triggers **0.098%**; the two are stated apart because they are two
 domains, and the second is smaller by a factor of 390. This is the current state,
-not a delta; the tables after it record how it was reached.
+not a delta; the tables after it record how it was reached. (Current at **649**
+tunes reaching the gate and after §4i, the two figures are **38.81%** — 753971 of
+1942809 — and **0.099%**, 304 of 307225.)
 
 | plane | interpreted | of | share | strong | shallow |
 |---|---|---|---|---|---|
@@ -1201,7 +1271,9 @@ divides the previous by roughly an order of magnitude, and the last one is prove
 the smallest admissible divisor, so the evidence is thin even where it holds: what
 carries it is that `2` is a byte the play code reloads into a cell it steps down, and
 that the law checks all 200 frames of the stream. That is the whole claim, and it is
-0.107% of the domain.
+0.107% of the domain. (§4i adds a fourth, `MUSICIANS/B/Bonifacio_Robert/Delta_Man.sid`,
+whose divider reloads 48 and whose counter the post-init image seeds at 32: `DIV(48, 31)`,
+where the divider's own phase 47 generates nothing.)
 
 What is refused is named, and each refusal was measured before it was made. A divisor
 fitted to the fire pattern — the obvious way to "explain" 27% — is refused outright.
@@ -1638,6 +1710,92 @@ region's rows would claim it, and the machine's own read index is what refuses i
 the sixth domain measured under that rule (§4c 1420, §4d, §4e, §4f 29559, §4g 54557), and
 the largest.
 
+### The sequencer chain, and which link actually binds
+
+§4i's change, measured against the same tree before it on the same 682 cached tunes at the
+PSID start subtune, 200 frames (649 reach the gate), and on `tools/graph_diff.py` over 15
+GoatTracker tunes at 600 frames (14 map). A change to `tracker.py`, `trackertext.py` and
+`tools/tracker_arrange.py` only.
+
+| | before | after |
+|---|---|---|
+| interpreted | 753971/1942809 = 38.81% | **byte-identical**, every plane and every class |
+| **triggers (fires)** | **300/307225 = 0.0977%** | **304/307225 = 0.0990%** |
+| `graph_diff` matched nodes | 71 of 1648 theirs, 1801 ours | 71 of 1648, 1801 ours |
+| only ours / only theirs | 1730 / 1577 | 1730 / 1577 |
+| tracker law, Gate FP, canonical fixpoint | 649/649 | 649/649 |
+| GoatTracker law / strict-full | 71/71, 4 | 71/71, 4 (admitted 113585/282516, strict `RAW` 122247) |
+| SID-Wizard law / strict-full | 64/64, 64/64 | 64/64, 64/64 (admitted 106034/228702, strict `RAW` 122668) |
+| DefMON law / strict-full | 6/6, 6/6 | 6/6, 6/6 (admitted 12556/28800, strict `RAW` 16244) |
+
+Every plane, every evidence class and every tune's value partition is unmoved — `lane`
+516986, `gate` 32914, `imm` 25188, `ramp` 25399, `seed` 4152, `mask` 676, `rel` 317,
+`arr` 0 — as it must be, since a `DIV` that replaces an `EDGE` fires on the same frames
+and a generated row emits the same declared byte the recovered run did. What moves is the
+*evidence*: **15 emits on one tune are now read at a row the program text generates**
+rather than at a row observation yielded, and **4 more fires on one tune are generated**
+rather than replayed.
+
+**The per-link attrition, which is the result.** The static links come from
+`tools/tracker_arrange.py` over 650 decompiling tunes; the realized ones from the refusal
+histogram over the 649 that reach the gate.
+
+| the chain has | tunes | objects |
+|---|---|---|
+| link 1 — a tick: a declared divisor with the phase its own counter seeds | **424** | 604 ticks |
+| link 2 — a cursor: a cell the text only walks, with a step and a modulus | **593** | 2198 cursors |
+| links 1–2 | **401** | — |
+| link 3 — a declared region the text indexes at one of those cursors | **203** | 710 of 7712 regions |
+| links 1–3 | **159** | — |
+| link 3 reaching a *lane stream* the recovery actually builds | 87 | — |
+| link 1 realized: a `DIV` node in the graph | **4** | 4 nodes |
+| link 4 realized: a table read at a generated row | **1** | 1 cursor node, 15 emits |
+| the whole chain: a `DIV` beating a cursor | **0** | — |
+
+Read down it and the collapse is between "the text names all three links" (159 tunes) and
+"the machine's own streams agree with them" (1). Two refusals do all of that work, and
+both are counted rather than argued:
+
+| the refusal | count |
+|---|---|
+| a lane stream whose region the text names no *walked* cursor for | 6205 streams |
+| a cursor some writer reloads — a `RAMP` walks and never resets | 217 |
+| a row run the cursor's own beats do not reproduce | 58436 rows |
+| **taken: a row the cursor's declared seed, step and modulus generate** | **15** |
+
+**And the trigger domain, where the headline was supposed to move.** Of the 8051
+fire-routed lane streams, **1101 are strictly periodic** with a period of two or more
+(16071 fires), and the period is where it stops:
+
+| the periodic stream's period is | streams | fires |
+|---|---|---|
+| a byte some divider's reload declares | 17 | — |
+| a **product** of two declared divisors — a cascade `DIV` cannot express | 95 | 1826 |
+| neither | **989** | **13608** |
+| …of the 17, generated by the shipped rule (period *and* phase) | **5** | **404** |
+| …of the 17, a phase no counter seed supplies | 9 | 196 |
+| …of the 17, a stream that starts later than its own period allows | 3 | — |
+
+**So the phase was never the binding link, and §8's estimate of it was 25× too large.**
+The refused phases are worth **196 fires over 9 streams**, not 4961, and the declared
+counter seed recovers 4 of them. The binding link is one level up: **90% of periodic
+streams have a period no reload declares at all**, so there is no tick to hang a cursor or
+a pattern on. That is the correction §0 records, and it re-aims §7.4: before a pattern can
+decide *which* tick carries a note, the tick has to be nameable.
+
+**Every refusal, priced.** A phase read off the first observed fire would take the 196
+above and, without the divisor rule beside it, the whole 16071 — it is refused for the
+reason §4c refuses a fitted step, §4d a fitted period, §4e a fitted mask, §4f a
+back-computed delta, §4g a segmented row and §4h a searched row; this is the seventh
+domain measured under it. A **cursor triggered by the stream that reads it** rather than
+by its own step statement — the reading that assumes one step per read — would take **21
+rows over 3 nodes on 2 tunes** against the shipped 15 over 1 on 1: it is refused because
+the beats are what the machine ran and the read stream is only what agreed. And a tick
+taken from a **walked counter's own modulus** — the obvious way to reach the periods 6, 8,
+12, 16, 24, 48, 64 and 96 that dominate the refused set — was measured before it was
+built and has **no population at all**: **zero** of the corpus's 2198 walked cursors step
+exactly once per frame, so no counter's `AND`-modulus is a frame divider.
+
 ## 7. Where the residual goes next
 
 **The objective in this section is the wrong one, and the list below is kept for its
@@ -1758,6 +1916,18 @@ take 29559 of them and is refused (§6).
    pointer arrives here with no source cell at all. Reporting the **resolved** deref
    address as that store's source — the address rung (f) has already proved lies in
    `{T[k]} + [0, bound]` — is the change that would move it, and §6 sizes it.
+
+   **The whole chain was then built, and the binding link is not this one.** §4i wires
+   `DIV -> RAMP[Index] -> SELECT` inside the graph — the tick's phase off the declared
+   counter, the cursor's beats off its own step statement, the row generated rather than
+   observed — and §6 measures it link by link: **424 tunes have a tick, 593 a cursor, 203
+   a region one of those cursors indexes, 159 all three — and 1 tune reads a table at a
+   generated row while 0 have a `DIV` beating a cursor.** The trigger domain goes 300 to
+   **304** fires and the value partition is byte-identical. What the census then names is
+   a link nobody had costed: **989 of the 1101 strictly periodic streams (13608 fires)
+   have a period no divider's reload declares**, and 95 more only as a product of two.
+   So the next question at this layer is not which tick carries a note but **where the
+   driver's tempo byte is** — the same provenance wall as items 1 and 2, one domain over.
 5. **Codec** — `parse(emit(t)) ≡ t`, as for the structurer and frameprog.
 
 ## 8. Known limits
@@ -1794,7 +1964,7 @@ take 29559 of them and is refused (§6).
 - **The transfers we generate and the transfers the editors need are not the same set**,
   and the census says so in both directions. `DIV -> fire` is used by **no editor's own
   song** (0 nodes in GT, SW or DM) and is the one transfer the recovery generates that
-  nothing else does — 3 nodes, 300 fires over 3 tunes of 649 (§4d). The relative route's
+  nothing else does — 4 nodes, 304 fires over 4 tunes of 649 (§4d, §4i). The relative route's
   `Const` and `Node` bases are the same inversion one level down: 0 nodes on any editor's
   side, 36 and 4 emits on ours. `SELECT -> plane+mask` runs the other way — 68 nodes
   theirs against 676 emits ours — and `SELECT[rel]` and `rel` in the index domain are
@@ -1848,10 +2018,20 @@ take 29559 of them and is refused (§6).
 - A divisor is refused unless the play code declares it (§4d): a period fitted to
   the observed fires, a reload out of a RAM cell whose post-init byte merely agrees,
   and a divisor of one are all refused, and §6 measures each refusal's cost. The
-  primitive has no phase field either, so a divider whose counter starts anywhere but
-  at its own reload stays at the floor — 363 of the 391 divider-shaped streams do.
-  Adding the field would open at most their 4961 fires (1.8% of the domain), and only
-  where the divisor is declared as well.
+  primitive **now has a phase field and the arrangement supplies it** (§4i): the phase
+  is `(mem0[counter] − 1) mod n`, the declared byte init left in the divider's own
+  counter, and `n-1` is what that reading gives for a counter seeded at its reload or
+  never staged at all. A phase read off the first observed fire is still refused.
+
+  **This entry used to price the field at 4961 fires and that was 25× too high** (§0).
+  Measured with the divisor rule still in force: of the 1101 strictly periodic streams
+  only **17** have a period some reload declares, **9 of those (196 fires)** need a phase
+  other than `n-1`, and the declared counter recovers **4**. The domain's real limit is
+  one level up — **989 streams (13608 fires) have a period no reload declares**, and 95
+  more only as the product of two declared divisors, which a `DIV` cannot express because
+  `_ticks` reads the frame and not its input count. A counter's own `AND`-modulus would
+  be the other source and it has **no population**: zero of 2198 walked cursors step once
+  per frame.
 
   **The three-editor verdict on that field, settled.** This entry used to price it as
   "a per-stream parameter fitted to the output". DefMON refines that and the refinement
@@ -1870,8 +2050,14 @@ take 29559 of them and is refused (§6).
   parameter: it is *where the song started the clock*. A phase field fitted per stream
   would be exactly the refusal §4c, §4d, §4e and §4f each make in their own domain, and
   a phase field supplied by the arrangement is not a separate step at all. **§7.4 and
-  this field are one problem, and the field is not worth adding before the arrangement
-  is recovered.**
+  this field are one problem**, which is why §4i builds them together — and having built
+  them, the field is worth 4 fires and the arrangement 15 emits.
+- A cursor is refused unless the play code only walks it (§4i): a cell some writer
+  reloads is not a `RAMP`, and 217 candidate cursors are refused for that. A row run the
+  cursor's own beats do not reproduce is refused whole, which is 58436 rows against 15
+  taken; and the cursor's trigger is its **own step statement**, never the stream that
+  reads it — that reading would take 21 rows over 3 nodes and is refused as a trigger
+  fitted to the row run.
 - The tree walk is per procedure (locals) plus a program-wide staging hop
   (`origins`), so a byte staged across a procedure boundary or through the stack is
   named by no store site. On ctrl/AD/SR the provenance search covers it — 15648

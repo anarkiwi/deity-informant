@@ -18,6 +18,9 @@ SHOWCASE = [
     "MUSICIANS/G/Goto80/Automatas.sid",
     "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
     "MUSICIANS/D/Daglish_Ben/Krakout.sid",
+    # the corpus's one table read at a generated row, and its one phased tick (docs 4i).
+    "MUSICIANS/B/Blanchette_Francois/Bird_on_the_Run_II.sid",
+    "MUSICIANS/B/Bonifacio_Robert/Delta_Man.sid",
 ]
 # tunes whose own song is ground truth: docs/gt-oracle.md §3.1's four, and a DefMON one.
 ORACLES = [

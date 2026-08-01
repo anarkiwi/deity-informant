@@ -240,6 +240,17 @@ is the *union* of several of theirs, and `graph_diff` matches on the exact set o
 why the matched count is 1–11 and not zero: the few that match are the streams the editor
 happens not to split.
 
+**Corrected again — the cursor now *generates* the row, and the population is one tune.**
+docs/tracker.md §4i builds the chain the paragraph below asks for, but from the text
+rather than from the value: the cursor's seed is the post-init byte, its step and modulus
+are the program text, and its trigger is its own step statement watched on the same
+`eval_watch` run. The rows are then *predicted* and checked against the run the machine
+read. Over the corpus **203 tunes have a declared region the text indexes at a walked
+cursor and 1 tune's row run the cursor reproduces** (15 emits); 58436 rows are refused
+because the walk does not produce them, and 217 cursors because some writer reloads them.
+Using the cursor's *observed* value as the row instead is the split docs/tracker.md §6
+already priced at 26 of the 71 matched nodes, and it stays refused.
+
 So: **watch the cursor cell and use its value as the row.** `tracker._observe` already
 watches cells on the one `frameval.eval_watch` run the recovery makes (the accumulator
 sites and the arrangement's own walks ride it). Adding the cursor cells of the
