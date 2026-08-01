@@ -26,8 +26,9 @@ _NOTES = (
     "; generated from the committed sidprog model (the cycle-exact ground truth)",
     "; the text is grammar-defined (deity_informant/sidprog.lark) and a canonical",
     ";   fixpoint dumps(loads(t)) == t; frameval.gate_fp is the reference evaluator",
-    "; 16-bit fusion (rung d) makes a proven lo/hi pair one u16 state field; a",
-    ";   lone-half access refuses that pair; per-voice unification is not applied",
+    "; 16-bit fusion (rung d) makes a proven lo/hi pair one u16 state field and an",
+    ";   adjacent freq/pulse/cutoff store pair one u16 store; a lone-half access",
+    ";   refuses that pair; per-voice unification is not applied",
     "; *ptr[i] (rung f) is a deref whose every definition loads a declared lo/hi",
     ";   pointer table, so the address is a row of one of that table's blocks",
     "; registers/temporaries are procedure locals; parameters, returns and",
@@ -192,7 +193,7 @@ def _init_copies(model, decls):
     return origins, [_init_proof(pc, *v) for pc, v in sites.items()], census
 
 
-def program(model, sid_fusion=False):
+def program(model):
     """The frame program of a committed block model (entry translation, rungs a-f)."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
@@ -202,9 +203,7 @@ def program(model, sid_fusion=False):
     trees, labels, view = sidprog._model_trees(model)
     state, inputs = _state_fields(view, decls, model.dispatch_sets, symbols)
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
-    state, proofs = framefuse.apply_rung(
-        model, decls, procs, state, symbols, G.addr_name, sid_fusion
-    )
+    state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(
