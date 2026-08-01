@@ -13,11 +13,14 @@ from deity_informant import framelog as F
 from deity_informant import frameprog
 from deity_informant import structured as S
 from deity_informant import tracker as T
-from deity_informant.c64 import load_psid, psid_songs
+from deity_informant.c64 import load_psid
+
+from _corpus import corpus_params
 
 ROOT = Path(__file__).resolve().parent.parent
 HVSC = ROOT / ".oracle-cache" / "hvsc"
 LEDGER = json.loads((Path(__file__).parent / "universality.json").read_text(encoding="utf-8"))
+CORPUS = {p: sub for p, sub, _secs in corpus_params(HVSC)}  # resolving is what fetches them
 
 # `charts` is on notice: it carries the recovered song beside the generators (docs §4j).
 CHANNELS = frozenset({"nodes", "freq_table", "classes", "charts"})
@@ -52,12 +55,11 @@ def _shallow(cov):
 def _recovered(rel, nframes):
     """``(graph, ground truth)`` for a cached tune, by the pipeline tools/tracker_text.py runs."""
     path = HVSC / rel
-    if not path.is_file():
+    if path not in CORPUS:
         pytest.skip("corpus tune absent")
-    data = path.read_bytes()
-    mem, _load, init, play = load_psid(data)
+    mem, _load, init, play = load_psid(path.read_bytes())
     mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, nframes, psid_songs(data)[1] - 1)
+    model, _ev = S.decompile(mem, init, play, nframes, CORPUS[path])
     prog = frameprog.program(model)
     trace, _walker = frameprog.iota(model, nframes)
     gt, ords, lww, acc = T._observe(prog, trace, nframes)
