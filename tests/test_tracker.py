@@ -31,6 +31,7 @@ def _tune(stem, parent):
 
 
 _LONG = 1200  # frames enough for a tune to reach past its opening bars
+_BENT = 6000  # where Commando's song first plays the pattern that bends a note
 
 
 def _lifted(sid, subtune, frames=200):
@@ -1143,7 +1144,8 @@ def test_the_reload_seed_is_the_declared_byte_and_the_law_says_so():
     nodes = list(graph.nodes)
     seed = nodes[at]
     lane = tuple(mem[0x2000:0x2004])  # the declared lane, read at the reload's own row
-    assert seed.transfer[1] == lane and set(seed.transfer[2]) == {0}
+    # the reload's own row, and no row at all where the text stepped the object instead
+    assert seed.transfer[1] == lane and set(seed.transfer[2]) == {0, len(lane)}
     nodes[at] = seed._replace(transfer=("SELECT", (lane[0] ^ 0x55,) + lane[1:], seed.transfer[2]))
     assert F.diff(T.eval_graph(T.Graph(nodes), 8), gt) is not None
 
@@ -2148,15 +2150,60 @@ def test_commando_drum_is_the_pitch_word_the_note_reloads_walked_down(sid, subtu
     prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
     walks = T._reload_walks(prog, T._banks(prog))
     assert walks[0x551A][0][0][1] == ("step", 0xFF, 0x100)  # dec ctr_551A,x: the text's own step
-    assert {T._base(s[1]) for s in walks[0x551A][1]} == {0x551A}  # and its one reload
+    assert {T._base(s[1]) for s, _k in walks[0x551A][1]} == {0x551A}  # and its one reload
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
     objs = [g for g in graph.nodes if g.transfer[0] == "RAMP" and isinstance(g.transfer[1], tuple)]
-    assert objs and {g.transfer[2:4] for g in objs} == {(0xFF, 0x100)}
-    seeds = {graph.nodes[g.transfer[1][1]].transfer[1] for g in objs}
     lane = tuple(prog.mem0[0x5429 + 2 * r] for r in range(96))
-    assert seeds == {lane}  # the high lane of the declared `$5428` pitch table, at the note's row
+    # the high lane of the declared `$5428` pitch table, at the note's row, walked down by one
+    drum = [g for g in objs if graph.nodes[g.transfer[1][1]].transfer[1] == lane]
+    assert drum and {g.transfer[2:4] for g in drum} == {(0xFF, 0x100)}
     cov = T.render(prog, trace, nf)[2]
     assert cov.classes["freq"]["ramp"] > 0 and cov.classes["freq"]["seed"] == 0
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_spilled_arpeggio_reads_the_driver_cell_the_graph_walks(sid, subtune):
+    """§4n: `(note + 12) * 2` runs onto the driver's own state, and the graph holds it."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    banks = T._banks(prog)
+    lanes = T._cell_lanes(T._charts(prog, banks, None, Counter()))
+    assert lanes[0][0x54FB] and lanes[0][0x54FE]  # the note and instrument columns, by cell
+    walks = T._reload_walks(prog, banks, lanes, T._cell_reach(prog))
+    # the pulse direction counter: the +1 arm's guard pins the cell, so that arm is a seed
+    assert [k for _s, k in walks[0x5510][1]] == [("imm", 1)]
+    assert [r for _s, r in walks[0x5510][0]] == [("step", 0xFF, 0x100)]
+    assert [k for _s, k in walks[0x54FE][1]] == [("song",)]  # the instrument column
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    walked = {  # a read of what a driver cell the graph walks holds, routed to a plane
+        i
+        for i, g in enumerate(graph.nodes)
+        if g.transfer[0] == "HOLD" and graph.nodes[g.transfer[1]].route == T.INDEX
+    }
+    assert walked and all(T._is_plane(graph.nodes[i].route) for i in walked)
+    assert T.render(prog, trace, nf)[2].planes["freq"][0] > 0
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_bend_is_the_pattern_byte_the_pair_steps_by(sid, subtune):
+    """§4o: the halves are bound by the carry, and the step is the song's own byte."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_BENT)
+    banks = T._banks(prog)
+    _w, _c, roots, _a = T._acc_sites(prog)
+    assert T._carried(prog, roots)[0x551D] == 0x551A  # three cells apart: the carry pairs them
+    lanes = T._cell_lanes(T._charts(prog, banks, None, Counter()))
+    arms = T._bend_arms(prog, roots, {c for v in lanes.values() for c in v})
+    kinds = [tag for _s, tag in arms[0x551D][1]]
+    assert {a for k, _l, a in kinds if k == "barm"} == {
+        ("lane", 1, 0x5520, 0x7E),
+        ("lane", -1, 0x5520, 0x7E),
+    }
+    # voice 1's bend magnitudes are exactly `& $7E` of its song's own `$5520` lane
+    assert {b & 0x7E for b in lanes[0][0x5520]} >= {78, 62, 80, 40}
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    bent = [g for g in graph.nodes if g.transfer[0] == "RAMP" and isinstance(g.transfer[2], tuple)]
+    assert bent and all(g.transfer[3] == 0x10000 for g in bent)
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.residual == 0 and cov.classes["freq"]["seed"] == 0
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))
@@ -2230,9 +2277,9 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     prog, trace, nf = _lifted(sid, subtune)
     assert T.gate(prog, trace, nf) is None
     cov = T.render(prog, trace, nf)[2]
-    assert cov.planes["filter"] == (384, 598)
+    assert cov.planes["filter"] == (391, 598)
     assert cov.classes["filter"] == {
-        "lane": 384,
+        "lane": 391,
         "gate": 0,
         "imm": 0,
         "ramp": 0,
@@ -2313,6 +2360,47 @@ def test_index_route_without_a_reader_is_dead():
     order = T.indexer(("SELECT", (0, 1), ()), T.FRAME)
     with pytest.raises(T.TrackerError, match="has no reader"):
         T.eval_graph(T.Graph([order]), 4)
+
+
+def test_a_ramp_step_is_the_value_a_generator_holds_at_the_reload():
+    """§4o: a bend magnitude is a pattern byte, so the step reads where the seed does."""
+    seed = T.indexer(("SELECT", (0x100,), (0, 1, 1, 1)), T.FRAME)
+    step = T.indexer(("SELECT", (-3,), (0, 0, 0, 0)), T.FRAME)
+    ramp = T.Generator(("RAMP", ("node", 0), ("node", 1), 0x10000, ()), T.FRAME, T.INDEX)
+    read = T.Generator(T.hold(2, 0, 1), T.FRAME, T.pair(0, 1))
+    got = T.eval_graph(T.Graph([seed, step, ramp, read]), 4)
+    assert [dict(rec[0]) for rec in got] == [
+        {0: 0x00, 1: 0x01},
+        {0: 0xFD, 1: 0x00},
+        {0: 0xFA, 1: 0x00},
+        {0: 0xF7, 1: 0x00},
+    ]
+
+
+def test_a_ramp_step_no_earlier_index_node_supplies_is_refused():
+    """The step is a value, so it comes from an index node exactly as a row does."""
+    seed = T.indexer(("SELECT", (7,), ()), T.FRAME)
+    plane = T.lookup((3,), T.FRAME, 0x04)
+    ramp = T.Generator(("RAMP", ("node", 0), ("node", 1), 0x100, ()), T.FRAME, T.plane(0))
+    with pytest.raises(T.TrackerError, match="not an earlier index node"):
+        T.eval_graph(T.Graph([seed, plane, ramp]), 2)
+
+
+def test_a_ramp_step_with_no_reload_has_no_epoch_to_read_it_at():
+    """A step read anywhere but at a reload names no moment: the ramp is refused."""
+    step = T.indexer(("SELECT", (2,), ()), T.FRAME)
+    ramp = T.Generator(("RAMP", 0, ("node", 0), 0x100, ()), T.FRAME, T.plane(0))
+    with pytest.raises(T.TrackerError, match="no reload to read it at"):
+        T.eval_graph(T.Graph([step, ramp]), 2)
+
+
+def test_a_seed_that_emits_nothing_leaves_the_ramp_walking():
+    """§4n's one clock: the seed reads no row at a step, and the ramp walks through it."""
+    seed = T.indexer(("SELECT", (0x40,), (0, 1, 1, 1)), T.FRAME)
+    ramp = T.Generator(("RAMP", ("node", 0), 1, 0x100, ()), T.FRAME, T.INDEX)
+    read = T.Generator(T.hold(1, 0, 1), T.FRAME, T.plane(0))
+    got = T.eval_graph(T.Graph([seed, ramp, read]), 4)
+    assert [dict(rec[0])[0] for rec in got] == [0x40, 0x41, 0x42, 0x43]
 
 
 def test_generated_row_out_of_range_drops_the_write():

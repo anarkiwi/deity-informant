@@ -27,53 +27,53 @@
     "rounded-up floor fails >= on the very run that measured it."
   ],
   "baseline": {
-    "commit": "6333c55",
+    "commit": "6f9cab3",
     "measured": "2026-08-01",
-    "records": "the delivered state, not a starting point: bounds re-measured after the note-reload object (\u00a74m) and the spilled-row reading so their gains are held by CI",
+    "records": "the delivered state, not a starting point: bounds re-measured after the driver-cell object (§4n) and the accumulator the song bends (§4o), which take Commando to residual 0 at every frame count measured",
     "jitter": "none: every figure reproduced exactly on two independent runs, so the bounds sit at the measured value with no margin"
   },
   "tunes": [
     {
       "rel": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
       "frames": 400,
-      "generative_share": 0.964444,
-      "residual": 90,
+      "generative_share": 1.0,
+      "residual": 0,
       "planes": {
         "ad": 205,
         "ctrl": 762,
-        "freq": 1628,
+        "freq": 1718,
         "pw": 485,
         "sr": 205
       },
       "trigger_fires": 505,
-      "observed_fires": 2593,
-      "trigger_share": 0.194755,
+      "observed_fires": 2795,
+      "trigger_share": 0.180679,
       "shallow": 342,
-      "ablated_share": 0.973333,
-      "recover_s": 0.9,
-      "measured": "\u00a74m walks `ctr_551A` down from the pitch word the note-on reloads and the spilled row reads the declaration the arpeggio's `+12` lands in: freq 1600 -> 1628, residual 118 -> 90, share 0.956148 -> 0.964444. trigger_fires holds at 505 while observed fires rise 2046 -> 2593, which is the trigger_share row of _doc",
+      "ablated_share": 1.0,
+      "recover_s": 1.0,
+      "measured": "§4n reads the driver's own per-voice state as objects the graph walks and §4o the pair the song bends: freq 1628 -> 1718, residual 90 -> 0, share 0.964444 -> 1.0. shallow holds at 342 and trigger_fires at 505 while observed fires rise 2593 -> 2795, which is the trigger_share row of _doc",
       "frames_why": "400 is where each structure recurs rather than happening once: orderlist cursor $54EC takes 3 values (2 advances), pattern cursor $54EF resets twice, and the $10 pulse ramp runs segments of up to 24 emits at step 22 over bound 256 (2 full turns). At 200 each of the three occurs exactly once; the full tune's 11750 frames is ~236s and far too slow for CI",
       "total": 3375
     },
     {
       "rel": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
       "frames": 1200,
-      "generative_share": 0.990466,
-      "residual": 98,
+      "generative_share": 1.0,
+      "residual": 0,
       "planes": {
         "ad": 598,
         "ctrl": 2032,
-        "freq": 5048,
+        "freq": 5146,
         "pw": 2115,
         "sr": 598
       },
       "trigger_fires": 1499,
-      "observed_fires": 9366,
-      "trigger_share": 0.160046,
+      "observed_fires": 9826,
+      "trigger_share": 0.152554,
       "shallow": 938,
-      "ablated_share": 0.990656,
-      "recover_s": 2.2,
-      "measured": "freq 5024 -> 5048, residual 122 -> 98, share 0.988178 -> 0.990466, shallow unmoved at 938 (\u00a74m's seed is a reload, so it adds no observed byte). recover_s 5.0 -> 2.2: `_refine_voice` no longer rebuilds a per-frame default it already has",
+      "ablated_share": 1.0,
+      "recover_s": 2.5,
+      "measured": "freq 5048 -> 5146, residual 98 -> 0, share 0.990466 -> 1.0, shallow unmoved at 938: §4n's seeds are a declaration, a program immediate the text names or a byte the song copies in, so none of them is an observed byte",
       "frames_why": "the 400-frame entry cannot see the pulse-width sweep at all: Commando's turning instruments enter around frame 800, so pw holds 407/485 = 84% at 400 and 708/844 = 84% at 700, then knees to 600/1008 = 60% at 800 and 900/2115 = 43% at 1200 before #119. Sweeping 400..11750, 1200 is the smallest count that registers work of this size. Costs 5.0s to recover, against ~200s at 11750",
       "total": 10489
     },
@@ -95,7 +95,7 @@
       "shallow": 0,
       "ablated_share": 0.465936,
       "recover_s": 1.3,
-      "measured": "the control tune moves for the first time: 978/2099 survive ablation against 929, all of it the spilled row -- Follin's pitch reads run past their own table too. It still keeps no accumulator any declaration reaches, so \u00a74m recovers nothing here",
+      "measured": "the control tune moves for the first time: 978/2099 survive ablation against 929, all of it the spilled row -- Follin's pitch reads run past their own table too. It still keeps no accumulator any declaration reaches, so §4m recovers nothing here",
       "frames_why": "a second engine at the same frame count; mid-range share, so movement in either direction is visible where Commando's 0.99 has little room left. It carries no pw plane at all -- its 1170 residual is mostly filter 0/802 -- so it locks the planes Commando's entries cannot",
       "total": 2099
     }
