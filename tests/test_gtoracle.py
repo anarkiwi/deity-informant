@@ -102,12 +102,8 @@ def test_a_16_bit_sweep_is_one_pair_routed_ramp_carrying_into_its_high_byte():
     words = [0x00F0, 0x0110, 0x0130, 0x0150]
     graph, rep = G.strict(_native({("t", "r"): (0x20,)}, _sweep16(words, 0x20)))
     node = [g for g in graph.nodes if g.route[0] == "pair"][0]
-    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000, ()) and node.route == (
-        "pair",
-        2,
-        3,
-        0xFF,
-    )
+    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000, ())
+    assert node.route == T.pair(2, 3, 0xFF)
     assert rep.divergence is None and rep.coverage.interp == 8
     assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {"ramp": 6, "seed": 2}
 
