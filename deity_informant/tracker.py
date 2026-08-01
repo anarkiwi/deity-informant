@@ -2206,13 +2206,14 @@ def _cur_watch(prog, objs, at):
     return out, tags
 
 
-def _div_watch(prog, at):
+def _div_watch(prog, at, taken=frozenset()):
     """``([statement], {watch index: divider cell})``: each divider's own dec statement.
 
     A cascade's evidence is the machine's — the inner counter steps exactly on the
-    outer's ticks — so the dec rides the one ``eval_watch`` run everything rides."""
+    outer's ticks — so the dec rides the one ``eval_watch`` run everything rides.
+    ``eval_watch`` keys by statement identity, so one already watched is skipped."""
     clocks = {c.base for c in _clocks(prog) if c.role == "divider"}
-    env, out, tags, seen = _prog_env(prog), [], {}, set()
+    env, out, tags, seen = _prog_env(prog), [], {}, set(taken)
     for s in _stmts(prog):
         if s[0] != "st" or _base(s[1]) not in clocks or id(s) in seen:
             continue
@@ -2489,7 +2490,11 @@ def _observe(prog, trace, nframes, diag=None):
     banks = _banks(prog)
     objs = _objects(prog, banks, diag)
     cstmts, ctags = _cur_watch(prog, objs, len(watch) + len(astmts))
-    dstmts, dtags = _div_watch(prog, len(watch) + len(astmts) + len(cstmts))
+    dstmts, dtags = _div_watch(
+        prog,
+        len(watch) + len(astmts) + len(cstmts),
+        taken={id(s) for s in watch + astmts + cstmts},
+    )
     frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts + dstmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]

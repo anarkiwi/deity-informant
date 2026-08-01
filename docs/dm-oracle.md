@@ -259,7 +259,11 @@ outright: "bit 7 clear = relative, added to the voice's transpose buffer" — an
 Neither is a table read straight through (the values depend on the base note) nor a `RAMP` (the
 direction reverses). GoatTracker spells this as vibrato + the wavetable
 relative-note column, SID-Wizard as `detune` + `chord_table` + `octave_shift`,
-DefMON as `TR` + `AF`. Three editors, one missing route.
+DefMON as `TR` + `AF`. Three editors, one missing route. **The index-domain half
+landed** (the universal-layer step): `_dm_src` passes `TR`'s own amount instead of a
+0/1 flag, so a bit-7-clear `TR` over the pattern's note column emits `SELECT[rel]` —
+**7 nodes over 3 of 6 tunes**, laws green (docs/gt-oracle.md §4.5). `AF` stays: it is
+the value-domain slide whose rate lives in the replay's own code.
 
 **And DefMON reaches the second half of the extension that no tune had reached
 before.** docs/tracker.md §8 records "a triangle sweep that turns around at a

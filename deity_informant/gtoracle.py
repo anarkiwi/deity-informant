@@ -123,7 +123,7 @@ def _pair16_keys(native, frames):
     advance by it (docs/tracker.md §4c, one register wider). The high write is eaten."""
     obs = [dict(w) for w in frames]
     cand = {}
-    for f, cells in enumerate(native.writes):
+    for f, cells in enumerate(native.writes[: len(obs)]):
         for reg, cell in cells.items():
             one = cell if isinstance(cell, Cell) else None
             if one is None or one.kind != "ramp16" or not one.step or one.base is None:
