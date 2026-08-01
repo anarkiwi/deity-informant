@@ -2614,8 +2614,8 @@ SID store's own execution, `frameval.eval_watch`, at the full 11750 frames):
   bend, 696 writes, and what it is owed is nameable: a song lane keyed by the cell a
   pattern byte flows into (`_row_walk` already carries the destination set of every row
   byte) and a `RAMP` whose *step* is `Node(j)`, exactly as its seed now is. The step is
-  declared — §7 measures voice 1's magnitudes against the song's own `$5520` lane and they
-  agree byte for byte — so this is a build, not a wall.
+  declared — §7 measures every magnitude voice 1 bends by against that lane and finds no
+  magnitude the lane does not hold — so this is a build, not a wall.
 - **A read that spills onto live state has no declaration to reach** (§4b, §7). The
   arpeggio's `(note + 12) * 2` runs past the pitch table on the top octave; 240 of those
   rows land in the next declaration and are recovered, and **1110 land on the driver's own
