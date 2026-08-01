@@ -1722,7 +1722,9 @@ GoatTracker tunes at 600 frames (14 map). A change to `tracker.py`, `trackertext
 | `graph_diff` matched nodes | 71 of 1648 theirs, 1801 ours | 71 of 1648, 1801 ours |
 | only ours / only theirs | 1730 / 1577 | 1730 / 1577 |
 | tracker law, Gate FP, canonical fixpoint | 649/649 | 649/649 |
-| GT / SW / DM oracle law | 71/71, 64/64, 64/64, 6/6, 6/6 | unchanged, admitted and strict RAW to the byte |
+| GoatTracker law / strict-full | 71/71, 4 | 71/71, 4 (admitted 113585/282516, strict `RAW` 122247) |
+| SID-Wizard law / strict-full | 64/64, 64/64 | 64/64, 64/64 (admitted 106034/228702, strict `RAW` 122668) |
+| DefMON law / strict-full | 6/6, 6/6 | 6/6, 6/6 (admitted 12556/28800, strict `RAW` 16244) |
 
 Every plane, every evidence class and every tune's value partition is unmoved — `lane`
 516986, `gate` 32914, `imm` 25188, `ramp` 25399, `seed` 4152, `mask` 676, `rel` 317,
