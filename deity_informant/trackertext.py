@@ -698,12 +698,12 @@ def _node_lines(graph, i, scan, keys, cons):
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
-            "     %s  starts at %s (%s), steps %+d per fire, %s"
+            "     %s  starts at %s (%s), steps %s per fire, %s"
             % (
                 "object" if isinstance(seed, tuple) else ("cursor" if held else "sweep "),
                 ("what n%02d reloads" % seed[1]) if isinstance(seed, tuple) else "%d" % seed,
                 "DECLARED" if held or isinstance(seed, tuple) else "OBSERVED",
-                step,
+                ("by what n%02d reloads" % step[1]) if isinstance(step, tuple) else "%+d" % step,
                 (
                     "turns down at high %d and up at high %d (DECLARED), wraps at %d"
                     % (turn[1], turn[0], bound)

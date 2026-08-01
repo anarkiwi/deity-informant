@@ -43,6 +43,8 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | the arpeggio's residual is a provenance gap: the origin map names the *cursor* the index came from rather than the table cell the read resolved to (§7) | this step | **false, and backwards** — the origin map names exactly the cell the read resolved to. `asl` takes `(note + 12) * 2` past the declared 96-entry pitch table, and 240 of those rows land in the *next declaration* (recovered here) while **1110 land on the driver's own per-voice state** — `pos_54EF`, `ctr_5510`, `idx_54FE`, `pos_54EC`, `idx_54FB`. Those are live RAM, and no declaration reaches them at all: the "cursor" reading had the right cells and the wrong conclusion |
 | the bend and the drum are one mechanism, and one generalisation reaches both (§7) | this step | **half true** — the object generalisation (§4m) reaches the drum whole, 644 writes. The bend needs a *second* thing the same rung does not supply: its step is a pattern byte, and the pattern is read through a zero-page pointer the origin map cannot name, so only §4j's chart walk reaches it. Measured against that walk the step is declared exactly (`& $7E` of the song's own `$5520` lane), so it is a build and not a wall |
 | `Graph.charts` carries the song as declared data beside the generators (#115) | #116 | **a side-car scores zero** — the law passes at 0% generation, so "law PASS, corpus byte-identical" was satisfied perfectly by a change that generated nothing. Every coverage figure was byte-identical to the pre-#115 baseline. What the song is worth is what it *produces*, and §4k is where it began producing |
+| the arpeggio's 1110 spilled writes have no declaration to reach, and emitting a walked cell's value is a route the layer does not have (§7, §8) | this step | **built, and it is one object rule** — a driver cell whose *every* store the text names is §4l's object with three more seeds: a program immediate, a step a guard on the cell's own value pins, and a byte the song copies in. With the read's cell taken off the machine's address bus, all 1112 come out and Commando's residual falls 1808 -> 696 |
+| the bend needs a song lane keyed by the destination cell and a `RAMP` whose step is `Node(j)`, so it is a build and not a wall (§7, §8) | this step | **true as stated, and it cost one more element than the entry named** — the two halves are bound by the carry the text takes and *not* by adjacency (they are three cells apart), so §4c's `_paired_cells` does not find them. With `_carried` reading the carry alone, `RAMP`'s step taking `Node(j)`, and the pair route already in the primitive, the last 696 come out: **Commando is residual 0** |
 
 The `SELECT[rel]` row is the one to read before adding to the primitive: a refusal count
 says an element *would* be used, never that anything *does* use it. The `LOOKUP` row is
@@ -114,7 +116,7 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n, phase)           # one tick per n input triggers (a clock)
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
-           |                         #  seed may be Node(j): reloaded when j emits
+           |                         #  seed and step may be Node(j): read on j's emit
            | HOLD(j, seed, at)       # emit what generator j held after its at-th emit
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
@@ -136,9 +138,12 @@ Generator = (transfer, trigger, route)
 ```
 
 **A parameter a driver computes at runtime is another generator's value.** A `DIV`'s
-divisor, a `SELECT`'s rows, a relative route's base and a `RAMP`'s **seed** all take the
-form `Node(j)`; the last is what an accumulator a note-on reloads needs (§4m), and the
-ramp then restarts from what `j` holds every time `j` emits rather than from a constant.
+divisor, a `SELECT`'s rows, a relative route's base and a `RAMP`'s **seed** and **step**
+all take the form `Node(j)`. The seed is what an accumulator a note-on reloads needs
+(§4m) — the ramp restarts from what `j` holds every time `j` emits rather than from a
+constant — and the step is what one the song *bends* needs (§4o), read at that same
+reload, because a tracker's bend magnitude is a pattern byte and no constant names it. A
+step read anywhere but at a reload has no epoch to be read at, and `_check` refuses it.
 
 **A `DIV` divides its input ticks, not the frame.** Clocked by the frame the two are
 the same number; clocked by another generator's edge it counts what it receives, so
@@ -678,6 +683,83 @@ whole — `freq` `51478/54170` -> `52362/54170`, residual `2692` -> **`1808`**, 
 the pitch plane `0` -> **`644`**, observed sweep seeds still **`0`**. Corpus-wide, 649
 tunes at 200 frames: `law` 649/649, interpreted `776678` -> `794952` over **138 tunes**
 with **none generating less** and every tune's `total` unmoved.
+
+## 4n. The driver cell as an object, and the song lane that reloads it
+
+§4l's object is a cell a declaration **contains**; §4m's is plain RAM a declared byte
+reloads. This is the same object with **every** store the program text names, and it is
+what a read that spills onto the driver's own state needs (§7, §8's retired entry).
+
+- **Four stores name a value** (`_reload_walks`). A program immediate the text stores;
+  a step under a guard that pins the cell's own value (`_pinned`) — a 6502 branches on a
+  compare and the *taken* arm names the value, §4j's reading of the compare that resets a
+  cursor; a byte the song copies into the cell (`_cell_lanes`); and §4m's reload whose
+  origins name one declared byte. Commando's pulse direction counter is the guard case:
+  `ctr_5510[x] = ctr_5510[x] + 1` under `ctr_5510[x] == $00` is a store of `$01`, so a
+  cell two arms step by ±1 is one reload and one step and not two steps that disagree.
+- **A song lane is keyed by the cell, not by the table it indexes** (`_cell_lanes`).
+  §4k names a row byte by the table the cell it flows into indexes — a note column, an
+  instrument column. `_row_walk` already carries every row byte's destination set with the
+  guards resolved, so the cell itself is the prior name, and a byte the song copies into
+  plain RAM is declared data at a program-text offset exactly as a note column is.
+- **A cell the run never writes still holds its post-init image** (`_obj_cells`). Every
+  store is watched, object or not, so that is a fact about the run rather than an
+  assumption; a store whose address the run does not report withdraws the reading whole.
+- **A read is a copy, and the cell is the machine's address bus** (`_reload_reads`). The
+  store's value must resolve to a single load with nothing done to it — arithmetic
+  combines cells and names none — and which cell is then the store's own origins, the
+  cell the load addressed with its origin ahead of it, or the capture it read through
+  where a staged copy collapsed them. A cell outside one index register of both an object
+  base and the reading statement's own base is no object's and no read's (§4b's rule,
+  applied at both ends).
+- **The object has one clock: its own updates.** The seed reads its lane at the row the
+  reload took and *no row* at a step, and a ramp whose seed emits nothing walks on. Machine
+  order is then the graph's order rather than an ordinal it must infer, which is what makes
+  a cursor the text steps *and* resets inside one frame expressible at all.
+- **Regenerate or refuse whole.** Every read is checked against the byte the register
+  took and one contradiction refuses that object entirely, exactly as §4l's does.
+
+On Commando this is the arpeggio's spilled row. `m_5428[(note + 12*(frc & 1)) * 2]` runs
+past the declared 96-entry table onto the driver's own per-voice state, and the origin map
+names the cell exactly: `pos_54EF` the pattern row cursor (576 writes), `ctr_5510` the pulse
+direction counter (330), `idx_54FE` the instrument index (96), `pos_54EC` the orderlist
+cursor (72), `idx_54FB` the note index (36), `m_54F8` (2). The first three are walks, the
+next two are song lanes, and the last is a cell whose post-init image the read met first.
+
+**Measured, Commando whole tune (11750 frames, law PASS):** residual `1808` -> **`696`**,
+freq `52362/54170` -> `53474/54170`, generated `98.5%` -> `99.4%`, observed sweep seeds
+still `0`. Corpus-wide, 649 tunes at 200 frames: `law` 649/649, interpreted `794952` ->
+`892071` over **348 tunes** with **none generating less**, every tune's `total` unmoved and
+`seed` unmoved at `7479`.
+
+## 4o. The accumulator the song bends
+
+§4n's object is one byte and one step the text names. Commando's pitch bend is neither: it
+is a 16-bit accumulator whose step is a **pattern byte**.
+
+- **The carry binds the halves, not adjacency** (`_carried`). §4c pairs a cell with the
+  byte *above* it, and a driver's halves need not be adjacent — `m_551D[x]` and
+  `ctr_551A[x]` are three apart. What says the two are one number is the high store taking
+  the carry out of the low one's own arithmetic, which is program text.
+- **The step is the song's own byte, under the mask the text applies** (`_bend_lane`). A
+  driver stages the step in a scratch byte it also uses for other things, so the store that
+  names it is the one live *at* the arm. Commando's is `m_5520[x] & $7E`, and the sign is
+  the arm the text's guard on bit 0 of that same byte selects.
+- **A `RAMP`'s step may be `Node(j)`** — the last scalar parameter of the primitive to
+  take the form the divisor, the rows and the seed already carry. The step is read where
+  the seed is, at the reload, so a ramp with no reload has no epoch to read one and
+  `_check` refuses it.
+- **One arm walks one run.** The graph's ramp reads one step per epoch, so a run two arms
+  step is claimed by neither — the recovery checks what the graph will emit, not what the
+  machine did.
+- **Both halves of an emit are one `pair` write**, so a read of one half alone claims
+  nothing, and a SID store is a read only where its value expression *is* the arm's own —
+  the text saying so, never a byte that agrees.
+
+**Measured, Commando whole tune (11750 frames, law PASS):** residual `696` -> **`0`**, the
+pitch plane `53474/54170` -> **`54170/54170`**, 501 pair emits over two arms (299 down, 202
+up). The corpus is unmoved at 200 frames: Commando's bend does not enter before frame 2000,
+and no other cached tune carries a 16-bit accumulator a song byte steps.
 
 ## 4d. The trigger domain: a `DIV` whose divisor is a declared reload
 
@@ -2523,6 +2605,44 @@ SID store's own execution, `frameval.eval_watch`, at the full 11750 frames):
   it is a lane keyed by the cell a pattern byte flows into (`_row_walk` already carries
   the destination set) and a `RAMP` whose *step* is a node, exactly as its seed now is.
 
+### Commando, whole tune: residual 0
+
+11750 frames, law PASS throughout, against the same tune after §4m:
+
+| figure | after §4m | after §4n | after §4o |
+|---|---|---|---|
+| values generated | 115223 / 117031 = 98.5% | 116335 / 117031 = 99.4% | **117031 / 117031 = 100%** |
+| residual (replayed) | 1808 | 696 | **0** |
+| pitch plane | 52362 / 54170 = 96.7% | 53474 / 54170 | **54170 / 54170 = 100%** |
+| observed sweep seeds (`seed`) | 0 | 0 | **0** |
+| nodes | 142 | 176 | **194** |
+| fires generated | 15000 / 117031 | 15000 / 125585 | **15000 / 128837** |
+
+**Every write of the tune is now produced and none is replayed.** The two readings that
+close it are one object rule apiece. §4n's is that a driver cell whose *every* store the
+program text names is §4l's object one step further out — the three seeds it adds are a
+program immediate, a step a guard on the cell's own value pins, and a byte the song copies
+in — and that the cell a read landed on is the machine's own address bus. §4o's is that a
+16-bit accumulator the song *bends* needs its step read where its seed is read, which is
+`RAMP`'s last scalar parameter taking the form the divisor, the rows and the seed already
+had.
+
+Both are checked the same way every object here is: the walk is regenerated from the
+declaration and the text, every read is compared with the byte the register took, and one
+contradiction refuses that object whole. **Nothing is seeded from an observed byte**:
+`Coverage.classes` reports `seed` 0, and the shallow classes are unmoved at 10108 program
+constants — the same waveform and ADSR immediates §4e and §5 already reported.
+
+**The song is unchanged and re-verified byte for byte**: 3 orderlists (65/64/124 bytes
+including their `$FF` terminators), 32 patterns, 571 rows, **0 divergences** against Rob
+Hubbard's own source, including the one pattern that source ships commented out. §4n and
+§4o touch the value domain only, and the recovered `Graph.charts` is byte-identical to the
+one #120 shipped.
+
+**Corpus-wide** (649 tunes at 200 frames): `law` 649/649, interpreted `794952` ->
+`892071` over **348 tunes** with **none generating less**, every tune's `total` unmoved,
+`seed` unmoved at `7479`, and generated fires `1140` -> `1191`.
+
 ## 8. Known limits
 
 - The arrangement (§4g) needs **two** things the program text must supply, and this
@@ -2608,22 +2728,20 @@ SID store's own execution, `frameval.eval_watch`, at the full 11750 frames):
   `$08` down) in its own walked text (`out/Commando.frameprog.txt:373-421`), over a
   12-bit accumulator whose halves are the `$5591` bank's `+0`/`+1` lanes. It is worth
   **23071 of that tune's 25763 replayed writes** and it is not built here.
-- **§4m's object names one step and one seed lane.** Its step is what `_walk_of` reads —
-  the text's own immediate — so an arm whose delta is a *pattern* byte leaves the object
-  undefined until the next reload rather than walking through it. That is Commando's pitch
-  bend, 696 writes, and what it is owed is nameable: a song lane keyed by the cell a
-  pattern byte flows into (`_row_walk` already carries the destination set of every row
-  byte) and a `RAMP` whose *step* is `Node(j)`, exactly as its seed now is. The step is
-  declared — §7 measures every magnitude voice 1 bends by against that lane and finds no
-  magnitude the lane does not hold — so this is a build, not a wall.
-- **A read that spills onto live state has no declaration to reach** (§4b, §7). The
-  arpeggio's `(note + 12) * 2` runs past the pitch table on the top octave; 240 of those
-  rows land in the next declaration and are recovered, and **1110 land on the driver's own
-  per-voice cells** — the pattern row cursor, the orderlist cursor, the pulse direction
-  counter, the note and instrument indices. Those are *walked* cells in §4j's sense, so
-  their values are program text; what the layer has no route for is emitting a walked
-  cell's value as a byte. `HOLD` reads what a generator holds, and no generator holds
-  them: the arrangement's row nodes carry a pattern byte, not the cursor that indexed it.
+- **§4m's object named one step and one seed lane, and this entry has been paid** (§4o).
+  An arm whose delta is a *pattern* byte left the object undefined until the next reload;
+  a song lane keyed by the destination cell and a `RAMP` whose step is `Node(j)` walk it
+  through, and Commando's 696 bend writes come out. What the entry did **not** name is
+  the pairing: the two halves are three cells apart, so the carry the text takes is the
+  only thing that binds them (`_carried`). What is still owed here is a *turning* step —
+  a bend that reverses at a bound rather than being reloaded — which no cached tune has.
+- **A read that spills onto live state had no declaration to reach, and this entry has
+  been paid** (§4n). The arpeggio's `(note + 12) * 2` runs past the pitch table on the top
+  octave; 240 of those rows land in the next declaration and **1110 land on the driver's
+  own per-voice cells**. A driver cell whose every store the text names is an object the
+  graph walks, and `HOLD` then reads what that object holds. What is still owed is a cell
+  some writer the text does *not* name touches: the object is undefined from there to its
+  next reload, and nothing is claimed across it.
 - The step is queried at the *play* phase's copies. A parameter a table supplies at
   **init** and the play code only reads back arrives as a RAM cell with no origin, so
   it names no declaration; that is a large part of what §6's refusal table leaves.

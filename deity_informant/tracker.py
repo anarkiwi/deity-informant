@@ -2812,7 +2812,6 @@ def _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes):
         nth = {}
         for i, at, srcs in wat[f] if f < len(wat) else ():
             tag, btag = tags.get(i), btags.get(i)
-            cell = None
             if tag is not None and tag[0] == "load" and tag[1] is not None:
                 got = _obj_seed_of(tag[2], at, tag[1], srcs, banks, mem0, lanes, rows)
                 lbyte[at] = None if got is None else got[1:]
@@ -2820,7 +2819,7 @@ def _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes):
                 continue
             if btag is not None and btag[0] == "bread":
                 reg, (half, arm) = at - _SID, btag[2]
-                cell, took = btag[1] + reg // 7, lww[f].get(reg)
+                cell, took = btag[1] + _OFFS.index(reg - reg % 7), lww[f].get(reg)
                 key, got = wkey.get(cell), word.get(cell)
                 if took is None or took[1] is not srcs or got is None or key is None:
                     continue
@@ -2877,29 +2876,34 @@ def _bend_table(key, mem0):
     return tuple(a | (b << 8) for a, b in zip(lo, hi))
 
 
-def _bend_nodes(cell, key, em, arms, ctx):
+def _bend_arm_node(arm, lane, em):
+    """``(arm, step, table, rows)``: a constant step, or the song lane signed and masked.
+
+    The sign is the arm the text's own guard on that byte selects, so one lane read two
+    ways is two nodes and the recovery never has to say which the machine would take."""
+    if arm[0] == "const":
+        return (arm, arm[1], None, ())
+    table = tuple(arm[1] * (b & arm[3]) for b in lane)
+    rows = tuple((held or {}).get(arm[2], (None,))[0] for _f, _r, held in em)
+    return (arm, None, table, tuple(len(table) if r is None else r for r in rows))
+
+
+def _bend_nodes(cell, key, em, lo, ctx):
     """One bent pair's ``BendObj``: its reload, one ramp per arm, and the reads they hold."""
     holds, lanes, mem0, nframes, hi = ctx
-    table = _bend_table(key, mem0)
-    counts = [0] * nframes
+    table, counts, voice = _bend_table(key, mem0), [0] * nframes, cell - lo
     for f, _r, _b in em:
         counts[f] += 1
-    out = []
-    for arm in sorted({a for _c, _at, a in holds}):
-        if arm[0] == "const":
-            out.append((arm, arm[1], None, ()))
-            continue
-        lane = lanes.get(cell - arms[0], {}).get(arm[2], ())
-        step = tuple(arm[1] * (b & arm[3]) for b in lane)
-        rws = tuple((b or {}).get(arm[2], (len(step),))[0] for _f, _r, b in em)
-        out.append((arm, None, step, tuple(len(step) if r is None else r for r in rws)))
+    lane = lanes.get(voice, {})
     return BendObj(
         cell,
-        (7 * (cell - arms[0]), 7 * (cell - arms[0]) + 1),
+        (_OFFS[voice], _OFFS[voice] + 1),
         table,
         tuple(len(table) if r is None else r for _f, r, _b in em),
         tuple(counts),
-        tuple(out),
+        tuple(
+            _bend_arm_node(a, lane.get(a[2], ()), em) for a in sorted({a for _c, _at, a in holds})
+        ),
         mem0[cell] | (mem0[cell + hi] << 8),
         tuple(holds),
     )
@@ -2915,9 +2919,9 @@ def _bend_streams(prog, banks, bends, btags, tags, wat, lww, nframes, done=(), l
     claims, emits, bad = _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes)
     holds, out, explained = {}, [], [set() for _f in range(nframes)]
     for (cell, key, arm, at), halves in sorted(claims.items()):
+        regs = _bend_regs(cell, bends)
         if cell in bad or set(halves) != {0, 1} or halves[0] != halves[1]:
             continue  # a read of one half alone is not this object's 16-bit emit
-        regs = (7 * _bend_voice(cell, bends), 7 * _bend_voice(cell, bends) + 1)
         rest = [f for f in halves[0] if not any(r in done[f] for r in regs)] if done else halves[0]
         if rest:
             counts = [0] * nframes
@@ -2928,18 +2932,19 @@ def _bend_streams(prog, banks, bends, btags, tags, wat, lww, nframes, done=(), l
     for cell, key in sorted(holds):
         lo = _bend_low(cell, bends)
         ctx = (holds[(cell, key)], lanes, mem0, nframes, bends[lo][0] - lo)
-        out.append(_bend_nodes(cell, key, emits[(cell, key)], (lo,), ctx))
+        out.append(_bend_nodes(cell, key, emits[(cell, key)], lo, ctx))
     return out, explained
 
 
 def _bend_low(cell, bends):
-    """The base of the pair one walked cell belongs to."""
-    return next(lo for lo in bends if 0 <= cell - lo < 3)
+    """The base of the pair one walked cell belongs to: one entry per SID voice."""
+    return next(lo for lo in bends if 0 <= cell - lo < len(_OFFS))
 
 
-def _bend_voice(cell, bends):
-    """Which voice a walked pair cell is: its offset in its own base's array."""
-    return cell - _bend_low(cell, bends)
+def _bend_regs(cell, bends):
+    """The register pair a walked pair cell writes: its own voice's freq lo and hi."""
+    off = _OFFS[cell - _bend_low(cell, bends)]
+    return (off, off + 1)
 
 
 def _reloads(prog, banks):
