@@ -281,14 +281,13 @@ def test_a_masked_group_counts_as_one_emit_not_one_per_field():
     assert "filter                 8       8  100.0%" in X.emit(g, MF)
 
 
-def test_the_fire_index_is_the_evaluator_s_own_propagation():
-    """The linear consumer index must agree with `tracker._fired` frame for frame."""
+def test_the_fire_propagation_is_the_evaluator_s_own():
+    """The scan and the evaluator share `tracker._Fires`, so their counts agree."""
     for g in (_masked(), _graph()):
-        nodes = g.nodes
-        cons = X._consumers(nodes)
-        roots = [i for i, n in enumerate(nodes) if n.route[0] == "fire"]
+        firing = T._Fires(g.nodes)
         for f in range(NF):
-            assert X._fires(nodes, roots, cons, f) == T._fired(nodes, f)
+            fires, _ticks = firing.step(f)
+            assert len(fires) == len(g.nodes)
 
 
 # ---- side by side: our recovery against a native editor's own song ----------------

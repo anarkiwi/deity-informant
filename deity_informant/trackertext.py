@@ -246,25 +246,12 @@ def _run_note(runs, f, note):
 
 
 def _consumers(nodes):
-    """``{node: [the nodes it triggers]}``, indexed once so a frame's fires cost no scan.
-
-    ``tracker._fired`` rescans every node per firing trigger, which is quadratic in the
-    graph; a whole tune is thousands of nodes, so the index is what makes a pass linear."""
+    """``{node: [the nodes it triggers]}``, indexed once for the per-node display."""
     out = {}
     for j, h in enumerate(nodes):
         if h.trigger != tracker.FRAME:
             out.setdefault(h.trigger[1], []).append(j)
     return out
-
-
-def _fires(nodes, roots, cons, frame):
-    """Trigger counts per node for ``frame``: ``tracker._fired``, without the rescan."""
-    fired = [1 if g.trigger == tracker.FRAME else 0 for g in nodes]
-    for i in roots:
-        n = tracker._ticks(nodes[i], frame) if fired[i] else 0
-        for j in cons.get(i, ()) if n else ():
-            fired[j] += n
-    return fired
 
 
 def _see_select(scan_tabs, key, row, reg, frame, insts):
@@ -282,7 +269,7 @@ def _scan(graph, nframes, keys, tabs):
     them to fire writes the assembled byte, exactly as ``tracker._run`` evaluates it, so
     a register several generators drive counts as one emit and not as one per field."""
     nodes = graph.nodes
-    cons, roots = _consumers(nodes), [i for i, g in enumerate(nodes) if g.route[0] == "fire"]
+    firing = tracker._Fires(nodes)
     parts = tracker._masked(nodes)
     held = {reg: {} for reg in parts}
     counts, emits = [0] * len(nodes), [0] * len(nodes)
@@ -290,7 +277,7 @@ def _scan(graph, nframes, keys, tabs):
     at, insts = [[None] * nframes for _v in range(3)], [{}, {}, {}]
     pitch = graph.freq_table
     for f in range(nframes):
-        fired = _fires(nodes, roots, cons, f)
+        fired, _ticks = firing.step(f)
         last = {r: max((i for i in ns if fired[i]), default=None) for r, ns in parts.items()}
         cur = {}
         for i, g in enumerate(nodes):
@@ -307,6 +294,18 @@ def _scan(graph, nframes, keys, tabs):
                     emits[i] += v is not None
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
                     del ramps[i][1][:-4]
+                continue
+            if g.route[0] == "pair":  # a 16-bit emit: both halves count, the word samples
+                for _t in range(fired[i]):
+                    counts[i] += 1
+                    v = tracker._emit(g, counts[i], cur)
+                    if v is None:
+                        continue
+                    emits[i] += 1
+                    ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
+                    del ramps[i][1][:-4]
+                    for reg in g.route[1:3]:
+                        gen[reg] = gen.get(reg, 0) + 1
                 continue
             if g.route[0] != "plane":
                 counts[i] += fired[i]
@@ -593,6 +592,8 @@ def _route(g):
     if tracker._is_plane(g.route):
         role = _role(g.route[1], tracker._mask_of(g.route))
         return "-> " + (role + ", as an offset" if g.route[0] == "rel" else role)
+    if g.route[0] == "pair":
+        return "-> %s, as one 16-bit value" % _role(g.route[1], tracker._FULL)
     if g.route[0] == "fire":
         return "-> triggers"
     if g.route == tracker.INDEX:

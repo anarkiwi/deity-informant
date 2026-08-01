@@ -67,14 +67,9 @@ def test_a_ctrl_byte_is_the_waveform_lane_read_through_its_gate_image():
     graph, rep = G.strict(_native(tables, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 4)][0]
     assert node.transfer[1] == G._ctrl_table(lane)
-    assert rep.coverage.classes["ctrl"] == {
+    assert rep.coverage.classes["ctrl"] == dict.fromkeys(G._CLASSES, 0) | {
         "lane": 1,
         "gate": 1,
-        "imm": 0,
-        "ramp": 0,
-        "seed": 0,
-        "mask": 0,
-        "rel": 0,
     }
 
 
@@ -85,14 +80,9 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
     graph, rep = G.strict(_native({("ptbl", "right"): (step,)}, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 2)][0]
     assert node.transfer == ("RAMP", 0x10, step, 0x100)
-    assert rep.coverage.classes["pw"] == {
-        "lane": 0,
-        "gate": 0,
-        "imm": 0,
+    assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {
         "ramp": 3,
         "seed": 1,
-        "mask": 0,
-        "rel": 0,
     }
 
 
@@ -154,14 +144,8 @@ def test_two_fields_of_one_register_become_two_masked_generators():
     assert [m for m, _t in got] == [0x0F, 0x70]
     assert dict(got)[0x70] == ("SELECT", (0x10, 0x20), (0, 1))
     assert rep.divergence is None and rep.coverage.interp == 2  # two frames, one write each
-    assert rep.coverage.classes["filter"] == {
-        "lane": 0,
-        "gate": 0,
-        "imm": 0,
-        "ramp": 0,
-        "seed": 0,
+    assert rep.coverage.classes["filter"] == dict.fromkeys(G._CLASSES, 0) | {
         "mask": 2,
-        "rel": 0,
     }
 
 

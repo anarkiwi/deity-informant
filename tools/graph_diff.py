@@ -20,77 +20,17 @@ def _acts(graph, nframes):
     """``([node] -> signature, per-frame writes)``: what each node does.
 
     A plane node's signature is its writes, a fire node's its edges, an index node's
-    its rows. Mirrors ``tracker._run``'s loop, which ``_faithful`` then checks."""
+    its rows — recorded by ``tracker._run`` itself, so attribution cannot drift."""
     from deity_informant import tracker
 
-    nodes = graph.nodes
-    counts = [0] * len(nodes)
-    parts = tracker._masked(nodes)
-    held = {reg: {} for reg in parts}
-    prev, cur = {}, {}
-    acts = [[] for _ in nodes]
-    writes_by_frame = []
-    for f in range(nframes):
-        fires = tracker._fired(nodes, f)
-        eaten = {
-            g.route[4][1]
-            for i, g in enumerate(nodes)
-            if fires[i] and g.route[0] == "rel" and g.route[4][0] == "node"
-        }
-        last = {
-            r: max((i for i in ns if fires[i] and i not in eaten), default=None)
-            for r, ns in parts.items()
-        }
-        frame_writes = []
-        for i, g in enumerate(nodes):
-            if not fires[i]:
-                continue
-            if g.transfer[0] == "RAW":
-                counts[i] += fires[i]
-                rows = g.transfer[1]
-                for reg, val in rows[f] if f < len(rows) else ():
-                    acts[i].append((f, reg, val))
-                    frame_writes.append((reg, val))
-                    prev[reg] = val
-            elif g.route == tracker.INDEX:
-                for _t in range(fires[i]):
-                    counts[i] += 1
-                    cur[i] = v = tracker._emit(g, counts[i], cur)
-                    acts[i].append((f, v))
-            elif tracker._is_plane(g.route):
-                reg = g.route[1]
-                for _t in range(fires[i]):
-                    counts[i] += 1
-                    cur[i] = v = tracker._emit(g, counts[i], cur)
-                    if g.route[0] == "rel":
-                        v = tracker._combine(g.route, v, prev, cur)
-                    if i in eaten:
-                        continue
-                    v = tracker._assemble(g, v, held.get(reg), i == last.get(reg))
-                    if v is None:
-                        continue
-                    acts[i].append((f, reg, v & 0xFF))
-                    prev[reg] = v & 0xFF
-                    frame_writes.append((reg, v & 0xFF))
-            else:
-                counts[i] += fires[i]
-                n = tracker._ticks(g, f) * fires[i]
-                if n:
-                    acts[i].append((f, n))
-        writes_by_frame.append(frame_writes)
-    return [tuple(a) for a in acts], writes_by_frame
+    acts, frames = [[] for _ in graph.nodes], []
+    tracker._run(graph, nframes, trace=(acts, frames))
+    return [tuple(a) for a in acts], frames
 
 
 def _rebase(sig, offset, win):
     """A signature moved into the oracle's aligned window, entries outside dropped."""
     return tuple((e[0] - offset,) + e[1:] for e in sig if offset <= e[0] < offset + win)
-
-
-def _faithful(graph, nframes, writes):
-    """The per-node attribution must rebuild the graph's own projection."""
-    from deity_informant import framelog, tracker
-
-    return framelog.canonical(writes) == tracker.eval_graph(graph, nframes)
 
 
 def _role(g):
@@ -99,6 +39,8 @@ def _role(g):
 
     if tracker._is_plane(g.route):
         where = trackertext._role(g.route[1], tracker._mask_of(g.route))
+    elif g.route[0] == "pair":
+        where = trackertext._role(g.route[1], tracker._FULL) + " (16-bit pair)"
     elif g.route == tracker.INDEX:
         where = "a row index"
     elif g.route[0] == "fire":
@@ -140,9 +82,8 @@ def diff(rel, nframes):
     ours, _cov = _ours(prog, trace, nframes)
     win = report.frames
 
-    a_ours, w_ours = _acts(ours, nframes)
-    a_theirs, w_theirs = _acts(theirs, win)
-    ok = _faithful(ours, nframes, w_ours) and _faithful(theirs, win, w_theirs)
+    a_ours, _w_ours = _acts(ours, nframes)
+    a_theirs, _w_theirs = _acts(theirs, win)
     a_ours = [_rebase(sig, offset, win) for sig in a_ours]
     pairs, only_ours, only_theirs = _match(theirs, a_ours, a_theirs)
 
@@ -157,7 +98,6 @@ def diff(rel, nframes):
         absent[key] += sum(1 for e in writes if e not in produced)
     return {
         "tune": rel,
-        "faithful": ok,
         "ours_nodes": len(ours.nodes),
         "their_nodes": len(theirs.nodes),
         "matched": len(pairs),

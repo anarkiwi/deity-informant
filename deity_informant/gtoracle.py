@@ -18,13 +18,12 @@ Report = namedtuple(
     "Report", "coverage frames matched divergence offset raw_kinds arrangement", defaults=({},)
 )
 
-_VOICE_HI = 0x14
-_FILTER_HI = 0x18
-_PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
+_VOICE_HI = tracker._VOICE_HI
+_FILTER_HI = tracker._FILTER_HI
 _CTRL = 4
 _FULL = 0xFF
 _GATES = (0xFE, 0x00)  # the gate images a ctrl lane byte is read through
-_CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel")
+_CLASSES = tracker._CLASSES  # ONE evidence vocabulary, the recovery's own
 _COUNTER = ("row", "counter")  # a row counter's "lane": the row is the emit, not a table byte
 _NONE = 0x1FF  # a pattern column entry no row declares: it matches no table row
 _SW_NOTE_FX = 0x60  # at and above this a SID-Wizard note column is an effect, not a pitch
@@ -43,11 +42,7 @@ def _value(cell):
     return v
 
 
-def _plane_of(reg):
-    """Canonical plane class for a SID register offset."""
-    if reg <= _VOICE_HI:
-        return _PLANE[reg % 7]
-    return "filter" if reg <= _FILTER_HI else "tail"
+_plane_of = tracker._plane_of  # ONE plane map, the recovery's own
 
 
 def _is_ord(reg):
