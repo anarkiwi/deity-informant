@@ -34,7 +34,7 @@ _PLANE_NAME = {
     "filter": "filter",
     "tail": "other",
 }
-_STRONG = ("lane", "gate", "ramp")
+_STRONG = ("arr", "lane", "gate", "ramp")
 _SHALLOW = ("imm", "seed")
 _ASSEMBLED = ("mask",)  # a byte several generators assemble field by field: neither of those
 _SECT = ("", " hold", " gate-", " gate+")  # ctrl rows: lane byte, held, gate cleared, gate set
@@ -269,7 +269,8 @@ def _scan(graph, nframes, keys, tabs):
     them to fire writes the assembled byte, exactly as ``tracker._run`` evaluates it, so
     a register several generators drive counts as one emit and not as one per field."""
     nodes = graph.nodes
-    firing = tracker._Fires(nodes)
+    vals = tracker._Held()  # node values, keyed by node: `cur` below is keyed by register
+    firing = tracker._Fires(nodes, vals)  # a generated divisor reads what its node holds
     parts = tracker._masked(nodes)
     held = {reg: {} for reg in parts}
     counts, emits = [0] * len(nodes), [0] * len(nodes)
@@ -278,6 +279,7 @@ def _scan(graph, nframes, keys, tabs):
     pitch = graph.freq_table
     for f in range(nframes):
         fired, _ticks = firing.step(f)
+        vals.frame()
         last = {r: max((i for i in ns if fired[i]), default=None) for r, ns in parts.items()}
         cur = {}
         for i, g in enumerate(nodes):
@@ -288,17 +290,19 @@ def _scan(graph, nframes, keys, tabs):
                     res[reg] = res.get(reg, 0) + 1
                 continue
             if g.route == tracker.INDEX:  # the arrangement: this emit is a row, not a byte
-                for _t in range(fired[i]):
+                for t in range(fired[i]):
                     counts[i] += 1
-                    cur[i] = v = tracker._value(g, i, counts[i], cur, st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    vals.put(i, v)
                     emits[i] += v is not None
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
                     del ramps[i][1][:-4]
                 continue
             if g.route[0] == "pair":  # a 16-bit emit: both halves count, the word samples
-                for _t in range(fired[i]):
+                for t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._value(g, i, counts[i], cur, st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    vals.put(i, v)
                     if v is None:
                         continue
                     emits[i] += 1
@@ -311,14 +315,15 @@ def _scan(graph, nframes, keys, tabs):
                 counts[i] += fired[i]
                 continue
             reg = g.route[1]
-            for _t in range(fired[i]):
+            for t in range(fired[i]):
                 counts[i] += 1
-                v = tracker._value(g, i, counts[i], cur, st)
+                v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                vals.put(i, v)
                 if v is None:
                     continue
                 emits[i] += 1
                 if keys[i] is not None:
-                    row = tracker._row(g.transfer[2], counts[i], cur)
+                    row = tracker._row(g.transfer[2], counts[i], vals.edge(t))
                     _see_select(tabs, keys[i], row, reg, f, insts)
                 elif g.transfer[0] == "RAMP":
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v & 0xFF)
@@ -437,8 +442,8 @@ def _stream(items, fmt, width=84):
 
 # ---- 5. header: the law verdict and the coverage partition -----------------------
 _CLS = _STRONG + _SHALLOW + _ASSEMBLED + ("note",)
-_COVFMT = "%-16s %7d %7d  %5.1f%% | %6d %6d %6d | %6d %6d | %6d | %6d"
-_COVHDR = "%-16s %7s %7s  %6s | %6s %6s %6s | %6s %6s | %6s | %6s" % (
+_COVFMT = "%-16s %7d %7d  %5.1f%% | %6d %6d %6d %6d | %6d %6d | %6d | %6d"
+_COVHDR = "%-16s %7s %7s  %6s | %6s %6s %6s %6s | %6s %6s | %6s | %6s" % (
     ("plane", "gen", "total", "share") + _CLS
 )
 
@@ -479,8 +484,8 @@ def _header(graph, scan, title, law):
     all_row = ("all", cov.interp, cov.total, _pct(cov.interp, cov.total))
     return out + [
         _COVFMT % (all_row + tuple(tot[k] for k in _CLS)),
-        "         strong = a declared table byte at a recovered row (lane/gate), or generated"
-        " from one (ramp)",
+        "         strong = a declared table byte at a recovered row (lane/gate), at a row the"
+        " arrangement generates (arr), or generated from one (ramp)",
         "         shallow = imm: a program constant, no row explained; seed: the observed byte"
         " a sweep starts from",
         "         mask = one byte several generators assemble field by field: part declared,"

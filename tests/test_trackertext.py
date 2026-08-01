@@ -156,7 +156,8 @@ def test_the_note_lane_names_notes_and_factors_out_the_figure():
 def test_the_coverage_split_reports_the_evidence_classes_and_the_residual_share():
     """Strong (lane/gate/ramp), shallow (imm/seed) and the note class are never folded."""
     text = _text()
-    row = ["waveform", "14", "14", "100.0%", "|", "2", "5", "0", "|", "7", "0", "|", "0", "|", "0"]
+    row = ["waveform", "14", "14", "100.0%"]
+    row += ["|", "0", "2", "5", "0", "|", "7", "0", "|", "0", "|", "0"]  # arr, lane, gate, ramp
     assert _line(text, "waveform").split() == row
     assert _line(text, "pitch  ").split()[-1] == "16"  # the note lane: its own class
     assert _line(text, "all").split()[1:4] == ["41", "44", "93.2%"]
