@@ -2375,14 +2375,16 @@ def _reload_watch(walks, reads, at, taken):
 
 def _reload_seed(srcs, banks, mem0):
     """``(lane key, row, byte)`` the one declared cell a reload's origins name, else None."""
-    got = []
+    got = None
     for src in srcs:
         d = _decl_of(src, banks)
         if d is None or (src - d[0]) % _record(d[1], d[2]) in d[3]:
             continue
+        if got is not None:  # two declarations name this reload: neither is its seed
+            return None
         row, off = divmod(src - d[0], d[2])
-        got.append((("lane", 0, d[0], d[1], d[2], off, None), row, mem0[src]))
-    return got[0] if len(got) == 1 else None
+        got = (("lane", 0, d[0], d[1], d[2], off, None), row, mem0[src])
+    return got
 
 
 def _reload_walk(walks, tags, wat, lww, banks, mem0, nframes):
