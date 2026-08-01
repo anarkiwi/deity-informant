@@ -118,8 +118,8 @@ SID write loaded its byte from, where the value is one byte load at a pure
 address (consts, locals and ops only — no memory read, so the address
 re-evaluates with no side effect and consumes no volatile input). It buffers
 and flushes exactly as `eval_fp` does, so the projection is byte-identical
-and the law is untouched; the tracker uses it to tell a declared-table read
-from a computed value (docs/tracker.md §5). The purity gate has exactly one
+and the law is untouched; a consumer uses it to tell a declared-table read
+from a computed value. The purity gate has exactly one
 exception and it is not a weakening: a deref rung (f) proved to name a single
 target block reports **the proof's** address — a constant base plus the pure row
 — so no impure expression is ever evaluated twice (§4.6).
@@ -149,7 +149,7 @@ cells *and* the origins of the locals whose value it reads; the one-contributor
 rule is unchanged over that set, and the read cells still come first, so a
 consumer that ranks by position sees what it saw before. The evaluator's hop is
 exact where a static one is not: it binds one cell per assignment rather than a
-set of candidate definitions. Measured effect at the tracker: docs/tracker.md §6.
+set of candidate definitions.
 
 The map does not **start empty**. `decompile` runs the init routine concretely and
 keeps only its flat image, so a byte init copied out of a const table into RAM
@@ -178,7 +178,7 @@ cached tunes at 200 frames (646 decompile, PSID start subtune) the query resolve
 an accumulator's step to a declared byte at a non-`mut` offset agreeing with the
 snapshot for **27246 pw and 3353 cutoff emits** over 121 tunes, against **1420
 and 0** over 13 for the same identification requiring the step to reach a
-declaration statically (docs/tracker.md §4c). A per-frame snapshot of the same
+declaration statically. A per-frame snapshot of the same
 map reaches 17324/3353 and an end-of-run snapshot 17111/2564: a staging cell is
 re-staged mid-run — a new note-on copies a new step byte, and one statement
 serves three voices inside a frame — so any snapshot names the last row written
@@ -405,14 +405,11 @@ Measured (2026-07-30, 682 cached tunes, PSID start subtune, 200-frame windows;
 645 emit). Raw `mem[` occurrences in the emitted text: **15086 → 10338** (−31%),
 tunes with none at all **6 → 16**; Commando **17 → 5**, the five being the
 pointer-pair derefs `(hi<<8|lo) + y`, which have no const base to name. The
-canonical fixpoint holds 645/645, Gate FP 646/646 and the tracker law 646/646,
-all unchanged.
+canonical fixpoint holds 645/645 and Gate FP 646/646, both unchanged.
 
-What this is *not*: a coverage step. Over the same 682 tunes the tracker's
-partition is **byte-identical** before and after (interpreted 425657/1933877;
-ctrl 10558/300573, ad 16890/112534, sr 19105/115963), because tracker reads the
-statement trees and `frameval.eval_src`, neither of which an address *rendering*
-changes. Two probes bound the alternatives: admitting impure load addresses to
+What this is *not*: a coverage step. An address *rendering* changes neither the
+statement trees nor `frameval.eval_src`, which is what a consumer reads over the
+same 682 tunes. Two probes bound the alternatives: admitting impure load addresses to
 the provenance rule moves nothing (the addresses are already pure), and chasing
 provenance through locals moves `ad` up 446→470 but collapses `ctrl` 402→66 on a
 25-tune sample — an extra source cell mis-binds the held row. The residual is a
@@ -466,8 +463,7 @@ evaluation order), and a lone half elsewhere leaves that site alone.
 
 Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
 (650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical
-fixpoint 649/649, both unchanged**, as the argument above requires; the tracker
-law is likewise 649/649.
+fixpoint 649/649, both unchanged**, as the argument above requires.
 
 Of the **1296** state-pair candidates the model named — 1238 pointer pairs and 58
 dispatch operand words — **584 fuse and 712 refuse**: 518 for a lone-half read,
@@ -479,26 +475,17 @@ occurrences are **unchanged at 10280**, because what fusion names is the pointer
 *word* and the deref it feeds still has no const base for §4.2's indexed form to
 name — precisely the residue §4(f) inherits.
 
-The tracker's value partition over the same corpus is **byte-identical** before
-and after — 752598/1942809 = 38.74%, freq 417490, pw 89850, ctrl 112502, filter
-22301, sr 56019, ad 54436, triggers 300/306277 — with **zero** tunes moving in
-either direction. That is the expected result and worth stating as one: the
-tracker reads the SID stores' statement trees and `eval_src`'s per-register
-provenance, and state-pair fusion rewrites neither.
-
 **SID fusion is opt-in** (`frameprog.program(model, sid_fusion=True)`), and off
 by default, because it is presentational and it costs the consumer. Of the
 **2069** SID pairs a store site addresses, 916 fuse every site, 228 fuse some and
-leave the rest split, and 925 have no adjacent lo/hi store site at all; the
-tracker's value partition then falls to **699551/1942809 = 36.01%** on 250 tunes,
-all of it in pw (89850 → 48346), freq (417490 → 407148) and filter (22301 →
-21100), ctrl/sr/ad untouched. Gate FP and the fixpoint still hold 649/649, so
-this is not a correctness cost.
-The tracker keys its last-write-wins planes per register and identifies a lane by
-the declaration the *store statement* names (docs/tracker.md §5); one word store
-names one class, so the hi half's class loses its tree-named table and falls back
-to searching every bank. That is a tracker question, not a fusion one, and it is
-recorded here rather than compensated for.
+leave the rest split, and 925 have no adjacent lo/hi store site at all. Gate FP
+and the fixpoint still hold 649/649, so this is not a correctness cost. The cost
+is naming: a consumer that keys its last-write-wins planes per register and
+identifies a lane by the declaration the *store statement* names sees one word
+store name one class where two byte stores named two, so the hi half's class
+loses its tree-named table and falls back to searching every bank. That is the
+consumer's question, not the rung's, and it is recorded here rather than
+compensated for.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -542,23 +529,20 @@ sites (below), and it is the honest one: `P = P + n` is not a table read.
 
 Like §4.2 this is **naming, not rewriting**. `apply_rung` returns the set of
 resolved addresses and one `structured.Proof` per site; the statement trees, the
-values and the store provenance are untouched, so Gate FP and the tracker cannot
-move by construction — and did not. The grammar carries `*base[index]` (and
+values and the store provenance are untouched, so Gate FP cannot move by
+construction — and did not. The grammar carries `*base[index]` (and
 `*base` for row zero) as its own production ([grammar.md](grammar.md)), so the
 text distinguishes a proven deref from an unproven one: a refused site keeps its
 raw `mem[...]` and its diagnostic.
 
 Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows (650
-decompile, 649 reach the gate). **Gate FP 649/649, the tracker law 649/649 and the
-canonical fixpoint 649/649**, every one unchanged, with zero tunes moving in
-either direction. Raw `mem[` occurrences **10280 → 9682** (−598, the 598 textual
-deref reads the rung names); tunes with none at all **17 → 51**; Commando reaches
-zero (its five pointer derefs were the whole residue). Emitted text grows
-9522243 → 9608342 bytes, but 96701 of that is the two new header comment lines
-(149 B × 649): the body is **10602 bytes smaller**. The tracker's value partition
-is **byte-identical** — 752598/1942809 = 38.74%, freq 417490, pw 89850, ctrl
-112502, filter 22301, sr 56019, ad 54436, triggers 300/306277 — as the naming
-argument requires.
+decompile, 649 reach the gate). **Gate FP 649/649 and the canonical fixpoint
+649/649**, both unchanged, with zero tunes moving in either direction. Raw `mem[`
+occurrences **10280 → 9682** (−598, the 598 textual deref reads the rung names);
+tunes with none at all **17 → 51**; Commando reaches zero (its five pointer
+derefs were the whole residue). Emitted text grows 9522243 → 9608342 bytes, but
+96701 of that is the two new header comment lines (149 B × 649): the body is
+**10602 bytes smaller**.
 
 The census is the point, and it is modest. Of **3929** distinct deref addresses
 over 628 of the 649 tunes, **366 resolve (9.3%)** and 3563 refuse; by pointer,
@@ -602,19 +586,16 @@ Commando is the clean case: `ptr_005D` ranges over 3 blocks all declared,
 reached in the window, so `datadecl` carved no region there — an extent question,
 not a resolution one).
 
-The recommendation this evidence supports is in docs/tracker.md's terms and is
-**not implemented here**: the tracker's structure recovery scores exactly zero
-against the native-editor oracles on orderlist and patterns while pitch is 1.0000
-and instruments bijective. What it lacks is a candidate orderlist, and rung (f)
-now hands it one per resolved pointer — the declared pointer table `T` is the
-orderlist's row set, its entry index `k` is the position, the target block is the
-pattern base, and the deref row index `i` is the pattern row. 84 tunes carry that
-shape today. A tracker-side reader would take `FrameProgram.proofs` filtered to
-`kind == "deref"` and `status == "resolved"`, group the sites by pointer, and read
-(pattern table, pattern base set, row index) straight off the record rather than
-searching banks. The honest caveat is the 84: this is evidence for a layer, not a
-layer, and 466 tunes still resolve nothing — the ceiling is rung (d)'s fusion rate
-and the wild-store rule, in that order.
+What this evidence supports is **not implemented here**: rung (f) hands a
+consumer a candidate orderlist per resolved pointer — the declared pointer table
+`T` is the orderlist's row set, its entry index `k` is the position, the target
+block is the pattern base, and the deref row index `i` is the pattern row. 84
+tunes carry that shape today. A reader would take `FrameProgram.proofs` filtered
+to `kind == "deref"` and `status == "resolved"`, group the sites by pointer, and
+read (pattern table, pattern base set, row index) straight off the record rather
+than searching banks. The honest caveat is the 84: this is evidence for a layer,
+not a layer, and 466 tunes still resolve nothing — the ceiling is rung (d)'s
+fusion rate and the wild-store rule, in that order.
 
 ### 4.5 The init phase's copies, named
 
@@ -623,8 +604,7 @@ parameter at init — copying bytes out of a const table into RAM the play code 
 reads back — leaves the bytes in that image but not their origin, so the play-phase
 map of §1.4 can only ever see an undeclared RAM cell. `deity_informant/initcopy.py`
 records the origin *while init runs*, and it is traced dataflow, never a value
-match: matching a RAM byte against table contents is the failure docs/tracker.md §6
-already prices, and a search that picks between equal bytes explains no index.
+match: a search that picks between equal bytes explains no index.
 
 **The transfer is static, the addresses are the machine's.** Each lifted record
 carries a one-off `transfer(rec)` derived from its P-Code: walking the ops in order
@@ -678,19 +658,16 @@ cells (69%) end with a proven traced copy origin. Then the declaration filter bi
 with 491 cells re-staged during init from a different origin (last kept) and 1005
 of the 1846 also written by the play phase, where the dynamic map supersedes them.
 
-**What it buys, and the honest finding.** Gate FP **649/649**, the tracker law
-**649/649** and the canonical fixpoint **649/649**, all unchanged; raw `mem[`
-**9682** and tunes with none **51**, both unchanged — this is annotation, it
-rewrites no tree and no value. The tracker's value partition moves
-**753274 → 753689 of 1942809 (38.77% → 38.79%)**, ctrl 112502 → 112806, sr
-56019 → 56073, ad 54436 → 54490, freq 417490 → 417493; **6 tunes improve and none
-regresses**, and the gain is strong evidence (`lane` +304, `gate` +206, `imm`
-unmoved).
+**What it buys, and the honest finding.** Gate FP **649/649** and the canonical
+fixpoint **649/649**, both unchanged; raw `mem[` **9682** and tunes with none
+**51**, both unchanged — this is annotation, it rewrites no tree and no value.
+What it adds is the 1846 staged cells above, carried across the init/play
+boundary with a declared const origin.
 
-**`pw` and `filter` do not move by a single emit**, and docs/tracker.md §7.2
-predicted they would: its 112539 pw emits "sweep with a constant delta whose step
-the map traces to no declaration — a parameter filled at init". Of the 114082 pw
-and 28103 cutoff emits this partition counts in that row, **0 now trace to one**.
+**`pw` and `filter` do not move by a single emit**, against the standing
+prediction that they would: that a pw sweep's constant delta is "a step the map
+traces to no declaration — a parameter filled at init". Of the 114082 pw and
+28103 cutoff emits counted in that row, **0 now trace to one**.
 The diagnosis was wrong, and the same run says what is actually there — classifying
 each refused run by its step pool:
 
@@ -758,24 +735,19 @@ census counts 46 sites naming a single *declared* block; the image word is anoth
 45 of them, so the sound set is a singleton exactly once.
 
 **Measured** 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows (650
-decompile, 649 reach the gate). **Gate FP 649/649, the tracker law 649/649 and the canonical
-fixpoint 649/649**, all unchanged; raw `mem[` **9682**, tunes with none **51** and the
-emitted text **9608342** bytes, all unchanged — the rule rewrites no tree, no value and no
-character of the artifact. The tracker's value partition is **byte-identical**:
-**753971/1942809 = 38.81%**, freq 417498, pw 90000, ctrl 112806, filter 23104, sr 56073,
-ad 54490; classes `lane` 516986, `gate` 32914, `imm` 25188, `ramp` 25399, `seed` 4152,
-`mask` 676, `rel` 317, `arr` 0; triggers 300/307060. **Zero tunes move in either
-direction.** (That baseline was re-measured on this tree rather than taken from §4.5's
-753689; the +282 is the lifter's `$CE` cycle-cost fix of #104, not this change.)
+decompile, 649 reach the gate). **Gate FP 649/649 and the canonical fixpoint 649/649**,
+both unchanged; raw `mem[` **9682**, tunes with none **51** and the emitted text
+**9608342** bytes, all unchanged — the rule rewrites no tree, no value and no character of
+the artifact, on every one of the 649 tunes.
 
 **What the rule does move, and where it stops.** On the one pinned site — `*m_C0E0[x]` in
 `MUSICIANS/B/Bialluch_Dirk/Helden.sid` — **582 SID writes** report the proven address
 instead of the pointer's cells, and the address is right: it equals the
 address the run read at **582 of 582** writes. All 582 land inside a `datadecl`
 declaration of `kind == "stream"` — the pointer-target anchor `datadecl` carves `via` the
-pointer pair — which `tracker._banks` does not admit (it takes `kind == "table"` only),
-and the declared byte there is not the byte the register took. So the recovery is **0
-emits**, and it would still be 0 with streams admitted.
+pointer pair — which a bank pool taking `kind == "table"` only does not admit, and the
+declared byte there is not the byte the register took. So the recovery is **0 emits**, and
+it would still be 0 with streams admitted.
 
 **The refusal the rule rests on, priced.** An address recovered by *watching* the
 execution — re-evaluating the impure address, which is the design this refuses — would
@@ -789,13 +761,10 @@ where they had none. Where those addresses land:
 | a declared table byte the emit does not equal (#61 refuses) | 683 |
 | **a declared table byte equal to the emit — a lane** | **60** |
 
-and **the tracker's partition is byte-identical under it too**, every plane, every class and
-every refusal counter, on every one of the 649 tunes. The 60 sit on writes that already
-carried a source cell and were already interpreted, so they add no emit. Reporting the
+The 60 sit on writes that already carried a source cell, so they add nothing. Reporting the
 whole proven target set instead of one member is refused without measuring a ceiling for
-it: it is the observation choosing between blocks, the refusal §4c makes for a fitted
-`RAMP` step and §6 for an `imm` read over `$18`'s program constants, and its claims
-are a superset of the observation-derived ones, which recover nothing.
+it: it is the observation choosing between blocks, and its claims are a superset of the
+observation-derived ones, which recover nothing.
 
 **The structural finding, which is the point.** The proof supplies the address *space* and
 not the address, and now the consequence is measured rather than argued: the entry `k` is
@@ -806,16 +775,15 @@ row index expression; what is **not** is which entry the pointer was reloaded fr
 therefore which block. A design that needs the block at run time needs a second evaluation
 of an impure address or a hop through the origin map, and both are outside this rule.
 
-And the address is **not what the consumer was missing**. docs/tracker.md §6 names the
-impure deref address as the wall in front of arrangement recovery; handed the address the
-run itself used, recovery is still zero. Two walls stand behind it, both measured above:
-`datadecl` carves the deref's target as a `stream` rather than a table, so the tracker's
-bank pool excludes 3008 of the 3751 addresses; and of the 743 that do land in a table,
-#61's own byte check refuses 683. The only measured headroom anywhere in
-this chain is a **tracker-side** change admitting `stream` declarations as banks, whose
-ceiling is **1585 emits over 28 tunes (0.08% of the partition)** and only under the
-observation-derived address that is itself refused. With the proof-supplied address the
-ceiling is **0**. That is recorded here as a recommendation and not taken.
+And the address is **not what a consumer was missing**. The impure deref address was named
+as the wall in front of arrangement recovery; handed the address the run itself used,
+recovery downstream was still zero. Two walls stand behind it, both measured above:
+`datadecl` carves the deref's target as a `stream` rather than a table, so a bank pool
+taking tables only excludes 3008 of the 3751 addresses; and of the 743 that do land in a
+table, #61's own byte check refuses 683. The only measured headroom anywhere in this chain
+is consumer-side — admitting `stream` declarations as banks, ceiling **1585 emits over 28
+tunes** — and only under the observation-derived address that is itself refused. With the
+proof-supplied address the ceiling is **0**.
 
 ### 4.7 The one origin relation: built, measured, and what it cannot carry
 
@@ -839,8 +807,8 @@ another row, so re-reading the index expression where the byte is *used* names a
 cell than the byte came from — not a weaker answer but a wrong one
 (`test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell`). The only sound
 static value for a staged byte is `region(R, ⊤)`, which carries no row, and every consumer
-at this level needs the row: `tracker._lane_key` takes `(cell − base) // stride` off the
-cell and checks `mem0[cell] == value`, which is #61's whole const claim.
+at this level needs the row: a lane key is `(cell − base) // stride` off the cell together
+with the `mem0[cell] == value` check, which is #61's whole const claim.
 
 **The map it would replace is already transitive and already crosses frames.** `prov` is
 built once per evaluator, never cleared between frames, and path-compressed at bind time,
@@ -852,7 +820,9 @@ relation is the side that stops short.
 
 **Measured** 2026-08-01, 682 cached tunes, PSID start subtune, 200-frame windows (650
 decompile, 649 reach the gate). Three runs of the corpus: the map as it ships, the map
-replaced by the relation, and no map at all.
+replaced by the relation, and no map at all. The emit columns are the partition of the
+downstream consumer of the day, since removed from this tree (#122); they are kept as the
+record the refusal rests on, and are not re-measurable here.
 
 | | dynamic map | static relation | no map |
 |---|---|---|---|
@@ -883,7 +853,7 @@ against the **33915** the dynamic map holds at end of run. Cell for cell against
 staged cell), 67 otherwise differ, and **1391 the run bound to nothing at all**, its
 one-contributor rule having refused what the static join asserted. Right at 1644 of 3402 —
 and those 1644 explain no emit, because a closed address is a scalar copy while what
-carries the tracker's evidence is the indexed read whose row a static reading cannot have.
+carries the evidence is the indexed read whose row a static reading cannot have.
 Commando and Krakout name **0** cells each.
 
 | mechanism | what it computes | the relation's value | verdict |
@@ -902,7 +872,7 @@ offset, and whether that offset is const — stood in three places (`datadecl._a
 them and `datadecl._mut_offs` writing it in a third. It is now `datadecl.Regions`
 (`at`/`const_at`/`avail`) in the declarations' own module, `_mut_offs` shares its record
 reading, and `initcopy` takes the const predicate from its caller and stops knowing about
-declarations at all. Gate FP **649/649**, the tracker law **649/649**, the canonical
+declarations at all. Gate FP **649/649**, the canonical
 fixpoint **649/649**, raw `mem[` **9682**, tunes with none **51**, the emitted text
 **9608342** bytes and the value partition **753971/1942809** are byte-identical, every
 plane, every class, every refusal counter, **zero tunes moving in either direction**.
@@ -937,7 +907,7 @@ running past the region end.
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
 | Replacing the dynamic origin map with a static relation | Refused, priced (§4.7). The lattice's `region(R, i)` is sound only where the index is closed, and a staged byte's index is live at the staging site alone — re-read where the byte is used it names a different cell. Built and run over the corpus, the relation recovers **0** emits against the dynamic map's 298759 and the whole trigger domain, and of the 3402 cells it names it agrees with the run at 1644. What was actually shared — the declaration containment index — is now `datadecl.Regions` and the three copies are gone. |
-| A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but costs the tracker 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
+| A rung that reads well and consumes worse | Rung (d)'s SID half is the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but cost the consumer of the day 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). Held opt-in and off by default, measured rather than compensated for; the fix belongs in whatever names a lane, not in the rung. Every later rung MUST report the consumer partition beside Gate FP for the same reason. |
 
 ## 6. Milestones and corpus gates
 
@@ -977,7 +947,7 @@ HVSC absent (decompiler-implementation.md §1, §7).
   `tests/_fuzzgen` player classes (`_FP_GAP` empty) and on Commando at full
   Songlengths length. Measured 2026-07-31 over the **whole cached corpus** —
   682 tunes, PSID start subtune, 200-frame windows: **650 decompile**, of those
-  **Gate FP passes 649** and the tracker law 649. The 32 that never reach the
+  **Gate FP passes 649**. The 32 that never reach the
   gate are sidprog refusals (19 `runaway in init`, 10 `play $0000` installing
   no interrupt vector, 3 unmodelled `brk`); **one frameprog-attributable
   failure remains** — `C64_World`'s inline-parameter `JSR` (§5), one site of
@@ -985,18 +955,15 @@ HVSC absent (decompiler-implementation.md §1, §7).
   are zero" over a 140-tune sample at 300-frame windows (2026-07-29, 123 pass
   and 0 diverge), was true of that sample and **false at 682**: the same sweep
   found 3 tunes faulting `iota(0, cia_icr, 0) past the pinned trace`, the
-  §1.3 input-set divergence now closed (§5) — Gate FP 646 → 649, the tracker
-  law 646 → 649, and the tracker's value partition 747709/1933877 = 38.66% →
-  752598/1942809 = 38.74%, the whole delta being those three tunes' 4889 of
-  8932 emits and every other tune's row byte-identical. The 140-tune sample
+  §1.3 input-set divergence now closed (§5) — Gate FP 646 → 649, the whole
+  delta being those three tunes. The 140-tune sample
   scored 96 before the three liveness fixes of §5 (goto-into-later-arm,
   `call`-entered inline bodies, `sp` as machine state): 96 → 111 → 123, none
   regressed. Landed since: the **init-copy origin map**
   (`deity_informant/initcopy.py`, §4.5 for the census), which seeds §1.4's cell →
   origin map with the copies init made, one `structured.Proof` per init store site.
-  Gate: FP 649/649, the tracker law 649/649 and the canonical fixpoint 649/649 over
-  the 682-tune corpus, all unchanged; the partition 753274 → 753689 of 1942809, 6
-  tunes up and none down. `tests/_fuzzgen` carries the `init_param` class (a sweep
+  Gate: FP 649/649 and the canonical fixpoint 649/649 over the 682-tune corpus,
+  both unchanged. `tests/_fuzzgen` carries the `init_param` class (a sweep
   step staged in RAM at init out of the table the play phase indexes) and
   `tests/test_initcopy.py` the refusals. **M-FP2 mutation evidence (init copies)**:
   the rule annotates, so the record each mutation must move is the reported source
@@ -1021,7 +988,7 @@ HVSC absent (decompiler-implementation.md §1, §7).
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
   halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
   proof records are still M-FP2's debt, and whether SID fusion ships by default
-  is a tracker decision, not a frameprog one.
+  is a consumer decision, not a frameprog one.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
@@ -1032,9 +999,8 @@ HVSC absent (decompiler-implementation.md §1, §7).
   pointer-pair deref rung (d) left, named `*ptr[i]` against the declared
   `lo`/`hi` table its every definition reloads from, with a `structured.Proof`
   per deref site carrying the table, the definition count, the target block set
-  and the row bound. Gate: FP 649/649, the tracker law 649/649 and the canonical
-  fixpoint 649/649 over the 682-tune corpus, all unchanged, and the tracker's
-  value partition byte-identical; raw `mem[` 10280 → 9682 and tunes with none at
+  and the row bound. Gate: FP 649/649 and the canonical fixpoint 649/649 over the
+  682-tune corpus, both unchanged; raw `mem[` 10280 → 9682 and tunes with none at
   all 17 → 51. `tests/_fuzzgen` carries the `ptr_seq` class (a pointer table
   walked by a position counter, deref'd at a separate row index) and
   `tests/test_frameptr.py` the refusals. **M-FP5 mutation evidence**: this rung
@@ -1051,9 +1017,8 @@ HVSC absent (decompiler-implementation.md §1, §7).
   deref** (§4.6 for the census) — where the proof names one target block the evaluator
   reports that block plus the pure row as the store's source cell instead of the
   pointer's own cells, with a `structured.Proof` per deref site (`kind == "deref-src"`).
-  Gate FP 649/649, the tracker law 649/649 and the canonical fixpoint 649/649, all
-  unchanged, the emitted text byte-identical, and the tracker's value partition
-  byte-identical at 753971/1942809 with zero tunes moving. The census is the result:
+  Gate FP 649/649 and the canonical fixpoint 649/649, both unchanged, and the
+  emitted text byte-identical. The census is the result:
   **1 site of 3929 pins**, because the proven set is `{T[k]}` together with the pointer's
   own image word and the entry `k` is live state at 366 of 366 resolved sites.
   `tests/_fuzzgen` carries the `ptr_pin` class (a pointer table whose every entry names

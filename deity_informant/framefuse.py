@@ -306,7 +306,7 @@ def apply_rung(model, decls, procs, state, symbols, name_of, sid=False):
 
     Per pair, never per tune: a pair whose premise fails keeps its two byte
     halves and every other pair still fuses. ``sid`` also rewrites the SID
-    register pairs, which is presentational and costs the tracker (spec 4d)."""
+    register pairs, which is presentational only (spec 4d)."""
     proofs, fused = [], []
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
         p = _Pair(lo, hi, kind, evidence)
