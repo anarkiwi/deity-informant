@@ -1314,7 +1314,13 @@ further **514** for §4l, all of them `pw` (110842 -> 111356) with `seed` fallin
 7479, and by **18274** for §4m and the spilled row together, over **138 tunes** with
 **none generating less**, every tune's `total` unmoved and `seed` unmoved at 7479:
 `lane` 517258 -> 531325 and `ramp` 44533 -> 49746, `pw` 111356 -> 124436, `freq` 417498 ->
-420957 and `filter` 24455 -> 26190. The trigger *share* falls throughout because
+420957 and `filter` 24455 -> 26190. §4n's driver-cell object adds **97119** more over **348
+tunes** with none generating less — `lane` 531325 -> 634859, `ramp` 49746 -> 53183 and the
+shallow `imm` 25188 -> 35379, `pw` 124436 -> 170873, `freq` 420957 -> 453467 and `filter`
+26190 -> 44362, `total` unmoved and `seed` unmoved at 7479 — which takes the two figures to
+**45.91%** (892071 of 1942809) and **0.306%** (1191 of 388282); §4o adds nothing at 200
+frames, because the one tune that bends a note does not reach that pattern until frame
+~4000. The trigger *share* falls throughout because
 generating a value costs a fire — a byte a `RAW` node replayed needed no trigger and a
 byte a generator produces does — which is why `universality.json` floors the generated
 *count* and not the share, and §8 records the domain as the next thing to pay off.)
