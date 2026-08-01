@@ -2,7 +2,8 @@
 
 ``from_frames`` replays every write verbatim, so the law and corpus byte-identity both
 hold at zero generation. The share of ground truth the generators alone reproduce cannot
-be carried in a side-car field; ``universality.json`` ledgers it, bound by measured bound."""
+be carried in a side-car field; ``universality.json`` ledgers it, bound by measured bound
+and plane by plane, since a whole-tune total hides a plane that collapses on its own."""
 
 import json
 from pathlib import Path
@@ -52,6 +53,15 @@ def _shallow(cov):
     return sum(c["imm"] + c["seed"] for c in (cov.classes or {}).values())
 
 
+def _trigger_share(cov):
+    """Generated share of the fires — the floor that replaces an observed-fire ceiling.
+
+    A RAW-replayed byte carries no trigger and a generated one needs one, so turning
+    residual into generation *raises* the observed count wherever the new trigger is an
+    ``EDGE``: a ceiling there penalises the progress this module exists to demand."""
+    return cov.triggers[0] / cov.triggers[1] if cov.triggers[1] else 0.0
+
+
 def _recovered(rel, nframes):
     """``(graph, ground truth)`` for a cached tune, by the pipeline tools/tracker_text.py runs."""
     path = HVSC / rel
@@ -87,20 +97,40 @@ def test_ablation_scores_the_generated_half():
     assert _share(graph, gt) == 0.5
 
 
+def test_plane_floor_pins_at_both_ends():
+    """``planes`` splits generation as the share does: 0 under replay, whole under a generator."""
+    frames = [[(0, (7 * i) % 256)] for i in range(64)]
+    replay = T.coverage(T.from_frames(frames), len(frames))
+    assert replay.planes == {"freq": (0, 64)}
+    assert _trigger_share(replay) == 0.0  # replay fires nothing at all, so the floor is vacuous
+    assert T.coverage(T.Graph([T.ramp(0, 7, 256, T.FRAME, 0)]), len(frames)).planes == {
+        "freq": (64, 64)
+    }
+
+
 def test_graph_carries_no_new_channel():
     """The allowlist is frozen, so a new channel beside the generators is a reviewed diff line."""
     assert frozenset(vars(T.Graph([]))) == CHANNELS
     assert not [k for k, v in vars(T.Graph).items() if not k.startswith("_") and not callable(v)]
 
 
-@pytest.mark.parametrize("tune", LEDGER["tunes"], ids=lambda t: Path(t["rel"]).stem)
+@pytest.mark.parametrize(
+    "tune", LEDGER["tunes"], ids=lambda t: "%s-%d" % (Path(t["rel"]).stem, t["frames"])
+)
 def test_universality_ratchets(tune):
-    """Generation only grows; replay, observed fires and the shallow classes only shrink."""
+    """Generation only grows, plane by plane; replay and the shallow classes only shrink.
+
+    The plane key set is exact: which planes exist is fixed by the tune's emits, not by
+    how well they are recovered, so a floor per plane stops a gain in one masking a
+    loss in another."""
     nframes = tune["frames"]
     graph, gt = _recovered(tune["rel"], nframes)
     assert F.diff(T.eval_graph(graph, nframes), gt) is None
     cov = T.coverage(graph, nframes)
     assert _share(graph, gt) >= tune["generative_share"]
     assert cov.residual <= tune["residual"]
-    assert cov.triggers[1] - cov.triggers[0] <= tune["observed_fires"]
+    assert _trigger_share(cov) >= tune["trigger_share"]
     assert _shallow(cov) <= tune["shallow"]
+    assert set(cov.planes) == set(tune["planes"])
+    below = {p: (cov.planes[p][0], f) for p, f in tune["planes"].items() if cov.planes[p][0] < f}
+    assert not below, "generated below floor, (got, floor): %r" % below
