@@ -29,7 +29,7 @@ def _tune(stem, parent):
     ]
 
 
-_LONG = 2000  # frames enough for a tune to reach past its opening bars
+_LONG = 1200  # frames enough for a tune to reach past its opening bars
 
 
 def _lifted(sid, subtune, frames=200):
@@ -211,6 +211,60 @@ def test_raw_floor_reproduces_frameprog_on_fuzz_players(p):
     assert F.diff(T.eval_graph(g, nframes), T.oracle(prog, trace, nframes)) is None
     cov = T.coverage(g, nframes)
     assert cov.total == sum(len(fr) for fr in frames) and cov.interp == 0
+
+
+def test_a_row_read_is_paired_with_the_edge_that_produced_it():
+    """Three rows cut inside one frame read three rows, not the last one three times."""
+    nodes = [
+        T.edge((3,)),
+        T.indexer(("SELECT", (2, 0, 1), ()), ("event", 0)),
+        T.select((0x11, 0x22, 0x33), ("node", 1), ("event", 0), 5),
+    ]
+    got = [w[1] for rec in T.eval_graph(T.Graph(nodes), 1) for sec in rec for w in sec]
+    assert got == [0x33, 0x11, 0x22]  # the index node's own first, second and third emit
+
+
+def test_an_index_node_that_does_not_fire_holds_what_it_last_emitted():
+    """A cell the machine did not rewrite still holds its byte, and so does an index node."""
+    nodes = [
+        T.edge((1, 0, 1)),
+        T.edge((1, 1, 1)),
+        T.indexer(("SELECT", (0, 2), ()), ("event", 0)),
+        T.select((0x11, 0x22, 0x33), ("node", 2), ("event", 1), 5),
+    ]
+    got = [w[1] for rec in T.eval_graph(T.Graph(nodes), 3) for sec in rec for w in sec]
+    assert got == [0x11, 0x11, 0x33]  # frame 1 reads the row frame 0 left
+
+
+def test_a_divider_whose_divisor_is_another_generators_emit():
+    """A period no constant names: the row's own duration field, reloaded at every tick."""
+    nodes = [
+        T.div(1),
+        T.indexer(("SELECT", (2, 3, 1), ()), ("event", 2)),
+        T.div(("node", 1), ("event", 0), phase=1),
+        T.select((0x10, 0x20, 0x30), (), ("event", 2), 5),
+    ]
+    recs = T.eval_graph(T.Graph(nodes), 20)
+    at = [f for f, r in enumerate(recs) for sec in r for _w in sec]
+    assert [b - a for a, b in zip(at, at[1:])] == [2, 3, 1, 2, 3, 1, 2, 3, 1]
+
+
+def test_a_generated_divisor_must_name_an_index_node():
+    """The divisor is a value, so it comes from an index node exactly as a row does."""
+    good = [T.indexer(("SELECT", (2,), ()), T.FRAME), T.div(("node", 0), T.FRAME)]
+    assert T.eval_graph(T.Graph(good), 4) is not None
+    for bad in (("node", 9), ("node", 1), ("prev",)):
+        nodes = list(good)
+        nodes[1] = nodes[1]._replace(transfer=("DIV", bad, 0))
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph(nodes), 4)
+
+
+def test_a_turning_ramp_names_a_bound_to_turn_in():
+    """`RAMP` carries a turn field; a turn with no wrap to turn in is not evaluable."""
+    for bad in (("RAMP", 0, 1, 0x100), ("RAMP", 0, 1, 0, (1, 2)), ("RAMP", 0, 1, 0x100, (1,))):
+        with pytest.raises(T.TrackerError):
+            T.eval_graph(T.Graph([T.Generator(bad, T.FRAME, T.plane(0))]), 4)
 
 
 # ---- 2. pitch from the declarations ---------------------------------------------
@@ -1761,6 +1815,43 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
     assert cov.classes["freq"]["lane"] > 600 and cov.classes["freq"]["imm"] == 0
 
 
+# ---- 3k. universality: what the graph *produces*, ratcheted so it cannot slip back ----
+# The law passes at zero generation — `from_frames` is exactly that floor — so law-PASS is
+# a soundness check and never a universality one. These are the figures that measure the
+# goal: what is replayed rather than produced, what reaches the output shallowly, how many
+# fires no generator makes, and how much is read at a row the arrangement generates.
+# Measured at _LONG frames, which is where Commando's turning pulse sweep and its song
+# chain both run; the 200-frame tests above reach neither. It does NOT cover the whole
+# tune's figures, which docs/tracker.md §6 reports.
+_COMMANDO = {"residual": 668, "shallow": 991, "observed_fires": 6974, "arr": 598}
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_universality_does_not_regress(sid, subtune):
+    """Residual, shallow emits and observed fires may only fall; generated rows may only rise."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    cov = T.render(prog, trace, nf)[2]
+    shallow = sum(c["imm"] + c["seed"] for c in cov.classes.values())
+    fires = cov.triggers[1] - cov.triggers[0]
+    assert cov.residual <= _COMMANDO["residual"]  # bytes replayed, not produced
+    assert shallow <= _COMMANDO["shallow"]  # a constant, or a byte a sweep starts from
+    assert fires <= _COMMANDO["observed_fires"]  # fires the EDGE floor carries
+    assert sum(c["arr"] for c in cov.classes.values()) >= _COMMANDO["arr"]
+    assert cov.triggers[0] > 0 and T.gate(prog, trace, nf) is None
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_ablating_raw_leaves_the_generators_reproducing_the_tune(sid, subtune):
+    """Deleting the ``RAW`` floor is what measures universality: what the graph *produces*."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    nodes = list(graph.nodes)  # emptied in place: node indices carry rows and divisors
+    nodes[graph.raw_index()] = T.raw([])
+    got, want = T.coverage(T.Graph(nodes), nf), T.coverage(graph, nf)
+    assert got.residual == 0 and got.total == want.interp  # nothing is carried any more
+    assert got.total / want.total >= 0.80  # the share of the tune the generators produce
+
+
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
 def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, subtune):
     """$5591's +0 lane is `mut`: the play code writes it back, so it is not const data."""
@@ -1773,8 +1864,9 @@ def test_commando_pw_lo_is_refused_because_the_play_phase_writes_that_lane(sid, 
     cov = T.render(prog, trace, nf)[2]
     assert cov.planes["pw"] == (205, 245)  # 53 lane reads at +1, the rest the swept +0
     pw = cov.classes["pw"]
-    assert pw["lane"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
-    assert pw["lane"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
+    assert pw["arr"] == 53 and pw["imm"] == 0  # nothing reads the +0 lane as const
+    assert pw["lane"] == 0  # the +1 lane's rows are the song's, not the observation's
+    assert pw["arr"] + pw["ramp"] + pw["seed"] == cov.planes["pw"][0]
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))

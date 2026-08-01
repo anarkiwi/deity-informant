@@ -228,20 +228,21 @@ class _Fires:
 
         The divisor is not a modulus here — it is reloaded at every tick, so the divider
         is a countdown and a row that lasts one tick and one that lasts sixteen are the
-        same generator with a different reload."""
-        left = self.left.get(i)
-        if left is None:
-            left = (g.transfer[2] or 0) + 1
+        same generator with a different reload. The reload is the value the tick's own
+        reader emits, which the frame settles after the triggers, so a tick whose reload
+        is not in yet takes it at the next input trigger: that is the player's own order,
+        the counter running out first and the row it then reads supplying the next one."""
+        left = self.left.get(i, (g.transfer[2] or 0) + 1)
         out = 0
         for _x in range(got):
+            if left is None:
+                left = self._period(g.transfer[1])
+                if left is None:
+                    break
             left -= 1
             if left <= 0:
-                n = self._period(g.transfer[1])
-                if n is None:
-                    self.left[i] = 1
-                    return out
                 out += 1
-                left = n
+                left = None
         self.left[i] = left
         return out
 
@@ -1424,7 +1425,7 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     )
 
 
-def _classes(streams, groups=(), rels=(), pairs=(), sweeps=()):
+def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=()):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
@@ -1444,7 +1445,7 @@ def _classes(streams, groups=(), rels=(), pairs=(), sweeps=()):
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         cls["seed"] += len(route) - 2
         cls["ramp"] += (len(route) - 2) * (sum(counts) - 1)
-    for counts, t, reg, ev, _key in streams:
+    for i, (counts, t, reg, ev, _key) in enumerate(streams):
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if ev == "ramp":
             cls["seed"] += 1
@@ -1456,7 +1457,7 @@ def _classes(streams, groups=(), rels=(), pairs=(), sweeps=()):
             cls["lane"] += sum(r < n for r in t[2])
             cls["gate"] += sum(r >= n for r in t[2])
         else:
-            cls["lane"] += len(t[2])
+            cls["arr" if i in songs else "lane"] += len(t[2])
     return out
 
 
@@ -1858,8 +1859,11 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0):
     for reg, seq in sorted(wide.items()):
         a = acc[_class_of(reg)][0]
         wrap = a.wraps[0] * a.wraps[1]
+        claimed = set()
         for at, n, step in _regen([v for _f, v in seq], wrap, a.turn):
-            if not all(
+            if seq[at][0] in claimed:  # adjacent runs share their boundary emit
+                at, n = at + 1, n - 1
+            if n < 2 or not all(
                 _named_step(reg, abs(step), pools[f].get(a.cells[0], ()), banks, mem0, a.masks)
                 for f, _v in seq[at + 1 : at + n]
             ):
@@ -1867,6 +1871,7 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0):
             counts = [0] * len(lww)
             for f, _v in seq[at : at + n]:
                 counts[f] = 1
+                claimed.add(f)
                 explained[f] |= {reg, reg + 1}
             sweeps.append(
                 (
@@ -2918,6 +2923,196 @@ def _blocks(prog, site, terms, decls, gram, names, envs, diag):
     return out
 
 
+# ---- 4k. the song as generators: a pattern byte is an index, not a register byte --
+def _row_roles(row, roles):
+    """``{role: byte}`` for one walked row: the parameter bytes, by what they are copied into.
+
+    §4j already names a byte by the cell it flows into — the pitch table's cursor makes it a
+    note, an instrument bank's cursor an instrument. Here that name becomes the *table* the
+    byte indexes, which is the whole difference between a pattern byte and a register byte:
+    §4g's byte-equality rule can never see an index, because an index is not the byte the
+    register took."""
+    off, fields = row
+    out = {}
+    for o, val, cells in fields:
+        if o == off:
+            continue
+        for role in {roles.get(c) for c in cells} - {None}:
+            out.setdefault(role, val)
+    return out
+
+
+def _voice_lanes(blk, blocks, roles):
+    """``{(role, held): [byte]}`` for one voice: its entries' patterns, row by row."""
+    lanes, held = {}, {}
+    for _o, fields in blk.rows:
+        got = blocks.get(next((x for _p, x, _c in fields[:1]), None))
+        if got is None:
+            break
+        for row in got.rows:
+            seen = _row_roles(row, roles)
+            for role in set(seen) | set(held):
+                held[role] = seen.get(role, held.get(role))
+                if role in seen:
+                    lanes.setdefault((role, False), []).append(seen[role])
+                lanes.setdefault((role, True), []).append(held[role])
+    return lanes
+
+
+def _song_lanes(charts):
+    """``{voice: {(role, held): bytes}}``: the indices each voice's song plays, in order.
+
+    An orderlist is a chart whose entries name another chart's blocks (§4j), so a voice's
+    row stream is the patterns its own entries name, concatenated — declared data at
+    program-text offsets, in the order the program text's own cursor reaches it, with
+    nothing read off the row stream the machine happened to produce.
+
+    Two readings of one datum, both structural: a row that names no parameter either takes
+    no emit at all, or holds the one before it, which is what the player's own cell does.
+    Which of the two a lane takes is settled by whether it reproduces that lane's own
+    stream, exactly as §4i settles a cursor's rows — never by fitting bytes."""
+    out = {}
+    for seq in charts:
+        pats = [c for c in charts if c.source == seq.pointer]
+        if not pats:
+            continue
+        for v, blk in enumerate(seq.blocks):
+            lanes = _voice_lanes(blk, {b.index: b for b in pats[0].blocks}, pats[0].roles[0])
+            out[v] = {k: tuple(vs) for k, vs in lanes.items() if vs and None not in vs}
+    return out
+
+
+def _song_durs(charts):
+    """``{voice: periods}``: the ticks each row of a voice's song lasts.
+
+    The duration field is the ``AND``-immediate §4j reads off the mask a stepped-down
+    counter is reloaded through, and the extra tick is the text's own ``dec``-to-negative:
+    a counter reloaded with `d` runs out `d + 1` ticks later. Both are program text over
+    a declared byte, which is the standing §4c's masked step already has."""
+    out = {}
+    for seq in charts:
+        pats = [c for c in charts if c.source == seq.pointer]
+        mask = next(
+            (m for c in pats for m, n in c.roles[1].items() if n == "duration"),
+            None,
+        )
+        if mask is None or not pats:
+            continue
+        blocks = {b.index: b for b in pats[0].blocks}
+        for v, blk in enumerate(seq.blocks):
+            got = []
+            for _o, fields in blk.rows:
+                block = blocks.get(next((x for _p, x, _c in fields[:1]), None))
+                if block is None:
+                    break
+                for off, row in block.rows:
+                    byte = next((x for o, x, _c in row if o == off), None)
+                    got.append(None if byte is None else (byte & mask) // (mask & -mask) + 1)
+            if got and None not in got:
+                out[v] = tuple(got)
+    return out
+
+
+def _row_fires(tick, table, phase, nframes):
+    """The frames a countdown over ``table`` fires on, clocked by the tick stream ``tick``."""
+    out, left, at = [0] * nframes, phase + 1, 0
+    for f in range(nframes):
+        if not tick[f]:
+            continue
+        left -= 1
+        if left <= 0:
+            out[f] += 1
+            left = table[at % len(table)]
+            at += 1
+    return out
+
+
+def _tick_stream(n, phase, nframes):
+    """The frames ``DIV(n, phase)`` clocked by the frame fires on."""
+    return [1 if f % n == phase else 0 for f in range(nframes)]
+
+
+def _song_clock(counts, durs, cands, nframes):
+    """``(tick, tick phase, voice, row phase)`` whose countdown fires exactly ``counts``.
+
+    The row's duration is the divisor and the tick is the divider that clocks it, both
+    program text; the whole stream must match in both directions, so a period read off the
+    fire pattern is refused for the reason §4d refuses one."""
+    want = list(counts)
+    if any(c > 1 for c in want):  # a row divider runs out at most once a frame
+        return None
+    first = next((f for f, c in enumerate(want) if c), None)
+    for n, tphase in cands[0]:
+        if first is None or (first - tphase) % n:
+            continue
+        tick = _tick_stream(n, tphase, nframes)
+        for v, table in sorted(durs.items()):
+            for rphase in cands[1]:
+                if _row_fires(tick, table, rphase, nframes) == want:
+                    return (n, tphase, v, rphase)
+    return None
+
+
+def _song_cands(prog, seq):
+    """``([(tick, phase)], [row phase])``: the periods and counters the program text names.
+
+    A counter the text steps down names its period twice over, and which reading holds is
+    the *branch*: one that fires where the result reaches zero runs ``n`` ticks, one that
+    fires where it goes negative runs ``n + 1`` and starts a tick earlier. Both are
+    readings of the same declared reload and the same post-init counter byte (§4i), and
+    the whole fire stream selects between them — never a period shaped to the fires."""
+    ticks = set()
+    for cell, ts in seq.cells.items():
+        for n, _p in ts:
+            for m in (n, n + 1):
+                if m > 1:
+                    ticks |= {(m, int(prog.mem0[cell]) % m), (m, (int(prog.mem0[cell]) - 1) % m)}
+    rows = {
+        int(prog.mem0[c.base + v]) - d
+        for c in _clocks(prog)
+        for v in range(3)
+        for d in (0, 1)
+        if c.kind == "dec" and c.reload is None
+    }
+    return sorted(ticks), sorted({r for r in rows if r >= 0} | {0})
+
+
+def _song_at(lanes, reg, rows):
+    """The song lane whose own bytes are this stream's row run, or None.
+
+    The run is *predicted* from the declared song and compared with the run the machine
+    read; a stream the song does not reproduce keeps its recovered rows, exactly as a
+    sweep whose step no declaration names is refused whole (§4c)."""
+    got = lanes.get(reg // 7 if reg <= _VOICE_HI else None) or {}
+    want = tuple(rows)
+    for key in sorted(got):
+        table = got[key]
+        if want and all(v == table[i % len(table)] for i, v in enumerate(want)):
+            return key, table
+    return None
+
+
+def _songed(streams, charts, diag):
+    """``{stream index: (lane key, table)}``: the streams the song's own bytes row.
+
+    This is §7.4's stated goal reached: the row a note-on selects is *generated* from the
+    orderlist and the patterns, so the pattern byte reaches the register as an ``Index``
+    emit and not as declared data carried beside the graph."""
+    lanes = _song_lanes(charts)
+    out = {}
+    for i, (_c, t, reg, ev, _k) in enumerate(streams):
+        if ev != "lane" or t[0] != "SELECT" or not t[2] or _generated(t[2]):
+            continue
+        got = _song_at(lanes, reg, t[2])
+        if got is None:
+            diag["song_rows_unplayed"] += len(t[2])
+        else:
+            diag["song_rows_generated"] += len(t[2])
+            out[i] = got
+    diag["song_lane_nodes"] += len(set(out.values()))
+    return out
+
+
 # ---- 4h. the node identity: a declared region at a cursor the program text names --
 def _cursors(idx, env, depth=4):
     """Cursor cells an index expression reads, through the locals defined above it.
@@ -3274,12 +3469,27 @@ def _rowers(chained, edges, nodes):
     return rowed
 
 
-def _planed(i, st, chained, rowed, edges):
-    """One stream's plane generator, read at its recovered run or at its cursor's node."""
+def _planed(i, st, chained, rowed, edges, songs=(), sung=()):
+    """One stream's plane generator: read at its recovered run, its cursor, or its song row."""
     counts, t, reg, _ev, _key = st
     if i in chained:
         t = (t[0], t[1], ("node", rowed[chained[i]]))
+    elif i in songs:
+        t = (t[0], t[1], ("node", sung[(counts, songs[i])]))
     return Generator(t, ("event", edges[counts]), ("plane", reg))
+
+
+def _singers(songs, streams, edges, nodes):
+    """Append one ``Index`` node per song lane a stream reads, and return where each sits.
+
+    One lane is one node however many registers read it, as the player's own cell is: a
+    voice's attack/decay and its sustain/release are two reads of one instrument index."""
+    at = {}
+    for i, key in songs.items():
+        k = (streams[i][0], key)
+        if at.setdefault(k, len(nodes)) == len(nodes):
+            nodes.append(indexer(("SELECT", key[1], ()), ("event", edges[streams[i][0]])))
+    return at
 
 
 def _attrition(seq, streams, chained, pairs, nodes, diag):
@@ -3419,26 +3629,39 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         residual.append([e for sec in secs for e in sec])
     streams = pre + post + lwws + ramps
     seq = _sequencer(prog, banks)
+    charts = _charts(prog, banks, pitch, diag)
     chained = _chain(streams, (seq, beats), diag)
+    songs = {i: k for i, k in _songed(streams, charts, diag).items() if i not in chained}
+    durs, cands = _song_durs(charts), _song_cands(prog, seq)
     edges = {}
     for counts, *_rest in streams + groups + rels + pairs + sweeps:
         edges.setdefault(counts, len(edges))
     for key in chained.values():
         edges.setdefault(key[2], len(edges))
-    nodes, clock_at = [], {}
-    for c in edges:  # a clock is one DIV, a cascade of two, or the EDGE floor
-        for g in _clock_node(c, seq, decs):
+    nodes, clock_at, beaten = [], {}, {}
+    for c in edges:  # a clock is one DIV, a cascade of two, the song's own row, or the floor
+        got = _song_clock(c, durs, cands, len(frames)) if durs and sum(c) > 1 else None
+        if got is None:
+            chain = _clock_node(c, seq, decs)
+        else:
+            diag["song_fires_generated"] += sum(c)
+            chain = [
+                div(got[0], phase=got[1]),
+                Generator(("DIV", ("node", -1), got[3]), ("event", -1), ("fire",)),
+            ]
+        for g in chain:
             if g.trigger == ("event", -1):
                 g = g._replace(trigger=("event", len(nodes) - 1))
             nodes.append(g)
         clock_at[c] = len(nodes) - 1
+        if got is not None:
+            beaten[len(nodes) - 1] = got[2]
     rowed = _rowers(chained, clock_at, nodes)
-    fired = [_planed(i, s, chained, rowed, clock_at) for i, s in enumerate(streams[: len(pre)])]
+    sung = _singers(songs, streams, clock_at, nodes)
+    args = (chained, rowed, clock_at, songs, sung)
+    fired = [_planed(i, s, *args) for i, s in enumerate(streams[: len(pre)])]
     nodes += fired + [raw(residual)]
-    nodes += [
-        _planed(i + len(pre), s, chained, rowed, clock_at)
-        for i, s in enumerate(streams[len(pre) :])
-    ]
+    nodes += [_planed(i + len(pre), s, *args) for i, s in enumerate(streams[len(pre) :])]
     nodes += [
         Generator(t, ("event", clock_at[c]), plane(r, m)) for c, ps, r in groups for t, m in ps
     ]
@@ -3452,13 +3675,18 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     for counts, walk, table, reg in pairs:  # the row generator, then the pattern it rows
         nodes.append(indexer(walk, ("event", clock_at[counts])))
         nodes.append(select(table, ("node", len(nodes) - 1), ("event", clock_at[counts]), reg))
+    for at, v in beaten.items():  # the row divider's divisor is the row's own duration
+        nodes.append(indexer(("SELECT", durs[v], ()), ("event", at)))
+        nodes[at] = nodes[at]._replace(
+            transfer=("DIV", ("node", len(nodes) - 1), nodes[at].transfer[2])
+        )
     _attrition(seq, streams, chained, pairs, nodes, diag)
     return (
         Graph(
             nodes,
             freq_table=pitch,
-            classes=_classes(streams, groups, rels, pairs, sweeps),
-            charts=_charts(prog, banks, pitch, diag),
+            classes=_classes(streams, groups, rels, pairs, sweeps, songs),
+            charts=charts,
         ),
         lanes,
     )

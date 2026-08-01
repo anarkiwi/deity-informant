@@ -702,9 +702,22 @@ def _node_lines(graph, i, scan, keys, cons):
     if kind == "DIV":
         n, phase = g.transfer[1], g.transfer[2] if len(g.transfer) > 2 else g.transfer[1] - 1
         seen = cons.get(i, ())
+        rate = (
+            "one tick per row, the row's own duration (n%02d)" % n[1]
+            if isinstance(n, tuple)
+            else "one tick per %d frames" % n
+        )
+        what = "ticks" if g.trigger != tracker.FRAME else "frames"
         return [
-            "%s  one tick per %d frames, first at frame %d -> %s"
-            % (head, n, phase, _block(["n%02d" % j for j in seen]))
+            "%s  %s, %d in after %d %s -> %s"
+            % (
+                head,
+                rate,
+                scan.emits[i] or sum(1 for _x in seen),
+                phase,
+                what,
+                _block(["n%02d" % j for j in seen]),
+            )
         ]
     return ["%s  one tick per %s" % (head, g.transfer[1])]
 
