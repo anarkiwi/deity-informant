@@ -2926,9 +2926,11 @@ def _bend_streams(prog, banks, bends, btags, tags, wat, lww, nframes, done=(), l
     Both halves of one emit are one ``pair`` write, so a read of one half alone claims
     nothing; and every read is checked against the byte the register took, one
     contradiction refusing that pair whole as §4l's containment reading does."""
-    mem0 = prog.mem0
+    mem0, explained = prog.mem0, [set() for _f in range(nframes)]
+    if not bends:  # no pair the text binds by a carry: nothing to walk
+        return [], explained
     claims, emits, bad = _bend_walk(bends, btags, tags, wat, lww, banks, mem0, nframes, lanes)
-    holds, out, explained = {}, [], [set() for _f in range(nframes)]
+    holds, out = {}, []
     for (cell, key, arm, at), halves in sorted(claims.items()):
         regs = _bend_regs(cell, bends)
         if cell in bad or set(halves) != {0, 1} or halves[0] != halves[1]:
