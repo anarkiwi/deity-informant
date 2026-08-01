@@ -79,7 +79,7 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
     writes = [{2: G.Cell("ramp", ("ptbl", "right"), 0, 0x10 + step * i, step)} for i in range(4)]
     graph, rep = G.strict(_native({("ptbl", "right"): (step,)}, writes))
     node = [g for g in graph.nodes if g.route == ("plane", 2)][0]
-    assert node.transfer == ("RAMP", 0x10, step, 0x100)
+    assert node.transfer == ("RAMP", 0x10, step, 0x100, ())
     assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {
         "ramp": 3,
         "seed": 1,
@@ -102,7 +102,12 @@ def test_a_16_bit_sweep_is_one_pair_routed_ramp_carrying_into_its_high_byte():
     words = [0x00F0, 0x0110, 0x0130, 0x0150]
     graph, rep = G.strict(_native({("t", "r"): (0x20,)}, _sweep16(words, 0x20)))
     node = [g for g in graph.nodes if g.route[0] == "pair"][0]
-    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000) and node.route == ("pair", 2, 3, 0xFF)
+    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000, ()) and node.route == (
+        "pair",
+        2,
+        3,
+        0xFF,
+    )
     assert rep.divergence is None and rep.coverage.interp == 8
     assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {"ramp": 6, "seed": 2}
 
@@ -114,7 +119,7 @@ def test_a_high_byte_outside_the_mask_refuses_the_pair_and_reseeds_the_byte_run(
     graph, rep = G.strict(_native({("t", "r"): (0x20,)}, writes))
     assert rep.divergence is None
     pairs = [g for g in graph.nodes if g.route[0] == "pair"]
-    assert [g.transfer for g in pairs] == [("RAMP", 0x0110, 0x20, 0x10000)]
+    assert [g.transfer for g in pairs] == [("RAMP", 0x0110, 0x20, 0x10000, ())]
     lows = [g for g in graph.nodes if g.route == ("plane", 2) and g.transfer[0] == "RAMP"]
     assert not lows  # frame 0's write stays residual, not a stale-seeded byte ramp
 
@@ -464,7 +469,7 @@ def test_an_evenly_stepped_walk_is_a_row_counter_and_a_broken_one_is_unrolled():
     """`RAMP` is the row counter; a walk that restarts is carried unrolled instead."""
     ramp = G.strict(_arranged(rows=(0, 1, 2)))[0]
     walk = G.strict(_arranged(rows=(0, 1, 0)))[0]
-    assert [g.transfer for g in ramp.nodes if g.route == T.INDEX][0] == ("RAMP", 0, 1, 0)
+    assert [g.transfer for g in ramp.nodes if g.route == T.INDEX][0] == ("RAMP", 0, 1, 0, ())
     assert [g.transfer for g in walk.nodes if g.route == T.INDEX][0] == ("SELECT", (0, 1, 0), ())
 
 
@@ -473,7 +478,7 @@ def test_a_row_counter_seeded_at_another_pattern_breaks_the_law():
     graph = G.strict(_arranged())[0]
     records = T.eval_graph(graph, 3)
     at = [i for i, g in enumerate(graph.nodes) if g.route == T.INDEX][0]
-    graph.nodes[at] = graph.nodes[at]._replace(transfer=("RAMP", 1, 1, 0))
+    graph.nodes[at] = graph.nodes[at]._replace(transfer=("RAMP", 1, 1, 0, ()))
     assert F.diff(T.eval_graph(graph, 3), records) is not None
 
 

@@ -351,7 +351,7 @@ def test_a_relative_route_says_it_offsets_its_register():
 def test_the_arrangement_axis_counts_a_generated_row_where_one_exists():
     """A pattern read at a row an index generator supplies is what the axis is looking for."""
     nodes = list(_graph().nodes) + [
-        T.indexer(("RAMP", 0, 1, 4), T.FRAME),
+        T.indexer(("RAMP", 0, 1, 4, ()), T.FRAME),
         T.select((0x11, 0x22, 0x33, 0x44), ("node", len(_graph().nodes)), T.FRAME, 0x15),
     ]
     side = X.Side("A", "our recovery", T.Graph(nodes), "PASS", _prog())

@@ -273,7 +273,7 @@ def _scan(graph, nframes, keys, tabs):
     parts = tracker._masked(nodes)
     held = {reg: {} for reg in parts}
     counts, emits = [0] * len(nodes), [0] * len(nodes)
-    gen, res, ramps, notes = {}, {}, {}, [[], [], []]
+    gen, res, ramps, notes, st = {}, {}, {}, [[], [], []], {}
     at, insts = [[None] * nframes for _v in range(3)], [{}, {}, {}]
     pitch = graph.freq_table
     for f in range(nframes):
@@ -290,7 +290,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route == tracker.INDEX:  # the arrangement: this emit is a row, not a byte
                 for _t in range(fired[i]):
                     counts[i] += 1
-                    cur[i] = v = tracker._emit(g, counts[i], cur)
+                    cur[i] = v = tracker._value(g, i, counts[i], cur, st)
                     emits[i] += v is not None
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
                     del ramps[i][1][:-4]
@@ -298,7 +298,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route[0] == "pair":  # a 16-bit emit: both halves count, the word samples
                 for _t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._emit(g, counts[i], cur)
+                    v = tracker._value(g, i, counts[i], cur, st)
                     if v is None:
                         continue
                     emits[i] += 1
@@ -313,7 +313,7 @@ def _scan(graph, nframes, keys, tabs):
             reg = g.route[1]
             for _t in range(fired[i]):
                 counts[i] += 1
-                v = tracker._emit(g, counts[i], cur)
+                v = tracker._value(g, i, counts[i], cur, st)
                 if v is None:
                     continue
                 emits[i] += 1
@@ -667,17 +667,22 @@ def _node_lines(graph, i, scan, keys, cons):
     if kind == "SELECT" and keys[i] is not None:
         return [head] + _select_lines(g, keys[i], scan.tabs, scan.emits[i])
     if kind == "RAMP":
-        _k, seed, step, bound = g.transfer
+        _k, seed, step, bound, turn = g.transfer
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
-            "     %s  starts at %d (%s), steps %+d per fire, wraps at %d"
+            "     %s  starts at %d (%s), steps %+d per fire, %s"
             % (
                 "cursor" if g.route == tracker.INDEX else "sweep ",
                 seed,
                 "DECLARED" if g.route == tracker.INDEX else "OBSERVED",
                 step,
-                bound,
+                (
+                    "turns down at high %d and up at high %d (DECLARED), wraps at %d"
+                    % (turn[1], turn[0], bound)
+                    if turn
+                    else "wraps at %d" % bound
+                ),
             ),
             "     values %s%s  (%d emits)"
             % (

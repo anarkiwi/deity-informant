@@ -85,7 +85,13 @@ def div(n, trigger=FRAME, phase=None):
 
     ``phase`` is the frame the first tick lands on modulo ``n``. It belongs to the
     arrangement, not to the divider (§8): the post-init counter byte says where the
-    count runs out, and an unstaged cell's zero yields the default ``n-1``."""
+    count runs out, and an unstaged cell's zero yields the default ``n-1``.
+
+    ``n`` may be ``("node", j)`` — a divisor generator ``j`` emits, reloaded at every
+    tick. A period a constant cannot name is what a tracker row's duration field is, and
+    ``phase`` is then the ticks the first row still owes."""
+    if isinstance(n, tuple):
+        return Generator(("DIV", n, phase or 0), trigger, ("fire",))
     return Generator(
         ("DIV", n, (n - 1 if phase is None else phase) % max(1, n)), trigger, ("fire",)
     )
@@ -96,9 +102,13 @@ def lookup(seq, trigger, reg, mask=_FULL):
     return Generator(("SELECT", tuple(seq), ()), trigger, plane(reg, mask))
 
 
-def ramp(seed, step, bound, trigger, reg, mask=_FULL):
-    """Emit ``seed + step*count`` into a plane, wrapped at ``bound``."""
-    return Generator(("RAMP", seed, step, bound), trigger, plane(reg, mask))
+def ramp(seed, step, bound, trigger, reg, mask=_FULL, turn=()):
+    """Emit ``seed + step*count`` into a plane, wrapped at ``bound``, turned at ``turn``.
+
+    ``turn`` is ``()`` for a ramp that only wraps, else ``(low, high)`` in high-register
+    units: the step goes negative where the new emit's high register reaches ``high`` and
+    positive where it reaches ``low``, which is the one 6502 sweep a wrap cannot say."""
+    return Generator(("RAMP", seed, step, bound, turn), trigger, plane(reg, mask))
 
 
 def select(table, rows, trigger, reg, mask=_FULL):
@@ -148,20 +158,92 @@ class Graph:
         return None
 
 
+class _Held:
+    """What each node holds at the ``t``-th edge of a frame: its own ``t``-th emit, else its last.
+
+    ``_run`` settles a frame's generators in dependency order — index nodes are earlier
+    than the reads they feed (``_index_ok``) — but a driver can cut several rows inside one
+    frame, and a node-major pass would then show every read of that frame the *last* row.
+    Pairing an emit with the edge that produced it is what makes the row generated rather
+    than observed; the last value stands where a node did not fire that edge, which is what
+    a cell the machine did not rewrite holds."""
+
+    __slots__ = ("last", "seq", "t")
+
+    def __init__(self):
+        self.last, self.seq, self.t = {}, {}, 0
+
+    def put(self, i, v):
+        """Record node ``i``'s emit for this edge."""
+        self.last[i] = v
+        self.seq.setdefault(i, []).append(v)
+
+    def get(self, i, default=None):
+        """Node ``i``'s value as of edge ``t``."""
+        got = self.seq.get(i)
+        return got[self.t] if got is not None and self.t < len(got) else self.last.get(i, default)
+
+    def edge(self, t):
+        """Read the frame at its ``t``-th edge."""
+        self.t = t
+        return self
+
+    def frame(self):
+        """Start a frame: this frame's emits are not the last one's."""
+        self.seq.clear()
+        self.t = 0
+
+
 class _Fires:
     """Trigger propagation with per-node input ordinals, one instance per run.
 
     A ``DIV`` emits one tick per ``n`` *input* triggers (§2): clocked by the frame it
     divides the frame number, clocked by an event it divides the ticks it has received,
-    which is what lets one divider clock another. The consumer index keeps a frame linear."""
+    which is what lets one divider clock another. The consumer index keeps a frame linear.
 
-    def __init__(self, nodes):
+    A divisor may itself be a generator's emit (``Node(j)``) — the trigger domain's
+    counterpart of the value domain's generated row. A period no constant can name is
+    exactly what a tracker row's own duration field is, and the divider reads the value
+    node ``j`` was holding when it last ran out, which is the byte the machine reloaded."""
+
+    def __init__(self, nodes, held=None):
         self.nodes = nodes
+        self.held = held
         self.seen = [0] * len(nodes)  # input ticks a node has received so far
+        self.left = {}  # ticks still owed, for a divider whose divisor is an emit
         self.cons = {}
         for j, h in enumerate(nodes):
             if h.trigger != FRAME:
                 self.cons.setdefault(h.trigger[1], []).append(j)
+
+    def _period(self, spec):
+        """The divisor a ``DIV`` divides by: a constant, or the value a generator holds."""
+        if not isinstance(spec, tuple):
+            return max(1, spec)
+        got = None if self.held is None else self.held.last.get(spec[1])
+        return None if got is None or got < 1 else int(got)
+
+    def _counted(self, i, g, got):
+        """Ticks a generated-divisor ``DIV`` emits over ``got`` input triggers.
+
+        The divisor is not a modulus here — it is reloaded at every tick, so the divider
+        is a countdown and a row that lasts one tick and one that lasts sixteen are the
+        same generator with a different reload."""
+        left = self.left.get(i)
+        if left is None:
+            left = (g.transfer[2] or 0) + 1
+        out = 0
+        for _x in range(got):
+            left -= 1
+            if left <= 0:
+                n = self._period(g.transfer[1])
+                if n is None:
+                    self.left[i] = 1
+                    return out
+                out += 1
+                left = n
+        self.left[i] = left
+        return out
 
     def _ticks(self, i, g, frame, got):
         """Edges fire-routed node ``i`` emits at ``frame``, given ``got`` input ticks."""
@@ -170,6 +252,8 @@ class _Fires:
             seq = g.transfer[1]
             return seq[frame] if frame < len(seq) else 0
         if kind == "DIV":
+            if isinstance(g.transfer[1], tuple):
+                return self._counted(i, g, got)
             n = max(1, g.transfer[1])
             p = (g.transfer[2] if len(g.transfer) > 2 else n - 1) % n
             if g.trigger == FRAME:
@@ -227,6 +311,29 @@ def _row(rows, count, cur):
     return None if d is None or v is None else _REL[op](v, d)
 
 
+def _turned(transfer, count, state=None):
+    """``(count, value, direction)`` of a turning ``RAMP``, stepped on from ``state``.
+
+    The direction turns where the new emit's high register meets a bound, exactly as
+    the 6502 compares it. Carrying the state keeps a run linear in its own length: a
+    turn is history-dependent, so recomputing from the seed each fire is quadratic."""
+    _k, seed, step, bound, turn = transfer
+    low, high = turn
+    mag = abs(step)
+    if state is None or state[0] > count:
+        state = (1, seed % bound, 1 if step >= 0 else -1)
+    n, v, d = state
+    while n < count:
+        v = (v + d * mag) % bound
+        top = v >> 8
+        if d > 0 and top == high:
+            d = -1
+        elif d < 0 and top == low:
+            d = 1
+        n += 1
+    return (n, v, d)
+
+
 def _emit(g, count, cur=()):
     """Value a plane-routed generator emits on its ``count``-th trigger."""
     kind = g.transfer[0]
@@ -237,7 +344,9 @@ def _emit(g, count, cur=()):
         i = _row(rows, count, cur or {}) if rows else (count - 1) % len(table)
         return table[i] if i is not None and 0 <= i < len(table) else None
     if kind == "RAMP":
-        _k, seed, step, bound = g.transfer
+        _k, seed, step, bound, turn = g.transfer
+        if turn:
+            return _turned(g.transfer, count)[1]
         raw_v = seed + step * (count - 1)
         return raw_v % bound if bound else raw_v
     raise TrackerError("transfer %r has no value emit" % (kind,))
@@ -272,6 +381,21 @@ def _rel_ok(nodes, i, op, srcs, field):
             raise TrackerError("relative base %r drives another field" % (base,))
 
 
+def _divisor_ok(nodes, i, g):
+    """Refuse a generated divisor no ``index`` node supplies.
+
+    The divisor is a value, so it comes from an ``index`` node exactly as a row does; the
+    divider reads what that node last emitted, which is the byte the machine reloaded, so
+    the source may be *any* index node and not only an earlier one — a row's duration and
+    the divider that counts it name each other, as a player's counter and its reload do."""
+    n = g.transfer[1]
+    if g.transfer[0] != "DIV" or not isinstance(n, tuple):
+        return ()
+    if n[0] != "node" or not 0 <= n[1] < len(nodes) or nodes[n[1]].route != INDEX:
+        raise TrackerError("divisor %r on node %d is not an index node" % (n, i))
+    return (n[1],)
+
+
 def _index_ok(nodes, i, g):
     """Refuse a generated row index the graph cannot supply before it is read.
 
@@ -282,8 +406,11 @@ def _index_ok(nodes, i, g):
     if _generated(rows):
         rel = rows[0] == "rel"
         _rel_ok(nodes, i, rows[1] if rel else None, rows[2:] if rel else (rows,), INDEX)
+    _divisor_ok(nodes, i, g)
     if g.route == INDEX and not any(
-        h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]) for h in nodes
+        (h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]))
+        or i in _divisor_ok(nodes, j, h)
+        for j, h in enumerate(nodes)
     ):
         raise TrackerError("index route on node %d has no reader" % (i,))
 
@@ -302,6 +429,11 @@ def _check(nodes):
             raise TrackerError("dangling trigger %r" % (g.trigger,))
         if g.route[0] not in ("plane", "fire", "raw", "rel", "index", "pair"):
             raise TrackerError("unknown route %r" % (g.route,))
+        if g.transfer[0] == "RAMP" and (
+            len(g.transfer) != 5
+            or (g.transfer[4] and (len(g.transfer[4]) != 2 or not g.transfer[3]))
+        ):
+            raise TrackerError("ramp %r names no turn and no wrap to turn in" % (g.transfer,))
         _index_ok(nodes, i, g)
         if g.route[0] == "pair":  # each half owns its whole byte
             if not 0 < g.route[3] <= _FULL:
@@ -368,6 +500,17 @@ def _combine(route, delta, prev, cur):
     return None if delta is None or val is None else _REL[op](val & mask, delta) & 0xFF
 
 
+def _value(g, i, count, cur, state):
+    """One generator's emit, carrying a turning ``RAMP``'s own state forward.
+
+    Trigger counts are monotonic within a run, so one step per fire replaces the
+    recomputation from the seed a history-dependent transfer would otherwise need."""
+    if g.transfer[0] == "RAMP" and g.transfer[4]:
+        state[i] = st = _turned(g.transfer, count, state.get(i))
+        return st[1]
+    return _emit(g, count, cur)
+
+
 def _run(graph, nframes, trace=None):
     """``(canonical records, interpreted emits, raw emits, fire census)``.
 
@@ -381,10 +524,11 @@ def _run(graph, nframes, trace=None):
     interp, rawn, trig = {}, {}, {}
     parts = _masked(nodes)
     held = {reg: {} for reg in parts}
-    prev, cur = {}, {}
-    firing = _Fires(nodes)
+    prev, cur, state = {}, _Held(), {}
+    firing = _Fires(nodes, cur)
     out = []
     for f in range(nframes):
+        cur.frame()
         fires, ticks = firing.step(f)
         eaten = {
             g.route[4][1]
@@ -409,15 +553,17 @@ def _run(graph, nframes, trace=None):
                     if acts is not None:
                         acts[i].append((f, reg, val))
             elif g.route == INDEX:  # a value edge: it indexes, it does not write
-                for _t in range(fires[i]):
+                for t in range(fires[i]):
                     counts[i] += 1
-                    cur[i] = v = _emit(g, counts[i], cur)
+                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    cur.put(i, v)
                     if acts is not None:
                         acts[i].append((f, v))
             elif g.route[0] == "pair":  # one emit, two registers: a 16-bit value
-                for _t in range(fires[i]):
+                for t in range(fires[i]):
                     counts[i] += 1
-                    cur[i] = v = _emit(g, counts[i], cur)
+                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    cur.put(i, v)
                     got = () if v is None else _pair_writes(g.route, v)
                     writes += got
                     for reg, b in got:
@@ -427,9 +573,10 @@ def _run(graph, nframes, trace=None):
                         acts[i].extend((f, reg, b) for reg, b in got)
             elif _is_plane(g.route):
                 reg = g.route[1]
-                for _t in range(fires[i]):  # one emit per trigger, in order
+                for t in range(fires[i]):  # one emit per trigger, in order
                     counts[i] += 1
-                    cur[i] = v = _emit(g, counts[i], cur)
+                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    cur.put(i, v)
                     if g.route[0] == "rel":
                         v = _combine(g.route, v, prev, cur)
                     if i in eaten:  # a base generator supplies a value, it does not write
@@ -1277,7 +1424,7 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     )
 
 
-def _classes(streams, groups=(), rels=(), pairs=()):
+def _classes(streams, groups=(), rels=(), pairs=(), sweeps=()):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
@@ -1293,6 +1440,10 @@ def _classes(streams, groups=(), rels=(), pairs=()):
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["rel"] += sum(counts)
     for counts, _r, _s, reg in pairs:
         out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["arr"] += sum(counts)
+    for counts, _t, route, reg in sweeps:  # one pair emit is two register writes
+        cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
+        cls["seed"] += len(route) - 2
+        cls["ramp"] += (len(route) - 2) * (sum(counts) - 1)
     for counts, t, reg, ev, _key in streams:
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         if ev == "ramp":
@@ -1358,6 +1509,8 @@ def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None):
 
 # ---- 4c. the pulse sweep: a RAMP whose step the origin map names ------------------
 _CUTOFF = (0x15, 0x16)
+_LOW = (2, 0x15)  # the low half of the two 16-bit SID planes an accumulator drives
+Acc = namedtuple("Acc", "cells wraps turn masks signs")
 
 
 def _def_stmt(expr, env, defs, fallback):
@@ -1371,24 +1524,64 @@ def _def_stmt(expr, env, defs, fallback):
     return out
 
 
-def _steps_own(s, env):
-    """``1``/``-1`` if the store adds a term to a read of its own cell, else None."""
-    root = _resolve(s[2], env)
-    if not (isinstance(root, tuple) and root[0] == "op" and root[1] in ("INT_ADD", "INT_SUB")):
-        return None
-    held = [t for t in root[2] if _read_base(t, env) == _base(s[1])]
-    if not held or (root[1] == "INT_SUB" and root[2][0] not in held):
-        return None
-    return -1 if root[1] == "INT_SUB" else 1
+def _staged(prog):
+    """``{cell: [statement]}``: every non-SID store, by the cell it writes."""
+    out = {}
+    for s in _stmts(prog):
+        if s[0] == "st" and _sid_class(s[1]) is None:
+            out.setdefault(_base(s[1]), []).append(s)
+    return out
+
+
+def _and_imm(root):
+    """The one ``AND``-immediate a value expression applies to a term, else None."""
+    if isinstance(root, tuple) and root[0] == "op" and root[1] == "INT_AND" and len(root[2]) == 2:
+        cs = [k for k in root[2] if isinstance(k, tuple) and k[0] == "const"]
+        if len(cs) == 1:
+            return cs[0][1] & 0xFF
+    return None
+
+
+def _steps_own(s, env, wide=None, staged=()):
+    """``[(sign, root, core, wrap, statement, held)]``: every way a store steps its own cell.
+
+    The value is followed through the locals it names *and* through the staging cells it
+    is copied from, so an accumulator whose arithmetic happens in a scratch byte is one
+    too; the statement returned is where that arithmetic is, which is what the origin map
+    answers for. A staged store's ``AND``-immediate is that byte's own width — the one
+    place a 6502 names how wide an accumulator's high half is."""
+    cell, out, seen = _base(s[1]), [], set()
+    stack = [(_resolve(s[2], env), s, env, False)]
+    while stack:
+        root, at, e, hop = stack.pop()
+        if not isinstance(root, tuple):
+            continue
+        if root[0] == "mem":
+            c = _base(root[1])
+            if wide is not None and c not in seen:
+                seen.add(c)
+                stack += [(_resolve(t[2], wide), t, wide, True) for t in staged.get(c, ())]
+            continue
+        core, wrap = _unmask(root, e) if hop else (root, 0x100)
+        if not (isinstance(core, tuple) and core[0] == "op" and core[1] in ("INT_ADD", "INT_SUB")):
+            continue
+        held = [t for t in core[2] if _read_base(t, e) == cell]
+        if not held or (core[1] == "INT_SUB" and core[2][0] not in held):
+            continue
+        out.append((-1 if core[1] == "INT_SUB" else 1, root, core, wrap, at, tuple(held)))
+    return out
 
 
 def _acc_sites(prog):
-    """``([statement to watch], [cells per statement], {cell: sign})``: the accumulators.
+    """``([statement to watch], [cells per statement], {cell: [root]})``: the accumulators.
 
-    Watched is the statement the arithmetic happens in — the store, or the assignment
-    its value resolves through, since a store of a bare local carries no origin at all.
-    Watching is by identity, so one assignment two stores share answers for both."""
-    watch, cells, at, signs = [], [], {}, {}
+    Watched is the statement the arithmetic happens in — the store, the assignment its
+    value resolves through, or the staging cell it is copied from, since a store of a bare
+    local or of a scratch byte carries no origin at all. Watching is by identity, so one
+    statement two stores share answers for both, and a cell stepped both ways keeps both
+    signs: one store adds and the other subtracts, and the first seen fixes neither."""
+    watch, cells, at, roots = [], [], {}, {}
+    wide, staged = _prog_env(prog), _staged(prog)
     for proc in prog.procs:
         env, defs = {}, {}
         for s in _proc_stmts(proc):
@@ -1397,17 +1590,15 @@ def _acc_sites(prog):
                 continue
             if s[0] != "st" or _sid_class(s[1]) is not None:
                 continue
-            sign = _steps_own(s, env)
-            if sign is None:
-                continue
-            w = _def_stmt(s[2], env, defs, s)
-            i = at.setdefault(id(w), len(watch))
-            if i == len(watch):
-                watch.append(w)
-                cells.append(set())
-            cells[i].add(_base(s[1]))
-            signs.setdefault(_base(s[1]), sign)
-    return watch, cells, signs
+            for got in _steps_own(s, env, wide, staged):
+                w = _def_stmt(s[2], env, defs, s) if got[4] is s else got[4]
+                i = at.setdefault(id(w), len(watch))
+                if i == len(watch):
+                    watch.append(w)
+                    cells.append(set())
+                cells[i].add(_base(s[1]))
+                roots.setdefault(_base(s[1]), []).append(got)
+    return watch, cells, roots
 
 
 def _acc_pools(cells, watched):
@@ -1427,15 +1618,135 @@ def _acc_pools(cells, watched):
     return out
 
 
-def _accumulators(prog, signs):
-    """``{register class: (accumulator cell, sign)}``: the accumulator a store reads.
+def _reads_cell(expr, env, cell, depth=3):
+    """Does this expression read ``cell``, through the locals and the widenings it names?"""
+    root = _resolve(expr, env)
+    if not isinstance(root, tuple) or depth <= 0:
+        return False
+    if root[0] == "mem":
+        return _base(root[1]) == cell
+    return root[0] == "op" and any(_reads_cell(c, env, cell, depth - 1) for c in root[2])
+
+
+def _carries(root, env, cell):
+    """Does this store's value take the carry out of ``cell``'s own arithmetic?
+
+    That is what makes two byte cells one 16-bit accumulator, and it is the program
+    text saying so rather than the two addresses happening to be adjacent. A 6502
+    borrow is the same statement written as a comparison, so both forms count."""
+    for x in _sub_exprs(root, []):
+        if x[0] == "op" and x[1] in ("INT_CARRY", "INT_LESSEQUAL"):
+            if any(_reads_cell(k, env, cell) for k in x[2]):
+                return True
+    return False
+
+
+def _step_mask(core, held, env, staged):
+    """The mask the text applies to the step byte: the ``AND``-immediate its staging store
+    names, where every store to that cell names the same one, else the whole byte."""
+    for t in core[2]:
+        if t in held:
+            continue
+        root = _resolve(t, env)
+        if not (isinstance(root, tuple) and root[0] == "mem"):
+            continue
+        ms = {_and_imm(_resolve(w[2], env)) for w in staged.get(_base(root[1]), ())}
+        if len(ms) == 1 and None not in ms:
+            return ms.pop()
+    return _FULL
+
+
+def _turn_of(conds, roots):
+    """``{sign: immediate}``: the byte the text compares a stepped value against, where the
+    equal arm steps a direction cell by one. Both bounds are program text, and a bound
+    fitted to the emitted values is refused for the reason a fitted step is."""
+    out = {}
+    for cond, env, arms in conds:
+        got = _zero_test(cond)
+        sign = None if got is None else roots.get(_resolve(got[0], env))
+        if sign is None:
+            continue
+        arm = arms[0 if got[2] else 1]
+        if any(
+            s[0] == "st" and _step(s[2], env, _base(s[1])) is not None for s in _in_order(list(arm))
+        ):
+            out.setdefault(sign, got[1])
+    return out
+
+
+def _acc_of(roots, lo, hi, ctx):
+    """The ``Acc`` a low cell and its optional carry-taking high cell describe.
+
+    ``masks`` is every ``AND``-immediate the text applies to this accumulator's step byte:
+    one store can mask the byte it adds and another take it whole, and the step is a
+    declared byte under one of them."""
+    wide, conds, staged = ctx
+    turn = _turn_of(conds, {r[1]: r[0] for r in roots[hi]}) if hi is not None else {}
+    return Acc(
+        (lo,) if hi is None else (lo, hi),
+        (max(r[3] for r in roots[lo]),)
+        + ((max(r[3] for r in roots[hi]),) if hi is not None else ()),
+        (turn[-1], turn[1]) if len(turn) == 2 else (),
+        frozenset(_step_mask(r[2], r[5], wide, staged) for r in roots[lo]),
+        frozenset(r[0] for r in roots[lo]),
+    )
+
+
+def _reached(expr, env, origins, want, depth=4):
+    """The cells of ``want`` this value reaches, at the fewest staging hops any of them takes.
+
+    A byte staged one hop away is what the store reads; a cell some *other* staging cell
+    further up also touches is not what it named, and refusing on that ambiguity refuses
+    accumulators the shallow reading resolves outright."""
+    level, seen = [expr], set()
+    for _h in range(depth):
+        got, nxt, stack = set(), [], list(level)
+        while stack:
+            x = stack.pop()
+            if not isinstance(x, tuple) or x in seen:
+                continue
+            seen.add(x)
+            if x[0] == "op":
+                stack.extend(x[2])
+            elif x[0] == "mem":
+                b = _base(x[1])
+                if b in want:
+                    got.add(b)
+                nxt.extend(origins.get(b, ()))
+            elif x[0] == "loc":
+                nxt.extend(env.get(x[1], ()))
+        if got:
+            return got
+        level = nxt
+    return set()
+
+
+def _paired_cells(roots, wide):
+    """``{low cell: high cell}``: the byte above a cell, where the text takes its carry.
+
+    A 16-bit cell is a byte and the byte above it, and what says the two are one number is
+    the high store taking the carry out of the low one's own arithmetic — not the two
+    addresses happening to be adjacent, and not the values they hold."""
+    return {
+        lo: lo + 1
+        for lo in roots
+        if lo >= 2 and lo + 1 in roots and any(_carries(r[1], wide, lo) for r in roots[lo + 1])
+    }
+
+
+def _accumulators(prog, roots):
+    """``{register class: (Acc, half)}``: the accumulator a store reads, and which byte of it.
 
     A pw or cutoff store whose value reaches exactly one stepped cell is that
-    accumulator's output; two accumulators reaching one store refuse it."""
-    origins, out, stepped = {}, {}, set(signs)
-    for s in _stmts(prog):
-        if s[0] == "st" and _sid_class(s[1]) is None:
-            origins.setdefault(_base(s[1]), []).append(s[2])
+    accumulator's output; two accumulators reaching one store refuse it, unless the two
+    are the halves of one 16-bit cell — the high byte takes the low byte's own carry, and
+    then the plane's own low register is the low half."""
+    staged, out, stepped = _staged(prog), {}, set(roots)
+    ctx = (_prog_env(prog), _conditions(prog), staged)
+    origins = {c: [s[2] for s in ss] for c, ss in staged.items()}
+    high = _paired_cells(roots, ctx[0])
+    accs = {lo: _acc_of(roots, lo, high.get(lo), ctx) for lo in stepped - set(high.values())}
+    group = {c: a for a in accs.values() for c in a.cells}
     for proc in prog.procs:
         envl = {}
         for s in _proc_stmts(proc):
@@ -1445,10 +1756,9 @@ def _accumulators(prog, signs):
             cls = _sid_class(s[1]) if s[0] == "st" else None
             if cls is None or not (_PLANE.get(cls) == "pw" or cls in _CUTOFF):
                 continue
-            hit = _read_bases(s[2], envl, origins) & stepped
+            hit = {group[c] for c in _reached(s[2], envl, origins, stepped) if c in group}
             if len(hit) == 1:
-                cell = hit.pop()
-                out.setdefault(cls, (cell, signs[cell]))
+                out.setdefault(cls, (hit.pop(), 0 if cls in _LOW else 1))
     return out
 
 
@@ -1466,29 +1776,75 @@ def _runs(vals):
     return out
 
 
-def _acc_streams(acc, pools, banks, tabs, lww, mem0):
-    """``(streams, explained)``: the sweep as a RAMP whose step the origin map names.
+def _regen(vals, wrap, turn):
+    """``[(start, emits, signed step)]``: the runs a turning ramp regenerates from its seed.
 
-    A maximal constant-delta run of the register's own emits is the candidate; every
-    stepped emit's accumulator execution must report an origin that is a declared byte
-    at a non-``mut`` offset equal to that step, so a fitted step is refused."""
-    seqs = {}
+    The magnitude of the first transition is the candidate step and the rest of the run is
+    *predicted*, direction turns included, so the run ends where the prediction does — the
+    same regenerate-or-refuse rule a wrapping run takes, with the turn in it."""
+    out, i = [], 0
+    while i + 1 < len(vals):
+        d = (vals[i + 1] - vals[i]) % wrap
+        mag, sgn = (d, 1) if d * 2 <= wrap else (wrap - d, -1)
+        n = 1
+        if mag:
+            t = (1, vals[i], sgn)
+            while i + n < len(vals):
+                t = _turned(("RAMP", vals[i], sgn * mag, wrap, turn or (-1, -1)), t[0] + 1, t)
+                if t[1] != vals[i + n]:
+                    break
+                n += 1
+            if n >= 2:
+                out.append((i, n, sgn * mag))
+        i += max(1, n - 1)  # adjacent runs share their boundary emit
+    return out
+
+
+def _named_step(reg, step, pool, banks, mem0, masks):
+    """Is this step a declared byte under one of the masks the program text applies to it?"""
+    return any(
+        byte & m == step for _k, _r, byte in _decl_cells(reg, pool, banks, mem0) for m in masks
+    )
+
+
+def _acc_streams(acc, pools, banks, tabs, lww, mem0):
+    """``(streams, sweeps, explained)``: the sweep as a RAMP whose step the origin map names.
+
+    A run of the register's own emits is the candidate; every stepped emit's accumulator
+    execution must report an origin that is a declared byte at a non-``mut`` offset equal,
+    under the mask the text applies, to that step, so a fitted step is refused. A cell
+    whose high byte takes its carry is one 16-bit accumulator and emits through a ``pair``
+    route: the modulus and the high register's mask are that byte's own ``AND``-immediate,
+    and a byte-wide ramp on the low register would leave every carry frame residual."""
+    seqs, wide = {}, {}
     for f, wr in enumerate(lww):
         for reg, (val, srcs) in wr.items():
             cls = _class_of(reg)
-            if cls in acc and _lane_key((reg, val, srcs), tabs.get(cls, ()), mem0) is None:
+            got = acc.get(cls)
+            if got is None or _lane_key((reg, val, srcs), tabs.get(cls, ()), mem0) is not None:
+                continue
+            a, half = got
+            if len(a.cells) == 2 and half:
+                continue  # the high half is written by the low half's own pair emit
+            hi = wr.get(reg + 1) if len(a.cells) == 2 else None
+            if hi is None:
                 seqs.setdefault(reg, []).append((f, val))
-    streams, explained = [], [set() for _f in lww]
+            elif _lane_key((reg + 1,) + hi, tabs.get(cls + 1, ()), mem0) is None:
+                wide.setdefault(reg, []).append((f, val | (hi[0] << 8)))
+    streams, sweeps, explained = [], [], [set() for _f in lww]
     for reg, seq in sorted(seqs.items()):
-        cell, sign = acc[_class_of(reg)]
+        a = acc[_class_of(reg)][0]
         claimed = set()
         for at, n, delta in _runs([v for _f, v in seq]):
             if seq[at][0] in claimed:  # adjacent runs share their boundary emit
                 at, n = at + 1, n - 1
-            step = delta if sign > 0 else (-delta) & 0xFF
-            if n < 2 or not all(
-                _lane_key((reg, step, pools[f].get(cell, ())), banks, mem0) is not None
-                for f, _v in seq[at + 1 : at + n]
+            steps = {delta if s > 0 else (-delta) & 0xFF for s in a.signs}
+            if n < 2 or not any(
+                all(
+                    _named_step(reg, step, pools[f].get(a.cells[0], ()), banks, mem0, a.masks)
+                    for f, _v in seq[at + 1 : at + n]
+                )
+                for step in steps
             ):
                 continue
             counts = [0] * len(lww)
@@ -1496,8 +1852,31 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0):
                 counts[f] = 1
                 claimed.add(f)
                 explained[f].add(reg)
-            streams.append((tuple(counts), ("RAMP", seq[at][1], delta, 0x100), reg, "ramp", None))
-    return streams, explained
+            streams.append(
+                (tuple(counts), ("RAMP", seq[at][1], delta, 0x100, ()), reg, "ramp", None)
+            )
+    for reg, seq in sorted(wide.items()):
+        a = acc[_class_of(reg)][0]
+        wrap = a.wraps[0] * a.wraps[1]
+        for at, n, step in _regen([v for _f, v in seq], wrap, a.turn):
+            if not all(
+                _named_step(reg, abs(step), pools[f].get(a.cells[0], ()), banks, mem0, a.masks)
+                for f, _v in seq[at + 1 : at + n]
+            ):
+                continue
+            counts = [0] * len(lww)
+            for f, _v in seq[at : at + n]:
+                counts[f] = 1
+                explained[f] |= {reg, reg + 1}
+            sweeps.append(
+                (
+                    tuple(counts),
+                    ("RAMP", seq[at][1], step, wrap, a.turn),
+                    pair(reg, reg + 1, a.wraps[1] - 1),
+                    reg,
+                )
+            )
+    return streams, sweeps, explained
 
 
 # ---- 4d. the trigger domain: a DIV whose divisor is a declared reload -------------
@@ -2067,7 +2446,9 @@ def _arr_pairs(lww, arr, states, banks, mem0, done, diag):
             for f, _r in run:
                 counts[f] += 1
                 explained[f].add(reg)
-            pairs.append((tuple(counts), ("RAMP", run[0][1], a.step, a.wrap), tabs[ptr][blk], reg))
+            pairs.append(
+                (tuple(counts), ("RAMP", run[0][1], a.step, a.wrap, ()), tabs[ptr][blk], reg)
+            )
     return pairs, explained
 
 
@@ -2859,7 +3240,7 @@ def _chain_cell(key, counts, rows, ctx, diag):
             diag["chain_cursor_reset"] += 1
         elif _rows_at(seq.cursors[cell], beats[cell], counts) == list(rows):
             diag["chain_rows_generated"] += len(rows)
-            return (cell, ("RAMP",) + seq.cursors[cell], beats[cell])
+            return (cell, ("RAMP",) + seq.cursors[cell] + ((),), beats[cell])
     diag["chain_rows_unwalked"] += len(rows)
     return None
 
@@ -2934,7 +3315,7 @@ def _observe(prog, trace, nframes, diag=None):
     statements (§4c), the arrangement's own reload and row walks (§4g) and every cursor
     the program text indexes a declared region at (§4h)."""
     diag = Counter() if diag is None else diag
-    watch, cells, signs = _acc_sites(prog)
+    watch, cells, roots = _acc_sites(prog)
     sites, addrs = _arr_sites(prog, _prog_env(prog), _walked(prog), diag)
     astmts, tags = _arr_watch(prog, sites, len(watch))
     banks = _banks(prog)
@@ -2964,7 +3345,7 @@ def _observe(prog, trace, nframes, diag=None):
         lww,
         (
             _acc_pools(cells, wat),
-            signs,
+            roots,
             (sites, _arr_classes(prog, addrs)),
             states,
             (objs, curs, _beats(ctags, wat, nframes), _decs(dtags, wat, nframes)),
@@ -2993,14 +3374,16 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
     diag = Counter() if diag is None else diag
-    pools, signs, arrs, states, (objs, curs, beats, decs) = acc
+    pools, roots, arrs, states, (objs, curs, beats, decs) = acc
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
     residual = []
     pre, post, ires = _instr_streams(prog, ords, tabs, banks, objs, curs, diag)
     lwws, declared = _lww_streams(lww, tabs, prog.mem0, objs, curs, diag)
-    ramps, swept = _acc_streams(_accumulators(prog, signs), pools, banks, tabs, lww, prog.mem0)
+    ramps, sweeps, swept = _acc_streams(
+        _accumulators(prog, roots), pools, banks, tabs, lww, prog.mem0
+    )
     fields = [d | s for d, s in zip(declared, swept)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     claimed = [d | a for d, a in zip(fields, assembled)]
@@ -3038,7 +3421,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     seq = _sequencer(prog, banks)
     chained = _chain(streams, (seq, beats), diag)
     edges = {}
-    for counts, *_rest in streams + groups + rels + pairs:
+    for counts, *_rest in streams + groups + rels + pairs + sweeps:
         edges.setdefault(counts, len(edges))
     for key in chained.values():
         edges.setdefault(key[2], len(edges))
@@ -3059,6 +3442,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     nodes += [
         Generator(t, ("event", clock_at[c]), plane(r, m)) for c, ps, r in groups for t, m in ps
     ]
+    nodes += [Generator(t, ("event", clock_at[c]), r) for c, t, r, _reg in sweeps]
     nodes += [lookup(seqs[r], FRAME, r) for r in _FREQ_REGS if any(v is not None for v in seqs[r])]
     for counts, t, reg, op, base in rels:  # absolutes settle a register, relatives follow
         if base[0] == "gen":
@@ -3073,7 +3457,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         Graph(
             nodes,
             freq_table=pitch,
-            classes=_classes(streams, groups, rels, pairs),
+            classes=_classes(streams, groups, rels, pairs, sweeps),
             charts=_charts(prog, banks, pitch, diag),
         ),
         lanes,
