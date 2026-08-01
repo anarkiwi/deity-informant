@@ -3027,30 +3027,26 @@ def _row_fires(tick, table, phase, nframes):
     return out
 
 
-def _tick_stream(n, phase, nframes):
-    """The frames ``DIV(n, phase)`` clocked by the frame fires on."""
-    return [1 if f % n == phase else 0 for f in range(nframes)]
+def _song_beats(durs, cands, nframes):
+    """``{fire vector: (tick, tick phase, voice, row phase)}``: what the song's own rows beat.
 
+    Every candidate is program text — the tick a divider's reload names, under each reading
+    of the branch that tests it, and the phases the post-init counters hold (§4i). The fire
+    vector is the *key*, so a stream is claimed only where the countdown fires on exactly
+    its frames: a missing fire refuses as loudly as a spare one, and a period read off the
+    fire pattern is refused for the reason §4d refuses one.
 
-def _song_clock(counts, durs, cands, nframes):
-    """``(tick, tick phase, voice, row phase)`` whose countdown fires exactly ``counts``.
-
-    The row's duration is the divisor and the tick is the divider that clocks it, both
-    program text; the whole stream must match in both directions, so a period read off the
-    fire pattern is refused for the reason §4d refuses one."""
-    want = list(counts)
-    if any(c > 1 for c in want):  # a row divider runs out at most once a frame
-        return None
-    first = next((f for f, c in enumerate(want) if c), None)
+    Built once per tune rather than searched per stream: the candidates do not depend on
+    the stream, so a per-stream search re-derives the same few vectors hundreds of times."""
+    out = {}
     for n, tphase in cands[0]:
-        if first is None or (first - tphase) % n:
-            continue
-        tick = _tick_stream(n, tphase, nframes)
+        tick = [1 if f % n == tphase else 0 for f in range(nframes)]
         for v, table in sorted(durs.items()):
             for rphase in cands[1]:
-                if _row_fires(tick, table, rphase, nframes) == want:
-                    return (n, tphase, v, rphase)
-    return None
+                out.setdefault(
+                    tuple(_row_fires(tick, table, rphase, nframes)), (n, tphase, v, rphase)
+                )
+    return out
 
 
 def _song_cands(prog, seq):
@@ -3632,7 +3628,8 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     charts = _charts(prog, banks, pitch, diag)
     chained = _chain(streams, (seq, beats), diag)
     songs = {i: k for i, k in _songed(streams, charts, diag).items() if i not in chained}
-    durs, cands = _song_durs(charts), _song_cands(prog, seq)
+    durs = _song_durs(charts)
+    beats_of = _song_beats(durs, _song_cands(prog, seq), len(frames)) if durs else {}
     edges = {}
     for counts, *_rest in streams + groups + rels + pairs + sweeps:
         edges.setdefault(counts, len(edges))
@@ -3640,7 +3637,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         edges.setdefault(key[2], len(edges))
     nodes, clock_at, beaten = [], {}, {}
     for c in edges:  # a clock is one DIV, a cascade of two, the song's own row, or the floor
-        got = _song_clock(c, durs, cands, len(frames)) if durs and sum(c) > 1 else None
+        got = beats_of.get(c) if sum(c) > 1 else None
         if got is None:
             chain = _clock_node(c, seq, decs)
         else:

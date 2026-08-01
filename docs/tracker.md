@@ -2292,12 +2292,27 @@ tracker claim, and the rendering states the lane it was given.
 | fires still observed | 81099 | 84294 |
 | nodes | 1812 | 1311 |
 
-§4c is the whole of the value move: the 12-bit pair sweep takes 13780 pulse emits that a
-byte-wide `RAMP` could not reach, and the residual falls by 53.5%. §4k is the whole of the
-`arr` move — the attack/decay and sustain/release lanes of all three voices are read at a
-row the orderlist and the patterns generate — and of the trigger move: the note-on divider
-of each voice is a `DIV` whose divisor is the row's own duration field, 3249 fires that
-were the `EDGE` floor, and the tick that clocks it accounts for the rest of the 15000.
+**§4c is the whole of the value move and §4k buys none of it.** The 12-bit pair sweep
+takes 13780 pulse emits a byte-wide `RAMP` could not reach, and the residual falls by
+53.5%; every emit of the +13780 is §4c's. §4k's **6498 is a reclassification, not new
+coverage** — those attack/decay and sustain/release emits were already generated, as
+`lane`, at a row the observation yielded that a declared byte happened to agree with.
+What changes is the *justification*: the row is now produced by the orderlist and the
+patterns, so the emit no longer rests on a coincidental match. That is a quality gain and
+it is reported in its own class precisely so it cannot be read as a coverage one. §4k's
+only figure that moves a total is in the other domain: the note-on divider of each voice
+is a `DIV` whose divisor is the row's own duration field, 3249 fires off the `EDGE` floor,
+with the tick that clocks it accounting for the rest of the 15000.
+
+**The denominator is ground truth and is checked as one.** `Coverage.total` is the tune's
+own write count at a fixed frame count, so `tests/test_tracker.py` asserts it by
+*equality* and asserts `interp + residual == total`; a second test pins the rendered
+artifact's own replay (`trackertext._scan`, a separate evaluator) to `_run`'s books —
+same total, same interp, same per-plane split, same trigger census, no class negative.
+That invariant exists because it was violated: `_scan` built its `_Fires` with no value
+view, a generated divisor therefore found no divisor and never ticked, and 6492 writes
+left the artifact's books entirely while the law still passed. A share printed over a
+shrinking denominator is inflated, and nothing was checking the denominator.
 
 **Observed fires rise against the pre-#116 baseline and that is measured, not hidden.**
 81099 -> 84294 is +6444 from §4c and -3249 from §4k. A write a `RAW` node replayed carries
@@ -2310,6 +2325,15 @@ sweep is 597 runs because each run's seed is an observed byte, so no single divi
 stream is any run's. Merging them needs the accumulator expressed relative to `Prev`
 (§4f's route, applied to §4c's transfer), which would also retire the 1221 observed seeds.
 That is one measured piece of work, and it is not done here.
+
+**Why one voice's sweep generates nothing, as a number.** Of the frames that write both
+pulse registers, the ones that ran **no accumulator statement at all** are 10.4% on voice
+1, **63.2%** on voice 2 and 75.7% on voice 3: those writes are the note-on copying the
+instrument's own pw bytes to `$D402`/`$D403`, not a sweep step, so the origin map has
+nothing to name and the run is refused rather than fitted. What is left on voice 2 is cut
+into 233 runs, and none has every stepped emit's origin inside a declaration. Voice 2's
+2655 lo and 1116 hi writes are therefore a *correct* refusal, and the same fragmentation
+is what the merged-run work above would address.
 
 **What §4k does not buy, as a number.** 62696 of the 69194 rows it examined are refused:
 every freq-plane row of the tune. The pitch lane is read at a note-on *and* by vibrato and
