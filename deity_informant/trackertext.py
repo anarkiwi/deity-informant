@@ -293,7 +293,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route == tracker.INDEX:  # the arrangement: this emit is a row, not a byte
                 for t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                     vals.put(i, v)
                     emits[i] += v is not None
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
@@ -302,7 +302,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route[0] == "pair":  # a 16-bit emit: both halves count, the word samples
                 for t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                     vals.put(i, v)
                     if v is None:
                         continue
@@ -320,7 +320,7 @@ def _scan(graph, nframes, keys, tabs):
             reg = g.route[1]
             for t in range(fired[i]):
                 counts[i] += 1
-                v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                 vals.put(i, v)
                 if v is None:
                     continue

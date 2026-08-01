@@ -674,6 +674,30 @@ def test_the_lww_planes_read_the_table_the_store_names_not_the_one_it_indexes():
     assert T._tree_tables(prog, T._banks(prog)) == {1: ((0x2000, 8, 2, frozenset()),)}
 
 
+def _spillprog(beyond=0x2004):
+    """``(image, program)``: one store's index runs past its table into a second one."""
+    mem, decl = _bank(0x2000, 4, 1, {0: [0x10, 0x21, 0x32, 0x43]})
+    mem[beyond : beyond + 4] = bytes([0xA0, 0xB0, 0xC0, 0xD0])
+    prog = _rowprog(mem, decl, [(0, _sel(0x2000, 0, "i"))])
+    prog.data_decls.append(_table(beyond, 4))
+    return mem, prog
+
+
+def test_a_row_past_the_declared_end_reads_the_declaration_it_lands_in():
+    """The statement names the base and one index reaches 256 bytes: the row is still its."""
+    _mem, prog = _spillprog()
+    assert T.gate(prog, {}, 8) is None
+    cov = T.render(prog, {}, 8)[2]
+    assert cov.planes["freq"] == (8, 8) and cov.classes["freq"]["lane"] == 8
+
+
+def test_a_declaration_no_named_base_reaches_is_no_source():
+    """Past one index register the read is not that statement's own any more."""
+    _mem, prog = _spillprog(beyond=0x2200)
+    assert T.gate(prog, {}, 8) is None
+    assert T.render(prog, {}, 8)[2].planes["freq"] == (4, 8)
+
+
 # ---- 3c. the pulse sweep: a RAMP whose step the origin map names ------------------
 _ACC, _STAGE, _RAM = 0x0800, 0x0900, 0x0A00
 _SWEEP_LANE = (0x16, 0x33)
@@ -1045,6 +1069,99 @@ def test_hold_reads_the_object_where_the_frame_order_puts_it():
         read = T.Generator(T.hold(3, 0, k), T.FRAME, T.pair(2, 3, 0xFF, ("node", 1)))
         got = dict(w for sec in T.eval_graph(T.Graph(base + [step, read]), 1)[0] for w in sec)
         assert got[16] == want  # before this frame's steps, after the first, after the second
+
+
+# ---- 3m. the accumulator the note reloads ----------------------------------------
+_SEED_LANE = [0x40, 0x50, 0x60, 0x70]
+_OBJ, _ROW = 0x0810, 0x0800
+
+
+def _noteprog(lane=None, extra=(), decl=None, reload_at=0):
+    """``(image, program)``: a RAM cell a declared table reloads and the text steps down.
+
+    The row cell walks 0..3 and the reload fires on one of them, so the object is seeded
+    from a declaration and then walked by the text's own ``dec`` for three frames."""
+    mem, table = _bank(0x2000, 4, 1, {0: list(lane or _SEED_LANE)})
+    obj, row = ("mem", ("const", _OBJ, 2), 1), ("mem", ("const", _ROW, 2), 1)
+    stmts = [
+        ("asg", "i", ("mem", ("const", _ROW, 2), 1)),
+        (
+            "if",
+            "if",
+            ("op", "INT_EQUAL", (("loc", "i"), ("const", reload_at, 1)), 1),
+            [("st", ("const", _OBJ, 2), _sel(0x2000, 0, "i"))],
+            [("st", ("const", _OBJ, 2), ("op", "INT_SUB", (obj, ("const", 1, 1)), 1))],
+        ),
+        *extra,
+        ("st", ("const", 0xD400, 2), obj),
+        (
+            "st",
+            ("const", _ROW, 2),
+            ("op", "INT_AND", (("op", "INT_ADD", (row, ("const", 1, 1)), 1), ("const", 3, 1)), 1),
+        ),
+        ("ret",),
+    ]
+    prog = frameprog.FrameProgram(
+        0x1000, 0x0F00, decls=[decl or table], mem0=mem, procs=[(0x1000, [], [], stmts)]
+    )
+    return mem, prog
+
+
+def _obj_vals(prog, nframes=8):
+    """The freq_lo bytes the graph emits, and its coverage."""
+    recs, _gt, cov, _lanes = T.render(prog, {}, nframes)
+    return [dict(rec[0]).get(0) for rec in recs], cov
+
+
+def _graph_of(prog, nframes):
+    """The recovered graph, without the note reading."""
+    return T._graph(prog, None, *T._observe(prog, {}, nframes))[0]
+
+
+def test_an_object_a_declared_table_reloads_is_walked_by_the_text_own_step():
+    """§4l's object one step out: the seed is a reload, not the post-init image."""
+    _mem, prog = _noteprog()
+    assert T.gate(prog, {}, 8) is None
+    vals, cov = _obj_vals(prog)
+    assert vals == [0x40, 0x3F, 0x3E, 0x3D, 0x40, 0x3F, 0x3E, 0x3D]
+    assert cov.planes["freq"] == (8, 8) and cov.classes["freq"]["seed"] == 0
+    assert [g.transfer[1:4] for g in _reloaded(_graph_of(prog, 8))] == [(("node", 6), 0xFF, 0x100)]
+
+
+def _reloaded(graph):
+    """The ramps whose seed another generator supplies: §4m's own objects."""
+    return [g for g in graph.nodes if g.transfer[0] == "RAMP" and isinstance(g.transfer[1], tuple)]
+
+
+def test_the_reload_seed_is_the_declared_byte_and_the_law_says_so():
+    """Move the byte the seed node emits and every emit the object walks from it moves."""
+    mem, prog = _noteprog()
+    graph = _graph_of(prog, 8)
+    gt = T.oracle(prog, {}, 8)
+    assert F.diff(T.eval_graph(graph, 8), gt) is None
+    at = _reloaded(graph)[0].transfer[1][1]
+    nodes = list(graph.nodes)
+    seed = nodes[at]
+    lane = tuple(mem[0x2000:0x2004])  # the declared lane, read at the reload's own row
+    assert seed.transfer[1] == lane and set(seed.transfer[2]) == {0}
+    nodes[at] = seed._replace(transfer=("SELECT", (lane[0] ^ 0x55,) + lane[1:], seed.transfer[2]))
+    assert F.diff(T.eval_graph(T.Graph(nodes), 8), gt) is not None
+
+
+def test_a_writer_the_text_does_not_name_leaves_the_object_undefined():
+    """A store neither the walk nor a declaration explains claims nothing after it."""
+    dirt = [("st", ("const", _OBJ, 2), ("mem", ("const", 0x0A00, 2), 1))]
+    _mem, prog = _noteprog(extra=dirt)
+    assert T.gate(prog, {}, 8) is None
+    assert _obj_vals(prog)[1].planes["freq"] == (0, 8)
+
+
+def test_an_object_whose_reload_is_a_play_written_lane_is_refused():
+    """``mut`` holds here too: a reload out of runtime state is no declared seed."""
+    _mem, table = _bank(0x2000, 4, 1, {0: _SEED_LANE})
+    _m, prog = _noteprog(decl=_muted(table, [0]))
+    assert T.gate(prog, {}, 8) is None
+    assert _obj_vals(prog)[1].planes["freq"] == (0, 8)
 
 
 # ---- 3d. the filter plane: $15-$18 off the store statement, in its own class ------
@@ -1973,14 +2090,15 @@ def test_commando_object_seed_is_the_declared_image_and_the_law_says_so(sid, sub
     projection no longer matches, which is what an observed seed could never fail at."""
     prog, trace, nf = _lifted(sid, subtune)
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
-    holds = {g.transfer[2] for g in graph.nodes if g.transfer[0] == "HOLD"}
+    pw = [g for g in graph.nodes if g.transfer[0] == "HOLD" and T._plane_of(g.route[1]) == "pw"]
+    holds = {g.transfer[2] for g in pw}
     assert holds  # the note-on reads of an object are what carry its declared first value
     want = {prog.mem0[0x5591 + 8 * r] | (prog.mem0[0x5592 + 8 * r] << 8) for r in range(13)}
     assert holds <= want | {w & 0xFF for w in want}  # a declared word, or a byte object's half
     gt = T.oracle(prog, trace, nf)
     assert F.diff(T.eval_graph(graph, nf), gt) is None
     for i, g in enumerate(graph.nodes):  # every declared first value is load-bearing
-        if g.transfer[0] != "HOLD":
+        if g not in pw:
             continue
         nodes = list(graph.nodes)
         nodes[i] = g._replace(transfer=("HOLD", g.transfer[1], g.transfer[2] ^ 0x55, g.transfer[3]))
@@ -1996,7 +2114,11 @@ def test_commando_pw_sweep_is_generated_from_the_declared_step_lane(sid, subtune
     assert T._accumulators(prog, T._acc_sites(prog)[2]) == {2: (_byte_acc(0x5591), 0)}
     assert cov.classes["pw"]["ramp"] > 100 and cov.classes["pw"]["seed"] < 20
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
-    ramps = [g.transfer for g in graph.nodes if g.transfer[0] == "RAMP"]
+    ramps = [  # a §4m ramp's seed is a node, and its step is the walk rule, not this lane
+        g.transfer
+        for g in graph.nodes
+        if g.transfer[0] == "RAMP" and not isinstance(g.transfer[1], tuple)
+    ]
     assert ramps and all(t[2] == prog.mem0[0x55A7] for t in ramps)  # the declared step byte
     lane = {prog.mem0[0x5591 + 8 * r + 6] for r in range(263 // 8)}
     assert {t[2] for t in ramps} <= lane  # every step is a byte of the declared +6 lane
@@ -2018,6 +2140,23 @@ def test_commando_pulse_sweep_turns_where_the_player_compares(sid, subtune):
     assert {g.transfer[3] for g in turns} == {0x1000} and {g.transfer[4] for g in turns} == {
         (8, 14)
     }
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_commando_drum_is_the_pitch_word_the_note_reloads_walked_down(sid, subtune):
+    """`ctr_551A` is plain RAM the note-on reloads from the declared pitch table (§4m)."""
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    walks = T._reload_walks(prog, T._banks(prog))
+    assert walks[0x551A][0][0][1] == ("step", 0xFF, 0x100)  # dec ctr_551A,x: the text's own step
+    assert {T._base(s[1]) for s in walks[0x551A][1]} == {0x551A}  # and its one reload
+    graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
+    objs = [g for g in graph.nodes if g.transfer[0] == "RAMP" and isinstance(g.transfer[1], tuple)]
+    assert objs and {g.transfer[2:4] for g in objs} == {(0xFF, 0x100)}
+    seeds = {graph.nodes[g.transfer[1][1]].transfer[1] for g in objs}
+    lane = tuple(prog.mem0[0x5429 + 2 * r] for r in range(96))
+    assert seeds == {lane}  # the high lane of the declared `$5428` pitch table, at the note's row
+    cov = T.render(prog, trace, nf)[2]
+    assert cov.classes["freq"]["ramp"] > 0 and cov.classes["freq"]["seed"] == 0
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Artura", "Daglish_Ben"))

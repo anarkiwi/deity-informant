@@ -34,6 +34,7 @@ _PLANE = {0: "freq", 1: "freq", 2: "pw", 3: "pw", 4: "ctrl", 5: "ad", 6: "sr"}
 _VOICE_HI = 0x14
 _FILTER_HI = 0x18
 _FULL = 0xFF  # the mask of a route that owns a register's whole byte
+_SPAN = 0x100  # what one 6502 index register reaches from the base a load names
 _CLASSES = ("lane", "gate", "imm", "ramp", "seed", "mask", "rel", "arr")
 _REL = {"ADD": lambda b, d: b + d, "SUB": lambda b, d: b - d, "XOR": lambda b, d: b ^ d}
 
@@ -128,7 +129,9 @@ def ramp(seed, step, bound, trigger, reg, mask=_FULL, turn=()):
 
     ``turn`` is ``()`` for a ramp that only wraps, else ``(low, high)`` in high-register
     units: the step goes negative where the new emit's high register reaches ``high`` and
-    positive where it reaches ``low``, which is the one 6502 sweep a wrap cannot say."""
+    positive where it reaches ``low``, which is the one 6502 sweep a wrap cannot say.
+    ``seed`` may be ``("node", j)``: the value ``j`` holds, taken afresh every time ``j``
+    emits, which is what a note-on reloading an accumulator does (§4m)."""
     return Generator(("RAMP", seed, step, bound, turn), trigger, plane(reg, mask))
 
 
@@ -428,6 +431,22 @@ def _divisor_ok(nodes, i, g):
     return (n[1],)
 
 
+def _seed_ok(nodes, i, g):
+    """Refuse a generated ramp seed no earlier ``index`` node supplies.
+
+    The seed is a value, so it comes from an ``index`` node as a row does; it must be
+    *earlier*, because the ramp re-seeds on the edge that reloads it and node order is
+    what settles a frame."""
+    s = g.transfer[1] if g.transfer[0] == "RAMP" else None
+    if not isinstance(s, tuple):
+        return ()
+    if s[0] != "node" or not 0 <= s[1] < i or nodes[s[1]].route != INDEX:
+        raise TrackerError("ramp seed %r on node %d is not an earlier index node" % (s, i))
+    if g.transfer[4]:
+        raise TrackerError("ramp seed %r on node %d turns: a reload has no direction" % (s, i))
+    return (s[1],)
+
+
 def _offsets(nodes, at):
     """The register offsets an ``at`` generator can hold: the rows of its own table."""
     g = nodes[at[1]]
@@ -457,10 +476,13 @@ def _index_ok(nodes, i, g):
     if g.transfer[0] == "HOLD" and not 0 <= g.transfer[1] < i:
         raise TrackerError("held value %r on node %d is not an earlier node" % (g.transfer, i))
     _divisor_ok(nodes, i, g)
+    _seed_ok(nodes, i, g)
     _at_ok(nodes, i, g)
     if g.route == INDEX and not any(
         (h.transfer[0] == "SELECT" and i in _sources(h.transfer[2]))
+        or (h.transfer[0] == "HOLD" and h.transfer[1] == i)
         or i in _divisor_ok(nodes, j, h)
+        or i in _seed_ok(nodes, j, h)
         or i in _at_ok(nodes, j, h)
         for j, h in enumerate(nodes)
     ):
@@ -558,14 +580,38 @@ def _combine(route, delta, prev, cur):
     return None if delta is None or val is None else _REL[op](val & mask, delta) & 0xFF
 
 
-def _value(g, i, count, cur, state):
-    """One generator's emit, carrying a turning ``RAMP``'s own state forward.
+def _reseeded(g, i, count, cur, state, counts):
+    """A ramp whose seed is generator ``j``'s value: it restarts every time ``j`` emits.
+
+    ``j``'s emit count *at this edge* is the epoch, so the reload is an event and not a
+    frame number, and a ramp whose seed has not arrived yet emits nothing rather than a
+    guess."""
+    _k, seed, step, bound, _turn = g.transfer
+    j = seed[1]
+    got = cur.seq.get(j, ()) if cur else ()
+    epoch = counts[j] - len(got) + min(cur.t + 1, len(got)) if cur else 0
+    was = state.get(i)
+    if was is None or was[0] != epoch:
+        base = cur.get(j) if cur else None
+        if base is None:
+            return None
+        was = (epoch, base, count)
+    state[i] = was
+    v = was[1] + step * (count - was[2])
+    return v % bound if bound else v
+
+
+def _value(g, i, count, cur, state, counts=()):
+    """One generator's emit, carrying a turning or reloaded ``RAMP``'s own state forward.
 
     Trigger counts are monotonic within a run, so one step per fire replaces the
     recomputation from the seed a history-dependent transfer would otherwise need."""
-    if g.transfer[0] == "RAMP" and g.transfer[4]:
-        state[i] = st = _turned(g.transfer, count, state.get(i))
-        return st[1]
+    if g.transfer[0] == "RAMP":
+        if isinstance(g.transfer[1], tuple):
+            return _reseeded(g, i, count, cur, state, counts)
+        if g.transfer[4]:
+            state[i] = st = _turned(g.transfer, count, state.get(i))
+            return st[1]
     return _emit(g, count, cur)
 
 
@@ -613,7 +659,7 @@ def _run(graph, nframes, trace=None):
             elif g.route == INDEX:  # a value edge: it indexes, it does not write
                 for t in range(fires[i]):
                     counts[i] += 1
-                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    v = _value(g, i, counts[i], cur.edge(t), state, counts)
                     cur.put(i, v)
                     if acts is not None:
                         acts[i].append((f, v))
@@ -621,7 +667,7 @@ def _run(graph, nframes, trace=None):
                 at = _at_of(g.route)
                 for t in range(fires[i]):
                     counts[i] += 1
-                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    v = _value(g, i, counts[i], cur.edge(t), state, counts)
                     cur.put(i, v)
                     off = 0 if at is None else cur.edge(t).get(at[1])
                     got = () if v is None or off is None else _pair_writes(g.route, v, off)
@@ -635,7 +681,7 @@ def _run(graph, nframes, trace=None):
                 at = _at_of(g.route)
                 for t in range(fires[i]):  # one emit per trigger, in order
                     counts[i] += 1
-                    v = _value(g, i, counts[i], cur.edge(t), state)
+                    v = _value(g, i, counts[i], cur.edge(t), state, counts)
                     cur.put(i, v)
                     if g.route[0] == "rel":
                         v = _combine(g.route, v, prev, cur)
@@ -1352,13 +1398,33 @@ def _lane_key(w, banks, mem0, pairs=Pairs(), diag=None):
     return None
 
 
+def _spilled(w, tabs, banks, mem0, pairs=Pairs(), diag=None):
+    """``(stream key, row)`` for a read that ran past its own table's declared end.
+
+    The store statement names the base and one 6502 index reaches ``_SPAN`` bytes from
+    it, so a row past the declared extent is that statement's own read still and the byte
+    is the declaration the address landed in. A cell no named base reaches is no source."""
+    reg, val, srcs = w
+    bases = [b[0] for b in tabs.get(_class_of(reg), ())]
+    hit = tuple(s for s in srcs if any(b < s < b + _SPAN for b in bases))
+    return _lane_key((reg, val, hit), banks, mem0, pairs, diag) if hit else None
+
+
+def _declared_at(w, tabs, banks, mem0, pairs=Pairs(), diag=None):
+    """``(stream key, row)`` for a write whose read cell a declaration the text names holds.
+
+    The declarations the store statement names come first, then the one an index past
+    their end reaches; one reading, so every stage claims the same writes."""
+    got = _lane_key(w, tabs.get(_class_of(w[0]), ()), mem0, pairs, diag)
+    return got if got is not None else _spilled(w, tabs, banks, mem0, pairs, diag)
+
+
 def _classify(w, tabs, banks, imm, mem0, held, pairs=Pairs(), diag=None):
     """``(stream key, row)`` for one write: a lane byte, its gate image, or a constant.
 
-    The declarations the program text reads into this register class come first, so
-    the table is named by the tree; the search over every bank is the fallback for a
-    value the tree cannot express. A ctrl write carrying no cell of its own is the
-    gate bit over the lane byte at the voice's held row: only bit 0 moves."""
+    The declarations the tree names come first and every bank is the fallback for a value
+    the tree cannot express. A ctrl write carrying no cell of its own is the gate bit over
+    the lane byte at the voice's held row: only bit 0 moves."""
     reg, val, _srcs = w
     for pool in (tabs.get(reg % 7, ()), banks):
         got = _lane_key(w, pool, mem0, pairs, diag)
@@ -1466,7 +1532,10 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
         for w in ws:
             got = _classify(w, tabs, banks, imm, mem0, held, pairs, diag)
             if got is not None:
-                rows.setdefault(got[0], [[] for _g in seq])[f].append(got[1])
+                lane = rows.get(got[0])
+                if lane is None:  # built on first use: the default is one row per frame
+                    lane = rows[got[0]] = [[] for _g in seq]
+                lane[f].append(got[1])
                 weight[got[0]] = weight.get(got[0], 0) + 1
             row.append((_RES if got is None else got[0], w[0], w[1]))
         obs.append(row)
@@ -1488,7 +1557,7 @@ def _refine_voice(seq, tabs, banks, imm, mem0, objs=(), curs=(), diag=None):
     )
 
 
-def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=()):
+def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=(), notes=()):
     """``{plane: {lane, gate, imm, ramp, seed, mask}}``: refined emits by their evidence.
 
     ``lane`` is a declared bank byte at a row that emit's own provenance recovered
@@ -1508,6 +1577,9 @@ def _classes(streams, groups=(), rels=(), pairs=(), sweeps=(), songs=(), held=()
         for node in ([grp.step] if grp.step else []) + list(grp.reads):
             cls = out.setdefault(_plane_of(node.lo), dict.fromkeys(_CLASSES, 0))
             cls[node.ev] += sum(node.counts) * (2 if node.hi is not None else 1)
+    for obj in notes:  # an object the note reloads: declared seed, declared walk (§4m)
+        for counts, _at, reg in obj.holds:
+            out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))["ramp"] += sum(counts)
     for counts, _t, route, reg in sweeps:  # one pair emit is two register writes
         cls = out.setdefault(_plane_of(reg), dict.fromkeys(_CLASSES, 0))
         cls["seed"] += _writes_of(route)
@@ -1548,12 +1620,13 @@ def _instr_streams(prog, ords, tabs, banks, objs=(), curs=(), diag=None):
 
 
 # ---- 4b. the last-write-wins planes: freq/pw/filter off the store statement -------
-def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None, done=()):
+def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None, done=(), banks=()):
     """``(streams, explained)``: declared-lane SELECT nodes for the freq/pw/filter planes.
 
     The store statement names the declaration and the read cell recovers the row, so
-    the emitted byte is declared data at the index the play code used. The plane is
-    last-write-wins, so only the frames the declaration explains fire."""
+    the emitted byte is declared data at the index the play code used; the search over
+    every bank is `_classify`'s own fallback, for a row that ran past the end of the named
+    table and landed in another declaration. The plane is last-write-wins."""
     streams, explained = {}, [set() for _f in lww]
     for f, wr in enumerate(lww):
         pairs = _pair_at(objs, curs, f)
@@ -1561,7 +1634,7 @@ def _lww_streams(lww, tabs, mem0, objs=(), curs=(), diag=None, done=()):
             if f < len(done) and reg in done[f]:
                 continue  # an object owns every read of its own cell, steps included (§4l)
             val, srcs = wr[reg]
-            got = _lane_key((reg, val, srcs), tabs.get(_class_of(reg), ()), mem0, pairs, diag)
+            got = _declared_at((reg, val, srcs), tabs, banks, mem0, pairs, diag)
             if got is None:
                 continue
             key, row = got
@@ -1895,7 +1968,7 @@ def _acc_streams(acc, pools, banks, tabs, lww, mem0, done=()):
             if got is None or (f < len(done) and reg in done[f]):
                 continue
             if _lane_key((reg, val, srcs), tabs.get(cls, ()), mem0) is not None:
-                continue
+                continue  # the statement's own naming: the bank fallback must not cut a run
             a, half = got
             if len(a.cells) == 2 and half:
                 continue  # the high half is written by the low half's own pair emit
@@ -2215,6 +2288,198 @@ def _obj_streams(prog, banks, accs, arms, roots, wat, lww, order, nframes):
                 for f, _j, v in rs:
                     explained[f].add(cls + k + _OFFS[v])
     return groups, explained
+
+
+# ---- 4m. the accumulator the note reloads ----------------------------------------
+RelObj = namedtuple("RelObj", "cell table rows seeds fires step wrap first holds")
+
+
+def _reload_walks(prog, banks):
+    """``{cell: (steps, reloads, opaque)}``: cells the text walks and something reloads.
+
+    §4l's object is a cell a declaration *contains*, whose first value is the post-init
+    image. This is that object one step out: plain RAM whose value arrives from a store
+    the text does not compute, and whose later ones are the step the text names."""
+    env, staged, out = _prog_env(prog), _staged(prog), {}
+    for proc in prog.procs:
+        e = {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                e[s[1]] = s[2]
+                continue
+            cell = _base(s[1]) if s[0] == "st" else None
+            if cell is None or cell < 0x100 or _sid_class(s[1]) is not None:
+                continue
+            if _decl_of(cell, banks) is not None:
+                continue
+            got = out.setdefault(cell, ([], [], []))
+            rule = _walk_of(s, e, cell)
+            if rule is not None and rule[0] == "step" and rule[1] % rule[2]:
+                got[0].append((s, rule))
+            elif rule is not None or _steps_own(s, e, env, staged):
+                got[2].append(s)
+            else:
+                got[1].append(s)
+    return {c: v for c, v in out.items() if v[0] and v[1]}
+
+
+def _reload_reads(prog, cells):
+    """``[(store, cell, capture)]``: SID stores whose value reads exactly one object cell.
+
+    ``capture`` is the assignment the stored value resolves through, where there is one:
+    a 6502 reads a cell into A before stepping it, so the register takes what the object
+    held at that assignment and not what it holds after."""
+    staged = _staged(prog)
+    origins = {c: [s[2] for s in ss] for c, ss in staged.items()}
+    out = []
+    for proc in prog.procs:
+        e, envl, defs = {}, {}, {}
+        for s in _proc_stmts(proc):
+            if s[0] == "asg":
+                e[s[1]], defs[s[1]] = s[2], s
+                envl.setdefault(s[1], []).append(s[2])
+                continue
+            if s[0] != "st" or _sid_class(s[1]) is None:
+                continue
+            hit = _reached(s[2], envl, origins, cells)
+            if len(hit) == 1:
+                w = _def_stmt(s[2], e, defs, s)
+                out.append((s, hit.pop(), None if w is s else w))
+    return out
+
+
+def _reload_watch(walks, reads, at, taken):
+    """``([statement], {watch index: tag})``: every writer of an object cell, and its readers."""
+    out, tags, seen = [], {}, dict(taken)
+
+    def add(s, tag):
+        i = seen.get(id(s))
+        if i is None:
+            i = seen[id(s)] = at + len(out)
+            out.append(s)
+        tags[i] = tag
+        return i
+
+    for cell, (steps, loads, opaque) in sorted(walks.items()):
+        for s, rule in steps:
+            add(s, ("step", cell, rule[1:]))
+        for s in loads:
+            add(s, ("load", cell, None))
+        for s in opaque:
+            add(s, ("dirt", cell, None))
+    for s, cell, cap in reads:
+        j = None if cap is None else add(cap, ("snap", None, None))
+        add(s, ("read", cell, j))
+    return out, tags
+
+
+def _reload_seed(srcs, banks, mem0):
+    """``(lane key, row, byte)`` the one declared cell a reload's origins name, else None."""
+    got = []
+    for src in srcs:
+        d = _decl_of(src, banks)
+        if d is None or (src - d[0]) % _record(d[1], d[2]) in d[3]:
+            continue
+        row, off = divmod(src - d[0], d[2])
+        got.append((("lane", 0, d[0], d[1], d[2], off, None), row, mem0[src]))
+    return got[0] if len(got) == 1 else None
+
+
+def _reload_walk(walks, tags, wat, lww, banks, mem0, nframes):
+    """``(claims, seeds, fires, spec, bad)``: every object cell walked in the machine's order.
+
+    A store the text names steps the cell and a reload sets it from a declared byte; a
+    store neither rule covers leaves the object undefined until the next reload, so
+    nothing is claimed across a writer the text does not name."""
+    val, lane, spec, seeds, fires, claims, bad = {}, {}, {}, {}, {}, {}, set()
+    for f in range(nframes):
+        nth, snap, stepped = {}, {}, set()
+        for i, at, srcs in wat[f] if f < len(wat) else ():
+            tag = tags.get(i)
+            if tag is None:
+                continue
+            kind, base, extra = tag
+            cell = at if kind in ("step", "load", "dirt") else None
+            if kind == "load":
+                if cell in stepped:  # one shared edge ordinal cannot say step-then-reload
+                    bad.add(cell)
+                got = _reload_seed(srcs, banks, mem0)
+                if got is None:
+                    val[cell] = None
+                    continue
+                key, row, byte = got
+                val[cell], lane[cell] = byte, key
+                seeds.setdefault((cell, key), []).append((f, row))
+            elif kind == "step":
+                stepped.add(cell)
+                if spec.setdefault(cell, extra) != extra:
+                    bad.add(cell)
+                if val.get(cell) is None or cell not in lane:
+                    continue
+                val[cell] = (val[cell] + extra[0]) % extra[1]
+            elif kind == "dirt":  # a writer the text does not name: the snapshots lose it too
+                val[cell] = None
+                for was, _ns, _lz in snap.values():
+                    was.pop(cell, None)
+                continue
+            elif kind == "snap":
+                snap[i] = (dict(val), dict(nth), dict(lane))
+                continue
+            else:
+                reg = at - _SID
+                obj, (vs, ns, ls) = base + reg // 7, snap.get(extra, (val, nth, lane))
+                cur, took, key = vs.get(obj), lww[f].get(reg), ls.get(obj)
+                if cur is None or key is None or took is None or took[1] is not srcs:
+                    continue
+                if took[0] != cur:
+                    bad.add(obj)
+                    continue
+                claims.setdefault((obj, key, reg, ns.get((obj, key), 0)), []).append(f)
+                continue
+            key = lane[cell]
+            nth[(cell, key)] = nth.get((cell, key), 0) + 1
+            fires.setdefault((cell, key), [0] * nframes)[f] += 1
+    return claims, seeds, fires, spec, bad
+
+
+def _reload_streams(prog, banks, walks, tags, wat, lww, nframes, done=()):
+    """``(objects, explained)``: an accumulator whose seed is the row a note-on names.
+
+    The cell is walked from the byte each reload declares by the step the text names, and
+    every read is checked against the byte the register took; one contradiction refuses
+    that object whole, exactly as §4l's containment reading does."""
+    mem0 = prog.mem0
+    claims, seeds, fires, spec, bad = _reload_walk(walks, tags, wat, lww, banks, mem0, nframes)
+    holds, out, explained = {}, [], [set() for _f in range(nframes)]
+    for (cell, key, reg, at), fs in sorted(claims.items()):
+        obj = (cell, key)
+        if cell in bad or cell not in spec or not all(obj in d for d in (seeds, fires)):
+            continue  # an object with no reload, or none of the steps its arms name, is not one
+        got = [f for f in fs if reg not in done[f]] if done else fs
+        if got:
+            counts = [0] * nframes
+            for f in got:
+                counts[f] += 1
+                explained[f].add(reg)
+            holds.setdefault(obj, []).append((tuple(counts), at, reg))
+    for cell, key in sorted(holds):
+        counts = [0] * nframes
+        for f, _r in seeds[(cell, key)]:
+            counts[f] += 1
+        out.append(
+            RelObj(
+                cell,
+                _lane(key, mem0),
+                tuple(r for _f, r in seeds[(cell, key)]),
+                tuple(counts),
+                tuple(fires[(cell, key)]),
+                spec[cell][0],
+                spec[cell][1],
+                mem0[cell],
+                tuple(holds[(cell, key)]),
+            )
+        )
+    return out, explained
 
 
 # ---- 4d. the trigger domain: a DIV whose divisor is a declared reload -------------
@@ -3865,7 +4130,15 @@ def _observe(prog, trace, nframes, diag=None):
         len(watch) + len(astmts) + len(cstmts),
         taken={id(s) for s in watch + astmts + cstmts},
     )
-    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts + dstmts)
+    prior = watch + astmts + cstmts + dstmts
+    walks = _reload_walks(prog, banks)
+    rstmts, rtags = _reload_watch(
+        walks,
+        _reload_reads(prog, set(walks)),
+        len(prior),
+        {id(s): i for i, s in enumerate(prior)},
+    )
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, prior + rstmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     order = [[] for _f in range(nframes)]
@@ -3893,6 +4166,7 @@ def _observe(prog, trace, nframes, diag=None):
             states,
             (objs, curs, _beats(ctags, wat, nframes), _decs(dtags, wat, nframes)),
             (arms, wat, order),
+            (walks, rtags),
         ),
     )  # the arrangement, the cursors and the dividers ride the same run, all watched
 
@@ -3918,7 +4192,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     banks = _banks(prog)
     tabs = _tree_tables(prog, banks)
     diag = Counter() if diag is None else diag
-    pools, roots, arrs, states, (objs, curs, beats, decs), (arms, wat, order) = acc
+    pools, roots, arrs, states, (objs, curs, beats, decs), (arms, wat, order), rel = acc
     lanes = [[], [], []]
     anchor = [None, None, None]
     seqs = {r: [] for r in _FREQ_REGS}
@@ -3926,9 +4200,12 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     pre, post, ires = _instr_streams(prog, ords, tabs, banks, objs, curs, diag)
     accs = _accumulators(prog, roots)
     held, kept = _obj_streams(prog, banks, accs, arms, roots, wat, lww, order, len(frames))
-    lwws, declared = _lww_streams(lww, tabs, prog.mem0, objs, curs, diag, kept)
     ramps, sweeps, swept = _acc_streams(accs, pools, banks, tabs, lww, prog.mem0, kept)
-    fields = [d | s | k for d, s, k in zip(declared, swept, kept)]
+    held_by = [s | k for s, k in zip(swept, kept)]
+    lwws, declared = _lww_streams(lww, tabs, prog.mem0, objs, curs, diag, held_by, banks)
+    taken = [d | h for d, h in zip(declared, held_by)]
+    notes, seeded = _reload_streams(prog, banks, rel[0], rel[1], wat, lww, len(frames), taken)
+    fields = [t | n for t, n in zip(taken, seeded)]
     groups, assembled = _mask_streams(lww, _partitions(prog), tabs, prog.mem0, fields)
     claimed = [d | a for d, a in zip(fields, assembled)]
     sites = _rel_sites(prog, banks, diag)
@@ -3974,6 +4251,9 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
     for grp in held:
         for node in ([grp.step] if grp.step else []) + list(grp.reads):
             edges.setdefault(node.counts, len(edges))
+    for obj in notes:
+        for c in (obj.seeds, obj.fires) + tuple(h[0] for h in obj.holds):
+            edges.setdefault(c, len(edges))
     for key in chained.values():
         edges.setdefault(key[2], len(edges))
     nodes, clock_at, beaten = [], {}, {}
@@ -4025,6 +4305,20 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
             tr = ("HOLD", step) + node.transfer[2:] if node.transfer[0] == "HOLD" else node.transfer
             nodes.append(Generator(tr, ("event", clock_at[node.counts]), route))
             step = len(nodes) - 1 if node is grp.step else step
+    for obj in notes:  # the note's own reload, the walk it seeds, and every read of it
+        nodes.append(indexer(("SELECT", obj.table, obj.rows), ("event", clock_at[obj.seeds])))
+        nodes.append(
+            Generator(
+                ("RAMP", ("node", len(nodes) - 1), obj.step, obj.wrap, ()),
+                ("event", clock_at[obj.fires]),
+                INDEX,
+            )
+        )
+        walk = len(nodes) - 1
+        for counts, at, reg in obj.holds:
+            nodes.append(
+                Generator(("HOLD", walk, obj.first, at), ("event", clock_at[counts]), plane(reg))
+            )
     for at, v in beaten.items():  # the row divider's divisor is the row's own duration
         nodes.append(indexer(("SELECT", durs[v], ()), ("event", at)))
         nodes[at] = nodes[at]._replace(
@@ -4035,7 +4329,7 @@ def _graph(prog, pitch, frames, ords, lww, acc, diag=None):
         Graph(
             nodes,
             freq_table=pitch,
-            classes=_classes(streams, groups, rels, pairs, sweeps, songs, held),
+            classes=_classes(streams, groups, rels, pairs, sweeps, songs, held, notes),
             charts=charts,
         ),
         lanes,
