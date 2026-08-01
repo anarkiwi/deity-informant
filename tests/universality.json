@@ -1,0 +1,38 @@
+{
+  "_doc": [
+    "Ratchet bounds for tests/test_universality.py. generative_share is a floor (the",
+    "ablated graph must reproduce at least this share of the canonical ground truth);",
+    "residual, observed_fires and shallow are ceilings. Loosening any of them is a",
+    "deliberate, reviewable diff line, not a side effect of a refactor.",
+    "recover_s is the measured _observe+_graph wall clock, so CI cost stays visible."
+  ],
+  "baseline": {
+    "commit": "eac7ee2",
+    "measured": "2026-08-01",
+    "jitter": "none: every figure below reproduced exactly on two independent runs, so the bounds sit at the measured value with no margin"
+  },
+  "tunes": [
+    {
+      "rel": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
+      "frames": 400,
+      "generative_share": 0.918814,
+      "residual": 196,
+      "observed_fires": 2071,
+      "shallow": 367,
+      "recover_s": 0.9,
+      "measured": "3101/3375 canonical entries survive ablation",
+      "frames_why": "400 is where each structure recurs rather than happening once: orderlist cursor $54EC takes 3 values (2 advances), pattern cursor $54EF resets twice, and the $10 pulse ramp runs segments of up to 24 emits at step 22 over bound 256 (2 full turns). At 200 each of the three occurs exactly once; the full tune's 11750 frames is ~160s and far too slow for CI"
+    },
+    {
+      "rel": "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
+      "frames": 400,
+      "generative_share": 0.419247,
+      "residual": 1170,
+      "observed_fires": 766,
+      "shallow": 0,
+      "recover_s": 1.3,
+      "measured": "880/2099 canonical entries survive ablation",
+      "frames_why": "a second engine at the same frame count; mid-range share, so movement in either direction is visible where Commando's 0.92 has little room left"
+    }
+  ]
+}
