@@ -43,6 +43,13 @@ evidence, spelled as a distinction in the transfer. The last two rows are the sa
 mistake once more, in the other domain: a refusal was priced from the *output* side (363
 divider-shaped streams) and the provenance rule cut it to 9.
 
+The two arrangement rows are a different failure and worth reading as a pair: **a census
+is only as good as the reading that produced it.** "Both levels walked at once: zero
+sites" was measured, published and acted on for two work cycles, and it was an artefact
+of resolving a local against the *last* definition in a procedure rather than the one
+live at the site. Nothing about the corpus changed; a lookup did. Before pricing a
+refusal, check that the thing being counted is the thing the machine did.
+
 The `coverage` row is the load-bearing correction. **Every value is already produced.** What
 this document measures throughout is whether an emit can be *attributed* to a
 declaration, never whether it can be reproduced. A residual emit is not a missing byte.
