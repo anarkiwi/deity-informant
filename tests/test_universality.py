@@ -127,6 +127,8 @@ def test_universality_ratchets(tune):
     graph, gt = _recovered(tune["rel"], nframes)
     assert F.diff(T.eval_graph(graph, nframes), gt) is None
     cov = T.coverage(graph, nframes)
+    assert cov.total == tune["total"]  # ground truth: a movable divisor is no ratchet (#117)
+    assert cov.interp + cov.residual == cov.total
     assert _share(graph, gt) >= tune["generative_share"]
     assert cov.residual <= tune["residual"]
     assert _trigger_share(cov) >= tune["trigger_share"]
