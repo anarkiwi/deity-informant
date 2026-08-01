@@ -40,6 +40,8 @@ mark it as one, and when it is measured, correct it here rather than deleting it
 | the pulse accumulator's cell is `mut`, so no declaration reaches it and the sweep must seed from an observed byte (§4c, §6) | this step | **false as stated** — the cell is not data, and it is not undeclarable either: it is **state the graph itself produces**, whose first value is the declared post-init image at its own row and whose every later one is a declared step. Expressed as one object per row (§4l), Commando's pulse plane goes `22272/31563` -> **`31563/31563`**, its 597 runs collapse to 4 objects and 3 constants, its 1221 observed seeds retire to **0**, and voice 2 — which generated nothing at all — comes out whole |
 | `trigger_share` cannot be gamed by generating less, so it is the floor that replaces the `observed_fires` ceiling (universality.json, #118) | this step | **half true, and the other half is the same mistake one level down** — it cannot be gamed by generating less, but its *denominator still moves with progress*: a `RAW`-replayed byte carries no trigger and a generated one needs one, so explaining 9291 pulse writes took Commando's fires `99294` -> `105944` while the generated count held at `15000` **exactly**, and the share fell `0.1769` -> `0.1714` on a step that replayed 5.5x less. The floor is now `trigger_fires`, the generated count itself: verbatim replay generates none, and no value the layer explains can lower it |
 | a run whose seed is observed is the best a sweep can do, and the 597 runs are fragmentation the arrangement must fix (§7, §8) | this step | **the fragmentation was the node identity, not the evidence** — the runs are one object per instrument seen through a register-first partition, and merging them needed no new evidence at all: a route whose register an `Index` node offsets (`sta $d402,y`) and a transfer that emits what another generator holds. Corpus-wide `pw` `110842` -> `111356` over 649 tunes with **no tune generating less**, and `seed` `7542` -> `7479` |
+| the arpeggio's residual is a provenance gap: the origin map names the *cursor* the index came from rather than the table cell the read resolved to (§7) | this step | **false, and backwards** — the origin map names exactly the cell the read resolved to. `asl` takes `(note + 12) * 2` past the declared 96-entry pitch table, and 240 of those rows land in the *next declaration* (recovered here) while **1110 land on the driver's own per-voice state** — `pos_54EF`, `ctr_5510`, `idx_54FE`, `pos_54EC`, `idx_54FB`. Those are live RAM, and no declaration reaches them at all: the "cursor" reading had the right cells and the wrong conclusion |
+| the bend and the drum are one mechanism, and one generalisation reaches both (§7) | this step | **half true** — the object generalisation (§4m) reaches the drum whole, 644 writes. The bend needs a *second* thing the same rung does not supply: its step is a pattern byte, and the pattern is read through a zero-page pointer the origin map cannot name, so only §4j's chart walk reaches it. Measured against that walk the step is declared exactly (`& $7E` of the song's own `$5520` lane), so it is a build and not a wall |
 | `Graph.charts` carries the song as declared data beside the generators (#115) | #116 | **a side-car scores zero** — the law passes at 0% generation, so "law PASS, corpus byte-identical" was satisfied perfectly by a change that generated nothing. Every coverage figure was byte-identical to the pre-#115 baseline. What the song is worth is what it *produces*, and §4k is where it began producing |
 
 The `SELECT[rel]` row is the one to read before adding to the primitive: a refusal count
@@ -112,6 +114,7 @@ Generator = (transfer, trigger, route)
   transfer : DIV(n, phase)           # one tick per n input triggers (a clock)
            | SELECT(table, rows)     # emit table[rows[i]]: a table at a row index
            | RAMP(seed, step, bound) # emit seed + step*count, wrapped
+           |                         #  seed may be Node(j): reloaded when j emits
            | HOLD(j, seed, at)       # emit what generator j held after its at-th emit
            | EDGE(counts)            # fire counts[f] edges on frame f: the trigger floor
            | RAW(per_frame)          # replay writes verbatim: the value floor
@@ -131,6 +134,11 @@ Generator = (transfer, trigger, route)
   delta    | Node(i)                 # generator i's current value
            | Const(c)                # a declared base byte
 ```
+
+**A parameter a driver computes at runtime is another generator's value.** A `DIV`'s
+divisor, a `SELECT`'s rows, a relative route's base and a `RAMP`'s **seed** all take the
+form `Node(j)`; the last is what an accumulator a note-on reloads needs (§4m), and the
+ramp then restarts from what `j` holds every time `j` emits rather than from a constant.
 
 **A `DIV` divides its input ticks, not the frame.** Clocked by the frame the two are
 the same number; clocked by another generator's edge it counts what it receives, so
@@ -295,6 +303,10 @@ nodes wired by their triggers, with two distinguished members: the pitch table
   the play code steps, the origin map is *queried* for where that step byte was copied
   from; where it was copied from a declaration the sweep is generated from that byte —
   one observed seed per run, then every further emit predicted.
+- **The accumulator a note reloads** (§4m) — a plain-RAM cell every store either steps by
+  the text's own immediate or sets from a declared byte at the row the machine's address
+  bus named. One node per (cell, seed lane): a `SELECT` over the lane, a `RAMP` seeded
+  from it, a `HOLD` per read.
 - **Clocks** (`_clocks`) — cells the play code steps by one, read off the frame
   program's procedures: `dec` + reload is a divider (its reload is
   `frames_per_tick`), a free `inc` is an LFO phase.
@@ -431,6 +443,18 @@ Requiring the tree to name the table is stricter than a bare provenance search o
 every declaration, and measurably so: over the corpus it declined 5693 emits' worth
 of lane classifications a blind search would take. That is the point — a byte whose
 declaration the program text never names is not explained by that declaration.
+
+**A row may run past its own table's end** (`_spilled`). A 6502 index reaches 256 bytes
+from the base a load names, and nothing stops a driver indexing past its declaration's
+extent: Commando's arpeggio reads `m_5428[(note + 12) * 2]`, and on the top octave that
+lands in the *next* declaration. The statement still names the base, the address is still
+the machine's own, and the byte is still `mem0[src] == val` at a non-`mut` offset, so the
+emit is that declaration's lane at that row. The window is what keeps this honest: a
+declared cell no named base reaches is refused exactly as before, which is what stops an
+*index* byte agreeing with a value byte by coincidence
+(`test_the_lww_planes_read_the_table_the_store_names_not_the_one_it_indexes`). One
+reading, `_declared_at`, serves the lane search and the sweep's own eligibility check, so
+the two stages can no longer claim the same write and move `Coverage.total`.
 
 ## 4c. The pulse sweep: a `RAMP` whose step the origin map names
 
@@ -620,6 +644,40 @@ sweep steps, is now whole: the copies *are* the object, emitted rather than repl
 frames, `pw` `110842/565009` -> `111356/565009`, `seed` `7542` -> `7479`, generated fires
 unchanged at `1140`, and **no tune's generated count falls**. It is one engine's shape,
 and the engine is Rob Hubbard's.
+
+## 4m. The accumulator a note reloads
+
+§4l's object is a cell a declaration **contains**, whose first value is the post-init
+image. A driver's per-voice accumulator is usually not one: `ctr_551A[x]` is plain RAM,
+and what makes it program text plus declared data all the same is that every store to it
+is one of two things the text names.
+
+- **Its value arrives from a reload** (`_reload_seed`). A store the text does not compute
+  sets the cell, and that execution's own origins must name exactly one declared byte at a
+  non-`mut` offset — which is §4b's rule for a lane emit, at a cell instead of a register.
+  The row is the machine's own address bus, the byte is the declaration's.
+- **Its later values are the walk the text names** (`_reload_walks`). A store `_walk_of`
+  reads as `("step", d, wrap)` steps it, exactly as §4j reads a cursor. A store neither
+  rule covers — arithmetic over a cell no declaration reaches — leaves the object
+  **undefined until the next reload**, so nothing is claimed across it.
+- **One object is one (cell, seed lane).** The seed is a `SELECT` over one declared lane,
+  so an object whose reloads name two declarations is two objects with disjoint fire
+  vectors, not one refused. Keying on the cell alone made recovery depend on which lane
+  came first, and so on how many frames were run.
+- **A `RAMP`'s seed may be `Node(j)`** — the last scalar parameter of the primitive to
+  take the form `DIV`'s divisor and `SELECT`'s rows already have. The ramp restarts from
+  what `j` holds every time `j` emits, which is what a note-on reloading an accumulator
+  does; `_check` refuses a seed no *earlier* index node settles, and refuses one on a
+  turning ramp, since a reload has no direction.
+- **Regenerate or refuse whole.** Every read is checked against the byte the register
+  took, and one contradiction refuses that object entirely — the object's row is bound to
+  the read's own voice, and that binding is what the check proves.
+
+**Measured, Commando whole tune (11750 frames, law PASS):** the drum plane comes out
+whole — `freq` `51478/54170` -> `52362/54170`, residual `2692` -> **`1808`**, `ramp` on
+the pitch plane `0` -> **`644`**, observed sweep seeds still **`0`**. Corpus-wide, 649
+tunes at 200 frames: `law` 649/649, interpreted `776678` -> `794952` over **138 tunes**
+with **none generating less** and every tune's `total` unmoved.
 
 ## 4d. The trigger domain: a `DIV` whose divisor is a declared reload
 
@@ -1167,11 +1225,14 @@ is recovered for **582**. The 36 that do not decompile never reach this layer (1
 explained and triggers **0.098%**; the two are stated apart because they are two
 domains, and the second is smaller by a factor of 390. This is the current state,
 not a delta; the tables after it record how it was reached. (Current at **649**
-tunes reaching the gate and after §4c's turning pair sweep, §4k's song and §4l's object,
-the two figures are **39.98%** — 776678 of 1942809 — and **0.351%**, 1140 of 324756. The
-value figure rose by 22193 emits for the first two, all `ramp` and `arr`, and by a
+tunes reaching the gate and after §4c's turning pair sweep, §4k's song, §4l's object and
+§4m's reload, the two figures are **40.92%** — 794952 of 1942809 — and **0.339%**, 1140 of
+336667. The value figure rose by 22193 emits for the first two, all `ramp` and `arr`, by a
 further **514** for §4l, all of them `pw` (110842 -> 111356) with `seed` falling 7542 ->
-7479 and **no tune generating less**. The trigger *share* falls throughout because
+7479, and by **18274** for §4m and the spilled row together, over **138 tunes** with
+**none generating less**, every tune's `total` unmoved and `seed` unmoved at 7479:
+`lane` 517258 -> 531325 and `ramp` 44533 -> 49746, `pw` 111356 -> 124436, `freq` 417498 ->
+420957 and `filter` 24455 -> 26190. The trigger *share* falls throughout because
 generating a value costs a fire — a byte a `RAW` node replayed needed no trigger and a
 byte a generator produces does — which is why `universality.json` floors the generated
 *count* and not the share, and §8 records the domain as the next thing to pay off.)
@@ -2401,31 +2462,66 @@ where the value domain improves. `universality.json` therefore floors
 including their `$FF` terminators), 32 patterns, 571 rows, **0 divergences** against Rob
 Hubbard's own source. §4l touches the value domain only.
 
-**What is left, and the mechanism of each write.** The residual is 2692 writes, every one
-of them freq, and each is one of four program-text sites (attributed by watching each
-SID store's own execution, `frameval.eval_watch`):
+### Commando, whole tune: the accumulator a note reloads
 
-| site | what the 6502 does | residual / all |
+11750 frames, law PASS throughout, against the same tune after §4l:
+
+| figure | after §4l | after §4m |
 |---|---|---|
-| the pitch bend | `nfq = m_551D[x] ± (m_5520[x] & $7E)`, its high byte `ctr_551A[x]` taking the carry | 292 / 408 at 5600 frames |
-| the drum | `sta freq_hi, y : dec ctr_551A[x]` on the first frames of a row, with a noise/ctrl arm | 274 / 315 |
-| the arpeggio | `m_5428[(note + 12 * (frc & 1)) * 2]`, the declared pitch table at a shifted row | 408 / 15092 |
-| the note-on | `m_5428[note * 2]` copied through `idx_5503` | 2 / 2786 |
+| values generated | 114339 / 117031 = 97.7% | **115223 / 117031 = 98.5%** |
+| residual (replayed) | 2692 | **1808** |
+| pitch plane | 51478 / 54170 = 95.0% | **52362 / 54170 = 96.7%** |
+| observed sweep seeds (`seed`) | 0 | **0** |
+| whole-tune recovery | 173s | **11s** |
 
-The first two are **one mechanism**: a 16-bit accumulator per voice whose halves are
-`m_551D[x]` and `ctr_551A[x]`, *seeded at every note-on from the declared pitch word at
-the note's own row* and stepped by a declared pattern byte (the bend) or by one (the
-drum). It is not reached today for two reasons, both structural and both nameable:
-`_paired_cells` requires the high byte to be the byte **above** the low one and these two
-arrays are three bytes apart, and §4l's object requires its cell to lie **in a declared
-region** while these are plain per-voice RAM. Neither is a missing declaration; both are
-the same generalisation, of the object to a cell a declared table *reloads*.
+Two readings move it, and the whole of the move is in the pitch plane.
 
-The arpeggio's 408 are a provenance gap and not a recovery one: the same store explains
-14684 of its 15092 writes as a declared-table read, and on the other 408 the origin map
-reports the *cursor* the index came from rather than the table cell the read resolved to,
-so `_lane_key` finds no declared byte to match. The note-on's 2 are the first two frames,
-before any cursor has been walked.
+- **§4m, the drum (644 writes).** `ctr_551A[x]` is plain per-voice RAM, so §4l's
+  containment rule cannot see it; every store to it is either the text's own
+  `dec` or a reload from the declared pitch table's high lane at the note's row, which is
+  what makes it program text plus declared data all the same. One node per (cell, seed
+  lane) — a `SELECT` over the lane, a `RAMP` seeded from it, a `HOLD` per read — carries
+  the whole tune. Voice 2's object reloads from *two* declarations over the run, and
+  keying the object on the lane rather than on the cell is what keeps both.
+- **The spilled row (240 writes).** The arpeggio reads `m_5428[(note + 12) * 2]`, and on
+  the top octave that index runs past the declared 96-entry table into the declaration
+  beyond it. The store statement names the base, one 6502 index reaches 256 bytes from
+  it, and the byte is the declaration the address landed in — the same
+  `mem0[src] == val` rule every other lane emit passes.
+
+**The song is unchanged and re-verified byte for byte**: 3 orderlists (65/64/124 bytes
+including their `$FF` terminators), 32 patterns, 571 rows, **0 divergences** against Rob
+Hubbard's own source, including the one pattern that source ships commented out and whose
+bytes its pointer table still names. §4m touches the value domain only.
+
+**What is left, and the mechanism of each write.** The residual is 1808 writes, every one
+of them freq, and each is one of three program-text sites (attributed by watching each
+SID store's own execution, `frameval.eval_watch`, at the full 11750 frames):
+
+| site | what the 6502 does | residual |
+|---|---|---|
+| the arpeggio, spilled onto live state | `m_5428[(note + 12) * 2]` where `asl` has taken the row past every declaration | 1110 |
+| the pitch bend | `nfq = m_551D[x] ± (m_5520[x] & $7E)`, its high byte `ctr_551A[x]` taking the carry | 696 |
+| the note-on, spilled | `m_5428[note * 2]` at a row past every declaration, frames 0 and 1 | 2 |
+
+- **The arpeggio's 1110 are not a provenance gap** — the earlier reading of them (§0) was
+  wrong. The origin map names exactly the cell the read resolved to, and that cell is the
+  driver's *own per-voice state*: `pos_54EF` the pattern row cursor (576 writes),
+  `ctr_5510` the pulse direction counter (330), `idx_54FE` the instrument index (96),
+  `pos_54EC` the orderlist cursor (72), `idx_54FB` the note index (36). Every one is live
+  RAM whose post-init image is `00` and whose value at the read is not it, so **no
+  declaration reaches them**: what would reach them is a generator per walked cell, which
+  the layer does not have. The note-on's 2 are the same site one table over (`m_54F8`).
+- **The bend's 696** are §4m's object at a step the object cannot name. The cells are the
+  16-bit pair `m_551D[x]`:`ctr_551A[x]` — paired by the carry the text takes, not by
+  adjacency — and the step is `m_5520[x] & $7E`, a **pattern byte**: the origin map does
+  not reach it (the pattern is read through a zero-page pointer, so `frameval._addrs`
+  cannot name the address and `prog.pinned` is empty here), and only §4j's chart walk
+  does. Measured against that walk, the step *is* declared: voice 1's bend magnitudes
+  `78, 62, 80, 40, 48` are exactly `& $7E` of its song's own `$5520` lane
+  (`CF BF D1 A8 B1`), and the sign is bit 0 of the same byte. What §4m is owed to reach
+  it is a lane keyed by the cell a pattern byte flows into (`_row_walk` already carries
+  the destination set) and a `RAMP` whose *step* is a node, exactly as its seed now is.
 
 ## 8. Known limits
 
@@ -2512,6 +2608,22 @@ before any cursor has been walked.
   `$08` down) in its own walked text (`out/Commando.frameprog.txt:373-421`), over a
   12-bit accumulator whose halves are the `$5591` bank's `+0`/`+1` lanes. It is worth
   **23071 of that tune's 25763 replayed writes** and it is not built here.
+- **§4m's object names one step and one seed lane.** Its step is what `_walk_of` reads —
+  the text's own immediate — so an arm whose delta is a *pattern* byte leaves the object
+  undefined until the next reload rather than walking through it. That is Commando's pitch
+  bend, 696 writes, and what it is owed is nameable: a song lane keyed by the cell a
+  pattern byte flows into (`_row_walk` already carries the destination set of every row
+  byte) and a `RAMP` whose *step* is `Node(j)`, exactly as its seed now is. The step is
+  declared — §7 measures every magnitude voice 1 bends by against that lane and finds no
+  magnitude the lane does not hold — so this is a build, not a wall.
+- **A read that spills onto live state has no declaration to reach** (§4b, §7). The
+  arpeggio's `(note + 12) * 2` runs past the pitch table on the top octave; 240 of those
+  rows land in the next declaration and are recovered, and **1110 land on the driver's own
+  per-voice cells** — the pattern row cursor, the orderlist cursor, the pulse direction
+  counter, the note and instrument indices. Those are *walked* cells in §4j's sense, so
+  their values are program text; what the layer has no route for is emitting a walked
+  cell's value as a byte. `HOLD` reads what a generator holds, and no generator holds
+  them: the arrangement's row nodes carry a pattern byte, not the cursor that indexed it.
 - The step is queried at the *play* phase's copies. A parameter a table supplies at
   **init** and the play code only reads back arrives as a RAM cell with no origin, so
   it names no declaration; that is a large part of what §6's refusal table leaves.

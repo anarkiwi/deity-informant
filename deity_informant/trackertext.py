@@ -293,7 +293,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route == tracker.INDEX:  # the arrangement: this emit is a row, not a byte
                 for t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                     vals.put(i, v)
                     emits[i] += v is not None
                     ramps.setdefault(i, [[], []])[0 if emits[i] <= 12 else 1].append(v)
@@ -302,7 +302,7 @@ def _scan(graph, nframes, keys, tabs):
             if g.route[0] == "pair":  # a 16-bit emit: both halves count, the word samples
                 for t in range(fired[i]):
                     counts[i] += 1
-                    v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                    v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                     vals.put(i, v)
                     if v is None:
                         continue
@@ -320,7 +320,7 @@ def _scan(graph, nframes, keys, tabs):
             reg = g.route[1]
             for t in range(fired[i]):
                 counts[i] += 1
-                v = tracker._value(g, i, counts[i], vals.edge(t), st)
+                v = tracker._value(g, i, counts[i], vals.edge(t), st, counts)
                 vals.put(i, v)
                 if v is None:
                     continue
@@ -611,6 +611,8 @@ def _route(g):
     if g.route[0] == "fire":
         return "-> triggers"
     if g.route == tracker.INDEX:
+        if g.transfer[0] == "RAMP" and isinstance(g.transfer[1], tuple):
+            return "-> the object a reader holds"
         return "-> the row another generator reads"
     return "-> unexplained writes"
 
@@ -696,11 +698,11 @@ def _node_lines(graph, i, scan, keys, cons):
         head_v, tail_v = scan.ramps.get(i, ([], []))
         return [
             head,
-            "     %s  starts at %d (%s), steps %+d per fire, %s"
+            "     %s  starts at %s (%s), steps %+d per fire, %s"
             % (
-                "cursor" if g.route == tracker.INDEX else "sweep ",
-                seed,
-                "DECLARED" if held else "OBSERVED",
+                "object" if isinstance(seed, tuple) else ("cursor" if held else "sweep "),
+                ("what n%02d reloads" % seed[1]) if isinstance(seed, tuple) else "%d" % seed,
+                "DECLARED" if held or isinstance(seed, tuple) else "OBSERVED",
                 step,
                 (
                     "turns down at high %d and up at high %d (DECLARED), wraps at %d"
