@@ -1143,7 +1143,8 @@ def test_the_reload_seed_is_the_declared_byte_and_the_law_says_so():
     nodes = list(graph.nodes)
     seed = nodes[at]
     lane = tuple(mem[0x2000:0x2004])  # the declared lane, read at the reload's own row
-    assert seed.transfer[1] == lane and set(seed.transfer[2]) == {0}
+    # the reload's own row, and no row at all where the text stepped the object instead
+    assert seed.transfer[1] == lane and set(seed.transfer[2]) == {0, len(lane)}
     nodes[at] = seed._replace(transfer=("SELECT", (lane[0] ^ 0x55,) + lane[1:], seed.transfer[2]))
     assert F.diff(T.eval_graph(T.Graph(nodes), 8), gt) is not None
 
@@ -2148,13 +2149,13 @@ def test_commando_drum_is_the_pitch_word_the_note_reloads_walked_down(sid, subtu
     prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
     walks = T._reload_walks(prog, T._banks(prog))
     assert walks[0x551A][0][0][1] == ("step", 0xFF, 0x100)  # dec ctr_551A,x: the text's own step
-    assert {T._base(s[1]) for s in walks[0x551A][1]} == {0x551A}  # and its one reload
+    assert {T._base(s[1]) for s, _k in walks[0x551A][1]} == {0x551A}  # and its one reload
     graph = T._graph(prog, None, *T._observe(prog, trace, nf))[0]
     objs = [g for g in graph.nodes if g.transfer[0] == "RAMP" and isinstance(g.transfer[1], tuple)]
-    assert objs and {g.transfer[2:4] for g in objs} == {(0xFF, 0x100)}
-    seeds = {graph.nodes[g.transfer[1][1]].transfer[1] for g in objs}
     lane = tuple(prog.mem0[0x5429 + 2 * r] for r in range(96))
-    assert seeds == {lane}  # the high lane of the declared `$5428` pitch table, at the note's row
+    # the high lane of the declared `$5428` pitch table, at the note's row, walked down by one
+    drum = [g for g in objs if graph.nodes[g.transfer[1][1]].transfer[1] == lane]
+    assert drum and {g.transfer[2:4] for g in drum} == {(0xFF, 0x100)}
     cov = T.render(prog, trace, nf)[2]
     assert cov.classes["freq"]["ramp"] > 0 and cov.classes["freq"]["seed"] == 0
 
@@ -2230,9 +2231,9 @@ def test_64_forever_filter_registers_read_declared_cells(sid, subtune):
     prog, trace, nf = _lifted(sid, subtune)
     assert T.gate(prog, trace, nf) is None
     cov = T.render(prog, trace, nf)[2]
-    assert cov.planes["filter"] == (384, 598)
+    assert cov.planes["filter"] == (391, 598)
     assert cov.classes["filter"] == {
-        "lane": 384,
+        "lane": 391,
         "gate": 0,
         "imm": 0,
         "ramp": 0,
