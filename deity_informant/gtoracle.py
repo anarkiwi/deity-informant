@@ -1,8 +1,8 @@
 """gtoracle — a native editor's own song, mapped onto the universal primitive.
 
-Reads a song out of a real editor's model and expresses it in the primitive
-`tracker` uses, so the mapped graph is checkable by the same law. Two editors,
-one generic vocabulary; see docs/gt-oracle.md.
+Reads a song out of a real editor's model into the primitive `tracker` uses, so
+the mapped graph is checkable by the same law. The builder (§1-2) knows no editor:
+GT and SID-Wizard feed it here, DefMON from `dmoracle`. docs/gt-oracle.md.
 """
 
 from collections import namedtuple
@@ -26,7 +26,6 @@ _GATES = (0xFE, 0x00)  # the gate images a ctrl lane byte is read through
 _CLASSES = tracker._CLASSES  # ONE evidence vocabulary, the recovery's own
 _COUNTER = ("row", "counter")  # a row counter's "lane": the row is the emit, not a table byte
 _NONE = 0x1FF  # a pattern column entry no row declares: it matches no table row
-_SW_NOTE_FX = 0x60  # at and above this a SID-Wizard note column is an effect, not a pitch
 
 
 def _parts(cell):
@@ -1136,6 +1135,9 @@ def gt_decompile(path, subtune=0):
 
 
 # ---- 4. SID-Wizard: the same generic lanes, a different editor's spelling ---------
+_SW_NOTE_FX = 0x60  # at and above this a SID-Wizard note column is an effect, not a pitch
+
+
 def sw_available():
     """Is `pysidwizard` >= 0.3 importable? The oracle needs the write-capturing player."""
     try:
