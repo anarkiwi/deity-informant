@@ -348,6 +348,11 @@ def _masked(nodes):
     return out
 
 
+def _pair_writes(route, v):
+    """The two byte writes one pair-routed emit makes: its low half, its masked high."""
+    return [(route[1], v & 0xFF), (route[2], (v >> 8) & route[3])]
+
+
 def _combine(route, delta, prev, cur):
     """The byte a relative route writes: its delta, combined with the named base.
 
@@ -408,14 +413,13 @@ def _run(graph, nframes, trace=None):
                 for _t in range(fires[i]):
                     counts[i] += 1
                     cur[i] = v = _emit(g, counts[i], cur)
-                    if v is None:
-                        continue
-                    for reg, b in ((g.route[1], v & 0xFF), (g.route[2], (v >> 8) & g.route[3])):
+                    got = () if v is None else _pair_writes(g.route, v)
+                    writes += got
+                    for reg, b in got:
                         interp[reg] = interp.get(reg, 0) + 1
                         prev[reg] = b
-                        writes.append((reg, b))
-                        if acts is not None:
-                            acts[i].append((f, reg, b))
+                    if acts is not None:
+                        acts[i].extend((f, reg, b) for reg, b in got)
             elif _is_plane(g.route):
                 reg = g.route[1]
                 for _t in range(fires[i]):  # one emit per trigger, in order

@@ -1389,7 +1389,7 @@ def _sw_player_class():
 
         def _wr(self, addr, val):
             self.log.append((addr, val))
-            super()._wr(addr, val)
+            super()._wr(addr, val)  # pylint: disable=no-member  # absent before 0.3, gated above
 
     return _Cap
 
