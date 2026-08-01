@@ -666,6 +666,11 @@ def _straight_str(g, n_emits):
     return "%d of %d entries, %d distinct (see the note lane)" % (n_emits, len(seq), len(set(vals)))
 
 
+def _after_str(at):
+    """Where in a frame a held read sits: before the object's steps, or after the k-th."""
+    return "before its steps this frame" if not at else "after its step %d this frame" % at
+
+
 def _node_lines(graph, i, scan, keys, cons):
     """One node: its transfer, what triggers it, where it routes, and its detail."""
     g = graph.nodes[i]
@@ -682,8 +687,8 @@ def _node_lines(graph, i, scan, keys, cons):
         return [head] + _select_lines(g, keys[i], scan.tabs, scan.emits[i])
     if kind == "HOLD":
         return [
-            "%s  emits what the object n%02d carries, after its %d step this frame"
-            % (head, g.transfer[1], g.transfer[3])
+            "%s  emits what the object n%02d carries, %s"
+            % (head, g.transfer[1], _after_str(g.transfer[3]))
         ]
     if kind == "RAMP":
         _k, seed, step, bound, turn = g.transfer
