@@ -82,6 +82,34 @@ def test_ramp_wraps_at_its_bound():
     assert vals == [0xFE, 0xFF, 0x00, 0x01]
 
 
+def test_a_pair_routed_ramp_carries_into_its_high_register():
+    """One 16-bit emit writes both halves; the carry is the word's own, mask applied."""
+    nodes = [T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0x7F))]
+    recs = T.eval_graph(T.Graph(nodes), 3)
+    got = [dict(w for sec in rec for w in sec) for rec in recs]
+    assert got == [{2: 0xF0, 3: 0x00}, {2: 0x10, 3: 0x01}, {2: 0x30, 3: 0x01}]
+    cov = T.coverage(T.Graph(nodes), 3)
+    assert cov.interp == 6  # two register writes per tick
+
+
+def test_mutation_a_wrong_pair_step_moves_both_halves():
+    """The pair is generated: perturb the step and the whole stream moves."""
+    good = T.Graph([T.Generator(("RAMP", 0x00F0, 0x20, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    base = T.eval_graph(good, 3)
+    bad = T.Graph([T.Generator(("RAMP", 0x00F0, 0x21, 0x10000), T.FRAME, T.pair(2, 3, 0xFF))])
+    assert F.diff(T.eval_graph(bad, 3), base) is not None
+
+
+def test_a_pair_route_refuses_a_masked_owner_on_either_register():
+    """A pair owns both whole bytes, so a masked generator on one is two owners of a bit."""
+    nodes = [
+        T.Generator(("RAMP", 0, 1, 0x10000), T.FRAME, T.pair(2, 3, 0xFF)),
+        T.lookup([0x0F], T.FRAME, 3, mask=0x0F),
+    ]
+    with pytest.raises(T.TrackerError):
+        T.eval_graph(T.Graph(nodes), 2)
+
+
 def test_refinement_moves_coverage_out_of_raw_and_still_gates():
     """Pulling a last-write-wins plane out of RAW keeps the law green."""
     frames = _frames([[(0, 0x10), (4, 0x41)], [(0, 0x10), (4, 0x41)]])

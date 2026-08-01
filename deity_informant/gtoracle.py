@@ -47,7 +47,7 @@ _plane_of = tracker._plane_of  # ONE plane map, the recovery's own
 
 def _is_ord(reg):
     """Is ``reg`` in a voice's order-preserved ctrl/AD/SR section?"""
-    return reg <= _VOICE_HI and 4 <= reg % 7 <= 6
+    return isinstance(reg, int) and reg <= _VOICE_HI and 4 <= reg % 7 <= 6
 
 
 def _ctrl_table(lane):
@@ -86,6 +86,9 @@ def _table_of(tables, cell):
 
 
 # ---- 1. runs: a sweep is a RAMP only where its step is a declared byte ------------
+_RAMPS = ("ramp", "ramp16")  # a 16-bit cell's low byte still ramps mod $100
+
+
 def _runs(seq):
     """``[(start, count)]``: maximal runs of ramp cells sharing one nonzero step.
 
@@ -94,17 +97,61 @@ def _runs(seq):
     out, i = [], 0
     while i < len(seq):
         cell = seq[i]
-        if cell is None or cell.kind != "ramp" or not cell.step:
+        if cell is None or cell.kind not in _RAMPS or not cell.step:
             i += 1
             continue
         j = i + 1
-        while j < len(seq) and seq[j] is not None and seq[j].kind == "ramp":
+        while j < len(seq) and seq[j] is not None and seq[j].kind in _RAMPS:
             if seq[j].step != cell.step or seq[j].value != (seq[j - 1].value + cell.step) & 0xFF:
                 break
             j += 1
         if j - i >= 2:
             out.append((i, j - i))
         i = max(j, i + 1)
+    return out
+
+
+def _masked16(word, mask_hi):
+    """A 16-bit accumulator word as its two written bytes see it."""
+    return (word & 0xFF) | (((word >> 8) & mask_hi) << 8)
+
+
+def _pair16_keys(native, frames):
+    """``{(frame, reg): ("emit", key, seed) | ("eat",)}``: 16-bit runs claimed whole.
+
+    A sweep carries into its high byte, which no byte-wide `RAMP` can say; the run
+    is the observation's, the step the recorded read's, and the whole word must
+    advance by it (docs/tracker.md §4c, one register wider). The high write is eaten."""
+    obs = [dict(w) for w in frames]
+    cand = {}
+    for f, cells in enumerate(native.writes):
+        for reg, cell in cells.items():
+            one = cell if isinstance(cell, Cell) else None
+            if one is None or one.kind != "ramp16" or not one.step or one.base is None:
+                continue
+            hi_reg, mask_hi = one.base
+            lo, hi = obs[f].get(reg), obs[f].get(hi_reg)
+            if lo is None or hi is None or lo != one.value & 0xFF or hi & ~mask_hi:
+                continue  # a high byte outside the mask is not this emit's (kbtrack, ghost)
+            word = lo | (hi << 8)
+            cand.setdefault(reg, []).append((f, word, one.step, hi_reg, mask_hi))
+    out = {}
+    for reg, seq in cand.items():
+        i = 0
+        while i < len(seq):
+            j = i + 1
+            while j < len(seq) and seq[j][2:] == seq[i][2:]:
+                want = _masked16((seq[j - 1][1] + seq[i][2]) % 0x10000, seq[i][4])
+                if seq[j][1] != want:
+                    break
+                j += 1
+            if j - i >= 2:
+                _f0, seed, step, hi_reg, mask_hi = seq[i]
+                key = (reg, "ramp16", seq[i][0], step, mask_hi, hi_reg)
+                for f, _w, _s, _h, _m in seq[i:j]:
+                    out[(f, reg)] = ("emit", key, seed)
+                    out[(f, hi_reg)] = ("eat",)
+            i = max(j, i + 1)
     return out
 
 
@@ -134,7 +181,7 @@ class _Streams:
             )
             counts[frame] += 1
             srcs.append(None if part.src is None else part.src[1])
-            if part.kind == "ramp":
+            if part.kind in _RAMPS:
                 rows.append(part.value)
                 continue
             if part.kind == "rel":
@@ -170,15 +217,35 @@ class _Streams:
             return (src_lane, tuple(srcs))
         return None
 
+    def add16(self, frame, key, seed):
+        """Record one 16-bit accumulator tick: two register writes, one emit."""
+        counts, rows, _srcs = self.rows.setdefault(key, ([0] * self.n, [], []))
+        counts[frame] += 1
+        rows.append(seed)
+
     def streams(self):
         """``[(counts, transfer, reg, mask, rel, arr)]`` for every stream recorded.
 
         ``rel`` is ``None`` for an absolute stream, else ``(op, base lane, base rows)``;
-        ``arr`` is the arrangement generator whose emit is this stream's row index."""
+        ``arr`` is the arrangement generator whose emit is this stream's row index;
+        a ``ramp16`` stream's ``reg`` is the ``(lo, hi, mask_hi)`` pair route."""
         out = []
         for key, (counts, rows, srcs) in self.rows.items():
             reg, kind, lane, step, mask = key[:5]
-            if kind == "ramp":
+            if kind == "ramp16":
+                out.append(
+                    (
+                        tuple(counts),
+                        ("RAMP", rows[0], step, 0x10000),
+                        (reg, key[5], mask),
+                        _FULL,
+                        None,
+                        None,
+                    )
+                )
+                self._bump(reg, "seed", 2)
+                self._bump(reg, "ramp", 2 * (len(rows) - 1))
+            elif kind == "ramp":
                 out.append((tuple(counts), ("RAMP", rows[0], step, 0x100), reg, mask, None, None))
                 self._bump(reg, "seed")
                 self._bump(reg, "ramp", len(rows) - 1)
@@ -219,7 +286,7 @@ def _one_typed(cell, value, tables):
     `_rel_keys` — which combines the two and checks the result — can admit it."""
     if cell is None or cell.value != value or cell.kind in ("raw", "rel"):
         return False
-    if cell.kind in ("imm", "ramp"):
+    if cell.kind in ("imm",) + _RAMPS:
         return True
     table = _table_of(tables, cell)
     return 0 <= cell.row < len(table) and table[cell.row] == value
@@ -286,16 +353,19 @@ def _rel_keys(native, frames, tables):
     return out
 
 
-def _ramp_keys(native, frames, tables):
+def _ramp_keys(native, frames, tables, taken=frozenset()):
     """``{(frame, reg): (run start, seed)}`` the sweep RAMPs claim.
 
     A run is claimed whole or not at all: one emit whose step no table names, or a
-    value the arithmetic does not predict, refuses the run entire."""
+    value the arithmetic does not predict, refuses the run entire. ``taken`` frames
+    belong to a 16-bit claim already, so a byte run restarts — and reseeds — after them."""
     seqs, obs, claimed = {}, {}, {}
     for f, writes in enumerate(frames):
         for reg, val in writes:
             cell = native.writes[f].get(reg)
             one = cell if isinstance(cell, Cell) else None
+            if (f, reg) in taken:
+                one = None
             seqs.setdefault(reg, [None] * len(frames))[f] = one
             obs.setdefault(reg, {})[f] = val
     for reg, seq in seqs.items():
@@ -381,7 +451,9 @@ def _build(frames, native):
     streams render as whole buckets in node order; the last-write-wins registers
     are typed per write, because the projection sorts them."""
     tables, n = native.tables, len(frames)
-    acc, ramps, layout = _Streams(n, tables), _ramp_keys(native, frames, tables), _layout(frames)
+    acc, layout = _Streams(n, tables), _layout(frames)
+    pair16 = _pair16_keys(native, frames)
+    ramps = _ramp_keys(native, frames, tables, taken=set(pair16))
     rels = _rel_keys(native, frames, tables)
     residual = []
     for f, writes in enumerate(frames):
@@ -397,11 +469,15 @@ def _build(frames, native):
         rest = []
         for reg, val in writes:
             cell = native.writes[f].get(reg)
+            wide = pair16.get((f, reg))
             if _is_ord(reg):
                 if ok[reg // 7]:
                     acc.add(reg, f, cell)
                 else:
                     rest.append((reg, val))
+            elif wide is not None:  # a 16-bit emit: the low write records, the high is its own
+                if wide[0] == "emit":
+                    acc.add16(f, wide[1], wide[2])
             elif (f, reg) in ramps:
                 at, seed = ramps[(f, reg)]
                 acc.add(
@@ -409,7 +485,11 @@ def _build(frames, native):
                 )
             elif (f, reg) in rels:
                 acc.add(reg, f, cell)
-            elif cell is not None and _parts(cell)[0].kind != "ramp" and _typed(cell, val, tables):
+            elif (
+                cell is not None
+                and _parts(cell)[0].kind not in _RAMPS
+                and _typed(cell, val, tables)
+            ):
                 acc.add(reg, f, cell)
             else:
                 rest.append((reg, val))
@@ -432,6 +512,9 @@ def _build(frames, native):
     nodes.append(tracker.raw(residual))
     for c, t, r, m, rel, arr in streams:
         if _is_ord(r):
+            continue
+        if isinstance(r, tuple):  # a 16-bit accumulator: one emit, a register pair
+            nodes.append(tracker.Generator(t, ("event", edges[c]), tracker.pair(*r)))
             continue
         if arr is not None:
             _arranged(nodes, c, t, tracker.plane(r, m), arr, ctx)
@@ -902,7 +985,7 @@ def _gt_freq_cells(regs, base, freq, cells, src=None):
             cells[base + off] = Cell("select", lane, freq[1], val, 0, src=src)
         elif freq and freq[0] == ("stbl", None):
             cells[base + off] = (
-                Cell("ramp", ("pitch", "lo"), freq[1], val, freq[2] & 0xFF)
+                Cell("ramp16", ("stbl", None), freq[1], val, freq[2], base=(base + 1, _FULL))
                 if off == 0
                 else Cell("raw", ("porta", "carry"), 0, val, 0)
             )
@@ -917,14 +1000,15 @@ def _gt_freq_cells(regs, base, freq, cells, src=None):
 
 
 def _gt_pulse_cells(regs, base, pulse, cells):
-    """pw_lo/pw_hi: a pulse-table set step, or the sweep the same table steps."""
+    """pw_lo/pw_hi: a pulse-table set step, or the 16-bit sweep the same table steps."""
     for off, lane in ((2, ("ptbl", "right")), (3, ("ptbl", "left"))):
         val = regs[base + off]
         if pulse and pulse[0] == "set":
             cells[base + off] = Cell("select", lane, pulse[1], val, 0)
         elif pulse and pulse[0] == "mod":
+            step = pulse[2] - 0x100 if pulse[2] >= 0x80 else pulse[2]
             cells[base + off] = (
-                Cell("ramp", ("ptbl", "right"), pulse[1], val, pulse[2])
+                Cell("ramp16", ("ptbl", "right"), pulse[1], val, step, base=(base + 3, _FULL))
                 if off == 2
                 else Cell("select", lane, pulse[1] - 1, val, 0)
             )
@@ -1057,12 +1141,12 @@ def gt_decompile(path, subtune=0):
 
 # ---- 4. SID-Wizard: the same generic lanes, a different editor's spelling ---------
 def sw_available():
-    """Is `pysidwizard` importable? The oracle is an optional extra."""
+    """Is `pysidwizard` >= 0.3 importable? The oracle needs the write-capturing player."""
     try:
-        import pysidwizard  # noqa: F401  pylint: disable=import-outside-toplevel,unused-import
+        from pysidwizard.player import SWMPlayer  # pylint: disable=import-outside-toplevel
     except ImportError:
         return False
-    return True
+    return hasattr(SWMPlayer, "_wr")
 
 
 def _sw_tables(swm, freq_lo, freq_hi):
@@ -1188,7 +1272,11 @@ def _sw_pulse(voice, tables, base, num, cells, reg):
             cells[reg + 3] = Cell("select", ("wf", "hi7"), row, hi, 0)
             return
         if not prog[row] & 0x80 and prog[row + 1]:
-            cells[reg + 2] = Cell("ramp", ("wf", "left"), row + 1, lo, prog[row + 1])
+            delta = prog[row + 1]
+            step = delta - 0x100 if delta & 0x80 else delta
+            cells[reg + 2] = Cell(
+                "ramp16", ("wf", "left"), row + 1, lo, step, base=(reg + 3, 0x7F)
+            )
             return
 
 
@@ -1287,6 +1375,29 @@ def _sw_cells(player, tables, base, held, cells, walk=None):
             cells[reg + off] = got or Cell("raw", ("small_fx", name), 0, val, 0)
 
 
+def _sw_player_class():
+    """The SID-Wizard player with its register writes captured, in driver order.
+
+    The editor's own driver writes freq/pw/ctrl every frame (WRPULS/WRWFGHO), and the
+    capture is that stream — what a decompiled SID-Wizard binary would give frameprog —
+    not ``play_frame``'s nibble-masked snapshot diff. Needs pysidwizard >= 0.3."""
+    from pysidwizard.player import SWMPlayer  # pylint: disable=import-outside-toplevel
+
+    if not hasattr(SWMPlayer, "_wr"):
+        raise ImportError("pysidwizard >= 0.3 required: the write stream is the oracle's input")
+
+    class _Cap(SWMPlayer):
+        """SWMPlayer logging every ``_wr`` this frame, values as written."""
+
+        log = ()
+
+        def _wr(self, addr, val):
+            self.log.append((addr, val))
+            super()._wr(addr, val)
+
+    return _Cap
+
+
 def sw_native(swm, nframes):
     """``(Native, records)`` for a SID-Wizard module's first subtune.
 
@@ -1297,20 +1408,21 @@ def sw_native(swm, nframes):
         NOTE_FREQ_HI,
         NOTE_FREQ_LO,
         SID_REG_BASE,
-        SWMPlayer,
     )
 
     tables, base, fbase, pbase = _sw_tables(swm, NOTE_FREQ_LO, NOTE_FREQ_HI)
-    player = SWMPlayer(swm)
+    player = _sw_player_class()(swm)
     writes, notes, instrs, onsets, shape, frames = [], [], [], [], [], []
     held = {}
     pnum = {id(p): i for i, p in enumerate(swm.patterns)}
     walk = {"steps": set(), "rows": set(), "refused": {}, **_sw_loops(swm)}
     for _f in range(nframes):
         prev = [v.hr_timer for v in player.voices]
+        player.log = []
+        player.play_frame()
         got = [
             (r - SID_REG_BASE, x & 0xFF)
-            for r, x in player.play_frame()
+            for r, x in player.log
             if 0 <= r - SID_REG_BASE <= _FILTER_HI
         ]
         frames.append(got)

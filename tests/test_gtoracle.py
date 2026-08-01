@@ -86,6 +86,39 @@ def test_a_sweep_whose_step_the_table_holds_is_a_ramp():
     }
 
 
+def _sweep16(words, step, mask_hi=0xFF):
+    """Writes for a 16-bit sweep over the pw pair, cells as an editor emits them."""
+    return [
+        {
+            2: G.Cell("ramp16", ("t", "r"), 0, w & 0xFF, step, base=(3, mask_hi)),
+            3: G.Cell("raw", ("ghost", "pw"), 0, (w >> 8) & mask_hi, 0),
+        }
+        for w in words
+    ]
+
+
+def test_a_16_bit_sweep_is_one_pair_routed_ramp_carrying_into_its_high_byte():
+    """The carry the byte-wide RAMP refused is the word's own; both writes are one emit."""
+    words = [0x00F0, 0x0110, 0x0130, 0x0150]
+    graph, rep = G.strict(_native({("t", "r"): (0x20,)}, _sweep16(words, 0x20)))
+    node = [g for g in graph.nodes if g.route[0] == "pair"][0]
+    assert node.transfer == ("RAMP", 0x00F0, 0x20, 0x10000) and node.route == ("pair", 2, 3, 0xFF)
+    assert rep.divergence is None and rep.coverage.interp == 8
+    assert rep.coverage.classes["pw"] == dict.fromkeys(G._CLASSES, 0) | {"ramp": 6, "seed": 2}
+
+
+def test_a_high_byte_outside_the_mask_refuses_the_pair_and_reseeds_the_byte_run():
+    """A kbtrack-adjusted high byte is not this emit's; the byte run restarts after it."""
+    writes = _sweep16([0x00F0, 0x0110, 0x0130], 0x20, mask_hi=0x7F)
+    writes[0][3] = G.Cell("raw", ("ghost", "pw"), 0, 0xFF, 0)  # out of mask: no pair seed
+    graph, rep = G.strict(_native({("t", "r"): (0x20,)}, writes))
+    assert rep.divergence is None
+    pairs = [g for g in graph.nodes if g.route[0] == "pair"]
+    assert [g.transfer for g in pairs] == [("RAMP", 0x0110, 0x20, 0x10000)]
+    lows = [g for g in graph.nodes if g.route == ("plane", 2) and g.transfer[0] == "RAMP"]
+    assert not lows  # frame 0's write stays residual, not a stale-seeded byte ramp
+
+
 def test_a_step_of_zero_and_a_run_of_one_are_both_refused():
     """A generator that predicts nothing is not one (docs/tracker.md §4c)."""
     flat = [{2: G.Cell("ramp", ("t", "r"), 0, 0x10, 0)} for _f in range(4)]
