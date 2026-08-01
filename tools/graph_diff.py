@@ -65,18 +65,34 @@ def _match(theirs, a_ours, a_theirs):
     return pairs, unmatched_ours, [j for j in range(len(theirs.nodes)) if j not in taken]
 
 
-def diff(rel, nframes):
-    """The node-level diff for one GoatTracker-packed tune."""
-    from deity_informant import gtoracle, tracker
+def _native_of(rel, nframes):
+    """``(native, editor, start)`` for a cached tune, whichever editor's it is.
+
+    ONE loader for every oracle a frameprog exists for: a GT-packed tune decompiles
+    through pygoattracker, a DefMON one is found by its replay signature."""
+    from deity_informant import dmoracle, gtoracle
     from deity_informant.c64 import psid_songs
-    from gt_compare import _lifted, _ours
 
     path = HVSC / rel
     _songs, start = psid_songs(path.read_bytes())
-    song, info, psub = gtoracle.gt_decompile(path, start - 1)
-    prog, trace = _lifted(path, start - 1, nframes)
+    try:
+        song, info, psub = gtoracle.gt_decompile(path, start - 1)
+        return gtoracle.gt_native(song, info, psub, nframes), "goattracker", start
+    except Exception:  # pylint: disable=broad-except
+        got = dmoracle.dm_decompile(path, nframes, start - 1)
+        if got is None:
+            raise ValueError("neither GoatTracker nor DefMON: %s" % rel) from None
+        return got[0], "defmon", start
+
+
+def diff(rel, nframes):
+    """The node-level diff for one cached tune, any editor with a frameprog boundary."""
+    from deity_informant import gtoracle, tracker
+    from gt_compare import _lifted, _ours
+
+    native, editor, start = _native_of(rel, nframes)
+    prog, trace = _lifted(HVSC / rel, start - 1, nframes)
     records = tracker.oracle(prog, trace, nframes)
-    native = gtoracle.gt_native(song, info, psub, nframes)
     offset = gtoracle.align(records, native)
     theirs, report = gtoracle.graph(records, native, offset)
     ours, _cov = _ours(prog, trace, nframes)
@@ -98,6 +114,7 @@ def diff(rel, nframes):
         absent[key] += sum(1 for e in writes if e not in produced)
     return {
         "tune": rel,
+        "editor": editor,
         "ours_nodes": len(ours.nodes),
         "their_nodes": len(theirs.nodes),
         "matched": len(pairs),

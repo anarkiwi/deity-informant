@@ -144,50 +144,6 @@ def _masks(native, nframes):
     return {"masks": sorted(seen), "gate_only_emits": gate, "wider_mask_emits": other}
 
 
-def _pitch_axis(ours, native, nframes, off):
-    """``(share at the modal offset, that offset, emits)`` for the note lane.
-
-    gt_compare's version reads freq_lo; DefMON's tunes declare freq_hi and not
-    freq_lo, so the register the recovery carries a row on is a parameter."""
-    diffs = [
-        ours[(f, 7 * v + off)] - native.notes[f][v]
-        for f in range(nframes)
-        for v in range(3)
-        if (f, 7 * v + off) in ours and native.notes[f][v] >= 0
-    ]
-    if not diffs:
-        return 0.0, None, 0
-    hist = {}
-    for d in diffs:
-        hist[d] = hist.get(d, 0) + 1
-    best = max(hist, key=hist.get)
-    return hist[best] / len(diffs), best, len(diffs)
-
-
-def _instr_axis(ours, native, nframes, off):
-    """``(consistency, distinct rows, is a bijection, emits)`` on one instrument plane."""
-    import gt_compare as GC  # pylint: disable=import-outside-toplevel,import-error
-
-    pairs = [
-        (ours[(f, 7 * v + off)], native.instrs[f][v])
-        for f in range(nframes)
-        for v in range(3)
-        if (f, 7 * v + off) in ours and native.instrs[f][v] >= 0
-    ]
-    share, size, onto = GC._bijection(pairs)  # pylint: disable=protected-access
-    return share, size, onto, len(pairs)
-
-
-def _best(axis, ours, native, nframes, offs):
-    """The register offset the recovery actually carries a row on, and its result."""
-    best, key = None, -1
-    for off in offs:
-        got = axis(ours, native, nframes, off)
-        if got[-1] > key:
-            best, key = (off,) + got, got[-1]
-    return best
-
-
 def _columns(native):
     """How many sidTAB rows carry each column: the decomposition, measured."""
     return {
@@ -229,8 +185,9 @@ def dm_one(rel):
         if f >= offset
     }
     n = admitted.frames
-    preg, share, poff, emits = _best(_pitch_axis, rows, native, n, (0, 1))
-    ireg, isha, isize, onto, iemits = _best(_instr_axis, rows, native, n, (5, 6, 4))
+    # pylint: disable=protected-access
+    preg, share, poff, emits = GC._best(GC._pitch_axis, rows, native, n, (0, 1))
+    ireg, isha, isize, onto, iemits = GC._best(GC._instr_axis, rows, native, n, (5, 6, 4))
     out.update(
         {
             "frames": n,

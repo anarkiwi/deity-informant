@@ -304,9 +304,7 @@ def _check(nodes):
             for reg in g.route[1:3]:
                 for other in owned.setdefault(reg, set()):
                     if other != _FULL:
-                        raise TrackerError(
-                            "routes $%02X and $FF overlap on $%02X" % (other, reg)
-                        )
+                        raise TrackerError("routes $%02X and $FF overlap on $%02X" % (other, reg))
                 owned[reg].add(_FULL)
             continue
         if not _is_plane(g.route):
@@ -2492,9 +2490,7 @@ def _observe(prog, trace, nframes, diag=None):
     objs = _objects(prog, banks, diag)
     cstmts, ctags = _cur_watch(prog, objs, len(watch) + len(astmts))
     dstmts, dtags = _div_watch(prog, len(watch) + len(astmts) + len(cstmts))
-    frames, srcs, wat = frameval.eval_watch(
-        prog, trace, nframes, watch + astmts + cstmts + dstmts
-    )
+    frames, srcs, wat = frameval.eval_watch(prog, trace, nframes, watch + astmts + cstmts + dstmts)
     ords = [[[] for _f in range(nframes)] for _v in range(3)]
     lww = [{} for _f in range(nframes)]
     for f, (fr, sr) in enumerate(zip(frames, srcs)):

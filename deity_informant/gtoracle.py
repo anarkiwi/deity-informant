@@ -577,11 +577,7 @@ def index_nodes(built):
     The one predicate the structure axis asks of a graph, and it asks it of the
     recovery's as well as the oracle's — a row is generated or it is observed."""
     nodes = built.nodes
-    gen = sum(
-        1
-        for g in nodes
-        if g.transfer[0] == "SELECT" and tracker._generated(g.transfer[2])
-    )
+    gen = sum(1 for g in nodes if g.transfer[0] == "SELECT" and tracker._generated(g.transfer[2]))
     return sum(1 for g in nodes if g.route == tracker.INDEX), gen
 
 
@@ -1274,9 +1270,7 @@ def _sw_pulse(voice, tables, base, num, cells, reg):
         if not prog[row] & 0x80 and prog[row + 1]:
             delta = prog[row + 1]
             step = delta - 0x100 if delta & 0x80 else delta
-            cells[reg + 2] = Cell(
-                "ramp16", ("wf", "left"), row + 1, lo, step, base=(reg + 3, 0x7F)
-            )
+            cells[reg + 2] = Cell("ramp16", ("wf", "left"), row + 1, lo, step, base=(reg + 3, 0x7F))
             return
 
 

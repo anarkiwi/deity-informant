@@ -1049,9 +1049,7 @@ def test_a_div_fires_where_the_divisor_says_and_nowhere_else():
     assert T._generates((0, 1, 0, 1), 2, 1) and not T._generates((0, 1, 1, 1), 2, 1)
     assert not T._generates((0, 1, 0, 0), 2, 1) and not T._generates((0, 1, 0, 1), 4, 3)
     assert T._clock_node((0, 1, 0, 1), T.Seq(((2, 1),), {}, {})) == [T.div(2)]
-    assert T._clock_node((0, 1, 0, 1), T.Seq(((3, 2), (4, 3)), {}, {})) == [
-        T.edge((0, 1, 0, 1))
-    ]
+    assert T._clock_node((0, 1, 0, 1), T.Seq(((3, 2), (4, 3)), {}, {})) == [T.edge((0, 1, 0, 1))]
 
 
 def test_mutation_a_wrong_divisor_is_detected():
