@@ -2320,7 +2320,7 @@ def _obj_streams(prog, banks, accs, arms, roots, wat, lww, order, nframes):
 
 
 # ---- 4n. the driver cell as an object the song reloads ---------------------------
-RelObj = namedtuple("RelObj", "cell table rows seeds fires step wrap first holds ev")
+CellObj = namedtuple("CellObj", "cell table rows seeds fires step wrap first holds ev")
 
 
 def _under_guards(stmts, env, guards, out):
@@ -2646,7 +2646,7 @@ def _reload_walk(tags, wat, lww, banks, mem0, nframes, lanes=()):
 
 
 def _obj_nodes(cell, key, em, spec, ctx):
-    """One object's ``RelObj``: its own reload rows, its walk, and the reads it holds.
+    """One object's ``CellObj``: its own reload rows, its walk, and the reads it holds.
 
     The object has one clock — its own updates — so the seed reads its lane at the row
     the reload took and *no row* at a step, and the ramp walks on where its seed emits
@@ -2657,7 +2657,7 @@ def _obj_nodes(cell, key, em, spec, ctx):
     for f, _r in em:
         counts[f] += 1
     step = spec.get(cell) if em else None
-    return RelObj(
+    return CellObj(
         cell,
         table,
         tuple(len(table) if r is None else r for _f, r in em),
