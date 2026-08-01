@@ -1,8 +1,8 @@
 """Follin command-script lane: decode the per-voice sequencer script.
 
 Decodes the operand grammar validated in docs/follin-dispatch-study.md from the
-graph-recovered zp script pointers, following call/jump control flow, and
-certifies every consumed byte was observed fetched. See docs/tracker.md §4."""
+recovered zp script pointers, following call/jump control flow, and
+certifies every consumed byte was observed fetched."""
 
 from collections import namedtuple
 

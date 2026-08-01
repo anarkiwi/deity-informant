@@ -207,7 +207,7 @@ def test_sid_fusion_is_recorded_even_where_it_is_not_applied():
     assert {p.status for p in sid} == {"fused"}
 
 
-# ---- the annotation the tracker reads is preserved -------------------------------
+# ---- the store-source annotation is preserved ------------------------------------
 def test_a_word_read_still_names_both_source_cells():
     """A byte staged through a fused word reports the two cells the halves read."""
     assert frameval._addrs(framefuse._word(0x0100)) == [
@@ -217,13 +217,13 @@ def test_a_word_read_still_names_both_source_cells():
 
 
 def _by_reg(pair):
-    """``{register: (value, source cells)}`` per frame, as the tracker bins it."""
+    """``{register: (value, source cells)}`` per frame, binned by register."""
     frames, srcs = pair
     return [{r: (v, s) for (r, v), s in zip(fr, sr)} for fr, sr in zip(frames, srcs)]
 
 
 def test_a_fused_sid_store_keeps_its_per_half_provenance():
-    """The tracker reads eval_src: each buffered write reports its own half's cells."""
+    """Under eval_src each buffered write reports its own half's cells."""
     model = _freq_pair_model()
     trace, _w = frameprog.iota(model, 4)
     plain = _by_reg(frameval.eval_src(frameprog.program(model), trace, 4))

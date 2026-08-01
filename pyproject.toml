@@ -26,15 +26,12 @@ dependencies = ["jennings>=0.1.0", "lark>=1.2"]
 
 [project.optional-dependencies]
 oracle = ["py65", "pysidtracker", "zstandard"]
-# native-editor oracles (docs/gt-oracle.md): a real editor's own song model,
-# mapped onto the universal primitive. Optional; the tests skip without them.
-nativeoracle = ["pygoattracker", "pysidwizard", "pydefmon"]
 ghidra = ["pypcode"]
 # egglog str-form of extracted exprs is parsed; pin minor so it stays stable.
 eqlift = ["egglog>=13,<14", "z3-solver"]
 # pysidtracker is dev-only tooling: tools/fetch_corpus.py imports it at module
 # scope and CI lints tools/, so pylint must be able to resolve it.
-dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pysidtracker", "pygoattracker", "pysidwizard", "pydefmon"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pysidtracker"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -64,17 +61,7 @@ source = ["deity_informant"]
 omit = [
     "tools/eqlift_emit.py",
     "tools/fetch_corpus.py",
-    "tools/pitch_audit.py",
-    "tools/pitch_triage.py",
-    "tools/pitchind_measure.py",
     "tools/showcase.py",
-    "tools/tracker_audit.py",
-    "tools/tracker_corpus.py",
-    "tools/gt_compare.py",
-    "tools/dm_compare.py",
-    "tools/graph_diff.py",
-    "tools/tracker_showcase.py",
-    "tools/tracker_text.py",
 ]
 
 [tool.black]
