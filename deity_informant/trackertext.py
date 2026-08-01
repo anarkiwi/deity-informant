@@ -275,10 +275,11 @@ def _scan(graph, nframes, keys, tabs):
     held = {reg: {} for reg in parts}
     counts, emits = [0] * len(nodes), [0] * len(nodes)
     gen, res, ramps, notes, st = {}, {}, {}, [[], [], []], {}
+    trig = {}
     at, insts = [[None] * nframes for _v in range(3)], [{}, {}, {}]
     pitch = graph.freq_table
     for f in range(nframes):
-        fired, _ticks = firing.step(f)
+        fired, ticks = firing.step(f)
         vals.frame()
         last = {r: max((i for i in ns if fired[i]), default=None) for r, ns in parts.items()}
         cur = {}
@@ -313,6 +314,8 @@ def _scan(graph, nframes, keys, tabs):
                 continue
             if g.route[0] != "plane":
                 counts[i] += fired[i]
+                if g.route[0] == "fire":  # the trigger domain's own census, as `_run` keeps it
+                    trig[g.transfer[0]] = trig.get(g.transfer[0], 0) + ticks[i]
                 continue
             reg = g.route[1]
             for t in range(fired[i]):
@@ -339,7 +342,7 @@ def _scan(graph, nframes, keys, tabs):
             if note is not None:
                 _run_note(notes[v], f, note)
                 at[v][f] = note.index
-    cov = tracker._coverage(gen, res, graph.classes)
+    cov = tracker._coverage(gen, res, graph.classes, trig)
     return Scan(cov, emits, gen, res, notes, at, insts, tabs, ramps, nframes, parts)
 
 
@@ -924,9 +927,10 @@ def _residual(graph, scan):
             % (_role(reg), scan.res[reg], scan.gen.get(reg, 0))
         )
     edges = [sum(g.transfer[1]) for g in graph.nodes if g.transfer[0] == "EDGE"]
+    made, all_ = scan.cov.triggers
     out.append(
-        "timing   %d trigger streams, %d fires: every note-on time is observed, not generated"
-        % (len(edges), sum(edges))
+        "timing   %d trigger streams carry %d observed fires; %d of %d fires are generated"
+        " by a divider" % (len(edges), sum(edges), made, all_)
     )
     cls = {}
     for c in (graph.classes or {}).values():

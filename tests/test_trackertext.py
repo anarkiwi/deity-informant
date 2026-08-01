@@ -170,7 +170,7 @@ def test_the_residual_is_reported_per_plane_and_per_part():
     assert "values   3 writes replayed verbatim over 8 frames = 6.8% of all writes" in text
     assert "plane  filter                 3 of       3 not explained (100.0%)" in text
     assert "filter cutoff lo               2 replayed,       0 generated" in text
-    assert "timing   1 trigger streams, 7 fires" in text
+    assert "timing   1 trigger streams carry 7 observed fires; 4 of 11 fires" in text
     assert "shallow  7 program constants" in text and "1 observed bytes seeding a sweep" in text
     assert "f00000  filter cutoff lo = 16   (OBSERVED)" in text
 

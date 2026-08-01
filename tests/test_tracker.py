@@ -1823,21 +1823,48 @@ def test_commando_freq_is_the_declared_pitch_table_at_a_recovered_row(sid, subtu
 # Measured at _LONG frames, which is where Commando's turning pulse sweep and its song
 # chain both run; the 200-frame tests above reach neither. It does NOT cover the whole
 # tune's figures, which docs/tracker.md §6 reports.
-_COMMANDO = {"residual": 668, "shallow": 991, "observed_fires": 6974, "arr": 598}
+_COMMANDO = {"total": 10489, "residual": 668, "shallow": 991, "observed_fires": 6974, "arr": 598}
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
 def test_commando_universality_does_not_regress(sid, subtune):
-    """Residual, shallow emits and observed fires may only fall; generated rows may only rise."""
+    """Residual, shallow emits and observed fires may only fall; generated rows may only rise.
+
+    ``total`` is asserted by **equality**, not by a bound: it is the tune's own write count
+    at a fixed frame count, so it is a constant of the ground truth and not a figure the
+    recovery is entitled to move. A denominator that shrinks inflates every share printed
+    over it, which is how a write leaves the books while the law still passes."""
     prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
     cov = T.render(prog, trace, nf)[2]
     shallow = sum(c["imm"] + c["seed"] for c in cov.classes.values())
     fires = cov.triggers[1] - cov.triggers[0]
+    assert cov.total == _COMMANDO["total"]  # ground truth, not ours to move
+    assert cov.interp + cov.residual == cov.total  # every write is on one side or the other
     assert cov.residual <= _COMMANDO["residual"]  # bytes replayed, not produced
     assert shallow <= _COMMANDO["shallow"]  # a constant, or a byte a sweep starts from
     assert fires <= _COMMANDO["observed_fires"]  # fires the EDGE floor carries
     assert sum(c["arr"] for c in cov.classes.values()) >= _COMMANDO["arr"]
     assert cov.triggers[0] > 0 and T.gate(prog, trace, nf) is None
+
+
+@pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
+def test_the_rendered_header_keeps_the_same_books_as_the_recovery(sid, subtune):
+    """The artifact's own replay must agree with ``_run``: same denominator, no negative class.
+
+    ``trackertext._scan`` is a *second* evaluator, so it can silently disagree — and it did:
+    building ``_Fires`` without a value view left a generated divisor with no divisor, and
+    every stream it triggers fell out of the artifact's books entirely."""
+    from deity_informant import trackertext as X  # pylint: disable=import-outside-toplevel
+
+    prog, trace, nf = _lifted(sid, subtune, frames=_LONG)
+    got = T._observe(prog, trace, nf)
+    graph = T._graph(prog, T._pitch(prog, T._freq_words(got[0])), *got)[0]
+    cov = T.coverage(graph, nf)  # the recovery's own books, off `_run`
+    _keys, scan = X._scanned(graph, nf, prog)  # the artifact's, off its own replay
+    assert (scan.cov.total, scan.cov.interp) == (cov.total, cov.interp)
+    assert scan.cov.planes == cov.planes and scan.cov.triggers == cov.triggers
+    for plane in scan.cov.planes:
+        assert min(X._classes(graph, scan.cov, plane).values()) >= 0  # a count is never negative
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Commando", "Hubbard_Rob"))
