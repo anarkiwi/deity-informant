@@ -7,9 +7,11 @@ exists only where the two lanes are halves of one quantity.
 
 from __future__ import annotations
 
+from . import datadecl
 from . import expr as E
 from . import framefuse as FF
 from . import frameproc
+from . import grammar as G
 from . import sidprog
 from . import streams as ST
 from .structured import Proof
@@ -103,7 +105,41 @@ def _volatile(n):
     return any(FF._may_read(n, c) for c in sidprog._VOLS)
 
 
-def _clobbers(stmt, exprs):
+def _mem_refs(n):
+    """``((base, index), width)`` of every memory reference under ``n``."""
+    out, stack = [], [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            out.append((FF._addr_split(x[1]), x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+def _span(base, idx, regions):
+    """Tightest sound span for an indexed address at ``base``: the ONE span rule.
+
+    An index reaches no further than the declaration holding its base, since the
+    lifted program indexes that datum; with no declaration the register width is
+    all that bounds it."""
+    if idx is None:
+        return 0
+    full = E.mask(FF._w(idx))
+    avail = 0 if base is None or regions is None else regions.avail(base)
+    return min(full, avail - 1) if avail > 0 else full
+
+
+def _reads(exprs, base, span, regions):
+    """True where evaluating ``exprs`` may load a cell of ``[base, base + span]``."""
+    for (rb, ri), rw in (r for x in exprs for r in _mem_refs(x)):
+        if rb is None or not (rb + _span(rb, ri, regions) + rw - 1 < base or rb > base + span):
+            return True
+    return False
+
+
+def _clobbers(stmt, exprs, regions):
     """True where ``stmt`` may change the value of any of ``exprs``."""
     if stmt[0] == "asg":
         return any(stmt[1] in frameproc._locset(x) for x in exprs)
@@ -112,12 +148,47 @@ def _clobbers(stmt, exprs):
     base, idx = FF._addr_split(stmt[1])
     if base is None:
         return True
-    span = 0 if idx is None else E.mask(FF._w(idx))
-    return any(any(FF._may_read(x, c) for c in range(base, base + span + 1)) for x in exprs)
+    return _reads(exprs, base, _span(base, idx, regions), regions)
 
 
-def _writes(stmt, base, span):
-    """True where ``stmt`` may store into the lane at ``base``."""
+def _disturbs(stmt, exprs, regions):
+    """The store may change a value ``exprs`` read.
+
+    Index expressions may only be compared when the read is a direct load here;
+    one captured earlier can be structurally equal yet hold a stale index."""
+    if stmt[0] != "st":
+        return False
+    b, bi = FF._addr_split(stmt[1])
+    if b is None:
+        return True
+    bw = G.store_width(stmt[2])
+    for (rb, ri), rw in (r for x in exprs for r in _mem_refs(x)):
+        if rb is None:
+            return True
+        if ri == bi:
+            if not (b + bw - 1 < rb or b > rb + rw - 1):
+                return True
+        else:
+            sb, sr = _span(b, bi, regions), _span(rb, ri, regions)
+            if not (b + sb + bw - 1 < rb or b > rb + sr + rw - 1):
+                return True
+    return False
+
+
+def _may_disturb(stmt, base, idx, regions):
+    """The store may write the lane at ``(base, idx)``; exact when the index matches."""
+    if stmt[0] != "st":
+        return False
+    b, i2 = FF._addr_split(stmt[1])
+    if b is None:
+        return True
+    if i2 == idx:
+        return b == base
+    return not (b + _span(b, i2, regions) < base or b > base + _span(base, idx, regions))
+
+
+def _writes(stmt, base, span, regions):
+    """True where ``stmt`` may store into the lane spanning ``base``."""
     if stmt[0] not in ("asg", "st"):
         return True
     if stmt[0] != "st":
@@ -125,27 +196,27 @@ def _writes(stmt, base, span):
     b, idx = FF._addr_split(stmt[1])
     if b is None:
         return True
-    s = 0 if idx is None else E.mask(FF._w(idx))
-    return not (b + s < base or b > base + span)
+    return not (b + _span(b, idx, regions) < base or b > base + span)
 
 
-def _hits(stmt, base, span):
+def _hits(stmt, base, span, regions):
     """True where ``stmt`` may read or write a cell of the lane at ``base``."""
-    if _writes(stmt, base, span):
-        return True
-    cells = range(base, base + span + 1)
-    return any(any(FF._may_read(x, c) for c in cells) for x in frameproc._stmt_exprs(stmt))
+    return _writes(stmt, base, span, regions) or _reads(
+        frameproc._stmt_exprs(stmt), base, span, regions
+    )
 
 
 class _Site:
     """One byte-wise 16-bit update, its premise counts and its refusal."""
 
-    __slots__ = ("lo", "hi", "op", "word", "merge", "why", "sid", "at")
+    __slots__ = ("lo", "hi", "op", "word", "direct", "merge", "mask", "why", "sid", "at")
 
     def __init__(self, lo, hi, op):
         self.lo, self.hi, self.op = lo, hi, op
         self.word = lo is not None and hi == lo + 1
-        self.merge = self.word
+        self.direct = False
+        self.merge = False
+        self.mask = None
         self.why = None
         self.sid = None
         self.at = None
@@ -168,6 +239,35 @@ class _Site:
         )
 
 
+def _value(s):
+    """The value a store or assignment writes."""
+    return s[2]
+
+
+def _load_addr(n, env):
+    """The address ``n`` loads one byte from, else None."""
+    r = _resolve(n, env)
+    return r[1] if r[0] == "mem" and r[2] == 1 else None
+
+
+def _peel_mask(val, env):
+    """``(update, byte mask)`` where the hi half is masked (a 12-bit register)."""
+    r = _resolve(val, env)
+    if r[0] == "op" and r[1] == "INT_AND" and len(r[2]) == 2 and r[3] == 1:
+        for a, b in (r[2], r[2][::-1]):
+            if E.is_const(b) and _update(a, env) is not None:
+                return a, b[1]
+    return val, None
+
+
+def _mergeable(dst_lo, dst_hi, src_lo, src_hi):
+    """Both halves go straight back to the lanes they came from.
+
+    Adjacency is the caller's ``word`` test: two lanes three bytes apart are one
+    quantity but not one word store."""
+    return dst_lo is not None and dst_lo == src_lo and dst_hi == src_hi
+
+
 def _lo_agrees(lo, op, step, env):
     """The lo lane runs the same update the hi lane carries from.
 
@@ -180,57 +280,90 @@ def _lo_agrees(lo, op, step, env):
     return False
 
 
-def _match(lst, i, env):
-    """``(j, site, parts)`` for the update the store at ``lst[i]`` opens, else None."""
+def _half_ref(s):
+    """How later statements refer to the half this statement produced."""
+    return ("loc", s[1]) if s[0] == "asg" else s[2]
+
+
+def _match(lst, i, env, kinds=("st", "asg"), regions=None):
+    """``(j, site, parts)`` for the update ``lst[i]`` opens, else None.
+
+    The **sources** decide the lift: two byte lanes linked by a carry are one
+    16-bit quantity wherever their halves are then written. The destinations
+    decide only whether the two writes collapse into one ``u16`` store."""
     s = lst[i]
-    lo = _update(s[2], env)
+    if s[0] not in kinds:
+        return None
+    lo = _update(_value(s), env)
     if lo is None:
         return None
-    lo_base, lo_idx = FF._addr_split(s[1])
-    if not _same(lo[0], ("mem", s[1], 1), env):
+    a_lo = _load_addr(lo[0], env)
+    if a_lo is None:
         return None
+    env = {**env, s[1]: s[2]} if s[0] == "asg" else env
     for j in range(i + 1, len(lst)):
         t = lst[j]
-        if t[0] == "asg":
-            env = {**env, t[1]: t[2]}
-            continue
-        if t[0] != "st":
+        if t[0] not in ("st", "asg"):
             return None
-        hi = _update(t[2], env)
-        if hi is None:
+        if t[0] not in kinds:
+            env = {**env, t[1]: t[2]} if t[0] == "asg" else env
             continue
-        over = (_carry_over if hi[2] == _ADD else _borrow_over)(hi[1], env)
-        if over is None or not _lo_agrees(lo, hi[2], over[1], env):
+        val, mask = _peel_mask(_value(t), env)
+        hi = _update(val, env)
+        over = None if hi is None else (_carry_over if hi[2] == _ADD else _borrow_over)(hi[1], env)
+        a_hi = None if hi is None else _load_addr(hi[0], env)
+        if over is None or a_hi is None or not _lo_agrees(lo, hi[2], over[1], env):
+            if t[0] == "asg":
+                env = {**env, t[1]: t[2]}
             continue
-        if not _same(over[0], lo[0], env) or not _same(hi[0], ("mem", t[1], 1), env):
+        if not _same(over[0], lo[0], env):
+            if t[0] == "asg":
+                env = {**env, t[1]: t[2]}
             continue
-        hi_base, hi_idx = FF._addr_split(t[1])
+        lo_base, lo_idx = FF._addr_split(a_lo)
+        hi_base, hi_idx = FF._addr_split(a_hi)
         site = _Site(lo_base, hi_base, hi[2])
-        if lo_base is None or hi_base is None:
+        site.mask = mask
+        site.direct = lo[0][0] == "mem" and hi[0][0] == "mem"
+        site.merge = site.word and _mergeable(
+            s[1] if s[0] == "st" else None, t[1] if t[0] == "st" else None, a_lo, a_hi
+        )
+        if (
+            lo_base is not None
+            and hi_base is not None
+            and _may_disturb(s, hi_base, hi_idx, regions)
+        ):
+            site.why = "the lo destination may alias the hi lane"
+        elif lo_base is None or hi_base is None:
             site.why = "a lane address is not a const base plus index"
         elif hi_idx != lo_idx:
             site.why = "the two lanes are indexed differently"
-        return j, site, (lo[0], hi[0], over[1], lo_idx)
+        return j, site, (lo[0], hi[0], over[1], lo_idx, a_lo)
     return None
 
 
-def _premise(lst, i, j, parts, site, span):
+def _premise(lst, i, j, parts, site, span, regions=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     The hi lane's load moves to the word assignment, so no intervening statement
     may write it; merging the two lane stores also moves the hi store, so that
     needs no intervening read either."""
     watch = [x for x in parts[:3] if x is not None]
+    later = [x for x in parts[1:3] if x is not None]  # the lo store precedes them in the original
+    if _disturbs(lst[i], later, regions):
+        return "the lo destination may disturb the hi lane or the step"
     for k in range(i + 1, j):
-        if _clobbers(lst[k], watch):
+        if _clobbers(lst[k], watch, regions):
             return "an intervening statement changes an operand"
-        if _writes(lst[k], site.hi, span):
+        if _writes(lst[k], site.hi, span, regions):
             return "an intervening statement writes the hi lane"
-    site.merge = site.word and not any(_hits(lst[k], site.hi, span) for k in range(i + 1, j))
+    site.merge = site.merge and not any(
+        _hits(lst[k], site.hi, span, regions) for k in range(i + 1, j)
+    )
     return None
 
 
-def _sid_pair(lst, i, vlo, vhi, span):
+def _sid_pair(lst, i, vlo, vhi, span, regions=None):
     """``(first, second, lo address, base)`` of a SID pair store over the halves.
 
     Freq/pulse/cutoff are last-write-wins, so the projection keys them by register
@@ -250,7 +383,7 @@ def _sid_pair(lst, i, vlo, vhi, span):
     if len(at) != 2 or at["hi"][1] != at["lo"][1] + 1:
         return None
     a, b = sorted((at["lo"][0], at["hi"][0]))
-    if any(_hits(lst[k], at["lo"][1], span + 1) for k in range(a + 1, b)):
+    if any(_hits(lst[k], at["lo"][1], span + 1, regions) for k in range(a + 1, b)):
         return None
     return a, b, at["lo"][2], at["lo"][1]
 
@@ -258,8 +391,11 @@ def _sid_pair(lst, i, vlo, vhi, span):
 def _lift(lst, i, j, parts, site, name):
     """Rewrite ``lst`` in place: one word assignment, the halves truncated off it."""
     lo_st, hi_st, lv = lst[i], lst[j], _loc(name)
-    src = ("mem", lo_st[1], 2) if site.word else FF._pack(parts[0], parts[1])
+    word_load = site.word and (site.direct or site.merge)
+    src = ("mem", parts[4], 2) if word_load else FF._pack(parts[0], parts[1])
     word = ("op", site.op, (src, FF._zext2(parts[2])), 2)
+    if site.mask is not None:
+        word = ("op", "INT_AND", (word, ("const", (site.mask << 8) | 0xFF, 2)), 2)
     half = {i: _trunc(lv), j: _hi_byte(lv)}
     out = []
     for k, s in enumerate(lst):
@@ -268,8 +404,11 @@ def _lift(lst, i, j, parts, site, name):
         if k in (i, j):
             if k == j and site.merge:
                 continue
-            addr = lo_st[1] if k == i else hi_st[1]
-            out.append(("st", addr, lv if (k == i and site.merge) else half[k]))
+            src_s = lo_st if k == i else hi_st
+            if src_s[0] == "asg":
+                out.append(("asg", src_s[1], half[k]))
+                continue
+            out.append(("st", src_s[1], lv if (k == i and site.merge) else half[k]))
             continue
         if site.at is not None and k in site.at[:2]:
             if k == site.at[0]:
@@ -333,37 +472,52 @@ def _names(procs):
     return used
 
 
-def apply_rung(procs):
-    """Rung (d2) in place over ``procs``; returns the per-site proofs."""
+def apply_rung(procs, decls=()):
+    """Rung (d2) in place over ``procs``; returns the per-site proofs.
+
+    Two sweeps: cell destinations first, so a half written through a register
+    still collapses into the lane store, then the local-destination form. ``decls``
+    bound the index spans an aliasing test has to assume (``_span``)."""
+    regions = datadecl.Regions(decls)
     used, proofs, n = _names(procs), [], 0
     for _e, params, rets, stmts in procs:
         lifted = False
         for lst in _bodies(stmts):
-            i = 0
-            while i < len(lst):
-                env = {s[1]: s[2] for s in lst[:i] if s[0] == "asg"}
-                got = _match(lst, i, env) if lst[i][0] == "st" else None
-                if got is None:
-                    i += 1
-                    continue
-                j, site, parts = got
-                inner = {s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"}
-                parts = tuple(_inline(p, inner) if p is not None else None for p in parts)
-                span = 0 if parts[3] is None else E.mask(FF._w(parts[3]))
-                site.why = site.why or _premise(lst, i, j, parts, site, span)
-                site.at = None if site.why else _sid_pair(lst, i, lst[i][2], lst[j][2], span)
-                site.sid = None if site.at is None else site.at[3]
-                proofs.append(site.proof())
-                if site.why:
-                    i += 1
-                    continue
-                while "d%d" % n in used:
-                    n += 1
-                name = "d%d" % n
-                used.add(name)
-                _lift(lst, i, j, parts, site, name)
-                lifted = True
-                i += 2
+            done = set()
+            for kinds in (("st",), ("asg",)):
+                i = 0
+                while i < len(lst):
+                    env = {s[1]: s[2] for s in lst[:i] if s[0] == "asg"}
+                    got = _match(lst, i, env, kinds, regions)
+                    if got is None:
+                        i += 1
+                        continue
+                    j, site, parts = got
+                    if (site.lo, site.hi) in done:
+                        i += 1
+                        continue
+                    done.add((site.lo, site.hi))
+                    inner = {s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"}
+                    parts = tuple(_inline(p, inner) if p is not None else None for p in parts)
+                    span = _span(site.hi, parts[3], regions)
+                    site.why = site.why or _premise(lst, i, j, parts, site, span, regions)
+                    site.at = (
+                        None
+                        if site.why
+                        else _sid_pair(lst, i, _half_ref(lst[i]), _half_ref(lst[j]), span, regions)
+                    )
+                    site.sid = None if site.at is None else site.at[3]
+                    proofs.append(site.proof())
+                    if site.why:
+                        i += 1
+                        continue
+                    while "d%d" % n in used:
+                        n += 1
+                    name = "d%d" % n
+                    used.add(name)
+                    _lift(lst, i, j, parts, site, name)
+                    lifted = True
+                    i += 2
         if lifted:
             _drop_dead(_e, params, rets, stmts)
     return proofs
