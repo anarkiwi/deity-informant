@@ -221,6 +221,18 @@ def _zp_indexed_lanes():
     return _build("zpx", a, {0x20 + k: 0xF0 + k for k in range(6)})
 
 
+def _deref_lanes():
+    """Both lanes read through a zero-page pointer pair: an address with no const base."""
+    a = G.Asm(G.ORG)
+    a.i("LDY", "imm", 0).i("CLC")
+    a.i("LDA", "indy", G.PTR).i("ADC", "imm", 0x37).i("STA", "indy", G.PTR)
+    a.i("INY")
+    a.i("LDA", "indy", G.PTR).i("ADC", "imm", 0x00).i("STA", "indy", G.PTR)
+    a.i("LDY", "imm", 0).i("LDA", "indy", G.PTR).i("STA", "abs", OUT)
+    a.i("INY").i("LDA", "indy", G.PTR).i("STA", "abs", OUT + 1).i("RTS")
+    return _build("deref", a, {G.PTR: WLO & 0xFF, G.PTR + 1: WLO >> 8, WLO: 0xF0, WHI: 0x20})
+
+
 def _split_index_lanes():
     """One lane walked by X, the other by Y: two rows, not two halves of one row."""
     a = G.Asm(G.ORG)
@@ -248,7 +260,7 @@ def _step_overwritten():
 @pytest.mark.parametrize(
     "build,want",
     [
-        (_zp_indexed_lanes, "a lane address is not a const base plus index"),
+        (_deref_lanes, "a lane address is not a const base plus index"),
         (_split_index_lanes, "the two lanes are indexed differently"),
         (_step_overwritten, "an intervening statement changes an operand"),
     ],
@@ -295,8 +307,56 @@ def test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page():
 
 def test_an_unresolved_lane_prints_as_unresolved_and_sites_at_zero():
     """With neither lane named, the record has nowhere to sit but the bottom."""
-    (pr,) = _math(_zp_indexed_lanes()[1])
+    (pr,) = _math(_deref_lanes()[1])
     assert "lanes unresolved" in pr.lemma and pr.site == 0 and pr.targets == (None, None)
+
+
+def test_the_zero_page_indexed_lanes_lift_but_never_as_one_word_access():
+    """`$20,X`/`$21,X` share one index, so they are one row apart and provably disjoint.
+
+    Adjacent they may be, but the wrap denies them a word access: at ``X = $DF``
+    the pair is ``$FF``/``$00``, which no ``:2`` load or store reaches."""
+    _m, prog, text = _zp_indexed_lanes()
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (0x20, 0x21)
+    assert "16-bit add: lanes $0020/$0021, split tables" in pr.lemma
+    assert "one u16 store" not in pr.lemma
+    assert "carry(" not in text and "d0:2 = " in text
+    assert "]:2" not in text  # no word access at a wrapping address
+
+
+def test_a_wrapping_zero_page_store_may_reach_a_lane_below_its_base():
+    """`STA $20,X` reaches `$0011` at `X = $F1`: the whole zero page, not `$20..$11F`.
+
+    The modulus is what says so. Read as a plain span the store would clear the hi
+    lane and the site would lift, hoisting the hi read above the store that fills it."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 0xF1).label("lp").i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "imm", 0x37).i("STA", "zpx", 0x20)
+    a.i("LDA", "zp", HI).i("ADC", "imm", 0x00).i("STA", "zp", HI)
+    a.i("DEX").i("CPX", "imm", 0xEF).i("BNE", "rel", ("L", "lp"))
+    _publish(a, LO, HI).i("RTS")
+    _m, prog, text = _build("zpwrap", a, {LO: 0xF0, HI: 0x20})
+    (pr,) = _math(prog)
+    assert pr.status == "refused"
+    assert pr.lemma.endswith("the lo destination may alias the hi lane")
+    assert "carry(" in text and "d0:2" not in text
+
+
+def test_an_absolute_indexed_store_below_the_page_still_reaches_a_zero_page_lane():
+    """`STA $0019,Y` reaches `$0019..$0118`, which holds the hi lane `$005C`."""
+    a = G.Asm(G.ORG)
+    a.i("LDY", "imm", 0x43).label("lp").i("CLC")
+    a.i("LDA", "zp", 0x5B).i("ADC", "imm", 0x37).i("STA", "absy", 0x0019)
+    a.i("LDA", "zp", 0x5C).i("ADC", "imm", 0x00).i("STA", "zp", 0x5C)
+    a.i("DEY").i("CPY", "imm", 0x41).i("BNE", "rel", ("L", "lp"))
+    a.i("LDA", "zp", 0x5B).i("STA", "abs", OUT)
+    a.i("LDA", "zp", 0x5C).i("STA", "abs", OUT + 1).i("RTS")
+    _m, prog, text = _build("absylo", a, {0x5B: 0xF0, 0x5C: 0x20})
+    (pr,) = _math(prog)
+    assert pr.status == "refused"
+    assert pr.lemma.endswith("the lo destination may alias the hi lane")
+    assert "carry(" in text and "d0:2" not in text
 
 
 def test_a_sixteen_bit_step_lifts_as_one_word_add():

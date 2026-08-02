@@ -1457,21 +1457,94 @@ reverted:
 `test_framemath.py::test_a_write_later_than_the_read_it_would_spoil_is_no_hazard`
 and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
 
-- **Unresolved lane address** feeds three classes at once — "a lane address is
-  not a const base plus index", "the lo destination may alias the hi lane"
-  (`_may_disturb` with `base` None), "the lo destination may disturb the hi lane
-  or the step" (`_disturbs` with a ref base None). The dominant unresolvable
-  form is `zext2(x + K)`, the 6502 `zp,X` wrap: the add is at width **1**
-  because the wrap is inside the byte, and `frameproc._index_of` demands
-  `INT_ADD` at width 2 with a base ≥ `$100`, so it declines to name it. Fix: one
-  extra clause naming it as base `K`, index `x`, modulus 256, plus a straddle
-  guard **at the access site** (only the access knows its width) refusing a
-  2-byte access that can reach `$FF`, since a word read at `$FF` takes `$0100`.
-  This is not a case the lift finds hard; it is a case one predicate will not
-  look at. A separate normalisation pass would be the wrong shape — `_index_of`
-  is the single point `frameproc`, `framefuse._addr_split`, `framemath` and
-  `frameptr` all ask, so fixing it once fixes four consumers. It changes naming
-  for every consumer at once, so it wants its own commit and its own gate run.
+- **Unresolved lane address: the `zp,X` wrap, named modulo 256 (CLOSED, 16 → 0).**
+  Instrumenting the class over the corpus put **16 of 16** on one form,
+  `zext2((x + K):1)` — the add is at width **1** because the wrap is inside the
+  byte, and `_index_of` demanded `INT_ADD` at width 2 with a base ≥ `$100`. Both
+  lanes of every one of the 16 carry the *same* index expression. That is the
+  whole win: `$1A,X` and `$1D,X` differ by `(K1 - K2) mod 256` at every value of
+  `X`, which `addr_bits` cannot say and a modulus can. With indices differing or
+  unknown a `zp,X` access reaches the **whole zero page**, which is exactly what
+  `addr_bits` already gave, so nothing loosens: `frameproc.span` refuses a
+  declaration's bound to a modular index (the wrap is the evidence the access
+  leaves its datum), and `_flat` normalises any modular range no shared row
+  tightens back to `$00..$FF`. The **straddle guard** lives in
+  `frameproc.addr_range`, which is where the *width* is known: a 2-byte access at
+  a modular address does not resolve, since a word read at `$FF` takes `$0100`
+  and the wrap does not. Donkey_Kong's `$E0,X`/`$E1,X` is the witness — adjacent
+  cells that must still lift as two byte accesses, and it is `_Site.word` the
+  guard denies, not the lift.
+- **The naming was necessary and not sufficient; two more inputs were.** Naming
+  alone closed 2 of the 16. The other 14 store through a CSE'd address local
+  (`t0 = zext2((x - $7F)) … *[t0] = …`), and two predicates read the local rather
+  than the address: `_lane_addr` returned the *shallowest* pass-1 naming of the
+  lane address, and `store_ref` was handed the statement as written.
+  `_lane_ref` now prefers, among the namings `to_egg` recorded for the same
+  term, the shallowest one the range rule can read — free, since every naming
+  admitted holds the same value where the lift emits, and it is admitted under
+  the *strict* test (`_emittable(…, i, i)`), because a row named by a definition
+  inside the interval is not the row the lift emits. `_store` spells a store's
+  address through the definition in force, discharging the staleness `_disturbs`
+  warns of by requiring every local that naming reads to hold at the store what
+  it held at the definition. `Defs._hits` has resolved store addresses this way
+  all along; this puts the same reading in front of the one `overlaps` rule.
+- **Three of the four consumers must decline the modular naming, and do.** The
+  plan above said fixing `_index_of` fixes four consumers at once. It does — but
+  three of them answer a *naming* question, not a *range* one, and for them the
+  answer is "no name": `base[index]` in the grammar means `base + zext2(index)`
+  with no wrap, so `_membody` printing `zp_14[x]` for `$14,X` would emit a
+  program that is not the one lifted; `frameptr._leg` reading `$14,X` as row `x`
+  of the table at `$0014` would identify the wrong pointer table. `addr_split`
+  therefore stays the naming form and returns nothing for a modular address, and
+  `framefuse` (which is `addr_split`) is untouched. `frameptr._span` takes the
+  range answer — a `zp,X` store is no longer a wild store, it reaches `$00..$FF`
+  — which is strictly more information; on this corpus it changed no pointer
+  proof. The one place the modulus belongs is the range tuple
+  `(base, index, span, width, mod)` that `overlaps` decides, which is where it
+  went.
+- **Measured, HEAD vs the modulus.** Refusals 62 → **48**, lifts 1466 → **1480**,
+  merges 182 → 182, adjacent 628 → 628, SID pairs 356 → 356, Gate FP **649/649**,
+  canonical fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records
+  differ**. The consumer partition §6 requires beside the gate: emitted text
+  10194957 → **10196432** bytes (+1475), raw `mem[` 9682 → **9697** (+15, all of
+  it in the six tunes that gained lifts — a `zp,X` read the lift hoists into the
+  word expression stays `mem[zext2((x + $1D))]`, since naming it would drop the
+  wrap); byte-wide SID stores **786** and word **2892**, both unchanged. Eight
+  tunes moved and no others: 14 sites lifted and 2 reclassified into "the lo
+  destination may disturb the hi lane or the step" (36 → 38), both correctly —
+  `Aaaaaargh_13`'s `$BF,X` store can wrap onto its own step at `$00E2`, and
+  `Donkey_Kong`'s hi-lane *read* address is a local defined before the interval,
+  which `_store` does not reach because it resolves store addresses only. That
+  residue is the same shape §7.3 already names for that class: an unresolved
+  *read* address. Extending the same resolution to reads is the next step and a
+  separate commit.
+- **Both counter-examples still refuse, and lift when the modulus is removed.**
+  `After_the_War` `$0010/$0011` and `Ultima_III-Exodus` `$005B/$005C` are pinned
+  by `test_framemath.py::test_a_wrapping_zero_page_store_may_reach_a_lane_below_its_base`
+  and `::test_an_absolute_indexed_store_below_the_page_still_reaches_a_zero_page_lane`.
+  Mutating `frameproc._flat` to drop the modulus makes the first test's synthetic
+  **fail Gate FP** — it lifts, hoists the hi-lane read above the store that fills
+  it, and emits a wrong SID byte — and makes the real `After_the_War` site lift
+  as well; `Ultima_III` refuses either way, since `$005C` lies inside `$0019..$0118`.
+  Dropping the straddle guard, or `_lane_ref`, or `_store` each fails
+  `::test_the_zero_page_indexed_lanes_lift_but_never_as_one_word_access`.
+- **A mismatched index, found by this work and fixed with it.** `_match` passed
+  the *lo* lane's index with the *hi* lane's base to `_may_disturb`, so a hi lane
+  at a constant address was claimed to sit at row `idx` of itself and `overlaps`'
+  shared-row rule could prove a disjointness that does not hold. It predates this
+  change. Over the corpus the configuration arises at **1 site** and the two
+  answers agree, so it was unreachable — but "unreachable on this corpus" is not
+  a property of the rule, and the fix is one token (`site.hidx`), so it is taken
+  here rather than recorded: measured after, the corpus is unchanged in every
+  figure below.
+- **The modular branch of `overlaps` is sound only for one-byte ranges.** With a
+  shared index and modulus it tests `(ba - bb) % m` against `(-wa, wb)`, which
+  omits the wrap-around case `d > m - wa` that a range of width ≥ 2 could reach.
+  Nothing constructs one: the straddle guard in `addr_range` refuses a modular
+  address to any access wider than a byte, and every modular range in the pass
+  comes through it. Verified rather than argued — asserting the invariant inside
+  `overlaps` and running the corpus trips it in **0 of 682 tunes**. Widening the
+  guard later MUST widen this test with it.
 - **Lanes indexed differently** has two causes. One lane may be an unindexed
   zero-page cell (`American $B501[..]/$00FE`, `Endless_Sands $181F[x]/$00FC`),
   which has a constant address and so no row to disagree about — index equality

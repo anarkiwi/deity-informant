@@ -89,44 +89,53 @@ def capture(tune, frames=200, sub=0):
         if r is None:
             return "None"
         idx = brief(r[1], 2) if r[1] is None or isinstance(r[1], tuple) else "unres"
-        return "$%04X idx=%s span=%d w=%d" % (r[0], idx, r[2], r[3])
+        return "$%04X idx=%s span=%d w=%d mod=%d" % (r[0], idx, r[2], r[3], r[4])
+
+    def read_rng(ref, rw, regions):
+        """One read as a range tuple, its span filled in from the declarations."""
+        if ref is None:
+            return None
+        rb, ri, rm = ref
+        return (rb, ri, FM._span(rb, ri, regions, rm), rw, rm)
 
     def refs(exprs, regions):
         """Every memory range the expressions read: the other half of a refusal's terms."""
         return [
-            "read=%s" % rng(None if rb is None else (rb, ri, FM._span(rb, ri, regions), rw))
+            "read=%s" % rng(read_rng(ref, rw, regions))
             for x in exprs
-            for (rb, ri), rw in FM._mem_refs(x)
+            for ref, rw in FM._mem_refs(x)
         ]
 
-    def ranges(lst, i, st, regions):
+    def ranges(lst, i, st, regions, env):
         """The store's range against each range it is held to reach: the refusal's terms.
 
         A refusal names a predicate, not the pair of addresses that tripped it, and
         an unresolvable one prints as None -- which is the usual answer."""
-        return ["store=%s" % rng(FM._reach(lst[i], regions))] + refs(st.src[1:], regions)
+        store = FM._store(env, lst, i)
+        return ["store=%s" % rng(FM._reach(store, regions))] + refs(st.src[1:], regions)
 
-    def culprit(lst, k, st, regions):
+    def culprit(lst, k, st, regions, env):
         """The statement blocking the hoist, and which operand it changed."""
-        hit = [n for n, x in enumerate(st.src) if FM._clobbers(lst[k], (x,), regions)]
-        return [k, brief(lst[k], 8), "at=%s" % rng(FM._reach(lst[k], regions)), hit] + refs(
+        s = FM._store(env, lst, k)
+        hit = [n for n, x in enumerate(st.src) if FM._clobbers(s, (x,), regions)]
+        return [k, brief(lst[k], 8), "at=%s" % rng(FM._reach(s, regions)), hit] + refs(
             [st.src[n] for n in hit], regions
         )
 
-    def premise(lst, i, j, st, span, blocked=None, regions=None):
-        why = o_prem(lst, i, j, st, span, blocked, regions)
+    def premise(lst, i, j, st, span, blocked=None, regions=None, env=None):
+        why = o_prem(lst, i, j, st, span, blocked, regions, env)
         ev.append(["premise", i, j, why, bool(st.merge)])
         if why == "the lo destination may disturb the hi lane or the step":
-            ev.append(["disturb", i, j, ranges(lst, i, st, regions)])
+            ev.append(["disturb", i, j, ranges(lst, i, st, regions, env)])
         if why == "an intervening statement changes an operand":
-            ev.append(["clobber", i, j, culprit(lst, blocked, st, regions)])
+            ev.append(["clobber", i, j, culprit(lst, blocked, st, regions, env)])
         return why
 
-    def may_disturb(stmt, base, idx, regions):
+    def may_disturb(stmt, base, idx, regions, mod=0):
         """``_match``'s own alias test: the lo store's range against the hi lane's."""
-        got = o_may(stmt, base, idx, regions)
+        got = o_may(stmt, base, idx, regions, mod)
         if got:
-            lane = FM._lane(base, idx, FM._span(base, idx, regions))
+            lane = FM._lane(base, idx, FM._span(base, idx, regions, mod), mod)
             ev.append(["alias", "store=%s" % rng(FM._reach(stmt, regions)), "hi=%s" % rng(lane)])
         return got
 

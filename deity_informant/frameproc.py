@@ -132,11 +132,26 @@ UNRES = object()  # "the base is not named, so only the bits the address sets bo
 
 # ---- addresses: the base an access names, and the bytes it may reach -------------
 def addr_split(addr):
-    """``(const base, index expression)`` of an address, index None when plain."""
+    """``(const base, index expression)`` of an address, index None when plain.
+
+    The naming form: a modular address is no ``base + index`` the emitter may write
+    or a table row be read off, since the row it lands on wraps."""
     if addr[0] == "const" and addr[2] == 2:
         return addr[1], None
     got = _index_of(addr)
-    return got if got is not None else (None, None)
+    return (got[0], got[1]) if got is not None and got[2] == 0 else (None, None)
+
+
+def addr_range(addr, width=1):
+    """``(base, index, modulus)`` an access of ``width`` bytes makes, else None.
+
+    The straddle guard sits here because only the access knows its width: a wider
+    access at a modular address is refused, since a word read at ``$FF`` takes
+    ``$0100`` and the ``zp,X`` wrap does not reach it."""
+    if addr[0] == "const" and addr[2] == 2:
+        return (addr[1], None, 0)
+    got = _index_of(addr)
+    return None if got is None or (got[2] and width > 1) else got
 
 
 def addr_bits(n):
@@ -155,38 +170,49 @@ def addr_bits(n):
     return m
 
 
-def span(base, idx, regions):
+def span(base, idx, regions, mod=0):
     """Tightest sound span for an indexed address at ``base``: the ONE span rule.
 
     An index reaches no further than the declaration holding its base, since the
-    lifted program indexes that datum; with no declaration the register width is
-    all that bounds it."""
+    lifted program indexes that datum; a modular index is the evidence the access
+    leaves its datum, so no declaration bounds one."""
     if idx is None:
         return 0
     full = E.mask(loc_width(idx))
-    avail = 0 if base is None or regions is None else regions.avail(base)
+    avail = 0 if mod or base is None or regions is None else regions.avail(base)
     return min(full, avail - 1) if avail > 0 else full
 
 
-def overlaps(a, b):
-    """Whether two ranges may intersect; each is ``(base, index, span, width)``.
+def _flat(base, sp, width, mod):
+    """A modular range as the plain interval it cannot leave."""
+    if not mod or base + sp + width - 1 < mod:
+        return base, sp, width
+    return 0, mod - 1, width
 
-    The ONE aliasing rule. Two ranges carrying one index name one row apiece, so
-    their spans drop out and bases and widths alone decide: ``T[x]`` and
-    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is. One row
-    needs a shared index expression, which the sentinels are not."""
-    (ba, ia, sa, wa), (bb, ib, sb, wb) = a, b
-    if isinstance(ia, tuple) and ia == ib:
-        sa = sb = 0
+
+def overlaps(a, b):
+    """Whether two ranges may intersect; each is ``(base, index, span, width, mod)``.
+
+    The ONE aliasing rule: two ranges carrying one index and one modulus name one
+    row apiece, so their spans drop out and the bases decide, ``$14,X``/``$15,X``
+    modulo the wrap. Short of that a modular range reaches its whole wrap."""
+    (ba, ia, sa, wa, ma), (bb, ib, sb, wb, mb) = a, b
+    if isinstance(ia, tuple) and ia == ib and ma == mb:
+        d = (ba - bb) % ma if ma else ba - bb
+        return -wa < d < wb
+    ba, sa, wa = _flat(ba, sa, wa, ma)
+    bb, sb, wb = _flat(bb, sb, wb, mb)
     return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
 
 
 def store_ref(stmt, regions):
     """The range a store writes, else None where its address does not resolve."""
-    base, idx = addr_split(stmt[1])
-    if base is None:
+    width = G.store_width(stmt[2])
+    got = addr_range(stmt[1], width)
+    if got is None:
         return None
-    return (base, idx, span(base, idx, regions), G.store_width(stmt[2]))
+    base, idx, mod = got
+    return (base, idx, span(base, idx, regions, mod), width, mod)
 
 
 def store_reach(stmt, regions):
@@ -198,7 +224,7 @@ def store_reach(stmt, regions):
     got = store_ref(stmt, regions)
     if got is not None:
         return got
-    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]))
+    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]), 0)
 
 
 def hidden_defs(s):
@@ -293,7 +319,7 @@ class Defs:
         s = self.lst[k]
         got = store_ref(s, regions)
         if got is not None:
-            return overlaps((cell, NOIDX, 0, 1), got)
+            return overlaps((cell, NOIDX, 0, 1, 0), got)
         m = addr_bits(self.resolve(s[1], k))
         return any((cell - d) & ~m == 0 for d in range(G.store_width(s[2])))
 
@@ -1522,14 +1548,11 @@ def _forloops(info):
 
 
 # ---- printing --------------------------------------------------------------------
-def _index_of(addr):
-    """``(base, index expression)`` for a ``const + index`` address, else None.
-
-    The index is whatever the address adds to the base; ``zext2`` is the reader's
-    own widening (grammar ``_index_addr``) and is stripped so the text round trips."""
-    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != 2 or len(addr[2]) != 2:
+def _base_add(addr, w, least):
+    """``(const base, index)`` of a two-operand ``INT_ADD`` at width ``w``, else None."""
+    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != w or len(addr[2]) != 2:
         return None
-    at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == 2 and c[1] >= 0x100]
+    at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == w and c[1] >= least]
     if len(at) != 1:
         return None
     base, idx = addr[2][at[0]], addr[2][1 - at[0]]
@@ -1538,6 +1561,19 @@ def _index_of(addr):
     if idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2:
         idx = idx[2][0]
     return base[1], idx
+
+
+def _index_of(addr):
+    """``(base, index expression, modulus)`` for a ``const + index`` address, else None.
+
+    The index is whatever the address adds to the base; ``zext2`` is the reader's
+    own widening (grammar ``_index_addr``) and is stripped so the text round trips.
+    The ``zp,X`` form adds inside the byte, so it names the zero page modulo 256."""
+    if addr[0] == "op" and addr[1] == "INT_ZEXT" and addr[3] == 2:
+        got = _base_add(addr[2][0], 1, 0)
+        return None if got is None else (got[0], got[1], 0x100)
+    got = _base_add(addr, 2, 0x100)
+    return None if got is None else (got[0], got[1], 0)
 
 
 _NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
@@ -1551,7 +1587,7 @@ def _membody(addr, res=_NORES):
         name = "*" + sidprog._addr_name(got[0])
         return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
-    if got is not None:
+    if got is not None and got[2] == 0:
         return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
     return None
 

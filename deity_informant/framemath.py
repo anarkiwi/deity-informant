@@ -182,6 +182,19 @@ def _lane_addr(t, prov, ok):
     return ("const", t[1], 2) if t[0] == "cell" else _back(t[1], prov, ok)
 
 
+def _lane_ref(t, prov, ok, fallback):
+    """A naming of the lane address the range rule reads, else ``fallback``.
+
+    Every naming ``ok`` admits is the same address there, so preferring one the
+    aliasing rule can read costs nothing; ``ok`` here forbids the interval's own
+    definitions, since a row those pick out is not the row the lift emits."""
+    if t[0] != "cell":
+        for ir, (_d, at) in sorted(prov.get(t[1], {}).items(), key=lambda kv: kv[1][0]):
+            if ok(ir, at) and frameproc.addr_range(ir) is not None:
+                return ir
+    return fallback
+
+
 def _inline(n, defs):
     """Substitute ``defs`` (definitions inside the interval) into ``n``."""
     if n[0] == "loc" and n[1] in defs:
@@ -193,7 +206,7 @@ def _inline(n, defs):
     return n
 
 
-def _hoist(lst, i, j, exprs, regions):
+def _hoist(lst, i, j, exprs, regions, env=None):
     """``exprs``, the interval's definitions inlined, and the statement blocking it.
 
     A read is carried up to ``i`` from where the interval made it, so a statement
@@ -204,7 +217,7 @@ def _hoist(lst, i, j, exprs, regions):
         s = lst[k]
         if s[0] == "asg" and any(s[1] in frameproc._locset(x) for x in exprs):
             exprs = tuple(frameproc._subst_loc(x, s[1], s[2]) for x in exprs)
-        elif _clobbers(s, exprs, regions):
+        elif _clobbers(_store(env, lst, k), exprs, regions):
             at = k
     return exprs, at
 
@@ -215,12 +228,12 @@ def _volatile(n):
 
 
 def _mem_refs(n):
-    """``((base, index), width)`` of every memory reference under ``n``."""
+    """``((base, index, modulus), width)`` of every memory reference under ``n``."""
     out, stack = [], [n]
     while stack:
         x = stack.pop()
         if x[0] == "mem":
-            out.append((FF._addr_split(x[1]), x[2]))
+            out.append((frameproc.addr_range(x[1], x[2]), x[2]))
             stack.append(x[1])
         elif x[0] == "op":
             stack.extend(x[2])
@@ -233,15 +246,18 @@ _overlaps = frameproc.overlaps
 _reach = frameproc.store_reach  # a store with no named base still has a bound
 
 
-def _lane(base, idx, span):
+def _lane(base, idx, span, mod=0):
     """The one-byte range a lane occupies."""
-    return (base, idx, span, 1)
+    return (base, idx, span, 1, mod)
 
 
 def _reads(exprs, at, regions):
     """True where evaluating ``exprs`` may load a cell of the range ``at``."""
-    for (rb, ri), rw in (r for x in exprs for r in _mem_refs(x)):
-        if rb is None or _overlaps(at, (rb, ri, _span(rb, ri, regions), rw)):
+    for ref, rw in (r for x in exprs for r in _mem_refs(x)):
+        if ref is None:
+            return True
+        rb, ri, rm = ref
+        if _overlaps(at, (rb, ri, _span(rb, ri, regions, rm), rw, rm)):
             return True
     return False
 
@@ -261,38 +277,63 @@ def _disturbs(stmt, exprs, regions):
     return False if stmt[0] != "st" else _reads(exprs, _reach(stmt, regions), regions)
 
 
-def _may_disturb(stmt, base, idx, regions):
+def _store(env, lst, k):
+    """``lst[k]`` with its address spelled as the definition in force spells it.
+
+    A local naming an address names the same address at ``k`` only where every
+    local that naming reads still holds there what it held where it was written --
+    the staleness ``_disturbs`` warns of, discharged rather than assumed."""
+    s = lst[k]
+    if s[0] != "st" or env is None:
+        return s
+    n, bound = s[1], k
+    while n[0] == "loc":
+        got = env.value(n[1], bound)
+        if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in frameproc._locset(got[1])):
+            break
+        n, bound = got[1], got[0]
+    return ("st", n, s[2])
+
+
+def _may_disturb(stmt, base, idx, regions, mod=0):
     """The store may write the lane at ``(base, idx)``; exact when the index matches."""
     if stmt[0] != "st":
         return False
-    lane = _lane(base, idx, _span(base, idx, regions))
+    lane = _lane(base, idx, _span(base, idx, regions, mod), mod)
     return _overlaps(lane, _reach(stmt, regions))
 
 
-def _writes(stmt, base, span, regions, idx=_NOIDX):
+def _writes(stmt, base, span, regions, idx=_NOIDX, mod=0):
     """True where ``stmt`` may store into the lane spanning ``base``."""
     if stmt[0] not in ("asg", "st"):
         return True
-    return False if stmt[0] != "st" else _overlaps(_lane(base, idx, span), _reach(stmt, regions))
+    if stmt[0] != "st":
+        return False
+    return _overlaps(_lane(base, idx, span, mod), _reach(stmt, regions))
 
 
-def _hits(stmt, base, span, regions):
+def _hits(stmt, base, span, regions, mod=0):
     """True where ``stmt`` may read or write a cell of the lane at ``base``."""
-    return _writes(stmt, base, span, regions) or _reads(
-        frameproc._stmt_exprs(stmt), _lane(base, _NOIDX, span), regions
+    return _writes(stmt, base, span, regions, _NOIDX, mod) or _reads(
+        frameproc._stmt_exprs(stmt), _lane(base, _NOIDX, span, mod), regions
     )
 
 
 class _Site:
     """One byte-wise 16-bit update: its lanes, the word it is, and its refusal."""
 
-    __slots__ = "lo hi op mask word direct merge src addr load idx hidx why sid at".split()
+    __slots__ = "lo hi op mask word direct merge src addr load idx hidx mod hmod why sid at".split()
 
-    def __init__(self, form, addrs, src):
+    def __init__(self, form, addrs, refs, src):
         self.op, self.mask = _OF[form[0]], form[4]
-        self.lo, self.idx = FF._addr_split(addrs[0])
-        self.hi, self.hidx = FF._addr_split(addrs[1])
-        self.word = self.lo is not None and self.hi == self.lo + 1 and self.hidx == self.idx
+        self.lo, self.idx, self.mod = frameproc.addr_range(refs[0]) or (None, None, 0)
+        self.hi, self.hidx, self.hmod = frameproc.addr_range(refs[1]) or (None, None, 0)
+        self.word = (
+            self.lo is not None
+            and self.hi == self.lo + 1
+            and self.hidx == self.idx
+            and frameproc.addr_range(refs[0], 2) is not None
+        )
         self.src, self.addr, self.load = src, addrs, addrs[0]
         self.direct = all(x[0] == "mem" for x in src[:2])
         self.merge = False
@@ -303,7 +344,7 @@ class _Site:
         elif self.idx is not None and self.hidx is not None and self.hidx != self.idx:
             self.why = "the two lanes are indexed differently"
 
-    def settle(self, lst, i, j, regions):
+    def settle(self, lst, i, j, regions, env=None):
         """Inline what the interval defines, since the word assignment leads it.
 
         Returns the statement blocking the hoist, if any. ``addr`` stays as
@@ -312,7 +353,7 @@ class _Site:
         inner = {s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"}
         self.load = _inline(self.load, inner)
         self.idx = None if self.idx is None else _inline(self.idx, inner)
-        self.src, at = _hoist(lst, i, j, self.src, regions)
+        self.src, at = _hoist(lst, i, j, self.src, regions, env)
         return at
 
     def proof(self):
@@ -362,12 +403,17 @@ def _site(lst, i, j, env):
     def ok(ir, at):
         return _emittable(ir, env, at, i, j)
 
+    def fixed(ir, at):
+        return _emittable(ir, env, at, i, i)
+
     cands = []
     for form in _fuse(lo, hi):
         src = tuple(_back(t, prov, ok) for t in (form[2], form[1], form[3]))
         addrs = tuple(_lane_addr(t, prov, ok) for t in (form[2], form[1]))
-        if not any(x is None for x in src + addrs):
-            cands.append(_Site(form, addrs, src))
+        if any(x is None for x in src + addrs):
+            continue
+        refs = tuple(_lane_ref(t, prov, fixed, a) for t, a in zip((form[2], form[1]), addrs))
+        cands.append(_Site(form, addrs, refs, src))
     if not cands:
         return None
     return min(cands, key=lambda s: (not _rmw(lst, i, j, s.addr), not s.word))
@@ -390,36 +436,40 @@ def _match(lst, i, env, kinds=("st", "asg"), regions=None):
             continue
         site = _site(lst, i, j, env)
         if site is not None:
-            if site.why is None and _may_disturb(s, site.hi, site.idx, regions):
+            if site.why is None and _may_disturb(
+                _store(env, lst, i), site.hi, site.hidx, regions, site.hmod
+            ):
                 site.why = "the lo destination may alias the hi lane"
             return j, site
     return None
 
 
-def _premise(lst, i, j, site, span, blocked=None, regions=None):
+def _premise(lst, i, j, site, span, blocked=None, regions=None, env=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     The hi lane's load moves to the word assignment, so no intervening statement
     may write it; merging the two lane stores also moves the hi store, so that
     needs no intervening read either. ``blocked`` is ``settle``'s verdict."""
     later = list(site.src[1:])  # the lo store precedes the hi lane and the step
-    if _disturbs(lst[i], later, regions):
+    if _disturbs(_store(env, lst, i), later, regions):
         return "the lo destination may disturb the hi lane or the step"
     for k in range(i + 1, j):
         if k == blocked:
             return "an intervening statement changes an operand"
-        if _writes(lst[k], site.hi, span, regions, site.hidx):
+        if _writes(_store(env, lst, k), site.hi, span, regions, site.hidx, site.hmod):
             return "an intervening statement writes the hi lane"
     site.merge = (
         site.word
         and (lst[i][0], lst[j][0]) == ("st", "st")
         and (lst[i][1], lst[j][1]) == site.addr
-        and not any(_hits(lst[k], site.hi, span, regions) for k in range(i + 1, j))
+        and not any(
+            _hits(_store(env, lst, k), site.hi, span, regions, site.hmod) for k in range(i + 1, j)
+        )
     )
     return None
 
 
-def _sid_pair(lst, i, vlo, vhi, span, regions=None):
+def _sid_pair(lst, i, vlo, vhi, span, regions=None, env=None):
     """``(first, second, lo address, base)`` of a SID pair store over the halves.
 
     Freq/pulse/cutoff are last-write-wins, so the projection keys them by register
@@ -439,7 +489,7 @@ def _sid_pair(lst, i, vlo, vhi, span, regions=None):
     if len(at) != 2 or at["hi"][1] != at["lo"][1] + 1:
         return None
     a, b = sorted((at["lo"][0], at["hi"][0]))
-    if any(_hits(lst[k], at["lo"][1], span + 1, regions) for k in range(a + 1, b)):
+    if any(_hits(_store(env, lst, k), at["lo"][1], span + 1, regions) for k in range(a + 1, b)):
         return None
     return a, b, at["lo"][2], at["lo"][1]
 
@@ -557,13 +607,15 @@ def apply_rung(procs, decls=()):
                         i += 1
                         continue
                     done.add((site.lo, site.hi))
-                    blocked = site.settle(lst, i, j, regions)
-                    span = _span(site.hi, site.idx, regions)
-                    site.why = site.why or _premise(lst, i, j, site, span, blocked, regions)
+                    blocked = site.settle(lst, i, j, regions, env)
+                    span = _span(site.hi, site.idx, regions, site.hmod)
+                    site.why = site.why or _premise(lst, i, j, site, span, blocked, regions, env)
                     site.at = (
                         None
                         if site.why
-                        else _sid_pair(lst, i, _half_ref(lst[i]), _half_ref(lst[j]), span, regions)
+                        else _sid_pair(
+                            lst, i, _half_ref(lst[i]), _half_ref(lst[j]), span, regions, env
+                        )
                     )
                     site.sid = None if site.at is None else site.at[3]
                     proofs.append(site.proof())
