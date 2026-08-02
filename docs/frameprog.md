@@ -1795,12 +1795,38 @@ x adjacent or split lanes x add or subtract x step operand mode x how the carry
 crosses -- 180 shapes, and Gate FP as the oracle, so no case states an expected
 lift. It runs in under eight seconds, which the corpus sweep cannot.
 
-The matrix is uniform and was not visible from the refusal ledger:
+Extended over the machine's operations as well -- add, subtract, 16-bit shift
+(`ASL`/`ROL`, `LSR`/`ROR`), 16-bit increment and decrement, and the bitwise
+`AND`/`ORA`/`EOR` -- it is **462 shapes, of which 150 lift and 312 are never seen
+at all**:
 
-| carry form | shapes | result |
-|---|---|---|
-| `ADC #0` / `SBC #0` | 100 | all lift |
-| `BCC`/`INC` , `BCS`/`DEC` | 80 | **no site found at all** |
+| operation | carry form | shapes | result |
+|---|---|---|---|
+| add | `ADC #0` | 50 | lift |
+| add | word step | 50 | lift |
+| subtract | `SBC #0` | 50 | lift |
+| **subtract** | **word step** | **50** | **no site** |
+| add, subtract | `BCC`/`INC`, `BCS`/`DEC` | 80 | **no site** |
+| 16-bit shift | `ASL`/`ROL`, `LSR`/`ROR` | 16 | **no site** |
+| 16-bit inc/dec | `INC`/`BNE`/`INC` | 16 | **no site** |
+| bitwise | `AND`/`ORA`/`EOR` both lanes | 150 | **no site** |
+
+Two causes, not eight. **`_links` is an idiom filter, and it is the gate.** It
+requires an `INT_CARRY`/`INT_LESS`/`INT_LESSEQUAL` in the hi statement's *value*,
+so a carry that crosses as control flow, as a shift bit, or as a predicated
+increment is invisible, and a 16-bit operation with no carry at all -- a bitwise
+one -- can never qualify. That is 262 of the 312. **The remaining 50 are the
+standard 16-bit subtract**: `SEC / LDA lo / SBC lo_step / STA lo / LDA hi / SBC
+hi_step / STA hi` emits a hi lane of `hi - (step_hi + (1 - carry))`, and only the
+`step_hi = 0` case has an admitted rule, so the general borrow never fuses. By
+§4's own governance that is a missing rule, not a missing pass.
+
+The consolidation follows from the matrix rather than from a hypothesis. Rung
+(d2) already *queries* an e-class for the lane grouping (§7.3); it still
+*pre-filters* the site on an idiom. Asking the same query without the carry
+pre-filter -- do these two byte statements jointly compute one 16-bit value --
+subsumes shifts, bitwise operations and predicated increments through the
+machinery that is already there, and leaves the borrow as one Z3-proven rule.
 
 Rung (d2) pairs two statements by their *values*, and `_links` looks for an
 `INT_CARRY` inside the hi statement's value. Written as control flow the hi lane

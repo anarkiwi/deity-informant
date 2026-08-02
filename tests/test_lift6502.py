@@ -56,11 +56,32 @@ def _shape(lanes, split, op, step, carry):
     lo, hi_adj, hi_split, reg = _LANES[lanes]
     kind = "zp" if lanes.startswith("zp") else "abs"
     hi = hi_split if split else hi_adj
-    if carry == "branch" and lanes not in _INCABLE:
+    if carry in ("branch", "rmw") and lanes not in _INCABLE:
         return None
-    add = op == "adc"
+    if op in ("shl", "shr", "inc", "dec") and (carry != "rmw" or step != "imm"):
+        return None
+    if op in ("and", "ora", "eor") and carry != "withzero":
+        return None
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0).i("LDY", "imm", 0)
+    if op in ("shl", "shr"):
+        _rmw_shift(a, op, kind, lo, hi, reg)
+    elif op in ("inc", "dec"):
+        _rmw_count(a, op, kind, lo, hi, reg)
+    elif op in ("and", "ora", "eor"):
+        _bitwise(a, op, kind, lo, hi, reg, step)
+    else:
+        _carry_chain(a, op, kind, lo, hi, reg, step, carry)
+    _acc(a, "LDA", kind, lo, reg)
+    a.i("STA", "abs", OUT)
+    _acc(a, "LDA", kind, hi, reg)
+    a.i("STA", "abs", OUT + 1)
+    return a.i("RTS")
+
+
+def _carry_chain(a, op, kind, lo, hi, reg, step, carry):
+    """``ADC``/``SBC`` on the lo lane, the carry crossing into the hi lane."""
+    add = op == "adc"
     a.i("CLC" if add else "SEC")
     _acc(a, "LDA", kind, lo, reg)
     _step_op(a, "ADC" if add else "SBC", step)
@@ -69,24 +90,72 @@ def _shape(lanes, split, op, step, carry):
         _acc(a, "LDA", kind, hi, reg)
         a.i("ADC" if add else "SBC", "imm", 0x00)
         _acc(a, "STA", kind, hi, reg)
+    elif carry == "wordstep":
+        _acc(a, "LDA", kind, hi, reg)
+        a.i("ADC" if add else "SBC", "abs", STEP + 1)
+        _acc(a, "STA", kind, hi, reg)
     else:
         a.i("BCC" if add else "BCS", "rel", ("L", "skip"))
         _acc(a, "INC" if add else "DEC", kind, hi, reg)
         a.label("skip")
+
+
+def _rmw_shift(a, op, kind, lo, hi, reg):
+    """A 16-bit shift: the bit leaves one lane through the carry and enters the other."""
+    if op == "shl":
+        _acc(a, "ASL", kind, lo, reg)
+        _acc(a, "ROL", kind, hi, reg)
+    else:
+        _acc(a, "LSR", kind, hi, reg)
+        _acc(a, "ROR", kind, lo, reg)
+
+
+def _rmw_count(a, op, kind, lo, hi, reg):
+    """A 16-bit increment or decrement, the hi lane predicated on the lo lane's wrap."""
+    if op == "inc":
+        _acc(a, "INC", kind, lo, reg)
+        a.i("BNE", "rel", ("L", "skip"))
+        _acc(a, "INC", kind, hi, reg)
+    else:
+        _acc(a, "LDA", kind, lo, reg)
+        a.i("BNE", "rel", ("L", "skip"))
+        _acc(a, "DEC", kind, hi, reg)
+        a.label("skip")
+        _acc(a, "DEC", kind, lo, reg)
+        return
+    a.label("skip")
+
+
+def _bitwise(a, op, kind, lo, hi, reg, step):
+    """A 16-bit AND/ORA/EOR: no carry crosses, but both lanes take one word operand."""
+    mn = {"and": "AND", "ora": "ORA", "eor": "EOR"}[op]
     _acc(a, "LDA", kind, lo, reg)
-    a.i("STA", "abs", OUT)
+    _step_op(a, mn, step)
+    _acc(a, "STA", kind, lo, reg)
     _acc(a, "LDA", kind, hi, reg)
-    a.i("STA", "abs", OUT + 1)
-    return a.i("RTS")
+    a.i(mn, "abs", STEP + 1)
+    _acc(a, "STA", kind, hi, reg)
 
 
+_OPS = ("adc", "sbc", "shl", "shr", "inc", "dec", "and", "ora", "eor")
+_CARRY = {  # the carry forms each operation actually has on this machine
+    "adc": ("withzero", "branch", "wordstep"),
+    "sbc": ("withzero", "branch", "wordstep"),
+    "shl": ("rmw",),
+    "shr": ("rmw",),
+    "inc": ("rmw",),
+    "dec": ("rmw",),
+    "and": ("withzero",),
+    "ora": ("withzero",),
+    "eor": ("withzero",),
+}
 _CASES = [
     (lanes, split, op, step, carry)
     for lanes in _LANES
     for split in (False, True)
-    for op in ("adc", "sbc")
-    for step in _STEPS
-    for carry in ("withzero", "branch")
+    for op in _OPS
+    for step in (_STEPS if op not in ("shl", "shr", "inc", "dec") else ("imm",))
+    for carry in _CARRY[op]
 ]
 
 
