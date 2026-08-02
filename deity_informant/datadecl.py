@@ -381,7 +381,10 @@ def _aliases(cls):
 
 def declarations(model):
     """``(decls, aliases)``: mutually disjoint data-region declarations carved
-    from the image (bytes attached) and the state-cell alias table."""
+    from the image (bytes attached) and the state-cell alias table.
+
+    A region is declared for its extent; ``mut`` alone carries constness, so a
+    wholly play-written array declares its size with an empty const claim."""
     if not getattr(model, "blocks", None):
         return [], {}
     f = ST._facts(model)
@@ -394,11 +397,7 @@ def declarations(model):
     for pc, a in getattr(model, "reads", ()):
         by_pc.setdefault(pc, []).append(a)
     groups = _regions(
-        [
-            g
-            for g in _groups(sites)
-            if g["base"] not in codeset and not all(b in model.written for b in g["fields"])
-        ],
+        [g for g in _groups(sites) if g["base"] not in codeset],
         sites,
         rd_pcs,
         by_pc,

@@ -68,6 +68,18 @@ def test_flat_region_excludes_the_cells_the_play_phase_writes():
     )
 
 
+def test_wholly_written_run_declares_its_extent_with_an_empty_const_claim():
+    """A per-voice state array is a datum: ``mut`` carries constness, the size stands.
+
+    Its extent is what bounds an index (``avail``), so suppressing the declaration
+    would leave every access spanning the whole register range."""
+    mut = frozenset(range(0x2000, 0x2100))
+    size, moffs, _obs = _ext(0x2000, [0x2000, 0x2001, 0x2002], bounds=[0x2000, 0x2100], mut=mut)
+    assert (size, moffs) == (3, [0, 1, 2])
+    r = D.Regions([_reg(0x2000, size, mut=moffs)])
+    assert r.avail(0x2000) == 3 and not any(r.const_at(a) for a in range(0x2000, 0x2003))
+
+
 def test_strided_block_keeps_the_lanes_the_play_phase_never_writes():
     """A record block is const per lane: a written row names its lane, not the block."""
     reads, bounds = range(0x2000, 0x2040), [0x2000, 0x2040]

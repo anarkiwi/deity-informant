@@ -315,7 +315,8 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     text = frameprog.emit(model)
     assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
     assert "switch code[" not in text
-    assert " ctr_5513: u8" in text and " pos_54EC: u8[]" in text
+    assert " ctr_5513: u8" in text
+    assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
     # the note word: the hi lane rides a fused indexed u16 store (rung d, hi-first)

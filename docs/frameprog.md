@@ -1094,7 +1094,9 @@ HVSC absent (decompiler-implementation.md §1, §7).
   pair, and freq, pulse width and cutoff fused on the same footing — per store
   site, unconditionally, and a lane store indexed by a proven lane-aligned index
   widens with it (§7.2). Gate: FP 649/649 and the canonical fixpoint 649/649,
-  both unchanged over the 682-tune corpus; byte-wide SID stores 984 -> 821.
+  both unchanged over the 682-tune corpus; byte-wide SID stores 984 -> 821, and
+  a wholly play-written array now declares its extent so an index has a bound
+  (§7.3), for emitted text 9787954 -> 10192917 bytes (+4.1%).
   `tests/_fuzzgen` carries the `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
   synthetic refusals — lone half, unpaired half store, write-order hazard — plus
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
@@ -1252,9 +1254,18 @@ Measured over the corpus: **byte-wide SID stores 984 → 821, word stores 2694 �
 corpus still bit-identical under two hash seeds. 165 indexed lane stores prove
 lane-aligned; 821 do not, and the two reasons are named, not guessed:
 
-- **806 — the index table is undeclared**, so `Regions.avail` is 0 and no entry
-  set can be read off it. Same root as the 10 span refusals in §7.3: `datadecl`
-  coverage, not the widening rule.
+- **806 — the index is spilled through a play-written RAM cell** (CORRECTED).
+  This was recorded as "the index table is undeclared, so `Regions.avail` is 0";
+  re-instrumenting `_consts` splits `row is None` (a scalar read, where `_consts`
+  takes size 1 and never asks `avail`) from a genuinely undeclared table, and
+  **all 806 are the scalar case and all 806 cells are in `model.written`** —
+  0 are undeclared tables. `Ala_Gal` is the shape: `$1150 LDA $1046,X / $1153 STA
+  $107E / TAY` caches the voice offset, and every SID store then reloads
+  `$1634 LDY $107E`. The const table is right there and declared; what is missing
+  is a reaching definition *through a memory cell*, which `frameproc.Defs`
+  resolves for locals only. No `datadecl` declaration can close this — the cell
+  is written by play, so it is not const under any extent claim. Undeclared
+  index tables are 0, undeclared table addresses 4, declared-but-not-const 2.
 - **800 — the index is a procedure parameter**, so the enclosing chain runs out
   inside the procedure. The voice loop passes it: `Also_Bad`'s `JSR $C098` with
   X = 0/7/14 is three call sites each supplying a constant. Closing this wants
@@ -1278,14 +1289,15 @@ split state is the ordinary structure-of-arrays layout.
 
 Root causes traced by instrumenting `FF._addr_split` and the aliasing
 predicates, and by reading the 6502 at the refusing sites. The trajectory,
-re-measured against the deterministic gate of §7.1: **77 → 76 refusals** while
-lifts went **1434 → 1452** and merges **131 → 181**, Gate FP 649/649 throughout.
-The classes moved as well as the totals — "lanes indexed differently" is now 8
-(was 22 before the §7.1 fix) and "may alias the hi lane" 6 (was 14) — so the
-counts recorded before §7.1 was settled should not be compared against these.
+re-measured against the deterministic gate of §7.1: **77 → 76 → 65 refusals**
+while lifts went **1434 → 1452 → 1463** and merges **131 → 181 → 182**, Gate FP
+649/649 throughout. The classes moved as well as the totals — "lanes indexed
+differently" is now 8 (was 22 before the §7.1 fix) and "may alias the hi lane" 2
+(was 14, then 6) — so the counts recorded before §7.1 was settled should not be
+compared against these.
 
 **The dominant class, triaged.** "The lo destination may disturb the hi lane or
-the step" is 43 of the 76, and `lifttrace capture` now records the store's range
+the step" was 43 of the 76, and `lifttrace capture` now records the store's range
 against every range it is held to reach, so the class splits by what actually
 tripped it rather than by which predicate reported it:
 
@@ -1301,18 +1313,35 @@ tripped it rather than by which predicate reported it:
   this class means making that block set available to the aliasing test, which
   is a rung-ordering change and wants its own commit: `frameptr.analyse` keys
   its sites by address *expression*, and rung (d2) rewrites expressions.
-- **10 — an undeclared span over a differing index.** The store's span falls
-  back to the whole 256-byte register range because `Regions.avail(base)` is 0,
-  and then any constant read within 256 bytes collides. `Beat_the_System` is
-  representative: `$213C,X` and `$2136,X` are per-voice 3-entry arrays that
-  `datadecl` does not declare (it declares `$211E` and `$214F`, size 3, in the
-  same driver), so a read of the scalar `$2165` — 41 bytes above — is held to
-  alias. The index is bound by a `loop`, not a `for`, so no local reaching
-  definition bounds it either; the route is `datadecl` coverage, not the
-  aliasing rule. `_overlaps` already does the right thing once a span is right:
-  the same-index lane read at `$2136,X` is correctly proved disjoint.
+- **10 — an undeclared span over a differing index (CLOSED, 43 → 36 here and
+  6 → 2 in "may alias the hi lane"; 11 refusals in 11 tunes, none opened).** The
+  store's span fell back to the whole 256-byte register range because
+  `Regions.avail(base)` was 0, and then any constant read within 256 bytes
+  collided. `Beat_the_System` is representative: `$1B0A LDA $213C,X / SBC $2164 /
+  STA $213C,X` then `LDA $2136,X / SBC $2165 / STA $2136,X` — the per-voice
+  freq lo/hi arrays and a scalar step 41 bytes above the lo array.
+  `datadecl.declarations` dropped a group when **every** field base was in
+  `model.written`, a filter that predates `mut`/`_sound_hi`. A declaration's
+  claim is two things — an extent and a per-record-offset const set — and
+  `mut` alone carries the second, so the filter suppressed extent evidence for a
+  claim the declaration no longer makes: a wholly play-written array now
+  declares its observed size with `mut` naming every offset, hence an empty
+  const claim. `$213C` and `$2136` declare size 3, `_span` is 2, and `$2165` is
+  out of reach. The mutable per-voice arrays move from unsized `state { }`
+  fields to sized `data { }` tables (Commando `pos_54EC: u8[]` becomes
+  `table pos_54EC[3] mut 0 1 2`), which is strictly more information and is what
+  `test_frameprog.py::test_real_tune_frameprog_commando_gate` now pins.
+  `_overlaps` already did the right thing once a span is right: the same-index
+  lane read at `$2136,X` was correctly proved disjoint throughout.
+  **The consumer partition, as §6 requires beside Gate FP:** emitted text
+  9787954 → **10192917** bytes (+4.1%), raw `mem[` unchanged at 9682. The growth
+  is the declarations themselves — an array that was one unsized `state` line is
+  now a sized `data` table carrying its `mut` offsets and observed bytes. It buys
+  the span that closed 11 refusals, and it is the same trade §4.3 records for
+  rung (d)'s SID half: a rung that reads better and consumes worse is allowed
+  only with the number stated.
 
-Neither class is a defect in the rule that was consolidated; both are missing
+Neither class was a defect in the rule that was consolidated; both were missing
 *inputs* to it. The counts above are the re-measured trajectory, not the
 pre-§7.1 ones.
 
