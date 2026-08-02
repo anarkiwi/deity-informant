@@ -15,19 +15,14 @@ SID = 0xD400  # $D400..$D418 SID register file (the observable output set)
 
 # ---- opcode encoder: invert deity's own (opcode -> (mn, mode)) table ---------
 _ENC = {}
-for _op, (_mn, _md) in OPS.items():
+for _op in sorted(OPS):  # legal encodings first: they win any (mn, mode) collision
+    _mn, _md = OPS[_op]
+    if _op not in ILLEGAL_OPCODES:
+        _ENC[(_mn, _md)] = _op
+for _op in sorted(OPS):  # then every illegal the lifter models, lowest byte wins
+    _mn, _md = OPS[_op]
     if _op in ILLEGAL_OPCODES:
-        continue
-    _ENC[(_mn, _md)] = _op
-for _mn, _pairs in (
-    ("LAX", (("zp", 0xA7), ("abs", 0xAF), ("absy", 0xBF), ("indy", 0xB3), ("indx", 0xA3))),
-    ("SAX", (("zp", 0x87), ("abs", 0x8F), ("indx", 0x83))),
-    ("DCP", (("zp", 0xC7), ("abs", 0xCF), ("absx", 0xDF))),
-    ("ISC", (("zp", 0xE7), ("abs", 0xEF), ("absx", 0xFF))),
-    ("SLO", (("zp", 0x07), ("abs", 0x0F))),
-):  # whitelisted illegals real players use (unambiguous byte per (mn,mode))
-    for _md, _o in _pairs:
-        _ENC[(_mn, _md)] = _o
+        _ENC.setdefault((_mn, _md), _op)
 
 _ONE = {"imm", "zp", "zpx", "zpy", "indx", "indy", "rel"}
 

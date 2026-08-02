@@ -17,6 +17,7 @@ OUT = 0xD404  # sid.v1.ctrl/attack_decay: observable, and not a lo/hi pair
 ZP, ABS = 0x10, G.CNT + 0x20
 STEP = G.TBL + 0x10
 ZPSTEP = 0x60
+DIR = G.CNT + 0x60  # the direction flag a bounded accumulator flips
 
 _LANES = {  # mode -> (lo base, hi adjacent, hi split, index register)
     "zp": (ZP, ZP + 1, ZP + 0x40, None),
@@ -51,23 +52,29 @@ def _step_op(a, mn, step):
     return a.i(mn, step, STEP)
 
 
-def _shape(lanes, split, op, step, carry):
+def _shape(lanes, split, op, step, carry, flow="straight"):
     """The player for one shape, or None where the 6502 has no such instruction."""
     lo, hi_adj, hi_split, reg = _LANES[lanes]
     kind = "zp" if lanes.startswith("zp") else "abs"
     hi = hi_split if split else hi_adj
     if carry in ("branch", "rmw") and lanes not in _INCABLE:
         return None
-    if op in ("shl", "shr", "inc", "dec") and (carry != "rmw" or step != "imm"):
+    if op in ("shl", "shr", "inc", "dec") + _ILLEGAL and (carry != "rmw" or step != "imm"):
         return None
     if op in ("and", "ora", "eor") and carry != "withzero":
         return None
+    if flow == "bidir" and (op != "adc" or carry == "branch"):
+        return None
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0).i("LDY", "imm", 0)
-    if op in ("shl", "shr"):
+    if flow == "bidir":
+        _bidir(a, kind, lo, hi, reg, step, carry)
+    elif op in ("shl", "shr"):
         _rmw_shift(a, op, kind, lo, hi, reg)
     elif op in ("inc", "dec"):
         _rmw_count(a, op, kind, lo, hi, reg)
+    elif op in _ILLEGAL:
+        _illegal(a, op, kind, lo, hi, reg)
     elif op in ("and", "ora", "eor"):
         _bitwise(a, op, kind, lo, hi, reg, step)
     else:
@@ -126,6 +133,45 @@ def _rmw_count(a, op, kind, lo, hi, reg):
     a.label("skip")
 
 
+def _bidir(a, kind, lo, hi, reg, step, carry):
+    """A bounded accumulator that reverses direction at a threshold.
+
+    The musical shape: one lane pair driven up by an add in one arm and down by a
+    subtract in the other, with a compare on the hi lane flipping the flag."""
+    a.i("LDA", "abs", DIR).i("BNE", "rel", ("L", "down"))
+    _carry_chain(a, "adc", kind, lo, hi, reg, step, carry)
+    _acc(a, "LDA", kind, hi, reg)
+    a.i("CMP", "imm", 0x08).i("BCC", "rel", ("L", "done"))
+    a.i("LDA", "imm", 0x01).i("STA", "abs", DIR)
+    a.i("JMP", "abs", ("L", "done"))
+    a.label("down")
+    _carry_chain(a, "sbc", kind, lo, hi, reg, step, carry)
+    _acc(a, "LDA", kind, hi, reg)
+    a.i("CMP", "imm", 0x02).i("BCS", "rel", ("L", "done"))
+    a.i("LDA", "imm", 0x00).i("STA", "abs", DIR)
+    a.label("done")
+
+
+def _illegal(a, op, kind, lo, hi, reg):
+    """A 16-bit shape built from an undocumented read-modify-write opcode.
+
+    ``SLO``/``RLA`` shift a lane and fold a logic op into A on the way; ``SRE``/
+    ``RRA`` do it rightwards; ``DCP``/``ISC`` are the counter forms real drivers
+    use, where the flag the RMW sets is what the hi lane is predicated on."""
+    a.i("LDA", "imm", 0x00)
+    if op in ("slo", "rla"):
+        _acc(a, "SLO" if op == "slo" else "RLA", kind, lo, reg)
+        _acc(a, "ROL", kind, hi, reg)
+    elif op in ("sre", "rra"):
+        _acc(a, "SRE" if op == "sre" else "RRA", kind, hi, reg)
+        _acc(a, "ROR", kind, lo, reg)
+    else:
+        _acc(a, "DCP" if op == "dcp" else "ISC", kind, lo, reg)
+        a.i("BNE", "rel", ("L", "skip"))
+        _acc(a, "DEC" if op == "dcp" else "INC", kind, hi, reg)
+        a.label("skip")
+
+
 def _bitwise(a, op, kind, lo, hi, reg, step):
     """A 16-bit AND/ORA/EOR: no carry crosses, but both lanes take one word operand."""
     mn = {"and": "AND", "ora": "ORA", "eor": "EOR"}[op]
@@ -137,7 +183,8 @@ def _bitwise(a, op, kind, lo, hi, reg, step):
     _acc(a, "STA", kind, hi, reg)
 
 
-_OPS = ("adc", "sbc", "shl", "shr", "inc", "dec", "and", "ora", "eor")
+_ILLEGAL = ("slo", "rla", "sre", "rra", "dcp", "isc")  # undocumented RMW opcodes
+_OPS = ("adc", "sbc", "shl", "shr", "inc", "dec", "and", "ora", "eor") + _ILLEGAL
 _CARRY = {  # the carry forms each operation actually has on this machine
     "adc": ("withzero", "branch", "wordstep"),
     "sbc": ("withzero", "branch", "wordstep"),
@@ -148,19 +195,21 @@ _CARRY = {  # the carry forms each operation actually has on this machine
     "and": ("withzero",),
     "ora": ("withzero",),
     "eor": ("withzero",),
+    **{_o: ("rmw",) for _o in _ILLEGAL},
 }
 _CASES = [
-    (lanes, split, op, step, carry)
+    (lanes, split, op, step, carry, flow)
     for lanes in _LANES
     for split in (False, True)
     for op in _OPS
-    for step in (_STEPS if op not in ("shl", "shr", "inc", "dec") else ("imm",))
+    for step in (("imm",) if op in ("shl", "shr", "inc", "dec") + _ILLEGAL else _STEPS)
     for carry in _CARRY[op]
+    for flow in ("straight", "bidir")
 ]
 
 
 def _ident(c):
-    return "%s-%s-%s-%s-%s" % (c[0], "split" if c[1] else "adj", c[2], c[3], c[4])
+    return "%s-%s-%s-%s-%s-%s" % (c[0], "split" if c[1] else "adj", c[2], c[3], c[4], c[5])
 
 
 def build(case):
@@ -176,6 +225,7 @@ def build(case):
         ZP + 1: 0x01,
         ABS: 0xF0,
         ABS + 1: 0x01,
+        DIR: 0x00,
     }
     player = G.Player(
         _ident(case), G.ORG, asm.assemble(), {OUT, OUT + 1}, {"indexed"}, data=data, frames=8
