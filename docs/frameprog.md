@@ -1092,9 +1092,10 @@ HVSC absent (decompiler-implementation.md §1, §7).
 - **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
   measurement): the state-pair fusion with a `structured.Proof` per candidate
   pair, and freq, pulse width and cutoff fused on the same footing — per store
-  site, unconditionally. Gate: FP 649/649 and the canonical fixpoint 649/649,
-  both unchanged over the 682-tune corpus. `tests/_fuzzgen` carries the
-  `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
+  site, unconditionally, and a lane store indexed by a proven lane-aligned index
+  widens with it (§7.2). Gate: FP 649/649 and the canonical fixpoint 649/649,
+  both unchanged over the 682-tune corpus; byte-wide SID stores 984 -> 821.
+  `tests/_fuzzgen` carries the `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
   synthetic refusals — lone half, unpaired half store, write-order hazard — plus
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
   halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
@@ -1225,21 +1226,43 @@ sidinit value against the projection's default.
 
 Open:
 
-- **Only unindexed lanes widen.** `mem[$D400 + y]` is a store to register `y`,
-  not to freq; widening it writes whatever cell follows, which corrupted
-  `Also_Bad` and `Aiginas_Prophecy` in `v0.ord`. That leaves ~1058 byte-width
-  SID stores, all indexed (`[y]` 622, `[x]` 326; 819 of them freq lanes).
-- **The rule for indexed lanes** is a per-site dataflow fact about the index's
-  reaching definitions, never a property of its name. `Also_Bad` uses X and Y
-  for *both* the voice offset and the voice number, swapping roles between
-  `JSR $C098` (X = 0/7/14) and `JSR $C1E3` (Y = 0/7/14), and loads Y from a
-  table at `$C27D`/`$C0F1` where no constant is provable. So: widen iff every
-  definition of the index reaching that store is a constant lane-aligned for the
-  pair — a multiple of 7 and ≤ `$0E` for the voice pairs, 0 for cutoff.
-  `framemath._Env.at` already answers "the definition in force here".
-- **A constant *table* counts.** Commando's index is `LDY $14B5,X` with
-  `$14B5` = `$00 $07 $0E`; a rule demanding immediate constants would refuse
-  Commando's own pulse stores.
+**Indexed lanes widen under a reaching-definition rule (LANDED).** `mem[$D400 + y]`
+is a store to register `y`, not to freq; widening it blind writes whatever cell
+follows, which corrupted `Also_Bad` and `Aiginas_Prophecy` in `v0.ord`. The rule
+is a per-site dataflow fact about the index's reaching definitions, never a
+property of its name — `Also_Bad` uses X and Y for *both* the voice offset and
+the voice number, swapping roles between `JSR $C098` (X = 0/7/14) and
+`JSR $C1E3` (Y = 0/7/14). `framefuse._consts` resolves the index through
+`frameproc.Defs` and `_lane_aligned` widens iff **every** value it may take puts
+the pair's lo on a register that is itself a pair's lo (`_sid_base(p.lo + k) ==
+p.lo + k`). A constant *table* counts: Commando's index is `LDY $14B5,X` with
+`$14B5` = `$00 $07 $0E`, and a rule demanding immediates would refuse Commando's
+own pulse stores. `Also_Bad` and `Aiginas_Prophecy` both gate clean.
+
+`framemath._Env` moved to `frameproc.Defs` for this — one implementation of "the
+definition in force here", now used by rungs (d) and (d2) both — and gained an
+*enclosing* scope: `Defs.resolve` follows a local out through the lists that
+contain it. A body reached by a back edge sees its own later definitions on the
+next iteration, so an enclosing one survives only a name that body never binds;
+`at` is unchanged and list-local, because the index it returns is a position in
+one list and a caller stepping to it must not be handed another's.
+
+Measured over the corpus: **byte-wide SID stores 984 → 821, word stores 2694 →
+2857**, Gate FP 649/649 and the canonical fixpoint 649/649 unchanged, and the
+corpus still bit-identical under two hash seeds. 165 indexed lane stores prove
+lane-aligned; 821 do not, and the two reasons are named, not guessed:
+
+- **806 — the index table is undeclared**, so `Regions.avail` is 0 and no entry
+  set can be read off it. Same root as the 10 span refusals in §7.3: `datadecl`
+  coverage, not the widening rule.
+- **800 — the index is a procedure parameter**, so the enclosing chain runs out
+  inside the procedure. The voice loop passes it: `Also_Bad`'s `JSR $C098` with
+  X = 0/7/14 is three call sites each supplying a constant. Closing this wants
+  the union of the constants each call site passes — an interprocedural step the
+  chain cannot reach, and the last thing between the rung and the whole residue.
+
+(Both counts are per-resolution and so double-count the measure and mutate
+passes; the ratio is the finding, not the absolute.)
 The six tests that pinned the superseded contract are moved to this one and the
 suite is green; `test_framelog.py` gained
 `::test_a_held_lane_is_the_value_the_seed_and_earlier_frames_left`, which is the

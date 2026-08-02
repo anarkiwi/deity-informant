@@ -319,3 +319,35 @@ def test_gate_fp_holds_over_the_fuzz_corpus_under_fusion(p):
     text = frameprog.dumps(prog)
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert not F.digi_frames(F.frames_from_walker(S.Walker(model), nframes))
+
+
+# ---- an indexed lane widens only where the index lands on a register -------------
+def _voice_loop(name, index_table):
+    """Commando's shape: a voice loop whose lane index comes from a constant table."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 2).label("lp")
+    a.i("LDY", "absx", TBL + 1)
+    a.i("LDA", "absx", TBL + 8)
+    a.i("STA", "absy", SID)
+    a.i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = {TBL + 1 + k: v for k, v in enumerate(index_table)}
+    data.update({TBL + 8 + k: 0x30 + k for k in range(3)})
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player(name, a.assemble(), data, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    return _proof(prog, SID).lemma, frameprog.dumps(prog)
+
+
+def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
+    """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers."""
+    lemma, text = _voice_loop("idx_ok", [0x00, 0x07, 0x0E])
+    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
+    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+
+
+def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
+    """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
+    lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
+    assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
+    assert "0 lane-aligned indexed, 1 index not proven" in lemma

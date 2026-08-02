@@ -7,6 +7,7 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from types import MappingProxyType
 
 from . import expr as E
@@ -121,6 +122,94 @@ def _subst_loc(n, name, repl):
     if not kids:
         return n
     return _rebuild(n, [_subst_loc(c, name, repl) for c in kids])
+
+
+_WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
+
+
+def kills(s):
+    """Names ``s`` may define other than as this list's own ``asg``; None means any.
+
+    A nested body's definition, a call's writes and a label control may enter at
+    are invisible to a scan of one list, yet each ends the reign of the definition
+    before it."""
+    if s[0] in _WILD:
+        return None
+    out = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
+    for b in _stmt_bodies(s):
+        for s2 in b:
+            got = kills(s2)
+            if got is None:
+                return None
+            out |= got
+    return out
+
+
+class Defs:
+    """The local definitions of one statement list, read at the point of the read.
+
+    A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
+    every lookup carries the reader's position and answers with the definer's. A
+    definition the list does not make itself is recorded valueless (``kills``)."""
+
+    __slots__ = ("defs", "wild", "outer", "cyclic")
+
+    def __init__(self, lst, outer=None, cyclic=False):
+        self.defs, self.wild = {}, []
+        self.outer, self.cyclic = outer, cyclic
+        for k, s in enumerate(lst):
+            if s[0] == "asg":
+                self.defs.setdefault(s[1], []).append((k, s[2]))
+                continue
+            killed = kills(s)
+            if killed is None:
+                self.wild.append(k)
+                continue
+            for name in killed:
+                self.defs.setdefault(name, []).append((k, None))
+
+    def at(self, name, bound):
+        """``(index, value)`` of the definition in force at ``bound``, else None.
+
+        This list only: the index is a position in it, so a caller stepping to that
+        index must not be handed one from an enclosing list. A None ``value`` marks
+        a definition whose value cannot be read off, and still names which it is."""
+        made = self.defs.get(name)
+        k = 0 if made is None else bisect_left(made, (bound,))
+        got = made[k - 1] if k else None
+        w = bisect_left(self.wild, bound)
+        if w and (got is None or self.wild[w - 1] > got[0]):
+            return (self.wild[w - 1], None)
+        return got
+
+    def _lookup(self, name, bound):
+        """``(env, index, value)`` of the definition in force, enclosing lists included.
+
+        Reaching here at all means this list defines nothing for ``name`` before
+        ``bound`` and lets control in nowhere before it either -- ``at`` answers
+        both. Only a back edge can still overwrite it, from a definition or a label
+        *after* the read, so a cyclic body must bind neither."""
+        got = self.at(name, bound)
+        if got is not None:
+            return (self, got[0], got[1])
+        if self.outer is None or (self.cyclic and (self.wild or name in self.defs)):
+            return None
+        return self.outer[0]._lookup(name, self.outer[1])
+
+    def resolve(self, n, bound):
+        """The value ``n`` names, following definitions out through enclosing lists."""
+        env = self
+        while n[0] == "loc":
+            got = env._lookup(n[1], bound)
+            if got is None or got[2] is None:
+                return n
+            env, bound, n = got
+        return n
+
+    def value(self, name, bound):
+        """``at``, but None wherever the definition in force has no readable value."""
+        got = self.at(name, bound)
+        return None if got is None or got[1] is None else got
 
 
 def _stmt_exprs(s):

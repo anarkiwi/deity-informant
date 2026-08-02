@@ -6,8 +6,6 @@ are concatenated and ``eqlift``'s Z3-proven rules say what ``hi<<8 | lo`` is."""
 
 from __future__ import annotations
 
-from bisect import bisect_left
-
 from egglog import EGraph
 
 from . import datadecl
@@ -36,69 +34,6 @@ def _trunc(n):
 
 def _hi_byte(n):
     return _trunc(("op", "INT_RIGHT", (n, ("const", 8, 1)), 2))
-
-
-_WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
-
-
-def _kills(s):
-    """Names ``s`` may define other than as this list's own ``asg``; None means any.
-
-    A nested body's definition, a call's writes and a label control may enter at
-    are invisible to a scan of one list, yet each ends the reign of the definition
-    before it."""
-    if s[0] in _WILD:
-        return None
-    out = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
-    for b in frameproc._stmt_bodies(s):
-        for s2 in b:
-            got = _kills(s2)
-            if got is None:
-                return None
-            out |= got
-    return out
-
-
-class _Env:
-    """The local definitions of one statement list, read at the point of the read.
-
-    A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
-    every lookup carries the reader's position and answers with the definer's. A
-    definition the list does not make itself is recorded valueless (``_kills``)."""
-
-    __slots__ = ("defs", "wild")
-
-    def __init__(self, lst):
-        self.defs, self.wild = {}, []
-        for k, s in enumerate(lst):
-            if s[0] == "asg":
-                self.defs.setdefault(s[1], []).append((k, s[2]))
-                continue
-            killed = _kills(s)
-            if killed is None:
-                self.wild.append(k)
-                continue
-            for name in killed:
-                self.defs.setdefault(name, []).append((k, None))
-
-    def at(self, name, bound):
-        """``(index, value)`` of the definition in force at ``bound``, else None.
-
-        A None ``value`` marks a definition whose value this list cannot read off;
-        the entry still names *which* definition, so two reads either side of one
-        do not compare equal."""
-        made = self.defs.get(name)
-        k = 0 if made is None else bisect_left(made, (bound,))
-        got = made[k - 1] if k else None
-        w = bisect_left(self.wild, bound)
-        if w and (got is None or self.wild[w - 1] > got[0]):
-            return (self.wild[w - 1], None)
-        return got
-
-    def value(self, name, bound):
-        """``at``, but None wherever the definition in force has no readable value."""
-        got = self.at(name, bound)
-        return None if got is None or got[1] is None else got
 
 
 def _resolve(n, env, at):
@@ -630,7 +565,7 @@ def apply_rung(procs, decls=()):
         for lst in _bodies(stmts):
             done = set()
             for kinds in (("st",), ("asg",)):
-                i, env = 0, _Env(lst)
+                i, env = 0, frameproc.Defs(lst)
                 while i < len(lst):
                     got = _match(lst, i, env, kinds, regions)
                     if got is None:
@@ -659,7 +594,7 @@ def apply_rung(procs, decls=()):
                     name = "d%d" % n
                     used.add(name)
                     _lift(lst, i, j, site, name)
-                    env, lifted = _Env(lst), True
+                    env, lifted = frameproc.Defs(lst), True
                     i += 2
         if lifted:
             _drop_dead(_e, params, rets, stmts)

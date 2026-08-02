@@ -7,6 +7,7 @@ canonical section emits adjacent. One lone-half access refuses that pair alone.
 
 from __future__ import annotations
 
+from . import datadecl
 from . import expr as E
 from . import frameproc
 from . import grammar as G
@@ -69,13 +70,43 @@ def _rebase(addr, old, new):
     return addr
 
 
+def _consts(idx, env, at, regions, mem0):
+    """Every value ``idx`` may take where the model proves them all, else None.
+
+    A constant *table* counts: Commando indexes its pulse stores by ``LDY $14B5,X``
+    over `$00 $07 $0E`, and a rule wanting an immediate would refuse the very
+    driver the pair exists for."""
+    n = env.resolve(idx, at)
+    if n[0] == "op" and n[1] == "INT_ZEXT":
+        n = n[2][0]
+    if n[0] == "const":
+        return frozenset((n[1] & 0xFF,))
+    if n[0] != "mem" or n[2] != 1:
+        return None
+    base, row = _addr_split(n[1])
+    if base is None:
+        return None
+    size = 1 if row is None else regions.avail(base)
+    if not size or any(not regions.const_at(a) for a in range(base, base + size)):
+        return None
+    return frozenset(mem0[a] for a in range(base, base + size))
+
+
+def _lane_aligned(p, ks):
+    """Every ``k`` puts the pair's lo on a register that is itself a pair's lo.
+
+    ``mem[$D400 + y]`` is a store to register ``y``: widening it is right exactly
+    where every reaching ``y`` lands the word on a 16-bit register, and wrong --
+    it writes whatever cell follows -- where one does not."""
+    return ks is not None and all(_sid_base(p.lo + k) == p.lo + k for k in ks)
+
+
 def _widen(s, p):
     """A lone lane store as the u16 store it is, the other lane keeping its value.
 
     freq, pulse and cutoff are 16-bit registers: nothing narrower can be written
-    to one, so a driver touching one lane still writes the whole word. Only an
-    unindexed lane qualifies -- ``mem[$D400 + y]`` is a store to register ``y``,
-    not to freq, and widening it would write whatever cell follows."""
+    to one, so a driver touching one lane still writes the whole word. An indexed
+    lane widens only under ``_lane_aligned``."""
     base, _idx = _addr_split(s[1])
     addr = _rebase(s[1], base, p.lo)
     half = _zext2(s[2])
@@ -135,6 +166,7 @@ class _Pair:
         "unpaired",
         "hazard",
         "indexed",
+        "strayidx",
     )
 
     def __init__(self, lo, hi, kind, evidence):
@@ -143,7 +175,7 @@ class _Pair:
         self.kind = kind
         self.evidence = evidence
         self.words = self.lone = self.stores = self.unpaired = self.hazard = 0
-        self.indexed = 0
+        self.indexed = self.strayidx = 0
 
     def refusal(self):
         """The premise's refusal diagnostic, or None where the pair fuses.
@@ -181,6 +213,11 @@ class _Pair:
             "widened lane store(s)" if self.kind == "sid" else "lone-half store(s)",
             self.hazard,
         )
+        if self.kind == "sid":
+            rest += ", %d lane-aligned indexed, %d index not proven lane-aligned" % (
+                self.indexed,
+                self.strayidx,
+            )
         status = "refused" if why else ("fused" if not (self.lone or self.unpaired) else "partial")
         return Proof(self.lo, self.kind, status, (self.lo, self.hi), "%s; %s" % (body, why or rest))
 
@@ -279,14 +316,23 @@ def _pair_at(stmts, i, p):
     return None if hb[0] != p.hi and p.kind != "sid" else (ha[0], hb[0])
 
 
-def _visit(stmts, p, mutate):
-    """One statement list: fuse paired stores, fold word reads, count refusals."""
+_CYCLIC = frozenset(("loop", "for"))
+
+
+def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
+    """One statement list: fuse paired stores, fold word reads, count refusals.
+
+    The list is rewritten as it is scanned, so the environment is rebuilt whenever
+    a statement moved: a stale index would answer for the wrong statement."""
     count = 0 if mutate else 1
+    env, stale = frameproc.Defs(stmts, outer, cyclic), False
     i = 0
     while i < len(stmts):
+        if stale:
+            env, stale = frameproc.Defs(stmts, outer, cyclic), False
         s = stmts[i]
         for body in frameproc._stmt_bodies(s):
-            _visit(body, p, mutate)
+            _visit(body, p, mutate, ctx, (env, i), s[0] in _CYCLIC)
         at = _pair_at(stmts, i, p)
         if at is not None and _may_read(stmts[i + 1][2], at[0]):
             p.hazard += count
@@ -300,6 +346,7 @@ def _visit(stmts, p, mutate):
             if mutate:
                 stmts[i] = ("st", lo[1], _pack(lo[2], hi[2], at[1] == p.lo))
                 del stmts[i + 1]
+                stale = True
             i += 1 if mutate else 2
             continue
         if s[0] == "st" and _addr_split(s[1])[0] == p.lo and G.store_width(s[2]) == 2:
@@ -307,14 +354,17 @@ def _visit(stmts, p, mutate):
             i += 1
             continue
         half = _store_half(s, p)
+        widen = half is not None and p.kind == "sid"
+        if widen and half[1] is not None:
+            widen = ctx is not None and _lane_aligned(p, _consts(half[1], env, i, *ctx))
+            p.indexed += count if widen else 0
+            p.strayidx += 0 if widen else count
         if half is not None:
             p.unpaired += count
-            if half[1] is not None:
-                p.indexed += count  # the index need not select a lane: see _widen
         new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))
         if mutate:
-            widen = half is not None and half[1] is None and p.kind == "sid"
             stmts[i] = _widen(new, p) if widen else new
+            stale = stale or new is not s
         i += 1
 
 
@@ -352,16 +402,17 @@ def apply_rung(model, decls, procs, state, symbols, name_of):
     halves and every other pair still fuses. The SID register pairs — freq,
     pulse and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
+    ctx = (datadecl.Regions(decls), model.mem0)
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
         p = _Pair(lo, hi, kind, evidence)
         if hi == lo + 1:
             for _e, _pa, _r, stmts in procs:
-                _visit(stmts, p, False)
+                _visit(stmts, p, False, ctx)
         proofs.append(p.proof())
         if p.refusal() is not None:
             continue
         fused.append(p)
         for _e, _pa, _r, stmts in procs:
-            _visit(stmts, p, True)
+            _visit(stmts, p, True, ctx)
     state = _fuse_state(state, symbols, [p for p in fused if p.kind != "sid"], name_of)
     return state, proofs
