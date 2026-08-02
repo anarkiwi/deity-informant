@@ -1333,12 +1333,12 @@ split state is the ordinary structure-of-arrays layout.
 
 Root causes traced by instrumenting `FF._addr_split` and the aliasing
 predicates, and by reading the 6502 at the refusing sites. The trajectory,
-re-measured against the deterministic gate of §7.1: **77 → 76 → 65 refusals**
-while lifts went **1434 → 1452 → 1463** and merges **131 → 181 → 182**, Gate FP
-649/649 throughout. The classes moved as well as the totals — "lanes indexed
-differently" is now 8 (was 22 before the §7.1 fix) and "may alias the hi lane" 2
-(was 14, then 6) — so the counts recorded before §7.1 was settled should not be
-compared against these.
+re-measured against the deterministic gate of §7.1: **77 → 76 → 65 → 62
+refusals** while lifts went **1434 → 1452 → 1463 → 1466** and merges **131 → 181
+→ 182 → 182**, Gate FP 649/649 and the canonical fixpoint 649/649 throughout. The
+classes moved as well as the totals — "lanes indexed differently" is now 8 (was
+22 before the §7.1 fix) and "may alias the hi lane" 2 (was 14, then 6) — so the
+counts recorded before §7.1 was settled should not be compared against these.
 
 **The dominant class, triaged.** "The lo destination may disturb the hi lane or
 the step" was 43 of the 76, and `lifttrace capture` now records the store's range
@@ -1388,6 +1388,74 @@ tripped it rather than by which predicate reported it:
 Neither class was a defect in the rule that was consolidated; both were missing
 *inputs* to it. The counts above are the re-measured trajectory, not the
 pre-§7.1 ones.
+
+**"The lo destination may alias the hi lane" (2 sites, both CORRECT).** Traced
+with `lifttrace`'s `alias` event, which records `_match`'s own test — the lo
+store's range against the hi lane's — since `_may_disturb` fires before
+`_premise` and so leaves no `premise` event.
+
+- `Ultima_III-Exodus` `$005B/$005C`. The site is the init relocation loop at
+  `$9AE0`: `LDA ($5B),Y / ADC $5B / STA $0019,Y / INY / LDA ($5B),Y / ADC $5C /
+  STA $0019,Y`, adding the song-data pointer `$5B/$5C` to each entry of a pointer
+  table and writing it to `$0019+Y`. The lo store reaches `$0019..$0118`, which
+  contains the hi lane `$005C` at `Y = $43`; the entry count comes from the first
+  byte of the pointed-at data, so nothing in the program bounds `Y`. Naming the
+  base would not change the answer — the range still covers `$005C`.
+- `After_the_War` `$0010/$0011`. `$122E LDA $14,X / CLC / ADC $10 / STA $14,X /
+  LDA $5A,X / ADC $11 / STA $17,X`: the per-voice 16-bit accumulator at
+  `$14,X`/`$5A,X` stepped by `$10/$11`. The lo store is `zp,X`, which wraps inside
+  the byte, so it reaches `$0011` at `X = $FD`, and `X` enters at a label.
+  **This site is the witness the `_index_of` extension above needs.** Naming
+  `$14,X` as base `$0014` index `x` *without* the modulus makes `overlaps` read
+  the range as `$0014..$0113` and declare `$0011` disjoint — turning a correct
+  refusal into a wrong lift. `addr_bits` gives the sound answer (`$0000..$00FF`)
+  and keeps the refusal.
+
+**"An intervening statement changes an operand" (3 sites, all LIMITATION;
+CLOSED, 3 → 0).** All three are rung (d2)'s *own output* blocking its second
+sweep: the same 16-bit sum is written twice, the first pair lifts, and the second
+pair then sees the first pair's hi-half store between its two statements. Two
+independent causes, both fixed; `lifttrace` gained a `clobber` event naming the
+blocking statement, its range and the operand it hit.
+
+- **The interval was the wrong interval (`Der_Ring_der_Nibelungen` `$805E/$805F`,
+  `Abatement` `$45FE/$44FE`).** `$86A5 LDA $8086,X / ADC $805E,X / STA $8086,X /
+  STA $FB / LDA $8087,X / ADC $805F,X / STA $8087,X / STA $FC` — the second site
+  is the `$FB/$FC` pair, and the statement that "changes an operand" is
+  `STA $8087,X`, which the site's step reads. But that read was made at
+  `LDA $8087,X`, *before* the store. `settle` inlined the interval's definitions
+  and lost their positions, so `_premise` held every read against the whole
+  interval `(i, j)`. The check is now one backward pass (`_hoist`): a statement
+  blocks only what has been hoisted *past* it, and an assignment the word depends
+  on is substituted rather than counted as a hazard. That is also strictly more
+  correct than `_inline` was — `_inline` left a self-referential definition
+  (`x = x + 1`) unresolved, which only the conservative check kept from being
+  emitted as a read of the wrong `x`. `Abatement` `$5130` is the same shape
+  against `$0A3F,X`.
+- **An unresolvable store address was held to reach everything (`Bomb_Mania`
+  `$3CB4/$3CB5`).** `$0FC5 LDA $3CB4 / CLC / ADC #$50 / STA $3CB4 / STA $08,X /
+  LDA $3CB5 / ADC #$01 / STA $3CB5 / STA $09,X` mirrors a 16-bit counter into two
+  zero-page pointers. `STA $08,X` names no base, so `store_ref` answered None and
+  `_disturbs` returned True — yet `addr_bits` already proves a `zp,X` store cannot
+  leave `$0000..$00FF`, and `frameproc.Defs._hits` has read it that way all along.
+  `store_reach` puts that bound in range form beside `store_ref`, so the one
+  `overlaps` rule decides it; the `UNRES` index sentinel is not a shared row, which
+  is why `overlaps` now requires an index *expression* before it drops the spans.
+  Here the read of `$3CB5` is later than the store, so the interval fix does not
+  reach this site, and the store is later than the read at the two `alias` sites,
+  so the mask does not reach those: the two fixes are disjoint.
+
+**Measured, HEAD vs both fixes.** Refusals 65 → **62**, lifts 1463 → **1466**,
+merges 182 → 182, Gate FP **649/649**, canonical fixpoint **649/649**,
+`PYTHONHASHSEED=0` vs `=1` **0 of 672 records differ**. The consumer partition
+§6 requires beside the gate: emitted text 10194792 → **10194957** bytes (+165),
+raw `mem[` unchanged at **9682**. "The lo destination may disturb the hi lane or
+the step" stayed at 36, which confirms the reading above: that class is
+unresolved *read* addresses, not unresolved store addresses, and only rung (f)'s
+target block set closes it. Both fixes are pinned by tests that fail when
+reverted:
+`test_framemath.py::test_a_write_later_than_the_read_it_would_spoil_is_no_hazard`
+and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
 
 - **Unresolved lane address** feeds three classes at once — "a lane address is
   not a const base plus index", "the lo destination may alias the hi lane"
@@ -1476,6 +1544,12 @@ by re-running the corpus and comparing totals.
   repeat <tune> --runs N      N fresh processes; splits the verdict if flaky
   stable <tune> --runs N      N hash seeds; diffs whole traces, not verdicts
   verdict <tune>              one gate verdict (what repeat forks)
+
+A refusal names a predicate, not the addresses that tripped it, so `capture`
+appends one event per class that needs its terms: `disturb` (the lo store's range
+against every range it is held to reach), `clobber` (the statement blocking the
+hoist, its range, and which operand it hit) and `alias` (`_match`'s own test,
+which fires before `_premise` and would otherwise leave no event at all).
 
 Prefer this to toggling a flag and re-running the corpus: a corpus delta says a
 number moved, not which decision moved. Every finding in §7.1 and §7.3 above was

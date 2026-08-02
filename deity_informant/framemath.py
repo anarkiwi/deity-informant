@@ -193,6 +193,22 @@ def _inline(n, defs):
     return n
 
 
+def _hoist(lst, i, j, exprs, regions):
+    """``exprs``, the interval's definitions inlined, and the statement blocking it.
+
+    A read is carried up to ``i`` from where the interval made it, so a statement
+    is held only against what is hoisted *past* it: one writing a cell later than
+    the read it would spoil is no hazard, and its own definition is not one."""
+    at = None
+    for k in range(j - 1, i, -1):
+        s = lst[k]
+        if s[0] == "asg" and any(s[1] in frameproc._locset(x) for x in exprs):
+            exprs = tuple(frameproc._subst_loc(x, s[1], s[2]) for x in exprs)
+        elif _clobbers(s, exprs, regions):
+            at = k
+    return exprs, at
+
+
 def _volatile(n):
     """True where ``n`` may load a volatile source, so its value cannot be dropped."""
     return any(FF._may_read(n, c) for c in sidprog._VOLS)
@@ -214,7 +230,7 @@ def _mem_refs(n):
 _span = frameproc.span  # the range rules live beside the definition-in-force query
 _NOIDX = frameproc.NOIDX
 _overlaps = frameproc.overlaps
-_ref = frameproc.store_ref
+_reach = frameproc.store_reach  # a store with no named base still has a bound
 
 
 def _lane(base, idx, span):
@@ -242,28 +258,22 @@ def _disturbs(stmt, exprs, regions):
 
     Index expressions may only be compared when the read is a direct load here;
     one captured earlier can be structurally equal yet hold a stale index."""
-    if stmt[0] != "st":
-        return False
-    at = _ref(stmt, regions)
-    return True if at is None else _reads(exprs, at, regions)
+    return False if stmt[0] != "st" else _reads(exprs, _reach(stmt, regions), regions)
 
 
 def _may_disturb(stmt, base, idx, regions):
     """The store may write the lane at ``(base, idx)``; exact when the index matches."""
     if stmt[0] != "st":
         return False
-    at = _ref(stmt, regions)
-    return True if at is None else _overlaps(_lane(base, idx, _span(base, idx, regions)), at)
+    lane = _lane(base, idx, _span(base, idx, regions))
+    return _overlaps(lane, _reach(stmt, regions))
 
 
 def _writes(stmt, base, span, regions, idx=_NOIDX):
     """True where ``stmt`` may store into the lane spanning ``base``."""
     if stmt[0] not in ("asg", "st"):
         return True
-    if stmt[0] != "st":
-        return False
-    at = _ref(stmt, regions)
-    return True if at is None else _overlaps(_lane(base, idx, span), at)
+    return False if stmt[0] != "st" else _overlaps(_lane(base, idx, span), _reach(stmt, regions))
 
 
 def _hits(stmt, base, span, regions):
@@ -293,14 +303,17 @@ class _Site:
         elif self.idx is not None and self.hidx is not None and self.hidx != self.idx:
             self.why = "the two lanes are indexed differently"
 
-    def settle(self, inner):
+    def settle(self, lst, i, j, regions):
         """Inline what the interval defines, since the word assignment leads it.
 
-        ``addr`` stays as written: it is matched against the two store addresses,
-        which the lift does not move."""
-        self.src = tuple(_inline(x, inner) for x in self.src)
+        Returns the statement blocking the hoist, if any. ``addr`` stays as
+        written: it is matched against the two store addresses, which the lift
+        does not move."""
+        inner = {s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"}
         self.load = _inline(self.load, inner)
         self.idx = None if self.idx is None else _inline(self.idx, inner)
+        self.src, at = _hoist(lst, i, j, self.src, regions)
+        return at
 
     def proof(self):
         known = self.lo is not None and self.hi is not None
@@ -383,17 +396,17 @@ def _match(lst, i, env, kinds=("st", "asg"), regions=None):
     return None
 
 
-def _premise(lst, i, j, site, span, regions=None):
+def _premise(lst, i, j, site, span, blocked=None, regions=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     The hi lane's load moves to the word assignment, so no intervening statement
     may write it; merging the two lane stores also moves the hi store, so that
-    needs no intervening read either."""
+    needs no intervening read either. ``blocked`` is ``settle``'s verdict."""
     later = list(site.src[1:])  # the lo store precedes the hi lane and the step
     if _disturbs(lst[i], later, regions):
         return "the lo destination may disturb the hi lane or the step"
     for k in range(i + 1, j):
-        if _clobbers(lst[k], site.src, regions):
+        if k == blocked:
             return "an intervening statement changes an operand"
         if _writes(lst[k], site.hi, span, regions, site.hidx):
             return "an intervening statement writes the hi lane"
@@ -544,9 +557,9 @@ def apply_rung(procs, decls=()):
                         i += 1
                         continue
                     done.add((site.lo, site.hi))
-                    site.settle({s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"})
+                    blocked = site.settle(lst, i, j, regions)
                     span = _span(site.hi, site.idx, regions)
-                    site.why = site.why or _premise(lst, i, j, site, span, regions)
+                    site.why = site.why or _premise(lst, i, j, site, span, blocked, regions)
                     site.at = (
                         None
                         if site.why

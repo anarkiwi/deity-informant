@@ -127,6 +127,7 @@ def _subst_loc(n, name, repl):
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
 _CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
 NOIDX = object()  # "the caller is not a store, so no index is shared"
+UNRES = object()  # "the base is not named, so only the bits the address sets bound it"
 
 
 # ---- addresses: the base an access names, and the bytes it may reach -------------
@@ -172,9 +173,10 @@ def overlaps(a, b):
 
     The ONE aliasing rule. Two ranges carrying one index name one row apiece, so
     their spans drop out and bases and widths alone decide: ``T[x]`` and
-    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is."""
+    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is. One row
+    needs a shared index expression, which the sentinels are not."""
     (ba, ia, sa, wa), (bb, ib, sb, wb) = a, b
-    if ia == ib:
+    if isinstance(ia, tuple) and ia == ib:
         sa = sb = 0
     return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
 
@@ -185,6 +187,18 @@ def store_ref(stmt, regions):
     if base is None:
         return None
     return (base, idx, span(base, idx, regions), G.store_width(stmt[2]))
+
+
+def store_reach(stmt, regions):
+    """The range a store writes: ``store_ref``, or the bits its address can set.
+
+    An address the base/index form does not name still bounds the bytes it may
+    reach (``addr_bits``), which holds a zero-page store to ``$00FF`` however
+    unresolvable its index is; a wholly unknown address reaches everything."""
+    got = store_ref(stmt, regions)
+    if got is not None:
+        return got
+    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]))
 
 
 def hidden_defs(s):

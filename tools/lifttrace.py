@@ -50,8 +50,8 @@ def brief(n, depth=6):
 def capture(tune, frames=200, sub=0):
     """The ordered rung-(d2) decision trace of building ``tune``, and its gate."""
     ev = []
-    saved = (FM._fuse, FM._site, FM._premise, FM._lift)
-    o_fuse, o_site, o_prem, o_lift = saved
+    saved = (FM._fuse, FM._site, FM._premise, FM._lift, FM._may_disturb)
+    o_fuse, o_site, o_prem, o_lift, o_may = saved
 
     def form_str(f):
         """The whole 16-bit form: two lanes alone do not tell two forms apart."""
@@ -84,46 +84,63 @@ def capture(tune, frames=200, sub=0):
         ev.append(["site", i, j, shown])
         return st
 
+    def rng(r):
+        """One address range as text; a sentinel index prints by name, not by id."""
+        if r is None:
+            return "None"
+        idx = brief(r[1], 2) if r[1] is None or isinstance(r[1], tuple) else "unres"
+        return "$%04X idx=%s span=%d w=%d" % (r[0], idx, r[2], r[3])
+
+    def refs(exprs, regions):
+        """Every memory range the expressions read: the other half of a refusal's terms."""
+        return [
+            "read=%s" % rng(None if rb is None else (rb, ri, FM._span(rb, ri, regions), rw))
+            for x in exprs
+            for (rb, ri), rw in FM._mem_refs(x)
+        ]
+
     def ranges(lst, i, st, regions):
         """The store's range against each range it is held to reach: the refusal's terms.
 
         A refusal names a predicate, not the pair of addresses that tripped it, and
         an unresolvable one prints as None -- which is the usual answer."""
-        at = FM._ref(lst[i], regions)
-        out = [
-            (
-                "store=%s" % (at,)
-                if at is None
-                else "store=$%04X idx=%s span=%d w=%d" % (at[0], brief(at[1], 2), at[2], at[3])
-            )
-        ]
-        for x in st.src[1:]:
-            for (rb, ri), rw in FM._mem_refs(x):
-                out.append(
-                    "read=%s" % (rb,)
-                    if rb is None
-                    else "read=$%04X idx=%s span=%d w=%d"
-                    % (rb, brief(ri, 2), FM._span(rb, ri, regions), rw)
-                )
-        return out
+        return ["store=%s" % rng(FM._reach(lst[i], regions))] + refs(st.src[1:], regions)
 
-    def premise(lst, i, j, st, span, regions=None):
-        why = o_prem(lst, i, j, st, span, regions)
+    def culprit(lst, k, st, regions):
+        """The statement blocking the hoist, and which operand it changed."""
+        hit = [n for n, x in enumerate(st.src) if FM._clobbers(lst[k], (x,), regions)]
+        return [k, brief(lst[k], 8), "at=%s" % rng(FM._reach(lst[k], regions)), hit] + refs(
+            [st.src[n] for n in hit], regions
+        )
+
+    def premise(lst, i, j, st, span, blocked=None, regions=None):
+        why = o_prem(lst, i, j, st, span, blocked, regions)
         ev.append(["premise", i, j, why, bool(st.merge)])
         if why == "the lo destination may disturb the hi lane or the step":
             ev.append(["disturb", i, j, ranges(lst, i, st, regions)])
+        if why == "an intervening statement changes an operand":
+            ev.append(["clobber", i, j, culprit(lst, blocked, st, regions)])
         return why
+
+    def may_disturb(stmt, base, idx, regions):
+        """``_match``'s own alias test: the lo store's range against the hi lane's."""
+        got = o_may(stmt, base, idx, regions)
+        if got:
+            lane = FM._lane(base, idx, FM._span(base, idx, regions))
+            ev.append(["alias", "store=%s" % rng(FM._reach(stmt, regions)), "hi=%s" % rng(lane)])
+        return got
 
     def lift(lst, i, j, st, name):
         o_lift(lst, i, j, st, name)
         ev.append(["lift", i, j, name, brief(lst[i], 7)])
 
-    FM._fuse, FM._site, FM._premise, FM._lift = fuse, site, premise, lift
+    FM._fuse, FM._site, FM._premise = fuse, site, premise
+    FM._lift, FM._may_disturb = lift, may_disturb
     try:
         model, prog = build(tune, frames, sub)
         gate = frameval.gate_fp(model, frames, prog)
     finally:
-        FM._fuse, FM._site, FM._premise, FM._lift = saved
+        FM._fuse, FM._site, FM._premise, FM._lift, FM._may_disturb = saved
     return {"tune": tune, "frames": frames, "sub": sub, "gate": gate and list(gate), "events": ev}
 
 

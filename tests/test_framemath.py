@@ -20,6 +20,7 @@ LO, HI = 0x10, 0x11  # adjacent zero-page lanes, clear of the CPU port
 SLO, SHI = G.TBL, G.TBL + 0x40  # the same index in two non-adjacent tables
 OUT = 0xD404  # sid.v1.ctrl/attack_decay: observable and not a SID lo/hi pair
 STEP = G.TBL + 0x80
+WLO, WHI = G.CNT + 0x10, G.CNT + 0x11  # adjacent lanes out of reach of a zero-page store
 
 
 def _build(name, asm, data=(), outs=(OUT, OUT + 1)):
@@ -257,6 +258,39 @@ def test_the_refusal_diagnostic_names_the_premise_that_failed(build, want):
     (pr,) = _math(prog)
     assert pr.status == "refused" and pr.lemma.endswith(want)
     assert "carry(" in text and "d0:2" not in text  # left as the two byte updates
+
+
+def test_a_write_later_than_the_read_it_would_spoil_is_no_hazard():
+    """The step's hi byte is read, then rewritten before the hi store: the read still moves.
+
+    A statement blocks only what is hoisted *past* it, so its position against the
+    read's decides, not its membership of the interval."""
+    a = G.Asm(G.ORG)
+    a.i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "abs", STEP).i("STA", "zp", LO)
+    a.i("LDA", "zp", HI).i("ADC", "abs", STEP + 1).i("TAX")
+    a.i("LDA", "imm", 0x09).i("STA", "abs", STEP + 1)
+    a.i("TXA").i("STA", "zp", HI)
+    _publish(a, LO, HI).i("RTS")
+    _m, prog, text = _build("late", a, {STEP: 0x37, STEP + 1: 0x02, LO: 0x10, HI: 0x80})
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (LO, HI)
+    assert "carry(" not in text and "d0:2 = " in text
+
+
+def test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page():
+    """`STA $08,X` names no base, but the bits its address sets hold it to $00FF."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 0x00).label("lp").i("CLC")
+    a.i("LDA", "abs", WLO).i("ADC", "imm", 0x50).i("STA", "abs", WLO).i("STA", "zpx", 0x08)
+    a.i("LDA", "abs", WHI).i("ADC", "imm", 0x01).i("STA", "abs", WHI)
+    a.i("INX").i("INX").i("CPX", "imm", 0x04).i("BNE", "rel", ("L", "lp"))
+    a.i("LDA", "abs", WLO).i("STA", "abs", OUT)
+    a.i("LDA", "abs", WHI).i("STA", "abs", OUT + 1).i("RTS")
+    _m, prog, text = _build("zpstore", a, {WLO: 0xF0, WHI: 0x20})
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (WLO, WHI)
+    assert "carry(" not in text and "d0:2 = " in text
 
 
 def test_an_unresolved_lane_prints_as_unresolved_and_sites_at_zero():
