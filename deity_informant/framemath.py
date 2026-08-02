@@ -77,14 +77,18 @@ def _split(hi, lo):
 
 
 def _lanes(t):
-    """``(hi, lo)`` byte-lane loads of a packed word term, else None."""
+    """``(hi, lo)`` byte-lane loads of a packed word term, else None.
+
+    One byte is not two lanes: ``c<<8 | c`` wears the shape but names a single
+    cell twice, which ``_rank`` would then rate best of all for having its bases
+    no distance apart. ``_pairs`` refuses it on the same ground."""
     if t[0] != "bor" or t[3] != 2:
         return None
     for a, b in (t[1:3], t[2:0:-1]):
         if a[0] != "shl" or a[2] != ("num", 8, 1) or a[1][0] != "zext" or b[0] != "zext":
             continue
         hi, lo = a[1][1], b[1]
-        if all(x[0] in ("cell", "load") and x[2] == 1 for x in (hi, lo)):
+        if hi != lo and all(x[0] in ("cell", "load") and x[2] == 1 for x in (hi, lo)):
             return hi, lo
     return None
 

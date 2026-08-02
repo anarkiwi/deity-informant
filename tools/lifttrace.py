@@ -197,11 +197,12 @@ def repeat(tune, runs=5, frames=200, sub=0):
     return 1 if len(seen) > 1 else 0
 
 
-def stable(tune, runs=4, frames=200, sub=0):
+def stable(tune, runs=8, frames=200, sub=0):
     """Diff whole decision traces across ``runs`` hash seeds, not just the verdict.
 
     A gate verdict is a lossy detector: an unstable decision only shows up in it
-    when it happens to change an emitted frame. The trace shows every one."""
+    when it happens to change an emitted frame. Two seeds are a lossy detector
+    too -- ``Amulet_of_Yendor`` first parted company at seed 3."""
     out = Path(tempfile.mkdtemp(prefix="lifttrace-"))
     caps = []
     for r in range(runs):
