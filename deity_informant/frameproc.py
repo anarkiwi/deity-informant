@@ -127,7 +127,7 @@ def _subst_loc(n, name, repl):
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
 
 
-def kills(s):
+def hidden_defs(s):
     """Names ``s`` may define other than as this list's own ``asg``; None means any.
 
     A nested body's definition, a call's writes and a label control may enter at
@@ -138,7 +138,7 @@ def kills(s):
     out = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
     for b in _stmt_bodies(s):
         for s2 in b:
-            got = kills(s2)
+            got = hidden_defs(s2)
             if got is None:
                 return None
             out |= got
@@ -150,7 +150,7 @@ class Defs:
 
     A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
     every lookup carries the reader's position and answers with the definer's. A
-    definition the list does not make itself is recorded valueless (``kills``)."""
+    definition the list does not make itself is recorded valueless (``hidden_defs``)."""
 
     __slots__ = ("defs", "wild", "outer", "cyclic")
 
@@ -161,7 +161,7 @@ class Defs:
             if s[0] == "asg":
                 self.defs.setdefault(s[1], []).append((k, s[2]))
                 continue
-            killed = kills(s)
+            killed = hidden_defs(s)
             if killed is None:
                 self.wild.append(k)
                 continue
