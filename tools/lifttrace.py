@@ -84,9 +84,34 @@ def capture(tune, frames=200, sub=0):
         ev.append(["site", i, j, shown])
         return st
 
+    def ranges(lst, i, st, regions):
+        """The store's range against each range it is held to reach: the refusal's terms.
+
+        A refusal names a predicate, not the pair of addresses that tripped it, and
+        an unresolvable one prints as None -- which is the usual answer."""
+        at = FM._ref(lst[i], regions)
+        out = [
+            (
+                "store=%s" % (at,)
+                if at is None
+                else "store=$%04X idx=%s span=%d w=%d" % (at[0], brief(at[1], 2), at[2], at[3])
+            )
+        ]
+        for x in st.src[1:]:
+            for (rb, ri), rw in FM._mem_refs(x):
+                out.append(
+                    "read=%s" % (rb,)
+                    if rb is None
+                    else "read=$%04X idx=%s span=%d w=%d"
+                    % (rb, brief(ri, 2), FM._span(rb, ri, regions), rw)
+                )
+        return out
+
     def premise(lst, i, j, st, span, regions=None):
         why = o_prem(lst, i, j, st, span, regions)
         ev.append(["premise", i, j, why, bool(st.merge)])
+        if why == "the lo destination may disturb the hi lane or the step":
+            ev.append(["disturb", i, j, ranges(lst, i, st, regions)])
         return why
 
     def lift(lst, i, j, st, name):

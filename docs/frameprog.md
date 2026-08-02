@@ -1261,6 +1261,38 @@ The classes moved as well as the totals — "lanes indexed differently" is now 8
 (was 22 before the §7.1 fix) and "may alias the hi lane" 6 (was 14) — so the
 counts recorded before §7.1 was settled should not be compared against these.
 
+**The dominant class, triaged.** "The lo destination may disturb the hi lane or
+the step" is 43 of the 76, and `lifttrace capture` now records the store's range
+against every range it is held to reach, so the class splits by what actually
+tripped it rather than by which predicate reported it:
+
+- **33 — an unresolved *read* address**, and one shape: the step is a deref
+  through a zero-page pointer pair (`Arpeggio`, `Danger_Mouse`,
+  `Data_Data_Data_Data` are the same driver repeated; `$00F0/$00F1`, `$00F4/$00F5`,
+  … per voice). These are **genuine** hazards as the pass stands. The deref is
+  defined *inside* the lift interval, so `settle` inlines it and the load really
+  does move above the lo store; with no bound on the pointer, a store to a
+  constant byte cannot be excluded from it. The bound exists — it is exactly
+  rung (f)'s proven target block set (`frameptr`'s `blocks()`) — but rung (f)
+  runs *after* rung (d2) and is naming-only, so `_disturbs` cannot ask. Closing
+  this class means making that block set available to the aliasing test, which
+  is a rung-ordering change and wants its own commit: `frameptr.analyse` keys
+  its sites by address *expression*, and rung (d2) rewrites expressions.
+- **10 — an undeclared span over a differing index.** The store's span falls
+  back to the whole 256-byte register range because `Regions.avail(base)` is 0,
+  and then any constant read within 256 bytes collides. `Beat_the_System` is
+  representative: `$213C,X` and `$2136,X` are per-voice 3-entry arrays that
+  `datadecl` does not declare (it declares `$211E` and `$214F`, size 3, in the
+  same driver), so a read of the scalar `$2165` — 41 bytes above — is held to
+  alias. The index is bound by a `loop`, not a `for`, so no local reaching
+  definition bounds it either; the route is `datadecl` coverage, not the
+  aliasing rule. `_overlaps` already does the right thing once a span is right:
+  the same-index lane read at `$2136,X` is correctly proved disjoint.
+
+Neither class is a defect in the rule that was consolidated; both are missing
+*inputs* to it. The counts above are the re-measured trajectory, not the
+pre-§7.1 ones.
+
 - **Unresolved lane address** feeds three classes at once — "a lane address is
   not a const base plus index", "the lo destination may alias the hi lane"
   (`_may_disturb` with `base` None), "the lo destination may disturb the hi lane
@@ -1301,7 +1333,16 @@ counts recorded before §7.1 was settled should not be compared against these.
   construction, since the candidate lanes come from the program rather than from
   extraction. The site refuses today ("lanes indexed differently"), so nothing
   unsound is emitted; a wrong pairing driving a wrong **merge** remains
-  unguarded and wants a mutation test.
+  unguarded and wants a mutation test. This is worth more than one site: **most
+  of the 8 "lanes indexed differently" refusals carry the same signature** —
+  lanes implausibly far apart and differently indexed (`Antitrack_01
+  $166B[y]/$15CB[x]`, `10_Days_and_No_Longer $10A0/$1F25`, `Counterforce
+  $2015/$1ED2` three times), which is what a step named as a lane looks like. A
+  query would take the class and the last extraction dependence together. The
+  obvious form of it — extract `sub(h, pack(hi_cell, lo_cell))` as the step —
+  must be checked against the cancellation rules actually admitted before it is
+  believed, or the lift emits `pack(lanes) + (h - pack(lanes))`: right, and
+  unreadable.
 - **The exact-index rule now lives in one place (LANDED).** Four sibling
   predicates answered "can these two address ranges intersect", and it was
   present in only two: `_disturbs` and `_may_disturb` had it, `_reads` and
