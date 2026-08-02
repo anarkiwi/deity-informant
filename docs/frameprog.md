@@ -1787,6 +1787,38 @@ which refuses when the loop is restored, beside
 `::test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site` for the shape
 that is a hazard.
 
+### 7.5 The carry as control flow, which rung (d2) never sees
+
+`tests/test_lift6502.py` enumerates the 6502 shapes that write one 16-bit
+quantity as two bytes -- lane addressing (`zp`, `zp,X`, `abs`, `abs,X`, `abs,Y`)
+x adjacent or split lanes x add or subtract x step operand mode x how the carry
+crosses -- 180 shapes, and Gate FP as the oracle, so no case states an expected
+lift. It runs in under eight seconds, which the corpus sweep cannot.
+
+The matrix is uniform and was not visible from the refusal ledger:
+
+| carry form | shapes | result |
+|---|---|---|
+| `ADC #0` / `SBC #0` | 100 | all lift |
+| `BCC`/`INC` , `BCS`/`DEC` | 80 | **no site found at all** |
+
+Rung (d2) pairs two statements by their *values*, and `_links` looks for an
+`INT_CARRY` inside the hi statement's value. Written as control flow the hi lane
+has no value at that level -- `st [$10] = t0` followed by
+`if carry(ctr0,$37) { INC $11 }` -- so `_match` never forms the pair. These are
+not refusals; they are never counted, so they never entered the 51 of §7.3 and no
+census reports them.
+
+The shape is common and it is already in this document: `Arpeggio $3297 LDA $F0 /
+CLC / ADC #$04 / STA $F0 / BCC $32A2 / INC $F1` is the pointer advance read off
+the 6502 in §7.3. A predicated increment is the same 16-bit add written another
+way, and the condition IS the carry the lo add produced, so converting it is a
+provable normalisation and not an idiom: `if carry(a, b) { INC c }` is
+`c = c + carry(a, b)`. It belongs before rung (d2) as an if-conversion over
+predicated updates, so the rung keeps working on values alone.
+
+Not yet sized on the corpus. That is the first thing to measure.
+
 ### 7.4 tools/lifttrace.py
 
 Records a tune's ordered rung-(d2) decisions — every candidate form `_fuse`
