@@ -1254,18 +1254,58 @@ Measured over the corpus: **byte-wide SID stores 984 → 821, word stores 2694 �
 corpus still bit-identical under two hash seeds. 165 indexed lane stores prove
 lane-aligned; 821 do not, and the two reasons are named, not guessed:
 
-- **806 — the index is spilled through a play-written RAM cell** (CORRECTED).
-  This was recorded as "the index table is undeclared, so `Regions.avail` is 0";
-  re-instrumenting `_consts` splits `row is None` (a scalar read, where `_consts`
-  takes size 1 and never asks `avail`) from a genuinely undeclared table, and
-  **all 806 are the scalar case and all 806 cells are in `model.written`** —
-  0 are undeclared tables. `Ala_Gal` is the shape: `$1150 LDA $1046,X / $1153 STA
-  $107E / TAY` caches the voice offset, and every SID store then reloads
-  `$1634 LDY $107E`. The const table is right there and declared; what is missing
-  is a reaching definition *through a memory cell*, which `frameproc.Defs`
-  resolves for locals only. No `datadecl` declaration can close this — the cell
-  is written by play, so it is not const under any extent claim. Undeclared
-  index tables are 0, undeclared table addresses 4, declared-but-not-const 2.
+- **806 — the index is spilled through a play-written RAM cell** (PARTLY CLOSED,
+  70 of 786 re-measured resolutions, 35 sites in 16 tunes). This was recorded as
+  "the index table is undeclared, so `Regions.avail` is 0"; re-instrumenting
+  `_consts` splits `row is None` (a scalar read, where `_consts` takes size 1 and
+  never asks `avail`) from a genuinely undeclared table, and **all 806 are the
+  scalar case and all 806 cells are in `model.written`** — 0 are undeclared
+  tables. `Ala_Gal` is the shape: `$1150 LDA $1046,X / $1153 STA $107E / TAY`
+  caches the voice offset, and every SID store then reloads `$1634 LDY $107E`.
+  No `datadecl` declaration can close this — the cell is written by play, so it
+  is not const under any extent claim. What was missing is a reaching definition
+  *through a memory cell*, and `frameproc.Defs` now answers that too:
+  `Defs.cell(cell, bound, regions)` is `_lookup` over memory rather than names,
+  returning the byte store in force at a read — the last statement before it that
+  may write the cell — chased out through the same enclosing scopes and refused
+  on the same cyclic premise. `_consts` follows it and re-asks, so a spilled
+  index proves whatever the value it was spilled from proves. `framemath`'s
+  `_span`/`_overlaps`/`_ref` moved to `frameproc` for it, one aliasing rule now
+  beside the one definition-in-force query, and `framemath` keeps the names.
+
+  **Dominance was never the blocker; naming the addresses was.** As first
+  written the rule closed **0 of 806**: every site died on an intervening store
+  the pass declined to place, and the dominant shape is the stack push
+  `mem[(zext2(sp) | $0100)]` that rung (d0) could not destack, which
+  `addr_split` reports as "no base" and a walk must then read as writing
+  anywhere. `frameproc.addr_bits` bounds it without naming the shape: a value
+  fits the width it is read at, and `or`/`and`/`zext` over that give the bits an
+  address can set, of which every address it names is a subset. The residue then
+  splits: **330** an intervening *indexed* store whose base is undeclared, so its
+  span falls back to 256 bytes and swallows the cell; **160** a dominating store
+  whose value is not provable; **118** a label between, where control may enter
+  having made no spill; **50** a loop and **24** an `if` arm that may write the
+  cell; **18** a `pcall`; **12** a store whose address bits still cover the cell;
+  **4** no store in the procedure. `Ala_Gal` itself refuses on the first two: 8
+  on `$1064,X` and `$1073,X`, arrays inside the code image that `datadecl`
+  declines to declare, so their spans reach `$107E`; 4 on a label between.
+
+  Measured: **byte-wide SID stores 821 → 786, word stores 2857 → 2892**
+  (lane-aligned indexed 165 → 200), Gate FP 649/649 and the canonical fixpoint
+  649/649 unchanged, rung (d2) unchanged at 1463 lifted / 65 refused / 182
+  merges, and the corpus bit-identical under two hash seeds (672 tunes, 0
+  differ). Consumer partition: emitted text 10192917 → **10194792** bytes
+  (+0.02%), raw `mem[` unchanged at 9682.
+
+  **The flow-insensitive alternative was measured and not taken.** A cell's value
+  set is also provable as `mem0[cell]` unioned over every store the program makes
+  to it, which needs no dominance at all; instrumented over the corpus it closes
+  **166** resolutions to this rule's 70, the union being 168, so it is the wider
+  rule and not a superset. It buys that with a premise this rung does not
+  otherwise make — that no control leaves the modelled statement tree, so the
+  tree's `st` statements are *every* executed store — and it is blocked anyway on
+  **476** by the same undeclared indexed spans. Bounding those is worth more than
+  either rule and belongs to `datadecl`.
 - **800 — the index is a procedure parameter**, so the enclosing chain runs out
   inside the procedure. The voice loop passes it: `Also_Bad`'s `JSR $C098` with
   X = 0/7/14 is three call sites each supplying a constant. Closing this wants
@@ -1274,6 +1314,10 @@ lane-aligned; 821 do not, and the two reasons are named, not guessed:
 
 (Both counts are per-resolution and so double-count the measure and mutate
 passes; the ratio is the finding, not the absolute.)
+The spill rule is pinned by three tests in `test_framefuse.py`: the widening
+itself, a store between the spill and the reload that refuses it, and
+`::test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index`, which
+is `addr_bits` as the thing that decides whether the first two are reachable.
 The six tests that pinned the superseded contract are moved to this one and the
 suite is green; `test_framelog.py` gained
 `::test_a_held_lane_is_the_value_the_seed_and_earlier_frames_left`, which is the

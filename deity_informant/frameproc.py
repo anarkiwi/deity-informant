@@ -125,6 +125,66 @@ def _subst_loc(n, name, repl):
 
 
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
+_CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
+NOIDX = object()  # "the caller is not a store, so no index is shared"
+
+
+# ---- addresses: the base an access names, and the bytes it may reach -------------
+def addr_split(addr):
+    """``(const base, index expression)`` of an address, index None when plain."""
+    if addr[0] == "const" and addr[2] == 2:
+        return addr[1], None
+    got = _index_of(addr)
+    return got if got is not None else (None, None)
+
+
+def addr_bits(n):
+    """Bits an address may set: every address the expression names is a subset.
+
+    A value fits the width it is read at, which bounds the ``zp,X`` wrap and the
+    stack push ``zext2(sp) | $0100`` without either being named as a shape."""
+    m = E.mask(loc_width(n))
+    if n[0] == "const":
+        return n[1] & m
+    if n[0] == "op" and n[1] in ("INT_ZEXT", "COPY"):
+        return addr_bits(n[2][0]) & m
+    if n[0] == "op" and n[1] in ("INT_OR", "INT_AND") and len(n[2]) == 2:
+        a, b = (addr_bits(c) for c in n[2])
+        return (a | b if n[1] == "INT_OR" else a & b) & m
+    return m
+
+
+def span(base, idx, regions):
+    """Tightest sound span for an indexed address at ``base``: the ONE span rule.
+
+    An index reaches no further than the declaration holding its base, since the
+    lifted program indexes that datum; with no declaration the register width is
+    all that bounds it."""
+    if idx is None:
+        return 0
+    full = E.mask(loc_width(idx))
+    avail = 0 if base is None or regions is None else regions.avail(base)
+    return min(full, avail - 1) if avail > 0 else full
+
+
+def overlaps(a, b):
+    """Whether two ranges may intersect; each is ``(base, index, span, width)``.
+
+    The ONE aliasing rule. Two ranges carrying one index name one row apiece, so
+    their spans drop out and bases and widths alone decide: ``T[x]`` and
+    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is."""
+    (ba, ia, sa, wa), (bb, ib, sb, wb) = a, b
+    if ia == ib:
+        sa = sb = 0
+    return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
+
+
+def store_ref(stmt, regions):
+    """The range a store writes, else None where its address does not resolve."""
+    base, idx = addr_split(stmt[1])
+    if base is None:
+        return None
+    return (base, idx, span(base, idx, regions), G.store_width(stmt[2]))
 
 
 def hidden_defs(s):
@@ -152,11 +212,11 @@ class Defs:
     every lookup carries the reader's position and answers with the definer's. A
     definition the list does not make itself is recorded valueless (``hidden_defs``)."""
 
-    __slots__ = ("defs", "wild", "outer", "cyclic")
+    __slots__ = ("defs", "wild", "outer", "cyclic", "lst")
 
     def __init__(self, lst, outer=None, cyclic=False):
         self.defs, self.wild = {}, []
-        self.outer, self.cyclic = outer, cyclic
+        self.outer, self.cyclic, self.lst = outer, cyclic, lst
         for k, s in enumerate(lst):
             if s[0] == "asg":
                 self.defs.setdefault(s[1], []).append((k, s[2]))
@@ -210,6 +270,53 @@ class Defs:
         """``at``, but None wherever the definition in force has no readable value."""
         got = self.at(name, bound)
         return None if got is None or got[1] is None else got
+
+    def _hits(self, k, cell, regions):
+        """True where the store at ``k`` may reach ``cell``.
+
+        An address the base/index form does not name still bounds the bytes it can
+        reach by the bits it can set (``addr_bits``)."""
+        s = self.lst[k]
+        got = store_ref(s, regions)
+        if got is not None:
+            return overlaps((cell, NOIDX, 0, 1), got)
+        m = addr_bits(self.resolve(s[1], k))
+        return any((cell - d) & ~m == 0 for d in range(G.store_width(s[2])))
+
+    def _writes(self, k, cell, regions):
+        """True where statement ``k`` may store into ``cell``, nested bodies included.
+
+        A callee's stores and a nested body's are invisible to a scan of one list,
+        and control may enter at a label having made neither, exactly as
+        ``hidden_defs`` records for names."""
+        s = self.lst[k]
+        if s[0] in _WILD or s[0] == "pcall":
+            return True
+        if s[0] == "st" and self._hits(k, cell, regions):
+            return True
+        return any(
+            Defs(b, (self, k), s[0] in _CYCLIC)._writes(j, cell, regions)
+            for b in _stmt_bodies(s)
+            for j in range(len(b))
+        )
+
+    def cell(self, cell, bound, regions):
+        """``(env, index, value)`` of the byte store to ``cell`` in force at ``bound``.
+
+        ``_lookup`` over memory rather than names: the store in force is the last
+        statement before the read that may write the cell, and an enclosing one
+        survives only a cyclic body that writes the cell nowhere."""
+        for k in range(min(bound, len(self.lst)) - 1, -1, -1):
+            if not self._writes(k, cell, regions):
+                continue
+            s = self.lst[k]
+            exact = s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1
+            return (self, k, s[2]) if exact else None
+        if self.outer is None or (
+            self.cyclic and any(self._writes(k, cell, regions) for k in range(len(self.lst)))
+        ):
+            return None
+        return self.outer[0].cell(cell, self.outer[1], regions)
 
 
 def _stmt_exprs(s):

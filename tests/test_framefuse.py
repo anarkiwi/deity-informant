@@ -8,8 +8,10 @@ Gate FP (the M-FP3 mutation evidence).
 import numpy as np
 import pytest
 
+from deity_informant import datadecl
 from deity_informant import framefuse
 from deity_informant import framelog as F
+from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 from deity_informant import sidprog
@@ -349,5 +351,59 @@ def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
 def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
     lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
+    assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
+    assert "0 lane-aligned indexed, 1 index not proven" in lemma
+
+
+# ---- the index spilled through a play-written cell (docs/frameprog.md 7.2) -------
+def _spill_loop(name, between=()):
+    """Ala_Gal's shape: the voice offset is cached in a RAM cell and reloaded."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 2).label("lp")
+    a.i("LDA", "absx", TBL + 1)
+    a.i("STA", "abs", G.CNT)
+    for mn, mode, operand in between:
+        a.i(mn, mode, operand)
+    a.i("LDY", "abs", G.CNT)
+    a.i("LDA", "absx", TBL + 8)
+    a.i("STA", "absy", SID)
+    a.i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = {TBL + 1 + k: v for k, v in enumerate((0x00, 0x07, 0x0E))}
+    data.update({TBL + 8 + k: 0x30 + k for k in range(3)})
+    data.update({PTR: 0x80, PTR + 1: (G.CNT >> 8) & 0xFF})
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player(name, a.assemble(), data, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    return _proof(prog, SID).lemma, frameprog.dumps(prog)
+
+
+def test_an_index_spilled_through_a_ram_cell_widens_on_the_store_in_force():
+    """No declaration can make a play-written cell const; the store that wrote it can."""
+    lemma, text = _spill_loop("spill_ok")
+    idx = "sid.v1.freq_lo[m_%04X]" % G.CNT
+    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(a)):2" % (idx, idx) in text
+    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+
+
+def _push(val):
+    """A stack push at an ``sp`` no pass pinned: ``mem[zext2(sp) | $0100]``."""
+    sp = ("op", "INT_ZEXT", (("loc", "sp"),), 2)
+    return ("st", ("op", "INT_OR", (sp, ("const", 0x0100, 2)), 2), val)
+
+
+def test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index():
+    """The bits `zext2(sp) | $0100` can set stop at $01FF, so $1440 is out of reach."""
+    regions = datadecl.Regions([])
+    spill, read = _st(G.CNT, ("const", 7, 1)), ("asg", "y", _byte(G.CNT))
+    env = frameproc.Defs([spill, _push(("loc", "a")), read])
+    assert env.cell(G.CNT, 2, regions) == (env, 0, ("const", 7, 1))
+    deref = ("st", ("op", "INT_ADD", (("loc", "p", 2), ("loc", "y")), 2), ("loc", "a"))
+    assert frameproc.Defs([spill, deref, read]).cell(G.CNT, 2, regions) is None
+
+
+def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
+    """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
+    lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
     assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
     assert "0 lane-aligned indexed, 1 index not proven" in lemma

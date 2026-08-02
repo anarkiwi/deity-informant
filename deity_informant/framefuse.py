@@ -74,22 +74,26 @@ def _consts(idx, env, at, regions, mem0):
     """Every value ``idx`` may take where the model proves them all, else None.
 
     A constant *table* counts: Commando indexes its pulse stores by ``LDY $14B5,X``
-    over `$00 $07 $0E`, and a rule wanting an immediate would refuse the very
-    driver the pair exists for."""
-    n = env.resolve(idx, at)
-    if n[0] == "op" and n[1] == "INT_ZEXT":
-        n = n[2][0]
-    if n[0] == "const":
-        return frozenset((n[1] & 0xFF,))
-    if n[0] != "mem" or n[2] != 1:
-        return None
-    base, row = _addr_split(n[1])
-    if base is None:
-        return None
-    size = 1 if row is None else regions.avail(base)
-    if not size or any(not regions.const_at(a) for a in range(base, base + size)):
-        return None
-    return frozenset(mem0[a] for a in range(base, base + size))
+    over `$00 $07 $0E`. A cell the play code writes counts through the store in
+    force at the read (``Defs.cell``): drivers spill the voice offset to RAM."""
+    while True:
+        n = env.resolve(idx, at)
+        if n[0] == "op" and n[1] == "INT_ZEXT":
+            n = n[2][0]
+        if n[0] == "const":
+            return frozenset((n[1] & 0xFF,))
+        if n[0] != "mem" or n[2] != 1:
+            return None
+        base, row = _addr_split(n[1])
+        if base is None:
+            return None
+        size = 1 if row is None else regions.avail(base)
+        if size and all(regions.const_at(a) for a in range(base, base + size)):
+            return frozenset(mem0[a] for a in range(base, base + size))
+        got = None if row is not None else env.cell(base, at, regions)
+        if got is None:
+            return None
+        env, at, idx = got
 
 
 def _lane_aligned(p, ks):
@@ -117,12 +121,7 @@ def _widen(s, p):
     return ("st", addr, ("op", "INT_OR", (kept, half), 2))
 
 
-def _addr_split(addr):
-    """``(const base, index expression)`` of an address, index None when plain."""
-    if addr[0] == "const" and addr[2] == 2:
-        return addr[1], None
-    got = frameproc._index_of(addr)
-    return got if got is not None else (None, None)
+_addr_split = frameproc.addr_split
 
 
 def _may_read(n, cell):
@@ -316,9 +315,6 @@ def _pair_at(stmts, i, p):
     return None if hb[0] != p.hi and p.kind != "sid" else (ha[0], hb[0])
 
 
-_CYCLIC = frozenset(("loop", "for"))
-
-
 def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
     """One statement list: fuse paired stores, fold word reads, count refusals.
 
@@ -332,7 +328,7 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
             env, stale = frameproc.Defs(stmts, outer, cyclic), False
         s = stmts[i]
         for body in frameproc._stmt_bodies(s):
-            _visit(body, p, mutate, ctx, (env, i), s[0] in _CYCLIC)
+            _visit(body, p, mutate, ctx, (env, i), s[0] in frameproc._CYCLIC)
         at = _pair_at(stmts, i, p)
         if at is not None and _may_read(stmts[i + 1][2], at[0]):
             p.hazard += count
@@ -364,7 +360,7 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))
         if mutate:
             stmts[i] = _widen(new, p) if widen else new
-            stale = stale or new is not s
+            stale = stale or stmts[i] is not s  # a widened store moved its own range
         i += 1
 
 

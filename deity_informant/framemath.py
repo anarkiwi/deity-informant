@@ -10,10 +10,8 @@ from egglog import EGraph
 
 from . import datadecl
 from . import eqlift as EQ
-from . import expr as E
 from . import framefuse as FF
 from . import frameproc
-from . import grammar as G
 from . import sidprog
 from .structured import Proof
 
@@ -213,40 +211,10 @@ def _mem_refs(n):
     return out
 
 
-def _span(base, idx, regions):
-    """Tightest sound span for an indexed address at ``base``: the ONE span rule.
-
-    An index reaches no further than the declaration holding its base, since the
-    lifted program indexes that datum; with no declaration the register width is
-    all that bounds it."""
-    if idx is None:
-        return 0
-    full = E.mask(FF._w(idx))
-    avail = 0 if base is None or regions is None else regions.avail(base)
-    return min(full, avail - 1) if avail > 0 else full
-
-
-_NOIDX = object()  # "the caller is not a store, so no index is shared"
-
-
-def _overlaps(a, b):
-    """Whether two ranges may intersect; each is ``(base, index, span, width)``.
-
-    The ONE aliasing rule. Two ranges carrying one index name one row apiece, so
-    their spans drop out and bases and widths alone decide: ``T[x]`` and
-    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is."""
-    (ba, ia, sa, wa), (bb, ib, sb, wb) = a, b
-    if ia == ib:
-        sa = sb = 0
-    return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
-
-
-def _ref(stmt, regions):
-    """The range a store writes, else None where its address does not resolve."""
-    base, idx = FF._addr_split(stmt[1])
-    if base is None:
-        return None
-    return (base, idx, _span(base, idx, regions), G.store_width(stmt[2]))
+_span = frameproc.span  # the range rules live beside the definition-in-force query
+_NOIDX = frameproc.NOIDX
+_overlaps = frameproc.overlaps
+_ref = frameproc.store_ref
 
 
 def _lane(base, idx, span):
