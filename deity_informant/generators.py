@@ -19,56 +19,19 @@ Trigger = namedtuple("Trigger", "kind source guard")
 Generators = namedtuple("Generators", "clocks pw filter freq triggers static")
 Coverage = namedtuple("Coverage", "plane target interpreted total runs")
 
-_OPN = {
-    "INT_ADD": "add",
-    "INT_SUB": "sub",
-    "INT_AND": "band",
-    "INT_OR": "bor",
-    "INT_XOR": "bxor",
-    "INT_LEFT": "shl",
-    "INT_RIGHT": "shr",
-    "INT_EQUAL": "eq",
-    "INT_NOTEQUAL": "ne",
-    "INT_LESS": "ult",
-    "INT_LESSEQUAL": "ule",
-    "INT_CARRY": "carry",
-}
-_CMP = frozenset(("eq", "ne", "ult", "ule"))
 _PR = E._Printer({})
-
-
-def _to_egg(ir):
-    """Translate a pass-1 IR expression into an eqlift value-graph term."""
-    k = ir[0]
-    if k == "const":
-        return ("num", ir[1] & ((1 << (8 * ir[2])) - 1), ir[2])
-    if k == "loc":
-        return ("loc", ir[1])
-    if k == "mem":
-        a = ir[1]
-        return ("cell", a[1], ir[2], 0) if a[0] == "const" else ("load", _to_egg(a), ir[2], 0)
-    mn, kids, w = ir[1], ir[2], ir[3]
-    if mn == "INT_ZEXT":
-        return ("zext", _to_egg(kids[0]))
-    fn = _OPN[mn]
-    if fn in _CMP:
-        return (fn, _to_egg(kids[0]), _to_egg(kids[1]))
-    r = _to_egg(kids[0])
-    for kid in kids[1:]:
-        r = (fn, r, _to_egg(kid), w)
-    return r
 
 
 def canon(ir):
     """Simplest form of a pass-1 expression under equality saturation, rendered."""
     if ir is None:
         return None
-    return _PR.fmt(M.to_ir(M.extract(E._egg_of(_to_egg(ir), {}))))
+    return _PR.fmt(M.to_ir(M.extract(E._egg_of(E.to_egg(ir), {}))))
 
 
 def raw(ir):
     """Rendered raw (pre-saturation) form of a pass-1 expression."""
-    return None if ir is None else _PR.fmt(M.to_ir(str(E._egg_of(_to_egg(ir), {}))))
+    return None if ir is None else _PR.fmt(M.to_ir(str(E._egg_of(E.to_egg(ir), {}))))
 
 
 def _clock(counter):

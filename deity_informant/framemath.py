@@ -1,22 +1,29 @@
 """framemath: rung (d2), 16-bit arithmetic lifting (docs/frameprog.md 4).
 
 An 8-bit add/sub on the lo lane plus the carry (borrow) it propagates into the hi
-lane is one 16-bit add/sub. The carry link is the evidence, and it is local: it
-exists only where the two lanes are halves of one quantity.
-"""
+lane is one 16-bit add/sub. Not a catalogue of 6502 idioms: the two byte results
+are concatenated and ``eqlift``'s Z3-proven rules say what ``hi<<8 | lo`` is."""
 
 from __future__ import annotations
 
+from bisect import bisect_left
+
+from egglog import EGraph
+
 from . import datadecl
+from . import eqlift as EQ
 from . import expr as E
 from . import framefuse as FF
 from . import frameproc
 from . import grammar as G
 from . import sidprog
-from . import streams as ST
 from .structured import Proof
 
 _ADD, _SUB = "INT_ADD", "INT_SUB"
+_OF = {"add": _ADD, "sub": _SUB}
+_LINK = frozenset(("INT_CARRY", "INT_LESS", "INT_LESSEQUAL"))
+_ITERS, _STEP, _VARIANTS = 25, 1, 8
+_NODES, _TERM = 30000, 4000  # e-graph and translated-term budgets
 
 
 def _loc(name):
@@ -31,62 +38,168 @@ def _hi_byte(n):
     return _trunc(("op", "INT_RIGHT", (n, ("const", 8, 1)), 2))
 
 
-def _resolve(n, env, seen=None):
-    """Follow ``loc`` definitions to the first non-``loc`` expression."""
-    seen = seen or set()
-    while n[0] == "loc" and n[1] in env and n[1] not in seen:
-        seen.add(n[1])
-        n = env[n[1]]
+class _Env:
+    """The local definitions of one statement list, read at the point of the read.
+
+    A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
+    resolving it against a later definition of ``x`` reads the wrong value. Every
+    lookup carries the reader's position and answers with the definer's."""
+
+    __slots__ = ("defs",)
+
+    def __init__(self, lst):
+        self.defs = {}
+        for k, s in enumerate(lst):
+            if s[0] == "asg":
+                self.defs.setdefault(s[1], []).append((k, s[2]))
+
+    def at(self, name, bound):
+        """``(index, value)`` of the definition in force at ``bound``, else None."""
+        made = self.defs.get(name)
+        k = 0 if made is None else bisect_left(made, (bound,))
+        return made[k - 1] if k else None
+
+
+def _resolve(n, env, at):
+    """Follow ``loc`` definitions, each read where it was written."""
+    while n[0] == "loc":
+        got = env.at(n[1], at)
+        if got is None:
+            return n
+        at, n = got
     return n
 
 
-def _same(a, b, env):
-    """Same value, whatever width it was widened to (the borrow compare zero-extends)."""
-    if a == b:
-        return True
-    a, b = _resolve(a, env), _resolve(b, env)
-    if E.is_const(a) and E.is_const(b):
-        return a[1] == b[1]
-    return a == b
+def _byte_op(val, env, at):
+    """``val`` computes a byte, so it can be the lo half of a word."""
+    r = _resolve(val, env, at)
+    return r[0] == "op" and r[3] == 1
 
 
-def _update(val, env):
-    """``(lane value, step, op)`` when ``val`` is a byte add/sub, else None."""
-    r = _resolve(val, env)
-    if r[0] != "op" or r[3] != 1:
+def _links(n, env, at):
+    """``n`` reads a carry or a borrow, without which no split can rejoin."""
+    stack = [(n, at)]
+    while stack:
+        x, b = stack.pop()
+        if x[0] == "op":
+            if x[1] in _LINK:
+                return True
+            stack.extend((c, b) for c in x[2])
+        elif x[0] == "mem":
+            stack.append((x[1], b))
+        elif x[0] == "loc":
+            got = env.at(x[1], b)
+            if got is not None:
+                stack.append((got[1], got[0]))
+    return False
+
+
+_FUSED = {}
+
+
+def _split(hi, lo):
+    """``hi<<8 | lo`` over two byte terms: the word the two halves would make."""
+    return ("bor", ("shl", ("zext", hi), ("num", 8, 1), 2), ("zext", lo), 2)
+
+
+def _lanes(t):
+    """``(hi, lo)`` byte-lane loads of a packed word term, else None."""
+    if t[0] != "bor" or t[3] != 2:
         return None
-    if r[1] == _ADD and len(r[2]) == 2:
-        return (r[2][0], r[2][1], _ADD)
-    if r[1] == _SUB:
-        return (r[2][0], r[2][1], _SUB)
+    for a, b in (t[1:3], t[2:0:-1]):
+        if a[0] != "shl" or a[2] != ("num", 8, 1) or a[1][0] != "zext" or b[0] != "zext":
+            continue
+        hi, lo = a[1][1], b[1]
+        if all(x[0] in ("cell", "load") and x[2] == 1 for x in (hi, lo)):
+            return hi, lo
     return None
 
 
-def _carry_over(n, env):
-    """``(a, b)`` a carry term is over; ``carry(x, $00)`` is 0 and drops out."""
-    r = _resolve(n, env)
-    if r[0] != "op":
+def _signed(op, step):
+    """An add of a step past the halfway mark is the subtract it stands for."""
+    if op == "add" and step[0] == "num" and step[2] == 2 and step[1] >= 0x8000:
+        return "sub", ("num", 0x10000 - step[1], 2)
+    return op, step
+
+
+def _word_form(t):
+    """``(op, hi lane, lo lane, step, mask)`` of a 16-bit form of ``t``, else None."""
+    mask = None
+    if t[0] == "band" and t[3] == 2:
+        for a, b in (t[1:3], t[2:0:-1]):
+            if b[0] == "num":
+                mask, t = b[1], a
+                break
+    if t[0] not in _OF or t[3] != 2:
         return None
-    if r[1] == "INT_CARRY":
-        return None if E.is_const(r[2][1]) and r[2][1][1] == 0 else (r[2][0], r[2][1])
-    if r[1] == "INT_OR":
-        live = [g for g in (_carry_over(c, env) for c in r[2]) if g is not None]
-        return live[0] if len(live) == 1 else None
+    for w, step in ((t[1:3], t[2:0:-1]) if t[0] == "add" else (t[1:3],)):
+        got = _lanes(w)
+        if got is not None:
+            op, step = _signed(t[0], step)
+            return (op, got[0], got[1], step, mask)
     return None
 
 
-def _borrow_over(n, env):
-    """``(a, b)`` a borrow term is over: ``$01 - (zext(b) <= zext(a))`` or ``a < b``."""
-    r = _resolve(n, env)
-    if r[0] != "op":
+def _saturate(eg, rules):
+    """Run the rules to saturation, or to a node budget, whichever comes first.
+
+    Associativity and commutativity grow an e-graph over a long expression
+    without bound. Extraction is sound at any cutoff, so a budget can cost a
+    site but can never buy a wrong one. The budget is checked every iteration:
+    allocation happens inside ``run``, so a batched step is unbounded however
+    small the node budget is."""
+    for _ in range(0, _ITERS, _STEP):
+        if not eg.run(rules * _STEP).updated:
+            return
+        if sum(n for _f, n in eg.all_function_sizes()) > _NODES:
+            return
+
+
+def _fuse(lo, hi):
+    """The 16-bit operation the two byte halves saturate to, else None."""
+    key = (lo, hi)
+    if key not in _FUSED:
+        rules, _names = EQ.admitted_rules()
+        eg = EGraph()
+        h = eg.let("h", EQ._egg_of(_split(hi, lo), {}))
+        _saturate(eg, rules)
+        forms = sorted(
+            (EQ._parse_ir(str(x)) for x in eg.extract_multiple(h, _VARIANTS)),
+            key=lambda t: (EQ._cost(t), repr(t)),
+        )
+        _FUSED[key] = next((f for f in map(_word_form, forms) if f is not None), None)
+    return _FUSED[key]
+
+
+def _emittable(n, env, at, i, j):
+    """Every local ``n`` names holds at ``i`` the value it held at ``at``.
+
+    A definition made inside the interval passes too: ``settle`` inlines it, and
+    the premise guards whatever reads that inlining moves."""
+    for name in frameproc._locset(n):
+        made = env.at(name, at)
+        if made != env.at(name, i) and not (made is not None and i < made[0] < j):
+            return False
+    return True
+
+
+def _back(t, prov, ok):
+    """The shallowest naming of a term that ``ok`` admits, else the term rebuilt.
+
+    A read with no admissible naming is refused: the word assignment leads the
+    interval, so a load rebuilt out of the graph is a read made where it was not."""
+    for ir, (_d, at) in sorted(prov.get(t, {}).items(), key=lambda kv: kv[1][0]):
+        if ok(ir, at):
+            return ir
+    if t[0] in ("loc", "cell", "load"):
         return None
-    if r[1] == "INT_LESS":
-        return (r[2][0], r[2][1])
-    if r[1] == _SUB and r[2][0] == ("const", 1, 1):
-        c = _resolve(r[2][1], env)
-        if c[0] == "op" and c[1] == "INT_LESSEQUAL":
-            return (ST._strip_zext(c[2][1]), ST._strip_zext(c[2][0]))
-    return None
+    kids = [_back(a, prov, ok) for a in t[1:] if isinstance(a, tuple)]
+    return None if any(k is None for k in kids) else EQ.pass1_node(t, kids)
+
+
+def _lane_addr(t, prov, ok):
+    """The address a lane term loads from."""
+    return ("const", t[1], 2) if t[0] == "cell" else _back(t[1], prov, ok)
 
 
 def _inline(n, defs):
@@ -207,19 +320,33 @@ def _hits(stmt, base, span, regions):
 
 
 class _Site:
-    """One byte-wise 16-bit update, its premise counts and its refusal."""
+    """One byte-wise 16-bit update: its lanes, the word it is, and its refusal."""
 
-    __slots__ = ("lo", "hi", "op", "word", "direct", "merge", "mask", "why", "sid", "at")
+    __slots__ = "lo hi op mask word direct merge src addr load idx why sid at".split()
 
-    def __init__(self, lo, hi, op):
-        self.lo, self.hi, self.op = lo, hi, op
-        self.word = lo is not None and hi == lo + 1
-        self.direct = False
+    def __init__(self, form, addrs, src):
+        self.op, self.mask = _OF[form[0]], form[4]
+        self.lo, self.idx = FF._addr_split(addrs[0])
+        self.hi, hi_idx = FF._addr_split(addrs[1])
+        self.word = self.lo is not None and self.hi == self.lo + 1
+        self.src, self.addr, self.load = src, addrs, addrs[0]
+        self.direct = all(x[0] == "mem" for x in src[:2])
         self.merge = False
-        self.mask = None
+        self.sid = self.at = None
         self.why = None
-        self.sid = None
-        self.at = None
+        if self.lo is None or self.hi is None:
+            self.why = "a lane address is not a const base plus index"
+        elif hi_idx != self.idx:
+            self.why = "the two lanes are indexed differently"
+
+    def settle(self, inner):
+        """Inline what the interval defines, since the word assignment leads it.
+
+        ``addr`` stays as written: it is matched against the two store addresses,
+        which the lift does not move."""
+        self.src = tuple(_inline(x, inner) for x in self.src)
+        self.load = _inline(self.load, inner)
+        self.idx = None if self.idx is None else _inline(self.idx, inner)
 
     def proof(self):
         known = self.lo is not None and self.hi is not None
@@ -244,121 +371,73 @@ def _value(s):
     return s[2]
 
 
-def _load_addr(n, env):
-    """The address ``n`` loads one byte from, else None."""
-    r = _resolve(n, env)
-    return r[1] if r[0] == "mem" and r[2] == 1 else None
-
-
-def _peel_mask(val, env):
-    """``(update, byte mask)`` where the hi half is masked (a 12-bit register)."""
-    r = _resolve(val, env)
-    if r[0] == "op" and r[1] == "INT_AND" and len(r[2]) == 2 and r[3] == 1:
-        for a, b in (r[2], r[2][::-1]):
-            if E.is_const(b) and _update(a, env) is not None:
-                return a, b[1]
-    return val, None
-
-
-def _mergeable(dst_lo, dst_hi, src_lo, src_hi):
-    """Both halves go straight back to the lanes they came from.
-
-    Adjacency is the caller's ``word`` test: two lanes three bytes apart are one
-    quantity but not one word store."""
-    return dst_lo is not None and dst_lo == src_lo and dst_hi == src_hi
-
-
-def _lo_agrees(lo, op, step, env):
-    """The lo lane runs the same update the hi lane carries from.
-
-    ``expr`` folds ``SBC #k`` to an add of ``-k``, so a borrow's lo half may be an
-    add of the byte complement; that is still the 16-bit subtract of ``k``."""
-    if lo[2] == op:
-        return _same(lo[1], step, env)
-    if lo[2] == _ADD and op == _SUB and E.is_const(lo[1]) and E.is_const(step):
-        return (lo[1][1] + step[1]) % 0x100 == 0
-    return False
-
-
 def _half_ref(s):
     """How later statements refer to the half this statement produced."""
     return ("loc", s[1]) if s[0] == "asg" else s[2]
 
 
+def _site(lst, i, j, env):
+    """The site the two statements' values are one 16-bit update of, else None."""
+    prov = {}
+    lo, hi = (EQ.to_egg(_value(lst[k]), env.at, prov, k, _TERM) for k in (i, j))
+    if lo is None or hi is None:
+        return None
+    form = _fuse(lo, hi)
+    if form is None:
+        return None
+
+    def ok(ir, at):
+        return _emittable(ir, env, at, i, j)
+
+    src = tuple(_back(t, prov, ok) for t in (form[2], form[1], form[3]))
+    addrs = tuple(_lane_addr(t, prov, ok) for t in (form[2], form[1]))
+    if any(x is None for x in src + addrs):
+        return None
+    return _Site(form, addrs, src)
+
+
 def _match(lst, i, env, kinds=("st", "asg"), regions=None):
-    """``(j, site, parts)`` for the update ``lst[i]`` opens, else None.
+    """``(j, site)`` for the update ``lst[i]`` opens, else None.
 
     The **sources** decide the lift: two byte lanes linked by a carry are one
     16-bit quantity wherever their halves are then written. The destinations
     decide only whether the two writes collapse into one ``u16`` store."""
     s = lst[i]
-    if s[0] not in kinds:
+    if s[0] not in kinds or not _byte_op(_value(s), env, i):
         return None
-    lo = _update(_value(s), env)
-    if lo is None:
-        return None
-    a_lo = _load_addr(lo[0], env)
-    if a_lo is None:
-        return None
-    env = {**env, s[1]: s[2]} if s[0] == "asg" else env
     for j in range(i + 1, len(lst)):
         t = lst[j]
         if t[0] not in ("st", "asg"):
             return None
-        if t[0] not in kinds:
-            env = {**env, t[1]: t[2]} if t[0] == "asg" else env
+        if t[0] not in kinds or not _links(_value(t), env, j):
             continue
-        val, mask = _peel_mask(_value(t), env)
-        hi = _update(val, env)
-        over = None if hi is None else (_carry_over if hi[2] == _ADD else _borrow_over)(hi[1], env)
-        a_hi = None if hi is None else _load_addr(hi[0], env)
-        if over is None or a_hi is None or not _lo_agrees(lo, hi[2], over[1], env):
-            if t[0] == "asg":
-                env = {**env, t[1]: t[2]}
-            continue
-        if not _same(over[0], lo[0], env):
-            if t[0] == "asg":
-                env = {**env, t[1]: t[2]}
-            continue
-        lo_base, lo_idx = FF._addr_split(a_lo)
-        hi_base, hi_idx = FF._addr_split(a_hi)
-        site = _Site(lo_base, hi_base, hi[2])
-        site.mask = mask
-        site.direct = lo[0][0] == "mem" and hi[0][0] == "mem"
-        site.merge = site.word and _mergeable(
-            s[1] if s[0] == "st" else None, t[1] if t[0] == "st" else None, a_lo, a_hi
-        )
-        if (
-            lo_base is not None
-            and hi_base is not None
-            and _may_disturb(s, hi_base, hi_idx, regions)
-        ):
-            site.why = "the lo destination may alias the hi lane"
-        elif lo_base is None or hi_base is None:
-            site.why = "a lane address is not a const base plus index"
-        elif hi_idx != lo_idx:
-            site.why = "the two lanes are indexed differently"
-        return j, site, (lo[0], hi[0], over[1], lo_idx, a_lo)
+        site = _site(lst, i, j, env)
+        if site is not None:
+            if site.why is None and _may_disturb(s, site.hi, site.idx, regions):
+                site.why = "the lo destination may alias the hi lane"
+            return j, site
     return None
 
 
-def _premise(lst, i, j, parts, site, span, regions=None):
+def _premise(lst, i, j, site, span, regions=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     The hi lane's load moves to the word assignment, so no intervening statement
     may write it; merging the two lane stores also moves the hi store, so that
     needs no intervening read either."""
-    watch = [x for x in parts[:3] if x is not None]
-    later = [x for x in parts[1:3] if x is not None]  # the lo store precedes them in the original
+    later = list(site.src[1:])  # the lo store precedes the hi lane and the step
     if _disturbs(lst[i], later, regions):
         return "the lo destination may disturb the hi lane or the step"
     for k in range(i + 1, j):
-        if _clobbers(lst[k], watch, regions):
+        if _clobbers(lst[k], site.src, regions):
             return "an intervening statement changes an operand"
         if _writes(lst[k], site.hi, span, regions):
             return "an intervening statement writes the hi lane"
-    site.merge = site.merge and not any(
-        _hits(lst[k], site.hi, span, regions) for k in range(i + 1, j)
+    site.merge = (
+        site.word
+        and (lst[i][0], lst[j][0]) == ("st", "st")
+        and (lst[i][1], lst[j][1]) == site.addr
+        and not any(_hits(lst[k], site.hi, span, regions) for k in range(i + 1, j))
     )
     return None
 
@@ -388,14 +467,14 @@ def _sid_pair(lst, i, vlo, vhi, span, regions=None):
     return a, b, at["lo"][2], at["lo"][1]
 
 
-def _lift(lst, i, j, parts, site, name):
+def _lift(lst, i, j, site, name):
     """Rewrite ``lst`` in place: one word assignment, the halves truncated off it."""
     lo_st, hi_st, lv = lst[i], lst[j], _loc(name)
     word_load = site.word and (site.direct or site.merge)
-    src = ("mem", parts[4], 2) if word_load else FF._pack(parts[0], parts[1])
-    word = ("op", site.op, (src, FF._zext2(parts[2])), 2)
+    src = ("mem", site.load, 2) if word_load else FF._pack(site.src[0], site.src[1])
+    word = ("op", site.op, (src, FF._zext2(site.src[2])), 2)
     if site.mask is not None:
-        word = ("op", "INT_AND", (word, ("const", (site.mask << 8) | 0xFF, 2)), 2)
+        word = ("op", "INT_AND", (word, ("const", site.mask, 2)), 2)
     half = {i: _trunc(lv), j: _hi_byte(lv)}
     out = []
     for k, s in enumerate(lst):
@@ -485,22 +564,20 @@ def apply_rung(procs, decls=()):
         for lst in _bodies(stmts):
             done = set()
             for kinds in (("st",), ("asg",)):
-                i = 0
+                i, env = 0, _Env(lst)
                 while i < len(lst):
-                    env = {s[1]: s[2] for s in lst[:i] if s[0] == "asg"}
                     got = _match(lst, i, env, kinds, regions)
                     if got is None:
                         i += 1
                         continue
-                    j, site, parts = got
+                    j, site = got
                     if (site.lo, site.hi) in done:
                         i += 1
                         continue
                     done.add((site.lo, site.hi))
-                    inner = {s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"}
-                    parts = tuple(_inline(p, inner) if p is not None else None for p in parts)
-                    span = _span(site.hi, parts[3], regions)
-                    site.why = site.why or _premise(lst, i, j, parts, site, span, regions)
+                    site.settle({s[1]: s[2] for s in lst[i + 1 : j] if s[0] == "asg"})
+                    span = _span(site.hi, site.idx, regions)
+                    site.why = site.why or _premise(lst, i, j, site, span, regions)
                     site.at = (
                         None
                         if site.why
@@ -515,8 +592,8 @@ def apply_rung(procs, decls=()):
                         n += 1
                     name = "d%d" % n
                     used.add(name)
-                    _lift(lst, i, j, parts, site, name)
-                    lifted = True
+                    _lift(lst, i, j, site, name)
+                    env, lifted = _Env(lst), True
                     i += 2
         if lifted:
             _drop_dead(_e, params, rets, stmts)

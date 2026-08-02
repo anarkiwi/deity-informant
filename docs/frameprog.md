@@ -312,14 +312,18 @@ valid, gated artifact.
   registers writes the add twice — the lo lane, then the carry it propagates
   into the hi lane — so rung (d) sees two byte stores with statements between
   them and refuses. Rung (d2) reads that pair of updates as the one 16-bit
-  add/sub it is: the **carry link is the evidence**, and it is local, because a
-  carry from the lo lane into the hi lane exists only where the two lanes are
-  halves of one quantity. Premise per site: each lane is a read-modify-write of
-  its **own** cell (a hi half read from one cell and stored to another is not a
-  lane — see the CyberTracker case in §5), the lanes share an index, and no
-  intervening statement writes the hi lane or changes an operand. The lemma is
-  Z3-proven in `eqlift.RULES` (`carry_fuse`, `borrow_fuse`). Gate: FP + a proof
-  record per site.
+  add/sub it is: the two written values are concatenated `hi<<8 | lo` and the
+  admitted rule set is asked what that word is; a site lifts where the answer
+  has lane shape. The **sources** decide the lift — two byte lanes at a const
+  base plus one shared index, linked by a carry, are one 16-bit quantity
+  wherever their halves are then written — and every naming the lift emits must
+  still hold where it emits it, with no intervening statement writing the hi
+  lane or changing an operand. The **destinations** decide nothing about the
+  lift, only whether the two writes collapse into one `u16` store, which needs
+  them adjacent; a hi half stored elsewhere still lifts (the CyberTracker case
+  in §5). The lemmas are Z3-proven in `eqlift.RULES` (`carry_fuse`,
+  `carry_fuse0`, `borrow_fuse`, `mask_hoist`, `add_to_sub`, `num_narrow`).
+  Gate: FP + a proof record per site.
 - **(e) Per-voice unification.** Replace k code copies with one procedure
   parameterized by voice `v`. Premise — code isomorphism up to voice index:
   a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
@@ -536,29 +540,56 @@ so the *value* is 16 bits where the *memory* cannot be. Where the two lanes are
 adjacent cells the word source is a real `:2` load and the two lane stores
 collapse to one `u16` store.
 
-Measured 2026-08-01, same corpus and window. **Gate FP 649/649 and the canonical
-fixpoint 649/649**, unchanged — the lift moves no record. **667 sites lift across
-264 tunes** (448 adds, 219 subtracts): 324 over adjacent cells (88 of them
-collapsing to one `u16` store) and 343 over split tables, with **159 carrying a
-SID pair store onto the lifted word**. SID fusion at site granularity goes
-1317 → **1476** store pairs, which is the §4.3 residue above being paid down by
-the rung that understands *why* the halves were apart. Emitted text 9660384 →
-**9693442** bytes (+0.34%); raw `mem[` is unchanged at 9682.
+The rung does not pattern-match 6502 idioms. `_site` translates the two written
+values into the value graph (`eqlift.to_egg`, recording per term every pass-1
+node that named it and where), `_fuse` concatenates them as `hi<<8 | lo` and
+saturates `eqlift.admitted_rules()`, and `_word_form` reads
+`(op, hi lane, lo lane, step, mask)` off the cheapest extraction that has lane
+shape. The cases an idiom table would enumerate are rules instead, each
+Z3-proven in `tests/test_eqlift.py::test_all_rules_z3_verified`: `add_to_sub`
+recovers the subtract `expr` folded into an `INT_ADD` of `-k`, `mask_hoist`
+lifts the 12-bit register's `AND #$0F` out of the hi lane, `carry_fuse0` is the
+`ADC #0` hi half whose `+ bh` is already folded away, and `num_narrow` narrows
+a word constant **only** under the guard `a & $FF00 == 0`. A guarded rule is
+proven under exactly the premise the pattern enforces; a width-constrained
+`ivar` without a matching `fits` guard would be proven under a premise egglog
+never checks.
 
-The operation is read off the **hi** lane, not the lo one: `expr` folds `SBC #k`
-into an add of the byte complement, so a subtract's lo half is an `INT_ADD` of
-`-k` while its hi half subtracts the borrow. Deriving from the lo lane silently
-skips every immediate subtract (219 of the 667).
+What a site may emit is a separate question from what it computes. The word
+assignment leads the interval, so a naming valid where it was written need not
+be valid where the lift emits it: `_back` returns the shallowest naming that
+holds at both points and refuses a `loc`/`cell`/`load` that has none, rather
+than rebuilding a memory read at a position where it was never made.
 
-**18 sites refuse, each with its diagnostic**: 12 whose lane address is not a
-const base plus index — chiefly the zero-page indexed form `mem[zext2((x - $20))]`,
-where the 6502's `zp,X` wrap puts the add *inside* the byte so `frameproc._index_of`
-(which requires a base ≥ `$100`) cannot name it, plus the CyberTracker stack case
-of §5 — 4 whose lanes are indexed differently, and 2 where an intervening
-statement changes an operand. The zero-page form is a naming gap shared with
-rung (f), not a soundness one: widening the splitter must also refuse the
-`$FF`→`$00` straddle, since a 16-bit read at `$FF` takes `$0100` and the `zp,X`
-wrap does not apply to the word access.
+Measured 2026-08-02, same corpus and window. **Gate FP 649/649 and the
+canonical fixpoint 649/649**, unchanged — the lift moves no record. **1484
+sites lift across 410 tunes** (1257 adds, 227 subtracts): 577 over adjacent
+cells (130 of them collapsing to one `u16` store) and 907 over split tables,
+with **349 carrying a SID pair store onto the lifted word**. SID fusion at site
+granularity goes 1524 → **1625** store pairs over freq, pulse and cutoff —
+measured against this branch's previous lift strength, not the rung-(d)-alone
+figure above — which is the §4.3 residue being paid down by the rung that
+understands *why* the halves were apart. Emitted text 9714399 → **9746169** bytes (+0.33%);
+raw `mem[` is unchanged at 9682.
+
+**100 sites refuse, each with its diagnostic**: 35 where the lo destination may
+disturb the hi lane or the step, 22 whose lanes are indexed differently, 18
+whose lane address is not a const base plus index — chiefly the zero-page
+indexed form `mem[zext2((x - $20))]`, where the 6502's `zp,X` wrap puts the add
+*inside* the byte so `frameproc._index_of` (which requires a base ≥ `$100`)
+cannot name it — 14 where an intervening statement changes an operand, and 11
+where the lo destination may alias the hi lane. The zero-page form is a naming
+gap shared with rung (f), not a soundness one: widening the splitter must also
+refuse the `$FF`→`$00` straddle, since a 16-bit read at `$FF` takes `$0100` and
+the `zp,X` wrap does not apply to the word access.
+
+Two budgets bound the search, both sound at any cutoff because extraction is:
+`_NODES` caps the e-graph and `_TERM` caps the translated term, since `to_egg`
+follows a local's definition at every distinct read point. `docs/eqlift-adoption.md`
+§10 predicted this blowup and prescribed exactly this mitigation. The budget is
+checked **every** iteration (`_STEP = 1`): allocation happens inside egglog's
+`run`, so a batched step is unbounded however small the node budget is — a
+5-iteration batch took one corpus worker to 44 GB and an OOM kill.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -973,7 +1004,7 @@ running past the region end.
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
-| A 16-bit add whose halves are not one variable | Rung (d2)'s false positive, and the reason its premise demands each lane be a read-modify-write of its **own** cell. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. Fusing (`$14`, stack slot) computes the right value through the wrong cell. Refused because source cell ≠ destination cell; pinned by `tests/test_framemath.py`. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
+| A 16-bit add whose halves are written to different places | Rung (d2)'s false positive would be *merging* it, and the reason the destinations are checked separately from the sources. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. The **sources** `$14`/`$15` are one quantity, so the arithmetic lifts and the emitted text carries the `+ $0004` as a word; the **destinations** are not the lanes, so the two writes stay apart and no `u16` store is emitted. Collapsing (`$14`, stack slot) into one word store would write the right value through the wrong cell. Pinned by `tests/test_framemath.py::test_the_c64_world_cybertracker_half_goes_elsewhere`, in both the `PHA` and the plain-`STA $16` form. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Closed. The surface serializes the transfer as a bare `ret` and the evaluator returns machine-faithfully through `sp` and the stack image. `PHA`-pushed targets were unrecoverable only because the passes treated `sp` as an ordinary local and eliminated its updates; `sp` is machine state (`call`/`ret` move it, pushed bytes land at addresses derived from it), so it is now exempt from pruning, from inlining and from the faint-assignment rule. `_fuzzgen.t_rts_trick` passes and `_FP_GAP` is empty. |
@@ -1064,14 +1095,15 @@ HVSC absent (decompiler-implementation.md §1, §7).
   proof records are still M-FP2's debt.
 - **M-FP3b — 16-bit arithmetic (d2).** Landed (`deity_informant/framemath.py`,
   §4.3 for the measurement): the carry/borrow-chained byte-wise update read as
-  one 16-bit add/sub, with a `structured.Proof` per site and the lemma Z3-proven
-  in `eqlift.RULES` (`carry_fuse`, `borrow_fuse`). Gate: FP 649/649 and the
-  canonical fixpoint 649/649 over the 682-tune corpus; 663 sites lifted, 18
-  refused with named diagnostics. `tests/test_framemath.py` carries the synthetic
-  add/sub, the split-lane and adjacent-cell forms, each refusal, the CyberTracker
-  false positive (a hi half read from one cell and stored to another) and the
-  mutation evidence that a wrongly lifted site moves the record. Outstanding: the
-  zero-page indexed lane address (§4.3), which is rung (f)'s naming gap too.
+  one 16-bit add/sub, the shape queried off the admitted rule set rather than an
+  idiom table, with a `structured.Proof` per site and every lemma Z3-proven in
+  `eqlift.RULES`. Gate: FP 649/649 and the canonical fixpoint 649/649 over the
+  682-tune corpus; 1484 sites lifted across 410 tunes, 100 refused with named
+  diagnostics. `tests/test_framemath.py` carries the synthetic add/sub, the
+  split-lane and adjacent-cell forms, each refusal, the CyberTracker case (the
+  arithmetic lifts, the destinations do not merge) and the mutation evidence
+  that a wrongly lifted site moves the record. Outstanding: the zero-page
+  indexed lane address (§4.3), which is rung (f)'s naming gap too.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported

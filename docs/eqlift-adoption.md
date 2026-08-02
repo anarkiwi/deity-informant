@@ -193,17 +193,15 @@ procedure text.
 
 ## 9. Dependency policy
 
-- `egglog` and `z3-solver` go into `pyproject.toml` under a new extra
-  `eqlift = ["egglog", "z3-solver"]`; `dev` MUST include the extra so CI and local
-  dev always have it. Pin `egglog` minor (`egglog>=13,<14`): the str form of
-  extracted expressions is parsed and MUST stay stable.
+- `egglog` and `z3-solver` are **core dependencies**. They began as the extra
+  `eqlift = ["egglog", "z3-solver"]`, and moved on the first cutover: frameprog's
+  rung (d2) reads its 16-bit lifts off the admitted rule set, so a frame program
+  cannot be built without them and an optional extra would only mean a broken
+  install. Pin `egglog` minor (`egglog>=13,<14`): the str form of extracted
+  expressions is parsed and MUST stay stable.
 - CI MUST `pip install -e .[dev]` before the fast suite; `tests/test_eqlift.py`
-  and `tests/test_eqlift_mem.py` keep `pytest.importorskip` so forks without the
-  extra skip cleanly.
-- Import guard: `eqlift`/`eqlift_mem` import `egglog`/`z3` at module top; no
-  production module imports them until cutover. At cutover, `frameproc` MUST
-  import them lazily inside `procedures()` so the base install keeps every
-  non-lifting entry point working.
+  and `tests/test_eqlift_mem.py` keep `pytest.importorskip` for forks that pin an
+  older core.
 
 ## 10. Risks and mitigations
 

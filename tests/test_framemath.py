@@ -57,7 +57,7 @@ def test_the_classic_carry_chain_lifts_to_one_word_add():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "16-bit add: lanes $0010/$0011, adjacent cells" in pr.lemma
-    assert "d0:2 = (ctr_0010:2 + zext2($37)):2" in text
+    assert "d0:2 = (ctr_0010:2 + $0037):2" in text  # the widened byte step is a word const
     assert "carry(" not in text
 
 
@@ -148,11 +148,11 @@ def test_an_intervening_write_to_the_hi_lane_refuses_the_site():
 
 
 @pytest.mark.parametrize("push", [True, False])
-def test_the_c64_world_cybertracker_high_half_is_not_a_lane(push):
-    """`LDA $14/CLC/ADC #4/STA $14/LDA $15/ADC #0/PHA` reads $15 but never stores it.
+def test_the_c64_world_cybertracker_half_goes_elsewhere(push):
+    """`LDA $14/CLC/ADC #4/STA $14/LDA $15/ADC #0/PHA` reads $15 but stores elsewhere.
 
-    The two cells are not one 16-bit variable: fusing them computes the right
-    value through the wrong cell, so the source cell must be the destination cell.
+    The sources ARE one 16-bit quantity, so the arithmetic lifts; the destinations
+    are not the lanes, so the two writes must stay apart (no u16 store).
     """
     a = G.Asm(G.ORG)
     a.i("LDA", "zp", 0x14).i("CLC").i("ADC", "imm", 0x04).i("STA", "zp", 0x14)
@@ -161,9 +161,14 @@ def test_the_c64_world_cybertracker_high_half_is_not_a_lane(push):
     a.i("LDA", "zp", 0x14).i("STA", "abs", OUT)
     a.i(*(("PLA",) if push else ("LDA", "zp", 0x16))).i("STA", "abs", OUT + 1)
     a.i("RTS")
-    _m, prog, text = _build("c64world", a, {0x14: 0xF0, 0x15: 0x20, 0x16: 0x00})
-    assert not _math(prog, "lifted")
-    assert "carry(" in text and ":2 = " not in text
+    model, prog, text = _build("c64world", a, {0x14: 0xF0, 0x15: 0x20, 0x16: 0x00})
+    (pr,) = _math(prog, "lifted")
+    assert "carry(" not in text and "):2 + $0004):2" in text
+    assert "one u16 store" not in pr.lemma  # the hi half never reaches $15
+    assert "ctr_0014 = trunc1(d0:2)" in text
+    dest = "sid.v1.attack_decay" if push else "zp_16"  # destacked, the slot is not a cell
+    assert "%s = trunc1((d0:2 >> $08):2)" % dest in text
+    assert frameval.gate_fp(model, 8, prog) is None
 
 
 # ---- mutation evidence: a wrongly lifted site moves the record --------------------
@@ -202,94 +207,95 @@ def test_dropping_the_truncation_off_the_hi_lane_store_moves_the_record():
     assert frameval.eval_fp(prog, trace, 8) != good
 
 
-# ---- the premise, stated ----------------------------------------------------------
-def _cell(addr):
-    return ("mem", ("const", addr, 2), 1)
+# ---- the premise, refused from real code ------------------------------------------
+def _zp_indexed_lanes():
+    """`zp,X` wraps inside the byte, so the add is under the index, not over a base."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 2).label("lp").i("CLC")
+    a.i("LDA", "zpx", 0x20).i("ADC", "imm", 0x37).i("STA", "zpx", 0x20)
+    a.i("LDA", "zpx", 0x21).i("ADC", "imm", 0x00).i("STA", "zpx", 0x21)
+    a.i("LDA", "zpx", 0x20).i("STA", "abs", OUT)
+    a.i("LDA", "zpx", 0x21).i("STA", "abs", OUT + 1)
+    a.i("DEX").i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    return _build("zpx", a, {0x20 + k: 0xF0 + k for k in range(6)})
 
 
-def _byte_op(name, args):
-    return ("op", name, tuple(args), 1)
+def _split_index_lanes():
+    """One lane walked by X, the other by Y: two rows, not two halves of one row."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 1).i("LDY", "imm", 3).label("lp").i("CLC")
+    a.i("LDA", "absx", SLO).i("ADC", "imm", 0x37).i("STA", "absx", SLO)
+    a.i("LDA", "absy", SHI).i("ADC", "imm", 0x00).i("STA", "absy", SHI)
+    a.i("LDA", "absx", SLO).i("STA", "absx", OUT)
+    a.i("LDA", "absy", SHI).i("STA", "abs", OUT + 1)
+    a.i("DEY").i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = {SLO + k: 0x80 + k for k in range(4)} | {SHI + k: 0x10 + k for k in range(4)}
+    return _build("xyidx", a, data, tuple(OUT + k for k in range(4)))
 
 
-def _at(base, name):
-    return ("op", "INT_ADD", (("const", base, 2), ("op", "INT_ZEXT", (("loc", name),), 2)), 2)
-
-
-def _chain(lo_addr, hi_addr, lo_val, step, hi_val=None):
-    """The two lane stores of one carry chain, addressed as given."""
-    hi_val = hi_val or ("mem", hi_addr, 1)
-    return [
-        ("st", lo_addr, _byte_op("INT_ADD", (lo_val, step))),
-        ("st", hi_addr, _byte_op("INT_ADD", (hi_val, _byte_op("INT_CARRY", (lo_val, step))))),
-    ]
-
-
-def _diagnose(lst, env=None):
-    """The pass's own matcher and premise over the site ``lst[0]`` opens."""
-    j, site, parts = framemath._match(lst, 0, dict(env or {}))
-    inner = {s[1]: s[2] for s in lst[1:j] if s[0] == "asg"}
-    parts = tuple(None if p is None else framemath._inline(p, inner) for p in parts)
-    span = 0 if parts[3] is None else E.mask(FF._w(parts[3]))
-    site.why = site.why or framemath._premise(lst, 0, j, parts, site, span)
-    return site
-
-
-def _unresolved_lane():
-    addr = ("loc", "p", 2)
-    return _chain(addr, ("const", HI, 2), ("mem", addr, 1), ("const", 0x37, 1)), {}
-
-
-def _mismatched_index():
-    lo, hi = _at(SLO, "x"), _at(SHI, "y")
-    return _chain(lo, hi, ("mem", lo, 1), ("const", 0x37, 1)), {}
-
-
-def _operand_clobbered():
-    step = _cell(STEP)
-    lst = _chain(("const", LO, 2), ("const", HI, 2), _cell(LO), step)
-    lst.insert(1, ("st", ("const", STEP, 2), ("const", 9, 1)))
-    return lst, {}
-
-
-def _hi_lane_written():
-    lst = _chain(("const", LO, 2), ("const", HI, 2), _cell(LO), ("const", 0x37, 1), ("loc", "w"))
-    lst.insert(1, ("st", ("const", HI, 2), ("const", 5, 1)))
-    return lst, {"w": _cell(HI)}
-
-
-def _clean():
-    return _chain(("const", LO, 2), ("const", HI, 2), _cell(LO), ("const", 0x37, 1)), {}
+def _step_overwritten():
+    """A 16-bit step whose hi byte is rewritten between the lanes: the read cannot move up."""
+    a = G.Asm(G.ORG)
+    a.i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "abs", STEP).i("STA", "zp", LO)
+    a.i("LDA", "imm", 0x09).i("STA", "abs", STEP + 1)
+    a.i("LDA", "zp", HI).i("ADC", "abs", STEP + 1).i("STA", "zp", HI)
+    _publish(a, LO, HI).i("RTS")
+    return _build("clobber", a, {STEP: 0x37, STEP + 1: 0x02, LO: 0x10, HI: 0x80})
 
 
 @pytest.mark.parametrize(
     "build,want",
     [
-        (_unresolved_lane, "a lane address is not a const base plus index"),
-        (_mismatched_index, "the two lanes are indexed differently"),
-        (_operand_clobbered, "an intervening statement changes an operand"),
-        (_hi_lane_written, "an intervening statement writes the hi lane"),
-        (_clean, None),
+        (_zp_indexed_lanes, "a lane address is not a const base plus index"),
+        (_split_index_lanes, "the two lanes are indexed differently"),
+        (_step_overwritten, "an intervening statement changes an operand"),
     ],
 )
 def test_the_refusal_diagnostic_names_the_premise_that_failed(build, want):
-    lst, env = build()
-    site = _diagnose(lst, env)
-    assert site.why is None if want is None else site.why == want
-    pr = site.proof()
-    assert pr.kind == "math" and pr.status == ("lifted" if want is None else "refused")
-    assert pr.lemma.endswith(want or "carry chain")
-    assert pr.targets == (site.lo, site.hi)
+    _m, prog, text = build()
+    (pr,) = _math(prog)
+    assert pr.status == "refused" and pr.lemma.endswith(want)
+    assert "carry(" in text and "d0:2" not in text  # left as the two byte updates
 
 
 def test_an_unresolved_lane_prints_as_unresolved_and_sites_at_zero():
-    site = _diagnose(*_unresolved_lane())
-    assert "lanes unresolved" in site.proof().lemma and site.proof().site == 0
+    """With neither lane named, the record has nowhere to sit but the bottom."""
+    (pr,) = _math(_zp_indexed_lanes()[1])
+    assert "lanes unresolved" in pr.lemma and pr.site == 0 and pr.targets == (None, None)
 
 
-def test_a_zero_carry_term_is_not_a_carry_link():
-    """`carry(x, $00)` is identically 0 and cannot stand as the chain's evidence."""
-    assert framemath._carry_over(_byte_op("INT_CARRY", (_cell(LO), ("const", 0, 1))), {}) is None
-    assert framemath._carry_over(_byte_op("INT_CARRY", (_cell(LO), ("const", 1, 1))), {}) == (
-        _cell(LO),
-        ("const", 1, 1),
-    )
+def test_a_sixteen_bit_step_lifts_as_one_word_add():
+    """Both addends 16 bits: the word the rules name need not be a widened byte."""
+    a = G.Asm(G.ORG)
+    a.i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "abs", STEP).i("STA", "zp", LO)
+    a.i("LDA", "zp", HI).i("ADC", "abs", STEP + 1).i("STA", "zp", HI)
+    _publish(a, LO, HI).i("RTS")
+    _m, prog, text = _build("word_step", a, {STEP: 0x37, STEP + 1: 0x02, LO: 0x10, HI: 0x80})
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (LO, HI)
+    assert "carry(" not in text
+    assert "(zext2(m_1481) << $08):2 | zext2(m_1480)" in text
+
+
+def test_lanes_three_bytes_apart_lift_but_never_merge():
+    """For_Link's shape: a stride-3 lane pair is one quantity, not one word store.
+
+    Merging `$1750,X`/`$1753,X` into a u16 store would write `$1750/$1751` — the
+    wrong cells — so the arithmetic lifts and the two byte stores stay.
+    """
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 2).label("lp")
+    a.i("LDA", "absx", SLO).i("CLC").i("ADC", "imm", 0x37).i("STA", "absx", SLO)
+    a.i("LDA", "absx", SLO + 3).i("ADC", "imm", 0x00).i("STA", "absx", SLO + 3)
+    a.i("LDA", "absx", SLO).i("STA", "absx", OUT)
+    a.i("LDA", "absx", SLO + 3).i("STA", "absx", OUT + 4)
+    a.i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = {SLO + k: 0x80 + k for k in range(8)}
+    _m, prog, text = _build("stride3", a, data, tuple(OUT + k for k in range(8)))
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (SLO, SLO + 3)
+    assert "one u16 store" not in pr.lemma
+    assert "trunc1(d0:2)" in text and "trunc1((d0:2 >> $08):2)" in text
+    assert ":2 = d0:2" not in text  # no merged word store across a 3-byte stride
