@@ -561,27 +561,33 @@ be valid where the lift emits it: `_back` returns the shallowest naming that
 holds at both points and refuses a `loc`/`cell`/`load` that has none, rather
 than rebuilding a memory read at a position where it was never made.
 
-Measured 2026-08-02, same corpus and window. **Gate FP 649/649 and the
-canonical fixpoint 649/649**, unchanged — the lift moves no record. **1484
-sites lift across 410 tunes** (1257 adds, 227 subtracts): 577 over adjacent
-cells (130 of them collapsing to one `u16` store) and 907 over split tables,
-with **349 carrying a SID pair store onto the lifted word**. SID fusion at site
-granularity goes 1524 → **1625** store pairs over freq, pulse and cutoff —
-measured against this branch's previous lift strength, not the rung-(d)-alone
-figure above — which is the §4.3 residue being paid down by the rung that
-understands *why* the halves were apart. Emitted text 9714399 → **9746169** bytes (+0.33%);
-raw `mem[` is unchanged at 9682.
+Measured 2026-08-02, same corpus and window, and **reproducible run to run**:
+the whole corpus is bit-identical under two `PYTHONHASHSEED` values (§7.1).
+**Gate FP 649/649 and the canonical fixpoint 649/649**, unchanged — the lift
+moves no record. **1452 sites lift across 414 tunes** (1211 adds, 241
+subtracts): 618 over adjacent cells (181 of them collapsing to one `u16` store)
+and 834 over split tables, with **356 carrying a SID pair store onto the lifted
+word**. Emitted text **9779304** bytes; raw `mem[` unchanged at 9682.
 
-**100 sites refuse, each with its diagnostic**: 35 where the lo destination may
-disturb the hi lane or the step, 22 whose lanes are indexed differently, 18
-whose lane address is not a const base plus index — chiefly the zero-page
-indexed form `mem[zext2((x - $20))]`, where the 6502's `zp,X` wrap puts the add
-*inside* the byte so `frameproc._index_of` (which requires a base ≥ `$100`)
-cannot name it — 14 where an intervening statement changes an operand, and 11
-where the lo destination may alias the hi lane. The zero-page form is a naming
-gap shared with rung (f), not a soundness one: widening the splitter must also
+**76 sites refuse, each with its diagnostic**: 43 where the lo destination may
+disturb the hi lane or the step, 16 whose lane address is not a const base plus
+index — chiefly the zero-page indexed form `mem[zext2((x - $20))]`, where the
+6502's `zp,X` wrap puts the add *inside* the byte so `frameproc._index_of`
+(which requires a base ≥ `$100`) cannot name it — 8 whose lanes are indexed
+differently, 6 where the lo destination may alias the hi lane, and 3 where an
+intervening statement changes an operand. The zero-page form is a naming gap
+shared with rung (f), not a soundness one: widening the splitter must also
 refuse the `$FF`→`$00` straddle, since a 16-bit read at `$FF` takes `$0100` and
 the `zp,X` wrap does not apply to the word access.
+
+A form the rules prove equal is not thereby the form the *program* wrote. Two
+choices are made off the fused e-class rather than read off whichever term
+extraction returned. `_site` weighs **every** form `_fuse` offers and prefers
+the grouping whose lanes are the two statements' own cells (`_rmw`), then one
+over adjacent lanes, then the cheapest — lane *shape* is not lane *identity*,
+and a step table wears the shape too (§7.3). `EQ.canon` collapses `x - K` and
+`x + (2**w - K)`, one function spelled two ways, onto the spelling pass-1 uses
+for an indexed address, so a provenance lookup can still name it.
 
 Two budgets bound the search, both sound at any cutoff because extraction is:
 `_NODES` caps the e-graph and `_TERM` caps the translated term, since `to_egg`
@@ -1098,12 +1104,15 @@ HVSC absent (decompiler-implementation.md §1, §7).
   one 16-bit add/sub, the shape queried off the admitted rule set rather than an
   idiom table, with a `structured.Proof` per site and every lemma Z3-proven in
   `eqlift.RULES`. Gate: FP 649/649 and the canonical fixpoint 649/649 over the
-  682-tune corpus; 1484 sites lifted across 410 tunes, 100 refused with named
-  diagnostics. `tests/test_framemath.py` carries the synthetic add/sub, the
-  split-lane and adjacent-cell forms, each refusal, the CyberTracker case (the
-  arithmetic lifts, the destinations do not merge) and the mutation evidence
-  that a wrongly lifted site moves the record. Outstanding: the zero-page
-  indexed lane address (§4.3), which is rung (f)'s naming gap too.
+  682-tune corpus; 1452 sites lifted across 414 tunes, 76 refused with named
+  diagnostics, and the corpus bit-identical under two hash seeds (§7.1).
+  `tests/test_framemath.py` carries the synthetic add/sub, the split-lane and
+  adjacent-cell forms, each refusal, the CyberTracker case (the arithmetic
+  lifts, the destinations do not merge), the mutation evidence that a wrongly
+  lifted site moves the record, and the two soundness regressions of §7.1/§7.3 —
+  a definition made inside a branch arm, and a SID pair naming the lifted store.
+  Outstanding: the zero-page indexed lane address (§4.3), which is rung (f)'s
+  naming gap too, and the mis-grouped extraction of §7.3.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
@@ -1152,3 +1161,186 @@ HVSC absent (decompiler-implementation.md §1, §7).
 
 Gate FP is the only correctness law at this level; no milestone may weaken
 it, and sidprog's Gates A/C/L/S are untouched throughout.
+
+## 7. Open issues
+
+Work in flight on the lift ladder, with what is proven, what is not, and the
+evidence each claim rests on. §7.1 is settled; everything measured before it was
+settled has been re-measured against the deterministic gate.
+
+### 7.1 The gate was flaky: two defects, one visible (SETTLED)
+
+`tools/lifttrace.py repeat Andy_Capp-The_Game --runs 8` gave a **split verdict**
+on identical source. The verdict turned out to be a *pure function* of
+`PYTHONHASHSEED` — seeds 0, 2, 3 and 4 passed and seeds 1 and 5 failed, twice
+each, reproducibly — so it was never a race, and `extract_multiple` pool
+membership alone was the wrong diagnosis (`docs/eqlift-adoption.md` §10, since
+corrected). Two independent defects were compounded:
+
+- **A wrong lift the gate could reach.** `framemath._Env` indexed only the
+  top-level `asg` of its own statement list, so a definition made inside an
+  `if` arm was invisible and a later read resolved to the definition *before*
+  the branch. In `Andy_Capp` the arm holds the `DEY` of `LDY #$00 / BCS / DEY`
+  at `$FAF5`, which sign-extends the byte added to the `$F8/$F9` pointer; read
+  as the `LDY #$00`, the extension folds away and the lift adds `$0100` too
+  much — exactly the reported `got=(1,10) want=(1,9)`. The fix is `_kills`: a
+  definition the list does not itself make (a nested body's, a call's, or one
+  control reaches through a label) is recorded **with no value**, not omitted,
+  so a read past it is unknown rather than the last value written textually. The
+  entry still names *which* definition, so two reads either side of one do not
+  compare equal.
+- **Which of the two the build reached.** Extraction returns *a* representative
+  of an e-class and which one is not contractual. Here the tie was between
+  `x - 2405` and `x + 63131` — the same address in two's complement — and only
+  one of them had a provenance naming `_back` could use, so the hash seed
+  decided whether the unsound site was lifted at all. `EQ.canon` gives the pair
+  one representative, the `add` spelling pass-1 writes an indexed address as.
+
+The pass-1 input to rung (d2) was **identical** across seeds throughout; the
+divergence was entirely inside `_fuse`. Evidence for the fix, at two scales:
+`lifttrace stable Andy_Capp-The_Game --runs 4` — 4 seeds agree on all 38
+decisions; and the whole 682-tune corpus run under two hash seeds, **672 records,
+0 differ**. A corpus number is now a measurement rather than a sample.
+
+Determinism is a property of the *decisions*, not of the verdict: `repeat`
+only sees an unstable decision that happens to move an emitted frame, which is
+why `stable` diffs whole traces (§7.4).
+
+### 7.2 Rung (d): freq, pulse and cutoff are 16-bit registers
+
+Nothing narrower than 16 bits can be written to them, so they are typed that
+way unconditionally rather than fused only where a driver happens to write both
+halves adjacently. `framefuse._widen` turns a lone lane store into the `u16`
+store it is, the other lane keeping its value; `_Pair.refusal` never refuses a
+SID pair; `framelog.canonical(frames, held0)` reports the whole word when either
+lane is written, seeded from `frameval.sid_held0(prog)` (`prog.mem0`) and passed
+to **both** sides in `gate_fp`.
+
+Two measurements decided that shape rather than assumption: 64.3% of
+freq/pulse/cutoff lane writes rewrite the value already held, so change-gating
+the VM is not viable; and 10.19% of frame-pairs write exactly one lane, so the
+projection had to compare the register's value rather than which byte moved.
+Without the `held0` seed four tunes diverge as `got=(21,7) want=(21,0)` — the
+sidinit value against the projection's default.
+
+Open:
+
+- **Only unindexed lanes widen.** `mem[$D400 + y]` is a store to register `y`,
+  not to freq; widening it writes whatever cell follows, which corrupted
+  `Also_Bad` and `Aiginas_Prophecy` in `v0.ord`. That leaves ~1058 byte-width
+  SID stores, all indexed (`[y]` 622, `[x]` 326; 819 of them freq lanes).
+- **The rule for indexed lanes** is a per-site dataflow fact about the index's
+  reaching definitions, never a property of its name. `Also_Bad` uses X and Y
+  for *both* the voice offset and the voice number, swapping roles between
+  `JSR $C098` (X = 0/7/14) and `JSR $C1E3` (Y = 0/7/14), and loads Y from a
+  table at `$C27D`/`$C0F1` where no constant is provable. So: widen iff every
+  definition of the index reaching that store is a constant lane-aligned for the
+  pair — a multiple of 7 and ≤ `$0E` for the voice pairs, 0 for cutoff.
+  `framemath._Env.at` already answers "the definition in force here".
+- **A constant *table* counts.** Commando's index is `LDY $14B5,X` with
+  `$14B5` = `$00 $07 $0E`; a rule demanding immediate constants would refuse
+  Commando's own pulse stores.
+The six tests that pinned the superseded contract are moved to this one and the
+suite is green; `test_framelog.py` gained
+`::test_a_held_lane_is_the_value_the_seed_and_earlier_frames_left`, which is the
+`held0` seed and the frame-to-frame carry stated as a test.
+
+Split-table 16-bit *state* is real and settled — do not re-litigate it. Commando
+`$12E1 LDY $14B5,X / $12E4 LDA $1467,X / $12E7 STA $D402,Y / $12EA LDA $146A,X /
+$12ED STA $D403,Y`: the lo and hi bytes of the 16-bit pulse width come from two
+parallel 3-entry tables, one entry per voice. A split *register* is impossible;
+split state is the ordinary structure-of-arrays layout.
+
+### 7.3 Rung (d2): the refusal classes
+
+Root causes traced by instrumenting `FF._addr_split` and the aliasing
+predicates, and by reading the 6502 at the refusing sites. The trajectory,
+re-measured against the deterministic gate of §7.1: **77 → 76 refusals** while
+lifts went **1434 → 1452** and merges **131 → 181**, Gate FP 649/649 throughout.
+The classes moved as well as the totals — "lanes indexed differently" is now 8
+(was 22 before the §7.1 fix) and "may alias the hi lane" 6 (was 14) — so the
+counts recorded before §7.1 was settled should not be compared against these.
+
+- **Unresolved lane address** feeds three classes at once — "a lane address is
+  not a const base plus index", "the lo destination may alias the hi lane"
+  (`_may_disturb` with `base` None), "the lo destination may disturb the hi lane
+  or the step" (`_disturbs` with a ref base None). The dominant unresolvable
+  form is `zext2(x + K)`, the 6502 `zp,X` wrap: the add is at width **1**
+  because the wrap is inside the byte, and `frameproc._index_of` demands
+  `INT_ADD` at width 2 with a base ≥ `$100`, so it declines to name it. Fix: one
+  extra clause naming it as base `K`, index `x`, modulus 256, plus a straddle
+  guard **at the access site** (only the access knows its width) refusing a
+  2-byte access that can reach `$FF`, since a word read at `$FF` takes `$0100`.
+  This is not a case the lift finds hard; it is a case one predicate will not
+  look at. A separate normalisation pass would be the wrong shape — `_index_of`
+  is the single point `frameproc`, `framefuse._addr_split`, `framemath` and
+  `frameptr` all ask, so fixing it once fixes four consumers. It changes naming
+  for every consumer at once, so it wants its own commit and its own gate run.
+- **Lanes indexed differently** has two causes. One lane may be an unindexed
+  zero-page cell (`American $B501[..]/$00FE`, `Endless_Sands $181F[x]/$00FC`),
+  which has a constant address and so no row to disagree about — index equality
+  is needed for the *merge* decision (which already demands adjacency), not for
+  the lift, which emits `FF._pack(src_lo, src_hi)` and assumes no adjacency. The
+  rest are genuinely different tables (`Antitrack_01 $166B[y]/$15CB[x]`).
+- **Antitrack_01 is a mis-grouped extraction, not a bad site — and coherence
+  selection does not reach it.** `$13F4 LDA $166B,Y` is the *step*; the real
+  lanes are `$15C8,X` and `$15CB,X`, parallel per-voice arrays sharing one
+  index. `hi<<8` has a zero low byte, so `|` is `+` and
+  `(hi<<8 | step) + lo == (hi<<8 | lo) + step` — proved by
+  `add_comm`/`add_assoc`/`or_zero`. `_lanes` only checks that both operands are
+  byte-wide `cell`/`load` nodes; nothing requires them to be *related*, so
+  `_fuse` can offer a grouping that pairs the hi lane with the step, and
+  `_word_form` accepts it. `_site` now weighs every offered form and prefers the
+  one whose lanes are the statements' own cells, but at this site **the correct
+  grouping is never offered**: both extracted variants collapse to the
+  mis-grouped shape, so there is nothing to prefer. Choosing better among
+  extracted forms cannot fix this; the form has to be *asked for*. The fix
+  direction is to query the fused e-class for an equality against lanes drawn
+  from the program's own provenance — `site.addr`, as merge does — instead of
+  reading lanes off whatever term came back. That is deterministic by
+  construction, since the candidate lanes come from the program rather than from
+  extraction. The site refuses today ("lanes indexed differently"), so nothing
+  unsound is emitted; a wrong pairing driving a wrong **merge** remains
+  unguarded and wants a mutation test.
+- **The exact-index rule now lives in one place (LANDED).** Four sibling
+  predicates answered "can these two address ranges intersect", and it was
+  present in only two: `_disturbs` and `_may_disturb` had it, `_reads` and
+  `_writes` did not, so a byte store to `T[x]` was held to clobber a load of
+  `T+1[x]` — same index, one apart, provably disjoint, because an undeclared
+  lane table leaves both spans at the whole register range. All four are
+  collapsed onto one `_overlaps((base, idx, span, width), …)`, with `_reads` and
+  `_disturbs` becoming the same predicate over a store's range. The earlier
+  worry that the width terms had to be matched to each original rather than
+  normalised does not survive measurement: normalising them to the general form
+  is a strict *tightening* (a 2-byte store at `base` reaches `base + 1`, which
+  two of the four dropped), and the consolidated version is **bit-identical to
+  the previous one over all 672 corpus records**. The revert cost nothing and
+  bought nothing; it was decided on one flaky sample.
+- **The SID pair may name a statement the lift rewrites (FIXED).** `_lift`
+  tested `k in (i, j)` before the `site.at` branch, so when the pair's first
+  member *was* the lifted lo statement it emitted the lane half there and still
+  dropped the pair's second member — leaving the hi SID register holding the
+  previous frame's byte. Reached in `Beat_the_System` once coherence selection
+  made `_site(4,8)` refuse and `_match` fall through to the degenerate pair
+  (5,8), the SID lo store against a table hi store. The pair is now settled
+  before the halves are, so that store carries the whole word. This was a latent
+  bug in `_lift`, not a consequence of the selection rule; it is pinned by
+  `test_framemath.py::test_a_sid_pair_naming_the_lifted_store_writes_the_whole_word_there`.
+
+### 7.4 tools/lifttrace.py
+
+Records a tune's ordered rung-(d2) decisions — every candidate form `_fuse`
+offered, the grouping `_site` chose, the refusal `_premise` gave, the statement
+`_lift` emitted — so two builds are diffed at the first disagreement instead of
+by re-running the corpus and comparing totals.
+
+  capture <tune> <out.json>   ordered decisions + gate verdict
+  diff <a.json> <b.json>      first decision two builds disagree on
+  repeat <tune> --runs N      N fresh processes; splits the verdict if flaky
+  stable <tune> --runs N      N hash seeds; diffs whole traces, not verdicts
+  verdict <tune>              one gate verdict (what repeat forks)
+
+Prefer this to toggling a flag and re-running the corpus: a corpus delta says a
+number moved, not which decision moved. Every finding in §7.1 and §7.3 above was
+located by `capture` on two builds and `diff` — the statement list at the
+disagreeing site, then the 6502 behind it — not by comparing totals.

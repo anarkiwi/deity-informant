@@ -613,12 +613,17 @@ class Evaluator:
         return out
 
 
-def eval_fp(prog, trace, nframes, state0=None):
+def eval_fp(prog, trace, nframes, state0=None, held0=None):
     """Canonical per-frame records of ``prog`` under the pinned trace (spec 1.4).
 
     Output semantics: buffer the frame's SID writes, flush one canonical
     record per frame through the single projection."""
-    return framelog.canonical(Evaluator(prog, trace, state0).frames(nframes))
+    return framelog.canonical(Evaluator(prog, trace, state0).frames(nframes), held0)
+
+
+def sid_held0(prog):
+    """Post-init value of every SID register: the lane a frame leaves untouched."""
+    return {r: prog.mem0[framelog._ABS + r] for r in range(framelog._NREG)}
 
 
 def eval_src(prog, trace, nframes, state0=None, pin=None):
@@ -648,4 +653,7 @@ def gate_fp(model, nframes, prog=None):
     trace, walker = frameprog.iota(model, nframes)
     if prog is None:
         prog = frameprog.program(model)
-    return framelog.diff(eval_fp(prog, trace, nframes), framelog.canonical(walker))
+    held0 = sid_held0(prog)
+    return framelog.diff(
+        eval_fp(prog, trace, nframes, held0=held0), framelog.canonical(walker, held0)
+    )

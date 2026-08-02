@@ -216,10 +216,26 @@ procedure text.
 - egglog version drift: extracted-str parsing and RunReport shapes are
   version-sensitive. Mitigation: minor-version pin + `_parse_ir` round-trip
   covered by tests (including the let-lifted multi-line form).
-- Extraction nondeterminism: `extract_multiple` pool membership is not
-  contractually ordered. Mitigation: re-cost with `_COSTS`, break ties
-  lexicographically; emit twice and compare; corpus artifacts are the
-  cross-process witness. Instability is a release blocker for step 3.
+- Extraction nondeterminism: **observed, diagnosed and closed.**
+  `extract_multiple` returns *a* representative of an e-class and which one is
+  not contractual; re-costing with `_COSTS` plus a lexicographic tie-break does
+  not help, because the tie-break orders a pool whose membership itself varies.
+  Measured 2026-08-02 with `tools/lifttrace.py repeat Andy_Capp-The_Game
+  --runs 8` — a split Gate FP verdict on identical source, one fresh process per
+  run. `framemath._FUSED` warmth was tested and is not the cause (cold and warm
+  agree in-process). The verdict proved to be a *pure function* of
+  `PYTHONHASHSEED`, reproducible per seed, so the fix was not a total order over
+  the pool: **the consumer must not depend on which representative came back**.
+  The variation that mattered was `x - K` against `x + (2**w - K)`, one function
+  spelled two ways, of which only one had a provenance naming `framemath._back`
+  could use. `canon` collapses that pair onto the `add` spelling pass-1 uses for
+  an indexed address; where a *choice* between forms remains, `framemath._site`
+  makes it off the program (the statements' own cells) rather than off the
+  extraction order. Evidence: the 682-tune corpus run under two hash seeds is
+  bit-identical, 672 records, 0 differ. A residual case is recorded in
+  `docs/frameprog.md` §7.3 — where the wanted form is never extracted at all,
+  no choice among returned forms can recover it, and the e-class must be
+  *queried* for it instead.
 - Interval analysis too weak: a table left unbounded degrades to a full-memory
   read-through miss (a correctness-preserving readability loss, never a soundness
   loss). Mitigation: extend the `lo`/`hi` lattice by proven cases only, justified

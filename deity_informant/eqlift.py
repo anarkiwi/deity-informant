@@ -723,6 +723,20 @@ def _parse_ir(text):
     return result
 
 
+def canon(ir):
+    """One representative of an extracted term wherever two spell one function.
+
+    ``x - K`` and ``x + (2**w - K)`` are the same term in two's complement and
+    which one extraction hands back is not contractual; pass-1 writes an indexed
+    address as an add, so that is the spelling a provenance lookup can name."""
+    if not isinstance(ir, tuple):
+        return ir
+    out = tuple(canon(a) for a in ir)
+    if out[0] == "sub" and out[2][0] == "num":
+        return ("add", out[1], ("num", -out[2][1] & _mask(out[3]), out[2][2]), out[3])
+    return out
+
+
 _SID_LO, _SID_HI = 0xD400, 0xD41C
 
 

@@ -202,16 +202,21 @@ def test_sid_register_pairs_render_as_u16_without_moving_the_record():
     assert [p.status for p in sid] == ["fused"] * 3
 
 
-def test_a_lone_sid_half_is_recorded_and_left_split():
-    """A pair with no adjacent lo/hi store site refuses; the byte store stands."""
+def test_a_lone_sid_half_widens_to_the_word_store_it_is():
+    """Freq is a 16-bit register, so a lone hi store still writes the whole word.
+
+    Nothing narrower can reach it: the store widens and the lo lane keeps its
+    value, which is why a SID pair has no per-site premise left to refuse."""
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0).i("LDA", "absx", TBL).i("STA", "abs", 0xD401).i("RTS")
     model = _fuzz_model(_player("lonehalf", a.assemble(), {TBL: 0x10}, {0xD401}))
     prog = frameprog.program(model)
     sid = [p for p in prog.proofs if p.kind == "sid"]
-    assert [(p.targets, p.status) for p in sid] == [((0xD400, 0xD401), "refused")]
-    assert "no word access in the play code" in sid[0].lemma
-    assert "sid.v1.freq_hi = " in frameprog.dumps(prog)
+    assert [(p.targets, p.status) for p in sid] == [((0xD400, 0xD401), "partial")]
+    assert "1 widened lane store(s)" in sid[0].lemma
+    text = frameprog.dumps(prog)
+    assert "sid.v1.freq_hi = " not in text  # no byte-wide store to a 16-bit register
+    assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $00FF):2 | (zext2(m_1400) << $08):2):2" in text
     assert frameval.gate_fp(model, 8, prog) is None
 
 

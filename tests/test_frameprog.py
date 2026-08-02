@@ -58,7 +58,8 @@ def test_cycle_and_penalty_annotations_stripped():
     m = _model({(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], events, ("rts",), _regs())})
     text = frameprog.emit(m)
     assert not _ANNOT.search(text)
-    assert "sid.v1.freq_lo = m_1500" in text  # pen-free single-use load inlines
+    # pen-free single-use load inlines, into the u16 store a freq lane write is
+    assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $FF00):2 | zext2(m_1500)):2" in text
     assert " m_1500: u8" in text  # non-SID cell is state
     assert "sid.v1.freq_lo: " not in text  # SID cells are outputs, not state
 
@@ -355,7 +356,8 @@ def test_computed_table_read_is_an_indexed_access_not_a_raw_memref():
     assert "m_1500[(t0 + $01)]" in text and "m_1500[m_1600]" in text
     assert frameprog.dumps(frameprog.loads(text)) == text
     frames = frameval.eval_fp(prog, {}, 1)
-    assert dict(frames[0][0]) == {0: 0x0A, 1: 0x14, 2: 0x0A}  # mem0[$1500], [$1501], [$1500]
+    # mem0[$1500], [$1501], [$1500]; pw_hi comes along as the held lane of pw
+    assert dict(frames[0][0]) == {0: 0x0A, 1: 0x14, 2: 0x0A, 3: 0x00}
 
 
 @pytest.mark.parametrize(

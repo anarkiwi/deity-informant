@@ -38,32 +38,73 @@ def _hi_byte(n):
     return _trunc(("op", "INT_RIGHT", (n, ("const", 8, 1)), 2))
 
 
+_WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
+
+
+def _kills(s):
+    """Names ``s`` may define other than as this list's own ``asg``; None means any.
+
+    A nested body's definition, a call's writes and a label control may enter at
+    are invisible to a scan of one list, yet each ends the reign of the definition
+    before it."""
+    if s[0] in _WILD:
+        return None
+    out = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
+    for b in frameproc._stmt_bodies(s):
+        for s2 in b:
+            got = _kills(s2)
+            if got is None:
+                return None
+            out |= got
+    return out
+
+
 class _Env:
     """The local definitions of one statement list, read at the point of the read.
 
     A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
-    resolving it against a later definition of ``x`` reads the wrong value. Every
-    lookup carries the reader's position and answers with the definer's."""
+    every lookup carries the reader's position and answers with the definer's. A
+    definition the list does not make itself is recorded valueless (``_kills``)."""
 
-    __slots__ = ("defs",)
+    __slots__ = ("defs", "wild")
 
     def __init__(self, lst):
-        self.defs = {}
+        self.defs, self.wild = {}, []
         for k, s in enumerate(lst):
             if s[0] == "asg":
                 self.defs.setdefault(s[1], []).append((k, s[2]))
+                continue
+            killed = _kills(s)
+            if killed is None:
+                self.wild.append(k)
+                continue
+            for name in killed:
+                self.defs.setdefault(name, []).append((k, None))
 
     def at(self, name, bound):
-        """``(index, value)`` of the definition in force at ``bound``, else None."""
+        """``(index, value)`` of the definition in force at ``bound``, else None.
+
+        A None ``value`` marks a definition whose value this list cannot read off;
+        the entry still names *which* definition, so two reads either side of one
+        do not compare equal."""
         made = self.defs.get(name)
         k = 0 if made is None else bisect_left(made, (bound,))
-        return made[k - 1] if k else None
+        got = made[k - 1] if k else None
+        w = bisect_left(self.wild, bound)
+        if w and (got is None or self.wild[w - 1] > got[0]):
+            return (self.wild[w - 1], None)
+        return got
+
+    def value(self, name, bound):
+        """``at``, but None wherever the definition in force has no readable value."""
+        got = self.at(name, bound)
+        return None if got is None or got[1] is None else got
 
 
 def _resolve(n, env, at):
     """Follow ``loc`` definitions, each read where it was written."""
     while n[0] == "loc":
-        got = env.at(n[1], at)
+        got = env.value(n[1], at)
         if got is None:
             return n
         at, n = got
@@ -88,7 +129,7 @@ def _links(n, env, at):
         elif x[0] == "mem":
             stack.append((x[1], b))
         elif x[0] == "loc":
-            got = env.at(x[1], b)
+            got = env.value(x[1], b)
             if got is not None:
                 stack.append((got[1], got[0]))
     return False
@@ -156,7 +197,11 @@ def _saturate(eg, rules):
 
 
 def _fuse(lo, hi):
-    """The 16-bit operation the two byte halves saturate to, else None."""
+    """Every 16-bit form the two byte halves saturate to, cheapest first.
+
+    More than one is expected: ``hi<<8`` has a zero low byte, so ``|`` is ``+``
+    and ``(hi<<8 | step) + lo`` equals ``(hi<<8 | lo) + step``. Lane *shape* does
+    not make a lane -- the caller picks the grouping whose halves are one datum."""
     key = (lo, hi)
     if key not in _FUSED:
         rules, _names = EQ.admitted_rules()
@@ -164,21 +209,23 @@ def _fuse(lo, hi):
         h = eg.let("h", EQ._egg_of(_split(hi, lo), {}))
         _saturate(eg, rules)
         forms = sorted(
-            (EQ._parse_ir(str(x)) for x in eg.extract_multiple(h, _VARIANTS)),
+            (EQ.canon(EQ._parse_ir(str(x))) for x in eg.extract_multiple(h, _VARIANTS)),
             key=lambda t: (EQ._cost(t), repr(t)),
         )
-        _FUSED[key] = next((f for f in map(_word_form, forms) if f is not None), None)
+        _FUSED[key] = tuple(f for f in map(_word_form, forms) if f is not None)
     return _FUSED[key]
 
 
 def _emittable(n, env, at, i, j):
     """Every local ``n`` names holds at ``i`` the value it held at ``at``.
 
-    A definition made inside the interval passes too: ``settle`` inlines it, and
-    the premise guards whatever reads that inlining moves."""
+    A definition made inside the interval passes too, since ``settle`` inlines it
+    -- but only one this list wrote, which is all ``settle`` collects."""
     for name in frameproc._locset(n):
         made = env.at(name, at)
-        if made != env.at(name, i) and not (made is not None and i < made[0] < j):
+        if made == env.at(name, i):
+            continue
+        if made is None or made[1] is None or not i < made[0] < j:
             return False
     return True
 
@@ -244,10 +291,38 @@ def _span(base, idx, regions):
     return min(full, avail - 1) if avail > 0 else full
 
 
-def _reads(exprs, base, span, regions):
-    """True where evaluating ``exprs`` may load a cell of ``[base, base + span]``."""
+_NOIDX = object()  # "the caller is not a store, so no index is shared"
+
+
+def _overlaps(a, b):
+    """Whether two ranges may intersect; each is ``(base, index, span, width)``.
+
+    The ONE aliasing rule. Two ranges carrying one index name one row apiece, so
+    their spans drop out and bases and widths alone decide: ``T[x]`` and
+    ``T+1[x]`` are provably disjoint however wide an undeclared ``T`` is."""
+    (ba, ia, sa, wa), (bb, ib, sb, wb) = a, b
+    if ia == ib:
+        sa = sb = 0
+    return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
+
+
+def _ref(stmt, regions):
+    """The range a store writes, else None where its address does not resolve."""
+    base, idx = FF._addr_split(stmt[1])
+    if base is None:
+        return None
+    return (base, idx, _span(base, idx, regions), G.store_width(stmt[2]))
+
+
+def _lane(base, idx, span):
+    """The one-byte range a lane occupies."""
+    return (base, idx, span, 1)
+
+
+def _reads(exprs, at, regions):
+    """True where evaluating ``exprs`` may load a cell of the range ``at``."""
     for (rb, ri), rw in (r for x in exprs for r in _mem_refs(x)):
-        if rb is None or not (rb + _span(rb, ri, regions) + rw - 1 < base or rb > base + span):
+        if rb is None or _overlaps(at, (rb, ri, _span(rb, ri, regions), rw)):
             return True
     return False
 
@@ -256,12 +331,7 @@ def _clobbers(stmt, exprs, regions):
     """True where ``stmt`` may change the value of any of ``exprs``."""
     if stmt[0] == "asg":
         return any(stmt[1] in frameproc._locset(x) for x in exprs)
-    if stmt[0] != "st":
-        return True
-    base, idx = FF._addr_split(stmt[1])
-    if base is None:
-        return True
-    return _reads(exprs, base, _span(base, idx, regions), regions)
+    return True if stmt[0] != "st" else _disturbs(stmt, exprs, regions)
 
 
 def _disturbs(stmt, exprs, regions):
@@ -271,64 +341,45 @@ def _disturbs(stmt, exprs, regions):
     one captured earlier can be structurally equal yet hold a stale index."""
     if stmt[0] != "st":
         return False
-    b, bi = FF._addr_split(stmt[1])
-    if b is None:
-        return True
-    bw = G.store_width(stmt[2])
-    for (rb, ri), rw in (r for x in exprs for r in _mem_refs(x)):
-        if rb is None:
-            return True
-        if ri == bi:
-            if not (b + bw - 1 < rb or b > rb + rw - 1):
-                return True
-        else:
-            sb, sr = _span(b, bi, regions), _span(rb, ri, regions)
-            if not (b + sb + bw - 1 < rb or b > rb + sr + rw - 1):
-                return True
-    return False
+    at = _ref(stmt, regions)
+    return True if at is None else _reads(exprs, at, regions)
 
 
 def _may_disturb(stmt, base, idx, regions):
     """The store may write the lane at ``(base, idx)``; exact when the index matches."""
     if stmt[0] != "st":
         return False
-    b, i2 = FF._addr_split(stmt[1])
-    if b is None:
-        return True
-    if i2 == idx:
-        return b == base
-    return not (b + _span(b, i2, regions) < base or b > base + _span(base, idx, regions))
+    at = _ref(stmt, regions)
+    return True if at is None else _overlaps(_lane(base, idx, _span(base, idx, regions)), at)
 
 
-def _writes(stmt, base, span, regions):
+def _writes(stmt, base, span, regions, idx=_NOIDX):
     """True where ``stmt`` may store into the lane spanning ``base``."""
     if stmt[0] not in ("asg", "st"):
         return True
     if stmt[0] != "st":
         return False
-    b, idx = FF._addr_split(stmt[1])
-    if b is None:
-        return True
-    return not (b + _span(b, idx, regions) < base or b > base + span)
+    at = _ref(stmt, regions)
+    return True if at is None else _overlaps(_lane(base, idx, span), at)
 
 
 def _hits(stmt, base, span, regions):
     """True where ``stmt`` may read or write a cell of the lane at ``base``."""
     return _writes(stmt, base, span, regions) or _reads(
-        frameproc._stmt_exprs(stmt), base, span, regions
+        frameproc._stmt_exprs(stmt), _lane(base, _NOIDX, span), regions
     )
 
 
 class _Site:
     """One byte-wise 16-bit update: its lanes, the word it is, and its refusal."""
 
-    __slots__ = "lo hi op mask word direct merge src addr load idx why sid at".split()
+    __slots__ = "lo hi op mask word direct merge src addr load idx hidx why sid at".split()
 
     def __init__(self, form, addrs, src):
         self.op, self.mask = _OF[form[0]], form[4]
         self.lo, self.idx = FF._addr_split(addrs[0])
-        self.hi, hi_idx = FF._addr_split(addrs[1])
-        self.word = self.lo is not None and self.hi == self.lo + 1
+        self.hi, self.hidx = FF._addr_split(addrs[1])
+        self.word = self.lo is not None and self.hi == self.lo + 1 and self.hidx == self.idx
         self.src, self.addr, self.load = src, addrs, addrs[0]
         self.direct = all(x[0] == "mem" for x in src[:2])
         self.merge = False
@@ -336,7 +387,7 @@ class _Site:
         self.why = None
         if self.lo is None or self.hi is None:
             self.why = "a lane address is not a const base plus index"
-        elif hi_idx != self.idx:
+        elif self.idx is not None and self.hidx is not None and self.hidx != self.idx:
             self.why = "the two lanes are indexed differently"
 
     def settle(self, inner):
@@ -376,24 +427,34 @@ def _half_ref(s):
     return ("loc", s[1]) if s[0] == "asg" else s[2]
 
 
+def _rmw(lst, i, j, addrs):
+    """The lanes are the two statements' own cells, so the update reads what it writes."""
+    return (lst[i][0], lst[j][0]) == ("st", "st") and (lst[i][1], lst[j][1]) == addrs
+
+
 def _site(lst, i, j, env):
-    """The site the two statements' values are one 16-bit update of, else None."""
+    """The site the two statements' values are one 16-bit update of, else None.
+
+    Lane *shape* is not lane *identity*: a step table wears it too, so ``_fuse``
+    can offer a grouping pairing the hi lane with the step (Antitrack_01). Every
+    form is weighed, and one whose lanes are the statements' own cells wins."""
     prov = {}
-    lo, hi = (EQ.to_egg(_value(lst[k]), env.at, prov, k, _TERM) for k in (i, j))
+    lo, hi = (EQ.to_egg(_value(lst[k]), env.value, prov, k, _TERM) for k in (i, j))
     if lo is None or hi is None:
-        return None
-    form = _fuse(lo, hi)
-    if form is None:
         return None
 
     def ok(ir, at):
         return _emittable(ir, env, at, i, j)
 
-    src = tuple(_back(t, prov, ok) for t in (form[2], form[1], form[3]))
-    addrs = tuple(_lane_addr(t, prov, ok) for t in (form[2], form[1]))
-    if any(x is None for x in src + addrs):
+    cands = []
+    for form in _fuse(lo, hi):
+        src = tuple(_back(t, prov, ok) for t in (form[2], form[1], form[3]))
+        addrs = tuple(_lane_addr(t, prov, ok) for t in (form[2], form[1]))
+        if not any(x is None for x in src + addrs):
+            cands.append(_Site(form, addrs, src))
+    if not cands:
         return None
-    return _Site(form, addrs, src)
+    return min(cands, key=lambda s: (not _rmw(lst, i, j, s.addr), not s.word))
 
 
 def _match(lst, i, env, kinds=("st", "asg"), regions=None):
@@ -431,7 +492,7 @@ def _premise(lst, i, j, site, span, regions=None):
     for k in range(i + 1, j):
         if _clobbers(lst[k], site.src, regions):
             return "an intervening statement changes an operand"
-        if _writes(lst[k], site.hi, span, regions):
+        if _writes(lst[k], site.hi, span, regions, site.hidx):
             return "an intervening statement writes the hi lane"
     site.merge = (
         site.word
@@ -468,7 +529,11 @@ def _sid_pair(lst, i, vlo, vhi, span, regions=None):
 
 
 def _lift(lst, i, j, site, name):
-    """Rewrite ``lst`` in place: one word assignment, the halves truncated off it."""
+    """Rewrite ``lst`` in place: one word assignment, the halves truncated off it.
+
+    The SID pair is settled before the halves are: it may name a lane store as
+    one of its two, and that store then writes the whole word once rather than a
+    half here and a half it never reaches."""
     lo_st, hi_st, lv = lst[i], lst[j], _loc(name)
     word_load = site.word and (site.direct or site.merge)
     src = ("mem", site.load, 2) if word_load else FF._pack(site.src[0], site.src[1])
@@ -476,10 +541,15 @@ def _lift(lst, i, j, site, name):
     if site.mask is not None:
         word = ("op", "INT_AND", (word, ("const", site.mask, 2)), 2)
     half = {i: _trunc(lv), j: _hi_byte(lv)}
+    pair = () if site.at is None else site.at[:2]
     out = []
     for k, s in enumerate(lst):
         if k == i:
             out.append(("asg", name, word))
+        if k in pair:
+            if k == site.at[0]:
+                out.append(("st", site.at[2], lv))
+            continue
         if k in (i, j):
             if k == j and site.merge:
                 continue
@@ -488,10 +558,6 @@ def _lift(lst, i, j, site, name):
                 out.append(("asg", src_s[1], half[k]))
                 continue
             out.append(("st", src_s[1], lv if (k == i and site.merge) else half[k]))
-            continue
-        if site.at is not None and k in site.at[:2]:
-            if k == site.at[0]:
-                out.append(("st", site.at[2], lv))
             continue
         out.append(s)
     lst[:] = out

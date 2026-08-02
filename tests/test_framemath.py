@@ -299,3 +299,38 @@ def test_lanes_three_bytes_apart_lift_but_never_merge():
     assert "one u16 store" not in pr.lemma
     assert "trunc1(d0:2)" in text and "trunc1((d0:2 >> $08):2)" in text
     assert ":2 = d0:2" not in text  # no merged word store across a 3-byte stride
+
+
+# ---- a definition the statement list does not make ---------------------------------
+def test_a_definition_in_a_branch_arm_is_not_the_value_before_the_branch():
+    """Andy_Capp's ptr step: ``DEY`` under a ``BCS`` sign-extends the byte added.
+
+    Reading Y as the ``LDY #$00`` that precedes the branch folds the extension away
+    and adds $0100 too much, so the definition inside the arm must end the reign of
+    the one before it."""
+    a = G.Asm(G.ORG)
+    a.i("SEC").i("LDA", "abs", STEP).i("SBC", "abs", STEP + 1)
+    a.i("LDY", "imm", 0x00).i("BCS", "rel", ("L", "pos")).i("DEY").label("pos")
+    a.i("CLC").i("ADC", "zp", LO).i("STA", "zp", LO)
+    a.i("TYA").i("ADC", "zp", HI).i("STA", "zp", HI)
+    _publish(a, LO, HI).i("RTS")
+    _m, prog, text = _build("sext16", a, {STEP: 0x10, STEP + 1: 0x40, LO: 0x00, HI: 0x80})
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (LO, HI)
+    assert "((zext2(y) << $08):2 | zext2(a)):2" in text  # the step is a word, Y its hi byte
+
+
+def test_a_sid_pair_naming_the_lifted_store_writes_the_whole_word_there():
+    """Beat_the_System's shape: the pair's lo store is the lifted lo statement itself.
+
+    Emitting the lane half there and dropping the pair's hi store leaves the hi SID
+    register holding the previous frame's byte."""
+    a = G.Asm(G.ORG)
+    a.i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "imm", 0x37).i("STA", "abs", G.SID).i("STA", "zp", LO)
+    a.i("LDA", "zp", HI).i("ADC", "imm", 0x00).i("STA", "zp", HI).i("STA", "abs", G.SID + 1)
+    a.i("RTS")
+    _m, prog, text = _build("sidfirst16", a, {LO: 0xF0, HI: 0x01}, (G.SID, G.SID + 1))
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and "SID pair $D400" in pr.lemma
+    assert [ln for ln in text.splitlines() if "sid.v1.freq" in ln] == ["  sid.v1.freq_lo:2 = d0:2"]
