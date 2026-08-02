@@ -12,6 +12,7 @@ from . import framefuse
 from . import framemath
 from . import frameproc
 from . import frameptr
+from . import framestack
 from . import grammar as G
 from . import initcopy
 from . import sidprog
@@ -204,9 +205,11 @@ def program(model):
     trees, labels, view = sidprog._model_trees(model)
     state, inputs = _state_fields(view, decls, model.dispatch_sets, symbols)
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
+    stack_proofs = framestack.apply_rung(procs)
+    state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs)
     state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
-    proofs = math_proofs + proofs
+    proofs = stack_proofs + math_proofs + proofs
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(
