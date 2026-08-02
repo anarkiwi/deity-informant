@@ -133,19 +133,36 @@ def test_the_sid_pair_fuses_off_the_lifted_word():
 
 
 # ---- the refusal is per site -----------------------------------------------------
-def test_an_intervening_write_to_the_hi_lane_refuses_the_site():
-    """The lift moves the hi load up; a store into that lane first forbids it."""
+def test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site():
+    """The load sits below a store into its own lane, so hoisting it crosses one."""
+    a = G.Asm(G.ORG)
+    a.i("CLC")
+    a.i("LDA", "zp", LO).i("ADC", "imm", 0x37).i("STA", "zp", LO)
+    a.i("LDA", "imm", 0x05).i("STA", "zpx", 0x00)
+    a.i("LDA", "zp", HI).i("ADC", "imm", 0x00).i("STA", "zp", HI)
+    _publish(a, LO, HI).i("RTS")
+    _m, prog, text = _build("hilane", a)
+    (pr,) = _math(prog)
+    assert pr.status == "refused" and pr.targets == (LO, HI)
+    assert "an intervening statement changes an operand" in pr.lemma
+    assert ":2 = " not in text and "carry(" in text  # the site is left as two byte updates
+
+
+def test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard():
+    """The hi lane is captured before the store into it, so the load still moves.
+
+    Interval membership does not decide it: the write is later than the read it
+    would spoil, and the lift emits the value the read already took."""
     a = G.Asm(G.ORG)
     a.i("LDX", "zp", HI).i("CLC")
     a.i("LDA", "zp", LO).i("ADC", "imm", 0x37).i("STA", "zp", LO)
     a.i("LDA", "imm", 0x05).i("STA", "zp", HI)
     a.i("TXA").i("ADC", "imm", 0x00).i("STA", "zp", HI)
     _publish(a, LO, HI).i("RTS")
-    _m, prog, text = _build("hilane", a)
+    _m, prog, text = _build("hilane_late", a)
     (pr,) = _math(prog)
-    assert pr.status == "refused" and pr.targets == (LO, HI)
-    assert "an intervening statement writes the hi lane" in pr.lemma
-    assert ":2 = " not in text and "carry(" in text  # the site is left as two byte updates
+    assert pr.status == "lifted" and pr.targets == (LO, HI)
+    assert "zp_11 = $05" in text and "zp_11 = trunc1((d0:2 >> $08):2)" in text
 
 
 @pytest.mark.parametrize("push", [True, False])

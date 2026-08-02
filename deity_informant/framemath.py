@@ -351,18 +351,18 @@ def _may_disturb(stmt, base, idx, regions, mod=0):
     return _overlaps(lane, _reach(stmt, regions))
 
 
-def _writes(stmt, base, span, regions, idx=_NOIDX, mod=0):
+def _writes(stmt, base, span, regions, mod=0):
     """True where ``stmt`` may store into the lane spanning ``base``."""
     if stmt[0] not in ("asg", "st"):
         return True
     if stmt[0] != "st":
         return False
-    return _overlaps(_lane(base, idx, span, mod), _reach(stmt, regions))
+    return _overlaps(_lane(base, _NOIDX, span, mod), _reach(stmt, regions))
 
 
 def _hits(stmt, base, span, regions, mod=0):
     """True where ``stmt`` may read or write a cell of the lane at ``base``."""
-    return _writes(stmt, base, span, regions, _NOIDX, mod) or _reads(
+    return _writes(stmt, base, span, regions, mod) or _reads(
         frameproc._stmt_exprs(stmt), _lane(base, _NOIDX, span, mod), regions
     )
 
@@ -558,17 +558,14 @@ def _match(lst, i, env, kinds=("st", "asg"), regions=None):
 def _premise(lst, i, j, site, span, blocked=None, regions=None, env=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
-    The hi lane's load moves to the word assignment, so no intervening statement
-    may write it; merging the two lane stores also moves the hi store, so that
-    needs no intervening read either. ``blocked`` is ``settle``'s verdict."""
+    Every read the word assignment leads with is held against the statements it is
+    hoisted past, which is ``blocked``, ``settle``'s verdict; merging the two lane
+    stores also moves the hi store, so that needs no intervening read either."""
     later = list(site.src[1:])  # the lo store precedes the hi lane and the step
     if _disturbs(_store(env, lst, i), later, regions):
         return "the lo destination may disturb the hi lane or the step"
-    for k in range(i + 1, j):
-        if k == blocked:
-            return "an intervening statement changes an operand"
-        if _writes(_store(env, lst, k), site.hi, span, regions, site.hidx, site.hmod):
-            return "an intervening statement writes the hi lane"
+    if blocked is not None:
+        return "an intervening statement changes an operand"
     site.merge = (
         site.word
         and _rmw(lst, i, j, site.addr)
@@ -718,7 +715,7 @@ def apply_rung(procs, decls=()):
                         continue
                     done.add((site.lo, site.hi))
                     blocked = site.settle(lst, i, j, regions, env)
-                    span = _span(site.hi, site.idx, regions, site.hmod)
+                    span = _span(site.hi, site.hidx, regions, site.hmod)
                     site.why = site.why or _premise(lst, i, j, site, span, blocked, regions, env)
                     site.at = (
                         None

@@ -317,8 +317,8 @@ valid, gated artifact.
   has lane shape. The **sources** decide the lift — two byte lanes at a const
   base plus one shared index, linked by a carry, are one 16-bit quantity
   wherever their halves are then written — and every naming the lift emits must
-  still hold where it emits it, with no intervening statement writing the hi
-  lane or changing an operand. The **destinations** decide nothing about the
+  still hold where it emits it, with no statement it is hoisted past changing an
+  operand (the hi lane is one such read). The **destinations** decide nothing about the
   lift, only whether the two writes collapse into one `u16` store, which needs
   them adjacent; a hi half stored elsewhere still lifts (the CyberTracker case
   in §5). Which grouping a site *is* comes from the program, not from what
@@ -1705,6 +1705,87 @@ and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
   before the halves are, so that store carries the whole word. This was a latent
   bug in `_lift`, not a consequence of the selection rule; it is pinned by
   `test_framemath.py::test_a_sid_pair_naming_the_lifted_store_writes_the_whole_word_there`.
+
+**The last six, each read off the 6502 (1 CLOSED, 5 measured negatives).** With
+the 40 and the 4 `Counterforce` sites already settled above, these were the
+residue no one had disassembled. `lifttrace capture` located each; the
+disassembly decided it. Nothing here is a defect in the one aliasing rule.
+
+- **`Dribbling` `$003F/$0058` — "an intervening statement writes the hi lane"
+  (LIMITATION; CLOSED, 1 → 0).** `$A2B5 LDA $13,X / CLC / ADC $3F,X / STA $13,X /
+  STA $D402,X / LDA $58,X / ADC #$00 / STA $58,X / STA $D403,X`. The first sweep
+  lifts the `$13,X`/`$58,X` pair; the refusing site is the second sweep's SID
+  mirror pair `$D402,X`/`$D403,X`, where `_rank` settles on lanes `$3F,X`/`$58,X`
+  stepped by `$13,X` — the nearer bases, and the same word under `carry_comm`.
+  The blocking statement is the *first* lift's own hi-half store to `$58,X`,
+  which is **later** than the load of `$58,X` it is held to spoil, so nothing is
+  hoisted past it. `_premise`'s hi-lane loop was the position-blind twin of the
+  check §7.3 made position-aware above: `_hoist` already holds every read the
+  word assignment leads with against the statements it is carried past, and the
+  hi lane is one of those reads, so the loop could only ever fire on a
+  non-hazard. It is removed and the class with it; `_writes` loses the index
+  parameter only that call passed. The two shapes that *are* hazards — the hi
+  lane reloaded after a store to it, and after a `zp,X` store that may reach it —
+  refuse identically in both builds, as "an intervening statement changes an
+  operand", which is the check that was doing the work all along.
+- **`Wizball` `$0004/$0005` and `$0006/$0007` — "may alias the hi lane" (CORRECT
+  as the pass stands).** `$4981 LDX $0D / LDA #$02 / CLC / ADC $04 / STA $E4,X /
+  LDA #$00 / ADC $05 / STA $E9,X`, and `$4ABA` the same over `$0E`, `$06/$07`,
+  `$F3,X`/`$F8,X`. The lanes are the song pointer; the destination is a
+  loop-nesting stack. `STA $E4,X` is `zp,X`, so it reaches `$00..$FF` and covers
+  `$0005` at `X = $21`. The program *does* bound it — `$4A0B LDY $0D / CPY #$04 /
+  BEQ` caps the depth at 4, so the store only ever reaches `$E4..$E8` — but that
+  is a value range over a zero-page counter, not a declaration, and no such
+  machinery exists. The declaration route is measured and empty:
+  `datadecl.declarations` carves **no zero-page region at all** for this tune, so
+  `Regions.avail($00E4)` is 0 and the one tightening `span`'s modular rule could
+  admit — a declared bound with `base + avail - 1 < 256`, where the wrap provably
+  does not happen — would buy nothing here (MEASURED, no change taken). The third
+  voice of the same driver, `$4BEE … STA $4708,X`, lifts: its stack is
+  absolute-indexed, so `store_ref` resolves it clear of `$0008/$0009`.
+- **`Are_Friends_Electric` `$17F9[y]/$10C8[x]` and `Flowing` `$1B3C[y]/$10B7[x]`
+  — "the two lanes are indexed differently" (correctly classified).** `$13DC LDA
+  $10C6,X / BCC $13F6 / CLC / ADC $17F9,Y / STA $10C6,X / LDA $10C8,X / ADC #$00 /
+  STA $10C8,X` (`Flowing` `$1193 LDA $10B5,X`, step `$1B3C,Y`, hi `$10B7,X`). The
+  real lanes are `$10C6,X`/`$10C8,X` under one index, stepped by `$17F9,Y` — an
+  ordinary split-table site. `_cells` does put that pair in `_pairs` and `_fuse`
+  does ask about it, but the **lo lane's load is in the dominating block**, above
+  the `BCC` that separates the ADC arm from the SBC arm, so inside the interval it
+  is the free local `a`: the e-graph has no fact `a == mem[$10C6,X]`, and
+  `sub(word, pack(cells))` cannot cancel. That confirms the recorded suspicion —
+  the store cells' own query does not cancel. What survives is the regrouping
+  `(hi $10C8,X, lo $17F9,Y, step a)`, the same word with the step table wearing
+  lo-lane shape, and it refuses on the one-shared-index premise §4 rung (d2)
+  states. Closing these wants the lo lane's definition read out of the dominating
+  block — a definition query across basic blocks, not an aliasing input.
+- **`Allt_under_himmelens_faeste` — "a lane address is not a const base plus
+  index" (LIMITATION, not closed).** `$0974 JSR $0B65 / PLA / CLC / ADC $FB /
+  STA $0E1D,X / LDA $FC / ADC #$00 / STA $0E1E,X`: the lanes are the zero-page
+  pointer `$FB/$FC` and the step is the byte pulled off the stack. This is **not**
+  the `zp,X` form the modular-index work drove 16 → 0. `_fuse` does offer the
+  coherent form — `_asked` returns `add hi=(cell $FC) lo=(cell $FB)
+  step=zext(load $0100|sp)` — and `_site` then drops it, because `_back` cannot
+  name the step: the e-graph folded the pull's address `((sp + $FF) + 1)` to
+  `sp`, while `to_egg` keyed provenance by the unfolded spelling, so `prov` misses
+  the extracted term. The two forms left both make the stack byte the lo lane,
+  whose address `zext2(sp + $01) | $0100` is no `const base + index` — which is
+  what refuses, correctly for the form it is given. Closing it wants provenance
+  keyed by e-class rather than by term; `_back`'s own rule forbids the cheap
+  alternative, since a load rebuilt out of the graph is a read made where it was
+  not.
+
+**Measured, HEAD vs the `_premise` collapse.** Refusals 52 → **51**, lifts
+1523 → **1524**, merges 189, adjacent 668, SID pairs 365, Gate FP **649/649**,
+canonical fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records
+differ**, and `lifttrace stable --runs 4` agrees on all 23 decisions of
+`Dribbling`. Per (tune, lo, hi) over 1564 sites: **0 previously lifted now
+refuse**, 1 newly lifts. The consumer partition §6 requires beside the gate:
+emitted text 10197544 → **10197665** bytes (+121), raw `mem[` 9698 → **9699**;
+byte-wide SID stores 772 and word 2899 both unchanged. Pinned by
+`test_framemath.py::test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard`,
+which refuses when the loop is restored, beside
+`::test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site` for the shape
+that is a hazard.
 
 ### 7.4 tools/lifttrace.py
 
