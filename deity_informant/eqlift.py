@@ -366,6 +366,16 @@ def _r_carry_fuse(A, w):
     return split, A.add(a16, b16, 2)
 
 
+def _r_borrow_fuse(A, w):
+    """The SBC chain fuses: ``(ah - (al<bl))<<8 | (al-bl) -> a16 - zext(bl)``."""
+    del w
+    al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
+    hi = A.sub(ah, A.ult(al, bl), 1)
+    split = A.bor(A.shl(A.zext(hi), A.num(8, 1), 2), A.zext(A.sub(al, bl, 1)), 2)
+    a16 = A.bor(A.shl(A.zext(ah), A.num(8, 1), 2), A.zext(al), 2)
+    return split, A.sub(a16, A.zext(bl), 2)
+
+
 def _r_sbc_borrow(A, w):
     """SBC borrow ``$01 - (zext(x) <= zext(y)) -> (y < x)`` (bytes)."""
     del w
@@ -421,6 +431,7 @@ RULES = (
     ("sub_eq0", (1, 2), _r_sub_eq0),
     ("sub_ne0", (1, 2), _r_sub_ne0),
     ("carry_fuse", (2,), _r_carry_fuse),
+    ("borrow_fuse", (2,), _r_borrow_fuse),
     ("sbc_borrow", (1,), _r_sbc_borrow),
 ) + _SHIFT_FOLDS
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import expr as E
 from . import frameproc
+from . import grammar as G
 from . import streams as ST
 from .structured import Proof
 
@@ -258,6 +259,10 @@ def _visit(stmts, p, mutate):
                 stmts[i] = ("st", lo[1], _pack(lo[2], hi[2], at[1] == p.lo))
                 del stmts[i + 1]
             i += 1 if mutate else 2
+            continue
+        if s[0] == "st" and _addr_split(s[1])[0] == p.lo and G.store_width(s[2]) == 2:
+            p.stores += count  # already one word store: rung (d2) fused this pair
+            i += 1
             continue
         if _store_half(s, p) is not None:
             p.unpaired += count

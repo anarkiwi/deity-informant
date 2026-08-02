@@ -252,8 +252,8 @@ recorded in the build report.
   and an assignment whose value is two bytes wide states that width on its
   lvalue. `trunc1(x)`/`trunc2(x)` narrow a value to that width
   (`("op", "COPY", (x,), w)`). Both are frameprog forms a sidprog document
-  rejects, exactly as the width suffix and the `*ptr[i]` deref are. No pass
-  emits either yet: they are the notation 16-bit arithmetic will be written in.
+  rejects, exactly as the width suffix and the `*ptr[i]` deref are. They are the
+  notation rung (d2) writes 16-bit arithmetic in.
 - sidprog is and remains the cycle-exact ground truth and the deliverable of
   the decompiler; frameprog replaces nothing and relaxes nothing below it.
 - frameprog is **generated from the committed model** (post commit-phase,
@@ -307,6 +307,19 @@ valid, gated artifact.
   (follin-dispatch-study §4), every read using the half only inside
   `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
   per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
+- **(d2) 16-bit arithmetic lifting** (landed, `deity_informant/framemath.py`;
+  §4.3 for the measurement). A driver maintaining 16-bit state in 8-bit
+  registers writes the add twice — the lo lane, then the carry it propagates
+  into the hi lane — so rung (d) sees two byte stores with statements between
+  them and refuses. Rung (d2) reads that pair of updates as the one 16-bit
+  add/sub it is: the **carry link is the evidence**, and it is local, because a
+  carry from the lo lane into the hi lane exists only where the two lanes are
+  halves of one quantity. Premise per site: each lane is a read-modify-write of
+  its **own** cell (a hi half read from one cell and stored to another is not a
+  lane — see the CyberTracker case in §5), the lanes share an index, and no
+  intervening statement writes the hi lane or changes an operand. The lemma is
+  Z3-proven in `eqlift.RULES` (`carry_fuse`, `borrow_fuse`). Gate: FP + a proof
+  record per site.
 - **(e) Per-voice unification.** Replace k code copies with one procedure
   parameterized by voice `v`. Premise — code isomorphism up to voice index:
   a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
@@ -500,9 +513,52 @@ than the two byte stores it replaces, so this rung buys shape, not size — and 
 pre-fusion scan of the same corpus finds about two thirds (577 of the 931 pairs
 it sees) write both halves and never as adjacent statements — Commando's slide
 path writes `freq_lo`, then the state cell and the carry, then `freq_hi` — and
-the rest write one half only. Reaching those needs statement motion across a
-proven-independent statement, which is a rung above (d), not a licence (d) can
-take for itself.
+the rest write one half only. Reaching those is rung (d2) below: not statement
+motion for its own sake, but reading the arithmetic that put the halves apart.
+
+**Rung (d2): the arithmetic behind the pair.** What separates the halves is the
+driver's own 16-bit add, written twice because the machine is 8-bit — Commando's
+slide path is the shape:
+
+```
+      t4 = (w13 + idx3)                                  d0:2 = (((zext2(ctr_551A[x]) << $08):2
+      m_551D[x] = t4                                              | zext2(w13)):2 + zext2(idx3)):2
+      sid.v1.freq_lo[y] = t4                    ->       m_551D[x] = trunc1(d0:2)
+      w14 = ctr_551A[x]                                  sid.v1.freq_lo[y]:2 = d0:2
+      t6 = (w14 + (carry(w13, idx3) | carry(t4, $00)))   ctr_551A[x] = trunc1((d0:2 >> $08):2)
+      ctr_551A[x] = t6
+      sid.v1.freq_hi[y] = t6
+```
+
+The carry operator is gone, the SID write is one 16-bit store, and the state
+lanes are two truncations of one word — `m_551D`/`ctr_551A` are separate tables,
+so the *value* is 16 bits where the *memory* cannot be. Where the two lanes are
+adjacent cells the word source is a real `:2` load and the two lane stores
+collapse to one `u16` store.
+
+Measured 2026-08-01, same corpus and window. **Gate FP 649/649 and the canonical
+fixpoint 649/649**, unchanged — the lift moves no record. **667 sites lift across
+264 tunes** (448 adds, 219 subtracts): 324 over adjacent cells (88 of them
+collapsing to one `u16` store) and 343 over split tables, with **159 carrying a
+SID pair store onto the lifted word**. SID fusion at site granularity goes
+1317 → **1476** store pairs, which is the §4.3 residue above being paid down by
+the rung that understands *why* the halves were apart. Emitted text 9660384 →
+**9693442** bytes (+0.34%); raw `mem[` is unchanged at 9682.
+
+The operation is read off the **hi** lane, not the lo one: `expr` folds `SBC #k`
+into an add of the byte complement, so a subtract's lo half is an `INT_ADD` of
+`-k` while its hi half subtracts the borrow. Deriving from the lo lane silently
+skips every immediate subtract (219 of the 667).
+
+**18 sites refuse, each with its diagnostic**: 12 whose lane address is not a
+const base plus index — chiefly the zero-page indexed form `mem[zext2((x - $20))]`,
+where the 6502's `zp,X` wrap puts the add *inside* the byte so `frameproc._index_of`
+(which requires a base ≥ `$100`) cannot name it, plus the CyberTracker stack case
+of §5 — 4 whose lanes are indexed differently, and 2 where an intervening
+statement changes an operand. The zero-page form is a naming gap shared with
+rung (f), not a soundness one: widening the splitter must also refuse the
+`$FF`→`$00` straddle, since a 16-bit read at `$FF` takes `$0100` and the `zp,X`
+wrap does not apply to the word access.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -917,6 +973,7 @@ running past the region end.
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
+| A 16-bit add whose halves are not one variable | Rung (d2)'s false positive, and the reason its premise demands each lane be a read-modify-write of its **own** cell. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. Fusing (`$14`, stack slot) computes the right value through the wrong cell. Refused because source cell ≠ destination cell; pinned by `tests/test_framemath.py`. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Closed. The surface serializes the transfer as a bare `ret` and the evaluator returns machine-faithfully through `sp` and the stack image. `PHA`-pushed targets were unrecoverable only because the passes treated `sp` as an ordinary local and eliminated its updates; `sp` is machine state (`call`/`ret` move it, pushed bytes land at addresses derived from it), so it is now exempt from pruning, from inlining and from the faint-assignment rule. `_fuzzgen.t_rts_trick` passes and `_FP_GAP` is empty. |
@@ -1004,8 +1061,17 @@ HVSC absent (decompiler-implementation.md §1, §7).
   synthetic refusals — lone half, unpaired half store, write-order hazard — plus
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
   halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
-  proof records are still M-FP2's debt, and the 925 SID pairs whose halves are
-  written apart wait on a statement-motion rung above (d) (§4.3).
+  proof records are still M-FP2's debt.
+- **M-FP3b — 16-bit arithmetic (d2).** Landed (`deity_informant/framemath.py`,
+  §4.3 for the measurement): the carry/borrow-chained byte-wise update read as
+  one 16-bit add/sub, with a `structured.Proof` per site and the lemma Z3-proven
+  in `eqlift.RULES` (`carry_fuse`, `borrow_fuse`). Gate: FP 649/649 and the
+  canonical fixpoint 649/649 over the 682-tune corpus; 663 sites lifted, 18
+  refused with named diagnostics. `tests/test_framemath.py` carries the synthetic
+  add/sub, the split-lane and adjacent-cell forms, each refusal, the CyberTracker
+  false positive (a hi half read from one cell and stored to another) and the
+  mutation evidence that a wrongly lifted site moves the record. Outstanding: the
+  zero-page indexed lane address (§4.3), which is rung (f)'s naming gap too.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
