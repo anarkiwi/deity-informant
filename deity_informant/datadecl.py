@@ -178,9 +178,16 @@ def _witnessed(g, sites):
 
 
 def _regions(groups, sites, rd_pcs, by_pc, code):
-    """Witnessed regions, alias bases absorbed into the region they index."""
+    """Witnessed regions off the code image, alias bases absorbed into their region.
+
+    A declaration starts at its base and carries that byte, so one based on an
+    executed instruction byte would carve code into ``data { }``; spec 2 reads a
+    code cell as the state variable it is. The next code byte bounds it anyway."""
     out = []
+    oncode = set(code)
     for g in groups:
+        if g["base"] in oncode:
+            continue
         reads = _run_reads(g, rd_pcs, by_pc)
         g = dict(g, reads=reads, top=reads[-1] if reads else -1)
         if not _witnessed(g, sites):
@@ -396,13 +403,7 @@ def declarations(model):
     by_pc = {}
     for pc, a in getattr(model, "reads", ()):
         by_pc.setdefault(pc, []).append(a)
-    groups = _regions(
-        [g for g in _groups(sites) if g["base"] not in codeset],
-        sites,
-        rd_pcs,
-        by_pc,
-        code,
-    )
+    groups = _regions(_groups(sites), sites, rd_pcs, by_pc, code)
     starts = [g["base"] for g in groups]
     pairs = _pair_recs(cls)
     mut = model.written

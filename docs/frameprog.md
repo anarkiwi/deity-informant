@@ -1392,6 +1392,49 @@ Neither class was a defect in the rule that was consolidated; both were missing
 *inputs* to it. The counts above are the re-measured trajectory, not the
 pre-§7.1 ones.
 
+**`datadecl`'s code-image filter is not what withholds the missing extents
+(MEASURED, no change taken).** `declarations` drops a group whose base lies in
+`_code_bytes`, and the residues above were read as that filter's cost. They are
+not. The filter fires on **141 groups in 87 of 650 tunes**, and only **13 of
+them (7 tunes) would declare anything at all**: `_next_bound` already treats
+every code byte as a boundary, so a region *based* on one runs only to the next
+code byte. Removing the filter over the whole corpus moves **one** number —
+emitted text 10197544 → **10198819** bytes (+1275, the 7 tunes and no others);
+Gate FP **649/649**, canonical fixpoint **649/649**, lifts 1523, refusals 52
+with an identical class breakdown, merges 189, adjacent 668, SID pairs 365,
+byte-wide SID stores 772, word 2899, raw `mem[` 9698, all unchanged. The extent
+claim is **not separable** from the data-emission claim here, because a
+declaration begins *on* the code byte: `data { table … }` would carry that
+instruction byte as its first datum. Spec 2 already says what such a cell is —
+a state variable — and an undeclared array base is exactly what
+`frameprog._state_fields` emits as one. `mut`/`_sound_hi` are not the issue: 9
+of the 141 bases are play-written SMC operands (`A_Chipful_of_Love_for_You`
+`$121F`/`$122E`/`$123D` are the immediates of three `LDA #$00 / STA $D40x` at
+stride 5, read back as `$121F,X`) and `mut` would carry their constness
+correctly; the other 132 are const tables that merely start on an instruction
+byte. Pinned by
+`test_datadecl.py::test_a_base_on_the_code_image_is_not_carved_as_data`, which
+fails when the filter is removed.
+
+**What does withhold them, measured at the same HEAD.** Instrumenting
+`Defs.cell`'s blocker over the corpus splits the spilled-index residue: **222**
+the blocking indexed store's base is *never a group*, because `_idx_sites`
+collects idx-shaped **reads** only and the base is only ever written
+(`Boys_Dont`/`3_Feet_Higher`/`Bella_Rossa` `STA $1035,X`, `Ala_Gal`
+`STA $1073,X`); **116** a group whose extent is 0, because `_run_reads` observed
+no read at its site pcs and the index bound is unproven (`Ala_Gal` `$1064`, read
+only at `$17D5`/`$17DA`, which the 200-frame window never reaches); and **0**
+the code-image filter. The same split holds for the refusal class: of the 5
+"undeclared span over a differing index", 3 are one driver's `STA $1035,X`, 1
+(`Aaaaaargh_13` `$00BF,X`) is a modular index that no declaration may bound by
+the rule above, and 1 (`Abatement`) has a store span of 0 and was bucketed on
+its *reads'* spans. Closing the 222 wants an extent floored by observed
+**writes**, which is a model fact that does not exist: `model.written` is a set
+of cells with no site attribution, where `_run_reads` needs `pc -> addresses`.
+It is also necessary and not sufficient — declaring `Ala_Gal`'s `$1064`/`$1073`
+by hand removes them as blockers and moves that tune's SID store widths not at
+all, because the next blocker on all 8 sites is a loop that may write `$107E`.
+
 **"The lo destination may alias the hi lane" (2 sites, both CORRECT).** Traced
 with `lifttrace`'s `alias` event, which records `_match`'s own test — the lo
 store's range against the hi lane's — since `_may_disturb` fires before

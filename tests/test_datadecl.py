@@ -117,6 +117,19 @@ def test_unwitnessed_base_neither_declares_nor_bounds():
     assert _ext(0x2000, range(0x2000, 0x2060), bounds=[0x2000]) == (0x100, [], True)
 
 
+def test_a_base_on_the_code_image_is_not_carved_as_data():
+    """A declaration carries its base byte, so one there would print code as data.
+
+    The extent claim is not separable from that: the next code byte bounds the
+    region, so all it can claim is the instruction byte itself. Spec 2 reads a
+    code cell as the state variable it is."""
+    lo = _grp(0x2000, range(0x2000, 0x2040))
+    on_code = _grp(0x2040, range(0x2040, 0x2080))
+    assert [g["base"] for g in _regions([lo, on_code])] == [0x2000, 0x2040]
+    assert [g["base"] for g in _regions([lo, on_code], code=[0x2040])] == [0x2000]
+    assert _ext(0x2040, [0x2040, 0x2050], code=[0x2040, 0x2041]) == (1, [], True)
+
+
 def _reg(base, size, stride=1, mut=()):
     return {"base": base, "size": size, "stride": stride, "mut": list(mut)}
 
