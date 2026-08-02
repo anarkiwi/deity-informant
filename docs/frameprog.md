@@ -1354,12 +1354,42 @@ tripped it rather than by which predicate reported it:
   … per voice). These are **genuine** hazards as the pass stands. The deref is
   defined *inside* the lift interval, so `settle` inlines it and the load really
   does move above the lo store; with no bound on the pointer, a store to a
-  constant byte cannot be excluded from it. The bound exists — it is exactly
-  rung (f)'s proven target block set (`frameptr`'s `blocks()`) — but rung (f)
-  runs *after* rung (d2) and is naming-only, so `_disturbs` cannot ask. Closing
-  this class means making that block set available to the aliasing test, which
-  is a rung-ordering change and wants its own commit: `frameptr.analyse` keys
-  its sites by address *expression*, and rung (d2) rewrites expressions.
+  constant byte cannot be excluded from it. **The bound does not exist, and the
+  rung-ordering change is worth nothing (MEASURED, no change taken).** The
+  reading above assumed rung (f)'s proven target block set (`frameptr`'s
+  `blocks()`) was the missing bound and that only the rung order withheld it.
+  Measured at HEAD over the 14 tunes carrying the class, the 40 refusals split
+  **35 unresolved read / 5 other**, and of the 35: **2 are not a deref at all**
+  (`Amazon`, `Donkey_Kong` — the latter is the local-defined-before-the-interval
+  residue recorded below), and the other **33 deref through 32 pointer cells of
+  which 0 resolve** — not after rung (d2), and not before it either. Running
+  `frameptr.analyse` on the *pre*-(d2) trees yields the same verdict on all 32,
+  and both verdicts are the same refusal: `the lo/hi pair did not fuse (rung d)`.
+  The pointer is **advanced**, and that one fact refuses it three times over.
+  `Arpeggio $3297 LDA $F0 / CLC / ADC #$04 / STA $F0 / BCC / INC $F1` is the
+  reload-plus-advance sequencer walk: the reload at `$27DC LDA $2073,Y / STA $F0 /
+  LDA $2173,Y / STA $F1` is the declared partner-table read §4.4 wants, but the
+  advance is a lone-half read, which is why rung (d) refuses the fusion
+  (`16-bit fusion: cells $00F0/$00F1; pointer pair (datadecl lo/hi partner table
+  $2073); 5 word read(s), 1 word store(s); 1 lone-half read(s)`), and `P = P + n`
+  is not a partner-table entry read, which is why §4.4 premise 1 would refuse it
+  even if the pair did fuse. Checking premise 1 directly over the byte stores to
+  each pair — i.e. asking the ceiling question without needing the fusion first —
+  puts **32 of 32** on a non-table definition (**29** a literal advance
+  `ptr + $04`/`+$05`, 3 an undeclared or computed source) and **2** additionally
+  inside a tune with a wild store (premise 4). Zero are clean. The refusing site
+  itself is SMC: `$32DC LDY #$02 / CLC / LDA #$00 / ADC ($F0),Y / STA $32E0 / INY /
+  LDA #$00 / ADC ($F0),Y / STA $32E8` keeps its 16-bit accumulator in the two
+  `LDA #$00` immediates, and `$32C3 LDA ($F0),Y / STA $00F1 / PLA / STA $00F0`
+  reloads the pointer out of the stream it points at — a closure over the song
+  data, not a set of table blocks. `Asterix_and_the_Magic_Cauldron` is a second,
+  unrelated driver with the same answer: `$8236/$8237` is the patched operand of
+  `$8235 LDA $86FE,Y`, advanced by `ptr0 + $01`. §4.4 already states the rule this
+  measurement runs into — "an advanced pointer is `T[k] + n` for an `n` accumulated
+  across frames with no static bound, so neither the (block, row) pair nor a range
+  claim survives it" — so these 33 are refusals rung (f) is *designed* to make, not
+  ones the rung order hides. All 40 stay CORRECT and the class is closed as such:
+  raising it is upstream work on rung (d)'s lone-half rule, not an aliasing input.
 - **10 — an undeclared span over a differing index (CLOSED, 43 → 36 here and
   6 → 2 in "may alias the hi lane"; 11 refusals in 11 tunes, none opened).** The
   store's span fell back to the whole 256-byte register range because
