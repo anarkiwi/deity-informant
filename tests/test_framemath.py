@@ -428,3 +428,88 @@ def test_a_sid_pair_naming_the_lifted_store_writes_the_whole_word_there():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and "SID pair $D400" in pr.lemma
     assert [ln for ln in text.splitlines() if "sid.v1.freq" in ln] == ["  sid.v1.freq_lo:2 = d0:2"]
+
+
+# ---- the grouping is asked for, not read off an extraction ------------------------
+IDX = G.TBL + 0x180  # a per-row step index, so the step table is walked by its own y
+
+
+def _step_wearing_lane_shape():
+    """Antitrack_01's shape: the step is a table read, so it wears lane shape too."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", 3).label("lp").i("LDY", "absx", IDX)
+    a.i("LDA", "absy", STEP).i("CLC").i("ADC", "absx", SLO).i("STA", "absx", SLO)
+    a.i("LDA", "absx", SHI).i("ADC", "imm", 0x00).i("STA", "absx", SHI)
+    a.i("LDA", "absx", SLO).i("STA", "absx", OUT)
+    a.i("LDA", "absx", SHI).i("STA", "absx", OUT + 4)
+    a.i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = dict(_SPLIT_DATA)
+    data |= {STEP + k: 0x11 * k for k in range(4)} | {IDX + k: 3 - k for k in range(4)}
+    return _build("askedfor", a, data, _SPLIT_OUTS)
+
+
+def test_a_step_wearing_lane_shape_does_not_become_a_lane():
+    """The lanes are the two stores' own rows; the differently indexed table is the step."""
+    _m, prog, text = _step_wearing_lane_shape()
+    (pr,) = _math(prog)
+    assert pr.status == "lifted" and pr.targets == (SLO, SHI)
+    assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
+    assert "carry(" not in text and "w0 = m_1480[y]" in text
+    assert "(zext2(m_1440[x]) << $08):2 | zext2(w1)):2 + zext2(w0)):2" in text
+
+
+def _lane_terms():
+    """The same shape as value-graph terms: ``(lo, hi, lo lane, hi lane, step)``."""
+
+    def row(base, idx):
+        return ("load", ("add", ("zext", ("loc", idx)), ("num", base, 2), 2), 1, 0)
+
+    lane_lo, lane_hi, step = row(SLO, "x"), row(SHI, "x"), row(STEP, "y")
+    lo = ("add", step, lane_lo, 1)
+    return lo, ("add", lane_hi, ("carry", step, lane_lo, 1), 1), lane_lo, lane_hi, step
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_either_grouping_is_provable_and_the_program_names_which(swap):
+    """``h - pack(lanes)`` is the step by construction; the rules must cancel the pack.
+
+    Both the lanes and the step-as-lane pairing prove out, which is exactly why the
+    choice cannot be left to whichever term extraction returned."""
+    lo, hi, lane_lo, lane_hi, step = _lane_terms()
+    want = step if swap else lane_lo
+    other = lane_lo if swap else step
+    form = framemath._fuse(lo, hi, ((lane_hi, want),))[0]
+    assert (form[0], form[1], form[2], form[3]) == ("add", lane_hi, want, ("zext", other))
+
+
+def test_the_word_a_masked_hi_lane_makes_is_what_the_query_asks_about():
+    """A 12-bit register's `AND #$0F` masks the word, so the query strips it first."""
+    lo, hi, lane_lo, lane_hi, step = _lane_terms()
+    masked = ("band", hi, ("num", 0x0F, 1), 1)
+    form = framemath._fuse(lo, masked, ((lane_hi, lane_lo),))[0]
+    assert (form[1], form[2], form[3], form[4]) == (lane_hi, lane_lo, ("zext", step), 0x0FFF)
+
+
+# ---- mutation evidence: the merge's premise is the destinations, not the lanes -----
+def _half_goes_elsewhere():
+    a = G.Asm(G.ORG)
+    a.i("LDA", "zp", 0x14).i("CLC").i("ADC", "imm", 0x04).i("STA", "zp", 0x14)
+    a.i("LDA", "zp", 0x15).i("ADC", "imm", 0x00).i("STA", "zp", 0x16)
+    a.i("LDA", "zp", 0x14).i("STA", "abs", OUT)
+    return a.i("LDA", "zp", 0x16).i("STA", "abs", OUT + 1).i("RTS")
+
+
+def test_merging_a_pair_whose_lanes_are_not_its_destinations_moves_the_record(monkeypatch):
+    """`_rmw` is the merge's whole premise: without it the u16 store lands on `$15`.
+
+    The lanes `$14/$15` are adjacent, so `word` holds and only the destinations say
+    the hi half goes to `$16`; drop that and the merge overwrites `$15` instead."""
+    model, prog, _text = _build("nomerge", _half_goes_elsewhere(), {0x14: 0xF0, 0x15: 0x20})
+    assert "one u16 store" not in _math(prog)[0].lemma
+    trace, _walker = frameprog.iota(model, 8)
+    good = frameval.eval_fp(prog, trace, 8)
+    monkeypatch.setattr(framemath, "_rmw", lambda *_a: True)
+    bad = frameprog.program(model)
+    assert "one u16 store" in _math(bad)[0].lemma
+    assert frameval.eval_fp(bad, trace, 8) != good
+    assert frameval.gate_fp(model, 8, bad) is not None

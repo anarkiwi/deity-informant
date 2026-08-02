@@ -232,10 +232,12 @@ procedure text.
   an indexed address; where a *choice* between forms remains, `framemath._site`
   makes it off the program (the statements' own cells) rather than off the
   extraction order. Evidence: the 682-tune corpus run under two hash seeds is
-  bit-identical, 672 records, 0 differ. A residual case is recorded in
-  `docs/frameprog.md` §7.3 — where the wanted form is never extracted at all,
-  no choice among returned forms can recover it, and the e-class must be
-  *queried* for it instead.
+  bit-identical, 672 records, 0 differ. The residual case — where the wanted form
+  is never extracted at all, so no choice among returned forms can recover it —
+  is closed in `docs/frameprog.md` §7.3: `framemath._pairs` enumerates the lane
+  pairs the program names and `_fuse` *queries* the e-class for each, admitting
+  only those the cancellation rules reduce. Extraction still decides how the step
+  is spelled; it no longer decides which grouping the site is.
 - Interval analysis too weak: a table left unbounded degrades to a full-memory
   read-through miss (a correctness-preserving readability loss, never a soundness
   loss). Mitigation: extend the `lo`/`hi` lattice by proven cases only, justified

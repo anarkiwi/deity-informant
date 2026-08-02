@@ -321,8 +321,11 @@ valid, gated artifact.
   lane or changing an operand. The **destinations** decide nothing about the
   lift, only whether the two writes collapse into one `u16` store, which needs
   them adjacent; a hi half stored elsewhere still lifts (the CyberTracker case
-  in §5). The lemmas are Z3-proven in `eqlift.RULES` (`carry_fuse`,
-  `carry_fuse0`, `borrow_fuse`, `mask_hoist`, `add_to_sub`, `num_narrow`).
+  in §5). Which grouping a site *is* comes from the program, not from what
+  extraction returned: `_pairs` names the candidate lanes and `_fuse` queries the
+  fused e-class for the step each implies (§7.3). The lemmas are Z3-proven in
+  `eqlift.RULES` (`carry_fuse`, `carry_fuse0`, `carry_comm`, `borrow_fuse`,
+  `mask_hoist`, `add_to_sub`, `num_narrow`, `sub_add_cancel`, `sub_sub_cancel`).
   Gate: FP + a proof record per site.
 - **(e) Per-voice unification.** Replace k code copies with one procedure
   parameterized by voice `v`. Premise — code isomorphism up to voice index:
@@ -1545,41 +1548,66 @@ and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
   comes through it. Verified rather than argued — asserting the invariant inside
   `overlaps` and running the corpus trips it in **0 of 682 tunes**. Widening the
   guard later MUST widen this test with it.
-- **Lanes indexed differently** has two causes. One lane may be an unindexed
-  zero-page cell (`American $B501[..]/$00FE`, `Endless_Sands $181F[x]/$00FC`),
-  which has a constant address and so no row to disagree about — index equality
-  is needed for the *merge* decision (which already demands adjacency), not for
-  the lift, which emits `FF._pack(src_lo, src_hi)` and assumes no adjacency. The
-  rest are genuinely different tables (`Antitrack_01 $166B[y]/$15CB[x]`).
-- **Antitrack_01 is a mis-grouped extraction, not a bad site — and coherence
-  selection does not reach it.** `$13F4 LDA $166B,Y` is the *step*; the real
-  lanes are `$15C8,X` and `$15CB,X`, parallel per-voice arrays sharing one
-  index. `hi<<8` has a zero low byte, so `|` is `+` and
-  `(hi<<8 | step) + lo == (hi<<8 | lo) + step` — proved by
-  `add_comm`/`add_assoc`/`or_zero`. `_lanes` only checks that both operands are
-  byte-wide `cell`/`load` nodes; nothing requires them to be *related*, so
-  `_fuse` can offer a grouping that pairs the hi lane with the step, and
-  `_word_form` accepts it. `_site` now weighs every offered form and prefers the
-  one whose lanes are the statements' own cells, but at this site **the correct
-  grouping is never offered**: both extracted variants collapse to the
-  mis-grouped shape, so there is nothing to prefer. Choosing better among
-  extracted forms cannot fix this; the form has to be *asked for*. The fix
-  direction is to query the fused e-class for an equality against lanes drawn
-  from the program's own provenance — `site.addr`, as merge does — instead of
-  reading lanes off whatever term came back. That is deterministic by
-  construction, since the candidate lanes come from the program rather than from
-  extraction. The site refuses today ("lanes indexed differently"), so nothing
-  unsound is emitted; a wrong pairing driving a wrong **merge** remains
-  unguarded and wants a mutation test. This is worth more than one site: **most
-  of the 8 "lanes indexed differently" refusals carry the same signature** —
-  lanes implausibly far apart and differently indexed (`Antitrack_01
-  $166B[y]/$15CB[x]`, `10_Days_and_No_Longer $10A0/$1F25`, `Counterforce
-  $2015/$1ED2` three times), which is what a step named as a lane looks like. A
-  query would take the class and the last extraction dependence together. The
-  obvious form of it — extract `sub(h, pack(hi_cell, lo_cell))` as the step —
-  must be checked against the cancellation rules actually admitted before it is
-  believed, or the lift emits `pack(lanes) + (h - pack(lanes))`: right, and
-  unreadable.
+- **The grouping is now asked for, not read off an extraction (LANDED, 8 → 6).**
+  `Antitrack_01 $13F4 LDA $166B,Y` is the *step*; the real lanes are `$15C8,X`
+  and `$15CB,X`, parallel per-voice arrays sharing one index. `hi<<8` has a zero
+  low byte, so `|` is `+` and `(hi<<8 | step) + lo == (hi<<8 | lo) + step`, and
+  `_lanes` only checks that both operands are byte-wide `cell`/`load` nodes — so
+  a step table wears lane shape and `_word_form` accepts it. Measured per site
+  before the fix, the 8 split three ways and only the first two are defects:
+  **1 never offered** (`Antitrack_01`: every extracted variant collapsed to the
+  mis-grouping), **3 offered but not chosen** (`10_Days_and_No_Longer`,
+  `18_Years_Mercury`, `Abatement`: the coherent pair was in the pool and `_site`
+  broke the `(rmw, word)` tie by *position*, i.e. by extraction order), and
+  **4 correct** (`Counterforce $2015,X`/`$1ED2,Y` ×4, `$1DB6`/`$1DD2`/`$1DF4`/
+  `$1E12`, `LDA $2015,X / ADC $1ED4,Y / STA $2015,X / LDA $1ED2,Y / ADC #$00 /
+  STA $1ED2,Y` — the two statements' own cells, which is exactly the shape
+  `::test_the_refusal_diagnostic_names_the_premise_that_failed` pins as a
+  refusal). The fix is three parts:
+  - **`carry_comm` was the missing fact.** `carry_fuse0` matches the ADC chain
+    with either lo addend as the lane, but only one way round, because `carry`
+    was not commutative in the ruleset. Without it `add(pack(lanes), step)` is
+    not in the fused e-class at all and no query can find it; measured, the
+    cancellation below returns the question unchanged.
+  - **The query.** `framemath._pairs` enumerates the lane pairs the *program*
+    names — every byte the lo value reads against every byte the hi value reads,
+    plus the two statements' own cells — and `_fuse` lets `sub(word, pack(lanes))`
+    and `sub(pack(lanes), word)` for each. `pack(lanes) op step` is the word by
+    construction however the step extracts, so `_asked` admits a form only where
+    `sub_add_cancel`/`sub_sub_cancel` cancelled the pack back out: a step still
+    reading a lane is the query answered with the question, which is the failure
+    mode the sketch had to be checked for. All three rules are Z3-proven by
+    `verify_rules`. A masked hi byte is stripped first (`_unmask`) and the mask
+    rides on the answer, since `mask_hoist` puts the `AND` on the word — without
+    that the 12-bit pulse sites (`Armalyte`, `Altered_Beast`, …) cannot cancel.
+  - **The order.** `_rank` replaces the positional tie-break with a total order
+    on program-visible facts: the statements' own cells, then a resolved pair,
+    then one sharing a row, then adjacency, then the *nearer* bases — a step
+    table sits away from the lanes it steps — then the step's cost and spelling.
+    Two candidates tie only where they are the same form.
+  Closing the class needed all three: with `carry_comm` alone every ADC site
+  gains a second grouping and the corpus stops being hash-stable (**10 tunes
+  differ**, `Armalyte $C546/$C549` against `$C4BA/$C549`); the query closes the
+  candidate set so the pool cannot decide, and `_fuse` dedups it so the *trace*
+  is stable too, not just the record.
+  **Measured, HEAD vs the query.** Refusals 48 → **52**, lifts 1480 → **1523**
+  (47 sites newly found, 43 of them lifted), merges 182 → **189**, adjacent
+  628 → **668**, SID pairs 356 → **365**, Gate FP **649/649**, canonical
+  fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records differ**,
+  and `lifttrace stable --runs 4` agrees on every decision of all 14 tunes that
+  moved. Consumer partition: emitted text 10196432 → **10197544** bytes (+1112),
+  raw `mem[` 9697 → **9698**; byte-wide SID stores 786 → **772**, word
+  2892 → **2899**. The residue is 6: `Counterforce` ×4 unchanged and correct,
+  plus 2 newly found sites of the same shape (`Are_Friends_Electric
+  $17F9[y]/$10C8[x]`, `Flowing $1B3C[y]/$10B7[x]`) where the store cells' own
+  query does not cancel, so only the mis-grouping is on offer and it refuses.
+  **The merge was the hazard a mis-grouping could reach, and it is guarded.**
+  `_premise` now spells its address premise as `_rmw(lst, i, j, site.addr)` —
+  the same predicate `_site` ranks by — so the guard has one mutation point:
+  `::test_merging_a_pair_whose_lanes_are_not_its_destinations_moves_the_record`
+  forces it True on `$14`/`$15` lanes whose hi half is stored to `$16`, the u16
+  store then lands on `$15`, and Gate FP fails. Lanes adjacent and destinations
+  not is the only way a merge can be wrong, and `_rmw` is what forbids it.
 - **The exact-index rule now lives in one place (LANDED).** Four sibling
   predicates answered "can these two address ranges intersect", and it was
   present in only two: `_disturbs` and `_may_disturb` had it, `_reads` and

@@ -323,6 +323,24 @@ def _r_carry_zero(A, w):
     return A.carry(x, A.num(0, w), w), A.num(0, 1)
 
 
+def _r_sub_add_cancel(A, w):
+    """``(x + y) - y -> x``: the addend a known accumulator leaves behind."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.sub(A.add(x, y, w), y, w), x
+
+
+def _r_sub_sub_cancel(A, w):
+    """``x - (x - y) -> y``, the subtrahend the same way round."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.sub(x, A.sub(x, y, w), w), y
+
+
+def _r_carry_comm(A, w):
+    """A carry out does not know which addend it came from; an ADC's lane pairing does."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.carry(x, y, w), A.carry(y, x, w)
+
+
 def _r_and_fold(A, w):
     a, b = A.ivar("a", w), A.ivar("b", w)
     return A.band(A.num(a, w), A.num(b, w), w), A.num(a & b, w)
@@ -478,6 +496,9 @@ RULES = (
     ("add_zero", (1, 2), _r_add_zero),
     ("sub_to_add", (1, 2), _r_sub_to_add),
     ("add_to_sub", (1, 2), _r_add_to_sub),
+    ("sub_add_cancel", (1, 2), _r_sub_add_cancel),
+    ("sub_sub_cancel", (1, 2), _r_sub_sub_cancel),
+    ("carry_comm", (1, 2), _r_carry_comm),
     ("and_comm", (1, 2), _r_and_comm),
     ("and_fold", (1, 2), _r_and_fold),
     ("or_comm", (1, 2), _r_or_comm),

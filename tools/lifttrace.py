@@ -63,9 +63,9 @@ def capture(tune, frames=200, sub=0):
             f[4],
         )
 
-    def fuse(lo, hi):
-        forms = o_fuse(lo, hi)
-        ev.append(["forms", len(forms), [form_str(f) for f in forms]])
+    def fuse(lo, hi, pairs=()):
+        forms = o_fuse(lo, hi, pairs)
+        ev.append(["forms", len(forms), [form_str(f) for f in forms], brief(pairs, 5)])
         return forms
 
     def site(lst, i, j, env):

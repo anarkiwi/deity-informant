@@ -129,23 +129,71 @@ def _saturate(eg, rules):
             return
 
 
-def _fuse(lo, hi):
-    """Every 16-bit form the two byte halves saturate to, cheapest first.
+def _holds(n, t):
+    """``t`` occurs somewhere in the term ``n``."""
+    stack = [n]
+    while stack:
+        x = stack.pop()
+        if x == t:
+            return True
+        stack.extend(a for a in x[1:] if isinstance(a, tuple))
+    return False
 
-    More than one is expected: ``hi<<8`` has a zero low byte, so ``|`` is ``+``
-    and ``(hi<<8 | step) + lo`` equals ``(hi<<8 | lo) + step``. Lane *shape* does
-    not make a lane -- the caller picks the grouping whose halves are one datum."""
-    key = (lo, hi)
+
+def _unmask(hi):
+    """``(hi without its constant AND, the word mask that stands for)``.
+
+    ``mask_hoist`` says a masked hi byte is the whole word masked, so the query
+    asks about the word the update makes and the mask rides on the answer."""
+    if hi[0] == "band" and hi[3] == 1:
+        for a, b in ((hi[1], hi[2]), (hi[2], hi[1])):
+            if b[0] == "num":
+                return a, (b[1] << 8) | 0xFF
+    return hi, None
+
+
+def _asked(eg, qs, lanes, mask):
+    """The forms making ``lanes`` the lanes, each step read off its own e-class.
+
+    ``pack(lanes) op step`` is the word by construction however ``step`` extracts,
+    so a form is admitted only where the rules cancelled the pack back out: a step
+    still reading a lane is the query answered with the question."""
+    out = []
+    for op, q in qs:
+        step = EQ.canon(EQ._parse_ir(str(eg.extract(q))))
+        if not any(_holds(step, t) for t in lanes):
+            sop, sstep = _signed(op, step)
+            out.append((sop, lanes[0], lanes[1], sstep, mask))
+    return tuple(out)
+
+
+def _fuse(lo, hi, pairs=()):
+    """Every 16-bit form the two byte halves saturate to, the asked-for ones first.
+
+    ``hi<<8`` has a zero low byte, so ``|`` is ``+`` and ``(hi<<8 | step) + lo``
+    equals ``(hi<<8 | lo) + step``: lane *shape* does not make a lane, and the
+    wanted grouping need not be extracted at all, so ``pairs`` are asked for."""
+    key = (lo, hi, pairs)
     if key not in _FUSED:
         rules, _names = EQ.admitted_rules()
-        eg = EGraph()
-        h = eg.let("h", EQ._egg_of(_split(hi, lo), {}))
+        eg, memo, asked = EGraph(), {}, []
+        h = eg.let("h", EQ._egg_of(_split(hi, lo), memo))
+        bare, mask = _unmask(hi)
+        w = h if mask is None else eg.let("w", EQ._egg_of(_split(bare, lo), memo))
+        qs = []
+        for n, lanes in enumerate(pairs):
+            p = eg.let("p%d" % n, EQ._egg_of(_split(*lanes), memo))
+            fwd = ("add", eg.let("qa%d" % n, EQ.sub(w, p, 2)))
+            qs.append((lanes, (fwd, ("sub", eg.let("qs%d" % n, EQ.sub(p, w, 2))))))
         _saturate(eg, rules)
+        for lanes, q in qs:
+            asked.extend(_asked(eg, q, lanes, mask))
         forms = sorted(
             (EQ.canon(EQ._parse_ir(str(x))) for x in eg.extract_multiple(h, _VARIANTS)),
             key=lambda t: (EQ._cost(t), repr(t)),
         )
-        _FUSED[key] = tuple(f for f in map(_word_form, forms) if f is not None)
+        got = [f for f in map(_word_form, forms) if f is not None]
+        _FUSED[key] = tuple(dict.fromkeys(asked + got))  # one term per grouping
     return _FUSED[key]
 
 
@@ -389,12 +437,76 @@ def _rmw(lst, i, j, addrs):
     return (lst[i][0], lst[j][0]) == ("st", "st") and (lst[i][1], lst[j][1]) == addrs
 
 
+def _cells(lst, i, j, env, prov):
+    """The two statements' own byte cells as lane terms, else None.
+
+    These are the lanes the *program* names, so a form built on them is the same
+    form under any extraction order."""
+    if (lst[i][0], lst[j][0]) != ("st", "st"):
+        return None
+    got = []
+    for k in (i, j):
+        a = lst[k][1]
+        if a[0] == "const":
+            got.append(("cell", a[1], 1, 0))
+            continue
+        t = EQ.to_egg(a, env.value, prov, k, _TERM)
+        got.append(None if t is None else ("load", t, 1, 0))
+    return None if any(t is None for t in got) else (got[1], got[0])
+
+
+def _byte_reads(t):
+    """The byte cells a value reads, an address's own reads excluded."""
+    out, stack = [], [t]
+    while stack:
+        x = stack.pop()
+        if x[0] in ("cell", "load") and x[2] == 1:
+            if x not in out:
+                out.append(x)
+            continue
+        stack.extend(a for a in x[1:] if isinstance(a, tuple))
+    return out
+
+
+def _pairs(lo, hi, cells):
+    """Every ``(hi, lo)`` lane pair the program itself names, in a fixed order.
+
+    A byte the lo value reads against a byte the hi value reads is a grouping the
+    e-graph can be asked about; which of them it happens to extract is not, so the
+    set is closed here rather than left to the pool."""
+    got = [] if cells is None else [cells]
+    for h in _byte_reads(hi):
+        for lane in _byte_reads(lo):
+            if lane != h and (h, lane) not in got:
+                got.append((h, lane))
+    return tuple(sorted(got, key=repr))
+
+
+def _rank(lst, i, j, s, form):
+    """Order over the offered groupings, decided by the program and not by extraction.
+
+    The statements' own cells outrank a resolved pair, which outranks one sharing a
+    row, then adjacency and the nearer bases: a step table sits away from the lanes
+    it steps. The step's cost and spelling settle the rest, so a tie is one form."""
+    known = s.lo is not None and s.hi is not None
+    return (
+        not _rmw(lst, i, j, s.addr),
+        not known,
+        s.idx != s.hidx,
+        not s.word,
+        abs(s.hi - s.lo) if known else 0,
+        s.lo if known else 0,
+        EQ._cost(form[3]),
+        repr(form),
+    )
+
+
 def _site(lst, i, j, env):
     """The site the two statements' values are one 16-bit update of, else None.
 
     Lane *shape* is not lane *identity*: a step table wears it too, so ``_fuse``
-    can offer a grouping pairing the hi lane with the step (Antitrack_01). Every
-    form is weighed, and one whose lanes are the statements' own cells wins."""
+    can offer a grouping pairing the hi lane with the step (Antitrack_01). The
+    lanes the program names are asked for, and every offered form is then weighed."""
     prov = {}
     lo, hi = (EQ.to_egg(_value(lst[k]), env.value, prov, k, _TERM) for k in (i, j))
     if lo is None or hi is None:
@@ -407,16 +519,15 @@ def _site(lst, i, j, env):
         return _emittable(ir, env, at, i, i)
 
     cands = []
-    for form in _fuse(lo, hi):
+    for form in _fuse(lo, hi, _pairs(lo, hi, _cells(lst, i, j, env, prov))):
         src = tuple(_back(t, prov, ok) for t in (form[2], form[1], form[3]))
         addrs = tuple(_lane_addr(t, prov, ok) for t in (form[2], form[1]))
         if any(x is None for x in src + addrs):
             continue
         refs = tuple(_lane_ref(t, prov, fixed, a) for t, a in zip((form[2], form[1]), addrs))
-        cands.append(_Site(form, addrs, refs, src))
-    if not cands:
-        return None
-    return min(cands, key=lambda s: (not _rmw(lst, i, j, s.addr), not s.word))
+        cand = _Site(form, addrs, refs, src)
+        cands.append((_rank(lst, i, j, cand, form), cand))
+    return min(cands, key=lambda kv: kv[0])[1] if cands else None
 
 
 def _match(lst, i, env, kinds=("st", "asg"), regions=None):
@@ -460,8 +571,7 @@ def _premise(lst, i, j, site, span, blocked=None, regions=None, env=None):
             return "an intervening statement writes the hi lane"
     site.merge = (
         site.word
-        and (lst[i][0], lst[j][0]) == ("st", "st")
-        and (lst[i][1], lst[j][1]) == site.addr
+        and _rmw(lst, i, j, site.addr)
         and not any(
             _hits(_store(env, lst, k), site.hi, span, regions, site.hmod) for k in range(i + 1, j)
         )
