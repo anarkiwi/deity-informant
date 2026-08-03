@@ -10,7 +10,9 @@ from __future__ import annotations
 import ast
 
 import z3
+from egglog import pretty as _pretty
 from egglog import Expr, StringLike, function, i64, i64Like, rewrite, ruleset, var
+from egglog import eq as _fact_eq
 
 from . import datadecl
 from . import frameproc
@@ -169,6 +171,9 @@ class _EggAlg:
     def carry(self, x, y, w):
         return carry(x, y, w)
 
+    def fits(self, v, inner, outer):
+        return _fact_eq(v & (_mask(outer) ^ _mask(inner))).to(i64(0))
+
 
 def _b1(c):
     return z3.If(c, z3.BitVecVal(1, 8), z3.BitVecVal(0, 8))
@@ -256,6 +261,10 @@ class _Z3Alg:
     def carry(self, x, y, w):
         return _b1(z3.UGT(z3.ZeroExt(1, x) + z3.ZeroExt(1, y), _mask(w)))
 
+    def fits(self, v, inner, outer):
+        """No goal of its own: an ``ivar`` is already constrained to its own width."""
+        del self, v, inner, outer
+
 
 # ---- the rule set: each entry is Z3-proven for each width before admission ------
 def _r_add_comm(A, w):
@@ -283,9 +292,54 @@ def _r_sub_to_add(A, w):
     return A.sub(x, A.num(b, w), w), A.add(x, A.num((_mask(w) + 1 - b) & _mask(w), w), w)
 
 
+def _r_add_to_sub(A, w):
+    """The way back: ``expr`` folds ``SBC #k`` to an add, and the borrow needs the k."""
+    x, a = A.tvar("x", w), A.ivar("a", w)
+    return A.add(x, A.num(a, w), w), A.sub(x, A.num((_mask(w) + 1 - a) & _mask(w), w), w)
+
+
 def _r_and_comm(A, w):
     x, y = A.tvar("x", w), A.tvar("y", w)
     return A.band(x, y, w), A.band(y, x, w)
+
+
+def _r_or_comm(A, w):
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.bor(x, y, w), A.bor(y, x, w)
+
+
+def _r_or_zero(A, w):
+    x = A.tvar("x", w)
+    return A.bor(x, A.num(0, w), w), x
+
+
+def _r_shl_zero(A, w):
+    y = A.tvar("y", 1)
+    return A.shl(A.num(0, w), y, w), A.num(0, w)
+
+
+def _r_carry_zero(A, w):
+    """Nothing carries out of adding zero; the flag is a byte whatever ``w`` is."""
+    x = A.tvar("x", w)
+    return A.carry(x, A.num(0, w), w), A.num(0, 1)
+
+
+def _r_sub_add_cancel(A, w):
+    """``(x + y) - y -> x``: the addend a known accumulator leaves behind."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.sub(A.add(x, y, w), y, w), x
+
+
+def _r_sub_sub_cancel(A, w):
+    """``x - (x - y) -> y``, the subtrahend the same way round."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.sub(x, A.sub(x, y, w), w), y
+
+
+def _r_carry_comm(A, w):
+    """A carry out does not know which addend it came from; an ADC's lane pairing does."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.carry(x, y, w), A.carry(y, x, w)
 
 
 def _r_and_fold(A, w):
@@ -297,6 +351,13 @@ def _r_zext_num(A, w):
     del w
     a = A.ivar("a", 1)
     return A.zext(A.num(a, 1)), A.num(a, 2)
+
+
+def _r_num_narrow(A, w):
+    """The way back, guarded: expr's borrow compare widens its constant, not its zext."""
+    del w
+    a = A.ivar("a", 1)
+    return A.num(a, 2), A.zext(A.num(a, 1)), (A.fits(a, 1, 2),)
 
 
 def _r_sign_ne(A, w):
@@ -346,6 +407,22 @@ def _r_addc_ne(A, w):
     return lhs, A.ne(x, A.num((_mask(w) + 1 + b - a) & _mask(w), w))
 
 
+def _r_eq_comm(A, w):
+    """Equality is symmetric, so which side a compare leaves the literal on is not a fact.
+
+    ``sub_eq0`` hands back the two compared terms in the order the subtract had
+    them, and every rule that then moves a constant step across the equality wants
+    it on the right; without this the same flag reads one way and not the other."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.eq(x, y), A.eq(y, x)
+
+
+def _r_ne_comm(A, w):
+    """The same for the negated relation."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.ne(x, y), A.ne(y, x)
+
+
 def _r_sub_eq0(A, w):
     x, y = A.tvar("x", w), A.tvar("y", w)
     return A.eq(A.sub(x, y, w), A.num(0, w)), A.eq(x, y)
@@ -356,14 +433,115 @@ def _r_sub_ne0(A, w):
     return A.ne(A.sub(x, y, w), A.num(0, w)), A.ne(x, y)
 
 
+def _pk(A, h, l):
+    """``h<<8 | l``: the word two byte lanes make, the shape every fusion is over."""
+    return A.bor(A.shl(A.zext(h), A.num(8, 1), 2), A.zext(l), 2)
+
+
 def _r_carry_fuse(A, w):
     del w
     al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
     hi = A.add(A.add(ah, bh, 1), A.carry(al, bl, 1), 1)
-    split = A.bor(A.shl(A.zext(hi), A.num(8, 1), 2), A.zext(A.add(al, bl, 1)), 2)
-    a16 = A.bor(A.shl(A.zext(ah), A.num(8, 1), 2), A.zext(al), 2)
-    b16 = A.bor(A.shl(A.zext(bh), A.num(8, 1), 2), A.zext(bl), 2)
-    return split, A.add(a16, b16, 2)
+    return _pk(A, hi, A.add(al, bl, 1)), A.add(_pk(A, ah, al), _pk(A, bh, bl), 2)
+
+
+def _r_carry_fuse0(A, w):
+    """The ADC chain with no hi addend: ``(ah + carry(al,bl))<<8 | (al+bl)``."""
+    del w
+    al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
+    hi = A.add(ah, A.carry(al, bl, 1), 1)
+    return _pk(A, hi, A.add(al, bl, 1)), A.add(_pk(A, ah, al), A.zext(bl), 2)
+
+
+def _r_borrow_fuse(A, w):
+    """The SBC chain fuses: ``(ah - (al<bl))<<8 | (al-bl) -> a16 - zext(bl)``."""
+    del w
+    al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
+    hi = A.sub(ah, A.ult(al, bl), 1)
+    return _pk(A, hi, A.sub(al, bl, 1)), A.sub(_pk(A, ah, al), A.zext(bl), 2)
+
+
+def _r_borrow_word(A, w):
+    """The general borrow, hi addend and all: ``ah - (bh + (al<bl))`` is the hi lane.
+
+    ``SEC / SBC lo / SBC hi`` writes the borrow the compare form of the flag makes,
+    which is what the byte-wise chain leaves; one rule, not a pass."""
+    del w
+    al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
+    hi = A.sub(ah, A.add(bh, A.ult(al, bl), 1), 1)
+    return _pk(A, hi, A.sub(al, bl, 1)), A.sub(_pk(A, ah, al), _pk(A, bh, bl), 2)
+
+
+def _r_bit_fuse(mn):
+    """A bitwise op distributes over the pack, so two lanes of it are one word op."""
+
+    def build(A, w):
+        del w
+        al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
+        f = getattr(A, mn)
+        return _pk(A, f(ah, bh, 1), f(al, bl, 1)), f(_pk(A, ah, al), _pk(A, bh, bl), 2)
+
+    return build
+
+
+def _r_shl_fuse(rot):
+    """``ASL/ROL lo`` then ``ROL hi``: the bit leaves the lo lane's top for the hi.
+
+    ``rot`` adds the bit the lo lane takes in, which is the carry the program held
+    and which the word takes in the same place."""
+
+    def build(A, w):
+        del w
+        al, ah, c = (A.tvar(n, 1) for n in ("al", "ah", "c"))
+        bit = A.ne(A.band(al, A.num(0x80, 1), 1), A.num(0, 1))
+        one, word = A.num(1, 1), A.shl(_pk(A, ah, al), A.num(1, 2), 2)
+        lo = A.bor(A.shl(al, one, 1), c, 1) if rot else A.shl(al, one, 1)
+        hi = A.bor(A.shl(ah, one, 1), bit, 1)
+        return _pk(A, hi, lo), A.bor(word, A.zext(c), 2) if rot else word
+
+    return build
+
+
+def _r_shr_fuse(rot):
+    """``LSR/ROR hi`` then ``ROR lo``: the same bit rightwards, out of the hi lane."""
+
+    def build(A, w):
+        del w
+        al, ah, c = (A.tvar(n, 1) for n in ("al", "ah", "c"))
+        one, word = A.num(1, 1), A.shr(_pk(A, ah, al), A.num(1, 2), 2)
+        bit = A.shl(A.band(ah, one, 1), A.num(7, 1), 1)
+        hi = A.bor(A.shr(ah, one, 1), A.shl(c, A.num(7, 1), 1), 1) if rot else A.shr(ah, one, 1)
+        lo = A.bor(A.shr(al, one, 1), bit, 1)
+        out = A.bor(word, A.shl(A.zext(c), A.num(15, 2), 2), 2) if rot else word
+        return _pk(A, hi, lo), out
+
+    return build
+
+
+def _r_carry_ult(A, w):
+    """A sum below its own addend is the carry out, which is how a wrap test reads."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.carry(x, y, w), A.ult(A.add(x, y, w), y)
+
+
+def _r_eq_zero(A, w):
+    """``x == 0`` is ``x < 1``, which is the borrow out of ``x - 1``."""
+    x = A.tvar("x", w)
+    return A.eq(x, A.num(0, w)), A.ult(x, A.num(1, w))
+
+
+def _r_carry_ones(A, w):
+    """All ones is the one value a further count carries out of, which ``BNE`` tests."""
+    x = A.tvar("x", w)
+    return A.eq(x, A.num(_mask(w), w)), A.carry(x, A.num(1, w), w)
+
+
+def _r_mask_hoist(A, w):
+    """A masked hi half is the word masked: the 12-bit register's ``AND #$0F``."""
+    del w
+    h, l, m = A.tvar("h", 1), A.tvar("l", 1), A.ivar("m", 1)
+    lhs = _pk(A, A.band(h, A.num(m, 1), 1), l)
+    return lhs, A.band(_pk(A, h, l), A.num((m << 8) | 0xFF, 2), 2)
 
 
 def _r_sbc_borrow(A, w):
@@ -401,37 +579,72 @@ _SHIFT_FOLDS = tuple(
 
 
 RULES = (
-    ("add_comm", (1, 2), _r_add_comm),
-    ("add_assoc", (1, 2), _r_add_assoc),
-    ("add_fold", (1, 2), _r_add_fold),
-    ("add_zero", (1, 2), _r_add_zero),
-    ("sub_to_add", (1, 2), _r_sub_to_add),
-    ("and_comm", (1, 2), _r_and_comm),
-    ("and_fold", (1, 2), _r_and_fold),
-    ("zext_num", (1,), _r_zext_num),
-    ("sign_ne", (1, 2), _r_sign_ne),
-    ("sign_eq", (1, 2), _r_sign_eq),
-    ("not_ne", (1, 2), _r_not_ne),
-    ("not_eq", (1, 2), _r_not_eq),
-    ("not_slt", (1, 2), _r_not_slt),
-    ("not_ult", (1, 2), _r_not_ult),
-    ("not_ule", (1, 2), _r_not_ule),
-    ("addc_eq", (1, 2), _r_addc_eq),
-    ("addc_ne", (1, 2), _r_addc_ne),
-    ("sub_eq0", (1, 2), _r_sub_eq0),
-    ("sub_ne0", (1, 2), _r_sub_ne0),
-    ("carry_fuse", (2,), _r_carry_fuse),
-    ("sbc_borrow", (1,), _r_sbc_borrow),
-) + _SHIFT_FOLDS
+    (
+        ("add_comm", (1, 2), _r_add_comm),
+        ("add_assoc", (1, 2), _r_add_assoc),
+        ("add_fold", (1, 2), _r_add_fold),
+        ("add_zero", (1, 2), _r_add_zero),
+        ("sub_to_add", (1, 2), _r_sub_to_add),
+        ("add_to_sub", (1, 2), _r_add_to_sub),
+        ("sub_add_cancel", (1, 2), _r_sub_add_cancel),
+        ("sub_sub_cancel", (1, 2), _r_sub_sub_cancel),
+        ("carry_comm", (1, 2), _r_carry_comm),
+        ("eq_comm", (1, 2), _r_eq_comm),
+        ("ne_comm", (1, 2), _r_ne_comm),
+        ("and_comm", (1, 2), _r_and_comm),
+        ("and_fold", (1, 2), _r_and_fold),
+        ("or_comm", (1, 2), _r_or_comm),
+        ("or_zero", (1, 2), _r_or_zero),
+        ("shl_zero", (1, 2), _r_shl_zero),
+        ("carry_zero", (1, 2), _r_carry_zero),
+        ("zext_num", (1,), _r_zext_num),
+        ("num_narrow", (1,), _r_num_narrow),
+        ("sign_ne", (1, 2), _r_sign_ne),
+        ("sign_eq", (1, 2), _r_sign_eq),
+        ("not_ne", (1, 2), _r_not_ne),
+        ("not_eq", (1, 2), _r_not_eq),
+        ("not_slt", (1, 2), _r_not_slt),
+        ("not_ult", (1, 2), _r_not_ult),
+        ("not_ule", (1, 2), _r_not_ule),
+        ("addc_eq", (1, 2), _r_addc_eq),
+        ("addc_ne", (1, 2), _r_addc_ne),
+        ("sub_eq0", (1, 2), _r_sub_eq0),
+        ("sub_ne0", (1, 2), _r_sub_ne0),
+        ("carry_fuse", (2,), _r_carry_fuse),
+        ("carry_fuse0", (2,), _r_carry_fuse0),
+        ("borrow_fuse", (2,), _r_borrow_fuse),
+        ("borrow_word", (2,), _r_borrow_word),
+        ("shl_fuse", (2,), _r_shl_fuse(False)),
+        ("rol_fuse", (2,), _r_shl_fuse(True)),
+        ("shr_fuse", (2,), _r_shr_fuse(False)),
+        ("ror_fuse", (2,), _r_shr_fuse(True)),
+        ("carry_ult", (1,), _r_carry_ult),
+        ("eq_zero", (1,), _r_eq_zero),
+        ("carry_ones", (1,), _r_carry_ones),
+        ("mask_hoist", (2,), _r_mask_hoist),
+        ("sbc_borrow", (1,), _r_sbc_borrow),
+    )
+    + tuple(("%s_fuse" % mn, (2,), _r_bit_fuse(mn)) for mn in ("band", "bor", "bxor"))
+    + _SHIFT_FOLDS
+)
+
+
+def _built(build, alg, w):
+    """``(lhs, rhs, guards)`` of a rule instance; guards are the algebra's own."""
+    got = build(alg, w)
+    return got[0], got[1], tuple(g for g in (got[2] if len(got) > 2 else ()) if g is not None)
 
 
 def verify_rules():
-    """Z3-prove every rule instance equivalent over QF_BV; returns the list."""
+    """Z3-prove every rule instance equivalent over QF_BV; returns the list.
+
+    A guarded rule's premise rides on ``ivar``'s width constraint, so the goal
+    below is already the guarded one."""
     proved = []
     for name, widths, build in RULES:
         for w in widths:
             alg = _Z3Alg()
-            lhs, rhs = build(alg, w)
+            lhs, rhs, _g = _built(build, alg, w)
             s = z3.Solver()
             s.add(*alg.constraints)
             s.add(lhs != rhs)
@@ -456,8 +669,8 @@ def admitted_rules():
         rewrites, names = [], {}
         for name, widths, build in RULES:
             for w in widths:
-                lhs, rhs = build(alg, w)
-                rw = rewrite(lhs).to(rhs)
+                lhs, rhs, guards = _built(build, alg, w)
+                rw = rewrite(lhs).to(rhs, *guards)
                 if rw.decl in names:
                     continue
                 rewrites.append(rw)
@@ -519,6 +732,96 @@ def _egg_of(ir, memo):
     return r
 
 
+# ---- pass-1 IR <-> value-graph IR ------------------------------------------------
+_UNOPS = {v: k for k, v in _OPS.items()}
+
+
+class _ToEgg:
+    """Pass-1 to value-graph translation, expanding locals where they were written.
+
+    ``env(name, at)`` answers with the definition in force at ``at`` and the point
+    it was made, which becomes the bound for its own reads. ``prov`` collects every
+    naming of a term as ``{term: {node: (depth, point)}}``, shallowest per node."""
+
+    def __init__(self, env, prov, limit):
+        self.env, self.prov, self.left = env, prov, limit
+
+    def of(self, ir, at, d=0):
+        if self.left <= 0:
+            return None
+        self.left -= 1
+        e = self._of(ir, at, d)
+        if e is not None and self.prov is not None:
+            named = self.prov.setdefault(e, {})
+            if d < named.get(ir, (d + 1,))[0]:
+                named[ir] = (d, at)
+        return e
+
+    def _of(self, ir, at, d):
+        k = ir[0]
+        if k == "const":
+            return ("num", ir[1] & _mask(ir[2]), ir[2])
+        if k == "loc":
+            got = None if self.env is None else self.env(ir[1], at)
+            return ("loc", ir[1]) if got is None else self.of(got[1], got[0], d + 1)
+        if k == "mem":
+            if ir[1][0] == "const":
+                return ("cell", ir[1][1], ir[2], 0)
+            a = self.of(ir[1], at, d + 1)
+            return None if a is None else ("load", a, ir[2], 0)
+        return self._op(ir, at, d) if k == "op" else None
+
+    def _op(self, ir, at, d):
+        kids = [self.of(c, at, d + 1) for c in ir[2]]
+        if any(c is None for c in kids):
+            return None
+        if ir[1] == "INT_ZEXT":
+            return ("zext", kids[0])
+        fn = _OPS.get(ir[1])
+        if fn is None:
+            return None
+        if fn in _CMP_TAGS:
+            return (fn, kids[0], kids[1])
+        r = kids[0]
+        for c in kids[1:]:
+            r = (fn, r, c, ir[3])
+        return r
+
+
+def to_egg(ir, env=None, prov=None, at=0, limit=1 << 20):
+    """Value-graph IR for a pass-1 expression, None where it has no counterpart.
+
+    Expansion follows a local's definition at every distinct point it is read, so
+    ``limit`` bounds the nodes it may produce."""
+    return _ToEgg(env, prov, limit).of(ir, at)
+
+
+def pass1_node(ir, kids):
+    """Pass-1 node for one term, its children already pass-1; None where it has none."""
+    k = ir[0]
+    if k == "num":
+        return ("const", ir[1], ir[2])
+    if k == "loc":
+        return ("loc", ir[1])
+    if k == "cell":
+        return ("mem", ("const", ir[1], 2), ir[2])
+    if k == "load":
+        return ("mem", kids[0], ir[2])
+    if k == "zext":
+        return ("op", "INT_ZEXT", (kids[0],), 2)
+    mn = _UNOPS.get(k)
+    return None if mn is None else ("op", mn, tuple(kids), 1 if k in _CMP_TAGS else ir[-1])
+
+
+def from_egg(ir):
+    """Pass-1 expression for a term, None where it has none; a local comes back a byte.
+
+    ``to_egg`` does not carry a local's width, so a word local only round trips
+    through the provenance its translation recorded."""
+    kids = [from_egg(a) for a in ir[1:] if isinstance(a, tuple)]
+    return None if any(c is None for c in kids) else pass1_node(ir, kids)
+
+
 def _parse_call(node, env):
     if isinstance(node, ast.Name):
         return env[node.id]
@@ -533,6 +836,25 @@ def _parse_call(node, env):
     return tuple(out)
 
 
+def _unformat():
+    """Stop egglog's printer formatting a term we only ever parse back.
+
+    ``str()`` pretty-prints through Black and ``_parse_ir`` hands that to ``ast``,
+    which does not care: the pass was 60% of rung (d2)'s time. Skipped if egglog
+    stops printing that way, since its own note there proposes exactly that."""
+    black = getattr(_pretty, "black", None)
+    if black is None or not hasattr(black, "format_str"):
+        return
+    _pretty.black = type(
+        "_Unformatted",
+        (),
+        {"parsing": black.parsing, "format_str": staticmethod(lambda program, mode=None: program)},
+    )
+
+
+_unformat()
+
+
 def _parse_ir(text):
     """Parse an extracted egglog str form (optionally let-lifted) into IR."""
     env, result = {}, None
@@ -542,6 +864,20 @@ def _parse_ir(text):
         else:
             result = _parse_call(node.value, env)
     return result
+
+
+def canon(ir):
+    """One representative of an extracted term wherever two spell one function.
+
+    ``x - K`` and ``x + (2**w - K)`` are the same term in two's complement and
+    which one extraction hands back is not contractual; pass-1 writes an indexed
+    address as an add, so that is the spelling a provenance lookup can name."""
+    if not isinstance(ir, tuple):
+        return ir
+    out = tuple(canon(a) for a in ir)
+    if out[0] == "sub" and out[2][0] == "num":
+        return ("add", out[1], ("num", -out[2][1] & _mask(out[3]), out[2][2]), out[3])
+    return out
 
 
 _SID_LO, _SID_HI = 0xD400, 0xD41C

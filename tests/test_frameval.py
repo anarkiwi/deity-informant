@@ -93,10 +93,11 @@ def test_frame_buffer_flushes_one_canonical_record():
     """Spec 1.1/1.4: writes buffer per frame, the single projection collapses."""
     prog = frameprog.program(_sid_model([(4, 0x10), (0, 0x11), (0, 0x22), (4, 0x13)]))
     raw = frameval.Evaluator(prog, {}).frames(2)
-    assert raw[0] == [(4, 0x10), (0, 0x11), (0, 0x22), (4, 0x13)] == raw[1]
+    # each freq_lo store is a u16 store: it puts both lanes on the wire
+    assert raw[0] == [(4, 0x10), (0, 0x11), (1, 0), (0, 0x22), (1, 0), (4, 0x13)] == raw[1]
     rec = F.canonical(raw)[0]
-    assert rec[0] == ((0, 0x22),)  # freq_lo collapses, ctrl keeps both in order
-    assert rec[1] == ((4, 0x10), (4, 0x13))
+    assert rec[0] == ((0, 0x22), (1, 0x00))  # freq collapses to one word, hi lane held
+    assert rec[1] == ((4, 0x10), (4, 0x13))  # ctrl keeps both writes in order
 
 
 def test_eval_src_records_the_cell_each_write_loaded_from():

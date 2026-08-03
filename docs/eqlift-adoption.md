@@ -193,17 +193,15 @@ procedure text.
 
 ## 9. Dependency policy
 
-- `egglog` and `z3-solver` go into `pyproject.toml` under a new extra
-  `eqlift = ["egglog", "z3-solver"]`; `dev` MUST include the extra so CI and local
-  dev always have it. Pin `egglog` minor (`egglog>=13,<14`): the str form of
-  extracted expressions is parsed and MUST stay stable.
+- `egglog` and `z3-solver` are **core dependencies**. They began as the extra
+  `eqlift = ["egglog", "z3-solver"]`, and moved on the first cutover: frameprog's
+  rung (d2) reads its 16-bit lifts off the admitted rule set, so a frame program
+  cannot be built without them and an optional extra would only mean a broken
+  install. Pin `egglog` minor (`egglog>=13,<14`): the str form of extracted
+  expressions is parsed and MUST stay stable.
 - CI MUST `pip install -e .[dev]` before the fast suite; `tests/test_eqlift.py`
-  and `tests/test_eqlift_mem.py` keep `pytest.importorskip` so forks without the
-  extra skip cleanly.
-- Import guard: `eqlift`/`eqlift_mem` import `egglog`/`z3` at module top; no
-  production module imports them until cutover. At cutover, `frameproc` MUST
-  import them lazily inside `procedures()` so the base install keeps every
-  non-lifting entry point working.
+  and `tests/test_eqlift_mem.py` keep `pytest.importorskip` for forks that pin an
+  older core.
 
 ## 10. Risks and mitigations
 
@@ -218,10 +216,28 @@ procedure text.
 - egglog version drift: extracted-str parsing and RunReport shapes are
   version-sensitive. Mitigation: minor-version pin + `_parse_ir` round-trip
   covered by tests (including the let-lifted multi-line form).
-- Extraction nondeterminism: `extract_multiple` pool membership is not
-  contractually ordered. Mitigation: re-cost with `_COSTS`, break ties
-  lexicographically; emit twice and compare; corpus artifacts are the
-  cross-process witness. Instability is a release blocker for step 3.
+- Extraction nondeterminism: **observed, diagnosed and closed.**
+  `extract_multiple` returns *a* representative of an e-class and which one is
+  not contractual; re-costing with `_COSTS` plus a lexicographic tie-break does
+  not help, because the tie-break orders a pool whose membership itself varies.
+  Measured 2026-08-02 with `tools/lifttrace.py repeat Andy_Capp-The_Game
+  --runs 8` — a split Gate FP verdict on identical source, one fresh process per
+  run. `framemath._FUSED` warmth was tested and is not the cause (cold and warm
+  agree in-process). The verdict proved to be a *pure function* of
+  `PYTHONHASHSEED`, reproducible per seed, so the fix was not a total order over
+  the pool: **the consumer must not depend on which representative came back**.
+  The variation that mattered was `x - K` against `x + (2**w - K)`, one function
+  spelled two ways, of which only one had a provenance naming `framemath._back`
+  could use. `canon` collapses that pair onto the `add` spelling pass-1 uses for
+  an indexed address; where a *choice* between forms remains, `framemath._site`
+  makes it off the program (the statements' own cells) rather than off the
+  extraction order. Evidence: the 682-tune corpus run under two hash seeds is
+  bit-identical, 672 records, 0 differ. The residual case — where the wanted form
+  is never extracted at all, so no choice among returned forms can recover it —
+  is closed in `docs/frameprog.md` §7.3: `framemath._pairs` enumerates the lane
+  pairs the program names and `_fuse` *queries* the e-class for each, admitting
+  only those the cancellation rules reduce. Extraction still decides how the step
+  is spelled; it no longer decides which grouping the site is.
 - Interval analysis too weak: a table left unbounded degrades to a full-memory
   read-through miss (a correctness-preserving readability loss, never a soundness
   loss). Mitigation: extend the `lo`/`hi` lattice by proven cases only, justified

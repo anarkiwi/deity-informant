@@ -247,6 +247,13 @@ recorded in the build report.
   `code[...]` switch subjects) are absent from the frameprog item alphabet,
   and `state { }`/`inputs { }`, named locals, procedure calls and `for` ranges
   are added; every shared construct is one production used by both.
+- A local is a byte unless its name carries the width suffix: `w:2` is a
+  16-bit local (`("loc", name, 2)`; the bare `("loc", name)` stays one byte)
+  and an assignment whose value is two bytes wide states that width on its
+  lvalue. `trunc1(x)`/`trunc2(x)` narrow a value to that width
+  (`("op", "COPY", (x,), w)`). Both are frameprog forms a sidprog document
+  rejects, exactly as the width suffix and the `*ptr[i]` deref are. They are the
+  notation rung (d2) writes 16-bit arithmetic in.
 - sidprog is and remains the cycle-exact ground truth and the deliverable of
   the decompiler; frameprog replaces nothing and relaxes nothing below it.
 - frameprog is **generated from the committed model** (post commit-phase,
@@ -300,6 +307,35 @@ valid, gated artifact.
   (follin-dispatch-study §4), every read using the half only inside
   `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
   per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
+- **(d2) 16-bit arithmetic lifting** (landed, `deity_informant/framemath.py`;
+  §4.3 and §7.5 for the measurement). A driver maintaining 16-bit state in 8-bit
+  registers writes the update twice — the lo lane, then whatever crosses into the
+  hi lane — so rung (d) sees two byte stores with statements between them and
+  refuses. Rung (d2) reads that pair as the one 16-bit update it is, by one
+  definition and no idiom: **two statements jointly update `W = hi<<8 | lo` iff
+  the concatenation of the two values they write is a width-2 function of the
+  concatenation of the two the cells held.** The two written values are
+  concatenated and the admitted rule set is asked what that word is; a site lifts
+  where the answer is a term over one lane pack, whatever operator that term uses
+  — a shift is `W*2`, a bitwise pair `W & K`, a counter `W+1`, an add `W+step`,
+  and one reader takes them all. The **sources** decide the lift — two byte lanes
+  at a const base plus one shared index are one 16-bit quantity wherever their
+  halves are then written — and every naming the lift emits must still hold where
+  it emits it, with no statement it is hoisted past changing an operand (the other
+  lane is one such read). The **destinations** decide nothing about the
+  lift, only whether the two writes collapse into one `u16` store, which needs
+  them adjacent; a hi half stored elsewhere still lifts (the CyberTracker case
+  in §5). Which grouping a site *is* comes from the program, not from what
+  extraction returned: `_pairs` names the candidate lanes and `_fuse` queries the
+  fused e-class for the step each implies (§7.3). A carry written as control flow
+  is normalised to a value first (`if c { INC x }` is `x = x + c`, `_predicated`),
+  since the condition is a flag and so is 0 or 1. The lemmas are Z3-proven in
+  `eqlift.RULES`: the pack is a homomorphism (`carry_fuse`, `carry_fuse0`,
+  `borrow_fuse`, `borrow_word`, `band_fuse`/`bor_fuse`/`bxor_fuse`,
+  `shl_fuse`/`rol_fuse`/`shr_fuse`/`ror_fuse`, `mask_hoist`), plus the flag
+  identities (`carry_comm`, `carry_ult`, `eq_zero`, `carry_ones`, `sbc_borrow`)
+  and the algebra (`add_to_sub`, `num_narrow`, `sub_add_cancel`,
+  `sub_sub_cancel`). Gate: FP + a proof record per site.
 - **(e) Per-voice unification.** Replace k code copies with one procedure
   parameterized by voice `v`. Premise — code isomorphism up to voice index:
   a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
@@ -493,9 +529,95 @@ than the two byte stores it replaces, so this rung buys shape, not size — and 
 pre-fusion scan of the same corpus finds about two thirds (577 of the 931 pairs
 it sees) write both halves and never as adjacent statements — Commando's slide
 path writes `freq_lo`, then the state cell and the carry, then `freq_hi` — and
-the rest write one half only. Reaching those needs statement motion across a
-proven-independent statement, which is a rung above (d), not a licence (d) can
-take for itself.
+the rest write one half only. Reaching those is rung (d2) below: not statement
+motion for its own sake, but reading the arithmetic that put the halves apart.
+
+**Rung (d2): the arithmetic behind the pair.** What separates the halves is the
+driver's own 16-bit add, written twice because the machine is 8-bit — Commando's
+slide path is the shape:
+
+```
+      t4 = (w13 + idx3)                                  d0:2 = (((zext2(ctr_551A[x]) << $08):2
+      m_551D[x] = t4                                              | zext2(w13)):2 + zext2(idx3)):2
+      sid.v1.freq_lo[y] = t4                    ->       m_551D[x] = trunc1(d0:2)
+      w14 = ctr_551A[x]                                  sid.v1.freq_lo[y]:2 = d0:2
+      t6 = (w14 + (carry(w13, idx3) | carry(t4, $00)))   ctr_551A[x] = trunc1((d0:2 >> $08):2)
+      ctr_551A[x] = t6
+      sid.v1.freq_hi[y] = t6
+```
+
+The carry operator is gone, the SID write is one 16-bit store, and the state
+lanes are two truncations of one word — `m_551D`/`ctr_551A` are separate tables,
+so the *value* is 16 bits where the *memory* cannot be. Where the two lanes are
+adjacent cells the word source is a real `:2` load and the two lane stores
+collapse to one `u16` store.
+
+The rung does not pattern-match 6502 idioms. `_site` translates the two written
+values into the value graph (`eqlift.to_egg`, recording per term every pass-1
+node that named it and where), `_fuse` concatenates them as `hi<<8 | lo` and
+saturates `eqlift.admitted_rules()`, and `_word_form` reads
+`(op, hi lane, lo lane, step, mask)` off the cheapest extraction that has lane
+shape. The cases an idiom table would enumerate are rules instead, each
+Z3-proven in `tests/test_eqlift.py::test_all_rules_z3_verified`: `add_to_sub`
+recovers the subtract `expr` folded into an `INT_ADD` of `-k`, `mask_hoist`
+lifts the 12-bit register's `AND #$0F` out of the hi lane, `carry_fuse0` is the
+`ADC #0` hi half whose `+ bh` is already folded away, and `num_narrow` narrows
+a word constant **only** under the guard `a & $FF00 == 0`. A guarded rule is
+proven under exactly the premise the pattern enforces; a width-constrained
+`ivar` without a matching `fits` guard would be proven under a premise egglog
+never checks.
+
+What a site may emit is a separate question from what it computes. The word
+assignment leads the interval, so a naming valid where it was written need not
+be valid where the lift emits it: `_back` returns the shallowest naming that
+holds at both points and refuses a `loc`/`cell`/`load` that has none, rather
+than rebuilding a memory read at a position where it was never made.
+
+Measured 2026-08-02, same corpus and window, and **reproducible run to run**:
+the whole corpus is bit-identical under two `PYTHONHASHSEED` values (§7.1).
+**Gate FP 649/649 and the canonical fixpoint 649/649**, unchanged — the lift
+moves no record. **1452 sites lift across 414 tunes** (1211 adds, 241
+subtracts): 618 over adjacent cells (181 of them collapsing to one `u16` store)
+and 834 over split tables, with **356 carrying a SID pair store onto the lifted
+word**. Emitted text **9779304** bytes; raw `mem[` unchanged at 9682.
+
+**76 sites refuse, each with its diagnostic**: 43 where the lo destination may
+disturb the hi lane or the step, 16 whose lane address is not a const base plus
+index — chiefly the zero-page indexed form `mem[zext2((x - $20))]`, where the
+6502's `zp,X` wrap puts the add *inside* the byte so `frameproc._index_of`
+(which requires a base ≥ `$100`) cannot name it — 8 whose lanes are indexed
+differently, 6 where the lo destination may alias the hi lane, and 3 where an
+intervening statement changes an operand. The zero-page form is a naming gap
+shared with rung (f), not a soundness one: widening the splitter must also
+refuse the `$FF`→`$00` straddle, since a 16-bit read at `$FF` takes `$0100` and
+the `zp,X` wrap does not apply to the word access.
+
+A form the rules prove equal is not thereby the form the *program* wrote. Two
+choices are made off the fused e-class rather than read off whichever term
+extraction returned. `_site` weighs **every** form `_fuse` offers and prefers
+the grouping whose lanes are the two statements' own cells (`_rmw`), then one
+over adjacent lanes, then the cheapest — lane *shape* is not lane *identity*,
+and a step table wears the shape too (§7.3). `EQ.canon` collapses `x - K` and
+`x + (2**w - K)`, one function spelled two ways, onto the spelling pass-1 uses
+for an indexed address, so a provenance lookup can still name it.
+
+Two budgets bound the search, both sound at any cutoff because extraction is:
+`_NODES` caps the e-graph and `_TERM` caps the translated term, since `to_egg`
+follows a local's definition at every distinct read point. `docs/eqlift-adoption.md`
+§10 predicted this blowup and prescribed exactly this mitigation. The budget is
+checked **every** iteration (`_STEP = 1`): allocation happens inside egglog's
+`run`, so a batched step is unbounded however small the node budget is — a
+5-iteration batch took one corpus worker to 44 GB and an OOM kill.
+
+What dominated this rung was neither budget but **`str()`**. Reading an extracted
+term back means `EQ.canon(EQ._parse_ir(str(x)))`, and `str()` on an egglog
+expression pretty-prints through **Black** at ~16ms a term: 62.2s of 103.7s on
+`Arpeggio`, against 3.5s of saturation and 4.9s of extraction. `_parse_ir` parses
+that string with `ast`, which is indifferent to formatting, so the pass was pure
+waste; `eqlift._Unformatted` swaps it off the printer's module reference (not off
+`black`, so nothing else in the process changes) and `Arpeggio` goes **103.7s ->
+22.0s**. Asking about more pairs is what a principled query costs, and it is
+affordable; it was never what the profile was showing.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -910,6 +1032,7 @@ running past the region end.
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
+| A 16-bit add whose halves are written to different places | Rung (d2)'s false positive would be *merging* it, and the reason the destinations are checked separately from the sources. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. The **sources** `$14`/`$15` are one quantity, so the arithmetic lifts and the emitted text carries the `+ $0004` as a word; the **destinations** are not the lanes, so the two writes stay apart and no `u16` store is emitted. Collapsing (`$14`, stack slot) into one word store would write the right value through the wrong cell. Pinned by `tests/test_framemath.py::test_the_c64_world_cybertracker_half_goes_elsewhere`, in both the `PHA` and the plain-`STA $16` form. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Closed. The surface serializes the transfer as a bare `ret` and the evaluator returns machine-faithfully through `sp` and the stack image. `PHA`-pushed targets were unrecoverable only because the passes treated `sp` as an ordinary local and eliminated its updates; `sp` is machine state (`call`/`ret` move it, pushed bytes land at addresses derived from it), so it is now exempt from pruning, from inlining and from the faint-assignment rule. `_fuzzgen.t_rts_trick` passes and `_FP_GAP` is empty. |
@@ -991,14 +1114,30 @@ HVSC absent (decompiler-implementation.md §1, §7).
 - **M-FP3 — fusion (d).** Landed (`deity_informant/framefuse.py`, §4.3 for the
   measurement): the state-pair fusion with a `structured.Proof` per candidate
   pair, and freq, pulse width and cutoff fused on the same footing — per store
-  site, unconditionally. Gate: FP 649/649 and the canonical fixpoint 649/649,
-  both unchanged over the 682-tune corpus. `tests/_fuzzgen` carries the
-  `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
+  site, unconditionally, and a lane store indexed by a proven lane-aligned index
+  widens with it (§7.2). Gate: FP 649/649 and the canonical fixpoint 649/649,
+  both unchanged over the 682-tune corpus; byte-wide SID stores 984 -> 821, and
+  a wholly play-written array now declares its extent so an index has a bound
+  (§7.3), for emitted text 9787954 -> 10192917 bytes (+4.1%).
+  `tests/_fuzzgen` carries the `word_pair` and `lone_half` classes and `tests/test_framefuse.py` the
   synthetic refusals — lone half, unpaired half store, write-order hazard — plus
   the mutation evidence that a wrongly fused pair moves the record (non-adjacent
   halves, swapped halves, a hazard fused anyway). Outstanding: the rung (a)-(c)
-  proof records are still M-FP2's debt, and the 925 SID pairs whose halves are
-  written apart wait on a statement-motion rung above (d) (§4.3).
+  proof records are still M-FP2's debt.
+- **M-FP3b — 16-bit arithmetic (d2).** Landed (`deity_informant/framemath.py`,
+  §4.3 for the measurement): the carry/borrow-chained byte-wise update read as
+  one 16-bit add/sub, the shape queried off the admitted rule set rather than an
+  idiom table, with a `structured.Proof` per site and every lemma Z3-proven in
+  `eqlift.RULES`. Gate: FP 649/649 and the canonical fixpoint 649/649 over the
+  682-tune corpus; 1452 sites lifted across 414 tunes, 76 refused with named
+  diagnostics, and the corpus bit-identical under two hash seeds (§7.1).
+  `tests/test_framemath.py` carries the synthetic add/sub, the split-lane and
+  adjacent-cell forms, each refusal, the CyberTracker case (the arithmetic
+  lifts, the destinations do not merge), the mutation evidence that a wrongly
+  lifted site moves the record, and the two soundness regressions of §7.1/§7.3 —
+  a definition made inside a branch arm, and a SID pair naming the lifted store.
+  Outstanding: the zero-page indexed lane address (§4.3), which is rung (f)'s
+  naming gap too, and the mis-grouped extraction of §7.3.
 - **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
   near-miss refusal exercised synthetically; unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
@@ -1047,3 +1186,831 @@ HVSC absent (decompiler-implementation.md §1, §7).
 
 Gate FP is the only correctness law at this level; no milestone may weaken
 it, and sidprog's Gates A/C/L/S are untouched throughout.
+
+## 7. Open issues
+
+Work in flight on the lift ladder, with what is proven, what is not, and the
+evidence each claim rests on. §7.1 is settled; everything measured before it was
+settled has been re-measured against the deterministic gate.
+
+### 7.1 The gate was flaky: two defects, one visible (SETTLED)
+
+`tools/lifttrace.py repeat Andy_Capp-The_Game --runs 8` gave a **split verdict**
+on identical source. The verdict turned out to be a *pure function* of
+`PYTHONHASHSEED` — seeds 0, 2, 3 and 4 passed and seeds 1 and 5 failed, twice
+each, reproducibly — so it was never a race, and `extract_multiple` pool
+membership alone was the wrong diagnosis (`docs/eqlift-adoption.md` §10, since
+corrected). Two independent defects were compounded:
+
+- **A wrong lift the gate could reach.** `framemath._Env` indexed only the
+  top-level `asg` of its own statement list, so a definition made inside an
+  `if` arm was invisible and a later read resolved to the definition *before*
+  the branch. In `Andy_Capp` the arm holds the `DEY` of `LDY #$00 / BCS / DEY`
+  at `$FAF5`, which sign-extends the byte added to the `$F8/$F9` pointer; read
+  as the `LDY #$00`, the extension folds away and the lift adds `$0100` too
+  much — exactly the reported `got=(1,10) want=(1,9)`. The fix is `_kills`: a
+  definition the list does not itself make (a nested body's, a call's, or one
+  control reaches through a label) is recorded **with no value**, not omitted,
+  so a read past it is unknown rather than the last value written textually. The
+  entry still names *which* definition, so two reads either side of one do not
+  compare equal.
+- **Which of the two the build reached.** Extraction returns *a* representative
+  of an e-class and which one is not contractual. Here the tie was between
+  `x - 2405` and `x + 63131` — the same address in two's complement — and only
+  one of them had a provenance naming `_back` could use, so the hash seed
+  decided whether the unsound site was lifted at all. `EQ.canon` gives the pair
+  one representative, the `add` spelling pass-1 writes an indexed address as.
+
+The pass-1 input to rung (d2) was **identical** across seeds throughout; the
+divergence was entirely inside `_fuse`. Evidence for the fix, at two scales:
+`lifttrace stable Andy_Capp-The_Game --runs 4` — 4 seeds agree on all 38
+decisions; and the whole 682-tune corpus run under two hash seeds, **672 records,
+0 differ**. A corpus number is now a measurement rather than a sample.
+
+Determinism is a property of the *decisions*, not of the verdict: `repeat`
+only sees an unstable decision that happens to move an emitted frame, which is
+why `stable` diffs whole traces (§7.4).
+
+### 7.2 Rung (d): freq, pulse and cutoff are 16-bit registers
+
+Nothing narrower than 16 bits can be written to them, so they are typed that
+way unconditionally rather than fused only where a driver happens to write both
+halves adjacently. `framefuse._widen` turns a lone lane store into the `u16`
+store it is, the other lane keeping its value; `_Pair.refusal` never refuses a
+SID pair; `framelog.canonical(frames, held0)` reports the whole word when either
+lane is written, seeded from `frameval.sid_held0(prog)` (`prog.mem0`) and passed
+to **both** sides in `gate_fp`.
+
+Two measurements decided that shape rather than assumption: 64.3% of
+freq/pulse/cutoff lane writes rewrite the value already held, so change-gating
+the VM is not viable; and 10.19% of frame-pairs write exactly one lane, so the
+projection had to compare the register's value rather than which byte moved.
+Without the `held0` seed four tunes diverge as `got=(21,7) want=(21,0)` — the
+sidinit value against the projection's default.
+
+Open:
+
+**Indexed lanes widen under a reaching-definition rule (LANDED).** `mem[$D400 + y]`
+is a store to register `y`, not to freq; widening it blind writes whatever cell
+follows, which corrupted `Also_Bad` and `Aiginas_Prophecy` in `v0.ord`. The rule
+is a per-site dataflow fact about the index's reaching definitions, never a
+property of its name — `Also_Bad` uses X and Y for *both* the voice offset and
+the voice number, swapping roles between `JSR $C098` (X = 0/7/14) and
+`JSR $C1E3` (Y = 0/7/14). `framefuse._consts` resolves the index through
+`frameproc.Defs` and `_lane_aligned` widens iff **every** value it may take puts
+the pair's lo on a register that is itself a pair's lo (`_sid_base(p.lo + k) ==
+p.lo + k`). A constant *table* counts: Commando's index is `LDY $14B5,X` with
+`$14B5` = `$00 $07 $0E`, and a rule demanding immediates would refuse Commando's
+own pulse stores. `Also_Bad` and `Aiginas_Prophecy` both gate clean.
+
+`framemath._Env` moved to `frameproc.Defs` for this — one implementation of "the
+definition in force here", now used by rungs (d) and (d2) both — and gained an
+*enclosing* scope: `Defs.resolve` follows a local out through the lists that
+contain it. A body reached by a back edge sees its own later definitions on the
+next iteration, so an enclosing one survives only a name that body never binds;
+`at` is unchanged and list-local, because the index it returns is a position in
+one list and a caller stepping to it must not be handed another's.
+
+Measured over the corpus: **byte-wide SID stores 984 → 821, word stores 2694 →
+2857**, Gate FP 649/649 and the canonical fixpoint 649/649 unchanged, and the
+corpus still bit-identical under two hash seeds. 165 indexed lane stores prove
+lane-aligned; 821 do not, and the two reasons are named, not guessed:
+
+- **806 — the index is spilled through a play-written RAM cell** (PARTLY CLOSED,
+  70 of 786 re-measured resolutions, 35 sites in 16 tunes). This was recorded as
+  "the index table is undeclared, so `Regions.avail` is 0"; re-instrumenting
+  `_consts` splits `row is None` (a scalar read, where `_consts` takes size 1 and
+  never asks `avail`) from a genuinely undeclared table, and **all 806 are the
+  scalar case and all 806 cells are in `model.written`** — 0 are undeclared
+  tables. `Ala_Gal` is the shape: `$1150 LDA $1046,X / $1153 STA $107E / TAY`
+  caches the voice offset, and every SID store then reloads `$1634 LDY $107E`.
+  No `datadecl` declaration can close this — the cell is written by play, so it
+  is not const under any extent claim. What was missing is a reaching definition
+  *through a memory cell*, and `frameproc.Defs` now answers that too:
+  `Defs.cell(cell, bound, regions)` is `_lookup` over memory rather than names,
+  returning the byte store in force at a read — the last statement before it that
+  may write the cell — chased out through the same enclosing scopes and refused
+  on the same cyclic premise. `_consts` follows it and re-asks, so a spilled
+  index proves whatever the value it was spilled from proves. `framemath`'s
+  `_span`/`_overlaps`/`_ref` moved to `frameproc` for it, one aliasing rule now
+  beside the one definition-in-force query, and `framemath` keeps the names.
+
+  **Dominance was never the blocker; naming the addresses was.** As first
+  written the rule closed **0 of 806**: every site died on an intervening store
+  the pass declined to place, and the dominant shape is the stack push
+  `mem[(zext2(sp) | $0100)]` that rung (d0) could not destack, which
+  `addr_split` reports as "no base" and a walk must then read as writing
+  anywhere. `frameproc.addr_bits` bounds it without naming the shape: a value
+  fits the width it is read at, and `or`/`and`/`zext` over that give the bits an
+  address can set, of which every address it names is a subset. The residue then
+  splits: **330** an intervening *indexed* store whose base is undeclared, so its
+  span falls back to 256 bytes and swallows the cell; **160** a dominating store
+  whose value is not provable; **118** a label between, where control may enter
+  having made no spill; **50** a loop and **24** an `if` arm that may write the
+  cell; **18** a `pcall`; **12** a store whose address bits still cover the cell;
+  **4** no store in the procedure. `Ala_Gal` itself refuses on the first two: 8
+  on `$1064,X` and `$1073,X`, arrays inside the code image that `datadecl`
+  declines to declare, so their spans reach `$107E`; 4 on a label between.
+
+  Measured: **byte-wide SID stores 821 → 786, word stores 2857 → 2892**
+  (lane-aligned indexed 165 → 200), Gate FP 649/649 and the canonical fixpoint
+  649/649 unchanged, rung (d2) unchanged at 1463 lifted / 65 refused / 182
+  merges, and the corpus bit-identical under two hash seeds (672 tunes, 0
+  differ). Consumer partition: emitted text 10192917 → **10194792** bytes
+  (+0.02%), raw `mem[` unchanged at 9682.
+
+  **The flow-insensitive alternative was measured and not taken.** A cell's value
+  set is also provable as `mem0[cell]` unioned over every store the program makes
+  to it, which needs no dominance at all; instrumented over the corpus it closes
+  **166** resolutions to this rule's 70, the union being 168, so it is the wider
+  rule and not a superset. It buys that with a premise this rung does not
+  otherwise make — that no control leaves the modelled statement tree, so the
+  tree's `st` statements are *every* executed store — and it is blocked anyway on
+  **476** by the same undeclared indexed spans. Bounding those is worth more than
+  either rule and belongs to `datadecl`.
+- **800 — the index is a procedure parameter**, so the enclosing chain runs out
+  inside the procedure. The voice loop passes it: `Also_Bad`'s `JSR $C098` with
+  X = 0/7/14 is three call sites each supplying a constant. Closing this wants
+  the union of the constants each call site passes — an interprocedural step the
+  chain cannot reach, and the last thing between the rung and the whole residue.
+
+(Both counts are per-resolution and so double-count the measure and mutate
+passes; the ratio is the finding, not the absolute.)
+The spill rule is pinned by three tests in `test_framefuse.py`: the widening
+itself, a store between the spill and the reload that refuses it, and
+`::test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index`, which
+is `addr_bits` as the thing that decides whether the first two are reachable.
+The six tests that pinned the superseded contract are moved to this one and the
+suite is green; `test_framelog.py` gained
+`::test_a_held_lane_is_the_value_the_seed_and_earlier_frames_left`, which is the
+`held0` seed and the frame-to-frame carry stated as a test.
+
+Split-table 16-bit *state* is real and settled — do not re-litigate it. Commando
+`$12E1 LDY $14B5,X / $12E4 LDA $1467,X / $12E7 STA $D402,Y / $12EA LDA $146A,X /
+$12ED STA $D403,Y`: the lo and hi bytes of the 16-bit pulse width come from two
+parallel 3-entry tables, one entry per voice. A split *register* is impossible;
+split state is the ordinary structure-of-arrays layout.
+
+### 7.3 Rung (d2): the refusal classes
+
+Root causes traced by instrumenting `FF._addr_split` and the aliasing
+predicates, and by reading the 6502 at the refusing sites. The trajectory,
+re-measured against the deterministic gate of §7.1: **77 → 76 → 65 → 62
+refusals** while lifts went **1434 → 1452 → 1463 → 1466** and merges **131 → 181
+→ 182 → 182**, Gate FP 649/649 and the canonical fixpoint 649/649 throughout. The
+classes moved as well as the totals — "lanes indexed differently" is now 8 (was
+22 before the §7.1 fix) and "may alias the hi lane" 2 (was 14, then 6) — so the
+counts recorded before §7.1 was settled should not be compared against these.
+
+**Everything in this section predates §7.5's redesign, and its counts are not
+comparable to the current ones.** Every class below was measured while `_links`
+still gated the rung, so the section is a record of what was reachable *through an
+idiom filter*: 1466 lifts against 62 refusals. With the filter gone the rung reaches
+far more sites, and both numbers rose together — **2311 lifted, 120 refused**, over
+649 records at Gate FP 649/649 and fixpoint 649/649. A refusal here is a site the
+rung now sees and declines, not a shape it never looked at, so the doubling is the
+census widening rather than the lift regressing. The classes are unchanged in kind:
+46 an unresolvable lane address, 42 the lo destination disturbing the hi lane or the
+step, 20 lanes indexed differently, 5 the hi destination, 4 may-alias, 3 an
+intervening statement. §7.5 carries the current measurement.
+
+**The dominant class, triaged.** "The lo destination may disturb the hi lane or
+the step" was 43 of the 76, and `lifttrace capture` now records the store's range
+against every range it is held to reach, so the class splits by what actually
+tripped it rather than by which predicate reported it:
+
+- **33 — an unresolved *read* address**, and one shape: the step is a deref
+  through a zero-page pointer pair (`Arpeggio`, `Danger_Mouse`,
+  `Data_Data_Data_Data` are the same driver repeated; `$00F0/$00F1`, `$00F4/$00F5`,
+  … per voice). These are **genuine** hazards as the pass stands. The deref is
+  defined *inside* the lift interval, so `settle` inlines it and the load really
+  does move above the lo store; with no bound on the pointer, a store to a
+  constant byte cannot be excluded from it. **The bound does not exist, and the
+  rung-ordering change is worth nothing (MEASURED, no change taken).** The
+  reading above assumed rung (f)'s proven target block set (`frameptr`'s
+  `blocks()`) was the missing bound and that only the rung order withheld it.
+  Measured at HEAD over the 14 tunes carrying the class, the 40 refusals split
+  **35 unresolved read / 5 other**, and of the 35: **2 are not a deref at all**
+  (`Amazon`, `Donkey_Kong` — the latter is the local-defined-before-the-interval
+  residue recorded below), and the other **33 deref through 32 pointer cells of
+  which 0 resolve** — not after rung (d2), and not before it either. Running
+  `frameptr.analyse` on the *pre*-(d2) trees yields the same verdict on all 32,
+  and both verdicts are the same refusal: `the lo/hi pair did not fuse (rung d)`.
+  The pointer is **advanced**, and that one fact refuses it three times over.
+  `Arpeggio $3297 LDA $F0 / CLC / ADC #$04 / STA $F0 / BCC / INC $F1` is the
+  reload-plus-advance sequencer walk: the reload at `$27DC LDA $2073,Y / STA $F0 /
+  LDA $2173,Y / STA $F1` is the declared partner-table read §4.4 wants, but the
+  advance is a lone-half read, which is why rung (d) refuses the fusion
+  (`16-bit fusion: cells $00F0/$00F1; pointer pair (datadecl lo/hi partner table
+  $2073); 5 word read(s), 1 word store(s); 1 lone-half read(s)`), and `P = P + n`
+  is not a partner-table entry read, which is why §4.4 premise 1 would refuse it
+  even if the pair did fuse. Checking premise 1 directly over the byte stores to
+  each pair — i.e. asking the ceiling question without needing the fusion first —
+  puts **32 of 32** on a non-table definition (**29** a literal advance
+  `ptr + $04`/`+$05`, 3 an undeclared or computed source) and **2** additionally
+  inside a tune with a wild store (premise 4). Zero are clean. The refusing site
+  itself is SMC: `$32DC LDY #$02 / CLC / LDA #$00 / ADC ($F0),Y / STA $32E0 / INY /
+  LDA #$00 / ADC ($F0),Y / STA $32E8` keeps its 16-bit accumulator in the two
+  `LDA #$00` immediates, and `$32C3 LDA ($F0),Y / STA $00F1 / PLA / STA $00F0`
+  reloads the pointer out of the stream it points at — a closure over the song
+  data, not a set of table blocks. `Asterix_and_the_Magic_Cauldron` is a second,
+  unrelated driver with the same answer: `$8236/$8237` is the patched operand of
+  `$8235 LDA $86FE,Y`, advanced by `ptr0 + $01`. §4.4 already states the rule this
+  measurement runs into — "an advanced pointer is `T[k] + n` for an `n` accumulated
+  across frames with no static bound, so neither the (block, row) pair nor a range
+  claim survives it" — so these 33 are refusals rung (f) is *designed* to make, not
+  ones the rung order hides. All 40 stay CORRECT and the class is closed as such:
+  raising it is upstream work on rung (d)'s lone-half rule, not an aliasing input.
+- **10 — an undeclared span over a differing index (CLOSED, 43 → 36 here and
+  6 → 2 in "may alias the hi lane"; 11 refusals in 11 tunes, none opened).** The
+  store's span fell back to the whole 256-byte register range because
+  `Regions.avail(base)` was 0, and then any constant read within 256 bytes
+  collided. `Beat_the_System` is representative: `$1B0A LDA $213C,X / SBC $2164 /
+  STA $213C,X` then `LDA $2136,X / SBC $2165 / STA $2136,X` — the per-voice
+  freq lo/hi arrays and a scalar step 41 bytes above the lo array.
+  `datadecl.declarations` dropped a group when **every** field base was in
+  `model.written`, a filter that predates `mut`/`_sound_hi`. A declaration's
+  claim is two things — an extent and a per-record-offset const set — and
+  `mut` alone carries the second, so the filter suppressed extent evidence for a
+  claim the declaration no longer makes: a wholly play-written array now
+  declares its observed size with `mut` naming every offset, hence an empty
+  const claim. `$213C` and `$2136` declare size 3, `_span` is 2, and `$2165` is
+  out of reach. The mutable per-voice arrays move from unsized `state { }`
+  fields to sized `data { }` tables (Commando `pos_54EC: u8[]` becomes
+  `table pos_54EC[3] mut 0 1 2`), which is strictly more information and is what
+  `test_frameprog.py::test_real_tune_frameprog_commando_gate` now pins.
+  `_overlaps` already did the right thing once a span is right: the same-index
+  lane read at `$2136,X` was correctly proved disjoint throughout.
+  **The consumer partition, as §6 requires beside Gate FP:** emitted text
+  9787954 → **10192917** bytes (+4.1%), raw `mem[` unchanged at 9682. The growth
+  is the declarations themselves — an array that was one unsized `state` line is
+  now a sized `data` table carrying its `mut` offsets and observed bytes. It buys
+  the span that closed 11 refusals, and it is the same trade §4.3 records for
+  rung (d)'s SID half: a rung that reads better and consumes worse is allowed
+  only with the number stated.
+
+Neither class was a defect in the rule that was consolidated; both were missing
+*inputs* to it. The counts above are the re-measured trajectory, not the
+pre-§7.1 ones.
+
+**`datadecl`'s code-image filter is not what withholds the missing extents
+(MEASURED, no change taken).** `declarations` drops a group whose base lies in
+`_code_bytes`, and the residues above were read as that filter's cost. They are
+not. The filter fires on **141 groups in 87 of 650 tunes**, and only **13 of
+them (7 tunes) would declare anything at all**: `_next_bound` already treats
+every code byte as a boundary, so a region *based* on one runs only to the next
+code byte. Removing the filter over the whole corpus moves **one** number —
+emitted text 10197544 → **10198819** bytes (+1275, the 7 tunes and no others);
+Gate FP **649/649**, canonical fixpoint **649/649**, lifts 1523, refusals 52
+with an identical class breakdown, merges 189, adjacent 668, SID pairs 365,
+byte-wide SID stores 772, word 2899, raw `mem[` 9698, all unchanged. The extent
+claim is **not separable** from the data-emission claim here, because a
+declaration begins *on* the code byte: `data { table … }` would carry that
+instruction byte as its first datum. Spec 2 already says what such a cell is —
+a state variable — and an undeclared array base is exactly what
+`frameprog._state_fields` emits as one. `mut`/`_sound_hi` are not the issue: 9
+of the 141 bases are play-written SMC operands (`A_Chipful_of_Love_for_You`
+`$121F`/`$122E`/`$123D` are the immediates of three `LDA #$00 / STA $D40x` at
+stride 5, read back as `$121F,X`) and `mut` would carry their constness
+correctly; the other 132 are const tables that merely start on an instruction
+byte. Pinned by
+`test_datadecl.py::test_a_base_on_the_code_image_is_not_carved_as_data`, which
+fails when the filter is removed.
+
+**What does withhold them, measured at the same HEAD.** Instrumenting
+`Defs.cell`'s blocker over the corpus splits the spilled-index residue: **222**
+the blocking indexed store's base is *never a group*, because `_idx_sites`
+collects idx-shaped **reads** only and the base is only ever written
+(`Boys_Dont`/`3_Feet_Higher`/`Bella_Rossa` `STA $1035,X`, `Ala_Gal`
+`STA $1073,X`); **116** a group whose extent is 0, because `_run_reads` observed
+no read at its site pcs and the index bound is unproven (`Ala_Gal` `$1064`, read
+only at `$17D5`/`$17DA`, which the 200-frame window never reaches); and **0**
+the code-image filter. The same split holds for the refusal class: of the 5
+"undeclared span over a differing index", 3 are one driver's `STA $1035,X`, 1
+(`Aaaaaargh_13` `$00BF,X`) is a modular index that no declaration may bound by
+the rule above, and 1 (`Abatement`) has a store span of 0 and was bucketed on
+its *reads'* spans. Closing the 222 wants an extent floored by observed
+**writes**, which is a model fact that does not exist: `model.written` is a set
+of cells with no site attribution, where `_run_reads` needs `pc -> addresses`.
+It is also necessary and not sufficient — declaring `Ala_Gal`'s `$1064`/`$1073`
+by hand removes them as blockers and moves that tune's SID store widths not at
+all, because the next blocker on all 8 sites is a loop that may write `$107E`.
+
+**"The lo destination may alias the hi lane" (2 sites, both CORRECT).** Traced
+with `lifttrace`'s `alias` event, which records `_match`'s own test — the lo
+store's range against the hi lane's — since `_may_disturb` fires before
+`_premise` and so leaves no `premise` event.
+
+- `Ultima_III-Exodus` `$005B/$005C`. The site is the init relocation loop at
+  `$9AE0`: `LDA ($5B),Y / ADC $5B / STA $0019,Y / INY / LDA ($5B),Y / ADC $5C /
+  STA $0019,Y`, adding the song-data pointer `$5B/$5C` to each entry of a pointer
+  table and writing it to `$0019+Y`. The lo store reaches `$0019..$0118`, which
+  contains the hi lane `$005C` at `Y = $43`; the entry count comes from the first
+  byte of the pointed-at data, so nothing in the program bounds `Y`. Naming the
+  base would not change the answer — the range still covers `$005C`.
+- `After_the_War` `$0010/$0011`. `$122E LDA $14,X / CLC / ADC $10 / STA $14,X /
+  LDA $5A,X / ADC $11 / STA $17,X`: the per-voice 16-bit accumulator at
+  `$14,X`/`$5A,X` stepped by `$10/$11`. The lo store is `zp,X`, which wraps inside
+  the byte, so it reaches `$0011` at `X = $FD`, and `X` enters at a label.
+  **This site is the witness the `_index_of` extension above needs.** Naming
+  `$14,X` as base `$0014` index `x` *without* the modulus makes `overlaps` read
+  the range as `$0014..$0113` and declare `$0011` disjoint — turning a correct
+  refusal into a wrong lift. `addr_bits` gives the sound answer (`$0000..$00FF`)
+  and keeps the refusal.
+
+**"An intervening statement changes an operand" (3 sites, all LIMITATION;
+CLOSED, 3 → 0).** All three are rung (d2)'s *own output* blocking its second
+sweep: the same 16-bit sum is written twice, the first pair lifts, and the second
+pair then sees the first pair's hi-half store between its two statements. Two
+independent causes, both fixed; `lifttrace` gained a `clobber` event naming the
+blocking statement, its range and the operand it hit.
+
+- **The interval was the wrong interval (`Der_Ring_der_Nibelungen` `$805E/$805F`,
+  `Abatement` `$45FE/$44FE`).** `$86A5 LDA $8086,X / ADC $805E,X / STA $8086,X /
+  STA $FB / LDA $8087,X / ADC $805F,X / STA $8087,X / STA $FC` — the second site
+  is the `$FB/$FC` pair, and the statement that "changes an operand" is
+  `STA $8087,X`, which the site's step reads. But that read was made at
+  `LDA $8087,X`, *before* the store. `settle` inlined the interval's definitions
+  and lost their positions, so `_premise` held every read against the whole
+  interval `(i, j)`. The check is now one backward pass (`_hoist`): a statement
+  blocks only what has been hoisted *past* it, and an assignment the word depends
+  on is substituted rather than counted as a hazard. That is also strictly more
+  correct than `_inline` was — `_inline` left a self-referential definition
+  (`x = x + 1`) unresolved, which only the conservative check kept from being
+  emitted as a read of the wrong `x`. `Abatement` `$5130` is the same shape
+  against `$0A3F,X`.
+- **An unresolvable store address was held to reach everything (`Bomb_Mania`
+  `$3CB4/$3CB5`).** `$0FC5 LDA $3CB4 / CLC / ADC #$50 / STA $3CB4 / STA $08,X /
+  LDA $3CB5 / ADC #$01 / STA $3CB5 / STA $09,X` mirrors a 16-bit counter into two
+  zero-page pointers. `STA $08,X` names no base, so `store_ref` answered None and
+  `_disturbs` returned True — yet `addr_bits` already proves a `zp,X` store cannot
+  leave `$0000..$00FF`, and `frameproc.Defs._hits` has read it that way all along.
+  `store_reach` puts that bound in range form beside `store_ref`, so the one
+  `overlaps` rule decides it; the `UNRES` index sentinel is not a shared row, which
+  is why `overlaps` now requires an index *expression* before it drops the spans.
+  Here the read of `$3CB5` is later than the store, so the interval fix does not
+  reach this site, and the store is later than the read at the two `alias` sites,
+  so the mask does not reach those: the two fixes are disjoint.
+
+**Measured, HEAD vs both fixes.** Refusals 65 → **62**, lifts 1463 → **1466**,
+merges 182 → 182, Gate FP **649/649**, canonical fixpoint **649/649**,
+`PYTHONHASHSEED=0` vs `=1` **0 of 672 records differ**. The consumer partition
+§6 requires beside the gate: emitted text 10194792 → **10194957** bytes (+165),
+raw `mem[` unchanged at **9682**. "The lo destination may disturb the hi lane or
+the step" stayed at 36, which confirms the reading above: that class is
+unresolved *read* addresses, not unresolved store addresses, and only rung (f)'s
+target block set closes it. Both fixes are pinned by tests that fail when
+reverted:
+`test_framemath.py::test_a_write_later_than_the_read_it_would_spoil_is_no_hazard`
+and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
+
+- **Unresolved lane address: the `zp,X` wrap, named modulo 256 (CLOSED, 16 → 0).**
+  Instrumenting the class over the corpus put **16 of 16** on one form,
+  `zext2((x + K):1)` — the add is at width **1** because the wrap is inside the
+  byte, and `_index_of` demanded `INT_ADD` at width 2 with a base ≥ `$100`. Both
+  lanes of every one of the 16 carry the *same* index expression. That is the
+  whole win: `$1A,X` and `$1D,X` differ by `(K1 - K2) mod 256` at every value of
+  `X`, which `addr_bits` cannot say and a modulus can. With indices differing or
+  unknown a `zp,X` access reaches the **whole zero page**, which is exactly what
+  `addr_bits` already gave, so nothing loosens: `frameproc.span` refuses a
+  declaration's bound to a modular index (the wrap is the evidence the access
+  leaves its datum), and `_flat` normalises any modular range no shared row
+  tightens back to `$00..$FF`. The **straddle guard** lives in
+  `frameproc.addr_range`, which is where the *width* is known: a 2-byte access at
+  a modular address does not resolve, since a word read at `$FF` takes `$0100`
+  and the wrap does not. Donkey_Kong's `$E0,X`/`$E1,X` is the witness — adjacent
+  cells that must still lift as two byte accesses, and it is `_Site.word` the
+  guard denies, not the lift.
+- **The naming was necessary and not sufficient; two more inputs were.** Naming
+  alone closed 2 of the 16. The other 14 store through a CSE'd address local
+  (`t0 = zext2((x - $7F)) … *[t0] = …`), and two predicates read the local rather
+  than the address: `_lane_addr` returned the *shallowest* pass-1 naming of the
+  lane address, and `store_ref` was handed the statement as written.
+  `_lane_ref` now prefers, among the namings `to_egg` recorded for the same
+  term, the shallowest one the range rule can read — free, since every naming
+  admitted holds the same value where the lift emits, and it is admitted under
+  the *strict* test (`_emittable(…, i, i)`), because a row named by a definition
+  inside the interval is not the row the lift emits. `_store` spells a store's
+  address through the definition in force, discharging the staleness `_disturbs`
+  warns of by requiring every local that naming reads to hold at the store what
+  it held at the definition. `Defs._hits` has resolved store addresses this way
+  all along; this puts the same reading in front of the one `overlaps` rule.
+- **Three of the four consumers must decline the modular naming, and do.** The
+  plan above said fixing `_index_of` fixes four consumers at once. It does — but
+  three of them answer a *naming* question, not a *range* one, and for them the
+  answer is "no name": `base[index]` in the grammar means `base + zext2(index)`
+  with no wrap, so `_membody` printing `zp_14[x]` for `$14,X` would emit a
+  program that is not the one lifted; `frameptr._leg` reading `$14,X` as row `x`
+  of the table at `$0014` would identify the wrong pointer table. `addr_split`
+  therefore stays the naming form and returns nothing for a modular address, and
+  `framefuse` (which is `addr_split`) is untouched. `frameptr._span` takes the
+  range answer — a `zp,X` store is no longer a wild store, it reaches `$00..$FF`
+  — which is strictly more information; on this corpus it changed no pointer
+  proof. The one place the modulus belongs is the range tuple
+  `(base, index, span, width, mod)` that `overlaps` decides, which is where it
+  went.
+- **Measured, HEAD vs the modulus.** Refusals 62 → **48**, lifts 1466 → **1480**,
+  merges 182 → 182, adjacent 628 → 628, SID pairs 356 → 356, Gate FP **649/649**,
+  canonical fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records
+  differ**. The consumer partition §6 requires beside the gate: emitted text
+  10194957 → **10196432** bytes (+1475), raw `mem[` 9682 → **9697** (+15, all of
+  it in the six tunes that gained lifts — a `zp,X` read the lift hoists into the
+  word expression stays `mem[zext2((x + $1D))]`, since naming it would drop the
+  wrap); byte-wide SID stores **786** and word **2892**, both unchanged. Eight
+  tunes moved and no others: 14 sites lifted and 2 reclassified into "the lo
+  destination may disturb the hi lane or the step" (36 → 38), both correctly —
+  `Aaaaaargh_13`'s `$BF,X` store can wrap onto its own step at `$00E2`, and
+  `Donkey_Kong`'s hi-lane *read* address is a local defined before the interval,
+  which `_store` does not reach because it resolves store addresses only. That
+  residue is the same shape §7.3 already names for that class: an unresolved
+  *read* address. Extending the same resolution to reads is the next step and a
+  separate commit.
+- **Both counter-examples still refuse, and lift when the modulus is removed.**
+  `After_the_War` `$0010/$0011` and `Ultima_III-Exodus` `$005B/$005C` are pinned
+  by `test_framemath.py::test_a_wrapping_zero_page_store_may_reach_a_lane_below_its_base`
+  and `::test_an_absolute_indexed_store_below_the_page_still_reaches_a_zero_page_lane`.
+  Mutating `frameproc._flat` to drop the modulus makes the first test's synthetic
+  **fail Gate FP** — it lifts, hoists the hi-lane read above the store that fills
+  it, and emits a wrong SID byte — and makes the real `After_the_War` site lift
+  as well; `Ultima_III` refuses either way, since `$005C` lies inside `$0019..$0118`.
+  Dropping the straddle guard, or `_lane_ref`, or `_store` each fails
+  `::test_the_zero_page_indexed_lanes_lift_but_never_as_one_word_access`.
+- **A mismatched index, found by this work and fixed with it.** `_match` passed
+  the *lo* lane's index with the *hi* lane's base to `_may_disturb`, so a hi lane
+  at a constant address was claimed to sit at row `idx` of itself and `overlaps`'
+  shared-row rule could prove a disjointness that does not hold. It predates this
+  change. Over the corpus the configuration arises at **1 site** and the two
+  answers agree, so it was unreachable — but "unreachable on this corpus" is not
+  a property of the rule, and the fix is one token (`site.hidx`), so it is taken
+  here rather than recorded: measured after, the corpus is unchanged in every
+  figure below.
+- **The modular branch of `overlaps` is sound only for one-byte ranges.** With a
+  shared index and modulus it tests `(ba - bb) % m` against `(-wa, wb)`, which
+  omits the wrap-around case `d > m - wa` that a range of width ≥ 2 could reach.
+  Nothing constructs one: the straddle guard in `addr_range` refuses a modular
+  address to any access wider than a byte, and every modular range in the pass
+  comes through it. Verified rather than argued — asserting the invariant inside
+  `overlaps` and running the corpus trips it in **0 of 682 tunes**. Widening the
+  guard later MUST widen this test with it.
+- **The grouping is now asked for, not read off an extraction (LANDED, 8 → 6).**
+  `Antitrack_01 $13F4 LDA $166B,Y` is the *step*; the real lanes are `$15C8,X`
+  and `$15CB,X`, parallel per-voice arrays sharing one index. `hi<<8` has a zero
+  low byte, so `|` is `+` and `(hi<<8 | step) + lo == (hi<<8 | lo) + step`, and
+  `_lanes` only checks that both operands are byte-wide `cell`/`load` nodes — so
+  a step table wears lane shape and `_word_form` accepts it. Measured per site
+  before the fix, the 8 split three ways and only the first two are defects:
+  **1 never offered** (`Antitrack_01`: every extracted variant collapsed to the
+  mis-grouping), **3 offered but not chosen** (`10_Days_and_No_Longer`,
+  `18_Years_Mercury`, `Abatement`: the coherent pair was in the pool and `_site`
+  broke the `(rmw, word)` tie by *position*, i.e. by extraction order), and
+  **4 correct** (`Counterforce $2015,X`/`$1ED2,Y` ×4, `$1DB6`/`$1DD2`/`$1DF4`/
+  `$1E12`, `LDA $2015,X / ADC $1ED4,Y / STA $2015,X / LDA $1ED2,Y / ADC #$00 /
+  STA $1ED2,Y` — the two statements' own cells, which is exactly the shape
+  `::test_the_refusal_diagnostic_names_the_premise_that_failed` pins as a
+  refusal). The fix is three parts:
+  - **`carry_comm` was the missing fact.** `carry_fuse0` matches the ADC chain
+    with either lo addend as the lane, but only one way round, because `carry`
+    was not commutative in the ruleset. Without it `add(pack(lanes), step)` is
+    not in the fused e-class at all and no query can find it; measured, the
+    cancellation below returns the question unchanged.
+  - **The query.** `framemath._pairs` enumerates the lane pairs the *program*
+    names — every byte the lo value reads against every byte the hi value reads,
+    plus the two statements' own cells — and `_fuse` lets `sub(word, pack(lanes))`
+    and `sub(pack(lanes), word)` for each. `pack(lanes) op step` is the word by
+    construction however the step extracts, so `_asked` admits a form only where
+    `sub_add_cancel`/`sub_sub_cancel` cancelled the pack back out: a step still
+    reading a lane is the query answered with the question, which is the failure
+    mode the sketch had to be checked for. All three rules are Z3-proven by
+    `verify_rules`. A masked hi byte is stripped first (`_unmask`) and the mask
+    rides on the answer, since `mask_hoist` puts the `AND` on the word — without
+    that the 12-bit pulse sites (`Armalyte`, `Altered_Beast`, …) cannot cancel.
+  - **The order.** `_rank` replaces the positional tie-break with a total order
+    on program-visible facts: the statements' own cells, then a resolved pair,
+    then one sharing a row, then adjacency, then the *nearer* bases — a step
+    table sits away from the lanes it steps — then the step's cost and spelling.
+    Two candidates tie only where they are the same form.
+  Closing the class needed all three: with `carry_comm` alone every ADC site
+  gains a second grouping and the corpus stops being hash-stable (**10 tunes
+  differ**, `Armalyte $C546/$C549` against `$C4BA/$C549`); the query closes the
+  candidate set so the pool cannot decide, and `_fuse` dedups it so the *trace*
+  is stable too, not just the record.
+  **Measured, HEAD vs the query.** Refusals 48 → **52**, lifts 1480 → **1523**
+  (47 sites newly found, 43 of them lifted), merges 182 → **189**, adjacent
+  628 → **668**, SID pairs 356 → **365**, Gate FP **649/649**, canonical
+  fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records differ**,
+  and `lifttrace stable --runs 4` agrees on every decision of all 14 tunes that
+  moved. Consumer partition: emitted text 10196432 → **10197544** bytes (+1112),
+  raw `mem[` 9697 → **9698**; byte-wide SID stores 786 → **772**, word
+  2892 → **2899**. The residue is 6: `Counterforce` ×4 unchanged and correct,
+  plus 2 newly found sites of the same shape (`Are_Friends_Electric
+  $17F9[y]/$10C8[x]`, `Flowing $1B3C[y]/$10B7[x]`) where the store cells' own
+  query does not cancel, so only the mis-grouping is on offer and it refuses.
+  **The merge was the hazard a mis-grouping could reach, and it is guarded.**
+  `_premise` now spells its address premise as `_rmw(lst, i, j, site.addr)` —
+  the same predicate `_site` ranks by — so the guard has one mutation point:
+  `::test_merging_a_pair_whose_lanes_are_not_its_destinations_moves_the_record`
+  forces it True on `$14`/`$15` lanes whose hi half is stored to `$16`, the u16
+  store then lands on `$15`, and Gate FP fails. Lanes adjacent and destinations
+  not is the only way a merge can be wrong, and `_rmw` is what forbids it.
+- **The exact-index rule now lives in one place (LANDED).** Four sibling
+  predicates answered "can these two address ranges intersect", and it was
+  present in only two: `_disturbs` and `_may_disturb` had it, `_reads` and
+  `_writes` did not, so a byte store to `T[x]` was held to clobber a load of
+  `T+1[x]` — same index, one apart, provably disjoint, because an undeclared
+  lane table leaves both spans at the whole register range. All four are
+  collapsed onto one `_overlaps((base, idx, span, width), …)`, with `_reads` and
+  `_disturbs` becoming the same predicate over a store's range. The earlier
+  worry that the width terms had to be matched to each original rather than
+  normalised does not survive measurement: normalising them to the general form
+  is a strict *tightening* (a 2-byte store at `base` reaches `base + 1`, which
+  two of the four dropped), and the consolidated version is **bit-identical to
+  the previous one over all 672 corpus records**. The revert cost nothing and
+  bought nothing; it was decided on one flaky sample.
+- **The SID pair may name a statement the lift rewrites (FIXED).** `_lift`
+  tested `k in (i, j)` before the `site.at` branch, so when the pair's first
+  member *was* the lifted lo statement it emitted the lane half there and still
+  dropped the pair's second member — leaving the hi SID register holding the
+  previous frame's byte. Reached in `Beat_the_System` once coherence selection
+  made `_site(4,8)` refuse and `_match` fall through to the degenerate pair
+  (5,8), the SID lo store against a table hi store. The pair is now settled
+  before the halves are, so that store carries the whole word. This was a latent
+  bug in `_lift`, not a consequence of the selection rule; it is pinned by
+  `test_framemath.py::test_a_sid_pair_naming_the_lifted_store_writes_the_whole_word_there`.
+
+**The last six, each read off the 6502 (1 CLOSED, 5 measured negatives).** With
+the 40 and the 4 `Counterforce` sites already settled above, these were the
+residue no one had disassembled. `lifttrace capture` located each; the
+disassembly decided it. Nothing here is a defect in the one aliasing rule.
+
+- **`Dribbling` `$003F/$0058` — "an intervening statement writes the hi lane"
+  (LIMITATION; CLOSED, 1 → 0).** `$A2B5 LDA $13,X / CLC / ADC $3F,X / STA $13,X /
+  STA $D402,X / LDA $58,X / ADC #$00 / STA $58,X / STA $D403,X`. The first sweep
+  lifts the `$13,X`/`$58,X` pair; the refusing site is the second sweep's SID
+  mirror pair `$D402,X`/`$D403,X`, where `_rank` settles on lanes `$3F,X`/`$58,X`
+  stepped by `$13,X` — the nearer bases, and the same word under `carry_comm`.
+  The blocking statement is the *first* lift's own hi-half store to `$58,X`,
+  which is **later** than the load of `$58,X` it is held to spoil, so nothing is
+  hoisted past it. `_premise`'s hi-lane loop was the position-blind twin of the
+  check §7.3 made position-aware above: `_hoist` already holds every read the
+  word assignment leads with against the statements it is carried past, and the
+  hi lane is one of those reads, so the loop could only ever fire on a
+  non-hazard. It is removed and the class with it; `_writes` loses the index
+  parameter only that call passed. The two shapes that *are* hazards — the hi
+  lane reloaded after a store to it, and after a `zp,X` store that may reach it —
+  refuse identically in both builds, as "an intervening statement changes an
+  operand", which is the check that was doing the work all along.
+- **`Wizball` `$0004/$0005` and `$0006/$0007` — "may alias the hi lane" (CORRECT
+  as the pass stands).** `$4981 LDX $0D / LDA #$02 / CLC / ADC $04 / STA $E4,X /
+  LDA #$00 / ADC $05 / STA $E9,X`, and `$4ABA` the same over `$0E`, `$06/$07`,
+  `$F3,X`/`$F8,X`. The lanes are the song pointer; the destination is a
+  loop-nesting stack. `STA $E4,X` is `zp,X`, so it reaches `$00..$FF` and covers
+  `$0005` at `X = $21`. The program *does* bound it — `$4A0B LDY $0D / CPY #$04 /
+  BEQ` caps the depth at 4, so the store only ever reaches `$E4..$E8` — but that
+  is a value range over a zero-page counter, not a declaration, and no such
+  machinery exists. The declaration route is measured and empty:
+  `datadecl.declarations` carves **no zero-page region at all** for this tune, so
+  `Regions.avail($00E4)` is 0 and the one tightening `span`'s modular rule could
+  admit — a declared bound with `base + avail - 1 < 256`, where the wrap provably
+  does not happen — would buy nothing here (MEASURED, no change taken). The third
+  voice of the same driver, `$4BEE … STA $4708,X`, lifts: its stack is
+  absolute-indexed, so `store_ref` resolves it clear of `$0008/$0009`.
+- **`Are_Friends_Electric` `$17F9[y]/$10C8[x]` and `Flowing` `$1B3C[y]/$10B7[x]`
+  — "the two lanes are indexed differently" (correctly classified).** `$13DC LDA
+  $10C6,X / BCC $13F6 / CLC / ADC $17F9,Y / STA $10C6,X / LDA $10C8,X / ADC #$00 /
+  STA $10C8,X` (`Flowing` `$1193 LDA $10B5,X`, step `$1B3C,Y`, hi `$10B7,X`). The
+  real lanes are `$10C6,X`/`$10C8,X` under one index, stepped by `$17F9,Y` — an
+  ordinary split-table site. `_cells` does put that pair in `_pairs` and `_fuse`
+  does ask about it, but the **lo lane's load is in the dominating block**, above
+  the `BCC` that separates the ADC arm from the SBC arm, so inside the interval it
+  is the free local `a`: the e-graph has no fact `a == mem[$10C6,X]`, and
+  `sub(word, pack(cells))` cannot cancel. That confirms the recorded suspicion —
+  the store cells' own query does not cancel. What survives is the regrouping
+  `(hi $10C8,X, lo $17F9,Y, step a)`, the same word with the step table wearing
+  lo-lane shape, and it refuses on the one-shared-index premise §4 rung (d2)
+  states. Closing these wants the lo lane's definition read out of the dominating
+  block — a definition query across basic blocks, not an aliasing input.
+- **`Allt_under_himmelens_faeste` — "a lane address is not a const base plus
+  index" (LIMITATION, not closed).** `$0974 JSR $0B65 / PLA / CLC / ADC $FB /
+  STA $0E1D,X / LDA $FC / ADC #$00 / STA $0E1E,X`: the lanes are the zero-page
+  pointer `$FB/$FC` and the step is the byte pulled off the stack. This is **not**
+  the `zp,X` form the modular-index work drove 16 → 0. `_fuse` does offer the
+  coherent form — `_asked` returns `add hi=(cell $FC) lo=(cell $FB)
+  step=zext(load $0100|sp)` — and `_site` then drops it, because `_back` cannot
+  name the step: the e-graph folded the pull's address `((sp + $FF) + 1)` to
+  `sp`, while `to_egg` keyed provenance by the unfolded spelling, so `prov` misses
+  the extracted term. The two forms left both make the stack byte the lo lane,
+  whose address `zext2(sp + $01) | $0100` is no `const base + index` — which is
+  what refuses, correctly for the form it is given. Closing it wants provenance
+  keyed by e-class rather than by term; `_back`'s own rule forbids the cheap
+  alternative, since a load rebuilt out of the graph is a read made where it was
+  not.
+
+**Measured, HEAD vs the `_premise` collapse.** Refusals 52 → **51**, lifts
+1523 → **1524**, merges 189, adjacent 668, SID pairs 365, Gate FP **649/649**,
+canonical fixpoint **649/649**, `PYTHONHASHSEED=0` vs `=1` **0 of 672 records
+differ**, and `lifttrace stable --runs 4` agrees on all 23 decisions of
+`Dribbling`. Per (tune, lo, hi) over 1564 sites: **0 previously lifted now
+refuse**, 1 newly lifts. The consumer partition §6 requires beside the gate:
+emitted text 10197544 → **10197665** bytes (+121), raw `mem[` 9698 → **9699**;
+byte-wide SID stores 772 and word 2899 both unchanged. Pinned by
+`test_framemath.py::test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard`,
+which refuses when the loop is restored, beside
+`::test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site` for the shape
+that is a hazard.
+
+### 7.5 The carry as control flow, and the definition that subsumes it (LANDED)
+
+`tests/test_lift6502.py` enumerates the 6502 shapes that write one 16-bit
+quantity as two bytes -- lane addressing (`zp`, `zp,X`, `abs`, `abs,X`, `abs,Y`)
+x adjacent or split lanes x operation x step operand mode x how the carry crosses
+x straight-line or a bounded accumulator reversing on a threshold. **610 shapes**,
+Gate FP as the oracle, so no case states an expected lift, and it runs in seconds
+where the corpus sweep cannot.
+
+At the version that enumeration was written against it read **242 lifted, 368
+never reaching a site at all** -- not refusals, so no census reported them and
+none entered §7.3's ledger. Two causes, not eight. `_links` required an
+`INT_CARRY`/`INT_LESS`/`INT_LESSEQUAL` in the hi statement's *value*, so a carry
+crossing as control flow, as a shift bit or as a predicated increment was
+invisible and a 16-bit operation with no carry at all could never qualify; and
+`_word_form` matched `(op, hi lane, lo lane, step, mask)` for `op` in
+`{add, sub}`, an idiom table behind a principled query. The architecture was
+idiom filter, principled query, idiom reader.
+
+**The redesign (docs/twobyte-lift.md §4).** `_links` is gone. Candidate pairs are
+bounded by *program structure* -- the run of statements that write a value,
+proximity in that run, a byte one value reads that the other reads, a pair the
+program names that is two adjacent cells of one row -- and never by the shape of
+an operator; `_linked` is a cost bound only, and cost is managed by how many pairs
+are asked about. `_word_form` names no operator: it returns, for each byte pair
+the extracted width-2 term packs, that term with every occurrence of the pack
+standing as the word, admitted only where no lane survives outside it. One reader
+takes a shift (`W*2`), a bitwise pair (`W & K`), a counter (`W+1`) and an add
+(`W+step`) alike, and `_lift` substitutes the word local into whatever term came
+back. Predicated updates are normalised to values before the query
+(`_predicated`): `if c { INC x }` is `x = x + c` and the other arm takes `1 - c`,
+sound because the condition is a comparison or a carry and so is 0 or 1, and
+refused where the arm binds a register, escapes a name, or the store may read an
+input or write an output. Either statement may hold the hi lane, since
+`LSR hi / ROR lo` writes that one first. The general borrow is one Z3-proven rule
+(`borrow_word`), as §4 requires, and the rest of what the operations needed is
+the same law stated over the pack: it is a homomorphism for the bitwise ops
+(`band_fuse`/`bor_fuse`/`bxor_fuse`, one builder), for the shifts and rotates
+(`shl_fuse`/`rol_fuse`/`shr_fuse`/`ror_fuse`, two builders), plus three flag
+identities (`carry_ult`, `eq_zero`, `carry_ones`) and the symmetry of the two
+compare relations (`eq_comm`, `ne_comm`) -- a `CMP` leaves the literal on whichever
+side the subtract had it, and every rule that then moves a constant step across the
+equality wants it on the right. Every one is Z3-proven through `verify_rules`
+before admission; 86 rule instances now prove.
+
+**Measured over the 610 shapes: 242 lifted -> 552, 368 no site -> 34, 0 refused
+-> 24.**
+
+| operation | was | now | what is left |
+|---|---|---|---|
+| `ADC` | 192 lifted / 48 no site | 216 / 14 no site / 10 refused | 14 unobserved, 10 the `zp,X` wrap |
+| `SBC` | 50 / 90 | 124 / 8 / 8 | 8 unobserved, 8 the `zp,X` wrap |
+| 16-bit shift (`ASL`/`ROL`, `LSR`/`ROR`) | 0 / 16 | 16 / 0 | — |
+| 16-bit inc/dec (`INC`/`BNE`/`INC`) | 0 / 16 | 10 / 4 / 2 | 6 the one naming defect |
+| bitwise `AND`/`ORA`/`EOR` | 0 / 150 | 150 / 0 | — |
+| `SLO` `RLA` `SRE` `RRA` `DCP` `ISC` | 0 / 48 | 36 / 8 / 4 | 8 `RRA`, 4 the naming defect |
+
+The enumeration itself carried two 6502 errors, and both flattered the refusal
+count rather than the lift: `ZP`/`ABS` were seeded `$F0`, at which `INC lo` cannot
+wrap in eight frames, so the 16 counter shapes never ran the hi arm they exist to
+exercise; and `DCP`/`ISC` were given `LDA #$00`, which makes the flag they leave a
+test of something else. Those are the accumulator's fault, not the opcode's -- the
+counters' flag is a compare against `A`, so only `$FF` for `DCP` and a set carry
+over `A = 0` for `ISC` make it the lo lane's wrap. `build` now seeds each counter
+at the value that wraps on the first frame and `_illegal` writes the real forms.
+
+**The falsifiable prediction, answered.** 36 of the 48 undocumented-opcode shapes
+lift and **no line of rung (d2) or of its rule set names SLO, RLA, SRE, RRA, DCP,
+ISC or any opcode**: `git grep -inE "\b(slo|rla|sre|rra|dcp|isc)\b"` over
+`framemath.py`, `eqlift.py`, `framefuse.py` and `frameproc.py` matches nothing,
+and the only mnemonics in any of them are docstrings saying which 6502 sequence a
+Z3-proven identity corresponds to. The decoder (`lifter.py`) names them, as the
+machine model must. `SLO`'s statement list is byte-identical to `ASL`'s and
+`SRE`'s to `LSR`'s, which is the prediction working exactly as stated: the value
+graphs are those of the legal sequences they fuse. `DCP` and `ISC` needed no
+clause either -- once the enumeration gave them their real accumulators, the one
+thing between them and the existing borrow and carry laws was **orientation**:
+`sub_eq0` hands a compare back as `eq(num, term)` while `addc_eq` and its
+relatives match `eq(term, num)`. Stating that equality is symmetric took
+`DCP` and `ISC` from 0 of 16 to 12 of 16, and it is one fact about a relation, not
+a page in a catalogue. The 12 that remain are two causes:
+
+- **`RRA hi / ROR lo` is not a 16-bit shift (8 shapes).** `RRA` is `ROR mem` then
+  `ADC mem`, and the bit the following `ROR lo` takes in is the **ADC's** carry
+  out, not the bit `ROR hi` shifted out: the value graph reads
+  `(w1>>1) | ((carry($00,t0) | carry(t0, w0&$01)) << 7)`, where a 16-bit shift
+  needs `w0 & $01`. It refuses because the pair does not compute `W>>1`, which is
+  the design refusing over values, as it should.
+- **4 are the naming defect below**, the `zp,X` half of the counter shapes.
+
+**The residue is 58 shapes and three causes, one of which is a real defect.**
+22 are the trace and not the pass: a branch the 8-frame window never takes leaves
+its arm `unobs`, so the `SBC` borrow (8) and the bidirectional accumulator's
+threshold (14) are never reached, the latter being the asymmetry §7.3 still holds
+open. 8 are `RRA`, above. **The other 28 are one defect, and it is upstream of
+rung (d2): the same cell named two ways.** Where the index is a known constant the
+block converter folds it into some addresses and not others, so one lane arrives as
+`mem[$1460]` and the other as `mem[zext(x) + $1460]` -- two terms for one byte,
+which no e-graph can join because nothing has told it they are equal. It shows up
+as a refusal (24) where the unfolded lane's range then covers the folded one and
+`_may_disturb` correctly says they may alias, and as a no-site (4, the `abs,X` and
+`zp,X` `DEC` shapes) where the two terms simply never fuse. This is the class §7.3
+records for `After_the_War $0010/$0011`; **the fix belongs in address
+canonicalisation, not in the lift**, and it is the one thing left that a correct
+rung (d2) cannot reach on its own.
+
+**The bidirectional accumulator: both arms lift in 65 of 100 shapes, up from 15.**
+The 50 `wordstep` shapes were held by the missing general borrow and `borrow_word`
+takes them. Of the 35 that still lift one arm only, the cause is the same
+unobserved arm: the down arm runs only after the hi lane crosses `CMP #$08`,
+which the seeded data reaches in the `wordstep` shapes and not in the `withzero`
+ones. `apply_rung`'s `done` set is not involved — the two arms are different
+statement lists, so they never share it.
+
+**Measured over the corpus, HEAD vs the redesign** (682 tunes, `CAP_CPU=2400`;
+see the cost note below for why the cap moved). Gate FP **649/649** and the
+canonical fixpoint **649/649**, on the same 649 records HEAD reaches, with the
+same 33 failures and all of them decompile-side. Rung (d2) lifts **1515 -> 2311**
+and refuses **60 -> 120**; merges **189 -> 410**, adjacent **668 -> 953**, SID
+pairs **365 -> 383**; byte-wide SID stores **772 -> 750** and word **2899 ->
+2908**. The consumer partition §6 requires beside the gate: emitted text
+10196681 -> **10222682** bytes (+0.25%), raw `mem[` 9699 -> **9703**. Bit-identical
+across `PYTHONHASHSEED` 0, 1, 2 and 3 — 672 records, 0 differ on each pair — and
+`lifttrace stable --runs 8` agrees on every decision of `Andy_Capp-The_Game`,
+`Beat_the_System`, `Dribbling` and `Army_Moves`. One seed dependence was found
+and closed on the way: `mask_hoist` gives a masked pack two spellings of one
+cost, so `_asked` read the step off whichever the pool returned; it now takes the
+cheapest of the class by the same total order `_fuse` uses for the word
+(`_cheapest`), which is §7.1's lesson arriving in the step. The lifted
+sites by what the word turns out to be: 1485 add, 509 sub, 198 the word unchanged
+(a 16-bit copy), 107 `shl`, 56 `and`, 37 `or`, 34 `shr`, 5 `xor` — the 437 that
+are not an add or a subtract are what `_links` never let the rung see. The
+refusal classes are the ones §7.3 names, with two mirrored by the reversed
+orientation: 46 "a lane address is not a const base plus index", 42 "the lo
+destination may disturb the hi lane or the step" (5 more as "the hi destination
+… the lo lane"), 20 "the two lanes are indexed differently", 4 "the lo
+destination may alias the hi lane", 3 "an intervening statement changes an
+operand".
+
+**Two wrong lifts the gate caught, and the premise each was missing.** Both are
+`_back` choosing a naming that does not mean at `i` what it meant where it was
+recorded, and both predate the redesign in `_emittable` — `_links` merely kept
+the pairs that reach them from forming. `80squares` `$140F/$1410`: the step is
+`("loc", "a")` captured before the interval, and the interval's own `a = t4`
+reassigns it, so `_hoist`'s wholesale inlining rewrote the step to the lo lane's
+own result. `Army_Moves` `$E009/$EDF7`: `to_egg` keys a load by its address, so
+the reads of `$ED8F,X` at `w1` and at `a1` are one term although a store to that
+cell sits between them, and `_back` took the earlier, stale naming. `_emittable`
+now refuses a naming the interval rebinds or that means any definition other than
+the one in force at `j`, and `_stale` holds a naming recorded before `i` against
+every statement between, by the same `_clobbers` predicate `_hoist` holds the
+interval to. With both, all four tunes that failed gate FP pass it.
+
+**Cost.** The rung asks every structurally admissible pair instead of one
+pre-matched idiom, and the price is measured: `_fuse`'s cost is almost entirely
+`egglog`'s `extract` per query pair (63.4s of 97.9s on `Arpeggio` at 40 frames,
+against 4.0s of saturation), so it scales with pairs asked. One e-graph now serves
+every partner of one statement rather than one per pair, which is worth about 20%;
+the rest of the bound is `_linked` and `_pairs`. `Arpeggio`, the corpus's worst
+case, goes **58.9s -> 95.0s at 40 frames (1.61x)**, with 936 query pairs in 66
+e-graphs becoming 1281 in 202; at 200 frames it is 251s at HEAD.
+
+**That cost is not free at corpus scale, and the measurement says so.**
+`fuse_run.py`'s `CAP_CPU` is an `RLIMIT_CPU` per *worker*, not per tune, so 16
+workers share a fixed CPU budget for the whole sweep. At `CAP_CPU=300` HEAD fits
+(649 of 682, all 33 failures decompile-side) and this build does not: **251 tunes
+return `MemoryError: cpu cap`**, and two workers crossed the hard limit mid-task
+and were `SIGKILL`ed, which deadlocks `imap_unordered` exactly as that file's
+docstring warns. The sweep below is therefore run at `CAP_CPU=2400`, where the cap
+binds on neither build. Cutting the extraction per query pair is the next cost
+work; part of the bound is already paid for in coverage, since `_pairs` offers a
+cross pair of differing rows only where no same-row pair is on offer at all, which
+costs 6 `adc`-`withzero`-`bidir` shapes whose step table is walked by the other
+index register.
+
+Records a tune's ordered rung-(d2) decisions — every candidate form `_fuse`
+offered, the grouping `_site` chose, the refusal `_premise` gave, the statement
+`_lift` emitted — so two builds are diffed at the first disagreement instead of
+by re-running the corpus and comparing totals.
+
+  capture <tune> <out.json>   ordered decisions + gate verdict
+  diff <a.json> <b.json>      first decision two builds disagree on
+  repeat <tune> --runs N      N fresh processes; splits the verdict if flaky
+  stable <tune> --runs N      N hash seeds; diffs whole traces, not verdicts
+  verdict <tune>              one gate verdict (what repeat forks)
+
+A refusal names a predicate, not the addresses that tripped it, so `capture`
+appends one event per class that needs its terms: `disturb` (the lo store's range
+against every range it is held to reach), `clobber` (the statement blocking the
+hoist, its range, and which operand it hit) and `alias` (`_match`'s own test,
+which fires before `_premise` and would otherwise leave no event at all).
+
+Prefer this to toggling a flag and re-running the corpus: a corpus delta says a
+number moved, not which decision moved. Every finding in §7.1 and §7.3 above was
+located by `capture` on two builds and `diff` — the statement list at the
+disagreeing site, then the 6502 behind it — not by comparing totals.

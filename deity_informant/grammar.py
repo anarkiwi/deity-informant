@@ -115,10 +115,15 @@ def check_alias(name):
 
 
 def store_width(val):
-    """Byte width of a store whose value expression is ``val`` (2 once fused)."""
+    """Byte width of a store whose value expression is ``val`` (2 once fused).
+
+    ``op``/``mem`` and a word local state their width (``frameproc.loc_width``
+    is the same rule, unreachable here); every other value is one byte."""
     if val[0] == "op":
         return val[3]
-    return val[2] if val[0] == "mem" else 1
+    if val[0] == "mem":
+        return val[2]
+    return val[2] if val[0] == "loc" and len(val) > 2 else 1
 
 
 def _check_store(lv, rhs):
@@ -484,6 +489,17 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def e_zext(self, c):
         return ("op", "INT_ZEXT", (c[1],), c[0])
 
+    def t1(self, c):
+        return 1
+
+    def t2(self, c):
+        return 2
+
+    def e_trunc(self, c):
+        if not self._frame():
+            raise ValueError("a truncation is a frameprog form")
+        return ("op", "COPY", (c[1],), c[0])
+
     def e_carry(self, c):
         return ("op", "INT_CARRY", (c[0], c[1]), 1)
 
@@ -530,7 +546,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         name = self.rev.get(name, name)
         if self._frame():
             addr = name_addr(name)
-            return ("mem", ("const", addr, 2), sz) if addr is not None else ("loc", name)
+            if addr is not None:
+                return ("mem", ("const", addr, 2), sz)
+            return ("loc", name) if sz == 1 else ("loc", name, sz)
         m = _T_NAME.match(name)
         if m:
             return ("uni", BIND_BASE + int(m.group(1)), 1)

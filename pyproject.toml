@@ -22,7 +22,9 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-dependencies = ["jennings>=0.1.0", "lark>=1.2"]
+# frameprog rung (d2) reads its 16-bit lifts off the Z3-proven egglog rule set, so
+# the solver stack is core, not an extra; egglog's minor is pinned (its str form is parsed).
+dependencies = ["jennings>=0.1.0", "lark>=1.2", "egglog>=13,<14", "z3-solver"]
 
 [project.optional-dependencies]
 oracle = ["py65", "pysidtracker", "zstandard"]

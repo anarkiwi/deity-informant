@@ -7,8 +7,10 @@ canonical section emits adjacent. One lone-half access refuses that pair alone.
 
 from __future__ import annotations
 
+from . import datadecl
 from . import expr as E
 from . import frameproc
+from . import grammar as G
 from . import streams as ST
 from .structured import Proof
 
@@ -24,9 +26,7 @@ def _word(cell):
     return ("mem", ("const", cell, 2), 2)
 
 
-def _w(n):
-    """Value width of a frameprog expression node (a local holds one byte)."""
-    return 1 if n[0] == "loc" else E.width(n)
+_w = frameproc.loc_width  # value width of a frameprog node, loc leaves included
 
 
 def _zext2(n):
@@ -61,12 +61,67 @@ def unpack(val):
     return None
 
 
-def _addr_split(addr):
-    """``(const base, index expression)`` of an address, index None when plain."""
-    if addr[0] == "const" and addr[2] == 2:
-        return addr[1], None
-    got = frameproc._index_of(addr)
-    return got if got is not None else (None, None)
+def _rebase(addr, old, new):
+    """The same address with its const base moved from ``old`` to ``new``."""
+    if addr == ("const", old, 2):
+        return ("const", new, 2)
+    if addr[0] == "op":
+        return (addr[0], addr[1], tuple(_rebase(a, old, new) for a in addr[2]), addr[3])
+    return addr
+
+
+def _consts(idx, env, at, regions, mem0):
+    """Every value ``idx`` may take where the model proves them all, else None.
+
+    A constant *table* counts: Commando indexes its pulse stores by ``LDY $14B5,X``
+    over `$00 $07 $0E`. A cell the play code writes counts through the store in
+    force at the read (``Defs.cell``): drivers spill the voice offset to RAM."""
+    while True:
+        n = env.resolve(idx, at)
+        if n[0] == "op" and n[1] == "INT_ZEXT":
+            n = n[2][0]
+        if n[0] == "const":
+            return frozenset((n[1] & 0xFF,))
+        if n[0] != "mem" or n[2] != 1:
+            return None
+        base, row = _addr_split(n[1])
+        if base is None:
+            return None
+        size = 1 if row is None else regions.avail(base)
+        if size and all(regions.const_at(a) for a in range(base, base + size)):
+            return frozenset(mem0[a] for a in range(base, base + size))
+        got = None if row is not None else env.cell(base, at, regions)
+        if got is None:
+            return None
+        env, at, idx = got
+
+
+def _lane_aligned(p, ks):
+    """Every ``k`` puts the pair's lo on a register that is itself a pair's lo.
+
+    ``mem[$D400 + y]`` is a store to register ``y``: widening it is right exactly
+    where every reaching ``y`` lands the word on a 16-bit register, and wrong --
+    it writes whatever cell follows -- where one does not."""
+    return ks is not None and all(_sid_base(p.lo + k) == p.lo + k for k in ks)
+
+
+def _widen(s, p):
+    """A lone lane store as the u16 store it is, the other lane keeping its value.
+
+    freq, pulse and cutoff are 16-bit registers: nothing narrower can be written
+    to one, so a driver touching one lane still writes the whole word. An indexed
+    lane widens only under ``_lane_aligned``."""
+    base, _idx = _addr_split(s[1])
+    addr = _rebase(s[1], base, p.lo)
+    half = _zext2(s[2])
+    if base == p.hi:
+        half = ("op", "INT_LEFT", (half, ("const", 8, 1)), 2)
+    keep = ("const", 0xFF00 if base == p.lo else 0x00FF, 2)
+    kept = ("op", "INT_AND", (("mem", addr, 2), keep), 2)
+    return ("st", addr, ("op", "INT_OR", (kept, half), 2))
+
+
+_addr_split = frameproc.addr_split
 
 
 def _may_read(n, cell):
@@ -99,7 +154,19 @@ def stmts_of(stmts):
 class _Pair:
     """One candidate lo/hi pair and the evidence gathered against it."""
 
-    __slots__ = ("lo", "hi", "kind", "evidence", "words", "lone", "stores", "unpaired", "hazard")
+    __slots__ = (
+        "lo",
+        "hi",
+        "kind",
+        "evidence",
+        "words",
+        "lone",
+        "stores",
+        "unpaired",
+        "hazard",
+        "indexed",
+        "strayidx",
+    )
 
     def __init__(self, lo, hi, kind, evidence):
         self.lo = lo
@@ -107,22 +174,24 @@ class _Pair:
         self.kind = kind
         self.evidence = evidence
         self.words = self.lone = self.stores = self.unpaired = self.hazard = 0
+        self.indexed = self.strayidx = 0
 
     def refusal(self):
         """The premise's refusal diagnostic, or None where the pair fuses.
 
-        A state pair is one tune-wide declaration, so any lone half refuses it; a
-        SID pair declares nothing beyond the two statements it rewrites, so its
-        premise is per site and only a pair with no fusable site refuses."""
+        A state pair is one tune-wide declaration, so any lone half refuses it. A
+        SID pair never refuses: freq, pulse and cutoff are 16-bit registers, so
+        the pair is one register whatever the driver's store sites look like."""
         if self.hi != self.lo + 1:
             return "halves are not adjacent"
-        if self.kind != "sid":
-            if self.hazard:
-                return "%d store pair(s) whose second value may read the first cell" % self.hazard
-            if self.lone:
-                return "%d lone-half read(s)" % self.lone
-            if self.unpaired:
-                return "%d unpaired half store(s)" % self.unpaired
+        if self.kind == "sid":
+            return None
+        if self.hazard:
+            return "%d store pair(s) whose second value may read the first cell" % self.hazard
+        if self.lone:
+            return "%d lone-half read(s)" % self.lone
+        if self.unpaired:
+            return "%d unpaired half store(s)" % self.unpaired
         if not (self.words or self.stores):
             return "no word access in the play code"
         return None
@@ -137,11 +206,17 @@ class _Pair:
             self.words,
             self.stores,
         )
-        rest = "%d lone-half read(s), %d lone-half store(s), %d hazard(s)" % (
+        rest = "%d lone-half read(s), %d %s, %d hazard(s)" % (
             self.lone,
             self.unpaired,
+            "widened lane store(s)" if self.kind == "sid" else "lone-half store(s)",
             self.hazard,
         )
+        if self.kind == "sid":
+            rest += ", %d lane-aligned indexed, %d index not proven lane-aligned" % (
+                self.indexed,
+                self.strayidx,
+            )
         status = "refused" if why else ("fused" if not (self.lone or self.unpaired) else "partial")
         return Proof(self.lo, self.kind, status, (self.lo, self.hi), "%s; %s" % (body, why or rest))
 
@@ -240,32 +315,52 @@ def _pair_at(stmts, i, p):
     return None if hb[0] != p.hi and p.kind != "sid" else (ha[0], hb[0])
 
 
-def _visit(stmts, p, mutate):
-    """One statement list: fuse paired stores, fold word reads, count refusals."""
+def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
+    """One statement list: fuse paired stores, fold word reads, count refusals.
+
+    The list is rewritten as it is scanned, so the environment is rebuilt whenever
+    a statement moved: a stale index would answer for the wrong statement."""
     count = 0 if mutate else 1
+    env, stale = frameproc.Defs(stmts, outer, cyclic), False
     i = 0
     while i < len(stmts):
+        if stale:
+            env, stale = frameproc.Defs(stmts, outer, cyclic), False
         s = stmts[i]
         for body in frameproc._stmt_bodies(s):
-            _visit(body, p, mutate)
+            _visit(body, p, mutate, ctx, (env, i), s[0] in frameproc._CYCLIC)
         at = _pair_at(stmts, i, p)
-        if at is not None:
-            if _may_read(stmts[i + 1][2], at[0]):
-                p.hazard += count
+        if at is not None and _may_read(stmts[i + 1][2], at[0]):
+            p.hazard += count
+            if p.kind != "sid":
                 i += 2
                 continue
+            at = None  # the halves cannot pack, but each lane still widens
+        if at is not None:
             lo, hi = (s, stmts[i + 1]) if at[1] == p.hi else (stmts[i + 1], s)
             p.stores += count
             if mutate:
                 stmts[i] = ("st", lo[1], _pack(lo[2], hi[2], at[1] == p.lo))
                 del stmts[i + 1]
+                stale = True
             i += 1 if mutate else 2
             continue
-        if _store_half(s, p) is not None:
+        if s[0] == "st" and _addr_split(s[1])[0] == p.lo and G.store_width(s[2]) == 2:
+            p.stores += count  # already one word store: rung (d2) fused this pair
+            i += 1
+            continue
+        half = _store_half(s, p)
+        widen = half is not None and p.kind == "sid"
+        if widen and half[1] is not None:
+            widen = ctx is not None and _lane_aligned(p, _consts(half[1], env, i, *ctx))
+            p.indexed += count if widen else 0
+            p.strayidx += 0 if widen else count
+        if half is not None:
             p.unpaired += count
         new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))
         if mutate:
-            stmts[i] = new
+            stmts[i] = _widen(new, p) if widen else new
+            stale = stale or stmts[i] is not s  # a widened store moved its own range
         i += 1
 
 
@@ -303,16 +398,17 @@ def apply_rung(model, decls, procs, state, symbols, name_of):
     halves and every other pair still fuses. The SID register pairs — freq,
     pulse and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
+    ctx = (datadecl.Regions(decls), model.mem0)
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
         p = _Pair(lo, hi, kind, evidence)
         if hi == lo + 1:
             for _e, _pa, _r, stmts in procs:
-                _visit(stmts, p, False)
+                _visit(stmts, p, False, ctx)
         proofs.append(p.proof())
         if p.refusal() is not None:
             continue
         fused.append(p)
         for _e, _pa, _r, stmts in procs:
-            _visit(stmts, p, True)
+            _visit(stmts, p, True, ctx)
     state = _fuse_state(state, symbols, [p for p in fused if p.kind != "sid"], name_of)
     return state, proofs

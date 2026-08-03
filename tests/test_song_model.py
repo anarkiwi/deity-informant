@@ -262,7 +262,8 @@ def test_to_egg_and_canon_cover_forms():
     assert isinstance(G.raw(load), str)  # computed-address load
     zext = ("op", "INT_ZEXT", (("loc", "x"),), 2)
     cmp_ir = ("op", "INT_LESS", (("loc", "x"), ("const", 3, 1)), 1)
-    assert isinstance(G._to_egg(zext), tuple) and G._to_egg(cmp_ir)[0] == "ult"
+    assert E.to_egg(zext) == ("zext", ("loc", "x"))  # generators translates via eqlift now
+    assert E.to_egg(cmp_ir)[0] == "ult"
 
 
 def test_series_extracts_register_column():

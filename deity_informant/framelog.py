@@ -9,6 +9,8 @@ from collections import namedtuple
 _ABS = 0xD400
 _NREG = 0x1D
 _FILTER = (0x15, 0x16, 0x17, 0x18)
+_LO = tuple(7 * v + o for v in range(3) for o in (0, 2)) + (0x15,)
+_OTHER = {r + d: r + 1 - d for r in _LO for d in (0, 1)}
 
 SECTIONS = ("v0.lww", "v0.ord", "v1.lww", "v1.ord", "v2.lww", "v2.ord", "filter", "residual")
 
@@ -26,13 +28,13 @@ def _pair(reg, val):
     return reg, val
 
 
-def canonical(frames):
+def canonical(frames, held0=None):
     """Per-frame canonical records: 8 tuples of (reg, val), one per SECTIONS.
 
-    Freq/PW per voice and the $15-$18 filter tail are last-write-wins,
-    elided when unwritten that frame; ctrl/AD/SR per voice and the
-    read-only tail $19-$1C keep original relative write order."""
-    out = []
+    Freq/PW/cutoff are 16-bit: touching either lane reports the whole word, the
+    unwritten lane seeded by ``held0``. Other last-write-wins cells are elided
+    when unwritten; ctrl/AD/SR and the tail $19-$1C keep write order."""
+    out, held = [], dict(held0 or {})
     for frame in frames:
         lww = {}
         ordv = ([], [], [], [])
@@ -41,7 +43,10 @@ def canonical(frames):
             if reg >= 0x19:
                 ordv[3].append((reg, val))
             elif reg >= 0x15 or reg % 7 < 4:
-                lww[reg] = val
+                lww[reg] = held[reg] = val
+                other = _OTHER.get(reg)
+                if other is not None:
+                    lww.setdefault(other, held.get(other, 0))
             else:
                 ordv[reg // 7].append((reg, val))
         rec = []

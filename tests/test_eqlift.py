@@ -55,6 +55,29 @@ def test_admitted_ruleset_builds_and_dedups():
     assert len(set(names.values())) == len(names)
 
 
+def _saturate(term, iters=25):
+    from egglog import EGraph
+
+    rs, _names = eqlift.admitted_rules()
+    eg = EGraph()
+    h = eg.let("h", eqlift._egg_of(term, {}))
+    eg.run(rs * iters)
+    return {eqlift._parse_ir(str(x)) for x in eg.extract_multiple(h, 8)}
+
+
+def test_a_guarded_rule_fires_only_inside_its_width():
+    """``num_narrow`` is what lets the SBC borrow's widened constant meet its byte."""
+    assert ("zext", ("num", 55, 1)) in _saturate(("num", 55, 2))
+    assert not any(f[0] == "zext" for f in _saturate(("num", 0x1234, 2)))
+
+
+def test_a_zero_carry_term_is_identically_zero():
+    """``carry(x, $00)`` cannot stand as a chain's evidence: the rules erase it."""
+    x = ("cell", 0x10, 1, 0)
+    assert ("num", 0, 1) in _saturate(("carry", x, ("num", 0, 1), 1))
+    assert ("num", 0, 1) not in _saturate(("carry", x, ("num", 1, 1), 1))
+
+
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Commando", "Hubbard_Rob"))
 def test_commando_emit_end_to_end(sid, subtune, secs):
     """The whole-artifact emit lifts Commando: header, play sub, a representative

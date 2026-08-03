@@ -112,12 +112,13 @@ def _span(addr, wide, vals, chase=True):
     """``(lo, hi)`` a store at ``addr`` may reach, else None (unprovable).
 
     ``base + i`` is the declared-index form; ``x | K`` is the stack (``x | K`` lies
-    in ``[K, K + hi(x)]``); a local address is the union over its assignments."""
+    in ``[K, K + hi(x)]``); a local address is the union over its assignments. A
+    modular address leaves no page, so it reaches that page and no more."""
     if addr[0] == "const" and addr[2] == 2:
         return addr[1], addr[1]
     got = frameproc._index_of(addr)
     if got is not None:
-        return got[0], got[0] + _bound(got[1], wide)
+        return (0, got[2] - 1) if got[2] else (got[0], got[0] + _bound(got[1], wide))
     if addr[0] == "op" and addr[1] == "INT_OR" and len(addr[2]) == 2:
         ks = [c for c in addr[2] if c[0] == "const"]
         rest = [c for c in addr[2] if c[0] != "const"]
@@ -149,12 +150,15 @@ def _writers(procs, wide, vals):
 
 
 def _leg(half):
-    """``(base address, index)`` of one byte-wide table read, else None."""
+    """``(base address, index)`` of one byte-wide table read, else None.
+
+    A modular read is no row of the table at its base -- the wrap picks another --
+    so it names no leg."""
     if half[0] != "mem" or half[2] != 1:
         return None
     got = frameproc._index_of(half[1])
-    if got is not None:
-        return got
+    if got is not None and got[2] == 0:
+        return got[:2]
     if half[1][0] == "const" and half[1][2] == 2:
         return half[1][1], ("const", 0, 1)
     return None

@@ -7,8 +7,10 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from types import MappingProxyType
 
+from . import expr as E
 from . import grammar as G
 from . import sidprog
 from . import structured as C
@@ -41,7 +43,18 @@ def _by_reg(names):
     return sorted(names, key=_LOCAL_ORDER.get)
 
 
-# ---- expression helpers (sidprog nodes plus ("loc", name) leaves) ---------------
+# ---- expression helpers (sidprog nodes plus ("loc", name[, width]) leaves) -------
+def loc_width(n):
+    """Value width of a frameprog expression node: the ONE local-width rule.
+
+    ``("loc", name)`` is one byte and ``("loc", name, w)`` is ``w``; every other
+    node states its own width. ``expr.width`` cannot decide a bare local (it reads
+    the name), so a loc width is decided here and nowhere else."""
+    if n[0] == "loc":
+        return n[2] if len(n) > 2 else 1
+    return E.width(n)
+
+
 def _kids(n):
     if n[0] == "mem":
         return (n[1],)
@@ -109,6 +122,241 @@ def _subst_loc(n, name, repl):
     if not kids:
         return n
     return _rebuild(n, [_subst_loc(c, name, repl) for c in kids])
+
+
+_WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
+_CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
+NOIDX = object()  # "the caller is not a store, so no index is shared"
+UNRES = object()  # "the base is not named, so only the bits the address sets bound it"
+
+
+# ---- addresses: the base an access names, and the bytes it may reach -------------
+def addr_split(addr):
+    """``(const base, index expression)`` of an address, index None when plain.
+
+    The naming form: a modular address is no ``base + index`` the emitter may write
+    or a table row be read off, since the row it lands on wraps."""
+    if addr[0] == "const" and addr[2] == 2:
+        return addr[1], None
+    got = _index_of(addr)
+    return (got[0], got[1]) if got is not None and got[2] == 0 else (None, None)
+
+
+def addr_range(addr, width=1):
+    """``(base, index, modulus)`` an access of ``width`` bytes makes, else None.
+
+    The straddle guard sits here because only the access knows its width: a wider
+    access at a modular address is refused, since a word read at ``$FF`` takes
+    ``$0100`` and the ``zp,X`` wrap does not reach it."""
+    if addr[0] == "const" and addr[2] == 2:
+        return (addr[1], None, 0)
+    got = _index_of(addr)
+    return None if got is None or (got[2] and width > 1) else got
+
+
+def addr_bits(n):
+    """Bits an address may set: every address the expression names is a subset.
+
+    A value fits the width it is read at, which bounds the ``zp,X`` wrap and the
+    stack push ``zext2(sp) | $0100`` without either being named as a shape."""
+    m = E.mask(loc_width(n))
+    if n[0] == "const":
+        return n[1] & m
+    if n[0] == "op" and n[1] in ("INT_ZEXT", "COPY"):
+        return addr_bits(n[2][0]) & m
+    if n[0] == "op" and n[1] in ("INT_OR", "INT_AND") and len(n[2]) == 2:
+        a, b = (addr_bits(c) for c in n[2])
+        return (a | b if n[1] == "INT_OR" else a & b) & m
+    return m
+
+
+def span(base, idx, regions, mod=0):
+    """Tightest sound span for an indexed address at ``base``: the ONE span rule.
+
+    An index reaches no further than the declaration holding its base, since the
+    lifted program indexes that datum; a modular index is the evidence the access
+    leaves its datum, so no declaration bounds one."""
+    if idx is None:
+        return 0
+    full = E.mask(loc_width(idx))
+    avail = 0 if mod or base is None or regions is None else regions.avail(base)
+    return min(full, avail - 1) if avail > 0 else full
+
+
+def _flat(base, sp, width, mod):
+    """A modular range as the plain interval it cannot leave."""
+    if not mod or base + sp + width - 1 < mod:
+        return base, sp, width
+    return 0, mod - 1, width
+
+
+def overlaps(a, b):
+    """Whether two ranges may intersect; each is ``(base, index, span, width, mod)``.
+
+    The ONE aliasing rule: two ranges carrying one index and one modulus name one
+    row apiece, so their spans drop out and the bases decide, ``$14,X``/``$15,X``
+    modulo the wrap. Short of that a modular range reaches its whole wrap."""
+    (ba, ia, sa, wa, ma), (bb, ib, sb, wb, mb) = a, b
+    if isinstance(ia, tuple) and ia == ib and ma == mb:
+        d = (ba - bb) % ma if ma else ba - bb
+        return -wa < d < wb
+    ba, sa, wa = _flat(ba, sa, wa, ma)
+    bb, sb, wb = _flat(bb, sb, wb, mb)
+    return not (ba + sa + wa - 1 < bb or bb + sb + wb - 1 < ba)
+
+
+def store_ref(stmt, regions):
+    """The range a store writes, else None where its address does not resolve."""
+    width = G.store_width(stmt[2])
+    got = addr_range(stmt[1], width)
+    if got is None:
+        return None
+    base, idx, mod = got
+    return (base, idx, span(base, idx, regions, mod), width, mod)
+
+
+def store_reach(stmt, regions):
+    """The range a store writes: ``store_ref``, or the bits its address can set.
+
+    An address the base/index form does not name still bounds the bytes it may
+    reach (``addr_bits``), which holds a zero-page store to ``$00FF`` however
+    unresolvable its index is; a wholly unknown address reaches everything."""
+    got = store_ref(stmt, regions)
+    if got is not None:
+        return got
+    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]), 0)
+
+
+def hidden_defs(s):
+    """Names ``s`` may define other than as this list's own ``asg``; None means any.
+
+    A nested body's definition, a call's writes and a label control may enter at
+    are invisible to a scan of one list, yet each ends the reign of the definition
+    before it."""
+    if s[0] in _WILD:
+        return None
+    out = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
+    for b in _stmt_bodies(s):
+        for s2 in b:
+            got = hidden_defs(s2)
+            if got is None:
+                return None
+            out |= got
+    return out
+
+
+class Defs:
+    """The local definitions of one statement list, read at the point of the read.
+
+    A statement list is not SSA: ``x0 = x`` captures what ``x`` held there, so
+    every lookup carries the reader's position and answers with the definer's. A
+    definition the list does not make itself is recorded valueless (``hidden_defs``)."""
+
+    __slots__ = ("defs", "wild", "outer", "cyclic", "lst")
+
+    def __init__(self, lst, outer=None, cyclic=False):
+        self.defs, self.wild = {}, []
+        self.outer, self.cyclic, self.lst = outer, cyclic, lst
+        for k, s in enumerate(lst):
+            if s[0] == "asg":
+                self.defs.setdefault(s[1], []).append((k, s[2]))
+                continue
+            killed = hidden_defs(s)
+            if killed is None:
+                self.wild.append(k)
+                continue
+            for name in killed:
+                self.defs.setdefault(name, []).append((k, None))
+
+    def at(self, name, bound):
+        """``(index, value)`` of the definition in force at ``bound``, else None.
+
+        This list only: the index is a position in it, so a caller stepping to that
+        index must not be handed one from an enclosing list. A None ``value`` marks
+        a definition whose value cannot be read off, and still names which it is."""
+        made = self.defs.get(name)
+        k = 0 if made is None else bisect_left(made, (bound,))
+        got = made[k - 1] if k else None
+        w = bisect_left(self.wild, bound)
+        if w and (got is None or self.wild[w - 1] > got[0]):
+            return (self.wild[w - 1], None)
+        return got
+
+    def _lookup(self, name, bound):
+        """``(env, index, value)`` of the definition in force, enclosing lists included.
+
+        Reaching here at all means this list defines nothing for ``name`` before
+        ``bound`` and lets control in nowhere before it either -- ``at`` answers
+        both. Only a back edge can still overwrite it, from a definition or a label
+        *after* the read, so a cyclic body must bind neither."""
+        got = self.at(name, bound)
+        if got is not None:
+            return (self, got[0], got[1])
+        if self.outer is None or (self.cyclic and (self.wild or name in self.defs)):
+            return None
+        return self.outer[0]._lookup(name, self.outer[1])
+
+    def resolve(self, n, bound):
+        """The value ``n`` names, following definitions out through enclosing lists."""
+        env = self
+        while n[0] == "loc":
+            got = env._lookup(n[1], bound)
+            if got is None or got[2] is None:
+                return n
+            env, bound, n = got
+        return n
+
+    def value(self, name, bound):
+        """``at``, but None wherever the definition in force has no readable value."""
+        got = self.at(name, bound)
+        return None if got is None or got[1] is None else got
+
+    def _hits(self, k, cell, regions):
+        """True where the store at ``k`` may reach ``cell``.
+
+        An address the base/index form does not name still bounds the bytes it can
+        reach by the bits it can set (``addr_bits``)."""
+        s = self.lst[k]
+        got = store_ref(s, regions)
+        if got is not None:
+            return overlaps((cell, NOIDX, 0, 1, 0), got)
+        m = addr_bits(self.resolve(s[1], k))
+        return any((cell - d) & ~m == 0 for d in range(G.store_width(s[2])))
+
+    def _writes(self, k, cell, regions):
+        """True where statement ``k`` may store into ``cell``, nested bodies included.
+
+        A callee's stores and a nested body's are invisible to a scan of one list,
+        and control may enter at a label having made neither, exactly as
+        ``hidden_defs`` records for names."""
+        s = self.lst[k]
+        if s[0] in _WILD or s[0] == "pcall":
+            return True
+        if s[0] == "st" and self._hits(k, cell, regions):
+            return True
+        return any(
+            Defs(b, (self, k), s[0] in _CYCLIC)._writes(j, cell, regions)
+            for b in _stmt_bodies(s)
+            for j in range(len(b))
+        )
+
+    def cell(self, cell, bound, regions):
+        """``(env, index, value)`` of the byte store to ``cell`` in force at ``bound``.
+
+        ``_lookup`` over memory rather than names: the store in force is the last
+        statement before the read that may write the cell, and an enclosing one
+        survives only a cyclic body that writes the cell nowhere."""
+        for k in range(min(bound, len(self.lst)) - 1, -1, -1):
+            if not self._writes(k, cell, regions):
+                continue
+            s = self.lst[k]
+            exact = s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1
+            return (self, k, s[2]) if exact else None
+        if self.outer is None or (
+            self.cyclic and any(self._writes(k, cell, regions) for k in range(len(self.lst)))
+        ):
+            return None
+        return self.outer[0].cell(cell, self.outer[1], regions)
 
 
 def _stmt_exprs(s):
@@ -1300,14 +1548,11 @@ def _forloops(info):
 
 
 # ---- printing --------------------------------------------------------------------
-def _index_of(addr):
-    """``(base, index expression)`` for a ``const + index`` address, else None.
-
-    The index is whatever the address adds to the base; ``zext2`` is the reader's
-    own widening (grammar ``_index_addr``) and is stripped so the text round trips."""
-    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != 2 or len(addr[2]) != 2:
+def _base_add(addr, w, least):
+    """``(const base, index)`` of a two-operand ``INT_ADD`` at width ``w``, else None."""
+    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != w or len(addr[2]) != 2:
         return None
-    at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == 2 and c[1] >= 0x100]
+    at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == w and c[1] >= least]
     if len(at) != 1:
         return None
     base, idx = addr[2][at[0]], addr[2][1 - at[0]]
@@ -1316,6 +1561,19 @@ def _index_of(addr):
     if idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2:
         idx = idx[2][0]
     return base[1], idx
+
+
+def _index_of(addr):
+    """``(base, index expression, modulus)`` for a ``const + index`` address, else None.
+
+    The index is whatever the address adds to the base; ``zext2`` is the reader's
+    own widening (grammar ``_index_addr``) and is stripped so the text round trips.
+    The ``zp,X`` form adds inside the byte, so it names the zero page modulo 256."""
+    if addr[0] == "op" and addr[1] == "INT_ZEXT" and addr[3] == 2:
+        got = _base_add(addr[2][0], 1, 0)
+        return None if got is None else (got[0], got[1], 0x100)
+    got = _base_add(addr, 2, 0x100)
+    return None if got is None else (got[0], got[1], 0)
 
 
 _NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
@@ -1329,7 +1587,7 @@ def _membody(addr, res=_NORES):
         name = "*" + sidprog._addr_name(got[0])
         return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
-    if got is not None:
+    if got is not None and got[2] == 0:
         return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
     return None
 
@@ -1346,12 +1604,14 @@ def _fmt(n, res=_NORES):
     if k == "const":
         return sidprog._hex(n[1], n[2])
     if k == "loc":
-        return n[1]
+        return n[1] + sidprog._wsuf(loc_width(n))
     if k == "mem":
         return _memref(n[1], n[2], res)
     mn, kids, sz = n[1], n[2], n[3]
     if mn == "INT_ZEXT":
         return "zext%d(%s)" % (sz, _fmt(kids[0], res))
+    if mn == "COPY":
+        return "trunc%d(%s)" % (sz, _fmt(kids[0], res))
     if mn == "INT_CARRY":
         return "carry(%s, %s)" % (_fmt(kids[0], res), _fmt(kids[1], res))
     if mn == "INT_ADD":
@@ -1445,7 +1705,8 @@ class _Printer:
         if k == "label":
             self.line("$%04X:" % s[1], d)
         elif k == "asg":
-            self.line("%s = %s" % (s[1], self.e(s[2])), d + 1)
+            lv = s[1] + sidprog._wsuf(G.store_width(s[2]))
+            self.line("%s = %s" % (lv, self.e(s[2])), d + 1)
         elif k == "st":
             self.line(
                 "%s = %s" % (_memref(s[1], G.store_width(s[2]), self.res), self.e(s[2])), d + 1

@@ -262,14 +262,15 @@ _WILD = frozenset(("call", "dcall", "dbr", "dgoto", "igoto", "label", "swc", "sw
 
 
 def _mem_writes(stmts):
-    """(const (addr,w) written, wild) memory footprint of a statement list."""
+    """(const (addr, addr_width, val_width) written, wild) footprint of a statement list."""
     addrs, wild = set(), [False]
 
     def rec(sl):
         for s in sl:
             if s[0] == "st":
-                if s[1][0] == "const":
-                    addrs.add((s[1][1], _ew(s[2])))
+                a = s[1]
+                if a[0] == "const":
+                    addrs.add((a[1] & E._mask(a[2]), a[2], _ew(s[2])))
                 else:
                     wild[0] = True
             elif s[0] in _WILD:
@@ -279,6 +280,21 @@ def _mem_writes(stmts):
 
     rec(stmts)
     return addrs, wild[0]
+
+
+def _join_mem(pre_mem, stmts, fresh):
+    """Memory after ``stmts`` may or may not have run: ``pre_mem`` with only the
+    cells they can write rebound to a fresh opaque memory. Any unresolvable store
+    address or wild statement kind havocs everything."""
+    addrs, wild = _mem_writes(stmts)
+    if wild:
+        return memk(i64(fresh()))
+    base = memk(i64(fresh()))  # opaque post-branch memory; written cells read from it
+    m = pre_mem
+    for a, aw, w in sorted(addrs):
+        addr = E.num(a, aw)
+        m = store(m, addr, sel(base, addr, w), w)
+    return m
 
 
 def _reg_bases(ir, out):
@@ -554,19 +570,8 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
         stt[key] += 1
         return stt[key]
 
-    def join_mem(pre_mem, bodies):
-        addrs, wild = set(), False
-        for b in bodies:
-            a, w = _mem_writes(b)
-            addrs |= a
-            wild = wild or w
-        if wild:
-            return memk(i64(bump("k")))
-        base = memk(i64(bump("k")))  # opaque post-branch memory; written cells read from it
-        m = pre_mem
-        for a, w in sorted(addrs):
-            m = store(m, E.num(a & E._mask(w), w), sel(base, E.num(a & E._mask(w), w), w), w)
-        return m
+    def join_mem(pre_mem, s):
+        return _join_mem(pre_mem, [s], lambda: bump("k"))
 
     def conv(e):
         k = e[0]
@@ -631,7 +636,7 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
                 stt["env"], stt["mem"] = dict(pre_env), pre_mem
                 els = walk(s[4])
                 els_env = dict(stt["env"])
-                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, [s[3], s[4]])
+                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s)
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) is c and els_env.get(n) is c):
@@ -642,10 +647,10 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
             elif k == "loop":
                 pre_mem = stt["mem"]
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, [s[1]])
+                stt["mem"] = join_mem(pre_mem, s)
                 body = walk(s[1])
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, [s[1]])
+                stt["mem"] = join_mem(pre_mem, s)
                 nodes.append(("loop", body))
             elif k == "label":
                 havoc_all()
@@ -904,9 +909,10 @@ _NOEFFECT = frozenset(("goto", "cont", "brk", "ret", "unobs"))
 
 
 class Proc(Straight):
-    """Whole-procedure lift: intra-block store-chain forwarding, with memory and
-    written locals reset to fresh opaque terms (the algebraic havoc) at branch
-    joins, loop heads, labels, calls and dynamic control. Records per-site terms."""
+    """Whole-procedure lift: intra-block store-chain forwarding, with written locals
+    reset to fresh opaque terms (the algebraic havoc) at branch joins and loop heads,
+    and everything reset at labels, calls and dynamic control. Memory joins through
+    ``_join_mem``, so cells no branch can write keep forwarding. Records site terms."""
 
     def __init__(self):
         super().__init__()
@@ -945,45 +951,45 @@ class Proc(Straight):
             if s[1] == "ifnot":
                 cond = E.bnot(cond)
             self.sites.append(("if", cond))
-            self._branch([s[3], s[4]])
+            self._branch([s[3], s[4]], s)
         elif k == "loop":
-            self._loop(s[1])
+            self._loop(s)
         elif k == "callb":
             self.run(s[3])
             self._havoc_all()
         elif k in ("swc", "opsw"):
-            self._branch([b for _l, b in s[2]])
+            self._branch([b for _l, b in s[2]], s)
         elif k == "swg":
-            self._branch([b for _l, b in s[1]])
+            self._branch([b for _l, b in s[1]], s)
         elif k not in _NOEFFECT:
             for i in _READS.get(k, ()):
                 if s[i] is not None:
                     self.sites.append((k, self._conv(s[i])))
             self._havoc_all()
 
-    def _branch(self, bodies):
+    def _branch(self, bodies, stmt):
         pre_env, pre_mem = dict(self.env), self.mem
         ends = []
         for b in bodies:
             self.env, self.mem = dict(pre_env), pre_mem
             self.run(b)
             ends.append((self.env, self.mem))
-        self.env, self.mem = dict(pre_env), pre_mem
-        if any(m is not pre_mem for _e, m in ends):
-            self.mem = memk(i64(self._fresh()))
+        self.env = dict(pre_env)
+        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
         names = set(pre_env).union(*(e for e, _m in ends))
         for n in names:
             terms = [e.get(n) for e, _m in ends] + [pre_env.get(n)]
             if any(t is not terms[0] for t in terms):
                 self.env[n] = E.loc("%s@%d" % (n, self._fresh()))
 
-    def _loop(self, body):
+    def _loop(self, stmt):
+        body, pre_mem = stmt[1], self.mem
         w = _written(body)
         self._havoc_locs(w)
-        self.mem = memk(i64(self._fresh()))
+        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
         self.run(body)
         self._havoc_locs(w)
-        self.mem = memk(i64(self._fresh()))
+        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
 
 
 def _written(stmts):

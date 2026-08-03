@@ -27,11 +27,19 @@ def test_non_byte_value_rejected(val):
         F.canonical([[(0x00, val)]])
 
 
-def test_freq_pw_last_write_wins_and_elision():
+def test_freq_pw_last_write_wins_and_the_other_lane_comes_with_it():
+    """Freq/PW are 16-bit: a lane write reports the word, the other lane as held."""
     (rec,) = F.canonical([[(0x00, 0x11), (0x00, 0x22), (0x03, 0x08), (0x08, 0x40)]])
-    assert rec[0] == ((0x00, 0x22), (0x03, 0x08))  # v0.lww: LWW, $01/$02 elided
-    assert rec[2] == ((0x08, 0x40),)  # v1.lww pw lo
-    assert rec[4] == ()  # v2 untouched: elided
+    assert rec[0] == ((0x00, 0x22), (0x01, 0x00), (0x02, 0x00), (0x03, 0x08))
+    assert rec[2] == ((0x07, 0x00), (0x08, 0x40))  # v1 freq: hi written, lo held
+    assert rec[4] == ()  # v2 untouched: still elided, neither lane written
+
+
+def test_a_held_lane_is_the_value_the_seed_and_earlier_frames_left():
+    """The unwritten lane reports what it holds, not zero, once anything set it."""
+    a, b = F.canonical([[(0x00, 0x11)], [(0x01, 0x02)]], {0x01: 0x09})
+    assert a[0] == ((0x00, 0x11), (0x01, 0x09))  # the seed supplies the hi lane
+    assert b[0] == ((0x00, 0x11), (0x01, 0x02))  # frame 0's lo lane carries forward
 
 
 def test_ctrl_ad_sr_original_order_preserved_incl_double_ctrl():
@@ -49,8 +57,9 @@ def test_voice_sections_do_not_interleave():
 
 
 def test_filter_tail_last_write_wins():
+    """Cutoff is the tail's only 16-bit register; $17/$18 stay byte-wide."""
     (rec,) = F.canonical([[(0x18, 0x0F), (0x15, 0x03), (0x18, 0x1F), (0x17, 0xF1)]])
-    assert rec[6] == ((0x15, 0x03), (0x17, 0xF1), (0x18, 0x1F))
+    assert rec[6] == ((0x15, 0x03), (0x16, 0x00), (0x17, 0xF1), (0x18, 0x1F))
 
 
 def test_readonly_residual_class_ordered():

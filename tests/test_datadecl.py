@@ -68,6 +68,18 @@ def test_flat_region_excludes_the_cells_the_play_phase_writes():
     )
 
 
+def test_wholly_written_run_declares_its_extent_with_an_empty_const_claim():
+    """A per-voice state array is a datum: ``mut`` carries constness, the size stands.
+
+    Its extent is what bounds an index (``avail``), so suppressing the declaration
+    would leave every access spanning the whole register range."""
+    mut = frozenset(range(0x2000, 0x2100))
+    size, moffs, _obs = _ext(0x2000, [0x2000, 0x2001, 0x2002], bounds=[0x2000, 0x2100], mut=mut)
+    assert (size, moffs) == (3, [0, 1, 2])
+    r = D.Regions([_reg(0x2000, size, mut=moffs)])
+    assert r.avail(0x2000) == 3 and not any(r.const_at(a) for a in range(0x2000, 0x2003))
+
+
 def test_strided_block_keeps_the_lanes_the_play_phase_never_writes():
     """A record block is const per lane: a written row names its lane, not the block."""
     reads, bounds = range(0x2000, 0x2040), [0x2000, 0x2040]
@@ -103,6 +115,19 @@ def test_unwitnessed_base_neither_declares_nor_bounds():
     out = _regions([_grp(0x2000, range(0x2000, 0x2060)), _grp(0x2001)])
     assert [g["base"] for g in out] == [0x2000]
     assert _ext(0x2000, range(0x2000, 0x2060), bounds=[0x2000]) == (0x100, [], True)
+
+
+def test_a_base_on_the_code_image_is_not_carved_as_data():
+    """A declaration carries its base byte, so one there would print code as data.
+
+    The extent claim is not separable from that: the next code byte bounds the
+    region, so all it can claim is the instruction byte itself. Spec 2 reads a
+    code cell as the state variable it is."""
+    lo = _grp(0x2000, range(0x2000, 0x2040))
+    on_code = _grp(0x2040, range(0x2040, 0x2080))
+    assert [g["base"] for g in _regions([lo, on_code])] == [0x2000, 0x2040]
+    assert [g["base"] for g in _regions([lo, on_code], code=[0x2040])] == [0x2000]
+    assert _ext(0x2040, [0x2040, 0x2050], code=[0x2040, 0x2041]) == (1, [], True)
 
 
 def _reg(base, size, stride=1, mut=()):

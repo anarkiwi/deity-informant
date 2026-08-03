@@ -118,6 +118,72 @@ def test_proc_forwards_intra_block_but_havocs_across_branch():
     assert mem.extract(p.env["b"]).startswith("sel(memk(")  # not forwarded across join
 
 
+_SPILL = [("st", ("const", 0x01FD, 2), ("mem", ("const", 0x5591, 2), 1))]
+_IDX_STORE = (
+    "st",
+    ("op", "INT_ADD", (("const", 0x5510, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2),
+    ("loc", "d"),
+)
+
+
+def _read_after_branch(body, addr=0x01FD, w=1, pre=None):
+    """Extracted term of a read of ``addr`` placed after a branch running ``body``."""
+    stmts = list(pre or _SPILL)
+    stmts.append(("if", "if", ("loc", "c"), list(body), []))
+    stmts.append(("asg", "out", ("mem", ("const", addr, 2), w)))
+    return mem.extract(mem.Proc().run(stmts).env["out"])
+
+
+def test_proc_forwards_across_branch_writing_disjoint_cell():
+    """A branch that provably writes only $5510 leaves the $01FD spill forwarded."""
+    assert _read_after_branch([("st", ("const", 0x5510, 2), ("loc", "d"))]) == str(
+        mem.sel(mem.mem0(), E.num(0x5591, 2), 1)
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [("st", ("const", 0x01FD, 2), ("loc", "d"))],
+        [_IDX_STORE],
+        [("call", 0x1234, 0x1237)],
+        [("label", 0x1234)],
+        [("if", "if", ("loc", "e"), [("dgoto", ("loc", "p"))], [])],
+    ],
+    ids=["same-cell", "indexed-address", "call", "label", "nested-dynamic"],
+)
+def test_proc_havocs_across_branch_that_may_write_the_cell(body):
+    """Any store the join cannot pin to a disjoint constant cell havocs the read."""
+    assert _read_after_branch(body).startswith("sel(memk(")
+
+
+def test_proc_havocs_partially_overlapping_write_across_branch():
+    """A branch byte-write to $41 must not let a word read of $40 forward."""
+    pre = [("st", ("const", 0x0040, 2), ("mem", ("const", 0x5591, 2), 2))]
+    out = _read_after_branch([("st", ("const", 0x0041, 2), ("loc", "d"))], 0x0040, 2, pre)
+    assert out.startswith("sel(") and out != str(mem.sel(mem.mem0(), E.num(0x5591, 2), 2))
+
+
+def test_join_uses_address_width_not_value_width():
+    """A 2-byte $5510 address holding a 1-byte value joins at $5510, not $0010."""
+    body = [("st", ("const", 0x5510, 2), ("loc", "d"))]
+    assert mem._mem_writes(body) == ({(0x5510, 2, 1)}, False)
+    pre = [("st", ("const", 0x0010, 2), ("loc", "q")), ("st", ("const", 0x5510, 2), ("loc", "r"))]
+    assert _read_after_branch(body, 0x0010, 1, pre) == str(E.loc("q"))  # not the joined cell
+    assert _read_after_branch(body, 0x5510, 1, pre).startswith("sel(memk(")  # is the joined cell
+
+
+def test_proc_forwards_across_loop_writing_disjoint_cell():
+    """The loop head/exit join is the branch join: a disjoint body still forwards."""
+    stmts = _SPILL + [
+        ("loop", [("st", ("const", 0x5510, 2), ("loc", "d")), ("brk",)]),
+        ("asg", "out", ("mem", ("const", 0x01FD, 2), 1)),
+    ]
+    assert mem.extract(mem.Proc().run(stmts).env["out"]) == str(
+        mem.sel(mem.mem0(), E.num(0x5591, 2), 1)
+    )
+
+
 def test_extracted_terms_render_through_existing_printer():
     """End-to-end: lift real pass-1 IR, extract over the unified graph, translate,
     and print with eqlift's own _Printer -- forwarding and simplification survive."""
