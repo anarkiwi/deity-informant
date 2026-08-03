@@ -836,22 +836,23 @@ def _parse_call(node, env):
     return tuple(out)
 
 
-class _Unformatted:
-    """Enough of ``black`` for egglog's printer, without the formatting pass.
+def _unformat():
+    """Stop egglog's printer formatting a term we only ever parse back.
 
-    ``str()`` on an extracted expression pretty-prints through Black, and
-    ``_parse_ir`` hands that to ``ast``, which does not care: the pass was 60% of
-    rung (d2)'s time. Swapped on the printer's module reference, not on ``black``."""
+    ``str()`` pretty-prints through Black and ``_parse_ir`` hands that to ``ast``,
+    which does not care: the pass was 60% of rung (d2)'s time. Skipped if egglog
+    stops printing that way, since its own note there proposes exactly that."""
+    black = getattr(_pretty, "black", None)
+    if black is None or not hasattr(black, "format_str"):
+        return
+    _pretty.black = type(
+        "_Unformatted",
+        (),
+        {"parsing": black.parsing, "format_str": staticmethod(lambda program, mode=None: program)},
+    )
 
-    parsing = _pretty.black.parsing
 
-    @staticmethod
-    def format_str(program, mode=None):
-        del mode
-        return program
-
-
-_pretty.black = _Unformatted
+_unformat()
 
 
 def _parse_ir(text):
