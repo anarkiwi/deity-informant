@@ -495,16 +495,17 @@ def test_either_grouping_is_provable_and_the_program_names_which(swap):
     lo, hi, lane_lo, lane_hi, step = _lane_terms()
     want = step if swap else lane_lo
     other = lane_lo if swap else step
-    form = framemath._fuse(lo, hi, ((lane_hi, want),))[0]
-    assert (form[0], form[1], form[2], form[3]) == ("add", lane_hi, want, ("zext", other))
+    form = framemath._fuse((((lo, hi)),), ((((lane_hi, want),)),))[0][0]
+    assert form == (lane_hi, want, ("add", framemath._W, ("zext", other), 2))
 
 
 def test_the_word_a_masked_hi_lane_makes_is_what_the_query_asks_about():
     """A 12-bit register's `AND #$0F` masks the word, so the query strips it first."""
     lo, hi, lane_lo, lane_hi, step = _lane_terms()
     masked = ("band", hi, ("num", 0x0F, 1), 1)
-    form = framemath._fuse(lo, masked, ((lane_hi, lane_lo),))[0]
-    assert (form[1], form[2], form[3], form[4]) == (lane_hi, lane_lo, ("zext", step), 0x0FFF)
+    form = framemath._fuse((((lo, masked)),), ((((lane_hi, lane_lo),)),))[0][0]
+    word = ("add", framemath._W, ("zext", step), 2)
+    assert form == (lane_hi, lane_lo, ("band", word, ("num", 0x0FFF, 2), 2))
 
 
 # ---- mutation evidence: the merge's premise is the destinations, not the lanes -----

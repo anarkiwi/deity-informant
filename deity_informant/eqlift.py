@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 
 import z3
+from egglog import pretty as _pretty
 from egglog import Expr, StringLike, function, i64, i64Like, rewrite, ruleset, var
 from egglog import eq as _fact_eq
 
@@ -406,6 +407,22 @@ def _r_addc_ne(A, w):
     return lhs, A.ne(x, A.num((_mask(w) + 1 + b - a) & _mask(w), w))
 
 
+def _r_eq_comm(A, w):
+    """Equality is symmetric, so which side a compare leaves the literal on is not a fact.
+
+    ``sub_eq0`` hands back the two compared terms in the order the subtract had
+    them, and every rule that then moves a constant step across the equality wants
+    it on the right; without this the same flag reads one way and not the other."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.eq(x, y), A.eq(y, x)
+
+
+def _r_ne_comm(A, w):
+    """The same for the negated relation."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.ne(x, y), A.ne(y, x)
+
+
 def _r_sub_eq0(A, w):
     x, y = A.tvar("x", w), A.tvar("y", w)
     return A.eq(A.sub(x, y, w), A.num(0, w)), A.eq(x, y)
@@ -416,14 +433,16 @@ def _r_sub_ne0(A, w):
     return A.ne(A.sub(x, y, w), A.num(0, w)), A.ne(x, y)
 
 
+def _pk(A, h, l):
+    """``h<<8 | l``: the word two byte lanes make, the shape every fusion is over."""
+    return A.bor(A.shl(A.zext(h), A.num(8, 1), 2), A.zext(l), 2)
+
+
 def _r_carry_fuse(A, w):
     del w
     al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
     hi = A.add(A.add(ah, bh, 1), A.carry(al, bl, 1), 1)
-    split = A.bor(A.shl(A.zext(hi), A.num(8, 1), 2), A.zext(A.add(al, bl, 1)), 2)
-    a16 = A.bor(A.shl(A.zext(ah), A.num(8, 1), 2), A.zext(al), 2)
-    b16 = A.bor(A.shl(A.zext(bh), A.num(8, 1), 2), A.zext(bl), 2)
-    return split, A.add(a16, b16, 2)
+    return _pk(A, hi, A.add(al, bl, 1)), A.add(_pk(A, ah, al), _pk(A, bh, bl), 2)
 
 
 def _r_carry_fuse0(A, w):
@@ -431,9 +450,7 @@ def _r_carry_fuse0(A, w):
     del w
     al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
     hi = A.add(ah, A.carry(al, bl, 1), 1)
-    split = A.bor(A.shl(A.zext(hi), A.num(8, 1), 2), A.zext(A.add(al, bl, 1)), 2)
-    a16 = A.bor(A.shl(A.zext(ah), A.num(8, 1), 2), A.zext(al), 2)
-    return split, A.add(a16, A.zext(bl), 2)
+    return _pk(A, hi, A.add(al, bl, 1)), A.add(_pk(A, ah, al), A.zext(bl), 2)
 
 
 def _r_borrow_fuse(A, w):
@@ -441,18 +458,90 @@ def _r_borrow_fuse(A, w):
     del w
     al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
     hi = A.sub(ah, A.ult(al, bl), 1)
-    split = A.bor(A.shl(A.zext(hi), A.num(8, 1), 2), A.zext(A.sub(al, bl, 1)), 2)
-    a16 = A.bor(A.shl(A.zext(ah), A.num(8, 1), 2), A.zext(al), 2)
-    return split, A.sub(a16, A.zext(bl), 2)
+    return _pk(A, hi, A.sub(al, bl, 1)), A.sub(_pk(A, ah, al), A.zext(bl), 2)
+
+
+def _r_borrow_word(A, w):
+    """The general borrow, hi addend and all: ``ah - (bh + (al<bl))`` is the hi lane.
+
+    ``SEC / SBC lo / SBC hi`` writes the borrow the compare form of the flag makes,
+    which is what the byte-wise chain leaves; one rule, not a pass."""
+    del w
+    al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
+    hi = A.sub(ah, A.add(bh, A.ult(al, bl), 1), 1)
+    return _pk(A, hi, A.sub(al, bl, 1)), A.sub(_pk(A, ah, al), _pk(A, bh, bl), 2)
+
+
+def _r_bit_fuse(mn):
+    """A bitwise op distributes over the pack, so two lanes of it are one word op."""
+
+    def build(A, w):
+        del w
+        al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
+        f = getattr(A, mn)
+        return _pk(A, f(ah, bh, 1), f(al, bl, 1)), f(_pk(A, ah, al), _pk(A, bh, bl), 2)
+
+    return build
+
+
+def _r_shl_fuse(rot):
+    """``ASL/ROL lo`` then ``ROL hi``: the bit leaves the lo lane's top for the hi.
+
+    ``rot`` adds the bit the lo lane takes in, which is the carry the program held
+    and which the word takes in the same place."""
+
+    def build(A, w):
+        del w
+        al, ah, c = (A.tvar(n, 1) for n in ("al", "ah", "c"))
+        bit = A.ne(A.band(al, A.num(0x80, 1), 1), A.num(0, 1))
+        one, word = A.num(1, 1), A.shl(_pk(A, ah, al), A.num(1, 2), 2)
+        lo = A.bor(A.shl(al, one, 1), c, 1) if rot else A.shl(al, one, 1)
+        hi = A.bor(A.shl(ah, one, 1), bit, 1)
+        return _pk(A, hi, lo), A.bor(word, A.zext(c), 2) if rot else word
+
+    return build
+
+
+def _r_shr_fuse(rot):
+    """``LSR/ROR hi`` then ``ROR lo``: the same bit rightwards, out of the hi lane."""
+
+    def build(A, w):
+        del w
+        al, ah, c = (A.tvar(n, 1) for n in ("al", "ah", "c"))
+        one, word = A.num(1, 1), A.shr(_pk(A, ah, al), A.num(1, 2), 2)
+        bit = A.shl(A.band(ah, one, 1), A.num(7, 1), 1)
+        hi = A.bor(A.shr(ah, one, 1), A.shl(c, A.num(7, 1), 1), 1) if rot else A.shr(ah, one, 1)
+        lo = A.bor(A.shr(al, one, 1), bit, 1)
+        out = A.bor(word, A.shl(A.zext(c), A.num(15, 2), 2), 2) if rot else word
+        return _pk(A, hi, lo), out
+
+    return build
+
+
+def _r_carry_ult(A, w):
+    """A sum below its own addend is the carry out, which is how a wrap test reads."""
+    x, y = A.tvar("x", w), A.tvar("y", w)
+    return A.carry(x, y, w), A.ult(A.add(x, y, w), y)
+
+
+def _r_eq_zero(A, w):
+    """``x == 0`` is ``x < 1``, which is the borrow out of ``x - 1``."""
+    x = A.tvar("x", w)
+    return A.eq(x, A.num(0, w)), A.ult(x, A.num(1, w))
+
+
+def _r_carry_ones(A, w):
+    """All ones is the one value a further count carries out of, which ``BNE`` tests."""
+    x = A.tvar("x", w)
+    return A.eq(x, A.num(_mask(w), w)), A.carry(x, A.num(1, w), w)
 
 
 def _r_mask_hoist(A, w):
     """A masked hi half is the word masked: the 12-bit register's ``AND #$0F``."""
     del w
     h, l, m = A.tvar("h", 1), A.tvar("l", 1), A.ivar("m", 1)
-    lhs = A.bor(A.shl(A.zext(A.band(h, A.num(m, 1), 1)), A.num(8, 1), 2), A.zext(l), 2)
-    word = A.bor(A.shl(A.zext(h), A.num(8, 1), 2), A.zext(l), 2)
-    return lhs, A.band(word, A.num((m << 8) | 0xFF, 2), 2)
+    lhs = _pk(A, A.band(h, A.num(m, 1), 1), l)
+    return lhs, A.band(_pk(A, h, l), A.num((m << 8) | 0xFF, 2), 2)
 
 
 def _r_sbc_borrow(A, w):
@@ -490,40 +579,54 @@ _SHIFT_FOLDS = tuple(
 
 
 RULES = (
-    ("add_comm", (1, 2), _r_add_comm),
-    ("add_assoc", (1, 2), _r_add_assoc),
-    ("add_fold", (1, 2), _r_add_fold),
-    ("add_zero", (1, 2), _r_add_zero),
-    ("sub_to_add", (1, 2), _r_sub_to_add),
-    ("add_to_sub", (1, 2), _r_add_to_sub),
-    ("sub_add_cancel", (1, 2), _r_sub_add_cancel),
-    ("sub_sub_cancel", (1, 2), _r_sub_sub_cancel),
-    ("carry_comm", (1, 2), _r_carry_comm),
-    ("and_comm", (1, 2), _r_and_comm),
-    ("and_fold", (1, 2), _r_and_fold),
-    ("or_comm", (1, 2), _r_or_comm),
-    ("or_zero", (1, 2), _r_or_zero),
-    ("shl_zero", (1, 2), _r_shl_zero),
-    ("carry_zero", (1, 2), _r_carry_zero),
-    ("zext_num", (1,), _r_zext_num),
-    ("num_narrow", (1,), _r_num_narrow),
-    ("sign_ne", (1, 2), _r_sign_ne),
-    ("sign_eq", (1, 2), _r_sign_eq),
-    ("not_ne", (1, 2), _r_not_ne),
-    ("not_eq", (1, 2), _r_not_eq),
-    ("not_slt", (1, 2), _r_not_slt),
-    ("not_ult", (1, 2), _r_not_ult),
-    ("not_ule", (1, 2), _r_not_ule),
-    ("addc_eq", (1, 2), _r_addc_eq),
-    ("addc_ne", (1, 2), _r_addc_ne),
-    ("sub_eq0", (1, 2), _r_sub_eq0),
-    ("sub_ne0", (1, 2), _r_sub_ne0),
-    ("carry_fuse", (2,), _r_carry_fuse),
-    ("carry_fuse0", (2,), _r_carry_fuse0),
-    ("borrow_fuse", (2,), _r_borrow_fuse),
-    ("mask_hoist", (2,), _r_mask_hoist),
-    ("sbc_borrow", (1,), _r_sbc_borrow),
-) + _SHIFT_FOLDS
+    (
+        ("add_comm", (1, 2), _r_add_comm),
+        ("add_assoc", (1, 2), _r_add_assoc),
+        ("add_fold", (1, 2), _r_add_fold),
+        ("add_zero", (1, 2), _r_add_zero),
+        ("sub_to_add", (1, 2), _r_sub_to_add),
+        ("add_to_sub", (1, 2), _r_add_to_sub),
+        ("sub_add_cancel", (1, 2), _r_sub_add_cancel),
+        ("sub_sub_cancel", (1, 2), _r_sub_sub_cancel),
+        ("carry_comm", (1, 2), _r_carry_comm),
+        ("eq_comm", (1, 2), _r_eq_comm),
+        ("ne_comm", (1, 2), _r_ne_comm),
+        ("and_comm", (1, 2), _r_and_comm),
+        ("and_fold", (1, 2), _r_and_fold),
+        ("or_comm", (1, 2), _r_or_comm),
+        ("or_zero", (1, 2), _r_or_zero),
+        ("shl_zero", (1, 2), _r_shl_zero),
+        ("carry_zero", (1, 2), _r_carry_zero),
+        ("zext_num", (1,), _r_zext_num),
+        ("num_narrow", (1,), _r_num_narrow),
+        ("sign_ne", (1, 2), _r_sign_ne),
+        ("sign_eq", (1, 2), _r_sign_eq),
+        ("not_ne", (1, 2), _r_not_ne),
+        ("not_eq", (1, 2), _r_not_eq),
+        ("not_slt", (1, 2), _r_not_slt),
+        ("not_ult", (1, 2), _r_not_ult),
+        ("not_ule", (1, 2), _r_not_ule),
+        ("addc_eq", (1, 2), _r_addc_eq),
+        ("addc_ne", (1, 2), _r_addc_ne),
+        ("sub_eq0", (1, 2), _r_sub_eq0),
+        ("sub_ne0", (1, 2), _r_sub_ne0),
+        ("carry_fuse", (2,), _r_carry_fuse),
+        ("carry_fuse0", (2,), _r_carry_fuse0),
+        ("borrow_fuse", (2,), _r_borrow_fuse),
+        ("borrow_word", (2,), _r_borrow_word),
+        ("shl_fuse", (2,), _r_shl_fuse(False)),
+        ("rol_fuse", (2,), _r_shl_fuse(True)),
+        ("shr_fuse", (2,), _r_shr_fuse(False)),
+        ("ror_fuse", (2,), _r_shr_fuse(True)),
+        ("carry_ult", (1,), _r_carry_ult),
+        ("eq_zero", (1,), _r_eq_zero),
+        ("carry_ones", (1,), _r_carry_ones),
+        ("mask_hoist", (2,), _r_mask_hoist),
+        ("sbc_borrow", (1,), _r_sbc_borrow),
+    )
+    + tuple(("%s_fuse" % mn, (2,), _r_bit_fuse(mn)) for mn in ("band", "bor", "bxor"))
+    + _SHIFT_FOLDS
+)
 
 
 def _built(build, alg, w):
@@ -731,6 +834,24 @@ def _parse_call(node, env):
         else:
             out.append(ast.literal_eval(a))
     return tuple(out)
+
+
+class _Unformatted:
+    """Enough of ``black`` for egglog's printer, without the formatting pass.
+
+    ``str()`` on an extracted expression pretty-prints through Black, and
+    ``_parse_ir`` hands that to ``ast``, which does not care: the pass was 60% of
+    rung (d2)'s time. Swapped on the printer's module reference, not on ``black``."""
+
+    parsing = _pretty.black.parsing
+
+    @staticmethod
+    def format_str(program, mode=None):
+        del mode
+        return program
+
+
+_pretty.black = _Unformatted
 
 
 def _parse_ir(text):

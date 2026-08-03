@@ -155,20 +155,28 @@ def _bidir(a, kind, lo, hi, reg, step, carry):
 def _illegal(a, op, kind, lo, hi, reg):
     """A 16-bit shape built from an undocumented read-modify-write opcode.
 
-    ``SLO``/``RLA`` shift a lane and fold a logic op into A on the way; ``SRE``/
-    ``RRA`` do it rightwards; ``DCP``/``ISC`` are the counter forms real drivers
-    use, where the flag the RMW sets is what the hi lane is predicated on."""
-    a.i("LDA", "imm", 0x00)
+    ``SLO``/``RLA`` shift a lane and fold a logic op into A; ``SRE``/``RRA`` do it
+    rightwards. The counters' flag is a compare against A, so only ``$FF`` (DCP)
+    and a set carry over ``A=0`` (ISC) make it the lo lane's wrap."""
     if op in ("slo", "rla"):
+        a.i("LDA", "imm", 0x00)
         _acc(a, "SLO" if op == "slo" else "RLA", kind, lo, reg)
         _acc(a, "ROL", kind, hi, reg)
     elif op in ("sre", "rra"):
+        a.i("LDA", "imm", 0x00)
         _acc(a, "SRE" if op == "sre" else "RRA", kind, hi, reg)
         _acc(a, "ROR", kind, lo, reg)
-    else:
-        _acc(a, "DCP" if op == "dcp" else "ISC", kind, lo, reg)
+    elif op == "dcp":
+        a.i("LDA", "imm", 0xFF)
+        _acc(a, "DCP", kind, lo, reg)
         a.i("BNE", "rel", ("L", "skip"))
-        _acc(a, "DEC" if op == "dcp" else "INC", kind, hi, reg)
+        _acc(a, "DEC", kind, hi, reg)
+        a.label("skip")
+    else:
+        a.i("SEC").i("LDA", "imm", 0x00)
+        _acc(a, "ISC", kind, lo, reg)
+        a.i("BNE", "rel", ("L", "skip"))
+        _acc(a, "INC", kind, hi, reg)
         a.label("skip")
 
 
@@ -212,18 +220,25 @@ def _ident(c):
     return "%s-%s-%s-%s-%s-%s" % (c[0], "split" if c[1] else "adj", c[2], c[3], c[4], c[5])
 
 
+_SEED = {"inc": 0xFF, "isc": 0xFF, "dec": 0x00, "dcp": 0x00}  # so the wrap arm is taken
+
+
 def build(case):
-    """``(model, program)`` for one enumerated shape, else None where it has none."""
+    """``(model, program)`` for one enumerated shape, else None where it has none.
+
+    A counter's hi lane only runs when the lo lane wraps, so its lo seed is the one
+    value that wraps on the first frame; ``$F0`` steps but never wraps in eight."""
     asm = _shape(*case)
     if asm is None:
         return None
+    lo_seed = _SEED.get(case[2], 0xF0)
     data = {
         STEP: 0x37,
         STEP + 1: 0x02,
         ZPSTEP: 0x05,
-        ZP: 0xF0,
+        ZP: lo_seed,
         ZP + 1: 0x01,
-        ABS: 0xF0,
+        ABS: lo_seed,
         ABS + 1: 0x01,
         DIR: 0x00,
     }

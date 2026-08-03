@@ -55,29 +55,25 @@ def capture(tune, frames=200, sub=0):
 
     def form_str(f):
         """The whole 16-bit form: two lanes alone do not tell two forms apart."""
-        return "%s hi=%s lo=%s step=%s mask=%s" % (
-            f[0],
-            brief(f[1], 5),
-            brief(f[2], 5),
-            brief(f[3], 5),
-            f[4],
-        )
+        return "hi=%s lo=%s word=%s" % (brief(f[0], 5), brief(f[1], 5), brief(f[2], 6))
 
-    def fuse(lo, hi, pairs=()):
-        forms = o_fuse(lo, hi, pairs)
-        ev.append(["forms", len(forms), [form_str(f) for f in forms], brief(pairs, 5)])
-        return forms
+    def fuse(halves, pairs):
+        got = o_fuse(halves, pairs)
+        for n, forms in enumerate(got):
+            ev.append(["forms", len(forms), [form_str(f) for f in forms], brief(pairs[n], 5)])
+        return got
 
-    def site(lst, i, j, env):
-        st = o_site(lst, i, j, env)
+    def site(lst, i, j, env, offered, regions):
+        st = o_site(lst, i, j, env, offered, regions)
         ev.append(["stmts", i, j, [brief(s, 8) for s in lst]])
         shown = None
         if st is not None:
-            shown = "lo=%s hi=%s idx=%s hidx=%s why=%s src=%s" % (
+            shown = "lo=%s hi=%s idx=%s hidx=%s at=%s why=%s src=%s" % (
                 st.lo,
                 st.hi,
                 brief(st.idx, 3),
                 brief(st.hidx, 3),
+                (st.lo_at, st.hi_at),
                 st.why,
                 [brief(x, 5) for x in st.src],
             )
@@ -112,7 +108,8 @@ def capture(tune, frames=200, sub=0):
         A refusal names a predicate, not the pair of addresses that tripped it, and
         an unresolvable one prints as None -- which is the usual answer."""
         store = FM._store(env, lst, i)
-        return ["store=%s" % rng(FM._reach(store, regions))] + refs(st.src[1:], regions)
+        held = [st.src[1 if st.lo_at == i else 0], st.src[2]]
+        return ["store=%s" % rng(FM._reach(store, regions))] + refs(held, regions)
 
     def culprit(lst, k, st, regions, env):
         """The statement blocking the hoist, and which operand it changed."""
@@ -139,9 +136,10 @@ def capture(tune, frames=200, sub=0):
             ev.append(["alias", "store=%s" % rng(FM._reach(stmt, regions)), "hi=%s" % rng(lane)])
         return got
 
-    def lift(lst, i, j, st, name):
-        o_lift(lst, i, j, st, name)
-        ev.append(["lift", i, j, name, brief(lst[i], 7)])
+    def lift(lst, st, name):
+        o_lift(lst, st, name)
+        at = min(st.lo_at, st.hi_at)
+        ev.append(["lift", st.lo_at, st.hi_at, name, brief(lst[at], 7)])
 
     FM._fuse, FM._site, FM._premise = fuse, site, premise
     FM._lift, FM._may_disturb = lift, may_disturb

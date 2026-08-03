@@ -308,25 +308,34 @@ valid, gated artifact.
   `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
   per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
 - **(d2) 16-bit arithmetic lifting** (landed, `deity_informant/framemath.py`;
-  §4.3 for the measurement). A driver maintaining 16-bit state in 8-bit
-  registers writes the add twice — the lo lane, then the carry it propagates
-  into the hi lane — so rung (d) sees two byte stores with statements between
-  them and refuses. Rung (d2) reads that pair of updates as the one 16-bit
-  add/sub it is: the two written values are concatenated `hi<<8 | lo` and the
-  admitted rule set is asked what that word is; a site lifts where the answer
-  has lane shape. The **sources** decide the lift — two byte lanes at a const
-  base plus one shared index, linked by a carry, are one 16-bit quantity
-  wherever their halves are then written — and every naming the lift emits must
-  still hold where it emits it, with no statement it is hoisted past changing an
-  operand (the hi lane is one such read). The **destinations** decide nothing about the
+  §4.3 and §7.5 for the measurement). A driver maintaining 16-bit state in 8-bit
+  registers writes the update twice — the lo lane, then whatever crosses into the
+  hi lane — so rung (d) sees two byte stores with statements between them and
+  refuses. Rung (d2) reads that pair as the one 16-bit update it is, by one
+  definition and no idiom: **two statements jointly update `W = hi<<8 | lo` iff
+  the concatenation of the two values they write is a width-2 function of the
+  concatenation of the two the cells held.** The two written values are
+  concatenated and the admitted rule set is asked what that word is; a site lifts
+  where the answer is a term over one lane pack, whatever operator that term uses
+  — a shift is `W*2`, a bitwise pair `W & K`, a counter `W+1`, an add `W+step`,
+  and one reader takes them all. The **sources** decide the lift — two byte lanes
+  at a const base plus one shared index are one 16-bit quantity wherever their
+  halves are then written — and every naming the lift emits must still hold where
+  it emits it, with no statement it is hoisted past changing an operand (the other
+  lane is one such read). The **destinations** decide nothing about the
   lift, only whether the two writes collapse into one `u16` store, which needs
   them adjacent; a hi half stored elsewhere still lifts (the CyberTracker case
   in §5). Which grouping a site *is* comes from the program, not from what
   extraction returned: `_pairs` names the candidate lanes and `_fuse` queries the
-  fused e-class for the step each implies (§7.3). The lemmas are Z3-proven in
-  `eqlift.RULES` (`carry_fuse`, `carry_fuse0`, `carry_comm`, `borrow_fuse`,
-  `mask_hoist`, `add_to_sub`, `num_narrow`, `sub_add_cancel`, `sub_sub_cancel`).
-  Gate: FP + a proof record per site.
+  fused e-class for the step each implies (§7.3). A carry written as control flow
+  is normalised to a value first (`if c { INC x }` is `x = x + c`, `_predicated`),
+  since the condition is a flag and so is 0 or 1. The lemmas are Z3-proven in
+  `eqlift.RULES`: the pack is a homomorphism (`carry_fuse`, `carry_fuse0`,
+  `borrow_fuse`, `borrow_word`, `band_fuse`/`bor_fuse`/`bxor_fuse`,
+  `shl_fuse`/`rol_fuse`/`shr_fuse`/`ror_fuse`, `mask_hoist`), plus the flag
+  identities (`carry_comm`, `carry_ult`, `eq_zero`, `carry_ones`, `sbc_borrow`)
+  and the algebra (`add_to_sub`, `num_narrow`, `sub_add_cancel`,
+  `sub_sub_cancel`). Gate: FP + a proof record per site.
 - **(e) Per-voice unification.** Replace k code copies with one procedure
   parameterized by voice `v`. Premise — code isomorphism up to voice index:
   a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
@@ -599,6 +608,16 @@ follows a local's definition at every distinct read point. `docs/eqlift-adoption
 checked **every** iteration (`_STEP = 1`): allocation happens inside egglog's
 `run`, so a batched step is unbounded however small the node budget is — a
 5-iteration batch took one corpus worker to 44 GB and an OOM kill.
+
+What dominated this rung was neither budget but **`str()`**. Reading an extracted
+term back means `EQ.canon(EQ._parse_ir(str(x)))`, and `str()` on an egglog
+expression pretty-prints through **Black** at ~16ms a term: 62.2s of 103.7s on
+`Arpeggio`, against 3.5s of saturation and 4.9s of extraction. `_parse_ir` parses
+that string with `ast`, which is indifferent to formatting, so the pass was pure
+waste; `eqlift._Unformatted` swaps it off the printer's module reference (not off
+`black`, so nothing else in the process changes) and `Arpeggio` goes **103.7s ->
+22.0s**. Asking about more pairs is what a principled query costs, and it is
+affordable; it was never what the profile was showing.
 
 ### 4.4 Pointer resolution: the deref against the table it is reloaded from
 
@@ -1343,6 +1362,18 @@ classes moved as well as the totals — "lanes indexed differently" is now 8 (wa
 22 before the §7.1 fix) and "may alias the hi lane" 2 (was 14, then 6) — so the
 counts recorded before §7.1 was settled should not be compared against these.
 
+**Everything in this section predates §7.5's redesign, and its counts are not
+comparable to the current ones.** Every class below was measured while `_links`
+still gated the rung, so the section is a record of what was reachable *through an
+idiom filter*: 1466 lifts against 62 refusals. With the filter gone the rung reaches
+far more sites, and both numbers rose together — **2311 lifted, 120 refused**, over
+649 records at Gate FP 649/649 and fixpoint 649/649. A refusal here is a site the
+rung now sees and declines, not a shape it never looked at, so the doubling is the
+census widening rather than the lift regressing. The classes are unchanged in kind:
+46 an unresolvable lane address, 42 the lo destination disturbing the hi lane or the
+step, 20 lanes indexed differently, 5 the hi destination, 4 may-alias, 3 an
+intervening statement. §7.5 carries the current measurement.
+
 **The dominant class, triaged.** "The lo destination may disturb the hi lane or
 the step" was 43 of the 76, and `lifttrace capture` now records the store's range
 against every range it is held to reach, so the class splits by what actually
@@ -1787,65 +1818,180 @@ which refuses when the loop is restored, beside
 `::test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site` for the shape
 that is a hazard.
 
-### 7.5 The carry as control flow, which rung (d2) never sees
+### 7.5 The carry as control flow, and the definition that subsumes it (LANDED)
 
 `tests/test_lift6502.py` enumerates the 6502 shapes that write one 16-bit
 quantity as two bytes -- lane addressing (`zp`, `zp,X`, `abs`, `abs,X`, `abs,Y`)
-x adjacent or split lanes x add or subtract x step operand mode x how the carry
-crosses -- 180 shapes, and Gate FP as the oracle, so no case states an expected
-lift. It runs in under eight seconds, which the corpus sweep cannot.
+x adjacent or split lanes x operation x step operand mode x how the carry crosses
+x straight-line or a bounded accumulator reversing on a threshold. **610 shapes**,
+Gate FP as the oracle, so no case states an expected lift, and it runs in seconds
+where the corpus sweep cannot.
 
-Extended over the machine's operations as well -- add, subtract, 16-bit shift
-(`ASL`/`ROL`, `LSR`/`ROR`), 16-bit increment and decrement, and the bitwise
-`AND`/`ORA`/`EOR` -- it is **462 shapes, of which 150 lift and 312 are never seen
-at all**:
+At the version that enumeration was written against it read **242 lifted, 368
+never reaching a site at all** -- not refusals, so no census reported them and
+none entered §7.3's ledger. Two causes, not eight. `_links` required an
+`INT_CARRY`/`INT_LESS`/`INT_LESSEQUAL` in the hi statement's *value*, so a carry
+crossing as control flow, as a shift bit or as a predicated increment was
+invisible and a 16-bit operation with no carry at all could never qualify; and
+`_word_form` matched `(op, hi lane, lo lane, step, mask)` for `op` in
+`{add, sub}`, an idiom table behind a principled query. The architecture was
+idiom filter, principled query, idiom reader.
 
-| operation | carry form | shapes | result |
+**The redesign (docs/twobyte-lift.md §4).** `_links` is gone. Candidate pairs are
+bounded by *program structure* -- the run of statements that write a value,
+proximity in that run, a byte one value reads that the other reads, a pair the
+program names that is two adjacent cells of one row -- and never by the shape of
+an operator; `_linked` is a cost bound only, and cost is managed by how many pairs
+are asked about. `_word_form` names no operator: it returns, for each byte pair
+the extracted width-2 term packs, that term with every occurrence of the pack
+standing as the word, admitted only where no lane survives outside it. One reader
+takes a shift (`W*2`), a bitwise pair (`W & K`), a counter (`W+1`) and an add
+(`W+step`) alike, and `_lift` substitutes the word local into whatever term came
+back. Predicated updates are normalised to values before the query
+(`_predicated`): `if c { INC x }` is `x = x + c` and the other arm takes `1 - c`,
+sound because the condition is a comparison or a carry and so is 0 or 1, and
+refused where the arm binds a register, escapes a name, or the store may read an
+input or write an output. Either statement may hold the hi lane, since
+`LSR hi / ROR lo` writes that one first. The general borrow is one Z3-proven rule
+(`borrow_word`), as §4 requires, and the rest of what the operations needed is
+the same law stated over the pack: it is a homomorphism for the bitwise ops
+(`band_fuse`/`bor_fuse`/`bxor_fuse`, one builder), for the shifts and rotates
+(`shl_fuse`/`rol_fuse`/`shr_fuse`/`ror_fuse`, two builders), plus three flag
+identities (`carry_ult`, `eq_zero`, `carry_ones`) and the symmetry of the two
+compare relations (`eq_comm`, `ne_comm`) -- a `CMP` leaves the literal on whichever
+side the subtract had it, and every rule that then moves a constant step across the
+equality wants it on the right. Every one is Z3-proven through `verify_rules`
+before admission; 86 rule instances now prove.
+
+**Measured over the 610 shapes: 242 lifted -> 552, 368 no site -> 34, 0 refused
+-> 24.**
+
+| operation | was | now | what is left |
 |---|---|---|---|
-| add | `ADC #0` | 50 | lift |
-| add | word step | 50 | lift |
-| subtract | `SBC #0` | 50 | lift |
-| **subtract** | **word step** | **50** | **no site** |
-| add, subtract | `BCC`/`INC`, `BCS`/`DEC` | 80 | **no site** |
-| 16-bit shift | `ASL`/`ROL`, `LSR`/`ROR` | 16 | **no site** |
-| 16-bit inc/dec | `INC`/`BNE`/`INC` | 16 | **no site** |
-| bitwise | `AND`/`ORA`/`EOR` both lanes | 150 | **no site** |
+| `ADC` | 192 lifted / 48 no site | 216 / 14 no site / 10 refused | 14 unobserved, 10 the `zp,X` wrap |
+| `SBC` | 50 / 90 | 124 / 8 / 8 | 8 unobserved, 8 the `zp,X` wrap |
+| 16-bit shift (`ASL`/`ROL`, `LSR`/`ROR`) | 0 / 16 | 16 / 0 | — |
+| 16-bit inc/dec (`INC`/`BNE`/`INC`) | 0 / 16 | 10 / 4 / 2 | 6 the one naming defect |
+| bitwise `AND`/`ORA`/`EOR` | 0 / 150 | 150 / 0 | — |
+| `SLO` `RLA` `SRE` `RRA` `DCP` `ISC` | 0 / 48 | 36 / 8 / 4 | 8 `RRA`, 4 the naming defect |
 
-Two causes, not eight. **`_links` is an idiom filter, and it is the gate.** It
-requires an `INT_CARRY`/`INT_LESS`/`INT_LESSEQUAL` in the hi statement's *value*,
-so a carry that crosses as control flow, as a shift bit, or as a predicated
-increment is invisible, and a 16-bit operation with no carry at all -- a bitwise
-one -- can never qualify. That is 262 of the 312. **The remaining 50 are the
-standard 16-bit subtract**: `SEC / LDA lo / SBC lo_step / STA lo / LDA hi / SBC
-hi_step / STA hi` emits a hi lane of `hi - (step_hi + (1 - carry))`, and only the
-`step_hi = 0` case has an admitted rule, so the general borrow never fuses. By
-§4's own governance that is a missing rule, not a missing pass.
+The enumeration itself carried two 6502 errors, and both flattered the refusal
+count rather than the lift: `ZP`/`ABS` were seeded `$F0`, at which `INC lo` cannot
+wrap in eight frames, so the 16 counter shapes never ran the hi arm they exist to
+exercise; and `DCP`/`ISC` were given `LDA #$00`, which makes the flag they leave a
+test of something else. Those are the accumulator's fault, not the opcode's -- the
+counters' flag is a compare against `A`, so only `$FF` for `DCP` and a set carry
+over `A = 0` for `ISC` make it the lo lane's wrap. `build` now seeds each counter
+at the value that wraps on the first frame and `_illegal` writes the real forms.
 
-The consolidation follows from the matrix rather than from a hypothesis. Rung
-(d2) already *queries* an e-class for the lane grouping (§7.3); it still
-*pre-filters* the site on an idiom. Asking the same query without the carry
-pre-filter -- do these two byte statements jointly compute one 16-bit value --
-subsumes shifts, bitwise operations and predicated increments through the
-machinery that is already there, and leaves the borrow as one Z3-proven rule.
+**The falsifiable prediction, answered.** 36 of the 48 undocumented-opcode shapes
+lift and **no line of rung (d2) or of its rule set names SLO, RLA, SRE, RRA, DCP,
+ISC or any opcode**: `git grep -inE "\b(slo|rla|sre|rra|dcp|isc)\b"` over
+`framemath.py`, `eqlift.py`, `framefuse.py` and `frameproc.py` matches nothing,
+and the only mnemonics in any of them are docstrings saying which 6502 sequence a
+Z3-proven identity corresponds to. The decoder (`lifter.py`) names them, as the
+machine model must. `SLO`'s statement list is byte-identical to `ASL`'s and
+`SRE`'s to `LSR`'s, which is the prediction working exactly as stated: the value
+graphs are those of the legal sequences they fuse. `DCP` and `ISC` needed no
+clause either -- once the enumeration gave them their real accumulators, the one
+thing between them and the existing borrow and carry laws was **orientation**:
+`sub_eq0` hands a compare back as `eq(num, term)` while `addc_eq` and its
+relatives match `eq(term, num)`. Stating that equality is symmetric took
+`DCP` and `ISC` from 0 of 16 to 12 of 16, and it is one fact about a relation, not
+a page in a catalogue. The 12 that remain are two causes:
 
-Rung (d2) pairs two statements by their *values*, and `_links` looks for an
-`INT_CARRY` inside the hi statement's value. Written as control flow the hi lane
-has no value at that level -- `st [$10] = t0` followed by
-`if carry(ctr0,$37) { INC $11 }` -- so `_match` never forms the pair. These are
-not refusals; they are never counted, so they never entered the 51 of §7.3 and no
-census reports them.
+- **`RRA hi / ROR lo` is not a 16-bit shift (8 shapes).** `RRA` is `ROR mem` then
+  `ADC mem`, and the bit the following `ROR lo` takes in is the **ADC's** carry
+  out, not the bit `ROR hi` shifted out: the value graph reads
+  `(w1>>1) | ((carry($00,t0) | carry(t0, w0&$01)) << 7)`, where a 16-bit shift
+  needs `w0 & $01`. It refuses because the pair does not compute `W>>1`, which is
+  the design refusing over values, as it should.
+- **4 are the naming defect below**, the `zp,X` half of the counter shapes.
 
-The shape is common and it is already in this document: `Arpeggio $3297 LDA $F0 /
-CLC / ADC #$04 / STA $F0 / BCC $32A2 / INC $F1` is the pointer advance read off
-the 6502 in §7.3. A predicated increment is the same 16-bit add written another
-way, and the condition IS the carry the lo add produced, so converting it is a
-provable normalisation and not an idiom: `if carry(a, b) { INC c }` is
-`c = c + carry(a, b)`. It belongs before rung (d2) as an if-conversion over
-predicated updates, so the rung keeps working on values alone.
+**The residue is 58 shapes and three causes, one of which is a real defect.**
+22 are the trace and not the pass: a branch the 8-frame window never takes leaves
+its arm `unobs`, so the `SBC` borrow (8) and the bidirectional accumulator's
+threshold (14) are never reached, the latter being the asymmetry §7.3 still holds
+open. 8 are `RRA`, above. **The other 28 are one defect, and it is upstream of
+rung (d2): the same cell named two ways.** Where the index is a known constant the
+block converter folds it into some addresses and not others, so one lane arrives as
+`mem[$1460]` and the other as `mem[zext(x) + $1460]` -- two terms for one byte,
+which no e-graph can join because nothing has told it they are equal. It shows up
+as a refusal (24) where the unfolded lane's range then covers the folded one and
+`_may_disturb` correctly says they may alias, and as a no-site (4, the `abs,X` and
+`zp,X` `DEC` shapes) where the two terms simply never fuse. This is the class §7.3
+records for `After_the_War $0010/$0011`; **the fix belongs in address
+canonicalisation, not in the lift**, and it is the one thing left that a correct
+rung (d2) cannot reach on its own.
 
-Not yet sized on the corpus. That is the first thing to measure.
+**The bidirectional accumulator: both arms lift in 65 of 100 shapes, up from 15.**
+The 50 `wordstep` shapes were held by the missing general borrow and `borrow_word`
+takes them. Of the 35 that still lift one arm only, the cause is the same
+unobserved arm: the down arm runs only after the hi lane crosses `CMP #$08`,
+which the seeded data reaches in the `wordstep` shapes and not in the `withzero`
+ones. `apply_rung`'s `done` set is not involved — the two arms are different
+statement lists, so they never share it.
 
-### 7.4 tools/lifttrace.py
+**Measured over the corpus, HEAD vs the redesign** (682 tunes, `CAP_CPU=2400`;
+see the cost note below for why the cap moved). Gate FP **649/649** and the
+canonical fixpoint **649/649**, on the same 649 records HEAD reaches, with the
+same 33 failures and all of them decompile-side. Rung (d2) lifts **1515 -> 2311**
+and refuses **60 -> 120**; merges **189 -> 410**, adjacent **668 -> 953**, SID
+pairs **365 -> 383**; byte-wide SID stores **772 -> 750** and word **2899 ->
+2908**. The consumer partition §6 requires beside the gate: emitted text
+10196681 -> **10222682** bytes (+0.25%), raw `mem[` 9699 -> **9703**. Bit-identical
+across `PYTHONHASHSEED` 0, 1, 2 and 3 — 672 records, 0 differ on each pair — and
+`lifttrace stable --runs 8` agrees on every decision of `Andy_Capp-The_Game`,
+`Beat_the_System`, `Dribbling` and `Army_Moves`. One seed dependence was found
+and closed on the way: `mask_hoist` gives a masked pack two spellings of one
+cost, so `_asked` read the step off whichever the pool returned; it now takes the
+cheapest of the class by the same total order `_fuse` uses for the word
+(`_cheapest`), which is §7.1's lesson arriving in the step. The lifted
+sites by what the word turns out to be: 1485 add, 509 sub, 198 the word unchanged
+(a 16-bit copy), 107 `shl`, 56 `and`, 37 `or`, 34 `shr`, 5 `xor` — the 437 that
+are not an add or a subtract are what `_links` never let the rung see. The
+refusal classes are the ones §7.3 names, with two mirrored by the reversed
+orientation: 46 "a lane address is not a const base plus index", 42 "the lo
+destination may disturb the hi lane or the step" (5 more as "the hi destination
+… the lo lane"), 20 "the two lanes are indexed differently", 4 "the lo
+destination may alias the hi lane", 3 "an intervening statement changes an
+operand".
+
+**Two wrong lifts the gate caught, and the premise each was missing.** Both are
+`_back` choosing a naming that does not mean at `i` what it meant where it was
+recorded, and both predate the redesign in `_emittable` — `_links` merely kept
+the pairs that reach them from forming. `80squares` `$140F/$1410`: the step is
+`("loc", "a")` captured before the interval, and the interval's own `a = t4`
+reassigns it, so `_hoist`'s wholesale inlining rewrote the step to the lo lane's
+own result. `Army_Moves` `$E009/$EDF7`: `to_egg` keys a load by its address, so
+the reads of `$ED8F,X` at `w1` and at `a1` are one term although a store to that
+cell sits between them, and `_back` took the earlier, stale naming. `_emittable`
+now refuses a naming the interval rebinds or that means any definition other than
+the one in force at `j`, and `_stale` holds a naming recorded before `i` against
+every statement between, by the same `_clobbers` predicate `_hoist` holds the
+interval to. With both, all four tunes that failed gate FP pass it.
+
+**Cost.** The rung asks every structurally admissible pair instead of one
+pre-matched idiom, and the price is measured: `_fuse`'s cost is almost entirely
+`egglog`'s `extract` per query pair (63.4s of 97.9s on `Arpeggio` at 40 frames,
+against 4.0s of saturation), so it scales with pairs asked. One e-graph now serves
+every partner of one statement rather than one per pair, which is worth about 20%;
+the rest of the bound is `_linked` and `_pairs`. `Arpeggio`, the corpus's worst
+case, goes **58.9s -> 95.0s at 40 frames (1.61x)**, with 936 query pairs in 66
+e-graphs becoming 1281 in 202; at 200 frames it is 251s at HEAD.
+
+**That cost is not free at corpus scale, and the measurement says so.**
+`fuse_run.py`'s `CAP_CPU` is an `RLIMIT_CPU` per *worker*, not per tune, so 16
+workers share a fixed CPU budget for the whole sweep. At `CAP_CPU=300` HEAD fits
+(649 of 682, all 33 failures decompile-side) and this build does not: **251 tunes
+return `MemoryError: cpu cap`**, and two workers crossed the hard limit mid-task
+and were `SIGKILL`ed, which deadlocks `imap_unordered` exactly as that file's
+docstring warns. The sweep below is therefore run at `CAP_CPU=2400`, where the cap
+binds on neither build. Cutting the extraction per query pair is the next cost
+work; part of the bound is already paid for in coverage, since `_pairs` offers a
+cross pair of differing rows only where no same-row pair is on offer at all, which
+costs 6 `adc`-`withzero`-`bidir` shapes whose step table is walked by the other
+index register.
 
 Records a tune's ordered rung-(d2) decisions — every candidate form `_fuse`
 offered, the grouping `_site` chose, the refusal `_premise` gave, the statement
