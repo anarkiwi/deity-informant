@@ -82,7 +82,7 @@ def _consts(idx, env, at, regions, mem0, depth=8):
     while True:
         while idx[0] == "loc":
             got = env.lookup_joined(idx[1], at)
-            if got is None:
+            if got is None or got is frameproc.ENTRY:
                 return None
             if got[2] is None:
                 return _fork(idx, got[0], got[1], regions, mem0, depth)

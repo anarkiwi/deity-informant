@@ -324,6 +324,7 @@ def hidden_defs(s):
 
 
 _COMPUTED = frozenset(("dgoto", "dbr", "igoto", "swg"))  # a jump no list of gotos names
+ENTRY = object()  # "nothing is in force, so the name still holds its value at entry"
 
 
 def _label_defs(s):
@@ -521,8 +522,10 @@ class Defs:
             if name in got[0]:
                 return (self, k, None)
             labels |= got[1]
-        if self.outer is None or (self.cyclic and self._name_dirty(name, labels)):
+        if self.cyclic and self._name_dirty(name, labels):
             return None
+        if self.outer is None:
+            return ENTRY
         oenv, obound = self.outer
         if oenv.lst[obound][0] == "for" and oenv.lst[obound][1] == name:
             return (oenv, obound, None)  # the counter binds the body from its own seat
@@ -548,14 +551,15 @@ class Defs:
         jumps = self._entries()
         if jumps.computed:
             return None
-        want, seen = (id(got[0].lst), got[1]), set()
+        want = got if got is ENTRY else (id(got[0].lst), got[1])
+        seen = set()
         while labels:
             pc = labels.pop()
             seen.add(pc)
             for env, k in jumps.srcs.get(pc, ()):
                 more = set()
                 sgot = walk(env, k, more)
-                if sgot is None or (id(sgot[0].lst), sgot[1]) != want:
+                if sgot is None or (sgot if sgot is ENTRY else (id(sgot[0].lst), sgot[1])) != want:
                     return None
                 labels |= more - seen
         return got
@@ -575,6 +579,68 @@ class Defs:
         labels = set()
         got = self._cell_walk(cell, bound, regions, labels)
         return self._verified(got, labels, lambda e, k, out: e._cell_walk(cell, k, regions, out))
+
+
+def envs(stmts, outer=None, cyclic=False):
+    """``(env, index, statement)`` over a list and its nested bodies, scopes linked."""
+    env = Defs(stmts, outer, cyclic)
+    for i, s in enumerate(stmts):
+        yield env, i, s
+        for b in _stmt_bodies(s):
+            yield from envs(b, (env, i), s[0] in _CYCLIC)
+
+
+def _transfers(s, nxt):
+    """True where ``s`` may enter a procedure the enclosing list does not name.
+
+    A ``dgoto``/``igoto`` the next statement's ``swg`` enumerates lands in an arm of
+    this same procedure, and a ``dcall`` an ``swc`` enumerates lands on one of the
+    labels ``swc`` names; anything else computed may go anywhere."""
+    k = s[0]
+    if k in ("dgoto", "igoto"):
+        return nxt != "swg"
+    if k == "dcall":
+        return nxt != "swc"
+    return k == "dbr"
+
+
+class Calls:
+    """Who calls each procedure and with what: the entry side of a bare local.
+
+    A parameter holds what a call site passed, so the value is known only where
+    the call graph is closed -- an indirect transfer, a caller the model does not
+    name (an RTS-trick landing among them), or no caller at all leaves it open."""
+
+    __slots__ = ("params", "sites", "opaque", "open_flow", "play")
+
+    def __init__(self, procs, play, landings=()):
+        self.play, self.sites, self.open_flow = play, {}, False
+        self.opaque = set(landings)
+        self.params = {e: list(pa) for e, pa, _r, _s in procs}
+        for e, _pa, _r, stmts in procs:
+            for env, i, s in envs(stmts):
+                k = s[0]
+                if k == "pcall":
+                    self.sites.setdefault(s[1], []).append((e, env, i, tuple(s[2])))
+                elif k in ("call", "callb"):
+                    self.opaque.add(s[1])
+                elif k == "swc":
+                    self.opaque |= {int(lbl[1:], 16) for lbl in s[1]}
+                elif _transfers(s, env.lst[i + 1][0] if i + 1 < len(env.lst) else None):
+                    self.open_flow = True
+
+    def args(self, entry, name):
+        """``(caller, env, index, argument)`` per call site, None where the graph is open."""
+        params = self.params.get(entry) or []
+        if self.open_flow or entry == self.play or entry in self.opaque:
+            return None
+        if name not in params or not self.sites.get(entry):
+            return None
+        k = params.index(name)
+        sites = self.sites[entry]
+        if any(k >= len(args) for _c, _e, _i, args in sites):
+            return None
+        return [(c, env, i, args[k]) for c, env, i, args in sites]
 
 
 def _stmt_exprs(s):
@@ -2061,6 +2127,139 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
+_NEGATE = {"INT_EQUAL": "INT_NOTEQUAL", "INT_NOTEQUAL": "INT_EQUAL"}
+
+
+def _tidy_ifs(stmts):
+    """Empty then-arms flip to their negation, and ``ifnot (a != b)`` folds to ``if``."""
+    for i, s in enumerate(stmts):
+        for b in _stmt_bodies(s):
+            _tidy_ifs(b)
+        if s[0] != "if":
+            continue
+        if not s[3] and s[4]:
+            s = ("if", "ifnot" if s[1] == "if" else "if", s[2], s[4], s[3])
+        if s[1] == "ifnot" and s[2][0] == "op" and s[2][1] in _NEGATE:
+            s = ("if", "if", ("op", _NEGATE[s[2][1]], s[2][2], s[2][3]), s[3], s[4])
+        stmts[i] = s
+
+
+def _arm_locals(stmts):
+    """Locals the arm may define, None where a call binds unseen."""
+    names = set()
+    for s in stmts:
+        got = _label_defs(s)
+        if got is None:
+            return None
+        names |= got[0]
+    return names
+
+
+def _unify(a, b, ctx):
+    """``a`` equals ``b`` modulo a bijection over arm-local names, grown in ``ctx``."""
+    if a == b:
+        return True
+    if not (isinstance(a, tuple) and isinstance(b, tuple)) or len(a) != len(b):
+        return False
+    if a[0] == "loc" and b[0] == "loc":
+        return _pair_names(a[1], b[1], ctx)
+    return all(_unify(x, y, ctx) for x, y in zip(a, b))
+
+
+def _pair_names(na, nb, ctx):
+    mine, theirs, sigma, taken = ctx
+    if nb in sigma:
+        return sigma[nb] == na
+    if na == nb:
+        return True
+    if na in mine and nb in theirs and na not in taken:
+        sigma[nb] = na
+        taken.add(na)
+        return True
+    return False
+
+
+def _unify_stmt(sa, sb, ctx):
+    """The two arm statements are the same statement under the growing bijection."""
+    if sa[0] != sb[0] or sa[0] not in ("asg", "st"):
+        return False
+    if sa[0] == "asg":
+        return _pair_names(sa[1], sb[1], ctx) and _unify(sa[2], sb[2], ctx)
+    return _unify(sa[1], sb[1], ctx) and _unify(sa[2], sb[2], ctx)
+
+
+def _rename_stmt(s, sigma):
+    if s[0] == "asg" and s[1] in sigma:
+        s = ("asg", sigma[s[1]], s[2])
+    elif s[0] == "for" and s[1] in sigma:
+        s = ("for", sigma[s[1]], s[2], s[3], s[4])
+    elif s[0] == "pcall":
+        s = ("pcall", s[1], s[2], [sigma.get(n, n) for n in s[3]])
+    for nb, na in sigma.items():
+        s = _map_exprs(s, lambda x, _b=nb, _a=na: _subst_loc(x, _b, ("loc", _a)))
+    for b in _stmt_bodies(s):
+        b[:] = [_rename_stmt(s2, sigma) for s2 in b]
+    return s
+
+
+def _hoistable(s, cond):
+    """Moving ``s`` above the pure ``cond`` changes neither: no write ``cond`` reads."""
+    if s[0] == "asg":
+        return s[1] not in _locset(cond)
+    return not _reads_mem(cond)
+
+
+def _factor_one(s, root):
+    """``(head, if, tail)`` with the arms' shared statements moved out, else None."""
+    a, b = list(s[3]), list(s[4])
+    mine, theirs = _arm_locals(a), _arm_locals(b)
+    if mine is None or theirs is None:
+        return None
+    ctx = (mine, theirs, {}, set())
+    head = 0
+    while (
+        head < min(len(a), len(b))
+        and _hoistable(a[head], s[2])
+        and _unify_stmt(a[head], b[head], ctx)
+    ):
+        head += 1
+    tail = 0
+    while tail < min(len(a), len(b)) - head and _unify_stmt(a[-1 - tail], b[-1 - tail], ctx):
+        tail += 1
+    sigma = ctx[2]
+    if (head == 0 and tail == 0) or set(sigma) & set(sigma.values()):
+        return None
+    inside = sum(_use_count(s, n) for n in sigma)
+    total = sum(_use_count(x, n) for n in sigma for x in root)
+    if total != inside:
+        return None  # a renamed arm local leaks outside the if
+    b = [_rename_stmt(x, sigma) for x in b]
+    cut = len(a) - tail
+    kept = ("if", s[1], s[2], a[head:cut], b[head : len(b) - tail])
+    keep = [kept] if kept[3] or kept[4] or _reads_vol(s[2]) else []
+    return a[:head], keep, a[cut:]
+
+
+def _factor_ifs(stmts, root):
+    changed = False
+    i = 0
+    while i < len(stmts):
+        s = stmts[i]
+        for b in _stmt_bodies(s):
+            changed |= _factor_ifs(b, root)
+        got = None
+        if s[0] == "if" and s[3] and s[4]:
+            got = _factor_one(s, root)
+        if got is None:
+            i += 1
+            continue
+        pre, kept, post = got
+        stmts[i : i + 1] = pre + kept + post
+        changed = True
+        i += len(pre) + len(kept) + len(post)
+    return changed
+
+
 def repolish(procs, play):
     """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
 
@@ -2074,8 +2273,13 @@ def repolish(procs, play):
     for _round in range(16):
         pruned = _prune(info)
         inlined = _inline(info)
-        if not (pruned or inlined):
+        factored = False
+        for stmts in info.procs.values():
+            factored |= _factor_ifs(stmts, stmts)
+        if not (pruned or inlined or factored):
             break
+    for _e, _p, _r, stmts in procs:
+        _tidy_ifs(stmts)
 
 
 def render_lines(procs, resolved=_NORES):
