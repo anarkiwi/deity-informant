@@ -1353,6 +1353,9 @@ split state is the ordinary structure-of-arrays layout.
 
 ### 7.3 Rung (d2): the refusal classes
 
+> SUPERSEDED by §7.6 for rung (d2): there are now 0 refusals over the 610
+> shapes. The classes below survive only as corpus shapes, unre-measured.
+
 Root causes traced by instrumenting `FF._addr_split` and the aliasing
 predicates, and by reading the 6502 at the refusing sites. The trajectory,
 re-measured against the deterministic gate of §7.1: **77 → 76 → 65 → 62
@@ -1820,6 +1823,10 @@ that is a hazard.
 
 ### 7.5 The carry as control flow, and the definition that subsumes it (LANDED)
 
+> Counts SUPERSEDED by §7.6: the shape matrix is now 594/16/0, and §7.5's
+> attribution of 14 `adc-withzero-bidir` no-sites to the unobserved threshold
+> was wrong. The corpus numbers here predate the address rule.
+
 `tests/test_lift6502.py` enumerates the 6502 shapes that write one 16-bit
 quantity as two bytes -- lane addressing (`zp`, `zp,X`, `abs`, `abs,X`, `abs,Y`)
 x adjacent or split lanes x operation x step operand mode x how the carry crosses
@@ -2014,3 +2021,162 @@ Prefer this to toggling a flag and re-running the corpus: a corpus delta says a
 number moved, not which decision moved. Every finding in §7.1 and §7.3 above was
 located by `capture` on two builds and `diff` — the statement list at the
 disagreeing site, then the 6502 behind it — not by comparing totals.
+
+### 7.6 The address a value names, and the row a constant lost (IN PROGRESS)
+
+§7.5's residue named one real defect: the same cell under two names. The block
+converter spells a constant address as its constant only inside the block that
+sets the index, and binds it to a temporary wherever the address takes two
+operations, so `zp,X` (`add` at width 1, then `zext`) always gets one. The lane
+mode is not the discriminator; whether the converter materialised a temporary is.
+
+**The rule, stated over values.** `frameproc._one_addr`, called from
+`canon_addrs` at the end of `procedures()` over every `mem` address and every
+`st` destination: an address whose value is a constant is spelled as that
+constant. `_const_of` evaluates it through the definition chain -- a local reads
+as the definition in force leaves it, and that definition's own locals at the
+point *it* was written -- and refuses a `mem` read, so a value reached through a
+cell stays with rung (d)'s spill rule and its dominance conditions. A syntactic
+version of this rule folds only what the converter left inline and misses every
+`zp,X` site; the value form is what reaches them.
+
+**Measured over the 610 shapes (tests/test_lift6502.py):** 552 lifted -> **594**,
+34 no site -> **16**, 24 refused -> **0**, gate FP and the canonical fixpoint hold
+on all 610, emitted text 714610 -> **705926** bytes. 42 shapes moved and every one
+moved toward lifting. `DCP`/`ISC` go 6 of 8 to 8 of 8, so 40 of the 48
+undocumented-opcode shapes lift. The residue is 16 and neither part is this
+defect: 8 `RRA` (§7.5, refused over values and correctly) and 8
+`sbc-zpstep-branch` the 8-frame trace never reaches.
+
+**§7.5 mis-attributed 14 shapes and this corrects the record.** The
+`adc-*-withzero-bidir` no-sites were recorded as the trace never reaching the
+`CMP #$08` threshold. They were this defect, in the *step* operand rather than the
+lane -- every one has an `absx`/`absy` step -- and they lift with no change to the
+enumeration. Both arms still lift in 65 of 100, so the bidirectional asymmetry
+§7.3 holds open is untouched; what closed is that those 14 now have a site at all.
+
+**One refusal regressed, and `_pairs` is not where it is decided.**
+`test_liftgaps.py::test_a_lo_lane_loaded_in_the_dominating_block_refuses` now
+lifts as `lanes $1400/$1462`: `$1400` is the step table, paired with the hi lane.
+Before the fold the step was indexed by `Y` and the lane by `X`, so `_pairs`'
+same-row concession held them apart; after it both are constant cells and
+`_rowbase` gives every one the row `None`.
+
+**Giving a constant cell the declaration containing it as its row does not close
+it, measured both ways.** The three cells are three declarations -- `$1400` size
+96, `$1460` size 2, `$1462` size 256 -- so no pair shares a row, `(row or cross)`
+falls through to `cross`, and the offers are bit-identical to today's. Forcing the
+exclusion instead, so `_pairs` returns only the true pair `($1462, $1460)`, leaves
+the site at `lo=$1400` regardless: lanes are read off the extracted form by
+`_lane_addr`, and `_pairs` bounds what the e-graph is *asked*, not what it may
+name.
+
+**The premise actually missing is that two split lanes are one declared pair.**
+`_Site` spells `split tables` wherever `not self.word`, with no condition on the
+two declarations; `role` appears nowhere in `framemath`. `datadecl` already
+recovers the pairing (`dl["role"], dh["role"] = ("lo", ht), ("hi", lt)`) and
+`Regions` is already threaded into `apply_rung`, so the refusal belongs in
+`_decide`/`_premise` over the chosen site's lanes, not in `_pairs` over the
+offers. In the regressed case all three declarations carry `role=None` -- no pair
+was recovered -- and that is the fact the site should have been refused on. NOT
+YET APPLIED; it is the one failure in the suite.
+
+**Measured:** the shape counts above reproduce exactly on both sides (552/34/24 at
+HEAD, 594/16/0 with the rule), and corpus Gate FP holds -- the suite over the
+cached HVSC selection is 1621 passed, 1 failed (the regression above), 2 skipped.
+Still unmeasured: the consumer partition (§6) and determinism across four seeds.
+
+### 7.7 Byte-wide SID stores: the target, and why the metric is wrong
+
+The goal is that freq, pulse width and cutoff are 16-bit everywhere, i.e. zero
+byte-wide SID stores. **Zero is not reachable as `fuse_measure._BYTE_SID` defines
+it, and the obstacle is the metric, not a proof gap.**
+
+`_BYTE_SID` counts a byte store whose *base* is a lane. That conflates two things:
+a byte-wide store to a register proven 16-bit (should be zero, and can be), and a
+store to an **unidentified** register merely named after its base. `Also_Bad`
+`$CA6A`, reachable from play via `$C475`/`$C90D`/`$CA6A`:
+
+    $CA6A LDY #$17 / $CA6E STA $D400,Y / $CA77 DEY / $CA78 BPL $CA6E
+
+is emitted as `sid.v1.freq_lo[y] = $00` and writes **every** SID register. At
+`Y=4` it selects `ctrl`. Only 14 of the 29 offsets are lanes of a 16-bit register;
+9 are 8-bit order-preserved (ctrl/AD/SR), 2 are `$D417`/`$D418`, 4 are
+`$D419`-`$D41C`. No 16-bit reformulation of that store exists.
+
+**`_lane_aligned` is the tight condition, not a conservative one.**
+`framelog.canonical` keys by byte offset and partner-completes through `_OTHER`;
+a widened store's record contribution equals the byte store's **iff
+`other(r) == r+1`**, i.e. iff `r` is a pair lo. `held0` agrees the untouched
+lane's *value*; the divergence is *presence* -- a spurious entry in an
+order-preserved section, which §1.1 requires to survive verbatim. That is the
+`v0.ord` corruption. So no better proof recovers anything along this axis, and a
+stronger index analysis moves `$CA6E` from "index unproven" to "index proven and
+proven not lane-aligned" -- byte-wide either way. **Proofs relabel this residue;
+they do not shrink it.**
+
+Next steps, in order:
+
+1. **Split the metric.** Report "index provably not lane-aligned" apart from
+   "index unproven". Only the second is work. This number is unmeasured and it
+   decides whether anything below is worth doing.
+2. **Merge, do not widen.** `_pair_at` already merges two adjacent lane stores at
+   the same symbolic index with no alignment proof, because it invents no write
+   (Commando's `$12E7`/`$12ED` pulse pair fuses with `Y` symbolic). §4.3 records
+   925 SID pairs with no adjacent store site, ~577 writing both halves
+   non-adjacently; each one rung (d2) brings together turns two byte-wide stores
+   into one word store with no fact about the index at all. This is the only route
+   that needs no new premise.
+3. **The control-flow join.** `Defs` gives up at a merge, so
+   `LDY #$00 / … / LDY #$07 / join / STA $D400,Y` refuses though both values are
+   aligned. `test_liftgaps::test_a_lane_index_set_in_a_branch_arm_does_not_widen`
+   pins it as the largest widening residue, and it is strictly easier than the
+   interprocedural case.
+4. **The parameter union** (§7.2's ~800). `stash@{0}` holds it and applies to HEAD
+   cleanly -- its pre-image blobs are identical to HEAD's, the d2 redesign never
+   moved `framefuse.py` or `frameproc.py`. Its `ENTRY` sentinel splits "no
+   definition anywhere" from "a definition whose value cannot be read off"; of 940
+   bare-local failures only 272 are genuine entry values, so reading them all as
+   parameters would be unsound on 71%. **Two blockers before it lands:**
+   `_const_of` (§7.6) must handle `ENTRY` -- `ENTRY is None` is False and
+   `ENTRY[2]` raises, on every tune, and `git apply` is silent because the hunks
+   are textually disjoint; and `model.ev_targets` (RTS-trick landings) must fold
+   into `Calls.opaque`, or a procedure that is both a `JSR` target and an
+   RTS-dispatch landing takes its union over the `JSR` sites only.
+5. **Stop naming an unresolved indexed SID store after its base.**
+   `sid.v1.freq_lo[y]` asserts a register the store need not touch. Ship only with
+   (1), or it is laundering.
+
+**Two unproven premises found on the way, both unrelated to the above.**
+`_pair_at` accepts a hi-first adjacent SID pair, but `frameval`'s `stw` always
+logs lo then hi; an indexed hi-first pair landing both cells in an order-preserved
+section would reverse two `ord` entries. The corpus does not contain one, which is
+observation, not proof. And `_BYTE_SID`/`_WORD_SID` match only named lvalues, so a
+SID store whose address `addr_split` cannot resolve (the `zp,X` form, modulus
+`$100`) is counted in neither column: the true byte-wide total is `750 + unnamed`.
+
+### 7.8 The environment this branch was measured in
+
+> SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
+> the case as of the §7.6 measurement above: `/dev/sdb1` ext4, `import egglog`
+> 0.4s, the hermetic suite 15s, the 610 shapes 19s at `-n 6`, the full suite with
+> the HVSC cache 11m. None of the serialisation below applies there -- build the
+> venv from PyPI and run `pytest -n` normally. Keep the rest for an NFS host.
+
+`/scratch` is NFS serving **~1.5 file-opens/sec**, measured: 20 uncached small
+files take 15s serially, and 64 files 32-way parallel take 35.8s -- concurrency
+buys 1.35x, so it is global throughput, not per-connection latency. `import
+egglog` costs 2-15 minutes on ~0.5s of CPU; one `pytest` run of five files took
+35m58s wall for 34s of CPU. Consequences: run ONE python process at a time, never
+poll a running job with `ls`/`du`/`wc` against /scratch (it spends from the same
+budget), and expect a 610-shape run to cost ~9 minutes.
+
+Copying the venv does not work -- 14,419 files at that rate is ~3 hours, and
+parallelism does not help. **Building one locally does:** PyPI answers in 1.4s and
+`/` is a local overlay. `/home/josh/di-venv` is created but pip is not yet
+bootstrapped; `ensurepip` must run with **`TMPDIR` on local disk**, because `/tmp`
+is another mount of the same NFS export. Put the repo on `PYTHONPATH` rather than
+`pip install -e .` so no `egg-info` lands in the tree; a second editable install,
+`pysidwizard` from `/scratch/anarkiwi/cbm/pysidwizard/src`, is on the same path.
+Verify any new interpreter reproduces `shape_base.json` before trusting a number
+from it.

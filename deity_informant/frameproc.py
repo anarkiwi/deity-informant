@@ -423,6 +423,53 @@ def _map_exprs(s, f):
     return s
 
 
+def _const_of(n, env, k):
+    """The constant ``n`` evaluates to at ``k``, else None.
+
+    A local is read as the definition in force leaves it, and that definition's own
+    locals at the point it was written. A memory read is never constant, so a value
+    reached through a cell is refused here and left to rung (d)'s spill rule."""
+    if n[0] == "const":
+        return n
+    if n[0] == "loc":
+        got = env._lookup(n[1], k)
+        return None if got is None or got[2] is None else _const_of(got[2], got[0], got[1])
+    if n[0] != "op":
+        return None
+    kids = [_const_of(c, env, k) for c in n[2]]
+    if any(c is None for c in kids):
+        return None
+    return E.simplify(("op", n[1], tuple(kids), n[3]))
+
+
+def _one_addr(addr, env, k):
+    """``addr`` as the constant it is, else as written: the ONE address-naming rule.
+
+    The converter spells a constant address as its constant only inside the block
+    that sets the index, and binds it to a temporary wherever it takes two
+    operations, as ``zp,X`` does -- so one cell arrives under two names."""
+    got = _const_of(addr, env, k)
+    return addr if got is None else ("const", got[1] & 0xFFFF, 2)
+
+
+def _addr_exprs(n, env, k):
+    """``n`` with the address of every memory reference under it spelled the one way."""
+    kids = _kids(n)
+    out = n if not kids else _rebuild(n, [_addr_exprs(c, env, k) for c in kids])
+    return ("mem", _one_addr(out[1], env, k), out[2]) if out[0] == "mem" else out
+
+
+def canon_addrs(stmts, outer=None, cyclic=False):
+    """Spell every address ``stmts`` names one way, nested bodies included."""
+    env = Defs(stmts, outer, cyclic)
+    for k, s in enumerate(stmts):
+        for b in _stmt_bodies(s):
+            canon_addrs(b, (env, k), s[0] in _CYCLIC)
+        if s[0] == "st":
+            s = ("st", _one_addr(s[1], env, k), s[2])
+        stmts[k] = _map_exprs(s, lambda n, e=env, i=k: _addr_exprs(n, e, i))
+
+
 # ---- block -> sequential local statements (pass 1 groundwork) -------------------
 class _Stale(Exception):
     def __init__(self, reg):
@@ -1788,6 +1835,8 @@ def procedures(trees, labels, view, dispatch, aliases, play):
         if not (pruned or inlined):
             break
     _forloops(info)
+    for _e, stmts in procs:
+        canon_addrs(stmts)
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
