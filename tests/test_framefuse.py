@@ -345,14 +345,14 @@ def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
     """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers."""
     lemma, text = _voice_loop("idx_ok", [0x00, 0x07, 0x0E])
     assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
-    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
 def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
     lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
     assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
-    assert "0 lane-aligned indexed, 1 index not proven" in lemma
+    assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
 # ---- the index spilled through a play-written cell (docs/frameprog.md 7.2) -------
@@ -383,7 +383,7 @@ def test_an_index_spilled_through_a_ram_cell_widens_on_the_store_in_force():
     lemma, text = _spill_loop("spill_ok")
     idx = "sid.v1.freq_lo[m_%04X]" % G.CNT
     assert "%s:2 = ((%s:2 & $FF00):2 | zext2(a)):2" % (idx, idx) in text
-    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
 def _push(val):
@@ -406,4 +406,4 @@ def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
     assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
-    assert "0 lane-aligned indexed, 1 index not proven" in lemma
+    assert "0 lane-aligned indexed, 1 index unproven, 0 index proven off-lane" in lemma

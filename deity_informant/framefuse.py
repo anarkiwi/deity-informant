@@ -165,7 +165,8 @@ class _Pair:
         "unpaired",
         "hazard",
         "indexed",
-        "strayidx",
+        "unproven",
+        "notaligned",
     )
 
     def __init__(self, lo, hi, kind, evidence):
@@ -174,7 +175,7 @@ class _Pair:
         self.kind = kind
         self.evidence = evidence
         self.words = self.lone = self.stores = self.unpaired = self.hazard = 0
-        self.indexed = self.strayidx = 0
+        self.indexed = self.unproven = self.notaligned = 0
 
     def refusal(self):
         """The premise's refusal diagnostic, or None where the pair fuses.
@@ -213,9 +214,10 @@ class _Pair:
             self.hazard,
         )
         if self.kind == "sid":
-            rest += ", %d lane-aligned indexed, %d index not proven lane-aligned" % (
+            rest += ", %d lane-aligned indexed, %d index unproven, %d index proven off-lane" % (
                 self.indexed,
-                self.strayidx,
+                self.unproven,
+                self.notaligned,
             )
         status = "refused" if why else ("fused" if not (self.lone or self.unpaired) else "partial")
         return Proof(self.lo, self.kind, status, (self.lo, self.hi), "%s; %s" % (body, why or rest))
@@ -352,9 +354,11 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         half = _store_half(s, p)
         widen = half is not None and p.kind == "sid"
         if widen and half[1] is not None:
-            widen = ctx is not None and _lane_aligned(p, _consts(half[1], env, i, *ctx))
+            ks = _consts(half[1], env, i, *ctx) if ctx is not None else None
+            widen = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
             p.indexed += count if widen else 0
-            p.strayidx += 0 if widen else count
+            p.unproven += count if ks is None else 0
+            p.notaligned += count if ks is not None and not widen else 0
         if half is not None:
             p.unpaired += count
         new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))

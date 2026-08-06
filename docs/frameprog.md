@@ -2099,8 +2099,9 @@ Still unmeasured: the consumer partition (§6) and determinism across four seeds
 ### 7.7 Byte-wide SID stores: the target, and why the metric is wrong
 
 The goal is that freq, pulse width and cutoff are 16-bit everywhere, i.e. zero
-byte-wide SID stores. **Zero is not reachable as `fuse_measure._BYTE_SID` defines
-it, and the obstacle is the metric, not a proof gap.**
+byte-wide SID stores. **Zero is not reachable as `_BYTE_SID` defines it, and the
+obstacle is the metric, not a proof gap.** `tools/fuse_measure.py` is the split
+metric this section asked for, committed; `_BYTE_SID` is its lane column.
 
 `_BYTE_SID` counts a byte store whose *base* is a lane. That conflates two things:
 a byte-wide store to a register proven 16-bit (should be zero, and can be), and a
@@ -2127,9 +2128,25 @@ they do not shrink it.**
 
 Next steps, in order:
 
-1. **Split the metric.** Report "index provably not lane-aligned" apart from
-   "index unproven". Only the second is work. This number is unmeasured and it
-   decides whether anything below is worth doing.
+1. **Split the metric. Landed and measured.** `framefuse` counts `unproven` and
+   `notaligned` apart -- `_consts` returning None against a set `_lane_aligned`
+   rejects -- and the pair's proof record carries both. `tools/fuse_measure.py`
+   sweeps the cache: 624 of the 682 files carry a play address and a Songlengths
+   duration, 0 refusals, 245s wall over 32 workers for 5941s CPU. The lane column
+   is **812**: **802 index unproven, 10 index proven off-lane, 0 unindexed**.
+   Beside it, 5330 byte-wide stores to the 8-bit registers (2539 indexed, 2791
+   not), which have no 16-bit form and were never the target, and 1498 indexed
+   word stores already 16-bit. `plain_lane` at 0 is the check that rung (d)
+   widens every unindexed lane store, so zero *is* reached where the register is
+   identified.
+   **The residue proofs can only relabel is 10 stores, 1.2% of the lane column**,
+   so the paragraph above is right about `$CA6E` and wrong about the scale:
+   nothing measured forecloses the other 802. Steps 2-5 are worth doing, and step
+   2 carries most of the reach on its own -- **644 of the 812** have their partner
+   lane stored at the same index expression in the same procedure, so `_pair_at`
+   extended past adjacency reaches 79% of the residue with no fact about the
+   index at all. Step 5 is the honest one: 802 stores are named after a register
+   the model has not shown they touch.
 2. **Merge, do not widen.** `_pair_at` already merges two adjacent lane stores at
    the same symbolic index with no alignment proof, because it invents no write
    (Commando's `$12E7`/`$12ED` pulse pair fuses with `Y` symbolic). §4.3 records
@@ -2162,8 +2179,15 @@ Next steps, in order:
 logs lo then hi; an indexed hi-first pair landing both cells in an order-preserved
 section would reverse two `ord` entries. The corpus does not contain one, which is
 observation, not proof. And `_BYTE_SID`/`_WORD_SID` match only named lvalues, so a
-SID store whose address `addr_split` cannot resolve (the `zp,X` form, modulus
-`$100`) is counted in neither column: the true byte-wide total is `750 + unnamed`.
+store whose address `addr_split` cannot resolve is counted in neither column.
+Measured: of 2000 such byte stores, `addr_bits` rules 1928 out of the SID and
+leaves **72**, and not one of the 72 is demonstrably a SID store -- every one is
+an unresolved indirect write, `mem[((zext2(zp_FE) << $08) | zext2(zp_FD)) +
+$0004]`, or a zero-page indexed store whose base `_base_add` will not take below
+`$0100`. So the byte-wide lane total is 812 and at most `812 + 72`. The `zp,X`
+form named here is not among them: `canon_addrs` (§7.6) spells it as the constant
+it proves, and where it does not, the form adds inside the byte, so `addr_bits`
+caps it at `$00FF` and it reaches no SID register.
 
 ### 7.8 The environment this branch was measured in
 

@@ -63,6 +63,7 @@ source = ["deity_informant"]
 omit = [
     "tools/eqlift_emit.py",
     "tools/fetch_corpus.py",
+    "tools/fuse_measure.py",
     "tools/showcase.py",
 ]
 
