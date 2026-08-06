@@ -2061,6 +2061,23 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
+def repolish(procs, play):
+    """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
+
+    Signatures are already spelled into every ``pcall``, so ``params``/``rets``
+    stay as the build fixed them; only the bodies move, ahead of rung (f)
+    keying ``resolved`` by the final address expressions."""
+    info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
+    info.summarize()
+    info.params = {e: list(p) for e, p, _r, _s in procs}
+    info.rets = {e: list(r) for e, _p, r, _s in procs}
+    for _round in range(16):
+        pruned = _prune(info)
+        inlined = _inline(info)
+        if not (pruned or inlined):
+            break
+
+
 def render_lines(procs, resolved=_NORES):
     """frameprog text lines for analysed (or parsed) procedures."""
     printer = _Printer(resolved)

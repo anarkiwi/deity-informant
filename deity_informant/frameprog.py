@@ -212,6 +212,7 @@ def program(model):
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs, decls)
     state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
+    frameproc.repolish(procs, model.play)
     proofs = stack_proofs + math_proofs + proofs
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
