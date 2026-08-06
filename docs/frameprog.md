@@ -2177,11 +2177,23 @@ Next steps, in order:
    or a clobbering statement blocks both directions. Merging past those is
    exactly what the record forbids, so step 2 is done and was never the route:
    the unproven residue is steps 3 and 4's to prove, and step 5's to name.
-3. **The control-flow join.** `Defs` gives up at a merge, so
-   `LDY #$00 / … / LDY #$07 / join / STA $D400,Y` refuses though both values are
-   aligned. `test_liftgaps::test_a_lane_index_set_in_a_branch_arm_does_not_widen`
-   pins it as the largest widening residue, and it is strictly easier than the
-   interprocedural case.
+3. **The control-flow join. Landed, three joins.** `Defs` gave up at every
+   merge; now `_consts` forks an ``if`` per arm (each arm's exit value reaches
+   the store, so the union is the index set --
+   `test_liftgaps::test_a_lane_index_set_in_a_branch_arm_widens_on_the_join_union`),
+   a ``for`` binds its counter to the range's every value, and a *label* joins
+   under `Defs._verified`: a definition survives a crossed label only where
+   every enumerable `goto` entering it arrives with the same definition in
+   force, to a fixpoint over the entry graph, and one computed jump in the
+   procedure refuses them all. The label join is what the corpus shape needed:
+   Commando's spilled voice offset (`m_54EB`, from the const table `$00 $07
+   $0E`) resolves through the `$519B`/`$532B` goto joins, every one of its
+   eight view stores widens or merges, and the tune is 16-clean -- zero
+   byte-wide SID lane accesses, named or viewed. What the join cannot reach is
+   the *loop-carried* index -- `x` stepped per voice inside a `loop` -- which
+   needs a value-set fixpoint over the loop body, not a join; that residue is
+   the view's remaining tenant (41 stores over a 7-tune probe) and the next
+   frontier after step 4.
 4. **The parameter union** (§7.2's ~800). `stash@{0}` holds it, and step 2's
    landing rewrote `framefuse.py` and `frameproc.py`, so it no longer applies
    (`git apply --check` refuses both) -- rebase it by hand. Its `ENTRY` sentinel splits "no

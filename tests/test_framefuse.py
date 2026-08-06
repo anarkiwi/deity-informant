@@ -407,3 +407,57 @@ def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
     assert "sid.reg00[y] = a" in text and "freq_lo[y]" not in text
     assert "0 lane-aligned indexed, 1 index unproven, 0 index proven off-lane" in lemma
+
+
+# ---- the label join: an entry proven to carry the same store (7.7 (3)) -----------
+def _cell_set(stmts, at):
+    env = frameproc.Defs(stmts)
+    idx = ("mem", ("const", 0x54EB, 2), 1)
+    return framefuse._consts(idx, env, at, datadecl.Regions(()), bytearray(0x10000))
+
+
+def test_a_label_whose_every_goto_carries_the_same_store_is_no_wall():
+    """Commando's shape: the spill dominates the label and the goto behind it."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2) == frozenset((7,))
+
+
+def test_a_label_entered_with_another_store_in_force_refuses():
+    """One goto arrives with a different store to the cell: the join kills it."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        _st(0x54EB, ("const", 9, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2) is None
+
+
+def test_a_computed_jump_refuses_every_label_join():
+    """A dispatch may land anywhere: no label's entry set is enumerable."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("dgoto", ("mem", ("const", 0x0002, 2), 2)),
+    ]
+    assert _cell_set(stmts, 2) is None
+
+
+def test_a_for_counter_binds_its_range_and_a_rebinding_body_refuses():
+    """The counter takes the range's every value; a body rebinding it is a wall."""
+    body = [("st", ("op", "INT_ADD", (("loc", "x"), ("const", 0xD400, 2)), 2), ("const", 1, 1))]
+    env = frameproc.Defs([("for", "x", 2, 0, body)])
+    sub = frameproc.Defs(body, (env, 0), True)
+    got = framefuse._consts(("loc", "x"), sub, 1, datadecl.Regions(()), bytearray(0x10000))
+    assert got == frozenset((0, 1, 2))
+    rebound = body + [("asg", "x", ("const", 5, 1))]
+    env = frameproc.Defs([("for", "x", 2, 0, rebound)])
+    sub = frameproc.Defs(rebound, (env, 0), True)
+    assert framefuse._consts(("loc", "x"), sub, 1, datadecl.Regions(()), bytearray(0x10000)) is None

@@ -73,16 +73,26 @@ def _rebase(addr, old, new):
     return addr
 
 
-def _consts(idx, env, at, regions, mem0):
+def _consts(idx, env, at, regions, mem0, depth=8):
     """Every value ``idx`` may take where the model proves them all, else None.
 
-    A constant *table* counts: Commando indexes its pulse stores by ``LDY $14B5,X``
-    over `$00 $07 $0E`. A cell the play code writes counts through the store in
-    force at the read (``Defs.cell``): drivers spill the voice offset to RAM."""
+    A constant *table* counts (Commando's ``LDY $14B5,X``), a written cell counts
+    through the store in force (``Defs.cell``), and a definition a branch join
+    leaves valueless forks (``_fork``): the union over the arms is the set."""
     while True:
-        n = env.resolve(idx, at)
+        while idx[0] == "loc":
+            got = env.lookup_joined(idx[1], at)
+            if got is None:
+                return None
+            if got[2] is None:
+                return _fork(idx, got[0], got[1], regions, mem0, depth)
+            env, at, idx = got
+        n = idx
         if n[0] == "op" and n[1] == "INT_ZEXT":
             n = n[2][0]
+            if n[0] == "loc":
+                idx = n
+                continue
         if n[0] == "const":
             return frozenset((n[1] & 0xFF,))
         if n[0] != "mem" or n[2] != 1:
@@ -97,6 +107,30 @@ def _consts(idx, env, at, regions, mem0):
         if got is None:
             return None
         env, at, idx = got
+
+
+def _fork(n, env, k, regions, mem0, depth):
+    """The union of the values the join at ``env.lst[k]`` may leave in ``n``.
+
+    An ``if`` forks per arm (docs/frameprog.md 7.7 (3)): the arms are the exact
+    paths control took, and an arm binding nothing falls through. A ``for`` binds
+    its counter to the range's every value. A loop or a call stays a wall."""
+    s = env.lst[k]
+    if depth == 0:
+        return None
+    if s[0] == "for" and s[1] == n[1]:
+        lo, hi = sorted((s[2], s[3]))
+        return frozenset(range(lo, hi + 1))
+    if s[0] != "if":
+        return None
+    out = set()
+    for body in frameproc._stmt_bodies(s):
+        sub = frameproc.Defs(body, (env, k), False)
+        ks = _consts(n, sub, len(body), regions, mem0, depth - 1)
+        if ks is None:
+            return None
+        out |= ks
+    return frozenset(out)
 
 
 def _lane_aligned(p, ks):

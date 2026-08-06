@@ -319,13 +319,11 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
-    # a hi-first unproven pair stays split (docs/frameprog.md 7.7), rendered on the byte view
+    # 16-clean (7.7): named freq/pw/cutoff access is u16 and the label join empties the view
     assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(\w+\) << \$08\):2 \| zext2", text)
-    assert re.search(r"sid\.reg01\[\w+\] = m_5429\[\w+\]", text)
-    assert not re.search(
-        r"sid\.v1\.(freq|pw)_(lo|hi)\[\w+\] =", text
-    )  # 7.7 (5): u16 by construction
-    assert not re.search(r"sid\.reg[0-9A-F]{2}:", text)  # the view is an lvalue, never state
+    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(m_5429\[\w+\]\) << \$08\):2", text)
+    assert not re.search(r"sid\.reg[0-9A-F]{2}\[", text)
+    assert not re.search(r"sid\.v1\.(freq|pw)_(lo|hi)\[\w+\] =", text)
     assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
     assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named
     assert "*ptr_005F[pos_54EF[x]]" in text  # a row index that is itself an indexed read
