@@ -46,6 +46,7 @@ _REG_NAMES = {
 _NAME_REGS = {v: k for k, v in _REG_NAMES.items()}
 _SID_NAMES = {a: sid_name(a) for a in range(0xD400, 0xD419)}
 _SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
+_VIEW_NAME = re.compile(r"sid\.reg([01][0-9A-F])$")
 _CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
 _SLOT_NAME = re.compile(r"[utr]\d+$")
 _T_NAME = re.compile(r"t(\d+)$")
@@ -71,10 +72,34 @@ def addr_name(v):
     return _SID_NAMES.get(v) or ("zp_%02X" % v if v < 0x100 else "m_%04X" % v)
 
 
+def sid_base(base):
+    """The lo register of the SID lo/hi pair ``base`` belongs to, else None."""
+    reg = base - 0xD400
+    if not 0 <= reg <= 0x18:
+        return None
+    if reg > 0x14:
+        return 0xD415 if reg in (0x15, 0x16) else None
+    r = reg % 7
+    return base - r if r <= 1 else base - (r - 2) if r <= 3 else None
+
+
+def view_name(base):
+    """The register-file view name of a SID byte offset (docs/frameprog.md 7.7 (5)).
+
+    A byte-wide indexed store whose index rung (d) cannot prove renders against
+    this view: it asserts one byte at ``base - $D400`` plus the index, and never
+    names a 16-bit register, so a named freq/pulse/cutoff access is always u16."""
+    return "sid.reg%02X" % (base - 0xD400)
+
+
 def name_addr(name):
     """Address named by a canonical cell name, else None (inverse of addr_name)."""
     a = _SID_ADDRS.get(name)
     if a is None:
+        m = _VIEW_NAME.match(name)
+        if m:
+            a = 0xD400 + int(m.group(1), 16)
+            return a if a <= 0xD41C else None
         m = _CELL_NAME.match(name)
         if m:
             a = int(m.group(2), 16)

@@ -122,8 +122,8 @@ def test_a_lane_index_set_in_a_branch_arm_does_not_widen():
     a.i("LDA", "abs", G.TBL + 1).i("STA", "absy", G.SID).i("RTS")
     outs = tuple(G.SID + k for k in range(0x19))
     _proofs, text = _run("arm_index", a, {G.TBL: 0x01, G.TBL + 1: 0x42}, outs)
-    assert "sid.v1.freq_lo[y] = " in text  # byte-wide: the index is not proven
-    assert "sid.v1.freq_lo[y]:2" not in text
+    assert "sid.reg00[y] = " in text  # byte-wide residue: the view, never a register name
+    assert "sid.v1.freq_lo[y]" not in text
 
 
 @pytest.mark.parametrize("k,widens", [(0x07, True), (0x01, False)])

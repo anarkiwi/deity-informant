@@ -29,11 +29,13 @@ def _prog(name, asm, data=(), outs=(OUT, OUT + 1), frames=8):
 
 
 def _lane_line(text):
-    """The one indexed freq-lo store in the emitted text; asserts there is one.
+    """The one indexed lane store in the emitted text; asserts there is one.
 
-    Reading the line rather than a fixed spelling keeps the check honest when the
-    index folds to a constant, which would make a fixed ``[y]`` match vacuous."""
-    got = [ln.strip() for ln in text.splitlines() if "sid.v1.freq_lo[" in ln]
+    Unwidened, it rides the ``sid.regNN`` byte view (docs/frameprog.md 7.7 (5));
+    widened, it names the register at ``:2``. Reading the line rather than a fixed
+    spelling keeps the check honest when the index folds to a constant."""
+    hits = ("sid.reg00[", "sid.v1.freq_lo[")
+    got = [ln.strip() for ln in text.splitlines() if any(h in ln for h in hits)]
     assert len(got) == 1, "expected exactly one indexed lane store, got %r" % (got,)
     return got[0]
 

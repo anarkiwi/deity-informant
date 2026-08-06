@@ -1704,7 +1704,7 @@ def _index_of(addr):
 _NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
 
 
-def _membody(addr, res=_NORES):
+def _membody(addr, res=_NORES, sz=1):
     if addr[0] == "const" and addr[2] == 2:
         return sidprog._addr_name(addr[1])
     got = res.get(addr)
@@ -1713,12 +1713,15 @@ def _membody(addr, res=_NORES):
         return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
     if got is not None and got[2] == 0:
-        return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
+        name = sidprog._addr_name(got[0])
+        if sz == 1 and G.sid_base(got[0]) is not None:
+            name = G.view_name(got[0])  # rung (d)'s residue: assert the byte, not the register
+        return "%s[%s]" % (name, _fmt(got[1], res))
     return None
 
 
 def _memref(addr, sz=1, res=_NORES):
-    body = _membody(addr, res)
+    body = _membody(addr, res, sz)
     if body is None:
         body = "mem[%s]" % _fmt(addr, res)
     return body + sidprog._wsuf(sz)

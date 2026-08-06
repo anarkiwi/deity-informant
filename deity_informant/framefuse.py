@@ -18,7 +18,6 @@ from .structured import Proof
 
 _SID_LO = 0xD400
 _SID_HI = 0xD41C  # the last register the frame log records
-_CUTOFF = 0x15  # the filter cutoff lo/hi pair; the voice pairs are freq and pulse
 _LOGGED = (_SID_LO, frameproc.NOIDX, _SID_HI - _SID_LO, 1, 0)
 
 
@@ -251,15 +250,7 @@ def _dispatch_pairs(model):
     return out
 
 
-def _sid_base(base):
-    """The lo register of the SID lo/hi pair ``base`` belongs to, else None."""
-    reg = base - _SID_LO
-    if not 0 <= reg <= 0x18:
-        return None
-    if reg > 0x14:
-        return _SID_LO + _CUTOFF if reg in (_CUTOFF, _CUTOFF + 1) else None
-    r = reg % 7
-    return base - r if r <= 1 else base - (r - 2) if r <= 3 else None
+_sid_base = G.sid_base  # the lane rule lives with the grammar's names; the view uses it too
 
 
 def _sid_pairs(procs):

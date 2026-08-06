@@ -2203,6 +2203,16 @@ Next steps, in order:
    by construction, and steps 3 and 4 migrate stores out of the view as their
    indexes prove -- each one measurable as the view shrinking. Ship only with
    (1), or it is laundering.
+   **Landed.** The view is per-offset -- `sid.reg01[y]`, not `sid.reg[(y + $01)]`
+   -- because the offset cannot ride the index: `_index_addr` widens the byte
+   index with `zext2`, so a folded-in offset would wrap mod 256 and name the
+   wrong cell for `y >= $FF - off`. The lane rule moved to `grammar.sid_base`
+   beside the names, `name_addr` reads `sid.regNN` back, and the canonical
+   fixpoint holds: a byte-wide indexed reference whose base is a lane renders
+   on the view wherever it appears, so parse and dump agree. The metric is
+   untouched -- `fuse_measure` reads the IR, and the view is a rendering -- so
+   the unproven column now counts exactly the `sid.regNN` stores, the view's
+   size, and steps 3 and 4 are measured by shrinking it.
 
 **Two unproven premises found on the way; the first is now enforced.**
 `_pair_at` accepted a hi-first adjacent SID pair, but `frameval`'s `stw` always
