@@ -2154,14 +2154,37 @@ Next steps, in order:
    non-adjacently; each one rung (d2) brings together turns two byte-wide stores
    into one word store with no fact about the index at all. This is the only route
    that needs no new premise.
+   **Landed and measured, well short of the forecast.** The partner is the
+   nearest later store of the other lane at the same symbolic index in the same
+   statement list. `_bring` proves the two may meet -- hoist the later store
+   with the interval's definitions inlined, or sink the leader where inlining
+   changes nothing -- and `_undisturbed` holds the interval to reading no moved
+   lane and writing no logged register, which is what §1.1's verbatim record
+   requires of a store whose index may land it in an order-preserved section.
+   The sweep over the same 624 files, 0 refusals, run twice bit-identical (the
+   pipeline is deterministic): the lane column is **802** -- 784 index
+   unproven, 18 proven off-lane, 0 unindexed. The unproven residue gave up 18;
+   off-lane *rose* by 8, the hi-first refusal (below) splitting pairs the old
+   adjacent merge took unsoundly. What did move is the representation: 303
+   fewer word stores emit for the same writes (`word_plain` 1852 -> 1633,
+   `aligned` 1498 -> 1414) -- a pair rung (d) used to widen into two
+   read-modify-write word stores now meets in one packed store. The 644
+   forecast measured co-presence only: sampled across the surviving 618
+   partnered stores, every refusal is a premise, not a gap. The interval
+   writes another logged register (the per-voice loop -- freq lo, ctrl, ...,
+   freq hi -- where crossing may reverse two `ord` entries), the pair is
+   hi-first at an unproven index, the partner sits in another statement list,
+   or a clobbering statement blocks both directions. Merging past those is
+   exactly what the record forbids, so step 2 is done and was never the route:
+   the unproven residue is steps 3 and 4's to prove, and step 5's to name.
 3. **The control-flow join.** `Defs` gives up at a merge, so
    `LDY #$00 / … / LDY #$07 / join / STA $D400,Y` refuses though both values are
    aligned. `test_liftgaps::test_a_lane_index_set_in_a_branch_arm_does_not_widen`
    pins it as the largest widening residue, and it is strictly easier than the
    interprocedural case.
-4. **The parameter union** (§7.2's ~800). `stash@{0}` holds it and applies to HEAD
-   cleanly -- its pre-image blobs are identical to HEAD's, the d2 redesign never
-   moved `framefuse.py` or `frameproc.py`. Its `ENTRY` sentinel splits "no
+4. **The parameter union** (§7.2's ~800). `stash@{0}` holds it, and step 2's
+   landing rewrote `framefuse.py` and `frameproc.py`, so it no longer applies
+   (`git apply --check` refuses both) -- rebase it by hand. Its `ENTRY` sentinel splits "no
    definition anywhere" from "a definition whose value cannot be read off"; of 940
    bare-local failures only 272 are genuine entry values, so reading them all as
    parameters would be unsound on 71%. **Two blockers before it lands:**
@@ -2170,15 +2193,26 @@ Next steps, in order:
    are textually disjoint; and `model.ev_targets` (RTS-trick landings) must fold
    into `Calls.opaque`, or a procedure that is both a `JSR` target and an
    RTS-dispatch landing takes its union over the `JSR` sites only.
-5. **Stop naming an unresolved indexed SID store after its base.**
-   `sid.v1.freq_lo[y]` asserts a register the store need not touch. Ship only with
+5. **Carve the 16-bit registers out of the output model.**
+   `sid.v1.freq_lo[y]` asserts a register the store need not touch, and
+   `render.py`'s `sid_name` names it off the base alone. Declare freq, pulse
+   width and cutoff u16, and give the SID a byte-addressed register-file view
+   -- `sid.reg[y]` -- for the store whose index the model has not resolved: it
+   asserts exactly the proven byte, invents no write, and byte-wide access to
+   a named 16-bit register stops being expressible at all. The goal then holds
+   by construction, and steps 3 and 4 migrate stores out of the view as their
+   indexes prove -- each one measurable as the view shrinking. Ship only with
    (1), or it is laundering.
 
-**Two unproven premises found on the way, both unrelated to the above.**
-`_pair_at` accepts a hi-first adjacent SID pair, but `frameval`'s `stw` always
+**Two unproven premises found on the way; the first is now enforced.**
+`_pair_at` accepted a hi-first adjacent SID pair, but `frameval`'s `stw` always
 logs lo then hi; an indexed hi-first pair landing both cells in an order-preserved
 section would reverse two `ord` entries. The corpus does not contain one, which is
-observation, not proof. And `_BYTE_SID`/`_WORD_SID` match only named lvalues, so a
+observation, not proof -- so rung (d2) no longer leans on it: `_lww` admits a
+hi-first pair only where the index is absent or proven lane-aligned, both cells
+then last-write-wins registers whose two writes commute, and Commando's hi-first
+indexed freq pair stays split for it -- each lane still widens where its index
+proves out. And `_BYTE_SID`/`_WORD_SID` match only named lvalues, so a
 store whose address `addr_split` cannot resolve is counted in neither column.
 Measured: of 2000 such byte stores, `addr_bits` rules 1928 out of the SID and
 leaves **72**, and not one of the 72 is demonstrably a SID store -- every one is

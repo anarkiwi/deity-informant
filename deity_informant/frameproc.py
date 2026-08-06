@@ -227,6 +227,84 @@ def store_reach(stmt, regions):
     return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]), 0)
 
 
+def mem_refs(n):
+    """``((base, index, modulus), width)`` of every memory reference under ``n``."""
+    out, stack = [], [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            out.append((addr_range(x[1], x[2]), x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+def lane(base, idx, sp, mod=0):
+    """The one-byte range a lane occupies."""
+    return (base, idx, sp, 1, mod)
+
+
+def reads(exprs, at, regions):
+    """True where evaluating ``exprs`` may load a cell of the range ``at``."""
+    for ref, rw in (r for x in exprs for r in mem_refs(x)):
+        if ref is None:
+            return True
+        rb, ri, rm = ref
+        if overlaps(at, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+            return True
+    return False
+
+
+def clobbers(stmt, exprs, regions):
+    """True where ``stmt`` may change the value of any of ``exprs``."""
+    if stmt[0] == "asg":
+        return any(stmt[1] in _locset(x) for x in exprs)
+    return True if stmt[0] != "st" else disturbs(stmt, exprs, regions)
+
+
+def disturbs(stmt, exprs, regions):
+    """The store may change a value ``exprs`` read.
+
+    Index expressions may only be compared when the read is a direct load here;
+    one captured earlier can be structurally equal yet hold a stale index."""
+    return False if stmt[0] != "st" else reads(exprs, store_reach(stmt, regions), regions)
+
+
+def as_written(env, lst, k):
+    """``lst[k]`` with its address spelled as the definition in force spells it.
+
+    A local naming an address names the same address at ``k`` only where every
+    local that naming reads still holds there what it held where it was written --
+    the staleness ``disturbs`` warns of, discharged rather than assumed."""
+    s = lst[k]
+    if s[0] != "st" or env is None:
+        return s
+    n, bound = s[1], k
+    while n[0] == "loc":
+        got = env.value(n[1], bound)
+        if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in _locset(got[1])):
+            break
+        n, bound = got[1], got[0]
+    return ("st", n, s[2])
+
+
+def hoist(lst, i, j, exprs, regions, env=None):
+    """``exprs``, the interval's definitions inlined, and the statement blocking it.
+
+    A read is carried up to ``i`` from where the interval made it, so a statement
+    is held only against what is hoisted *past* it: one writing a cell later than
+    the read it would spoil is no hazard, and its own definition is not one."""
+    at = None
+    for k in range(j - 1, i, -1):
+        s = lst[k]
+        if s[0] == "asg" and any(s[1] in _locset(x) for x in exprs):
+            exprs = tuple(_subst_loc(x, s[1], s[2]) for x in exprs)
+        elif clobbers(as_written(env, lst, k), exprs, regions):
+            at = k
+    return exprs, at
+
+
 def hidden_defs(s):
     """Names ``s`` may define other than as this list's own ``asg``; None means any.
 

@@ -317,98 +317,27 @@ def _inline(n, defs):
     return n
 
 
-def _hoist(lst, i, j, exprs, regions, env=None):
-    """``exprs``, the interval's definitions inlined, and the statement blocking it.
-
-    A read is carried up to ``i`` from where the interval made it, so a statement
-    is held only against what is hoisted *past* it: one writing a cell later than
-    the read it would spoil is no hazard, and its own definition is not one."""
-    at = None
-    for k in range(j - 1, i, -1):
-        s = lst[k]
-        if s[0] == "asg" and any(s[1] in frameproc._locset(x) for x in exprs):
-            exprs = tuple(frameproc._subst_loc(x, s[1], s[2]) for x in exprs)
-        elif _clobbers(_store(env, lst, k), exprs, regions):
-            at = k
-    return exprs, at
-
-
 def _volatile(n):
     """True where ``n`` may load a volatile source, so its value cannot be dropped."""
     return any(FF._may_read(n, c) for c in sidprog._VOLS)
-
-
-def _mem_refs(n):
-    """``((base, index, modulus), width)`` of every memory reference under ``n``."""
-    out, stack = [], [n]
-    while stack:
-        x = stack.pop()
-        if x[0] == "mem":
-            out.append((frameproc.addr_range(x[1], x[2]), x[2]))
-            stack.append(x[1])
-        elif x[0] == "op":
-            stack.extend(x[2])
-    return out
 
 
 _span = frameproc.span  # the range rules live beside the definition-in-force query
 _NOIDX = frameproc.NOIDX
 _overlaps = frameproc.overlaps
 _reach = frameproc.store_reach  # a store with no named base still has a bound
+_lane = frameproc.lane  # the hazard predicates rung (d) shares with this one
+_mem_refs = frameproc.mem_refs
+_reads = frameproc.reads
+_clobbers = frameproc.clobbers
+_disturbs = frameproc.disturbs
+_store = frameproc.as_written
+_hoist = frameproc.hoist
 
 
 _OUTPUTS = ((0xD400, _NOIDX, 0x1F, 1, 0),) + tuple(
     (c, _NOIDX, 0, 1, 0) for c in sorted(sidprog._VOLS)
 )
-
-
-def _lane(base, idx, span, mod=0):
-    """The one-byte range a lane occupies."""
-    return (base, idx, span, 1, mod)
-
-
-def _reads(exprs, at, regions):
-    """True where evaluating ``exprs`` may load a cell of the range ``at``."""
-    for ref, rw in (r for x in exprs for r in _mem_refs(x)):
-        if ref is None:
-            return True
-        rb, ri, rm = ref
-        if _overlaps(at, (rb, ri, _span(rb, ri, regions, rm), rw, rm)):
-            return True
-    return False
-
-
-def _clobbers(stmt, exprs, regions):
-    """True where ``stmt`` may change the value of any of ``exprs``."""
-    if stmt[0] == "asg":
-        return any(stmt[1] in frameproc._locset(x) for x in exprs)
-    return True if stmt[0] != "st" else _disturbs(stmt, exprs, regions)
-
-
-def _disturbs(stmt, exprs, regions):
-    """The store may change a value ``exprs`` read.
-
-    Index expressions may only be compared when the read is a direct load here;
-    one captured earlier can be structurally equal yet hold a stale index."""
-    return False if stmt[0] != "st" else _reads(exprs, _reach(stmt, regions), regions)
-
-
-def _store(env, lst, k):
-    """``lst[k]`` with its address spelled as the definition in force spells it.
-
-    A local naming an address names the same address at ``k`` only where every
-    local that naming reads still holds there what it held where it was written --
-    the staleness ``_disturbs`` warns of, discharged rather than assumed."""
-    s = lst[k]
-    if s[0] != "st" or env is None:
-        return s
-    n, bound = s[1], k
-    while n[0] == "loc":
-        got = env.value(n[1], bound)
-        if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in frameproc._locset(got[1])):
-            break
-        n, bound = got[1], got[0]
-    return ("st", n, s[2])
 
 
 def _may_disturb(stmt, base, idx, regions, mod=0):

@@ -7,6 +7,8 @@ canonical section emits adjacent. One lone-half access refuses that pair alone.
 
 from __future__ import annotations
 
+from bisect import bisect_right
+
 from . import datadecl
 from . import expr as E
 from . import frameproc
@@ -15,7 +17,9 @@ from . import streams as ST
 from .structured import Proof
 
 _SID_LO = 0xD400
+_SID_HI = 0xD41C  # the last register the frame log records
 _CUTOFF = 0x15  # the filter cutoff lo/hi pair; the voice pairs are freq and pulse
+_LOGGED = (_SID_LO, frameproc.NOIDX, _SID_HI - _SID_LO, 1, 0)
 
 
 def _half(cell):
@@ -298,54 +302,135 @@ def _rewrite(n, p, count):
 
 def _store_half(s, p):
     """``(cell, index expression)`` when ``s`` stores one half, else None."""
-    if s[0] != "st":
+    if s[0] != "st" or G.store_width(s[2]) != 1:
         return None
     base, idx = _addr_split(s[1])
     return (base, idx) if base in (p.lo, p.hi) else None
 
 
-def _pair_at(stmts, i, p):
-    """``(first cell, second cell)`` of a half-store pair at ``stmts[i:i+2]``.
+def _sites(stmts, p):
+    """``{(cell, index): [position]}`` over the list's half stores, in list order."""
+    out = {}
+    for k, s in enumerate(stmts):
+        h = _store_half(s, p)
+        if h is not None:
+            out.setdefault(h, []).append(k)
+    return out
 
-    A last-write-wins SID pair may be written hi first: the canonical section
-    emits lo,hi whatever the order, so the record cannot move."""
-    if i + 1 >= len(stmts):
+
+def _lww(p, idx, env, at, ctx):
+    """Both cells an indexed store pair writes are last-write-wins registers.
+
+    ``framelog`` keys the record by register and keeps write order only inside the
+    ctrl/AD/SR and $19-$1C sections, so two writes to one lo/hi pair commute. An
+    index the model cannot resolve may land the pair inside one of those."""
+    if idx is None:
+        return True
+    return ctx is not None and _lane_aligned(p, _consts(idx, env, at, *ctx))
+
+
+def _undisturbed(stmts, i, j, half, regions, env):
+    """The interval leaves the moved lane and every logged register alone.
+
+    A read of the lane between the two sites would see the moved write, and a
+    write to any register the frame log records may share an order-preserved
+    section with it, so crossing one may reverse two entries."""
+    cell, idx = half
+    at = frameproc.lane(cell, idx, frameproc.span(cell, idx, regions))
+    for k in range(i + 1, j):
+        s = frameproc.as_written(env, stmts, k)
+        if s[0] == "st" and frameproc.overlaps(_LOGGED, frameproc.store_reach(s, regions)):
+            return False
+        if frameproc.reads(frameproc._stmt_exprs(s), at, regions):
+            return False
+    return True
+
+
+def _bring(stmts, i, j, p, regions, env):
+    """``(seat, value at i, value at j)`` where the two half stores may meet, else None.
+
+    Either end may move. Hoisting the later store inlines what the interval
+    defines, since the merged store then leads it; sinking the leading store
+    admits no inlining, since it keeps the expression it was written with. Both
+    hold the interval to disturbing neither value nor the lane that moved."""
+    a, b = stmts[i], stmts[j]
+    ha, hb = _store_half(a, p), _store_half(b, p)
+    up, blocked = frameproc.hoist(stmts, i, j, (b[1], b[2]), regions, env)
+    if blocked is None and up[0] == b[1] and _undisturbed(stmts, i, j, hb, regions, env):
+        return i, a[2], up[1]
+    down, blocked = frameproc.hoist(stmts, i, j, (a[1], a[2]), regions, env)
+    if blocked is None and down == (a[1], a[2]) and _undisturbed(stmts, i, j, ha, regions, env):
+        return j, a[2], b[2]
+    return None
+
+
+def _pair_at(stmts, i, p, sites, regions=None, env=None, ctx=None):
+    """The merge ``stmts[i]`` leads: ``(partner, seat, statement, its value, cell)``.
+
+    The partner is the nearest later store of the pair's other lane at the same
+    symbolic index, adjacent or not. A merge writes exactly the two cells the
+    program wrote, so it owes no proof about the index -- only that bringing the
+    two together moves no value and no record entry. ``stw`` logs lo then hi, so
+    a hi-first pair reverses two writes: free where both cells are proven
+    last-write-wins registers, and refused where the index leaves that open."""
+    ha = _store_half(stmts[i], p)
+    if ha is None:
         return None
-    ha, hb = _store_half(stmts[i], p), _store_half(stmts[i + 1], p)
-    if ha is None or hb is None or ha[0] == hb[0] or ha[1] != hb[1]:
+    ks = sites.get((p.hi if ha[0] == p.lo else p.lo, ha[1])) or ()
+    k = bisect_right(ks, i)
+    if k == len(ks):
         return None
-    return None if hb[0] != p.hi and p.kind != "sid" else (ha[0], hb[0])
+    j = ks[k]
+    lofirst = _store_half(stmts[j], p)[0] == p.hi
+    if not lofirst and (p.kind != "sid" or not _lww(p, ha[1], env, i, ctx)):
+        return None
+    got = _bring(stmts, i, j, p, regions, env)
+    if got is None:
+        return None
+    seat, va, vb = got
+    lo = stmts[i] if lofirst else stmts[j]
+    vlo, vhi = (va, vb) if lofirst else (vb, va)
+    return j, seat, ("st", lo[1], _pack(vlo, vhi, not lofirst)), vb, ha[0]
 
 
 def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
     """One statement list: fuse paired stores, fold word reads, count refusals.
 
-    The list is rewritten as it is scanned, so the environment is rebuilt whenever
-    a statement moved: a stale index would answer for the wrong statement."""
+    The list is rewritten as it is scanned, so the environment and the half-store
+    index are rebuilt whenever a statement moved: a stale one would answer for
+    the wrong statement. ``taken`` is the partner a merge already accounted for."""
     count = 0 if mutate else 1
-    env, stale = frameproc.Defs(stmts, outer, cyclic), False
+    regions = None if ctx is None else ctx[0]
+    env, sites, taken, stale = None, None, set(), True
     i = 0
     while i < len(stmts):
         if stale:
-            env, stale = frameproc.Defs(stmts, outer, cyclic), False
+            env, sites, stale = frameproc.Defs(stmts, outer, cyclic), _sites(stmts, p), False
+            taken.clear()
+        if i in taken:
+            i += 1
+            continue
         s = stmts[i]
         for body in frameproc._stmt_bodies(s):
             _visit(body, p, mutate, ctx, (env, i), s[0] in frameproc._CYCLIC)
-        at = _pair_at(stmts, i, p)
-        if at is not None and _may_read(stmts[i + 1][2], at[0]):
+        at = _pair_at(stmts, i, p, sites, regions, env, ctx)
+        if at is not None and _may_read(at[3], at[4]):
             p.hazard += count
             if p.kind != "sid":
-                i += 2
+                taken.add(at[0])
+                i += 1
                 continue
             at = None  # the halves cannot pack, but each lane still widens
         if at is not None:
-            lo, hi = (s, stmts[i + 1]) if at[1] == p.hi else (stmts[i + 1], s)
+            j, seat, merged = at[:3]
             p.stores += count
             if mutate:
-                stmts[i] = ("st", lo[1], _pack(lo[2], hi[2], at[1] == p.lo))
-                del stmts[i + 1]
+                stmts[seat] = merged
+                del stmts[j if seat == i else i]
                 stale = True
-            i += 1 if mutate else 2
+            else:
+                taken.add(j)
+            i += 1 if seat == i or not mutate else 0
             continue
         if s[0] == "st" and _addr_split(s[1])[0] == p.lo and G.store_width(s[2]) == 2:
             p.stores += count  # already one word store: rung (d2) fused this pair

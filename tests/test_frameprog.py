@@ -319,8 +319,9 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
-    # the note word: the hi lane rides a fused indexed u16 store (rung d, hi-first)
-    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(m_5429\[\w+\]\) << \$08\)", text)
+    # a hi-first indexed pair merges only on a proven lane index (docs/frameprog.md 7.7)
+    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(\w+\) << \$08\):2 \| zext2", text)
+    assert re.search(r"sid\.v1\.freq_hi\[\w+\] = m_5429\[\w+\]", text)
     assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
     assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named
     assert "*ptr_005F[pos_54EF[x]]" in text  # a row index that is itself an indexed read
