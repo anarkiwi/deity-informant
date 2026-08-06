@@ -725,12 +725,35 @@ def _decide(lst, i, j, site, regions, env):
     site.sid = None if site.at is None else site.at[3]
 
 
+def _pairtab(d, other):
+    """``d`` is declared one half of a 16-bit table pair whose other half is ``other``."""
+    role = d.get("role")
+    return bool(role) and role[1] == other["base"]
+
+
+def _one_datum(site, regions):
+    """The two split lanes may be halves of one quantity, as the declarations have it.
+
+    Adjacent cells are one datum by their addresses; split lanes are two declared
+    data, and one the program never writes is not the half of one it does unless
+    ``datadecl`` paired them. A lane in no declaration is no evidence either way."""
+    if regions is None or site.word:
+        return True
+    got = [regions.at(a) for a in (site.lo, site.hi)]
+    if any(g is None for g in got):
+        return True
+    (dl, _lo_off), (dh, _hi_off) = got
+    return bool(dl.get("mut")) == bool(dh.get("mut")) or (_pairtab(dl, dh) and _pairtab(dh, dl))
+
+
 def _premise(lst, i, j, site, span, blocked=None, regions=None, env=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     Every read the word assignment leads with is held against the statements it is
     hoisted past, which is ``blocked``, ``settle``'s verdict; merging the two lane
     stores also moves the second one, so that needs no intervening read either."""
+    if not _one_datum(site, regions):
+        return "a const lane and a written lane are not one declared datum"
     kept = 1 if site.lo_at == i else 0
     later = [site.src[kept], site.src[2]]  # the leading store precedes both of these
     if _disturbs(_store(env, lst, i), later, regions):

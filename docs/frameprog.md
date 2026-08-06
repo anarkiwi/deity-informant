@@ -2056,8 +2056,8 @@ enumeration. Both arms still lift in 65 of 100, so the bidirectional asymmetry
 §7.3 holds open is untouched; what closed is that those 14 now have a site at all.
 
 **One refusal regressed, and `_pairs` is not where it is decided.**
-`test_liftgaps.py::test_a_lo_lane_loaded_in_the_dominating_block_refuses` now
-lifts as `lanes $1400/$1462`: `$1400` is the step table, paired with the hi lane.
+`test_liftgaps.py::test_a_lo_lane_loaded_in_the_dominating_block_refuses` lifted
+as `lanes $1400/$1462`: `$1400` is the step table, paired with the hi lane.
 Before the fold the step was indexed by `Y` and the lane by `X`, so `_pairs`'
 same-row concession held them apart; after it both are constant cells and
 `_rowbase` gives every one the row `None`.
@@ -2071,19 +2071,29 @@ the site at `lo=$1400` regardless: lanes are read off the extracted form by
 `_lane_addr`, and `_pairs` bounds what the e-graph is *asked*, not what it may
 name.
 
-**The premise actually missing is that two split lanes are one declared pair.**
-`_Site` spells `split tables` wherever `not self.word`, with no condition on the
-two declarations; `role` appears nowhere in `framemath`. `datadecl` already
-recovers the pairing (`dl["role"], dh["role"] = ("lo", ht), ("hi", lt)`) and
-`Regions` is already threaded into `apply_rung`, so the refusal belongs in
-`_decide`/`_premise` over the chosen site's lanes, not in `_pairs` over the
-offers. In the regressed case all three declarations carry `role=None` -- no pair
-was recovered -- and that is the fact the site should have been refused on. NOT
-YET APPLIED; it is the one failure in the suite.
+**The premise missing is that two split lanes are one datum, and `role` alone does
+not state it.** `_Site` spelled `split tables` wherever `not self.word`, with no
+condition on the two declarations. `datadecl` does recover a lo/hi table pair
+(`dl["role"], dh["role"] = ("lo", ht), ("hi", lt)`), but requiring that pairing
+refuses far too much: 53 of the enumeration's split-lane decisions pair two
+`role=None` tables and lift correctly, and no site in the suite or in a 12-tune
+corpus probe reaches a declaration carrying a role at all. The separating fact is
+`mut`. `$1400` is a wholly const table and `$1462` is written, and a datum the
+program never writes is not the half of one it does.
 
-**Measured:** the shape counts above reproduce exactly on both sides (552/34/24 at
-HEAD, 594/16/0 with the rule), and corpus Gate FP holds -- the suite over the
-cached HVSC selection is 1621 passed, 1 failed (the regression above), 2 skipped.
+**`framemath._one_datum`, the first clause of `_premise`.** Over the chosen site's
+lanes, not `_pairs` over the offers: a split-lane site whose two declarations
+disagree on being written is refused as `a const lane and a written lane are not
+one declared datum`, unless `role` pairs them. A lane in no declaration is no
+evidence either way and is left alone, which is the stance the other clauses take
+on an operand they cannot name -- and it is what keeps the 284 enumeration
+decisions whose lanes are undeclared lifting.
+
+**Measured:** 594 lifted / 16 no site / 0 refused over the 610 shapes, unchanged
+by the refusal, and the suite over the cached HVSC selection is 1622 passed, 2
+skipped, 0 failed. Over 12 corpus tunes the rule fires on nothing: of 18
+split-lane sites, 11 have both lanes written, 1 has both wholly const (which the
+`role` rule would have wrongly refused) and 6 have a lane in no declaration.
 Still unmeasured: the consumer partition (§6) and determinism across four seeds.
 
 ### 7.7 Byte-wide SID stores: the target, and why the metric is wrong
