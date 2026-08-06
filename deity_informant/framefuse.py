@@ -73,19 +73,21 @@ def _rebase(addr, old, new):
     return addr
 
 
-def _consts(idx, env, at, regions, mem0, depth=8):
+def _consts(idx, env, at, regions, mem0, params=None, entry=None, depth=8):
     """Every value ``idx`` may take where the model proves them all, else None.
 
     A constant *table* counts (Commando's ``LDY $14B5,X``), a written cell counts
-    through the store in force (``Defs.cell``), and a definition a branch join
-    leaves valueless forks (``_fork``): the union over the arms is the set."""
+    through the store in force (``Defs.cell``), a join forks (``_fork``), and the
+    value at entry is the union over the call sites (``_Params``)."""
     while True:
         while idx[0] == "loc":
             got = env.lookup_joined(idx[1], at)
-            if got is None or got is frameproc.ENTRY:
+            if got is frameproc.ENTRY:
+                return None if params is None else params.of(entry, idx[1])
+            if got is None:
                 return None
             if got[2] is None:
-                return _fork(idx, got[0], got[1], regions, mem0, depth)
+                return _fork(idx, got[0], got[1], regions, mem0, params, entry, depth)
             env, at, idx = got
         n = idx
         if n[0] == "op" and n[1] == "INT_ZEXT":
@@ -109,7 +111,7 @@ def _consts(idx, env, at, regions, mem0, depth=8):
         env, at, idx = got
 
 
-def _fork(n, env, k, regions, mem0, depth):
+def _fork(n, env, k, regions, mem0, params, entry, depth):
     """The union of the values the join at ``env.lst[k]`` may leave in ``n``.
 
     An ``if`` forks per arm (docs/frameprog.md 7.7 (3)): the arms are the exact
@@ -126,11 +128,65 @@ def _fork(n, env, k, regions, mem0, depth):
     out = set()
     for body in frameproc._stmt_bodies(s):
         sub = frameproc.Defs(body, (env, k), False)
-        ks = _consts(n, sub, len(body), regions, mem0, depth - 1)
+        ks = _consts(n, sub, len(body), regions, mem0, params, entry, depth - 1)
         if ks is None:
             return None
         out |= ks
     return frozenset(out)
+
+
+class _Params:
+    """The values each procedure parameter may hold, unioned over its call sites.
+
+    Filled before rung (d) moves a statement: a call site is a position in a list
+    this pass rewrites, so the table is loaded while the positions still hold and
+    only read back afterwards."""
+
+    __slots__ = ("calls", "regions", "mem0", "table", "busy", "filling")
+
+    def __init__(self, calls, regions, mem0):
+        self.calls, self.regions, self.mem0 = calls, regions, mem0
+        self.table, self.busy, self.filling = {}, set(), False
+
+    def fill(self, procs):
+        """Solve every parameter of a procedure that stores to a lane through an index."""
+        self.filling = True
+        for e, params, _r, stmts in procs:
+            if any(_lane_index(s) for s in stmts_of(stmts)):
+                for name in params:
+                    self.of(e, name)
+        self.filling = False
+
+    def of(self, entry, name):
+        """The values the parameter may hold; an unsolved one reads as unknown."""
+        key = (entry, name)
+        if key in self.table or not self.filling:
+            return self.table.get(key)
+        if key in self.busy:
+            return None  # a call cycle: the union is not well founded
+        sites = self.calls.args(entry, name)
+        if sites is None:
+            self.table[key] = None
+            return None
+        self.busy.add(key)
+        out = set()
+        for caller, env, at, arg in sites:
+            got = _consts(arg, env, at, self.regions, self.mem0, self, caller)
+            if got is None:
+                out = None
+                break
+            out |= got
+        self.busy.discard(key)
+        self.table[key] = out = None if out is None else frozenset(out)
+        return out
+
+
+def _lane_index(s):
+    """True where ``s`` stores to a SID lo/hi register through an index."""
+    if s[0] != "st":
+        return False
+    base, idx = _addr_split(s[1])
+    return idx is not None and base is not None and _sid_base(base) is not None
 
 
 def _lane_aligned(p, ks):
@@ -505,6 +561,32 @@ def _fuse_state(state, symbols, pairs, name_of):
     return out
 
 
+def _landings(model):
+    """RTS-trick landings: what an RTS reaches that no JSR's return explains.
+
+    ``ev_targets`` also records every JSR's callee and every normal return, so
+    only the RTS-terminated blocks are consulted, as ``procpass._graph`` does."""
+    ev = getattr(model, "ev_targets", None) or {}
+    blocks = getattr(model, "blocks", None) or {}
+    rets = {(b.term[2] + 1) & 0xFFFF for b in blocks.values() if b.term[0] == "jsr"}
+    out = set()
+    for b in blocks.values():
+        if b.term[0] == "rts":
+            out |= set(ev.get(b.pcs[-1], ())) - rets
+    return out
+
+
+def contexts(model, decls, procs):
+    """Per-procedure ``(regions, mem0, params, entry)`` with the call sites solved.
+
+    RTS-trick landings are callers the graph cannot name, so they fold into
+    ``Calls.opaque`` and their parameters stay unknown (docs/frameprog.md 7.7 (4))."""
+    regions = datadecl.Regions(decls)
+    params = _Params(frameproc.Calls(procs, model.play, _landings(model)), regions, model.mem0)
+    params.fill(procs)
+    return {e: (regions, model.mem0, params, e) for e, _pa, _r, _s in procs}
+
+
 def apply_rung(model, decls, procs, state, symbols, name_of):
     """Rung (d) in place over ``procs``; returns ``(state fields, proofs)``.
 
@@ -512,17 +594,17 @@ def apply_rung(model, decls, procs, state, symbols, name_of):
     halves and every other pair still fuses. The SID register pairs — freq,
     pulse and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
-    ctx = (datadecl.Regions(decls), model.mem0)
+    ctx = contexts(model, decls, procs)
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
         p = _Pair(lo, hi, kind, evidence)
         if hi == lo + 1:
-            for _e, _pa, _r, stmts in procs:
-                _visit(stmts, p, False, ctx)
+            for e, _pa, _r, stmts in procs:
+                _visit(stmts, p, False, ctx[e])
         proofs.append(p.proof())
         if p.refusal() is not None:
             continue
         fused.append(p)
-        for _e, _pa, _r, stmts in procs:
-            _visit(stmts, p, True, ctx)
+        for e, _pa, _r, stmts in procs:
+            _visit(stmts, p, True, ctx[e])
     state = _fuse_state(state, symbols, [p for p in fused if p.kind != "sid"], name_of)
     return state, proofs

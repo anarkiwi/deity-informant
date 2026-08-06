@@ -91,18 +91,17 @@ def _residue(model, prog):
 
     The measure pass re-run over the lifted program: a store rung (d) widened is
     no longer a lane half, so what it counts here is what it left behind."""
-    from deity_informant import datadecl
     from deity_informant import framefuse
 
-    ctx = (datadecl.Regions(prog.data_decls), prog.mem0)
+    ctx = framefuse.contexts(model, prog.data_decls, prog.procs)
     unproven = notaligned = 0
     cands = framefuse.candidates(model, prog.data_decls, prog.procs)
     for (lo, hi), (kind, evidence) in sorted(cands.items()):
         if kind != "sid":
             continue
         p = framefuse._Pair(lo, hi, kind, evidence)
-        for _e, _pa, _r, stmts in prog.procs:
-            framefuse._visit(stmts, p, False, ctx)
+        for e, _pa, _r, stmts in prog.procs:
+            framefuse._visit(stmts, p, False, ctx[e])
         assert not p.indexed, "a lane-aligned indexed store survived rung (d)"
         unproven += p.unproven
         notaligned += p.notaligned

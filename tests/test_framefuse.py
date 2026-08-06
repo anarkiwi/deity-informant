@@ -450,6 +450,43 @@ def test_a_computed_jump_refuses_every_label_join():
     assert _cell_set(stmts, 2) is None
 
 
+def _call_voice(name, offsets):
+    """Also_Bad's shape: three call sites, each passing the callee's lane index."""
+    a = G.Asm(G.ORG)
+    for k, off in enumerate(offsets):
+        a.i("LDA", "imm", 0x30 + k).i("LDY", "imm", off).i("JSR", "abs", ("L", "sub"))
+    a.i("RTS").label("sub").i("STA", "absy", SID).i("RTS")
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player(name, a.assemble(), None, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    return _proof(prog, SID).lemma, frameprog.dumps(prog)
+
+
+def test_the_constants_the_call_sites_pass_widen_the_callee_lane_store():
+    """A parameter holds the union of what its call sites pass, `$00 $07 $0E` here."""
+    lemma, text = _call_voice("param_ok", (0x00, 0x07, 0x0E))
+    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
+
+
+def test_one_call_site_passing_a_mid_register_offset_refuses_the_widening():
+    """`$01` lands the word on freq *hi*, so the union is not lane-aligned."""
+    lemma, text = _call_voice("param_stray", (0x00, 0x01, 0x0E))
+    assert "sid.reg00[y] = a" in text and "freq_lo[y]" not in text
+    assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
+
+
+def test_a_bare_local_is_the_entry_value_only_clear_of_walls():
+    """ENTRY survives an unentered label; a cyclic body that may rebind refuses."""
+    top = frameproc.Defs([("label", 0x1000), ("ret", False)])
+    assert top.lookup_joined("y", 0) is frameproc.ENTRY
+    assert top.lookup_joined("y", 2) is frameproc.ENTRY  # no goto enters the label
+    body = [("st", ("const", 0x1440, 2), ("loc", "y")), ("asg", "y", ("const", 1, 1))]
+    inner = frameproc.Defs(body, (frameproc.Defs([("loop", body)]), 0), True)
+    assert inner.lookup_joined("y", 0) is None  # the back edge may rebind it
+
+
 def test_a_for_counter_binds_its_range_and_a_rebinding_body_refuses():
     """The counter takes the range's every value; a body rebinding it is a wall."""
     body = [("st", ("op", "INT_ADD", (("loc", "x"), ("const", 0xD400, 2)), 2), ("const", 1, 1))]

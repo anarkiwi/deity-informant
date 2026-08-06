@@ -2194,17 +2194,21 @@ Next steps, in order:
    needs a value-set fixpoint over the loop body, not a join; that residue is
    the view's remaining tenant (41 stores over a 7-tune probe) and the next
    frontier after step 4.
-4. **The parameter union** (§7.2's ~800). `stash@{0}` holds it, and step 2's
-   landing rewrote `framefuse.py` and `frameproc.py`, so it no longer applies
-   (`git apply --check` refuses both) -- rebase it by hand. Its `ENTRY` sentinel splits "no
-   definition anywhere" from "a definition whose value cannot be read off"; of 940
-   bare-local failures only 272 are genuine entry values, so reading them all as
-   parameters would be unsound on 71%. **Two blockers before it lands:**
-   `_const_of` (§7.6) must handle `ENTRY` -- `ENTRY is None` is False and
-   `ENTRY[2]` raises, on every tune, and `git apply` is silent because the hunks
-   are textually disjoint; and `model.ev_targets` (RTS-trick landings) must fold
-   into `Calls.opaque`, or a procedure that is both a `JSR` target and an
-   RTS-dispatch landing takes its union over the `JSR` sites only.
+4. **The parameter union** (§7.2's ~800). **Landed, rebased rather than
+   applied** -- step 2's rewrite left `stash@{0}` unappliable and both its
+   blockers were real. `ENTRY` splits "the value the procedure was entered
+   with" from a definition that cannot be read off: `Defs._name_walk` answers
+   it, the label join holds to it, and `_const_of` never sees it, since only
+   `lookup_joined` returns it. `Calls` closes the graph and `_Params` unions
+   `_consts` over every `pcall` site, refused where the play entry, a
+   `call`/`swc` target, an open transfer, or an RTS-trick landing leaves a
+   caller unnamed. `ev_targets` records every JSR callee and normal return
+   besides the trick landings, so only RTS-terminated blocks are consulted,
+   minus the JSR returns, as `procpass._graph` reads it. The measure pass
+   diverged until the polish moved: `repolish` runs before rung (d) as well as
+   after, so the rung proves against the lists the measure re-reads.
+   Briley_Witch_Chronicles clears 4 -> 0 on the union alone; the 7-tune probe
+   holds 37, every one loop-carried.
 5. **Carve the 16-bit registers out of the output model.**
    `sid.v1.freq_lo[y]` asserts a register the store need not touch, and
    `render.py`'s `sid_name` names it off the base alone. Declare freq, pulse
