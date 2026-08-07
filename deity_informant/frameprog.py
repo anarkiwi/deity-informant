@@ -212,7 +212,8 @@ def _pack_witness(n, bases, cover):
 
     An indexed pack witnesses at the bases themselves; a scalar pack witnesses
     through ``cover`` -- the declaration each cell sits in -- when both cells
-    sit at one offset into declarations the same distance apart."""
+    sit at one offset into declarations the same distance apart. Cells no
+    declaration names witness for themselves, as a pair of one element."""
     got = frameproc._le_bytes(n)
     if got is None or got[0][0] != "mem" or got[1][0] != "mem":
         return None
@@ -221,10 +222,14 @@ def _pack_witness(n, bases, cover):
         return None
     if il is None:
         dl, dh = cover.get(bl), cover.get(bh)
-        if dl is None or dh is None or bl - dl != bh - dh:
+        if dl is None and dh is None:
+            return ("cells", bl, bh)
+        if dl is None or dh is None:
             return None
         if dl == dh:
             return ("intra", dl, bh - bl)
+        if bl - dl != bh - dh:
+            return None
         bl, bh = dl, dh
         if bh == bl + 1:
             return None
@@ -259,7 +264,55 @@ def _split_intra(decls, bases, intra, vetoed, words):
         bases.pop(dbase, None)
 
 
-def _pair_tables(procs, decls):
+def _cell_decl(base, role, mem0, mut):
+    """A one-element byte-column declaration carved for a loose cell."""
+    return {
+        "kind": "table",
+        "base": base,
+        "size": 1,
+        "stride": 1,
+        "mut": datadecl._mut_offs(base, 1, 1, mut),
+        "cobases": [],
+        "role": role,
+        "via": None,
+        "targets": None,
+        "cmp": [],
+        "dispatch": [],
+        "observed": False,
+        "data": bytes(mem0[base : base + 1]),
+    }
+
+
+def _declare_cells(decls, cells, vetoed, words, mem0, mut, code):
+    """Declare the loose cell pair a scalar pack witnesses (7.9 (a)).
+
+    Two non-adjacent cells no declaration names, packed into one u16 and never
+    used as an address, are a 16-bit datum shredded into byte columns of one
+    element each -- the pack is the only evidence they will ever have, and it
+    is the same evidence a split table's pack carries. They carve out of the
+    image as a co-extensive lo/hi pair, so the registry rides the data section
+    exactly as a table pair's does, and the roles survive a round trip."""
+    covered = {a for d in decls for a in range(d["base"], d["base"] + d["size"])}
+    taken, new = set(), []
+    for lo, his in sorted(cells.items()):
+        (hi,) = his if len(his) == 1 else (None,)
+        if hi is None or hi == lo:
+            continue
+        if {lo, hi} & (vetoed | words | taken | covered):
+            continue
+        if not all(datadecl._LOW <= c < 0xD000 or c >= 0xE000 for c in (lo, hi)):
+            continue
+        if {lo, hi} & code:
+            continue
+        taken.update((lo, hi))
+        new.append(_cell_decl(lo, ("lo", hi), mem0, mut))
+        new.append(_cell_decl(hi, ("hi", lo), mem0, mut))
+    if new:
+        decls.extend(new)
+        decls.sort(key=lambda d: d["base"])
+
+
+def _pair_tables(procs, decls, mem0, mut, code):
     """Declare the split lo/hi table pairs the value graph packs (7.9 (a)).
 
     A pack over two declared non-adjacent columns at one index is the witness
@@ -270,7 +323,7 @@ def _pair_tables(procs, decls):
     for d in decls:
         for a in range(d["base"], d["base"] + d["size"]):
             cover.setdefault(a, d["base"])
-    votes, words, veto, intra = {}, set(), set(), {}
+    votes, words, veto, intra, cells = {}, set(), set(), {}, {}
 
     def walk(n, in_addr=False):
         if n[0] == "mem":
@@ -286,6 +339,8 @@ def _pair_tables(procs, decls):
                     veto.add(got[1:])
                 elif got[0] == "pair":
                     votes.setdefault(got[1], set()).add(got[2])
+                elif got[0] == "cells":
+                    cells.setdefault(got[1], set()).add(got[2])
                 else:
                     intra.setdefault(got[1], set()).add(got[2])
             for c in n[2]:
@@ -297,6 +352,7 @@ def _pair_tables(procs, decls):
                 walk(x)
     vetoed = {b for pr in veto for b in pr}
     _split_intra(decls, bases, intra, vetoed, words)
+    _declare_cells(decls, cells, vetoed, words, mem0, mut, code)
     pairs = {}
     his = set()
     for lo, hs in sorted(votes.items()):
@@ -390,10 +446,12 @@ def program(model):
     regions = datadecl.Regions(decls)
     frameproc.repolish(procs, model.play, regions)
     state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
+    code = set(datadecl._code_bytes(model))
     for _pass in range(4):
         before = repr(procs)
         frameproc.repolish(procs, model.play, regions)
-        pairs = _pair_tables(procs, decls)
+        pairs = _pair_tables(procs, decls, model.mem0, model.written, code)
+        regions = datadecl.Regions(decls)  # the rung re-carves decls: containment follows
         for _e2, _pa2, _r2, stmts2 in procs:
             _adjoin_pairs(stmts2, pairs, regions)
         if repr(procs) == before:

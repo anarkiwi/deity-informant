@@ -37,6 +37,11 @@ def _proof(prog, lo):
     return next(p for p in prog.proofs if p.site == lo)
 
 
+def _proof_kind(prog, lo, kind):
+    """One site carries a proof per rung, so the kind picks between them."""
+    return next(p for p in prog.proofs if p.site == lo and p.kind == kind)
+
+
 def _stmts(prog):
     return prog.procs[0][3]
 
@@ -65,13 +70,21 @@ def _st(cell, val):
 
 # ---- the premise discharged ------------------------------------------------------
 def test_pointer_pair_fuses_to_one_u16_state_field():
-    """The pair the classifier proves becomes one field, read and written as a word."""
+    """The pair the classifier proves becomes one field, read and written as a word.
+
+    The source cells declare themselves too (7.9 (a), scalar): nothing indexes
+    them, so the pack over them is their only evidence and it carves them as a
+    one-element lo/hi pair. That is what lets rung (f) name the deref's
+    definition, so the load resolves to the pointer rather than to its cell."""
     model = _model_of(G.t_word_pair)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
     assert " ptr_0002: u16" in text and "ptr_0002_lo" not in text
-    assert "ptr_0002:2 = ((zext2(m_1505) << $08):2 | zext2(m_1501)):2" in text
-    assert "mem[ptr_0002:2]" in text
+    assert " table m_1501[1] lo m_1505:" in text and " table m_1505[1] hi m_1501:" in text
+    assert "ptr_0002:2 = m_1501[$00]:2" in text
+    assert "a = *ptr_0002" in text
+    assert _proof_kind(prog, PTR, "deref").status == "resolved"
+    assert "from m_1501/m_1505[1]@$00" in _proof_kind(prog, PTR, "deref").lemma
     assert _proof(prog, PTR).status == "fused"
     assert "pointer pair" in _proof(prog, PTR).lemma
     assert frameprog.dumps(frameprog.loads(text)) == text

@@ -2297,6 +2297,51 @@ spills of one word, ``idx_550A``/``idx_550B``) wants the store-side fold; and
 the sink pair by value provenance -- two halves of one 16-bit datum stored one
 lane apart -- replaces the index-proof pairing entirely, Oracle-gated per tune.
 
+**The pack declares its own columns (7.9 (a), scalar).** A pack over two
+*declared* non-adjacent columns is the pair witness, and the roles land on the
+decls so the registry rides the data section. But ``datadecl`` carves from
+indexed evidence alone, so a driver that touches one 16-bit datum at fixed
+addresses -- no index anywhere -- declares nothing at all, and the intra-decl
+split had nothing to re-stride: the shredder's whole fixed-voice column was the
+pack surviving as ``(zext2(m_1404) << $08):2 | zext2(m_1401)``. **Two cells no
+declaration names now witness for themselves**, as a pair of one element:
+uncovered, non-adjacent, packed into one u16 and never used as an address, they
+carve out of the image as a co-extensive lo/hi pair (``_declare_cells``), so
+every later rung reads them as an ordinary table pair and the roles survive the
+round trip. ``_pack_witness`` gives its verdict by coverage -- neither cell
+declared is *cells*, one of each refuses, one declaration covering both is
+*intra* -- and that last case must be read **before** the equal-offsets guard
+or the intra branch is dead code, since two cells of one declaration never sit
+at equal offsets into it. The carving guards are ``datadecl``'s own: never a
+code byte, never below ``_LOW``, never the I/O page, and never a base some
+address computation reads. The shredder's fixed-voice and transported columns
+all lift whole on this rung -- ``sid.v1.freq_lo:2 = m_1401[$00]:2`` for the
+move -- and the arithmetic follows *with no further rule*: the SBC borrow chain
+and the ASL/ROL pair were already word-folding, and were only ever blocked on
+the pair not existing.
+
+The rung pays a second time, in rung (f). The fused-pointer fixture loads its
+pointer from two fixed cells nothing indexes, so it too declared nothing, and
+the deref stayed spelled at its cell: ``a = mem[ptr_0002:2]``. With the cells
+carved the pointer classifier has a *definition* to name -- ``1 definition(s)
+from m_1501/m_1505[1]@$00`` -- and the load resolves to the pointer itself,
+``a = *ptr_0002``. Declaring the data is what let the deref rung see it, which
+is the reframe's own claim: canonicalize the value graph and the walls stop
+mattering. On the corpus this rung is inert -- Commando witnesses no loose cell
+pair at all, its evidence being indexed throughout, and its emit is unchanged
+at 549 lines.
+
+The immediate operand needed one fold of its own. An extracted word form spells
+a 16-bit literal the way the 6502 loads it, ``($0037 | ($0001 << $08):2)``,
+which ``_lanes`` rightly refuses -- a literal has no lanes -- but nothing then
+collapsed it. ``framemath._numfold`` folds a constant pack to the constant word
+before the form is chosen: ``d0:2 = (ctr_1401[$00]:2 + $0137):2``. The
+*store*-side spelling does not fold, and deliberately: ``grammar.store_width``
+reads every ``const`` store value as one byte, so a folded word constant would
+store truncated (the evaluator refuses it outright), and an immediate write to
+a SID pair still emits the shifted pack. Widening that protocol so a ``const``
+states its width like an ``op`` does is its own increment.
+
 **The stack leaves the frame program (rung d0').** ``sp`` is invisible to the
 record and its real consumers were the destacked slot addresses, so where
 nothing reads it the updates, the parameter and every threading argument go --

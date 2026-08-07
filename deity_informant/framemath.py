@@ -78,6 +78,26 @@ def _lanes(t):
     return None
 
 
+def _numfold(t):
+    """A pack of two constant bytes is the constant word it spells.
+
+    The 6502 spells a 16-bit immediate as two, and the extraction keeps that
+    spelling even though ``_lanes`` refuses it -- a literal has no lanes to
+    read. Folding it is the last 8-bit shadow off an otherwise word form."""
+    if not isinstance(t, tuple):
+        return t
+    t = tuple(_numfold(a) for a in t)
+    if t[0] == "bor" and t[3] == 2:
+        for a, b in (t[1:3], t[2:0:-1]):
+            if a[0] != "shl" or a[2][0] != "num" or a[2][1] != 8:
+                continue
+            hi = a[1][1] if a[1][0] == "zext" else a[1]
+            lo = b[1] if b[0] == "zext" else b
+            if hi[0] == "num" and lo[0] == "num":
+                return ("num", ((hi[1] & 0xFF) << 8) | (lo[1] & 0xFF), 2)
+    return t
+
+
 def _signed(t):
     """An add of a step past the halfway mark is the subtract it stands for."""
     if t[0] == "add" and t[3] == 2 and t[2][0] == "num" and t[2][1] >= 0x8000:
@@ -120,6 +140,7 @@ def _word_form(t):
     the form is what is left once every occurrence of that pack stands as the
     word. A pack the rest of the term still reads a lane outside is no form."""
     out = []
+    t = _numfold(t)
     for p in _packs(t):
         lanes = _lanes(p)
         if lanes is None:

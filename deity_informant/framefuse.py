@@ -48,7 +48,11 @@ def _word_shape(n, lo, hi):
 
 
 def _pack(vlo, vhi, hi_first=True):
-    """``hi<<8 | lo``, the half written first left of the bar: evaluation order."""
+    """``hi<<8 | lo``, the half written first left of the bar: evaluation order.
+
+    Two constant halves do NOT fold to one constant here: ``grammar.store_width``
+    reads every ``const`` store value as one byte, so a folded word would store
+    truncated. The pack keeps the width the store protocol can see."""
     shl = ("op", "INT_LEFT", (_zext2(vhi), ("const", 8, 1)), 2)
     kids = (shl, _zext2(vlo)) if hi_first else (_zext2(vlo), shl)
     return ("op", "INT_OR", kids, 2)
