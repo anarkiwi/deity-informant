@@ -46,7 +46,7 @@ _REG_NAMES = {
 _NAME_REGS = {v: k for k, v in _REG_NAMES.items()}
 _SID_NAMES = {a: sid_name(a) for a in range(0xD400, 0xD419)}
 _SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
-_VIEW_NAME = re.compile(r"sid\.reg([01][0-9A-F])$")
+VIEW = "sid.reg"  # the byte view of the register file (docs/frameprog.md 7.7 (5))
 _CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
 _SLOT_NAME = re.compile(r"[utr]\d+$")
 _T_NAME = re.compile(r"t(\d+)$")
@@ -83,23 +83,12 @@ def sid_base(base):
     return base - r if r <= 1 else base - (r - 2) if r <= 3 else None
 
 
-def view_name(base):
-    """The register-file view name of a SID byte offset (docs/frameprog.md 7.7 (5)).
-
-    A byte-wide indexed store whose index rung (d) cannot prove renders against
-    this view: it asserts one byte at ``base - $D400`` plus the index, and never
-    names a 16-bit register, so a named freq/pulse/cutoff access is always u16."""
-    return "sid.reg%02X" % (base - 0xD400)
-
-
 def name_addr(name):
     """Address named by a canonical cell name, else None (inverse of addr_name)."""
+    if name == VIEW:
+        return 0xD400
     a = _SID_ADDRS.get(name)
     if a is None:
-        m = _VIEW_NAME.match(name)
-        if m:
-            a = 0xD400 + int(m.group(1), 16)
-            return a if a <= 0xD41C else None
         m = _CELL_NAME.match(name)
         if m:
             a = int(m.group(2), 16)
@@ -586,9 +575,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("reg", reg_index(name))
 
     def _index_addr(self, base, idx):
-        """``base + zext2(idx)``: the declared-base indexed access, any index expression."""
+        """``base + zext2(idx)``: the declared-base indexed access, any index expression.
+
+        A byte index widens; one already a word -- the ``sid.reg`` view carries
+        its offset inside the index at word width -- rides as written."""
         addr = req_name(self.rev.get(base, base))
-        return ("op", "INT_ADD", (("op", "INT_ZEXT", (idx,), 2), ("const", addr, 2)), 2)
+        if not (idx[0] == "op" and idx[3] == 2) and not (
+            idx[0] in ("mem", "const") and idx[2] == 2
+        ):
+            idx = ("op", "INT_ZEXT", (idx,), 2)
+        return ("op", "INT_ADD", (idx, ("const", addr, 2)), 2)
 
     def _deref_addr(self, base, idx):
         """``ptr [+ zext2(idx)]``: rung (f)'s resolved deref, the pointer read as a word."""

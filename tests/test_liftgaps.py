@@ -123,7 +123,7 @@ def test_a_lane_index_set_in_a_branch_arm_widens_on_the_join_union():
     outs = tuple(G.SID + k for k in range(0x19))
     _proofs, text = _run("arm_index", a, {G.TBL: 0x01, G.TBL + 1: 0x42}, outs)
     assert "sid.v1.freq_lo[y]:2 = " in text  # the union {$00, $07} is all lane lo
-    assert "sid.reg00[y]" not in text
+    assert "sid.reg[y]" not in text
 
 
 @pytest.mark.parametrize("k,widens", [(0x07, True), (0x01, False)])

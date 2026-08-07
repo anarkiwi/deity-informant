@@ -1919,10 +1919,14 @@ def _membody(addr, res=_NORES, sz=1):
         return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
     if got is not None and got[2] == 0:
-        name = sidprog._addr_name(got[0])
-        if sz == 1 and G.sid_base(got[0]) is not None:
-            name = G.view_name(got[0])  # rung (d)'s residue: assert the byte, not the register
-        return "%s[%s]" % (name, _fmt(got[1], res))
+        base, idx = got[0], got[1]
+        if sz == 1 and G.sid_base(base) is not None:
+            off = base - 0xD400  # rung (d)'s residue: assert the byte, not the register
+            if off:
+                wide = idx if loc_width(idx) == 2 else ("op", "INT_ZEXT", (idx,), 2)
+                idx = ("op", "INT_ADD", (wide, ("const", off, 2)), 2)
+            return "%s[%s]" % (G.VIEW, _fmt(idx, res))
+        return "%s[%s]" % (sidprog._addr_name(base), _fmt(idx, res))
     return None
 
 

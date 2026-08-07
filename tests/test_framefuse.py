@@ -351,7 +351,7 @@ def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
 def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
     lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
-    assert "sid.reg00[y] = a" in text and "freq_lo[y]" not in text
+    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
     assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
@@ -405,7 +405,7 @@ def test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index():
 def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
-    assert "sid.reg00[y] = a" in text and "freq_lo[y]" not in text
+    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
     assert "0 lane-aligned indexed, 1 index unproven, 0 index proven off-lane" in lemma
 
 
@@ -473,7 +473,7 @@ def test_the_constants_the_call_sites_pass_widen_the_callee_lane_store():
 def test_one_call_site_passing_a_mid_register_offset_refuses_the_widening():
     """`$01` lands the word on freq *hi*, so the union is not lane-aligned."""
     lemma, text = _call_voice("param_stray", (0x00, 0x01, 0x0E))
-    assert "sid.reg00[y] = a" in text and "freq_lo[y]" not in text
+    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
     assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 

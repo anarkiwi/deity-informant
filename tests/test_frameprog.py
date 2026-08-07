@@ -322,7 +322,8 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     # 16-clean (7.7): named freq/pw/cutoff access is u16 and the label join empties the view
     assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(\w+\) << \$08\):2 \| zext2", text)
     assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(m_5429\[\w+\]\) << \$08\):2", text)
-    assert not re.search(r"sid\.reg[0-9A-F]{2}\[", text)
+    body = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith(";"))
+    assert "sid.reg[" not in body
     assert not re.search(r"sid\.v1\.(freq|pw)_(lo|hi)\[\w+\] =", text)
     assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
     assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named
@@ -380,7 +381,10 @@ def test_computed_table_read_is_an_indexed_access_not_a_raw_memref():
             ),
             "m_5591[m_5518]",
         ),
-        (("op", "INT_ADD", (("const", 0xD402, 2), ("loc", "v")), 2), "sid.reg02[v]"),
+        (
+            ("op", "INT_ADD", (("const", 0xD402, 2), ("loc", "v")), 2),
+            "sid.reg[(zext2(v) + $0002):2]",
+        ),
         (("op", "INT_ADD", (("loc", "t5"), ("const", 0x00F0, 2)), 2), None),  # zero page: no base
     ],
 )

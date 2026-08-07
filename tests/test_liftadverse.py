@@ -34,8 +34,9 @@ def _lane_line(text):
     Unwidened, it rides the ``sid.regNN`` byte view (docs/frameprog.md 7.7 (5));
     widened, it names the register at ``:2``. Reading the line rather than a fixed
     spelling keeps the check honest when the index folds to a constant."""
-    hits = ("sid.reg00[", "sid.v1.freq_lo[")
-    got = [ln.strip() for ln in text.splitlines() if any(h in ln for h in hits)]
+    hits = ("sid.reg[", "sid.v1.freq_lo[")
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith(";")]
+    got = [ln.strip() for ln in lines if any(h in ln for h in hits)]
     assert len(got) == 1, "expected exactly one indexed lane store, got %r" % (got,)
     return got[0]
 
