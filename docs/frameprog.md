@@ -2456,6 +2456,19 @@ counted: the index's constant set, the registers it actually reaches, each one's
 lo/hi/8-bit role, the address shape ``addr_split`` refused and the definition
 behind it. It exists so a bucket can be argued with.
 
+**A row is keyed by the tune's cache-relative path, not by its stem.** Eight stems
+in the 624-tune cache name two different tunes each -- ``Commando`` is Hubbard's
+*and* Cadaver's, likewise ``12_Bar_Blues``, ``720_Degrees``, ``Acid_Rain``,
+``Aftermath``, ``Alpha``, ``Axel_F``, ``Crocketts_Theme`` -- so a stem-keyed index
+of any of these sweeps silently merges eight pairs of tunes, and diffing two sweeps
+through one reports eight tunes as changed that did not change. The key is
+``MUSICIANS/H/Hubbard_Rob/Commando``, unique by construction; the stem rides along
+as ``name`` for reading. ``fuse_measure``, ``lift_residue``, ``lift_triage`` and
+``lifttrace`` share the identity out of ``tools/_sweep.py``, which asserts it is
+unique over the cache before a sweep starts and over the rows before one is written.
+``--tunes`` still takes a bare stem, and an ambiguous one is refused by naming the
+qualified identities to choose between rather than quietly running both.
+
 #### 7.10.1 The census: the ladder measures one corner of one rung
 
 617 tunes, 259s over 32 workers, the same 7 refusals as §7.9.1 (1). The census

@@ -14,20 +14,17 @@ import sys
 import tempfile
 from pathlib import Path
 
+import _sweep
 from deity_informant import framemath as FM
 from deity_informant import frameprog, frameval
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
-HVSC = Path(".oracle-cache/hvsc")
-
 
 def sid_path(tune):
-    """The cached HVSC file for a tune stem; raises when it is not unique."""
-    hits = sorted(HVSC.resolve().rglob(tune + ".sid"))
-    if len(hits) != 1:
-        raise SystemExit("%d files match %r" % (len(hits), tune))
-    return hits[0]
+    """The cached HVSC file a tune id or stem names; an ambiguous stem is refused."""
+    hits = {_sweep.tune_id(p): p for p in sorted(_sweep.HVSC.rglob("*.sid"))}
+    return hits[_sweep.resolve(hits, tune)]
 
 
 def build(tune, frames, sub):
@@ -148,7 +145,8 @@ def capture(tune, frames=200, sub=0):
         gate = frameval.gate_fp(model, frames, prog)
     finally:
         FM._fuse, FM._site, FM._premise, FM._lift, FM._may_disturb = saved
-    return {"tune": tune, "frames": frames, "sub": sub, "gate": gate and list(gate), "events": ev}
+    ident = _sweep.tune_id(sid_path(tune))
+    return {"tune": ident, "frames": frames, "sub": sub, "gate": gate and list(gate), "events": ev}
 
 
 def diff(a, b):

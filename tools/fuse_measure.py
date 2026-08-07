@@ -5,6 +5,7 @@ store is a word store and what stays byte-wide is the residue: an index the mode
 cannot resolve (work) against one it resolves off a pair lo (irreducible).
 """
 
+import argparse
 import json
 import multiprocessing as mp
 import signal
@@ -12,11 +13,11 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import _sweep
+
+ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
 
-HVSC = ROOT / ".oracle-cache" / "hvsc"
-CAP_S = 1800  # wall seconds per tune, so one pathological build cannot hold the sweep open
 SID_LO, SID_HI = 0xD400, 0xD41C
 NREG = SID_HI - SID_LO + 1
 
@@ -114,10 +115,10 @@ def one(entry):
     A tune the decompiler refuses returns its exception instead; the sweep is the
     whole cache, and §7.7's numbers are over the same 682 files."""
     try:
-        signal.alarm(CAP_S)
+        signal.alarm(_sweep.CAP_S)
         return _one(entry)
     except Exception as exc:  # pylint: disable=broad-except
-        return {"tune": Path(entry[0]).stem, "error": "%s: %s" % (type(exc).__name__, exc)}
+        return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
     finally:
         signal.alarm(0)
 
@@ -134,7 +135,7 @@ def _one(entry):
     t0 = time.monotonic()
     model, _ev = S.decompile(mem, init, play, int(secs * 50), sub)
     prog = frameprog.program(model)
-    row = {"tune": Path(sid).stem, "build_s": round(time.monotonic() - t0, 1)}
+    row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
     row.update({k: 0 for k in BYTE})
     row["aligned"] = row["word_plain"] = row["unnamed_ruled_out"] = 0
     idx_lane = 0
@@ -162,37 +163,21 @@ def _one(entry):
     return row
 
 
-def entries():
-    """``[(path, subtune, secs)]`` for every cached tune, at full Songlengths length."""
-    from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
-
-    lengths = song_lengths((HVSC / "Songlengths.md5").read_text(encoding="latin-1"))
-    out = []
-    for path in sorted(HVSC.rglob("*.sid")):
-        data = path.read_bytes()
-        _mem, _load, _init, play = load_psid(data)
-        sub = psid_songs(data)[1] - 1
-        secs = song_seconds(data, lengths, sub)
-        if play and secs:
-            out.append((str(path), sub, secs))
-    return out
-
-
-def _alarm(_sig, _frame):
-    raise TimeoutError("build cap")
-
-
-def _arm():
-    signal.signal(signal.SIGALRM, _alarm)
-
-
 def main():
-    tunes = entries()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--tunes", help="comma-separated tune ids or stems; default the whole cache")
+    ap.add_argument("-j", "--procs", type=int, default=32)
+    ap.add_argument("-o", "--out", default=str(ROOT / "out" / "fuse_measure.json"))
+    args = ap.parse_args()
+
+    tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
+    if not tunes:
+        sys.exit("no cached tune matched")
     t0 = time.monotonic()
-    with mp.Pool(min(len(tunes), 32), _arm) as pool:
-        rows = pool.map(one, tunes)
+    with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
+        rows = _sweep.check_rows(pool.map(one, tunes))
     done = [r for r in rows if "error" not in r]
-    total = {k: sum(r[k] for r in done) for k in done[0] if k != "tune"}
+    total = {k: sum(r[k] for r in done) for k in done[0] if k not in ("tune", "name")}
     assert total["byte_total"] == sum(total[k] for k in BYTE)
     out = {
         "tunes": len(done),
@@ -203,8 +188,8 @@ def main():
         "total": total,
         "rows": rows,
     }
-    (ROOT / "out").mkdir(exist_ok=True)
-    (ROOT / "out" / "fuse_measure.json").write_text(json.dumps(out, indent=1))
+    Path(args.out).parent.mkdir(exist_ok=True)
+    Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
     brief = {k: v for k, v in out.items() if k != "rows"}
     brief["refused"] = len(out["refused"])
     print(json.dumps(brief, indent=1))

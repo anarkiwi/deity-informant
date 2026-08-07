@@ -15,15 +15,14 @@ from collections import Counter, defaultdict
 from functools import partial
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import _sweep
 
-HVSC = ROOT / ".oracle-cache" / "hvsc"
-CAP_S = 1800
+ROOT = _sweep.ROOT
+sys.path.insert(0, str(ROOT))
 
 USAGE = """\
   python tools/lift_residue.py                              # the whole cache, ranked
-  python tools/lift_residue.py --tunes Commando --show 8    # one tune, with examples
+  python tools/lift_residue.py --tunes Hubbard_Rob/Commando --show 8
   python tools/lift_residue.py --sig borrow --show 20       # drill into one signature"""
 
 # What each surviving shape says the lift did not do: a machine artifact left behind.
@@ -56,14 +55,6 @@ _CMP = frozenset(
     )
 )
 _ARITH = frozenset(("INT_ADD", "INT_SUB", "INT_MULT"))
-
-
-def _alarm(_sig, _frame):
-    raise TimeoutError("build cap")
-
-
-def _arm():
-    signal.signal(signal.SIGALRM, _alarm)
 
 
 def _shift_pair(n):
@@ -257,32 +248,13 @@ def build(entry):
     return frameprog.program(model)
 
 
-def entries(names=None):
-    """``[(path, subtune, secs)]`` per cached tune, at full Songlengths length."""
-    from deity_informant.c64 import load_psid, psid_songs, song_lengths, song_seconds
-
-    lengths = song_lengths((HVSC / "Songlengths.md5").read_text(encoding="latin-1"))
-    want = None if names is None else set(names)
-    out = []
-    for path in sorted(HVSC.rglob("*.sid")):
-        if want is not None and path.stem not in want:
-            continue
-        data = path.read_bytes()
-        _mem, _load, _init, play = load_psid(data)
-        sub = psid_songs(data)[1] - 1
-        secs = song_seconds(data, lengths, sub)
-        if play and secs:
-            out.append((str(path), sub, secs))
-    return out
-
-
 def one(entry):
     """One tune's census, or the exception that stopped it."""
     try:
-        signal.alarm(CAP_S)
+        signal.alarm(_sweep.CAP_S)
         return _one(entry)
     except Exception as exc:  # pylint: disable=broad-except
-        return {"tune": Path(entry[0]).stem, "error": "%s: %s" % (type(exc).__name__, exc)}
+        return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
     finally:
         signal.alarm(0)
 
@@ -294,7 +266,7 @@ def _one(entry):
     for s in sites:
         skels[s["sig"]][s["skel"]] += 1
     return {
-        "tune": Path(entry[0]).stem,
+        **_sweep.row_head(entry),
         "build_s": round(time.monotonic() - t0, 1),
         "sites": dict(Counter(s["sig"] for s in sites)),
         "skels": {k: dict(v) for k, v in skels.items()},
@@ -340,19 +312,19 @@ def main():
         epilog=USAGE,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--tunes", help="comma-separated tune stems; default the whole cache")
+    ap.add_argument("--tunes", help="comma-separated tune ids or stems; default the whole cache")
     ap.add_argument("--sig", help="restrict the shape listing to one signature")
     ap.add_argument("--show", type=int, default=0, help="list this many shapes per signature")
     ap.add_argument("-j", "--procs", type=int, default=32)
     ap.add_argument("-o", "--out", default=str(ROOT / "out" / "lift_residue.json"))
     args = ap.parse_args()
 
-    tunes = entries(args.tunes.split(",") if args.tunes else None)
+    tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
     if not tunes:
         sys.exit("no cached tune matched")
     t0 = time.monotonic()
-    with mp.Pool(min(len(tunes), args.procs), _arm) as pool:
-        rows = pool.map(one, tunes)
+    with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
+        rows = _sweep.check_rows(pool.map(one, tunes))
     done = [r for r in rows if "error" not in r]
     sites, tune_ct, skels, block = _merge(done)
     out = {
