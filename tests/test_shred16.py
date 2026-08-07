@@ -56,6 +56,7 @@ def _lift(name, a, data, outs=(SID, SID + 1)):
     assert frameprog.dumps(frameprog.loads(text)) == text
     return text[text.index("sub_") :]
 
+
 _SHADOWS = (
     ") << $08):2 | zext2(",
     "carry(",
