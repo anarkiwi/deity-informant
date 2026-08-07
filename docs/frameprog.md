@@ -2418,8 +2418,10 @@ Unrelated and pre-existing: ``Dribbling`` refuses at HEAD from ``check_locals``
 
 > **Superseded in four places by §7.10, which re-derived every bucket above from
 > the emitted program rather than from the rungs' own counters.** (1) is a stale
-> cache, not a bound. (2)'s ``partnered`` lever is worth 0 stores as stated and the
-> real lever is elsewhere. (3) is 62% register-window copies that need no widening
+> cache, not a bound, and is fixed -- the corpus is 624 tunes refusing none, and
+> the clamp weighed here was never applied. (2)'s ``partnered`` lever is worth 0
+> stores as stated and the real lever is elsewhere. (3) is 62% register-window
+> copies that need no widening
 > at all -- ``Comic_Bakery`` is 5 for 5 -- and is not the floor. (4) is 90.5% stack
 > and zero-page traffic hidden behind one def-use edge, not an addressing problem.
 > The counts stand; the labels did not.
@@ -2640,7 +2642,9 @@ about the index.** One flag on the IR store node, ``reversed(range(..))`` in
 
 **Sized: 60 of the 76 hi-first pairs also pass ``_bring`` (46 literally adjacent),
 so 120 of 337 residue stores (35.6%) over 43 tunes, 18 of which go to zero.
-Corpus 3356/379 (89.85%) -> 3416/259 (92.95%); clean tunes 458 -> 476 (77.1%).**
+Corpus 3387/381 (89.89%) -> 3447/261 (92.96%); clean tunes 464 -> 482 (77.2%).**
+(Restated over the 624-tune sweep of §7.10.6; the counts it moves are unchanged,
+the 7 tunes contributing no ``unproven`` store.)
 
 Secondary, recorded not proposed: ``_lww`` calls ``_lane_aligned``, which demands
 a pair *lo*, where the framelog premise is only that both cells be
@@ -2662,9 +2666,9 @@ backward search for a *unique* one that returns ⊤ at the first wall.
 | where ``_consts`` bailed | stores |
 |---|---:|
 | loop-carried: a cyclic body may rebind (``frameproc.py:663``) | 107 |
-| one computed jump *anywhere* in the procedure (``frameproc.py:697``) | 56 |
+| one computed jump *anywhere* in the procedure (``frameproc.py:709``) | 56 |
 | a crossing store may write the index cell (``frameproc.py:614``) | 54 |
-| label entries disagree (``frameproc.py:700``) | 38 |
+| label entries disagree (``frameproc.py:712``) | 38 |
 | ``_fork`` wall at ``pcall``/``callb`` (``framefuse.py:129``) | 18 |
 | ``_crossable`` blocked by ``if``/``pcall``/``loop`` | 17 |
 | ``_Params`` union unsolved, table not const, index is an ``op``, other | 47 |
@@ -2675,7 +2679,7 @@ unique-definition walk. Every top class is "more than one reaching definition",
 not "unknowable".
 
 The cheapest piece is separable and needs no new machinery. ``Defs._verified``
-(``frameproc.py:697``) is a **whole-procedure kill switch**: one ``dgoto`` /
+(``frameproc.py:709``) is a **whole-procedure kill switch**: one ``dgoto`` /
 ``igoto`` / ``swg`` anywhere refuses *every* label join in that procedure,
 including labels the computed jump provably cannot reach. Scoping the refusal to
 the jump's own target set is local to ``_Jumps``. **Ceiling 56 stores (16.6%);
@@ -2688,54 +2692,77 @@ The ``IndexError`` of §7.9.1 (1) is not a bounds bug. ``Defs._entries`` builds
 ``root.jumps = _Jumps(root)`` once per root environment and **never invalidates
 it** (``frameproc.py:678-683``), freezing ``(env, position)`` pairs for every
 goto. ``_fold_pair_at`` then rewrites statement lists **in place**, shrinking
-them by one per merged pair (``frameproc.py:2643``). Any cached position at or
+them by one per merged pair (``frameproc.py:2655``). Any cached position at or
 past the fold point is stale. ``551be1b`` did not introduce the staleness -- it
 introduced the first *reader* of it, because its ``_same_defs``
-(``frameproc.py:2369``) resolves index locals with the label-joining
+(``frameproc.py:2381``) resolves index locals with the label-joining
 ``lookup_joined``, whose ``_verified`` re-walks those cached chains, and because
 it removed the old ``_side_addr`` guard that refused cross-env results. The crash
 is ``oenv.lst[obound]`` with ``obound=13`` into a list pair-folding shrank from 14
 to 13.
 
-**So the clamp is wrong in principle and safe here by luck.** A clamped stale
-bound is a *different* lookup, not a conservative one: statements after the
-reference seat slide down into the scanned range, so the walk can return an
-``asg`` that textually follows the goto as the definition in force before it, and
-``_same_defs`` compares definition identity as ``(id(lst), index)``, where a
-stale index can collide with a fresh index of a different statement and validate
-a join that does not hold. Instrumented over three tunes, *every* stale consult
-on this corpus is the same case -- drift exactly 1, seat last-of-list, zero
-in-bounds staleness -- which is why it works and why it encodes no invariant.
+**So the clamp is wrong in principle and would be safe here only by luck.** A
+clamped stale bound is a *different* lookup, not a conservative one: statements
+after the reference seat slide down into the scanned range, so the walk can
+return an ``asg`` that textually follows the goto as the definition in force
+before it, and ``_same_defs`` compares definition identity as ``(id(lst),
+index)``, where a stale index can collide with a fresh index of a different
+statement and validate a join that does not hold. Instrumented over three tunes,
+*every* stale consult on this corpus is the same case -- drift exactly 1, seat
+last-of-list, zero in-bounds staleness -- which is why it would work and why it
+encodes no invariant.
 
-**The correct fix restores the invariant: the ``_Jumps`` cache must not outlive a
-rewrite of a list it indexes.** Clear ``root.jumps`` when ``_fold_pair_at``
-succeeds; ``_entries`` rebuilds it lazily from current contents. That reproduces
-exactly the lookups a from-scratch analysis would make. Completeness: live
-``Defs`` chains are safe by construction -- a list is pair-folded at the end of
-its own ``_fold_words`` call, after which its env is dead -- and ``_map_exprs``
-rebuilds statement tuples while keeping body *list objects* by reference, so env
-bindings and ``id(lst)`` identities survive expression rewriting.
+**The fix restores the invariant instead: the ``_Jumps`` cache does not outlive a
+rewrite of a list it indexes.** ``Defs.rewritten`` clears ``root.jumps``, and
+``_fold_words`` calls it on every ``_fold_pair_at`` that succeeds; ``_entries``
+rebuilds the index lazily from current contents, which reproduces exactly the
+lookups a from-scratch analysis would make. Completeness: live ``Defs`` chains are
+safe by construction -- a list is pair-folded at the end of its own
+``_fold_words`` call, after which its env is dead -- and ``_map_exprs`` rebuilds
+statement tuples while keeping body *list objects* by reference, so env bindings
+and ``id(lst)`` identities survive expression rewriting.
 
-**Verified:** all 7 tunes build under the invalidation, ``frameval.gate_fp``
-passes on all 7, and the emitted text is byte-identical to the clamp's. The
-Oracle debt §7.9.1 (1) demanded is paid -- for this corpus slice.
+**The two ``min(bound, len(self.lst))`` in ``_cell_walk`` and ``_name_walk`` came
+out with it.** They are not the clamp §7.9.1 declined to apply -- that one was
+never committed -- but the pre-existing scan clamps §7.9.1 reads as "already
+clamps", and they are the same wrong answer one statement earlier: a stale bound
+absorbed quietly where the walk should never be handed one. Both walks now index
+``bound`` plainly. Nothing offers them a bound past the end of its list over the
+whole corpus, so what the clamps were absorbing was the pair-fold staleness and
+nothing else, and a future rewrite that forgets to invalidate crashes instead of
+lying.
+
+**Verified.** All 7 tunes build, ``frameval.gate_fp`` passes on all 7, and the
+emitted text is byte-identical to the clamp's at exactly the line counts §7.9.1
+recorded (``ABC_Music`` 814, ``Abstrack`` 775, ``Bal`` 863, ``Abroxus`` 876) --
+the clamp having never been committed, the comparison is against a rebuild of it.
+Corpus-wide the sweep goes from 617 tunes and 7 refusals to **624 and 0**, with
+every other tune's row bit-identical in all three instruments: the word-store rate
+is **89.89%** (3387 word against 381 byte-wide, from 3356/379), clean tunes 464 of
+624 (74.4%), the census gains ``word_pack`` 4472 -> 4583 and ``carry_val`` 5524 ->
+5594, and the triage moves only ``straddle``, 15 -> 17. The Oracle debt §7.9.1 (1)
+demanded is paid. Every other rate quoted in §7.9.1 and §7.10 is over the 617-tune
+sweep that preceded this, and is restated against 624 only where a later section
+re-measures.
 
 #### 7.10.7 What the measurements say to do, in order
 
-1. **Invalidate ``_Jumps`` on a pair fold** (§7.10.6). 7 tunes, Gate FP verified,
-   an invariant rather than a clamp. Unblocks all measurement on those tunes.
-2. **G1: ``addr_bits`` follows a local to its definition** (§7.10.3). 1031 of
+Invalidating ``_Jumps`` on a pair fold (§7.10.6) led this list and is **done**: the
+7 tunes build, the corpus sweeps at 624 refusing none, and measurement on those
+tunes is unblocked. What is left, in the order it costs:
+
+1. **G1: ``addr_bits`` follows a local to its definition** (§7.10.3). 1031 of
    1139 stores; provable completeness 225 -> 448 tunes. The largest single
    correction in this section, and the branch's own thesis applied to the one
    predicate still reading syntax.
-3. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
-   stores, 18 tunes to zero, 89.85% -> 92.95%. Index-free, one-line soundness
+2. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
+   stores, 18 tunes to zero, 89.89% -> 92.96%. Index-free, one-line soundness
    argument, and it deletes a premise rather than proving one.
-4. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
+3. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
    discharged. 26 stores, and it removes a false "floor" from the record.
-5. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). 67 stores, three lines.
-6. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
-7. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
+4. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). 67 stores, three lines.
+5. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
+6. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
    new machinery. Its cost is why it is last, not its size.
 
 Above all of these sits the census: **``word_pack`` at 4472 sites over 545 tunes,

@@ -624,7 +624,7 @@ class Defs:
 
     def _cell_walk(self, cell, bound, regions, labels, writes=None):
         """One backward walk for the store in force, labels transparent-and-collected."""
-        for k in range(min(bound, len(self.lst)) - 1, -1, -1):
+        for k in range(bound - 1, -1, -1):
             s = self.lst[k]
             if s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1:
                 return (self, k, s[2])
@@ -650,7 +650,7 @@ class Defs:
 
     def _name_walk(self, name, bound, labels):
         """``_lookup`` with labels transparent-and-collected; None where truly wild."""
-        for k in range(min(bound, len(self.lst)) - 1, -1, -1):
+        for k in range(bound - 1, -1, -1):
             s = self.lst[k]
             if s[0] == "asg" and s[1] == name:
                 return (self, k, s[2])
@@ -676,11 +676,23 @@ class Defs:
         return root
 
     def _entries(self):
-        """The root's label-entry index, built once per root environment."""
+        """The root's label-entry index, rebuilt from current contents when dropped."""
         root = self._root()
         if root.jumps is None:
             root.jumps = _Jumps(root)
         return root.jumps
+
+    def rewritten(self):
+        """A list under this root changed shape: its cached label entries are void.
+
+        ``_Jumps`` names each goto by ``(env, position)`` over the whole root
+        environment, so a rewrite that shrinks any list in it -- a pair fold merging
+        two statements into one -- leaves every cached position at or past the change
+        pointing at a different statement. Dropping the index makes ``_entries``
+        rebuild it, reproducing the lookups a from-scratch analysis would make; a
+        clamped stale position would be a different lookup, not a safer one
+        (docs/frameprog.md 7.10.6)."""
+        self._root().jumps = None
 
     def _verified(self, got, labels, walk):
         """``got`` where every enumerable entry into each crossed label agrees.
@@ -2685,6 +2697,7 @@ def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
     i = 0
     while i + 1 < len(stmts):
         if _fold_pair_at(stmts, i, regions):
+            env.rewritten()  # the fold shrank this list; the root's goto index named it
             continue
         i += 1
 
