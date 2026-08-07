@@ -2201,13 +2201,21 @@ def _le_bytes(n):
 def _stable_row(addr, env, k, at, regions):
     """``addr`` where the byte it read at ``k`` still reads the same at ``at``.
 
-    The row must be wholly const (a store cannot move it) and the index's locals
-    defined as they were, so the traced value may stand in for the spill."""
+    The row is wholly const (a store cannot move it) or nothing between wrote
+    it, and the index's locals are defined as they were, so the traced value
+    may stand in for the spill."""
     vb, vi = addr_split(addr)
     if vb is None:
         return None
-    if not all(regions.const_at(a) for a in range(vb, vb + span(vb, vi, regions) + 1)):
-        return None
+    sp = span(vb, vi, regions)
+    if not all(regions.const_at(a) for a in range(vb, vb + sp + 1)):
+        rd = (vb, vi, sp, 2, 0)
+        for j in range(k + 1, at):
+            s = env.lst[j]
+            if s[0] == "asg":
+                continue
+            if s[0] != "st" or overlaps(rd, store_reach(s, regions)):
+                return None
     if vi is not None and any(env.at(m, k) != env.at(m, at) for m in _locset(vi)):
         return None
     return addr
@@ -2264,12 +2272,98 @@ def _fold_expr(n, env, at, regions):
     return _fold_word(n, env, at, regions)
 
 
+def _word_of(vl, vh):
+    """The word value two half stores spell, where the halves say so themselves."""
+    if vl[0] == "mem" and vl[2] == 1 and vh[0] == "mem" and vh[2] == 1:
+        (cl, jl), (ch, jh) = addr_split(vl[1]), addr_split(vh[1])
+        if cl is not None and ch == cl + 1 and jl == jh:
+            return ("mem", vl[1], 2)
+    if vl[0] == "op" and vl[1] == "COPY" and vh[0] == "op" and vh[1] == "COPY":
+        v, h = vl[2][0], vh[2][0]
+        if h[0] == "op" and h[1] == "INT_RIGHT" and h[2][1] == ("const", 8, 1):
+            if h[2][0] == v and loc_width(v) == 2:
+                return v
+    return None
+
+
+def _fold_store_pair(a, b, regions):
+    """One word store for two adjacent half stores of one datum, RAM only.
+
+    The SID pairs stay rung (d)'s, where the record law lives; here the two
+    cells are plain memory, the writes adjacent, and the second half's reads
+    must not overlap the first store, so one word store is the same program."""
+    if a[0] != "st" or b[0] != "st":
+        return None
+    if G.store_width(a[2]) != 1 or G.store_width(b[2]) != 1:
+        return None
+    (ba, ia), (bb, ib) = addr_split(a[1]), addr_split(b[1])
+    if ba is None or bb is None or ia != ib:
+        return None
+    lo, hi = (a, b) if bb == ba + 1 else (b, a) if ba == bb + 1 else (None, None)
+    if lo is None:
+        return None
+    base = min(ba, bb)
+    if 0xD000 <= base <= 0xDFFF:
+        return None
+    val = _word_of(lo[2], hi[2])
+    if val is None:
+        return None
+    st_at = (base, ia, span(base, ia, regions), 2, 0)
+    for ref, rw in (r for x in (hi[2], hi[1]) for r in mem_refs(x)):
+        if ref is None:
+            return None
+        rb, ri, rm = ref
+        if overlaps(st_at, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+            return None
+    return ("st", lo[1], val)
+
+
+def _fold_pair_at(stmts, i, regions):
+    """Fold the half-store pair led at ``i``, safe asgs between hoisted above.
+
+    An ``asg`` between the halves moves above the pair only where it reads
+    neither target cell, so it still sees the memory the lo store had not yet
+    changed; anything else between the halves keeps them apart."""
+    a = stmts[i]
+    if a[0] != "st" or G.store_width(a[2]) != 1:
+        return False
+    if addr_split(a[1])[0] is None:
+        return False
+    lead = store_reach(a, regions)  # an asg hoists above the pair crossing only this
+    moved = []
+    for j in range(i + 1, min(i + 5, len(stmts))):
+        s = stmts[j]
+        if s[0] == "st":
+            got = _fold_store_pair(a, s, regions)
+            if got is None:
+                return False
+            stmts[i : j + 1] = moved + [got]
+            return True
+        if s[0] != "asg":
+            return False
+        for ref, rw in mem_refs(s[2]):
+            if ref is None:
+                return False
+            rb, ri, rm = ref
+            if overlaps(lead, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+                return False
+        moved.append(s)
+    return False
+
+
 def _fold_words(stmts, regions, outer=None, cyclic=False):
     env = Defs(stmts, outer, cyclic)
     for i, s in enumerate(stmts):
         stmts[i] = _map_exprs(s, lambda x, _i=i: _fold_expr(x, env, _i, regions))
         for b in _stmt_bodies(stmts[i]):
             _fold_words(b, regions, (env, i), stmts[i][0] in _CYCLIC)
+    if regions is None:
+        return
+    i = 0
+    while i + 1 < len(stmts):
+        if _fold_pair_at(stmts, i, regions):
+            continue
+        i += 1
 
 
 _NEGATE = {"INT_EQUAL": "INT_NOTEQUAL", "INT_NOTEQUAL": "INT_EQUAL"}
