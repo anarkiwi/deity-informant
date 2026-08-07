@@ -36,36 +36,34 @@ def _zext2(n):
     return n if _w(n) == 2 else ("op", "INT_ZEXT", (n,), 2)
 
 
-def _word_shape(n, lo, hi):
-    """``n`` is exactly ``hi<<8 | lo`` over the pair's two byte cells."""
-    if n[0] != "op" or n[1] != "INT_OR" or len(n[2]) != 2 or n[3] != 2:
-        return False
-    for a, b in (n[2], n[2][::-1]):
-        if a[0] == "op" and a[1] == "INT_LEFT" and E.is_const(a[2][1]) and a[2][1][1] == 8:
-            if ST._strip_zext(a[2][0]) == _half(hi) and ST._strip_zext(b) == _half(lo):
-                return True
-    return False
-
-
 def _pack(vlo, vhi, hi_first=True):
     """``hi<<8 | lo``, the half written first left of the bar: evaluation order.
 
     Two constant halves do NOT fold to one constant here: ``grammar.store_width``
     reads every ``const`` store value as one byte, so a folded word would store
     truncated. The pack keeps the width the store protocol can see."""
-    shl = ("op", "INT_LEFT", (_zext2(vhi), ("const", 8, 1)), 2)
+    shl = ("op", "INT_LEFT", (_zext2(vhi), frameproc.SHIFT8), 2)
     kids = (shl, _zext2(vlo)) if hi_first else (_zext2(vlo), shl)
     return ("op", "INT_OR", kids, 2)
 
 
 def unpack(val):
-    """``(lo value, hi value)`` of a packed word value, else None."""
-    if val[0] != "op" or val[1] != "INT_OR" or len(val[2]) != 2 or val[3] != 2:
+    """``(lo value, hi value)`` of a packed word value, else None.
+
+    The ONE reader of the pack shape here: rung (d) packs computed halves as
+    readily as cells, so unlike ``frameproc._le_bytes`` neither side has to be a
+    leaf -- what ``_pack`` writes is exactly what this reads back."""
+    if not frameproc.is_op(val, "INT_OR", 2, 2):
         return None
-    for a, b in (val[2], val[2][::-1]):
-        if a[0] == "op" and a[1] == "INT_LEFT" and E.is_const(a[2][1]) and a[2][1][1] == 8:
+    for a, b in frameproc.commuted(val[2]):
+        if frameproc.is_op(a, "INT_LEFT") and E.is_const(a[2][1]) and a[2][1][1] == 8:
             return ST._strip_zext(b), ST._strip_zext(a[2][0])
     return None
+
+
+def _word_shape(n, lo, hi):
+    """``n`` is exactly ``hi<<8 | lo`` over the pair's two byte cells."""
+    return unpack(n) == (_half(lo), _half(hi))
 
 
 def _rebase(addr, old, new):

@@ -10,6 +10,7 @@ import pytest
 from deity_informant import expr as E
 from deity_informant import framefuse as FF
 from deity_informant import framemath
+from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 import _fuzzgen as G
@@ -220,7 +221,7 @@ def test_dropping_the_truncation_off_the_hi_lane_store_moves_the_record():
     model, prog, _text = _split()
     trace, _walker = frameprog.iota(model, 8)
     good = frameval.eval_fp(prog, trace, 8)
-    lst, i = _find(prog, lambda s: s[0] == "st" and s[2] == framemath._hi_byte(_D0))
+    lst, i = _find(prog, lambda s: s[0] == "st" and s[2] == frameproc.trunc_hi(_D0))
     lst[i] = ("st", lst[i][1], _D0)
     assert frameval.eval_fp(prog, trace, 8) != good
 

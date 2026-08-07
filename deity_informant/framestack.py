@@ -406,10 +406,7 @@ def _trick_window(lst, i, sp):
             if lo[0] == "const" and hi[0] == "const":
                 target = ("const", (((hi[1] << 8) | lo[1]) + 1) & 0xFFFF, 2)
             else:
-                zlo = ("op", "INT_ZEXT", (lo,), 2)
-                zhi = ("op", "INT_ZEXT", (hi,), 2)
-                shl = ("op", "INT_LEFT", (zhi, ("const", 8, 1)), 2)
-                pack = ("op", "INT_OR", (shl, zlo), 2)
+                pack = frameproc.le_pack(lo, hi)
                 target = ("op", "INT_ADD", (pack, ("const", 1, 2)), 2)
             return keep + [disp, j], target
         if s[0] == "asg" and s[1] == sp:

@@ -214,11 +214,11 @@ def _pack_witness(n, bases, cover):
     through ``cover`` -- the declaration each cell sits in -- when both cells
     sit at one offset into declarations the same distance apart. Cells no
     declaration names witness for themselves, as a pair of one element."""
-    got = frameproc._le_bytes(n)
-    if got is None or got[0][0] != "mem" or got[1][0] != "mem":
+    got = frameproc.packed_cells(n)
+    if got is None:
         return None
-    (bl, il), (bh, ih) = frameproc.addr_split(got[0][1]), frameproc.addr_split(got[1][1])
-    if bl is None or bh is None or il != ih or bh == bl + 1:
+    bl, bh, il = got
+    if bh == bl + 1:
         return None
     if il is None:
         dl, dh = cover.get(bl), cover.get(bh)
@@ -236,6 +236,15 @@ def _pack_witness(n, bases, cover):
     return ("pair", bl, bh) if bl in bases and bh in bases else None
 
 
+def _sole(votes):
+    """``{key: its one witness}``, in key order: two witnesses that disagree are none.
+
+    Every tally in the rung -- table pairs, loose cells, intra-decl splits --
+    settles on this one law, so a column that two packs read differently is left
+    a plain byte rather than shredded on the strength of half its evidence."""
+    return {k: next(iter(s)) for k, s in sorted(votes.items()) if len(s) == 1}
+
+
 def _split_intra(decls, bases, intra, vetoed, words):
     """Split a declaration whose halves the value graph packs (re-striding).
 
@@ -243,10 +252,9 @@ def _split_intra(decls, bases, intra, vetoed, words):
     is the witness that D is two K-byte columns of one u16 datum; the decl
     splits in place, the data and mut offsets with it, and the roles land so
     the registry sees an ordinary pair."""
-    for dbase, ks in sorted(intra.items()):
+    for dbase, k in _sole(intra).items():
         d = bases.get(dbase)
-        (k,) = ks if len(ks) == 1 else (None,)
-        if d is None or k is None or k < 2 or d["size"] != 2 * k:
+        if d is None or k < 2 or d["size"] != 2 * k:
             continue
         if dbase in vetoed or dbase in words or dbase + k in words:
             continue
@@ -293,18 +301,15 @@ def _declare_cells(decls, cells, vetoed, words, mem0, mut, code):
     image as a co-extensive lo/hi pair, so the registry rides the data section
     exactly as a table pair's does, and the roles survive a round trip."""
     covered = {a for d in decls for a in range(d["base"], d["base"] + d["size"])}
+    refuse = vetoed | words | covered | code  # named, addressed, or executed: not loose
     taken, new = set(), []
-    for lo, his in sorted(cells.items()):
-        (hi,) = his if len(his) == 1 else (None,)
-        if hi is None or hi == lo:
+    for lo, hi in _sole(cells).items():
+        pair = {lo, hi}
+        if len(pair) != 2 or pair & (refuse | taken):
             continue
-        if {lo, hi} & (vetoed | words | taken | covered):
+        if not all(datadecl._LOW <= c < 0xD000 or c >= 0xE000 for c in pair):
             continue
-        if not all(datadecl._LOW <= c < 0xD000 or c >= 0xE000 for c in (lo, hi)):
-            continue
-        if {lo, hi} & code:
-            continue
-        taken.update((lo, hi))
+        taken.update(pair)
         new.append(_cell_decl(lo, ("lo", hi), mem0, mut))
         new.append(_cell_decl(hi, ("hi", lo), mem0, mut))
     if new:
@@ -323,7 +328,8 @@ def _pair_tables(procs, decls, mem0, mut, code):
     for d in decls:
         for a in range(d["base"], d["base"] + d["size"]):
             cover.setdefault(a, d["base"])
-    votes, words, veto, intra, cells = {}, set(), set(), {}, {}
+    words, veto = set(), set()
+    tally = {"pair": {}, "cells": {}, "intra": {}}  # one tally per witness kind
 
     def walk(n, in_addr=False):
         if n[0] == "mem":
@@ -336,13 +342,9 @@ def _pair_tables(procs, decls, mem0, mut, code):
             got = _pack_witness(n, bases, cover)
             if got is not None:
                 if in_addr:
-                    veto.add(got[1:])
-                elif got[0] == "pair":
-                    votes.setdefault(got[1], set()).add(got[2])
-                elif got[0] == "cells":
-                    cells.setdefault(got[1], set()).add(got[2])
+                    veto.add(got[1:])  # an address packs them: they are one word, not two
                 else:
-                    intra.setdefault(got[1], set()).add(got[2])
+                    tally[got[0]].setdefault(got[1], set()).add(got[2])
             for c in n[2]:
                 walk(c, in_addr)
 
@@ -351,17 +353,14 @@ def _pair_tables(procs, decls, mem0, mut, code):
             for x in frameproc._stmt_exprs(stmt):
                 walk(x)
     vetoed = {b for pr in veto for b in pr}
-    _split_intra(decls, bases, intra, vetoed, words)
-    _declare_cells(decls, cells, vetoed, words, mem0, mut, code)
-    pairs = {}
+    _split_intra(decls, bases, tally["intra"], vetoed, words)
+    _declare_cells(decls, tally["cells"], vetoed, words, mem0, mut, code)
     his = set()
-    for lo, hs in sorted(votes.items()):
-        (hi,) = hs if len(hs) == 1 else (None,)
-        if hi is None or hi in his or lo in words or hi in words or lo == hi:
+    for lo, hi in _sole(tally["pair"]).items():
+        if hi in his or lo in words or hi in words or lo == hi:
             continue
         if lo in vetoed or hi in vetoed:
             continue
-        pairs[lo] = hi
         his.add(hi)
         bases[lo]["role"] = ("lo", hi)
         bases[hi]["role"] = ("hi", lo)
@@ -393,29 +392,24 @@ def _adjoin_pairs(stmts, pairs, regions):
 
 def _half_at(s, pairs):
     """``(lo cell, hi cell, index, value)`` where ``s`` stores a pair's lo half."""
-    if s[0] != "st" or s[2][0] != "op" or s[2][1] != "COPY":
+    if s[0] != "st" or not frameproc.is_op(s[2], "COPY"):
         return None
     base, idx = frameproc.addr_split(s[1])
     if base is None:
         return None
-    if idx is not None:
-        return (base, pairs[base][0], idx, s[2][2][0]) if base in pairs else None
-    for lo, (hi, size) in pairs.items():
-        o = base - lo
-        if 0 <= o < size:
-            return base, hi + o, None, s[2][2][0]
-    return None
+    got = frameproc.pair_site(pairs, base, idx)
+    return None if got is None else (base, got[0], idx, s[2][2][0])
 
 
 def _hi_partner(stmts, i, hi, idx, v, regions):
     """The movable hi-half store's position, else None (docs/frameprog.md 7.9)."""
     at = (hi, idx, 0, 1, 0)
     locs = frameproc._locset(v)
+    want = frameproc.trunc_hi(v)
     for j in range(i + 1, min(i + 5, len(stmts))):
         s = stmts[j]
         if s[0] == "st":
             base, ji = frameproc.addr_split(s[1])
-            want = ("op", "COPY", (("op", "INT_RIGHT", (v, ("const", 8, 1)), 2),), 1)
             if base == hi and ji == idx and s[2] == want:
                 return j
             if frameproc.overlaps(at, frameproc.store_reach(s, regions)):

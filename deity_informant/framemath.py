@@ -29,14 +29,6 @@ def _loc(name):
     return ("loc", name, 2)
 
 
-def _trunc(n):
-    return ("op", "COPY", (n,), 1)
-
-
-def _hi_byte(n):
-    return _trunc(("op", "INT_RIGHT", (n, ("const", 8, 1)), 2))
-
-
 def _resolve(n, env, at):
     """Follow ``loc`` definitions, each read where it was written."""
     while n[0] == "loc":
@@ -757,7 +749,7 @@ def _lift(lst, site, name):
     word_load = site.word and (site.direct or site.merge)
     src = ("mem", site.load, 2) if word_load else FF._pack(site.src[0], site.src[1])
     word = frameproc._subst_loc(site.src[2], _WNAME, src)
-    half = {i: _trunc(lv), j: _hi_byte(lv)}
+    half = {i: frameproc.trunc_lo(lv), j: frameproc.trunc_hi(lv)}
     pair = () if site.at is None else site.at[:2]
     out = []
     for k, s in enumerate(lst):
@@ -844,7 +836,7 @@ def _bit(n):
 
 def _counts(addr, val):
     """The word op a store of ``val`` to ``addr`` makes of that cell, else None."""
-    if val[0] != "op" or val[1] != "INT_ADD" or len(val[2]) != 2 or val[3] != 1:
+    if not frameproc.is_op(val, "INT_ADD", 1, 2):
         return None
     a, b = val[2]
     if a != ("mem", addr, 1) or b[0] != "const":

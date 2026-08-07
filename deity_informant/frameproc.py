@@ -57,6 +57,101 @@ def loc_width(n):
     return E.width(n)
 
 
+SHIFT8 = ("const", 8, 1)  # a byte column's own distance: the 6502 shifts no wider
+
+
+def is_op(n, mn, width=None, arity=None):
+    """``n`` is that operation, of that width and operand count where given.
+
+    Every rule below opens by naming the shape it rewrites; spelling that naming
+    once means a rule reads as the shape it matches and not as the tuple indices
+    the shape happens to occupy."""
+    if n[0] != "op" or n[1] != mn:
+        return False
+    return (width is None or n[3] == width) and (arity is None or len(n[2]) == arity)
+
+
+def commuted(kids):
+    """Both readings of a two-operand node: the tree spells no order, so try each."""
+    return (kids, kids[::-1])
+
+
+def strip_zext(n):
+    """``n`` without the reader's own widening -- one zext, which hides nothing.
+
+    The widening is the reader's, not the datum's (grammar ``_index_addr``), so
+    exactly one comes off; a second would be a value the program really widened."""
+    return n[2][0] if is_op(n, "INT_ZEXT") else n
+
+
+def shifted_hi(n):
+    """The word whose high byte ``n`` shifts down (``v >> 8``), else None."""
+    return n[2][0] if is_op(n, "INT_RIGHT") and n[2][1] == SHIFT8 else None
+
+
+def trunc_lo(v):
+    """The low byte of ``v``, spelled as the value graph spells it."""
+    return ("op", "COPY", (v,), 1)
+
+
+def trunc_hi(v):
+    """The high byte of ``v``, spelled as the value graph spells it."""
+    return ("op", "COPY", (("op", "INT_RIGHT", (v, SHIFT8), 2),), 1)
+
+
+def trunc_pair(lo, hi):
+    """The one word ``lo`` and ``hi`` are the two truncs of, else None.
+
+    ``hi:lo`` of ``V`` is ``V`` only where both halves name the same ``V``; two
+    truncs of different words wear the shape and mean nothing."""
+    if not is_op(lo, "COPY") or not is_op(hi, "COPY"):
+        return None
+    v = lo[2][0]
+    return v if shifted_hi(hi[2][0]) == v else None
+
+
+_LEAF = ("mem", "loc")  # a pack side carries a cell, a local, or a trunc of a word
+
+
+def _le_bytes(n):
+    """``(lo side, hi side)`` where ``n`` packs two byte-wide sides into one word.
+
+    The 6502 spells a word this way and only this way, so the shape is read once
+    here; every rule that rewrites a pack opens by asking this, then asks only
+    what it needs of the two sides it gets back."""
+    if not is_op(n, "INT_OR", 2, 2):
+        return None
+    for hi, lo in commuted(n[2]):
+        if not is_op(hi, "INT_LEFT", 2) or hi[2][1][0] != "const" or hi[2][1][1] != 8:
+            continue
+        mh, ml = strip_zext(hi[2][0]), strip_zext(lo)
+        if (mh[0] in _LEAF or mh[1] == "COPY") and (ml[0] in _LEAF or ml[1] == "COPY"):
+            return ml, mh
+    return None
+
+
+def le_pack(lo, hi):
+    """``hi<<8 | lo`` over two byte values: the word ``_le_bytes`` reads back out."""
+    shl = ("op", "INT_LEFT", (("op", "INT_ZEXT", (hi,), 2), SHIFT8), 2)
+    return ("op", "INT_OR", (shl, ("op", "INT_ZEXT", (lo,), 2)), 2)
+
+
+def pair_site(pairs, base, idx):
+    """``(hi cell, lo base, index)`` for the pair half at ``base``/``idx``, else None.
+
+    ``pairs`` is the ONE registry, lo base to ``(hi base, size)`` off the decl
+    roles. An indexed half names its table's base outright; a scalar half's own
+    offset into the columns IS the index the pair rendering reads."""
+    if idx is not None:
+        got = pairs.get(base)
+        return None if got is None else (got[0], base, idx)
+    for lo, (hi, size) in pairs.items():
+        o = base - lo
+        if 0 <= o < size:
+            return hi + o, lo, ("const", o, 1)
+    return None
+
+
 def _kids(n):
     if n[0] == "mem":
         return (n[1],)
@@ -154,6 +249,21 @@ def addr_range(addr, width=1):
         return (addr[1], None, 0)
     got = _index_of(addr)
     return None if got is None or (got[2] and width > 1) else got
+
+
+def packed_cells(n):
+    """``(lo base, hi base, shared index)`` of the two cells ``n`` packs, else None.
+
+    Both sides must be byte cells -- a wider side is a value the program really
+    widened, not a column -- and both must ride one index, since two columns of
+    one datum are read at one row or at no row at all."""
+    got = _le_bytes(n)
+    if got is None or got[0][0] != "mem" or got[0][2] != 1:
+        return None
+    if got[1][0] != "mem" or got[1][2] != 1:
+        return None
+    (bl, il), (bh, ih) = addr_split(got[0][1]), addr_split(got[1][1])
+    return None if bl is None or bh is None or il != ih else (bl, bh, il)
 
 
 def addr_bits(n):
@@ -836,12 +946,12 @@ class _Names:
 
 def _sugar(n):
     """Subtrees that print as name sugar (array index shapes) stay inline."""
-    if n[0] == "op" and n[1] == "INT_ZEXT" and n[2][0][0] in ("reg", "slot", "loc"):
+    if is_op(n, "INT_ZEXT") and n[2][0][0] in ("reg", "slot", "loc"):
         return True
-    if n[0] == "op" and n[1] == "INT_ADD" and n[3] == 2 and len(n[2]) == 2:
+    if is_op(n, "INT_ADD", 2, 2):
         idx, base = n[2]
         if base[0] == "const" and base[2] == 2 and base[1] >= 0x100:
-            return idx[0] == "op" and idx[1] == "INT_ZEXT"
+            return is_op(idx, "INT_ZEXT")
     return False
 
 
@@ -1941,7 +2051,7 @@ def _forloops(info):
 # ---- printing --------------------------------------------------------------------
 def _base_add(addr, w, least):
     """``(const base, index)`` of a two-operand ``INT_ADD`` at width ``w``, else None."""
-    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != w or len(addr[2]) != 2:
+    if not is_op(addr, "INT_ADD", w, 2):
         return None
     at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == w and c[1] >= least]
     if len(at) != 1:
@@ -1949,7 +2059,7 @@ def _base_add(addr, w, least):
     base, idx = addr[2][at[0]], addr[2][1 - at[0]]
     if idx[0] == "const":
         return None
-    if idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2:
+    if is_op(idx, "INT_ZEXT", 2):
         idx = idx[2][0]
     return base[1], idx
 
@@ -1960,7 +2070,7 @@ def _index_of(addr):
     The index is whatever the address adds to the base; ``zext2`` is the reader's
     own widening (grammar ``_index_addr``) and is stripped so the text round trips.
     The ``zp,X`` form adds inside the byte, so it names the zero page modulo 256."""
-    if addr[0] == "op" and addr[1] == "INT_ZEXT" and addr[3] == 2:
+    if is_op(addr, "INT_ZEXT", 2):
         got = _base_add(addr[2][0], 1, 0)
         return None if got is None else (got[0], got[1], 0x100)
     got = _base_add(addr, 2, 0x100)
@@ -2000,31 +2110,19 @@ def _memref(addr, sz=1, res=_NORES):
 _PAIRS = {}  # render-scoped: lo table base -> hi table base, from the decl roles
 
 
+def _pair_columns(bl, bh, idx):
+    """``(lo base, index)`` where two cells are a declared pair's two columns.
+
+    The hi cell the registry names for the lo half must be the very cell the hi
+    address reads; anything else is two cells that merely sit near each other."""
+    got = pair_site(_PAIRS, bl, idx)
+    return None if got is None or got[0] != bh else got[1:]
+
+
 def _pair_pack(n):
     """``(lo base, index)`` where ``n`` packs a declared lo/hi table pair."""
-    if not _PAIRS or n[0] != "op" or n[1] != "INT_OR" or n[3] != 2 or len(n[2]) != 2:
-        return None
-    for hi, lo in (n[2], n[2][::-1]):
-        if hi[0] != "op" or hi[1] != "INT_LEFT" or hi[2][1] != ("const", 8, 1):
-            continue
-        mh, ml = hi[2][0], lo
-        if mh[0] == "op" and mh[1] == "INT_ZEXT":
-            mh = mh[2][0]
-        if ml[0] == "op" and ml[1] == "INT_ZEXT":
-            ml = ml[2][0]
-        if mh[0] != "mem" or mh[2] != 1 or ml[0] != "mem" or ml[2] != 1:
-            continue
-        (bl, il), (bh, ih) = addr_split(ml[1]), addr_split(mh[1])
-        if bl is None or bh is None or il != ih:
-            continue
-        if il is not None and _PAIRS.get(bl, (None,))[0] == bh:
-            return bl, il
-        if il is None:
-            for lo2, (hi2, size) in _PAIRS.items():
-                o = bl - lo2
-                if 0 <= o < size and bh - hi2 == o:
-                    return lo2, ("const", o, 1)
-    return None
+    got = packed_cells(n) if _PAIRS else None
+    return None if got is None else _pair_columns(*got)
 
 
 def _pair_halves(a, b):
@@ -2036,23 +2134,9 @@ def _pair_halves(a, b):
     (bl, il), (bh, ih) = addr_split(a[1]), addr_split(b[1])
     if bl is None or bh is None or il != ih:
         return None
-    if il is not None and _PAIRS.get(bl, (None,))[0] != bh:
-        return None
-    if il is None:
-        for lo2, (hi2, size) in _PAIRS.items():
-            o = bl - lo2
-            if 0 <= o < size and bh - hi2 == o:
-                bl, il = lo2, ("const", o, 1)
-                break
-        else:
-            return None
-    vl, vh = a[2], b[2]
-    if vl[0] != "op" or vl[1] != "COPY" or vh[0] != "op" or vh[1] != "COPY":
-        return None
-    v, h = vl[2][0], vh[2][0]
-    if h[0] != "op" or h[1] != "INT_RIGHT" or h[2][1] != ("const", 8, 1) or h[2][0] != v:
-        return None
-    return bl, il, v
+    site = _pair_columns(bl, bh, il)
+    v = trunc_pair(a[2], b[2])
+    return None if site is None or v is None else (site[0], site[1], v)
 
 
 def _fmt(n, res=_NORES):
@@ -2261,26 +2345,6 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
-def _le_bytes(n):
-    """``(lo side, hi side)`` where ``n`` packs two byte-wide sides into one word."""
-    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 2 or len(n[2]) != 2:
-        return None
-    for hi, lo in (n[2], n[2][::-1]):
-        if hi[0] != "op" or hi[1] != "INT_LEFT" or hi[3] != 2:
-            continue
-        if hi[2][1][0] != "const" or hi[2][1][1] != 8:
-            continue
-        mh, ml = hi[2][0], lo
-        if mh[0] == "op" and mh[1] == "INT_ZEXT":
-            mh = mh[2][0]
-        if ml[0] == "op" and ml[1] == "INT_ZEXT":
-            ml = ml[2][0]
-        ok = ("mem", "loc")
-        if (mh[0] in ok or mh[1] == "COPY") and (ml[0] in ok or ml[1] == "COPY"):
-            return ml, mh
-    return None
-
-
 def _clear_path(uenv, at, denv, k, rd, regions):
     """No statement between the definition and the use may write ``rd``.
 
@@ -2351,12 +2415,8 @@ def _untrunced(lo, hi, env, at):
     the same definitions from the pack as from both truncs, or the value moved."""
     vl, le, lk = _side_val(lo, env, at)
     vh, he, hk = _side_val(hi, env, at)
-    if vl[0] != "op" or vl[1] != "COPY" or vh[0] != "op" or vh[1] != "COPY":
-        return None
-    v, h = vl[2][0], vh[2][0]
-    if h[0] != "op" or h[1] != "INT_RIGHT" or h[2][1] != ("const", 8, 1) or h[2][0] != v:
-        return None
-    if loc_width(v) != 2 or _reads_mem(v) or _reads_vol(v):
+    v = trunc_pair(vl, vh)
+    if v is None or loc_width(v) != 2 or _reads_mem(v) or _reads_vol(v):
         return None
     names = _locset(v)
     if not _same_defs(names, env, at, le, lk) or not _same_defs(names, env, at, he, hk):
@@ -2421,44 +2481,44 @@ def _fold_word(n, env, at, regions, in_addr=False):
         return ("mem", la, 2)
     if in_addr:
         return n
-    shl = ("op", "INT_LEFT", (("op", "INT_ZEXT", (("mem", ha, 1),), 2), ("const", 8, 1)), 2)
-    return ("op", "INT_OR", (shl, ("op", "INT_ZEXT", (("mem", la, 1),), 2)), 2)
+    return le_pack(("mem", la, 1), ("mem", ha, 1))
+
+
+def _carry_out(n, carry_in):
+    """``(the two addends, what came in below)`` where ``n`` is a stage's carry-out.
+
+    A carry out of ``A + B + cin`` is spelled ``carry(A, B) | carry(A + B, cin)``;
+    ``carry_in`` reads the stage below out of ``cin``, and neither bar nor plus
+    spells an order, so every side is tried both ways."""
+    if not is_op(n, "INT_OR", 1, 2):
+        return None
+    for x, y in commuted(n[2]):
+        if not is_op(x, "INT_CARRY") or not is_op(y, "INT_CARRY"):
+            continue
+        for add, cin in commuted(y[2]):
+            got = carry_in(cin)
+            if got is None or not is_op(add, "INT_ADD", 1, 2):
+                continue
+            if set(add[2]) == set(x[2]):
+                return x[2], got
+    return None
+
+
+def _no_carry_in(cin):
+    """The bottom stage carries nothing in: the literal zero byte, and only that."""
+    return () if cin == ("const", 0, 1) else None
 
 
 def _chain_lo(n):
     """``(l1, l2)`` where ``n`` is a byte add's carry-out spelled as its chain."""
-    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 1 or len(n[2]) != 2:
-        return None
-    for x, y in (n[2], n[2][::-1]):
-        if x[0] != "op" or x[1] != "INT_CARRY" or y[0] != "op" or y[1] != "INT_CARRY":
-            continue
-        add, cin = y[2]
-        if cin != ("const", 0, 1):
-            add, cin = cin, add
-        if cin != ("const", 0, 1) or add[0] != "op" or add[1] != "INT_ADD" or add[3] != 1:
-            continue
-        if set(add[2]) == set(x[2]) and len(add[2]) == 2:
-            return x[2]
-    return None
+    got = _carry_out(n, _no_carry_in)
+    return None if got is None else got[0]
 
 
 def _chain_full(n):
     """``(h1, h2, l1, l2)`` where ``n`` is a word add's carry-out chain."""
-    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 1 or len(n[2]) != 2:
-        return None
-    for x, y in (n[2], n[2][::-1]):
-        if x[0] != "op" or x[1] != "INT_CARRY" or y[0] != "op" or y[1] != "INT_CARRY":
-            continue
-        add, cin = y[2]
-        lo = _chain_lo(cin)
-        if lo is None:
-            add, cin = cin, add
-            lo = _chain_lo(cin)
-        if lo is None or add[0] != "op" or add[1] != "INT_ADD" or add[3] != 1:
-            continue
-        if set(add[2]) == set(x[2]) and len(add[2]) == 2:
-            return x[2][0], x[2][1], lo[0], lo[1]
-    return None
+    got = _carry_out(n, _chain_lo)
+    return None if got is None else (got[0][0], got[0][1], got[1][0], got[1][1])
 
 
 def _word_from(lo, hi, env, at, regions):
@@ -2495,12 +2555,12 @@ def _fold_chain(n, env, at, regions):
             if a2 is not None and b2 is not None:
                 return ("op", "INT_CARRY", (a2, b2), 1)
         return n
-    if n[0] == "op" and n[1] == "INT_ADD" and n[3] == 1 and len(n[2]) == 2:
-        for h1, chain in (n[2], n[2][::-1]):
+    if is_op(n, "INT_ADD", 1, 2):
+        for h1, chain in commuted(n[2]):
             lo = _chain_lo(chain)
             if lo is None:
                 continue
-            for l1, l2 in (lo, lo[::-1]):
+            for l1, l2 in commuted(lo):
                 a2 = _word_from(l1, h1, env, at, regions)
                 if a2 is None:
                     continue
@@ -2526,12 +2586,8 @@ def _word_of(vl, vh):
         (cl, jl), (ch, jh) = addr_split(vl[1]), addr_split(vh[1])
         if cl is not None and ch == cl + 1 and jl == jh:
             return ("mem", vl[1], 2)
-    if vl[0] == "op" and vl[1] == "COPY" and vh[0] == "op" and vh[1] == "COPY":
-        v, h = vl[2][0], vh[2][0]
-        if h[0] == "op" and h[1] == "INT_RIGHT" and h[2][1] == ("const", 8, 1):
-            if h[2][0] == v and loc_width(v) == 2:
-                return v
-    return None
+    v = trunc_pair(vl, vh)
+    return v if v is not None and loc_width(v) == 2 else None
 
 
 def _fold_store_pair(a, b, regions):
@@ -2693,11 +2749,11 @@ def _half_def(s):
         base, idx = addr_split(v[1])
         if base is not None:
             return ("cell", base, idx)
-    if v[0] == "op" and v[1] == "COPY":
+    if is_op(v, "COPY"):
         inner = v[2][0]
-        if inner[0] == "op" and inner[1] == "INT_RIGHT" and inner[2][1] == ("const", 8, 1):
-            if loc_width(inner[2][0]) == 2:
-                return ("hi", inner[2][0])
+        word = shifted_hi(inner)
+        if word is not None and loc_width(word) == 2:
+            return ("hi", word)
         if loc_width(inner) == 2:
             return ("lo", inner)
     return None
@@ -2756,8 +2812,7 @@ def _pair_window(lst, i):
 def _sub_halves(s, lo, hi, q):
     """Uses of the halves read the word local's truncs; nested bodies included."""
     word = ("loc", q, 2)
-    shr = ("op", "INT_RIGHT", (word, ("const", 8, 1)), 2)
-    reps = {lo: ("op", "COPY", (word,), 1), hi: ("op", "COPY", (shr,), 1)}
+    reps = {lo: trunc_lo(word), hi: trunc_hi(word)}
 
     def f(x):
         for name, rep in reps.items():

@@ -49,8 +49,8 @@ def deref(addr):
     got = _cell_of(addr)
     if got is not None:
         return got[0], None, got[1]
-    if addr[0] == "op" and addr[1] == "INT_ADD" and addr[3] == 2 and len(addr[2]) == 2:
-        for a, b in (addr[2], addr[2][::-1]):
+    if frameproc.is_op(addr, "INT_ADD", 2, 2):
+        for a, b in frameproc.commuted(addr[2]):
             got = _cell_of(a)
             if got is not None:
                 return got[0], ST._strip_zext(b), got[1]
@@ -119,7 +119,7 @@ def _span(addr, wide, vals, chase=True):
     got = frameproc._index_of(addr)
     if got is not None:
         return (0, got[2] - 1) if got[2] else (got[0], got[0] + _bound(got[1], wide))
-    if addr[0] == "op" and addr[1] == "INT_OR" and len(addr[2]) == 2:
+    if frameproc.is_op(addr, "INT_OR", arity=2):
         ks = [c for c in addr[2] if c[0] == "const"]
         rest = [c for c in addr[2] if c[0] != "const"]
         if len(ks) == 1:
