@@ -129,20 +129,13 @@ def _unnamed_class(addr):
     return "opaque"
 
 
-def _through(addr, env, at, depth=4):
-    """The address as its definition spells it, following locals to their definers.
+def _through(addr, at):
+    """The address as its definition spells it, else None where none reaches it.
 
-    ``addr_split`` and ``addr_bits`` both read the address expression as written, so
-    a store through a local is unnameable and unrulable however plain its definition
-    is. This is what they would see if either followed the value graph."""
-    from deity_informant import frameproc
-
-    while depth and addr[0] == "loc":
-        got = env.at(addr[1], at)
-        if got is None or got[1] is None:
-            return None
-        addr, depth = got[1], depth - 1
-    return addr if frameproc.loc_width(addr) == 2 else None
+    ``addr_split`` reads the address as written, so a store through a local is
+    unnameable however plain its definition is; ``addr_bits`` no longer does
+    (G1), and this is the same edge, kept for the record it prints."""
+    return None if addr[0] != "loc" else at.defn(addr)
 
 
 def _lane_records(model, prog):
@@ -198,36 +191,40 @@ def _unnamed_records(prog):
     """One record per byte store whose address the emitter cannot name.
 
     ``addr_bits`` is all that stands between these and the SID: an address that cannot
-    set every bit $D400 and $D41C share reaches no register. What it cannot rule out
-    bounds every completeness claim the ladder makes."""
+    set every bit $D400 and $D41C share reaches no register. The population is what it
+    cannot rule out *as written*; ``ruled`` is G1's verdict on the same store."""
     from deity_informant import frameproc
     from deity_informant import grammar as G
 
     out = []
 
-    def walk(stmts):
-        env = frameproc.Defs(stmts)
+    def walk(stmts, outer, cyclic):
+        env = frameproc.Defs(stmts, outer, cyclic)
         for k, s in enumerate(stmts):
             for body in frameproc._stmt_bodies(s):
-                walk(body)
+                walk(body, (env, k), s[0] in frameproc._CYCLIC)
             if s[0] != "st" or G.store_width(s[2]) != 1:
                 continue
             base, _idx = frameproc.addr_split(s[1])
             if base is not None or s[1] in prog.resolved:
                 continue
             if frameproc.addr_bits(s[1]) & SID_LO != SID_LO:
-                continue  # ruled out: it cannot reach a register
-            rec = {"class": _unnamed_class(s[1]), "addr": frameproc._fmt(s[1])}
-            got = _through(s[1], env, k)
+                continue  # ruled out as written: it cannot reach a register
+            at = frameproc.DefsAt(env, k)
+            rec = {
+                "class": _unnamed_class(s[1]),
+                "addr": frameproc._fmt(s[1]),
+                "ruled": frameproc.addr_bits(s[1], at) & SID_LO != SID_LO,
+            }
+            got = _through(s[1], at)
             if got is not None:
                 rec["def"] = frameproc._fmt(got)
                 rec["def_class"] = _unnamed_class(got)
                 rec["def_named"] = frameproc.addr_split(got)[0] is not None
-                rec["def_ruled"] = frameproc.addr_bits(got) & SID_LO != SID_LO
             out.append(rec)
 
     for _e, _p, _r, stmts in prog.procs:
-        walk(stmts)
+        walk(stmts, None, False)
     return out
 
 
@@ -252,6 +249,7 @@ def _one(entry):
         "build_s": round(time.monotonic() - t0, 1),
         "lane": dict(Counter(r["class"] for r in lanes)),
         "unnamed": dict(Counter(r["class"] for r in unnamed)),
+        "unnamed_ruled": dict(Counter(r["class"] for r in unnamed if r["ruled"])),
         "lane_records": lanes,
         "unnamed_records": unnamed,
     }
@@ -305,6 +303,7 @@ def main():
         "wall_s": round(time.monotonic() - t0, 1),
         "lane_total": _totals(done, "lane"),
         "unnamed_total": _totals(done, "unnamed"),
+        "unnamed_ruled_total": _totals(done, "unnamed_ruled"),
         "rows": rows,
     }
     Path(args.out).parent.mkdir(exist_ok=True)

@@ -2423,7 +2423,9 @@ Unrelated and pre-existing: ``Dribbling`` refuses at HEAD from ``check_locals``
 > stores as stated and the real lever is elsewhere. (3) is 62% register-window
 > copies that need no widening
 > at all -- ``Comic_Bakery`` is 5 for 5 -- and is not the floor. (4) is 90.5% stack
-> and zero-page traffic hidden behind one def-use edge, not an addressing problem.
+> and zero-page traffic hidden behind one def-use edge, not an addressing problem,
+> and G1 has since ruled 1031 of the 1139 out: provable completeness is **451 of
+> 624**, not 225 of 617, and the bound (4) puts on the whole claim is 13 tunes.
 > The counts stand; the labels did not.
 
 ### 7.10 The residue read off the output, not off the rungs
@@ -2454,7 +2456,9 @@ root can be told from its cascade. Calibration: its ``narrow_sink`` count is
 ``framefuse._visit``'s measure pass with the verdict spelled out instead of
 counted: the index's constant set, the registers it actually reaches, each one's
 lo/hi/8-bit role, the address shape ``addr_split`` refused and the definition
-behind it. It exists so a bucket can be argued with.
+behind it. It exists so a bucket can be argued with. Its unnamed walk carries the
+enclosing environment, so the definition it reads is the one the lift would read
+and its ``ruled`` column is ``addr_bits``'s own verdict, not a re-derivation of it.
 
 **A row is keyed by the tune's cache-relative path, not by its stem.** Eight stems
 in the 624-tune cache name two different tunes each -- ``Commando`` is Hubbard's
@@ -2574,10 +2578,10 @@ lattice rules out on sight.
 | ``loc_param`` | 3 | none: ``pcall``-bound | ⊤ -- correctly unclaimed |
 
 711 of them are the 6502 hardware stack. 320 are zero-page indexed stores. **The
-bucket is 90.5% traffic that cannot reach a SID register at all**, and it is
-counted as possibly-SID because ``addr_bits`` (``frameproc.py:269-282``) has no
-``"loc"`` case and falls through to ``return m`` = ``$FFFF``. Every bare local
-address in the corpus is unrulable *by construction*, whatever it points at:
+bucket is 90.5% traffic that cannot reach a SID register at all**, and it was
+counted as possibly-SID because ``addr_bits`` had no ``"loc"`` case and fell
+through to ``return m`` = ``$FFFF``. Every bare local address in the corpus was
+unrulable *by construction*, whatever it pointed at:
 
     bare loc t1:2       addr_bits=$FFFF  may_reach_sid=True
     zext2((x - $03))    addr_bits=$00FF  may_reach_sid=False
@@ -2587,8 +2591,8 @@ The bitmask lattice is adequate. It is not being *given* anything: ``addr_bits``
 is pure over the node and has no environment, while every other rule on this
 branch now reads the value graph. That gap is the branch's own name unfinished.
 
-**G1 -- the reach bound follows the value graph.** For a local address, the reach
-bound is the join of the reach bounds of its reaching definitions. The two proof
+**G1 -- the reach bound follows the value graph (LANDED).** For a local address,
+the reach bound is the reach bound of the definition reaching it. The two proof
 obligations are already discharged: ``frameprog.check_locals``
 (``frameprog.py:119``) rejects a program using a local before definition, and all
 1064 have exactly one assignment, so there is no join to be unsound about and no
@@ -2596,27 +2600,82 @@ redefinition to miss. ``pcall``-bound locals stay ⊤. Placement is a read-only 
 parameter on ``addr_bits``, threaded from ``frameproc.store_reach`` and
 ``fuse_measure._may_reach_sid`` -- *not* a substitution rewrite in ``repolish``,
 which would delete ``t4:2`` from the emitted text and move Gate FP output.
-**Claims 1031 / 1139 (90.5%).**
+**Claimed 1031 / 1139 (90.5%); measured 1031, the prediction exactly.**
+
+``frameproc.DefsAt`` is the env: a ``Defs`` and a position, one method, no
+mutator. ``addr_bits(n, env)`` reads a local as the address its reaching
+definition spells, and ``Defs.resolve`` -- the same query ``Defs._hits`` already
+made of a store's own address -- hands the local straight back at every wall, so a
+cyclic body that may rebind, a ``pcall``-bound name and an unreadable definition
+are ⊤ without a rule saying so. **The definition's own locals are bounded by width
+alone**: the definition was evaluated where it was written, so ``t1 = zext2(y)``
+read at a later store bounds that store at ``$00FF`` however ``y`` was rewritten
+between, and resolving ``y`` at the store's seat instead would be reading a value
+that never existed. That one line is what makes reading a definition at a
+*different* seat sound, and it is why the rule needs no staleness check of its
+own (``as_written``'s obligation is to spell an address, not to bound one).
+
+**The lift passes no env, deliberately.** Every in-tree caller of ``store_reach``
+feeds the aliasing that decides a fold -- ``_clear_path``, ``_fold_pair_at``,
+``_steps_over``, ``framefuse``'s hazard scans -- so an env there is a *tightening*
+of ``overlaps`` and would move the emitted program, which is the artifact under
+test. The parameter defaults to ``None`` and the whole ladder takes the default:
+28 tunes sampled across the cache emit byte-identical text before and after, and
+every column of all three sweeps that is not about ``unnamed`` is unchanged over
+624 rows. Resolving a local to decide a predicate is the goal; rewriting the
+program is not.
 
 **G2 -- a carry rule for ``INT_ADD`` in ``addr_bits``.** ``a + b`` is bounded by
 ``mtop(bits(a) + bits(b))``, ``mtop(x) = (1 << x.bit_length()) - 1``. Three lines,
 inside the existing lattice, no new domain. Run directly on the real address
 tuples it rules out **32 of 34**; the 2 misses need G1 to see through a local
-first, so the two compose. **Claims 67 / 1139 (5.9%).**
+first, so the two compose. **Claims 67 / 1139 (5.9%)**, of which 65 shapes remain
+after G1 and 33 of those are reachable only through it.
 
 Measured a second time and independently, by ``lift_triage`` following each
 address one def-use edge and re-asking ``addr_bits`` of the definition it finds:
 **1022 of the 1139 are ruled out**, 33 stay open pending G2, and 12 have no
 readable definition in their own statement list. Two instruments, two methods,
 1022 against 1031 -- the disagreement is the 9 stores whose definition sits in an
-enclosing list that ``Defs.at`` alone does not climb.
+enclosing list that ``Defs.at`` alone does not climb. **Confirmed by G1 itself.**
+``Defs.resolve`` climbs, and the triage walk now carries the enclosing env so it
+asks the same question the lift does: 1022 + 9 = **1031**, and the two instruments
+agree store for store.
 
-**Together 1098 / 1139 (96.4%), and provable completeness goes 225 -> 448 of 617
-tunes** against 458 that look complete -- the gap the doc calls the bound on the
-whole claim closes to 10 tunes. Residue: 38 genuine pointer derefs over 12 tunes,
-plus the 3 ``pcall``-bound. The 38 are gated on resolving a ``zp,X`` index, i.e.
-on §7.10.5's problem, not on naming an address; rung (f) does not reach them and
-two strengthenings of it were measured at **0** additional resolutions.
+**Measured, over the 624-tune cache.** ``fuse_measure`` now reports both verdicts
+per tune -- ``unnamed_as_written`` against ``unnamed`` -- so the population is
+provably the same 1139, and carries ``looks_complete``/``provably_complete`` per
+row, so the figure the section is about is read off the sweep instead of
+recomputed by hand from it:
+
+| | predicted | measured |
+|---|---:|---:|
+| stores G1 rules out | 1031 / 1139 | **1031 / 1139** |
+| provably complete, G1 alone | 448 of 617 | **451 of 624** |
+| against tunes that look complete | 458 | 464 |
+| the gap that bounds the claim | 10 tunes | **13 tunes** |
+| word-store rate, emitted text | unchanged | unchanged (89.89%, 3387/381) |
+
+The 108 that survive are the predicted ones and nothing else: **33 have a reaching
+definition G2 has not been written for** (31 ``(zext2(y) + $00A5):2``, 2 through a
+zero-page deref), **3 are ``pcall``-bound** with no definition to read, **40 are
+genuine pointer derefs** and **32 are an ``INT_ADD`` written at the store itself**.
+G1 landed at its ceiling: every store it was written for, it claims, and the
+``loc_stack``/``loc_zext`` rows of the table above are now empty.
+
+One figure the section did not state, and it is the less flattering one: **57
+tunes still hold an unnamed store**, down from 342. 1031 of 1139 stores is 90.5%
+of the traffic but only 83% of the tunes carrying any, because the residue is
+spread thin -- 46 of the 57 hold exactly one, and the worst are 14 apiece
+(``C64_World``, ``1st_Decent_Hardcore``). Provable completeness moves further than
+that because most of those 57 are not lane-complete either. Counting stores
+flatters this rung; the 13-tune gap is the number that bounds a completeness claim
+and the one to quote.
+
+The 40 derefs are gated on resolving a ``zp,X`` index, i.e. on §7.10.5's problem,
+not on naming an address; rung (f) does not reach them and two strengthenings of
+it were measured at **0** additional resolutions. The 3 ``pcall``-bound stay ⊤ and
+are correct there.
 
 #### 7.10.4 ``partnered`` never was the lever; the store's byte order is
 
@@ -2762,20 +2821,19 @@ re-measures.
 
 Invalidating ``_Jumps`` on a pair fold (§7.10.6) led this list and is **done**: the
 7 tunes build, the corpus sweeps at 624 refusing none, and measurement on those
-tunes is unblocked. What is left, in the order it costs:
+tunes is unblocked. **G1 (§7.10.3) led what was left and is done too**: 1031 of
+1139 stores, the prediction exactly, and provable completeness 231 -> 451 of 624.
+What is left, in the order it costs:
 
-1. **G1: ``addr_bits`` follows a local to its definition** (§7.10.3). 1031 of
-   1139 stores; provable completeness 225 -> 448 tunes. The largest single
-   correction in this section, and the branch's own thesis applied to the one
-   predicate still reading syntax.
-2. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
+1. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
    stores, 18 tunes to zero, 89.89% -> 92.96%. Index-free, one-line soundness
    argument, and it deletes a premise rather than proving one.
-3. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
+2. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
    discharged. 26 stores, and it removes a false "floor" from the record.
-4. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). 67 stores, three lines.
-5. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
-6. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
+3. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). Three lines, and G1 made the
+   33 stores behind a local visible to it: 65 of the 108 unnamed stores left.
+4. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
+5. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
    new machinery. Its cost is why it is last, not its size.
 
 Above all of these sits the census: **``word_pack`` at 4472 sites over 545 tunes,

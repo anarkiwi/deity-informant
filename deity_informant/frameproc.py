@@ -266,18 +266,43 @@ def packed_cells(n):
     return None if bl is None or bh is None or il != ih else (bl, bh, il)
 
 
-def addr_bits(n):
+class DefsAt:
+    """The definitions in force at one statement: a ``Defs`` and a position.
+
+    Read-only by construction, so a predicate may resolve a local without the
+    emitted program learning of it (docs/frameprog.md 7.10.3)."""
+
+    __slots__ = ("defs", "bound")
+
+    def __init__(self, defs, bound):
+        self.defs, self.bound = defs, bound
+
+    def defn(self, n):
+        """What the local names where one definition reaches it, else None.
+
+        ``Defs.resolve`` hands back the local itself at every wall -- a cyclic body
+        that may rebind, a ``pcall``-bound name, a definition with no readable
+        value -- so a local returning is exactly ⊤."""
+        got = self.defs.resolve(n, self.bound)
+        return None if got[0] == "loc" else got
+
+
+def addr_bits(n, env=None):
     """Bits an address may set: every address the expression names is a subset.
 
     A value fits the width it is read at, which bounds the ``zp,X`` wrap and the
-    stack push ``zext2(sp) | $0100`` without either being named as a shape."""
+    stack push ``zext2(sp) | $0100`` without either being named as a shape. Given a
+    ``DefsAt``, a local is the address its reaching definition spells."""
     m = E.mask(loc_width(n))
     if n[0] == "const":
         return n[1] & m
+    if n[0] == "loc":
+        got = None if env is None else env.defn(n)
+        return m if got is None else addr_bits(got) & m  # the definition's own: width alone
     if n[0] == "op" and n[1] in ("INT_ZEXT", "COPY"):
-        return addr_bits(n[2][0]) & m
+        return addr_bits(n[2][0], env) & m
     if n[0] == "op" and n[1] in ("INT_OR", "INT_AND") and len(n[2]) == 2:
-        a, b = (addr_bits(c) for c in n[2])
+        a, b = (addr_bits(c, env) for c in n[2])
         return (a | b if n[1] == "INT_OR" else a & b) & m
     return m
 
@@ -327,7 +352,7 @@ def store_ref(stmt, regions):
     return (base, idx, span(base, idx, regions, mod), width, mod)
 
 
-def store_reach(stmt, regions):
+def store_reach(stmt, regions, env=None):
     """The range a store writes: ``store_ref``, or the bits its address can set.
 
     An address the base/index form does not name still bounds the bytes it may
@@ -336,7 +361,7 @@ def store_reach(stmt, regions):
     got = store_ref(stmt, regions)
     if got is not None:
         return got
-    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]), 0)
+    return (0, UNRES, addr_bits(stmt[1], env), G.store_width(stmt[2]), 0)
 
 
 def mem_refs(n):

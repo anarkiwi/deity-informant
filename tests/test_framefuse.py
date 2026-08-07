@@ -420,6 +420,53 @@ def test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index():
     assert frameproc.Defs([spill, deref, read]).cell(G.CNT, 2, regions) is None
 
 
+# ---- G1: the reach bound follows a local to its definition (7.10.3) --------------
+_T4 = ("loc", "t4", 2)
+_STORE_T4 = ("st", _T4, ("loc", "a"))
+
+
+def _bits(stmts, k, outer=None, cyclic=False):
+    """``addr_bits`` of ``stmts[k]``'s address, as written and against its definitions."""
+    at = frameproc.DefsAt(frameproc.Defs(stmts, outer, cyclic), k)
+    return frameproc.addr_bits(stmts[k][1]), frameproc.addr_bits(stmts[k][1], at)
+
+
+def test_a_bare_local_address_is_ruled_off_the_sid_by_the_definition_reaching_it():
+    """`t4 = zext2(sp)|$0100` bounds `mem[t4:2]` at $01FF; as written it bounds nothing."""
+    assert _bits([("asg", "t4", _push(("loc", "a"))[1]), _STORE_T4], 1) == (0xFFFF, 0x01FF)
+    sub = ("op", "INT_SUB", (("loc", "x"), ("const", 3, 1)), 1)
+    zp = ("op", "INT_ZEXT", (sub,), 2)
+    assert _bits([("asg", "t4", zp), _STORE_T4], 1) == (0xFFFF, 0x00FF)
+
+
+def test_the_definition_is_read_where_the_store_is_read_walls_included():
+    """An enclosing list is climbed; no definition, a `pcall` binding and a back edge are ⊤."""
+    push = _push(("loc", "a"))[1]
+    body = [_STORE_T4]
+    outer = frameproc.Defs([("asg", "t4", push), ("loop", body)])
+    assert _bits(body, 0, (outer, 1), True) == (0xFFFF, 0x01FF)
+    assert _bits([_STORE_T4], 0) == (0xFFFF, 0xFFFF)
+    assert _bits([("pcall", 0x1000, (), ("t4",)), _STORE_T4], 1) == (0xFFFF, 0xFFFF)
+    rebound = [_STORE_T4, ("asg", "t4", push)]
+    assert _bits(rebound, 0, (outer, 1), True) == (0xFFFF, 0xFFFF)
+
+
+def test_a_local_under_the_address_resolves_but_the_definition_s_own_do_not():
+    """`t1|$0100` reads `t1` where the store is; what `t1` was assigned was read there."""
+    addr = ("op", "INT_OR", (("loc", "t1", 2), ("const", 0x0100, 2)), 2)
+    zext = ("op", "INT_ZEXT", (("loc", "y"),), 2)
+    stmts = [("asg", "t1", zext), ("asg", "y", ("const", 0xD4, 1)), ("st", addr, ("loc", "a"))]
+    assert _bits(stmts, 2) == (0xFFFF, 0x01FF)
+
+
+def test_store_reach_carries_the_env_into_the_bound_it_reports():
+    """The range a store with no named base reaches is the env's bound, not ⊤."""
+    stmts = [("asg", "t4", _push(("loc", "a"))[1]), _STORE_T4]
+    at = frameproc.DefsAt(frameproc.Defs(stmts), 1)
+    assert frameproc.store_reach(stmts[1], None) == (0, frameproc.UNRES, 0xFFFF, 1, 0)
+    assert frameproc.store_reach(stmts[1], None, at) == (0, frameproc.UNRES, 0x01FF, 1, 0)
+
+
 def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])

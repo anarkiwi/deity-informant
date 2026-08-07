@@ -41,28 +41,35 @@ def lane_offsets():
     return sorted(fuse)
 
 
-def _may_reach_sid(addr):
+def _may_reach_sid(addr, env):
     """True where an address the emitter cannot name may still land on a register.
 
     ``addr_bits`` bounds it: an address that cannot set every bit $D400 and $D41C
-    share names no SID register, which is what rules the ``zp,X`` wrap out."""
+    share names no SID register, which is what rules the ``zp,X`` wrap out. ``env``
+    is what lets it read a local as the definition reaching it (7.10.3)."""
     from deity_informant import frameproc
 
-    return frameproc.addr_bits(addr) & SID_LO == SID_LO
+    return frameproc.addr_bits(addr, env) & SID_LO == SID_LO
 
 
 def _stores(prog):
-    """Every store as ``(width, address, const base, indexed, named)``."""
-    from deity_informant import framefuse
+    """Every store as ``(width, address, const base, indexed, named, defs at it)``."""
     from deity_informant import frameproc
     from deity_informant import grammar as G
 
-    for _e, _p, _r, stmts in prog.procs:
-        for s in framefuse.stmts_of(stmts):
+    def walk(stmts, outer, cyclic):
+        env = frameproc.Defs(stmts, outer, cyclic)
+        for k, s in enumerate(stmts):
+            for body in frameproc._stmt_bodies(s):
+                yield from walk(body, (env, k), s[0] in frameproc._CYCLIC)
             if s[0] == "st":
                 base, idx = frameproc.addr_split(s[1])
                 named = base is not None or s[1] in prog.resolved
-                yield G.store_width(s[2]), s[1], base, idx is not None, named
+                at = frameproc.DefsAt(env, k)
+                yield G.store_width(s[2]), s[1], base, idx is not None, named, at
+
+    for _e, _p, _r, stmts in prog.procs:
+        yield from walk(stmts, None, False)
 
 
 def _partnered(prog):
@@ -137,12 +144,13 @@ def _one(entry):
     prog = frameprog.program(model)
     row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
     row.update({k: 0 for k in BYTE})
-    row["aligned"] = row["word_plain"] = row["unnamed_ruled_out"] = 0
+    row["aligned"] = row["word_plain"] = row["unnamed_ruled_out"] = row["unnamed_as_written"] = 0
     idx_lane = 0
-    for width, addr, base, indexed, named in _stores(prog):
+    for width, addr, base, indexed, named, env in _stores(prog):
         if base is None:
             if width == 1 and not named:
-                row["unnamed" if _may_reach_sid(addr) else "unnamed_ruled_out"] += 1
+                row["unnamed" if _may_reach_sid(addr, env) else "unnamed_ruled_out"] += 1
+                row["unnamed_as_written"] += _may_reach_sid(addr, None)
             continue
         if not SID_LO <= base <= SID_HI:
             continue
@@ -160,6 +168,8 @@ def _one(entry):
     row["partnered"] = _partnered(prog)
     row["byte_total"] = sum(row[k] for k in BYTE)
     row["lane_byte_total"] = row["unproven"] + row["notaligned"] + row["plain_lane"]
+    row["looks_complete"] = int(row["lane_byte_total"] == 0)
+    row["provably_complete"] = int(row["looks_complete"] and row["unnamed"] == 0)
     return row
 
 
