@@ -113,12 +113,17 @@ def test_a_call_between_the_push_and_the_pull_refuses():
 
 
 def test_the_rts_trick_keeps_its_pushed_target_in_memory():
-    """``PHA``/``PHA``/``RTS`` dispatch: nothing reads the slots, so nothing moves."""
+    """``PHA``/``PHA``/``RTS`` dispatch: the displacement is the dispatch, so sp stays.
+
+    Nothing reads the slots, so they stay the stores they are; ``sp`` nets -2
+    into the ret, which is how the evaluator finds the pushed target, so rung
+    (d0') refuses the drop and names the unbalanced procedure."""
     _m, prog, text = _check(G.t_rts_trick(np.random.default_rng(5)))
     assert not _stack(prog, "named")
     assert {p.targets[0] for p in _stack(prog)} == {LOSLOT, HISLOT}
-    assert all(p.lemma.endswith("stored and read in the procedure") for p in _stack(prog))
     assert "m_01FD = $13" in text and "m_01FC = $1F" in text and "sp = (sp - $02)" in text
+    (sp,) = [p for p in prog.proofs if p.kind == "sp"]
+    assert sp.status == "refused" and "read it beyond updates" in sp.lemma
 
 
 # ---- the premise, stated ----------------------------------------------------------

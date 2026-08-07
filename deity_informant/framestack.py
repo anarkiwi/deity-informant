@@ -225,3 +225,124 @@ def drop_state(state, proofs, symbols, name_of):
             (named if p.status == "named" else kept).update(p.targets)
     gone = {symbols.pop(c, None) or name_of(c) for c in named - kept}
     return [f for f in state if f[0] not in gone]
+
+
+# ---- rung (d0'): the stack fabric leaves the frame program -----------------------
+_RAW_CALLS = frozenset(("call", "callb", "dcall", "swc"))
+
+
+def _sp_uses(stmts, calls, sp):
+    """True where a statement needs ``sp`` beyond updating or passing it.
+
+    A raw call keeps the machine stack alive; a pcall's plain ``sp`` argument is
+    the threading the caller may drop with the callee, recorded in ``calls``."""
+    for s in stmts:
+        k = s[0]
+        if k in _RAW_CALLS:
+            return True
+        if k == "asg" and s[1] == sp:
+            continue
+        if k == "pcall":
+            if sp in s[3]:
+                return True
+            for a in s[2]:
+                if a == ("loc", sp):
+                    calls.append(s[1])
+                elif sp in frameproc._locset(a):
+                    return True
+            continue
+        for x in frameproc._stmt_exprs(s):
+            if sp in frameproc._locset(x):
+                return True
+        for b in frameproc._stmt_bodies(s):
+            if _sp_uses(b, calls, sp):
+                return True
+    return False
+
+
+def _strip_sp(stmts, spat, sp):
+    """Remove the ``sp`` updates and the threading argument, bodies included."""
+    out = []
+    for s in stmts:
+        if s[0] == "asg" and s[1] == sp:
+            continue
+        if s[0] == "pcall":
+            k = spat.get(s[1])
+            args = [a for i, a in enumerate(s[2]) if i != k]
+            s = ("pcall", s[1], args, [r for r in s[3] if r != sp])
+        for b in frameproc._stmt_bodies(s):
+            b[:] = _strip_sp(b, spat, sp)
+        out.append(s)
+    return out
+
+
+def _sp_delta(v, sp):
+    """``+/-k`` of an ``sp = (sp +/- $k)`` update, else None."""
+    if v[0] != "op" or len(v[2]) != 2:
+        return None
+    a, b = v[2]
+    if v[1] == "INT_ADD" and b[0] == "const" and a == ("loc", sp):
+        return b[1]
+    if v[1] == "INT_ADD" and a[0] == "const" and b == ("loc", sp):
+        return a[1]
+    if v[1] == "INT_SUB" and a == ("loc", sp) and b[0] == "const":
+        return -b[1]
+    return None
+
+
+def _sp_net(stmts, off, sp):
+    """Net ``sp`` displacement through the list, None where dropping cannot hold.
+
+    Every point control may leave or enter -- a ret, a label, a goto, a break
+    or continue -- must sit at rest (offset zero), and joining arms must agree,
+    so a dropped ``sp`` leaves the evaluator's frame matching untouched."""
+    for s in stmts:
+        k = s[0]
+        if k == "asg" and s[1] == sp:
+            d = _sp_delta(s[2], sp)
+            if d is None:
+                return None
+            off = (off + d) & 0xFF  # sp walks its byte: -$02 is +$FE
+        elif k in ("ret", "label", "goto", "cont", "brk", "unobs") and off != 0:
+            return None
+        elif k == "if":
+            a = _sp_net(s[3], off, sp)
+            if a is None or a != _sp_net(s[4], off, sp):
+                return None
+            off = a
+        elif k in ("loop", "for", "opsw", "swg", "callb"):
+            for b in frameproc._stmt_bodies(s):
+                if _sp_net(b, off, sp) != off:
+                    return None
+    return off
+
+
+def drop_sp(procs, play):
+    """``sp`` leaves the program where nothing reads it; the proof names why not.
+
+    The record cannot see ``sp`` and its real consumers were the destacked slot
+    addresses, so the updates, the parameter and every threading argument go.
+    An unresolved stack access, a raw call or a computed ``sp`` keeps it -- the
+    RTS-trick's pushed cells stay as the stores they are either way."""
+    sp = frameproc._SP
+    need, calls_of = {}, {}
+    for e, _pa, rets, stmts in procs:
+        calls = []
+        need[e] = sp in rets or _sp_uses(stmts, calls, sp) or _sp_net(stmts, 0, sp) != 0
+        calls_of[e] = calls
+    changed = True
+    while changed:
+        changed = False
+        for e, _pa, _r, _s in procs:
+            if not need[e] and any(need.get(c, True) for c in calls_of[e]):
+                need[e] = changed = True
+    kept = sorted(e for e, n in need.items() if n)
+    if kept:
+        why = "sp kept: %d procedure(s) read it beyond updates" % len(kept)
+        return Proof(play, "sp", "refused", tuple(kept), why)
+    spat = {e: (pa.index(sp) if sp in pa else None) for e, pa, _r, _s in procs}
+    for k, (e, pa, rets, stmts) in enumerate(procs):
+        stmts[:] = _strip_sp(stmts, spat, sp)
+        procs[k] = (e, [p for p in pa if p != sp], [r for r in rets if r != sp], stmts)
+    why = "sp: no reader; the updates, the parameter and the threading dropped"
+    return Proof(play, "sp", "resolved", (), why)

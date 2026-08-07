@@ -2297,6 +2297,21 @@ spills of one word, ``idx_550A``/``idx_550B``) wants the store-side fold; and
 the sink pair by value provenance -- two halves of one 16-bit datum stored one
 lane apart -- replaces the index-proof pairing entirely, Oracle-gated per tune.
 
+**The stack leaves the frame program (rung d0').** ``sp`` is invisible to the
+record and its real consumers were the destacked slot addresses, so where
+nothing reads it the updates, the parameter and every threading argument go --
+Commando's play is ``sub_5012()``, stack-free. The drop holds only where every
+procedure is *balanced*: zero net displacement (mod 256 -- ``- $02`` is
+``+ $FE``) at every ret, label, goto, break and continue, joining arms
+agreeing, because the evaluator matches call frames by ``r[sp]`` and an
+RTS-trick's whole dispatch is its displacement into the ret. Unbalanced or
+computed ``sp``, a raw call, or an unresolved stack access refuses, and the
+``sp`` proof names the procedures that keep it. Next: the RTS-trick's pushed
+cells are stores whose only reader is the modeled dispatch, so with the
+dispatch's evidence in hand the pushes and the displacement can leave too;
+computed ``sp`` (TXS-era players) wants the same value-set treatment as any
+index.
+
 ### 7.8 The environment this branch was measured in
 
 > SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
