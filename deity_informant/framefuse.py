@@ -422,13 +422,16 @@ def candidates(model, decls, procs):
 
 # ---- the pass ---------------------------------------------------------------------
 def _rewrite(n, p, count):
-    """Fold word shapes to a word load; count lone-half reads on the way."""
-    if _word_shape(n, p.lo, p.hi):
+    """Fold word shapes to a word load; count lone-half reads on the way.
+
+    A word read already folded (``repolish`` runs the little-endian fold before
+    this rung) is the same evidence the shape is: one access of the whole pair."""
+    if _word_shape(n, p.lo, p.hi) or n == _word(p.lo):
         p.words += count
         return _word(p.lo)
     k = n[0]
     if k == "mem":
-        if n[1] in (("const", p.lo, 2), ("const", p.hi, 2)):
+        if n[2] == 1 and n[1] in (("const", p.lo, 2), ("const", p.hi, 2)):
             p.lone += count
             return n
         return ("mem", _rewrite(n[1], p, count), n[2])

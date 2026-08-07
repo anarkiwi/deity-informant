@@ -2179,6 +2179,99 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
+def _le_bytes(n):
+    """``(lo side, hi side)`` where ``n`` packs two byte-wide sides into one word."""
+    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 2 or len(n[2]) != 2:
+        return None
+    for hi, lo in (n[2], n[2][::-1]):
+        if hi[0] != "op" or hi[1] != "INT_LEFT" or hi[3] != 2:
+            continue
+        if hi[2][1][0] != "const" or hi[2][1][1] != 8:
+            continue
+        mh, ml = hi[2][0], lo
+        if mh[0] == "op" and mh[1] == "INT_ZEXT":
+            mh = mh[2][0]
+        if ml[0] == "op" and ml[1] == "INT_ZEXT":
+            ml = ml[2][0]
+        if mh[0] in ("mem", "loc") and ml[0] in ("mem", "loc"):
+            return ml, mh
+    return None
+
+
+def _stable_row(addr, env, k, at, regions):
+    """``addr`` where the byte it read at ``k`` still reads the same at ``at``.
+
+    The row must be wholly const (a store cannot move it) and the index's locals
+    defined as they were, so the traced value may stand in for the spill."""
+    vb, vi = addr_split(addr)
+    if vb is None:
+        return None
+    if not all(regions.const_at(a) for a in range(vb, vb + span(vb, vi, regions) + 1)):
+        return None
+    if vi is not None and any(env.at(m, k) != env.at(m, at) for m in _locset(vi)):
+        return None
+    return addr
+
+
+def _side_addr(node, env, at, regions):
+    """The byte address a pack side reads, traced through one spill or local."""
+    if node[0] == "mem" and node[2] == 1:
+        base, idx = addr_split(node[1])
+        if base is None:
+            return None
+        if idx is not None or env is None or regions is None:
+            return node[1]
+        got = env.cell(base, at, regions)
+        if got is None or got[0] is not env or got[2][0] != "mem" or got[2][2] != 1:
+            return node[1]
+        return _stable_row(got[2][1], env, got[1], at, regions) or node[1]
+    if node[0] != "loc" or env is None or regions is None:
+        return None
+    got = env.lookup_joined(node[1], at)
+    if got is None or got is ENTRY or got[2] is None or got[0] is not env:
+        return None
+    if got[2][0] != "mem" or got[2][2] != 1:
+        return None
+    return _stable_row(got[2][1], env, got[1], at, regions)
+
+
+def _fold_word(n, env, at, regions):
+    """One little-endian word read for its two byte reads, the 6502's only spelling.
+
+    ``hi<<8 | lo`` over ``mem[b+1+i]``/``mem[b+i]`` is ``mem[b+i]:2`` -- the same
+    two cells, loaded pure -- for any base and one shared index, a volatile source
+    excluded since ``iota`` pins each of its reads (docs/frameprog.md 7.9)."""
+    got = _le_bytes(n)
+    if got is None:
+        return n
+    la = _side_addr(got[0], env, at, regions)
+    ha = _side_addr(got[1], env, at, regions)
+    if la is None or ha is None:
+        return n
+    (bl, il), (bh, ih) = addr_split(la), addr_split(ha)
+    if bl is None or bh != bl + 1 or il != ih:
+        return n
+    reach = 1 + (0 if il is None else E.mask(loc_width(il)))
+    if any(bl <= v <= bl + reach for v in sidprog._VOLS):
+        return n
+    return ("mem", la, 2)
+
+
+def _fold_expr(n, env, at, regions):
+    kids = _kids(n)
+    if kids:
+        n = _rebuild(n, [_fold_expr(c, env, at, regions) for c in kids])
+    return _fold_word(n, env, at, regions)
+
+
+def _fold_words(stmts, regions, outer=None, cyclic=False):
+    env = Defs(stmts, outer, cyclic)
+    for i, s in enumerate(stmts):
+        stmts[i] = _map_exprs(s, lambda x, _i=i: _fold_expr(x, env, _i, regions))
+        for b in _stmt_bodies(stmts[i]):
+            _fold_words(b, regions, (env, i), stmts[i][0] in _CYCLIC)
+
+
 _NEGATE = {"INT_EQUAL": "INT_NOTEQUAL", "INT_NOTEQUAL": "INT_EQUAL"}
 
 
@@ -2312,7 +2405,7 @@ def _factor_ifs(stmts, root):
     return changed
 
 
-def repolish(procs, play):
+def repolish(procs, play, regions=None):
     """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
 
     Signatures are already spelled into every ``pcall``, so ``params``/``rets``
@@ -2327,6 +2420,7 @@ def repolish(procs, play):
         inlined = _inline(info)
         factored = False
         for stmts in info.procs.values():
+            _fold_words(stmts, regions)
             factored |= _factor_ifs(stmts, stmts)
         if not (pruned or inlined or factored):
             break

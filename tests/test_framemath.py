@@ -181,7 +181,7 @@ def test_the_c64_world_cybertracker_half_goes_elsewhere(push):
     a.i("RTS")
     model, prog, text = _build("c64world", a, {0x14: 0xF0, 0x15: 0x20, 0x16: 0x00})
     (pr,) = _math(prog, "lifted")
-    assert "carry(" not in text and "):2 + $0004):2" in text
+    assert "carry(" not in text and "(ctr_0014:2 + $0004):2" in text  # the pair reads as u16
     assert "one u16 store" not in pr.lemma  # the hi half never reaches $15
     assert "ctr_0014 = trunc1(d0:2)" in text
     dest = "sid.v1.attack_decay" if push else "zp_16"  # destacked, the slot is not a cell
@@ -387,7 +387,7 @@ def test_a_sixteen_bit_step_lifts_as_one_word_add():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "carry(" not in text
-    assert "(zext2(m_1481) << $08):2 | zext2(m_1480)" in text
+    assert "d0:2 = (zp_10:2 + m_1480:2):2" in text  # both addends fold to u16 reads
 
 
 def test_lanes_three_bytes_apart_lift_but_never_merge():

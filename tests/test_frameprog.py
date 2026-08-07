@@ -319,9 +319,9 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
-    # 16-clean (7.7): named freq/pw/cutoff access is u16 and the label join empties the view
-    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(\w+\) << \$08\):2 \| zext2", text)
-    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = \(\(zext2\(m_5429\[\w+\]\) << \$08\):2", text)
+    # 16-clean (7.7) and canonical (7.9): the strided pitch table reads as u16 rows
+    assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = m_5428\[\w+\]:2", text)
+    assert re.search(r"sid\.v1\.pw_lo\[\w+\]:2 = m_5591\[\w+\]:2", text)
     body = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith(";"))
     assert "sid.reg[" not in body
     assert not re.search(r"sid\.v1\.(freq|pw)_(lo|hi)\[\w+\] =", text)

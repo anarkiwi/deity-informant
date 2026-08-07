@@ -2260,6 +2260,43 @@ form named here is not among them: `canon_addrs` (§7.6) spells it as the consta
 it proves, and where it does not, the form adds inside the byte, so `addr_bits`
 caps it at `$00FF` and it reaches no SID register.
 
+### 7.9 The generalization: 16-bit data wears 8-bit shadows
+
+**The reframe (Josh's):** §7.7's walls -- labels, parameters, spills, call
+summaries, undeclared arrays -- are each a special case of one missing
+generalization. Frequency, pulse width and cutoff are 16-bit *quantities*; the
+6502 has no 16-bit operations, so every driver shreds them into 8-bit shadows:
+pitch tables split or strided into byte columns, arithmetic as byte pairs with
+carry chains, writes as two byte stores to a lane pair. That structure is value
+dataflow -- sources through operations to sinks -- and it is control-flow
+independent. Chase the walls and there will always be more; canonicalize the
+value graph to 16-bit operations and the walls stop mattering. The arbiter is
+the frame Oracle: the same order-critical writes in the same frames in the same
+order (`gate_fp`), which admits far more transformation than per-shape proofs.
+The 8-bit registers' operations are the same problem one lift later, so every
+piece here is written for the value graph, not for the width.
+
+**Landed first: the little-endian word fold.** ``hi<<8 | lo`` over
+``mem[b+1+i]``/``mem[b+i]`` is one ``mem[b+i]:2`` -- the same two cells, loaded
+pure -- for any base and one shared index, volatile sources excluded since
+``iota`` pins their read count. A pack side may be a local or a spill cell: it
+traces through its definition in force to a *stable* const-table row (the row
+cannot be stored to, the index's locals hold their definitions), so Commando's
+``(zext2(m_5429[t10]) << $08) | zext2(idx_5503)`` reads as ``m_5428[t10]:2`` --
+the strided pitch table as the u16 rows it always was. The fold runs in
+``repolish`` before rung (d), whose ``_rewrite`` takes a folded word read as the
+same pair evidence the unfolded shape carried. Commando's pitch and pulse sinks
+are now ``sid.v1.freq_lo[m_54EB]:2 = m_5428[t10]:2`` and
+``sid.v1.pw_lo[y]:2 = m_5591[x]:2``, and framemath's word-step lift reads
+``d0:2 = (zp_10:2 + m_1480:2):2`` with both addends folded.
+
+**Next increments, in value-graph order:** the split state pair (Commando's
+``m_551D[x]``/``ctr_551A[x]``, non-adjacent byte columns of one u16 per-voice
+variable) wants a paired-table u16 access; the spill-store pair (two byte
+spills of one word, ``idx_550A``/``idx_550B``) wants the store-side fold; and
+the sink pair by value provenance -- two halves of one 16-bit datum stored one
+lane apart -- replaces the index-proof pairing entirely, Oracle-gated per tune.
+
 ### 7.8 The environment this branch was measured in
 
 > SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
