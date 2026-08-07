@@ -2230,6 +2230,17 @@ Next steps, in order:
    the unproven column now counts exactly the `sid.regNN` stores, the view's
    size, and steps 3 and 4 are measured by shrinking it.
 
+**All five landed, measured over the same 624 files, 0 refusals.** The lane
+column is **536** -- 492 index unproven, 44 proven off-lane, 0 unindexed --
+from 812 at the step-1 baseline: the joins and the parameter union took 292
+off the unproven column, 26 of them into the off-lane bucket where no 16-bit
+form exists, and `partnered` fell 644 -> 383. What remains renders on the
+`sid.regNN` byte view, so the goal holds by construction everywhere: a named
+freq/pulse/cutoff access is u16 in all 624, and the view's tenants are the
+loop-carried indexes -- `x` stepped per voice inside a `loop`, a value-set
+fixpoint over the loop body, not a join -- which is the frontier after this
+branch.
+
 **Two unproven premises found on the way; the first is now enforced.**
 `_pair_at` accepted a hi-first adjacent SID pair, but `frameval`'s `stw` always
 logs lo then hi; an indexed hi-first pair landing both cells in an order-preserved
