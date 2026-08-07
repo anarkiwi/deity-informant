@@ -2890,7 +2890,9 @@ pick one.
 **Two debts stand against any of it**, both found while landing G1 and neither
 caused by it:
 
-- ``MUSICIANS/G/Galway_Martin/Comic_Bakery`` **fails ``frameval.gate_fp``**, with
+- **SETTLED by §7.10.9: the defect is in ``frameproc``'s liveness sweep, two rungs
+  above the premise it sat behind, and is not a counter-example to item 1.**
+  ``MUSICIANS/G/Galway_Martin/Comic_Bakery`` **fails ``frameval.gate_fp``**, with
   ``Divergence(frame=0, section='v2.lww', pos=0, got=(14,208), want=(14,108))``
   -- identical at 300 frames and at its full 9450. Checked out at ``db5c642`` it
   gives the same divergence from a program whose text hashes identically
@@ -2904,7 +2906,64 @@ caused by it:
   cache, plus ``Commando``, ``Wizball``, ``Comic_Bakery`` and ``Krakout``) and
   the suite's own gate tests, **not over all 624**. The emitted text was shown
   unmoved corpus-wide, which is the stronger property for G1 specifically, but
-  the Oracle claim itself rests on the sample.
+  the Oracle claim itself rests on the sample. **§7.10.9 makes this the larger of
+  the two debts**: three more tunes fail the gate than the sample could see.
+
+#### 7.10.9 The first debt was not in the rung it sat behind (SETTLED)
+
+``Comic_Bakery``'s divergence reproduces at **20 frames**, not the 300 the debt was
+recorded at, so bisecting it costs four seconds a build. It survives ``framefuse``,
+``framemath``, ``framestack``, ``frameptr`` and ``_pair_tables`` each disabled in
+turn, and disappears with ``frameproc.repolish`` disabled, then with ``_prune``
+alone. Delta-debugging the 75 prune drops -- an allowance counter, binary-searched
+for the flip -- names drop **#72, ``x = a`` in ``sub_7F03``**, whose uses are
+``m_8D92[x]`` and ``m_8DF1[x]`` eight statements later feeding ``sid.v3.freq_lo``:
+register ``$D40E``, the one the gate reports. Printing the backward walk shows the
+live set ``['x']`` above the two uses and **empty** at the definition, with a
+``for y in $04..$00`` between them.
+
+**The defect.** ``_Flow.stmt`` (``frameproc.py:1630``) builds a loop's live-in from
+the back-edge fixpoint and the body, and lets the exit successor's set in only
+through ``brk``. A ``loop`` leaves only by ``brk``, so that is complete for one; a
+``for`` falls out of its own bottom and carried nothing. Every name live after a
+``for`` and untouched inside it was therefore dead at its definition, and ``_Prune``
+deleted it. One line -- ``out |= live`` before the counter discard, which stays
+because the ``for`` defines the counter on entry and so kills it for everyone above.
+
+**Corpus.** 624 tunes built with and without: **611 emit byte-identical text**. Of
+the 13 that move, ``Comic_Bakery`` goes to ``None`` at its full 9450 frames, and
+``Asterix_and_the_Magic_Cauldron`` and ``Commando_High-Score`` stop **faulting under
+evaluation** (``switch goto target $83A3 outside the observed set``, ``unobserved
+$0CFF reached``) and gate clean. The other ten gate exactly as before. Hermetic
+suite 2258 passed, 492 skipped, and ``tests/test_frameprog.py`` gains a hand-built
+proc that fails without the fix on ``check_locals``, which is how the same defect
+surfaces when the pruned name has no later definition at all.
+
+**What it does not settle.** Three tunes fail Gate FP for reasons this does not
+touch, all identical before and after: ``720_Degrees`` at frame 225 in ``v1.ord``,
+``Rambo_First_Blood_Part_II`` at frame 0 in ``v1.ord`` (``got=None``), and
+``Dribbling`` at frame 0 in ``v1.lww``. ``Dribbling`` no longer refuses from
+``check_locals`` as §7.9.1 records -- it builds at HEAD and diverges instead --
+so that note is stale in its cause and stands in its conclusion. None of the three
+was in the 28-tune sample, which is the second debt arriving as evidence rather
+than as a caveat: **the full-corpus Gate FP sweep is owed before any claim about
+the emitted program is corpus-wide**, and it is the natural baseline for item 1,
+which changes emission for real.
+
+**Item 1 is unblocked and is next.** Preparing it fixed three things worth
+recording ahead of the work. The order belongs to the store node, not to the
+pack: ``unpack`` reads the pack's operands ``commuted`` on purpose, so operand
+order cannot carry write order without a pass silently flipping it, and the two
+forms already appear in emitted text meaning the same thing -- reusing them would
+reinterpret every committed ``.frameprog.txt``. ``_map_exprs``
+(``frameproc.py:890``) rebuilds a store as a bare 3-tuple and is the one central
+place a flag would be dropped; the other six ``("st", ...)`` rebuilders in the
+frameprog path are ``frameproc.py`` 426, 950, 1040, 1224 and 2660 and
+``movefwd.py:106``, all of which must carry ``s[3:]`` through. And deleting
+``_lww`` deletes the ``p.kind != "sid"`` clause with it, so non-SID pairs merge
+hi-first too: sound, since RAM order is invisible to the log and ``_bring`` and
+``_may_read`` still guard the values, but **unsized** -- §7.10.4's 76 counted
+``_lww`` refusals only.
 
 ### 7.8 The environment this branch was measured in
 
