@@ -2015,8 +2015,15 @@ def _pair_pack(n):
         if mh[0] != "mem" or mh[2] != 1 or ml[0] != "mem" or ml[2] != 1:
             continue
         (bl, il), (bh, ih) = addr_split(ml[1]), addr_split(mh[1])
-        if bl is not None and il is not None and _PAIRS.get(bl) == bh and il == ih:
+        if bl is None or bh is None or il != ih:
+            continue
+        if il is not None and _PAIRS.get(bl, (None,))[0] == bh:
             return bl, il
+        if il is None:
+            for lo2, (hi2, size) in _PAIRS.items():
+                o = bl - lo2
+                if 0 <= o < size and bh - hi2 == o:
+                    return lo2, ("const", o, 1)
     return None
 
 
@@ -2027,8 +2034,18 @@ def _pair_halves(a, b):
     if G.store_width(a[2]) != 1 or G.store_width(b[2]) != 1:
         return None
     (bl, il), (bh, ih) = addr_split(a[1]), addr_split(b[1])
-    if bl is None or il is None or _PAIRS.get(bl) != bh or il != ih:
+    if bl is None or bh is None or il != ih:
         return None
+    if il is not None and _PAIRS.get(bl, (None,))[0] != bh:
+        return None
+    if il is None:
+        for lo2, (hi2, size) in _PAIRS.items():
+            o = bl - lo2
+            if 0 <= o < size and bh - hi2 == o:
+                bl, il = lo2, ("const", o, 1)
+                break
+        else:
+            return None
     vl, vh = a[2], b[2]
     if vl[0] != "op" or vl[1] != "COPY" or vh[0] != "op" or vh[1] != "COPY":
         return None
