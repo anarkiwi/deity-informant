@@ -68,7 +68,8 @@ def test_pointer_pair_fuses_to_one_u16_state_field():
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
     assert " ptr_0002: u16" in text and "ptr_0002_lo" not in text
-    assert "ptr_0002:2 = (zext2(" in text and "mem[ptr_0002:2]" in text
+    assert "ptr_0002:2 = ((zext2(m_1505) << $08):2 | zext2(m_1501)):2" in text
+    assert "mem[ptr_0002:2]" in text
     assert _proof(prog, PTR).status == "fused"
     assert "pointer pair" in _proof(prog, PTR).lemma
     assert frameprog.dumps(frameprog.loads(text)) == text

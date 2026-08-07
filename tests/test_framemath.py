@@ -114,9 +114,9 @@ def test_lanes_in_two_tables_lift_without_merging_the_stores():
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
     assert "one u16 store" not in pr.lemma
-    assert "(zext2(m_1440[x]) << $08):2 | zext2(" in text
-    assert "ctr_1400[x] = trunc1(d0:2)" in text
-    assert "m_1440[x] = trunc1((d0:2 >> $08):2)" in text
+    assert " lo m_1440" in text  # the split pair rides the declaration (7.9 (a))
+    assert "d0:2 = (ctr_1400[x]:2 + $0037):2" in text
+    assert "ctr_1400[x]:2 = d0:2" in text
 
 
 def test_the_sid_pair_fuses_off_the_lifted_word():
@@ -408,8 +408,9 @@ def test_lanes_three_bytes_apart_lift_but_never_merge():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (SLO, SLO + 3)
     assert "one u16 store" not in pr.lemma
-    assert "trunc1(d0:2)" in text and "trunc1((d0:2 >> $08):2)" in text
-    assert ":2 = d0:2" not in text  # no merged word store across a 3-byte stride
+    assert " lo m_1403" in text  # the declared pair splits back to the true cells
+    assert "d0:2 = (ctr_1400[x]:2 + $0037):2" in text
+    assert "ctr_1400[x]:2 = d0:2" in text
 
 
 # ---- a definition the statement list does not make ---------------------------------
@@ -472,7 +473,7 @@ def test_a_step_wearing_lane_shape_does_not_become_a_lane():
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
     assert "carry(" not in text and "w0 = m_1480[y]" in text
-    assert "(zext2(m_1440[x]) << $08):2 | zext2(w1)):2 + zext2(w0)):2" in text
+    assert "d0:2 = (m_1400[x]:2 + zext2(w0)):2" in text
 
 
 def _lane_terms():

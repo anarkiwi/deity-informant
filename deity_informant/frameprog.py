@@ -198,6 +198,124 @@ def _init_copies(model, decls):
     return origins, [_init_proof(pc, *v) for pc, v in sites.items()], census
 
 
+def _decl_pairs(decls):
+    """``{lo base: hi base}`` off the declared roles, the ONE pair registry."""
+    return {d["base"]: d["role"][1] for d in decls if d.get("role") and d["role"][0] == "lo"}
+
+
+def _pack_witness(n, bases):
+    """``(lo, hi)`` where ``n`` packs two declared non-adjacent byte columns."""
+    got = frameproc._le_bytes(n)
+    if got is None or got[0][0] != "mem" or got[1][0] != "mem":
+        return None
+    (bl, il), (bh, ih) = frameproc.addr_split(got[0][1]), frameproc.addr_split(got[1][1])
+    if bl is None or il is None or il != ih or bh == bl + 1:
+        return None
+    return (bl, bh) if bl in bases and bh in bases else None
+
+
+def _pair_tables(procs, decls):
+    """Declare the split lo/hi table pairs the value graph packs (7.9 (a)).
+
+    A pack over two declared non-adjacent columns at one index is the witness
+    that they are one u16 datum; the roles land on the decls, so the registry
+    rides the data section and the parser rebuilds it from there."""
+    bases = {d["base"]: d for d in decls if d.get("role") is None}
+    votes, words, veto = {}, set(), set()
+
+    def walk(n, in_addr=False):
+        if n[0] == "mem":
+            if n[2] == 2:
+                b = frameproc.addr_split(n[1])[0]
+                if b is not None:
+                    words.add(b)
+            walk(n[1], True)
+        elif n[0] == "op":
+            got = _pack_witness(n, bases)
+            if got is not None:
+                if in_addr:
+                    veto.add(got)
+                else:
+                    votes.setdefault(got[0], set()).add(got[1])
+            for c in n[2]:
+                walk(c, in_addr)
+
+    for _e, _pa, _r, stmts in procs:
+        for stmt in framefuse.stmts_of(stmts):
+            for x in frameproc._stmt_exprs(stmt):
+                walk(x)
+    vetoed = {b for pr in veto for b in pr}
+    pairs = {}
+    his = set()
+    for lo, hs in sorted(votes.items()):
+        (hi,) = hs if len(hs) == 1 else (None,)
+        if hi is None or hi in his or lo in words or hi in words or lo == hi:
+            continue
+        if lo in vetoed or hi in vetoed:
+            continue
+        pairs[lo] = hi
+        his.add(hi)
+        bases[lo]["role"] = ("lo", hi)
+        bases[hi]["role"] = ("hi", lo)
+    return pairs
+
+
+def _adjoin_pairs(stmts, pairs, regions):
+    """Bring each pair's half stores together so the renderer writes one word.
+
+    The hi store moves up past statements that neither touch its cells nor
+    rebind its value's locals; the SID stores crossed keep their own order."""
+    for i, stmt in enumerate(stmts):
+        for b in frameproc._stmt_bodies(stmt):
+            _adjoin_pairs(b, pairs, regions)
+    i = 0
+    while i < len(stmts):
+        got = _half_at(stmts[i], pairs)
+        if got is None:
+            i += 1
+            continue
+        lo, idx, v = got
+        j = _hi_partner(stmts, i, pairs[lo], idx, v, regions)
+        if j is None:
+            i += 1
+            continue
+        stmts.insert(i + 1, stmts.pop(j))
+        i += 2
+
+
+def _half_at(s, pairs):
+    """``(lo, index, value)`` where ``s`` stores a pair's lo half."""
+    if s[0] != "st" or s[2][0] != "op" or s[2][1] != "COPY":
+        return None
+    base, idx = frameproc.addr_split(s[1])
+    if base not in pairs or idx is None:
+        return None
+    return base, idx, s[2][2][0]
+
+
+def _hi_partner(stmts, i, hi, idx, v, regions):
+    """The movable hi-half store's position, else None (docs/frameprog.md 7.9)."""
+    at = (hi, idx, 0, 1, 0)
+    locs = frameproc._locset(v)
+    for j in range(i + 1, min(i + 5, len(stmts))):
+        s = stmts[j]
+        if s[0] == "st":
+            base, ji = frameproc.addr_split(s[1])
+            want = ("op", "COPY", (("op", "INT_RIGHT", (v, ("const", 8, 1)), 2),), 1)
+            if base == hi and ji == idx and s[2] == want:
+                return j
+            if frameproc.overlaps(at, frameproc.store_reach(s, regions)):
+                return None
+            if frameproc.reads(frameproc._stmt_exprs(s), at, regions):
+                return None
+            continue
+        if s[0] != "asg" or s[1] in locs:
+            return None
+        if frameproc.reads((s[2],), at, regions):
+            return None
+    return None
+
+
 def program(model):
     """The frame program of a committed block model (entry translation, rungs a-f)."""
     decls = getattr(model, "data_decls", None)
@@ -215,6 +333,9 @@ def program(model):
     frameproc.repolish(procs, model.play, regions)
     state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
     frameproc.repolish(procs, model.play, regions)
+    pairs = _pair_tables(procs, decls)
+    for _e2, _pa2, _r2, stmts2 in procs:
+        _adjoin_pairs(stmts2, pairs, regions)
     proofs = stack_proofs + math_proofs + proofs
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
@@ -257,7 +378,7 @@ def dumps(prog):
     data_out, _cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
-    body.extend(frameproc.render_lines(prog.procs, prog.resolved))
+    body.extend(frameproc.render_lines(prog.procs, prog.resolved, _decl_pairs(prog.data_decls)))
     to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))

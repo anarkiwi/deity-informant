@@ -1985,8 +1985,52 @@ def _memref(addr, sz=1, res=_NORES):
     return body + sidprog._wsuf(sz)
 
 
+_PAIRS = {}  # render-scoped: lo table base -> hi table base, from the decl roles
+
+
+def _pair_pack(n):
+    """``(lo base, index)`` where ``n`` packs a declared lo/hi table pair."""
+    if not _PAIRS or n[0] != "op" or n[1] != "INT_OR" or n[3] != 2 or len(n[2]) != 2:
+        return None
+    for hi, lo in (n[2], n[2][::-1]):
+        if hi[0] != "op" or hi[1] != "INT_LEFT" or hi[2][1] != ("const", 8, 1):
+            continue
+        mh, ml = hi[2][0], lo
+        if mh[0] == "op" and mh[1] == "INT_ZEXT":
+            mh = mh[2][0]
+        if ml[0] == "op" and ml[1] == "INT_ZEXT":
+            ml = ml[2][0]
+        if mh[0] != "mem" or mh[2] != 1 or ml[0] != "mem" or ml[2] != 1:
+            continue
+        (bl, il), (bh, ih) = addr_split(ml[1]), addr_split(mh[1])
+        if bl is not None and il is not None and _PAIRS.get(bl) == bh and il == ih:
+            return bl, il
+    return None
+
+
+def _pair_halves(a, b):
+    """``(lo base, index, word value)`` where ``a``/``b`` store one pair datum."""
+    if not _PAIRS or a[0] != "st" or b[0] != "st":
+        return None
+    if G.store_width(a[2]) != 1 or G.store_width(b[2]) != 1:
+        return None
+    (bl, il), (bh, ih) = addr_split(a[1]), addr_split(b[1])
+    if bl is None or il is None or _PAIRS.get(bl) != bh or il != ih:
+        return None
+    vl, vh = a[2], b[2]
+    if vl[0] != "op" or vl[1] != "COPY" or vh[0] != "op" or vh[1] != "COPY":
+        return None
+    v, h = vl[2][0], vh[2][0]
+    if h[0] != "op" or h[1] != "INT_RIGHT" or h[2][1] != ("const", 8, 1) or h[2][0] != v:
+        return None
+    return bl, il, v
+
+
 def _fmt(n, res=_NORES):
     k = n[0]
+    got = _pair_pack(n)
+    if got is not None:
+        return "%s[%s]:2" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
     if k == "const":
         return sidprog._hex(n[1], n[2])
     if k == "loc":
@@ -2045,8 +2089,17 @@ class _Printer:
         self.line("}", 0)
 
     def seq(self, stmts, d):
-        for s in stmts:
-            self.stmt(s, d)
+        i = 0
+        while i < len(stmts):
+            got = None if i + 1 >= len(stmts) else _pair_halves(stmts[i], stmts[i + 1])
+            if got is not None:
+                lo, idx, v = got
+                text = "%s[%s]:2 = %s" % (sidprog._addr_name(lo), self.e(idx), self.e(v))
+                self.line(text, d + 1)
+                i += 2
+                continue
+            self.stmt(stmts[i], d)
+            i += 1
 
     def _cases(self, head, cases, d):
         self.line(head, d)
@@ -2198,25 +2251,55 @@ def _le_bytes(n):
     return None
 
 
-def _stable_row(addr, env, k, at, regions):
+def _clear_path(uenv, at, denv, k, rd, regions):
+    """No statement between the definition and the use may write ``rd``.
+
+    The use's scope chain climbs to the definition's list; every top-level
+    statement crossed must be an ``asg`` or a store proven off the range, and a
+    compound crossed is a wall (its bodies may store anywhere)."""
+    env, pos = uenv, at
+    while True:
+        for j in range(k + 1 if env is denv else 0, pos):
+            s = env.lst[j]
+            if s[0] == "asg":
+                continue
+            if s[0] != "st" or overlaps(rd, store_reach(s, regions)):
+                return False
+        if env is denv:
+            return True
+        if env.outer is None:
+            return False
+        env, pos = env.outer
+
+
+def _same_defs(names, uenv, at, denv, k):
+    """Every name resolves to one definition from both points, ENTRY included."""
+    for m in sorted(names):
+        a = uenv.lookup_joined(m, at)
+        b = denv.lookup_joined(m, k)
+        if a is ENTRY or b is ENTRY:
+            if a is not b:
+                return False
+            continue
+        if a is None or b is None or (id(a[0].lst), a[1]) != (id(b[0].lst), b[1]):
+            return False
+    return True
+
+
+def _stable_row(addr, uenv, at, denv, k, regions):
     """``addr`` where the byte it read at ``k`` still reads the same at ``at``.
 
-    The row is wholly const (a store cannot move it) or nothing between wrote
-    it, and the index's locals are defined as they were, so the traced value
-    may stand in for the spill."""
+    The row is wholly const (a store cannot move it) or no statement between
+    wrote it, and the index's locals resolve to the same definitions from both
+    points, so the traced value may stand in for the spill."""
     vb, vi = addr_split(addr)
     if vb is None:
         return None
     sp = span(vb, vi, regions)
     if not all(regions.const_at(a) for a in range(vb, vb + sp + 1)):
-        rd = (vb, vi, sp, 2, 0)
-        for j in range(k + 1, at):
-            s = env.lst[j]
-            if s[0] == "asg":
-                continue
-            if s[0] != "st" or overlaps(rd, store_reach(s, regions)):
-                return None
-    if vi is not None and any(env.at(m, k) != env.at(m, at) for m in _locset(vi)):
+        if not _clear_path(uenv, at, denv, k, (vb, vi, sp, 2, 0), regions):
+            return None
+    if vi is not None and not _same_defs(_locset(vi), uenv, at, denv, k):
         return None
     return addr
 
@@ -2232,44 +2315,58 @@ def _side_addr(node, env, at, regions):
         got = env.cell(base, at, regions)
         if got is None or got[0] is not env or got[2][0] != "mem" or got[2][2] != 1:
             return node[1]
-        return _stable_row(got[2][1], env, got[1], at, regions) or node[1]
+        return _stable_row(got[2][1], env, at, got[0], got[1], regions) or node[1]
     if node[0] != "loc" or env is None or regions is None:
         return None
     got = env.lookup_joined(node[1], at)
-    if got is None or got is ENTRY or got[2] is None or got[0] is not env:
+    if got is None or got is ENTRY or got[2] is None:
         return None
     if got[2][0] != "mem" or got[2][2] != 1:
         return None
-    return _stable_row(got[2][1], env, got[1], at, regions)
+    return _stable_row(got[2][1], env, at, got[0], got[1], regions)
 
 
-def _fold_word(n, env, at, regions):
+def _fold_word(n, env, at, regions, in_addr=False):
     """One little-endian word read for its two byte reads, the 6502's only spelling.
 
     ``hi<<8 | lo`` over ``mem[b+1+i]``/``mem[b+i]`` is ``mem[b+i]:2`` -- the same
     two cells, loaded pure -- for any base and one shared index, a volatile source
-    excluded since ``iota`` pins each of its reads (docs/frameprog.md 7.9)."""
+    excluded since ``iota`` pins each of its reads (docs/frameprog.md 7.9). An
+    address position folds only the plain adjacent shape, whose spelling rung (f)
+    already reads; a value position also traces spills and normalizes a
+    non-adjacent pack onto its columns for the pair rendering."""
     got = _le_bytes(n)
     if got is None:
         return n
-    la = _side_addr(got[0], env, at, regions)
-    ha = _side_addr(got[1], env, at, regions)
+    if in_addr:
+        if got[0][0] != "mem" or got[1][0] != "mem":
+            return n
+        la, ha = got[0][1], got[1][1]
+    else:
+        la = _side_addr(got[0], env, at, regions)
+        ha = _side_addr(got[1], env, at, regions)
     if la is None or ha is None:
         return n
     (bl, il), (bh, ih) = addr_split(la), addr_split(ha)
-    if bl is None or bh != bl + 1 or il != ih:
+    if bl is None or bh is None or il != ih:
         return n
     reach = 1 + (0 if il is None else E.mask(loc_width(il)))
-    if any(bl <= v <= bl + reach for v in sidprog._VOLS):
+    if any(min(bl, bh) <= v <= max(bl, bh) + reach for v in sidprog._VOLS):
         return n
-    return ("mem", la, 2)
+    if bh == bl + 1:
+        return ("mem", la, 2)
+    if in_addr:
+        return n
+    shl = ("op", "INT_LEFT", (("op", "INT_ZEXT", (("mem", ha, 1),), 2), ("const", 8, 1)), 2)
+    return ("op", "INT_OR", (shl, ("op", "INT_ZEXT", (("mem", la, 1),), 2)), 2)
 
 
-def _fold_expr(n, env, at, regions):
-    kids = _kids(n)
-    if kids:
-        n = _rebuild(n, [_fold_expr(c, env, at, regions) for c in kids])
-    return _fold_word(n, env, at, regions)
+def _fold_expr(n, env, at, regions, in_addr=False):
+    if n[0] == "mem":
+        n = ("mem", _fold_expr(n[1], env, at, regions, True), n[2])
+    elif n[0] == "op":
+        n = ("op", n[1], tuple(_fold_expr(c, env, at, regions, in_addr) for c in n[2]), n[3])
+    return _fold_word(n, env, at, regions, in_addr)
 
 
 def _word_of(vl, vh):
@@ -2351,8 +2448,8 @@ def _fold_pair_at(stmts, i, regions):
     return False
 
 
-def _fold_words(stmts, regions, outer=None, cyclic=False):
-    env = Defs(stmts, outer, cyclic)
+def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
+    env = Defs(stmts, outer, cyclic, foreign if outer is None else None)
     for i, s in enumerate(stmts):
         stmts[i] = _map_exprs(s, lambda x, _i=i: _fold_expr(x, env, _i, regions))
         for b in _stmt_bodies(stmts[i]):
@@ -2513,8 +2610,12 @@ def repolish(procs, play, regions=None):
         pruned = _prune(info)
         inlined = _inline(info)
         factored = False
-        for stmts in info.procs.values():
-            _fold_words(stmts, regions)
+        gotos = {
+            e: {s[1] for _v, _i, s in envs(st) if s[0] == "goto"} for e, st in info.procs.items()
+        }
+        for e, stmts in info.procs.items():
+            foreign = frozenset(t for e2, ts in gotos.items() if e2 != e for t in ts)
+            _fold_words(stmts, regions, foreign=foreign)
             factored |= _factor_ifs(stmts, stmts)
         if not (pruned or inlined or factored):
             break
@@ -2522,9 +2623,18 @@ def repolish(procs, play, regions=None):
         _tidy_ifs(stmts)
 
 
-def render_lines(procs, resolved=_NORES):
-    """frameprog text lines for analysed (or parsed) procedures."""
-    printer = _Printer(resolved)
-    for entry, params, rets, stmts in procs:
-        printer.proc(entry, stmts, params, rets)
-    return printer.out
+def render_lines(procs, resolved=_NORES, pairs=None):
+    """frameprog text lines for analysed (or parsed) procedures.
+
+    ``pairs`` (lo table base -> hi table base, off the decl roles) scopes the
+    split-pair rendering: a pack over a declared pair reads ``lo[i]:2`` and its
+    half-store pair writes it, the byte spelling staying the parsed form."""
+    _PAIRS.clear()
+    _PAIRS.update(pairs or {})
+    try:
+        printer = _Printer(resolved)
+        for entry, params, rets, stmts in procs:
+            printer.proc(entry, stmts, params, rets)
+        return printer.out
+    finally:
+        _PAIRS.clear()
