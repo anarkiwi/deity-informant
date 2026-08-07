@@ -2304,6 +2304,36 @@ def _stable_row(addr, uenv, at, denv, k, regions):
     return addr
 
 
+def _side_val(node, env, at):
+    """The value a pack side carries, traced through one local definition."""
+    if node[0] != "loc" or env is None:
+        return node, env, at
+    got = env.lookup_joined(node[1], at)
+    if got is None or got is ENTRY or got[2] is None:
+        return node, env, at
+    return got[2], got[0], got[1]
+
+
+def _untrunced(lo, hi, env, at):
+    """The word a pack of its own two truncs rebuilds: ``hi:lo`` of ``V`` is ``V``.
+
+    Both sides trace through one local each; the word's locals must resolve to
+    the same definitions from the pack as from both truncs, or the value moved."""
+    vl, le, lk = _side_val(lo, env, at)
+    vh, he, hk = _side_val(hi, env, at)
+    if vl[0] != "op" or vl[1] != "COPY" or vh[0] != "op" or vh[1] != "COPY":
+        return None
+    v, h = vl[2][0], vh[2][0]
+    if h[0] != "op" or h[1] != "INT_RIGHT" or h[2][1] != ("const", 8, 1) or h[2][0] != v:
+        return None
+    if loc_width(v) != 2 or _reads_mem(v) or _reads_vol(v):
+        return None
+    names = _locset(v)
+    if not _same_defs(names, env, at, le, lk) or not _same_defs(names, env, at, he, hk):
+        return None
+    return v
+
+
 def _side_addr(node, env, at, regions):
     """The byte address a pack side reads, traced through one spill or local."""
     if node[0] == "mem" and node[2] == 1:
@@ -2338,6 +2368,10 @@ def _fold_word(n, env, at, regions, in_addr=False):
     got = _le_bytes(n)
     if got is None:
         return n
+    if not in_addr:
+        whole = _untrunced(got[0], got[1], env, at)
+        if whole is not None:
+            return whole
     if in_addr:
         if got[0][0] != "mem" or got[1][0] != "mem":
             return n
