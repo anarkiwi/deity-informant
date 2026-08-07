@@ -340,7 +340,8 @@ def program(model):
             _adjoin_pairs(stmts2, pairs, regions)
         if repr(procs) == before:
             break
-    proofs = stack_proofs + math_proofs + proofs + [framestack.drop_sp(procs, model.play)]
+    proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
+    proofs.append(framestack.drop_sp(procs, model.play))
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(

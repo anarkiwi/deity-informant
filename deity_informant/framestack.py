@@ -303,8 +303,9 @@ def _sp_net(stmts, off, sp):
             if d is None:
                 return None
             off = (off + d) & 0xFF  # sp walks its byte: -$02 is +$FE
-        elif k in ("ret", "label", "goto", "cont", "brk", "unobs") and off != 0:
-            return None
+        elif k in ("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"):
+            if off != 0:
+                return None
         elif k == "if":
             a = _sp_net(s[3], off, sp)
             if a is None or a != _sp_net(s[4], off, sp):
@@ -315,6 +316,100 @@ def _sp_net(stmts, off, sp):
                 if _sp_net(b, off, sp) != off:
                     return None
     return off
+
+
+_PAGE1 = range(0x0100, 0x0200)
+
+
+def _push_val(s):
+    """``(cell, value)`` of a constant byte store to a stack-page cell."""
+    if s[0] != "st" or s[1][0] != "const" or s[2][0] != "const" or s[2][2] != 1:
+        return None
+    return (s[1][1], s[2][1]) if s[1][1] in _PAGE1 else None
+
+
+def _trick_window(lst, i, sp):
+    """``(positions, target)`` of a constant RTS trick led by the push at ``i``.
+
+    Two constant pushes to adjacent stack cells, the -2 displacement, and the
+    ret it flows into, nothing between touching the cells, ``sp`` or control:
+    the machine reads PCL at the lower cell and PCH above, and lands one past."""
+    first = _push_val(lst[i])
+    if first is None:
+        return None
+    cells = {first[0]: first[1]}
+    keep = [i]
+    disp = None
+    for j in range(i + 1, min(i + 8, len(lst))):
+        s = lst[j]
+        if s[0] == "ret":
+            if disp is None or len(cells) != 2:
+                return None
+            lo_cell = min(cells)
+            if max(cells) != lo_cell + 1:
+                return None
+            target = ((cells[max(cells)] << 8) | cells[lo_cell]) + 1
+            return keep + [disp, j], target & 0xFFFF
+        if s[0] == "asg" and s[1] == sp:
+            if disp is not None or _sp_delta(s[2], sp) != -2 % 256:
+                return None
+            disp = j
+            continue
+        got = _push_val(s)
+        if got is not None and len(cells) < 2:
+            cells[got[0]] = got[1]
+            keep.append(j)
+            continue
+        if s[0] not in ("asg", "st"):
+            return None
+        if s[0] == "st" and _push_val(s) is None and s[1][0] == "const" and s[1][1] in _PAGE1:
+            return None
+        if s[0] == "asg" and s[1] == sp:
+            return None
+    return None
+
+
+def lift_rts_trick(procs):
+    """A constant RTS trick becomes the goto it is (docs/frameprog.md 7.9).
+
+    The push pair, the displacement and the ret are one dispatch: control lands
+    at the pushed word plus one, which the evaluator resolves through the same
+    map the machine path read. The procedure then balances, and rung (d0')
+    drops ``sp`` with no further rule; a ret carrying declared returns stays."""
+    sp = frameproc._SP
+    out = []
+    for _e, _pa, rets, stmts in procs:
+        if rets:
+            continue
+        out += _lift_tricks(stmts, sp)
+    return out
+
+
+def _lift_tricks(stmts, sp):
+    proofs = []
+    for s in stmts:
+        for b in frameproc._stmt_bodies(s):
+            proofs += _lift_tricks(b, sp)
+    i = 0
+    while i < len(stmts):
+        got = _trick_window(stmts, i, sp)
+        if got is None:
+            i += 1
+            continue
+        positions, target = got
+        stmts[positions[-1]] = ("dgoto", ("const", target, 2))
+        for j in sorted(positions[:-1], reverse=True):
+            del stmts[j]
+        proofs.append(
+            Proof(
+                target,
+                "rts",
+                "resolved",
+                (target,),
+                "rts trick: the push pair and the displacement are goto ($%04X)" % target,
+            )
+        )
+    return proofs
 
 
 def drop_sp(procs, play):

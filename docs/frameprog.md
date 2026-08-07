@@ -2306,10 +2306,15 @@ procedure is *balanced*: zero net displacement (mod 256 -- ``- $02`` is
 agreeing, because the evaluator matches call frames by ``r[sp]`` and an
 RTS-trick's whole dispatch is its displacement into the ret. Unbalanced or
 computed ``sp``, a raw call, or an unresolved stack access refuses, and the
-``sp`` proof names the procedures that keep it. Next: the RTS-trick's pushed
-cells are stores whose only reader is the modeled dispatch, so with the
-dispatch's evidence in hand the pushes and the displacement can leave too;
-computed ``sp`` (TXS-era players) wants the same value-set treatment as any
+``sp`` proof names the procedures that keep it. **The constant RTS trick is lifted:** the push pair, the
+displacement and the ret are one dispatch -- control lands at the pushed word
+plus one -- so they become ``goto ($xxxx)``, resolved through the same map the
+evaluator's machine path read; the procedure then balances and ``sp`` drops
+with no further rule, the ``rts`` proof naming the target. Still to come: the
+data-driven trick (a ``dgoto`` on the traced word with the observed targets as
+its ``switch goto``), and computed ``sp`` (TXS-era players), which wants the
+symbolic-displacement generalization -- ``ENTRY-sp + k`` states, spills proven
+undisturbed by the cell walk -- and then the value-set treatment like any
 index.
 
 ### 7.8 The environment this branch was measured in
