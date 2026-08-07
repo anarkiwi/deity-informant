@@ -238,16 +238,19 @@ def test_lint_rejects_dangling_local():
         frameprog.lint(_LINT_DOC % ("", "(y + $01)"))
 
 
-def _counter_loop_model():
+def _counter_loop_blocks(op0=0x60, tail=(), staged=None):
+    """``x`` counting $02..$00 over ``m_1500``, then ``tail``; ``staged`` is ``a`` at entry."""
     dec = ("op", "INT_ADD", (E.reg(1), ("const", 0xFF, 1)), 1)
     sign = ("op", "INT_AND", (dec, ("const", 0x80, 1)), 1)
     cond = ("op", "INT_NOTEQUAL", (sign, ("const", 0, 1)), 1)
     arr = ("op", "INT_ADD", (("op", "INT_ZEXT", (E.reg(1),), 2), ("const", 0x1500, 2)), 2)
     init = _regs()
     init[1] = ("const", 2, 1)
+    if staged is not None:
+        init[0] = ("const", staged, 1)
     body = _regs()
     body[1] = dec
-    blocks = {
+    return {
         (0x1000, 0xA2): Block(0x1000, 0xA2, [0x1000], [], ("goto", 0x1005), init),
         (0x1005, 0x99): Block(
             0x1005,
@@ -257,9 +260,12 @@ def _counter_loop_model():
             ("br", 0, 0x1005, 0x100A, cond, None),
             body,
         ),
-        (0x100A, 0x60): Block(0x100A, 0x60, [0x100A], [], ("rts",), _regs()),
+        (0x100A, op0): Block(0x100A, op0, [0x100A], list(tail), ("rts",), _regs()),
     }
-    return _model(blocks)
+
+
+def _counter_loop_model():
+    return _model(_counter_loop_blocks())
 
 
 def test_counter_loop_renders_as_for_range():
@@ -267,6 +273,18 @@ def test_counter_loop_renders_as_for_range():
     assert "for x in $02..$00 {" in text
     assert "m_1500[x] = $01" in text
     assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_a_local_live_across_a_for_loop_is_not_pruned():
+    """A for leaves by its own bottom, so its exit live set reaches its head that way.
+
+    Where a loop leaves only by ``brk``, which carries the exit set for it, a for
+    carried none: every name live after one and untouched inside it was pruned."""
+    tail = (("st", ("const", 0xD404, 2), E.reg(0)), ("st", ("const", 0xD40B, 2), E.reg(0)))
+    text = frameprog.emit(_model(_counter_loop_blocks(0x8D, tail, staged=0x07)))
+    assert "for x in $02..$00 {" in text
+    assert "a = $07" in text and "sid.v1.ctrl = a" in text and "sid.v2.ctrl = a" in text
+    frameprog.lint(text)
 
 
 def test_parameter_and_return_inference():

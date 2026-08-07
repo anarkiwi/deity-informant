@@ -1639,7 +1639,8 @@ class _Flow:
             self.brk.pop()
             self.cont.pop()
             if k == "for":
-                out.discard(s[1])
+                out |= live  # a for leaves by its own bottom: a loop leaves only by brk
+                out.discard(s[1])  # the counter the for defines on entry is dead above
             return out | head
         if k == "label":
             self.labmap[s[1]] = self.labmap.get(s[1], set()) | live
