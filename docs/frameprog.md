@@ -2310,12 +2310,19 @@ computed ``sp``, a raw call, or an unresolved stack access refuses, and the
 displacement and the ret are one dispatch -- control lands at the pushed word
 plus one -- so they become ``goto ($xxxx)``, resolved through the same map the
 evaluator's machine path read; the procedure then balances and ``sp`` drops
-with no further rule, the ``rts`` proof naming the target. Still to come: the
-data-driven trick (a ``dgoto`` on the traced word with the observed targets as
-its ``switch goto``), and computed ``sp`` (TXS-era players), which wants the
-symbolic-displacement generalization -- ``ENTRY-sp + k`` states, spills proven
-undisturbed by the cell walk -- and then the value-set treatment like any
-index.
+with no further rule, the ``rts`` proof naming the target. **Computed sp is lifted through its brackets:** the balance
+walk is symbolic -- states ``(base, offset)``, a save (``st CELL = sp`` to a
+cell saved once and read only to restore) records the state, a restore returns
+to it whatever ran between, and a constant ``TXS`` opens an ``(abs, v)`` base
+-- so the TSX/STX..LDX/TXS context save and the constant stack switch both
+dissolve entirely, save store and restore included, the cells being private
+and RAM invisible to the record. **The data-driven trick lifts too** (pure
+push values undisturbed through the window become ``goto ((hi:lo) + 1)``),
+but its end-to-end validation is blocked on a pre-existing model gap: a
+multi-target RTS dispatch faults the evaluator's resolver identically with or
+without the lift (``ret target outside the observed set``), so the landing
+roots' reachability is its own investigation. A ``TXS`` from unresolved data
+still refuses, named -- the value-set treatment when a specimen demands it.
 
 ### 7.8 The environment this branch was measured in
 

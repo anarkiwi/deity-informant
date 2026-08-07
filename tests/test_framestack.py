@@ -128,6 +128,45 @@ def test_the_rts_trick_is_the_goto_it_always_was():
     assert sp.status == "resolved" and "no reader" in sp.lemma
 
 
+def test_a_tsx_save_txs_restore_bracket_dissolves():
+    """The context-save idiom: sp spilled, moved, restored -- all of it fabric.
+
+    The bracket cell is saved once and read only to restore, the symbolic walk
+    returns to the entry state whatever ran between, and the datum that rode
+    the stack arrives as the one word it was (docs/frameprog.md 7.9)."""
+    a = G.Asm(G.ORG)
+    a.i("TSX").i("STX", "abs", G.CNT + 0x10)
+    a.i("LDA", "abs", LO).i("PHA")
+    a.i("LDA", "abs", HI).i("PHA")
+    a.i("PLA").i("STA", "abs", OUT + 1)
+    a.i("PLA").i("STA", "abs", OUT)
+    a.i("LDX", "abs", G.CNT + 0x10).i("TXS").i("RTS")
+    _m, prog, text = _build("spsave", a, {LO: 0x40, HI: 0x02})
+    body = text[text.index("sub_") :]
+    assert "sp" not in body and "m_01" not in body
+    assert "sid.v1.ctrl = s1" in body and "sid.v1.attack_decay = m_1401" in body
+    (sp,) = [p for p in prog.proofs if p.kind == "sp"]
+    assert sp.status == "resolved"
+
+
+def test_a_txs_stack_switch_with_restore_dissolves():
+    """A constant TXS opens a new stack; restored before ret, it is still fabric."""
+    a = G.Asm(G.ORG)
+    a.i("TSX").i("STX", "abs", G.CNT + 0x10)
+    a.i("LDX", "imm", 0x80).i("TXS")
+    a.i("LDA", "abs", LO).i("PHA")
+    a.i("LDA", "abs", HI).i("PHA")
+    a.i("PLA").i("STA", "abs", OUT + 1)
+    a.i("PLA").i("STA", "abs", OUT)
+    a.i("LDX", "abs", G.CNT + 0x10).i("TXS").i("RTS")
+    _m, prog, text = _build("spswitch", a, {LO: 0x41, HI: 0x03})
+    body = text[text.index("sub_") :]
+    assert "sp" not in body and "m_01" not in body and "m_0080" not in body
+    assert "sid.v1.ctrl = s1" in body and "sid.v1.attack_decay = m_1401" in body
+    (sp,) = [p for p in prog.proofs if p.kind == "sp"]
+    assert sp.status == "resolved"
+
+
 # ---- the premise, stated ----------------------------------------------------------
 CELL = 0x01FD
 

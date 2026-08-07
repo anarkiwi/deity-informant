@@ -231,16 +231,19 @@ def drop_state(state, proofs, symbols, name_of):
 _RAW_CALLS = frozenset(("call", "callb", "dcall", "swc"))
 
 
-def _sp_uses(stmts, calls, sp):
-    """True where a statement needs ``sp`` beyond updating or passing it.
+def _sp_uses(stmts, calls, sp, saves):
+    """True where a statement needs ``sp`` beyond updating, saving or passing it.
 
     A raw call keeps the machine stack alive; a pcall's plain ``sp`` argument is
-    the threading the caller may drop with the callee, recorded in ``calls``."""
+    the threading the caller may drop with the callee, recorded in ``calls``; a
+    save-bracket store of ``sp`` to a private cell is fabric, not a consumer."""
     for s in stmts:
         k = s[0]
         if k in _RAW_CALLS:
             return True
         if k == "asg" and s[1] == sp:
+            continue
+        if k == "st" and s[1][0] == "const" and s[1][1] in saves and s[2] == ("loc", sp):
             continue
         if k == "pcall":
             if sp in s[3]:
@@ -255,23 +258,25 @@ def _sp_uses(stmts, calls, sp):
             if sp in frameproc._locset(x):
                 return True
         for b in frameproc._stmt_bodies(s):
-            if _sp_uses(b, calls, sp):
+            if _sp_uses(b, calls, sp, saves):
                 return True
     return False
 
 
-def _strip_sp(stmts, spat, sp):
-    """Remove the ``sp`` updates and the threading argument, bodies included."""
+def _strip_sp(stmts, spat, sp, saves=frozenset()):
+    """Remove the ``sp`` updates, saves and threading argument, bodies included."""
     out = []
     for s in stmts:
         if s[0] == "asg" and s[1] == sp:
+            continue
+        if s[0] == "st" and s[1][0] == "const" and s[1][1] in saves and s[2] == ("loc", sp):
             continue
         if s[0] == "pcall":
             k = spat.get(s[1])
             args = [a for i, a in enumerate(s[2]) if i != k]
             s = ("pcall", s[1], args, [r for r in s[3] if r != sp])
         for b in frameproc._stmt_bodies(s):
-            b[:] = _strip_sp(b, spat, sp)
+            b[:] = _strip_sp(b, spat, sp, saves)
         out.append(s)
     return out
 
@@ -290,50 +295,99 @@ def _sp_delta(v, sp):
     return None
 
 
-def _sp_net(stmts, off, sp):
-    """Net ``sp`` displacement through the list, None where dropping cannot hold.
+def _saves(stmts, sp):
+    """Capture cells eligible as sp brackets: saved once, read only to restore.
 
-    Every point control may leave or enter -- a ret, a label, a goto, a break
-    or continue -- must sit at rest (offset zero), and joining arms must agree,
-    so a dropped ``sp`` leaves the evaluator's frame matching untouched."""
+    A save is ``st CELL = sp``; its restore is ``sp = mem[CELL]``. Any other
+    access that may touch the cell -- resolvable or not -- disqualifies it, so
+    the bracket pair is provably private before the walk trusts it."""
+    cells, dirty = {}, set()
+    all_stmts = list(FF.stmts_of(stmts))
+    for s in all_stmts:
+        if s[0] == "st" and s[1][0] == "const" and s[2] == ("loc", sp):
+            cells[s[1][1]] = cells.get(s[1][1], 0) + 1
+    for s in all_stmts:
+        if s[0] == "st" and s[1][0] == "const" and s[2] == ("loc", sp) and s[1][1] in cells:
+            continue
+        if s[0] == "asg" and s[1] == sp and s[2][0] == "mem" and s[2][1][0] == "const":
+            continue  # the restore is the bracket's own reader
+        for addr, width in _accesses(s):
+            base, span = _span(addr)
+            if base is None:
+                dirty.update(cells)
+                continue
+            for c in cells:
+                if base <= c <= base + span + width - 1:
+                    dirty.add(c)
+    return frozenset(c for c, n in cells.items() if c not in dirty and n == 1)
+
+
+def _sp_state(stmts, st, sp, saves, caps):
+    """Symbolic ``sp`` state through the list, None where dropping cannot hold.
+
+    States are ``(base, offset)``: displacement moves the offset (mod 256), a
+    save records the state under its cell, a restore returns to it whatever ran
+    between, and a constant load opens a new base (the TXS stack switch). Every
+    point control may leave or enter must sit at the entry state."""
     for s in stmts:
         k = s[0]
-        if k == "asg" and s[1] == sp:
+        if k == "st" and s[1][0] == "const" and s[2] == ("loc", sp) and s[1][1] in saves:
+            caps[s[1][1]] = st
+        elif k == "asg" and s[1] == sp:
             d = _sp_delta(s[2], sp)
-            if d is None:
+            if d is not None:
+                st = (st[0], (st[1] + d) & 0xFF)
+            elif s[2][0] == "mem" and s[2][1][0] == "const" and s[2][1][1] in caps:
+                st = caps[s[2][1][1]]
+            elif s[2][0] == "const":
+                st = ("abs", s[2][1] & 0xFF)
+            else:
                 return None
-            off = (off + d) & 0xFF  # sp walks its byte: -$02 is +$FE
         elif k in ("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"):
-            if off != 0:
+            if st != ("entry", 0):
                 return None
         elif k == "if":
-            a = _sp_net(s[3], off, sp)
-            if a is None or a != _sp_net(s[4], off, sp):
+            a = _sp_state(s[3], st, sp, saves, caps)
+            if a is None or a != _sp_state(s[4], st, sp, saves, caps):
                 return None
-            off = a
+            st = a
         elif k in ("loop", "for", "opsw", "swg", "callb"):
             for b in frameproc._stmt_bodies(s):
-                if _sp_net(b, off, sp) != off:
+                if _sp_state(b, st, sp, saves, caps) != st:
                     return None
-    return off
+    return st
 
 
 _PAGE1 = range(0x0100, 0x0200)
 
 
 def _push_val(s):
-    """``(cell, value)`` of a constant byte store to a stack-page cell."""
-    if s[0] != "st" or s[1][0] != "const" or s[2][0] != "const" or s[2][2] != 1:
+    """``(cell, value expression)`` of a pure byte store to a stack-page cell."""
+    if s[0] != "st" or s[1][0] != "const" or G.store_width(s[2]) != 1:
         return None
-    return (s[1][1], s[2][1]) if s[1][1] in _PAGE1 else None
+    if s[2][0] not in ("const", "loc", "mem"):
+        return None
+    return (s[1][1], s[2]) if s[1][1] in _PAGE1 else None
+
+
+def _disturbs_vals(s, names, reads):
+    """The interval statement may change what the pushed values read."""
+    if s[0] == "asg":
+        return s[1] in names
+    reach = frameproc.store_reach(s, None)
+    for (rb, ri, rm), rw in reads:
+        if frameproc.overlaps(reach, (rb, ri, frameproc.span(rb, ri, None, rm), rw, rm)):
+            return True
+    return False
 
 
 def _trick_window(lst, i, sp):
-    """``(positions, target)`` of a constant RTS trick led by the push at ``i``.
+    """``(positions, target expr)`` of an RTS trick led by the push at ``i``.
 
-    Two constant pushes to adjacent stack cells, the -2 displacement, and the
-    ret it flows into, nothing between touching the cells, ``sp`` or control:
-    the machine reads PCL at the lower cell and PCH above, and lands one past."""
+    Two pure pushes to adjacent stack cells, the -2 displacement, and the ret
+    it flows into, nothing between touching the cells, the values, ``sp`` or
+    control: the machine reads PCL at the lower cell, PCH above, and lands one
+    past the word, so the ret is a goto on it (docs/frameprog.md 7.9)."""
     first = _push_val(lst[i])
     if first is None:
         return None
@@ -348,8 +402,16 @@ def _trick_window(lst, i, sp):
             lo_cell = min(cells)
             if max(cells) != lo_cell + 1:
                 return None
-            target = ((cells[max(cells)] << 8) | cells[lo_cell]) + 1
-            return keep + [disp, j], target & 0xFFFF
+            lo, hi = cells[lo_cell], cells[max(cells)]
+            if lo[0] == "const" and hi[0] == "const":
+                target = ("const", (((hi[1] << 8) | lo[1]) + 1) & 0xFFFF, 2)
+            else:
+                zlo = ("op", "INT_ZEXT", (lo,), 2)
+                zhi = ("op", "INT_ZEXT", (hi,), 2)
+                shl = ("op", "INT_LEFT", (zhi, ("const", 8, 1)), 2)
+                pack = ("op", "INT_OR", (shl, zlo), 2)
+                target = ("op", "INT_ADD", (pack, ("const", 1, 2)), 2)
+            return keep + [disp, j], target
         if s[0] == "asg" and s[1] == sp:
             if disp is not None or _sp_delta(s[2], sp) != -2 % 256:
                 return None
@@ -362,9 +424,13 @@ def _trick_window(lst, i, sp):
             continue
         if s[0] not in ("asg", "st"):
             return None
-        if s[0] == "st" and _push_val(s) is None and s[1][0] == "const" and s[1][1] in _PAGE1:
+        if s[0] == "st" and s[1][0] == "const" and s[1][1] in _PAGE1:
             return None
-        if s[0] == "asg" and s[1] == sp:
+        names = set().union(*(frameproc._locset(v) for v in cells.values()))
+        reads = [r for v in cells.values() for r in frameproc.mem_refs(v) if r[0] is not None]
+        if any(r[0] is None for v in cells.values() for r in frameproc.mem_refs(v)):
+            return None
+        if _disturbs_vals(s, names, reads):
             return None
     return None
 
@@ -397,16 +463,17 @@ def _lift_tricks(stmts, sp):
             i += 1
             continue
         positions, target = got
-        stmts[positions[-1]] = ("dgoto", ("const", target, 2))
+        stmts[positions[-1]] = ("dgoto", target)
         for j in sorted(positions[:-1], reverse=True):
             del stmts[j]
+        where = "$%04X" % target[1] if target[0] == "const" else "the pushed word + 1"
         proofs.append(
             Proof(
-                target,
+                target[1] if target[0] == "const" else 0,
                 "rts",
                 "resolved",
-                (target,),
-                "rts trick: the push pair and the displacement are goto ($%04X)" % target,
+                (target[1],) if target[0] == "const" else (),
+                "rts trick: the push pair and the displacement are goto (%s)" % where,
             )
         )
     return proofs
@@ -420,11 +487,14 @@ def drop_sp(procs, play):
     An unresolved stack access, a raw call or a computed ``sp`` keeps it -- the
     RTS-trick's pushed cells stay as the stores they are either way."""
     sp = frameproc._SP
-    need, calls_of = {}, {}
+    need, calls_of, saves_of = {}, {}, {}
     for e, _pa, rets, stmts in procs:
         calls = []
-        need[e] = sp in rets or _sp_uses(stmts, calls, sp) or _sp_net(stmts, 0, sp) != 0
+        saves = _saves(stmts, sp)
+        balanced = _sp_state(stmts, ("entry", 0), sp, saves, {}) == ("entry", 0)
+        need[e] = sp in rets or _sp_uses(stmts, calls, sp, saves) or not balanced
         calls_of[e] = calls
+        saves_of[e] = saves
     changed = True
     while changed:
         changed = False
@@ -437,7 +507,7 @@ def drop_sp(procs, play):
         return Proof(play, "sp", "refused", tuple(kept), why)
     spat = {e: (pa.index(sp) if sp in pa else None) for e, pa, _r, _s in procs}
     for k, (e, pa, rets, stmts) in enumerate(procs):
-        stmts[:] = _strip_sp(stmts, spat, sp)
+        stmts[:] = _strip_sp(stmts, spat, sp, saves_of[e])
         procs[k] = (e, [p for p in pa if p != sp], [r for r in rets if r != sp], stmts)
     why = "sp: no reader; the updates, the parameter and the threading dropped"
     return Proof(play, "sp", "resolved", (), why)
