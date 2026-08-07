@@ -2481,6 +2481,10 @@ only byte *stores* its reach bound could not rule out, so ``unnamed_addr``'s 925
 is a different population from §7.9.1's 1139 and the two are not comparable. The
 column that *is* comparable is ``narrow_sink``.
 
+The table is the sweep as it stood at ``db5c642``, over 617 tunes with 7
+refusing; §7.10.6 unblocked those and §7.10.8 restates the two largest rows over
+the current 624. The shape of the finding is unchanged by that.
+
 | signature | sites | tunes | what survived |
 |---|---:|---:|---|
 | ``unnamed_addr`` | 9257 | 604 | an access whose address names no declared datum |
@@ -2836,12 +2840,71 @@ What is left, in the order it costs:
 5. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
    new machinery. Its cost is why it is last, not its size.
 
-Above all of these sits the census: **``word_pack`` at 4472 sites over 545 tunes,
-and ``carry_val`` at 5524 over 543, are each an order of magnitude larger than
-the ``narrow_sink`` residue the ladder has been measuring, and most of the 4293
-``hi_byte``/``lo_byte`` sites read off a word the pack never made.** Nothing in
-the list above touches
-them. The next metric should be the census, not the lane column.
+Above all of these sits the census, restated over the current 624-tune sweep:
+**``word_pack`` at 4583 sites over 552 tunes, and ``carry_val`` at 5594 over 550,
+are each an order of magnitude larger than the ``narrow_sink`` residue the ladder
+has been measuring, and most of the 4402 ``hi_byte``/``lo_byte`` sites read off a
+word the pack never made.** Nothing in the list above touches them. The next
+metric should be the census, not the lane column.
+
+#### 7.10.8 The next step, and why it is two steps
+
+The list above is ordered by cost and the paragraph closing it says the list is
+optimising the wrong quantity. Both are true, and they sequence rather than
+conflict.
+
+**Take item 1 now.** The word store carrying its own byte-emission order
+(§7.10.4) is index-free, its soundness argument is one line -- ``frameval.py:532``
+emits ascending unconditionally, so a store emitting in program order reproduces
+the log for *any* index -- and it **deletes a premise** rather than discharging
+one. That is the cheapest kind of progress the ladder admits, it is worth 120 of
+337 stores and 18 tunes to zero, and unlike items 2-5 it does not first need a
+proof obligation constructed for it. It is also the last item whose value does
+not depend on the metric question below.
+
+**Then build the metric, before items 2-5.** Items 2, 3, 4 and 5 have ceilings of
+26, 65, 56 and 107 stores: **254 together, if every one of them lands in full.**
+Against that, ``word_pack`` alone is 4583 sites over 552 of 624 tunes, and
+**no counter anywhere in the tree reports it** -- the number exists only because
+``lift_residue`` reads it off the emitted program. The blocking matrix says these
+are not independent classes either: 3998 def-use edges run from a ``word_pack``
+site into a ``hi_byte``/``lo_byte`` site, against 4402 such sites in all, so the
+three are largely **one** residue -- a word read as bytes because the pack never
+made it -- and 891 edges run ``raw_sp`` -> ``unnamed_addr``, which is §7.10.3's
+finding arriving from the other end.
+
+So the honest reading is that items 2-5 are small against what the census says is
+left -- 254 stores where the census counts 30,460 sites, which are different
+units and deliberately not divided here, but not so different that three orders
+of magnitude between them is a unit artefact -- and that the ladder cannot tell
+whether work on ``word_pack`` helps at all, because the 89.89% rate is computed
+from ``narrow_sink``'s 381 and moves by a fraction of a point whatever happens to
+the other 30,079 sites. **A rate over the census is the prerequisite for choosing
+among items 2-5 on evidence rather than on cost.** Whether that rate should be a
+``word_pack`` completion
+figure, a def-use-edge closure, or a per-tune "wears no machine shape" predicate
+is the first thing to decide, and it is a decision about what the branch is
+claiming, not a measurement -- which is why this note stops here and does not
+pick one.
+
+**Two debts stand against any of it**, both found while landing G1 and neither
+caused by it:
+
+- ``MUSICIANS/G/Galway_Martin/Comic_Bakery`` **fails ``frameval.gate_fp``**, with
+  ``Divergence(frame=0, section='v2.lww', pos=0, got=(14,208), want=(14,108))``
+  -- identical at 300 frames and at its full 9450. Checked out at ``db5c642`` it
+  gives the same divergence from a program whose text hashes identically
+  (``a004c7a1f9eaab6b``), so it predates every change in §7.10.6 and §7.10.3 and
+  is not caused by them. It sits in ``v2.lww``, which is exactly the gate item 1
+  proposes to delete, so it should be understood *before* item 1 lands rather
+  than after: item 1's argument is that the ``_lww`` premise is unnecessary, and
+  a tune already diverging inside that section is either the counter-example to
+  that or the first thing it fixes.
+- Gate FP after G1 was verified over a **28-tune sample** (every 26th of the
+  cache, plus ``Commando``, ``Wizball``, ``Comic_Bakery`` and ``Krakout``) and
+  the suite's own gate tests, **not over all 624**. The emitted text was shown
+  unmoved corpus-wide, which is the stronger property for G1 specifically, but
+  the Oracle claim itself rests on the sample.
 
 ### 7.8 The environment this branch was measured in
 
