@@ -2369,6 +2369,53 @@ without the lift (``ret target outside the observed set``), so the landing
 roots' reachability is its own investigation. A ``TXS`` from unresolved data
 still refuses, named -- the value-set treatment when a specimen demands it.
 
+#### 7.9.1 Where the lift stands, measured (`tools/fuse_measure.py`, 617 tunes)
+
+**89.85%** of every store landing on a freq/pulse/cutoff lane is already a word
+store -- **3356** word against **379** byte-wide -- and **458 of 617 tunes
+(74.2%) carry no byte-wide lane store at all**. §7.7's residue was 536 before
+this generalization. ``plain_lane`` is **0 corpus-wide**: rung (d) widens every
+unindexed lane store there is, without exception, and that class is closed.
+
+What remains, in the order it costs:
+
+**(1) Seven tunes reach no frame program at all, and the branch did that.**
+``ABC_Music``, ``Abstrack``, ``Abroxus``, ``Bal``, ``Acceleration-mix``,
+``Gheton_Khasvatit`` and ``10_Days_and_No_Longer`` raise ``IndexError`` in
+``frameproc.Defs._name_walk``, reached by the fold path
+(``_fold_word`` → ``_side_addr`` → ``_stable_row`` → ``_same_defs`` →
+``lookup_joined``). Bisected: they build at the branch point ``cd3be3d`` and
+break at **``551be1b``** ("a split lo/hi table pair is one u16 datum"). It is
+not ``_adjoin_pairs`` -- disabling that leaves the fault -- but the fold the
+pair registry newly reaches. The shape of it is plain in the source: the
+statement scan already clamps with ``min(bound, len(self.lst))``, and the very
+next line then reads ``oenv.lst[obound]`` with no such clamp. Clamping it
+equally builds all four tunes tried (``ABC_Music`` 814 lines, ``Abstrack`` 775,
+``Bal`` 863, ``Abroxus`` 876). **Not applied**: the clamp stops the fault, but
+where ``obound`` is stale against a rewritten list it trades a loud crash for a
+quiet mislookup, so it owes the Oracle over the corpus before it is believed.
+
+**(2) ``unproven``: 337 stores over 141 tunes**, 89% of the residue -- an
+indexed lane store whose index the model cannot resolve. A long tail, worst
+``Mindblast_tune_2`` at 11, then 4-8 apiece. **227 of the 379 (60%) are
+``partnered``**, both halves stored under one index: those merge into a word
+store *without proving anything about the index*, which is the largest lever
+here and the cheapest.
+
+**(3) ``notaligned``: 42 stores over 24 tunes** (worst ``Comic_Bakery``, 5).
+The index resolves but lands off a pair lo, so widening would write the
+following register. Correctly refused -- this is the floor, not a blocker.
+
+**(4) The uncertainty that actually bounds the claim: ``unnamed``, 1139 stores
+over 342 tunes.** Addresses ``addr_split`` cannot name and ``addr_bits`` cannot
+rule out of reaching ``$D400``. It dwarfs the known residue, and it is why only
+**225 tunes (36.5%)** are *provably* complete where 458 look complete. 856 more
+were ruled out, so the machinery works; naming the rest is the open work, and
+until it is done "complete" is unclaimable for over half the corpus.
+
+Unrelated and pre-existing: ``Dribbling`` refuses at HEAD from ``check_locals``
+(``sub_A000: local 't16' used before definition``).
+
 ### 7.8 The environment this branch was measured in
 
 > SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
