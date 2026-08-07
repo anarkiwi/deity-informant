@@ -327,6 +327,24 @@ _COMPUTED = frozenset(("dgoto", "dbr", "igoto", "swg"))  # a jump no list of got
 ENTRY = object()  # "nothing is in force, so the name still holds its value at entry"
 
 
+def _never_binds(stmts, name):
+    """No statement of the forest may bind ``name``: it holds its entry value.
+
+    An ``asg``/``for``/``pcall`` return binds it by name; a ``call``, ``dcall``
+    or ``swc`` clobbers registers unseen; a jump or a label binds nothing."""
+    for s in stmts:
+        k = s[0]
+        if k in ("call", "dcall", "swc"):
+            return False
+        if k in ("asg", "for") and s[1] == name:
+            return False
+        if k == "pcall" and name in s[3]:
+            return False
+        if any(not _never_binds(b, name) for b in _stmt_bodies(s)):
+            return False
+    return True
+
+
 def _label_defs(s):
     """``(names, label pcs)`` that ``s`` may define, or None where a call binds unseen.
 
@@ -354,17 +372,20 @@ class _Jumps:
     ``computed`` is any jump whose targets no list of gotos names -- an indirect
     goto, a computed branch, a switch goto -- and it refuses every label join."""
 
-    __slots__ = ("computed", "srcs")
+    __slots__ = ("computed", "srcs", "labels")
 
     def __init__(self, root):
         self.computed = False
         self.srcs = {}
+        self.labels = set()
         self._scan(root)
 
     def _scan(self, env):
         for k, s in enumerate(env.lst):
             if s[0] == "goto":
                 self.srcs.setdefault(s[1], []).append((env, k))
+            elif s[0] == "label":
+                self.labels.add(s[1])
             elif s[0] in _COMPUTED:
                 self.computed = True
             for b in _stmt_bodies(s):
@@ -378,11 +399,11 @@ class Defs:
     every lookup carries the reader's position and answers with the definer's. A
     definition the list does not make itself is recorded valueless (``hidden_defs``)."""
 
-    __slots__ = ("defs", "wild", "outer", "cyclic", "lst", "jumps")
+    __slots__ = ("defs", "wild", "outer", "cyclic", "lst", "jumps", "foreign")
 
-    def __init__(self, lst, outer=None, cyclic=False):
+    def __init__(self, lst, outer=None, cyclic=False, foreign=None):
         self.defs, self.wild, self.jumps = {}, [], None
-        self.outer, self.cyclic, self.lst = outer, cyclic, lst
+        self.outer, self.cyclic, self.lst, self.foreign = outer, cyclic, lst, foreign
         for k, s in enumerate(lst):
             if s[0] == "asg":
                 self.defs.setdefault(s[1], []).append((k, s[2]))
@@ -466,40 +487,45 @@ class Defs:
             for j in range(len(b))
         )
 
-    def _crossable(self, k, cell, regions, labels):
+    def _crossable(self, k, cell, regions, labels, writes=None):
         """True where statement ``k`` cannot write ``cell``; label entries collected.
 
         ``_writes`` with labels held out for the caller: a label writes nothing,
         but control may enter there, so ``cell`` owes a proof that every
-        enumerable entry reaches the same store (docs/frameprog.md 7.7 (3))."""
+        enumerable entry reaches the same store (docs/frameprog.md 7.7 (3)). A
+        ``pcall`` crosses only where the callee summary rules the cell out."""
         s = self.lst[k]
         if s[0] == "label":
             labels.add(s[1])
             return True
-        if s[0] in _WILD or s[0] == "pcall":
+        if s[0] == "pcall":
+            return writes is not None and not writes.may_write(s[1], cell)
+        if s[0] in _WILD:
             return False
         if s[0] == "st" and self._hits(k, cell, regions):
-            return False
+            return writes is not None and writes.store_misses(self, k, s, cell)
         return all(
-            Defs(b, (self, k), s[0] in _CYCLIC)._crossable(j, cell, regions, labels)
+            Defs(b, (self, k), s[0] in _CYCLIC)._crossable(j, cell, regions, labels, writes)
             for b in _stmt_bodies(s)
             for j in range(len(b))
         )
 
-    def _cell_walk(self, cell, bound, regions, labels):
+    def _cell_walk(self, cell, bound, regions, labels, writes=None):
         """One backward walk for the store in force, labels transparent-and-collected."""
         for k in range(min(bound, len(self.lst)) - 1, -1, -1):
             s = self.lst[k]
             if s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1:
                 return (self, k, s[2])
-            if not self._crossable(k, cell, regions, labels):
+            if not self._crossable(k, cell, regions, labels, writes):
                 return None
         if self.outer is None or (
             self.cyclic
-            and any(not self._crossable(k, cell, regions, labels) for k in range(len(self.lst)))
+            and any(
+                not self._crossable(k, cell, regions, labels, writes) for k in range(len(self.lst))
+            )
         ):
             return None
-        return self.outer[0]._cell_walk(cell, self.outer[1], regions, labels)
+        return self.outer[0]._cell_walk(cell, self.outer[1], regions, labels, writes)
 
     def _name_dirty(self, name, labels):
         """The cyclic body may rebind ``name``; its labels join like any crossed."""
@@ -531,11 +557,15 @@ class Defs:
             return (oenv, obound, None)  # the counter binds the body from its own seat
         return oenv._name_walk(name, obound, labels)
 
-    def _entries(self):
-        """The root's label-entry index, built once per root environment."""
+    def _root(self):
         root = self
         while root.outer is not None:
             root = root.outer[0]
+        return root
+
+    def _entries(self):
+        """The root's label-entry index, built once per root environment."""
+        root = self._root()
         if root.jumps is None:
             root.jumps = _Jumps(root)
         return root.jumps
@@ -545,17 +575,22 @@ class Defs:
 
         The join law (docs/frameprog.md 7.7 (3)): a definition survives a label
         only where each ``goto`` entering it arrives with the same definition in
-        force, to a fixpoint over the entry graph; a computed jump refuses all."""
+        force, to a fixpoint over the entry graph. A computed jump refuses all,
+        and so does a label another procedure's goto may target -- ``foreign``
+        is that set, and an unstamped root (None) trusts no label at all."""
         if got is None or not labels:
             return got
+        foreign = self._root().foreign
         jumps = self._entries()
-        if jumps.computed:
+        if jumps.computed or foreign is None:
             return None
         want = got if got is ENTRY else (id(got[0].lst), got[1])
         seen = set()
         while labels:
             pc = labels.pop()
             seen.add(pc)
+            if pc in foreign:
+                return None
             for env, k in jumps.srcs.get(pc, ()):
                 more = set()
                 sgot = walk(env, k, more)
@@ -565,20 +600,33 @@ class Defs:
         return got
 
     def lookup_joined(self, name, bound):
-        """``_lookup`` surviving labels every goto entry is proven to agree with."""
+        """``_lookup`` surviving labels every goto entry is proven to agree with.
+
+        A name the whole procedure cannot bind holds its entry value at every
+        point: jumps bind nothing, so no label, goto or computed dispatch can
+        carry another value in -- unless a foreign goto enters the procedure
+        itself, whose caller's value of the name arrives unseen."""
         labels = set()
         got = self._name_walk(name, bound, labels)
-        return self._verified(got, labels, lambda e, k, out: e._name_walk(name, k, out))
+        out = self._verified(got, labels, lambda e, k, o: e._name_walk(name, k, o))
+        if out is not None:
+            return out
+        root = self._root()
+        if root.foreign is None or not self._entries().labels.isdisjoint(root.foreign):
+            return None
+        return ENTRY if _never_binds(root.lst, name) else None
 
-    def cell(self, cell, bound, regions):
+    def cell(self, cell, bound, regions, writes=None):
         """``(env, index, value)`` of the byte store to ``cell`` in force at ``bound``.
 
         ``_lookup`` over memory rather than names: the store in force is the last
         statement before the read that may write the cell, labels joined as
         ``_verified`` requires."""
         labels = set()
-        got = self._cell_walk(cell, bound, regions, labels)
-        return self._verified(got, labels, lambda e, k, out: e._cell_walk(cell, k, regions, out))
+        got = self._cell_walk(cell, bound, regions, labels, writes)
+        return self._verified(
+            got, labels, lambda e, k, out: e._cell_walk(cell, k, regions, out, writes)
+        )
 
 
 def envs(stmts, outer=None, cyclic=False):

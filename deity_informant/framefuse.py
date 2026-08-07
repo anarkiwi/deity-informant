@@ -73,12 +73,13 @@ def _rebase(addr, old, new):
     return addr
 
 
-def _consts(idx, env, at, regions, mem0, params=None, entry=None, depth=8):
+def _consts(idx, env, at, ctx, depth=8):
     """Every value ``idx`` may take where the model proves them all, else None.
 
-    A constant *table* counts (Commando's ``LDY $14B5,X``), a written cell counts
-    through the store in force (``Defs.cell``), a join forks (``_fork``), and the
-    value at entry is the union over the call sites (``_Params``)."""
+    ``ctx`` is ``(regions, mem0, params, entry, foreign, writes)``. A constant
+    *table* counts, a written cell counts through the store in force
+    (``Defs.cell``), a join forks (``_fork``), an entry unions the call sites."""
+    regions, mem0, params, entry = ctx[0], ctx[1], ctx[2], ctx[3]
     while True:
         while idx[0] == "loc":
             got = env.lookup_joined(idx[1], at)
@@ -87,7 +88,7 @@ def _consts(idx, env, at, regions, mem0, params=None, entry=None, depth=8):
             if got is None:
                 return None
             if got[2] is None:
-                return _fork(idx, got[0], got[1], regions, mem0, params, entry, depth)
+                return _fork(idx, got[0], got[1], ctx, depth)
             env, at, idx = got
         n = idx
         if n[0] == "op" and n[1] == "INT_ZEXT":
@@ -105,13 +106,13 @@ def _consts(idx, env, at, regions, mem0, params=None, entry=None, depth=8):
         size = 1 if row is None else regions.avail(base)
         if size and all(regions.const_at(a) for a in range(base, base + size)):
             return frozenset(mem0[a] for a in range(base, base + size))
-        got = None if row is not None else env.cell(base, at, regions)
+        got = None if row is not None else env.cell(base, at, regions, ctx[5])
         if got is None:
             return None
         env, at, idx = got
 
 
-def _fork(n, env, k, regions, mem0, params, entry, depth):
+def _fork(n, env, k, ctx, depth):
     """The union of the values the join at ``env.lst[k]`` may leave in ``n``.
 
     An ``if`` forks per arm (docs/frameprog.md 7.7 (3)): the arms are the exact
@@ -128,11 +129,65 @@ def _fork(n, env, k, regions, mem0, params, entry, depth):
     out = set()
     for body in frameproc._stmt_bodies(s):
         sub = frameproc.Defs(body, (env, k), False)
-        ks = _consts(n, sub, len(body), regions, mem0, params, entry, depth - 1)
+        ks = _consts(n, sub, len(body), ctx, depth - 1)
         if ks is None:
             return None
         out |= ks
     return frozenset(out)
+
+
+class _MayWrite:
+    """Whether a procedure, or any procedure it calls, may store into one cell.
+
+    A ``pcall`` on a cell walk is a wall only where the callee may reach the
+    cell; a raw call binds unseen and stays one. A call cycle answers True."""
+
+    __slots__ = ("procs", "regions", "mem0", "memo", "depth")
+
+    def __init__(self, procs, regions, mem0):
+        self.procs = {e: stmts for e, _pa, _r, stmts in procs}
+        self.regions = regions
+        self.mem0 = mem0
+        self.memo = {}
+        self.depth = 0
+
+    def may_write(self, entry, cell):
+        key = (entry, cell)
+        if key in self.memo:
+            return self.memo[key]
+        self.memo[key] = True  # a cycle may write until the scan proves otherwise
+        self.memo[key] = got = self._scan(self.procs.get(entry), cell)
+        return got
+
+    def _scan(self, stmts, cell):
+        if stmts is None:
+            return True
+        at = (cell, frameproc.NOIDX, 0, 1, 0)
+        for s in stmts_of(stmts):
+            k = s[0]
+            if k == "st" and frameproc.overlaps(at, frameproc.store_reach(s, self.regions)):
+                return True
+            if k == "pcall" and self.may_write(s[1], cell):
+                return True
+            if k in ("call", "dcall", "swc"):
+                return True
+        return False
+
+    def store_misses(self, env, k, s, cell):
+        """The indexed byte store at ``env.lst[k]`` provably never lands on ``cell``.
+
+        Its own index resolved as any store's would be: the span rule bounds an
+        undeclared base at the full index width, but the values the index takes
+        can rule the cell out exactly. Re-entrant walks give up rather than spin."""
+        base, idx = _addr_split(s[1])
+        if base is None or idx is None or G.store_width(s[2]) != 1 or self.depth > 8:
+            return False
+        self.depth += 1
+        try:
+            ks = _consts(idx, env, k, (self.regions, self.mem0, None, None, None, self), 4)
+        finally:
+            self.depth -= 1
+        return ks is not None and all(base + v != cell for v in ks)
 
 
 class _Params:
@@ -142,10 +197,10 @@ class _Params:
     this pass rewrites, so the table is loaded while the positions still hold and
     only read back afterwards."""
 
-    __slots__ = ("calls", "regions", "mem0", "table", "busy", "filling")
+    __slots__ = ("calls", "regions", "mem0", "writes", "table", "busy", "filling")
 
-    def __init__(self, calls, regions, mem0):
-        self.calls, self.regions, self.mem0 = calls, regions, mem0
+    def __init__(self, calls, regions, mem0, writes=None):
+        self.calls, self.regions, self.mem0, self.writes = calls, regions, mem0, writes
         self.table, self.busy, self.filling = {}, set(), False
 
     def fill(self, procs):
@@ -171,7 +226,8 @@ class _Params:
         self.busy.add(key)
         out = set()
         for caller, env, at, arg in sites:
-            got = _consts(arg, env, at, self.regions, self.mem0, self, caller)
+            ctx = (self.regions, self.mem0, self, caller, None, self.writes)
+            got = _consts(arg, env, at, ctx)
             if got is None:
                 out = None
                 break
@@ -407,7 +463,7 @@ def _lww(p, idx, env, at, ctx):
     index the model cannot resolve may land the pair inside one of those."""
     if idx is None:
         return True
-    return ctx is not None and _lane_aligned(p, _consts(idx, env, at, *ctx))
+    return ctx is not None and _lane_aligned(p, _consts(idx, env, at, ctx))
 
 
 def _undisturbed(stmts, i, j, half, regions, env):
@@ -482,11 +538,13 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
     the wrong statement. ``taken`` is the partner a merge already accounted for."""
     count = 0 if mutate else 1
     regions = None if ctx is None else ctx[0]
+    foreign = ctx[4] if ctx is not None and outer is None else None
     env, sites, taken, stale = None, None, set(), True
     i = 0
     while i < len(stmts):
         if stale:
-            env, sites, stale = frameproc.Defs(stmts, outer, cyclic), _sites(stmts, p), False
+            env = frameproc.Defs(stmts, outer, cyclic, foreign)
+            sites, stale = _sites(stmts, p), False
             taken.clear()
         if i in taken:
             i += 1
@@ -520,7 +578,7 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         half = _store_half(s, p)
         widen = half is not None and p.kind == "sid"
         if widen and half[1] is not None:
-            ks = _consts(half[1], env, i, *ctx) if ctx is not None else None
+            ks = _consts(half[1], env, i, ctx) if ctx is not None else None
             widen = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
             p.indexed += count if widen else 0
             p.unproven += count if ks is None else 0
@@ -577,14 +635,28 @@ def _landings(model):
 
 
 def contexts(model, decls, procs):
-    """Per-procedure ``(regions, mem0, params, entry)`` with the call sites solved.
+    """Per-procedure ``(regions, mem0, params, entry, foreign)``, call sites solved.
 
-    RTS-trick landings are callers the graph cannot name, so they fold into
-    ``Calls.opaque`` and their parameters stay unknown (docs/frameprog.md 7.7 (4))."""
+    ``foreign`` is the goto targets every *other* procedure carries: a label among
+    them is an entry no local walk saw, refusing its join, and a procedure so
+    entered is opaque to the union, with the RTS landings (7.7 (4))."""
     regions = datadecl.Regions(decls)
-    params = _Params(frameproc.Calls(procs, model.play, _landings(model)), regions, model.mem0)
+    targets = {}
+    for e, _pa, _r, stmts in procs:
+        targets[e] = {s[1] for s in stmts_of(stmts) if s[0] == "goto"}
+    foreign = {
+        e: frozenset(t for e2, ts in targets.items() if e2 != e for t in ts) for e in targets
+    }
+    entered = {
+        e
+        for e, _pa, _r, stmts in procs
+        if any(s[0] == "label" and s[1] in foreign[e] for s in stmts_of(stmts))
+    }
+    calls = frameproc.Calls(procs, model.play, _landings(model) | entered)
+    writes = _MayWrite(procs, regions, model.mem0)
+    params = _Params(calls, regions, model.mem0, writes)
     params.fill(procs)
-    return {e: (regions, model.mem0, params, e) for e, _pa, _r, _s in procs}
+    return {e: (regions, model.mem0, params, e, foreign[e], writes) for e, _pa, _r, _s in procs}
 
 
 def apply_rung(model, decls, procs, state, symbols, name_of):

@@ -410,10 +410,23 @@ def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
 
 
 # ---- the label join: an entry proven to carry the same store (7.7 (3)) -----------
-def _cell_set(stmts, at):
-    env = frameproc.Defs(stmts)
+def _cell_set(stmts, at, foreign=frozenset()):
+    env = frameproc.Defs(stmts, foreign=foreign)
     idx = ("mem", ("const", 0x54EB, 2), 1)
-    return framefuse._consts(idx, env, at, datadecl.Regions(()), bytearray(0x10000))
+    ctx = (datadecl.Regions(()), bytearray(0x10000), None, None, frozenset(), None)
+    return framefuse._consts(idx, env, at, ctx)
+
+
+def test_a_label_a_foreign_goto_may_target_refuses_the_join():
+    """Another procedure's goto is an entry no local walk saw (Foolish_Maniacs)."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2, foreign=frozenset((0x2000,))) is None
+    assert _cell_set(stmts, 2, foreign=None) is None  # an unstamped root trusts no label
 
 
 def test_a_label_whose_every_goto_carries_the_same_store_is_no_wall():
@@ -478,12 +491,16 @@ def test_one_call_site_passing_a_mid_register_offset_refuses_the_widening():
 
 
 def test_a_bare_local_is_the_entry_value_only_clear_of_walls():
-    """ENTRY survives an unentered label; a cyclic body that may rebind refuses."""
-    top = frameproc.Defs([("label", 0x1000), ("ret", False)])
+    """ENTRY survives an unentered label; a rebinding back edge or a foreign entry refuses."""
+    lst = [("label", 0x1000), ("ret", False)]
+    top = frameproc.Defs(lst, foreign=frozenset())
     assert top.lookup_joined("y", 0) is frameproc.ENTRY
     assert top.lookup_joined("y", 2) is frameproc.ENTRY  # no goto enters the label
+    entered = frameproc.Defs(lst, foreign=frozenset((0x1000,)))
+    assert entered.lookup_joined("y", 2) is None  # a foreign goto brings its own y
     body = [("st", ("const", 0x1440, 2), ("loc", "y")), ("asg", "y", ("const", 1, 1))]
-    inner = frameproc.Defs(body, (frameproc.Defs([("loop", body)]), 0), True)
+    outer = frameproc.Defs([("loop", body)], foreign=frozenset())
+    inner = frameproc.Defs(body, (outer, 0), True)
     assert inner.lookup_joined("y", 0) is None  # the back edge may rebind it
 
 
@@ -492,9 +509,10 @@ def test_a_for_counter_binds_its_range_and_a_rebinding_body_refuses():
     body = [("st", ("op", "INT_ADD", (("loc", "x"), ("const", 0xD400, 2)), 2), ("const", 1, 1))]
     env = frameproc.Defs([("for", "x", 2, 0, body)])
     sub = frameproc.Defs(body, (env, 0), True)
-    got = framefuse._consts(("loc", "x"), sub, 1, datadecl.Regions(()), bytearray(0x10000))
+    ctx = (datadecl.Regions(()), bytearray(0x10000), None, None, frozenset(), None)
+    got = framefuse._consts(("loc", "x"), sub, 1, ctx)
     assert got == frozenset((0, 1, 2))
     rebound = body + [("asg", "x", ("const", 5, 1))]
     env = frameproc.Defs([("for", "x", 2, 0, rebound)])
     sub = frameproc.Defs(rebound, (env, 0), True)
-    assert framefuse._consts(("loc", "x"), sub, 1, datadecl.Regions(()), bytearray(0x10000)) is None
+    assert framefuse._consts(("loc", "x"), sub, 1, ctx) is None
