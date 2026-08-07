@@ -2416,6 +2416,335 @@ until it is done "complete" is unclaimable for over half the corpus.
 Unrelated and pre-existing: ``Dribbling`` refuses at HEAD from ``check_locals``
 (``sub_A000: local 't16' used before definition``).
 
+> **Superseded in four places by §7.10, which re-derived every bucket above from
+> the emitted program rather than from the rungs' own counters.** (1) is a stale
+> cache, not a bound. (2)'s ``partnered`` lever is worth 0 stores as stated and the
+> real lever is elsewhere. (3) is 62% register-window copies that need no widening
+> at all -- ``Comic_Bakery`` is 5 for 5 -- and is not the floor. (4) is 90.5% stack
+> and zero-page traffic hidden behind one def-use edge, not an addressing problem.
+> The counts stand; the labels did not.
+
+### 7.10 The residue read off the output, not off the rungs
+
+Every number in §7.9.1 is a rung's own count of what that rung looked at. That is
+the defect the section could not see: a counter incremented at a refusal site
+reports the shapes some rule was written to consider and is silent about
+everything else, so a generalization nobody wrote is invisible to all of them,
+and a bucket's one-word label -- ``notaligned`` says *irreducible* -- is an
+assertion no count can contradict. Re-derived from the emitted program, three of
+the four buckets turn out to be measuring something other than what they name,
+and the two largest machine artifacts left in the output are in none of them.
+
+Two instruments are committed with this section.
+
+**``tools/lift_residue.py`` -- mechanism-independent.** It reads the frame
+program and asks one question of every node: does this still wear a machine
+shape? A hand-packed ``hi<<8 | lo``, a high byte shifted out of a word, a
+comparison feeding arithmetic, a carry surviving as a value, a byte store to a
+16-bit register, an address naming no datum. Because it asks no rung anything, a
+rung that refused and a rung that was never written are equally visible. It
+clusters sites by an abstracted skeleton, ranks by tunes affected, and reads the
+def-use edges to emit a **blocking matrix** -- which residue feeds which -- so a
+root can be told from its cascade. Calibration: its ``narrow_sink`` count is
+**379**, exactly ``fuse_measure``'s independently-computed lane byte column.
+
+**``tools/lift_triage.py`` -- the rung-(d) bucket audit.** It re-walks
+``framefuse._visit``'s measure pass with the verdict spelled out instead of
+counted: the index's constant set, the registers it actually reaches, each one's
+lo/hi/8-bit role, the address shape ``addr_split`` refused and the definition
+behind it. It exists so a bucket can be argued with.
+
+#### 7.10.1 The census: the ladder measures one corner of one rung
+
+617 tunes, 259s over 32 workers, the same 7 refusals as §7.9.1 (1). The census
+counts **every access and every expression node**, where ``fuse_measure`` counts
+only byte *stores* its reach bound could not rule out, so ``unnamed_addr``'s 9257
+is a different population from §7.9.1's 1139 and the two are not comparable. The
+column that *is* comparable is ``narrow_sink``.
+
+| signature | sites | tunes | what survived |
+|---|---:|---:|---|
+| ``unnamed_addr`` | 9257 | 604 | an access whose address names no declared datum |
+| ``carry_val`` | 5524 | 543 | ``carry(..)`` as a value: the flag outlived the operation |
+| ``word_pack`` | 4472 | 545 | two byte columns still packed by hand into one word |
+| ``raw_sp`` | 2604 | 323 | the stack pointer survived: a procedure did not balance |
+| ``hi_byte`` | 2185 | 466 | a word's high byte extracted, so the word is read as bytes |
+| ``lo_byte`` | 2108 | 442 | likewise the low byte |
+| ``flag_bit`` | 1649 | 476 | a status bit recomputed as a mask-and-compare |
+| ``borrow`` | 892 | 359 | a comparison feeding arithmetic: a borrow chain, unfolded |
+| ``mod_addr`` | 741 | 91 | a modular ``zp,X`` address, so no row is nameable |
+| ``narrow_sink`` | 379 | 159 | a byte store to a 16-bit SID register |
+| ``shift_pair`` | 169 | 94 | a shift threaded across two byte columns |
+
+**``narrow_sink`` -- the entire subject of §7.7 and §7.9, the 379 the 89.85%
+is computed from -- is the second-smallest class in the output.** ``word_pack``
+is 4472 sites over 545 tunes, twelve times larger; §7.9's little-endian fold
+landed and ``_le_bytes`` is its shape, so these are what survived it, and no
+counter anywhere reports that number. ``carry_val`` is larger still. The ladder
+has been optimising the one class that has a metric.
+
+The blocking matrix says the classes are not independent:
+
+    word_pack    -> lo_byte 1940, hi_byte 1934, carry_val 192
+    raw_sp       -> unnamed_addr 890
+    unnamed_addr -> carry_val 430, flag_bit 59, narrow_sink 57, borrow 47
+    mod_addr     -> carry_val 90, word_pack 45, lo_byte 36, hi_byte 36
+
+3874 def-use edges run from a ``word_pack`` site into a ``hi_byte``/``lo_byte``
+site, against 4293 such sites in all: they are largely not three residues but
+one, read off a word the fold did not make. And ``raw_sp`` feeding 890
+``unnamed_addr`` is §7.10.3's finding arriving from the other end -- the stack
+surviving is *why* those addresses cannot be named.
+
+#### 7.10.2 ``notaligned`` is not a floor: it is a register-window copy
+
+``Comic_Bakery`` is the tune §7.9.1 (3) names as worst, at 5. All five, from
+``lift_triage``:
+
+    [window] sid.reg[x] = a
+        reaches $D400:lo $D401:hi $D402:lo $D403:hi $D404:byte $D405:byte $D406:byte
+    [window] sid.reg[(zext2(y) + $000E):2] = a
+        reaches $D40E:lo $D40F:hi $D410:lo $D411:hi $D412:byte ...
+
+Nothing here lands "off a pair lo". The index sweeps a **contiguous run of the
+register file**, and every 16-bit register the run touches it touches *both
+halves of*. ``Krakout`` and ``Trap`` are the shape at full size --
+``sid.reg[x] = m_E686[x]`` over ``$D400..$D418``, the whole shadow block blitted
+to the chip in one loop.
+
+``_lane_aligned`` (``framefuse.py:250``) asks "does every reaching index land on
+a pair lo?" and gets ``False``, which is true and beside the point. Its premise
+is that the store is a **lone lane half** needing the word completed around it;
+for a covering sweep that premise is simply false. There is nothing to widen
+because the word is already written entire.
+
+Corpus-wide the 42 split **26 ``window`` / 15 ``straddle`` / 1 ``offlane``**. Only
+the last 16 are anywhere near a floor, and ``straddle`` -- a run covering some
+pair by one half only -- deserves its own look before it is conceded.
+
+**The generalization: the covering-sweep rule.** An indexed store is not a lane
+half where the register set it reaches contains both halves of every pair it
+touches. Stated over the reached set, so it holds for any base, any index, any
+stride, and no shape of loop is named.
+
+**The proof obligation it owes, stated honestly.** The reached set ``_consts``
+returns is a *union over reaching definitions*, not a guarantee that every value
+occurs on every execution. Covering is therefore necessary and not sufficient: a
+set that came from an ``if`` join means the store writes *one* of those
+registers, and the pair is left half-written. The sufficient rule adds that the
+index is a loop counter sweeping exactly that range with no early exit -- which
+``_fork`` already distinguishes, since it binds a ``for`` counter to its range
+(``framefuse.py:126-128``) and unions an ``if`` per arm. The rule must consult
+which of the two produced the set. Measured: **22 of the 26 window sites sit in a
+cyclic body** and 4 do not, so the obligation is real but small, and the 4 are
+nameable individually. §7.7's ``$CA6E`` argument -- that widening such a store
+would put a spurious entry in an order-preserved section -- remains correct, and
+answers a question the sweep does not ask.
+
+#### 7.10.3 ``unnamed`` is one def-use edge, not an addressing problem
+
+§7.9.1 (4) calls this "the uncertainty that actually bounds the claim": 1139
+byte stores whose address ``addr_split`` cannot name and ``addr_bits`` cannot
+rule off ``$D400``, holding provable completeness to 225 tunes where 458 look
+complete. **1067 of the 1139 are a bare width-2 local** -- ``mem[t4:2] = ..``.
+Not a pointer: in **1064 of the 1067 the local has exactly one reaching
+assignment in its procedure**, and that assignment is an address the existing
+lattice rules out on sight.
+
+| class | n | the single assignment | ``addr_bits`` of it |
+|---|---:|---|---|
+| ``loc_stack`` | 711 | ``(zext2(sp) \| $0100):2`` | ``$01FF`` -- ruled out |
+| ``loc_zext`` | 320 | ``zext2((x - $03))`` | ``$00FF`` -- ruled out |
+| ``loc_mixed`` | 33 | ``(zext2(y) + $00A5):2`` | ``$FFFF`` -- needs G2 |
+| ``loc_param`` | 3 | none: ``pcall``-bound | ⊤ -- correctly unclaimed |
+
+711 of them are the 6502 hardware stack. 320 are zero-page indexed stores. **The
+bucket is 90.5% traffic that cannot reach a SID register at all**, and it is
+counted as possibly-SID because ``addr_bits`` (``frameproc.py:269-282``) has no
+``"loc"`` case and falls through to ``return m`` = ``$FFFF``. Every bare local
+address in the corpus is unrulable *by construction*, whatever it points at:
+
+    bare loc t1:2       addr_bits=$FFFF  may_reach_sid=True
+    zext2((x - $03))    addr_bits=$00FF  may_reach_sid=False
+    (zext2(sp)|$0100)   addr_bits=$01FF  may_reach_sid=False
+
+The bitmask lattice is adequate. It is not being *given* anything: ``addr_bits``
+is pure over the node and has no environment, while every other rule on this
+branch now reads the value graph. That gap is the branch's own name unfinished.
+
+**G1 -- the reach bound follows the value graph.** For a local address, the reach
+bound is the join of the reach bounds of its reaching definitions. The two proof
+obligations are already discharged: ``frameprog.check_locals``
+(``frameprog.py:119``) rejects a program using a local before definition, and all
+1064 have exactly one assignment, so there is no join to be unsound about and no
+redefinition to miss. ``pcall``-bound locals stay ⊤. Placement is a read-only env
+parameter on ``addr_bits``, threaded from ``frameproc.store_reach`` and
+``fuse_measure._may_reach_sid`` -- *not* a substitution rewrite in ``repolish``,
+which would delete ``t4:2`` from the emitted text and move Gate FP output.
+**Claims 1031 / 1139 (90.5%).**
+
+**G2 -- a carry rule for ``INT_ADD`` in ``addr_bits``.** ``a + b`` is bounded by
+``mtop(bits(a) + bits(b))``, ``mtop(x) = (1 << x.bit_length()) - 1``. Three lines,
+inside the existing lattice, no new domain. Run directly on the real address
+tuples it rules out **32 of 34**; the 2 misses need G1 to see through a local
+first, so the two compose. **Claims 67 / 1139 (5.9%).**
+
+Measured a second time and independently, by ``lift_triage`` following each
+address one def-use edge and re-asking ``addr_bits`` of the definition it finds:
+**1022 of the 1139 are ruled out**, 33 stay open pending G2, and 12 have no
+readable definition in their own statement list. Two instruments, two methods,
+1022 against 1031 -- the disagreement is the 9 stores whose definition sits in an
+enclosing list that ``Defs.at`` alone does not climb.
+
+**Together 1098 / 1139 (96.4%), and provable completeness goes 225 -> 448 of 617
+tunes** against 458 that look complete -- the gap the doc calls the bound on the
+whole claim closes to 10 tunes. Residue: 38 genuine pointer derefs over 12 tunes,
+plus the 3 ``pcall``-bound. The 38 are gated on resolving a ``zp,X`` index, i.e.
+on §7.10.5's problem, not on naming an address; rung (f) does not reach them and
+two strengthenings of it were measured at **0** additional resolutions.
+
+#### 7.10.4 ``partnered`` never was the lever; the store's byte order is
+
+§7.9.1 (2) calls ``partnered`` "the largest lever here and the cheapest" -- 227
+of 379 stores that "merge into a word store *without proving anything about the
+index*". **Measured: not one of them does.** All are refused, and 202 of 204 by
+a real premise rather than a gap.
+
+``_partnered`` (``fuse_measure.py:67-86``) is co-presence only, and over-counts
+three ways: the counted side keeps multiplicity where the partner side is a set
+(3 lo + 1 hi at one index scores 4, mergeable 2 -- which is why ``partnered`` is
+*odd* for ``Mindblast_tune_2``, impossible under any matched-pair reading); its
+scope is the procedure where ``_pair_at``'s is one statement list; and it applies
+no order, adjacency, hazard or interval test. The tight bound is **204 stores =
+102 pairs**, and the residue's independent size is **235 facts (102 pairs + 133
+singletons), not 337** -- the headline over-states the work by 30% for the same
+reason.
+
+The 102 leaders, by the guard that actually refused them: **76 ``_lww`` hi-first**
+(``framefuse.py:527``), 16 ``_bring``, 10 ``_may_read`` hazard.
+
+**The real lever is in the store form, and it is not an analysis at all.**
+``_pair_at`` never needed a resolved index -- it keys the partner on the
+*symbolic* index and merges with no ``_consts`` call. The index requirement
+enters at exactly one place: a **hi-first** pair must pass ``_lww``, because
+``frameval``'s ``stw`` emits its bytes ascending unconditionally
+(``frameval.py:532``, ``for j in range(op[5])``) and ``framelog.canonical``
+preserves that order inside the ord sections. So the premise is not about the
+index; it is about *emission order*, and the fix is to let the store state it:
+**a merged store that emits its two bytes in the order the program wrote them
+reproduces the log byte-for-byte for every possible index, so it owes no fact
+about the index.** One flag on the IR store node, ``reversed(range(..))`` in
+``frameval``, a spelling in the grammar, and the ``_lww`` gate goes.
+``_pack``'s existing ``hi_first`` argument (``framefuse.py:39``) already carries
+*operand evaluation* order; this is its missing twin for *write* order.
+
+**Sized: 60 of the 76 hi-first pairs also pass ``_bring`` (46 literally adjacent),
+so 120 of 337 residue stores (35.6%) over 43 tunes, 18 of which go to zero.
+Corpus 3356/379 (89.85%) -> 3416/259 (92.95%); clean tunes 458 -> 476 (77.1%).**
+
+Secondary, recorded not proposed: ``_lww`` calls ``_lane_aligned``, which demands
+a pair *lo*, where the framelog premise is only that both cells be
+last-write-wins -- a conflation. Measured gain from relaxing it: **0**, since all
+76 have ``_consts`` returning ``None`` regardless. And ``_widen`` can have no
+index-free counterpart: ``framelog`` materialises the other lane only on a lane
+register (``framelog.py:47-49``), so widening a lone byte is log-neutral exactly
+on a lane target, which is an index fact by construction. The 133 no-partner
+stores are irreducible without resolving the index, and the ``sid.regNN`` view is
+already the model's answer for them.
+
+#### 7.10.5 ``unproven`` is reaching definitions, not index shapes
+
+**334 of the 337 indexes are a bare local** (``x`` 48, ``y`` 40, ``a`` 28 among
+the unpartnered). The expression shape carries no information; the problem is
+always that more than one definition reaches, and ``_consts`` is a demand-driven
+backward search for a *unique* one that returns ⊤ at the first wall.
+
+| where ``_consts`` bailed | stores |
+|---|---:|
+| loop-carried: a cyclic body may rebind (``frameproc.py:663``) | 107 |
+| one computed jump *anywhere* in the procedure (``frameproc.py:697``) | 56 |
+| a crossing store may write the index cell (``frameproc.py:614``) | 54 |
+| label entries disagree (``frameproc.py:700``) | 38 |
+| ``_fork`` wall at ``pcall``/``callb`` (``framefuse.py:129``) | 18 |
+| ``_crossable`` blocked by ``if``/``pcall``/``loop`` | 17 |
+| ``_Params`` union unsolved, table not const, index is an ``op``, other | 47 |
+
+The general fix is one thing, not seven: **a forward value-set interpretation
+with explicit ⊤ and widening at back edges**, replacing the backward
+unique-definition walk. Every top class is "more than one reaching definition",
+not "unknowable".
+
+The cheapest piece is separable and needs no new machinery. ``Defs._verified``
+(``frameproc.py:697``) is a **whole-procedure kill switch**: one ``dgoto`` /
+``igoto`` / ``swg`` anywhere refuses *every* label join in that procedure,
+including labels the computed jump provably cannot reach. Scoping the refusal to
+the jump's own target set is local to ``_Jumps``. **Ceiling 56 stores (16.6%);
+the yield below that ceiling is unmeasured, because the target-set computation
+has to exist first.**
+
+#### 7.10.6 The seven tunes are a stale cache, not a bound
+
+The ``IndexError`` of §7.9.1 (1) is not a bounds bug. ``Defs._entries`` builds
+``root.jumps = _Jumps(root)`` once per root environment and **never invalidates
+it** (``frameproc.py:678-683``), freezing ``(env, position)`` pairs for every
+goto. ``_fold_pair_at`` then rewrites statement lists **in place**, shrinking
+them by one per merged pair (``frameproc.py:2643``). Any cached position at or
+past the fold point is stale. ``551be1b`` did not introduce the staleness -- it
+introduced the first *reader* of it, because its ``_same_defs``
+(``frameproc.py:2369``) resolves index locals with the label-joining
+``lookup_joined``, whose ``_verified`` re-walks those cached chains, and because
+it removed the old ``_side_addr`` guard that refused cross-env results. The crash
+is ``oenv.lst[obound]`` with ``obound=13`` into a list pair-folding shrank from 14
+to 13.
+
+**So the clamp is wrong in principle and safe here by luck.** A clamped stale
+bound is a *different* lookup, not a conservative one: statements after the
+reference seat slide down into the scanned range, so the walk can return an
+``asg`` that textually follows the goto as the definition in force before it, and
+``_same_defs`` compares definition identity as ``(id(lst), index)``, where a
+stale index can collide with a fresh index of a different statement and validate
+a join that does not hold. Instrumented over three tunes, *every* stale consult
+on this corpus is the same case -- drift exactly 1, seat last-of-list, zero
+in-bounds staleness -- which is why it works and why it encodes no invariant.
+
+**The correct fix restores the invariant: the ``_Jumps`` cache must not outlive a
+rewrite of a list it indexes.** Clear ``root.jumps`` when ``_fold_pair_at``
+succeeds; ``_entries`` rebuilds it lazily from current contents. That reproduces
+exactly the lookups a from-scratch analysis would make. Completeness: live
+``Defs`` chains are safe by construction -- a list is pair-folded at the end of
+its own ``_fold_words`` call, after which its env is dead -- and ``_map_exprs``
+rebuilds statement tuples while keeping body *list objects* by reference, so env
+bindings and ``id(lst)`` identities survive expression rewriting.
+
+**Verified:** all 7 tunes build under the invalidation, ``frameval.gate_fp``
+passes on all 7, and the emitted text is byte-identical to the clamp's. The
+Oracle debt §7.9.1 (1) demanded is paid -- for this corpus slice.
+
+#### 7.10.7 What the measurements say to do, in order
+
+1. **Invalidate ``_Jumps`` on a pair fold** (§7.10.6). 7 tunes, Gate FP verified,
+   an invariant rather than a clamp. Unblocks all measurement on those tunes.
+2. **G1: ``addr_bits`` follows a local to its definition** (§7.10.3). 1031 of
+   1139 stores; provable completeness 225 -> 448 tunes. The largest single
+   correction in this section, and the branch's own thesis applied to the one
+   predicate still reading syntax.
+3. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
+   stores, 18 tunes to zero, 89.85% -> 92.95%. Index-free, one-line soundness
+   argument, and it deletes a premise rather than proving one.
+4. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
+   discharged. 26 stores, and it removes a false "floor" from the record.
+5. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). 67 stores, three lines.
+6. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
+7. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
+   new machinery. Its cost is why it is last, not its size.
+
+Above all of these sits the census: **``word_pack`` at 4472 sites over 545 tunes,
+and ``carry_val`` at 5524 over 543, are each an order of magnitude larger than
+the ``narrow_sink`` residue the ladder has been measuring, and most of the 4293
+``hi_byte``/``lo_byte`` sites read off a word the pack never made.** Nothing in
+the list above touches
+them. The next metric should be the census, not the lane column.
+
 ### 7.8 The environment this branch was measured in
 
 > SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
