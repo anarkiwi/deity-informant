@@ -162,7 +162,7 @@ def test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard():
     _m, prog, text = _build("hilane_late", a)
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
-    assert "zp_11 = $05" in text and "zp_11 = trunc1((d0:2 >> $08):2)" in text
+    assert "zp_11 = $05" in text and "ctr_0010:2 = d0:2" in text
 
 
 @pytest.mark.parametrize("push", [True, False])
@@ -472,8 +472,8 @@ def test_a_step_wearing_lane_shape_does_not_become_a_lane():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
-    assert "carry(" not in text and "w0 = m_1480[y]" in text
-    assert "d0:2 = (m_1400[x]:2 + zext2(w0)):2" in text
+    assert "carry(" not in text
+    assert "d0:2 = (m_1400[x]:2 + zext2(m_1480[m_1580[x]])):2" in text
 
 
 def _lane_terms():

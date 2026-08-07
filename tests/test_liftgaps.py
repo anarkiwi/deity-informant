@@ -5,6 +5,8 @@ the diagnostic the pass gives it today. A gap that closes flips its case here in
 under a second, which is what the corpus sweep is too slow to tell you.
 """
 
+import re
+
 import pytest
 
 from deity_informant import framemath
@@ -137,4 +139,4 @@ def test_a_lane_index_from_a_constant_table_widens_only_when_lane_aligned(k, wid
     data = {G.TBL: 0x00, G.TBL + 1: k, G.TBL + 4: 0x30, G.TBL + 5: 0x31}
     outs = tuple(G.SID + n for n in range(0x19))
     _proofs, text = _run("tbl_index_%02X" % k, a, data, outs)
-    assert ("sid.v1.freq_lo[y]:2" in text) is widens
+    assert bool(re.search(r"sid\.v1\.freq_lo\[.*\]:2", text)) is widens

@@ -90,8 +90,8 @@ def test_a_slot_written_in_both_arms_and_read_in_the_tail_is_one_local():
     )
     defs = [l.strip().split(" = ")[0] for l in text.splitlines() if " = " in l]
     assert defs.count("d0:2") == 2  # the arms keep only the +/- choice (repolish factoring)
-    assert "sid.v1.ctrl = trunc1(d0:2)" in text
-    assert "sid.v1.attack_decay = trunc1((d0:2 >> $08):2)" in text
+    assert "sid.v1.ctrl = trunc1(q0:2)" in text  # the slot pair is one word local
+    assert "sid.v1.attack_decay = trunc1((q0:2 >> $08):2)" in text
     assert "s0" not in text and "s1" not in text  # the slot locals inline clean away
     assert "m_01F" not in text
 

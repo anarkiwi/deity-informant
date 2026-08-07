@@ -7,6 +7,8 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+import re
+
 from bisect import bisect_left
 from types import MappingProxyType
 
@@ -1759,6 +1761,13 @@ def _inline_list(items, ctx):
     return changed
 
 
+def _pin_stmts(stmts, out):
+    for s in stmts:
+        out.append(s)
+        for b in _stmt_bodies(s):
+            _pin_stmts(b, out)
+
+
 def _inline(info):
     changed = False
     for e in info.order:
@@ -1766,7 +1775,10 @@ def _inline(info):
         flow.liveout = {}
         flow.loop_head = {}
         flow.run()
+        pins = []
+        _pin_stmts(info.procs[e], pins)  # freed ids reused by new tuples are stale liveness hits
         changed |= _inline_list(info.procs[e], _InlineCtx(info, e, flow.liveout, flow.loop_head))
+        del pins
     return changed
 
 
@@ -2246,7 +2258,8 @@ def _le_bytes(n):
             mh = mh[2][0]
         if ml[0] == "op" and ml[1] == "INT_ZEXT":
             ml = ml[2][0]
-        if mh[0] in ("mem", "loc") and ml[0] in ("mem", "loc"):
+        ok = ("mem", "loc")
+        if (mh[0] in ok or mh[1] == "COPY") and (ml[0] in ok or ml[1] == "COPY"):
             return ml, mh
     return None
 
@@ -2395,12 +2408,99 @@ def _fold_word(n, env, at, regions, in_addr=False):
     return ("op", "INT_OR", (shl, ("op", "INT_ZEXT", (("mem", la, 1),), 2)), 2)
 
 
+def _chain_lo(n):
+    """``(l1, l2)`` where ``n`` is a byte add's carry-out spelled as its chain."""
+    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 1 or len(n[2]) != 2:
+        return None
+    for x, y in (n[2], n[2][::-1]):
+        if x[0] != "op" or x[1] != "INT_CARRY" or y[0] != "op" or y[1] != "INT_CARRY":
+            continue
+        add, cin = y[2]
+        if cin != ("const", 0, 1):
+            add, cin = cin, add
+        if cin != ("const", 0, 1) or add[0] != "op" or add[1] != "INT_ADD" or add[3] != 1:
+            continue
+        if set(add[2]) == set(x[2]) and len(add[2]) == 2:
+            return x[2]
+    return None
+
+
+def _chain_full(n):
+    """``(h1, h2, l1, l2)`` where ``n`` is a word add's carry-out chain."""
+    if n[0] != "op" or n[1] != "INT_OR" or n[3] != 1 or len(n[2]) != 2:
+        return None
+    for x, y in (n[2], n[2][::-1]):
+        if x[0] != "op" or x[1] != "INT_CARRY" or y[0] != "op" or y[1] != "INT_CARRY":
+            continue
+        add, cin = y[2]
+        lo = _chain_lo(cin)
+        if lo is None:
+            add, cin = cin, add
+            lo = _chain_lo(cin)
+        if lo is None or add[0] != "op" or add[1] != "INT_ADD" or add[3] != 1:
+            continue
+        if set(add[2]) == set(x[2]) and len(add[2]) == 2:
+            return x[2][0], x[2][1], lo[0], lo[1]
+    return None
+
+
+def _word_from(lo, hi, env, at, regions):
+    """The word two byte operands are the halves of, else None."""
+    v = _untrunced(lo, hi, env, at)
+    if v is not None:
+        return v
+    la = _side_addr(lo, env, at, regions)
+    ha = _side_addr(hi, env, at, regions)
+    if la is None or ha is None:
+        return None
+    (bl, il), (bh, ih) = addr_split(la), addr_split(ha)
+    if bl is None or bh != bl + 1 or il != ih:
+        return None
+    reach = 1 + (0 if il is None else E.mask(loc_width(il)))
+    if any(bl <= v2 <= bl + reach for v2 in sidprog._VOLS):
+        return None
+    return ("mem", la, 2)
+
+
+def _fold_chain(n, env, at, regions):
+    """A byte carry chain over word halves is the word operation (7.9).
+
+    The full chain is the word add's carry-out, ``carry(A:2, B:2)``; a hi half
+    plus a lo chain is the word sum's high byte. Halves pair by provenance --
+    truncs of one word, or reads of adjacent cells -- and each pairing is tried
+    both ways since the chain spells no order."""
+    got = _chain_full(n)
+    if got is not None:
+        h1, h2, l1, l2 = got
+        for (la, ha), (lb, hb) in (((l1, h1), (l2, h2)), ((l2, h2), (l1, h1))):
+            a2 = _word_from(la, ha, env, at, regions)
+            b2 = _word_from(lb, hb, env, at, regions)
+            if a2 is not None and b2 is not None:
+                return ("op", "INT_CARRY", (a2, b2), 1)
+        return n
+    if n[0] == "op" and n[1] == "INT_ADD" and n[3] == 1 and len(n[2]) == 2:
+        for h1, chain in (n[2], n[2][::-1]):
+            lo = _chain_lo(chain)
+            if lo is None:
+                continue
+            for l1, l2 in (lo, lo[::-1]):
+                a2 = _word_from(l1, h1, env, at, regions)
+                if a2 is None:
+                    continue
+                b2 = ("op", "INT_ZEXT", (l2,), 2)
+                add = ("op", "INT_ADD", (a2, b2), 2)
+                shr = ("op", "INT_RIGHT", (add, ("const", 8, 1)), 2)
+                return ("op", "COPY", (shr,), 1)
+    return n
+
+
 def _fold_expr(n, env, at, regions, in_addr=False):
     if n[0] == "mem":
         n = ("mem", _fold_expr(n[1], env, at, regions, True), n[2])
     elif n[0] == "op":
         n = ("op", n[1], tuple(_fold_expr(c, env, at, regions, in_addr) for c in n[2]), n[3])
-    return _fold_word(n, env, at, regions, in_addr)
+    n = _fold_word(n, env, at, regions, in_addr)
+    return n if in_addr else _fold_chain(n, env, at, regions)
 
 
 def _word_of(vl, vh):
@@ -2460,16 +2560,19 @@ def _fold_pair_at(stmts, i, regions):
         return False
     if addr_split(a[1])[0] is None:
         return False
-    lead = store_reach(a, regions)  # an asg hoists above the pair crossing only this
+    lead = store_reach(a, regions)  # what a crossed statement steps above
     moved = []
     for j in range(i + 1, min(i + 5, len(stmts))):
         s = stmts[j]
         if s[0] == "st":
             got = _fold_store_pair(a, s, regions)
-            if got is None:
+            if got is not None:
+                stmts[i : j + 1] = moved + [got]
+                return True
+            if not _steps_over(a, s, lead, regions):
                 return False
-            stmts[i : j + 1] = moved + [got]
-            return True
+            moved.append(s)
+            continue
         if s[0] != "asg":
             return False
         for ref, rw in mem_refs(s[2]):
@@ -2480,6 +2583,22 @@ def _fold_pair_at(stmts, i, regions):
                 return False
         moved.append(s)
     return False
+
+
+def _steps_over(a, s, lead, regions):
+    """The store ``s`` may move above the half store ``a``: neither sees the other.
+
+    ``s`` must read nothing ``a`` writes, and ``a`` must read nothing ``s``
+    writes, so the two commute and the pair may meet below."""
+    sreach = store_reach(s, regions)
+    for x, at2 in ((s, lead), (a, sreach)):
+        for ref, rw in (r for e in (x[1], x[2]) for r in mem_refs(e)):
+            if ref is None:
+                return False
+            rb, ri, rm = ref
+            if overlaps(at2, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+                return False
+    return not overlaps(lead, sreach)
 
 
 def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
@@ -2495,6 +2614,176 @@ def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
         if _fold_pair_at(stmts, i, regions):
             continue
         i += 1
+
+
+def _loc_widths(stmts, widths):
+    """Definition widths per local over the forest; a pcall return is unknown."""
+    for s in stmts:
+        if s[0] == "asg":
+            widths.setdefault(s[1], set()).add(G.store_width(s[2]))
+        elif s[0] == "for":
+            widths.setdefault(s[1], set()).add(1)
+        elif s[0] == "pcall":
+            for name in s[3]:
+                widths.setdefault(name, set()).add(0)
+        for b in _stmt_bodies(s):
+            _loc_widths(b, widths)
+
+
+def _norm_widths(stmts, params):
+    """A local every definition of which is a word spells ``:2`` at every use.
+
+    The converter writes some references bare; one spelling per name is what the
+    half matchers and the folds key on, so the width law is normalized here."""
+    widths = {}
+    _loc_widths(stmts, widths)
+    words = {n for n, ws in widths.items() if ws == {2} and n not in params}
+
+    def f(x):
+        for n in sorted(words):
+            x = _subst_loc(x, n, ("loc", n, 2))
+        return x
+
+    def apply(lst):
+        for i, s in enumerate(lst):
+            lst[i] = _map_exprs(s, f)
+            for b in _stmt_bodies(lst[i]):
+                apply(b)
+
+    if words:
+        apply(stmts)
+
+
+def _def_sites(stmts, sites, banned, path=()):
+    """Every asg per local over the forest; pcall returns and for counters ban."""
+    for i, s in enumerate(stmts):
+        if s[0] == "asg":
+            sites.setdefault(s[1], []).append((stmts, i))
+        elif s[0] == "for":
+            banned.add(s[1])
+        elif s[0] == "pcall":
+            banned.update(s[3])
+        for b in _stmt_bodies(s):
+            _def_sites(b, sites, banned, path)
+
+
+def _half_def(s):
+    """``(kind, payload)`` where ``s`` defines one half of a word datum."""
+    if s[0] != "asg":
+        return None
+    v = s[2]
+    if v[0] == "mem" and v[2] == 1:
+        base, idx = addr_split(v[1])
+        if base is not None:
+            return ("cell", base, idx)
+    if v[0] == "op" and v[1] == "COPY":
+        inner = v[2][0]
+        if inner[0] == "op" and inner[1] == "INT_RIGHT" and inner[2][1] == ("const", 8, 1):
+            if loc_width(inner[2][0]) == 2:
+                return ("hi", inner[2][0])
+        if loc_width(inner) == 2:
+            return ("lo", inner)
+    return None
+
+
+def _match_halves(a, b):
+    """``(lo name, hi name, word value)`` where two adjacent asgs define one word."""
+    da, db = _half_def(a), _half_def(b)
+    if da is None or db is None:
+        return None
+    if da[0] == "cell" and db[0] == "cell" and da[2] == db[2]:
+        if db[1] == da[1] + 1:
+            return a[1], b[1], ("mem", a[2][1], 2)
+        if da[1] == db[1] + 1:
+            return b[1], a[1], ("mem", b[2][1], 2)
+    if da[0] == "lo" and db[0] == "hi" and da[1] == db[1]:
+        return a[1], b[1], da[1]
+    if da[0] == "hi" and db[0] == "lo" and da[1] == db[1]:
+        return b[1], a[1], db[1]
+    return None
+
+
+def _pair_window(lst, i):
+    """``(j, lo, hi, word)`` pairing ``lst[i]`` with a nearby half asg, else None.
+
+    Only asgs may stand between -- they write no memory, so the halves read at
+    ``i`` what they read apart -- and none may rebind the word's locals or the
+    first half; a volatile source anywhere refuses (``iota`` pins its reads)."""
+    a = lst[i]
+    if a[0] != "asg" or _half_def(a) is None:
+        return None
+    for j in range(i + 1, min(i + 4, len(lst))):
+        b = lst[j]
+        if b[0] != "asg":
+            return None
+        got = _match_halves(a, b)
+        if got is None:
+            names = {a[1]}
+            if b[1] in names or _reads_vol(b[2]):
+                return None
+            continue
+        lo, hi, word = got
+        names = _locset(word) | {a[1]}
+        for k in range(i + 1, j):
+            if lst[k][1] in names or _reads_vol(lst[k][2]):
+                return None
+        if word[0] == "mem":
+            base, idx = addr_split(word[1])
+            reach = 1 + (0 if idx is None else E.mask(loc_width(idx)))
+            if any(base <= v <= base + reach for v in sidprog._VOLS):
+                return None
+        return j, lo, hi, word
+    return None
+
+
+def _sub_halves(s, lo, hi, q):
+    """Uses of the halves read the word local's truncs; nested bodies included."""
+    word = ("loc", q, 2)
+    shr = ("op", "INT_RIGHT", (word, ("const", 8, 1)), 2)
+    reps = {lo: ("op", "COPY", (word,), 1), hi: ("op", "COPY", (shr,), 1)}
+
+    def f(x):
+        for name, rep in reps.items():
+            x = _subst_loc(x, name, rep)
+        return x
+
+    s = _map_exprs(s, f)
+    for b in _stmt_bodies(s):
+        b[:] = [_sub_halves(s2, lo, hi, q) for s2 in b]
+    return s
+
+
+def _pair_locals(stmts, params, rets, counter):
+    """Two byte locals born as one word's halves become one word local (7.9).
+
+    Every definition of both halves must pair in one window, neither name may be
+    a parameter, return, pcall binding or counter, and every use then reads the
+    word's truncs, which the pack folds take back to the word."""
+    sites, banned = {}, set(params) | set(rets)
+    _def_sites(stmts, sites, banned)
+    pairs = {}
+    for name, defs in sites.items():
+        if name in banned:
+            continue
+        for lst, i in defs:
+            got = _pair_window(lst, i)
+            if got is None:
+                continue
+            j, lo, hi, word = got
+            pairs.setdefault((lo, hi), []).append((lst, i, j, word))
+    for (lo, hi), wins in sorted(pairs.items()):
+        if lo in banned or hi in banned or lo == hi:
+            continue
+        if len(sites.get(lo, ())) != len(wins) or len(sites.get(hi, ())) != len(wins):
+            continue
+        q = "q%d" % counter[0]
+        counter[0] += 1
+        for lst, i, j, word in sorted(wins, key=lambda w: -w[1]):
+            lst[i] = ("asg", q, word)
+            del lst[j]
+        stmts[:] = [_sub_halves(s2, lo, hi, q) for s2 in stmts]
+        return True  # one pair per call: the next round re-reads the moved positions
+    return False
 
 
 _NEGATE = {"INT_EQUAL": "INT_NOTEQUAL", "INT_NOTEQUAL": "INT_EQUAL"}
@@ -2640,10 +2929,18 @@ def repolish(procs, play, regions=None):
     info.summarize()
     info.params = {e: list(p) for e, p, _r, _s in procs}
     info.rets = {e: list(r) for e, _p, r, _s in procs}
+    widths = {}
+    for _e, _p, _r, st in procs:
+        _loc_widths(st, widths)
+    qs = [int(n[1:]) for n in widths if re.fullmatch(r"q\d+", n)]
+    counter = [max(qs) + 1 if qs else 0]  # a pair's word name is born once, ever
     for _round in range(16):
         pruned = _prune(info)
         inlined = _inline(info)
         factored = False
+        for e, stmts in info.procs.items():
+            _norm_widths(stmts, info.params.get(e, ()))
+            factored |= _pair_locals(stmts, info.params.get(e, ()), info.rets.get(e, ()), counter)
         gotos = {
             e: {s[1] for _v, _i, s in envs(st) if s[0] == "goto"} for e, st in info.procs.items()
         }

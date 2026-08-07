@@ -257,7 +257,7 @@ def _pair_tables(procs, decls):
         his.add(hi)
         bases[lo]["role"] = ("lo", hi)
         bases[hi]["role"] = ("hi", lo)
-    return pairs
+    return _decl_pairs(decls)  # roles persist on the decls: emission stays idempotent
 
 
 def _adjoin_pairs(stmts, pairs, regions):
@@ -332,10 +332,14 @@ def program(model):
     regions = datadecl.Regions(decls)
     frameproc.repolish(procs, model.play, regions)
     state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
-    frameproc.repolish(procs, model.play, regions)
-    pairs = _pair_tables(procs, decls)
-    for _e2, _pa2, _r2, stmts2 in procs:
-        _adjoin_pairs(stmts2, pairs, regions)
+    for _pass in range(4):
+        before = repr(procs)
+        frameproc.repolish(procs, model.play, regions)
+        pairs = _pair_tables(procs, decls)
+        for _e2, _pa2, _r2, stmts2 in procs:
+            _adjoin_pairs(stmts2, pairs, regions)
+        if repr(procs) == before:
+            break
     proofs = stack_proofs + math_proofs + proofs
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     prov0, init_proofs, census = _init_copies(model, decls)

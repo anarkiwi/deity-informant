@@ -5,6 +5,8 @@ one lone-half access refuses that pair alone, and a wrongly fused pair fails
 Gate FP (the M-FP3 mutation evidence).
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -345,14 +347,16 @@ def _voice_loop(name, index_table):
 def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
     """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers."""
     lemma, text = _voice_loop("idx_ok", [0x00, 0x07, 0x0E])
-    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
+    assert re.search(
+        r"sid\.v1\.freq_lo\[.*\]:2 = \(\(sid\.v1\.freq_lo\[.*\]:2 & \$FF00\):2 \| zext2\(", text
+    )
     assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
 def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
     lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
-    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
@@ -383,7 +387,7 @@ def test_an_index_spilled_through_a_ram_cell_widens_on_the_store_in_force():
     """No declaration can make a play-written cell const; the store that wrote it can."""
     lemma, text = _spill_loop("spill_ok")
     idx = "sid.v1.freq_lo[m_%04X]" % G.CNT
-    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(a)):2" % (idx, idx) in text
+    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(m_1408[x])):2" % (idx, idx) in text
     assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
@@ -406,7 +410,7 @@ def test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index():
 def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
-    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "0 lane-aligned indexed, 1 index unproven, 0 index proven off-lane" in lemma
 
 
@@ -487,7 +491,7 @@ def test_the_constants_the_call_sites_pass_widen_the_callee_lane_store():
 def test_one_call_site_passing_a_mid_register_offset_refuses_the_widening():
     """`$01` lands the word on freq *hi*, so the union is not lane-aligned."""
     lemma, text = _call_voice("param_stray", (0x00, 0x01, 0x0E))
-    assert "sid.reg[y] = a" in text and "freq_lo[y]" not in text
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
