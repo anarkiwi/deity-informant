@@ -7,6 +7,8 @@ for-ranges; all three are emit-side over the committed model's region trees.
 
 from __future__ import annotations
 
+import re
+
 from bisect import bisect_left
 from types import MappingProxyType
 
@@ -53,6 +55,101 @@ def loc_width(n):
     if n[0] == "loc":
         return n[2] if len(n) > 2 else 1
     return E.width(n)
+
+
+SHIFT8 = ("const", 8, 1)  # a byte column's own distance: the 6502 shifts no wider
+
+
+def is_op(n, mn, width=None, arity=None):
+    """``n`` is that operation, of that width and operand count where given.
+
+    Every rule below opens by naming the shape it rewrites; spelling that naming
+    once means a rule reads as the shape it matches and not as the tuple indices
+    the shape happens to occupy."""
+    if n[0] != "op" or n[1] != mn:
+        return False
+    return (width is None or n[3] == width) and (arity is None or len(n[2]) == arity)
+
+
+def commuted(kids):
+    """Both readings of a two-operand node: the tree spells no order, so try each."""
+    return (kids, kids[::-1])
+
+
+def strip_zext(n):
+    """``n`` without the reader's own widening -- one zext, which hides nothing.
+
+    The widening is the reader's, not the datum's (grammar ``_index_addr``), so
+    exactly one comes off; a second would be a value the program really widened."""
+    return n[2][0] if is_op(n, "INT_ZEXT") else n
+
+
+def shifted_hi(n):
+    """The word whose high byte ``n`` shifts down (``v >> 8``), else None."""
+    return n[2][0] if is_op(n, "INT_RIGHT") and n[2][1] == SHIFT8 else None
+
+
+def trunc_lo(v):
+    """The low byte of ``v``, spelled as the value graph spells it."""
+    return ("op", "COPY", (v,), 1)
+
+
+def trunc_hi(v):
+    """The high byte of ``v``, spelled as the value graph spells it."""
+    return ("op", "COPY", (("op", "INT_RIGHT", (v, SHIFT8), 2),), 1)
+
+
+def trunc_pair(lo, hi):
+    """The one word ``lo`` and ``hi`` are the two truncs of, else None.
+
+    ``hi:lo`` of ``V`` is ``V`` only where both halves name the same ``V``; two
+    truncs of different words wear the shape and mean nothing."""
+    if not is_op(lo, "COPY") or not is_op(hi, "COPY"):
+        return None
+    v = lo[2][0]
+    return v if shifted_hi(hi[2][0]) == v else None
+
+
+_LEAF = ("mem", "loc")  # a pack side carries a cell, a local, or a trunc of a word
+
+
+def _le_bytes(n):
+    """``(lo side, hi side)`` where ``n`` packs two byte-wide sides into one word.
+
+    The 6502 spells a word this way and only this way, so the shape is read once
+    here; every rule that rewrites a pack opens by asking this, then asks only
+    what it needs of the two sides it gets back."""
+    if not is_op(n, "INT_OR", 2, 2):
+        return None
+    for hi, lo in commuted(n[2]):
+        if not is_op(hi, "INT_LEFT", 2) or hi[2][1][0] != "const" or hi[2][1][1] != 8:
+            continue
+        mh, ml = strip_zext(hi[2][0]), strip_zext(lo)
+        if (mh[0] in _LEAF or mh[1] == "COPY") and (ml[0] in _LEAF or ml[1] == "COPY"):
+            return ml, mh
+    return None
+
+
+def le_pack(lo, hi):
+    """``hi<<8 | lo`` over two byte values: the word ``_le_bytes`` reads back out."""
+    shl = ("op", "INT_LEFT", (("op", "INT_ZEXT", (hi,), 2), SHIFT8), 2)
+    return ("op", "INT_OR", (shl, ("op", "INT_ZEXT", (lo,), 2)), 2)
+
+
+def pair_site(pairs, base, idx):
+    """``(hi cell, lo base, index)`` for the pair half at ``base``/``idx``, else None.
+
+    ``pairs`` is the ONE registry, lo base to ``(hi base, size)`` off the decl
+    roles. An indexed half names its table's base outright; a scalar half's own
+    offset into the columns IS the index the pair rendering reads."""
+    if idx is not None:
+        got = pairs.get(base)
+        return None if got is None else (got[0], base, idx)
+    for lo, (hi, size) in pairs.items():
+        o = base - lo
+        if 0 <= o < size:
+            return hi + o, lo, ("const", o, 1)
+    return None
 
 
 def _kids(n):
@@ -154,18 +251,58 @@ def addr_range(addr, width=1):
     return None if got is None or (got[2] and width > 1) else got
 
 
-def addr_bits(n):
+def packed_cells(n):
+    """``(lo base, hi base, shared index)`` of the two cells ``n`` packs, else None.
+
+    Both sides must be byte cells -- a wider side is a value the program really
+    widened, not a column -- and both must ride one index, since two columns of
+    one datum are read at one row or at no row at all."""
+    got = _le_bytes(n)
+    if got is None or got[0][0] != "mem" or got[0][2] != 1:
+        return None
+    if got[1][0] != "mem" or got[1][2] != 1:
+        return None
+    (bl, il), (bh, ih) = addr_split(got[0][1]), addr_split(got[1][1])
+    return None if bl is None or bh is None or il != ih else (bl, bh, il)
+
+
+class DefsAt:
+    """The definitions in force at one statement: a ``Defs`` and a position.
+
+    Read-only by construction, so a predicate may resolve a local without the
+    emitted program learning of it (docs/frameprog.md 7.10.3)."""
+
+    __slots__ = ("defs", "bound")
+
+    def __init__(self, defs, bound):
+        self.defs, self.bound = defs, bound
+
+    def defn(self, n):
+        """What the local names where one definition reaches it, else None.
+
+        ``Defs.resolve`` hands back the local itself at every wall -- a cyclic body
+        that may rebind, a ``pcall``-bound name, a definition with no readable
+        value -- so a local returning is exactly ⊤."""
+        got = self.defs.resolve(n, self.bound)
+        return None if got[0] == "loc" else got
+
+
+def addr_bits(n, env=None):
     """Bits an address may set: every address the expression names is a subset.
 
     A value fits the width it is read at, which bounds the ``zp,X`` wrap and the
-    stack push ``zext2(sp) | $0100`` without either being named as a shape."""
+    stack push ``zext2(sp) | $0100`` without either being named as a shape. Given a
+    ``DefsAt``, a local is the address its reaching definition spells."""
     m = E.mask(loc_width(n))
     if n[0] == "const":
         return n[1] & m
+    if n[0] == "loc":
+        got = None if env is None else env.defn(n)
+        return m if got is None else addr_bits(got) & m  # the definition's own: width alone
     if n[0] == "op" and n[1] in ("INT_ZEXT", "COPY"):
-        return addr_bits(n[2][0]) & m
+        return addr_bits(n[2][0], env) & m
     if n[0] == "op" and n[1] in ("INT_OR", "INT_AND") and len(n[2]) == 2:
-        a, b = (addr_bits(c) for c in n[2])
+        a, b = (addr_bits(c, env) for c in n[2])
         return (a | b if n[1] == "INT_OR" else a & b) & m
     return m
 
@@ -215,7 +352,7 @@ def store_ref(stmt, regions):
     return (base, idx, span(base, idx, regions, mod), width, mod)
 
 
-def store_reach(stmt, regions):
+def store_reach(stmt, regions, env=None):
     """The range a store writes: ``store_ref``, or the bits its address can set.
 
     An address the base/index form does not name still bounds the bytes it may
@@ -224,7 +361,97 @@ def store_reach(stmt, regions):
     got = store_ref(stmt, regions)
     if got is not None:
         return got
-    return (0, UNRES, addr_bits(stmt[1]), G.store_width(stmt[2]), 0)
+    return (0, UNRES, addr_bits(stmt[1], env), G.store_width(stmt[2]), 0)
+
+
+def mem_refs(n):
+    """``((base, index, modulus), width)`` of every memory reference under ``n``."""
+    out, stack = [], [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            out.append((addr_range(x[1], x[2]), x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+def lane(base, idx, sp, mod=0):
+    """The one-byte range a lane occupies."""
+    return (base, idx, sp, 1, mod)
+
+
+def reads(exprs, at, regions):
+    """True where evaluating ``exprs`` may load a cell of the range ``at``."""
+    for ref, rw in (r for x in exprs for r in mem_refs(x)):
+        if ref is None:
+            return True
+        rb, ri, rm = ref
+        if overlaps(at, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+            return True
+    return False
+
+
+def clobbers(stmt, exprs, regions):
+    """True where ``stmt`` may change the value of any of ``exprs``."""
+    if stmt[0] == "asg":
+        return any(stmt[1] in _locset(x) for x in exprs)
+    return True if stmt[0] != "st" else disturbs(stmt, exprs, regions)
+
+
+def disturbs(stmt, exprs, regions):
+    """The store may change a value ``exprs`` read.
+
+    Index expressions may only be compared when the read is a direct load here;
+    one captured earlier can be structurally equal yet hold a stale index."""
+    return False if stmt[0] != "st" else reads(exprs, store_reach(stmt, regions), regions)
+
+
+def hi_first(s):
+    """True where a word store emits its high byte before its low byte.
+
+    A store's write order rides as an optional fourth element, set only by rung
+    (d) where the pair it merged was written hi then lo. It is a fact about the
+    store and not about its index: ``frameval``'s ``stw`` emits ascending unless
+    told otherwise, so a store carrying its own order reproduces the frame log
+    wherever the index lands, and owes nothing about where that is (§7.10.4).
+    Every rebuilder of a store carries ``s[3:]`` through for that reason."""
+    return len(s) > 3 and s[3]
+
+
+def as_written(env, lst, k):
+    """``lst[k]`` with its address spelled as the definition in force spells it.
+
+    A local naming an address names the same address at ``k`` only where every
+    local that naming reads still holds there what it held where it was written --
+    the staleness ``disturbs`` warns of, discharged rather than assumed."""
+    s = lst[k]
+    if s[0] != "st" or env is None:
+        return s
+    n, bound = s[1], k
+    while n[0] == "loc":
+        got = env.value(n[1], bound)
+        if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in _locset(got[1])):
+            break
+        n, bound = got[1], got[0]
+    return ("st", n, s[2]) + s[3:]
+
+
+def hoist(lst, i, j, exprs, regions, env=None):
+    """``exprs``, the interval's definitions inlined, and the statement blocking it.
+
+    A read is carried up to ``i`` from where the interval made it, so a statement
+    is held only against what is hoisted *past* it: one writing a cell later than
+    the read it would spoil is no hazard, and its own definition is not one."""
+    at = None
+    for k in range(j - 1, i, -1):
+        s = lst[k]
+        if s[0] == "asg" and any(s[1] in _locset(x) for x in exprs):
+            exprs = tuple(_subst_loc(x, s[1], s[2]) for x in exprs)
+        elif clobbers(as_written(env, lst, k), exprs, regions):
+            at = k
+    return exprs, at
 
 
 def hidden_defs(s):
@@ -245,6 +472,75 @@ def hidden_defs(s):
     return out
 
 
+_COMPUTED = frozenset(("dgoto", "dbr", "igoto", "swg"))  # a jump no list of gotos names
+ENTRY = object()  # "nothing is in force, so the name still holds its value at entry"
+
+
+def _never_binds(stmts, name):
+    """No statement of the forest may bind ``name``: it holds its entry value.
+
+    An ``asg``/``for``/``pcall`` return binds it by name; a ``call``, ``dcall``
+    or ``swc`` clobbers registers unseen; a jump or a label binds nothing."""
+    for s in stmts:
+        k = s[0]
+        if k in ("call", "dcall", "swc"):
+            return False
+        if k in ("asg", "for") and s[1] == name:
+            return False
+        if k == "pcall" and name in s[3]:
+            return False
+        if any(not _never_binds(b, name) for b in _stmt_bodies(s)):
+            return False
+    return True
+
+
+def _label_defs(s):
+    """``(names, label pcs)`` that ``s`` may define, or None where a call binds unseen.
+
+    ``hidden_defs`` with the labels held out: a label binds nothing itself, and
+    the join (``Defs._verified``) proves what its entries carry."""
+    if s[0] == "label":
+        return frozenset(), frozenset((s[1],))
+    if s[0] in _WILD:
+        return None
+    names = {s[1]} if s[0] in ("asg", "for") else set(s[3]) if s[0] == "pcall" else set()
+    labels = set()
+    for b in _stmt_bodies(s):
+        for s2 in b:
+            got = _label_defs(s2)
+            if got is None:
+                return None
+            names |= got[0]
+            labels |= got[1]
+    return names, labels
+
+
+class _Jumps:
+    """The procedure's label entries: ``pc -> [(env, position)]`` over its gotos.
+
+    ``computed`` is any jump whose targets no list of gotos names -- an indirect
+    goto, a computed branch, a switch goto -- and it refuses every label join."""
+
+    __slots__ = ("computed", "srcs", "labels")
+
+    def __init__(self, root):
+        self.computed = False
+        self.srcs = {}
+        self.labels = set()
+        self._scan(root)
+
+    def _scan(self, env):
+        for k, s in enumerate(env.lst):
+            if s[0] == "goto":
+                self.srcs.setdefault(s[1], []).append((env, k))
+            elif s[0] == "label":
+                self.labels.add(s[1])
+            elif s[0] in _COMPUTED:
+                self.computed = True
+            for b in _stmt_bodies(s):
+                self._scan(Defs(b, (env, k), s[0] in _CYCLIC))
+
+
 class Defs:
     """The local definitions of one statement list, read at the point of the read.
 
@@ -252,11 +548,11 @@ class Defs:
     every lookup carries the reader's position and answers with the definer's. A
     definition the list does not make itself is recorded valueless (``hidden_defs``)."""
 
-    __slots__ = ("defs", "wild", "outer", "cyclic", "lst")
+    __slots__ = ("defs", "wild", "outer", "cyclic", "lst", "jumps", "foreign")
 
-    def __init__(self, lst, outer=None, cyclic=False):
-        self.defs, self.wild = {}, []
-        self.outer, self.cyclic, self.lst = outer, cyclic, lst
+    def __init__(self, lst, outer=None, cyclic=False, foreign=None):
+        self.defs, self.wild, self.jumps = {}, [], None
+        self.outer, self.cyclic, self.lst, self.foreign = outer, cyclic, lst, foreign
         for k, s in enumerate(lst):
             if s[0] == "asg":
                 self.defs.setdefault(s[1], []).append((k, s[2]))
@@ -340,23 +636,220 @@ class Defs:
             for j in range(len(b))
         )
 
-    def cell(self, cell, bound, regions):
+    def _crossable(self, k, cell, regions, labels, writes=None):
+        """True where statement ``k`` cannot write ``cell``; label entries collected.
+
+        ``_writes`` with labels held out for the caller: a label writes nothing,
+        but control may enter there, so ``cell`` owes a proof that every
+        enumerable entry reaches the same store (docs/frameprog.md 7.7 (3)). A
+        ``pcall`` crosses only where the callee summary rules the cell out."""
+        s = self.lst[k]
+        if s[0] == "label":
+            labels.add(s[1])
+            return True
+        if s[0] == "pcall":
+            return writes is not None and not writes.may_write(s[1], cell)
+        if s[0] in _WILD:
+            return False
+        if s[0] == "st" and self._hits(k, cell, regions):
+            return writes is not None and writes.store_misses(self, k, s, cell)
+        return all(
+            Defs(b, (self, k), s[0] in _CYCLIC)._crossable(j, cell, regions, labels, writes)
+            for b in _stmt_bodies(s)
+            for j in range(len(b))
+        )
+
+    def _cell_walk(self, cell, bound, regions, labels, writes=None):
+        """One backward walk for the store in force, labels transparent-and-collected."""
+        for k in range(bound - 1, -1, -1):
+            s = self.lst[k]
+            if s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1:
+                return (self, k, s[2])
+            if not self._crossable(k, cell, regions, labels, writes):
+                return None
+        if self.outer is None or (
+            self.cyclic
+            and any(
+                not self._crossable(k, cell, regions, labels, writes) for k in range(len(self.lst))
+            )
+        ):
+            return None
+        return self.outer[0]._cell_walk(cell, self.outer[1], regions, labels, writes)
+
+    def _name_dirty(self, name, labels):
+        """The cyclic body may rebind ``name``; its labels join like any crossed."""
+        for s in self.lst:
+            got = _label_defs(s)
+            if got is None or name in got[0]:
+                return True
+            labels |= got[1]
+        return False
+
+    def _name_walk(self, name, bound, labels):
+        """``_lookup`` with labels transparent-and-collected; None where truly wild."""
+        for k in range(bound - 1, -1, -1):
+            s = self.lst[k]
+            if s[0] == "asg" and s[1] == name:
+                return (self, k, s[2])
+            got = _label_defs(s)
+            if got is None:
+                return None
+            if name in got[0]:
+                return (self, k, None)
+            labels |= got[1]
+        if self.cyclic and self._name_dirty(name, labels):
+            return None
+        if self.outer is None:
+            return ENTRY
+        oenv, obound = self.outer
+        if oenv.lst[obound][0] == "for" and oenv.lst[obound][1] == name:
+            return (oenv, obound, None)  # the counter binds the body from its own seat
+        return oenv._name_walk(name, obound, labels)
+
+    def _root(self):
+        root = self
+        while root.outer is not None:
+            root = root.outer[0]
+        return root
+
+    def _entries(self):
+        """The root's label-entry index, rebuilt from current contents when dropped."""
+        root = self._root()
+        if root.jumps is None:
+            root.jumps = _Jumps(root)
+        return root.jumps
+
+    def rewritten(self):
+        """A list under this root changed shape: its cached label entries are void.
+
+        ``_Jumps`` names each goto by ``(env, position)`` over the whole root
+        environment, so a rewrite that shrinks any list in it -- a pair fold merging
+        two statements into one -- leaves every cached position at or past the change
+        pointing at a different statement. Dropping the index makes ``_entries``
+        rebuild it, reproducing the lookups a from-scratch analysis would make; a
+        clamped stale position would be a different lookup, not a safer one
+        (docs/frameprog.md 7.10.6)."""
+        self._root().jumps = None
+
+    def _verified(self, got, labels, walk):
+        """``got`` where every enumerable entry into each crossed label agrees.
+
+        The join law (docs/frameprog.md 7.7 (3)): a definition survives a label
+        only where each ``goto`` entering it arrives with the same definition in
+        force, to a fixpoint over the entry graph. A computed jump refuses all,
+        and so does a label another procedure's goto may target -- ``foreign``
+        is that set, and an unstamped root (None) trusts no label at all."""
+        if got is None or not labels:
+            return got
+        foreign = self._root().foreign
+        jumps = self._entries()
+        if jumps.computed or foreign is None:
+            return None
+        want = got if got is ENTRY else (id(got[0].lst), got[1])
+        seen = set()
+        while labels:
+            pc = labels.pop()
+            seen.add(pc)
+            if pc in foreign:
+                return None
+            for env, k in jumps.srcs.get(pc, ()):
+                more = set()
+                sgot = walk(env, k, more)
+                if sgot is None or (sgot if sgot is ENTRY else (id(sgot[0].lst), sgot[1])) != want:
+                    return None
+                labels |= more - seen
+        return got
+
+    def lookup_joined(self, name, bound):
+        """``_lookup`` surviving labels every goto entry is proven to agree with.
+
+        A name the whole procedure cannot bind holds its entry value at every
+        point: jumps bind nothing, so no label, goto or computed dispatch can
+        carry another value in -- unless a foreign goto enters the procedure
+        itself, whose caller's value of the name arrives unseen."""
+        labels = set()
+        got = self._name_walk(name, bound, labels)
+        out = self._verified(got, labels, lambda e, k, o: e._name_walk(name, k, o))
+        if out is not None:
+            return out
+        root = self._root()
+        if root.foreign is None or not self._entries().labels.isdisjoint(root.foreign):
+            return None
+        return ENTRY if _never_binds(root.lst, name) else None
+
+    def cell(self, cell, bound, regions, writes=None):
         """``(env, index, value)`` of the byte store to ``cell`` in force at ``bound``.
 
         ``_lookup`` over memory rather than names: the store in force is the last
-        statement before the read that may write the cell, and an enclosing one
-        survives only a cyclic body that writes the cell nowhere."""
-        for k in range(min(bound, len(self.lst)) - 1, -1, -1):
-            if not self._writes(k, cell, regions):
-                continue
-            s = self.lst[k]
-            exact = s[0] == "st" and s[1] == ("const", cell, 2) and G.store_width(s[2]) == 1
-            return (self, k, s[2]) if exact else None
-        if self.outer is None or (
-            self.cyclic and any(self._writes(k, cell, regions) for k in range(len(self.lst)))
-        ):
+        statement before the read that may write the cell, labels joined as
+        ``_verified`` requires."""
+        labels = set()
+        got = self._cell_walk(cell, bound, regions, labels, writes)
+        return self._verified(
+            got, labels, lambda e, k, out: e._cell_walk(cell, k, regions, out, writes)
+        )
+
+
+def envs(stmts, outer=None, cyclic=False):
+    """``(env, index, statement)`` over a list and its nested bodies, scopes linked."""
+    env = Defs(stmts, outer, cyclic)
+    for i, s in enumerate(stmts):
+        yield env, i, s
+        for b in _stmt_bodies(s):
+            yield from envs(b, (env, i), s[0] in _CYCLIC)
+
+
+def _transfers(s, nxt):
+    """True where ``s`` may enter a procedure the enclosing list does not name.
+
+    A ``dgoto``/``igoto`` the next statement's ``swg`` enumerates lands in an arm of
+    this same procedure, and a ``dcall`` an ``swc`` enumerates lands on one of the
+    labels ``swc`` names; anything else computed may go anywhere."""
+    k = s[0]
+    if k in ("dgoto", "igoto"):
+        return nxt != "swg"
+    if k == "dcall":
+        return nxt != "swc"
+    return k == "dbr"
+
+
+class Calls:
+    """Who calls each procedure and with what: the entry side of a bare local.
+
+    A parameter holds what a call site passed, so the value is known only where
+    the call graph is closed -- an indirect transfer, a caller the model does not
+    name (an RTS-trick landing among them), or no caller at all leaves it open."""
+
+    __slots__ = ("params", "sites", "opaque", "open_flow", "play")
+
+    def __init__(self, procs, play, landings=()):
+        self.play, self.sites, self.open_flow = play, {}, False
+        self.opaque = set(landings)
+        self.params = {e: list(pa) for e, pa, _r, _s in procs}
+        for e, _pa, _r, stmts in procs:
+            for env, i, s in envs(stmts):
+                k = s[0]
+                if k == "pcall":
+                    self.sites.setdefault(s[1], []).append((e, env, i, tuple(s[2])))
+                elif k in ("call", "callb"):
+                    self.opaque.add(s[1])
+                elif k == "swc":
+                    self.opaque |= {int(lbl[1:], 16) for lbl in s[1]}
+                elif _transfers(s, env.lst[i + 1][0] if i + 1 < len(env.lst) else None):
+                    self.open_flow = True
+
+    def args(self, entry, name):
+        """``(caller, env, index, argument)`` per call site, None where the graph is open."""
+        params = self.params.get(entry) or []
+        if self.open_flow or entry == self.play or entry in self.opaque:
             return None
-        return self.outer[0].cell(cell, self.outer[1], regions)
+        if name not in params or not self.sites.get(entry):
+            return None
+        k = params.index(name)
+        sites = self.sites[entry]
+        if any(k >= len(args) for _c, _e, _i, args in sites):
+            return None
+        return [(c, env, i, args[k]) for c, env, i, args in sites]
 
 
 def _stmt_exprs(s):
@@ -407,7 +900,7 @@ def _map_exprs(s, f):
     if k == "asg":
         return ("asg", s[1], f(s[2]))
     if k == "st":
-        return ("st", f(s[1]), f(s[2]))
+        return ("st", f(s[1]), f(s[2])) + s[3:]
     if k == "if":
         return ("if", s[1], f(s[2]), s[3], s[4])
     if k == "pcall":
@@ -421,6 +914,53 @@ def _map_exprs(s, f):
     if k == "igoto" and s[2] is not None:
         return ("igoto", s[1], f(s[2]))
     return s
+
+
+def _const_of(n, env, k):
+    """The constant ``n`` evaluates to at ``k``, else None.
+
+    A local is read as the definition in force leaves it, and that definition's own
+    locals at the point it was written. A memory read is never constant, so a value
+    reached through a cell is refused here and left to rung (d)'s spill rule."""
+    if n[0] == "const":
+        return n
+    if n[0] == "loc":
+        got = env._lookup(n[1], k)
+        return None if got is None or got[2] is None else _const_of(got[2], got[0], got[1])
+    if n[0] != "op":
+        return None
+    kids = [_const_of(c, env, k) for c in n[2]]
+    if any(c is None for c in kids):
+        return None
+    return E.simplify(("op", n[1], tuple(kids), n[3]))
+
+
+def _one_addr(addr, env, k):
+    """``addr`` as the constant it is, else as written: the ONE address-naming rule.
+
+    The converter spells a constant address as its constant only inside the block
+    that sets the index, and binds it to a temporary wherever it takes two
+    operations, as ``zp,X`` does -- so one cell arrives under two names."""
+    got = _const_of(addr, env, k)
+    return addr if got is None else ("const", got[1] & 0xFFFF, 2)
+
+
+def _addr_exprs(n, env, k):
+    """``n`` with the address of every memory reference under it spelled the one way."""
+    kids = _kids(n)
+    out = n if not kids else _rebuild(n, [_addr_exprs(c, env, k) for c in kids])
+    return ("mem", _one_addr(out[1], env, k), out[2]) if out[0] == "mem" else out
+
+
+def canon_addrs(stmts, outer=None, cyclic=False):
+    """Spell every address ``stmts`` names one way, nested bodies included."""
+    env = Defs(stmts, outer, cyclic)
+    for k, s in enumerate(stmts):
+        for b in _stmt_bodies(s):
+            canon_addrs(b, (env, k), s[0] in _CYCLIC)
+        if s[0] == "st":
+            s = ("st", _one_addr(s[1], env, k), s[2]) + s[3:]
+        stmts[k] = _map_exprs(s, lambda n, e=env, i=k: _addr_exprs(n, e, i))
 
 
 # ---- block -> sequential local statements (pass 1 groundwork) -------------------
@@ -455,12 +995,12 @@ class _Names:
 
 def _sugar(n):
     """Subtrees that print as name sugar (array index shapes) stay inline."""
-    if n[0] == "op" and n[1] == "INT_ZEXT" and n[2][0][0] in ("reg", "slot", "loc"):
+    if is_op(n, "INT_ZEXT") and n[2][0][0] in ("reg", "slot", "loc"):
         return True
-    if n[0] == "op" and n[1] == "INT_ADD" and n[3] == 2 and len(n[2]) == 2:
+    if is_op(n, "INT_ADD", 2, 2):
         idx, base = n[2]
         if base[0] == "const" and base[2] == 2 and base[1] >= 0x100:
-            return idx[0] == "op" and idx[1] == "INT_ZEXT"
+            return is_op(idx, "INT_ZEXT")
     return False
 
 
@@ -509,7 +1049,7 @@ class _Conv:
             if ev[0] == "ld":
                 items.append(("ld", ev[1], key(ev[2])))
             else:
-                items.append(("st", key(ev[1]), key(ev[2])))
+                items.append(("st", key(ev[1]), key(ev[2])) + ev[3:])
         kouts = {i: key(x) for i, x in enumerate(blk.regs) if x != ("reg", i)}
         t = blk.term
         k = t[0]
@@ -693,7 +1233,7 @@ class _Conv:
                     out.append(("asg", name, rendered))
                     bind(name, ("slot", s))
             else:
-                out.append(("st", render(item[1]), render(item[2])))
+                out.append(("st", render(item[1]), render(item[2])) + item[3:])
         mat(len(items))
         while pend:
             done = None
@@ -1111,7 +1651,8 @@ class _Flow:
             self.brk.pop()
             self.cont.pop()
             if k == "for":
-                out.discard(s[1])
+                out |= live  # a for leaves by its own bottom: a loop leaves only by brk
+                out.discard(s[1])  # the counter the for defines on entry is dead above
             return out | head
         if k == "label":
             self.labmap[s[1]] = self.labmap.get(s[1], set()) | live
@@ -1380,6 +1921,13 @@ def _inline_list(items, ctx):
     return changed
 
 
+def _pin_stmts(stmts, out):
+    for s in stmts:
+        out.append(s)
+        for b in _stmt_bodies(s):
+            _pin_stmts(b, out)
+
+
 def _inline(info):
     changed = False
     for e in info.order:
@@ -1387,7 +1935,10 @@ def _inline(info):
         flow.liveout = {}
         flow.loop_head = {}
         flow.run()
+        pins = []
+        _pin_stmts(info.procs[e], pins)  # freed ids reused by new tuples are stale liveness hits
         changed |= _inline_list(info.procs[e], _InlineCtx(info, e, flow.liveout, flow.loop_head))
+        del pins
     return changed
 
 
@@ -1550,7 +2101,7 @@ def _forloops(info):
 # ---- printing --------------------------------------------------------------------
 def _base_add(addr, w, least):
     """``(const base, index)`` of a two-operand ``INT_ADD`` at width ``w``, else None."""
-    if addr[0] != "op" or addr[1] != "INT_ADD" or addr[3] != w or len(addr[2]) != 2:
+    if not is_op(addr, "INT_ADD", w, 2):
         return None
     at = [i for i, c in enumerate(addr[2]) if c[0] == "const" and c[2] == w and c[1] >= least]
     if len(at) != 1:
@@ -1558,7 +2109,7 @@ def _base_add(addr, w, least):
     base, idx = addr[2][at[0]], addr[2][1 - at[0]]
     if idx[0] == "const":
         return None
-    if idx[0] == "op" and idx[1] == "INT_ZEXT" and idx[3] == 2:
+    if is_op(idx, "INT_ZEXT", 2):
         idx = idx[2][0]
     return base[1], idx
 
@@ -1569,7 +2120,7 @@ def _index_of(addr):
     The index is whatever the address adds to the base; ``zext2`` is the reader's
     own widening (grammar ``_index_addr``) and is stripped so the text round trips.
     The ``zp,X`` form adds inside the byte, so it names the zero page modulo 256."""
-    if addr[0] == "op" and addr[1] == "INT_ZEXT" and addr[3] == 2:
+    if is_op(addr, "INT_ZEXT", 2):
         got = _base_add(addr[2][0], 1, 0)
         return None if got is None else (got[0], got[1], 0x100)
     got = _base_add(addr, 2, 0x100)
@@ -1579,7 +2130,7 @@ def _index_of(addr):
 _NORES = MappingProxyType({})  # rung (f): deref address -> (pointer cell, index or None)
 
 
-def _membody(addr, res=_NORES):
+def _membody(addr, res=_NORES, sz=1):
     if addr[0] == "const" and addr[2] == 2:
         return sidprog._addr_name(addr[1])
     got = res.get(addr)
@@ -1588,19 +2139,61 @@ def _membody(addr, res=_NORES):
         return name if got[1] is None else "%s[%s]" % (name, _fmt(got[1], res))
     got = _index_of(addr)
     if got is not None and got[2] == 0:
-        return "%s[%s]" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
+        base, idx = got[0], got[1]
+        if sz == 1 and G.sid_base(base) is not None:
+            off = base - 0xD400  # rung (d)'s residue: assert the byte, not the register
+            if off:
+                wide = idx if loc_width(idx) == 2 else ("op", "INT_ZEXT", (idx,), 2)
+                idx = ("op", "INT_ADD", (wide, ("const", off, 2)), 2)
+            return "%s[%s]" % (G.VIEW, _fmt(idx, res))
+        return "%s[%s]" % (sidprog._addr_name(base), _fmt(idx, res))
     return None
 
 
 def _memref(addr, sz=1, res=_NORES):
-    body = _membody(addr, res)
+    body = _membody(addr, res, sz)
     if body is None:
         body = "mem[%s]" % _fmt(addr, res)
     return body + sidprog._wsuf(sz)
 
 
+_PAIRS = {}  # render-scoped: lo table base -> hi table base, from the decl roles
+
+
+def _pair_columns(bl, bh, idx):
+    """``(lo base, index)`` where two cells are a declared pair's two columns.
+
+    The hi cell the registry names for the lo half must be the very cell the hi
+    address reads; anything else is two cells that merely sit near each other."""
+    got = pair_site(_PAIRS, bl, idx)
+    return None if got is None or got[0] != bh else got[1:]
+
+
+def _pair_pack(n):
+    """``(lo base, index)`` where ``n`` packs a declared lo/hi table pair."""
+    got = packed_cells(n) if _PAIRS else None
+    return None if got is None else _pair_columns(*got)
+
+
+def _pair_halves(a, b):
+    """``(lo base, index, word value)`` where ``a``/``b`` store one pair datum."""
+    if not _PAIRS or a[0] != "st" or b[0] != "st":
+        return None
+    if G.store_width(a[2]) != 1 or G.store_width(b[2]) != 1:
+        return None
+    (bl, il), (bh, ih) = addr_split(a[1]), addr_split(b[1])
+    if bl is None or bh is None or il != ih:
+        return None
+    site = _pair_columns(bl, bh, il)
+    v = trunc_pair(a[2], b[2])
+    return None if site is None or v is None else (site[0], site[1], v)
+
+
 def _fmt(n, res=_NORES):
     k = n[0]
+    got = _pair_pack(n)
+    if got is not None:
+        return "%s[%s]:2" % (sidprog._addr_name(got[0]), _fmt(got[1], res))
     if k == "const":
         return sidprog._hex(n[1], n[2])
     if k == "loc":
@@ -1659,8 +2252,17 @@ class _Printer:
         self.line("}", 0)
 
     def seq(self, stmts, d):
-        for s in stmts:
-            self.stmt(s, d)
+        i = 0
+        while i < len(stmts):
+            got = None if i + 1 >= len(stmts) else _pair_halves(stmts[i], stmts[i + 1])
+            if got is not None:
+                lo, idx, v = got
+                text = "%s[%s]:2 = %s" % (sidprog._addr_name(lo), self.e(idx), self.e(v))
+                self.line(text, d + 1)
+                i += 2
+                continue
+            self.stmt(stmts[i], d)
+            i += 1
 
     def _cases(self, head, cases, d):
         self.line(head, d)
@@ -1708,8 +2310,11 @@ class _Printer:
             lv = s[1] + sidprog._wsuf(G.store_width(s[2]))
             self.line("%s = %s" % (lv, self.e(s[2])), d + 1)
         elif k == "st":
+            sz = G.store_width(s[2])
             self.line(
-                "%s = %s" % (_memref(s[1], G.store_width(s[2]), self.res), self.e(s[2])), d + 1
+                "%s%s = %s"
+                % ("hi-first " if hi_first(s) else "", _memref(s[1], sz, self.res), self.e(s[2])),
+                d + 1,
             )
         elif k == "if":
             self._if(s, d)
@@ -1788,12 +2393,705 @@ def procedures(trees, labels, view, dispatch, aliases, play):
         if not (pruned or inlined):
             break
     _forloops(info)
+    for _e, stmts in procs:
+        canon_addrs(stmts)
     return [(e, info.params[e], info.rets[e], stmts) for e, stmts in procs]
 
 
-def render_lines(procs, resolved=_NORES):
-    """frameprog text lines for analysed (or parsed) procedures."""
-    printer = _Printer(resolved)
-    for entry, params, rets, stmts in procs:
-        printer.proc(entry, stmts, params, rets)
-    return printer.out
+def _clear_path(uenv, at, denv, k, rd, regions):
+    """No statement between the definition and the use may write ``rd``.
+
+    The use's scope chain climbs to the definition's list; every top-level
+    statement crossed must be an ``asg`` or a store proven off the range, and a
+    compound crossed is a wall (its bodies may store anywhere)."""
+    env, pos = uenv, at
+    while True:
+        for j in range(k + 1 if env is denv else 0, pos):
+            s = env.lst[j]
+            if s[0] == "asg":
+                continue
+            if s[0] != "st" or overlaps(rd, store_reach(s, regions)):
+                return False
+        if env is denv:
+            return True
+        if env.outer is None:
+            return False
+        env, pos = env.outer
+
+
+def _same_defs(names, uenv, at, denv, k):
+    """Every name resolves to one definition from both points, ENTRY included."""
+    for m in sorted(names):
+        a = uenv.lookup_joined(m, at)
+        b = denv.lookup_joined(m, k)
+        if a is ENTRY or b is ENTRY:
+            if a is not b:
+                return False
+            continue
+        if a is None or b is None or (id(a[0].lst), a[1]) != (id(b[0].lst), b[1]):
+            return False
+    return True
+
+
+def _stable_row(addr, uenv, at, denv, k, regions):
+    """``addr`` where the byte it read at ``k`` still reads the same at ``at``.
+
+    The row is wholly const (a store cannot move it) or no statement between
+    wrote it, and the index's locals resolve to the same definitions from both
+    points, so the traced value may stand in for the spill."""
+    vb, vi = addr_split(addr)
+    if vb is None:
+        return None
+    sp = span(vb, vi, regions)
+    if not all(regions.const_at(a) for a in range(vb, vb + sp + 1)):
+        if not _clear_path(uenv, at, denv, k, (vb, vi, sp, 2, 0), regions):
+            return None
+    if vi is not None and not _same_defs(_locset(vi), uenv, at, denv, k):
+        return None
+    return addr
+
+
+def _side_val(node, env, at):
+    """The value a pack side carries, traced through one local definition."""
+    if node[0] != "loc" or env is None:
+        return node, env, at
+    got = env.lookup_joined(node[1], at)
+    if got is None or got is ENTRY or got[2] is None:
+        return node, env, at
+    return got[2], got[0], got[1]
+
+
+def _untrunced(lo, hi, env, at):
+    """The word a pack of its own two truncs rebuilds: ``hi:lo`` of ``V`` is ``V``.
+
+    Both sides trace through one local each; the word's locals must resolve to
+    the same definitions from the pack as from both truncs, or the value moved."""
+    vl, le, lk = _side_val(lo, env, at)
+    vh, he, hk = _side_val(hi, env, at)
+    v = trunc_pair(vl, vh)
+    if v is None or loc_width(v) != 2 or _reads_mem(v) or _reads_vol(v):
+        return None
+    names = _locset(v)
+    if not _same_defs(names, env, at, le, lk) or not _same_defs(names, env, at, he, hk):
+        return None
+    return v
+
+
+def _side_addr(node, env, at, regions):
+    """The byte address a pack side reads, traced through one spill or local."""
+    if node[0] == "mem" and node[2] == 1:
+        base, idx = addr_split(node[1])
+        if base is None:
+            return None
+        if idx is not None or env is None or regions is None:
+            return node[1]
+        got = env.cell(base, at, regions)
+        if got is None or got[0] is not env or got[2][0] != "mem" or got[2][2] != 1:
+            return node[1]
+        return _stable_row(got[2][1], env, at, got[0], got[1], regions) or node[1]
+    if node[0] != "loc" or env is None or regions is None:
+        return None
+    got = env.lookup_joined(node[1], at)
+    if got is None or got is ENTRY or got[2] is None:
+        return None
+    if got[2][0] != "mem" or got[2][2] != 1:
+        return None
+    return _stable_row(got[2][1], env, at, got[0], got[1], regions)
+
+
+def _fold_word(n, env, at, regions, in_addr=False):
+    """One little-endian word read for its two byte reads, the 6502's only spelling.
+
+    ``hi<<8 | lo`` over ``mem[b+1+i]``/``mem[b+i]`` is ``mem[b+i]:2`` -- the same
+    two cells, loaded pure -- for any base and one shared index, a volatile source
+    excluded since ``iota`` pins each of its reads (docs/frameprog.md 7.9). An
+    address position folds only the plain adjacent shape, whose spelling rung (f)
+    already reads; a value position also traces spills and normalizes a
+    non-adjacent pack onto its columns for the pair rendering."""
+    got = _le_bytes(n)
+    if got is None:
+        return n
+    if not in_addr:
+        whole = _untrunced(got[0], got[1], env, at)
+        if whole is not None:
+            return whole
+    if in_addr:
+        if got[0][0] != "mem" or got[1][0] != "mem":
+            return n
+        la, ha = got[0][1], got[1][1]
+    else:
+        la = _side_addr(got[0], env, at, regions)
+        ha = _side_addr(got[1], env, at, regions)
+    if la is None or ha is None:
+        return n
+    (bl, il), (bh, ih) = addr_split(la), addr_split(ha)
+    if bl is None or bh is None or il != ih:
+        return n
+    reach = 1 + (0 if il is None else E.mask(loc_width(il)))
+    if any(min(bl, bh) <= v <= max(bl, bh) + reach for v in sidprog._VOLS):
+        return n
+    if bh == bl + 1:
+        return ("mem", la, 2)
+    if in_addr:
+        return n
+    return le_pack(("mem", la, 1), ("mem", ha, 1))
+
+
+def _carry_out(n, carry_in):
+    """``(the two addends, what came in below)`` where ``n`` is a stage's carry-out.
+
+    A carry out of ``A + B + cin`` is spelled ``carry(A, B) | carry(A + B, cin)``;
+    ``carry_in`` reads the stage below out of ``cin``, and neither bar nor plus
+    spells an order, so every side is tried both ways."""
+    if not is_op(n, "INT_OR", 1, 2):
+        return None
+    for x, y in commuted(n[2]):
+        if not is_op(x, "INT_CARRY") or not is_op(y, "INT_CARRY"):
+            continue
+        for add, cin in commuted(y[2]):
+            got = carry_in(cin)
+            if got is None or not is_op(add, "INT_ADD", 1, 2):
+                continue
+            if set(add[2]) == set(x[2]):
+                return x[2], got
+    return None
+
+
+def _no_carry_in(cin):
+    """The bottom stage carries nothing in: the literal zero byte, and only that."""
+    return () if cin == ("const", 0, 1) else None
+
+
+def _chain_lo(n):
+    """``(l1, l2)`` where ``n`` is a byte add's carry-out spelled as its chain."""
+    got = _carry_out(n, _no_carry_in)
+    return None if got is None else got[0]
+
+
+def _chain_full(n):
+    """``(h1, h2, l1, l2)`` where ``n`` is a word add's carry-out chain."""
+    got = _carry_out(n, _chain_lo)
+    return None if got is None else (got[0][0], got[0][1], got[1][0], got[1][1])
+
+
+def _word_from(lo, hi, env, at, regions):
+    """The word two byte operands are the halves of, else None."""
+    v = _untrunced(lo, hi, env, at)
+    if v is not None:
+        return v
+    la = _side_addr(lo, env, at, regions)
+    ha = _side_addr(hi, env, at, regions)
+    if la is None or ha is None:
+        return None
+    (bl, il), (bh, ih) = addr_split(la), addr_split(ha)
+    if bl is None or bh != bl + 1 or il != ih:
+        return None
+    reach = 1 + (0 if il is None else E.mask(loc_width(il)))
+    if any(bl <= v2 <= bl + reach for v2 in sidprog._VOLS):
+        return None
+    return ("mem", la, 2)
+
+
+def _fold_chain(n, env, at, regions):
+    """A byte carry chain over word halves is the word operation (7.9).
+
+    The full chain is the word add's carry-out, ``carry(A:2, B:2)``; a hi half
+    plus a lo chain is the word sum's high byte. Halves pair by provenance --
+    truncs of one word, or reads of adjacent cells -- and each pairing is tried
+    both ways since the chain spells no order."""
+    got = _chain_full(n)
+    if got is not None:
+        h1, h2, l1, l2 = got
+        for (la, ha), (lb, hb) in (((l1, h1), (l2, h2)), ((l2, h2), (l1, h1))):
+            a2 = _word_from(la, ha, env, at, regions)
+            b2 = _word_from(lb, hb, env, at, regions)
+            if a2 is not None and b2 is not None:
+                return ("op", "INT_CARRY", (a2, b2), 1)
+        return n
+    if is_op(n, "INT_ADD", 1, 2):
+        for h1, chain in commuted(n[2]):
+            lo = _chain_lo(chain)
+            if lo is None:
+                continue
+            for l1, l2 in commuted(lo):
+                a2 = _word_from(l1, h1, env, at, regions)
+                if a2 is None:
+                    continue
+                b2 = ("op", "INT_ZEXT", (l2,), 2)
+                add = ("op", "INT_ADD", (a2, b2), 2)
+                shr = ("op", "INT_RIGHT", (add, ("const", 8, 1)), 2)
+                return ("op", "COPY", (shr,), 1)
+    return n
+
+
+def _fold_expr(n, env, at, regions, in_addr=False):
+    if n[0] == "mem":
+        n = ("mem", _fold_expr(n[1], env, at, regions, True), n[2])
+    elif n[0] == "op":
+        n = ("op", n[1], tuple(_fold_expr(c, env, at, regions, in_addr) for c in n[2]), n[3])
+    n = _fold_word(n, env, at, regions, in_addr)
+    return n if in_addr else _fold_chain(n, env, at, regions)
+
+
+def _word_of(vl, vh):
+    """The word value two half stores spell, where the halves say so themselves."""
+    if vl[0] == "mem" and vl[2] == 1 and vh[0] == "mem" and vh[2] == 1:
+        (cl, jl), (ch, jh) = addr_split(vl[1]), addr_split(vh[1])
+        if cl is not None and ch == cl + 1 and jl == jh:
+            return ("mem", vl[1], 2)
+    v = trunc_pair(vl, vh)
+    return v if v is not None and loc_width(v) == 2 else None
+
+
+def _fold_store_pair(a, b, regions):
+    """One word store for two adjacent half stores of one datum, RAM only.
+
+    The SID pairs stay rung (d)'s, where the record law lives; here the two
+    cells are plain memory, the writes adjacent, and the second half's reads
+    must not overlap the first store, so one word store is the same program."""
+    if a[0] != "st" or b[0] != "st":
+        return None
+    if G.store_width(a[2]) != 1 or G.store_width(b[2]) != 1:
+        return None
+    (ba, ia), (bb, ib) = addr_split(a[1]), addr_split(b[1])
+    if ba is None or bb is None or ia != ib:
+        return None
+    lo, hi = (a, b) if bb == ba + 1 else (b, a) if ba == bb + 1 else (None, None)
+    if lo is None:
+        return None
+    base = min(ba, bb)
+    if 0xD000 <= base <= 0xDFFF:
+        return None
+    val = _word_of(lo[2], hi[2])
+    if val is None:
+        return None
+    st_at = (base, ia, span(base, ia, regions), 2, 0)
+    for ref, rw in (r for x in (hi[2], hi[1]) for r in mem_refs(x)):
+        if ref is None:
+            return None
+        rb, ri, rm = ref
+        if overlaps(st_at, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+            return None
+    return ("st", lo[1], val)
+
+
+def _fold_pair_at(stmts, i, regions):
+    """Fold the half-store pair led at ``i``, safe asgs between hoisted above.
+
+    An ``asg`` between the halves moves above the pair only where it reads
+    neither target cell, so it still sees the memory the lo store had not yet
+    changed; anything else between the halves keeps them apart."""
+    a = stmts[i]
+    if a[0] != "st" or G.store_width(a[2]) != 1:
+        return False
+    if addr_split(a[1])[0] is None:
+        return False
+    lead = store_reach(a, regions)  # what a crossed statement steps above
+    moved = []
+    for j in range(i + 1, min(i + 5, len(stmts))):
+        s = stmts[j]
+        if s[0] == "st":
+            got = _fold_store_pair(a, s, regions)
+            if got is not None:
+                stmts[i : j + 1] = moved + [got]
+                return True
+            if not _steps_over(a, s, lead, regions):
+                return False
+            moved.append(s)
+            continue
+        if s[0] != "asg":
+            return False
+        for ref, rw in mem_refs(s[2]):
+            if ref is None:
+                return False
+            rb, ri, rm = ref
+            if overlaps(lead, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+                return False
+        moved.append(s)
+    return False
+
+
+def _steps_over(a, s, lead, regions):
+    """The store ``s`` may move above the half store ``a``: neither sees the other.
+
+    ``s`` must read nothing ``a`` writes, and ``a`` must read nothing ``s``
+    writes, so the two commute and the pair may meet below."""
+    sreach = store_reach(s, regions)
+    for x, at2 in ((s, lead), (a, sreach)):
+        for ref, rw in (r for e in (x[1], x[2]) for r in mem_refs(e)):
+            if ref is None:
+                return False
+            rb, ri, rm = ref
+            if overlaps(at2, (rb, ri, span(rb, ri, regions, rm), rw, rm)):
+                return False
+    return not overlaps(lead, sreach)
+
+
+def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
+    env = Defs(stmts, outer, cyclic, foreign if outer is None else None)
+    for i, s in enumerate(stmts):
+        stmts[i] = _map_exprs(s, lambda x, _i=i: _fold_expr(x, env, _i, regions))
+        for b in _stmt_bodies(stmts[i]):
+            _fold_words(b, regions, (env, i), stmts[i][0] in _CYCLIC)
+    if regions is None:
+        return
+    i = 0
+    while i + 1 < len(stmts):
+        if _fold_pair_at(stmts, i, regions):
+            env.rewritten()  # the fold shrank this list; the root's goto index named it
+            continue
+        i += 1
+
+
+def _loc_widths(stmts, widths):
+    """Definition widths per local over the forest; a pcall return is unknown."""
+    for s in stmts:
+        if s[0] == "asg":
+            widths.setdefault(s[1], set()).add(G.store_width(s[2]))
+        elif s[0] == "for":
+            widths.setdefault(s[1], set()).add(1)
+        elif s[0] == "pcall":
+            for name in s[3]:
+                widths.setdefault(name, set()).add(0)
+        for b in _stmt_bodies(s):
+            _loc_widths(b, widths)
+
+
+def _norm_widths(stmts, params):
+    """A local every definition of which is a word spells ``:2`` at every use.
+
+    The converter writes some references bare; one spelling per name is what the
+    half matchers and the folds key on, so the width law is normalized here."""
+    widths = {}
+    _loc_widths(stmts, widths)
+    words = {n for n, ws in widths.items() if ws == {2} and n not in params}
+
+    def f(x):
+        for n in sorted(words):
+            x = _subst_loc(x, n, ("loc", n, 2))
+        return x
+
+    def apply(lst):
+        for i, s in enumerate(lst):
+            lst[i] = _map_exprs(s, f)
+            for b in _stmt_bodies(lst[i]):
+                apply(b)
+
+    if words:
+        apply(stmts)
+
+
+def _def_sites(stmts, sites, banned, path=()):
+    """Every asg per local over the forest; pcall returns and for counters ban."""
+    for i, s in enumerate(stmts):
+        if s[0] == "asg":
+            sites.setdefault(s[1], []).append((stmts, i))
+        elif s[0] == "for":
+            banned.add(s[1])
+        elif s[0] == "pcall":
+            banned.update(s[3])
+        for b in _stmt_bodies(s):
+            _def_sites(b, sites, banned, path)
+
+
+def _half_def(s):
+    """``(kind, payload)`` where ``s`` defines one half of a word datum."""
+    if s[0] != "asg":
+        return None
+    v = s[2]
+    if v[0] == "mem" and v[2] == 1:
+        base, idx = addr_split(v[1])
+        if base is not None:
+            return ("cell", base, idx)
+    if is_op(v, "COPY"):
+        inner = v[2][0]
+        word = shifted_hi(inner)
+        if word is not None and loc_width(word) == 2:
+            return ("hi", word)
+        if loc_width(inner) == 2:
+            return ("lo", inner)
+    return None
+
+
+def _match_halves(a, b):
+    """``(lo name, hi name, word value)`` where two adjacent asgs define one word."""
+    da, db = _half_def(a), _half_def(b)
+    if da is None or db is None:
+        return None
+    if da[0] == "cell" and db[0] == "cell" and da[2] == db[2]:
+        if db[1] == da[1] + 1:
+            return a[1], b[1], ("mem", a[2][1], 2)
+        if da[1] == db[1] + 1:
+            return b[1], a[1], ("mem", b[2][1], 2)
+    if da[0] == "lo" and db[0] == "hi" and da[1] == db[1]:
+        return a[1], b[1], da[1]
+    if da[0] == "hi" and db[0] == "lo" and da[1] == db[1]:
+        return b[1], a[1], db[1]
+    return None
+
+
+def _pair_window(lst, i):
+    """``(j, lo, hi, word)`` pairing ``lst[i]`` with a nearby half asg, else None.
+
+    Only asgs may stand between -- they write no memory, so the halves read at
+    ``i`` what they read apart -- and none may rebind the word's locals or the
+    first half; a volatile source anywhere refuses (``iota`` pins its reads)."""
+    a = lst[i]
+    if a[0] != "asg" or _half_def(a) is None:
+        return None
+    for j in range(i + 1, min(i + 4, len(lst))):
+        b = lst[j]
+        if b[0] != "asg":
+            return None
+        got = _match_halves(a, b)
+        if got is None:
+            names = {a[1]}
+            if b[1] in names or _reads_vol(b[2]):
+                return None
+            continue
+        lo, hi, word = got
+        names = _locset(word) | {a[1]}
+        for k in range(i + 1, j):
+            if lst[k][1] in names or _reads_vol(lst[k][2]):
+                return None
+        if word[0] == "mem":
+            base, idx = addr_split(word[1])
+            reach = 1 + (0 if idx is None else E.mask(loc_width(idx)))
+            if any(base <= v <= base + reach for v in sidprog._VOLS):
+                return None
+        return j, lo, hi, word
+    return None
+
+
+def _sub_halves(s, lo, hi, q):
+    """Uses of the halves read the word local's truncs; nested bodies included."""
+    word = ("loc", q, 2)
+    reps = {lo: trunc_lo(word), hi: trunc_hi(word)}
+
+    def f(x):
+        for name, rep in reps.items():
+            x = _subst_loc(x, name, rep)
+        return x
+
+    s = _map_exprs(s, f)
+    for b in _stmt_bodies(s):
+        b[:] = [_sub_halves(s2, lo, hi, q) for s2 in b]
+    return s
+
+
+def _pair_locals(stmts, params, rets, counter):
+    """Two byte locals born as one word's halves become one word local (7.9).
+
+    Every definition of both halves must pair in one window, neither name may be
+    a parameter, return, pcall binding or counter, and every use then reads the
+    word's truncs, which the pack folds take back to the word."""
+    sites, banned = {}, set(params) | set(rets)
+    _def_sites(stmts, sites, banned)
+    pairs = {}
+    for name, defs in sites.items():
+        if name in banned:
+            continue
+        for lst, i in defs:
+            got = _pair_window(lst, i)
+            if got is None:
+                continue
+            j, lo, hi, word = got
+            pairs.setdefault((lo, hi), []).append((lst, i, j, word))
+    for (lo, hi), wins in sorted(pairs.items()):
+        if lo in banned or hi in banned or lo == hi:
+            continue
+        if len(sites.get(lo, ())) != len(wins) or len(sites.get(hi, ())) != len(wins):
+            continue
+        q = "q%d" % counter[0]
+        counter[0] += 1
+        for lst, i, j, word in sorted(wins, key=lambda w: -w[1]):
+            lst[i] = ("asg", q, word)
+            del lst[j]
+        stmts[:] = [_sub_halves(s2, lo, hi, q) for s2 in stmts]
+        return True  # one pair per call: the next round re-reads the moved positions
+    return False
+
+
+_NEGATE = {"INT_EQUAL": "INT_NOTEQUAL", "INT_NOTEQUAL": "INT_EQUAL"}
+
+
+def _tidy_ifs(stmts):
+    """Empty then-arms flip to their negation, and ``ifnot (a != b)`` folds to ``if``."""
+    for i, s in enumerate(stmts):
+        for b in _stmt_bodies(s):
+            _tidy_ifs(b)
+        if s[0] != "if":
+            continue
+        if not s[3] and s[4]:
+            s = ("if", "ifnot" if s[1] == "if" else "if", s[2], s[4], s[3])
+        if s[1] == "ifnot" and s[2][0] == "op" and s[2][1] in _NEGATE:
+            s = ("if", "if", ("op", _NEGATE[s[2][1]], s[2][2], s[2][3]), s[3], s[4])
+        stmts[i] = s
+
+
+def _arm_locals(stmts):
+    """Locals the arm may define, None where a call binds unseen."""
+    names = set()
+    for s in stmts:
+        got = _label_defs(s)
+        if got is None:
+            return None
+        names |= got[0]
+    return names
+
+
+def _unify(a, b, ctx):
+    """``a`` equals ``b`` modulo a bijection over arm-local names, grown in ``ctx``."""
+    if a == b:
+        return True
+    if not (isinstance(a, tuple) and isinstance(b, tuple)) or len(a) != len(b):
+        return False
+    if a[0] == "loc" and b[0] == "loc":
+        return _pair_names(a[1], b[1], ctx)
+    return all(_unify(x, y, ctx) for x, y in zip(a, b))
+
+
+def _pair_names(na, nb, ctx):
+    mine, theirs, sigma, taken = ctx
+    if nb in sigma:
+        return sigma[nb] == na
+    if na == nb:
+        return True
+    if na in mine and nb in theirs and na not in taken:
+        sigma[nb] = na
+        taken.add(na)
+        return True
+    return False
+
+
+def _unify_stmt(sa, sb, ctx):
+    """The two arm statements are the same statement under the growing bijection."""
+    if sa[0] != sb[0] or sa[0] not in ("asg", "st"):
+        return False
+    if sa[0] == "asg":
+        return _pair_names(sa[1], sb[1], ctx) and _unify(sa[2], sb[2], ctx)
+    return _unify(sa[1], sb[1], ctx) and _unify(sa[2], sb[2], ctx)
+
+
+def _rename_stmt(s, sigma):
+    if s[0] == "asg" and s[1] in sigma:
+        s = ("asg", sigma[s[1]], s[2])
+    elif s[0] == "for" and s[1] in sigma:
+        s = ("for", sigma[s[1]], s[2], s[3], s[4])
+    elif s[0] == "pcall":
+        s = ("pcall", s[1], s[2], [sigma.get(n, n) for n in s[3]])
+    for nb, na in sigma.items():
+        s = _map_exprs(s, lambda x, _b=nb, _a=na: _subst_loc(x, _b, ("loc", _a)))
+    for b in _stmt_bodies(s):
+        b[:] = [_rename_stmt(s2, sigma) for s2 in b]
+    return s
+
+
+def _hoistable(s, cond):
+    """Moving ``s`` above the pure ``cond`` changes neither: no write ``cond`` reads."""
+    if s[0] == "asg":
+        return s[1] not in _locset(cond)
+    return not _reads_mem(cond)
+
+
+def _factor_one(s, root):
+    """``(head, if, tail)`` with the arms' shared statements moved out, else None."""
+    a, b = list(s[3]), list(s[4])
+    mine, theirs = _arm_locals(a), _arm_locals(b)
+    if mine is None or theirs is None:
+        return None
+    ctx = (mine, theirs, {}, set())
+    head = 0
+    while (
+        head < min(len(a), len(b))
+        and _hoistable(a[head], s[2])
+        and _unify_stmt(a[head], b[head], ctx)
+    ):
+        head += 1
+    tail = 0
+    while tail < min(len(a), len(b)) - head and _unify_stmt(a[-1 - tail], b[-1 - tail], ctx):
+        tail += 1
+    sigma = ctx[2]
+    if (head == 0 and tail == 0) or set(sigma) & set(sigma.values()):
+        return None
+    inside = sum(_use_count(s, n) for n in sigma)
+    total = sum(_use_count(x, n) for n in sigma for x in root)
+    if total != inside:
+        return None  # a renamed arm local leaks outside the if
+    b = [_rename_stmt(x, sigma) for x in b]
+    cut = len(a) - tail
+    kept = ("if", s[1], s[2], a[head:cut], b[head : len(b) - tail])
+    keep = [kept] if kept[3] or kept[4] or _reads_vol(s[2]) else []
+    return a[:head], keep, a[cut:]
+
+
+def _factor_ifs(stmts, root):
+    changed = False
+    i = 0
+    while i < len(stmts):
+        s = stmts[i]
+        for b in _stmt_bodies(s):
+            changed |= _factor_ifs(b, root)
+        got = None
+        if s[0] == "if" and s[3] and s[4]:
+            got = _factor_one(s, root)
+        if got is None:
+            i += 1
+            continue
+        pre, kept, post = got
+        stmts[i : i + 1] = pre + kept + post
+        changed = True
+        i += len(pre) + len(kept) + len(post)
+    return changed
+
+
+def repolish(procs, play, regions=None):
+    """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
+
+    Signatures are already spelled into every ``pcall``, so ``params``/``rets``
+    stay as the build fixed them; only the bodies move, ahead of rung (f)
+    keying ``resolved`` by the final address expressions."""
+    info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
+    info.summarize()
+    info.params = {e: list(p) for e, p, _r, _s in procs}
+    info.rets = {e: list(r) for e, _p, r, _s in procs}
+    widths = {}
+    for _e, _p, _r, st in procs:
+        _loc_widths(st, widths)
+    qs = [int(n[1:]) for n in widths if re.fullmatch(r"q\d+", n)]
+    counter = [max(qs) + 1 if qs else 0]  # a pair's word name is born once, ever
+    for _round in range(16):
+        pruned = _prune(info)
+        inlined = _inline(info)
+        factored = False
+        for e, stmts in info.procs.items():
+            _norm_widths(stmts, info.params.get(e, ()))
+            factored |= _pair_locals(stmts, info.params.get(e, ()), info.rets.get(e, ()), counter)
+        gotos = {
+            e: {s[1] for _v, _i, s in envs(st) if s[0] == "goto"} for e, st in info.procs.items()
+        }
+        for e, stmts in info.procs.items():
+            foreign = frozenset(t for e2, ts in gotos.items() if e2 != e for t in ts)
+            _fold_words(stmts, regions, foreign=foreign)
+            factored |= _factor_ifs(stmts, stmts)
+        if not (pruned or inlined or factored):
+            break
+    for _e, _p, _r, stmts in procs:
+        _tidy_ifs(stmts)
+
+
+def render_lines(procs, resolved=_NORES, pairs=None):
+    """frameprog text lines for analysed (or parsed) procedures.
+
+    ``pairs`` (lo table base -> hi table base, off the decl roles) scopes the
+    split-pair rendering: a pack over a declared pair reads ``lo[i]:2`` and its
+    half-store pair writes it, the byte spelling staying the parsed form."""
+    _PAIRS.clear()
+    _PAIRS.update(pairs or {})
+    try:
+        printer = _Printer(resolved)
+        for entry, params, rets, stmts in procs:
+            printer.proc(entry, stmts, params, rets)
+        return printer.out
+    finally:
+        _PAIRS.clear()

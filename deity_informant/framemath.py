@@ -29,14 +29,6 @@ def _loc(name):
     return ("loc", name, 2)
 
 
-def _trunc(n):
-    return ("op", "COPY", (n,), 1)
-
-
-def _hi_byte(n):
-    return _trunc(("op", "INT_RIGHT", (n, ("const", 8, 1)), 2))
-
-
 def _resolve(n, env, at):
     """Follow ``loc`` definitions, each read where it was written."""
     while n[0] == "loc":
@@ -76,6 +68,26 @@ def _lanes(t):
         if hi != lo and all(x[0] in ("cell", "load") and x[2] == 1 for x in (hi, lo)):
             return hi, lo
     return None
+
+
+def _numfold(t):
+    """A pack of two constant bytes is the constant word it spells.
+
+    The 6502 spells a 16-bit immediate as two, and the extraction keeps that
+    spelling even though ``_lanes`` refuses it -- a literal has no lanes to
+    read. Folding it is the last 8-bit shadow off an otherwise word form."""
+    if not isinstance(t, tuple):
+        return t
+    t = tuple(_numfold(a) for a in t)
+    if t[0] == "bor" and t[3] == 2:
+        for a, b in (t[1:3], t[2:0:-1]):
+            if a[0] != "shl" or a[2][0] != "num" or a[2][1] != 8:
+                continue
+            hi = a[1][1] if a[1][0] == "zext" else a[1]
+            lo = b[1] if b[0] == "zext" else b
+            if hi[0] == "num" and lo[0] == "num":
+                return ("num", ((hi[1] & 0xFF) << 8) | (lo[1] & 0xFF), 2)
+    return t
 
 
 def _signed(t):
@@ -120,6 +132,7 @@ def _word_form(t):
     the form is what is left once every occurrence of that pack stands as the
     word. A pack the rest of the term still reads a lane outside is no form."""
     out = []
+    t = _numfold(t)
     for p in _packs(t):
         lanes = _lanes(p)
         if lanes is None:
@@ -317,98 +330,27 @@ def _inline(n, defs):
     return n
 
 
-def _hoist(lst, i, j, exprs, regions, env=None):
-    """``exprs``, the interval's definitions inlined, and the statement blocking it.
-
-    A read is carried up to ``i`` from where the interval made it, so a statement
-    is held only against what is hoisted *past* it: one writing a cell later than
-    the read it would spoil is no hazard, and its own definition is not one."""
-    at = None
-    for k in range(j - 1, i, -1):
-        s = lst[k]
-        if s[0] == "asg" and any(s[1] in frameproc._locset(x) for x in exprs):
-            exprs = tuple(frameproc._subst_loc(x, s[1], s[2]) for x in exprs)
-        elif _clobbers(_store(env, lst, k), exprs, regions):
-            at = k
-    return exprs, at
-
-
 def _volatile(n):
     """True where ``n`` may load a volatile source, so its value cannot be dropped."""
     return any(FF._may_read(n, c) for c in sidprog._VOLS)
-
-
-def _mem_refs(n):
-    """``((base, index, modulus), width)`` of every memory reference under ``n``."""
-    out, stack = [], [n]
-    while stack:
-        x = stack.pop()
-        if x[0] == "mem":
-            out.append((frameproc.addr_range(x[1], x[2]), x[2]))
-            stack.append(x[1])
-        elif x[0] == "op":
-            stack.extend(x[2])
-    return out
 
 
 _span = frameproc.span  # the range rules live beside the definition-in-force query
 _NOIDX = frameproc.NOIDX
 _overlaps = frameproc.overlaps
 _reach = frameproc.store_reach  # a store with no named base still has a bound
+_lane = frameproc.lane  # the hazard predicates rung (d) shares with this one
+_mem_refs = frameproc.mem_refs
+_reads = frameproc.reads
+_clobbers = frameproc.clobbers
+_disturbs = frameproc.disturbs
+_store = frameproc.as_written
+_hoist = frameproc.hoist
 
 
 _OUTPUTS = ((0xD400, _NOIDX, 0x1F, 1, 0),) + tuple(
     (c, _NOIDX, 0, 1, 0) for c in sorted(sidprog._VOLS)
 )
-
-
-def _lane(base, idx, span, mod=0):
-    """The one-byte range a lane occupies."""
-    return (base, idx, span, 1, mod)
-
-
-def _reads(exprs, at, regions):
-    """True where evaluating ``exprs`` may load a cell of the range ``at``."""
-    for ref, rw in (r for x in exprs for r in _mem_refs(x)):
-        if ref is None:
-            return True
-        rb, ri, rm = ref
-        if _overlaps(at, (rb, ri, _span(rb, ri, regions, rm), rw, rm)):
-            return True
-    return False
-
-
-def _clobbers(stmt, exprs, regions):
-    """True where ``stmt`` may change the value of any of ``exprs``."""
-    if stmt[0] == "asg":
-        return any(stmt[1] in frameproc._locset(x) for x in exprs)
-    return True if stmt[0] != "st" else _disturbs(stmt, exprs, regions)
-
-
-def _disturbs(stmt, exprs, regions):
-    """The store may change a value ``exprs`` read.
-
-    Index expressions may only be compared when the read is a direct load here;
-    one captured earlier can be structurally equal yet hold a stale index."""
-    return False if stmt[0] != "st" else _reads(exprs, _reach(stmt, regions), regions)
-
-
-def _store(env, lst, k):
-    """``lst[k]`` with its address spelled as the definition in force spells it.
-
-    A local naming an address names the same address at ``k`` only where every
-    local that naming reads still holds there what it held where it was written --
-    the staleness ``_disturbs`` warns of, discharged rather than assumed."""
-    s = lst[k]
-    if s[0] != "st" or env is None:
-        return s
-    n, bound = s[1], k
-    while n[0] == "loc":
-        got = env.value(n[1], bound)
-        if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in frameproc._locset(got[1])):
-            break
-        n, bound = got[1], got[0]
-    return ("st", n, s[2])
 
 
 def _may_disturb(stmt, base, idx, regions, mod=0):
@@ -725,12 +667,35 @@ def _decide(lst, i, j, site, regions, env):
     site.sid = None if site.at is None else site.at[3]
 
 
+def _pairtab(d, other):
+    """``d`` is declared one half of a 16-bit table pair whose other half is ``other``."""
+    role = d.get("role")
+    return bool(role) and role[1] == other["base"]
+
+
+def _one_datum(site, regions):
+    """The two split lanes may be halves of one quantity, as the declarations have it.
+
+    Adjacent cells are one datum by their addresses; split lanes are two declared
+    data, and one the program never writes is not the half of one it does unless
+    ``datadecl`` paired them. A lane in no declaration is no evidence either way."""
+    if regions is None or site.word:
+        return True
+    got = [regions.at(a) for a in (site.lo, site.hi)]
+    if any(g is None for g in got):
+        return True
+    (dl, _lo_off), (dh, _hi_off) = got
+    return bool(dl.get("mut")) == bool(dh.get("mut")) or (_pairtab(dl, dh) and _pairtab(dh, dl))
+
+
 def _premise(lst, i, j, site, span, blocked=None, regions=None, env=None):
     """The refusal diagnostic for lifting ``lst[i:j+1]``, or None.
 
     Every read the word assignment leads with is held against the statements it is
     hoisted past, which is ``blocked``, ``settle``'s verdict; merging the two lane
     stores also moves the second one, so that needs no intervening read either."""
+    if not _one_datum(site, regions):
+        return "a const lane and a written lane are not one declared datum"
     kept = 1 if site.lo_at == i else 0
     later = [site.src[kept], site.src[2]]  # the leading store precedes both of these
     if _disturbs(_store(env, lst, i), later, regions):
@@ -784,7 +749,7 @@ def _lift(lst, site, name):
     word_load = site.word and (site.direct or site.merge)
     src = ("mem", site.load, 2) if word_load else FF._pack(site.src[0], site.src[1])
     word = frameproc._subst_loc(site.src[2], _WNAME, src)
-    half = {i: _trunc(lv), j: _hi_byte(lv)}
+    half = {i: frameproc.trunc_lo(lv), j: frameproc.trunc_hi(lv)}
     pair = () if site.at is None else site.at[:2]
     out = []
     for k, s in enumerate(lst):
@@ -871,7 +836,7 @@ def _bit(n):
 
 def _counts(addr, val):
     """The word op a store of ``val`` to ``addr`` makes of that cell, else None."""
-    if val[0] != "op" or val[1] != "INT_ADD" or len(val[2]) != 2 or val[3] != 1:
+    if not frameproc.is_op(val, "INT_ADD", 1, 2):
         return None
     a, b = val[2]
     if a != ("mem", addr, 1) or b[0] != "const":

@@ -5,6 +5,8 @@ one lone-half access refuses that pair alone, and a wrongly fused pair fails
 Gate FP (the M-FP3 mutation evidence).
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -35,6 +37,11 @@ def _proof(prog, lo):
     return next(p for p in prog.proofs if p.site == lo)
 
 
+def _proof_kind(prog, lo, kind):
+    """One site carries a proof per rung, so the kind picks between them."""
+    return next(p for p in prog.proofs if p.site == lo and p.kind == kind)
+
+
 def _stmts(prog):
     return prog.procs[0][3]
 
@@ -63,12 +70,21 @@ def _st(cell, val):
 
 # ---- the premise discharged ------------------------------------------------------
 def test_pointer_pair_fuses_to_one_u16_state_field():
-    """The pair the classifier proves becomes one field, read and written as a word."""
+    """The pair the classifier proves becomes one field, read and written as a word.
+
+    The source cells declare themselves too (7.9 (a), scalar): nothing indexes
+    them, so the pack over them is their only evidence and it carves them as a
+    one-element lo/hi pair. That is what lets rung (f) name the deref's
+    definition, so the load resolves to the pointer rather than to its cell."""
     model = _model_of(G.t_word_pair)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
     assert " ptr_0002: u16" in text and "ptr_0002_lo" not in text
-    assert "ptr_0002:2 = (zext2(" in text and "mem[ptr_0002:2]" in text
+    assert " table m_1501[1] lo m_1505:" in text and " table m_1505[1] hi m_1501:" in text
+    assert "ptr_0002:2 = m_1501[$00]:2" in text
+    assert "a = *ptr_0002" in text
+    assert _proof_kind(prog, PTR, "deref").status == "resolved"
+    assert "from m_1501/m_1505[1]@$00" in _proof_kind(prog, PTR, "deref").lemma
     assert _proof(prog, PTR).status == "fused"
     assert "pointer pair" in _proof(prog, PTR).lemma
     assert frameprog.dumps(frameprog.loads(text)) == text
@@ -191,17 +207,84 @@ def _freq_pair_model():
 
 
 def test_sid_register_pairs_render_as_u16_without_moving_the_record():
-    """freq, pulse and cutoff fuse per site, hi-first included: the section still emits lo,hi."""
+    """freq, pulse and cutoff fuse per site, and a hi-first pair carries its write order.
+
+    The cutoff store writes $D416 before $D415, so its merge is spelled ``hi-first``
+    and ``stw`` emits the two bytes descending -- the sequence the program wrote."""
     model = _freq_pair_model()
     fused = frameprog.program(model)
     assert frameval.gate_fp(model, 8, fused) is None
     text = frameprog.dumps(fused)
     lvalues = [ln.split(" = ")[0].strip() for ln in text.splitlines() if " = " in ln]
-    assert lvalues == ["sid.v1.freq_lo:2", "sid.v1.pw_lo:2", "filter.cutoff_lo:2"]
+    assert lvalues == ["sid.v1.freq_lo:2", "sid.v1.pw_lo:2", "hi-first filter.cutoff_lo:2"]
     assert frameprog.dumps(frameprog.loads(text)) == text
     sid = [p for p in fused.proofs if p.kind == "sid"]
     assert [p.targets for p in sid] == [(0xD400, 0xD401), (0xD402, 0xD403), (0xD415, 0xD416)]
     assert [p.status for p in sid] == ["fused"] * 3
+
+
+# ---- the word store carries its own byte-emission order (7.10.4) -----------------
+_HF_DATA = {TBL: 0x33, TBL + 1: 0x44}
+_HF_OUTS = tuple(0xD400 + k for k in range(0x19))
+
+
+def _hifirst_indexed():
+    """A lane pair written hi then lo through an index no constant set reaches.
+
+    ``osc3`` is a declared input, so ``_consts`` returns None for ``y``; the mask
+    still pins it to $04/$05, where both cells of the pair land in the ctrl/AD/SR
+    section the frame log keeps in write order."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", 0xD41B).i("AND", "imm", 0x01).i("ORA", "imm", 0x04).i("TAY")
+    a.i("LDA", "abs", TBL).i("STA", "absy", 0xD401)  # the hi half is written first
+    a.i("LDA", "abs", TBL + 1).i("STA", "absy", 0xD400)
+    return a.i("RTS").assemble()
+
+
+def test_a_word_store_emits_its_bytes_in_the_order_it_declares():
+    """``stw`` emits ascending unless the store says otherwise, and the log sees it.
+
+    $D404/$D405 are ctrl and AD, which ``framelog`` keeps in write order, so the
+    two spellings of one word store give two different records. That difference is
+    the whole of item 1's argument: a store that declares its order reproduces the
+    program's sequence without knowing where its address landed."""
+    val = framefuse._pack(("const", 0x11, 1), ("const", 0x22, 1))
+    ordv = F.SECTIONS.index("v0.ord")
+    ascending = frameval.eval_fp(_hand([("st", ("const", 0xD404, 2), val)], {}), {}, 1)
+    descending = frameval.eval_fp(_hand([("st", ("const", 0xD404, 2), val, True)], {}), {}, 1)
+    assert ascending[0][ordv] == ((0x04, 0x11), (0x05, 0x22))
+    assert descending[0][ordv] == ((0x05, 0x22), (0x04, 0x11))
+
+
+def test_a_hi_first_lane_pair_merges_on_an_index_it_can_say_nothing_about():
+    """The premise deleted: a hi-first pair owes no fact about its index (7.10.4).
+
+    ``y`` comes from ``osc3``, so no constant set reaches the store and the old
+    ``_lww`` gate refused the merge outright -- the pair stayed two byte stores to
+    ``sid.reg[..]``. It merges now, spelled ``hi-first``, and Gate FP holds because
+    the two bytes leave in the order the program wrote them for every ``y``."""
+    model = _fuzz_model(_player("hifirst_idx", _hifirst_indexed(), _HF_DATA, _HF_OUTS))
+    prog = frameprog.program(model)
+    text = frameprog.dumps(prog)
+    assert "hi-first sid.v1.freq_lo[((y0 & $01) | $04)]:2 = " in text
+    body = text.split("sub_", 1)[1]  # the header notes name sid.reg[i] themselves
+    assert "sid.reg[" not in body  # neither half survived as a byte store
+    assert frameval.gate_fp(model, 64, prog) is None
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_dropping_a_hi_first_store_s_order_moves_the_record():
+    """The flag is not decoration: emit the same merge ascending and the log moves.
+
+    ``y`` is masked into ctrl/AD/SR, which is the section that keeps write order,
+    so this is the case the deleted ``_lww`` gate existed to refuse -- and the one
+    the store's own order answers without resolving ``y``."""
+    model = _fuzz_model(_player("hifirst_drop", _hifirst_indexed(), _HF_DATA, _HF_OUTS))
+    prog = frameprog.program(model)
+    st = _stmts(prog)
+    i = next(i for i, s in enumerate(st) if s[0] == "st" and frameproc.hi_first(s))
+    st[i] = st[i][:3]  # the same store, emitting ascending again
+    assert frameval.gate_fp(model, 64, prog) is not None
 
 
 def test_a_lone_sid_half_widens_to_the_word_store_it_is():
@@ -344,15 +427,17 @@ def _voice_loop(name, index_table):
 def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
     """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers."""
     lemma, text = _voice_loop("idx_ok", [0x00, 0x07, 0x0E])
-    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
-    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+    assert re.search(
+        r"sid\.v1\.freq_lo\[.*\]:2 = \(\(sid\.v1\.freq_lo\[.*\]:2 & \$FF00\):2 \| zext2\(", text
+    )
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
 def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     """One entry of `$01` puts it on freq *hi*, where the word would write pulse's lo."""
     lemma, text = _voice_loop("idx_stray", [0x00, 0x01, 0x0E])
-    assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
-    assert "0 lane-aligned indexed, 1 index not proven" in lemma
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
+    assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
 # ---- the index spilled through a play-written cell (docs/frameprog.md 7.2) -------
@@ -382,8 +467,8 @@ def test_an_index_spilled_through_a_ram_cell_widens_on_the_store_in_force():
     """No declaration can make a play-written cell const; the store that wrote it can."""
     lemma, text = _spill_loop("spill_ok")
     idx = "sid.v1.freq_lo[m_%04X]" % G.CNT
-    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(a)):2" % (idx, idx) in text
-    assert "1 lane-aligned indexed, 0 index not proven" in lemma
+    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(m_1408[x])):2" % (idx, idx) in text
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
 def _push(val):
@@ -402,8 +487,164 @@ def test_an_address_the_stack_page_bounds_does_not_kill_the_spilled_index():
     assert frameproc.Defs([spill, deref, read]).cell(G.CNT, 2, regions) is None
 
 
+# ---- G1: the reach bound follows a local to its definition (7.10.3) --------------
+_T4 = ("loc", "t4", 2)
+_STORE_T4 = ("st", _T4, ("loc", "a"))
+
+
+def _bits(stmts, k, outer=None, cyclic=False):
+    """``addr_bits`` of ``stmts[k]``'s address, as written and against its definitions."""
+    at = frameproc.DefsAt(frameproc.Defs(stmts, outer, cyclic), k)
+    return frameproc.addr_bits(stmts[k][1]), frameproc.addr_bits(stmts[k][1], at)
+
+
+def test_a_bare_local_address_is_ruled_off_the_sid_by_the_definition_reaching_it():
+    """`t4 = zext2(sp)|$0100` bounds `mem[t4:2]` at $01FF; as written it bounds nothing."""
+    assert _bits([("asg", "t4", _push(("loc", "a"))[1]), _STORE_T4], 1) == (0xFFFF, 0x01FF)
+    sub = ("op", "INT_SUB", (("loc", "x"), ("const", 3, 1)), 1)
+    zp = ("op", "INT_ZEXT", (sub,), 2)
+    assert _bits([("asg", "t4", zp), _STORE_T4], 1) == (0xFFFF, 0x00FF)
+
+
+def test_the_definition_is_read_where_the_store_is_read_walls_included():
+    """An enclosing list is climbed; no definition, a `pcall` binding and a back edge are ⊤."""
+    push = _push(("loc", "a"))[1]
+    body = [_STORE_T4]
+    outer = frameproc.Defs([("asg", "t4", push), ("loop", body)])
+    assert _bits(body, 0, (outer, 1), True) == (0xFFFF, 0x01FF)
+    assert _bits([_STORE_T4], 0) == (0xFFFF, 0xFFFF)
+    assert _bits([("pcall", 0x1000, (), ("t4",)), _STORE_T4], 1) == (0xFFFF, 0xFFFF)
+    rebound = [_STORE_T4, ("asg", "t4", push)]
+    assert _bits(rebound, 0, (outer, 1), True) == (0xFFFF, 0xFFFF)
+
+
+def test_a_local_under_the_address_resolves_but_the_definition_s_own_do_not():
+    """`t1|$0100` reads `t1` where the store is; what `t1` was assigned was read there."""
+    addr = ("op", "INT_OR", (("loc", "t1", 2), ("const", 0x0100, 2)), 2)
+    zext = ("op", "INT_ZEXT", (("loc", "y"),), 2)
+    stmts = [("asg", "t1", zext), ("asg", "y", ("const", 0xD4, 1)), ("st", addr, ("loc", "a"))]
+    assert _bits(stmts, 2) == (0xFFFF, 0x01FF)
+
+
+def test_store_reach_carries_the_env_into_the_bound_it_reports():
+    """The range a store with no named base reaches is the env's bound, not ⊤."""
+    stmts = [("asg", "t4", _push(("loc", "a"))[1]), _STORE_T4]
+    at = frameproc.DefsAt(frameproc.Defs(stmts), 1)
+    assert frameproc.store_reach(stmts[1], None) == (0, frameproc.UNRES, 0xFFFF, 1, 0)
+    assert frameproc.store_reach(stmts[1], None, at) == (0, frameproc.UNRES, 0x01FF, 1, 0)
+
+
 def test_a_write_between_the_spill_and_the_reload_refuses_the_widening():
     """``STA ($02),Y`` may write the cell, so no store is in force at the reload."""
     lemma, text = _spill_loop("spill_alias", [("STA", "indy", PTR)])
-    assert "sid.v1.freq_lo[y] = a" in text and "freq_lo[y]:2" not in text
-    assert "0 lane-aligned indexed, 1 index not proven" in lemma
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
+    assert "0 lane-aligned indexed, 1 index unproven, 0 index proven off-lane" in lemma
+
+
+# ---- the label join: an entry proven to carry the same store (7.7 (3)) -----------
+def _cell_set(stmts, at, foreign=frozenset()):
+    env = frameproc.Defs(stmts, foreign=foreign)
+    idx = ("mem", ("const", 0x54EB, 2), 1)
+    ctx = (datadecl.Regions(()), bytearray(0x10000), None, None, frozenset(), None)
+    return framefuse._consts(idx, env, at, ctx)
+
+
+def test_a_label_a_foreign_goto_may_target_refuses_the_join():
+    """Another procedure's goto is an entry no local walk saw (Foolish_Maniacs)."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2, foreign=frozenset((0x2000,))) is None
+    assert _cell_set(stmts, 2, foreign=None) is None  # an unstamped root trusts no label
+
+
+def test_a_label_whose_every_goto_carries_the_same_store_is_no_wall():
+    """Commando's shape: the spill dominates the label and the goto behind it."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2) == frozenset((7,))
+
+
+def test_a_label_entered_with_another_store_in_force_refuses():
+    """One goto arrives with a different store to the cell: the join kills it."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        _st(0x54EB, ("const", 9, 1)),
+        ("goto", 0x2000),
+    ]
+    assert _cell_set(stmts, 2) is None
+
+
+def test_a_computed_jump_refuses_every_label_join():
+    """A dispatch may land anywhere: no label's entry set is enumerable."""
+    stmts = [
+        _st(0x54EB, ("const", 7, 1)),
+        ("label", 0x2000),
+        _st(0xD400, ("const", 1, 1)),
+        ("dgoto", ("mem", ("const", 0x0002, 2), 2)),
+    ]
+    assert _cell_set(stmts, 2) is None
+
+
+def _call_voice(name, offsets):
+    """Also_Bad's shape: three call sites, each passing the callee's lane index."""
+    a = G.Asm(G.ORG)
+    for k, off in enumerate(offsets):
+        a.i("LDA", "imm", 0x30 + k).i("LDY", "imm", off).i("JSR", "abs", ("L", "sub"))
+    a.i("RTS").label("sub").i("STA", "absy", SID).i("RTS")
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player(name, a.assemble(), None, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    return _proof(prog, SID).lemma, frameprog.dumps(prog)
+
+
+def test_the_constants_the_call_sites_pass_widen_the_callee_lane_store():
+    """A parameter holds the union of what its call sites pass, `$00 $07 $0E` here."""
+    lemma, text = _call_voice("param_ok", (0x00, 0x07, 0x0E))
+    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
+    assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
+
+
+def test_one_call_site_passing_a_mid_register_offset_refuses_the_widening():
+    """`$01` lands the word on freq *hi*, so the union is not lane-aligned."""
+    lemma, text = _call_voice("param_stray", (0x00, 0x01, 0x0E))
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
+    assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
+
+
+def test_a_bare_local_is_the_entry_value_only_clear_of_walls():
+    """ENTRY survives an unentered label; a rebinding back edge or a foreign entry refuses."""
+    lst = [("label", 0x1000), ("ret", False)]
+    top = frameproc.Defs(lst, foreign=frozenset())
+    assert top.lookup_joined("y", 0) is frameproc.ENTRY
+    assert top.lookup_joined("y", 2) is frameproc.ENTRY  # no goto enters the label
+    entered = frameproc.Defs(lst, foreign=frozenset((0x1000,)))
+    assert entered.lookup_joined("y", 2) is None  # a foreign goto brings its own y
+    body = [("st", ("const", 0x1440, 2), ("loc", "y")), ("asg", "y", ("const", 1, 1))]
+    outer = frameproc.Defs([("loop", body)], foreign=frozenset())
+    inner = frameproc.Defs(body, (outer, 0), True)
+    assert inner.lookup_joined("y", 0) is None  # the back edge may rebind it
+
+
+def test_a_for_counter_binds_its_range_and_a_rebinding_body_refuses():
+    """The counter takes the range's every value; a body rebinding it is a wall."""
+    body = [("st", ("op", "INT_ADD", (("loc", "x"), ("const", 0xD400, 2)), 2), ("const", 1, 1))]
+    env = frameproc.Defs([("for", "x", 2, 0, body)])
+    sub = frameproc.Defs(body, (env, 0), True)
+    ctx = (datadecl.Regions(()), bytearray(0x10000), None, None, frozenset(), None)
+    got = framefuse._consts(("loc", "x"), sub, 1, ctx)
+    assert got == frozenset((0, 1, 2))
+    rebound = body + [("asg", "x", ("const", 5, 1))]
+    env = frameproc.Defs([("for", "x", 2, 0, rebound)])
+    sub = frameproc.Defs(rebound, (env, 0), True)
+    assert framefuse._consts(("loc", "x"), sub, 1, ctx) is None

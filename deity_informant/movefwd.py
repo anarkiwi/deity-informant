@@ -103,7 +103,7 @@ def _map_tree(stmts, shadows):
     out = []
     for s in stmts:
         if s[0] == "st" and ann._const_base(s[1]) in shadows:
-            s = ("st", _rebase(s[1], shadows), s[2])
+            s = ("st", _rebase(s[1], shadows), s[2]) + s[3:]
         k = s[0]
         if k == "if":
             s = ("if", s[1], s[2], _map_tree(s[3], shadows), _map_tree(s[4], shadows))

@@ -61,8 +61,11 @@ source = ["deity_informant"]
 # hermetic job and would sit at a permanent 0% that only dilutes the signal.
 # black and pylint still cover them.
 omit = [
+    "tools/_sweep.py",
     "tools/eqlift_emit.py",
     "tools/fetch_corpus.py",
+    "tools/fuse_measure.py",
+    "tools/gate_sweep.py",
     "tools/showcase.py",
 ]
 

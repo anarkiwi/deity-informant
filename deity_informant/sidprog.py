@@ -235,6 +235,8 @@ def _bytev(n):
     """True iff ``n`` provably evaluates to one byte under ``compile_block``."""
     while n[0] == "op" and n[1] == "INT_ZEXT":
         n = n[2][0]
+    if n[0] == "loc":
+        return len(n) == 2  # the ONE local-width rule: a bare local is one byte
     if n[0] != "op":
         return E.width(n) == 1
     if n[1] in ("INT_ADD", "INT_SUB", "INT_LEFT"):

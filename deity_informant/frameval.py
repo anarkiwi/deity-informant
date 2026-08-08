@@ -228,7 +228,9 @@ class _Code:
             return
         halves = framefuse.unpack(s[2]) or (s[2],) * sz
         derv = tuple(self.deriv(h) for h in halves)
-        self.emit(("stw", self.expr(s[1]), self.expr(s[2]), derv, self.tag(s), sz))
+        # The byte order is the store's own: ascending unless it says otherwise.
+        order = tuple(range(sz))[:: -1 if frameproc.hi_first(s) else 1]
+        self.emit(("stw", self.expr(s[1]), self.expr(s[2]), derv, self.tag(s), order))
 
     def deriv(self, val):
         """``(address closure, taint slots)``: where a stored byte may be copied from.
@@ -529,7 +531,7 @@ class Evaluator:
                     _bind(prov, a, _copy(op[3], r, m, rd, prov, ploc))
             elif k == "stw":
                 a, v = op[1](r, m, rd), op[2](r, m, rd)
-                for j in range(op[5]):
+                for j in op[5]:  # the store's own byte-emission order
                     c = (a + j) & 0xFFFF
                     m[c] = (v >> (8 * j)) & 0xFF
                     if C.SID_LO <= c <= C.SID_HI:

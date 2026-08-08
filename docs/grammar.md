@@ -51,6 +51,16 @@ stored, so the width is stated once; the suffix is a frameprog form, and a
 sidprog document carrying one is rejected. `state { }` fields are `u8` or `u16`
 accordingly.
 
+A width-2 store may carry the **write order** `hi-first`, which says its two
+bytes leave in descending address order: `hi-first sid.v1.freq_lo[y]:2 = e`
+writes the high cell before the low one. Absent the word, a word store emits
+ascending. The order is a fact about the store rather than about its address, so
+rung (d) can merge a pair the program wrote hi-first without resolving the index
+it was written through ([frameprog.md](frameprog.md) §7.10.4); `framelog` keeps
+write order inside the ctrl/AD/SR and `$19`-`$1C` sections, which is where the
+difference is observable. It is a frameprog form on a store, and a sidprog
+document carrying one is rejected.
+
 Reserved words are exactly the grammar's literal identifier terminals
 (`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
 canonical cell name, register or `uN`/`tN`/`rN` slot.
@@ -71,7 +81,8 @@ fails when it drifts; regenerate with
 // switches, flow items -- is shared. Parsed LALR(1); templates parameterise
 // the shared region productions over the two item alphabets. The width suffix
 // and the *ptr[i] deref form are frameprog forms a sidprog document rejects,
-// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local).
+// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local) and the
+// hi-first write order of a word store.
 
 start: sidprog_doc
      | frameprog_doc
@@ -165,6 +176,7 @@ fblock: label _fbody?
 _fbody: fline+ _fcloser*
       | _fcloser+
 fline: asg _NL -> f_asg
+      | _HIFIRST asg _NL -> f_asg_hifirst
       | pcall _NL -> f_pcall_void
       | lvalue ("," NAME)* "=" pcall _NL -> f_pcall_ret
 pcall: NAME "(" (expr ("," expr)*)? ")"
@@ -235,6 +247,9 @@ CYC: /@\d+/
 CYCT: /@t\d+/
 PENTAG: /@xi?/
 _SIDINIT.5: "sid-init"
+// a word store's own byte-emission order (frameprog form); hyphenated, so no
+// NAME can spell it and no symbol alias can shadow it
+_HIFIRST.5: "hi-first"
 _NL: /(?:;[^\n]*)?\r?\n(?:[ \t]*(?:;[^\n]*)?\r?\n)*/
 
 %ignore /[ \t]+/

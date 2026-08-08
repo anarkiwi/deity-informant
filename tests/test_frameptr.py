@@ -283,11 +283,16 @@ def test_an_unbounded_row_index_refuses_the_site():
     assert "row index bound $FFFF exceeds one row" in _only(proofs).lemma
 
 
-def test_an_unfused_pair_refuses_and_names_rung_d():
+def test_an_unfused_pair_refuses_and_names_its_reason():
+    """However the word folds spell the deref, the unfused pair's deref refuses.
+
+    The reason names rung (d) or the half-writing ``INC`` depending on which
+    shape the folds leave; the raw ``mem[]`` staying is the law being pinned."""
     model = _fuzz_model(FG.t_lone_half(np.random.default_rng(7)))
     prog = frameprog.program(model)
     pr = next(p for p in prog.proofs if p.kind == "deref")
-    assert pr.status == "refused" and "did not fuse (rung d)" in pr.lemma
+    assert pr.status == "refused"
+    assert "did not fuse (rung d)" in pr.lemma or "another store may write the pointer" in pr.lemma
     assert "mem[" in frameprog.dumps(prog)
 
 

@@ -10,6 +10,7 @@ import pytest
 from deity_informant import expr as E
 from deity_informant import framefuse as FF
 from deity_informant import framemath
+from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 import _fuzzgen as G
@@ -114,9 +115,9 @@ def test_lanes_in_two_tables_lift_without_merging_the_stores():
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
     assert "one u16 store" not in pr.lemma
-    assert "(zext2(m_1440[x]) << $08):2 | zext2(" in text
-    assert "ctr_1400[x] = trunc1(d0:2)" in text
-    assert "m_1440[x] = trunc1((d0:2 >> $08):2)" in text
+    assert " lo m_1440" in text  # the split pair rides the declaration (7.9 (a))
+    assert "d0:2 = (ctr_1400[x]:2 + $0037):2" in text
+    assert "ctr_1400[x]:2 = d0:2" in text
 
 
 def test_the_sid_pair_fuses_off_the_lifted_word():
@@ -162,7 +163,7 @@ def test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard():
     _m, prog, text = _build("hilane_late", a)
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
-    assert "zp_11 = $05" in text and "zp_11 = trunc1((d0:2 >> $08):2)" in text
+    assert "zp_11 = $05" in text and "ctr_0010:2 = d0:2" in text
 
 
 @pytest.mark.parametrize("push", [True, False])
@@ -181,7 +182,7 @@ def test_the_c64_world_cybertracker_half_goes_elsewhere(push):
     a.i("RTS")
     model, prog, text = _build("c64world", a, {0x14: 0xF0, 0x15: 0x20, 0x16: 0x00})
     (pr,) = _math(prog, "lifted")
-    assert "carry(" not in text and "):2 + $0004):2" in text
+    assert "carry(" not in text and "(ctr_0014:2 + $0004):2" in text  # the pair reads as u16
     assert "one u16 store" not in pr.lemma  # the hi half never reaches $15
     assert "ctr_0014 = trunc1(d0:2)" in text
     dest = "sid.v1.attack_decay" if push else "zp_16"  # destacked, the slot is not a cell
@@ -220,7 +221,7 @@ def test_dropping_the_truncation_off_the_hi_lane_store_moves_the_record():
     model, prog, _text = _split()
     trace, _walker = frameprog.iota(model, 8)
     good = frameval.eval_fp(prog, trace, 8)
-    lst, i = _find(prog, lambda s: s[0] == "st" and s[2] == framemath._hi_byte(_D0))
+    lst, i = _find(prog, lambda s: s[0] == "st" and s[2] == frameproc.trunc_hi(_D0))
     lst[i] = ("st", lst[i][1], _D0)
     assert frameval.eval_fp(prog, trace, 8) != good
 
@@ -387,7 +388,7 @@ def test_a_sixteen_bit_step_lifts_as_one_word_add():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "carry(" not in text
-    assert "(zext2(m_1481) << $08):2 | zext2(m_1480)" in text
+    assert "d0:2 = (zp_10:2 + m_1480:2):2" in text  # both addends fold to u16 reads
 
 
 def test_lanes_three_bytes_apart_lift_but_never_merge():
@@ -408,8 +409,9 @@ def test_lanes_three_bytes_apart_lift_but_never_merge():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (SLO, SLO + 3)
     assert "one u16 store" not in pr.lemma
-    assert "trunc1(d0:2)" in text and "trunc1((d0:2 >> $08):2)" in text
-    assert ":2 = d0:2" not in text  # no merged word store across a 3-byte stride
+    assert " lo m_1403" in text  # the declared pair splits back to the true cells
+    assert "d0:2 = (ctr_1400[x]:2 + $0037):2" in text
+    assert "ctr_1400[x]:2 = d0:2" in text
 
 
 # ---- a definition the statement list does not make ---------------------------------
@@ -471,8 +473,8 @@ def test_a_step_wearing_lane_shape_does_not_become_a_lane():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
-    assert "carry(" not in text and "w0 = m_1480[y]" in text
-    assert "(zext2(m_1440[x]) << $08):2 | zext2(w1)):2 + zext2(w0)):2" in text
+    assert "carry(" not in text
+    assert "d0:2 = (m_1400[x]:2 + zext2(m_1480[m_1580[x]])):2" in text
 
 
 def _lane_terms():

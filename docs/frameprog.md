@@ -496,8 +496,10 @@ per pair, never per tune, and the rest of the tune still fuses. A *SID* register
 pair declares nothing beyond the two statements it rewrites: freq, pulse and
 cutoff are last-write-wins and §1.1 emits lo,hi adjacent whatever order the
 driver wrote them in, so its premise is per store site — an adjacent lo/hi pair
-at one index fuses (hi-first included; the packed value keeps the driver's
-evaluation order), and a lone half elsewhere leaves that site alone.
+at one index fuses (hi-first included: the packed value keeps the driver's
+evaluation order and the merged store carries its *write* order, spelled
+`hi-first`, so the merge owes no fact about the index — §7.10.4), and a lone half
+elsewhere leaves that site alone.
 
 Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
 (650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical
@@ -1353,6 +1355,9 @@ split state is the ordinary structure-of-arrays layout.
 
 ### 7.3 Rung (d2): the refusal classes
 
+> SUPERSEDED by §7.6 for rung (d2): there are now 0 refusals over the 610
+> shapes. The classes below survive only as corpus shapes, unre-measured.
+
 Root causes traced by instrumenting `FF._addr_split` and the aliasing
 predicates, and by reading the 6502 at the refusing sites. The trajectory,
 re-measured against the deterministic gate of §7.1: **77 → 76 → 65 → 62
@@ -1820,6 +1825,10 @@ that is a hazard.
 
 ### 7.5 The carry as control flow, and the definition that subsumes it (LANDED)
 
+> Counts SUPERSEDED by §7.6: the shape matrix is now 594/16/0, and §7.5's
+> attribution of 14 `adc-withzero-bidir` no-sites to the unobserved threshold
+> was wrong. The corpus numbers here predate the address rule.
+
 `tests/test_lift6502.py` enumerates the 6502 shapes that write one 16-bit
 quantity as two bytes -- lane addressing (`zp`, `zp,X`, `abs`, `abs,X`, `abs,Y`)
 x adjacent or split lanes x operation x step operand mode x how the carry crosses
@@ -2014,3 +2023,1046 @@ Prefer this to toggling a flag and re-running the corpus: a corpus delta says a
 number moved, not which decision moved. Every finding in §7.1 and §7.3 above was
 located by `capture` on two builds and `diff` — the statement list at the
 disagreeing site, then the 6502 behind it — not by comparing totals.
+
+### 7.6 The address a value names, and the row a constant lost (IN PROGRESS)
+
+§7.5's residue named one real defect: the same cell under two names. The block
+converter spells a constant address as its constant only inside the block that
+sets the index, and binds it to a temporary wherever the address takes two
+operations, so `zp,X` (`add` at width 1, then `zext`) always gets one. The lane
+mode is not the discriminator; whether the converter materialised a temporary is.
+
+**The rule, stated over values.** `frameproc._one_addr`, called from
+`canon_addrs` at the end of `procedures()` over every `mem` address and every
+`st` destination: an address whose value is a constant is spelled as that
+constant. `_const_of` evaluates it through the definition chain -- a local reads
+as the definition in force leaves it, and that definition's own locals at the
+point *it* was written -- and refuses a `mem` read, so a value reached through a
+cell stays with rung (d)'s spill rule and its dominance conditions. A syntactic
+version of this rule folds only what the converter left inline and misses every
+`zp,X` site; the value form is what reaches them.
+
+**Measured over the 610 shapes (tests/test_lift6502.py):** 552 lifted -> **594**,
+34 no site -> **16**, 24 refused -> **0**, gate FP and the canonical fixpoint hold
+on all 610, emitted text 714610 -> **705926** bytes. 42 shapes moved and every one
+moved toward lifting. `DCP`/`ISC` go 6 of 8 to 8 of 8, so 40 of the 48
+undocumented-opcode shapes lift. The residue is 16 and neither part is this
+defect: 8 `RRA` (§7.5, refused over values and correctly) and 8
+`sbc-zpstep-branch` the 8-frame trace never reaches.
+
+**§7.5 mis-attributed 14 shapes and this corrects the record.** The
+`adc-*-withzero-bidir` no-sites were recorded as the trace never reaching the
+`CMP #$08` threshold. They were this defect, in the *step* operand rather than the
+lane -- every one has an `absx`/`absy` step -- and they lift with no change to the
+enumeration. Both arms still lift in 65 of 100, so the bidirectional asymmetry
+§7.3 holds open is untouched; what closed is that those 14 now have a site at all.
+
+**One refusal regressed, and `_pairs` is not where it is decided.**
+`test_liftgaps.py::test_a_lo_lane_loaded_in_the_dominating_block_refuses` lifted
+as `lanes $1400/$1462`: `$1400` is the step table, paired with the hi lane.
+Before the fold the step was indexed by `Y` and the lane by `X`, so `_pairs`'
+same-row concession held them apart; after it both are constant cells and
+`_rowbase` gives every one the row `None`.
+
+**Giving a constant cell the declaration containing it as its row does not close
+it, measured both ways.** The three cells are three declarations -- `$1400` size
+96, `$1460` size 2, `$1462` size 256 -- so no pair shares a row, `(row or cross)`
+falls through to `cross`, and the offers are bit-identical to today's. Forcing the
+exclusion instead, so `_pairs` returns only the true pair `($1462, $1460)`, leaves
+the site at `lo=$1400` regardless: lanes are read off the extracted form by
+`_lane_addr`, and `_pairs` bounds what the e-graph is *asked*, not what it may
+name.
+
+**The premise missing is that two split lanes are one datum, and `role` alone does
+not state it.** `_Site` spelled `split tables` wherever `not self.word`, with no
+condition on the two declarations. `datadecl` does recover a lo/hi table pair
+(`dl["role"], dh["role"] = ("lo", ht), ("hi", lt)`), but requiring that pairing
+refuses far too much: 53 of the enumeration's split-lane decisions pair two
+`role=None` tables and lift correctly, and no site in the suite or in a 12-tune
+corpus probe reaches a declaration carrying a role at all. The separating fact is
+`mut`. `$1400` is a wholly const table and `$1462` is written, and a datum the
+program never writes is not the half of one it does.
+
+**`framemath._one_datum`, the first clause of `_premise`.** Over the chosen site's
+lanes, not `_pairs` over the offers: a split-lane site whose two declarations
+disagree on being written is refused as `a const lane and a written lane are not
+one declared datum`, unless `role` pairs them. A lane in no declaration is no
+evidence either way and is left alone, which is the stance the other clauses take
+on an operand they cannot name -- and it is what keeps the 284 enumeration
+decisions whose lanes are undeclared lifting.
+
+**Measured:** 594 lifted / 16 no site / 0 refused over the 610 shapes, unchanged
+by the refusal, and the suite over the cached HVSC selection is 1622 passed, 2
+skipped, 0 failed. Over 12 corpus tunes the rule fires on nothing: of 18
+split-lane sites, 11 have both lanes written, 1 has both wholly const (which the
+`role` rule would have wrongly refused) and 6 have a lane in no declaration.
+Still unmeasured: the consumer partition (§6) and determinism across four seeds.
+
+### 7.7 Byte-wide SID stores: the target, and why the metric is wrong
+
+The goal is that freq, pulse width and cutoff are 16-bit everywhere, i.e. zero
+byte-wide SID stores. **Zero is not reachable as `_BYTE_SID` defines it, and the
+obstacle is the metric, not a proof gap.** `tools/fuse_measure.py` is the split
+metric this section asked for, committed; `_BYTE_SID` is its lane column.
+
+`_BYTE_SID` counts a byte store whose *base* is a lane. That conflates two things:
+a byte-wide store to a register proven 16-bit (should be zero, and can be), and a
+store to an **unidentified** register merely named after its base. `Also_Bad`
+`$CA6A`, reachable from play via `$C475`/`$C90D`/`$CA6A`:
+
+    $CA6A LDY #$17 / $CA6E STA $D400,Y / $CA77 DEY / $CA78 BPL $CA6E
+
+is emitted as `sid.v1.freq_lo[y] = $00` and writes **every** SID register. At
+`Y=4` it selects `ctrl`. Only 14 of the 29 offsets are lanes of a 16-bit register;
+9 are 8-bit order-preserved (ctrl/AD/SR), 2 are `$D417`/`$D418`, 4 are
+`$D419`-`$D41C`. No 16-bit reformulation of that store exists.
+
+**`_lane_aligned` is the tight condition, not a conservative one.**
+`framelog.canonical` keys by byte offset and partner-completes through `_OTHER`;
+a widened store's record contribution equals the byte store's **iff
+`other(r) == r+1`**, i.e. iff `r` is a pair lo. `held0` agrees the untouched
+lane's *value*; the divergence is *presence* -- a spurious entry in an
+order-preserved section, which §1.1 requires to survive verbatim. That is the
+`v0.ord` corruption. So no better proof recovers anything along this axis, and a
+stronger index analysis moves `$CA6E` from "index unproven" to "index proven and
+proven not lane-aligned" -- byte-wide either way. **Proofs relabel this residue;
+they do not shrink it.**
+
+Next steps, in order:
+
+1. **Split the metric. Landed and measured.** `framefuse` counts `unproven` and
+   `notaligned` apart -- `_consts` returning None against a set `_lane_aligned`
+   rejects -- and the pair's proof record carries both. `tools/fuse_measure.py`
+   sweeps the cache: 624 of the 682 files carry a play address and a Songlengths
+   duration, 0 refusals, 245s wall over 32 workers for 5941s CPU. The lane column
+   is **812**: **802 index unproven, 10 index proven off-lane, 0 unindexed**.
+   Beside it, 5330 byte-wide stores to the 8-bit registers (2539 indexed, 2791
+   not), which have no 16-bit form and were never the target, and 1498 indexed
+   word stores already 16-bit. `plain_lane` at 0 is the check that rung (d)
+   widens every unindexed lane store, so zero *is* reached where the register is
+   identified.
+   **The residue proofs can only relabel is 10 stores, 1.2% of the lane column**,
+   so the paragraph above is right about `$CA6E` and wrong about the scale:
+   nothing measured forecloses the other 802. Steps 2-5 are worth doing, and step
+   2 carries most of the reach on its own -- **644 of the 812** have their partner
+   lane stored at the same index expression in the same procedure, so `_pair_at`
+   extended past adjacency reaches 79% of the residue with no fact about the
+   index at all. Step 5 is the honest one: 802 stores are named after a register
+   the model has not shown they touch.
+2. **Merge, do not widen.** `_pair_at` already merges two adjacent lane stores at
+   the same symbolic index with no alignment proof, because it invents no write
+   (Commando's `$12E7`/`$12ED` pulse pair fuses with `Y` symbolic). §4.3 records
+   925 SID pairs with no adjacent store site, ~577 writing both halves
+   non-adjacently; each one rung (d2) brings together turns two byte-wide stores
+   into one word store with no fact about the index at all. This is the only route
+   that needs no new premise.
+   **Landed and measured, well short of the forecast.** The partner is the
+   nearest later store of the other lane at the same symbolic index in the same
+   statement list. `_bring` proves the two may meet -- hoist the later store
+   with the interval's definitions inlined, or sink the leader where inlining
+   changes nothing -- and `_undisturbed` holds the interval to reading no moved
+   lane and writing no logged register, which is what §1.1's verbatim record
+   requires of a store whose index may land it in an order-preserved section.
+   The sweep over the same 624 files, 0 refusals, run twice bit-identical (the
+   pipeline is deterministic): the lane column is **802** -- 784 index
+   unproven, 18 proven off-lane, 0 unindexed. The unproven residue gave up 18;
+   off-lane *rose* by 8, the hi-first refusal (below) splitting pairs the old
+   adjacent merge took unsoundly. What did move is the representation: 303
+   fewer word stores emit for the same writes (`word_plain` 1852 -> 1633,
+   `aligned` 1498 -> 1414) -- a pair rung (d) used to widen into two
+   read-modify-write word stores now meets in one packed store. The 644
+   forecast measured co-presence only: sampled across the surviving 618
+   partnered stores, every refusal is a premise, not a gap. The interval
+   writes another logged register (the per-voice loop -- freq lo, ctrl, ...,
+   freq hi -- where crossing may reverse two `ord` entries), the pair is
+   hi-first at an unproven index, the partner sits in another statement list,
+   or a clobbering statement blocks both directions. Merging past those is
+   exactly what the record forbids, so step 2 is done and was never the route:
+   the unproven residue is steps 3 and 4's to prove, and step 5's to name.
+3. **The control-flow join. Landed, three joins.** `Defs` gave up at every
+   merge; now `_consts` forks an ``if`` per arm (each arm's exit value reaches
+   the store, so the union is the index set --
+   `test_liftgaps::test_a_lane_index_set_in_a_branch_arm_widens_on_the_join_union`),
+   a ``for`` binds its counter to the range's every value, and a *label* joins
+   under `Defs._verified`: a definition survives a crossed label only where
+   every enumerable `goto` entering it arrives with the same definition in
+   force, to a fixpoint over the entry graph, and one computed jump in the
+   procedure refuses them all. The label join is what the corpus shape needed:
+   Commando's spilled voice offset (`m_54EB`, from the const table `$00 $07
+   $0E`) resolves through the `$519B`/`$532B` goto joins, every one of its
+   eight view stores widens or merges, and the tune is 16-clean -- zero
+   byte-wide SID lane accesses, named or viewed. What the join cannot reach is
+   the *loop-carried* index -- `x` stepped per voice inside a `loop` -- which
+   needs a value-set fixpoint over the loop body, not a join; that residue is
+   the view's remaining tenant (41 stores over a 7-tune probe) and the next
+   frontier after step 4.
+4. **The parameter union** (§7.2's ~800). **Landed, rebased rather than
+   applied** -- step 2's rewrite left `stash@{0}` unappliable and both its
+   blockers were real. `ENTRY` splits "the value the procedure was entered
+   with" from a definition that cannot be read off: `Defs._name_walk` answers
+   it, the label join holds to it, and `_const_of` never sees it, since only
+   `lookup_joined` returns it. `Calls` closes the graph and `_Params` unions
+   `_consts` over every `pcall` site, refused where the play entry, a
+   `call`/`swc` target, an open transfer, or an RTS-trick landing leaves a
+   caller unnamed. `ev_targets` records every JSR callee and normal return
+   besides the trick landings, so only RTS-terminated blocks are consulted,
+   minus the JSR returns, as `procpass._graph` reads it. The measure pass
+   diverged until the polish moved: `repolish` runs before rung (d) as well as
+   after, so the rung proves against the lists the measure re-reads.
+   Briley_Witch_Chronicles clears 4 -> 0 on the union alone; the 7-tune probe
+   holds 37, every one loop-carried.
+5. **Carve the 16-bit registers out of the output model.**
+   `sid.v1.freq_lo[y]` asserts a register the store need not touch, and
+   `render.py`'s `sid_name` names it off the base alone. Declare freq, pulse
+   width and cutoff u16, and give the SID a byte-addressed register-file view
+   -- `sid.reg[y]` -- for the store whose index the model has not resolved: it
+   asserts exactly the proven byte, invents no write, and byte-wide access to
+   a named 16-bit register stops being expressible at all. The goal then holds
+   by construction, and steps 3 and 4 migrate stores out of the view as their
+   indexes prove -- each one measurable as the view shrinking. Ship only with
+   (1), or it is laundering.
+   **Landed.** The view is per-offset -- `sid.reg01[y]`, not `sid.reg[(y + $01)]`
+   -- because the offset cannot ride the index: `_index_addr` widens the byte
+   index with `zext2`, so a folded-in offset would wrap mod 256 and name the
+   wrong cell for `y >= $FF - off`. The lane rule moved to `grammar.sid_base`
+   beside the names, `name_addr` reads `sid.regNN` back, and the canonical
+   fixpoint holds: a byte-wide indexed reference whose base is a lane renders
+   on the view wherever it appears, so parse and dump agree. The metric is
+   untouched -- `fuse_measure` reads the IR, and the view is a rendering -- so
+   the unproven column now counts exactly the `sid.regNN` stores, the view's
+   size, and steps 3 and 4 are measured by shrinking it.
+
+**All five landed, measured over the same 624 files, 0 refusals.** The lane
+column is **536** -- 492 index unproven, 44 proven off-lane, 0 unindexed --
+from 812 at the step-1 baseline: the joins and the parameter union took 292
+off the unproven column, 26 of them into the off-lane bucket where no 16-bit
+form exists, and `partnered` fell 644 -> 383. What remains renders on the
+`sid.regNN` byte view, so the goal holds by construction everywhere: a named
+freq/pulse/cutoff access is u16 in all 624, and the view's tenants are the
+loop-carried indexes -- `x` stepped per voice inside a `loop`, a value-set
+fixpoint over the loop body, not a join -- which is the frontier after this
+branch.
+
+**Two unproven premises found on the way; the first is now enforced.**
+`_pair_at` accepted a hi-first adjacent SID pair, but `frameval`'s `stw` always
+logs lo then hi; an indexed hi-first pair landing both cells in an order-preserved
+section would reverse two `ord` entries. The corpus does not contain one, which is
+observation, not proof -- so rung (d2) no longer leans on it: `_lww` admits a
+hi-first pair only where the index is absent or proven lane-aligned, both cells
+then last-write-wins registers whose two writes commute, and Commando's hi-first
+indexed freq pair stays split for it -- each lane still widens where its index
+proves out. And `_BYTE_SID`/`_WORD_SID` match only named lvalues, so a
+store whose address `addr_split` cannot resolve is counted in neither column.
+Measured: of 2000 such byte stores, `addr_bits` rules 1928 out of the SID and
+leaves **72**, and not one of the 72 is demonstrably a SID store -- every one is
+an unresolved indirect write, `mem[((zext2(zp_FE) << $08) | zext2(zp_FD)) +
+$0004]`, or a zero-page indexed store whose base `_base_add` will not take below
+`$0100`. So the byte-wide lane total is 812 and at most `812 + 72`. The `zp,X`
+form named here is not among them: `canon_addrs` (§7.6) spells it as the constant
+it proves, and where it does not, the form adds inside the byte, so `addr_bits`
+caps it at `$00FF` and it reaches no SID register.
+
+### 7.9 The generalization: 16-bit data wears 8-bit shadows
+
+**The reframe (Josh's):** §7.7's walls -- labels, parameters, spills, call
+summaries, undeclared arrays -- are each a special case of one missing
+generalization. Frequency, pulse width and cutoff are 16-bit *quantities*; the
+6502 has no 16-bit operations, so every driver shreds them into 8-bit shadows:
+pitch tables split or strided into byte columns, arithmetic as byte pairs with
+carry chains, writes as two byte stores to a lane pair. That structure is value
+dataflow -- sources through operations to sinks -- and it is control-flow
+independent. Chase the walls and there will always be more; canonicalize the
+value graph to 16-bit operations and the walls stop mattering. The arbiter is
+the frame Oracle: the same order-critical writes in the same frames in the same
+order (`gate_fp`), which admits far more transformation than per-shape proofs.
+The 8-bit registers' operations are the same problem one lift later, so every
+piece here is written for the value graph, not for the width.
+
+**Landed first: the little-endian word fold.** ``hi<<8 | lo`` over
+``mem[b+1+i]``/``mem[b+i]`` is one ``mem[b+i]:2`` -- the same two cells, loaded
+pure -- for any base and one shared index, volatile sources excluded since
+``iota`` pins their read count. A pack side may be a local or a spill cell: it
+traces through its definition in force to a *stable* const-table row (the row
+cannot be stored to, the index's locals hold their definitions), so Commando's
+``(zext2(m_5429[t10]) << $08) | zext2(idx_5503)`` reads as ``m_5428[t10]:2`` --
+the strided pitch table as the u16 rows it always was. The fold runs in
+``repolish`` before rung (d), whose ``_rewrite`` takes a folded word read as the
+same pair evidence the unfolded shape carried. Commando's pitch and pulse sinks
+are now ``sid.v1.freq_lo[m_54EB]:2 = m_5428[t10]:2`` and
+``sid.v1.pw_lo[y]:2 = m_5591[x]:2``, and framemath's word-step lift reads
+``d0:2 = (zp_10:2 + m_1480:2):2`` with both addends folded.
+
+**Next increments, in value-graph order:** the split state pair (Commando's
+``m_551D[x]``/``ctr_551A[x]``, non-adjacent byte columns of one u16 per-voice
+variable) wants a paired-table u16 access; the spill-store pair (two byte
+spills of one word, ``idx_550A``/``idx_550B``) wants the store-side fold; and
+the sink pair by value provenance -- two halves of one 16-bit datum stored one
+lane apart -- replaces the index-proof pairing entirely, Oracle-gated per tune.
+
+**The pack declares its own columns (7.9 (a), scalar).** A pack over two
+*declared* non-adjacent columns is the pair witness, and the roles land on the
+decls so the registry rides the data section. But ``datadecl`` carves from
+indexed evidence alone, so a driver that touches one 16-bit datum at fixed
+addresses -- no index anywhere -- declares nothing at all, and the intra-decl
+split had nothing to re-stride: the shredder's whole fixed-voice column was the
+pack surviving as ``(zext2(m_1404) << $08):2 | zext2(m_1401)``. **Two cells no
+declaration names now witness for themselves**, as a pair of one element:
+uncovered, non-adjacent, packed into one u16 and never used as an address, they
+carve out of the image as a co-extensive lo/hi pair (``_declare_cells``), so
+every later rung reads them as an ordinary table pair and the roles survive the
+round trip. ``_pack_witness`` gives its verdict by coverage -- neither cell
+declared is *cells*, one of each refuses, one declaration covering both is
+*intra* -- and that last case must be read **before** the equal-offsets guard
+or the intra branch is dead code, since two cells of one declaration never sit
+at equal offsets into it. The carving guards are ``datadecl``'s own: never a
+code byte, never below ``_LOW``, never the I/O page, and never a base some
+address computation reads. The shredder's fixed-voice and transported columns
+all lift whole on this rung -- ``sid.v1.freq_lo:2 = m_1401[$00]:2`` for the
+move -- and the arithmetic follows *with no further rule*: the SBC borrow chain
+and the ASL/ROL pair were already word-folding, and were only ever blocked on
+the pair not existing.
+
+The rung pays a second time, in rung (f). The fused-pointer fixture loads its
+pointer from two fixed cells nothing indexes, so it too declared nothing, and
+the deref stayed spelled at its cell: ``a = mem[ptr_0002:2]``. With the cells
+carved the pointer classifier has a *definition* to name -- ``1 definition(s)
+from m_1501/m_1505[1]@$00`` -- and the load resolves to the pointer itself,
+``a = *ptr_0002``. Declaring the data is what let the deref rung see it, which
+is the reframe's own claim: canonicalize the value graph and the walls stop
+mattering. On the corpus this rung is inert -- Commando witnesses no loose cell
+pair at all, its evidence being indexed throughout, and its emit is unchanged
+at 549 lines.
+
+The immediate operand needed one fold of its own. An extracted word form spells
+a 16-bit literal the way the 6502 loads it, ``($0037 | ($0001 << $08):2)``,
+which ``_lanes`` rightly refuses -- a literal has no lanes -- but nothing then
+collapsed it. ``framemath._numfold`` folds a constant pack to the constant word
+before the form is chosen: ``d0:2 = (ctr_1401[$00]:2 + $0137):2``. The
+*store*-side spelling does not fold, and deliberately: ``grammar.store_width``
+reads every ``const`` store value as one byte, so a folded word constant would
+store truncated (the evaluator refuses it outright), and an immediate write to
+a SID pair still emits the shifted pack. Widening that protocol so a ``const``
+states its width like an ``op`` does is its own increment.
+
+**The stack leaves the frame program (rung d0').** ``sp`` is invisible to the
+record and its real consumers were the destacked slot addresses, so where
+nothing reads it the updates, the parameter and every threading argument go --
+Commando's play is ``sub_5012()``, stack-free. The drop holds only where every
+procedure is *balanced*: zero net displacement (mod 256 -- ``- $02`` is
+``+ $FE``) at every ret, label, goto, break and continue, joining arms
+agreeing, because the evaluator matches call frames by ``r[sp]`` and an
+RTS-trick's whole dispatch is its displacement into the ret. Unbalanced or
+computed ``sp``, a raw call, or an unresolved stack access refuses, and the
+``sp`` proof names the procedures that keep it. **The constant RTS trick is lifted:** the push pair, the
+displacement and the ret are one dispatch -- control lands at the pushed word
+plus one -- so they become ``goto ($xxxx)``, resolved through the same map the
+evaluator's machine path read; the procedure then balances and ``sp`` drops
+with no further rule, the ``rts`` proof naming the target. **Computed sp is lifted through its brackets:** the balance
+walk is symbolic -- states ``(base, offset)``, a save (``st CELL = sp`` to a
+cell saved once and read only to restore) records the state, a restore returns
+to it whatever ran between, and a constant ``TXS`` opens an ``(abs, v)`` base
+-- so the TSX/STX..LDX/TXS context save and the constant stack switch both
+dissolve entirely, save store and restore included, the cells being private
+and RAM invisible to the record. **The data-driven trick lifts too** (pure
+push values undisturbed through the window become ``goto ((hi:lo) + 1)``),
+but its end-to-end validation is blocked on a pre-existing model gap: a
+multi-target RTS dispatch faults the evaluator's resolver identically with or
+without the lift (``ret target outside the observed set``), so the landing
+roots' reachability is its own investigation. A ``TXS`` from unresolved data
+still refuses, named -- the value-set treatment when a specimen demands it.
+
+#### 7.9.1 Where the lift stands, measured (`tools/fuse_measure.py`, 617 tunes)
+
+**89.85%** of every store landing on a freq/pulse/cutoff lane is already a word
+store -- **3356** word against **379** byte-wide -- and **458 of 617 tunes
+(74.2%) carry no byte-wide lane store at all**. §7.7's residue was 536 before
+this generalization. ``plain_lane`` is **0 corpus-wide**: rung (d) widens every
+unindexed lane store there is, without exception, and that class is closed.
+
+What remains, in the order it costs:
+
+**(1) Seven tunes reach no frame program at all, and the branch did that.**
+``ABC_Music``, ``Abstrack``, ``Abroxus``, ``Bal``, ``Acceleration-mix``,
+``Gheton_Khasvatit`` and ``10_Days_and_No_Longer`` raise ``IndexError`` in
+``frameproc.Defs._name_walk``, reached by the fold path
+(``_fold_word`` → ``_side_addr`` → ``_stable_row`` → ``_same_defs`` →
+``lookup_joined``). Bisected: they build at the branch point ``cd3be3d`` and
+break at **``551be1b``** ("a split lo/hi table pair is one u16 datum"). It is
+not ``_adjoin_pairs`` -- disabling that leaves the fault -- but the fold the
+pair registry newly reaches. The shape of it is plain in the source: the
+statement scan already clamps with ``min(bound, len(self.lst))``, and the very
+next line then reads ``oenv.lst[obound]`` with no such clamp. Clamping it
+equally builds all four tunes tried (``ABC_Music`` 814 lines, ``Abstrack`` 775,
+``Bal`` 863, ``Abroxus`` 876). **Not applied**: the clamp stops the fault, but
+where ``obound`` is stale against a rewritten list it trades a loud crash for a
+quiet mislookup, so it owes the Oracle over the corpus before it is believed.
+
+**(2) ``unproven``: 337 stores over 141 tunes**, 89% of the residue -- an
+indexed lane store whose index the model cannot resolve. A long tail, worst
+``Mindblast_tune_2`` at 11, then 4-8 apiece. **227 of the 379 (60%) are
+``partnered``**, both halves stored under one index: those merge into a word
+store *without proving anything about the index*, which is the largest lever
+here and the cheapest.
+
+**(3) ``notaligned``: 42 stores over 24 tunes** (worst ``Comic_Bakery``, 5).
+The index resolves but lands off a pair lo, so widening would write the
+following register. Correctly refused -- this is the floor, not a blocker.
+
+**(4) The uncertainty that actually bounds the claim: ``unnamed``, 1139 stores
+over 342 tunes.** Addresses ``addr_split`` cannot name and ``addr_bits`` cannot
+rule out of reaching ``$D400``. It dwarfs the known residue, and it is why only
+**225 tunes (36.5%)** are *provably* complete where 458 look complete. 856 more
+were ruled out, so the machinery works; naming the rest is the open work, and
+until it is done "complete" is unclaimable for over half the corpus.
+
+Unrelated and pre-existing: ``Dribbling`` refuses at HEAD from ``check_locals``
+(``sub_A000: local 't16' used before definition``).
+
+> **Superseded in four places by §7.10, which re-derived every bucket above from
+> the emitted program rather than from the rungs' own counters.** (1) is a stale
+> cache, not a bound, and is fixed -- the corpus is 624 tunes refusing none, and
+> the clamp weighed here was never applied. (2)'s ``partnered`` lever is worth 0
+> stores as stated and the real lever is elsewhere. (3) is 62% register-window
+> copies that need no widening
+> at all -- ``Comic_Bakery`` is 5 for 5 -- and is not the floor. (4) is 90.5% stack
+> and zero-page traffic hidden behind one def-use edge, not an addressing problem,
+> and G1 has since ruled 1031 of the 1139 out: provable completeness is **451 of
+> 624**, not 225 of 617, and the bound (4) puts on the whole claim is 13 tunes.
+> The counts stand; the labels did not.
+
+### 7.10 The residue read off the output, not off the rungs
+
+Every number in §7.9.1 is a rung's own count of what that rung looked at. That is
+the defect the section could not see: a counter incremented at a refusal site
+reports the shapes some rule was written to consider and is silent about
+everything else, so a generalization nobody wrote is invisible to all of them,
+and a bucket's one-word label -- ``notaligned`` says *irreducible* -- is an
+assertion no count can contradict. Re-derived from the emitted program, three of
+the four buckets turn out to be measuring something other than what they name,
+and the two largest machine artifacts left in the output are in none of them.
+
+Two instruments are committed with this section.
+
+**``tools/lift_residue.py`` -- mechanism-independent.** It reads the frame
+program and asks one question of every node: does this still wear a machine
+shape? A hand-packed ``hi<<8 | lo``, a high byte shifted out of a word, a
+comparison feeding arithmetic, a carry surviving as a value, a byte store to a
+16-bit register, an address naming no datum. Because it asks no rung anything, a
+rung that refused and a rung that was never written are equally visible. It
+clusters sites by an abstracted skeleton, ranks by tunes affected, and reads the
+def-use edges to emit a **blocking matrix** -- which residue feeds which -- so a
+root can be told from its cascade. Calibration: its ``narrow_sink`` count is
+**379**, exactly ``fuse_measure``'s independently-computed lane byte column.
+
+**``tools/lift_triage.py`` -- the rung-(d) bucket audit.** It re-walks
+``framefuse._visit``'s measure pass with the verdict spelled out instead of
+counted: the index's constant set, the registers it actually reaches, each one's
+lo/hi/8-bit role, the address shape ``addr_split`` refused and the definition
+behind it. It exists so a bucket can be argued with. Its unnamed walk carries the
+enclosing environment, so the definition it reads is the one the lift would read
+and its ``ruled`` column is ``addr_bits``'s own verdict, not a re-derivation of it.
+
+**A row is keyed by the tune's cache-relative path, not by its stem.** Eight stems
+in the 624-tune cache name two different tunes each -- ``Commando`` is Hubbard's
+*and* Cadaver's, likewise ``12_Bar_Blues``, ``720_Degrees``, ``Acid_Rain``,
+``Aftermath``, ``Alpha``, ``Axel_F``, ``Crocketts_Theme`` -- so a stem-keyed index
+of any of these sweeps silently merges eight pairs of tunes, and diffing two sweeps
+through one reports eight tunes as changed that did not change. The key is
+``MUSICIANS/H/Hubbard_Rob/Commando``, unique by construction; the stem rides along
+as ``name`` for reading. ``fuse_measure``, ``lift_residue``, ``lift_triage`` and
+``lifttrace`` share the identity out of ``tools/_sweep.py``, which asserts it is
+unique over the cache before a sweep starts and over the rows before one is written.
+``--tunes`` still takes a bare stem, and an ambiguous one is refused by naming the
+qualified identities to choose between rather than quietly running both.
+
+#### 7.10.1 The census: the ladder measures one corner of one rung
+
+617 tunes, 259s over 32 workers, the same 7 refusals as §7.9.1 (1). The census
+counts **every access and every expression node**, where ``fuse_measure`` counts
+only byte *stores* its reach bound could not rule out, so ``unnamed_addr``'s 9257
+is a different population from §7.9.1's 1139 and the two are not comparable. The
+column that *is* comparable is ``narrow_sink``.
+
+The table is the sweep as it stood at ``db5c642``, over 617 tunes with 7
+refusing; §7.10.6 unblocked those and §7.10.8 restates the two largest rows over
+the current 624. The shape of the finding is unchanged by that.
+
+| signature | sites | tunes | what survived |
+|---|---:|---:|---|
+| ``unnamed_addr`` | 9257 | 604 | an access whose address names no declared datum |
+| ``carry_val`` | 5524 | 543 | ``carry(..)`` as a value: the flag outlived the operation |
+| ``word_pack`` | 4472 | 545 | two byte columns still packed by hand into one word |
+| ``raw_sp`` | 2604 | 323 | the stack pointer survived: a procedure did not balance |
+| ``hi_byte`` | 2185 | 466 | a word's high byte extracted, so the word is read as bytes |
+| ``lo_byte`` | 2108 | 442 | likewise the low byte |
+| ``flag_bit`` | 1649 | 476 | a status bit recomputed as a mask-and-compare |
+| ``borrow`` | 892 | 359 | a comparison feeding arithmetic: a borrow chain, unfolded |
+| ``mod_addr`` | 741 | 91 | a modular ``zp,X`` address, so no row is nameable |
+| ``narrow_sink`` | 379 | 159 | a byte store to a 16-bit SID register |
+| ``shift_pair`` | 169 | 94 | a shift threaded across two byte columns |
+
+**``narrow_sink`` -- the entire subject of §7.7 and §7.9, the 379 the 89.85%
+is computed from -- is the second-smallest class in the output.** ``word_pack``
+is 4472 sites over 545 tunes, twelve times larger; §7.9's little-endian fold
+landed and ``_le_bytes`` is its shape, so these are what survived it, and no
+counter anywhere reports that number. ``carry_val`` is larger still. The ladder
+has been optimising the one class that has a metric.
+
+The blocking matrix says the classes are not independent:
+
+    word_pack    -> lo_byte 1940, hi_byte 1934, carry_val 192
+    raw_sp       -> unnamed_addr 890
+    unnamed_addr -> carry_val 430, flag_bit 59, narrow_sink 57, borrow 47
+    mod_addr     -> carry_val 90, word_pack 45, lo_byte 36, hi_byte 36
+
+3874 def-use edges run from a ``word_pack`` site into a ``hi_byte``/``lo_byte``
+site, against 4293 such sites in all: they are largely not three residues but
+one, read off a word the fold did not make. And ``raw_sp`` feeding 890
+``unnamed_addr`` is §7.10.3's finding arriving from the other end -- the stack
+surviving is *why* those addresses cannot be named.
+
+#### 7.10.2 ``notaligned`` is not a floor: it is a register-window copy
+
+``Comic_Bakery`` is the tune §7.9.1 (3) names as worst, at 5. All five, from
+``lift_triage``:
+
+    [window] sid.reg[x] = a
+        reaches $D400:lo $D401:hi $D402:lo $D403:hi $D404:byte $D405:byte $D406:byte
+    [window] sid.reg[(zext2(y) + $000E):2] = a
+        reaches $D40E:lo $D40F:hi $D410:lo $D411:hi $D412:byte ...
+
+Nothing here lands "off a pair lo". The index sweeps a **contiguous run of the
+register file**, and every 16-bit register the run touches it touches *both
+halves of*. ``Krakout`` and ``Trap`` are the shape at full size --
+``sid.reg[x] = m_E686[x]`` over ``$D400..$D418``, the whole shadow block blitted
+to the chip in one loop.
+
+``_lane_aligned`` (``framefuse.py:250``) asks "does every reaching index land on
+a pair lo?" and gets ``False``, which is true and beside the point. Its premise
+is that the store is a **lone lane half** needing the word completed around it;
+for a covering sweep that premise is simply false. There is nothing to widen
+because the word is already written entire.
+
+Corpus-wide the 42 split **26 ``window`` / 15 ``straddle`` / 1 ``offlane``**. Only
+the last 16 are anywhere near a floor, and ``straddle`` -- a run covering some
+pair by one half only -- deserves its own look before it is conceded.
+
+**The generalization: the covering-sweep rule.** An indexed store is not a lane
+half where the register set it reaches contains both halves of every pair it
+touches. Stated over the reached set, so it holds for any base, any index, any
+stride, and no shape of loop is named.
+
+**The proof obligation it owes, stated honestly.** The reached set ``_consts``
+returns is a *union over reaching definitions*, not a guarantee that every value
+occurs on every execution. Covering is therefore necessary and not sufficient: a
+set that came from an ``if`` join means the store writes *one* of those
+registers, and the pair is left half-written. The sufficient rule adds that the
+index is a loop counter sweeping exactly that range with no early exit -- which
+``_fork`` already distinguishes, since it binds a ``for`` counter to its range
+(``framefuse.py:126-128``) and unions an ``if`` per arm. The rule must consult
+which of the two produced the set. Measured: **22 of the 26 window sites sit in a
+cyclic body** and 4 do not, so the obligation is real but small, and the 4 are
+nameable individually. §7.7's ``$CA6E`` argument -- that widening such a store
+would put a spurious entry in an order-preserved section -- remains correct, and
+answers a question the sweep does not ask.
+
+#### 7.10.3 ``unnamed`` is one def-use edge, not an addressing problem
+
+§7.9.1 (4) calls this "the uncertainty that actually bounds the claim": 1139
+byte stores whose address ``addr_split`` cannot name and ``addr_bits`` cannot
+rule off ``$D400``, holding provable completeness to 225 tunes where 458 look
+complete. **1067 of the 1139 are a bare width-2 local** -- ``mem[t4:2] = ..``.
+Not a pointer: in **1064 of the 1067 the local has exactly one reaching
+assignment in its procedure**, and that assignment is an address the existing
+lattice rules out on sight.
+
+| class | n | the single assignment | ``addr_bits`` of it |
+|---|---:|---|---|
+| ``loc_stack`` | 711 | ``(zext2(sp) \| $0100):2`` | ``$01FF`` -- ruled out |
+| ``loc_zext`` | 320 | ``zext2((x - $03))`` | ``$00FF`` -- ruled out |
+| ``loc_mixed`` | 33 | ``(zext2(y) + $00A5):2`` | ``$FFFF`` -- needs G2 |
+| ``loc_param`` | 3 | none: ``pcall``-bound | ⊤ -- correctly unclaimed |
+
+711 of them are the 6502 hardware stack. 320 are zero-page indexed stores. **The
+bucket is 90.5% traffic that cannot reach a SID register at all**, and it was
+counted as possibly-SID because ``addr_bits`` had no ``"loc"`` case and fell
+through to ``return m`` = ``$FFFF``. Every bare local address in the corpus was
+unrulable *by construction*, whatever it pointed at:
+
+    bare loc t1:2       addr_bits=$FFFF  may_reach_sid=True
+    zext2((x - $03))    addr_bits=$00FF  may_reach_sid=False
+    (zext2(sp)|$0100)   addr_bits=$01FF  may_reach_sid=False
+
+The bitmask lattice is adequate. It is not being *given* anything: ``addr_bits``
+is pure over the node and has no environment, while every other rule on this
+branch now reads the value graph. That gap is the branch's own name unfinished.
+
+**G1 -- the reach bound follows the value graph (LANDED).** For a local address,
+the reach bound is the reach bound of the definition reaching it. The two proof
+obligations are already discharged: ``frameprog.check_locals``
+(``frameprog.py:119``) rejects a program using a local before definition, and all
+1064 have exactly one assignment, so there is no join to be unsound about and no
+redefinition to miss. ``pcall``-bound locals stay ⊤. Placement is a read-only env
+parameter on ``addr_bits``, threaded from ``frameproc.store_reach`` and
+``fuse_measure._may_reach_sid`` -- *not* a substitution rewrite in ``repolish``,
+which would delete ``t4:2`` from the emitted text and move Gate FP output.
+**Claimed 1031 / 1139 (90.5%); measured 1031, the prediction exactly.**
+
+``frameproc.DefsAt`` is the env: a ``Defs`` and a position, one method, no
+mutator. ``addr_bits(n, env)`` reads a local as the address its reaching
+definition spells, and ``Defs.resolve`` -- the same query ``Defs._hits`` already
+made of a store's own address -- hands the local straight back at every wall, so a
+cyclic body that may rebind, a ``pcall``-bound name and an unreadable definition
+are ⊤ without a rule saying so. **The definition's own locals are bounded by width
+alone**: the definition was evaluated where it was written, so ``t1 = zext2(y)``
+read at a later store bounds that store at ``$00FF`` however ``y`` was rewritten
+between, and resolving ``y`` at the store's seat instead would be reading a value
+that never existed. That one line is what makes reading a definition at a
+*different* seat sound, and it is why the rule needs no staleness check of its
+own (``as_written``'s obligation is to spell an address, not to bound one).
+
+**The lift passes no env, deliberately.** Every in-tree caller of ``store_reach``
+feeds the aliasing that decides a fold -- ``_clear_path``, ``_fold_pair_at``,
+``_steps_over``, ``framefuse``'s hazard scans -- so an env there is a *tightening*
+of ``overlaps`` and would move the emitted program, which is the artifact under
+test. The parameter defaults to ``None`` and the whole ladder takes the default:
+28 tunes sampled across the cache emit byte-identical text before and after, and
+every column of all three sweeps that is not about ``unnamed`` is unchanged over
+624 rows. Resolving a local to decide a predicate is the goal; rewriting the
+program is not.
+
+**G2 -- a carry rule for ``INT_ADD`` in ``addr_bits``.** ``a + b`` is bounded by
+``mtop(bits(a) + bits(b))``, ``mtop(x) = (1 << x.bit_length()) - 1``. Three lines,
+inside the existing lattice, no new domain. Run directly on the real address
+tuples it rules out **32 of 34**; the 2 misses need G1 to see through a local
+first, so the two compose. **Claims 67 / 1139 (5.9%)**, of which 65 shapes remain
+after G1 and 33 of those are reachable only through it.
+
+Measured a second time and independently, by ``lift_triage`` following each
+address one def-use edge and re-asking ``addr_bits`` of the definition it finds:
+**1022 of the 1139 are ruled out**, 33 stay open pending G2, and 12 have no
+readable definition in their own statement list. Two instruments, two methods,
+1022 against 1031 -- the disagreement is the 9 stores whose definition sits in an
+enclosing list that ``Defs.at`` alone does not climb. **Confirmed by G1 itself.**
+``Defs.resolve`` climbs, and the triage walk now carries the enclosing env so it
+asks the same question the lift does: 1022 + 9 = **1031**, and the two instruments
+agree store for store.
+
+**Measured, over the 624-tune cache.** ``fuse_measure`` now reports both verdicts
+per tune -- ``unnamed_as_written`` against ``unnamed`` -- so the population is
+provably the same 1139, and carries ``looks_complete``/``provably_complete`` per
+row, so the figure the section is about is read off the sweep instead of
+recomputed by hand from it:
+
+| | predicted | measured |
+|---|---:|---:|
+| stores G1 rules out | 1031 / 1139 | **1031 / 1139** |
+| provably complete, G1 alone | 448 of 617 | **451 of 624** |
+| against tunes that look complete | 458 | 464 |
+| the gap that bounds the claim | 10 tunes | **13 tunes** |
+| word-store rate, emitted text | unchanged | unchanged (89.89%, 3387/381) |
+
+The 108 that survive are the predicted ones and nothing else: **33 have a reaching
+definition G2 has not been written for** (31 ``(zext2(y) + $00A5):2``, 2 through a
+zero-page deref), **3 are ``pcall``-bound** with no definition to read, **40 are
+genuine pointer derefs** and **32 are an ``INT_ADD`` written at the store itself**.
+G1 landed at its ceiling: every store it was written for, it claims, and the
+``loc_stack``/``loc_zext`` rows of the table above are now empty.
+
+One figure the section did not state, and it is the less flattering one: **57
+tunes still hold an unnamed store**, down from 342. 1031 of 1139 stores is 90.5%
+of the traffic but only 83% of the tunes carrying any, because the residue is
+spread thin -- 46 of the 57 hold exactly one, and the worst are 14 apiece
+(``C64_World``, ``1st_Decent_Hardcore``). Provable completeness moves further than
+that because most of those 57 are not lane-complete either. Counting stores
+flatters this rung; the 13-tune gap is the number that bounds a completeness claim
+and the one to quote.
+
+The 40 derefs are gated on resolving a ``zp,X`` index, i.e. on §7.10.5's problem,
+not on naming an address; rung (f) does not reach them and two strengthenings of
+it were measured at **0** additional resolutions. The 3 ``pcall``-bound stay ⊤ and
+are correct there.
+
+#### 7.10.4 ``partnered`` never was the lever; the store's byte order is
+
+§7.9.1 (2) calls ``partnered`` "the largest lever here and the cheapest" -- 227
+of 379 stores that "merge into a word store *without proving anything about the
+index*". **Measured: not one of them does.** All are refused, and 202 of 204 by
+a real premise rather than a gap.
+
+``_partnered`` (``fuse_measure.py:67-86``) is co-presence only, and over-counts
+three ways: the counted side keeps multiplicity where the partner side is a set
+(3 lo + 1 hi at one index scores 4, mergeable 2 -- which is why ``partnered`` is
+*odd* for ``Mindblast_tune_2``, impossible under any matched-pair reading); its
+scope is the procedure where ``_pair_at``'s is one statement list; and it applies
+no order, adjacency, hazard or interval test. The tight bound is **204 stores =
+102 pairs**, and the residue's independent size is **235 facts (102 pairs + 133
+singletons), not 337** -- the headline over-states the work by 30% for the same
+reason.
+
+The 102 leaders, by the guard that actually refused them: **76 ``_lww`` hi-first**
+(``framefuse.py:527``), 16 ``_bring``, 10 ``_may_read`` hazard.
+
+**The real lever is in the store form, and it is not an analysis at all.**
+``_pair_at`` never needed a resolved index -- it keys the partner on the
+*symbolic* index and merges with no ``_consts`` call. The index requirement
+enters at exactly one place: a **hi-first** pair must pass ``_lww``, because
+``frameval``'s ``stw`` emits its bytes ascending unconditionally
+(``frameval.py:532``, ``for j in range(op[5])``) and ``framelog.canonical``
+preserves that order inside the ord sections. So the premise is not about the
+index; it is about *emission order*, and the fix is to let the store state it:
+**a merged store that emits its two bytes in the order the program wrote them
+reproduces the log byte-for-byte for every possible index, so it owes no fact
+about the index.** One flag on the IR store node, ``reversed(range(..))`` in
+``frameval``, a spelling in the grammar, and the ``_lww`` gate goes.
+``_pack``'s existing ``hi_first`` argument (``framefuse.py:39``) already carries
+*operand evaluation* order; this is its missing twin for *write* order.
+
+**Sized: 60 of the 76 hi-first pairs also pass ``_bring`` (46 literally adjacent),
+so 120 of 337 residue stores (35.6%) over 43 tunes, 18 of which go to zero.
+Corpus 3387/381 (89.89%) -> 3447/261 (92.96%); clean tunes 464 -> 482 (77.2%).**
+(Restated over the 624-tune sweep of §7.10.6; the counts it moves are unchanged,
+the 7 tunes contributing no ``unproven`` store.)
+
+Secondary, recorded not proposed: ``_lww`` calls ``_lane_aligned``, which demands
+a pair *lo*, where the framelog premise is only that both cells be
+last-write-wins -- a conflation. Measured gain from relaxing it: **0**, since all
+76 have ``_consts`` returning ``None`` regardless. And ``_widen`` can have no
+index-free counterpart: ``framelog`` materialises the other lane only on a lane
+register (``framelog.py:47-49``), so widening a lone byte is log-neutral exactly
+on a lane target, which is an index fact by construction. The 133 no-partner
+stores are irreducible without resolving the index, and the ``sid.regNN`` view is
+already the model's answer for them.
+
+#### 7.10.5 ``unproven`` is reaching definitions, not index shapes
+
+**334 of the 337 indexes are a bare local** (``x`` 48, ``y`` 40, ``a`` 28 among
+the unpartnered). The expression shape carries no information; the problem is
+always that more than one definition reaches, and ``_consts`` is a demand-driven
+backward search for a *unique* one that returns ⊤ at the first wall.
+
+| where ``_consts`` bailed | stores |
+|---|---:|
+| loop-carried: a cyclic body may rebind (``frameproc.py:663``) | 107 |
+| one computed jump *anywhere* in the procedure (``frameproc.py:709``) | 56 |
+| a crossing store may write the index cell (``frameproc.py:614``) | 54 |
+| label entries disagree (``frameproc.py:712``) | 38 |
+| ``_fork`` wall at ``pcall``/``callb`` (``framefuse.py:129``) | 18 |
+| ``_crossable`` blocked by ``if``/``pcall``/``loop`` | 17 |
+| ``_Params`` union unsolved, table not const, index is an ``op``, other | 47 |
+
+The general fix is one thing, not seven: **a forward value-set interpretation
+with explicit ⊤ and widening at back edges**, replacing the backward
+unique-definition walk. Every top class is "more than one reaching definition",
+not "unknowable".
+
+The cheapest piece is separable and needs no new machinery. ``Defs._verified``
+(``frameproc.py:709``) is a **whole-procedure kill switch**: one ``dgoto`` /
+``igoto`` / ``swg`` anywhere refuses *every* label join in that procedure,
+including labels the computed jump provably cannot reach. Scoping the refusal to
+the jump's own target set is local to ``_Jumps``. **Ceiling 56 stores (16.6%);
+the yield below that ceiling is unmeasured, because the target-set computation
+has to exist first.**
+
+#### 7.10.6 The seven tunes are a stale cache, not a bound
+
+The ``IndexError`` of §7.9.1 (1) is not a bounds bug. ``Defs._entries`` builds
+``root.jumps = _Jumps(root)`` once per root environment and **never invalidates
+it** (``frameproc.py:678-683``), freezing ``(env, position)`` pairs for every
+goto. ``_fold_pair_at`` then rewrites statement lists **in place**, shrinking
+them by one per merged pair (``frameproc.py:2655``). Any cached position at or
+past the fold point is stale. ``551be1b`` did not introduce the staleness -- it
+introduced the first *reader* of it, because its ``_same_defs``
+(``frameproc.py:2381``) resolves index locals with the label-joining
+``lookup_joined``, whose ``_verified`` re-walks those cached chains, and because
+it removed the old ``_side_addr`` guard that refused cross-env results. The crash
+is ``oenv.lst[obound]`` with ``obound=13`` into a list pair-folding shrank from 14
+to 13.
+
+**So the clamp is wrong in principle and would be safe here only by luck.** A
+clamped stale bound is a *different* lookup, not a conservative one: statements
+after the reference seat slide down into the scanned range, so the walk can
+return an ``asg`` that textually follows the goto as the definition in force
+before it, and ``_same_defs`` compares definition identity as ``(id(lst),
+index)``, where a stale index can collide with a fresh index of a different
+statement and validate a join that does not hold. Instrumented over three tunes,
+*every* stale consult on this corpus is the same case -- drift exactly 1, seat
+last-of-list, zero in-bounds staleness -- which is why it would work and why it
+encodes no invariant.
+
+**The fix restores the invariant instead: the ``_Jumps`` cache does not outlive a
+rewrite of a list it indexes.** ``Defs.rewritten`` clears ``root.jumps``, and
+``_fold_words`` calls it on every ``_fold_pair_at`` that succeeds; ``_entries``
+rebuilds the index lazily from current contents, which reproduces exactly the
+lookups a from-scratch analysis would make. Completeness: live ``Defs`` chains are
+safe by construction -- a list is pair-folded at the end of its own
+``_fold_words`` call, after which its env is dead -- and ``_map_exprs`` rebuilds
+statement tuples while keeping body *list objects* by reference, so env bindings
+and ``id(lst)`` identities survive expression rewriting.
+
+**The two ``min(bound, len(self.lst))`` in ``_cell_walk`` and ``_name_walk`` came
+out with it.** They are not the clamp §7.9.1 declined to apply -- that one was
+never committed -- but the pre-existing scan clamps §7.9.1 reads as "already
+clamps", and they are the same wrong answer one statement earlier: a stale bound
+absorbed quietly where the walk should never be handed one. Both walks now index
+``bound`` plainly. Nothing offers them a bound past the end of its list over the
+whole corpus, so what the clamps were absorbing was the pair-fold staleness and
+nothing else, and a future rewrite that forgets to invalidate crashes instead of
+lying.
+
+**Verified.** All 7 tunes build, ``frameval.gate_fp`` passes on all 7, and the
+emitted text is byte-identical to the clamp's at exactly the line counts §7.9.1
+recorded (``ABC_Music`` 814, ``Abstrack`` 775, ``Bal`` 863, ``Abroxus`` 876) --
+the clamp having never been committed, the comparison is against a rebuild of it.
+Corpus-wide the sweep goes from 617 tunes and 7 refusals to **624 and 0**, with
+every other tune's row bit-identical in all three instruments: the word-store rate
+is **89.89%** (3387 word against 381 byte-wide, from 3356/379), clean tunes 464 of
+624 (74.4%), the census gains ``word_pack`` 4472 -> 4583 and ``carry_val`` 5524 ->
+5594, and the triage moves only ``straddle``, 15 -> 17. The Oracle debt §7.9.1 (1)
+demanded is paid. Every other rate quoted in §7.9.1 and §7.10 is over the 617-tune
+sweep that preceded this, and is restated against 624 only where a later section
+re-measures.
+
+#### 7.10.7 What the measurements say to do, in order
+
+Invalidating ``_Jumps`` on a pair fold (§7.10.6) led this list and is **done**: the
+7 tunes build, the corpus sweeps at 624 refusing none, and measurement on those
+tunes is unblocked. **G1 (§7.10.3) led what was left and is done too**: 1031 of
+1139 stores, the prediction exactly, and provable completeness 231 -> 451 of 624.
+What is left, in the order it costs:
+
+1. ~~**The word store carries its byte-emission order** (§7.10.4).~~ **DONE
+   (§7.10.10)**: 132 of 381 stores, 21 tunes to zero, 89.89% -> 93.27%, and the
+   ``_lww`` gate is deleted rather than discharged.
+2. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
+   discharged. 26 stores, and it removes a false "floor" from the record.
+3. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). Three lines, and G1 made the
+   33 stores behind a local visible to it: 65 of the 108 unnamed stores left.
+4. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
+5. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
+   new machinery. Its cost is why it is last, not its size.
+
+Above all of these sits the census, restated over the current 624-tune sweep:
+**``word_pack`` at 4583 sites over 552 tunes, and ``carry_val`` at 5594 over 550,
+are each an order of magnitude larger than the ``narrow_sink`` residue the ladder
+has been measuring, and most of the 4402 ``hi_byte``/``lo_byte`` sites read off a
+word the pack never made.** Nothing in the list above touches them. The next
+metric should be the census, not the lane column.
+
+#### 7.10.8 The next step, and why it is two steps
+
+The list above is ordered by cost and the paragraph closing it says the list is
+optimising the wrong quantity. Both are true, and they sequence rather than
+conflict.
+
+**Take item 1 now.** The word store carrying its own byte-emission order
+(§7.10.4) is index-free, its soundness argument is one line -- ``frameval.py:532``
+emits ascending unconditionally, so a store emitting in program order reproduces
+the log for *any* index -- and it **deletes a premise** rather than discharging
+one. That is the cheapest kind of progress the ladder admits, it is worth 120 of
+337 stores and 18 tunes to zero, and unlike items 2-5 it does not first need a
+proof obligation constructed for it. It is also the last item whose value does
+not depend on the metric question below.
+
+**Then build the metric, before items 2-5.** Items 2, 3, 4 and 5 have ceilings of
+26, 65, 56 and 107 stores: **254 together, if every one of them lands in full.**
+Against that, ``word_pack`` alone is 4583 sites over 552 of 624 tunes, and
+**no counter anywhere in the tree reports it** -- the number exists only because
+``lift_residue`` reads it off the emitted program. The blocking matrix says these
+are not independent classes either: 3998 def-use edges run from a ``word_pack``
+site into a ``hi_byte``/``lo_byte`` site, against 4402 such sites in all, so the
+three are largely **one** residue -- a word read as bytes because the pack never
+made it -- and 891 edges run ``raw_sp`` -> ``unnamed_addr``, which is §7.10.3's
+finding arriving from the other end.
+
+So the honest reading is that items 2-5 are small against what the census says is
+left -- 254 stores where the census counts 30,460 sites, which are different
+units and deliberately not divided here, but not so different that three orders
+of magnitude between them is a unit artefact -- and that the ladder cannot tell
+whether work on ``word_pack`` helps at all, because the 89.89% rate is computed
+from ``narrow_sink``'s 381 and moves by a fraction of a point whatever happens to
+the other 30,079 sites. **A rate over the census is the prerequisite for choosing
+among items 2-5 on evidence rather than on cost.** Whether that rate should be a
+``word_pack`` completion
+figure, a def-use-edge closure, or a per-tune "wears no machine shape" predicate
+is the first thing to decide, and it is a decision about what the branch is
+claiming, not a measurement -- which is why this note stops here and does not
+pick one.
+
+**Two debts stand against any of it**, both found while landing G1 and neither
+caused by it:
+
+- **SETTLED by §7.10.9: the defect is in ``frameproc``'s liveness sweep, two rungs
+  above the premise it sat behind, and is not a counter-example to item 1.**
+  ``MUSICIANS/G/Galway_Martin/Comic_Bakery`` **fails ``frameval.gate_fp``**, with
+  ``Divergence(frame=0, section='v2.lww', pos=0, got=(14,208), want=(14,108))``
+  -- identical at 300 frames and at its full 9450. Checked out at ``db5c642`` it
+  gives the same divergence from a program whose text hashes identically
+  (``a004c7a1f9eaab6b``), so it predates every change in §7.10.6 and §7.10.3 and
+  is not caused by them. It sits in ``v2.lww``, which is exactly the gate item 1
+  proposes to delete, so it should be understood *before* item 1 lands rather
+  than after: item 1's argument is that the ``_lww`` premise is unnecessary, and
+  a tune already diverging inside that section is either the counter-example to
+  that or the first thing it fixes.
+- Gate FP after G1 was verified over a **28-tune sample** (every 26th of the
+  cache, plus ``Commando``, ``Wizball``, ``Comic_Bakery`` and ``Krakout``) and
+  the suite's own gate tests, **not over all 624**. The emitted text was shown
+  unmoved corpus-wide, which is the stronger property for G1 specifically, but
+  the Oracle claim itself rests on the sample. **§7.10.9 makes this the larger of
+  the two debts**: three more tunes fail the gate than the sample could see.
+
+#### 7.10.9 The first debt was not in the rung it sat behind (SETTLED)
+
+``Comic_Bakery``'s divergence reproduces at **20 frames**, not the 300 the debt was
+recorded at, so bisecting it costs four seconds a build. It survives ``framefuse``,
+``framemath``, ``framestack``, ``frameptr`` and ``_pair_tables`` each disabled in
+turn, and disappears with ``frameproc.repolish`` disabled, then with ``_prune``
+alone. Delta-debugging the 75 prune drops -- an allowance counter, binary-searched
+for the flip -- names drop **#72, ``x = a`` in ``sub_7F03``**, whose uses are
+``m_8D92[x]`` and ``m_8DF1[x]`` eight statements later feeding ``sid.v3.freq_lo``:
+register ``$D40E``, the one the gate reports. Printing the backward walk shows the
+live set ``['x']`` above the two uses and **empty** at the definition, with a
+``for y in $04..$00`` between them.
+
+**The defect.** ``_Flow.stmt`` (``frameproc.py:1630``) builds a loop's live-in from
+the back-edge fixpoint and the body, and lets the exit successor's set in only
+through ``brk``. A ``loop`` leaves only by ``brk``, so that is complete for one; a
+``for`` falls out of its own bottom and carried nothing. Every name live after a
+``for`` and untouched inside it was therefore dead at its definition, and ``_Prune``
+deleted it. One line -- ``out |= live`` before the counter discard, which stays
+because the ``for`` defines the counter on entry and so kills it for everyone above.
+
+**Corpus.** 624 tunes built with and without: **611 emit byte-identical text**. Of
+the 13 that move, ``Comic_Bakery`` goes to ``None`` at its full 9450 frames, and
+``Asterix_and_the_Magic_Cauldron`` and ``Commando_High-Score`` stop **faulting under
+evaluation** (``switch goto target $83A3 outside the observed set``, ``unobserved
+$0CFF reached``) and gate clean. The other ten gate exactly as before. Hermetic
+suite 2258 passed, 492 skipped, and ``tests/test_frameprog.py`` gains a hand-built
+proc that fails without the fix on ``check_locals``, which is how the same defect
+surfaces when the pruned name has no later definition at all.
+
+**What it does not settle.** Three tunes fail Gate FP for reasons this does not
+touch, all identical before and after: ``720_Degrees`` at frame 225 in ``v1.ord``,
+``Rambo_First_Blood_Part_II`` at frame 0 in ``v1.ord`` (``got=None``), and
+``Dribbling`` at frame 0 in ``v1.lww``. ``Dribbling`` no longer refuses from
+``check_locals`` as §7.9.1 records -- it builds at HEAD and diverges instead --
+so that note is stale in its cause and stands in its conclusion. None of the three
+was in the 28-tune sample, which is the second debt arriving as evidence rather
+than as a caveat: **the full-corpus Gate FP sweep is owed before any claim about
+the emitted program is corpus-wide**, and it is the natural baseline for item 1,
+which changes emission for real.
+
+**Item 1 is unblocked and is next.** Preparing it fixed three things worth
+recording ahead of the work. The order belongs to the store node, not to the
+pack: ``unpack`` reads the pack's operands ``commuted`` on purpose, so operand
+order cannot carry write order without a pass silently flipping it, and the two
+forms already appear in emitted text meaning the same thing -- reusing them would
+reinterpret every committed ``.frameprog.txt``. ``_map_exprs``
+(``frameproc.py:890``) rebuilds a store as a bare 3-tuple and is the one central
+place a flag would be dropped; the other six ``("st", ...)`` rebuilders in the
+frameprog path are ``frameproc.py`` 426, 950, 1040, 1224 and 2660 and
+``movefwd.py:106``, all of which must carry ``s[3:]`` through. And deleting
+``_lww`` deletes the ``p.kind != "sid"`` clause with it, so non-SID pairs merge
+hi-first too: sound, since RAM order is invisible to the log and ``_bring`` and
+``_may_read`` still guard the values, but **unsized** -- §7.10.4's 76 counted
+``_lww`` refusals only.
+
+#### 7.10.10 Item 1: the store carries its order, and the premise is deleted (LANDED)
+
+A word store's write order is its own, spelled ``hi-first`` in the grammar and
+carried as the optional fourth element of the ``st`` node
+(``frameproc.hi_first``). ``frameval._s_st`` hands ``stw`` a byte-index order
+tuple instead of a count, and the VM iterates it, so a merged pair emits the two
+bytes in the sequence the program wrote them. ``_lww`` is **gone**, and with it
+``_pair_at``'s ``ctx`` parameter: the merge now asks nothing about the index,
+because the record it reproduces is the same for every value the index can take.
+That is the whole soundness argument, and it is one line of ``framelog``:
+write order is kept only inside the ctrl/AD/SR and ``$19``-``$1C`` sections, and
+a store emitting in program order matches there whatever cell it lands on.
+
+**The Gate FP baseline the debt demanded, paid first** (``tools/gate_sweep.py``,
+new here, 300 frames, 624 rows, 353s over 24 workers). At ``30fb83c``: **623
+build, 618 gate clean, 5 diverge, 1 faults under evaluation**
+(``C64_World``, ``unobserved $4ED7 reached``). The 28-tune sample of §7.10.9 saw
+three of the five; the sweep names **two more it could not**:
+``After_the_War`` (frame 4, ``v2.lww``) and ``Astro_Marine_Corps`` (frame 3,
+``v0.lww``). Neither is caused by anything on this branch and neither is item 1's
+-- they are the second debt's remainder, now bounded rather than sampled.
+
+**After item 1 the sweep is byte-identical**: 623 built, 618 clean, the same five
+divergences at the same frame, section and position, the same one fault. A change
+that moves emitted text in a third of the corpus moves the gate not at all.
+
+| | before | after |
+|---|---:|---:|
+| word-store rate | 3387 / 381 (**89.89%**) | 3453 / 249 (**93.27%**) |
+| ``unproven`` | 337 | **217** |
+| ``notaligned`` | 44 | **32** |
+| indexed word stores (``aligned``) | 1754 | **1820** |
+| tunes lane-complete | 464 | **485** |
+| tunes provably complete | 451 | **472** |
+| ``partnered`` (the over-count of §7.10.4) | 229 | 96 |
+| census ``narrow_sink`` | 381 over 160 tunes | **249 over 139** |
+| Gate FP clean / built | 618 / 623 | 618 / 623 |
+| ``unnamed``, ``unnamed_as_written`` | 108, 1139 | 108, 1139 |
+
+**Predicted 120 stores and 92.96%; measured 132 and 93.27%.** The prediction
+counted the ``unproven`` column only, where ``_lww`` refused on both columns it
+could refuse on: ``unproven`` falls by exactly the 120 predicted and
+``notaligned`` by a further 12, for **66 newly merged pairs**. Clean tunes were
+predicted 482 and measured 485. The triage moves with it -- ``straddle`` 17 -> 9,
+``window`` 26 -> 22, ``offlane`` 1 unchanged -- and every ``unnamed`` column is
+untouched, as it must be: G1's population is a different question.
+
+**The text moves in 213 of 624 tunes, and only a third of that is new work.**
+336 stores are emitted ``hi-first``; **66 of them are merges that did not happen
+before**, and the other 270 are pairs that already merged and now state the order
+they always had. The old text spelled those lo-first because ``_lww`` had proved
+the two cells commute -- true, and now unnecessary to know.
+
+**What the census says about the win, which is the less flattering half.**
+``narrow_sink`` drops 381 -> 249, and ``lift_residue`` computes that column
+independently of ``fuse_measure``, so the two instruments still agree store for
+store. But ``word_pack`` **rises 4583 -> 4617** over 552 -> 556 tunes: a merged
+pair emits ``hi<<8 | lo``, which is exactly the machine shape the census counts.
+Every other signature, the blocking matrix included, is bit-identical. So item 1
+converts 132 sites of one residue into 34 sites of another an order of magnitude
+larger, and **only the census can see that** -- the 89.89% -> 93.27% rate cannot,
+which is §7.10.8's argument arriving as a measurement rather than a prediction.
+Item 1 was still worth taking: it deletes a premise, and the rate it moves is the
+one the branch has been quoting. The metric question it does not answer is still
+the prerequisite for items 2-5.
+
+**Verified.** Hermetic suite 2261 passed, 492 skipped; the canonical fixpoint
+``dumps(loads(t)) == t`` holds over the new form, and ``tests/test_framefuse.py``
+gains three cases: that ``stw`` emits descending when the store says so and that
+the log sees the difference in an ``ord`` section, that a hi-first lane pair
+merges through an index with no constant set, and that dropping the flag from
+that merge moves the record. The third is the mutation evidence -- the flag is
+load-bearing, not decoration.
+
+### 7.8 The environment this branch was measured in
+
+> SUPERSEDED where the host mounts `/scratch` and `/tmp` on local disk, which is
+> the case as of the §7.6 measurement above: `/dev/sdb1` ext4, `import egglog`
+> 0.4s, the hermetic suite 15s, the 610 shapes 19s at `-n 6`, the full suite with
+> the HVSC cache 11m. None of the serialisation below applies there -- build the
+> venv from PyPI and run `pytest -n` normally. Keep the rest for an NFS host.
+
+`/scratch` is NFS serving **~1.5 file-opens/sec**, measured: 20 uncached small
+files take 15s serially, and 64 files 32-way parallel take 35.8s -- concurrency
+buys 1.35x, so it is global throughput, not per-connection latency. `import
+egglog` costs 2-15 minutes on ~0.5s of CPU; one `pytest` run of five files took
+35m58s wall for 34s of CPU. Consequences: run ONE python process at a time, never
+poll a running job with `ls`/`du`/`wc` against /scratch (it spends from the same
+budget), and expect a 610-shape run to cost ~9 minutes.
+
+Copying the venv does not work -- 14,419 files at that rate is ~3 hours, and
+parallelism does not help. **Building one locally does:** PyPI answers in 1.4s and
+`/` is a local overlay. `/home/josh/di-venv` is created but pip is not yet
+bootstrapped; `ensurepip` must run with **`TMPDIR` on local disk**, because `/tmp`
+is another mount of the same NFS export. Put the repo on `PYTHONPATH` rather than
+`pip install -e .` so no `egg-info` lands in the tree; a second editable install,
+`pysidwizard` from `/scratch/anarkiwi/cbm/pysidwizard/src`, is on the same path.
+Verify any new interpreter reproduces `shape_base.json` before trusting a number
+from it.

@@ -11,7 +11,9 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import _sweep
+
+ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -28,6 +30,9 @@ SHOWCASE = [
     "MUSICIANS/L/Laxity/Freeze.sid",
 ]
 
+# The texts are named off the stem, which is unique in this list but not in HVSC.
+assert len({Path(r).stem for r in SHOWCASE}) == len(SHOWCASE), "two showcase tunes share a stem"
+
 
 def one(rel):
     from deity_informant import sidprog
@@ -39,7 +44,7 @@ def one(rel):
     hvsc = ROOT / ".oracle-cache" / "hvsc"
     entry = next((t for t in corpus_params(hvsc) if str(t[0]).endswith(rel)), None)
     if entry is None:
-        return {"tune": Path(rel).stem, "error": "not cached"}
+        return {"tune": rel[:-4], "name": Path(rel).stem, "error": "not cached"}
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
@@ -55,7 +60,8 @@ def one(rel):
     met = sidprog.metrics(model)
     (ROOT / "out" / ("%s.sidprog.txt" % sid.stem)).write_text(text, encoding="utf-8")
     return {
-        "tune": sid.stem,
+        "tune": _sweep.tune_id(sid),
+        "name": sid.stem,
         "subtune": sub,
         "secs": secs,
         "frames": frames,

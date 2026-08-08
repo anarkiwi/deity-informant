@@ -8,7 +8,8 @@
 // switches, flow items -- is shared. Parsed LALR(1); templates parameterise
 // the shared region productions over the two item alphabets. The width suffix
 // and the *ptr[i] deref form are frameprog forms a sidprog document rejects,
-// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local).
+// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local) and the
+// hi-first write order of a word store.
 
 start: sidprog_doc
      | frameprog_doc
@@ -102,6 +103,7 @@ fblock: label _fbody?
 _fbody: fline+ _fcloser*
       | _fcloser+
 fline: asg _NL -> f_asg
+      | _HIFIRST asg _NL -> f_asg_hifirst
       | pcall _NL -> f_pcall_void
       | lvalue ("," NAME)* "=" pcall _NL -> f_pcall_ret
 pcall: NAME "(" (expr ("," expr)*)? ")"
@@ -172,6 +174,9 @@ CYC: /@\d+/
 CYCT: /@t\d+/
 PENTAG: /@xi?/
 _SIDINIT.5: "sid-init"
+// a word store's own byte-emission order (frameprog form); hyphenated, so no
+// NAME can spell it and no symbol alias can shadow it
+_HIFIRST.5: "hi-first"
 _NL: /(?:;[^\n]*)?\r?\n(?:[ \t]*(?:;[^\n]*)?\r?\n)*/
 
 %ignore /[ \t]+/

@@ -46,12 +46,17 @@ _REG_NAMES = {
 _NAME_REGS = {v: k for k, v in _REG_NAMES.items()}
 _SID_NAMES = {a: sid_name(a) for a in range(0xD400, 0xD419)}
 _SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
+VIEW = "sid.reg"  # the byte view of the register file (docs/frameprog.md 7.7 (5))
 _CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
 _SLOT_NAME = re.compile(r"[utr]\d+$")
 _T_NAME = re.compile(r"t(\d+)$")
 _U_NAME = re.compile(r"u(\d+)$")
 _R_NAME = re.compile(r"r\d+$")
 _SUB_NAME = re.compile(r"sub_([0-9A-F]{4})$")
+
+
+def _z2(n):
+    return ("op", "INT_ZEXT", (n,), 2)
 
 
 def reg_name(i):
@@ -71,8 +76,21 @@ def addr_name(v):
     return _SID_NAMES.get(v) or ("zp_%02X" % v if v < 0x100 else "m_%04X" % v)
 
 
+def sid_base(base):
+    """The lo register of the SID lo/hi pair ``base`` belongs to, else None."""
+    reg = base - 0xD400
+    if not 0 <= reg <= 0x18:
+        return None
+    if reg > 0x14:
+        return 0xD415 if reg in (0x15, 0x16) else None
+    r = reg % 7
+    return base - r if r <= 1 else base - (r - 2) if r <= 3 else None
+
+
 def name_addr(name):
     """Address named by a canonical cell name, else None (inverse of addr_name)."""
+    if name == VIEW:
+        return 0xD400
     a = _SID_ADDRS.get(name)
     if a is None:
         m = _CELL_NAME.match(name)
@@ -469,6 +487,12 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return self._nameref(str(c[0]), c[1] or 1)
 
     def e_index(self, c):
+        if (c[2] or 1) == 2:
+            got = self._pair_addrs(str(c[0]), c[1])
+            if got is not None:
+                la, ha = got
+                shl = ("op", "INT_LEFT", (_z2(("mem", ha, 1)), ("const", 8, 1)), 2)
+                return ("op", "INT_OR", (shl, _z2(("mem", la, 1))), 2)
         return ("mem", self._index_addr(str(c[0]), c[1]), c[2] or 1)
 
     def e_deref(self, c):
@@ -561,9 +585,32 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("reg", reg_index(name))
 
     def _index_addr(self, base, idx):
-        """``base + zext2(idx)``: the declared-base indexed access, any index expression."""
+        """``base + zext2(idx)``: the declared-base indexed access, any index expression.
+
+        A byte index widens; one already a word -- the ``sid.reg`` view carries
+        its offset inside the index at word width -- rides as written."""
         addr = req_name(self.rev.get(base, base))
-        return ("op", "INT_ADD", (("op", "INT_ZEXT", (idx,), 2), ("const", addr, 2)), 2)
+        if not (idx[0] == "op" and idx[3] == 2) and not (
+            idx[0] in ("mem", "const") and idx[2] == 2
+        ):
+            idx = ("op", "INT_ZEXT", (idx,), 2)
+        return ("op", "INT_ADD", (idx, ("const", addr, 2)), 2)
+
+    def _pair_hi(self, base):
+        """Hi partner address where ``base`` names a declared lo-role table."""
+        name = self.rev.get(base, base)
+        for d in self.doc.data_decls:
+            if d["base"] == name and d["role"] and d["role"][0] == "lo":
+                return req_name(self.rev.get(d["role"][1], d["role"][1]))
+        return None
+
+    def _pair_addrs(self, base, idx):
+        """``(lo addr, hi addr)`` of a paired-table access, one widened index."""
+        hi = self._pair_hi(base)
+        if hi is None:
+            return None
+        la = self._index_addr(base, idx)
+        return la, ("op", "INT_ADD", (la[2][0], ("const", hi, 2)), 2)
 
     def _deref_addr(self, base, idx):
         """``ptr [+ zext2(idx)]``: rung (f)'s resolved deref, the pointer read as a word."""
@@ -608,6 +655,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def f_asg(self, c):
         return ("stmt", 0, ("asg",) + c[0])
+
+    def f_asg_hifirst(self, c):
+        return ("stmt", 0, ("asg",) + c[0] + (True,))
 
     def pcall(self, c):
         m = _SUB_NAME.match(str(c[0]))
@@ -825,7 +875,8 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             if tag == "label":
                 out.append(x)
             elif tag == "stmt":
-                out.append(self._fasg(x[2]))
+                got = self._fasg(x[2])
+                (out.extend if isinstance(got, list) else out.append)(got)
             elif tag == "pcall":
                 out.append(("pcall", x[2][0], x[2][1], x[1]))
             elif tag == "term":
@@ -844,8 +895,25 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return out
 
     def _fasg(self, payload):
+        got = self._fasg_body(payload)
+        if len(payload) < 4:
+            return got
+        if not isinstance(got, tuple) or got[0] != "st" or store_width(payload[2]) != 2:
+            raise ValueError("hi-first states a word store's byte order")
+        return got + (True,)
+
+    def _fasg_body(self, payload):
         lv, rhs = payload[1], payload[2]
         if lv[0] == "index" and _check_store(lv, rhs):
+            if lv[3] == 2:
+                got = self._pair_addrs(lv[1], lv[2])
+                if got is not None:
+                    la, ha = got
+                    hishift = ("op", "INT_RIGHT", (rhs, ("const", 8, 1)), 2)
+                    return [
+                        ("st", la, ("op", "COPY", (rhs,), 1)),
+                        ("st", ha, ("op", "COPY", (hishift,), 1)),
+                    ]
             return ("st", self._index_addr(lv[1], lv[2]), rhs)
         if lv[0] == "deref" and _check_store(lv, rhs):
             return ("st", self._deref_addr(lv[1], lv[2]), rhs)
