@@ -1794,11 +1794,16 @@ def _labels_in(s):
 
 
 def _use_count_expr(x, name):
+    """How many times ``name`` is read in ``x``, at any width.
+
+    A 16-bit local reads as ``("loc", name, 2)``, so matching the bare 2-tuple
+    misses exactly the words rung (d) mints: ``_find_use`` then walks past a real
+    use and ``_inline_list`` deletes a definition still being read (§7.10.14)."""
     n = 0
     stack = [x]
     while stack:
         y = stack.pop()
-        if y == ("loc", name):
+        if y[0] == "loc" and y[1] == name:
             n += 1
         stack.extend(_kids(y))
     return n
