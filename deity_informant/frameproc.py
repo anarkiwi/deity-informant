@@ -307,6 +307,26 @@ def addr_bits(n, env=None):
     return m
 
 
+def addr_floor(n, env=None):
+    """Bits an address must set: every address the expression names is a superset.
+
+    ``addr_bits``' mirror, and the lower bound it cannot give: the stack push
+    ``zext2(sp) | $0100`` is guaranteed bit 8, so its reach starts at ``$0100``
+    rather than at zero (docs/register-model-lift-impl.md 2, Phase 3 (ii))."""
+    m = E.mask(loc_width(n))
+    if n[0] == "const":
+        return n[1] & m
+    if n[0] == "loc":
+        got = None if env is None else env.defn(n)
+        return 0 if got is None else addr_floor(got) & m
+    if n[0] == "op" and n[1] in ("INT_ZEXT", "COPY"):
+        return addr_floor(n[2][0], env) & m
+    if n[0] == "op" and n[1] in ("INT_OR", "INT_AND") and len(n[2]) == 2:
+        a, b = (addr_floor(c, env) for c in n[2])
+        return (a | b if n[1] == "INT_OR" else a & b) & m
+    return 0
+
+
 def span(base, idx, regions, mod=0):
     """Tightest sound span for an indexed address at ``base``: the ONE span rule.
 

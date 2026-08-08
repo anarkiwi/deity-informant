@@ -220,6 +220,30 @@ def top_sites(prog):
     return out
 
 
+def census_roots(tops):
+    """``ptr_roots`` as this instrument derives it: the roots of the top loads."""
+    return sorted({c for rec in tops["load_top"] for c in rec.get("roots", ())})
+
+
+def top_roots(prog):
+    """The pointer roots of the top-wide loads, read off ``ptrcert``'s own walk.
+
+    The same population ``ptr_roots`` names, derived by the Phase 2a analysis
+    rather than by this file: where the two disagree the row says so, which is
+    the "two instruments agree store for store" discipline for roots."""
+    from deity_informant import ptrcert
+
+    per, _loose = ptrcert.sites(prog)
+    return sorted("$%04X" % c for c, n in per.items() if n.get("load"))
+
+
+def certification(model, prog):
+    """Phase 2a's per-root block-rooting record for one program (read-only)."""
+    from deity_informant import ptrcert, streams
+
+    return ptrcert.summary(prog, streams.classify(model))
+
+
 def readback_sites(prog):
     """Static loads of a write-only SID register: ``_widen``'s RMW emission."""
     from deity_informant import frameproc
@@ -346,7 +370,7 @@ def census(model, prog, nframes):
         "stack_stores": len(tops["store_stack"]),
         "top_load_sites": tops["load_top"],
         "top_store_sites": tops["store_top"],
-        "ptr_roots": sorted({c for rec in tops["load_top"] for c in rec.get("roots", ())}),
+        "ptr_roots": census_roots(tops),
         "wide_classes": dict(Counter(rec["shape"] for rec in tops["store_top"])),
         "readback_sites": len(rbs),
         "readback": rbs,
@@ -356,6 +380,9 @@ def census(model, prog, nframes):
         "dyn_stmts": dyn,
         "switch_gotos": swgs,
     }
+    cert = certification(model, prog)
+    row["cert"] = cert
+    row["cert_agree"] = row["ptr_roots"] == top_roots(prog)
     if fault is not None:
         row["eval_fault"] = fault
     return row
@@ -376,6 +403,50 @@ def one(entry, frames):
         signal.alarm(0)
 
 
+def _cert_totals(done):
+    """Phase 2a's coverage: roots certified, what each premise cost, refusals."""
+    from deity_informant import ptrcert
+
+    ref, prem, shapes, kinds, loose = Counter(), Counter(), Counter(), Counter(), Counter()
+    for r in done:
+        c = r["cert"]
+        ref.update(c["refusals"])
+        prem.update(c["premises"])
+        shapes.update(c["shapes"])
+        kinds.update(c["def_kinds"])
+        loose.update(c["unrooted"])
+    have = [r for r in done if r["cert"]["roots"]]
+
+    def per(k):
+        return sum(r["cert"][k] for r in done)
+
+    return {
+        "cert_roots": per("roots"),
+        "cert_block_rooted": per("block_rooted"),
+        "cert_ready": per("cursor_ready"),
+        "cert_top_loads": per("top_loads"),
+        "cert_rooted_loads": per("rooted_loads"),
+        "cert_ready_loads": per("ready_loads"),
+        "cert_top_stores": per("top_stores"),
+        "cert_rooted_stores": per("rooted_stores"),
+        "cert_ready_stores": per("ready_stores"),
+        "cert_unrooted": dict(loose),
+        "cert_def_kinds": {k: kinds[k] for k in ptrcert.KINDS},
+        "cert_premises": dict(prem),
+        "cert_shapes": dict(shapes),
+        "cert_refusals": dict(ref),
+        "cert_refusal_tunes": {
+            k: sum(1 for r in done if k in r["cert"]["refusals"]) for k in ptrcert.REFUSALS
+        },
+        "tunes_with_roots": len(have),
+        "tunes_all_block_rooted": sum(
+            1 for r in have if r["cert"]["block_rooted"] == r["cert"]["roots"]
+        ),
+        "tunes_all_ready": sum(1 for r in have if r["cert"]["cursor_ready"] == r["cert"]["roots"]),
+        "cert_disagree": sorted(r["tune"] for r in done if not r["cert_agree"]),
+    }
+
+
 def _totals(done):
     """The corpus totals the plan's gates read, merged over clean rows."""
     wide, roots = Counter(), Counter()
@@ -383,6 +454,7 @@ def _totals(done):
         wide.update(r["wide_classes"])
         roots.update(r["ptr_roots"])
     return {
+        **_cert_totals(done),
         "state_decl_total": sum(r["state_decl"] for r in done),
         "scratch_total": sum(r["scratch"] for r in done),
         "persistent_total": sum(r["persistent"] for r in done),

@@ -105,7 +105,9 @@ is the same walk that produced this table.
 **R2 — What are the unbounded (⊤) accesses? Sequence-pointer traffic,
 uniformly, in every family including Follin.** All 188 ⊤ loads on the seven
 are the tracker/interpreter's pattern-walk (`(ptr + zext2(y+k))`) through 15
-pointer roots, every one already in `streams.classify`'s `pointer` vocabulary
+pointer roots (the row abbreviates: Automatas' ten `m_11xx` RAM pairs are one
+entry, and Phase 2a's committed instrument counts **23** roots over the seven —
+the 188 loads are exact), every one already in `streams.classify`'s `pointer` vocabulary
 (GT's `$FB/$FC` and Follin's `$21..$26` are literally documented test/study
 cases). The corpus adds one twist the five-tune draft missed: 12 tunes also
 *store* through such pointers. So the pointer question is the whole ⊤
@@ -493,17 +495,213 @@ The keystone phase, split so analysis lands before dialect — and grown a
 third half in review: 2c spends 2a's bounds on the stack fabric Phase 1
 could not remove.
 
-**2a — certification (analysis only, no text change).** For every pointer
-root (Phase 0's list): classify each reaching definition as table-row reload /
-in-block advance / save-restore / other. A root with zero `other` is
-**block-rooted**; emit the per-root proof record (the §7.10.11
-`_counter_range` pattern: the rule re-asks the question in sufficient form and
-records which premise held). Corpus-measured coverage of block-rooting is 2a's
-deliverable — the number that decides how much of 2b's dialect work the
-corpus pays for. `streams.classify` is the finder; the seven-tune expectation
-is 15/15 roots certify.
+#### 2a — certification (analysis only, no text change) — DONE
 
-**2b — the cursor dialect and rewrite.** Grammar/IR: `cursor(table)` state
+**Landed**: `deity_informant/ptrcert.py` — the authority on block-rooting — plus
+`frameproc.addr_floor` (the Phase 3 (ii) must-set-bits floor, arriving early
+because 2a needed it), the certification folded into `storage_census` as a row
+and a totals block, `fuse_measure.root_cells` delegating to `ptrcert` so the two
+instruments cannot drift on what a pointer root *is*, and 24 hermetic tests in
+`tests/test_ptrcert.py` over the shredder's own fixtures. Per §6's third review
+decision this is a mode of the standing instruments, not a third counter
+population; the analysis earns its own module because Phase 2b, 2c and 3 all
+consume it.
+
+*What chose the rule.* The certification is stated over the **emitted program**,
+not the model, because that is where the ⊤ residue lives and what 2b would
+rewrite: a root is a cell the emitted text still derefs through an address
+naming no datum — exactly `storage_census`'s `ptr_roots`, now derived by
+`ptrcert.sites` and cross-checked per tune (`cert_agree`, 0 disagreements over
+624). Each definition is read through `Defs._lookup`'s own chase, which a label,
+a call and a cyclic body already stop. Three premises, each re-asked in
+sufficient form rather than read off `streams.classify`'s union (the §7.10.11
+`_counter_range` discipline), each recorded per root in the proof record:
+
+- **definitions closed** — every store that may reach the pair is a table-row
+  reload (rung (f)'s premise re-asked per leg against the *declared* registry:
+  a table `declarations` already gave the matching `lo`/`hi` role, a declared
+  partner and no play-written offset, the row index bounding the block set), an
+  in-block advance (one term of the add *is* the cell at that width, every other
+  a constant, a carry the lo lane produced, or a value bounded inside a byte),
+  or a save/restore closed transitively over held locations. Else
+  `ptr_uncertified`.
+- **reads closed** — no read of the pair's bytes observed outside its own web.
+  §6's obligation, and it bites: a counter role, an end-of-block byte compare or
+  a page-alignment test reads a byte a block+offset cursor does not maintain.
+  Else `role_entangled`; where only a local the chase could not read through may
+  carry the pair, the weaker `role_opaque`.
+- **extent declared** — every row the root may reload, and its post-init value,
+  lands inside a declared datum, under a bounded advance. Else
+  `ptr_extent_open`.
+
+*Two things the analysis needed before it could measure anything.* First,
+`store_reach`'s interval **from zero** — the Phase 1 review finding that Phase 3
+(ii) schedules a floor for — made every page-one push an alias of every
+zero-page pointer pair, so the first run refused every Follin and SID-Wizard
+root on aliasing alone. `frameproc.addr_floor` is that floor, landed here and
+unused by any rewrite: must-set bits, mirroring `addr_bits`' may-set ones, so
+`(zext2(sp) | $0100)` reaches `[$0100, $01FF]` and not `[$0000, $01FF]`. Second,
+a store *through* a certified root is bounded by that root's own blocks — the
+certification spending itself — without which the 12 write-through players are
+each other's aliases and none of them certifies.
+
+**The coverage, corpus-wide** (`storage_census --frames 1500`, 624 tunes, 0
+refusals; roots are pairs, loads and stores are ⊤ access sites):
+
+| | roots | ⊤ loads | ⊤ stores | tunes |
+|---|---:|---:|---:|---:|
+| pointer roots the emitted text still derefs | **1,044** | 6,653 | 38 | 511 |
+| — **block-rooted** (definitions closed) | **441 (42.2%)** | 1,939 (29.1%) | 8 | 145 all-rooted |
+| — block-rooted *and* reads closed | 307 (29.4%) | 1,142 (17.2%) | 8 | 91 |
+| — **cursor-ready** (every premise) | **107 (10.2%)** | 157 (2.4%) | 1 | 9 |
+| ⊤ accesses carrying no pointer root at all | — | 59 | 67 | 50 |
+
+The 38 rooted ⊤ stores are exactly Phase 0's `ptr_writethrough` count, from a
+different walk — the two instruments agree store for store on the write-through
+class as well as on the roots.
+
+**Definition kinds** over the 1,044 roots — 4,372 definitions: `reload` 1,776,
+`save_restore` 1,034, `advance` 504, `other` 1,058. The plan's three cursor
+shapes cover **76%** of the reaching definitions, which is the R9 framing
+confirmed; the `other` quarter is five shapes and nothing else, and naming them
+is 2a's real work list:
+
+| shape | defs | what it is |
+|---|---:|---|
+| `computed` | 480 | a pointer built from arithmetic no cursor spells (zero-page reuse as scratch: `zp_FB = (a & $7F)`) |
+| `held_open` | 261 | a save location the closure could not admit: something other than a cursor also writes it |
+| `block_read` | 133 | **a cursor loaded from the block a cursor walks** — the script interpreter's own jump/call operand (Follin, Galway) |
+| `low_held` | 96 | the cursor saved and restored through page one — Phase 1's surviving `sp` fabric holding a cursor |
+| `opaque` | 88 | the definition is a procedure parameter or a call's return; the chase is intraprocedural |
+
+**The refusal ledger** (per root; a root may wear a reads class and a defs class
+at once):
+
+| class | roots | tunes |
+|---|---:|---:|
+| `ptr_uncertified` | 603 | 366 |
+| `role_entangled` | 418 | 302 |
+| `ptr_extent_open` | 311 | 151 |
+| `role_opaque` | 7 | 7 |
+
+`ptr_uncertified` splits 316 roots refused on `other` definitions alone, 193 on
+an alias store alone (2,751 stores the reach analysis cannot keep out of a pair,
+even with the floor), 94 on both. The 1,296 foreign read sites over 418 roots
+are the `role_entangled` population; only 7 roots refuse on the opaque path, so
+the position-blind taint fallback costs almost nothing.
+
+**What each premise costs, measured** — roots that would be cursor-ready if that
+one premise were discharged and nothing else changed:
+
+| premise | roots holding | roots blocked by it alone |
+|---|---:|---:|
+| advance bounded | 1,014 | 2 |
+| rows declared | 642 | 17 |
+| reads closed | 619 | 23 |
+| definitions closed | 441 | 50 |
+| **post-init value declared** | **328** | **107** |
+
+The single largest blocker is the *post-init* premise, and it is a
+conservatism rather than a fact about the corpus: a pair whose post-init image
+is `$0000` or `$FFFF` (a cell init zeroed, written before it is ever read) has
+no declared block for a value it never derefs. Discharging it needs precisely
+Phase 3's written-before-read analysis at the frame boundary — so **Phase 3
+returns 2a's favour**: cursor-ready would go 107 -> 214 on that premise alone.
+
+**The seven-tune table, and the plan corrected.** The review set was expected to
+be 15/15. It is **23 roots, 12 block-rooted, 0 cursor-ready**:
+
+| | Commando | Comic_Bakery | Automatas | Aces_High | Angry_Birds | Ghouls | Agent_X_II |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| pointer roots | 0 | 4 | 11 | 1 | 1 | 3 | 3 |
+| block-rooted | 0 | 0 | **10** | 0 | 0 | **2** | 0 |
+| cursor-ready | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ⊤ loads | 0 | 23 | 26 | 6 | 39 | 52 | 42 |
+| defs: reload/advance/save/other | — | 0/6/9/15 | 6/3/8/4 | 2/0/1/4 | 4/0/8/2 | 0/12/5/2 | 0/6/3/6 |
+| refusals | — | unc 4, ent 4 | unc 1, ext 10, ent 3 | unc 1, ent 1 | unc 1, ent 1 | unc 1, ent 3 | unc 3, ent 3 |
+
+Three corrections the corpus forces on the plan, all folded into §0/R2/§5.2
+above:
+
+1. **"15 pointer roots" was the §0 table's row, not a count.** The §0 row
+   collapses Automatas' ten `m_11xx` RAM pointer pairs into one entry
+   (`RAM cells m_11xx`); the emitted programs carry 23. The 188 ⊤ loads
+   reproduce exactly, so it is the root count that was abbreviated, not the
+   traffic.
+2. **§5.2's "GT, SW, Galway and goto80 certify structurally" is measured
+   false for GT, SW and Galway.** Aces_High's `zp_FB` is not only a cursor: the
+   player spills a register into it (`ptr_00FB_lo = x` … `x = ptr_00FB_lo`) and
+   builds a masked value in it, so it is Galway's own multiplexing appearing in
+   a tracker export. Angry_Birds' pair is saved and restored **through page
+   one**. Only goto80 certifies structurally, and its ten RAM pairs are the
+   corpus's cleanest cursors.
+3. **§5.2's "Follin's roots classify as `other` on exactly two def shapes" is
+   one shape short.** The loop save cells (`zp_30/32`) and the 3-deep return
+   stack (`m_6B25[zp_6A]`) *do* close under the transitive save closure — that
+   half of R9's design point arrives as predicted, and it is why Ghouls' `zp_21`
+   and `zp_25` are block-rooted. The third shape is `block_read`: `zp_23 =
+   mem[(zp_23:2 + zext2(y)):2]`, the interpreter reading its **next cursor out
+   of the script it is walking**. That is a script-language jump, and no
+   declared-registry premise bounds it — 133 definitions over the corpus.
+
+**Gates.** All five held, and the phase is read-only so the first is the point:
+
+| gate | result |
+|---|---|
+| emitted text byte-identical corpus-wide (sha256 per tune, branch vs `40b33d7`) | **624 / 624 identical, 0 build errors either side** |
+| full suite | **2,357 passed, 495 skipped, 8 xfailed**; the four Phase 2 shredder fixtures stay xfail |
+| `gate_sweep --frames 300` | **622 clean / 623 built**, diverged `Rambo` (C) only, refused `C64_World` |
+| `lift_residue` | census sum **31,112**, `raw_sp` **2,379 / 298**, every signature unchanged |
+| `fuse_measure` / `storage_census` | `unproven` **201**, `provably_complete` **488**, wide stores 105/54; every pre-existing census total identical row for row |
+
+**What the number says about 2b.** The corpus pays for the cursor dialect at
+**42% of roots and 29% of ⊤ loads today**, and for the *fault-outside-extent*
+semantics at 10% of roots. That is below the level at which four new grammar
+constructs pay for themselves, and it is direct evidence for §6's first review
+decision: **build the block-extent annotation on the existing `u16` spelling
+(`ptr_0002: u16 in m_1500`) plus an evaluator range check, not 2b's four
+constructs.** The measured reason is specific and repeats across families —
+**418 of 1,044 roots have their bytes read outside the deref**, so a cursor that
+cannot spell `lo(seq)`/`hi(seq)` forces the fallback on 40% of the population
+regardless of how well its definitions certify. A one-token annotation on the
+existing spelling keeps the byte lanes and buys the extent fault; that is the
+2b design the measurement supports, and the shredder's `pointer_walk` fixture is
+the type specimen (it certifies on definitions, and refuses on the `(lo & $18)`
+alignment test that decides its reload).
+
+**What it supplies to 2c and 3.** 2c's `sp_linked` relaxation needs "an access
+certified into a declared block's extent is bounded away from page one by that
+extent". 2a supplies it in two pieces, and the second is the bigger one: the
+per-root block list (1,939 ⊤ loads on block-rooted roots now carry a declared
+extent, none of it in page one) *and* `frameproc.addr_floor`, which by itself
+gives the surviving `(zext2(sp [+ k]) | $0100)` push the interval
+`[$0100, $01FF]` instead of `[$0000, $01FF]`. Phase 1's measurement was that the
+`sp_linked` premise is unprovable for 611 of 624 tunes because "any unresolvable
+address may reach `$0100..$01FF`" — half of that unprovability was the missing
+floor, not the missing certification. The `low_held` shape (96 definitions) is
+the traffic in the other direction and 2c owns it: a cursor that lives on the
+machine stack keeps `sp` alive and refuses block-rooting at once. Phase 3 gets
+the reach bounds for its `aliased` condition (a certified write extent is a
+declared block span, which is what §2 Phase 3 (ii) asks for), gets
+`addr_floor` as the floor that section makes mandatory, and is **owed** the
+post-init premise in return.
+
+**Not done, and why.** No text moved and none was meant to; the shredder's four
+Phase 2 fixtures stay `xfail(strict=True)` because 2b did not land. The
+certification is intraprocedural (88 `opaque` definitions are a call's or a
+parameter's), the reads closure falls back to a position-blind taint where the
+chase cannot read a local (7 roots), and the `block_read` shape — a cursor read
+out of the block a cursor walks — is named and counted but not certified: doing
+so means enumerating a const block's words as a target set, which is a rule 2b
+should decide it wants before 2a builds it.
+
+#### 2b — the cursor dialect and rewrite
+
+**Read 2a's coverage first (above): the measurement argues for §6's one-token
+block-extent annotation on the existing `u16` spelling over the four constructs
+below, because 418 of 1,044 roots read their own bytes outside the deref.**
+
+Grammar/IR: `cursor(table)` state
 fields; indexed read `cur[k]`; advance; reload from a pointer-table row;
 cursor values as data (Follin's call stack and loop cells). Evaluator: cursor
 reads fault outside the block extent (observation-closed, gate-visible).
@@ -513,14 +711,16 @@ stores; uncertified roots fall back to coalesced u16 pointer variables
 with unbounded advance keep the fallback too, class `ptr_extent_open`. The
 page-cross carry guards collapse with the addresses that carried them.
 
-Gates: 2a — none needed (read-only), its output reviewed as numbers. 2b —
+Gates: 2a — none needed (read-only), its output reviewed as numbers (the five
+it was in fact read against are tabled in 2a above). 2b —
 full `gate_sweep` with movement only on tunes whose text changed, gating same
 or better; census `unnamed_addr` + `carry_val` down, sum down; triage
 `unproven` MUST NOT rise; canonical fixpoint over the new construct;
 `dumps(loads(t)) == t`.
 
-**2c — the stack fabric leaves (`raw_sp` -> 0, scheduled).** Phase 1's
-review finding made a phase: two thirds of the surviving `raw_sp` class is
+#### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
+
+Phase 1's review finding made a phase: two thirds of the surviving `raw_sp` class is
 `sp = sp ± k` and the `pcall` threading, removable only by `drop_sp`, which
 is all-or-nothing per program and blocked by `sp_linked` (307 tunes) and
 `sp_unbalanced` (201). Two rules, both with premises 2a supplies or Phase 1
@@ -586,7 +786,10 @@ Mechanical rule, both conditions computed by committed analyses:
   condition therefore MUST compute reach with a lower bound — must-set bits
   from the same `addr_bits` walk (an `INT_OR` constant's bits are guaranteed;
   zext/copy/and propagate them), giving the stack store the interval
-  `[$0100, $01FF]` — before this phase lands, and the shredder owes the
+  `[$0100, $01FF]` — before this phase lands. **Landed in 2a as
+  `frameproc.addr_floor`**, which needed it for the same reason (the push
+  aliased every zero-page pointer pair); this phase's job is now to *use* it in
+  `aliased` rather than to build it. The shredder still owes the
   fixture with it: a program that keeps `sp` (an `sp_linked`/`sp_unbalanced`
   refusal) alongside zero-page scratch, whose scratch still promotes. Without
   the floor this phase silently forfeits a third of its yield to Phase 1's
@@ -785,7 +988,13 @@ GT, SW, Galway and goto80 roots structurally. Follin's roots classify as
 `other` on exactly two def shapes — the loop-start save cells (`zp_30/32`)
 and the 3-deep return stack (`m_6B25[zp_6A]`) — i.e. **cursor values stored
 as data**, certifiable by transitive closure over save cells, which is R9's
-design point arriving as a measurement. Two further findings shaped the rule:
+design point arriving as a measurement.
+
+**Both sentences are corrected by the landed 2a (see §2 Phase 2a): only goto80
+certifies structurally — GT, SW and Galway all multiplex or spill through their
+pointer cells — and Follin carries a third `other` shape, the cursor read out of
+the block it walks. The transitive save closure does hold, and is what makes
+Ghouls' `zp_21`/`zp_25` block-rooted.** Two further findings shaped the rule:
 
 - **The block registry already exists.** `data_decls` records pointer tables
   with `targets` spans and — decisively — blocks with `via: $FB`: the model
