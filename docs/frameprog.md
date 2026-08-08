@@ -2834,8 +2834,11 @@ What is left, in the order it costs:
 1. ~~**The word store carries its byte-emission order** (§7.10.4).~~ **DONE
    (§7.10.10)**: 132 of 381 stores, 21 tunes to zero, 89.89% -> 93.27%, and the
    ``_lww`` gate is deleted rather than discharged.
-2. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
-   discharged. 26 stores, and it removes a false "floor" from the record.
+2. ~~**The covering-sweep rule** (§7.10.2), with the loop-counter obligation
+   discharged.~~ **DONE (§7.10.11)**: 22 stores, the whole ``window`` class, and
+   the obligation refuses none of them. 93.27% -> 93.83%, 13 more tunes complete,
+   and not one byte of emitted text moves -- it removes a false "floor" from the
+   record and nothing else.
 3. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). Three lines, and G1 made the
    33 stores behind a local visible to it: 65 of the 108 unnamed stores left.
 4. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
@@ -3051,6 +3054,126 @@ the log sees the difference in an ``ord`` section, that a hi-first lane pair
 merges through an index with no constant set, and that dropping the flag from
 that merge moves the record. The third is the mutation evidence -- the flag is
 load-bearing, not decoration.
+
+#### 7.10.11 Item 2: a covering sweep is no lane half, and the counter is the premise (LANDED)
+
+**The rule, in code.** ``framefuse._covering(cell, ks)`` asks whether the
+registers the store reaches hold **both halves of every pair they touch**. It is
+stated over the reached set, so it holds for any base, index or stride and names
+no shape of loop; a register the pair rule calls 8-bit owes nothing. Where it
+holds, the store is not a lane half: ``_lane_aligned``'s premise -- a lone half
+needing the word completed around it -- is simply false, because the word is
+already written entire. **Nothing widens.** §7.7's ``$CA6E`` argument is exactly
+why it must not: `Also_Bad`'s `STA $D400,Y / DEY / BPL` blit *is* a covering
+sweep, and the widened `mem[$D400+y]:2` at `y=$04` would put a spurious `$D405`
+entry in the AD section, which §1.1 requires verbatim. The rule answers a
+different question -- whether the store is residue -- and answers it *no*.
+
+**The obligation, discharged in ``_counter_range``.** The set ``_consts`` returns
+is a union over reaching definitions: what the index *may* hold, not what it does
+hold on any one pass. Covering is therefore necessary and not sufficient -- a set
+that came from an ``if`` join, or from a constant table of offsets, means the
+store writes *one* of those registers and the pair is left half-written.
+``_counter_range`` does not read ``_consts``' answer at all; it re-asks the
+question in the sufficient form. The index must resolve through
+``lookup_joined`` to a definition with no value, that seat must be the store's
+own ``env.outer``, and the statement in it must be a ``for`` binding that name --
+which is precisely ``_fork``'s ``for`` arm reached the one way that proves the
+store rides every value. `_escapes` then holds the loop body to leaving no other
+way: a ``ret``, a ``goto`` or a computed jump at any depth, or a ``brk``/``cont``
+belonging to this loop rather than a nested one, and the range is not swept. The
+seat test is what rules out a store *after* the loop, which ``_fork`` would
+answer with the same range and which runs once.
+
+**Measured over the same 624 files, 0 refusals, against a worktree at `f66f61a`.**
+
+| | before | after |
+|---|---:|---:|
+| ``notaligned`` | 32 | **10** |
+| ``swept`` (new) | -- | **22** |
+| lane byte column (``lane_byte_total``) | 249 | **227** |
+| word-store rate | 3453 / 249 (**93.27%**) | 3453 / 227 (**93.83%**) |
+| tunes lane-complete | 485 | **498** |
+| tunes provably complete | 472 | **485** |
+| triage ``lane_total`` | `unproven 217, window 22, straddle 9, offlane 1` | `unproven 217, swept 22, window 2, straddle 7, offlane 1` |
+| ``unproven``, ``aligned``, ``word_plain``, ``partnered`` | 217, 1820, 1633, 96 | unchanged |
+| census ``narrow_sink`` | 249 over 139 tunes | 249 over 139 tunes |
+| Gate FP clean / built | 618 / 623 | 618 / 623 |
+
+**Predicted a ceiling of 22 and the obligation refusing some of them; measured 22
+and it refuses none.** Every covering-shaped site in the corpus is a genuine
+counted sweep: a ``for`` counter, the store a direct statement of its body, no
+early exit. §7.10.2's "22 of the 26 sit in a cyclic body" was the ``in_loop``
+proxy read off the pre-item-1 split; the sufficient premise is strictly stronger
+than that proxy and still costs nothing, so the ``window`` class empties. The 22
+sit in 16 tunes -- Comic_Bakery 5 (the five §7.10.2 opens with), Trap and
+25_Years_tune_1 2 each, thirteen tunes 1 -- and **13 tunes go complete on this
+alone**, Krakout, Trap, Comic_Bakery and Wizball among them.
+
+**``straddle`` looked at, and it is not this rule's.** Of the 9, seven really do
+cover a pair by one half only -- After_the_War's four `sid.reg[(zext2(y) + $0001)]`
+stores, 7_of_4's two `sid.reg[y]` stores reaching los and 8-bit registers but not
+one hi, Ace_of_Aces the mirror of that -- and widening any would write a
+neighbour, exactly as the
+bucket claims. **Two were mislabelled, and the tool is fixed here**:
+Ultima_III-Exodus and Block_n_Bubble reach `$D400 $D401 $D407 $D408 $D40E $D40F`,
+which covers every pair whole; ``lift_triage`` called them ``straddle`` because
+its ``window`` test demanded a *contiguous* run, a shape requirement the rule
+does not have. They are now ``window``: covering, and refused by the counter
+obligation, since their index is a table union and one value occurs per pass. So
+the covering rule's remaining reach over ``straddle`` is **2 stores, and they need
+a different premise** -- that the union is swept exhaustively, which a constant
+table does not give. The other 7 are conceded.
+
+**The Gate FP sweep is byte-identical, and it had to be.** 300 frames, 623 built,
+618 clean, the same five divergences at the same frame, section and position --
+720_Degrees (225, `v1.ord`), After_the_War (4, `v2.lww`), Astro_Marine_Corps (3,
+`v0.lww`), Dribbling (0, `v1.lww`), Rambo_First_Blood_Part_II (0, `v1.ord`) --
+and the same one fault (C64_World, `unobserved $4ED7 reached`). This item emits
+no different text anywhere in the corpus, so the gate cannot see it. **That is
+the honest reading of the safety net here: it did not test the rule.** What the
+loop-counter obligation protects is not a rewrite but a *claim*, and a false
+claim shows up in the metric, never in the log. The test that does bear on it is
+``test_an_if_join_covering_both_halves_is_not_a_sweep``, where a union covering
+`$D400/$D401` is refused and the proof record says so.
+
+**What the census says, which is the less flattering half.** ``lift_residue`` is
+**bit-identical**, ``narrow_sink`` included: 249 sites over 139 tunes, every
+signature and the whole blocking matrix unmoved. Unlike item 1 this adds no
+``word_pack`` -- it packs nothing -- but the calibration §7.10 opens with is now
+an identity plus a named term: **``narrow_sink`` 249 == ``lane_byte_total`` 227 +
+``swept`` 22**. The census is right to keep counting them. `sid.reg[x] = m_E686[x]`
+is a byte-wise blit of a 16-bit register file and still wears the machine's
+shape; what changed is only that rung (d) has no lever on it and stops pretending
+the residue is work. The 0.56 points of word-store rate are bookkeeping, not
+lifting, and should be read that way.
+
+**It removes no read-back either (§7.10.12), and that is not a disappointment.**
+The rule fires only on stores ``_lane_aligned`` had already refused, so it takes
+nothing out of ``_widen``'s population: a structural count of word stores whose
+value reads their own SID address is **22 before and 22 after** over the 18 tunes
+carrying a swept site or a §7.10.12 measurement, per tune unmoved -- Aztec_Challenge
+6, Action_Biker 4, Commando 3, Monty_on_the_Run 3, Aaargh and Freeze 2,
+Asterix_and_the_Magic_Cauldron and Comic_Bakery 1 -- and the Commando and
+Monty_on_the_Run figures reproduce §7.10.12's from the emitted text alone rather
+than from an instrumented state image. What the rule does owe that section is the
+counterfactual: had "not a lane half" been read as "so widen it", the 22 sweeps
+would have **minted** 22 more reads of a write-only register, and broken the log
+besides. Discharging residue by proving rather than by rewriting is the only
+direction that cannot make §7.10.12 worse.
+
+**The emitted text is identical, checked directly.** ``frameprog.dumps`` hashes
+equal on all 18 tunes above, the 16 carrying swept sites included, and
+``lift_residue``'s per-tune rows -- every site, every skeleton, the whole blocking
+matrix -- are bit-identical across all 624. The gate sweep is a consequence of
+that, not independent evidence for it.
+
+**Verified.** Hermetic suite 2261 -> 2265 passed, 492 skipped;
+``tests/test_framefuse.py`` gains four cases: a `$D400,X` blit over the whole
+register file that is swept and stays byte-wide, the same blit one byte short of
+a pair's hi that is not, an ``if``-join union covering `$D400/$D401` that is not,
+and ``_lane_sweep`` refused directly on a `brk` in the body and on a store sitting
+after the loop rather than in it.
 
 #### 7.10.12 A widened lane store reads a register the CPU cannot read
 

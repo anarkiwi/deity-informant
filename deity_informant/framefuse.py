@@ -256,6 +256,62 @@ def _lane_aligned(p, ks):
     return ks is not None and all(_sid_base(p.lo + k) == p.lo + k for k in ks)
 
 
+_LEAVES = frozenset(("ret", "goto", "dgoto", "dbr", "igoto", "swg", "unobs"))
+
+
+def _escapes(body, own=True):
+    """Control may leave the loop before its counter has taken every value.
+
+    ``brk`` and ``cont`` belong to the nearest enclosing cycle, so they count only
+    outside a nested one; a return or a jump leaves whatever it is nested in."""
+    for s in body:
+        if s[0] in _LEAVES or (own and s[0] in ("brk", "cont")):
+            return True
+        inner = own and s[0] not in frameproc._CYCLIC
+        if any(_escapes(b, inner) for b in frameproc._stmt_bodies(s)):
+            return True
+    return False
+
+
+def _counter_range(idx, env, at):
+    """The range ``idx`` steps through where the store rides every value of it.
+
+    ``_consts`` unions the definitions reaching a store, so its set is what the
+    index *may* hold; a sweep needs each value to occur, which only a ``for``
+    counter binding the body the store sits directly in, with no early exit, gives."""
+    while frameproc.is_op(idx, "INT_ZEXT"):
+        idx = idx[2][0]
+    if idx[0] != "loc" or env.outer is None:
+        return None
+    got = env.lookup_joined(idx[1], at)
+    if got is None or got is frameproc.ENTRY or got[2] is not None or got[:2] != env.outer:
+        return None
+    s = env.outer[0].lst[env.outer[1]]
+    if s[0] != "for" or s[1] != idx[1] or _escapes(s[4]):
+        return None
+    lo, hi = sorted((s[2], s[3]))
+    return frozenset(range(lo, hi + 1))
+
+
+def _covering(cell, ks):
+    """The reached registers hold both halves of every pair they touch.
+
+    A run of the register file writes each 16-bit register it reaches entire, so
+    no half is left stale and there is no word to complete around the store."""
+    hit = frozenset(cell + k for k in ks)
+    return all(_sid_base(a) is None or {_sid_base(a), _sid_base(a) + 1} <= hit for a in hit)
+
+
+def _lane_sweep(cell, idx, env, at):
+    """The indexed lane store is a covering sweep, so it is no lane half at all.
+
+    ``_lane_aligned``'s premise is that the store is a lone half needing the word
+    completed around it; a sweep writes the word entire, so nothing is owed and
+    nothing widens -- the rule is stated over the reached set and names no loop."""
+    ks = _counter_range(idx, env, at)
+    return ks is not None and _covering(cell, ks)
+
+
 def _widen(s, p):
     """A lone lane store as the u16 store it is, the other lane keeping its value.
 
@@ -318,6 +374,7 @@ class _Pair:
         "indexed",
         "unproven",
         "notaligned",
+        "swept",
     )
 
     def __init__(self, lo, hi, kind, evidence):
@@ -326,7 +383,7 @@ class _Pair:
         self.kind = kind
         self.evidence = evidence
         self.words = self.lone = self.stores = self.unpaired = self.hazard = 0
-        self.indexed = self.unproven = self.notaligned = 0
+        self.indexed = self.unproven = self.notaligned = self.swept = 0
 
     def refusal(self):
         """The premise's refusal diagnostic, or None where the pair fuses.
@@ -365,10 +422,10 @@ class _Pair:
             self.hazard,
         )
         if self.kind == "sid":
-            rest += ", %d lane-aligned indexed, %d index unproven, %d index proven off-lane" % (
-                self.indexed,
-                self.unproven,
-                self.notaligned,
+            rest += (
+                ", %d lane-aligned indexed, %d index unproven, %d index proven off-lane"
+                ", %d covering sweep(s)"
+                % (self.indexed, self.unproven, self.notaligned, self.swept)
             )
         status = "refused" if why else ("fused" if not (self.lone or self.unpaired) else "partial")
         return Proof(self.lo, self.kind, status, (self.lo, self.hi), "%s; %s" % (body, why or rest))
@@ -574,9 +631,11 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         if widen and half[1] is not None:
             ks = _consts(half[1], env, i, ctx) if ctx is not None else None
             widen = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
+            swept = not widen and _lane_sweep(half[0], half[1], env, i)
             p.indexed += count if widen else 0
-            p.unproven += count if ks is None else 0
-            p.notaligned += count if ks is not None and not widen else 0
+            p.swept += count if swept else 0
+            p.unproven += count if ks is None and not swept else 0
+            p.notaligned += count if not (widen or swept or ks is None) else 0
         if half is not None:
             p.unpaired += count
         new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))

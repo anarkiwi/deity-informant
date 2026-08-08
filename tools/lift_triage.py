@@ -30,7 +30,8 @@ USAGE = """\
 LANE = (
     "unproven",  # the index resolves to no constant set: what the model cannot see
     "hi_lane",  # every reaching index lands on a pair *hi*: widening is right one cell down
-    "window",  # a contiguous run covering each pair it touches whole: a register-window copy
+    "swept",  # a covering run a loop counter proves swept: rung (d) leaves it alone (7.10.2)
+    "window",  # covering, with no counter proving every value it may take occurs
     "straddle",  # covers some pair by one half only: widening really would write a neighbour
     "offlane",  # reaches only 8-bit registers: no 16-bit form exists to widen to
 )
@@ -69,24 +70,12 @@ def _roles(cell, ks):
     return out
 
 
-def _covers_whole_pairs(cell, ks):
-    """Every 16-bit register the reached set touches, it touches both halves of.
-
-    That is what makes a sweep sound to leave alone: the loop writes each pair it
-    reaches whole, so no half is left holding a stale byte and there is nothing for
-    rung (d) to widen -- the word is already written entire."""
+def _lane_class(cell, ks, swept):
+    """Which ``LANE`` class an indexed lane store rung (d) refused belongs to."""
     from deity_informant import framefuse
 
-    hit = {cell + k for k in ks}
-    for at in hit:
-        base = framefuse._sid_base(at)
-        if base is not None and not {base, base + 1} <= hit:
-            return False
-    return True
-
-
-def _lane_class(cell, ks):
-    """Which ``LANE`` class an indexed lane store rung (d) refused belongs to."""
+    if swept:
+        return "swept"
     if ks is None:
         return "unproven"
     roles = _roles(cell, ks)
@@ -94,9 +83,7 @@ def _lane_class(cell, ks):
         return "hi_lane"
     if all(r == "byte" for r in roles):
         return "offlane"
-    ordered = sorted(ks)
-    run = ordered == list(range(ordered[0], ordered[0] + len(ordered)))
-    return "window" if run and _covers_whole_pairs(cell, ks) else "straddle"
+    return "window" if framefuse._covering(cell, ks) else "straddle"
 
 
 def _has(node, kind):
@@ -164,7 +151,7 @@ def _lane_records(model, prog):
                 continue  # rung (d) widens it: not residue
             cell = half[0]
             rec = {
-                "class": _lane_class(cell, ks),
+                "class": _lane_class(cell, ks, framefuse._lane_sweep(cell, half[1], env, i)),
                 "entry": "$%04X" % entry,
                 "pair": "$%04X/$%04X" % (p.lo, p.hi),
                 "store": "%s = %s" % (frameproc._memref(s[1]), frameproc._fmt(s[2])),

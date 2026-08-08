@@ -440,6 +440,69 @@ def test_an_index_that_may_land_mid_register_leaves_the_store_byte_wide():
     assert "0 lane-aligned indexed, 0 index unproven, 1 index proven off-lane" in lemma
 
 
+# ---- the covering sweep: a register-window copy is no lane half (7.10.2) --------
+def _blit(name, top):
+    """Krakout's shape: a counted loop copying a shadow block to the register file."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "imm", top).label("lp")
+    a.i("LDA", "absx", TBL).i("STA", "absx", SID)
+    a.i("DEX").i("BPL", "rel", ("L", "lp")).i("RTS")
+    data = {TBL + k: 0x20 + k for k in range(top + 1)}
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player(name, a.assemble(), data, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    return _proof(prog, SID).lemma, frameprog.dumps(prog)
+
+
+def test_a_covering_sweep_of_the_register_file_is_no_lane_half():
+    """`$D400,X` over the whole file writes every pair it touches entire.
+
+    Nothing is widened: the premise ``_lane_aligned`` tests -- a lone half needing
+    the word completed around it -- is simply false here, and widening would put a
+    spurious entry in an order-preserved section (7.7's `$CA6E`)."""
+    lemma, text = _blit("blit_all", 0x18)
+    assert "0 index proven off-lane, 1 covering sweep(s)" in lemma
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
+
+
+def test_a_run_stopping_on_a_pair_lo_covers_nothing_of_the_kind():
+    """One byte short, the run leaves `$D403` holding a half the loop never wrote."""
+    lemma, _text = _blit("blit_part", 0x02)
+    assert "1 index proven off-lane, 0 covering sweep(s)" in lemma
+
+
+def test_an_if_join_covering_both_halves_is_not_a_sweep():
+    """The union is what the index *may* hold, and one arm runs: the pair is half written.
+
+    ``_consts`` unions over reaching definitions, so covering is necessary and not
+    sufficient; only the ``for`` binding proves every value occurs."""
+    a = G.Asm(G.ORG)
+    a.i("LDY", "imm", 0x00)
+    a.i("LDA", "abs", TBL).i("BEQ", "rel", ("L", "keep"))
+    a.i("LDY", "imm", 0x01)
+    a.label("keep")
+    a.i("LDA", "abs", TBL + 1).i("STA", "absy", SID).i("RTS")
+    outs = tuple(SID + k for k in range(0x19))
+    model = _fuzz_model(_player("arm_cover", a.assemble(), {TBL: 0x01, TBL + 1: 0x42}, outs))
+    prog = frameprog.program(model)
+    assert frameval.gate_fp(model, 8, prog) is None
+    lemma = _proof(prog, SID).lemma
+    assert "1 index proven off-lane, 0 covering sweep(s)" in lemma
+    assert re.search(r"sid\.reg\[.*\] = ", frameprog.dumps(prog))
+
+
+def test_the_sweep_proof_wants_the_counter_the_store_rides():
+    """A break may cut the range short, and a store after the loop rides one value."""
+    st = ("st", ("op", "INT_ADD", (("loc", "x"), ("const", SID, 2)), 2), ("const", 1, 1))
+    for body, want in (([st], True), ([st, ("brk",)], False)):
+        env = frameproc.Defs([("for", "x", 0x18, 0, body)])
+        sub = frameproc.Defs(body, (env, 0), True)
+        assert framefuse._lane_sweep(SID, ("loc", "x"), sub, 0) is want
+    after = [("for", "x", 0x18, 0, [("ret", False)]), st]
+    assert not framefuse._lane_sweep(SID, ("loc", "x"), frameproc.Defs(after), 1)
+
+
 # ---- the index spilled through a play-written cell (docs/frameprog.md 7.2) -------
 def _spill_loop(name, between=()):
     """Ala_Gal's shape: the voice offset is cached in a RAM cell and reloaded."""
