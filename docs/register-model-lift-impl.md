@@ -279,10 +279,154 @@ The phase specification, for the record:
 Gate: instruments reproduce the seven-tune table bit-for-bit; no emitted text
 changes anywhere (hash-checked).
 
-### Phase 1 — the stack becomes locals (`raw_sp` -> 0)
+### Phase 1 — the stack becomes locals (`raw_sp` -> 0) — DONE
 
-Scope: `framestack` finishes. Balanced push/pop and call linkage become
-locals/params; the work list is the unbalanced residue — **16 of the seven
+**Landed**: rung (d0s) in `framestack` — the spill named through `sp` rather
+than through its cell — plus two soundness fixes the phase turned up on its way
+in, and a per-procedure refusal ledger carried by `lift_residue`.
+
+*What chose the rule.* A corpus classification of every surviving `sp` site
+(624 tunes) says the residue is **three shapes and nothing else**: the pull
+address `(zext2(sp [+ k]) | $0100)` 1,278 sites / 263 tunes; the update
+`sp = sp ± k` 841 / 218; and the `pcall` threading argument 533 / 172 (plus 3
+strays). Only the first is a *spill*; the other two are fabric that no rewrite
+removes — they leave with `drop_sp` or not at all. So the phase is one rule and
+one ledger, and the corpus lead in §0 (Angry_Birds' 16 sites) is representative
+of the shape but not of the disposition.
+
+*The rule.* `concretize_stack` folds a push to a constant cell only where one
+entry `sp` flowed there; a subroutine reached at two call depths joins to bot
+(`structured.sp_flow`) and its spills keep the machine spelling. Rung (d0s)
+names such a slot **relatively**: a `_Marks` pass gives every statement an
+`(epoch, displacement, aliases)` where an epoch is a run control neither leaves
+nor enters, so inside one `sp` is the entry value plus the displacements
+written between and a slot is `(epoch, displacement + k)`. `_SpSlot` then
+re-asks rung (d0)'s own premises against that relative cell — a store dominates
+every read, no control transfer between, no other access may touch it — plus
+two of its own: the store must claim free stack space (`k <= 0`; a store above
+the live top is the caller's return address, not a spill), and **the procedure
+must balance**. The aliases matter as much as the rule: a polished procedure
+spells the pull address once into a local (`t0 = (zext2(sp) | $0100)`), and
+without following that the rule sees a third of the sites.
+
+*The balance premise is not bookkeeping — it cost eleven divergences.* The
+first landing without it moved the gate to 611/623: `frameval`'s `ret` reads
+page one for its target where the program moved `sp`, so a promoted slot
+deletes the byte the machine returns through (`Boles_Howard/Amazon`,
+`Doxx/Absolutely_Fabulous`). Requiring `_sp_state == ("entry", 0)` per
+procedure — the plan's own `sp_unbalanced` class — restores it, and
+`_sp_state` gained the missing case that a `pcall` handing `sp` back leaves the
+walk unable to say where it stands.
+
+*Two soundness fixes, both found by this phase, both pre-existing:*
+
+- **`720_Degrees` (Class B, §7.10.14) is named and closed.** Rung (d0)'s
+  `_count` walks into a `mem` node's *address*, so a slot read nested in
+  another access's address (`m_CA02[(m_01FA & $07)]`) scored as a read and the
+  slot was named — but `_rewrite_expr` did not walk there, so the store became
+  a local, `drop_state` deleted the cell under it, and the load read a cell
+  nothing writes. One slot, `$01FA`, one bit of `v1.ctrl` at frame 225. The
+  counter and the rewriter now walk the same tree. **Gate FP 621 -> 622 clean
+  of 623**, and this is the movement §2's gate reserved for `720_Degrees`.
+- **`_factor_ifs` could rename two locals into one.** `_pair_names` accepted a
+  bijection target the *other* arm also binds, so factoring arms that both
+  assign a rung-(d0) slot renamed a carry operand onto the sum it fed
+  (`Ames_John/Basket_Case` and eight more). The premise is now stated: a
+  renamed arm local may not take a name that arm binds.
+
+**The before/after table** (full 624-tune cache; census at full Songlengths
+length, `fuse_measure`/`storage_census` at 1500 frames):
+
+| | before (`c109a13`) | after |
+|---|---:|---:|
+| **Gate FP, 300 frames** | 621 clean / 623 built | **622 clean / 623 built** |
+| — diverged | `720_Degrees` (B), `Rambo` (C) | **`Rambo` (C) only** |
+| — refused | `C64_World` (`unobserved $4ED7`) | `C64_World` (unchanged) |
+| **Gate FP, review seven, full length** | 7/7 clean | **7/7 clean** |
+| census `raw_sp` | 2,653 / 328 tunes | **2,379 / 298 tunes** |
+| census `unnamed_addr` | 9,373 / 611 | **9,129 / 611** |
+| census `sid_readback` | 1,123 / 466 | 1,049 / 466 |
+| census `narrow_sink` | 249 / 139 | 233 / 138 |
+| census `hi_byte` / `lo_byte` | 2,254 / 2,172 | 2,328 / 2,248 |
+| census `word_pack` / `flag_bit` / `carry_val` | 4,617 / 1,664 / 5,608 | 4,651 / 1,673 / 5,610 |
+| census `borrow` / `mod_addr` / `shift_pair` | 902 / 741 / 169 | unchanged |
+| **census sum** | **31,525** | **31,112 (-413)** |
+| — tunes whose sum fell / rose | — | **92 / 33** (worst riser +4) |
+| `storage_census` stack loads / stores | 974 / 889 | **753 / 661** |
+| `fuse_measure` `unproven` | 217 | **201** |
+| `fuse_measure` `provably_complete` | 487 | **488** |
+| `fuse_measure` `looks_complete` / `unnamed` / wide stores | 498 / 105 / 105 | 499 / 105 / 105 |
+
+**The refusal ledger** (`lift_residue --sig raw_sp` now prints it; per tune in
+each row's `stack_refusals`). Every program that still carries `sp` carries a
+named per-procedure refusal, so the phase's "0-or-refused" holds literally —
+but the classes are broader and far more numerous than the plan expected:
+
+| class | refusals | tunes |
+|---|---:|---:|
+| `spslot`: the procedure's stack effect is not zero | 372 | 128 |
+| `sp_linked` (a raw call keeps the machine stack alive) | 366 | 307 |
+| `sp_unbalanced` (the procedure's stack effect is not zero) | 288 | 201 |
+| `stack`: a read is not dominated by a store of the slot | 102 | 52 |
+| `spslot`: an unresolvable address may alias the live slot | 101 | 67 |
+| `stack`: the slot is not both stored and read in the procedure | 78 | 43 |
+| `stack`: an unresolvable address may alias the live slot | 71 | 57 |
+| `sp_read` (an access rung (d0) could not destack reads sp) | 58 | 58 |
+| `sp_returned` (the procedure returns sp to its caller) | 47 | 47 |
+| `spslot`: another resolvable access may touch the slot | 14 | 5 |
+| `spslot`: the slot is not both stored and read in the procedure | 10 | 8 |
+| `stack`: another procedure may touch the slot | 8 | 6 |
+| `sp_callee` | 2 | 2 |
+| `spslot`: a read is not dominated by a store of the slot | 1 | 1 |
+| `stack`: another resolvable access may touch the slot | 1 | 1 |
+
+**Where the plan and the corpus disagree, the corpus wins, and it says
+`raw_sp -> 0` is not reachable by destacking.** Two thirds of the class is
+`sp = sp ± k` and the `pcall` threading, which only `drop_sp` removes, and
+`drop_sp` is all-or-nothing per *program*: one keeper keeps `sp` everywhere.
+307 tunes keep it because a raw `call` keeps the machine stack alive
+(`frameval`'s `call`/`ret` move the same register the program reads back), and
+201 because some procedure's stack effect is unproven. Measured: if
+`sp_linked` were relaxed outright, only **71 tunes / 217 sites** would clear —
+so linkage is the widest blocker but not the largest prize, and the real
+ceiling is the balance analysis. What would move the number is a stronger
+`_sp_state` (it demands the *entry* displacement at every label, `goto`, `ret`
+and loop edge, rather than a fixpoint over them) and a rule for the
+`sp_linked` case with a checkable "no surviving page-one access" premise; both
+are named here as Phase 6 candidates rather than guessed at now. The doc's
+committed bound also drifted honestly: `raw_sp` is **2,653 over 328 tunes** at
+`c109a13`, not the 2,604 / 323 recorded above (which predates `#130`).
+
+**Three classes rose, and the rise is the residue moving, not being traded.**
+`hi_byte` +74, `lo_byte` +76, `word_pack` +34, `flag_bit` +9, `carry_val` +2
+against `raw_sp` -274, `unnamed_addr` -244, `sid_readback` -74,
+`narrow_sink` -16. The shape is uniform and readable per tune: a destacked
+lo/hi spill pair becomes one 16-bit local, rung (d) fuses it, and its halves
+are then read as `trunc1(q:2)` and `trunc1((q:2 >> $08):2)` — two Phase 4
+sites replacing two machine-shape ones (`6581_Words_per_Minute`: `raw_sp` 1->0,
+`unnamed_addr` 9->8, `hi_byte`/`lo_byte` 2->4 each). 33 tunes rise, by at most
+4 sites; 92 fall, by up to 10; the sum falls 413. Under §3's law — the sum is
+the metric — that is a pass, and the §2 wording "no other signature rises" is
+recorded here as too strong for a phase that turns memory into values: the
+byte-lane classes are exactly where a promoted word's halves land, and Phase 4
+is where they leave.
+
+**Shredder**: `sp_spill` (a subroutine two call depths reach, spilling
+sp-relative) is the Phase 1 fixture — it built, gated and failed its
+canonicality assert at `c109a13`, XPASSes now, and its `xfail` marker is
+removed in this change. `sp_unbalanced` is the standing invariant: the same
+player with the spill spanning a loop, whose stack effect is unproven, keeps
+`sp` and its stack-page identity.
+
+**Not done, and why.** `raw_sp` is 2,379, not 0 (above). The `sp_linked`
+relaxation was designed and dropped: its sound form needs "the program makes no
+page-one access", and 611 of 624 tunes carry an unresolvable address whose
+reach the current analysis cannot bound below `$0100`, so the premise is
+unprovable for almost every tune that would benefit. `Rambo_First_Blood_Part_II`
+(Class C) is untouched, as §4 says.
+
+The phase specification, for the record: `framestack` finishes. Balanced
+push/pop and call linkage become locals/params; the work list is the unbalanced residue — **16 of the seven
 tunes' 19 `raw_sp` sites are Angry_Birds'** (SID-Wizard's dispatch), 3
 Automatas'; corpus bound 2,604 sites over 323 tunes. Follin needs nothing
 here: the study's rts census found zero pushed-target rts, and both tunes

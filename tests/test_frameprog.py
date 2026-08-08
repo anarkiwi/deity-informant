@@ -440,3 +440,16 @@ def test_inline_does_not_orphan_a_width_2_use_by_folding_into_a_later_one():
     flow.run()
     ctx = frameproc._InlineCtx(info, 0x1000, flow.liveout, flow.loop_head)
     assert frameproc._find_use(items, 1, "t16", val, ctx) != 2, "folded past the width-2 use"
+
+
+def test_a_factored_arm_rename_may_not_take_a_name_that_arm_binds():
+    """Two arms that both assign one local: renaming into it merges two values.
+
+    ``_factor_ifs`` unifies arm statements modulo a bijection over arm locals;
+    with a rung-(d0) slot named in both arms the bijection could map the else
+    arm's carry-in onto the slot, and the carry then read the sum it fed."""
+    ctx = ({"s0", "t0"}, {"s0", "t1", "t2"}, {}, set())
+    assert not frameproc._pair_names("s0", "t1", ctx)
+    assert ctx[2] == {} and ctx[3] == set()
+    assert frameproc._pair_names("t0", "t1", ctx)
+    assert ctx[2] == {"t1": "t0"}

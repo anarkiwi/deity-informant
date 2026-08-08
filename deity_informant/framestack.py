@@ -181,8 +181,15 @@ def _fresh(used, n):
 
 
 def _rewrite_expr(n, names):
+    """The slot's loads become the local, addresses included.
+
+    A read nested in another access's address (``m_CA02[(m_01FA & $07)]``) is a
+    read like any other: ``_count`` walks into ``mem`` addresses, so a rewrite
+    that does not walk there deletes the store and leaves the load behind."""
     if n[0] == "mem":
-        return ("loc", names[n[1]]) if n[2] == 1 and n[1] in names else ("mem", n[1], n[2])
+        if n[2] == 1 and n[1] in names:
+            return ("loc", names[n[1]])
+        return ("mem", _rewrite_expr(n[1], names), n[2])
     if n[0] == "op":
         return ("op", n[1], tuple(_rewrite_expr(c, names) for c in n[2]), n[3])
     return n
@@ -197,13 +204,273 @@ def _rewrite(stmts, names):
         stmts[i] = ("asg", names[s[1]], s[2]) if s[0] == "st" and s[1] in names else s
 
 
+# ---- rung (d0s): the slot named through ``sp`` rather than through its cell ------
+_STK_PAGE = ("const", 0x0100, 2)
+
+
+def _sp_disp(addr, sp):
+    """``k`` of a ``(zext2(sp [+ $k]) | $0100)`` address, else None.
+
+    The 6510 pull address, ``or`` rather than add because the byte wraps inside
+    page one. ``concretize_stack`` folds it to a cell only where one entry
+    ``sp`` flowed there; two call depths join to bot and the spelling survives."""
+    if addr[0] != "op" or addr[1] != "INT_OR" or len(addr[2]) != 2:
+        return None
+    for a, b in (addr[2], addr[2][::-1]):
+        if b != _STK_PAGE or a[0] != "op" or a[1] != "INT_ZEXT":
+            continue
+        inner = a[2][0]
+        if inner == ("loc", sp):
+            return 0
+        if inner[0] == "op" and inner[1] == "INT_ADD" and len(inner[2]) == 2:
+            p, q = inner[2]
+            if p == ("loc", sp) and q[0] == "const":
+                return q[1] & 0xFF
+            if q == ("loc", sp) and p[0] == "const":
+                return p[1] & 0xFF
+    return None
+
+
+def _touches_page(addr, width):
+    """``(may reach page one, address unresolvable)`` of a ``width``-byte access."""
+    base, span = _span(addr)
+    if base is None:
+        return False, True
+    return base <= _PAGE[-1] and base + span + width - 1 >= _PAGE[0], False
+
+
+class _Marks:
+    """Per-statement ``(epoch, displacement, aliases)``: where ``sp`` stands.
+
+    An epoch is a run control neither leaves nor enters, so inside one ``sp`` is
+    the entry value plus the displacements written between and a slot is
+    ``(epoch, displacement + k)``; two epochs name nothing in common."""
+
+    def __init__(self):
+        self.epoch = 0
+        self.disp = 0
+        self.alias = {}
+        self.at = {}
+
+    def bump(self):
+        self.epoch += 1
+        self.disp = 0
+        self.alias = {}
+
+    def state(self):
+        return (self.epoch, self.disp, dict(self.alias))
+
+    def restore(self, st):
+        self.epoch, self.disp, self.alias = st[0], st[1], dict(st[2])
+
+    def mark(self, stmts, i):
+        self.at[(id(stmts), i)] = (self.epoch, self.disp, self.alias)
+
+
+def _sp_scan(stmts, marks, sp):
+    """Mark every statement of the list, bodies included, opening epochs as needed."""
+    for i, s in enumerate(stmts):
+        k = s[0]
+        if k not in _STRAIGHT:
+            marks.bump()
+        marks.mark(stmts, i)
+        if k == "if":
+            here, arms = marks.state(), []
+            for b in frameproc._stmt_bodies(s):
+                marks.restore(here)
+                _sp_scan(b, marks, sp)
+                arms.append(marks.state())
+            if len({(a[0], a[1]) for a in arms}) == 1:
+                marks.restore(arms[0] if len(arms) == 1 else (arms[0][0], arms[0][1], {}))
+            else:
+                marks.bump()
+        else:
+            for b in frameproc._stmt_bodies(s):
+                marks.bump()
+                _sp_scan(b, marks, sp)
+                marks.bump()
+        if k in ("asg", "for"):
+            marks.alias = {n: v for n, v in marks.alias.items() if n != s[1]}
+        if k == "asg" and s[1] == sp:
+            d = _sp_delta(s[2], sp)
+            if d is None:
+                marks.bump()
+            else:
+                marks.disp = (marks.disp + d) & 0xFF
+        elif k == "asg":
+            d = _sp_disp(s[2], sp)
+            if d is not None:
+                marks.alias = {**marks.alias, s[1]: (marks.disp + d) & 0xFF}
+
+
+def _slot_at(addr, mark, sp):
+    """``(epoch, cell)`` the address names at ``mark``, else None.
+
+    A polished procedure spells the pull address once into a local, so a
+    two-byte local the run defined from ``sp`` names the cell it was made at."""
+    d = _sp_disp(addr, sp)
+    if d is not None:
+        return (mark[0], (mark[1] + d) & 0xFF)
+    return (mark[0], mark[2][addr[1]]) if addr[0] == "loc" and addr[1] in mark[2] else None
+
+
+def _below_sp(k):
+    """The displacement claims free stack space: at or below the live top.
+
+    A store at ``k > 0`` writes the caller's live stack -- the return address an
+    RTS trick rewrites -- and is no spill of this procedure's own."""
+    return k == 0 or k >= 0x80
+
+
+def _count_sp(n, key, mark, sp):
+    """Occurrences of a one-byte load of slot ``key`` in expression ``n``."""
+    out, stack = 0, [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            if x[2] == 1 and _slot_at(x[1], mark, sp) == key:
+                out += 1
+            else:
+                stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+class _SpSlot:
+    """One slot named through ``sp``: the must-def walk over a procedure.
+
+    Rung (d0)'s premises re-asked against a relative cell, plus two of its own:
+    the store claims free stack space, and the procedure balances so no ``ret``
+    reads page one for the return address the slot would sit in."""
+
+    __slots__ = ("key", "stores", "reads", "why")
+
+    def __init__(self, key):
+        self.key = key
+        self.stores = self.reads = 0
+        self.why = None
+
+    def _refuse(self, why):
+        self.why = self.why or why
+
+    def run(self, stmts, marks, sp, balanced):
+        if not balanced:
+            self._refuse("the procedure's stack effect is not zero")
+        self._walk(stmts, marks, sp, False)
+        if not (self.stores and self.reads):
+            self._refuse("the slot is not both stored and read in the procedure")
+        return self
+
+    def _probe(self, addr, width, mark, sp, defd):
+        """One access against the slot: refuse where it may touch what is live."""
+        got = _slot_at(addr, mark, sp)
+        if got is None:
+            near, blind = _touches_page(addr, width)
+            if near:
+                self._refuse("another resolvable access may touch the slot")
+            elif blind and defd:
+                self._refuse("an unresolvable address may alias the live slot")
+            return
+        if got[0] != self.key[0]:
+            if defd:
+                self._refuse("an unresolvable address may alias the live slot")
+            return
+        if width != 1 and any(((got[1] + j) & 0xFF) == self.key[1] for j in range(width)):
+            self._refuse("another resolvable access may touch the slot")
+
+    def _walk(self, stmts, marks, sp, defd):
+        """Must-def over one statement list; returns the state it leaves behind."""
+        for i, s in enumerate(stmts):
+            k = s[0]
+            defd = defd and k in _STRAIGHT
+            mark = marks.at[(id(stmts), i)]
+            for addr, width in _accesses(s):
+                self._probe(addr, width, mark, sp, defd)
+            for x in frameproc._stmt_exprs(s):
+                got = _count_sp(x, self.key, mark, sp)
+                self.reads += got
+                if got and not defd:
+                    self._refuse("a read is not dominated by a store of the slot")
+            if k == "st" and _slot_at(s[1], mark, sp) == self.key and G.store_width(s[2]) == 1:
+                self.stores += 1
+                defd = True
+            if k == "if":
+                arms = [self._walk(b, marks, sp, defd) for b in frameproc._stmt_bodies(s)]
+                defd = all(arms)
+            else:
+                for b in frameproc._stmt_bodies(s):
+                    self._walk(b, marks, sp, False)
+        return defd
+
+    def proof(self, name):
+        """The rung-(d0s) record: the premise counts, and the refusal or the local."""
+        return Proof(
+            self.key[1],
+            "spslot",
+            "refused" if self.why else "named",
+            (),
+            "sp slot [%d]$%02X: %d store(s), %d read(s); %s"
+            % (
+                self.key[0],
+                self.key[1],
+                self.stores,
+                self.reads,
+                self.why or "data temporary, local %s" % name,
+            ),
+        )
+
+
+def _sp_candidates(stmts, marks, sp):
+    """Slots some store in the procedure claims below the live stack top."""
+    out = set()
+
+    def walk(lst):
+        for i, s in enumerate(lst):
+            if s[0] == "st" and G.store_width(s[2]) == 1:
+                mark = marks.at[(id(lst), i)]
+                got = _slot_at(s[1], mark, sp)
+                if got is not None and _below_sp((got[1] - mark[1]) & 0xFF):
+                    out.add(got)
+            for b in frameproc._stmt_bodies(s):
+                walk(b)
+
+    walk(stmts)
+    return out
+
+
+def _rewrite_sp_expr(n, names, mark, sp):
+    if n[0] == "mem":
+        got = _slot_at(n[1], mark, sp)
+        if n[2] == 1 and got in names:
+            return ("loc", names[got])
+        return ("mem", _rewrite_sp_expr(n[1], names, mark, sp), n[2])
+    if n[0] == "op":
+        return ("op", n[1], tuple(_rewrite_sp_expr(c, names, mark, sp) for c in n[2]), n[3])
+    return n
+
+
+def _rewrite_sp(stmts, marks, names, sp):
+    """Slot stores become assignments, slot reads locals; no store is dropped."""
+    for i, s in enumerate(stmts):
+        mark = marks.at[(id(stmts), i)]
+        for b in frameproc._stmt_bodies(s):
+            _rewrite_sp(b, marks, names, sp)
+        was = _slot_at(s[1], mark, sp) if s[0] == "st" else None
+        s = frameproc._map_exprs(s, lambda x, _m=mark: _rewrite_sp_expr(x, names, _m, sp))
+        stmts[i] = ("asg", names[was], s[2]) if was in names else s
+
+
 def apply_rung(procs):
-    """Rung (d0) in place over ``procs``; returns the per-slot proofs."""
+    """Rungs (d0) and (d0s) in place over ``procs``; returns the per-slot proofs."""
     used, proofs, n = _used_names(procs), [], 0
     prints = [_footprint(p[3]) for p in procs]
+    sp = frameproc._SP
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
-        names = {}
+        names, spnames = {}, {}
+        marks = _Marks()
+        _sp_scan(stmts, marks, sp)
         for cell in sorted(_candidates(stmts)):
             slot = _Slot(cell).run(stmts, shared)
             name = None
@@ -212,8 +479,19 @@ def apply_rung(procs):
                 used.add(name)
                 names[_addr(cell)] = name
             proofs.append(slot.proof(name))
+        bal = _sp_state(stmts, ("entry", 0), sp, _saves(stmts, sp), {}) == ("entry", 0)
+        for key in sorted(_sp_candidates(stmts, marks, sp)):
+            slot = _SpSlot(key).run(stmts, marks, sp, bal)
+            name = None
+            if slot.why is None:
+                name, n = _fresh(used, n)
+                used.add(name)
+                spnames[key] = name
+            proofs.append(slot.proof(name))
         if names:
             _rewrite(stmts, names)
+        if spnames:
+            _rewrite_sp(stmts, marks, spnames, sp)
     return proofs
 
 
@@ -232,7 +510,7 @@ _RAW_CALLS = frozenset(("call", "callb", "dcall", "swc"))
 
 
 def _sp_uses(stmts, calls, sp, saves):
-    """True where a statement needs ``sp`` beyond updating, saving or passing it.
+    """The class naming why a statement needs ``sp``, else None.
 
     A raw call keeps the machine stack alive; a pcall's plain ``sp`` argument is
     the threading the caller may drop with the callee, recorded in ``calls``; a
@@ -240,27 +518,28 @@ def _sp_uses(stmts, calls, sp, saves):
     for s in stmts:
         k = s[0]
         if k in _RAW_CALLS:
-            return True
+            return "sp_linked"
         if k == "asg" and s[1] == sp:
             continue
         if k == "st" and s[1][0] == "const" and s[1][1] in saves and s[2] == ("loc", sp):
             continue
         if k == "pcall":
             if sp in s[3]:
-                return True
+                return "sp_read"
             for a in s[2]:
                 if a == ("loc", sp):
                     calls.append(s[1])
                 elif sp in frameproc._locset(a):
-                    return True
+                    return "sp_read"
             continue
         for x in frameproc._stmt_exprs(s):
             if sp in frameproc._locset(x):
-                return True
+                return "sp_read"
         for b in frameproc._stmt_bodies(s):
-            if _sp_uses(b, calls, sp, saves):
-                return True
-    return False
+            got = _sp_uses(b, calls, sp, saves)
+            if got is not None:
+                return got
+    return None
 
 
 def _strip_sp(stmts, spat, sp, saves=frozenset()):
@@ -343,6 +622,8 @@ def _sp_state(stmts, st, sp, saves, caps):
                 st = ("abs", s[2][1] & 0xFF)
             else:
                 return None
+        elif k == "pcall" and sp in s[3]:
+            return None  # the callee hands sp back: this walk cannot say where it stands
         elif k in ("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"):
             if st != ("entry", 0):
                 return None
@@ -476,35 +757,48 @@ def _lift_tricks(stmts, sp):
     return proofs
 
 
+SP_CLASSES = {
+    "sp_unbalanced": "the procedure's stack effect is not zero",
+    "sp_returned": "the procedure returns sp to its caller",
+    "sp_linked": "a raw call keeps the machine stack alive",
+    "sp_read": "an access rung (d0) could not destack reads sp",
+    "sp_callee": "a callee keeps sp, so the threading argument stays",
+}
+
+
 def drop_sp(procs, play):
-    """``sp`` leaves the program where nothing reads it; the proof names why not.
+    """``sp`` leaves the program where nothing reads it; one proof per keeper.
 
     The record cannot see ``sp`` and its real consumers were the destacked slot
-    addresses, so the updates, the parameter and every threading argument go.
-    An unresolved stack access, a raw call or a computed ``sp`` keeps it -- the
-    RTS-trick's pushed cells stay as the stores they are either way."""
+    addresses, so the updates, the parameter and every threading argument go; a
+    refusal names its ``SP_CLASSES`` class, per procedure, in the ledger."""
     sp = frameproc._SP
     need, calls_of, saves_of = {}, {}, {}
     for e, _pa, rets, stmts in procs:
         calls = []
         saves = _saves(stmts, sp)
         balanced = _sp_state(stmts, ("entry", 0), sp, saves, {}) == ("entry", 0)
-        need[e] = sp in rets or _sp_uses(stmts, calls, sp, saves) or not balanced
+        why = None if balanced else "sp_unbalanced"
+        why = why or ("sp_returned" if sp in rets else None)
+        need[e] = why or _sp_uses(stmts, calls, sp, saves)
         calls_of[e] = calls
         saves_of[e] = saves
     changed = True
     while changed:
         changed = False
         for e, _pa, _r, _s in procs:
-            if not need[e] and any(need.get(c, True) for c in calls_of[e]):
-                need[e] = changed = True
+            if not need[e] and any(need.get(c, "sp_callee") for c in calls_of[e]):
+                need[e] = "sp_callee"
+                changed = True
     kept = sorted(e for e, n in need.items() if n)
     if kept:
-        why = "sp kept: %d procedure(s) read it beyond updates" % len(kept)
-        return Proof(play, "sp", "refused", tuple(kept), why)
+        return [
+            Proof(e, "sp", "refused", (e,), "%s: sub_$%04X keeps sp -- %s" % (c, e, SP_CLASSES[c]))
+            for e, c in ((k, need[k]) for k in kept)
+        ]
     spat = {e: (pa.index(sp) if sp in pa else None) for e, pa, _r, _s in procs}
     for k, (e, pa, rets, stmts) in enumerate(procs):
         stmts[:] = _strip_sp(stmts, spat, sp, saves_of[e])
         procs[k] = (e, [p for p in pa if p != sp], [r for r in rets if r != sp], stmts)
     why = "sp: no reader; the updates, the parameter and the threading dropped"
-    return Proof(play, "sp", "resolved", (), why)
+    return [Proof(play, "sp", "resolved", (), why)]

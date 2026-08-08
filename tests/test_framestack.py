@@ -248,3 +248,134 @@ def test_the_synthetic_names_collide_with_nothing_the_procedures_bind():
     (pr,) = framestack.apply_rung(procs)
     assert pr.status == "named" and pr.lemma.endswith("local s1")
     assert procs[0][3][1:] == [("asg", "s1", ("const", 7, 1)), ("asg", "w0", ("loc", "s1"))]
+
+
+# ---- the read the rewrite used to walk past ---------------------------------------
+def test_a_slot_read_inside_another_address_becomes_the_local_too():
+    """``m_CA02[(m_01FA & $07)]`` is a read: the store may not go without it.
+
+    ``_count`` walks into a ``mem`` address and scored this read, so the slot
+    was named while the rewrite left the load behind and ``drop_state`` deleted
+    the cell under it -- 720_Degrees' Class B divergence (frameprog 7.10.14)."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", LO).i("AND", "imm", 0x03).i("PHA")
+    a.i("LDX", "abs", LOSLOT).i("LDA", "absx", G.TBL + 4).i("STA", "abs", OUT + 1)
+    a.i("PLA").i("ORA", "imm", 0x20).i("STA", "abs", OUT).i("RTS")
+    data = {LO: 0x02, HI: 0x33}
+    data.update({G.TBL + 4 + k: 0x50 + k for k in range(4)})
+    _m, prog, text = _build("nested", a, data)
+    (pr,) = _stack(prog)
+    assert pr.status == "named" and pr.lemma.endswith(
+        "1 store(s), 2 read(s); data temporary, local s0"
+    )
+    assert "m_01FD" not in text  # the cell is gone, so no read of it may survive
+    assert "s0" in text
+
+
+# ---- rung (d0s): the slot named through sp ---------------------------------------
+SPN = "sp"
+
+
+def _spaddr(k=0):
+    inner = ("loc", SPN) if k == 0 else ("op", "INT_ADD", (("loc", SPN), ("const", k & 0xFF, 1)), 1)
+    return ("op", "INT_OR", (("op", "INT_ZEXT", (inner,), 2), ("const", 0x0100, 2)), 2)
+
+
+def _spstore(k=0, val=("const", 7, 1)):
+    return ("st", _spaddr(k), val)
+
+
+def _spread(k=0, name="w0"):
+    return ("asg", name, ("mem", _spaddr(k), 1))
+
+
+def _spmove(d):
+    return ("asg", SPN, ("op", "INT_ADD", (("loc", SPN), ("const", d & 0xFF, 1)), 1))
+
+
+def _run_spslots(stmts, balanced=True):
+    """Every candidate slot of the list, walked, in the rung's own order."""
+    marks = framestack._Marks()
+    framestack._sp_scan(stmts, marks, SPN)
+    keys = sorted(framestack._sp_candidates(stmts, marks, SPN))
+    return [framestack._SpSlot(k).run(stmts, marks, SPN, balanced) for k in keys]
+
+
+def _sp_clean():
+    return [_spstore(), _spmove(-1), _spread(1), _spmove(1)]
+
+
+def _sp_read_first():
+    return [_spread(0), _spstore()]
+
+
+def _sp_control_between():
+    return [_spstore(), _spmove(-1), ("label", 0x1234), _spread(1), _spmove(1)]
+
+
+def _sp_page_peek():
+    return [_spstore(), ("st", ("const", 0x01F0, 2), ("const", 0, 1)), _spmove(-1), _spread(1)]
+
+
+def _sp_blind_store():
+    return [_spstore(), ("st", ("loc", "t0", 2), ("const", 0, 1)), _spmove(-1), _spread(1)]
+
+
+def _sp_word_store():
+    return [_spstore(), ("st", _spaddr(0), ("mem", ("const", 0x1400, 2), 2)), _spread(0)]
+
+
+def _sp_other_slot():
+    return [_spstore(), _spstore(0xFF, ("const", 9, 1)), _spmove(-1), _spread(1)]
+
+
+@pytest.mark.parametrize(
+    "build,want",
+    [
+        (_sp_clean, None),
+        (_sp_other_slot, None),
+        (_sp_read_first, "a read is not dominated by a store of the slot"),
+        (_sp_control_between, "the slot is not both stored and read in the procedure"),
+        (_sp_page_peek, "another resolvable access may touch the slot"),
+        (_sp_blind_store, "an unresolvable address may alias the live slot"),
+        (_sp_word_store, "another resolvable access may touch the slot"),
+    ],
+)
+def test_the_sp_slot_diagnostic_names_the_premise_that_failed(build, want):
+    slots = _run_spslots(build())
+    assert slots and slots[0].why == want
+    pr = slots[0].proof("s0")
+    assert pr.kind == "spslot" and pr.status == ("named" if want is None else "refused")
+    assert pr.targets == () and pr.lemma.endswith(want or "data temporary, local s0")
+
+
+def test_an_unbalanced_procedure_keeps_its_sp_slot():
+    """The ret reads page one for its target where sp moved, so the store stays."""
+    (slot,) = _run_spslots(_sp_clean(), balanced=False)
+    assert slot.why == "the procedure's stack effect is not zero"
+
+
+def test_a_store_above_the_live_stack_top_is_no_candidate():
+    """``sp + 1`` is the caller's live stack -- the return address, not a spill."""
+    stmts = [_spstore(1), _spread(1)]
+    marks = framestack._Marks()
+    framestack._sp_scan(stmts, marks, SPN)
+    assert not framestack._sp_candidates(stmts, marks, SPN)
+
+
+def test_two_arms_that_push_and_a_tail_that_pulls_are_one_sp_local():
+    """The sp state joins where both arms leave it equal, so the tail reads one slot."""
+    arm = [_spstore(0, ("loc", "a")), _spmove(-1)]
+    stmts = [("if", "if", ("loc", "cflag"), list(arm), list(arm)), _spread(1), _spmove(1)]
+    (slot,) = _run_spslots(stmts)
+    assert slot.why is None and (slot.stores, slot.reads) == (2, 1)
+
+
+def test_arms_that_leave_sp_at_different_depths_share_no_slot():
+    """One arm pushes and the other does not: the tail names neither arm's cell."""
+    stmts = [
+        ("if", "if", ("loc", "cflag"), [_spstore(0, ("loc", "a")), _spmove(-1)], []),
+        _spread(1),
+    ]
+    for slot in _run_spslots(stmts):
+        assert slot.why == "the slot is not both stored and read in the procedure"

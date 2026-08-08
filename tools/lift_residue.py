@@ -287,6 +287,22 @@ def build(entry):
     return frameprog.program(model)
 
 
+def stack_ledger(prog):
+    """Refusals of the stack rungs by class: Phase 1's ledger (impl plan 2, 3).
+
+    ``sp`` refusals carry their class first, a slot refusal the premise it
+    failed, so a class that shrinks without a rule change is visible per tune."""
+    out = Counter()
+    for p in prog.proofs:
+        if p.status != "refused":
+            continue
+        if p.kind == "sp":
+            out[p.lemma.split(":", 1)[0]] += 1
+        elif p.kind in ("stack", "spslot"):
+            out["%s: %s" % (p.kind, p.lemma.rsplit("; ", 1)[-1])] += 1
+    return dict(out)
+
+
 def one(entry):
     """One tune's census, or the exception that stopped it."""
     try:
@@ -310,6 +326,7 @@ def _one(entry):
         **_sweep.row_head(entry),
         "build_s": round(time.monotonic() - t0, 1),
         "sites": dict(Counter(s["sig"] for s in sites)),
+        "stack_refusals": stack_ledger(prog),
         "dyn_stmts": dyn,
         "switch_gotos": swgs,
         "skels": {k: dict(v) for k, v in skels.items()},
@@ -331,11 +348,26 @@ def _merge(done):
     return sites, tunes, skels, {k: dict(v) for k, v in block.items()}
 
 
-def _print(sites, tunes, skels, block, show):
+def _ledger(done):
+    """``(refusals per class, tunes per class)`` over the stack rungs."""
+    per, tunes = Counter(), Counter()
+    for r in done:
+        got = r.get("stack_refusals", {})
+        per.update(got)
+        tunes.update(got.keys())
+    return per, tunes
+
+
+def _print(sites, tunes, skels, block, show, ledger=None):
     """Signatures ranked by site count, then the cascade each one gates."""
     print("\n%-14s %7s %6s  %s" % ("signature", "sites", "tunes", "meaning"))
     for sig, n in sites.most_common():
         print("%-14s %7d %6d  %s" % (sig, n, tunes[sig], SIGS.get(sig, "")))
+    if ledger:
+        per, lt = ledger
+        print("\n%-58s %7s %6s" % ("stack refusal class", "sites", "tunes"))
+        for cls, n in per.most_common():
+            print("%-58s %7d %6d" % (cls[:58], n, lt[cls]))
     print("\nblocking (fixing LEFT may unblock RIGHT):")
     for up in sorted(block, key=lambda k: -sum(block[k].values())):
         per = ", ".join("%s %d" % kv for kv in sorted(block[up].items(), key=lambda kv: -kv[1])[:5])
@@ -381,6 +413,7 @@ def main():
         "tunes_with_dyn": sum(1 for r in done if r["dyn_stmts"]),
         "tunes_with_switch_goto": sum(1 for r in done if r["switch_gotos"]),
         "census_zero_tunes": sum(1 for r in done if not r["sites"]),
+        "stack_refusals": dict(_ledger(done)[0]),
         "blocking": block,
         "skels": {k: dict(v) for k, v in skels.items()},
         "rows": rows,
@@ -389,7 +422,7 @@ def main():
     Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
     print("%d tunes, %d refused, %.1fs" % (len(done), len(out["refused"]), out["wall_s"]))
     keep = sites if not args.sig else Counter({args.sig: sites.get(args.sig, 0)})
-    _print(keep, tune_ct, skels, block, args.show)
+    _print(keep, tune_ct, skels, block, args.show, _ledger(done))
 
 
 if __name__ == "__main__":

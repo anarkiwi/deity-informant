@@ -2957,12 +2957,17 @@ def _unify(a, b, ctx):
 
 
 def _pair_names(na, nb, ctx):
+    """``nb`` may be read as ``na``: a fresh pairing, and ``na`` is free to take.
+
+    ``na`` must bind nothing in the other arm -- renaming ``t1`` to a name that
+    arm already assigns merges two locals into one, which is how a slot named in
+    both arms (rung d0) turns a carry operand into the sum it fed."""
     mine, theirs, sigma, taken = ctx
     if nb in sigma:
         return sigma[nb] == na
     if na == nb:
         return True
-    if na in mine and nb in theirs and na not in taken:
+    if na in mine and nb in theirs and na not in taken and na not in theirs:
         sigma[nb] = na
         taken.add(na)
         return True

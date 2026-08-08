@@ -23,6 +23,8 @@ SAV = G.CNT + 0x2A  # cursor save cell pair (the Follin loop-cell shape)
 PAT = G.TBL + 0x100  # sequence data block the zero-page pointer walks
 PAT2 = G.TBL + 0x160  # second sequence block (cursor save/restore target)
 BLK = G.TBL + 0x180  # RAM block a pointer stores through
+SPSUB = 0x1300  # a subroutine two call depths reach, so its sp never concretizes
+SPMID = 0x1340  # the second depth
 
 XFAIL = dict(strict=True)
 
@@ -260,6 +262,39 @@ def _writethrough():
     return a, data, 8
 
 
+def _sp_body(sub):
+    """A player calling ``sub`` at two stack depths, so its spill stays sp-relative.
+
+    ``structured.sp_flow`` joins the two depths to bot, so ``concretize_stack``
+    folds no cell and the push keeps the machine spelling rung (d0s) reads."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("JSR", "abs", SPSUB).i("JSR", "abs", SPMID).i("JSR", "abs", SPMID)
+    a.i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
+    mid = G.Asm(SPMID).i("JSR", "abs", SPSUB).i("RTS")
+    data = {CTR: 0}
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    data.update({SPMID + k: b for k, b in enumerate(mid.assemble())})
+    return a, data, 8
+
+
+def _sp_spill():
+    """Phase 1: a balanced sp-relative spill is a local, and sp leaves entirely."""
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDA", "abs", CTR).i("AND", "imm", 0x0F).i("STA", "abs", TMP)
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    return _sp_body(sub)
+
+
+def _sp_unbalanced():
+    """Invariant (Phase 1): a procedure whose stack effect is unproven keeps sp."""
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDX", "imm", 0x03)
+    sub.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    return _sp_body(sub)
+
+
 def _g2_store():
     """G2 (7.10.3): a (zext2(y) + $NN) store is bounded under $01FF, not top."""
     a = G.Asm(G.ORG)
@@ -287,6 +322,8 @@ _FIXTURES = {
     "cursor_save": _cursor_save,
     "writethrough": _writethrough,
     "g2_store": _g2_store,
+    "sp_spill": _sp_spill,
+    "sp_unbalanced": _sp_unbalanced,
 }
 
 
@@ -321,6 +358,25 @@ def test_borrow_chain_is_one_wide_compare():
 def test_lone_lane_half_owes_no_register_load():
     text = _lift("lone_lane")
     assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
+
+
+def _body(text):
+    return text[text.index("play $") :]
+
+
+def test_sp_relative_spill_leaves_no_stack_pointer():
+    """Phase 1 (LANDED): the spill is a local and no procedure threads sp."""
+    assert not re.search(r"\bsp\b", _body(_lift("sp_spill"))), "the stack pointer survived"
+
+
+def test_an_unbalanced_procedure_keeps_its_stack_pointer():
+    """Invariant: unproven stack effect means the spill stays memory, sp and all.
+
+    The ret of such a procedure reads page one for its target, so a promoted
+    slot would delete the byte the machine returns through."""
+    text = _lift("sp_unbalanced")
+    assert re.search(r"\bsp\b", _body(text)), "an unbalanced procedure lost sp"
+    assert "$0100" in text, "the spill lost its stack-page identity"
 
 
 def test_covering_sweep_stays_byte_wide():
