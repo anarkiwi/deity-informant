@@ -149,7 +149,13 @@ HEAD; any verdict movement on them is attributable to the phase that moved it.
 / 111 / 72 / 23 / 124 / 161 / 105 on the seven. Headline: **tunes wearing zero
 machine shapes**. The word-store rate is retired (§7.10.10 proved it can rise
 while the census worsens). Every phase MUST move its named classes down and
-MUST NOT move any other class up, summed per tune.
+MUST NOT move the summed census up per tune (Phase 1 corrected the original
+"no other class rises" wording: a phase that turns memory into values moves
+residue between classes — the byte-lane classes are where a promoted word's
+halves land — so the per-tune sum is the law, §3). Post-Phase-1 correction:
+while 298 tunes wear refused `sp` fabric the headline is **capped at 326 of
+624** regardless of Phases 2–5; Phase 2c owns releasing the cap, and any
+headline reported before it lands is read against that ceiling.
 
 **R8 — Does the Follin dispatch break the plan? No — it is already structured
 in this dialect, and the wall is in the walker, not the program.** Ghouls'
@@ -221,11 +227,13 @@ built.
 
 ## 2. The phases
 
-Ordering is by dependency: 1 clears the stack, 2a certifies the pointer
-traffic (producing the bounds Phase 3's guard needs — the guard needs the
-*bound*, not the rewrite, so **Phase 3 depends on 2a only** and 2b can land
-on its own schedule, §6), 3 promotes frame-local scratch, 4 coalesces the
-remaining byte columns, 5 retires the boundary read-back, 6 re-measures. Every phase ends with the same sweeps
+Ordering is by dependency: 1 clears the stack's spills, 2a certifies the
+pointer traffic (producing the bounds two dependents need — the *bound*, not
+the rewrite, so **Phase 3 and Phase 2c depend on 2a only** and 2b can land
+on its own schedule, §6), 2c finishes the stack (the fabric Phase 1's
+destacking cannot remove, provable only with 2a's bounds), 3 promotes
+frame-local scratch, 4 coalesces the remaining byte columns, 5 retires the
+boundary read-back, 6 re-measures. Every phase ends with the same sweeps
 (`gate_sweep`, `lift_residue`, `fuse_measure`, `storage_census`) over the full
 corpus, and its before/after table appended to this doc.
 
@@ -279,7 +287,13 @@ The phase specification, for the record:
 Gate: instruments reproduce the seven-tune table bit-for-bit; no emitted text
 changes anywhere (hash-checked).
 
-### Phase 1 — the stack becomes locals (`raw_sp` -> 0) — DONE
+### Phase 1 — the stack becomes locals (`raw_sp` -> 0-or-refused) — DONE, headline rescoped
+
+The heading's original promise was `raw_sp -> 0`; the gate it shipped under
+was "monotone to 0-or-refused", and that is what landed. The post-landing
+review (below, and §2 Phase 2c) found the corpus refutes the stronger
+headline for destacking alone, so the phase is renamed to what it achieved
+and the fabric's removal is scheduled (Phase 2c), not parked.
 
 **Landed**: rung (d0s) in `framestack` — the spill named through `sp` rather
 than through its cell — plus two soundness fixes the phase turned up on its way
@@ -360,7 +374,15 @@ length, `fuse_measure`/`storage_census` at 1500 frames):
 **The refusal ledger** (`lift_residue --sig raw_sp` now prints it; per tune in
 each row's `stack_refusals`). Every program that still carries `sp` carries a
 named per-procedure refusal, so the phase's "0-or-refused" holds literally —
-but the classes are broader and far more numerous than the plan expected:
+but the classes are broader and far more numerous than the plan expected.
+Reading the table: `stack:`/`spslot:` rows are per-slot rung refusals (rung
+(d0) and (d0s) re-asking their premises), while bare `sp_*` rows are
+`drop_sp`'s per-procedure verdicts — `spslot: the procedure's stack effect is
+not zero` and `sp_unbalanced` share a premise at two granularities, not one
+class counted twice. The ledger also carries refusals on 252 tunes whose
+final text has `raw_sp` 0 (e.g. `sp_linked` where a raw call keeps the
+machine stack alive but no `sp` spelling survives) — conservative rows, kept
+because §3's shrinking-ledger rule needs the baseline to include them:
 
 | class | refusals | tunes |
 |---|---:|---:|
@@ -392,8 +414,14 @@ so linkage is the widest blocker but not the largest prize, and the real
 ceiling is the balance analysis. What would move the number is a stronger
 `_sp_state` (it demands the *entry* displacement at every label, `goto`, `ret`
 and loop edge, rather than a fixpoint over them) and a rule for the
-`sp_linked` case with a checkable "no surviving page-one access" premise; both
-are named here as Phase 6 candidates rather than guessed at now. The doc's
+`sp_linked` case with a checkable "no surviving page-one access" premise. The
+review moved both out of "Phase 6 candidates" and into **Phase 2c**, because
+the `sp_linked` premise is not free-standing: proving a program's other
+accesses stay off page one is exactly the bound Phase 2a's block-rooting
+certifies (an access inside a declared block's extent is away from the stack
+by that extent), so the sp endgame is a dependent of 2a the same way Phase 3
+is — scheduling it before 2a would just re-measure today's 611-tune
+unprovability. The doc's
 committed bound also drifted honestly: `raw_sp` is **2,653 over 328 tunes** at
 `c109a13`, not the 2,604 / 323 recorded above (which predates `#130`).
 
@@ -425,6 +453,21 @@ reach the current analysis cannot bound below `$0100`, so the premise is
 unprovable for almost every tune that would benefit. `Rambo_First_Blood_Part_II`
 (Class C) is untouched, as §4 says.
 
+**Two consequences of the partial outcome, found in review and now owned by
+their phases.** First, while 298 tunes wear refused `sp` fabric, R7's
+census-zero headline is **capped at 326 of 624** no matter what Phases 2–5
+deliver — the cap is stated at R7 and is Phase 2c's number to release.
+Second, the surviving stack traffic (202 tunes, 661 page-one stores, and 201
+of those tunes declaring 3,292 scratch fields — 35% of Phase 3's corpus-wide
+prize) is a spurious wall for Phase 3 as originally specified: the kept
+spelling `(zext2(sp [+ k]) | $0100)` resolves to no base/idx form, so
+`store_reach` falls back to `(0, UNRES, addr_bits, w, 0)` — an interval
+**from zero**, because `addr_bits` keeps only the may-set upper bits and
+discards the OR's guaranteed bit 8 — and `overlaps` then says every such
+push threatens every zero-page cell (verified against the committed code:
+`store_reach` on the push spelling returns reach `$0000..$01FF` and
+intersects `zp_A0`). The fix is a floor, specified in Phase 3 (ii).
+
 The phase specification, for the record: `framestack` finishes. Balanced
 push/pop and call linkage become locals/params; the work list is the unbalanced residue — **16 of the seven
 tunes' 19 `raw_sp` sites are Angry_Birds'** (SID-Wizard's dispatch), 3
@@ -446,7 +489,9 @@ other signature rises.
 
 ### Phase 2 — sequence traffic becomes table cursors
 
-The keystone phase, split so analysis lands before dialect.
+The keystone phase, split so analysis lands before dialect — and grown a
+third half in review: 2c spends 2a's bounds on the stack fabric Phase 1
+could not remove.
 
 **2a — certification (analysis only, no text change).** For every pointer
 root (Phase 0's list): classify each reaching definition as table-row reload /
@@ -474,6 +519,38 @@ or better; census `unnamed_addr` + `carry_val` down, sum down; triage
 `unproven` MUST NOT rise; canonical fixpoint over the new construct;
 `dumps(loads(t)) == t`.
 
+**2c — the stack fabric leaves (`raw_sp` -> 0, scheduled).** Phase 1's
+review finding made a phase: two thirds of the surviving `raw_sp` class is
+`sp = sp ± k` and the `pcall` threading, removable only by `drop_sp`, which
+is all-or-nothing per program and blocked by `sp_linked` (307 tunes) and
+`sp_unbalanced` (201). Two rules, both with premises 2a supplies or Phase 1
+named:
+
+- **The `sp_linked` relaxation.** Sound form: a raw `call`'s linkage may be
+  dropped where the program makes no surviving page-one access other than
+  through `sp` itself. Unprovable today for 611 of 624 tunes (any
+  unresolvable address may reach `$0100..$01FF`); after 2a, an access
+  certified into a declared block's extent is bounded away from page one by
+  that extent, so the premise is computed per tune from 2a's records plus
+  the Phase 3 (ii) reach vocabulary. Refusal class stays `sp_linked` for
+  tunes where an uncertified access survives. Phase 1's measurement bounds
+  the direct prize (71 tunes / 217 sites clear on relaxation alone) — the
+  real yield is the compound with the second rule, re-measured when 2a's
+  certification coverage is known.
+- **The balance fixpoint.** `_sp_state` currently demands the entry
+  displacement at every label, `goto`, `ret` and loop edge; the rule becomes
+  a worklist fixpoint over those edges (the same discipline as Phase 3's
+  forward analysis), so a procedure whose displacement provably returns to
+  entry on every path balances even where an interior edge holds a nonzero
+  displacement. `sp_unbalanced` remains the refusal for genuine imbalance.
+
+Gates: full `gate_sweep`, no verdict regression; census `raw_sp` monotone
+down, sum down; the refusal ledger MUST NOT grow without a rule change (§3);
+R7's census-zero cap (326, stated there) is this phase's number to release —
+re-measured at landing. The `sp_spill`/`sp_unbalanced` shredder fixtures
+stand; 2c owes one more: a balanced-by-fixpoint procedure (interior nonzero
+displacement, entry-balanced on every path) whose spill destacks.
+
 ### Phase 3 — frame-local promotion (the scratch elimination)
 
 Mechanical rule, both conditions computed by committed analyses:
@@ -497,6 +574,23 @@ Mechanical rule, both conditions computed by committed analyses:
   `aliased`, computed from the same `addr_bits`/extent facts conditions use
   elsewhere (`frameproc.store_reach`/`overlaps` are the existing vocabulary),
   and pinned by the shredder's `alias_state` fixture.
+
+  **The vocabulary needs a floor first (Phase 1 review finding).** The
+  surviving stack traffic — 202 tunes, 661 page-one stores, 201 of those
+  tunes declaring 3,292 scratch fields, 35% of this phase's corpus prize —
+  is spelled `(zext2(sp [+ k]) | $0100)`, which `store_ref` cannot name, so
+  `store_reach` falls back to an interval from **zero** (`addr_bits` keeps
+  may-set bits only) and `overlaps` reports every such push threatening
+  every zero-page cell. That threat is physically impossible: the OR
+  guarantees bit 8, so the true reach is `$0100..$01FF`. The `aliased`
+  condition therefore MUST compute reach with a lower bound — must-set bits
+  from the same `addr_bits` walk (an `INT_OR` constant's bits are guaranteed;
+  zext/copy/and propagate them), giving the stack store the interval
+  `[$0100, $01FF]` — before this phase lands, and the shredder owes the
+  fixture with it: a program that keeps `sp` (an `sp_linked`/`sp_unbalanced`
+  refusal) alongside zero-page scratch, whose scratch still promotes. Without
+  the floor this phase silently forfeits a third of its yield to Phase 1's
+  ledgered residue.
 
 A cell passing both leaves `state { }` and becomes a local; cross-procedure
 frame-locals follow the params/returns vocabulary or refuse as `crossproc`
@@ -822,6 +916,23 @@ silently adopted:
   `wall`/dispatch count is one more `lift_residue` signature — keeping the
   "two instruments agree store for store" discipline instead of minting a
   third counter population.
+
+**Post-Phase-1 review (2026-08-08).** A second review, run against the landed
+phase and its artifacts, verified the before/after table reproduces row for
+row (gate 622/623, ledger, census sums, the 92/33 movement) and that
+"0-or-refused" holds literally (zero tunes with `raw_sp > 0` lack a ledger
+entry; the shredder's `sp_spill` passes hard with its marker removed). It
+found three defects in the *plan*, all folded into the sections above: the
+Phase 1 heading promised `raw_sp -> 0` while its gate asked 0-or-refused
+(heading rescoped; the fabric's removal scheduled as Phase 2c with its
+2a-dependency stated, not parked in Phase 6); R7's census-zero headline was
+uncapped while 298 tunes wear refused `sp` fabric (cap 326/624 stated at R7);
+and Phase 3's `aliased` condition, as specified, would have spuriously
+refused every zero-page cell in the 201 scratch-bearing tunes that keep
+page-one stores — 3,292 fields, 35% of the phase's prize — because
+`store_reach`'s fallback interval starts at zero (demonstrated against the
+committed code). The floor requirement in Phase 3 (ii) and its shredder
+fixture are that finding's fix.
 
 Two obligations the review added that stay open in their phases: Phase 2's
 certification must be proven closed under **reads** as well as writes (a
