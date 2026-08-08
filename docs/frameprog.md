@@ -2855,11 +2855,9 @@ What is left, in the order it costs:
    interrupt boundary and 3 are never written at all. Wants a may-be-live-in
    analysis at the frame boundary, because persistence is path-dependent.
    **Unsized.**
-8. **``_use_count`` does not see a width-suffixed local** (§7.10.14). The named
-   and experimentally confirmed root cause of **3 of the 5 Gate FP divergences**:
-   counting a ``loc`` of any width clears exactly those three and leaves the other
-   two untouched. One line, but it moves emitted text well beyond them, so it owes
-   the full sweep before it is a change rather than a patch.
+8. ~~**``_use_count`` does not see a width-suffixed local** (§7.10.14).~~ **DONE
+   (§7.10.15)**: Gate FP **618 -> 621 clean** over 623, exactly the three Class A
+   tunes and no other row moved.
 
 Above all of these sits the census, restated over the current 624-tune sweep:
 **``word_pack`` at 4583 sites over 552 tunes, and ``carry_val`` at 5594 over 550,
@@ -3358,6 +3356,50 @@ was investigated past localisation.
 **What this does not settle.** ``C64_World`` still faults under evaluation
 (``unobserved $4ED7 reached``) and is not a divergence, so it is not triaged
 here. The harnesses used were scratch, not committed tools.
+
+#### 7.10.15 Item 8: a local is a use at every width (LANDED)
+
+``_use_count_expr`` matches ``y[0] == "loc" and y[1] == name`` instead of the
+bare 2-tuple, so a 16-bit local counts as the use it is. That is the whole
+change; §7.10.14 is the derivation.
+
+**Gate FP over the 624-tune cache, 300 frames: 618 -> 621 clean of 623 built.**
+The three that clear are exactly Class A -- ``Dribbling``,
+``Astro_Marine_Corps``, ``After_the_War`` -- with **no new divergence, no
+verdict moved and the same single refusal**. ``720_Degrees`` (Class B,
+``framestack``) and ``Rambo_First_Blood_Part_II`` (Class C, beneath every rung)
+are untouched, which is the split §7.10.14 predicted and the reason to believe
+the localisation rather than the coincidence.
+
+**It is a correctness fix and not a metric.** Every lane column is bit-identical
+-- ``unproven`` 217, ``notaligned`` 10, ``swept`` 22, ``aligned`` 1820, lane byte
+227, the word-store rate **93.83%** -- and ``looks_complete`` stays 498. Two
+columns move, both favourably: ``unnamed`` **108 -> 105** and
+``provably_complete`` **485 -> 487**, while ``unnamed_as_written`` goes 1139 ->
+1142, so the population G1 is measured against grew by three and the residue
+inside it shrank by three.
+
+**What the emitted text does is delete a temporary.** Four ``framemath``
+assertions pinned a spelling that no longer occurs: the lifted word used to land
+in a fresh ``d0:2`` and be copied to its cell, and now it is written to the cell
+directly -- ``ctr_0010:2 = (ctr_0010:2 + $0037):2`` where the test expected
+``d0:2 = (ctr_0010:2 + $0037):2``. The proofs those tests assert on are unmoved
+(``lifted``, the same lanes, no ``carry(`` surviving) and ``_build`` gates and
+fixpoint-checks every one of them, so the four are restatements, not
+concessions. That is also where the line counts come from: ``Commando``
+549 -> 547, ``Krakout`` 791 -> 788.
+
+**Tests.** ``test_a_local_is_a_use_at_every_width`` pins the counter on both
+spellings, and
+``test_inline_does_not_orphan_a_width_2_use_by_folding_into_a_later_one`` builds
+the shape delta-debugged out of ``Dribbling`` and asserts ``_find_use`` does not
+name the second use when the first is width-2. Both fail on the old counter --
+the second returns 2 where it must not -- which is what makes them regression
+tests rather than restatements. Hermetic suite **2268 passed, 492 skipped**.
+
+**Still open, and untouched by this:** ``720_Degrees`` and ``Rambo`` remain
+diverged and are localised but undiagnosed, and ``C64_World`` still faults under
+evaluation.
 
 ### 7.8 The environment this branch was measured in
 

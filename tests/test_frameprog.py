@@ -408,3 +408,35 @@ def test_computed_table_read_is_an_indexed_access_not_a_raw_memref():
 )
 def test_index_rendering_covers_the_computed_shapes(addr, want):
     assert frameproc._membody(addr) == want
+
+
+# ---- the inline that orphaned a use (docs/frameprog.md 7.10.14) -------------------
+@pytest.mark.parametrize("loc", [("loc", "t16"), ("loc", "t16", 2)])
+def test_a_local_is_a_use_at_every_width(loc):
+    """A 16-bit local reads as ``("loc", name, 2)`` and is a use like any other.
+
+    Counting only the bare 2-tuple missed exactly the words rung (d) mints, which
+    is what let ``_find_use`` walk past a real use."""
+    s = ("asg", "a6", ("mem", loc, 1))
+    assert frameproc._use_count(s, "t16") == 1
+    assert frameproc._locset(("mem", loc, 1)) == {"t16"}
+
+
+def test_inline_does_not_orphan_a_width_2_use_by_folding_into_a_later_one():
+    """``_find_use`` must not name the second use when the first is width-2.
+
+    The shape delta-debugged out of ``Dribbling``: ``t16`` feeds a word-wide load
+    and then a condition. Folding into the condition strands the load."""
+    val = ("op", "INT_ZEXT", (("op", "INT_ADD", (("loc", "x"), ("const", 19, 1)), 1),), 2)
+    items = [
+        ("asg", "t16", val),
+        ("asg", "a6", ("mem", ("loc", "t16", 2), 1)),  # width-2 use: scored 0 before the fix
+        ("if", "if", ("loc", "t16"), [("asg", "a7", ("const", 1, 1))], []),
+    ]
+    info = frameproc._Info([(0x1000, items)], 0x1000)
+    info.summarize()
+    flow = frameproc._Flow(info, 0x1000)
+    flow.liveout, flow.loop_head = {}, {}
+    flow.run()
+    ctx = frameproc._InlineCtx(info, 0x1000, flow.liveout, flow.loop_head)
+    assert frameproc._find_use(items, 1, "t16", val, ctx) != 2, "folded past the width-2 use"

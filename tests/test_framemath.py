@@ -59,7 +59,7 @@ def test_the_classic_carry_chain_lifts_to_one_word_add():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "16-bit add: lanes $0010/$0011, adjacent cells" in pr.lemma
-    assert "d0:2 = (ctr_0010:2 + $0037):2" in text  # the widened byte step is a word const
+    assert "ctr_0010:2 = (ctr_0010:2 + $0037):2" in text  # the sum lands in its own cell
     assert "carry(" not in text
 
 
@@ -74,7 +74,7 @@ def test_the_borrow_chain_lifts_to_one_word_sub():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "16-bit sub: lanes $0010/$0011, adjacent cells" in pr.lemma
-    assert "d0:2 = (zp_10:2 - zext2(m_1480)):2" in text
+    assert "zp_10:2 = (zp_10:2 - zext2(m_1480)):2" in text
     assert "<=" not in text  # the borrow predicate is gone with the byte form
 
 
@@ -320,7 +320,7 @@ def test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page():
     _m, prog, text = _build("zpstore", a, {WLO: 0xF0, WHI: 0x20})
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (WLO, WHI)
-    assert "carry(" not in text and "d0:2 = " in text
+    assert "carry(" not in text and "ctr_1450:2 = (ctr_1450:2 + $0150):2" in text
 
 
 def test_an_unresolved_lane_prints_as_unresolved_and_sites_at_zero():
@@ -388,7 +388,7 @@ def test_a_sixteen_bit_step_lifts_as_one_word_add():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "carry(" not in text
-    assert "d0:2 = (zp_10:2 + m_1480:2):2" in text  # both addends fold to u16 reads
+    assert "zp_10:2 = (zp_10:2 + m_1480:2):2" in text  # both addends fold to u16 reads
 
 
 def test_lanes_three_bytes_apart_lift_but_never_merge():
