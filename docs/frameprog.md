@@ -2855,6 +2855,11 @@ What is left, in the order it costs:
    interrupt boundary and 3 are never written at all. Wants a may-be-live-in
    analysis at the frame boundary, because persistence is path-dependent.
    **Unsized.**
+8. **``_use_count`` does not see a width-suffixed local** (§7.10.14). The named
+   and experimentally confirmed root cause of **3 of the 5 Gate FP divergences**:
+   counting a ``loc`` of any width clears exactly those three and leaves the other
+   two untouched. One line, but it moves emitted text well beyond them, so it owes
+   the full sweep before it is a change rather than a patch.
 
 Above all of these sits the census, restated over the current 624-tune sweep:
 **``word_pack`` at 4583 sites over 552 tunes, and ``carry_val`` at 5594 over 550,
@@ -3280,6 +3285,79 @@ cannot be named are what hold the other rungs up.
 
 **Unsized.** One tune, one subtune, 1500 of its 11750 frames. Nothing here is
 corpus-wide, and the instrument is a scratch harness, not a committed tool.
+
+#### 7.10.14 The five divergences triaged: three causes, and the largest is named
+
+``tools/gate_sweep.py`` at 300 frames leaves **623 built, 618 clean, 5 diverged,
+1 faulting under evaluation**. Read by register rather than by section index, the
+five are not five problems:
+
+| tune | frame | section | got | want |
+|---|---:|---|---|---|
+| ``Astro_Marine_Corps`` | 3 | ``v0.lww`` | ``v0.pw_lo=$10`` | ``v0.pw_lo=$1D`` |
+| ``After_the_War`` | 4 | ``v2.lww`` | ``v2.pw_lo=$20`` | ``v2.pw_lo=$40`` |
+| ``Dribbling`` | 0 | ``v1.lww`` | ``v1.pw_lo=$D0`` | ``v1.pw_lo=$30`` |
+| ``720_Degrees`` | 225 | ``v1.ord`` | ``v1.ctrl=$41`` | ``v1.ctrl=$81`` |
+| ``Rambo_First_Blood_Part_II`` | 0 | ``v1.ord`` | *nothing* | ``v1.sr=$00`` |
+
+**Three are the same register role on three different voices.** Localising each
+by §7.10.9's method -- disable one rung, see whether the divergence survives --
+over ``framefuse``, ``framemath``, ``framestack``, ``frameptr``,
+``_pair_tables``, ``repolish``, ``_prune``, ``_inline`` and ``_fold_words``:
+
+| class | tunes | disappears when disabled |
+|---|---|---|
+| **A** | ``Dribbling``, ``Astro_Marine_Corps``, ``After_the_War`` | ``repolish``, and ``_inline`` alone |
+| **B** | ``720_Degrees`` | ``framestack`` |
+| **C** | ``Rambo_First_Blood_Part_II`` | **nothing** |
+
+Note it is *not* ``_prune``: §7.10.9's liveness defect is a different bug in a
+neighbouring pass.
+
+**Class A, named.** ``_use_count_expr`` (``frameproc.py:1796``) counts a use by
+**exact tuple equality** against ``("loc", name)``, so a **width-suffixed local**
+``("loc", name, 2)`` -- precisely the 16-bit local rung (d) mints -- scores
+**zero**. ``_find_use`` therefore walks straight past a real use, calls a later
+one "the sole safe use site", and ``_inline_list`` substitutes there and
+``del items[i]`` deletes the definition **with the earlier use still reading
+it**. ``_locset`` gets the same node right, which is why nothing else complains.
+
+Delta-debugged on ``Dribbling`` with an allowance counter: 21 inlines, and
+**#20 flips the gate**. The definition is ``t16 = zext2((x + $13))`` and the
+statement between it and the ``if`` it is folded into is
+
+    a6 = mem[t16:2]
+
+a use ``_use_count`` scores 0. That is also why the class is ``pw_lo``: width-2
+locals are exactly the words rung (d) makes, so the orphaned reads land on
+pulse-width and frequency.
+
+**Confirmed by experiment.** Counting a ``loc`` of any width clears
+``Dribbling``, ``Astro_Marine_Corps`` and ``After_the_War`` to ``None``, and
+leaves ``720_Degrees`` and ``Rambo`` diverging exactly as before -- the split the
+rung localisation predicts. It also explains §7.10.9's observation that
+``Dribbling`` stopped refusing from ``check_locals`` and started diverging
+instead: whether an orphaned use is *caught* rather than silently misread depends
+on whether some earlier definition of the name happens to survive.
+
+**Why it is not landed here.** ``_use_count`` also feeds ``_subst_stmt``,
+``_mentions`` (the for-range pass) and the escape counters at
+``frameproc.py:3017``, so the one line moves emitted text well past the three
+tunes -- ``Commando`` 549 -> 547 lines, ``Krakout`` 791 -> 788, ``Rambo`` 1769 ->
+1766, with ``Commando``, ``Krakout`` and ``Comic_Bakery`` still gating clean. A
+change that moves the artifact corpus-wide owes the full sweep, and this section
+is a triage.
+
+**Class B and C are open, and deliberately not guessed at.** ``720_Degrees``
+differs in one bit of ``v1.ctrl`` -- ``$41`` against ``$81``, pulse where the
+walker says noise -- and answers only to ``framestack``. ``Rambo`` survives all
+ten configurations, so it is not a rung at all but the base translation or the
+serialization beneath it, and its entry is **missing** rather than wrong. Neither
+was investigated past localisation.
+
+**What this does not settle.** ``C64_World`` still faults under evaluation
+(``unobserved $4ED7 reached``) and is not a divergence, so it is not triaged
+here. The harnesses used were scratch, not committed tools.
 
 ### 7.8 The environment this branch was measured in
 
