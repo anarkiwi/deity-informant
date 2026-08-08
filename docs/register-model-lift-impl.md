@@ -1,14 +1,20 @@
 # register-model-lift: implementation plan (phased, evidence-based)
 
-Status: implementation plan for docs/register-model-lift.md, de-risked against
-seven family-representative tunes and one corpus-wide sweep before any phase
-starts. Each phase is mechanical (a committed instrument produces its work
-list), bounded (a refusal vocabulary names what it will not do), and guarded
-(gates that stop the line rather than reinterpret the goal). "MUST" is a gate.
-§5 records the prototypes: the Phase 3 analysis run to zero oracle
-contradictions on all seven tunes, the Phase 2 certification run against the
-declared block registry, six Z3-proved worked examples, and the committed
-`tests/test_shred_regmodel.py` shredder that stays xfail until the phases land.
+Status: in execution. Phases 0, 1 and 2a are DONE — each carries its landed
+record and before/after table in its own section; 2c and 3 are the next
+candidates (both dependents of 2a's bounds only), and 2b is respecified as a
+mechanical observed-extent pipeline (§2 2b; §6's deferral superseded) free to
+land on its own schedule. The plan was
+de-risked against seven family-representative tunes and one corpus-wide sweep
+before any phase started. Each phase is mechanical (a committed instrument
+produces its work list), bounded (a refusal vocabulary names what it will not
+do), and guarded (gates that stop the line rather than reinterpret the goal).
+"MUST" is a gate. §5 records the prototypes: the Phase 3 analysis run to zero
+oracle contradictions on all seven tunes, the Phase 2 certification run
+against the declared block registry, six Z3-proved worked examples, and the
+committed `tests/test_shred_regmodel.py` shredder whose per-phase asserts
+stay xfail until their phase lands (Phase 1's `sp_spill` has flipped and
+passes hard).
 
 ## 0. The evidence base: one tune per driver family
 
@@ -181,7 +187,15 @@ a runtime fault outside the observed map (`frameval`'s `swd`/`gdyn` +
    `wall` refusal is reserved for programs that emit such raw forms, and the
    corpus count is now known: **42 statements over 31 tunes**, with
    `switch goto` dispatch (195 sites over 141 tunes — Galway and GT emit them
-   too, not just Follin) handled as an ordinary join.
+   too, not just Follin) handled as an ordinary join. (The seven-tune figures
+   reproduce at HEAD from the committed instrument — 1 dyn form, the
+   `switch goto` row 0/4/0/2/1/3/3 — but the two corpus figures do not: a
+   pre-Phase-1 `lift_residue` artifact whose every census signature matches
+   the Phase 1 before-column bit for bit reports **44 / 32** and **198 / 142**,
+   so one of the two is a transcription and the counter is the authority.
+   Owed a re-measure at 2b's sweep, where the `wall` class is Phase 3's input
+   and the number has to be right anyway; nothing in the plan turns on which
+   way it settles.)
 2. **Follin's residue is ordinary.** Zero ⊤ stores, zero `raw_sp`, zero
    read-backs; its ⊤ loads are the three script pointers; its `word_pack`
    sites include the handler-table pack `(m_6C76[a]<<8 | m_6C37[a])` feeding
@@ -225,7 +239,10 @@ sweep, the cursor is the common case and the pointer the exception, not the
 reverse. Cost, stated: the cursor is a new IR/grammar construct with evaluator
 support — the largest dialect addition in the plan, which is why Phase 2 is
 split so its analysis half lands and is measured before the dialect half is
-built.
+built. (Resolved 2026-08-08: the split did its job — 2a's measurement chose
+the annotation spelling over the four constructs, and the license for the
+extent claim is the evaluator fault under observed extents, never the static
+certification; §2 2b.)
 
 ## 2. The phases
 
@@ -669,6 +686,16 @@ existing spelling keeps the byte lanes and buys the extent fault; that is the
 the type specimen (it certifies on definitions, and refuses on the `(lo & $18)`
 alignment test that decides its reload).
 
+**Superseded in part (2026-08-08, §6's reframe entry).** The paragraph above
+prices the dialect by static-certification coverage, and that was never the
+license — R9 puts the extent claim in the evaluator fault, and the control
+layer's observed-primary discipline (docs/corpus-status.md: artifacts carry
+the trace-observed sets, guards fault outside them, static analysis demoted
+to certification accounting) is the standing precedent. What stands is the
+annotation-over-constructs conclusion, which is now 2b's dialect; what does
+not is the deferral. 42.2% is the certification tally's opening row, and the
+respecified 2b ships the spelling corpus-wide, guard-live where uncertified.
+
 **What it supplies to 2c and 3.** 2c's `sp_linked` relaxation needs "an access
 certified into a declared block's extent is bounded away from page one by that
 extent". 2a supplies it in two pieces, and the second is the bigger one: the
@@ -695,28 +722,139 @@ out of the block a cursor walks — is named and counted but not certified: doin
 so means enumerating a const block's words as a target set, which is a rule 2b
 should decide it wants before 2a builds it.
 
-#### 2b — the cursor dialect and rewrite
+#### 2b — the unified spelling under observed extents (respecified 2026-08-08)
 
-**Read 2a's coverage first (above): the measurement argues for §6's one-token
-block-extent annotation on the existing `u16` spelling over the four constructs
-below, because 418 of 1,044 roots read their own bytes outside the deref.**
+The four-construct cursor dialect and the certified-roots-only rewrite are
+superseded (§6's reframe entry records why). The license for the extent claim
+was never the static proof: R9 places it in the evaluator fault, and the
+control layer already runs exactly this discipline corpus-wide
+(docs/corpus-status.md's observed-primary flip: committed artifacts are the
+trace-observed sets, runtime guards fault outside them, static analysis is
+demoted to certification accounting, and run-to-recurrence closure certifies
+guards for the infinite run). 2a's 42.2% priced the dialect by the accounting
+column; under the correct criterion the spelling ships corpus-wide, guard-live
+where uncertified. One constructor set covers every family because every
+measured vocabulary closes single-digit — 3 `sp` shapes, 3 wide-store shapes,
+5 `other`-def shapes, 2 pack skeletons, 3 carry roles, 1 raw dyn form on the
+seven — the families compose the same constructors at different depths, and no
+per-family (let alone per-tune) knowledge appears anywhere below.
 
-Grammar/IR: `cursor(table)` state
-fields; indexed read `cur[k]`; advance; reload from a pointer-table row;
-cursor values as data (Follin's call stack and loop cells). Evaluator: cursor
-reads fault outside the block extent (observation-closed, gate-visible).
-Certified roots rewrite to cursors — loads *and* the 12 write-through tunes'
-stores; uncertified roots fall back to coalesced u16 pointer variables
-(existing spelling, `ptr_005D: u16`), class `ptr_uncertified`; certified roots
-with unbounded advance keep the fallback too, class `ptr_extent_open`. The
-page-cross carry guards collapse with the addresses that carried them.
+**The dialect: two grammar productions, no new statement kinds.** A
+declaration clause — `ptr_0021: u16 in m_7338, m_7401` (the extent list, per
+web, per program) — and indexed access through the annotated variable:
+`ptr_0021[y]`, `ptr_0021[y]:2`, `ptr_0021[y] = v`, replacing the
+`mem[(ptr:2 + zext2(y)):2]` spelling. Everything else already spells: advance
+`ptr:2 += k` and reload `ptr = T[i]` emit today, byte reads of the pointer
+are the existing trunc extracts, a `block_read` is `ptr = ptr[k]:2`, and a
+save/restore is a u16 move. `frameval` checks every access through an
+annotated variable against its extent and faults outside it (fault kind
+`extent`, the `unobserved` machinery). At-rest junk in a multiplexed cell is
+harmless by construction because the check is at the use (§5.2 M2).
 
-Gates: 2a — none needed (read-only), its output reviewed as numbers (the five
-it was in fact read against are tabled in 2a above). 2b —
-full `gate_sweep` with movement only on tunes whose text changed, gating same
-or better; census `unnamed_addr` + `carry_val` down, sum down; triage
-`unproven` MUST NOT rise; canonical fixpoint over the new construct;
-`dumps(loads(t)) == t`.
+**The pipeline (b0–b5).** Each step is a committed instrument or a rung with
+its inputs, rule, refusal classes and gate; nothing below waits on a design
+decision.
+
+- **(b0) Observed extents become a committed artifact.** The census sweep
+  already resolves every deref concretely; per web it now records the set of
+  declared data those derefs touched, attributing addresses outside the
+  registry through `data_decls`' existing `via:` discovery (the registry
+  already declares blocks a pointer walks). An address neither declared nor
+  via-attributable ledgers `extent_unmappable` and the web keeps today's
+  spelling. The artifact is keyed like the census (cache-relative identity,
+  per subtune) and records its horizon. MUST: every gate run's horizon ≤ the
+  artifact's recorded horizon, checked per tune — so an `extent` fault inside
+  gating is an instrument defect and stops the line, while a fault past the
+  recorded horizon is the claim boundary working, exactly `unobserved`'s own
+  discipline.
+- **(b1) Lift eligibility is a `ptrcert` column, separate from
+  certification.** A web lifts iff: (i) **web closed** — no unresolvable
+  store may reach the pair (`store_reach` with `addr_floor`); refusal
+  `web_alias`, 287 roots today (2a's 193 alias-alone + 94 both). This is the
+  only premise doing soundness work — the rename is semantics-preserving
+  exactly when every def is known; everything else in this phase is
+  spelling, and Gate FP replays every build behind it. (ii) **defs
+  expressible** — every def is a reload, an advance, a save/restore closing
+  through holds whose every writer carries an admitted pair value (2a's
+  transitive closure, relaxed from "no other writer" to shared holds, which
+  is where `held_open`'s 261 defs either admit or refuse), a `block_read`
+  (`ptr = ptr[k]:2`), or a `computed` def whose lo/hi legs fuse at one seat
+  (rung (d)'s premise, emitted as one word expression); anything else
+  refuses `def_unliftable` — today's 88 `opaque` defs land here until the
+  params/returns vocabulary admits them, a ledgered precision item, not a
+  design question. (iii) **uses expressible** — deref, store-through, byte
+  extract, word compare; a web reachable only through a local the chase
+  cannot read refuses `web_opaque` (the 7 `role_opaque` roots). (iv) **holds
+  off the machine stack** — `low_held` webs (96 defs) keep today's spelling,
+  refusal `low_held`, and re-enter after 2c removes the fabric. Everything
+  2a called a *certification* refusal stops blocking: `role_entangled` byte
+  reads spell as extracts (those sites move from `unnamed_addr` to
+  `hi/lo_byte` in the census — the sum still falls, derefs outnumber foreign
+  reads 6,653 to 1,296, and the pack forms among them are Phase 4's);
+  unbounded advance is what the guard is for (`ptr_extent_open` survives
+  only as accounting); and the post-init premise — 2a's largest single
+  blocker, 107 roots — dissolves at lift, because the guard checks at the
+  deref and a value never deref'd faults nothing.
+- **(b2) One rewrite rung** (rung (g), in `frameproc`): per eligible web,
+  rename the pair to one u16 variable, rewrite each def by (ii)'s table and
+  each use by (iii)'s, attach (b0)'s extent to the declaration, and rewrite
+  write-through stores identically (the 38 sites over 12 tunes). The cell
+  leaves `state { }` iff no other web keeps it — another role in the cell is
+  another variable (M2), which is the whole of "multiplexing" once webs are
+  named.
+- **(b3) Certification stays 2a's machinery, as the accounting tally.**
+  `ptrcert` gains the static extent enumeration: reload targets from the
+  declared row-index bound, and `block_read` targets as a least fixpoint
+  over the finite registry — E₀ = the web's reload and post-init blocks;
+  each round adds every declared datum containing any 16-bit little-endian
+  value readable at any byte offset of the constant bytes of blocks already
+  in E; monotone over a finite registry, so it terminates. A block some
+  store reaches is not constant: refuse `extent_mutable` (certification
+  only — the lift and its guard stand). A root is **extent-certified** when
+  the fixpoint equals the observed extent, or when run-to-recurrence closure
+  covers the infinite run (`--close`; at the control layer the same
+  discipline took 20 certified sites to 133). The per-tune tally
+  (certified / guard-live) is the `--sound` pattern. The any-word rule is
+  deliberately coarse — an over-wide fixpoint leaves a root guard-live,
+  never wrong — and offset-aware refinement is a ledgered precision item.
+- **(b4) Evaluator cost is measured, not feared.** The extent check is one
+  membership test per annotated access against a per-web block list (short,
+  per 2a's records). The 300-frame corpus sweep and the seven full-length
+  sweeps run before and after; the wall-clock delta lands in this section's
+  before/after table and MUST stay under 2× (docs/cycle-times.md the
+  reference) — discharging §6's budget obligation with numbers.
+- **(b5) The work list precedes the rewrite.** b1's column prints, per tune,
+  the eligible webs and their site counts *before* rung (g) runs; the phase
+  commits to that measured target, not a hope. Quotable today only as
+  bounds: ≤ 1,044 roots, of which ≥ 287 refuse `web_alias` and parts of the
+  `low_held`/`opaque` populations refuse (iv)/(ii). The `web_alias` ledger
+  (2,751 unresolvable stores) is simultaneously the direct pricing input for
+  Phase 6's value-set walker, whose deferral test now runs in reverse.
+
+Gates: full `gate_sweep` (300f corpus + seven full-length), movement only on
+tunes whose text changed, gating same or better; **zero `extent` faults in
+any gate run** (impossible-by-construction under b0's horizon rule; one is
+stop-the-line); census `unnamed_addr` down by the rewritten deref count and
+`carry_val` down (the page-cross role (ii) collapses, §5.3's proof), per-tune
+sum down (§3's law); triage `unproven` MUST NOT rise; canonical fixpoint and
+`dumps(loads(t)) == t` over the two new productions; the refusal ledger
+(`web_alias`, `def_unliftable`, `web_opaque`, `low_held`,
+`extent_unmappable`, `extent_mutable`) counted per tune, a shrink without a
+rule change a finding (§3).
+
+Shredder: the four standing Phase 2 fixtures are this phase's flips
+(`pointer_walk`, `mux_pair`, `cursor_save`, `writethrough` — markers removed
+in the landing change), and 2b owes three more with it: `block_read` (a
+script-jump cursor lifts; its enumeration fixpoint certifies it or the guard
+carries it), `extent_guard` invariant (an access past the recorded extent
+faults at evaluation), `web_alias` invariant (an unresolvable store into the
+pair refuses the lift and the machine spelling survives).
+
+What 2b hands its dependents: Phase 3 (ii)'s certified write extents now
+exist for every lifted write-through, not only the cursor-ready 10%; 2c's
+`sp_linked` premise gains every lifted web (an access through an annotated
+variable is bounded off page one by its extent); Phase 4 inherits the
+extract sites the entangled reads produce, as counted above.
 
 #### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
 
@@ -887,7 +1025,9 @@ Not a rewrite phase. With 1–5 landed: re-run triage and census, re-derive
 §7.10.7's ranked list. The value-set fixpoint (old item 5) is built only if
 the residue still pays for it — over promoted variables and cursors it is a
 textbook forward analysis, and the expectation recorded here is that it is no
-longer worth building. G2 (old item 3) is partly consumed by Phase 0's
+longer worth building (revisited 2026-08-08: 2b's `web_alias` ledger — 287
+roots, 2,751 unresolvable stores — is now the walker's direct pricing input,
+and §6's reframe entry expects this decision to reverse). G2 (old item 3) is partly consumed by Phase 0's
 `g2_boundable` class; computed-jump scoping (old item 4) is expected to
 dissolve into R8's forward-analysis design. Readability candidates parked
 here: switch-on-command-byte for interpreter dispatches.
@@ -1049,16 +1189,20 @@ register survives.
 ### 5.4 The shredder: the plan as an executable, failing spec
 
 `tests/test_shred_regmodel.py` (committed with this doc) is the
-`test_shred16.py` discipline pointed at this plan: four synthesized players,
-one per phase promise, each **building and gating today** (hard asserts), each
-canonicality assert `xfail(strict=True)` so a phase that lands flips its test
-to XPASS and forces the marker's deliberate removal — the suite cannot drift
-past the plan silently, and the plan cannot claim what the suite disproves.
+`test_shred16.py` discipline pointed at this plan: fifteen synthesized
+players pinned to the phase promises, each **building and gating today**
+(hard asserts), each canonicality assert `xfail(strict=True)` so a phase that
+lands flips its test to XPASS and forces the marker's deliberate removal —
+the suite cannot drift past the plan silently, and the plan cannot claim what
+the suite disproves. Phase 1 exercised the discipline end to end: `sp_spill`
+XPASSed at landing, its marker was removed in the same change, and it now
+pins its phase's outcome as a hard pass.
 
 The suite has two kinds of fixture, and the second is what moves failure
-detection out of corpus sweeps: **xfail targets** (what a phase must achieve)
-and **standing invariants** (what no phase may break — soundness facts the
-plan's own gates otherwise only catch at 624-tune cost).
+detection out of corpus sweeps: **xfail targets** (what a phase must achieve;
+a landed phase's target stays in the suite as a hard pass) and **standing
+invariants** (what no phase may break — soundness facts the plan's own gates
+otherwise only catch at 624-tune cost).
 
 | fixture | kind | pins |
 |---|---|---|
@@ -1070,11 +1214,13 @@ plan's own gates otherwise only catch at 624-tune cost).
 | `cursor_save` | xfail P2 | Follin's save/restore — cursor values as data |
 | `writethrough` | xfail P2 | write-through pointer store becomes a bounded table write |
 | `g2_store` | xfail G2 | `(zext2(y)+$NN)` store bound, asserted via `addr_bits` |
+| `sp_spill` | **landed P1** | two-depth sp-relative spill destacks, no `sp` survives — marker removed |
 | `sweep_blit` | **invariant** | a covering blit stays byte-wide — the §7.7 `$CA6E` ord break |
 | `hi_first_pair` | **invariant** | the `hi-first` order flag survives every rebuilder |
 | `path_persist` | **invariant** | a path-dependent persistent cell (`pos_54EC` shape) stays state |
 | `alias_state` | **invariant** | a cell a write-through store can clobber stays memory (M1) |
 | `init_livein` | **invariant** | frame 0 reads init's value: the init/state0 coupling holds |
+| `sp_unbalanced` | **invariant** | an unproven stack effect keeps `sp` and its stack-page identity |
 
 Writing it measured the ladder once more, and honestly in its favour: the
 first drafts of `pointer_walk` (pure advance) and `borrow_chain` (lane-paired
@@ -1100,7 +1246,10 @@ stated; and §5.1's units and the Automatas ceiling (17, not 23) are corrected.
 Three are design simplifications recorded here as decisions to take, not
 silently adopted:
 
-- **Defer Phase 2b behind its own census payback.** Phase 3 needs 2a's bounds,
+- **Defer Phase 2b behind its own census payback.** *(Superseded 2026-08-08:
+  the reframe entry below reverses the deferral and respecifies 2b; the
+  annotation simplification in this bullet stands and is 2b's dialect.)*
+  Phase 3 needs 2a's bounds,
   not the cursor rewrite, so the plan's largest dialect addition moves off the
   critical path — the same deferral test Phase 6 applies to the value-set
   walker. Sharper: the fallback spelling already reads like a cursor
@@ -1143,12 +1292,48 @@ page-one stores — 3,292 fields, 35% of the phase's prize — because
 committed code). The floor requirement in Phase 3 (ii) and its shredder
 fixture are that finding's fix.
 
-Two obligations the review added that stay open in their phases: Phase 2's
+Two obligations the review added, one since discharged: Phase 2's
 certification must be proven closed under **reads** as well as writes (a
 counter role reading bytes a cursor rewrite no longer maintains is a
-divergence — the `mux_pair` fixture is built to catch exactly that), with a
-`role_entangled` refusal for pairs it cannot split; and the 2b extent check
-inherits Phase 3's full-length differential discipline, since a cursor
-faulting at frame 9,000 is invisible to the 300-frame sweep — with the
-corpus-wide `--frames full` cost budgeted before either lands (§7.8's
-environment numbers are the reference).
+divergence) — **landed in 2a** as the reads-closed premise, with the refusals
+the review asked for (`role_entangled` 418 roots / 302 tunes, `role_opaque`
+7 / 7); the `mux_pair` fixture stays xfail against 2b's rewrite half, which
+is what it pins. Still open in its phase: the 2b extent check inherits
+Phase 3's full-length differential discipline, since a cursor faulting at
+frame 9,000 is invisible to the 300-frame sweep — with the corpus-wide
+`--frames full` cost budgeted before either lands (§7.8's environment
+numbers are the reference).
+
+**Post-Phase-2a course correction (2026-08-08).** 2a's three corpus-forced
+corrections were folded at landing (§0's root-count abbreviation noted at R2,
+§5.2's two measured-false sentences marked, 2b rewritten around the coverage
+number); this pass propagated the residue the landing commit did not: the
+status header now records Phases 0/1/2a as DONE rather than describing a plan
+awaiting its first phase, §5.4's fixture table carries the committed suite's
+full fifteen (`sp_spill` as a landed hard pass, `sp_unbalanced` as the Phase 1
+invariant), and the reads-closure obligation above is marked discharged by
+2a's `role_entangled`/`role_opaque` ledger instead of standing open.
+
+**Post-2a reframe (2026-08-08): the 2b deferral is superseded, and 2b is
+respecified as a mechanical pipeline (§2 2b).** The first bullet above priced
+the cursor dialect by static-certification coverage; that criterion was wrong
+by R9's own text — the extent claim's license is the evaluator fault, and the
+project already runs this discipline at the control layer (the
+observed-primary flip, docs/corpus-status.md: committed artifacts are the
+trace-observed sets, runtime guards fault outside them, static analysis is
+demoted to certification accounting, and recurrence closure certifies guards
+for the infinite run). The dialect question is closed by the corpus's own
+censuses: every measured vocabulary is single-digit — three `sp` shapes,
+three wide-store shapes, five `other`-def shapes, two pack skeletons, three
+carry roles, one raw dyn form on the seven (R8's Angry_Birds statement) — so
+one constructor set
+(bounded accumulators, cursors with extents, arrays of both, dispatch,
+triggers) covers all six families at different composition depths, and no
+per-family knowledge is required anywhere in the pipeline. Consequences
+recorded in 2b: the annotation-over-constructs simplification stands and the
+deferral does not; lift eligibility (web closure, the one soundness premise)
+is separated from certification (accounting); the post-init premise
+dissolves at lift; `role_entangled` blocks nothing; and the `web_alias`
+ledger (287 roots, 2,751 unresolvable stores) becomes the direct pricing
+input for Phase 6's value-set walker, whose "no longer worth building"
+expectation is now expected to reverse.
