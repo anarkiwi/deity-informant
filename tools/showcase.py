@@ -1,10 +1,11 @@
-"""Regenerate out/: canonical sidprog text + metrics for representative tunes.
+"""Regenerate out/: canonical sidprog and frameprog text plus metrics.
 
-out/ is gitignored (HVSC-derived); this keeps it current for progress review:
-one <Tune>.sidprog.txt per showcase tune (full Songlengths length, verified
-bit-exact) and showcase.json with per-tune gate numbers.
+out/ is gitignored (HVSC-derived); this keeps it current for progress review at
+full Songlengths length. Each dialect is verified as it is written: sidprog
+replayed bit-exact against the VM, frameprog gated and checked for its fixpoint.
 """
 
+import argparse
 import json
 import multiprocessing as mp
 import sys
@@ -16,6 +17,8 @@ import _sweep
 ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+
+DIALECTS = ("sidprog", "frameprog")
 
 SHOWCASE = [
     "MUSICIANS/H/Hubbard_Rob/Commando.sid",
@@ -33,9 +36,58 @@ SHOWCASE = [
 # The texts are named off the stem, which is unique in this list but not in HVSC.
 assert len({Path(r).stem for r in SHOWCASE}) == len(SHOWCASE), "two showcase tunes share a stem"
 
+USAGE = """\
+  python tools/showcase.py                            # both dialects, every showcase tune
+  python tools/showcase.py --dialect frameprog        # the frame program only
+  python tools/showcase.py --tunes Commando,Krakout   # named tunes, the rest left alone"""
 
-def one(rel):
+
+def _sidprog_text(model, ev, frames, row):
+    """sidprog text, replayed bit-exact through its own parse (spec 6)."""
     from deity_informant import sidprog
+    from deity_informant import structured as S
+
+    text = sidprog.emit(model)
+    tm = sidprog.parse(text)
+    row["bit_exact_standalone"] = (
+        S.Walker(model).run(frames) == ev.wlog
+        and tm.run(frames) == ev.wlog
+        and sidprog.emit(tm) == text
+    )
+    row["text_bytes"] = len(text)
+    row.update(sidprog.metrics(model))
+    return text
+
+
+def _frameprog_text(model, _ev, frames, row):
+    """frameprog text, held to Gate FP and to the canonical fixpoint (docs 1.4).
+
+    ``gate`` None is the pass: the frame program's projection equals the walker's
+    for every frame. A tune that diverges still writes its text, because the text
+    is what a divergence is read off."""
+    from deity_informant import frameprog
+    from deity_informant import frameval
+
+    t0 = time.monotonic()
+    prog = frameprog.program(model)
+    frameprog.check_locals(prog.procs)
+    text = frameprog.dumps(prog)
+    gate = frameval.gate_fp(model, frames, prog)
+    row["frameprog_build_s"] = round(time.monotonic() - t0, 1)
+    row["frameprog_bytes"] = len(text)
+    row["frameprog_lines"] = text.count("\n")
+    row["frameprog_fixpoint"] = frameprog.dumps(frameprog.loads(text)) == text
+    row["frameprog_gate"] = None if gate is None else list(gate)
+    row["hi_first_stores"] = text.count("hi-first ")
+    return text
+
+
+_EMIT = {"sidprog": _sidprog_text, "frameprog": _frameprog_text}
+
+
+def one(job):
+    """One tune: the model built once, then each dialect emitted off it."""
+    rel, dialects = job
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
@@ -47,47 +99,102 @@ def one(rel):
         return {"tune": rel[:-4], "name": Path(rel).stem, "error": "not cached"}
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(sid.read_bytes())
-    mem[0xD418] = 0x0F
+    mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
     frames = secs * 50
     t0 = time.monotonic()
     model, ev = S.decompile(mem, init, play, frames, sub)
-    build_s = round(time.monotonic() - t0, 1)
-    w = S.Walker(model)
-    exact = w.run(frames) == ev.wlog
-    text = sidprog.emit(model)
-    tm = sidprog.parse(text)
-    exact = exact and tm.run(frames) == ev.wlog and sidprog.emit(tm) == text
-    met = sidprog.metrics(model)
-    (ROOT / "out" / ("%s.sidprog.txt" % sid.stem)).write_text(text, encoding="utf-8")
-    return {
+    row = {
         "tune": _sweep.tune_id(sid),
         "name": sid.stem,
         "subtune": sub,
         "secs": secs,
         "frames": frames,
         "writes": len(ev.wlog),
-        "bit_exact_standalone": exact,
-        "text_bytes": len(text),
+        "build_s": round(time.monotonic() - t0, 1),
         "guard_live": sorted(
             "$%04X" % s for s, p in model.proofs.items() if p.status != "certified"
         ),
         "certified": sum(p.status == "certified" for p in model.proofs.values()),
-        "build_s": build_s,
-        **met,
     }
+    for dialect in dialects:
+        try:
+            text = _EMIT[dialect](model, ev, frames, row)
+        except Exception as exc:  # pylint: disable=broad-except
+            row["%s_error" % dialect] = "%s: %s" % (type(exc).__name__, exc)
+            continue
+        (ROOT / "out" / ("%s.%s.txt" % (sid.stem, dialect))).write_text(text, encoding="utf-8")
+    return row
+
+
+def select(names):
+    """The showcase entries ``names`` picks, or every one of them."""
+    if not names:
+        return list(SHOWCASE)
+    want = {n.strip().lower() for n in names.split(",") if n.strip()}
+    hits = [r for r in SHOWCASE if Path(r).stem.lower() in want]
+    missing = want - {Path(r).stem.lower() for r in hits}
+    if missing:
+        sys.exit(
+            "not a showcase tune: %s\navailable: %s"
+            % (", ".join(sorted(missing)), ", ".join(Path(r).stem for r in SHOWCASE))
+        )
+    return hits
+
+
+def merge(path, rows):
+    """This run's rows over whatever the last one left, so ``--tunes`` keeps the rest."""
+    old = []
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            old = []
+    keep = {r["tune"]: r for r in old if isinstance(r, dict) and "tune" in r}
+    keep.update({r["tune"]: r for r in rows})
+    return [keep[k] for k in sorted(keep)]
+
+
+def failures(rows):
+    """Every row field that says a law did not hold, as ``tune: what``."""
+    out = []
+    for r in rows:
+        for key, val in sorted(r.items()):
+            bad = val is False if key.endswith(("_fixpoint", "_standalone")) else None
+            if key.endswith("error") or (key == "frameprog_gate" and val is not None):
+                bad = True
+            if bad:
+                out.append("%s: %s=%s" % (r.get("name", r.get("tune")), key, val))
+    return out
 
 
 def main():
-    (ROOT / "out").mkdir(exist_ok=True)
-    for old in (ROOT / "out").glob("*"):
-        if old.suffix in (".sidc", ".txt", ".json"):
-            old.unlink()
-    with mp.Pool(min(len(SHOWCASE), 10)) as pool:
-        rows = pool.map(one, SHOWCASE)
-    (ROOT / "out" / "showcase.json").write_text(json.dumps(rows, indent=1))
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--dialect", choices=DIALECTS + ("both",), default="both")
+    ap.add_argument("--tunes", help="comma-separated showcase stems; default all of them")
+    ap.add_argument("-j", "--procs", type=int, default=10)
+    args = ap.parse_args()
+
+    dialects = DIALECTS if args.dialect == "both" else (args.dialect,)
+    rels = select(args.tunes)
+    out = ROOT / "out"
+    out.mkdir(exist_ok=True)
+    for rel in rels:  # only the texts this run rewrites: a stale one must not survive
+        for dialect in dialects:
+            (out / ("%s.%s.txt" % (Path(rel).stem, dialect))).unlink(missing_ok=True)
+    with mp.Pool(min(len(rels), args.procs)) as pool:
+        rows = pool.map(one, [(r, dialects) for r in rels])
+    (out / "showcase.json").write_text(json.dumps(merge(out / "showcase.json", rows), indent=1))
     for r in rows:
         print(json.dumps(r))
+    bad = failures(rows)
+    for line in bad:
+        sys.stderr.write("FAILED %s\n" % line)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
