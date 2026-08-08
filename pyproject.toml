@@ -65,6 +65,7 @@ omit = [
     "tools/eqlift_emit.py",
     "tools/fetch_corpus.py",
     "tools/fuse_measure.py",
+    "tools/gate_sweep.py",
     "tools/showcase.py",
 ]
 

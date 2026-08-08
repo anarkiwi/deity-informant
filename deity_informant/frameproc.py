@@ -408,6 +408,18 @@ def disturbs(stmt, exprs, regions):
     return False if stmt[0] != "st" else reads(exprs, store_reach(stmt, regions), regions)
 
 
+def hi_first(s):
+    """True where a word store emits its high byte before its low byte.
+
+    A store's write order rides as an optional fourth element, set only by rung
+    (d) where the pair it merged was written hi then lo. It is a fact about the
+    store and not about its index: ``frameval``'s ``stw`` emits ascending unless
+    told otherwise, so a store carrying its own order reproduces the frame log
+    wherever the index lands, and owes nothing about where that is (§7.10.4).
+    Every rebuilder of a store carries ``s[3:]`` through for that reason."""
+    return len(s) > 3 and s[3]
+
+
 def as_written(env, lst, k):
     """``lst[k]`` with its address spelled as the definition in force spells it.
 
@@ -423,7 +435,7 @@ def as_written(env, lst, k):
         if got is None or any(env.at(m, got[0]) != env.at(m, k) for m in _locset(got[1])):
             break
         n, bound = got[1], got[0]
-    return ("st", n, s[2])
+    return ("st", n, s[2]) + s[3:]
 
 
 def hoist(lst, i, j, exprs, regions, env=None):
@@ -888,7 +900,7 @@ def _map_exprs(s, f):
     if k == "asg":
         return ("asg", s[1], f(s[2]))
     if k == "st":
-        return ("st", f(s[1]), f(s[2]))
+        return ("st", f(s[1]), f(s[2])) + s[3:]
     if k == "if":
         return ("if", s[1], f(s[2]), s[3], s[4])
     if k == "pcall":
@@ -947,7 +959,7 @@ def canon_addrs(stmts, outer=None, cyclic=False):
         for b in _stmt_bodies(s):
             canon_addrs(b, (env, k), s[0] in _CYCLIC)
         if s[0] == "st":
-            s = ("st", _one_addr(s[1], env, k), s[2])
+            s = ("st", _one_addr(s[1], env, k), s[2]) + s[3:]
         stmts[k] = _map_exprs(s, lambda n, e=env, i=k: _addr_exprs(n, e, i))
 
 
@@ -1037,7 +1049,7 @@ class _Conv:
             if ev[0] == "ld":
                 items.append(("ld", ev[1], key(ev[2])))
             else:
-                items.append(("st", key(ev[1]), key(ev[2])))
+                items.append(("st", key(ev[1]), key(ev[2])) + ev[3:])
         kouts = {i: key(x) for i, x in enumerate(blk.regs) if x != ("reg", i)}
         t = blk.term
         k = t[0]
@@ -1221,7 +1233,7 @@ class _Conv:
                     out.append(("asg", name, rendered))
                     bind(name, ("slot", s))
             else:
-                out.append(("st", render(item[1]), render(item[2])))
+                out.append(("st", render(item[1]), render(item[2])) + item[3:])
         mat(len(items))
         while pend:
             done = None
@@ -2298,8 +2310,11 @@ class _Printer:
             lv = s[1] + sidprog._wsuf(G.store_width(s[2]))
             self.line("%s = %s" % (lv, self.e(s[2])), d + 1)
         elif k == "st":
+            sz = G.store_width(s[2])
             self.line(
-                "%s = %s" % (_memref(s[1], G.store_width(s[2]), self.res), self.e(s[2])), d + 1
+                "%s%s = %s"
+                % ("hi-first " if hi_first(s) else "", _memref(s[1], sz, self.res), self.e(s[2])),
+                d + 1,
             )
         elif k == "if":
             self._if(s, d)

@@ -496,8 +496,10 @@ per pair, never per tune, and the rest of the tune still fuses. A *SID* register
 pair declares nothing beyond the two statements it rewrites: freq, pulse and
 cutoff are last-write-wins and §1.1 emits lo,hi adjacent whatever order the
 driver wrote them in, so its premise is per store site — an adjacent lo/hi pair
-at one index fuses (hi-first included; the packed value keeps the driver's
-evaluation order), and a lone half elsewhere leaves that site alone.
+at one index fuses (hi-first included: the packed value keeps the driver's
+evaluation order and the merged store carries its *write* order, spelled
+`hi-first`, so the merge owes no fact about the index — §7.10.4), and a lone half
+elsewhere leaves that site alone.
 
 Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
 (650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical
@@ -2829,9 +2831,9 @@ tunes is unblocked. **G1 (§7.10.3) led what was left and is done too**: 1031 of
 1139 stores, the prediction exactly, and provable completeness 231 -> 451 of 624.
 What is left, in the order it costs:
 
-1. **The word store carries its byte-emission order** (§7.10.4). 120 of 337
-   stores, 18 tunes to zero, 89.89% -> 92.96%. Index-free, one-line soundness
-   argument, and it deletes a premise rather than proving one.
+1. ~~**The word store carries its byte-emission order** (§7.10.4).~~ **DONE
+   (§7.10.10)**: 132 of 381 stores, 21 tunes to zero, 89.89% -> 93.27%, and the
+   ``_lww`` gate is deleted rather than discharged.
 2. **The covering-sweep rule** (§7.10.2), with the loop-counter obligation
    discharged. 26 stores, and it removes a false "floor" from the record.
 3. **G2: ``INT_ADD`` in ``addr_bits``** (§7.10.3). Three lines, and G1 made the
@@ -2964,6 +2966,80 @@ frameprog path are ``frameproc.py`` 426, 950, 1040, 1224 and 2660 and
 hi-first too: sound, since RAM order is invisible to the log and ``_bring`` and
 ``_may_read`` still guard the values, but **unsized** -- §7.10.4's 76 counted
 ``_lww`` refusals only.
+
+#### 7.10.10 Item 1: the store carries its order, and the premise is deleted (LANDED)
+
+A word store's write order is its own, spelled ``hi-first`` in the grammar and
+carried as the optional fourth element of the ``st`` node
+(``frameproc.hi_first``). ``frameval._s_st`` hands ``stw`` a byte-index order
+tuple instead of a count, and the VM iterates it, so a merged pair emits the two
+bytes in the sequence the program wrote them. ``_lww`` is **gone**, and with it
+``_pair_at``'s ``ctx`` parameter: the merge now asks nothing about the index,
+because the record it reproduces is the same for every value the index can take.
+That is the whole soundness argument, and it is one line of ``framelog``:
+write order is kept only inside the ctrl/AD/SR and ``$19``-``$1C`` sections, and
+a store emitting in program order matches there whatever cell it lands on.
+
+**The Gate FP baseline the debt demanded, paid first** (``tools/gate_sweep.py``,
+new here, 300 frames, 624 rows, 353s over 24 workers). At ``30fb83c``: **623
+build, 618 gate clean, 5 diverge, 1 faults under evaluation**
+(``C64_World``, ``unobserved $4ED7 reached``). The 28-tune sample of §7.10.9 saw
+three of the five; the sweep names **two more it could not**:
+``After_the_War`` (frame 4, ``v2.lww``) and ``Astro_Marine_Corps`` (frame 3,
+``v0.lww``). Neither is caused by anything on this branch and neither is item 1's
+-- they are the second debt's remainder, now bounded rather than sampled.
+
+**After item 1 the sweep is byte-identical**: 623 built, 618 clean, the same five
+divergences at the same frame, section and position, the same one fault. A change
+that moves emitted text in a third of the corpus moves the gate not at all.
+
+| | before | after |
+|---|---:|---:|
+| word-store rate | 3387 / 381 (**89.89%**) | 3453 / 249 (**93.27%**) |
+| ``unproven`` | 337 | **217** |
+| ``notaligned`` | 44 | **32** |
+| indexed word stores (``aligned``) | 1754 | **1820** |
+| tunes lane-complete | 464 | **485** |
+| tunes provably complete | 451 | **472** |
+| ``partnered`` (the over-count of §7.10.4) | 229 | 96 |
+| census ``narrow_sink`` | 381 over 160 tunes | **249 over 139** |
+| Gate FP clean / built | 618 / 623 | 618 / 623 |
+| ``unnamed``, ``unnamed_as_written`` | 108, 1139 | 108, 1139 |
+
+**Predicted 120 stores and 92.96%; measured 132 and 93.27%.** The prediction
+counted the ``unproven`` column only, where ``_lww`` refused on both columns it
+could refuse on: ``unproven`` falls by exactly the 120 predicted and
+``notaligned`` by a further 12, for **66 newly merged pairs**. Clean tunes were
+predicted 482 and measured 485. The triage moves with it -- ``straddle`` 17 -> 9,
+``window`` 26 -> 22, ``offlane`` 1 unchanged -- and every ``unnamed`` column is
+untouched, as it must be: G1's population is a different question.
+
+**The text moves in 213 of 624 tunes, and only a third of that is new work.**
+336 stores are emitted ``hi-first``; **66 of them are merges that did not happen
+before**, and the other 270 are pairs that already merged and now state the order
+they always had. The old text spelled those lo-first because ``_lww`` had proved
+the two cells commute -- true, and now unnecessary to know.
+
+**What the census says about the win, which is the less flattering half.**
+``narrow_sink`` drops 381 -> 249, and ``lift_residue`` computes that column
+independently of ``fuse_measure``, so the two instruments still agree store for
+store. But ``word_pack`` **rises 4583 -> 4617** over 552 -> 556 tunes: a merged
+pair emits ``hi<<8 | lo``, which is exactly the machine shape the census counts.
+Every other signature, the blocking matrix included, is bit-identical. So item 1
+converts 132 sites of one residue into 34 sites of another an order of magnitude
+larger, and **only the census can see that** -- the 89.89% -> 93.27% rate cannot,
+which is §7.10.8's argument arriving as a measurement rather than a prediction.
+Item 1 was still worth taking: it deletes a premise, and the rate it moves is the
+one the branch has been quoting. The metric question it does not answer is still
+the prerequisite for items 2-5.
+
+**Verified.** Hermetic suite 2261 passed, 492 skipped; the canonical fixpoint
+``dumps(loads(t)) == t`` holds over the new form, and ``tests/test_framefuse.py``
+gains three cases: that ``stw`` emits descending when the store says so and that
+the log sees the difference in an ``ord`` section, that a hi-first lane pair
+merges through an index with no constant set, and that dropping the flag from
+that merge moves the record. The third is the mutation evidence -- the flag is
+load-bearing, not decoration.
 
 ### 7.8 The environment this branch was measured in
 

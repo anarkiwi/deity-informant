@@ -460,17 +460,6 @@ def _sites(stmts, p):
     return out
 
 
-def _lww(p, idx, env, at, ctx):
-    """Both cells an indexed store pair writes are last-write-wins registers.
-
-    ``framelog`` keys the record by register and keeps write order only inside the
-    ctrl/AD/SR and $19-$1C sections, so two writes to one lo/hi pair commute. An
-    index the model cannot resolve may land the pair inside one of those."""
-    if idx is None:
-        return True
-    return ctx is not None and _lane_aligned(p, _consts(idx, env, at, ctx))
-
-
 def _undisturbed(stmts, i, j, half, regions, env):
     """The interval leaves the moved lane and every logged register alone.
 
@@ -506,15 +495,16 @@ def _bring(stmts, i, j, p, regions, env):
     return None
 
 
-def _pair_at(stmts, i, p, sites, regions=None, env=None, ctx=None):
+def _pair_at(stmts, i, p, sites, regions=None, env=None):
     """The merge ``stmts[i]`` leads: ``(partner, seat, statement, its value, cell)``.
 
     The partner is the nearest later store of the pair's other lane at the same
     symbolic index, adjacent or not. A merge writes exactly the two cells the
     program wrote, so it owes no proof about the index -- only that bringing the
-    two together moves no value and no record entry. ``stw`` logs lo then hi, so
-    a hi-first pair reverses two writes: free where both cells are proven
-    last-write-wins registers, and refused where the index leaves that open."""
+    two together moves no value and no record entry. A hi-first pair merges to a
+    store that says so (``frameproc.hi_first``): ``stw`` then emits hi then lo,
+    which is the sequence the program wrote for *any* index, so the record is
+    reproduced wherever the index lands and no lane fact is owed (§7.10.4)."""
     ha = _store_half(stmts[i], p)
     if ha is None:
         return None
@@ -524,15 +514,14 @@ def _pair_at(stmts, i, p, sites, regions=None, env=None, ctx=None):
         return None
     j = ks[k]
     lofirst = _store_half(stmts[j], p)[0] == p.hi
-    if not lofirst and (p.kind != "sid" or not _lww(p, ha[1], env, i, ctx)):
-        return None
     got = _bring(stmts, i, j, p, regions, env)
     if got is None:
         return None
     seat, va, vb = got
     lo = stmts[i] if lofirst else stmts[j]
     vlo, vhi = (va, vb) if lofirst else (vb, va)
-    return j, seat, ("st", lo[1], _pack(vlo, vhi, not lofirst)), vb, ha[0]
+    st = ("st", lo[1], _pack(vlo, vhi, not lofirst)) + (() if lofirst else (True,))
+    return j, seat, st, vb, ha[0]
 
 
 def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
@@ -557,7 +546,7 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         s = stmts[i]
         for body in frameproc._stmt_bodies(s):
             _visit(body, p, mutate, ctx, (env, i), s[0] in frameproc._CYCLIC)
-        at = _pair_at(stmts, i, p, sites, regions, env, ctx)
+        at = _pair_at(stmts, i, p, sites, regions, env)
         if at is not None and _may_read(at[3], at[4]):
             p.hazard += count
             if p.kind != "sid":

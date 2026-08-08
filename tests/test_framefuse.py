@@ -207,17 +207,84 @@ def _freq_pair_model():
 
 
 def test_sid_register_pairs_render_as_u16_without_moving_the_record():
-    """freq, pulse and cutoff fuse per site, hi-first included: the section still emits lo,hi."""
+    """freq, pulse and cutoff fuse per site, and a hi-first pair carries its write order.
+
+    The cutoff store writes $D416 before $D415, so its merge is spelled ``hi-first``
+    and ``stw`` emits the two bytes descending -- the sequence the program wrote."""
     model = _freq_pair_model()
     fused = frameprog.program(model)
     assert frameval.gate_fp(model, 8, fused) is None
     text = frameprog.dumps(fused)
     lvalues = [ln.split(" = ")[0].strip() for ln in text.splitlines() if " = " in ln]
-    assert lvalues == ["sid.v1.freq_lo:2", "sid.v1.pw_lo:2", "filter.cutoff_lo:2"]
+    assert lvalues == ["sid.v1.freq_lo:2", "sid.v1.pw_lo:2", "hi-first filter.cutoff_lo:2"]
     assert frameprog.dumps(frameprog.loads(text)) == text
     sid = [p for p in fused.proofs if p.kind == "sid"]
     assert [p.targets for p in sid] == [(0xD400, 0xD401), (0xD402, 0xD403), (0xD415, 0xD416)]
     assert [p.status for p in sid] == ["fused"] * 3
+
+
+# ---- the word store carries its own byte-emission order (7.10.4) -----------------
+_HF_DATA = {TBL: 0x33, TBL + 1: 0x44}
+_HF_OUTS = tuple(0xD400 + k for k in range(0x19))
+
+
+def _hifirst_indexed():
+    """A lane pair written hi then lo through an index no constant set reaches.
+
+    ``osc3`` is a declared input, so ``_consts`` returns None for ``y``; the mask
+    still pins it to $04/$05, where both cells of the pair land in the ctrl/AD/SR
+    section the frame log keeps in write order."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", 0xD41B).i("AND", "imm", 0x01).i("ORA", "imm", 0x04).i("TAY")
+    a.i("LDA", "abs", TBL).i("STA", "absy", 0xD401)  # the hi half is written first
+    a.i("LDA", "abs", TBL + 1).i("STA", "absy", 0xD400)
+    return a.i("RTS").assemble()
+
+
+def test_a_word_store_emits_its_bytes_in_the_order_it_declares():
+    """``stw`` emits ascending unless the store says otherwise, and the log sees it.
+
+    $D404/$D405 are ctrl and AD, which ``framelog`` keeps in write order, so the
+    two spellings of one word store give two different records. That difference is
+    the whole of item 1's argument: a store that declares its order reproduces the
+    program's sequence without knowing where its address landed."""
+    val = framefuse._pack(("const", 0x11, 1), ("const", 0x22, 1))
+    ordv = F.SECTIONS.index("v0.ord")
+    ascending = frameval.eval_fp(_hand([("st", ("const", 0xD404, 2), val)], {}), {}, 1)
+    descending = frameval.eval_fp(_hand([("st", ("const", 0xD404, 2), val, True)], {}), {}, 1)
+    assert ascending[0][ordv] == ((0x04, 0x11), (0x05, 0x22))
+    assert descending[0][ordv] == ((0x05, 0x22), (0x04, 0x11))
+
+
+def test_a_hi_first_lane_pair_merges_on_an_index_it_can_say_nothing_about():
+    """The premise deleted: a hi-first pair owes no fact about its index (7.10.4).
+
+    ``y`` comes from ``osc3``, so no constant set reaches the store and the old
+    ``_lww`` gate refused the merge outright -- the pair stayed two byte stores to
+    ``sid.reg[..]``. It merges now, spelled ``hi-first``, and Gate FP holds because
+    the two bytes leave in the order the program wrote them for every ``y``."""
+    model = _fuzz_model(_player("hifirst_idx", _hifirst_indexed(), _HF_DATA, _HF_OUTS))
+    prog = frameprog.program(model)
+    text = frameprog.dumps(prog)
+    assert "hi-first sid.v1.freq_lo[((y0 & $01) | $04)]:2 = " in text
+    body = text.split("sub_", 1)[1]  # the header notes name sid.reg[i] themselves
+    assert "sid.reg[" not in body  # neither half survived as a byte store
+    assert frameval.gate_fp(model, 64, prog) is None
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_dropping_a_hi_first_store_s_order_moves_the_record():
+    """The flag is not decoration: emit the same merge ascending and the log moves.
+
+    ``y`` is masked into ctrl/AD/SR, which is the section that keeps write order,
+    so this is the case the deleted ``_lww`` gate existed to refuse -- and the one
+    the store's own order answers without resolving ``y``."""
+    model = _fuzz_model(_player("hifirst_drop", _hifirst_indexed(), _HF_DATA, _HF_OUTS))
+    prog = frameprog.program(model)
+    st = _stmts(prog)
+    i = next(i for i, s in enumerate(st) if s[0] == "st" and frameproc.hi_first(s))
+    st[i] = st[i][:3]  # the same store, emitting ascending again
+    assert frameval.gate_fp(model, 64, prog) is not None
 
 
 def test_a_lone_sid_half_widens_to_the_word_store_it_is():

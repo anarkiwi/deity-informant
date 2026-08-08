@@ -656,6 +656,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def f_asg(self, c):
         return ("stmt", 0, ("asg",) + c[0])
 
+    def f_asg_hifirst(self, c):
+        return ("stmt", 0, ("asg",) + c[0] + (True,))
+
     def pcall(self, c):
         m = _SUB_NAME.match(str(c[0]))
         if not m:
@@ -892,6 +895,14 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return out
 
     def _fasg(self, payload):
+        got = self._fasg_body(payload)
+        if len(payload) < 4:
+            return got
+        if not isinstance(got, tuple) or got[0] != "st" or store_width(payload[2]) != 2:
+            raise ValueError("hi-first states a word store's byte order")
+        return got + (True,)
+
+    def _fasg_body(self, payload):
         lv, rhs = payload[1], payload[2]
         if lv[0] == "index" and _check_store(lv, rhs):
             if lv[3] == 2:
