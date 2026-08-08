@@ -24,6 +24,7 @@ NREG = SID_HI - SID_LO + 1
 BYTE = (
     "unproven",  # indexed lane store, index unresolved: the actionable residue
     "notaligned",  # indexed lane store, index resolved off a pair lo: irreducible
+    "swept",  # indexed lane store covering every pair it touches: the word is written entire
     "plain_lane",  # unindexed lane store: rung (d) widens every one of these
     "bytereg_idx",  # indexed store to ctrl/AD/SR/$D417-$D41C: no 16-bit form exists
     "bytereg_plain",  # unindexed store to the same 8-bit registers
@@ -95,14 +96,15 @@ def _partnered(prog):
 
 
 def _residue(model, prog):
-    """``(unproven, notaligned)`` over the SID pairs, from rung (d)'s own counters.
+    """``(unproven, notaligned, swept)`` over the SID pairs, from rung (d)'s counters.
 
     The measure pass re-run over the lifted program: a store rung (d) widened is
-    no longer a lane half, so what it counts here is what it left behind."""
+    no longer a lane half, so what it counts here is what it left behind, and a
+    covering sweep is no lane half either (7.10.2) though it stays byte-wide."""
     from deity_informant import framefuse
 
     ctx = framefuse.contexts(model, prog.data_decls, prog.procs)
-    unproven = notaligned = 0
+    unproven = notaligned = swept = 0
     cands = framefuse.candidates(model, prog.data_decls, prog.procs)
     for (lo, hi), (kind, evidence) in sorted(cands.items()):
         if kind != "sid":
@@ -113,7 +115,8 @@ def _residue(model, prog):
         assert not p.indexed, "a lane-aligned indexed store survived rung (d)"
         unproven += p.unproven
         notaligned += p.notaligned
-    return unproven, notaligned
+        swept += p.swept
+    return unproven, notaligned, swept
 
 
 def one(entry):
@@ -163,8 +166,8 @@ def _one(entry):
             idx_lane += 1
         else:
             row["plain_lane"] += 1
-    row["unproven"], row["notaligned"] = _residue(model, prog)
-    assert row["unproven"] + row["notaligned"] == idx_lane, row
+    row["unproven"], row["notaligned"], row["swept"] = _residue(model, prog)
+    assert row["unproven"] + row["notaligned"] + row["swept"] == idx_lane, row
     row["partnered"] = _partnered(prog)
     row["byte_total"] = sum(row[k] for k in BYTE)
     row["lane_byte_total"] = row["unproven"] + row["notaligned"] + row["plain_lane"]
