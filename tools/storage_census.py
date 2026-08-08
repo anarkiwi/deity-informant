@@ -1,0 +1,444 @@
+"""Per-cell storage census over an instrumented state image (docs/frameprog.md 7.10.13).
+
+The evaluator runs against a recording state image: per-cell reads and writes
+(net of the ``frameval.py:523`` write echo), first-access kind per frame, verdicts
+per declared state field in both units, and the top-address/read-back site lists.
+"""
+
+import argparse
+import json
+import multiprocessing as mp
+import re
+import signal
+import sys
+import time
+from collections import Counter, defaultdict
+from functools import partial
+from pathlib import Path
+
+import _sweep
+import fuse_measure
+import lift_residue
+
+ROOT = _sweep.ROOT
+sys.path.insert(0, str(ROOT))
+
+SID_LO, SID_HI = 0xD400, 0xD41C  # the register span excluded from cell classes
+ECHO_HI = 0xD418  # frameval re-reads a just-stored cell to buffer a SID write
+RB_HI = 0xD416  # last write-only register a pair's read-back can land on
+SCRATCH = frozenset(("framelocal", "writeonly", "data"))
+
+USAGE = """\
+  python tools/storage_census.py                                # the whole cache
+  python tools/storage_census.py --tunes Hubbard_Rob/Commando --frames full
+  python tools/storage_census.py --frames 1500 -o out/storage_census.json"""
+
+_CELL = re.compile(r"_([0-9A-Fa-f]{2,4})(_lo|_hi)?$")
+
+
+class Image(bytearray):
+    """A state image recording reads, writes, and first access kind per frame."""
+
+    def __init__(self, src):
+        super().__init__(src)
+        self.frame = 0
+        self.first = defaultdict(dict)
+        self.reads = defaultdict(int)
+        self.writes = defaultdict(int)
+        self.wframes = defaultdict(set)
+
+    def __getitem__(self, a):
+        if isinstance(a, int):
+            self.reads[a] += 1
+            self.first[a].setdefault(self.frame, "r")
+        return bytearray.__getitem__(self, a)
+
+    def __setitem__(self, a, v):
+        if isinstance(a, int):
+            self.writes[a] += 1
+            self.first[a].setdefault(self.frame, "w")
+            self.wframes[a].add(self.frame)
+        bytearray.__setitem__(self, a, v)
+
+
+def build(entry, frames=None):
+    """``(model, prog, nframes)``: the tune as ``lift_triage`` builds it.
+
+    ``frames`` caps the decompile observation length as the doc's probe did;
+    ``None`` is the full Songlengths length, bit-identical to the other tools'
+    build (the Phase 0 text gate compares the two at equal length)."""
+    from deity_informant import frameprog
+    from deity_informant import structured as S
+    from deity_informant.c64 import load_psid
+
+    sid, sub, secs = entry
+    mem, _load, init, play = load_psid(Path(sid).read_bytes())
+    mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
+    nframes = int(secs * 50) if frames is None else min(int(secs * 50), frames)
+    model, _ev = S.decompile(mem, init, play, nframes, sub)
+    return model, frameprog.program(model), nframes
+
+
+def evaluate(model, prog, nframes):
+    """``(image, frames run, fault or None)``: the instrumented evaluation."""
+    from deity_informant import frameprog, frameval
+
+    trace, _walker = frameprog.iota(model, nframes)
+    ev = frameval.Evaluator(prog, trace)
+    image = Image(ev.m)
+    ev.m = image
+    fault, ran = None, 0
+    for f in range(nframes):
+        ev.frame = f
+        image.frame = f
+        try:
+            ev.run_frame()
+        except frameval.FrameFault as exc:
+            fault = "frame %d: %s" % (f, exc)
+            break
+        ran = f + 1
+    return image, ran, fault
+
+
+def cell_classes(image):
+    """Per-cell storage class from the recorded accesses, SID cells excluded.
+
+    ``persistent`` means some frame's first access is a read with a write in an
+    earlier frame: the cell carried a value across the interrupt boundary. The
+    first-access kinds are echo-immune, since the write lands first."""
+    cls = {}
+    for a in set(image.reads) | set(image.writes):
+        if SID_LO <= a <= SID_HI:
+            continue
+        r, w = image.reads.get(a, 0), image.writes.get(a, 0)
+        if w == 0:
+            cls[a] = "data"
+        elif r == 0:
+            cls[a] = "writeonly"
+        else:
+            carried = any(
+                kind == "r" and any(wf < f for wf in image.wframes[a])
+                for f, kind in image.first[a].items()
+            )
+            cls[a] = "persistent" if carried else "framelocal"
+    return cls
+
+
+def rendered_fields(text):
+    """Rendered ``state { }`` fields as ``{name: (base cell, width)}``.
+
+    The doc's declared-field unit: only address-named fields map to cells, so
+    aliased and flag names fall out exactly as the 7.10.13 probe dropped them."""
+    out, in_state = {}, False
+    for line in text.splitlines():
+        s = line.strip()
+        if s == "state {":
+            in_state = True
+        elif in_state:
+            if s == "}":
+                break
+            name, width = s.split(":", 1)
+            try:
+                base = int(name.strip().rsplit("_", 1)[-1], 16)
+            except ValueError:
+                continue
+            out[name.strip()] = (base, 2 if width.strip() == "u16" else 1)
+    return out
+
+
+def field_cells(name, width):
+    """Cells of a ``prog.state`` entry from its canonical name, else None."""
+    m = _CELL.search(name)
+    if m is None:
+        return None
+    base = int(m.group(1), 16) + (1 if m.group(2) == "_hi" else 0)
+    return range(base, base + width)
+
+
+def field_verdict(cls, cells):
+    """One field's verdict from its cells' classes, mixed verdicts spelled out."""
+    verdicts = {cls.get(a, "untouched") for a in cells}
+    if "persistent" in verdicts:
+        return "persistent"
+    if "framelocal" in verdicts:
+        return "framelocal"
+    return "/".join(sorted(verdicts))
+
+
+def top_sites(prog):
+    """Unnamed ``st``/``asg`` access sites past $FF, split at the stack bound.
+
+    ``top`` is a G1-resolved ``addr_bits`` above $01FF, ``stack`` the $0100-
+    $01FF band; each record carries its pointer-root cells and a top store
+    carries its ``fuse_measure.wide_class`` shape."""
+    from deity_informant import frameproc
+
+    out = {"load_top": [], "load_stack": [], "store_top": [], "store_stack": []}
+
+    def record(addr, at, kind):
+        bits = frameproc.addr_bits(addr, at)
+        if bits <= 0xFF:
+            return
+        bucket = "top" if bits > 0x1FF else "stack"
+        rec = {"addr": frameproc._fmt(addr), "bits": "$%04X" % bits}
+        roots = sorted(set(fuse_measure.root_cells(addr)))
+        if roots:
+            rec["roots"] = ["$%04X" % c for c in roots]
+        if kind == "store" and bucket == "top":
+            rec["shape"] = fuse_measure.wide_class(addr)
+        out["%s_%s" % (kind, bucket)].append(rec)
+
+    def scan(n, at):
+        stack = [n]
+        while stack:
+            x = stack.pop()
+            if not isinstance(x, tuple):
+                continue
+            if x[0] == "mem":
+                if frameproc.addr_split(x[1])[0] is None and x[1] not in prog.resolved:
+                    record(x[1], at, "load")
+                stack.append(x[1])
+            elif x[0] == "op":
+                stack.extend(x[2])
+
+    def walk(stmts, outer, cyclic):
+        env = frameproc.Defs(stmts, outer, cyclic)
+        for k, s in enumerate(stmts):
+            for body in frameproc._stmt_bodies(s):
+                walk(body, (env, k), s[0] in frameproc._CYCLIC)
+            at = frameproc.DefsAt(env, k)
+            if s[0] == "st":
+                if frameproc.addr_split(s[1])[0] is None and s[1] not in prog.resolved:
+                    record(s[1], at, "store")
+                scan(s[2], at)
+                scan(s[1], at)
+            elif s[0] == "asg":
+                scan(s[2], at)
+
+    for _e, _p, _r, stmts in prog.procs:
+        walk(stmts, None, False)
+    return out
+
+
+def readback_sites(prog):
+    """Static loads of a write-only SID register: ``_widen``'s RMW emission."""
+    from deity_informant import frameproc
+
+    sites = []
+
+    def scan(n):
+        stack = [n]
+        while stack:
+            x = stack.pop()
+            if not isinstance(x, tuple):
+                continue
+            if x[0] == "mem":
+                base, _idx = frameproc.addr_split(x[1])
+                if base is None and x[1][0] == "const":
+                    base = x[1][1]
+                if base is not None and SID_LO <= base <= RB_HI:
+                    sites.append(frameproc._fmt(x))
+                stack.append(x[1])
+            elif x[0] == "op":
+                stack.extend(x[2])
+
+    def walk(stmts):
+        for s in stmts:
+            for body in frameproc._stmt_bodies(s):
+                walk(body)
+            if s[0] == "st":
+                scan(s[1])
+                scan(s[2])
+            elif s[0] == "asg":
+                scan(s[2])
+
+    for _e, _p, _r, stmts in prog.procs:
+        walk(stmts)
+    return sites
+
+
+def crossproc(prog, cells):
+    """``{cell: procedure count}`` for the cells at least two procedures touch.
+
+    Static plain named accesses only (loads and stores, both widths): an
+    indexed row access names its table, not the cell a row lands on."""
+    from deity_informant import frameproc
+    from deity_informant import grammar as G
+
+    want = set(cells)
+    per = defaultdict(set)
+
+    def scan(n, acc):
+        stack = [n]
+        while stack:
+            x = stack.pop()
+            if not isinstance(x, tuple):
+                continue
+            if x[0] == "mem":
+                base, idx = frameproc.addr_split(x[1])
+                if base is not None and idx is None:
+                    acc.update(range(base, base + x[2]))
+                stack.append(x[1])
+            elif x[0] == "op":
+                stack.extend(x[2])
+
+    def walk(stmts, acc):
+        for s in stmts:
+            for body in frameproc._stmt_bodies(s):
+                walk(body, acc)
+            if s[0] == "st":
+                base, idx = frameproc.addr_split(s[1])
+                if base is not None and idx is None:
+                    acc.update(range(base, base + G.store_width(s[2])))
+                scan(s[2], acc)
+                scan(s[1], acc)
+            elif s[0] == "asg":
+                scan(s[2], acc)
+
+    for entry, _p, _r, stmts in prog.procs:
+        acc = set()
+        walk(stmts, acc)
+        for a in acc & want:
+            per[a].add(entry)
+    return {a: len(es) for a, es in per.items() if len(es) > 1}
+
+
+def census(model, prog, nframes):
+    """One tune's storage row from an in-memory build: the testable core."""
+    from deity_informant import frameprog
+
+    image, ran, fault = evaluate(model, prog, nframes)
+    cls = cell_classes(image)
+    decl = rendered_fields(frameprog.dumps(prog))
+    decl_verdict = {n: field_verdict(cls, range(b, b + w)) for n, (b, w) in decl.items()}
+    fields = {}
+    for f in prog.state:
+        cells = field_cells(f[0], f[1])
+        fields[f[0]] = "unparsed" if cells is None else field_verdict(cls, cells)
+    by_region = defaultdict(lambda: defaultdict(int))
+    for a, c in cls.items():
+        by_region[c]["zp" if a < 0x100 else "stack" if a < 0x200 else "ram"] += 1
+    gross = {a: n for a, n in image.reads.items() if SID_LO <= a <= ECHO_HI}
+    net = {a: n - image.writes.get(a, 0) for a, n in gross.items()}
+    net = {a: n for a, n in net.items() if n > 0}
+    tops = top_sites(prog)
+    rbs = readback_sites(prog)
+    dyn, swgs = lift_residue.dyn_counts(prog.procs)
+    locals_ = sorted(a for a, c in cls.items() if c == "framelocal")
+    xp = crossproc(prog, locals_)
+    row = {
+        "frames": ran,
+        "state_fields": len(prog.state),
+        "field_verdicts": dict(Counter(fields.values())),
+        "state_decl": len(decl),
+        "decl_verdicts": dict(Counter(decl_verdict.values())),
+        "scratch": sum(1 for v in decl_verdict.values() if v in SCRATCH),
+        "persistent": sum(1 for v in decl_verdict.values() if v == "persistent"),
+        "untouched": sum(1 for v in decl_verdict.values() if v == "untouched"),
+        "decl_verdict": decl_verdict,
+        "cells_touched": len(cls),
+        "by_class_region": {c: dict(v) for c, v in by_region.items()},
+        "framelocal_cells": len(locals_),
+        "crossproc": {"$%04X" % a: n for a, n in sorted(xp.items())},
+        "top_loads": len(tops["load_top"]),
+        "stack_loads": len(tops["load_stack"]),
+        "top_stores": len(tops["store_top"]),
+        "stack_stores": len(tops["store_stack"]),
+        "top_load_sites": tops["load_top"],
+        "top_store_sites": tops["store_top"],
+        "ptr_roots": sorted({c for rec in tops["load_top"] for c in rec.get("roots", ())}),
+        "wide_classes": dict(Counter(rec["shape"] for rec in tops["store_top"])),
+        "readback_sites": len(rbs),
+        "readback": rbs,
+        "sid_gross_reads": sum(gross.values()),
+        "sid_net_reads": sum(net.values()),
+        "sid_net_regs": len(net),
+        "dyn_stmts": dyn,
+        "switch_gotos": swgs,
+    }
+    if fault is not None:
+        row["eval_fault"] = fault
+    return row
+
+
+def one(entry, frames):
+    """One tune's census row, or the exception that stopped it."""
+    try:
+        signal.alarm(_sweep.CAP_S)
+        t0 = time.monotonic()
+        model, prog, nframes = build(entry, frames)
+        row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
+        row.update(census(model, prog, nframes))
+        return row
+    except Exception as exc:  # pylint: disable=broad-except
+        return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
+    finally:
+        signal.alarm(0)
+
+
+def _totals(done):
+    """The corpus totals the plan's gates read, merged over clean rows."""
+    wide, roots = Counter(), Counter()
+    for r in done:
+        wide.update(r["wide_classes"])
+        roots.update(r["ptr_roots"])
+    return {
+        "state_decl_total": sum(r["state_decl"] for r in done),
+        "scratch_total": sum(r["scratch"] for r in done),
+        "persistent_total": sum(r["persistent"] for r in done),
+        "untouched_total": sum(r["untouched"] for r in done),
+        "tunes_zero_scratch": sum(1 for r in done if not r["scratch"]),
+        "framelocal_cell_total": sum(r["framelocal_cells"] for r in done),
+        "crossproc_cell_total": sum(len(r["crossproc"]) for r in done),
+        "top_load_total": sum(r["top_loads"] for r in done),
+        "stack_load_total": sum(r["stack_loads"] for r in done),
+        "top_store_total": sum(r["top_stores"] for r in done),
+        "stack_store_total": sum(r["stack_stores"] for r in done),
+        "wide_class_total": dict(wide),
+        "readback_site_total": sum(r["readback_sites"] for r in done),
+        "readback_tunes": sum(1 for r in done if r["readback_sites"]),
+        "sid_net_read_total": sum(r["sid_net_reads"] for r in done),
+        "dyn_stmt_total": sum(r["dyn_stmts"] for r in done),
+        "switch_goto_total": sum(r["switch_gotos"] for r in done),
+        "tunes_with_dyn": sum(1 for r in done if r["dyn_stmts"]),
+        "tunes_with_switch_goto": sum(1 for r in done if r["switch_gotos"]),
+        "eval_faults": sorted(r["tune"] for r in done if "eval_fault" in r),
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--tunes", help="comma-separated tune ids or stems; default the whole cache")
+    ap.add_argument("--frames", default="1500", help="frame cap, or 'full' (default 1500)")
+    ap.add_argument("-j", "--procs", type=int, default=32)
+    ap.add_argument("-o", "--out", default=str(ROOT / "out" / "storage_census.json"))
+    args = ap.parse_args()
+
+    frames = None if args.frames == "full" else int(args.frames)
+    tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
+    if not tunes:
+        sys.exit("no cached tune matched")
+    t0 = time.monotonic()
+    with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
+        rows = _sweep.check_rows(pool.map(partial(one, frames=frames), tunes))
+    done = [r for r in rows if "error" not in r]
+    out = {
+        "tunes": len(done),
+        "refused": [r for r in rows if "error" in r],
+        "wall_s": round(time.monotonic() - t0, 1),
+        "frames": args.frames,
+        **_totals(done),
+        "rows": rows,
+    }
+    Path(args.out).parent.mkdir(exist_ok=True)
+    Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
+    print(json.dumps({k: v for k, v in out.items() if k not in ("rows", "refused")}, indent=1))
+    print("%d refused" % len(out["refused"]))
+
+
+if __name__ == "__main__":
+    main()

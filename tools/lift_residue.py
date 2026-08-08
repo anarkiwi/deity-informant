@@ -39,7 +39,10 @@ SIGS = {
     "mod_addr": "a modular (``zp,X``) address, so no row is nameable",
     "raw_reg": "a machine register or lifter temporary in the output",
     "raw_sp": "the stack pointer survived: some procedure did not balance",
+    "sid_readback": "a load of a write-only SID register no 6502 can perform",
 }
+
+SID_WO_LO, SID_WO_HI = 0xD400, 0xD416  # the write-only span a read-back site lands on
 
 _BITS = frozenset((0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80))
 _CMP = frozenset(
@@ -103,7 +106,8 @@ def _expr_sig(n, parent):
     if n[0] == "mem":
         base, _idx = P.addr_split(n[1])
         if base is not None or n[1][0] == "const":
-            return None
+            reg = base if base is not None else n[1][1]
+            return "sid_readback" if SID_WO_LO <= reg <= SID_WO_HI else None
         got = P._index_of(n[1])
         return "mod_addr" if got is not None and got[2] else "unnamed_addr"
     if n[0] != "op":
@@ -225,6 +229,41 @@ def census(prog):
     return sites, edges
 
 
+def dyn_counts(procs):
+    """``(raw dyn-control statements, switch-goto pairs)`` over the procedures.
+
+    R8's wall class: a ``dgoto``/``igoto``-with-expr/``dcall`` no ``swg``/``swc``
+    enumerates, a ``dbr``, or a lone ``swc`` compiles to a raw dynamic jump; a
+    ``dgoto``/``igoto`` + ``swg`` pair is a switch goto over its observed set."""
+    from deity_informant import frameproc as P
+
+    dyn = swg = 0
+
+    def walk(stmts):
+        nonlocal dyn, swg
+        prev = None
+        for k, s in enumerate(stmts):
+            for body in P._stmt_bodies(s):
+                walk(body)
+            nxt = stmts[k + 1][0] if k + 1 < len(stmts) else None
+            paired = nxt in ("swg", "swc") and s[0] in ("dgoto", "igoto", "dcall")
+            if paired and nxt == "swg" and s[0] in ("dgoto", "igoto"):
+                swg += 1
+            elif s[0] in ("dgoto", "dcall") and not paired:
+                dyn += 1
+            elif s[0] == "igoto" and s[2] is not None and not paired:
+                dyn += 1
+            elif s[0] == "dbr":
+                dyn += 1
+            elif s[0] == "swc" and prev not in ("dgoto", "igoto", "dcall"):
+                dyn += 1
+            prev = s[0]
+
+    for _e, _p, _r, stmts in procs:
+        walk(stmts)
+    return dyn, swg
+
+
 def _blocking(sites, edges):
     """``upstream sig -> downstream sig -> count``: what fixing one would unblock."""
     out = defaultdict(Counter)
@@ -261,7 +300,9 @@ def one(entry):
 
 def _one(entry):
     t0 = time.monotonic()
-    sites, edges = census(build(entry))
+    prog = build(entry)
+    sites, edges = census(prog)
+    dyn, swgs = dyn_counts(prog.procs)
     skels = defaultdict(Counter)
     for s in sites:
         skels[s["sig"]][s["skel"]] += 1
@@ -269,6 +310,8 @@ def _one(entry):
         **_sweep.row_head(entry),
         "build_s": round(time.monotonic() - t0, 1),
         "sites": dict(Counter(s["sig"] for s in sites)),
+        "dyn_stmts": dyn,
+        "switch_gotos": swgs,
         "skels": {k: dict(v) for k, v in skels.items()},
         "blocking": _blocking(sites, edges),
     }
@@ -333,6 +376,11 @@ def main():
         "wall_s": round(time.monotonic() - t0, 1),
         "sites": dict(sites),
         "tunes_per_sig": dict(tune_ct),
+        "dyn_stmt_total": sum(r["dyn_stmts"] for r in done),
+        "switch_goto_total": sum(r["switch_gotos"] for r in done),
+        "tunes_with_dyn": sum(1 for r in done if r["dyn_stmts"]),
+        "tunes_with_switch_goto": sum(1 for r in done if r["switch_gotos"]),
+        "census_zero_tunes": sum(1 for r in done if not r["sites"]),
         "blocking": block,
         "skels": {k: dict(v) for k, v in skels.items()},
         "rows": rows,

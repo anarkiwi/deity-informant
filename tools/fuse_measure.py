@@ -42,6 +42,58 @@ def lane_offsets():
     return sorted(fuse)
 
 
+WIDE = (
+    "g2_boundable",  # (zext2(reg) + $00NN) whose true bound stays inside the stack
+    "ptr_writethrough",  # a store through a named pointer cell: Phase 2's population
+    "loc_unresolved",  # a bare local G1's read cannot resolve at that seat
+    "other",  # none of the named shapes
+)
+
+
+def root_cells(addr):
+    """Width-2 named reads inside an address: the pointer roots it walks.
+
+    A plain cell or indexed row read is a root at its base; a lo/hi column
+    pair packed in place (``packed_cells``) roots at the lo column."""
+    from deity_informant import frameproc
+
+    out, stack = [], [addr]
+    while stack:
+        n = stack.pop()
+        if not isinstance(n, tuple):
+            continue
+        if n[0] == "mem":
+            base, _idx = frameproc.addr_split(n[1])
+            if base is not None and n[2] == 2:
+                out.append(base)
+            stack.append(n[1])
+        elif n[0] == "op":
+            got = frameproc.packed_cells(n)
+            if got is not None:
+                out.append(got[0])
+            stack.extend(n[2])
+    return out
+
+
+def wide_class(addr):
+    """The R1 shape of a store whose reach bound exceeds the stack.
+
+    docs/register-model-lift-impl.md 0: the corpus's wide stores are three
+    shapes -- G2-boundable adds, write-through pointers, bare locals -- and
+    ``other`` names whatever falls outside them rather than absorbing it."""
+    from deity_informant import frameproc
+
+    if frameproc.is_op(addr, "INT_ADD", arity=2):
+        for a, b in frameproc.commuted(addr[2]):
+            if b[0] == "const" and frameproc.is_op(a, "INT_ZEXT", 2) and 0xFF + b[1] <= 0x1FF:
+                return "g2_boundable"
+    if root_cells(addr):
+        return "ptr_writethrough"
+    if addr[0] == "loc":
+        return "loc_unresolved"
+    return "other"
+
+
 def _may_reach_sid(addr, env):
     """True where an address the emitter cannot name may still land on a register.
 
@@ -135,6 +187,7 @@ def one(entry):
 
 def _one(entry):
     from deity_informant import framefuse
+    from deity_informant import frameproc
     from deity_informant import frameprog
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
@@ -148,9 +201,14 @@ def _one(entry):
     row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
     row.update({k: 0 for k in BYTE})
     row["aligned"] = row["word_plain"] = row["unnamed_ruled_out"] = row["unnamed_as_written"] = 0
+    row["wide_stores"], row["wide_classes"] = 0, {}
     idx_lane = 0
     for width, addr, base, indexed, named, env in _stores(prog):
         if base is None:
+            if not named and frameproc.addr_bits(addr, env) > 0x1FF:
+                row["wide_stores"] += 1
+                shape = wide_class(addr)
+                row["wide_classes"][shape] = row["wide_classes"].get(shape, 0) + 1
             if width == 1 and not named:
                 row["unnamed" if _may_reach_sid(addr, env) else "unnamed_ruled_out"] += 1
                 row["unnamed_as_written"] += _may_reach_sid(addr, None)
@@ -190,14 +248,22 @@ def main():
     with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
         rows = _sweep.check_rows(pool.map(one, tunes))
     done = [r for r in rows if "error" not in r]
-    total = {k: sum(r[k] for r in done) for k in done[0] if k not in ("tune", "name")}
+    skip = ("tune", "name", "wide_classes")
+    total = {k: sum(r[k] for r in done) for k in done[0] if k not in skip}
     assert total["byte_total"] == sum(total[k] for k in BYTE)
+    wide_hist = {}
+    for r in done:
+        for k, v in r["wide_classes"].items():
+            wide_hist[k] = wide_hist.get(k, 0) + v
     out = {
         "tunes": len(done),
         "refused": [r for r in rows if "error" in r],
         "wall_s": round(time.monotonic() - t0, 1),
         "lane_offsets": ["$%02X" % r for r in lane_offsets()],
         "of_registers": NREG,
+        "wide_store_total": total["wide_stores"],
+        "tunes_with_wide_stores": sum(1 for r in done if r["wide_stores"]),
+        "wide_class_total": wide_hist,
         "total": total,
         "rows": rows,
     }
