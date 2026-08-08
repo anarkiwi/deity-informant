@@ -7,14 +7,17 @@ buffer per frame and flush through the single projection ``framelog.canonical``.
 
 from __future__ import annotations
 
+from . import datadecl
 from . import expr as E
 from . import framefuse
 from . import framelog
 from . import frameproc
 from . import frameprog
 from . import grammar as G
+from . import ptrcert
 from . import sidprog
 from . import structured as C
+from .render import name_addr
 
 _GUARD = 8_000_000
 _REG_INIT = {frameproc._reg_local(i): (0xFF if i == 3 else 0) for i in range(16)}
@@ -22,6 +25,104 @@ _REG_INIT = {frameproc._reg_local(i): (0xFF if i == 3 else 0) for i in range(16)
 
 class FrameFault(RuntimeError):
     """The frame program left its guarded envelope (fault, never improvise)."""
+
+
+# ---- the extent guard: an annotated web derefs inside its own blocks ------------
+def _merge(spans):
+    """The same bytes as ``spans``, as ascending disjoint half-open ranges."""
+    out = []
+    for lo, hi in sorted(spans):
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def _blocks(bases, regions):
+    """The bytes an extent's blocks cover; a base the registry omits admits none."""
+    out = []
+    for b in bases:
+        at = regions.at(b)
+        if at is not None:
+            out.append((at[0]["base"], at[0]["base"] + at[0]["size"]))
+    return _merge(out)
+
+
+def _inside(spans, c):
+    return any(lo <= c < hi for lo, hi in spans)
+
+
+def _outside(a, width, spans, who):
+    """The fault an access raises, named at the first byte its extent does not cover."""
+    first = next((c for c in range(a, a + width) if not _inside(spans, c)), a)
+    return "extent $%04X outside %s" % (first, who)
+
+
+class Extent:
+    """The extent guard at the two address seats (register-model-lift 2b).
+
+    Every byte of an access through an annotated web must land in that web's blocks;
+    attribution is static and per site (``ptrcert.root_cells``, as ``ptrextent.Probe``
+    charges by), so an unspelled site keeps its own closure. The check is at the use."""
+
+    __slots__ = ("spans", "sites")
+
+    def __init__(self, prog):
+        regions = datadecl.Regions(prog.data_decls)
+        self.spans = {
+            c: _blocks(bs, regions) for c, bs in (getattr(prog, "extents", None) or {}).items()
+        }
+        self.sites = 0
+
+    def __call__(self, addr, f, width):
+        """``f`` guarded by the extent this site's own roots name, else ``f`` itself.
+
+        Every byte of the access is checked, so a word at a block's last cell reads one
+        past it and faults; the union over roots never over-faults, an address two
+        annotated webs both spelled being inside where either one declares it."""
+        roots = sorted({c for c in ptrcert.root_cells(addr) if c in self.spans})
+        if not roots:
+            return f
+        self.sites += 1
+        spans = _merge(s for c in roots for s in self.spans[c])
+        who = ", ".join(name_addr(c) for c in roots)
+        if len(spans) == 1:
+            lo, top = spans[0][0], spans[0][1] - width + 1
+
+            def one(r, m, rd):
+                a = f(r, m, rd)
+                if lo <= a < top:
+                    return a
+                raise FrameFault(_outside(a, width, spans, who))
+
+            return one
+
+        def many(r, m, rd):
+            a = f(r, m, rd)
+            for c in range(a, a + width):
+                if not _inside(spans, c):
+                    raise FrameFault(_outside(a, width, spans, who))
+            return a
+
+        return many
+
+
+def _guard(prog):
+    """The guard a program's own annotations ask for: none where it declares none."""
+    return Extent(prog) if getattr(prog, "extents", None) else None
+
+
+def _seat(probe, check):
+    """The one address wrapper a seat carries, b0's observer ahead of 2b's guard.
+
+    The probe sees the address first, so a census run under both instruments records
+    what it faulted on: an address observed and then refused is what names the gap."""
+    if probe is None:
+        return check
+    if check is None:
+        return probe
+    return lambda n, f, w: check(n, probe(n, f, w), w)
 
 
 # ---- expressions: closures over (locals, state image, volatile reader) ----------
@@ -91,8 +192,8 @@ def _taint(n):
 def _expr(n, slot, probe=None):
     """Closure ``(r, m, rd) -> value`` for one frameprog expression node.
 
-    ``probe`` is the read-only address observer Phase 2b (b0) records observed
-    extents with: it sees each computed address node once, at compile time, and
+    ``probe`` is the address-seat wrapper -- b0's read-only observer, 2b's extent
+    guard, or both: it sees each computed address node once, at compile time, and
     hands back the address closure it wants called. ``None`` builds today's."""
     k = n[0]
     if k == "const":
@@ -124,7 +225,7 @@ class _Code:
 
     def __init__(self, prog, watch=(), pin=None, probe=None):
         self.mem0 = prog.mem0
-        self.probe = probe
+        self.probe = _seat(probe, _guard(prog))  # both seats carry the same wrapper
         self.pin = dict(getattr(prog, "pinned", ()) if pin is None else pin)
         self.watch = {id(s): i for i, s in enumerate(watch)}
         self.tagged = set()
@@ -186,7 +287,7 @@ class _Code:
         return _expr(n, self.slot, self.probe)
 
     def addr(self, n, sz):
-        """A store's address closure, probed: a write-through deref is one too."""
+        """A store's address closure, wrapped: a write-through deref is one too."""
         f = self.expr(n)
         return f if self.probe is None else self.probe(n, f, sz)
 

@@ -1,12 +1,16 @@
 # register-model-lift: implementation plan (phased, evidence-based)
 
-Status: in execution. Phases 0, 1, 2a and **2b's analysis half (b0, b1, b5)**
-are DONE — each carries its landed record and before/after table in its own
-section; 2b's rewrite half (b2–b4), 2c and 3 are the next candidates (2c and 3
-are dependents of 2a's bounds only, so they need not wait on rung (g)). 2b's
-measured work list is **308 webs / 1,782 ⊤ loads over 158 tunes**, and its
-largest blocker is not the soundness premise but the declared registry's
-coverage of what the pointers walk (§2 2b). The plan was
+Status: in execution. Phases 0, 1, 2a and **2b (b0–b2, b4, b5)** are DONE —
+each carries its landed record and before/after table in its own section; b3,
+2c and 3 are the next candidates (2c and 3 are dependents of 2a's bounds only).
+2b's rewrite rung lifted **251 of its 325-web work list, over 116 tunes,
+retiring 1,000 ⊤ loads**, and the whole 74-web residue is one class:
+`web_unnamed`, the pair rung (d) declined to fuse. Two of the plan's premises
+turn out to be that same rung (d) condition counted twice, so the phase's
+remaining yield is owned by rung (d)'s read-side rule and not by anything 2b
+can relax (§2 2b). Its other standing blocker is the declared registry's
+coverage of what the pointers walk — `extent_unmappable`, 418 webs, b3's to
+answer. The plan was
 de-risked against seven family-representative tunes and one corpus-wide sweep
 before any phase started. Each phase is mechanical (a committed instrument
 produces its work list), bounded (a refusal vocabulary names what it will not
@@ -1037,6 +1041,150 @@ with the position-blind taint fallback and the same `_stores_into` width filter 
 so `web_opaque`'s 152 webs and the 88 direct `opaque` definitions remain ledgered
 precision items rather than design questions.
 
+##### 2b rewrite half (b2, b4) — DONE, 251 of 325 webs
+
+**Landed**: `deity_informant/ptrlift.py` (rung (g), after rung (f) at
+`frameprog.py:455`) — per web, b1's eligibility ∧ b0's mapped extent, the deref
+sites named and the blocks attached — plus the `in` clause as one grammar
+production (`sidprog.lark:57,59`, reader at `grammar.py:472/478/963`,
+`FrameProgram.extents` as a side map keyed `{cell: (base, ...)}`, emitted by
+`_field_line`), `frameval.Extent` (b4's guard, wrapped at the same two address
+seats `ptrextent.Probe` uses, observer ahead of guard), `frameprog.program(model,
+extents=None)`, `--lift-extents` on `storage_census` and the build side of
+`gate_sweep --extents`, and 26 hermetic tests across `tests/test_frameprog.py`,
+`tests/test_frameval_extent.py` and `tests/test_ptrlift.py`.
+
+*Two departures from the spec above, both forced and both narrowing.* First,
+**the deref spells `*ptr_0021[y]`, not `ptr_0021[y]`**: `NAME[expr]` already means
+row-of-the-block-at-NAME (`sidprog.lark:143`), and rung (f) already emits `*ptr[i]`
+for this exact shape, so the plan's spelling would have needed the reader to
+consult a declaration elsewhere before falling back to the table rule — one
+surface syntax, two meanings, with the canonical fixpoint as the thing that
+breaks. Reusing rung (f)'s form costs **one** grammar production instead of two
+and makes rung (g) *naming-only*: trees and values are untouched, so Gate FP
+cannot move and every 2a/b1 number keeps reproducing. Second, **the extent is
+read from b0's artifact at build time**, because an extent is an evaluated
+observation and no static derivation exists before b3 — a build without the
+artifact emits today's spelling, byte for byte. That is the observed-primary
+discipline made structural: an emitted program is now a function of a recorded
+trace as well as of the binary.
+
+*The precondition, discharged first.* b0's artifact was re-recorded at
+`--frames full` (median horizon 6,050 frames, max 32,250, 577 of 624 over 1,500,
+no tune's horizon shrank), which is what §3's full-length review gate needs. The
+extents widen with the horizon exactly as predicted, and the work list moves with
+them: **308 -> 325 webs, 1,782 -> 2,061 ⊤ loads, 158 -> 161 tunes**, declared
+blocks 1,276 -> 2,332. `web_alias` stays **287** at both horizons — the one
+premise doing soundness work is horizon-independent, which is the check that the
+widening is observation and not drift.
+
+**The corpus, before and after the rewrite** (`storage_census --frames full`, 624
+tunes, 0 build errors either side; before = the artifact recorded, rung (g) idle):
+
+| | before | after |
+|---|---:|---:|
+| pointer webs the emitted text derefs | 1,079 | **828** |
+| ⊤ loads on them | 7,236 | **6,236** |
+| ⊤ loads, all sites | 7,296 | **6,296** |
+| b1 eligible / its ⊤ loads | 546 / 2,914 | 294 / 1,912 |
+| b0 extent-mapped | 661 | 410 |
+| **b5 work list** (webs / loads / tunes) | **325 / 2,061 / 161** | **74 / 1,061 / 52** |
+| `state { }` declared / scratch / persistent / untouched | 18,101 / 9,152 / 8,325 / 624 | **identical** |
+| `sid_readback` sites, dyn stmts, `switch goto` | 1,048 / 44 / 198 | **identical** |
+| ⊤ stores, stack loads, stack stores | 105 / 806 / 661 | **identical** |
+| evaluation faults | the two standing | **the two standing** |
+
+**251 webs lift** (77.2% of 325), over **116 of 161 tunes**, renaming **729 deref
+sites** and emitting 251 `in` clauses; 1,000 ⊤ loads leave the census. The
+residual work list — 74 webs, 1,061 ⊤ loads, 52 tunes — *is* the refusal
+population field for field, which is the rewrite certifying its own accounting.
+The state rows not moving is the naming-only property paying its way: Phase 3's
+input is untouched by this phase. `low_held` moved 71 -> 72, one web, the only
+ledger movement not predicted by the rule.
+
+**Four corrections the corpus forces on the plan.**
+
+1. **The whole 74-web gap is one class, `web_unnamed`, and it is rung (d)'s
+   refusal read back.** Every one of the 74 has its pair still declared as two
+   `u8` fields (`ptr_0021_lo`/`ptr_0021_hi`), and the `in` clause rides a scalar
+   `u16` field. Rung (d) refuses 68 of them on `lone-half read(s)` (164 reads) and
+   6 on `unpaired half store(s)` (17 stores); the other three premises refuse
+   none. It is **not** a Follin quirk — 46 of the 74 over 42 tunes are elsewhere.
+2. **b1 (ii) and `web_unnamed` are the same condition counted twice.** All 135
+   webs carrying a `computed` lone byte lane are *also* `web_unnamed` — 100%, at
+   both horizons. A lone byte lane survives *because* rung (d) refused the pair,
+   and rung (d) refusing is exactly why no `u16` field exists to name. So
+   relaxing (ii) cannot move one web to rung (g): admitting all 272 such
+   definitions makes 41 webs newly eligible and yields **net zero** rung-(g)
+   targets. The ledger's `def_unliftable` and `web_unnamed` are not independent
+   premises, and any yield read off their sum is double-counted.
+3. **The seven-tune work-list row stands; the lift on it does not.** b5's
+   `at --frames full` row (Ghouls 3, Agent_X_II 3) is the *work list* and
+   reproduces exactly. Both tunes then lift **0 of 3**, because all six pairs are
+   unfused. The review set is therefore silent on the rewrite, and 2b's evidence
+   is the corpus.
+4. **The census gate cannot be evaluated with the committed instruments.**
+   `lift_residue._expr_sig` (`tools/lift_residue.py:105-112`) classifies a `mem`
+   node from `addr_split` alone and never consults `prog.resolved`, so rung (f)'s
+   **633** already-named sites over 164 tunes are *still* counted `unnamed_addr`
+   today, and rung (g)'s 729 would be too; `lift_residue` also has no way to take
+   the artifact, so it builds unlifted. "census `unnamed_addr` down by the
+   rewritten deref count" is therefore unmeasured, not met — see Not done.
+
+**What the 74 actually are** (five 6502 idioms, disassembled; the shredder now
+carries one fixture per idiom, §5.4):
+
+| idiom | webs | tunes | why rung (d) refuses |
+|---|---:|---:|---|
+| pointer spilled to the hardware stack (`PHA`/`PLA`) | 15 | 15 | no 16-bit push, and the stack descends, so hi lands at the *lower* address — no `hi<<8\|lo` pack can exist. Rung (d2) emits no site at all |
+| ADC carry chain, both lanes emitted | 29 | 12 | rung (d2) lifts one site per lane pair per statement list; the destination that loses the word keeps two byte stores whose lane values are then named byte-wise |
+| ADC carry chain, carry arm `unobserved` | 12 | 10 | the hi lane is in the code but not the text, so nothing pairs with the lo store |
+| spill/reload through a split lo/hi table | 8 | 8 | the save-back destination is de-interleaved (columns 2–3 bytes apart), so those two stores can never be a pair |
+| genuinely byte-wise | 8 | 8 | **correct refusals** — 3 non-pointer roles (a pair time-shared as a 16-bit division accumulator; a lo cell borrowed as byte scratch) and 5 in-page-only advances with no carry arm at all |
+
+The discriminator is **not** the second destination and **not** the interleaving
+— a fixture whose pair stores keep normal adjacency still refuses, and one whose
+copy reads the already-fused word still fuses. It is whether any byte-lane *read*
+of the pair survives rung (d2), which `framefuse.refusal()` (`framefuse.py:400`)
+then reads as refusing the whole tune-wide declaration even where an equal word
+read stands beside it. Across all 164 refused reads the parent ops are 130 bare
+copies, 33 `INT_ADD` and one `INT_ADD∘INT_ZEXT`, and the sinks are `asg` (96) and
+`st` (70) — **zero `if` conditions**, so not one of them is the page-alignment
+test or end-of-block compare the refusal exists to protect. Scope, measured: a
+fix keyed on "the word form is proven elsewhere" clears at most 45 of 68 and
+reaches **none** of the 15-web stack group; one keyed on the merge premises
+reaches 66, and the remaining 8 must stay refused.
+
+**Gates.**
+
+| gate | result |
+|---|---|
+| emitted text byte-identical with no artifact (sha256 per tune) | **10 / 10 tunes identical**; state/scratch/persistent rows identical corpus-wide |
+| canonical fixpoint `dumps(loads(t)) == t`, lifted | **624 / 624**, 0 build errors |
+| full suite | **2,451 passed, 490 skipped, 18 xfailed** (was 2,435 / 490 / 8) |
+| `gate_sweep --frames 300 --extents` (build-live) | **622 clean / 623 built**, diverged `Rambo` only, refused `C64_World` — the pre-change baseline exactly |
+| **zero `extent` faults in any gate run** | **held**; `outran_horizon: []`, and `eval_faults` is the two standing tunes on both sides |
+| Gate FP, six lifted tunes, full length (3,350–27,600 frames) | **6 / 6 clean** |
+| b4 evaluator cost | structurally zero unannotated (no guard object is built); ~**1.06×** on a micro-fixture where the guarded deref dominates — inside the 2× budget |
+| §3's per-tune census sum | **not evaluated** — see correction 4 |
+
+**Not done, and why.** b3 is untouched: `extent_mutable` is unimplemented and the
+static extent fixpoint — the only proposal that widens the annotation past what
+one run observed — is still the answer to `extent_unmappable`'s 418 webs. The
+four standing Phase 2 fixtures stay `xfail(strict=True)`: `_lift` passes no
+artifact, so none can flip, and of the four only `cursor_save` would pass if it
+did — `pointer_walk` and `mux_pair` refuse `web_unnamed`, and `writethrough`'s
+store roots at a declared lo/hi *table* rather than a state field and is not rung
+(f)'s deref shape at all. The write-through class still reaches the work list at
+**zero** sites. `lift_residue` needs the `resolved` form and an artifact input
+before correction 4's gate can be read, and teaching it will move rung (f)'s 633
+pre-existing sites in the same change — an instrument-attributable movement that
+must be reported apart from the rewrite's own. Two precision items the sweep
+named, both small and both real: `ptrcert._advance` should look through `_lane`
+(2 definitions, spelled `trunc1((pair + k):2)`, an in-page lo advance), and
+`_reload`/`frameptr._leg` should look through a pack-and-mask (3 definitions over
+three Slaygon tunes, where re-asking `_reload` on the stripped leg succeeds).
+
 #### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
 
 Phase 1's review finding made a phase: two thirds of the surviving `raw_sp` class is
@@ -1403,6 +1551,38 @@ otherwise only catch at 624-tune cost).
 | `init_livein` | **invariant** | frame 0 reads init's value: the init/state0 coupling holds |
 | `sp_unbalanced` | **invariant** | an unproven stack effect keeps `sp` and its stack-page identity |
 
+2b's rewrite half added thirteen more, and they are a different instrument from
+the eight above: where those pin *a phase's promise*, these pin *why a promise
+is not met* — one fixture per 6502 idiom behind the `web_unnamed` residue, so
+the 74-web class is readable at suite cost instead of at 624-tune cost. Two are
+controls that fuse today and must keep fusing; one is an invariant that must
+**never** fuse.
+
+| fixture | kind | pins |
+|---|---|---|
+| `plain_advance` | **control** | a bare in-place advance fuses, and rung (g) resolves it — the baseline the family is measured against |
+| `dual_store_word_copy` | **control** | a second destination is no refusal where every lane read folds to a word |
+| `dual_store_advance` | xfail 2b | the Follin idiom: per lane a save copy, then the pair in place |
+| `dual_store_pair_first` | xfail 2b | store order within a lane does not free the pair |
+| `dual_store_via_regs` | xfail 2b | pair stores kept adjacent still refuse — interleaving is not the discriminator |
+| `dual_store_hi_first` | xfail 2b | hi lane first; rung (d2) refuses outright on an intervening operand change |
+| `dual_store_computed` | xfail 2b | a cell-stepped advance behaves as an immediate one |
+| `dual_store_lo_only` | xfail 2b | one lane's copy: refuses `def_unliftable`, a rule gap the corpus never exhibits |
+| `stack_spill_cursor` | xfail 2b | `PHA`/`PLA` spill — rung (d2) emits no site, so no word form exists to appeal to |
+| `deferred_carry_cursor` | xfail 2b | the carry arm never ran, so the hi lane is in the code and not the text |
+| `table_spill_cursor` | xfail 2b | a de-interleaved save-back destination: the pair store already merged, and it still refuses |
+| `unpaired_half_store` | xfail 2b | the only fixture reaching `unpaired half store(s)`; `refusal()` reports first-failure-only, so the class is otherwise invisible |
+| `inpage_advance` | **invariant** | a bare-`INC` in-page advance is **never** fused — fusing carries on a wrap the machine does not |
+
+The set was built to test a causal claim and refuted it, which is the reason to
+keep it: the first hypothesis was that a dual-destination store breaks the pair
+by interleaving, and `dual_store_via_regs` (adjacent, still refuses) against
+`dual_store_word_copy` (a second destination, fuses) killed it in one pair of
+fixtures. What discriminates is whether any byte-lane *read* survives rung (d2).
+`unpaired_half_store` carries one web of each verdict in the same procedure —
+its fetch cursor fuses and rung (g) resolves it with a two-block extent while
+the walked pair refuses beside it — so it pins the granularity as the web.
+
 Writing it measured the ladder once more, and honestly in its favour: the
 first drafts of `pointer_walk` (pure advance) and `borrow_chain` (lane-paired
 SBC) **XPASSed immediately** — framemath already coalesces a pure-advance
@@ -1535,3 +1715,34 @@ the table that widens the annotation past what one run observed — and Phase 6'
 value-set walker now has a second customer, since the `foreign` half of the
 unmappable addresses (39,068 of 78,510) is exactly "where can this pointer
 point" asked at the block level.
+
+**Post-2b-rewrite finding (2026-08-08): the phase's remaining yield is not
+2b's to release, and the refusal ledger was double-counting.** Rung (g) landed
+and lifted 251 of 325 webs; the record is in §2 2b. Three findings the rewrite
+forced, in descending order of how much they change the plan:
+
+- **`def_unliftable` and `web_unnamed` are the same rung (d) condition read
+  twice.** All 135 webs carrying a `computed` lone byte lane are also
+  `web_unnamed`, at both horizons — a lone lane survives *because* rung (d)
+  refused the pair, which is exactly why no `u16` field exists to name.
+  Admitting every one of those 272 definitions makes 41 webs eligible and
+  yields **net zero** rung-(g) targets. b1's premise table (§2 2b) counts them
+  as independent columns; they are not, and any yield read off their sum is
+  inflated. The same caution applies wherever this plan sums a refusal ledger.
+- **The lever is rung (d)'s read-side rule, and it is not the rule the plan
+  named.** §2 2b's correction 3 said "strengthening rung (d) is what moves
+  it" and located the defect in the `computed` lone-lane *definition*. The
+  disassembly says otherwise: rung (d2) lifts one site per lane pair per
+  statement list, the destination that loses the word keeps two byte stores,
+  and `framefuse.refusal()` reads one surviving byte-lane read as refusing the
+  whole tune-wide declaration even where an equal word read stands beside it.
+  Fixing the def side buys nothing; relaxing the merge premises reaches 66 of
+  the 74, and **8 must stay refused** — they are genuinely byte-wise, and
+  `inpage_advance` is now the invariant that says so.
+- **A gate the instruments cannot read is not a gate that held.** The census
+  `unnamed_addr` obligation is unmeasured, because `lift_residue` neither
+  consults `prog.resolved` nor accepts the extent artifact. It is recorded as
+  unmeasured rather than waived, and discharging it will move rung (f)'s 633
+  pre-existing sites at the same time — a movement that must be reported apart
+  from the rewrite's own, or the next phase inherits a baseline nobody can
+  attribute.

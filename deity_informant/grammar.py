@@ -314,6 +314,7 @@ class Document:
         self.state = []
         self.inputs = []
         self.resolved = {}  # rung (f): deref address -> (pointer cell, index or None)
+        self.extents = {}  # 2b: pointer cell -> the declared block bases its derefs land in
         self.labels = set()
         self.procs = []  # sidprog: [(entry, seq Region)]
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
@@ -468,13 +469,22 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def array(self, c):
         return True
 
+    def statext(self, c):
+        return [str(t) for t in c]
+
     def statobs(self, c):
         return [_hexval(t) for t in c]
 
     def statedef(self, c):
-        if str(c[1]) not in ("u8", "u16"):
-            raise ValueError("unknown state type %r" % str(c[1]))
-        self.doc.state.append((str(c[0]), int(str(c[1])[1:]) // 8, c[2] is not None, c[3] or []))
+        """A block extent is a pointer's, so it is a scalar u16 field's alone."""
+        name, kind = str(c[0]), str(c[1])
+        if kind not in ("u8", "u16"):
+            raise ValueError("unknown state type %r" % kind)
+        if c[3] and (kind != "u16" or c[2] is not None):
+            raise ValueError("state field %s: a block extent is a u16 field's" % name)
+        self.doc.state.append((name, int(kind[1:]) // 8, c[2] is not None, c[4] or []))
+        if c[3]:
+            self.doc.extents[name] = c[3]
 
     # -- expressions -----------------------------------------------------------
     def e_hex(self, c):
@@ -584,12 +594,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             return ("mem", ("const", addr, 2), 1)
         return ("reg", reg_index(name))
 
+    def _cell(self, name):
+        """The cell a section names, an alias resolving to the cell it stands for."""
+        return req_name(self.rev.get(name, name))
+
     def _index_addr(self, base, idx):
         """``base + zext2(idx)``: the declared-base indexed access, any index expression.
 
         A byte index widens; one already a word -- the ``sid.reg`` view carries
         its offset inside the index at word width -- rides as written."""
-        addr = req_name(self.rev.get(base, base))
+        addr = self._cell(base)
         if not (idx[0] == "op" and idx[3] == 2) and not (
             idx[0] in ("mem", "const") and idx[2] == 2
         ):
@@ -601,7 +615,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         name = self.rev.get(base, base)
         for d in self.doc.data_decls:
             if d["base"] == name and d["role"] and d["role"][0] == "lo":
-                return req_name(self.rev.get(d["role"][1], d["role"][1]))
+                return self._cell(d["role"][1])
         return None
 
     def _pair_addrs(self, base, idx):
@@ -616,7 +630,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         """``ptr [+ zext2(idx)]``: rung (f)'s resolved deref, the pointer read as a word."""
         if not self._frame():
             raise ValueError("a pointer deref is a frameprog form")
-        cell = req_name(self.rev.get(base, base))
+        cell = self._cell(base)
         word = ("mem", ("const", cell, 2), 2)
         addr = word if idx is None else ("op", "INT_ADD", (word, ("op", "INT_ZEXT", (idx,), 2)), 2)
         self.doc.resolved[addr] = (cell, idx)
@@ -785,7 +799,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return [Region("switch", ("code[$%04X]" % pc, cases), [pc])]
 
     def opsw_cell(self, c):
-        addr = req_name(self.rev.get(str(c[1]), str(c[1])))
+        addr = self._cell(str(c[1]))
         out = [("label", c[0][1])] if c[0] is not None else []
         return out + [("opsw", addr, [("$%02X" % op, body) for op, body in c[2:]])]
 
@@ -946,13 +960,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def _finish(self):
         doc = self.doc
+        doc.extents = {
+            self._cell(n): tuple(sorted(self._cell(b) for b in bs)) for n, bs in doc.extents.items()
+        }
         for d in doc.data_decls:
-            d["base"] = req_name(self.rev.get(d["base"], d["base"]))
-            d["cobases"] = [req_name(self.rev.get(n, n)) for n in d["cobases"]]
+            d["base"] = self._cell(d["base"])
+            d["cobases"] = [self._cell(n) for n in d["cobases"]]
             if d["role"] is not None:
-                d["role"] = (d["role"][0], req_name(self.rev.get(d["role"][1], d["role"][1])))
+                d["role"] = (d["role"][0], self._cell(d["role"][1]))
             if d["via"] is not None:
-                d["via"] = req_name(self.rev.get(d["via"], d["via"]))
+                d["via"] = self._cell(d["via"])
             if len(d["data"]) != d["size"]:
                 raise ValueError(
                     "data region %s[%d] carries %d bytes"

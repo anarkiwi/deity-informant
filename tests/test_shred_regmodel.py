@@ -20,6 +20,7 @@ TGT = G.CNT + 0x24  # a 16-bit threshold pair
 POS = G.CNT + 0x26  # a persistent position cell (the pos_54EC shape)
 MODE = G.CNT + 0x28  # a per-tune phase toggle
 SAV = G.CNT + 0x2A  # cursor save cell pair (the Follin loop-cell shape)
+FTC = G.PTR + 2  # a second zero-page pair: the fetch cursor half stores arrive through
 PAT = G.TBL + 0x100  # sequence data block the zero-page pointer walks
 PAT2 = G.TBL + 0x160  # second sequence block (cursor save/restore target)
 BLK = G.TBL + 0x180  # RAM block a pointer stores through
@@ -262,6 +263,190 @@ def _writethrough():
     return a, data, 8
 
 
+def _cursor():
+    """A cursor fixture's opening: deref the pair to the SID, so the web is genuine.
+
+    Rung (d2) lifts one site per lane pair per statement list, so the word reaches
+    exactly one of a dual-destination advance's two stores; the loser keeps two byte
+    stores whose lane values are then named byte-wise. Which one loses is immaterial."""
+    a = G.Asm(G.ORG)
+    a.i("LDY", "imm", 0x00).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    return a
+
+
+def _cursor_data(*cells):
+    """The seed a cursor fixture walks: the pair aimed at ``PAT``, ``cells`` at zero."""
+    data = {G.PTR: PAT & 0xFF, G.PTR + 1: PAT >> 8}
+    data.update({PAT + k: 0x40 | (k & 0x1F) for k in range(0x40)})
+    data.update({c: 0 for c in cells})
+    return data
+
+
+def _plain_advance():
+    """Phase 2 (control): a bare in-place advance, no second destination at all."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.i("RTS")
+    return a, _cursor_data(), 8
+
+
+def _dual_store_advance():
+    """Phase 2: the Ghouls advance - per lane a save copy, then the pair in place."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
+    a.i("STA", "abs", SAV).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00)
+    a.i("STA", "abs", SAV + 1).i("STA", "zp", G.PTR + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1), 8
+
+
+def _dual_store_pair_first():
+    """Phase 2: the same advance with the pair store leading its lane's save copy."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
+    a.i("STA", "zp", G.PTR).i("STA", "abs", SAV)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00)
+    a.i("STA", "zp", G.PTR + 1).i("STA", "abs", SAV + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1), 8
+
+
+def _dual_store_via_regs():
+    """Phase 2: the save copies deferred through X/Y, so the pair stores stay adjacent."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("TAX").i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("TAY").i("STA", "zp", G.PTR + 1)
+    a.i("STX", "abs", SAV).i("STY", "abs", SAV + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1), 8
+
+
+def _dual_store_hi_first():
+    """Phase 2: the dual-destination advance with the hi lane stored before the lo."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("TAX")
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00)
+    a.i("STA", "abs", SAV + 1).i("STA", "zp", G.PTR + 1)
+    a.i("TXA").i("STA", "abs", SAV).i("STA", "zp", G.PTR)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1), 8
+
+
+def _dual_store_computed():
+    """Phase 2: the dual-destination advance stepping by a cell, not an immediate."""
+    a = _cursor()
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("AND", "imm", 0x03)
+    a.i("STA", "abs", CTR)
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "abs", CTR)
+    a.i("STA", "abs", SAV).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00)
+    a.i("STA", "abs", SAV + 1).i("STA", "zp", G.PTR + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1, CTR), 8
+
+
+def _dual_store_lo_only():
+    """Phase 2: the save copy taken off the lo lane only, so one lane stays paired."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
+    a.i("STA", "abs", SAV).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV), 8
+
+
+def _dual_store_word_copy():
+    """Phase 2: a second destination fed by a plain advance, copied lane by lane."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "zp", G.PTR).i("STA", "abs", SAV)
+    a.i("LDA", "zp", G.PTR + 1).i("STA", "abs", SAV + 1)
+    a.i("RTS")
+    return a, _cursor_data(SAV, SAV + 1), 8
+
+
+def _stack_spill_cursor():
+    """Phase 2 (A): the cursor pushed a lane at a time, so no word form exists at all.
+
+    The 6502 has no 16-bit push and the stack descends, so the hi half lands at the
+    lower address: nothing packs. The hi-first restore pair still merges."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "zp", G.PTR).i("PHA").i("LDA", "zp", G.PTR + 1).i("PHA")
+    a.i("LDX", "abs", CTR)
+    a.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
+    a.i("LDA", "absx", G.TBL + 2).i("STA", "zp", G.PTR + 1)
+    a.i("LDY", "imm", 0x01).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    a.i("PLA").i("STA", "zp", G.PTR + 1).i("PLA").i("STA", "zp", G.PTR)
+    a.i("LDA", "abs", CTR).i("EOR", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("RTS")
+    data = _cursor_data(CTR)
+    data.update({G.TBL: PAT & 0xFF, G.TBL + 1: (PAT + 8) & 0xFF})
+    data.update({G.TBL + 2: PAT >> 8, G.TBL + 3: (PAT + 8) >> 8})
+    return a, data, 8
+
+
+def _deferred_carry_cursor():
+    """Phase 2 (B2): an INC/BNE/INC advance whose carry arm the run never enters."""
+    a = G.Asm(G.ORG)
+    a.i("INC", "zp", G.PTR).i("BNE", "rel", ("L", "skip"))
+    a.i("INC", "zp", G.PTR + 1)
+    a.label("skip")
+    a.i("LDY", "imm", 0x00).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    a.i("RTS")
+    return a, _cursor_data(), 8
+
+
+def _table_spill_cursor():
+    """Phase 2 (C): the cursor reloaded from and saved back to a split lo/hi table."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "abs", CTR)
+    a.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
+    a.i("LDA", "absx", G.TBL + 2).i("STA", "zp", G.PTR + 1)
+    a.i("LDY", "imm", 0x00).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "zp", G.PTR).i("STA", "absx", G.TBL)
+    a.i("LDA", "zp", G.PTR + 1).i("STA", "absx", G.TBL + 2)
+    a.i("LDA", "abs", CTR).i("EOR", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("RTS")
+    data = _cursor_data(CTR)
+    data.update({G.TBL: PAT & 0xFF, G.TBL + 1: (PAT + 0x10) & 0xFF})
+    data.update({G.TBL + 2: PAT >> 8, G.TBL + 3: (PAT + 0x10) >> 8})
+    return a, data, 8
+
+
+def _inpage_advance():
+    """Phase 2 (E): a bare INC advance with no carry arm - fusing it would be wrong."""
+    a = _cursor()
+    a.i("INC", "zp", G.PTR).i("INC", "zp", G.PTR).i("INC", "zp", G.PTR)
+    a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", PAT >> 8).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "imm", PAT & 0xFF).i("STA", "zp", G.PTR)
+    a.label("out")
+    a.i("LDA", "abs", MODE).i("EOR", "imm", 0x01).i("STA", "abs", MODE)
+    a.i("RTS")
+    return a, _cursor_data(MODE), 8
+
+
+def _unpaired_half_store():
+    """Phase 2 (Commando): both halves fetched through another cursor, never read back."""
+    a = G.Asm(G.ORG)
+    a.i("LDY", "imm", 0x00).i("LDA", "indy", FTC).i("STA", "zp", G.PTR)
+    a.i("INY").i("LDA", "indy", FTC).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "zp", FTC).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", FTC)
+    a.i("LDA", "zp", FTC + 1).i("ADC", "imm", 0x00).i("STA", "zp", FTC + 1)
+    a.i("LDY", "imm", 0x00).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    a.i("RTS")
+    data = _cursor_data()
+    data.update({FTC: PAT2 & 0xFF, FTC + 1: PAT2 >> 8})
+    data.update({PAT2 + 2 * k: (PAT + 2 * k) & 0xFF for k in range(8)})
+    data.update({PAT2 + 2 * k + 1: (PAT + 2 * k) >> 8 for k in range(8)})
+    return a, data, 8
+
+
 def _sp_body(sub):
     """A player calling ``sub`` at two stack depths, so its spill stays sp-relative.
 
@@ -321,6 +506,19 @@ _FIXTURES = {
     "mux_pair": _mux_pair,
     "cursor_save": _cursor_save,
     "writethrough": _writethrough,
+    "plain_advance": _plain_advance,
+    "dual_store_advance": _dual_store_advance,
+    "dual_store_pair_first": _dual_store_pair_first,
+    "dual_store_via_regs": _dual_store_via_regs,
+    "dual_store_hi_first": _dual_store_hi_first,
+    "dual_store_computed": _dual_store_computed,
+    "dual_store_lo_only": _dual_store_lo_only,
+    "dual_store_word_copy": _dual_store_word_copy,
+    "stack_spill_cursor": _stack_spill_cursor,
+    "deferred_carry_cursor": _deferred_carry_cursor,
+    "table_spill_cursor": _table_spill_cursor,
+    "inpage_advance": _inpage_advance,
+    "unpaired_half_store": _unpaired_half_store,
     "g2_store": _g2_store,
     "sp_spill": _sp_spill,
     "sp_unbalanced": _sp_unbalanced,
@@ -437,6 +635,127 @@ def test_writethrough_store_becomes_a_bounded_table_write():
     text = _lift("writethrough")
     body = text[text.index("sub_") :]
     assert not re.search(r"^\s*mem\[.*\] = ", body, re.M), "the store still writes through top"
+
+
+def _fused_cursor(name):
+    """True where rung (d) declared the walked pair one ``u16`` field, not two lanes.
+
+    ``framefuse.refusal()`` reads one surviving byte-lane read of the pair as refusing
+    its whole tune-wide declaration, even where an equal word read stands beside it: it
+    is that read, not the second destination or the store order, that discriminates."""
+    return "ptr_%04X: u16" % G.PTR in _state_block(_lift(name))
+
+
+def test_a_plain_advance_fuses_its_cursor_pair():
+    """Invariant: the baseline the dual-destination family is measured against."""
+    assert _fused_cursor("plain_advance"), "a bare in-place advance left the pair byte-wise"
+
+
+def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():
+    """Invariant: a second destination is no refusal where every lane read folds to a word.
+
+    The save copy reads the pair after the advance, so rung (d2) merges both the
+    advance and the copy; no byte-lane read of the pair survives to refuse it."""
+    assert _fused_cursor("dual_store_word_copy"), "a word-wide save copy refused the pair"
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a dual-destination advance keeps the pair byte-wise", **XFAIL
+)
+def test_dual_store_advance_fuses_its_cursor_pair():
+    assert _fused_cursor("dual_store_advance")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: store order within a lane does not free the pair", **XFAIL
+)
+def test_dual_store_pair_first_fuses_its_cursor_pair():
+    assert _fused_cursor("dual_store_pair_first")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: uninterleaved pair stores still keep it byte-wise", **XFAIL
+)
+def test_dual_store_via_regs_fuses_its_cursor_pair():
+    assert _fused_cursor("dual_store_via_regs")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a hi-first dual-destination advance keeps the pair byte-wise",
+    **XFAIL,
+)
+def test_dual_store_hi_first_fuses_its_cursor_pair():
+    assert _fused_cursor("dual_store_hi_first")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a cell-stepped dual store keeps it byte-wise", **XFAIL
+)
+def test_dual_store_computed_fuses_its_cursor_pair():
+    assert _fused_cursor("dual_store_computed")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a lo-only dual store refuses certification, not just naming",
+    **XFAIL,
+)
+def test_dual_store_lo_only_fuses_its_cursor_pair():
+    """One lane's copy is enough: rung (g) then refuses ``def_unliftable``, not the spelling.
+
+    ``ptrcert._def_refusal`` reads the role, so the hi lane refuses as ``computed`` though
+    both lanes extract one named word -- a rule gap the corpus never exhibits (0 webs; the
+    nearest 2 are lo-lane advances spelled through the word), so it is no lift to recover."""
+    assert _fused_cursor("dual_store_lo_only")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a stack-spilled cursor has no word form to appeal to", **XFAIL
+)
+def test_stack_spill_cursor_fuses_its_cursor_pair():
+    """The largest group (15 webs), and the one no proven-word-form fix can reach.
+
+    Corpus-wide the 164 lone-half reads are 130 bare copies to 33 ``INT_ADD``, sinking to
+    ``asg`` (96) and ``st`` (70) and to no ``if`` at all: not one is a page-alignment test
+    or an end-of-block compare, so the byte-wise evidence is spill and carry residue."""
+    assert _fused_cursor("stack_spill_cursor")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: an unobserved carry arm leaves the hi lane unpaired", **XFAIL
+)
+def test_deferred_carry_cursor_fuses_its_cursor_pair():
+    """The hi lane is in the code but not the text, so no store pairs with the lo one."""
+    assert _fused_cursor("deferred_carry_cursor")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a split lo/hi save-back destination cannot pair", **XFAIL
+)
+def test_table_spill_cursor_fuses_its_cursor_pair():
+    """The advance is already one u16 store; the de-interleaved save-back is what refuses."""
+    assert _fused_cursor("table_spill_cursor")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: interleaved half stores never pair, so the pair refuses",
+    **XFAIL,
+)
+def test_unpaired_half_store_fuses_its_cursor_pair():
+    """The one rung (d) class no other fixture reaches: no lane read, the stores unpaired.
+
+    ``framefuse.refusal()`` reports the first failing premise only, testing ``lone``
+    before ``unpaired``, so a fixture's stated class is the first that fails and not
+    necessarily the only one - the classes are ordered, not disjoint."""
+    assert _fused_cursor("unpaired_half_store")
+
+
+def test_an_inpage_advance_is_never_fused():
+    """Invariant: a bare INC lane with no carry arm is genuinely byte-wise (8 of the 74).
+
+    Fusing would carry on a lane wrap the machine does not, so no rung (d) fix may take it.
+    A fix keyed on the word form existing elsewhere clears at most 45 of 68 refusals; one
+    keyed on the merge premises reaches 66, and these 8 must stay refused for good."""
+    assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
 
 
 @pytest.mark.xfail(reason="register-model-lift G2: INT_ADD bound in addr_bits", **XFAIL)

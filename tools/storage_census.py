@@ -13,7 +13,6 @@ import signal
 import sys
 import time
 from collections import Counter, defaultdict
-from functools import partial
 from pathlib import Path
 
 import _sweep
@@ -31,7 +30,8 @@ SCRATCH = frozenset(("framelocal", "writeonly", "data"))
 USAGE = """\
   python tools/storage_census.py                                # the whole cache
   python tools/storage_census.py --tunes Hubbard_Rob/Commando --frames full
-  python tools/storage_census.py --frames 1500 -o out/storage_census.json"""
+  python tools/storage_census.py --frames 1500 -o out/storage_census.json
+  python tools/storage_census.py --frames full --lift-extents out/ptr_extents_full.json"""
 
 _CELL = re.compile(r"_([0-9A-Fa-f]{2,4})(_lo|_hi)?$")
 
@@ -61,12 +61,12 @@ class Image(bytearray):
         bytearray.__setitem__(self, a, v)
 
 
-def build(entry, frames=None):
+def build(entry, frames=None, extents=None):
     """``(model, prog, nframes)``: the tune as ``lift_triage`` builds it.
 
     ``frames`` caps the decompile observation length as the doc's probe did;
     ``None`` is the full Songlengths length, bit-identical to the other tools'
-    build (the Phase 0 text gate compares the two at equal length)."""
+    build. ``extents`` is this tune's b0 row, which rung (g) reads."""
     from deity_informant import frameprog
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
@@ -76,7 +76,7 @@ def build(entry, frames=None):
     mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
     nframes = int(secs * 50) if frames is None else min(int(secs * 50), frames)
     model, _ev = S.decompile(mem, init, play, nframes, sub)
-    return model, frameprog.program(model), nframes
+    return model, frameprog.program(model, extents), nframes
 
 
 def evaluate(model, prog, nframes, probe=None):
@@ -132,7 +132,8 @@ def rendered_fields(text):
     """Rendered ``state { }`` fields as ``{name: (base cell, width)}``.
 
     The doc's declared-field unit: only address-named fields map to cells, so
-    aliased and flag names fall out exactly as the 7.10.13 probe dropped them."""
+    aliased and flag names fall out exactly as the 7.10.13 probe dropped them.
+    The type is the first token, since ``observed``/``in`` clauses follow it."""
     out, in_state = {}, False
     for line in text.splitlines():
         s = line.strip()
@@ -146,7 +147,7 @@ def rendered_fields(text):
                 base = int(name.strip().rsplit("_", 1)[-1], 16)
             except ValueError:
                 continue
-            out[name.strip()] = (base, 2 if width.strip() == "u16" else 1)
+            out[name.strip()] = (base, 2 if width.split()[0] == "u16" else 1)
     return out
 
 
@@ -416,12 +417,12 @@ def census(model, prog, nframes):
     return row
 
 
-def one(entry, frames):
+def one(entry, frames, extents=None):
     """One tune's census row, or the exception that stopped it."""
     try:
         signal.alarm(_sweep.CAP_S)
         t0 = time.monotonic()
-        model, prog, nframes = build(entry, frames)
+        model, prog, nframes = build(entry, frames, extents)
         row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
         row.update(census(model, prog, nframes))
         return row
@@ -584,6 +585,15 @@ def worklist_lines(done, cap=20):
     return out
 
 
+def _lift_rows(path):
+    """``{tune: [web record]}`` rung (g) reads, empty where no artifact is named."""
+    from deity_informant import ptrextent
+
+    if not path:
+        return {}
+    return ptrextent.records(json.loads(Path(path).read_text(encoding="utf-8"))["rows"])
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
@@ -599,15 +609,21 @@ def main():
         default=str(ROOT / "out" / "ptr_extents.json"),
         help="Phase 2b (b0)'s observed-extent artifact, keyed and horizoned per tune",
     )
+    ap.add_argument(
+        "--lift-extents",
+        help="a b0 artifact fed to rung (g): the build names the webs it maps",
+    )
     args = ap.parse_args()
 
     frames = None if args.frames == "full" else int(args.frames)
     tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
     if not tunes:
         sys.exit("no cached tune matched")
+    lifts = _lift_rows(args.lift_extents)
     t0 = time.monotonic()
     with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
-        rows = _sweep.check_rows(pool.map(partial(one, frames=frames), tunes))
+        jobs = [(e, frames, lifts.get(_sweep.tune_id(e[0]))) for e in tunes]
+        rows = _sweep.check_rows(pool.starmap(one, jobs))
     done = [r for r in rows if "error" not in r]
     out = {
         "tunes": len(done),

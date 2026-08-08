@@ -151,6 +151,11 @@ def horizons(rows):
     return {r["tune"]: r["extents"]["horizon"] for r in rows if "extents" in r}
 
 
+def records(rows):
+    """``{tune: [web record]}`` from artifact rows: rung (g)'s own build-time input."""
+    return {r["tune"]: r["extents"]["records"] for r in rows if "extents" in r}
+
+
 def outran(art, runs):
     """Rows of a run that outran the artifact's horizon: b0's MUST, as a check.
 
