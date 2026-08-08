@@ -2841,6 +2841,17 @@ What is left, in the order it costs:
 4. **Scope the computed-jump refusal to its target set** (§7.10.5). Ceiling 56.
 5. **The value-set fixpoint** (§7.10.5). Ceiling 107, and the only item needing
    new machinery. Its cost is why it is last, not its size.
+6. **A widened lane store reads a register the CPU cannot read** (§7.10.12). Not
+   a residue item and not ranked with the rest: it is a defect in the emitted
+   artifact rather than a quantity to reduce, and Gate FP cannot see it because
+   both sides of the gate share the shadow it reads. **Unsized** -- 3 sites each
+   in 2 of the 10 showcase tunes is the whole measurement.
+7. **``state { }`` declares temporaries as state** (§7.10.13). A cell written
+   before it is read on every path is a procedure local, not per-tune state.
+   Measured on one tune: 20 of 26 declared cells never carry a value across the
+   interrupt boundary and 3 are never written at all. Wants a may-be-live-in
+   analysis at the frame boundary, because persistence is path-dependent.
+   **Unsized.**
 
 Above all of these sits the census, restated over the current 624-tune sweep:
 **``word_pack`` at 4583 sites over 552 tunes, and ``carry_val`` at 5594 over 550,
@@ -3040,6 +3051,112 @@ the log sees the difference in an ``ord`` section, that a hi-first lane pair
 merges through an index with no constant set, and that dropping the flag from
 that merge moves the record. The third is the mutation evidence -- the flag is
 load-bearing, not decoration.
+
+#### 7.10.12 A widened lane store reads a register the CPU cannot read
+
+``_widen`` (``framefuse.py:256``) turns a lone lane half into the word store §4(d)
+says it already is, and preserves the other lane by **reading it back**:
+
+    sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $00FF):2 | (zext2(w19) << $08):2):2
+    sid.v1.pw_lo[m_54EB]:2 = ((sid.v1.pw_lo[m_54EB]:2 & $FF00):2 | zext2(t3)):2
+
+``$D400``-``$D414`` are **write-only**. A 6502 reading one gets the floating data
+bus, not the last value written, so this is a load the machine cannot perform.
+
+**Gate FP cannot see it, by construction.** ``framelog.canonical`` keeps a
+``held`` value per register across frames and materialises the untouched lane
+from it (``framelog.py:47-49``); the frame program's state image mirrors that
+shadow and the walker reads the same one. Both sides of the gate agree, so the
+*record* is right and the gate passes. The premise §4(d) states -- "nothing
+narrower can be written to a 16-bit register" -- is true of the log projection
+and false of the chip. The held lane is real state, but it belongs in a declared
+variable, which is where a driver keeps its own shadow, and not in a read of an
+unreadable address.
+
+**Measured on ``Commando``, 1500 frames, by instrumenting the state image**
+(first access kind per cell per frame). Every one of **23357 SID reads is of a
+write-only register** -- all three voices' freq/pw/ctrl/AD/SR -- and **nothing in
+``$D419``-``$D41C``, the four that are readable, is touched at all**. Eight cells
+are read *before* the frame writes them, so they carry a value across the
+interrupt boundary: the three freq pairs and v2's pulse width. **Three
+statements** produce all of it, each indexed, which is how three sites reach 21
+registers. ``osc3``/``envelope3`` are declared inputs resolved through ``iota``
+and never reach the image: no showcase tune references either.
+
+**The tension worth naming.** The widen exists to turn a byte store into a word
+store, and word stores are the numerator of the 93.27% rate §7.10.10 reports. So
+part of that rate is bought with a construct no 6502 can execute. §7.10.8 says
+the ladder has been optimising the one class that has a metric; this is the same
+finding arriving from the other side, and it is why this item is listed apart
+from items 2-5 rather than ranked among them.
+
+**Not caused by item 1**: ``Commando`` emits 3 read-backs before it and 3 after,
+and ``_widen`` is untouched by it. If anything item 1 shrinks the population,
+since a merged pair writes both cells and owes no read-back.
+
+**Unsized, deliberately.** 3 sites each in ``Commando`` and ``Monty_on_the_Run``,
+0 in the other eight showcase tunes, is the whole measurement. What is known
+corpus-wide is only that ``plain_lane`` is **0** in every ``fuse_measure`` row,
+i.e. every *unindexed* lone half is widened somewhere. Sizing it is the first
+step, and ``lift_residue`` is the natural instrument: "reads a write-only
+register" is a machine shape it does not name, and it is mechanism-independent
+by design.
+
+#### 7.10.13 ``state { }`` is mostly scratch: the per-frame residency of a tune
+
+A frame program models **one interrupt call**, so a memory cell is per-tune state
+only where some frame reads it before that frame writes it. Everything else is a
+temporary that happens to live in memory.
+
+**Measured on ``Commando``, 1500 frames**, by recording the first access kind per
+cell per frame against an instrumented state image. Of **652 RAM cells** the play
+routine touches, 593 are never written (the note streams, the 192-row freq table,
+the pointer tables: data, not variables) and 3 are written and never read. That
+leaves **56 read-write cells, of which 20 are frame-local and 36 persist.**
+
+**The declaration is nearly all scratch.** ``state { }`` declares 24 fields = 26
+cells. Exactly **four** carry a value between interrupts:
+
+| field | reads | writes | frames carried in |
+|---|---:|---:|---:|
+| ``ctr_5513`` | 6000 | 2000 | 1500 / 1500 |
+| ``ctr_5525`` | 5244 | 1501 | 1500 / 1500 |
+| ``m_5528`` | 5987 | 6000 | 1500 / 1500 |
+| ``m_5519`` | 3000 | **1** | 1500 / 1500 |
+
+``m_5519`` is written *once* in 1500 frames and read 3000 times: a latch, not a
+variable. Of the rest, **20 are frame-local** -- both zero-page pointers, the
+whole ``idx_5502``..``idx_550C`` block, ``m_54EB``, ``ctr_5501``, ``m_5518``,
+``m_5523``, ``m_5524`` -- and ``m_5523``, the busiest cell in the program at
+16524 reads, never survives a frame. **Three more (``m_5517``, ``m_5526``,
+``m_5527``) are never written on any path**: read-only constants declared as
+state.
+
+**The real cross-frame state is in ``data { }``, not ``state { }``.** 32 of the
+36 persistent cells are ``mut`` columns of the per-voice three-entry tables --
+``ctr_54F2`` (carried in 1414 of 1500 frames), ``ctr_551A``, ``idx_54FE``,
+``m_5520``, ``m_54F5``, ``idx_54FB``, ``m_54F8``, ``pos_54EC``/``pos_54EF``,
+``ctr_550D``, ``ctr_5510`` -- plus three working rows of the 263-row ``m_5591``.
+That is the tracker's per-voice cursor set, one cell per SID voice.
+
+**The obligation, and why the declaration is not simply wrong.** Persistence is
+**path-dependent**: ``pos_54EC`` carries in 130 of 1500 frames and ``pos_54EF``
+in 178, cells mostly rewritten before use that survive on some paths. A static
+declaration must cover any path, so listing the 20 is conservative rather than
+incorrect. The sound rule is a **may-be-live-in analysis at the frame boundary**,
+and a dynamic count is an **upper** bound on what it could promote, never a lower
+one -- more frames can only move a cell from frame-local to persistent, never
+back. The three never-written cells are the exception: read-only on every path is
+statically decidable, and declaring one as state is a plain over-declaration.
+
+**Why it is worth doing.** A cell written before it is read on every path is a
+procedure local wearing a memory address. Promoting it deletes a cell from the
+state section, the traffic with it, and an address from the population §7.10.3
+bounds -- and ``raw_sp`` -> ``unnamed_addr`` at 891 edges says addresses that
+cannot be named are what hold the other rungs up.
+
+**Unsized.** One tune, one subtune, 1500 of its 11750 frames. Nothing here is
+corpus-wide, and the instrument is a scratch harness, not a committed tool.
 
 ### 7.8 The environment this branch was measured in
 
