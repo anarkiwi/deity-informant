@@ -1,7 +1,7 @@
 """Per-cell storage census over an instrumented state image (docs/frameprog.md 7.10.13).
 
 The evaluator runs against a recording state image: per-cell reads and writes
-(net of the ``frameval.py:523`` write echo), first-access kind per frame, verdicts
+(net of the ``frameval.py:535`` write echo), first-access kind per frame, verdicts
 per declared state field in both units, and the top-address/read-back site lists.
 """
 
@@ -79,12 +79,16 @@ def build(entry, frames=None):
     return model, frameprog.program(model), nframes
 
 
-def evaluate(model, prog, nframes):
-    """``(image, frames run, fault or None)``: the instrumented evaluation."""
+def evaluate(model, prog, nframes, probe=None):
+    """``(image, frames run, fault or None)``: the instrumented evaluation.
+
+    ``probe`` is Phase 2b (b0)'s address observer: the run already resolves every
+    deref concretely, so recording where each web's derefs landed costs one set
+    add per deref and nothing at all at a site carrying no root."""
     from deity_informant import frameprog, frameval
 
     trace, _walker = frameprog.iota(model, nframes)
-    ev = frameval.Evaluator(prog, trace)
+    ev = frameval.Evaluator(prog, trace, probe=probe)
     image = Image(ev.m)
     ev.m = image
     fault, ran = None, 0
@@ -327,11 +331,33 @@ def crossproc(prog, cells):
     return {a: len(es) for a, es in per.items() if len(es) > 1}
 
 
+def work_list(cert, ext):
+    """Phase 2b (b5): the webs rung (g) may rewrite, and the sites they carry.
+
+    The lift's own column (b1) intersected with an observed extent the registry
+    maps (b0): a web whose derefs left the declared data keeps today's spelling,
+    so it is no target however well its definitions spell."""
+    from deity_informant import ptrextent
+
+    mapped = ptrextent.mapped_cells(ext["records"])
+    fit = [r for r in cert["records"] if r["eligible"] and int(r["root"][1:], 16) in mapped]
+    return {
+        "webs": len(fit),
+        "loads": sum(r["top_loads"] for r in fit),
+        "stores": sum(r["top_stores"] for r in fit),
+        "blocks": sum(
+            len(e["blocks"]) for e in ext["records"] if e["root"] in {r["root"] for r in fit}
+        ),
+        "roots": [r["root"] for r in fit],
+    }
+
+
 def census(model, prog, nframes):
     """One tune's storage row from an in-memory build: the testable core."""
-    from deity_informant import frameprog
+    from deity_informant import frameprog, ptrextent
 
-    image, ran, fault = evaluate(model, prog, nframes)
+    probe = ptrextent.Probe()
+    image, ran, fault = evaluate(model, prog, nframes, probe)
     cls = cell_classes(image)
     decl = rendered_fields(frameprog.dumps(prog))
     decl_verdict = {n: field_verdict(cls, range(b, b + w)) for n, (b, w) in decl.items()}
@@ -383,6 +409,8 @@ def census(model, prog, nframes):
     cert = certification(model, prog)
     row["cert"] = cert
     row["cert_agree"] = row["ptr_roots"] == top_roots(prog)
+    row["extents"] = ptrextent.summary(ptrextent.extents(prog, probe.hits), ran)
+    row["work_list"] = work_list(cert, row["extents"])
     if fault is not None:
         row["eval_fault"] = fault
     return row
@@ -444,6 +472,55 @@ def _cert_totals(done):
         ),
         "tunes_all_ready": sum(1 for r in have if r["cert"]["cursor_ready"] == r["cert"]["roots"]),
         "cert_disagree": sorted(r["tune"] for r in done if not r["cert_agree"]),
+        **_lift_totals(done),
+    }
+
+
+def _lift_totals(done):
+    """Phase 2b's two columns: b1's eligibility, b0's extents, b5's work list."""
+    from deity_informant import ptrcert, ptrextent
+
+    lift, alone, prem, defs, held = Counter(), Counter(), Counter(), Counter(), Counter()
+    ext = Counter()
+    for r in done:
+        lift.update(r["cert"]["lift_refusals"])
+        alone.update(r["cert"]["lift_alone"])
+        prem.update(r["cert"]["lift_premises"])
+        defs.update(r["cert"]["lift_defs"])
+        held.update(r["cert"]["held_writers"])
+        ext.update(r["extents"]["refusals"])
+    return {
+        "lift_eligible": sum(r["cert"]["eligible"] for r in done),
+        "lift_eligible_loads": sum(r["cert"]["eligible_loads"] for r in done),
+        "lift_eligible_stores": sum(r["cert"]["eligible_stores"] for r in done),
+        "lift_refusals": {k: lift[k] for k in ptrcert.LIFT_REFUSALS if lift[k]},
+        "lift_alone": {k: alone[k] for k in ptrcert.LIFT_REFUSALS if alone[k]},
+        "lift_premises": dict(prem),
+        "lift_defs": dict(defs),
+        "lift_held_writers": dict(held),
+        "lift_refusal_tunes": {
+            k: sum(1 for r in done if k in r["cert"]["lift_refusals"])
+            for k in ptrcert.LIFT_REFUSALS
+        },
+        "extent_webs": sum(r["extents"]["webs"] for r in done),
+        "extent_observed": sum(r["extents"]["webs_observed"] for r in done),
+        "extent_mapped": sum(r["extents"]["webs_mapped"] for r in done),
+        "extent_via": sum(r["extents"]["webs_via"] for r in done),
+        "extent_blocks": sum(r["extents"]["blocks"] for r in done),
+        "extent_addrs": sum(r["extents"]["addrs"] for r in done),
+        "extent_unmappable_addrs": sum(r["extents"]["unmappable_addrs"] for r in done),
+        "extent_unmappable_short": sum(r["extents"]["unmappable_short"] for r in done),
+        "extent_webs_short": sum(r["extents"]["webs_short"] for r in done),
+        "extent_overshoot": max((r["extents"]["overshoot"] for r in done), default=0),
+        "extent_refusals": {k: ext[k] for k in ptrextent.REFUSALS},
+        "extent_refusal_tunes": {
+            k: sum(1 for r in done if r["extents"]["refusals"].get(k)) for k in ptrextent.REFUSALS
+        },
+        "work_webs": sum(r["work_list"]["webs"] for r in done),
+        "work_loads": sum(r["work_list"]["loads"] for r in done),
+        "work_stores": sum(r["work_list"]["stores"] for r in done),
+        "work_blocks": sum(r["work_list"]["blocks"] for r in done),
+        "work_tunes": sum(1 for r in done if r["work_list"]["webs"]),
     }
 
 
@@ -478,6 +555,35 @@ def _totals(done):
     }
 
 
+def artifact(out):
+    """Phase 2b (b0)'s artifact: per tune, the horizon and every web's extent."""
+    return {
+        "frames": out["frames"],
+        "tunes": out["tunes"],
+        "rows": [
+            {"tune": r["tune"], "name": r["name"], "extents": r["extents"]}
+            for r in out["rows"]
+            if "extents" in r
+        ],
+    }
+
+
+def worklist_lines(done, cap=20):
+    """Phase 2b (b5): the measured target, per tune, printed before rung (g) exists."""
+    rows = [r for r in done if r["work_list"]["webs"]]
+    total = sum(r["work_list"]["webs"] for r in rows)
+    out = ["", "work list (b5): %d web(s) over %d tune(s)" % (total, len(rows))]
+    if len(rows) > cap:
+        return out + ["  per-tune rows in the artifact; rerun with --tunes to print them"]
+    for r in rows:
+        w = r["work_list"]
+        out.append(
+            "  %-46s %2d web(s) %4d load(s) %2d store(s)  %s"
+            % (r["tune"], w["webs"], w["loads"], w["stores"], ", ".join(w["roots"]))
+        )
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
@@ -488,6 +594,11 @@ def main():
     ap.add_argument("--frames", default="1500", help="frame cap, or 'full' (default 1500)")
     ap.add_argument("-j", "--procs", type=int, default=32)
     ap.add_argument("-o", "--out", default=str(ROOT / "out" / "storage_census.json"))
+    ap.add_argument(
+        "--extents",
+        default=str(ROOT / "out" / "ptr_extents.json"),
+        help="Phase 2b (b0)'s observed-extent artifact, keyed and horizoned per tune",
+    )
     args = ap.parse_args()
 
     frames = None if args.frames == "full" else int(args.frames)
@@ -508,7 +619,10 @@ def main():
     }
     Path(args.out).parent.mkdir(exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
+    Path(args.extents).write_text(json.dumps(artifact(out), indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in out.items() if k not in ("rows", "refused")}, indent=1))
+    for line in worklist_lines(done):
+        print(line)
     print("%d refused" % len(out["refused"]))
 
 

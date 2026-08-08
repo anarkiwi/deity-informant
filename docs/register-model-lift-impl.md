@@ -1,10 +1,12 @@
 # register-model-lift: implementation plan (phased, evidence-based)
 
-Status: in execution. Phases 0, 1 and 2a are DONE — each carries its landed
-record and before/after table in its own section; 2c and 3 are the next
-candidates (both dependents of 2a's bounds only), and 2b is respecified as a
-mechanical observed-extent pipeline (§2 2b; §6's deferral superseded) free to
-land on its own schedule. The plan was
+Status: in execution. Phases 0, 1, 2a and **2b's analysis half (b0, b1, b5)**
+are DONE — each carries its landed record and before/after table in its own
+section; 2b's rewrite half (b2–b4), 2c and 3 are the next candidates (2c and 3
+are dependents of 2a's bounds only, so they need not wait on rung (g)). 2b's
+measured work list is **308 webs / 1,782 ⊤ loads over 158 tunes**, and its
+largest blocker is not the soundness premise but the declared registry's
+coverage of what the pointers walk (§2 2b). The plan was
 de-risked against seven family-representative tunes and one corpus-wide sweep
 before any phase started. Each phase is mechanical (a committed instrument
 produces its work list), bounded (a refusal vocabulary names what it will not
@@ -69,7 +71,7 @@ above `$01FF`.
 
 One instrument correction found while calibrating, owed to the record:
 `frameval.run_frame` re-reads the just-stored cell to buffer a SID write
-(`frameval.py:523`), so a state-image read counter sees one echo per write.
+(`frameval.py:535`), so a state-image read counter sees one echo per write.
 §7.10.12's "23,357 SID reads" includes that echo; the echo-free figure for
 Commando is **5,440 reads over 8 registers from the same 3 statements**, and
 the section's conclusions (all write-only, carried across frames, three sites)
@@ -288,7 +290,7 @@ to the 300-frame gate sweep; it is also one of the two 14-wide-store tunes)
 The phase specification, for the record:
 
 - Commit `tools/storage_census.py`: the §7.10.13 harness productionized — per
-  cell: reads/writes (net of the `frameval.py:523` write echo), first-access
+  cell: reads/writes (net of the `frameval.py:535` write echo), first-access
   kind per frame, storage-class verdict, region; per tune: `state { }`
   verdict table, ⊤-load/⊤-store site lists with pointer roots, SID read-back
   sites, cross-procedure use counts per frame-local cell, and a
@@ -755,9 +757,10 @@ harmless by construction because the check is at the use (§5.2 M2).
 its inputs, rule, refusal classes and gate; nothing below waits on a design
 decision.
 
-- **(b0) Observed extents become a committed artifact.** The census sweep
-  already resolves every deref concretely; per web it now records the set of
-  declared data those derefs touched, attributing addresses outside the
+- **(b0) Observed extents become a committed artifact.** *(LANDED; the
+  parenthetical below is measured-false — see the b0/b1/b5 record.)* The
+  census sweep already resolves every deref concretely; per web it now records
+  the set of declared data those derefs touched, attributing addresses outside the
   registry through `data_decls`' existing `via:` discovery (the registry
   already declares blocks a pointer walks). An address neither declared nor
   via-attributable ledgers `extent_unmappable` and the web keeps today's
@@ -768,8 +771,10 @@ decision.
   recorded horizon is the claim boundary working, exactly `unobserved`'s own
   discipline.
 - **(b1) Lift eligibility is a `ptrcert` column, separate from
-  certification.** A web lifts iff: (i) **web closed** — no unresolvable
-  store may reach the pair (`store_reach` with `addr_floor`); refusal
+  certification.** *(LANDED; the `held_open` and `opaque` counts below are
+  corrected in the b0/b1/b5 record — `web_alias` 287 is exact.)* A web lifts
+  iff: (i) **web closed** — no unresolvable store may reach the pair
+  (`store_reach` with `addr_floor`); refusal
   `web_alias`, 287 roots today (2a's 193 alias-alone + 94 both). This is the
   only premise doing soundness work — the rename is semantics-preserving
   exactly when every def is known; everything else in this phase is
@@ -823,7 +828,9 @@ decision.
   sweeps run before and after; the wall-clock delta lands in this section's
   before/after table and MUST stay under 2× (docs/cycle-times.md the
   reference) — discharging §6's budget obligation with numbers.
-- **(b5) The work list precedes the rewrite.** b1's column prints, per tune,
+- **(b5) The work list precedes the rewrite.** *(LANDED: 308 webs / 1,782 ⊤
+  loads over 158 tunes; the bound below stood, the binding constraint did
+  not — see the record.)* b1's column prints, per tune,
   the eligible webs and their site counts *before* rung (g) runs; the phase
   commits to that measured target, not a hope. Quotable today only as
   bounds: ≤ 1,044 roots, of which ≥ 287 refuse `web_alias` and parts of the
@@ -855,6 +862,178 @@ exist for every lifted write-through, not only the cursor-ready 10%; 2c's
 `sp_linked` premise gains every lifted web (an access through an annotated
 variable is bounded off page one by its extent); Phase 4 inherits the
 extract sites the entangled reads produce, as counted above.
+
+##### 2b analysis half (b0, b1, b5) — DONE, no text change
+
+**Landed**: `deity_informant/ptrextent.py` (b0) — per web, the declared data its
+derefs were observed to touch, with the horizon rule as a runnable check — plus
+b1's lift-eligibility column inside `ptrcert` (`LIFT_REFUSALS`, per-root
+`eligible`/`lift_refusals`/`lift_defs`, and a shape on every definition record),
+b5's work list in `storage_census` (printed per tune, and written as
+`out/ptr_extents.json`, keyed like the census and carrying each row's horizon),
+`gate_sweep --extents` (b0's MUST as a gate that stops the line), and an optional
+read-only address `probe` in `frameval` so a deref's concrete address is charged
+to the web whose text spelled it. 39 hermetic tests (`tests/test_ptrextent.py`
+plus b1's in `tests/test_ptrcert.py`). Per §6's third review decision the new
+counters are modes of `storage_census`, not a third population, and `ptrcert`
+stays the single authority on what a pointer web *is*: 2a's coverage, def-kind,
+shape and refusal totals reproduce from this run row for row.
+
+**Split on purpose, one level down from 2a.** b5's own rule is that the column
+prints the measured target *before* rung (g) runs, so no emitted text moved and
+the four Phase 2 shredder fixtures stay `xfail(strict=True)`. §R9 records that the
+2a/2b split "did its job"; this repeats it inside 2b.
+
+*What chose the rule — b0.* Attribution was the only real choice, and it was
+between guessing and knowing. A pair's value at rest is junk between roles
+(§5.2 M2), so reading an extent off the cell is a guess; the address a deref
+*computes* is not. `frameval` therefore gained a compile-time probe: it sees each
+computed address node once, asks `ptrcert.root_cells` which web spelled it, and —
+only where a web did — wraps that address closure to record what it resolves to.
+A site carrying no root gets its own closure back, so the default path builds the
+identical program it did before, and the two full censuses — run concurrently
+under the same load — differ by 0.9% of wall (411.8s -> 415.4s). A write-through
+store is a deref too, so the store address is probed at the store's width.
+
+*What chose the rule — b1 (ii).* Rung (d) has already run by the time a frame
+program exists, so a lo/hi pair that *could* fuse at one seat already did: a
+surviving byte-lane `computed` def is precisely one rung (d)'s own premise
+refused. "A computed def whose lo/hi legs fuse at one seat" is therefore decidable
+by reading the definition's role — `word` spells as one word expression, a lone
+lane does not — with no second fusion analysis to write or to keep in step. And a
+hold keeps its memory identity under the lift (`ptr:2 = m_H:2` spells whatever
+wrote `m_H`), so the plan's relaxation "to shared holds" lands as: a hold's writer
+refuses only where the chase cannot read it at all (`opaque`, so the analysis
+cannot say the hold is written as a pair) or it comes off page one (`low_held`,
+premise (iv)); a value read out of a walked block or computed whole admits.
+
+**The coverage, corpus-wide** (`storage_census --frames 1500`, 624 tunes, 0
+refusals; the 2a rows are from the same run and match §2 2a exactly):
+
+| | webs | ⊤ loads | ⊤ stores | tunes carrying ≥ 1 |
+|---|---:|---:|---:|---:|
+| pointer webs the emitted text derefs | **1,044** | 6,653 | 38 | 511 |
+| — 2a block-rooted / cursor-ready, for contrast | 441 / 107 | 1,939 / 157 | 8 / 1 | 182 / 63 |
+| — **b1 eligible** (premises (i)–(iv)) | **524 (50.2%)** | **2,654 (39.9%)** | 8 | 207 |
+| — **b0 extent-mapped** (observed, all in the registry) | **645 (61.8%)** | — | — | 414 |
+| — **b5 work list** (eligible ∧ mapped) | **308 (29.5%)** | **1,782 (26.8%)** | **0** | **158** |
+
+**b1: what each premise costs, measured** — the 2a table's shape, over the lift's
+own four premises. 520 webs refuse; 392 refuse under exactly one class, so 128
+wear two or more:
+
+| premise | webs holding | webs blocked by it alone | class |
+|---|---:|---:|---|
+| (i) web closed | 757 | **241** | `web_alias` |
+| (ii) defs expressible | 873 | 62 | `def_unliftable` |
+| (iii) uses expressible | 892 | 54 | `web_opaque` |
+| (iv) holds off the machine stack | 979 | 35 | `low_held` |
+
+**The refusal ledger**, per class, per tune (a web may wear several):
+
+| class | webs | tunes |
+|---|---:|---:|
+| `extent_unmappable` (b0) | **399** | 188 |
+| `web_alias` (b1 i) | **287** | 132 |
+| `def_unliftable` (b1 ii) | 171 | 153 |
+| `web_opaque` (b1 iii) | 152 | 135 |
+| `low_held` (b1 iv) | 65 | 54 |
+
+`web_alias` is **287, exactly the plan's predicted 287** (2a's 193 alias-alone +
+94 both) — the one premise doing soundness work costs precisely what §2 2b said
+it would. Per definition, over 2a's 4,372: **3,876 admit (88.7%)**, 390 refuse
+`def_unliftable`, 106 refuse `low_held`. The `def_unliftable` 390 decompose as
+272 `computed` lone byte lanes, 88 direct `opaque` definitions, and 30 hold
+writers the chase could not read; the `low_held` 106 as 96 direct and 10 hold
+writers. Of the 480 `computed` definitions **208 are the word role rung (d)
+already fused**, which is the (ii) rule paying for itself.
+
+**b0: the observed extents.** 1,044 webs, 1,036 of them deref'd inside the
+1,500-frame horizon, **282,776 distinct addresses over 4,893 declared blocks**;
+726 webs carry at least one block the registry itself attributes to them through
+`via:`. 78,510 addresses (27.8%) land in no declared datum, and they split almost
+evenly into two different repairs: **39,442 (50.2%) are `short`** — the deref ran
+off the end of a block that same web walks, by up to 6,979 bytes — and the rest
+are `foreign`, landing where the registry declares nothing at all. Only 58 of the
+399 refusing webs refuse on short overruns alone.
+
+**Four corrections the corpus forces on the plan**, all marked in the b0/b1/b5
+bullets above:
+
+1. **b0's parenthetical "the registry already declares blocks a pointer walks" is
+   measured-false as a covering claim.** `datadecl`'s `via:` discovery declares the
+   *anchor* blocks — the pair's post-init word and its reload-table rows — not the
+   extent the pointer walks. It is the right mechanism (726 of 1,044 webs get a
+   via-attributed block from it) and it is why GT's `zp_FB`, SW's `zp_FE` and
+   Follin's script cursors map (5 of the 6 at 1,500 frames, 6 of 6 at full
+   length); but a web whose rows are computed rather than reloaded gets one anchor
+   and nothing else, which is Galway and goto80 exactly (4 and 10 refusing webs).
+   `extent_unmappable` is not a rare residue class: **it is the largest single
+   blocker in the pipeline at 399 webs**, ahead of `web_alias`'s 287.
+2. **b5's binding constraint is b0, not b1.** The bound "≤ 1,044 roots, of which
+   ≥ 287 refuse `web_alias`" holds exactly, but b1 alone leaves 524 webs and the
+   extent map removes **216 of them**. The measured target is 308 webs / 1,782 ⊤
+   loads over 158 tunes, and 110 tunes lift every web they carry.
+3. **b1 (ii)'s "today's 88 `opaque` defs land here" is a third of the class.**
+   `def_unliftable` is 390 definitions; the `computed` lone byte lane (272) is the
+   larger population and the one with a rule attached — it is rung (d)'s refusal
+   read back, so strengthening rung (d) is what moves it, not a params/returns
+   vocabulary. Likewise `held_open`'s 261 defs do not split evenly: **221 admit,
+   40 refuse** (30 `opaque` writers, 10 `low_held`).
+4. **The write-through class reaches the work list at zero sites.** 22 webs carry
+   the 38 rooted ⊤ stores; 2 of them are b1-eligible (`Counterforce` `$1E57`,
+   `Archon` `$00FD`, 8 stores between them) and **both refuse
+   `extent_unmappable`**, so b2's "rewrite write-through stores identically (the
+   38 sites over 12 tunes)" has no targets until the extent gap closes. Phase 3
+   (ii) should not expect certified write extents from 2b's first rewrite.
+
+**The seven-tune table** (1,500 frames; the full-length column is the sensitivity
+check §3 asks for, and the registry is floored by the same observation, so the
+extents *widen* with the horizon):
+
+| | Commando | Comic_Bakery | Automatas | Aces_High | Angry_Birds | Ghouls | Agent_X_II |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| webs | 0 | 4 | 11 | 1 | 1 | 3 | 3 |
+| b1 eligible | 0 | 1 | **7** | 0 | 0 | 3 | 3 |
+| b0 extent-mapped | 0 | 0 | 1 | 1 | 1 | 2 | 3 |
+| **b5 work list** | 0 | 0 | 0 | 0 | 0 | **2** | **3** |
+| — its ⊤ loads / blocks | — | — | — | — | — | 28 / 2 | 42 / 3 |
+| b1 refusals | — | unl 3, opq 3 | unl 1, opq 3 | unl 1, opq 1 | low 1 | — | — |
+| b0 refusals (`extent_unmappable`) | — | 4 | 10 | — | — | 1 | — |
+| at `--frames full`: webs / work | 0 / 0 | 4 / 0 | 13 / 0 | 1 / 0 | 1 / 0 | 3 / **3** | 3 / **3** |
+
+Aces_High and Angry_Birds are the exact mirror of Automatas: their single web maps
+perfectly and refuses b1 — GT's `zp_FB` under (ii) and (iii) (2a's register spill
+is a `computed` lone lane, and a local the chase cannot read carries the pair),
+SW's `zp_FE` under (iv), saved through page one — while goto80 has seven of its
+eleven webs eligible and ten of them unmappable. The two halves of the pipeline
+are independent by construction and the corpus proves it tune by tune, which is
+why both had to be measured before rung (g) was written.
+
+**Gates.** All seven held, and the phase is read-only so the first is the point:
+
+| gate | result |
+|---|---|
+| emitted text byte-identical corpus-wide (sha256 per tune, branch vs `f720d3f`) | **624 / 624 identical, 0 build errors either side** |
+| full suite | **2,399 passed, 492 skipped, 8 xfailed**; the four Phase 2 shredder fixtures stay xfail |
+| `gate_sweep --frames 300` | **622 clean / 623 built**, diverged `Rambo` (C) only, refused `C64_World` |
+| Gate FP, review seven, full Songlengths length | **7 / 7 clean** |
+| `lift_residue` | census sum **31,112**, `raw_sp` **2,379 / 298**, every signature and every stack-refusal row unchanged |
+| `fuse_measure` / `storage_census` | `unproven` **201**, `provably_complete` **488**, wide stores 105 / 54 in the same four shapes; **every pre-existing census total and every one of 624 rows identical field for field** |
+| b0 horizon MUST (`gate_sweep --frames 300 --extents`) | **0 of 623 tunes outran the artifact**; the deliberate violation (the seven at full length against a 1,500-frame artifact) exits non-zero, naming all 7 |
+
+**Not done, and why.** Rung (g) is not written and no emitted text moved; b2, b3
+and b4 are untouched, and the four Phase 2 fixtures stay `xfail(strict=True)`
+because that is what "the work list precedes the rewrite" means. `extent_mutable`
+is b3's class and is unimplemented — b0 records observation, not the static
+fixpoint. The extent artifact is recorded at 1,500 frames, which covers the
+300-frame corpus gate for all 623 built tunes but **not** §3's full-length review
+gate (the seven run 3,450–16,150 frames): b2 must record the artifact at
+`--frames full` before it lands, and the seven's own full-length artifact, run
+here, passes that gate cleanly. Finally, the analysis is 2a's — intraprocedural,
+with the position-blind taint fallback and the same `_stores_into` width filter —
+so `web_opaque`'s 152 webs and the 88 direct `opaque` definitions remain ledgered
+precision items rather than design questions.
 
 #### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
 
@@ -1337,3 +1516,20 @@ dissolves at lift; `role_entangled` blocks nothing; and the `web_alias`
 ledger (287 roots, 2,751 unresolvable stores) becomes the direct pricing
 input for Phase 6's value-set walker, whose "no longer worth building"
 expectation is now expected to reverse.
+
+**Post-2b-analysis finding (2026-08-08): the reframe was right about the
+license and wrong about where the cost sits.** b0/b1/b5 landed and confirm the
+reframe's own predictions where they were checkable — `web_alias` costs exactly
+the 287 roots it predicted, the post-init premise and `role_entangled` block
+nothing, and eligibility separates cleanly from certification (50.2% of webs
+lift against 10.2% cursor-ready). What the reframe did not price is the
+*registry*: 399 webs touch an address `data_decls` declares nothing for, which is
+the largest single blocker in the pipeline and removes 216 of b1's 524 eligible
+webs. So the guard-live-where-uncertified argument stands, but "guard-live"
+needs a block list to be live *against*, and the corpus supplies one for 61.8%
+of webs. Two consequences, both owned by their step and stated in §2 2b: b3's
+static extent fixpoint stops being accounting-only — it is the only proposal on
+the table that widens the annotation past what one run observed — and Phase 6's
+value-set walker now has a second customer, since the `foreign` half of the
+unmappable addresses (39,068 of 78,510) is exactly "where can this pointer
+point" asked at the block level.

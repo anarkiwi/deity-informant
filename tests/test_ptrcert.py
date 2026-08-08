@@ -154,6 +154,100 @@ def test_a_packed_constant_word_is_a_constant_row():
     assert ptrcert._const(("op", "INT_OR", (lo, hi), 2)) == 0x1560
 
 
+def _root(**kw):
+    """A bare root record, so one premise of the lift column can be asked alone."""
+    root = ptrcert._Root(0x0002, {"load": 1})
+    for k, v in kw.items():
+        getattr(root, k).append(v)
+    return root
+
+
+@pytest.mark.parametrize("name", ("pointer_walk", "cursor_save", "mux_pair", "writethrough"))
+def test_the_phase_2_fixtures_are_eligible_for_the_lift(name):
+    """2b (b1): every fixture the rewrite half owes lifts, whatever 2a said of it."""
+    for rec in _cert(name).values():
+        assert rec["eligible"], (name, rec["lift_refusals"], rec["lemma"])
+
+
+def test_eligibility_is_not_certification():
+    """The two columns are different questions: pointer_walk refuses one, holds the other."""
+    rec = _cert("pointer_walk")["$0002"]
+    assert rec["refusals"] == ["role_entangled"] and rec["lift_refusals"] == []
+
+
+def test_an_entangled_byte_read_stops_blocking_at_lift():
+    """418 roots read their bytes outside the deref; those sites spell as extracts."""
+    root = _root(foreign={"stmt": "st", "via": "cell"})
+    assert "role_entangled" in root.refusals() and root.eligible
+
+
+def test_the_post_init_premise_dissolves_at_lift():
+    """2a's largest single blocker: a value never deref'd faults nothing."""
+    root = ptrcert._Root(0x0002, {"load": 1})
+    root.init_declared = False
+    assert "ptr_extent_open" in root.refusals() and root.eligible
+
+
+def test_an_unbounded_advance_survives_only_as_accounting():
+    root = ptrcert._Root(0x0002, {"load": 1})
+    root.advance_bounded = False
+    assert "ptr_extent_open" in root.refusals() and root.eligible
+
+
+def test_an_unresolvable_store_into_the_pair_refuses_the_lift():
+    """(i) is the only premise doing soundness work, so it is the one that blocks."""
+    root = _root(alias={"proc": "$1000", "addr": "t0"})
+    assert root.lift_refusals() == ["web_alias"] and not root.eligible
+
+
+def test_a_web_only_an_unread_local_reaches_refuses():
+    """(iii): a use the chase cannot read is a use no rewrite may rename."""
+    root = _root(opaque={"stmt": "asg", "via": "local"})
+    assert root.lift_refusals() == ["web_opaque"]
+
+
+@pytest.mark.parametrize(
+    "role,shape,writer,want",
+    (
+        ("word", "computed", None, None),
+        ("lo", "computed", None, "def_unliftable"),
+        ("word", "block_read", None, None),
+        ("lo", "opaque", None, "def_unliftable"),
+        ("lo", "low_held", None, "low_held"),
+        ("held", "held_open", "block_read", None),
+        ("held", "held_open", "computed", None),
+        ("held", "held_open", "opaque", "def_unliftable"),
+        ("held", "held_open", "low_held", "low_held"),
+    ),
+)
+def test_one_definition_at_a_time_against_the_spelling_vocabulary(role, shape, writer, want):
+    """(ii) as a table: rung (d)'s fused word spells, a lone byte leg does not."""
+    d = {"kind": "other", "role": role, "shape": shape, "writer": writer}
+    assert ptrcert._def_refusal(d) == want
+
+
+def test_every_kind_the_plan_names_a_cursor_shape_spells():
+    for kind in ("reload", "advance", "save_restore"):
+        d = {"kind": kind, "role": "word", "shape": None, "writer": None}
+        assert ptrcert._def_refusal(d) is None
+
+
+def test_every_lift_refusal_is_in_the_plan_vocabulary():
+    """A class the plan does not name would be a ledger nobody reads."""
+    for name in ("pointer_walk", "cursor_save", "writethrough", "mux_pair", "alias_state"):
+        for rec in _cert(name).values():
+            assert set(rec["lift_refusals"]) <= set(ptrcert.LIFT_REFUSALS), rec
+
+
+def test_the_column_counts_the_work_it_licenses():
+    """b5 reads its site counts off this column, so the column carries them."""
+    _lift("writethrough")
+    got = ptrcert.summary(_lift_prog["writethrough"])
+    assert got["eligible"] == got["roots"] == 2
+    assert got["eligible_loads"] == 1 and got["eligible_stores"] == 1
+    assert got["lift_premises"]["web_closed"] == 2
+
+
 @pytest.mark.parametrize("name", ("pointer_walk", "cursor_save", "mux_pair", "writethrough"))
 def test_certification_changes_no_text(name):
     """2a is analysis only: certifying a program may not move its emitted text."""

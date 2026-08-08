@@ -65,6 +65,10 @@ def main():
     ap.add_argument("--frames", type=int, help="cap the frames per tune; default the full length")
     ap.add_argument("-j", "--procs", type=int, default=32)
     ap.add_argument("-o", "--out", default=str(ROOT / "out" / "gate_sweep.json"))
+    ap.add_argument(
+        "--extents",
+        help="Phase 2b (b0) artifact: fail where this run outruns a recorded horizon",
+    )
     args = ap.parse_args()
 
     tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
@@ -84,12 +88,28 @@ def main():
         "wall_s": round(time.monotonic() - t0, 1),
         "rows": rows,
     }
+    if args.extents:
+        out["outran_horizon"] = _horizon(args.extents, built)
     Path(args.out).parent.mkdir(exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
     brief = {k: v for k, v in out.items() if k != "rows"}
     brief["refused"] = len(out["refused"])
     print(json.dumps(brief, indent=1))
-    return 1 if failed or out["refused"] else 0
+    return 1 if failed or out["refused"] or out.get("outran_horizon") else 0
+
+
+def _horizon(path, built):
+    """Phase 2b (b0)'s MUST: no gate run may outrun the extent artifact's horizon.
+
+    Inside it an ``extent`` fault is an instrument defect and stops the line; past it
+    the fault is the claim boundary, so a run this artifact does not cover is refused
+    before its verdicts are read."""
+    from deity_informant import ptrextent
+
+    art = json.loads(Path(path).read_text(encoding="utf-8"))
+    return ptrextent.outran(
+        ptrextent.horizons(art["rows"]), {r["tune"]: r["frames"] for r in built}
+    )
 
 
 if __name__ == "__main__":

@@ -28,7 +28,9 @@ _STEP = 0xFF  # an advance step wider than a byte is no in-block step
 
 KINDS = ("reload", "advance", "save_restore", "other")
 REFUSALS = ("ptr_uncertified", "ptr_extent_open", "role_entangled", "role_opaque")
+LIFT_REFUSALS = ("web_alias", "def_unliftable", "web_opaque", "low_held")
 _SHAPES = ("block_read", "low_held", "opaque", "computed", "held_open")
+_LIFTS = ("block_read", "computed")  # residue shapes the 2b spelling still writes
 
 
 def root_cells(addr):
@@ -275,6 +277,24 @@ def _lane(v):
     return hi if hi is not None else (inner if frameproc.loc_width(inner) == 2 else None)
 
 
+def _def_refusal(d):
+    """The class one definition refuses the 2b lift under, else None: it spells.
+
+    A reload, an advance, a save/restore and a block read spell today; a computed
+    def spells where rung (d) fused its lanes at one seat (role ``word``), and a
+    hold's own writer answers for a save 2a's closure could not admit."""
+    if d["kind"] != "other":
+        return None
+    shape = d["writer"] if d["shape"] == "held_open" else d["shape"]
+    if shape == "low_held":
+        return "low_held"
+    if shape not in _LIFTS:
+        return "def_unliftable"
+    if shape == "computed" and d["role"] not in ("word", "held"):
+        return "def_unliftable"
+    return None
+
+
 def _shape(v):
     """Which residue shape an uncertified definition wears, for the ledger."""
     if v[0] == "loc":
@@ -313,10 +333,19 @@ class _Root:
         self.init_word = 0
         self.notes = []
 
-    def add(self, entry, role, kind, why):
-        """Record one definition and the premise that named its kind."""
+    def add(self, entry, role, kind, why, shape=None, writer=None):
+        """Record one definition, the premise that named its kind, and its shape."""
         self.kinds[kind] += 1
-        self.defs.append({"proc": "$%04X" % entry, "role": role, "kind": kind, "premise": why})
+        self.defs.append(
+            {
+                "proc": "$%04X" % entry,
+                "role": role,
+                "kind": kind,
+                "premise": why,
+                "shape": shape,
+                "writer": writer,
+            }
+        )
 
     @property
     def block_rooted(self):
@@ -345,6 +374,35 @@ class _Root:
         elif self.opaque:
             out.append("role_opaque")
         return out
+
+    def lift_defs(self):
+        """This web's definitions counted by the class each refuses under."""
+        out = Counter()
+        for d in self.defs:
+            out[_def_refusal(d) or "admits"] += 1
+        return out
+
+    def lift_refusals(self):
+        """The classes this web refuses 2b's lift under, premises (i)..(iv) in order.
+
+        Separate from ``refusals``: certification is accounting, and everything 2a
+        refused for the *extent* claim -- entangled byte reads, an open extent, an
+        undeclared post-init value -- stops blocking once the guard checks at the
+        deref (docs/register-model-lift-impl.md 2, 2b (b1))."""
+        classes = set(self.lift_defs())
+        out = ["web_alias"] if self.alias else []
+        if "def_unliftable" in classes:
+            out.append("def_unliftable")
+        if self.opaque:
+            out.append("web_opaque")
+        if "low_held" in classes:
+            out.append("low_held")
+        return out
+
+    @property
+    def eligible(self):
+        """No premise refuses, so rung (g) may rename this web to one u16."""
+        return not self.lift_refusals()
 
     def status(self):
         """The one word for this root: what 2b may spell it as."""
@@ -417,6 +475,12 @@ class _Root:
             "top_loads": self.counts.get("load", 0),
             "top_stores": self.counts.get("store", 0),
             "refusals": self.refusals(),
+            "eligible": self.eligible,
+            "lift_refusals": self.lift_refusals(),
+            "lift_defs": dict(self.lift_defs()),
+            "held_writers": dict(
+                Counter(d["writer"] for d in self.defs if d["shape"] == "held_open")
+            ),
             "lemma": self.lemma(),
             "notes": self.notes,
         }
@@ -477,6 +541,8 @@ class _Cert:
                     "kind": "reload",
                     "premise": "declared lo/hi pointer table %s over %d row(s)"
                     % (name_addr(d["base"]), d["size"] - off),
+                    "shape": None,
+                    "writer": None,
                 }
             )
         return self
@@ -490,13 +556,13 @@ class _Cert:
         return "hi" if width == 1 and base == root.cell + 1 else None
 
     def _classify(self, root, role, v):
-        """``(kind, premise)`` of one definition, its extent contribution absorbed."""
+        """``(kind, premise, shape)`` of one definition, extent contribution absorbed."""
         width = 2 if role == "word" else 1
         got = _reload(v, role, self.regions, self.mem0, self.wide)
         if got is not None:
             root.targets |= got[1]
             names = ", ".join(name_addr(b) for b in got[0])
-            return "reload", "row of declared pointer table(s) %s" % names
+            return "reload", "row of declared pointer table(s) %s" % names, None
         k = _const(v)
         if k is not None:
             if role == "word":
@@ -505,28 +571,27 @@ class _Cert:
                 root.const_lo.add(k & 0xFF)
             else:
                 root.const_hi.add(k & 0xFF)
-            return "reload", "constant row $%0*X" % (2 * width, k)
+            return "reload", "constant row $%0*X" % (2 * width, k), None
         adv = _advance(v, root.cell + (1 if role == "hi" else 0), width, self.wide)
         if adv is not None:
             root.advance_bounded = root.advance_bounded and adv[1]
             open_ = "" if adv[1] else " (unbounded)"
-            return "advance", "in-block advance of the %s lane, step bound $%X%s" % (
-                role,
-                adv[0],
-                open_,
-            )
+            why = "in-block advance of the %s lane, step bound $%X%s" % (role, adv[0], open_)
+            return "advance", why, None
         held = _held(v, width)
         if held is not None:
             base, indexed = held
             if base in self.cells:
                 root.sources.add(self.cells[base])
-                return "save_restore", "restored from cursor %s" % name_addr(base)
+                return "save_restore", "restored from cursor %s" % name_addr(base), None
             root.holds.add(base)
             self.saves.setdefault((base, indexed, width), set()).add(root.cell)
             row = "[]" if indexed else ""
-            return "save_restore", "restored from held value %s%s" % (name_addr(base), row)
-        root.shapes[_shape(v)] += 1
-        return "other", "%s: %s" % (_shape(v), frameproc._fmt(v))
+            why = "restored from held value %s%s" % (name_addr(base), row)
+            return "save_restore", why, None
+        shape = _shape(v)
+        root.shapes[shape] += 1
+        return "other", "%s: %s" % (shape, frameproc._fmt(v)), shape
 
     def _reach(self, s, at):
         """The range a store writes, floored by the bits its address must set."""
@@ -546,8 +611,8 @@ class _Cert:
                     continue
                 role = self._role(root, base, indexed, width)
                 if role is not None:
-                    kind, why = self._classify(root, role, _inline(s[2], env, k))
-                    root.add(entry, role, kind, why)
+                    kind, why, shape = self._classify(root, role, _inline(s[2], env, k))
+                    root.add(entry, role, kind, why, shape)
         return self
 
     def _span(self, cells):
@@ -635,8 +700,8 @@ class _Cert:
             owners = sorted(self.saves[loc])
             for entry, env, k, s in self._stores_into(base, indexed, width):
                 v = _inline(s[2], env, k)
+                core = _lane(v) or v
                 if self._cursor_value(v, width):
-                    core = _lane(v) or v
                     for o in owners:
                         self.roots[o].sources |= self._carried(core)
                     held = _held(core, width)
@@ -652,7 +717,7 @@ class _Cert:
                 for c in owners:
                     root = self.roots[c]
                     root.shapes["held_open"] += 1
-                    root.add(entry, "held", "other", why)
+                    root.add(entry, "held", "other", why, "held_open", _shape(core))
         return self
 
     def _web_dest(self, base, indexed, width):
@@ -817,11 +882,15 @@ def summary(prog, cls=None):
     root the finder names and the program no longer derefs top-wide is visible as
     rung (f)'s work rather than as a root nobody looked at."""
     recs, loose = certify(prog)
-    ledger = Counter()
+    ledger, lift, defs, held = Counter(), Counter(), Counter(), Counter()
     for r in recs:
         ledger.update(r["refusals"])
+        lift.update(r["lift_refusals"])
+        defs.update(r["lift_defs"])
+        held.update(r["held_writers"])
     rooted = [r for r in recs if r["block_rooted"]]
     ready = [r for r in recs if r["status"] == "block_rooted"]
+    fit = [r for r in recs if r["eligible"]]
     premises = {
         "defs_closed": sum(1 for r in recs if r["block_rooted"]),
         "reads_closed": sum(1 for r in recs if r["reads_closed"]),
@@ -844,6 +913,22 @@ def summary(prog, cls=None):
         "unrooted": loose,
         "def_kinds": {k: sum(r["kinds"][k] for r in recs) for k in KINDS},
         "refusals": dict(ledger),
+        "eligible": len(fit),
+        "eligible_loads": sum(r["top_loads"] for r in fit),
+        "eligible_stores": sum(r["top_stores"] for r in fit),
+        "eligible_roots": [r["root"] for r in fit],
+        "lift_refusals": dict(lift),
+        "lift_alone": dict(
+            Counter(r["lift_refusals"][0] for r in recs if len(r["lift_refusals"]) == 1)
+        ),
+        "lift_premises": {
+            "web_closed": sum(1 for r in recs if "web_alias" not in r["lift_refusals"]),
+            "defs_expressible": sum(1 for r in recs if "def_unliftable" not in r["lift_refusals"]),
+            "uses_expressible": sum(1 for r in recs if "web_opaque" not in r["lift_refusals"]),
+            "holds_off_stack": sum(1 for r in recs if "low_held" not in r["lift_refusals"]),
+        },
+        "lift_defs": dict(defs),
+        "held_writers": dict(held),
         "records": recs,
     }
     if cls is not None:

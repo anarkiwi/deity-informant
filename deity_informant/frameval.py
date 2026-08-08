@@ -28,7 +28,7 @@ class FrameFault(RuntimeError):
 _width = frameproc.loc_width  # loc leaves carry their own width; every other node is E.width
 
 
-def _load(n, slot):
+def _load(n, slot, probe=None):
     addr, sz = n[1], n[2]
     if addr[0] == "const" and sidprog._ld_safe(addr):
         cells = [(addr[1] + j) & 0xFFFF for j in range(sz)]
@@ -36,7 +36,9 @@ def _load(n, slot):
             a = cells[0]
             return lambda r, m, rd: m[a]
         return lambda r, m, rd: sum(m[c] << (8 * j) for j, c in enumerate(cells))
-    fa = _expr(addr, slot)
+    fa = _expr(addr, slot, probe)
+    if probe is not None:
+        fa = probe(addr, fa, sz)
     if sz == 1:
         return lambda r, m, rd: rd(fa(r, m, rd))
     return lambda r, m, rd: sum(rd((fa(r, m, rd) + j) & 0xFFFF) << (8 * j) for j in range(sz))
@@ -86,8 +88,12 @@ def _taint(n):
     return []
 
 
-def _expr(n, slot):
-    """Closure ``(r, m, rd) -> value`` for one frameprog expression node."""
+def _expr(n, slot, probe=None):
+    """Closure ``(r, m, rd) -> value`` for one frameprog expression node.
+
+    ``probe`` is the read-only address observer Phase 2b (b0) records observed
+    extents with: it sees each computed address node once, at compile time, and
+    hands back the address closure it wants called. ``None`` builds today's."""
     k = n[0]
     if k == "const":
         v = n[1]
@@ -96,11 +102,11 @@ def _expr(n, slot):
         i = slot(n[1])
         return lambda r, m, rd: r[i]
     if k == "mem":
-        return _load(n, slot)
+        return _load(n, slot, probe)
     if k != "op":
         raise FrameFault("unexpected expression node %r" % (k,))
     mn, sz = n[1], n[3]
-    fs = tuple(_expr(c, slot) for c in n[2])
+    fs = tuple(_expr(c, slot, probe) for c in n[2])
     szs = [_width(c) for c in n[2]]
     return lambda r, m, rd: E._apply(mn, [f(r, m, rd) for f in fs], szs, sz)
 
@@ -116,8 +122,9 @@ class _Code:
     ``call``/``goto`` cross procedures as machine transfers, so locals are
     program-wide (registers are shared, temporaries never outlive a block)."""
 
-    def __init__(self, prog, watch=(), pin=None):
+    def __init__(self, prog, watch=(), pin=None, probe=None):
         self.mem0 = prog.mem0
+        self.probe = probe
         self.pin = dict(getattr(prog, "pinned", ()) if pin is None else pin)
         self.watch = {id(s): i for i, s in enumerate(watch)}
         self.tagged = set()
@@ -176,7 +183,12 @@ class _Code:
         self.fix.append((len(self.ops) - 1, field, pc))
 
     def expr(self, n):
-        return _expr(n, self.slot)
+        return _expr(n, self.slot, self.probe)
+
+    def addr(self, n, sz):
+        """A store's address closure, probed: a write-through deref is one too."""
+        f = self.expr(n)
+        return f if self.probe is None else self.probe(n, f, sz)
 
     # -- statements ---------------------------------------------------------------
     def seq(self, stmts, ctx):
@@ -224,13 +236,13 @@ class _Code:
     def _s_st(self, s, _ctx):
         sz = G.store_width(s[2])
         if sz == 1:
-            self.emit(("st", self.expr(s[1]), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
+            self.emit(("st", self.addr(s[1], 1), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
             return
         halves = framefuse.unpack(s[2]) or (s[2],) * sz
         derv = tuple(self.deriv(h) for h in halves)
         # The byte order is the store's own: ascending unless it says otherwise.
         order = tuple(range(sz))[:: -1 if frameproc.hi_first(s) else 1]
-        self.emit(("stw", self.expr(s[1]), self.expr(s[2]), derv, self.tag(s), order))
+        self.emit(("stw", self.addr(s[1], sz), self.expr(s[2]), derv, self.tag(s), order))
 
     def deriv(self, val):
         """``(address closure, taint slots)``: where a stored byte may be copied from.
@@ -431,8 +443,8 @@ def _derived(d, r, m, rd, prov, ploc):
 class Evaluator:
     """Executes a ``FrameProgram`` frame by frame against a pinned ``iota``."""
 
-    def __init__(self, prog, trace, state0=None, sources=False, watch=(), pin=None):
-        self.code = _Code(prog, watch, pin)
+    def __init__(self, prog, trace, state0=None, sources=False, watch=(), pin=None, probe=None):
+        self.code = _Code(prog, watch, pin, probe)
         self.srcs = [] if sources else None
         self.watched = [] if sources else None
         self.prov = dict(getattr(prog, "prov0", ())) if sources else None
