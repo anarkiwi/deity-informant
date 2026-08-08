@@ -189,15 +189,17 @@ a runtime fault outside the observed map (`frameval`'s `swd`/`gdyn` +
    `wall` refusal is reserved for programs that emit such raw forms, and the
    corpus count is now known: **42 statements over 31 tunes**, with
    `switch goto` dispatch (195 sites over 141 tunes — Galway and GT emit them
-   too, not just Follin) handled as an ordinary join. (The seven-tune figures
-   reproduce at HEAD from the committed instrument — 1 dyn form, the
-   `switch goto` row 0/4/0/2/1/3/3 — but the two corpus figures do not: a
-   pre-Phase-1 `lift_residue` artifact whose every census signature matches
-   the Phase 1 before-column bit for bit reports **44 / 32** and **198 / 142**,
-   so one of the two is a transcription and the counter is the authority.
-   Owed a re-measure at 2b's sweep, where the `wall` class is Phase 3's input
-   and the number has to be right anyway; nothing in the plan turns on which
-   way it settles.)
+   too, not just Follin) handled as an ordinary join. (All three figures
+   reproduce at HEAD from the committed counter — the seven-tune row is 1 dyn
+   form and `switch goto` 0/4/0/2/1/3/3, and 2b's sweep re-measures the corpus
+   at 42/31 and 195/141. What does *not* reproduce is the tree they were first
+   taken on: a pre-Phase-1 `lift_residue` artifact matching the Phase 1
+   before-column bit for bit on every census signature reports **44 / 32** and
+   **198 / 142**, so **Phase 1's destacking moved the wall class down by 2
+   statements over 1 tune, and `switch goto` by 3 sites over 1 tune** —
+   movement its before/after table does not carry because neither is a census
+   signature. Small, and in the right direction, but the wall class is Phase
+   3's input: that phase re-measures it rather than quoting this line.)
 2. **Follin's residue is ordinary.** Zero ⊤ stores, zero `raw_sp`, zero
    read-backs; its ⊤ loads are the three script pointers; its `word_pack`
    sites include the handler-table pack `(m_6C76[a]<<8 | m_6C37[a])` feeding
