@@ -51,6 +51,12 @@ stored, so the width is stated once; the suffix is a frameprog form, and a
 sidprog document carrying one is rejected. `state { }` fields are `u8` or `u16`
 accordingly.
 
+A `state { }` field may carry a **block extent** — `ptr_0021: u16 in m_7338,
+m_7401` — naming the declared data blocks the derefs through that pointer land
+in. An extent is a pointer's, so only a scalar `u16` field carries one; each
+block is named by its base cell, an alias included, and the blocks are emitted
+ascending. The clause sits between the array brackets and `observed`.
+
 A width-2 store may carry the **write order** `hi-first`, which says its two
 bytes leave in descending address order: `hi-first sid.v1.freq_lo[y]:2 = e`
 writes the high cell before the low one. Absent the word, a word store emits
@@ -127,8 +133,9 @@ symbols_sec: "symbols" "{" _NL aliasdef* "}" _NL
 aliasdef: "alias" NAME "=" NAME _NL
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" NAME [array] [statobs] _NL
+statedef: NAME ":" NAME [array] [statext] [statobs] _NL
 array: "[" "]"
+statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
 
 // ---- procedures ----------------------------------------------------------------

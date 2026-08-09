@@ -54,8 +54,9 @@ symbols_sec: "symbols" "{" _NL aliasdef* "}" _NL
 aliasdef: "alias" NAME "=" NAME _NL
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" NAME [array] [statobs] _NL
+statedef: NAME ":" NAME [array] [statext] [statobs] _NL
 array: "[" "]"
+statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
 
 // ---- procedures ----------------------------------------------------------------

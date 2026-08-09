@@ -15,6 +15,7 @@ from . import frameptr
 from . import framestack
 from . import grammar as G
 from . import initcopy
+from . import ptrlift
 from . import sidprog
 from . import structured
 from .grammar import FRAMEPROG_VERSION
@@ -38,6 +39,10 @@ _NOTES = (
     ";   pointer table, so the address is a row of one of that table's blocks",
     "; registers/temporaries are procedure locals; parameters, returns and",
     ";   for-ranges are inferred from register liveness (serialization-layer)",
+)
+_EXTENT_NOTE = (  # emitted only by a program carrying one: the notes are emitted bytes
+    "; a state field's `in` clause is that pointer's extent: the declared blocks",
+    ";   its derefs were observed to land in, and the only blocks an access may name",
 )
 
 
@@ -103,11 +108,21 @@ def _state_fields(view, decls, dispatch, aliases=None):
     return fields, inputs
 
 
-def _field_line(name, width, array, observed):
+def _field_line(name, width, array, observed, blocks=()):
     if array:
         return " %s: u%d[]" % (name, 8 * width)
+    ext = (" in " + ", ".join(blocks)) if blocks else ""
     obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
-    return " %s: u%d%s" % (name, 8 * width, obs)
+    return " %s: u%d%s%s" % (name, 8 * width, ext, obs)
+
+
+def _extent_names(extents, symbols):
+    """``{field name: block names}``: the extent map spelled as the state text names it."""
+
+    def spell(a):
+        return symbols.get(a) or G.addr_name(a)
+
+    return {spell(c): [spell(b) for b in sorted(bs)] for c, bs in extents.items()}
 
 
 def _state_lines(view, decls, dispatch):
@@ -157,6 +172,7 @@ class FrameProgram:
         pinned=(),
         prov0=(),
         init_census=None,
+        extents=(),
     ):
         self.play = play
         self.init = init
@@ -173,6 +189,7 @@ class FrameProgram:
         self.pinned = dict(pinned)  # spec 4.6: deref address -> the address the proof names
         self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
         self.init_census = dict(init_census or {})
+        self.extents = dict(extents)  # 2b: pointer cell -> the block bases its derefs land in
 
 
 def _init_proof(pc, cells, undeclared, computed):
@@ -424,8 +441,11 @@ def _hi_partner(stmts, i, hi, idx, v, regions):
     return None
 
 
-def program(model):
-    """The frame program of a committed block model (entry translation, rungs a-f)."""
+def program(model, extents=None):
+    """The frame program of a committed block model (entry translation, rungs a-g).
+
+    ``extents`` is this tune's row of Phase 2b (b0)'s observed-extent artifact, which
+    rung (g) reads; without one no web lifts and the text is the one rung (f) left."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -451,8 +471,12 @@ def program(model):
         if repr(procs) == before:
             break
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
-    proofs.append(framestack.drop_sp(procs, model.play))
+    proofs += framestack.drop_sp(procs, model.play, regions)
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
+    lifted, ext, lift_proofs = ptrlift.apply_rung(
+        model.mem0, decls, procs, state, symbols, resolved, extents
+    )
+    resolved.update(lifted)
     prov0, init_proofs, census = _init_copies(model, decls)
     return FrameProgram(
         model.play,
@@ -465,11 +489,12 @@ def program(model):
         symbols,
         procs,
         model.mem0,
-        proofs + deref_proofs + init_proofs,
+        proofs + deref_proofs + lift_proofs + init_proofs,
         resolved,
         pinned,
         prov0,
         census,
+        ext,
     )
 
 
@@ -479,6 +504,8 @@ def dumps(prog):
         prog = program(prog)
     head = ["frameprog %d" % FRAMEPROG_VERSION]
     head.extend(_NOTES)
+    if prog.extents:
+        head.extend(_EXTENT_NOTE)
     head.append("play $%04X" % prog.play)
     head.append("init $%04X" % prog.init)
     if prog.subtune:
@@ -489,7 +516,8 @@ def dumps(prog):
         head.append("}")
     if prog.inputs:
         head.append("inputs { %s }" % " ".join(prog.inputs))
-    body = ["state {"] + [_field_line(*f) for f in prog.state] + ["}"]
+    ext = _extent_names(prog.extents, prog.symbols)
+    body = ["state {"] + [_field_line(*f, ext.get(f[0], ())) for f in prog.state] + ["}"]
     data_out, _cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
@@ -518,6 +546,7 @@ def parse(text):
         doc.mem0,
         (),
         doc.resolved,
+        extents=doc.extents,
     )
 
 

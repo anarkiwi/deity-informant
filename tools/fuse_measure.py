@@ -53,26 +53,11 @@ WIDE = (
 def root_cells(addr):
     """Width-2 named reads inside an address: the pointer roots it walks.
 
-    A plain cell or indexed row read is a root at its base; a lo/hi column
-    pair packed in place (``packed_cells``) roots at the lo column."""
-    from deity_informant import frameproc
+    ``ptrcert.root_cells`` is the one definition, so this instrument, the census
+    and Phase 2a's certification cannot drift on what a pointer root is."""
+    from deity_informant import ptrcert
 
-    out, stack = [], [addr]
-    while stack:
-        n = stack.pop()
-        if not isinstance(n, tuple):
-            continue
-        if n[0] == "mem":
-            base, _idx = frameproc.addr_split(n[1])
-            if base is not None and n[2] == 2:
-                out.append(base)
-            stack.append(n[1])
-        elif n[0] == "op":
-            got = frameproc.packed_cells(n)
-            if got is not None:
-                out.append(got[0])
-            stack.extend(n[2])
-    return out
+    return ptrcert.root_cells(addr)
 
 
 def wide_class(addr):

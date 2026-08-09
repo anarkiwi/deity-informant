@@ -440,3 +440,90 @@ def test_inline_does_not_orphan_a_width_2_use_by_folding_into_a_later_one():
     flow.run()
     ctx = frameproc._InlineCtx(info, 0x1000, flow.liveout, flow.loop_head)
     assert frameproc._find_use(items, 1, "t16", val, ctx) != 2, "folded past the width-2 use"
+
+
+def test_a_factored_arm_rename_may_not_take_a_name_that_arm_binds():
+    """Two arms that both assign one local: renaming into it merges two values.
+
+    ``_factor_ifs`` unifies arm statements modulo a bijection over arm locals;
+    with a rung-(d0) slot named in both arms the bijection could map the else
+    arm's carry-in onto the slot, and the carry then read the sum it fed."""
+    ctx = ({"s0", "t0"}, {"s0", "t1", "t2"}, {}, set())
+    assert not frameproc._pair_names("s0", "t1", ctx)
+    assert ctx[2] == {} and ctx[3] == set()
+    assert frameproc._pair_names("t0", "t1", ctx)
+    assert ctx[2] == {"t1": "t0"}
+
+
+# ---- the state field's block extent (register-model-lift 2b) ----------------------
+_STATE_DOC = "frameprog 0\nplay $1000\ninit $0F00\nstate {\n %s\n}\n"
+
+
+def _extent_prog(state, extents, symbols=None):
+    return frameprog.FrameProgram(0x1000, 0x0F00, state=state, symbols=symbols, extents=extents)
+
+
+def test_block_extent_round_trips_as_an_int_keyed_side_map():
+    """The extent rides beside the 4-tuple fields: cell address -> block bases."""
+    state = [("zp_21", 2, False, []), ("zp_02", 1, False, [])]
+    text = frameprog.dumps(_extent_prog(state, {0x21: (0x7338, 0x7401)}))
+    assert " zp_21: u16 in m_7338, m_7401\n" in text and " zp_02: u8\n" in text
+    prog = frameprog.loads(text)
+    assert prog.extents == {0x21: (0x7338, 0x7401)} and prog.state == state
+    assert frameprog.dumps(prog) == text  # M-FP2 over the new production
+
+
+def test_block_extent_emits_ascending_and_before_the_observed_values():
+    """Ascending block order and the clause's seat are the canonical form."""
+    state = [("zp_21", 2, False, [0x01])]
+    text = frameprog.dumps(_extent_prog(state, {0x21: (0x7401, 0x1000, 0x7338)}))
+    assert " zp_21: u16 in m_1000, m_7338, m_7401 observed $01\n" in text
+    prog = frameprog.loads(text)
+    assert prog.extents == {0x21: (0x1000, 0x7338, 0x7401)}
+    assert frameprog.dumps(prog) == text
+
+
+def test_block_extent_is_spelled_through_the_symbol_table():
+    """Both ends of the clause are cell names, so an alias stands for either."""
+    state = [("ptr_0021", 2, False, [])]
+    text = frameprog.dumps(
+        _extent_prog(state, {0x21: (0x7338,)}, {0x21: "ptr_0021", 0x7338: "song"})
+    )
+    assert " ptr_0021: u16 in song\n" in text and "alias song = m_7338" in text
+    prog = frameprog.loads(text)
+    assert prog.extents == {0x21: (0x7338,)}
+    assert frameprog.dumps(prog) == text
+
+
+def test_a_field_without_an_extent_emits_exactly_what_it_did():
+    """The clause and its note are the whole delta: a program with none is unmoved."""
+    state = [("zp_21", 2, False, [])]
+    plain = frameprog.dumps(_extent_prog(state, {}))
+    assert " zp_21: u16\n" in plain and frameprog._EXTENT_NOTE[0] not in plain
+    note = "\n".join(frameprog._EXTENT_NOTE) + "\n"
+    got = frameprog.dumps(_extent_prog(state, {0x21: (0x7338,)}))
+    assert got.replace(note, "").replace(" in m_7338", "") == plain
+
+
+def test_the_in_keyword_serves_both_the_extent_and_the_for_range():
+    """One contextual-lexer keyword: `in` opens an extent and a for-range alike."""
+    text = _STATE_DOC % "zp_21: u16 in m_7338" + (
+        "sub_1000() {\n  for x in $02..$00 {\n    zp_02 = x\n  }\n  ret\n}\n"
+    )
+    prog = frameprog.loads(text)
+    assert prog.extents == {0x21: (0x7338,)}
+    assert "for x in $02..$00 {" in frameprog.dumps(prog)
+
+
+@pytest.mark.parametrize(
+    "line,msg",
+    [
+        ("zp_21: u8 in m_7338", "a block extent is a u16 field's"),
+        ("zp_21: u16[] in m_7338", "a block extent is a u16 field's"),
+        ("zp_21: u16 in nope", "not a canonical cell name"),
+    ],
+)
+def test_a_block_extent_is_a_scalar_u16_field_naming_canonical_cells(line, msg):
+    """An extent is a pointer's: a byte field, an array or an unnamed block refuses."""
+    with pytest.raises(ValueError, match=msg):
+        frameprog.loads(_STATE_DOC % line)

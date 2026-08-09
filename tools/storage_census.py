@@ -1,11 +1,12 @@
 """Per-cell storage census over an instrumented state image (docs/frameprog.md 7.10.13).
 
 The evaluator runs against a recording state image: per-cell reads and writes
-(net of the ``frameval.py:523`` write echo), first-access kind per frame, verdicts
+(net of the ``frameval.py:535`` write echo), first-access kind per frame, verdicts
 per declared state field in both units, and the top-address/read-back site lists.
 """
 
 import argparse
+import hashlib
 import json
 import multiprocessing as mp
 import re
@@ -13,7 +14,6 @@ import signal
 import sys
 import time
 from collections import Counter, defaultdict
-from functools import partial
 from pathlib import Path
 
 import _sweep
@@ -31,7 +31,9 @@ SCRATCH = frozenset(("framelocal", "writeonly", "data"))
 USAGE = """\
   python tools/storage_census.py                                # the whole cache
   python tools/storage_census.py --tunes Hubbard_Rob/Commando --frames full
-  python tools/storage_census.py --frames 1500 -o out/storage_census.json"""
+  python tools/storage_census.py --frames 1500 -o out/storage_census.json
+  python tools/storage_census.py --frames full --lift-extents out/ptr_extents_full.json
+  python tools/storage_census.py --frames 1500 --close        # 2b (b3) recurrence"""
 
 _CELL = re.compile(r"_([0-9A-Fa-f]{2,4})(_lo|_hi)?$")
 
@@ -46,6 +48,8 @@ class Image(bytearray):
         self.reads = defaultdict(int)
         self.writes = defaultdict(int)
         self.wframes = defaultdict(set)
+        self.recurred = None  # b3 --close: the frame this one's state image repeats
+        self.driven = False
 
     def __getitem__(self, a):
         if isinstance(a, int):
@@ -61,12 +65,12 @@ class Image(bytearray):
         bytearray.__setitem__(self, a, v)
 
 
-def build(entry, frames=None):
+def build(entry, frames=None, extents=None):
     """``(model, prog, nframes)``: the tune as ``lift_triage`` builds it.
 
     ``frames`` caps the decompile observation length as the doc's probe did;
     ``None`` is the full Songlengths length, bit-identical to the other tools'
-    build (the Phase 0 text gate compares the two at equal length)."""
+    build. ``extents`` is this tune's b0 row, which rung (g) reads."""
     from deity_informant import frameprog
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
@@ -76,17 +80,23 @@ def build(entry, frames=None):
     mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
     nframes = int(secs * 50) if frames is None else min(int(secs * 50), frames)
     model, _ev = S.decompile(mem, init, play, nframes, sub)
-    return model, frameprog.program(model), nframes
+    return model, frameprog.program(model, extents), nframes
 
 
-def evaluate(model, prog, nframes):
-    """``(image, frames run, fault or None)``: the instrumented evaluation."""
+def evaluate(model, prog, nframes, probe=None, close=False):
+    """``(image, frames run, fault or None)``: the instrumented evaluation.
+
+    ``probe`` is Phase 2b (b0)'s address observer: the run already resolves every
+    deref concretely, so recording where each web's derefs landed costs one set
+    add per deref and nothing at all at a site carrying no root."""
     from deity_informant import frameprog, frameval
 
     trace, _walker = frameprog.iota(model, nframes)
-    ev = frameval.Evaluator(prog, trace)
+    ev = frameval.Evaluator(prog, trace, probe=probe)
     image = Image(ev.m)
     ev.m = image
+    image.driven = bool(frameprog.declared_inputs(trace))
+    seen = {}
     fault, ran = None, 0
     for f in range(nframes):
         ev.frame = f
@@ -97,7 +107,25 @@ def evaluate(model, prog, nframes):
             fault = "frame %d: %s" % (f, exc)
             break
         ran = f + 1
+        if close and image.recurred is None:
+            key = state_key(ev, image)
+            image.recurred = seen.get(key)
+            seen.setdefault(key, f)
     return image, ran, fault
+
+
+def state_key(ev, image):
+    """The frame-boundary state a recurrence test compares: the image and ``sp``."""
+    sp = 0 if ev.sp is None else ev.r[ev.sp] & 0xFF
+    return hashlib.sha256(bytes(image)).digest() + bytes((sp,))
+
+
+def closed_run(image, ran, fault):
+    """b3's ``--close``: does this finite run stand for the infinite one?
+
+    Only where the state image and ``sp`` recurred at a frame boundary and the trace
+    declares no per-frame input, so the frame map is a function of the state alone."""
+    return image.recurred is not None and not image.driven and fault is None and ran > 0
 
 
 def cell_classes(image):
@@ -128,7 +156,8 @@ def rendered_fields(text):
     """Rendered ``state { }`` fields as ``{name: (base cell, width)}``.
 
     The doc's declared-field unit: only address-named fields map to cells, so
-    aliased and flag names fall out exactly as the 7.10.13 probe dropped them."""
+    aliased and flag names fall out exactly as the 7.10.13 probe dropped them.
+    The type is the first token, since ``observed``/``in`` clauses follow it."""
     out, in_state = {}, False
     for line in text.splitlines():
         s = line.strip()
@@ -142,7 +171,7 @@ def rendered_fields(text):
                 base = int(name.strip().rsplit("_", 1)[-1], 16)
             except ValueError:
                 continue
-            out[name.strip()] = (base, 2 if width.strip() == "u16" else 1)
+            out[name.strip()] = (base, 2 if width.split()[0] == "u16" else 1)
     return out
 
 
@@ -218,6 +247,34 @@ def top_sites(prog):
     for _e, _p, _r, stmts in prog.procs:
         walk(stmts, None, False)
     return out
+
+
+def census_roots(tops):
+    """``ptr_roots`` as this instrument derives it: the roots of the top loads."""
+    return sorted({c for rec in tops["load_top"] for c in rec.get("roots", ())})
+
+
+def top_roots(prog):
+    """The pointer roots of the top-wide loads, read off ``ptrcert``'s own walk.
+
+    The same population ``ptr_roots`` names, derived by the Phase 2a analysis
+    rather than by this file: where the two disagree the row says so, which is
+    the "two instruments agree store for store" discipline for roots."""
+    from deity_informant import ptrcert
+
+    per, _loose = ptrcert.sites(prog)
+    return sorted("$%04X" % c for c, n in per.items() if n.get("load"))
+
+
+def certification(model, prog, extents=None, closed=False):
+    """Phase 2a's per-root block-rooting record for one program (read-only).
+
+    ``extents`` is b0's row for this same run, which 2b (b3) compares its static
+    enumeration against; ``closed`` says the run reached recurrence."""
+    from deity_informant import ptrcert, streams
+
+    seen = None if extents is None else ptrcert.observed_blocks(extents["records"])
+    return ptrcert.summary(prog, streams.classify(model), seen, closed)
 
 
 def readback_sites(prog):
@@ -303,11 +360,33 @@ def crossproc(prog, cells):
     return {a: len(es) for a, es in per.items() if len(es) > 1}
 
 
-def census(model, prog, nframes):
-    """One tune's storage row from an in-memory build: the testable core."""
-    from deity_informant import frameprog
+def work_list(cert, ext):
+    """Phase 2b (b5): the webs rung (g) may rewrite, and the sites they carry.
 
-    image, ran, fault = evaluate(model, prog, nframes)
+    The lift's own column (b1) intersected with an observed extent the registry
+    maps (b0): a web whose derefs left the declared data keeps today's spelling,
+    so it is no target however well its definitions spell."""
+    from deity_informant import ptrextent
+
+    mapped = ptrextent.mapped_cells(ext["records"])
+    fit = [r for r in cert["records"] if r["eligible"] and int(r["root"][1:], 16) in mapped]
+    return {
+        "webs": len(fit),
+        "loads": sum(r["top_loads"] for r in fit),
+        "stores": sum(r["top_stores"] for r in fit),
+        "blocks": sum(
+            len(e["blocks"]) for e in ext["records"] if e["root"] in {r["root"] for r in fit}
+        ),
+        "roots": [r["root"] for r in fit],
+    }
+
+
+def census(model, prog, nframes, close=False):
+    """One tune's storage row from an in-memory build: the testable core."""
+    from deity_informant import frameprog, ptrextent
+
+    probe = ptrextent.Probe()
+    image, ran, fault = evaluate(model, prog, nframes, probe, close)
     cls = cell_classes(image)
     decl = rendered_fields(frameprog.dumps(prog))
     decl_verdict = {n: field_verdict(cls, range(b, b + w)) for n, (b, w) in decl.items()}
@@ -346,7 +425,7 @@ def census(model, prog, nframes):
         "stack_stores": len(tops["store_stack"]),
         "top_load_sites": tops["load_top"],
         "top_store_sites": tops["store_top"],
-        "ptr_roots": sorted({c for rec in tops["load_top"] for c in rec.get("roots", ())}),
+        "ptr_roots": census_roots(tops),
         "wide_classes": dict(Counter(rec["shape"] for rec in tops["store_top"])),
         "readback_sites": len(rbs),
         "readback": rbs,
@@ -356,24 +435,128 @@ def census(model, prog, nframes):
         "dyn_stmts": dyn,
         "switch_gotos": swgs,
     }
+    ext = ptrextent.summary(ptrextent.extents(prog, probe.hits), ran)
+    ext["closed"] = closed_run(image, ran, fault)
+    cert = certification(model, prog, ext, ext["closed"])
+    row["cert"] = cert
+    row["cert_agree"] = row["ptr_roots"] == top_roots(prog)
+    row["extents"] = ext
+    row["work_list"] = work_list(cert, row["extents"])
     if fault is not None:
         row["eval_fault"] = fault
     return row
 
 
-def one(entry, frames):
+def one(entry, frames, extents=None, close=False):
     """One tune's census row, or the exception that stopped it."""
     try:
         signal.alarm(_sweep.CAP_S)
         t0 = time.monotonic()
-        model, prog, nframes = build(entry, frames)
+        model, prog, nframes = build(entry, frames, extents)
         row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
-        row.update(census(model, prog, nframes))
+        row.update(census(model, prog, nframes, close))
         return row
     except Exception as exc:  # pylint: disable=broad-except
         return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
     finally:
         signal.alarm(0)
+
+
+def _cert_totals(done):
+    """Phase 2a's coverage: roots certified, what each premise cost, refusals."""
+    from deity_informant import ptrcert
+
+    ref, prem, shapes, kinds, loose = Counter(), Counter(), Counter(), Counter(), Counter()
+    enum = Counter()
+    for r in done:
+        c = r["cert"]
+        ref.update(c["refusals"])
+        prem.update(c["premises"])
+        shapes.update(c["shapes"])
+        kinds.update(c["def_kinds"])
+        loose.update(c["unrooted"])
+        enum.update(c["extent"])
+    have = [r for r in done if r["cert"]["roots"]]
+
+    def per(k):
+        return sum(r["cert"][k] for r in done)
+
+    return {
+        "cert_roots": per("roots"),
+        "cert_block_rooted": per("block_rooted"),
+        "cert_ready": per("cursor_ready"),
+        "cert_top_loads": per("top_loads"),
+        "cert_rooted_loads": per("rooted_loads"),
+        "cert_ready_loads": per("ready_loads"),
+        "cert_top_stores": per("top_stores"),
+        "cert_rooted_stores": per("rooted_stores"),
+        "cert_ready_stores": per("ready_stores"),
+        "cert_unrooted": dict(loose),
+        "cert_def_kinds": {k: kinds[k] for k in ptrcert.KINDS},
+        "cert_premises": dict(prem),
+        "cert_shapes": dict(shapes),
+        "cert_extent": dict(enum),
+        "cert_closed_tunes": sum(1 for r in done if r["extents"].get("closed")),
+        "cert_refusals": dict(ref),
+        "cert_refusal_tunes": {
+            k: sum(1 for r in done if k in r["cert"]["refusals"]) for k in ptrcert.REFUSALS
+        },
+        "tunes_with_roots": len(have),
+        "tunes_all_block_rooted": sum(
+            1 for r in have if r["cert"]["block_rooted"] == r["cert"]["roots"]
+        ),
+        "tunes_all_ready": sum(1 for r in have if r["cert"]["cursor_ready"] == r["cert"]["roots"]),
+        "cert_disagree": sorted(r["tune"] for r in done if not r["cert_agree"]),
+        **_lift_totals(done),
+    }
+
+
+def _lift_totals(done):
+    """Phase 2b's two columns: b1's eligibility, b0's extents, b5's work list."""
+    from deity_informant import ptrcert, ptrextent
+
+    lift, alone, prem, defs, held = Counter(), Counter(), Counter(), Counter(), Counter()
+    ext = Counter()
+    for r in done:
+        lift.update(r["cert"]["lift_refusals"])
+        alone.update(r["cert"]["lift_alone"])
+        prem.update(r["cert"]["lift_premises"])
+        defs.update(r["cert"]["lift_defs"])
+        held.update(r["cert"]["held_writers"])
+        ext.update(r["extents"]["refusals"])
+    return {
+        "lift_eligible": sum(r["cert"]["eligible"] for r in done),
+        "lift_eligible_loads": sum(r["cert"]["eligible_loads"] for r in done),
+        "lift_eligible_stores": sum(r["cert"]["eligible_stores"] for r in done),
+        "lift_refusals": {k: lift[k] for k in ptrcert.LIFT_REFUSALS if lift[k]},
+        "lift_alone": {k: alone[k] for k in ptrcert.LIFT_REFUSALS if alone[k]},
+        "lift_premises": dict(prem),
+        "lift_defs": dict(defs),
+        "lift_held_writers": dict(held),
+        "lift_refusal_tunes": {
+            k: sum(1 for r in done if k in r["cert"]["lift_refusals"])
+            for k in ptrcert.LIFT_REFUSALS
+        },
+        "extent_webs": sum(r["extents"]["webs"] for r in done),
+        "extent_observed": sum(r["extents"]["webs_observed"] for r in done),
+        "extent_mapped": sum(r["extents"]["webs_mapped"] for r in done),
+        "extent_via": sum(r["extents"]["webs_via"] for r in done),
+        "extent_blocks": sum(r["extents"]["blocks"] for r in done),
+        "extent_addrs": sum(r["extents"]["addrs"] for r in done),
+        "extent_unmappable_addrs": sum(r["extents"]["unmappable_addrs"] for r in done),
+        "extent_unmappable_short": sum(r["extents"]["unmappable_short"] for r in done),
+        "extent_webs_short": sum(r["extents"]["webs_short"] for r in done),
+        "extent_overshoot": max((r["extents"]["overshoot"] for r in done), default=0),
+        "extent_refusals": {k: ext[k] for k in ptrextent.REFUSALS},
+        "extent_refusal_tunes": {
+            k: sum(1 for r in done if r["extents"]["refusals"].get(k)) for k in ptrextent.REFUSALS
+        },
+        "work_webs": sum(r["work_list"]["webs"] for r in done),
+        "work_loads": sum(r["work_list"]["loads"] for r in done),
+        "work_stores": sum(r["work_list"]["stores"] for r in done),
+        "work_blocks": sum(r["work_list"]["blocks"] for r in done),
+        "work_tunes": sum(1 for r in done if r["work_list"]["webs"]),
+    }
 
 
 def _totals(done):
@@ -383,6 +566,7 @@ def _totals(done):
         wide.update(r["wide_classes"])
         roots.update(r["ptr_roots"])
     return {
+        **_cert_totals(done),
         "state_decl_total": sum(r["state_decl"] for r in done),
         "scratch_total": sum(r["scratch"] for r in done),
         "persistent_total": sum(r["persistent"] for r in done),
@@ -406,6 +590,44 @@ def _totals(done):
     }
 
 
+def artifact(out):
+    """Phase 2b (b0)'s artifact: per tune, the horizon and every web's extent."""
+    return {
+        "frames": out["frames"],
+        "tunes": out["tunes"],
+        "rows": [
+            {"tune": r["tune"], "name": r["name"], "extents": r["extents"]}
+            for r in out["rows"]
+            if "extents" in r
+        ],
+    }
+
+
+def worklist_lines(done, cap=20):
+    """Phase 2b (b5): the measured target, per tune, printed before rung (g) exists."""
+    rows = [r for r in done if r["work_list"]["webs"]]
+    total = sum(r["work_list"]["webs"] for r in rows)
+    out = ["", "work list (b5): %d web(s) over %d tune(s)" % (total, len(rows))]
+    if len(rows) > cap:
+        return out + ["  per-tune rows in the artifact; rerun with --tunes to print them"]
+    for r in rows:
+        w = r["work_list"]
+        out.append(
+            "  %-46s %2d web(s) %4d load(s) %2d store(s)  %s"
+            % (r["tune"], w["webs"], w["loads"], w["stores"], ", ".join(w["roots"]))
+        )
+    return out
+
+
+def _lift_rows(path):
+    """``{tune: [web record]}`` rung (g) reads, empty where no artifact is named."""
+    from deity_informant import ptrextent
+
+    if not path:
+        return {}
+    return ptrextent.records(json.loads(Path(path).read_text(encoding="utf-8"))["rows"])
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
@@ -416,15 +638,32 @@ def main():
     ap.add_argument("--frames", default="1500", help="frame cap, or 'full' (default 1500)")
     ap.add_argument("-j", "--procs", type=int, default=32)
     ap.add_argument("-o", "--out", default=str(ROOT / "out" / "storage_census.json"))
+    ap.add_argument(
+        "--extents",
+        default=str(ROOT / "out" / "ptr_extents.json"),
+        help="Phase 2b (b0)'s observed-extent artifact, keyed and horizoned per tune",
+    )
+    ap.add_argument(
+        "--lift-extents",
+        help="a b0 artifact fed to rung (g): the build names the webs it maps",
+    )
+    ap.add_argument(
+        "--close",
+        action="store_true",
+        help="2b (b3): test each run for recurrence, so a finite run may stand for the"
+        " infinite one and license its observed extent",
+    )
     args = ap.parse_args()
 
     frames = None if args.frames == "full" else int(args.frames)
     tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
     if not tunes:
         sys.exit("no cached tune matched")
+    lifts = _lift_rows(args.lift_extents)
     t0 = time.monotonic()
     with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
-        rows = _sweep.check_rows(pool.map(partial(one, frames=frames), tunes))
+        jobs = [(e, frames, lifts.get(_sweep.tune_id(e[0])), args.close) for e in tunes]
+        rows = _sweep.check_rows(pool.starmap(one, jobs))
     done = [r for r in rows if "error" not in r]
     out = {
         "tunes": len(done),
@@ -436,7 +675,10 @@ def main():
     }
     Path(args.out).parent.mkdir(exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
+    Path(args.extents).write_text(json.dumps(artifact(out), indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in out.items() if k not in ("rows", "refused")}, indent=1))
+    for line in worklist_lines(done):
+        print(line)
     print("%d refused" % len(out["refused"]))
 
 

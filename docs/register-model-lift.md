@@ -244,6 +244,10 @@ currently 621/623 clean) holding or improving.
 4. **Boundary shadow variables** (P3). Deletes the read-back form; Gate FP
    cannot see it (§7.10.12), so its gate is structural: zero loads of
    `$D400`–`$D414` anywhere in emitted text, asserted by `lift_residue`.
+5. **Interpreter recovery** (P4, §10). Independent of P1–P3 in its subject —
+   it names cells P1 must leave declared — and dependent on them in its
+   machinery. Sized before built; the standing governance violation it
+   discharges is named there.
 
 ## 8. Risks, stated against the record
 
@@ -275,3 +279,115 @@ currently 621/623 clean) holding or improving.
 - No deletion of the `sid.reg[i]` byte view: it remains the model's answer for
   a genuinely unresolvable index, and the covering-sweep and ord-section
   arguments keep it load-bearing.
+
+## 10. P4 (proposed, Phase 7): the bespoke VM is a storage class
+
+### 10.1 A standing violation of §9, named
+
+`deity_informant/follin_script.py` hardcodes the Follin opcode table
+(`_ARITY = {0x80: 3, 0x81: 0, 0x82: 1, ...}`), transcribed by hand from the
+docs/follin-dispatch-study.md grammar. That is exactly the per-tune rewrite §9
+forbids: a finding about one driver written down as a constant instead of
+becoming an analysis. It is a debt, not a feature. **Phase 7 lands only when
+that table is deleted and the same arities are recovered**; until then the
+module is a named exception carrying a pointer to this section, and no new
+per-tune table may join it.
+
+### 10.2 The framing, one level up
+
+§3's design error is generalizing per shape where the residue is per class.
+A script-interpreter driver repeats it above the storage layer: its cells are
+not scratch and not per-tune state in any interesting sense — they are the
+**registers of a virtual machine the driver implements**, one per operator of
+its own instruction set. The lift currently sees ~60 anonymous cells; the
+machine has ~20 named registers times three voices.
+
+This is why P1 yields so little here and why that is correct, not a defect:
+R3 measures Follin's scratch fraction at 36%/34%, the corpus's low end, and
+an interpreter's registers hold *between* instructions, so they are genuinely
+live across the frame boundary. **P1 must leave them declared. Phase 7 is what
+names them.** The target is therefore `unnamed_addr` — the largest census
+class (9,101 sites at 2c) — and `state { }` structure, not promotion.
+
+Evidence that the class is real and hand-shaped: Ghouls_n_Ghosts carries the
+seven's worst `unnamed_addr` (81) and worst census total (161) while emitting
+955 lines, and its 114 declared `state { }` fields are three mirrored copies
+of one voice's register file. The primary source confirms the reading from the
+programmer's side (Tim/Geoff Follin music development disks, Software
+Creations, reference material only — not vendored): the driver's variables are
+*instruction operands*, declared with an assembler idiom (`LENA: EQU !-1`)
+that names the operand byte of the instruction just emitted. For this family
+the register file is the code stream, which is why no data declaration names
+those cells.
+
+### 10.3 The detector: a join of two landed analyses
+
+Neither half detects an interpreter; the conjunction does, and both conjuncts
+already carry proofs.
+
+1. **A dispatch head** — a `jmpd` site whose target set is the zip
+   `{T_lo[i] | T_hi[i]<<8}` over two immutable tables indexed by one variable.
+   This is the cross-block single-writer-pair lemma (docs/soundness.md),
+   landed, proven on Ghouls' three sites.
+2. **An instruction pointer** — a cursor web (Phase 2a/2b certification) whose
+   deref supplies that head's index, advanced by a batch add and rewritten
+   wholesale by some arms.
+3. **The join** — *the dispatch index is a deref of the cursor.* One
+   predicate over two existing records.
+
+### 10.4 Operator recovery, then roles
+
+Per handler arm, three facts, none of them semantic:
+
+- **arity**: the net `Y` delta from dispatch entry to the arm's rejoin, which
+  MUST be constant on all paths — a value-walk fact, so Phase 2.5's lattice is
+  the dependency and the thing that replaces `_ARITY`;
+- **effect set**: the cells the arm writes, including SMC operand cells;
+- **control class**: an arm rejoining the advance is an *effect* operator; an
+  arm re-entering the fetch has rewritten the pointer and is a *control*
+  operator. That one bit separates loop/call/ret/jump from the rest with no
+  semantics required.
+
+The operator set then classifies storage by role rather than per cell:
+
+| role | test | disposition |
+|---|---|---|
+| VM register | written by exactly one operator arm, read by the effect engine | declared and named after its operator; leaves `unnamed_addr` |
+| VM machine state | written by the fetch/advance/control arms — pointer, return stack, loop start and counter | the genuine per-tune state; stays |
+| operator temp | written and dead within one arm | frame-local; P1 promotes it normally |
+| stream datum | the block the cursor walks | a declared datum with the recovered grammar |
+
+One verdict per role, not per cell — §3's argument applied to the operator set.
+
+### 10.5 Per-voice unification
+
+A voiced driver emits its operator set once per voice (Ghouls: three dispatch
+heads, handler tables at a fixed stride, 63 handler entries for 21 operators;
+the frameprog notes already state "per-voice unification is not applied").
+Detection is isomorphism of the arm sets up to a constant cell-offset
+permutation. Where total, emit one operator set over a voice record; **any
+asymmetry refuses and keeps the copies**.
+
+### 10.6 Refusals, gates, and what is not claimed
+
+Refusal vocabulary, per construct and never per tune: `vm_arity` (an arm's
+`Y` delta is not constant), `vm_alias` (a role cell is also written from
+outside the operator set), `vm_asymmetric` (the per-voice isomorphism is not
+total), `vm_open` (the dispatch head refuses the closure lemma).
+
+Soundness is inherited, not extended: the dispatch stays `evidence`-grade
+unless the paired-index lemma proves it, and the walker still faults on any
+operand word outside the observed set. Gates: `gate_sweep` unchanged;
+`unnamed_addr` down; census sum down; `follin_script._ARITY` deleted with its
+arities recovered and equal, which is the executable test that the mechanism
+is real rather than a second transcription.
+
+**Step 0 is an instrument, and nothing below it starts until it is a number.**
+The upper bound is measured — `switch goto` at 195 sites / 141 tunes (R8) —
+but the VM population is the join of §10.3, which is **unsized**. That number
+decides whether this is a family fix or a corpus one, and both analyses
+already emit the records it needs.
+
+Not claimed: that this shortens P1. It does not; it names what P1 correctly
+refuses. Not claimed: that the corpus is full of interpreters — one driver
+family is confirmed and the rest is the instrument's to answer.
