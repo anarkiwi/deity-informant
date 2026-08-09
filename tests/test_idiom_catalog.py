@@ -4,6 +4,9 @@ Every row is exercised on the shape it was derived from, ``cover`` accounts a
 composed slice to the last node, a shape outside the catalog is reported rather
 than absorbed, and ``obligations`` enumerates both slices off a built program."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from deity_informant import frameproc as P
@@ -11,6 +14,7 @@ from deity_informant import frameprog
 from deity_informant import idioms
 
 ROW = {r.id: r for r in idioms.ROWS}
+CATALOG = Path(__file__).resolve().parent.parent / "docs" / "idiom-catalog.md"
 
 
 def op(mn, kids, w=1):
@@ -126,6 +130,19 @@ def test_rows_are_uniquely_named_and_carry_a_normal_form():
     assert len(set(ids)) == len(ids)
     assert all(i == i.lower() and " " not in i and "_" not in i for i in ids)
     assert set(idioms.FORMS) == set(ids)
+
+
+def test_the_doc_rows_table_and_the_recognizers_are_one_ordered_set():
+    """docs/idiom-catalog.md's Rows table is the catalog; ROWS is its recognizer set.
+
+    The doc claims the two sets (and their match order) are equal; this is the
+    gate that makes the claim true."""
+    doc = re.findall(
+        r"^\| `([a-z0-9-]+)` \| (.+?) \| \d+ \| \d+ \|$",
+        CATALOG.read_text(encoding="utf-8"),
+        re.M,
+    )
+    assert [(i, f.strip("`")) for i, f in doc] == [(r.id, r.form) for r in idioms.ROWS]
 
 
 def test_a_lone_shift_is_no_chain_and_a_byte_copy_is_no_word_half():

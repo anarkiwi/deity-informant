@@ -13,11 +13,18 @@ admissions license (docs/soundness.md, docs/eqlift-adoption.md §4).
 
 | column | content |
 |---|---|
-| `id` | stable kebab-case key; the recognizer in `deity_informant/idioms.py` carries the same key, and a test gates the two sets equal |
+| `id` | stable kebab-case key; the recognizer in `deity_informant/idioms.py` carries the same key, and `tests/test_idiom_catalog.py` parses this document to gate the two sets (and their order) equal |
 | canonical cite | player and label/address in the canonical source the idiom is read from |
 | exemplar cite | `tools/disasm_tune.py` range in a corpus exemplar carrying it |
 | families | which of the families below spell it |
 | normal form | the dialect term extraction must pick, or `named-unknown` |
+
+The cite and families columns are **the stage-1 remainder**: the rows below
+carry ids, normal forms and witness counts today, and their warrant is the
+exemplars' lifted dataflow, not yet a reading of the canonical sources. The
+anchors below (with their trust tiers) exist so those cites can be written;
+until a row carries them, it claims "the exemplars spell this", nothing more.
+The remainder is tracked in the plan's decision log.
 
 A `named-unknown` row is a refusal on the record: the idiom is inventoried and
 its sites are cited, and no normal form is claimed for it yet. It is not a gap
@@ -64,7 +71,7 @@ of 624 (57.7%)**.
 | family | exemplar | tunes | SIDId name | canonical source |
 |---|---|---:|---|---|
 | Hubbard (hand-coded) | `Hubbard_Rob/Commando` | 9 | `Rob_Hubbard` | McSweeney's commented disassembly |
-| Galway 1st gen (1984–mid-1987) | `Galway_Martin/Comic_Bakery` | 3 | `Martin_Galway` | the composer's own sources |
+| Galway 1st gen (1984–mid-1987) | `Galway_Martin/Comic_Bakery` | 1 | `Martin_Galway` | the composer's own sources |
 | Galway 2nd gen | `Galway_Martin/Athena` | 1 | `Martin_Galway` | not published |
 | Follin (script interpreter) | `Follin_Tim/Ghouls_n_Ghosts`, `Agent_X_II` | 10 | `Stephen_Ruddy` | docs/follin-dispatch-study.md §3 (in-repo) |
 | GoatTracker 2 export | `Jammer/Grid_Runner` | 75 | `GoatTracker_V2.x` | GoatTracker 2 `player.s` |
@@ -78,6 +85,14 @@ of 624 (57.7%)**.
 | SID-Wizard export | `Chabee/Angry_Birds` | 19 | `Hermit/SidWizard_V1.x` | SID-Wizard `player.asm` |
 | Master Composer | `Buckley_Kevin/Down_Under` | 15 | `Master_Composer` | — |
 | defMON | `Goto80/Automatas` | 6 | `DefMon` | undefmon `defmon.asm` |
+
+The `tunes` column is the exemplar's **cluster size**, not the family's corpus
+population — the column sums to the 360 the sixteen cover. Where SIDId names
+more tunes than the cluster holds, the family fragments across clusters: SIDId
+names five `Martin_Galway` tunes, and the three outside the two exemplars'
+clusters (`Commando_High-Score`, `Rambo_First_Blood_Part_II`, `Wizball`) sit
+in clusters with no exemplar. The anchors below still read Rambo and Wizball
+directly, because the alignment targets the image, not the cluster.
 
 Each exemplar is its cluster's highest-coverage member (most executed opcode
 grams), except where a specific tune anchors the family: `Grid_Runner` is the
@@ -102,6 +117,28 @@ Two findings the clustering forced, both now folded into the table above:
   player 1984–mid-1987 and names `Athena` as the first 2nd-generation player.
   The fingerprint splits them independently, and only the 1st generation has
   published source.
+
+### The next exemplars, already surfaced
+
+The same two instruments name the largest clusters the set does not cover, so
+the additions the plan calls for are queued, not waiting to be discovered.
+Cluster sizes from `out/family_cluster.json`, names from
+`out/player_id_corpus.json`:
+
+| cluster size | SIDId name | note |
+|---:|---|---|
+| 10 | `GoatTracker_V1.x` | a **second** V1 cluster; `Aces_High`'s holds only 4 of SIDId's 15 |
+| 10 | `DMC`/`DMC_V5.x` | a **third** DMC cluster, containing neither DMC exemplar |
+| 9 | `RoMuzak_V6.x` | no exemplar |
+| 8 | `DefleMask_v12` | no exemplar |
+| 6 | `Electrosound` | no exemplar |
+| 6 | `CheeseCutter_2.x` | mixed signatures (Laxity-player derivative) |
+| 6 | `Laxity_NewPlayer_V21` | no exemplar |
+
+Adding these seven raises coverage 360 → 415 of 624 (66.5%). The GoatTracker
+and DMC rows carry the standing lesson: families fragment **by build**, so
+"one exemplar per family" is really one exemplar per cluster, and a family's
+claim extends only as far as its exemplar's cluster.
 
 ### Anchors
 
