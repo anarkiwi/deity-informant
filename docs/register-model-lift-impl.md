@@ -15,8 +15,8 @@ unverified and consult the disassembly before acting on it. Both prior course
 corrections on this plan were exactly that: a claim acted on without reading
 the machine, resolved in minutes once the instructions were on the record.
 
-Status: in execution. **Phases 0, 1, 2a and the whole of 2b (b0–b5) are DONE**;
-2c and 3 are next (both depend on 2a's bounds only). 2b's rewrite lifted
+Status: in execution. **Phases 0, 1, 2a, the whole of 2b (b0–b5) and 2c are
+DONE**; **Phase 3 is next**. 2b's rewrite lifted
 **251 of 325 webs over 116 tunes, retiring 1,000 ⊤ loads**; the whole 74-web
 residue is `web_unnamed` — rung (d)'s read-side refusal, pinned by the
 `dual_store_*` fixture family. b3's static enumeration then took block-rooting
@@ -24,8 +24,11 @@ from **441 to 480 roots** and certified **99 of the 103 extents it claims**
 against b0's observed run; what it does not reach is the registry's coverage of
 computed rows (`extent_unmappable`, 399 webs, now **Phase 6's** to answer,
 pinned by `computed_rows`). **Zero webs in the measured residue are unliftable
-in principle** (§6, byte-residue challenge). "MUST" is a gate. §5 records the
-prototypes and the shredder; §6 is the decision log.
+in principle** (§6, byte-residue challenge). 2c then took the stack fabric out
+of 47 more tunes, moving R7's cap from 326 to **373 of 624**; what it withdrew is as binding as what
+it landed (§2 2c correction 2: a structured statement list is not a CFG).
+"MUST" is a gate. §5 records the prototypes and the shredder; §6 is the
+decision log.
 
 ## 0. The evidence base: one tune per driver family
 
@@ -125,9 +128,10 @@ machine shapes** (word-store rate retired, §7.10.10). Every phase MUST move
 its named classes down and MUST NOT move the summed census up per tune — the
 per-tune **sum** is the law: a phase that turns memory into values moves
 residue between classes (a promoted word's halves land in the byte-lane
-classes; Phase 4 is where they leave). Post-Phase-1 cap: while 298 tunes wear
-refused `sp` fabric the headline is capped at **326 of 624**; Phase 2c owns
-releasing the cap.
+classes; Phase 4 is where they leave). The cap is 624 less the tunes wearing
+refused `sp` fabric: **326 of 624** after Phase 1 (298 tunes), **373 of 624**
+after 2c (251). The remaining 251 are ledgered per class at §2 2c; the
+headline itself stays 0 while `unnamed_addr` and the byte-lane classes stand.
 
 **R8 — Does the Follin dispatch break the plan?** No. The emitted dialect is
 already structured: the SMC dispatchers arrive as `switch goto` over the
@@ -268,7 +272,9 @@ have forfeited a third of Phase 3's yield (the floor is `frameproc
 .addr_floor`, landed in 2a; `sp_scratch_floor` fixture pins the promise).
 
 Shredder: `sp_spill` flipped to a hard pass at landing (marker removed in
-the same change); `sp_unbalanced` stands as the invariant.
+the same change); the invariant fixture this phase wrote as `sp_unbalanced`
+is stack-balanced and refused on its loop edge, so 2c renamed it
+`sp_loop_edge` and gave `sp_unbalanced` a genuine member (§2 2c correction 2).
 
 ### Phase 2 — sequence traffic becomes table cursors
 
@@ -624,30 +630,152 @@ defs) and `_reload` through a pack-and-mask (3 defs, Slaygon) are ledgered
 precision items, joined by b3's row-index gap (correction 3) and its
 deliberate isolation from the alias span.
 
-#### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
+#### 2c — the stack fabric leaves (`raw_sp` -> 0-or-refused, per procedure) — DONE
 
-Phase 1's finding made a phase: two thirds of the surviving class is fabric
-only `drop_sp` removes, blocked by `sp_linked` (307 tunes) and
-`sp_unbalanced` (201). Two rules, premises supplied by 2a and Phase 1:
+**Landed**: `framestack._SpFlow` — the per-procedure displacement walk, which
+also records where the procedure's calls stand — `_balances`, the balance
+verdict as a least fixpoint over the call graph, and the `sp_linked` relaxation
+in `drop_sp` with `_page_one_free` beside it. `apply_rung` reads the same
+verdict, so rung (d0s) now promotes spills the old per-procedure walk refused.
 
-- **The `sp_linked` relaxation.** Sound form: a raw `call`'s linkage may be
-  dropped where the program makes no surviving page-one access other than
-  through `sp` itself — computed per tune from 2a's records (an access
-  certified into a declared extent is bounded off page one) plus
-  `addr_floor`. Refusal stays `sp_linked` where an uncertified access
-  survives. Direct prize measured at 71 tunes / 217 sites; the real yield is
-  the compound with the balance rule, re-measured at landing.
-- **The balance fixpoint.** `_sp_state` currently demands the entry
-  displacement at every label, `goto`, `ret` and loop edge; the rule becomes
-  a worklist fixpoint over those edges, so a procedure whose displacement
-  provably returns to entry on every path balances even with an interior
-  nonzero-displacement label. `sp_fix_balance` is the xfail; `sp_unbalanced`
-  remains the invariant for genuine imbalance.
+*The two rules that landed*:
 
-Gates: full `gate_sweep`, no verdict regression; census `raw_sp` monotone
-down, sum down; the ledger MUST NOT grow without a rule change; R7's cap
-(326) is this phase's number to release. `low_held_cursor` re-enters 2b's
-work list when the fabric leaves (its xfail names this phase).
+- **Balance is interprocedural.** A `pcall` that hands `sp` back preserves the
+  caller's displacement exactly where its callee balances, so the verdict is a
+  least fixpoint over the call graph: nothing assumed, a cycle stays unproven,
+  only callers re-asked. `sp_returned` retires with it — once balance is proven
+  the returned `sp` is what the callee was given, and `_strip_sp` already
+  dropped it — and so does its mirror inside `_sp_uses` (a `pcall` returning
+  `sp` was `sp_read`).
+- **The linkage rests on displacement, not on page one.** The machine keeps
+  pushing return bytes into page one, and dropping the program's own
+  displacement moves where they land; so the linkage drops where **every call
+  in the program stands at the entry displacement** (the push cannot move), or
+  where **no surviving access can name page one** (nothing reads what moved).
+  The premise is asked of `pcall`s too: `frameval` pushes a return address for
+  every call, the real one for a raw `call`, a synthetic one for a `pcall`.
+  Refusal stays `sp_linked` otherwise. `_page_one_free` is the second disjunct,
+  computed from `addr_range`/`span` (the ONE span rule) and `addr_bits` with
+  2a's `addr_floor` as its lower bound.
+
+| | before (`9c91720`, post-b3) | after |
+|---|---:|---:|
+| **Gate FP, 300 frames** | 622 clean / 623 built | **622 clean / 623 built** |
+| — diverged | `Rambo` (C) | **`Rambo` (C) only** |
+| Gate FP, seven review tunes, full length | 7 / 7 | **7 / 7** |
+| census `raw_sp` | 2,379 / 298 tunes | **2,117 / 251 tunes** |
+| census `unnamed_addr` | 9,129 / 611 | **9,101 / 611** |
+| census `sid_readback` / `narrow_sink` | 1,049 / 233 | 1,049 / 233 |
+| census `hi_byte` / `lo_byte` | 2,328 / 2,248 | 2,334 / 2,254 |
+| census `word_pack` / `flag_bit` / `carry_val` | 4,651 / 1,673 / 5,610 | 4,657 / 1,687 / 5,610 |
+| **census sum** | **31,112** | **30,854 (-258)** |
+| — tunes whose sum fell / rose | — | **64 / 5** (worst riser +1) |
+| `storage_census` stack loads / stores | 753 / 661 | **733 / 640** |
+| `fuse_measure` `unproven` / `provably_complete` | 201 / 488 | 201 / 488 |
+| — `unnamed_ruled_out` / `unnamed_as_written` | 1,639 / 924 | **1,610 / 898** |
+| stack refusal ledger, every class | 1,519 | **1,097** |
+| **R7's cap** (624 less the `raw_sp` tunes) | **326 of 624** | **373 of 624** |
+
+The byte-lane classes rise again (+6/+6/+6/+14 against `raw_sp` -262 and
+`unnamed_addr` -28), for Phase 1's reason: a destacked spill pair becomes one
+local whose halves are then read as truncs. Under §3's law the sum is the
+metric, and it falls. **Which premise carries the linkage** (per tune, this
+tree): 202 tunes make no raw call at all; of the 422 that do, **344 drop the
+linkage because every call stands at the entry displacement** and **78 keep
+`sp_linked`**; the page-one verdict would have carried **7** of those 344 and
+**0** of the 78.
+
+**The refusal ledger** (`lift_residue --sig raw_sp`), after 2c:
+
+| class | refusals | tunes |
+|---|---:|---:|
+| `spslot`: stack effect not zero | 254 | 84 |
+| `sp_unbalanced` | 148 | 111 |
+| `spslot`: unresolvable address may alias the slot | 106 | 71 |
+| `stack`: read not dominated by a store of the slot | 102 | 52 |
+| `sp_linked` | 87 | 75 |
+| `sp_read` | 79 | 77 |
+| `stack`: slot not both stored and read | 78 | 43 |
+| `stack`: unresolvable address may alias the slot | 71 | 57 |
+| `spslot`: slot not both stored and read | 58 | 53 |
+| `sp_callee` | 51 | 49 |
+| `spslot`: read not dominated by a store of the slot | 40 | 40 |
+| `spslot`: another resolvable access may touch the slot | 14 | 5 |
+| `stack`: another procedure may touch the slot | 8 | 6 |
+| `stack`: another resolvable access may touch the slot | 1 | 1 |
+| `sp_returned` | **0** | retired by rule |
+
+The ledger shrinks 1,519 -> 1,097 **with** a rule change, as §3 requires; no
+class grows except by re-classification (`sp_read` 58 -> 79 and `sp_callee`
+2 -> 51 are the procedures whose old first-failure was `sp_returned` or
+`sp_unbalanced`, `framefuse.refusal()`'s first-failure-only rule applying here
+too).
+
+**Where the plan and the corpus disagree, the corpus wins** — six corrections,
+each measured at this tree:
+
+1. **The bullet's balance rule names the smallest of the three blockers.** The
+   288 `sp_unbalanced` refusals decompose, measured at entry: a `pcall` handing
+   `sp` back **110**, an `unobserved` edge standing at a displacement **108**, a
+   genuine `ret`/`igoto` off the entry **32**, the label/`goto`/loop edges the
+   bullet names **37**, an opaque `sp` assignment **1**. The fixpoint that pays
+   is over the call graph, which the bullet does not mention.
+2. **The label/`goto`/loop-edge relaxation is unsound and was withdrawn.** Its
+   first form — a worklist over label edges, with a path that leaves treated as
+   dead — passed every fixture and **diverged eight tunes** at the corpus gate
+   (Liberty, Amazon, Big_K_O, Absolutely_Fabulous, Alien_Team, Atmosphere,
+   Atmosphere_II, Chameleon; localized one rule at a time). The reason is one
+   fact about this dialect: a label or a dispatch arm may be entered by an edge
+   the statement list does not carry — an `igoto`/`swg` pair, a `goto` from
+   another list, a block reached only past an `unobserved` — so an interior
+   displacement is not a state the walk may assume, and a dead tail hides the
+   stack effects of everything it skips. Phase 1's rule (every such point
+   stands at the entry) is restored; `sp_loop_edge` is the fixture that pins
+   it, and the 37 refusals are a ledgered precision item, not a bug.
+3. **`sp_fix_balance` passes, and not for the reason it was written.** Its
+   emitted form carries no interior label: with the threading refusal gone the
+   structurizer gives an `if`/`else` with a `ret` in each arm. What it now pins
+   is an entry-balanced procedure reached at two depths destacking, which is
+   real; the interior-label case it was named for is correction 2's, still
+   refused. Renamed in kind, not in name (control + landed).
+4. **The page-one premise the bullet specifies is nearly inert.** It carries
+   **7 of the 422 raw-call tunes**, against 344 for the displacement premise,
+   and none of the 78 that stay refused: the verdict is program-wide, one
+   ⊤-wide deref anywhere kills it, and 611 of 624 tunes carry `unnamed_addr`
+   residue. It is kept as the second disjunct because it is sound and cheap,
+   but the premise that pays is the displacement one. 2a's certification is
+   *not* the premise it could have been: certification is stated over the
+   emitted program and `drop_sp` runs before that program exists, so the reach
+   vocabulary (`addr_range`/`span`/`addr_floor`) is what is available there.
+5. **`low_held_cursor`'s fabric does not leave, and the blocker is neither of
+   2c's rules.** Both of its asserts stand: the invariant
+   (`refuses low_held`, `sp` survives) passes, and the xfail does not flip.
+   What changed is the reason — `sp_linked` is gone from that fixture (its
+   calls stand at the entry), the balance is proven, and `sp` survives because
+   rung (d0s) refuses both slots with *an unresolvable address may alias the
+   live slot*: the `(ptr),y` deref between the pushes and the pulls. Bounding
+   that deref needs the pair's extent, and the pair is refused certification
+   *because* it is held through page one — a real circularity that no scheduled
+   phase breaks by construction. The xfail's reason is re-pointed at **Phase
+   6**, whose value-set walker is the analysis that bounds an unresolvable
+   address without certification (`alias_web`'s own case).
+6. **Phase 1's balance premise was masking the per-slot blockers.** The slot
+   class *stack effect not zero* falls 372 -> 254, and of the 118 refusals it
+   frees, **91 re-refuse on premises it had been hiding**: *slot not both
+   stored and read* 10 -> 58, *read not dominated* 1 -> 40, *unresolvable
+   address may alias* 101 -> 106. Twenty-seven slots actually promote; the
+   balance premise was the first failure, not the only one.
+
+**Ledgered precision items**, all four with the measurement that priced them:
+the label/`goto`/loop-edge refusals of correction 2 (measured at entry as 37 of
+288, each a stack-balanced procedure whose interior edge the walk cannot
+follow) and the 108 `unobserved`-edge refusals, which the same withdrawal
+keeps; the genuine imbalances (`ret`/`goto` at entry+2 — a procedure discarding
+its own return address, `sp_unbalanced`'s fixture); the 78 tunes whose raw call
+stands displaced; and 2a's certification as a page-one premise, which needs
+`drop_sp` to run after the emitted program exists. `low_held` defs are
+**96 corpus-wide, unmoved** — the fabric leaving did not free one, which is
+correction 5 measured rather than argued.
 
 ### Phase 3 — frame-local promotion (the scratch elimination)
 
@@ -868,7 +996,8 @@ must achieve), **standing invariants** (what no phase may break), and
 | `path_persist` | invariant | a path-dependent persistent cell stays state |
 | `alias_state` | invariant | a cell a write-through store can clobber stays memory |
 | `init_livein` | invariant | frame 0 reads init's value: the init/state0 coupling |
-| `sp_unbalanced` | invariant | an unproven stack effect keeps `sp` and its stack page |
+| `sp_unbalanced` | invariant | an unproven stack effect keeps `sp` and its stack page (720_Degrees `$C31D`: `PLA/PLA/RTS` discards its own return) |
+| `sp_loop_edge` | invariant (2c) | a stack-balanced procedure whose back edge stands at a displacement keeps `sp` — the relaxation 2c withdrew |
 
 The `web_unnamed` family (2b's rewrite record): one fixture per 6502 idiom
 behind the 74-web residue, so the class is readable at suite cost. The
@@ -901,14 +1030,16 @@ cites (`tools/disasm_tune.py` reproduces it):
 | `follin_jump` | control + **landed b3** | the script jump (Ghouls `$6AD0`) fuses and is lift-eligible; the fixpoint closes on the block it walks — hard pass, and the fused `block_read` classifying `computed` is its own assert |
 | `follin_ret_stack` | control + **landed b3** | the depth-indexed split-column call stack (`$6ADD`/`$6B42`) fuses and is eligible; certification refuses `extent_mutable` and nothing else — hard pass |
 | `lone_lane_block_read` | invariant (b3) | the hi lane alone read out of the block (Data_Data_Data_Data `zp_D2`, American `$B41A`): defs closed, `ptr_extent_open` — no word for the fixpoint to key on |
-| `low_held_cursor` | invariant + xfail 2c | the pair held through page one (Angry_Birds `$09F1`) refuses `low_held`, keeps `sp`; re-enters after 2c |
+| `low_held_cursor` | invariant + xfail **P6** | the pair held through page one (Angry_Birds `$09F1`) refuses `low_held`, keeps `sp`; 2c measured the blocker as neither of its rules (§2 2c correction 5) |
 | `alias_web` | invariant | a wrapping `STA $zz,X` with unbounded X (ASL/04 `$128B`) refuses `web_alias`; the machine spelling survives |
 | `call_returned_row` | control | a row returned in A/X across a call refuses certification, never the lift |
 | `computed_rows` | invariant + xfail **P6** | an arithmetic row off the registry: b1-eligible, `extent_unmappable`, and no block read for b3 to enumerate; only the value-set walker flips it |
 | `shift_divide` | xfail P6 | the divide accumulator (Cool_Air `$1447`): `(T2[y]-T1[y]) >> n` as a loop-carried `LSR`/`ROR` — the `>>` exists, the loop rule does not |
 | `phase_split_reload` | xfail 2b | the pair's halves reloaded in different frames (Air_on_a_Rasterline `$0C1A`/`$0D05`) — each store is a lane replacement, a masked word update away from fused |
 | `dispatch_scratch` | control + xfail P3 | the SMC-operand dispatch emits `switch goto` (no wall); scratch promotes across the join |
-| `sp_fix_balance` | xfail 2c | interior label at nonzero displacement, entry-balanced on every path, destacks under the fixpoint |
+| `sp_fix_balance` | control + **landed 2c** | an entry-balanced procedure reached at two depths destacks and drops `sp` — hard pass |
+| `sp_call_at_entry` | control + **landed 2c** | a raw `call` standing at the entry displacement drops its linkage; `sp` leaves with the call still in the text |
+| `sp_call_displaced` | invariant (2c) | a raw `call` at a nonzero displacement keeps `sp_linked`: the drop would move the machine's pushed return |
 | `sp_scratch_floor` | xfail P3 | zero-page scratch beside kept `sp` fabric promotes once `aliased` uses `addr_floor` |
 
 The extent guard itself (an access past the recorded extent faults at
@@ -1014,6 +1145,30 @@ history (`git log --grep=regmodel`); only what still binds is here.
   `computed_rows` keeps its xfail and its reason narrows to **Phase 6 alone**:
   b3's fixpoint reads declared data, and an arithmetic row is in no block, so
   nothing short of the value-set walker flips it.
+- **Post-2c (2026-08-09).** The stack fabric leaves where the machine's own
+  pushes cannot move, and 2c's two rules are not the two the bullet named. The
+  balance blocker is the **call graph** (a `pcall` handing `sp` back, 110 of
+  288) and the `unobserved` edge (108), not the interior label (37); the
+  linkage premise that pays is **displacement** (every call standing at the
+  entry displacement), not the page-one verdict the bullet specified, which
+  measured nearly inert (`sp_linked` *rose* to 404 tunes under it alone) and
+  survives only as the second disjunct. 2a's certification could not be that
+  premise at all: it is stated over the emitted program and `drop_sp` runs
+  before that program exists. The standing lesson is the withdrawal, not the
+  landing: **a structured statement list is not a control-flow graph.** The
+  label/`goto`/loop-edge fixpoint — the bullet's headline rule — passed every
+  fixture and diverged eight tunes, because a label or dispatch arm may be
+  entered by an edge the list does not carry (`igoto`/`swg`, a `goto` from
+  another list, a block past an `unobserved`), and a "dead" tail silently
+  drops the stack effects of everything it skips. Phase 1's entry-displacement
+  rule is restored for those edges and pinned by `sp_loop_edge`. Two ledger
+  consequences: `sp_returned` retires by rule (a balanced callee hands back
+  what it was given), and Phase 1's largest slot class was never about balance
+  (*stack effect not zero* 372 -> 43, the freed slots re-refusing on the
+  premises it had been masking). `low_held_cursor` does not re-enter 2b: its
+  blocker is the `(ptr),y` deref aliasing the live slot, and the pair's own
+  certification is refused *because* it is held through page one — a
+  circularity handed to **Phase 6**'s walker, not to any 2b work list.
 
 ## 7. Briefing a subagent to execute a phase
 

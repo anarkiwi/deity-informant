@@ -74,6 +74,13 @@ def _cert(name):
     return rec
 
 
+def _sp_classes(name):
+    """The ``drop_sp`` refusal classes the program carries: Phase 1's ledger keys."""
+    _lift(name)
+    proofs = _lift_prog[name].proofs
+    return sorted({p.lemma.split(":", 1)[0] for p in proofs if p.kind == "sp"} - {"sp"})
+
+
 def _observed(name):
     """b0's observed-extent record for the walked pair, from the fixture's own run."""
     _lift(name)
@@ -662,7 +669,7 @@ def _sp_scratch_floor():
 
     Without frameproc.addr_floor the kept push (zext2(sp)|$0100) reaches an
     interval from zero and spuriously threatens every zero-page cell."""
-    a, data, frames = _sp_body(_sp_unbalanced_sub())
+    a, data, frames = _sp_body(_sp_loop_sub())
     a2 = G.Asm(G.ORG)
     a2.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
     a2.i("AND", "imm", 0x0F).i("STA", "zp", ZTMP)
@@ -672,7 +679,8 @@ def _sp_scratch_floor():
     return a2, data, frames
 
 
-def _sp_unbalanced_sub():
+def _sp_loop_sub():
+    """A loop between the push and the pull, so its back edge carries a displacement."""
     sub = G.Asm(SPSUB)
     sub.i("PHA").i("LDX", "imm", 0x03)
     sub.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
@@ -776,9 +784,75 @@ def _sp_spill():
     return _sp_body(sub)
 
 
+def _sp_loop_edge():
+    """Invariant: a loop edge standing at a displacement keeps sp -- 2c's own bound."""
+    return _sp_body(_sp_loop_sub())
+
+
 def _sp_unbalanced():
-    """Invariant (Phase 1): a procedure whose stack effect is unproven keeps sp."""
-    return _sp_body(_sp_unbalanced_sub())
+    """Invariant: a procedure that discards its own return address keeps sp.
+
+    720_Degrees $C31D (tools/disasm_tune.py): PLA/PLA/RTS returns one level out,
+    so the machine reads page one for a target the entry displacement does not
+    name -- the one shape in the corpus the balance fixpoint must still refuse."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("JSR", "abs", SPMID)
+    a.i("LDA", "abs", TMP).i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
+    mid = G.Asm(SPMID)
+    mid.i("JSR", "abs", SPSUB).i("LDA", "imm", 0x0C).i("STA", "abs", TMP).i("RTS")
+    sub = G.Asm(SPSUB)
+    sub.i("LDA", "abs", CTR).i("AND", "imm", 0x01).i("BEQ", "rel", ("L", "back"))
+    sub.i("PLA").i("PLA")
+    sub.i("LDA", "abs", CTR).i("AND", "imm", 0x0F).i("STA", "abs", TMP).i("RTS")
+    sub.label("back").i("LDA", "imm", 0x03).i("STA", "abs", TMP).i("RTS")
+    data = {CTR: 0, TMP: 0}
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    data.update({SPMID + k: b for k, b in enumerate(mid.assemble())})
+    return a, data, 8
+
+
+def _raw_call_body(a, sub):
+    """A player whose ``JSR SPSUB`` stays a raw call: a tail ``JMP`` blocks the pcall.
+
+    ``frameproc`` will not give a procedure a register interface once another
+    procedure jumps into it, so the machine, not the text, threads this call."""
+    a.label("alt").i("JMP", "abs", SPSUB)
+    data = {CTR: 0, TMP: 0}
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    return a, data, 8
+
+
+def _sp_call_at_entry():
+    """2c: a raw call standing at the entry displacement drops its linkage.
+
+    The machine writes the return bytes exactly where it always did, so nothing
+    the program keeps can tell that the displacement went with ``sp``."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("AND", "imm", 0x01).i("BNE", "rel", ("L", "alt"))
+    a.i("JSR", "abs", SPSUB)
+    a.i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDA", "abs", CTR).i("AND", "imm", 0x0F).i("STA", "abs", TMP)
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    return _raw_call_body(a, sub)
+
+
+def _sp_call_displaced():
+    """Invariant (2c): a raw call at a nonzero displacement keeps its linkage.
+
+    The caller pushes before the call, so dropping its displacement would move
+    where the machine writes the return bytes this call pushes."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("AND", "imm", 0x01).i("BNE", "rel", ("L", "alt"))
+    a.i("LDA", "abs", CTR).i("PHA")
+    a.i("JSR", "abs", SPSUB)
+    a.i("PLA").i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
+    sub = G.Asm(SPSUB)
+    sub.i("LDA", "abs", CTR).i("AND", "imm", 0x0F).i("STA", "abs", TMP).i("RTS")
+    return _raw_call_body(a, sub)
 
 
 def _g2_store():
@@ -833,6 +907,9 @@ _FIXTURES = {
     "g2_store": _g2_store,
     "sp_spill": _sp_spill,
     "sp_unbalanced": _sp_unbalanced,
+    "sp_loop_edge": _sp_loop_edge,
+    "sp_call_at_entry": _sp_call_at_entry,
+    "sp_call_displaced": _sp_call_displaced,
     "sp_fix_balance": _sp_fix_balance,
     "sp_scratch_floor": _sp_scratch_floor,
 }
@@ -881,13 +958,39 @@ def test_sp_relative_spill_leaves_no_stack_pointer():
 
 
 def test_an_unbalanced_procedure_keeps_its_stack_pointer():
-    """Invariant: unproven stack effect means the spill stays memory, sp and all.
+    """Invariant: an unproven stack effect keeps sp; the fixpoint may not touch it.
 
     The ret of such a procedure reads page one for its target, so a promoted
     slot would delete the byte the machine returns through."""
-    text = _lift("sp_unbalanced")
-    assert re.search(r"\bsp\b", _body(text)), "an unbalanced procedure lost sp"
+    assert re.search(r"\bsp\b", _body(_lift("sp_unbalanced"))), "an unbalanced procedure lost sp"
+    assert _sp_classes("sp_unbalanced") == ["sp_unbalanced"]
+
+
+def test_a_loop_edge_at_a_displacement_keeps_the_stack_pointer():
+    """Invariant, and 2c's own measured bound: an interior edge is not relaxable.
+
+    The procedure is stack-balanced (PHA .. PLA) and refused because its back edge
+    stands at the displacement. Relaxing that is what 2c withdrew: a dispatch arm
+    or a label may be entered by a jump no list enumerates (8 tunes diverged)."""
+    text = _lift("sp_loop_edge")
+    assert re.search(r"\bsp\b", _body(text)), "the kept spill lost sp"
     assert "$0100" in text, "the spill lost its stack-page identity"
+    assert _sp_classes("sp_loop_edge") == ["sp_unbalanced"]
+
+
+def test_a_raw_call_at_the_entry_displacement_drops_its_linkage():
+    """Landed 2c: the machine's pushed return does not move, so sp leaves."""
+    body = _body(_lift("sp_call_at_entry"))
+    assert "call $" in body, "the fixture lost the raw call it pins"
+    assert not re.search(r"\bsp\b", body), "the stack pointer survived"
+
+
+def test_a_displaced_raw_call_keeps_the_stack_pointer():
+    """Invariant (2c): dropping the displacement would move the pushed return."""
+    body = _body(_lift("sp_call_displaced"))
+    assert "call $" in body, "the fixture lost the raw call it pins"
+    assert re.search(r"\bsp\b", body), "a displaced raw call lost sp"
+    assert _sp_classes("sp_call_displaced") == ["sp_linked"]
 
 
 def test_covering_sweep_stays_byte_wide():
@@ -1172,9 +1275,15 @@ def test_a_stack_held_cursor_refuses_low_held():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2c: the fabric leaves and low_held re-enters", **XFAIL
+    reason="register-model-lift Phase 6: the deref bound the certification cannot give",
+    **XFAIL,
 )
-def test_a_stack_held_cursor_lifts_after_the_fabric_leaves():
+def test_a_stack_held_cursor_lifts_once_the_deref_is_bounded():
+    """2c measured the blocker and it is neither of 2c's rules (§2 2c correction 5).
+
+    The linkage drops and the balance is proven; rung (d0s) still refuses both
+    slots because the `(ptr),y` deref between push and pull may alias them, and
+    the pair's own extent is refused because it is held through page one."""
     assert _cert("low_held_cursor")["eligible"]
 
 
@@ -1256,8 +1365,8 @@ def test_a_shift_divide_lifts_to_a_wide_shift():
     assert _fused_cursor("shift_divide")
 
 
-@pytest.mark.xfail(reason="register-model-lift 2c: balance becomes a worklist fixpoint", **XFAIL)
 def test_an_entry_balanced_procedure_destacks():
+    """Landed 2c: the interior nonzero displacement is a label edge, not an imbalance."""
     assert not re.search(r"\bsp\b", _body(_lift("sp_fix_balance")))
 
 

@@ -466,6 +466,8 @@ def apply_rung(procs):
     used, proofs, n = _used_names(procs), [], 0
     prints = [_footprint(p[3]) for p in procs]
     sp = frameproc._SP
+    saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
+    bals, _at_entry = _balances(procs, sp, saves_of)
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
         names, spnames = {}, {}
@@ -479,7 +481,7 @@ def apply_rung(procs):
                 used.add(name)
                 names[_addr(cell)] = name
             proofs.append(slot.proof(name))
-        bal = _sp_state(stmts, ("entry", 0), sp, _saves(stmts, sp), {}) == ("entry", 0)
+        bal = bals.get(_e, False)
         for key in sorted(_sp_candidates(stmts, marks, sp)):
             slot = _SpSlot(key).run(stmts, marks, sp, bal)
             name = None
@@ -509,15 +511,15 @@ def drop_state(state, proofs, symbols, name_of):
 _RAW_CALLS = frozenset(("call", "callb", "dcall", "swc"))
 
 
-def _sp_uses(stmts, calls, sp, saves):
+def _sp_uses(stmts, calls, sp, saves, linked=True):
     """The class naming why a statement needs ``sp``, else None.
 
-    A raw call keeps the machine stack alive; a pcall's plain ``sp`` argument is
-    the threading the caller may drop with the callee, recorded in ``calls``; a
-    save-bracket store of ``sp`` to a private cell is fabric, not a consumer."""
+    A raw call keeps the machine stack alive unless nothing reads its page; a
+    pcall's plain ``sp`` argument or returned ``sp`` is the threading the caller
+    drops with the callee, recorded in ``calls``; a save store is fabric."""
     for s in stmts:
         k = s[0]
-        if k in _RAW_CALLS:
+        if k in _RAW_CALLS and linked:
             return "sp_linked"
         if k == "asg" and s[1] == sp:
             continue
@@ -525,7 +527,7 @@ def _sp_uses(stmts, calls, sp, saves):
             continue
         if k == "pcall":
             if sp in s[3]:
-                return "sp_read"
+                calls.append(s[1])  # a balanced callee hands back what it was given
             for a in s[2]:
                 if a == ("loc", sp):
                     calls.append(s[1])
@@ -536,7 +538,7 @@ def _sp_uses(stmts, calls, sp, saves):
             if sp in frameproc._locset(x):
                 return "sp_read"
         for b in frameproc._stmt_bodies(s):
-            got = _sp_uses(b, calls, sp, saves)
+            got = _sp_uses(b, calls, sp, saves, linked)
             if got is not None:
                 return got
     return None
@@ -601,42 +603,145 @@ def _saves(stmts, sp):
     return frozenset(c for c, n in cells.items() if c not in dirty and n == 1)
 
 
-def _sp_state(stmts, st, sp, saves, caps):
-    """Symbolic ``sp`` state through the list, None where dropping cannot hold.
+class _Unbalanced(Exception):
+    """The displacement walk cannot prove the procedure stands where it entered."""
 
-    States are ``(base, offset)``: displacement moves the offset (mod 256), a
-    save records the state under its cell, a restore returns to it whatever ran
-    between, and a constant load opens a new base (the TXS stack switch). Every
-    point control may leave or enter must sit at the entry state."""
-    for s in stmts:
-        k = s[0]
-        if k == "st" and s[1][0] == "const" and s[2] == ("loc", sp) and s[1][1] in saves:
-            caps[s[1][1]] = st
-        elif k == "asg" and s[1] == sp:
-            d = _sp_delta(s[2], sp)
-            if d is not None:
-                st = (st[0], (st[1] + d) & 0xFF)
-            elif s[2][0] == "mem" and s[2][1][0] == "const" and s[2][1][1] in caps:
-                st = caps[s[2][1][1]]
-            elif s[2][0] == "const":
-                st = ("abs", s[2][1] & 0xFF)
-            else:
-                return None
-        elif k == "pcall" and sp in s[3]:
-            return None  # the callee hands sp back: this walk cannot say where it stands
-        elif k in ("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"):
-            if st != ("entry", 0):
-                return None
-        elif k == "if":
-            a = _sp_state(s[3], st, sp, saves, caps)
-            if a is None or a != _sp_state(s[4], st, sp, saves, caps):
-                return None
-            st = a
-        elif k in ("loop", "for", "opsw", "swg", "callb"):
+
+_ENTRY = ("entry", 0)  # the displacement a procedure is entered and must return at
+_INLINED = frozenset(("callb", "swc"))  # a callee's body: its ``ret`` is the call's edge
+_EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"))
+
+
+def _join(a, b):
+    """The one displacement two edges into a point carry, else ``_Unbalanced``."""
+    if a != b:
+        raise _Unbalanced
+    return a
+
+
+class _SpFlow:
+    """The displacement walk of one procedure, and where its calls stand.
+
+    States are ``(base, offset)``: a displacement moves the offset (mod 256), a save
+    records it under its cell, a restore returns to it, a constant load opens a new
+    base (TXS). Every point control may leave or enter stands at the entry."""
+
+    def __init__(self, sp, saves, bal):
+        self.sp, self.saves, self.bal, self.caps = sp, saves, bal, {}
+        self.entry = None
+        self.at_entry = True
+
+    def run(self, stmts, st):
+        """The exit state where every edge holds, else ``_Unbalanced``."""
+        self.entry, self.at_entry, self.caps = st, True, {}
+        return self.walk(stmts, st)
+
+    def walk(self, stmts, st):
+        for s in stmts:
+            st = self.step(s, st)
+        return st
+
+    def leaves(self, st):
+        """A point control leaves or enters: only the entry displacement holds.
+
+        A label may be the target of a ``goto`` this list does not carry, of a jump
+        no list enumerates, or of a dispatch arm, so an interior displacement is
+        not a state the walk may assume -- Phase 1's rule, and 2c re-measured it."""
+        if st != self.entry:
+            raise _Unbalanced
+        return self.entry
+
+    def update(self, v, st):
+        """One ``sp = ..`` assignment against the state in force."""
+        d = _sp_delta(v, self.sp)
+        if d is not None:
+            return (st[0], (st[1] + d) & 0xFF)
+        if v[0] == "mem" and v[1][0] == "const" and v[1][1] in self.caps:
+            return self.caps[v[1][1]]
+        if v[0] == "const":
+            return ("abs", v[1] & 0xFF)
+        raise _Unbalanced
+
+    def body(self, s, st):
+        """A callee inlined at the call: its own ``ret`` edges stand where it began."""
+        outer, self.entry = self.entry, st
+        try:
             for b in frameproc._stmt_bodies(s):
-                if _sp_state(b, st, sp, saves, caps) != st:
-                    return None
-    return st
+                _join(self.walk(b, st), st)
+        finally:
+            self.entry = outer
+        return st
+
+    def call(self, st):
+        """A call: the machine pushes its return here, so the drop must not move it."""
+        if st != _ENTRY:
+            self.at_entry = False
+        return st
+
+    def step(self, s, st):
+        k = s[0]
+        if k == "st" and s[1][0] == "const" and s[2] == ("loc", self.sp) and s[1][1] in self.saves:
+            self.caps[s[1][1]] = st
+            return st
+        if k == "asg" and s[1] == self.sp:
+            return self.update(s[2], st)
+        if k == "pcall":
+            if self.sp in s[3] and not self.bal.get(s[1]):
+                raise _Unbalanced  # the callee hands sp back from a place unproven
+            return self.call(st)
+        if k in _EDGES:
+            return self.leaves(st)
+        if k == "if":
+            return _join(self.walk(s[3], st), self.walk(s[4], st))
+        if k in _INLINED:
+            return self.body(s, self.call(st))
+        if k in ("loop", "for", "opsw", "swg"):
+            for b in frameproc._stmt_bodies(s):
+                _join(self.walk(b, st), st)
+            return st
+        if k in _RAW_CALLS:
+            return self.call(st)
+        return st
+
+
+def _sp_state(stmts, st, sp, saves, bal=None):
+    """The state the procedure leaves ``sp`` in, None where dropping cannot hold."""
+    return _run_flow(stmts, sp, saves, bal or {}, st)[0]
+
+
+def _run_flow(stmts, sp, saves, bal, st=_ENTRY):
+    """``(exit state or None, every call stood at the entry displacement)``."""
+    flow = _SpFlow(sp, saves, bal)
+    try:
+        return flow.run(stmts, st), flow.at_entry
+    except _Unbalanced:
+        return None, False
+
+
+def _balances(procs, sp, saves_of):
+    """Per procedure: ``sp`` stands at its entry displacement on every edge.
+
+    A ``pcall`` handing ``sp`` back preserves the caller's displacement exactly where
+    its callee balances, so the verdict is a least fixpoint over the call graph:
+    nothing is assumed, a cycle stays unproven, and only callers are re-asked."""
+    bal, at_entry = {}, {}
+    body = {e: stmts for e, _pa, _r, stmts in procs}
+    deps = {
+        e: {s[1] for s in FF.stmts_of(stmts) if s[0] == "pcall" and sp in s[3]}
+        for e, stmts in body.items()
+    }
+    pending = ask = set(body)
+    while ask:
+        won = set()
+        for e in sorted(ask):
+            st, calls = _run_flow(body[e], sp, saves_of[e], bal)
+            if st == _ENTRY:
+                won.add(e)
+                at_entry[e] = calls
+        bal.update((e, True) for e in won)
+        pending -= won
+        ask = {e for e in pending if deps[e] & won}
+    return bal, at_entry
 
 
 _PAGE1 = range(0x0100, 0x0200)
@@ -759,30 +864,72 @@ def _lift_tricks(stmts, sp):
 
 SP_CLASSES = {
     "sp_unbalanced": "the procedure's stack effect is not zero",
-    "sp_returned": "the procedure returns sp to its caller",
     "sp_linked": "a raw call keeps the machine stack alive",
     "sp_read": "an access rung (d0) could not destack reads sp",
     "sp_callee": "a callee keeps sp, so the threading argument stays",
 }
 
+_PAGE_RANGE = (_PAGE[0], None, len(_PAGE) - 1, 1, 0)
 
-def drop_sp(procs, play):
+
+def _off_page(addr, width, at, regions):
+    """Every address the expression names lies outside the stack page.
+
+    The resolvable form is bounded by the ONE span rule (a modular ``zp,X`` address
+    never leaves the zero page), the rest by the bits the address may set and 2a's
+    ``addr_floor``, the bits it must."""
+    got = frameproc.addr_range(addr, width)
+    if got is None:
+        lo = frameproc.addr_floor(addr, at)
+        hi = frameproc.addr_bits(addr, at)
+        return hi + width - 1 < _PAGE[0] or lo > _PAGE[-1]
+    base, idx, mod = got
+    span = frameproc.span(base, idx, regions, mod)
+    return not frameproc.overlaps((base, idx, span, width, mod), _PAGE_RANGE)
+
+
+def _raw_called(procs):
+    """Some procedure makes a call the machine, not the text, threads."""
+    return any(s[0] in _RAW_CALLS for _e, _pa, _r, b in procs for s in FF.stmts_of(b))
+
+
+def _page_one_free(procs, sp, regions):
+    """No surviving access may reach the stack page other than through ``sp``.
+
+    The second premise the raw call's linkage may rest on: the drop moves where the
+    machine's pushed return bytes land, and where no surviving access can name page
+    one, nothing in the program reads what moved."""
+    for _e, _pa, _r, stmts in procs:
+        for env, k, s in frameproc.envs(stmts):
+            at = frameproc.DefsAt(env, k)
+            if s[0] == "opsw" and s[1] in _PAGE:
+                return False  # the dispatch reads its operand cell, which _accesses misses
+            for addr, width in _accesses(s):
+                if sp in frameproc._locset(addr):
+                    continue
+                if not _off_page(addr, width, at, regions):
+                    return False
+    return True
+
+
+def drop_sp(procs, play, regions=None):
     """``sp`` leaves the program where nothing reads it; one proof per keeper.
 
-    The record cannot see ``sp`` and its real consumers were the destacked slot
-    addresses, so the updates, the parameter and every threading argument go; a
-    refusal names its ``SP_CLASSES`` class, per procedure, in the ledger."""
+    The updates, the parameter and every threading argument go. A raw call's
+    linkage goes with them where the drop cannot move the machine's pushed return
+    bytes -- every call at the entry displacement -- or where nothing reads them."""
     sp = frameproc._SP
-    need, calls_of, saves_of = {}, {}, {}
-    for e, _pa, rets, stmts in procs:
+    need, calls_of = {}, {}
+    saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
+    bal, at_entry = _balances(procs, sp, saves_of)
+    linked = _raw_called(procs) and not (
+        all(at_entry.values()) or _page_one_free(procs, sp, regions)
+    )
+    for e, _pa, _rets, stmts in procs:
         calls = []
-        saves = _saves(stmts, sp)
-        balanced = _sp_state(stmts, ("entry", 0), sp, saves, {}) == ("entry", 0)
-        why = None if balanced else "sp_unbalanced"
-        why = why or ("sp_returned" if sp in rets else None)
-        need[e] = why or _sp_uses(stmts, calls, sp, saves)
+        why = None if bal.get(e) else "sp_unbalanced"
+        need[e] = why or _sp_uses(stmts, calls, sp, saves_of[e], linked)
         calls_of[e] = calls
-        saves_of[e] = saves
     changed = True
     while changed:
         changed = False

@@ -471,7 +471,7 @@ def program(model, extents=None):
         if repr(procs) == before:
             break
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
-    proofs += framestack.drop_sp(procs, model.play)
+    proofs += framestack.drop_sp(procs, model.play, regions)
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
         model.mem0, decls, procs, state, symbols, resolved, extents
