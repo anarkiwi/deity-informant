@@ -526,6 +526,25 @@ def _follin_ret_stack():
     return a, data, 8
 
 
+def _lone_lane_block_read():
+    """2b/b3: the hi lane alone is read out of the block; the lo lane steps.
+
+    American $B41A (tools/disasm_tune.py): LDA ($FB),Y / PHA / INY / LDA ($FB),Y /
+    STA $FC / PLA / STA $FB - the hi lane is a block read and the lo lane arrives
+    from elsewhere, so the two never meet at one seat and no LE word was read."""
+    a = _cursor()
+    a.i("CMP", "imm", 0x80).i("BCC", "rel", ("L", "adv"))
+    a.i("LDY", "imm", 0x01).i("LDA", "indy", G.PTR).i("STA", "zp", G.PTR + 1)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("adv")
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "zp", G.PTR)
+    a.label("out").i("RTS")
+    data = _cursor_data()
+    data[PAT + 3] = 0x80  # the jump op; the byte beside it re-selects the same page
+    data[PAT + 4] = PAT >> 8
+    return a, data, 8
+
+
 def _low_held_cursor():
     """b1 (iv): the pair held on the machine stack in a sub reached at two depths.
 
@@ -803,6 +822,7 @@ _FIXTURES = {
     "unpaired_half_store": _unpaired_half_store,
     "follin_jump": _follin_jump,
     "follin_ret_stack": _follin_ret_stack,
+    "lone_lane_block_read": _lone_lane_block_read,
     "low_held_cursor": _low_held_cursor,
     "alias_web": _alias_web,
     "call_returned_row": _call_returned_row,
@@ -1068,9 +1088,35 @@ def test_the_script_jump_is_fused_and_lift_eligible():
     assert rec["eligible"] and not rec["lift_refusals"]
 
 
-@pytest.mark.xfail(reason="register-model-lift 2b (b3): the script-jump def certifies", **XFAIL)
 def test_the_script_jump_certifies():
-    assert not _cert("follin_jump")["refusals"]
+    """2b (b3) LANDED: the jump operand is a block read, and the fixpoint closes on PAT.
+
+    E0 is the post-init block; the only word in it that the registry declares is the
+    operand aiming the cursor back at PAT, so one round reaches the fixpoint."""
+    rec = _cert("follin_jump")
+    assert not rec["refusals"], rec["lemma"]
+    assert rec["kinds"]["block_read"] == 1 and rec["reach"] == ["$%04X" % PAT]
+    assert not rec["mutable_blocks"] and rec["read_roots"] == ["$%04X" % G.PTR]
+
+
+def test_the_enumeration_keys_on_the_fused_block_read():
+    """b3's keying note, executable: rung (d)'s pack is what the shape recognizer sees.
+
+    Ghouls $6AD0 fuses, so the def wears shape ``computed`` and kind ``block_read`` --
+    an enumeration keyed on the ``block_read`` *shape* alone would never see it."""
+    (d,) = [d for d in _cert("follin_jump")["defs"] if d["kind"] == "block_read"]
+    assert d["shape"] == "computed" and d["role"] == "word"
+
+
+def test_a_lone_lane_block_read_has_no_word_to_enumerate():
+    """b3: the hi lane is read out of the block while the lo lane steps on its own.
+
+    The enumeration keys on 16-bit LE values, so a lane whose partner is not the byte
+    beside it names half a pointer: the defs close and the extent stays open."""
+    rec = _cert("lone_lane_block_read")
+    assert rec["kinds"]["block_read"] == 1 and rec["block_rooted"]
+    assert rec["refusals"] == ["ptr_extent_open"], rec["lemma"]
+    assert any("adjacent partner" in n for n in rec["notes"]), rec["notes"]
 
 
 def test_the_ret_stack_is_fused_and_lift_eligible():
@@ -1080,12 +1126,42 @@ def test_the_ret_stack_is_fused_and_lift_eligible():
     assert rec["eligible"] and not rec["lift_refusals"]
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift 2b (b3): a mutable save table certifies extent_mutable only",
-    **XFAIL,
-)
 def test_the_ret_stack_certifies():
-    assert set(_cert("follin_ret_stack")["refusals"]) <= {"extent_mutable"}
+    """2b (b3) LANDED: the split call-stack columns are a declared pair play writes.
+
+    Ghouls $6ADD/$6B42: the row is a cursor value stored as data, so the web closes
+    over the columns -- and because play writes them, ``mem0``'s words are not their
+    rows, which is the whole content of ``extent_mutable``."""
+    rec = _cert("follin_ret_stack")
+    assert set(rec["refusals"]) <= {"extent_mutable"}
+    assert rec["mutable_blocks"] == ["$%04X" % STK, "$%04X" % (STK + 3)]
+    assert rec["kinds"]["other"] == 0 and rec["block_rooted"]
+
+
+def test_the_extent_guard_compares_the_fixpoint_with_what_the_run_saw():
+    """b3 against b0, the divergence guard: equality certifies and a gap is ledgered.
+
+    ``--close`` is the second licence: a run that reached recurrence stands for the
+    infinite one, so its observed extent is the extent whatever the fixpoint named."""
+    _lift("follin_jump")
+    prog, root = _lift_prog["follin_jump"], "$%04X" % G.PTR
+
+    def one(observed, closed=False):
+        (rec,) = [r for r in ptrcert.certify(prog, observed, closed)[0] if r["root"] == root]
+        return rec
+
+    same = one({G.PTR: {PAT}})
+    assert same["extent_certified"] and not same["extent_short"]
+    more = one({G.PTR: {PAT, PAT2}})
+    assert not more["extent_certified"] and more["extent_short"] == ["$%04X" % PAT2]
+    assert one({G.PTR: {PAT, PAT2}}, closed=True)["extent_certified"]
+    assert not one(None)["extent_certified"], "no observation is no certificate"
+
+
+def test_a_play_written_source_block_stops_the_certification_only():
+    """Invariant (b3): ``extent_mutable`` is accounting -- the lift and the guard stand."""
+    rec = _cert("follin_ret_stack")
+    assert rec["eligible"] and not rec["lift_refusals"]
 
 
 def test_a_stack_held_cursor_refuses_low_held():
@@ -1126,11 +1202,22 @@ def test_computed_rows_walk_off_the_registry():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b (b3)/Phase 6: a computed row needs derived extents",
+    reason="register-model-lift Phase 6: a computed row needs the value-set walker",
     **XFAIL,
 )
 def test_computed_rows_map():
+    """b3 measured this and cannot reach it: the row is arithmetic, not a registry read.
+
+    The fixpoint walks declared data for 16-bit LE words; a row built as
+    ``((ctr & 1) << 3) | $80`` is in no block, so only a value-set walker derives it."""
     assert not _observed("computed_rows")["refusals"]
+
+
+def test_the_computed_row_is_no_block_read():
+    """b3's own boundary, stated: the arithmetic row names no source block to enumerate."""
+    rec = _cert("computed_rows")
+    assert rec["kinds"]["block_read"] == 0 and not rec["read_blocks"] and not rec["read_roots"]
+    assert rec["refusals"] == ["ptr_uncertified"], rec["lemma"]
 
 
 def test_the_smc_operand_dispatch_is_a_join_not_a_wall():

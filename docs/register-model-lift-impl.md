@@ -15,16 +15,17 @@ unverified and consult the disassembly before acting on it. Both prior course
 corrections on this plan were exactly that: a claim acted on without reading
 the machine, resolved in minutes once the instructions were on the record.
 
-Status: in execution. Phases 0, 1, 2a and 2b (b0–b2, b4, b5) are DONE; b3, 2c
-and 3 are next (2c and 3 depend on 2a's bounds only). 2b's rewrite lifted
+Status: in execution. **Phases 0, 1, 2a and the whole of 2b (b0–b5) are DONE**;
+2c and 3 are next (both depend on 2a's bounds only). 2b's rewrite lifted
 **251 of 325 webs over 116 tunes, retiring 1,000 ⊤ loads**; the whole 74-web
 residue is `web_unnamed` — rung (d)'s read-side refusal, pinned by the
-`dual_store_*` fixture family — and the other standing blocker is the
-registry's coverage of what pointers walk (`extent_unmappable`, 418 webs,
-b3's to answer, pinned by `computed_rows`). **Zero webs in the measured
-residue are unliftable in principle** (§6, byte-residue challenge). "MUST"
-is a gate. §5 records the prototypes and the shredder; §6 is the decision
-log.
+`dual_store_*` fixture family. b3's static enumeration then took block-rooting
+from **441 to 480 roots** and certified **99 of the 103 extents it claims**
+against b0's observed run; what it does not reach is the registry's coverage of
+computed rows (`extent_unmappable`, 399 webs, now **Phase 6's** to answer,
+pinned by `computed_rows`). **Zero webs in the measured residue are unliftable
+in principle** (§6, byte-residue challenge). "MUST" is a gate. §5 records the
+prototypes and the shredder; §6 is the decision log.
 
 ## 0. The evidence base: one tune per driver family
 
@@ -272,8 +273,8 @@ the same change); `sp_unbalanced` stands as the invariant.
 ### Phase 2 — sequence traffic becomes table cursors
 
 The keystone, split so analysis lands before dialect: 2a certification
-(DONE), 2b annotation + rewrite (b0–b2, b4, b5 DONE; b3 open), 2c the stack
-endgame (scheduled).
+(DONE), 2b annotation + rewrite (DONE, b0–b5), 2c the stack endgame
+(scheduled).
 
 #### 2a — certification (analysis only, no text change) — DONE
 
@@ -352,9 +353,10 @@ unprovability was the missing `addr_floor`, not the missing certification;
 Phase 3's `aliased` reach vocabulary and its floor; and 2b's whole work
 list. **Not done**: the certification is intraprocedural (88 `opaque`
 defs); the reads closure falls back to position-blind taint (7 roots);
-`block_read` is named and counted but not certified — b3's rule.
+`block_read` is named and counted but not certified — b3's rule, landed below
+(128 of the 133 defs are now a kind of their own).
 
-#### 2b — the unified spelling under observed extents — b0–b2, b4, b5 DONE; b3 OPEN
+#### 2b — the unified spelling under observed extents — DONE (b0–b5)
 
 The four-construct cursor dialect and the certified-roots-only rewrite are
 superseded (§6, 2026-08-08): the extent claim's license is the **evaluator
@@ -410,20 +412,114 @@ rule, refusals, gate):
   binary; a build without the artifact emits today's spelling byte for
   byte.
 - **(b3) Certification stays 2a's machinery, as the accounting tally**
-  *(OPEN — and after the b0 record, more than accounting: it is the only
-  proposal that widens the annotation past what one run observed)*.
-  `ptrcert` gains the static extent enumeration: reload targets from the
-  declared row-index bound; `block_read` targets as a least fixpoint over
-  the finite registry (E₀ = reload + post-init blocks; each round adds every
-  declared datum containing any 16-bit LE value readable in blocks already
-  in E; monotone, terminates). A block some store reaches refuses
-  `extent_mutable` (certification only — the lift and guard stand). A root
-  is **extent-certified** when the fixpoint equals the observed extent, or
-  run-to-recurrence closure covers the infinite run (`--close`). Note from
-  the fixture record: a fused pair's `block_read` def classifies `computed`
-  (the byte-lane spelling is what the shape recognizer reads), so the
-  enumeration must key on the fused form too — `follin_jump`'s xfail is the
-  executable statement.
+  *(LANDED)*. `ptrcert` gained the static extent enumeration: reload targets
+  from the declared row-index bound (2a's `_reload` already bounded them, so
+  b3 adds nothing there); `block_read` targets as a least fixpoint
+  over the finite registry (E₀ = reload rows + post-init block **+ the declared
+  blocks the web reads its value out of**, see correction 2; each round adds
+  every declared datum containing any 16-bit LE value readable in blocks
+  already in E; monotone over a finite registry, so it terminates). A block
+  some store reaches refuses `extent_mutable` (certification only — the lift
+  and guard stand). A root is **extent-certified** when the fixpoint equals the
+  observed extent, or run-to-recurrence closure covers the infinite run
+  (`storage_census --close`). A `block_read` def arrives fused (rung (d)'s pack,
+  which the shape recognizer reads as `computed`) or as the two byte lanes the
+  machine wrote, so the enumeration keys on both; a lane whose partner is not
+  the byte beside it names half a pointer and the extent stays open.
+
+  | | before (`657dee9`) | after |
+  |---|---:|---:|
+  | pointer roots | 1,044 | 1,044 |
+  | — block-rooted (definitions closed) | 441 (42.2%) | **480 (46.0%)**, 2,430 ⊤ loads |
+  | — cursor-ready | 107 | **110** |
+  | — tunes all-block-rooted | 145 | **157** |
+  | def kinds `reload`/`advance`/`save_restore` | 1,776 / 504 / 1,034 | 1,776 / 504 / **1,076** |
+  | — `block_read` (new) / `other` | — / 1,058 | **128** / **1,022** |
+  | premises `defs_closed` / `rows_declared` | 441 / 642 | **480** / **595** |
+  | roots reading their value out of the registry | — | **370** |
+  | roots with a non-empty static extent / blocks named | — | **858 / 5,057** |
+  | **extent claims** (refusals empty) | — | **103** (100 deref'd in the run) |
+  | — fixpoint == observed (**extent-certified**) | — | **99** |
+  | — observed block the fixpoint does not name | — | **1** |
+  | tunes closing under `--close` (1,500 frames) | — | **9 of 624**, 0 extra certificates |
+  | b1 `eligible` / b5 work list | 524 / 308 webs | **523** / **308 webs** (correction 1) |
+
+  **The refusal ledger** (per root; a root may wear several classes):
+
+  | class | roots | tunes | movement |
+  |---|---:|---:|---|
+  | `ptr_uncertified` | 564 | 354 | **-39 / -12** (the block reads are named) |
+  | `role_entangled` | 418 | 302 | unchanged |
+  | `ptr_extent_open` | 347 | 170 | **+36 / +19** (63 unpaired-lane roots) |
+  | `extent_mutable` (new) | **182** | **132** | the enumeration reads out of a written block |
+  | `role_opaque` | 7 | 7 | unchanged |
+
+  Gates, all held and all full-corpus: emitted text byte-identical, 624/624
+  sha256, **both with and without b0's artifact**; `gate_sweep --frames 300
+  --extents out/ptr_extents_full.json` **622 clean / 623 built**, `Rambo` (C)
+  the only divergence, zero `extent` faults, no run outran its horizon;
+  `lift_residue` and `fuse_measure` identical field for field on all 624 rows
+  (only `build_s` moves); census sum **31,112**, every signature unchanged; the
+  seven review tunes Gate FP clean at full Songlengths length, 7/7, and their
+  emitted-text diff is empty by the sha256 above.
+
+  **The corpus-forced corrections:**
+
+  1. **b3 moves b1's column by one web, downward, and the plan's "the lift and
+     guard stand" survives only because the work list does not move.**
+     Admitting a play-written pointer table into the web runs 2a's closure over
+     its writers, and `Amazing_Spider-Man`'s `m_6367` reloads from
+     `m_659F`/`m_65A2`, which are written from a register: two `held_open`
+     defs, `def_unliftable`, `eligible` 524 -> 523. The web was never in the
+     work list (its observed extent is unmappable), so rung (g) rewrites the
+     same 308 webs and every emitted byte stands. The movement is a rule
+     change and it is monotone toward refusal — b3 found a web b1 admitted
+     only because 2a could not see the table behind its reload.
+  2. **E₀ as specified was incomplete, and the differential guard proved it
+     before any prose did.** With E₀ = reload + post-init only, six claiming
+     roots had the run reach declared blocks the enumeration never named — all
+     six restored from a held table (`Adidas_Football` `zp_20` from
+     `m_70A9[]`, `Anastasia`, `Airwolf`, `Counterforce` `m_1E57` from
+     `m_1EC1[]` (`$1E45: LDA $1EC1,Y / STA $1E57`), `Contact_Us`, `Cybernoid`).
+     2a's closure proves a hold's *writers* are cursor values and never asked
+     where its *rows* point, so the extent claim was open. Feeding a hold that
+     lands in a declared datum into the read set — the same fixpoint edge the
+     block reads use — closes five of the six.
+  3. **The one survivor is a different quantity, not a defect.** `Counterforce`
+     `m_1E57` is the operand pair of the instruction at `$1E56`
+     (`99 D1 1E` = `STA $1ED1,Y`), and `$1E51: LDY #$0E` walks the row index
+     fourteen bytes past the block the operand's *value* names; the registry
+     carved that span into seven declarations. The enumeration states where a
+     root's value may point, b0's record states where its derefs landed —
+     value **+** row index. Ledgered as a precision item: the row-index span
+     is `frameptr`'s, not b3's.
+  4. **The fused `block_read` the plan told b3 to key on is 2 definitions in
+     624 tunes; the byte-lane form is 126.** 2a's `block_read` *shape* (133)
+     is almost entirely lanes rung (d) never fused, and the fused ones hide
+     under `computed` exactly as the fixture record said. Keying only on the
+     fused form — the literal reading of this bullet before it landed — would
+     have reached two definitions. Both keyings are now in the rule and both
+     have fixtures (`follin_jump`, `lone_lane_block_read`).
+  5. **`--close` is real and nearly empty.** Nine of 624 tunes reach a
+     recurring state image at 1,500 frames with no declared input; six carry a
+     pointer root and one carries a claiming root, whose extent the fixpoint
+     had already certified. `--close` therefore adds **zero** certificates at
+     this horizon: it is a licence with no customers yet, kept because it is
+     the only licence that does not depend on the enumeration being exact.
+  6. **`gate_sweep --extents` must be given the `--frames full` artifact.**
+     `gate_sweep` decompiles at full Songlengths length while
+     `storage_census --frames 1500` decompiles at 1,500, so the 1,500-frame
+     artifact describes a different model: five tunes take `extent` faults that
+     have nothing to do with any rule. Measured identically at `657dee9`, so it
+     is a usage trap, not a regression — but it is how a clean gate can be made
+     to look like a broken one.
+
+  **Not done**: the enumeration does not derive an extent from arithmetic —
+  `computed_rows` stays xfail and its reason is now **Phase 6 alone**; the
+  static extent is deliberately kept out of `aliases`' span (widening the
+  alias bound would move `web_alias`, and with it the text) — a later phase
+  owns that; 63 roots over 32 tunes refuse `ptr_extent_open` on an unpaired
+  byte lane, which is rung (d)'s read-side rule again.
 - **(b4) Evaluator cost is measured, not feared** *(LANDED)*: structurally
   zero unannotated (no guard object); ~1.06× where the guarded deref
   dominates — inside the 2× budget (docs/cycle-times.md).
@@ -508,7 +604,9 @@ Gate FP on the six lifted review tunes at full length 6/6 clean; b4 above.
    whose rows are computed gets one anchor and nothing else — Galway and
    goto80 exactly (`computed_rows` fixture: b1-eligible, rows land in no
    declared datum). Of the unmappable addresses, 50.2% are `short` (ran off
-   a block the web walks), the rest `foreign`.
+   a block the web walks), the rest `foreign`. **b3 measured this and cannot
+   reach it**: its fixpoint walks declared data for 16-bit LE words, and an
+   arithmetic row is in no block, so the class is Phase 6's outright.
 3. **The write-through class reaches the work list at zero sites** (both
    b1-eligible carriers refuse `extent_unmappable`), so Phase 3 (ii) should
    not expect certified write extents from 2b's first rewrite.
@@ -519,11 +617,12 @@ Gate FP on the six lifted review tunes at full length 6/6 clean; b4 above.
    moves both populations in one change — an instrument-attributable
    movement to report apart from any rewrite's own.
 
-**Not done**: b3 (above); the four original Phase 2 shredder fixtures stay
-xfail (`_lift` passes no artifact — deliberate; of the four only
+**Not done** (2b as a whole, after b3): the four original Phase 2 shredder
+fixtures stay xfail (`_lift` passes no artifact — deliberate; of the four only
 `cursor_save` would pass with one); `ptrcert._advance` through `_lane` (2
 defs) and `_reload` through a pack-and-mask (3 defs, Slaygon) are ledgered
-precision items.
+precision items, joined by b3's row-index gap (correction 3) and its
+deliberate isolation from the alias span.
 
 #### 2c — the stack fabric leaves (`raw_sp` -> 0, scheduled)
 
@@ -656,7 +755,10 @@ operator exists, the rule does not), and `/`/`%` themselves stay absent
 from the dialect until a true shift-subtract divider appears in the
 corpus, which none of the measured residue needs. G2 is partly consumed by Phase 0's
 `g2_boundable`; computed-jump scoping dissolves into R8's forward analysis.
-Readability candidates parked here: switch-on-command-byte.
+Readability candidates parked here: switch-on-command-byte, and — handed over
+whole by b3 — the arithmetic row (`computed_rows`): the fixpoint reads 16-bit
+LE words out of declared data, and a row built by arithmetic is in no block, so
+`extent_unmappable`'s 399 webs are this phase's alone.
 
 ## 3. Divergence guards (cross-cutting, every phase)
 
@@ -796,12 +898,13 @@ cites (`tools/disasm_tune.py` reproduces it):
 
 | fixture | kind | pins |
 |---|---|---|
-| `follin_jump` | control + xfail b3 | the script jump (Ghouls `$6AD0`) fuses and is lift-eligible; b3's enumeration certifies it (fused `block_read` classifies `computed` — key on the fused form) |
-| `follin_ret_stack` | control + xfail b3 | the depth-indexed split-column call stack (`$6ADD`/`$6B42`) fuses and is eligible; b3 certifies `extent_mutable` only |
+| `follin_jump` | control + **landed b3** | the script jump (Ghouls `$6AD0`) fuses and is lift-eligible; the fixpoint closes on the block it walks — hard pass, and the fused `block_read` classifying `computed` is its own assert |
+| `follin_ret_stack` | control + **landed b3** | the depth-indexed split-column call stack (`$6ADD`/`$6B42`) fuses and is eligible; certification refuses `extent_mutable` and nothing else — hard pass |
+| `lone_lane_block_read` | invariant (b3) | the hi lane alone read out of the block (Data_Data_Data_Data `zp_D2`, American `$B41A`): defs closed, `ptr_extent_open` — no word for the fixpoint to key on |
 | `low_held_cursor` | invariant + xfail 2c | the pair held through page one (Angry_Birds `$09F1`) refuses `low_held`, keeps `sp`; re-enters after 2c |
 | `alias_web` | invariant | a wrapping `STA $zz,X` with unbounded X (ASL/04 `$128B`) refuses `web_alias`; the machine spelling survives |
 | `call_returned_row` | control | a row returned in A/X across a call refuses certification, never the lift |
-| `computed_rows` | invariant + xfail b3/P6 | an arithmetic row off the registry: b1-eligible, `extent_unmappable`; derived extents flip it |
+| `computed_rows` | invariant + xfail **P6** | an arithmetic row off the registry: b1-eligible, `extent_unmappable`, and no block read for b3 to enumerate; only the value-set walker flips it |
 | `shift_divide` | xfail P6 | the divide accumulator (Cool_Air `$1447`): `(T2[y]-T1[y]) >> n` as a loop-carried `LSR`/`ROR` — the `>>` exists, the loop rule does not |
 | `phase_split_reload` | xfail 2b | the pair's halves reloaded in different frames (Air_on_a_Rasterline `$0C1A`/`$0D05`) — each store is a lane replacement, a masked word update away from fused |
 | `dispatch_scratch` | control + xfail P3 | the SMC-operand dispatch emits `switch goto` (no wall); scratch promotes across the join |
@@ -810,7 +913,11 @@ cites (`tools/disasm_tune.py` reproduces it):
 
 The extent guard itself (an access past the recorded extent faults at
 evaluation) is pinned hermetically in `tests/test_frameval_extent.py`; the
-horizon MUST is a runnable gate (`gate_sweep --extents`).
+horizon MUST is a runnable gate (`gate_sweep --extents`, given the
+`--frames full` artifact — §2 2b (b3) correction 6). b3's recurrence licence
+has its own hermetic player, `recurrent` in `tests/test_storage_census.py`:
+one toggling cell, so the state image repeats at a frame boundary and
+`--close` fires, beside `scratch`, whose counter never repeats.
 
 Writing the first fixture family measured the ladder honestly in its
 favour: the first drafts of `pointer_walk` and `borrow_chain` XPASSed
@@ -886,3 +993,24 @@ history (`git log --grep=regmodel`); only what still binds is here.
   phase, each with a fixture. The lesson is standing: a claim read off the
   emitted text is not a claim about the machine — `unobserved` arms are
   invisible in the text by design.
+- **Post-b3 (2026-08-09).** The static enumeration landed and 2b is closed.
+  Block-rooting 441 -> 480 roots, 99 of 103 extent claims certified against
+  b0's observed run, `extent_mutable` 182 roots / 132 tunes; text
+  byte-identical 624/624 with and without the artifact, gate 622/623, census
+  sum 31,112, `lift_residue`/`fuse_measure` identical row for row. Four things
+  the corpus decided against the bullet as written (§2 2b (b3)): E₀ was
+  incomplete and the §3 differential guard is what proved it — six claiming
+  roots restored from a held table whose rows the closure never followed, five
+  closed by feeding the hold into the read set and the sixth explained as a
+  row-index span, not a defect; the fused `block_read` the bullet told b3 to
+  key on is **2 definitions in 624 tunes** against 126 byte-lane ones, so
+  "key on the fused form too" had to mean *both* keyings and not that one;
+  `--close` closes 9 tunes and buys **zero** certificates at 1,500 frames;
+  and admitting a play-written pointer table into the web costs b1 one web
+  (`Amazing_Spider-Man`), which the work list absorbs, so "the lift and guard
+  stand" holds for the emitted text but not for the eligibility ledger. The
+  standing lesson: a rule stated over one spelling of a value is a rule about
+  the emitter, not about the machine — count the spellings before pricing it.
+  `computed_rows` keeps its xfail and its reason narrows to **Phase 6 alone**:
+  b3's fixpoint reads declared data, and an arithmetic row is in no block, so
+  nothing short of the value-set walker flips it.

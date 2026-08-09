@@ -227,9 +227,31 @@ def test_one_definition_at_a_time_against_the_spelling_vocabulary(role, shape, w
 
 
 def test_every_kind_the_plan_names_a_cursor_shape_spells():
-    for kind in ("reload", "advance", "save_restore"):
+    for kind in ("reload", "advance", "save_restore", "block_read"):
         d = {"kind": kind, "role": "word", "shape": None, "writer": None}
         assert ptrcert._def_refusal(d) is None
+
+
+def test_b3_names_a_kind_without_moving_the_lift_column():
+    """Invariant: (ii)'s verdict keys on the shape, so naming a def's kind is accounting.
+
+    2b (b3) certifies definitions 2a called ``other``; the lift column was measured at
+    2b's rewrite and may not follow, so the shape stays what the recognizer read."""
+    for kind in ("other", "block_read", "save_restore"):
+        d = {"kind": kind, "role": "lo", "shape": "computed", "writer": None}
+        assert ptrcert._def_refusal(d) == "def_unliftable"
+
+
+def test_the_static_extent_never_bounds_the_alias_premise():
+    """Invariant: ``aliases`` reads 2a's own blocks, never b3's wider enumeration.
+
+    A store through a certified root is bounded by that root's blocks; letting the
+    fixpoint widen that bound would move ``web_alias``, and with it the emitted text."""
+    _lift("writethrough")
+    cert = ptrcert._Cert(_lift_prog["writethrough"]).run()
+    for root in cert.roots.values():
+        assert set(root.blocks) <= root.reach
+        assert cert._span([root.cell]) is None or root.blocks
 
 
 def test_every_lift_refusal_is_in_the_plan_vocabulary():

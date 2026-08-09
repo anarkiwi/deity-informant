@@ -74,8 +74,18 @@ def _writethrough():
     return a, data
 
 
+def _recurrent():
+    """2b (b3) --close: the whole state is one toggling cell, so frame 2 repeats frame 0."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("EOR", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("ORA", "imm", 0x40).i("STA", "abs", SID + 4)
+    a.i("RTS")
+    return a, {CTR: 0}
+
+
 _PLAYERS = {
     "scratch": _scratch,
+    "recurrent": _recurrent,
     "lone_lane": _lone_lane,
     "pointer_walk": _pointer_walk,
     "writethrough": _writethrough,
@@ -229,6 +239,27 @@ def test_census_matches_the_dynamic_oracle_of_the_evaluator():
     cls = storage_census.cell_classes(image)
     assert cls[TMP] == "framelocal" and cls[CTR] == "persistent"
     assert not any(SID <= a <= SID + 0x1C for a in cls)
+
+
+def test_a_recurring_run_closes_and_a_counting_one_does_not():
+    """2b (b3) ``--close``: recurrence is what lets a finite run stand for the infinite one.
+
+    The toggle's state image repeats at a frame boundary and no input drives it, so the
+    observed extent is the whole extent; the counter never repeats inside the horizon."""
+    model, prog = _built("recurrent")
+    image, ran, fault = storage_census.evaluate(model, prog, FRAMES, close=True)
+    assert image.recurred == 0 and not image.driven
+    assert storage_census.closed_run(image, ran, fault)
+    model, prog = _built("scratch")
+    image, ran, fault = storage_census.evaluate(model, prog, FRAMES, close=True)
+    assert image.recurred is None and not storage_census.closed_run(image, ran, fault)
+
+
+def test_closure_is_off_unless_it_is_asked_for():
+    """Invariant: the recurrence test costs a hash per frame, so it is opt in."""
+    model, prog = _built("recurrent")
+    image, ran, fault = storage_census.evaluate(model, prog, FRAMES)
+    assert image.recurred is None and not storage_census.closed_run(image, ran, fault)
 
 
 @pytest.mark.parametrize("name", sorted(_PLAYERS))

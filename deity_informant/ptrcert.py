@@ -1,8 +1,8 @@
-"""ptrcert: is a pointer root a cursor into declared blocks? (register-model-lift 2a).
+"""ptrcert: is a pointer root a cursor into declared blocks? (register-model-lift 2a, 2b b3).
 
-Block-rooting against ``datadecl``'s declared registry: every definition reaching
-a root the program derefs top-wide is a reload, an advance, a save/restore or
-``other``, and a root with no ``other`` is block-rooted. Read-only, so no text moves.
+Block-rooting against ``datadecl``'s registry: every definition reaching a root the
+program derefs top-wide is a reload, an advance, a save/restore, a block read or
+``other``; b3 adds the extent enumeration. Read-only, so no text moves.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from collections import Counter
 
 from . import datadecl
 from . import expr as E
+from . import framefuse as FU
 from . import frameproc
 from . import frameptr
 from . import grammar as G
@@ -26,8 +27,14 @@ _CAP = 8  # evidence rows a record carries per list; the count is the number
 _STACK = 0x01FF  # a reach at or under the stack is not the pointer traffic
 _STEP = 0xFF  # an advance step wider than a byte is no in-block step
 
-KINDS = ("reload", "advance", "save_restore", "other")
-REFUSALS = ("ptr_uncertified", "ptr_extent_open", "role_entangled", "role_opaque")
+KINDS = ("reload", "advance", "save_restore", "block_read", "other")
+REFUSALS = (
+    "ptr_uncertified",
+    "ptr_extent_open",
+    "extent_mutable",
+    "role_entangled",
+    "role_opaque",
+)
 LIFT_REFUSALS = ("web_alias", "def_unliftable", "web_opaque", "low_held")
 _SHAPES = ("block_read", "low_held", "opaque", "computed", "held_open")
 _LIFTS = ("block_read", "computed")  # residue shapes the 2b spelling still writes
@@ -277,13 +284,85 @@ def _lane(v):
     return hi if hi is not None else (inner if frameproc.loc_width(inner) == 2 else None)
 
 
+def _addr_const(a):
+    """``(the address without its constant term, that constant)``."""
+    if frameproc.is_op(a, "INT_ADD"):
+        ks = [c[1] for c in a[2] if c[0] == "const"]
+        rest = tuple(c for c in a[2] if c[0] != "const")
+        if len(ks) == 1 and len(rest) == 1:
+            return rest[0], ks[0]
+    return a, 0
+
+
+def _word_read(v):
+    """The address of a 16-bit LE read, taken through the fused byte-lane spelling.
+
+    b3's keying note: rung (d) fuses a block operand's two lane reads into one pack,
+    so the shape recognizer sees ``computed`` where the machine read a word."""
+    if v[0] == "mem" and v[2] == 2:
+        return v[1]
+    got = FU.unpack(v)
+    if got is None:
+        return None
+    lo, hi = got
+    if lo[0] != "mem" or hi[0] != "mem" or lo[2] != 1 or hi[2] != 1:
+        return None
+    (la, lk), (ha, hk) = _addr_const(lo[1]), _addr_const(hi[1])
+    return lo[1] if la == ha and hk == lk + 1 else None
+
+
+def _pair_legs(v):
+    """``[(base, indexed)]`` of the two byte-table reads a packed row entry makes."""
+    got = FU.unpack(v)
+    if got is None:
+        return None
+    out = []
+    for half in got:
+        half = ST._strip_zext(half)
+        if half[0] != "mem" or half[2] != 1:
+            return None
+        base, idx = frameproc.addr_split(half[1])
+        if base is None:
+            return None
+        out.append((base, idx is not None))
+    return out
+
+
+def _pair_table(v, role, regions):
+    """``[(decl, indexed)]`` where ``v`` reads a row of a play-written lo/hi table pair.
+
+    Exactly the rows ``_reload``'s const premise refuses: the registry names the pair
+    and the row, but play writes the columns, so the words ``mem0`` carries are not
+    the words the row will hold -- b3 names the def and refuses ``extent_mutable``."""
+    legs = None if role != "word" else _pair_legs(v)
+    if legs is None:
+        return None
+    (lob, lix), (hib, hix) = legs
+    alo, ahi = regions.at(lob), regions.at(hib)
+    if alo is None or ahi is None:
+        return None
+    (dlo, off), (dhi, ohi) = alo, ahi
+    if dlo["role"] != ("lo", dhi["base"]) or dhi["role"] != ("hi", dlo["base"]) or off != ohi:
+        return None
+    return [(dlo, lix), (dhi, hix)] if dlo["mut"] or dhi["mut"] else None
+
+
+def _lanes_pair(lanes):
+    """Every byte-lane block read has its partner one byte along, so a word was read.
+
+    The enumeration keys on 16-bit LE values: a lone lane names half a pointer, and
+    what the other half is came from some other definition entirely."""
+    lo, hi = lanes["lo"], lanes["hi"]
+    return all((a, k + 1) in hi for a, k in lo) and all((a, k - 1) in lo for a, k in hi)
+
+
 def _def_refusal(d):
     """The class one definition refuses the 2b lift under, else None: it spells.
 
     A reload, an advance, a save/restore and a block read spell today; a computed
     def spells where rung (d) fused its lanes at one seat (role ``word``), and a
     hold's own writer answers for a save 2a's closure could not admit."""
-    if d["kind"] != "other":
+    if d["shape"] is None:
         return None
     shape = d["writer"] if d["shape"] == "held_open" else d["shape"]
     if shape == "low_held":
@@ -332,6 +411,15 @@ class _Root:
         self.init_declared = True
         self.init_word = 0
         self.notes = []
+        self.read_roots = set()  # b3: cursors whose blocks this root reads its value out of
+        self.read_blocks = set()  # b3: declared blocks it reads its value out of directly
+        self.lanes = {"lo": set(), "hi": set()}  # b3: byte-lane block reads, to pair
+        self.lane_open = False
+        self.reach = set()  # b3: the static extent, the fixpoint's own answer
+        self.mutable = set()  # b3: blocks it reads out of that some store reaches
+        self.observed = None
+        self.extent_short = []
+        self.extent_certified = False
 
     def add(self, entry, role, kind, why, shape=None, writer=None):
         """Record one definition, the premise that named its kind, and its shape."""
@@ -369,11 +457,26 @@ class _Root:
             out.append("ptr_uncertified")
         elif not self.extent_ok:
             out.append("ptr_extent_open")
+        if self.mutable:
+            out.append("extent_mutable")
         if self.foreign:
             out.append("role_entangled")
         elif self.opaque:
             out.append("role_opaque")
         return out
+
+    def close(self, observed, closed):
+        """b3's verdict against b0: the fixpoint equals what the run saw, or it closed.
+
+        ``observed`` is this root's b0 block set, so a block the run reached and the
+        enumeration did not name is the differential guard firing, ledgered apart."""
+        if observed is None:
+            return
+        self.observed = set(observed)
+        if self.refusals():
+            return
+        self.extent_short = sorted(self.observed - self.reach)
+        self.extent_certified = bool(self.observed) and (closed or self.observed == self.reach)
 
     def lift_defs(self):
         """This web's definitions counted by the class each refuses under."""
@@ -436,9 +539,19 @@ class _Root:
         if not self.advance_bounded:
             why.append("an advance steps by an unbounded amount")
         if not self.extent_declared:
-            why.append("a row the root may reload is in no declared datum")
+            why.append(
+                "a byte-lane block read has no partner lane"
+                if self.lane_open
+                else "a row the root may reload is in no declared datum"
+            )
         if not self.init_declared:
             why.append("the post-init value $%04X is in no declared datum" % self.init_word)
+        if self.mutable:
+            why.append("%d block(s) it reads its value out of are play-written" % len(self.mutable))
+        if self.extent_short:
+            why.append(
+                "%d observed block(s) the enumeration does not name" % len(self.extent_short)
+            )
         return "%s; %s" % (body, "; ".join(why) if why else "block-rooted, extent declared")
 
     def proof(self):
@@ -471,6 +584,13 @@ class _Root:
             "opaque_count": len(self.opaque),
             "sources": ["$%04X" % c for c in sorted(self.sources)],
             "blocks": ["$%04X" % b for b in sorted(self.blocks)],
+            "reach": ["$%04X" % b for b in sorted(self.reach)],
+            "read_roots": ["$%04X" % c for c in sorted(self.read_roots)],
+            "read_blocks": ["$%04X" % b for b in sorted(self.read_blocks)],
+            "mutable_blocks": ["$%04X" % b for b in sorted(self.mutable)],
+            "extent_certified": self.extent_certified,
+            "extent_short": ["$%04X" % b for b in self.extent_short[:_CAP]],
+            "observed_blocks": None if self.observed is None else len(self.observed),
             "holds": ["$%04X" % b for b in sorted(self.holds)],
             "top_loads": self.counts.get("load", 0),
             "top_stores": self.counts.get("store", 0),
@@ -499,6 +619,7 @@ class _Cert:
         self.cells = {c + o: c for c in self.roots for o in (0, 1)}
         self.stores = []
         self.saves = {}
+        self.edges = None
 
     def scan(self):
         """Index every store as ``(entry, env, seat, stmt, base, indexed, width)``."""
@@ -586,12 +707,110 @@ class _Cert:
                 return "save_restore", "restored from cursor %s" % name_addr(base), None
             root.holds.add(base)
             self.saves.setdefault((base, indexed, width), set()).add(root.cell)
+            at = self.regions.at(base)
+            if at is not None:
+                root.read_blocks.add(at[0]["base"])
             row = "[]" if indexed else ""
             why = "restored from held value %s%s" % (name_addr(base), row)
             return "save_restore", why, None
         shape = _shape(v)
+        got = _pair_table(v, role, self.regions)
+        if got is not None:
+            root.shapes[shape] += 1
+            for d, indexed in got:
+                root.holds.add(d["base"])
+                self.saves.setdefault((d["base"], indexed, 1), set()).add(root.cell)
+                if d["mut"]:
+                    root.mutable.add(d["base"])
+            why = "row of declared pointer table %s, play-written" % name_addr(got[0][0]["base"])
+            return "save_restore", why, shape
+        got = self._block_read(role, v)
+        if got is not None:
+            root.shapes[shape] += 1
+            through, blocks, addr = got
+            root.read_roots |= set(through)
+            root.read_blocks |= set(blocks)
+            if role != "word":
+                root.lanes[role].add(_addr_const(addr))
+            named = [name_addr(c) for c in sorted(through)] + [name_addr(b) for b in sorted(blocks)]
+            lane = "word" if role == "word" else "%s lane" % role
+            return "block_read", "%s read out of %s" % (lane, ", ".join(named)), shape
         root.shapes[shape] += 1
         return "other", "%s: %s" % (shape, frameproc._fmt(v)), shape
+
+    def _block_read(self, role, v):
+        """``(cursor roots, declared blocks, address)`` a def reads its next value from.
+
+        2a named this shape and left it uncertified. The word arrives fused (rung
+        (d)'s pack, which the shape recognizer reads as ``computed``) or as the two
+        byte lanes the machine wrote, so b3 keys on both."""
+        if role == "word":
+            addr = _word_read(v)
+        else:
+            addr = v[1] if v[0] == "mem" and v[2] == 1 else None
+        if addr is None:
+            return None
+        through = sorted(set(root_cells(addr)) & set(self.roots))
+        if through:
+            return through, [], addr
+        base, _idx = frameproc.addr_split(addr)
+        at = None if base is None else self.regions.at(base)
+        return None if at is None else ([], [at[0]["base"]], addr)
+
+    def _block_edges(self):
+        """``block base -> the declared datums a 16-bit LE word inside it names``.
+
+        b3's fixpoint step, computed once per program: the registry is finite and so
+        is this relation, which is what makes the least fixpoint terminate."""
+        if self.edges is None:
+            self.edges = {}
+            for d in self.regions.decls:
+                base, size, out = d["base"], d["size"], set()
+                for a in range(base, base + max(0, size - 1)):
+                    at = self.regions.at(self.mem0[a] | (self.mem0[a + 1] << 8))
+                    if at is not None:
+                        out.add(at[0]["base"])
+                self.edges[base] = out
+        return self.edges
+
+    def enumerate(self):
+        """b3: the static extent of every root, as a least fixpoint over the registry.
+
+        E0 is 2a's own answer (reload rows plus the post-init block); each round adds
+        every declared datum holding a word readable in the blocks the root reads out
+        of. Monotone over a finite registry, so it terminates."""
+        edges = self._block_edges()
+        for root in self.roots.values():
+            root.reach = set(root.blocks)
+        grew = True
+        while grew:
+            grew = False
+            for root in self.roots.values():
+                add = set()
+                for b in self._read_span(root):
+                    add |= edges.get(b, ())
+                if add - root.reach:
+                    root.reach |= add
+                    grew = True
+        for root in self.roots.values():
+            for b in self._read_span(root):
+                at = self.regions.at(b)
+                if at is not None and at[0]["mut"]:
+                    root.mutable.add(b)
+            if not _lanes_pair(root.lanes):
+                root.extent_declared = False
+                root.lane_open = True
+                root.notes.append("a byte-lane block read has no adjacent partner lane")
+        return self
+
+    def _read_span(self, root):
+        """The declared blocks a root's block reads take their word out of."""
+        out = set(root.read_blocks)
+        for c in root.read_roots:
+            other = self.roots.get(c)
+            if other is not None:
+                out |= other.reach
+        return out
 
     def _reach(self, s, at):
         """The range a store writes, floored by the bits its address must set."""
@@ -852,15 +1071,24 @@ class _Cert:
             root.blocks = sorted(set(root.blocks))
         return self
 
-    def run(self):
-        """Discharge every premise, in the order each one's inputs are ready."""
-        cert = self.scan()._seed_tables().definitions().closure().extents()
-        return cert.aliases().reads()
+    def run(self, observed=None, closed=False):
+        """Discharge every premise, in the order each one's inputs are ready.
+
+        ``aliases`` reads 2a's own extent, never b3's enumeration: b3 is accounting,
+        so the alias premise the lift rides on is left exactly where 2b measured it."""
+        cert = self.scan()._seed_tables().definitions().closure().extents().enumerate()
+        cert = cert.aliases().reads()
+        for c, root in cert.roots.items():
+            root.close(None if observed is None else observed.get(c, ()), closed)
+        return cert
 
 
-def certify(prog):
-    """``([proof record], top-wide accesses with no root)`` for ``prog``."""
-    cert = _Cert(prog).run()
+def certify(prog, observed=None, closed=False):
+    """``([proof record], top-wide accesses with no root)`` for ``prog``.
+
+    ``observed`` is b0's per-root block set for this run and ``closed`` says the run
+    reached recurrence: together they decide b3's ``extent_certified`` column."""
+    cert = _Cert(prog).run(observed, closed)
     return [cert.roots[c].record() for c in sorted(cert.roots)], dict(cert.loose)
 
 
@@ -875,13 +1103,18 @@ def cert_cells(recs):
     return {int(r["root"][1:], 16) + o for r in recs for o in (0, 1)}
 
 
-def summary(prog, cls=None):
+def observed_blocks(recs):
+    """``{root cell: {block base}}`` from b0's extent records: b3's own comparison."""
+    return {int(r["root"][1:], 16): {int(b[1:], 16) for b in r["blocks"]} for r in recs}
+
+
+def summary(prog, cls=None, observed=None, closed=False):
     """One tune's certification row: coverage, the refusal ledger, the records.
 
     ``cls`` is ``streams.classify``'s cell table where the caller has it, so a
     root the finder names and the program no longer derefs top-wide is visible as
     rung (f)'s work rather than as a root nobody looked at."""
-    recs, loose = certify(prog)
+    recs, loose = certify(prog, observed, closed)
     ledger, lift, defs, held = Counter(), Counter(), Counter(), Counter()
     for r in recs:
         ledger.update(r["refusals"])
@@ -903,6 +1136,16 @@ def summary(prog, cls=None):
         "block_rooted": len(rooted),
         "cursor_ready": len(ready),
         "premises": premises,
+        "extent": {
+            "enumerated": sum(1 for r in recs if r["reach"]),
+            "block_reads": sum(r["kinds"]["block_read"] for r in recs),
+            "read_roots": sum(1 for r in recs if r["read_roots"] or r["read_blocks"]),
+            "reach_blocks": sum(len(r["reach"]) for r in recs),
+            "mutable": sum(1 for r in recs if r["mutable_blocks"]),
+            "certified": sum(1 for r in recs if r["extent_certified"]),
+            "short": sum(1 for r in recs if r["extent_short"]),
+            "compared": sum(1 for r in recs if r["observed_blocks"] is not None),
+        },
         "shapes": {k: sum(r["shapes"].get(k, 0) for r in recs) for k in _SHAPES},
         "top_loads": sum(r["top_loads"] for r in recs),
         "top_stores": sum(r["top_stores"] for r in recs),
