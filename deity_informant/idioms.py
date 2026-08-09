@@ -163,6 +163,22 @@ def _table_row(n):
     return None if got is None or got[1] is None or got[2] else (got[1],)
 
 
+def _zp_row(n):
+    """``mem[zext(b)]``: a page-zero row whose index arithmetic wrapped in 8 bits.
+
+    ``LDA $zz,X`` adds in the byte domain, so the address is a widened byte term and
+    no width-2 base+index form names it; the const side is the base the row is off."""
+    if n[0] != "mem" or not P.is_op(n[1], "INT_ZEXT", arity=1):
+        return None
+    b = n[1][2][0]
+    if P.loc_width(b) != 1:
+        return None
+    if P.is_op(b, "INT_ADD", arity=2) or P.is_op(b, "INT_SUB", arity=2):
+        rest = tuple(x for x in b[2] if x[0] != "const")
+        return rest if len(rest) < 2 else (b,)
+    return (b,)
+
+
 def _cell_read(n):
     """``mem[$ADDR]``: one named cell, byte or word."""
     return () if n[0] == "mem" and n[1][0] == "const" and n[1][2] == 2 else None
@@ -254,6 +270,7 @@ ROWS = (
     Row("shift-chain", "one shift", _shift_chain),
     Row("flag-bit", "flag", flag_bit),
     Row("table-row", "table[i]", _table_row),
+    Row("zp-row", "zp table[i]", _zp_row),
     Row("cell-read", "cell", _cell_read),
     Row("stack-slot", UNKNOWN, _stack_slot),
     Row("deref-row", "*ptr[i]", _deref_row),
@@ -296,7 +313,7 @@ def cover(node):
     return counts, gaps
 
 
-Obligation = namedtuple("Obligation", "kind entry site at base field value")
+Obligation = namedtuple("Obligation", "kind entry site at base field value addr")
 
 _SITE = {"label": 1, "opsw": 1}  # statements carrying the pc a disassembly is read at
 
@@ -330,6 +347,17 @@ def state_cells(prog):
         for a in range(base, base + (1 if array else width)):
             out[a] = name
     return out
+
+
+def seats(prog):
+    """Every labelled pc of ``prog``, sorted: a cite range runs from one seat to the next."""
+    out, stack = set(), [s for _e, _p, _r, stmts in prog.procs for s in stmts]
+    while stack:
+        s = stack.pop()
+        if s[0] in _SITE:
+            out.add(s[_SITE[s[0]]])
+        stack.extend(x for body in P._stmt_bodies(s) for x in body)
+    return sorted(out)
 
 
 def obligations(prog):
@@ -382,5 +410,5 @@ def _slices(stmts, entry, site, cells, sid, upd):
         if got is None:
             continue
         kind, base, field = got
-        ob = Obligation(kind, entry, site, k, base, field, resolve(env, s[2], k))
+        ob = Obligation(kind, entry, site, k, base, field, resolve(env, s[2], k), s[1])
         (sid if kind == "sid" else upd).append(ob)

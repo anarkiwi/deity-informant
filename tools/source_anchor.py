@@ -15,6 +15,7 @@ import numpy as np
 
 import _sweep
 import disasm_tune
+import exemplars
 
 ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
@@ -26,15 +27,8 @@ USAGE = """\
 
 PLAYERS = ROOT / ".oracle-cache" / "players"
 
-# The fetched source, and the exemplar the source's own player plays.
-FAMILIES = {
-    "defmon": ("defmon/defmon.asm", "Goto80/Automatas"),
-    "hubbard": ("hubbard/rob_hubbards_music.txt", "Hubbard_Rob/Commando"),
-    "galway": ("galway/wizball.asm", "Galway_Martin/Wizball"),
-    "galway-rambo": ("galway/rambload.asm", "Galway_Martin/Rambo_First_Blood_Part_II"),
-    "goattracker": ("goattracker/player.s", "Jammer/Grid_Runner"),
-    "sidwizard": ("sidwizard/player.asm", "Chabee/Angry_Birds"),
-}
+# The fetched source, and the exemplar the source's own player plays (tools/exemplars.py).
+FAMILIES = {k: (a.source, exemplars.BY_KEY[k].tunes[0]) for k, a in exemplars.ALIGNED.items()}
 
 # An operand is one token or tokens joined by operators; prose is neither, and these
 _EXPR = r"[^\s]+(?:[ \t]*[-+*/&|^<>][ \t]*[^\s]+)*"  # sources carry prose as well as code.
