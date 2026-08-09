@@ -151,6 +151,23 @@ observed handler set with `unobserved` at the closure boundary (zero
    `dispatch_scratch` fixture pins both halves: the SMC-operand dispatch
    emits `switch goto` (control), and scratch promotes across the join
    (xfail Phase 3).
+
+   **Amended by 2c (correction 2): the edge set this analysis joins over does
+   not exist yet, and building it is a precondition, not a detail.** 2c built
+   the label/`goto`/loop worklist this bullet assumes, passed every fixture,
+   and **diverged eight tunes**; it was withdrawn and `sp_loop_edge` pins the
+   withdrawal. A structured statement list is not a CFG — a label may be
+   entered by a `goto` its list does not carry, a jump no list enumerates, or
+   a dispatch arm, so a forward join over the list alone concludes a property
+   holds on every path to a point that an unenumerated edge reaches without
+   it. Written-before-read is a **must**-analysis that licenses promotion, so
+   it carries strictly more risk than 2c's displacement claim, which is what
+   broke. Phase 3 MUST therefore either consume an explicit in-edge map (for
+   every label and dispatch arm, the sites that may reach it, across lists and
+   procedures, with the `unobserved` boundary) or take the conservative value
+   at every such point, which is what `_SpFlow.leaves()` does today and why it
+   is correct. Whether that map closes corpus-wide is unmeasured and is the
+   number Phase 2.5 owes this phase.
 2. **Follin's residue is ordinary.** Zero ⊤ stores, zero `raw_sp`, zero
    read-backs; its ⊤ loads are the three script pointers. What is genuinely
    Follin-shaped is the *scale* of the pointer machinery (3-deep per-voice
@@ -1230,6 +1247,30 @@ history (`git log --grep=regmodel`); only what still binds is here.
   `storage_census --frames 1500` 155 -> 134 (a 1,500-frame trace was never the
   cost). The first populating run pays ~11% to emit and store; the whole corpus
   is 18 MB over 1,203 artifacts.
+
+- **Post-3a, four items the phases did not own (2026-08-09).**
+  (i) **R8 amended in place**: its bullet still specified the forward worklist
+  2c had already withdrawn, so a Phase 3 agent reading it would have rebuilt
+  the analysis that diverged eight tunes. The in-edge map is now stated as
+  that phase's precondition and Phase 2.5 owes the number.
+  (ii) **The framing gained §2.1** (docs/register-model-lift.md): read forward,
+  the persistent half is four roles — cursor, accumulator, counter, parameter
+  — whose vocabulary is closed by the chip's parameter count rather than by
+  enumeration of spellings, which is the closure argument the ladder lacked.
+  It reorganises what P1/P2 and Phase 7 are rather than adding work, licenses
+  nothing on its own (elimination needs a complete recognizer; the static
+  proof stays the license), and is unmeasured pending its classifier. It also
+  reads R3's scratch fractions as an architecture axis — table-per-frame
+  (Commando: 4 of 26 persist) against event-script (Ghouls: 68 of 114) —
+  which predicts P1/Phase 3 paying at one end and Phase 7 at the other.
+  (iii) **Phase 7 (P4, §10) landed inside `daa31a5`** by squash rather than as
+  its own commit, so no prior entry records its arrival; the standing
+  governance violation it discharges is `follin_script._ARITY`, a hand-written
+  per-tune opcode table, named as a debt at both the doc and the module.
+  (iv) **`out/*.eqlift.txt` are committed artifacts last regenerated at PR
+  #51 and are stale** against current output (found by 3a's smoke run, whose
+  regeneration was reverted rather than folded in). They want refreshing or
+  untracking; no phase owns them.
 
 ## 7. Briefing a subagent to execute a phase
 
