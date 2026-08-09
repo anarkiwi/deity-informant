@@ -53,6 +53,11 @@ def sites(mem, opcode, lo, hi):
             yield format_insn(mem, pc)[1]
 
 
+def _hexint(x):
+    """``argparse`` type for an address in any base, as ``cli.py`` spells it."""
+    return int(x, 0)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
@@ -60,7 +65,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("tune", help="tune id or stem, resolved like every sweep resolves it")
-    hexint = lambda x: int(x, 0)  # noqa: E731 - argparse type, matches cli.py
+    hexint = _hexint
     ap.add_argument("--start", type=hexint, help="first address (default: the play entry)")
     ap.add_argument("--end", type=hexint, help="one past the last address (default: start+0x40)")
     ap.add_argument("--opcode", type=hexint, help="scan the image for this opcode instead")
