@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 import _sweep
+from exemplars import EXEMPLARS
 
 ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
@@ -25,26 +26,6 @@ USAGE = """\
   python tools/family_cluster.py                        # the whole cache, clusters ranked
   python tools/family_cluster.py --threshold 0.4        # override the plateau pick
   python tools/family_cluster.py --ngram 6 --frames 900 # a longer gram, a shorter listen"""
-
-# docs/idiom-catalog.md's exemplar set: one tune per player family this run tests for gaps.
-EXEMPLARS = (
-    "MUSICIANS/H/Hubbard_Rob/Commando",
-    "MUSICIANS/G/Galway_Martin/Comic_Bakery",
-    "MUSICIANS/G/Galway_Martin/Athena",
-    "MUSICIANS/G/Goto80/Automatas",
-    "MUSICIANS/J/Jammer/Grid_Runner",
-    "MUSICIANS/C/Cadaver/Aces_High",
-    "MUSICIANS/C/Chabee/Angry_Birds",
-    "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts",
-    "MUSICIANS/F/Follin_Tim/Agent_X_II_The_Mad_Profs_Back",
-    "MUSICIANS/D/Daf/Alioth",
-    "MUSICIANS/C/Cleve/ABC_Music",
-    "MUSICIANS/A/Alfatech/Galway-tune",
-    "MUSICIANS/B/Beast/Discmonsters_Intro",
-    "MUSICIANS/T/Tel_Kees/Before_I_Forget",
-    "MUSICIANS/D/Deek/4_Tunes",
-    "MUSICIANS/B/Buckley_Kevin/Down_Under",
-)
 
 SEED = 0x5109  # fixed: every worker must draw the same permutations
 U64 = np.uint64

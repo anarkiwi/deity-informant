@@ -5,6 +5,7 @@ composed slice to the last node, a shape outside the catalog is reported rather
 than absorbed, and ``obligations`` enumerates both slices off a built program."""
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,11 @@ import pytest
 from deity_informant import frameproc as P
 from deity_informant import frameprog
 from deity_informant import idioms
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+
+import exemplars  # pylint: disable=wrong-import-position
+import idiom_cite  # pylint: disable=wrong-import-position
 
 ROW = {r.id: r for r in idioms.ROWS}
 CATALOG = Path(__file__).resolve().parent.parent / "docs" / "idiom-catalog.md"
@@ -98,6 +104,8 @@ CASES = [
         (op("INT_ADD", (A, B)),),
     ),
     ("table-row", ROWCELL, (IDX,)),
+    ("zp-row", m(zext(op("INT_ADD", (loc("x"), c(0x04))))), (loc("x"),)),
+    ("zp-row", m(zext(op("INT_SUB", (loc("zp_0D"), c(0x11))))), (loc("zp_0D"),)),
     ("cell-read", B, ()),
     ("stack-slot", STACK, (STACK[1],)),
     ("deref-row", deref(PTRCELL, IDX), (PTRCELL, IDX)),
@@ -138,11 +146,34 @@ def test_the_doc_rows_table_and_the_recognizers_are_one_ordered_set():
     The doc claims the two sets (and their match order) are equal; this is the
     gate that makes the claim true."""
     doc = re.findall(
-        r"^\| `([a-z0-9-]+)` \| (.+?) \| \d+ \| \d+ \|$",
+        r"^\| `([a-z0-9-]+)` \| ([^|]+?) \| [^|]+ \| [^|]+ \| [^|]+ \| \d+ \| \d+ \|$",
         CATALOG.read_text(encoding="utf-8"),
         re.M,
     )
     assert [(i, f.strip("`")) for i, f in doc] == [(r.id, r.form) for r in idioms.ROWS]
+
+
+def test_the_doc_family_table_is_the_exemplar_set_the_sweeps_run():
+    """docs/idiom-catalog.md's family table is tools/exemplars.py rendered.
+
+    Every claim of coverage is over the exemplars the gate actually builds, so the
+    doc's families, exemplars and cluster sizes are gated against that table."""
+    doc = re.findall(
+        r"^\| `([a-z0-9-]+)` \| ([^|]+?) \| `([^|`]+)` \| *(\d+) \|",
+        CATALOG.read_text(encoding="utf-8"),
+        re.M,
+    )
+    want = [
+        (f.key, f.label, ", ".join(t.split("/", 2)[2] for t in f.tunes), str(f.cluster))
+        for f in exemplars.FAMILIES
+    ]
+    assert [(k, lab.strip(), t.replace("`", "").strip(), n) for k, lab, t, n in doc] == want
+
+
+def test_every_exemplar_is_named_once_and_the_anchors_name_families():
+    assert len(set(exemplars.EXEMPLARS)) == len(exemplars.EXEMPLARS)
+    assert set(exemplars.ANCHORS) <= set(exemplars.BY_KEY)
+    assert all(k == k.lower() and " " not in k for k in exemplars.BY_KEY)
 
 
 def test_a_lone_shift_is_no_chain_and_a_byte_copy_is_no_word_half():
@@ -166,6 +197,8 @@ REFUSALS = [
     ("alu-op", op("INT_SREM", (A, B))),
     ("adc-chain", op("INT_ADD", (A, B))),
     ("table-row", m(loc("w0", 2))),
+    ("zp-row", m(loc("b0"))),
+    ("zp-row", m(zext(loc("w0", 2)))),
     ("stack-slot", m(op("INT_ADD", (c(0x2000, 2), zext(IDX)), 2))),
 ]
 
@@ -258,6 +291,12 @@ def test_a_store_in_a_nested_body_is_enumerated_at_the_site_enclosing_it():
     prog = _prog([("label", 0x1020), ("if", "if", c(1), inner, [])])
     sid, _upd = idioms.obligations(prog)
     assert [(o.site, o.value) for o in sid] == [(0x1020, c(3))]
+
+
+def test_seats_are_every_labelled_pc_nested_bodies_included():
+    inner = [("label", 0x1030), ("st", c(SID, 2), c(3))]
+    prog = _prog([("label", 0x1020), ("if", "if", c(1), inner, [("label", 0x1040)])])
+    assert idioms.seats(prog) == [0x1020, 0x1030, 0x1040]
 
 
 def test_a_state_row_that_names_no_cell_is_no_obligation():

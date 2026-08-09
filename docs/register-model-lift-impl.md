@@ -75,6 +75,7 @@ census sum 30,854 — **retired as a steering metric**, kept as a diagnostic.
 | Phase 2b (b0–b5) | `ptrextent.py` + `out/ptr_extents*.json` (observed extents); rung (g) in `ptrlift.py` (251 webs lifted, 1,000 ⊤ loads retired); extent faults in `frameval` | landed lift; the guard pattern stage 3 inherits |
 | Phase 2c | `framestack._SpFlow`/`_balances` — interprocedural balance as a call-graph fixpoint; `sp_linked` on displacement | landed lift, stands |
 | Phase 2.5 | `tools/value_walk.py` — strided-interval walker and **the in-edge map** (closes 6,350 of 7,278 labels, 584 of 624 tunes; a raw `call` into the calling list is an in-edge) | feeds stage 3's joins and disjointness |
+| Stage 1 | `tools/exemplars.py` (the 25-tune set), `idiom_cover.py` (the completeness gate), `source_anchor.py` + `idiom_cite.py` (the cites), `deity_informant/idioms.py` (23 recognizers); docs/idiom-catalog.md | the claim of coverage stages 2-4 are tested against |
 | Phase 3a | frameprog total artifact (`image`/`dispatch`/`evidence`); content-keyed decompile cache in `tools/_sweep.py` | the substrate; a package-file edit costs one cold sweep |
 
 Operational facts that bind: the suite runs `-n 24` (`-n auto` hits the
@@ -154,23 +155,25 @@ After minimization the role is read off each surviving cell's update term
 accumulator). Recognition licenses nothing — the guards and the proofs
 license; roles name.
 
-## Stage 1 — the catalog (canonical sources -> idiom inventory)
+## Stage 1 — the catalog (canonical sources -> idiom inventory) — CLOSED
 
 Pull the canonical player for each family, disassemble/read it, and write the
 idiom inventory the rule set will be tested against.
 
-The family table, the exemplar set and the fetched sources now live in
-**docs/idiom-catalog.md**; `tools/fetch_players.py` caches and pins the
-sources, `tools/player_id.py` names a tune's player from the SIDId signatures
-and `tools/family_cluster.py` clusters the corpus by executed-code fingerprint.
+The family table, the exemplar set and the fetched sources live in
+**docs/idiom-catalog.md**; `tools/exemplars.py` is the one declaration of the
+set, `tools/fetch_players.py` caches and pins the sources, `tools/player_id.py`
+names a tune's player from the SIDId signatures, `tools/family_cluster.py`
+clusters the corpus by executed-code fingerprint, `tools/source_anchor.py`
+binds source labels to exemplar addresses and `tools/idiom_cite.py` joins the
+gate's witnessed seats to those labels.
 
-The exemplar set is **sixteen tunes**, one per player family, replacing the
-seven this plan opened with: the seven covered 49 of 624 cached tunes (7.9%)
-by fingerprint, the sixteen cover 360 (57.7%). A family is added when
-clustering surfaces one the set misses. Per family, the canonical source is
+The exemplar set is **25 tunes over 24 clusters**, covering 417 of 624 cached
+tunes (66.8%) — the plan opened with seven (49, 7.9%) and stage 1's first
+landing measured sixteen (360, 57.7%). Per family the canonical source is
 cross-checked against its exemplar before any idiom is recorded from it; a
-family with no published source is marked as such and carries the weaker
-warrant.
+family with no published source is marked as such, carries the weaker warrant,
+and carries no canonical cite.
 
 **Deliverable: `docs/idiom-catalog.md`.** One row per idiom: the
 canonical-source citation (player, label/address), the `disasm_tune` cite in
@@ -180,22 +183,21 @@ feeds in rather than being redone: docs/twobyte-lift.md's 610-shape pair
 enumeration, the §5.4 shredder fixture family, ptrcert's definition-kind
 census, the follin-dispatch-study grammar.
 
-**Landed**: 22 rows (19 normal forms, 3 named-unknowns), every one witnessed
-over the sixteen exemplars; the completeness gate (`tools/idiom_cover.py`)
-runs 0 unaccounted over 1,474 obligations / 4,377 nodes; the doc's Rows table
-and the recognizer set are gated equal by `tests/test_idiom_catalog.py`.
-**The remainder, owed before stage 1 closes**: the cite and families columns
-— today the rows' warrant is the exemplars' lifted dataflow, and the method's
-own claim ("derive from the canonical players") is earned per row only when
-its canonical cite lands through the anchors and their trust tiers. The seven
-queued exemplar additions (catalog, "The next exemplars, already surfaced")
-land with those cites; each addition MUST re-run the completeness gate over
-the grown set.
+**Landed**: 23 rows (20 normal forms, 3 named-unknowns), every one witnessed
+over the 25 exemplars; the completeness gate (`tools/idiom_cover.py`) runs 0
+unaccounted over 2,205 obligations / 6,257 nodes; 18 of the 23 rows carry a
+canonical cite computed through the anchors, and the five that do not name why
+(no published source for the families that spell them, or seats outside the
+anchored runs). The doc's Rows table, its family table and the recognizer set
+are gated equal to the code by `tests/test_idiom_catalog.py`. Growing the set
+from sixteen to 25 is what forced the 23rd row: nine new exemplars reported
+eight unaccounted nodes of one shape (`zp-row`), which is the gate doing the
+job it exists for.
 
 **Completeness is checkable and MUST be checked**: in each exemplar, every
 SID-store dataflow slice and every frame-surviving cell is accounted to a
 catalog row. The catalog, not a corpus census, is thereafter the claim of
-coverage.
+coverage. Any exemplar added later MUST re-run the gate over the grown set.
 
 The Follin entry carries the debt: `_ARITY` is a hand transcription; the
 catalog records the mechanical definition (an operator's arity is the net
@@ -214,9 +216,10 @@ role-typed `state { }` declarations
 
 **The capability checklist is `idioms.FORMS`, not the sentence above.** The
 catalog's normal-form column also demands u16 lane update, u16 high/low byte
-reads, u16 shift, flag, and field select/set — some already spellable, none
+reads, u16 shift, flag, field select/set, and the page-zero row whose index
+arithmetic wraps in 8 bits — some already spellable, none
 allowed to be assumed so. The stage is done when every non-unknown normal
-form (19 today) has a hermetic evaluator test spelling and executing it,
+form (20 today) has a hermetic evaluator test spelling and executing it,
 enumerated from `idioms.FORMS` mechanically so the checklist cannot
 undercount. Named-unknowns add no vocabulary by definition.
 
@@ -224,7 +227,7 @@ undercount. Named-unknowns add no vocabulary by definition.
 argument, not from stage 1 — the catalog accounted dataflow shapes, never
 update shapes, so there is no witness yet that the roles cover the exemplars'
 persistent cells. Before the keywords freeze in the grammar:
-`idioms.obligations()` already enumerates the ~1,148 witnessed cell-update
+`idioms.obligations()` already enumerates the 1,730 witnessed cell-update
 slices; a census classifies each update term against the roles' defining
 forms and reports the residue. A common residual shape names a missing role
 *now*, not after the grammar ships it. Un-roled `u8`/`u16` fields stay legal
@@ -283,7 +286,7 @@ of three phases.
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
-Per landing: the full suite; the full-corpus Gate FP sweep; the sixteen
+Per landing: the full suite; the full-corpus Gate FP sweep; the 25
 exemplars at full Songlengths with their emitted-text diffs read by hand.
 
 Steering metrics, replacing the census: **extracted term cost / emitted
@@ -417,3 +420,33 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   exemplar's cluster. Adopted for stage 2's open: the capability checklist is
   enumerated from `idioms.FORMS`, and the role keywords freeze only after a
   census of the witnessed cell-update shapes (both in stage 2 above).
+- **2026-08-09 — stage 1 closes: the cites are computed, and the exemplar set
+  is 25.** The named remainder is discharged. The seven queued clusters were
+  added, plus `Wizball` and `Rambo_First_Blood_Part_II` — the two tunes the
+  published Galway sources are the source *of*, so those rows' two cites name
+  one code rather than two builds (Rambo carries the corpus's one standing Gate
+  FP divergence; what the catalog reads from it is lifted dataflow and image
+  addresses, which the frame-level divergence does not bear on). Coverage 360 →
+  **417 of 624 (66.8%)** over 24 clusters, and the set is declared once in
+  `tools/exemplars.py` instead of twice in the sweeps that consume it — the
+  doc's family table is now gated against that table. The cite and families
+  columns are **computed, not transcribed**: `idiom_cover` records the seat each
+  row is witnessed at, `source_anchor` binds labels to addresses, `idiom_cite`
+  joins them by strongest-anchored family then tightest label, and a cite is
+  refused unless the seat sits between two anchors of a run the family's trust
+  tier allows. 18 of 23 rows carry one; the five that do not say why. Findings
+  the close forced, all reproduced from `out/`: (1) the grown set reported
+  **eight unaccounted nodes over one shape** — `mem[zext(b ± k)]`, page-zero
+  indexed addressing whose arithmetic wraps in 8 bits — so the catalog gained
+  its 23rd row (`zp-row`) and the gate returned to 0; (2) an anchor binds one
+  source to one *build*, so a family's second exemplar carries no cite —
+  Follin's `Agent_X_II` seats cannot cite the study's `Ghouls_n_Ghosts` handler
+  addresses, and the tool enforces it; (3) the earlier claim "25 stores do not
+  resolve, two of which can reach `$D400`–`$D41C`" was wrong on the second half
+  — over the 25 exemplars 42 stores do not resolve and **27** are conservatively
+  attributed to the SID because their address is wholly open (`addr_bits` leaves
+  the high byte unconstrained), which is what that attribution means; (4)
+  defMON's exemplar is a **later build** than the disassembly — the control's
+  four constant-displacement classes (`+$21` on 294 instructions, `+$28` on 86,
+  `+$24` on 80, `0` on 10) are what a correct cross-build alignment looks like,
+  so a defMON cite prints the source's line and the exemplar's own address.

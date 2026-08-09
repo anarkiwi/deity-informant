@@ -17,6 +17,7 @@ from pathlib import Path
 import _sweep
 import lift_residue
 import storage_census
+from exemplars import EXEMPLARS
 
 ROOT = _sweep.ROOT
 sys.path.insert(0, str(ROOT))
@@ -26,39 +27,24 @@ USAGE = """\
   python tools/idiom_cover.py --tunes Hubbard_Rob/Commando --show 20
   python tools/idiom_cover.py --frames 1500 -o out/idiom_cover.json"""
 
-EXEMPLARS = (  # docs/idiom-catalog.md's exemplar set: one per family, the plan's seven inside
-    "Hubbard_Rob/Commando",
-    "Galway_Martin/Comic_Bakery",
-    "Galway_Martin/Athena",
-    "Follin_Tim/Ghouls_n_Ghosts",
-    "Follin_Tim/Agent_X_II_The_Mad_Profs_Back",
-    "Jammer/Grid_Runner",
-    "Cadaver/Aces_High",
-    "Daf/Alioth",
-    "Cleve/ABC_Music",
-    "Alfatech/Galway-tune",
-    "Beast/Discmonsters_Intro",
-    "Tel_Kees/Before_I_Forget",
-    "Deek/4_Tunes",
-    "Chabee/Angry_Birds",
-    "Buckley_Kevin/Down_Under",
-    "Goto80/Automatas",
-)
-
 
 def accounting(prog):
     """``(counts, gaps, tally)``: the catalog's histogram and every unaccounted node.
 
     A gap carries the obligation it sits in, so ``disasm_tune`` can be pointed at
-    the site; ``tally`` is the obligation count per kind plus the state rows."""
+    the site; ``tally`` is the obligation count per kind, the state rows, and the
+    sites each catalog row is witnessed at, which is what a row's cite is read from."""
     from deity_informant import frameproc, idioms
 
     counts, gaps, raw = Counter(), [], 0
+    sites = defaultdict(set)
     sid, upd = idioms.obligations(prog)
     for ob in sid + upd:
         per, missed = idioms.cover(ob.value)
         counts.update(per)
         raw += idioms.size(ob.value)
+        for rid in per:
+            sites[rid].add(ob.site)
         for n in missed:
             gaps.append(
                 {
@@ -82,8 +68,14 @@ def accounting(prog):
         "cells_updated": len(hit - {None}),
         "cells_quiet": sorted("$%04X" % c for c in cells if c not in hit),
         "unresolved": sum(1 for ob in sid + upd if ob.base is None),
+        "unresolved_sid": sum(1 for ob in sid if ob.base is None),
+        "unresolved_open": sum(
+            1 for ob in sid + upd if ob.base is None and frameproc.addr_bits(ob.addr) >= 0xFF00
+        ),
         "nodes": sum(counts.values()) + len(gaps),
         "raw_nodes": raw,
+        "seats": idioms.seats(prog),
+        "row_sites": {rid: sorted(s) for rid, s in sites.items()},
     }
     return counts, gaps, tally
 
