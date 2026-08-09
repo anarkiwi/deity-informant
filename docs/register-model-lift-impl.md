@@ -134,9 +134,11 @@ whole method in one file, and `tests/test_state_machine_lift.py` gates it: a
 hand-written 6502 playroutine (8 bars on one voice, vibrato via an ADC carry
 chain, a Follin-style SMC-JMP command dispatch, a deferred-carry script
 cursor) runs through the real pipeline — VM, decompile + walker replay,
-`eqlift_mem.emit` minimization, three Z3-proved spelling folds (paired u16
-SID store, u16 pair reload, deferred-carry advance with the unobserved-arm
-guard), role classification off the folded update shapes — and the resulting
+`eqlift_mem.emit` minimization, three spelling folds — the paired u16 SID
+store and the deferred-carry advance with the unobserved-arm guard each
+Z3-proved, the u16 pair reload a structural match whose independence check
+is a name scan and whose proof stage 3's rule admission owes — role
+classification off the folded update shapes — and the resulting
 role-typed u16 state machine executes and matches the original frame-for-frame
 on the VM projection, on pysidtracker's independent engine, and on the
 dockerized sidplayfp/sidtrace oracle (`--sidtrace`). **Every stage below
@@ -555,7 +557,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   preserves the bits it does not write (`s & K`, `s | K`, `s ^ K`,
   `(s & $F0) | v`), on 18 cells over 10 exemplars. Adopted: **`flags` is a
   sixth role**, landing before the keywords froze, which is what the
-  precondition existed to buy. The residue is 11 cells (1.1%) over 8 exemplars,
+  precondition existed to buy. The residue is 11 cells (1.1%) over 9 exemplars,
   all one-place shifts (ASL/LSR/ROL/ROR clocked per frame), and is deliberately
   left un-roled: the sites are an index scaled to a 2-byte row stride and a
   bit-serial pattern register wearing one shape, so a seventh role would
