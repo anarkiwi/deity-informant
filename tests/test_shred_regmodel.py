@@ -11,7 +11,7 @@ import pytest
 
 import _fuzzgen as G
 from test_frameprog import _fuzz_model
-from deity_informant import frameproc, frameprog, frameval
+from deity_informant import frameproc, frameprog, frameval, ptrcert, ptrextent
 
 SID = G.SID
 TMP = G.CNT + 0x20  # a RAM cell used only as per-frame scratch
@@ -20,12 +20,18 @@ TGT = G.CNT + 0x24  # a 16-bit threshold pair
 POS = G.CNT + 0x26  # a persistent position cell (the pos_54EC shape)
 MODE = G.CNT + 0x28  # a per-tune phase toggle
 SAV = G.CNT + 0x2A  # cursor save cell pair (the Follin loop-cell shape)
+DEPTH = G.CNT + 0x2C  # the Follin per-voice call-stack depth cell (zp_6A shape)
+DIV = G.CNT + 0x2E  # where the shift-divide role parks its quotient pair
 FTC = G.PTR + 2  # a second zero-page pair: the fetch cursor half stores arrive through
+ZTMP = 0x0030  # a zero-page cell used only as per-frame scratch
 PAT = G.TBL + 0x100  # sequence data block the zero-page pointer walks
 PAT2 = G.TBL + 0x160  # second sequence block (cursor save/restore target)
 BLK = G.TBL + 0x180  # RAM block a pointer stores through
+STK = G.TBL + 0x1C0  # split return-stack columns, lo at STK, hi at STK+3 (m_6B25 shape)
 SPSUB = 0x1300  # a subroutine two call depths reach, so its sp never concretizes
 SPMID = 0x1340  # the second depth
+HND0 = 0x13C0  # dispatch handler stubs (the SMC-operand jmp's observed targets)
+HND1 = 0x13E0
 
 XFAIL = dict(strict=True)
 
@@ -53,10 +59,34 @@ def _lift(name):
     assert frameval.gate_fp(model, frames, prog) is None, "the frame oracle must hold"
     assert frameprog.dumps(frameprog.loads(text)) == text
     _lift_prog[name] = prog
+    _lift_ctx[name] = (model, frames)
     return text
 
 
 _lift_prog = {}
+_lift_ctx = {}
+
+
+def _cert(name):
+    """The walked pair's certification record: 2a's authority, read at suite cost."""
+    _lift(name)
+    (rec,) = [r for r in ptrcert.certify(_lift_prog[name])[0] if r["root"] == "$%04X" % G.PTR]
+    return rec
+
+
+def _observed(name):
+    """b0's observed-extent record for the walked pair, from the fixture's own run."""
+    _lift(name)
+    model, frames = _lift_ctx[name]
+    prog = _lift_prog[name]
+    trace, _walker = frameprog.iota(model, frames)
+    probe = ptrextent.Probe()
+    ev = frameval.Evaluator(prog, trace, probe=probe)
+    for f in range(frames):
+        ev.frame = f
+        ev.run_frame()
+    (rec,) = [r for r in ptrextent.extents(prog, probe.hits) if r["root"] == "$%04X" % G.PTR]
+    return rec
 
 
 def _state_block(text):
@@ -447,6 +477,262 @@ def _unpaired_half_store():
     return a, data, 8
 
 
+def _follin_jump():
+    """2b/b3: the script jump - the cursor's next value read out of the block it walks.
+
+    Ghouls $6AD0 (tools/disasm_tune.py): LDA (21),Y / TAX / INY / LDA (21),Y /
+    STA $22 / STX $21 - the block_read def, hi stored first through a register."""
+    a = _cursor()
+    a.i("CMP", "imm", 0x80).i("BCC", "rel", ("L", "adv"))
+    a.i("LDY", "imm", 0x01).i("LDA", "indy", G.PTR).i("TAX")
+    a.i("INY").i("LDA", "indy", G.PTR)
+    a.i("STA", "zp", G.PTR + 1).i("STX", "zp", G.PTR)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("adv")
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    data = _cursor_data()
+    data[PAT + 5] = 0x80  # the jump op; its operand word aims the cursor back at PAT
+    data[PAT + 6] = PAT & 0xFF
+    data[PAT + 7] = PAT >> 8
+    return a, data, 8
+
+
+def _follin_ret_stack():
+    """2b/b3: call pushes ptr+3 into split columns via a depth cell; ret pops.
+
+    Ghouls $6ADD/$6B42 (tools/disasm_tune.py): STA $6B25,X / STA $6B28,X columns
+    3 apart, INX depth - cursor values as data, on a mutable de-interleaved table."""
+    a = _cursor()
+    a.i("CMP", "imm", 0x80).i("BCC", "rel", ("L", "ret"))
+    a.i("LDX", "abs", DEPTH)
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x03).i("STA", "absx", STK)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "absx", STK + 3)
+    a.i("INX").i("STX", "abs", DEPTH)
+    a.i("LDA", "imm", PAT2 & 0xFF).i("STA", "zp", G.PTR)
+    a.i("LDA", "imm", PAT2 >> 8).i("STA", "zp", G.PTR + 1)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("ret")
+    a.i("LDX", "abs", DEPTH).i("BEQ", "rel", ("L", "out"))
+    a.i("DEX").i("STX", "abs", DEPTH)
+    a.i("LDA", "absx", STK).i("STA", "zp", G.PTR)
+    a.i("LDA", "absx", STK + 3).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    data = _cursor_data(DEPTH)
+    data[PAT] = 0x81  # the call op: push ptr+3, enter PAT2
+    data.update({PAT2 + k: 0x20 | (k & 0x0F) for k in range(0x10)})
+    data.update({STK + k: 0 for k in range(6)})
+    return a, data, 8
+
+
+def _low_held_cursor():
+    """b1 (iv): the pair held on the machine stack in a sub reached at two depths.
+
+    Angry_Birds $09F1..$0A35 (tools/disasm_tune.py): LDA $FE/PHA/LDA $FF/PHA at
+    entry, PLA/STA $FF/PLA/STA $FE at exit - the restore reads page one through sp."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("JSR", "abs", SPSUB).i("JSR", "abs", SPMID)
+    a.i("RTS")
+    mid = G.Asm(SPMID).i("JSR", "abs", SPSUB).i("RTS")
+    sub = G.Asm(SPSUB)
+    sub.i("LDA", "zp", G.PTR).i("PHA").i("LDA", "zp", G.PTR + 1).i("PHA")
+    sub.i("LDX", "abs", CTR)
+    sub.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
+    sub.i("LDA", "absx", G.TBL + 2).i("STA", "zp", G.PTR + 1)
+    sub.i("LDY", "imm", 0x00).i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    sub.i("PLA").i("STA", "zp", G.PTR + 1).i("PLA").i("STA", "zp", G.PTR)
+    sub.i("RTS")
+    data = _cursor_data(CTR)
+    data.update(
+        {
+            G.TBL: PAT & 0xFF,
+            G.TBL + 1: (PAT + 8) & 0xFF,
+            G.TBL + 2: PAT >> 8,
+            G.TBL + 3: (PAT + 8) >> 8,
+            G.TBL + 4: PAT & 0xFF,
+        }
+    )
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    data.update({SPMID + k: b for k, b in enumerate(mid.assemble())})
+    return a, data, 8
+
+
+def _alias_web():
+    """b1 (i): a wrapping zp,X store with unbounded X may reach any zero-page pair.
+
+    ASL/04 $128B (tools/disasm_tune.py --opcode 0x95): STA $FD,X spells
+    zext2((x - $03)), an interval the reach analysis cannot keep off the pair."""
+    a = _cursor()
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.i("LDX", "abs", CTR)
+    a.i("LDA", "imm", 0x11).i("STA", "zpx", 0x40)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("RTS")
+    data = _cursor_data(CTR)
+    data.update({0x40 + k: 0 for k in range(0x10)})
+    return a, data, 8
+
+
+def _call_returned_row():
+    """b1 (ii): the row crosses a call boundary - the callee returns it in A/X."""
+    a = _cursor()
+    a.i("CMP", "imm", 0x5F).i("BNE", "rel", ("L", "adv"))
+    a.i("JSR", "abs", SPSUB)
+    a.i("STA", "zp", G.PTR).i("STX", "zp", G.PTR + 1)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("adv")
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    sub = G.Asm(SPSUB)
+    sub.i("LDX", "abs", CTR)
+    sub.i("LDA", "absx", G.TBL)
+    sub.i("PHA")
+    sub.i("LDA", "abs", CTR).i("EOR", "imm", 0x01).i("STA", "abs", CTR)
+    sub.i("LDX", "imm", PAT >> 8)
+    sub.i("PLA")
+    sub.i("RTS")
+    data = _cursor_data(CTR)
+    data.update({G.TBL: PAT & 0xFF, G.TBL + 1: (PAT + 8) & 0xFF})
+    data[PAT + 2] = 0x5F
+    data[PAT + 10] = 0x5F
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    return a, data, 12
+
+
+def _computed_rows():
+    """b0: the reload row is arithmetic, aimed where the registry declares nothing.
+
+    The Galway/goto80 shape behind extent_unmappable: via: discovery anchors the
+    walked stream, but a computed row breaks the chain and lands off the registry."""
+    a = _cursor()
+    a.i("CMP", "imm", 0x5F).i("BNE", "rel", ("L", "adv"))
+    a.i("LDA", "abs", CTR).i("AND", "imm", 0x01)
+    a.i("ASL", "acc").i("ASL", "acc").i("ASL", "acc")
+    a.i("ORA", "imm", 0x80).i("STA", "zp", G.PTR)
+    a.i("LDA", "imm", G.ORG >> 8).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("adv")
+    a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "zp", G.PTR)
+    a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    data = {CTR: 0, G.PTR: PAT & 0xFF, G.PTR + 1: PAT >> 8}
+    data.update({PAT + k: 0x40 | (k & 0x1E) for k in range(0x40)})
+    data[PAT + 2] = 0x5F
+    data.update({G.ORG + 0x80 + k: 0x20 | (k & 0x0F) for k in range(0x20)})
+    return a, data, 12
+
+
+def _sp_fix_balance():
+    """2c: an interior label at nonzero displacement, entry-balanced on every path."""
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDA", "abs", CTR).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "odd"))
+    sub.i("LDA", "abs", CTR).i("AND", "imm", 0x0F).i("STA", "abs", TMP)
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    sub.label("odd")
+    sub.i("PLA").i("EOR", "imm", 0x04).i("RTS")
+    return _sp_body(sub)
+
+
+def _sp_scratch_floor():
+    """Phase 3 (ii): zero-page scratch beside kept sp fabric still promotes.
+
+    Without frameproc.addr_floor the kept push (zext2(sp)|$0100) reaches an
+    interval from zero and spuriously threatens every zero-page cell."""
+    a, data, frames = _sp_body(_sp_unbalanced_sub())
+    a2 = G.Asm(G.ORG)
+    a2.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a2.i("AND", "imm", 0x0F).i("STA", "zp", ZTMP)
+    a2.i("JSR", "abs", SPSUB).i("JSR", "abs", SPMID).i("JSR", "abs", SPMID)
+    a2.i("LDA", "zp", ZTMP).i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
+    data[ZTMP] = 0
+    return a2, data, frames
+
+
+def _sp_unbalanced_sub():
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDX", "imm", 0x03)
+    sub.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    return sub
+
+
+def _phase_split_reload():
+    """2b: the pair's halves reloaded in different frames by a phase machine.
+
+    Air_on_a_Rasterline $0C1A/$0D05 (tools/disasm_tune.py): one play phase writes
+    zp_FC from m_1145, a later phase writes zp_FB from m_118A - no frame holds a
+    pair store for rung (d2) to pair, yet each store is a plain lane replacement."""
+    a = _cursor()
+    a.i("LDA", "abs", MODE).i("CLC").i("ADC", "imm", 0x01).i("AND", "imm", 0x03)
+    a.i("STA", "abs", MODE).i("TAY")
+    a.i("CPY", "imm", 0x01).i("BNE", "rel", ("L", "hi"))
+    a.i("LDA", "absy", G.TBL).i("STA", "zp", G.PTR)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("hi")
+    a.i("CPY", "imm", 0x02).i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", PAT >> 8).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    data = _cursor_data(MODE)
+    data.update({G.TBL + k: (PAT + 2 * k) & 0xFF for k in range(4)})
+    return a, data, 8
+
+
+def _shift_divide():
+    """Phase 6: the pair as a divide accumulator - (T2[y]-T1[y]) >> n, n from a cell.
+
+    Cool_Air $1447..$145D (tools/disasm_tune.py): SEC/SBC lanes build the 16-bit
+    interval, then an LSR A / ROR $FB loop rotates it right n times - the 6502
+    has no divide, so a power-of-two divide is a loop-carried lane rotate."""
+    a = _cursor()
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("AND", "imm", 0x01).i("BEQ", "rel", ("L", "out"))
+    a.i("LDA", "abs", CTR).i("AND", "imm", 0x03).i("ORA", "imm", 0x01).i("TAX")
+    a.i("LDA", "abs", CTR).i("AND", "imm", 0x03).i("TAY")
+    a.i("LDA", "absy", PAT2 + 16).i("SEC").i("SBC", "absy", PAT2).i("STA", "zp", G.PTR)
+    a.i("LDA", "absy", PAT2 + 24).i("SBC", "absy", PAT2 + 8)
+    a.label("lp").i("LSR", "acc").i("ROR", "zp", G.PTR)
+    a.i("DEX").i("BNE", "rel", ("L", "lp"))
+    a.i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "zp", G.PTR).i("STA", "abs", DIV)
+    a.i("LDA", "zp", G.PTR + 1).i("STA", "abs", DIV + 1)
+    a.i("LDA", "imm", PAT & 0xFF).i("STA", "zp", G.PTR)
+    a.i("LDA", "imm", PAT >> 8).i("STA", "zp", G.PTR + 1)
+    a.label("out").i("RTS")
+    data = _cursor_data(CTR, DIV, DIV + 1)
+    data.update({PAT2 + k: (0x30 + 3 * k) for k in range(4)})
+    data.update({PAT2 + 8 + k: 0x01 for k in range(4)})
+    data.update({PAT2 + 16 + k: (0x20 + 5 * k) for k in range(4)})
+    data.update({PAT2 + 24 + k: 0x1F for k in range(4)})
+    return a, data, 8
+
+
+def _dispatch_scratch():
+    """Phase 3/R8: scratch written before an SMC-operand dispatch, read by handlers.
+
+    Ghouls $6360..$6374 in miniature (docs/follin-dispatch-study.md section 1):
+    paired table rows patch a jmp operand - a switch goto join, not a wall."""
+    a = G.Asm(G.ORG)
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x11).i("STA", "abs", CTR)
+    a.i("AND", "imm", 0x0F).i("STA", "abs", TMP)
+    a.i("LDA", "abs", CTR).i("AND", "imm", 0x01).i("TAX")
+    a.i("LDA", "absx", G.TBL).i("STA", "abs", ("L", "site", 1))
+    a.i("LDA", "absx", G.TBL + 2).i("STA", "abs", ("L", "site", 2))
+    a.label("site").i("JMP", "abs", 0x0000)
+    data = {CTR: 0, TMP: 0}
+    data.update({G.TBL: HND0 & 0xFF, G.TBL + 1: HND1 & 0xFF})
+    data.update({G.TBL + 2: HND0 >> 8, G.TBL + 3: HND1 >> 8})
+    for base, orv in ((HND0, 0x20), (HND1, 0x40)):
+        h = G.Asm(base)
+        h.i("LDA", "abs", TMP).i("ORA", "imm", orv).i("STA", "abs", SID + 4).i("RTS")
+        data.update({base + k: b for k, b in enumerate(h.assemble())})
+    return a, data, 8
+
+
 def _sp_body(sub):
     """A player calling ``sub`` at two stack depths, so its spill stays sp-relative.
 
@@ -473,11 +759,7 @@ def _sp_spill():
 
 def _sp_unbalanced():
     """Invariant (Phase 1): a procedure whose stack effect is unproven keeps sp."""
-    sub = G.Asm(SPSUB)
-    sub.i("PHA").i("LDX", "imm", 0x03)
-    sub.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
-    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
-    return _sp_body(sub)
+    return _sp_body(_sp_unbalanced_sub())
 
 
 def _g2_store():
@@ -519,9 +801,20 @@ _FIXTURES = {
     "table_spill_cursor": _table_spill_cursor,
     "inpage_advance": _inpage_advance,
     "unpaired_half_store": _unpaired_half_store,
+    "follin_jump": _follin_jump,
+    "follin_ret_stack": _follin_ret_stack,
+    "low_held_cursor": _low_held_cursor,
+    "alias_web": _alias_web,
+    "call_returned_row": _call_returned_row,
+    "computed_rows": _computed_rows,
+    "phase_split_reload": _phase_split_reload,
+    "shift_divide": _shift_divide,
+    "dispatch_scratch": _dispatch_scratch,
     "g2_store": _g2_store,
     "sp_spill": _sp_spill,
     "sp_unbalanced": _sp_unbalanced,
+    "sp_fix_balance": _sp_fix_balance,
+    "sp_scratch_floor": _sp_scratch_floor,
 }
 
 
@@ -750,11 +1043,11 @@ def test_unpaired_half_store_fuses_its_cursor_pair():
 
 
 def test_an_inpage_advance_is_never_fused():
-    """Invariant: a bare INC lane with no carry arm is genuinely byte-wise (8 of the 74).
+    """Invariant: a bare INC lane with no carry arm never fuses to the wide add (8 of 74).
 
-    Fusing would carry on a lane wrap the machine does not, so no rung (d) fix may take it.
-    A fix keyed on the word form existing elsewhere clears at most 45 of 68 refusals; one
-    keyed on the merge premises reaches 66, and these 8 must stay refused for good."""
+    lo = (lo+k) mod 256 with hi untouched diverges from +:2 at every lane wrap
+    ($14FF -> $1400, not $1500). No operator is missing: hi is a constant page
+    selector, so the honest lift is a u8 offset into the page block, never a u16."""
     assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
 
 
@@ -763,3 +1056,127 @@ def test_g2_bounds_the_zext_add_store():
     _lift("g2_store")
     bad = [b for b in _unnamed_store_bounds(_lift_prog["g2_store"]) if b > 0x01FF]
     assert not bad, "a (zext2(y) + $NN) store is still counted top-wide"
+
+
+def test_the_script_jump_is_fused_and_lift_eligible():
+    """Control: Follin's jump op is no lift refusal - the pair fuses, (ii) admits.
+
+    The fused def classifies ``computed`` (the block_read shape is a byte-lane
+    spelling), so b3's enumeration must key on the fused form too."""
+    assert _fused_cursor("follin_jump"), "the script-jump pair went byte-wise"
+    rec = _cert("follin_jump")
+    assert rec["eligible"] and not rec["lift_refusals"]
+
+
+@pytest.mark.xfail(reason="register-model-lift 2b (b3): the script-jump def certifies", **XFAIL)
+def test_the_script_jump_certifies():
+    assert not _cert("follin_jump")["refusals"]
+
+
+def test_the_ret_stack_is_fused_and_lift_eligible():
+    """Control: the depth-indexed split-column call stack is no lift refusal."""
+    assert _fused_cursor("follin_ret_stack"), "the ret-stack pair went byte-wise"
+    rec = _cert("follin_ret_stack")
+    assert rec["eligible"] and not rec["lift_refusals"]
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b (b3): a mutable save table certifies extent_mutable only",
+    **XFAIL,
+)
+def test_the_ret_stack_certifies():
+    assert set(_cert("follin_ret_stack")["refusals"]) <= {"extent_mutable"}
+
+
+def test_a_stack_held_cursor_refuses_low_held():
+    """Invariant (b1 iv): the restore reads page one through sp, and sp survives."""
+    rec = _cert("low_held_cursor")
+    assert rec["lift_refusals"] == ["low_held"] and not rec["eligible"]
+    assert re.search(r"\bsp\b", _body(_lift("low_held_cursor"))), "the hold lost its sp spelling"
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2c: the fabric leaves and low_held re-enters", **XFAIL
+)
+def test_a_stack_held_cursor_lifts_after_the_fabric_leaves():
+    assert _cert("low_held_cursor")["eligible"]
+
+
+def test_an_unresolvable_store_refuses_the_web_and_keeps_the_spelling():
+    """Invariant (b1 i): the one soundness premise; renaming under it would be wrong."""
+    rec = _cert("alias_web")
+    assert rec["lift_refusals"] == ["web_alias"] and not rec["eligible"]
+    assert "mem[" in _body(_lift("alias_web")), "the refused web lost its machine spelling"
+
+
+def test_a_call_returned_row_is_no_lift_refusal():
+    """Control: a def crossing a call boundary refuses certification, never the lift."""
+    assert _fused_cursor("call_returned_row")
+    rec = _cert("call_returned_row")
+    assert rec["eligible"] and not rec["lift_refusals"]
+    assert rec["refusals"] == ["ptr_uncertified"]
+
+
+def test_computed_rows_walk_off_the_registry():
+    """Invariant (b0): b1-eligible, and the observed rows land in no declared datum."""
+    rec = _cert("computed_rows")
+    assert rec["eligible"] and not rec["lift_refusals"]
+    row = _observed("computed_rows")
+    assert row["refusals"] == ["extent_unmappable"] and row["unmappable_foreign"]
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b (b3)/Phase 6: a computed row needs derived extents",
+    **XFAIL,
+)
+def test_computed_rows_map():
+    assert not _observed("computed_rows")["refusals"]
+
+
+def test_the_smc_operand_dispatch_is_a_join_not_a_wall():
+    """Control (R8): the Follin dispatch shape emits switch goto, no raw dyn form."""
+    body = _body(_lift("dispatch_scratch"))
+    assert "switch goto" in body, "the dispatch fell out of the observed-target closure"
+    assert "dgoto" not in body and "igoto" not in body
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift Phase 3: written-before-read joins over a dispatch", **XFAIL
+)
+def test_dispatch_scratch_promotes():
+    assert not re.search(r"\bm_%04X\b" % TMP, _lift("dispatch_scratch"))
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift 2b: a cross-frame lane reload is a masked word update", **XFAIL
+)
+def test_a_phase_split_reload_fuses_its_cursor_pair():
+    """Each half store is a lane replacement - (ptr & $FF00) | zext2(row) - so no
+    carry and no new operator is involved; only the lane-update spelling is missing."""
+    assert _fused_cursor("phase_split_reload")
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift Phase 6: a loop-carried LSR/ROR pair is one wide variable shift",
+    **XFAIL,
+)
+def test_a_shift_divide_lifts_to_a_wide_shift():
+    """The dialect has >>; what is missing is the loop-to-expression rule, not an operator.
+
+    Unlike ``inpage_advance`` this fusion is semantically permitted: the loop is a
+    power-of-two divide of one 16-bit value, so the strict xfail is the whole pin -
+    it fails while the pair is byte-wise and XPASSes the day a loop-level rule lands."""
+    assert _fused_cursor("shift_divide")
+
+
+@pytest.mark.xfail(reason="register-model-lift 2c: balance becomes a worklist fixpoint", **XFAIL)
+def test_an_entry_balanced_procedure_destacks():
+    assert not re.search(r"\bsp\b", _body(_lift("sp_fix_balance")))
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift Phase 3 (ii): addr_floor keeps the kept push off zero page",
+    **XFAIL,
+)
+def test_scratch_beside_kept_sp_fabric_promotes():
+    assert not re.search(r"\bzp_%02X\b" % ZTMP, _lift("sp_scratch_floor"))
