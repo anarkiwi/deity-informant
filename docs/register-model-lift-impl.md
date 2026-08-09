@@ -192,8 +192,11 @@ fallback for a root that fails block-rooting.
 
 Ordering by dependency: 1 cleared the stack's spills, 2a certified the
 pointer traffic (the *bounds* 2c and 3 depend on), 2b ships the annotation
-spelling, 2c finishes the stack, 3 promotes frame-local scratch, 4 coalesces
-byte columns, 5 retires the boundary read-back, 6 re-measures. Every phase
+spelling, 2c finishes the stack, 3a made the artifact total and cached the
+corpus on it, 2.5 walks values and re-prices what is left, 3 promotes
+frame-local scratch, 4 coalesces byte columns, 5 retires the boundary
+read-back, 6 re-measures. 2.5 was inserted after 3a on the finding that one
+missing analysis blocks four phases (§2 Phase 2.5, §6). Every phase
 ends with the same full-corpus sweeps (`gate_sweep`, `lift_residue`,
 `fuse_measure`, `storage_census`) and its before/after table appended here.
 
@@ -796,6 +799,98 @@ stands displaced; and 2a's certification as a page-one premise, which needs
 **96 corpus-wide, unmoved** — the fabric leaving did not free one, which is
 correction 5 measured rather than argued.
 
+### Phase 2.5 — the value walker as an instrument (analysis only, no text change)
+
+**The finding that made this phase.** Five partial value analyses are in tree,
+each written for one shape: `addr_bits` (bits an address may set), `addr_floor`
+(bits it must set), `addr_range`/`span`/`overlaps` (the interval on a split
+address), `_counter_range` (the must-hit set of a `for` counter with no early
+exit), and 2c's `_off_page`, which stacks three of the others to answer one
+value question for one shape. Each approximates the same question — what values
+may this expression take — and each is coarse in a different direction. That is
+§3's design error of the framing document recurring inside the phases written
+to cure it.
+
+The same premise blocks the rest of the plan:
+
+| customer | size at entry | its fixture |
+|---|---:|---|
+| Phase 3 (ii) `aliased`: `zp,X` clobbers zero page | census `mod_addr` | `sp_scratch_floor` (adjacent) |
+| R1 `wide_store`: `loc_unresolved` at the seat | `fuse_measure` `wide_classes` | — (owed) |
+| G2: `(zext2(reg)+$00NN)` bounded inside the stack | `g2_boundable` | `g2_store` (xfail G2) |
+| Phase 6 `web_alias` | `ptrcert` `lift_refusals` | `alias_web` (invariant) |
+| Phase 6 `extent_unmappable`, the `foreign` half only | `ptrextent` `unmappable_foreign` | `computed_rows` (invariant + xfail P6) |
+
+Every count above MUST be re-measured at entry; the tree has moved through 2c
+and 3a. `g2_boundable` is the sharpest statement of the gap: `fuse_measure`
+already *names* stores whose true bound stays inside the stack, and no analysis
+exists to prove the bound it names.
+
+**Scope, and the reason it is cheap.** The proposal priced the walker over
+mutable memory. The blocking specimens do not need that: `alias_web`'s X is
+bounded {0..2} by control flow (`LDX #$00`/`INX` over three per-voice calls),
+`mod_addr` is `zp,X`, G2's is a register addend. So the instrument is **locals
+only — every memory read is ⊤** — over a strided interval (interval +
+congruence; the congruence is what a modular `zp,X` wrap needs regardless).
+The memory-join problem the proposal names as its primary open risk is out of
+scope by construction. The first number owed is the one the plan does not have:
+**how much of the standing residue is bounded by locals alone.**
+
+**The structural deliverable: the in-edge map.** 2c settled what this is, by
+building the wrong thing first. Its worklist fixpoint over label/`goto`/loop
+edges passed every fixture and **diverged eight tunes**; it was withdrawn,
+Phase 1's conservative rule restored, and `sp_loop_edge` pins the withdrawal.
+The reason is in `_SpFlow.leaves()`'s docstring: a label may be entered by a
+`goto` its list does not carry, by a jump no list enumerates, or by a dispatch
+arm. **A structured statement list is not a CFG**, so a forward join over the
+list alone can conclude a property holds on all paths to a point that an
+unenumerated edge reaches without it.
+
+This binds every remaining forward analysis, R8's included — and R8's is a
+**must**-analysis that licenses promotion, so it carries more risk than the
+displacement claim that broke. The deliverable is therefore the missing edge
+set: for every label and dispatch arm, the sites that may reach it, across
+lists and procedures, with the `unobserved` boundary. With that map a worklist
+is sound; without it none is, and a label whose in-edges will not close is a
+wall every lattice must take conservatively. Whether the map closes
+corpus-wide is the number this phase owes Phase 3.
+
+**Verdict vocabulary**, per queried expression: `bounded` (a strided interval
+strictly inside the queried region), `top_memory` (a memory read reached the
+expression), `top_call` (a callee's effect), `top_dyn` (a raw dyn form),
+`top_width` (nothing narrower than the declared width proved), `top_edge` (an
+in-edge the map could not close). Every ⊤ names which one, so the next phase
+reads its prize off the class breakdown.
+
+**This phase licenses nothing.** No rewrite, no refusal relaxation, no text
+change. Verdicts are a report. Re-instantiating `_SpFlow` over the edge map is
+**out of scope** — 2c's rule is sound as it stands and its relaxation is a
+separate gated change. The consuming phases (3 and 6) admit the analysis on
+their own gates, and the walker is written **sound by construction**: an
+interval+congruence domain costs nearly nothing to keep sound, and a
+measurement-grade approximation retrofitted into a license is how an instrument
+becomes a defect.
+
+**The oracle.** 3a's artifact records what the evaluator reached; §3's
+differential guard applies unchanged — a value observed outside a claimed
+static bound is an analysis bug found before any phase leans on it, and the
+phase stops; static over-refusal is counted and reported, never failed.
+
+**Gates.** Emitted text byte-identical **against 3a's reset baseline**
+(aggregate `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`
+over the 624 built tunes at full Songlengths); `gate_sweep`, `lift_residue`,
+`fuse_measure`, `storage_census` identical row for row — an instrument that
+moves the census is not an instrument; `alias_web` and `computed_rows`
+reproduce their pinned verdicts and the walker's verdict on each is asserted
+beside them; hermetic tests in `tests/test_value_walk.py` (Phase 0's
+`test_storage_census.py` precedent — an instrument owes hermetic tests, not
+shredder fixtures, and §5.4 gains no rows); the 60s per-script budget holds.
+
+**What it does not price.** Phases 4 and 5 are not value-bound — M-FP3's
+dialect, the evaluator's support for it, and the boundary shadow are spelling
+and grammar obligations. 2.5 re-prices 3 and 6 and nothing else, and MUST NOT
+claim otherwise.
+
 ### Phase 3 — frame-local promotion (the scratch elimination)
 
 Mechanical rule, both conditions computed by committed analyses:
@@ -1271,6 +1366,25 @@ history (`git log --grep=regmodel`); only what still binds is here.
   #51 and are stale** against current output (found by 3a's smoke run, whose
   regeneration was reverted rather than folded in). They want refreshing or
   untracking; no phase owns them.
+
+- **Value-walker-first (2026-08-09).** Four phases were queued behind one
+  missing analysis — Phase 3's `aliased`, R1's `loc_unresolved`, G2
+  (`g2_boundable`, a class already *named* as boundable with nothing able to
+  prove the bound), and both of Phase 6's customers — and the tree already
+  carried five partial value analyses, each written for one shape, 2c's
+  `_off_page` being the fifth and the one that made the pattern visible. Two
+  corrections to the arc follow. First, the walker was priced over mutable
+  memory (proposal §4 P1) and the blocking specimens do not need it: every one
+  bounds a **local** from control flow, so a locals-only strided interval with
+  memory at ⊤ is the instrument, and whether that suffices is a measurement,
+  not a judgement. Second, 2c's withdrawal reassigns the structural
+  deliverable: not a traversal to extract, but **the in-edge map the statement
+  list is not**, which is also R8's precondition. Inserted after 3a as an
+  analysis-only instrument in the 2a mould — no license, no text change,
+  byte-identity against 3a's reset baseline as its gate. The standing lesson
+  from b3 applies to its own framing: a rule stated over one spelling is a rule
+  about the emitter — the verdict classes exist so the next phase reads its
+  prize off the breakdown rather than off this entry's expectation.
 
 ## 7. Briefing a subagent to execute a phase
 
