@@ -7,12 +7,17 @@ out of one saturation + root extraction as Z3-proven rewrites.
 
 from __future__ import annotations
 
+import collections
+import os
+
 import z3
 from egglog import EGraph, Expr, function, i64, rewrite, rule, ruleset, set_, union
 from egglog import eq as egg_eq
 
 from . import eqlift as E
 from . import frameprog
+
+ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "") == "1"  # stage 3a flag
 
 
 class Mem(Expr):
@@ -372,21 +377,12 @@ def _subst_loc(ir, name, repl):
     )
 
 
-def _inline_single_use(tree, dead, chosen, terms):
-    """Inline a non-register temp read exactly once into its use, then drop its
-    def (single-use inlining -- what root extraction implies). Site-validity of
-    the inlined value at the use is required, so no stale version is printed."""
+def _share_once(tree, dead, chosen, terms):
+    """``render_roots``' sharing rule over the render tree: a non-register subterm
+    stays named only where more than one kept statement reads it; a name read once
+    is inlined and its def drops. Site-validity is required, so no stale version."""
     reg = E.frameproc._ALL_REG_LOCALS
-    by_name = {}
-
-    def gather(nodes):
-        for nd in nodes:
-            if nd[0] == "asg":
-                by_name[nd[3]] = nd
-            for b in _child_bodies(nd):
-                gather(b)
-
-    gather(tree)
+    by_name = {nd[3]: nd for nd in _all_nodes(tree) if nd[0] == "asg"}
     changed = True
     while changed:
         changed = False
@@ -394,7 +390,7 @@ def _inline_single_use(tree, dead, chosen, terms):
 
         def scan(nodes):
             for nd in nodes:
-                if nd[0] == "asg" and id(nd) in dead:
+                if nd[0] in ("asg", "st") and id(nd) in dead:
                     continue
                 for ti in _node_terms(nd):
                     names = []
@@ -454,11 +450,11 @@ def _temp_sweep(tree, dead, chosen):
             return
 
 
-def _dce(tree, info, entry, chosen):
-    """Backward register liveness over the render tree; ids of dead reg-local asgs.
+def _liveness(tree, info, entry, chosen):
+    """Backward register liveness over the render tree: id(node) -> live-out set.
 
-    Uses the interprocedural ``_Info`` for call/goto/dynamic/return live-out, so a
-    flag no consumer reads is dropped -- the deletion root extraction implies."""
+    The interprocedural ``_Info`` supplies call/goto/dynamic/return live-out, so
+    this is pass 2's boundary summary in the form root extraction reads."""
     reg = E.frameproc._ALL_REG_LOCALS
     labmap, liveout, brk, cont = {}, {}, [], []
 
@@ -546,27 +542,85 @@ def _dce(tree, info, entry, chosen):
         seq(tree, set(info.ret_live(entry)))
         if all(labmap.get(p) == before.get(p) for p in labmap):
             break
-    dead = set()
-
-    def mark(nodes):
-        for nd in nodes:
-            if nd[0] == "asg" and nd[1] in reg and nd[1] not in liveout.get(id(nd), reg):
-                dead.add(id(nd))
-            for b in _child_bodies(nd):
-                mark(b)
-
-    mark(tree)
-    return dead
+    return liveout
 
 
-def render_proc(stmts, aliases=None, entry=0, info=None):
+def _dce(tree, info, entry, chosen):
+    """ids of dead register-local asgs (transitional; root extraction subsumes it)."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    liveout = _liveness(tree, info, entry, chosen)
+    return {
+        id(nd)
+        for nd in _all_nodes(tree)
+        if nd[0] == "asg" and nd[1] in reg and nd[1] not in liveout.get(id(nd), reg)
+    }
+
+
+def _all_nodes(nodes):
+    """Every render-tree node, outermost first."""
+    for nd in nodes:
+        yield nd
+        for b in _child_bodies(nd):
+            yield from _all_nodes(b)
+
+
+Roots = collections.namedtuple("Roots", "ids sid regs")
+
+
+def roots(tree, info, entry, chosen, dead_stores=()):
+    """The observable roots of one rendered procedure (adoption §2), as node ids.
+
+    Sinks are the surviving memory stores (``sid`` names the write-only
+    $D400-$D41C ones) and every control statement; the register locals rooted are
+    those pass 2's boundary summary says a consumer reads. Nothing else is a root."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    live = _liveness(tree, info, entry, chosen)
+    ids, sid = set(), set()
+    for nd in _all_nodes(tree):
+        k = nd[0]
+        if k == "asg":
+            if nd[1] in reg and nd[1] in live.get(id(nd), reg):
+                ids.add(id(nd))
+        elif k == "st":
+            if id(nd) in dead_stores:
+                continue
+            ids.add(id(nd))
+            a = nd[1]
+            if a[0] == "const" and E._SID_LO <= (a[1] & 0xFFFF) <= E._SID_HI:
+                sid.add(a[1] & 0xFFFF)
+        else:
+            ids.add(id(nd))
+    return Roots(frozenset(ids), frozenset(sid), frozenset(info.ret_live(entry)))
+
+
+def _root_keep(tree, rootids, chosen):
+    """Node ids reachable from ``rootids``: a root, or a definition a kept node's
+    extracted spelling names. One mechanism for dead flags, scratch and spills."""
+    by_name = {nd[3]: nd for nd in _all_nodes(tree) if nd[0] == "asg"}
+    keep = set(rootids)
+    work = [nd for nd in _all_nodes(tree) if id(nd) in keep]
+    while work:
+        nd = work.pop()
+        names = set()
+        for ti in _node_terms(nd):
+            _loc_names(chosen[ti], names)
+        for nm in names:
+            d = by_name.get(nm)
+            if d is not None and id(d) not in keep:
+                keep.add(id(d))
+                work.append(d)
+    return keep
+
+
+def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proofs=None):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
     Memory forwards intra-block; at a branch join or loop head only the addresses
     written under the branch are havoced, so cells invariant across it still
-    forward. Value locals stay named with def-equations."""
+    forward. ``root_extract`` selects the stage-3a root path (default ``ROOT_EXTRACT``)."""
+    root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     stt = {"env": {}, "mem": mem0(), "ver": 0, "k": 0}
-    defs, terms, avail = [], [], set()
+    defs, terms, avail, locw, mempairs = [], [], set(), {}, []
 
     def bump(key):
         stt[key] += 1
@@ -613,7 +667,8 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
             if k == "asg":
                 rhs = conv(s[2])
                 name = "%s.%d" % (s[1], bump("ver"))
-                defs.append((E.loc(name), rhs))
+                defs.append((name, E.loc(name), rhs))
+                locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
                 nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
                 stt["env"][s[1]] = E.loc(name)
                 avail.add(name)
@@ -621,10 +676,14 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
                 v = conv(s[2])
                 a = s[1]
                 addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else conv(a)
-                stt["mem"] = store(stt["mem"], addr, v, _ew(s[2]))
+                pre = stt["mem"]
+                stt["mem"] = store(pre, addr, v, _ew(s[2]))
                 ai = None if a[0] == "const" else add(addr)
                 own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
-                nodes.append(("st", a, add(v, own), ai, _ew(s[2])))
+                nd = ("st", a, add(v, own), ai, _ew(s[2]))
+                nodes.append(nd)
+                if root_extract:
+                    mempairs.append((nd, pre, stt["mem"]))
             elif k == "if":
                 cond = conv(s[2])
                 if s[1] == "ifnot":
@@ -698,15 +757,21 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
     tree = walk(stmts)
     rs, _names = unified_rules()
     eg = EGraph()
-    for leaf, rhs in defs:
+    for _n, leaf, rhs in defs:
         eg.register(union(leaf).with_(rhs))
     handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
+    memh = [
+        (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
+    ]
     eg.run(rs * 30)
     pr = E._Printer(aliases or {})
 
     def pick_ir(i):
         t, av, own = terms[i]
-        cands = [to_ir(str(x)) for x in eg.extract_multiple(handles[i], 12)]
+        cands = [
+            (_to_ir(r), r)
+            for r in (E._parse_ir(str(x)) for x in eg.extract_multiple(handles[i], 12))
+        ]
         own_name = own[1] if own is not None and own[0] == "loc" else None
 
         def ok(c):
@@ -714,20 +779,38 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
             _count_locs(c, got)
             return c != own and (own_name is None or own_name not in got)
 
-        kept = [c for c in cands if ok(c) and not _has_mem(c) and _defined_at(c, av)]
+        kept = [c for c in cands if ok(c[0]) and not _has_mem(c[0]) and _defined_at(c[0], av)]
         if not kept:
-            site = to_ir(str(t))
-            if ok(site):
-                kept = [site]
-        return min(kept or cands, key=lambda c: (E._cost(c), repr(c)))
+            raw = E._parse_ir(str(t))
+            if ok(_to_ir(raw)):
+                kept = [(_to_ir(raw), raw)]
+        return min(kept or cands, key=lambda c: (E._cost(c[0]), repr(c[0])))
 
-    chosen = [pick_ir(i) for i in range(len(terms))]
+    picked = [pick_ir(i) for i in range(len(terms))]
+    chosen = [c for c, _raw in picked]
     if info is None:
         info = E.frameproc._Info([(entry, stmts)], entry)
         info.summarize()
-    dead = _dce(tree, info, entry, chosen)
-    _inline_single_use(tree, dead, chosen, terms)
-    _temp_sweep(tree, dead, chosen)
+    if root_extract:
+        gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
+        keep = _root_keep(tree, roots(tree, info, entry, chosen, gone).ids, chosen)
+        dead = {id(nd) for nd in _all_nodes(tree)} - keep
+        _share_once(tree, dead, chosen, terms)
+    else:
+        dead = _dce(tree, info, entry, chosen)
+        _share_once(tree, dead, chosen, terms)
+        _temp_sweep(tree, dead, chosen)
+    if proofs is not None:
+        pairs = proofs.setdefault("pairs", [])
+        for nd in _all_nodes(tree):
+            if id(nd) not in dead:
+                pairs.extend(
+                    (E._parse_ir(str(terms[ti][0])), picked[ti][1]) for ti in _node_terms(nd)
+                )
+        proofs.setdefault("defs", {}).update(
+            (name, E._parse_ir(str(rhs))) for name, _leaf, rhs in defs
+        )
+        proofs.setdefault("locw", {}).update(locw)
 
     def pick(i):
         return pr.fmt(chosen[i])
@@ -739,6 +822,8 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
                     continue
                 pr.line("%s = %s" % (nd[1], pick(nd[2])), d)
             elif nd[0] == "st":
+                if id(nd) in dead:
+                    continue
                 a = nd[1]
                 if a[0] == "const":
                     dest = pr.name(a[1]) + E.sidprog._wsuf(nd[4])
@@ -791,14 +876,143 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
     return pr.out
 
 
-def render_roots(roots, aliases=None):
+_CMPS = frozenset(("eq", "ne", "ult", "ule", "slt", "sge"))
+
+
+class _Z3Env:
+    """Z3 reading of an extracted term: values are BV16 masked to their own width,
+    memory an array BV16 -> BV8 whose ``mem0``/``memk`` leaves are opaque."""
+
+    def __init__(self, locw=None):
+        self.locw = locw or {}
+        self.locs, self.arrs, self.constraints = {}, {}, []
+
+    def _arr(self, key):
+        a = self.arrs.get(key)
+        if a is None:
+            a = self.arrs[key] = z3.Array(key, z3.BitVecSort(16), z3.BitVecSort(8))
+        return a
+
+    def _loc(self, name):
+        v = self.locs.get(name)
+        if v is None:
+            v = self.locs[name] = z3.BitVec("L_" + name.replace(".", "_"), 16)
+        return v
+
+    def width(self, ir):
+        k = ir[0]
+        if k == "num":
+            return ir[2]
+        if k == "sel":
+            return ir[3]
+        if k in ("cell", "load"):
+            return ir[2]
+        if k == "loc":
+            base = ir[1].rpartition(".")[0]
+            return 1 if base in E.frameproc._ALL_REG_LOCALS else self.locw.get(base, 2)
+        if k == "zext":
+            return 2
+        return 1 if k in _CMPS or k in ("bnot", "carry") else ir[-1]
+
+    def close(self, defs):
+        """Definitional equations for every reachable SSA local, plus the byte-range
+        assumption on the free ones; call after the terms are read."""
+        out, seen = [], set()
+        while True:
+            todo = [n for n in list(self.locs) if n not in seen and n in defs]
+            if not todo:
+                break
+            for n in todo:
+                seen.add(n)
+                out.append(self._loc(n) == self.of(defs[n]))
+        free = [n for n in self.locs if n not in defs]
+        return out + [z3.ULE(self._loc(n), E._mask(self.width(("loc", n)))) for n in free]
+
+    def memory(self, ir):
+        k = ir[0]
+        if k == "mem0":
+            return self._arr("m0")
+        if k == "memk":
+            return self._arr("mk%d" % ir[1])
+        if k == "store":
+            v = z3.Extract(8 * ir[4] - 1, 0, self.of(ir[3]))
+            return _store_w(self.memory(ir[1]), self.of(ir[2]), v, ir[4])
+        raise ValueError("unreadable memory %r" % (k,))
+
+    def of(self, ir):
+        k = ir[0]
+        if k == "num":
+            return z3.BitVecVal(ir[1] & E._mask(ir[2]), 16)
+        if k == "loc":
+            return self._loc(ir[1])
+        if k == "sel":
+            return z3.ZeroExt(16 - 8 * ir[3], _sel_w(self.memory(ir[1]), self.of(ir[2]), ir[3]))
+        if k == "zext":
+            return self.of(ir[1])
+        if k == "bnot":
+            return _b16(self.of(ir[1]) == 0)
+        if k in ("slt", "sge"):
+            x, y = (self._signed(a) for a in ir[1:3])
+            return _b16(x < y if k == "slt" else x >= y)
+        if k in _CMPS:
+            x, y = self.of(ir[1]), self.of(ir[2])
+            return _b16({"eq": x == y, "ne": x != y, "ult": z3.ULT(x, y), "ule": z3.ULE(x, y)}[k])
+        x, y, w = self.of(ir[1]), self.of(ir[2]), ir[-1]
+        if k == "carry":
+            wide = z3.ZeroExt(1, x) + z3.ZeroExt(1, y)
+            return _b16(z3.UGT(wide, z3.BitVecVal(E._mask(w), 17)))
+        if k == "shr":
+            return z3.LShR(x & E._mask(w), y)
+        v = {"add": x + y, "sub": x - y, "band": x & y, "bor": x | y, "bxor": x ^ y}.get(k)
+        return (x << y if k == "shl" else v) & E._mask(w)
+
+    def _signed(self, ir):
+        w = self.width(ir)
+        return (
+            z3.SignExt(16 - 8 * w, z3.Extract(8 * w - 1, 0, self.of(ir))) if w < 2 else self.of(ir)
+        )
+
+
+def _b16(cond):
+    return z3.If(cond, z3.BitVecVal(1, 16), z3.BitVecVal(0, 16))
+
+
+def verify_sites(sites):
+    """Z3-prove every recorded site equal to what extraction chose; count proved.
+
+    Adoption §6's all-rewritten-sites law, under the SSA/memory definitional
+    equations: both sides are raw extracted forms, so a forwarded load is proven
+    against the array encoding of its own store chain, not replayed."""
+    defs, env = sites.get("defs", {}), _Z3Env(sites.get("locw"))
+    goals = [
+        (site, got, env.of(site) != env.of(got))
+        for site, got in sites.get("pairs", ())
+        if site != got
+    ]
+    if not goals:
+        return len(sites.get("pairs", ()))
+    s = z3.Solver()
+    s.add(*env.close(defs))
+    if s.check() != z3.sat:
+        raise AssertionError("site environment is unsatisfiable: proofs would be vacuous")
+    for site, got, goal in goals:
+        s.push()
+        s.add(goal)
+        ok = s.check() == z3.unsat
+        s.pop()
+        if not ok:
+            raise AssertionError("site %r is not equivalent to %r" % (site, got))
+    return len(sites["pairs"])
+
+
+def render_roots(rootterms, aliases=None):
     """Print a forest of root terms with common subterms shared as named temps.
 
-    roots is [(dest, term)]. Subterms used more than once become ``t<k>`` locals
-    (let-binding); a subterm in no root never prints -- dead code drops out."""
+    ``rootterms`` is [(dest, term)]. Subterms used more than once become ``t<k>``
+    locals (let-binding); a subterm in no root never prints -- dead code drops out."""
     rs, _names = unified_rules()
     eg = EGraph()
-    handles = [(dest, eg.let("r%d" % i, t)) for i, (dest, t) in enumerate(roots)]
+    handles = [(dest, eg.let("r%d" % i, t)) for i, (dest, t) in enumerate(rootterms)]
     eg.run(rs * 30)
     irs = [(dest, to_ir(str(eg.extract(h)))) for dest, h in handles]
     counts = {}
@@ -1019,7 +1233,7 @@ def _written(stmts):
     return out
 
 
-def emit_mem(model):
+def emit_mem(model, root_extract=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
     Reuses eqlift's header/state/data/symbol assembly verbatim; only the per-proc
@@ -1063,7 +1277,8 @@ def emit_mem(model):
     proc_lines = []
     for entry, stmts in procs:
         proc_lines.append("sub_%04X {" % entry)
-        proc_lines.extend(" " + ln for ln in render_proc(stmts, aliases, entry, info))
+        body = render_proc(stmts, aliases, entry, info, root_extract)
+        proc_lines.extend(" " + ln for ln in body)
         proc_lines.append("}")
     from . import eqlift_annotate  # pylint: disable=import-outside-toplevel
 
@@ -1073,10 +1288,10 @@ def emit_mem(model):
     return "\n".join(lines) + "\n"
 
 
-def emit(model):
+def emit(model, root_extract=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model), None
+    return emit_mem(model, root_extract), None
