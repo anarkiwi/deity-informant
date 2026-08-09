@@ -21,6 +21,9 @@ nomoresecrets.pdf
 # oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed)
 .oracle-cache/
 
+# frameprog artifact cache for the sweeps (content-keyed, never committed)
+.sweep-cache/
+
 # local artifacts
 .venv/
 out/

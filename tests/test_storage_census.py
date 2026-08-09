@@ -191,7 +191,7 @@ def test_dyn_counts_pairs_and_walls():
 def test_rendered_fields_drops_unaddressed_names():
     text = "\n".join(
         (
-            "frameprog 0",
+            "frameprog 1",
             "state {",
             " m_1234: u8",
             " ptr_00FB: u16",

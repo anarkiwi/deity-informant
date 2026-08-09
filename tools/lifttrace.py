@@ -16,8 +16,7 @@ from pathlib import Path
 
 import _sweep
 from deity_informant import framemath as FM
-from deity_informant import frameprog, frameval
-from deity_informant import structured as S
+from deity_informant import frameval
 from deity_informant.c64 import load_psid
 
 
@@ -31,8 +30,8 @@ def build(tune, frames, sub):
     """``(model, prog)`` for one tune, as the corpus measurement builds it."""
     mem, _l, init, play = load_psid(sid_path(tune).read_bytes())
     mem[0xD418] = 0x0F
-    model, _ev = S.decompile(mem, init, play, frames, sub)
-    return model, frameprog.program(model)
+    model, prog, _ev = _sweep.build(mem, init, play, frames, sub)
+    return model, prog
 
 
 def brief(n, depth=6):

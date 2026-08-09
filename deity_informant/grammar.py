@@ -17,7 +17,7 @@ from . import structured as C
 from .render import sid_name
 
 SIDPROG_VERSION = 1  # 1: play-phase structured program (spec section 6)
-FRAMEPROG_VERSION = 0
+FRAMEPROG_VERSION = 1  # 1: image + dispatch + evidence sections (the total artifact)
 
 GRAMMAR_PATH = Path(__file__).with_name("sidprog.lark")
 GRAMMAR = GRAMMAR_PATH.read_text(encoding="utf-8")
@@ -318,6 +318,22 @@ class Document:
         self.labels = set()
         self.procs = []  # sidprog: [(entry, seq Region)]
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
+        self.evidence = new_evidence()  # frameprog: the block-model rebuild channels
+
+
+def new_evidence():
+    """An empty ``evidence { }`` record (frameprog 1)."""
+    return {
+        "code": set(),  # executed pcs
+        "leaders": set(),  # block leaders
+        "written": set(),  # play-written cells, evidence half (page one is a rule)
+        "targets": {},  # transfer site -> observed successors
+        "reads": {},  # read site -> addresses read there (datadecl.declarations)
+        "closure": None,  # (recur, first, window, cap); -1 spells None
+        "copies": {},  # init-staged cell -> (origin, proving store pc)
+        "staged": {},  # store pc -> (undeclared origins, refused stores)
+        "census": {},  # initcopy.reduce's census counters
+    }
 
 
 class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
@@ -457,6 +473,46 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             else:
                 d[key] = val
         self.doc.data_decls.append(d)
+
+    # -- evidence (frameprog 1: the block-model rebuild channels) --------------
+    def span(self, c):
+        a = _hexval(c[0])
+        return range(a, (a if c[1] is None else _hexval(c[1])) + 1)
+
+    def evidence_sec(self, c):
+        return None
+
+    def _ev(self, key, spans):
+        self.doc.evidence[key].update(a for r in spans for a in r)
+
+    def ev_code(self, c):
+        self._ev("code", c)
+
+    def ev_leaders(self, c):
+        self._ev("leaders", c)
+
+    def ev_written(self, c):
+        self._ev("written", c)
+
+    def ev_targets(self, c):
+        self.doc.evidence["targets"][_hexval(c[0])] = {_hexval(t) for t in c[1:]}
+
+    def ev_reads(self, c):
+        self.doc.evidence["reads"].setdefault(_hexval(c[0]), set()).update(
+            a for r in c[1:] for a in r
+        )
+
+    def ev_closure(self, c):
+        self.doc.evidence["closure"] = tuple(int(t) for t in c)
+
+    def ev_copy(self, c):
+        self.doc.evidence["copies"][_hexval(c[0])] = (_hexval(c[1]), _hexval(c[2]))
+
+    def ev_staged(self, c):
+        self.doc.evidence["staged"][_hexval(c[0])] = (int(c[1]), int(c[2]))
+
+    def ev_census(self, c):
+        self.doc.evidence["census"][str(c[0])] = int(c[1])
 
     def aliasdef(self, c):
         alias, cell = str(c[0]), str(c[1])

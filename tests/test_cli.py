@@ -1,5 +1,7 @@
 """CLI smoke tests: disasm / pcode / run over a hand-assembled illegal snippet."""
 
+import re
+
 from deity_informant import cli
 
 
@@ -74,8 +76,9 @@ def test_decompile_frameprog_flag(tmp_path, capsys):
     )
     assert rc == 0
     text = out_file.read_text()
-    assert text.startswith("frameprog 0\n") and "sub_1000(" in text
-    assert " ctr_1010: u8" in text and "@" not in text and "image {" not in text
+    assert text.startswith("frameprog 1\n") and "sub_1000(" in text
+    assert " ctr_1010: u8" in text and not re.search(r"@\d|@t\d|@x\(|code\[", text)
+    assert "image {" in text and "evidence {" in text  # 3a: the artifact is total
 
 
 def test_decompile_report_flag(tmp_path, capsys):

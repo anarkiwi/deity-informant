@@ -47,15 +47,13 @@ UNNAMED = (
 
 def build(entry):
     """The frame program of one tune, as ``fuse_measure`` builds it."""
-    from deity_informant import frameprog
-    from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(Path(sid).read_bytes())
     mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
-    model, _ev = S.decompile(mem, init, play, int(secs * 50), sub)
-    return model, frameprog.program(model)
+    model, prog, _ev = _sweep.build(mem, init, play, int(secs * 50), sub)
+    return model, prog
 
 
 def _roles(cell, ks):

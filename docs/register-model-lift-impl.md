@@ -15,8 +15,10 @@ unverified and consult the disassembly before acting on it. Both prior course
 corrections on this plan were exactly that: a claim acted on without reading
 the machine, resolved in minutes once the instructions were on the record.
 
-Status: in execution. **Phases 0, 1, 2a, the whole of 2b (b0–b5) and 2c are
-DONE**; **Phase 3 is next**. 2b's rewrite lifted
+Status: in execution. **Phases 0, 1, 2a, the whole of 2b (b0–b5), 2c and 3a are
+DONE**; the queue is **2c -> 3a -> 2.5 -> 3b**, then Phase 3. 3a changed no lift:
+it made the frameprog artifact total (major 1: `image`/`dispatch`/`evidence`) and
+gave the sweeps a content-keyed decompile cache (§6, post-3a). 2b's rewrite lifted
 **251 of 325 webs over 116 tunes, retiring 1,000 ⊤ loads**; the whole 74-web
 residue is `web_unnamed` — rung (d)'s read-side refusal, pinned by the
 `dual_store_*` fixture family. b3's static enumeration then took block-rooting
@@ -1169,6 +1171,65 @@ history (`git log --grep=regmodel`); only what still binds is here.
   blocker is the `(ptr),y` deref aliasing the live slot, and the pair's own
   certification is refused *because* it is held through page one — a
   circularity handed to **Phase 6**'s walker, not to any 2b work list.
+- **Post-3a (2026-08-09).** `frameprog` was never derivable from `sidprog`, and
+  the decision is to **supersede, not restore**. Both project the same
+  `structured.Model`, but the sidprog projection is lossy for frameprog's
+  purposes — `sidprog.TextModel` carries no init tracer and sets `written` from
+  the dispatch table alone — so `frameprog.program(sidprog.parse(sidprog.emit(m)))`
+  is a different, silently shorter program (hermetic `t_jump_table`: **32 lines
+  against 18**). 3a made frameprog the total artifact: major **1** adds
+  `image { }` (sidprog's proven encoding, reused, not reinvented), `dispatch`
+  header lines and an `evidence { }` section, and `frameprog.block_model` rebuilds
+  the committed model the text came from — the trace, **80% of per-tune work
+  against `build_all`'s 0.01s**, is not repeated. `tools/_sweep.py` caches on it,
+  keyed on the mutated image, the build parameters and a **content fingerprint of
+  every package source file** — not a maintained constant, which is the failure
+  mode a version bump forgets; unknown keys recompute, never partial-match, and
+  `DI_SWEEP_CACHE=0` bypasses. The pinning assert whose absence let the gap exist
+  is `tests/test_frameprog.py`, over the fuzz-player family: re-emitted text,
+  walker log and Gate FP verdict all equal. **The byte-identity baseline resets
+  here** — the artifact gained sections, so identity of *statements* and of *gate
+  verdicts* is the standing gate and every later phase re-inherits byte identity
+  from the new hashes. Three corpus-forced corrections. (1) The brief's claim
+  that `reads` has no consumer in the frameprog path is **false**:
+  `datadecl.declarations` consumes it (`datadecl.py:404`), and a rebuild that
+  omits it re-declares differently — measured on `Agent_X_II`, which drops two
+  `state { }` fields. It is carried, and it is the largest channel. (2)
+  `initcopy.reduce`'s inputs are two orders larger than its output
+  (`Ghouls_n_Ghosts`: 7,159 traced cells, 6,999 of them undeclared, against 40
+  surviving records), and both its other arguments are already in the artifact,
+  so what is serialized is the **projection**, not the tracer. (3) A latent defect
+  surfaced and is **not** fixed here: `_declare_cells` carves loose cells after
+  `_state_fields` has run, so a cell can be declared twice — once in `state { }`
+  and once in `data { }` (`Agent_X_II` `$6923`/`$6925`). Correcting it moves
+  gate-visible text, which 3a may not do. Queue: **2c -> 3a -> 2.5 -> 3b**; 3b
+  deprecates sidprog and owes `tests/test_soundness.py:403` a frameprog
+  equivalent before that test retires.
+
+  3a's gates, all full-corpus against a post-2c (`daa31a5`) baseline measured on
+  the same host, and all run twice more cache-cold and cache-warm:
+
+  | gate | verdict |
+  |---|---|
+  | `lift_residue` | 624 rows **identical**, census sum **30,854** unchanged |
+  | `fuse_measure` | 624 rows **identical** |
+  | `storage_census --frames 1500` | 624 rows **identical** |
+  | `gate_sweep`, full Songlengths | 622 built / **621 clean**, identical tune for tune: one divergence (`Rambo_First_Blood_Part_II`) and two refusals (`C64_World`, `1st_Decent_Hardcore`), all three standing §4 exclusions |
+  | `dumps(loads(t)) == t` | **0 failures** over 1,203 artifacts |
+  | `dumps(program(block_model(loads(t)))) == t` | **0 failures** over the same 1,203 — totality on the corpus, not only on the fixture |
+  | cache-cold vs cache-warm | 624 rows identical in all four sweeps |
+  | suite | 2,528 passed / 492 skipped / 24 xfailed, `-n 24`, both passes |
+
+  **The new byte-identity baseline** is the sha256 of each tune's canonical
+  frameprog text at full Songlengths length; over the 624 built tunes their
+  aggregate is `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`
+  (`Commando` `7f564cf0b099ba5a…`, `Ghouls_n_Ghosts` `2fa177fa165868da…`,
+  `Comic_Bakery` `5bcb8107f0054cfd…`). Speedup, `-j 22` on 24 cores:
+  `lift_residue` **264s bypassed -> 104s warm (2.5x)**, `fuse_measure` 257 -> 109,
+  `gate_sweep` 386 -> 231 (the gate evaluation, not the trace, is what is left),
+  `storage_census --frames 1500` 155 -> 134 (a 1,500-frame trace was never the
+  cost). The first populating run pays ~11% to emit and store; the whole corpus
+  is 18 MB over 1,203 artifacts.
 
 ## 7. Briefing a subagent to execute a phase
 

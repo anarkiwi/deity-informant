@@ -25,9 +25,7 @@ USAGE = """\
 
 
 def _one(entry, frames, extents):
-    from deity_informant import frameprog
     from deity_informant import frameval
-    from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
     sid, sub, secs = entry
@@ -36,8 +34,7 @@ def _one(entry, frames, extents):
     full = int(secs * 50)
     n = full if frames is None else min(frames, full)
     t0 = time.monotonic()
-    model, _ev = S.decompile(mem, init, play, full, sub)
-    prog = frameprog.program(model, extents)
+    model, prog, _ev = _sweep.build(mem, init, play, full, sub, extents)
     got = frameval.gate_fp(model, n, prog)
     row = {**_sweep.row_head(entry), "frames": n, "wall_s": round(time.monotonic() - t0, 1)}
     row["gate"] = None if got is None else list(got)

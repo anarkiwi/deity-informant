@@ -44,6 +44,8 @@ def _lifted(name, records):
         p.prov0,
         p.init_census,
         ext,
+        p.dispatch,
+        p.evidence,
     )
     return out, proofs
 

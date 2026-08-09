@@ -50,8 +50,8 @@ def _sidprog_text(model, ev, frames, row):
     text = sidprog.emit(model)
     tm = sidprog.parse(text)
     row["bit_exact_standalone"] = (
-        S.Walker(model).run(frames) == ev.wlog
-        and tm.run(frames) == ev.wlog
+        _sweep.wlog_matches(ev, S.Walker(model).run(frames))
+        and _sweep.wlog_matches(ev, tm.run(frames))
         and sidprog.emit(tm) == text
     )
     row["text_bytes"] = len(text)
@@ -88,7 +88,6 @@ _EMIT = {"sidprog": _sidprog_text, "frameprog": _frameprog_text}
 def one(job):
     """One tune: the model built once, then each dialect emitted off it."""
     rel, dialects = job
-    from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
     from _corpus import corpus_params
@@ -102,14 +101,14 @@ def one(job):
     mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
     frames = secs * 50
     t0 = time.monotonic()
-    model, ev = S.decompile(mem, init, play, frames, sub)
+    model, ev = _sweep.decompile(mem, init, play, frames, sub)
     row = {
         "tune": _sweep.tune_id(sid),
         "name": sid.stem,
         "subtune": sub,
         "secs": secs,
         "frames": frames,
-        "writes": len(ev.wlog),
+        "writes": ev.wlog_len,
         "build_s": round(time.monotonic() - t0, 1),
         "guard_live": sorted(
             "$%04X" % s for s, p in model.proofs.items() if p.status != "certified"

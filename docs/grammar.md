@@ -12,6 +12,18 @@ header selects the dialect:
   sections, named locals, procedure calls with inferred parameters and
   returns, and `for` ranges ([frameprog.md](frameprog.md)).
 
+**frameprog major 1 (Phase 3a) is total**: the dialect gained `image { }`,
+`dispatch` header lines and an `evidence { }` section, so
+`frameprog.block_model(frameprog.loads(text))` rebuilds the committed block
+model the text was emitted from — image, executed pcs, block leaders,
+play-written cells, observed transfer targets, read sites, the recurrence
+record and the reduced init-copy result. A major-0 artifact predates those
+sections and is refused. `evidence { }` addresses come as `$A` / `$A..$B`
+spans; `written` carries the evidence half only, because
+`structured.Model` unions page one in as a rule. The one channel not carried
+is the closure *diagnostic* (`Closure.diag`/`note`), which only the CLI proof
+report reads and no rebuild consumes.
+
 Everything else — expressions, memrefs, `data { }`/`symbols { }`, loops,
 switches, case arms, flow items — is shared: lark templates parameterise the
 region productions over the two item alphabets (`sitem`, `fitem`), so a
@@ -94,12 +106,12 @@ start: sidprog_doc
      | frameprog_doc
 
 sidprog_doc: sphead _sheader* image_sec? data_sec? symbols_sec? proc*
-frameprog_doc: fphead _fheader* state_sec? data_sec? symbols_sec? sub*
+frameprog_doc: fphead _fheader* image_sec? state_sec? data_sec? symbols_sec? evidence_sec? sub*
 sphead: "sidprog" INT _NL
 fphead: "frameprog" INT _NL
 
 _sheader: play | init | subtune | sidinit | dispatch_set
-_fheader: play | init | subtune | sidinit | inputs_sec
+_fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set
 
 play: "play" HEX _NL
 init: "init" HEX _NL
@@ -131,6 +143,23 @@ attr: "stride" INT      -> at_stride
 
 symbols_sec: "symbols" "{" _NL aliasdef* "}" _NL
 aliasdef: "alias" NAME "=" NAME _NL
+
+// ---- evidence section (frameprog only) ---------------------------------------
+// The trace channels a block-model rebuild consumes: executed pcs, block
+// leaders, play-written cells, observed transfer targets, read sites, the
+// recurrence record and the reduced init-copy result. Addresses come as spans;
+// `written` is the evidence half, since page one is a rule of the model.
+evidence_sec: "evidence" "{" _NL evline* "}" _NL
+evline: "code" span* _NL               -> ev_code
+      | "leaders" span* _NL            -> ev_leaders
+      | "written" span* _NL            -> ev_written
+      | "targets" HEX ":" HEX* _NL     -> ev_targets
+      | "reads" HEX ":" span* _NL      -> ev_reads
+      | "closure" INT INT INT INT _NL  -> ev_closure
+      | "copy" HEX "=" HEX "@" HEX _NL -> ev_copy
+      | "staged" HEX ":" INT INT _NL   -> ev_staged
+      | "census" NAME INT _NL          -> ev_census
+span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
 statedef: NAME ":" NAME [array] [statext] [statobs] _NL

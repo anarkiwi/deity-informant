@@ -15,12 +15,12 @@ start: sidprog_doc
      | frameprog_doc
 
 sidprog_doc: sphead _sheader* image_sec? data_sec? symbols_sec? proc*
-frameprog_doc: fphead _fheader* state_sec? data_sec? symbols_sec? sub*
+frameprog_doc: fphead _fheader* image_sec? state_sec? data_sec? symbols_sec? evidence_sec? sub*
 sphead: "sidprog" INT _NL
 fphead: "frameprog" INT _NL
 
 _sheader: play | init | subtune | sidinit | dispatch_set
-_fheader: play | init | subtune | sidinit | inputs_sec
+_fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set
 
 play: "play" HEX _NL
 init: "init" HEX _NL
@@ -52,6 +52,23 @@ attr: "stride" INT      -> at_stride
 
 symbols_sec: "symbols" "{" _NL aliasdef* "}" _NL
 aliasdef: "alias" NAME "=" NAME _NL
+
+// ---- evidence section (frameprog only) ---------------------------------------
+// The trace channels a block-model rebuild consumes: executed pcs, block
+// leaders, play-written cells, observed transfer targets, read sites, the
+// recurrence record and the reduced init-copy result. Addresses come as spans;
+// `written` is the evidence half, since page one is a rule of the model.
+evidence_sec: "evidence" "{" _NL evline* "}" _NL
+evline: "code" span* _NL               -> ev_code
+      | "leaders" span* _NL            -> ev_leaders
+      | "written" span* _NL            -> ev_written
+      | "targets" HEX ":" HEX* _NL     -> ev_targets
+      | "reads" HEX ":" span* _NL      -> ev_reads
+      | "closure" INT INT INT INT _NL  -> ev_closure
+      | "copy" HEX "=" HEX "@" HEX _NL -> ev_copy
+      | "staged" HEX ":" INT INT _NL   -> ev_staged
+      | "census" NAME INT _NL          -> ev_census
+span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
 statedef: NAME ":" NAME [array] [statext] [statobs] _NL
