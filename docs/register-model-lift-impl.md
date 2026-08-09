@@ -84,12 +84,17 @@ stands.
 
 ## The method
 
-**Derive from the canonical players, not from 624 binaries.** Most of the
-corpus is a handful of players, and their ground truth is published: the
-trackers ship their own player source (GoatTracker, SID-Wizard, defMON), the
-hand-coded families circulate as commented community disassemblies, and the
-Follin driver's development disks are already in the reference set
-(docs/follin-dispatch-study.md). The SID binaries serve two purposes only:
+**Derive from the canonical players, not from 624 binaries.** The corpus is a
+heavy head over a long tail — 16 families are 57.7% of it — and the head's
+ground truth is largely published: the trackers ship their own player source
+(GoatTracker, SID-Wizard, defMON), Galway's sources are published by the
+composer himself, Hubbard's driver circulates as a commented disassembly, and
+the Follin driver's grammar is already in this repository
+(docs/follin-dispatch-study.md §3, derived from the handler code and validated
+against instrumented dispatch counts — there are no Follin "development disks"
+in any reference set; that earlier claim was unsupported). Six head families
+have no published source and are read from their exemplars alone. The SID
+binaries serve two purposes only:
 cross-checking a canonical source against its exports under the sidplayfp
 oracle (which catches export feature-stripping and version drift), and the
 full-corpus gate. Idiom derivation is a reading task over fewer than ten
@@ -152,23 +157,20 @@ license; roles name.
 Pull the canonical player for each family, disassemble/read it, and write the
 idiom inventory the rule set will be tested against.
 
-| family | corpus exemplar | canonical source |
-|---|---|---|
-| Hubbard (hand-coded) | `Hubbard_Rob/Commando` | community-commented driver disassemblies |
-| Galway (hand-coded, per-voice code) | `Galway_Martin/Comic_Bakery` | community-commented driver disassemblies |
-| goto80 / defMON-line | `Goto80/Automatas` | defMON player source |
-| GoatTracker export | `Cadaver/Aces_High` | GoatTracker 2 player source |
-| SID-Wizard export | `Chabee/Angry_Birds` | SID-Wizard player source |
-| Follin (script interpreter) | `Follin_Tim/Ghouls_n_Ghosts`, `Agent_X_II` | Follin development disks (reference set) + docs/follin-dispatch-study.md |
+The family table, the exemplar set and the fetched sources now live in
+**docs/idiom-catalog.md**; `tools/fetch_players.py` caches and pins the
+sources, `tools/player_id.py` names a tune's player from the SIDId signatures
+and `tools/family_cluster.py` clusters the corpus by executed-code fingerprint.
 
-The seven-tune evidence set stands as the exemplar set; a family is added
-only if clustering by executed-code fingerprint (the recorder's run
-signature, made relocation-tolerant: opcode shingles, not absolute addresses)
-surfaces one the seven miss. Per family, the canonical source is
-cross-checked against its HVSC exemplar under the oracle before any idiom is
-recorded from it.
+The exemplar set is **sixteen tunes**, one per player family, replacing the
+seven this plan opened with: the seven covered 49 of 624 cached tunes (7.9%)
+by fingerprint, the sixteen cover 360 (57.7%). A family is added when
+clustering surfaces one the set misses. Per family, the canonical source is
+cross-checked against its exemplar before any idiom is recorded from it; a
+family with no published source is marked as such and carries the weaker
+warrant.
 
-**Deliverable: `docs/idiom-catalog.md`.** One row per idiom: the
+**Deliverable: `docs/idiom-catalog.md`.** (Landed; rows in progress.) One row per idiom: the
 canonical-source citation (player, label/address), the `disasm_tune` cite in
 a corpus exemplar, the families carrying it, and **the normal form it must
 reduce to** (a dialect term) or `named-unknown`. Existing enumeration data
@@ -184,7 +186,9 @@ coverage.
 The Follin entry carries the debt: `_ARITY` is a hand transcription; the
 catalog records the mechanical definition (an operator's arity is the net
 `Y` delta of its dispatch arm, constant on all paths) and stage 3 recovers
-it.
+it. The study's own §3 grammar already corroborates all 20 constant arities
+op for op — and shows the definition is incomplete: `$85` (`rawsid`) is
+variable-arity, so it needs a decoded-length escape or a named refusal.
 
 ## Stage 2 — the vocabulary (capability before use)
 
@@ -315,6 +319,25 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   eqlift-adoption.md's §8 step list is superseded by the stages; its §4/§5/§6
   contracts are enforced unchanged — §5's no-extension rule now includes the
   interval/alias family that grew five members before it.
+- **2026-08-09 — stage 1 opens; the exemplar set goes from seven to sixteen.**
+  The canonical sources are fetched and pinned for six families
+  (`tools/fetch_players.py`; Galway turns out to be **author-published**, not a
+  community disassembly, and his README splits the family into a 1st-generation
+  player and the 2nd generation `Athena` introduced). Two instruments then
+  measured what the seven actually cover: `tools/player_id.py` names a tune's
+  player from the SIDId signature database (unused in the cache until now) and
+  `tools/family_cluster.py` clusters executed-opcode 5-grams by **containment**
+  — Jaccard scores the size gap between two songs on one driver as difference,
+  which is the wrong question. The two agree cluster for cluster. The seven fall
+  in 6 clusters covering **49 of 624 tunes**; the corpus's largest single-player
+  family (`GoatTracker_V2.x`, 75 tunes) had no exemplar, and the plan's
+  GoatTracker exemplar `Aces_High` is `GoatTracker_V1.x` — the wrong major
+  version for the fetched source. Adopted: the exemplar set is sixteen tunes,
+  one per family (**360 of 624, 57.7%**), `Jammer/Grid_Runner` anchors
+  GoatTracker 2, `Aces_High` stays as the V1 exemplar, and the families with no
+  published source (DMC, Music Assembler, FutureComposer, Soundmonitor, JCH
+  NewPlayer, Master Composer) are read from their exemplars and marked as
+  carrying the weaker warrant.
 - **2026-08-09 — the canonical example, and the two defects it forced.**
   `examples/state_machine_lift.py` landed the same day as the pivot: the full
   method on a hand-written Follin-flavored playroutine, gated by
