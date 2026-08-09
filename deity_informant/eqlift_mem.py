@@ -254,7 +254,9 @@ def _defined_at(ir, avail):
     if not isinstance(ir, tuple):
         return True
     if ir[0] == "loc":
-        return ir[1].endswith(".0") or ir[1] in avail
+        if ir[1].endswith(".0") and ir[1].split(".")[0] in E.frameproc._ALL_REG_LOCALS:
+            return True
+        return ir[1] in avail
     return all(_defined_at(a, avail) for a in ir[1:] if isinstance(a, tuple))
 
 
@@ -597,10 +599,8 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
         return len(terms) - 1
 
     def havoc(names):
-        for n in names:
-            name = "%s.%d" % (n, bump("k"))
-            stt["env"][n] = E.loc(name)
-            avail.add(name)
+        for n in names:  # havoc names have no rendered def: never available to spell
+            stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
 
     def havoc_all():
         havoc(list(stt["env"]))
@@ -630,29 +630,31 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
                 if s[1] == "ifnot":
                     cond = E.bnot(cond)
                 ci = add(cond)
-                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
+                pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
                 then = walk(s[3])
                 then_env = dict(stt["env"])
                 stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                avail.intersection_update(pre_av)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
                 stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s)
+                avail.intersection_update(pre_av)
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) is c and els_env.get(n) is c):
-                        name = "%s.%d" % (n, bump("k"))
-                        stt["env"][n] = E.loc(name)
-                        avail.add(name)
+                        stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
-                pre_mem = stt["mem"]
+                pre_mem, pre_av = stt["mem"], set(avail)
                 havoc(_written(s[1]))
                 stt["mem"] = join_mem(pre_mem, s)
                 body = walk(s[1])
+                avail.intersection_update(pre_av)
                 havoc(_written(s[1]))
                 stt["mem"] = join_mem(pre_mem, s)
                 nodes.append(("loop", body))
             elif k == "label":
+                avail.clear()
                 havoc_all()
                 nodes.append(("label", s[1]))
             elif k in ("goto", "cont", "brk", "ret", "unobs"):
@@ -670,11 +672,13 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
                 nodes.append(("dcall", ix, s[2]))
             elif k in ("swc", "opsw", "swg"):
                 cases = s[1] if k == "swg" else s[2]
-                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
+                pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
                 arms = []
                 for lbl, body in cases:
                     stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                    avail.intersection_update(pre_av)
                     arms.append((lbl, walk(body)))
+                avail.intersection_update(pre_av)
                 havoc_all()
                 nodes.append(("switch", arms))
             elif k == "dbr":
@@ -701,10 +705,21 @@ def render_proc(stmts, aliases=None, entry=0, info=None):
     pr = E._Printer(aliases or {})
 
     def pick_ir(i):
-        _t, av, own = terms[i]
+        t, av, own = terms[i]
         cands = [to_ir(str(x)) for x in eg.extract_multiple(handles[i], 12)]
-        cands = [c for c in cands if c != own and _defined_at(c, av)] or cands
-        return min(cands, key=E._cost)
+        own_name = own[1] if own is not None and own[0] == "loc" else None
+
+        def ok(c):
+            got = []
+            _count_locs(c, got)
+            return c != own and (own_name is None or own_name not in got)
+
+        kept = [c for c in cands if ok(c) and not _has_mem(c) and _defined_at(c, av)]
+        if not kept:
+            site = to_ir(str(t))
+            if ok(site):
+                kept = [site]
+        return min(kept or cands, key=lambda c: (E._cost(c), repr(c)))
 
     chosen = [pick_ir(i) for i in range(len(terms))]
     if info is None:

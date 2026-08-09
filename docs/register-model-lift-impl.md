@@ -117,6 +117,23 @@ each frame to straight-line dataflow over the entry state with SMC handled
 soundly (docs/symbolic-recorder.md). The recorder is "enough analysis to feed
 the saturation algorithm" — it exists and is hardware-validated.
 
+**The canonical example, executable.** `examples/state_machine_lift.py` is the
+whole method in one file, and `tests/test_state_machine_lift.py` gates it: a
+hand-written 6502 playroutine (8 bars on one voice, vibrato via an ADC carry
+chain, a Follin-style SMC-JMP command dispatch, a deferred-carry script
+cursor) runs through the real pipeline — VM, decompile + walker replay,
+`eqlift_mem.emit` minimization, three Z3-proved spelling folds (paired u16
+SID store, u16 pair reload, deferred-carry advance with the unobserved-arm
+guard), role classification off the folded update shapes — and the resulting
+role-typed u16 state machine executes and matches the original frame-for-frame
+on the VM projection, on pysidtracker's independent engine, and on the
+dockerized sidplayfp/sidtrace oracle (`--sidtrace`). **Every stage below
+MUST keep this example green; a stage that cannot express it has diverged
+from the goal.** The stages generalize exactly what it does: stage 1 catalogs
+the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
+grammar, stage 3 moves its folds into admitted rules and its convergence
+checks over the catalog, stage 4 emits its output shape for the corpus.
+
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into four roles — **cursor** (an index
 into a declared block, advanced monotonically), **accumulator** (a value
@@ -215,6 +232,9 @@ of three phases.
 - **Budgets.** Bounded schedules — extraction is sound at any cutoff because
   every admitted rule is an equivalence; 60s per tune; a tune over budget
   ships less-minimized and never blocks a landing.
+- **The canonical example stays green** (`tests/test_state_machine_lift.py`):
+  its folds and its oracle equalities are this stage's definition of done in
+  miniature.
 - **Retirement.** Adoption §5's transitional passes actually retire as
   subsumption lands, and extending them is forbidden — enforced from this
   document forward.
@@ -295,3 +315,29 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   eqlift-adoption.md's §8 step list is superseded by the stages; its §4/§5/§6
   contracts are enforced unchanged — §5's no-extension rule now includes the
   interval/alias family that grew five members before it.
+- **2026-08-09 — the canonical example, and the two defects it forced.**
+  `examples/state_machine_lift.py` landed the same day as the pivot: the full
+  method on a hand-written Follin-flavored playroutine, gated by
+  `tests/test_state_machine_lift.py` (VM projection, independent-engine grid,
+  sidplayfp/sidtrace change stream — 136 changes, minimized side). Making the
+  minimized text *executable* — the adoption doc's own §6 said it had only
+  ever been review material — surfaced two real renderer defects in
+  `eqlift_mem.render_proc`, both fixed with regression tests:
+  (1) **availability was path-insensitive** — `avail` accumulated across
+  sibling arms and label copies, so extraction could spell a value over
+  another path's local (rendered as `w0 = w0` self-assignments that deleted
+  the definition, or as reads of temps whose defs never execute on the
+  path). `avail` is now scoped like `env` (restored at branches and cases,
+  cleared at labels), havoc/join names — which have no rendered definition —
+  are never available to spell over, and the `.0` entry-version bypass is
+  restricted to genuine CPU-register locals.
+  (2) **memory spellings erased chain position** — a `sel` extracted at one
+  store-chain position could print as `mem[addr]`/cell at a statement where
+  memory differs (the dispatch-hi line read its SMC cell pre-store).
+  Extraction candidates are now pure value spellings only; a surviving
+  memory read always renders from the site's own term, which is
+  position-correct by construction, and ties break deterministically by
+  (cost, repr) — adoption §10's discipline extended to the memory renderer.
+  Standing lesson, recorded where the plan can see it: **emitted text that is
+  never executed is not verified** — stage 4's evaluator-precondition exists
+  because two soundness-grade defects sat invisible in review-only output.
