@@ -102,6 +102,64 @@ shadow of the chip" except a memory address — so the held lane, which is real
 driver state, got spelled as a load no 6502 can perform. The defect is not in
 `_widen`; it is that the IR's only noun is the cell.
 
+### 2.1 What the persistent half is, if the residue is read forward
+
+§2 reads the residue back to the machine that forced it. Read it forward
+instead — what does a play routine *do* — and the cross-frame state resolves
+into four roles, not an open set:
+
+| role | what it is | its residue |
+|---|---|---|
+| **cursor** | an index into a declared block, advanced monotonically | the pointer web: `unnamed_addr`, `ptrcert`'s subject |
+| **accumulator** | a value stepped by a delta each frame, within a bound | the byte-column block: `carry_val`, `word_pack`, `hi/lo_byte` |
+| **counter** | a countdown gating when a cursor or accumulator steps | small; folded into either |
+| **parameter** | set once by a cursor event, read every frame by a stepper | declared `state { }` with no table to name it |
+
+Two things follow that the per-shape reading does not give.
+
+**The vocabulary is closed by the chip, not by enumeration.** §1's complaint is
+that the spelling population is the image of every code generator and cannot
+shrink by enumeration. True of spellings; false of roles. An accumulator exists
+exactly where the SID lacks hardware — it has envelopes, oscillators and a
+filter, so what a driver must synthesize is vibrato, portamento, PWM sweep,
+filter sweep, arpeggio and fade. Six or so effects, because there are six or so
+things to modulate. The grid `{freq, pulse, cutoff, wave, gate, volume} ×
+{constant, accumulator, cursor}` is under twenty slots and is closed by the
+hardware. That is a closure argument the ladder never had.
+
+**This is what P1 and P2 already are.** Phase 2's certification is cursor
+recovery; P2's column coalescing is accumulator recovery — a 16-bit value
+stepped by a delta *is* the carry chain, which is why `carry_val` is the
+largest class. P1 is the complement: whatever is neither is recomputed per
+frame and need not survive. The three promotions were derived from the residue;
+this says what they are.
+
+**And the scratch fraction measures an architecture, not a driver quirk.**
+R3 records Hubbard 85%, GT 58%, Galway 39%, SW 38%, Follin 36%/34%, goto80 17%.
+That is an axis: a **table-per-frame** driver re-reads its parameters from a
+row every frame and caches nothing (Commando declares 26 state fields and only
+**4** persist), while an **event-script** driver caches a parameter bank its
+cursor writes between events (Ghouls declares 114, 68 persistent). The fraction
+predicts which phase pays — P1/Phase 3 at the recompute end, Phase 7 (§10) at
+the cache end — and they are complementary, not competing.
+
+**What this may not be used for.** Recognizing the four roles licenses nothing
+by itself: promotion by elimination ("not one of these, therefore scratch") is
+sound only if the recognizer is complete, and a missed persistent cell is a
+silent miscompile. The static may-live-in proof stays the license; this is the
+**target and the oracle** — it says how many cells a phase should reach, which
+turns over-refusal from an unknown into a measured gap, per §3's differential
+guard. Two known frays: the filter is one global resource three voices contend
+for, so an arbitration protocol sits outside the four roles (Ruddy's driver
+spends an opcode on it), and where the accumulator lives in the code stream
+(§10.2) the roles hold but the addressing does not.
+
+**Unmeasured, and sized before used.** The claim is that every persistent cell
+lands in one of four bins. The instrument is a classifier over the 624 tunes
+reporting the **unclassified rate**, off `storage_census`'s persistent verdicts
+and `ptrcert`'s cursor records — both already emitted. Near zero and the
+vocabulary is closed; large and this is a story the corpus does not support.
+
 ## 3. The design error, named
 
 The ladder generalizes **per shape**: rung (d) for the unindexed lane pair,
