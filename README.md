@@ -98,6 +98,7 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
 - [docs/register-model-lift-impl.md](docs/register-model-lift-impl.md) — the active plan: lift the play routine to a role-typed state machine by canonical-source idiom derivation + equality-saturation minimization (goal, law, landed record, four stages).
+- [docs/idiom-catalog.md](docs/idiom-catalog.md) — the driver-idiom inventory derived from the canonical player sources: per idiom, its canonical and exemplar cites and the normal form it must reduce to. The coverage claim the corpus census no longer makes.
 - [docs/decompiler-implementation.md](docs/decompiler-implementation.md) — the landed structured-decompiler specification (soundness, structuring, the structured language, corpus gates).
 - [docs/grammar.md](docs/grammar.md) — the ONE grammar (`deity_informant/sidprog.lark`, LALR(1)) of the sidprog language and its frameprog dialect, generated from the implementation.
 - [docs/sidprog-language.md](docs/sidprog-language.md) — sidprog language: normative semantics, version policy, and property-tested round-trip laws.

@@ -60,44 +60,10 @@ _CMP = frozenset(
 _ARITH = frozenset(("INT_ADD", "INT_SUB", "INT_MULT"))
 
 
-def _shift_pair(n):
-    """``(lo >> 1) | ((hi & 1) << 7)`` and its mirror: one word shifted as two bytes."""
-    from deity_informant import frameproc as P
-
-    if not P.is_op(n, "INT_OR", arity=2):
-        return False
-    for a, b in P.commuted(n[2]):
-        if not P.is_op(a, "INT_RIGHT") and not P.is_op(a, "INT_LEFT"):
-            continue
-        if not P.is_op(b, "INT_LEFT") and not P.is_op(b, "INT_RIGHT"):
-            continue
-        inner = b[2][0]
-        if P.is_op(inner, "INT_AND") and inner[2][1][0] == "const":
-            return inner[2][1][1] in (0x01, 0x80)
-    return False
-
-
-def _flag_bit(n):
-    """``(OP(..) & BIT) != 0``: a status flag the lift left as a mask-and-compare.
-
-    The masked value must be an operation's result, since that is what the 6502 sets
-    N and Z from. The same shape over a plain load is the driver testing a bit of its
-    own state byte -- program logic, not a flag the lift failed to name."""
-    from deity_informant import frameproc as P
-
-    if n[0] != "op" or n[1] not in ("INT_EQUAL", "INT_NOTEQUAL"):
-        return False
-    for a, b in P.commuted(n[2]):
-        if b[0] != "const" or b[1] != 0 or not P.is_op(a, "INT_AND", arity=2):
-            continue
-        k, v = a[2][1], P.strip_zext(a[2][0])
-        return k[0] == "const" and k[1] in _BITS and v[0] == "op" and v[1] not in _CMP
-    return False
-
-
 def _expr_sig(n, parent):
     """The residue signature ``n`` wears under ``parent``, else None."""
     from deity_informant import frameproc as P
+    from deity_informant import idioms
 
     if n[0] in ("reg", "uni"):
         return "raw_reg"
@@ -116,11 +82,11 @@ def _expr_sig(n, parent):
         return "carry_val"
     if n[1] in _CMP and parent in _ARITH:
         return "borrow"
-    if _flag_bit(n):
+    if idioms.flag_bit(n) is not None:
         return "flag_bit"
     if P._le_bytes(n) is not None:
         return "word_pack"
-    if _shift_pair(n):
+    if idioms.shift_pair(n) is not None:
         return "shift_pair"
     if P.is_op(n, "COPY", 1):
         inner = n[2][0]
