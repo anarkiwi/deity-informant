@@ -71,10 +71,13 @@ evline: "code" span* _NL               -> ev_code
 span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" NAME [array] [statext] [statobs] _NL
+statedef: NAME ":" [srole] NAME [array] [statext] [statobs] _NL
 array: "[" "]"
 statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
+// the role qualifies the field's type: it names how the cell is updated and
+// licenses nothing, so an un-roled uN stays legal (register-model-lift stage 2)
+!srole: "cursor" | "accumulator" | "counter" | "flags" | "parameter" | "vm"
 
 // ---- procedures ----------------------------------------------------------------
 proc: "proc" HEX "{" _NL sitem* "}" _NL

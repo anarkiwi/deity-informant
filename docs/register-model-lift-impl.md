@@ -62,10 +62,13 @@ clean** (standing exclusions: `Rambo_First_Blood_Part_II` divergence;
 aggregate
 `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` over all
 624 — emission does not evaluate, so the two evaluation faults still emit
-(recipe: per tune, sha256 of
+(the recipe is `tools/emit_identity.py`: per tune, sha256 of
 `frameprog.dumps(frameprog.program(model))` at full Songlengths; aggregate
-sha256 of `"%s %s\n" % (tune_id, sha)` joined over tunes sorted by id);
-census sum 30,854 — **retired as a steering metric**, kept as a diagnostic.
+sha256 of `"%s %s\n" % (tune_id, sha)` joined over tunes sorted by id;
+`--expect <sha>` gates it); census sum 30,854 — **retired as a steering
+metric**, kept as a diagnostic. Stage 2 reproduced both: `gate_sweep` 622/621
+with the same three named tunes, aggregate `99d4fdec…` unchanged over 624
+(28,512,406 bytes).
 
 | label | what landed, where | role under this plan |
 |---|---|---|
@@ -76,6 +79,7 @@ census sum 30,854 — **retired as a steering metric**, kept as a diagnostic.
 | Phase 2c | `framestack._SpFlow`/`_balances` — interprocedural balance as a call-graph fixpoint; `sp_linked` on displacement | landed lift, stands |
 | Phase 2.5 | `tools/value_walk.py` — strided-interval walker and **the in-edge map** (closes 6,350 of 7,278 labels, 584 of 624 tunes; a raw `call` into the calling list is an in-edge) | feeds stage 3's joins and disjointness |
 | Stage 1 | `tools/exemplars.py` (the 25-tune set), `idiom_cover.py` (the completeness gate), `source_anchor.py` + `idiom_cite.py` (the cites), `deity_informant/idioms.py` (23 recognizers); docs/idiom-catalog.md | the claim of coverage stages 2-4 are tested against |
+| Stage 2 | `tests/test_vocabulary.py` (the checklist); `deity_informant/roles.py` + `tools/role_census.py` (the role reading); the `state { }` role keywords; `tools/emit_identity.py` | the vocabulary extraction may choose from, and the roles stage 4 names cells with |
 | Phase 3a | frameprog total artifact (`image`/`dispatch`/`evidence`); content-keyed decompile cache in `tools/_sweep.py` | the substrate; a package-file edit costs one cold sweep |
 
 Operational facts that bind: the suite runs `-n 24` (`-n auto` hits the
@@ -143,17 +147,20 @@ grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus.
 
 **The roles are the expected output, not a license.** Read forward, a play
-routine's persistent state resolves into four roles — **cursor** (an index
-into a declared block, advanced monotonically), **accumulator** (a value
-stepped by a delta within a bound), **counter** (a countdown gating a step),
-**parameter** (set by a cursor event, read by steppers) — plus the VM
-registers of script-interpreter families. The vocabulary is closed by the
-chip, not by enumeration: the SID lacks hardware for vibrato, portamento,
-PWM/filter sweeps, arpeggio and fades, so that is what drivers synthesize.
-After minimization the role is read off each surviving cell's update term
-(`s' = s + k` feeding a deref is a cursor; a bounded `s' = s ± d` is an
-accumulator). Recognition licenses nothing — the guards and the proofs
-license; roles name.
+routine's persistent state resolves into five roles — **cursor** (an index
+into a declared block, advanced monotonically or rewritten), **accumulator** (a
+value stepped by a delta within a bound), **counter** (a countdown gating a
+step), **flags** (a bit-packed cell each writer updates while preserving the
+bits it does not write), **parameter** (set by a cursor event, read by
+steppers) — plus the VM registers of script-interpreter families. The
+vocabulary is closed by the chip, not by enumeration: the SID lacks hardware
+for vibrato, portamento, PWM/filter sweeps, arpeggio and fades, so that is what
+drivers synthesize. The role is read off each cell's update term (`s' = s + k`
+whose cell an address reads is a cursor; a bounded `s' = s ± d` is an
+accumulator), which stage 2 executed over the exemplars —
+`flags` is the role that census added, and it covers 98.9% of the witnessed
+cells with the shift residue named. Recognition licenses nothing — the guards
+and the proofs license; roles name.
 
 ## Stage 1 — the catalog (canonical sources -> idiom inventory) — CLOSED
 
@@ -206,37 +213,122 @@ it. The study's own §3 grammar already corroborates all 20 constant arities
 op for op — and shows the definition is incomplete: `$85` (`rawsid`) is
 variable-arity, so it needs a decoded-length escape or a named refusal.
 
-## Stage 2 — the vocabulary (capability before use)
+## Stage 2 — the vocabulary (capability before use) — CLOSED
 
 The grammar and evaluator learn to spell and execute what extraction will
 choose, with **no rewrite landing alongside**: wide (u16) locals and pair
 cells (frameprog.md's M-FP3), the cursor forms rung (g) already ships, and
-role-typed `state { }` declarations
-(`cursor`/`accumulator`/`counter`/`parameter`/`vm`).
+role-typed `state { }` declarations.
 
 **The capability checklist is `idioms.FORMS`, not the sentence above.** The
 catalog's normal-form column also demands u16 lane update, u16 high/low byte
 reads, u16 shift, flag, field select/set, and the page-zero row whose index
-arithmetic wraps in 8 bits — some already spellable, none
-allowed to be assumed so. The stage is done when every non-unknown normal
-form (20 today) has a hermetic evaluator test spelling and executing it,
-enumerated from `idioms.FORMS` mechanically so the checklist cannot
-undercount. Named-unknowns add no vocabulary by definition.
+arithmetic wraps in 8 bits — some already spellable, none allowed to be assumed
+so. `tests/test_vocabulary.py` is that checklist, enumerated from
+`idioms.FORMS` so it cannot undercount: **all 20 non-unknown normal forms** are
+emitted as frameprog text, parsed back, accounted by `idioms.cover` to the row
+they claim with zero gaps, and executed to a checked SID write. Named-unknowns
+add no vocabulary by definition, and the test asserts the three of them
+(`stack-slot`, `carry-value`, `compare-value`) carry no spelling obligation.
 
-**Role precondition.** The five role keywords come from the plan's read-forward
-argument, not from stage 1 — the catalog accounted dataflow shapes, never
-update shapes, so there is no witness yet that the roles cover the exemplars'
-persistent cells. Before the keywords freeze in the grammar:
-`idioms.obligations()` already enumerates the 1,730 witnessed cell-update
-slices; a census classifies each update term against the roles' defining
-forms and reports the residue. A common residual shape names a missing role
-*now*, not after the grammar ships it. Un-roled `u8`/`u16` fields stay legal
-regardless — roles name, they never license — so role incompleteness can
-degrade only stage 4's role-named metric, never soundness.
+**Landed, and the finding is a negative one**: none of the 20 needed new
+grammar — the dialect could already spell every one. What did not exist was any
+test that it could, which is the point of running the checklist rather than
+reading the sentence: the stage's cost was one census and one keyword set, not
+a vocabulary build-out. The four cases the checklist had to be written
+carefully to reach at all are where the spelling is not the obvious one —
+`word-pack` (a pack of two *terms*; `pair-row` owns it the moment both sides
+are byte cells), `zp-row` (`mem[zext2((x + $80))]`, byte-domain arithmetic
+under the widening), `deref-row` (`*ptr_00FB[y]`, which needs rung (f)'s
+`resolved` binding to be spelled as a deref at all) and `pair-row` (which needs
+the `lo`/`hi` roles declared on the two columns). The other half of the
+sentence was already gated and is not restated: `tests/test_locwidth.py` spells,
+round-trips and *executes* the u16 local and the width-2 cell store (low byte
+first), and rung (g)'s deref is `deref-row`'s own case.
+
+**Role precondition — the census, and the sixth role it forced.** The role
+keywords come from the plan's read-forward argument, not from stage 1: the
+catalog accounted dataflow shapes, never update shapes, so nothing yet
+witnessed that the roles cover the exemplars' persistent cells.
+`deity_informant/roles.py` reads a cell's role off its own update terms plus
+where the program reads it back, and `tools/role_census.py` runs it over the 25
+exemplars at full Songlengths (`out/role_census.json`, ~15s cached): of stage
+1's **1,730 witnessed cell updates**, 1,715 attribute to a named cell (15 land
+on a base the address form does not name) over **963 persistent cells**. By
+update: 1,327 `set`, 174 `dec`, 162 `step-up`, 24 `field`, 15 `step-down`, 13
+unshaped. By cell:
+
+| role | cells | share | what the update is |
+|---|--:|--:|---|
+| parameter | 597 | 62.0% | set from a term that does not read the cell |
+| counter | 160 | 16.6% | a countdown, `s' = s - 1` |
+| cursor | 113 | 11.7% | stepped or rewritten, and read inside an address |
+| accumulator | 62 | 6.4% | stepped by a delta, the bound spelled as a mask |
+| **flags** | 15 | 1.6% | **bitwise recombination of the cell with itself** |
+| vm | 5 | 0.5% | the cell an operator dispatch switches on |
+| un-roled | 11 | 1.1% | the residue below |
+
+**`flags` is the missing role the census named**, and it landed before the
+keywords froze, which is what the precondition was for: a cell whose update is
+`s & K`, `s | K`, `s ^ K`, `s & table[i]` or `(s & $F0) | v` — a
+read-modify-write that *preserves the bits it does not write*. The `field`
+shape is witnessed on 18 cells over 10 exemplars (24 updates); 15 of those
+cells carry no stronger evidence and take the role. Without it, 29 cells over
+14 exemplars are un-roled and the residue is two families; with it, 11 over 9
+and one. The catalog already spelled this at dataflow level
+(`mask-const`, `set-const`, `flag-bit` → `field select` / `field set` /
+`flag`); what it never said is that a *cell* can be one.
+
+**The residue is one shape and it is deliberately not a role.** 11 cells (1.1%)
+over 9 exemplars, 13 updates over 7 skeletons, every one a **one-place shift
+of the cell**:
+`s << 1`, `(s:2 >> 1):2`, `(s >> 1) | ((a & $01) << $07)`,
+`(s << 1) | ((a & $80) != 0)` — ASL/LSR/ROL/ROR clocked once per frame. It
+splits mechanically in two, which is why one role would not cover it: a bare
+one-place shift, where the cell's value is scaled and its top or bottom bit is
+dropped (`ptr_00FB` in `Frantic_3_tune_5`, `zp_FB:2` in `21_G4_demo_tune_2`,
+`m_CDF0:2`/`m_CDF2:2` in `Before_I_Forget`), and a **rotate**, where a bit is
+shifted *in* from a flag and the cell is a queue rather than a number
+(`ptr_00F8` in `Dynasty_8_tune_2`, `m_217F` in `Discmonsters_Intro`, `m_7948`
+in `Down_Under`). Naming either one alone would leave the other un-roled, and
+naming both together would say the same thing about a scaled value and a bit
+queue; 1.1% over 9 tunes is not the "common residual shape" the precondition
+asks to act on. Whichever of the two the disassembly turns out to justify, the
+sites are on the record with their tunes and seats in `out/role_census.json`,
+which is what a later stage needs to act. Un-roled `u8`/`u16` fields stay
+legal — roles name, they never license — so this costs stage 4's role-named
+metric and nothing else.
+
+**Two classifier defects the census forced, both reproduced from `out/`:**
+
+- **A `DEC` lifts to `x + $FF`.** The first run reported `counter` on *zero*
+  cells over 25 exemplars, which is not a fact about SID drivers. A countdown is
+  a modular step up until the delta is read signed at the width the step is
+  taken at (`roles._signed`); reading it so put 165 cells on `dec` and moved
+  `counter` from 0 to 160.
+- **A cell read inside an *address* is not a self-reference.** `s' = mem[s + y]`
+  walks a block through the cell; it does not step it. Counting it as one put
+  the Follin script pointers in the residue as unshaped. Excluding addresses
+  makes them `set` — and that same read is what puts the cell in the address
+  set, which is a cursor's own evidence, so the correction and the
+  classification are one fact read twice.
+
+Also corrected on the way: the high lane of a wide step (`trunc1(v >> 8)`) is
+that step's shape and not one of its own, and a bare `s' = s` is an assignment
+rather than a shape.
+
+**The keywords.** `statedef` gains an optional role between the colon and the
+type — `ptr_0021: cursor u16 in m_7338 observed $01` — one of `cursor`,
+`accumulator`, `counter`, `flags`, `parameter`, `vm`, carried on
+`FrameProgram.roles` exactly as 2b's extents are carried, and gated equal to
+`roles.ROLES` by `tests/test_vocabulary.py`. **Zero use**: the emitter assigns
+no role, so every artifact is byte-identical and stage 4 is what turns them on.
 
 Gates: emitted text byte-identical corpus-wide (capability, zero use);
 `dumps(loads(t)) == t` over every artifact; Gate FP untouched; hermetic
-evaluator tests for every new form.
+evaluator tests for every form. `tools/emit_identity.py` is the byte-identity
+aggregate as a command (`--expect <sha>` gates it), which the plan cited but
+nothing ran.
 
 ## Stage 3 — the minimizer (one e-graph, root extraction, convergence tests)
 
@@ -450,3 +542,32 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   four constant-displacement classes (`+$21` on 294 instructions, `+$28` on 86,
   `+$24` on 80, `0` on 10) are what a correct cross-build alignment looks like,
   so a defMON cite prints the source's line and the exemplar's own address.
+- **2026-08-09 — stage 2 closes: the checklist found no gap, the census found a
+  role.** The capability checklist ran and every one of the 20 non-unknown
+  normal forms already spelled, round-tripped, accounted to its own catalog row
+  and executed — the stage bought a *test* that the dialect can spell what
+  extraction will choose, not new grammar, and `tests/test_vocabulary.py`
+  enumerates it from `idioms.FORMS` so a row added to the catalog fails until it
+  has a case. The role precondition is where the work was. `roles.py` reads a
+  cell's role off its update terms plus where the program reads it back, and the
+  census over the 25 exemplars (963 persistent cells, 1,730 updates) reported a
+  common residual shape the five roles had no form for: a read-modify-write that
+  preserves the bits it does not write (`s & K`, `s | K`, `s ^ K`,
+  `(s & $F0) | v`), on 18 cells over 10 exemplars. Adopted: **`flags` is a
+  sixth role**, landing before the keywords froze, which is what the
+  precondition existed to buy. The residue is 11 cells (1.1%) over 8 exemplars,
+  all one-place shifts (ASL/LSR/ROL/ROR clocked per frame), and is deliberately
+  left un-roled: the sites are an index scaled to a 2-byte row stride and a
+  bit-serial pattern register wearing one shape, so a seventh role would
+  misdescribe half of them. Two classifier defects the census forced: a 6502
+  `DEC` lifts to `x + $FF`, so the first run put `counter` on **zero** cells
+  over 25 exemplars until the delta was read signed at the step's width (165
+  cells on `dec`, counter 0 → 160); and a cell read inside an *address* is not a
+  self-reference — `s' = mem[s + y]` walks a block through the cell rather than
+  stepping it, and that same read is the cursor evidence, so the correction and
+  the classification are one fact read twice. The `state { }` role keyword sits
+  between the colon and the type (`ptr_0021: cursor u16 in m_7338`), rides on
+  `FrameProgram.roles` as 2b's extents do, and is **zero use**: the emitter
+  assigns none, so the corpus artifact is byte-identical. `tools/emit_identity.py`
+  makes the byte-identity aggregate a command the gate can run, which the plan
+  had cited without one.

@@ -315,6 +315,7 @@ class Document:
         self.inputs = []
         self.resolved = {}  # rung (f): deref address -> (pointer cell, index or None)
         self.extents = {}  # 2b: pointer cell -> the declared block bases its derefs land in
+        self.roles = {}  # stage 2: state field name -> the role its updates name
         self.labels = set()
         self.procs = []  # sidprog: [(entry, seq Region)]
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
@@ -531,16 +532,21 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def statobs(self, c):
         return [_hexval(t) for t in c]
 
+    def srole(self, c):
+        return str(c[0])
+
     def statedef(self, c):
         """A block extent is a pointer's, so it is a scalar u16 field's alone."""
-        name, kind = str(c[0]), str(c[1])
+        name, kind = str(c[0]), str(c[2])
         if kind not in ("u8", "u16"):
             raise ValueError("unknown state type %r" % kind)
-        if c[3] and (kind != "u16" or c[2] is not None):
+        if c[4] and (kind != "u16" or c[3] is not None):
             raise ValueError("state field %s: a block extent is a u16 field's" % name)
-        self.doc.state.append((name, int(kind[1:]) // 8, c[2] is not None, c[4] or []))
-        if c[3]:
-            self.doc.extents[name] = c[3]
+        self.doc.state.append((name, int(kind[1:]) // 8, c[3] is not None, c[5] or []))
+        if c[1]:
+            self.doc.roles[name] = c[1]
+        if c[4]:
+            self.doc.extents[name] = c[4]
 
     # -- expressions -----------------------------------------------------------
     def e_hex(self, c):
