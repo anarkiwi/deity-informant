@@ -16,7 +16,7 @@ Full-length rts census (popped-byte provenance tracked per stack cell):
 Ghouls executes **zero** RTS-with-explicit-push and zero jsr returns in the
 play phase — all 12,950 rts events are the play-exit sentinel. Agent_X_II:
 3,450 jsr returns (one driver pair per frame) + 3,450 sentinels, again zero
-pushed-target rts. The "RTS-trick" label in corpus-status is wrong for this
+pushed-target rts. The "RTS-trick" label in older status notes is wrong for this
 player; the dynamic transfers are three **`jmp abs` sites whose operands are
 rewritten** from handler tables (the model's `jmpd` terminator):
 

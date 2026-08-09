@@ -258,9 +258,29 @@ def test_render_proc_branchy():
     ]
     lines = mem.render_proc(stmts)
     assert lines[0] == "zp_40 = x"  # store keeps value
-    assert lines[1] == "a = zp_40"  # reload reads the forwarded cell
+    assert lines[1] == "a = x"  # reload forwards all the way to the stored value
     assert lines[2] == "if (a >=s $00) {"  # ifnot(sign-test) simplified via value rules
-    assert lines[3] == " zp_50 = zp_40"
+    assert lines[3] == " zp_50 = a"
+
+
+def test_render_proc_no_cross_arm_spelling():
+    """A value must not be spelled over a sibling arm's local: the duplicate read
+    in the second arm renders its own load, never `w = w` or a stale temp."""
+    load = ("mem", ("op", "INT_ADD", (("mem", ("const", 0xFB, 2), 2), ("const", 1, 2)), 2), 1)
+    arm = [
+        ("asg", "w0", load),
+        ("st", ("const", 0x40, 1), ("loc", "w0")),
+        ("asg", "p", ("mem", ("const", 0xFB, 1), 1)),
+        ("st", ("const", 0xFB, 1), ("op", "INT_ADD", (("loc", "p"), ("const", 2, 1)), 1)),
+    ]
+    stmts = [
+        ("if", "if", ("op", "INT_EQUAL", (("loc", "sel"), ("const", 0, 1)), 1), arm, list(arm))
+    ]
+    lines = [ln.strip() for ln in mem.render_proc(stmts)]
+    for ln in lines:
+        if "=" in ln and not ln.startswith("if"):
+            tgt, rhs = (s.strip() for s in ln.split("=", 1))
+            assert rhs != tgt, ln
 
 
 def test_dag_printer_shares_and_drops_dead():

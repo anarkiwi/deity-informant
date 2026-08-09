@@ -180,8 +180,8 @@ def test_the_sidprog_projection_is_not_total_and_the_frameprog_one_is():
     """The 3a finding, pinned: ``frameprog.program`` is not derivable from sidprog.
 
     ``TextModel`` carries no init tracer and sets ``written`` from the dispatch
-    table alone, so the same rungs run on less evidence; 3b supersedes sidprog
-    rather than restoring it."""
+    table alone, so the same rungs run on less evidence; sidprog retirement
+    (impl-plan housekeeping) supersedes it rather than restoring it."""
     model = _fuzz_model(G.t_jump_table(np.random.default_rng(7)))
     direct = frameprog.dumps(frameprog.program(model))
     via_sid = frameprog.dumps(frameprog.program(sidprog.parse(sidprog.emit(model))))

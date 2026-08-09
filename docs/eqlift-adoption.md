@@ -2,9 +2,12 @@
 
 Status: PoC landed (`deity_informant/eqlift.py`, `deity_informant/eqlift_mem.py`,
 `tools/eqlift_emit.py`, `tests/test_eqlift.py`, `tests/test_eqlift_mem.py`); this
-doc is the normative plan for replacing frameproc's expression-level lift passes
-with solver-verified rewriting over a unified value+memory e-graph. "MUST" is a
-gate.
+doc is the normative contract for solver-verified rewriting over a unified
+value+memory e-graph. "MUST" is a gate. 2026-08-09: the register-model plan
+(docs/register-model-lift-impl.md) adopted this engine as its stage 3; §8's
+step list is superseded by that plan's stages, while §4 (rule governance), §5
+(transitional passes — the no-extension rule is now enforced), §6 (verification
+laws) and §9 (dependency policy) bind unchanged.
 
 ## 1. What equality saturation does and does not do
 
@@ -174,7 +177,7 @@ reachability a first-class query, and it produces semantic labels as output.
 These labels are a first-class output of the lifted graph, emitted alongside the
 procedure text.
 
-## 8. Migration steps (each independently gated)
+## 8. Migration steps (superseded as a schedule by docs/register-model-lift-impl.md stages 2–4; the per-step gates below remain the engine's own)
 
 1. Land the `eqlift` extra + CI install; fast suite green with the value PoC and
    the memory PoC (`test_eqlift_mem.py`) running (not skipping) in CI. Memory

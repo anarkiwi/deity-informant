@@ -12,7 +12,7 @@ program an advisory view. **The deliverable is the structured program itself —
 canonical, standalone, byte-exact (§0.3)**; SIDC is scaffolding to be deleted.
 What remains is inverting that split, then proven soundness, complete coverage,
 and the specified structured language. The prototype's phase/gate history is
-archived in [decompiler-plan-prototype.md](decompiler-plan-prototype.md).
+in git history (`docs/decompiler-plan-prototype.md`, retired 2026-08-09).
 
 The contract below is normative. "MUST" is a gate; "prototype:" notes what the
 current code does and why it is not yet sufficient.
@@ -350,8 +350,8 @@ Ordered, each step gated and independently shippable:
    precondition.
 7. **Goto-minimal structuring + semantic naming** to the Gate S bar.
 8. **v2/P-INT (§8).**
-9. **Delete prototype scaffolding**, retire `decompiler-plan-prototype.md`,
-   fold this document into the shipped `docs/`.
+9. **Delete prototype scaffolding** (`decompiler-plan-prototype.md` retired
+   2026-08-09), fold this document into the shipped `docs/`.
 
 Each step MUST leave the tree green (Gate C at minimum) and MUST NOT regress the
 committed synthetic-corpus coverage or the frozen oracle.

@@ -5,10 +5,10 @@ recovered zp script pointers, following call/jump control flow, and
 certifies every consumed byte was observed fetched.
 
 ``_ARITY`` below is a per-tune table transcribed by hand, which the governance
-rule forbids (docs/register-model-lift.md 9). It is a named debt, not a
-pattern: no second table may join it, and Phase 7 (ibid. 10) lands only when
-this one is deleted and the same arities are recovered as the net ``Y`` delta
-of each dispatch arm."""
+rule forbids (docs/register-model-lift-impl.md, The law). It is a named debt,
+not a pattern: no second table may join it, and it is discharged only when
+stage 3 deletes it and recovers the same arities as the net ``Y`` delta of
+each dispatch arm."""
 
 from collections import namedtuple
 

@@ -119,7 +119,7 @@ def test_root_cells_has_one_definition():
 
 
 def test_addr_floor_gives_the_stack_push_its_page():
-    """The Phase 3 (ii) floor: an ``| $0100`` address cannot reach the zero page."""
+    """The stage 3 floor: an ``| $0100`` address cannot reach the zero page."""
     assert frameproc.addr_bits(SP) == 0x01FF
     assert frameproc.addr_floor(SP) == 0x0100
 

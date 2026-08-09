@@ -306,7 +306,7 @@ class InEdges:
         return self.wall or ("landing" if pc in self.landings else None)
 
     def report(self):
-        """The corpus number Phase 3 waits on: does the map close, and where not."""
+        """The join structure stage 3 consumes: does the map close, and where not."""
         pcs = sorted(set(self.labels) | self.gotos)
         cross = sum(
             1
@@ -557,10 +557,10 @@ def _mod_sites(n, s, at):
 
 
 def mod_addrs(walk, prog):
-    """Phase 3 (ii): every modular (``zp,X``) access, and how much of its page it reaches.
+    """Stage 3 threat input: every modular (``zp,X``) access, and its page reach.
 
     The cell-threat test is an interval one, so the verdict is whether the address is
-    strictly narrower than its own wrap; the store half is Phase 3 (ii)'s own, and
+    strictly narrower than its own wrap; the store half is the threat test's own, and
     ``mod_addr`` counts neither it nor the temp-bound spelling."""
     from deity_informant import frameproc
 
@@ -582,7 +582,7 @@ def mod_addrs(walk, prog):
 
 
 def alias_webs(walk, prog):
-    """Phase 6: per web refusing ``web_alias``, whether the walker rules every store out.
+    """Per web refusing ``web_alias``: whether the walker rules every store out (stage 3 pricing).
 
     ``ptrcert``'s own alias scan with the interval substituted only where 2a had no
     bound of its own; a web's verdict is the hardest of its stores', since one store
@@ -630,7 +630,7 @@ def _deref_addrs(n):
 
 
 def foreign_webs(walk, prog, rec):
-    """Phase 6: the ``foreign`` half of ``extent_unmappable``, priced per web.
+    """The ``foreign`` half of ``extent_unmappable``, priced per web (stage 3 pricing).
 
     A static extent exists exactly where the walker bounds the web's own deref
     addresses, so this is where a locals-only domain is asked to prove it is enough."""
