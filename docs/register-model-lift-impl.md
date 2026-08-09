@@ -1014,3 +1014,45 @@ history (`git log --grep=regmodel`); only what still binds is here.
   `computed_rows` keeps its xfail and its reason narrows to **Phase 6 alone**:
   b3's fixpoint reads declared data, and an arithmetic row is in no block, so
   nothing short of the value-set walker flips it.
+
+## 7. Briefing a subagent to execute a phase
+
+b3 was executed from a written brief, and it measured the brief as well as the
+rule: what the brief carried worked, and what it omitted cost **two hours of
+wall clock across three abandoned suite runs**. Both halves are recorded here
+so the next phase starts from the corrected form.
+
+**What a brief MUST carry about the work** — b3's half that held:
+
+- **The phase's bullet quoted verbatim**, never paraphrased. b3's headline
+  correction — the fused `block_read` the bullet told it to key on is 2
+  definitions against 126 byte-lane ones — is a finding *about the bullet*,
+  and it was only available because the agent had the exact words to test the
+  corpus against. A paraphrase absorbs that error silently.
+- **The claims discipline** (this document's opening section) and
+  `tools/disasm_tune.py`: no unliftable or uncertifiable claim without the
+  disassembly and a fixture.
+- **§5.4's fixture index as the executable spec**, named test by named test,
+  with the rule that landing flips the marker in the same change. Point at
+  the fixtures; never at this document's narrative.
+- **The gates as full-corpus, and "do not report a gate you did not run"**
+  stated outright. Sampled verification is not verification (§3).
+- **This document as part of the deliverable**: the before/after table, the
+  refusal ledger, the corpus-forced corrections, the §6 entry.
+- **That corrections are the valuable output**, not a failure to confess.
+  Every phase so far produced at least one; b3 produced six.
+
+**What a brief MUST carry about running it** — the half b3's brief omitted:
+
+- **The suite runs in parallel.** `pytest-xdist` is in `.venv`, and
+  `.github/workflows/ci.yml` runs two passes, `-m "not oracle"` and
+  `-m oracle`. Measured at b3: `-n 24` completes both in **3m46s** (2,468
+  passed / 490 skipped / 25 xfailed, then 14 passed). Serially the suite did
+  not finish in 41 minutes. **`-n auto` is wrong here** — 72 workers hit a
+  fork limit in this container; `-n 24` is the stable setting.
+- **The sweeps take `-j`/`--procs`** (`gate_sweep`, `storage_census`,
+  `lift_residue`, `fuse_measure`) and default to 32.
+- **The usage traps the previous phase found.** Currently: `gate_sweep
+  --extents` MUST be given the `--frames full` artifact (§2 2b (b3)
+  correction 6), since the 1,500-frame artifact describes a different model
+  and fabricates five `extent` faults.
