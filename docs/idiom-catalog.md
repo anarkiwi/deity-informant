@@ -115,10 +115,48 @@ cites name the same code. Established so far:
 
 The Follin reference is already anchored because it was derived from the
 exemplar rather than fetched: the grammar's citations *are* exemplar addresses.
-The remaining families' sources are symbolic assembly with no absolute
-addresses (Hubbard, Galway, GoatTracker, SID-Wizard), so their anchors are an
-opcode-sequence alignment of source against exemplar — the same
-relocation-tolerant primitive `tools/family_cluster.py` already shingles with.
+
+The remaining four families' sources are symbolic assembly with no absolute
+addresses, so `tools/source_anchor.py` computes their anchors by
+**opcode-sequence alignment**: operands carry absolute addresses and are
+discarded, the mnemonic sequence survives relocation, and unique 8-gram seeds
+are extended and chained. The image side decodes linearly but **resyncs at
+traced instruction seats**, so unexecuted arms decode too.
+
+Three checks stand behind the method, none of which the aligner can see:
+
+- **defMON control.** Computed `player_init`/`player_play`/
+  `player_sound_update` = `$1000`/`$1003`/`$1006`, matching both the source's
+  declared addresses and the export stub's `JSR` targets.
+- **External addresses.** `playmusic` → `$5012` is exactly Commando's PSID
+  `play`; `MUS` → `$6F00` is exactly Rambo's load address. The aligner never
+  reads the PSID header.
+- **Held-out validator.** The addressing-mode class the source operand's
+  *syntax* states, against the mode in the image's opcode byte — a signal the
+  alignment never consumes. 470/470 on defMON, ≥96% on every family.
+
+| family | source → exemplar | aligned | longest run | labels (run ≥32 / ≥64) | held-out mode | trust |
+|---|---|--:|--:|---|--:|---|
+| galway | `rambload.asm` → `Rambo` | 1050 (96.2%) | 993 | 214 / 214 | 99.7% | **cite freely** |
+| galway | `wizball.asm` → `Wizball` | 990 (49.4%) | 161 | 139 / 91 | 100% | **cite freely** |
+| sidwizard | `player.asm` → `Angry_Birds` | 704 (42.0%) | 116 | 53 / 22 | 99.2% | cite at run ≥32 |
+| hubbard | `rob_hubbards_music.txt` → `Commando` | 214 (55.6%) | 100 | 15 / 9 | 99.1% | cite the 9 anchors on runs ≥64 |
+| goattracker | `player.s` → `Grid_Runner` | 251 (35.2%) | 51 | 25 / 0 | 96.4% | **provisional** |
+
+Two of these numbers are findings, not shortfalls:
+
+- **Hubbard's 44% non-alignment is the "slight modifications" claim, measured.**
+  The source is the *Monty on the Run* driver, which the article says was
+  reused with slight modifications in Commando. 55.6% aligns in 5 runs; the
+  rest is the modification.
+- **GoatTracker's weakness is a build difference.** `Grid_Runner` ships a
+  differently-configured GoatTracker than `player.s`: the shipped player
+  indexes with **X** where the source writes `,Y`, which is 9 of its mode
+  mismatches, and no run reaches 64. `altplayer.s` does no better. GoatTracker
+  rows are provisional until the matching build is found.
+
+Every row in `out/source_anchor.json` carries its run length and its run's mode
+agreement, so a thin match inside a repetitive band is visible as one.
 
 ## The two-byte axis
 
