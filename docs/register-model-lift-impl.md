@@ -15,8 +15,17 @@ unverified and consult the disassembly before acting on it. Both prior course
 corrections on this plan were exactly that: a claim acted on without reading
 the machine, resolved in minutes once the instructions were on the record.
 
-Status: in execution. **Phases 0, 1, 2a, the whole of 2b (b0–b5), 2c and 3a are
-DONE**; the queue is **2c -> 3a -> 2.5 -> 3b**, then Phase 3. 3a changed no lift:
+Status: in execution. **Phases 0, 1, 2a, the whole of 2b (b0–b5), 2c, 3a and 2.5
+are DONE**; the queue is **3b**, then Phase 3. 2.5 built the value walker as an
+instrument and the in-edge map R8 is a precondition of: the map closes on
+**6,350 of 7,278 labels and in 584 of 624 tunes**, and the edge kind 2c's
+withdrawal does not name — a raw `call` into a label of the calling list — is the
+one that broke a `goto`-only map, caught by the differential guard as 334
+contradictions before any prose (§2 Phase 2.5 correction 1). It re-priced two
+customers up (**65 of 65 G2-shaped wide stores bounded**, so R1's residue is the
+38 write-throughs) and two down, and it settled the memory question: memory
+value-sets are the binding premise for `extent_unmappable` **and for nothing
+else**. 3a changed no lift:
 it made the frameprog artifact total (major 1: `image`/`dispatch`/`evidence`) and
 gave the sweeps a content-keyed decompile cache (§6, post-3a). 2b's rewrite lifted
 **251 of 325 webs over 116 tunes, retiring 1,000 ⊤ loads**; the whole 74-web
@@ -80,13 +89,14 @@ loads are exact.
 
 **The corpus-wide store-reach sweep** (624 tunes): **570 of 624 (91.3%) have
 no store whose reach bound exceeds the stack.** The 105 wide stores over the
-remaining 54 tunes are three shapes:
+remaining 54 tunes are **two** shapes, not the three this table first named
+(§2 Phase 2.5 correction 2):
 
 | shape | stores | tunes | disposition |
 |---|---:|---:|---|
-| `(zext2(reg) + $00NN):2`, true bound ≤ `$01FF` | ~20 | 15 | G2's `INT_ADD` carry rule bounds them (`g2_store` fixture) |
-| a store *through* a sequence pointer | ~50 | 12 | write-through players; Phase 2's certification |
-| a bare `t0:2` local G1 cannot resolve at that seat | ~31 | 30 | resolve-strengthening or per-tune refusal |
+| `(zext2(reg) + $00NN):2`, true bound ≤ `$01FF` | **65** | 44 | 2.5's interval bounds **all 65**, inline (32) or bound to a `t0:2` temp (33) |
+| a store *through* a sequence pointer | 38 | 12 | write-through players; Phase 2's certification |
+| neither shape | 2 | 1 | bounded by 2.5 as well |
 
 The two worst carriers (`C64_World`, `1st_Decent_Hardcore`, 14 apiece) are
 §7.10.3's worst `unnamed` carriers: one defect wearing two counters.
@@ -97,9 +107,10 @@ Measured answers, not judgment calls. The journey to each is in git history;
 only the answers bind.
 
 **R1 — Can a store clobber a promoted cell through an alias?** No for 91.3%
-of tunes; the rest are the three shapes above. R1 is not an assumption: the
-promotion pass recomputes the sweep per build and refuses `wide_store` per
-cell, ledgered per tune.
+of tunes; the rest are the two shapes above, and 2.5 bounded 67 of those 105
+stores inside the stack, leaving the 38 write-throughs Phase 2 already owns as
+the actionable residue. R1 is not an assumption: the promotion pass recomputes
+the sweep per build and refuses `wide_store` per cell, ledgered per tune.
 
 **R2 — What are the ⊤ accesses?** Sequence-pointer traffic, uniformly, in
 every family including Follin: `(ptr + zext2(y+k))` walks through pointer
@@ -168,6 +179,18 @@ observed handler set with `unobserved` at the closure boundary (zero
    at every such point, which is what `_SpFlow.leaves()` does today and why it
    is correct. Whether that map closes corpus-wide is unmeasured and is the
    number Phase 2.5 owes this phase.
+
+   **Answered by 2.5: the map closes on 6,350 of 7,278 labels and in 584 of 624
+   tunes, and the edge list above is short by one kind.** A raw `call` may target
+   a label of the calling list itself (ASL/04's three per-voice passes are
+   `JSR $1040`/`JSR $103F` into `$103F`/`$1040`); the corpus carries 3,185 such
+   edges, and a map built from `goto` alone contradicted the run on 81 tunes.
+   Phase 3 MUST take the raw call as an in-edge. The 928 unclosed labels are all
+   in 39 tunes, each carrying a raw dyn transfer or an RTS-trick landing on a
+   label, so closing them is this bullet's `wall`, not a map defect. `switch goto` is not
+   a wall — 121 of the 142 tunes carrying one close entirely — though
+   `frameproc._COMPUTED` lists `swg`, so today's `Defs._verified` refuses every
+   label join in all 142 (§2 Phase 2.5 corrections 1 and 7).
 2. **Follin's residue is ordinary.** Zero ⊤ stores, zero `raw_sp`, zero
    read-backs; its ⊤ loads are the three script pointers. What is genuinely
    Follin-shaped is the *scale* of the pointer machinery (3-deep per-voice
@@ -192,8 +215,11 @@ fallback for a root that fails block-rooting.
 
 Ordering by dependency: 1 cleared the stack's spills, 2a certified the
 pointer traffic (the *bounds* 2c and 3 depend on), 2b ships the annotation
-spelling, 2c finishes the stack, 3 promotes frame-local scratch, 4 coalesces
-byte columns, 5 retires the boundary read-back, 6 re-measures. Every phase
+spelling, 2c finishes the stack, 3a made the artifact total and cached the
+corpus on it, 2.5 walked values and re-priced what is left, 3 promotes
+frame-local scratch, 4 coalesces byte columns, 5 retires the boundary
+read-back, 6 re-measures. 2.5 was inserted after 3a on the finding that one
+missing analysis blocks four phases (§2 Phase 2.5, §6). Every phase
 ends with the same full-corpus sweeps (`gate_sweep`, `lift_residue`,
 `fuse_measure`, `storage_census`) and its before/after table appended here.
 
@@ -796,6 +822,246 @@ stands displaced; and 2a's certification as a page-one premise, which needs
 **96 corpus-wide, unmoved** — the fabric leaving did not free one, which is
 correction 5 measured rather than argued.
 
+### Phase 2.5 — the value walker as an instrument (analysis only, no text change) — DONE
+
+**The finding that made this phase.** Five partial value analyses are in tree,
+each written for one shape: `addr_bits` (bits an address may set), `addr_floor`
+(bits it must set), `addr_range`/`span`/`overlaps` (the interval on a split
+address), `_counter_range` (the must-hit set of a `for` counter with no early
+exit), and 2c's `_off_page`, which stacks three of the others to answer one
+value question for one shape. Each approximates the same question — what values
+may this expression take — and each is coarse in a different direction. That is
+§3's design error of the framing document recurring inside the phases written
+to cure it.
+
+The same premise blocks the rest of the plan:
+
+| customer | size at entry | its fixture |
+|---|---:|---|
+| Phase 3 (ii) `aliased`: `zp,X` clobbers zero page | census `mod_addr` | `sp_scratch_floor` (adjacent) |
+| R1 `wide_store`: `loc_unresolved` at the seat | `fuse_measure` `wide_classes` | — (owed) |
+| G2: `(zext2(reg)+$00NN)` bounded inside the stack | `g2_boundable` | `g2_store` (xfail G2) |
+| Phase 6 `web_alias` | `ptrcert` `lift_refusals` | `alias_web` (invariant) |
+| Phase 6 `extent_unmappable`, the `foreign` half only | `ptrextent` `unmappable_foreign` | `computed_rows` (invariant + xfail P6) |
+
+Every count above MUST be re-measured at entry; the tree has moved through 2c
+and 3a. `g2_boundable` is the sharpest statement of the gap: `fuse_measure`
+already *names* stores whose true bound stays inside the stack, and no analysis
+exists to prove the bound it names.
+
+**Scope, and the reason it is cheap.** The proposal priced the walker over
+mutable memory. The blocking specimens do not need that: `alias_web`'s X is
+bounded {0..2} by control flow (`LDX #$00`/`INX` over three per-voice calls),
+`mod_addr` is `zp,X`, G2's is a register addend. So the instrument is **locals
+only — every memory read is ⊤** — over a strided interval (interval +
+congruence; the congruence is what a modular `zp,X` wrap needs regardless).
+The memory-join problem the proposal names as its primary open risk is out of
+scope by construction. The first number owed is the one the plan does not have:
+**how much of the standing residue is bounded by locals alone.**
+
+**The structural deliverable: the in-edge map.** 2c settled what this is, by
+building the wrong thing first. Its worklist fixpoint over label/`goto`/loop
+edges passed every fixture and **diverged eight tunes**; it was withdrawn,
+Phase 1's conservative rule restored, and `sp_loop_edge` pins the withdrawal.
+The reason is in `_SpFlow.leaves()`'s docstring: a label may be entered by a
+`goto` its list does not carry, by a jump no list enumerates, or by a dispatch
+arm. **A structured statement list is not a CFG**, so a forward join over the
+list alone can conclude a property holds on all paths to a point that an
+unenumerated edge reaches without it.
+
+This binds every remaining forward analysis, R8's included — and R8's is a
+**must**-analysis that licenses promotion, so it carries more risk than the
+displacement claim that broke. The deliverable is therefore the missing edge
+set: for every label and dispatch arm, the sites that may reach it, across
+lists and procedures, with the `unobserved` boundary. With that map a worklist
+is sound; without it none is, and a label whose in-edges will not close is a
+wall every lattice must take conservatively. Whether the map closes
+corpus-wide is the number this phase owes Phase 3.
+
+**Verdict vocabulary**, per queried expression: `bounded` (a strided interval
+strictly inside the queried region), `top_memory` (a memory read reached the
+expression), `top_call` (a callee's effect), `top_dyn` (a raw dyn form),
+`top_width` (nothing narrower than the declared width proved), `top_edge` (an
+in-edge the map could not close). Every ⊤ names which one, so the next phase
+reads its prize off the class breakdown.
+
+**This phase licenses nothing.** No rewrite, no refusal relaxation, no text
+change. Verdicts are a report. Re-instantiating `_SpFlow` over the edge map is
+**out of scope** — 2c's rule is sound as it stands and its relaxation is a
+separate gated change. The consuming phases (3 and 6) admit the analysis on
+their own gates, and the walker is written **sound by construction**: an
+interval+congruence domain costs nearly nothing to keep sound, and a
+measurement-grade approximation retrofitted into a license is how an instrument
+becomes a defect.
+
+**The oracle.** 3a's artifact records what the evaluator reached; §3's
+differential guard applies unchanged — a value observed outside a claimed
+static bound is an analysis bug found before any phase leans on it, and the
+phase stops; static over-refusal is counted and reported, never failed.
+
+**Gates.** Emitted text byte-identical **against 3a's reset baseline**
+(aggregate `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`
+over the 624 built tunes at full Songlengths); `gate_sweep`, `lift_residue`,
+`fuse_measure`, `storage_census` identical row for row — an instrument that
+moves the census is not an instrument; `alias_web` and `computed_rows`
+reproduce their pinned verdicts and the walker's verdict on each is asserted
+beside them; hermetic tests in `tests/test_value_walk.py` (Phase 0's
+`test_storage_census.py` precedent — an instrument owes hermetic tests, not
+shredder fixtures, and §5.4 gains no rows); the 60s per-script budget holds.
+
+**What it does not price.** Phases 4 and 5 are not value-bound — M-FP3's
+dialect, the evaluator's support for it, and the boundary shadow are spelling
+and grammar obligations. 2.5 re-prices 3 and 6 and nothing else, and MUST NOT
+claim otherwise.
+
+**Landed**: `tools/value_walk.py` (the domain, the in-edge map, the four customer
+queries, the differential guard) and `tests/test_value_walk.py` (26 hermetic
+tests; §5.4 gained no rows, and `alias_web`/`computed_rows` each carry the
+walker's verdict beside their pinned one). No package file changed, so the
+sweeps' decompile cache stayed warm and byte identity is by construction as well
+as by measurement. The domain is one strided interval `{lo, lo+s, .. hi}` per
+width with a **premise set** on every widening; the six verdict classes are read
+off that set, hardest premise first. Two rules do the work five partial analyses
+did separately: Warren's exact endpoint bounds for `|` and `&` (with `^` taking
+`|`'s upper bound) subsume `addr_bits` **and** `addr_floor` in one step (`zext2(sp) | $0100` comes out
+`[$0100,$01FF]`, not `[0,$01FF]`), and a `for` counter's **may**-set is its
+bounds with no early-exit premise at all — `_counter_range`'s `_escapes` test is
+a *must*-set premise and a bound does not need it.
+
+**The in-edge map** (624 tunes, full Songlengths) — the number Phase 3 waits on:
+
+| | corpus |
+|---|---:|
+| labels (label statements + `goto` targets) | **7,278** |
+| — every edge into them enumerated | **6,350 (87.2%)** |
+| tunes whose map closes entirely | **584 of 624 (93.6%)** |
+| — walled by a raw dyn transfer (R8's `wall`) | 37 |
+| — opened by an RTS-trick landing on a label pc | 3 |
+| enumerated edges: `goto` / raw call / dispatch arm | **7,030 / 3,185 / 1,520** |
+| — crossing a procedure boundary | 240 |
+| RTS-trick landings | 659 |
+| tunes carrying `switch goto` whose map closes | **121 of 142** |
+
+**The re-pricing table** (each population re-measured at entry; `bounded` means a
+strided interval strictly inside the queried region):
+
+| customer | phase | population | bounded | top_edge | top_call | top_memory | top_dyn | top_width |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `wide_store` (R1/G2), all shapes | 3 (ii) | 105 | **67** | 6 | 5 | 27 | 0 | 0 |
+| — `g2_boundable` + `loc_unresolved` | G2 | 65 | **65** | — | — | — | — | — |
+| — `ptr_writethrough` | 2 | 38 | **0** | 6 | 5 | 27 | 0 | 0 |
+| — `other` | — | 2 | **2** | — | — | — | — | — |
+| modular **stores** | 3 (ii) | 927 | **73** | 376 | 188 | 171 | 119 | 0 |
+| modular **loads** | 3 (ii) | 1,100 | **98** | 395 | 344 | 177 | 86 | 0 |
+| `web_alias` | 6 | 287 | **1** | 155 | 64 | 23 | 37 | 7 |
+| `extent_unmappable`, `foreign` half | 6 | 330 | **0** | 31 | 1 | 282 | 16 | 0 |
+
+**Does the locals-only domain suffice?** For R1 and G2, yes and completely: every
+one of the 65 G2-shaped wide stores is bounded inside the stack, so the bound
+`g2_boundable` is *named* for is proved, and R1's actionable residue is the
+38 write-throughs Phase 2 already owns. For everything else, no — but **memory is
+the binding premise for exactly one customer**. Of the 330 `foreign` webs, 282
+are blocked by a memory read and by nothing else (premise `memory` or
+`memory|width`), which is by construction: a pointer root *is* a memory cell, so
+no locals-only domain can ever give it an extent. **Memory value-sets are on the
+critical path for Phase 6's registry customer and only for that one.** For
+`web_alias` memory is 23 of 287 while the back edge is 155 (116 of them
+loop-carried and nothing else) and the call graph 64; for Phase 3's modular
+stores memory is 171 of 854 behind the back edge (376) and the call graph (188).
+The premise histograms are in `out/value_walk.json` per tune.
+
+This does **not** restate Phase 3's prize: the promotable-field count is a
+product of that phase's liveness analysis (i), which 2.5 does not run. What moves
+is (ii)'s input, in both directions — 67 of the 105 `wide_store` threats are
+removed corpus-wide, and 854 of 927 modular stores still threaten their whole
+page in the 90 tunes that carry one.
+
+**The corpus-forced corrections:**
+
+1. **The edge set 2c named is incomplete, and the missing kind is the raw call.**
+   2c's withdrawal lists three ways a label may be entered by an edge its list
+   does not carry — an `igoto`/`swg` pair, a `goto` from another list, a block
+   past an `unobserved`. There is a fourth: a raw `call` whose target is a
+   **label of the calling list itself**. ASL/04 `$1039`/`$103C`
+   (`tools/disasm_tune.py ASL/04 --start 0x1021`) is
+   `JSR $1040` / `JSR $103F` into the labels at `$103F`/`$1040`, three per-voice
+   passes done by nested JSR rather than by a loop; the corpus carries **3,185**
+   such edges. Built from `goto` alone the map claimed one index where three
+   arrive, and §3's differential guard caught it corpus-wide before any prose
+   did: **334 contradictions over 81 tunes**, each an address the run reached
+   outside a claimed static bound (the sampled ones a fixed stride below a
+   singleton claim, which is the missed call edge exactly). With the call edges
+   the guard is **0 contradictions over 41,375 checked address sites in 624
+   tunes**. This is the phase's headline and it is a
+   finding about the doc, not about the corpus: Phase 3 MUST take the raw call as
+   an in-edge, and `_SpFlow.leaves()`'s docstring is short by one clause.
+2. **`g2_boundable` and `loc_unresolved` are one shape, not two.** All 33
+   `loc_unresolved` stores resolve to `(zext2(reg) + $00NN)` — the address bound
+   to a temporary because the cell is read as well as written — and all 33 are
+   bounded by the rule that bounds the 32 inline ones. §0's third wide-store
+   shape ("a bare `t0:2` local G1 cannot resolve at that seat", disposition
+   "resolve-strengthening or per-tune refusal") is G2's own add wearing the
+   emitter's other spelling. b3's standing lesson exactly: a rule stated over one
+   spelling is a rule about the emitter.
+3. **The census `mod_addr` signature counts a third of its own population.**
+   `lift_residue._expr_sig` classifies a `mem` node, so it sees modular **loads**
+   in the **inline** spelling only: 741 sites / 91 tunes. Following the temp
+   binding and counting store destinations, the corpus carries **2,027 modular
+   accesses over 98 tunes — 927 of them stores over 90 tunes**, and the stores are
+   the half Phase 3 (ii) is actually about. The census number is not wrong for
+   what it counts; it is the wrong number for that bullet to quote.
+4. **Phase 6's flagship specimen is `top_call`, not a memory question.** §2 Phase
+   6 says the ASL/04 `$128B` store's X "is the voice index, bounded {0..2} by
+   control flow (`LDX #$00`/`INX` over three per-voice calls), so `STA $FD,X`
+   writes `$FD..$FF` — precisely the bound a value-set walker reads." The machine
+   agrees about the bound and the emitted dialect refutes the inference: the
+   three passes are the nested-JSR loop of correction 1, so X at the store is
+   clobbered by a raw call and the walker answers `top_call` with premise
+   `call|width`. Reading {0..2} off it needs a callee summary over a
+   self-entering call, not a memory value-set. The pricing input Phase 6 was
+   promised is real (287 webs) but its type specimen is mis-diagnosed.
+5. **`alias_web` does not reproduce its own specimen's premise.** The fixture
+   bounds X through a RAM counter (`LDX $CTR`), so the walker answers
+   `top_memory` — asserted beside the pinned refusal — while the corpus specimen
+   answers `top_call`. The invariant it pins (an unresolvable store refuses the
+   web) is untouched; what it does not pin is the reason.
+6. **The verdict vocabulary has no class for "bounded and genuinely aliased".**
+   Seven of the 287 `web_alias` webs get an **exact** bound from the walker that
+   really does overlap the pair; they carry an empty premise set and are reported
+   `top_width` because that is the vocabulary's only home for them. They are
+   correct refusals, not precision gaps, and a phase reading the breakdown must
+   subtract them before counting a prize.
+7. **A `switch goto` is no wall for the map, and `Defs` refuses it anyway.**
+   `frameproc._COMPUTED` includes `swg`, so `Defs._verified` refuses **every**
+   label join in any program carrying one — 142 tunes. The arms are inlined
+   bodies entered from the dispatch beside them, so they add no unenumerated
+   edge: **121 of those 142 tunes have a fully closing map.** R8's "an ordinary
+   join" is right, and the blanket refusal in the committed walker is precision,
+   not soundness. Relaxing it is a later phase's gated change; this phase only
+   measures it.
+
+**Gates** (all full-corpus, all run):
+
+| gate | verdict |
+|---|---|
+| byte identity vs 3a's reset baseline | aggregate **`99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`**, 624/624 built, reproduced before and after |
+| `lift_residue` | 624 rows, 0 refused, census sum **30,854**, every signature unchanged |
+| `fuse_measure` | 624 rows, 0 refused, wide stores **105 / 54 tunes**, class histogram unchanged |
+| `storage_census --frames 1500` | 624 rows, totals unchanged |
+| `gate_sweep`, full Songlengths | **622 built / 621 clean**, the three standing §4 exclusions and nothing else |
+| the §3 differential guard | 41,375 sites over 624 tunes at 1,500 frames, **0 contradictions**; 40,600 over-refusals counted and reported |
+| suite, `-n 24`, both passes | **2,551 passed / 495 skipped / 24 xfailed**, then **14 passed**; `test_value_walk.py` 26 of them |
+| per-script budget | the per-tune unit is **≤ 2.5s**; the corpus driver is a `-j` sweep like the other four (95s at `-j 24`, 147s with the guard) |
+
+**Not done**: the walker takes ⊤ at every loop back edge (premise `loop`), which
+is the single largest ⊤ class in three of the four customers — a widening
+fixpoint is the standard answer and is out of this phase's scope; no consumer
+reads the walker yet, and re-instantiating `_SpFlow` or relaxing
+`Defs._verified` over the edge map stays a later phase's gated change; the map's
+928 unclosed labels sit in 39 tunes, every one carrying a raw dyn transfer or an
+RTS-trick landing on a label, so closing them is R8's `wall` problem and not a
+map problem (a 40th tune has a landing-label and no unclosed label of its own).
+
 ### Phase 3 — frame-local promotion (the scratch elimination)
 
 Mechanical rule, both conditions computed by committed analyses:
@@ -804,11 +1070,17 @@ Mechanical rule, both conditions computed by committed analyses:
   read analysis over the emitted dialect from `play` entry — across calls,
   joining over `if`/`loop`/`for`/`switch goto` arms and labels via worklist,
   `unobserved` as a terminator (R8; `dispatch_scratch` is the xfail). The
-  `wall` refusal covers only raw dyn forms, re-sized at entry.
+  `wall` refusal covers only raw dyn forms, re-sized at entry. **Its edge set is
+  2.5's in-edge map** (`tools/value_walk.py:InEdges`), which closes on 6,350 of
+  7,278 labels and in 584 of 624 tunes and carries the raw call as an in-edge —
+  the kind R8's own list omitted and the one that contradicted the run (§2 Phase
+  2.5 correction 1).
 - **(ii) unthreatened**: a per-cell interval test — a cell is threatened by
   any store whose reach interval it intersects: uncertified wide stores
-  (`wide_store`), in-bounds computed stores (`zp,X` modular stores clobber
-  zero page; census `mod_addr` 741 / 91 tunes), and certified cursor write
+  (`wide_store`, which 2.5 bounds for 67 of 105), in-bounds computed stores
+  (`zp,X` modular stores clobber zero page; **927 modular stores over 90 tunes**,
+  of which 2.5 bounds 73 — the census `mod_addr` 741 / 91 counts modular *loads*
+  in the inline spelling only, §2 Phase 2.5 correction 3), and certified cursor write
   extents (a write-through lands inside its block with the evaluator never
   faulting). Refusal `aliased`, computed from `store_reach`/`overlaps` —
   **with `addr_floor` mandatory**: without it the kept push
@@ -895,7 +1167,17 @@ expectation is that it gets built. Disassembly of the flagship specimen
 (ASL/04 `$128B`) says the ledger overstates genuine aliasing: the store's X
 is the voice index, bounded {0..2} by control flow (`LDX #$00`/`INX` over
 three per-voice calls), so `STA $FD,X` writes `$FD..$FF` and never reaches
-the `zp_FA` pair — precisely the bound a value-set walker reads. Also
+the `zp_FA` pair — precisely the bound a value-set walker reads.
+**2.5 measured this and the inference does not hold** (§2 Phase 2.5 correction
+4): the three passes are nested JSRs into the calling list's own labels
+(`$1039: JSR $1040` / `$103C: JSR $103F`), so X at the store is clobbered by a
+raw call and the walker answers `top_call`, not `top_memory`. Of the 287
+`web_alias` webs the walker bounds **1**; 155 are `top_edge` (116 loop-carried
+alone), 64 `top_call`, 37 `top_dyn`, **23 `top_memory`** and 7 exact and
+genuinely aliased. The memory value-set is this phase's lever for
+`extent_unmappable` — 282 of its 330 `foreign` webs are blocked by a memory read
+and by nothing else — and for `web_alias` the levers are a loop widening and a
+callee summary. Also
 parked here: the loop-to-expression rule for loop-carried lane rotates
 (`shift_divide` — a power-of-two divide is one wide variable `>>`; the
 operator exists, the rule does not), and `/`/`%` themselves stay absent
@@ -1050,9 +1332,9 @@ cites (`tools/disasm_tune.py` reproduces it):
 | `follin_ret_stack` | control + **landed b3** | the depth-indexed split-column call stack (`$6ADD`/`$6B42`) fuses and is eligible; certification refuses `extent_mutable` and nothing else — hard pass |
 | `lone_lane_block_read` | invariant (b3) | the hi lane alone read out of the block (Data_Data_Data_Data `zp_D2`, American `$B41A`): defs closed, `ptr_extent_open` — no word for the fixpoint to key on |
 | `low_held_cursor` | invariant + xfail **P6** | the pair held through page one (Angry_Birds `$09F1`) refuses `low_held`, keeps `sp`; 2c measured the blocker as neither of its rules (§2 2c correction 5) |
-| `alias_web` | invariant | a wrapping `STA $zz,X` with unbounded X (ASL/04 `$128B`) refuses `web_alias`; the machine spelling survives |
+| `alias_web` | invariant | a wrapping `STA $zz,X` with unbounded X (ASL/04 `$128B`) refuses `web_alias`; the machine spelling survives; 2.5's walker answers `top_memory` beside it (the fixture's X is a cell, the specimen's a raw call — §2 Phase 2.5 correction 5) |
 | `call_returned_row` | control | a row returned in A/X across a call refuses certification, never the lift |
-| `computed_rows` | invariant + xfail **P6** | an arithmetic row off the registry: b1-eligible, `extent_unmappable`, and no block read for b3 to enumerate; only the value-set walker flips it |
+| `computed_rows` | invariant + xfail **P6** | an arithmetic row off the registry: b1-eligible, `extent_unmappable`, and no block read for b3 to enumerate; only the value-set walker flips it, and 2.5's locals-only one answers `top_memory` beside it |
 | `shift_divide` | xfail P6 | the divide accumulator (Cool_Air `$1447`): `(T2[y]-T1[y]) >> n` as a loop-carried `LSR`/`ROR` — the `>>` exists, the loop rule does not |
 | `phase_split_reload` | xfail 2b | the pair's halves reloaded in different frames (Air_on_a_Rasterline `$0C1A`/`$0D05`) — each store is a lane replacement, a masked word update away from fused |
 | `dispatch_scratch` | control + xfail P3 | the SMC-operand dispatch emits `switch goto` (no wall); scratch promotes across the join |
@@ -1272,6 +1554,51 @@ history (`git log --grep=regmodel`); only what still binds is here.
   regeneration was reverted rather than folded in). They want refreshing or
   untracking; no phase owns them.
 
+- **Value-walker-first (2026-08-09).** Four phases were queued behind one
+  missing analysis — Phase 3's `aliased`, R1's `loc_unresolved`, G2
+  (`g2_boundable`, a class already *named* as boundable with nothing able to
+  prove the bound), and both of Phase 6's customers — and the tree already
+  carried five partial value analyses, each written for one shape, 2c's
+  `_off_page` being the fifth and the one that made the pattern visible. Two
+  corrections to the arc follow. First, the walker was priced over mutable
+  memory (proposal §4 P1) and the blocking specimens do not need it: every one
+  bounds a **local** from control flow, so a locals-only strided interval with
+  memory at ⊤ is the instrument, and whether that suffices is a measurement,
+  not a judgement. Second, 2c's withdrawal reassigns the structural
+  deliverable: not a traversal to extract, but **the in-edge map the statement
+  list is not**, which is also R8's precondition. Inserted after 3a as an
+  analysis-only instrument in the 2a mould — no license, no text change,
+  byte-identity against 3a's reset baseline as its gate. The standing lesson
+  from b3 applies to its own framing: a rule stated over one spelling is a rule
+  about the emitter — the verdict classes exist so the next phase reads its
+  prize off the breakdown rather than off this entry's expectation.
+- **Post-2.5 (2026-08-09).** The walker landed as `tools/value_walk.py` with the
+  in-edge map, and the map is the finding. **It closes on 6,350 of 7,278 labels
+  and in 584 of 624 tunes**, and the reason it did not close at first is an edge
+  kind neither 2c's withdrawal nor R8's amendment names: **a raw `call` whose
+  target is a label of the calling list itself**. ASL/04 does its three
+  per-voice passes as `JSR $1040`/`JSR $103F` into `$103F`/`$1040` rather than
+  as a loop, and the corpus carries 3,185 such edges; the `goto`-only map claimed
+  one index where three arrive, and §3's differential guard read it off the run
+  as **334 contradictions over 81 tunes** before any prose did — the second phase
+  running to the guard rather than to an argument. With the call edges the guard
+  is clean over 41,375 address sites. Two further corrections are about spellings
+  again: `loc_unresolved` is not a third wide-store shape but G2's own add with
+  its address bound to a temporary (all 33 bounded, so G2's class is 65 of 65 and
+  R1's residue is 38 write-throughs), and the census `mod_addr` signature counts
+  741 modular *loads* in the *inline* spelling against a real population of 2,027
+  accesses of which **927 are the stores Phase 3 (ii) is about**. The scope
+  question the phase existed to answer is settled and the answer is split:
+  **memory value-sets are the binding premise for `extent_unmappable` (282 of 330
+  `foreign` webs, blocked by a memory read and nothing else) and for no other
+  customer.** `web_alias` is 1 bounded of 287 with the back edge at 155 and the
+  call graph at 64 against memory's 23, so Phase 6's flagship specimen is
+  mis-diagnosed: bounding ASL/04's X needs a callee summary over a self-entering
+  call, not a value-set over memory. The walker takes ⊤ at every loop back edge
+  by construction, which is the largest single ⊤ class in three of the four
+  customers and is the next instrument, not this one. Phases 4 and 5 are not
+  priced and this entry claims nothing about them.
+
 ## 7. Briefing a subagent to execute a phase
 
 b3 was executed from a written brief, and it measured the brief as well as the
@@ -1312,4 +1639,20 @@ so the next phase starts from the corrected form.
 - **The usage traps the previous phase found.** Currently: `gate_sweep
   --extents` MUST be given the `--frames full` artifact (§2 2b (b3)
   correction 6), since the 1,500-frame artifact describes a different model
-  and fabricates five `extent` faults.
+  and fabricates five `extent` faults; `out/ptr_extents*.json` is **not** a
+  standing artifact and the copy in a working tree is whatever the last phase
+  left there, so regenerate it (`storage_census --frames full --extents ...`)
+  before reading any `foreign`/`short` split off it (2.5 found the in-tree copy
+  three phases stale).
+- **The byte-identity aggregate is reproducible and its recipe is not written
+  down anywhere else**: per tune, `sha256` of
+  `frameprog.dumps(frameprog.program(model))` at full Songlengths length; the
+  aggregate is `sha256` of `"".join("%s %s\n" % (tune_id, sha))` over the built
+  tunes **sorted by tune id**. 2.5 recovered it by trying recipes against the
+  three per-tune digests §6 quotes; a phase that cannot reproduce the aggregate
+  cannot report the gate.
+- **An analysis-only instrument belongs in `tools/`** (Phase 0's
+  `storage_census.py` precedent): 3a's decompile cache fingerprints
+  `deity_informant/*.py`, so a package file touched for a measurement invalidates
+  1,203 artifacts and costs every sweep a cache-cold pass. 2.5 changed no package
+  file, so byte identity held by construction as well as by measurement.
