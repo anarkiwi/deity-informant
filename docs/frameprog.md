@@ -256,6 +256,17 @@ recorded in the build report.
   notation rung (d2) writes 16-bit arithmetic in.
 - sidprog is and remains the cycle-exact ground truth and the deliverable of
   the decompiler; frameprog replaces nothing and relaxes nothing below it.
+- **frameprog is not a projection of sidprog, and never was** (Phase 3a,
+  2026-08-09). Both project the same `structured.Model`, but the sidprog
+  projection is lossy for frameprog's purposes: `sidprog.TextModel` carries no
+  init tracer and sets `written` from the dispatch table alone, so
+  `frameprog.program(sidprog.parse(sidprog.emit(m)))` is a **different, silently
+  shorter program** (measured on the hermetic `t_jump_table` model: 32 lines
+  against 18). The decision is to supersede, not restore: frameprog major 1 is
+  the total artifact (`image { }`, `dispatch`, `evidence { }`), and
+  `frameprog.block_model(frameprog.loads(text))` rebuilds the committed block
+  model the text came from. The inequality is pinned in
+  `tests/test_frameprog.py`, as is the equality that replaces it.
 - frameprog is **generated from the committed model** (post commit-phase,
   observed-primary sets), never hand-edited; changes flow from the sidprog
   side and regeneration is mandatory on any model change.

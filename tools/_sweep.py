@@ -5,6 +5,10 @@ row keyed by stem merges two and ``--tunes Commando`` runs two while looking lik
 The identity is the cache-relative path without its suffix, unique by construction.
 """
 
+import gzip
+import hashlib
+import json
+import os
 import signal
 import sys
 from collections import Counter
@@ -14,6 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 HVSC = ROOT / ".oracle-cache" / "hvsc"
 CACHE = HVSC.resolve()
 CAP_S = 1800  # wall seconds per tune, so one pathological build cannot hold the sweep open
+
+PKG = ROOT / "deity_informant"
+ARTIFACTS = ROOT / ".sweep-cache"  # frameprog artifacts, content-keyed; never committed
+CACHE_ENV = "DI_SWEEP_CACHE"  # "0"/"off": bypass; "refresh": recompute and rewrite
+_FINGERPRINT = None
 
 
 def tune_id(path):
@@ -81,6 +90,124 @@ def check_rows(rows):
     if dupes:
         sys.exit("rows are not uniquely keyed: %s" % ", ".join(sorted(dupes)))
     return rows
+
+
+# ---- the decompile artifact cache (3a) -----------------------------------------
+def fingerprint():
+    """SHA of every package source file: no key can name a build it did not come from.
+
+    Content, not a maintained constant -- a stale artifact after an edit to any
+    module the decompile reaches is the failure mode this exists to make impossible."""
+    global _FINGERPRINT  # pylint: disable=global-statement
+    if _FINGERPRINT is None:
+        h = hashlib.sha256()
+        for p in sorted(PKG.rglob("*.py")) + sorted(PKG.rglob("*.lark")):
+            h.update(p.name.encode())
+            h.update(p.read_bytes())
+        _FINGERPRINT = h.hexdigest()
+    return _FINGERPRINT
+
+
+def _key(mem, init, play, frames, subtune, kw):
+    """The cache key: the image as the caller mutated it, the build, and the code."""
+    h = hashlib.sha256(bytes(mem))
+    h.update(repr((init, play, frames, subtune, sorted(kw.items()))).encode())
+    h.update(fingerprint().encode())
+    return h.hexdigest()
+
+
+def _digest(wlog):
+    """SHA of a SID write log: what a cached run compares a replay against."""
+    h = hashlib.sha256()
+    for c, reg, val in wlog:
+        h.update(b"%d %d %d\n" % (c, reg, val))
+    return h.hexdigest()
+
+
+class Replayed:
+    """The evidence a cached artifact carries: the log is a digest, not the log."""
+
+    __slots__ = ("wlog_sha", "wlog_len", "cached")
+
+    def __init__(self, sha, n):
+        self.wlog_sha = sha
+        self.wlog_len = n
+        self.cached = True
+
+
+def wlog_matches(ev, log):
+    """Whether ``log`` is the write log this evidence recorded (cached or not)."""
+    return len(log) == ev.wlog_len and _digest(log) == ev.wlog_sha
+
+
+def _serve(mem, init, play, frames, subtune, kw):
+    """``(model, evidence, where to store)``: a hit rebuilds, a miss traces; None: cached.
+
+    The artifact is the frameprog text, which is total, so a hit skips the trace. An
+    unknown key recomputes -- never a partial match -- and ``DI_SWEEP_CACHE=0``
+    bypasses both directions, ``=refresh`` recomputes and rewrites."""
+    from deity_informant import codec
+    from deity_informant import frameprog
+    from deity_informant import structured as S
+
+    mode = os.environ.get(CACHE_ENV, "").lower()
+    path = None
+    if mode not in ("0", "off", "no"):
+        path = ARTIFACTS / ("%s.fp.gz" % _key(mem, init, play, frames, subtune, kw))
+        got = _read(path) if mode != "refresh" else None
+        if got is not None:
+            rec, text = got
+            model = frameprog.block_model(frameprog.loads(text), kw.get("sound", False))
+            codec.verify(model)
+            return model, Replayed(rec["wlog_sha"], rec["wlog_len"]), None
+    model, ev = S.decompile(mem, init, play, frames, subtune, **kw)
+    ev.wlog_sha, ev.wlog_len, ev.cached = _digest(ev.wlog), len(ev.wlog), False
+    return model, ev, path
+
+
+def decompile(mem, init, play, frames, subtune=0, **kw):
+    """``(model, evidence)`` as ``structured.decompile``, off the artifact cache."""
+    from deity_informant import frameprog
+
+    model, ev, path = _serve(mem, init, play, frames, subtune, kw)
+    if path is not None:
+        _store(path, ev, frameprog.dumps(frameprog.program(model)))
+    return model, ev
+
+
+def build(mem, init, play, frames, subtune=0, extents=None, **kw):
+    """``(model, frame program, evidence)``: the cached decompile plus rung (g).
+
+    The stored artifact is always the extent-free program, which is the canonical
+    form and the one a rebuild reads; only an ``--extents`` run emits twice."""
+    from deity_informant import frameprog
+
+    model, ev, path = _serve(mem, init, play, frames, subtune, kw)
+    prog = frameprog.program(model, extents)
+    if path is not None:
+        _store(path, ev, frameprog.dumps(prog if extents is None else frameprog.program(model)))
+    return model, prog, ev
+
+
+def _read(path):
+    """``(header, text)`` of a stored artifact, or None: a damaged file is a miss.
+
+    Storage faults recompute; a well-formed artifact the reader rejects does not,
+    because that is a grammar regression and must be loud."""
+    try:
+        head, text = gzip.decompress(path.read_bytes()).decode("utf-8").split("\n", 1)
+        return json.loads(head), text
+    except (OSError, EOFError, ValueError):
+        return None
+
+
+def _store(path, ev, text):
+    """Write one artifact atomically: 32 workers share this directory."""
+    head = json.dumps({"wlog_sha": ev.wlog_sha, "wlog_len": ev.wlog_len})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".%d.tmp" % os.getpid())
+    tmp.write_bytes(gzip.compress(("%s\n%s" % (head, text)).encode("utf-8")))
+    os.replace(tmp, path)
 
 
 def _alarm(_sig, _frame):

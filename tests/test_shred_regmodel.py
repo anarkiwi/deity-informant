@@ -918,7 +918,7 @@ _FIXTURES = {
 @pytest.mark.parametrize("name", sorted(_FIXTURES))
 def test_fixture_builds_and_gates(name):
     """Not xfail: the fixtures themselves must stay valid while the lift lands."""
-    assert _lift(name).startswith("frameprog 0")
+    assert _lift(name).startswith("frameprog 1")
 
 
 @pytest.mark.xfail(reason="register-model-lift Phase 3: scratch promotion", **XFAIL)

@@ -341,7 +341,7 @@ def test_a_definition_that_is_not_a_pair_entry_read_has_no_entry(val):
 
 # ---- the emitted form and its fixpoint ----------------------------------------------
 _DEREF_DOC = (
-    "frameprog 0\n"
+    "frameprog 1\n"
     "play $1000\n"
     "init $0F00\n"
     "data {\n"

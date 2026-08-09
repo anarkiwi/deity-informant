@@ -108,3 +108,11 @@ jobs:
         env:
           DI_CORPUS_LIMIT: ${{ github.event_name == 'pull_request' && '12' || '0' }}
         run: pytest tests/ -m "not oracle" -n auto -p no:cacheprovider
+
+      # Phase 3a: the sweeps read decompiles out of a content-keyed artifact cache.
+      # One sweep runs with it off, over whatever the step above left cached, so a
+      # change the cache would otherwise serve around still fails here.
+      - name: One cache-cold sweep
+        env:
+          DI_SWEEP_CACHE: "0"
+        run: python tools/storage_census.py --frames 200 -j 4 -o out/census_cold.json

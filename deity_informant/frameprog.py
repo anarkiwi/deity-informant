@@ -44,6 +44,11 @@ _EXTENT_NOTE = (  # emitted only by a program carrying one: the notes are emitte
     "; a state field's `in` clause is that pointer's extent: the declared blocks",
     ";   its derefs were observed to land in, and the only blocks an access may name",
 )
+_EVIDENCE_NOTE = (
+    "; image/dispatch/evidence are the trace channels a block-model rebuild consumes:",
+    ";   frameprog.block_model(loads(t)) re-derives the model this text was emitted",
+    ";   from, so the artifact is total and the trace need not be repeated",
+)
 
 
 def _scan(node, scalars, arrays):
@@ -173,6 +178,8 @@ class FrameProgram:
         prov0=(),
         init_census=None,
         extents=(),
+        dispatch=(),
+        evidence=None,
     ):
         self.play = play
         self.init = init
@@ -190,6 +197,8 @@ class FrameProgram:
         self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
         self.init_census = dict(init_census or {})
         self.extents = dict(extents)  # 2b: pointer cell -> the block bases its derefs land in
+        self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
+        self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
 
 
 def _init_proof(pc, cells, undeclared, computed):
@@ -205,14 +214,120 @@ def _init_proof(pc, cells, undeclared, computed):
 
 
 def _init_copies(model, decls):
-    """``(cell -> origin, proofs, census)``: the init phase's copies, named (spec 4.5)."""
+    """``(cell -> origin, per-site verdicts, census)``: the init copies (spec 4.5)."""
     tracer = getattr(model, "init_copy", None)
     if tracer is None:
-        return {}, [], {}
-    origins, sites, census = initcopy.reduce(
-        tracer, datadecl.Regions(decls).const_at, model.written
+        return {}, {}, {}
+    return initcopy.reduce(tracer, datadecl.Regions(decls).const_at, model.written)
+
+
+_PAGE1 = range(0x100, 0x200)  # always mutable: a rule of ``Model``, never evidence
+_SPANS_PER_LINE = 12
+
+
+def _spans(addrs):
+    """Sorted addresses as ``$A`` / ``$A..$B`` run tokens."""
+    out, seq, i = [], sorted(addrs), 0
+    while i < len(seq):
+        j = i
+        while j + 1 < len(seq) and seq[j + 1] == seq[j] + 1:
+            j += 1
+        out.append("$%04X" % seq[i] if j == i else "$%04X..$%04X" % (seq[i], seq[j]))
+        i = j + 1
+    return out
+
+
+def _evidence(model, origins, sites, census):
+    """The trace channels a block-model rebuild consumes, as the artifact carries them."""
+    ev = G.new_evidence()
+    ev["code"] = set(getattr(model, "pcs", None) or ())
+    ev["leaders"] = set(getattr(model, "leaders", None) or ())
+    ev["written"] = set(getattr(model, "written", None) or ()).difference(_PAGE1)
+    ev["targets"] = {s: set(t) for s, t in (getattr(model, "ev_targets", None) or {}).items() if t}
+    for pc, a in getattr(model, "reads", None) or ():
+        ev["reads"].setdefault(pc, set()).add(a)
+    clo = getattr(model, "closure", None)
+    if clo is not None:
+        ev["closure"] = tuple(
+            -1 if x is None else x for x in (clo.recur, clo.first, clo.window, clo.cap)
+        )
+    ev["copies"] = {c: (origins[c], pc) for pc, (cells, _d, _r) in sites.items() for c in cells}
+    ev["staged"] = {pc: (d, r) for pc, (_c, d, r) in sites.items() if d or r}
+    ev["census"] = dict(census)
+    return ev
+
+
+def _evidence_lines(ev):
+    """``evidence { }`` lines, empty for a program carrying no trace channel."""
+    body = []
+    for key in ("code", "leaders", "written"):
+        toks = _spans(ev[key])
+        for i in range(0, len(toks), _SPANS_PER_LINE):
+            body.append(" %s %s" % (key, " ".join(toks[i : i + _SPANS_PER_LINE])))
+    body.extend(
+        " targets $%04X: %s" % (s, " ".join("$%04X" % t for t in sorted(ev["targets"][s])))
+        for s in sorted(ev["targets"])
     )
-    return origins, [_init_proof(pc, *v) for pc, v in sites.items()], census
+    body.extend(
+        " reads $%04X: %s" % (pc, " ".join(_spans(ev["reads"][pc]))) for pc in sorted(ev["reads"])
+    )
+    if ev["closure"] is not None:
+        body.append(" closure %d %d %d %d" % ev["closure"])
+    body.extend(
+        " copy $%04X = $%04X @ $%04X" % ((c,) + ev["copies"][c]) for c in sorted(ev["copies"])
+    )
+    body.extend(" staged $%04X: %d %d" % ((pc,) + ev["staged"][pc]) for pc in sorted(ev["staged"]))
+    body.extend(" census %s %d" % (k, ev["census"][k]) for k in sorted(ev["census"]))
+    return ["evidence {"] + body + ["}"] if body else []
+
+
+def block_model(prog, sound=False):
+    """The committed block model ``prog`` was emitted from (3a: the artifact is total).
+
+    Image, dispatch and evidence rebuild the trace channels; ``build_all`` re-derives
+    every site table and ``datadecl.declarations`` the data regions, so the model
+    walks, re-declares and re-emits identically."""
+    ev = prog.evidence
+    mem0 = bytes(prog.mem0)
+    pcs = {pc: {mem0[pc]} for pc in ev["code"]}
+    pcs.update({pc: set(v) for pc, v in prog.dispatch.items()})
+    clo = ev["closure"]
+    if clo is not None:
+        recur, first, window, cap = (None if x < 0 else x for x in clo)
+        note = "" if recur is not None else "no recurrence within %d frames" % cap
+        clo = structured.Closure(recur, first, window, cap, (), note)
+    evidence = structured.Evidence(
+        pcs,
+        set(ev["leaders"]),
+        {s: set(t) for s, t in ev["targets"].items()},
+        set(ev["written"]) | set(prog.dispatch),  # an opcode cell is written by definition
+        [],
+        b"",
+        [],
+        prog.prologue,
+        mem0,
+        reads=frozenset((pc, a) for pc, addrs in ev["reads"].items() for a in addrs),
+        closure=clo,
+        play=prog.play,
+        init_copy=initcopy.Reduced(_origins(ev), _sites(ev), ev["census"]),
+    )
+    return structured.Model(mem0, prog.init, prog.play, evidence, prog.subtune, sound).build_all()
+
+
+def _origins(ev):
+    return {c: o for c, (o, _pc) in ev["copies"].items()}
+
+
+def _sites(ev):
+    """``initcopy.reduce``'s per-site verdicts, rebuilt from the copy and staged lines."""
+    staged = {}
+    for cell in sorted(ev["copies"]):
+        staged.setdefault(ev["copies"][cell][1], []).append(cell)
+    counts = ev["staged"]
+    return {
+        pc: (tuple(staged.get(pc, ())), *counts.get(pc, (0, 0)))
+        for pc in sorted(set(staged) | set(counts))
+    }
 
 
 def _decl_pairs(decls):
@@ -477,7 +592,8 @@ def program(model, extents=None):
         model.mem0, decls, procs, state, symbols, resolved, extents
     )
     resolved.update(lifted)
-    prov0, init_proofs, census = _init_copies(model, decls)
+    prov0, sites, census = _init_copies(model, decls)
+    init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
     return FrameProgram(
         model.play,
         model.init,
@@ -495,6 +611,8 @@ def program(model, extents=None):
         prov0,
         census,
         ext,
+        model.dispatch_sets,
+        _evidence(model, prov0, sites, census),
     )
 
 
@@ -506,6 +624,7 @@ def dumps(prog):
     head.extend(_NOTES)
     if prog.extents:
         head.extend(_EXTENT_NOTE)
+    head.extend(_EVIDENCE_NOTE)
     head.append("play $%04X" % prog.play)
     head.append("init $%04X" % prog.init)
     if prog.subtune:
@@ -516,16 +635,22 @@ def dumps(prog):
         head.append("}")
     if prog.inputs:
         head.append("inputs { %s }" % " ".join(prog.inputs))
+    head.extend(
+        "dispatch $%04X: %s" % (pc, " ".join("$%02X" % v for v in sorted(prog.dispatch[pc])))
+        for pc in sorted(prog.dispatch)
+    )
     ext = _extent_names(prog.extents, prog.symbols)
     body = ["state {"] + [_field_line(*f, ext.get(f[0], ())) for f in prog.state] + ["}"]
-    data_out, _cov = sidprog._data_lines(prog.data_decls, prog.mem0)
+    data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
     body.extend(frameproc.render_lines(prog.procs, prog.resolved, _decl_pairs(prog.data_decls)))
     to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))
-    return "\n".join(head + body[:n] + sidprog._symbol_lines(prog.symbols) + body[n:]) + "\n"
+    mid = sidprog._symbol_lines(prog.symbols) + _evidence_lines(prog.evidence)
+    head.extend(sidprog._image_lines(prog.mem0, cov))
+    return "\n".join(head + body[:n] + mid + body[n:]) + "\n"
 
 
 def parse(text):
@@ -546,7 +671,11 @@ def parse(text):
         doc.mem0,
         (),
         doc.resolved,
+        prov0=_origins(doc.evidence),
+        init_census=doc.evidence["census"],
         extents=doc.extents,
+        dispatch=doc.dispatch_sets,
+        evidence=doc.evidence,
     )
 
 

@@ -376,7 +376,7 @@ def test_the_hazard_test_is_conservative_about_a_computed_address():
     ],
 )
 def test_word_forms_round_trip(line):
-    src = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n%s\n  ret\n}\n" % line
+    src = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n%s\n  ret\n}\n" % line
     text = frameprog.dumps(frameprog.loads(src))
     assert line in text.splitlines()
     assert frameprog.dumps(frameprog.loads(text)) == text
@@ -389,7 +389,7 @@ def test_a_width_suffix_is_not_a_sidprog_form():
 
 
 def test_a_word_store_must_match_its_lvalue_width():
-    bad = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n  m_1500:2 = $01\n  ret\n}\n"
+    bad = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n  m_1500:2 = $01\n  ret\n}\n"
     with pytest.raises(ValueError):
         frameprog.loads(bad)
 

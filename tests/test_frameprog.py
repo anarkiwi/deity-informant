@@ -148,10 +148,46 @@ def _fuzz_model(player):
 def test_fuzz_players_emit_annotation_free_and_project(p):
     model = _fuzz_model(p)
     text = frameprog.emit(model)
-    assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
+    assert text.startswith("frameprog 1\n") and not _ANNOT.search(text)
     assert frameprog.dumps(frameprog.loads(text)) == text  # M-FP2 canonical fixpoint
     frames = F.frames_from_walker(S.Walker(model), p.frames)
     assert F.loads(F.dumps(frames)) == F.canonical(frames)
+
+
+def _round_trip(model):
+    """``(text, program, model)`` rebuilt from the artifact text and nothing else."""
+    text = frameprog.dumps(frameprog.program(model))
+    rebuilt = frameprog.block_model(frameprog.loads(text))
+    return text, frameprog.program(rebuilt), rebuilt
+
+
+@pytest.mark.parametrize("p", G.players(2), ids=lambda p: f"{p.name}-{p.seed[1]}")
+def test_artifact_rebuilds_the_program_it_was_emitted_from(p):
+    """3a's pinning assert: the frameprog projection is total.
+
+    Its absence is what let a projection silently produce a shorter, different
+    program; equality of the re-emitted text, the walker log and the Gate FP
+    verdict is the only thing that keeps that closed."""
+    model = _fuzz_model(p)
+    text, prog, rebuilt = _round_trip(model)
+    assert frameprog.dumps(prog) == text
+    assert S.Walker(rebuilt).run(p.frames) == S.Walker(model).run(p.frames)
+    want = frameval.gate_fp(model, p.frames, frameprog.program(model))
+    assert frameval.gate_fp(rebuilt, p.frames, prog) == want
+
+
+def test_the_sidprog_projection_is_not_total_and_the_frameprog_one_is():
+    """The 3a finding, pinned: ``frameprog.program`` is not derivable from sidprog.
+
+    ``TextModel`` carries no init tracer and sets ``written`` from the dispatch
+    table alone, so the same rungs run on less evidence; 3b supersedes sidprog
+    rather than restoring it."""
+    model = _fuzz_model(G.t_jump_table(np.random.default_rng(7)))
+    direct = frameprog.dumps(frameprog.program(model))
+    via_sid = frameprog.dumps(frameprog.program(sidprog.parse(sidprog.emit(model))))
+    assert via_sid != direct
+    text, prog, _rebuilt = _round_trip(model)
+    assert frameprog.dumps(prog) == text == direct
 
 
 def test_iota_pins_volatile_reads_and_matches_declared_inputs():
@@ -229,7 +265,7 @@ def test_registers_render_as_locals():
     frameprog.lint(text)
 
 
-_LINT_DOC = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000(%s) {\n  zp_10 = %s\n  ret\n}\n"
+_LINT_DOC = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000(%s) {\n  zp_10 = %s\n  ret\n}\n"
 
 
 def test_lint_rejects_dangling_local():
@@ -331,7 +367,7 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     frames = F.frames_from_walker(w, nframes)
     assert w.wlog == ev.wlog  # model walker replay bit-exact vs the recorder
     text = frameprog.emit(model)
-    assert text.startswith("frameprog 0\n") and not _ANNOT.search(text)
+    assert text.startswith("frameprog 1\n") and not _ANNOT.search(text)
     assert "switch code[" not in text
     assert " ctr_5513: u8" in text
     assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
@@ -354,7 +390,7 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
 
 
 _IDX_DOC = (
-    "frameprog 0\n"
+    "frameprog 1\n"
     "play $1000\n"
     "init $0F00\n"
     "data {\n"
@@ -456,7 +492,7 @@ def test_a_factored_arm_rename_may_not_take_a_name_that_arm_binds():
 
 
 # ---- the state field's block extent (register-model-lift 2b) ----------------------
-_STATE_DOC = "frameprog 0\nplay $1000\ninit $0F00\nstate {\n %s\n}\n"
+_STATE_DOC = "frameprog 1\nplay $1000\ninit $0F00\nstate {\n %s\n}\n"
 
 
 def _extent_prog(state, extents, symbols=None):

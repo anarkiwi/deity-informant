@@ -71,16 +71,14 @@ def build(entry, frames=None, extents=None):
     ``frames`` caps the decompile observation length as the doc's probe did;
     ``None`` is the full Songlengths length, bit-identical to the other tools'
     build. ``extents`` is this tune's b0 row, which rung (g) reads."""
-    from deity_informant import frameprog
-    from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(Path(sid).read_bytes())
     mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
     nframes = int(secs * 50) if frames is None else min(int(secs * 50), frames)
-    model, _ev = S.decompile(mem, init, play, nframes, sub)
-    return model, frameprog.program(model, extents), nframes
+    model, prog, _ev = _sweep.build(mem, init, play, nframes, sub, extents)
+    return model, prog, nframes
 
 
 def evaluate(model, prog, nframes, probe=None, close=False):

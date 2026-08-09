@@ -14,7 +14,7 @@ from deity_informant import frameval
 from deity_informant import grammar as G
 from deity_informant import sidprog
 
-_DOC = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n%s\n  ret\n}\n"
+_DOC = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n%s\n  ret\n}\n"
 
 
 def _round_trip(lines):

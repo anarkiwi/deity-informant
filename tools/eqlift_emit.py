@@ -41,8 +41,8 @@ def one(rel):
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     frames = int(secs * 50)
-    model, ev = S.decompile(mem, init, play, frames, sub)
-    if S.Walker(model).run(frames) != ev.wlog:
+    model, ev = _sweep.decompile(mem, init, play, frames, sub)
+    if not _sweep.wlog_matches(ev, S.Walker(model).run(frames)):
         raise AssertionError("%s: model walker replay is not bit-exact" % rel)
     t0 = time.monotonic()
     text, _ = eqlift_mem.emit(model)

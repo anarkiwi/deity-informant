@@ -15,7 +15,7 @@ _BEGIN = "<!-- BEGIN GENERATED GRAMMAR: deity_informant/sidprog.lark -->"
 _END = "<!-- END GENERATED GRAMMAR -->"
 
 _SID = "sidprog 1\nplay $1000\ninit $0F00\nimage {\n $1000: 60\n}\nproc $1000 {\n ret\n}\n"
-_FRAME = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n  ret\n}\n"
+_FRAME = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n  ret\n}\n"
 
 
 def test_generated_grammar_block_matches_the_implementation():
@@ -46,10 +46,13 @@ def test_wrong_dialect_rejected(reader, text):
     "reader,text",
     [
         (sidprog.parse, _SID.replace("sidprog 1", "sidprog 7", 1)),
-        (frameprog.parse, _FRAME.replace("frameprog 0", "frameprog 7", 1)),
+        (frameprog.parse, _FRAME.replace("frameprog 1", "frameprog 7", 1)),
+        (sidprog.parse, _SID.replace("sidprog 1", "sidprog 0", 1)),
+        (frameprog.parse, _FRAME.replace("frameprog 1", "frameprog 0", 1)),
     ],
 )
-def test_future_major_fails_cleanly_in_both_dialects(reader, text):
+def test_off_major_fails_cleanly_in_both_dialects(reader, text):
+    """3a bumped frameprog to 1: a major-0 artifact predates image/dispatch/evidence."""
     with pytest.raises(sidprog.SidprogVersionError):
         reader(text)
 
@@ -116,9 +119,9 @@ def test_bad_expressions_rejected(bad):
         "sidprog 1\nplay $1000\nproc $1000 {\n ret\n}\n",  # no init
         "sidprog 1\nplay $1000\ninit $0F00\nsymbols {\n alias a = nosuch\n}\n",
         "sidprog 1\nplay $1000\ninit $0F00\nsymbols {\n alias p = m_1000\n alias q = m_1000\n}\n",
-        "frameprog 0\nplay $1000\ninit $0F00\nsub_XXXX() {\n  ret\n}\n",  # not a sub name
-        "frameprog 0\nplay $1000\ninit $0F00\nstate {\n m_1000: u24\n}\n",  # unknown type
-        "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n m_1000:2 = $01\n ret\n}\n",  # width
+        "frameprog 1\nplay $1000\ninit $0F00\nsub_XXXX() {\n  ret\n}\n",  # not a sub name
+        "frameprog 1\nplay $1000\ninit $0F00\nstate {\n m_1000: u24\n}\n",  # unknown type
+        "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n m_1000:2 = $01\n ret\n}\n",  # width
         "sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n m_1000:2 = $0001\n}\n",  # frame form
     ],
 )
@@ -151,7 +154,7 @@ def test_indexed_access_carries_any_index_expression(text, base, idx):
 
 def test_indexed_store_target_carries_an_index_expression():
     """The same production serves the lvalue: a computed store names its base."""
-    doc = "frameprog 0\nplay $1000\ninit $0F00\nsub_1000() {\n  m_1500[(X + $01)] = $07\n  ret\n}\n"
+    doc = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n  m_1500[(X + $01)] = $07\n  ret\n}\n"
     prog = frameprog.parse(doc)
     st = prog.procs[0][3][0]
     assert st[0] == "st" and st[1][2][1] == ("const", 0x1500, 2)

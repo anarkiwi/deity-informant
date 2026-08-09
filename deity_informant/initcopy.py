@@ -112,13 +112,29 @@ class Tracer:
         self.sites[cell] = pc
 
 
+class Reduced:
+    """A recorded ``reduce`` result, replayed instead of the tracer it came from.
+
+    Both the declaration index and the projection are in the artifact while the
+    tracer is not, and the projection is two orders smaller (Ghouls_n_Ghosts:
+    7,159 traced cells against 40 surviving records)."""
+
+    __slots__ = ("origins", "sites", "census")
+
+    def __init__(self, origins, sites, census):
+        self.origins = dict(origins)
+        self.sites = dict(sites)
+        self.census = dict(census)
+
+
 def reduce(tracer, is_const, played=frozenset()):
     """``(cell -> origin, per-site verdicts, census)``: the copies a declaration names.
 
     The map seeds ``frameval``'s play-phase map, so a play-phase store rebinds or
     drops a staged cell by the same one-contributor rule. ``is_const`` is the caller's
-    declaration index (``datadecl.Regions.const_at``) -- the const claim #61 makes.
-    """
+    declaration index (``datadecl.Regions.const_at``); a ``Reduced`` consults neither."""
+    if isinstance(tracer, Reduced):
+        return tracer.origins, tracer.sites, tracer.census
     cens = Counter(cells=len(tracer.written), stores=tracer.stores, conflict=len(tracer.conflict))
     cens["stack"] = sum(1 for c in tracer.written if _STK_LO <= c <= _STK_HI)
     cens["computed"] = len(tracer.written) - len(tracer.cells) - cens["stack"]

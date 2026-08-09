@@ -173,16 +173,13 @@ def one(entry):
 def _one(entry):
     from deity_informant import framefuse
     from deity_informant import frameproc
-    from deity_informant import frameprog
-    from deity_informant import structured as S
     from deity_informant.c64 import load_psid
 
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(Path(sid).read_bytes())
     mem[0xD418] = 0x0F
     t0 = time.monotonic()
-    model, _ev = S.decompile(mem, init, play, int(secs * 50), sub)
-    prog = frameprog.program(model)
+    model, prog, _ev = _sweep.build(mem, init, play, int(secs * 50), sub)
     row = {**_sweep.row_head(entry), "build_s": round(time.monotonic() - t0, 1)}
     row.update({k: 0 for k in BYTE})
     row["aligned"] = row["word_plain"] = row["unnamed_ruled_out"] = row["unnamed_as_written"] = 0
