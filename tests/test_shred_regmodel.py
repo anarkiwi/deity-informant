@@ -5,13 +5,19 @@ and stays ``xfail(strict=True)`` until its phase lands: the fixture must build
 and gate today, and its canonicality assert must not pass yet."""
 
 import re
+import sys
 from functools import lru_cache
+from pathlib import Path
 
 import pytest
 
 import _fuzzgen as G
 from test_frameprog import _fuzz_model
 from deity_informant import frameproc, frameprog, frameval, ptrcert, ptrextent
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+
+import value_walk
 
 SID = G.SID
 TMP = G.CNT + 0x20  # a RAM cell used only as per-frame scratch
@@ -94,6 +100,13 @@ def _observed(name):
         ev.run_frame()
     (rec,) = [r for r in ptrextent.extents(prog, probe.hits) if r["root"] == "$%04X" % G.PTR]
     return rec
+
+
+def _walk(name, extents=()):
+    """Phase 2.5's verdicts for this fixture: the walker's answer beside the pinned one."""
+    _lift(name)
+    model, frames = _lift_ctx[name]
+    return value_walk.row(model, _lift_prog[name], extents, frames)
 
 
 def _state_block(text):
@@ -1292,6 +1305,7 @@ def test_an_unresolvable_store_refuses_the_web_and_keeps_the_spelling():
     rec = _cert("alias_web")
     assert rec["lift_refusals"] == ["web_alias"] and not rec["eligible"]
     assert "mem[" in _body(_lift("alias_web")), "the refused web lost its machine spelling"
+    assert _walk("alias_web")["web_alias"] == {"top_memory": 1}, "2.5: the index is a cell"
 
 
 def test_a_call_returned_row_is_no_lift_refusal():
@@ -1308,6 +1322,7 @@ def test_computed_rows_walk_off_the_registry():
     assert rec["eligible"] and not rec["lift_refusals"]
     row = _observed("computed_rows")
     assert row["refusals"] == ["extent_unmappable"] and row["unmappable_foreign"]
+    assert _walk("computed_rows", [row])["extent_foreign"] == {"top_memory": 1}, "2.5: P6 stands"
 
 
 @pytest.mark.xfail(
