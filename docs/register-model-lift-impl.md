@@ -56,11 +56,13 @@ chose the method; this document writes it down. Narratives are in git history
 
 The phased campaign's landings are library now; their historical labels
 appear in docstrings and resolve here. Standing verification state at the
-pivot: `gate_sweep` at full Songlengths **622 built / 621 clean** (standing
-exclusions: `Rambo_First_Blood_Part_II` divergence; `C64_World` and
-`1st_Decent_Hardcore` evaluation faults); byte-identity aggregate
-`99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` over the
-624 built tunes (recipe: per tune, sha256 of
+pivot: `gate_sweep` at full Songlengths **624 build; 622 evaluate / 621
+clean** (standing exclusions: `Rambo_First_Blood_Part_II` divergence;
+`C64_World` and `1st_Decent_Hardcore` evaluation faults); byte-identity
+aggregate
+`99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` over all
+624 — emission does not evaluate, so the two evaluation faults still emit
+(recipe: per tune, sha256 of
 `frameprog.dumps(frameprog.program(model))` at full Songlengths; aggregate
 sha256 of `"%s %s\n" % (tune_id, sha)` joined over tunes sorted by id);
 census sum 30,854 — **retired as a steering metric**, kept as a diagnostic.
@@ -170,13 +172,25 @@ cross-checked against its exemplar before any idiom is recorded from it; a
 family with no published source is marked as such and carries the weaker
 warrant.
 
-**Deliverable: `docs/idiom-catalog.md`.** (Landed; rows in progress.) One row per idiom: the
+**Deliverable: `docs/idiom-catalog.md`.** One row per idiom: the
 canonical-source citation (player, label/address), the `disasm_tune` cite in
 a corpus exemplar, the families carrying it, and **the normal form it must
 reduce to** (a dialect term) or `named-unknown`. Existing enumeration data
 feeds in rather than being redone: docs/twobyte-lift.md's 610-shape pair
 enumeration, the §5.4 shredder fixture family, ptrcert's definition-kind
 census, the follin-dispatch-study grammar.
+
+**Landed**: 22 rows (19 normal forms, 3 named-unknowns), every one witnessed
+over the sixteen exemplars; the completeness gate (`tools/idiom_cover.py`)
+runs 0 unaccounted over 1,474 obligations / 4,377 nodes; the doc's Rows table
+and the recognizer set are gated equal by `tests/test_idiom_catalog.py`.
+**The remainder, owed before stage 1 closes**: the cite and families columns
+— today the rows' warrant is the exemplars' lifted dataflow, and the method's
+own claim ("derive from the canonical players") is earned per row only when
+its canonical cite lands through the anchors and their trust tiers. The seven
+queued exemplar additions (catalog, "The next exemplars, already surfaced")
+land with those cites; each addition MUST re-run the completeness gate over
+the grown set.
 
 **Completeness is checkable and MUST be checked**: in each exemplar, every
 SID-store dataflow slice and every frame-surviving cell is accounted to a
@@ -197,6 +211,25 @@ choose, with **no rewrite landing alongside**: wide (u16) locals and pair
 cells (frameprog.md's M-FP3), the cursor forms rung (g) already ships, and
 role-typed `state { }` declarations
 (`cursor`/`accumulator`/`counter`/`parameter`/`vm`).
+
+**The capability checklist is `idioms.FORMS`, not the sentence above.** The
+catalog's normal-form column also demands u16 lane update, u16 high/low byte
+reads, u16 shift, flag, and field select/set — some already spellable, none
+allowed to be assumed so. The stage is done when every non-unknown normal
+form (19 today) has a hermetic evaluator test spelling and executing it,
+enumerated from `idioms.FORMS` mechanically so the checklist cannot
+undercount. Named-unknowns add no vocabulary by definition.
+
+**Role precondition.** The five role keywords come from the plan's read-forward
+argument, not from stage 1 — the catalog accounted dataflow shapes, never
+update shapes, so there is no witness yet that the roles cover the exemplars'
+persistent cells. Before the keywords freeze in the grammar:
+`idioms.obligations()` already enumerates the ~1,148 witnessed cell-update
+slices; a census classifies each update term against the roles' defining
+forms and reports the residue. A common residual shape names a missing role
+*now*, not after the grammar ships it. Un-roled `u8`/`u16` fields stay legal
+regardless — roles name, they never license — so role incompleteness can
+degrade only stage 4's role-named metric, never soundness.
 
 Gates: emitted text byte-identical corpus-wide (capability, zero use);
 `dumps(loads(t)) == t` over every artifact; Gate FP untouched; hermetic
@@ -250,7 +283,7 @@ of three phases.
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
-Per landing: the full suite; the full-corpus Gate FP sweep; the seven
+Per landing: the full suite; the full-corpus Gate FP sweep; the sixteen
 exemplars at full Songlengths with their emitted-text diffs read by hand.
 
 Steering metrics, replacing the census: **extracted term cost / emitted
@@ -364,3 +397,23 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   Standing lesson, recorded where the plan can see it: **emitted text that is
   never executed is not verified** — stage 4's evaluator-precondition exists
   because two soundness-grade defects sat invisible in review-only output.
+- **2026-08-09 — the stage-1 review: four corrections, two stage-2
+  preconditions.** Every catalog number reproduced exactly from
+  `out/idiom_cover.json` and `out/family_cluster.json`; what did not hold:
+  (1) the doc claimed a doc↔code gate no test enforced —
+  `test_idiom_catalog.py` now parses the Rows table and gates ids, normal
+  forms and match order against `idioms.ROWS`; (2) the family table's Galway
+  1st-gen count said 3 where its exemplar's cluster holds 1 (the column is
+  now defined as cluster size and sums to the 360 covered — SIDId's other
+  three Galway tunes sit in uncovered clusters); (3) "622 built" and "624
+  built" named different things — now 624 build, 622 evaluate, 621 clean;
+  (4) stage 4 still said seven exemplars. Adopted for stage 1's close: the
+  cite/families columns are the named remainder (the rows' warrant is the
+  exemplars' lifted dataflow until each canonical cite lands), and the seven
+  uncovered clusters the instruments already surface are queued in the
+  catalog (a second GoatTracker V1 build, a third DMC build, RoMuzak,
+  DefleMask, Electrosound, CheeseCutter, Laxity NewPlayer; 360 → 415 of 624)
+  — families fragment **by build**, so a family's claim ends at its
+  exemplar's cluster. Adopted for stage 2's open: the capability checklist is
+  enumerated from `idioms.FORMS`, and the role keywords freeze only after a
+  census of the witnessed cell-update shapes (both in stage 2 above).
