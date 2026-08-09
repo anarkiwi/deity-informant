@@ -235,6 +235,22 @@ shapes). The definition that covers all of them mentions no carry: two byte
 cells jointly update one 16-bit quantity iff the concatenation of the values
 they write is a width-2 function of the concatenation of the values they held.
 
+### The other enumerations the catalog reuses
+
+Stage 1 was not to re-derive what the repository already enumerated:
+
+- **`ptrcert`'s definition-kind census** (`reload`, `advance`, `save_restore`,
+  `block_read`, `other`) is the enumeration of the shapes a pointer *definition*
+  takes; `deref-row` accounts their reads, and rung (g) in `ptrlift.py` already
+  lifts the certified ones. The catalog adds no row per kind.
+- **The §5.4 shredder fixture family** (`tests/test_shred_regmodel.py`, 24
+  `xfail(strict=True)` fixtures) is not catalog material: each pending fixture
+  is a stage 3 convergence seed, normalizing there or re-pinned as a guarded
+  refusal with its reason.
+- **The Follin grammar** enters as the anchors above and the arity debt below,
+  not as rows: it names operators, and an operator is a dispatch arm, not a
+  spelling of a value.
+
 ## The Follin arity debt
 
 `follin_script._ARITY` is a hand-transcribed per-tune table and the one
