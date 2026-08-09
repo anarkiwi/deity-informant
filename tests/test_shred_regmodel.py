@@ -1,8 +1,8 @@
 """The register-model shredder (docs/register-model-lift-impl.md).
 
-Each fixture forces one 6502 register-model artifact the plan promises to lift
-and stays ``xfail(strict=True)`` until its phase lands: the fixture must build
-and gate today, and its canonicality assert must not pass yet."""
+Each fixture forces one register-model artifact and stays ``xfail(strict=True)``
+until its stage lands; pending fixtures are stage 3's convergence-seed corpus,
+each normalizing there or re-pinned as a guarded refusal with its reason."""
 
 import re
 import sys
@@ -133,7 +133,7 @@ def _unnamed_store_bounds(prog):
 
 
 def _scratch():
-    """Phase 3: a cell written before read every frame is a local, not state."""
+    """Stage 3: a cell written before read every frame is a local, not state."""
     a = G.Asm(G.ORG)
     a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x11).i("STA", "abs", CTR)
     a.i("AND", "imm", 0x0F).i("STA", "abs", TMP)
@@ -143,7 +143,7 @@ def _scratch():
 
 
 def _pointer_walk():
-    """Phase 2: a reloaded-and-advancing pointer is a cursor into its blocks."""
+    """Stage 3: a reloaded-and-advancing pointer is a cursor into its blocks."""
     a = G.Asm(G.ORG)
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x03).i("STA", "zp", G.PTR)
     a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
@@ -162,7 +162,7 @@ def _pointer_walk():
 
 
 def _borrow_chain():
-    """Phase 4: a 16-bit compare split into SBC lanes is one wide compare."""
+    """Stage 3: a 16-bit compare split into SBC lanes is one wide compare."""
     a = G.Asm(G.ORG)
     a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x37).i("STA", "abs", CTR)
     a.i("LDA", "abs", CTR + 1).i("ADC", "imm", 0x00).i("STA", "abs", CTR + 1)
@@ -178,7 +178,7 @@ def _borrow_chain():
 
 
 def _lone_lane():
-    """Phase 5: widening a lone lane half may not read the write-only register."""
+    """Stage 3: widening a lone lane half may not read the write-only register."""
     a = G.Asm(G.ORG)
     a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x05).i("STA", "abs", CTR)
     a.i("STA", "abs", SID + 1)
@@ -220,7 +220,7 @@ def _path_persist():
 
 
 def _alias_state():
-    """Invariant (R1): a cell a write-through pointer store may clobber stays memory."""
+    """Invariant: a cell a write-through pointer store may clobber stays memory."""
     a = G.Asm(G.ORG)
     a.i("LDA", "imm", 0x33).i("STA", "abs", POS)
     a.i("LDX", "abs", CTR)
@@ -238,7 +238,7 @@ def _alias_state():
 
 
 def _init_livein():
-    """Invariant (Phase 3 init coupling): frame 0 reads what init wrote, so state."""
+    """Invariant (stage 3 init coupling): frame 0 reads what init wrote, so state."""
     ini = G.Asm(0x0F00)
     ini.i("LDA", "imm", 0x21).i("STA", "abs", POS).i("RTS")
     a = G.Asm(G.ORG)
@@ -249,7 +249,7 @@ def _init_livein():
 
 
 def _mux_pair():
-    """Phase 2: one zp pair, pointer role on one path, counter role on the other."""
+    """Stage 3: one zp pair, pointer role on one path, counter role on the other."""
     a = G.Asm(G.ORG)
     a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "ctr"))
     a.i("LDX", "abs", CTR)
@@ -272,7 +272,7 @@ def _mux_pair():
 
 
 def _cursor_save():
-    """Phase 2: the pointer is copied to save cells and restored, Follin-style."""
+    """Stage 3: the pointer is copied to save cells and restored, Follin-style."""
     a = G.Asm(G.ORG)
     a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "res"))
     a.i("LDA", "zp", G.PTR).i("STA", "abs", SAV)
@@ -296,7 +296,7 @@ def _cursor_save():
 
 
 def _writethrough():
-    """Phase 2: a store through a reloaded sequence pointer (the 12-tune class)."""
+    """Stage 3: a store through a reloaded sequence pointer (the 12-tune class)."""
     a = G.Asm(G.ORG)
     a.i("LDX", "abs", CTR)
     a.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
@@ -333,7 +333,7 @@ def _cursor_data(*cells):
 
 
 def _plain_advance():
-    """Phase 2 (control): a bare in-place advance, no second destination at all."""
+    """Stage 3 (control): a bare in-place advance, no second destination at all."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
     a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
@@ -342,7 +342,7 @@ def _plain_advance():
 
 
 def _dual_store_advance():
-    """Phase 2: the Ghouls advance - per lane a save copy, then the pair in place."""
+    """Stage 3: the Ghouls advance - per lane a save copy, then the pair in place."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
     a.i("STA", "abs", SAV).i("STA", "zp", G.PTR)
@@ -353,7 +353,7 @@ def _dual_store_advance():
 
 
 def _dual_store_pair_first():
-    """Phase 2: the same advance with the pair store leading its lane's save copy."""
+    """Stage 3: the same advance with the pair store leading its lane's save copy."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
     a.i("STA", "zp", G.PTR).i("STA", "abs", SAV)
@@ -364,7 +364,7 @@ def _dual_store_pair_first():
 
 
 def _dual_store_via_regs():
-    """Phase 2: the save copies deferred through X/Y, so the pair stores stay adjacent."""
+    """Stage 3: the save copies deferred through X/Y, so the pair stores stay adjacent."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("TAX").i("STA", "zp", G.PTR)
     a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("TAY").i("STA", "zp", G.PTR + 1)
@@ -374,7 +374,7 @@ def _dual_store_via_regs():
 
 
 def _dual_store_hi_first():
-    """Phase 2: the dual-destination advance with the hi lane stored before the lo."""
+    """Stage 3: the dual-destination advance with the hi lane stored before the lo."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("TAX")
     a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00)
@@ -385,7 +385,7 @@ def _dual_store_hi_first():
 
 
 def _dual_store_computed():
-    """Phase 2: the dual-destination advance stepping by a cell, not an immediate."""
+    """Stage 3: the dual-destination advance stepping by a cell, not an immediate."""
     a = _cursor()
     a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("AND", "imm", 0x03)
     a.i("STA", "abs", CTR)
@@ -398,7 +398,7 @@ def _dual_store_computed():
 
 
 def _dual_store_lo_only():
-    """Phase 2: the save copy taken off the lo lane only, so one lane stays paired."""
+    """Stage 3: the save copy taken off the lo lane only, so one lane stays paired."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02)
     a.i("STA", "abs", SAV).i("STA", "zp", G.PTR)
@@ -408,7 +408,7 @@ def _dual_store_lo_only():
 
 
 def _dual_store_word_copy():
-    """Phase 2: a second destination fed by a plain advance, copied lane by lane."""
+    """Stage 3: a second destination fed by a plain advance, copied lane by lane."""
     a = _cursor()
     a.i("LDA", "zp", G.PTR).i("CLC").i("ADC", "imm", 0x02).i("STA", "zp", G.PTR)
     a.i("LDA", "zp", G.PTR + 1).i("ADC", "imm", 0x00).i("STA", "zp", G.PTR + 1)
@@ -419,7 +419,7 @@ def _dual_store_word_copy():
 
 
 def _stack_spill_cursor():
-    """Phase 2 (A): the cursor pushed a lane at a time, so no word form exists at all.
+    """Stage 3 (A): the cursor pushed a lane at a time, so no word form exists at all.
 
     The 6502 has no 16-bit push and the stack descends, so the hi half lands at the
     lower address: nothing packs. The hi-first restore pair still merges."""
@@ -439,7 +439,7 @@ def _stack_spill_cursor():
 
 
 def _deferred_carry_cursor():
-    """Phase 2 (B2): an INC/BNE/INC advance whose carry arm the run never enters."""
+    """Stage 3 (B2): an INC/BNE/INC advance whose carry arm the run never enters."""
     a = G.Asm(G.ORG)
     a.i("INC", "zp", G.PTR).i("BNE", "rel", ("L", "skip"))
     a.i("INC", "zp", G.PTR + 1)
@@ -450,7 +450,7 @@ def _deferred_carry_cursor():
 
 
 def _table_spill_cursor():
-    """Phase 2 (C): the cursor reloaded from and saved back to a split lo/hi table."""
+    """Stage 3 (C): the cursor reloaded from and saved back to a split lo/hi table."""
     a = G.Asm(G.ORG)
     a.i("LDX", "abs", CTR)
     a.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
@@ -469,7 +469,7 @@ def _table_spill_cursor():
 
 
 def _inpage_advance():
-    """Phase 2 (E): a bare INC advance with no carry arm - fusing it would be wrong."""
+    """Stage 3 (E): a bare INC advance with no carry arm - fusing it would be wrong."""
     a = _cursor()
     a.i("INC", "zp", G.PTR).i("INC", "zp", G.PTR).i("INC", "zp", G.PTR)
     a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "out"))
@@ -482,7 +482,7 @@ def _inpage_advance():
 
 
 def _unpaired_half_store():
-    """Phase 2 (Commando): both halves fetched through another cursor, never read back."""
+    """Stage 3 (Commando): both halves fetched through another cursor, never read back."""
     a = G.Asm(G.ORG)
     a.i("LDY", "imm", 0x00).i("LDA", "indy", FTC).i("STA", "zp", G.PTR)
     a.i("INY").i("LDA", "indy", FTC).i("STA", "zp", G.PTR + 1)
@@ -678,7 +678,7 @@ def _sp_fix_balance():
 
 
 def _sp_scratch_floor():
-    """Phase 3 (ii): zero-page scratch beside kept sp fabric still promotes.
+    """Stage 3: zero-page scratch beside kept sp fabric still promotes.
 
     Without frameproc.addr_floor the kept push (zext2(sp)|$0100) reaches an
     interval from zero and spuriously threatens every zero-page cell."""
@@ -702,7 +702,7 @@ def _sp_loop_sub():
 
 
 def _phase_split_reload():
-    """2b: the pair's halves reloaded in different frames by a phase machine.
+    """Stage 3: the pair's halves reloaded in different frames by a phase machine.
 
     Air_on_a_Rasterline $0C1A/$0D05 (tools/disasm_tune.py): one play phase writes
     zp_FC from m_1145, a later phase writes zp_FB from m_118A - no frame holds a
@@ -723,7 +723,7 @@ def _phase_split_reload():
 
 
 def _shift_divide():
-    """Phase 6: the pair as a divide accumulator - (T2[y]-T1[y]) >> n, n from a cell.
+    """Stage 3: the pair as a divide accumulator - (T2[y]-T1[y]) >> n, n from a cell.
 
     Cool_Air $1447..$145D (tools/disasm_tune.py): SEC/SBC lanes build the 16-bit
     interval, then an LSR A / ROR $FB loop rotates it right n times - the 6502
@@ -752,7 +752,7 @@ def _shift_divide():
 
 
 def _dispatch_scratch():
-    """Phase 3/R8: scratch written before an SMC-operand dispatch, read by handlers.
+    """Stage 3: scratch written before an SMC-operand dispatch, read by handlers.
 
     Ghouls $6360..$6374 in miniature (docs/follin-dispatch-study.md section 1):
     paired table rows patch a jmp operand - a switch goto join, not a wall."""
@@ -869,7 +869,7 @@ def _sp_call_displaced():
 
 
 def _g2_store():
-    """G2 (7.10.3): a (zext2(y) + $NN) store is bounded under $01FF, not top."""
+    """Stage 3 (G2 shape, 7.10.3): a (zext2(y) + $NN) store is bounded under $01FF, not top."""
     a = G.Asm(G.ORG)
     a.i("LDY", "abs", CTR)
     a.i("LDA", "abs", CTR).i("ORA", "imm", 0x40).i("STA", "absy", 0x00A5)
@@ -934,13 +934,13 @@ def test_fixture_builds_and_gates(name):
     assert _lift(name).startswith("frameprog 1")
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 3: scratch promotion", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: scratch promotion", **XFAIL)
 def test_scratch_cell_is_a_local_not_state():
     text = _lift("scratch")
     assert not re.search(r"\bm_%04X\b" % TMP, text), "scratch cell survives as a named cell"
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 2: cursor lift", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: cursor lift", **XFAIL)
 def test_pointer_walk_names_no_raw_address():
     text = _lift("pointer_walk")
     body = text[text.index("sub_") :]
@@ -948,14 +948,16 @@ def test_pointer_walk_names_no_raw_address():
     assert "carry(" not in body, "the pointer advance still carries between lanes"
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 4: wide compare", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: wide compare", **XFAIL)
 def test_borrow_chain_is_one_wide_compare():
     text = _lift("borrow_chain")
     assert "carry(" not in text, "the borrow chain survives as byte-lane carries"
     assert not re.search(r"\$01 - \(zext2", text), "a borrow survives as compare arithmetic"
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 5: boundary shadow", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3: sinks are write-only, no read-back survives", **XFAIL
+)
 def test_lone_lane_half_owes_no_register_load():
     text = _lift("lone_lane")
     assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
@@ -1043,14 +1045,14 @@ def test_init_written_livein_cell_stays_state():
     assert re.search(r"_%04X\b" % POS, _state_block(_lift("init_livein")))
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 2: multiplexed pair splits per role", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: multiplexed pair splits per role", **XFAIL)
 def test_mux_pair_certifies_the_pointer_role():
     text = _lift("mux_pair")
     body = text[text.index("sub_") :]
     assert "mem[" not in body, "the pointer role still reads through a raw address"
 
 
-@pytest.mark.xfail(reason="register-model-lift Phase 2: cursor values as data", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: cursor values as data", **XFAIL)
 def test_cursor_save_restore_lifts_to_cursor_values():
     text = _lift("cursor_save")
     body = text[text.index("sub_") :]
@@ -1058,7 +1060,7 @@ def test_cursor_save_restore_lifts_to_cursor_values():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 2: write-through becomes a table write", **XFAIL
+    reason="register-model-lift stage 3: write-through becomes a table write", **XFAIL
 )
 def test_writethrough_store_becomes_a_bounded_table_write():
     text = _lift("writethrough")
@@ -1089,28 +1091,29 @@ def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a dual-destination advance keeps the pair byte-wise", **XFAIL
+    reason="register-model-lift stage 3: a dual-destination advance keeps the pair byte-wise",
+    **XFAIL,
 )
 def test_dual_store_advance_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_advance")
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: store order within a lane does not free the pair", **XFAIL
+    reason="register-model-lift stage 3: store order within a lane does not free the pair", **XFAIL
 )
 def test_dual_store_pair_first_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_pair_first")
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: uninterleaved pair stores still keep it byte-wise", **XFAIL
+    reason="register-model-lift stage 3: uninterleaved pair stores still keep it byte-wise", **XFAIL
 )
 def test_dual_store_via_regs_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_via_regs")
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a hi-first dual-destination advance keeps the pair byte-wise",
+    reason="register-model-lift stage 3: a hi-first dual-destination advance keeps the pair byte-wise",
     **XFAIL,
 )
 def test_dual_store_hi_first_fuses_its_cursor_pair():
@@ -1118,14 +1121,14 @@ def test_dual_store_hi_first_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a cell-stepped dual store keeps it byte-wise", **XFAIL
+    reason="register-model-lift stage 3: a cell-stepped dual store keeps it byte-wise", **XFAIL
 )
 def test_dual_store_computed_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_computed")
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a lo-only dual store refuses certification, not just naming",
+    reason="register-model-lift stage 3: a lo-only dual store refuses certification, not just naming",
     **XFAIL,
 )
 def test_dual_store_lo_only_fuses_its_cursor_pair():
@@ -1138,7 +1141,8 @@ def test_dual_store_lo_only_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a stack-spilled cursor has no word form to appeal to", **XFAIL
+    reason="register-model-lift stage 3: a stack-spilled cursor has no word form to appeal to",
+    **XFAIL,
 )
 def test_stack_spill_cursor_fuses_its_cursor_pair():
     """The largest group (15 webs), and the one no proven-word-form fix can reach.
@@ -1150,7 +1154,8 @@ def test_stack_spill_cursor_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: an unobserved carry arm leaves the hi lane unpaired", **XFAIL
+    reason="register-model-lift stage 3: an unobserved carry arm leaves the hi lane unpaired",
+    **XFAIL,
 )
 def test_deferred_carry_cursor_fuses_its_cursor_pair():
     """The hi lane is in the code but not the text, so no store pairs with the lo one."""
@@ -1158,7 +1163,7 @@ def test_deferred_carry_cursor_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a split lo/hi save-back destination cannot pair", **XFAIL
+    reason="register-model-lift stage 3: a split lo/hi save-back destination cannot pair", **XFAIL
 )
 def test_table_spill_cursor_fuses_its_cursor_pair():
     """The advance is already one u16 store; the de-interleaved save-back is what refuses."""
@@ -1166,7 +1171,7 @@ def test_table_spill_cursor_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: interleaved half stores never pair, so the pair refuses",
+    reason="register-model-lift stage 3: interleaved half stores never pair, so the pair refuses",
     **XFAIL,
 )
 def test_unpaired_half_store_fuses_its_cursor_pair():
@@ -1187,7 +1192,7 @@ def test_an_inpage_advance_is_never_fused():
     assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
 
 
-@pytest.mark.xfail(reason="register-model-lift G2: INT_ADD bound in addr_bits", **XFAIL)
+@pytest.mark.xfail(reason="register-model-lift stage 3: INT_ADD store bound via intervals", **XFAIL)
 def test_g2_bounds_the_zext_add_store():
     _lift("g2_store")
     bad = [b for b in _unnamed_store_bounds(_lift_prog["g2_store"]) if b > 0x01FF]
@@ -1288,7 +1293,7 @@ def test_a_stack_held_cursor_refuses_low_held():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 6: the deref bound the certification cannot give",
+    reason="register-model-lift stage 3: the deref bound the certification cannot give",
     **XFAIL,
 )
 def test_a_stack_held_cursor_lifts_once_the_deref_is_bounded():
@@ -1326,7 +1331,7 @@ def test_computed_rows_walk_off_the_registry():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 6: a computed row needs the value-set walker",
+    reason="register-model-lift stage 3: an arithmetic row resolves in the memory sort or stays guarded",
     **XFAIL,
 )
 def test_computed_rows_map():
@@ -1352,14 +1357,14 @@ def test_the_smc_operand_dispatch_is_a_join_not_a_wall():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 3: written-before-read joins over a dispatch", **XFAIL
+    reason="register-model-lift stage 3: written-before-read joins over a dispatch", **XFAIL
 )
 def test_dispatch_scratch_promotes():
     assert not re.search(r"\bm_%04X\b" % TMP, _lift("dispatch_scratch"))
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift 2b: a cross-frame lane reload is a masked word update", **XFAIL
+    reason="register-model-lift stage 3: a cross-frame lane reload is a masked word update", **XFAIL
 )
 def test_a_phase_split_reload_fuses_its_cursor_pair():
     """Each half store is a lane replacement - (ptr & $FF00) | zext2(row) - so no
@@ -1368,7 +1373,7 @@ def test_a_phase_split_reload_fuses_its_cursor_pair():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 6: a loop-carried LSR/ROR pair is one wide variable shift",
+    reason="register-model-lift stage 3: a loop-carried LSR/ROR pair is one wide variable shift",
     **XFAIL,
 )
 def test_a_shift_divide_lifts_to_a_wide_shift():
@@ -1386,7 +1391,7 @@ def test_an_entry_balanced_procedure_destacks():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift Phase 3 (ii): addr_floor keeps the kept push off zero page",
+    reason="register-model-lift stage 3: addr_floor keeps the kept push off zero page",
     **XFAIL,
 )
 def test_scratch_beside_kept_sp_fabric_promotes():

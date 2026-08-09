@@ -312,7 +312,7 @@ def addr_floor(n, env=None):
 
     ``addr_bits``' mirror, and the lower bound it cannot give: the stack push
     ``zext2(sp) | $0100`` is guaranteed bit 8, so its reach starts at ``$0100``
-    rather than at zero (docs/register-model-lift-impl.md 2, Phase 3 (ii))."""
+    rather than at zero (docs/register-model-lift-impl.md, stage 3 intervals)."""
     m = E.mask(loc_width(n))
     if n[0] == "const":
         return n[1] & m
