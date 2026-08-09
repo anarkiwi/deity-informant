@@ -6,6 +6,7 @@ frame-oracle equality."""
 
 import pytest
 
+from deity_informant import roles
 from examples.state_machine_lift import (
     FRAMES,
     change_stream,
@@ -39,13 +40,16 @@ def test_minimized_grid_matches_vm(art):
     assert grids_from_writes(art["init_writes"], art["min_frames"]) == art["orig_grids"]
 
 
-def test_roles_are_the_four_the_plan_names(art):
-    roles = classify_roles(art["folded"])
-    assert roles["ptr_00FB"] == "cursor"
-    assert roles["ctr_00FA"] == "counter"
-    assert roles["ctr_00F9"] == "accumulator"
-    assert {roles[n] for n in ("zp_F5", "zp_F6", "zp_F7", "zp_F8")} == {"parameter"}
-    text = render(art["folded"], roles)
+def test_roles_are_the_plan_s_own_and_the_field_line_is_the_dialect_s(art):
+    """The example's roles are ``roles.ROLES`` and it spells them as the grammar does."""
+    got = classify_roles(art["folded"])
+    assert got["ptr_00FB"] == "cursor"
+    assert got["ctr_00FA"] == "counter"
+    assert got["ctr_00F9"] == "accumulator"
+    assert {got[n] for n in ("zp_F5", "zp_F6", "zp_F7", "zp_F8")} == {"parameter"}
+    assert set(got.values()) <= set(roles.ROLES)
+    text = render(art["folded"], got)
+    assert "song_pos: cursor u16" in text and "dur: counter u8" in text
     assert "song_pos:u16 += 2" in text and "sid.v1.freq:u16" in text
 
 

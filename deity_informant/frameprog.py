@@ -113,12 +113,14 @@ def _state_fields(view, decls, dispatch, aliases=None):
     return fields, inputs
 
 
-def _field_line(name, width, array, observed, blocks=()):
+def _field_line(name, width, array, observed, role=None, blocks=()):
+    """One ``state { }`` line; the role qualifies the type and names nothing else."""
+    kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
     if array:
-        return " %s: u%d[]" % (name, 8 * width)
+        return " %s: %s[]" % (name, kind)
     ext = (" in " + ", ".join(blocks)) if blocks else ""
     obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
-    return " %s: u%d%s%s" % (name, 8 * width, ext, obs)
+    return " %s: %s%s%s" % (name, kind, ext, obs)
 
 
 def _extent_names(extents, symbols):
@@ -180,6 +182,7 @@ class FrameProgram:
         extents=(),
         dispatch=(),
         evidence=None,
+        roles=(),
     ):
         self.play = play
         self.init = init
@@ -197,6 +200,7 @@ class FrameProgram:
         self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
         self.init_census = dict(init_census or {})
         self.extents = dict(extents)  # 2b: pointer cell -> the block bases its derefs land in
+        self.roles = dict(roles)  # stage 2: state field name -> the role its updates name
         self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
 
@@ -640,7 +644,8 @@ def dumps(prog):
         for pc in sorted(prog.dispatch)
     )
     ext = _extent_names(prog.extents, prog.symbols)
-    body = ["state {"] + [_field_line(*f, ext.get(f[0], ())) for f in prog.state] + ["}"]
+    fields = [_field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in prog.state]
+    body = ["state {"] + fields + ["}"]
     data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
@@ -676,6 +681,7 @@ def parse(text):
         extents=doc.extents,
         dispatch=doc.dispatch_sets,
         evidence=doc.evidence,
+        roles=doc.roles,
     )
 
 

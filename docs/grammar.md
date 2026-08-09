@@ -69,6 +69,13 @@ in. An extent is a pointer's, so only a scalar `u16` field carries one; each
 block is named by its base cell, an alias included, and the blocks are emitted
 ascending. The clause sits between the array brackets and `observed`.
 
+A field's type may carry a **role** — `ptr_0021: cursor u16`, one of `cursor`,
+`accumulator`, `counter`, `flags`, `parameter`, `vm` — naming how the play
+routine updates that cell (docs/register-model-lift-impl.md, stage 2). The role
+qualifies the type and **licenses nothing**: an un-roled `uN` field is legal and
+means exactly what it always did, so a cell whose update shape no role covers is
+declared without one rather than misdescribed. Roles are a frameprog form.
+
 A width-2 store may carry the **write order** `hi-first`, which says its two
 bytes leave in descending address order: `hi-first sid.v1.freq_lo[y]:2 = e`
 writes the high cell before the low one. Absent the word, a word store emits
@@ -162,10 +169,13 @@ evline: "code" span* _NL               -> ev_code
 span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" NAME [array] [statext] [statobs] _NL
+statedef: NAME ":" [srole] NAME [array] [statext] [statobs] _NL
 array: "[" "]"
 statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
+// the role qualifies the field's type: it names how the cell is updated and
+// licenses nothing, so an un-roled uN stays legal (register-model-lift stage 2)
+!srole: "cursor" | "accumulator" | "counter" | "flags" | "parameter" | "vm"
 
 // ---- procedures ----------------------------------------------------------------
 proc: "proc" HEX "{" _NL sitem* "}" _NL

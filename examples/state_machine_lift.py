@@ -805,13 +805,16 @@ def _fmt(e):
 
 
 def render(folded, roles):
-    """Print the folded program as the role-typed state machine."""
+    """Print the folded program as the role-typed state machine.
+
+    The field line is the dialect's own (``name: <role> uN``, sidprog.lark
+    ``statedef``), so what this prints is what stage 4 emits."""
     lines = ["state {"]
     order = {"cursor": 0, "counter": 1, "accumulator": 2, "parameter": 3}
     for n in sorted(roles, key=lambda n: (order[roles[n]], n)):
         w = "u16" if roles[n] == "cursor" else "u8"
-        lines.append("  %-11s %s: %s" % (roles[n], RENAME.get(n, n), w))
-    lines.append("  parameter   note: u16   ; note_hi:note_lo as one word (pitch row)")
+        lines.append("  %s: %s %s" % (RENAME.get(n, n), roles[n], w))
+    lines.append("  note: parameter u16   ; note_hi:note_lo as one word (pitch row)")
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
     lines.append("play {")
