@@ -265,9 +265,10 @@ not reachable by destacking.** Two thirds of the class is fabric only
 `drop_sp` removes, and `drop_sp` is all-or-nothing per program, blocked by
 `sp_linked` (307 tunes) and `sp_unbalanced` (201). Relaxing `sp_linked`
 outright clears only 71 tunes / 217 sites, so the real ceiling is the
-balance analysis. Both rules moved into **Phase 2c** (they are dependents of
-2a's bounds). Two consequences owned by their phases: R7's cap (326/624,
-2c's to release), and the `store_reach` interval-from-zero defect that would
+balance analysis. Both rules moved into **Phase 2c**, which landed neither as
+written: the linkage went on displacement and the balance on the call graph
+(§2 2c). Two consequences owned by their phases: R7's cap (326/624, released
+to 373 by 2c), and the `store_reach` interval-from-zero defect that would
 have forfeited a third of Phase 3's yield (the floor is `frameproc
 .addr_floor`, landed in 2a; `sp_scratch_floor` fixture pins the promise).
 
@@ -279,8 +280,7 @@ is stack-balanced and refused on its loop edge, so 2c renamed it
 ### Phase 2 — sequence traffic becomes table cursors
 
 The keystone, split so analysis lands before dialect: 2a certification
-(DONE), 2b annotation + rewrite (DONE, b0–b5), 2c the stack endgame
-(scheduled).
+(DONE), 2b annotation + rewrite (DONE, b0–b5), 2c the stack endgame (DONE).
 
 #### 2a — certification (analysis only, no text change) — DONE
 
@@ -353,9 +353,9 @@ emitted text byte-identical corpus-wide (624/624 sha256); full suite green
 with the Phase 2 fixtures xfail; gate 622/623; census sum 31,112 with every
 signature unchanged; `fuse_measure`/`storage_census` identical row for row.
 
-**What it supplies**: 2c's `sp_linked` premise ("an access certified into a
-declared extent is bounded off page one") — half of Phase 1's 611-tune
-unprovability was the missing `addr_floor`, not the missing certification;
+**What it supplies**: the reach vocabulary 2c's page-one verdict is built from
+(`addr_floor` is half of Phase 1's 611-tune unprovability; the *certification*
+itself could not serve as 2c's premise — §2 2c correction 4);
 Phase 3's `aliased` reach vocabulary and its floor; and 2b's whole work
 list. **Not done**: the certification is intraprocedural (88 `opaque`
 defs); the reads closure falls back to position-blind taint (7 roots);
@@ -404,8 +404,8 @@ rule, refusals, gate):
   `block_read`, or a computed def whose lo/hi legs fuse at one seat; else
   `def_unliftable`; (iii) **uses expressible** — deref, store-through, byte
   extract, word compare; else `web_opaque`; (iv) **holds off the machine
-  stack** — else `low_held`, re-enters after 2c (`low_held_cursor`
-  fixture). Everything 2a called a *certification* refusal stops blocking:
+  stack** — else `low_held`, which 2c measured as unmoved at 96 defs and
+  handed to Phase 6 (`low_held_cursor` fixture, §2 2c correction 5). Everything 2a called a *certification* refusal stops blocking:
   entangled reads spell as extracts, unbounded advance is what the guard is
   for, and the post-init premise dissolves at lift (a value never deref'd
   faults nothing).
