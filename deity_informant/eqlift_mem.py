@@ -725,16 +725,23 @@ def _root_keep(tree, rootids, chosen):
 
 
 def render_proc(
-    stmts, aliases=None, entry=0, info=None, root_extract=None, proofs=None, budget=None
+    stmts,
+    aliases=None,
+    entry=0,
+    info=None,
+    root_extract=None,
+    proofs=None,
+    budget=None,
+    stats=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
-    Memory forwards intra-block; at a branch join or loop head only the addresses
-    written under the branch are havoced, so cells invariant across it still
-    forward. ``root_extract`` selects the stage-3a root path (default ``ROOT_EXTRACT``),
-    and ``budget`` is this procedure's share of the artifact's saturation seconds."""
+    Memory forwards intra-block; at a join only the addresses written under the branch
+    are havoced. ``budget`` is the procedure's share of the artifact's emit seconds, spent
+    by saturation (capped at ``BUDGET_S``) then extraction; sites past it render own-term."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
-    stt = {"env": {}, "mem": mem0(), "ver": 0, "k": 0}
+    deadline = None if budget is None else time.monotonic() + budget
+    stt = {"env": {}, "mem": mem0(), "k": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
     src, seeds = {}, []
     dfs = _Defs(src)
@@ -746,12 +753,14 @@ def render_proc(
             seeds.append((term, got[0], got[1]))
         return term
 
-    def bump(key):
-        stt[key] += 1
-        return stt[key]
+    def fresh():
+        """One counter for every fresh name: a def version and a havoc version drawn
+        from two counters collide on ``<base>.<n>`` and equate unrelated values."""
+        stt["k"] += 1
+        return stt["k"]
 
     def join_mem(pre_mem, s):
-        return _join_mem(pre_mem, [s], lambda: bump("k"))
+        return _join_mem(pre_mem, [s], fresh)
 
     def conv(e):
         k = e[0]
@@ -778,12 +787,12 @@ def render_proc(
 
     def havoc(names):
         for n in names:  # havoc names have no rendered def: never available to spell
-            stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+            stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
             src.pop(n, None)
 
     def havoc_all():
         havoc(list(stt["env"]))
-        stt["mem"] = memk(i64(bump("k")))
+        stt["mem"] = memk(i64(fresh()))
 
     def walk(sl):
         nodes = []
@@ -791,7 +800,7 @@ def render_proc(
             k = s[0]
             if k == "asg":
                 rhs = conv(s[2])
-                name = "%s.%d" % (s[1], bump("ver"))
+                name = "%s.%d" % (s[1], fresh())
                 defs.append((name, E.loc(name), rhs))
                 locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
                 nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
@@ -832,7 +841,7 @@ def render_proc(
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) is c and els_env.get(n) is c):
-                        stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+                        stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
                         src.pop(n, None)
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
@@ -899,11 +908,17 @@ def render_proc(
     memh = [
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
-    saturate(eg, rs, budget=budget)
+    saturate(eg, rs, budget=None if budget is None else min(BUDGET_S, budget))
     pr = E._Printer(aliases or {})
 
+    def own_ir(i):
+        """The site's own term: position-correct by construction, and what a spent
+        extraction budget falls back to -- extraction is sound at any cutoff."""
+        raw = E._parse_ir(str(terms[i][0]))
+        return _to_ir(raw), raw
+
     def pick_ir(i):
-        t, av, own = terms[i]
+        _t, av, own = terms[i]
         cands = [
             (_to_ir(r), r)
             for r in (E._parse_ir(str(x)) for x in eg.extract_multiple(handles[i], 12))
@@ -917,12 +932,22 @@ def render_proc(
 
         kept = [c for c in cands if ok(c[0]) and not _has_mem(c[0]) and _defined_at(c[0], av)]
         if not kept:
-            raw = E._parse_ir(str(t))
-            if ok(_to_ir(raw)):
-                kept = [(_to_ir(raw), raw)]
+            raw = own_ir(i)
+            if ok(raw[0]):
+                kept = [raw]
         return min(kept or cands, key=lambda c: (E._cost(c[0]), repr(c[0])))
 
-    picked = [pick_ir(i) for i in range(len(terms))]
+    spent = 0
+    picked = []
+    for i in range(len(terms)):
+        if deadline is not None and time.monotonic() >= deadline:
+            spent += 1
+            picked.append(own_ir(i))
+        else:
+            picked.append(pick_ir(i))
+    if stats is not None:
+        stats["sites"] = stats.get("sites", 0) + len(terms)
+        stats["extract_fallback"] = stats.get("extract_fallback", 0) + spent
     chosen = [c for c, _raw in picked]
     if info is None:
         info = E.frameproc._Info([(entry, stmts)], entry)
@@ -1382,13 +1407,12 @@ def _written(stmts):
     return out
 
 
-def emit_mem(model, root_extract=None, proofs=None):
+def emit_mem(model, root_extract=None, proofs=None, stats=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
-    Reuses eqlift's header/state/data/symbol assembly verbatim; only the per-proc
-    body is the memory-graph lift. Interprocedural liveness feeds every proc, and
     ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
-    are per procedure, so one merged record would prove the wrong equalities."""
+    are per procedure, so one merged record would prove the wrong equalities. ``EMIT_S``
+    is divided over the procedures still to render, so slack from one funds the next."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -1430,7 +1454,7 @@ def emit_mem(model, root_extract=None, proofs=None):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
         share = max(0.0, end - time.monotonic()) / (len(procs) - i)
-        body = render_proc(stmts, aliases, entry, info, root_extract, rec, min(BUDGET_S, share))
+        body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats)
         if rec is not None:
             proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)
@@ -1443,10 +1467,10 @@ def emit_mem(model, root_extract=None, proofs=None):
     return "\n".join(lines) + "\n"
 
 
-def emit(model, root_extract=None, proofs=None):
+def emit(model, root_extract=None, proofs=None, stats=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model, root_extract, proofs), None
+    return emit_mem(model, root_extract, proofs, stats), None

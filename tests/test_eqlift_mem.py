@@ -527,3 +527,36 @@ def test_verify_sites_reads_the_store_chain_not_the_name():
     assert mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x40, 2), 1), ("loc", "x.1"))]}) == 1
     with pytest.raises(AssertionError):
         mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x41, 2), 1), ("loc", "x.1"))]})
+
+
+_ACROSS_CALL = [
+    ("asg", "a", ("const", 5, 1)),
+    ("call", 0x1000, 0x1003),
+    ("asg", "a", ("op", "INT_ADD", (("loc", "a"), ("const", 1, 1)), 1)),
+    ("st", ("const", 0x40, 1), ("loc", "a")),
+]
+
+
+@pytest.mark.parametrize("root", (False, True))
+def test_havoc_versions_do_not_collide_with_def_versions(root):
+    """Two counters over one ``<base>.<n>`` namespace equate a havoc with a def: the
+    call's havoc of ``a`` took the pre-call def's name, so the graph folded $05 across
+    the call and printed ``zp_40 = $06``, and Alioth's proof read ``x.3 = x.3 + 1``."""
+    assert mem.render_proc(_ACROSS_CALL, root_extract=root)[-2:] == ["a = (a + $01)", "zp_40 = a"]
+    proofs = {}
+    mem.render_proc(_ACROSS_CALL, root_extract=root, proofs=proofs)
+    for name, rhs in proofs["defs"].items():
+        got = []
+        mem._count_locs(rhs, got)
+        assert name not in got  # a fresh version is never read by its own definition
+    assert mem.verify_sites(proofs) == len(proofs["pairs"])
+
+
+def test_extraction_budget_falls_back_to_the_site_term():
+    """A spent share renders the remaining sites from their own term -- position-correct
+    and sound at any cutoff -- and reports how many; the forwarding is what is given up."""
+    spent, ample = {}, {}
+    assert mem.render_proc(_spill_over(_PUSH), budget=0.0, stats=spent)[-1] == "zp_41 = zp_40"
+    assert 0 < spent["sites"] == spent["extract_fallback"]
+    assert mem.render_proc(_spill_over(_PUSH), budget=30.0, stats=ample)[-1] == "zp_41 = x"
+    assert ample["extract_fallback"] == 0 and ample["sites"] == spent["sites"]
