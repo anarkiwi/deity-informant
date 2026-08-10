@@ -576,8 +576,27 @@ against the cutover's own emitter (`_spliced`) and of which exactly **one** flip
 The `returns` set landing 1 owed is **refused, with its reason measured**: the only
 procedures it can relax are the ones `slot_reader` blocks, and those return to a pc the
 call site does not name, so the sound mechanism is a `framestack` reading of each site's
-resume pc rather than an `_Info` relaxation. Then landings 3-5: role-typed emission, the
-completed witness, housekeeping + close.
+resume pc rather than an `_Info` relaxation.
+
+**Landing 2 is closed (#173-#177); landings 3-5 are open and untouched.** The baselines a
+successor starts from: emit identity **624 tunes, 0 refused, 28,506,888 bytes**, aggregate
+`bc256138777fb033fc2b3d49d8b54c21218d5c87c3402a1e838eae04a59e3f5b`; `gate_sweep` at full
+Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences and zero refusals;
+suite **2,727 passed / 490 skipped / 32 xfailed**, oracle 16; the 25-exemplar review (one
+path now, against the recorded baseline `out/eqlift_measure_l2f.json`) **26,811 lines /
+1,988 stores**, 13,909 extraction sites, 3,322 changed, 12,128 proved, zero faults,
+refusals, regressions and extraction fallbacks; prototype ratchets **339 lines / 820
+nodes**. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved
+and cannot until landing 3 turns the role keywords on; what moved in landing 2 is fidelity
+(the emitter spells the dialect the parser reads) and determinism (the artifact is a
+function of the program). Landing 3 (role-typed emission + steering metrics), landing 4
+(the witness completed: the raw `call`/`callb` and static-image-vector refusals, the signed
+compare over unequal operand widths, the three `Asm` copies onto `asm6502.py`, the
+25-exemplar VM sweep) and landing 5 (the song-model retirement, the `swc` in-edge join
+extension, the `low_held_cursor` ptrcert rung, the stage close) are as their sections state
+them, none begun. The one landing-2 item with no subject yet is the `state { }` demotion:
+scratch demotion belongs to root extraction and frameprog's own emit has none, so it has
+nothing to drop until the unconditional switch.
 
 ## Independent housekeeping (blocks nothing)
 
