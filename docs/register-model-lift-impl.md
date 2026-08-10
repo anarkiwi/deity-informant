@@ -578,25 +578,36 @@ procedures it can relax are the ones `slot_reader` blocks, and those return to a
 call site does not name, so the sound mechanism is a `framestack` reading of each site's
 resume pc rather than an `_Info` relaxation.
 
-**Landing 2 is closed (#173-#177); landings 3-5 are open and untouched.** The baselines a
-successor starts from: emit identity **624 tunes, 0 refused, 28,506,888 bytes**, aggregate
-`bc256138777fb033fc2b3d49d8b54c21218d5c87c3402a1e838eae04a59e3f5b`; `gate_sweep` at full
-Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences and zero refusals;
-suite **2,727 passed / 490 skipped / 32 xfailed**, oracle 16; the 25-exemplar review (one
-path now, against the recorded baseline `out/eqlift_measure_l2f.json`) **26,811 lines /
-1,988 stores**, 13,909 extraction sites, 3,322 changed, 12,128 proved, zero faults,
-refusals, regressions and extraction fallbacks; prototype ratchets **339 lines / 820
+**Landing 2 is closed (#173-#177); landing 3 opens with the emitter made corpus-worthy
+(#179), and the switch itself is what it still owes.** The landings are renumbered from
+here: **3** is the unconditional path (adoption §8 step 4's remainder, with §5's
+`_Prune`/`_inline` and rung (d2) deletions), **4** role-typed emission + steering metrics,
+**5** the witness completed, **6** the housekeeping and the stage close.
+
+Landing 3 part 1 (#179) is landed: the unified renderer is measured on all 624 tunes
+rather than on the canonical example, and the sixteen faults that measurement found are
+fixed. The corpus measurement is now a tool (`tools/splice_sweep.py`): per tune the text
+parses, is a `dumps`/`loads` fixpoint, defines every local it reads, and the program it
+parses back to reproduces the walker's projection. Against the **control** — the same four
+checks over `frameproc.render_lines`' own text, which is where the finding is that 87 of
+624 tunes fail them today — the unified emitter is **zero new failures, three fixed**, a
+`dumps`/`loads` fixpoint on **624 of 624**, and **−4,603 lines with no tune larger** (575
+smaller). Emit identity is **unmoved**, which is what capability with zero use means.
+
+The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,506,888
+bytes**, aggregate `bc256138777fb033fc2b3d49d8b54c21218d5c87c3402a1e838eae04a59e3f5b`;
+`gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
+and zero refusals; suite **2,738 passed / 490 skipped / 32 xfailed**, oracle 16; the
+25-exemplar review against the new recorded baseline `out/eqlift_measure_s4l3.json`
+**26,909 lines / 1,984 stores**, 13,909 extraction sites, 2,884 changed, 12,226 proved,
+zero faults, refusals, unproved sites and extraction fallbacks; the corpus splice sweep
+`out/splice_s4l3.json` against `out/splice_base.json`; prototype ratchets **339 lines / 820
 nodes**. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved
-and cannot until landing 3 turns the role keywords on; what moved in landing 2 is fidelity
-(the emitter spells the dialect the parser reads) and determinism (the artifact is a
-function of the program). Landing 3 (role-typed emission + steering metrics), landing 4
-(the witness completed: the raw `call`/`callb` and static-image-vector refusals, the signed
-compare over unequal operand widths, the three `Asm` copies onto `asm6502.py`, the
-25-exemplar VM sweep) and landing 5 (the song-model retirement, the `swc` in-edge join
-extension, the `low_held_cursor` ptrcert rung, the stage close) are as their sections state
-them, none begun. The one landing-2 item with no subject yet is the `state { }` demotion:
-scratch demotion belongs to root extraction and frameprog's own emit has none, so it has
-nothing to drop until the unconditional switch.
+and cannot until landing 4 turns the role keywords on; what moved in landing 2 is fidelity
+and determinism, and what moved in landing 3 part 1 is soundness of the emitter that is
+about to become the artifact. The `state { }` demotion still has no subject: scratch
+demotion belongs to root extraction and frameprog's own emit has none, so it has nothing
+to drop until the switch.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2109,3 +2120,87 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   sites, two depths, per-site length). A `ret_live` that unions the live-in at each site's
   resume pc is sound; `returns` accumulated at the call statement is not. That is the landing
   this owes, and it is a `framestack` reading, not a `_Info` relaxation.
+- **2026-08-10 — stage 4, landing 3 (part): the unified emitter is measured on the corpus,
+  and sixteen faults it found are fixed.** The cutover's text was green on the canonical
+  example alone; §4's review discipline is the corpus, and the example hid every fault
+  below.
+  (1) **The measurement is a tool, and it has a control.** `tools/splice_sweep.py` asks of
+  each of 624 tunes what the switch will ask — the text parses, it is a `dumps`/`loads`
+  fixpoint, every local it reads has a definition (`frameprog.lint`), and the program it
+  parses back to reproduces the walker's projection under Gate FP. `--baseline` runs the
+  same four over `frameproc.render_lines`' own text, and **that is the finding the control
+  produced**: 87 of 624 tunes fail them on the emitter that ships today (27 evaluation
+  faults, 9 lint, 52 divergences), so the parse-and-evaluate path is not a corpus property
+  and a landing may only be measured as a difference against it. Gate FP as `gate_sweep`
+  runs it evaluates the *analysed* program and never reads the text, which is why this was
+  never visible.
+  (2) **The address reading, at the dialect's breadth.** `_split` reads a `sub` by a
+  constant as the add it equals mod $10000 — `sub_to_add`/`add_to_sub` are both admitted,
+  so §10 forbids depending on which representative extraction returns — and `fmt` spells a
+  constant subtrahend the way `_addref` does, so the two representatives print one text.
+  `_loadref` splits at the access's own width (a word row was `mem[..]:2`), the `sid.reg`
+  view stays the byte's, and a rung-(f) resolved deref names its pointer cell: `derefs` is
+  the resolved cell set, threaded `frameprog.render_ctx` -> `render_proc` -> `_Printer`,
+  and it reads the fused word cell and the unfused `hi<<8|lo` pack alike. The canonical
+  example cannot see this: `test_step4_splice` passed no `resolved` and the example's own
+  deref prints the same either way.
+  (3) **Widths, statements and shapes the walk had never met.** A local reads at the width
+  its definition states (`m_1155[x]:2 = d3` is a byte value in a word store, which the
+  parser refuses) and `_ew` takes `grammar.store_width`'s rule instead of "a local is a
+  byte". `for` — which `frameproc._forloops` mints and the walk raised on — is walked as a
+  loop whose counter havocs with the body. A declared pair's two half stores fuse to the
+  word column, compared on the printed form (a version the base still holds prints the
+  same) and across the nodes root extraction dropped, because otherwise the re-dump fuses
+  them and the text is not a fixpoint. An else arm whose every node is dead prints no
+  `} else {`.
+  (4) **One dialect gap, taken as capability.** A folded word literal had no spelling:
+  `grammar.store_width` read every `const` as one byte, so `filter.cutoff_lo:2 = $0000` was
+  unparseable — and `framefuse._pack` says so in a comment, keeping two constant halves
+  apart to work around it. A literal's width is its digit count (`grammar._const`), which
+  is the rule every other value already states; `tests/test_vocabulary.py` carries the case
+  (spelled, parsed, fixpoint, executed). 23 tunes were unparseable on this alone.
+  (5) **A rule fired outside the width it was proved at.** `INT_CARRY`'s node width is its
+  one-bit result, and both converters passed it as the carry's lane, so `carry_ult` —
+  Z3-proved at width 1 — matched a carry over two u16 loads and rewrote it to an 8-bit
+  wrap test. `eqlift.carry_lane` reads the lane off the operands (`expr._apply`'s own
+  reading), `pass1_node` maps a carry back at width 1, and the §6 site proof that had
+  **refused** on `Akira_K/Data_Data_Data_Data` passes. Emit identity is unmoved, so rung
+  (d2) never saw a word-lane carry; the fault was reachable only after rung (d) fuses.
+  (6) **Five rooting faults, each a local the text reads and no definition defines.**
+  `_node_terms` knew no `pcall`, so an argument's spelling rooted nothing and the call
+  passed an undefined local. `_liveness` ran over the registers alone, so a value local a
+  join renames — read by base name at a version no def carries — looked dead in both arms;
+  it now runs over every local, and `_share_once` refuses to inline away a base some
+  surviving read names at a version no def carries. `sp` is machine state and never faint,
+  and an asg whose operand reads a volatile is rooted for its input order, both as
+  `frameproc._Prune` has them. `_liveness` gets `_Flow`'s remaining cases: the call-body
+  rule (a body some `call` enters carries the machine set at its exit), `armret` (an
+  inlined callee's `ret` continues after the call, not at the procedure's), the loop-head
+  fixpoint's shape, and `info.labmap`'s seed.
+  (7) **Two stale-version faults, and they are the reason the machine disagreed.**
+  `wall`/`havoc_all` havocked only the names already in `env`, so a register the procedure
+  had not yet assigned kept its block input spellable across a call and a store forwarded
+  over it — `Amazing_Spider-Man`'s dispatch target came back as `$60B0`. And a `callb`
+  body (and a `swc` arm) runs with the stack pointer the machine call moved, so `sp` havocs
+  before the body: `Cool_Air`'s `ret` read `$0046`. `live()`'s block-input test was
+  `endswith(".0")`, which matches `x.10` and `x.20`.
+  (8) **The gates.** `tools/emit_identity.py --expect bc256138…` passes — 624 tunes, 0
+  refused, 28,506,888 bytes, **unmoved**. `gate_sweep` at full Songlengths **624 / 624 /
+  624 clean**, zero divergences and refusals. Suite **2,738 passed / 490 skipped / 32
+  xfailed** (eleven new cases, no pin flipped), oracle 16. `tools/splice_sweep.py` at full
+  Songlengths: **zero new failures against the control, three fixed**, the fixpoint holds
+  on **624 of 624**, and emitted size falls **−4,603 lines with no tune larger** (575
+  smaller).
+  (9) **The exemplar review moves, and the direction is the honest one.** The 25-exemplar
+  measure at `DI_EQLIFT_EMIT_S=600` is clean — zero faults, refusals, unproved sites and
+  extraction fallbacks — at **26,909 lines / 1,984 stores** against 26,811 / 1,988: **+98
+  lines on 15 tunes**, `Atmosphere_II` −25, 2 identical. Sites changed fall 3,322 ->
+  **2,884** and sites proved rise 12,128 -> **12,226**, which is (6) and (7) restated: the
+  added lines are register and value definitions the text reads, and the retired rewrites
+  are the ones that were spelling a version the base no longer held. A size ratchet is a
+  steering metric and not a soundness law, so the new run is recorded as the baseline
+  (`out/eqlift_measure_s4l3.json`) with this review rather than treated as a regression.
+  (10) **One context, not three.** `frameprog.render_ctx`/`unified_lines` are the emitter
+  context the switch will call, and `tests/test_step4_splice.py`, `test_shred_regmodel`'s
+  `_spliced` and `tools/splice_sweep.py` all read it, so the cutover's emitter cannot drift
+  from the one the pins measure.

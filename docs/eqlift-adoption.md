@@ -170,7 +170,10 @@ names what is real, grep-verified at #156.)
   compares against a recorded baseline artifact, not a second code path.
 - `frameproc._Prune`/`_prune` and `_inline`/`_inline_list`, with the repolish
   fixpoints that drive them — replaced by root extraction and `_share_once` on
-  the unified path.
+  the unified path. `_Prune`'s liveness is not scaffolding but the reading the
+  render tree owes: stage 4 landing 3 part 1 put its call-body rule, its `armret`
+  stack, its loop-head fixpoint, its `labmap` seed and its `sp`/volatile
+  exemptions into `eqlift_mem._liveness`, because the corpus faulted without them.
 - `framemath`'s per-site value e-graphs (rung (d2)'s scaffolding) — subsumed
   when the same admitted rules fire once in the per-procedure unified graph.
 - the `_loadref` operand-order fix — subsumed once loads are `sel` terms with
@@ -256,7 +259,12 @@ procedure text.
    until step 4 deleted it (stage 4, landing 2).
 4. Delete the transitional passes (§5), `_Prune`/`_inline`, and the flag;
    frameprog emission goes through the unified graph unconditionally. Gate: full
-   suite + Gate FP status unchanged.
+   suite + Gate FP status unchanged. **Part 1 landed (stage 4, landing 3)**: the
+   renderer is measured on all 624 tunes by `tools/splice_sweep.py` — parse,
+   `dumps`/`loads` fixpoint, `lint`, and Gate FP on the parsed text — against the
+   control the same four give on `render_lines`' own text; zero new failures,
+   three fixed, the fixpoint on 624 of 624, −4,603 lines and no tune larger, emit
+   identity unmoved. The switch and the deletions are what remains.
 
 ## 9. Dependency policy
 

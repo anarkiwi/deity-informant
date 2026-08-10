@@ -295,3 +295,16 @@ def test_a_named_unknown_carries_no_spelling_obligation():
     unknown = {r.id for r in idioms.ROWS if r.form == idioms.UNKNOWN}
     assert unknown == {"stack-slot", "carry-value", "compare-value"}
     assert len(unknown) + len(CHECKLIST) == len(idioms.ROWS)
+
+
+def test_a_word_constant_is_spellable_as_a_word_store_s_value():
+    """A folded word literal had no spelling: ``grammar.store_width`` read every
+    ``const`` as one byte, so ``filter.cutoff_lo:2 = $0000`` was unparseable and
+    ``framefuse._pack`` kept two constant halves apart to work around it. A literal's
+    width is its digit count, which is the same rule every other value states."""
+    text = frameprog.dumps(_prog(c(0x0102, 2), (), (), ()))
+    assert " sid.v1.freq_lo:2 = $0102" in text
+    prog = frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+    assert G.store_width(c(0x0102, 2)) == 2 and G.store_width(c(0x02, 1)) == 1
+    assert frameval.Evaluator(prog, {}).frames(1) == [[(0, 0x02), (1, 0x01)]]

@@ -116,11 +116,13 @@ def check_alias(name):
 def store_width(val):
     """Byte width of a store whose value expression is ``val`` (2 once fused).
 
-    ``op``/``mem`` and a word local state their width (``frameproc.loc_width``
-    is the same rule, unreachable here); every other value is one byte."""
+    ``op``/``mem``, a word local and a word literal state their width
+    (``frameproc.loc_width`` is the same rule, unreachable here); every other
+    value is one byte. A literal's width is its digit count (``_const``), so a
+    folded word constant has one spelling rather than none."""
     if val[0] == "op":
         return val[3]
-    if val[0] == "mem":
+    if val[0] in ("mem", "const"):
         return val[2]
     return val[2] if val[0] == "loc" and len(val) > 2 else 1
 

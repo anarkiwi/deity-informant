@@ -69,6 +69,7 @@ omit = [
     "tools/fuse_measure.py",
     "tools/gate_sweep.py",
     "tools/showcase.py",
+    "tools/splice_sweep.py",
 ]
 
 [tool.black]
