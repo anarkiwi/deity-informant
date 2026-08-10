@@ -9,6 +9,34 @@ pytest.importorskip("z3")
 from deity_informant import eqlift as E
 from deity_informant import eqlift_mem as mem
 
+
+def _commando():
+    """The cached Commando model, or a skip; one copy for every corpus case here."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, "tests")
+    from _corpus import corpus_params
+    from deity_informant import structured as S
+    from deity_informant.c64 import load_psid
+
+    ent = next(
+        (
+            t
+            for t in corpus_params(Path(".oracle-cache/hvsc"))
+            if str(t[0]).endswith("Commando.sid") and t[0].parent.name == "Hubbard_Rob"
+        ),
+        None,
+    )
+    if ent is None:
+        pytest.skip("HVSC Commando not cached")
+    sid, sub, secs = ent
+    m, _l, init, play = load_psid(sid.read_bytes())
+    m[0xD418] = 0x0F
+    model, _ev = S.decompile(m, init, play, int(secs * 50), sub)
+    return model
+
+
 SCRATCH = ("num", 0x5504, 2)
 SID = ("add", ("num", 0xD400, 2), ("zext", ("loc", "voice.1")), 2)  # [D400,D4FF]
 PTR = ("add", ("loc", "ptr.1"), ("loc", "w9.1"), 2)  # unknown base: unbounded
@@ -298,30 +326,7 @@ def test_dag_printer_shares_and_drops_dead():
 def test_render_proc_real_commando():
     """render_proc emits the whole Commando play procedure via the memory graph,
     matching eqlift-quality structured output on real code."""
-    from pathlib import Path
-    import sys
-
-    sys.path.insert(0, "tests")
-    from _corpus import corpus_params
-    from deity_informant import structured as S
-    from deity_informant.c64 import load_psid
-
-    hvsc = Path(".oracle-cache/hvsc")
-    ent = next(
-        (
-            t
-            for t in corpus_params(hvsc)
-            if str(t[0]).endswith("Commando.sid") and t[0].parent.name == "Hubbard_Rob"
-        ),
-        None,
-    )
-    if ent is None:
-        pytest.skip("HVSC Commando not cached")
-    sid, sub, secs = ent
-    m, _l, init, play = load_psid(sid.read_bytes())
-    m[0xD418] = 0x0F
-    model, _ev = S.decompile(m, init, play, int(secs * 50), sub)
-    stmts, aliases, entry = E.pass1(model)
+    stmts, aliases, entry = E.pass1(_commando())
     lines = mem.render_proc(stmts, aliases, entry)
     assert len(lines) > 300
     assert "ctr_5525 = (ctr_5525 + $01)" in lines  # cell forward + byte width + printer
@@ -344,29 +349,7 @@ def test_render_proc_real_commando():
 def test_emit_mem_whole_artifact():
     """emit_mem renders the whole artifact (header/state/data + all procs) via the
     memory graph, deterministically -- the cutover-capable emitter."""
-    from pathlib import Path
-    import sys
-
-    sys.path.insert(0, "tests")
-    from _corpus import corpus_params
-    from deity_informant import structured as S
-    from deity_informant.c64 import load_psid
-
-    hvsc = Path(".oracle-cache/hvsc")
-    ent = next(
-        (
-            t
-            for t in corpus_params(hvsc)
-            if str(t[0]).endswith("Commando.sid") and t[0].parent.name == "Hubbard_Rob"
-        ),
-        None,
-    )
-    if ent is None:
-        pytest.skip("HVSC Commando not cached")
-    sid, sub, secs = ent
-    m, _l, init, play = load_psid(sid.read_bytes())
-    m[0xD418] = 0x0F
-    model, _ev = S.decompile(m, init, play, int(secs * 50), sub)
+    model = _commando()
     txt = mem.emit_mem(model)
     assert txt.startswith("eqlift 0\n") and "state {" in txt and "sub_5012 {" in txt
     assert "table m_5428" in txt  # data section reused from eqlift verbatim
@@ -375,30 +358,115 @@ def test_emit_mem_whole_artifact():
 
 def test_proc_walks_whole_procedure():
     """The lift traverses a full procedure body (all control flow) and records sites."""
-    from pathlib import Path
-    import sys
-
-    sys.path.insert(0, "tests")
-    from _corpus import corpus_params
-    from deity_informant import structured as S
-    from deity_informant.c64 import load_psid
-
-    hvsc = Path(".oracle-cache/hvsc")
-    ent = next(
-        (
-            t
-            for t in corpus_params(hvsc)
-            if str(t[0]).endswith("Commando.sid") and t[0].parent.name == "Hubbard_Rob"
-        ),
-        None,
-    )
-    if ent is None:
-        pytest.skip("HVSC Commando not cached")
-    sid, sub, secs = ent
-    m, _l, init, play = load_psid(sid.read_bytes())
-    m[0xD418] = 0x0F
-    model, _ev = S.decompile(m, init, play, int(secs * 50), sub)
-    stmts, _aliases, _entry = E.pass1(model)
+    stmts, _aliases, _entry = E.pass1(_commando())
     p = mem.Proc().run(stmts)
     kinds = {k: sum(s[0] == k for s in p.sites) for k in ("asg", "st", "if")}
     assert kinds["asg"] > 50 and kinds["st"] > 50 and kinds["if"] > 10
+
+
+# ---- stage 3a: root extraction ---------------------------------------------------
+def _info(entry=0, stmts=()):
+    info = E.frameproc._Info([(entry, list(stmts))], entry)
+    info.summarize()
+    return info
+
+
+def _tree():
+    """A render tree: one asg, a SID store, a scratch store, a return."""
+    return [
+        ("asg", "a", 0, "a.1"),
+        ("st", ("const", 0xD400, 2), 1, None, 1),
+        ("st", ("const", 0x40, 1), 2, None, 1),
+        ("ret", None),
+    ]
+
+
+def test_flag_defaults_off():
+    """3a lands the mechanism, not the artifact change: the flag is off by default."""
+    assert mem.ROOT_EXTRACT is False
+
+
+def test_roots_names_only_the_observable_sinks():
+    """Roots are the surviving stores, the control statements and the boundary-live
+    registers -- a register no consumer reads is not one."""
+    tree, chosen = _tree(), [("num", 1, 1), ("loc", "a.1"), ("num", 2, 1)]
+    rt = mem.roots(tree, _info(), 0, chosen)
+    assert rt.sid == frozenset({0xD400})  # the write-only SID sink
+    assert {id(nd) for nd in tree} == rt.ids  # every store, the ret, and the read `a`
+    dead = mem.roots(tree, _info(), 0, [("num", 1, 1), ("num", 9, 1), ("num", 2, 1)])
+    assert id(tree[0]) not in dead.ids  # nothing reads `a` now: not a root
+    assert rt.regs == frozenset(_info().ret_live(0))
+
+
+def test_roots_drop_a_store_the_axioms_proved_redundant():
+    tree = _tree()
+    rt = mem.roots(tree, _info(), 0, [("num", 1, 1)] * 3, {id(tree[2])})
+    assert id(tree[2]) not in rt.ids and id(tree[1]) in rt.ids
+
+
+def test_root_keep_pulls_in_the_definitions_a_root_names():
+    """A statement is emitted only if a root reaches it -- transitively."""
+    tree = [
+        ("asg", "t", 0, "t.1"),
+        ("asg", "u", 1, "u.1"),
+        ("st", ("const", 0xD400, 2), 2, None, 1),
+    ]
+    chosen = [("num", 1, 1), ("loc", "t.1"), ("loc", "u.1")]
+    keep = mem._root_keep(tree, frozenset({id(tree[2])}), chosen)
+    assert keep == {id(nd) for nd in tree}
+    solo = mem._root_keep(tree, frozenset({id(tree[2])}), [("num", 1, 1)] * 3)
+    assert solo == {id(tree[2])}  # neither def is named: neither prints
+
+
+_RELOAD = [
+    ("asg", "a", ("mem", ("const", 0x1000, 2), 1)),
+    ("st", ("const", 0x40, 1), ("loc", "a")),
+    ("asg", "b", ("mem", ("const", 0x40, 1), 1)),
+    ("st", ("const", 0x40, 1), ("loc", "b")),
+    ("st", ("const", 0xD400, 2), ("loc", "b")),
+]
+
+
+def test_root_extraction_drops_a_reload_store():
+    """Spill removal is not a pass: ``store(m, a, sel(m, a))`` is the memory the
+    chain already had, so no root reaches the statement and it never prints."""
+    off = mem.render_proc(_RELOAD, root_extract=False)
+    on = mem.render_proc(_RELOAD, root_extract=True)
+    assert off.count("zp_40 = a") == 2  # liveness DCE keeps the reload store
+    assert on.count("zp_40 = a") == 1
+    assert off[-1] == on[-1] == "sid.v1.freq_lo = a"  # the sink is untouched
+
+
+def test_root_extraction_matches_the_liveness_path_on_commando():
+    """With no store proved redundant the two mechanisms agree line for line: the
+    root path replaces liveness DCE and the temp sweep, it does not re-render."""
+    stmts, aliases, entry = E.pass1(_commando())
+    assert mem.render_proc(stmts, aliases, entry, root_extract=True) == mem.render_proc(
+        stmts, aliases, entry, root_extract=False
+    )
+
+
+def test_all_sites_proofs_hold_on_the_root_path():
+    """Adoption §6: every emitted site is Z3-proven equal to the term the statement
+    holds, under the SSA/memory definitional equations."""
+    stmts, aliases, entry = E.pass1(_commando())
+    proofs = {}
+    mem.render_proc(stmts, aliases, entry, root_extract=True, proofs=proofs)
+    changed = [(a, b) for a, b in proofs["pairs"] if a != b]
+    assert len(changed) > 20 and mem.verify_sites(proofs) == len(proofs["pairs"])
+
+
+def test_verify_sites_rejects_a_non_equivalence():
+    same = ("add", ("loc", "a.1"), ("num", 1, 1), 1)
+    comm = ("add", ("num", 1, 1), ("loc", "a.1"), 1)
+    assert mem.verify_sites({"pairs": [(same, comm)]}) == 1
+    with pytest.raises(AssertionError):
+        mem.verify_sites({"pairs": [(same, ("add", ("num", 2, 1), ("loc", "a.1"), 1))]})
+
+
+def test_verify_sites_reads_the_store_chain_not_the_name():
+    """A forwarded load is proven against the array encoding of its own chain."""
+    chain = ("store", ("mem0",), ("num", 0x40, 2), ("loc", "x.1"), 1)
+    assert mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x40, 2), 1), ("loc", "x.1"))]}) == 1
+    with pytest.raises(AssertionError):
+        mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x41, 2), 1), ("loc", "x.1"))]})

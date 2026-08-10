@@ -573,3 +573,46 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   assigns none, so the corpus artifact is byte-identical. `tools/emit_identity.py`
   makes the byte-identity aggregate a command the gate can run, which the plan
   had cited without one.
+- **2026-08-10 — stage 3a: root extraction replaces the liveness pass, behind a
+  flag.** The emit path's back half is one mechanism instead of three.
+  `eqlift_mem.roots()` names adoption §2's observable sinks per procedure — every
+  surviving memory store (`Roots.sid` is the write-only `$D400`–`$D41C` subset;
+  memory persists across the frame, so a store is observable unless an axiom
+  retires it), every control statement, and the register locals pass 2's boundary
+  summary says a consumer reads — and `_root_keep` closes over them: **a statement
+  is emitted only if a root reaches it**, transitively through the names
+  extraction chose to spell with. That is dead flags, scratch and spill removal as
+  one reachability, so `_dce` and `_temp_sweep` do not run on the root path;
+  `_dce`'s fixpoint survives as `_liveness`, feeding the root set instead of a
+  deletion pass. The flag is `eqlift_mem.ROOT_EXTRACT` (env
+  `DI_EQLIFT_ROOT_EXTRACT=1`, which any emitter run inherits), **default off**,
+  and off the corpus aggregate is
+  `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` over 624
+  tunes (28,512,406 bytes, 0 refused), unmoved. What the landing found:
+  (1) **Store deletion is the part liveness could not do.** A store drops when the
+  admitted axioms prove the chain unchanged — `store(m,a,sel(m,a,w),w) = m`, or an
+  in-place overwrite — read as e-class equality of the store's pre and post
+  memory, not as a pass. Krakout's play routine loses one duplicated
+  `m_E686[x] = a`; Commando loses none and its 350 lines are identical on both
+  paths, which is what "the root path replaces the mechanism, not the rendering"
+  looks like.
+  (2) **Single-use inlining is re-derived, not yet retired.** adoption §5 retires
+  it with the flag, and the flag is still here; what changed is its warrant. The
+  root path needs the same rule for its own reason — `render_roots` names a
+  subterm only where more than one root reads it — so it is now `_share_once`,
+  stated as that rule and called by both paths. Without it extraction keeps every
+  name the cost model preferred to its expression (a `loc` costs 4), three extra
+  lines on Commando alone.
+  (3) **The all-sites proofs are executable now, and they are not vacuous.**
+  `verify_sites` is adoption §6's law as a function: a Z3 reading of the extracted
+  IR (values BV16 masked to their own width, memory an array `BV16 -> BV8` whose
+  `mem0`/`memk` leaves are opaque) proves each emitted site's chosen term equal to
+  the term the statement holds, under the SSA/memory definitional equations, with
+  the assumption set checked satisfiable first so an over-constrained environment
+  cannot prove everything. Commando: 291 sites, 64 changed by saturation, all
+  proved.
+  Not in 3a, by scope: the join model is untouched (opaque-reset at branch, loop
+  head and call stands), so a store's redundancy can only be proved inside the
+  region its chain spans — the join-free-region-first order stage 3 asks for,
+  arrived at through the axioms rather than through a region split. Whole-chain
+  extraction over a region, the region splice and the flag default are 3b.
