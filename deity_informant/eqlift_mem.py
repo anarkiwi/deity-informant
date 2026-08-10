@@ -562,18 +562,24 @@ def _temp_sweep(tree, dead, chosen):
             return
 
 
+def _dispatch(nd):
+    """The frameprog statement kind a rendered ``switch`` node came from, or None."""
+    return nd[2] if nd is not None and nd[0] == "switch" else None
+
+
 def _liveness(tree, info, entry, chosen):
     """Backward register liveness over the render tree: id(node) -> live-out set.
 
-    The interprocedural ``_Info`` supplies call/goto/dynamic/return live-out, so
-    this is pass 2's boundary summary in the form root extraction reads."""
+    ``frameproc._Flow`` on the render tree, successor-aware cases included: a
+    computed transfer the next statement's ``swg``/``swc`` enumerates lands in one of
+    its arms, so it reads what they read, not every register the program has."""
     reg = E.frameproc._ALL_REG_LOCALS
     labmap, liveout, brk, cont = {}, {}, [], []
 
     def uses(i):
         return _reg_bases(chosen[i], set())
 
-    def node(nd, live):
+    def node(nd, live, nxt=None):
         k = nd[0]
         if k == "asg":
             if nd[1] in reg:
@@ -623,21 +629,25 @@ def _liveness(tree, info, entry, chosen):
             out = set()
             for _lbl, arm in nd[1]:
                 brk.append(set(live))
-                out |= seq(arm, set())
+                out |= seq(arm, set(live))  # an arm that falls off its end continues here
                 brk.pop()
-            return out | set(info.G)
+            return out if nd[2] in ("swg", "opsw") else out | set(info.G)
         if k in ("dcall", "dgoto"):
-            return set(info.G) | uses(nd[1])
+            want = "swc" if k == "dcall" else "swg"
+            return (live if _dispatch(nxt) == want else set(info.G)) | uses(nd[1])
         if k == "dbr":
             return set(info.G) | uses(nd[2]) | uses(nd[3])
         if k == "igoto":
-            return set(info.G) | (uses(nd[2]) if nd[2] is not None else set())
+            used = uses(nd[2]) if nd[2] is not None else set()
+            return (live if nd[2] is None or _dispatch(nxt) == "swg" else set(info.G)) | used
         return set(info.G)
 
     def seq(nodes, live):
+        nxt = None
         for nd in reversed(nodes):
             liveout[id(nd)] = set(live)
-            live = node(nd, live)
+            live = node(nd, live, nxt)
+            nxt = nd
         return live
 
     def loop(body, brk_live, head):
@@ -889,7 +899,7 @@ def render_proc(
                     arms.append((lbl, walk(body)))
                 avail.intersection_update(pre_av)
                 havoc_all()
-                nodes.append(("switch", arms))
+                nodes.append(("switch", arms, k))
             elif k == "dbr":
                 pair = (add(conv(s[2])), add(conv(s[3])))
                 havoc_all()

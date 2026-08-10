@@ -573,3 +573,32 @@ def test_memory_versions_are_named_so_a_copy_chain_cannot_double():
     assert len(chains) == 12
     assert all(c[0] == "store" and c[1][0] in ("mem0", "memk") for c in chains)
     assert mem.verify_sites(proofs) == len(proofs["pairs"])
+
+
+def _swg_arm(lbl, cell):
+    """A dispatch arm that redefines the flag before reading it, then rejoins."""
+    return (
+        lbl,
+        [
+            ("asg", "cflag", ("const", 0, 1)),
+            ("if", "if", ("loc", "cflag"), [("st", ("const", cell, 1), ("const", 5, 1))], []),
+            ("goto", 0x2000),
+        ],
+    )
+
+
+_DISPATCH = [
+    ("asg", "cflag", ("const", 1, 1)),
+    ("dgoto", ("loc", "ptr")),
+    ("swg", (_swg_arm("$1000", 0x40), _swg_arm("$1010", 0x41))),
+    ("label", 0x2000),
+    ("ret", None),
+]
+
+
+@pytest.mark.parametrize("root", (False, True))
+def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms(root):
+    """``_liveness`` is ``frameproc._Flow`` on the render tree and dropped its
+    successor-aware cases, so every computed transfer read every register the program
+    reads: a flag no arm reads was boundary-live and its definition was rooted."""
+    assert mem.render_proc(_DISPATCH, root_extract=root)[0] == "goto (ptr)"
