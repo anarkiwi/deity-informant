@@ -1064,7 +1064,7 @@ running past the region end.
 | The two sides disagreeing on what a volatile input *is* (fixed) | Closed. `frameprog._INPUTS` declared $DC0D a nondeterministic input `cia_icr()` while the walker's `_VOL0` inlines that read as the constant 0 at block-compile time, never calling the pinning hook: `iota` could not record what the evaluator then demanded, so the first read of frame 0 faulted `past the pinned trace` — the one-model claim of §1.3 violated in the *set* of inputs, not in a value. 3 of 682 cached tunes (`4k_Digi_Competition_Entry`, `Chotmix`, `5_Channels_of_Feekzoid_Noise`), none digi-class. The declared set is now keyed on `structured._VOL`, so an address the walker cannot pin cannot be declared, and the evaluator resolves `structured._VOL0` to 0 exactly as the walker does instead of naming $D019 alone. Repaired frameprog-side by construction: the walker's constant-0 model is the v1 ground truth Gate C already verifies (decompiler-implementation.md §8.1), not an approximation to correct here. |
 | Behavior genuinely dependent on cycle position of volatile reads | The law stays well-defined: both sides consume the pinned `iota` (§1.3). The residual risk is semantic, not soundness: such a frame program is faithful only modulo its input trace, and a standalone run beyond/without the trace faults rather than improvises. 3/140 tunes affected, osc3 only. |
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
-| Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
+| Inline parameters after `JSR` (open) | The corpus's **two** remaining evaluation faults, and they are **one cause**. `C64_World` (frame 189) and `1st_Decent_Hardcore` (frame 508) are the same `CyberTracker_exe` image — identical `load=$0800`/`init=$53A2`/`play=$53E2`, byte-identical over `$476B..$4E9A` and `$4F23..$5292`, and identical at both sites — so the shared address is the player, not a coincidence. The exposure is exactly those two: the corpus's other three CyberTracker tunes (`Data_Data_Data_Data`, `Danger_Mouse`, `Arpeggio`) are the plain build at `load=$1000` and do not contain the routine at all. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data and lands at `$4EDB`. (`$4D7A` is the second such site, data at `$4D7D`; the four bytes are the operand cells of the `STX`/`STY` at `$494D`/`$4950` plus the word to store.) **The model has this right**: its `code` seats run `$4ED4 $4EDB`, and `reads $492F: … $4ED7` declares the inline bytes read-as-data — the walker never diverges here. What is wrong is the frame program's *continuation*, which the structurer takes statically from the pushed address (`term ('jsr', $4921, $4ED6)` ⇒ fall-through `$4ED7`). The `pcall` promotion compounds it by dropping `ret $R`, so the callee rewrites a stand-in. **The fix direction this row used to state — refuse the `pcall` promotion where the callee reads the stack at its own return slot — is necessary but not sufficient, measured**: forcing `callable_[$4921] = False` restores `call $4921 ret $4ED6` in the text and the fault is *unchanged*, because control still falls through to the textual successor. The continuation must be taken from the return slot the callee wrote — the machine-faithful `ret` through `sp` and the stack image that `framestack.lift_rts_trick` already installs for `PHA`/`RTS` dispatch. Classified a **lift defect, not the claim boundary**: the machine never executes `$4ED7`, so the guard is right and the control flow that reaches it is wrong. Not the volatile-input divergence above; distinct cause, distinct fix. |
 | A 16-bit add whose halves are written to different places | Rung (d2)'s false positive would be *merging* it, and the reason the destinations are checked separately from the sources. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. The **sources** `$14`/`$15` are one quantity, so the arithmetic lifts and the emitted text carries the `+ $0004` as a word; the **destinations** are not the lanes, so the two writes stay apart and no `u16` store is emitted. Collapsing (`$14`, stack slot) into one word store would write the right value through the wrong cell. Pinned by `tests/test_framemath.py::test_the_c64_world_cybertracker_half_goes_elsewhere`, in both the `PHA` and the plain-`STA $16` form. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
 | Isomorphism near-misses (voice-3 noise/filter special cases) | The re-rolling pass refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
@@ -3467,6 +3467,87 @@ tests rather than restatements. Hermetic suite **2268 passed, 492 skipped**.
 **Still open, and untouched by this:** ``720_Degrees`` and ``Rambo`` remain
 diverged and are localised but undiagnosed, and ``C64_World`` still faults under
 evaluation.
+
+#### 7.10.16 Class C named: a ``for`` counter is bound by its header (LANDED)
+
+§7.10.14 put ``Rambo_First_Blood_Part_II`` beneath every rung -- it survived all
+ten disable configurations, so it was "the base translation or the serialization
+beneath it". It is the base translation, and the bisect says which line of it.
+
+**The site.** The runtime image's ``$23C4`` (the load image's ``$72C4``; the
+player relocates itself to ``$2xxx``):
+
+    $23C4: LDY #$04
+    $23C6: LDA #$00
+    $23C8: STA $D409,Y
+    $23CB: LDA $2934,Y
+    $23CE: STA $D409,Y
+    $23D1: DEY
+    $23D2: BPL $23C6
+
+which is Martin Galway's own ``rambload.asm``, labels ``NOTE1``/``n1sl2``, verbatim
+-- the composer-published ground truth the ``galway-rambo`` anchor (idiom-catalog)
+is computed against. It is the note-on hard restart: for ``Y = 4..0`` write ``$00``
+then ``DB1+22,Y`` to ``$D409+Y``, i.e. SR, AD, ctrl, pw_hi, pw_lo of voice 1, each
+zeroed and reloaded. ``m_2934`` is ``84 0B 41 88 CC``. ``NOTE0``/``NOTE2`` are the
+same loop over ``$D402,Y``/``$D410,Y``.
+
+**Which side was wrong, settled three ways.** (i) The composer's source above.
+(ii) The model's own block IR at ``$23C6`` carries the index --
+``('st', INT_ADD(zext2(reg2), $D409), …)``, ``reg2`` = Y -- so the model is
+faithful and only the frame program is not. (iii) The Dockerized
+``sidplayfp``/``sidtrace`` oracle: deity's raw P-Code VM reproduces Rambo's
+``$D400..$D418`` grid **byte-exact on 299 of 299 frames** at a uniform one-frame
+grid phase -- ``got[i+1] == exp[i]`` holds on every frame and no other lead
+matches any (``aligned_match`` reports False on this phase, which is a harness
+detail and not a disagreement) -- and the oracle's voice-1 ``ctrl/AD/SR`` are
+``$41/$88/$CC``, the three registers the frame program wrote *nothing* to.
+Rambo is not one of ``test_oracle``'s pinned cases; this was run for this
+diagnosis.
+
+**What the walker emitted.** The walker emits
+``0D=00, 0D=CC, 0C=00, 0C=88, 0B=00, 0B=41, 0A=00, 0A=0B, 09=00, 09=84`` -- the
+source, exactly. The frame program emitted ``09=00, 0A=00, 09=84, 0A=00`` five
+times: the index gone from *both* the store and the table read, and a lane store
+widened around the survivor. So ``v1.ord`` (ctrl/AD/SR) was **empty** on the
+frameprog side, which is why the gate reported ``got=None`` against
+``want=v1.sr=$00`` rather than a wrong value.
+
+**The line.** The block IR is correct
+(``('st', INT_ADD(zext2(reg2), $D409), …)``), and so are the statements after
+``_Builder.proc``, ``_rewrite_calls``, ``_prune``/``_inline`` and ``_forloops``.
+The last step of ``frameproc.procedures`` is ``canon_addrs``, whose ``_one_addr``
+folds an address to its constant wherever ``_const_of`` can read the index off the
+definitions in force. ``Defs._lookup`` escaping a body asks the enclosing list at
+the compound's **own index**, which ``at`` excludes -- right for every statement
+whose bodies are the only binders, and wrong for ``for``: pass 3 lifts the
+counter's init and step *out* of the list (``_for_lists`` does ``del items[j]``),
+so the body defines nothing for the counter, the cyclic guard
+(``name in self.defs``) does not fire, and the lookup sails past the header to
+an unrelated ``y = $00`` earlier in the enclosing loop. ``$D409 + 0`` and
+``$2934 + 0`` are then constants. The counter is that value at no iteration.
+
+**The fix** is that a ``for`` header binds its counter over its own body, three
+lines in ``Defs._lookup``. With the index restored, ``framefuse``'s ``_lane_sweep``
+sees the covering sweep it always could have and declines to widen, so the
+spurious ``0A=00`` goes too, and the emitted loop is the machine:
+
+    for y in $04..$00 {
+      sid.reg[(zext2(y) + $0009):2] = $00
+      sid.reg[(zext2(y) + $0009):2] = m_2934[y]
+    }
+
+**Gate FP over the whole cache at full Songlengths: 622 built, 621 → 622 clean,
+zero divergences.** Rambo goes to ``None`` and **no other verdict moves**; the
+same two evaluation faults remain (``C64_World``, ``1st_Decent_Hardcore``, one
+cause, §5). The corpus has no standing Gate FP divergence left.
+
+**Tests.** ``test_a_for_counter_is_not_the_constant_in_force_before_the_loop``
+pins the lookup and ``test_canon_addrs_keeps_the_index_of_a_store_a_for_counter_indexes``
+pins the address, both on the ``n1sl2`` shape; both fail on the old lookup, which
+is what makes them regression tests. This is a **correctness** fix and it moves
+emitted text, so the emit-identity aggregate moves with it (recorded in
+docs/register-model-lift-impl.md).
 
 ### 7.8 The environment this branch was measured in
 

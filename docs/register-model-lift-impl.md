@@ -70,6 +70,22 @@ metric**, kept as a diagnostic. Stage 2 reproduced both: `gate_sweep` 622/621
 with the same three named tunes, aggregate `99d4fdec…` unchanged over 624
 (28,512,406 bytes).
 
+**Moved since, and it is the only movement:** the three standing exclusions are
+diagnosed to root cause (docs/frameprog.md §7.10.16 and the §5 risk register).
+`Rambo_First_Blood_Part_II`'s divergence was a `for` counter read as the constant
+in force *before* its loop — Galway's own `rambload.asm` (`NOTE1`/`n1sl2`) is the
+ground truth, and the walker was right — and is **closed**: `gate_sweep` at full
+Songlengths is now **624 build; 622 evaluate / 622 clean**, no standing Gate FP
+divergence left, no other verdict moved. The two evaluation faults stand and are
+**one cause, not two**: `C64_World` (frame 189) and `1st_Decent_Hardcore`
+(frame 508) are the same `CyberTracker_exe` image faulting at the same
+inline-parameter `JSR` return, and it is a **lift defect, not the claim
+boundary** — the machine never executes `$4ED7`, so the guard is right and the
+control flow that reaches it is wrong. The fix moves one tune's emitted text and
+623 of 624 are byte-identical, so the aggregate moves to
+`946f0dcb082fc4df0814505b5eb42a8dd677f70bcfe94deeb245c2132f1c6ec0` over the same
+624 (28,512,265 bytes).
+
 | label | what landed, where | role under this plan |
 |---|---|---|
 | Phase 0 | `tools/storage_census.py`; wide-store classes in `fuse_measure`; `sid_readback`/dyn counts in `lift_residue`; `tools/disasm_tune.py` | diagnostics; the claims discipline's instruments |
