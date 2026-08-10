@@ -272,9 +272,14 @@ def _r_add_comm(A, w):
     return A.add(x, y, w), A.add(y, x, w)
 
 
-def _r_add_assoc(A, w):
-    x, y, z = A.tvar("x", w), A.tvar("y", w), A.tvar("z", w)
-    return A.add(A.add(x, y, w), z, w), A.add(x, A.add(y, z, w), w)
+def _r_add_num_in(A, w):
+    """A numeral addend floats to the inner position of a chain.
+
+    The one associativity instance the lane fusions need: they match a two-term add
+    whose partner is the carry, and a lift spells the numeral last. Directed, so no
+    grouping of a chain is ever enumerated."""
+    x, y, c = A.tvar("x", w), A.tvar("y", w), A.ivar("c", w)
+    return A.add(A.add(x, y, w), A.num(c, w), w), A.add(A.add(x, A.num(c, w), w), y, w)
 
 
 def _r_add_fold(A, w):
@@ -612,7 +617,7 @@ _SHIFT_FOLDS = tuple(
 RULES = (
     (
         ("add_comm", (1, 2), _r_add_comm),
-        ("add_assoc", (1, 2), _r_add_assoc),
+        ("add_num_in", (1, 2), _r_add_num_in),
         ("add_fold", (1, 2), _r_add_fold),
         ("add_zero", (1, 2), _r_add_zero),
         ("sub_to_add", (1, 2), _r_sub_to_add),
