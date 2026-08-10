@@ -386,13 +386,14 @@ _TOPFP = (frozenset(), True)  # the footprint that says nothing: a join forgets 
 _NOFP = (frozenset(), False)  # writes nothing; the call graph's fixpoint resolves it
 
 
-def _wr_span(e):
+def _wr_span(e, defs=None):
     """The interval a store address expression can reach, or None where it is ⊤.
 
     The lattice bound and the bridge's bit bounds are each sound alone, so the tighter of
-    the two is. Read with no env: a local's reaching definition at the join is not the
-    definition it carried inside the arm, so only width-and-shape bounds hold."""
-    got, bits = _lattice(e), (E.frameproc.addr_floor(e), E.frameproc.addr_bits(e))
+    the two is. A join reads it with no env (a local's reaching definition at the join is
+    not the one it carried inside the arm); a chain step reads it with the walk's own."""
+    got = _lattice(e)
+    bits = (E.frameproc.addr_floor(e, defs), E.frameproc.addr_bits(e, defs))
     got = bits if got is None else (max(got[0], bits[0]), min(got[1], bits[1]))
     return None if got == _TOP or got[0] > got[1] else got
 
@@ -436,20 +437,80 @@ def _mem_writes(stmts, enter=None, out_goto=False):
     return frozenset(spans), wild[0]
 
 
-def _disjoint_of(a0, a1, sw, a, w):
-    """Z3 (QF_BV): no byte a store in ``[a0,a1]`` of width ``sw`` writes is a byte of
-    the cell ``a:w``. The join's admitted weakening is proved, never matched."""
-    x = z3.BitVec("x", 16)
-    goal = z3.Implies(
-        z3.And(z3.ULE(z3.BitVecVal(a0, 16), x), z3.ULE(x, z3.BitVecVal(a1, 16))),
-        z3.And([x + i != z3.BitVecVal((a + j) & 0xFFFF, 16) for i in range(sw) for j in range(w)]),
-    )
+def _disjoint_of(a0, a1, sw, b0, b1, w):
+    """Z3 (QF_BV): no byte a store in ``[a0,a1]`` of width ``sw`` writes is a byte a read
+    in ``[b0,b1]`` of width ``w`` names. The admitted weakenings are proved, never matched."""
+    x, y = z3.BitVec("x", 16), z3.BitVec("y", 16)
+    within = [
+        z3.ULE(z3.BitVecVal(a0, 16), x),
+        z3.ULE(x, z3.BitVecVal(a1, 16)),
+        z3.ULE(z3.BitVecVal(b0, 16), y),
+        z3.ULE(y, z3.BitVecVal(b1, 16)),
+    ]
+    goal = z3.Implies(z3.And(within), z3.And([x + i != y + j for i in range(sw) for j in range(w)]))
     s = z3.Solver()
     s.add(z3.Not(goal))
     return s.check() == z3.unsat
 
 
-_disjoint_span = functools.lru_cache(maxsize=None)(_disjoint_of)
+_disjoint_spans = functools.lru_cache(maxsize=None)(_disjoint_of)
+
+
+def _disjoint_span(a0, a1, sw, a, w):
+    """The single-cell case the join asks for: ``a:w`` is one address, not an interval."""
+    return _disjoint_spans(a0, a1, sw, a, a, w)
+
+
+class _Chain:
+    """The walk's own memory versions: what each step writes, so a read taken at an
+    earlier version is proved to spell the same value at a later site.
+
+    A step is a store span, a join's kept-cell set, or ⊤ (a havoc, which nothing crosses)."""
+
+    __slots__ = ("steps", "memo")
+
+    def __init__(self):
+        self.steps, self.memo = {}, {}
+
+    def step(self, ver, prev, wrote):
+        self.steps[ver] = (prev, wrote)
+
+    def _crosses(self, wrote, span):
+        if isinstance(wrote, frozenset):  # a join carries exactly the cells it proved kept
+            return span[0] == span[1] and any(c[0] == span[0] and c[2] == span[2] for c in wrote)
+        return wrote is not None and _disjoint_spans(*wrote, span[0], span[1], span[2])
+
+    def reach(self, ver, span):
+        """The versions a read of ``span`` at ``ver`` may equally be taken at."""
+        key = (ver, span)
+        got = self.memo.get(key)
+        if got is None:
+            out, n = [ver], ver
+            while True:
+                st = self.steps.get(n)
+                if st is None or st[0] is None or not self._crosses(st[1], span):
+                    break
+                out.append(st[0])
+                n = st[0]
+            got = self.memo[key] = frozenset(out)
+        return got
+
+    def ok(self, ver, reads):
+        """Depth of ``reads`` if every one spells at ``ver`` the value it holds, else None.
+
+        Depth is how far back the chain the read may equally be taken — read off the site,
+        so the rank does not depend on which representative extraction returned (§10)."""
+        depth = 0
+        for at, span, w in reads:
+            if span is None:
+                if at != ver:
+                    return None
+                continue
+            got = self.reach(ver, (span[0], span[1], w))
+            if at is None or at not in got:
+                return None
+            depth += len(got) - 1
+        return depth
 
 
 def _join_mem(pre_mem, stmts, fresh, held=(), enter=None):
@@ -597,6 +658,68 @@ def _has_mem(ir):
     return any(_has_mem(a) for a in ir[1:])
 
 
+def _ir_span(ir):
+    """The address interval an extracted term names, or None where it is ⊤.
+
+    ``_lattice``'s rules over the printer IR, wrap guards included; a value read out of
+    memory is bounded by its own width, which is what makes a byte pointer page zero."""
+    k = ir[0]
+    if k == "num":
+        v = ir[1] & E._mask(ir[2])
+        return v, v
+    if k == "zext":
+        return 0, 0xFF
+    if k == "band" and ir[2][0] == "num":
+        return 0, ir[2][1] & E._mask(ir[3])
+    if k == "add":
+        a, b = _ir_span(ir[1]), _ir_span(ir[2])
+        if a and b and a[1] + b[1] <= E._mask(ir[3]):
+            return a[0] + b[0], a[1] + b[1]
+        return None
+    if k == "shl" and ir[2][0] == "num":
+        a = _ir_span(ir[1])
+        if a and (a[1] << ir[2][1]) <= E._mask(ir[3]):
+            return a[0] << ir[2][1], a[1] << ir[2][1]
+        return None
+    if k in ("cell", "load"):
+        return 0, E._mask(ir[2])
+    return None
+
+
+def _mem_ver(ir):
+    """The memory version a ``sel``'s memory argument names, or None for a raw chain."""
+    if ir[0] == "mem0":
+        return 0
+    return ir[1] if ir[0] == "memk" else None
+
+
+def _sel_reads(raw, out):
+    """``(version, address span, width)`` of every memory read of an extracted term."""
+    if not isinstance(raw, tuple):
+        return out
+    if raw[0] == "sel":
+        out.append((_mem_ver(raw[1]), _ir_span(_to_ir(raw[2])), raw[3]))
+        return _sel_reads(raw[2], out)
+    for a in raw[1:]:
+        if isinstance(a, tuple):
+            _sel_reads(a, out)
+    return out
+
+
+def _ir_reads(ir, ver, out):
+    """The same over printer IR, where the version is the one the site was spelled at."""
+    if not isinstance(ir, tuple):
+        return out
+    if ir[0] in ("cell", "load"):
+        span = (ir[1], ir[1]) if ir[0] == "cell" else _ir_span(ir[1])
+        out.append((ver, span, ir[2]))
+        return _ir_reads(ir[1], ver, out) if ir[0] == "load" else out
+    for a in ir[1:]:
+        if isinstance(a, tuple):
+            _ir_reads(a, ver, out)
+    return out
+
+
 def _count_locs(ir, out):
     if isinstance(ir, tuple):
         if ir[0] == "loc":
@@ -616,7 +739,7 @@ def _subst_loc(ir, name, repl):
     )
 
 
-def _share_once(tree, dead, chosen, terms):
+def _share_once(tree, dead, chosen, terms, chain=None):
     """``render_roots``' sharing rule over the render tree: a non-register subterm
     stays named only where more than one kept statement reads it; a name read once
     is inlined and its def drops. Site-validity is required, so no stale version."""
@@ -646,8 +769,13 @@ def _share_once(tree, dead, chosen, terms):
                 continue
             ti = site[name]
             defval = chosen[nd[2]]
-            if _has_mem(defval) or not _defined_at(defval, terms[ti][1]):
-                continue  # a cell/load value could be stale at the use -- keep it named
+            if not _defined_at(defval, terms[ti][1]):
+                continue
+            if _has_mem(defval) and (
+                chain is None
+                or chain.ok(terms[ti][3], _ir_reads(defval, terms[nd[2]][3], [])) is None
+            ):
+                continue  # a memory value moves to the use only where it reads the same
             chosen[ti] = _subst_loc(chosen[ti], name, defval)
             dead.add(id(nd))
             changed = True
@@ -879,10 +1007,10 @@ def render_proc(
     seconds, spent by saturation then extraction; sites past it render own-term."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
-    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset()}
+    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
     src, seeds, memdefs = {}, [], []
-    dfs = _Defs(src)
+    dfs, ch = _Defs(src), _Chain()
 
     def seed(term, e):
         """Bridge ``e``'s address interval onto the term the address converts to."""
@@ -897,18 +1025,20 @@ def render_proc(
         stt["k"] += 1
         return stt["k"]
 
-    def remember(chain):
+    def remember(chain, wrote):
         """Name the memory version, as a def names a value: a store of a load embeds
         the chain twice, so an unnamed chain is exponential in the number of them."""
         n = fresh()
         memdefs.append((n, chain))
+        ch.step(n, stt["memv"], wrote)
+        stt["memv"] = n
         return memk(i64(n))
 
-    def join_mem(pre_mem, s, held):
+    def join_mem(pre_mem, s, held, pre_ver):
         """Rebind memory at a wall; the held cells the join carries are the new chain."""
         m, kept = _join_mem(pre_mem, [s], fresh, held, None if foot is None else foot.of)
-        stt["held"] = kept
-        return remember(m)
+        stt["held"], stt["memv"] = kept, pre_ver
+        return remember(m, kept)
 
     def conv(e):
         k = e[0]
@@ -929,8 +1059,8 @@ def render_proc(
             r = fn(r, conv(kid), w)
         return r
 
-    def add(t, own=None):
-        terms.append((t, live(), own))
+    def add(t, own=None, ver=None):
+        terms.append((t, live(), own, stt["memv"] if ver is None else ver))
         return len(terms) - 1
 
     def live():
@@ -945,13 +1075,15 @@ def render_proc(
 
     def havoc_all():
         havoc(list(stt["env"]))
-        stt["mem"], stt["held"] = memk(i64(fresh())), frozenset()
+        n = fresh()
+        ch.step(n, None, None)  # ⊤: no read crosses a havoc
+        stt["mem"], stt["held"], stt["memv"] = memk(i64(n)), frozenset(), n
 
     def wall(s):
         """A boundary the locals cannot cross: memory joins over what it can write."""
-        pre_mem, pre_held = stt["mem"], stt["held"]
+        pre_mem, pre_held, pre_ver = stt["mem"], stt["held"], stt["memv"]
         havoc(list(stt["env"]))
-        stt["mem"] = join_mem(pre_mem, s, pre_held)
+        stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
 
     def walk(sl):
         nodes = []
@@ -970,13 +1102,15 @@ def render_proc(
                 v = conv(s[2])
                 a = s[1]
                 addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else seed(conv(a), a)
-                pre = stt["mem"]
-                stt["mem"] = remember(store(pre, addr, v, _ew(s[2])))
+                pre, pre_ver, w = stt["mem"], stt["memv"], _ew(s[2])
+                cell = a[1] & E._mask(a[2]) if a[0] == "const" else None
+                got = _wr_span(a, dfs) if cell is None else (cell, cell)
+                ai = add(addr, ver=pre_ver) if cell is None else None
+                own = None if cell is None else ("cell", cell, w, 0)
+                nd = ("st", a, add(v, own, ver=pre_ver), ai, w)
+                stt["mem"] = remember(store(pre, addr, v, w), None if got is None else got + (w,))
                 if a[0] == "const":
-                    stt["held"] |= {(a[1] & E._mask(a[2]), a[2], _ew(s[2]))}
-                ai = None if a[0] == "const" else add(addr)
-                own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
-                nd = ("st", a, add(v, own), ai, _ew(s[2]))
+                    stt["held"] |= {(cell, a[2], w)}
                 nodes.append(nd)
                 if root_extract:
                     mempairs.append((nd, pre, stt["mem"]))
@@ -986,16 +1120,17 @@ def render_proc(
                     cond = E.bnot(cond)
                 ci = add(cond)
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
-                pre_src, pre_held = dict(src), stt["held"]
+                pre_src, pre_held, pre_ver = dict(src), stt["held"], stt["memv"]
                 then = walk(s[3])
                 then_env = dict(stt["env"])
                 stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
+                stt["memv"] = pre_ver
                 src.clear()
                 src.update(pre_src)
                 avail.intersection_update(pre_av)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
-                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s, pre_held)
+                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s, pre_held, pre_ver)
                 src.clear()
                 src.update(pre_src)
                 avail.intersection_update(pre_av)
@@ -1007,12 +1142,13 @@ def render_proc(
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
                 pre_mem, pre_av, pre_held = stt["mem"], set(avail), stt["held"]
+                pre_ver = stt["memv"]
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, s, pre_held)
+                stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 body = walk(s[1])
                 avail.intersection_update(pre_av)
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, s, pre_held)
+                stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 nodes.append(("loop", body))
             elif k == "label":
                 if foot is None or foot.joins(s[1]):
@@ -1036,14 +1172,16 @@ def render_proc(
                 cases = s[1] if k == "swg" else s[2]
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
                 pre_src, pre_held, arms = dict(src), stt["held"], []
+                pre_ver = stt["memv"]
                 for lbl, body in cases:
                     stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
+                    stt["memv"] = pre_ver
                     src.clear()
                     src.update(pre_src)
                     avail.intersection_update(pre_av)
                     arms.append((lbl, walk(body)))
                 avail.intersection_update(pre_av)
-                stt["mem"], stt["held"] = pre_mem, pre_held
+                stt["mem"], stt["held"], stt["memv"] = pre_mem, pre_held, pre_ver
                 wall(s)
                 nodes.append(("switch", arms, k))
             elif k == "dbr":
@@ -1069,7 +1207,7 @@ def render_proc(
         eg.register(union(memk(i64(n))).with_(chain))
     for t, l, h in seeds:  # the interval bridge: bit analyses read as e-class bounds
         eg.register(set_(lo(t)).to(i64(l)), set_(hi(t)).to(i64(h)))
-    handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
+    handles = [eg.let("h%d" % i, t) for i, (t, _av, _o, _v) in enumerate(terms)]
     memh = [
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
@@ -1082,8 +1220,18 @@ def render_proc(
         raw = E._parse_ir(str(terms[i][0]))
         return _to_ir(raw), raw
 
+    def price(c, ver):
+        """Adoption §4's order as a price, not a filter: a memory spelling costs more
+        than every value one, and among memory spellings the deepest read wins — the
+        source rather than a copy of it, so the copies go unread. None refuses."""
+        got = _sel_reads(c[1], [])
+        if not got:
+            return 0, 0, E._cost(c[0]), repr(c[0])
+        depth = ch.ok(ver, got)
+        return None if depth is None else (1, -depth, E._cost(c[0]), repr(c[0]))
+
     def pick_ir(i):
-        _t, av, own = terms[i]
+        _t, av, own, ver = terms[i]
         cands = [
             (_to_ir(r), r)
             for r in (E._parse_ir(str(x)) for x in eg.extract_multiple(handles[i], 12))
@@ -1095,12 +1243,15 @@ def render_proc(
             _count_locs(c, got)
             return c != own and (own_name is None or own_name not in got)
 
-        kept = [c for c in cands if ok(c[0]) and not _has_mem(c[0]) and _defined_at(c[0], av)]
+        kept = [(price(c, ver), c) for c in cands if ok(c[0]) and _defined_at(c[0], av)]
+        kept = [(p, c) for p, c in kept if p is not None]
         if not kept:
-            raw = own_ir(i)
+            raw = own_ir(i)  # the site's own term reads its own version: always in position
             if ok(raw[0]):
-                kept = [raw]
-        return min(kept or cands, key=lambda c: (E._cost(c[0]), repr(c[0])))
+                kept = [(price(raw, ver), raw)]
+        if not kept:
+            return min(cands, key=lambda c: (E._cost(c[0]), repr(c[0])))
+        return min(kept, key=lambda pc: pc[0])[1]
 
     spent = 0
     picked = []
@@ -1121,10 +1272,10 @@ def render_proc(
         gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
         keep = _root_keep(tree, roots(tree, info, entry, chosen, gone).ids, chosen)
         dead = {id(nd) for nd in _all_nodes(tree)} - keep
-        _share_once(tree, dead, chosen, terms)
+        _share_once(tree, dead, chosen, terms, ch)
     else:
         dead = _dce(tree, info, entry, chosen)
-        _share_once(tree, dead, chosen, terms)
+        _share_once(tree, dead, chosen, terms, ch)
         _temp_sweep(tree, dead, chosen)
     if proofs is not None:
         pairs = proofs.setdefault("pairs", [])

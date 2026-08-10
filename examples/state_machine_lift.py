@@ -43,7 +43,7 @@ SWEEP = 0x0153  # per-frame step of voice 3's 16-bit filter cutoff accumulator
 FILT3, LP, VOL = 0x04, 0x10, 0x0F  # route voice 3, low-pass, master volume
 
 FOLDS = frozenset(
-    ("forward_shadow", "pair_store", "pair_set", "advance", "wide16", "wide24", "wide_cmp")
+    ("pair_store", "pair_set", "advance", "wide16", "wide24", "wide_cmp")
 )  # every rewrite the example applies, each instance Z3-proved
 
 _ENC = {}
@@ -661,12 +661,13 @@ def _z3_expr(e, env, z3, w=16):
 
 def _names(e, out):
     if not isinstance(e, tuple) or not e:
-        return
+        return out
     if e[0] == "name":
         out.add(e[1])
-        return
+        return out
     for kid in e:
         _names(kid, out)
+    return out
 
 
 def _base_split(e):
@@ -918,10 +919,6 @@ def prove_carry_out(expr, order, lanes, n, got, z3):
     return s.check() == z3.unsat
 
 
-class _NoAbstraction(Exception):
-    """The window holds a term the array abstraction does not model."""
-
-
 def _store_addr(name):
     """Concrete address a statement target writes (state cell or SID sink)."""
     a = cell_addr(name)
@@ -929,99 +926,6 @@ def _store_addr(name):
         return a
     t = sid_target(name)
     return None if t is None else SID + t
-
-
-def prove_forward(window, si, li, z3):
-    """Z3-prove the SID sink at ``li`` reads what the shadow store at ``si`` composed.
-
-    Intervening writes are ``Store``s at concrete addresses, so aliasing is decided;
-    operators become uninterpreted functions (sound: the concrete ops refine them)
-    and locals are version-keyed, so a reassignment between the sites refutes."""
-    ufs, ver = {}, {}
-    bv8, bv16 = z3.BitVecSort(8), z3.BitVecSort(16)
-    at = z3.Function("at", bv16, bv8, bv16)  # a table read's address, unconstrained
-
-    def uf(key, n):
-        f = ufs.get((key, n))
-        if f is None:
-            f = z3.Function("f_%s_%d" % (re.sub(r"\W", "_", key), n), *([bv8] * (n + 1)))
-            ufs[(key, n)] = f
-        return f
-
-    def ab(e, m):
-        k = e[0]
-        if k == "num":
-            return z3.BitVecVal(e[1] & 0xFF, 8)
-        if k == "name":
-            a = cell_addr(e[1])
-            if a is not None:
-                return z3.Select(m, z3.BitVecVal(a, 16))
-            return z3.BitVec("%s#%d" % (e[1], ver.get(e[1], 0)), 8)
-        if k == "index":
-            base = cell_addr(e[1])
-            if base is None:
-                raise _NoAbstraction(e[1])
-            return z3.Select(m, at(z3.BitVecVal(base, 16), ab(e[2], m)))
-        if k in ("not", "neg"):
-            return uf(k, 1)(ab(e[1], m))
-        if k == "call":
-            return uf(e[1], len(e[2]))(*[ab(x, m) for x in e[2]])
-        if k == "bin":
-            return uf(e[1], 2)(ab(e[2], m), ab(e[3], m))
-        raise _NoAbstraction(k)
-
-    m, val = z3.Array("m", bv16, bv8), None
-    try:
-        for i, s in enumerate(window[: li + 1]):
-            if i == li:
-                sv = z3.Solver()
-                sv.add(z3.Select(m, z3.BitVecVal(cell_addr(window[si][1]), 16)) != val)
-                return sv.check() == z3.unsat
-            a = _store_addr(s[1])
-            if a is None:
-                ver[s[1]] = ver.get(s[1], 0) + 1
-                continue
-            rhs = ab(s[2], m)
-            if i == si:
-                val = rhs
-            m = z3.Store(m, z3.BitVecVal(a, 16), rhs)
-    except _NoAbstraction:
-        return False
-    return False
-
-
-def forward_shadow(stmts, proofs):
-    """Store-to-load forward the RAM SID shadow into the hardware sinks.
-
-    Each substitution is an array-theory proof instance; the e-graph already
-    unions the two terms, but its printer refuses every spelling that mentions
-    memory and so falls back to the raw shadow read-back."""
-    import z3  # pylint: disable=import-outside-toplevel
-
-    out, window, src = [], [], {}
-    for s in stmts:
-        if s[0] == "if":
-            out.append(("if", s[1], forward_shadow(s[2], proofs), forward_shadow(s[3], proofs)))
-        elif s[0] == "loop":
-            out.append(("loop", forward_shadow(s[1], proofs)))
-        elif s[0] == "switch":
-            out.append(("switch", [(l, forward_shadow(b, proofs)) for l, b in s[1]]))
-        elif s[0] != "asg":
-            out.append(s)
-        else:
-            rhs = s[2]
-            window.append(s)
-            if sid_target(s[1]) is not None and rhs[0] == "name" and rhs[1] in src:
-                if prove_forward(window, src[rhs[1]], len(window) - 1, z3):
-                    proofs.append("forward_shadow(%s->%s)" % (rhs[1], s[1]))
-                    s = ("asg", s[1], window[src[rhs[1]]][2])
-                    window[-1] = s
-            elif is_shadow(s[1]):
-                src[s[1]] = len(window) - 1
-            out.append(s)
-            continue
-        window, src = [], {}
-    return out
 
 
 def _reads(stmts, out):
@@ -1299,35 +1203,32 @@ def _add_const(e, p):
 
 
 def _match_advance(stmts, i):
-    """Match ``p = lo; ...; lo = p + k; if <guard> {} else {hi+1 | fault}``.
+    """Match ``lo = <lo> + k`` under a deferred-carry guard, however it is spelled.
 
-    The temporaries the extractor may or may not name are inlined; the guard is
-    handed to Z3 rather than compared, so every spelling of the carry folds."""
-    if stmts[i][0] != "asg" or stmts[i][2][0] != "name":
-        return None
-    pm = _PAIRRE.match(stmts[i][2][1])
-    if not pm or pm.group(2) != "lo":
-        return None
-    pair, p = pm.group(1), stmts[i][1]
-    lo, hi = "ptr_%s_lo" % pair, "ptr_%s_hi" % pair
-    if cell_addr(p) is not None:
-        return None
-    env, k, j = {}, None, i + 1
+    The window's temporaries are inlined and the guard is handed to Z3 rather than
+    compared, so a copy of the cell and the cell read in place are one rule; a read of
+    the cell after its own store is the new value and refuses."""
+    env, j, k, pair, lo, taken = {}, i, None, None, None, set()
     while j < len(stmts) and stmts[j][0] == "asg" and j - i <= 4:
-        tgt, rhs = stmts[j][1], _subst(stmts[j][2], env)
-        if tgt == lo:
-            if k is not None:
-                return None
-            k = _add_const(rhs, p)
+        tgt, raw = stmts[j][1], stmts[j][2]
+        ns = _names(raw, set())
+        if lo is not None and lo in ns:
+            return None
+        rhs, pm = _subst(raw, env), _PAIRRE.match(tgt)
+        if pm and pm.group(2) == "lo" and k is None:
+            k = _add_const(rhs, tgt)
             if k is None:
                 return None
+            pair, lo = pm.group(1), tgt
         elif cell_addr(tgt) is not None or sid_target(tgt) is not None:
             return None
         else:
             env[tgt] = rhs
+            taken.add(tgt)
         j += 1
     if k is None or j >= len(stmts) or stmts[j][0] != "if" or stmts[j][2]:
         return None
+    hi = "ptr_%s_hi" % pair
     els = stmts[j][3]
     if els in (
         [("asg", hi, ("bin", "+", ("name", hi), ("num", 1)))],
@@ -1338,7 +1239,12 @@ def _match_advance(stmts, i):
         carried = False
     else:
         return None
-    return "ptr_%s" % pair, k, carried, _subst(stmts[j][1], env), p, j + 1 - i
+    if lo in _names(stmts[j][1], set()) or taken & _reads(stmts[j + 1 :], set()):
+        return None  # the guard reads the stored cell, or a temporary outlives the window
+    cond = _subst(stmts[j][1], env)
+    return (
+        ("ptr_%s" % pair, k, carried, cond, lo, j + 1 - i) if _names(cond, set()) == {lo} else None
+    )
 
 
 class Flat:
@@ -2215,9 +2121,7 @@ def pipeline(frames=FRAMES):
     proofs, folded = [], {}
     for entry in proc_entries(text):
         ast = extract_proc(text, entry)
-        folded[entry] = drop_dead_locals(
-            fold(drop_dead_shadow(forward_shadow(ast, proofs)), proofs)
-        )
+        folded[entry] = drop_dead_locals(fold(drop_dead_shadow(ast), proofs))
     machine = Machine({e: Flat(s) for e, s in folded.items()}, ram0)
     min_frames = [machine.frame() for _ in range(frames)]
     return {

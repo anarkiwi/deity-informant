@@ -124,6 +124,15 @@ passing tests (`tests/test_eqlift_mem.py`).
   carries `_SEL_COST` rather than egglog's default 1 — at the default, a value class
   holding several memory versions returned only spellings the consumer discards and
   the site fell back to its own raw term.
+- **A memory spelling is priced, not banned** (stage 3c landing 1). `pick_ir` used to
+  drop every candidate mentioning a `cell` or a `load`, which is most of a play
+  routine's vocabulary, so a site reading any cell fell back to its own raw term and
+  saturation reached it only through the terms it did not name. The order is now
+  three keys: a spelling with no memory read beats every spelling with one; among
+  memory spellings the **deepest** read wins — the source rather than a copy of it, so
+  the copies go unread and root extraction retires them; then `_COSTS` and `repr`
+  (§10's determinism). A memory spelling is admitted only where the chain walk
+  proves it position-correct (§10), which is the argument the filter stood in for.
 
 ## 5. Migration: delete the transitional passes
 
@@ -259,6 +268,18 @@ procedure text.
     reaches past `hi` and a cell inside the row both refuse. An unbounded store
     address, a label and any dynamic transfer keep ⊤; an unkept cell is guarded
     memory, a readability loss and never a soundness one.
+  - *The chain walk*, stage 3c landing 1 — position-correctness as a proof rather than
+    a filter. A printed `mem[a]`/cell reads memory **at the statement it prints on**, so
+    a spelling extracted from an earlier memory version is valid there only if the chain
+    between writes nothing the read names. `_Chain` records what each version wrote (a
+    store's span, a join's kept-cell set, ⊤ for a havoc) and walks back from the site:
+    each store step is crossed only under a Z3 QF_BV proof over *every* address of both
+    spans (`_disjoint_spans`, cached), each join step only for a cell it proved kept, and
+    a havoc, an unbounded step, an address the IR cannot bound and a memory term that is
+    not a named version all refuse. The walk's length is also the rank the price uses, so
+    which representative extraction returned changes nothing (§10). §6's all-sites proof
+    is the independent check: it expands the store chain and re-derives the disjointness
+    from the address terms themselves.
   - *The call/goto closure* (`Footprints`). What entering at a pc may write, over the
     enumerated call/goto graph, as that graph's least fixpoint — a caller writes what
     its callees write. A pc no procedure owns is ⊤, and so is a procedure holding a

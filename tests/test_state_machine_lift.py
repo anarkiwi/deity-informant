@@ -100,15 +100,18 @@ def test_folds_all_proved(art):
 
 
 def test_shadow_forwards_off_the_sid_path(art, text):
-    """The RAM SID shadow is looked through: no sink reads it back."""
-    fwd = [p for p in art["proofs"] if p.startswith("forward_shadow")]
-    assert len(fwd) == 3 * VOICES  # ad, sr and ctrl per voice
+    """The RAM SID shadow is looked through: no sink reads it back.
+
+    Stage 3c's memory price does this in the emitter, so the example's own
+    ``forward_shadow`` fold is retired: the sinks arrive spelled from the cells."""
     shadow = re.compile(r"m_0[0-9A-F]{3}")
     assert not [n for n in shadow.findall(text) if SHADOW <= int(n[2:], 16) < SHADOW + 7 * VOICES]
     for v in range(1, VOICES + 1):
         assert "sid.v%d.ctrl = v%d_ctl" % (v, v) in text
         assert "sid.v%d.attack_decay = v%d_ad" % (v, v) in text
-    assert "m_034" in art["eqlift_text"], "the emitter's own text keeps the read-back"
+    eq = art["eqlift_text"]
+    assert [ln for ln in eq.splitlines() if "m_034" in ln and "sid." in ln] == []
+    assert [ln for ln in eq.splitlines() if "m_034" in ln.split("=")[0]], "no shadow store at all"
 
 
 def test_minimized_matches_vm_frame_projection(art):
@@ -264,9 +267,10 @@ def test_voices_are_isomorphic_up_to_base_displacement(art):
     core = [voice_skeleton(play, v, "core") for v in range(VOICES)]
     filt = [voice_skeleton(play, v, "filter") for v in range(VOICES)]
     assert skel[0] and skel[0] == skel[1]
-    assert core[2] == core[0] and len(filt[2]) > 8
+    assert core[2] == core[0]
     assert filt[0] == filt[1] == []
-    assert any("filter.cutoff" in ln for ln in filt[2])
+    for reg in ("filter.cutoff", "filter.resonance", "filter.mode_vol"):
+        assert any(reg in ln for ln in filt[2]), reg
 
 
 @pytest.mark.xfail(
@@ -364,8 +368,8 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 461, 1192  # re-pinned when the prototype grew eight extensions;
-# a stage lowers these, never raises
+LINE_PIN, COST_PIN = 455, 1149  # lowered by stage 3c's memory price; a stage lowers
+# these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
     "accumulator": r"\b(?:observed|mask|bound)\b",
