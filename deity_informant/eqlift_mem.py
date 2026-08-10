@@ -1275,13 +1275,15 @@ def render_proc(
     stats=None,
     foot=None,
     rets=(),
+    pairs=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
     Memory forwards intra-block; a join carries the chain-held cells proved disjoint from
     every span it can write. ``budget`` is the procedure's share of the artifact's emit
     seconds, spent by saturation then extraction; sites past it render own-term. ``rets``
-    are the procedure's declared returns, which a valueless ``ret`` names."""
+    are the procedure's declared returns, which a valueless ``ret`` names, and ``pairs``
+    the declared lo/hi table registry the pack rendering reads."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
@@ -1544,7 +1546,7 @@ def render_proc(
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
     saturate(eg, rs, budget=None if budget is None else min(BUDGET_S, budget))
-    pr = E._Printer(aliases or {})
+    pr = E._Printer(aliases or {}, pairs, locw)
 
     def own_ir(i):
         """The site's own term: position-correct by construction, and what a spent

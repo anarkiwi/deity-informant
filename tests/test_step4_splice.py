@@ -1,14 +1,15 @@
 """Adoption §8 step 4's cutover, pinned on the canonical example.
 
 Step 4 carries the rung-built statements ``frameprog.program`` produces through
-``eqlift_mem.render_proc``, in place of ``frameproc.render_lines``. The goal is a
-strict xfail; the observed first blocker sits beside it un-pinned.
+``eqlift_mem.render_proc``, in place of ``frameproc.render_lines``. The cutover gate
+is green; the controls beside it hold each mechanism it took to get there.
 """
 
 from unittest import mock
 
 import pytest
 
+from deity_informant import eqlift
 from deity_informant import eqlift_mem
 from deity_informant import framefuse
 from deity_informant import framelog
@@ -51,13 +52,16 @@ def _render_ctx(model, prog):
 def _unified_lines(model, prog):
     """``render_lines``' replacement: the same procedure headers, bodies from the graph."""
     info, foot = _render_ctx(model, prog)
+    pairs = frameprog._decl_pairs(prog.data_decls)
     out = []
     for entry, params, rets, stmts in prog.procs:
         sig = "sub_%04X(%s)" % (entry, ", ".join(params))
         if rets:
             sig += " -> %s" % ", ".join(rets)
         out.append(sig + " {")
-        body = eqlift_mem.render_proc(stmts, prog.symbols, entry, info, foot=foot, rets=rets)
+        body = eqlift_mem.render_proc(
+            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs
+        )
         out.extend(" " + ln for ln in body)
         out.append("}")
     return out
@@ -84,7 +88,7 @@ def _copy_terms(node, out):
 def test_the_example_s_own_emitter_holds_the_three_properties(example):
     """The control: emission, the text fixpoint and the frame oracle, on frameprog today.
 
-    The strict xfail below runs the same three assertions over the same program, so what
+    The cutover gate below runs the same three assertions over the same program, so what
     it pins is the splice and not the example or the harness."""
     model, frames, prog = example
     text = frameprog.dumps(prog)
@@ -169,41 +173,40 @@ def test_the_spliced_program_reproduces_the_walker_s_projection(example):
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
 
 
-def test_the_splice_now_blocks_on_three_memory_spellings_and_nothing_else(example):
-    """The next blocker, un-pinned: every fixpoint difference is a memory reference.
+def test_the_three_memory_spellings_the_cutover_owed_are_in_the_text(example):
+    """The last blocker, LANDED: each of the three spellings, in the artifact itself.
 
-    Two are printer breadth -- no index *expression* against a declared base, no
-    ``sid.reg[i]`` view -- and one is the declared lo/hi column pack, which reads a
-    ``_PAIRS`` registry ``render_proc`` is never handed."""
+    An index *expression* against a declared base, the ``sid.reg`` view of the register
+    file, and the declared lo/hi pair read as one word column rather than as the OR."""
     model, _frames, prog = example
     text = _spliced_text(model, prog)
-    back = frameprog.dumps(frameprog.loads(text))
-    assert back != text
-    lines, relined = text.splitlines(), back.splitlines()
-    assert len(lines) == len(relined), "the fixpoint moved a line count, not a spelling"
-    moved = [(a, b) for a, b in zip(lines, relined) if a != b]
-    assert moved and all("[" in a and "[" in b for a, b in moved), moved[:4]
+    assert "m_14D3[(ctr_0043 & zp_46)]" in text, "the index expression stayed mem[...]"
+    assert "sid.reg[a]" in text, "the register file kept a register name for a byte index"
+    assert "m_148F[t3]:2" in text, "the declared pair stayed an OR-pack"
+    assert "<< $08" not in text, "a byte column pack survived the declarations"
 
 
-def test_the_two_printer_breadth_spellings_owe_nothing_to_the_declarations(example):
-    """The separation the pin above claims, measured: ``_memref`` emits both with no decls.
+def test_the_printer_breadth_and_the_registry_are_separate_mechanisms(example):
+    """The separation #172 measured, now on the widened printer itself.
 
-    ``res`` empty and ``pairs`` unset still gives the indexed and ``sid.reg`` forms, so the
-    next landing widens ``eqlift._Printer._loadref`` and only the pack wants the registry."""
+    ``_loadref`` gives the indexed and ``sid.reg`` forms with no registry at all; only
+    the pack asks for ``pairs``, and without it prints the OR it started as."""
     del example
-    idx = ("op", "INT_AND", (("loc", "ctr_0043"), ("loc", "zp_46")), 1)
-    wide = ("op", "INT_ZEXT", (idx,), 2)
-    table = ("op", "INT_ADD", (wide, ("const", 0x14D3, 2)), 2)
-    reg = ("op", "INT_ADD", (("op", "INT_ZEXT", (("loc", "a"),), 2), ("const", 0xD400, 2)), 2)
-    assert frameproc._memref(table, 1) == "m_14D3[(ctr_0043 & zp_46)]"
-    assert frameproc._memref(reg, 1) == "sid.reg[a]"
+    idx = ("band", ("loc", "ctr_0043.0"), ("loc", "zp_46.0"), 1)
+    table = ("load", ("add", ("zext", idx), ("num", 0x14D3, 2), 2), 1, 0)
+    reg = ("load", ("add", ("zext", ("loc", "a.0")), ("num", 0xD400, 2), 2), 1, 0)
+
+    def col(b):
+        return ("zext", ("load", ("add", ("loc", "t3.0"), ("num", b, 2), 2), 1, 0))
+
+    pack = ("bor", ("shl", col(0x1493), ("num", 8, 1), 2), col(0x148F), 2)
+    bare = eqlift._Printer({})
+    assert bare.fmt(table) == "m_14D3[(ctr_0043 & zp_46)]"
+    assert bare.fmt(reg) == "sid.reg[a]"
+    assert bare.fmt(pack) == "((zext2(m_1493[t3]) << $08):2 | zext2(m_148F[t3])):2"
+    assert eqlift._Printer({}, {0x148F: (0x1493, 4)}).fmt(pack) == "m_148F[t3]:2"
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 (§8 step 4): the spliced emitter carries "
-    "rung-minted statements",
-    strict=True,
-)
 def test_the_spliced_emitter_carries_the_rung_built_statements(example):
     """The cutover gate: the unified renderer emits the example's artifact, and it holds.
 

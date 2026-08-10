@@ -554,20 +554,25 @@ the emit baseline moved on a reviewed §4 diff of exactly two tunes; and two par
 **landing 2, adoption §8 step 4's cutover** — the narrowing `COPY` is a term
 (`eqlift.trunc`), so the splice reaches the rules, and then the dialect gains the
 signed compare while the unified renderer learns the layout, the dispatch headers and
-the statement set it prints, `pcall` included. **The cutover's semantic half is
-landed**: `frameval.gate_fp` on the spliced text is `None`, so the unified emitter's
-program is the walker's projection. **Landing 2 is open** on its text half, and the
-blocker is measured and pinned to three spellings with two causes: the unified
-printer's `_loadref` is narrower than `frameproc._membody` — no index *expression*
-against a declared base, no `sid.reg[i]` view — and the declared lo/hi column pack
-reads a `_PAIRS` registry `render_proc` is never handed. The `dumps`/`loads` fixpoint
-fails there and nowhere else (`tests/test_step4_splice.py`). Behind that stand §5's deletion inventory, the
-deterministic round cap, the `state { }` demotion and the ~16 substrate-dependent
-shredder pins — which want the same declarations — and then landings 3-5 (role-typed
-emission, the completed witness, housekeeping + close). Also owed to landing 2 and
-named at landing 1: a precise `returns` set for a procedure every entry of which is a
-`call`, which is what would take back the four architectural-register lines the
-refused `pcall` promotion costs `sub_4921`.
+the statement set it prints, `pcall` included; and then, on the canonical example,
+**the cutover closes**. Both halves are landed: `frameval.gate_fp` on the spliced text is
+`None`, so the unified emitter's program is the walker's projection, and the text is a
+`dumps`/`loads` fixpoint, because `eqlift._Printer` now reads an address at
+`frameproc._index_of`'s breadth, routes a register-file base through the `sid.reg` view,
+and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word column.
+
+**What step 4 still owes is the unconditional path.** `frameprog.dumps` renders through
+`frameproc.render_lines` still; the splice lives in `tests/test_step4_splice.py`, which is
+the gate, not the artifact. §5's `_Prune`/`_inline` deletions and rung (d2)'s per-site
+e-graphs are subsumed only where the unified graph is what emits, so they land with that
+switch and with the corpus diff it moves. Beside it stand §5's `eqlift_mem` liveness
+deletions (`_dce`, `_temp_sweep`, `ROOT_EXTRACT`), the deterministic round cap replacing
+the wall-clock cut, the `state { }` demotion, `_declare_cells`' double declaration, the ~16
+substrate-dependent shredder pins — which want the same declarations — and, named at
+landing 1, a precise `returns` set for a procedure every entry of which is a `call`, which
+is what would take back the four architectural-register lines the refused `pcall`
+promotion costs `sub_4921`. Then landings 3-5: role-typed emission, the completed witness,
+housekeeping + close.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -1884,3 +1889,44 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   was a control written to move with the cutover and it moved with it; no stage-3 pin flipped
   — the ~16 substrate-dependent ones want the declarations, so they are named for the next
   landing.
+- **2026-08-10 — stage 4, landing 2 (part): the unified printer reads an address the way the
+  dialect does, and the cutover gate goes green.** #172's three spellings, closed on the two
+  mechanisms its measurement separated.
+  (1) **The address reading is `frameproc._index_of`'s, and it is read once.**
+  `eqlift._Printer._split` takes a `base + index` at width 2 with exactly one constant
+  `>= $0100` and the index whatever the address adds — `zext2` stripped, because that widening
+  is the reader's own (`grammar._index_addr`) — so a declared table read at an index
+  *expression* spells `m_14D3[(ctr_0043 & zp_46)]` instead of `mem[…]`. `_loadref` then routes
+  a base that `grammar.sid_base` names to the `sid.reg` view with the register's own offset
+  folded into the index, which is the one spelling `frameproc._membody` prints back — the
+  register-named indexed form was the same address under a name the dialect does not index.
+  (2) **The pack wants the registry, and nothing else does.** `render_proc` takes `pairs`
+  (`frameprog._decl_pairs`, the ONE lo/hi registry) and hands it to the printer, where
+  `_pair_pack` reads a byte-column OR through `frameproc.pair_site` itself rather than a second
+  copy of it, so a declared pair reads `m_148F[t3]:2`. With no registry the two breadth
+  spellings still land and the pack stays the OR: #172's separation, now asserted on the
+  printer rather than on `frameproc._memref` standing in for it.
+  (3) **The cutover gate flips.**
+  `test_the_spliced_emitter_carries_the_rung_built_statements` is green — the spliced text is a
+  `dumps`/`loads` fixpoint at 922 lines with zero divergent spellings, and `frameval.gate_fp`
+  on it is `None`. §8 step 4's **text** half is landed on the canonical example. What step 4
+  still owes is the unconditional path: frameprog emission itself, and with it §5's
+  `_Prune`/`_inline` deletions and rung (d2)'s per-site graphs, which are subsumed only where
+  the unified graph is what emits.
+  (4) **The prototype is the acceptance gate, so the prototype moved.** `sid.reg` is a store
+  row, so `state_machine_lift._store_addr` names the view (`grammar.VIEW` -> `$D400`) and
+  `test_variable_arity_dispatch_operator` reads `sid.reg[a] =`. `LINE_PIN` **holds exactly at
+  339**; `COST_PIN` **falls 836 -> 820**, because an indexed read parses to fewer nodes than
+  the add it was spelled as.
+  (5) **The gates, and a steering metric that correctly does not move.**
+  `tools/emit_identity.py --expect 37b87140…` passes — 624 tunes, 0 refused, 28,513,156 bytes,
+  **unmoved**: nothing here is on frameprog's own emit path. `gate_sweep` at full Songlengths:
+  **624 build / 624 evaluate / 624 clean**, zero divergences, zero refusals. Suite 2,726 passed
+  / 490 skipped / **32** xfailed (one flipped), oracle 16. The 25-exemplar review at
+  `DI_EQLIFT_EMIT_S=600` is clean — zero faults, refusals, regressions, unproved sites and
+  extraction fallbacks — and its rollup is **byte-identical to #171's**: OFF 26,826 / ON 26,811,
+  `d_lines` −15, `d_stores` −3, 13,909 extraction sites, 3,309 changed, 12,128 proved, 18 of 25
+  identical. A respelling is not a line, so the rollup cannot see this landing; the texts can,
+  and they moved on **24 of 25 tunes on both paths** (`Goto80/Automatas` alone unmoved), **313
+  lines each path, every one at an unchanged line count** — 163 indexed reads that named their
+  row, 150 register-file accesses that took the view.
