@@ -103,7 +103,7 @@ def test_axioms_z3_verified():
     proved = mem.verify_axioms()
     assert "sel_store_same/w1" in proved and "sel_store_same/w2" in proved
     assert "sel_store_diff/w12" in proved and "sel_store_diff/w21" in proved
-    assert len(proved) == 10  # 3 axioms x {w1,w2} + diff x {w1,w2}^2
+    assert len(proved) == 11  # 3 axioms x {w1,w2} + diff x {w1,w2}^2 + the pair read
 
 
 def test_spill_forwards_through_disjoint_store():

@@ -167,10 +167,9 @@ the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus. What it
 does not yet reach is pinned `xfail(strict=True)` against the stage that flips
-it: the stack-spill forward (3c — of its two mechanisms the memory spelling's
-price landed at 3c landing 1, so what still prints the slot is scratch
-demotion), the split lo/hi pitch row and any byte-lane update of a declared-u16
-quantity (3c), and per-voice re-rolling (3d). The branch-join forward is green
+it: the stack-spill forward and the split lo/hi pitch row (3d — 3c landed the
+memory price and the pair-row axiom, and measured what each still needs), any
+byte-lane update of a declared-u16 quantity (3c), and per-voice re-rolling (3d). The branch-join forward is green
 as of 3b landing 2, and the shadow read-back as of 3c landing 1.
 
 **The roles are the expected output, not a license.** Read forward, a play
@@ -377,13 +376,18 @@ of three phases.
   extraction). Cost changes are justified by a corpus-artifact diff, never
   one tune (adoption §4).
 - **Convergence tests — where the generative fuzzing sits.** Per catalog
-  idiom, a parametric generator (the differential-fuzz / shredder harness)
-  produces the spelling variants, and the test asserts they merge into **one
-  e-class** with the catalog's normal form extractable from it. The §5.4
-  shredder fixtures are the seed corpus: each pending xfail either
-  normalizes here (the marker is removed in the same change) or is re-pinned
-  as a guarded refusal with its reason on the record. A variant that fails
-  to merge names a missing rule, and the rule lands only with its Z3 proof.
+  idiom, a parametric generator produces the spelling variants, and the test
+  asserts they merge into **one e-class** with the catalog's normal form
+  extractable from it. **Landed, 3c landing 2**:
+  `tests/test_eqlift_converge.py`, enumerated from `idioms.FORMS` so a catalog
+  row added later fails until it has a case — 20 rows carry a generator, the
+  three that spell one way name why. It named four rules on its first run and
+  they are admitted with their proofs (`pack_hi`, `pack_lo`, `zext_mask` over
+  QF_BV; `sel_pair` over the array theory); one more is proved and pinned
+  rather than admitted, because its cost is a §4 decision. The shredder's own
+  stage-3 xfails stay pinned to the *frameprog* emitter (3b landing 2 (7)),
+  which is where they flip. A variant that fails to merge names a missing
+  rule, and the rule lands only with its Z3 proof.
 - **Not equational, kept as small classical passes.** Per-voice re-rolling
   (anti-unify the unrolled voice slices; total isomorphism or keep the
   copies), for-range recovery, and SMC opcode dispatch, which stays the
@@ -412,15 +416,20 @@ closure, and the egg-side memory cost the consumer's filter always implied),
 3b landing 3 (the in-edge map at labels, and `ROOT_EXTRACT` **on** by default
 on a clean 25-of-25 review), 3c landing 1 (the memory spelling's price with its
 position-correctness walk, in place of `pick_ir`'s filter — −326 lines over the
-exemplars, and the spelling-independent advance rule that re-spelling forced).
+exemplars, and the spelling-independent advance rule that re-spelling forced),
+3c landing 2 (the per-idiom convergence harness and the four rules its first run
+named, one more proved and pinned on a cost decision).
 What 3b handed 3c stands unchanged: the join carries 1,628 of 2,528 walls and
 the remaining 900 are enumerated by kind in the decision log; a label with real
 in-edges still resets, and closing it needs a join over the in-edge memories
-rather than a map lookup. **Next in 3c**: the per-idiom convergence harness and
-the rules it names, in the shape the eight-extension landing recorded — search
-the operand, prove the instance, never enumerate spellings — then scratch
-demotion, which is what a dead stack slot needs; then 3d (the `_ARITY`
-discharge, guard-aware re-rolling).
+rather than a map lookup. **Stage 3c is closed** and hands 3d four named
+items, each with its mechanism: scratch demotion needs a `Footprints` **read** closure
+whose deref spans come from 2b's observed extents (the artifact-wide reader set is ⊤
+today, measured); the declared lo/hi pair row read needs the pair enumerated at the site
+and the class queried, `framemath._pairs`' shape; `pack_add` needs the §4 cost change
+that names the pack as the normal form; and the join at a label with real in-edges still
+needs a join over the in-edge memories. 3d's own work is unchanged: the `_ARITY`
+discharge and guard-aware re-rolling.
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
@@ -1143,3 +1152,65 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   frameprog artifact): 624 tunes, 0 refused, 28,512,406 bytes,
   `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`. Suite 2,782
   passed / 35 xfailed, oracle 16 passed.
+- **2026-08-10 — stage 3c, landing 2: the convergence harness, and the four rules it
+  named on its first run.** `tests/test_eqlift_converge.py` is stage 3's per-idiom
+  convergence gate, executed: enumerated from `idioms.FORMS` so a catalog row added
+  later fails until it has a case, each row carrying a generator of the spellings a 6502
+  lift produces for it, and asserting they merge into **one e-class** whose extracted
+  representative — read at `pick_ir`'s own price — is the row's normal form. 20 rows
+  carry a generator; the three that spell one way (`const-literal`, `local-read`,
+  `shift-pair`) name why instead of being absent.
+  (1) **The first run named five gaps, and four are admitted rules.** `pack_hi`
+  (`(h<<8|l) >> 8 = zext(h)`), `pack_lo` (`(h<<8|l) & $FF = zext(l)`) and `zext_mask`
+  (`zext(x) & $00FF = zext(x)`) are QF_BV entries in `eqlift.RULES`, proved by
+  `verify_rules` like every other; `sel_pair` (`sel(m,a,2) = sel(m,a+1,1)<<8 |
+  sel(m,a,1)`) is a fifth memory axiom proved over the array theory by `verify_axioms`,
+  and it is what makes the catalog's `pair-row` converge — two adjacent byte columns
+  read at one index and the word read of the same row are now one class.
+  (2) **The axiom is applied at the shape the corpus spells, and the direction is the
+  measurement.** Stated as `sel(m,a,2) -> pack(...)` it fires on every word read and
+  spawns its two lanes: the memory suite went 23s to 104s. Stated over the pack of two
+  indexed byte reads sharing an index (`p = q + 1`, guarded), it fires only where a
+  program actually spells the pack. The egglog rule is the proved axiom instantiated at
+  `a = q + b`, never a second statement of it.
+  (3) **`pack_add` is proved and NOT admitted, and the reason is a cost decision with
+  its number.** The ADC-built pack (`(h<<8) + zext(l)`) is equal to the ORA-built one
+  and `tests/test_eqlift_converge.py` proves it there rather than asserting it. Admitting
+  it prices the two spellings the same, so the `repr` tie-break moves the canonical pack
+  corpus-wide — `framemath`'s provenance reads the OR form (adoption §10's closed
+  nondeterminism defect is exactly this shape) — and it costs **2.8x** the memory suite's
+  saturation time, because a pack is the pointer vocabulary and the rule adds an `add`
+  e-node to every one. It lands with the §4 cost change that names the pack as the normal
+  form, on that change's own corpus diff; the gate is `xfail(strict)` at 3d until then.
+  (4) **The split pitch row is not this axiom's shape, and the pin says so.** The
+  prototype's `pitch` table lifts as two 22-byte columns at unrelated bases (`m_14A7` lo,
+  `m_14BD` hi) that `frameprog._pair_tables` declares a lo/hi pair; no address arithmetic
+  relates them, so no memory axiom can. `test_note_fetch_is_one_u16_row_read` is re-pinned
+  at **3d** with the mechanism named: enumerate the declared pair at the site
+  (`framemath._pairs`' shape) and query the class for the row read, so extraction still
+  decides how the row is spelled and not which grouping the site is.
+  (5) **The rules cost the artifact nothing, which is the point of admitting on the
+  convergence gate.** The 25-exemplar review is **byte-identical to landing 1** —
+  OFF 27,462 / ON 27,457, `d_lines` −5, `d_stores` −3, 22 identical, 13,909 extraction
+  sites, 3,309 changed and every one Z3-proved, zero faults, refusals, regressions and
+  fallbacks — and the frameprog artifact is unmoved even though rung (d2) reads the
+  admitted rule set: 624 tunes, 0 refused, 28,512,406 bytes,
+  `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`. The canonical
+  example is unchanged at 455 rendered lines / 1149 term nodes. Suite 2,804 passed /
+  36 xfailed (the 36th is (3)'s pin), oracle 16 passed; `gate_sweep` at full Songlengths
+  624 build, 622 evaluate, 621 clean with the same three named tunes.
+  (6) **Scratch demotion is measured, and what blocks it is named — 3c closes here.**
+  Landing 1 discharged the first half of `test_stack_spill_forwards` (the pull is spelled
+  from the pushed value), so only the store survives, a root until demotion. A store is
+  demotable when no reader can observe it, and the reader set is artifact-wide: the
+  prototype's helper `sub_1485` is clean (one stack read, one stack store, no unbounded
+  read), but `sub_1000` reads its scripts through a zp pointer pair whose address is
+  **⊤ with no env**, so the artifact-wide reader set is the whole space and the slot is
+  not provably unread. The stack-discipline shortcut is not available either, and the
+  reason is on the record: the stack slots eqlift still sees are the ones rung (d0s)'s
+  `framestack._balances` refused to lift, so a balance argument would contradict the
+  analysis that refused them. The mechanism 3d carries is therefore a `Footprints` **read**
+  closure — the dual of `_mem_writes` — whose deref spans come from the committed observed
+  extents (2b's `ptrextent`), consumed exactly as the join consumes
+  `addr_floor`/`addr_bits`. `test_stack_spill_forwards` is re-pinned at 3d with that
+  reason, and the executable half stays in `tests/test_eqlift_mem.py`.
