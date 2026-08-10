@@ -12,6 +12,7 @@ import sys
 from deity_informant import PcodeVM, lift, run_sub
 from deity_informant import eqlift_mem
 from deity_informant import framelog
+from deity_informant import grammar as GR
 from deity_informant import render as R
 from deity_informant import structured as S
 from deity_informant.lifter import OPS, MODE_LEN, ILLEGAL_OPCODES
@@ -943,7 +944,9 @@ def prove_carry_out(expr, order, lanes, n, got, z3):
 
 
 def _store_addr(name):
-    """Concrete address a statement target writes (state cell or SID sink)."""
+    """Concrete address a statement target writes (state cell, SID sink or the view)."""
+    if name == GR.VIEW:
+        return SID  # the byte view of the register file: the row IS the sink
     a = cell_addr(name)
     if a is not None:
         return a

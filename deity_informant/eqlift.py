@@ -16,6 +16,7 @@ from egglog import eq as _fact_eq
 
 from . import datadecl
 from . import frameproc
+from . import grammar as G
 from . import sidprog
 
 
@@ -990,16 +991,25 @@ _SHIFTS = {"shl": "<<", "shr": ">>"}
 
 
 class _Printer:
-    """Skeleton + chosen IR terms to frameprog-style text lines."""
+    """Skeleton + chosen IR terms to frameprog-style text lines.
 
-    def __init__(self, aliases):
+    ``pairs`` is the ONE lo/hi table registry (``frameprog._decl_pairs``): with it a
+    declared pair's pack spells the word column, without it it stays the OR.
+    ``locw`` gives a local's width, which only the SID view's offset fold needs."""
+
+    def __init__(self, aliases, pairs=None, locw=None):
         self.aliases = aliases or {}
+        self.pairs = pairs or {}
+        self.locw = locw or {}
         self.out = []
 
     def name(self, a):
         return self.aliases.get(a) or sidprog._addr_name(a)
 
     def fmt(self, ir):
+        got = self._pair_pack(ir)
+        if got is not None:
+            return "%s[%s]:2" % (self.name(got[0]), self.fmt(got[1]))
         k = ir[0]
         if k == "num":
             return sidprog._hex(ir[1], ir[2])
@@ -1055,19 +1065,63 @@ class _Printer:
                 body.append("+ " + self.fmt(p))
         return "(%s)%s" % (" ".join(body), sidprog._wsuf(w))
 
+    def _split(self, addr):
+        """``(const base, index)`` of a ``base + index`` address, else None.
+
+        ``frameproc._index_of``'s breadth: the index is whatever the address adds,
+        and ``zext2`` is the reader's own widening (grammar ``_index_addr``)."""
+        if addr[0] != "add" or addr[3] != 2:
+            return None
+        at = [i for i in (1, 2) if addr[i][0] == "num" and addr[i][2] == 2 and addr[i][1] >= 0x100]
+        if len(at) != 1 or addr[3 - at[0]][0] == "num":
+            return None
+        base, idx = addr[at[0]], addr[3 - at[0]]
+        return base[1], idx[1] if idx[0] == "zext" else idx
+
     def _loadref(self, ir):
         addr, w = ir[1], ir[2]
-        if w == 1 and addr[0] == "add" and addr[3] == 2:
-            a, b = addr[1], addr[2]
-            base, idx = (a, b) if a[0] == "num" else (b, a)  # add is commutative
-            if (
-                base[0] == "num"
-                and base[1] >= 0x100
-                and idx[0] == "zext"
-                and idx[1][0] in ("loc", "cell")
-            ):
-                return "%s[%s]" % (self.name(base[1]), self.fmt(idx[1]))
-        return "mem[%s]%s" % (self.fmt(addr), sidprog._wsuf(w))
+        got = self._split(addr) if w == 1 else None
+        if got is None:
+            return "mem[%s]%s" % (self.fmt(addr), sidprog._wsuf(w))
+        base, idx = got
+        if G.sid_base(base) is None:
+            return "%s[%s]" % (self.name(base), self.fmt(idx))
+        off = base - 0xD400  # rung (d)'s residue: the byte is the register file's index
+        if off:
+            wide = idx if _ir_width(idx, self.locw) == 2 else ("zext", idx)
+            idx = ("add", wide, ("num", off, 2), 2)
+        return "%s[%s]" % (G.VIEW, self.fmt(idx))
+
+    def _half(self, ir):
+        """``(base, index or None)`` where ``ir`` reads one byte of a named cell."""
+        if ir[0] == "zext":
+            ir = ir[1]
+        if ir[0] == "cell" and ir[2] == 1:
+            return ir[1], None
+        return self._split(ir[1]) if ir[0] == "load" and ir[2] == 1 else None
+
+    def _pair_columns(self, bl, bh, idx):
+        """``(lo base, index)`` where two byte cells are a declared pair's columns."""
+        got = frameproc.pair_site(self.pairs, bl, idx)
+        if got is None or got[0] != bh:
+            return None
+        i = got[2]
+        return got[1], (("num", i[1], i[2]) if i[0] == "const" else i)
+
+    def _pair_pack(self, ir):
+        """``(lo base, index)`` where ``ir`` packs a declared pair's two columns."""
+        if not self.pairs or not isinstance(ir, tuple) or ir[0] != "bor" or ir[3] != 2:
+            return None
+        for hi, lo in ((ir[1], ir[2]), (ir[2], ir[1])):
+            if hi[0] != "shl" or hi[3] != 2 or hi[2][0] != "num" or hi[2][1] != 8:
+                continue
+            sl, sh = self._half(lo), self._half(hi[1])
+            if sl is None or sh is None or sl[1] != sh[1]:
+                continue
+            got = self._pair_columns(sl[0], sh[0], sl[1])
+            if got is not None:
+                return got
+        return None
 
     def line(self, text, d):
         self.out.append(" " * d + text)

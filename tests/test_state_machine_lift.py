@@ -260,7 +260,7 @@ def test_variable_arity_dispatch_operator(art, text):
     assert arities == {0, 1, 2}, "the operator's arity is not data-dependent"
     copies = 1 + VOICES - len(art["unify"]["unified"])  # the loop body plus the copies
     assert text.count("op ") - text.count("loop ") == 4 * copies, "a handler left the dispatch"
-    assert text.count("sid.v1.freq_lo[a] = ") == copies, "the raw write is not a span store"
+    assert text.count("sid.reg[a] = ") == copies, "the raw write is not a span store"
     assert len({g[17] for g in art["orig_grids"]}) > 1, "no raw command ran"
 
 
@@ -413,7 +413,7 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 339, 836  # lowered by 3d landing 3's row read and re-rolling; a stage
+LINE_PIN, COST_PIN = 339, 820  # lowered by stage 4's cutover: an indexed read names its row
 # lowers these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
