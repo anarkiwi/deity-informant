@@ -146,9 +146,10 @@ pair, an indexed span store on one arm of a branch a disjoint cell crosses, and
 a page-zero row whose index arithmetic wraps in 8 bits) and, on voice 3 alone,
 a filter block (the `$D415`/`$D416` cutoff pair, and `(s & K) | v` field updates
 on the `$D417`/`$D418` flag cells) runs through the real pipeline — VM,
-decompile + walker replay, `eqlift_mem.emit` minimization, seven spelling folds,
-every instance Z3-proved: the shadow store-to-load forward over the array
-theory, the paired u16 SID store, the deferred-carry advance and the wide
+decompile + walker replay, `eqlift_mem.emit` minimization, six spelling folds
+(the shadow store-to-load forward retired at 3c landing 1, subsumed by the
+emitter's memory price), every instance Z3-proved:
+the paired u16 SID store, the deferred-carry advance and the wide
 compare whose guards are proved rather than matched, the n-lane wide update
 (2 and 3 lanes, with its carry-out) whose operand is searched and proved rather
 than pattern-matched, and the u16 pair reload, a structural match whose
@@ -166,10 +167,11 @@ the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus. What it
 does not yet reach is pinned `xfail(strict=True)` against the stage that flips
-it: the stack-spill forward (3c — landing 2 measured it as two mechanisms, the
-memory spelling's cost and scratch demotion), the split lo/hi pitch row and any
-byte-lane update of a declared-u16 quantity (3c), and per-voice re-rolling (3d).
-The branch-join forward is green as of 3b landing 2.
+it: the stack-spill forward (3c — of its two mechanisms the memory spelling's
+price landed at 3c landing 1, so what still prints the slot is scratch
+demotion), the split lo/hi pitch row and any byte-lane update of a declared-u16
+quantity (3c), and per-voice re-rolling (3d). The branch-join forward is green
+as of 3b landing 2, and the shadow read-back as of 3c landing 1.
 
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into five roles — **cursor** (an index
@@ -408,17 +410,17 @@ chain-doubling defects, the extraction budget, the 25-of-25 ON/OFF review),
 3b landing 2 (the span join, the complemented join encoding, the call/goto
 closure, and the egg-side memory cost the consumer's filter always implied),
 3b landing 3 (the in-edge map at labels, and `ROOT_EXTRACT` **on** by default
-on a clean 25-of-25 review). **Next is 3c**, and what stage 3b hands it is
-named: the join carries 1,628 of 2,528 walls and the remaining 900 are
-enumerated by kind in the decision log; a label with real in-edges still
-resets, and closing it needs a join over the in-edge memories rather than a
-map lookup. After it, 3c's rules in the shape the eight-extension
-landing recorded — search the operand, prove the instance, never enumerate
-spellings — with the per-idiom convergence harness and the two mechanisms
-landing 2 named (a memory spelling's cost with its position-correctness
-argument, in place of `pick_ir`'s filter; scratch demotion, which is what a
-dead stack slot needs), then 3d (the `_ARITY` discharge, guard-aware
-re-rolling).
+on a clean 25-of-25 review), 3c landing 1 (the memory spelling's price with its
+position-correctness walk, in place of `pick_ir`'s filter — −326 lines over the
+exemplars, and the spelling-independent advance rule that re-spelling forced).
+What 3b handed 3c stands unchanged: the join carries 1,628 of 2,528 walls and
+the remaining 900 are enumerated by kind in the decision log; a label with real
+in-edges still resets, and closing it needs a join over the in-edge memories
+rather than a map lookup. **Next in 3c**: the per-idiom convergence harness and
+the rules it names, in the shape the eight-extension landing recorded — search
+the operand, prove the instance, never enumerate spellings — then scratch
+demotion, which is what a dead stack slot needs; then 3d (the `_ARITY`
+discharge, guard-aware re-rolling).
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
@@ -1086,3 +1088,58 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   emission through the unified graph — is not this landing: the flag still selects, and
   the shredder's stage-3 xfails are pinned to the *frameprog* emitter, so they flip
   there and not here.
+- **2026-08-10 — stage 3c, landing 1: the memory spelling is priced, and the price
+  un-blinds extraction.** Every number is `tools/eqlift_measure.py` over the 25
+  exemplars at full Songlengths, both paths, `DI_EQLIFT_EMIT_S=600`, beside the same
+  run on `b83559f`.
+  (1) **The filter was never about shadows; it dropped every spelling that mentions a
+  cell.** #144's finding read `pick_ir`'s refusal as a shadow problem. `_has_mem` is
+  true of any `cell` or `load`, which is most of a play routine's vocabulary, so *any*
+  site reading a state cell kept nothing from `extract_multiple` and fell back to its
+  own raw term — saturation reached those sites and the consumer threw the result away.
+  The visible half, on the prototype alone: `if !(ctr_0037 == $10)` for
+  `(ctr_0037 != $10)`; `zp_4E = (zp_4E - ($01 - (zext2(zp_4F) <= zext2(w9))))` for
+  `zp_4E = (zp_4E - (w9 < zp_4F))`; `if !(carry(zp_50, zp_4F) | carry((zp_50 + zp_4F),
+  $00))` for `if (zp_4F <= (zp_50 + zp_4F))`; and the SMC dispatch reading its own
+  operand cell, `goto ((zext2(m_10AD) | (zext2(m_10AE) << $08)))`, for the local the
+  store had just written. **−326 lines over 27,783 (−1.17%)** is what the filter cost.
+  (2) **Position-correctness is a walk, and it is the proof the filter stood in for.**
+  A printed `mem[a]`/cell reads memory *at the statement it prints on*. `_Chain` records
+  what every memory version wrote — a store's span, a join's kept-cell set, ⊤ for a
+  havoc — and walks back from the site to the version a candidate read at: a store step
+  is crossed only under a Z3 QF_BV proof over every address of both spans, a join step
+  only for a cell it proved kept, and a havoc, an unbounded step, an address the IR
+  cannot bound and a memory term that is not a named version all refuse. §6's all-sites
+  proof is the independent check and it holds: 3,309 sites changed by saturation
+  (2,109 on main), every one Z3-proved, zero refusals.
+  (3) **The price is the mechanism #144 asked for.** Three keys: no-memory beats memory;
+  among memory spellings the **deepest** read wins — the source rather than a copy of it
+  — then `_COSTS` and `repr`. The depth is the walk's own length, read off the site, so
+  no consumer sees which representative extraction returned (§10). The shadow read-backs
+  are what this retires: `sid.v1.attack_decay = m_0345` becomes `= zp_49`, and
+  `a = m_01FB` becomes `a = m_14A7[x]`. `_share_once` inherits the same test, so a
+  memory value now inlines into the use it moves to.
+  (4) **A re-spelled idiom needs a spelling-independent rule.** The un-blinded extractor
+  spells the deferred-carry advance two ways in one artifact — with the copy `p = lo`
+  and with the cell read in place — and the prototype's `_match_advance` matched only the
+  first, losing 3 of 9 advances and putting 12 lines back. Re-stated in #148's shape:
+  inline the window's temporaries, take the cell read in place as the operand, hand the
+  guard to Z3; a read of the cell after its own store and a temporary that outlives the
+  window refuse. All 9 fold again.
+  (5) **`forward_shadow` retires, subsumed.** The example's fourth fold and its
+  array-theory `prove_forward` are deleted: the emitter forwards the shadow into the
+  sinks itself. `FOLDS` is six rules, and the property the fold bought is asserted on the
+  emitter's own text instead. The prototype's ratchets fall rather than hold —
+  **461 → 455 rendered lines, 1192 → 1149 extracted term nodes**, 677 → 667 emitted.
+  (6) **The review: 25 of 25, clean.** OFF 27,462 / ON 27,457, `d_lines` −5,
+  `d_stores` −3, 22 of 25 byte-identical on the two paths, 13,909 extraction sites,
+  12,139 proved sites, zero faults, zero refusals, zero regressions, zero extraction
+  fallbacks. Against main **every tune shrinks or holds**: 23 of 25 smaller (best
+  `Gray_Matt/Atmosphere_II` −51, `From_Beyond_main` −27, `Athena` −24), two unchanged,
+  none larger. Slowest emit 120.5s against main's 86.0s at a budget that does not bind —
+  the walk and the wider candidate pool are what that buys, and at the default
+  `DI_EQLIFT_EMIT_S=60` a site past the share still renders own-term, which is sound.
+  Byte identity is untouched by construction and by measurement (`emit_identity` is the
+  frameprog artifact): 624 tunes, 0 refused, 28,512,406 bytes,
+  `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942`. Suite 2,782
+  passed / 35 xfailed, oracle 16 passed.

@@ -318,25 +318,61 @@ def test_a_stale_local_version_never_spells_a_site():
     ]
 
 
-def test_a_push_pull_spill_forwards_in_the_graph_and_not_in_the_text():
-    """The refusal behind the prototype's ``m_01FB`` pin, measured on both halves.
+_ROW = ("op", "INT_ADD", (("const", 0x14A7, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
+_PUSH_PULL = [
+    ("st", ("const", 0x01FB, 2), ("mem", _ROW, 1)),
+    ("asg", "a", ("mem", ("const", 0x01FB, 2), 1)),
+    ("st", ("const", 0xD404, 2), ("loc", "a")),
+]
 
-    ``sel_store_same`` does forward the pull to the pushed value; ``pick_ir`` admits no
-    memory spelling (3c's cost) and every surviving store is a root (scratch demotion),
-    so the slot still prints."""
-    row = ("op", "INT_ADD", (("const", 0x14A7, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
-    stmts = [
-        ("st", ("const", 0x01FB, 2), ("mem", row, 1)),
-        ("asg", "a", ("mem", ("const", 0x01FB, 2), 1)),
-        ("st", ("const", 0xD404, 2), ("loc", "a")),
-    ]
-    assert mem.extract(mem.Proc().run(stmts).env["a"]) == str(
+
+def test_a_push_pull_spill_forwards_in_the_graph_and_in_the_text():
+    """The prototype's ``m_01FB`` pin, measured on both halves.
+
+    ``sel_store_same`` forwards the pull to the pushed value and 3c's memory price now
+    spells the pull from it, so what still prints the slot is the store — a root until
+    scratch demotion, which is the half of the refusal that remains."""
+    assert mem.extract(mem.Proc().run(_PUSH_PULL).env["a"]) == str(
         mem.sel(mem.mem0(), E.add(E.num(0x14A7, 2), E.zext(E.loc("x")), 2), 1)
     )
-    assert [ln for ln in mem.render_proc(stmts) if "m_01FB" in ln] == [
-        "m_01FB = m_14A7[x]",
-        "a = m_01FB",
+    assert [ln for ln in mem.render_proc(_PUSH_PULL) if "m_01FB" in ln] == ["m_01FB = m_14A7[x]"]
+
+
+def test_a_memory_spelling_is_priced_below_every_value_one():
+    """Adoption §4's order as a price: a value spelling beats every memory spelling, so
+    admitting memory costs none of the forwarding the filter used to guarantee."""
+    site = mem._Chain()
+    site.step(1, 0, (0x0040, 0x0040, 1))
+    val = mem._sel_reads(("add", ("loc", "x.1"), ("num", 1, 1), 1), [])
+    assert not val and site.ok(1, val) == 0
+    cell = mem._sel_reads(("sel", ("memk", 1), ("num", 0x41, 2), 1), [])
+    assert cell == [(1, (0x41, 0x41), 1)] and site.ok(1, cell) == 1
+
+
+def test_a_memory_spelling_must_read_the_same_at_the_site_it_spells():
+    """The position-correctness argument the price replaces the filter with: the read
+    crosses only chain steps proved disjoint from it, so a store of the cell refuses."""
+    stmts = [
+        ("st", ("const", 0x40, 1), ("mem", ("const", 0x14A7, 2), 1)),
+        ("st", ("const", 0x14A7, 2), ("const", 0x09, 1)),
+        ("st", ("const", 0xD404, 2), ("mem", ("const", 0x40, 1), 1)),
     ]
+    assert mem.render_proc(stmts)[-1] == "sid.v1.ctrl = zp_40"  # m_14A7 holds $09 here
+    moved = list(stmts)
+    moved[1] = ("st", ("const", 0x14A8, 2), ("const", 0x09, 1))
+    assert mem.render_proc(moved)[-1] == "sid.v1.ctrl = m_14A7"  # crossed, and the deeper read
+
+
+def test_the_chain_walk_stops_at_a_join_that_does_not_carry_the_cell():
+    """A join carries the cells it proved kept, and a read crosses it only for those."""
+    ch = mem._Chain()
+    ch.step(1, 0, (0x0040, 0x0040, 1))
+    ch.step(2, 1, frozenset({(0x0041, 1, 1)}))
+    assert ch.reach(2, (0x0041, 0x0041, 1)) == frozenset({2, 1, 0})  # kept, then disjoint
+    assert ch.reach(2, (0x0040, 0x0040, 1)) == frozenset({2})  # the join does not carry it
+    assert ch.reach(1, (0x0040, 0x0040, 1)) == frozenset({1})
+    ch.step(3, None, None)  # a havoc: nothing crosses it
+    assert ch.reach(3, (0x0041, 0x0041, 1)) == frozenset({3})
 
 
 def test_a_call_carries_the_cells_its_callee_cannot_write():
