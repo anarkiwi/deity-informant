@@ -384,6 +384,63 @@ def store_reach(stmt, regions, env=None):
     return (0, UNRES, addr_bits(stmt[1], env), G.store_width(stmt[2]), 0)
 
 
+def accesses(s):
+    """``(address node, byte width)`` of every load a statement makes, plus its store."""
+    out, stack = [], list(_stmt_exprs(s))
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            out.append((x[1], x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    if s[0] == "st":
+        out.append((s[1], G.store_width(s[2])))
+    return out
+
+
+_STK_PAGE = ("const", 0x0100, 2)
+
+
+def sp_disp(addr, sp=None):
+    """``k`` of a ``(zext2(sp [+ $k]) | $0100)`` address, else None.
+
+    The 6510 pull address, ``or`` rather than add because the byte wraps inside
+    page one. ``concretize_stack`` folds it to a cell only where one entry
+    ``sp`` flowed there; two call depths join to bot and the spelling survives."""
+    sp = _SP if sp is None else sp
+    if addr[0] != "op" or addr[1] != "INT_OR" or len(addr[2]) != 2:
+        return None
+    for a, b in (addr[2], addr[2][::-1]):
+        if b != _STK_PAGE or a[0] != "op" or a[1] != "INT_ZEXT":
+            continue
+        inner = a[2][0]
+        if inner == ("loc", sp):
+            return 0
+        if inner[0] == "op" and inner[1] == "INT_ADD" and len(inner[2]) == 2:
+            p, q = inner[2]
+            if p == ("loc", sp) and q[0] == "const":
+                return q[1] & 0xFF
+            if q == ("loc", sp) and p[0] == "const":
+                return p[1] & 0xFF
+    return None
+
+
+def sp_delta(v, sp=None):
+    """``+/-k`` of an ``sp = (sp +/- $k)`` update, else None."""
+    sp = _SP if sp is None else sp
+    if v[0] != "op" or len(v[2]) != 2:
+        return None
+    a, b = v[2]
+    if v[1] == "INT_ADD" and b[0] == "const" and a == ("loc", sp):
+        return b[1]
+    if v[1] == "INT_ADD" and a[0] == "const" and b == ("loc", sp):
+        return a[1]
+    if v[1] == "INT_SUB" and a == ("loc", sp) and b[0] == "const":
+        return -b[1]
+    return None
+
+
 def mem_refs(n):
     """``((base, index, modulus), width)`` of every memory reference under ``n``."""
     out, stack = [], [n]
@@ -1425,6 +1482,40 @@ class _Builder:
             out.append(("ret", self.arm > 0))
 
 
+def _signed(k):
+    return k - 256 if k > 127 else k
+
+
+def slot_reader(stmts):
+    """The procedure consumes the return slot its caller pushed (docs/frameprog.md 5).
+
+    ``sp`` walks entry-relative over the straight-line prefix, where a callee must take
+    its own return address before a transfer can lose it: a stack pointer above entry,
+    or an access at displacement ``+1``, is what the caller pushed and a ``pcall`` drops."""
+    disp, env = 0, {}
+    for s in stmts:
+        for addr, width in accesses(s):
+            for _hop in range(4):
+                if addr[0] != "loc" or addr[1] not in env:
+                    break
+                addr = env[addr[1]]
+            k = sp_disp(addr)
+            if k is not None and disp + _signed(k) + width - 1 >= 1:
+                return True
+        if s[0] == "asg" and s[1] == _SP:
+            d = sp_delta(s[2])
+            if d is None:
+                return False
+            disp += _signed(d & 0xFF)
+            if disp >= 1:
+                return True
+        elif s[0] == "asg":
+            env[s[1]] = s[2]
+        elif s[0] != "st":
+            return False
+    return False
+
+
 # ---- pass 2: interprocedural register liveness -----------------------------------
 class _Info:
     """Program-wide summaries: live-in, may/must-define, returns, callability."""
@@ -1454,6 +1545,8 @@ class _Info:
             self._scan_list(self.procs[e], self.own_labels[e], gotos, blocked, calls)
             blocked |= {pc for pc in gotos if pc == e or pc not in self.own_labels[e]}
             self.call_labels[e] = calls & self.own_labels[e]
+            if slot_reader(self.procs[e]):
+                blocked.add(e)
         for e in self.order:
             self.callable_[e] = not self.open_flow and e not in blocked
 

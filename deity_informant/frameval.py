@@ -592,7 +592,8 @@ class Evaluator:
         """One play invocation; the frame's buffered ``(reg, val)`` SID writes.
 
         ``sp`` and the pushed return bytes are machine-faithful: call/ret move
-        the shared stack register the program itself reads back (TSX/TXS)."""
+        the shared stack register the program itself reads back (TSX/TXS), and a
+        ``ret`` continues at the slot the callee left, not at its call's successor."""
         ops, r, m, rd, s = self.code.ops, self.r, self.m, self._rd, self.sp
         rmap, prov, ploc = self.code.rmap, self.prov, self.ploc
 
@@ -672,18 +673,18 @@ class Evaluator:
                 while stack and stack[-1][1] < p:
                     stack.pop()
                 r[s] = q = (p + 2) & 0xFF
-                if stack and stack[-1][1] == p:
+                w = m[0x100 + ((p + 1) & 0xFF)] | (m[0x100 + q] << 8)
+                if stack and stack[-1][1] == p and stack[-1][2] == w:
                     pc = stack.pop()[0]
                 elif q >= start:
                     break
-                else:  # the program moved sp (TXS/PHA): return through the real stack
-                    w = m[0x100 + ((p + 1) & 0xFF)] | (m[0x100 + q] << 8)
+                else:  # the slot the callee wrote, or the program's own sp move
                     pc = self._resolve(self.code.rmap, (w + 1) & 0xFFFF, "ret")
             elif k == "sw":
                 pc = self._resolve(op[2], m[op[1]], "switch $%04X" % op[1])
             elif k == "call":
                 push(op[2])
-                stack.append((pc, r[s]))
+                stack.append((pc, r[s], op[2]))
                 pc = op[1]
             elif k == "pcall":
                 vals = [f(r, m, rd) for f in op[3]]
@@ -693,7 +694,7 @@ class Evaluator:
                 for i, o in zip(op[2], orgs or ()):
                     _bind(ploc, i, o)
                 push(op[4])
-                stack.append((pc, r[s]))
+                stack.append((pc, r[s], op[4]))
                 pc = op[1]
             elif k == "dyn":
                 dyn = op[1](r, m, rd) & 0xFFFF
@@ -706,11 +707,11 @@ class Evaluator:
                 pc = op[1].get(dyn) or self._resolve(rmap, dyn, "switch goto")
             elif k == "cd":
                 push(op[2])
-                stack.append((pc, r[s]))
+                stack.append((pc, r[s], op[2]))
                 pc = op[1].get(dyn) or self._resolve(rmap, dyn, "switch call")
             elif k == "calld":
                 push(op[1])
-                stack.append((pc, r[s]))
+                stack.append((pc, r[s], op[1]))
                 pc = self._resolve(rmap, dyn, "call")
             else:
                 raise FrameFault(op[1])

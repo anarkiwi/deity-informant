@@ -27,18 +27,6 @@ def _span(addr):
     return base, 0 if idx is None else E.mask(FF._w(idx))
 
 
-def _mems(s):
-    """Every ``mem`` node of a statement's expression operands."""
-    stack = list(frameproc._stmt_exprs(s))
-    while stack:
-        x = stack.pop()
-        if x[0] == "mem":
-            yield x
-            stack.append(x[1])
-        elif x[0] == "op":
-            stack.extend(x[2])
-
-
 def _hit(addr, width, cell):
     """``(may touch ``cell``, address unresolvable)`` of a ``width``-byte access."""
     base, span = _span(addr)
@@ -47,10 +35,7 @@ def _hit(addr, width, cell):
     return base <= cell <= base + span + width - 1, False
 
 
-def _accesses(s):
-    """``(address, byte width)`` of every load and store the statement performs."""
-    out = [(x[1], x[2]) for x in _mems(s)]
-    return out + [(s[1], G.store_width(s[2]))] if s[0] == "st" else out
+_accesses = frameproc.accesses  # the ONE reading of a statement's memory operands
 
 
 def _footprint(stmts):
@@ -205,30 +190,7 @@ def _rewrite(stmts, names):
 
 
 # ---- rung (d0s): the slot named through ``sp`` rather than through its cell ------
-_STK_PAGE = ("const", 0x0100, 2)
-
-
-def _sp_disp(addr, sp):
-    """``k`` of a ``(zext2(sp [+ $k]) | $0100)`` address, else None.
-
-    The 6510 pull address, ``or`` rather than add because the byte wraps inside
-    page one. ``concretize_stack`` folds it to a cell only where one entry
-    ``sp`` flowed there; two call depths join to bot and the spelling survives."""
-    if addr[0] != "op" or addr[1] != "INT_OR" or len(addr[2]) != 2:
-        return None
-    for a, b in (addr[2], addr[2][::-1]):
-        if b != _STK_PAGE or a[0] != "op" or a[1] != "INT_ZEXT":
-            continue
-        inner = a[2][0]
-        if inner == ("loc", sp):
-            return 0
-        if inner[0] == "op" and inner[1] == "INT_ADD" and len(inner[2]) == 2:
-            p, q = inner[2]
-            if p == ("loc", sp) and q[0] == "const":
-                return q[1] & 0xFF
-            if q == ("loc", sp) and p[0] == "const":
-                return p[1] & 0xFF
-    return None
+_sp_disp = frameproc.sp_disp  # the ONE reading of a stack-page address
 
 
 def _touches_page(addr, width):
@@ -562,18 +524,7 @@ def _strip_sp(stmts, spat, sp, saves=frozenset()):
     return out
 
 
-def _sp_delta(v, sp):
-    """``+/-k`` of an ``sp = (sp +/- $k)`` update, else None."""
-    if v[0] != "op" or len(v[2]) != 2:
-        return None
-    a, b = v[2]
-    if v[1] == "INT_ADD" and b[0] == "const" and a == ("loc", sp):
-        return b[1]
-    if v[1] == "INT_ADD" and a[0] == "const" and b == ("loc", sp):
-        return a[1]
-    if v[1] == "INT_SUB" and a == ("loc", sp) and b[0] == "const":
-        return -b[1]
-    return None
+_sp_delta = frameproc.sp_delta  # the ONE reading of an ``sp`` update
 
 
 def _saves(stmts, sp):
