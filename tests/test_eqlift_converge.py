@@ -9,7 +9,6 @@ import pytest
 pytest.importorskip("egglog")
 pytest.importorskip("z3")
 
-import z3
 from egglog import EGraph
 from egglog import eq as egg_eq
 
@@ -210,26 +209,18 @@ def test_every_catalog_row_is_gated():
     assert not set(CASES) & set(NO_VARIANTS)
 
 
-def test_the_deferred_pack_rule_is_an_equivalence_already():
-    """The deferral is a cost decision, not an open question: the rule is proved here."""
-    alg = E._Z3Alg()
-    lhs, rhs, _g = E._built(E._r_pack_add, alg, 2)
-    s = z3.Solver()
-    s.add(*alg.constraints)
-    s.add(lhs != rhs)
-    assert s.check() == z3.unsat
+def test_the_cost_names_the_or_built_pack_the_normal_form():
+    """§4's cost change, admitted with the rule: the ADC spelling is priced above the
+    ORA one, so the merge cannot leave which pack the artifact carries to ``repr``."""
+    lo, hi = ("cell", 0x40, 1, 0), ("cell", 0x41, 1, 0)
+    ora = ("bor", ("shl", ("zext", hi), ("num", 8, 1), 2), ("zext", lo), 2)
+    adc = ("add",) + ora[1:]
+    assert E._packed(adc) and not E._packed(ora)
+    assert E._cost(adc) == E._cost(ora) + 1
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3d: the ADC-built pack. `pack_add` is written and "
-    "Z3-proved, but admitting it prices the ADD spelling equal to the OR one, so the "
-    "`repr` tie-break moves the canonical pack corpus-wide (framemath's provenance reads "
-    "the OR form) and costs 2.8x the memory suite's saturation -- it lands with the §4 "
-    "cost change that names the pack as the normal form, on its own corpus diff",
-    strict=True,
-)
 def test_the_adc_built_pack_converges_on_the_ora_built_one(rules):
-    """The pack the 6502 builds with ADC rather than ORA: equal, and not yet admitted."""
+    """The pack the 6502 builds with ADC rather than ORA: one class, one normal form."""
     eg = EGraph()
     hs = [eg.let("h%d" % i, t) for i, t in enumerate(_terms((), [PK(L("h"), L("l")), PACK_ADD]))]
     mem.saturate(eg, rules, iters=_ROUNDS, budget=60.0)

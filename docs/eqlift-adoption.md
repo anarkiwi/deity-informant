@@ -113,6 +113,10 @@ passing tests (`tests/test_eqlift_mem.py`).
   asserts they merge into one e-class whose extracted representative is the row's normal
   form. A row that does not merge names a rule; a rule proved but not admitted names the
   cost decision that holds it back, with its measurement, and keeps a strict xfail.
+  `pack_add` is the worked example: proved at 3c landing 2, admitted at 3d landing 2 with
+  the price that names the OR-built pack the normal form (`eqlift._packed`, the catalog's
+  own `word-pack`), on a corpus-artifact diff of 49 of 624 tunes at +8 bytes and one
+  respelled line each. A cost change that makes a merge safe lands *with* the rule.
 - Single source: each value builder runs against the dual algebra (`_EggAlg` for
   the rewrite, `_Z3Alg` for the proof) so the formula Z3 proves IS the rewrite
   egglog applies. Memory axioms are stated once as the egglog rewrite/rule and

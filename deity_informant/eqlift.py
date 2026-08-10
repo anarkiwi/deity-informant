@@ -547,9 +547,8 @@ def _r_mask_hoist(A, w):
 def _r_pack_add(A, w):
     """The pack built with ADC rather than ORA: the lanes are disjoint, so ``|`` is ``+``.
 
-    Proved but NOT admitted (3c landing 2): with both spellings priced 1 the tie-break
-    moves the canonical pack corpus-wide, and it costs 2.8x the memory suite's
-    saturation. ``tests/test_eqlift_converge.py`` carries its proof and its pinned gate."""
+    Admitted at 3d landing 2 with the §4 cost change that names the OR-built pack the
+    normal form (``_packed``), so the merge cannot leave the tie-break to spell it."""
     del w
     h, l = A.tvar("h", 1), A.tvar("l", 1)
     return A.add(A.shl(A.zext(h), A.num(8, 1), 2), A.zext(l), 2), _pk(A, h, l)
@@ -655,6 +654,7 @@ RULES = (
         ("carry_ones", (1,), _r_carry_ones),
         ("mask_hoist", (2,), _r_mask_hoist),
         ("sbc_borrow", (1,), _r_sbc_borrow),
+        ("pack_add", (2,), _r_pack_add),
         ("pack_hi", (2,), _r_pack_hi),
         ("pack_lo", (2,), _r_pack_lo),
         ("zext_mask", (2,), _r_zext_mask),
@@ -716,6 +716,21 @@ def admitted_rules():
 
 # ---- tuple IR mirroring the constructors (parse target for extracted reprs) -----
 _COSTS = {"num": 1, "cell": 1, "loc": 4, "load": 2, "bnot": 2, "carry": 12}
+_PACK_ADD = 2  # the ADC-built pack: equal to the OR one, and not the normal form
+
+
+def _packed(ir):
+    """True where an ``add`` spells the pack ``bor`` spells (``hi << 8`` plus ``zext lo``).
+
+    ``idioms.pack`` is the OR form, so naming it the normal form is the catalog's own
+    reading; the price says so instead of leaving it to the ``repr`` tie-break."""
+    if ir[0] != "add":
+        return False
+    for a, b in ((ir[1], ir[2]), (ir[2], ir[1])):
+        if a[0] == "shl" and a[2][0] == "num" and a[2][1] == 8 and a[1][0] == "zext":
+            return b[0] == "zext"
+    return False
+
 
 _OPS = {
     "INT_ADD": "add",
@@ -922,6 +937,8 @@ def _cost(ir):
     c = _COSTS.get(ir[0], 1)
     if ir[0] == "cell" and _SID_LO <= ir[1] <= _SID_HI:
         c = 9  # SID cells are outputs; never prefer reading one back
+    elif _packed(ir):
+        c = _PACK_ADD  # the catalog's word-pack is the OR one; the ADC spelling costs more
     for a in ir[1:]:
         c += _cost(a) if isinstance(a, tuple) else 1
     return c
