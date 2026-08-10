@@ -1,5 +1,14 @@
 # Structured decompiler — implementation specification
 
+> **Superseded as a plan; retained because it is normative.** This is the
+> **landed sidprog specification**, not a stray: frameprog.md and soundness.md
+> cite it normatively (v1 class scoping, handler entry), which is why the
+> 2026-08-09 pivot kept it when the other pre-pivot plan docs were deleted. The
+> active plan is docs/register-model-lift-impl.md. The sidprog **emit path** is
+> in that plan's housekeeping queue for deletion; the soundness contract of §0.1
+> — observed sets plus faulting guards, static analysis as optional
+> certification — is the kernel that outlives it and is unchanged.
+
 This specifies how to replace the working **prototype**
 (`deity_informant/structured.py`, `render.py`, `stext.py`) with a **complete,
 production implementation**. The prototype proved the approach: 14 HVSC tunes

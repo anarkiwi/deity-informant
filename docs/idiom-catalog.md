@@ -371,7 +371,43 @@ the record, and no normal form is claimed for it yet. Sites are in
 |---|---:|---:|---|---|
 | `carry-value` | 40 | 10 | `carry(..)` surviving as a value — the flag outlived the operation that set it | fusing into `adc-chain`/`sbc-chain`'s wide form, the `carry_fuse` Stage 3 names |
 | `compare-value` | 29 | 9 | a comparison feeding arithmetic — a borrow chain, unfolded | the wide compare it is a lane of |
-| `stack-slot` | 23 | 8 | a stack byte the sp rung did not lift to a local | Phase 1's rung generalized, or a named refusal |
+| `stack-slot` | 23 | 8 | a byte of the `$0100` page read as a value | the memory sort plus the joins, per shape — the seats are read below |
+
+### The `stack-slot` seats, read
+
+All 12 seats `out/idiom_cover.json` records were read against the machine
+(claims discipline). They fall in four shapes, and each is a memory-sort
+obligation rather than a missing pass. The `$0100` interval every one of them
+needs is the one stage 3b's bridge seeds from `zext2(sp) | $0100`.
+
+- **Push, use, pull — one statement list.** `4_Tunes` `$13F7`
+  (`LDA table,Y; PHA; LSR×4; STA hi; PLA; AND #$0F; STA lo`), `Alioth` `$E0B0`
+  (three of them: `mem[t:2] = w; …; w' = mem[t:2]`, nibble splits feeding
+  `sustain_release`, `filter.mode_vol` and `m_E771`/`m_E774`),
+  `Discmonsters_Intro` `$1806` and one of `Angry_Birds` `$0CFC`'s two. Nothing
+  writes the slot between store and load, so `sel_store_same` discharges it.
+  **Already measured working**: 3b's exemplar measurement deleted 2 statements
+  from `4_Tunes`, both stack pushes the interval bridge bounds.
+- **A pushed value crossing a join.** `Atmosphere_II` `$0FA4`/`$0FCE` (5 nodes,
+  conditional pop/re-push, final `PLA` → `STA $D404,Y`); `Athena` `$C17D`,
+  where each arm pushes its own SMC opcode byte (`$C185 LDA #$A9 / PHA` against
+  `$C198 LDA #$60 / PHA`), the arms converge at `$C1A1` and `$C1AA PLA /
+  STA $C325` pulls it; `Angry_Birds` `$0CFC`'s other one, a `PHP` in both arms
+  of an `if`/`else` pulled after the join; `4_Tunes` `$11D9`, a command byte
+  popped in dispatch arms; and `Alioth`'s push across `call $E84B`. The
+  memory join 3b's second landing owes is the discharge — a branch join for all
+  but the last, a call boundary for it.
+- **An entry save/restore of a zero-page pair.** `Angry_Birds` `$0903` →
+  `$09F1: LDA $FE / PHA / LDA $FF / PHA … $0A2F: PLA / STA $FF / PLA / STA $FE
+  / RTS`; `From_Beyond_main` `$1003` → `$1095` with `$FA`/`$FB`; `4_Tunes`
+  `$1003` → `$10C0` with `$FB`/`$FC`. All three seats are `JMP` trampolines —
+  the pushes and pulls sit in the block they enter. This is
+  `store(m,a,sel(m,a)) = m`, the redundant-store axiom, with phase 2c's balance
+  fixpoint supplying the disjointness of the callees' own stack traffic between
+  push and pull.
+- **Return-address bytes.** `Automatas` `$0FE3`, in the documented export stub.
+  Phase 2c's balance fixpoint owns the call fabric; this is a census-accounting
+  exclusion, not an unsolved lift.
 
 ## Obligations the exemplars do not pose
 

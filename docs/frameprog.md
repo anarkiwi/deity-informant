@@ -1,5 +1,16 @@
 # frameprog — the frame-program layer (specification)
 
+> **What in here is live, as of the 2026-08-09 pivot**
+> (docs/register-model-lift-impl.md). §1 (Gate FP), §2 (the SMC-free domain),
+> §3 (the dialect) and §4's landed rungs are the **standing spec of the
+> artifact and its law** — Gate FP, the reference evaluator, the grammar and
+> the observed-primary guards all remain, and nothing below may be weakened.
+> §5's dispositions, §6's milestone records and §7's measurements are the
+> **historical record** of how the lift landed; the labels resolve here because
+> docstrings cite them. What is **not** live is the ladder as a work list: the
+> per-shape rungs are not extended, no new rung is queued, and the residue §7
+> measures is stage 3's e-graph work under the four-stage plan, not a next rung.
+
 frameprog is a **derived** artifact level above sidprog. It drops cycle
 exactness: the only normative output is the **canonical frame projection**
 of the SID write stream, one record per play-frame. sidprog remains the
@@ -254,8 +265,11 @@ recorded in the build report.
   (`("op", "COPY", (x,), w)`). Both are frameprog forms a sidprog document
   rejects, exactly as the width suffix and the `*ptr[i]` deref are. They are the
   notation rung (d2) writes 16-bit arithmetic in.
-- sidprog is and remains the cycle-exact ground truth and the deliverable of
-  the decompiler; frameprog replaces nothing and relaxes nothing below it.
+- The cycle-exact ground truth is the committed model, the walker replay and
+  the VM/recorder against sidplayfp — never the sidprog text, whose emit path
+  is queued for deletion (register-model-lift-impl.md, housekeeping). frameprog
+  is the deliverable artifact level and relaxes nothing beneath it: Gate C
+  holds on the model for as long as the text does.
 - **frameprog is not a projection of sidprog, and never was** (Phase 3a,
   2026-08-09). Both project the same `structured.Model`, but the sidprog
   projection is lossy for frameprog's purposes: `sidprog.TextModel` carries no
@@ -277,14 +291,17 @@ recorded in the build report.
   sidprog runtime guards under the §2 mapping; certification (static set
   equals observed) stays upstream report metadata, never changing the arms.
 
-## 4. The lift ladder
+## 4. The lift ladder (landed; the labels the code cites)
 
 The §2 entry translation is applied first and is definitional, not a rung.
-Ordered rungs (a)-(f) then transform the frame program; each carries a
-static premise discharged by proof records (structured.Proof style) and
-re-verifies Gate FP. Refusals are per-site/per-pair/per-procedure with a
-diagnostic; a tune's artifact records its highest rung; every rung is a
-valid, gated artifact.
+Rungs (a)-(d2) and (f) landed and stand; each carries a static premise
+discharged by proof records (structured.Proof style) and re-verifies Gate FP.
+Refusals are per-site/per-pair/per-procedure with a diagnostic; a tune's
+artifact records its highest rung; every rung is a valid, gated artifact.
+**This is a description of what landed, not a queue.** No rung is extended or
+generalized to reach a residue, and no rung is added: consolidation is stage
+3's one e-graph (docs/eqlift-adoption.md §2), where a shape the rungs refuse is
+a rule with a Z3 proof or a named refusal.
 
 - **(a) Timing-annotation elimination** (mechanical). Strip `@n`, `@tP`,
   `@x`/`@xi`. Premise: none — outputs are frame-buffered (§1.4), volatile
@@ -347,8 +364,15 @@ valid, gated artifact.
   identities (`carry_comm`, `carry_ult`, `eq_zero`, `carry_ones`, `sbc_borrow`)
   and the algebra (`add_to_sub`, `num_narrow`, `sub_add_cancel`,
   `sub_sub_cancel`). Gate: FP + a proof record per site.
-- **(e) Per-voice unification.** Replace k code copies with one procedure
-  parameterized by voice `v`. Premise — code isomorphism up to voice index:
+- **(e) Per-voice unification — not a rung; stage 3d's classical re-rolling.**
+  The label is kept because §5, §6 and the code cite it, but the work belongs to
+  stage 3's "not equational, kept as small classical passes" bullet: anti-unify
+  the unrolled voice slices, take a total isomorphism or keep the copies.
+  Nothing here is queued as ladder work, and the canonical example already
+  amends the premise below — an observed-guard difference between two voices is
+  unifiable under a guard, not a structure difference (plan decision log,
+  2026-08-10). The premise the pass inherits is code isomorphism up to voice
+  index:
   a substitution `sigma_v` maps the voice-1 region tree node-for-node onto
   voice-k's after normalization, every leaf difference being one of: SID
   base `+7(v-1)`; state variable `base + stride*(v-1)` or split-table
@@ -1046,22 +1070,25 @@ running past the region end.
 | Unbounded play-time code copy | The one SMC shape with no state translation (§2). Refuses with a site diagnostic; zero corpus tunes. Everything else — operand, opcode toggle, vector, reads-as-data — is state by construction, with the faulting-default guard covering unobserved values. |
 | Inline parameters after `JSR` (open) | The one remaining frameprog-attributable corpus failure: `C64_World`, `FrameFault: unobserved $4ED7 reached` at frame 189. `$4ED4: JSR $4921` is followed by four data bytes; `$4921` pulls its own return address into a pointer (`PLA/PLA`, rendered `mem[(sp+1)\|$0100]`), copies the four bytes through it and pushes the address back advanced by 4, so the `RTS` skips the data. `frameproc` renders that call as a `pcall`, which drops `ret $R` and makes `_Code.synth` push a stand-in address, and `frameval`'s `ret` returns through its shadow stack rather than the patched image — so the callee rewrites a stand-in and the return lands on the inline data ($4ED7), a site the trace rightly never observed. Fix direction: refuse the `pcall` promotion where the callee reads the stack at its own return slot (the `call ... ret $R` form already pushes the real address), not a second return path in the evaluator. Not the volatile-input divergence above; distinct cause, distinct fix. |
 | A 16-bit add whose halves are written to different places | Rung (d2)'s false positive would be *merging* it, and the reason the destinations are checked separately from the sources. `C64_World` (CyberTracker) at `$4953`: `LDA $14 / CLC / ADC #$04 / STA $14 / LDA $15 / ADC #$00 / PHA` is a real 16-bit add, but the hi half is *pushed*, not stored to `$15` — `$4921` pulls its own return address, skips the four inline parameter bytes and pushes the address back, so the 16-bit destination is the return-address pair on the stack and `$14` is a one-byte spill. The **sources** `$14`/`$15` are one quantity, so the arithmetic lifts and the emitted text carries the `+ $0004` as a word; the **destinations** are not the lanes, so the two writes stay apart and no `u16` store is emitted. Collapsing (`$14`, stack slot) into one word store would write the right value through the wrong cell. Pinned by `tests/test_framemath.py::test_the_c64_world_cybertracker_half_goes_elsewhere`, in both the `PHA` and the plain-`STA $16` form. The same routine holds a genuine pair nine bytes earlier (`STA $4951`/`STA $4952`, the self-modified operand of the `STY` at `$4950`), so "this tune is broken" is not a safe proxy for "this site is bad". |
-| Isomorphism near-misses (voice-3 noise/filter special cases) | Rung (e) refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
+| Isomorphism near-misses (voice-3 noise/filter special cases) | The re-rolling pass refuses; copies stay per-voice, FP still holds. Tracked via the unification-rate metric; synthesized voice guards are forbidden (they fabricate structure the code does not have). |
 | Forward `goto` into a later arm (fixed) | Closed. `frameproc`'s backward liveness sweep walks an `if`'s then-arm before its else-arm, so a `goto` was seen before its target label: the label's live-set read empty and locals live across that edge looked dead, letting `_inline` delete an update the target still consumed. Two faults, both needed: `_Flow.run` now iterates label live-sets to a fixpoint (as `_loop_head` already did for loops), and `_invis_name` treats an own-procedure `goto` as consuming whatever is live at its label instead of dismissing it — `_use_count` sees no textual use, so the consumer was invisible. |
 | Stack-driven dispatch (`PHA`/`RTS`, `TXS`/`RTS`) | Closed. The surface serializes the transfer as a bare `ret` and the evaluator returns machine-faithfully through `sp` and the stack image. `PHA`-pushed targets were unrecoverable only because the passes treated `sp` as an ordinary local and eliminated its updates; `sp` is machine state (`call`/`ret` move it, pushed bytes land at addresses derived from it), so it is now exempt from pruning, from inlining and from the faint-assignment rule. `_fuzzgen.t_rts_trick` passes and `_FP_GAP` is empty. |
 | Inline callee body entered by `call` (fixed) | Closed. A label some `call` targets is a mini-procedure: its exit returns to the call sites and may be re-entered, so a local it updates stays live. `_scan_list` collected `goto` targets and labels but never `call` targets, so the sweep treated the body's end as textual fall-through and `_prune` deleted a live update. `_Info.call_labels` now records them and both sweeps keep the machine set live from such a label onward. |
 | Envelope dispatch under frame semantics | ADSR hardware state is not modeled at this level; audibility rests on the order-preserved ctrl/ADSR section (hard restart, test-bit, retrigger survive per §1.1). `envelope3()`/`osc3()` reads are pinned inputs; a driver branching on sub-frame envelope phase degrades to trace-faithful (previous row). |
 | Sub-frame filter-mode transients | Collapsed by last-write-wins and declared non-normative (§1.2); measured benign (equal volume nibble) on all 17 multi-write tunes. |
 | Replacing the dynamic origin map with a static relation | Refused, priced (§4.7). The lattice's `region(R, i)` is sound only where the index is closed, and a staged byte's index is live at the staging site alone — re-read where the byte is used it names a different cell. Built and run over the corpus, the relation recovers **0** emits against the dynamic map's 298759 and the whole trigger domain, and of the 3402 cells it names it agrees with the run at 1644. What was actually shared — the declaration containment index — is now `datadecl.Regions` and the three copies are gone. |
-| A rung that reads well and consumes worse | Rung (d)'s SID half was the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but cost the consumer of the day 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). It was held opt-in for that consumer; the consumer is gone and the frame program is the deliverable, so the rung now applies unconditionally and a downstream reader that keys lanes off the store statement must read a `u16` store as naming both halves. Every later rung MUST still report the consumer partition beside Gate FP. |
+| A lift that reads well and consumes worse | Rung (d)'s SID half was the case: fusing freq/pulse/cutoff moves no record (Gate FP 649/649) but cost the consumer of the day 752598 → 699551 of 1942809 emits, because one word store names one register class where two byte stores named two (§4.3). It was held opt-in for that consumer; the consumer is gone and the frame program is the deliverable, so the rung applies unconditionally and a downstream reader that keys lanes off the store statement must read a `u16` store as naming both halves. The standing lesson is stage 4's: a landing reports its steering metrics beside Gate FP, and Gate FP is the only law. |
 
 ## 6. Milestones and corpus gates
 
-Each milestone is independently shippable, gated **full-length,
-full-corpus** on the cached HVSC set (opt-in job, results recorded); the
-committed synthetic corpus (`tests/_fuzzgen.py` extended) independently
-covers every new code path so CI holds its gates and >85% coverage with
-HVSC absent (decompiler-implementation.md §1, §7).
+The M-FP labels are the landed record — code and tests cite them and they
+resolve here. They are not a queue: M-FP1/2/3/3b/5 landed with the remainders
+each names, and what M-FP4 named is stage 3d's re-rolling pass (§4(e)). Each
+milestone was gated
+**full-length, full-corpus** on the cached HVSC set (opt-in job, results
+recorded); the committed synthetic corpus (`tests/_fuzzgen.py` extended)
+independently covers every new code path so CI holds its gates and >85%
+coverage with HVSC absent (decompiler-implementation.md §1, §7).
 
 - **M-FP1 — projection + verifier.** Landed: `framelog`
   (canonical/dumps/loads/digi_frames/diff, walker adapter); `iota` extraction
@@ -1151,8 +1178,10 @@ HVSC absent (decompiler-implementation.md §1, §7).
   a definition made inside a branch arm, and a SID pair naming the lifted store.
   Outstanding: the zero-page indexed lane address (§4.3), which is rung (f)'s
   naming gap too, and the mis-grouped extraction of §7.3.
-- **M-FP4 — unification (e).** Gate: FP; isomorphism records; voice-3
-  near-miss refusal exercised synthetically; unification-rate metric.
+- **M-FP4 — unification (e).** Not landed and not a milestone any more: the
+  per-voice re-rolling it named is stage 3d's classical pass (§4(e)), gated
+  there by FP, isomorphism records, the synthetic voice-3 near-miss refusal and
+  the unification-rate metric.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
   (no unproven raw `mem[expr]`); the Commando-family excerpt shape achieved
   on at least the index-looped drivers; per-tune rung recorded in the build
@@ -1194,17 +1223,22 @@ HVSC absent (decompiler-implementation.md §1, §7).
   while the machine reads three others
   (`test_mutation_an_unresolved_site_given_an_address_moves_the_record`); and dropping the
   row bound turns the claim `block + [0, $FF]` into the whole address space
-  (`test_mutation_dropping_the_row_bound_claims_the_address_space`). Outstanding: rungs
-  (e)/(f) proper, and the ceiling on resolution is rung (d)'s fusion rate (§4.4 census).
+  (`test_mutation_dropping_the_row_bound_claims_the_address_space`). What the rungs did
+  not resolve is not a rung's debt: the residue is stage 3's extraction problem, and the
+  ceiling this rung reached was rung (d)'s fusion rate (§4.4 census).
 
 Gate FP is the only correctness law at this level; no milestone may weaken
 it, and sidprog's Gates A/C/L/S are untouched throughout.
 
-## 7. Open issues
+## 7. The measurement record
 
-Work in flight on the lift ladder, with what is proven, what is not, and the
-evidence each claim rests on. §7.1 is settled; everything measured before it was
-settled has been re-measured against the deterministic gate.
+How the lift landed, what is proven, what is not, and the evidence each claim
+rests on. §7.1 is settled; everything measured before it was settled has been
+re-measured against the deterministic gate. **Read this as a record, not a work
+list.** Every "next step" and ranked item below was written under the phased
+plan the 2026-08-09 pivot deleted; the counts stand and the diagnoses stand,
+but the residue they measure is stage 3's extraction problem, and the census
+they steer by is retired as a steering metric.
 
 ### 7.1 The gate was flaky: two defects, one visible (SETTLED)
 
@@ -1639,8 +1673,8 @@ and `::test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page`.
   `Donkey_Kong`'s hi-lane *read* address is a local defined before the interval,
   which `_store` does not reach because it resolves store addresses only. That
   residue is the same shape §7.3 already names for that class: an unresolved
-  *read* address. Extending the same resolution to reads is the next step and a
-  separate commit.
+  *read* address, which stage 3 resolves through the shared interval analysis
+  rather than by widening this rung's own address resolution.
 - **Both counter-examples still refuse, and lift when the modulus is removed.**
   `After_the_War` `$0010/$0011` and `Ultima_III-Exodus` `$005B/$005C` are pinned
   by `test_framemath.py::test_a_wrapping_zero_page_store_may_reach_a_lane_below_its_base`
@@ -2007,11 +2041,12 @@ workers share a fixed CPU budget for the whole sweep. At `CAP_CPU=300` HEAD fits
 return `MemoryError: cpu cap`**, and two workers crossed the hard limit mid-task
 and were `SIGKILL`ed, which deadlocks `imap_unordered` exactly as that file's
 docstring warns. The sweep below is therefore run at `CAP_CPU=2400`, where the cap
-binds on neither build. Cutting the extraction per query pair is the next cost
-work; part of the bound is already paid for in coverage, since `_pairs` offers a
-cross pair of differing rows only where no same-row pair is on offer at all, which
-costs 6 `adc`-`withzero`-`bidir` shapes whose step table is walked by the other
-index register.
+binds on neither build. The extraction cost per query pair is bounded by stage
+3's own schedule (`DI_EQLIFT_BUDGET_S`/`_MB`, sound at any cutoff), not by
+tuning this rung; part of the bound is already paid for in coverage, since
+`_pairs` offers a cross pair of differing rows only where no same-row pair is on
+offer at all, which costs 6 `adc`-`withzero`-`bidir` shapes whose step table is
+walked by the other index register.
 
 Records a tune's ordered rung-(d2) decisions — every candidate form `_fuse`
 offered, the grouping `_site` chose, the refusal `_premise` gave, the statement
@@ -2035,7 +2070,7 @@ number moved, not which decision moved. Every finding in §7.1 and §7.3 above w
 located by `capture` on two builds and `diff` — the statement list at the
 disagreeing site, then the 6502 behind it — not by comparing totals.
 
-### 7.6 The address a value names, and the row a constant lost (IN PROGRESS)
+### 7.6 The address a value names, and the row a constant lost (LANDED)
 
 §7.5's residue named one real defect: the same cell under two names. The block
 converter spells a constant address as its constant only inside the block that
@@ -2139,7 +2174,7 @@ stronger index analysis moves `$CA6E` from "index unproven" to "index proven and
 proven not lane-aligned" -- byte-wide either way. **Proofs relabel this residue;
 they do not shrink it.**
 
-Next steps, in order:
+The five steps that were taken, in the order they were taken (all landed):
 
 1. **Split the metric. Landed and measured.** `framefuse` counts `unproven` and
    `notaligned` apart -- `_consts` returning None against a set `_lane_aligned`
@@ -2205,8 +2240,8 @@ Next steps, in order:
    byte-wide SID lane accesses, named or viewed. What the join cannot reach is
    the *loop-carried* index -- `x` stepped per voice inside a `loop` -- which
    needs a value-set fixpoint over the loop body, not a join; that residue is
-   the view's remaining tenant (41 stores over a 7-tune probe) and the next
-   frontier after step 4.
+   the view's remaining tenant (41 stores over a 7-tune probe), and it is an
+   interval/join question stage 3's e-graph answers, not a sixth step.
 4. **The parameter union** (§7.2's ~800). **Landed, rebased rather than
    applied** -- step 2's rewrite left `stash@{0}` unappliable and both its
    blockers were real. `ENTRY` splits "the value the procedure was entered
@@ -2251,8 +2286,8 @@ form exists, and `partnered` fell 644 -> 383. What remains renders on the
 `sid.regNN` byte view, so the goal holds by construction everywhere: a named
 freq/pulse/cutoff access is u16 in all 624, and the view's tenants are the
 loop-carried indexes -- `x` stepped per voice inside a `loop`, a value-set
-fixpoint over the loop body, not a join -- which is the frontier after this
-branch.
+fixpoint over the loop body, not a join -- which is where the ladder stopped
+and where the e-graph's interval analysis picks the question up.
 
 **Two unproven premises found on the way; the first is now enforced.**
 `_pair_at` accepted a hi-first adjacent SID pair, but `frameval`'s `stw` always
@@ -2303,12 +2338,14 @@ are now ``sid.v1.freq_lo[m_54EB]:2 = m_5428[t10]:2`` and
 ``sid.v1.pw_lo[y]:2 = m_5591[x]:2``, and framemath's word-step lift reads
 ``d0:2 = (zp_10:2 + m_1480:2):2`` with both addends folded.
 
-**Next increments, in value-graph order:** the split state pair (Commando's
-``m_551D[x]``/``ctr_551A[x]``, non-adjacent byte columns of one u16 per-voice
-variable) wants a paired-table u16 access; the spill-store pair (two byte
-spills of one word, ``idx_550A``/``idx_550B``) wants the store-side fold; and
-the sink pair by value provenance -- two halves of one 16-bit datum stored one
-lane apart -- replaces the index-proof pairing entirely, Oracle-gated per tune.
+**What the fold did not reach**, recorded as shapes rather than as a queue: the
+split state pair (Commando's ``m_551D[x]``/``ctr_551A[x]``, non-adjacent byte
+columns of one u16 per-voice variable); the spill-store pair (two byte spills
+of one word, ``idx_550A``/``idx_550B``); and the sink pair by value provenance,
+two halves of one 16-bit datum stored one lane apart. Each is a catalog idiom
+with a normal form (docs/idiom-catalog.md ``pair-row``, ``word-pack``,
+``lane-insert``), so each is a convergence test over the e-graph, not a further
+fold bolted onto this one.
 
 **The pack declares its own columns (7.9 (a), scalar).** A pack over two
 *declared* non-adjacent columns is the pair witness, and the roles land on the
@@ -2352,8 +2389,9 @@ before the form is chosen: ``d0:2 = (ctr_1401[$00]:2 + $0137):2``. The
 *store*-side spelling does not fold, and deliberately: ``grammar.store_width``
 reads every ``const`` store value as one byte, so a folded word constant would
 store truncated (the evaluator refuses it outright), and an immediate write to
-a SID pair still emits the shifted pack. Widening that protocol so a ``const``
-states its width like an ``op`` does is its own increment.
+a SID pair still emits the shifted pack. Whether a ``const`` should state its
+width as an ``op`` does is a dialect question, and stage 2's checklist is where
+the dialect is answerable to the catalog's normal forms.
 
 **The stack leaves the frame program (rung d0').** ``sp`` is invisible to the
 record and its real consumers were the destacked slot addresses, so where
@@ -2834,7 +2872,18 @@ demanded is paid. Every other rate quoted in §7.9.1 and §7.10 is over the 617-
 sweep that preceded this, and is restated against 624 only where a later section
 re-measures.
 
-#### 7.10.7 What the measurements say to do, in order
+#### 7.10.7 The ranked list the measurements produced (historical)
+
+> **This ranking is superseded by the 2026-08-09 pivot.** It ordered per-shape
+> ladder work by cost, and the ladder is deleted. Items 1, 2 and 8 landed and
+> their numbers stand. Items 3-5 (``INT_ADD`` in ``addr_bits``, the computed-jump
+> refusal's target set, the value-set fixpoint) are interval and join questions
+> stage 3's one e-graph answers under adoption §2 -- **not** three more passes,
+> and not additions to ``addr_bits``, which §5's no-extension rule forbids
+> extending. Items 6 and 7 are artifact defects, restated below as such. The
+> closing paragraph's call for "the next metric" is answered: the census is
+> retired as a steering metric, and stage 4's metrics are extracted term cost
+> per emitted size and the share of persistent cells role-named.
 
 Invalidating ``_Jumps`` on a pair fold (§7.10.6) led this list and is **done**: the
 7 tunes build, the corpus sweeps at 624 refusing none, and measurement on those
@@ -2877,7 +2926,13 @@ has been measuring, and most of the 4402 ``hi_byte``/``lo_byte`` sites read off 
 word the pack never made.** Nothing in the list above touches them. The next
 metric should be the census, not the lane column.
 
-#### 7.10.8 The next step, and why it is two steps
+#### 7.10.8 The reading that ended the ladder (historical)
+
+> **Superseded by the pivot, and it is the argument the pivot was made on.**
+> Written as a sequencing note for items 1-5, it measures the ladder against the
+> census and finds the ladder optimising the wrong quantity by three orders of
+> magnitude. The plan's own answer is not a metric for choosing among the items:
+> it is that the items are not the work. Kept for the measurement.
 
 The list above is ordered by cost and the paragraph closing it says the list is
 optimising the wrong quantity. Both are true, and they sequence rather than
@@ -3234,10 +3289,14 @@ since a merged pair writes both cells and owes no read-back.
 **Unsized, deliberately.** 3 sites each in ``Commando`` and ``Monty_on_the_Run``,
 0 in the other eight showcase tunes, is the whole measurement. What is known
 corpus-wide is only that ``plain_lane`` is **0** in every ``fuse_measure`` row,
-i.e. every *unindexed* lone half is widened somewhere. Sizing it is the first
-step, and ``lift_residue`` is the natural instrument: "reads a write-only
-register" is a machine shape it does not name, and it is mechanism-independent
-by design.
+i.e. every *unindexed* lone half is widened somewhere.
+
+**The construct dies in stage 3 by cost, not by a fix here.** adoption §4's cost
+policy models SID-range cells write-only and penalizes them as outputs, so a
+read-back of ``$D400``-``$D414`` can never win extraction: the held lane is
+state and extraction spells it from the declared cell that holds it. The measure
+of it is the emitted artifact, and it is a convergence obligation, not a ranked
+ladder item.
 
 #### 7.10.13 ``state { }`` is mostly scratch: the per-frame residency of a tune
 
@@ -3286,11 +3345,12 @@ one -- more frames can only move a cell from frame-local to persistent, never
 back. The three never-written cells are the exception: read-only on every path is
 statically decidable, and declaring one as state is a plain over-declaration.
 
-**Why it is worth doing.** A cell written before it is read on every path is a
-procedure local wearing a memory address. Promoting it deletes a cell from the
-state section, the traffic with it, and an address from the population §7.10.3
-bounds -- and ``raw_sp`` -> ``unnamed_addr`` at 891 edges says addresses that
-cannot be named are what hold the other rungs up.
+**Where it is answered.** A cell written before it is read on every path is a
+procedure local wearing a memory address. Under stage 3 no liveness pass
+promotes it: a cell no observable root reaches is not emitted at all --
+scratch elimination and spill removal as one reachability (adoption §2), with
+the frame boundary among the roots so a genuinely persistent cell survives.
+What ``state { }`` then declares is stage 4's role-typed cell set.
 
 **Unsized.** One tune, one subtune, 1500 of its 11750 frames. Nothing here is
 corpus-wide, and the instrument is a scratch harness, not a committed tool.

@@ -7,7 +7,9 @@ value+memory e-graph. "MUST" is a gate. 2026-08-09: the register-model plan
 (docs/register-model-lift-impl.md) adopted this engine as its stage 3; §8's
 step list is superseded by that plan's stages, while §4 (rule governance), §5
 (transitional passes — the no-extension rule is now enforced), §6 (verification
-laws) and §9 (dependency policy) bind unchanged.
+laws) and §9 (dependency policy) bind unchanged. The passes §5 names are being
+**deleted**, not kept compatible with: their removal is the plan landing, and
+nothing in this document may be read as a reason to preserve one.
 
 ## 1. What equality saturation does and does not do
 
@@ -78,8 +80,8 @@ passing tests (`tests/test_eqlift_mem.py`).
   store-chain + value terms into one e-graph, saturate with the admitted value
   and memory rulesets, extract from the observable-sink roots, print the surviving
   statements.
-- Superseded on cutover: the pass-1 expression cleanup `_Prune` and
-  `_inline`/`_find_use`. Their effect is now root extraction over the unified
+- Deleted on cutover: the pass-1 expression cleanup `_Prune` and
+  `_inline`/`_find_use`. Their effect is root extraction over the unified
   graph — copies and dead defs are unreferenced subterms — NOT per-site cheapest
   extraction, which was shown insufficient (§1).
 - NOT superseded as term rewrites, but re-sourced: pass 2 (interprocedural
@@ -119,11 +121,16 @@ passing tests (`tests/test_eqlift_mem.py`).
   (`tools/eqlift_emit.py`), not one tune. Egg-side constructor costs and `_COSTS`
   MUST stay order-consistent.
 
-## 5. Migration: retire the transitional passes
+## 5. Migration: delete the transitional passes
 
 The unified memory graph is the target. Several bespoke passes were added to the
 value-only PoC as a scaffold and are TRANSITIONAL: they MUST be deleted once the
-memory-graph emit path subsumes them, and MUST NOT be extended.
+memory-graph emit path subsumes them, and they MUST NOT be extended,
+generalized, re-parameterized or given a new caller in the meantime. A finding
+that would require any of that is a rule or an axiom (§4), never a change to one
+of these. Deleting one is the engine landing, not a regression to weigh: no
+consumer may depend on one, and nothing downstream may be designed for
+compatibility with one.
 
 - `_RegLive` liveness DCE — replaced by root extraction from observable sinks.
 - `_copy_prop` (no-op self-copy removal) — replaced by `store_redundant` /
@@ -135,9 +142,11 @@ memory-graph emit path subsumes them, and MUST NOT be extended.
 - the `_loadref` operand-order fix — subsumed once loads are `sel` terms with
   normalized `add` operands in the shared graph.
 
-Local single-use value inlining that is purely expression canonicalization stays
-until the unified extractor is on; it is scaffolding for readability, not a
-semantic pass, and is deleted with the flag.
+Single-use value inlining is the one entry with a second warrant, established at
+stage 3a: `render_roots` names a subterm only where more than one root reads it,
+so the root path needs the same rule for its own reason. It is stated as that
+rule (`_share_once`) and called by both paths; the transitional pass is deleted
+with the flag, and what survives is the rule, not the scaffold.
 
 Open integration problems (these gate cutover, §7):
 
@@ -163,9 +172,13 @@ Open integration problems (these gate cutover, §7):
   encoding of their store chain.
 - Gate C / walker replay is untouched: eqlift reads the committed model and MUST
   NOT mutate it; emission re-asserts `Walker(model).run == ev.wlog` before
-  writing text. Gate FP (frameprog evaluator, M-FP2) applies to the lifted
-  dialect once the parser lands; until then emitted eqlift text is review
-  material, not a verified artifact level.
+  writing text. **Minimized text is executed, not reviewed.** The clause that
+  once stood here — emitted eqlift text is review material until the parser
+  lands — is retracted: `examples/state_machine_lift.py` parses and runs the
+  minimized program under the frameprog evaluator, the VM projection and the
+  sidplayfp oracle, and the two soundness-grade renderer defects that landing
+  found had sat invisible in review-only output. Emitted text that is never
+  executed is not verified.
 
 ## 7. Graph-provenance semantic recovery
 
@@ -290,8 +303,7 @@ procedure text.
   the lifted statements; only their intraprocedural dead-flag removal is
   subsumed by root extraction.
 - 16-bit cell fusion in emitted text: `carry_fuse` proves the ADC-pair
-  equivalence and wins extraction where the 16-bit vocabulary exists, but printing
-  fused byte-pair cells requires the M-FP3 pair-cell dialect first. M-FP3 is a
-  prerequisite, not a rule-set problem.
-- No replay/bit-exactness claim for lifted text until Gate FP's independent
-  evaluator (M-FP2) can execute the dialect.
+  equivalence and wins extraction where the 16-bit vocabulary exists. Printing
+  fused byte-pair cells was a dialect prerequisite, not a rule-set problem, and
+  the dialect ships it — stage 2's checklist emitted, parsed and executed all 20
+  non-unknown normal forms, `pair-row` among them.
