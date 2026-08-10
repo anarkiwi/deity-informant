@@ -565,9 +565,11 @@ and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word colu
 `frameproc.render_lines` still; the splice lives in `tests/test_step4_splice.py`, which is
 the gate, not the artifact. §5's `_Prune`/`_inline` deletions and rung (d2)'s per-site
 e-graphs are subsumed only where the unified graph is what emits, so they land with that
-switch and with the corpus diff it moves. Beside it stand §5's `eqlift_mem` liveness
-deletions (`_dce`, `_temp_sweep`, `ROOT_EXTRACT`), the deterministic round cap replacing
-the wall-clock cut, the `state { }` demotion, `_declare_cells`' double declaration, the ~16
+switch and with the corpus diff it moves. §5's `eqlift_mem` liveness deletions (`_dce`,
+`_temp_sweep`, `ROOT_EXTRACT` and every `root_extract` parameter) **are landed**, and the
+exemplar review now measures one path against a recorded baseline. Beside the switch stand
+the deterministic round cap replacing the wall-clock cut, the `state { }` demotion,
+`_declare_cells`' double declaration, the ~16
 substrate-dependent shredder pins — which want the same declarations — and, named at
 landing 1, a precise `returns` set for a procedure every entry of which is a `call`, which
 is what would take back the four architectural-register lines the refused `pcall`
@@ -1930,3 +1932,33 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   and they moved on **24 of 25 tunes on both paths** (`Goto80/Automatas` alone unmoved), **313
   lines each path, every one at an unchanged line count** — 163 indexed reads that named their
   row, 150 register-file accesses that took the view.
+- **2026-08-10 — stage 4, landing 2 (part): §5's liveness scaffold is deleted, and the
+  review's second path becomes a recorded baseline.** Adoption §5's first inventory entry,
+  taken as the deletion it is stated to be.
+  (1) **The selection goes, not just its default.** `eqlift_mem._dce`, `_temp_sweep`, the
+  `ROOT_EXTRACT` flag with its `DI_EQLIFT_ROOT_EXTRACT` env, and every `root_extract`
+  parameter on `render_proc`/`emit_mem`/`emit` are gone; the two `if root_extract:` guards
+  become the path. What survives is `_liveness` in its **rooting** role — which registers
+  `roots` roots — and `_share_once` as the rule §5 says has a second warrant, called by the
+  one path that is left. `test_the_liveness_deletion_path_is_gone` asserts the absence by
+  name, so the scaffold cannot come back as a parameter.
+  (2) **A deleted path is not a second opinion, so the baseline is recorded.**
+  `tools/eqlift_measure.py` measured ON against OFF; with OFF deleted it measures one run
+  against `--baseline`, a previously recorded artifact. The gate keeps its shape — no fault,
+  no refusal, no unproved change, and **no tune emitting more lines or stores than the
+  baseline** — and `identical` now counts the tunes whose sha did not move, which is what the
+  §4 review reads. A run with no baseline reports zero deltas and gates on faults alone.
+  (3) **The deletion is measurably a deletion.** The 25-exemplar review at
+  `DI_EQLIFT_EMIT_S=600` against #173's recorded ON run is **25 of 25 byte-identical**:
+  26,811 lines, 1,988 stores, `d_lines` 0, `d_stores` 0, 13,909 extraction sites, 3,309
+  changed, 12,128 proved, zero faults, refusals, regressions and extraction fallbacks. Wall
+  time halves, because there is one path to run.
+  (4) **The gates.** `tools/emit_identity.py --expect 37b87140…` passes — 624 tunes, 0
+  refused, 28,513,156 bytes, unmoved. `gate_sweep` at full Songlengths: **624 build / 624
+  evaluate / 624 clean**, zero divergences, zero refusals. Suite 2,724 passed / 490 skipped /
+  32 xfailed (two fewer cases: the ON/OFF parametrizations collapse), oracle 16.
+  (5) **What §5 still holds.** `frameproc._Prune`/`_prune`, `_inline`/`_inline_list` with the
+  repolish fixpoints, and rung (d2)'s per-site e-graphs are subsumed by the unified path
+  *where the unified path emits*, which frameprog does not do yet. They land with that
+  switch, on its corpus diff — deleting them before it would not be a deletion but a
+  degradation, which is a different claim than the one §5 makes.

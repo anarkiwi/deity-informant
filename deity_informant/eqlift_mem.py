@@ -20,8 +20,6 @@ from . import eqlift as E
 from . import frameprog
 from . import frameptr
 
-ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "1") != "0"  # 3b landing 3: on
-
 _WIDTHS = (1, 2)  # the widths the memory axioms and the interval rules are stated at
 _TOP = (0, 0xFFFF)  # an address interval that says only "somewhere in the address space"
 _ITERS = 30
@@ -992,42 +990,6 @@ def _share_once(tree, dead, chosen, terms, chain=None):
             changed = True
 
 
-def _temp_sweep(tree, dead, chosen):
-    """Drop non-register asgs whose versioned local no consumer reads (all-local
-    DCE by SSA name); iterate, since a drop can free another. Mutates ``dead``."""
-    reg = E.frameproc._ALL_REG_LOCALS
-    asgs = []
-
-    def gather(nodes):
-        for nd in nodes:
-            if nd[0] == "asg":
-                asgs.append(nd)
-            for b in _child_bodies(nd):
-                gather(b)
-
-    gather(tree)
-    while True:
-        used = set()
-
-        def collect(nodes):
-            for nd in nodes:
-                if nd[0] == "asg" and id(nd) in dead:
-                    continue
-                for ti in _node_terms(nd):
-                    _loc_names(chosen[ti], used)
-                for b in _child_bodies(nd):
-                    collect(b)
-
-        collect(tree)
-        progress = False
-        for nd in asgs:
-            if nd[1] not in reg and id(nd) not in dead and nd[3] not in used:
-                dead.add(id(nd))
-                progress = True
-        if not progress:
-            return
-
-
 def _dispatch(nd):
     """The frameprog statement kind a rendered ``switch`` node came from, or None."""
     return nd[2] if nd is not None and nd[0] == "switch" else None
@@ -1045,7 +1007,8 @@ def _liveness(tree, info, entry, chosen):
 
     ``frameproc._Flow`` on the render tree, successor-aware cases included: a
     computed transfer the next statement's ``swg``/``swc`` enumerates lands in one of
-    its arms, so it reads what they read, not every register the program has."""
+    its arms, so it reads what they read, not every register the program has. Its
+    deletion role is gone (§5); what it answers now is which registers ``roots`` roots."""
     reg = E.frameproc._ALL_REG_LOCALS
     labmap, liveout, brk, cont = {}, {}, [], []
 
@@ -1138,17 +1101,6 @@ def _liveness(tree, info, entry, chosen):
         if all(labmap.get(p) == before.get(p) for p in labmap):
             break
     return liveout
-
-
-def _dce(tree, info, entry, chosen):
-    """ids of dead register-local asgs (transitional; root extraction subsumes it)."""
-    reg = E.frameproc._ALL_REG_LOCALS
-    liveout = _liveness(tree, info, entry, chosen)
-    return {
-        id(nd)
-        for nd in _all_nodes(tree)
-        if nd[0] == "asg" and nd[1] in reg and nd[1] not in liveout.get(id(nd), reg)
-    }
 
 
 def _all_nodes(nodes):
@@ -1269,7 +1221,6 @@ def render_proc(
     aliases=None,
     entry=0,
     info=None,
-    root_extract=None,
     proofs=None,
     budget=None,
     stats=None,
@@ -1284,7 +1235,6 @@ def render_proc(
     seconds, spent by saturation then extraction; sites past it render own-term. ``rets``
     are the procedure's declared returns, which a valueless ``ret`` names, and ``pairs``
     the declared lo/hi table registry the pack rendering reads."""
-    root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
@@ -1434,8 +1384,7 @@ def render_proc(
                     stt["held"] |= {(cell, a[2], w)}
                 nodes.append(nd)
                 wrspan[id(nd)] = None if got is None else got + (w,)
-                if root_extract:
-                    mempairs.append((nd, pre, stt["mem"]))
+                mempairs.append((nd, pre, stt["mem"]))
             elif k == "if":
                 cond = conv(s[2])
                 if s[1] == "ifnot":
@@ -1602,20 +1551,15 @@ def render_proc(
     if info is None:
         info = E.frameproc._Info([(entry, stmts)], entry)
         info.summarize()
-    if root_extract:
-        gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
-        scratch = _scratch(wrspan, chosen, foot, entry)
-        noop = _self_copies(tree, chosen, held)
-        if stats is not None:
-            stats["scratch"] = stats.get("scratch", 0) + len(scratch)
-            stats["self_copy"] = stats.get("self_copy", 0) + len(noop)
-        keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch).ids, chosen)
-        dead = ({id(nd) for nd in _all_nodes(tree)} - keep) | noop
-        _share_once(tree, dead, chosen, terms, ch)
-    else:
-        dead = _dce(tree, info, entry, chosen)
-        _share_once(tree, dead, chosen, terms, ch)
-        _temp_sweep(tree, dead, chosen)
+    gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
+    scratch = _scratch(wrspan, chosen, foot, entry)
+    noop = _self_copies(tree, chosen, held)
+    if stats is not None:
+        stats["scratch"] = stats.get("scratch", 0) + len(scratch)
+        stats["self_copy"] = stats.get("self_copy", 0) + len(noop)
+    keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch).ids, chosen)
+    dead = ({id(nd) for nd in _all_nodes(tree)} - keep) | noop
+    _share_once(tree, dead, chosen, terms, ch)
     if proofs is not None:
         pairs = proofs.setdefault("pairs", [])
         for nd in _all_nodes(tree):
@@ -2137,7 +2081,7 @@ def _work(stmts):
     return n
 
 
-def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
+def emit_mem(model, proofs=None, stats=None, extents=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
     ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
@@ -2193,7 +2137,7 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
         rec = None if proofs is None else {}
         share = max(0.0, end - time.monotonic()) * (weights[i] / left if left else 1.0)
         left -= weights[i]
-        body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats, foot)
+        body = render_proc(stmts, aliases, entry, info, rec, share, stats, foot)
         if rec is not None:
             proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)
@@ -2206,10 +2150,10 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
     return "\n".join(lines) + "\n"
 
 
-def emit(model, root_extract=None, proofs=None, stats=None, extents=None):
+def emit(model, proofs=None, stats=None, extents=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model, root_extract, proofs, stats, extents), None
+    return emit_mem(model, proofs, stats, extents), None

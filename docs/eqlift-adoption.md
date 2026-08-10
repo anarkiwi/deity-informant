@@ -164,9 +164,10 @@ code, verified by `git log -S` over the package history. The inventory below
 names what is real, grep-verified at #156.)
 
 - `eqlift_mem`'s liveness path — `_dce`, `_temp_sweep`, `_liveness`'s deletion
-  role, the `ROOT_EXTRACT` flag and every `root_extract` parameter — replaced
-  by root extraction, the default since stage 3b landing 3; step 4 deletes the
-  selection.
+  role, the `ROOT_EXTRACT` flag and every `root_extract` parameter — **DELETED**
+  (stage 4, landing 2). Root extraction is the only path; what survives is
+  `_liveness` in its rooting role and `_share_once` as the rule. The measurement
+  compares against a recorded baseline artifact, not a second code path.
 - `frameproc._Prune`/`_prune` and `_inline`/`_inline_list`, with the repolish
   fixpoints that drive them — replaced by root extraction and `_share_once` on
   the unified path.
@@ -251,8 +252,8 @@ procedure text.
    full Songlengths (`tools/eqlift_measure.py`, `DI_EQLIFT_EMIT_S=600`) flipped
    `ROOT_EXTRACT` on — ON never emits more lines or stores than OFF, three tunes
    emit fewer, 22 of 25 are byte-identical, every changed site Z3-proved, zero
-   faults and zero refusals. `DI_EQLIFT_ROOT_EXTRACT=0` still selects the liveness
-   path, which step 4 deletes.
+   faults and zero refusals. `DI_EQLIFT_ROOT_EXTRACT=0` selected the liveness path
+   until step 4 deleted it (stage 4, landing 2).
 4. Delete the transitional passes (§5), `_Prune`/`_inline`, and the flag;
    frameprog emission goes through the unified graph unconditionally. Gate: full
    suite + Gate FP status unchanged.

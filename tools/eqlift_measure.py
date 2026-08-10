@@ -1,8 +1,10 @@
-"""The eqlift ON/OFF measurement over the exemplar set, off dumped frameprog texts.
+"""The eqlift measurement over the exemplar set, off dumped frameprog texts.
 
 A package edit costs one cold decompile sweep, so the lift is measured from texts
-dumped once: ``dump`` writes them, ``run`` lifts each tune on both paths and proves
-its sites, ``report`` rolls the artifact up into the review's gate.
+dumped once: ``dump`` writes them, ``run`` lifts and proves each tune, ``report``
+rolls the artifact up into the review's gate. The transitional liveness path is
+deleted (adoption §5), so a landing is measured against the **recorded baseline**
+artifact rather than against a second code path.
 """
 
 import argparse
@@ -25,11 +27,11 @@ MODELS = ROOT / "out" / "eqlift-models"
 
 USAGE = """\
   python tools/eqlift_measure.py dump                          # the exemplars' frameprog texts
-  python tools/eqlift_measure.py run --prove                   # both paths, all sites proved
-  python tools/eqlift_measure.py run --tunes Alioth --mode on  # one tune, one path
-  python tools/eqlift_measure.py report out/eqlift_measure.json"""
+  python tools/eqlift_measure.py run --prove                   # every tune, all sites proved
+  python tools/eqlift_measure.py run --tunes Alioth             # one tune
+  python tools/eqlift_measure.py report out/eqlift_measure.json --baseline out/prev.json"""
 
-_FIELDS = ("off_lines", "on_lines", "d_lines", "d_stores", "extracted", "changed", "proved")
+_FIELDS = ("lines", "stores", "d_lines", "d_stores", "extracted", "changed", "proved")
 
 
 def model_name(tune):
@@ -63,8 +65,8 @@ def dump(entry, models):
         signal.alarm(0)
 
 
-def lift(path, mode, prove, extents=None):
-    """One tune on one path: text, size, extraction fallbacks, and the §6 proofs.
+def lift(path, prove, extents=None):
+    """One tune: text, size, extraction fallbacks, and the §6 proofs.
 
     ``extents`` is this tune's 2b row, which stage 3d's read closure bounds a deref
     with. A proof that refuses is recorded as this row's named refusal -- the
@@ -73,15 +75,13 @@ def lift(path, mode, prove, extents=None):
     from deity_informant import frameprog
 
     tune = Path(path).stem.replace("~", "/")
-    row = {"tune": tune, "name": tune.rsplit("/", 1)[-1], "mode": bool(mode)}
+    row = {"tune": tune, "name": tune.rsplit("/", 1)[-1]}
     try:
         signal.alarm(_sweep.CAP_S)
         model = frameprog.block_model(frameprog.parse(Path(path).read_text(encoding="utf-8")))
         proofs, stats = ([] if prove else None), {}
         t0 = time.monotonic()
-        text, _ = eqlift_mem.emit(
-            model, root_extract=bool(mode), proofs=proofs, stats=stats, extents=extents
-        )
+        text, _ = eqlift_mem.emit(model, proofs=proofs, stats=stats, extents=extents)
         row.update(
             wall_s=round(time.monotonic() - t0, 1),
             lines=len(text.splitlines()),
@@ -122,37 +122,40 @@ def _arm(cap_gb):
         resource.setrlimit(resource.RLIMIT_AS, (cap_gb << 30, cap_gb << 30))
 
 
-def rollup(rows):
-    """Pair each tune's two paths and gate them: no fault, no refusal, no regression.
+def baseline_rows(path):
+    """``{tune: row}`` of a previously recorded run artifact, or {} without one."""
+    if not path:
+        return {}
+    art = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {r["tune"]: r for r in art["rows"] if "error" not in r}
 
-    ON may never emit more lines or stores than OFF, and a tune whose sites changed
-    under saturation must carry their proofs."""
-    by = {}
-    for r in rows:
-        key = (r["tune"], bool(r["mode"]))
-        if key in by:
-            raise ValueError("two rows for %s %s" % key)
-        by[key] = r
-    tunes, recs, faults = sorted({t for t, _m in by}), [], []
-    for tune in tunes:
-        off, on = by.get((tune, False)), by.get((tune, True))
-        if off is None or on is None or "error" in off or "error" in on:
-            faults.append(tune)
+
+def rollup(rows, base=None):
+    """Gate one run: no fault, no refusal, no unproved change, no growth on baseline.
+
+    Without a baseline the deltas are zero and only the faults gate; with one, a tune
+    emitting more lines or stores than the recorded run is a regression, and the tunes
+    whose sha moved are what the §4 review reads."""
+    base = base or {}
+    recs, faults = [], []
+    for r in sorted(rows, key=lambda r: r["tune"]):
+        if "error" in r:
+            faults.append(r["tune"])
             continue
+        was = base.get(r["tune"])
         recs.append(
             {
-                "tune": tune,
-                "off_lines": off["lines"],
-                "on_lines": on["lines"],
-                "d_lines": on["lines"] - off["lines"],
-                "d_stores": on["stores"] - off["stores"],
-                "identical": off["sha"] == on["sha"],
-                "extracted": on.get("sites", 0),
-                "changed": on.get("changed", 0),
-                "proved": on.get("proved", 0),
-                "off_fallback": off.get("fallback", 0),
-                "on_fallback": on.get("fallback", 0),
-                "wall_s": max(off["wall_s"], on["wall_s"]),
+                "tune": r["tune"],
+                "lines": r["lines"],
+                "stores": r["stores"],
+                "d_lines": 0 if was is None else r["lines"] - was["lines"],
+                "d_stores": 0 if was is None else r["stores"] - was["stores"],
+                "identical": was is not None and was["sha"] == r["sha"],
+                "extracted": r.get("sites", 0),
+                "changed": r.get("changed", 0),
+                "proved": r.get("proved", 0),
+                "fallback": r.get("fallback", 0),
+                "wall_s": r["wall_s"],
             }
         )
     out = {
@@ -162,9 +165,10 @@ def rollup(rows):
         "regressed": sorted(r["tune"] for r in recs if r["d_lines"] > 0 or r["d_stores"] > 0),
         "unproved": sorted(r["tune"] for r in recs if r["changed"] and not r["proved"]),
         "identical": sum(1 for r in recs if r["identical"]),
-        "fallback_tunes": sorted(r["tune"] for r in recs if r["on_fallback"] or r["off_fallback"]),
+        "fallback_tunes": sorted(r["tune"] for r in recs if r["fallback"]),
         "totals": {f: sum(r[f] for r in recs) for f in _FIELDS},
         "rows": recs,
+        "baseline": bool(base),
     }
     out["clean"] = not (out["faults"] or out["refused"] or out["regressed"] or out["unproved"])
     return out
@@ -172,23 +176,23 @@ def rollup(rows):
 
 def render(got):
     """The per-tune table plus the gate line, as the review records them."""
-    head = ("tune", "off_ln", "on_ln", "dlin", "dsto", "extr", "chg", "proved", "fb", "wall")
+    head = ("tune", "lines", "stores", "dlin", "dsto", "extr", "chg", "proved", "fb", "wall")
     lines = ["%-44s %6s %6s %5s %5s %6s %6s %6s %4s %6s" % head]
     for r in got["rows"]:
         lines.append(
             "%-44s %6d %6d %5d %5d %6d %6d %6d %4d %6.1f %s"
             % (
                 r["tune"][-44:],
-                r["off_lines"],
-                r["on_lines"],
+                r["lines"],
+                r["stores"],
                 r["d_lines"],
                 r["d_stores"],
                 r["extracted"],
                 r["changed"],
                 r["proved"],
-                max(r["on_fallback"], r["off_fallback"]),
+                r["fallback"],
                 r["wall_s"],
-                "identical" if r["identical"] else "DIFFERS",
+                "identical" if r["identical"] else "MOVED",
             )
         )
     t = got["totals"]
@@ -234,23 +238,19 @@ def _run_main(args):
         paths = [p for p in paths if any(w in p.stem for w in want)]
     if not paths:
         sys.exit("no dumped model matched; run `dump` first")
-    modes = {"both": (False, True), "on": (True,), "off": (False,)}[args.mode]
     ext = extent_rows(args.extents)
-    jobs = [
-        (str(p), m, args.prove, ext.get(p.stem.replace("~", "/"))) for p in paths for m in modes
-    ]
+    jobs = [(str(p), args.prove, ext.get(p.stem.replace("~", "/"))) for p in paths]
     t0 = time.monotonic()
     rows = []
     with mp.Pool(min(len(jobs), args.procs), _arm, (args.cap_gb,)) as pool:
         for r in pool.imap_unordered(_lift, jobs):
             rows.append(r)
             print(
-                "%3d/%d %-46s %s %s"
+                "%3d/%d %-46s %s"
                 % (
                     len(rows),
                     len(jobs),
                     r["name"],
-                    "on " if r["mode"] else "off",
                     r.get("error") or r.get("refused") or r["wall_s"],
                 ),
                 file=sys.stderr,
@@ -261,11 +261,10 @@ def _run_main(args):
         out.mkdir(parents=True, exist_ok=True)
         for r in rows:
             if "text" in r:
-                name = "%s.%s.txt" % (model_name(r["tune"]), "on" if r["mode"] else "off")
-                (out / name).write_text(r["text"], encoding="utf-8")
+                (out / (model_name(r["tune"]) + ".txt")).write_text(r["text"], encoding="utf-8")
     for r in rows:
         r.pop("text", None)
-    got = rollup(rows)
+    got = rollup(rows, baseline_rows(args.baseline))
     art = {"wall_s": round(time.monotonic() - t0, 1), "rows": rows, "rollup": got}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(art, indent=1), encoding="utf-8")
@@ -274,7 +273,8 @@ def _run_main(args):
 
 
 def _report_main(args):
-    got = rollup(json.loads(Path(args.artifact).read_text(encoding="utf-8"))["rows"])
+    rows = json.loads(Path(args.artifact).read_text(encoding="utf-8"))["rows"]
+    got = rollup(rows, baseline_rows(args.baseline))
     print(render(got))
     return 0 if got["clean"] else 1
 
@@ -288,9 +288,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("dump", help="write the exemplars' frameprog texts")
     d.add_argument("--tunes", help="comma-separated tune ids or stems; default the exemplar set")
-    r = sub.add_parser("run", help="lift every dumped text on both paths")
+    r = sub.add_parser("run", help="lift every dumped text")
     r.add_argument("--tunes", help="substring filter over the dumped stems")
-    r.add_argument("--mode", default="both", choices=("both", "on", "off"))
     r.add_argument("--prove", action="store_true", help="run the adoption §6 site proofs")
     r.add_argument("--texts", help="directory to write every emitted text into")
     r.add_argument("-o", "--out", default=str(ROOT / "out" / "eqlift_measure.json"))
@@ -298,6 +297,8 @@ def main(argv=None):
     r.add_argument("--extents", help="2b observed-extent artifact the read closure reads")
     p = sub.add_parser("report", help="roll a run artifact up")
     p.add_argument("artifact")
+    for q in (r, p):
+        q.add_argument("--baseline", help="a previously recorded run artifact to diff against")
     for q in (d, r):
         q.add_argument("-j", "--procs", type=int, default=24)
         q.add_argument("--models", default=str(MODELS))
