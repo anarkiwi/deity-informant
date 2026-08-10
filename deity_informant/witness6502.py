@@ -399,16 +399,19 @@ class _Gen:
         return refuse("the transfer to $%04X" % pc, "no label of the compiled program names it")
 
     def _s_st(self, s):
+        """Address first, then value: the order the reference evaluator reads them in."""
         sz = G.store_width(s[2])
         order = tuple(range(sz))[:: -1 if P.hi_first(s) else 1]
-        v = self.at(s[2], sz)
         if s[1][0] == "const" and s[1][2] == 2:
+            v = self.at(s[2], sz)
             for j in order:
                 self.lda(v + j)
                 self.sta((s[1][1] + j) & 0xFFFF)
             return
+        a = self.at(s[1], 2)
+        v = self.at(s[2], sz)
         lbls = [self.nl("st") for _ in range(sz)]
-        self.patch(self.at(s[1], 2), lbls)
+        self.patch(a, lbls)
         for j in order:
             self.p.i("LDY", "imm", j)
             self.lda(v + j)
