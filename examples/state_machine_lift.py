@@ -19,17 +19,32 @@ from deity_informant.lifter import OPS, MODE_LEN, ILLEGAL_OPCODES
 PAL_CLOCK = 985248
 PAL_CYCLES = 19656
 SID = 0xD400
-INIT, PLAY = 0x0F00, 0x1000
+INIT, PLAY = 0x0C00, 0x1000
 VOICES = 3
-ZPV = (0x40, 0x50, 0x60)  # per-voice state block; identical layout, shifted base
+ZPV = (0x40, 0x60, 0x80)  # per-voice state block; identical layout, shifted base
 PTR, DUR, PHASE, NLO, NHI, DEPTH, WAVE, CTL, AD, SR = 0, 2, 3, 4, 5, 6, 7, 8, 9, 10
+ADEF, SRDEF, CLO, CHI, RATE, DLO, DHI = 11, 12, 13, 14, 15, 16, 17
+CUT, CUTH, FCTL, FVOL = 18, 19, 20, 21  # voice 3 only: the filter lanes it owns
 SHADOW = 0x0340  # 3 x 7-byte SID image; the envelope/control lanes are flushed
 FLUSH = (5, 6, 4)  # ADSR before the gate: ctrl is written last
 WAVEF = (0x40, 0x20, 0x40)  # pulse lead, saw bass, pulse arpeggio
 ADSR = ((0x08, 0xA9), (0x09, 0x68), (0x00, 0x86))
 PW = ((0x00, 0x08), (0x00, 0x08), (0x00, 0x03))
+PORTA = (0x60, 0xC0, 0xFF)  # per-voice slide rate, in freq units per frame
 TEST_BIT, GATE_BIT = 0x08, 0x01
 BARS, FRAMES = 768, 800  # 8 bars of 96 frames, plus wrap through the loop command
+PH0, TICK, PWL, LOGI, ZX, ZY, SWP, LFO = 0x30, 0x33, 0x34, 0x36, 0x37, 0x38, 0x39, 0x3A
+PWH = PWL + 1
+ZBUF, ZLO, ZHI = 0x20, 0xF0, 0x0F  # zp row: base $20, index cycles $F0..$0F (8-bit wrap)
+ZSPAN = 32
+PHSTEP = (0x91, 0x2B, 0x5E)  # 24-bit phase step; the carry-out is the PWM tick
+PWSTEP = 0x0140  # per-frame step of the 12-bit pulse-width accumulator
+SWEEP = 0x0153  # per-frame step of voice 3's 16-bit filter cutoff accumulator
+FILT3, LP, VOL = 0x04, 0x10, 0x0F  # route voice 3, low-pass, master volume
+
+FOLDS = frozenset(
+    ("forward_shadow", "pair_store", "pair_set", "advance", "wide16", "wide24", "wide_cmp")
+)  # every rewrite the example applies, each instance Z3-proved
 
 _ENC = {}
 for _op in sorted(OPS):
@@ -114,16 +129,18 @@ ON, OFF = 0x07, 0x00  # phase mask: 0 pins the table at its zero entry
 
 _PHRASE = [(E4, Q), (E4, Q), (F4, Q), (G4, Q), (G4, Q), (F4, Q), (E4, Q), (D4, Q)]
 LEAD = (
-    _PHRASE
+    [("raw", (0x10, 0x80, 0x11, 0x01))]
+    + _PHRASE
     + [(C4, Q), (C4, Q), (D4, Q), (E4, Q), (E4, DQ), (D4, EI)]
     + [("vib", ON), (D4, H - 4), ("vib", OFF), ("rest", 4)]
+    + [("raw", (0x11, 0x02))]
     + _PHRASE
     + [(C4, Q), (C4, Q), (D4, Q), (E4, Q), (D4, DQ), (C4, EI)]
     + [("vib", ON), (C4, H - 8), ("vib", OFF), ("rest", 8)]
 )
 _ROOTS = (C3, C3, F3, C3, G3, C3, G3, C3, C3, C3, F3, C3, G3, G3, C3, C3)
 BASS = (
-    [("vib", OFF)]
+    [("vib", OFF), ("raw", (0x09, 0x00, 0x0A, 0x04))]
     + [(n, H) for n in _ROOTS[:11]]
     + [("vib", ON)]
     + [(n, H) for n in _ROOTS[11:15]]
@@ -131,9 +148,9 @@ BASS = (
 )
 _ARP = (C4, E4, G4, E4)
 ARP = (
-    [("vib", OFF)]
+    [("vib", OFF), ("raw", (0x10, 0x00, 0x11, 0x08))]
     + [(_ARP[k % 4], EI) for k in range(30)]
-    + [("vib", ON)]
+    + [("vib", ON), ("raw", ())]
     + [(_ARP[k % 4], EI) for k in range(30, 62)]
     + [("vib", OFF), ("rest", 24)]
 )
@@ -142,6 +159,81 @@ SCRIPTS = (LEAD, BASS, ARP)
 
 def script_frames(script):
     return sum(n for op, n in script if op == "rest" or isinstance(op, int))
+
+
+def _cursor(p, cell, tag):
+    """Step a zp-row cursor over ``$F0..$0F``: the index arithmetic wraps in 8 bits."""
+    p.i("INC", "zp", cell).i("LDA", "zp", cell)
+    p.i("CMP", "imm", (ZHI + 1) & 0xFF).i("BNE", "rel", ("L", tag))
+    p.i("LDA", "imm", ZLO).i("STA", "zp", cell)
+    p.label(tag)
+
+
+def _global(p):
+    """The voice-independent frame head: PWM phase, the log row, the zp row."""
+    p.i("LDA", "zp", PH0).i("CLC").i("ADC", "imm", PHSTEP[0]).i("STA", "zp", PH0)
+    p.i("LDA", "zp", PH0 + 1).i("ADC", "imm", PHSTEP[1]).i("STA", "zp", PH0 + 1)
+    p.i("LDA", "zp", PH0 + 2).i("ADC", "imm", PHSTEP[2]).i("STA", "zp", PH0 + 2)
+    p.i("LDA", "imm", 0).i("ADC", "imm", 0).i("STA", "zp", TICK)  # carry outlives its add
+    p.i("LDA", "zp", PWL).i("CLC").i("ADC", "imm", PWSTEP & 0xFF).i("STA", "zp", PWL)
+    p.i("LDA", "zp", PWH).i("ADC", "imm", PWSTEP >> 8).i("STA", "zp", PWH)
+    p.i("LDA", "zp", TICK).i("BEQ", "rel", ("L", "g_join"))
+    p.i("LDX", "zp", LOGI).i("LDA", "zp", PWH).i("STA", "absx", ("L", "pwlog"))
+    p.i("INC", "zp", LOGI).i("LDA", "zp", LOGI).i("AND", "imm", 0x0F).i("STA", "zp", LOGI)
+    p.label("g_join")  # the pw pair crosses the join, disjoint from the row the arm stored
+    p.i("LDA", "zp", PWL).i("STA", "abs", SID + 2)
+    p.i("LDA", "zp", PWH).i("STA", "abs", SID + 3)
+    p.i("LDX", "zp", LOGI).i("LDA", "absx", ("L", "pwlog")).i("STA", "zp", SWP)
+    _cursor(p, ZX, "g_zx")
+    p.i("LDX", "zp", ZX).i("LDA", "zp", SWP).i("STA", "zpx", ZBUF)
+    _cursor(p, ZY, "g_zy")
+    p.i("LDX", "zp", ZY).i("LDA", "zpx", ZBUF).i("STA", "zp", LFO)
+
+
+def _porta(p, v, b):
+    """Slide the sounding pitch toward the note: a byte borrow chain, then a
+    bounded step whose last stride snaps rather than overshooting."""
+
+    def n(tag):
+        return "v%d_%s" % (v, tag)
+
+    p.i("SEC")
+    p.i("LDA", "zp", b + NLO).i("SBC", "zp", b + CLO).i("STA", "zp", b + DLO)
+    p.i("LDA", "zp", b + NHI).i("SBC", "zp", b + CHI).i("STA", "zp", b + DHI)
+    p.i("BCC", "rel", ("L", n("p_dn")))
+    p.i("LDA", "zp", b + DHI).i("BNE", "rel", ("L", n("p_upf")))
+    p.i("LDA", "zp", b + RATE).i("CMP", "zp", b + DLO).i("BCC", "rel", ("L", n("p_upf")))
+    p.i("JMP", "abs", ("L", n("p_snap")))
+    p.label(n("p_upf"))
+    p.i("LDA", "zp", b + CLO).i("CLC").i("ADC", "zp", b + RATE).i("STA", "zp", b + CLO)
+    p.i("LDA", "zp", b + CHI).i("ADC", "imm", 0).i("STA", "zp", b + CHI)
+    p.i("JMP", "abs", ("L", n("p_end")))
+    p.label(n("p_dn"))
+    p.i("LDA", "zp", b + DHI).i("CMP", "imm", 0xFF).i("BNE", "rel", ("L", n("p_dnf")))
+    p.i("LDA", "zp", b + DLO).i("CLC").i("ADC", "zp", b + RATE)
+    p.i("BCC", "rel", ("L", n("p_dnf")))
+    p.i("JMP", "abs", ("L", n("p_snap")))
+    p.label(n("p_dnf"))
+    p.i("LDA", "zp", b + CLO).i("SEC").i("SBC", "zp", b + RATE).i("STA", "zp", b + CLO)
+    p.i("LDA", "zp", b + CHI).i("SBC", "imm", 0).i("STA", "zp", b + CHI)
+    p.i("JMP", "abs", ("L", n("p_end")))
+    p.label(n("p_snap"))
+    p.i("LDA", "zp", b + NLO).i("STA", "zp", b + CLO)
+    p.i("LDA", "zp", b + NHI).i("STA", "zp", b + CHI)
+    p.label(n("p_end"))
+
+
+def _filter(p, b):
+    """Voice 3's filter block: the 11-bit cutoff lane pair and two flag cells."""
+    p.i("LDA", "zp", b + CUT).i("CLC").i("ADC", "imm", SWEEP & 0xFF).i("STA", "zp", b + CUT)
+    p.i("LDA", "zp", b + CUTH).i("ADC", "imm", SWEEP >> 8).i("STA", "zp", b + CUTH)
+    p.i("LDA", "zp", b + CUT).i("STA", "abs", SID + 0x15)  # $D415 uses bits 0-2 only
+    p.i("LDA", "zp", b + CUTH).i("STA", "abs", SID + 0x16)
+    p.i("LDA", "zp", b + FCTL).i("AND", "imm", 0x0F).i("STA", "zp", b + FCTL)
+    p.i("LDA", "zp", LFO).i("AND", "imm", 0x70).i("ORA", "zp", b + FCTL).i("STA", "zp", b + FCTL)
+    p.i("LDA", "zp", b + FCTL).i("STA", "abs", SID + 0x17)
+    p.i("LDA", "zp", b + FVOL).i("AND", "imm", 0xF0).i("ORA", "imm", VOL)
+    p.i("STA", "zp", b + FVOL).i("STA", "abs", SID + 0x18)
 
 
 def _voice(p, v):
@@ -188,43 +280,64 @@ def _voice(p, v):
     p.i("INY").i("LDA", "indy", b + PTR).i("TAX")
     p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + PTR + 1)
     p.i("STX", "zp", b + PTR).i("JMP", "abs", lb("fetch"))
+    p.label(n("c_raw"))  # $83 (reg val)* $FF: arity is the decoded length, not a constant
+    p.label(n("r_loop"))
+    p.i("INY").i("LDA", "indy", b + PTR).i("BMI", "rel", lb("r_end"))
+    p.i("TAX").i("INY").i("LDA", "indy", b + PTR).i("STA", "absx", SID)
+    p.i("JMP", "abs", lb("r_loop"))
+    p.label(n("r_end"))
+    p.i("TYA").i("SEC").i("ADC", "zp", b + PTR).i("STA", "zp", b + PTR)
+    p.i("BCC", "rel", lb("r_nc")).i("INC", "zp", b + PTR + 1)
+    p.label(n("r_nc")).i("JMP", "abs", lb("fetch"))
     p.label(n("note"))  # nn dd: scale degree + duration; clears TEST, gates on
-    p.i("TAX")
-    p.i("LDA", "absx", ("L", "pitchlo")).i("STA", "zp", b + NLO)
-    p.i("LDA", "absx", ("L", "pitchhi")).i("STA", "zp", b + NHI)
+    p.i("TAX").i("JSR", "abs", ("L", "note_fetch"))
+    p.i("STA", "zp", b + NLO).i("STX", "zp", b + NHI)
     p.i("LDA", "zp", b + WAVE).i("ORA", "imm", GATE_BIT).i("STA", "zp", b + CTL)
-    p.i("LDA", "imm", ADSR[v][0]).i("STA", "zp", b + AD)
-    p.i("LDA", "imm", ADSR[v][1]).i("STA", "zp", b + SR)
+    p.i("LDA", "zp", b + ADEF).i("STA", "zp", b + AD)
+    p.i("LDA", "zp", b + SRDEF).i("STA", "zp", b + SR)
     p.i("LDA", "imm", 0).i("STA", "zp", b + PHASE)
     p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + DUR)
     p.i("LDA", "zp", b + PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", b + PTR)
     p.i("BCC", "rel", lb("tail")).i("INC", "zp", b + PTR + 1)
     p.label(n("tail"))  # vibrato straight to the chip, envelope/control via the shadow
     p.i("INC", "zp", b + PHASE)
+    _porta(p, v, b)
     p.i("LDA", "zp", b + PHASE).i("AND", "zp", b + DEPTH).i("TAX")
     p.i("LDA", "absx", ("L", "vibtab"))
-    p.i("CLC").i("ADC", "zp", b + NLO).i("STA", "abs", sidb + 0)
-    p.i("LDA", "zp", b + NHI).i("ADC", "imm", 0).i("STA", "abs", sidb + 1)  # carry chain -> u16
+    p.i("CLC").i("ADC", "zp", b + CLO).i("STA", "abs", sidb + 0)
+    p.i("LDA", "zp", b + CHI).i("ADC", "imm", 0).i("STA", "abs", sidb + 1)  # carry chain -> u16
     p.i("LDA", "zp", b + AD).i("STA", "abs", sh + 5)
     p.i("LDA", "zp", b + SR).i("STA", "abs", sh + 6)
     p.i("LDA", "zp", b + CTL).i("STA", "abs", sh + 4)
     for k in FLUSH:
         p.i("LDA", "abs", sh + k).i("STA", "abs", sidb + k)
+    if v == VOICES - 1:
+        _filter(p, b)
+
+
+def first_note(script):
+    return next(NOTES[op] for op, _n in script if isinstance(op, int))
 
 
 def build_image():
     """Assemble play + data, then init against its labels; return (mem, labels)."""
     p = Asm(PLAY)
+    _global(p)
     for v in range(VOICES):
         _voice(p, v)
     p.i("RTS")
+    p.label("note_fetch")  # shared helper: degree in X, freq lo in A / hi in X
+    p.i("LDA", "absx", ("L", "pitchlo")).i("PHA")
+    p.i("LDA", "absx", ("L", "pitchhi")).i("TAX")
+    p.i("PLA").i("RTS")
     for v in range(VOICES):
-        cmds = ("v%d_c_vib" % v, "v%d_c_off" % v, "v%d_c_loop" % v)
+        cmds = ("v%d_c_vib" % v, "v%d_c_off" % v, "v%d_c_loop" % v, "v%d_c_raw" % v)
         p.label("v%d_cmdlo" % v).byte(*[("LOL", c) for c in cmds])
         p.label("v%d_cmdhi" % v).byte(*[("HIL", c) for c in cmds])
     p.label("pitchlo").byte(*[f & 0xFF for f in NOTES])
     p.label("pitchhi").byte(*[f >> 8 for f in NOTES])
     p.label("vibtab").byte(*VIBTAB)
+    p.label("pwlog").byte(*([0] * 16))
     for v, script in enumerate(SCRIPTS):
         assert script_frames(script) == BARS, "voice %d spans %d frames" % (
             v,
@@ -236,22 +349,42 @@ def build_image():
                 p.byte(0x80, arg)
             elif item == "rest":
                 p.byte(0x81, arg)
+            elif item == "raw":
+                p.byte(0x83, *arg, 0xFF)
             else:
                 p.byte(item, arg)
         p.byte(0x82, ("LOL", "script%d" % v), ("HIL", "script%d" % v))
+    p.label("imgend")
 
     a = Asm(INIT)
+    a.i("LDA", "imm", 0)
+    for k in range(ZSPAN):
+        a.i("STA", "zp", (ZBUF + ZLO + k) & 0xFF)
+    for off in (PH0, PH0 + 1, PH0 + 2, TICK, PWL, PWH, LOGI, LFO, SWP):
+        a.i("STA", "zp", off)
+    a.i("LDA", "imm", ZLO).i("STA", "zp", ZX)
+    a.i("LDA", "imm", (ZLO + ZSPAN // 4) & 0xFF).i("STA", "zp", ZY)
     for v in range(VOICES):
         b = ZPV[v]
         a.i("LDA", "imm", ("LOL", "script%d" % v)).i("STA", "zp", b + PTR)
         a.i("LDA", "imm", ("HIL", "script%d" % v)).i("STA", "zp", b + PTR + 1)
         a.i("LDA", "imm", 1).i("STA", "zp", b + DUR)
         a.i("LDA", "imm", 0)
-        for off in (PHASE, NLO, NHI, DEPTH, CTL, AD, SR):
+        for off in (PHASE, NLO, NHI, DEPTH, CTL, AD, SR, DLO, DHI):
             a.i("STA", "zp", b + off)
         a.i("LDA", "imm", WAVEF[v]).i("STA", "zp", b + WAVE)
+        a.i("LDA", "imm", ADSR[v][0]).i("STA", "zp", b + ADEF)
+        a.i("LDA", "imm", ADSR[v][1]).i("STA", "zp", b + SRDEF)
+        a.i("LDA", "imm", PORTA[v]).i("STA", "zp", b + RATE)
+        note = first_note(SCRIPTS[v])
+        a.i("LDA", "imm", note & 0xFF).i("STA", "zp", b + CLO)
+        a.i("LDA", "imm", note >> 8).i("STA", "zp", b + CHI)
         a.i("LDA", "imm", PW[v][0]).i("STA", "abs", SID + 7 * v + 2)
         a.i("LDA", "imm", PW[v][1]).i("STA", "abs", SID + 7 * v + 3)
+    b = ZPV[VOICES - 1]
+    a.i("LDA", "imm", 0).i("STA", "zp", b + CUT).i("STA", "zp", b + CUTH)
+    a.i("LDA", "imm", FILT3).i("STA", "zp", b + FCTL)
+    a.i("LDA", "imm", LP).i("STA", "zp", b + FVOL)
     a.i("LDA", "imm", 0x0F).i("STA", "abs", SID + 0x18)
     a.i("RTS")
 
@@ -259,6 +392,7 @@ def build_image():
     code = p.assemble()
     a.labels.update(p.labels)
     init_code = a.assemble()
+    assert INIT + len(init_code) <= PLAY, "init overruns the play routine"
     mem[INIT : INIT + len(init_code)] = init_code
     mem[PLAY : PLAY + len(code)] = code
     return mem, p.labels
@@ -278,7 +412,7 @@ def run_vm(mem, frames):
         run_sub(vm, PLAY, cache, lift)
         per_frame.append([(r, v) for _c, r, v in vm.wlog])
         grids.append([vm.mem[SID + i] for i in range(25)])
-    return init_writes, ram0, per_frame, grids
+    return init_writes, ram0, per_frame, grids, bytearray(vm.mem)
 
 
 _BIN = {
@@ -397,6 +531,8 @@ def parse_block(lines, i):
             out.append(("dgoto", parse_expr(line[5:])))
         elif line.startswith("goto "):
             out.append(("goto", line[5:].strip()))
+        elif line.startswith("call $"):
+            out.append(("call", int(line[6:10], 16)))
         elif line == "loop {":
             body, i = parse_block(lines, i + 1)
             out.append(("loop", body))
@@ -418,12 +554,22 @@ def parse_block(lines, i):
                 els, i = parse_block(lines, i + 1)
             out.append(("if", parse_expr(line[3:-1].strip()), then, els))
         else:
+            m = re.fullmatch(r"([\w.]+)\[(.*)\](?::\d)? = (.*)", line)
+            if m:  # a span store: the row the index names, not a state cell
+                out.append(("sto", m.group(1), parse_expr(m.group(2)), parse_expr(m.group(3))))
+                i += 1
+                continue
             m = re.fullmatch(r"([\w.]+)(?::\d)? = (.*)", line)
             if not m:
                 raise SyntaxError("stmt: %r" % line)
             out.append(("asg", m.group(1), parse_expr(m.group(2))))
         i += 1
     raise SyntaxError("unterminated block")
+
+
+def proc_entries(text):
+    """Entry addresses of every procedure the emitter printed, in text order."""
+    return [int(m, 16) for m in re.findall(r"^sub_([0-9A-Fa-f]{4}) \{", text, re.M)]
 
 
 def extract_proc(text, entry):
@@ -460,31 +606,67 @@ def is_shadow(name):
     return a is not None and SHADOW <= a < SHADOW + 7 * VOICES
 
 
-def _z3_expr(e, env, z3):
+_UCMP = {"<": "ULT", "<=": "ULE", ">": "UGT", ">=": "UGE"}
+
+
+def _wid(e):
+    """Byte width of a term, by the dialect's own rule (as ``Machine._val`` reads it)."""
     k = e[0]
     if k == "num":
-        return z3.BitVecVal(e[1] & 0xFFFF, 16)
+        return 2 if e[1] > 0xFF else 1
+    if k == "call":
+        return 2 if e[1] == "zext2" else 1
+    if k == "bin":
+        if e[1] == "<<":
+            return 2
+        if e[1] in _UCMP or e[1] in ("==", "!="):
+            return 1
+        return max(_wid(e[2]), _wid(e[3]))
+    if k == "neg":
+        return _wid(e[1])
+    return 1
+
+
+def _z3_expr(e, env, z3, w=16):
+    """The emitted byte-domain term as a width-``w`` Z3 bitvector (0/1 for predicates)."""
+    k = e[0]
+    one, zero = z3.BitVecVal(1, w), z3.BitVecVal(0, w)
+    if k == "num":
+        return z3.BitVecVal(e[1] & ((1 << w) - 1), w)
     if k == "name":
         return env[e[1]]
+    if k == "not":
+        return z3.If(_z3_expr(e[1], env, z3, w) == zero, one, zero)
     if k == "call" and e[1] == "zext2":
-        return _z3_expr(e[2][0], env, z3)
+        return _z3_expr(e[2][0], env, z3, w)
     if k == "call" and e[1] == "carry":
-        a, b = (_z3_expr(x, env, z3) for x in e[2])
-        one, zero = z3.BitVecVal(1, 16), z3.BitVecVal(0, 16)
-        return z3.If(z3.ULT(z3.BitVecVal(0xFF, 16), a + b), one, zero)
-    if k == "bin" and e[1] in ("+", "-", "&", "|", "^"):
-        a, b = _z3_expr(e[2], env, z3), _z3_expr(e[3], env, z3)
-        v = {"+": a + b, "-": a - b, "&": a & b, "|": a | b, "^": a ^ b}[e[1]]
-        return v & 0xFF if e[1] in ("+", "-") else v
+        a, b = (_z3_expr(x, env, z3, w) for x in e[2])
+        return z3.If(z3.ULT(z3.BitVecVal(0xFF, w), a + b), one, zero)
+    if k == "bin" and e[1] in ("+", "-", "&", "|", "^", "<<", ">>"):
+        a, b = _z3_expr(e[2], env, z3, w), _z3_expr(e[3], env, z3, w)
+        if e[1] == ">>":
+            return z3.LShR(a, b)
+        v = {"+": a + b, "-": a - b, "&": a & b, "|": a | b, "^": a ^ b, "<<": a << b}[e[1]]
+        if e[1] in ("+", "-", "<<"):
+            return v & ((1 << (8 * _wid(e))) - 1)
+        return v
+    if k == "bin" and e[1] in _UCMP:
+        a, b = _z3_expr(e[2], env, z3, w), _z3_expr(e[3], env, z3, w)
+        return z3.If(getattr(z3, _UCMP[e[1]])(a, b), one, zero)
+    if k == "bin" and e[1] in ("==", "!="):
+        a, b = _z3_expr(e[2], env, z3, w), _z3_expr(e[3], env, z3, w)
+        return z3.If(a == b if e[1] == "==" else a != b, one, zero)
     raise ValueError("z3: %r" % (e,))
 
 
 def _names(e, out):
+    if not isinstance(e, tuple) or not e:
+        return
     if e[0] == "name":
         out.add(e[1])
-    for kid in e[1:]:
-        if isinstance(kid, tuple):
-            _names(kid, out)
+        return
+    for kid in e:
+        _names(kid, out)
 
 
 def _base_split(e):
@@ -553,6 +735,186 @@ def prove_advance(k, carried, cond, p, z3):
         s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), folded != wide)
     else:
         s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), nocarry, ((hi << 8) | t) != wide)
+    return s.check() == z3.unsat
+
+
+def _lane_run(stmts, i):
+    """``(addresses, term per address, end)`` for a run storing consecutive byte lanes.
+
+    Locals are inlined as they are bound, so the run is read at whatever width the
+    extractor spelled it; a local that reads a lane already stored ends the run,
+    which is what makes moving the wide store to the run's end sound."""
+    env, lanes, order, stored, j = {}, {}, [], set(), i
+    while j < len(stmts) and stmts[j][0] == "asg":
+        tgt, raw = stmts[j][1], stmts[j][2]
+        rhs = _subst(raw, env)
+        ns = set()
+        _names(raw, ns)
+        if ns & stored:
+            break
+        a = cell_addr(tgt)
+        if a is None:
+            if sid_target(tgt) is not None:
+                break
+            env[tgt] = rhs
+        elif (order and a != order[-1] + 1) or a in lanes:
+            break
+        else:
+            lanes[a], stored = rhs, stored | {tgt}
+            order.append(a)
+        j += 1
+    return order, lanes, j
+
+
+def prove_wide(order, lanes, n, z3, copy_ok):
+    """Z3-prove the first ``n`` lanes are one width-``8n`` update; name its operand.
+
+    Candidates come off the cells the lane terms read — the pair itself, any adjacent
+    pair, any byte, or the constant the terms reduce to — and each is *proved*, so a
+    borrow chain, a deferred-carry step and a straight copy all fold through one rule."""
+    lo, w = order[0], 8 * n + 8
+    exprs = [lanes[lo + k] for k in range(n)]
+    names = set()
+    for e in exprs:
+        _names(e, names)
+    cells = {cell_addr(x): x for x in names if cell_addr(x) is not None}
+    if len(cells) != len(names):
+        return None
+    env = {x: z3.BitVec(x, w) for x in names}
+    cons = [z3.ULE(env[x], 0xFF) for x in names]
+
+    def wide(base):
+        v = z3.BitVecVal(0, w)
+        for k in range(n):
+            v = v | (env[cells[base + k]] << (8 * k))
+        return v
+
+    got = z3.BitVecVal(0, w)
+    try:
+        for k, e in enumerate(exprs):
+            got = got | ((_z3_expr(e, env, z3, w) & 0xFF) << (8 * k))
+    except ValueError:  # a term the byte algebra does not model: no wide reading
+        return None
+    self_used = all(lo + k in cells for k in range(n))
+    srcs = []
+    if names <= {cells[lo + k] for k in range(n) if lo + k in cells}:
+        k = 0
+        for j, e in enumerate(exprs):
+            k |= (_z3_eval(e, {x: 0 for x in names}) & 0xFF) << (8 * j)
+        srcs.append((("const", k), z3.BitVecVal(k, w)))
+    pairs = [a for a in sorted(cells) if all(a + k in cells for k in range(n)) and a != lo]
+    srcs += [(("pair", a, n), wide(a)) for a in pairs]
+    srcs += [(("byte", a, 1), env[cells[a]]) for a in sorted(cells) if a not in range(lo, lo + n)]
+    cands = []
+    if self_used:
+        me = (("self", lo, n), wide(lo))
+        cands += [(op, me, b) for b in srcs for op in "+-"]
+    cands += [(op, a, b) for a in srcs for b in srcs if a is not b for op in "+-"]
+    if copy_ok:
+        cands += [("=", a, None) for a in srcs]
+    mask = (1 << (8 * n)) - 1
+    for op, a, b in cands:
+        cand = a[1] if b is None else (a[1] + b[1] if op == "+" else a[1] - b[1])
+        s = z3.Solver()
+        s.add(z3.And(*cons), (got & mask) != (cand & mask))
+        if s.check() == z3.unsat:
+            return op, a[0], None if b is None else b[0]
+    return None
+
+
+def _z3_eval(e, env):
+    """Concrete byte-domain evaluation of a term over an all-numeric environment."""
+    k = e[0]
+    if k == "num":
+        return e[1]
+    if k == "name":
+        return env[e[1]]
+    if k == "not":
+        return int(_z3_eval(e[1], env) == 0)
+    if k == "call" and e[1] == "zext2":
+        return _z3_eval(e[2][0], env)
+    if k == "call" and e[1] == "carry":
+        return int(_z3_eval(e[2][0], env) + _z3_eval(e[2][1], env) > 0xFF)
+    a, b = _z3_eval(e[2], env), _z3_eval(e[3], env)
+    op = e[1]
+    if op in ("+", "-"):
+        return (a + b if op == "+" else a - b) & 0xFF
+    if op in ("&", "|", "^"):
+        return {"&": a & b, "|": a | b, "^": a ^ b}[op]
+    return int({"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}[op])
+
+
+_WCMP = {">=": "UGE", "<": "ULT", ">": "UGT", "<=": "ULE"}
+
+
+def prove_wcmp(cond, z3):
+    """Z3-prove a guard is one wide compare of two lane pairs, whatever its spelling.
+
+    The borrow chain the branch tests is a 16-bit relation; proving the guard's
+    meaning (not matching its shape) is what lets every spelling of it fold."""
+    names = set()
+    _names(cond, names)
+    cells = {cell_addr(x): x for x in names if cell_addr(x) is not None}
+    if len(cells) != len(names) or len(cells) < 4:
+        return None
+    w = 32
+    env = {x: z3.BitVec(x, w) for x in names}
+    cons = [z3.ULE(env[x], 0xFF) for x in names]
+    try:
+        truth = _z3_expr(cond, env, z3, w) != z3.BitVecVal(0, w)
+    except ValueError:
+        return None
+
+    def wide(a):
+        return env[cells[a]] | (env[cells[a + 1]] << 8)
+
+    pairs = [a for a in sorted(cells) if a + 1 in cells]
+    for a in pairs:
+        for b in pairs:
+            for op, fn in _WCMP.items():
+                if a == b:
+                    continue
+                s = z3.Solver()
+                s.add(z3.And(*cons), truth != getattr(z3, fn)(wide(a), wide(b)))
+                if s.check() == z3.unsat:
+                    return op, ("pair", a, 2), ("pair", b, 2)
+    return None
+
+
+def prove_carry_out(expr, order, lanes, n, got, z3):
+    """Z3-prove ``expr`` is the carry the width-``8n`` update dropped."""
+    op, a, b = got
+    lo, w = order[0], 8 * n + 8
+    names = set()
+    _names(expr, names)
+    for k in range(n):
+        _names(lanes[lo + k], names)
+    cells = {cell_addr(x): x for x in names if cell_addr(x) is not None}
+    if len(cells) != len(names) or b is None:
+        return False
+    env = {x: z3.BitVec(x, w) for x in names}
+    cons = [z3.ULE(env[x], 0xFF) for x in names]
+
+    def wide(src):
+        if src[0] == "const":
+            return z3.BitVecVal(src[1], w)
+        v = z3.BitVecVal(0, w)
+        for k in range(src[2]):
+            if src[1] + k not in cells:
+                return None
+            v = v | (env[cells[src[1] + k]] << (8 * k))
+        return v
+
+    val, base = wide(b), wide(a)
+    if val is None or base is None:
+        return False
+    full = base + val if op == "+" else base - val
+    want = z3.LShR(full, 8 * n) & 1
+    s = z3.Solver()
+    try:
+        s.add(z3.And(*cons), _z3_expr(expr, env, z3, w) != want)
+    except ValueError:
+        return False
     return s.check() == z3.unsat
 
 
@@ -682,6 +1044,35 @@ def drop_dead_shadow(stmts):
         stmts = pruned
 
 
+def drop_dead_locals(stmts):
+    """Drop locals no expression in the procedure names: the folds consumed them.
+
+    The call ABI's registers stay live: a callee reads its params and writes its
+    returns without either appearing in an expression of the same procedure."""
+    while True:
+        live = _reads(stmts, set(_REGS))
+        pruned = _prune_local(stmts, live)
+        if pruned == stmts:
+            return stmts
+        stmts = pruned
+
+
+def _prune_local(stmts, live):
+    out = []
+    for s in stmts:
+        if s[0] == "asg" and cell_addr(s[1]) is None and sid_target(s[1]) is None:
+            if s[1] not in live:
+                continue
+        elif s[0] == "if":
+            s = ("if", s[1], _prune_local(s[2], live), _prune_local(s[3], live))
+        elif s[0] == "loop":
+            s = ("loop", _prune_local(s[1], live))
+        elif s[0] == "switch":
+            s = ("switch", [(l, _prune_local(b, live)) for l, b in s[1]])
+        out.append(s)
+    return out
+
+
 def _prune(stmts, live):
     out = []
     for s in stmts:
@@ -697,36 +1088,103 @@ def _prune(stmts, live):
     return out
 
 
-_FREQ = re.compile(r"(sid\.v[123])\.freq_(lo|hi)$")
+_FREQ = re.compile(r"(sid\.v[123]\.(?:freq|pw)|filter\.cutoff)_(lo|hi)$")
 
 
-def fold(stmts, proofs):
-    """Rewrite byte-lane spellings to u16 statements, each instance Z3-proved."""
+def _lane_fold(stmts, i, proofs, z3, targets):
+    """Fold a lane run at ``i`` into one wide update (plus its carry-out), if proved.
+
+    A plain lane-by-lane copy is only read as one word where a carry already links
+    the lanes: two independent byte moves are not evidence of a wide quantity."""
+    order, lanes, end = _lane_run(stmts, i)
+    for n in range(len(order), 1, -1):
+        got = prove_wide(order, lanes, n, z3, (order[0], n) in targets)
+        if got is None:
+            continue
+        lo, carry, used = order[0], None, end
+        if len(order) > n:  # the lane after the run may be the carry the add dropped
+            cut = order[n]
+            if prove_carry_out(lanes[cut], order, lanes, n, got, z3):
+                carry = cut
+            else:
+                used = None
+        if used is None:  # trailing lanes are not ours: refold from the run's start
+            continue
+        if got[0] != "=":
+            targets.add((lo, n))
+        proofs.append("wide%d(%s,%s%s)" % (8 * n, _addr_name(lo), got[0], got[1][0]))
+        keep = [
+            s
+            for s in stmts[i:end]
+            if cell_addr(s[1]) is None or cell_addr(s[1]) not in order[: n + (carry is not None)]
+        ]
+        rest = fold(keep, proofs, targets)  # lanes past the carry are their own quantity
+        return rest + [("w16", lo, n, got[0], got[1], got[2], carry)], end
+    return None
+
+
+def _addr_name(a):
+    return "zp_%02X" % a if a < 0x100 else "m_%04X" % a
+
+
+def _lane_src(rhs, last, defs):
+    """The cell holding ``rhs`` at this point, so a forwarded store folds like a read."""
+    if rhs[0] == "name" and cell_addr(rhs[1]) is not None:
+        return rhs
+    ns = set()
+    _names(rhs, ns)
+    for cell, (pos, stored) in last.items():
+        if stored == rhs and all(defs.get(x, -1) <= pos for x in ns):
+            return ("name", cell)
+    return rhs
+
+
+def fold(stmts, proofs, targets=None):
+    """Rewrite byte-lane spellings to wide statements, each instance Z3-proved.
+
+    Two passes: the first finds the lane groups a carry links, the second lets the
+    copies onto those groups fold too."""
     import z3  # pylint: disable=import-outside-toplevel
 
-    out, i = [], 0
+    if targets is None:
+        targets = set()
+        fold(stmts, [], targets)
+        return fold(stmts, proofs, targets)
+    out, i, last, defs = [], 0, {}, {}
     while i < len(stmts):
         s = stmts[i]
         if s[0] == "if":
-            out.append(("if", s[1], fold(s[2], proofs), fold(s[3], proofs)))
-            i += 1
+            cond, wc = s[1], prove_wcmp(s[1], z3)
+            if wc is not None:
+                proofs.append(
+                    "wide_cmp(%s%s%s)" % (_addr_name(wc[1][1]), wc[0], _addr_name(wc[2][1]))
+                )
+                cond = ("wcmp",) + wc
+            out.append(("if", cond, fold(s[2], proofs, targets), fold(s[3], proofs, targets)))
+            i, last, defs = i + 1, {}, {}
             continue
         if s[0] == "loop":
-            out.append(("loop", fold(s[1], proofs)))
-            i += 1
+            out.append(("loop", fold(s[1], proofs, targets)))
+            i, last, defs = i + 1, {}, {}
             continue
         if s[0] == "switch":
-            out.append(("switch", [(lbl, fold(b, proofs)) for lbl, b in s[1]]))
-            i += 1
+            out.append(("switch", [(lbl, fold(b, proofs, targets)) for lbl, b in s[1]]))
+            i, last, defs = i + 1, {}, {}
+            continue
+        if s[0] != "asg":
+            out.append(s)
+            i, last, defs = i + 1, {}, {}
             continue
         nxt = stmts[i + 1] if i + 1 < len(stmts) else None
         voice = _match_freq_pair(s, nxt)
         if voice is not None:
-            got = prove_pair(s[2], nxt[2], z3)
+            got = prove_pair(_lane_src(s[2], last, defs), _lane_src(nxt[2], last, defs), z3)
             if got is not None:
                 b_lo, b_hi, addend = got
-                proofs.append("pair_store(%s,%s)" % (b_lo, b_hi))
-                out.append(("st16", voice + ".freq", b_lo, b_hi, addend))
+                proofs.append(
+                    "pair_store(%s,%s)" % (_addr_name(cell_addr(b_lo)), _addr_name(cell_addr(b_hi)))
+                )
+                out.append(("st16", voice, b_lo, b_hi, addend))
                 i += 2
                 continue
         ps = _match_pair_set(s, nxt)
@@ -744,13 +1202,24 @@ def fold(stmts, proofs):
                 out.append(("adv16", pair, k, carried))
                 i += used
                 continue
+        got = _lane_fold(stmts, i, proofs, z3, targets)
+        if got is not None:
+            out.extend(got[0])
+            run, i = stmts[i : got[1]], got[1]
+            last = {s[1]: (i, s[2]) for s in run if cell_addr(s[1]) is not None}
+            defs = {s[1]: i for s in run if cell_addr(s[1]) is None}
+            continue
+        if cell_addr(s[1]) is not None:
+            last[s[1]] = (i, s[2])
+        else:
+            defs[s[1]] = i
         out.append(s)
         i += 1
     return out
 
 
 def _match_freq_pair(s, nxt):
-    """The voice whose freq lo/hi sinks these adjacent stores are, else None."""
+    """The multi-byte SID register whose lo/hi sinks these adjacent stores are."""
     if s[0] != "asg" or nxt is None or nxt[0] != "asg":
         return None
     m1, m2 = _FREQ.match(s[1]), _FREQ.match(nxt[1])
@@ -861,7 +1330,7 @@ class Flat:
             op = s[0]
             if op == "label":
                 self.labels[s[1]] = len(self.ops)
-            elif op in ("asg", "st16", "set16", "adv16"):
+            elif op in ("asg", "sto", "call", "st16", "set16", "adv16", "w16"):
                 self.ops.append(s)
             elif op == "if":
                 l_else, l_end = "@f%d" % len(self.ops), "@e%d" % len(self.ops)
@@ -904,11 +1373,15 @@ class Flat:
             k += 1
 
 
-class Machine:
-    """Execute the flattened, folded program over post-init RAM per frame."""
+_CALL_REGS = ("a", "x", "y")
+_REGS = _CALL_REGS + ("cflag", "zflag", "nflag", "vflag")  # the call ABI's own names
 
-    def __init__(self, flat, ram0):
-        self.flat, self.ram = flat, bytearray(ram0)
+
+class Machine:
+    """Execute the flattened, folded procedures over post-init RAM per frame."""
+
+    def __init__(self, flats, ram0):
+        self.flats, self.ram, self.out = flats, bytearray(ram0), []
 
     def _val(self, e, env):
         k = e[0]
@@ -932,6 +1405,9 @@ class Machine:
             a, _ = self._val(e[2][0], env)
             b, _ = self._val(e[2][1], env)
             return int(a + b > 0xFF), 1
+        if k == "wcmp":
+            a, b = self._src(e[2]), self._src(e[3])
+            return int({">=": a >= b, "<": a < b, ">": a > b, "<=": a <= b}[e[1]]), 1
         if k == "not":
             return int(self._val(e[1], env)[0] == 0), 1
         if k == "neg":
@@ -961,35 +1437,63 @@ class Machine:
             return val & 0xFFFF, 2
         return val & (0xFFFF if w == 2 else 0xFF), w
 
+    def _src(self, src):
+        if src[0] == "const":
+            return src[1]
+        return int.from_bytes(bytes(self.ram[src[1] : src[1] + src[2]]), "little")
+
+    def _write(self, addr, val):
+        """A byte reaching memory; inside the SID window it is also observable."""
+        self.ram[addr & 0xFFFF] = val & 0xFF
+        if SID <= addr < SID + 25:
+            self.out.append((addr - SID, val & 0xFF))
+
     def frame(self):
-        env = {"a": 0, "x": 0, "y": 0}  # CPU entry registers, unread by the driver
-        out, pc, ops, steps = [], 0, self.flat.ops, 0
+        self.out = []
+        self._run(PLAY, {"a": 0, "x": 0, "y": 0})  # CPU entry registers, unread here
+        return self.out
+
+    def _run(self, entry, env):
+        pc, ops, steps = 0, self.flats[entry].ops, 0
         while pc < len(ops):
             steps += 1
-            assert steps < 10000, "runaway frame"
+            assert steps < 20000, "runaway frame"
             s = ops[pc]
             op = s[0]
             if op == "asg":
                 sid = sid_target(s[1])
                 v = self._val(s[2], env)[0]
                 if sid is not None:
-                    out.append((sid, v & 0xFF))
-                    self.ram[SID + sid] = v & 0xFF
+                    self._write(SID + sid, v)
                 else:
                     addr = cell_addr(s[1])
                     if addr is not None:
                         self.ram[addr] = v & 0xFF
                     else:
                         env[s[1]] = v & 0xFF
+            elif op == "sto":
+                base = 0 if s[1] == "mem" else _store_addr(s[1])
+                assert base is not None, "span store through an unnamed row: %r" % (s[1],)
+                self._write(base + self._val(s[2], env)[0], self._val(s[3], env)[0])
+            elif op == "call":
+                sub = {k: env[k] for k in _REGS if k in env}
+                self._run(s[1], sub)
+                env.update(sub)
             elif op == "st16":
                 reg = sid_target(s[1] + "_lo")
                 wide = (self.ram[cell_addr(s[3])] << 8) | self.ram[cell_addr(s[2])]
                 if s[4] is not None:
                     wide = (wide + self._val(s[4], env)[0]) & 0xFFFF
-                out.append((reg, wide & 0xFF))
-                out.append((reg + 1, wide >> 8))
-                self.ram[SID + reg] = wide & 0xFF
-                self.ram[SID + reg + 1] = wide >> 8
+                self._write(SID + reg, wide & 0xFF)
+                self._write(SID + reg + 1, wide >> 8)
+            elif op == "w16":
+                lo, n, wop, a, b, carry = s[1:]
+                va = self._src(a)
+                full = va if b is None else va + self._src(b) if wop == "+" else va - self._src(b)
+                mask = (1 << (8 * n)) - 1
+                self.ram[lo : lo + n] = (full & mask).to_bytes(n, "little")
+                if carry is not None:
+                    self.ram[carry] = (full >> (8 * n)) & 1
             elif op == "set16":
                 base = cell_addr(s[1] + "_lo")
                 lo = self._val(s[2], env)[0]
@@ -1018,12 +1522,19 @@ class Machine:
             elif op == "ret":
                 break
             pc += 1
-        return out
 
 
 _FIELD = {
     PTR: "pos", DUR: "dur", PHASE: "phase", NLO: "note_lo", NHI: "note_hi",
     DEPTH: "vib", WAVE: "wave", CTL: "ctl", AD: "ad", SR: "sr",
+    ADEF: "ad_set", SRDEF: "sr_set", CLO: "pitch", CHI: "pitch_hi", RATE: "slide",
+    DLO: "diff", DHI: "diff_hi", CUT: "cut", CUTH: "cut_hi",
+    FCTL: "res_route", FVOL: "mode_vol",
+}  # fmt: skip
+_GLOBAL = {
+    PH0: "phase", PH0 + 1: "phase_1", PH0 + 2: "phase_2", TICK: "tick",
+    PWL: "pw", PWH: "pw_hi", LOGI: "log_idx",
+    ZX: "row_put", ZY: "row_get", SWP: "row_src", LFO: "row_val",
 }  # fmt: skip
 
 
@@ -1037,30 +1548,64 @@ def pretty(name):
     if addr is None:
         return name
     for v, b in enumerate(ZPV):
-        if addr - b in _FIELD:
+        if 0 <= addr - b < 32 and addr - b in _FIELD:
             return "v%d_%s%s" % (v + 1, _FIELD[addr - b], lane)
-    return name
+    return _GLOBAL[addr] + lane if addr in _GLOBAL else name
 
 
-def classify_roles(folded):
-    """Read each state cell's role off its folded update shapes (the plan's rule)."""
-    shapes = {}
+def _field_update(name, r):
+    """A read-modify-write that preserves the bits it does not write (stage 2's ``flags``)."""
+    if r[0] != "bin" or r[1] not in ("&", "|", "^"):
+        return False
+    ns, a = set(), cell_addr(name)
+    _names(r, ns)
+    if not any(cell_addr(x) == a for x in ns):
+        return False
+    return any(k[0] == "num" for k in (r[2], r[3])) or any(
+        k[0] == "bin" and k[1] in ("&", "|", "^") for k in (r[2], r[3])
+    )
+
+
+def classify_roles(procs):
+    """Read each state cell's role off its folded update shapes (the plan's rule).
+
+    Locals are inlined per straight-line run, so a cell updated through a temporary
+    is read at the same shape as one updated in place."""
+    shapes, read = {}, set()
 
     def walk(sl):
+        env = {}
         for s in sl:
             if s[0] == "adv16":
                 shapes.setdefault(s[1], set()).add("advance")
             elif s[0] == "set16":
                 shapes.setdefault(s[1], set()).add("rewrite")
-            elif s[0] == "asg" and cell_addr(s[1]) is not None:
-                r = s[2]
-                inc = r[0] == "bin" and r[1] in "+-" and ("name", s[1]) in (r[2], r[3])
-                ctr = r[0] == "bin" and r[1] == "-" and r[2][0] == "name" and r[3] == ("num", 1)
-                shapes.setdefault(s[1], set()).add("dec" if ctr else "inc" if inc else "set")
+            elif s[0] == "w16":
+                got = "inc" if s[4][0] == "self" else "set"
+                shapes.setdefault(_addr_name(s[1]), set()).add(got)
+                if s[6] is not None:
+                    shapes.setdefault(_addr_name(s[6]), set()).add("set")
+            elif s[0] == "asg":
+                r = _subst(s[2], env)
+                _names(r, read)
+                if cell_addr(s[1]) is None:
+                    env[s[1]] = r
+                else:
+                    inc = r[0] == "bin" and r[1] in "+-" and ("name", s[1]) in (r[2], r[3])
+                    ctr = r[0] == "bin" and r[1] == "-" and r[2][0] == "name" and r[3] == ("num", 1)
+                    got = "dec" if ctr else "inc" if inc else "set"
+                    key = _addr_name(cell_addr(s[1]))
+                    shapes.setdefault(key, set()).add("field" if _field_update(s[1], r) else got)
+            else:
+                for part in s[1:]:
+                    _names(part, read)
+                env = {}
             for b in _bodies(s):
                 walk(b)
+                env = {}
 
-    walk(folded)
+    for stmts in procs.values():
+        walk(stmts)
     roles = {}
     for name, got in shapes.items():
         if "advance" in got or "rewrite" in got:
@@ -1069,9 +1614,233 @@ def classify_roles(folded):
             roles[name] = "counter"
         elif "inc" in got:
             roles[name] = "accumulator"
+        elif "field" in got:
+            roles[name] = "flags"
         else:
             roles[name] = "parameter"
+    for name in read:  # read but never written: set once by init, then a parameter
+        a = cell_addr(name)
+        if a is not None:
+            roles.setdefault(_addr_name(a), "parameter")
     return roles
+
+
+_SIDV = re.compile(r"sid\.v([123])\.")
+_CELLTOK = re.compile(
+    r"\b(?:zp_[0-9A-Fa-f]{2}|(?:m|ctr|idx|pos)_[0-9A-Fa-f]{4}"
+    r"|ptr_[0-9A-Fa-f]{4}(?:_(?:lo|hi))?)\b"
+)
+FILTER_CELLS = frozenset((CUT, CUTH, FCTL, FVOL))
+_DIALECT = frozenset(("zext2", "carry", "mem", "u8", "u16", "u24", "u32"))
+
+
+def voice_of(name):
+    """The voice whose own *state* ``name`` is, else None.
+
+    Hardware sinks are deliberately not evidence: the pulse-width pair is voice 1's
+    register but the accumulator driving it is one global modulation."""
+    a = cell_addr(name)
+    a = cell_addr(name + "_lo") if a is None else a
+    if a is None:
+        return None
+    for v, b in enumerate(ZPV):
+        if 0 <= a - b < 32:
+            return v
+    if SHADOW <= a < SHADOW + 7 * VOICES:
+        return (a - SHADOW) // 7
+    return None
+
+
+def _norm_line(line, v, ids):
+    """Normalize one statement to voice ``v``'s frame: offsets, not addresses."""
+
+    def cell(m):
+        name = m.group(0)
+        a = cell_addr(name)
+        a = cell_addr(name + "_lo") if a is None else a
+        if a is None:
+            return rank(m)
+        if a < ZPV[0]:
+            return "g%02X" % a
+        if voice_of(name) == v:
+            b = ZPV[v] if a - ZPV[v] < 32 else SHADOW + 7 * v
+            return ("zp+%d" if b == ZPV[v] else "sh+%d") % (a - b)
+        return rank(m)
+
+    def rank(m):
+        return ids.setdefault(m.group(0), "#%d" % len(ids))
+
+    def local(m):
+        return m.group(0) if m.group(0) in _DIALECT else rank(m)
+
+    line = _CELLTOK.sub(cell, line)
+    line = _SIDV.sub("sid.", line)
+    line = re.sub(r"\$[0-9A-Fa-f]{4,}", rank, line)
+    line = re.sub(r"\b[a-z]+\d+\b", local, line)
+    return line.split("   ;")[0].strip()
+
+
+def _addr_srcs(src):
+    return () if src is None or src[0] == "const" else (_addr_name(src[1]),)
+
+
+def stmt_names(s):
+    """Every state name a folded statement mentions, wide operands included."""
+    ns = set()
+    if s[0] == "asg":
+        if cell_addr(s[1]) is not None or sid_target(s[1]) is not None:
+            ns.add(s[1])  # a local target is defined here, not read
+        _names(s[2], ns)
+    elif s[0] == "sto":
+        ns.add(s[1])
+        _names(s[2], ns)
+        _names(s[3], ns)
+    elif s[0] == "st16":
+        ns |= {s[1], s[2], s[3]}
+        _names(s[4], ns)
+    elif s[0] in ("adv16", "set16"):
+        ns.add(s[1] + "_lo")
+        for part in s[2:]:
+            _names(part, ns)
+    elif s[0] == "w16":
+        ns |= {_addr_name(a) for a in (s[1],) + ((s[6],) if s[6] is not None else ())}
+        ns |= set(_addr_srcs(s[4])) | set(_addr_srcs(s[5]))
+    elif s[0] == "if":
+        if s[1][0] == "wcmp":
+            ns |= set(_addr_srcs(s[1][2])) | set(_addr_srcs(s[1][3]))
+        else:
+            _names(s[1], ns)
+    return ns
+
+
+def voice_skeleton(stmts, v, part="all"):
+    """Voice ``v``'s statements, in order, normalized to its base displacement.
+
+    A statement is the voice's when the voice state it names is exactly that one's;
+    locals inherit its voice and taint. Guards differing only by an observed page
+    cross normalize equal; ``part`` splits off the filter block."""
+    out, own, taint = [], {}, set()
+    filt = {ZPV[v] + k for k in FILTER_CELLS}
+
+    def line(s):
+        buf = []
+        _render([s], buf, 0)
+        return buf[0]
+
+    def walk(sl):
+        for s in sl:
+            ns = stmt_names(s)
+            got = {own.get(n, voice_of(n)) for n in ns} - {None}
+            hot = bool(ns & taint) or any(
+                cell_addr(n) in filt or n.startswith("filter.") for n in ns
+            )
+            if got == {v}:
+                out.append((line(s), hot, s))
+            if s[0] == "asg" and cell_addr(s[1]) is None and sid_target(s[1]) is None:
+                own[s[1]] = list(got)[0] if len(got) == 1 else None
+                (taint.add if hot else taint.discard)(s[1])
+            for b in _bodies(s):
+                walk(b)
+
+    walk(stmts)
+    live, keep = set(), []
+    for ln, hot, s in reversed(out):  # a definition no later statement reads is not structure
+        if s[0] == "asg" and _store_addr(s[1]) is None and s[1] not in live:
+            continue
+        live |= stmt_names(s)
+        keep.append((ln, hot))
+    keep.reverse()
+    sel = [ln for ln, h in keep if part == "all" or h == (part == "filter")]
+    ids = {}
+    return [_norm_line(ln, v, ids) for ln in sel]
+
+
+def sid_pairs():
+    """Every multi-byte SID register, by lo/hi lane naming: the width law's subjects."""
+    out = []
+    for r in range(25):
+        lo, hi = R.sid_name(SID + r), R.sid_name(SID + r + 1)
+        if lo and hi and lo.endswith("_lo") and hi == lo[:-3] + "_hi":
+            out.append(lo[:-3])
+    return tuple(out)
+
+
+def wide_spans(procs):
+    """``addr -> width`` for every quantity the folds recovered as one word."""
+    out = {}
+    for name, n in wide_cells(procs).items():
+        a = cell_addr(name)
+        a = cell_addr(name + "_lo") if a is None else a
+        out[a] = n
+    return out
+
+
+def lane_updates(procs):
+    """Byte-lane writes to a cell some wide quantity spans: the width law's residue."""
+    spans, out = wide_spans(procs), []
+
+    def walk(sl):
+        for s in sl:
+            if s[0] == "asg":
+                a = cell_addr(s[1])
+                for base, n in spans.items():
+                    if a is not None and base <= a < base + n:
+                        out.append((pretty(_addr_name(base)), a))
+            for b in _bodies(s):
+                walk(b)
+
+    for stmts in procs.values():
+        walk(stmts)
+    return sorted(set(out))
+
+
+def _op_use(s):
+    ns = set()
+    if s[0] in ("call", "ret"):  # the ABI passes registers, never the flags
+        return set(_CALL_REGS)
+    for part in s[1:]:
+        _names(part, ns)
+    if s[0] == "asg" and _store_addr(s[1]) is not None:
+        ns.add(s[1])
+    return ns
+
+
+def dead_local_defs(stmts):
+    """Local definitions no path reads, by liveness over the flattened statements."""
+    flat = Flat(stmts)
+    ops = flat.ops
+    succ = []
+    for i, s in enumerate(ops):
+        if s[0] == "bf":
+            succ.append([i + 1, s[2]])
+        elif s[0] == "jmp":
+            succ.append([s[1]])
+        elif s[0] == "dsw":
+            succ.append(sorted(s[2].values()))
+        elif s[0] in ("ret", "fault"):
+            succ.append([])
+        else:
+            succ.append([i + 1])
+    use = [_op_use(s) for s in ops]
+    dfn = [s[1] if s[0] == "asg" and _store_addr(s[1]) is None else None for s in ops]
+    dfn = [None if s[0] == "call" else d for s, d in zip(ops, dfn)]
+    live = [set() for _ in ops]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(ops) - 1, -1, -1):
+            out = set().union(*[live[j] for j in succ[i] if j < len(ops)]) if succ[i] else set()
+            got = (out - ({dfn[i]} if dfn[i] else set())) | use[i]
+            if got != live[i]:
+                live[i], changed = got, True
+    dead = []
+    for i, s in enumerate(ops):
+        if dfn[i] is None:
+            continue
+        out = set().union(*[live[j] for j in succ[i] if j < len(ops)]) if succ[i] else set()
+        if dfn[i] not in out:
+            dead.append((dfn[i], s[2]))
+    return dead
 
 
 def _bodies(s):
@@ -1086,6 +1855,8 @@ def _bodies(s):
 
 def _fmt(e):
     k = e[0]
+    if k == "wcmp":
+        return "(%s %s %s)" % (_src_fmt(e[2]), e[1], _src_fmt(e[3]))
     if k == "num":
         return "$%02X" % e[1] if e[1] <= 0xFF else "$%04X" % e[1]
     if k == "name":
@@ -1101,23 +1872,55 @@ def _fmt(e):
     return "(%s %s %s)" % (_fmt(e[2]), e[1], _fmt(e[3]))
 
 
-def render(folded, roles):
+_ORDER = {"cursor": 0, "counter": 1, "accumulator": 2, "flags": 3, "parameter": 4}
+
+
+def wide_cells(procs):
+    """``name -> byte width`` for every quantity the folds recovered as one word."""
+    out = {}
+
+    def walk(sl):
+        for s in sl:
+            if s[0] == "w16":
+                out[_addr_name(s[1])] = s[2]
+            elif s[0] in ("adv16", "set16"):
+                out[s[1]] = 2
+            for b in _bodies(s):
+                walk(b)
+
+    for stmts in procs.values():
+        walk(stmts)
+    return out
+
+
+def declared_roles(procs, roles):
+    """The state block's own names: a lane a wide quantity spans is not a field."""
+    wide, covered = wide_cells(procs), set()
+    for n, m in wide.items():
+        a = cell_addr(n) if cell_addr(n) is not None else cell_addr(n + "_lo")
+        covered |= set(range(a, a + m))
+    return {n: r for n, r in roles.items() if n in wide or cell_addr(n) not in covered}
+
+
+def render(procs, roles):
     """Print the folded program as the role-typed state machine.
 
     The field line is the dialect's own (``name: <role> uN``, sidprog.lark
     ``statedef``), so what this prints is what stage 4 emits."""
-    lines = ["state {"]
-    order = {"cursor": 0, "counter": 1, "accumulator": 2, "parameter": 3}
-    for n in sorted(roles, key=lambda n: (order[roles[n]], pretty(n))):
-        w = "u16" if roles[n] == "cursor" else "u8"
+    lines, wide = ["state {"], wide_cells(procs)
+    show = declared_roles(procs, roles)
+    for n in sorted(show, key=lambda n: (_ORDER[roles[n]], pretty(n))):
+        lane = _PAIRBASE.match(n) and not _PAIRRE.match(n)
+        w = "u%d" % (8 * wide.get(n, 2 if lane else 1))
         lines.append("  %s: %s %s" % (pretty(n), roles[n], w))
     for v in range(1, VOICES + 1):
         lines.append("  v%d_note: parameter u16   ; note_hi:note_lo as one word" % v)
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
-    lines.append("play {")
-    _render(folded, lines, 1)
-    lines.append("}")
+    for entry, stmts in sorted(procs.items()):
+        lines.append("play {" if entry == PLAY else "sub_%04X {" % entry)
+        _render(stmts, lines, 1)
+        lines.append("}")
     return "\n".join(_rename_line(ln) for ln in lines)
 
 
@@ -1129,12 +1932,22 @@ def _rename_line(ln):
     )
 
 
+def _src_fmt(src):
+    if src[0] == "const":
+        return "$%0*X" % (2 * max(1, (src[1].bit_length() + 7) // 8), src[1])
+    return "%s:u%d" % (_addr_name(src[1]), 8 * src[2])
+
+
 def _render(sl, lines, d):
     pad = "  " * d
     for s in sl:
         op = s[0]
         if op == "asg":
             lines.append("%s%s = %s" % (pad, s[1], _fmt(s[2])))
+        elif op == "sto":
+            lines.append("%s%s[%s] = %s" % (pad, s[1], _fmt(s[2]), _fmt(s[3])))
+        elif op == "call":
+            lines.append("%scall sub_%04X" % (pad, s[1]))
         elif op == "st16":
             rhs = "%s:%s as u16" % (s[3], s[2])
             if s[4] is not None:
@@ -1145,6 +1958,16 @@ def _render(sl, lines, d):
         elif op == "adv16":
             guard = "" if s[3] else "   ; guard: no page cross observed"
             lines.append("%s%s:u16 += %d%s" % (pad, s[1], s[2], guard))
+        elif op == "w16":
+            lo, n, wop, a, b, cy = s[1:]
+            tgt = "%s:u%d" % (_addr_name(lo), 8 * n)
+            if b is None:
+                rhs = "%s = %s" % (tgt, _src_fmt(a))
+            elif a[0] == "self":
+                rhs = "%s %s= %s" % (tgt, wop, _src_fmt(b))
+            else:
+                rhs = "%s = %s %s %s" % (tgt, _src_fmt(a), wop, _src_fmt(b))
+            lines.append(pad + rhs + ("" if cy is None else "   ; carry -> %s" % _addr_name(cy)))
         elif op == "if":
             lines.append("%sif %s {" % (pad, _fmt(s[1])))
             _render(s[2], lines, d + 1)
@@ -1183,7 +2006,7 @@ def to_psid(mem, end):
 
 
 def image_end(labels):
-    return labels["script%d" % (VOICES - 1)] + 0x200
+    return labels["imgend"]
 
 
 def grids_from_writes(init_writes, per_frame):
@@ -1251,7 +2074,21 @@ def sidtrace_stream(mem, labels):
     return [(row.reg, row.value) for row in rows if row.chip == 0 and 0 <= row.reg < 25]
 
 
-def sidplayfp_wav(mem, labels, dst, seconds=20):
+WAV_SECONDS = 15  # whole seconds: sidplayfp's -t takes integer seconds
+FRAME_S = PAL_CYCLES / PAL_CLOCK
+
+
+def wav_frames(art, seconds=WAV_SECONDS):
+    """Frames both renders cover: ``seconds`` of program, capped by what it has."""
+    return min(round(seconds / FRAME_S), len(art["min_frames"]) + 1)
+
+
+def wav_span(art, seconds=WAV_SECONDS):
+    """That frame count in seconds, which is what both renders are pinned to."""
+    return wav_frames(art, seconds) * FRAME_S
+
+
+def sidplayfp_wav(mem, labels, dst, seconds=WAV_SECONDS):
     """Render the tune to WAV with the dockerized sidplayfp; return ``dst``."""
     import tempfile  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
@@ -1266,15 +2103,14 @@ def sidplayfp_wav(mem, labels, dst, seconds=20):
     return dst
 
 
-def minimized_wav(art, dst, seconds=20, model="8580"):
+def minimized_wav(art, dst, seconds=WAV_SECONDS, model="8580"):
     """Render the MINIMIZED program's own write stream on an emulated SID."""
     from pathlib import Path  # pylint: disable=import-outside-toplevel
     from pysidtracker.audio import render_wav  # pylint: disable=import-outside-toplevel
 
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    frames = int(seconds * PAL_CLOCK / PAL_CYCLES)
-    stream = [list(art["init_writes"])] + art["min_frames"][:frames]
+    stream = [list(art["init_writes"])] + art["min_frames"][: wav_frames(art, seconds) - 1]
     return render_wav(
         stream,
         dst,
@@ -1323,17 +2159,35 @@ def adsr_before_gate(per_frame):
     return True
 
 
+def boundary(model):
+    """``entry -> (params, returns)``: the decompiled model's own pass-2 summary."""
+    from deity_informant import datadecl, frameproc, sidprog  # pylint: disable=C0415
+
+    decls = getattr(model, "data_decls", None)
+    aliases = getattr(model, "symbols", None)
+    if decls is None:
+        decls, aliases = datadecl.declarations(model)
+    trees, labels, view = sidprog._model_trees(model)  # pylint: disable=protected-access
+    procs = frameproc.procedures(
+        trees, labels, view, set(model.dispatch_sets), dict(aliases or {}), model.play
+    )
+    return {e: (tuple(params), tuple(rets)) for e, params, rets, _s in procs}
+
+
 def pipeline(frames=FRAMES):
     """Build, verify, decompile, minimize, fold, execute; return the artifacts."""
     mem, labels = build_image()
-    init_writes, ram0, orig_frames, orig_grids = run_vm(mem, frames)
+    init_writes, ram0, orig_frames, orig_grids, ram_end = run_vm(mem, frames)
     model, ev = S.decompile(bytearray(mem), INIT, PLAY, frames)
     assert S.Walker(model).run(frames) == ev.wlog, "walker replay is not bit-exact"
     text, _ = eqlift_mem.emit(model)
-    play_ast = extract_proc(text, PLAY)
-    proofs = []
-    folded = fold(drop_dead_shadow(forward_shadow(play_ast, proofs)), proofs)
-    machine = Machine(Flat(folded), ram0)
+    proofs, folded = [], {}
+    for entry in proc_entries(text):
+        ast = extract_proc(text, entry)
+        folded[entry] = drop_dead_locals(
+            fold(drop_dead_shadow(forward_shadow(ast, proofs)), proofs)
+        )
+    machine = Machine({e: Flat(s) for e, s in folded.items()}, ram0)
     min_frames = [machine.frame() for _ in range(frames)]
     return {
         "mem": mem,
@@ -1341,8 +2195,10 @@ def pipeline(frames=FRAMES):
         "init_writes": init_writes,
         "orig_frames": orig_frames,
         "orig_grids": orig_grids,
+        "ram_end": ram_end,
         "eqlift_text": text,
         "folded": folded,
+        "boundary": boundary(model),
         "proofs": proofs,
         "min_frames": min_frames,
     }
@@ -1355,7 +2211,7 @@ def main(argv=None):
         print(art["eqlift_text"])
         return 0
     kinds = {p.split("(")[0] for p in art["proofs"]}
-    assert kinds == {"forward_shadow", "pair_store", "pair_set", "advance"}, kinds
+    assert kinds == FOLDS, kinds
     assert framelog.canonical(art["min_frames"]) == framelog.canonical(
         art["orig_frames"]
     ), "minimized program diverges from the VM frame projection"
@@ -1397,6 +2253,7 @@ def main(argv=None):
     if "--wav" in argv:
         print("wav (minimized program, reSID): %s" % minimized_wav(art, "out/minimized.wav"))
         print("wav (sidplayfp): %s" % sidplayfp_wav(art["mem"], art["labels"], "out/tune.wav"))
+        print("both renders span %d frames = %.3fs" % (wav_frames(art), wav_span(art)))
     return 0
 
 
