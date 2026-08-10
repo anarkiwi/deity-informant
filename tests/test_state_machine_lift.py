@@ -171,13 +171,16 @@ def test_indexed_store_lives_in_a_branch_arm(text):
     assert "sid.v1.pw:u16" in text
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3b landing 2: the branch join forwards a "
-    "disjoint cell instead of re-reading it",
-    **XFAIL,
-)
-def test_join_forwards_the_crossing_cell(text):
-    assert "$0140" in _line(text, "sid.v1.pw:u16 ="), "the sink re-reads the pair"
+def test_join_forwards_the_crossing_cell(art, text):
+    """3b landing 2: the pw pair crosses the join as the value the head computed.
+
+    The property lives in the emitter's text: the folded artifact resolves a forwarded
+    lane back to the cell holding it (#148's pair rule, which is what writes all seven
+    multi-byte registers wide), so both spellings fold to the same wide store."""
+    eq = art["eqlift_text"]
+    assert "ctr_0034" not in _line(eq, "sid.v1.pw_lo = "), "the sink re-reads the pair"
+    assert "zp_35" not in _line(eq, "sid.v1.pw_hi = "), "the sink re-reads the pair"
+    assert "sid.v1.pw:u16 = " in text
 
 
 def test_wrapping_zero_page_row(art, text):
@@ -202,8 +205,9 @@ def test_helper_procedure_and_its_boundary(art, text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3b landing 2: sel_store_same over $0100 "
-    "forwards the push-pull spill",
+    reason="register-model-lift stage 3c: sel_store_same does forward the pull (measured "
+    "by tests/test_eqlift_mem.py's push-pull refusal); the spill survives because pick_ir "
+    "admits no memory spelling and a store is a root until scratch demotion",
     **XFAIL,
 )
 def test_stack_spill_forwards(text):

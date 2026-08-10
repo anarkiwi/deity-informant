@@ -119,7 +119,11 @@ passing tests (`tests/test_eqlift_mem.py`).
   cheap, `carry` expensive; SID-range cells penalized (outputs, never read back).
   Cost changes MUST be justified by a corpus-artifact diff
   (`tools/eqlift_emit.py`), not one tune. Egg-side constructor costs and `_COSTS`
-  MUST stay order-consistent.
+  MUST stay order-consistent. **The memory sort is part of that order** (stage 3b
+  landing 2): `pick_ir` spells a site from memory only as a last resort, so `sel`
+  carries `_SEL_COST` rather than egglog's default 1 — at the default, a value class
+  holding several memory versions returned only spellings the consumer discards and
+  the site fell back to its own raw term.
 
 ## 5. Migration: delete the transitional passes
 
@@ -235,6 +239,24 @@ procedure text.
   a branch that writes its cell. Mitigation: opaque-reset by default at every
   join/loop-head/call boundary, weakened only per-site behind an admitted
   argument in this doc; all-sites Z3 proofs catch any residual hole.
+  **The admitted weakenings, stage 3b landing 2:**
+  - *The span join.* `_mem_writes` reads a non-const store's write span off
+    `addr_interval` — a `(lo, hi, width)` interval — instead of returning ⊤, and the
+    join is **complemented**: `_join_mem` builds a fresh opaque memory and re-stores
+    exactly the chain-held const cells, each proved disjoint from every span the
+    joined statements can write. Enumerating what the join *keeps* is what makes a
+    span usable at all: a bounded-but-unenumerable write (a row, a push) cannot be
+    listed as cells to forget, but every cell outside it can be listed as kept. The
+    disjointness is a Z3 QF_BV proof over *every* address in the span
+    (`_disjoint_span`, cached), never a structural match, so a store width that
+    reaches past `hi` and a cell inside the row both refuse. An unbounded store
+    address, a label and any dynamic transfer keep ⊤; an unkept cell is guarded
+    memory, a readability loss and never a soundness one.
+  - *The call/goto closure* (`Footprints`). What entering at a pc may write, over the
+    enumerated call/goto graph, as that graph's least fixpoint — a caller writes what
+    its callees write. A pc no procedure owns is ⊤, and so is a procedure holding a
+    transfer the map cannot follow, so nothing rests on the dispatch guards: what a
+    call boundary keeps is bounded by code the map actually reads.
 - Saturation blowup: assoc/comm plus the memory axioms are expansive over a whole
   procedure. Mitigation: bounded schedule; saturation is not assumed; extraction
   sound at any cutoff. Per-procedure wall-clock MUST hold the 60s test budget.
@@ -287,6 +309,16 @@ procedure text.
 - egglog version drift: extracted-str parsing and RunReport shapes are
   version-sensitive. Mitigation: minor-version pin + `_parse_ir` round-trip
   covered by tests (including the let-lifted multi-line form).
+- A local renders as its **base name**, so a spelling is valid only where the base
+  still holds that version. `_defined_at` read availability — the versions defined on
+  the path — which never drops a name when the base is redefined, so a site could
+  spell a stale version and the printed program read the new one. Measured minimal
+  case (stage 3b landing 2): `a = m_1000; b = a; a = m_1001; sid.ctrl = b` emitted
+  `sid.v1.ctrl = a` after `a` was redefined, with `b`'s definition deleted as unread —
+  a wrong byte at the chip. §6's all-sites proof cannot catch it: it proves the SSA
+  terms equal while the printer renders the base. Mitigation: a site carries the
+  versions **live** there, not the versions available there. This is the memory
+  renderer's position-correctness (2026-08-09) stated for locals.
 - Extraction nondeterminism: **observed, diagnosed and closed.**
   `extract_multiple` returns *a* representative of an e-class and which one is
   not contractual; re-costing with `_COSTS` plus a lexicographic tie-break does

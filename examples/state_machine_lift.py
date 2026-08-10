@@ -672,7 +672,7 @@ def _names(e, out):
 def _base_split(e):
     """``(base cell, addend)`` for ``b`` or ``b + x`` / ``x + b``, else None."""
     if e[0] == "name":
-        return e[1], None
+        return (e[1], None) if cell_addr(e[1]) is not None else None
     if e[0] == "bin" and e[1] == "+":
         for base, other in ((e[2], e[3]), (e[3], e[2])):
             if base[0] == "name" and cell_addr(base[1]) is not None:
@@ -1091,6 +1091,37 @@ def _prune(stmts, live):
 _FREQ = re.compile(r"(sid\.v[123]\.(?:freq|pw)|filter\.cutoff)_(lo|hi)$")
 
 
+def _arm_writes(sl, names, spans):
+    """Names a body assigns and the address spans it stores through; ⊤ is the space."""
+    for s in sl:
+        if s[0] == "asg":
+            names.add(s[1])
+        elif s[0] == "sto":
+            a = _store_addr(s[1])
+            spans.append((0, 0xFFFF) if a is None else (a, a + (1 << (8 * _wid(s[2]))) - 1))
+        for b in _bodies(s):
+            _arm_writes(b, names, spans)
+    return names, spans
+
+
+def _cross_window(s, last, defs):
+    """The fold lookback a branch survives: what no body of ``s`` can disturb.
+
+    The span join carries a cell no reachable store can name, so the fold reading that
+    cell back must carry the same entries -- and drop every cell a body stores into,
+    every span it stores through, and every term naming a local it assigns."""
+    names, spans = _arm_writes([s], set(), [])
+    keep = {}
+    for cell, (pos, stored) in last.items():
+        ns = set()
+        _names(stored, ns)
+        a = cell_addr(cell)
+        if cell in names or ns & names or any(lo <= a <= hi for lo, hi in spans):
+            continue
+        keep[cell] = (pos, stored)
+    return keep, {n: p for n, p in defs.items() if n not in names}
+
+
 def _lane_fold(stmts, i, proofs, z3, targets):
     """Fold a lane run at ``i`` into one wide update (plus its carry-out), if proved.
 
@@ -1161,15 +1192,15 @@ def fold(stmts, proofs, targets=None):
                 )
                 cond = ("wcmp",) + wc
             out.append(("if", cond, fold(s[2], proofs, targets), fold(s[3], proofs, targets)))
-            i, last, defs = i + 1, {}, {}
+            i, (last, defs) = i + 1, _cross_window(s, last, defs)
             continue
         if s[0] == "loop":
             out.append(("loop", fold(s[1], proofs, targets)))
-            i, last, defs = i + 1, {}, {}
+            i, (last, defs) = i + 1, _cross_window(s, last, defs)
             continue
         if s[0] == "switch":
             out.append(("switch", [(lbl, fold(b, proofs, targets)) for lbl, b in s[1]]))
-            i, last, defs = i + 1, {}, {}
+            i, (last, defs) = i + 1, _cross_window(s, last, defs)
             continue
         if s[0] != "asg":
             out.append(s)

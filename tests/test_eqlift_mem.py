@@ -226,20 +226,41 @@ def test_proc_forwards_across_branch_writing_disjoint_cell():
     )
 
 
+_OVERLAP = ("op", "INT_ADD", (("const", 0x0180, 2), ("op", "INT_ZEXT", (("loc", "y"),), 2)), 2)
+_WILD_STORE = ("st", ("op", "INT_ADD", (("loc", "ptr"), ("loc", "w")), 2), ("loc", "d"))
+
+
 @pytest.mark.parametrize(
     "body",
     [
         [("st", ("const", 0x01FD, 2), ("loc", "d"))],
-        [_IDX_STORE],
+        [("st", _OVERLAP, ("loc", "d"))],
+        [_WILD_STORE],
         [("call", 0x1234, 0x1237)],
         [("label", 0x1234)],
         [("if", "if", ("loc", "e"), [("dgoto", ("loc", "p"))], [])],
     ],
-    ids=["same-cell", "indexed-address", "call", "label", "nested-dynamic"],
+    ids=["same-cell", "overlapping-span", "unbounded-address", "call", "label", "nested-dynamic"],
 )
 def test_proc_havocs_across_branch_that_may_write_the_cell(body):
-    """Any store the join cannot pin to a disjoint constant cell havocs the read."""
+    """A join carries a cell only where the spans it can write are proved disjoint."""
     assert _read_after_branch(body).startswith("sel(memk(")
+
+
+def test_the_span_join_carries_a_cell_disjoint_from_an_indexed_write():
+    """Stage 3b landing 2: an indexed store is a write span, not ⊤, so the spill at
+    ``$01FD`` crosses a branch arm writing the row ``[$5510,$560F]``."""
+    assert mem._mem_writes([_IDX_STORE]) == (frozenset({(0x5510, 0x560F, 1)}), False)
+    assert _read_after_branch([_IDX_STORE]) == str(mem.sel(mem.mem0(), E.num(0x5591, 2), 1))
+
+
+def test_span_disjointness_is_proved_over_every_address_in_the_span():
+    """The weakening is Z3's, not a structural match: the byte after a row is inside it
+    at the last index, and one byte past the row's end is not."""
+    assert mem._disjoint_span(0x5510, 0x560F, 1, 0x5610, 1)
+    assert not mem._disjoint_span(0x5510, 0x560F, 1, 0x560F, 1)
+    assert not mem._disjoint_span(0x5510, 0x560F, 2, 0x5610, 1)  # the width writes past hi
+    assert mem._disjoint_span(0x0100, 0x01FF, 1, 0x0040, 2)  # a push cannot reach page zero
 
 
 def test_proc_havocs_partially_overlapping_write_across_branch():
@@ -252,10 +273,95 @@ def test_proc_havocs_partially_overlapping_write_across_branch():
 def test_join_uses_address_width_not_value_width():
     """A 2-byte $5510 address holding a 1-byte value joins at $5510, not $0010."""
     body = [("st", ("const", 0x5510, 2), ("loc", "d"))]
-    assert mem._mem_writes(body) == ({(0x5510, 2, 1)}, False)
+    assert mem._mem_writes(body) == (frozenset({(0x5510, 0x5510, 1)}), False)
     pre = [("st", ("const", 0x0010, 2), ("loc", "q")), ("st", ("const", 0x5510, 2), ("loc", "r"))]
     assert _read_after_branch(body, 0x0010, 1, pre) == str(E.loc("q"))  # not the joined cell
     assert _read_after_branch(body, 0x5510, 1, pre).startswith("sel(memk(")  # is the joined cell
+
+
+def test_a_pair_crossing_a_span_store_is_spelled_from_the_values():
+    """The prototype's pw case in miniature: an accumulator pair stored, an arm writing
+    a row it cannot alias, and the SID sinks after the join spell the computed values."""
+    zp = ("const", 0x34, 1)
+    stmts = [
+        ("asg", "c1", ("mem", zp, 1)),
+        ("st", zp, ("op", "INT_ADD", (("loc", "c1"), ("const", 0x40, 1)), 1)),
+        ("asg", "c2", ("mem", ("const", 0x35, 1), 1)),
+        ("st", ("const", 0x35, 1), ("op", "INT_ADD", (("loc", "c2"), ("const", 0x01, 1)), 1)),
+        ("if", "if", ("loc", "q"), [_IDX_STORE], []),
+        ("st", ("const", 0xD402, 2), ("mem", zp, 1)),
+        ("st", ("const", 0xD403, 2), ("mem", ("const", 0x35, 1), 1)),
+    ]
+    assert mem.render_proc(stmts)[-2:] == ["sid.v1.pw_lo = (c1 + $40)", "sid.v1.pw_hi = (c2 + $01)"]
+
+
+def test_a_stale_local_version_never_spells_a_site():
+    """A local renders as its base name, so only the version the base still holds may
+    spell a site: availability says a version was defined, never that it survived.
+
+    Spelled off availability this emits ``sid.v1.ctrl = a`` after ``a`` is redefined --
+    the wrong byte at the chip, and §6's proof cannot see it (it proves the SSA terms
+    equal while the printer renders the base)."""
+    stmts = [
+        ("asg", "a", ("mem", ("const", 0x1000, 2), 1)),
+        ("asg", "b", ("loc", "a")),
+        ("asg", "a", ("mem", ("const", 0x1001, 2), 1)),
+        ("st", ("const", 0xD404, 2), ("loc", "b")),
+        ("st", ("const", 0xD405, 2), ("loc", "a")),
+    ]
+    assert mem.render_proc(stmts) == [
+        "a = m_1000",
+        "b = a",
+        "a = m_1001",
+        "sid.v1.ctrl = b",
+        "sid.v1.attack_decay = a",
+    ]
+
+
+def test_a_push_pull_spill_forwards_in_the_graph_and_not_in_the_text():
+    """The refusal behind the prototype's ``m_01FB`` pin, measured on both halves.
+
+    ``sel_store_same`` does forward the pull to the pushed value; ``pick_ir`` admits no
+    memory spelling (3c's cost) and every surviving store is a root (scratch demotion),
+    so the slot still prints."""
+    row = ("op", "INT_ADD", (("const", 0x14A7, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
+    stmts = [
+        ("st", ("const", 0x01FB, 2), ("mem", row, 1)),
+        ("asg", "a", ("mem", ("const", 0x01FB, 2), 1)),
+        ("st", ("const", 0xD404, 2), ("loc", "a")),
+    ]
+    assert mem.extract(mem.Proc().run(stmts).env["a"]) == str(
+        mem.sel(mem.mem0(), E.add(E.num(0x14A7, 2), E.zext(E.loc("x")), 2), 1)
+    )
+    assert [ln for ln in mem.render_proc(stmts) if "m_01FB" in ln] == [
+        "m_01FB = m_14A7[x]",
+        "a = m_01FB",
+    ]
+
+
+def test_a_call_carries_the_cells_its_callee_cannot_write():
+    """The call/goto closure: a callee that only pushes cannot reach page zero, so the
+    caller's cell crosses the call; one whose store address is ⊤ takes everything with it."""
+    push = ("st", _PUSH, ("loc", "a"))
+    body = [("st", ("const", 0x0040, 1), ("loc", "v")), ("call", 0x2000, 0x2003)]
+    read = [("asg", "out", ("mem", ("const", 0x0040, 1), 1))]
+    tight = mem.Footprints([(0x2000, [push, ("ret",)])])
+    assert mem.extract(mem.Proc(tight).run(body + read).env["out"]) == str(E.loc("v"))
+    assert mem.extract(mem.Proc().run(body + read).env["out"]).startswith("sel(memk(")
+    wide = mem.Footprints([(0x2000, [_WILD_STORE, ("ret",)])])
+    assert mem.extract(mem.Proc(wide).run(body + read).env["out"]).startswith("sel(memk(")
+
+
+def test_the_footprint_closure_carries_what_a_callee_calls():
+    """A caller writes what its callees write, transitively, and a dynamic transfer in
+    any of them is ⊤ for every entry that reaches it."""
+    leaf = [("st", ("const", 0x0040, 1), ("loc", "v")), ("ret",)]
+    mid = [("call", 0x2000, 0x2003), ("ret",)]
+    foot = mem.Footprints([(0x2000, leaf), (0x3000, mid)])
+    assert foot.of(0x3000) == (frozenset({(0x0040, 0x0040, 1)}), False)
+    assert foot.of(0x9999) == mem._TOPFP
+    dyn = mem.Footprints([(0x2000, [("dgoto", ("loc", "p"))]), (0x3000, mid)])
+    assert dyn.of(0x3000)[1] and dyn.of(0x2000)[1]
 
 
 def test_proc_forwards_across_loop_writing_disjoint_cell():
