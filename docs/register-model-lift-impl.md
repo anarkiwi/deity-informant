@@ -1473,3 +1473,31 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   proved sites), zero faults, refusals, regressions and fallbacks — because the pack
   respelling lands in rung (d2)'s artifact and eqlift's own extraction never preferred the
   ADC form at any exemplar site.
+- **2026-08-10 — stage 3d, landing 3 (part): the architectural-register self-copies
+  retire, and 3d's residue is named.** 3b landing 2 left 11 live self-copies of
+  architectural registers over the 25 exemplars — `a = a`, `x = x`, `y = y`, `sp = sp`,
+  `zflag = zflag` — as "sound no-ops `_share_once` skips by rule and `_dce` keeps because
+  the register is live". Resolved by a named mechanism rather than by their death at §8
+  step 4: **a register assignment whose extracted spelling is the version the register
+  already holds is a no-op**, because a local renders as its base name and a root reaches
+  the register, not the statement. `render_proc` records the version in force at each
+  `asg` (the entry version `<base>.0` where the walk has made none, which is what `conv`
+  reads too) and `_self_copies` names the ones extraction spelled back. Over the exemplars
+  **11 → 1**; the survivor is `Angry_Birds`' `sp = sp`, where the spelling is a different
+  live version of `sp` and the statement is a real move rather than a copy. ON 27,456 →
+  **27,446** (−10), five tunes smaller and none larger, 13,909 extraction sites, 3,299
+  changed and every one Z3-proved (12,128 proved sites), zero faults, refusals,
+  regressions and fallbacks.
+  **What 3d has not closed, each with its owner.** (a) Guard-aware re-rolling and the
+  declared lo/hi pair row read stay pinned at 3d
+  (`test_rerolling_unifies_the_isomorphic_voices`,
+  `test_note_fetch_is_one_u16_row_read`): the row read has no site until the callee's two
+  returns are resolved into the caller, which is what anti-unification supplies, so the
+  two are one landing and not two. (b) The shredder's `dispatch_scratch_promotes` waits on
+  extending landing 1's in-edge memory join to `swc` (dispatch) labels, which landing 1
+  excluded by design — an `swc` label arrives with a memory the walk does not name, so the
+  extension needs the dispatch's own in-edge set and is the same mechanism one step
+  further out; it is re-pinned on that extension. (c) The `low_held_cursor` family's
+  premise is exactly the deref span landing 1's read closure computes, but its consumer is
+  `ptrcert`, a rung — that is a rung landing and not stage 3's, and it is handed on rather
+  than left floating.
