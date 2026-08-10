@@ -400,6 +400,26 @@ of three phases.
   deleted when its family's recovered arities equal the transcription — the
   executable test that the mechanism is real.
 
+**The position (2026-08-10), and the next landing.** Landed: 3a (root
+extraction behind `eqlift_mem.ROOT_EXTRACT`, default off), 3b part one (the
+interval bridge, the bounded schedule), 3b landing 1 (the name-collision and
+chain-doubling defects, the extraction budget, the 25-of-25 ON/OFF review —
+zero faults, zero refusals, zero regressions). **Next is 3b landing 2, the
+span join**: `_mem_writes` returns a write span per non-const store via
+`addr_interval` instead of ⊤, and the join encoding is complemented — a fresh
+opaque base re-storing exactly the chain-held const cells provably disjoint
+from every incoming span — landed once, in a helper both `Proc` and
+`render_proc` call, with `docs/join-model-footprints.md`'s call/goto closure
+riding on top once spans exist. Its gates are already written and waiting to
+flip: the prototype's `test_join_forwards_the_crossing_cell` and `m_01FB`
+spill pin (xfail strict), the shredder join fixtures, and the catalog's
+stack-slot branch/call-join seats. After it, landing 3 (the in-edge map at
+labels, whole-chain region extraction, the `ROOT_EXTRACT` default decision),
+then 3c's rules in the shape the eight-extension landing recorded — search
+the operand, prove the instance, never enumerate spellings — with the
+per-idiom convergence harness, then 3d (the `_ARITY` discharge, guard-aware
+re-rolling).
+
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
 Per landing: the full suite; the full-corpus Gate FP sweep; the 25
@@ -919,3 +939,19 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   minimized program agreed frame for frame on music that had derailed. The
   invariant that caught it was the script's own consumption (each voice's cursor
   advancing one command per event), not the write stream.
+- **2026-08-10 — the reconcile: five landings crossed, and the board is one
+  record.** PRs #144–#148 landed from five concurrent agents; this entry is the
+  cross-check. Facts that bind: (1) #145 merged via `--auto` on the three
+  required checks while the non-required corpus job still ran; the post-merge
+  main run (`31353472314`) completed green, and merge discipline from here is
+  every check including corpus, no `--auto`. (2) The size ratchet's pins are
+  the test's, not the log's: #147 pinned 243 lines / 679 term nodes, #148
+  re-pinned 461 / 1192 when the prototype grew eight extensions — a feature
+  landing re-pins, a stage-3 landing holds or lowers. (3) Two pins flipped
+  green before their stage: the four flag registers left the residue with
+  landing 1's liveness fix (test 1's surviving set is `a`, `y`), and #144's
+  dead `cflag` finding closed measured (3 → 0 unread defs) by the same fix.
+  (4) The catalog's `stack-slot` row, the prototype's landing-2 xfails and the
+  shredder join fixtures now name one mechanism from three directions, which
+  is what a stage landing should walk into. The next landing is named in the
+  stage 3 position block above: **3b landing 2, the span join.**
