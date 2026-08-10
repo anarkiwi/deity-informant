@@ -151,6 +151,7 @@ PINNED = (  # named by a test; always resolved, since a cap that drops one drops
     "MUSICIANS/C/Cadaver/Aces_High.sid",  # assertions silently. Guarded by
     "MUSICIANS/D/Daglish_Ben/Artura.sid",  # test_corpus_selection.py.
     "MUSICIANS/D/Daglish_Ben/Krakout.sid",
+    "MUSICIANS/F/Follin_Tim/Agent_X_II_The_Mad_Profs_Back.sid",
     "MUSICIANS/F/Follin_Tim/Bionic_Commando.sid",
     "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
     "MUSICIANS/G/Galway_Martin/Athena.sid",

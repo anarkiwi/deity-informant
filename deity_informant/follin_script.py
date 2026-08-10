@@ -1,41 +1,17 @@
 """Follin command-script lane: decode the per-voice sequencer script.
 
 Decodes the operand grammar validated in docs/follin-dispatch-study.md from the
-recovered zp script pointers, following call/jump control flow, and
-certifies every consumed byte was observed fetched.
-
-``_ARITY`` below is a per-tune table transcribed by hand, which the governance
-rule forbids (docs/register-model-lift-impl.md, The law). It is a named debt,
-not a pattern: no second table may join it, and it is discharged only when
-stage 3 deletes it and recovers the same arities as the net ``Y`` delta of
-each dispatch arm."""
+recovered zp script pointers, following call/jump control flow, and certifies
+every consumed byte was observed fetched. Operator lengths come from
+``follin_arity``, read off each dispatch arm of the model being decoded, so
+this lane holds no per-tune table: the hand transcription is discharged.
+"""
 
 from collections import namedtuple
 
-from . import streams
+from . import follin_arity, streams
 
-_ARITY = {
-    0x80: 3,
-    0x81: 0,
-    0x82: 1,
-    0x83: 1,
-    0x84: 1,
-    0x86: 0,
-    0x87: 2,
-    0x88: 8,
-    0x89: 0,
-    0x8A: 2,
-    0x8B: 0,
-    0x8C: 1,
-    0x8D: 1,
-    0x8E: 4,
-    0x8F: 4,
-    0x90: 1,
-    0x91: 3,
-    0x92: 1,
-    0x93: 0,
-    0x94: 2,
-}
+_TURNS = 128  # decoded-length turns before a variable-arity op reads as junk
 _NAME = {
     0x80: "slide",
     0x81: "loopend",
@@ -60,9 +36,37 @@ _NAME = {
     0x94: "slidedef",
 }
 _END = frozenset((0x86, 0x8B))
+_STICKY, _JUMP, _CALL = 0x84, 0x87, 0x8A
 
 Op = namedtuple("Op", "addr name args")
 Script = namedtuple("Script", "pair base ops patterns consumed certified")
+Grammar = namedtuple("Grammar", "arity escape")
+
+
+def grammar(model):
+    """The model's own operator lengths: constant arities and decoded escapes."""
+    arity, escape, _refused = follin_arity.operators(model)
+    return Grammar(arity, escape)
+
+
+def _escaped(mem0, addr, esc):
+    """``(length, operand pairs)`` of a decoded-length op, counted as its arm counts.
+
+    The arm tests the byte at ``first + k*stride``; the first one outside
+    ``cont`` ends the operand run, ``trailer`` bytes later. One turn spans
+    ``first - 1`` bytes, so only ``(2, 3)`` renders as ``(reg, val)`` pairs."""
+    i = addr + esc.first
+    for turn in range(_TURNS):
+        if mem0[i & 0xFFFF] not in esc.cont:
+            return i + esc.trailer - addr, tuple(
+                (
+                    mem0[(addr + 1 + esc.stride * j) & 0xFFFF],
+                    mem0[(addr + 2 + esc.stride * j) & 0xFFFF],
+                )
+                for j in range(turn + 1)
+            )
+        i += esc.stride
+    return None, ()
 
 
 def script_bases(model):
@@ -79,7 +83,7 @@ def script_bases(model):
     return pairs
 
 
-def _decode_seg(mem0, addr, reads, starts, consumed):
+def _decode_seg(mem0, addr, reads, starts, consumed, gram):
     """Linearly decode one script segment from ``addr`` until a terminator."""
     ops, calls, sticky = [], [], None
 
@@ -97,28 +101,28 @@ def _decode_seg(mem0, addr, reads, starts, consumed):
             ops.append(Op(addr, "note", (b, dur)))
             addr += ln
             continue
-        if b == 0x85:
-            i, pairs = addr + 1, []
-            while mem0[i & 0xFFFF] < 0x80:
-                pairs.append((mem0[i & 0xFFFF], mem0[(i + 1) & 0xFFFF]))
-                i += 2
-            i += 1
-            eat(addr, i - addr)
-            ops.append(Op(addr, "rawsid", tuple(pairs)))
-            addr = i
+        esc = gram.escape.get(b)
+        if esc is not None:
+            ln, pairs = _escaped(mem0, addr, esc)
+            if ln is None or (esc.stride, esc.first) != (2, 3):
+                ops.append(Op(addr, "bad", (b,)))
+                break
+            eat(addr, ln)
+            ops.append(Op(addr, _NAME.get(b, "op%02X" % b), pairs))
+            addr += ln
             continue
-        n = _ARITY.get(b)
+        n = gram.arity.get(b)
         if n is None:
             ops.append(Op(addr, "bad", (b,)))
             break
         args = tuple(mem0[(addr + 1 + k) & 0xFFFF] for k in range(n))
         eat(addr, 1 + n)
-        if b == 0x84:
+        if b == _STICKY and n == 1:
             sticky = args[0] or None
-        if b == 0x8A:
+        if b == _CALL and n == 2:
             calls.append(args[0] | (args[1] << 8))
-        ops.append(Op(addr, _NAME[b], args))
-        if b == 0x87:
+        ops.append(Op(addr, _NAME.get(b, "op%02X" % b), args))
+        if b == _JUMP and n == 2:
             addr = args[0] | (args[1] << 8)
             continue
         if b in _END:
@@ -127,18 +131,18 @@ def _decode_seg(mem0, addr, reads, starts, consumed):
     return ops, calls
 
 
-def _decode(model, base):
+def _decode(model, base, gram):
     """Decode the top-level script at ``base`` plus its call-target patterns."""
     mem0 = model.mem0
     reads = {a for _pc, a in model.reads}
     starts, consumed = set(), set()
-    top, calls = _decode_seg(mem0, base, reads, starts, consumed)
+    top, calls = _decode_seg(mem0, base, reads, starts, consumed, gram)
     patterns, work = {}, list(calls)
     while work:
         t = work.pop()
         if t in patterns or t not in reads:
             continue
-        patterns[t], more = _decode_seg(mem0, t, reads, starts, consumed)
+        patterns[t], more = _decode_seg(mem0, t, reads, starts, consumed, gram)
         work.extend(more)
     certified = consumed <= reads and not any(o.name == "bad" for o in top)
     return top, patterns, consumed, certified
@@ -146,9 +150,12 @@ def _decode(model, base):
 
 def decode(model, min_ops=4):
     """Decode every zp pointer stream that is a clean, non-trivial script."""
+    gram = grammar(model)
+    if not gram.arity:
+        return []  # no script VM dispatch: no operator lengths to decode with
     out = []
     for pair, base in sorted(script_bases(model).items()):
-        top, patterns, consumed, certified = _decode(model, base)
+        top, patterns, consumed, certified = _decode(model, base, gram)
         if certified and len(top) >= min_ops:
             out.append(Script(pair, base, top, patterns, consumed, certified))
     return out

@@ -251,36 +251,44 @@ Stage 1 was not to re-derive what the repository already enumerated:
   not as rows: it names operators, and an operator is a dispatch arm, not a
   spelling of a value.
 
-## The Follin arity debt
+## The Follin arity debt — discharged (stage 3d)
 
-`follin_script._ARITY` is a hand-transcribed per-tune table and the one
-standing exception to the governance rule; no second table may join it. The
-mechanical definition that replaces it, recorded here so Stage 3 can execute
-it: **an operator's arity is the net `Y` delta of its dispatch arm, constant on
-all paths through that arm.** The definition is mechanical because the family
-advances its stream pointer in batch at tick end by folding `Y` in
+`follin_script._ARITY` was a hand-transcribed per-tune table and the one
+standing exception to the governance rule; `deity_informant/follin_arity.py`
+recovers it and it is deleted, so no table stands in its place. The definition
+this section recorded — **an operator's arity is the net `Y` delta of its
+dispatch arm, constant on all paths through that arm** — is mechanical because
+the family advances its stream pointer in batch at tick end by folding `Y` in
 (`TYA`/`ADC`), so Y counts exactly the bytes the arm consumed
 (docs/follin-dispatch-study.md §2). An arm that rewrites the stream pointer
-rather than advancing it is control, not consumption, and is classified
-separately.
+rather than advancing it never folds, and that is where the definition needed
+one correction.
 
-The transcription is already corroborated in-repo, which lowers the risk on
-that discharge: study §3's operator table, read off the handler code and
-validated against instrumented dispatch counts, agrees with all **20** of
-`_ARITY`'s constant arities, op for op.
+**What the recovery landed as.** An operator's arity is the arm's
+consumption footprint: the stream offsets it fetches through the voice's
+pointer, walked over the lifted blocks at each block's least `Y`. On the 18
+arms that fold, the footprint *is* the net `Y` delta. On `$87` (`jump`) and
+`$8A` (`call`) the delta is one short — they read a 16-bit operand and rewrite
+the pointer without counting its second byte — so the footprint is the reading
+that covers both, and the delta is recorded beside it as the corroboration it
+is. Nothing else is told to the recovery: the stream is the pointer the
+dispatch's own fetch uses, the operator range is the guard's floor plus the
+tightest spacing of the paired handler tables (21 slots, `$80`–`$94`, on
+`Ghouls_n_Ghosts`), and the arms come from the paired table image.
 
-**The definition is incomplete, and §3 says where.** Op `$85` (`rawsid`,
-handler `$6909`) has arity `var` — it consumes `(reg, val)` pairs while
-`reg < $80`, then one terminator byte. Its `Y` delta is data-dependent by
-construction, so no "constant on all paths" rule can recover it, and that is
-exactly why `_ARITY` has no `$85` entry and the decoder stops there. Stage 3
-therefore owes either a decoded-length escape for variable-arity arms or a
-named refusal for this one; a constancy check alone will report `$85` as a
-failure of the mechanism when it is a property of the operator.
+**The variable-arity operator got the escape, not a refusal.** Op `$85`
+(`rawsid`, handler `$6909`) consumes `(reg, val)` pairs while `reg < $80`, then
+one terminator byte; its `Y` delta is data-dependent by construction. The
+recovery reads its counted loop as a decoded length — first guarded offset 3,
+stride 2, trailer 1, continue while the byte is under `$80` — and the decoder
+consumes exactly that, so the escape is derived per build rather than written
+in. An arm with no such loop stays a named refusal with its reason.
 
-`_ARITY` is deleted when the recovered arities equal the transcription on the
-20 constant ops and `$85` is handled explicitly — the executable test that the
-mechanism is real.
+The discharge is executable: `tests/test_follin_arity.py` holds the 20-entry
+transcription as the witness and asserts the recovery reproduces it op for op
+on `Ghouls_n_Ghosts`. It also holds the reason the table was debt —
+`Agent_X_II` is a second build with 17 operators of its own, `$84` taking no
+operand where Ghouls' takes one, and the deleted table spoke for it too.
 
 ## Rows
 
