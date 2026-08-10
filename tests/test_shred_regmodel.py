@@ -1404,17 +1404,15 @@ def test_the_unified_emitter_carries_no_rung_built_pair_declaration():
     assert "ptr_%04X_lo: u8" % G.PTR in block and "ptr_%04X_hi: u8" % G.PTR in block
 
 
-def test_the_rung_built_statements_do_not_yet_convert_for_the_unified_emitter():
-    """Cutover order: rung (d2) mints a narrowing ``COPY`` the unified converter has no op for.
+def test_the_rung_built_statements_convert_for_the_unified_emitter():
+    """Cutover order (LANDED): rung (d2)'s narrowing ``COPY`` is a term the converter has.
 
     ``dual_store_lo_only``'s lo-lane save copy is ``COPY`` of the fused u16 local at width
-    one, so splicing frameprog's own statements into ``render_proc`` faults before any
-    rule fires -- step 4 owes the narrowing copy."""
+    one; ``eqlift.trunc`` is ``zext``'s dual, so splicing frameprog's own statements into
+    ``render_proc`` reaches the rules instead of faulting."""
     _lift("dual_store_lo_only")
     (stmts,) = [s for _e, _p, _r, s in _lift_prog["dual_store_lo_only"].procs]
-    assert "COPY" not in eqlift_mem._OP
-    with pytest.raises(KeyError, match="COPY"):
-        eqlift_mem.render_proc(stmts)
+    assert eqlift_mem.render_proc(stmts), "the spliced statements rendered nothing"
 
 
 def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():

@@ -324,6 +324,16 @@ _OP = {
     "INT_CARRY": E.carry,
 }
 _CMP = frozenset(("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"))
+_REWIDTH = frozenset(("INT_ZEXT", "COPY"))
+
+
+def _rewidth(mn, x, w):
+    """The unary width changes: ``INT_ZEXT`` widens, rung (d2)'s ``COPY`` narrows."""
+    if mn == "INT_ZEXT":
+        return E.zext(x)
+    if w != 1:
+        raise KeyError("COPY at width %d" % w)
+    return E.trunc(x)
 
 
 def render_block(stmts, aliases=None):
@@ -343,8 +353,8 @@ def render_block(stmts, aliases=None):
         if k == "mem":
             return sel(memref[0], conv(e[1]), e[2])
         mn, kids, w = e[1], e[2], e[3]
-        if mn == "INT_ZEXT":
-            return E.zext(conv(kids[0]))
+        if mn in _REWIDTH:
+            return _rewidth(mn, conv(kids[0]), w)
         fn = _OP[mn]
         if mn in _CMP:
             return fn(conv(kids[0]), conv(kids[1]))
@@ -831,6 +841,8 @@ def _ir_span(ir):
         return v, v
     if k == "zext":
         return 0, 0xFF
+    if k == "trunc":
+        return 0, 0xFF
     if k == "band" and ir[2][0] == "num":
         return 0, ir[2][1] & E._mask(ir[3])
     if k == "add":
@@ -1297,8 +1309,8 @@ def render_proc(
         if k == "mem":
             return sel(stt["mem"], seed(conv(e[1]), e[1]), e[2])
         mn, kids, w = e[1], e[2], e[3]
-        if mn == "INT_ZEXT":
-            return E.zext(conv(kids[0]))
+        if mn in _REWIDTH:
+            return _rewidth(mn, conv(kids[0]), w)
         fn = _OP[mn]
         if mn in _CMP:
             return fn(conv(kids[0]), conv(kids[1]))
@@ -1692,6 +1704,8 @@ class _Z3Env:
             return 1 if base in E.frameproc._ALL_REG_LOCALS else self.locw.get(base, 2)
         if k == "zext":
             return 2
+        if k == "trunc":
+            return 1
         return 1 if k in _CMPS or k in ("bnot", "carry") else ir[-1]
 
     def close(self, defs):
@@ -1742,6 +1756,8 @@ class _Z3Env:
             return z3.ZeroExt(16 - 8 * ir[3], _sel_w(self.memory(ir[1]), self.of(ir[2]), ir[3]))
         if k == "zext":
             return self.of(ir[1])
+        if k == "trunc":
+            return self.of(ir[1]) & 0xFF
         if k == "bnot":
             return _b16(self.of(ir[1]) == 0)
         if k in ("slt", "sge"):
@@ -1915,8 +1931,8 @@ class Straight:
         if k != "op":
             raise ValueError("unencodable %r" % (k,))
         mn, kids, w = e[1], e[2], e[3]
-        if mn == "INT_ZEXT":
-            return E.zext(self._conv(kids[0]))
+        if mn in _REWIDTH:
+            return _rewidth(mn, self._conv(kids[0]), w)
         fn = _OP[mn]
         if mn in _CMP:
             return fn(self._conv(kids[0]), self._conv(kids[1]))

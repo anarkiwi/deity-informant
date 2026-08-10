@@ -78,6 +78,23 @@ def test_a_zero_carry_term_is_identically_zero():
     assert ("num", 0, 1) not in _saturate(("carry", x, ("num", 1, 1), 1))
 
 
+def test_the_narrowing_copy_is_a_term_in_both_algebras():
+    """``trunc`` is ``zext``'s dual, so rung (d2)'s width-one ``COPY`` converts (step 4).
+
+    The egg side round trips through the printer IR and back to pass 1; the Z3 side is
+    checked to be the low byte, which is what a rule stated over it would be proved on."""
+    ir = ("trunc", ("loc", "w0.1"))
+    assert eqlift._parse_ir(str(eqlift._egg_of(ir, {}))) == ir
+    assert eqlift.pass1_node(ir, [("loc", "w0")]) == ("op", "COPY", (("loc", "w0"),), 1)
+    assert eqlift._ir_width(ir, {}) == 1
+    assert eqlift._Printer({}).fmt(ir) == "trunc1(w0)"
+    alg = eqlift._Z3Alg()
+    x = alg.tvar("x", 1)
+    s = z3.Solver()
+    s.add(alg.trunc(alg.zext(x)) != x)
+    assert s.check() == z3.unsat
+
+
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Commando", "Hubbard_Rob"))
 def test_commando_emit_end_to_end(sid, subtune, secs):
     """The whole-artifact emit lifts Commando: header, play sub, a representative

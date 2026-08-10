@@ -73,6 +73,10 @@ def zext(x: T) -> T: ...
 
 
 @function
+def trunc(x: T) -> T: ...
+
+
+@function
 def eq(x: T, y: T) -> T: ...
 
 
@@ -109,8 +113,11 @@ def _mask(w):
 
 
 # ---- dual rule algebra: the same builder yields the egg rewrite and the Z3 goal --
-class _EggAlg:
-    """Builds egglog pattern terms; constant arithmetic rides on i64 operators."""
+class _EggAlg:  # pylint: disable=too-many-public-methods
+    """Builds egglog pattern terms; constant arithmetic rides on i64 operators.
+
+    One method per constructor by contract (§4's single source), so the count is
+    the vocabulary's and not a design choice to refactor."""
 
     def tvar(self, n, w):
         del w
@@ -147,6 +154,9 @@ class _EggAlg:
     def zext(self, x):
         return zext(x)
 
+    def trunc(self, x):
+        return trunc(x)
+
     def eq(self, x, y):
         return eq(x, y)
 
@@ -179,8 +189,10 @@ def _b1(c):
     return z3.If(c, z3.BitVecVal(1, 8), z3.BitVecVal(0, 8))
 
 
-class _Z3Alg:
-    """Builds Z3 QF_BV terms mirroring _EggAlg; widths 1/2 are BV8/BV16."""
+class _Z3Alg:  # pylint: disable=too-many-public-methods
+    """Builds Z3 QF_BV terms mirroring _EggAlg; widths 1/2 are BV8/BV16.
+
+    Method for method with ``_EggAlg``: the proof and the rewrite are one builder."""
 
     def __init__(self):
         self.constraints = []
@@ -236,6 +248,9 @@ class _Z3Alg:
 
     def zext(self, x):
         return z3.ZeroExt(8, x)
+
+    def trunc(self, x):
+        return z3.Extract(7, 0, x)
 
     def eq(self, x, y):
         return _b1(x == y)
@@ -767,6 +782,7 @@ _EGG_FNS = {
     "shl": shl,
     "shr": shr,
     "zext": zext,
+    "trunc": trunc,
     "eq": eq,
     "ne": ne,
     "ult": ult,
@@ -864,6 +880,8 @@ def pass1_node(ir, kids):
         return ("mem", kids[0], ir[2])
     if k == "zext":
         return ("op", "INT_ZEXT", (kids[0],), 2)
+    if k == "trunc":
+        return ("op", "COPY", (kids[0],), 1)
     mn = _UNOPS.get(k)
     return None if mn is None else ("op", mn, tuple(kids), 1 if k in _CMP_TAGS else ir[-1])
 
@@ -957,6 +975,8 @@ def _ir_width(ir, locw):
         return locw.get(ir[1], 1)
     if k == "zext":
         return 2
+    if k == "trunc":
+        return 1
     if k in _CMP_TAGS or k in ("bnot", "carry"):
         return 1
     return ir[-1]
@@ -990,6 +1010,8 @@ class _Printer:
             return self._loadref(ir)
         if k == "zext":
             return "zext2(%s)" % self.fmt(ir[1])
+        if k == "trunc":
+            return "trunc1(%s)" % self.fmt(ir[1])
         if k == "carry":
             return "carry(%s, %s)" % (self.fmt(ir[1]), self.fmt(ir[2]))
         if k == "bnot":
