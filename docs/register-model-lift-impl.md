@@ -87,7 +87,9 @@ container fork limit), two passes (`-m "not oracle"`, then `-m oracle`); the
 sweeps take `-j`/`--procs`; `gate_sweep --extents` MUST be given the
 `--frames full` artifact, and `out/ptr_extents*.json` MUST be regenerated
 before reading a `foreign`/`short` split off it; the 60s per-script budget
-stands.
+stands. eqlift's own bounds are `DI_EQLIFT_BUDGET_S` / `DI_EQLIFT_BUDGET_MB`
+per e-graph and `DI_EQLIFT_EMIT_S` per artifact (3b): a saturation cut short
+is sound, so lowering them trades minimization for time and nothing else.
 
 ## The method
 
@@ -616,3 +618,57 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   region its chain spans — the join-free-region-first order stage 3 asks for,
   arrived at through the axioms rather than through a region split. Whole-chain
   extraction over a region, the region splice and the flag default are 3b.
+- **2026-08-10 — stage 3b, part one: the interval bridge, and the bound the
+  schedule never had.** `addr_floor` was written for this and nothing read it.
+  `eqlift_mem.addr_interval` now reads it with `addr_bits` as one interval — the
+  must-set bits are a floor on every address the expression names, the may-set
+  bits a ceiling — and seeds it on the e-class the address converts to, **only
+  where `mem_rules` states no bound of its own**, so a seed can never be widened
+  by a derived one and the two committed bit analyses are consumed rather than
+  extended (adoption §5). What the lattice could not say and the bridge can: a
+  byte-wide address is page zero, and the stack push `zext2(sp) | $0100` is
+  `[$0100,$01FF]`. A spill now reads through a push instead of stopping at it —
+  `zp_41 = zp_40` becomes `zp_41 = x` — and on the exemplars the three stores the
+  root path retires are two of exactly that push and one indexed store.
+  A **soundness correction** the bridge forced: `add`/`shl` carried the interval
+  with no width guard, and a wrapped sum is *below* both operands, so
+  `$F0 + (y & $1F)` at one byte claimed a floor of `$F0` for a value that can be
+  `$10`. Both rules are now guarded by `hi(a) + hi(b) <= mask(w)`; nothing was
+  relying on the unguarded form, and the guard is what makes seeding byte-wide
+  leaves safe at all.
+  **The bounded schedule is real now.** `run(ruleset * 30)` is not a bound:
+  `Dynasty_8_tune_2` (one procedure, 488 statement nodes) costs 0.0s per round
+  through round 8, 0.5s at round 9, 3.1s at round 10, and asks for 1.6GB in one
+  allocation at round 11 — the process died before extraction, on this branch and
+  on main alike, which is why 3a's exemplar measurement never closed.
+  `eqlift_mem.saturate` runs the ruleset a round at a time, stops at a fixpoint,
+  and refuses the next round when the last round's own growth ratio outruns the
+  remaining seconds (`DI_EQLIFT_BUDGET_S`, 5s per e-graph) or when resident growth
+  passes `DI_EQLIFT_BUDGET_MB` (128); `emit_mem` divides `DI_EQLIFT_EMIT_S` (60)
+  across the procedures so the artifact has a budget and not only each graph.
+  Priced on the tune that forced it: 128MB gives 630 lines in 2.0s, 256MB gives
+  629 lines in 39.1s — one line of minimization for 37 seconds — and Commando
+  (350) and `Ghouls_n_Ghosts` (1,335) do not move a line at any bound because the
+  cap does not bind there. Cutting a schedule short is sound at any point: every
+  admitted rule is an equivalence.
+  **The §6 proof was exponential, and per artifact instead of per procedure.**
+  `_Z3Env.of` rebuilt each shared extracted subterm once per occurrence — the
+  extracted IR is a DAG — so `Dynasty` reached 37GB resident and was killed;
+  memoised on the IR node it proves in 40s. And `emit_mem` now hands each
+  procedure its own §6 record: SSA names are procedure-local, so one merged
+  `defs` would have proved equalities between different values.
+  **The measurement, one lift per tune per mode, full Songlengths, 20 of the 25
+  exemplars.** OFF 22,002 lines / 1,688 stores; ON 21,999 / 1,685. Eighteen tunes
+  are byte-identical on the two paths; `Deek/4_Tunes` loses 2 statements and
+  `Gray_Matt/Atmosphere_II` 1, all three of them stores the axioms prove
+  redundant, and **no exemplar regresses**. 9,980 emitted sites, 1,712 changed by
+  saturation, every one Z3-proved. Slowest emit 119.5s (`Angry_Birds`).
+  **The flag default stays off**, because the review is not complete rather than
+  because it failed: four exemplars (`Down_Under`, `Wizball`, `Automatas`,
+  `Before_I_Forget`) exceed the measurement wall-clock on both paths — the bound
+  holds per procedure, but extraction over a many-procedure artifact is not
+  bounded by it — and `Daf/Alioth` refuses its own §6 proof with "site
+  environment is unsatisfiable", which is the anti-vacuity guard firing on an
+  inconsistency in the definitional encoding that must be diagnosed before any
+  flip. Those five are 3b's next work, with the join model and whole-chain region
+  extraction.

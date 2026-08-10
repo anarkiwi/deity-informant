@@ -42,6 +42,63 @@ SID = ("add", ("num", 0xD400, 2), ("zext", ("loc", "voice.1")), 2)  # [D400,D4FF
 PTR = ("add", ("loc", "ptr.1"), ("loc", "w9.1"), 2)  # unknown base: unbounded
 
 
+_PUSH = ("op", "INT_OR", (("op", "INT_ZEXT", (("loc", "sp"),), 2), ("const", 0x0100, 2)), 2)
+_ZPX = (
+    "op",
+    "INT_ADD",
+    (("const", 0xF0, 1), ("op", "INT_AND", (("loc", "y"), ("const", 0x1F, 1)), 1)),
+    1,
+)
+
+
+def test_interval_bridge_reads_the_two_bit_analyses():
+    """A stack address must set bit 8 and can set none above it, so the bridge bounds
+    it to the stack page; a shape ``mem_rules`` bounds itself is left to the rules."""
+    assert mem.addr_interval(_PUSH) == (0x0100, 0x01FF)
+    assert mem.addr_interval(("loc", "y")) == (0, 0xFF)  # a byte-wide local is page zero
+    assert mem.addr_interval(("const", 0x5504, 2)) is None
+    idx = ("op", "INT_ADD", (("const", 0x5428, 2), ("op", "INT_ZEXT", (("loc", "y"),), 2)), 2)
+    assert mem.addr_interval(idx) is None and mem._lattice(idx) == (0x5428, 0x5527)
+
+
+def test_interval_rules_refuse_a_wrapping_add():
+    """``$F0 + (y & $1F)`` at one byte wraps below its own floor, so the lattice
+    states nothing: an unguarded rule would license a disjointness the value breaks."""
+    assert mem._lattice(_ZPX) is None
+    assert mem.addr_interval(_ZPX) == (0, 0xFF)  # its own width still bounds it
+
+
+def test_bridge_forwards_a_reload_past_a_stack_store():
+    """The spill idiom across a push: the pushed address cannot reach $40, so the
+    reload forwards. Without the bridge the store has no bound and blocks it."""
+    assert mem.render_proc(_spill_over(_PUSH))[-1] == "zp_41 = x"
+
+
+def test_bridge_does_not_forward_past_a_zero_page_store():
+    """The same store spelled ``zp,X`` may land on $40, so nothing forwards."""
+    assert mem.render_proc(_spill_over(_ZPX))[-1] == "zp_41 = zp_40"
+
+
+def _spill_over(addr):
+    """Spill to $40, store through ``addr``, copy $40 on: does the reload forward?"""
+    return [
+        ("st", ("const", 0x40, 1), ("loc", "x")),
+        ("st", addr, ("loc", "y")),
+        ("st", ("const", 0x41, 1), ("mem", ("const", 0x40, 1), 1)),
+    ]
+
+
+def test_saturate_is_a_bounded_schedule():
+    """One round runs whatever the budget, and a spent budget stops the next."""
+    from egglog import EGraph
+
+    rs, _names = mem.unified_rules()
+    eg = EGraph()
+    eg.let("h", E.add(E.loc("a.1"), E.num(1, 1), 1))
+    assert mem.saturate(eg, rs, budget=0.0) == 1
+    assert 1 <= mem.saturate(eg, rs, iters=4) <= 4
+
+
 def test_axioms_z3_verified():
     proved = mem.verify_axioms()
     assert "sel_store_same/w1" in proved and "sel_store_same/w2" in proved

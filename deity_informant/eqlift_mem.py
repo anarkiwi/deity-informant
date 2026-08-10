@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import os
+import time
 
 import z3
 from egglog import EGraph, Expr, function, i64, rewrite, rule, ruleset, set_, union
@@ -18,6 +19,39 @@ from . import eqlift as E
 from . import frameprog
 
 ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "") == "1"  # stage 3a flag
+
+_WIDTHS = (1, 2)  # the widths the memory axioms and the interval rules are stated at
+_TOP = (0, 0xFFFF)  # an address interval that says only "somewhere in the address space"
+_ITERS = 30
+BUDGET_S = float(os.environ.get("DI_EQLIFT_BUDGET_S", "5"))  # per-e-graph seconds
+BUDGET_MB = float(os.environ.get("DI_EQLIFT_BUDGET_MB", "128"))  # resident growth per e-graph
+EMIT_S = float(os.environ.get("DI_EQLIFT_EMIT_S", "60"))  # saturation across one artifact
+_PAGE_MB = os.sysconf("SC_PAGE_SIZE") / (1 << 20)
+
+
+def _rss_mb():
+    with open("/proc/self/statm", encoding="ascii") as f:
+        return int(f.read().split()[1]) * _PAGE_MB
+
+
+def saturate(eg, rs, iters=_ITERS, budget=None):
+    """Run ``rs`` a round at a time, to a fixpoint or to the resource bound.
+
+    Adoption §5's mandatory bounded schedule, sound at any cutoff because every
+    admitted rule is an equivalence: an e-graph grows super-linearly just before it
+    blows up, so a round is refused when the last one's growth outruns the budget."""
+    end = time.monotonic() + (BUDGET_S if budget is None else budget)
+    base, last = _rss_mb(), 0.0
+    for i in range(iters):
+        t0 = time.monotonic()
+        if not eg.run(rs).updated:
+            return i + 1
+        took = time.monotonic() - t0
+        nxt = took * max(1.0, took / last) if last else took
+        if time.monotonic() + nxt >= end or _rss_mb() - base >= BUDGET_MB:
+            return i + 1
+        last = took
+    return iters
 
 
 class Mem(Expr):
@@ -50,23 +84,46 @@ def hi(x: E.T) -> i64: ...
 
 @ruleset
 def mem_rules(
-    m: Mem, a: E.T, b: E.T, u: E.T, v: E.T, s: E.T, n: i64, p: i64, q: i64, w: i64, wa: i64, wb: i64
+    m: Mem,
+    a: E.T,
+    b: E.T,
+    u: E.T,
+    v: E.T,
+    s: E.T,
+    n: i64,
+    p: i64,
+    q: i64,
+    r: i64,
+    w: i64,
+    wa: i64,
+    wb: i64,
 ):
-    """Address-interval analysis plus the Z3-proven McCarthy array axioms."""
+    """Address-interval analysis plus the Z3-proven McCarthy array axioms.
+
+    ``add``/``shl`` carry the interval only where the result cannot wrap its own
+    width: a wrapped sum is smaller than either operand, so an unguarded ``lo``
+    would claim a floor the value drops below."""
     yield rule(egg_eq(a).to(E.num(n, w))).then(set_(lo(a)).to(n), set_(hi(a)).to(n))
     yield rule(egg_eq(a).to(E.zext(b))).then(set_(lo(a)).to(i64(0)), set_(hi(a)).to(i64(255)))
     yield rule(egg_eq(a).to(E.band(b, E.num(n, w), w))).then(
         set_(lo(a)).to(i64(0)), set_(hi(a)).to(n)
     )
-    yield rule(egg_eq(s).to(E.add(a, b, w)), egg_eq(lo(a)).to(n), egg_eq(lo(b)).to(q)).then(
-        set_(lo(s)).to(n + q)
-    )
-    yield rule(egg_eq(s).to(E.add(a, b, w)), egg_eq(hi(a)).to(p), egg_eq(hi(b)).to(q)).then(
-        set_(hi(s)).to(p + q)
-    )
-    yield rule(
-        egg_eq(s).to(E.shl(a, E.num(n, w), w)), egg_eq(lo(a)).to(p), egg_eq(hi(a)).to(q)
-    ).then(set_(lo(s)).to(p << n), set_(hi(s)).to(q << n))
+    for width in _WIDTHS:
+        cap = i64(E._mask(width))
+        yield rule(
+            egg_eq(s).to(E.add(a, b, i64(width))),
+            egg_eq(lo(a)).to(n),
+            egg_eq(lo(b)).to(q),
+            egg_eq(hi(a)).to(p),
+            egg_eq(hi(b)).to(r),
+            p + r <= cap,
+        ).then(set_(lo(s)).to(n + q), set_(hi(s)).to(p + r))
+        yield rule(
+            egg_eq(s).to(E.shl(a, E.num(n, i64(width)), i64(width))),
+            egg_eq(lo(a)).to(p),
+            egg_eq(hi(a)).to(q),
+            (q << n) <= cap,
+        ).then(set_(lo(s)).to(p << n), set_(hi(s)).to(q << n))
     yield rewrite(sel(store(m, a, v, w), a, w)).to(v)
     yield rule(
         egg_eq(s).to(sel(store(m, a, v, wa), b, wb)),
@@ -174,6 +231,61 @@ def extract_load(ops, addr, w=1, iters=30):
     return extract(sel(build(ops, w), E._egg_of(addr, {}), w), iters)
 
 
+class _Defs:
+    """``frameproc.DefsAt``'s reader over one walk's own SSA state.
+
+    A local resolves to the pass-1 expression currently bound to it and to nothing
+    where it was havoced, which is what ``addr_bits``/``addr_floor`` ask of an env."""
+
+    __slots__ = ("src",)
+
+    def __init__(self, src):
+        self.src = src
+
+    def defn(self, n):
+        got = self.src.get(n[1])
+        return None if got is None or got[0] == "loc" else got
+
+
+def _lattice(e):
+    """The interval ``mem_rules`` derives for ``e`` itself, or None where it states none.
+
+    Mirrors those rules exactly, wrap guard included: the bridge seeds a fact only
+    where the lattice has none, so no seeded bound can be widened by a derived one."""
+    if e[0] == "const":
+        v = e[1] & E._mask(e[2])
+        return v, v
+    if e[0] != "op":
+        return None
+    mn, kids, w = e[1], e[2], e[3]
+    if mn == "INT_ZEXT":
+        return 0, 255
+    if mn == "INT_AND" and len(kids) == 2 and kids[1][0] == "const":
+        return 0, kids[1][1] & E._mask(w)
+    if mn == "INT_ADD" and len(kids) == 2:
+        got = [_lattice(k) for k in kids]
+        if all(got) and got[0][1] + got[1][1] <= E._mask(w):
+            return got[0][0] + got[1][0], got[0][1] + got[1][1]
+    if mn == "INT_LEFT" and len(kids) == 2 and kids[1][0] == "const":
+        got, n = _lattice(kids[0]), kids[1][1]
+        if got and (got[1] << n) <= E._mask(w):
+            return got[0] << n, got[1] << n
+    return None
+
+
+def addr_interval(e, defs=None):
+    """The address interval of pass-1 expression ``e``, or None where only its width.
+
+    Stage 3's interval bridge: ``addr_floor``'s must-set bits are a lower bound on
+    every address the expression names and ``addr_bits``' may-set bits an upper one,
+    so the two committed bit analyses read as the one interval the disjointness
+    guard wants. Nothing is seeded where ``mem_rules`` already states a bound."""
+    if _lattice(e) is not None:
+        return None
+    got = (E.frameproc.addr_floor(e, defs), E.frameproc.addr_bits(e, defs))
+    return None if got == _TOP else got
+
+
 _OP = {
     "INT_ADD": E.add,
     "INT_SUB": E.sub,
@@ -243,7 +355,7 @@ def render_block(stmts, aliases=None):
     handles = [
         (kind, ref, own, av, eg.let("h%d" % i, t)) for i, (kind, ref, t, own, av) in enumerate(sk)
     ]
-    eg.run(rs * 30)
+    saturate(eg, rs)
     pr = E._Printer(aliases or {})
     for kind, ref, own, av, h in handles:
         cands = [to_ir(str(x)) for x in eg.extract_multiple(h, 12)]
@@ -612,15 +724,27 @@ def _root_keep(tree, rootids, chosen):
     return keep
 
 
-def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proofs=None):
+def render_proc(
+    stmts, aliases=None, entry=0, info=None, root_extract=None, proofs=None, budget=None
+):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
     Memory forwards intra-block; at a branch join or loop head only the addresses
     written under the branch are havoced, so cells invariant across it still
-    forward. ``root_extract`` selects the stage-3a root path (default ``ROOT_EXTRACT``)."""
+    forward. ``root_extract`` selects the stage-3a root path (default ``ROOT_EXTRACT``),
+    and ``budget`` is this procedure's share of the artifact's saturation seconds."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     stt = {"env": {}, "mem": mem0(), "ver": 0, "k": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
+    src, seeds = {}, []
+    dfs = _Defs(src)
+
+    def seed(term, e):
+        """Bridge ``e``'s address interval onto the term the address converts to."""
+        got = addr_interval(e, dfs)
+        if got is not None:
+            seeds.append((term, got[0], got[1]))
+        return term
 
     def bump(key):
         stt[key] += 1
@@ -636,7 +760,7 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
         if k == "loc":
             return stt["env"].get(e[1], E.loc(e[1] + ".0"))
         if k == "mem":
-            return sel(stt["mem"], conv(e[1]), e[2])
+            return sel(stt["mem"], seed(conv(e[1]), e[1]), e[2])
         mn, kids, w = e[1], e[2], e[3]
         if mn == "INT_ZEXT":
             return E.zext(conv(kids[0]))
@@ -655,6 +779,7 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
     def havoc(names):
         for n in names:  # havoc names have no rendered def: never available to spell
             stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+            src.pop(n, None)
 
     def havoc_all():
         havoc(list(stt["env"]))
@@ -671,11 +796,12 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
                 locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
                 nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
                 stt["env"][s[1]] = E.loc(name)
+                src[s[1]] = s[2]
                 avail.add(name)
             elif k == "st":
                 v = conv(s[2])
                 a = s[1]
-                addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else conv(a)
+                addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else seed(conv(a), a)
                 pre = stt["mem"]
                 stt["mem"] = store(pre, addr, v, _ew(s[2]))
                 ai = None if a[0] == "const" else add(addr)
@@ -690,18 +816,24 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
                     cond = E.bnot(cond)
                 ci = add(cond)
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
+                pre_src = dict(src)
                 then = walk(s[3])
                 then_env = dict(stt["env"])
                 stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                src.clear()
+                src.update(pre_src)
                 avail.intersection_update(pre_av)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
                 stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s)
+                src.clear()
+                src.update(pre_src)
                 avail.intersection_update(pre_av)
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) is c and els_env.get(n) is c):
                         stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+                        src.pop(n, None)
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
                 pre_mem, pre_av = stt["mem"], set(avail)
@@ -732,9 +864,11 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
             elif k in ("swc", "opsw", "swg"):
                 cases = s[1] if k == "swg" else s[2]
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
-                arms = []
+                pre_src, arms = dict(src), []
                 for lbl, body in cases:
                     stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                    src.clear()
+                    src.update(pre_src)
                     avail.intersection_update(pre_av)
                     arms.append((lbl, walk(body)))
                 avail.intersection_update(pre_av)
@@ -759,11 +893,13 @@ def render_proc(stmts, aliases=None, entry=0, info=None, root_extract=None, proo
     eg = EGraph()
     for _n, leaf, rhs in defs:
         eg.register(union(leaf).with_(rhs))
+    for t, l, h in seeds:  # the interval bridge: bit analyses read as e-class bounds
+        eg.register(set_(lo(t)).to(i64(l)), set_(hi(t)).to(i64(h)))
     handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
     memh = [
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
-    eg.run(rs * 30)
+    saturate(eg, rs, budget=budget)
     pr = E._Printer(aliases or {})
 
     def pick_ir(i):
@@ -886,6 +1022,7 @@ class _Z3Env:
     def __init__(self, locw=None):
         self.locw = locw or {}
         self.locs, self.arrs, self.constraints = {}, {}, []
+        self.memo = {}  # extracted IR is a DAG; rebuilt as a tree it is exponential
 
     def _arr(self, key):
         a = self.arrs.get(key)
@@ -929,6 +1066,12 @@ class _Z3Env:
         return out + [z3.ULE(self._loc(n), E._mask(self.width(("loc", n)))) for n in free]
 
     def memory(self, ir):
+        got = self.memo.get(ir)
+        if got is None:
+            got = self.memo[ir] = self._memory(ir)
+        return got
+
+    def _memory(self, ir):
         k = ir[0]
         if k == "mem0":
             return self._arr("m0")
@@ -940,6 +1083,12 @@ class _Z3Env:
         raise ValueError("unreadable memory %r" % (k,))
 
     def of(self, ir):
+        got = self.memo.get(ir)
+        if got is None:
+            got = self.memo[ir] = self._of(ir)
+        return got
+
+    def _of(self, ir):
         k = ir[0]
         if k == "num":
             return z3.BitVecVal(ir[1] & E._mask(ir[2]), 16)
@@ -1013,7 +1162,7 @@ def render_roots(rootterms, aliases=None):
     rs, _names = unified_rules()
     eg = EGraph()
     handles = [(dest, eg.let("r%d" % i, t)) for i, (dest, t) in enumerate(rootterms)]
-    eg.run(rs * 30)
+    saturate(eg, rs)
     irs = [(dest, to_ir(str(eg.extract(h)))) for dest, h in handles]
     counts = {}
     for _dest, ir in irs:
@@ -1233,11 +1382,13 @@ def _written(stmts):
     return out
 
 
-def emit_mem(model, root_extract=None):
+def emit_mem(model, root_extract=None, proofs=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
     Reuses eqlift's header/state/data/symbol assembly verbatim; only the per-proc
-    body is the memory-graph lift. Interprocedural liveness feeds every proc."""
+    body is the memory-graph lift. Interprocedural liveness feeds every proc, and
+    ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
+    are per procedure, so one merged record would prove the wrong equalities."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -1274,10 +1425,14 @@ def emit_mem(model, root_extract=None):
         info.summarize()
         if before == (info.params, info.rets):
             break
-    proc_lines = []
-    for entry, stmts in procs:
+    proc_lines, end = [], time.monotonic() + EMIT_S
+    for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
-        body = render_proc(stmts, aliases, entry, info, root_extract)
+        rec = None if proofs is None else {}
+        share = max(0.0, end - time.monotonic()) / (len(procs) - i)
+        body = render_proc(stmts, aliases, entry, info, root_extract, rec, min(BUDGET_S, share))
+        if rec is not None:
+            proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)
         proc_lines.append("}")
     from . import eqlift_annotate  # pylint: disable=import-outside-toplevel
@@ -1288,10 +1443,10 @@ def emit_mem(model, root_extract=None):
     return "\n".join(lines) + "\n"
 
 
-def emit(model, root_extract=None):
+def emit(model, root_extract=None, proofs=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model, root_extract), None
+    return emit_mem(model, root_extract, proofs), None

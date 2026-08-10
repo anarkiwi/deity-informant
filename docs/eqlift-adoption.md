@@ -52,8 +52,18 @@ passing tests (`tests/test_eqlift_mem.py`).
   - `store(m,a,sel(m,a)) = m` — redundant store / spill-reload elimination.
 - Address disjointness is an e-class INTERVAL analysis, not imperative cell
   overlap: `lo`/`hi` lattice values (merge by min/max) propagate over
-  `num`/`zext`/`add`; `hi(a) < lo(b)` yields the `disjoint(a,b)` relation that
-  guards the diff axiom. This replaces `_addr_range` + `havoc_store` scoping.
+  `num`/`zext`/`band`/`add`/`shl`; `hi(a) < lo(b)` yields the `disjoint(a,b)`
+  relation that guards the diff axiom. This replaces `_addr_range` +
+  `havoc_store` scoping. `add`/`shl` carry an interval only where the result
+  cannot wrap its own width — a wrapped sum is *below* both operands, so the
+  unguarded floor was a claim the value breaks (§10).
+- The interval BRIDGE (stage 3b) is the second source of those bounds:
+  `eqlift_mem.addr_interval` reads `frameproc.addr_floor` (must-set bits, a lower
+  bound) and `frameproc.addr_bits` (may-set bits, an upper one) off the pass-1
+  address expression and seeds the e-class the address converts to. It seeds only
+  where the lattice states nothing, so no seeded bound can be widened by a
+  derived one, and it consumes those two committed analyses rather than
+  extending them (§5's no-extension rule).
 - Root extraction from observable sinks drives deletion: the observable outputs
   are the SID hardware register writes (`$D400`–`$D41C`), procedure returns, and
   cross-procedure-live cells. A value reachable from no sink is an unreferenced
@@ -213,9 +223,25 @@ procedure text.
   join/loop-head/call boundary, weakened only per-site behind an admitted
   argument in this doc; all-sites Z3 proofs catch any residual hole.
 - Saturation blowup: assoc/comm plus the memory axioms are expansive over a whole
-  procedure. Mitigation: bounded schedule (`run(ruleset * iters)`); saturation is
-  not assumed; extraction sound at any cutoff. Per-procedure wall-clock MUST hold
-  the 60s test budget.
+  procedure. Mitigation: bounded schedule; saturation is not assumed; extraction
+  sound at any cutoff. Per-procedure wall-clock MUST hold the 60s test budget.
+  **Measured and closed 2026-08-10** — `run(ruleset * 30)` is not a bound: on
+  `Dynasty_8_tune_2` (one procedure, 488 statement nodes) rounds 0–8 cost 0.0s,
+  round 9 0.5s, round 10 3.1s and round 11 asked for 1.6GB in one allocation, so
+  the process died before extraction. `eqlift_mem.saturate` runs the ruleset a
+  round at a time and refuses the next one when the last round's own growth ratio
+  says it will not fit the remaining budget (`DI_EQLIFT_BUDGET_S`, default 5s) or
+  when resident growth passes `DI_EQLIFT_BUDGET_MB` (default 128), and stops at a
+  fixpoint. Priced on the tune that forced it: 128MB gives 630 lines in 2.0s,
+  256MB gives 629 lines in 39.1s — one line of minimization for 37 seconds — and
+  neither Commando (350) nor `Ghouls_n_Ghosts` (1,335) moves a line at any bound,
+  because the cap does not bind there.
+- Proof cost is a DAG problem, not a solver problem: `_Z3Env.of` rebuilt shared
+  extracted subterms once per occurrence, which is exponential on a DAG. It
+  memoizes on the IR node; the same tune goes from unbounded (37GB resident,
+  killed) to 40s. One §6 record per PROCEDURE, never one merged record per
+  artifact — SSA names are procedure-local, so a merged `defs` would prove
+  equalities between different values.
 - egglog version drift: extracted-str parsing and RunReport shapes are
   version-sensitive. Mitigation: minor-version pin + `_parse_ir` round-trip
   covered by tests (including the let-lifted multi-line form).
@@ -244,7 +270,19 @@ procedure text.
 - Interval analysis too weak: a table left unbounded degrades to a full-memory
   read-through miss (a correctness-preserving readability loss, never a soundness
   loss). Mitigation: extend the `lo`/`hi` lattice by proven cases only, justified
-  by corpus diff.
+  by corpus diff. **The admitted extensions, stage 3b:**
+  - *The bridge* (§2). `addr_floor(e) <= e <= addr_bits(e)` holds for every
+    address the expression names — every set bit of the value is in the may-set
+    mask, so the mask is an upper bound; every must-set bit is in the value, so
+    the floor is a lower one. Seeded only where the lattice states nothing. What
+    it buys that the lattice cannot: a byte-wide address is page zero
+    (`[0,$FF]`), and the stack push `zext2(sp) | $0100` is `[$0100,$01FF]`, so a
+    spill/reload reads through a push instead of stopping at it.
+  - *The wrap guard* (§2), a narrowing, not a widening: `add`/`shl` state an
+    interval only under `hi(a) + hi(b) <= mask(w)`. Without it `$F0 + (y & $1F)`
+    at one byte claims a floor of `$F0` while the value can be `$10`, which would
+    license a disjointness that is false. Nothing in the corpus was relying on
+    the unguarded form; the guard is what makes seeding byte-wide leaves safe.
 
 ## 11. Non-goals
 
