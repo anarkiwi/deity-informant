@@ -557,11 +557,11 @@ signed compare while the unified renderer learns the layout, the dispatch header
 the statement set it prints, `pcall` included. **The cutover's semantic half is
 landed**: `frameval.gate_fp` on the spliced text is `None`, so the unified emitter's
 program is the walker's projection. **Landing 2 is open** on its text half, and the
-blocker is measured and pinned: `frameproc.render_lines` reads the program's data
-declarations and `eqlift._Printer` does not, so a declared column pair, a declared
-table at an index expression and the indexed SID register block keep the undeclared
-spelling and the `dumps`/`loads` fixpoint fails there and nowhere else
-(`tests/test_step4_splice.py`). Behind that stand §5's deletion inventory, the
+blocker is measured and pinned to three spellings with two causes: the unified
+printer's `_loadref` is narrower than `frameproc._membody` — no index *expression*
+against a declared base, no `sid.reg[i]` view — and the declared lo/hi column pack
+reads a `_PAIRS` registry `render_proc` is never handed. The `dumps`/`loads` fixpoint
+fails there and nowhere else (`tests/test_step4_splice.py`). Behind that stand §5's deletion inventory, the
 deterministic round cap, the `state { }` demotion and the ~16 substrate-dependent
 shredder pins — which want the same declarations — and then landings 3-5 (role-typed
 emission, the completed witness, housekeeping + close). Also owed to landing 2 and
@@ -1849,12 +1849,17 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   and the promoted call survive, an unliftable statement raises, and **`frameval.gate_fp` on
   the spliced text is `None`** — the spliced program reproduces the walker's per-frame
   projection. What fails is the `dumps`/`loads` fixpoint alone, and it is three spellings with
-  one cause: `frameproc.render_lines` is handed the program's data declarations and
-  `eqlift._Printer` only its symbol aliases, so a declared lo/hi column pair stays the
-  OR-pack, a declared table read at an index *expression* stays `mem[…]`, and the indexed SID
-  register block spells a register name rather than `sid.reg[i]`. Each round-trips to the same
-  program; the next landing gives the unified printer the declarations, and §5's deletions
-  ride with it. Two smaller divergences the diff also named are closed here rather than left
+  **two** causes, separated by measurement rather than assumed to be one. Two are the unified
+  printer being narrower than `frameproc._membody` and owe nothing to the declarations: a
+  declared table read at an index *expression* stays `mem[…]` because `eqlift._Printer`'s
+  `_loadref` splits a base only where the index is a `zext` of a bare local or cell, where
+  `frameproc._index_of` takes whatever the address adds; and the indexed SID register block
+  spells a register name because the unified printer has no `sid.reg[i]` view. `_memref` emits
+  both off a bare parsed tree with `res` empty and no `pairs`, which is what says the cause is
+  printer breadth. The third is the declarations: a declared lo/hi column pair stays the
+  OR-pack because the pack recognizer reads `frameproc._PAIRS`, which `render_lines` is handed
+  and `render_proc` is not. Each round-trips to the same program; the next landing widens the
+  printer and passes the pairs, and §5's deletions ride with it. Two smaller divergences the diff also named are closed here rather than left
   to it — a valueless `ret` names the procedure's declared returns (`render_proc` takes them),
   and a wide store carries its `hi-first` order, which was dropped and is a fact about the
   store rather than its address (frameprog.md §7.10.4).
