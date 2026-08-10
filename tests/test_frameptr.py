@@ -378,14 +378,6 @@ def test_a_deref_the_rung_refuses_stays_a_raw_memref():
     assert "mem[(zp_02:2 + zext2(y))" in frameprog.dumps(prog)
 
 
-def test_the_deref_form_is_a_frameprog_form():
-    with pytest.raises(ValueError, match="frameprog form"):
-        G.parse_expression("*m_1500[X]", "sidprog")
-    doc = "sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n *m_1500[X] = A\n ret\n}\n"
-    with pytest.raises(ValueError, match="frameprog form"):
-        G.parse_document(doc, "sidprog")
-
-
 def test_the_printer_names_a_resolved_address_only():
     addr = _deref(0x02, _y())
     assert frameproc._membody(addr) is None

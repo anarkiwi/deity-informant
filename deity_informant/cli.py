@@ -4,8 +4,7 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
-  decompile    decompile a tune (.sid or raw) to sidprog structured text
-  prog-run     execute a sidprog program standalone and print the $D400.. grid
+  decompile    decompile a tune (.sid or raw) to frameprog structured text
   emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
 """
 
@@ -21,8 +20,8 @@ from jennings.disassembler import Disassembler as _Disassembler
 
 from . import c64
 from . import frameprog
+from . import frameval
 from . import render as render_mod
-from . import sidprog
 from . import structured
 from .c64 import load_psid, psid_songs
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
@@ -95,6 +94,26 @@ def _full_frames(data, subtune):
     return secs * 50 if secs else None
 
 
+def _verify(model, prog, text, frames, writes):
+    """Artifact laws: canonical fixpoint, block-model rebuild, Gate FP."""
+    if frameprog.dumps(frameprog.loads(text)) != text:
+        sys.stderr.write("verify FAILED: text is not a loads/dumps fixpoint\n")
+        return 1
+    rebuilt = frameprog.block_model(frameprog.loads(text))
+    if frameprog.dumps(frameprog.program(rebuilt)) != text:
+        sys.stderr.write("verify FAILED: the artifact does not rebuild its own program\n")
+        return 1
+    got = frameval.gate_fp(model, frames, prog)
+    if got is not None:
+        sys.stderr.write("verify FAILED: Gate FP diverges at %r\n" % (got,))
+        return 1
+    sys.stderr.write(
+        "verify ok: %d frames, %d cycle-stamped writes reproduced by the frame program\n"
+        % (frames, writes)
+    )
+    return 0
+
+
 def cmd_decompile(args):
     data = Path(args.file).read_bytes()
     subtune = args.subtune
@@ -129,53 +148,17 @@ def cmd_decompile(args):
         return 1
     if args.report:
         sys.stderr.write(structured.format_report(model))
+    prog = frameprog.program(model)
+    art = frameprog.dumps(prog)
+    text = render_mod.render(model) if args.structured else art
     if args.verify:
-        tm = sidprog.parse(sidprog.emit(model))
-        if sidprog.emit(tm) != sidprog.emit(model):
-            sys.stderr.write("verify FAILED: text is not a parse/emit fixpoint\n")
-            return 1
-        if tm.run(args.frames) != ev.wlog:
-            sys.stderr.write("verify FAILED: text replay diverges from the VM\n")
-            return 1
-        sys.stderr.write(
-            "verify ok: %d frames, %d cycle-stamped writes bit-exact\n"
-            % (args.frames, len(ev.wlog))
-        )
-        mt = sidprog.metrics(model)
-        sys.stderr.write(
-            "metrics: blocks=%d nested=%d structured=%.1f%% gotos=%d labels=%d "
-            "frontier=%d procs=%d cross-gotos=%d\n"
-            % (
-                mt["blocks"],
-                mt["nested_blocks"],
-                mt["structured_pct"],
-                mt["goto_count"],
-                mt["labels"],
-                mt["frontier"],
-                mt["proc_count"],
-                mt["cross_proc_gotos"],
-            )
-        )
-    if args.frameprog:
-        text = frameprog.emit(model)
-    else:
-        text = render_mod.render(model) if args.structured else sidprog.emit(model)
+        rc = _verify(model, prog, art, args.frames, len(ev.wlog))
+        if rc:
+            return rc
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
-    return 0
-
-
-def cmd_prog_run(args):
-    tm = sidprog.parse(Path(args.file).read_text(encoding="utf-8"))
-    w = sidprog.TreeWalker(tm)
-    for r, v in tm.prologue:
-        w.m[0xD400 + r] = v
-    for f in range(args.frames):
-        w.run_frame()
-        row = " ".join("%02X" % w.m[0xD400 + i] for i in range(25))
-        print("frame %4d: %s" % (f, row))
     return 0
 
 
@@ -227,21 +210,20 @@ def main(argv=None):
     p.add_argument("--frames", type=int, default=1)
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to sidprog text")
+    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to frameprog text")
     org(p)
     p.add_argument("--init", type=lambda x: int(x, 0), default=None)
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
     p.add_argument("--structured", action="store_true", help="emit the readable structured view")
-    p.add_argument("--frameprog", action="store_true", help="emit the frame-level dialect")
     p.add_argument(
         "--frames",
         type=int,
         default=None,
         help="evidence/verify window (default: the tune's full Songlengths duration)",
     )
-    p.add_argument("-o", "--out", help="write sidprog text to FILE (default stdout)")
-    p.add_argument("--verify", action="store_true", help="fixpoint + cycle-exact replay vs the VM")
+    p.add_argument("-o", "--out", help="write the emitted text to FILE (default stdout)")
+    p.add_argument("--verify", action="store_true", help="fixpoint + artifact rebuild + Gate FP")
     p.add_argument(
         "--report", action="store_true", help="print the per-site proof report to stderr"
     )
@@ -260,11 +242,6 @@ def main(argv=None):
         help="closure frame cap (default max(4x window, 60000))",
     )
     p.set_defaults(fn=cmd_decompile)
-
-    p = sub.add_parser("prog-run", help="execute a sidprog program, print the $D400.. grid")
-    p.add_argument("file")
-    p.add_argument("--frames", type=int, default=60)
-    p.set_defaults(fn=cmd_prog_run)
 
     p = sub.add_parser("emit-sleigh", help="build the 6510 SLEIGH module")
     p.add_argument("-o", "--out", help="languages dir to install the built module into")

@@ -11,11 +11,12 @@
 > per-shape rungs are not extended, no new rung is queued, and the residue §7
 > measures is stage 3's e-graph work under the four-stage plan, not a next rung.
 
-frameprog is a **derived** artifact level above sidprog. It drops cycle
-exactness: the only normative output is the **canonical frame projection**
-of the SID write stream, one record per play-frame. sidprog remains the
-cycle-exact ground truth (Gate C unchanged); frameprog is generated from the
-committed model and verified against the projection of the walker's log.
+frameprog is the **one emitted artifact**, derived from the committed model. It
+drops cycle exactness: the only normative output is the **canonical frame
+projection** of the SID write stream, one record per play-frame. The committed
+model and its walker remain the cycle-exact ground truth (Gate C unchanged);
+frameprog is generated from that model and verified against the projection of
+the walker's log.
 Status: design for review; landed already: the projection + digi rule in the
 pure log domain (`deity_informant/framelog.py`), the generator and reader
 (`frameprog.py`/`frameproc.py`) and the reference evaluator plus Gate FP
@@ -66,8 +67,8 @@ $D418 write sequence are **outside the class**:
   tunables beyond this definition.
 - A 2-step frame (single in-frame volume step: mute-click, song restart)
   stays in class, reported per tune as the `d418_collapsed` metric.
-- Excluded tunes remain fully served by sidprog; the exclusion is a class
-  diagnostic at frameprog generation time, never a sidprog build failure.
+- Excluded tunes remain fully served by the committed model; the exclusion is a
+  class diagnostic at frameprog generation time, never a decompile failure.
 
 Measured: 0 of 140 corpus tunes excluded; 17 write $D418 more than once per
 frame, all volume-nibble-equal except Aztec_Challenge (one frame `00`,`0F` —
@@ -243,52 +244,52 @@ is not classified operand/opcode/vector — unbounded play-time code copy —
 has no state shape and MUST refuse the tune with a site diagnostic; the
 corpus SMC census found every play-phase SMC class state-shaped, zero tunes
 refuse. At run time a variant or target outside the observed set hits the
-faulting default — the same guarded envelope sidprog serializes. Opcode
+faulting default — the model's runtime guard, serialized. Opcode
 variants diverging only in cycle-visible ways are irrelevant here (cycles
 are gone): their arms project identically and MAY merge after §4(a),
 recorded in the build report.
 
-## 3. Relationship to sidprog
+## 3. Relationship to the model, and the retired sidprog text
 
-- frameprog is a **dialect of the sidprog language**, not a second language:
-  both are defined by the one grammar `deity_informant/sidprog.lark`
+- frameprog is defined by the one grammar `deity_informant/sidprog.lark`
   ([grammar.md](grammar.md)) and read by the one parser
-  (`deity_informant.grammar`). The dialect delta is expressed in the grammar
-  itself — the cycle-annotation productions (`CYC`, `CYCT`, `PENTAG`,
-  `code[...]` switch subjects) are absent from the frameprog item alphabet,
-  and `state { }`/`inputs { }`, named locals, procedure calls and `for` ranges
-  are added; every shared construct is one production used by both.
+  (`deity_informant.grammar`). The cycle-exact **sidprog text dialect it grew
+  out of is retired** with its emit path (register-model-lift-impl.md,
+  housekeeping): the cycle-annotation productions (`CYC`, `CYCT`, `PENTAG`,
+  `code[...]` switch subjects), its `proc`/block forms and the emitter and tree
+  walker behind them are gone. Its landed specification is
+  [decompiler-implementation.md](decompiler-implementation.md). The grammar file
+  and `deity_informant/sidprog.py` — now the model machinery frameprog is built
+  from — keep their names, which is why the artifact header still cites them.
 - A local is a byte unless its name carries the width suffix: `w:2` is a
   16-bit local (`("loc", name, 2)`; the bare `("loc", name)` stays one byte)
   and an assignment whose value is two bytes wide states that width on its
   lvalue. `trunc1(x)`/`trunc2(x)` narrow a value to that width
-  (`("op", "COPY", (x,), w)`). Both are frameprog forms a sidprog document
-  rejects, exactly as the width suffix and the `*ptr[i]` deref are. They are the
-  notation rung (d2) writes 16-bit arithmetic in.
+  (`("op", "COPY", (x,), w)`). They are the notation rung (d2) writes 16-bit
+  arithmetic in.
 - The cycle-exact ground truth is the committed model, the walker replay and
-  the VM/recorder against sidplayfp — never the sidprog text, whose emit path
-  is queued for deletion (register-model-lift-impl.md, housekeeping). frameprog
-  is the deliverable artifact level and relaxes nothing beneath it: Gate C
-  holds on the model for as long as the text does.
-- **frameprog is not a projection of sidprog, and never was** (Phase 3a,
-  2026-08-09). Both project the same `structured.Model`, but the sidprog
-  projection is lossy for frameprog's purposes: `sidprog.TextModel` carries no
-  init tracer and sets `written` from the dispatch table alone, so
-  `frameprog.program(sidprog.parse(sidprog.emit(m)))` is a **different, silently
-  shorter program** (measured on the hermetic `t_jump_table` model: 32 lines
-  against 18). The decision is to supersede, not restore: frameprog major 1 is
-  the total artifact (`image { }`, `dispatch`, `evidence { }`), and
+  the VM/recorder against sidplayfp — never any text. frameprog is the
+  deliverable artifact level and relaxes nothing beneath it: Gate C holds on
+  the model.
+- **frameprog was never a projection of sidprog** (Phase 3a, 2026-08-09). Both
+  projected the same `structured.Model`, but the sidprog projection was lossy
+  for frameprog's purposes — its parsed model carried no init tracer and set
+  `written` from the dispatch table alone, so the same rungs ran on less
+  evidence (measured on the hermetic `t_jump_table` model: 32 lines against
+  18). The decision was to supersede, not restore, and the retirement
+  discharges it: there is no second projection left to disagree. frameprog
+  major 1 is the total artifact (`image { }`, `dispatch`, `evidence { }`) and
   `frameprog.block_model(frameprog.loads(text))` rebuilds the committed block
-  model the text came from. The inequality is pinned in
-  `tests/test_frameprog.py`, as is the equality that replaces it.
+  model the text came from — the equality that replaced the inequality, pinned
+  in `tests/test_frameprog.py`.
 - frameprog is **generated from the committed model** (post commit-phase,
-  observed-primary sets), never hand-edited; changes flow from the sidprog
-  side and regeneration is mandatory on any model change.
+  observed-primary sets), never hand-edited; regeneration is mandatory on any
+  model change.
 - Exactly ONE projection implementation — `framelog` — serves the
   generator's self-check, the Gate FP harness, and all tooling; a second
   projection is drift by definition and is forbidden.
 - Guard semantics carry over: frameprog's faulting switch defaults are the
-  sidprog runtime guards under the §2 mapping; certification (static set
+  model's runtime guards under the §2 mapping; certification (static set
   equals observed) stays upstream report metadata, never changing the arms.
 
 ## 4. The lift ladder (landed; the labels the code cites)
@@ -498,13 +499,8 @@ cell only *above* the observed read run, so a cell written inside the run did no
 truncate it — and the indexed form surfaced it rather than causing it. Closed
 since by per-record-offset soundness in `datadecl`: `mut` excludes the written
 lane of a record array and the written cell of a flat region from the const
-claim, at no cost to the extent (sidprog-language.md, §Data declarations).
-
-The sidprog dialect keeps the register-index form. Its `tN` bindings are expanded
-into the tree at parse, so a reader-supplied `zext2` around an already-widened
-binding would materialise as `zext2(zext2(t0))` and break the sidprog fixpoint;
-the grammar carries the wider form for both dialects, the sidprog emitter does
-not use it.
+claim, at no cost to the extent
+([decompiler-implementation.md](decompiler-implementation.md), data declarations).
 
 ### 4.3 16-bit fusion: what the evidence buys, per pair
 

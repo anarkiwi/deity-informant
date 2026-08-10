@@ -1,13 +1,13 @@
 """Structured decompiler: full-length real-tune acceptance (cycle-stamped
 bit-exact model replay), fuzz-corpus development checks, loud faults.
-Text-layer laws live in test_sidprog."""
+Artifact-layer laws live in test_frameprog."""
 
 from pathlib import Path
 
 import pytest
 
 from deity_informant import c64
-from deity_informant import sidprog
+from deity_informant import frameprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
@@ -87,7 +87,7 @@ def test_collect_unreachable_drops_residue_blocks_and_site_records():
 def test_dynamic_jump_onto_fallthrough_is_observed():
     """A patched JMP landing exactly on the next instruction is an observed
     edge (recorded despite equalling fallthrough): the committed set carries
-    it and the standalone text replays without a guard fault."""
+    it and the walker replays without a guard fault."""
     mem = bytearray(0x10000)
     mem[0x0F00] = 0x60
     code = [0xA9, 0x0A, 0x8D, 0x08, 0x10, 0xA9, 0x41]  # patch JMP operand lo
@@ -98,8 +98,6 @@ def test_dynamic_jump_onto_fallthrough_is_observed():
     assert 0x100A in model.ev_targets[0x1007] and 0x100A in model.dyn_targets[0x1007]
     w = S.Walker(model)
     assert w.run(3) == ev.wlog
-    tm = sidprog.parse(sidprog.emit(model))
-    assert tm.run(3) == ev.wlog
 
 
 def test_dynamic_branch_onto_fallthrough_replays():
@@ -113,8 +111,6 @@ def test_dynamic_branch_onto_fallthrough_replays():
     model, ev = S.decompile(mem, 0x0F00, 0x1000, 3)
     w = S.Walker(model)
     assert w.run(3) == ev.wlog
-    tm = sidprog.parse(sidprog.emit(model))
-    assert tm.run(3) == ev.wlog
 
 
 def _two_depth_image(dispatch):
@@ -323,7 +319,7 @@ def test_two_depth_routine_real_tune():
 @pytest.mark.parametrize("sid,subtune,secs", _tunes())
 def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
     """Model-level acceptance: bit-exact full-length log from the walker.
-    Text round-trip and the size gate live on the canonical artifact (test_sidprog)."""
+    Artifact round-trip and Gate FP live on the frame program (test_frameprog)."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     frames = int(secs * 50)
@@ -331,10 +327,38 @@ def test_real_tune_full_length_cycle_exact(sid, subtune, secs):
     assert model.dispatch_sets is not None
 
 
-def test_guard_live_dispatch_faults_on_unobserved_target():
+def _arm_labels(stmts, out):
+    """Every switch-arm label the frame program serializes, as ints."""
+    for s in stmts:
+        if s[0] == "swg":
+            out.update(int(lbl[1:], 16) for lbl, _b in s[1])
+            for _lbl, body in s[1]:
+                _arm_labels(body, out)
+        elif s[0] == "swc":
+            out.update(int(lbl[1:], 16) for lbl in s[1])
+            out.update(int(lbl[1:], 16) for lbl, _b in s[2])
+            for _lbl, body in s[2]:
+                _arm_labels(body, out)
+        elif s[0] == "opsw":
+            out.update(int(lbl[1:], 16) for lbl, _b in s[2])
+            for _lbl, body in s[2]:
+                _arm_labels(body, out)
+        elif s[0] == "if":
+            _arm_labels(s[3], out)
+            _arm_labels(s[4], out)
+        elif s[0] == "loop":
+            _arm_labels(s[1], out)
+        elif s[0] == "for":
+            _arm_labels(s[4], out)
+        elif s[0] == "callb":
+            _arm_labels(s[3], out)
+    return out
+
+
+def test_guard_live_dispatch_serializes_its_observed_set_and_nothing_else():
     """A computed-dispatch site static analysis cannot certify serializes its
-    observed set with a live guard; the standalone text walker faults on any
-    other target (observed-primary doctrine)."""
+    observed set as switch arms; any other target faults in the evaluator
+    (test_frameval::test_switch_arm_outside_the_observed_set_faults)."""
     entry = next((t for t in corpus_params(HVSC) if t[0].stem == "Bionic_Commando"), None)
     if entry is None:
         pytest.skip("corpus tune absent")
@@ -344,9 +368,8 @@ def test_guard_live_dispatch_faults_on_unobserved_target():
     model, _ev = S.decompile(mem, init, play, secs * 50, sub)
     live = {s: p for s, p in model.proofs.items() if p.status == "observed"}
     assert live, "expected at least one guard-live site"
-    tm = sidprog.parse(sidprog.emit(model)).link()
-    _site, pr = next(iter(live.items()))
-    unobserved = next(a for a in range(0x0200, 0xCF00) if a not in tm.pcmap and a not in tm.contmap)
-    assert unobserved not in pr.targets
-    with pytest.raises(S.WalkError):
-        tm.node_at(unobserved)
+    arms = set()
+    for _e, _p, _r, stmts in frameprog.program(model).procs:
+        _arm_labels(stmts, arms)
+    for site, pr in live.items():
+        assert set(pr.targets) <= arms, "$%04X serializes fewer arms than it observed" % site

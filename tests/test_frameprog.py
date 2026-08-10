@@ -21,11 +21,59 @@ from deity_informant.structured import Block
 import _fuzzgen as G
 
 from _corpus import corpus_params
-from test_sidprog import _decl_player
 
 HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 
 _ANNOT = re.compile(r"@\d|@t\d|@x\(|@xi\(|code\[")
+_Z = ("const", 0, 1)
+
+
+# ---- a hermetic player whose song data declares and aliases ---------------------
+_D_ORG, _D_TBL, _D_WTBL, _D_CNT, _D_PTR = 0x1000, 0x1400, 0x1480, 0x1440, 0x60
+_D_PLO, _D_PHI, _D_PATA, _D_PATB = 0x1500, 0x1508, 0x1520, 0x1530
+
+
+def _decl_player():
+    """Counter-indexed tables (proven + record stride), a reloaded pointer
+    pair walking command streams, and role-classified state cells."""
+    a = G.Asm(_D_ORG)
+    a.i("LDX", "abs", _D_CNT)
+    a.i("LDA", "absx", _D_PLO).i("STA", "zp", _D_PTR)
+    a.i("LDA", "absx", _D_PHI).i("STA", "zp", _D_PTR + 1)
+    a.i("LDY", "abs", _D_CNT + 1)
+    a.i("LDA", "indy", _D_PTR).i("CMP", "imm", 1).i("BNE", "rel", ("L", "n1"))
+    a.i("LDA", "imm", 0x41)
+    a.label("n1").i("STA", "abs", G.SID + 4)
+    a.i("LDA", "abs", _D_CNT + 2).i("CLC").i("ADC", "imm", 1).i("STA", "abs", _D_CNT + 2)
+    a.i("AND", "imm", 3).i("TAX")
+    a.i("LDA", "absx", _D_TBL).i("STA", "abs", G.SID)
+    a.i("LDA", "abs", _D_CNT + 2).i("AND", "imm", 3).i("ASL", "acc").i("TAX")
+    a.i("LDA", "absx", _D_WTBL).i("STA", "abs", G.SID + 2)
+    a.i("LDA", "absx", _D_WTBL + 1).i("STA", "abs", G.SID + 3)
+    a.i("INC", "abs", _D_CNT + 1).i("LDA", "abs", _D_CNT + 1).i("CMP", "imm", 3)
+    a.i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", 0).i("STA", "abs", _D_CNT + 1)
+    a.i("INC", "abs", _D_CNT).i("LDA", "abs", _D_CNT).i("CMP", "imm", 2)
+    a.i("BNE", "rel", ("L", "out"))
+    a.i("LDA", "imm", 0).i("STA", "abs", _D_CNT)
+    a.label("out").i("RTS")
+    data = {
+        _D_PLO: _D_PATA & 0xFF,
+        _D_PLO + 1: _D_PATB & 0xFF,
+        _D_PHI: _D_PATA >> 8,
+        _D_PHI + 1: _D_PATB >> 8,
+    }
+    data.update({_D_PATA + k: v for k, v in enumerate((1, 2, 1))})
+    data.update({_D_PATB + k: 0x11 + k for k in range(3)})
+    data.update({_D_TBL + k: 0x30 + k for k in range(4)})
+    data.update({_D_WTBL + k: 0x50 + k for k in range(8)})
+    mem = bytearray(0x10000)
+    mem[0x0F00] = 0x60  # init: RTS
+    for k, b in enumerate(a.assemble()):
+        mem[_D_ORG + k] = b
+    for addr, v in data.items():
+        mem[addr] = v
+    return S.decompile(mem, 0x0F00, _D_ORG, 14)
 
 
 def _regs():
@@ -36,7 +84,7 @@ def _model(blocks, dispatch=None, mem0=None, play=0x1000):
     mem0 = mem0 if mem0 is not None else bytearray(0x10000)
     for pc, op0 in blocks:
         mem0[pc] = mem0[pc] or op0
-    return sidprog.TextModel(mem0, 0x0F00, play, blocks, dispatch or {})
+    return sidprog.BlockModel(mem0, 0x0F00, play, blocks, dispatch or {})
 
 
 def test_header_version_and_notes():
@@ -176,18 +224,16 @@ def test_artifact_rebuilds_the_program_it_was_emitted_from(p):
     assert frameval.gate_fp(rebuilt, p.frames, prog) == want
 
 
-def test_the_sidprog_projection_is_not_total_and_the_frameprog_one_is():
-    """The 3a finding, pinned: ``frameprog.program`` is not derivable from sidprog.
+def test_the_projection_is_total_on_the_jump_table_player():
+    """3a's finding is discharged by supersession: there is no second projection.
 
-    ``TextModel`` carries no init tracer and sets ``written`` from the dispatch
-    table alone, so the same rungs run on less evidence; sidprog retirement
-    (impl-plan housekeeping) supersedes it rather than restoring it."""
+    The sidprog projection that produced a silently shorter program is retired
+    with its emit path (impl-plan housekeeping); what is left is the one
+    projection, and the artifact it emits rebuilds it."""
     model = _fuzz_model(G.t_jump_table(np.random.default_rng(7)))
-    direct = frameprog.dumps(frameprog.program(model))
-    via_sid = frameprog.dumps(frameprog.program(sidprog.parse(sidprog.emit(model))))
-    assert via_sid != direct
-    text, prog, _rebuilt = _round_trip(model)
-    assert frameprog.dumps(prog) == text == direct
+    text, prog, rebuilt = _round_trip(model)
+    assert frameprog.dumps(prog) == text == frameprog.dumps(frameprog.program(model))
+    assert S.Walker(rebuilt).run(8) == S.Walker(model).run(8)
 
 
 def test_iota_pins_volatile_reads_and_matches_declared_inputs():
@@ -231,7 +277,7 @@ def test_dynamic_flow_constructs_round_trip():
     mem0 = bytearray(0x10000)
     mem0[0x3000], mem0[0x3001] = 0x00, 0x21
     dyn = {0x1000: {0x2000}, 0x2000: {0x2100, 0x2200}}
-    text = frameprog.emit(sidprog.TextModel(mem0, 0x0F00, 0x1000, blocks, {}, dyn=dyn))
+    text = frameprog.emit(sidprog.BlockModel(mem0, 0x0F00, 0x1000, blocks, {}, dyn=dyn))
     for frag in ("goto (a)", "switch goto {", "switch call {", "\n    $2100\n", "igoto $3000"):
         assert frag in text, frag
     assert "call (a) ret $2002" in text
@@ -563,3 +609,181 @@ def test_a_block_extent_is_a_scalar_u16_field_naming_canonical_cells(line, msg):
     """An extent is a pointer's: a byte field, an array or an unnamed block refuses."""
     with pytest.raises(ValueError, match=msg):
         frameprog.loads(_STATE_DOC % line)
+
+
+# ---- ported from the retired sidprog emit path (the laws still bind) -----------
+def _one_block(events, term=("rts",), regs=None, blocks=None, mem0=None):
+    mem0 = mem0 if mem0 is not None else bytearray(0x10000)
+    mem0[0x1000] = mem0[0x1000] or 0xA9
+    blk = Block(0x1000, mem0[0x1000], [0x1000], events, term, regs or _regs())
+    blocks = dict(blocks or {})
+    blocks[(0x1000, mem0[0x1000])] = blk
+    return frameprog.emit(sidprog.BlockModel(mem0, 0x0F00, 0x1000, blocks, {}))
+
+
+def _indexed(base, reg):
+    zx = ("op", "INT_ZEXT", (("reg", reg),), 2)
+    return ("op", "INT_ADD", (zx, ("const", base, 2)), 2)
+
+
+def test_single_use_load_inlines_at_its_use_site():
+    """``_stmt_view``: the load line vanishes into the consumer that reads it."""
+    text = _one_block(
+        [
+            ("cyc", 2),
+            ("ld", 0, _indexed(0x5591, 2)),
+            ("cyc", 4),
+            ("pen", "ax", ("const", 0x5591, 2), ("reg", 2)),
+            ("cyc", 4),
+            ("st", ("const", 0x01FD, 2), ("op", "INT_SUB", (("uni", 0, 1), ("reg", 0)), 1)),
+        ]
+    )
+    assert "  m_01FD = (m_5591[y] - a)" in text
+    assert not re.search(r"\bw\d = ", text)
+
+
+@pytest.mark.parametrize(
+    "addr,line",
+    [
+        (("const", 0xD012, 2), "w0 = m_D012"),  # a volatile cell
+        (_indexed(0xD400, 1), "w0 = sid.reg[x]"),  # index window reaches $D41B/$D41C
+    ],
+)
+def test_a_volatile_or_near_volatile_load_keeps_its_line(addr, line):
+    """``_ld_safe``: a read that may hit a volatile cell may not move."""
+    text = _one_block([("ld", 0, addr), ("st", ("const", 0x00FB, 2), ("uni", 0, 1))])
+    assert "  %s" % line in text
+
+
+_FB = ("mem", ("const", 0xFB, 2), 1)
+
+
+@pytest.mark.parametrize(
+    "pol,cond,line",
+    [
+        (
+            1,
+            ("op", "INT_EQUAL", (("op", "INT_SUB", (_FB, ("reg", 0)), 1), _Z), 1),
+            "if (zp_FB == a) goto ($1000) else $1005",
+        ),
+        (
+            0,
+            (
+                "op",
+                "INT_NOTEQUAL",
+                (("op", "INT_ADD", (("reg", 0), ("const", 0xF8, 1)), 1), _Z),
+                1,
+            ),
+            "ifnot (a != $08) goto ($1000) else $1005",
+        ),
+    ],
+)
+def test_a_zero_compare_canonicalizes_to_a_direct_compare(pol, cond, line):
+    """``_canon_cond``: sub/add compare-to-zero becomes the direct compare."""
+    text = _one_block([], term=("br", pol, None, 0x1005, cond, ("const", 0x1000, 2)))
+    assert "  %s" % line in text
+
+
+def test_the_canonicalization_is_width_guarded():
+    """A compare whose operands are wider than the zero it tests stays as written."""
+    wide = ("op", "INT_SUB", ((("uni", 0, 2)), ("uni", 1, 2)), 2)
+    cond = ("op", "INT_EQUAL", (wide, _Z), 1)
+    assert sidprog._canon_cond(cond) is cond
+    narrow = ("op", "INT_EQUAL", (("op", "INT_SUB", (_FB, ("reg", 0)), 1), _Z), 1)
+    assert sidprog._canon_cond(narrow) == ("op", "INT_EQUAL", (_FB, ("reg", 0)), 1)
+
+
+@pytest.mark.parametrize(
+    "term,line",
+    [
+        ((1, 0x2000, 0x1002), " if (a == $01) unobserved $2000"),
+        ((1, 0x1002, 0x2000), " if (a != $01) unobserved $2000"),  # the closer collapses
+    ],
+)
+def test_a_never_serialized_branch_side_emits_the_frontier_marker(term, line):
+    """No goto and no label: an unobserved edge is a fault, not a destination."""
+    cond = ("op", "INT_EQUAL", (E.reg(0), ("const", 1, 1)), 1)
+    mem0 = bytearray(0x10000)
+    mem0[0x1000] = 0xD0
+    text = _one_block(
+        [],
+        term=("br", term[0], term[1], term[2], cond, None),
+        blocks={(0x1002, 0x60): Block(0x1002, 0x60, [0x1002], [], ("rts",), _regs())},
+        mem0=mem0,
+    )
+    assert line in text
+    assert "goto $2000" not in text and "$2000:" not in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def _flow_blk(pc, term):
+    return Block(pc, 0, [pc], [], term, _regs())
+
+
+def _call_model(callers):
+    blocks = {(0x2000, 0): _flow_blk(0x2000, ("rts",))}
+    for i, pc in enumerate(callers):
+        blocks[(pc, 0)] = _flow_blk(pc, ("jsr", 0x2000, pc + 2, None))
+        nxt = callers[i + 1] if i + 1 < len(callers) else None
+        blocks[(pc + 3, 0)] = _flow_blk(pc + 3, ("goto", nxt) if nxt is not None else ("rts",))
+    return sidprog.BlockModel(bytearray(0x10000), 0x0F00, callers[0], blocks, {})
+
+
+def test_a_sole_static_call_site_owns_the_callee_body():
+    """``_model_trees``: one caller inlines the callee, two keep it a procedure."""
+    one = frameprog.emit(_call_model([0x1000]))
+    assert "  call $2000 ret $1002 {" in one and "sub_2000(" not in one
+    assert frameprog.dumps(frameprog.loads(one)) == one
+    two = frameprog.emit(_call_model([0x1000, 0x1100]))
+    assert "sub_2000() {" in two and two.count("  sub_2000()\n") == 2
+    assert frameprog.dumps(frameprog.loads(two)) == two
+
+
+_DECL_TRUTH = {
+    "Hubbard_Rob-Commando": [
+        "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:",
+        "table m_56F9[3] lo m_56FC -> $576B..$57EC observed:",
+        "table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:",
+        " stride 8 ",  # instrument records at m_5591
+        "stream m_576B[",
+        "via zp_5D cmp $FE $FF observed:",
+        "alias pos_54EC = m_54EC",
+        "alias pos_54ED = m_54ED",
+        "alias pos_54EE = m_54EE",
+    ],
+    "Cadaver-Aces_High": [
+        "table m_155C[52] lo m_1590",
+        "stream m_15C4[",
+        "via zp_FB cmp $00 $FE $FF observed:",
+    ],
+    "Follin_Tim-Ghouls_n_Ghosts": [
+        "stream m_7338[",
+        "stream m_75F7[",
+        "stream m_77A8[",
+        "via zp_21 ",
+        "via zp_23 ",
+        "via zp_25 ",
+    ],
+}
+
+
+def _decl_tunes():
+    return [
+        pytest.param(path, sub, secs, id=tid)
+        for path, sub, secs in corpus_params(HVSC)
+        for tid in ["%s-%s" % (path.parent.name, path.stem)]
+        if tid in _DECL_TRUTH
+    ]
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("sid,subtune,secs", _decl_tunes())
+def test_declarations_are_ground_truth_on_the_studied_tunes(sid, subtune, secs):
+    """The declaration study, held on the artifact that carries it."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, int(secs * 50), subtune)
+    text = frameprog.emit(model)
+    for frag in _DECL_TRUTH["%s-%s" % (sid.parent.name, sid.stem)]:
+        assert frag in text, frag
+    assert frameprog.dumps(frameprog.loads(text)) == text

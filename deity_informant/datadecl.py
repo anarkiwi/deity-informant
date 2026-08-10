@@ -1,4 +1,4 @@
-"""Typed song-data declarations and state-role aliases (sidprog data/symbols).
+"""Typed song-data declarations and state-role aliases (the data/symbols sections).
 
 ``declarations(model)`` carves disjoint byte-carried data regions out of the
 post-init image, plus state-cell role aliases. Extents are honest: a proven index

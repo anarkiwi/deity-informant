@@ -46,9 +46,10 @@ def _player_prg(tmp_path):
     return str(p)
 
 
-def test_decompile_verify_and_prog_run(tmp_path, capsys):
+def test_decompile_emits_the_frame_program_and_verifies_it(tmp_path, capsys):
+    """``--verify`` is the artifact's own laws: fixpoint, rebuild, Gate FP."""
     prg = _player_prg(tmp_path)
-    out_file = tmp_path / "player.sidprog"
+    out_file = tmp_path / "player.frameprog"
     rc = cli.main(
         ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
         + ["--frames", "4", "--verify", "-o", str(out_file)]
@@ -56,25 +57,6 @@ def test_decompile_verify_and_prog_run(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 0
     assert "verify ok" in err
-    text = out_file.read_text()
-    assert text.startswith("sidprog 1\n") and "proc $1000 {" in text and "image {" in text
-
-    rc = cli.main(["prog-run", str(out_file), "--frames", "3"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    rows = [line.split(":")[1].split() for line in out.splitlines()]
-    assert [r[0] for r in rows] == ["01", "02", "03"]  # $D400 counts up per frame
-    assert all(r[24] == "0F" for r in rows)  # driver volume visible in the grid
-
-
-def test_decompile_frameprog_flag(tmp_path, capsys):
-    prg = _player_prg(tmp_path)
-    out_file = tmp_path / "player.frameprog"
-    rc = cli.main(
-        ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
-        + ["--frames", "4", "--frameprog", "-o", str(out_file)]
-    )
-    assert rc == 0
     text = out_file.read_text()
     assert text.startswith("frameprog 1\n") and "sub_1000(" in text
     assert " ctr_1010: u8" in text and not re.search(r"@\d|@t\d|@x\(|code\[", text)
@@ -85,7 +67,7 @@ def test_decompile_report_flag(tmp_path, capsys):
     prg = _player_prg(tmp_path)
     rc = cli.main(
         ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
-        + ["--frames", "4", "--report", "--sound", "-o", str(tmp_path / "p.sidprog")]
+        + ["--frames", "4", "--report", "--sound", "-o", str(tmp_path / "p.frameprog")]
     )
     err = capsys.readouterr().err
     assert rc == 0  # no dynamic dispatch: sound build succeeds
@@ -96,7 +78,7 @@ def test_decompile_close_flag(tmp_path, capsys):
     prg = _player_prg(tmp_path)
     rc = cli.main(
         ["decompile", prg, "--org", "0x1000", "--init", "0x1009", "--play", "0x1000"]
-        + ["--frames", "4", "--report", "--close", "-o", str(tmp_path / "p.sidprog")]
+        + ["--frames", "4", "--report", "--close", "-o", str(tmp_path / "p.frameprog")]
     )
     err = capsys.readouterr().err
     assert rc == 0

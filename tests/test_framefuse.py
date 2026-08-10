@@ -16,7 +16,6 @@ from deity_informant import framelog as F
 from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
-from deity_informant import sidprog
 from deity_informant import structured as S
 import _fuzzgen as G
 
@@ -380,12 +379,6 @@ def test_word_forms_round_trip(line):
     text = frameprog.dumps(frameprog.loads(src))
     assert line in text.splitlines()
     assert frameprog.dumps(frameprog.loads(text)) == text
-
-
-def test_a_width_suffix_is_not_a_sidprog_form():
-    """sidprog keeps the byte store: its tN bindings expand, so widths do not ride."""
-    with pytest.raises(ValueError):
-        sidprog.parse("sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n m_1500:2 = $0001\n}\n")
 
 
 def test_a_word_store_must_match_its_lvalue_width():

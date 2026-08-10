@@ -1,8 +1,8 @@
-"""Word-typed locals and the truncation form: the frameprog dialect only.
+"""Word-typed locals and the truncation form.
 
 ``("loc", name, 2)`` is a 16-bit local (the 2-tuple stays one byte) and
-``("op", "COPY", (x,), w)`` prints as ``trunc<w>``; both round trip and both are
-rejected in a sidprog document, exactly like the width suffix that carries them.
+``("op", "COPY", (x,), w)`` prints as ``trunc<w>``; both round trip through the
+grammar at every use site.
 """
 
 import pytest
@@ -12,7 +12,6 @@ from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 from deity_informant import grammar as G
-from deity_informant import sidprog
 
 _DOC = "frameprog 1\nplay $1000\ninit $0F00\nsub_1000() {\n%s\n  ret\n}\n"
 
@@ -90,13 +89,3 @@ def test_a_truncated_word_stores_one_cell():
         cells=((0x1400, 0x34), (0x1401, 0x12)),
     )
     assert (m[0x1600], m[0x1601]) == (0x34, 0x00)
-
-
-def test_a_word_local_is_not_a_sidprog_form():
-    with pytest.raises(ValueError, match="frameprog form"):
-        sidprog.parse("sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n w:2 = $0001\n}\n")
-
-
-def test_a_truncation_is_not_a_sidprog_form():
-    with pytest.raises(ValueError, match="frameprog form"):
-        sidprog.parse("sidprog 1\nplay $1000\ninit $0F00\nproc $1000 {\n A = trunc1(m_1500)\n}\n")

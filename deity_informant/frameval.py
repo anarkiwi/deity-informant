@@ -251,7 +251,7 @@ class _Code:
             raise FrameFault("watched statement outside the program")
 
     def mark(self, pc, i=None):
-        """Bind a serialized pc to an op index (sidprog's pcmap, first wins)."""
+        """Bind a serialized pc to an op index (first wins)."""
         self.pcmap.setdefault(pc, len(self.ops) if i is None else i)
 
     def cont(self, i, ret):

@@ -2,7 +2,7 @@
 
 Nests the verified block/edge model into ``if``/``loop`` regions over named
 state -- a human-facing view of the same model the walker replays byte-exact
-(the exact executable artifact stays the sidprog text, :mod:`deity_informant.sidprog`).
+(the executable artifact is the frame program, :mod:`deity_informant.frameprog`).
 """
 
 from __future__ import annotations
@@ -778,7 +778,7 @@ def _procedures(model):
 
 def render(model):
     """Readable structured pseudocode for the whole program."""
-    head = "; structured view of $%04X (play) -- the sidprog text is the exact program" % model.play
+    head = "; structured view of $%04X (play) -- the frame program is the artifact" % model.play
     lines = [head]
     for name, pc in _procedures(model):
         root, labels = _structure(model, pc)

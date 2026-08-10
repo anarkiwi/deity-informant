@@ -1,8 +1,8 @@
-"""frameprog: the frame-level dialect of the sidprog language.
+"""frameprog: the frame-level artifact, and the one text the project emits.
 
 Generation gives annotation-free region trees (rung (a)), state-variable
 opcode switches, declared inputs and the procedural surface; ``parse``/
-``loads`` read it back over the shared grammar (``sidprog.lark``).
+``loads`` read it back over the grammar (``sidprog.lark``).
 """
 
 from __future__ import annotations
