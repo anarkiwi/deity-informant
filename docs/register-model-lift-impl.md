@@ -133,17 +133,21 @@ the saturation algorithm" — it exists and is hardware-validated.
 
 **The canonical example, executable.** `examples/state_machine_lift.py` is the
 whole method in one file, and `tests/test_state_machine_lift.py` gates it: a
-hand-written 6502 playroutine (8 bars on one voice, vibrato via an ADC carry
-chain, a Follin-style SMC-JMP command dispatch, a deferred-carry script
-cursor) runs through the real pipeline — VM, decompile + walker replay,
-`eqlift_mem.emit` minimization, three spelling folds — the paired u16 SID
-store and the deferred-carry advance with the unobserved-arm guard each
-Z3-proved, the u16 pair reload a structural match whose independence check
-is a name scan and whose proof stage 3's rule admission owes — role
-classification off the folded update shapes — and the resulting
-role-typed u16 state machine executes and matches the original frame-for-frame
-on the VM projection, on pysidtracker's independent engine, and on the
-dockerized sidplayfp/sidtrace oracle (`--sidtrace`). **Every stage below
+hand-written 6502 playroutine (8 bars over three structurally parallel voices —
+lead, bass, offbeat arpeggio — each with its own script, deferred-carry cursor,
+Follin-style SMC-JMP command dispatch, table vibrato through an ADC carry
+chain, a two-frame hard restart that zeroes ADSR and drops the gate then sets
+TEST, and a RAM SID shadow carrying the envelope/control lanes flushed ADSR
+before gate) runs through the real pipeline — VM, decompile + walker replay,
+`eqlift_mem.emit` minimization, four spelling folds — the shadow store-to-load
+forward proved over the array theory, the paired u16 SID store and the
+deferred-carry advance whose guard is proved rather than matched, the u16 pair
+reload a structural match whose independence check is a name scan and whose
+proof stage 3's rule admission owes — role classification off the folded update
+shapes — and the resulting role-typed u16 state machine executes and matches
+the original frame-for-frame, in order, on the VM projection, on pysidtracker's
+independent engine, and on the dockerized sidplayfp/sidtrace oracle
+(`--sidtrace`); `--wav` renders it to `out/`. **Every stage below
 MUST keep this example green; a stage that cannot express it has diverged
 from the goal.** The stages generalize exactly what it does: stage 1 catalogs
 the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
@@ -672,3 +676,45 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   inconsistency in the definitional encoding that must be diagnosed before any
   flip. Those five are 3b's next work, with the join model and whole-chain region
   extraction.
+- **2026-08-10 — the canonical example grows shadowing, three voices and hard
+  restart; four findings 3c/3d owe.** The prototype is now three structurally
+  parallel voices (lead, bass, offbeat arpeggio), each with its own script,
+  cursor, SMC dispatch and hard restart, composing the envelope/control lanes
+  in a RAM SID shadow that the frame flushes ADSR-before-gate. What it surfaced:
+  (1) **The memory axioms forward; the printer refuses the result.** The
+  saturation does union `sel(shadow-chain, a)` with the composed value —
+  constants come out forwarded (`sid.v1.pw_lo = $00`) — but `pick_ir` keeps only
+  candidates with no `cell`/`load` anywhere and, when none survives, falls back
+  to the *raw unsaturated* term, which is the shadow read-back. So any shadow
+  value that itself reads a state cell is spelled from the shadow, never from the
+  cell. The fix 3c owes is a cost, not a filter: shadow/SID read-backs priced
+  expensive, after which root extraction drops the now-unread shadow stores on
+  its own. The example does it as a fourth fold, `forward_shadow`, each instance
+  proved over the array theory with intervening writes as concrete-address
+  `Store`s and locals version-keyed, then prunes the unread stores.
+  (2) **Forwarding a carry chain through a shadow read-back is where the e-graph
+  explodes.** One voice, measured: 3 read-backs 4.6s/0.8GB, 5 read-backs
+  53s/3.0GB, 7 read-backs OOM at 4GB — but 7 read-backs cost 3.3s when no wide
+  ADC term is in the block. That is why the example shadows three lanes per voice
+  and writes frequency straight to the chip. Stage 3's "bounded schedules" is not
+  optional tuning; `rs * 30` to fixpoint has no bound on this shape.
+  (3) **The extractor spells one idiom two ways in one routine.** The
+  deferred-carry advance now emits as `p=lo; t=p+k; lo=t; cflag=(t<k); if !cflag`
+  at some sites and as `p=lo; lo=p+k; if (k <= p+k)` at others. A syntactic
+  matcher catches one of the two. The example's rule now inlines the window's
+  temporaries and hands the guard to Z3 instead of comparing it — proving the
+  guard's meaning is what makes the rule spelling-independent, and that is the
+  shape the convergence tests should assert.
+  (4) **Isomorphic voices, non-isomorphic guards.** The three voices are the same
+  code at shifted bases, yet voice 1's advance folds `wide` and voices 2 and 3
+  fold `nocarry`, purely because of where each script landed relative to a page
+  boundary. Per-voice re-rolling (3d) must treat an observed-guard difference as
+  unifiable under a guard, not as a structure difference, or the isomorphism it
+  looks for will never be total. Noted in passing, unexplained: the minimized
+  text still carries two dead `cflag` defs — the vibrato ADC carry at the voice-1
+  and voice-2 tail boundaries, read by no statement, absent for voice 3 — so
+  root extraction is keeping something at a region boundary that no root reaches.
+  Both orderings hard restart depends on —
+  ADSR-before-gate within a frame, and zero-ADSR then TEST then waveform+gate
+  across frames — are reproduced by the minimized program exactly, and the test
+  asserts them on both sides rather than trusting last-write-wins.
