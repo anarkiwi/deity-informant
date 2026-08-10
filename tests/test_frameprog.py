@@ -739,14 +739,15 @@ def test_a_sole_static_call_site_owns_the_callee_body():
     assert frameprog.dumps(frameprog.loads(two)) == two
 
 
-_DECL_TRUTH = {
+_DECL_TRUTH = {  # the declaration studies, as the frame program spells them
     "Hubbard_Rob-Commando": [
         "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:",
         "table m_56F9[3] lo m_56FC -> $576B..$57EC observed:",
         "table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:",
         " stride 8 ",  # instrument records at m_5591
         "stream m_576B[",
-        "via zp_5D cmp $FE $FF observed:",
+        "via ptr_005D cmp $FE $FF observed:",
+        "alias ptr_005D = zp_5D",  # rung (d) fused this pair: one name
         "alias pos_54EC = m_54EC",
         "alias pos_54ED = m_54ED",
         "alias pos_54EE = m_54EE",
@@ -754,29 +755,35 @@ _DECL_TRUTH = {
     "Cadaver-Aces_High": [
         "table m_155C[52] lo m_1590",
         "stream m_15C4[",
-        "via zp_FB cmp $00 $FE $FF observed:",
+        "via ptr_00FB_lo cmp $00 $FE $FF observed:",  # unfused: the lo half names it
+        "alias ptr_00FB_lo = zp_FB",
+        "alias ptr_00FB_hi = zp_FC",
     ],
     "Follin_Tim-Ghouls_n_Ghosts": [
         "stream m_7338[",
         "stream m_75F7[",
         "stream m_77A8[",
-        "via zp_21 ",
-        "via zp_23 ",
-        "via zp_25 ",
+        "via ptr_0021_lo ",
+        "via ptr_0023_lo ",
+        "via ptr_0025_lo ",
+        "alias ptr_0021_lo = zp_21",
     ],
 }
 
 
 def _decl_tunes():
-    return [
-        pytest.param(path, sub, secs, id=tid)
-        for path, sub, secs in corpus_params(HVSC)
-        for tid in ["%s-%s" % (path.parent.name, path.stem)]
-        if tid in _DECL_TRUTH
-    ]
+    """The three studied tunes; the stem comparisons are what pins them."""
+    out = []
+    for path, sub, secs in corpus_params(HVSC):
+        named = (
+            path.stem == "Commando" or path.stem == "Aces_High" or path.stem == "Ghouls_n_Ghosts"
+        )
+        tid = "%s-%s" % (path.parent.name, path.stem)
+        if named and tid in _DECL_TRUTH:
+            out.append(pytest.param(path, sub, secs, id=tid))
+    return out
 
 
-@pytest.mark.oracle
 @pytest.mark.parametrize("sid,subtune,secs", _decl_tunes())
 def test_declarations_are_ground_truth_on_the_studied_tunes(sid, subtune, secs):
     """The declaration study, held on the artifact that carries it."""
