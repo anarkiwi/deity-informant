@@ -1,5 +1,15 @@
 # sidprog language specification
 
+> **Superseded as a deliverable surface, retained as the spec of what still
+> ships.** The frame program is the artifact level the register-model plan
+> emits (docs/register-model-lift-impl.md), and the sidprog **emit path is in
+> that plan's housekeeping queue for deletion** — the cycle-exact anchor is the
+> committed model, the walker replay and the VM/recorder against sidplayfp, not
+> this text. The laws below are normative for as long as the emitter exists;
+> `tests/test_soundness.py:403`'s closure round-trip is the named sidprog-only
+> law to port to a frameprog equivalent before it goes. Nothing here is a reason
+> to keep the emit path.
+
 sidprog is the canonical structured text a decompiled playroutine serialises
 to — the ONE language of the decompiler (spec §6). It is *specified*: the
 normative grammar is `deity_informant/sidprog.lark` ([grammar.md](grammar.md))
