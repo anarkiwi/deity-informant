@@ -342,13 +342,19 @@ procedure text.
   `Dynasty_8_tune_2` (one procedure, 488 statement nodes) rounds 0–8 cost 0.0s,
   round 9 0.5s, round 10 3.1s and round 11 asked for 1.6GB in one allocation, so
   the process died before extraction. `eqlift_mem.saturate` runs the ruleset a
-  round at a time and refuses the next one when the last round's own growth ratio
-  says it will not fit the remaining budget (`DI_EQLIFT_BUDGET_S`, default 5s) or
-  when resident growth passes `DI_EQLIFT_BUDGET_MB` (default 128), and stops at a
-  fixpoint. Priced on the tune that forced it: 128MB gives 630 lines in 2.0s,
-  256MB gives 629 lines in 39.1s — one line of minimization for 37 seconds — and
-  neither Commando (350) nor `Ghouls_n_Ghosts` (1,335) moves a line at any bound,
-  because the cap does not bind there.
+  round at a time and stops at a fixpoint, at a **round cap** (`DI_EQLIFT_ROUNDS`,
+  default 6) or when the e-graph passes a **node bound** (`DI_EQLIFT_NODES`,
+  default 30,000, the bound rung (d2)'s `framemath._saturate` already runs under).
+  **Both bounds are functions of the program**: the wall-clock and resident-growth
+  cut this replaced (stage 4, landing 2) made the artifact a function of the
+  machine, which §10's determinism clause forbids. The cap is measured, not
+  guessed: over the 25 exemplars the emitted total is 26,814 lines at 4 rounds,
+  26,812 at 5 and **26,811 at 6 and at every cap through 12** — the same total the
+  clock-cut schedule reached. Past 6 the size is fixed and the *spelling* keeps
+  moving (byte-identity with cap 6 falls 24/25 at 7, 23 at 8, 22 at 10, 20 at 12),
+  and one tune is non-monotone in size the other way (`Tel_Kees/Before_I_Forget`
+  1,553 lines at 4 rounds, 1,554 from 5 up). More rounds is therefore not better;
+  a cap must be chosen, fixed and recorded.
 - Graph BUILD cost is a DAG problem too, and it dominated the proof one: a store of
   a load (`m[a] = m[b]`) embeds the memory chain in its own stored value, so an
   unnamed chain DOUBLES per such store. `Down_Under`'s first procedure is a 340-node
@@ -367,12 +373,15 @@ procedure text.
   `remaining × weight[i]/sum(weights[i:])` over the recursive statement-node count,
   because dividing by procedure COUNT gave the largest procedure a one-site trailer's
   share and the trailer returned its own unspent -- and the share funds saturation,
-  capped at `DI_EQLIFT_BUDGET_S`, and then extraction. A site past the share renders
+  and it funds extraction alone since the schedule stopped taking seconds. A site past the share renders
   from its own term — position-correct by the renderer discipline, and sound because
   extraction is sound at any cutoff. Never silent: `emit`/`emit_mem`/`render_proc`
   take a `stats` dict carrying the extraction-site and fallback counts. Like the
-  saturation bound, a binding budget makes the artifact a function of the clock, so
-  an ON/OFF comparison is read at a budget that does not bind.
+  a binding budget makes the artifact a function of the clock, so this is the one
+  wall-clock cut left in the lifter and the review is read at a budget that does not
+  bind (`DI_EQLIFT_EMIT_S=600`; over the 25 exemplars the default 60 gives the same
+  bytes, and `extract_fallback` is zero on every tune, so it does not bind there
+  either).
 - Boundary liveness is `frameproc._Flow`, and a transcription of it is a place to
   lose precision: `eqlift_mem._liveness` dropped `_Flow`'s successor-aware cases, so
   every computed transfer read `info.G` — every register the program reads anywhere.
