@@ -497,9 +497,10 @@ The artifact: role-typed `state { }` plus the per-frame transition function,
 per-voice unified where the isomorphism is total (else the copies stay); VM
 families emit their operator sets. The witness, when wanted: re-emit minimal
 6502 from the minimized program and replay it under the VM against the
-oracle — an end-to-end check with no evaluator in the trust chain. (Partial
-witness landed: `deity_informant/witness6502.py`, the whole dialect witnessed,
-dispatch and computed transfers refused by name.)
+oracle — an end-to-end check with no evaluator in the trust chain. (Landed:
+`deity_informant/witness6502.py`, the whole dialect and every dispatch form
+witnessed, the canonical example replayed frame for frame off the machine; the
+raw machine call and the static image vector are the named refusals left.)
 
 **The runway the diagnosis left it** (#155, the record in the decision log):
 the two remaining evaluation faults (`C64_World`, `1st_Decent_Hardcore` — one

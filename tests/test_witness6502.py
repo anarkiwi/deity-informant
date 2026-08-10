@@ -167,14 +167,145 @@ def test_an_unobserved_statement_faults_the_machine_instead_of_running_on():
         run([("unobs", 0x1004), ("ret", False)])
 
 
+def smc(target, at=CELL):
+    """The dispatch operand the program writes itself: a word store of a pc."""
+    return ("st", c(at, 2), op("COPY", (c(target, 2),), 2))
+
+
+def test_a_computed_goto_reaches_the_label_its_target_names():
+    """The target is a pc of the program, so the machine resolves it to that pc's code."""
+    stmts = [
+        smc(0x1010),
+        ("dgoto", m(CELL, 2)),
+        store(c(0xEE)),
+        ("label", 0x1010),
+        store(c(0x77)),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0x77)]]
+
+
+def test_a_computed_goto_outside_the_observed_set_faults():
+    """Observed-primary: a pc no label of the program names lands on the fault."""
+    with pytest.raises(W.WitnessFault, match="unobserved"):
+        run([smc(0x1234), ("dgoto", m(CELL, 2)), ("ret", False)])
+
+
+def _swg(target, tail=()):
+    """A switch goto over two observed arms, dispatched through the written cell."""
+    arms = [
+        ("$1010", [store(c(0x77)), ("ret", False)]),
+        ("$1020", [store(c(0x88)), ("ret", False)]),
+    ]
+    return [smc(target), ("dgoto", m(CELL, 2)), ("swg", arms)] + list(tail)
+
+
+def test_an_observed_arm_of_a_switch_goto_runs_as_the_code_it_dispatches_to():
+    assert run(_swg(0x1010)) == [[(0, 0x77)]]
+    assert run(_swg(0x1020)) == [[(0, 0x88)]]
+
+
+def test_a_switch_goto_resolves_a_non_arm_target_through_the_program_s_labels():
+    """The arm table is primary and the whole label table is the fallback, as in the evaluator."""
+    tail = [("label", 0x1040), store(c(0x99)), ("ret", False)]
+    assert run(_swg(0x1040, tail)) == [[(0, 0x99)]]
+
+
+def test_an_unobserved_variant_faults_the_switch_goto():
+    with pytest.raises(W.WitnessFault, match="unobserved"):
+        run(_swg(0x1030))
+
+
+def test_an_arm_that_runs_off_its_end_faults_instead_of_running_on():
+    """The evaluator faults where a switch-goto arm falls through; so does the machine."""
+    stmts = [smc(0x1010), ("dgoto", m(CELL, 2)), ("swg", [("$1010", [store(c(0x77))])])]
+    with pytest.raises(W.WitnessFault, match="unobserved"):
+        run(stmts)
+
+
+def _opsw(value, arms):
+    return [("st", c(CELL, 2), c(value)), ("opsw", CELL, arms), store(c(0x33)), ("ret", False)]
+
+
+def test_a_state_variable_switch_takes_the_arm_its_operand_byte_names():
+    """The byte is read from the dispatch's own cell, which the program stored to."""
+    arms = [("$80", [store(c(0x11))]), ("$81", [store(c(0x22))])]
+    assert run(_opsw(0x80, arms)) == [[(0, 0x11), (0, 0x33)]]
+    assert run(_opsw(0x81, arms)) == [[(0, 0x22), (0, 0x33)]]
+
+
+def test_a_state_variable_switch_faults_on_an_unobserved_operand():
+    with pytest.raises(W.WitnessFault, match="unobserved"):
+        run(_opsw(0x82, [("$80", [store(c(0x11))])]))
+
+
+def test_a_guarded_computed_branch_takes_its_target_only_where_the_guard_holds():
+    def go(word):
+        cond = op("INT_NOTEQUAL", (m(CELL), c(0x11)))
+        return run(
+            [
+                ("dbr", word, cond, c(0x1010, 2)),
+                store(c(0xEE)),
+                ("ret", False),
+                ("label", 0x1010),
+                store(c(0x77)),
+                ("ret", False),
+            ]
+        )
+
+    assert go("if") == [[(0, 0xEE)]]
+    assert go("ifnot") == [[(0, 0x77)]]
+
+
+def test_a_computed_call_runs_its_callee_and_returns_to_the_next_statement():
+    callee = [(0x1200, [], [], [store(c(0x5A)), ("ret", False)])]
+    stmts = [smc(0x1200), ("dcall", m(CELL, 2), 0x1005), store(c(0x09)), ("ret", False)]
+    assert run(stmts, procs=callee) == [[(0, 0x5A), (0, 0x09)]]
+
+
+def _swc(target, bare=()):
+    arms = [("$1210", [store(c(0x44))]), ("$1220", [store(c(0x55))])]
+    return [
+        smc(target),
+        ("dcall", m(CELL, 2), 0x1005),
+        ("swc", list(bare), arms),
+        store(c(0x09)),
+        ("ret", False),
+    ]
+
+
+def test_an_observed_arm_of_a_switch_call_runs_and_returns():
+    assert run(_swc(0x1210)) == [[(0, 0x44), (0, 0x09)]]
+    assert run(_swc(0x1220)) == [[(0, 0x55), (0, 0x09)]]
+
+
+def test_a_switch_call_reaches_a_bare_arm_through_the_program_s_own_procedures():
+    """A bare arm carries no body: the call lands on the procedure the label names."""
+    callee = [(0x1200, [], [], [store(c(0x5A)), ("ret", False)])]
+    assert run(_swc(0x1200, ["$1200"]), procs=callee) == [[(0, 0x5A), (0, 0x09)]]
+
+
+def test_a_jump_through_an_image_vector_reads_the_word_the_vector_holds():
+    """``igoto`` through a computed pointer: the word is read on the machine, not pinned."""
+    stmts = [
+        smc(0x1010),
+        ("igoto", 0x1000, c(CELL, 2)),
+        store(c(0xEE)),
+        ("label", 0x1010),
+        store(c(0x77)),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0x77)]]
+
+
 REFUSALS = {
-    "opsw": (lambda: [("opsw", 0x1000, [("$1000", [])])], "SMC dispatch switch"),
-    "swg": (lambda: [("swg", [("$1000", [])])], "SMC dispatch switch"),
-    "swc": (lambda: [("swc", ["$1000"], [("$1000", [])])], "SMC dispatch switch"),
-    "dgoto": (lambda: [("dgoto", c(0x1000, 2))], "computed transfer"),
-    "igoto": (lambda: [("igoto", 0x1000, None)], "computed transfer"),
-    "dcall": (lambda: [("dcall", c(0x1000, 2), 0x1005)], "computed transfer"),
-    "dbr": (lambda: [("dbr", "if", c(1), c(0x1000, 2))], "computed transfer"),
+    "swg": (lambda: [("swg", [("$1000", [])])], "no computed goto before it"),
+    "swc": (lambda: [("swc", ["$1000"], [("$1000", [])])], "no computed call before it"),
+    "swg-after-call": (
+        lambda: [("dcall", c(0x1000, 2), 0x1005), ("swg", [("$1000", [])])],
+        "no computed goto before it",
+    ),
+    "igoto-static": (lambda: [("igoto", 0x1000, None)], r"static image vector at \$1000"),
     "call": (lambda: [("call", 0x1200, 0x1005)], "raw machine call"),
     "callb": (lambda: [("callb", 0x1005, 0x1005, [])], "raw machine call"),
     "unknown": (lambda: [("frobnicate", 0x1000)], "no witnessed statement form"),
@@ -271,16 +402,14 @@ def _example():
     return frameprog.program(model), frames
 
 
-def test_the_example_artifact_refuses_only_on_its_dispatch(example):
-    """The pin's observed failure mode, pinned: the coverage gap, not a divergence."""
-    with pytest.raises(W.Refusal, match="computed transfer"):
-        W.emit(example[0])
+def test_the_example_artifact_refuses_nothing_it_uses(example):
+    """The artifact dispatches, and every form it carries is compiled rather than declined."""
+    kinds = {s[0] for _e, _p, _r, st in example[0].procs for s in W._walk(st)}
+    assert {"dgoto", "swg"} <= kinds  # the table names ``swg`` only where no dispatch pairs it
+    assert not kinds & {"call", "callb"}
+    assert W.emit(example[0]).code
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4: the witness covers dispatch and the full artifact",
-    strict=True,
-)
 def test_the_example_artifact_replays_frame_for_frame(example):
     """The end-to-end gate: re-emitted 6502 against the original routine's projection."""
     p, frames = example
