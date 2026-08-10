@@ -83,9 +83,14 @@ divergence left, no other verdict moved. The two evaluation faults stand and are
 inline-parameter `JSR` return, and it is a **lift defect, not the claim
 boundary** — the machine never executes `$4ED7`, so the guard is right and the
 control flow that reaches it is wrong. The fix moves one tune's emitted text and
-623 of 624 are byte-identical, so the aggregate moves to
+623 of 624 are byte-identical, so the aggregate moved to
 `946f0dcb082fc4df0814505b5eb42a8dd677f70bcfe94deeb245c2132f1c6ec0` over the same
-624 (28,512,265 bytes).
+624 (28,512,265 bytes). It moved once more, on a **reviewed §4 cost diff** (3d
+landing 2): admitting `pack_add` beside the price that names the OR-built pack the
+normal form respells one line in 49 tunes and nothing else, so the standing
+baseline is
+`434f0bab009a2543da69f7997a5c279af4f9e390fc894f601bce262e515c7c72` over 624
+(28,512,657 bytes).
 
 | label | what landed, where | role under this plan |
 |---|---|---|
@@ -456,13 +461,15 @@ traversal landed once: the **read** closure (deref spans from 2b's observed
 extents, consumed exactly as the join consumes `addr_floor`/`addr_bits`) together
 with the join over the in-edge memories at a label with real in-edges — it flipped
 `test_stack_spill_forwards` and closed 3b's standing residue, the forward half by
-mechanism and the back-edge half by a keeps-∅-by-construction proof. Landing 2 is the
-declared lo/hi pair row read (`framemath._pairs`' shape: enumerate the declared
-pair at the site, query the class), flipping
-`test_note_fetch_is_one_u16_row_read`, plus `pack_add`'s §4 cost change
-measured on its own corpus diff — decided there, and re-read at §8 step 4's
-cutover, where naming the pack the normal form first moves the frameprog
-artifact (that ordering previews rung (d2)'s subsumption). Landing 3 is
+mechanism and the back-edge half by a keeps-∅-by-construction proof. Landing 2 has landed as `pack_add`'s §4 cost
+change, measured on its own corpus diff and **admitted** there: naming the pack
+the normal form moves the frameprog artifact first, which is rung (d2)'s
+subsumption previewed. The declared lo/hi pair row read moves to landing 3 on a
+measured reason rather than a schedule — `framemath._pairs`' shape needs a site,
+and the prototype's only two reads of the declared columns are `sub_1485`'s own
+statements, whose lanes leave in two registers across a `call`;
+`test_note_fetch_is_one_u16_row_read` is re-pinned there with that enumeration.
+Landing 3 is therefore that row read plus
 guard-aware re-rolling — anti-unify the extracted voices, an observed-guard
 difference unifying under a Z3-proved guard and never read as structure
 (de-risked by 3c: extraction is deterministic and no longer falls back at
@@ -1426,3 +1433,43 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   keyword or moves that assertion with it.
   Tests only, so no artifact movement. Suite 2,686 passed / 490 skipped / 42 xfailed,
   oracle 16 passed.
+- **2026-08-10 — stage 3d, landing 2: `pack_add` is admitted, and the cost names the
+  normal form.** The §4 process run end to end on the one rule 3c landing 2 proved and
+  refused to admit.
+  (1) **The cost change is the decision, and the rule rides on it.** With both pack
+  spellings priced 1 the `repr` tie-break decides which one the artifact carries, and it
+  decides for `add`. `eqlift._packed` prices an `add` that spells the pack (`zext(hi) << 8`
+  plus `zext(lo)`) one above the `bor` that spells it, which is the catalog's own reading —
+  `idioms.pack` **is** the OR form, so `word-pack`'s normal form was already named and the
+  price now says so. `pack_add` is admitted in `RULES` beside it and proved by
+  `verify_rules` like every other entry.
+  (2) **The corpus-artifact diff, read tune by tune.** `tools/emit_identity.py`: 624 tunes,
+  0 refused, **49 of 624 moved, every one by exactly +8 bytes**, 28,512,265 →
+  **28,512,657** bytes, aggregate `946f0dcb…` → **`434f0bab009a2543da69f7997a5c279af4f9e390fc894f601bce262e515c7c72`**.
+  Five of the 49 were diffed by hand and the diff is **one line each, one shape**: the
+  ×257 index scale `((zext2(i) << $08):2 + zext2(i)):2` becomes
+  `((zext2(idx_00FC) << $08):2 | zext2(idx_00FC)):2` — the ADC-built pack respelled as the
+  catalog's `word-pack`, with the operand spelled from its own cell instead of a local copy
+  (a cell costs 1 and a local 4, so the OR spelling's leaves win once the pack itself is
+  priced). The bytes grow because the cell's name is longer than the temp's; no line is
+  added or removed. Rung (d2) is what carries it: `framemath` reads the admitted rule set.
+  (3) **The 2.8× does not reproduce, and the reason is the cost change.** 3c landing 2
+  measured the memory suite at 2.8× with the rule admitted and the tie-break loose.
+  Measured now over `tests/test_eqlift_mem.py` + `tests/test_eqlift_converge.py`, three
+  runs each: **24.9s admitted, 25.0s not**. The rule adds one `add` e-node per pack; what
+  cost 2.8× was the churn of a tie that no longer exists.
+  (4) **The decision: admit.** The rule is a proved equivalence, the merge is what the
+  convergence gate exists to assert, the price removes a §10 nondeterminism hazard (a tie
+  decided by spelling), the artifact moves by +0.0014% of its bytes and by zero lines, and
+  every moved line moves *toward* the catalog's normal form.
+  `test_the_adc_built_pack_converges_on_the_ora_built_one` **flips**;
+  `test_the_cost_names_the_or_built_pack_the_normal_form` replaces the deferral's proof
+  test with the price it was waiting for. The new emit-identity baseline is recorded above
+  and `--expect` takes it from here.
+  (5) **Nothing else moves.** `gate_sweep` at full Songlengths 624 build, 622 evaluate,
+  **622 clean**, the two CyberTracker faults standing. The 25-exemplar eqlift review is
+  **byte-identical to landing 1** — OFF 27,462 / ON 27,456, `d_lines` −6, `d_stores` −3,
+  22 identical, 13,909 extraction sites, 3,309 changed and every one Z3-proved (12,138
+  proved sites), zero faults, refusals, regressions and fallbacks — because the pack
+  respelling lands in rung (d2)'s artifact and eqlift's own extraction never preferred the
+  ADC form at any exemplar site.

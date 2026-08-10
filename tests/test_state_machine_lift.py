@@ -305,12 +305,14 @@ def test_no_byte_lane_update_of_any_declared_u16(art):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3d: the pitch table is two columns at unrelated "
-    "bases (m_14A7 lo, m_14BD hi), which frameprog's _pair_tables declares a lo/hi pair "
-    "and no address arithmetic relates -- so 3c's sel_pair axiom, which merges two "
-    "ADJACENT columns at one index, cannot reach it. The read is chosen by enumerating "
-    "the declared pair at the site (framemath._pairs' shape) and querying the class for "
-    "the row read, which lands with per-voice re-rolling",
+    reason="register-model-lift stage 3d landing 3: the pitch table is two columns at "
+    "unrelated bases (m_14A7 lo, m_14BD hi), which frameprog's _pair_tables declares a "
+    "lo/hi pair and no address arithmetic relates -- so 3c's sel_pair axiom, which merges "
+    "two ADJACENT columns at one index, cannot reach it. Enumerating the declared pair at "
+    "the site (framemath._pairs' shape) and querying the class needs a site: the only two "
+    "reads of these columns are sub_1485's own statements, and their lanes leave it in two "
+    "registers across a `call`, so the pair meets again only where the callee's returns "
+    "are resolved into the caller -- which is what per-voice re-rolling supplies",
     **XFAIL,
 )
 def test_note_fetch_is_one_u16_row_read(text):
