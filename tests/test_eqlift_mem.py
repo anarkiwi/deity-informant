@@ -560,3 +560,16 @@ def test_extraction_budget_falls_back_to_the_site_term():
     assert 0 < spent["sites"] == spent["extract_fallback"]
     assert mem.render_proc(_spill_over(_PUSH), budget=30.0, stats=ample)[-1] == "zp_41 = x"
     assert ample["extract_fallback"] == 0 and ample["sites"] == spent["sites"]
+
+
+def test_memory_versions_are_named_so_a_copy_chain_cannot_double():
+    """``m[a] = m[b]`` embeds the chain in its own value, so an unnamed chain doubles
+    per copy -- 38 of them is 2**38 nodes and the graph build dies before saturation.
+    Each version is one store over the previous name, so the term stays linear."""
+    stmts = [("st", ("const", 0x40 + i, 1), ("mem", ("const", 0x60 + i, 1), 1)) for i in range(12)]
+    proofs = {}
+    assert mem.render_proc(stmts, proofs=proofs)[:2] == ["zp_40 = zp_60", "zp_41 = zp_61"]
+    chains = list(proofs["mems"].values())
+    assert len(chains) == 12
+    assert all(c[0] == "store" and c[1][0] in ("mem0", "memk") for c in chains)
+    assert mem.verify_sites(proofs) == len(proofs["pairs"])

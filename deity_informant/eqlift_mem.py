@@ -743,7 +743,7 @@ def render_proc(
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
-    src, seeds = {}, []
+    src, seeds, memdefs = {}, [], []
     dfs = _Defs(src)
 
     def seed(term, e):
@@ -759,8 +759,15 @@ def render_proc(
         stt["k"] += 1
         return stt["k"]
 
+    def remember(chain):
+        """Name the memory version, as a def names a value: a store of a load embeds
+        the chain twice, so an unnamed chain is exponential in the number of them."""
+        n = fresh()
+        memdefs.append((n, chain))
+        return memk(i64(n))
+
     def join_mem(pre_mem, s):
-        return _join_mem(pre_mem, [s], fresh)
+        return remember(_join_mem(pre_mem, [s], fresh))
 
     def conv(e):
         k = e[0]
@@ -812,7 +819,7 @@ def render_proc(
                 a = s[1]
                 addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else seed(conv(a), a)
                 pre = stt["mem"]
-                stt["mem"] = store(pre, addr, v, _ew(s[2]))
+                stt["mem"] = remember(store(pre, addr, v, _ew(s[2])))
                 ai = None if a[0] == "const" else add(addr)
                 own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
                 nd = ("st", a, add(v, own), ai, _ew(s[2]))
@@ -902,6 +909,8 @@ def render_proc(
     eg = EGraph()
     for _n, leaf, rhs in defs:
         eg.register(union(leaf).with_(rhs))
+    for n, chain in memdefs:
+        eg.register(union(memk(i64(n))).with_(chain))
     for t, l, h in seeds:  # the interval bridge: bit analyses read as e-class bounds
         eg.register(set_(lo(t)).to(i64(l)), set_(hi(t)).to(i64(h)))
     handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
@@ -971,6 +980,7 @@ def render_proc(
         proofs.setdefault("defs", {}).update(
             (name, E._parse_ir(str(rhs))) for name, _leaf, rhs in defs
         )
+        proofs.setdefault("mems", {}).update((n, E._parse_ir(str(c))) for n, c in memdefs)
         proofs.setdefault("locw", {}).update(locw)
 
     def pick(i):
@@ -1044,8 +1054,9 @@ class _Z3Env:
     """Z3 reading of an extracted term: values are BV16 masked to their own width,
     memory an array BV16 -> BV8 whose ``mem0``/``memk`` leaves are opaque."""
 
-    def __init__(self, locw=None):
+    def __init__(self, locw=None, mems=None):
         self.locw = locw or {}
+        self.mems = mems or {}  # named memory versions; the unnamed ones stay opaque
         self.locs, self.arrs, self.constraints = {}, {}, []
         self.memo = {}  # extracted IR is a DAG; rebuilt as a tree it is exponential
 
@@ -1101,7 +1112,8 @@ class _Z3Env:
         if k == "mem0":
             return self._arr("m0")
         if k == "memk":
-            return self._arr("mk%d" % ir[1])
+            got = self.mems.get(ir[1])
+            return self._arr("mk%d" % ir[1]) if got is None else self.memory(got)
         if k == "store":
             v = z3.Extract(8 * ir[4] - 1, 0, self.of(ir[3]))
             return _store_w(self.memory(ir[1]), self.of(ir[2]), v, ir[4])
@@ -1157,7 +1169,7 @@ def verify_sites(sites):
     Adoption §6's all-rewritten-sites law, under the SSA/memory definitional
     equations: both sides are raw extracted forms, so a forwarded load is proven
     against the array encoding of its own store chain, not replayed."""
-    defs, env = sites.get("defs", {}), _Z3Env(sites.get("locw"))
+    defs, env = sites.get("defs", {}), _Z3Env(sites.get("locw"), sites.get("mems"))
     goals = [
         (site, got, env.of(site) != env.of(got))
         for site, got in sites.get("pairs", ())

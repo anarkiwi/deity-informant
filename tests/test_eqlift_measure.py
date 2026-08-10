@@ -44,7 +44,7 @@ def test_rollup_pairs_the_two_paths_and_totals_them():
         "on_lines": 198,
         "d_lines": -2,
         "d_stores": -1,
-        "sites": 100,
+        "extracted": 100,
         "changed": 10,
         "proved": 100,
     }
