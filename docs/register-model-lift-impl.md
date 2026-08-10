@@ -393,6 +393,14 @@ Steering metrics, replacing the census: **extracted term cost / emitted
 size, falling; persistent cells role-named, rising toward all.** The census
 signatures remain available as a diagnostic only.
 
+The properties are pinned before the work: `tests/test_state_machine_lift.py`
+carries the goal itself as strict xfails on the canonical prototype — zero
+architectural registers in the role-typed text, no SMC dispatch operand and no
+scratch cell in `state { }`, the role evidence clauses, declared initial values,
+VM operator sets, and the round-trip witness — plus two green guards (hash-seed
+determinism of the rendered text, and a size ratchet on emitted lines and
+extracted term cost).
+
 The artifact: role-typed `state { }` plus the per-frame transition function,
 per-voice unified where the isomorphism is total (else the copies stay); VM
 families emit their operator sets. The witness, when wanted: re-emit minimal
@@ -785,3 +793,23 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `run` lifts both paths off those texts, `report` is the rollup that is this gate —
   and `docs/join-model-footprints.md` carries the drafted call/goto closure landing
   2 resurrects.
+- **2026-08-10 — the prototype pins the goal, and the pins measure the gap.**
+  `tests/test_state_machine_lift.py` gains seven goal-level properties as strict
+  xfails, each enumerated from the artifact (the rendered state block, the roles
+  map, the folded AST) rather than from a hand-written cell list, so a voice or
+  feature added to the example is covered by construction. What they measure
+  today: the role-typed text still names two architectural registers (`a`, `y` —
+  `x`, `sp` and the four flag cells are already gone, the last of them with 3b
+  landing 1's liveness fix); the six SMC JMP-operand cells (`m_103F`/`m_1040`,
+  `m_111D`/`m_111E`, `m_11FB`/`m_11FC`) are declared `parameter` state although
+  their only reads are the computed transfer, and the same six are the only
+  declared cells written before every read in every frame — read-before-write is
+  measured by instrumenting the minimized machine's own RAM over the run, so the
+  "no scratch" and "no anonymous SMC state" pins are one defect counted two ways;
+  no operator set is declared for the script interpreter and the scripts print as
+  bytes; no `cursor` names its block and no cell carries an initializer, the two
+  emission shapes stage 4 owes; and the round-trip witness fails on the missing
+  re-emission capability, which is where it must fail until stage 4 builds one.
+  Two green guards ride with them: the rendered text is byte-identical under two
+  `PYTHONHASHSEED` values (adoption §10's closed defect, kept closed), and a size
+  ratchet pins 243 rendered lines / 679 extracted term nodes as ceilings.
