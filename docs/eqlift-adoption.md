@@ -217,6 +217,13 @@ procedure text.
 3. Solve the memory-join model (phi / opaque-reset) and cost bounding; extend
    root extraction across whole procedures. Cost/rule tuning until the corpus
    diff is a strict readability win, reviewed tune by tune; flag defaults on.
+   **Landed, stage 3b landing 3**: the span join carries what it proves disjoint,
+   the in-edge map frees the labels no edge enters, and the 25-exemplar review at
+   full Songlengths (`tools/eqlift_measure.py`, `DI_EQLIFT_EMIT_S=600`) flipped
+   `ROOT_EXTRACT` on — ON never emits more lines or stores than OFF, three tunes
+   emit fewer, 22 of 25 are byte-identical, every changed site Z3-proved, zero
+   faults and zero refusals. `DI_EQLIFT_ROOT_EXTRACT=0` still selects the liveness
+   path, which step 4 deletes.
 4. Delete the transitional passes (§5), `_Prune`/`_inline`, and the flag;
    frameprog emission goes through the unified graph unconditionally. Gate: full
    suite + Gate FP status unchanged.

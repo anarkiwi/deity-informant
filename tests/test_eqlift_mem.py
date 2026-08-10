@@ -544,9 +544,11 @@ def _tree():
     ]
 
 
-def test_flag_defaults_off():
-    """3a lands the mechanism, not the artifact change: the flag is off by default."""
-    assert mem.ROOT_EXTRACT is False
+def test_root_extraction_is_the_default_path():
+    """3b landing 3: the 25-exemplar review flipped it -- ON never emits more lines or
+    stores than OFF, three tunes fewer, every changed site proved. ``DI_EQLIFT_ROOT_
+    EXTRACT=0`` keeps the liveness path, which is what the OFF cases here still gate."""
+    assert mem.ROOT_EXTRACT is True
 
 
 def test_roots_names_only_the_observable_sinks():
@@ -708,3 +710,23 @@ def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms(root):
     successor-aware cases, so every computed transfer read every register the program
     reads: a flag no arm reads was boundary-live and its definition was rooted."""
     assert mem.render_proc(_DISPATCH, root_extract=root)[0] == "goto (ptr)"
+
+
+def test_a_label_no_edge_enters_is_not_a_join():
+    """3b landing 3: the in-edge map read at a label. A label no goto, call or swc
+    names keeps the chain; one an edge enters, and any artifact holding a transfer the
+    map cannot follow, resets it."""
+    body = [
+        ("asg", "v", ("const", 0x05, 1)),
+        ("st", ("const", 0x0040, 1), ("loc", "v")),
+        ("label", 0x1234),
+        ("st", ("const", 0xD404, 2), ("mem", ("const", 0x0040, 1), 1)),
+    ]
+    free = mem.Footprints([(0x1000, body)], open_flow=False)
+    assert not free.joins(0x1234) and free.joins(0x1000)
+    assert mem.render_proc(body, foot=free)[-1] == "sid.v1.ctrl = $05"
+    assert mem.render_proc(body)[-1] == "sid.v1.ctrl = zp_40"  # no map: a label is a join
+    entered = mem.Footprints([(0x1000, body + [("goto", 0x1234)])], open_flow=False)
+    assert entered.joins(0x1234)
+    assert mem.Footprints([(0x1000, body)], open_flow=True).joins(0x1234)
+    assert mem.Footprints([(0x1000, body)], False, (0x1234,)).joins(0x1234)
