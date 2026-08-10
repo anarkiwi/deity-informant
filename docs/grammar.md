@@ -1,16 +1,18 @@
-# The sidprog grammar (generated)
+# The frameprog grammar (generated)
 
 `deity_informant/sidprog.lark` is the ONE grammar of the decompiler's text
-layers and the normative definition of both dialects. It is parsed LALR(1) by
-`deity_informant.grammar`, the only reader either layer has. The document
-header selects the dialect:
+layer and the normative definition of the artifact. It is parsed LALR(1) by
+`deity_informant.grammar`, the only reader the layer has, and a document opens
+`frameprog <major>` ([frameprog.md](frameprog.md)).
 
-- `sidprog <major>` — the cycle-exact language ([sidprog-language.md](sidprog-language.md)).
-- `frameprog <major>` — the same language with the cycle-annotation
-  productions removed (`CYC`, `CYCT`, `PENTAG`, `code[...]` switch subjects)
-  and the frame-level surface added: `state { }` / `inputs { }` header
-  sections, named locals, procedure calls with inferred parameters and
-  returns, and `for` ranges ([frameprog.md](frameprog.md)).
+The cycle-exact `sidprog <major>` dialect this grammar grew out of is
+**retired** with its emit path (docs/register-model-lift-impl.md,
+housekeeping): the cycle-exact anchor is the committed model, the walker replay
+and the VM/recorder against sidplayfp, never the text, so a text nothing emits
+and nothing reads is gone. Its landed specification is
+[decompiler-implementation.md](decompiler-implementation.md); the grammar file
+and `deity_informant/sidprog.py` keep their names, which is why the artifact's
+own header comment still cites them.
 
 **frameprog major 1 (Phase 3a) is total**: the dialect gained `image { }`,
 `dispatch` header lines and an `evidence { }` section, so
@@ -24,10 +26,9 @@ spans; `written` carries the evidence half only, because
 is the closure *diagnostic* (`Closure.diag`/`note`), which only the CLI proof
 report reads and no rebuild consumes.
 
-Everything else — expressions, memrefs, `data { }`/`symbols { }`, loops,
-switches, case arms, flow items — is shared: lark templates parameterise the
-region productions over the two item alphabets (`sitem`, `fitem`), so a
-construct cannot drift between the layers. A block is a run of payload lines
+Expressions, memrefs, `data { }`/`symbols { }`, loops, switches, case arms and
+flow items are written once: lark templates parameterise the region productions
+over the item alphabet (`fitem`). A block is a run of payload lines
 plus the closers that end it (`ret`, a computed jump, an `if` region, a call
 body, a flow item), so the nesting carries the flow with no lookahead beyond
 LALR(1).
@@ -52,15 +53,13 @@ the pointer *word*, so the `:2` is the form's own and never written. It is
 rung (f)'s ([frameprog.md](frameprog.md) §4.4), and the emitter writes it only
 where that rung proved every definition of the pointer against a declared
 `lo`/`hi` table — an unproven deref stays `mem[...]`, so the text distinguishes
-the two. Like the width suffix it is a frameprog form; a sidprog document
-carrying one is rejected.
+the two.
 
 A reference — named, indexed, deref or raw — carries an optional `:N` **width suffix**,
 absent for the one byte a 6502 access moves and `:2` for the 16-bit forms rung
 (d) fuses ([frameprog.md](frameprog.md) §4): `m_0021:2` is the word at `$21`, and
 `m_0021:2 = e` stores it. A store's suffix must equal the width of the value
-stored, so the width is stated once; the suffix is a frameprog form, and a
-sidprog document carrying one is rejected. `state { }` fields are `u8` or `u16`
+stored, so the width is stated once. `state { }` fields are `u8` or `u16`
 accordingly.
 
 A `state { }` field may carry a **block extent** — `ptr_0021: u16 in m_7338,
@@ -74,7 +73,7 @@ A field's type may carry a **role** — `ptr_0021: cursor u16`, one of `cursor`,
 routine updates that cell (docs/register-model-lift-impl.md, stage 2). The role
 qualifies the type and **licenses nothing**: an un-roled `uN` field is legal and
 means exactly what it always did, so a cell whose update shape no role covers is
-declared without one rather than misdescribed. Roles are a frameprog form.
+declared without one rather than misdescribed.
 
 A width-2 store may carry the **write order** `hi-first`, which says its two
 bytes leave in descending address order: `hi-first sid.v1.freq_lo[y]:2 = e`
@@ -83,8 +82,7 @@ ascending. The order is a fact about the store rather than about its address, so
 rung (d) can merge a pair the program wrote hi-first without resolving the index
 it was written through ([frameprog.md](frameprog.md) §7.10.4); `framelog` keeps
 write order inside the ctrl/AD/SR and `$19`-`$1C` sections, which is where the
-difference is observable. It is a frameprog form on a store, and a sidprog
-document carrying one is rejected.
+difference is observable.
 
 Reserved words are exactly the grammar's literal identifier terminals
 (`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
@@ -96,28 +94,17 @@ fails when it drifts; regenerate with
 
 <!-- BEGIN GENERATED GRAMMAR: deity_informant/sidprog.lark -->
 ```lark
-// One grammar, two dialects. The document header selects the dialect:
-//   sidprog N   -- the cycle-exact language (docs/sidprog-language.md)
-//   frameprog N -- the same language minus the cycle-annotation productions
-//                  (CYC/CYCT/PENTAG, code[] dispatch subjects), plus the
-//                  state/inputs header, named locals, procedure calls and
-//                  for-ranges (docs/frameprog.md)
-// Everything else -- expressions, memrefs, data/symbols sections, loops,
-// switches, flow items -- is shared. Parsed LALR(1); templates parameterise
-// the shared region productions over the two item alphabets. The width suffix
-// and the *ptr[i] deref form are frameprog forms a sidprog document rejects,
-// as is trunc1/trunc2 (a width-suffixed local name is the 16-bit local) and the
-// hi-first write order of a word store.
+// The frameprog document grammar (docs/frameprog.md), parsed LALR(1);
+// templates parameterise the region productions over the item alphabet. The
+// sidprog text dialect it grew out of is retired (register-model-lift-impl.md
+// housekeeping), so the cycle-annotation productions (CYC/CYCT/PENTAG, code[]
+// dispatch subjects) and its proc/block forms are gone with it.
 
-start: sidprog_doc
-     | frameprog_doc
+start: frameprog_doc
 
-sidprog_doc: sphead _sheader* image_sec? data_sec? symbols_sec? proc*
 frameprog_doc: fphead _fheader* image_sec? state_sec? data_sec? symbols_sec? evidence_sec? sub*
-sphead: "sidprog" INT _NL
 fphead: "frameprog" INT _NL
 
-_sheader: play | init | subtune | sidinit | dispatch_set
 _fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set
 
 play: "play" HEX _NL
@@ -178,15 +165,13 @@ statobs: "observed" HEX*
 !srole: "cursor" | "accumulator" | "counter" | "flags" | "parameter" | "vm"
 
 // ---- procedures ----------------------------------------------------------------
-proc: "proc" HEX "{" _NL sitem* "}" _NL
 sub: NAME "(" params ")" [rets] "{" _NL fitem* "}" _NL
 params: (NAME ("," NAME)*)?
 rets: "->" NAME ("," NAME)*
 
-?sitem: sblock | loop{sitem} | swgoto{sitem} | swcall{sitem} | opsw_code
 ?fitem: fblock | loop{fitem} | swgoto{fitem} | swcall{fitem} | opsw_cell | forloop
 
-// ---- shared region productions (parameterised over the item alphabet) ----------
+// ---- region productions (parameterised over the item alphabet) -----------------
 loop{item}: "loop" "{" _NL item* "}" _NL
 case{item}: "case" HEX ":" "{" _NL item* "}" _NL
 swgoto{item}: "switch" "goto" "{" _NL case{item}* "}" _NL
@@ -199,7 +184,6 @@ selse{item}: "}" _NL -> els_none
            | "}" "else" "{" _NL item* "}" _NL -> els_body
            | "}" "else" "unobserved" HEX _NL -> els_unobs
 
-opsw_code: [label] "switch" "code" "[" HEX "]" "{" _NL case{sitem}* "}" _NL
 opsw_cell: [label] "switch" NAME "{" _NL case{fitem}* "}" _NL
 forloop: "for" NAME "in" HEX ".." HEX "{" _NL fitem* "}" _NL
 
@@ -208,15 +192,6 @@ target: HEX -> tgt_static
       | "(" expr ")" -> tgt_dyn
 
 // ---- blocks: payload lines plus the closers that end them ----------------------
-sblock: label _sbody?
-      | _sbody
-_sbody: sline+ _scloser*
-      | _scloser+
-sline: [CYC] pen _NL -> s_pen
-     | [CYC] asg _NL -> s_asg
-     | CYC _NL -> s_cyc
-pen: PENTAG "(" expr "," expr ")"
-
 fblock: label _fbody?
       | _fbody
 _fbody: fline+ _fcloser*
@@ -227,11 +202,8 @@ fline: asg _NL -> f_asg
       | lvalue ("," NAME)* "=" pcall _NL -> f_pcall_ret
 pcall: NAME "(" (expr ("," expr)*)? ")"
 
-_scloser: dynbr | cgoto | igoto | callstmt{sitem} | retline | sif | flowline
 _fcloser: dynbr | cgoto | igoto | callstmt{fitem} | fretline | fif | flowline
 
-sif: ifw CYCT expr "{" _NL sitem* selse{sitem} -> sif_body
-   | ifw CYCT expr "unobserved" HEX _NL -> sif_front
 fif: ifw expr "{" _NL fitem* selse{fitem} -> fif_body
    | ifw expr "unobserved" HEX _NL -> fif_front
 
@@ -239,7 +211,6 @@ dynbr: ifw expr "goto" "(" expr ")" "else" HEX _NL
 cgoto: "goto" "(" expr ")" _NL
 igoto: "igoto" HEX _NL -> igoto_static
      | "igoto" "(" expr ")" _NL -> igoto_dyn
-retline: "ret" _NL
 fretline: "ret" (NAME ("," NAME)*)? _NL
 flowline: "goto" HEX _NL -> fl_goto
         | "unobserved" HEX _NL -> fl_unobs
@@ -249,7 +220,7 @@ flowline: "goto" HEX _NL -> fl_goto
 ifw: "if" -> w_if
    | "ifnot" -> w_ifnot
 
-// ---- statements and expressions (shared) ---------------------------------------
+// ---- statements and expressions -------------------------------------------------
 asg: lvalue "=" expr
 lvalue: NAME [wsuf] -> lv_name
       | NAME "[" expr "]" [wsuf] -> lv_index
@@ -289,9 +260,6 @@ HEX: /\$[0-9A-Fa-f]+/
 HEXBYTES: /[0-9A-F]+/
 INT: /\d+/
 NAME: /[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_0-9]+)*/
-CYC: /@\d+/
-CYCT: /@t\d+/
-PENTAG: /@xi?/
 _SIDINIT.5: "sid-init"
 // a word store's own byte-emission order (frameprog form); hyphenated, so no
 // NAME can spell it and no symbol alias can shadow it

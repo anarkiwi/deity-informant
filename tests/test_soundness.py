@@ -8,7 +8,7 @@ import types
 import pytest
 
 from deity_informant import expr as E
-from deity_informant import sidprog
+from deity_informant import frameprog
 from deity_informant import structured as S
 
 import _fuzzgen as G
@@ -21,6 +21,12 @@ STUB = 0x1300
 INIT = 0x0F00
 FRAMES = 6
 REG = 4
+
+
+def _rebuild(model):
+    """The block model the frame program rebuilds from its own text alone."""
+    text = frameprog.dumps(frameprog.program(model))
+    return frameprog.block_model(frameprog.loads(text))
 
 
 def _img_from_player(p):
@@ -174,8 +180,8 @@ def _pending_vector_image():
 
 def test_pending_vector_resolution_commits_observed_with_live_guard():
     """A resolution still pending when closure rounds exhaust commits the
-    observed set with a live guard and a tracked lemma; the standalone text
-    walker stays guarded to the observed targets."""
+    observed set with a live guard and a tracked lemma; the guard survives the
+    artifact round trip, so the rebuilt model is guarded to the same targets."""
     mem, site = _pending_vector_image()
     model, ev = S.decompile(mem, INIT, ORG, FRAMES)
     pr = model.proofs[site]
@@ -184,10 +190,10 @@ def test_pending_vector_resolution_commits_observed_with_live_guard():
     assert "unclosed cell" in pr.lemma or "unresolved" in pr.lemma or "observed" in pr.lemma
     w = S.Walker(model)
     assert w.run(FRAMES) == ev.wlog and bytes(w.m) == ev.end_mem
-    tm = sidprog.parse(sidprog.emit(model)).link()
-    unobserved = next(a for a in range(0x4000, 0x5000) if a not in tm.pcmap and a not in tm.contmap)
-    with pytest.raises(S.WalkError):
-        tm.node_at(unobserved)
+    rebuilt = _rebuild(model)
+    assert set(rebuilt.dyn_targets[site]) == {STUB}
+    assert rebuilt.proofs[site].status == "observed"
+    assert S.Walker(rebuilt).run(FRAMES) == ev.wlog
 
 
 def _vector_analysis(idx_addr):
@@ -399,8 +405,9 @@ def test_closure_recurrence_certifies_and_completes_observed_sets():
     w = S.Walker(model)
     assert w.run(2) == ev.wlog and bytes(w.m) == ev.end_mem
     assert "closure: recurrence at frame" in S.format_report(model)
-    tm = sidprog.parse(sidprog.emit(model))
-    assert tm.run(2) == ev.wlog  # extension-grown sets round-trip through the text
+    rebuilt = _rebuild(model)  # extension-grown sets ride evidence { closure }
+    assert len(rebuilt.dyn_targets[site]) == 4
+    assert S.Walker(rebuilt).run(2) == ev.wlog
 
 
 def test_sound_mode_composes_with_closure():

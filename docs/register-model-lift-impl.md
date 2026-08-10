@@ -447,12 +447,24 @@ oracle — an end-to-end check with no evaluator in the trust chain.
 
 ## Independent housekeeping (blocks nothing)
 
-- **sidprog retirement.** Inventory the sidprog-only laws
-  (`tests/test_soundness.py:403`'s closure round-trip is the named one), port
-  what still binds to frameprog equivalents, retire the emit path and the
-  README surface. Timebox ~one PR or re-queue it. The cycle-exact anchor is
-  the model, the walker replay and the VM/recorder against sidplayfp — the
-  text was never the anchor.
+- **sidprog retirement — done** (2026-08-10, one PR). The emit path (`emit`,
+  `metrics`, the writer), the parser, `TextModel`'s tree half and `TreeWalker`
+  are deleted, with the grammar's `sidprog` dialect, `docs/sidprog-language.md`,
+  the `prog-run` subcommand and `decompile --frameprog` (frameprog is now the
+  default output; `--verify` is fixpoint + block-model rebuild + Gate FP).
+  What stayed is the model machinery `frameprog.program` consumes —
+  `_model_trees`, `_stmt_view`, the `_*_lines` header helpers — in a
+  `sidprog.py` that keeps its name (`sidprog.lark` and the artifact's own
+  header comment cite it, and moving either would move the emit identity);
+  `TextModel` is now `BlockModel`. Ported: the closure round-trip
+  (`test_soundness.py`, through `frameprog.block_model`), the pending-vector
+  guard, the naming bijection and expression laws (`test_grammar.py`), the
+  statement-cleanup, frontier, call-inlining and declaration-truth laws
+  (`test_frameprog.py`). Retired as no longer binding: the sidprog-form
+  rejections (nothing to reject from), `metrics` (reporting-only, no
+  threshold), the multi-use load line (frameproc inlines further) and the 3a
+  lossy-projection inequality (there is no second projection left). Emit
+  identity unmoved.
 - **`_declare_cells` double declaration** (3a's finding: one cell declared in
   both `state { }` and `data { }`, Agent_X_II `$6923`/`$6925`): discharged by
   stage 3's first text-moving landing.

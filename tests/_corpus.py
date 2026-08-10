@@ -148,8 +148,9 @@ CORPUS = [
 
 
 PINNED = (  # named by a test; always resolved, since a cap that drops one drops its
-    "MUSICIANS/D/Daglish_Ben/Artura.sid",  # assertions silently. Guarded by
-    "MUSICIANS/D/Daglish_Ben/Krakout.sid",  # test_corpus_selection.py.
+    "MUSICIANS/C/Cadaver/Aces_High.sid",  # assertions silently. Guarded by
+    "MUSICIANS/D/Daglish_Ben/Artura.sid",  # test_corpus_selection.py.
+    "MUSICIANS/D/Daglish_Ben/Krakout.sid",
     "MUSICIANS/F/Follin_Tim/Bionic_Commando.sid",
     "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
     "MUSICIANS/G/Galway_Martin/Athena.sid",

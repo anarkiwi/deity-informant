@@ -1,8 +1,8 @@
-"""The ONE grammar of the sidprog language and its frameprog dialect.
+"""The ONE grammar of the frameprog language.
 
 ``sidprog.lark`` is normative and LALR(1); this module owns the name/address
-bijection it resolves against and the reader that turns a parse into region
-trees (sidprog) or statement trees (frameprog).
+bijection it resolves against and the reader that turns a parse into the
+statement trees frameprog reads back.
 """
 
 from __future__ import annotations
@@ -13,16 +13,12 @@ from pathlib import Path
 import lark
 
 from . import expr as E
-from . import structured as C
 from .render import sid_name
 
-SIDPROG_VERSION = 1  # 1: play-phase structured program (spec section 6)
 FRAMEPROG_VERSION = 1  # 1: image + dispatch + evidence sections (the total artifact)
 
 GRAMMAR_PATH = Path(__file__).with_name("sidprog.lark")
 GRAMMAR = GRAMMAR_PATH.read_text(encoding="utf-8")
-
-BIND_BASE = 1 << 20  # tN bindings ride the uni namespace above any real slot
 
 
 class SidprogVersionError(ValueError):
@@ -49,26 +45,11 @@ _SID_ADDRS = {n: a for a, n in _SID_NAMES.items()}
 VIEW = "sid.reg"  # the byte view of the register file (docs/frameprog.md 7.7 (5))
 _CELL_NAME = re.compile(r"(zp|m)_([0-9A-F]+)$")
 _SLOT_NAME = re.compile(r"[utr]\d+$")
-_T_NAME = re.compile(r"t(\d+)$")
-_U_NAME = re.compile(r"u(\d+)$")
-_R_NAME = re.compile(r"r\d+$")
 _SUB_NAME = re.compile(r"sub_([0-9A-F]{4})$")
 
 
 def _z2(n):
     return ("op", "INT_ZEXT", (n,), 2)
-
-
-def reg_name(i):
-    return _REG_NAMES.get(i, "r%d" % i)
-
-
-def reg_index(name):
-    if name in _NAME_REGS:
-        return _NAME_REGS[name]
-    if _R_NAME.match(name):
-        return int(name[1:])
-    raise ValueError("unknown register %r" % name)
 
 
 def addr_name(v):
@@ -181,75 +162,6 @@ def map_term(term, f):
     return term
 
 
-def expand(n, bind, memo):
-    """Inline every ``tN`` binding reference in ``n`` (bindings are sugar)."""
-    stack = [n]
-    while stack:
-        x = stack[-1]
-        if id(x) in memo:
-            stack.pop()
-            continue
-        if x[0] == "uni" and x[1] >= BIND_BASE:
-            memo[id(x)] = bind[x[1] - BIND_BASE]
-            stack.pop()
-            continue
-        todo = [k for k in kids(x) if id(k) not in memo]
-        if todo:
-            stack.extend(todo)
-            continue
-        stack.pop()
-        memo[id(x)] = rebuild(x, [memo[id(k)] for k in kids(x)])
-    return memo[id(n)]
-
-
-class Region:
-    """Parsed region node, duck-typing the structurer's Region (kind/a/b/c)."""
-
-    __slots__ = ("kind", "a", "b", "c")
-
-    def __init__(self, kind, a=None, b=None, c=None):
-        self.kind = kind
-        self.a = a
-        self.b = b
-        self.c = c
-
-
-class _Acc:
-    """One block under construction: events, register out-exprs, bindings."""
-
-    __slots__ = ("label", "events", "regs", "term", "bind")
-
-    def __init__(self, label):
-        self.label = label
-        self.events = []
-        self.regs = [E.reg(i) for i in range(16)]
-        self.term = None
-        self.bind = {}
-
-
-def acc_block(acc):
-    """Compiled block payload with every ``tN`` binding inlined."""
-    memo = {}
-
-    def x(n):
-        return expand(n, acc.bind, memo)
-
-    events = []
-    for ev in acc.events:
-        if ev[0] == "ld":
-            events.append(("ld", ev[1], x(ev[2])))
-        elif ev[0] == "st":
-            events.append(("st", x(ev[1]), x(ev[2])))
-        elif ev[0] == "pen":
-            events.append(("pen", ev[1], x(ev[2]), x(ev[3])))
-        else:
-            events.append(ev)
-    regs = [r if r == ("reg", i) else x(r) for i, r in enumerate(acc.regs)]
-    term = map_term(acc.term if acc.term is not None else ("goto", None), x)
-    pc = acc.label if acc.label is not None else 0
-    return C.Block(pc, 0, [pc], events, term, regs)
-
-
 # ---- parse-side operator tables -------------------------------------------------
 _ADDSUB = frozenset("+-")
 _CHAINOPS = {"|": "INT_OR", "^": "INT_XOR", "&": "INT_AND"}
@@ -317,7 +229,6 @@ class Document:
         self.extents = {}  # 2b: pointer cell -> the declared block bases its derefs land in
         self.roles = {}  # stage 2: state field name -> the role its updates name
         self.labels = set()
-        self.procs = []  # sidprog: [(entry, seq Region)]
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
         self.evidence = new_evidence()  # frameprog: the block-model rebuild channels
 
@@ -354,13 +265,7 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         self.subrets = []
         return self.doc
 
-    def _frame(self):
-        return self.doc.dialect == "frameprog"
-
     # -- header ----------------------------------------------------------------
-    def sphead(self, c):
-        self._version("sidprog", SIDPROG_VERSION, c[0])
-
     def fphead(self, c):
         self._version("frameprog", FRAMEPROG_VERSION, c[0])
 
@@ -592,8 +497,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return 2
 
     def e_trunc(self, c):
-        if not self._frame():
-            raise ValueError("a truncation is a frameprog form")
         return ("op", "COPY", (c[1],), c[0])
 
     def e_carry(self, c):
@@ -640,21 +543,10 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def _nameref(self, name, sz):
         name = self.rev.get(name, name)
-        if self._frame():
-            addr = name_addr(name)
-            if addr is not None:
-                return ("mem", ("const", addr, 2), sz)
-            return ("loc", name) if sz == 1 else ("loc", name, sz)
-        m = _T_NAME.match(name)
-        if m:
-            return ("uni", BIND_BASE + int(m.group(1)), 1)
-        m = _U_NAME.match(name)
-        if m:
-            return ("uni", int(m.group(1)), sz)
         addr = name_addr(name)
         if addr is not None:
-            return ("mem", ("const", addr, 2), 1)
-        return ("reg", reg_index(name))
+            return ("mem", ("const", addr, 2), sz)
+        return ("loc", name) if sz == 1 else ("loc", name, sz)
 
     def _cell(self, name):
         """The cell a section names, an alias resolving to the cell it stands for."""
@@ -690,8 +582,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def _deref_addr(self, base, idx):
         """``ptr [+ zext2(idx)]``: rung (f)'s resolved deref, the pointer read as a word."""
-        if not self._frame():
-            raise ValueError("a pointer deref is a frameprog form")
         cell = self._cell(base)
         word = ("mem", ("const", cell, 2), 2)
         addr = word if idx is None else ("op", "INT_ADD", (word, ("op", "INT_ZEXT", (idx,), 2)), 2)
@@ -716,18 +606,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def asg(self, c):
         return (c[0], c[1])
-
-    def pen(self, c):
-        return ("pen", "iy" if str(c[0]) == "@xi" else "ax", c[1], c[2])
-
-    def s_cyc(self, c):
-        return ("stmt", int(str(c[0])[1:]), None)
-
-    def s_pen(self, c):
-        return ("stmt", 0 if c[0] is None else int(str(c[0])[1:]), c[1])
-
-    def s_asg(self, c):
-        return ("stmt", 0 if c[0] is None else int(str(c[0])[1:]), ("asg",) + c[1])
 
     def f_asg(self, c):
         return ("stmt", 0, ("asg",) + c[0])
@@ -780,9 +658,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def call_deep(self, c):
         return ("callb", ("jsr", c[0][0], _hexval(c[1]), c[0][1]), _flat(c[2:]))
 
-    def retline(self, c):
-        return ("term", ("rts",))
-
     def fretline(self, c):
         return ("fret", [str(t) for t in c])
 
@@ -807,12 +682,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def els_unobs(self, c):
         return ("elsunobs", _hexval(c[0]))
 
-    def sif_body(self, c):
-        return ("if", int(str(c[1])[2:]), c[0], c[2], _flat(c[3:-1]), c[-1])
-
-    def sif_front(self, c):
-        return ("iffront", int(str(c[1])[2:]), c[0], c[2], _hexval(c[3]))
-
     def fif_body(self, c):
         return ("if", None, c[0], c[1], _flat(c[2:-1]), c[-1])
 
@@ -826,25 +695,16 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("label", pc)
 
     def loop(self, c):
-        body = _flat(c)
-        return [("loop", body)] if self._frame() else [Region("loop", Region("seq", body))]
+        return [("loop", _flat(c))]
 
     def case(self, c):
         return (_hexval(c[0]), _flat(c[1:]))
 
-    def _arm(self, body):
-        return body if self._frame() else Region("seq", body)
-
     def swgoto(self, c):
-        cases = [("$%04X" % pc, self._arm(body)) for pc, body in c]
-        return [("swg", cases)] if self._frame() else [Region("switch", ("goto", cases), [])]
+        return [("swg", [("$%04X" % pc, body) for pc, body in c])]
 
     def _swcall(self, bare, bodied):
-        if self._frame():
-            return [("swc", ["$%04X" % t for t in bare], [("$%04X" % pc, b) for pc, b in bodied])]
-        cases = [("$%04X" % t, Region("call", t)) for t in bare]
-        cases += [("$%04X" % pc, Region("call", pc, Region("seq", b))) for pc, b in bodied]
-        return [Region("switch", ("call", cases), [])]
+        return [("swc", ["$%04X" % t for t in bare], [("$%04X" % pc, b) for pc, b in bodied])]
 
     def swcall_flat(self, c):
         return self._swcall([_hexval(t) for t in c], [])
@@ -855,11 +715,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def swcall_deep(self, c):
         return self._swcall(c[0] or [], c[1:])
 
-    def opsw_code(self, c):
-        pc = _hexval(c[1])
-        cases = [("$%02X" % op, Region("seq", body)) for op, body in c[2:]]
-        return [Region("switch", ("code[$%04X]" % pc, cases), [pc])]
-
     def opsw_cell(self, c):
         addr = self._cell(str(c[1]))
         out = [("label", c[0][1])] if c[0] is not None else []
@@ -869,81 +724,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return [("for", str(c[0]), _hexval(c[1]), _hexval(c[2]), _flat(c[3:]))]
 
     # -- blocks ----------------------------------------------------------------
-    def sblock(self, c):
-        """Payload lines plus the closers that end them: the block region and
-        whatever sibling regions its closers introduce (the tree is the flow)."""
-        labelled = bool(c) and c[0][0] == "label"
-        acc = _Acc(c[0][1]) if labelled else None
-        out = []
-        for x in c[1:] if labelled else c:
-            tag = x[0]
-            if tag == "flow":  # a flow item ends the block without joining it
-                if acc is not None:
-                    out.append(Region("block", acc_block(acc), acc.label))
-                    acc = None
-                out.append(_FLOW_REGION[x[1]](x[2]))
-                continue
-            if acc is None:
-                acc = _Acc(None)
-            if tag == "stmt":
-                self._sstmt(acc, x[1], x[2])
-                continue
-            acc.term = x[1] if tag in ("term", "callb") else ("br", x[2], None, None, x[3], None)
-            out.append(Region("block", acc_block(acc), acc.label))
-            acc = None
-            if tag == "callb":
-                out.append(Region("call", x[1][1], Region("seq", x[2])))
-            elif tag == "if":
-                out.append(Region("if", x[1], Region("seq", x[4]), self._else(x[5])))
-            elif tag == "iffront":
-                arm = Region("seq", [Region("frontier", x[4])])
-                out.append(Region("if", x[1], arm, None))
-        if acc is not None:
-            out.append(Region("block", acc_block(acc), acc.label))
-        return out
-
-    @staticmethod
-    def _else(spec):
-        if spec[0] == "elsunobs":
-            return Region("seq", [Region("frontier", spec[1])])
-        return None if spec[1] is None else Region("seq", spec[1])
-
-    def _sstmt(self, acc, cyc, payload):
-        if cyc:
-            acc.events.append(("cyc", cyc))
-        if payload is None:
-            return
-        if payload[0] == "pen":
-            acc.events.append(payload)
-            return
-        lv, rhs = payload[1], payload[2]
-        if lv[-1] != 1:
-            raise ValueError("a width-suffixed lvalue is a frameprog form")
-        if lv[0] == "index":
-            acc.events.append(("st", self._index_addr(lv[1], lv[2]), rhs))
-            return
-        if lv[0] == "deref":
-            acc.events.append(("st", self._deref_addr(lv[1], lv[2]), rhs))
-            return
-        if lv[0] == "mem":
-            acc.events.append(("st", lv[1], rhs))
-            return
-        name = self.rev.get(lv[1], lv[1])
-        m = _T_NAME.match(name)
-        if m:
-            acc.bind[int(m.group(1))] = expand(rhs, acc.bind, {})
-            return
-        m = _U_NAME.match(name)
-        if m:
-            if rhs[0] != "mem":
-                raise ValueError("load line without a memory source: %r" % name)
-            acc.events.append(("ld", int(m.group(1)), rhs[1]))
-            return
-        if name in _NAME_REGS or _R_NAME.match(name):
-            acc.regs[reg_index(name)] = rhs
-            return
-        acc.events.append(("st", ("const", req_name(name), 2), rhs))
-
     def fblock(self, c):
         out = []
         for x in c:
@@ -1003,9 +783,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("st", ("const", addr, 2), rhs)
 
     # -- procedures and document -----------------------------------------------
-    def proc(self, c):
-        self.doc.procs.append((_hexval(c[0]), Region("seq", _flat(c[1:]))))
-
     def params(self, c):
         self.subrets = []
         return [str(t) for t in c]
@@ -1040,9 +817,6 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             doc.mem0[d["base"] : d["base"] + d["size"]] = d["data"]
         return doc
 
-    def sidprog_doc(self, c):
-        return self._finish()
-
     def frameprog_doc(self, c):
         return self._finish()
 
@@ -1065,12 +839,6 @@ def _fterm(term):
 
 
 _WORD = {1: "if", 0: "ifnot"}
-_FLOW_REGION = {
-    "goto": lambda pc: Region("goto", pc),
-    "unobs": lambda pc: Region("frontier", pc),
-    "cont": lambda _pc: Region("cont"),
-    "brk": lambda _pc: Region("brk"),
-}
 
 _READER = _Reader()
 _LARK = None
@@ -1106,7 +874,7 @@ def parse_document(text, want=None):
     return _run(text if text.endswith("\n") else text + "\n", "start", want)
 
 
-def parse_expression(text, want="sidprog"):
+def parse_expression(text, want="frameprog"):
     """Parse one expression in the given dialect; must consume ``text`` entirely."""
     return _run(text, "expr", want, preset=True)
 
