@@ -567,8 +567,9 @@ the gate, not the artifact. §5's `_Prune`/`_inline` deletions and rung (d2)'s p
 e-graphs are subsumed only where the unified graph is what emits, so they land with that
 switch and with the corpus diff it moves. §5's `eqlift_mem` liveness deletions (`_dce`,
 `_temp_sweep`, `ROOT_EXTRACT` and every `root_extract` parameter) **are landed**, and the
-exemplar review now measures one path against a recorded baseline. Beside the switch stand
-the deterministic round cap replacing the wall-clock cut, the `state { }` demotion,
+exemplar review now measures one path against a recorded baseline; the saturation schedule
+is **a round cap and a node bound**, so no clock reading reaches the artifact. Beside the
+switch stand the `state { }` demotion,
 `_declare_cells`' double declaration, the ~16
 substrate-dependent shredder pins — which want the same declarations — and, named at
 landing 1, a precise `returns` set for a procedure every entry of which is a `call`, which
@@ -1962,3 +1963,42 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   *where the unified path emits*, which frameprog does not do yet. They land with that
   switch, on its corpus diff — deleting them before it would not be a deletion but a
   degradation, which is a different claim than the one §5 makes.
+- **2026-08-10 — stage 4, landing 2 (part): the saturation schedule stops reading the
+  clock.** §10's determinism clause, applied to the one place in the lifter that broke it.
+  (1) **Two bounds, both functions of the program.** `eqlift_mem.saturate` cut a round when
+  the last one's growth ratio said the next would not fit `DI_EQLIFT_BUDGET_S` seconds, or
+  when resident growth passed `DI_EQLIFT_BUDGET_MB` — a wall clock and an RSS reading, so
+  the emitted text was a function of the machine and its load. It is now a **round cap**
+  (`DI_EQLIFT_ROUNDS`, default 6) and a **node bound** (`DI_EQLIFT_NODES`, default 30,000 —
+  the bound `framemath._saturate` already runs rung (d2) under, which is why rung (d2) never
+  had this defect). `BUDGET_S`, `BUDGET_MB` and `_rss_mb` are deleted; `render_proc`'s
+  `budget` now funds extraction alone, which is the one wall-clock cut left in the lifter
+  and is loud (`stats["extract_fallback"]`, zero on every exemplar).
+  (2) **The cap is measured, and the measurement is the finding.** Emitted total over the
+  25 exemplars by round cap: 26,814 at 4, 26,812 at 5, **26,811 at 6, 7, 8, 10 and 12** —
+  and 26,811 is exactly what the clock-cut schedule reached. So size converges at 6. Past
+  6 the size is fixed and the **spelling keeps moving**: byte-identity with cap 6 is 24/25
+  at 7, 23 at 8, 22 at 10, 20 at 12. And the size is not monotone the other way either —
+  `Tel_Kees/Before_I_Forget` is 1,553 lines at 4 rounds and 1,554 from 5 up, so a round
+  *added* a line. More rounds is not better; a cap has to be chosen, fixed and recorded,
+  which is the whole argument for a cap over a budget.
+  (3) **The §4 review: 6 tunes, 50 lines, no size anywhere.** 19 of 25 byte-identical to
+  #174; every moved tune's line and store counts are **unchanged**. `Tel_Kees` (38 lines):
+  four sites where `(((x << $01) << $01) << $01) << $01` fuses to `x << $04`, two where the
+  signed compare replaces the `& $80` mask test, one pack commuted, and a run of loads that
+  respells a shared index through the local the loop holds; one line grows, an address
+  recomputed from its source terms rather than read back out of the cell just written, which
+  is the memory price working. `Rambo` two carries collapse into one comparison; `Wizball`
+  a branch reads `cflag` instead of respelling its compare; `Atmosphere_II` an index takes
+  the local instead of the cell; `Grid_Runner` a pack takes `le_pack`'s own operand order;
+  `Deek/4_Tunes` one copy gives way to the deepest read. Rules that the clock had cut off
+  now fire, and some it had let run no longer do — which is (2) restated as text.
+  (4) **The gates.** The exemplar review is clean — zero faults, refusals, regressions,
+  unproved sites, extraction fallbacks — at 26,811 lines / 1,988 stores, `d_lines` 0 and
+  `d_stores` 0 against #174, 13,909 sites, 3,322 changed (13 more reach a rule), 12,128
+  proved. **Determinism, measured twice**: a second run is 25/25 byte-identical, and a run
+  at the *default* `DI_EQLIFT_EMIT_S=60` rather than 600 is also 25/25 byte-identical. Wall
+  time per tune falls roughly threefold (`Deek` 18.4s -> 2.4s). `tools/emit_identity.py
+  --expect 37b87140…` passes — 624 tunes, 28,513,156 bytes, unmoved. `gate_sweep` at full
+  Songlengths **624 / 624 / 624 clean**, zero divergences and refusals. Suite 2,724 passed /
+  490 skipped / 32 xfailed, oracle 16. The prototype holds exactly: 339 lines / 820 nodes.

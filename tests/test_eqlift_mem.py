@@ -88,15 +88,21 @@ def _spill_over(addr):
     ]
 
 
-def test_saturate_is_a_bounded_schedule():
-    """One round runs whatever the budget, and a spent budget stops the next."""
+def test_saturate_is_a_deterministic_schedule():
+    """Both bounds are functions of the program: a round cap and a node bound.
+
+    A term that fixpoints stops early; one that does not stops at the cap, and no
+    clock reading enters -- the artifact must not be a function of the machine."""
     from egglog import EGraph
 
     rs, _names = mem.unified_rules()
     eg = EGraph()
     eg.let("h", E.add(E.loc("a.1"), E.num(1, 1), 1))
-    assert mem.saturate(eg, rs, budget=0.0) == 1
-    assert 1 <= mem.saturate(eg, rs, iters=4) <= 4
+    assert mem.saturate(eg, rs, 1) == 1
+    assert 1 <= mem.saturate(eg, rs, 4) <= 4
+    assert mem.saturate(eg, rs, 0) == 0
+    assert mem.ROUNDS == 6 and mem.NODES == 30000
+    assert not any(hasattr(mem, n) for n in ("BUDGET_S", "BUDGET_MB", "_rss_mb"))
 
 
 def test_axioms_z3_verified():

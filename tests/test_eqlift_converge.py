@@ -223,7 +223,7 @@ def test_the_adc_built_pack_converges_on_the_ora_built_one(rules):
     """The pack the 6502 builds with ADC rather than ORA: one class, one normal form."""
     eg = EGraph()
     hs = [eg.let("h%d" % i, t) for i, t in enumerate(_terms((), [PK(L("h"), L("l")), PACK_ADD]))]
-    mem.saturate(eg, rules, iters=_ROUNDS, budget=60.0)
+    mem.saturate(eg, rules, _ROUNDS)
     assert eg.check_bool(egg_eq(hs[0]).to(hs[1]))
 
 
@@ -235,7 +235,7 @@ def test_the_spellings_of_one_idiom_merge_into_one_class(row, rules):
     assert len(variants) > 1, row
     eg = EGraph()
     hs = [eg.let("h%d" % i, t) for i, t in enumerate(_terms(setup, variants))]
-    mem.saturate(eg, rules, iters=_ROUNDS, budget=60.0)
+    mem.saturate(eg, rules, _ROUNDS)
     for i, h in enumerate(hs[1:], 1):
         assert eg.check_bool(egg_eq(hs[0]).to(h)), "%s: variant %d did not merge" % (row, i)
     assert {_pick(eg, h) for h in hs} == {want}, row

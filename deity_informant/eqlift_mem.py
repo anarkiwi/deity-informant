@@ -23,35 +23,25 @@ from . import frameptr
 _WIDTHS = (1, 2)  # the widths the memory axioms and the interval rules are stated at
 _TOP = (0, 0xFFFF)  # an address interval that says only "somewhere in the address space"
 _ITERS = 30
-BUDGET_S = float(os.environ.get("DI_EQLIFT_BUDGET_S", "5"))  # per-e-graph seconds
-BUDGET_MB = float(os.environ.get("DI_EQLIFT_BUDGET_MB", "128"))  # resident growth per e-graph
-EMIT_S = float(os.environ.get("DI_EQLIFT_EMIT_S", "60"))  # saturation across one artifact
-_PAGE_MB = os.sysconf("SC_PAGE_SIZE") / (1 << 20)
+ROUNDS = int(os.environ.get("DI_EQLIFT_ROUNDS", "6"))  # measured: emitted size converges at 6
+NODES = int(os.environ.get("DI_EQLIFT_NODES", "30000"))  # the e-graph bound rung (d2) runs under
+EMIT_S = float(os.environ.get("DI_EQLIFT_EMIT_S", "60"))  # extraction across one artifact
 
 
-def _rss_mb():
-    with open("/proc/self/statm", encoding="ascii") as f:
-        return int(f.read().split()[1]) * _PAGE_MB
-
-
-def saturate(eg, rs, iters=_ITERS, budget=None):
-    """Run ``rs`` a round at a time, to a fixpoint or to the resource bound.
+def saturate(eg, rs, rounds=None):
+    """Run ``rs`` a round at a time, to a fixpoint, the round cap or the node bound.
 
     Adoption §5's mandatory bounded schedule, sound at any cutoff because every
-    admitted rule is an equivalence: an e-graph grows super-linearly just before it
-    blows up, so a round is refused when the last one's growth outruns the budget."""
-    end = time.monotonic() + (BUDGET_S if budget is None else budget)
-    base, last = _rss_mb(), 0.0
-    for i in range(iters):
-        t0 = time.monotonic()
+    admitted rule is an equivalence. Both bounds are functions of the program, so the
+    artifact is one too (§10): the clock decides nothing, and a round past the cap
+    reshuffles which representative extraction returns without changing the size."""
+    rounds = ROUNDS if rounds is None else rounds
+    for i in range(rounds):
         if not eg.run(rs).updated:
             return i + 1
-        took = time.monotonic() - t0
-        nxt = took * max(1.0, took / last) if last else took
-        if time.monotonic() + nxt >= end or _rss_mb() - base >= BUDGET_MB:
+        if sum(n for _f, n in eg.all_function_sizes()) > NODES:
             return i + 1
-        last = took
-    return iters
+    return rounds
 
 
 class Mem(Expr):
@@ -1232,7 +1222,7 @@ def render_proc(
 
     Memory forwards intra-block; a join carries the chain-held cells proved disjoint from
     every span it can write. ``budget`` is the procedure's share of the artifact's emit
-    seconds, spent by saturation then extraction; sites past it render own-term. ``rets``
+    seconds, which extraction spends; sites past it render own-term. ``rets``
     are the procedure's declared returns, which a valueless ``ret`` names, and ``pairs``
     the declared lo/hi table registry the pack rendering reads."""
     deadline = None if budget is None else time.monotonic() + budget
@@ -1494,7 +1484,7 @@ def render_proc(
     memh = [
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
-    saturate(eg, rs, budget=None if budget is None else min(BUDGET_S, budget))
+    saturate(eg, rs)
     pr = E._Printer(aliases or {}, pairs, locw)
 
     def own_ir(i):
