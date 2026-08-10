@@ -1,8 +1,8 @@
 """End-to-end canonical example for docs/register-model-lift-impl.md.
 
-A hand-written 6502 playroutine (8 bars, vibrato, Follin-style SMC dispatch,
-deferred-carry cursor) is decompiled, minimized in the value+memory e-graph,
-folded to a role-typed u16 state machine by Z3-proved rules, frame-checked."""
+A hand-written 6502 playroutine (three parallel voices, a RAM SID shadow, hard
+restart, vibrato over an ADC carry chain, SMC dispatch, deferred-carry cursors)
+is decompiled, e-graph-minimized, Z3-folded to a role-typed u16 state machine."""
 
 from __future__ import annotations
 
@@ -12,14 +12,24 @@ import sys
 from deity_informant import PcodeVM, lift, run_sub
 from deity_informant import eqlift_mem
 from deity_informant import framelog
+from deity_informant import render as R
 from deity_informant import structured as S
 from deity_informant.lifter import OPS, MODE_LEN, ILLEGAL_OPCODES
 
 PAL_CLOCK = 985248
+PAL_CYCLES = 19656
 SID = 0xD400
 INIT, PLAY = 0x0F00, 0x1000
-PTR, GATE, DEPTH, BASE_LO, BASE_HI, PHASE, DUR = 0xFB, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA
-FRAMES = 800  # 8 bars of 96 frames + wrap through the script-loop command
+VOICES = 3
+ZPV = (0x40, 0x50, 0x60)  # per-voice state block; identical layout, shifted base
+PTR, DUR, PHASE, NLO, NHI, DEPTH, WAVE, CTL, AD, SR = 0, 2, 3, 4, 5, 6, 7, 8, 9, 10
+SHADOW = 0x0340  # 3 x 7-byte SID image; the envelope/control lanes are flushed
+FLUSH = (5, 6, 4)  # ADSR before the gate: ctrl is written last
+WAVEF = (0x40, 0x20, 0x40)  # pulse lead, saw bass, pulse arpeggio
+ADSR = ((0x08, 0xA9), (0x09, 0x68), (0x00, 0x86))
+PW = ((0x00, 0x08), (0x00, 0x08), (0x00, 0x03))
+TEST_BIT, GATE_BIT = 0x08, 0x01
+BARS, FRAMES = 768, 800  # 8 bars of 96 frames, plus wrap through the loop command
 
 _ENC = {}
 for _op in sorted(OPS):
@@ -78,7 +88,9 @@ class Asm:
                 continue
             val = self._resolve(operand)
             if mode == "rel":
-                out.append((val - pc) & 0xFF)
+                delta = val - pc
+                assert -128 <= delta <= 127, "branch out of range: %r" % (operand,)
+                out.append(delta & 0xFF)
             elif mode in _ONE:
                 out.append(val & 0xFF)
             else:
@@ -91,94 +103,157 @@ def sid_freq(hz):
     return round(hz * 0x1000000 / PAL_CLOCK)
 
 
-# Ode to Joy, 8 bars: (pitch index, frames) plus vib on/off and rest commands.
-NOTES = [sid_freq(hz) for hz in (261.63, 293.66, 329.63, 349.23, 392.00)]
-C, D, E, F, G = range(5)
+# C major over three octaves from C3; scripts index this row by scale degree.
+_DEG = (0, 2, 4, 5, 7, 9, 11)
+NOTES = [sid_freq(130.81 * 2 ** ((12 * (i // 7) + _DEG[i % 7]) / 12)) for i in range(22)]
+C3, F3, G3 = 0, 3, 4
+C4, D4, E4, F4, G4 = 7, 8, 9, 10, 11
 Q, EI, DQ, H = 24, 12, 36, 48
-MELODY = (
-    [(E, Q), (E, Q), (F, Q), (G, Q), (G, Q), (F, Q), (E, Q), (D, Q)]
-    + [(C, Q), (C, Q), (D, Q), (E, Q), (E, DQ), (D, EI)]
-    + [("vib", 1), (D, H - 4), ("vib", 0), ("rest", 4)]
-    + [(E, Q), (E, Q), (F, Q), (G, Q), (G, Q), (F, Q), (E, Q), (D, Q)]
-    + [(C, Q), (C, Q), (D, Q), (E, Q), (D, DQ), (C, EI)]
-    + [("vib", 1), (C, H - 8), ("vib", 0), ("rest", 8)]
-)
 VIBTAB = (0, 1, 2, 3, 4, 3, 2, 1)
+ON, OFF = 0x07, 0x00  # phase mask: 0 pins the table at its zero entry
+
+_PHRASE = [(E4, Q), (E4, Q), (F4, Q), (G4, Q), (G4, Q), (F4, Q), (E4, Q), (D4, Q)]
+LEAD = (
+    _PHRASE
+    + [(C4, Q), (C4, Q), (D4, Q), (E4, Q), (E4, DQ), (D4, EI)]
+    + [("vib", ON), (D4, H - 4), ("vib", OFF), ("rest", 4)]
+    + _PHRASE
+    + [(C4, Q), (C4, Q), (D4, Q), (E4, Q), (D4, DQ), (C4, EI)]
+    + [("vib", ON), (C4, H - 8), ("vib", OFF), ("rest", 8)]
+)
+_ROOTS = (C3, C3, F3, C3, G3, C3, G3, C3, C3, C3, F3, C3, G3, G3, C3, C3)
+BASS = (
+    [("vib", OFF)]
+    + [(n, H) for n in _ROOTS[:11]]
+    + [("vib", ON)]
+    + [(n, H) for n in _ROOTS[11:15]]
+    + [("vib", OFF), (_ROOTS[15], H - 8), ("rest", 8)]
+)
+_ARP = (C4, E4, G4, E4)
+ARP = (
+    [("vib", OFF)]
+    + [(_ARP[k % 4], EI) for k in range(30)]
+    + [("vib", ON)]
+    + [(_ARP[k % 4], EI) for k in range(30, 62)]
+    + [("vib", OFF), ("rest", 24)]
+)
+SCRIPTS = (LEAD, BASS, ARP)
+
+
+def script_frames(script):
+    return sum(n for op, n in script if op == "rest" or isinstance(op, int))
+
+
+def _voice(p, v):
+    """Emit voice ``v``: identical structure, shifted zp/shadow/SID bases."""
+    b, sh, sidb = ZPV[v], SHADOW + 7 * v, SID + 7 * v
+
+    def n(tag):
+        return "v%d_%s" % (v, tag)
+
+    def lb(tag, off=0):
+        return ("L", n(tag), off) if off else ("L", n(tag))
+
+    p.label(n("tick"))
+    p.i("DEC", "zp", b + DUR).i("BEQ", "rel", lb("fetch"))
+    p.i("LDA", "zp", b + DUR)
+    p.i("CMP", "imm", 2).i("BEQ", "rel", lb("kill"))
+    p.i("CMP", "imm", 1).i("BEQ", "rel", lb("test"))
+    p.i("JMP", "abs", lb("tail"))
+    p.label(n("kill"))  # hard restart at -2 frames: zero ADSR, drop the gate
+    p.i("LDA", "imm", 0).i("STA", "zp", b + AD).i("STA", "zp", b + SR)
+    p.i("LDA", "zp", b + CTL).i("AND", "imm", 0xFF ^ GATE_BIT).i("STA", "zp", b + CTL)
+    p.i("JMP", "abs", lb("tail"))
+    p.label(n("test"))  # hard restart at -1 frame: TEST resets the oscillator
+    p.i("LDA", "zp", b + WAVE).i("ORA", "imm", TEST_BIT).i("STA", "zp", b + CTL)
+    p.i("JMP", "abs", lb("tail"))
+    p.label(n("fetch")).i("LDY", "imm", 0).i("LDA", "indy", b + PTR)
+    p.i("BPL", "rel", lb("note"))
+    p.i("AND", "imm", 3).i("TAX")  # Follin: dispatch through paired lo/hi tables
+    p.i("LDA", "absx", lb("cmdlo")).i("STA", "abs", lb("jmpv", 1))
+    p.i("LDA", "absx", lb("cmdhi")).i("STA", "abs", lb("jmpv", 2))
+    p.label(n("jmpv")).i("JMP", "abs", 0)  # SMC operand: the dispatch head
+    p.label(n("c_vib"))  # $80 dd: vibrato depth mask (arity 1)
+    p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + DEPTH)
+    p.i("LDA", "zp", b + PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", b + PTR)
+    p.i("BCC", "rel", lb("v_nc")).i("INC", "zp", b + PTR + 1)
+    p.label(n("v_nc")).i("JMP", "abs", lb("fetch"))
+    p.label(n("c_off"))  # $81 dd: gate off, rest dd frames (arity 1)
+    p.i("LDA", "zp", b + WAVE).i("STA", "zp", b + CTL)
+    p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + DUR)
+    p.i("LDA", "zp", b + PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", b + PTR)
+    p.i("BCC", "rel", lb("tail")).i("INC", "zp", b + PTR + 1)
+    p.i("JMP", "abs", lb("tail"))
+    p.label(n("c_loop"))  # $82 ll hh: rewrite the cursor (control operator)
+    p.i("INY").i("LDA", "indy", b + PTR).i("TAX")
+    p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + PTR + 1)
+    p.i("STX", "zp", b + PTR).i("JMP", "abs", lb("fetch"))
+    p.label(n("note"))  # nn dd: scale degree + duration; clears TEST, gates on
+    p.i("TAX")
+    p.i("LDA", "absx", ("L", "pitchlo")).i("STA", "zp", b + NLO)
+    p.i("LDA", "absx", ("L", "pitchhi")).i("STA", "zp", b + NHI)
+    p.i("LDA", "zp", b + WAVE).i("ORA", "imm", GATE_BIT).i("STA", "zp", b + CTL)
+    p.i("LDA", "imm", ADSR[v][0]).i("STA", "zp", b + AD)
+    p.i("LDA", "imm", ADSR[v][1]).i("STA", "zp", b + SR)
+    p.i("LDA", "imm", 0).i("STA", "zp", b + PHASE)
+    p.i("INY").i("LDA", "indy", b + PTR).i("STA", "zp", b + DUR)
+    p.i("LDA", "zp", b + PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", b + PTR)
+    p.i("BCC", "rel", lb("tail")).i("INC", "zp", b + PTR + 1)
+    p.label(n("tail"))  # vibrato straight to the chip, envelope/control via the shadow
+    p.i("INC", "zp", b + PHASE)
+    p.i("LDA", "zp", b + PHASE).i("AND", "zp", b + DEPTH).i("TAX")
+    p.i("LDA", "absx", ("L", "vibtab"))
+    p.i("CLC").i("ADC", "zp", b + NLO).i("STA", "abs", sidb + 0)
+    p.i("LDA", "zp", b + NHI).i("ADC", "imm", 0).i("STA", "abs", sidb + 1)  # carry chain -> u16
+    p.i("LDA", "zp", b + AD).i("STA", "abs", sh + 5)
+    p.i("LDA", "zp", b + SR).i("STA", "abs", sh + 6)
+    p.i("LDA", "zp", b + CTL).i("STA", "abs", sh + 4)
+    for k in FLUSH:
+        p.i("LDA", "abs", sh + k).i("STA", "abs", sidb + k)
 
 
 def build_image():
     """Assemble play + data, then init against its labels; return (mem, labels)."""
-    a = Asm(INIT)
-    a.i("LDA", "imm", ("LOL", "script")).i("STA", "zp", PTR)
-    a.i("LDA", "imm", ("HIL", "script")).i("STA", "zp", PTR + 1)
-    a.i("LDA", "imm", 1).i("STA", "zp", DUR)
-    a.i("LDA", "imm", 0).i("STA", "zp", PHASE).i("STA", "zp", DEPTH)
-    a.i("LDA", "imm", 0x10).i("STA", "zp", GATE)
-    a.i("LDA", "imm", 0x29).i("STA", "abs", SID + 5)
-    a.i("LDA", "imm", 0x59).i("STA", "abs", SID + 6)
-    a.i("LDA", "imm", 0x0F).i("STA", "abs", SID + 0x18)
-    a.i("RTS")
-
     p = Asm(PLAY)
-    p.i("DEC", "zp", DUR).i("BNE", "rel", ("L", "effects"))
-    p.label("fetch").i("LDY", "imm", 0).i("LDA", "indy", PTR)
-    p.i("BPL", "rel", ("L", "note"))
-    p.i("AND", "imm", 3).i("TAX")  # Follin: dispatch through paired lo/hi tables
-    p.i("LDA", "absx", ("L", "cmdlo")).i("STA", "abs", ("L", "jmpv", 1))
-    p.i("LDA", "absx", ("L", "cmdhi")).i("STA", "abs", ("L", "jmpv", 2))
-    p.label("jmpv").i("JMP", "abs", 0)  # SMC operand: the dispatch head
-    p.label("c_vib")  # $80 dd: set vibrato depth (arity 1)
-    p.i("INY").i("LDA", "indy", PTR).i("STA", "zp", DEPTH)
-    p.i("LDA", "zp", PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", PTR)
-    p.i("BCC", "rel", ("L", "v_nc")).i("INC", "zp", PTR + 1)
-    p.label("v_nc").i("JMP", "abs", ("L", "fetch"))
-    p.label("c_off")  # $81 dd: gate off, rest dd frames (arity 1)
-    p.i("LDA", "imm", 0x10).i("STA", "zp", GATE)
-    p.i("INY").i("LDA", "indy", PTR).i("STA", "zp", DUR)
-    p.i("LDA", "zp", PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", PTR)
-    p.i("BCC", "rel", ("L", "effects")).i("INC", "zp", PTR + 1)
-    p.i("JMP", "abs", ("L", "effects"))
-    p.label("c_loop")  # $82 ll hh: rewrite the cursor (control operator)
-    p.i("INY").i("LDA", "indy", PTR).i("TAX")
-    p.i("INY").i("LDA", "indy", PTR).i("STA", "zp", PTR + 1)
-    p.i("STX", "zp", PTR).i("JMP", "abs", ("L", "fetch"))
-    p.label("note")  # nn dd: pitch index + duration
-    p.i("TAX")
-    p.i("LDA", "absx", ("L", "pitchlo")).i("STA", "zp", BASE_LO)
-    p.i("LDA", "absx", ("L", "pitchhi")).i("STA", "zp", BASE_HI)
-    p.i("LDA", "imm", 0x11).i("STA", "zp", GATE)
-    p.i("LDA", "imm", 0).i("STA", "zp", PHASE)
-    p.i("INY").i("LDA", "indy", PTR).i("STA", "zp", DUR)
-    p.i("LDA", "zp", PTR).i("CLC").i("ADC", "imm", 2).i("STA", "zp", PTR)
-    p.i("BCC", "rel", ("L", "effects")).i("INC", "zp", PTR + 1)
-    p.label("effects")
-    p.i("INC", "zp", PHASE)
-    p.i("LDX", "zp", DEPTH).i("BEQ", "rel", ("L", "novib"))
-    p.i("LDA", "zp", PHASE).i("AND", "imm", 7).i("TAX")
-    p.i("LDA", "zp", BASE_LO).i("CLC").i("ADC", "absx", ("L", "vibtab"))
-    p.i("STA", "abs", SID + 0)
-    p.i("LDA", "zp", BASE_HI).i("ADC", "imm", 0)  # the carry chain -> u16
-    p.i("STA", "abs", SID + 1)
-    p.i("JMP", "abs", ("L", "wctrl"))
-    p.label("novib")
-    p.i("LDA", "zp", BASE_LO).i("STA", "abs", SID + 0)
-    p.i("LDA", "zp", BASE_HI).i("STA", "abs", SID + 1)
-    p.label("wctrl").i("LDA", "zp", GATE).i("STA", "abs", SID + 4).i("RTS")
-
-    p.label("cmdlo").byte(("LOL", "c_vib"), ("LOL", "c_off"), ("LOL", "c_loop"))
-    p.label("cmdhi").byte(("HIL", "c_vib"), ("HIL", "c_off"), ("HIL", "c_loop"))
+    for v in range(VOICES):
+        _voice(p, v)
+    p.i("RTS")
+    for v in range(VOICES):
+        cmds = ("v%d_c_vib" % v, "v%d_c_off" % v, "v%d_c_loop" % v)
+        p.label("v%d_cmdlo" % v).byte(*[("LOL", c) for c in cmds])
+        p.label("v%d_cmdhi" % v).byte(*[("HIL", c) for c in cmds])
     p.label("pitchlo").byte(*[f & 0xFF for f in NOTES])
     p.label("pitchhi").byte(*[f >> 8 for f in NOTES])
     p.label("vibtab").byte(*VIBTAB)
-    p.label("script")
-    for item, arg in MELODY:
-        if item == "vib":
-            p.byte(0x80, arg)
-        elif item == "rest":
-            p.byte(0x81, arg)
-        else:
-            p.byte(item, arg)
-    p.byte(0x82, ("LOL", "script"), ("HIL", "script"))
+    for v, script in enumerate(SCRIPTS):
+        assert script_frames(script) == BARS, "voice %d spans %d frames" % (
+            v,
+            script_frames(script),
+        )
+        p.label("script%d" % v)
+        for item, arg in script:
+            if item == "vib":
+                p.byte(0x80, arg)
+            elif item == "rest":
+                p.byte(0x81, arg)
+            else:
+                p.byte(item, arg)
+        p.byte(0x82, ("LOL", "script%d" % v), ("HIL", "script%d" % v))
+
+    a = Asm(INIT)
+    for v in range(VOICES):
+        b = ZPV[v]
+        a.i("LDA", "imm", ("LOL", "script%d" % v)).i("STA", "zp", b + PTR)
+        a.i("LDA", "imm", ("HIL", "script%d" % v)).i("STA", "zp", b + PTR + 1)
+        a.i("LDA", "imm", 1).i("STA", "zp", b + DUR)
+        a.i("LDA", "imm", 0)
+        for off in (PHASE, NLO, NHI, DEPTH, CTL, AD, SR):
+            a.i("STA", "zp", b + off)
+        a.i("LDA", "imm", WAVEF[v]).i("STA", "zp", b + WAVE)
+        a.i("LDA", "imm", PW[v][0]).i("STA", "abs", SID + 7 * v + 2)
+        a.i("LDA", "imm", PW[v][1]).i("STA", "abs", SID + 7 * v + 3)
+    a.i("LDA", "imm", 0x0F).i("STA", "abs", SID + 0x18)
+    a.i("RTS")
 
     mem = bytearray(0x10000)
     code = p.assemble()
@@ -361,6 +436,8 @@ def extract_proc(text, entry):
 
 _CELL = re.compile(r"(?:zp_([0-9A-Fa-f]{2})|(?:m|ctr|idx|pos)_([0-9A-Fa-f]{4}))$")
 _PAIRRE = re.compile(r"ptr_([0-9A-Fa-f]{4})_(lo|hi)$")
+_PAIRBASE = re.compile(r"ptr_([0-9A-Fa-f]{4})(?:_(lo|hi))?$")
+_SIDNAME = {R.sid_name(SID + r): r for r in range(25) if R.sid_name(SID + r)}
 
 
 def cell_addr(name):
@@ -371,6 +448,16 @@ def cell_addr(name):
     if m:
         return int(m.group(1), 16) + (m.group(2) == "hi")
     return None
+
+
+def sid_target(name):
+    """SID register index 0-24 for a hardware sink name, else None."""
+    return _SIDNAME.get(name)
+
+
+def is_shadow(name):
+    a = cell_addr(name)
+    return a is not None and SHADOW <= a < SHADOW + 7 * VOICES
 
 
 def _z3_expr(e, env, z3):
@@ -400,20 +487,23 @@ def _names(e, out):
             _names(kid, out)
 
 
+def _base_split(e):
+    """``(base cell, addend)`` for ``b`` or ``b + x`` / ``x + b``, else None."""
+    if e[0] == "name":
+        return e[1], None
+    if e[0] == "bin" and e[1] == "+":
+        for base, other in ((e[2], e[3]), (e[3], e[2])):
+            if base[0] == "name" and cell_addr(base[1]) is not None:
+                return base[1], other
+    return None
+
+
 def prove_pair(lo, hi, z3):
     """Z3-prove Concat(hi, lo) equals one wide sum; return its decomposition."""
-    if lo[0] == "name":
-        b_lo, addend = lo[1], None
-    elif lo[0] == "bin" and lo[1] == "+" and lo[2][0] == "name":
-        b_lo, addend = lo[2][1], lo[3]
-    else:
+    got_lo, got_hi = _base_split(lo), _base_split(hi)
+    if got_lo is None or got_hi is None:
         return None
-    if hi[0] == "name":
-        b_hi = hi[1]
-    elif hi[0] == "bin" and hi[1] == "+" and hi[2][0] == "name":
-        b_hi = hi[2][1]
-    else:
-        return None
+    (b_lo, addend), b_hi = got_lo, got_hi[0]
     ns = set()
     _names(lo, ns)
     _names(hi, ns)
@@ -430,19 +520,184 @@ def prove_pair(lo, hi, z3):
     return b_lo, b_hi, addend
 
 
-def prove_advance(k, carried, z3):
-    """Z3-prove the deferred-carry advance equals one u16 add (or is carry-free)."""
-    lo, hi = z3.BitVec("lo", 16), z3.BitVec("hi", 16)
+_CMPZ = {"<": "ULT", "<=": "ULE", ">": "UGT", ">=": "UGE"}
+
+
+def _z3_cond(e, env, z3):
+    """The emitted guard as a Z3 Bool; raises on anything not modelled."""
+    if e[0] == "not":
+        return z3.Not(_z3_cond(e[1], env, z3))
+    if e[0] == "bin" and e[1] in _CMPZ:
+        return getattr(z3, _CMPZ[e[1]])(_z3_expr(e[2], env, z3), _z3_expr(e[3], env, z3))
+    if e[0] == "bin" and e[1] in ("==", "!="):
+        a, b = _z3_expr(e[2], env, z3), _z3_expr(e[3], env, z3)
+        return a == b if e[1] == "==" else a != b
+    return _z3_expr(e, env, z3) != 0
+
+
+def prove_advance(k, carried, cond, p, z3):
+    """Z3-prove ``lo = p + k`` under guard ``cond`` is one u16 add on the pair.
+
+    The guard's meaning is proved, not matched, so every spelling the extractor
+    picks for the same deferred carry folds through this one rule."""
+    lo, hi = z3.BitVec(p.replace(".", "_"), 16), z3.BitVec("hi", 16)
+    try:
+        nocarry = _z3_cond(cond, {p: lo}, z3)
+    except (KeyError, ValueError):
+        return False
     t = (lo + k) & 0xFF
-    cflag = z3.ULT(t, k)
     wide = ((hi << 8 | lo) + k) & 0xFFFF
     s = z3.Solver()
     if carried:
-        folded = (z3.If(cflag, (hi + 1) & 0xFF, hi & 0xFF) << 8 | t) & 0xFFFF
+        folded = (z3.If(nocarry, hi & 0xFF, (hi + 1) & 0xFF) << 8 | t) & 0xFFFF
         s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), folded != wide)
     else:
-        s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), z3.Not(cflag), ((hi << 8) | t) != wide)
+        s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), nocarry, ((hi << 8) | t) != wide)
     return s.check() == z3.unsat
+
+
+class _NoAbstraction(Exception):
+    """The window holds a term the array abstraction does not model."""
+
+
+def _store_addr(name):
+    """Concrete address a statement target writes (state cell or SID sink)."""
+    a = cell_addr(name)
+    if a is not None:
+        return a
+    t = sid_target(name)
+    return None if t is None else SID + t
+
+
+def prove_forward(window, si, li, z3):
+    """Z3-prove the SID sink at ``li`` reads what the shadow store at ``si`` composed.
+
+    Intervening writes are ``Store``s at concrete addresses, so aliasing is decided;
+    operators become uninterpreted functions (sound: the concrete ops refine them)
+    and locals are version-keyed, so a reassignment between the sites refutes."""
+    ufs, ver = {}, {}
+    bv8, bv16 = z3.BitVecSort(8), z3.BitVecSort(16)
+    at = z3.Function("at", bv16, bv8, bv16)  # a table read's address, unconstrained
+
+    def uf(key, n):
+        f = ufs.get((key, n))
+        if f is None:
+            f = z3.Function("f_%s_%d" % (re.sub(r"\W", "_", key), n), *([bv8] * (n + 1)))
+            ufs[(key, n)] = f
+        return f
+
+    def ab(e, m):
+        k = e[0]
+        if k == "num":
+            return z3.BitVecVal(e[1] & 0xFF, 8)
+        if k == "name":
+            a = cell_addr(e[1])
+            if a is not None:
+                return z3.Select(m, z3.BitVecVal(a, 16))
+            return z3.BitVec("%s#%d" % (e[1], ver.get(e[1], 0)), 8)
+        if k == "index":
+            base = cell_addr(e[1])
+            if base is None:
+                raise _NoAbstraction(e[1])
+            return z3.Select(m, at(z3.BitVecVal(base, 16), ab(e[2], m)))
+        if k in ("not", "neg"):
+            return uf(k, 1)(ab(e[1], m))
+        if k == "call":
+            return uf(e[1], len(e[2]))(*[ab(x, m) for x in e[2]])
+        if k == "bin":
+            return uf(e[1], 2)(ab(e[2], m), ab(e[3], m))
+        raise _NoAbstraction(k)
+
+    m, val = z3.Array("m", bv16, bv8), None
+    try:
+        for i, s in enumerate(window[: li + 1]):
+            if i == li:
+                sv = z3.Solver()
+                sv.add(z3.Select(m, z3.BitVecVal(cell_addr(window[si][1]), 16)) != val)
+                return sv.check() == z3.unsat
+            a = _store_addr(s[1])
+            if a is None:
+                ver[s[1]] = ver.get(s[1], 0) + 1
+                continue
+            rhs = ab(s[2], m)
+            if i == si:
+                val = rhs
+            m = z3.Store(m, z3.BitVecVal(a, 16), rhs)
+    except _NoAbstraction:
+        return False
+    return False
+
+
+def forward_shadow(stmts, proofs):
+    """Store-to-load forward the RAM SID shadow into the hardware sinks.
+
+    Each substitution is an array-theory proof instance; the e-graph already
+    unions the two terms, but its printer refuses every spelling that mentions
+    memory and so falls back to the raw shadow read-back."""
+    import z3  # pylint: disable=import-outside-toplevel
+
+    out, window, src = [], [], {}
+    for s in stmts:
+        if s[0] == "if":
+            out.append(("if", s[1], forward_shadow(s[2], proofs), forward_shadow(s[3], proofs)))
+        elif s[0] == "loop":
+            out.append(("loop", forward_shadow(s[1], proofs)))
+        elif s[0] == "switch":
+            out.append(("switch", [(l, forward_shadow(b, proofs)) for l, b in s[1]]))
+        elif s[0] != "asg":
+            out.append(s)
+        else:
+            rhs = s[2]
+            window.append(s)
+            if sid_target(s[1]) is not None and rhs[0] == "name" and rhs[1] in src:
+                if prove_forward(window, src[rhs[1]], len(window) - 1, z3):
+                    proofs.append("forward_shadow(%s->%s)" % (rhs[1], s[1]))
+                    s = ("asg", s[1], window[src[rhs[1]]][2])
+                    window[-1] = s
+            elif is_shadow(s[1]):
+                src[s[1]] = len(window) - 1
+            out.append(s)
+            continue
+        window, src = [], {}
+    return out
+
+
+def _reads(stmts, out):
+    for s in stmts:
+        for part in s[1:]:
+            if isinstance(part, tuple):
+                _names(part, out)
+        for b in _bodies(s):
+            _reads(b, out)
+    return out
+
+
+def drop_dead_shadow(stmts):
+    """Drop shadow stores no expression reads: unread and not hardware, so
+    unobservable. Iterated, since dropping one can free the store it read."""
+    while True:
+        pruned = _prune(stmts, _reads(stmts, set()))
+        if pruned == stmts:
+            return stmts
+        stmts = pruned
+
+
+def _prune(stmts, live):
+    out = []
+    for s in stmts:
+        if s[0] == "asg" and is_shadow(s[1]) and s[1] not in live:
+            continue
+        if s[0] == "if":
+            s = ("if", s[1], _prune(s[2], live), _prune(s[3], live))
+        elif s[0] == "loop":
+            s = ("loop", _prune(s[1], live))
+        elif s[0] == "switch":
+            s = ("switch", [(l, _prune(b, live)) for l, b in s[1]])
+        out.append(s)
+    return out
+
+
+_FREQ = re.compile(r"(sid\.v[123])\.freq_(lo|hi)$")
 
 
 def fold(stmts, proofs):
@@ -465,18 +720,13 @@ def fold(stmts, proofs):
             i += 1
             continue
         nxt = stmts[i + 1] if i + 1 < len(stmts) else None
-        if (
-            s[0] == "asg"
-            and s[1] == "sid.v1.freq_lo"
-            and nxt is not None
-            and nxt[0] == "asg"
-            and nxt[1] == "sid.v1.freq_hi"
-        ):
+        voice = _match_freq_pair(s, nxt)
+        if voice is not None:
             got = prove_pair(s[2], nxt[2], z3)
             if got is not None:
                 b_lo, b_hi, addend = got
                 proofs.append("pair_store(%s,%s)" % (b_lo, b_hi))
-                out.append(("st16", "sid.v1.freq", b_lo, b_hi, addend))
+                out.append(("st16", voice + ".freq", b_lo, b_hi, addend))
                 i += 2
                 continue
         ps = _match_pair_set(s, nxt)
@@ -488,8 +738,8 @@ def fold(stmts, proofs):
             continue
         adv = _match_advance(stmts, i)
         if adv is not None:
-            pair, k, carried, used = adv
-            if prove_advance(k, carried, z3):
+            pair, k, carried, cond, p, used = adv
+            if prove_advance(k, carried, cond, p, z3):
                 proofs.append("advance(%s,+%d,%s)" % (pair, k, "wide" if carried else "nocarry"))
                 out.append(("adv16", pair, k, carried))
                 i += used
@@ -497,6 +747,16 @@ def fold(stmts, proofs):
         out.append(s)
         i += 1
     return out
+
+
+def _match_freq_pair(s, nxt):
+    """The voice whose freq lo/hi sinks these adjacent stores are, else None."""
+    if s[0] != "asg" or nxt is None or nxt[0] != "asg":
+        return None
+    m1, m2 = _FREQ.match(s[1]), _FREQ.match(nxt[1])
+    if not m1 or not m2 or m1.group(1) != m2.group(1):
+        return None
+    return m1.group(1) if (m1.group(2), m2.group(2)) == ("lo", "hi") else None
 
 
 def _match_pair_set(s, nxt):
@@ -513,51 +773,72 @@ def _match_pair_set(s, nxt):
     return "ptr_%s" % m1.group(1), {m1.group(2): s[2], m2.group(2): nxt[2]}
 
 
+def _subst(e, env):
+    """Inline the window's local bindings so the guard names only the read cell."""
+    if e[0] == "name":
+        return env.get(e[1], e)
+    if e[0] in ("not", "neg"):
+        return (e[0], _subst(e[1], env))
+    if e[0] == "bin":
+        return (e[0], e[1], _subst(e[2], env), _subst(e[3], env))
+    if e[0] == "call":
+        return (e[0], e[1], tuple(_subst(a, env) for a in e[2]))
+    if e[0] == "index":
+        return (e[0], e[1], _subst(e[2], env))
+    return e
+
+
+def _add_const(e, p):
+    """``k`` if ``e`` is ``p + k`` in either order, else None."""
+    if e[0] != "bin" or e[1] != "+":
+        return None
+    for a, b in ((e[2], e[3]), (e[3], e[2])):
+        if a == ("name", p) and b[0] == "num":
+            return b[1]
+    return None
+
+
 def _match_advance(stmts, i):
-    """Match p=lo; t=(p+k); lo=t; cflag=(t<k); if !cflag {} else {hi+1 | fault}."""
-    win = stmts[i : i + 5]
-    if len(win) < 5 or any(s[0] != "asg" for s in win[:4]) or win[4][0] != "if":
+    """Match ``p = lo; ...; lo = p + k; if <guard> {} else {hi+1 | fault}``.
+
+    The temporaries the extractor may or may not name are inlined; the guard is
+    handed to Z3 rather than compared, so every spelling of the carry folds."""
+    if stmts[i][0] != "asg" or stmts[i][2][0] != "name":
         return None
-    p_asg, t_asg, lo_asg, cf_asg = win[:4]
-    if p_asg[2][0] != "name" or not _PAIRRE.match(p_asg[2][1]):
+    pm = _PAIRRE.match(stmts[i][2][1])
+    if not pm or pm.group(2) != "lo":
         return None
-    pm = _PAIRRE.match(p_asg[2][1])
-    pair, lane = pm.group(1), pm.group(2)
-    if lane != "lo" or lo_asg[1] != "ptr_%s_lo" % pair:
+    pair, p = pm.group(1), stmts[i][1]
+    lo, hi = "ptr_%s_lo" % pair, "ptr_%s_hi" % pair
+    if cell_addr(p) is not None:
         return None
-    t = t_asg[2]
-    if t[0] != "bin" or t[1] != "+":
+    env, k, j = {}, None, i + 1
+    while j < len(stmts) and stmts[j][0] == "asg" and j - i <= 4:
+        tgt, rhs = stmts[j][1], _subst(stmts[j][2], env)
+        if tgt == lo:
+            if k is not None:
+                return None
+            k = _add_const(rhs, p)
+            if k is None:
+                return None
+        elif cell_addr(tgt) is not None or sid_target(tgt) is not None:
+            return None
+        else:
+            env[tgt] = rhs
+        j += 1
+    if k is None or j >= len(stmts) or stmts[j][0] != "if" or stmts[j][2]:
         return None
-    sides = {t[2][0]: t[2], t[3][0]: t[3]}
-    if set(sides) != {"name", "num"} or sides["name"][1] != p_asg[1]:
-        return None
-    k = sides["num"][1]
-    if lo_asg[2] != ("name", t_asg[1]):
-        return None
-    if cf_asg[2] != ("bin", "<", ("name", t_asg[1]), ("num", k)):
-        return None
-    cond, then, els = win[4][1], win[4][2], win[4][3]
-    if cond != ("not", ("name", cf_asg[1])) or then:
-        return None
-    hi = "ptr_%s_hi" % pair
+    els = stmts[j][3]
     if els in (
         [("asg", hi, ("bin", "+", ("name", hi), ("num", 1)))],
         [("asg", hi, ("bin", "+", ("num", 1), ("name", hi)))],
     ):
-        return "ptr_%s" % pair, k, True, 5
-    if len(els) == 1 and els[0][0] == "unobserved":
-        return "ptr_%s" % pair, k, False, 5
-    return None
-
-
-_SIDREG = {"freq_lo": 0, "freq_hi": 1, "pw_lo": 2, "pw_hi": 3, "ctrl": 4, "ad": 5, "sr": 6}
-
-
-def sid_target(name):
-    m = re.fullmatch(r"sid\.v([123])\.(\w+)", name)
-    if m:
-        return 7 * (int(m.group(1)) - 1) + _SIDREG[m.group(2)]
-    return {"sid.fc_lo": 21, "sid.fc_hi": 22, "sid.res": 23, "sid.vol": 24}.get(name)
+        carried = True
+    elif len(els) == 1 and els[0][0] == "unobserved":
+        carried = False
+    else:
+        return None
+    return "ptr_%s" % pair, k, carried, _subst(stmts[j][1], env), p, j + 1 - i
 
 
 class Flat:
@@ -701,13 +982,14 @@ class Machine:
                     else:
                         env[s[1]] = v & 0xFF
             elif op == "st16":
-                _t, _n, b_lo, b_hi, addend = s
-                wide = (self.ram[cell_addr(b_hi)] << 8) | self.ram[cell_addr(b_lo)]
-                if addend is not None:
-                    wide = (wide + self._val(addend, env)[0]) & 0xFFFF
-                out.append((0, wide & 0xFF))
-                out.append((1, wide >> 8))
-                self.ram[SID], self.ram[SID + 1] = wide & 0xFF, wide >> 8
+                reg = sid_target(s[1] + "_lo")
+                wide = (self.ram[cell_addr(s[3])] << 8) | self.ram[cell_addr(s[2])]
+                if s[4] is not None:
+                    wide = (wide + self._val(s[4], env)[0]) & 0xFFFF
+                out.append((reg, wide & 0xFF))
+                out.append((reg + 1, wide >> 8))
+                self.ram[SID + reg] = wide & 0xFF
+                self.ram[SID + reg + 1] = wide >> 8
             elif op == "set16":
                 base = cell_addr(s[1] + "_lo")
                 lo = self._val(s[2], env)[0]
@@ -739,10 +1021,25 @@ class Machine:
         return out
 
 
-RENAME = {
-    "ptr_00FB": "song_pos", "ctr_00FA": "dur", "ctr_00F9": "phase",
-    "zp_F7": "note_lo", "zp_F8": "note_hi", "zp_F6": "vib_on", "zp_F5": "wave",
+_FIELD = {
+    PTR: "pos", DUR: "dur", PHASE: "phase", NLO: "note_lo", NHI: "note_hi",
+    DEPTH: "vib", WAVE: "wave", CTL: "ctl", AD: "ad", SR: "sr",
 }  # fmt: skip
+
+
+def pretty(name):
+    """Per-voice readable name for a state cell, whatever alias the emitter chose."""
+    m = _PAIRBASE.match(name)
+    if m:
+        addr, lane = int(m.group(1), 16), ("_" + m.group(2) if m.group(2) else "")
+    else:
+        addr, lane = cell_addr(name), ""
+    if addr is None:
+        return name
+    for v, b in enumerate(ZPV):
+        if addr - b in _FIELD:
+            return "v%d_%s%s" % (v + 1, _FIELD[addr - b], lane)
+    return name
 
 
 def classify_roles(folded):
@@ -811,10 +1108,11 @@ def render(folded, roles):
     ``statedef``), so what this prints is what stage 4 emits."""
     lines = ["state {"]
     order = {"cursor": 0, "counter": 1, "accumulator": 2, "parameter": 3}
-    for n in sorted(roles, key=lambda n: (order[roles[n]], n)):
+    for n in sorted(roles, key=lambda n: (order[roles[n]], pretty(n))):
         w = "u16" if roles[n] == "cursor" else "u8"
-        lines.append("  %s: %s %s" % (RENAME.get(n, n), roles[n], w))
-    lines.append("  note: parameter u16   ; note_hi:note_lo as one word (pitch row)")
+        lines.append("  %s: %s %s" % (pretty(n), roles[n], w))
+    for v in range(1, VOICES + 1):
+        lines.append("  v%d_note: parameter u16   ; note_hi:note_lo as one word" % v)
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
     lines.append("play {")
@@ -824,9 +1122,11 @@ def render(folded, roles):
 
 
 def _rename_line(ln):
-    for old, new in RENAME.items():
-        ln = re.sub(r"\b%s\b" % old, new, ln)
-    return ln
+    return re.sub(
+        r"\b(?:ptr|zp|ctr|idx|pos|m)_[0-9A-Fa-f]+(?:_(?:lo|hi))?\b",
+        lambda m: pretty(m.group(0)),
+        ln,
+    )
 
 
 def _render(sl, lines, d):
@@ -839,7 +1139,7 @@ def _render(sl, lines, d):
             rhs = "%s:%s as u16" % (s[3], s[2])
             if s[4] is not None:
                 rhs += " + zext2(%s)" % _fmt(s[4])
-            lines.append("%ssid.v1.freq:u16 = %s" % (pad, rhs))
+            lines.append("%s%s:u16 = %s" % (pad, s[1], rhs))
         elif op == "set16":
             lines.append("%s%s:u16 = %s:%s" % (pad, s[1], _fmt(s[3]), _fmt(s[2])))
         elif op == "adv16":
@@ -882,6 +1182,10 @@ def to_psid(mem, end):
     return write_psid(load=0, init=INIT, play=PLAY, image=body, kind="PSID")
 
 
+def image_end(labels):
+    return labels["script%d" % (VOICES - 1)] + 0x200
+
+
 def grids_from_writes(init_writes, per_frame):
     state = [0] * 25
     for r, v in init_writes:
@@ -895,7 +1199,7 @@ def grids_from_writes(init_writes, per_frame):
 
 
 def change_stream(init_writes, per_frame, volume=None):
-    state, out = [None] * 25, []
+    state, out = [0] * 25, []  # power-on zeros: a write of 0 is not a change
     if volume is not None:  # the PSID environment seeds $D418 before init runs
         state[24] = volume
     for writes in [list(init_writes)] + list(per_frame):
@@ -906,37 +1210,117 @@ def change_stream(init_writes, per_frame, volume=None):
     return out
 
 
-def sidtrace_stream(mem, labels):
+def _docker(args):
     import subprocess  # pylint: disable=import-outside-toplevel
+
+    return subprocess.run(
+        ["docker", *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=300,
+    )
+
+
+def _in_container(entrypoint, argv, tune, gets):
+    """Run ``entrypoint argv`` on ``tune`` in the sidtrace image; copy ``gets`` out."""
+    from pysidtracker.oracle import SIDTRACE_IMAGE  # pylint: disable=import-outside-toplevel
+
+    create = ["create", "-w", "/work", "--entrypoint", entrypoint, SIDTRACE_IMAGE, *argv]
+    cid = _docker(create).stdout.decode().strip()
+    try:
+        _docker(["cp", str(tune), "%s:/work/e2e.sid" % cid])
+        _docker(["start", "-a", cid])
+        for src, dst in gets:
+            _docker(["cp", "%s:/work/%s" % (cid, src), str(dst)])
+    finally:
+        _docker(["rm", "-f", cid])
+
+
+def sidtrace_stream(mem, labels):
     import tempfile  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
-    from pysidtracker.oracle import SIDTRACE_IMAGE  # pylint: disable=import-outside-toplevel
     from pysidtracker.oracle import read_sidtrace  # pylint: disable=import-outside-toplevel
 
     with tempfile.TemporaryDirectory() as td:
         tune = Path(td) / "e2e.sid"
-        tune.write_bytes(to_psid(mem, labels["script"] + 0x100))
+        tune.write_bytes(to_psid(mem, image_end(labels)))
         out = Path(td) / "t.csv.zst"
-
-        def d(args):
-            return subprocess.run(
-                ["docker", *args],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=180,
-            )
-
-        args = ["create", "-w", "/work", "--entrypoint", "sidtrace", SIDTRACE_IMAGE]
-        cid = d(args + ["t.csv.zst", "e2e.sid", "-t17"]).stdout.decode().strip()
-        try:
-            d(["cp", str(tune), f"{cid}:/work/e2e.sid"])
-            d(["start", "-a", cid])
-            d(["cp", f"{cid}:/work/t.csv.zst", str(out)])
-        finally:
-            d(["rm", "-f", cid])
+        _in_container("sidtrace", ["t.csv.zst", "e2e.sid", "-t17"], tune, [("t.csv.zst", out)])
         rows = read_sidtrace(out)
     return [(row.reg, row.value) for row in rows if row.chip == 0 and 0 <= row.reg < 25]
+
+
+def sidplayfp_wav(mem, labels, dst, seconds=20):
+    """Render the tune to WAV with the dockerized sidplayfp; return ``dst``."""
+    import tempfile  # pylint: disable=import-outside-toplevel
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        tune = Path(td) / "e2e.sid"
+        tune.write_bytes(to_psid(mem, image_end(labels)))
+        argv = ["-wout.wav", "-t%d" % seconds, "-q", "e2e.sid"]
+        _in_container("sidplayfp", argv, tune, [("out.wav", dst)])
+    return dst
+
+
+def minimized_wav(art, dst, seconds=20, model="8580"):
+    """Render the MINIMIZED program's own write stream on an emulated SID."""
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+    from pysidtracker.audio import render_wav  # pylint: disable=import-outside-toplevel
+
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    frames = int(seconds * PAL_CLOCK / PAL_CYCLES)
+    stream = [list(art["init_writes"])] + art["min_frames"][:frames]
+    return render_wav(
+        stream,
+        dst,
+        model=model,
+        cycles_per_frame=PAL_CYCLES,
+        clock_frequency=float(PAL_CLOCK),
+    )
+
+
+def note_starts(grids, voice):
+    """Frames on which ``voice``'s gate goes 0 -> 1 (a note attack)."""
+    reg, out, prev = 7 * voice + 4, [], 0
+    for i, g in enumerate(grids):
+        if g[reg] & GATE_BIT and not prev & GATE_BIT:
+            out.append(i)
+        prev = g[reg]
+    return out
+
+
+def oscillator_reset_frames(grids, voice):
+    """Frames on which ``voice`` holds the TEST bit (the oscillator reset)."""
+    reg = 7 * voice + 4
+    return [i for i, g in enumerate(grids) if g[reg] & TEST_BIT]
+
+
+def restart_shape(grids, voice):
+    """Per note attack, the (ad, sr, ctrl) of the two frames that precede it."""
+    b = 7 * voice
+    return [
+        tuple((grids[i][b + 5], grids[i][b + 6], grids[i][b + 4]) for i in (f - 2, f - 1))
+        for f in note_starts(grids, voice)
+        if f >= 2
+    ]
+
+
+def adsr_before_gate(per_frame):
+    """True if every frame writes each voice's AD/SR strictly before its ctrl."""
+    for writes in per_frame:
+        for v in range(VOICES):
+            b, seen = 7 * v, {}
+            for k, (r, _val) in enumerate(writes):
+                if r - b in (4, 5, 6):
+                    seen.setdefault(r - b, k)
+            if 4 in seen and not all(seen.get(r, -1) < seen[4] for r in (5, 6)):
+                return False
+    return True
 
 
 def pipeline(frames=FRAMES):
@@ -948,7 +1332,7 @@ def pipeline(frames=FRAMES):
     text, _ = eqlift_mem.emit(model)
     play_ast = extract_proc(text, PLAY)
     proofs = []
-    folded = fold(play_ast, proofs)
+    folded = fold(drop_dead_shadow(forward_shadow(play_ast, proofs)), proofs)
     machine = Machine(Flat(folded), ram0)
     min_frames = [machine.frame() for _ in range(frames)]
     return {
@@ -970,23 +1354,32 @@ def main(argv=None):
     if "--dump" in argv:
         print(art["eqlift_text"])
         return 0
-    assert len(art["proofs"]) >= 4, "expected pair/advance folds, got %r" % art["proofs"]
+    kinds = {p.split("(")[0] for p in art["proofs"]}
+    assert kinds == {"forward_shadow", "pair_store", "pair_set", "advance"}, kinds
     assert framelog.canonical(art["min_frames"]) == framelog.canonical(
         art["orig_frames"]
     ), "minimized program diverges from the VM frame projection"
     roles = classify_roles(art["folded"])
-    print(render(art["folded"], roles))
+    text = render(art["folded"], roles)
+    print(text)
     print()
-    print("folds proved by Z3: %s" % ", ".join(sorted(set(art["proofs"]))))
+    assert not re.search(r"m_03[0-9A-Fa-f]{2}", text), "shadow survives on the SID path"
+    print("folds proved by Z3: %s" % ", ".join(sorted(kinds)))
     print("frame projection: minimized == VM over %d frames" % FRAMES)
 
     min_grids = grids_from_writes(art["init_writes"], art["min_frames"])
     assert min_grids == art["orig_grids"], "write-application grid diverges from VM grid"
+    assert adsr_before_gate(art["min_frames"]), "minimized frame gates before writing the ADSR"
+    for v in range(VOICES):
+        shapes = restart_shape(art["orig_grids"], v)
+        want = ((0, 0, WAVEF[v]), (0, 0, WAVEF[v] | TEST_BIT))
+        assert shapes and all(s == want for s in shapes), "voice %d hard restart shape" % v
+    print("hard restart: %d voices, ADSR-zero then TEST, ADSR written before the gate" % VOICES)
 
     try:
         from pysidtracker.oracle import register_grid  # pylint: disable=import-outside-toplevel
 
-        psid = to_psid(art["mem"], art["labels"]["script"] + 0x100)
+        psid = to_psid(art["mem"], image_end(art["labels"]))
         oracle = [g[:25] for g in register_grid(psid, FRAMES)]
         assert oracle == art["orig_grids"], "pysidtracker oracle grid diverges"
         print("oracle grid: pysidtracker == VM == minimized over %d frames" % FRAMES)
@@ -1001,6 +1394,9 @@ def main(argv=None):
         n = min(len(stream), len(mine))
         assert n and mine[:n] == stream[:n], "sidtrace oracle diverges"
         print("sidplayfp/sidtrace oracle: %d register changes match (minimized side)" % n)
+    if "--wav" in argv:
+        print("wav (minimized program, reSID): %s" % minimized_wav(art, "out/minimized.wav"))
+        print("wav (sidplayfp): %s" % sidplayfp_wav(art["mem"], art["labels"], "out/tune.wav"))
     return 0
 
 
