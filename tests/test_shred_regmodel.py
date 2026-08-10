@@ -1141,32 +1141,20 @@ _FIXTURES = {
     "jsr_inline_skip_varlen": _jsr_inline_skip_varlen,
 }
 
-_STAGE4 = dict(
-    reason="register-model-lift stage 4: "
-    "the continuation is taken from the return slot the callee wrote",
-    **XFAIL,
-)
 _SKIP_FAMILY = (
     "jsr_inline_skip",
     "jsr_inline_skip_two_sites",
     "jsr_inline_skip_two_depths",
     "jsr_inline_skip_varlen",
 )
-_SKIP_PINNED = frozenset(_SKIP_FAMILY[1:])  # the one-site control gates today
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param(n, marks=pytest.mark.xfail(**_STAGE4)) if n in _SKIP_PINNED else n
-        for n in sorted(_FIXTURES)
-    ],
-)
+@pytest.mark.parametrize("name", sorted(_FIXTURES))
 def test_fixture_builds_and_gates(name):
     """Not xfail: the fixtures themselves must stay valid while the lift lands.
 
-    The exception is the stage-4 family, whose whole content is that the gate
-    refuses; each names the continuation defect it carries below."""
+    The stage-4 skip family is included since landing 1: a callee that consumes
+    its own return slot keeps its raw call and the ret reads the slot back."""
     assert _lift(name).startswith("frameprog 1")
 
 
@@ -1826,31 +1814,33 @@ def test_a_single_site_inline_skip_lifts_through_its_return_slot():
     assert _gate("jsr_inline_skip") is None
 
 
-@pytest.mark.xfail(**_STAGE4)
 def test_a_shared_inline_data_callee_evaluates_through_the_skip():
     """#155's shape with the callee shared, which is what makes it a procedure.
 
-    The call promotes to ``sub_1300(sp)``, which writes no return slot, and each
-    site's successor is ``unobserved`` at the first inline byte; the rts-trick
-    goto faults first, on the slot nothing wrote (``goto target $0002``)."""
+    The promotion is refused (``frameproc.slot_reader``), so the raw call writes
+    the return slot the callee steps and ``lift_rts_trick`` reads the goto off it."""
     assert _gate("jsr_inline_skip_two_sites") is None
+    body = _body(_lift("jsr_inline_skip_two_sites"))
+    assert not re.search(r"\n\s+sub_%04X\(" % SPSUB, body), "the slot reader promoted"
+    assert body.count("call $%04X ret " % SPSUB) == 2, "the raw call carries no return slot"
+    assert "goto ((((zext2(t1) << $08):2 | zext2(ptr_0004_lo)):2 + $0001):2)" in body
 
 
-@pytest.mark.xfail(**_STAGE4)
 def test_a_two_depth_inline_data_callee_evaluates_through_the_skip():
-    """The corpus spelling exactly, and the corpus fault exactly.
+    """The corpus spelling exactly, and the corpus fix exactly.
 
-    Entered at two depths ``sp`` never concretizes, so the pops render
-    ``mem[(sp + $01) | $0100]``, the push pair is no constant trick, and the
-    ``ret`` falls through: ``FrameFault: unobserved $1015 reached``."""
+    Entered at two depths ``sp`` never concretizes and no constant trick lifts, so
+    the ``ret`` is what carries it: the slot the callee rewrote, not the successor."""
     assert _gate("jsr_inline_skip_two_depths") is None
+    body = _body(_lift("jsr_inline_skip_two_depths"))
+    assert not re.search(r"\n\s+sub_%04X\(" % SPSUB, body), "the slot reader promoted"
+    assert "mem[(zext2((sp - $01)) | $0100):2] = a" in body, "the slot rewrite went"
+    assert body.count("call $%04X ret " % SPSUB) == 2, "the raw call carries no return slot"
 
 
-@pytest.mark.xfail(**_STAGE4)
 def test_a_per_site_inline_data_length_evaluates_through_the_skip():
     """The variation: the skip length is the site's, so no per-callee answer exists.
 
-    Three payload bytes at one site and five at the other, the count in the
-    inline byte before them. The callee's own slot rewrite stands in the text
-    (``m_01FC = ptr_0004_lo``) and the continuation still does not read it."""
+    Three payload bytes at one site and five at the other, the count in the inline
+    byte before them; the slot the callee wrote is the only continuation that fits."""
     assert _gate("jsr_inline_skip_varlen") is None

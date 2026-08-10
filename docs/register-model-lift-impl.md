@@ -77,7 +77,7 @@ diagnosed to root cause (docs/frameprog.md §7.10.16 and the §5 risk register).
 in force *before* its loop — Galway's own `rambload.asm` (`NOTE1`/`n1sl2`) is the
 ground truth, and the walker was right — and is **closed**: `gate_sweep` at full
 Songlengths is now **624 build; 622 evaluate / 622 clean**, no standing Gate FP
-divergence left, no other verdict moved. The two evaluation faults stand and are
+divergence left, no other verdict moved. The two evaluation faults were
 **one cause, not two**: `C64_World` (frame 189) and `1st_Decent_Hardcore`
 (frame 508) are the same `CyberTracker_exe` image faulting at the same
 inline-parameter `JSR` return, and it is a **lift defect, not the claim
@@ -87,10 +87,13 @@ control flow that reaches it is wrong. The fix moves one tune's emitted text and
 `946f0dcb082fc4df0814505b5eb42a8dd677f70bcfe94deeb245c2132f1c6ec0` over the same
 624 (28,512,265 bytes). It moved once more, on a **reviewed §4 cost diff** (3d
 landing 2): admitting `pack_add` beside the price that names the OR-built pack the
-normal form respells one line in 49 tunes and nothing else, so the standing
-baseline is
-`434f0bab009a2543da69f7997a5c279af4f9e390fc894f601bce262e515c7c72` over 624
-(28,512,657 bytes).
+normal form respells one line in 49 tunes and nothing else, taking it to
+`434f0bab009a2543da69f7997a5c279af4f9e390fc894f601bce262e515c7c72`
+(28,512,657 bytes). **Stage 4 landing 1 closed the two evaluation faults** on the
+return-slot continuation, so the corpus is now **624 build; 624 evaluate / 624
+clean, zero divergences and zero refusals** and the standing baseline is
+`37b871408ea4344dd60e562f44825730748528a49fc247d47828eeb7aae2ce23` over 624
+(28,513,156 bytes), 2 tunes moved and 622 byte-identical.
 
 | label | what landed, where | role under this plan |
 |---|---|---|
@@ -533,18 +536,24 @@ oracle — an end-to-end check with no evaluator in the trust chain. (Landed:
 witnessed, the canonical example replayed frame for frame off the machine; the
 raw machine call and the static image vector are the named refusals left.)
 
-**The runway the diagnosis left it** (#155, the record in the decision log):
-the two remaining evaluation faults (`C64_World`, `1st_Decent_Hardcore` — one
-CyberTracker build) clear when a `jsr` continuation is taken from the return
-slot the callee wrote — the machine-faithful `ret` through `sp` over the stack
-image `framestack.lift_rts_trick` already installs — with the measured record
-that refusing the `pcall` promotion alone is insufficient (frameprog.md §5).
-Stage 4 owns it because its per-landing gate is the full-corpus sweep, which
-exits nonzero while they refuse. With that fix the shredder gains a fixture
-family for the same trick — a `jsr` whose callee pops its own return address,
-steps it over inline data bytes and pushes it back advanced — so the
-continuation-from-the-return-slot claim is pinned by an executable fixture and
-not only by the two corpus tunes.
+**The runway the diagnosis left it** (#155) is **landed, landing 1**: the two
+remaining evaluation faults (`C64_World`, `1st_Decent_Hardcore` — one
+CyberTracker build) clear when the `jsr` continuation is taken from the return
+slot the callee wrote, and the two halves the diagnosis measured are both
+required (frameprog.md §5) — `frameproc.slot_reader` refuses the `pcall`
+promotion for a callee that consumes the slot, and `frameval`'s `ret` reads the
+slot rather than the call's textual successor. `gate_sweep` at full Songlengths
+is **624 build; 624 evaluate / 624 clean**, zero divergences and zero refusals,
+and the shredder's four-fixture family pins the trick (one site, two sites, two
+depths, per-site skip length) rather than the two corpus tunes alone.
+
+**The position (2026-08-10), and the next landing.** Landed: **landing 1**, the
+CyberTracker continuation — the corpus gate is clean for the first time since the
+plan opened, the three `jsr_inline_skip` pins flipped on their own mechanism, and
+the emit baseline moved on a reviewed §4 diff of exactly two tunes. Next is
+**landing 2, adoption §8 step 4's cutover**, whose first measured blocker is
+`eqlift_mem._OP`'s missing `COPY` (`tests/test_step4_splice.py`); landings 3-5
+(role-typed emission, the completed witness, housekeeping + close) follow it.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -1693,3 +1702,60 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   target body follows the transfer inline under no label, and an arm table with no
   computed transfer before it — and the module's own refusal table is still held to the
   checklist by test.
+- **2026-08-10 — stage 4, landing 1: the continuation comes from the return slot, and
+  the corpus gate is clean.** #155's runway, landed as the two halves its own
+  measurement said were each necessary and neither sufficient.
+  (1) **A callee that consumes its return slot is not a register-interface procedure.**
+  `frameproc.slot_reader` walks a procedure's straight-line prefix with `sp` read
+  entry-relative — which is where a callee must take its own return address, before a
+  transfer can lose it — and refuses the `pcall` promotion where the stack pointer rises
+  above its entry value or an access names page one at displacement `+1` or above.
+  Those bytes are what the caller pushed, and the `pcall` surface drops `ret $R`: the
+  evaluator pushes a stand-in, so the callee steps a stand-in, reads its inline data
+  from nowhere and returns to a pc no map holds. The refusal is one entry in `_Info`'s
+  own `blocked` set, so the raw `call $4921 ret $4ED6` carries the address again.
+  (2) **`ret` reads the slot, not the call's successor.** The evaluator's shadow stack
+  recorded where a call came from and returned there unconditionally, so a callee that
+  rewrote the return word was ignored. It now records the word it pushed beside the
+  frame, and a `ret` takes the shadow continuation **only where the slot still holds
+  that word**; otherwise the slot's own word resolves through the same `rmap` the
+  RTS-trick `dgoto` reads. Where `sp` concretizes, `framestack.lift_rts_trick` still
+  turns the constant push pair into that `dgoto` and no `ret` runs; where it does not —
+  the corpus spelling, one callee at two depths — the `ret` is the whole mechanism.
+  (3) **Three pins flip on their own mechanism, and the fixture family is the claim.**
+  `test_a_shared_inline_data_callee_evaluates_through_the_skip` (two sites of one
+  callee), `test_a_two_depth_inline_data_callee_evaluates_through_the_skip` (the corpus
+  spelling exactly) and `test_a_per_site_inline_data_length_evaluates_through_the_skip`
+  (the skip length in the first inline byte, so no per-callee answer exists) are green,
+  as is `test_fixture_builds_and_gates` for all four; the one-site control was already.
+  Each flipped pin also asserts the mechanism in the text — no promoted call, the raw
+  call with its return slot, and the slot rewrite or the `dgoto` read off it — so a gate
+  that passes for another reason fails.
+  (4) **The corpus, and the §4 diff read tune by tune.** `gate_sweep` at full
+  Songlengths: **624 build, 624 evaluate, 624 clean, zero divergences, zero refusals** —
+  the first clean corpus of this plan, and the standing `C64_World`/`1st_Decent_Hardcore`
+  exclusions are gone. `tools/emit_identity.py`: 624 tunes, 0 refused, 28,512,657 →
+  **28,513,156 bytes**, aggregate `434f0bab…` →
+  **`37b871408ea4344dd60e562f44825730748528a49fc247d47828eeb7aae2ce23`**, **2 of 624
+  moved** and 622 byte-identical. Both moved tunes were diffed in full and carry one
+  shape: the two `sub_4921(x, y, sp)` call statements become
+  `call $4921 ret $4ED6` / `ret $4D7C`, and `sub_4921` gains the boundary a raw call
+  makes conservative — `x = m_4963`, `y = m_4965` and the machine flags the callee
+  defines (`cflag`/`zflag`, plus `vflag`/`nflag` on `1st_Decent_Hardcore`), +7 and +10
+  lines, +196 and +303 bytes. That price is the honest one: with the register interface
+  gone, `ret_live` is `_Info.G` and the callee's own restores must survive, which is
+  exactly what makes the raw call correct. It is also stage 4's metric moving the wrong
+  way on two tunes, and the mechanism that would take it back is a precise `returns` set
+  for a procedure every entry of which is a `call` — named here, owned by landing 2's
+  cutover, which is where the boundary summary is re-sourced anyway.
+  (5) **Nothing else moves.** The 25-exemplar eqlift review is **byte-identical to 3d
+  landing 4** — OFF 27,461 / ON 27,445, `d_lines` −16, `d_stores` −3, 13,909 extraction
+  sites, 3,309 changed and every one Z3-proved (12,127 proved sites), 18 identical
+  between the paths, zero faults, refusals, regressions and extraction fallbacks — which
+  is what the mechanism predicts: no exemplar's frameprog text moved, and `slot_reader`
+  refuses nothing on the render trees `eqlift_mem`'s own `_Info` sees. Suite 2,713
+  passed / 490 skipped / **33** xfailed (39 before, six flipped), oracle 16.
+  (6) **One reading of the stack, not three.** `framestack._mems`/`_accesses`,
+  `_sp_disp` and `_sp_delta` moved to `frameproc` as `accesses`/`sp_disp`/`sp_delta` and
+  `framestack` binds the same objects, so rung (d0s) and the promotion refusal read a
+  stack address one way.
