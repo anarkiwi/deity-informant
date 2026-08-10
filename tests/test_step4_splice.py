@@ -169,12 +169,12 @@ def test_the_spliced_program_reproduces_the_walker_s_projection(example):
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
 
 
-def test_the_splice_now_blocks_on_the_declarations_the_unified_printer_never_reads(example):
-    """The next blocker, un-pinned: three spellings, one cause.
+def test_the_splice_now_blocks_on_three_memory_spellings_and_nothing_else(example):
+    """The next blocker, un-pinned: every fixpoint difference is a memory reference.
 
-    ``render_lines`` is handed the data declarations and ``eqlift._Printer`` only the
-    symbol aliases, so a declared column pair, a declared table read at an index
-    expression and the indexed SID register block each keep the undeclared spelling."""
+    Two are printer breadth -- no index *expression* against a declared base, no
+    ``sid.reg[i]`` view -- and one is the declared lo/hi column pack, which reads a
+    ``_PAIRS`` registry ``render_proc`` is never handed."""
     model, _frames, prog = example
     text = _spliced_text(model, prog)
     back = frameprog.dumps(frameprog.loads(text))
@@ -183,6 +183,20 @@ def test_the_splice_now_blocks_on_the_declarations_the_unified_printer_never_rea
     assert len(lines) == len(relined), "the fixpoint moved a line count, not a spelling"
     moved = [(a, b) for a, b in zip(lines, relined) if a != b]
     assert moved and all("[" in a and "[" in b for a, b in moved), moved[:4]
+
+
+def test_the_two_printer_breadth_spellings_owe_nothing_to_the_declarations(example):
+    """The separation the pin above claims, measured: ``_memref`` emits both with no decls.
+
+    ``res`` empty and ``pairs`` unset still gives the indexed and ``sid.reg`` forms, so the
+    next landing widens ``eqlift._Printer._loadref`` and only the pack wants the registry."""
+    del example
+    idx = ("op", "INT_AND", (("loc", "ctr_0043"), ("loc", "zp_46")), 1)
+    wide = ("op", "INT_ZEXT", (idx,), 2)
+    table = ("op", "INT_ADD", (wide, ("const", 0x14D3, 2)), 2)
+    reg = ("op", "INT_ADD", (("op", "INT_ZEXT", (("loc", "a"),), 2), ("const", 0xD400, 2)), 2)
+    assert frameproc._memref(table, 1) == "m_14D3[(ctr_0043 & zp_46)]"
+    assert frameproc._memref(reg, 1) == "sid.reg[a]"
 
 
 @pytest.mark.xfail(
