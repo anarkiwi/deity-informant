@@ -19,7 +19,7 @@ from egglog import eq as egg_eq
 from . import eqlift as E
 from . import frameprog
 
-ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "") == "1"  # stage 3a flag
+ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "1") != "0"  # 3b landing 3: on
 
 _WIDTHS = (1, 2)  # the widths the memory axioms and the interval rules are stated at
 _TOP = (0, 0xFFFF)  # an address interval that says only "somewhere in the address space"
@@ -499,13 +499,14 @@ class Footprints:
 
     ``of(pc)`` is ``(spans, wild)`` for the code entered there and everything it enters
     in turn; a pc no procedure owns is ⊤, and so is a procedure holding a transfer this
-    map cannot follow. An empty map is the ⊤ every call carried before spans existed."""
+    map cannot follow. ``joins(pc)`` reads the same map's in-edges at a label."""
 
-    __slots__ = ("own", "calls", "owner", "fp")
+    __slots__ = ("own", "calls", "owner", "fp", "entered", "landings", "wall")
 
-    def __init__(self, procs=()):
+    def __init__(self, procs=(), open_flow=True, landings=()):
         procs = list(procs)
         self.own, self.calls, self.owner = {}, {}, {}
+        self.wall, self.landings = bool(open_flow), frozenset(landings)
         for entry, stmts in procs:
             self.owner.update(dict.fromkeys(_labels_of(stmts), entry))
             self.owner[entry] = entry
@@ -513,6 +514,7 @@ class Footprints:
             tgts = set()
             self.own[entry] = _mem_writes(stmts, _collect(tgts), out_goto=True)
             self.calls[entry] = frozenset(tgts)
+        self.entered = frozenset().union(*self.calls.values()) if self.calls else frozenset()
         self.fp = self._close()
 
     def _close(self):
@@ -533,6 +535,12 @@ class Footprints:
     def of(self, pc):
         """The footprint of entering at ``pc``; ⊤ where the map does not name it."""
         return self.fp.get(self.owner.get(pc), _TOPFP)
+
+    def joins(self, pc):
+        """Whether a label at ``pc`` is a join: an edge arrives that the walk does not
+        carry. A transfer no map enumerates (``open_flow``) makes every label one, and
+        so do an RTS-trick landing, a procedure entry and any enumerated goto or call."""
+        return self.wall or pc in self.entered or pc in self.landings or pc in self.own
 
 
 def _reg_bases(ir, out):
@@ -1007,8 +1015,9 @@ def render_proc(
                 stt["mem"] = join_mem(pre_mem, s, pre_held)
                 nodes.append(("loop", body))
             elif k == "label":
-                avail.clear()
-                havoc_all()
+                if foot is None or foot.joins(s[1]):
+                    avail.clear()
+                    havoc_all()
                 nodes.append(("label", s[1]))
             elif k in ("goto", "cont", "brk", "ret", "unobs"):
                 nodes.append((k, s[1] if len(s) > 1 else None))
@@ -1623,7 +1632,9 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None):
         if before == (info.params, info.rets):
             break
     proc_lines, end = [], time.monotonic() + EMIT_S
-    foot = Footprints(procs)  # the call/goto closure: what a call boundary must forget
+    from . import framefuse  # pylint: disable=import-outside-toplevel
+
+    foot = Footprints(procs, info.open_flow, framefuse._landings(model))
     for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}

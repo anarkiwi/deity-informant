@@ -406,13 +406,13 @@ extraction behind `eqlift_mem.ROOT_EXTRACT`, default off), 3b part one (the
 interval bridge, the bounded schedule), 3b landing 1 (the name-collision and
 chain-doubling defects, the extraction budget, the 25-of-25 ON/OFF review),
 3b landing 2 (the span join, the complemented join encoding, the call/goto
-closure, and the egg-side memory cost the consumer's filter always implied).
-**Next is landing 3**: the in-edge map at labels (`tools/value_walk.py`'s
-in-edge map is the join structure; a raw `call` into the calling list is an
-in-edge — landing 2 leaves a `label` at ⊤, which is the last blanket havoc),
-whole-chain region extraction, and the `ROOT_EXTRACT` **default decision**,
-made on a full 25-exemplar ON/OFF review at full Songlengths and recorded with
-its numbers either way. After it, 3c's rules in the shape the eight-extension
+closure, and the egg-side memory cost the consumer's filter always implied),
+3b landing 3 (the in-edge map at labels, and `ROOT_EXTRACT` **on** by default
+on a clean 25-of-25 review). **Next is 3c**, and what stage 3b hands it is
+named: the join carries 1,628 of 2,528 walls and the remaining 900 are
+enumerated by kind in the decision log; a label with real in-edges still
+resets, and closing it needs a join over the in-edge memories rather than a
+map lookup. After it, 3c's rules in the shape the eight-extension
 landing recorded — search the operand, prove the instance, never enumerate
 spellings — with the per-idiom convergence harness and the two mechanisms
 landing 2 named (a memory spelling's cost with its position-correctness
@@ -635,8 +635,8 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   one reachability, so `_dce` and `_temp_sweep` do not run on the root path;
   `_dce`'s fixpoint survives as `_liveness`, feeding the root set instead of a
   deletion pass. The flag is `eqlift_mem.ROOT_EXTRACT` (env
-  `DI_EQLIFT_ROOT_EXTRACT=1`, which any emitter run inherits), **default off**,
-  and off the corpus aggregate is
+  `DI_EQLIFT_ROOT_EXTRACT=0` selects the liveness path since 3b landing 3 flipped
+  the default), **default off at 3a**, and off the corpus aggregate is
   `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` over 624
   tunes (28,512,406 bytes, 0 refused), unmoved. What the landing found:
   (1) **Store deletion is the part liveness could not do.** A store drops when the
@@ -1036,3 +1036,53 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   the entries no body of the branch can disturb and drops every cell it stores, every
   span it stores through, and every term naming a local it assigns. `_base_split` also
   refused a local as a pair base, which the forwarded lanes reached for the first time.
+- **2026-08-10 — stage 3b, landing 3: the in-edge map at labels, and `ROOT_EXTRACT`
+  goes on.** The review is `tools/eqlift_measure.py` over the 25 exemplars at full
+  Songlengths, both paths, `DI_EQLIFT_EMIT_S=600`.
+  (1) **A label the map shows no edge entering is not a join.** `Footprints.joins(pc)`
+  reads the same call/goto closure as an in-edge question — the walk's own
+  fall-through is the only edge — so a `label` no `goto`, `call` or `swc` names, that
+  is no procedure entry and no RTS-trick landing (`framefuse._landings`), keeps the
+  chain instead of havocing it; `_Info.open_flow`, a transfer no map enumerates, makes
+  every label in that artifact a join again. Over the exemplars **149 of 557 label
+  havocs retire** and the emitted text does not move a byte. That is the measurement
+  the mechanism owed and it says what the map is worth: **144 of the 149 are the first
+  statement of a body**, where the walk already enters with the state the label is
+  entered with, and 5 follow a `loop`. The blanket havoc was unjustified rather than
+  load-bearing; the labels that still reset are the ones with real in-edges, and
+  closing those needs a join over the in-edge *memories*, not a lookup.
+  (2) **Whole-chain region extraction is what landing 2 already bought, and the region
+  now ends in enumerable places.** Extraction has always run over the whole procedure
+  (one e-graph, `_root_keep` over the whole render tree); what 3a lacked was a chain
+  that crosses a join. Instrumented over the 25 exemplars, `_join_mem` is reached
+  2,528 times and **carries cells at 1,628 of them (64.4%)**: `if` 1,342 carry / 585
+  ⊤, `loop` 204 / 124, `call` 76 / 162, `swg`+`swc`+`opsw` 6 / 29. Every ⊤ is one of
+  four named causes — a store address with no interval, a dynamic transfer, a call
+  the map cannot follow, or a label with in-edges.
+  (3) **`whole()` would have bought nothing, which is why ⊤ is the right answer for
+  what the map cannot follow.** The draft bounded an unenumerable transfer by the
+  union of every procedure's footprint. Measured: **0 of 25 exemplars have a bounded
+  whole-program footprint** — each has at least one store whose address is ⊤ — so the
+  union is ⊤ on every one of them, and taking ⊤ directly costs nothing and rests on
+  no argument about dispatch guards.
+  (4) **The `ROOT_EXTRACT` default decision: on.** The review is clean — OFF 27,787
+  lines / ON 27,783, `d_lines` −4, `d_stores` −3, 22 of 25 byte-identical, 13,909
+  extraction sites, 2,109 changed by saturation and every one Z3-proved (12,465 proved
+  sites), **zero faults, zero refusals, zero regressions, zero extraction fallbacks**;
+  slowest emit 86.0s at a budget that does not bind. ON is never worse than OFF on any
+  tune and better on three (`Deek/4_Tunes` −2 lines/−2 stores,
+  `Gray_Matt/Atmosphere_II` −1/−1, `Tel_Kees/Before_I_Forget` −1). `ROOT_EXTRACT` is
+  therefore **on by default**, `DI_EQLIFT_ROOT_EXTRACT=0` selects the liveness path,
+  and `tests/test_eqlift_mem.py` keeps both paths gated. The byte-identity aggregate
+  is unmoved **by construction and by measurement**: `emit_identity` is the frameprog
+  artifact, which does not read this flag — 624 tunes, 0 refused, 28,512,406 bytes,
+  `99d4fdec3da1107bf950a57f6a655d8109a475cca5888f1a59bf9c9b1689a942` with the flag on.
+  `gate_sweep` at full Songlengths 622 evaluate / 621 clean with the same three named
+  tunes; suite 2,778 passed / 35 xfailed; oracle 16 passed. The canonical example is
+  byte-identical on both paths (461 rendered lines, 677 emitted), so the flip does not
+  re-pin either ratchet.
+  (5) **What the flip does not do.** Adoption §8's step 4 — deleting `_dce`,
+  `_temp_sweep`, `_liveness`'s deletion role and the flag itself, and routing frameprog
+  emission through the unified graph — is not this landing: the flag still selects, and
+  the shredder's stage-3 xfails are pinned to the *frameprog* emitter, so they flip
+  there and not here.
