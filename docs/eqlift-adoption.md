@@ -296,6 +296,25 @@ procedure text.
     which representative extraction returned changes nothing (§10). §6's all-sites proof
     is the independent check: it expands the store chain and re-derives the disjointness
     from the address terms themselves.
+  - *The read closure and scratch demotion*, stage 3d landing 1. `Footprints` carries a
+    per-procedure **read** span set beside its write footprint: every memory read walked
+    to an interval, the address resolved through its reaching definitions first, and where
+    the bit analyses state nothing and the address is a pointer deref, the declared blocks
+    2b's `ptrextent` observed the web's derefs inside (consumed, never extended — §5). A
+    store is then a root only where a reader can observe it: bounded, Z3-proved disjoint
+    from every reader interval and outside the device window is scratch. The reader set is
+    artifact-wide because memory persists across the frame, and it is every *other*
+    procedure's statements plus the rendering one's extracted spellings, since extraction
+    is what retires a read. A label and an enumerated dynamic transfer contribute nothing:
+    entering anywhere in the artifact reads no more than the union.
+  - *The in-edge memory join at a label*, stage 3d landing 1. A label the walk has already
+    passed every in-edge of — all of them `goto`s of this procedure, outside any cyclic
+    body, none a call, an `swc` label, an RTS-trick landing or a procedure entry — joins
+    instead of resetting: a cell every in-edge memory and the fall-through read at one
+    common chain version keeps that value, and `_Chain` records the version per cell so a
+    later read lands there and stops. A back edge is not weakened, and the reason is proved
+    rather than argued: its region is not delimitable below the whole procedure, whose
+    write footprint contains every cell the chain holds.
   - *The call/goto closure* (`Footprints`). What entering at a pc may write, over the
     enumerated call/goto graph, as that graph's least fixpoint — a caller writes what
     its callees write. A pc no procedure owns is ⊤, and so is a procedure holding a

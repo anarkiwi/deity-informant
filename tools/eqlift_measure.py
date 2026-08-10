@@ -63,11 +63,12 @@ def dump(entry, models):
         signal.alarm(0)
 
 
-def lift(path, mode, prove):
+def lift(path, mode, prove, extents=None):
     """One tune on one path: text, size, extraction fallbacks, and the §6 proofs.
 
-    A proof that refuses is recorded as this row's named refusal -- the anti-vacuity
-    guard and a failed equivalence are results the review reads, never a pass."""
+    ``extents`` is this tune's 2b row, which stage 3d's read closure bounds a deref
+    with. A proof that refuses is recorded as this row's named refusal -- the
+    anti-vacuity guard and a failed equivalence are results the review reads."""
     from deity_informant import eqlift_mem
     from deity_informant import frameprog
 
@@ -78,7 +79,9 @@ def lift(path, mode, prove):
         model = frameprog.block_model(frameprog.parse(Path(path).read_text(encoding="utf-8")))
         proofs, stats = ([] if prove else None), {}
         t0 = time.monotonic()
-        text, _ = eqlift_mem.emit(model, root_extract=bool(mode), proofs=proofs, stats=stats)
+        text, _ = eqlift_mem.emit(
+            model, root_extract=bool(mode), proofs=proofs, stats=stats, extents=extents
+        )
         row.update(
             wall_s=round(time.monotonic() - t0, 1),
             lines=len(text.splitlines()),
@@ -87,6 +90,9 @@ def lift(path, mode, prove):
             sha=hashlib.sha256(text.encode()).hexdigest(),
             sites=stats.get("sites", 0),
             fallback=stats.get("extract_fallback", 0),
+            scratch=stats.get("scratch", 0),
+            in_join=stats.get("in_join", 0),
+            label_reset=stats.get("label_reset", 0),
             text=text,
         )
         if prove:
@@ -211,6 +217,16 @@ def _dump_main(args):
     return 1 if bad else 0
 
 
+def extent_rows(path):
+    """``{tune: {pointer cell: block bases}}`` from a 2b artifact, or {} without one."""
+    from deity_informant import ptrextent
+
+    if not path:
+        return {}
+    art = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {r["tune"]: ptrextent.mapped_blocks(r["extents"]["records"]) for r in art["rows"]}
+
+
 def _run_main(args):
     paths = sorted(Path(args.models).glob("*.fp"))
     if args.tunes:
@@ -219,7 +235,10 @@ def _run_main(args):
     if not paths:
         sys.exit("no dumped model matched; run `dump` first")
     modes = {"both": (False, True), "on": (True,), "off": (False,)}[args.mode]
-    jobs = [(str(p), m, args.prove) for p in paths for m in modes]
+    ext = extent_rows(args.extents)
+    jobs = [
+        (str(p), m, args.prove, ext.get(p.stem.replace("~", "/"))) for p in paths for m in modes
+    ]
     t0 = time.monotonic()
     rows = []
     with mp.Pool(min(len(jobs), args.procs), _arm, (args.cap_gb,)) as pool:
@@ -276,6 +295,7 @@ def main(argv=None):
     r.add_argument("--texts", help="directory to write every emitted text into")
     r.add_argument("-o", "--out", default=str(ROOT / "out" / "eqlift_measure.json"))
     r.add_argument("--cap-gb", type=int, default=6, help="per-worker address-space cap; 0 off")
+    r.add_argument("--extents", help="2b observed-extent artifact the read closure reads")
     p = sub.add_parser("report", help="roll a run artifact up")
     p.add_argument("artifact")
     for q in (d, r):

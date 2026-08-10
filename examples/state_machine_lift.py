@@ -2096,6 +2096,23 @@ def adsr_before_gate(per_frame):
     return True
 
 
+def observed_extents(model, frames):
+    """Phase 2b (b0)'s observed extents for this model: ``{pointer cell: block bases}``.
+
+    The run resolves every deref concretely, so where each web's derefs landed is an
+    observation; stage 3d's read closure bounds a deref with it, and never with more."""
+    from deity_informant import frameprog, frameval, ptrextent  # pylint: disable=C0415
+
+    prog = frameprog.program(model)
+    trace, _walker = frameprog.iota(model, frames)
+    probe = ptrextent.Probe()
+    ev = frameval.Evaluator(prog, trace, probe=probe)
+    for f in range(frames):
+        ev.frame = f
+        ev.run_frame()
+    return ptrextent.mapped_blocks(ptrextent.extents(prog, probe.hits))
+
+
 def boundary(model):
     """``entry -> (params, returns)``: the decompiled model's own pass-2 summary."""
     from deity_informant import datadecl, frameproc, sidprog  # pylint: disable=C0415
@@ -2117,7 +2134,7 @@ def pipeline(frames=FRAMES):
     init_writes, ram0, orig_frames, orig_grids, ram_end = run_vm(mem, frames)
     model, ev = S.decompile(bytearray(mem), INIT, PLAY, frames)
     assert S.Walker(model).run(frames) == ev.wlog, "walker replay is not bit-exact"
-    text, _ = eqlift_mem.emit(model)
+    text, _ = eqlift_mem.emit(model, extents=observed_extents(model, frames))
     proofs, folded = [], {}
     for entry in proc_entries(text):
         ast = extract_proc(text, entry)

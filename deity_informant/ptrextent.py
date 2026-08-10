@@ -138,6 +138,19 @@ def summary(recs, frames):
     }
 
 
+def mapped_blocks(recs):
+    """``{web cell: block bases}`` for every web whose observed extent is mapped.
+
+    The one reading of a record's extent: rung (g) spells it and stage 3d's read
+    closure bounds a deref with it, off the same rows and the same verdict."""
+    mapped = mapped_cells(recs)
+    return {
+        int(r["root"][1:], 16): tuple(sorted(int(b[1:], 16) for b in r["blocks"]))
+        for r in recs
+        if int(r["root"][1:], 16) in mapped
+    }
+
+
 def mapped_cells(recs):
     """The web cells whose observed extent is wholly inside the declared registry.
 

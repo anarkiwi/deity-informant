@@ -18,6 +18,7 @@ from egglog import eq as egg_eq
 
 from . import eqlift as E
 from . import frameprog
+from . import frameptr
 
 ROOT_EXTRACT = os.environ.get("DI_EQLIFT_ROOT_EXTRACT", "1") != "0"  # 3b landing 3: on
 
@@ -416,6 +417,95 @@ def _wr_span(e, defs=None):
     return None if got == _TOP or got[0] > got[1] else got
 
 
+_INLINE = 4  # how far a read address is resolved through its reaching definitions
+
+
+def _resolve(e, defs, depth=_INLINE):
+    """``e`` with each local replaced by the definition reaching it.
+
+    ``addr_bits`` already reads one level of this ("a local is the address its
+    reaching definition spells"); an address built by an ``add`` needs the leaves,
+    since the lattice states nothing about a bare local. A wall answers None and
+    the local stays, so nothing is resolved that the definitions do not pin."""
+    if not isinstance(e, tuple) or depth <= 0:
+        return e
+    if e[0] == "loc":
+        got = None if defs is None else defs.defn(e)
+        return e if got is None else _resolve(got, defs, depth - 1)
+    if e[0] == "op":
+        return (e[0], e[1], tuple(_resolve(k, defs, depth) for k in e[2]), e[3])
+    return e
+
+
+def _rd_span(a, defs=None, ext=None):
+    """The interval a read address can reach, or None where it is ⊤.
+
+    The bit analyses first, over the resolved address; where they state nothing and
+    the address is a deref of a pointer web, 2b's observed extent bounds it -- the
+    declared blocks the derefs landed in, consumed exactly as the join consumes
+    ``addr_floor``/``addr_bits`` and extended nowhere."""
+    if a[0] == "const":
+        v = a[1] & E._mask(a[2])
+        return v, v
+    got = _wr_span(_resolve(a, defs), defs)
+    if got is not None or not ext:
+        return got
+    web = frameptr.deref(a)
+    return None if web is None else ext.get(web[0])
+
+
+def _reads_of(e, out):
+    """``(address, width)`` of every memory read an expression makes, nested included."""
+    stack = [e]
+    while stack:
+        x = stack.pop()
+        if not isinstance(x, tuple):
+            continue
+        if x[0] == "mem":
+            out.append((x[1], x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+def _cover(spans):
+    """``spans`` merged into the fewest byte intervals covering every address named.
+
+    A store answers to the whole reader set, so the set is asked as intervals and not
+    cell by cell: merging only widens, and it turns thousands of proofs into a few."""
+    got = []
+    for a0, a1, w in spans:
+        end = a1 + w - 1
+        got.append((0, 0xFFFF) if end > 0xFFFF else (a0, end))
+    out = []
+    for a0, a1 in sorted(got):
+        if out and a0 <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], a1))
+        else:
+            out.append((a0, a1))
+    return tuple(out)
+
+
+def _mem_reads(stmts, ext=None):
+    """(read spans, wild) of a statement list: every address running it may read.
+
+    ``_mem_writes``' dual, and the one a store answers to. Read artifact-wide, so a
+    label and an enumerated dynamic transfer cost nothing -- entering anywhere reads
+    no more than the union -- and only an address nothing bounds is ⊤."""
+    spans, wild = set(), False
+    for env, i, s in E.frameproc.envs(stmts):
+        defs = E.frameproc.DefsAt(env, i)
+        for e in E.frameproc._stmt_exprs(s):
+            for a, w in _reads_of(e, []):
+                got = _rd_span(a, defs, ext)
+                if got is None:
+                    wild = True
+                else:
+                    spans.add((got[0], got[1], w))
+    return frozenset(spans), wild
+
+
 def _mem_writes(stmts, enter=None, out_goto=False):
     """(write spans, wild) footprint of a statement list: what running it may store.
 
@@ -499,14 +589,26 @@ class _Chain:
         return wrote is not None and _disjoint_spans(*wrote, span[0], span[1], span[2])
 
     def reach(self, ver, span):
-        """The versions a read of ``span`` at ``ver`` may equally be taken at."""
+        """The versions a read of ``span`` at ``ver`` may equally be taken at.
+
+        An in-edge join records a version per cell instead of a kept set, because the
+        version every edge agrees at is the cell's own; the walk lands there and stops,
+        since only that one version is common to all the edges."""
         key = (ver, span)
         got = self.memo.get(key)
         if got is None:
             out, n = [ver], ver
             while True:
                 st = self.steps.get(n)
-                if st is None or st[0] is None or not self._crosses(st[1], span):
+                if st is None or st[0] is None:
+                    break
+                if isinstance(st[1], dict):
+                    at = st[1].get((span[0], span[2])) if span[0] == span[1] else None
+                    if at is None:
+                        break
+                    out.append(at)
+                    break
+                if not self._crosses(st[1], span):
                     break
                 out.append(st[0])
                 n = st[0]
@@ -563,6 +665,25 @@ def _collect(tgts):
     return enter
 
 
+def _targets(stmts, out=None):
+    """``({pc: goto count}, other targets)``: the in-edges of a label, by kind.
+
+    Only a ``goto`` carries a memory this walk can name; a call, an ``swc`` label and
+    anything the map does not enumerate arrive with a memory it cannot."""
+    goto, other = ({}, set()) if out is None else out
+    for s in stmts:
+        k = s[0]
+        if k == "goto":
+            goto[s[1]] = goto.get(s[1], 0) + 1
+        elif k in ("call", "callb"):
+            other.add(s[1])
+        elif k == "swc":
+            other.update(int(lbl[1:], 16) for lbl in s[1])
+        for b in E.frameproc._stmt_bodies(s):
+            _targets(b, (goto, other))
+    return goto, other
+
+
 def _labels_of(stmts, out=None):
     out = [] if out is None else out
     for s in stmts:
@@ -578,13 +699,15 @@ class Footprints:
 
     ``of(pc)`` is ``(spans, wild)`` for the code entered there and everything it enters
     in turn; a pc no procedure owns is ⊤, and so is a procedure holding a transfer this
-    map cannot follow. ``joins(pc)`` reads the same map's in-edges at a label."""
+    map cannot follow. ``joins(pc)`` reads the same map's in-edges at a label, and
+    ``unread`` the same traversal's read spans: what no reader in the artifact names."""
 
-    __slots__ = ("own", "calls", "owner", "fp", "entered", "landings", "wall")
+    __slots__ = ("own", "calls", "owner", "fp", "entered", "landings", "wall", "rd", "ext")
 
-    def __init__(self, procs=(), open_flow=True, landings=()):
+    def __init__(self, procs=(), open_flow=True, landings=(), extents=None):
         procs = list(procs)
-        self.own, self.calls, self.owner = {}, {}, {}
+        self.own, self.calls, self.owner, self.rd = {}, {}, {}, {}
+        self.ext = dict(extents or {})
         self.wall, self.landings = bool(open_flow), frozenset(landings)
         for entry, stmts in procs:
             self.owner.update(dict.fromkeys(_labels_of(stmts), entry))
@@ -593,6 +716,7 @@ class Footprints:
             tgts = set()
             self.own[entry] = _mem_writes(stmts, _collect(tgts), out_goto=True)
             self.calls[entry] = frozenset(tgts)
+            self.rd[entry] = _mem_reads(stmts, extents)
         self.entered = frozenset().union(*self.calls.values()) if self.calls else frozenset()
         self.fp = self._close()
 
@@ -620,6 +744,26 @@ class Footprints:
         carry. A transfer no map enumerates (``open_flow``) makes every label one, and
         so do an RTS-trick landing, a procedure entry and any enumerated goto or call."""
         return self.wall or pc in self.entered or pc in self.landings or pc in self.own
+
+    def sources(self, pc):
+        """The procedures whose enumerated transfers name ``pc``."""
+        return frozenset(e for e, tgts in self.calls.items() if pc in tgts)
+
+    def readers(self, skip=None):
+        """``(byte intervals, wild)`` every reader but ``skip``'s own statements names.
+
+        The reader set is artifact-wide because memory persists across the frame: a
+        store answers to every read the program holds, wherever it sits. The rendering
+        procedure is left out so its caller can offer the reads its *extraction* kept;
+        every other procedure is read at its statements, which is the conservative
+        side of the same question."""
+        spans, wild = set(), self.wall
+        for entry, (sp, wd) in self.rd.items():
+            if entry == skip:
+                continue
+            spans |= sp
+            wild = wild or wd
+        return _cover(spans), wild
 
 
 def _reg_bases(ir, out):
@@ -704,6 +848,29 @@ def _ir_span(ir):
     return None
 
 
+def _ir_ptr(ir):
+    """The pointer cell an extracted word read names, else None."""
+    if ir[0] == "cell" and ir[2] == 2:
+        return ir[1]
+    if ir[0] != "bor" or ir[1][0] != "shl" or ir[2][0] != "zext":
+        return None
+    top, bot = ir[1], ir[2][1]
+    if top[2][0] != "num" or top[2][1] != 8 or top[1][0] != "zext":
+        return None
+    h = top[1][1]
+    return bot[1] if h[0] == "cell" and bot[0] == "cell" and h[1] == bot[1] + 1 else None
+
+
+def _ir_deref(ir):
+    """The pointer cell an extracted address derefs, else None.
+
+    ``frameptr.deref``'s shapes read over the printer IR, so the extent that bounds a
+    deref in the statements bounds the same deref in the spelling extraction chose."""
+    if ir[0] == "add":
+        return next((c for c in map(_ir_ptr, (ir[1], ir[2])) if c is not None), None)
+    return _ir_ptr(ir)
+
+
 def _mem_ver(ir):
     """The memory version a ``sel``'s memory argument names, or None for a raw chain."""
     if ir[0] == "mem0":
@@ -724,17 +891,22 @@ def _sel_reads(raw, out):
     return out
 
 
-def _ir_reads(ir, ver, out):
-    """The same over printer IR, where the version is the one the site was spelled at."""
+def _ir_reads(ir, ver, out, ext=None):
+    """The same over printer IR, where the version is the one the site was spelled at.
+
+    ``ext`` bounds a deref by 2b's observed extent, as the statement side does; the
+    chain walk passes none, so which representative it may cross does not move."""
     if not isinstance(ir, tuple):
         return out
     if ir[0] in ("cell", "load"):
         span = (ir[1], ir[1]) if ir[0] == "cell" else _ir_span(ir[1])
+        if span is None and ext:
+            span = ext.get(_ir_deref(ir[1]))
         out.append((ver, span, ir[2]))
-        return _ir_reads(ir[1], ver, out) if ir[0] == "load" else out
+        return _ir_reads(ir[1], ver, out, ext) if ir[0] == "load" else out
     for a in ir[1:]:
         if isinstance(a, tuple):
-            _ir_reads(a, ver, out)
+            _ir_reads(a, ver, out, ext)
     return out
 
 
@@ -962,12 +1134,55 @@ def _all_nodes(nodes):
 Roots = collections.namedtuple("Roots", "ids sid regs")
 
 
-def roots(tree, info, entry, chosen, dead_stores=()):
+_IO_LO = 0xD000  # the device window: a store that may reach it is an output, never scratch
+
+
+def _unread(span, cover, wild):
+    """No reader names a byte ``span`` writes, and no device sits inside it.
+
+    Scratch demotion's whole test: a bounded store outside the device window that
+    every reader interval is Z3-proved disjoint from reaches no root, so it is not
+    one -- a store is observable only where a read of the program names it."""
+    if wild or span is None or span[1] + span[2] - 1 >= _IO_LO:
+        return False
+    return all(_disjoint_spans(span[0], span[1], span[2], b0, b1, 1) for b0, b1 in cover)
+
+
+def _own_reads(chosen, ext=None):
+    """``(byte intervals, wild)`` the extracted spellings of one procedure read.
+
+    Extraction is what retires a read: a pull the store forwards is spelled from the
+    pushed value, so the slot has no reader left however the statement was written."""
+    spans, wild = set(), False
+    for ir in chosen:
+        for _ver, span, w in _ir_reads(ir, None, [], ext):
+            if span is None:
+                wild = True
+            else:
+                spans.add((span[0], span[1], w))
+    return _cover(spans), wild
+
+
+def _scratch(wrspan, chosen, foot, entry):
+    """The store node ids no reader in the artifact can observe.
+
+    The reader set is every other procedure's statements plus this one's extracted
+    spellings, since extraction is what retires a read; without the map there is no
+    artifact to close over and nothing demotes."""
+    if foot is None:
+        return frozenset()
+    cover, wild = foot.readers(entry)
+    own, ownwild = _own_reads(chosen, foot.ext)
+    cover, wild = _cover([(a, b, 1) for a, b in cover + own]), wild or ownwild
+    return frozenset(i for i, span in wrspan.items() if _unread(span, cover, wild))
+
+
+def roots(tree, info, entry, chosen, dead_stores=(), scratch=()):
     """The observable roots of one rendered procedure (adoption §2), as node ids.
 
-    Sinks are the surviving memory stores (``sid`` names the write-only
-    $D400-$D41C ones) and every control statement; the register locals rooted are
-    those pass 2's boundary summary says a consumer reads. Nothing else is a root."""
+    Sinks are the surviving memory stores (``sid`` names the write-only $D400-$D41C
+    ones) and every control statement; the register locals rooted are those pass 2's
+    summary says a consumer reads. A store ``scratch`` names is observed by nobody."""
     reg = E.frameproc._ALL_REG_LOCALS
     live = _liveness(tree, info, entry, chosen)
     ids, sid = set(), set()
@@ -977,7 +1192,7 @@ def roots(tree, info, entry, chosen, dead_stores=()):
             if nd[1] in reg and nd[1] in live.get(id(nd), reg):
                 ids.add(id(nd))
         elif k == "st":
-            if id(nd) in dead_stores:
+            if id(nd) in dead_stores or id(nd) in scratch:
                 continue
             ids.add(id(nd))
             a = nd[1]
@@ -1025,9 +1240,10 @@ def render_proc(
     seconds, spent by saturation then extraction; sites past it render own-term."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
-    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0}
+    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
-    src, seeds, memdefs = {}, [], []
+    src, seeds, memdefs, wrspan = {}, [], [], {}
+    inedge, tgts = {}, _targets(stmts)
     dfs, ch = _Defs(src), _Chain()
 
     def seed(term, e):
@@ -1097,6 +1313,44 @@ def render_proc(
         ch.step(n, None, None)  # ⊤: no read crosses a havoc
         stt["mem"], stt["held"], stt["memv"] = memk(i64(n)), frozenset(), n
 
+    def count(*names):
+        """One counter per named statistic; the review reads the label roll-up off it."""
+        for n in names:
+            if stats is not None and n is not None:
+                stats[n] = stats.get(n, 0) + 1
+
+    def in_join(pc):
+        """Join the in-edge memories at ``pc`` instead of resetting, or False.
+
+        Every edge must be a ``goto`` this walk has already passed outside any cyclic
+        body, so each arrives with a memory version the chain names; a cell every one
+        of them reads at one common version keeps that value across the label."""
+        got = inedge.get(pc, ())
+        if foot is None or foot.wall or stt["cyc"] or not got:
+            return False
+        if pc in foot.landings or pc in foot.own or pc in tgts[1] or foot.sources(pc) - {entry}:
+            return False
+        if len(got) != tgts[0].get(pc, 0) or any(c for _v, _h, c in got):
+            return False
+        ins = [(stt["memv"], stt["held"])] + [(v, h) for v, h, _c in got]
+        at = {}
+        for c in sorted(frozenset.intersection(*[frozenset(h) for _v, h in ins])):
+            common = frozenset.intersection(*[ch.reach(v, (c[0], c[0], c[2])) for v, _h in ins])
+            if common:
+                at[c] = max(common)
+        m = memk(i64(fresh()))
+        for a, aw, w in sorted(at):
+            addr = E.num(a, aw)
+            base = mem0() if at[(a, aw, w)] == 0 else memk(i64(at[(a, aw, w)]))
+            m = store(m, addr, sel(base, addr, w), w)
+        havoc(list(stt["env"]))
+        stt["held"] = frozenset(at)
+        stt["mem"] = remember(m, {(a, w): v for (a, _aw, w), v in at.items()})
+        count("in_join")
+        if stats is not None:
+            stats["in_join_cells"] = stats.get("in_join_cells", 0) + len(at)
+        return True
+
     def wall(s):
         """A boundary the locals cannot cross: memory joins over what it can write."""
         pre_mem, pre_held, pre_ver = stt["mem"], stt["held"], stt["memv"]
@@ -1130,6 +1384,7 @@ def render_proc(
                 if a[0] == "const":
                     stt["held"] |= {(cell, a[2], w)}
                 nodes.append(nd)
+                wrspan[id(nd)] = None if got is None else got + (w,)
                 if root_extract:
                     mempairs.append((nd, pre, stt["mem"]))
             elif k == "if":
@@ -1163,7 +1418,9 @@ def render_proc(
                 pre_ver = stt["memv"]
                 havoc(_written(s[1]))
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
+                stt["cyc"] += 1
                 body = walk(s[1])
+                stt["cyc"] -= 1
                 avail.intersection_update(pre_av)
                 havoc(_written(s[1]))
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
@@ -1171,9 +1428,13 @@ def render_proc(
             elif k == "label":
                 if foot is None or foot.joins(s[1]):
                     avail.clear()
-                    havoc_all()
+                    if not in_join(s[1]):
+                        havoc_all()
+                        count("label_reset", "label_forward" if inedge.get(s[1]) else None)
                 nodes.append(("label", s[1]))
             elif k in ("goto", "cont", "brk", "ret", "unobs"):
+                if k == "goto":
+                    inedge.setdefault(s[1], []).append((stt["memv"], stt["held"], stt["cyc"]))
                 nodes.append((k, s[1] if len(s) > 1 else None))
             elif k == "call":
                 wall(s)
@@ -1288,7 +1549,10 @@ def render_proc(
         info.summarize()
     if root_extract:
         gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
-        keep = _root_keep(tree, roots(tree, info, entry, chosen, gone).ids, chosen)
+        scratch = _scratch(wrspan, chosen, foot, entry)
+        if stats is not None:
+            stats["scratch"] = stats.get("scratch", 0) + len(scratch)
+        keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch).ids, chosen)
         dead = {id(nd) for nd in _all_nodes(tree)} - keep
         _share_once(tree, dead, chosen, terms, ch)
     else:
@@ -1758,7 +2022,21 @@ def _written(stmts):
     return out
 
 
-def emit_mem(model, root_extract=None, proofs=None, stats=None):
+def _extent_spans(extents, decls):
+    """``{pointer cell: (lo, hi)}``: the interval 2b observed a web's derefs inside.
+
+    The declared blocks the extent names, read as one interval over the registry that
+    declared them -- the record is an observation and this is its only reading."""
+    size = {d["base"]: d["size"] for d in decls}
+    out = {}
+    for cell, bases in (extents or {}).items():
+        got = [(b, b + size[b] - 1) for b in bases if size.get(b)]
+        if got:
+            out[cell] = (min(a for a, _b in got), max(b for _a, b in got))
+    return out
+
+
+def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
     ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
@@ -1803,7 +2081,9 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None):
     proc_lines, end = [], time.monotonic() + EMIT_S
     from . import framefuse  # pylint: disable=import-outside-toplevel
 
-    foot = Footprints(procs, info.open_flow, framefuse._landings(model))
+    foot = Footprints(
+        procs, info.open_flow, framefuse._landings(model), _extent_spans(extents, decls)
+    )
     for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
@@ -1821,10 +2101,10 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None):
     return "\n".join(lines) + "\n"
 
 
-def emit(model, root_extract=None, proofs=None, stats=None):
+def emit(model, root_extract=None, proofs=None, stats=None, extents=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model, root_extract, proofs, stats), None
+    return emit_mem(model, root_extract, proofs, stats, extents), None
