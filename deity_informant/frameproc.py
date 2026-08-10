@@ -604,13 +604,23 @@ class Defs:
         Reaching here at all means this list defines nothing for ``name`` before
         ``bound`` and lets control in nowhere before it either -- ``at`` answers
         both. Only a back edge can still overwrite it, from a definition or a label
-        *after* the read, so a cyclic body must bind neither."""
+        *after* the read, so a cyclic body must bind neither.
+
+        A ``for`` header binds its counter over its own body, and is the one
+        statement that does: pass 3 lifts the counter's init and step *out* of the
+        list, so the body defines nothing for it, and an escape asks the enclosing
+        list at the ``for``'s own index -- which ``at`` excludes. Without this the
+        counter reads as whatever constant was in force before the loop, which it
+        is at no iteration."""
         got = self.at(name, bound)
         if got is not None:
             return (self, got[0], got[1])
         if self.outer is None or (self.cyclic and (self.wild or name in self.defs)):
             return None
-        return self.outer[0]._lookup(name, self.outer[1])
+        outer, at = self.outer
+        if outer.lst[at][:2] == ("for", name):
+            return None
+        return outer._lookup(name, at)
 
     def resolve(self, n, bound):
         """The value ``n`` names, following definitions out through enclosing lists."""

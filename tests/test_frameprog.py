@@ -504,6 +504,46 @@ def test_a_local_is_a_use_at_every_width(loc):
     assert frameproc._locset(("mem", loc, 1)) == {"t16"}
 
 
+# ---- the for counter the header binds (docs/frameprog.md 7.10.16) ----------------
+def _rambo_note_loop():
+    """Rambo ``$23C4``, ``rambload.asm`` ``NOTE1``/``n1sl2``, as statements.
+
+    ``LDY #4 / LDA #0 / STA $D409,Y / LDA $2934,Y / STA $D409,Y / DEY / BPL`` with
+    pass 3's rewrite already applied: init and step live in the header, so the body
+    holds only the two stores. ``y = $00`` before it is the unrelated definition the
+    escape used to reach."""
+    idx = ("op", "INT_ZEXT", (("loc", "y"),), 2)
+    dst = ("op", "INT_ADD", (idx, ("const", 0xD409, 2)), 2)
+    src = ("mem", ("op", "INT_ADD", (idx, ("const", 0x2934, 2)), 2), 1)
+    body = [("st", dst, ("const", 0, 1)), ("st", dst, src)]
+    return dst, src, [("asg", "y", ("const", 0, 1)), ("for", "y", 4, 0, body)]
+
+
+def test_a_for_counter_is_not_the_constant_in_force_before_the_loop():
+    """``Defs._lookup`` must stop at the ``for`` header that binds the name.
+
+    Reading past it folded ``$D409+y`` to ``$D409`` and ``$2934+y`` to ``$2934``:
+    the corpus's one standing Gate FP divergence, and a written-to-the-wrong-cell
+    store rather than a lost name."""
+    _dst, _src, items = _rambo_note_loop()
+    env = frameproc.Defs(items)
+    body_env = frameproc.Defs(items[1][4], (env, 1), True)
+    assert env._lookup("y", 1) is not None, "the outer definition is there to be found"
+    assert body_env._lookup("y", 0) is None, "the header binds the counter over its body"
+
+
+def test_canon_addrs_keeps_the_index_of_a_store_a_for_counter_indexes():
+    """The one address-naming rule may not name an indexed cell by one seat of it.
+
+    Both the SID store and the table read keep their index; before the fix each
+    folded to the constant the pre-loop ``y = $00`` made of it."""
+    dst, src, items = _rambo_note_loop()
+    frameproc.canon_addrs(items)
+    body = items[1][4]
+    assert [s[1] for s in body] == [dst, dst]
+    assert body[1][2] == src
+
+
 def test_inline_does_not_orphan_a_width_2_use_by_folding_into_a_later_one():
     """``_find_use`` must not name the second use when the first is width-2.
 
