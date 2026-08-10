@@ -561,9 +561,23 @@ the statement set it prints, `pcall` included; and then, on the canonical exampl
 `frameproc._index_of`'s breadth, routes a register-file base through the `sid.reg` view,
 and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word column.
 
-**What step 4 still owes is the unconditional path.** `frameprog.dumps` renders through
-`frameproc.render_lines` still; the splice lives in `tests/test_step4_splice.py`, which is
-the gate, not the artifact. §5's `_Prune`/`_inline` deletions and rung (d2)'s per-site
+**What step 4 still owes is the unconditional path, and the switch now has a named
+blocker.** `frameprog.dumps` renders through `frameproc.render_lines` still;
+`eqlift_mem.artifact_lines` is what it will call, and the splice in
+`tests/test_step4_splice.py` plus `tools/splice_sweep.py` are the gates, not the artifact.
+The blocker is an **import cycle with a design question inside it**: `eqlift_mem` reads
+`frameprog._state_lines` for the PoC artifact's header, so `frameprog` may not call
+`eqlift_mem` (pylint R0401, and CI fails on it). Three answers, and the switch must pick
+one: move the `state { }` emitter (`_state_fields`/`_field_line`/`_cells` and the
+`_INPUTS`/`_ZERO`/`_SID_*` constants) into `sidprog`, which already holds `_data_lines` and
+the header helpers; hand `eqlift_mem.emit` its header from the caller; or **retire
+`eqlift_mem.emit`/`emit_mem` as the second projection** — with frameprog emitting through
+the unified graph they are a second emitter over the same model, which is exactly what the
+sidprog retirement removed ("there is no second projection left"), and their one consumer
+`tools/eqlift_measure.py` is subsumed by `tools/splice_sweep.py` measuring the real
+artifact. The third is the plan-shaped answer and it deletes the most; it also moves the
+exemplar review onto the corpus sweep, so the 25-exemplar baseline retires with it.
+§5's `_Prune`/`_inline` deletions and rung (d2)'s per-site
 e-graphs are subsumed only where the unified graph is what emits, so they land with that
 switch and with the corpus diff it moves. §5's `eqlift_mem` liveness deletions (`_dce`,
 `_temp_sweep`, `ROOT_EXTRACT` and every `root_extract` parameter) **are landed**, and the
@@ -608,6 +622,37 @@ and determinism, and what moved in landing 3 part 1 is soundness of the emitter 
 about to become the artifact. The `state { }` demotion still has no subject: scratch
 demotion belongs to root extraction and frameprog's own emit has none, so it has nothing
 to drop until the switch.
+
+**The open items, each with its mechanism, as landing 3 part 1 leaves them.**
+- **The switch** (landing 3): the import cycle above, then `dumps` reading lines the
+  analysed program carries (a parsed program keeps `render_lines`, which is what makes the
+  fixpoint the gate rather than an accident), then §5's deletions on the corpus diff the
+  switch moves, then the emit-identity baseline re-recorded with a §4 review. `gate_sweep`
+  cannot see the switch — it evaluates the analysed program and never reads the text — so
+  `tools/splice_sweep.py` is the gate that can, and the re-measure of the 24 shredder
+  stage-3 pins moves from `_spliced` to `_lift`, where they become artifact facts.
+- **The parse-and-evaluate gap, newly measured and unowned.** 87 of 624 tunes fail on the
+  emitter that ships today: the emitted text, parsed back and evaluated, faults or diverges
+  where the analysed program does not (27 faults, 9 `lint`, 52 divergences; 84 on the
+  unified emitter, zero of them new). 3a's totality claim is about the *cache* round trip,
+  which `emit_identity` exercises and which holds; this is a different claim and it does
+  not. The tool records both sides (`out/splice_base.json`, `out/splice_s4l3.json`); the
+  diagnosis is a per-tune bisection of the kind #179 ran, and no landing owns it yet.
+- **`ret_live` for a slot-rewriting callee** (landing 1's owed, #177's refusal): a
+  `framestack` reading of each call site's resume pc — call site plus inline-data length,
+  where `lift_rts_trick` concretizes `sp` — unioned as the live-in. Not an `_Info`
+  relaxation; the shredder's four-fixture family already carries every spelling.
+- **The `_cell_decl` extent/`mut` defect** (#178 (3)): `table X[1] mut 0` on a cell the
+  text writes as `X[x]`, because `_cell_decl` reads `model.written` at the base alone. It
+  is a declaration-truth defect of `_declare_cells` and owes its own measurement.
+- **Landings 4-6** are as their sections state them, none begun: role-typed emission and
+  the steering metrics (landing 4), the witness completed — the raw `call`/`callb` and
+  static-image-vector refusals, the signed compare over unequal operand widths, the three
+  `Asm` copies onto `asm6502.py` (whose tables differ semantically: `_fuzzgen` admits
+  illegal opcodes and resolves duplicate legal `(mn, mode)` pairs to the highest byte where
+  `asm6502` takes the lowest, so the merge moves fixture bytes), the 25-exemplar VM sweep
+  (landing 5), and the song-model retirement, the `swc` in-edge join extension, the
+  `low_held_cursor` ptrcert rung and the stage close (landing 6).
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2206,3 +2251,20 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   from the one the pins measure. It sits with the renderer rather than in `frameprog`
   because `eqlift_mem` reads `frameprog._state_lines`, and the switch owes that cycle its
   own answer.
+- **2026-08-10 — stage 4, landing 3 (part): every pin's reason names a live owner, and the
+  switch's blocker is named.** An xfail audit found four prototype pins deferring to a
+  CLOSED stage, which the deferral discipline forbids.
+  (1) **Three have owners.** `test_state_block_holds_no_scratch` ("stage 3b/3c") is landing
+  3's `state { }` demotion; the two role pins ("3c/4") and the VM operator-set pin ("3d/4")
+  are landing 4's role-typed emission. The shredder's `_S3` prefix is where a pin was
+  *raised*, not who owns it — each carries a `_MEASURED` disposition against the cutover's
+  own emitter — and the stage close owes that family the same re-pointing.
+  (2) **One has none, and says so.** `test_no_byte_lane_update_of_any_declared_u16` needs a
+  variable-stride cursor advance folded, and no admitted rule folds one; admitting a rule
+  is a corpus-diff decision (adoption §4) nobody has priced. The reason states that rather
+  than naming a stage that would not flip it.
+  (3) **The switch's blocker, measured rather than assumed.** `frameprog` cannot call
+  `eqlift_mem` while `eqlift_mem` reads `frameprog._state_lines`: pylint's R0401 fails CI,
+  which is why `render_ctx`/`artifact_lines` sit with the renderer. The three answers are
+  in the position paragraph; the third — retiring `emit`/`emit_mem` as the second
+  projection — is the one the plan's own precedent points at.
