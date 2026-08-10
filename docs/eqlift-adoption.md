@@ -59,8 +59,8 @@ passing tests (`tests/test_eqlift_mem.py`).
 - Address disjointness is an e-class INTERVAL analysis, not imperative cell
   overlap: `lo`/`hi` lattice values (merge by min/max) propagate over
   `num`/`zext`/`band`/`add`/`shl`; `hi(a) < lo(b)` yields the `disjoint(a,b)`
-  relation that guards the diff axiom. This replaces `_addr_range` +
-  `havoc_store` scoping. `add`/`shl` carry an interval only where the result
+  relation that guards the diff axiom, in place of any imperative per-site
+  alias scoping. `add`/`shl` carry an interval only where the result
   cannot wrap its own width — a wrapped sum is *below* both operands, so the
   unguarded floor was a claim the value breaks (§10).
 - The interval BRIDGE (stage 3b) is the second source of those bounds:
@@ -154,13 +154,20 @@ of these. Deleting one is the engine landing, not a regression to weigh: no
 consumer may depend on one, and nothing downstream may be designed for
 compatibility with one.
 
-- `_RegLive` liveness DCE — replaced by root extraction from observable sinks.
-- `_copy_prop` (no-op self-copy removal) — replaced by `store_redundant` /
-  root extraction.
-- `_prop_once`'s cell-forwarding branch — replaced by `sel_store_same`
-  forwarding.
-- `havoc_store` + `_addr_range` alias scoping — replaced by the interval
-  disjointness analysis and the disjoint read-through axiom.
+(Re-grounded 2026-08-10: this list once named `_RegLive`, `_copy_prop`,
+`_prop_once` and `havoc_store` — prospective names that never existed in the
+code, verified by `git log -S` over the package history. The inventory below
+names what is real, grep-verified at #156.)
+
+- `eqlift_mem`'s liveness path — `_dce`, `_temp_sweep`, `_liveness`'s deletion
+  role, the `ROOT_EXTRACT` flag and every `root_extract` parameter — replaced
+  by root extraction, the default since stage 3b landing 3; step 4 deletes the
+  selection.
+- `frameproc._Prune`/`_prune` and `_inline`/`_inline_list`, with the repolish
+  fixpoints that drive them — replaced by root extraction and `_share_once` on
+  the unified path.
+- `framemath`'s per-site value e-graphs (rung (d2)'s scaffolding) — subsumed
+  when the same admitted rules fire once in the per-procedure unified graph.
 - the `_loadref` operand-order fix — subsumed once loads are `sel` terms with
   normalized `add` operands in the shared graph.
 

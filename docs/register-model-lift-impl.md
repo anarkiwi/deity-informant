@@ -447,6 +447,22 @@ and the class queried, `framemath._pairs`' shape; `pack_add` needs the §4 cost 
 that names the pack as the normal form; and the join at a label with real in-edges still
 needs a join over the in-edge memories. 3d's own work: the `_ARITY` discharge
 landed (housekeeping below), leaving guard-aware re-rolling.
+**Next is 3d, in three landings.** Landing 1 is one `Footprints` traversal
+landed once: the **read** closure (deref spans from 2b's observed extents,
+consumed exactly as the join consumes `addr_floor`/`addr_bits`) together with
+the join over the in-edge memories at a label with real in-edges — it flips
+`test_stack_spill_forwards` and closes 3b's standing residue. Landing 2 is the
+declared lo/hi pair row read (`framemath._pairs`' shape: enumerate the declared
+pair at the site, query the class), flipping
+`test_note_fetch_is_one_u16_row_read`, plus `pack_add`'s §4 cost change
+measured on its own corpus diff — decided there, and re-read at §8 step 4's
+cutover, where naming the pack the normal form first moves the frameprog
+artifact (that ordering previews rung (d2)'s subsumption). Landing 3 is
+guard-aware re-rolling — anti-unify the extracted voices, an observed-guard
+difference unifying under a Z3-proved guard and never read as structure
+(de-risked by 3c: extraction is deterministic and no longer falls back at
+state-reading sites) — and the 11 architectural-register self-copies resolved
+by analysis: a named mechanism, or their recorded death at §8 step 4.
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
@@ -470,6 +486,19 @@ per-voice unified where the isomorphism is total (else the copies stay); VM
 families emit their operator sets. The witness, when wanted: re-emit minimal
 6502 from the minimized program and replay it under the VM against the
 oracle — an end-to-end check with no evaluator in the trust chain.
+
+**The runway the diagnosis left it** (#155, the record in the decision log):
+the two remaining evaluation faults (`C64_World`, `1st_Decent_Hardcore` — one
+CyberTracker build) clear when a `jsr` continuation is taken from the return
+slot the callee wrote — the machine-faithful `ret` through `sp` over the stack
+image `framestack.lift_rts_trick` already installs — with the measured record
+that refusing the `pcall` promotion alone is insufficient (frameprog.md §5).
+Stage 4 owns it because its per-landing gate is the full-corpus sweep, which
+exits nonzero while they refuse. With that fix the shredder gains a fixture
+family for the same trick — a `jsr` whose callee pops its own return address,
+steps it over inline data bytes and pushes it back advanced — so the
+continuation-from-the-return-slot claim is pinned by an executable fixture and
+not only by the two corpus tunes.
 
 ## Independent housekeeping (blocks nothing)
 
