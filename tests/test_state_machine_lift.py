@@ -1,13 +1,14 @@
 """The canonical end-to-end example, gated (docs/register-model-lift-impl.md).
 
 The plan's stages MUST keep this pipeline green: playroutine -> decompile ->
-e-graph minimize -> Z3-proved u16 folds -> role-typed state machine ->
-frame-oracle equality."""
+minimize -> Z3-proved wide folds -> role-typed state machine -> frame oracles.
+Pending shapes are ``xfail(strict=True)``, named by the stage that flips them."""
 
 import os
 import re
 import subprocess
 import sys
+import wave
 from pathlib import Path
 
 import pytest
@@ -15,29 +16,52 @@ import pytest
 from deity_informant import roles
 from examples import state_machine_lift as sml
 from examples.state_machine_lift import (
+    CHI,
+    CLO,
+    CUT,
+    DLO,
+    FOLDS,
     FRAMES,
+    FRAME_S,
+    LP,
+    NLO,
+    PLAY,
+    SCRIPTS,
     SHADOW,
     TEST_BIT,
     VOICES,
+    VOL,
     WAVEF,
+    ZBUF,
+    ZLO,
     ZPV,
     adsr_before_gate,
     change_stream,
     classify_roles,
+    declared_roles,
+    dead_local_defs,
+    extract_proc,
     framelog,
     grids_from_writes,
+    image_end,
+    lane_updates,
     minimized_wav,
     note_starts,
     oscillator_reset_frames,
     pipeline,
     pretty,
+    proc_entries,
     render,
     restart_shape,
+    sid_pairs,
     sidplayfp_wav,
     sidtrace_stream,
     to_psid,
-    image_end,
+    voice_skeleton,
+    wav_frames,
 )
+
+XFAIL = {"strict": True}
 
 
 @pytest.fixture(scope="module", name="art")
@@ -45,28 +69,41 @@ def _art():
     return pipeline()
 
 
+@pytest.fixture(scope="module", name="text")
+def _text(art):
+    return render(art["folded"], classify_roles(art["folded"]))
+
+
 @pytest.fixture(scope="module", name="min_grids")
 def _min_grids(art):
     return grids_from_writes(art["init_writes"], art["min_frames"])
 
 
+def _line(text, needle):
+    return next(ln for ln in text.splitlines() if needle in ln)
+
+
 def test_folds_all_proved(art):
     kinds = {p.split("(")[0] for p in art["proofs"]}
-    assert kinds == {"forward_shadow", "pair_store", "pair_set", "advance"}
+    assert kinds == set(FOLDS)
     got = set(art["proofs"])
-    for b in ZPV:  # the three voices fold per voice, on their own cursor and note pair
+    for b in ZPV:  # every voice folds on its own cursor, note pair and slide
         assert "pair_set(ptr_%04X)" % b in got
-        assert "pair_store(zp_%02X,zp_%02X)" % (b + 4, b + 5) in got
+        assert "pair_store(zp_%02X,zp_%02X)" % (b + CLO, b + CHI) in got
         assert "advance(ptr_%04X,+2,nocarry)" % b in got
+        assert "wide_cmp(zp_%02X<zp_%02X)" % (b + NLO, b + CLO) in got
+        assert {"+self", "-self", "=pair"} <= {
+            p.split(",")[1][:-1] for p in got if p.startswith("wide16(zp_%02X," % (b + CLO))
+        }
+        assert "wide16(zp_%02X,-pair)" % (b + DLO) in got
     assert any(p.endswith(",wide)") for p in got), "no observed page cross to fold"
 
 
-def test_shadow_forwards_off_the_sid_path(art):
+def test_shadow_forwards_off_the_sid_path(art, text):
     """The RAM SID shadow is looked through: no sink reads it back."""
     fwd = [p for p in art["proofs"] if p.startswith("forward_shadow")]
     assert len(fwd) == 3 * VOICES  # ad, sr and ctrl per voice
     shadow = re.compile(r"m_0[0-9A-F]{3}")
-    text = render(art["folded"], classify_roles(art["folded"]))
     assert not [n for n in shadow.findall(text) if SHADOW <= int(n[2:], 16) < SHADOW + 7 * VOICES]
     for v in range(1, VOICES + 1):
         assert "sid.v%d.ctrl = v%d_ctl" % (v, v) in text
@@ -102,17 +139,18 @@ def test_hard_restart_survives_minimization(art, min_grids):
         assert note_starts(min_grids, v) == attacks
 
 
-def test_roles_are_the_plan_s_own_and_the_field_line_is_the_dialect_s(art):
+def test_roles_are_the_plan_s_own_and_the_field_line_is_the_dialect_s(art, text):
     """The example's roles are ``roles.ROLES`` and it spells them as the grammar does."""
     got = classify_roles(art["folded"])
     assert set(got.values()) <= set(roles.ROLES)
-    text = render(art["folded"], got)
-    by_voice = {pretty(n): r for n, r in got.items()}
+    by_voice = {pretty(n): r for n, r in declared_roles(art["folded"], got).items()}
     for v in range(1, VOICES + 1):
         assert by_voice["v%d_pos" % v] == "cursor"
         assert by_voice["v%d_dur" % v] == "counter"
         assert by_voice["v%d_phase" % v] == "accumulator"
-        fields = ("note_lo", "note_hi", "vib", "ctl", "ad", "sr")
+        assert by_voice["v%d_pitch" % v] == "accumulator"
+        assert by_voice["v%d_ctl" % v] == "flags"
+        fields = ("note_lo", "note_hi", "vib", "ad", "sr", "wave", "slide")
         assert {by_voice["v%d_%s" % (v, f)] for f in fields} == {"parameter"}
         assert "v%d_pos: cursor u16" % v in text and "v%d_dur: counter u8" % v in text
         assert "v%d_pos:u16 += 2" % v in text and "sid.v%d.freq:u16" % v in text
@@ -123,6 +161,167 @@ def test_independent_engine_grid(art):
     psid = to_psid(art["mem"], image_end(art["labels"]))
     oracle = [g[:25] for g in oracle_mod.register_grid(psid, FRAMES)]
     assert oracle == art["orig_grids"]
+
+
+def test_indexed_store_lives_in_a_branch_arm(text):
+    """One arm writes a real span row; the pw pair crosses the join into the chip."""
+    arms = [ln for ln in text.splitlines() if re.search(r"m_[0-9A-F]{4}\[log_idx\] = ", ln)]
+    assert len(arms) == 1
+    assert _line(text, "if (tick == $00)")
+    assert "sid.v1.pw:u16" in text
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3b landing 2: the branch join forwards a "
+    "disjoint cell instead of re-reading it",
+    **XFAIL,
+)
+def test_join_forwards_the_crossing_cell(text):
+    assert "$0140" in _line(text, "sid.v1.pw:u16 ="), "the sink re-reads the pair"
+
+
+def test_wrapping_zero_page_row(art, text):
+    """The zp-row idiom end to end, and no store forwards across the wrap."""
+    assert ZBUF + ZLO > 0xFF, "the row's index arithmetic does not wrap"
+    put = _line(text, "mem[zext2((row_put + $%02X))] = " % ZBUF)
+    get = _line(text, "mem[zext2((row_get + $%02X))]" % ZBUF)
+    assert put.endswith("row_src")
+    assert re.fullmatch(r"\s*\w+ = mem\[zext2\(\(row_get \+ \$%02X\)\)\]" % ZBUF, get)
+    assert "row_val = " in text, "the wrapped read reaches no state"
+    ram = art["ram_end"]
+    assert any(ram[ZBUF - 16 : ZBUF]) and any(ram[ZBUF : ZBUF + 16]), "one half never written"
+
+
+def test_helper_procedure_and_its_boundary(art, text):
+    """The JSR is a procedure of its own and pass 2 names its params and returns."""
+    assert len(art["folded"]) == 2 and PLAY in art["folded"]
+    sub = next(e for e in art["folded"] if e != PLAY)
+    assert art["boundary"][sub] == (("x",), ("a", "x"))
+    assert art["boundary"][PLAY] == ((), ())
+    assert text.count("call sub_%04X" % sub) == VOICES
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3b landing 2: sel_store_same over $0100 "
+    "forwards the push-pull spill",
+    **XFAIL,
+)
+def test_stack_spill_forwards(text):
+    assert not re.search(r"m_01[0-9A-F]{2}", text), "the PHA/PLA spill survives as a cell"
+
+
+def test_portamento_is_one_wide_compare(art, text):
+    """The SBC/SBC chain and its guard both fold, each instance Z3-proved."""
+    for v in range(1, VOICES + 1):
+        assert "v%d_diff:u16 = v%d_note_lo:u16 - v%d_pitch:u16" % (v, v, v) in text
+        assert "if (v%d_note_lo:u16 < v%d_pitch:u16)" % (v, v) in text
+        assert "v%d_pitch:u16 += v%d_slide:u8" % (v, v) in text
+        assert "v%d_pitch:u16 -= v%d_slide:u8" % (v, v) in text
+    freqs = {(g[1] << 8) | g[0] for g in art["orig_grids"]}
+    assert len(freqs) > 40, "the slide is inaudible"
+
+
+def test_carry_outlives_its_add(art, text):
+    """The 24-bit accumulator folds; its carry-out is a value a later statement reads."""
+    assert "wide24(zp_30,+self)" in set(art["proofs"])
+    assert "; carry -> tick" in _line(text, "phase:u24 +=")
+    assert "if (tick == $00)" in text
+    assert len({g[3] for g in art["orig_grids"]}) > 4, "the pulse width never sweeps"
+
+
+def test_filter_sweep_and_field_update_flags(art, text):
+    """One voice routed through the filter; the flag cells wear the census's shape."""
+    got = classify_roles(art["folded"])
+    by_voice = {pretty(n): r for n, r in declared_roles(art["folded"], got).items()}
+    assert by_voice["v3_res_route"] == "flags" and by_voice["v3_mode_vol"] == "flags"
+    assert "filter.cutoff:u16" in text
+    assert "v3_res_route = ((row_val & $70) | v3_res_route)" in text
+    assert {g[24] for g in art["orig_grids"]} == {LP | VOL}
+    for reg in (21, 22, 23):
+        assert len({g[reg] for g in art["orig_grids"]}) > 4, "register %d never sweeps" % reg
+    for writes in art["min_frames"]:  # the filter block is voice 3's tail, after its gate
+        order = {r: k for k, (r, _v) in enumerate(writes)}
+        assert order[23] > order[18] and order[24] > order[18]
+
+
+def test_variable_arity_dispatch_operator(art, text):
+    """The rawsid operator: (reg, val) pairs while reg < $80, then a terminator."""
+    arities = {len(arg) // 2 for s in SCRIPTS for op, arg in s if op == "raw"}
+    assert arities == {0, 1, 2}, "the operator's arity is not data-dependent"
+    assert text.count("op $") == 4 * VOICES, "a command handler left the dispatch"
+    assert text.count("sid.v1.freq_lo[a] = ") == VOICES, "the raw write is not a span store"
+    assert len({g[17] for g in art["orig_grids"]}) > 1, "no raw command ran"
+
+
+def test_voices_are_isomorphic_up_to_base_displacement(art):
+    """Voices 1-2 are one shape at shifted bases; voice 3 is that shape plus a block."""
+    play = art["folded"][PLAY]
+    skel = [voice_skeleton(play, v) for v in range(VOICES)]
+    core = [voice_skeleton(play, v, "core") for v in range(VOICES)]
+    filt = [voice_skeleton(play, v, "filter") for v in range(VOICES)]
+    assert skel[0] and skel[0] == skel[1]
+    assert core[2] == core[0] and len(filt[2]) > 8
+    assert filt[0] == filt[1] == []
+    assert any("filter.cutoff" in ln for ln in filt[2])
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3d: per-voice re-rolling unifies 1-2 and keeps "
+    "3 as a copy",
+    **XFAIL,
+)
+def test_rerolling_unifies_the_isomorphic_voices(text):
+    assert "for voice in" in text, "the voices are still unrolled copies"
+
+
+def test_multi_byte_sid_registers_are_written_wide(text):
+    """Enumerated from the register map, so nothing multi-byte can be missed."""
+    pairs = sid_pairs()
+    assert len(pairs) == 2 * VOICES + 1
+    for base in pairs:
+        assert not re.search(r"\b%s_(?:lo|hi) = " % re.escape(base), text), base
+    for base in ("sid.v1.freq", "sid.v2.freq", "sid.v3.freq", "sid.v1.pw", "filter.cutoff"):
+        assert "%s:u16 = " % base in text, base
+
+
+def test_declared_u16_state_is_updated_wide_except_the_cursors(art):
+    """Every wide quantity but the cursors is updated only at its own width."""
+    got = [n for n, _a in lane_updates(art["folded"])]
+    assert set(got) == {"v%d_pos" % (v + 1) for v in range(VOICES)}
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3c: a variable-stride cursor advance stays " "byte-lane",
+    **XFAIL,
+)
+def test_no_byte_lane_update_of_any_declared_u16(art):
+    assert lane_updates(art["folded"]) == []
+
+
+@pytest.mark.xfail(
+    reason="register-model-lift stage 3c: pair-row convergence (split lo/hi tables "
+    "merge into the u16 row)",
+    **XFAIL,
+)
+def test_note_fetch_is_one_u16_row_read(text):
+    assert not re.search(r"v\d_note_(?:lo|hi) = ", text), "the note keeps split lanes"
+    assert re.search(r"v\d_note = pitch\[", text), "the pitch table is still two rows"
+
+
+def test_no_unread_carry_definitions(art):
+    """3b landing 1 closed #144's unread-``cflag`` finding; this keeps it closed."""
+    dead = []
+    for entry in proc_entries(art["eqlift_text"]):
+        dead += dead_local_defs(extract_proc(art["eqlift_text"], entry))
+    assert [d for d in dead if "carry" in repr(d[1]) or "<=" in repr(d[1])] == []
+
+
+def test_the_filter_is_voice_three_s_alone(art):
+    """The asymmetry is deliberate and is the only one: the cut cells are voice 3's."""
+    ram = art["ram_end"]
+    for v in range(VOICES - 1):
+        assert ram[ZPV[v] + CUT] == 0, "voice %d owns filter state" % v
+    assert ram[ZPV[VOICES - 1] + CUT] or ram[ZPV[VOICES - 1] + CUT + 1]
 
 
 @pytest.mark.oracle
@@ -140,9 +339,8 @@ def test_sidplayfp_sidtrace_oracle(art):
 
 
 @pytest.mark.oracle
-def test_wav_renders(art, tmp_path):
-    """The tune is audible: the minimized write stream and sidplayfp both render."""
-    wave = pytest.importorskip("wave")
+def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
+    """Both renders cover the same frames, so the A/B is over identical audio."""
     pytest.importorskip("pysidtracker.audio")
 
     def seconds(path):
@@ -152,16 +350,18 @@ def test_wav_renders(art, tmp_path):
     mine = minimized_wav(art, tmp_path / "minimized.wav")
     assert seconds(mine) > 10
     try:
-        theirs = sidplayfp_wav(art["mem"], art["labels"], tmp_path / "tune.wav", seconds=12)
+        theirs = sidplayfp_wav(art["mem"], art["labels"], tmp_path / "tune.wav")
     except Exception as exc:  # pylint: disable=broad-except
         pytest.skip("sidplayfp unavailable: %s" % exc)
-    assert seconds(theirs) > 10
+    assert abs(seconds(mine) - seconds(theirs)) <= FRAME_S
+    assert abs(seconds(mine) - wav_frames(art) * FRAME_S) <= FRAME_S
 
 
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 243, 679  # pinned 2026-08-10 at 015a2e3; a stage lowers these, never raises
+LINE_PIN, COST_PIN = 461, 1192  # re-pinned when the prototype grew eight extensions;
+# a stage lowers these, never raises
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
     "accumulator": r"\b(?:observed|mask|bound)\b",
@@ -222,10 +422,10 @@ def _cells(term, out):
     return out
 
 
-def _reads_by_kind(stmts):
+def _reads_by_kind(procs):
     """Cell names read by data statements, and by control transfers."""
     data, ctrl = set(), set()
-    for s in _walk(stmts):
+    for s in (x for stmts in procs.values() for x in _walk(stmts)):
         into = ctrl if s[0] == "dgoto" else data
         for part in s[1:]:
             if isinstance(part, tuple):
@@ -289,7 +489,7 @@ class _TracedRam(bytearray):
 
 def _carried_addrs(art, ram0):
     """Addresses some frame reads before writing: what genuinely crosses the boundary."""
-    machine = sml.Machine(sml.Flat(art["folded"]), ram0)
+    machine = sml.Machine({e: sml.Flat(s) for e, s in art["folded"].items()}, ram0)
     ram = _TracedRam(ram0)
     machine.ram = ram
     carried = set()
@@ -404,4 +604,4 @@ def test_render_is_hash_seed_independent():
 def test_size_ratchet(art, role_text):
     """Emitted size and extracted term cost: a stage lowers them or holds them."""
     assert len(role_text.splitlines()) <= LINE_PIN
-    assert _term_cost(art["folded"]) <= COST_PIN
+    assert _term_cost(list(art["folded"].values())) <= COST_PIN

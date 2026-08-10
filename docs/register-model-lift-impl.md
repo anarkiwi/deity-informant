@@ -135,24 +135,40 @@ the saturation algorithm" — it exists and is hardware-validated.
 whole method in one file, and `tests/test_state_machine_lift.py` gates it: a
 hand-written 6502 playroutine (8 bars over three structurally parallel voices —
 lead, bass, offbeat arpeggio — each with its own script, deferred-carry cursor,
-Follin-style SMC-JMP command dispatch, table vibrato through an ADC carry
-chain, a two-frame hard restart that zeroes ADSR and drops the gate then sets
-TEST, and a RAM SID shadow carrying the envelope/control lanes flushed ADSR
-before gate) runs through the real pipeline — VM, decompile + walker replay,
-`eqlift_mem.emit` minimization, four spelling folds — the shadow store-to-load
-forward proved over the array theory, the paired u16 SID store and the
-deferred-carry advance whose guard is proved rather than matched, the u16 pair
-reload a structural match whose independence check is a name scan and whose
-proof stage 3's rule admission owes — role classification off the folded update
-shapes — and the resulting role-typed u16 state machine executes and matches
-the original frame-for-frame, in order, on the VM projection, on pysidtracker's
-independent engine, and on the dockerized sidplayfp/sidtrace oracle
-(`--sidtrace`); `--wav` renders it to `out/`. **Every stage below
-MUST keep this example green; a stage that cannot express it has diverged
+Follin-style SMC-JMP command dispatch including a variable-arity `rawsid`
+operator whose arity is the decoded length, table vibrato through an ADC carry
+chain, portamento as a byte borrow chain over a bounded step, a shared note
+fetch reached by `JSR` with a `PHA`/`PLA` spill, a two-frame hard restart that
+zeroes ADSR and drops the gate then sets TEST, and a RAM SID shadow carrying the
+envelope/control lanes flushed ADSR before gate) plus a voice-independent head
+(a 24-bit accumulator whose carry-out outlives its add, a 12-bit pulse-width
+pair, an indexed span store on one arm of a branch a disjoint cell crosses, and
+a page-zero row whose index arithmetic wraps in 8 bits) and, on voice 3 alone,
+a filter block (the `$D415`/`$D416` cutoff pair, and `(s & K) | v` field updates
+on the `$D417`/`$D418` flag cells) runs through the real pipeline — VM,
+decompile + walker replay, `eqlift_mem.emit` minimization, seven spelling folds,
+every instance Z3-proved: the shadow store-to-load forward over the array
+theory, the paired u16 SID store, the deferred-carry advance and the wide
+compare whose guards are proved rather than matched, the n-lane wide update
+(2 and 3 lanes, with its carry-out) whose operand is searched and proved rather
+than pattern-matched, and the u16 pair reload, a structural match whose
+independence check is a name scan and whose proof stage 3's rule admission owes
+— role classification off the folded update shapes, `flags` included — and the
+resulting role-typed state machine executes and matches the original
+frame-for-frame, in order, on the VM projection, on pysidtracker's independent
+engine, and on the dockerized sidplayfp/sidtrace oracle (`--sidtrace`); `--wav`
+renders both sides to `out/` over the same frame span. Voices 1 and 2's
+per-voice code is asserted isomorphic up to base displacement over the folded
+statements, and voice 3's differs by exactly the filter block. **Every stage
+below MUST keep this example green; a stage that cannot express it has diverged
 from the goal.** The stages generalize exactly what it does: stage 1 catalogs
 the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
-checks over the catalog, stage 4 emits its output shape for the corpus.
+checks over the catalog, stage 4 emits its output shape for the corpus. What it
+does not yet reach is pinned `xfail(strict=True)` against the stage that flips
+it: the branch-join forward and the stack-spill forward (3b landing 2), the
+split lo/hi pitch row and any byte-lane update of a declared-u16 quantity (3c),
+and per-voice re-rolling (3d).
 
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into five roles — **cursor** (an index
@@ -813,3 +829,93 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   Two green guards ride with them: the rendered text is byte-identical under two
   `PYTHONHASHSEED` values (adoption §10's closed defect, kept closed), and a size
   ratchet pins 243 rendered lines / 679 extracted term nodes as ceilings.
+- **2026-08-10 — the canonical example grows eight extensions; one fold rule
+  replaces five, and the residue is pinned.** The prototype now carries an
+  indexed span store on one arm of a branch a disjoint pair crosses, a page-zero
+  row whose index arithmetic wraps in 8 bits, a shared note fetch reached by
+  `JSR` with a `PHA`/`PLA` spill, portamento as a byte borrow chain over a
+  bounded step, a 24-bit accumulator whose carry-out outlives its add, a filter
+  block on voice 3 (the cutoff lane pair and two `(s & K) | v` flag cells), a
+  variable-arity `rawsid` operator, and an isomorphism check over the voices.
+  Everything is green end to end — VM projection, write-application grid,
+  pysidtracker's engine, the sidplayfp/sidtrace change stream — the pipeline in
+  **2.9s** and the whole example, oracle included, in **16s**; what is not yet
+  reached is `xfail(strict=True)` against its stage. What it found:
+  (1) **One proved rule subsumes five matchers.** `prove_wide` takes a run of
+  adjacent byte-lane stores (locals inlined), *searches* the operand off the
+  cells those terms read — the pair itself, an adjacent pair, a byte, or the
+  constant the terms reduce to at zero — and hands the candidate to Z3 at width
+  `8n+8`. The same rule reads the portamento step (`pitch:u16 += slide:u8`), its
+  borrow chain (`diff:u16 = note:u16 - pitch:u16`), the snap (`pitch:u16 =
+  note:u16`), the 12-bit pulse-width and 16-bit cutoff accumulators, and the
+  3-lane phase accumulator with its carry-out (`phase:u24 += $5E2B91 ; carry ->
+  tick`). `prove_wcmp` does the same for the guard: the branch the borrow chain
+  feeds becomes `if (note:u16 < pitch:u16)`, proved rather than matched, so every
+  spelling folds. This is the shape stage 3c's rules should take — search the
+  operand, prove the instance; do not enumerate shapes.
+  (2) **A lane-by-lane copy is not evidence of a wide quantity.** `zp_49 = $00;
+  zp_4A = $00` (AD and SR, two independent SID bytes) proves as one u16 copy,
+  because two independent byte moves always do. The rule now admits a copy only
+  onto a lane group some carry-linked update already targets, which is a two-pass
+  fold: evidence first, copies second. Without it the artifact declares AD:SR a
+  16-bit cell — sound, and wrong.
+  (3) **#144's finding (3) recurs for pair stores, and the fix is the same
+  lookback.** The extractor forwards a cell store into the following SID lane
+  store where nothing intervenes (`filter.cutoff_lo = (ctr5 - $80)`) and re-reads
+  the cell where a branch join does (`sid.v1.pw_lo = ctr_0034`) — one idiom, two
+  spellings, in one routine. The pair rule now resolves a lane term to the cell
+  whose last store holds that same term with its locals undisturbed, after which
+  all seven multi-byte registers are written wide.
+  (4) **The join is where forwarding stops, and it is measurable.** The value the
+  arm stores into the indexed row *is* forwarded into the arm; the same value
+  read after the join is spelled from the cells. That is the 3b-landing-2
+  obligation as a one-line assertion on the emitted text
+  (`test_join_forwards_the_crossing_cell`). The `PHA`/`PLA` spill likewise
+  survives as the state cell `m_01FB` with `ROOT_EXTRACT` off.
+  (5) **The wrap guard holds, end to end.** The zp row stores at `mem[zext2((c +
+  $20))]` with `c` cycling `$F0..$0F` and reads back at a second wrapping cursor
+  in the same frame; the read is not forwarded, both halves of the row are
+  written, and the frame streams match — the 3b wrap guard's witness, and the one
+  place where "the analysis could not look through it" is the right answer.
+  (6) **#144's unread `cflag` definitions are closed, and the closure is now
+  measured.** `dead_local_defs` runs a CFG liveness over the flattened emitted
+  statements. Against #144's emitter it reported exactly three dead
+  `cflag = carry(...)` definitions — the two voice-tail boundaries #144 noticed,
+  plus one in the voice-independent head; against 3b landing 1's (015a2e3) it
+  reports **none**, so the name-collision fix was the whole defect and the test
+  is green rather than pinned. The liveness is worth keeping: an unread
+  definition is not structure, which is what makes the voice isomorphism of (7)
+  read as structure.
+  (7) **Isomorphism was made guard-aware, not script-placed.** Voices 1 and 2
+  come out equal at **63 normalized statements** and voice 3's core equals them
+  with a **13-statement** filter block spliced in. The normalization that had to
+  be there is #144's finding (4): the observed-carry guard is dropped from the
+  advance, since voice 1 folds `wide` and voices 2-3 `nocarry` purely by script
+  page position. Placing the scripts so the guards agree was the alternative and
+  was rejected — it is a layout accident that any edit to the example moves,
+  while a guard-aware check is what 3d's re-rolling needs anyway.
+  (8) **The emit cost this example was sized against is gone.** On #144's
+  emitter the grown program cost 14–28s to emit at 800 frames and hit the
+  `DI_EQLIFT_EMIT_S` 60s wall at 200 — a shorter trace leaves more `unobserved`
+  arms and more distinct spellings, so it cost *more*. On 3b landing 1's it
+  emits in **1.2s at either length**, so the same fix that closed (6) removed the
+  cliff; #144's shadow-lane budget (three lanes per voice, frequency written
+  direct) is kept unchanged rather than re-priced on one measurement. Saturation
+  output is stable across `PYTHONHASHSEED` 1/7/12345 (same proof set, same
+  frames), and `test_render_is_hash_seed_independent` gates it.
+  (9) **The role reading needs the same local inlining the folds do.** `$D418`'s
+  update arrives as `a6 = zp_95; a = ((a6 & $F0) | $0F); zp_95 = a`, so a shape
+  read off the raw statement misses `flags` entirely; inlining per straight-line
+  run recovers it, and `flags` then lands on the three voice control bytes and
+  the two filter cells. `flags` is also the *weakest* evidence — a masked index
+  (`log_idx = log_idx & $0F`) is an accumulator, not a flag word.
+  (10) **The variable-arity operator needs no table.** `rawsid` decompiles to a
+  `loop` with a data-dependent trip count and a `ptr += Y+1` advance, and its
+  indexed SID store renders as `sid.v1.freq_lo[a] = w` — a span store over the
+  register file, which a width law must not read as a lane write. The minimized
+  program executes it, which is `_ARITY`'s escape mechanism proven in miniature.
+  (11) **Frame equality is not a correctness oracle for the program.** A helper
+  returning its high byte in `Y` clobbered the caller's `(ptr),Y` cursor; VM and
+  minimized program agreed frame for frame on music that had derailed. The
+  invariant that caught it was the script's own consumption (each voice's cursor
+  advancing one command per event), not the write stream.
