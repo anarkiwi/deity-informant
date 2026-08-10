@@ -184,10 +184,11 @@ the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus. What it
 does not yet reach is pinned `xfail(strict=True)` against the stage that flips
-it: the stack-spill forward and the split lo/hi pitch row (3d — 3c landed the
-memory price and the pair-row axiom, and measured what each still needs), any
-byte-lane update of a declared-u16 quantity (3c), and per-voice re-rolling (3d). The branch-join forward is green
-as of 3b landing 2, and the shadow read-back as of 3c landing 1.
+it: the split lo/hi pitch row (3d — 3c landed the pair-row axiom and measured what
+it still needs), any byte-lane update of a declared-u16 quantity (3c), and
+per-voice re-rolling (3d). The branch-join forward is green
+as of 3b landing 2, the shadow read-back as of 3c landing 1, and the stack-spill
+forward as of 3d landing 1.
 
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into five roles — **cursor** (an index
@@ -435,7 +436,10 @@ on a clean 25-of-25 review), 3c landing 1 (the memory spelling's price with its
 position-correctness walk, in place of `pick_ir`'s filter — −326 lines over the
 exemplars, and the spelling-independent advance rule that re-spelling forced),
 3c landing 2 (the per-idiom convergence harness and the four rules its first run
-named, one more proved and pinned on a cost decision).
+named, one more proved and pinned on a cost decision), 3d landing 1 (the
+`Footprints` read closure whose deref spans are 2b's observed extents, scratch
+demotion off the artifact-wide reader set, and the in-edge memory join at a label
+the walk has passed every edge of).
 What 3b handed 3c stands unchanged: the join carries 1,628 of 2,528 walls and
 the remaining 900 are enumerated by kind in the decision log; a label with real
 in-edges still resets, and closing it needs a join over the in-edge memories
@@ -447,11 +451,12 @@ and the class queried, `framemath._pairs`' shape; `pack_add` needs the §4 cost 
 that names the pack as the normal form; and the join at a label with real in-edges still
 needs a join over the in-edge memories. 3d's own work: the `_ARITY` discharge
 landed (housekeeping below), leaving guard-aware re-rolling.
-**Next is 3d, in three landings.** Landing 1 is one `Footprints` traversal
-landed once: the **read** closure (deref spans from 2b's observed extents,
-consumed exactly as the join consumes `addr_floor`/`addr_bits`) together with
-the join over the in-edge memories at a label with real in-edges — it flips
-`test_stack_spill_forwards` and closes 3b's standing residue. Landing 2 is the
+**Next is 3d, and landing 1 has landed.** Landing 1 was one `Footprints`
+traversal landed once: the **read** closure (deref spans from 2b's observed
+extents, consumed exactly as the join consumes `addr_floor`/`addr_bits`) together
+with the join over the in-edge memories at a label with real in-edges — it flipped
+`test_stack_spill_forwards` and closed 3b's standing residue, the forward half by
+mechanism and the back-edge half by a keeps-∅-by-construction proof. Landing 2 is the
 declared lo/hi pair row read (`framemath._pairs`' shape: enumerate the declared
 pair at the site, query the class), flipping
 `test_note_fetch_is_one_u16_row_read`, plus `pack_add`'s §4 cost change
@@ -1303,3 +1308,65 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   extents (2b's `ptrextent`), consumed exactly as the join consumes
   `addr_floor`/`addr_bits`. `test_stack_spill_forwards` is re-pinned at 3d with that
   reason, and the executable half stays in `tests/test_eqlift_mem.py`.
+- **2026-08-10 — stage 3d, landing 1: the read closure, and the store that answers to
+  nobody.** Every number is `tools/eqlift_measure.py` over the 25 exemplars at full
+  Songlengths, both paths, `DI_EQLIFT_EMIT_S=600`, `--extents out/ptr_extents_full.json`,
+  beside the same run on `fb74318`.
+  (1) **The reader set is the dual of `_mem_writes`, and 2b's extents are what bound it.**
+  `_mem_reads` walks every memory read of a statement list to a span — the address's own
+  lattice and bit bounds first, over the address *resolved through its reaching
+  definitions* (`addr_bits` already reads one level of that; an `add` needs the leaves,
+  since the lattice states nothing about a bare local), and where those state nothing and
+  the address is a pointer deref, the interval of the declared blocks 2b observed the web's
+  derefs inside. `Footprints` carries it per procedure beside the write footprint, so it is
+  one traversal. The measurement is what the extents are worth: over the 25 exemplars
+  **35 of 78 procedures have a ⊤ reader set without them and 16 with**, and the two
+  exemplars whose reader set is ⊤ for another reason are the two that are `open_flow`
+  (`Angry_Birds`, `Rambo_First_Blood_Part_II`). A label costs nothing here and an
+  enumerated dynamic transfer costs nothing either — entering anywhere reads no more than
+  the union — which is why the read closure needs no fixpoint where the write footprint
+  does.
+  (2) **Scratch demotion is that set asked once per store.** `roots()` no longer makes
+  every surviving store a sink: a store whose span is bounded, is Z3-proved disjoint from
+  every reader interval and cannot reach the device window is not observable, so it is not
+  a root and `_root_keep` retires it with whatever fed it. The reader set is every *other*
+  procedure's statements plus this one's **extracted** spellings, because extraction is
+  what retires a read — the prototype's `PHA`/`PLA` pull is spelled from the pushed value,
+  so the statement that reads `m_01FB` names it nowhere in the emitted text. The intervals
+  are merged before they are proved (`_cover`), so a store answers a handful of Z3
+  questions and not one per cell.
+  (3) **The gate flips, and the exemplars move by one line.**
+  `test_stack_spill_forwards` is green: `m_01FB` leaves the prototype's text entirely, and
+  both ratchets **fall rather than hold — 455 → 453 rendered lines, 1149 → 1146 extracted
+  term nodes** (677 → 666 emitted). Over the exemplars exactly one store demotes
+  (`Gray_Matt/Atmosphere_II`), which is the honest number for real drivers: a play routine
+  is usually one procedure and every cell it stores it also reads.
+  (4) **The in-edge join fires, and the labels that still reset are back edges.** A label
+  the walk has already passed every in-edge of — all of them `goto`s of this procedure,
+  outside any cyclic body, none of them a call, an `swc` label, an RTS-trick landing or a
+  procedure entry — is joined instead of havoced: a cell every in-edge memory and the
+  fall-through read at one common chain version keeps that value, and `_Chain` records the
+  version per cell so a later read lands there and stops. Over the exemplars it fires **10
+  times over 5 tunes** and **398 labels still reset**. The residue is one shape and it is
+  resolved rather than deferred: a back edge's in-edge memory is *behind* the walk, and the
+  loop-head bound that would replace it (what the code between the label and the `goto` may
+  write) is not delimitable below the whole procedure, because a label inside that region is
+  entered from outside it — and the whole procedure's write footprint contains every cell
+  the chain holds, since the chain holds only cells this procedure stored. The complemented
+  join therefore keeps ∅ **by construction**, which `tests/test_eqlift_mem.py` asserts on a
+  minimal case rather than leaving to argument.
+  (5) **The review: 25 of 25, clean.** OFF 27,462 / ON **27,456**, `d_lines` −6,
+  `d_stores` −3, 22 of 25 byte-identical on the two paths, 13,909 extraction sites, 3,309
+  changed by saturation and every one Z3-proved (12,138 proved sites), zero faults, zero
+  refusals, zero regressions, zero extraction fallbacks. Against 3c landing 2's 27,457
+  **no tune is larger and one is smaller** (`Gray_Matt/Atmosphere_II` −1). Slowest emit
+  91.1s at a budget that does not bind. Emit identity is untouched by construction (eqlift
+  is not in the frameprog path) and by measurement: 624 tunes, 0 refused, 28,512,265 bytes,
+  aggregate `946f0dcb082fc4df0814505b5eb42a8dd677f70bcfe94deeb245c2132f1c6ec0`.
+  (6) **What the landing does not do.** The extents reach the lifter as data
+  (`emit(model, extents=...)`), read from the committed 2b artifact by
+  `tools/eqlift_measure.py --extents` and observed in-line by the prototype's own probe
+  run; nothing derives one, and `ptrextent.mapped_blocks` is the single reading rung (g)
+  and the read closure share. Store spans are still read without the resolution the read
+  side got: tightening them would move the join and the artifact, and this landing's gate
+  is the reader set.

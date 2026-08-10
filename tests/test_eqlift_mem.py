@@ -400,6 +400,122 @@ def test_the_footprint_closure_carries_what_a_callee_calls():
     assert dyn.of(0x3000)[1] and dyn.of(0x2000)[1]
 
 
+_DEREF = (
+    "op",
+    "INT_ADD",
+    (
+        (
+            "op",
+            "INT_OR",
+            (
+                (
+                    "op",
+                    "INT_LEFT",
+                    (("op", "INT_ZEXT", (("mem", ("const", 0x41, 2), 1),), 2), ("const", 8, 1)),
+                    2,
+                ),
+                ("op", "INT_ZEXT", (("mem", ("const", 0x40, 2), 1),), 2),
+            ),
+            2,
+        ),
+        ("op", "INT_ZEXT", (("loc", "y"),), 2),
+    ),
+    2,
+)
+
+
+def test_the_read_closure_bounds_a_deref_by_its_observed_extent():
+    """2b's extent is what bounds a deref: with no record the address is ⊤, with one it
+    is the declared blocks the derefs landed in, consumed exactly as the join reads
+    ``addr_floor``/``addr_bits`` and extended nowhere."""
+    assert mem._rd_span(_DEREF) is None
+    assert mem._rd_span(_DEREF, ext={0x40: (0x14EB, 0x153F)}) == (0x14EB, 0x153F)
+    assert mem._rd_span(_DEREF, ext={0x60: (0x14EB, 0x153F)}) is None
+    assert mem._extent_spans({0x40: (0x14EB,)}, [{"base": 0x14EB, "size": 85}]) == {
+        0x40: (0x14EB, 0x153F)
+    }
+
+
+def test_the_read_closure_resolves_a_local_to_its_definition():
+    """``addr_bits`` reads one level of a local's definition; an ``add`` needs the leaves,
+    so the closure resolves through the reaching definitions and a wall stays ⊤."""
+    idx = ("op", "INT_ADD", (("loc", "t"), ("const", 0x148F, 2)), 2)
+    stmts = [("asg", "t", ("op", "INT_ZEXT", (("loc", "y"),), 2)), ("asg", "u", ("mem", idx, 1))]
+    got, wild = mem._mem_reads(stmts)
+    assert not wild and got == frozenset({(0x148F, 0x158E, 1)})
+    assert mem._mem_reads([("asg", "u", ("mem", idx, 1))]) == (frozenset(), True)
+
+
+def test_a_store_no_reader_can_observe_is_not_a_root():
+    """Scratch demotion: the reader set is artifact-wide, so the spill dies only once
+    every deref is bounded -- and the same store stays a root while one reader names it."""
+    read = [("asg", "z", ("mem", _DEREF, 1)), ("ret",)]
+    procs = [(0x1000, _PUSH_PULL + [("ret",)]), (0x2000, read)]
+    blind = mem.Footprints(procs, False)
+    seen = mem.Footprints(procs, False, extents={0x40: (0x14EB, 0x153F)})
+    assert blind.readers(0x1000)[1] and not seen.readers(0x1000)[1]
+    lines = mem.render_proc(_PUSH_PULL, entry=0x1000, foot=seen)
+    assert lines == ["a = m_14A7[x]", "sid.v1.ctrl = a"]
+    named = mem.Footprints(
+        procs + [(0x3000, [("asg", "q", ("mem", ("const", 0x01FB, 2), 1)), ("ret",)])],
+        False,
+        extents={0x40: (0x14EB, 0x153F)},
+    )
+    assert [ln for ln in mem.render_proc(_PUSH_PULL, entry=0x1000, foot=named) if "m_01FB" in ln]
+
+
+def test_a_device_store_is_never_scratch():
+    """A store that may reach the device window is an output, so no reader set demotes
+    it; the SID sinks are exactly the roots root extraction may not drop."""
+    assert not mem._unread((0xD404, 0xD404, 1), (), False)
+    assert mem._unread((0x01FB, 0x01FB, 1), ((0x40, 0x41),), False)
+    assert not mem._unread((0x01FB, 0x01FB, 1), ((0x40, 0x41),), True)
+    assert not mem._unread((0x01FB, 0x01FB, 2), ((0x01FC, 0x01FC),), False)
+    assert mem._cover({(0x40, 0x40, 1), (0x41, 0x42, 2), (0x50, 0x50, 1)}) == (
+        (0x40, 0x43),
+        (0x50, 0x50),
+    )
+
+
+def test_the_in_edge_join_carries_what_every_edge_reads_at_one_version():
+    """A label whose in-edges the walk has all passed is a join, not a reset: a cell every
+    edge and the fall-through read at one common version keeps forwarding across it."""
+    arm = [("st", ("const", 0x0041, 1), ("const", 9, 1)), ("goto", 0x1100)]
+    stmts = [
+        ("st", ("const", 0x0040, 1), ("loc", "a")),
+        ("st", ("const", 0x0041, 1), ("loc", "x")),
+        ("if", "if", ("loc", "y"), arm, []),
+        ("label", 0x1100),
+        ("st", ("const", 0xD404, 2), ("mem", ("const", 0x0040, 1), 1)),
+        ("st", ("const", 0xD40B, 2), ("mem", ("const", 0x0041, 1), 1)),
+    ]
+    foot = mem.Footprints([(0x1000, stmts)], False)
+    st = {}
+    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    assert st["in_join"] == 1 and st["in_join_cells"] == 1
+    assert lines[-2] == "sid.v1.ctrl = a"  # $40 agrees on both edges
+    assert lines[-1] == "sid.v2.ctrl = zp_41"  # $41 does not, so it reads memory
+
+
+def test_a_back_edge_label_still_resets_and_the_bound_that_would_free_it_is_empty():
+    """The in-edge memory of a back edge is behind the walk. The loop-head bound that
+    would replace it is the code between label and goto, which holds every cell the
+    chain holds, so it keeps nothing: the reset is the answer, not a deferral."""
+    stmts = [
+        ("st", ("const", 0x0040, 1), ("loc", "v")),
+        ("label", 0x1100),
+        ("st", ("const", 0xD404, 2), ("mem", ("const", 0x0040, 1), 1)),
+        ("goto", 0x1100),
+    ]
+    foot = mem.Footprints([(0x1000, stmts)], False)
+    st = {}
+    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    assert st["label_reset"] == 1 and "in_join" not in st
+    assert lines[-2] == "sid.v1.ctrl = zp_40"
+    spans, wild = mem._mem_writes(stmts[1:])
+    assert wild or (0x0040, 0x0040, 1) in spans  # the region writes the cell the chain holds
+
+
 def test_proc_forwards_across_loop_writing_disjoint_cell():
     """The loop head/exit join is the branch join: a disjoint body still forwards."""
     stmts = _SPILL + [

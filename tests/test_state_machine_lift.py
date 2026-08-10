@@ -207,17 +207,11 @@ def test_helper_procedure_and_its_boundary(art, text):
     assert text.count("call sub_%04X" % sub) == VOICES
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3d: the pull forwards and 3c landing 1's price now "
-    "spells it from the pushed value, so only the store survives -- a root until scratch "
-    "demotion. Demoting it needs a reader the artifact cannot yet bound: sub_1000's script "
-    "derefs read through a zp pointer pair whose address is unbounded with no env, so the "
-    "artifact-wide reader set is the whole space and the slot is not provably unread. The "
-    "mechanism is a Footprints read closure whose deref spans come from the committed "
-    "observed extents (2b), consumed exactly as the join consumes addr_floor/addr_bits",
-    **XFAIL,
-)
 def test_stack_spill_forwards(text):
+    """3d landing 1: the pull is spelled from the pushed value and the store demotes.
+
+    The reader set is artifact-wide, so the slot dies only once the script derefs are
+    bounded -- 2b's observed extents are what bound them, consumed and never extended."""
     assert not re.search(r"m_01[0-9A-F]{2}", text), "the PHA/PLA spill survives as a cell"
 
 
@@ -376,7 +370,7 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 455, 1149  # lowered by stage 3c's memory price; a stage lowers
+LINE_PIN, COST_PIN = 453, 1146  # lowered by 3d landing 1's scratch demotion; a stage lowers
 # these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
