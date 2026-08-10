@@ -571,12 +571,13 @@ exemplar review now measures one path against a recorded baseline; the saturatio
 is **a round cap and a node bound**, so no clock reading reaches the artifact. Beside the
 switch stand the `state { }` demotion — which has no subject until the unified path
 emits, since scratch demotion is root extraction's and frameprog's own emit has none —
-and the ~16
-substrate-dependent shredder pins — which want the same declarations — and, named at
-landing 1, a precise `returns` set for a procedure every entry of which is a `call`, which
-is what would take back the four architectural-register lines the refused `pcall`
-promotion costs `sub_4921`. Then landings 3-5: role-typed emission, the completed witness,
-housekeeping + close.
+and the 24 shredder stage-3 pins, which are now measured
+against the cutover's own emitter (`_spliced`) and of which exactly **one** flips there.
+The `returns` set landing 1 owed is **refused, with its reason measured**: the only
+procedures it can relax are the ones `slot_reader` blocks, and those return to a pc the
+call site does not name, so the sound mechanism is a `framestack` reading of each site's
+resume pc rather than an `_Info` relaxation. Then landings 3-5: role-typed emission, the
+completed witness, housekeeping + close.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2036,3 +2037,56 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   byte-identical** at 26,811 lines / 1,988 stores — `emit_mem` renders no state section, so
   the frameprog header cannot reach it, which is the check that says the move is where it
   is claimed to be.
+- **2026-08-10 — stage 4, landing 2 (part): the stage-3 pins are re-measured against the
+  cutover's own emitter, and `_emit` was the wrong stand-in.** #161 measured every stage-3
+  pin's goal property against `eqlift_mem.emit`; `emit` renders raw `_Builder` procedures,
+  and the cutover renders `frameprog.program`'s **rung-built** statements. A rung that
+  rewrites a statement before emission is invisible to the first and decisive for the second.
+  (1) **The measurement is now the cutover's.** `_spliced(name)` in the shredder is
+  `test_step4_splice`'s renderer over the fixture's own frame program — `render_proc` with
+  the declarations, the footprints and the `_PAIRS` registry, spliced in place of
+  `render_lines` — and `test_the_stage_three_pins_are_measured_against_the_cutover_emitter`
+  runs **all 24 pins' bodies** against it and asserts exactly which pass. The disposition is
+  therefore held by test rather than asserted in a reason string.
+  (2) **One of 24 flips, and it is the one that was predicted to.**
+  `test_borrow_chain_is_one_wide_compare` passes on the spliced text: the borrow chain is
+  neither `carry(` nor `$01 - (zext2(..) <= zext2(..))`. Its `unified path: holds today`
+  verdict is now measured on the emitter that decides it. The other 23 hold their recorded
+  verdicts, so "they flip at the cutover" remains true of one pin, not of the family.
+  (3) **One recorded verdict was wrong, and the correction names its owner.**
+  `test_lone_lane_half_owes_no_register_load` was recorded as `holds today` because `emit`'s
+  raw procedure carries the bare `sid.v1.freq_hi = t0`. The cutover's emitter is handed
+  frameprog's own rung output — `sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $00FF):2 | (zext2(t0)
+  << $08):2):2`, the lone half widened to a read-modify-write of the u16 register — and no
+  admitted rule removes a read of a write-only sink, so the pin does **not** flip. Its verdict
+  becomes `refuses, and the mechanism is named`, and the owner is the widening rung, not the
+  graph. Both control tests now assert the two unified texts and the disagreement between
+  them, so the correction cannot rot.
+  (4) **The gates.** Tests only: `tools/emit_identity.py --expect bc256138…` passes (624
+  tunes, 28,506,888 bytes, unmoved) and `gate_sweep` at full Songlengths is **624 / 624 / 624
+  clean**. Suite 2,727 passed / 490 skipped / 32 xfailed (one new case, no pin flipped
+  against `_lift` — the cutover is still a test, not the artifact), oracle 16.
+- **2026-08-10 — stage 4, landing 2: the owed `returns` set is measured and REFUSED, and
+  the refusal is the finding.** #169 named "a precise `returns` set for a procedure every
+  entry of which is a `call`" as what would take back `sub_4921`'s conservative boundary. It
+  was built (`_Info.call_only`, `returns` accumulated at raw `call` sites, `ret_live` taking
+  it instead of `_Info.G`) and it is **wrong**, by the corpus gate rather than by argument.
+  (1) **What it bought.** Exactly the two tunes #169 priced: `C64_World` **−192 bytes / −7
+  lines** and `1st_Decent_Hardcore` **−299 bytes / −10 lines** against +196 and +303 — the
+  whole price back, line for line (`x = m_4963`, `y = m_4965`, `cflag`, `zflag`, plus
+  `vflag`/`nflag`, and the temporaries that fed them). Nothing else in 624 moved.
+  (2) **What it broke, and why the premise is false.** `gate_sweep` at full Songlengths went
+  624 clean -> **622 clean, 2 refused**: both tunes raise `FrameFault: unobserved $4F16
+  reached`. "Every entry is a `call`, so every exit returns to that call's successor" is false
+  for exactly the procedures the rule can reach. The only procedures it relaxes are the ones
+  `frameproc.slot_reader` blocks — and `slot_reader` blocks them *because they rewrite their
+  return slot and return somewhere else*. `sub_4921` returns past the inline data, not to
+  `$4ED6`, so the live-out at its `ret` is not the union over the call sites at all. Restated:
+  the rule is empty where it is sound and unsound where it is not empty.
+  (3) **The mechanism that would work, named.** The live-out of a slot-rewriting callee is
+  the live-in at the pcs its slot may name. Those are derivable per site by the same reading
+  `framestack.lift_rts_trick` uses where `sp` concretizes — call site plus inline-data length
+  — and the shredder's four-fixture family already carries every spelling (one site, two
+  sites, two depths, per-site length). A `ret_live` that unions the live-in at each site's
+  resume pc is sound; `returns` accumulated at the call statement is not. That is the landing
+  this owes, and it is a `framestack` reading, not a `_Info` relaxation.
