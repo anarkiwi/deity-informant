@@ -1566,3 +1566,67 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   three parts — context cut, anti-unification, guard proof — onto `eqlift_mem`'s render
   tree, and it is named in stage 4's runway rather than left floating. `resolve_calls`
   resolves a *leaf* callee only; a callee with control flow keeps its call.
+- **2026-08-10 — stage 3d, landing 4: associativity is one directed instance, and the
+  emit budget is split by work.** The two measured performance findings the slow-tune
+  diagnosis handed forward, landed with the §4/§6 gates the diagnosis owed (it ran
+  `proofs=None`). Every number is `tools/eqlift_measure.py` over the 25 exemplars plus
+  `A_Chipful_of_Love_for_You`, `--extents out/ptr_extents_full.json`; the per-tune
+  seconds are single-job so the pool does not colour them.
+  (1) **The cost is at width 1, and the diagnosis's "widths 1-2" reading is corrected.**
+  `add_assoc` restricted to width **2** alone changes nothing measurable and restricted
+  to width **1** alone changes nothing measurable *either way*: `Angry_Birds` 50.6s with
+  both widths, 50.7s at width 1, **2.2s** with the rule gone. The blowup is the lane
+  arithmetic, not the packs.
+  (2) **A plain drop is not free, which the diagnosis could not see.** It loses a lift
+  `tests/test_framemath.py` pins (`STA $08,X`'s zero-page store case stops fusing) and it
+  un-triggers #164's step-4 splice pin — the example stops minting the width-one
+  narrowing `COPY` at all — and corpus-wide it moves **15 of 624** tunes in *both*
+  directions, net +710 bytes: `1942` loses `ptr_00FA:u16` to two byte lanes and
+  `Crazy_Dance` loses a row cursor's u16 advance, while `Agent_X_II` (−142 bytes) and
+  `Acid_at_Night` gain one. "Equal-or-smaller 14 of 15" does not survive a tune-by-tune
+  read.
+  (3) **What associativity was buying is one instance, and it is directed.** Every lost
+  site has the same shape: a lane sum of three terms whose numeral addend sits at the
+  outer position (`(y + w3) + $01`), where the fusion rules match a two-term add whose
+  partner is the carry. `add_num_in` is exactly that — `(x + y) + c -> (x + c) + y` for a
+  numeral `c`, widths 1 and 2, Z3-proved by `verify_rules` like every other entry, and
+  **directed**, so no grouping of a chain is ever enumerated. With it every one of those
+  tunes' frameprog artifacts is byte-identical to the general-associativity baseline, and
+  so is the corpus: `tools/emit_identity.py --expect 434f0bab…` **passes**, 624 tunes,
+  0 refused, 28,512,657 bytes. **The standing baseline does not move.** `_r_add_assoc` is
+  deleted; an intermediate that admitted two extra `carry_fuse` groupings instead was
+  measured and dropped as subsumed.
+  (4) **The price, and the §6 review.** Single-job at `DI_EQLIFT_EMIT_S=600`:
+  `Angry_Birds` 50.6 → **18.4s**, `Frantic_3_tune_5` 29.5 → **16.0s**, `Dynasty_8_tune_2`
+  27.9 → **13.6s**, `21_G4_demo_tune_2` 26.8 → **13.0s**; the exemplar review's 50 lifts
+  1,455.9 → **901.2s**; the fast suite 210s → **137s**. The review is **25 of 25, clean**:
+  OFF 27,461 / ON 27,445, `d_lines` −16, `d_stores` −3, 13,909 extraction sites, 3,309
+  changed by saturation and every one Z3-proved (12,127 proved sites), zero faults,
+  refusals, regressions and fallbacks, 18 byte-identical between the paths. Against
+  landing 3's texts **no tune is larger**, `Deek/4_Tunes` is one line smaller on both
+  paths, and 18 of 25 are respelled — mostly the operand order of a commutative sum the
+  tie-break now returns differently, and in six tunes a real simplification the smaller
+  graph reaches: `Athena`'s `(carry(ptr5,idx1) | carry((ptr5+idx1),$00))` becomes
+  `((ptr5+idx1) < idx1)`, `BubbleBobble`'s `((a & $80) != $00)` becomes `(a <s $00)`,
+  `Dynasty_8`'s `($01 - (zext2(a3) <= zext2(a2)))` becomes `(a2 < a3)`, and
+  `Atmosphere_II`'s expanded `filter.resonance` term collapses to
+  `((t0 << $01) + zp_12 + (t0 <s $00))`.
+  (5) **The emit budget is divided by work, and the budget stops moving the text.**
+  `emit_mem` divided the remaining seconds by procedure COUNT, so the largest procedure —
+  index 0 in almost every multi-procedure tune — got the same share as a one-site trailer
+  that then returned it unspent. The share is now `remaining × weight[i]/sum(weights[i:])`
+  with `weight` the procedure's recursive statement-node count (`_work`). Measured over
+  the 26 tunes at the **default** `DI_EQLIFT_EMIT_S=60`, three ways: **1,515 fallbacks
+  over 5 tunes** (main) → **1,129 over 4** (the rule alone, which moves where the time
+  goes but not how it is shared) → **0 over 0** (both). And the point of the fix, stated
+  as an identity rather than a count: with both changes every one of the 26 artifacts at
+  60s is **byte-identical to its own 600s artifact**, so on this set the default budget no
+  longer makes the text a function of the clock.
+  (6) **What it does not do.** `add_num_in` is the instance the *lane fusions* need; a
+  chain whose regrouping no admitted rule names still extracts as it is spelled, and the
+  standing answer to that is flat n-ary associative nodes (what `docs/symbolic-recorder.md`
+  already does for `INT_ADD`), which is an encoding change and not a rule. The optional
+  second lever the diagnosis named — `sub_to_add`/`add_to_sub` at 55s on a byte-identical
+  artifact — is not taken here: with `add_num_in` landed the same tune is 13.0s, so the
+  lever's measurement no longer describes this graph and re-taking it would be a decision
+  on stale numbers.

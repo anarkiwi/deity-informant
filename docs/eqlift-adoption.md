@@ -327,6 +327,16 @@ procedure text.
 - Saturation blowup: assoc/comm plus the memory axioms are expansive over a whole
   procedure. Mitigation: bounded schedule; saturation is not assumed; extraction
   sound at any cutoff. Per-procedure wall-clock MUST hold the 60s test budget.
+  **General associativity is retired, stage 3d landing 4.** Measured, the cost is at
+  width **1** (the lane arithmetic) and not at the packs: dropping `add_assoc` took
+  `Angry_Birds` 50.6s -> 2.2s while restricting it to either width alone changed
+  nothing. What it was buying is one instance -- a lane sum of three terms whose
+  numeral addend sits outermost, where the fusion rules match a two-term add whose
+  partner is the carry -- so `add_num_in` (`(x + y) + c -> (x + c) + y`, numeral `c`)
+  replaces it, directed so no grouping of a chain is enumerated. The corpus artifact
+  does not move (aggregate `434f0bab...` over 624) and the exemplar review is clean.
+  A chain whose regrouping no admitted rule names extracts as spelled; the standing
+  answer to that is flat n-ary associative nodes, an encoding change and not a rule.
   **Measured and closed 2026-08-10** — `run(ruleset * 30)` is not a bound: on
   `Dynasty_8_tune_2` (one procedure, 488 statement nodes) rounds 0–8 cost 0.0s,
   round 9 0.5s, round 10 3.1s and round 11 asked for 1.6GB in one allocation, so
@@ -352,7 +362,10 @@ procedure text.
   0.10GB.
 - Extraction cost: `extract_multiple` per term is not bounded by the saturation
   schedule. Mitigation, stage 3b: `DI_EQLIFT_EMIT_S` is divided over the procedures
-  still to render (so slack from one funds the next) and the share funds saturation,
+  still to render (so slack from one funds the next) **by work, stage 3d landing 4** --
+  `remaining × weight[i]/sum(weights[i:])` over the recursive statement-node count,
+  because dividing by procedure COUNT gave the largest procedure a one-site trailer's
+  share and the trailer returned its own unspent -- and the share funds saturation,
   capped at `DI_EQLIFT_BUDGET_S`, and then extraction. A site past the share renders
   from its own term — position-correct by the renderer discipline, and sound because
   extraction is sound at any cutoff. Never silent: `emit`/`emit_mem`/`render_proc`

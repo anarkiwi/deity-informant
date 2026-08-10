@@ -2054,12 +2054,27 @@ def _extent_spans(extents, decls):
     return out
 
 
+def _work(stmts):
+    """A procedure's statement-node count: what its share of the emit budget buys.
+
+    Dividing by the procedure COUNT gives the largest procedure -- index 0 in almost
+    every multi-procedure tune -- the same seconds as a one-site trailer, so the head
+    degrades while the tail returns its share unspent."""
+    n = 0
+    for s in stmts:
+        n += 1
+        for b in E.frameproc._stmt_bodies(s):
+            n += _work(b)
+    return n
+
+
 def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
     ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
     are per procedure, so one merged record would prove the wrong equalities. ``EMIT_S``
-    is divided over the procedures still to render, so slack from one funds the next."""
+    is divided over the procedures still to render **by work**, so slack from one funds
+    the next and the share tracks what it has to render."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -2102,10 +2117,13 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None, extents=None):
     foot = Footprints(
         procs, info.open_flow, framefuse._landings(model), _extent_spans(extents, decls)
     )
+    weights = [_work(stmts) for _e, stmts in procs]
+    left = sum(weights)
     for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
-        share = max(0.0, end - time.monotonic()) / (len(procs) - i)
+        share = max(0.0, end - time.monotonic()) * (weights[i] / left if left else 1.0)
+        left -= weights[i]
         body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats, foot)
         if rec is not None:
             proofs.append(rec)
