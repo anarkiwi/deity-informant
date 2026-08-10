@@ -721,11 +721,13 @@ def _tree():
     ]
 
 
-def test_root_extraction_is_the_default_path():
-    """3b landing 3: the 25-exemplar review flipped it -- ON never emits more lines or
-    stores than OFF, three tunes fewer, every changed site proved. ``DI_EQLIFT_ROOT_
-    EXTRACT=0`` keeps the liveness path, which is what the OFF cases here still gate."""
-    assert mem.ROOT_EXTRACT is True
+def test_the_liveness_deletion_path_is_gone():
+    """Adoption §5: root extraction is the only path, so the scaffold has no switch.
+
+    ``_dce``, ``_temp_sweep`` and the ``root_extract`` selection are deleted; what
+    survives is ``_liveness`` in its rooting role and ``_share_once`` as the rule."""
+    assert not any(hasattr(mem, n) for n in ("_dce", "_temp_sweep", "ROOT_EXTRACT"))
+    assert hasattr(mem, "_liveness") and hasattr(mem, "_share_once")
 
 
 def test_roots_names_only_the_observable_sinks():
@@ -772,20 +774,9 @@ _RELOAD = [
 def test_root_extraction_drops_a_reload_store():
     """Spill removal is not a pass: ``store(m, a, sel(m, a))`` is the memory the
     chain already had, so no root reaches the statement and it never prints."""
-    off = [ln.strip() for ln in mem.render_proc(_RELOAD, root_extract=False)]
-    on = [ln.strip() for ln in mem.render_proc(_RELOAD, root_extract=True)]
-    assert off.count("zp_40 = a") == 2  # liveness DCE keeps the reload store
-    assert on.count("zp_40 = a") == 1
-    assert off[-1] == on[-1] == "sid.v1.freq_lo = a"  # the sink is untouched
-
-
-def test_root_extraction_matches_the_liveness_path_on_commando():
-    """With no store proved redundant the two mechanisms agree line for line: the
-    root path replaces liveness DCE and the temp sweep, it does not re-render."""
-    stmts, aliases, entry = E.pass1(_commando())
-    assert mem.render_proc(stmts, aliases, entry, root_extract=True) == mem.render_proc(
-        stmts, aliases, entry, root_extract=False
-    )
+    on = [ln.strip() for ln in mem.render_proc(_RELOAD)]
+    assert on.count("zp_40 = a") == 1  # the reload store the liveness path kept
+    assert on[-1] == "sid.v1.freq_lo = a"  # the sink is untouched
 
 
 def test_all_sites_proofs_hold_on_the_root_path():
@@ -793,7 +784,7 @@ def test_all_sites_proofs_hold_on_the_root_path():
     holds, under the SSA/memory definitional equations."""
     stmts, aliases, entry = E.pass1(_commando())
     proofs = {}
-    mem.render_proc(stmts, aliases, entry, root_extract=True, proofs=proofs)
+    mem.render_proc(stmts, aliases, entry, proofs=proofs)
     changed = [(a, b) for a, b in proofs["pairs"] if a != b]
     assert len(changed) > 20 and mem.verify_sites(proofs) == len(proofs["pairs"])
 
@@ -822,15 +813,14 @@ _ACROSS_CALL = [
 ]
 
 
-@pytest.mark.parametrize("root", (False, True))
-def test_havoc_versions_do_not_collide_with_def_versions(root):
+def test_havoc_versions_do_not_collide_with_def_versions():
     """Two counters over one ``<base>.<n>`` namespace equate a havoc with a def: the
     call's havoc of ``a`` took the pre-call def's name, so the graph folded $05 across
     the call and printed ``zp_40 = $06``, and Alioth's proof read ``x.3 = x.3 + 1``."""
-    lines = [ln.strip() for ln in mem.render_proc(_ACROSS_CALL, root_extract=root)]
+    lines = [ln.strip() for ln in mem.render_proc(_ACROSS_CALL)]
     assert lines[-2:] == ["a = (a + $01)", "zp_40 = a"]
     proofs = {}
-    mem.render_proc(_ACROSS_CALL, root_extract=root, proofs=proofs)
+    mem.render_proc(_ACROSS_CALL, proofs=proofs)
     for name, rhs in proofs["defs"].items():
         got = []
         mem._count_locs(rhs, got)
@@ -885,12 +875,11 @@ _DISPATCH = [
 ]
 
 
-@pytest.mark.parametrize("root", (False, True))
-def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms(root):
+def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms():
     """``_liveness`` is ``frameproc._Flow`` on the render tree and dropped its
     successor-aware cases, so every computed transfer read every register the program
     reads: a flag no arm reads was boundary-live and its definition was rooted."""
-    assert mem.render_proc(_DISPATCH, root_extract=root)[0].strip() == "goto (ptr)"
+    assert mem.render_proc(_DISPATCH)[0].strip() == "goto (ptr)"
 
 
 def test_a_label_no_edge_enters_is_not_a_join():
