@@ -718,3 +718,70 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   ADSR-before-gate within a frame, and zero-ADSR then TEST then waveform+gate
   across frames — are reproduced by the minimized program exactly, and the test
   asserts them on both sides rather than trusting last-write-wins.
+- **2026-08-10 — stage 3b, landing 1: the two blockers were name-and-shape defects,
+  and the review is 25 of 25.** Every number below is `tools/eqlift_measure.py`'s
+  output over the exemplar set at full Songlengths, one lift per tune per path.
+  (1) **Alioth's §6 refusal was an encoding defect, and a lift defect with it.**
+  `render_proc` drew def versions from one counter and havoc/join versions from
+  another into one `<base>.<n>` namespace; where the counters collided a havoc name
+  *was* a def name, so the e-graph unioned a register's post-call value with its
+  pre-call definition and the §6 encoding read the collision as an equation — on
+  Alioth `x.3 = x.3 + 1`, the unsatisfiable environment the anti-vacuity guard
+  refused. The visible half is the worse half: a `call` between `a = $05` and
+  `a = a + 1` printed `zp_40 = $06`, a value folded across a boundary the join model
+  opaque-resets. One counter for every fresh name. Alioth now proves 481 emitted
+  sites, 168 changed, no refusal — the guard was right, and there is nothing left to
+  record as a named refusal.
+  (2) **The four unmeasured tunes were not slow, they were exponential.** `m[a] =
+  m[b]` embeds the memory chain in its own stored value, so an unnamed chain doubles
+  per such store: `Down_Under`'s first procedure is a 340-node DAG whose tree
+  expansion is 2.5e11 nodes, and the egglog build asked for 49GB and was killed
+  before saturation ever ran — on main as on the branch, so extraction time was the
+  symptom and not the cause. `render_proc` names each memory version (`memk(n)`
+  unioned with the store over the previous name) exactly as a def names a value. The
+  e-graph is unchanged, so every axiom still fires through the same e-class; the
+  emitted text is unchanged, because `_to_ir` drops a `sel`'s memory argument; and
+  the §6 record carries the version definitions, so a forwarded load is still proved
+  against its own store chain and not against an opaque array. `Down_Under`: killed
+  at 49GB, to 0.6s at 0.10GB.
+  (3) **Extraction has a bound now.** `DI_EQLIFT_EMIT_S` is divided over the
+  procedures still to render, so slack from one funds the next, and the share funds
+  saturation (capped at `DI_EQLIFT_BUDGET_S`) and then extraction; a site past the
+  share renders from its own term, which the renderer discipline already makes
+  position-correct and which extraction's cutoff-soundness makes free. It is never
+  silent: `emit`/`emit_mem`/`render_proc` take a `stats` dict carrying the
+  extraction-site and fallback counts. At the default 60s three exemplars take it —
+  `Angry_Birds` 470 sites, `Athena` 344, `4_Tunes` 60 — and at
+  `DI_EQLIFT_EMIT_S=600` none do. A binding budget makes the artifact a function of
+  the clock exactly as 3b's saturation bound already does, so ON/OFF is compared at a
+  budget that does not bind: at 60s an earlier run had `Frantic_3_tune_5` one line
+  longer ON, and at 600s that tune is byte-identical on the two paths.
+  (4) **The two dead `cflag` defs the canonical example carried are a liveness
+  defect, not a root-extraction one.** They survive on the liveness path too, so they
+  predate 3a, and neither `roots()` nor `_root_keep` is at fault — `ret_live` is
+  empty and the closure never names them. `eqlift_mem._liveness` is
+  `frameproc._Flow` transcribed onto the render tree, and the transcription dropped
+  `_Flow`'s successor-aware cases: a `dgoto`/`igoto` the next statement's `swg`
+  enumerates, and a `dcall` an `swc` enumerates, land in one of those arms —
+  `frameproc._open_flow` is that same invariant — so they read what the arms read
+  and not `info.G`, every register the program reads anywhere. Each voice's loop
+  holds `goto (ptr)` before its `switch`, so from the voice-1 and voice-2 tails a
+  computed transfer was reachable with no intervening redefinition of the flag;
+  voice 3 has no nested voice after it and its definition already died. `swg`/`opsw`
+  arms now take the switch's own live-out instead of the empty set — an arm that
+  falls off its end continues after the switch, which is what the blanket `info.G`
+  was covering for — and `swc` stays conservative, its bare labels being called with
+  no inline body. The example loses 5 lines (276 to 271); the exemplars lose 94 on
+  both paths.
+  (5) **The review, 25 of 25, at full Songlengths, both paths, every site proved.**
+  OFF 27,769 lines, ON 27,767; stores −3; 13,909 extraction sites, 12,449 emitted
+  sites proved, 1,971 changed by saturation and every one of them Z3-proved. Zero
+  faults, zero refusals, zero regressions; 21 tunes byte-identical on the two paths,
+  `Gray_Matt/Atmosphere_II` −1 line and −1 store, `Tel_Kees/Before_I_Forget` −1
+  line, `Deek/4_Tunes` −2 stores. Slowest emit 60.4s, which is the budget.
+  **The flag default stays off.** The review passed; the join model is landing 2's
+  work, and a landing that measured the flag does not flip it. The harness is
+  `tools/eqlift_measure.py` — `dump` writes the exemplars' frameprog texts once,
+  `run` lifts both paths off those texts, `report` is the rollup that is this gate —
+  and `docs/join-model-footprints.md` carries the drafted call/goto closure landing
+  2 resurrects.
