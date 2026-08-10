@@ -306,7 +306,9 @@ def test_declared_u16_state_is_updated_wide_except_the_cursors(art):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3c: a variable-stride cursor advance stays " "byte-lane",
+    reason="register-model-lift OPEN, no landing owns it: a variable-stride cursor "
+    "advance stays byte-lane because no admitted rule folds one, and admitting a rule "
+    "is a corpus-diff decision (adoption §4) nobody has priced",
     **XFAIL,
 )
 def test_no_byte_lane_update_of_any_declared_u16(art):
@@ -564,7 +566,10 @@ def _seeded_render(seed, frames):
     return got.stdout
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3c/4: zero machine shapes", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 4: role-typed emission (zero machine shapes)",
+    **XFAIL,
+)
 def test_no_architectural_register_survives_as_a_value(role_text):
     """Every value flows through declared state or a width-typed local.
 
@@ -573,14 +578,21 @@ def test_no_architectural_register_survives_as_a_value(role_text):
     assert not ARCH & names
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3c/4: typed handler switch", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 4: role-typed emission (typed handler switch)",
+    **XFAIL,
+)
 def test_smc_dispatch_cells_are_not_data_state(art, role_map):
     """A cell whose only reads are the computed transfer is a JMP operand, not state."""
     data, ctrl = _reads_by_kind(art["folded"])
     assert not sorted(set(role_map) & (ctrl - data))
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3d/4: VM operator sets (_ARITY)", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 4: VM families emit their operator sets "
+    "(follin_arity feeds the artifact)",
+    **XFAIL,
+)
 def test_vm_family_operator_set_is_emitted(art, role_text):
     """The interpreter's grammar is declared and its scripts print decoded."""
     want = {m.group(1) for k in art["labels"] for m in [re.fullmatch(r"v\d+_c_(\w+)", k)] if m}
@@ -593,7 +605,11 @@ def test_vm_family_operator_set_is_emitted(art, role_text):
         assert re.search(pat, role_text, re.M), "%s prints as raw bytes" % name
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3b/3c: scratch is demoted", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 3: the state { } demotion, whose subject "
+    "is the unconditional unified path (scratch demotion is root extraction's)",
+    **XFAIL,
+)
 def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     """Every declared cell is read before its first write in some frame.
 
