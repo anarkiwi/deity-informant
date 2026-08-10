@@ -24,7 +24,8 @@ LOW = (0x0000, 0x0200)  # page zero and the stack: never ours
 
 _ASSOC = {"INT_ADD": "ADC", "INT_AND": "AND", "INT_OR": "ORA", "INT_XOR": "EOR"}
 _UCMP = frozenset(("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"))
-_SIGNED = frozenset(("INT_SLESS", "INT_SLESSEQUAL", "INT_SCARRY"))
+_SCMP = frozenset(("INT_SLESS", "INT_SLESSEQUAL"))
+_SIGNED = frozenset(("INT_SCARRY",))
 
 _COMPUTED = frozenset(("dgoto", "igoto", "dcall", "dbr"))  # every statement that resolves a pc
 _STMT_REFUSALS = {
@@ -221,6 +222,16 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.p.label(skip)
         self.p.i("STX", "abs", dst)
 
+    def signfix(self):
+        """N gets the borrow chain's true sign: overflow flips bit 7, so undo it.
+
+        Runs on the top byte's SBC result in A; the branch that reads N follows, and
+        nothing between may write it."""
+        skip = self.nl("v")
+        self.p.i("BVC", "rel", ("L", skip))
+        self.p.i("EOR", "imm", 0x80)
+        self.p.label(skip)
+
     def value(self, n):
         """``(address, width)`` of a temp or local slot holding ``n``'s value."""
         k = n[0]
@@ -290,7 +301,7 @@ class _Gen:  # pylint: disable=too-many-public-methods
             self.move(a, aw, t, w)
             self.tp = mark
             return t, w
-        if mn in _UCMP or mn == "INT_CARRY":
+        if mn in _UCMP or mn in _SCMP or mn == "INT_CARRY":
             return self.compare(n)
         width = max([w] + [P.loc_width(c) for c in kids])
         t = self.push(width)
@@ -353,6 +364,11 @@ class _Gen:  # pylint: disable=too-many-public-methods
                 "the carry over operands of unequal width",
                 "the threshold is the first operand's mask, which the wider side outgrows",
             )
+        if mn in _SCMP and P.loc_width(kids[0]) != P.loc_width(kids[1]):
+            refuse(
+                "the signed compare over operands of unequal width",
+                "the evaluator reads each side at its own width and the machine copy zero-extends",
+            )
         t = self.push(w)
         mark = self.tp
         a, b = self.at(kids[0], width), self.at(kids[1], width)
@@ -367,12 +383,17 @@ class _Gen:  # pylint: disable=too-many-public-methods
                     self.p.i("ORA", "abs", self.cmp)
             self.flagbyte(t, "BNE" if mn == "INT_EQUAL" else "BEQ")
         else:
-            lo, hi = (b, a) if mn == "INT_LESSEQUAL" else (a, b)
+            swap = mn in ("INT_LESSEQUAL", "INT_SLESSEQUAL")
+            lo, hi = (b, a) if swap else (a, b)
             self.p.i("CLC" if mn == "INT_CARRY" else "SEC")
             for j in range(width):
                 self.lda(lo + j)
                 self.p.i("ADC" if mn == "INT_CARRY" else "SBC", "abs", hi + j)
-            self.flagbyte(t, "BCS" if mn == "INT_LESS" else "BCC")
+            if mn in _SCMP:
+                self.signfix()
+                self.flagbyte(t, "BPL" if mn == "INT_SLESS" else "BMI")
+            else:
+                self.flagbyte(t, "BCS" if mn == "INT_LESS" else "BCC")
         self.tp = mark
         self.move(t, 1, t, w)
         return t, w

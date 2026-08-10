@@ -550,18 +550,24 @@ depths, per-site skip length) rather than the two corpus tunes alone.
 **The position (2026-08-10), and the next landing.** Landed: **landing 1**, the
 CyberTracker continuation — the corpus gate is clean for the first time since the
 plan opened, the three `jsr_inline_skip` pins flipped on their own mechanism, and
-the emit baseline moved on a reviewed §4 diff of exactly two tunes; and the first
-part of **landing 2, adoption §8 step 4's cutover** — the narrowing `COPY` is a
-term (`eqlift.trunc`), so the splice reaches the rules. **Landing 2 is open**, and
-its next blocker is measured and pinned: the unified emitter spells `<s` and the
-frameprog dialect has no signed comparison, so the spliced text does not parse
-(`tests/test_step4_splice.py`). Behind that stand the rest of the cutover — the
-`pcall`/`switch goto` differences (#161), §5's deletion inventory, the deterministic
-round cap, the `state { }` demotion and the ~16 substrate-dependent shredder pins —
-and then landings 3-5 (role-typed emission, the completed witness, housekeeping +
-close). Also owed to landing 2 and named at landing 1: a precise `returns` set for a
-procedure every entry of which is a `call`, which is what would take back the four
-architectural-register lines the refused `pcall` promotion costs `sub_4921`.
+the emit baseline moved on a reviewed §4 diff of exactly two tunes; and two parts of
+**landing 2, adoption §8 step 4's cutover** — the narrowing `COPY` is a term
+(`eqlift.trunc`), so the splice reaches the rules, and then the dialect gains the
+signed compare while the unified renderer learns the layout, the dispatch headers and
+the statement set it prints, `pcall` included. **The cutover's semantic half is
+landed**: `frameval.gate_fp` on the spliced text is `None`, so the unified emitter's
+program is the walker's projection. **Landing 2 is open** on its text half, and the
+blocker is measured and pinned: `frameproc.render_lines` reads the program's data
+declarations and `eqlift._Printer` does not, so a declared column pair, a declared
+table at an index expression and the indexed SID register block keep the undeclared
+spelling and the `dumps`/`loads` fixpoint fails there and nowhere else
+(`tests/test_step4_splice.py`). Behind that stand §5's deletion inventory, the
+deterministic round cap, the `state { }` demotion and the ~16 substrate-dependent
+shredder pins — which want the same declarations — and then landings 3-5 (role-typed
+emission, the completed witness, housekeeping + close). Also owed to landing 2 and
+named at landing 1: a precise `returns` set for a procedure every entry of which is a
+`call`, which is what would take back the four architectural-register lines the
+refused `pcall` promotion costs `sub_4921`.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -1795,3 +1801,81 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `xfail(strict)`. `gate_sweep` at full Songlengths 624 build / 624 evaluate / 624 clean,
   zero divergences and zero refusals; `tools/emit_identity.py --expect 37b87140…` passes —
   624 tunes, 0 refused, 28,513,156 bytes, **unmoved**.
+- **2026-08-10 — stage 4, landing 2 (part): the signed compare is a dialect operator, the
+  unified renderer learns the dialect it prints, and the splice's frame oracle goes clean.**
+  #170's named blocker taken as capability, and then #161's substrate facts measured on the
+  canonical example rather than argued.
+  (1) **The dialect gains the operator, because no price prefers the unsigned spelling.**
+  `sign_ne`/`sign_eq` are admitted, Z3-proved rules (3d landing 4), so the smaller graph
+  reaches `(a <s $00)` for `((a & $80) != $00)` — the example spells it at three sites and
+  its complement at three more; pricing it out would retract a proved rule to spare the
+  grammar, which is the wrong way round. `sidprog.lark`'s `op` production gains `<s` and
+  `<=s`, `grammar._CMPOPS` and `sidprog._CMPS` carry `INT_SLESS`/`INT_SLESSEQUAL`, so the
+  dialect stays **one operator per
+  p-code mnemonic in operand order**; `expr._apply` is the hermetic evaluator case, each side
+  read at its own width; `eqlift_mem._OP`/`_CMP` is the way back into the graph and
+  `framemath._FLAGS` the 1-bit classification. `sge` is the one graph tag with no mnemonic —
+  `x >=s y` is `INT_SLESSEQUAL(y, x)` — so it prints as the swapped `<=s` and the map stays a
+  bijection. `eqlift._OPS`/`pass1_node` are deliberately **not** given the mnemonics: that
+  pair is rung (d2)'s own reader, and admitting them there would move the corpus artifact —
+  #170's reasoning for `trunc`, unchanged. `idioms._CMP` already named both, so the catalog
+  wanted the operator before the dialect could spell it and `compare-value` accounts it with
+  no gap; `tests/test_vocabulary.py` carries the capability case (spelled, parsed, fixpoint,
+  accounted, executed) and the instance that separates the signed reading from the unsigned.
+  (2) **The witness owed it, and the refusal's own stated reason is what fell.**
+  `witness6502` refused `INT_SLESS`/`INT_SLESSEQUAL` because "the reference evaluator spells
+  none either" — it does now, so the compare is the borrow chain the unsigned one already
+  emits plus a `BVC`/`EOR #$80` correction of the top byte's sign, read by `BPL`/`BMI`, and it
+  agrees with the evaluator on every operand pair across the overflow boundary at both widths.
+  One **new named refusal**: a signed compare over operands of unequal width, because the
+  evaluator reads each side at its own width and the machine copy zero-extends. `INT_SCARRY`
+  is the signed refusal that remains.
+  (3) **#161's substrate facts, and one nobody had named.** With the operator in, the splice
+  reached five more, four of them the unified renderer not knowing the dialect it prints:
+  the arm table's header was `switch {` for every kind (now `switch goto {` /
+  `switch call {` with its bare-label line / `switch <cell> {`); an `asg` dropped its local's
+  width suffix (`q0` for `q0:2`); an `if` over a lone `unobserved` arm did not collapse to the
+  one-liner and an `ifnot` printed as `if`; and simple statements sat one level left of where
+  `frameproc._Printer` puts them. The fifth is not a spelling: **`walk` silently dropped
+  every statement kind it did not know**, `pcall` among them, so `a, x = sub_1485(a)` left the
+  text and the reads after it took stale registers — invisible in the text and visible only to
+  the frame oracle. A `pcall` now converts its arguments, walls memory over the callee's own
+  footprint (`_mem_writes` takes a `pcall`'s entry, which it did not) and renders; an unknown
+  kind **raises**. `emit_mem` never saw any of this because the raw `_Builder` procedures it
+  renders carry no `pcall`, no promoted call and no `unobserved` one-liner — which is exactly
+  what #161 asked to be verified rather than assumed.
+  (4) **The cutover's semantic half is landed; what is left is the text.** The strict xfail
+  stands with five landed controls beside it: the signed spelling parses, the dispatch header
+  and the promoted call survive, an unliftable statement raises, and **`frameval.gate_fp` on
+  the spliced text is `None`** — the spliced program reproduces the walker's per-frame
+  projection. What fails is the `dumps`/`loads` fixpoint alone, and it is three spellings with
+  one cause: `frameproc.render_lines` is handed the program's data declarations and
+  `eqlift._Printer` only its symbol aliases, so a declared lo/hi column pair stays the
+  OR-pack, a declared table read at an index *expression* stays `mem[…]`, and the indexed SID
+  register block spells a register name rather than `sid.reg[i]`. Each round-trips to the same
+  program; the next landing gives the unified printer the declarations, and §5's deletions
+  ride with it. Two smaller divergences the diff also named are closed here rather than left
+  to it — a valueless `ret` names the procedure's declared returns (`render_proc` takes them),
+  and a wide store carries its `hi-first` order, which was dropped and is a fact about the
+  store rather than its address (frameprog.md §7.10.4).
+  (5) **The prototype is the acceptance gate, so the prototype's parser moved too.**
+  `examples/state_machine_lift.py` read exactly `switch {`, `if … {` and bare `ret`, so the
+  new headers, the `ifnot`, the `unobserved` one-liners, `ret <names>` and the `hi-first`
+  prefix all had to be parsed rather than tolerated: `ifnot C` is `("not", C)` and not an arm
+  swap, which is the difference between holding the size ratchet and inflating it by nine
+  empty-armed lines. The ratchets **hold exactly** at 339 lines / 836 nodes.
+  (6) **The gates and the steering metric.** `tools/emit_identity.py --expect 37b87140…`
+  passes — 624 tunes, 0 refused, 28,513,156 bytes, **unmoved**: nothing here is on frameprog's
+  own emit path, which is what capability with zero use means. `gate_sweep` at full
+  Songlengths: **624 build / 624 evaluate / 624 clean**, zero divergences, zero refusals.
+  Suite 2,724 passed / 490 skipped / 33 xfailed (nine new cases, no pin flipped), oracle 16.
+  The 25-exemplar review at `DI_EQLIFT_EMIT_S=600` is clean — zero faults, refusals,
+  regressions, unproved sites and extraction fallbacks — and **stage 4's own steering metric
+  falls**: emitted size OFF 27,461 → **26,826** and ON 27,445 → **26,811**, −634 lines on the
+  ON path, entirely from the renderer learning the dialect's one-liner forms. The graph itself
+  is untouched and says so: 13,909 extraction sites and 3,309 changed, both unmoved, 12,128
+  proved (one more), 18 of 25 identical between the paths, `d_lines` −16 → −15 and `d_stores`
+  −3. The shredder's `test_the_unified_emitter_spells_the_dispatch_header_without_the_goto`
+  was a control written to move with the cutover and it moved with it; no stage-3 pin flipped
+  — the ~16 substrate-dependent ones want the declarations, so they are named for the next
+  landing.

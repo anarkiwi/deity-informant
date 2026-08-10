@@ -166,7 +166,14 @@ def map_term(term, f):
 _ADDSUB = frozenset("+-")
 _CHAINOPS = {"|": "INT_OR", "^": "INT_XOR", "&": "INT_AND"}
 _BINOPS = {"<<": "INT_LEFT", ">>": "INT_RIGHT"}
-_CMPOPS = {"==": "INT_EQUAL", "!=": "INT_NOTEQUAL", "<": "INT_LESS", "<=": "INT_LESSEQUAL"}
+_CMPOPS = {
+    "==": "INT_EQUAL",
+    "!=": "INT_NOTEQUAL",
+    "<": "INT_LESS",
+    "<=": "INT_LESSEQUAL",
+    "<s": "INT_SLESS",
+    "<=s": "INT_SLESSEQUAL",
+}
 
 
 def _chain_node(parts, sz):
@@ -531,6 +538,12 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def o_lt(self, c):
         return "<"
+
+    def o_sle(self, c):
+        return "<=s"
+
+    def o_slt(self, c):
+        return "<s"
 
     def o_or(self, c):
         return "|"

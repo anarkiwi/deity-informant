@@ -251,6 +251,45 @@ def test_a_role_the_census_never_names_is_not_a_type():
         frameprog.loads(text)
 
 
+_SIGNED = {
+    "<s": (op("INT_SLESS", (op("INT_ADD", (m(CELL), c(0x80))), c(0))), 1),
+    "<=s": (op("INT_SLESSEQUAL", (c(0), m(CELL))), 1),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_SIGNED))
+def test_the_signed_compare_is_spellable_and_executable(spelling):
+    """The dialect's signed pair: spelled, parsed back, accounted and run.
+
+    ``eqlift``'s admitted ``sign_ne``/``sign_eq`` rewrite ``(x & $80) != $00`` to a
+    signed compare, so the unified emitter's operator set needs the dialect to carry
+    it before step 4's cutover may use one -- stage 2's capability precondition."""
+    value, want = _SIGNED[spelling]
+    text = frameprog.dumps(_prog(value, (), (), ()))
+    assert " %s " % spelling in text
+    prog = frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+
+    sid, _upd = idioms.obligations(prog)
+    counts, gaps = idioms.cover(sid[0].value)
+    assert not gaps, [P._fmt(g) for g in gaps]
+    assert counts["compare-value"], sorted(counts)
+
+    assert frameval.Evaluator(prog, {}).frames(1) == [[(0, want)]]
+
+
+def test_the_signed_compare_reads_the_sign_and_the_unsigned_one_does_not():
+    """The operators differ where the operand's top bit is set, and nowhere else."""
+    hi = op("INT_ADD", (m(CELL), c(0x80)))  # $11 + $80 = $91: negative, and above $00
+    signed = frameval.Evaluator(
+        frameprog.loads(frameprog.dumps(_prog(_SIGNED["<s"][0], (), (), ()))), {}
+    )
+    unsigned = frameval.Evaluator(
+        frameprog.loads(frameprog.dumps(_prog(op("INT_LESS", (hi, c(0))), (), (), ()))), {}
+    )
+    assert signed.frames(1) == [[(0, 1)]] and unsigned.frames(1) == [[(0, 0)]]
+
+
 def test_a_named_unknown_carries_no_spelling_obligation():
     """``stack-slot``/``carry-value``/``compare-value`` inventory a shape, not a form."""
     unknown = {r.id for r in idioms.ROWS if r.form == idioms.UNKNOWN}

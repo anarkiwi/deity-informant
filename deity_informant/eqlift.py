@@ -984,7 +984,8 @@ def _ir_width(ir, locw):
 
 # ---- printing --------------------------------------------------------------------
 _CHAINS = {"band": "&", "bor": "|", "bxor": "^"}
-_CMP_TEXT = {"eq": "==", "ne": "!=", "ult": "<", "ule": "<=", "slt": "<s", "sge": ">=s"}
+_CMP_TEXT = {"eq": "==", "ne": "!=", "ult": "<", "ule": "<=", "slt": "<s", "sge": "<=s"}
+_CMP_SWAP = frozenset(("sge",))  # x >=s y is INT_SLESSEQUAL(y, x): the dialect's <=s, swapped
 _SHIFTS = {"shl": "<<", "shr": ">>"}
 
 
@@ -1024,7 +1025,8 @@ class _Printer:
             body = (" %s " % _CHAINS[k]).join(self.fmt(p) for p in self._chain(ir, k))
             return "(%s)%s" % (body, sidprog._wsuf(ir[3]))
         if k in _CMP_TEXT:
-            return "(%s %s %s)" % (self.fmt(ir[1]), _CMP_TEXT[k], self.fmt(ir[2]))
+            under, over = (ir[2], ir[1]) if k in _CMP_SWAP else (ir[1], ir[2])
+            return "(%s %s %s)" % (self.fmt(under), _CMP_TEXT[k], self.fmt(over))
         if k in _SHIFTS:
             body = "%s %s %s" % (self.fmt(ir[1]), _SHIFTS[k], self.fmt(ir[2]))
             return "(%s)%s" % (body, sidprog._wsuf(ir[3]))

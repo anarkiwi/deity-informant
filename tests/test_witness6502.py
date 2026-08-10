@@ -10,6 +10,7 @@ import pytest
 import test_vocabulary as tv
 from deity_informant import framelog
 from deity_informant import frameprog
+from deity_informant import frameval
 from deity_informant import structured
 from deity_informant import witness6502 as W
 from deity_informant.asm6502 import Asm
@@ -146,6 +147,25 @@ def test_a_wide_guard_tests_every_byte():
     arms = ([store(c(0x01))], [store(c(0x02))])
     assert run([("if", "if", m(CELL, 2), *arms), ("ret", False)]) == [[(0, 0x01)]]
     assert run([("if", "if", m(0x2400, 2), *arms), ("ret", False)]) == [[(0, 0x02)]]
+
+
+_SIGNED_EDGES = (0x00, 0x01, 0x7F, 0x80, 0xFF)
+_SIGNED_EDGES16 = (0x0000, 0x7FFF, 0x8000, 0xFFFF)
+
+
+@pytest.mark.parametrize("mn", ("INT_SLESS", "INT_SLESSEQUAL"))
+def test_the_signed_compare_agrees_with_the_evaluator_across_the_overflow_boundary(mn):
+    """The borrow chain's sign is only true after the ``BVC``/``EOR #$80`` correction.
+
+    Every operand pair straddling the boundary, at both widths, against the reference
+    evaluator: the uncorrected ``BMI`` differs from it and this is what catches that."""
+    for width, edges in ((1, _SIGNED_EDGES), (2, _SIGNED_EDGES16)):
+        for x in edges:
+            for y in edges:
+                value = op(mn, (c(x, width), c(y, width)))
+                p = tv._prog(value, (), (), ())
+                want = frameval.Evaluator(frameprog.loads(frameprog.dumps(p)), {}).frames(1)
+                assert W.emit(p).frames(1) == want, (mn, width, hex(x), hex(y))
 
 
 def test_a_for_range_counts_past_a_byte():
@@ -309,7 +329,10 @@ REFUSALS = {
     "call": (lambda: [("call", 0x1200, 0x1005)], "raw machine call"),
     "callb": (lambda: [("callb", 0x1005, 0x1005, [])], "raw machine call"),
     "unknown": (lambda: [("frobnicate", 0x1000)], "no witnessed statement form"),
-    "signed": (lambda: [store(op("INT_SLESS", (m(CELL), c(1))))], "signed operator INT_SLESS"),
+    "signed": (
+        lambda: [store(op("INT_SCARRY", (m(CELL), m(ALT))))],
+        "signed operator INT_SCARRY",
+    ),
     "unknown-op": (lambda: [store(op("FLOAT_ADD", (m(CELL),)))], "operator FLOAT_ADD"),
     "variable-shift": (lambda: [store(op("INT_LEFT", (m(CELL), m(ALT))))], "variable shift"),
     "carry-width": (

@@ -84,6 +84,11 @@ it was written through ([frameprog.md](frameprog.md) §7.10.4); `framelog` keeps
 write order inside the ctrl/AD/SR and `$19`-`$1C` sections, which is where the
 difference is observable.
 
+An operator chain's comparisons are p-code's, one spelling per mnemonic in operand
+order: `==`, `!=`, `<`, `<=` and the signed pair `<s`, `<=s`
+(`INT_SLESS`/`INT_SLESSEQUAL`). There is no `>=s`: the minimizer's `sge` term is
+`INT_SLESSEQUAL` with its operands the other way, and it prints as one.
+
 Reserved words are exactly the grammar's literal identifier terminals
 (`grammar.keywords()`); `symbols { }` aliases may shadow none of them, nor a
 canonical cell name, register or `uN`/`tN`/`rN` slot.
@@ -252,6 +257,8 @@ op: "+" -> o_add
   | "!=" -> o_ne
   | "<=" -> o_le
   | "<" -> o_lt
+  | "<=s" -> o_sle
+  | "<s" -> o_slt
   | "|" -> o_or
   | "^" -> o_xor
   | "&" -> o_and

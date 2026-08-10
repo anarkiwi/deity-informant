@@ -71,12 +71,12 @@ def test_interval_rules_refuse_a_wrapping_add():
 def test_bridge_forwards_a_reload_past_a_stack_store():
     """The spill idiom across a push: the pushed address cannot reach $40, so the
     reload forwards. Without the bridge the store has no bound and blocks it."""
-    assert mem.render_proc(_spill_over(_PUSH))[-1] == "zp_41 = x"
+    assert mem.render_proc(_spill_over(_PUSH))[-1].strip() == "zp_41 = x"
 
 
 def test_bridge_does_not_forward_past_a_zero_page_store():
     """The same store spelled ``zp,X`` may land on $40, so nothing forwards."""
-    assert mem.render_proc(_spill_over(_ZPX))[-1] == "zp_41 = zp_40"
+    assert mem.render_proc(_spill_over(_ZPX))[-1].strip() == "zp_41 = zp_40"
 
 
 def _spill_over(addr):
@@ -292,7 +292,8 @@ def test_a_pair_crossing_a_span_store_is_spelled_from_the_values():
         ("st", ("const", 0xD402, 2), ("mem", zp, 1)),
         ("st", ("const", 0xD403, 2), ("mem", ("const", 0x35, 1), 1)),
     ]
-    assert mem.render_proc(stmts)[-2:] == ["sid.v1.pw_lo = (c1 + $40)", "sid.v1.pw_hi = (c2 + $01)"]
+    lines = [ln.strip() for ln in mem.render_proc(stmts)]
+    assert lines[-2:] == ["sid.v1.pw_lo = (c1 + $40)", "sid.v1.pw_hi = (c2 + $01)"]
 
 
 def test_a_stale_local_version_never_spells_a_site():
@@ -309,7 +310,7 @@ def test_a_stale_local_version_never_spells_a_site():
         ("st", ("const", 0xD404, 2), ("loc", "b")),
         ("st", ("const", 0xD405, 2), ("loc", "a")),
     ]
-    assert mem.render_proc(stmts) == [
+    assert [ln.strip() for ln in mem.render_proc(stmts)] == [
         "a = m_1000",
         "b = a",
         "a = m_1001",
@@ -335,7 +336,9 @@ def test_a_push_pull_spill_forwards_in_the_graph_and_in_the_text():
     assert mem.extract(mem.Proc().run(_PUSH_PULL).env["a"]) == str(
         mem.sel(mem.mem0(), E.add(E.num(0x14A7, 2), E.zext(E.loc("x")), 2), 1)
     )
-    assert [ln for ln in mem.render_proc(_PUSH_PULL) if "m_01FB" in ln] == ["m_01FB = m_14A7[x]"]
+    assert [ln.strip() for ln in mem.render_proc(_PUSH_PULL) if "m_01FB" in ln] == [
+        "m_01FB = m_14A7[x]"
+    ]
 
 
 def test_a_memory_spelling_is_priced_below_every_value_one():
@@ -357,10 +360,11 @@ def test_a_memory_spelling_must_read_the_same_at_the_site_it_spells():
         ("st", ("const", 0x14A7, 2), ("const", 0x09, 1)),
         ("st", ("const", 0xD404, 2), ("mem", ("const", 0x40, 1), 1)),
     ]
-    assert mem.render_proc(stmts)[-1] == "sid.v1.ctrl = zp_40"  # m_14A7 holds $09 here
+    assert mem.render_proc(stmts)[-1].strip() == "sid.v1.ctrl = zp_40"  # m_14A7 holds $09 here
     moved = list(stmts)
     moved[1] = ("st", ("const", 0x14A8, 2), ("const", 0x09, 1))
-    assert mem.render_proc(moved)[-1] == "sid.v1.ctrl = m_14A7"  # crossed, and the deeper read
+    # crossed, and the deeper read
+    assert mem.render_proc(moved)[-1].strip() == "sid.v1.ctrl = m_14A7"
 
 
 def test_the_chain_walk_stops_at_a_join_that_does_not_carry_the_cell():
@@ -454,7 +458,7 @@ def test_a_store_no_reader_can_observe_is_not_a_root():
     blind = mem.Footprints(procs, False)
     seen = mem.Footprints(procs, False, extents={0x40: (0x14EB, 0x153F)})
     assert blind.readers(0x1000)[1] and not seen.readers(0x1000)[1]
-    lines = mem.render_proc(_PUSH_PULL, entry=0x1000, foot=seen)
+    lines = [ln.strip() for ln in mem.render_proc(_PUSH_PULL, entry=0x1000, foot=seen)]
     assert lines == ["a = m_14A7[x]", "sid.v1.ctrl = a"]
     named = mem.Footprints(
         procs + [(0x3000, [("asg", "q", ("mem", ("const", 0x01FB, 2), 1)), ("ret",)])],
@@ -491,7 +495,7 @@ def test_the_in_edge_join_carries_what_every_edge_reads_at_one_version():
     ]
     foot = mem.Footprints([(0x1000, stmts)], False)
     st = {}
-    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    lines = [ln.strip() for ln in mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)]
     assert st["in_join"] == 1 and st["in_join_cells"] == 1
     assert lines[-2] == "sid.v1.ctrl = a"  # $40 agrees on both edges
     assert lines[-1] == "sid.v2.ctrl = zp_41"  # $41 does not, so it reads memory
@@ -509,7 +513,7 @@ def test_a_back_edge_label_still_resets_and_the_bound_that_would_free_it_is_empt
     ]
     foot = mem.Footprints([(0x1000, stmts)], False)
     st = {}
-    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    lines = [ln.strip() for ln in mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)]
     assert st["label_reset"] == 1 and "in_join" not in st
     assert lines[-2] == "sid.v1.ctrl = zp_40"
     spans, wild = mem._mem_writes(stmts[1:])
@@ -527,11 +531,12 @@ def test_a_register_assignment_of_what_it_already_holds_is_not_a_root():
     ]
     foot = mem.Footprints([(0x1000, stmts)], False)
     st = {}
-    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    lines = [ln.strip() for ln in mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)]
     assert st["self_copy"] == 1
     assert lines == ["a = m_14A7", "sid.v1.ctrl = a"]
     entry_copy = [("asg", "y", ("loc", "y")), ("st", ("const", 0xD404, 2), ("loc", "y"))]
-    assert mem.render_proc(entry_copy, entry=0x1000, foot=foot) == ["sid.v1.ctrl = y"]
+    copied = mem.render_proc(entry_copy, entry=0x1000, foot=foot)
+    assert [ln.strip() for ln in copied] == ["sid.v1.ctrl = y"]
 
 
 def test_proc_forwards_across_loop_writing_disjoint_cell():
@@ -618,10 +623,11 @@ def test_render_proc_branchy():
         ),
     ]
     lines = mem.render_proc(stmts)
-    assert lines[0] == "zp_40 = x"  # store keeps value
-    assert lines[1] == "a = x"  # reload forwards all the way to the stored value
-    assert lines[2] == "if (a >=s $00) {"  # ifnot(sign-test) simplified via value rules
-    assert lines[3] == " zp_50 = a"
+    assert lines[0] == " zp_40 = x"  # store keeps value, at frameproc's statement indent
+    assert lines[1] == " a = x"  # reload forwards all the way to the stored value
+    assert lines[2] == "if ($00 <=s a) {"  # ifnot(sign-test) simplified via value rules
+    assert lines[3] == "  zp_50 = a"  # one nesting level under the block header
+    assert lines[4] == "}"
 
 
 def test_render_proc_no_cross_arm_spelling():
@@ -662,8 +668,9 @@ def test_render_proc_real_commando():
     stmts, aliases, entry = E.pass1(_commando())
     lines = mem.render_proc(stmts, aliases, entry)
     assert len(lines) > 300
-    assert "ctr_5525 = (ctr_5525 + $01)" in lines  # cell forward + byte width + printer
-    assert "vflag = ((m_5519 & $40) != $00)" in lines  # a genuinely-live flag is kept
+    flat = [l.strip() for l in lines]
+    assert "ctr_5525 = (ctr_5525 + $01)" in flat  # cell forward + byte width + printer
+    assert "vflag = ((m_5519 & $40) != $00)" in flat  # a genuinely-live flag is kept
     assert any(
         l.strip() == "pos_54EC[x] = $00" for l in lines
     )  # indexed store, clean loop-carried x
@@ -765,8 +772,8 @@ _RELOAD = [
 def test_root_extraction_drops_a_reload_store():
     """Spill removal is not a pass: ``store(m, a, sel(m, a))`` is the memory the
     chain already had, so no root reaches the statement and it never prints."""
-    off = mem.render_proc(_RELOAD, root_extract=False)
-    on = mem.render_proc(_RELOAD, root_extract=True)
+    off = [ln.strip() for ln in mem.render_proc(_RELOAD, root_extract=False)]
+    on = [ln.strip() for ln in mem.render_proc(_RELOAD, root_extract=True)]
     assert off.count("zp_40 = a") == 2  # liveness DCE keeps the reload store
     assert on.count("zp_40 = a") == 1
     assert off[-1] == on[-1] == "sid.v1.freq_lo = a"  # the sink is untouched
@@ -820,7 +827,8 @@ def test_havoc_versions_do_not_collide_with_def_versions(root):
     """Two counters over one ``<base>.<n>`` namespace equate a havoc with a def: the
     call's havoc of ``a`` took the pre-call def's name, so the graph folded $05 across
     the call and printed ``zp_40 = $06``, and Alioth's proof read ``x.3 = x.3 + 1``."""
-    assert mem.render_proc(_ACROSS_CALL, root_extract=root)[-2:] == ["a = (a + $01)", "zp_40 = a"]
+    lines = [ln.strip() for ln in mem.render_proc(_ACROSS_CALL, root_extract=root)]
+    assert lines[-2:] == ["a = (a + $01)", "zp_40 = a"]
     proofs = {}
     mem.render_proc(_ACROSS_CALL, root_extract=root, proofs=proofs)
     for name, rhs in proofs["defs"].items():
@@ -834,9 +842,11 @@ def test_extraction_budget_falls_back_to_the_site_term():
     """A spent share renders the remaining sites from their own term -- position-correct
     and sound at any cutoff -- and reports how many; the forwarding is what is given up."""
     spent, ample = {}, {}
-    assert mem.render_proc(_spill_over(_PUSH), budget=0.0, stats=spent)[-1] == "zp_41 = zp_40"
+    cut = mem.render_proc(_spill_over(_PUSH), budget=0.0, stats=spent)
+    assert cut[-1].strip() == "zp_41 = zp_40"
     assert 0 < spent["sites"] == spent["extract_fallback"]
-    assert mem.render_proc(_spill_over(_PUSH), budget=30.0, stats=ample)[-1] == "zp_41 = x"
+    full = mem.render_proc(_spill_over(_PUSH), budget=30.0, stats=ample)
+    assert full[-1].strip() == "zp_41 = x"
     assert ample["extract_fallback"] == 0 and ample["sites"] == spent["sites"]
 
 
@@ -846,7 +856,8 @@ def test_memory_versions_are_named_so_a_copy_chain_cannot_double():
     Each version is one store over the previous name, so the term stays linear."""
     stmts = [("st", ("const", 0x40 + i, 1), ("mem", ("const", 0x60 + i, 1), 1)) for i in range(12)]
     proofs = {}
-    assert mem.render_proc(stmts, proofs=proofs)[:2] == ["zp_40 = zp_60", "zp_41 = zp_61"]
+    lines = [ln.strip() for ln in mem.render_proc(stmts, proofs=proofs)]
+    assert lines[:2] == ["zp_40 = zp_60", "zp_41 = zp_61"]
     chains = list(proofs["mems"].values())
     assert len(chains) == 12
     assert all(c[0] == "store" and c[1][0] in ("mem0", "memk") for c in chains)
@@ -879,7 +890,7 @@ def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms(root):
     """``_liveness`` is ``frameproc._Flow`` on the render tree and dropped its
     successor-aware cases, so every computed transfer read every register the program
     reads: a flag no arm reads was boundary-live and its definition was rooted."""
-    assert mem.render_proc(_DISPATCH, root_extract=root)[0] == "goto (ptr)"
+    assert mem.render_proc(_DISPATCH, root_extract=root)[0].strip() == "goto (ptr)"
 
 
 def test_a_label_no_edge_enters_is_not_a_join():
@@ -894,8 +905,9 @@ def test_a_label_no_edge_enters_is_not_a_join():
     ]
     free = mem.Footprints([(0x1000, body)], open_flow=False)
     assert not free.joins(0x1234) and free.joins(0x1000)
-    assert mem.render_proc(body, foot=free)[-1] == "sid.v1.ctrl = $05"
-    assert mem.render_proc(body)[-1] == "sid.v1.ctrl = zp_40"  # no map: a label is a join
+    assert mem.render_proc(body, foot=free)[-1].strip() == "sid.v1.ctrl = $05"
+    # no map: a label is a join
+    assert mem.render_proc(body)[-1].strip() == "sid.v1.ctrl = zp_40"
     entered = mem.Footprints([(0x1000, body + [("goto", 0x1234)])], open_flow=False)
     assert entered.joins(0x1234)
     assert mem.Footprints([(0x1000, body)], open_flow=True).joins(0x1234)

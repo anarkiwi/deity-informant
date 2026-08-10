@@ -80,6 +80,12 @@ def _fold(mn, vals, m):
     return r & m
 
 
+def _signed(v, sz):
+    """``v``'s two's-complement reading at its own width."""
+    half = 1 << (8 * sz - 1)
+    return v - 2 * half if v & half else v
+
+
 def _apply(mn, vals, szs, out_sz):
     m = mask(out_sz)
     if mn in _ASSOC:
@@ -102,6 +108,10 @@ def _apply(mn, vals, szs, out_sz):
         return 1 if a < b else 0
     if mn == "INT_LESSEQUAL":
         return 1 if a <= b else 0
+    if mn == "INT_SLESS":
+        return 1 if _signed(a, szs[0]) < _signed(b, szs[1]) else 0
+    if mn == "INT_SLESSEQUAL":
+        return 1 if _signed(a, szs[0]) <= _signed(b, szs[1]) else 0
     if mn == "INT_CARRY":
         return 1 if (a + b) > mask(szs[0]) else 0
     raise NotImplementedError(mn)

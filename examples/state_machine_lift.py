@@ -520,6 +520,12 @@ def parse_expr(text):
     return e
 
 
+def _guard(word, cond):
+    """The condition an ``if``/``ifnot`` header states: the dialect's word is the negation."""
+    e = parse_expr(cond.strip())
+    return ("not", e) if word == "ifnot" else e
+
+
 def parse_block(lines, i):
     """Parse the emitted statement dialect into (stmts, index of closing line)."""
     out = []
@@ -528,12 +534,12 @@ def parse_block(lines, i):
         if not line:
             i += 1
             continue
-        if line in ("}", "} else {"):
+        if line in ("}", "} else {") or line.startswith("} else unobserved "):
             return out, i
         if re.fullmatch(r"\$[0-9A-Fa-f]+:", line):
             out.append(("label", line[:-1]))
-        elif line in ("continue", "break", "ret"):
-            out.append((line,))
+        elif line in ("continue", "break", "ret") or line.startswith("ret "):
+            out.append((line.split()[0],))
         elif line.startswith("unobserved"):
             out.append(("unobserved", line.split()[1]))
         elif line.startswith("goto ("):
@@ -545,7 +551,7 @@ def parse_block(lines, i):
         elif line == "loop {":
             body, i = parse_block(lines, i + 1)
             out.append(("loop", body))
-        elif line == "switch {":
+        elif re.fullmatch(r"switch(?: [\w.$]+)? \{", line):
             i += 1
             cases = []
             while lines[i].strip() != "}":
@@ -556,13 +562,21 @@ def parse_block(lines, i):
                 cases.append((m.group(1), body))
                 i += 1
             out.append(("switch", cases))
-        elif line.startswith("if ") and line.endswith("{"):
+        elif re.match(r"ifn?o?t? .* unobserved \$[0-9A-Fa-f]+$", line):
+            word, _sep, tail = line.partition(" ")
+            cond, arm = tail.rsplit(" unobserved ", 1)
+            out.append(("if", _guard(word, cond), [("unobserved", arm)], []))
+        elif re.match(r"ifn?o?t? ", line) and line.endswith("{"):
+            word, _sep, tail = line.partition(" ")
             then, i = parse_block(lines, i + 1)
             els = []
             if lines[i].strip() == "} else {":
                 els, i = parse_block(lines, i + 1)
-            out.append(("if", parse_expr(line[3:-1].strip()), then, els))
+            elif lines[i].strip().startswith("} else unobserved "):
+                els = [("unobserved", lines[i].strip().rsplit(" ", 1)[1])]
+            out.append(("if", _guard(word, tail[:-1]), then, els))
         else:
+            line = line[9:] if line.startswith("hi-first ") else line
             m = re.fullmatch(r"([\w.]+)\[(.*)\](?::\d)? = (.*)", line)
             if m:  # a span store: the row the index names, not a state cell
                 out.append(("sto", m.group(1), parse_expr(m.group(2)), parse_expr(m.group(3))))
