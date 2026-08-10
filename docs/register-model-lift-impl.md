@@ -166,9 +166,10 @@ the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus. What it
 does not yet reach is pinned `xfail(strict=True)` against the stage that flips
-it: the branch-join forward and the stack-spill forward (3b landing 2), the
-split lo/hi pitch row and any byte-lane update of a declared-u16 quantity (3c),
-and per-voice re-rolling (3d).
+it: the stack-spill forward (3c — landing 2 measured it as two mechanisms, the
+memory spelling's cost and scratch demotion), the split lo/hi pitch row and any
+byte-lane update of a declared-u16 quantity (3c), and per-voice re-rolling (3d).
+The branch-join forward is green as of 3b landing 2.
 
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into five roles — **cursor** (an index
@@ -403,21 +404,20 @@ of three phases.
 **The position (2026-08-10), and the next landing.** Landed: 3a (root
 extraction behind `eqlift_mem.ROOT_EXTRACT`, default off), 3b part one (the
 interval bridge, the bounded schedule), 3b landing 1 (the name-collision and
-chain-doubling defects, the extraction budget, the 25-of-25 ON/OFF review —
-zero faults, zero refusals, zero regressions). **Next is 3b landing 2, the
-span join**: `_mem_writes` returns a write span per non-const store via
-`addr_interval` instead of ⊤, and the join encoding is complemented — a fresh
-opaque base re-storing exactly the chain-held const cells provably disjoint
-from every incoming span — landed once, in a helper both `Proc` and
-`render_proc` call, with `docs/join-model-footprints.md`'s call/goto closure
-riding on top once spans exist. Its gates are already written and waiting to
-flip: the prototype's `test_join_forwards_the_crossing_cell` and `m_01FB`
-spill pin (xfail strict), the shredder join fixtures, and the catalog's
-stack-slot branch/call-join seats. After it, landing 3 (the in-edge map at
-labels, whole-chain region extraction, the `ROOT_EXTRACT` default decision),
-then 3c's rules in the shape the eight-extension landing recorded — search
-the operand, prove the instance, never enumerate spellings — with the
-per-idiom convergence harness, then 3d (the `_ARITY` discharge, guard-aware
+chain-doubling defects, the extraction budget, the 25-of-25 ON/OFF review),
+3b landing 2 (the span join, the complemented join encoding, the call/goto
+closure, and the egg-side memory cost the consumer's filter always implied).
+**Next is landing 3**: the in-edge map at labels (`tools/value_walk.py`'s
+in-edge map is the join structure; a raw `call` into the calling list is an
+in-edge — landing 2 leaves a `label` at ⊤, which is the last blanket havoc),
+whole-chain region extraction, and the `ROOT_EXTRACT` **default decision**,
+made on a full 25-exemplar ON/OFF review at full Songlengths and recorded with
+its numbers either way. After it, 3c's rules in the shape the eight-extension
+landing recorded — search the operand, prove the instance, never enumerate
+spellings — with the per-idiom convergence harness and the two mechanisms
+landing 2 named (a memory spelling's cost with its position-correctness
+argument, in place of `pick_ir`'s filter; scratch demotion, which is what a
+dead stack slot needs), then 3d (the `_ARITY` discharge, guard-aware
 re-rolling).
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
@@ -826,9 +826,9 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   **The flag default stays off.** The review passed; the join model is landing 2's
   work, and a landing that measured the flag does not flip it. The harness is
   `tools/eqlift_measure.py` — `dump` writes the exemplars' frameprog texts once,
-  `run` lifts both paths off those texts, `report` is the rollup that is this gate —
-  and `docs/join-model-footprints.md` carries the drafted call/goto closure landing
-  2 resurrects.
+  `run` lifts both paths off those texts, `report` is the rollup that is this gate.
+  (The drafted call/goto closure this entry parked in `docs/join-model-footprints.md`
+  landed as `eqlift_mem.Footprints` in landing 2; the draft is deleted with it.)
 - **2026-08-10 — the prototype pins the goal, and the pins measure the gap.**
   `tests/test_state_machine_lift.py` gains seven goal-level properties as strict
   xfails, each enumerated from the artifact (the rendered state block, the roles

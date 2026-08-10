@@ -8,6 +8,7 @@ out of one saturation + root extraction as Z3-proven rewrites.
 from __future__ import annotations
 
 import collections
+import functools
 import os
 import time
 
@@ -70,7 +71,10 @@ def memk(n: i64) -> Mem: ...
 def store(m: Mem, a: E.T, v: E.T, w: i64) -> Mem: ...
 
 
-@function
+_SEL_COST = 1 << 10  # the consumer's price: pick_ir spells a site from memory last of all
+
+
+@function(cost=_SEL_COST)
 def sel(m: Mem, a: E.T, w: i64) -> E.T: ...
 
 
@@ -377,43 +381,158 @@ def _defined_at(ir, avail):
     return all(_defined_at(a, avail) for a in ir[1:] if isinstance(a, tuple))
 
 
-_WILD = frozenset(("call", "dcall", "dbr", "dgoto", "igoto", "label", "swc", "swg", "opsw"))
+_DYN = frozenset(("dcall", "dbr", "dgoto", "igoto", "label"))  # transfers no map follows
+_TOPFP = (frozenset(), True)  # the footprint that says nothing: a join forgets everything
+_NOFP = (frozenset(), False)  # writes nothing; the call graph's fixpoint resolves it
 
 
-def _mem_writes(stmts):
-    """(const (addr, addr_width, val_width) written, wild) footprint of a statement list."""
-    addrs, wild = set(), [False]
+def _wr_span(e):
+    """The interval a store address expression can reach, or None where it is ⊤.
+
+    The lattice bound and the bridge's bit bounds are each sound alone, so the tighter of
+    the two is. Read with no env: a local's reaching definition at the join is not the
+    definition it carried inside the arm, so only width-and-shape bounds hold."""
+    got, bits = _lattice(e), (E.frameproc.addr_floor(e), E.frameproc.addr_bits(e))
+    got = bits if got is None else (max(got[0], bits[0]), min(got[1], bits[1]))
+    return None if got == _TOP or got[0] > got[1] else got
+
+
+def _mem_writes(stmts, enter=None, out_goto=False):
+    """(write spans, wild) footprint of a statement list: what running it may store.
+
+    A span is ``(lo, hi, width)`` — every address a store can name, at the width it
+    writes; a const cell spans one address. ``enter(pc)`` is the footprint of the code an
+    edge enters, and its absence, an unbounded address and an unfollowable transfer are ⊤."""
+    spans, wild = set(), [False]
+
+    def take(pc):
+        got = _TOPFP if enter is None else enter(pc)
+        spans.update(got[0])
+        wild[0] = wild[0] or got[1]
 
     def rec(sl):
         for s in sl:
-            if s[0] == "st":
+            k = s[0]
+            if k == "st":
                 a = s[1]
-                if a[0] == "const":
-                    addrs.add((a[1] & E._mask(a[2]), a[2], _ew(s[2])))
-                else:
+                lohi = (a[1] & E._mask(a[2]),) * 2 if a[0] == "const" else _wr_span(a)
+                if lohi is None:
                     wild[0] = True
-            elif s[0] in _WILD:
+                else:
+                    spans.add((lohi[0], lohi[1], _ew(s[2])))
+            elif k in ("call", "callb"):
+                take(s[1])
+            elif k == "swc":
+                for lbl in s[1]:  # bare labels: entered with no inline body
+                    take(int(lbl[1:], 16))
+            elif k == "goto" and out_goto:
+                take(s[1])
+            elif k in _DYN:
                 wild[0] = True
             for b in E.frameproc._stmt_bodies(s):
                 rec(b)
 
     rec(stmts)
-    return addrs, wild[0]
+    return frozenset(spans), wild[0]
 
 
-def _join_mem(pre_mem, stmts, fresh):
-    """Memory after ``stmts`` may or may not have run: ``pre_mem`` with only the
-    cells they can write rebound to a fresh opaque memory. Any unresolvable store
-    address or wild statement kind havocs everything."""
-    addrs, wild = _mem_writes(stmts)
+def _disjoint_of(a0, a1, sw, a, w):
+    """Z3 (QF_BV): no byte a store in ``[a0,a1]`` of width ``sw`` writes is a byte of
+    the cell ``a:w``. The join's admitted weakening is proved, never matched."""
+    x = z3.BitVec("x", 16)
+    goal = z3.Implies(
+        z3.And(z3.ULE(z3.BitVecVal(a0, 16), x), z3.ULE(x, z3.BitVecVal(a1, 16))),
+        z3.And([x + i != z3.BitVecVal((a + j) & 0xFFFF, 16) for i in range(sw) for j in range(w)]),
+    )
+    s = z3.Solver()
+    s.add(z3.Not(goal))
+    return s.check() == z3.unsat
+
+
+_disjoint_span = functools.lru_cache(maxsize=None)(_disjoint_of)
+
+
+def _join_mem(pre_mem, stmts, fresh, held=(), enter=None):
+    """Memory after ``stmts`` may or may not have run, and the cells it still holds.
+
+    The complemented encoding: a fresh opaque base carrying exactly the chain-held const
+    cells Z3 proves disjoint from every span the statements can write — adoption §10's
+    opaque reset, weakened only where the disjointness is proved."""
+    spans, wild = _mem_writes(stmts, enter)
+    base = memk(i64(fresh()))  # opaque post-branch memory
     if wild:
-        return memk(i64(fresh()))
-    base = memk(i64(fresh()))  # opaque post-branch memory; written cells read from it
-    m = pre_mem
-    for a, aw, w in sorted(addrs):
+        return base, frozenset()
+    kept = [
+        c
+        for c in sorted(held)
+        if all(_disjoint_span(a0, a1, sw, c[0], c[2]) for a0, a1, sw in spans)
+    ]
+    m = base
+    for a, aw, w in kept:
         addr = E.num(a, aw)
-        m = store(m, addr, sel(base, addr, w), w)
-    return m
+        m = store(m, addr, sel(pre_mem, addr, w), w)
+    return m, frozenset(kept)
+
+
+def _collect(tgts):
+    """An ``enter`` that records the pc and contributes nothing: the fixpoint resolves it."""
+
+    def enter(pc):
+        tgts.add(pc)
+        return _NOFP
+
+    return enter
+
+
+def _labels_of(stmts, out=None):
+    out = [] if out is None else out
+    for s in stmts:
+        if s[0] == "label":
+            out.append(s[1])
+        for b in E.frameproc._stmt_bodies(s):
+            _labels_of(b, out)
+    return out
+
+
+class Footprints:
+    """What entering at a pc may write, over the enumerated call/goto graph.
+
+    ``of(pc)`` is ``(spans, wild)`` for the code entered there and everything it enters
+    in turn; a pc no procedure owns is ⊤, and so is a procedure holding a transfer this
+    map cannot follow. An empty map is the ⊤ every call carried before spans existed."""
+
+    __slots__ = ("own", "calls", "owner", "fp")
+
+    def __init__(self, procs=()):
+        procs = list(procs)
+        self.own, self.calls, self.owner = {}, {}, {}
+        for entry, stmts in procs:
+            self.owner.update(dict.fromkeys(_labels_of(stmts), entry))
+            self.owner[entry] = entry
+        for entry, stmts in procs:
+            tgts = set()
+            self.own[entry] = _mem_writes(stmts, _collect(tgts), out_goto=True)
+            self.calls[entry] = frozenset(tgts)
+        self.fp = self._close()
+
+    def _close(self):
+        """The call graph's least fixpoint: a caller writes what its callees write."""
+        cur = dict(self.own)
+        for _round in range(len(self.own) + 1):
+            nxt = {}
+            for e, (spans, wild) in cur.items():
+                for t in self.calls[e]:
+                    ts, tw = cur.get(self.owner.get(t), _TOPFP)
+                    spans, wild = spans | ts, wild or tw
+                nxt[e] = (spans, wild)
+            if nxt == cur:
+                return cur
+            cur = nxt
+        return cur
+
+    def of(self, pc):
+        """The footprint of entering at ``pc``; ⊤ where the map does not name it."""
+        return self.fp.get(self.owner.get(pc), _TOPFP)
 
 
 def _reg_bases(ir, out):
@@ -743,15 +862,16 @@ def render_proc(
     proofs=None,
     budget=None,
     stats=None,
+    foot=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
-    Memory forwards intra-block; at a join only the addresses written under the branch
-    are havoced. ``budget`` is the procedure's share of the artifact's emit seconds, spent
-    by saturation (capped at ``BUDGET_S``) then extraction; sites past it render own-term."""
+    Memory forwards intra-block; a join carries the chain-held cells proved disjoint from
+    every span it can write. ``budget`` is the procedure's share of the artifact's emit
+    seconds, spent by saturation then extraction; sites past it render own-term."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
-    stt = {"env": {}, "mem": mem0(), "k": 0}
+    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset()}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
     src, seeds, memdefs = {}, [], []
     dfs = _Defs(src)
@@ -776,8 +896,11 @@ def render_proc(
         memdefs.append((n, chain))
         return memk(i64(n))
 
-    def join_mem(pre_mem, s):
-        return remember(_join_mem(pre_mem, [s], fresh))
+    def join_mem(pre_mem, s, held):
+        """Rebind memory at a wall; the held cells the join carries are the new chain."""
+        m, kept = _join_mem(pre_mem, [s], fresh, held, None if foot is None else foot.of)
+        stt["held"] = kept
+        return remember(m)
 
     def conv(e):
         k = e[0]
@@ -809,7 +932,13 @@ def render_proc(
 
     def havoc_all():
         havoc(list(stt["env"]))
-        stt["mem"] = memk(i64(fresh()))
+        stt["mem"], stt["held"] = memk(i64(fresh())), frozenset()
+
+    def wall(s):
+        """A boundary the locals cannot cross: memory joins over what it can write."""
+        pre_mem, pre_held = stt["mem"], stt["held"]
+        havoc(list(stt["env"]))
+        stt["mem"] = join_mem(pre_mem, s, pre_held)
 
     def walk(sl):
         nodes = []
@@ -830,6 +959,8 @@ def render_proc(
                 addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else seed(conv(a), a)
                 pre = stt["mem"]
                 stt["mem"] = remember(store(pre, addr, v, _ew(s[2])))
+                if a[0] == "const":
+                    stt["held"] |= {(a[1] & E._mask(a[2]), a[2], _ew(s[2]))}
                 ai = None if a[0] == "const" else add(addr)
                 own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
                 nd = ("st", a, add(v, own), ai, _ew(s[2]))
@@ -842,16 +973,16 @@ def render_proc(
                     cond = E.bnot(cond)
                 ci = add(cond)
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
-                pre_src = dict(src)
+                pre_src, pre_held = dict(src), stt["held"]
                 then = walk(s[3])
                 then_env = dict(stt["env"])
-                stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
                 src.clear()
                 src.update(pre_src)
                 avail.intersection_update(pre_av)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
-                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s)
+                stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s, pre_held)
                 src.clear()
                 src.update(pre_src)
                 avail.intersection_update(pre_av)
@@ -862,13 +993,13 @@ def render_proc(
                         src.pop(n, None)
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
-                pre_mem, pre_av = stt["mem"], set(avail)
+                pre_mem, pre_av, pre_held = stt["mem"], set(avail), stt["held"]
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, s)
+                stt["mem"] = join_mem(pre_mem, s, pre_held)
                 body = walk(s[1])
                 avail.intersection_update(pre_av)
                 havoc(_written(s[1]))
-                stt["mem"] = join_mem(pre_mem, s)
+                stt["mem"] = join_mem(pre_mem, s, pre_held)
                 nodes.append(("loop", body))
             elif k == "label":
                 avail.clear()
@@ -877,11 +1008,11 @@ def render_proc(
             elif k in ("goto", "cont", "brk", "ret", "unobs"):
                 nodes.append((k, s[1] if len(s) > 1 else None))
             elif k == "call":
-                havoc_all()
+                wall(s)
                 nodes.append(("call", s[1], s[2]))
             elif k == "callb":
                 body = walk(s[3])
-                havoc_all()
+                wall(("call", s[1], s[2]))  # what the call writes beyond the inlined body
                 nodes.append(("callb", s[1], s[2], body))
             elif k == "dcall":
                 ix = add(conv(s[1]))
@@ -890,15 +1021,16 @@ def render_proc(
             elif k in ("swc", "opsw", "swg"):
                 cases = s[1] if k == "swg" else s[2]
                 pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
-                pre_src, arms = dict(src), []
+                pre_src, pre_held, arms = dict(src), stt["held"], []
                 for lbl, body in cases:
-                    stt["env"], stt["mem"] = dict(pre_env), pre_mem
+                    stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
                     src.clear()
                     src.update(pre_src)
                     avail.intersection_update(pre_av)
                     arms.append((lbl, walk(body)))
                 avail.intersection_update(pre_av)
-                havoc_all()
+                stt["mem"], stt["held"] = pre_mem, pre_held
+                wall(s)
                 nodes.append(("switch", arms, k))
             elif k == "dbr":
                 pair = (add(conv(s[2])), add(conv(s[3])))
@@ -1336,12 +1468,14 @@ _NOEFFECT = frozenset(("goto", "cont", "brk", "ret", "unobs"))
 class Proc(Straight):
     """Whole-procedure lift: intra-block store-chain forwarding, with written locals
     reset to fresh opaque terms (the algebraic havoc) at branch joins and loop heads,
-    and everything reset at labels, calls and dynamic control. Memory joins through
-    ``_join_mem``, so cells no branch can write keep forwarding. Records site terms."""
+    and everything reset at labels and dynamic control. Memory joins through
+    ``_join_mem``, so cells no reachable store can name keep forwarding."""
 
-    def __init__(self):
+    def __init__(self, foot=None):
         super().__init__()
         self.sites = []
+        self.held = frozenset()
+        self.foot = foot
         self._k = 0
 
     def _fresh(self):
@@ -1354,7 +1488,11 @@ class Proc(Straight):
 
     def _havoc_all(self):
         self._havoc_locs(list(self.env))
-        self.mem = memk(i64(self._fresh()))
+        self.mem, self.held = memk(i64(self._fresh())), frozenset()
+
+    def _join(self, pre_mem, stmts, held):
+        enter = None if self.foot is None else self.foot.of
+        self.mem, self.held = _join_mem(pre_mem, stmts, self._fresh, held, enter)
 
     def run(self, stmts):
         for s in stmts:
@@ -1368,9 +1506,11 @@ class Proc(Straight):
             self.env[s[1]] = t
             self.sites.append(("asg", s[1], t))
         elif k == "st":
-            v = self._conv(s[2])
-            self.mem = store(self.mem, self._addr(s[1]), v, _ew(s[2]))
-            self.sites.append(("st", s[1], v))
+            v, a = self._conv(s[2]), s[1]
+            self.mem = store(self.mem, self._addr(a), v, _ew(s[2]))
+            if a[0] == "const":
+                self.held |= {(a[1] & E._mask(a[2]), a[2], _ew(s[2]))}
+            self.sites.append(("st", a, v))
         elif k == "if":
             cond = self._conv(s[2])
             if s[1] == "ifnot":
@@ -1381,11 +1521,17 @@ class Proc(Straight):
             self._loop(s)
         elif k == "callb":
             self.run(s[3])
-            self._havoc_all()
+            pre_mem, pre_held = self.mem, self.held
+            self._havoc_locs(list(self.env))
+            self._join(pre_mem, [("call", s[1], s[2])], pre_held)
         elif k in ("swc", "opsw"):
             self._branch([b for _l, b in s[2]], s)
         elif k == "swg":
             self._branch([b for _l, b in s[1]], s)
+        elif k == "call":
+            pre_mem, pre_held = self.mem, self.held
+            self._havoc_locs(list(self.env))
+            self._join(pre_mem, [s], pre_held)
         elif k not in _NOEFFECT:
             for i in _READS.get(k, ()):
                 if s[i] is not None:
@@ -1393,14 +1539,14 @@ class Proc(Straight):
             self._havoc_all()
 
     def _branch(self, bodies, stmt):
-        pre_env, pre_mem = dict(self.env), self.mem
+        pre_env, pre_mem, pre_held = dict(self.env), self.mem, self.held
         ends = []
         for b in bodies:
-            self.env, self.mem = dict(pre_env), pre_mem
+            self.env, self.mem, self.held = dict(pre_env), pre_mem, pre_held
             self.run(b)
             ends.append((self.env, self.mem))
         self.env = dict(pre_env)
-        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
+        self._join(pre_mem, [stmt], pre_held)
         names = set(pre_env).union(*(e for e, _m in ends))
         for n in names:
             terms = [e.get(n) for e, _m in ends] + [pre_env.get(n)]
@@ -1408,13 +1554,13 @@ class Proc(Straight):
                 self.env[n] = E.loc("%s@%d" % (n, self._fresh()))
 
     def _loop(self, stmt):
-        body, pre_mem = stmt[1], self.mem
+        body, pre_mem, pre_held = stmt[1], self.mem, self.held
         w = _written(body)
         self._havoc_locs(w)
-        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
+        self._join(pre_mem, [stmt], pre_held)
         self.run(body)
         self._havoc_locs(w)
-        self.mem = _join_mem(pre_mem, [stmt], self._fresh)
+        self._join(pre_mem, [stmt], pre_held)
 
 
 def _written(stmts):
@@ -1472,11 +1618,12 @@ def emit_mem(model, root_extract=None, proofs=None, stats=None):
         if before == (info.params, info.rets):
             break
     proc_lines, end = [], time.monotonic() + EMIT_S
+    foot = Footprints(procs)  # the call/goto closure: what a call boundary must forget
     for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
         share = max(0.0, end - time.monotonic()) / (len(procs) - i)
-        body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats)
+        body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats, foot)
         if rec is not None:
             proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)

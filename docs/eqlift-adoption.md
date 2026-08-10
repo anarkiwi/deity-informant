@@ -235,6 +235,24 @@ procedure text.
   a branch that writes its cell. Mitigation: opaque-reset by default at every
   join/loop-head/call boundary, weakened only per-site behind an admitted
   argument in this doc; all-sites Z3 proofs catch any residual hole.
+  **The admitted weakenings, stage 3b landing 2:**
+  - *The span join.* `_mem_writes` reads a non-const store's write span off
+    `addr_interval` — a `(lo, hi, width)` interval — instead of returning ⊤, and the
+    join is **complemented**: `_join_mem` builds a fresh opaque memory and re-stores
+    exactly the chain-held const cells, each proved disjoint from every span the
+    joined statements can write. Enumerating what the join *keeps* is what makes a
+    span usable at all: a bounded-but-unenumerable write (a row, a push) cannot be
+    listed as cells to forget, but every cell outside it can be listed as kept. The
+    disjointness is a Z3 QF_BV proof over *every* address in the span
+    (`_disjoint_span`, cached), never a structural match, so a store width that
+    reaches past `hi` and a cell inside the row both refuse. An unbounded store
+    address, a label and any dynamic transfer keep ⊤; an unkept cell is guarded
+    memory, a readability loss and never a soundness one.
+  - *The call/goto closure* (`Footprints`). What entering at a pc may write, over the
+    enumerated call/goto graph, as that graph's least fixpoint — a caller writes what
+    its callees write. A pc no procedure owns is ⊤, and so is a procedure holding a
+    transfer the map cannot follow, so nothing rests on the dispatch guards: what a
+    call boundary keeps is bounded by code the map actually reads.
 - Saturation blowup: assoc/comm plus the memory axioms are expansive over a whole
   procedure. Mitigation: bounded schedule; saturation is not assumed; extraction
   sound at any cutoff. Per-procedure wall-clock MUST hold the 60s test budget.
