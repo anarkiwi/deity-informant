@@ -1,8 +1,8 @@
 """The register-model shredder (docs/register-model-lift-impl.md).
 
 Each fixture forces one register-model artifact and stays ``xfail(strict=True)``
-until its stage lands; pending fixtures are stage 3's convergence-seed corpus,
-each normalizing there or re-pinned as a guarded refusal with its reason."""
+until its stage lands; each stage-3 pin also carries the adoption §8 step 4
+disposition measured on ``_emit`` -- one of ``_MEASURED``'s three verdicts."""
 
 import re
 import sys
@@ -13,7 +13,7 @@ import pytest
 
 import _fuzzgen as G
 from test_frameprog import _fuzz_model
-from deity_informant import frameproc, frameprog, frameval, ptrcert, ptrextent
+from deity_informant import eqlift_mem, frameproc, frameprog, frameval, ptrcert, ptrextent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
@@ -40,6 +40,13 @@ HND0 = 0x13C0  # dispatch handler stubs (the SMC-operand jmp's observed targets)
 HND1 = 0x13E0
 
 XFAIL = dict(strict=True)
+
+_S3 = "register-model-lift stage 3:"
+_MEASURED = (  # the three §8 step 4 dispositions; every stage-3 reason names one
+    "unified path: holds today",  # a pre-verified flip: step 4 XPASSes the pin
+    "unified path: not an emission property",  # a pre-emission rung verdict step 4 keeps
+    "unified path: refuses, and the mechanism is named",  # emission's, with its owner
+)
 
 
 @lru_cache(maxsize=None)
@@ -89,6 +96,22 @@ def _gate(name):
         return str(exc)
 
 
+@lru_cache(maxsize=None)
+def _emit(name):
+    """The same model's text from the unified graph: the emitter §8 step 4 cuts over to.
+
+    ``frameprog.program`` runs the structural rungs before emission and ``emit_mem``
+    renders raw ``_Builder`` procedures, so a property this refuses may be refused by a
+    missing rung rather than a missing rule; the pins say which."""
+    text, _second = eqlift_mem.emit(_build(name)[0])
+    assert text.startswith("eqlift 0")
+    return text
+
+
+def _emit_body(name):
+    return _emit(name)[_emit(name).index("sub_") :]
+
+
 _lift_prog = {}
 _lift_ctx = {}
 _lift_extra = {}
@@ -135,8 +158,8 @@ def _state_block(text):
     return text[i : text.index("}", i)]
 
 
-def _unnamed_store_bounds(prog):
-    """G1-resolved reach bound of every store whose address names no datum."""
+def _unnamed_stores(prog):
+    """``(address expression, its G1 env)`` for every store whose address names no datum."""
     out = []
 
     def walk(stmts, outer, cyclic):
@@ -146,10 +169,43 @@ def _unnamed_store_bounds(prog):
                 walk(body, (env, k), s[0] in frameproc._CYCLIC)
             if s[0] == "st" and frameproc.addr_split(s[1])[0] is None:
                 if s[1] not in prog.resolved:
-                    out.append(frameproc.addr_bits(s[1], frameproc.DefsAt(env, k)))
+                    out.append((s[1], frameproc.DefsAt(env, k)))
 
     for _e, _p, _r, stmts in prog.procs:
         walk(stmts, None, False)
+    return out
+
+
+def _unnamed_store_bounds(prog):
+    """G1-resolved reach bound of every store whose address names no datum."""
+    return [frameproc.addr_bits(a, defs) for a, defs in _unnamed_stores(prog)]
+
+
+def _subterms(e):
+    """``e`` and every operand below it."""
+    yield e
+    for k in e[2] if e[0] == "op" else (e[1],) if e[0] == "mem" else ():
+        yield from _subterms(k)
+
+
+def _ops(e, mn):
+    """``mem_rules``' interval for every ``mn`` operand in ``e``, outermost first."""
+    return [eqlift_mem._lattice(k) for k in _subterms(e) if k[0] == "op" and k[1] == mn]
+
+
+def _stores_to(prog, addr):
+    """Every value the program stores at ``addr``, at any nesting depth."""
+    out = []
+
+    def walk(stmts):
+        for s in stmts:
+            for body in frameproc._stmt_bodies(s):
+                walk(body)
+            if s[0] == "st" and s[1][0] == "const" and s[1][1] == addr:
+                out.append(s[2])
+
+    for _e, _p, _r, stmts in prog.procs:
+        walk(stmts)
     return out
 
 
@@ -1114,13 +1170,34 @@ def test_fixture_builds_and_gates(name):
     assert _lift(name).startswith("frameprog 1")
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: scratch promotion", **XFAIL)
+@pytest.mark.xfail(
+    reason="%s scratch promotion; %s -- 3d landing 1's read closure already retires the "
+    "store, so what stands is the state { } declaration, which frameprog._state_lines "
+    "derives from _cells(view) and not from the stores extraction kept" % (_S3, _MEASURED[2]),
+    **XFAIL,
+)
 def test_scratch_cell_is_a_local_not_state():
     text = _lift("scratch")
     assert not re.search(r"\bm_%04X\b" % TMP, text), "scratch cell survives as a named cell"
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: cursor lift", **XFAIL)
+def test_the_scratch_store_demotes_on_the_unified_path_and_its_declaration_stays():
+    """Measured after 3d landing 1: the store is gone from the body, the field is not.
+
+    frameprog re-reads the cell at the SID write and keeps the store; the unified path
+    spells the value and retires it, so all that is left of the pin is ``state { }``."""
+    assert "sid.v1.ctrl = (m_%04X | $40)" % TMP in _lift("scratch")
+    assert "sid.v1.ctrl = ((t0 & $0F) | $40)" in _emit_body("scratch")
+    assert not re.search(r"\bm_%04X\b" % TMP, _emit_body("scratch")), "the store survived"
+    assert re.search(r"\bm_%04X\b" % TMP, _state_block(_emit("scratch"))), "the field went"
+
+
+@pytest.mark.xfail(
+    reason="%s cursor lift; %s -- rung (f)/(g) mints *ptr[i] inside frameprog.program "
+    "and refuses here ('another store may write the pointer'); emit runs no such rung, "
+    "so mem[ stands on both paths for the one premise" % (_S3, _MEASURED[1]),
+    **XFAIL,
+)
 def test_pointer_walk_names_no_raw_address():
     text = _lift("pointer_walk")
     body = text[text.index("sub_") :]
@@ -1128,19 +1205,42 @@ def test_pointer_walk_names_no_raw_address():
     assert "carry(" not in body, "the pointer advance still carries between lanes"
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: wide compare", **XFAIL)
+@pytest.mark.xfail(
+    reason="%s wide compare; %s -- the unified graph spells the borrow as the compare "
+    "it is ((ctr0 + $37) < m_1464) where frameprog spells $01 - (zext2(..) <= zext2(..)), "
+    "so step 4 XPASSes this pin" % (_S3, _MEASURED[0]),
+    **XFAIL,
+)
 def test_borrow_chain_is_one_wide_compare():
     text = _lift("borrow_chain")
     assert "carry(" not in text, "the borrow chain survives as byte-lane carries"
     assert not re.search(r"\$01 - \(zext2", text), "a borrow survives as compare arithmetic"
 
 
+def test_borrow_chain_is_one_wide_compare_on_the_unified_path():
+    """The pin above, pre-verified: its two assertions hold on ``emit`` today."""
+    text = _emit("borrow_chain")
+    assert "carry(" not in text, "the borrow chain survives as byte-lane carries"
+    assert not re.search(r"\$01 - \(zext2", text), "a borrow survives as compare arithmetic"
+    assert "(ctr0 + $37) < m_%04X" % (TGT,) in text, "the sbc-chain normal form went"
+
+
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: sinks are write-only, no read-back survives", **XFAIL
+    reason="%s sinks are write-only, no read-back survives; %s -- the unified graph "
+    "emits sid.v1.freq_hi = t0 where frameprog widens the lone half to a read-modify-"
+    "write of the u16 register, so step 4 XPASSes this pin" % (_S3, _MEASURED[0]),
+    **XFAIL,
 )
 def test_lone_lane_half_owes_no_register_load():
     text = _lift("lone_lane")
     assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
+
+
+def test_lone_lane_half_owes_no_register_load_on_the_unified_path():
+    """The pin above, pre-verified: the write-only price leaves the lane store bare."""
+    text = _emit("lone_lane")
+    assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
+    assert "sid.v1.freq_hi = t0" in text, "the lone lane lost its byte-wide store"
 
 
 def _body(text):
@@ -1225,14 +1325,30 @@ def test_init_written_livein_cell_stays_state():
     assert re.search(r"_%04X\b" % POS, _state_block(_lift("init_livein")))
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: multiplexed pair splits per role", **XFAIL)
+_DEREF_REFUSAL = {  # fixture -> the rung (f) premise its *ptr[i] lift states
+    "pointer_walk": "another store may write the pointer",
+    "mux_pair": "another store may write the pointer",
+    "cursor_save": "a definition is not a lo/hi partner-table entry read",
+    "writethrough": "a store at an unproven address may write the pointer",
+}
+_DEREF_WHY = "%s -- rung (f)'s premise, %%r, and emit mints no *ptr[i] at all" % _MEASURED[1]
+
+
+@pytest.mark.xfail(
+    reason="%s multiplexed pair splits per role; %s"
+    % (_S3, _DEREF_WHY % _DEREF_REFUSAL["mux_pair"]),
+    **XFAIL,
+)
 def test_mux_pair_certifies_the_pointer_role():
     text = _lift("mux_pair")
     body = text[text.index("sub_") :]
     assert "mem[" not in body, "the pointer role still reads through a raw address"
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: cursor values as data", **XFAIL)
+@pytest.mark.xfail(
+    reason="%s cursor values as data; %s" % (_S3, _DEREF_WHY % _DEREF_REFUSAL["cursor_save"]),
+    **XFAIL,
+)
 def test_cursor_save_restore_lifts_to_cursor_values():
     text = _lift("cursor_save")
     body = text[text.index("sub_") :]
@@ -1240,12 +1356,26 @@ def test_cursor_save_restore_lifts_to_cursor_values():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: write-through becomes a table write", **XFAIL
+    reason="%s write-through becomes a table write; %s"
+    % (_S3, _DEREF_WHY % _DEREF_REFUSAL["writethrough"]),
+    **XFAIL,
 )
 def test_writethrough_store_becomes_a_bounded_table_write():
     text = _lift("writethrough")
     body = text[text.index("sub_") :]
     assert not re.search(r"^\s*mem\[.*\] = ", body, re.M), "the store still writes through top"
+
+
+@pytest.mark.parametrize("name", sorted(_DEREF_REFUSAL))
+def test_a_refused_deref_keeps_its_raw_address_on_the_unified_path(name):
+    """The four ``mem[`` pins measured together: the refusal is the rung's, on both paths.
+
+    Each names the premise rung (f) states; the unified emitter has no deref rung, so its
+    text carries the same raw address and the cutover cannot move any of them."""
+    _lift(name)
+    why = [p.lemma for p in _lift_prog[name].proofs if p.kind == "deref"]
+    assert any(_DEREF_REFUSAL[name] in w for w in why), why
+    assert "mem[" in _emit_body(name), "the unified path already named the row"
 
 
 def _fused_cursor(name):
@@ -1257,9 +1387,46 @@ def _fused_cursor(name):
     return "ptr_%04X: u16" % G.PTR in _state_block(_lift(name))
 
 
+_FUSE_WHY = (
+    "%s -- rung (d)/framefuse decides the tune-wide declaration on the statements before "
+    "any emitter runs, and emit reuses frameprog._state_lines' unfused block, so the green "
+    "plain_advance control reads byte-wise there too" % _MEASURED[1]
+)
+
+
+def _fuse_pin(why):
+    """A rung-(d) pin's mark: its own refusal class beside the measured step 4 verdict."""
+    return pytest.mark.xfail(reason="%s %s; %s" % (_S3, why, _FUSE_WHY), **XFAIL)
+
+
 def test_a_plain_advance_fuses_its_cursor_pair():
     """Invariant: the baseline the dual-destination family is measured against."""
     assert _fused_cursor("plain_advance"), "a bare in-place advance left the pair byte-wise"
+
+
+def test_the_unified_emitter_carries_no_rung_built_pair_declaration():
+    """The fused-cursor family's disposition, measured on the control it is measured against.
+
+    ``plain_advance`` fuses under rung (d) and ``emit`` still spells its lanes, so every
+    ``_fused_cursor`` pin reads False there for want of framefuse and not of a rule; step
+    4's splice keeps the rungs as the substrate builder."""
+    assert _fused_cursor("plain_advance")
+    block = _state_block(_emit("plain_advance"))
+    assert "ptr_%04X: u16" % G.PTR not in block
+    assert "ptr_%04X_lo: u8" % G.PTR in block and "ptr_%04X_hi: u8" % G.PTR in block
+
+
+def test_the_rung_built_statements_do_not_yet_convert_for_the_unified_emitter():
+    """Cutover order: rung (d2) mints a narrowing ``COPY`` the unified converter has no op for.
+
+    ``dual_store_lo_only``'s lo-lane save copy is ``COPY`` of the fused u16 local at width
+    one, so splicing frameprog's own statements into ``render_proc`` faults before any
+    rule fires -- step 4 owes the narrowing copy."""
+    _lift("dual_store_lo_only")
+    (stmts,) = [s for _e, _p, _r, s in _lift_prog["dual_store_lo_only"].procs]
+    assert "COPY" not in eqlift_mem._OP
+    with pytest.raises(KeyError, match="COPY"):
+        eqlift_mem.render_proc(stmts)
 
 
 def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():
@@ -1270,47 +1437,32 @@ def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():
     assert _fused_cursor("dual_store_word_copy"), "a word-wide save copy refused the pair"
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a dual-destination advance keeps the pair byte-wise",
-    **XFAIL,
-)
+@_fuse_pin("a dual-destination advance keeps the pair byte-wise")
 def test_dual_store_advance_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_advance")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: store order within a lane does not free the pair", **XFAIL
-)
+@_fuse_pin("store order within a lane does not free the pair")
 def test_dual_store_pair_first_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_pair_first")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: uninterleaved pair stores still keep it byte-wise", **XFAIL
-)
+@_fuse_pin("uninterleaved pair stores still keep it byte-wise")
 def test_dual_store_via_regs_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_via_regs")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a hi-first dual-destination advance keeps the pair byte-wise",
-    **XFAIL,
-)
+@_fuse_pin("a hi-first dual-destination advance keeps the pair byte-wise")
 def test_dual_store_hi_first_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_hi_first")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a cell-stepped dual store keeps it byte-wise", **XFAIL
-)
+@_fuse_pin("a cell-stepped dual store keeps it byte-wise")
 def test_dual_store_computed_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_computed")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a lo-only dual store refuses certification, not just naming",
-    **XFAIL,
-)
+@_fuse_pin("a lo-only dual store refuses certification, not just naming")
 def test_dual_store_lo_only_fuses_its_cursor_pair():
     """One lane's copy is enough: rung (g) then refuses ``def_unliftable``, not the spelling.
 
@@ -1320,10 +1472,7 @@ def test_dual_store_lo_only_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_lo_only")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a stack-spilled cursor has no word form to appeal to",
-    **XFAIL,
-)
+@_fuse_pin("a stack-spilled cursor has no word form to appeal to")
 def test_stack_spill_cursor_fuses_its_cursor_pair():
     """The largest group (15 webs), and the one no proven-word-form fix can reach.
 
@@ -1333,27 +1482,19 @@ def test_stack_spill_cursor_fuses_its_cursor_pair():
     assert _fused_cursor("stack_spill_cursor")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: an unobserved carry arm leaves the hi lane unpaired",
-    **XFAIL,
-)
+@_fuse_pin("an unobserved carry arm leaves the hi lane unpaired")
 def test_deferred_carry_cursor_fuses_its_cursor_pair():
     """The hi lane is in the code but not the text, so no store pairs with the lo one."""
     assert _fused_cursor("deferred_carry_cursor")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a split lo/hi save-back destination cannot pair", **XFAIL
-)
+@_fuse_pin("a split lo/hi save-back destination cannot pair")
 def test_table_spill_cursor_fuses_its_cursor_pair():
     """The advance is already one u16 store; the de-interleaved save-back is what refuses."""
     assert _fused_cursor("table_spill_cursor")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: interleaved half stores never pair, so the pair refuses",
-    **XFAIL,
-)
+@_fuse_pin("interleaved half stores never pair, so the pair refuses")
 def test_unpaired_half_store_fuses_its_cursor_pair():
     """The one rung (d) class no other fixture reaches: no lane read, the stores unpaired.
 
@@ -1372,11 +1513,28 @@ def test_an_inpage_advance_is_never_fused():
     assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 3: INT_ADD store bound via intervals", **XFAIL)
+@pytest.mark.xfail(
+    reason="%s INT_ADD store bound via intervals; %s -- the bound exists in the graph "
+    "(mem_rules' lattice states ($00A5, $01A4) here) and the pin reads frameproc."
+    "addr_bits, which states top: addr_interval seeds the graph FROM the bit analysis "
+    "and never back" % (_S3, _MEASURED[1]),
+    **XFAIL,
+)
 def test_g2_bounds_the_zext_add_store():
     _lift("g2_store")
     bad = [b for b in _unnamed_store_bounds(_lift_prog["g2_store"]) if b > 0x01FF]
     assert not bad, "a (zext2(y) + $NN) store is still counted top-wide"
+
+
+def test_the_g2_store_is_bounded_by_the_unified_interval():
+    """The pin's goal measured on the unified path: ``mem_rules`` states the interval.
+
+    Both sides stand here, so what the pin still pins is the direction the bridge is
+    missing and not an absent bound."""
+    _lift("g2_store")
+    (addr, defs), *rest = _unnamed_stores(_lift_prog["g2_store"])
+    assert not rest and frameproc.addr_bits(addr, defs) > 0x01FF
+    assert eqlift_mem._lattice(addr) == (0x00A5, 0x01A4)
 
 
 def test_the_script_jump_is_fused_and_lift_eligible():
@@ -1473,7 +1631,10 @@ def test_a_stack_held_cursor_refuses_low_held():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: the deref bound the certification cannot give",
+    reason="%s the deref bound the certification cannot give; %s -- ptrcert reads the "
+    "program, and the unified path declines the same forward (the pull still spells "
+    "mem[t0]), so the deref-span quantity stage 3d landing 1's read closure computes is "
+    "the missing premise and its consumer is a rung" % (_S3, _MEASURED[1]),
     **XFAIL,
 )
 def test_a_stack_held_cursor_lifts_once_the_deref_is_bounded():
@@ -1511,7 +1672,10 @@ def test_computed_rows_walk_off_the_registry():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: an arithmetic row resolves in the memory sort or stays guarded",
+    reason="%s an arithmetic row stays guarded; %s -- the memory sort was the other "
+    "branch of this reason and it does not resolve the row: mem_rules' lattice states "
+    "nothing for ((ctr & $01) << $03) | $80 (INT_OR is in no interval rule), and the "
+    "consumer is ptrextent either way" % (_S3, _MEASURED[1]),
     **XFAIL,
 )
 def test_computed_rows_map():
@@ -1520,6 +1684,17 @@ def test_computed_rows_map():
     The fixpoint walks declared data for 16-bit LE words; a row built as
     ``((ctr & 1) << 3) | $80`` is in no block, so only a value-set walker derives it."""
     assert not _observed("computed_rows")["refusals"]
+
+
+def test_the_memory_sort_states_no_interval_for_the_computed_row():
+    """The guarded refusal's own alternative, measured: ``INT_OR`` is in no interval rule.
+
+    Phase 2.5's strided-interval walker stays the named mechanism, as the green
+    ``extent_foreign`` row beside this one already records."""
+    _lift("computed_rows")
+    (row,) = [r for r in _stores_to(_lift_prog["computed_rows"], G.PTR) if r[1] == "INT_OR"]
+    assert _ops(row, "INT_OR") == [None, None], "INT_OR gained an interval rule"
+    assert all(_ops(row, "INT_LEFT")), "the lane's shift chain lost its bound"
 
 
 def test_the_computed_row_is_no_block_read():
@@ -1536,26 +1711,45 @@ def test_the_smc_operand_dispatch_is_a_join_not_a_wall():
     assert "dgoto" not in body and "igoto" not in body
 
 
+def test_the_unified_emitter_spells_the_dispatch_header_without_the_goto():
+    """Cutover order: the same closure, a different header - ``switch {``, not ``switch goto``.
+
+    The arms and the ``goto`` over the patched operand stand on both paths, so the control
+    above pins a frameprog spelling step 4 either keeps or moves its assertion with."""
+    body = _emit_body("dispatch_scratch")
+    assert "switch {" in body and "switch goto" not in body
+    assert "dgoto" not in body and "igoto" not in body
+    assert body.count("case $%04X" % HND0) == 1 and body.count("case $%04X" % HND1) == 1
+
+
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: written-before-read joins over a dispatch", **XFAIL
+    reason="%s written-before-read joins over a dispatch; %s -- the arms are swc labels, "
+    "which 3d landing 1's in-edge join excludes by design, so each handler reads the cell "
+    "where the straight-line scratch fixture now reads the value" % (_S3, _MEASURED[2]),
+    **XFAIL,
 )
 def test_dispatch_scratch_promotes():
     assert not re.search(r"\bm_%04X\b" % TMP, _lift("dispatch_scratch"))
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a cross-frame lane reload is a masked word update", **XFAIL
-)
+def test_the_dispatch_arms_do_not_join_the_scratch_write():
+    """The dispatch pin's mechanism, measured: an ``swc`` label resets where a goto joins.
+
+    Both handlers read the cell on the unified path, so extending the in-edge join to the
+    dispatch's own arms is the whole of what this pin waits on."""
+    body = _emit_body("dispatch_scratch")
+    assert "m_%04X = (t0 & $0F)" % TMP in body, "the dispatch store already demoted"
+    assert body.count("sid.v1.ctrl = (m_%04X | $" % TMP) == 2, "an arm forwarded the value"
+
+
+@_fuse_pin("a cross-frame lane reload is a masked word update")
 def test_a_phase_split_reload_fuses_its_cursor_pair():
     """Each half store is a lane replacement - (ptr & $FF00) | zext2(row) - so no
     carry and no new operator is involved; only the lane-update spelling is missing."""
     assert _fused_cursor("phase_split_reload")
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3: a loop-carried LSR/ROR pair is one wide variable shift",
-    **XFAIL,
-)
+@_fuse_pin("a loop-carried LSR/ROR pair is one wide variable shift")
 def test_a_shift_divide_lifts_to_a_wide_shift():
     """The dialect has >>; what is missing is the loop-to-expression rule, not an operator.
 
@@ -1571,11 +1765,40 @@ def test_an_entry_balanced_procedure_destacks():
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3: addr_floor keeps the kept push off zero page",
+    reason="%s addr_floor keeps the kept push off zero page; %s -- emit's raw _Builder "
+    "procedures keep the raw call frameprog promotes to a register interface, and the "
+    "chain havocs at its landing label, so the cell survives for want of the promotion "
+    "and not for want of the floor" % (_S3, _MEASURED[2]),
     **XFAIL,
 )
 def test_scratch_beside_kept_sp_fabric_promotes():
     assert not re.search(r"\bzp_%02X\b" % ZTMP, _lift("sp_scratch_floor"))
+
+
+def test_a_raw_call_holds_the_scratch_cell_the_promoted_call_would_free():
+    """Cutover order: what the unified path lacks here is the substrate, not the floor.
+
+    The same fixture's cell survives beside a raw ``call`` where frameprog threads a
+    procedure with a register interface, so step 4's splice order decides this one."""
+    assert "sub_%04X(" % SPSUB in _body(_lift("sp_scratch_floor")), "the pcall went"
+    body = _emit_body("sp_scratch_floor")
+    assert "call $%04X" % SPSUB in body, "the raw path promoted the call after all"
+    assert "sid.v1.ctrl = (zp_%02X | $21)" % ZTMP in body, "the read forwarded after all"
+
+
+def test_every_stage_three_pin_carries_its_measured_disposition():
+    """Stage 3's convergence bullet, enforced: no pin may assume it flips at the cutover.
+
+    A stage-3 xfail added later fails here until its goal property has been evaluated
+    against ``_emit`` and one of the three verdicts put on its reason."""
+    pins = {
+        n: m.kwargs["reason"]
+        for n, f in sorted(globals().items())
+        for m in getattr(f, "pytestmark", ())
+        if m.name == "xfail" and m.kwargs.get("reason", "").startswith(_S3)
+    }
+    assert len(pins) == 24, sorted(pins)
+    assert not [n for n, r in pins.items() if sum(v in r for v in _MEASURED) != 1]
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)

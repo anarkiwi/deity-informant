@@ -1372,3 +1372,57 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   and the read closure share. Store spans are still read without the resolution the read
   side got: tightening them would move the join and the artifact, and this landing's gate
   is the reader set.
+- **2026-08-10 — the shredder's stage-3 pins are disposed against the unified emitter,
+  and "they flip at the cutover" is true of two of twenty-four.** Adoption §8 step 4 moves
+  frameprog *emission* onto the unified graph. Each stage-3 pin's goal property is now
+  evaluated against `eqlift_mem.emit` on the same fixture model (`_emit` in
+  `tests/test_shred_regmodel.py`) instead of assumed, on top of landing 1, and every
+  stage-3 reason carries one of three measured verdicts (`_MEASURED`), enforced by
+  `test_every_stage_three_pin_carries_its_measured_disposition` so a pin added later
+  cannot skip the measurement.
+  (1) **Two pre-verified flips.** `borrow_chain`: the unified graph extracts
+  `(ctr0 + $37) < m_1464` where frameprog spells `$01 - (zext2(..) <= zext2(..))`, so both
+  of the pin's assertions hold there today. `lone_lane`: the write-only price emits
+  `sid.v1.freq_hi = t0` outright where frameprog widens the lone half into a
+  read-modify-write of the u16 register. Each gains a parallel green test on the eqlift
+  text; the frameprog xfail stays, and step 4 XPASSes it.
+  (2) **Nineteen are not emission properties at all, which is the finding.** They read a
+  verdict `frameprog.program` computes on the statements *before* any emitter runs, so the
+  cutover cannot move them. The twelve `_fused_cursor` pins read rung (d)/`framefuse`'s
+  tune-wide pair declaration, and `emit` reuses `frameprog._state_lines`' unfused block —
+  even the green `plain_advance` control reads byte-wise there, which is pinned. The four
+  `mem[` pins read rung (f)/(g)'s `*ptr[i]`, which `emit` never mints; each fixture's own
+  premise is on the record ("another store may write the pointer" for `pointer_walk` and
+  `mux_pair`, "a definition is not a lo/hi partner-table entry read" for `cursor_save`,
+  "a store at an unproven address may write the pointer" for `writethrough`).
+  `low_held_cursor` and `computed_rows` read `ptrcert`/`ptrextent`; `g2_store` reads
+  `frameproc.addr_bits`.
+  (3) **`g2_store`'s bound already exists — in the other analysis.** `mem_rules`' lattice
+  states `($00A5, $01A4)` for the address `addr_bits` calls ⊤. `addr_interval` seeds the
+  graph *from* the bit analysis and never back, so that pin flips when the bit analysis
+  reads the lattice and not when emission moves. `computed_rows`' own alternative is
+  measured beside it: the memory sort states nothing for `((ctr & $01) << $03) | $80`
+  because `INT_OR` is in no interval rule, though every shift below it is bounded — so the
+  guarded refusal is the branch its reason takes, and Phase 2.5's walker stays its
+  mechanism.
+  (4) **The scratch trio splits three ways, and landing 1 moved one of them.** `scratch`:
+  the read closure retires the store, so `m_1460` is gone from the emitted body and all
+  that stands is the `state { }` declaration `frameprog._state_lines` derives from
+  `_cells(view)` rather than from the stores extraction kept — a `framestack.drop_state`
+  analogue keyed on demotion, named here for the first time. `dispatch_scratch`: the
+  handlers are `swc` labels, which landing 1's in-edge join excludes by design, so both
+  arms read the cell where the straight-line fixture now reads the value; extending the
+  join to the dispatch's own arms is the whole of what that pin waits on.
+  `sp_scratch_floor`: the cell survives beside a raw `call` where frameprog threads a
+  procedure with a register interface — the substrate, not `addr_floor`, is what holds it.
+  (5) **Three cutover-order facts the splice plan owes, all pinned green.** Rung (d2) mints
+  a *narrowing* `COPY` — the lo-lane save copy of a fused u16 local at width one — that
+  `eqlift_mem._OP` maps to nothing, so splicing frameprog's own statements into
+  `render_proc` raises `KeyError('COPY')` before any rule fires. `emit` builds raw
+  `_Builder` procedures, so it has neither the `pcall` promotion (4)'s third case needs nor
+  any structural rung. And the unified emitter spells the SMC dispatch header `switch {`
+  where frameprog spells `switch goto {`, with the arms and the operand `goto` intact on
+  both paths; the green R8 control matches the frameprog spelling, so step 4 keeps the
+  keyword or moves that assertion with it.
+  Tests only, so no artifact movement. Suite 2,686 passed / 490 skipped / 42 xfailed,
+  oracle 16 passed.
