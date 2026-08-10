@@ -43,7 +43,8 @@ XFAIL = dict(strict=True)
 
 
 @lru_cache(maxsize=None)
-def _lift(name):
+def _build(name):
+    """``(model, frames, program)`` before the gate, so a pin may read the verdict."""
     got = _FIXTURES[name]()
     a, data, frames = got[:3]
     extra = got[3] if len(got) > 3 else {}
@@ -59,8 +60,14 @@ def _lift(name):
         init=extra.get("init"),
         init_org=extra.get("init_org"),
     )
+    _lift_extra[name] = extra
     model = _fuzz_model(player)
-    prog = frameprog.program(model)
+    return model, frames, frameprog.program(model)
+
+
+@lru_cache(maxsize=None)
+def _lift(name):
+    model, frames, prog = _build(name)
     text = frameprog.dumps(prog)
     assert frameval.gate_fp(model, frames, prog) is None, "the frame oracle must hold"
     assert frameprog.dumps(frameprog.loads(text)) == text
@@ -69,8 +76,22 @@ def _lift(name):
     return text
 
 
+def _gate(name):
+    """Gate FP's verdict, an evaluation fault reported as its own text.
+
+    ``_lift`` asserts the verdict away; the stage-4 family reads it, because a
+    continuation the machine never takes faults out of the evaluator rather
+    than diverging in the log."""
+    model, frames, prog = _build(name)
+    try:
+        return frameval.gate_fp(model, frames, prog)
+    except frameval.FrameFault as exc:
+        return str(exc)
+
+
 _lift_prog = {}
 _lift_ctx = {}
+_lift_extra = {}
 
 
 def _cert(name):
@@ -881,6 +902,139 @@ def _g2_store():
     return a, data, 8
 
 
+def _skip_sub(n=None):
+    """The CyberTracker ``$4921`` callee (docs/frameprog.md section 5, #155).
+
+    It pops its own return address into a pointer, copies the inline bytes that
+    follow the ``JSR`` through it, pushes the address back advanced past them
+    and returns, so the machine lands on the byte after the data. ``n`` fixed is
+    the corpus's own shape; ``None`` reads the count out of the first inline
+    byte, which makes the skip a property of the site and not of the callee."""
+    sub = G.Asm(SPSUB)
+    sub.i("PLA").i("STA", "zp", FTC)
+    sub.i("PLA").i("STA", "zp", FTC + 1)
+    if n is None:
+        sub.i("LDY", "imm", 0x01).i("LDA", "indy", FTC).i("TAX").i("STA", "abs", TMP)
+        sub.label("cp").i("INY").i("LDA", "indy", FTC).i("STA", "absy", BLK - 2)
+        sub.i("DEX").i("BNE", "rel", ("L", "cp"))
+        sub.i("SEC").i("LDA", "zp", FTC).i("ADC", "abs", TMP).i("STA", "zp", FTC)
+    else:
+        sub.i("LDY", "imm", 0x01)
+        sub.label("cp").i("LDA", "indy", FTC).i("STA", "absy", BLK - 1)
+        sub.i("INY").i("CPY", "imm", n + 1).i("BNE", "rel", ("L", "cp"))
+        sub.i("LDA", "zp", FTC).i("CLC").i("ADC", "imm", n).i("STA", "zp", FTC)
+    sub.i("LDA", "zp", FTC + 1).i("ADC", "imm", 0x00).i("STA", "zp", FTC + 1)
+    sub.i("PHA").i("LDA", "zp", FTC).i("PHA")
+    sub.i("RTS")
+    return sub
+
+
+def _skip_site(a, tag, payload, orv):
+    """One inline-data call site: the call, its bytes, and a tail the output needs.
+
+    The tail reads what the callee copied, so the bytes are observed reads and a
+    continuation that misses the skip is a different SID write, not a no-op."""
+    a.i("JSR", "abs", SPSUB).label(tag)
+    for b in payload:
+        a.byte(b)
+    a.label(tag + "c")
+    a.i("LDX", "abs", CTR).i("LDA", "absx", BLK).i("ORA", "imm", orv)
+    a.i("STA", "abs", SID + 4)
+
+
+def _skip_spans(*pairs):
+    """``[(first inline byte, first byte past the data)]`` per site, in code order."""
+    out = []
+    for a, tags in pairs:
+        a.assemble()
+        out += [(a.labels[t], a.labels[t + "c"]) for t in tags]
+    return out
+
+
+def _skip_data(n, sub):
+    """The seed a skip fixture runs on: the copy target, the pointer and the callee."""
+    data = {CTR: 0, MODE: 0, TMP: 0, FTC: 0, FTC + 1: 0}
+    data.update({BLK + k: 0 for k in range(n)})
+    data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
+    return data
+
+
+def _skip_head(a, mask=0x03):
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("AND", "imm", mask)
+    a.i("STA", "abs", CTR)
+
+
+def _skip_tail(a):
+    a.i("LDA", "abs", MODE).i("EOR", "imm", 0x01).i("STA", "abs", MODE).i("RTS")
+
+
+def _jsr_inline_skip():
+    """Stage 4 (control): the trick at one call site, and it lifts today.
+
+    The lone raw call writes the return slot at a concrete stack cell, so the
+    callee's rewrite of that cell is a constant push pair and ``lift_rts_trick``
+    turns it into the goto it is - the continuation the machine takes."""
+    a = G.Asm(G.ORG)
+    _skip_head(a)
+    _skip_site(a, "s0", (0x01, 0x02, 0x03, 0x04), 0x20)
+    a.i("RTS")
+    return a, _skip_data(4, _skip_sub(4)), 8, {"skip": _skip_spans((a, ("s0",)))}
+
+
+def _jsr_inline_skip_two_sites():
+    """Stage 4: the corpus's two sites of one callee ($4ED4 and $4D7A)."""
+    a = G.Asm(G.ORG)
+    _skip_head(a)
+    a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "two"))
+    _skip_site(a, "s0", (0x01, 0x02, 0x03, 0x04), 0x20)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("two")
+    _skip_site(a, "s1", (0x05, 0x06, 0x07, 0x08), 0x40)
+    a.label("out")
+    _skip_tail(a)
+    return a, _skip_data(4, _skip_sub(4)), 8, {"skip": _skip_spans((a, ("s0", "s1")))}
+
+
+def _jsr_inline_skip_two_depths():
+    """Stage 4: the same callee entered at two stack depths, the corpus spelling.
+
+    ``sp`` never concretizes, so the pops render ``mem[(sp + $01) | $0100]`` and
+    the push pair is no constant rts trick: the callee ends ``ret`` and the text
+    resumes at the byte after the call."""
+    a = G.Asm(G.ORG)
+    _skip_head(a)
+    a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "two"))
+    _skip_site(a, "s0", (0x01, 0x02, 0x03, 0x04), 0x20)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("two").i("JSR", "abs", SPMID)
+    a.label("out")
+    _skip_tail(a)
+    mid = G.Asm(SPMID)
+    _skip_site(mid, "s1", (0x05, 0x06, 0x07, 0x08), 0x40)
+    mid.i("RTS")
+    data = _skip_data(4, _skip_sub(4))
+    data.update({SPMID + k: b for k, b in enumerate(mid.assemble())})
+    return a, data, 8, {"skip": _skip_spans((a, ("s0",)), (mid, ("s1",)))}
+
+
+def _jsr_inline_skip_varlen():
+    """Stage 4: one callee, two sites, the skip length in the first inline byte.
+
+    Three payload bytes at one site and five at the other, so no continuation
+    taken from the call is right for both: the skip is the site's, not the
+    callee's."""
+    a = G.Asm(G.ORG)
+    _skip_head(a, 0x01)
+    a.i("LDA", "abs", MODE).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "two"))
+    _skip_site(a, "s0", (0x03, 0x11, 0x12, 0x13), 0x20)
+    a.i("JMP", "abs", ("L", "out"))
+    a.label("two")
+    _skip_site(a, "s1", (0x05, 0x21, 0x22, 0x23, 0x24, 0x25), 0x40)
+    a.label("out")
+    _skip_tail(a)
+    return a, _skip_data(5, _skip_sub()), 8, {"skip": _skip_spans((a, ("s0", "s1")))}
+
+
 _FIXTURES = {
     "scratch": _scratch,
     "pointer_walk": _pointer_walk,
@@ -925,12 +1079,38 @@ _FIXTURES = {
     "sp_call_displaced": _sp_call_displaced,
     "sp_fix_balance": _sp_fix_balance,
     "sp_scratch_floor": _sp_scratch_floor,
+    "jsr_inline_skip": _jsr_inline_skip,
+    "jsr_inline_skip_two_sites": _jsr_inline_skip_two_sites,
+    "jsr_inline_skip_two_depths": _jsr_inline_skip_two_depths,
+    "jsr_inline_skip_varlen": _jsr_inline_skip_varlen,
 }
 
+_STAGE4 = dict(
+    reason="register-model-lift stage 4: "
+    "the continuation is taken from the return slot the callee wrote",
+    **XFAIL,
+)
+_SKIP_FAMILY = (
+    "jsr_inline_skip",
+    "jsr_inline_skip_two_sites",
+    "jsr_inline_skip_two_depths",
+    "jsr_inline_skip_varlen",
+)
+_SKIP_PINNED = frozenset(_SKIP_FAMILY[1:])  # the one-site control gates today
 
-@pytest.mark.parametrize("name", sorted(_FIXTURES))
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(n, marks=pytest.mark.xfail(**_STAGE4)) if n in _SKIP_PINNED else n
+        for n in sorted(_FIXTURES)
+    ],
+)
 def test_fixture_builds_and_gates(name):
-    """Not xfail: the fixtures themselves must stay valid while the lift lands."""
+    """Not xfail: the fixtures themselves must stay valid while the lift lands.
+
+    The exception is the stage-4 family, whose whole content is that the gate
+    refuses; each names the continuation defect it carries below."""
     assert _lift(name).startswith("frameprog 1")
 
 
@@ -1396,3 +1576,58 @@ def test_an_entry_balanced_procedure_destacks():
 )
 def test_scratch_beside_kept_sp_fabric_promotes():
     assert not re.search(r"\bzp_%02X\b" % ZTMP, _lift("sp_scratch_floor"))
+
+
+@pytest.mark.parametrize("name", _SKIP_FAMILY)
+def test_the_machine_skips_the_inline_data(name):
+    """The machine's half of the trick, and the model already has it right.
+
+    Every inline byte is an observed read of the callee's copy and none is a
+    code seat; the run resumes past the data. That is why the fault below is a
+    lift defect and not the claim boundary."""
+    model, _frames, _prog = _build(name)
+    seats, read = set(model.pcs), {a for _pc, a in model.reads}
+    for lo, hi in _lift_extra[name]["skip"]:
+        span = set(range(lo, hi))
+        assert span and not span & seats, "an inline data byte was decoded as code"
+        assert span <= read, "an inline data byte was never read as data"
+        assert hi in seats, "the byte past the data is no code seat"
+
+
+def test_a_single_site_inline_skip_lifts_through_its_return_slot():
+    """Control (LANDED): at one call site the trick already lifts and gates.
+
+    The lone raw ``call`` writes the return slot at a concrete stack cell, so
+    the callee's rewrite of it is the constant push pair 7.9 reads and
+    ``framestack.lift_rts_trick`` gives it the goto the machine takes."""
+    assert _gate("jsr_inline_skip") is None
+
+
+@pytest.mark.xfail(**_STAGE4)
+def test_a_shared_inline_data_callee_evaluates_through_the_skip():
+    """#155's shape with the callee shared, which is what makes it a procedure.
+
+    The call promotes to ``sub_1300(sp)``, which writes no return slot, and each
+    site's successor is ``unobserved`` at the first inline byte; the rts-trick
+    goto faults first, on the slot nothing wrote (``goto target $0002``)."""
+    assert _gate("jsr_inline_skip_two_sites") is None
+
+
+@pytest.mark.xfail(**_STAGE4)
+def test_a_two_depth_inline_data_callee_evaluates_through_the_skip():
+    """The corpus spelling exactly, and the corpus fault exactly.
+
+    Entered at two depths ``sp`` never concretizes, so the pops render
+    ``mem[(sp + $01) | $0100]``, the push pair is no constant trick, and the
+    ``ret`` falls through: ``FrameFault: unobserved $1015 reached``."""
+    assert _gate("jsr_inline_skip_two_depths") is None
+
+
+@pytest.mark.xfail(**_STAGE4)
+def test_a_per_site_inline_data_length_evaluates_through_the_skip():
+    """The variation: the skip length is the site's, so no per-callee answer exists.
+
+    Three payload bytes at one site and five at the other, the count in the
+    inline byte before them. The callee's own slot rewrite stands in the text
+    (``m_01FC = ptr_0004_lo``) and the continuation still does not read it."""
+    assert _gate("jsr_inline_skip_varlen") is None
