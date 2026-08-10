@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT))
 USAGE = """\
   python tools/disasm_tune.py Angry_Birds --start 0x09F1 --end 0x0A36
   python tools/disasm_tune.py Ghouls_n_Ghosts --start 0x6AD0 --end 0x6B64
-  python tools/disasm_tune.py ASL/04 --opcode 0x95      # every STA $zz,X site"""
+  python tools/disasm_tune.py ASL/04 --opcode 0x95      # every STA $zz,X site
+  python tools/disasm_tune.py Agent_X_II --post-init 1 --start 0x6AE0   # after init copies"""
 
 
 def load(raw):
@@ -28,6 +29,14 @@ def load(raw):
     path = next(p for p in paths if _sweep.tune_id(p) == ident)
     mem, loadaddr, init, play = load_psid(path.read_bytes())
     return path, mem, loadaddr, init, play
+
+
+def post_init(mem, init, play, subtune):
+    """The image the play routine actually runs: a driver copied or unpacked by
+    init is not in the load image, so a claim about it must read this one."""
+    from deity_informant import structured
+
+    return bytearray(structured.trace(bytearray(mem), init, play, 1, subtune).mem0)
 
 
 def lines(mem, start, end):
@@ -69,9 +78,14 @@ def main():
     ap.add_argument("--start", type=hexint, help="first address (default: the play entry)")
     ap.add_argument("--end", type=hexint, help="one past the last address (default: start+0x40)")
     ap.add_argument("--opcode", type=hexint, help="scan the image for this opcode instead")
+    ap.add_argument(
+        "--post-init", type=int, metavar="SUBTUNE", help="read the image init leaves, not the load"
+    )
     args = ap.parse_args()
 
     path, mem, loadaddr, init, play = load(args.tune)
+    if args.post_init is not None:
+        mem = post_init(mem, init, play, args.post_init)
     print("; %s load=$%04X init=$%04X play=$%04X" % (path.name, loadaddr, init, play))
     if args.opcode is not None:
         lo = args.start if args.start is not None else loadaddr

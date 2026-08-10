@@ -42,9 +42,10 @@ chose the method; this document writes it down. Narratives are in git history
 - **Rule governance** (docs/eqlift-adoption.md §4). A rewrite exists only as
   a Z3-proven equivalence over QF_BV / the array theory; no bypass. Findings
   become rules or named refusals, **never per-tune rewrites**.
-  `follin_script._ARITY` is the one standing exception — a hand-transcribed
-  per-tune table, a named debt discharged at stage 3 — and no second table
-  may join it.
+  `follin_script._ARITY` was the one standing exception — a hand-transcribed
+  per-tune table, a named debt — and stage 3d discharged it by recovering the
+  same arities from the dispatch arms (housekeeping below); no table takes its
+  place.
 - **The claims discipline.** No "unliftable" / "refuses" / "must stay" claim
   without the disassembly behind it (`tools/disasm_tune.py`) and a fixture. A
   claim read off emitted text is not a claim about the machine — `unobserved`
@@ -444,8 +445,8 @@ whose deref spans come from 2b's observed extents (the artifact-wide reader set 
 today, measured); the declared lo/hi pair row read needs the pair enumerated at the site
 and the class queried, `framemath._pairs`' shape; `pack_add` needs the §4 cost change
 that names the pack as the normal form; and the join at a label with real in-edges still
-needs a join over the in-edge memories. 3d's own work is unchanged: the `_ARITY`
-discharge and guard-aware re-rolling.
+needs a join over the in-edge memories. 3d's own work: the `_ARITY` discharge
+landed (housekeeping below), leaving guard-aware re-rolling.
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
@@ -472,6 +473,37 @@ oracle — an end-to-end check with no evaluator in the trust chain.
 
 ## Independent housekeeping (blocks nothing)
 
+- **The Follin arity table — discharged** (2026-08-10, stage 3d, one PR).
+  `follin_script._ARITY` is deleted and `deity_informant/follin_arity.py`
+  recovers what it held, per dispatch arm, off the lifted blocks: the stream is
+  the pointer the dispatch's own fetch uses, the operator range is
+  `[floor, floor + extent)` with the floor read off the guard that dominates
+  the dispatch and the extent the tightest spacing of the paired handler tables
+  (`Ghouls_n_Ghosts` 21 slots `$80`–`$94`; `Agent_X_II` 17 slots `$80`–`$90`),
+  the arms come from the paired table image, and an operator's arity is the
+  arm's consumption footprint — the stream offsets it fetches, walked at each
+  block's least `Y` so the reading does not depend on where the lifter cut. On
+  Ghouls that reproduces **all 20** transcribed arities op for op;
+  `tests/test_follin_arity.py` holds the transcription as the discharge
+  witness, and the decoder now takes its lengths from the model it is decoding.
+  Three findings. (1) The catalog's definition — net `Y` delta, constant on all
+  paths — holds on 18 of the 20 and is **one short on `$87`/`$8A`**, the arms
+  that rewrite the pointer instead of folding `Y` into it and so never count
+  the 16-bit operand's second byte; the footprint covers both and the delta is
+  recorded beside it. (2) `$85` (`rawsid`) came back as the **decoded-length
+  escape** the catalog owed, not a refusal: the counted loop reads as first
+  guarded offset 3, stride 2, trailer 1, continue while the byte is under
+  `$80`, and the decoder consumes exactly that. (3) The table was per-tune in
+  fact and not only in form — `Agent_X_II` is a second build whose `$84` takes
+  no operand where Ghouls' takes one, whose `$88` takes four where Ghouls'
+  takes eight, and whose `rawsid` run ends at `$FF` rather than at the command
+  bit; the deleted table spoke for that build too. Its `$87` is a genuine
+  refusal, named rather than decoded: `$6AE0` is `DEC $2F; JMP $69AB`, into the
+  shared note path, so its net delta is 2 or 3 by the sticky-duration state.
+  Reading that needed `tools/disasm_tune.py --post-init`, added here — the
+  claims discipline wants the disassembly behind a refusal, and this driver is
+  copied into place by init, so the load image does not hold it. Emit identity
+  and the Gate FP sweep unmoved: the lane has no artifact consumer.
 - **sidprog retirement — done** (2026-08-10, one PR). The emit path (`emit`,
   `metrics`, the writer), the parser, `TextModel`'s tree half and `TreeWalker`
   are deleted, with the grammar's `sidprog` dialect, `docs/sidprog-language.md`,
