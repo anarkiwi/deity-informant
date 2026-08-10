@@ -13,6 +13,7 @@ from deity_informant import framelog as F
 from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
+from deity_informant.grammar import addr_name
 from deity_informant import sidprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
@@ -834,3 +835,44 @@ def test_declarations_are_ground_truth_on_the_studied_tunes(sid, subtune, secs):
     for frag in _DECL_TRUTH["%s-%s" % (sid.parent.name, sid.stem)]:
         assert frag in text, frag
     assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def _pair_tune():
+    """`Agent_X_II`: 3a's own finding, one cell declared in ``state`` and in ``data``."""
+    return [
+        pytest.param(path, sub, secs, id="%s-%s" % (path.parent.name, path.stem))
+        for path, sub, secs in corpus_params(HVSC)
+        if path.parent.name == "Follin_Tim" and path.stem.startswith("Agent_X_II")
+    ]
+
+
+@pytest.mark.parametrize("sid,subtune,secs", _pair_tune())
+def test_no_cell_is_declared_in_both_state_and_data(sid, subtune, secs):
+    """3a's finding, discharged: the loose pair the rung carves leaves ``state { }``.
+
+    ``_state_fields`` refuses a cell inside a declared span; ``_pair_tables`` carves
+    new ones after it ran, so `$6923`/`$6925` were declared twice."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, int(secs * 50), subtune)
+    prog = frameprog.program(model)
+    text = frameprog.dumps(prog)
+    assert "table m_6923[1] mut 0 lo m_6925:" in text  # the pair is declared, once
+    assert "\n m_6923: u8\n" not in text and "\n m_6925: u8\n" not in text
+    covered = {
+        prog.symbols.get(a) or addr_name(a)
+        for d in prog.data_decls
+        for a in range(d["base"], d["base"] + d["size"])
+    }
+    assert not covered & {f[0] for f in prog.state}
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_drop_declared_takes_only_the_cells_a_declaration_covers():
+    """The rule is the span, not the pair: a name no declaration covers stays."""
+    decls = [{"base": 0x1000, "size": 2}, {"base": 0x6923, "size": 1}]
+    state = [("m_1000", 1, False, []), ("m_1001", 1, False, []), ("m_6923", 1, False, [])]
+    state.append(("zp_40", 1, False, []))
+    assert frameprog._drop_declared(state, decls, {}) == [("zp_40", 1, False, [])]
+    assert frameprog._drop_declared(state, [], {}) == state
+    assert frameprog._drop_declared(state, decls, {0x1000: "voice"})[0][0] == "m_1000"

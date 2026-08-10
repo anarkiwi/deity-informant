@@ -569,8 +569,9 @@ switch and with the corpus diff it moves. §5's `eqlift_mem` liveness deletions 
 `_temp_sweep`, `ROOT_EXTRACT` and every `root_extract` parameter) **are landed**, and the
 exemplar review now measures one path against a recorded baseline; the saturation schedule
 is **a round cap and a node bound**, so no clock reading reaches the artifact. Beside the
-switch stand the `state { }` demotion,
-`_declare_cells`' double declaration, the ~16
+switch stand the `state { }` demotion — which has no subject until the unified path
+emits, since scratch demotion is root extraction's and frameprog's own emit has none —
+and the ~16
 substrate-dependent shredder pins — which want the same declarations — and, named at
 landing 1, a precise `returns` set for a procedure every entry of which is a `call`, which
 is what would take back the four architectural-register lines the refused `pcall`
@@ -629,8 +630,10 @@ housekeeping + close.
   lossy-projection inequality (there is no second projection left). Emit
   identity unmoved.
 - **`_declare_cells` double declaration** (3a's finding: one cell declared in
-  both `state { }` and `data { }`, Agent_X_II `$6923`/`$6925`): discharged by
-  stage 3's first text-moving landing.
+  both `state { }` and `data { }`, Agent_X_II `$6923`/`$6925`): **discharged at
+  stage 4, landing 2** by `frameprog._drop_declared`, not by stage 3 as this
+  entry claimed — the claim was checked, found false, and the defect was still
+  in 18 cells of the 25 exemplars when it was measured.
 - **The song-model modules.** `song_model.py`, `generators.py`, `movefwd.py`,
   `eqlift_annotate.py` (and `eqlift_mem`'s annotate hook) were the role
   reading on the wrong substrate; their docs and stale artifacts are deleted.
@@ -2002,3 +2005,34 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   --expect 37b87140…` passes — 624 tunes, 28,513,156 bytes, unmoved. `gate_sweep` at full
   Songlengths **624 / 624 / 624 clean**, zero divergences and refusals. Suite 2,724 passed /
   490 skipped / 32 xfailed, oracle 16. The prototype holds exactly: 339 lines / 820 nodes.
+- **2026-08-10 — stage 4, landing 2 (part): a cell the data section declares stops being
+  declared twice.** 3a's own finding (`Agent_X_II` `$6923`/`$6925`), discharged — the
+  housekeeping list called it discharged by stage 3's first text-moving landing and it was
+  not; it is measured here before it is fixed.
+  (1) **The rule already existed; only its input moved.** `_state_fields.hidden` refuses a
+  cell that sits inside a declared span, and `_pair_tables`/`_declare_cells` carve new spans
+  in the four-pass fixpoint that runs *after* it. `frameprog._drop_declared` applies the same
+  rule once more where its input changed, so the loose lo/hi pair the pack witness carves
+  leaves `state { }` and is declared in `data { }` alone, with its role. It is stated as the
+  span, not as the pair: any cell a declaration covers.
+  (2) **The corpus diff: one shape, 124 tunes, every one smaller.**
+  `tools/emit_identity.py`: 624 tunes, 0 refused, 28,513,156 -> **28,506,888 bytes**,
+  aggregate `37b87140…` -> **`bc256138777fb033fc2b3d49d8b54c21218d5c87c3402a1e838eae04a59e3f5b`**,
+  **124 of 624 moved and every one shrank** (−24 bytes on 73 of them, −168 at the largest,
+  −6,268 total). Twelve tunes across every size class were diffed in full: **68 deleted
+  lines, zero added lines**, and every deleted line is a `state { }` field whose name the
+  data section declares. `gate_sweep` at full Songlengths is **624 / 624 / 624 clean**, zero
+  divergences and refusals, so the removed declarations were carrying nothing.
+  (3) **What the diff also exposed, named not fixed.** Two of the twelve drop an *array*
+  state field (`m_1090: u8[]`, `m_F6B6: u8[]`) whose data declaration is `table X[1] mut 0`
+  while the text writes `X[x]`. Carving the pair is right — it is what renders the word
+  column instead of the OR-pack, and refusing an indexed cell was tried and measured: it
+  costs `Akira_K/Data_Data_Data_Data` four packs and more lines than it saves. What is wrong
+  is the `[1]` extent and the `mut 0` on a cell the emitted text indexes and writes;
+  `_cell_decl` reads `model.written` at the base alone. That is a declaration-truth defect
+  of `_declare_cells`, not of this rule, and it is owed its own measurement.
+  (4) **The gates.** Suite 2,726 passed / 490 skipped / 32 xfailed (two new cases), oracle
+  16. The 25-exemplar review re-dumped against the moved artifact is **25 of 25
+  byte-identical** at 26,811 lines / 1,988 stores — `emit_mem` renders no state section, so
+  the frameprog header cannot reach it, which is the check that says the move is where it
+  is claimed to be.

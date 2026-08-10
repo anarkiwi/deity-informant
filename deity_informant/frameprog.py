@@ -113,6 +113,20 @@ def _state_fields(view, decls, dispatch, aliases=None):
     return fields, inputs
 
 
+def _drop_declared(state, decls, symbols):
+    """Drop the state field of every cell a later rung carved into the data section.
+
+    ``_state_fields.hidden`` already refuses a cell inside a declared span; the pair
+    rung carves new spans after it ran, so the same rule is applied once more where
+    its input changed (3a's finding: one cell declared in ``state`` and in ``data``)."""
+    covered = {
+        symbols.get(a) or sidprog._addr_name(a)
+        for d in decls
+        for a in range(d["base"], d["base"] + d["size"])
+    }
+    return [f for f in state if f[0] not in covered]
+
+
 def _field_line(name, width, array, observed, role=None, blocks=()):
     """One ``state { }`` line; the role qualifies the type and names nothing else."""
     kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
@@ -589,6 +603,7 @@ def program(model, extents=None):
             _adjoin_pairs(stmts2, pairs, regions)
         if repr(procs) == before:
             break
+    state = _drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
     proofs += framestack.drop_sp(procs, model.play, regions)
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
