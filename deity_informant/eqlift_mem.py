@@ -1177,6 +1177,20 @@ def _scratch(wrspan, chosen, foot, entry):
     return frozenset(i for i, span in wrspan.items() if _unread(span, cover, wild))
 
 
+def _self_copies(tree, chosen, held):
+    """Register asgs whose spelling is the version the register already holds.
+
+    A local renders as its base name, so such a statement prints ``a = a`` and does
+    nothing; 3b landing 2 left 11 of them live because the register is live, which is a
+    fact about the register and not about the statement."""
+    reg = E.frameproc._ALL_REG_LOCALS
+    return frozenset(
+        id(nd)
+        for nd in _all_nodes(tree)
+        if nd[0] == "asg" and nd[1] in reg and chosen[nd[2]] == ("loc", held.get(id(nd)))
+    )
+
+
 def roots(tree, info, entry, chosen, dead_stores=(), scratch=()):
     """The observable roots of one rendered procedure (adoption §2), as node ids.
 
@@ -1242,7 +1256,7 @@ def render_proc(
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
-    src, seeds, memdefs, wrspan = {}, [], [], {}
+    src, seeds, memdefs, wrspan, held = {}, [], [], {}, {}
     inedge, tgts = {}, _targets(stmts)
     dfs, ch = _Defs(src), _Chain()
 
@@ -1366,7 +1380,9 @@ def render_proc(
                 name = "%s.%d" % (s[1], fresh())
                 defs.append((name, E.loc(name), rhs))
                 locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
-                nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
+                nd = ("asg", s[1], add(rhs, ("loc", name)), name)
+                nodes.append(nd)
+                held[id(nd)] = stt["env"].get(s[1], s[1] + ".0")
                 stt["env"][s[1]] = name
                 src[s[1]] = s[2]
                 avail.add(name)
@@ -1550,10 +1566,12 @@ def render_proc(
     if root_extract:
         gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
         scratch = _scratch(wrspan, chosen, foot, entry)
+        noop = _self_copies(tree, chosen, held)
         if stats is not None:
             stats["scratch"] = stats.get("scratch", 0) + len(scratch)
+            stats["self_copy"] = stats.get("self_copy", 0) + len(noop)
         keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch).ids, chosen)
-        dead = {id(nd) for nd in _all_nodes(tree)} - keep
+        dead = ({id(nd) for nd in _all_nodes(tree)} - keep) | noop
         _share_once(tree, dead, chosen, terms, ch)
     else:
         dead = _dce(tree, info, entry, chosen)

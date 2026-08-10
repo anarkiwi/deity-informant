@@ -516,6 +516,24 @@ def test_a_back_edge_label_still_resets_and_the_bound_that_would_free_it_is_empt
     assert wild or (0x0040, 0x0040, 1) in spans  # the region writes the cell the chain holds
 
 
+def test_a_register_assignment_of_what_it_already_holds_is_not_a_root():
+    """3b landing 2's 11 live self-copies: sound no-ops that print ``a = a`` because a
+    local renders as its base. A root reaches the register, not the statement, so the
+    statement whose spelling is the version the base already holds is dropped."""
+    stmts = [
+        ("asg", "a", ("mem", ("const", 0x14A7, 2), 1)),
+        ("asg", "a", ("loc", "a")),
+        ("st", ("const", 0xD404, 2), ("loc", "a")),
+    ]
+    foot = mem.Footprints([(0x1000, stmts)], False)
+    st = {}
+    lines = mem.render_proc(stmts, entry=0x1000, foot=foot, stats=st)
+    assert st["self_copy"] == 1
+    assert lines == ["a = m_14A7", "sid.v1.ctrl = a"]
+    entry_copy = [("asg", "y", ("loc", "y")), ("st", ("const", 0xD404, 2), ("loc", "y"))]
+    assert mem.render_proc(entry_copy, entry=0x1000, foot=foot) == ["sid.v1.ctrl = y"]
+
+
 def test_proc_forwards_across_loop_writing_disjoint_cell():
     """The loop head/exit join is the branch join: a disjoint body still forwards."""
     stmts = _SPILL + [
