@@ -115,5 +115,5 @@ def test_krakout_emit_whole_artifact(sid, subtune, secs):
     text, _ = eqlift_mem.emit(model)
     assert text.startswith("eqlift 0\n") and "state {" in text
     assert "sub_E001 {" in text and "sub_E536 {" in text and "sub_E578 {" in text
-    assert "switch {" in text and "call $" in text
+    assert "switch call {" in text and "call $" in text
     assert eqlift_mem.emit(model)[0] == text  # emission is deterministic

@@ -57,8 +57,8 @@ def _unified_lines(model, prog):
         if rets:
             sig += " -> %s" % ", ".join(rets)
         out.append(sig + " {")
-        body = eqlift_mem.render_proc(stmts, prog.symbols, entry, info, foot=foot)
-        out.extend("  " + ln for ln in body)
+        body = eqlift_mem.render_proc(stmts, prog.symbols, entry, info, foot=foot, rets=rets)
+        out.extend(" " + ln for ln in body)
         out.append("}")
     return out
 
@@ -131,17 +131,58 @@ def test_the_rung_minted_narrowing_copy_is_a_term(example):
     assert body and any("trunc1(" in ln for ln in body), "no narrowing read survived"
 
 
-def test_the_splice_now_blocks_on_the_signed_compare_the_dialect_cannot_spell(example):
-    """The next blocker, un-pinned: the unified emitter spells an operator frameprog has not.
+def test_the_signed_compare_the_emitter_spells_is_the_dialect_s(example):
+    """#170's blocker, LANDED: the dialect carries the signed comparison the rules reach.
 
-    ``eqlift``'s ``slt``/``sge`` print ``<s``/``>=s`` -- 3d landing 4 measured the smaller
-    graph reaching ``(a <s $00)`` for ``((a & $80) != $00)`` -- and ``sidprog.lark``'s ``op``
-    production has no signed comparison, so ``loads`` refuses the spliced text."""
+    ``sidprog.lark``'s ``op`` production spells ``<s`` and ``<=s``, and ``sge`` -- the one
+    tag with no p-code mnemonic -- prints as the swapped ``<=s``."""
     model, _frames, prog = example
     text = _spliced_text(model, prog)
-    assert "<s " in text, "the example stopped spelling the signed compare"
-    with pytest.raises(ValueError, match="Unexpected token"):
-        frameprog.loads(text)
+    assert "<s " in text and "<=s " in text, "the example stopped spelling the signed compare"
+    assert ">=s" not in text, "a spelling the dialect has no production for"
+    assert frameprog.loads(text) is not None
+
+
+def test_the_dispatch_header_and_the_procedure_call_survive_the_splice(example):
+    """#161's substrate facts, LANDED, on frameprog's own rung-built procedures.
+
+    The arm table's header names its dispatch kind, and a ``pcall`` -- which the raw
+    ``_Builder`` procedures ``emit_mem`` renders never carry -- is emitted, not dropped."""
+    model, _frames, prog = example
+    text = _spliced_text(model, prog)
+    assert "switch goto {" in text and "switch {" not in text
+    assert "= sub_1485(" in text, "the promoted call left the text"
+
+
+def test_the_unified_walk_refuses_a_statement_it_cannot_lift(example):
+    """The silent drop the splice found is loud: an unknown kind raises, it does not vanish."""
+    _model, _frames, prog = example
+    _first, _params, _rets, stmts = prog.procs[0]
+    with pytest.raises(ValueError, match="unliftable statement"):
+        eqlift_mem.render_proc([("nosuchkind", 0)] + list(stmts), prog.symbols)
+
+
+def test_the_spliced_program_reproduces_the_walker_s_projection(example):
+    """The cutover's semantic half, LANDED: Gate FP on the spliced text is clean."""
+    model, frames, prog = example
+    text = _spliced_text(model, prog)
+    assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
+
+
+def test_the_splice_now_blocks_on_the_declarations_the_unified_printer_never_reads(example):
+    """The next blocker, un-pinned: three spellings, one cause.
+
+    ``render_lines`` is handed the data declarations and ``eqlift._Printer`` only the
+    symbol aliases, so a declared column pair, a declared table read at an index
+    expression and the indexed SID register block each keep the undeclared spelling."""
+    model, _frames, prog = example
+    text = _spliced_text(model, prog)
+    back = frameprog.dumps(frameprog.loads(text))
+    assert back != text
+    lines, relined = text.splitlines(), back.splitlines()
+    assert len(lines) == len(relined), "the fixpoint moved a line count, not a spelling"
+    moved = [(a, b) for a, b in zip(lines, relined) if a != b]
+    assert moved and all("[" in a and "[" in b for a, b in moved), moved[:4]
 
 
 @pytest.mark.xfail(

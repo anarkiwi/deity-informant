@@ -309,6 +309,11 @@ def addr_interval(e, defs=None):
     return None if got == _TOP else got
 
 
+def _sle(under, over):
+    """``under <=s over`` is ``sge(over, under)``: the graph carries the pair as slt/sge."""
+    return E.sge(over, under)
+
+
 _OP = {
     "INT_ADD": E.add,
     "INT_SUB": E.sub,
@@ -321,9 +326,13 @@ _OP = {
     "INT_NOTEQUAL": E.ne,
     "INT_LESS": E.ult,
     "INT_LESSEQUAL": E.ule,
+    "INT_SLESS": E.slt,
+    "INT_SLESSEQUAL": _sle,
     "INT_CARRY": E.carry,
 }
-_CMP = frozenset(("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"))
+_CMP = frozenset(
+    ("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL", "INT_SLESS", "INT_SLESSEQUAL")
+)
 _REWIDTH = frozenset(("INT_ZEXT", "COPY"))
 
 
@@ -539,7 +548,7 @@ def _mem_writes(stmts, enter=None, out_goto=False):
                     wild[0] = True
                 else:
                     spans.add((lohi[0], lohi[1], _ew(s[2])))
-            elif k in ("call", "callb"):
+            elif k in ("call", "callb", "pcall"):
                 take(s[1])
             elif k == "swc":
                 for lbl in s[1]:  # bare labels: entered with no inline body
@@ -1024,6 +1033,13 @@ def _dispatch(nd):
     return nd[2] if nd is not None and nd[0] == "switch" else None
 
 
+def _switch_head(pr, nd):
+    """The arm table's own header: the dialect spells one per dispatch kind."""
+    if nd[2] == "swg":
+        return "switch goto {"
+    return "switch call {" if nd[2] == "swc" else "switch %s {" % pr.name(nd[3])
+
+
 def _liveness(tree, info, entry, chosen):
     """Backward register liveness over the render tree: id(node) -> live-out set.
 
@@ -1258,12 +1274,14 @@ def render_proc(
     budget=None,
     stats=None,
     foot=None,
+    rets=(),
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
     Memory forwards intra-block; a join carries the chain-held cells proved disjoint from
     every span it can write. ``budget`` is the procedure's share of the artifact's emit
-    seconds, spent by saturation then extraction; sites past it render own-term."""
+    seconds, spent by saturation then extraction; sites past it render own-term. ``rets``
+    are the procedure's declared returns, which a valueless ``ret`` names."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
@@ -1391,8 +1409,9 @@ def render_proc(
                 rhs = conv(s[2])
                 name = "%s.%d" % (s[1], fresh())
                 defs.append((name, E.loc(name), rhs))
-                locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
-                nd = ("asg", s[1], add(rhs, ("loc", name)), name)
+                w = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
+                locw[s[1]] = w
+                nd = ("asg", s[1], add(rhs, ("loc", name)), name, w)
                 nodes.append(nd)
                 held[id(nd)] = stt["env"].get(s[1], s[1] + ".0")
                 stt["env"][s[1]] = name
@@ -1407,7 +1426,7 @@ def render_proc(
                 got = _wr_span(a, dfs) if cell is None else (cell, cell)
                 ai = add(addr, ver=pre_ver) if cell is None else None
                 own = None if cell is None else ("cell", cell, w, 0)
-                nd = ("st", a, add(v, own, ver=pre_ver), ai, w)
+                nd = ("st", a, add(v, own, ver=pre_ver), ai, w, E.frameproc.hi_first(s))
                 stt["mem"] = remember(store(pre, addr, v, w), None if got is None else got + (w,))
                 if a[0] == "const":
                     stt["held"] |= {(cell, a[2], w)}
@@ -1467,6 +1486,10 @@ def render_proc(
             elif k == "call":
                 wall(s)
                 nodes.append(("call", s[1], s[2]))
+            elif k == "pcall":
+                ixs = [add(conv(a)) for a in s[2]]  # arguments read before the callee runs
+                wall(s)
+                nodes.append(("pcall", s[1], ixs, list(s[3])))
             elif k == "callb":
                 body = walk(s[3])
                 wall(("call", s[1], s[2]))  # what the call writes beyond the inlined body
@@ -1490,7 +1513,7 @@ def render_proc(
                 avail.intersection_update(pre_av)
                 stt["mem"], stt["held"], stt["memv"] = pre_mem, pre_held, pre_ver
                 wall(s)
-                nodes.append(("switch", arms, k))
+                nodes.append(("switch", arms, k, None if k == "swg" else s[1]))
             elif k == "dbr":
                 pair = (add(conv(s[2])), add(conv(s[3])))
                 havoc_all()
@@ -1503,6 +1526,8 @@ def render_proc(
                 ix = add(conv(s[2])) if s[2] is not None else None
                 havoc_all()
                 nodes.append(("igoto", s[1], ix))
+            else:
+                raise ValueError("unliftable statement %r" % (k,))
         return nodes
 
     tree = walk(stmts)
@@ -1610,7 +1635,7 @@ def render_proc(
             if nd[0] == "asg":
                 if id(nd) in dead:
                     continue
-                pr.line("%s = %s" % (nd[1], pick(nd[2])), d)
+                pr.line("%s = %s" % (nd[1] + E.sidprog._wsuf(nd[4]), pick(nd[2])), d + 1)
             elif nd[0] == "st":
                 if id(nd) in dead:
                     continue
@@ -1619,10 +1644,21 @@ def render_proc(
                     dest = pr.name(a[1]) + E.sidprog._wsuf(nd[4])
                 else:
                     dest = pr._loadref(("load", chosen[nd[3]], nd[4], 0))
-                pr.line("%s = %s" % (dest, pick(nd[2])), d)
+                order = "hi-first " if nd[5] else ""
+                pr.line("%s%s = %s" % (order, dest, pick(nd[2])), d + 1)
             elif nd[0] == "if":
-                pr.line("if %s {" % pick(nd[1]), d)
+                cond = chosen[nd[1]]
+                word, inner = ("ifnot", cond[1]) if cond[0] == "bnot" else ("if", cond)
+                head = "%s %s" % (word, pr.fmt(inner))
+                if len(nd[2]) == 1 and nd[2][0][0] == "unobs":
+                    pr.line("%s unobserved $%04X" % (head, nd[2][0][1]), d)
+                    render(nd[3], d)
+                    continue
+                pr.line(head + " {", d)
                 render(nd[2], d + 1)
+                if len(nd[3]) == 1 and nd[3][0][0] == "unobs":
+                    pr.line("} else unobserved $%04X" % nd[3][0][1], d)
+                    continue
                 if nd[3]:
                     pr.line("} else {", d)
                     render(nd[3], d + 1)
@@ -1635,32 +1671,47 @@ def render_proc(
                 pr.line("$%04X:" % nd[1], d)
             elif nd[0] == "goto":
                 pr.line("goto $%04X" % nd[1], d)
-            elif nd[0] in ("ret", "cont", "brk"):
-                pr.line({"ret": "ret", "cont": "continue", "brk": "break"}[nd[0]], d)
+            elif nd[0] == "ret":
+                named = rets and not nd[1]
+                pr.line("ret %s" % ", ".join(rets) if named else "ret", d + 1)
+            elif nd[0] in ("cont", "brk"):
+                pr.line("continue" if nd[0] == "cont" else "break", d)
             elif nd[0] == "unobs":
                 pr.line("unobserved $%04X" % nd[1], d)
             elif nd[0] == "call":
-                pr.line("call $%04X ret $%04X" % (nd[1], nd[2]), d)
+                pr.line("call $%04X ret $%04X" % (nd[1], nd[2]), d + 1)
             elif nd[0] == "callb":
-                pr.line("call $%04X ret $%04X {" % (nd[1], nd[2]), d)
-                render(nd[3], d + 1)
-                pr.line("}", d)
+                pr.line("call $%04X ret $%04X {" % (nd[1], nd[2]), d + 1)
+                render(nd[3], d + 2)
+                pr.line("}", d + 1)
             elif nd[0] == "dcall":
-                pr.line("call (%s) ret $%04X" % (pick(nd[1]), nd[2]), d)
+                pr.line("call (%s) ret $%04X" % (pick(nd[1]), nd[2]), d + 1)
+            elif nd[0] == "pcall":
+                text = "sub_%04X(%s)" % (nd[1], ", ".join(pick(i) for i in nd[2]))
+                pr.line("%s = %s" % (", ".join(nd[3]), text) if nd[3] else text, d + 1)
             elif nd[0] == "switch":
-                pr.line("switch {", d)
+                if nd[2] == "swc" and not nd[1]:
+                    body = " ".join(nd[3])
+                    pr.line("switch call { %s }" % body if body else "switch call { }", d)
+                    continue
+                pr.line(_switch_head(pr, nd), d)
+                if nd[2] == "swc" and nd[3]:
+                    pr.line(" ".join(nd[3]), d + 1)
                 for lbl, arm in nd[1]:
                     pr.line("case %s: {" % lbl, d + 1)
                     render(arm, d + 2)
                     pr.line("}", d + 1)
                 pr.line("}", d)
             elif nd[0] == "dbr":
-                pr.line("%s %s goto (%s) else $%04X" % (nd[1], pick(nd[2]), pick(nd[3]), nd[4]), d)
+                text = "%s %s goto (%s) else $%04X"
+                pr.line(text % (nd[1], pick(nd[2]), pick(nd[3]), nd[4]), d + 1)
             elif nd[0] == "dgoto":
-                pr.line("goto (%s)" % pick(nd[1]), d)
+                pr.line("goto (%s)" % pick(nd[1]), d + 1)
             elif nd[0] == "igoto":
                 ptr = "(%s)" % pick(nd[2]) if nd[2] is not None else "$%04X" % nd[1]
-                pr.line("igoto %s" % ptr, d)
+                pr.line("igoto %s" % ptr, d + 1)
+            else:
+                raise ValueError("unprintable node %r" % (nd[0],))
 
     render(tree, 0)
     return pr.out

@@ -1697,13 +1697,13 @@ def test_the_smc_operand_dispatch_is_a_join_not_a_wall():
     assert "dgoto" not in body and "igoto" not in body
 
 
-def test_the_unified_emitter_spells_the_dispatch_header_without_the_goto():
-    """Cutover order: the same closure, a different header - ``switch {``, not ``switch goto``.
+def test_the_unified_emitter_spells_the_dispatch_header_the_dialect_spells():
+    """Cutover order, MOVED: the header names its dispatch kind on both paths.
 
-    The arms and the ``goto`` over the patched operand stand on both paths, so the control
-    above pins a frameprog spelling step 4 either keeps or moves its assertion with."""
+    It read ``switch {`` for every kind until the step-4 splice measured it against the
+    dialect; the arms and the ``goto`` over the patched operand always stood on both."""
     body = _emit_body("dispatch_scratch")
-    assert "switch {" in body and "switch goto" not in body
+    assert "switch goto {" in body
     assert "dgoto" not in body and "igoto" not in body
     assert body.count("case $%04X" % HND0) == 1 and body.count("case $%04X" % HND1) == 1
 

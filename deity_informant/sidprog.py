@@ -26,7 +26,14 @@ _check_alias = G.check_alias
 
 _CHAINS = {"INT_OR": "|", "INT_XOR": "^", "INT_AND": "&"}
 _BINS = {"INT_LEFT": "<<", "INT_RIGHT": ">>"}
-_CMPS = {"INT_EQUAL": "==", "INT_NOTEQUAL": "!=", "INT_LESS": "<", "INT_LESSEQUAL": "<="}
+_CMPS = {
+    "INT_EQUAL": "==",
+    "INT_NOTEQUAL": "!=",
+    "INT_LESS": "<",
+    "INT_LESSEQUAL": "<=",
+    "INT_SLESS": "<s",
+    "INT_SLESSEQUAL": "<=s",
+}
 
 
 def _split_index(addr):
