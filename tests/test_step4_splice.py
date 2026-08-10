@@ -113,25 +113,35 @@ def test_the_splice_plumbing_is_not_the_blocker(example):
     assert all(foot.of(entry) is not None for entry, _p, _r, _s in prog.procs)
 
 
-def test_the_splice_first_blocks_on_the_rung_minted_narrowing_copy(example):
-    """The observed failure mode, un-pinned: ``KeyError('COPY')`` out of ``render_proc``.
+def test_the_rung_minted_narrowing_copy_is_a_term(example):
+    """#164's first blocker, LANDED: the narrowing ``COPY`` converts and renders.
 
-    #161 measured this on the shredder's ``dual_store_lo_only``; the example mints the same
-    term -- a width-one ``COPY`` of a fused u16 local -- in the phase accumulator's carry
-    chain, and ``_OP`` maps no ``COPY``, so the converter faults before any rule fires."""
+    Rung (d2) mints a width-one ``COPY`` of a fused u16 local in the phase accumulator's
+    carry chain; ``eqlift.trunc`` is the dual of ``zext`` and ``_rewidth`` routes it, so
+    the converter no longer faults before any rule fires."""
     model, _frames, prog = example
-    assert "COPY" not in eqlift_mem._OP
-    first, _params, _rets, stmts = prog.procs[0]
-    with pytest.raises(KeyError, match="COPY"):
-        eqlift_mem.render_proc(stmts, prog.symbols, first, _render_ctx(model, prog)[0])
-    with pytest.raises(KeyError, match="COPY"):
-        _spliced_text(model, prog)
     terms = _copy_terms([s for _e, _p, _r, s in prog.procs], [])
     assert terms, "the example minted no COPY at all"
     assert all(t[3] == 1 for t in terms), "a COPY that is not narrowing"
     assert any(
         kid[0] == "loc" and kid[2] == 2 for t in terms for kid in t[2]
     ), "no width-one COPY reads a fused u16 local"
+    first, _params, _rets, stmts = prog.procs[0]
+    body = eqlift_mem.render_proc(stmts, prog.symbols, first, _render_ctx(model, prog)[0])
+    assert body and any("trunc1(" in ln for ln in body), "no narrowing read survived"
+
+
+def test_the_splice_now_blocks_on_the_signed_compare_the_dialect_cannot_spell(example):
+    """The next blocker, un-pinned: the unified emitter spells an operator frameprog has not.
+
+    ``eqlift``'s ``slt``/``sge`` print ``<s``/``>=s`` -- 3d landing 4 measured the smaller
+    graph reaching ``(a <s $00)`` for ``((a & $80) != $00)`` -- and ``sidprog.lark``'s ``op``
+    production has no signed comparison, so ``loads`` refuses the spliced text."""
+    model, _frames, prog = example
+    text = _spliced_text(model, prog)
+    assert "<s " in text, "the example stopped spelling the signed compare"
+    with pytest.raises(ValueError, match="Unexpected token"):
+        frameprog.loads(text)
 
 
 @pytest.mark.xfail(
