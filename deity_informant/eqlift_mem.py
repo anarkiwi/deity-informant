@@ -907,7 +907,7 @@ def render_proc(
         if k == "const":
             return E.num(e[1] & E._mask(e[2]), e[2])
         if k == "loc":
-            return stt["env"].get(e[1], E.loc(e[1] + ".0"))
+            return E.loc(stt["env"].get(e[1], e[1] + ".0"))
         if k == "mem":
             return sel(stt["mem"], seed(conv(e[1]), e[1]), e[2])
         mn, kids, w = e[1], e[2], e[3]
@@ -922,12 +922,17 @@ def render_proc(
         return r
 
     def add(t, own=None):
-        terms.append((t, set(avail), own))
+        terms.append((t, live(), own))
         return len(terms) - 1
+
+    def live():
+        """The versions a site may spell: a local renders as its base name, so a version
+        the base no longer holds reads as another value however available it once was."""
+        return {v for v in stt["env"].values() if v in avail}
 
     def havoc(names):
         for n in names:  # havoc names have no rendered def: never available to spell
-            stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
+            stt["env"][n] = "%s.%d" % (n, fresh())
             src.pop(n, None)
 
     def havoc_all():
@@ -950,7 +955,7 @@ def render_proc(
                 defs.append((name, E.loc(name), rhs))
                 locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
                 nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
-                stt["env"][s[1]] = E.loc(name)
+                stt["env"][s[1]] = name
                 src[s[1]] = s[2]
                 avail.add(name)
             elif k == "st":
@@ -988,8 +993,8 @@ def render_proc(
                 avail.intersection_update(pre_av)
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
-                    if not (then_env.get(n) is c and els_env.get(n) is c):
-                        stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
+                    if not (then_env.get(n) == c and els_env.get(n) == c):
+                        stt["env"][n] = "%s.%d" % (n, fresh())
                         src.pop(n, None)
                 nodes.append(("if", ci, then, els))
             elif k == "loop":

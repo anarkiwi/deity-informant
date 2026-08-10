@@ -119,7 +119,11 @@ passing tests (`tests/test_eqlift_mem.py`).
   cheap, `carry` expensive; SID-range cells penalized (outputs, never read back).
   Cost changes MUST be justified by a corpus-artifact diff
   (`tools/eqlift_emit.py`), not one tune. Egg-side constructor costs and `_COSTS`
-  MUST stay order-consistent.
+  MUST stay order-consistent. **The memory sort is part of that order** (stage 3b
+  landing 2): `pick_ir` spells a site from memory only as a last resort, so `sel`
+  carries `_SEL_COST` rather than egglog's default 1 — at the default, a value class
+  holding several memory versions returned only spellings the consumer discards and
+  the site fell back to its own raw term.
 
 ## 5. Migration: delete the transitional passes
 
@@ -305,6 +309,16 @@ procedure text.
 - egglog version drift: extracted-str parsing and RunReport shapes are
   version-sensitive. Mitigation: minor-version pin + `_parse_ir` round-trip
   covered by tests (including the let-lifted multi-line form).
+- A local renders as its **base name**, so a spelling is valid only where the base
+  still holds that version. `_defined_at` read availability — the versions defined on
+  the path — which never drops a name when the base is redefined, so a site could
+  spell a stale version and the printed program read the new one. Measured minimal
+  case (stage 3b landing 2): `a = m_1000; b = a; a = m_1001; sid.ctrl = b` emitted
+  `sid.v1.ctrl = a` after `a` was redefined, with `b`'s definition deleted as unread —
+  a wrong byte at the chip. §6's all-sites proof cannot catch it: it proves the SSA
+  terms equal while the printer renders the base. Mitigation: a site carries the
+  versions **live** there, not the versions available there. This is the memory
+  renderer's position-correctness (2026-08-09) stated for locals.
 - Extraction nondeterminism: **observed, diagnosed and closed.**
   `extract_multiple` returns *a* representative of an e-class and which one is
   not contractual; re-costing with `_COSTS` plus a lexicographic tie-break does

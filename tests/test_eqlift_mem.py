@@ -295,6 +295,29 @@ def test_a_pair_crossing_a_span_store_is_spelled_from_the_values():
     assert mem.render_proc(stmts)[-2:] == ["sid.v1.pw_lo = (c1 + $40)", "sid.v1.pw_hi = (c2 + $01)"]
 
 
+def test_a_stale_local_version_never_spells_a_site():
+    """A local renders as its base name, so only the version the base still holds may
+    spell a site: availability says a version was defined, never that it survived.
+
+    Spelled off availability this emits ``sid.v1.ctrl = a`` after ``a`` is redefined --
+    the wrong byte at the chip, and §6's proof cannot see it (it proves the SSA terms
+    equal while the printer renders the base)."""
+    stmts = [
+        ("asg", "a", ("mem", ("const", 0x1000, 2), 1)),
+        ("asg", "b", ("loc", "a")),
+        ("asg", "a", ("mem", ("const", 0x1001, 2), 1)),
+        ("st", ("const", 0xD404, 2), ("loc", "b")),
+        ("st", ("const", 0xD405, 2), ("loc", "a")),
+    ]
+    assert mem.render_proc(stmts) == [
+        "a = m_1000",
+        "b = a",
+        "a = m_1001",
+        "sid.v1.ctrl = b",
+        "sid.v1.attack_decay = a",
+    ]
+
+
 def test_a_push_pull_spill_forwards_in_the_graph_and_not_in_the_text():
     """The refusal behind the prototype's ``m_01FB`` pin, measured on both halves.
 

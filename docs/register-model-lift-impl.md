@@ -955,3 +955,84 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   shredder join fixtures now name one mechanism from three directions, which
   is what a stage landing should walk into. The next landing is named in the
   stage 3 position block above: **3b landing 2, the span join.**
+- **2026-08-10 — stage 3b, landing 2: the span join, and the stale local it exposed.**
+  Every number is `tools/eqlift_measure.py` over the 25 exemplars at full Songlengths,
+  both paths, `DI_EQLIFT_EMIT_S=600` so the budget does not bind (landing 1's
+  precedent), beside the same run on `622ced8`.
+  (1) **A store no enumeration can list can still bound a join, if the join enumerates
+  what it keeps.** `_mem_writes` returns a write span `(lo, hi, width)` per non-const
+  store — the tighter of the `mem_rules` lattice and the `addr_floor`/`addr_bits`
+  bridge, read with no env because a local's reaching definition at the join is not
+  the definition it carried inside the arm — and `_join_mem` is complemented: a fresh
+  opaque memory carrying exactly the chain-held const cells proved disjoint from every
+  span. Listing the row's cells to forget is impossible; listing the cells outside it
+  to keep is not. Each disjointness is a Z3 QF_BV proof over *every* address in the
+  span, cached, never a structural match — a store width reaching past `hi` refuses,
+  and so does a cell inside the row. `Proc` and `render_proc` call the one helper, so
+  branch, loop head, switch and call are one mechanism, and an unbounded address, a
+  `label` and any dynamic transfer keep ⊤.
+  (2) **The drafted call/goto closure landed as `Footprints`.** What entering at a pc
+  may write over the enumerated call graph, as its least fixpoint; a pc no procedure
+  owns and a procedure holding a transfer the map cannot follow are ⊤, so nothing
+  rests on the dispatch guards. `docs/join-model-footprints.md` is deleted with it.
+  (3) **egg priced at 1 the spelling the consumer refuses.** `pick_ir` has always
+  dropped every candidate that mentions memory (#144's position defect), while `sel`
+  carried egglog's default cost — the cheapest constructor there is. As the join
+  unioned memory versions into value classes, `extract_multiple`'s variants filled
+  with spellings the consumer must throw away and sites fell back to their own raw
+  terms: the prototype's deferred-carry temp regressed from `((ctr1 + $40) < $40)` to
+  `carry(ctr1, $40) | carry((ctr1 + $40), $00)` (`carry` is `_COSTS` 12). Adoption §4
+  already required the two cost models to be order-consistent; `sel` now carries the
+  consumer's price and the residue goes the other way.
+  (4) **A local renders as its base name, so availability was never the question.**
+  `_defined_at` accepted any version defined on the path, and a base redefined since
+  still prints as the base — so a site could spell a version the base no longer holds.
+  Minimal case, and it is a miscompile, not a readability loss: `a = m_1000; b = a;
+  a = m_1001; sid.ctrl = b` emitted `a = m_1000; a = m_1001; sid.v1.ctrl = a`, the
+  wrong byte at the chip, with `b`'s definition deleted as unread. §6's proof cannot
+  see it — it proves the SSA terms equal while the printer renders the base — so the
+  check belongs where the version is known: a site now carries the versions **live**
+  there, not the versions available there. On the exemplars this removes the visible
+  half of the defect (`x = x` self-assignments 13 → 11, `Wizball`'s `cflag` and
+  `Automatas`' `a` among them) and costs 16 lines. The 11 that remain are live
+  self-copies of architectural registers — sound no-ops `_share_once` skips by rule
+  and `_dce` keeps because the register is live; 3c/3d's residue, enumerated in
+  `out/eqlift-texts-l2b-600`.
+  (5) **The review: 25 of 25, clean.** OFF 27,787 lines / ON 27,783, `d_lines` −4,
+  `d_stores` −3, 22 tunes byte-identical on the two paths, 13,909 extraction sites,
+  2,124 changed by saturation and every one Z3-proved (12,465 proved sites); zero
+  faults, zero refusals, zero regressions, zero extraction fallbacks. Slowest emit
+  84.6s against main's 87.3s. Against main the artifact is **+28 lines over 27,759
+  (+0.10%)**, 13 tunes moved, +1 to +4 each: +12 of it is the span join spelling a
+  crossing value instead of a machine flag (`Down_Under`'s `if zflag` becomes
+  `a = m_7944; if (a == $00)` — a line for an architectural register, which is the
+  direction stage 4's metric asks for) and +16 is (4)'s correctness. Emit identity is
+  untouched by construction (it is the frameprog artifact): `624 tunes, 0 refused,
+  28,512,406 bytes`, aggregate `99d4fdec…` unmoved; `gate_sweep` at full Songlengths
+  622 evaluate / 621 clean with the same three named tunes; suite 2,777 passed / 35
+  xfailed, oracle 16 passed.
+  (6) **The two landing-2 pins, one flipped and one re-pinned with its measurement.**
+  `test_join_forwards_the_crossing_cell` is green: the pw pair crosses the join as the
+  values the head computed (`sid.v1.pw_lo = (ctr1 + $40)`, `sid.v1.pw_hi = t2`), which
+  is where the property lives — the *folded* artifact cannot show it, because #148's
+  pair rule resolves a forwarded lane back to the cell holding it, and that rule is
+  what writes all seven multi-byte registers wide. The pin's `$0140` proxy was
+  measuring the fold, so the assertion now reads the emitter's own text and the folded
+  text is byte-identical to #148's (461 lines, both ratchets held).
+  `test_stack_spill_forwards` is **re-pinned at 3c**, and the refusal is executable
+  (`tests/test_eqlift_mem.py`): `sel_store_same` *does* forward the pull to the pushed
+  value in the e-graph, and the slot survives the text for two reasons that are not
+  the join's — `pick_ir` admits no memory spelling (3c owes the cost with a
+  position-correctness argument, not a filter) and every surviving store is a root
+  until scratch demotion, which `test_state_block_holds_no_scratch` already pins.
+  (7) **The shredder join fixtures cannot flip here, and the reason is structural.**
+  `tests/test_shred_regmodel.py`'s `_lift` runs `frameprog.program`, not
+  `eqlift_mem.emit`: those xfails are pinned to the *frameprog* emitter and flip when
+  adoption §8's step 4 makes the unified graph unconditional, not when a join model
+  lands behind the flag. They stay pinned, and the join mechanism is gated by
+  `tests/test_eqlift_mem.py`'s own join cases instead.
+  (8) **The prototype's fold window is the same fact from the other side.** A lookback
+  reset at every branch cannot read a cell the join carries, so `_cross_window` keeps
+  the entries no body of the branch can disturb and drops every cell it stores, every
+  span it stores through, and every term naming a local it assigns. `_base_split` also
+  refused a local as a pair base, which the forwarded lanes reached for the first time.
