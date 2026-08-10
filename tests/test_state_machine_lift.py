@@ -71,7 +71,8 @@ def _art():
 
 @pytest.fixture(scope="module", name="text")
 def _text(art):
-    return render(art["folded"], classify_roles(art["folded"]))
+    """The artifact: the re-rolled program, its roles read off the unrolled one."""
+    return render(art["rolled"], classify_roles(art["folded"]))
 
 
 @pytest.fixture(scope="module", name="min_grids")
@@ -106,9 +107,9 @@ def test_shadow_forwards_off_the_sid_path(art, text):
     ``forward_shadow`` fold is retired: the sinks arrive spelled from the cells."""
     shadow = re.compile(r"m_0[0-9A-F]{3}")
     assert not [n for n in shadow.findall(text) if SHADOW <= int(n[2:], 16) < SHADOW + 7 * VOICES]
-    for v in range(1, VOICES + 1):
-        assert "sid.v%d.ctrl = v%d_ctl" % (v, v) in text
-        assert "sid.v%d.attack_decay = v%d_ad" % (v, v) in text
+    for v in ("voice", "v%d" % VOICES):  # the unified slice, then the voice that kept its copy
+        assert "sid.%s.ctrl = %s_ctl" % (v, v) in text
+        assert "sid.%s.attack_decay = %s_ad" % (v, v) in text
     eq = art["eqlift_text"]
     assert [ln for ln in eq.splitlines() if "m_034" in ln and "sid." in ln] == []
     assert [ln for ln in eq.splitlines() if "m_034" in ln.split("=")[0]], "no shadow store at all"
@@ -153,10 +154,11 @@ def test_roles_are_the_plan_s_own_and_the_field_line_is_the_dialect_s(art, text)
         assert by_voice["v%d_phase" % v] == "accumulator"
         assert by_voice["v%d_pitch" % v] == "accumulator"
         assert by_voice["v%d_ctl" % v] == "flags"
-        fields = ("note_lo", "note_hi", "vib", "ad", "sr", "wave", "slide")
+        fields = ("note", "vib", "ad", "sr", "wave", "slide")
         assert {by_voice["v%d_%s" % (v, f)] for f in fields} == {"parameter"}
         assert "v%d_pos: cursor u16" % v in text and "v%d_dur: counter u8" % v in text
-        assert "v%d_pos:u16 += 2" % v in text and "sid.v%d.freq:u16" % v in text
+    for v in ("voice", "v%d" % VOICES):  # the state block declares each voice; the body
+        assert "%s_pos:u16 += 2" % v in text and "sid.%s.freq:u16" % v in text
 
 
 def test_independent_engine_grid(art):
@@ -199,12 +201,15 @@ def test_wrapping_zero_page_row(art, text):
 
 
 def test_helper_procedure_and_its_boundary(art, text):
-    """The JSR is a procedure of its own and pass 2 names its params and returns."""
-    assert len(art["folded"]) == 2 and PLAY in art["folded"]
-    sub = next(e for e in art["folded"] if e != PLAY)
+    """The JSR is a procedure of its own, and its returns resolve into the caller.
+
+    3d landing 3: pass 2 still names the params and returns; the row read needs the
+    lanes in one place, so the leaf callee is resolved at its sites and leaves."""
+    sub = next(e for e in art["boundary"] if e != PLAY)
     assert art["boundary"][sub] == (("x",), ("a", "x"))
     assert art["boundary"][PLAY] == ((), ())
-    assert text.count("call sub_%04X" % sub) == VOICES
+    assert art["resolved"] == (sub,)
+    assert list(art["folded"]) == [PLAY] and "call sub_" not in text
 
 
 def test_stack_spill_forwards(text):
@@ -217,11 +222,11 @@ def test_stack_spill_forwards(text):
 
 def test_portamento_is_one_wide_compare(art, text):
     """The SBC/SBC chain and its guard both fold, each instance Z3-proved."""
-    for v in range(1, VOICES + 1):
-        assert "v%d_diff:u16 = v%d_note_lo:u16 - v%d_pitch:u16" % (v, v, v) in text
-        assert "if (v%d_note_lo:u16 < v%d_pitch:u16)" % (v, v) in text
-        assert "v%d_pitch:u16 += v%d_slide:u8" % (v, v) in text
-        assert "v%d_pitch:u16 -= v%d_slide:u8" % (v, v) in text
+    for v in ("voice", "v%d" % VOICES):
+        assert "%s_diff:u16 = %s_note:u16 - %s_pitch:u16" % (v, v, v) in text
+        assert "if (%s_note:u16 < %s_pitch:u16)" % (v, v) in text
+        assert "%s_pitch:u16 += %s_slide:u8" % (v, v) in text
+        assert "%s_pitch:u16 -= %s_slide:u8" % (v, v) in text
     freqs = {(g[1] << 8) | g[0] for g in art["orig_grids"]}
     assert len(freqs) > 40, "the slide is inaudible"
 
@@ -253,8 +258,9 @@ def test_variable_arity_dispatch_operator(art, text):
     """The rawsid operator: (reg, val) pairs while reg < $80, then a terminator."""
     arities = {len(arg) // 2 for s in SCRIPTS for op, arg in s if op == "raw"}
     assert arities == {0, 1, 2}, "the operator's arity is not data-dependent"
-    assert text.count("op $") == 4 * VOICES, "a command handler left the dispatch"
-    assert text.count("sid.v1.freq_lo[a] = ") == VOICES, "the raw write is not a span store"
+    copies = 1 + VOICES - len(art["unify"]["unified"])  # the loop body plus the copies
+    assert text.count("op ") - text.count("loop ") == 4 * copies, "a handler left the dispatch"
+    assert text.count("sid.v1.freq_lo[a] = ") == copies, "the raw write is not a span store"
     assert len({g[17] for g in art["orig_grids"]}) > 1, "no raw command ran"
 
 
@@ -271,13 +277,16 @@ def test_voices_are_isomorphic_up_to_base_displacement(art):
         assert any(reg in ln for ln in filt[2]), reg
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3d: per-voice re-rolling unifies 1-2 and keeps "
-    "3 as a copy",
-    **XFAIL,
-)
-def test_rerolling_unifies_the_isomorphic_voices(text):
+def test_rerolling_unifies_the_isomorphic_voices(art, text):
+    """3d landing 3: the total isomorphism is a loop; the near-miss keeps its copy.
+
+    Voice 3 carries the filter block, so it refuses by shape and is not guarded into
+    the loop -- a synthesized ``if voice == 3`` would fabricate structure."""
     assert "for voice in" in text, "the voices are still unrolled copies"
+    got = art["unify"]
+    assert got["unified"] == [1, 2] and got["voices"] == VOICES
+    assert "block of" in got["refused"], "voice 3 unified against its own filter block"
+    assert not re.search(r"if [^\n]*\bvoice\b", text), "a synthesized per-voice guard"
 
 
 def test_multi_byte_sid_registers_are_written_wide(text):
@@ -286,7 +295,7 @@ def test_multi_byte_sid_registers_are_written_wide(text):
     assert len(pairs) == 2 * VOICES + 1
     for base in pairs:
         assert not re.search(r"\b%s_(?:lo|hi) = " % re.escape(base), text), base
-    for base in ("sid.v1.freq", "sid.v2.freq", "sid.v3.freq", "sid.v1.pw", "filter.cutoff"):
+    for base in ("sid.voice.freq", "sid.v3.freq", "sid.v1.pw", "filter.cutoff"):
         assert "%s:u16 = " % base in text, base
 
 
@@ -304,20 +313,52 @@ def test_no_byte_lane_update_of_any_declared_u16(art):
     assert lane_updates(art["folded"]) == []
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 3d landing 3: the pitch table is two columns at "
-    "unrelated bases (m_14A7 lo, m_14BD hi), which frameprog's _pair_tables declares a "
-    "lo/hi pair and no address arithmetic relates -- so 3c's sel_pair axiom, which merges "
-    "two ADJACENT columns at one index, cannot reach it. Enumerating the declared pair at "
-    "the site (framemath._pairs' shape) and querying the class needs a site: the only two "
-    "reads of these columns are sub_1485's own statements, and their lanes leave it in two "
-    "registers across a `call`, so the pair meets again only where the callee's returns "
-    "are resolved into the caller -- which is what per-voice re-rolling supplies",
-    **XFAIL,
-)
-def test_note_fetch_is_one_u16_row_read(text):
+def test_note_fetch_is_one_u16_row_read(art, text):
+    """3d landing 3: the declared pair read at one index is one u16 row read.
+
+    The lanes met once the leaf callee's returns resolved into the caller; the pair is
+    the site's own declaration and the spelling is the image's own table label."""
     assert not re.search(r"v\d_note_(?:lo|hi) = ", text), "the note keeps split lanes"
     assert re.search(r"v\d_note = pitch\[", text), "the pitch table is still two rows"
+    assert "voice_note = pitch[" in text, "the unified slice kept the split lanes"
+    assert art["proofs"].count("row_read(m_14A7,m_14BD)") == VOICES
+
+
+def test_the_loop_expands_to_the_program_it_rolled(art):
+    """§6: the rendered loop is executed, and its meaning is the copies it replaced.
+
+    Every leaf difference is bound, so expanding the loop reproduces the folded program
+    exactly -- except at the observed-guard sites, which carry their Z3 proofs."""
+    got, want = sml.expand(art["rolled"]), art["folded"]
+    assert sorted(got) == sorted(want)
+    diffs = []
+
+    def walk(x, y, at):
+        if type(x) is not type(y) or (isinstance(x, (list, tuple)) and len(x) != len(y)):
+            diffs.append((at, x, y))
+        elif isinstance(x, (list, tuple)):
+            for i, (p, q) in enumerate(zip(x, y)):
+                walk(p, q, at + (i,))
+        elif x != y:
+            diffs.append((at, x, y))
+
+    for entry in sorted(got):
+        walk(got[entry], want[entry], ())
+    guards = [p for p in art["proofs"] if p.startswith("reroll_guard(")]
+    assert len(diffs) == len(guards) and guards
+    assert all((x, y) == (True, False) for _at, x, y in diffs), diffs
+
+
+def test_the_voice_record_declares_every_binding_no_name_covers(art, text):
+    """§4(e)'s voice parameter record: what the loop binds and no systematic name says."""
+    loop = next(s for s in art["rolled"][PLAY] if s[0] == "forvoice")
+    shown = sml.voice_display(loop[4], loop[1])
+    rows = [n for n, decl in shown if decl]
+    assert len(rows) == art["unify"]["params"] and rows == sorted(set(rows), key=rows.index)
+    block = text.split("voices v1, v2 {")[1].split("\n}")[0]
+    assert {ln.split(" = ")[0].strip() for ln in block.splitlines() if ln.strip()} == set(rows)
+    for name, _decl in shown:  # every binding is spelled, and nothing spells two ways
+        assert name in text
 
 
 def test_no_unread_carry_definitions(art):
@@ -372,8 +413,8 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 453, 1146  # lowered by 3d landing 1's scratch demotion; a stage lowers
-# these, never raises — only a feature landing re-pins them upward
+LINE_PIN, COST_PIN = 339, 836  # lowered by 3d landing 3's row read and re-rolling; a stage
+# lowers these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
     "accumulator": r"\b(?:observed|mask|bound)\b",
@@ -383,7 +424,7 @@ REEMIT = ("reemit_6502", "emit_6502", "assemble_6502")
 SEED_CODE = (
     "from examples.state_machine_lift import classify_roles, pipeline, render;"
     "a = pipeline(frames=%d);"
-    "import sys; sys.stdout.write(render(a['folded'], classify_roles(a['folded'])))"
+    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded'])))"
 )
 DECL = re.compile(r"^\s{2}(\w+):\s*(\w+)\s+(\S+)(.*)$")
 OPSET = re.compile(r"^[^\n]*\b(?:operators|ops)\b[^\n]*\{$", re.M)
@@ -397,7 +438,7 @@ def _role_map(art):
 
 @pytest.fixture(scope="module", name="role_text")
 def _role_text(art, role_map):
-    return render(art["folded"], role_map)
+    return render(art["rolled"], role_map)
 
 
 @pytest.fixture(scope="module", name="post_init_ram")
@@ -616,4 +657,4 @@ def test_render_is_hash_seed_independent():
 def test_size_ratchet(art, role_text):
     """Emitted size and extracted term cost: a stage lowers them or holds them."""
     assert len(role_text.splitlines()) <= LINE_PIN
-    assert _term_cost(list(art["folded"].values())) <= COST_PIN
+    assert _term_cost(list(art["rolled"].values())) <= COST_PIN

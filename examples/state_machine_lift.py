@@ -43,8 +43,17 @@ SWEEP = 0x0153  # per-frame step of voice 3's 16-bit filter cutoff accumulator
 FILT3, LP, VOL = 0x04, 0x10, 0x0F  # route voice 3, low-pass, master volume
 
 FOLDS = frozenset(
-    ("pair_store", "pair_set", "advance", "wide16", "wide24", "wide_cmp")
-)  # every rewrite the example applies, each instance Z3-proved
+    (
+        "pair_store",
+        "pair_set",
+        "advance",
+        "wide16",
+        "wide24",
+        "wide_cmp",
+        "row_read",
+        "reroll_guard",
+    )
+)  # fmt: skip -- every rewrite the example applies, each instance Z3-proved
 
 _ENC = {}
 for _op in sorted(OPS):
@@ -1059,6 +1068,8 @@ def _lane_fold(stmts, i, proofs, z3, targets):
 
 
 def _addr_name(a):
+    if isinstance(a, str):  # a re-rolled slice names the voice, not the address
+        return a
     return "zp_%02X" % a if a < 0x100 else "m_%04X" % a
 
 
@@ -1247,6 +1258,414 @@ def _match_advance(stmts, i):
     )
 
 
+# ---- the classical passes: call resolution, the row read, guard-aware re-rolling ----
+
+
+def _leaf_callee(stmts):
+    """A callee that is straight-line register arithmetic, else None.
+
+    Its post-state is the composition of its own assignments, so the body substituted
+    at a call site is exactly what the call's returns mean in the caller."""
+    if len(stmts) < 2 or stmts[-1] != ("ret",):
+        return None
+    body = stmts[:-1]
+    for s in body:
+        if s[0] != "asg" or _store_addr(s[1]) is not None:
+            return None
+    return body
+
+
+def resolve_calls(procs):
+    """Resolve every leaf callee into its call sites; return ``(procs, resolved)``.
+
+    A resolved callee is reached by no root afterwards -- the rule root extraction
+    retires an unobservable store by -- so it leaves with the calls."""
+    bodies = {e: _leaf_callee(s) for e, s in procs.items() if e != PLAY}
+    bodies = {e: b for e, b in bodies.items() if b is not None}
+    if not bodies:
+        return procs, ()
+
+    def walk(sl):
+        out = []
+        for s in sl:
+            if s[0] == "call" and s[1] in bodies:
+                out.extend(bodies[s[1]])
+                continue
+            if s[0] == "if":
+                s = ("if", s[1], walk(s[2]), walk(s[3]))
+            elif s[0] == "loop":
+                s = ("loop", walk(s[1]))
+            elif s[0] == "switch":
+                s = ("switch", [(lbl, walk(b)) for lbl, b in s[1]])
+            out.append(s)
+        return out
+
+    return {e: walk(s) for e, s in procs.items() if e not in bodies}, tuple(sorted(bodies))
+
+
+def prove_row(lo, z3):
+    """Z3-prove over the array theory that two column reads at one index are one row.
+
+    Storing the lo column's byte at the pair's lo cell and the hi column's at the cell
+    above leaves the pair holding ``Concat(hi, lo)``; a destination pair that aliases
+    refuses, which is what makes the grouping the site's and not the printer's."""
+    byte, word = z3.BitVecSort(8), z3.BitVecSort(16)
+    idx = z3.BitVec("i", 16)
+    t_lo, t_hi = z3.Array("t_lo", word, byte), z3.Array("t_hi", word, byte)
+    mem = z3.Array("m", word, byte)
+    a_lo, a_hi = z3.BitVecVal(lo, 16), z3.BitVecVal(lo + 1, 16)
+    got = z3.Store(z3.Store(mem, a_lo, z3.Select(t_lo, idx)), a_hi, z3.Select(t_hi, idx))
+    s = z3.Solver()
+    s.add(
+        z3.Concat(z3.Select(got, a_hi), z3.Select(got, a_lo))
+        != z3.Concat(z3.Select(t_hi, idx), z3.Select(t_lo, idx))
+    )
+    return s.check() == z3.unsat
+
+
+def pair_tables(labels):
+    """Declared lo/hi column pairs, by the image's own labels: ``pitchlo`` is ``pitch``."""
+    out = {}
+    for name, addr in labels.items():
+        if name.endswith("lo") and name[:-2] + "hi" in labels:
+            out[_addr_name(addr)] = name[:-2]
+    return out
+
+
+def _match_row(stmts, i):
+    """``r1 = T_lo[e]; r2 = T_hi[e]; c_lo = r1; c_hi = r2``: the pair the site declares."""
+    win = stmts[i : i + 4]
+    if len(win) != 4 or any(s[0] != "asg" for s in win):
+        return None
+    r1, ld1, r2, ld2 = win[0][1], win[0][2], win[1][1], win[1][2]
+    if r1 == r2 or _store_addr(r1) is not None or _store_addr(r2) is not None:
+        return None
+    if ld1[0] != "index" or ld2[0] != "index" or ld1[2] != ld2[2] or ld1[1] == ld2[1]:
+        return None
+    if cell_addr(ld1[1]) is None or cell_addr(ld2[1]) is None:
+        return None
+    if r1 in _names(ld2, set()):  # the first lane moved the index the second reads
+        return None
+    lo, hi = _store_addr(win[2][1]), _store_addr(win[3][1])
+    if lo is None or hi is None or hi != lo + 1:
+        return None
+    if (win[2][2], win[3][2]) != (("name", r1), ("name", r2)):
+        return None
+    return lo, ld1[1], ld2[1], ld1[2]
+
+
+def row_reads(stmts, proofs, tables):
+    """Fold a declared lane pair fed by two column reads into one u16 row read.
+
+    The grouping is the site's -- the declared pair enumerated where the lanes meet --
+    and the spelling is the declared table's own name."""
+    import z3  # pylint: disable=import-outside-toplevel
+
+    out, i = [], 0
+    while i < len(stmts):
+        s = stmts[i]
+        if s[0] in ("if", "loop", "switch"):
+            if s[0] == "if":
+                s = ("if", s[1], row_reads(s[2], proofs, tables), row_reads(s[3], proofs, tables))
+            elif s[0] == "loop":
+                s = ("loop", row_reads(s[1], proofs, tables))
+            else:
+                s = ("switch", [(lbl, row_reads(b, proofs, tables)) for lbl, b in s[1]])
+            out.append(s)
+            i += 1
+            continue
+        got = _match_row(stmts, i)
+        if got is not None and got[1] in tables and prove_row(got[0], z3):
+            lo, t_lo, t_hi, idx = got
+            proofs.append("row_read(%s,%s)" % (t_lo, t_hi))
+            out.append(("rd16", lo, t_lo, t_hi, idx, tables[t_lo]))
+            i += 4
+            continue
+        out.append(s)
+        i += 1
+    return out
+
+
+class _Hole:
+    """One leaf the voices disagree on: the substitution's ``k``-th binding."""
+
+    __slots__ = ("k",)
+
+    def __init__(self, k):
+        self.k = k
+
+    def __repr__(self):
+        return "<voice %d>" % self.k
+
+    def __eq__(self, other):
+        return isinstance(other, _Hole) and other.k == self.k
+
+    def __hash__(self):
+        return hash(("hole", self.k))
+
+
+def prove_guard_unify(k, z3):
+    """Z3-prove the guarded advance is the unguarded one wherever its guard holds.
+
+    Voice 1 folds the page cross and voices 2-3 fold ``nocarry``, purely from where
+    each script landed; both spellings denote one wide add, so the difference is a
+    guard and never a structure difference."""
+    lo, hi = z3.BitVec("lo", 16), z3.BitVec("hi", 16)
+    s = z3.Solver()
+    s.add(
+        z3.ULE(lo, 0xFF),
+        z3.ULE(hi, 0xFF),
+        z3.ULE(lo + k, 0xFF),
+        ((hi << 8) | ((lo + k) & 0xFF)) != ((((hi << 8) | lo) + k) & 0xFFFF),
+    )
+    return s.check() == z3.unsat
+
+
+_REFUSE = object()  # a leaf may itself be None, so a refusal needs its own sentinel
+
+
+class _Unify:
+    """Anti-unify two voice slices into one template plus its binding table."""
+
+    def __init__(self, z3, proofs):
+        self.z3, self.proofs, self.diffs, self.why = z3, proofs, [], None
+        self.seen, self.bound, self.arity = {}, {}, 1
+
+    def refuse(self, why):
+        self.why = self.why or why
+        return _REFUSE
+
+    def guard(self, a, b):
+        """One advance the voices observed different page crossings of."""
+        if a[2] != b[2] or not prove_guard_unify(a[2], self.z3):
+            return self.refuse("advance %r against %r" % (a, b))
+        pair = self.walk(a[1], b[1])
+        if pair is _REFUSE:
+            return _REFUSE
+        self.proofs.append("reroll_guard(%s,+%d)" % (a[1], a[2]))
+        return ("adv16", pair, a[2], True)
+
+    def walk(self, a, b):
+        if isinstance(a, tuple) and isinstance(b, tuple):
+            if a[:1] == ("adv16",) and b[:1] == ("adv16",) and a[3] != b[3]:
+                return self.guard(a, b)
+            if len(a) != len(b):
+                return self.refuse("arity %r against %r" % (a[:1], b[:1]))
+            got = [self.walk(x, y) for x, y in zip(a, b)]
+            return _REFUSE if _REFUSE in got else tuple(got)
+        if isinstance(a, list) and isinstance(b, list):
+            if len(a) != len(b):
+                return self.refuse("block of %d against %d" % (len(a), len(b)))
+            got = [self.walk(x, y) for x, y in zip(a, b)]
+            return _REFUSE if _REFUSE in got else got
+        if isinstance(a, _Hole):
+            got = self.bound.setdefault(a.k, b)
+            if got != b:
+                return self.refuse("binding %d is %r and %r" % (a.k, got, b))
+            if len(self.diffs[a.k]) == self.arity:
+                self.diffs[a.k] += (b,)
+            return a
+        if type(a) is not type(b):
+            return self.refuse("%r against %r" % (a, b))
+        if a == b:
+            return a
+        if isinstance(a, bool) or not isinstance(a, (int, str)):
+            return self.refuse("%r against %r" % (a, b))
+        if (a, b) not in self.seen:
+            self.seen[(a, b)] = _Hole(len(self.diffs))
+            self.diffs.append((a,) * self.arity + (b,))
+        return self.seen[(a, b)]
+
+    def run(self, a, b):
+        self.seen, self.bound, keep = {}, {}, list(self.diffs)
+        got = self.walk(a, b)
+        if got is _REFUSE:
+            self.diffs[:] = keep  # a refused voice binds nothing
+            return None
+        lhs, rhs = {x for x, _y in self.seen}, {y for _x, y in self.seen}
+        if len(lhs) != len(self.seen) or len(rhs) != len(self.seen):
+            self.refuse("the substitution is not a bijection")
+            self.diffs[:] = keep
+            return None
+        self.arity += 1
+        return got
+
+
+def _voice_name(tok, var):
+    """``(spelling, is a declared parameter)`` for a leaf the voices bind differently.
+
+    A cell or sink the voice owns spells itself; a per-voice temporary is renamed;
+    anything else -- a handler label, a split-table base -- is a declared parameter."""
+    if isinstance(tok, int):
+        tok = _addr_name(tok)
+    if tok.startswith("sid.v1."):
+        return "sid.%s.%s" % (var, tok[7:]), False
+    got = pretty(tok)
+    if got.startswith("v1_"):
+        return "%s_%s" % (var, got[3:]), False
+    if _store_addr(tok) is None and not tok.startswith("$"):
+        return None, False  # a local: alpha-renamed, not a voice parameter
+    return None, True
+
+
+def voice_display(diffs, var):
+    """``[(spelling, declared)]`` per binding, in the template's own order."""
+    out, locals_, params = [], 0, 0
+    for got in diffs:
+        name, decl = _voice_name(got[0], var)
+        if name is None:
+            name = "%s_%s%d" % (var, "p" if decl else "t", params if decl else locals_)
+            params, locals_ = params + decl, locals_ + (not decl)
+        out.append((name, decl))
+    return out
+
+
+def _shown(tree, names):
+    if isinstance(tree, _Hole):
+        return names[tree.k][0]
+    if isinstance(tree, tuple):
+        return tuple(_shown(x, names) for x in tree)
+    if isinstance(tree, list):
+        return [_shown(x, names) for x in tree]
+    return tree
+
+
+def _voices_of(s):
+    return {voice_of(n) for n in stmt_names(s)} - {None}
+
+
+def _find_first(sl, v):
+    """``(descents, index)`` of the first statement in tree order that is voice ``v``'s."""
+    for i, s in enumerate(sl):
+        if _voices_of(s) == {v}:
+            return ([], i)
+        for bi, b in enumerate(_bodies(s)):
+            got = _find_first(b, v)
+            if got is not None:
+                return ([(i, bi)] + got[0], got[1])
+    return None
+
+
+def _replace_body(s, bi, body):
+    if s[0] == "if":
+        return ("if", s[1], body, s[3]) if bi == 0 else ("if", s[1], s[2], body)
+    if s[0] == "loop":
+        return ("loop", body)
+    arms = list(s[1])
+    arms[bi] = (arms[bi][0], body)
+    return ("switch", arms)
+
+
+def _cut(sl, path, idx, mark):
+    """``(context, tail)``: the sub-list at ``path`` cut at ``idx``, ``mark`` in its place."""
+    if not path:
+        return list(sl[:idx]) + [mark], list(sl[idx:])
+    i, bi = path[0]
+    head, tail = _cut(_bodies(sl[i])[bi], path[1:], idx, mark)
+    return list(sl[:i]) + [_replace_body(sl[i], bi, head)] + list(sl[i + 1 :]), tail
+
+
+def _bind(tree, diffs, k):
+    if isinstance(tree, _Hole):
+        return diffs[tree.k][k]
+    if isinstance(tree, tuple):
+        return tuple(_bind(x, diffs, k) for x in tree)
+    if isinstance(tree, list):
+        return [_bind(x, diffs, k) for x in tree]
+    return tree
+
+
+def _plug(sl, var, tail):
+    """The loop's back edge: ``next <var>`` continues with the following voice's slice."""
+    out = []
+    for s in sl:
+        if s == ("next", var):
+            out.extend(tail)
+            continue
+        if s[0] == "if":
+            s = ("if", s[1], _plug(s[2], var, tail), _plug(s[3], var, tail))
+        elif s[0] == "loop":
+            s = ("loop", _plug(s[1], var, tail))
+        elif s[0] == "switch":
+            s = ("switch", [(lbl, _plug(b, var, tail)) for lbl, b in s[1]])
+        out.append(s)
+    return out
+
+
+def expand(procs):
+    """The re-rolled program's own meaning: the body once per voice, in loop order."""
+
+    def walk(sl):
+        out = []
+        for s in sl:
+            if s[0] == "forvoice":
+                _kw, var, voices, template, diffs, tail = s
+                acc = walk(tail)
+                for k in reversed(range(len(voices))):
+                    acc = _plug(_bind(template, diffs, k), var, acc)
+                out.extend(acc)
+                continue
+            if s[0] == "if":
+                s = ("if", s[1], walk(s[2]), walk(s[3]))
+            elif s[0] == "loop":
+                s = ("loop", walk(s[1]))
+            elif s[0] == "switch":
+                s = ("switch", [(lbl, walk(b)) for lbl, b in s[1]])
+            out.append(s)
+        return out
+
+    return {e: walk(s) for e, s in procs.items()}
+
+
+VOICE_VAR = "voice"
+
+
+def reroll(procs, proofs):
+    """Unify the per-voice slices into one loop where the isomorphism is total.
+
+    Every path through a voice's slice ends at the next voice's, so the slice is a
+    context whose hole is that entry and a total anti-unification of two adjacent
+    contexts is a loop over them. Any residual mismatch refuses; the copies stay."""
+    import z3  # pylint: disable=import-outside-toplevel
+
+    play = procs[PLAY]
+    at = _find_first(play, 0)
+    stats = {"voices": VOICES, "unified": [], "refused": None, "bindings": 0, "params": 0}
+    if at is None or at[0]:
+        stats["refused"] = "no voice slice at the procedure's own level"
+        return procs, stats
+    head, rest, ctxs = list(play[: at[1]]), list(play[at[1] :]), []
+    for v in range(VOICES):
+        nxt = _find_first(rest, v + 1) if v + 1 < VOICES else None
+        if nxt is None:
+            ctxs.append(rest)
+            break
+        ctx, rest = _cut(rest, nxt[0], nxt[1], ("next", VOICE_VAR))
+        ctxs.append(ctx)
+    if len(ctxs) < 2:
+        stats["refused"] = "one voice slice"
+        return procs, stats
+    uni = _Unify(z3, proofs)
+    template, n = ctxs[0], 1
+    while n < len(ctxs):
+        got = uni.run(template, ctxs[n])
+        if got is None:
+            break
+        template, n = got, n + 1
+    stats["refused"] = uni.why
+    if n < 2:
+        return procs, stats
+    shown = voice_display(uni.diffs, VOICE_VAR)
+    stats.update(
+        unified=list(range(1, n + 1)),
+        bindings=len(uni.diffs),
+        params=sum(1 for _n, decl in shown if decl),
+    )
+    tail = ctxs[n] if n < len(ctxs) else []
+    loop = ("forvoice", VOICE_VAR, tuple(range(1, n + 1)), template, uni.diffs, tail)
+    return {**procs, PLAY: head + [loop]}, stats
+
+
 class Flat:
     """Flatten folded statements to ops with resolved labels for execution."""
 
@@ -1267,7 +1686,7 @@ class Flat:
             op = s[0]
             if op == "label":
                 self.labels[s[1]] = len(self.ops)
-            elif op in ("asg", "sto", "call", "st16", "set16", "adv16", "w16"):
+            elif op in ("asg", "sto", "call", "st16", "set16", "adv16", "w16", "rd16"):
                 self.ops.append(s)
             elif op == "if":
                 l_else, l_end = "@f%d" % len(self.ops), "@e%d" % len(self.ops)
@@ -1431,6 +1850,10 @@ class Machine:
                 self.ram[lo : lo + n] = (full & mask).to_bytes(n, "little")
                 if carry is not None:
                     self.ram[carry] = (full >> (8 * n)) & 1
+            elif op == "rd16":
+                i = self._val(s[4], env)[0]
+                self.ram[s[1]] = self.ram[(cell_addr(s[2]) + i) & 0xFFFF]
+                self.ram[s[1] + 1] = self.ram[(cell_addr(s[3]) + i) & 0xFFFF]
             elif op == "set16":
                 base = cell_addr(s[1] + "_lo")
                 lo = self._val(s[2], env)[0]
@@ -1462,7 +1885,7 @@ class Machine:
 
 
 _FIELD = {
-    PTR: "pos", DUR: "dur", PHASE: "phase", NLO: "note_lo", NHI: "note_hi",
+    PTR: "pos", DUR: "dur", PHASE: "phase", NLO: "note", NHI: "note_hi",
     DEPTH: "vib", WAVE: "wave", CTL: "ctl", AD: "ad", SR: "sr",
     ADEF: "ad_set", SRDEF: "sr_set", CLO: "pitch", CHI: "pitch_hi", RATE: "slide",
     DLO: "diff", DHI: "diff_hi", CUT: "cut", CUTH: "cut_hi",
@@ -1522,6 +1945,8 @@ def classify_roles(procs):
                 shapes.setdefault(_addr_name(s[1]), set()).add(got)
                 if s[6] is not None:
                     shapes.setdefault(_addr_name(s[6]), set()).add("set")
+            elif s[0] == "rd16":
+                shapes.setdefault(_addr_name(s[1]), set()).add("set")
             elif s[0] == "asg":
                 r = _subst(s[2], env)
                 _names(r, read)
@@ -1634,6 +2059,9 @@ def stmt_names(s):
         _names(s[3], ns)
     elif s[0] == "st16":
         ns |= {s[1], s[2], s[3]}
+        _names(s[4], ns)
+    elif s[0] == "rd16":
+        ns |= {_addr_name(s[1]), _addr_name(s[1] + 1)}
         _names(s[4], ns)
     elif s[0] in ("adv16", "set16"):
         ns.add(s[1] + "_lo")
@@ -1795,6 +2223,8 @@ def _fmt(e):
     if k == "wcmp":
         return "(%s %s %s)" % (_src_fmt(e[2]), e[1], _src_fmt(e[3]))
     if k == "num":
+        if isinstance(e[1], str):
+            return e[1]
         return "$%02X" % e[1] if e[1] <= 0xFF else "$%04X" % e[1]
     if k == "name":
         return e[1]
@@ -1820,6 +2250,8 @@ def wide_cells(procs):
         for s in sl:
             if s[0] == "w16":
                 out[_addr_name(s[1])] = s[2]
+            elif s[0] == "rd16":
+                out[_addr_name(s[1])] = 2
             elif s[0] in ("adv16", "set16"):
                 out[s[1]] = 2
             for b in _bodies(s):
@@ -1828,6 +2260,30 @@ def wide_cells(procs):
     for stmts in procs.values():
         walk(stmts)
     return out
+
+
+def voice_record(procs):
+    """The loop's per-voice bindings that no systematic name covers: §4(e)'s record."""
+    out = []
+    for stmts in procs.values():
+        for s in stmts:
+            if s[0] != "forvoice":
+                continue
+            _kw, var, voices, _tpl, diffs, _tail = s
+            rows = [
+                "  %s = %s" % (n, ", ".join(_bound(v) for v in got))
+                for (n, decl), got in zip(voice_display(diffs, var), diffs)
+                if decl
+            ]
+            if rows:
+                out.append("voices %s {" % ", ".join("v%d" % v for v in voices))
+                out.extend(rows)
+                out.append("}")
+    return out
+
+
+def _bound(tok):
+    return "$%04X" % tok if isinstance(tok, int) else tok
 
 
 def declared_roles(procs, roles):
@@ -1844,16 +2300,16 @@ def render(procs, roles):
 
     The field line is the dialect's own (``name: <role> uN``, sidprog.lark
     ``statedef``), so what this prints is what stage 4 emits."""
-    lines, wide = ["state {"], wide_cells(procs)
-    show = declared_roles(procs, roles)
+    flat = expand(procs)
+    lines, wide = ["state {"], wide_cells(flat)
+    show = declared_roles(flat, roles)
     for n in sorted(show, key=lambda n: (_ORDER[roles[n]], pretty(n))):
         lane = _PAIRBASE.match(n) and not _PAIRRE.match(n)
         w = "u%d" % (8 * wide.get(n, 2 if lane else 1))
         lines.append("  %s: %s %s" % (pretty(n), roles[n], w))
-    for v in range(1, VOICES + 1):
-        lines.append("  v%d_note: parameter u16   ; note_hi:note_lo as one word" % v)
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
+    lines.extend(voice_record(procs))
     for entry, stmts in sorted(procs.items()):
         lines.append("play {" if entry == PLAY else "sub_%04X {" % entry)
         _render(stmts, lines, 1)
@@ -1890,6 +2346,17 @@ def _render(sl, lines, d):
             if s[4] is not None:
                 rhs += " + zext2(%s)" % _fmt(s[4])
             lines.append("%s%s:u16 = %s" % (pad, s[1], rhs))
+        elif op == "rd16":
+            lines.append("%s%s = %s[%s]" % (pad, _addr_name(s[1]), s[5], _fmt(s[4])))
+        elif op == "forvoice":
+            _kw, var, voices, template, diffs, tail = s
+            heads = ", ".join("v%d" % v for v in voices)
+            lines.append("%sfor %s in %s {" % (pad, var, heads))
+            _render(_shown(template, voice_display(diffs, var)), lines, d + 1)
+            lines.append("%s}" % pad)
+            _render(tail, lines, d)
+        elif op == "next":
+            lines.append("%snext %s" % (pad, s[1]))
         elif op == "set16":
             lines.append("%s%s:u16 = %s:%s" % (pad, s[1], _fmt(s[3]), _fmt(s[2])))
         elif op == "adv16":
@@ -2138,8 +2605,12 @@ def pipeline(frames=FRAMES):
     proofs, folded = [], {}
     for entry in proc_entries(text):
         ast = extract_proc(text, entry)
-        folded[entry] = drop_dead_locals(fold(drop_dead_shadow(ast), proofs))
-    machine = Machine({e: Flat(s) for e, s in folded.items()}, ram0)
+        folded[entry] = fold(drop_dead_shadow(ast), proofs)
+    folded, resolved = resolve_calls(folded)
+    tables = pair_tables(labels)
+    folded = {e: drop_dead_locals(row_reads(s, proofs, tables)) for e, s in folded.items()}
+    rolled, unify = reroll(folded, proofs)
+    machine = Machine({e: Flat(s) for e, s in expand(rolled).items()}, ram0)
     min_frames = [machine.frame() for _ in range(frames)]
     return {
         "mem": mem,
@@ -2150,6 +2621,9 @@ def pipeline(frames=FRAMES):
         "ram_end": ram_end,
         "eqlift_text": text,
         "folded": folded,
+        "rolled": rolled,
+        "resolved": resolved,
+        "unify": unify,
         "boundary": boundary(model),
         "proofs": proofs,
         "min_frames": min_frames,
@@ -2168,11 +2642,16 @@ def main(argv=None):
         art["orig_frames"]
     ), "minimized program diverges from the VM frame projection"
     roles = classify_roles(art["folded"])
-    text = render(art["folded"], roles)
+    text = render(art["rolled"], roles)
     print(text)
     print()
     assert not re.search(r"m_03[0-9A-Fa-f]{2}", text), "shadow survives on the SID path"
     print("folds proved by Z3: %s" % ", ".join(sorted(kinds)))
+    got = art["unify"]
+    print(
+        "re-rolling: %d of %d voices unified over %d bindings; refused: %s"
+        % (len(got["unified"]), got["voices"], got["params"], got["refused"] or "nothing")
+    )
     print("frame projection: minimized == VM over %d frames" % FRAMES)
 
     min_grids = grids_from_writes(art["init_writes"], art["min_frames"])

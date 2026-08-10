@@ -189,11 +189,10 @@ the idioms it hand-picks, stage 2 puts its fold vocabulary in the real
 grammar, stage 3 moves its folds into admitted rules and its convergence
 checks over the catalog, stage 4 emits its output shape for the corpus. What it
 does not yet reach is pinned `xfail(strict=True)` against the stage that flips
-it: the split lo/hi pitch row (3d — 3c landed the pair-row axiom and measured what
-it still needs), any byte-lane update of a declared-u16 quantity (3c), and
-per-voice re-rolling (3d). The branch-join forward is green
-as of 3b landing 2, the shadow read-back as of 3c landing 1, and the stack-spill
-forward as of 3d landing 1.
+it: any byte-lane update of a declared-u16 quantity (3c). The branch-join forward
+is green as of 3b landing 2, the shadow read-back as of 3c landing 1, the
+stack-spill forward as of 3d landing 1, and the declared lo/hi pitch row and
+per-voice re-rolling as of 3d landing 3.
 
 **The roles are the expected output, not a license.** Read forward, a play
 routine's persistent state resolves into five roles — **cursor** (an index
@@ -1502,3 +1501,68 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   premise is exactly the deref span landing 1's read closure computes, but its consumer is
   `ptrcert`, a rung — that is a rung landing and not stage 3's, and it is handed on rather
   than left floating.
+- **2026-08-10 — stage 3d, landing 3: the voices re-roll under a proved guard, and the
+  declared pair gets its site.** 3d's committed scope closes on the prototype, which is
+  where the plan puts the two passes that are not equational; the numbers are
+  `examples/state_machine_lift.py`'s own artifact at full frames.
+  (1) **A voice's slice is a context whose hole is the next voice's.** The structurer
+  weaves the three voices into one another — voice 2's region is a suffix of the list
+  inside voice 1's dispatch loop — so "three sibling regions" was never the shape. What
+  is true is stronger: *every* path through voice `v`'s region ends where voice `v+1`'s
+  begins (the break handler and the kill/test arm both `goto` the tail, and the tail
+  falls into the next voice), so the region is a context `C[v]` with one hole, and a
+  total anti-unification of `C[1]` against `C[2]` **is** a loop over them. `reroll` cuts
+  the contexts (`_find_first`/`_cut`, the voice read off `stmt_names`), anti-unifies
+  node for node (`_Unify`), and emits `for voice in v1, v2 { … next voice }` with the
+  hole as the loop's own back edge. Any residual mismatch refuses the whole slice.
+  (2) **The observed-guard difference is proved, not matched.** #144 finding 4 measured
+  the binding requirement: voice 1's cursor advance folds `wide` and voices 2-3 fold
+  `nocarry`, purely from where each script landed relative to a page boundary. `_Unify`
+  meets exactly one such difference and hands it to Z3 (`prove_guard_unify`): where the
+  `nocarry` guard holds the guarded spelling equals the unguarded wide add, so both
+  statements denote `pos:u16 += 2` and the unified statement is the unconditionally
+  proved one. It is recorded as `reroll_guard(ptr_0040,+2)` beside the folds. Nothing
+  structural is guarded into the loop: voice 3 refuses on its own filter block —
+  `block of 13 against 21` — and keeps its copy, which is the §4(e) near-miss refusal
+  running rather than being asserted, and `test_rerolling_unifies_the_isomorphic_voices`
+  asserts no synthesized per-voice guard appears in the text.
+  (3) **The declared pair row read needed the callee resolved, not the voices unified.**
+  A correction to what landing 2 handed forward: the site is created by resolving
+  `sub_1485`'s returns into its callers, which is a leaf-callee resolution
+  (`resolve_calls`: straight-line register arithmetic, so the callee's post-state is the
+  composition of its own assignments) and is independent of re-rolling — the two land
+  together because they are one landing's scope, not because one supplies the other.
+  With the lanes in one place `row_reads` matches `r1 = T_lo[e]; r2 = T_hi[e]; c_lo = r1;
+  c_hi = r2`, enumerates the destination pair at the site and proves the grouping over
+  the **array theory** (`prove_row`: storing the two columns' bytes at the pair's cells
+  leaves it holding `Concat(hi, lo)`; a destination pair that aliases refuses), then
+  emits `voice_note = pitch[x]` — the table spelled by the image's own `pitchlo`/`pitchhi`
+  labels (`pair_tables`). Three instances, `row_read(m_14A7,m_14BD)` each. The pair is
+  now the artifact's declaration and not the renderer's: `wide_cells` carries it, the
+  hand-written `v%d_note: parameter u16` lines are deleted, and the two lanes leave the
+  state block. `test_note_fetch_is_one_u16_row_read` flips.
+  (4) **The loop is executed, not reviewed** (adoption §6). `expand` is the loop's own
+  meaning — the body once per voice binding, the hole plugged with the following slice —
+  and the pipeline runs *that* expansion through `Machine`, so Gate FP, the write grid,
+  the hard-restart orderings and the pysidtracker oracle all gate the re-rolled program.
+  `test_the_loop_expands_to_the_program_it_rolled` proves the round trip exactly:
+  expanding the loop reproduces the folded program leaf for leaf with **one** difference,
+  the `adv16` guard flag, and it carries its Z3 proof.
+  (5) **The record, and the numbers.** 47 leaf bindings; 36 are systematic (a cell or
+  sink the voice owns, spelled `voice_pos`/`sid.voice.freq`) or a per-voice temporary
+  (alpha-renamed `voice_t<k>`), and the **11** that are neither — the two SMC operand
+  cells, the two paired handler tables, six handler labels and the tail label — are
+  declared in a `voices v1, v2 { … }` record, which is §4(e)'s per-voice parameter
+  record arriving as output. `test_the_voice_record_declares_every_binding_no_name_covers`
+  enumerates it from the artifact so a binding cannot go unspelled. Both ratchets fall
+  hard: **453 → 339 rendered lines** and **1146 → 836 extracted term nodes**, re-pinned
+  there. The unification rate is `2 of 3 voices over 11 bindings`, printed by the
+  example's own `main`. Suite 2,707 passed / 490 skipped / **39** xfailed, oracle 16; the
+  frameprog artifact is untouched by construction — the landing edits `examples/` and its
+  tests and nothing in the package — which `tools/emit_identity.py` confirms: 624 tunes,
+  0 refused, 28,512,657 bytes, aggregate `434f0bab…` unmoved.
+  (6) **What it does not do.** The pass lives in the prototype, which is where the plan
+  puts its classical passes and where the pins are; step 4's cutover carries the same
+  three parts — context cut, anti-unification, guard proof — onto `eqlift_mem`'s render
+  tree, and it is named in stage 4's runway rather than left floating. `resolve_calls`
+  resolves a *leaf* callee only; a callee with control flow keeps its call.
