@@ -382,6 +382,11 @@ a rule with a Z3 proof or a named refusal.
   canonical tree hashes equal after `sigma_v` normalization. ANY residual
   mismatch — extra block, different guard, voice-3 special case — refuses
   the whole procedure; synthesizing `if v == 3` guards is forbidden.
+  **Landed, stage 3d landing 3**, with the premise corrected by measurement: the
+  structurer weaves the voices into one another, so the slices are not sibling
+  regions — but every path through voice `v`'s region ends where voice `v+1`'s
+  begins, so the region is a context with one hole and a total anti-unification
+  of two adjacent contexts *is* a loop over them.
   Index-looped drivers (Hubbard's `sid.v1.*[Y]` voice loop) are already
   parameterized and need no rung-(e) work. Gate: FP + isomorphism record
   (`sigma`, parameter table); unification rate is a reported metric, never
@@ -1174,10 +1179,13 @@ coverage with HVSC absent (decompiler-implementation.md §1, §7).
   a definition made inside a branch arm, and a SID pair naming the lifted store.
   Outstanding: the zero-page indexed lane address (§4.3), which is rung (f)'s
   naming gap too, and the mis-grouped extraction of §7.3.
-- **M-FP4 — unification (e).** Not landed and not a milestone any more: the
-  per-voice re-rolling it named is stage 3d's classical pass (§4(e)), gated
-  there by FP, isomorphism records, the synthetic voice-3 near-miss refusal and
-  the unification-rate metric.
+- **M-FP4 — unification (e).** Not a milestone any more: the per-voice
+  re-rolling it named is stage 3d's classical pass (§4(e)), and it **landed at
+  3d landing 3** on the canonical example — gated by FP (the loop's own
+  expansion is what executes), the isomorphism record, voice 3's near-miss
+  refusal running rather than asserted, and the unification rate the example
+  prints (2 of 3 voices over 11 declared bindings). The cutover onto the
+  unified emitter is stage 4's.
 - **M-FP5 — the frame function (f).** Gate: FP; FP-complete tunes reported
   (no unproven raw `mem[expr]`); the Commando-family excerpt shape achieved
   on at least the index-looped drivers; per-tune rung recorded in the build

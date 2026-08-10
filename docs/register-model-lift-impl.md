@@ -413,7 +413,12 @@ of three phases.
 - **Not equational, kept as small classical passes.** Per-voice re-rolling
   (anti-unify the unrolled voice slices; total isomorphism or keep the
   copies), for-range recovery, and SMC opcode dispatch, which stays the
-  observed-variant `switch` behind guards.
+  observed-variant `switch` behind guards. **Re-rolling landed at 3d landing 3**
+  on the prototype, with the leaf-callee resolution the declared row read needed:
+  a voice's slice is a context whose hole is the next voice's, so a total
+  anti-unification of two adjacent contexts is a loop over them, and the one
+  difference that is not structure — an observed page cross — unifies under a Z3
+  proof. The cutover carries the same three parts onto the unified emitter.
 - **Budgets.** Bounded schedules — extraction is sound at any cutoff because
   every admitted rule is an equivalence; 60s per tune; a tune over budget
   ships less-minimized and never blocks a landing.
@@ -440,40 +445,67 @@ on a clean 25-of-25 review), 3c landing 1 (the memory spelling's price with its
 position-correctness walk, in place of `pick_ir`'s filter — −326 lines over the
 exemplars, and the spelling-independent advance rule that re-spelling forced),
 3c landing 2 (the per-idiom convergence harness and the four rules its first run
-named, one more proved and pinned on a cost decision), 3d landing 1 (the
-`Footprints` read closure whose deref spans are 2b's observed extents, scratch
-demotion off the artifact-wide reader set, and the in-edge memory join at a label
-the walk has passed every edge of).
+named, one more proved and pinned on a cost decision), and **stage 3d, in four
+landings**: 1 — the `Footprints` read closure whose deref spans are 2b's observed
+extents, scratch demotion off the artifact-wide reader set, and the in-edge memory
+join at a label the walk has passed every edge of; 2 — `pack_add` admitted with the
+§4 cost change that names the OR-built pack the normal form; 3 — guard-aware
+re-rolling and the declared lo/hi pair row read, with the leaf-callee resolution that
+gives the row read its site; 4 — general associativity retired for the one directed
+instance the lane fusions need, and the emit budget divided by work.
 What 3b handed 3c stands unchanged: the join carries 1,628 of 2,528 walls and
-the remaining 900 are enumerated by kind in the decision log; a label with real
-in-edges still resets, and closing it needs a join over the in-edge memories
-rather than a map lookup. **Stage 3c is closed** and hands 3d four named
-items, each with its mechanism: scratch demotion needs a `Footprints` **read** closure
-whose deref spans come from 2b's observed extents (the artifact-wide reader set is ⊤
-today, measured); the declared lo/hi pair row read needs the pair enumerated at the site
-and the class queried, `framemath._pairs`' shape; `pack_add` needs the §4 cost change
-that names the pack as the normal form; and the join at a label with real in-edges still
-needs a join over the in-edge memories. 3d's own work: the `_ARITY` discharge
-landed (housekeeping below), leaving guard-aware re-rolling.
-**Next is 3d, and landing 1 has landed.** Landing 1 was one `Footprints`
-traversal landed once: the **read** closure (deref spans from 2b's observed
-extents, consumed exactly as the join consumes `addr_floor`/`addr_bits`) together
-with the join over the in-edge memories at a label with real in-edges — it flipped
-`test_stack_spill_forwards` and closed 3b's standing residue, the forward half by
-mechanism and the back-edge half by a keeps-∅-by-construction proof. Landing 2 has landed as `pack_add`'s §4 cost
-change, measured on its own corpus diff and **admitted** there: naming the pack
-the normal form moves the frameprog artifact first, which is rung (d2)'s
-subsumption previewed. The declared lo/hi pair row read moves to landing 3 on a
-measured reason rather than a schedule — `framemath._pairs`' shape needs a site,
-and the prototype's only two reads of the declared columns are `sub_1485`'s own
-statements, whose lanes leave in two registers across a `call`;
-`test_note_fetch_is_one_u16_row_read` is re-pinned there with that enumeration.
-Landing 3 is therefore that row read plus
-guard-aware re-rolling — anti-unify the extracted voices, an observed-guard
-difference unifying under a Z3-proved guard and never read as structure
-(de-risked by 3c: extraction is deterministic and no longer falls back at
-state-reading sites) — and the 11 architectural-register self-copies resolved
-by analysis: a named mechanism, or their recorded death at §8 step 4.
+the remaining 900 are enumerated by kind in the decision log. **Stage 3c is closed**
+and its four named items are all discharged by 3d — the read closure, the row read,
+`pack_add`'s cost change, and the join over the in-edge memories — as is the
+`_ARITY` debt (housekeeping below).
+
+**Stage 3d is closed (2026-08-10).** Every property it was pinned against flipped
+on its own mechanism, none by a schedule: `test_stack_spill_forwards` (landing 1),
+`test_the_adc_built_pack_converges_on_the_ora_built_one` (landing 2),
+`test_rerolling_unifies_the_isomorphic_voices` and
+`test_note_fetch_is_one_u16_row_read` (landing 3). The prototype's ratchets fell
+455 → **339** rendered lines and 1149 → **836** extracted term nodes across the
+stage; the standing emit-identity aggregate moved exactly once, on landing 2's
+reviewed §4 diff, and is `434f0bab…` over 624 tunes (28,512,657 bytes); the
+25-exemplar review is clean at every landing, most recently OFF 27,461 / ON 27,445
+with 13,909 extraction sites, 3,309 changed and every one Z3-proved, zero faults,
+refusals, regressions and fallbacks. The one pin 3d re-pinned rather than flipped is
+the shredder's `dispatch_scratch_promotes`, and it names its extension below.
+
+**What 3d hands step 4**, each with its mechanism and its owner:
+- **The `swc`-label extension of the in-edge join.** Landing 1's join excludes
+  dispatch labels by design — an `swc` label arrives with a memory the walk does not
+  name — so the extension is the same mechanism one step out: take the dispatch's own
+  in-edge set as the label's. `dispatch_scratch_promotes` is re-pinned on it.
+- **The `low_held_cursor` rung landing.** Its premise is exactly the deref span
+  landing 1's read closure computes, but its consumer is `ptrcert` — a rung landing,
+  not stage 3's.
+- **The `state { }` declaration of a demoted cell.** `frameprog._state_lines` derives
+  the block from `_cells(view)` and not from the stores extraction kept, so a cell the
+  read closure retired from the body still declares; the fix is a
+  `framestack.drop_state` analogue keyed on demotion.
+- **The splice blocker, pinned.** Rung (d2) mints a width-one narrowing `COPY` that
+  `eqlift_mem._OP` maps to nothing, so splicing frameprog's statements into
+  `render_proc` raises `KeyError('COPY')` before any rule fires (#161, now executable
+  as `tests/test_step4_splice.py`'s strict xfail on the canonical example).
+- **Re-rolling on the unified emitter.** Landing 3's pass is the prototype's, which is
+  where the plan puts its classical passes and where the pins are; the cutover carries
+  the same three parts — context cut, anti-unification, guard proof — onto
+  `eqlift_mem`'s render tree.
+- **The schedule's own §4 order, assigned here: step 4's cutover owns it.** The
+  saturation and extraction bounds are wall-clock and memory-growth, which makes
+  minimization non-monotonic in the budget — measured at 3d landing 4, one
+  configuration's 60s artifact was *smaller* than its own 600s artifact — where a
+  deterministic round cap would not be. It is a §10 determinism question dressed as a
+  cost question, and it is the cutover's because the cutover is what makes the budget
+  bind on the shipped artifact.
+- **Flat n-ary associative nodes.** Landing 4 retired general associativity for one
+  directed instance; a chain whose regrouping no admitted rule names still extracts as
+  spelled, and the standing answer is the encoding `docs/symbolic-recorder.md` already
+  uses for `INT_ADD` — not a rule.
+- **Stage 4's own runway** is below: the CyberTracker `jsr`-continuation fix that
+  clears the two evaluation faults with its shredder fixture family, and the witness's
+  two remaining refusals (the raw machine call and the static image vector).
 
 ## Stage 4 — gate + emit (the state machine is the artifact)
 
@@ -1630,3 +1662,34 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   artifact — is not taken here: with `add_num_in` landed the same tune is 13.0s, so the
   lever's measurement no longer describes this graph and re-taking it would be a decision
   on stale numbers.
+- **2026-08-10 — the step-4 cutover splice is pinned, and stage 4's witness carries the
+  whole dispatch family.** Two landings from the parallel checkout (#164, #165), folded
+  into this record at 3d's close because the plan document is single-writer.
+  (1) **The splice is an executable gate now, not an argument** (#164).
+  `tests/test_step4_splice.py` carries adoption §8 step 4's move — the rung-built
+  statements `frameprog.program` produces, carried by `eqlift_mem.render_proc` in place
+  of `frameproc.render_lines` — as one strict xfail on the canonical example, read
+  through the same public pipeline the witness test uses: the spliced emission succeeds,
+  its text is a `dumps`/`loads` fixpoint, and the program it parses back to reproduces
+  the walker's per-frame projection under Gate FP. Three green controls stand beside it,
+  so the xfail isolates the splice rather than the harness. The measured first blocker is
+  #161's, now on the example rather than the shredder fixture: `KeyError('COPY')` out of
+  `render_proc`'s converter before any rule fires, because rung (d2) mints a width-one
+  narrowing `COPY` of a fused u16 local in the phase accumulator's carry chain and
+  `eqlift_mem._OP` maps no `COPY` at all. Tests only, no artifact movement.
+  (2) **The witness compiles every dispatch form, and the example replays on the
+  machine** (#165). `dgoto`, `swg`, `opsw`, `swc`, `dcall`, `dbr` and `igoto` through a
+  computed pointer, on one shared mechanism: a computed target is a **pc of the
+  serialized program**, not an address in the emitted image, so the machine resolves the
+  pc to the label the program compiled it under — `frameval`'s rmap, on the machine. An
+  observed arm is tested arm-first with the resolver as the fallback, and a variant
+  outside the observed set lands on the fault, so observed-primary holds on the machine
+  exactly as it holds in the evaluator; `igoto` reads its vector with the 6502's own page
+  wrap. `test_the_example_artifact_replays_frame_for_frame` **flips green**: the canonical
+  example's frame program, re-emitted as 6502 and replayed under the VM, matches the
+  original routine's per-frame projection frame for frame with **no evaluator in the
+  trust chain**. The refusals left each name their mechanism — the raw machine call
+  (`call`/`callb`, the `framestack` RTS-trick family), the static image vector whose
+  target body follows the transfer inline under no label, and an arm table with no
+  computed transfer before it — and the module's own refusal table is still held to the
+  checklist by test.
