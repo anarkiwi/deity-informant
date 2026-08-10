@@ -208,9 +208,13 @@ def test_helper_procedure_and_its_boundary(art, text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3c: sel_store_same does forward the pull (measured "
-    "by tests/test_eqlift_mem.py's push-pull refusal); the spill survives because pick_ir "
-    "admits no memory spelling and a store is a root until scratch demotion",
+    reason="register-model-lift stage 3d: the pull forwards and 3c landing 1's price now "
+    "spells it from the pushed value, so only the store survives -- a root until scratch "
+    "demotion. Demoting it needs a reader the artifact cannot yet bound: sub_1000's script "
+    "derefs read through a zp pointer pair whose address is unbounded with no env, so the "
+    "artifact-wide reader set is the whole space and the slot is not provably unread. The "
+    "mechanism is a Footprints read closure whose deref spans come from the committed "
+    "observed extents (2b), consumed exactly as the join consumes addr_floor/addr_bits",
     **XFAIL,
 )
 def test_stack_spill_forwards(text):
@@ -307,8 +311,12 @@ def test_no_byte_lane_update_of_any_declared_u16(art):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 3c: pair-row convergence (split lo/hi tables "
-    "merge into the u16 row)",
+    reason="register-model-lift stage 3d: the pitch table is two columns at unrelated "
+    "bases (m_14A7 lo, m_14BD hi), which frameprog's _pair_tables declares a lo/hi pair "
+    "and no address arithmetic relates -- so 3c's sel_pair axiom, which merges two "
+    "ADJACENT columns at one index, cannot reach it. The read is chosen by enumerating "
+    "the declared pair at the site (framemath._pairs' shape) and querying the class for "
+    "the row read, which lands with per-voice re-rolling",
     **XFAIL,
 )
 def test_note_fetch_is_one_u16_row_read(text):

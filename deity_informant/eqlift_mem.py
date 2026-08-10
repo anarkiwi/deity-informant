@@ -104,9 +104,10 @@ def mem_rules(
 ):
     """Address-interval analysis plus the Z3-proven McCarthy array axioms.
 
-    ``add``/``shl`` carry the interval only where the result cannot wrap its own
-    width: a wrapped sum is smaller than either operand, so an unguarded ``lo``
-    would claim a floor the value drops below."""
+    ``add``/``shl`` carry the interval only where the result cannot wrap its own width: a
+    wrapped sum is smaller than either operand. ``sel_pair`` is applied at the shape the
+    catalog's ``pair-row`` spells -- two adjacent columns at one index -- which is the
+    proved axiom instantiated at ``a = q + b``, never a second statement of it."""
     yield rule(egg_eq(a).to(E.num(n, w))).then(set_(lo(a)).to(n), set_(hi(a)).to(n))
     yield rule(egg_eq(a).to(E.zext(b))).then(set_(lo(a)).to(i64(0)), set_(hi(a)).to(i64(255)))
     yield rule(egg_eq(a).to(E.band(b, E.num(n, w), w))).then(
@@ -141,6 +142,16 @@ def mem_rules(
         egg_eq(lo(a)).to(q),
         p + wb <= q,
     ).then(union(s).with_(sel(m, b, wb)))
+    yield rule(
+        egg_eq(s).to(
+            E.bor(
+                E.shl(E.zext(sel(m, E.add(E.num(p, 2), b, 2), 1)), E.num(8, 1), 2),
+                E.zext(sel(m, E.add(E.num(q, 2), b, 2), 1)),
+                2,
+            )
+        ),
+        egg_eq(p).to(q + 1),
+    ).then(union(s).with_(sel(m, E.add(E.num(q, 2), b, 2), 2)))
     yield rewrite(store(store(m, a, u, w), a, v, w)).to(store(m, a, v, w))
     yield rewrite(store(m, a, sel(m, a, w), w)).to(m)
 
@@ -178,6 +189,13 @@ def _axioms():
             )
         )
         out.append(("store_redundant/w%d" % w, _store_w(m, a, _sel_w(m, a, w), w) == m))
+    out.append(
+        (
+            "sel_pair",
+            ((z3.ZeroExt(8, z3.Select(m, a + 1)) << 8) | z3.ZeroExt(8, z3.Select(m, a)))
+            == _sel_w(m, a, 2),
+        )
+    )
     for wa in (1, 2):
         for wb in (1, 2):
             v = z3.BitVec("vd%d%d" % (wa, wb), 8 * wa)

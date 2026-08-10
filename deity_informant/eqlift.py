@@ -544,6 +544,38 @@ def _r_mask_hoist(A, w):
     return lhs, A.band(_pk(A, h, l), A.num((m << 8) | 0xFF, 2), 2)
 
 
+def _r_pack_add(A, w):
+    """The pack built with ADC rather than ORA: the lanes are disjoint, so ``|`` is ``+``.
+
+    Proved but NOT admitted (3c landing 2): with both spellings priced 1 the tie-break
+    moves the canonical pack corpus-wide, and it costs 2.8x the memory suite's
+    saturation. ``tests/test_eqlift_converge.py`` carries its proof and its pinned gate."""
+    del w
+    h, l = A.tvar("h", 1), A.tvar("l", 1)
+    return A.add(A.shl(A.zext(h), A.num(8, 1), 2), A.zext(l), 2), _pk(A, h, l)
+
+
+def _r_pack_hi(A, w):
+    """A word read as its high byte is the pack's own hi lane."""
+    del w
+    h, l = A.tvar("h", 1), A.tvar("l", 1)
+    return A.shr(_pk(A, h, l), A.num(8, 1), 2), A.zext(h)
+
+
+def _r_pack_lo(A, w):
+    """And its low byte is the lo lane: the mask the 6502 spells with ``AND #$FF``."""
+    del w
+    h, l = A.tvar("h", 1), A.tvar("l", 1)
+    return A.band(_pk(A, h, l), A.num(0xFF, 2), 2), A.zext(l)
+
+
+def _r_zext_mask(A, w):
+    """A widened byte is already masked to its own width."""
+    del w
+    x = A.tvar("x", 1)
+    return A.band(A.zext(x), A.num(0xFF, 2), 2), A.zext(x)
+
+
 def _r_sbc_borrow(A, w):
     """SBC borrow ``$01 - (zext(x) <= zext(y)) -> (y < x)`` (bytes)."""
     del w
@@ -623,6 +655,9 @@ RULES = (
         ("carry_ones", (1,), _r_carry_ones),
         ("mask_hoist", (2,), _r_mask_hoist),
         ("sbc_borrow", (1,), _r_sbc_borrow),
+        ("pack_hi", (2,), _r_pack_hi),
+        ("pack_lo", (2,), _r_pack_lo),
+        ("zext_mask", (2,), _r_zext_mask),
     )
     + tuple(("%s_fuse" % mn, (2,), _r_bit_fuse(mn)) for mn in ("band", "bor", "bxor"))
     + _SHIFT_FOLDS

@@ -45,13 +45,17 @@ passing tests (`tests/test_eqlift_mem.py`).
   sort `Mem`. A procedure body is a `store`-chain over an opaque initial memory
   `mem0()`; every load is `sel(mem, addr)`. Cell versioning is replaced by
   position in the store chain.
-- The four McCarthy array axioms, each Z3-proven valid over the array theory
+- The McCarthy array axioms, each Z3-proven valid over the array theory
   (`select`/`store` over `BV16 -> BV8`) before admission, exactly as the value
   rules are proven over QF_BV:
   - `sel(store(m,a,v),a) = v` — store-to-load forwarding.
   - `sel(store(m,a,v),b) = sel(m,b)` when `disjoint(a,b)` — disjoint read-through.
   - `store(store(m,a,u),a,v) = store(m,a,v)` — dead-store overwrite.
   - `store(m,a,sel(m,a)) = m` — redundant store / spill-reload elimination.
+  - `sel(m,a,2) = sel(m,a+1,1)<<8 | sel(m,a,1)` — the pair read (stage 3c landing 2),
+    admitted so the catalog's `pair-row` converges: two adjacent byte columns read at
+    one index are the word the columns spell. The egglog rule is that axiom instantiated
+    at `a = q + b`, the shape the corpus spells, so a word read does not spawn its lanes.
 - Address disjointness is an e-class INTERVAL analysis, not imperative cell
   overlap: `lo`/`hi` lattice values (merge by min/max) propagate over
   `num`/`zext`/`band`/`add`/`shl`; `hi(a) < lo(b)` yields the `disjoint(a,b)`
@@ -103,12 +107,17 @@ passing tests (`tests/test_eqlift_mem.py`).
   theory by `eqlift_mem.verify_axioms()` before the memory ruleset is admitted,
   under the same no-bypass rule. The gate now spans QF_BV (values) and arrays
   (memory).
+- **Convergence names the missing rule** (stage 3c landing 2).
+  `tests/test_eqlift_converge.py` is the per-idiom gate: enumerated from `idioms.FORMS`,
+  each row carries a generator of the spellings a 6502 lift produces for it, and the test
+  asserts they merge into one e-class whose extracted representative is the row's normal
+  form. A row that does not merge names a rule; a rule proved but not admitted names the
+  cost decision that holds it back, with its measurement, and keeps a strict xfail.
 - Single source: each value builder runs against the dual algebra (`_EggAlg` for
   the rewrite, `_Z3Alg` for the proof) so the formula Z3 proves IS the rewrite
   egglog applies. Memory axioms are stated once as the egglog rewrite/rule and
-  once as the Z3 array goal; both forms are checked to match the four names
-  above. Hand-transcribing a rule so the proof and the rewrite can diverge is
-  forbidden.
+  once as the Z3 array goal; both forms are checked to match the names in §2.
+  Hand-transcribing a rule so the proof and the rewrite can diverge is forbidden.
 - Review findings become rules, not passes: a missed value simplification is a
   new `RULES` entry (with its Z3 proof); a missed memory simplification is a new
   admitted array axiom or a strengthening of the interval analysis — never a
