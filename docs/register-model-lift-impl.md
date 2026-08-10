@@ -550,10 +550,18 @@ depths, per-site skip length) rather than the two corpus tunes alone.
 **The position (2026-08-10), and the next landing.** Landed: **landing 1**, the
 CyberTracker continuation — the corpus gate is clean for the first time since the
 plan opened, the three `jsr_inline_skip` pins flipped on their own mechanism, and
-the emit baseline moved on a reviewed §4 diff of exactly two tunes. Next is
-**landing 2, adoption §8 step 4's cutover**, whose first measured blocker is
-`eqlift_mem._OP`'s missing `COPY` (`tests/test_step4_splice.py`); landings 3-5
-(role-typed emission, the completed witness, housekeeping + close) follow it.
+the emit baseline moved on a reviewed §4 diff of exactly two tunes; and the first
+part of **landing 2, adoption §8 step 4's cutover** — the narrowing `COPY` is a
+term (`eqlift.trunc`), so the splice reaches the rules. **Landing 2 is open**, and
+its next blocker is measured and pinned: the unified emitter spells `<s` and the
+frameprog dialect has no signed comparison, so the spliced text does not parse
+(`tests/test_step4_splice.py`). Behind that stand the rest of the cutover — the
+`pcall`/`switch goto` differences (#161), §5's deletion inventory, the deterministic
+round cap, the `state { }` demotion and the ~16 substrate-dependent shredder pins —
+and then landings 3-5 (role-typed emission, the completed witness, housekeeping +
+close). Also owed to landing 2 and named at landing 1: a precise `returns` set for a
+procedure every entry of which is a `call`, which is what would take back the four
+architectural-register lines the refused `pcall` promotion costs `sub_4921`.
 
 ## Independent housekeeping (blocks nothing)
 
@@ -1759,3 +1767,31 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `_sp_disp` and `_sp_delta` moved to `frameproc` as `accesses`/`sp_disp`/`sp_delta` and
   `framestack` binds the same objects, so rung (d0s) and the promotion refusal read a
   stack address one way.
+- **2026-08-10 — stage 4, landing 2 (part): the narrowing `COPY` is a term, and the next
+  splice blocker is named.** #164's measured first cutover blocker, cleared without moving
+  the artifact.
+  (1) **`trunc` is `zext`'s dual, and one constructor is the whole fix.** Rung (d2) mints a
+  width-one `COPY` of a fused u16 local — the lo-lane save copy — and `eqlift_mem`'s
+  converters mapped no `COPY`, so splicing frameprog's own statements into `render_proc`
+  raised `KeyError('COPY')` before any rule fired. `eqlift.trunc` lands across the egg
+  algebra, the Z3 algebra, `_EGG_FNS`, `pass1_node`, `_ir_width` and the printer, and the
+  three converters route `INT_ZEXT` and `COPY` through one `_rewidth`.
+  (2) **No rule is admitted over it, and that is a measurement rather than an omission.**
+  `trunc_zext`, `trunc_num` and `trunc_pack` were written and Z3-proved (93 instances) and
+  then dropped: `eqlift.RULES` is what rung (d2) reads, so admitting a rule is a corpus-diff
+  decision (§4) and these have no artifact to show for themselves. `eqlift.to_egg` likewise
+  still maps no `COPY` — mapping it there would grow rung (d2)'s per-site graphs — so the
+  frameprog artifact cannot move by construction. The convergence gate is where a `trunc`
+  rule lands, with its own price.
+  (3) **The next blocker is executable, and it is a vocabulary one.** The unified emitter
+  spells `<s`: `eqlift.slt`, which 3d landing 4 measured the smaller graph reaching for
+  `((a & $80) != $00)`. `sidprog.lark`'s `op` production has no signed comparison, so `loads`
+  refuses the spliced text — stage 2's capability precondition unmet for the unified
+  emitter's own operator set. Either the dialect gains the signed compare (grammar,
+  evaluator, an `idioms.FORMS` case) or the price never prefers it;
+  `test_the_splice_now_blocks_on_the_signed_compare_the_dialect_cannot_spell` holds it.
+  (4) **The pins and the gates.** The shredder's `dual_store_lo_only` `COPY` pin and
+  `test_step4_splice`'s blocker test become landed controls; the cutover gate stays
+  `xfail(strict)`. `gate_sweep` at full Songlengths 624 build / 624 evaluate / 624 clean,
+  zero divergences and zero refusals; `tools/emit_identity.py --expect 37b87140…` passes —
+  624 tunes, 0 refused, 28,513,156 bytes, **unmoved**.
