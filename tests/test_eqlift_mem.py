@@ -907,3 +907,144 @@ def test_a_label_no_edge_enters_is_not_a_join():
     assert entered.joins(0x1234)
     assert mem.Footprints([(0x1000, body)], open_flow=True).joins(0x1234)
     assert mem.Footprints([(0x1000, body)], False, (0x1234,)).joins(0x1234)
+
+
+# ---- stage 4, landing 3: the faults the corpus found in the unified emitter --------
+def test_an_address_reads_the_same_whichever_of_sub_to_add_s_forms_extraction_returns():
+    """``add_to_sub``/``sub_to_add`` are both admitted, so one address has two terms.
+
+    §10: no consumer may depend on which representative comes back, and an address is
+    read mod $10000, so the row is named from either."""
+    pr = E._Printer({})
+    plus = ("load", ("add", ("zext", ("loc", "y.0")), ("num", 0x155F, 2), 2), 1, 0)
+    minus = ("load", ("sub", ("zext", ("loc", "y.0")), ("num", 0xEAA1, 2), 2), 1, 0)
+    assert pr.fmt(plus) == pr.fmt(minus) == "m_155F[y]"
+    assert pr.fmt(("sub", ("loc", "y.0"), ("num", 0xF0, 1), 1)) == "(y + $10)"
+
+
+def test_a_word_access_names_its_row_and_only_a_byte_takes_the_register_view():
+    """``frameproc._membody``'s widths: the split is the access's, the ``sid.reg`` view
+    the byte's alone, and the row carries the width suffix the dialect reads."""
+    pr = E._Printer({})
+    idx = ("add", ("zext", ("loc", "x.0")), ("num", 0x1155, 2), 2)
+    assert pr.fmt(("load", idx, 2, 0)) == "m_1155[x]:2"
+    reg = ("add", ("zext", ("loc", "y.0")), ("num", 0xD402, 2), 2)
+    assert pr.fmt(("load", reg, 2, 0)) == "sid.v1.pw_lo[y]:2"
+    assert pr.fmt(("load", reg, 1, 0)) == "sid.reg[(zext2(y) + $0002):2]"
+
+
+def test_a_resolved_pointer_deref_names_its_cell():
+    """Rung (f)'s naming on the unified path: ``derefs`` is the resolved pointer cell
+    set, and a deref address spells ``*ptr`` / ``*ptr[i]`` as ``frameproc._membody``
+    does. Without the set the address stays ``mem[..]``, which is the separation."""
+    fused = ("cell", 0x00FB, 2, 0)
+    at = ("add", fused, ("zext", ("loc", "y.0")), 2)
+    bare = E._Printer({})
+    named = E._Printer({}, derefs={0x00FB})
+    assert named.fmt(("load", at, 1, 0)) == "*zp_FB[y]"
+    assert named.fmt(("load", fused, 1, 0)) == "*zp_FB"
+    assert bare.fmt(("load", at, 1, 0)).startswith("mem[")
+    split = (
+        "bor",
+        ("shl", ("zext", ("cell", 0x00FC, 1, 0)), ("num", 8, 1), 2),
+        ("zext", ("cell", 0x00FB, 1, 0)),
+        2,
+    )
+    assert named.fmt(("load", split, 1, 0)) == "*zp_FB"
+
+
+def test_a_word_local_is_read_at_the_width_its_definition_states():
+    """A local renders as its base name, so the width suffix must ride the read too:
+    ``X[i]:2 = d3`` is a byte value in a word store and the parser refuses it."""
+    stmts = [
+        ("asg", "d3", ("mem", ("const", 0x1155, 2), 2)),
+        ("st", ("const", 0x1160, 2), ("loc", "d3", 2)),
+        ("st", ("const", 0x1162, 2), ("loc", "d3", 2)),
+    ]
+    lines = [ln.strip() for ln in mem.render_proc(stmts)]
+    assert lines == ["d3:2 = m_1155:2", "m_1160:2 = d3:2", "m_1162:2 = d3:2"]
+    assert mem._ew(("loc", "d3", 2)) == 2  # grammar.store_width's rule, not "locals are bytes"
+
+
+def test_a_for_loop_is_lifted_and_its_counter_havocs_with_the_body():
+    """``frameproc._forloops`` mints ``for``; the walk refused it, so every tune with a
+    counted loop faulted. The counter is written by the header, so it havocs with the
+    body and the emitted header is the one the dialect reads back."""
+    body = [("st", ("const", 0x1200, 2), ("loc", "y"))]
+    lines = [ln.strip() for ln in mem.render_proc([("for", "y", 0x03, 0x00, body)])]
+    assert lines == ["for y in $03..$00 {", "m_1200 = y", "}"]
+
+
+def test_a_declared_pair_s_two_half_stores_fuse_to_the_word_column():
+    """``frameproc._Printer.seq``'s pair rule on the unified path: without it the two
+    byte stores re-dump as the fused line and the text is not a fixpoint."""
+    word = ("mem", ("const", 0x1300, 2), 2)
+    hi = ("op", "INT_RIGHT", (word, ("const", 8, 1)), 2)
+    stmts = [
+        (
+            "st",
+            ("op", "INT_ADD", (("op", "INT_ZEXT", (("loc", "x"),), 2), ("const", 0x1735, 2)), 2),
+            ("op", "COPY", (word,), 1),
+        ),
+        (
+            "st",
+            ("op", "INT_ADD", (("op", "INT_ZEXT", (("loc", "x"),), 2), ("const", 0x1738, 2)), 2),
+            ("op", "COPY", (hi,), 1),
+        ),
+    ]
+    pairs = {0x1735: (0x1738, 3)}
+    assert [ln.strip() for ln in mem.render_proc(stmts, pairs=pairs)] == ["m_1735[x]:2 = m_1300:2"]
+    assert len(mem.render_proc(stmts)) == 2  # no registry, no fusion
+
+
+_PCALL = [
+    ("asg", "w4", ("mem", ("const", 0x1155, 2), 1)),
+    ("pcall", 0x2000, (("loc", "w4"),), ()),
+]
+
+
+def test_a_pcall_s_arguments_are_terms_the_rooting_and_the_proofs_see():
+    """``_node_terms`` knew no ``pcall``, so an argument's spelling rooted nothing: the
+    definition it named dropped and the call passed a local no line defines."""
+    assert mem._node_terms(("pcall", 0x2000, (7, 9), ["a"])) == (7, 9)
+    lines = [ln.strip() for ln in mem.render_proc(_PCALL)]
+    assert lines == ["w4 = m_1155", "sub_2000(w4)"] or lines == ["sub_2000(m_1155)"]
+    proofs = {}
+    mem.render_proc(_PCALL, proofs=proofs)
+    assert proofs["pairs"]  # the argument site is proved, not skipped
+
+
+def test_a_call_havocs_every_register_not_only_the_ones_the_env_holds():
+    """A register the procedure has not assigned is absent from ``env``, so ``wall``
+    left its block input spellable and a store made before the call forwarded to it
+    across the call. Amazing_Spider-Man's dispatch target came back wrong."""
+    stmts = [
+        ("st", ("const", 0x1400, 2), ("loc", "a")),
+        ("call", 0x2000, 0x2003),
+        ("asg", "w0", ("mem", ("const", 0x1400, 2), 1)),
+        ("st", ("const", 0xD404, 1), ("loc", "w0")),
+    ]
+    lines = [ln.strip() for ln in mem.render_proc(stmts)]
+    assert "sid.v1.ctrl = a" not in lines  # the pre-call value is not what the cell holds
+
+
+def test_a_version_ten_is_not_the_block_input_version_zero():
+    """``endswith('.0')`` matched ``x.10``, ``x.20``: a stale version read as the
+    block input and spelled as the base name the program had since rewritten."""
+    assert not "x.10".rpartition(".")[2] == "0"
+    assert "x.0".rpartition(".")[2] == "0"
+
+
+def test_a_carry_wears_the_lane_it_is_a_carry_out_of():
+    """``INT_CARRY``'s own width is its one-bit result; ``expr._apply`` reads the lane
+    off the operands. Tagging the node's width let ``carry_ult`` (proved at width 1)
+    fire on a word-lane carry, and the site proof refused it."""
+    word = ("mem", ("const", 0x1300, 2), 2)
+    node = ("op", "INT_CARRY", (word, word), 1)
+    assert E.carry_lane(word) == 2
+    assert E.to_egg(node)[-1] == 2
+    assert E.carry_lane(("loc", "a")) == 1
+    assert (
+        E.pass1_node(("carry", ("loc", "a.0"), ("loc", "b.0"), 2), [("loc", "a"), ("loc", "b")])[3]
+        == 1
+    )

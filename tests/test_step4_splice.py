@@ -11,7 +11,6 @@ import pytest
 
 from deity_informant import eqlift
 from deity_informant import eqlift_mem
-from deity_informant import framefuse
 from deity_informant import framelog
 from deity_informant import frameproc
 from deity_informant import frameprog
@@ -30,48 +29,10 @@ def _example():
     return model, FRAMES, frameprog.program(model)
 
 
-def _render_ctx(model, prog):
-    """``emit_mem``'s per-artifact renderer context, built over the rung-built procedures."""
-    flat = [(entry, stmts) for entry, _p, _r, stmts in prog.procs]
-    info = frameproc._Info(flat, prog.play)
-    info.summarize()
-    for _round in range(3):
-        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
-        info.summarize()
-        if before == (info.params, info.rets):
-            break
-    foot = eqlift_mem.Footprints(
-        flat,
-        info.open_flow,
-        framefuse._landings(model),
-        eqlift_mem._extent_spans(prog.extents, prog.data_decls),
-    )
-    return info, foot
-
-
-def _unified_lines(model, prog):
-    """``render_lines``' replacement: the same procedure headers, bodies from the graph."""
-    info, foot = _render_ctx(model, prog)
-    pairs = frameprog._decl_pairs(prog.data_decls)
-    out = []
-    for entry, params, rets, stmts in prog.procs:
-        sig = "sub_%04X(%s)" % (entry, ", ".join(params))
-        if rets:
-            sig += " -> %s" % ", ".join(rets)
-        out.append(sig + " {")
-        body = eqlift_mem.render_proc(
-            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs
-        )
-        out.extend(" " + ln for ln in body)
-        out.append("}")
-    return out
-
-
 def _spliced_text(model, prog):
     """The step-4 artifact: frameprog's own text with the unified renderer spliced in."""
-    with mock.patch.object(
-        frameproc, "render_lines", lambda *_a, **_k: _unified_lines(model, prog)
-    ):
+    lines = eqlift_mem.artifact_lines(model, prog)
+    with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: lines):
         return frameprog.dumps(prog)
 
 
@@ -112,7 +73,7 @@ def test_the_splice_plumbing_is_not_the_blocker(example):
     Call summaries, footprints, landings and extents all come up on frameprog's own
     procedures, so the blocker below is a statement form and not an API mismatch."""
     model, _frames, prog = example
-    info, foot = _render_ctx(model, prog)
+    info, foot, _pairs, _derefs = eqlift_mem.render_ctx(model, prog)
     assert set(info.procs) == {entry for entry, _p, _r, _s in prog.procs}
     assert all(foot.of(entry) is not None for entry, _p, _r, _s in prog.procs)
 
@@ -131,7 +92,7 @@ def test_the_rung_minted_narrowing_copy_is_a_term(example):
         kid[0] == "loc" and kid[2] == 2 for t in terms for kid in t[2]
     ), "no width-one COPY reads a fused u16 local"
     first, _params, _rets, stmts = prog.procs[0]
-    body = eqlift_mem.render_proc(stmts, prog.symbols, first, _render_ctx(model, prog)[0])
+    body = eqlift_mem.render_proc(stmts, prog.symbols, first, eqlift_mem.render_ctx(model, prog)[0])
     assert body and any("trunc1(" in ln for ln in body), "no narrowing read survived"
 
 
@@ -182,7 +143,7 @@ def test_the_three_memory_spellings_the_cutover_owed_are_in_the_text(example):
     text = _spliced_text(model, prog)
     assert "m_14D3[(ctr_0043 & zp_46)]" in text, "the index expression stayed mem[...]"
     assert "sid.reg[a]" in text, "the register file kept a register name for a byte index"
-    assert "m_148F[t3]:2" in text, "the declared pair stayed an OR-pack"
+    assert "m_148F[t3:2]:2" in text, "the declared pair stayed an OR-pack"
     assert "<< $08" not in text, "a byte column pack survived the declarations"
 
 

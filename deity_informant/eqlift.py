@@ -854,9 +854,10 @@ class _ToEgg:
             return None
         if fn in _CMP_TAGS:
             return (fn, kids[0], kids[1])
+        w = carry_lane(ir[2][0]) if fn == "carry" else ir[3]
         r = kids[0]
         for c in kids[1:]:
-            r = (fn, r, c, ir[3])
+            r = (fn, r, c, w)
         return r
 
 
@@ -868,9 +869,19 @@ def to_egg(ir, env=None, prov=None, at=0, limit=1 << 20):
     return _ToEgg(env, prov, limit).of(ir, at)
 
 
+def carry_lane(val):
+    """The lane width a carry out of ``val`` is taken at (``expr._apply``'s reading).
+
+    A carry's own width is its one-bit result; the width that decides it is the
+    operands', so a word lane's carry may not wear a byte lane's tag."""
+    return G.store_width(val)
+
+
 def pass1_node(ir, kids):
     """Pass-1 node for one term, its children already pass-1; None where it has none."""
     k = ir[0]
+    if k == "carry":
+        return ("op", "INT_CARRY", tuple(kids), 1)
     if k == "num":
         return ("const", ir[1], ir[2])
     if k == "loc":
@@ -997,10 +1008,11 @@ class _Printer:
     declared pair's pack spells the word column, without it it stays the OR.
     ``locw`` gives a local's width, which only the SID view's offset fold needs."""
 
-    def __init__(self, aliases, pairs=None, locw=None):
+    def __init__(self, aliases, pairs=None, locw=None, derefs=()):
         self.aliases = aliases or {}
         self.pairs = pairs or {}
         self.locw = locw or {}
+        self.derefs = frozenset(derefs)
         self.out = []
 
     def name(self, a):
@@ -1014,7 +1026,8 @@ class _Printer:
         if k == "num":
             return sidprog._hex(ir[1], ir[2])
         if k == "loc":
-            return ir[1].rpartition(".")[0]
+            base = ir[1].rpartition(".")[0]
+            return base + sidprog._wsuf(self.locw.get(base, 1))
         if k == "cell":
             return self.name(ir[1]) + sidprog._wsuf(ir[2])
         if k == "load":
@@ -1030,6 +1043,9 @@ class _Printer:
         if k == "add":
             return self._addref(ir)
         if k == "sub":
+            if ir[2][0] == "num":  # the dialect folds a constant subtrahend into the add
+                m = _mask(ir[3])
+                return self._addref(("add", ir[1], ("num", (-ir[2][1]) & m, ir[3]), ir[3]))
             return "(%s - %s)%s" % (self.fmt(ir[1]), self.fmt(ir[2]), sidprog._wsuf(ir[3]))
         if k in _CHAINS:
             body = (" %s " % _CHAINS[k]).join(self.fmt(p) for p in self._chain(ir, k))
@@ -1069,23 +1085,76 @@ class _Printer:
         """``(const base, index)`` of a ``base + index`` address, else None.
 
         ``frameproc._index_of``'s breadth: the index is whatever the address adds,
-        and ``zext2`` is the reader's own widening (grammar ``_index_addr``)."""
+        and ``zext2`` is the reader's own widening (grammar ``_index_addr``).
+        ``sub_to_add``/``add_to_sub`` are admitted rules, so the same address is
+        equally an ``idx - $EAA1`` and an ``idx + $155F``; an address is read mod
+        $10000 and the reading may not depend on which representative extraction
+        returned (adoption §10)."""
+        if addr[0] not in ("add", "sub") or addr[3] != 2:
+            return None
+        if addr[0] == "sub" and addr[2][0] == "num" and addr[2][2] == 2:
+            base, idx = (-addr[2][1]) & 0xFFFF, addr[1]
+            if base < 0x100:
+                return None
+        elif addr[0] == "add":
+            at = [
+                i for i in (1, 2) if addr[i][0] == "num" and addr[i][2] == 2 and addr[i][1] >= 0x100
+            ]
+            if len(at) != 1:
+                return None
+            base, idx = addr[at[0]][1], addr[3 - at[0]]
+        else:
+            return None
+        if idx[0] == "num":
+            return None
+        return base, idx[1] if idx[0] == "zext" else idx
+
+    def _ptr_cell(self, ir):
+        """The pointer cell ``ir`` is the word of, else None (``frameptr._cell_of``).
+
+        The fused word is one two-byte cell; the unfused one is the little-endian
+        pack of two adjacent byte cells, which is the shape rung (d) did not fuse."""
+        if ir[0] == "cell" and ir[2] == 2:
+            return ir[1]
+        if ir[0] != "bor" or ir[3] != 2:
+            return None
+        for hi, lo in ((ir[1], ir[2]), (ir[2], ir[1])):
+            if hi[0] != "shl" or hi[3] != 2 or hi[2][0] != "num" or hi[2][1] != 8:
+                continue
+            hc, lc = self._half(hi[1]), self._half(lo)
+            if hc and lc and hc[1] is None and lc[1] is None and hc[0] == lc[0] + 1:
+                return lc[0]
+        return None
+
+    def _deref(self, addr):
+        """``(pointer cell, index or None)`` of a rung-(f) resolved deref, else None."""
+        if not self.derefs:
+            return None
+        ptr = self._ptr_cell(addr)
+        if ptr is not None:
+            return (ptr, None) if ptr in self.derefs else None
         if addr[0] != "add" or addr[3] != 2:
             return None
-        at = [i for i in (1, 2) if addr[i][0] == "num" and addr[i][2] == 2 and addr[i][1] >= 0x100]
-        if len(at) != 1 or addr[3 - at[0]][0] == "num":
-            return None
-        base, idx = addr[at[0]], addr[3 - at[0]]
-        return base[1], idx[1] if idx[0] == "zext" else idx
+        for a, b in ((addr[1], addr[2]), (addr[2], addr[1])):
+            ptr = self._ptr_cell(a)
+            if ptr is not None and ptr in self.derefs:
+                return ptr, b[1] if b[0] == "zext" else b
+        return None
 
     def _loadref(self, ir):
+        """``frameproc._memref``'s spelling of an access: a resolved deref, a row of a
+        named base, the register-file view, or ``mem[..]``, at the access's own width."""
         addr, w = ir[1], ir[2]
-        got = self._split(addr) if w == 1 else None
+        got = self._deref(addr)
+        if got is not None:
+            row = "" if got[1] is None else "[%s]" % self.fmt(got[1])
+            return "*%s%s%s" % (self.name(got[0]), row, sidprog._wsuf(w))
+        got = self._split(addr)
         if got is None:
             return "mem[%s]%s" % (self.fmt(addr), sidprog._wsuf(w))
         base, idx = got
-        if G.sid_base(base) is None:
-            return "%s[%s]" % (self.name(base), self.fmt(idx))
+        if w != 1 or G.sid_base(base) is None:
+            return "%s[%s]%s" % (self.name(base), self.fmt(idx), sidprog._wsuf(w))
         off = base - 0xD400  # rung (d)'s residue: the byte is the register file's index
         if off:
             wide = idx if _ir_width(idx, self.locw) == 2 else ("zext", idx)

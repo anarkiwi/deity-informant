@@ -119,36 +119,12 @@ def _spliced(name):
 
     ``_emit`` renders raw ``_Builder`` procedures, so a rung that rewrites a statement
     before emission is invisible to it; this is the emitter §8 step 4 installs, with the
-    declarations and the lo/hi registry the renderer reads (`tests/test_step4_splice.py`)."""
+    declarations, the lo/hi registry and the resolved derefs the renderer reads."""
     from unittest import mock  # pylint: disable=import-outside-toplevel
-
-    from deity_informant import framefuse  # pylint: disable=import-outside-toplevel
 
     model, frames, prog = _build(name)
     _lift_prog[name], _lift_ctx[name] = prog, (model, frames)
-    flat = [(e, st) for e, _p, _r, st in prog.procs]
-    info = frameproc._Info(flat, prog.play)
-    for _round in range(4):
-        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
-        info.summarize()
-        if before == (info.params, info.rets):
-            break
-    foot = eqlift_mem.Footprints(
-        flat,
-        info.open_flow,
-        framefuse._landings(model),
-        eqlift_mem._extent_spans(prog.extents, prog.data_decls),
-    )
-    pairs = frameprog._decl_pairs(prog.data_decls)
-    out = []
-    for entry, params, rets, stmts in prog.procs:
-        sig = "sub_%04X(%s)" % (entry, ", ".join(params))
-        out.append((sig + " -> %s" % ", ".join(rets) if rets else sig) + " {")
-        body = eqlift_mem.render_proc(
-            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs
-        )
-        out.extend(" " + ln for ln in body)
-        out.append("}")
+    out = eqlift_mem.artifact_lines(model, prog)
     with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: out):
         return frameprog.dumps(prog)
 

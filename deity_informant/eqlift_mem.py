@@ -355,12 +355,15 @@ def render_block(stmts, aliases=None):
         fn = _OP[mn]
         if mn in _CMP:
             return fn(conv(kids[0]), conv(kids[1]))
+        if mn == "INT_CARRY":
+            w = E.carry_lane(kids[0])  # the lane the carry is out of, not its own bit
         r = conv(kids[0])
         for kid in kids[1:]:
             r = fn(r, conv(kid), w)
         return r
 
-    avail = set()
+    avail = {n + ".0" for n in E.frameproc._ALL_REG_LOCALS}  # the block's own inputs
+    cur = {}
     for s in stmts:
         if s[0] == "asg":
             rhs = conv(s[2])
@@ -370,7 +373,9 @@ def render_block(stmts, aliases=None):
             defs.append((leaf, rhs))
             sk.append(("asg", s[1], rhs, ("loc", name), set(avail)))
             env[s[1]] = leaf
+            avail.discard(cur.get(s[1], s[1] + ".0"))  # the base no longer holds it
             avail.add(name)
+            cur[s[1]] = name
         elif s[0] == "st":
             v = conv(s[2])
             a = s[1]
@@ -397,12 +402,14 @@ def render_block(stmts, aliases=None):
 
 
 def _defined_at(ir, avail):
-    """True if every named-local leaf of ``ir`` is a block input or already defined."""
+    """True if every named-local leaf of ``ir`` is a version its base still holds.
+
+    ``avail`` is the site's own ``live()``, which carries the block inputs a base has
+    not been redefined over: a local renders as its base name, so a version the base
+    no longer holds spells another value however available it once was."""
     if not isinstance(ir, tuple):
         return True
     if ir[0] == "loc":
-        if ir[1].endswith(".0") and ir[1].split(".")[0] in E.frameproc._ALL_REG_LOCALS:
-            return True
         return ir[1] in avail
     return all(_defined_at(a, avail) for a in ir[1:] if isinstance(a, tuple))
 
@@ -773,23 +780,27 @@ class Footprints:
         return _cover(spans), wild
 
 
-def _reg_bases(ir, out):
+def _reg_bases(ir, out, regs_only=True):
+    """The local bases an extracted term names -- the text's own reads.
+
+    A local renders as its base name, so this is what the emitted line reads
+    whatever version the term carries."""
     if isinstance(ir, tuple):
         if ir[0] == "loc":
             base = ir[1].rpartition(".")[0]
-            if base in E.frameproc._ALL_REG_LOCALS:
+            if not regs_only or base in E.frameproc._ALL_REG_LOCALS:
                 out.add(base)
         else:
             for a in ir[1:]:
-                _reg_bases(a, out)
+                _reg_bases(a, out, regs_only)
     return out
 
 
 def _child_bodies(nd):
     if nd[0] == "if":
         return (nd[2], nd[3])
-    if nd[0] in ("loop", "callb"):
-        return (nd[1 if nd[0] == "loop" else 3],)
+    if nd[0] in ("loop", "callb", "for"):
+        return (nd[{"loop": 1, "callb": 3, "for": 4}[nd[0]]],)
     if nd[0] == "switch":
         return [arm for _lbl, arm in nd[1]]
     return ()
@@ -806,6 +817,12 @@ def _loc_names(ir, out):
 
 
 def _node_terms(nd):
+    """Every extracted-term index a node's rendered line names.
+
+    A term missing here is invisible to rooting, sharing and the §6 proofs, so a
+    spelling it alone reads would print a local no surviving def defines."""
+    if nd[0] == "pcall":
+        return tuple(nd[2])
     if nd[0] == "asg":
         return (nd[2],)
     if nd[0] == "st":
@@ -941,13 +958,17 @@ def _subst_loc(ir, name, repl):
 def _share_once(tree, dead, chosen, terms, chain=None):
     """``render_roots``' sharing rule over the render tree: a non-register subterm
     stays named only where more than one kept statement reads it; a name read once
-    is inlined and its def drops. Site-validity is required, so no stale version."""
+    is inlined and its def drops. Site-validity is required, so no stale version.
+
+    A base some surviving read names at a version no def carries -- what a join or a
+    havoc mints -- keeps every def it has: the text reads that base by name, and no
+    spelling of the one versioned use accounts for the read."""
     reg = E.frameproc._ALL_REG_LOCALS
     by_name = {nd[3]: nd for nd in _all_nodes(tree) if nd[0] == "asg"}
     changed = True
     while changed:
         changed = False
-        count, site = {}, {}
+        count, site, opaque = {}, {}, set()
 
         def scan(nodes):
             for nd in nodes:
@@ -959,12 +980,15 @@ def _share_once(tree, dead, chosen, terms, chain=None):
                     for nm in names:
                         count[nm] = count.get(nm, 0) + 1
                         site[nm] = ti
+                        d = by_name.get(nm)
+                        if d is None or id(d) in dead:
+                            opaque.add(nm.rpartition(".")[0])
                 for b in _child_bodies(nd):
                     scan(b)
 
         scan(tree)
         for name, nd in list(by_name.items()):
-            if id(nd) in dead or nd[1] in reg or count.get(name) != 1:
+            if id(nd) in dead or nd[1] in reg or nd[1] in opaque or count.get(name) != 1:
                 continue
             ti = site[name]
             defval = chosen[nd[2]]
@@ -992,41 +1016,45 @@ def _switch_head(pr, nd):
     return "switch call {" if nd[2] == "swc" else "switch %s {" % pr.name(nd[3])
 
 
-def _liveness(tree, info, entry, chosen):
-    """Backward register liveness over the render tree: id(node) -> live-out set.
+def _liveness(tree, info, entry, chosen, volatile=()):
+    """Backward liveness over the render tree, in the text's own reads: id -> live-out.
 
-    ``frameproc._Flow`` on the render tree, successor-aware cases included: a
-    computed transfer the next statement's ``swg``/``swc`` enumerates lands in one of
-    its arms, so it reads what they read, not every register the program has. Its
-    deletion role is gone (§5); what it answers now is which registers ``roots`` roots."""
-    reg = E.frameproc._ALL_REG_LOCALS
-    labmap, liveout, brk, cont = {}, {}, [], []
+    ``frameproc._Flow`` on the render tree, successor-aware cases included, and over
+    every local rather than the registers alone: a value local a join renames is read
+    by base name at a version no def carries, so only liveness sees that read. Its
+    deletion role is gone (§5); what it answers now is which asgs ``roots`` roots."""
+    labmap, liveout, brk, cont, armret = {}, {}, [], [], []
 
     def uses(i):
-        return _reg_bases(chosen[i], set())
+        return _reg_bases(chosen[i], set(), False)
 
     def node(nd, live, nxt=None):
         k = nd[0]
         if k == "asg":
-            if nd[1] in reg:
-                if nd[1] not in live:
-                    return live
-                live = set(live)
-                live.discard(nd[1])
+            if nd[1] != E.frameproc._SP and nd[1] not in live and id(nd) not in volatile:
+                return live  # faint: a dead target's operand reads are not uses
+            live = set(live)
+            live.discard(nd[1])
             return live | uses(nd[2])
         if k == "st":
             return live | uses(nd[2]) | (uses(nd[3]) if nd[3] is not None else set())
         if k == "if":
             return seq(nd[2], set(live)) | seq(nd[3], set(live)) | uses(nd[1])
-        if k == "loop":
+        if k in ("loop", "for"):
+            body = nd[1] if k == "loop" else nd[4]
             head = set()
             for _i in range(24):
-                h = loop(nd[1], live, head)
+                h = loop(body, live, head)
+                if k == "for":
+                    h.discard(nd[1])
                 if h <= head:
                     break
                 head |= h
-            loop(nd[1], live, head)
-            return head
+            out = loop(body, live, head)
+            if k == "for":
+                out |= live  # a for leaves by its own bottom: a loop leaves only by brk
+                out.discard(nd[1])  # the counter the for defines on entry is dead above
+            return out | head
         if k == "label":
             labmap[nd[1]] = labmap.get(nd[1], set()) | live
             return live
@@ -1041,9 +1069,21 @@ def _liveness(tree, info, entry, chosen):
                 if t in info.procs
                 else live | set(info.G)
             )
+        if k == "pcall":
+            args = set().union(*(uses(i) for i in nd[2])) if nd[2] else set()
+            if nd[1] in info.procs:
+                return (
+                    (live - (set(nd[3]) | info.must.get(nd[1], set()))) | info.livein[nd[1]] | args
+                )
+            return live | set(info.G) | args
         if k == "callb":
-            return seq(nd[3], set(live))
+            armret.append(set(live))  # the inlined callee's ret continues after the call
+            out = seq(nd[3], set(live))
+            armret.pop()
+            return out
         if k == "ret":
+            if nd[1]:
+                return set(armret[-1]) if armret else set(info.G)
             return set(info.ret_live(entry))
         if k == "cont":
             return set(cont[-1]) if cont else set(info.G)
@@ -1055,7 +1095,9 @@ def _liveness(tree, info, entry, chosen):
             out = set()
             for _lbl, arm in nd[1]:
                 brk.append(set(live))
+                armret.append(set(live))  # a call arm's ret continues after the dispatch
                 out |= seq(arm, set(live))  # an arm that falls off its end continues here
+                armret.pop()
                 brk.pop()
             return out if nd[2] in ("swg", "opsw") else out | set(info.G)
         if k in ("dcall", "dgoto"):
@@ -1068,9 +1110,26 @@ def _liveness(tree, info, entry, chosen):
             return (live if nd[2] is None or _dispatch(nxt) == "swg" else set(info.G)) | used
         return set(info.G)
 
+    def call_body(nodes):
+        """First index of an own-label some ``call`` enters, else None.
+
+        ``frameproc._Prune.seq``'s rule: such a body returns to its call sites and may
+        be entered again, so its exit carries the machine set -- textual fall-through
+        under-approximates, and a live register there reads as dead."""
+        labs = info.call_labels.get(entry)
+        if not labs:
+            return None
+        for i, nd in enumerate(nodes):
+            if nd[0] == "label" and nd[1] in labs:
+                return i
+        return None
+
     def seq(nodes, live):
-        nxt = None
-        for nd in reversed(nodes):
+        nxt, cb = None, call_body(nodes)
+        for j in range(len(nodes) - 1, -1, -1):
+            nd = nodes[j]
+            if cb is not None and j >= cb:
+                live = live | set(info.G)
             liveout[id(nd)] = set(live)
             live = node(nd, live, nxt)
             nxt = nd
@@ -1084,6 +1143,7 @@ def _liveness(tree, info, entry, chosen):
         cont.pop()
         return out
 
+    labmap.update({p: set(v) for p, v in info.labmap.get(entry, {}).items()})  # _Flow's seed
     for _i in range(24):
         before = {p: set(v) for p, v in labmap.items()}
         liveout.clear()
@@ -1161,19 +1221,21 @@ def _self_copies(tree, chosen, held):
     )
 
 
-def roots(tree, info, entry, chosen, dead_stores=(), scratch=()):
+def roots(tree, info, entry, chosen, dead_stores=(), scratch=(), volatile=()):
     """The observable roots of one rendered procedure (adoption §2), as node ids.
 
     Sinks are the surviving memory stores (``sid`` names the write-only $D400-$D41C
-    ones) and every control statement; the register locals rooted are those pass 2's
-    summary says a consumer reads. A store ``scratch`` names is observed by nobody."""
-    reg = E.frameproc._ALL_REG_LOCALS
-    live = _liveness(tree, info, entry, chosen)
+    ones) and every control statement; the asgs rooted are those a surviving read
+    names, register or value local. A store ``scratch`` names is observed by nobody,
+    and an asg in ``volatile`` reads an input, whose order is observable."""
+    live = _liveness(tree, info, entry, chosen, volatile)
     ids, sid = set(), set()
     for nd in _all_nodes(tree):
         k = nd[0]
         if k == "asg":
-            if nd[1] in reg and nd[1] in live.get(id(nd), reg):
+            # ``sp`` is machine state, never faint: a ret reads the stack through it
+            out = live.get(id(nd))
+            if nd[1] == E.frameproc._SP or id(nd) in volatile or out is None or nd[1] in out:
                 ids.add(id(nd))
         elif k == "st":
             if id(nd) in dead_stores or id(nd) in scratch:
@@ -1217,18 +1279,20 @@ def render_proc(
     foot=None,
     rets=(),
     pairs=None,
+    derefs=(),
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
     Memory forwards intra-block; a join carries the chain-held cells proved disjoint from
     every span it can write. ``budget`` is the procedure's share of the artifact's emit
     seconds, which extraction spends; sites past it render own-term. ``rets``
-    are the procedure's declared returns, which a valueless ``ret`` names, and ``pairs``
-    the declared lo/hi table registry the pack rendering reads."""
+    are the procedure's declared returns, which a valueless ``ret`` names, ``pairs``
+    the declared lo/hi table registry the pack rendering reads, and ``derefs`` the
+    pointer cells rung (f) resolved, which a deref address names."""
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
-    src, seeds, memdefs, wrspan, held = {}, [], [], {}, {}
+    src, seeds, memdefs, wrspan, held, volatile = {}, [], [], {}, {}, set()
     inedge, tgts = {}, _targets(stmts)
     dfs, ch = _Defs(src), _Chain()
 
@@ -1265,6 +1329,8 @@ def render_proc(
         if k == "const":
             return E.num(e[1] & E._mask(e[2]), e[2])
         if k == "loc":
+            # a parameter is read at a width no ``asg`` in this procedure states
+            locw.setdefault(e[1], e[2] if len(e) > 2 else 1)
             return E.loc(stt["env"].get(e[1], e[1] + ".0"))
         if k == "mem":
             return sel(stt["mem"], seed(conv(e[1]), e[1]), e[2])
@@ -1274,6 +1340,8 @@ def render_proc(
         fn = _OP[mn]
         if mn in _CMP:
             return fn(conv(kids[0]), conv(kids[1]))
+        if mn == "INT_CARRY":
+            w = E.carry_lane(kids[0])  # the lane the carry is out of, not its own bit
         r = conv(kids[0])
         for kid in kids[1:]:
             r = fn(r, conv(kid), w)
@@ -1285,16 +1353,26 @@ def render_proc(
 
     def live():
         """The versions a site may spell: a local renders as its base name, so a version
-        the base no longer holds reads as another value however available it once was."""
-        return {v for v in stt["env"].values() if v in avail}
+        the base no longer holds reads as another value however available it once was.
+
+        A register local's block input (``.0``) is one such version — spellable exactly
+        while the base has not been redefined over it."""
+        env = stt["env"]
+        cur = {v for v in env.values() if v in avail or v.rpartition(".")[2] == "0"}
+        return cur | {n + ".0" for n in E.frameproc._ALL_REG_LOCALS if n not in env}
 
     def havoc(names):
         for n in names:  # havoc names have no rendered def: never available to spell
             stt["env"][n] = "%s.%d" % (n, fresh())
             src.pop(n, None)
 
+    def havoc_locals():
+        """Every local a boundary may rewrite: a register the procedure has not assigned
+        yet is not in ``env``, and its block input would otherwise stay spellable."""
+        havoc(set(stt["env"]) | E.frameproc._ALL_REG_LOCALS)
+
     def havoc_all():
-        havoc(list(stt["env"]))
+        havoc_locals()
         n = fresh()
         ch.step(n, None, None)  # ⊤: no read crosses a havoc
         stt["mem"], stt["held"], stt["memv"] = memk(i64(n)), frozenset(), n
@@ -1340,7 +1418,7 @@ def render_proc(
     def wall(s):
         """A boundary the locals cannot cross: memory joins over what it can write."""
         pre_mem, pre_held, pre_ver = stt["mem"], stt["held"], stt["memv"]
-        havoc(list(stt["env"]))
+        havoc_locals()
         stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
 
     def walk(sl):
@@ -1355,6 +1433,8 @@ def render_proc(
                 locw[s[1]] = w
                 nd = ("asg", s[1], add(rhs, ("loc", name)), name, w)
                 nodes.append(nd)
+                if E.frameproc._reads_vol(s[2]):
+                    volatile.add(id(nd))  # an input read's order is observable (iota)
                 held[id(nd)] = stt["env"].get(s[1], s[1] + ".0")
                 stt["env"][s[1]] = name
                 src[s[1]] = s[2]
@@ -1401,18 +1481,20 @@ def render_proc(
                         stt["env"][n] = "%s.%d" % (n, fresh())
                         src.pop(n, None)
                 nodes.append(("if", ci, then, els))
-            elif k == "loop":
+            elif k in ("loop", "for"):
+                # a ``for``'s counter is written by the header, so it havocs with the body
+                stmts_of, wr = (s[1], set()) if k == "loop" else (s[4], {s[1]})
                 pre_mem, pre_av, pre_held = stt["mem"], set(avail), stt["held"]
                 pre_ver = stt["memv"]
-                havoc(_written(s[1]))
+                havoc(_written(stmts_of) | wr)
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 stt["cyc"] += 1
-                body = walk(s[1])
+                body = walk(stmts_of)
                 stt["cyc"] -= 1
                 avail.intersection_update(pre_av)
-                havoc(_written(s[1]))
+                havoc(_written(stmts_of) | wr)
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
-                nodes.append(("loop", body))
+                nodes.append(("loop", body) if k == "loop" else ("for", s[1], s[2], s[3], body))
             elif k == "label":
                 if foot is None or foot.joins(s[1]):
                     avail.clear()
@@ -1432,6 +1514,7 @@ def render_proc(
                 wall(s)
                 nodes.append(("pcall", s[1], ixs, list(s[3])))
             elif k == "callb":
+                havoc([E.frameproc._SP])  # the machine call moved the stack pointer
                 body = walk(s[3])
                 wall(("call", s[1], s[2]))  # what the call writes beyond the inlined body
                 nodes.append(("callb", s[1], s[2], body))
@@ -1447,6 +1530,8 @@ def render_proc(
                 for lbl, body in cases:
                     stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
                     stt["memv"] = pre_ver
+                    if k == "swc":
+                        havoc([E.frameproc._SP])  # a call arm is entered by a machine call
                     src.clear()
                     src.update(pre_src)
                     avail.intersection_update(pre_av)
@@ -1485,7 +1570,7 @@ def render_proc(
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
     saturate(eg, rs)
-    pr = E._Printer(aliases or {}, pairs, locw)
+    pr = E._Printer(aliases or {}, pairs, locw, derefs)
 
     def own_ir(i):
         """The site's own term: position-correct by construction, and what a spent
@@ -1547,7 +1632,7 @@ def render_proc(
     if stats is not None:
         stats["scratch"] = stats.get("scratch", 0) + len(scratch)
         stats["self_copy"] = stats.get("self_copy", 0) + len(noop)
-    keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch).ids, chosen)
+    keep = _root_keep(tree, roots(tree, info, entry, chosen, gone, scratch, volatile).ids, chosen)
     dead = ({id(nd) for nd in _all_nodes(tree)} - keep) | noop
     _share_once(tree, dead, chosen, terms, ch)
     if proofs is not None:
@@ -1566,8 +1651,57 @@ def render_proc(
     def pick(i):
         return pr.fmt(chosen[i])
 
+    def column(nd):
+        """``(base, index term or None)`` a live byte store writes, else None."""
+        if nd[0] != "st" or nd[4] != 1 or id(nd) in dead:
+            return None
+        a = nd[1]
+        return (a[1] & 0xFFFF, None) if a[0] == "const" else pr._split(chosen[nd[3]])
+
+    def pair_store(a, b):
+        """``(lo base, index, word)`` where two byte stores write one declared pair.
+
+        ``frameproc._pair_halves`` over the text the two lines would print: the halves
+        are the two truncs of one word, the columns are the registry's, and the order
+        is the declared one (lo then hi). The comparison is on the printed form because
+        that is what the lines read -- a local renders as its base name."""
+        if not pr.pairs:
+            return None
+        lcol, hcol = column(a), column(b)
+        if lcol is None or hcol is None or (lcol[1] is None) != (hcol[1] is None):
+            return None
+        if lcol[1] is not None and pr.fmt(lcol[1]) != pr.fmt(hcol[1]):
+            return None
+        site = pr._pair_columns(lcol[0], hcol[0], lcol[1])
+        if site is None:
+            return None
+        vl, vh = chosen[a[2]], chosen[b[2]]
+        if vl[0] != "trunc" or vh[0] != "trunc":
+            return None
+        sh = vh[1]
+        if sh[0] != "shr" or sh[2][0] != "num" or sh[2][1] != 8:
+            return None
+        return (site[0], site[1], vl[1]) if pr.fmt(sh[1]) == pr.fmt(vl[1]) else None
+
+    def shown(nodes, i):
+        """The next index at ``i`` or after whose node prints a line, else None."""
+        while i < len(nodes):
+            if nodes[i][0] not in ("asg", "st") or id(nodes[i]) not in dead:
+                return i
+            i += 1
+        return None
+
     def render(nodes, d):
-        for nd in nodes:
+        i = 0
+        while i < len(nodes):
+            nd = nodes[i]
+            i += 1
+            j = shown(nodes, i)  # the pair's halves are adjacent in the TEXT
+            got = None if j is None else pair_store(nd, nodes[j])
+            if got is not None:
+                pr.line("%s[%s]:2 = %s" % (pr.name(got[0]), pr.fmt(got[1]), pr.fmt(got[2])), d + 1)
+                i = j + 1
+                continue
             if nd[0] == "asg":
                 if id(nd) in dead:
                     continue
@@ -1595,13 +1729,17 @@ def render_proc(
                 if len(nd[3]) == 1 and nd[3][0][0] == "unobs":
                     pr.line("} else unobserved $%04X" % nd[3][0][1], d)
                     continue
-                if nd[3]:
+                if any(n[0] not in ("asg", "st") or id(n) not in dead for n in nd[3]):
                     pr.line("} else {", d)
                     render(nd[3], d + 1)
                 pr.line("}", d)
             elif nd[0] == "loop":
                 pr.line("loop {", d)
                 render(nd[1], d + 1)
+                pr.line("}", d)
+            elif nd[0] == "for":
+                pr.line("for %s in $%02X..$%02X {" % (nd[1], nd[2], nd[3]), d)
+                render(nd[4], d + 1)
                 pr.line("}", d)
             elif nd[0] == "label":
                 pr.line("$%04X:" % nd[1], d)
@@ -1873,10 +2011,15 @@ def _to_ir(ir):
 
 
 def _ew(e):
-    """Byte width of a pass-1 expression value (locals default to 1)."""
+    """Byte width of a pass-1 expression value (``grammar.store_width``'s rule).
+
+    A local states its own width where the tree carries one, which is what a word
+    local assigned into a byte-spelled destination would otherwise lose."""
     k = e[0]
     if k in ("const", "mem"):
         return e[2]
+    if k == "loc":
+        return e[2] if len(e) > 2 else 1
     if k == "op":
         mn = e[1]
         if mn == "INT_ZEXT":
@@ -2040,6 +2183,56 @@ def _written(stmts):
             out.update(s[3])
         for b in E.frameproc._stmt_bodies(s):
             out |= _written(b)
+    return out
+
+
+def render_ctx(model, prog):
+    """``(call summaries, footprints, pairs, derefs)`` the unified renderer reads.
+
+    Adoption §8 step 4's emitter context over the rung-built statements: the summary
+    ``repolish`` computed, the landings and extents the memory join consumes, the ONE
+    lo/hi registry, and rung (f)'s resolved pointer cells."""
+    from . import framefuse  # pylint: disable=import-outside-toplevel
+
+    flat = [(entry, stmts) for entry, _p, _r, stmts in prog.procs]
+    info = E.frameproc._Info(flat, prog.play)
+    info.summarize()
+    for _round in range(3):
+        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
+        info.summarize()
+        if before == (info.params, info.rets):
+            break
+    foot = Footprints(
+        flat,
+        info.open_flow,
+        framefuse._landings(model),
+        _extent_spans(prog.extents, prog.data_decls),
+    )
+    return (
+        info,
+        foot,
+        frameprog._decl_pairs(prog.data_decls),
+        {c for c, _i in prog.resolved.values()},
+    )
+
+
+def artifact_lines(model, prog):
+    """``frameproc.render_lines``' replacement: procedure bodies from the unified graph.
+
+    The headers are the program's own; every body is one saturation and one root
+    extraction over the procedure's statements (adoption §8 step 4)."""
+    info, foot, pairs, derefs = render_ctx(model, prog)
+    out = []
+    for entry, params, rets, stmts in prog.procs:
+        sig = "sub_%04X(%s)" % (entry, ", ".join(params))
+        if rets:
+            sig += " -> %s" % ", ".join(rets)
+        out.append(sig + " {")
+        body = render_proc(
+            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs, derefs=derefs
+        )
+        out.extend(" " + ln for ln in body)
+        out.append("}")
     return out
 
 

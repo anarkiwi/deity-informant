@@ -66,7 +66,7 @@ CASES = {  # row id -> (setup statements, spellings, the normal form extraction 
             PK(M(O("INT_ADD", (N(0x5429, 2), Z(L("y"))), 2)), M(_ROW)),
             M(_ROW, 2),
         ],
-        "mem[($5428 + zext2(y)):2]:2",
+        "m_5428[y]:2",  # the printer reads a word row's address at the dialect's breadth
     ),
     "lane-insert": (
         (),
