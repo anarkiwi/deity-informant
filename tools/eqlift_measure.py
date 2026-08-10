@@ -29,7 +29,7 @@ USAGE = """\
   python tools/eqlift_measure.py run --tunes Alioth --mode on  # one tune, one path
   python tools/eqlift_measure.py report out/eqlift_measure.json"""
 
-_FIELDS = ("off_lines", "on_lines", "d_lines", "d_stores", "sites", "changed", "proved")
+_FIELDS = ("off_lines", "on_lines", "d_lines", "d_stores", "extracted", "changed", "proved")
 
 
 def model_name(tune):
@@ -141,7 +141,7 @@ def rollup(rows):
                 "d_lines": on["lines"] - off["lines"],
                 "d_stores": on["stores"] - off["stores"],
                 "identical": off["sha"] == on["sha"],
-                "sites": on.get("sites", 0),
+                "extracted": on.get("sites", 0),
                 "changed": on.get("changed", 0),
                 "proved": on.get("proved", 0),
                 "off_fallback": off.get("fallback", 0),
@@ -166,19 +166,20 @@ def rollup(rows):
 
 def render(got):
     """The per-tune table plus the gate line, as the review records them."""
-    head = ("tune", "off_ln", "on_ln", "dlin", "dsto", "sites", "chg", "fb", "wall")
-    lines = ["%-44s %6s %6s %5s %5s %6s %6s %4s %6s" % head]
+    head = ("tune", "off_ln", "on_ln", "dlin", "dsto", "extr", "chg", "proved", "fb", "wall")
+    lines = ["%-44s %6s %6s %5s %5s %6s %6s %6s %4s %6s" % head]
     for r in got["rows"]:
         lines.append(
-            "%-44s %6d %6d %5d %5d %6d %6d %4d %6.1f %s"
+            "%-44s %6d %6d %5d %5d %6d %6d %6d %4d %6.1f %s"
             % (
                 r["tune"][-44:],
                 r["off_lines"],
                 r["on_lines"],
                 r["d_lines"],
                 r["d_stores"],
-                r["sites"],
+                r["extracted"],
                 r["changed"],
+                r["proved"],
                 max(r["on_fallback"], r["off_fallback"]),
                 r["wall_s"],
                 "identical" if r["identical"] else "DIFFERS",
@@ -186,10 +187,10 @@ def render(got):
         )
     t = got["totals"]
     lines.append(
-        "%-44s %6d %6d %5d %5d %6d %6d"
+        "%-44s %6d %6d %5d %5d %6d %6d %6d"
         % (
             "TOTAL (%d tunes, %d identical)" % (got["tunes"], got["identical"]),
-            *(t[f] for f in _FIELDS[:-1]),
+            *(t[f] for f in _FIELDS),
         )
     )
     lines.append(json.dumps({k: v for k, v in got.items() if k not in ("rows", "totals")}))
