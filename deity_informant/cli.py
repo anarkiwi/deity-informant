@@ -148,11 +148,10 @@ def cmd_decompile(args):
         return 1
     if args.report:
         sys.stderr.write(structured.format_report(model))
-    prog = frameprog.program(model)
-    art = frameprog.dumps(prog)
-    text = render_mod.render(model) if args.structured else art
+    prog = None if args.structured and not args.verify else frameprog.program(model)
+    text = render_mod.render(model) if args.structured else frameprog.dumps(prog)
     if args.verify:
-        rc = _verify(model, prog, art, args.frames, len(ev.wlog))
+        rc = _verify(model, prog, frameprog.dumps(prog), args.frames, len(ev.wlog))
         if rc:
             return rc
     if args.out:
