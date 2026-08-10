@@ -2200,7 +2200,9 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   are the ones that were spelling a version the base no longer held. A size ratchet is a
   steering metric and not a soundness law, so the new run is recorded as the baseline
   (`out/eqlift_measure_s4l3.json`) with this review rather than treated as a regression.
-  (10) **One context, not three.** `frameprog.render_ctx`/`unified_lines` are the emitter
+  (10) **One context, not three.** `eqlift_mem.render_ctx`/`artifact_lines` are the emitter
   context the switch will call, and `tests/test_step4_splice.py`, `test_shred_regmodel`'s
   `_spliced` and `tools/splice_sweep.py` all read it, so the cutover's emitter cannot drift
-  from the one the pins measure.
+  from the one the pins measure. It sits with the renderer rather than in `frameprog`
+  because `eqlift_mem` reads `frameprog._state_lines`, and the switch owes that cycle its
+  own answer.

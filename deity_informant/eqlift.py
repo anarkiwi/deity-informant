@@ -1130,15 +1130,15 @@ class _Printer:
         """``(pointer cell, index or None)`` of a rung-(f) resolved deref, else None."""
         if not self.derefs:
             return None
-        cell = self._ptr_cell(addr)
-        if cell is not None:
-            return (cell, None) if cell in self.derefs else None
+        ptr = self._ptr_cell(addr)
+        if ptr is not None:
+            return (ptr, None) if ptr in self.derefs else None
         if addr[0] != "add" or addr[3] != 2:
             return None
         for a, b in ((addr[1], addr[2]), (addr[2], addr[1])):
-            cell = self._ptr_cell(a)
-            if cell is not None and cell in self.derefs:
-                return cell, b[1] if b[0] == "zext" else b
+            ptr = self._ptr_cell(a)
+            if ptr is not None and ptr in self.derefs:
+                return ptr, b[1] if b[0] == "zext" else b
         return None
 
     def _loadref(self, ir):

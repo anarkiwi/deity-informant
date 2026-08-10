@@ -1667,12 +1667,12 @@ def render_proc(
         that is what the lines read -- a local renders as its base name."""
         if not pr.pairs:
             return None
-        lo, hi = column(a), column(b)
-        if lo is None or hi is None or (lo[1] is None) != (hi[1] is None):
+        lcol, hcol = column(a), column(b)
+        if lcol is None or hcol is None or (lcol[1] is None) != (hcol[1] is None):
             return None
-        if lo[1] is not None and pr.fmt(lo[1]) != pr.fmt(hi[1]):
+        if lcol[1] is not None and pr.fmt(lcol[1]) != pr.fmt(hcol[1]):
             return None
-        site = pr._pair_columns(lo[0], hi[0], lo[1])
+        site = pr._pair_columns(lcol[0], hcol[0], lcol[1])
         if site is None:
             return None
         vl, vh = chosen[a[2]], chosen[b[2]]
@@ -2183,6 +2183,56 @@ def _written(stmts):
             out.update(s[3])
         for b in E.frameproc._stmt_bodies(s):
             out |= _written(b)
+    return out
+
+
+def render_ctx(model, prog):
+    """``(call summaries, footprints, pairs, derefs)`` the unified renderer reads.
+
+    Adoption §8 step 4's emitter context over the rung-built statements: the summary
+    ``repolish`` computed, the landings and extents the memory join consumes, the ONE
+    lo/hi registry, and rung (f)'s resolved pointer cells."""
+    from . import framefuse  # pylint: disable=import-outside-toplevel
+
+    flat = [(entry, stmts) for entry, _p, _r, stmts in prog.procs]
+    info = E.frameproc._Info(flat, prog.play)
+    info.summarize()
+    for _round in range(3):
+        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
+        info.summarize()
+        if before == (info.params, info.rets):
+            break
+    foot = Footprints(
+        flat,
+        info.open_flow,
+        framefuse._landings(model),
+        _extent_spans(prog.extents, prog.data_decls),
+    )
+    return (
+        info,
+        foot,
+        frameprog._decl_pairs(prog.data_decls),
+        {c for c, _i in prog.resolved.values()},
+    )
+
+
+def artifact_lines(model, prog):
+    """``frameproc.render_lines``' replacement: procedure bodies from the unified graph.
+
+    The headers are the program's own; every body is one saturation and one root
+    extraction over the procedure's statements (adoption §8 step 4)."""
+    info, foot, pairs, derefs = render_ctx(model, prog)
+    out = []
+    for entry, params, rets, stmts in prog.procs:
+        sig = "sub_%04X(%s)" % (entry, ", ".join(params))
+        if rets:
+            sig += " -> %s" % ", ".join(rets)
+        out.append(sig + " {")
+        body = render_proc(
+            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs, derefs=derefs
+        )
+        out.extend(" " + ln for ln in body)
+        out.append("}")
     return out
 
 

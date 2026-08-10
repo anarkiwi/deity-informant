@@ -635,53 +635,6 @@ def program(model, extents=None):
     )
 
 
-def render_ctx(model, prog):
-    """``(call summaries, footprints, pairs, derefs)`` the unified renderer reads.
-
-    Adoption §8 step 4's emitter context over the rung-built statements: the summary
-    ``repolish`` computed, the landings and extents the memory join consumes, the ONE
-    lo/hi registry, and rung (f)'s resolved pointer cells."""
-    from . import eqlift_mem  # pylint: disable=import-outside-toplevel
-
-    flat = [(entry, stmts) for entry, _p, _r, stmts in prog.procs]
-    info = frameproc._Info(flat, prog.play)
-    info.summarize()
-    for _round in range(3):
-        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
-        info.summarize()
-        if before == (info.params, info.rets):
-            break
-    foot = eqlift_mem.Footprints(
-        flat,
-        info.open_flow,
-        framefuse._landings(model),
-        eqlift_mem._extent_spans(prog.extents, prog.data_decls),
-    )
-    return info, foot, _decl_pairs(prog.data_decls), {c for c, _i in prog.resolved.values()}
-
-
-def unified_lines(model, prog):
-    """``frameproc.render_lines``' replacement: procedure bodies from the unified graph.
-
-    The headers are the program's own; every body is one saturation and one root
-    extraction over the procedure's statements (adoption §8 step 4)."""
-    from . import eqlift_mem  # pylint: disable=import-outside-toplevel
-
-    info, foot, pairs, derefs = render_ctx(model, prog)
-    out = []
-    for entry, params, rets, stmts in prog.procs:
-        sig = "sub_%04X(%s)" % (entry, ", ".join(params))
-        if rets:
-            sig += " -> %s" % ", ".join(rets)
-        out.append(sig + " {")
-        body = eqlift_mem.render_proc(
-            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs, derefs=derefs
-        )
-        out.extend(" " + ln for ln in body)
-        out.append("}")
-    return out
-
-
 def dumps(prog):
     """Canonical frameprog text; ``dumps(loads(t)) == t`` for canonical ``t``."""
     if not isinstance(prog, FrameProgram):

@@ -124,7 +124,7 @@ def _spliced(name):
 
     model, frames, prog = _build(name)
     _lift_prog[name], _lift_ctx[name] = prog, (model, frames)
-    out = frameprog.unified_lines(model, prog)
+    out = eqlift_mem.artifact_lines(model, prog)
     with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: out):
         return frameprog.dumps(prog)
 

@@ -30,6 +30,7 @@ CHECKS = ("error", "parse", "lint", "fixpoint", "gate")
 
 def one(entry, frames, baseline):
     """One tune's verdict on each check, or the exception that stopped it."""
+    from deity_informant import eqlift_mem
     from deity_informant import frameprog
     from deity_informant import frameproc
     from deity_informant import frameval
@@ -48,7 +49,7 @@ def one(entry, frames, baseline):
         if baseline:
             text = frameprog.dumps(prog)
         else:
-            lines = frameprog.unified_lines(model, prog)
+            lines = eqlift_mem.artifact_lines(model, prog)
             with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: lines):
                 text = frameprog.dumps(prog)
         row["lines"] = len(text.splitlines())

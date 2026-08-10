@@ -31,7 +31,7 @@ def _example():
 
 def _spliced_text(model, prog):
     """The step-4 artifact: frameprog's own text with the unified renderer spliced in."""
-    lines = frameprog.unified_lines(model, prog)
+    lines = eqlift_mem.artifact_lines(model, prog)
     with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: lines):
         return frameprog.dumps(prog)
 
@@ -73,7 +73,7 @@ def test_the_splice_plumbing_is_not_the_blocker(example):
     Call summaries, footprints, landings and extents all come up on frameprog's own
     procedures, so the blocker below is a statement form and not an API mismatch."""
     model, _frames, prog = example
-    info, foot, _pairs, _derefs = frameprog.render_ctx(model, prog)
+    info, foot, _pairs, _derefs = eqlift_mem.render_ctx(model, prog)
     assert set(info.procs) == {entry for entry, _p, _r, _s in prog.procs}
     assert all(foot.of(entry) is not None for entry, _p, _r, _s in prog.procs)
 
@@ -92,7 +92,7 @@ def test_the_rung_minted_narrowing_copy_is_a_term(example):
         kid[0] == "loc" and kid[2] == 2 for t in terms for kid in t[2]
     ), "no width-one COPY reads a fused u16 local"
     first, _params, _rets, stmts = prog.procs[0]
-    body = eqlift_mem.render_proc(stmts, prog.symbols, first, frameprog.render_ctx(model, prog)[0])
+    body = eqlift_mem.render_proc(stmts, prog.symbols, first, eqlift_mem.render_ctx(model, prog)[0])
     assert body and any("trunc1(" in ln for ln in body), "no narrowing read survived"
 
 
