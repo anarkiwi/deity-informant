@@ -1,0 +1,289 @@
+"""The eqlift ON/OFF measurement over the exemplar set, off dumped frameprog texts.
+
+A package edit costs one cold decompile sweep, so the lift is measured from texts
+dumped once: ``dump`` writes them, ``run`` lifts each tune on both paths and proves
+its sites, ``report`` rolls the artifact up into the review's gate.
+"""
+
+import argparse
+import hashlib
+import json
+import multiprocessing as mp
+import resource
+import signal
+import sys
+import time
+from pathlib import Path
+
+import _sweep
+import exemplars
+
+ROOT = _sweep.ROOT
+sys.path.insert(0, str(ROOT))
+
+MODELS = ROOT / "out" / "eqlift-models"
+
+USAGE = """\
+  python tools/eqlift_measure.py dump                          # the exemplars' frameprog texts
+  python tools/eqlift_measure.py run --prove                   # both paths, all sites proved
+  python tools/eqlift_measure.py run --tunes Alioth --mode on  # one tune, one path
+  python tools/eqlift_measure.py report out/eqlift_measure.json"""
+
+_FIELDS = ("off_lines", "on_lines", "d_lines", "d_stores", "extracted", "changed", "proved")
+
+
+def model_name(tune):
+    """The dumped text's file stem: a tune id with its separators flattened."""
+    return tune.replace("/", "~")
+
+
+def stores(text):
+    """Emitted store statements: a destination that indexes or names memory."""
+    return sum(1 for ln in text.splitlines() if "=" in ln and "[" in ln.split("=")[0])
+
+
+def dump(entry, models):
+    """One exemplar's frameprog text, written off the artifact cache."""
+    from deity_informant import frameprog
+    from deity_informant.c64 import load_psid
+
+    try:
+        signal.alarm(_sweep.CAP_S)
+        sid, sub, secs = entry
+        mem, _load, init, play = load_psid(Path(sid).read_bytes())
+        mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
+        model, _ev = _sweep.decompile(mem, init, play, int(secs * 50), sub)
+        text = frameprog.dumps(frameprog.program(model))
+        path = Path(models) / (model_name(_sweep.tune_id(sid)) + ".fp")
+        path.write_text(text, encoding="utf-8")
+        return {**_sweep.row_head(entry), "bytes": len(text)}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
+    finally:
+        signal.alarm(0)
+
+
+def lift(path, mode, prove):
+    """One tune on one path: text, size, extraction fallbacks, and the §6 proofs.
+
+    A proof that refuses is recorded as this row's named refusal -- the anti-vacuity
+    guard and a failed equivalence are results the review reads, never a pass."""
+    from deity_informant import eqlift_mem
+    from deity_informant import frameprog
+
+    tune = Path(path).stem.replace("~", "/")
+    row = {"tune": tune, "name": tune.rsplit("/", 1)[-1], "mode": bool(mode)}
+    try:
+        signal.alarm(_sweep.CAP_S)
+        model = frameprog.block_model(frameprog.parse(Path(path).read_text(encoding="utf-8")))
+        proofs, stats = ([] if prove else None), {}
+        t0 = time.monotonic()
+        text, _ = eqlift_mem.emit(model, root_extract=bool(mode), proofs=proofs, stats=stats)
+        row.update(
+            wall_s=round(time.monotonic() - t0, 1),
+            lines=len(text.splitlines()),
+            bytes=len(text),
+            stores=stores(text),
+            sha=hashlib.sha256(text.encode()).hexdigest(),
+            sites=stats.get("sites", 0),
+            fallback=stats.get("extract_fallback", 0),
+            text=text,
+        )
+        if prove:
+            t1 = time.monotonic()
+            try:
+                row["proved"] = sum(eqlift_mem.verify_sites(p) for p in proofs)
+            except AssertionError as exc:
+                row["refused"] = str(exc)
+            row["changed"] = sum(1 for p in proofs for a, b in p.get("pairs", ()) if a != b)
+            row["proof_s"] = round(time.monotonic() - t1, 1)
+        return row
+    except Exception as exc:  # pylint: disable=broad-except
+        return {**row, "error": "%s: %s" % (type(exc).__name__, exc)}
+    finally:
+        signal.alarm(0)
+
+
+def _lift(job):
+    return lift(*job)
+
+
+def _arm(cap_gb):
+    """Pool initialiser: the build cap, plus an address-space cap so a saturation that
+    outruns its budget is one worker's ``MemoryError`` row and not the whole run."""
+    _sweep.arm()
+    if cap_gb:
+        resource.setrlimit(resource.RLIMIT_AS, (cap_gb << 30, cap_gb << 30))
+
+
+def rollup(rows):
+    """Pair each tune's two paths and gate them: no fault, no refusal, no regression.
+
+    ON may never emit more lines or stores than OFF, and a tune whose sites changed
+    under saturation must carry their proofs."""
+    by = {}
+    for r in rows:
+        key = (r["tune"], bool(r["mode"]))
+        if key in by:
+            raise ValueError("two rows for %s %s" % key)
+        by[key] = r
+    tunes, recs, faults = sorted({t for t, _m in by}), [], []
+    for tune in tunes:
+        off, on = by.get((tune, False)), by.get((tune, True))
+        if off is None or on is None or "error" in off or "error" in on:
+            faults.append(tune)
+            continue
+        recs.append(
+            {
+                "tune": tune,
+                "off_lines": off["lines"],
+                "on_lines": on["lines"],
+                "d_lines": on["lines"] - off["lines"],
+                "d_stores": on["stores"] - off["stores"],
+                "identical": off["sha"] == on["sha"],
+                "extracted": on.get("sites", 0),
+                "changed": on.get("changed", 0),
+                "proved": on.get("proved", 0),
+                "off_fallback": off.get("fallback", 0),
+                "on_fallback": on.get("fallback", 0),
+                "wall_s": max(off["wall_s"], on["wall_s"]),
+            }
+        )
+    out = {
+        "tunes": len(recs),
+        "faults": faults,
+        "refused": sorted(r["tune"] for r in rows if "refused" in r),
+        "regressed": sorted(r["tune"] for r in recs if r["d_lines"] > 0 or r["d_stores"] > 0),
+        "unproved": sorted(r["tune"] for r in recs if r["changed"] and not r["proved"]),
+        "identical": sum(1 for r in recs if r["identical"]),
+        "fallback_tunes": sorted(r["tune"] for r in recs if r["on_fallback"] or r["off_fallback"]),
+        "totals": {f: sum(r[f] for r in recs) for f in _FIELDS},
+        "rows": recs,
+    }
+    out["clean"] = not (out["faults"] or out["refused"] or out["regressed"] or out["unproved"])
+    return out
+
+
+def render(got):
+    """The per-tune table plus the gate line, as the review records them."""
+    head = ("tune", "off_ln", "on_ln", "dlin", "dsto", "extr", "chg", "proved", "fb", "wall")
+    lines = ["%-44s %6s %6s %5s %5s %6s %6s %6s %4s %6s" % head]
+    for r in got["rows"]:
+        lines.append(
+            "%-44s %6d %6d %5d %5d %6d %6d %6d %4d %6.1f %s"
+            % (
+                r["tune"][-44:],
+                r["off_lines"],
+                r["on_lines"],
+                r["d_lines"],
+                r["d_stores"],
+                r["extracted"],
+                r["changed"],
+                r["proved"],
+                max(r["on_fallback"], r["off_fallback"]),
+                r["wall_s"],
+                "identical" if r["identical"] else "DIFFERS",
+            )
+        )
+    t = got["totals"]
+    lines.append(
+        "%-44s %6d %6d %5d %5d %6d %6d %6d"
+        % (
+            "TOTAL (%d tunes, %d identical)" % (got["tunes"], got["identical"]),
+            *(t[f] for f in _FIELDS),
+        )
+    )
+    lines.append(json.dumps({k: v for k, v in got.items() if k not in ("rows", "totals")}))
+    return "\n".join(lines)
+
+
+def _dump_main(args):
+    models = Path(args.models)
+    models.mkdir(parents=True, exist_ok=True)
+    names = [t.split(exemplars.M)[1] for t in exemplars.EXEMPLARS]
+    ents = _sweep.entries(args.tunes.split(",") if args.tunes else names)
+    if not ents:
+        sys.exit("no cached tune matched")
+    with mp.Pool(min(len(ents), args.procs), _sweep.arm) as pool:
+        rows = _sweep.check_rows(pool.starmap(dump, [(e, str(models)) for e in ents]))
+    bad = [r for r in rows if "error" in r]
+    print(json.dumps({"dumped": len(rows) - len(bad), "into": str(models), "refused": bad}))
+    return 1 if bad else 0
+
+
+def _run_main(args):
+    paths = sorted(Path(args.models).glob("*.fp"))
+    if args.tunes:
+        want = args.tunes.split(",")
+        paths = [p for p in paths if any(w in p.stem for w in want)]
+    if not paths:
+        sys.exit("no dumped model matched; run `dump` first")
+    modes = {"both": (False, True), "on": (True,), "off": (False,)}[args.mode]
+    jobs = [(str(p), m, args.prove) for p in paths for m in modes]
+    t0 = time.monotonic()
+    rows = []
+    with mp.Pool(min(len(jobs), args.procs), _arm, (args.cap_gb,)) as pool:
+        for r in pool.imap_unordered(_lift, jobs):
+            rows.append(r)
+            print(
+                "%3d/%d %-46s %s %s"
+                % (
+                    len(rows),
+                    len(jobs),
+                    r["name"],
+                    "on " if r["mode"] else "off",
+                    r.get("error") or r.get("refused") or r["wall_s"],
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+    if args.texts:
+        out = Path(args.texts)
+        out.mkdir(parents=True, exist_ok=True)
+        for r in rows:
+            if "text" in r:
+                name = "%s.%s.txt" % (model_name(r["tune"]), "on" if r["mode"] else "off")
+                (out / name).write_text(r["text"], encoding="utf-8")
+    for r in rows:
+        r.pop("text", None)
+    got = rollup(rows)
+    art = {"wall_s": round(time.monotonic() - t0, 1), "rows": rows, "rollup": got}
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(art, indent=1), encoding="utf-8")
+    print(render(got))
+    return 0 if got["clean"] else 1
+
+
+def _report_main(args):
+    got = rollup(json.loads(Path(args.artifact).read_text(encoding="utf-8"))["rows"])
+    print(render(got))
+    return 0 if got["clean"] else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("dump", help="write the exemplars' frameprog texts")
+    d.add_argument("--tunes", help="comma-separated tune ids or stems; default the exemplar set")
+    r = sub.add_parser("run", help="lift every dumped text on both paths")
+    r.add_argument("--tunes", help="substring filter over the dumped stems")
+    r.add_argument("--mode", default="both", choices=("both", "on", "off"))
+    r.add_argument("--prove", action="store_true", help="run the adoption §6 site proofs")
+    r.add_argument("--texts", help="directory to write every emitted text into")
+    r.add_argument("-o", "--out", default=str(ROOT / "out" / "eqlift_measure.json"))
+    r.add_argument("--cap-gb", type=int, default=6, help="per-worker address-space cap; 0 off")
+    p = sub.add_parser("report", help="roll a run artifact up")
+    p.add_argument("artifact")
+    for q in (d, r):
+        q.add_argument("-j", "--procs", type=int, default=24)
+        q.add_argument("--models", default=str(MODELS))
+    args = ap.parse_args(argv)
+    return {"dump": _dump_main, "run": _run_main, "report": _report_main}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

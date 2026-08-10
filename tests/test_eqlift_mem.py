@@ -527,3 +527,78 @@ def test_verify_sites_reads_the_store_chain_not_the_name():
     assert mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x40, 2), 1), ("loc", "x.1"))]}) == 1
     with pytest.raises(AssertionError):
         mem.verify_sites({"pairs": [(("sel", chain, ("num", 0x41, 2), 1), ("loc", "x.1"))]})
+
+
+_ACROSS_CALL = [
+    ("asg", "a", ("const", 5, 1)),
+    ("call", 0x1000, 0x1003),
+    ("asg", "a", ("op", "INT_ADD", (("loc", "a"), ("const", 1, 1)), 1)),
+    ("st", ("const", 0x40, 1), ("loc", "a")),
+]
+
+
+@pytest.mark.parametrize("root", (False, True))
+def test_havoc_versions_do_not_collide_with_def_versions(root):
+    """Two counters over one ``<base>.<n>`` namespace equate a havoc with a def: the
+    call's havoc of ``a`` took the pre-call def's name, so the graph folded $05 across
+    the call and printed ``zp_40 = $06``, and Alioth's proof read ``x.3 = x.3 + 1``."""
+    assert mem.render_proc(_ACROSS_CALL, root_extract=root)[-2:] == ["a = (a + $01)", "zp_40 = a"]
+    proofs = {}
+    mem.render_proc(_ACROSS_CALL, root_extract=root, proofs=proofs)
+    for name, rhs in proofs["defs"].items():
+        got = []
+        mem._count_locs(rhs, got)
+        assert name not in got  # a fresh version is never read by its own definition
+    assert mem.verify_sites(proofs) == len(proofs["pairs"])
+
+
+def test_extraction_budget_falls_back_to_the_site_term():
+    """A spent share renders the remaining sites from their own term -- position-correct
+    and sound at any cutoff -- and reports how many; the forwarding is what is given up."""
+    spent, ample = {}, {}
+    assert mem.render_proc(_spill_over(_PUSH), budget=0.0, stats=spent)[-1] == "zp_41 = zp_40"
+    assert 0 < spent["sites"] == spent["extract_fallback"]
+    assert mem.render_proc(_spill_over(_PUSH), budget=30.0, stats=ample)[-1] == "zp_41 = x"
+    assert ample["extract_fallback"] == 0 and ample["sites"] == spent["sites"]
+
+
+def test_memory_versions_are_named_so_a_copy_chain_cannot_double():
+    """``m[a] = m[b]`` embeds the chain in its own value, so an unnamed chain doubles
+    per copy -- 38 of them is 2**38 nodes and the graph build dies before saturation.
+    Each version is one store over the previous name, so the term stays linear."""
+    stmts = [("st", ("const", 0x40 + i, 1), ("mem", ("const", 0x60 + i, 1), 1)) for i in range(12)]
+    proofs = {}
+    assert mem.render_proc(stmts, proofs=proofs)[:2] == ["zp_40 = zp_60", "zp_41 = zp_61"]
+    chains = list(proofs["mems"].values())
+    assert len(chains) == 12
+    assert all(c[0] == "store" and c[1][0] in ("mem0", "memk") for c in chains)
+    assert mem.verify_sites(proofs) == len(proofs["pairs"])
+
+
+def _swg_arm(lbl, cell):
+    """A dispatch arm that redefines the flag before reading it, then rejoins."""
+    return (
+        lbl,
+        [
+            ("asg", "cflag", ("const", 0, 1)),
+            ("if", "if", ("loc", "cflag"), [("st", ("const", cell, 1), ("const", 5, 1))], []),
+            ("goto", 0x2000),
+        ],
+    )
+
+
+_DISPATCH = [
+    ("asg", "cflag", ("const", 1, 1)),
+    ("dgoto", ("loc", "ptr")),
+    ("swg", (_swg_arm("$1000", 0x40), _swg_arm("$1010", 0x41))),
+    ("label", 0x2000),
+    ("ret", None),
+]
+
+
+@pytest.mark.parametrize("root", (False, True))
+def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms(root):
+    """``_liveness`` is ``frameproc._Flow`` on the render tree and dropped its
+    successor-aware cases, so every computed transfer read every register the program
+    reads: a flag no arm reads was boundary-live and its definition was rooted."""
+    assert mem.render_proc(_DISPATCH, root_extract=root)[0] == "goto (ptr)"

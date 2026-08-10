@@ -562,18 +562,24 @@ def _temp_sweep(tree, dead, chosen):
             return
 
 
+def _dispatch(nd):
+    """The frameprog statement kind a rendered ``switch`` node came from, or None."""
+    return nd[2] if nd is not None and nd[0] == "switch" else None
+
+
 def _liveness(tree, info, entry, chosen):
     """Backward register liveness over the render tree: id(node) -> live-out set.
 
-    The interprocedural ``_Info`` supplies call/goto/dynamic/return live-out, so
-    this is pass 2's boundary summary in the form root extraction reads."""
+    ``frameproc._Flow`` on the render tree, successor-aware cases included: a
+    computed transfer the next statement's ``swg``/``swc`` enumerates lands in one of
+    its arms, so it reads what they read, not every register the program has."""
     reg = E.frameproc._ALL_REG_LOCALS
     labmap, liveout, brk, cont = {}, {}, [], []
 
     def uses(i):
         return _reg_bases(chosen[i], set())
 
-    def node(nd, live):
+    def node(nd, live, nxt=None):
         k = nd[0]
         if k == "asg":
             if nd[1] in reg:
@@ -623,21 +629,25 @@ def _liveness(tree, info, entry, chosen):
             out = set()
             for _lbl, arm in nd[1]:
                 brk.append(set(live))
-                out |= seq(arm, set())
+                out |= seq(arm, set(live))  # an arm that falls off its end continues here
                 brk.pop()
-            return out | set(info.G)
+            return out if nd[2] in ("swg", "opsw") else out | set(info.G)
         if k in ("dcall", "dgoto"):
-            return set(info.G) | uses(nd[1])
+            want = "swc" if k == "dcall" else "swg"
+            return (live if _dispatch(nxt) == want else set(info.G)) | uses(nd[1])
         if k == "dbr":
             return set(info.G) | uses(nd[2]) | uses(nd[3])
         if k == "igoto":
-            return set(info.G) | (uses(nd[2]) if nd[2] is not None else set())
+            used = uses(nd[2]) if nd[2] is not None else set()
+            return (live if nd[2] is None or _dispatch(nxt) == "swg" else set(info.G)) | used
         return set(info.G)
 
     def seq(nodes, live):
+        nxt = None
         for nd in reversed(nodes):
             liveout[id(nd)] = set(live)
-            live = node(nd, live)
+            live = node(nd, live, nxt)
+            nxt = nd
         return live
 
     def loop(body, brk_live, head):
@@ -725,18 +735,25 @@ def _root_keep(tree, rootids, chosen):
 
 
 def render_proc(
-    stmts, aliases=None, entry=0, info=None, root_extract=None, proofs=None, budget=None
+    stmts,
+    aliases=None,
+    entry=0,
+    info=None,
+    root_extract=None,
+    proofs=None,
+    budget=None,
+    stats=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
-    Memory forwards intra-block; at a branch join or loop head only the addresses
-    written under the branch are havoced, so cells invariant across it still
-    forward. ``root_extract`` selects the stage-3a root path (default ``ROOT_EXTRACT``),
-    and ``budget`` is this procedure's share of the artifact's saturation seconds."""
+    Memory forwards intra-block; at a join only the addresses written under the branch
+    are havoced. ``budget`` is the procedure's share of the artifact's emit seconds, spent
+    by saturation (capped at ``BUDGET_S``) then extraction; sites past it render own-term."""
     root_extract = ROOT_EXTRACT if root_extract is None else root_extract
-    stt = {"env": {}, "mem": mem0(), "ver": 0, "k": 0}
+    deadline = None if budget is None else time.monotonic() + budget
+    stt = {"env": {}, "mem": mem0(), "k": 0}
     defs, terms, avail, locw, mempairs = [], [], set(), {}, []
-    src, seeds = {}, []
+    src, seeds, memdefs = {}, [], []
     dfs = _Defs(src)
 
     def seed(term, e):
@@ -746,12 +763,21 @@ def render_proc(
             seeds.append((term, got[0], got[1]))
         return term
 
-    def bump(key):
-        stt[key] += 1
-        return stt[key]
+    def fresh():
+        """One counter for every fresh name: a def version and a havoc version drawn
+        from two counters collide on ``<base>.<n>`` and equate unrelated values."""
+        stt["k"] += 1
+        return stt["k"]
+
+    def remember(chain):
+        """Name the memory version, as a def names a value: a store of a load embeds
+        the chain twice, so an unnamed chain is exponential in the number of them."""
+        n = fresh()
+        memdefs.append((n, chain))
+        return memk(i64(n))
 
     def join_mem(pre_mem, s):
-        return _join_mem(pre_mem, [s], lambda: bump("k"))
+        return remember(_join_mem(pre_mem, [s], fresh))
 
     def conv(e):
         k = e[0]
@@ -778,12 +804,12 @@ def render_proc(
 
     def havoc(names):
         for n in names:  # havoc names have no rendered def: never available to spell
-            stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+            stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
             src.pop(n, None)
 
     def havoc_all():
         havoc(list(stt["env"]))
-        stt["mem"] = memk(i64(bump("k")))
+        stt["mem"] = memk(i64(fresh()))
 
     def walk(sl):
         nodes = []
@@ -791,7 +817,7 @@ def render_proc(
             k = s[0]
             if k == "asg":
                 rhs = conv(s[2])
-                name = "%s.%d" % (s[1], bump("ver"))
+                name = "%s.%d" % (s[1], fresh())
                 defs.append((name, E.loc(name), rhs))
                 locw[s[1]] = locw.get(s[2][1], 1) if s[2][0] == "loc" else _ew(s[2])
                 nodes.append(("asg", s[1], add(rhs, ("loc", name)), name))
@@ -803,7 +829,7 @@ def render_proc(
                 a = s[1]
                 addr = E.num(a[1] & E._mask(a[2]), a[2]) if a[0] == "const" else seed(conv(a), a)
                 pre = stt["mem"]
-                stt["mem"] = store(pre, addr, v, _ew(s[2]))
+                stt["mem"] = remember(store(pre, addr, v, _ew(s[2])))
                 ai = None if a[0] == "const" else add(addr)
                 own = ("cell", a[1] & E._mask(a[2]), _ew(s[2]), 0) if a[0] == "const" else None
                 nd = ("st", a, add(v, own), ai, _ew(s[2]))
@@ -832,7 +858,7 @@ def render_proc(
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) is c and els_env.get(n) is c):
-                        stt["env"][n] = E.loc("%s.%d" % (n, bump("k")))
+                        stt["env"][n] = E.loc("%s.%d" % (n, fresh()))
                         src.pop(n, None)
                 nodes.append(("if", ci, then, els))
             elif k == "loop":
@@ -873,7 +899,7 @@ def render_proc(
                     arms.append((lbl, walk(body)))
                 avail.intersection_update(pre_av)
                 havoc_all()
-                nodes.append(("switch", arms))
+                nodes.append(("switch", arms, k))
             elif k == "dbr":
                 pair = (add(conv(s[2])), add(conv(s[3])))
                 havoc_all()
@@ -893,17 +919,25 @@ def render_proc(
     eg = EGraph()
     for _n, leaf, rhs in defs:
         eg.register(union(leaf).with_(rhs))
+    for n, chain in memdefs:
+        eg.register(union(memk(i64(n))).with_(chain))
     for t, l, h in seeds:  # the interval bridge: bit analyses read as e-class bounds
         eg.register(set_(lo(t)).to(i64(l)), set_(hi(t)).to(i64(h)))
     handles = [eg.let("h%d" % i, t) for i, (t, _av, _o) in enumerate(terms)]
     memh = [
         (nd, eg.let("mp%d" % i, p), eg.let("mq%d" % i, q)) for i, (nd, p, q) in enumerate(mempairs)
     ]
-    saturate(eg, rs, budget=budget)
+    saturate(eg, rs, budget=None if budget is None else min(BUDGET_S, budget))
     pr = E._Printer(aliases or {})
 
+    def own_ir(i):
+        """The site's own term: position-correct by construction, and what a spent
+        extraction budget falls back to -- extraction is sound at any cutoff."""
+        raw = E._parse_ir(str(terms[i][0]))
+        return _to_ir(raw), raw
+
     def pick_ir(i):
-        t, av, own = terms[i]
+        _t, av, own = terms[i]
         cands = [
             (_to_ir(r), r)
             for r in (E._parse_ir(str(x)) for x in eg.extract_multiple(handles[i], 12))
@@ -917,12 +951,22 @@ def render_proc(
 
         kept = [c for c in cands if ok(c[0]) and not _has_mem(c[0]) and _defined_at(c[0], av)]
         if not kept:
-            raw = E._parse_ir(str(t))
-            if ok(_to_ir(raw)):
-                kept = [(_to_ir(raw), raw)]
+            raw = own_ir(i)
+            if ok(raw[0]):
+                kept = [raw]
         return min(kept or cands, key=lambda c: (E._cost(c[0]), repr(c[0])))
 
-    picked = [pick_ir(i) for i in range(len(terms))]
+    spent = 0
+    picked = []
+    for i in range(len(terms)):
+        if deadline is not None and time.monotonic() >= deadline:
+            spent += 1
+            picked.append(own_ir(i))
+        else:
+            picked.append(pick_ir(i))
+    if stats is not None:
+        stats["sites"] = stats.get("sites", 0) + len(terms)
+        stats["extract_fallback"] = stats.get("extract_fallback", 0) + spent
     chosen = [c for c, _raw in picked]
     if info is None:
         info = E.frameproc._Info([(entry, stmts)], entry)
@@ -946,6 +990,7 @@ def render_proc(
         proofs.setdefault("defs", {}).update(
             (name, E._parse_ir(str(rhs))) for name, _leaf, rhs in defs
         )
+        proofs.setdefault("mems", {}).update((n, E._parse_ir(str(c))) for n, c in memdefs)
         proofs.setdefault("locw", {}).update(locw)
 
     def pick(i):
@@ -1019,8 +1064,9 @@ class _Z3Env:
     """Z3 reading of an extracted term: values are BV16 masked to their own width,
     memory an array BV16 -> BV8 whose ``mem0``/``memk`` leaves are opaque."""
 
-    def __init__(self, locw=None):
+    def __init__(self, locw=None, mems=None):
         self.locw = locw or {}
+        self.mems = mems or {}  # named memory versions; the unnamed ones stay opaque
         self.locs, self.arrs, self.constraints = {}, {}, []
         self.memo = {}  # extracted IR is a DAG; rebuilt as a tree it is exponential
 
@@ -1076,7 +1122,8 @@ class _Z3Env:
         if k == "mem0":
             return self._arr("m0")
         if k == "memk":
-            return self._arr("mk%d" % ir[1])
+            got = self.mems.get(ir[1])
+            return self._arr("mk%d" % ir[1]) if got is None else self.memory(got)
         if k == "store":
             v = z3.Extract(8 * ir[4] - 1, 0, self.of(ir[3]))
             return _store_w(self.memory(ir[1]), self.of(ir[2]), v, ir[4])
@@ -1132,7 +1179,7 @@ def verify_sites(sites):
     Adoption §6's all-rewritten-sites law, under the SSA/memory definitional
     equations: both sides are raw extracted forms, so a forwarded load is proven
     against the array encoding of its own store chain, not replayed."""
-    defs, env = sites.get("defs", {}), _Z3Env(sites.get("locw"))
+    defs, env = sites.get("defs", {}), _Z3Env(sites.get("locw"), sites.get("mems"))
     goals = [
         (site, got, env.of(site) != env.of(got))
         for site, got in sites.get("pairs", ())
@@ -1382,13 +1429,12 @@ def _written(stmts):
     return out
 
 
-def emit_mem(model, root_extract=None, proofs=None):
+def emit_mem(model, root_extract=None, proofs=None, stats=None):
     """Whole-artifact text with procedure bodies rendered via ``render_proc``.
 
-    Reuses eqlift's header/state/data/symbol assembly verbatim; only the per-proc
-    body is the memory-graph lift. Interprocedural liveness feeds every proc, and
     ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
-    are per procedure, so one merged record would prove the wrong equalities."""
+    are per procedure, so one merged record would prove the wrong equalities. ``EMIT_S``
+    is divided over the procedures still to render, so slack from one funds the next."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -1430,7 +1476,7 @@ def emit_mem(model, root_extract=None, proofs=None):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
         share = max(0.0, end - time.monotonic()) / (len(procs) - i)
-        body = render_proc(stmts, aliases, entry, info, root_extract, rec, min(BUDGET_S, share))
+        body = render_proc(stmts, aliases, entry, info, root_extract, rec, share, stats)
         if rec is not None:
             proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)
@@ -1443,10 +1489,10 @@ def emit_mem(model, root_extract=None, proofs=None):
     return "\n".join(lines) + "\n"
 
 
-def emit(model, root_extract=None, proofs=None):
+def emit(model, root_extract=None, proofs=None, stats=None):
     """Whole-artifact eqlift text via the unified value+memory e-graph lifter.
 
     Thin wrapper over ``emit_mem``; returns ``(text, None)`` so callers that still
     unpack a second value keep working. Soundness is the rule/axiom admission gate
     (``verify_rules`` + ``verify_axioms``) run once inside ``unified_rules``."""
-    return emit_mem(model, root_extract, proofs), None
+    return emit_mem(model, root_extract, proofs, stats), None

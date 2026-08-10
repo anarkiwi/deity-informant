@@ -249,6 +249,35 @@ procedure text.
   256MB gives 629 lines in 39.1s — one line of minimization for 37 seconds — and
   neither Commando (350) nor `Ghouls_n_Ghosts` (1,335) moves a line at any bound,
   because the cap does not bind there.
+- Graph BUILD cost is a DAG problem too, and it dominated the proof one: a store of
+  a load (`m[a] = m[b]`) embeds the memory chain in its own stored value, so an
+  unnamed chain DOUBLES per such store. `Down_Under`'s first procedure is a 340-node
+  DAG whose tree expansion is 2.5e11 nodes; the egglog build asked for 49GB and was
+  killed before saturation ran. Mitigation, stage 3b: `render_proc` names each memory
+  version — `memk(n)` unioned with the store over the previous name — exactly as a
+  def names a value, so every term is linear in the statements. The e-graph is
+  unchanged (the store e-node is still there, so every axiom fires through the same
+  e-class) and so is the emitted text (`_to_ir` drops a `sel`'s memory argument); the
+  §6 record carries the version definitions, so a forwarded load is still proved
+  against its own store chain and not against an opaque array. 49GB/killed → 0.6s at
+  0.10GB.
+- Extraction cost: `extract_multiple` per term is not bounded by the saturation
+  schedule. Mitigation, stage 3b: `DI_EQLIFT_EMIT_S` is divided over the procedures
+  still to render (so slack from one funds the next) and the share funds saturation,
+  capped at `DI_EQLIFT_BUDGET_S`, and then extraction. A site past the share renders
+  from its own term — position-correct by the renderer discipline, and sound because
+  extraction is sound at any cutoff. Never silent: `emit`/`emit_mem`/`render_proc`
+  take a `stats` dict carrying the extraction-site and fallback counts. Like the
+  saturation bound, a binding budget makes the artifact a function of the clock, so
+  an ON/OFF comparison is read at a budget that does not bind.
+- Boundary liveness is `frameproc._Flow`, and a transcription of it is a place to
+  lose precision: `eqlift_mem._liveness` dropped `_Flow`'s successor-aware cases, so
+  every computed transfer read `info.G` — every register the program reads anywhere.
+  A `dgoto`/`igoto` the next statement's `swg` enumerates, and a `dcall` an `swc`
+  enumerates, land in one of those arms (`frameproc._open_flow` is the same
+  invariant), so they read what the arms read; `swg`/`opsw` arms take the switch's
+  own live-out, since an arm that falls off its end continues after it. `swc` stays
+  conservative — its bare labels are called with no inline body.
 - Proof cost is a DAG problem, not a solver problem: `_Z3Env.of` rebuilt shared
   extracted subterms once per occurrence, which is exponential on a DAG. It
   memoizes on the IR node; the same tune goes from unbounded (37GB resident,
