@@ -625,8 +625,8 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    and the path is already proved on this exact image: `tests/test_witness6502.py`'s
    `test_the_example_artifact_replays_frame_for_frame` runs `sml.build_image()` →
    `structured.decompile` → `frameprog.program` → `witness6502.emit(p).frames(n)` and is
-   **green**. But **the re-basing alone flips only three of the seven**, and the scoping that
-   measured this is what says so; the other four owe the engine something and their entries
+   **green**. But **the re-basing alone flips only two of the seven**, and the scoping that
+   measured this is what says so; the other five owe the engine something and their entries
    below name it. Per pin:
    `no_architectural_register_survives_as_a_value` — **not the re-basing**. Measured on
    `Hubbard_Rob/Commando`, the artifact carries **151 register tokens** (`x` 73, `a` 38, `y`
@@ -660,9 +660,9 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `pipeline` passes extents today), and on an image whose `sml.PLAY` reaches the witness
    entry, since `Witness.entry` is a fresh label in a free span while `sml.run_vm` hard-codes
    `INIT`/`PLAY` (#188 (9)).
-   So landing 4 takes **three pins on the re-basing** and re-points the other four at the
-   engine work each names; the ledger arithmetic is unchanged (7 pins, 28 → 21) but the
-   landing is two PRs, not one, and the four may run in parallel behind the trunk.
+   So the trunk flips **two pins** and re-points the other five at the engine work each
+   names; the ledger arithmetic is unchanged (7 pins, 28 → 21) but the landing is a trunk plus
+   parallel parts, not one PR.
 2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
    (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
@@ -2891,12 +2891,12 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `test_every_pin_names_the_landing_that_flips_it` pins all seven prototype reasons to landing
   4 the way `test_the_owners_partition_the_family_as_the_ledger_records_it` pins the
   shredder's twenty-one, so neither ledger can drift from this document.
-  (6) **Landing 4 is three pins on the re-basing, not seven, and the scoping is what says
-  so.** The re-basing path is already proved on the prototype's own image —
+  (6) **Landing 4's trunk flips two pins, not seven, and the scoping is what says so.**
+  The re-basing path is already proved on the prototype's own image —
   `tests/test_witness6502.py::test_the_example_artifact_replays_frame_for_frame` runs
   `sml.build_image()` -> `structured.decompile` -> `frameprog.program` ->
-  `witness6502.emit(p).frames(n)` and is green — so the scratch-demotion pin, the witness pin
-  and the artifact reading all ride on it. The other four do not.
+  `witness6502.emit(p).frames(n)` and is green — so the scratch-demotion pin and the witness
+  pin ride on it. The other five do not.
   `no_architectural_register_survives_as_a_value` is the clearest: measured on
   `Hubbard_Rob/Commando` the artifact carries **151 register tokens** (`x` 73, `a` 38, `y` 31,
   `cflag` 7, `vflag` 2), of which exactly one is a `for` header, so re-basing makes the pin
