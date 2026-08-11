@@ -107,18 +107,44 @@ def _reserved(prog):
     return out
 
 
-def free_span(prog):
-    """The longest run of zeroed image bytes the program owns no part of."""
-    mem, taken = prog.mem0, _reserved(prog)
-    best, run = (0, 0), 0
-    for a in range(0x10000):
-        if mem[a] or a in taken:
-            if run > best[1]:
-                best = (a - run, run)
+def _runs(free):
+    """Maximal ``(base, length)`` runs of the addresses ``free`` admits, longest first."""
+    out, run = [], 0
+    for a in range(0x10001):
+        if a == 0x10000 or not free(a):
+            if run:
+                out.append((a - run, run))
             run = 0
         else:
             run += 1
-    return best if run <= best[1] else (0x10000 - run, run)
+    return sorted(out, key=lambda s: -s[1])
+
+
+def free_span(prog):
+    """The longest run of zeroed image bytes the program owns no part of."""
+    taken = _reserved(prog)
+    got = _runs(lambda a: a not in taken and not prog.mem0[a])
+    return got[0] if got else (0, 0)
+
+
+def _minus(run, hole):
+    """``run`` with ``hole`` taken out: itself, or the sides it leaves."""
+    a, n, b, m = run[0], run[1], hole[0], hole[1]
+    if not m or b + m <= a or b >= a + n:
+        return [run]
+    return [s for s in ((a, b - a), (b + m, a + n - b - m)) if s[1] > 0]
+
+
+def free_spans(prog):
+    """Where the emission may land: the zeroed run first, then every run it leaves.
+
+    Disjoint by construction, so the code may be laid across them in order. A byte
+    outside ``_reserved`` is named by no observed read, write, target, leader or
+    declaration, which is what makes a non-zero run admissible for code."""
+    taken = _reserved(prog)
+    best = free_span(prog)
+    rest = [s for r in _runs(lambda a: a not in taken) for s in _minus(r, best)]
+    return ([best] if best[1] else []) + sorted(rest, key=lambda s: -s[1])
 
 
 class _Gen:  # pylint: disable=too-many-public-methods
@@ -127,7 +153,9 @@ class _Gen:  # pylint: disable=too-many-public-methods
     One method per dialect form and one per statement form, so the count is the
     vocabulary's."""
 
-    def __init__(self, prog, org):
+    def __init__(self, prog, spans):
+        self.spans = spans
+        org = spans[0][0]
         self.prog = prog
         self.n = 0
         self.loops = []
@@ -139,8 +167,8 @@ class _Gen:  # pylint: disable=too-many-public-methods
             _inline_pcs(st, prog.mem0, self.pcs)
         self.rets = {(s[2] + 1) & 0xFFFF for s in stmts if s[0] in ("dcall",) + _RAW} - self.pcs
         self.pcs |= self.rets
-        self.raw = self._raw_callees(stmts)
-        self.sites, self.resolving = [], 0
+        self.sites, self.taken = [], self.pcs | self.entries
+        self.calls = any(s[0] in _RAW + ("pcall", "dcall") for s in stmts)
         self.computed = any(s[0] in _COMPUTED for s in stmts)
         self.lw = self._local_widths()
         self.fault, self.saved, self.cmp, self.dynv = org, org + 1, org + 2, org + 3
@@ -153,24 +181,11 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.top = base + TEMP_BYTES
         self.p = Asm(self.top)
 
-    def _raw_callees(self, stmts):
-        """Procedures a raw ``call`` enters: their ``ret`` reads the slot, not the machine's.
-
-        One convention per procedure, so a callee the program also reaches by
-        ``pcall`` -- or the frame entry itself -- is the refusal."""
-        raw = {s[1] for s in stmts if s[0] == "call"}
-        outside = raw - self.entries
-        mixed = raw & ({s[1] for s in stmts if s[0] == "pcall"} | {self.prog.play})
-        for bad, why in ((outside, "no procedure of the program"), (mixed, "also a pcall entry")):
-            if bad:
-                refuse(
-                    "the raw call to $%04X" % min(bad),
-                    "%s carries its return, so the slot's continuation has no owner" % why,
-                )
-        return raw
-
     def _local_widths(self):
-        """One memory slot per local, at the width the program reads it."""
+        """One memory slot per local, at the width the evaluator's own register holds it.
+
+        A bare local reads unmasked (``frameval._expr``), so a slot widened at one
+        site is read at that width everywhere; the widths reach a fixpoint."""
         w = {}
 
         def bump(name, width):
@@ -182,30 +197,30 @@ class _Gen:  # pylint: disable=too-many-public-methods
                 _loc_reads(x, out)
             return out
 
-        for _e, params, rets, stmts in self.prog.procs:
-            for name in tuple(params) + tuple(rets):
-                bump(name, 1)
-            for s in _walk(stmts):
-                if s[0] == "asg":
-                    bump(s[1], P.loc_width(s[2]))
-                elif s[0] == "for":
-                    bump(s[1], 2 if max(s[2], s[3]) > 0xFF else 1)
-                elif s[0] == "pcall":
-                    for name in s[3]:
-                        bump(name, 1)
-                for name, width in reads(s):
-                    bump(name, width)
-        if P._SP in w:
-            refuse("the stack-pointer local %r" % P._SP, "the machine's own SP is not a slot")
-        for _e, _pa, _r, stmts in self.prog.procs:
-            for s in _walk(stmts):
-                for name, width in reads(s):
-                    if width < w[name]:
-                        refuse(
-                            "the narrowing read of local %r (u%d of u%d)"
-                            % (name, 8 * width, 8 * w[name]),
-                            "the evaluator reads a local unmasked, memory reads it by width",
-                        )
+        changed = True
+        while changed:
+            before = dict(w)
+            for _e, params, rets, stmts in self.prog.procs:
+                for name in tuple(params) + tuple(rets):
+                    bump(name, 1)
+                for s in _walk(stmts):
+                    if s[0] == "asg":
+                        bump(s[1], w.get(s[2][1], 1) if s[2][0] == "loc" else P.loc_width(s[2]))
+                    elif s[0] == "for":
+                        bump(s[1], 2 if max(s[2], s[3]) > 0xFF else 1)
+                    elif s[0] == "pcall":
+                        for name, arg in zip(self.params.get(s[1], ()), s[2]):
+                            bump(name, w.get(arg[1], 1) if arg[0] == "loc" else P.loc_width(arg))
+                        for name in s[3]:
+                            bump(name, 1)
+                    for name, width in reads(s):
+                        bump(name, width)
+            changed = w != before
+        if w.get(P._SP, 1) != 1:
+            refuse(
+                "the wide stack-pointer local %r (u%d)" % (P._SP, 8 * w[P._SP]),
+                "the machine's SP is a byte, and the evaluator's own push masks it to one",
+            )
         return w
 
     def nl(self, tag="l"):
@@ -266,6 +281,10 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.p.i("EOR", "imm", 0x80)
         self.p.label(skip)
 
+    def vw(self, n):
+        """Width the evaluator's value of ``n`` carries: a local's slot, not its node."""
+        return self.lw[n[1]] if n[0] == "loc" else P.loc_width(n)
+
     def value(self, n):
         """``(address, width)`` of a temp or local slot holding ``n``'s value."""
         k = n[0]
@@ -274,6 +293,9 @@ class _Gen:  # pylint: disable=too-many-public-methods
             self.imm(t, [(n[1] >> (8 * j)) & 0xFF for j in range(n[2])])
             return t, n[2]
         if k == "loc":
+            if n[1] == P._SP:  # the evaluator's sp slot is the machine's own SP
+                self.p.i("TSX")
+                self.p.i("STX", "abs", self.locs[n[1]])
             return self.locs[n[1]], self.lw[n[1]]
         if k == "mem":
             return self.load(n)
@@ -357,7 +379,7 @@ class _Gen:  # pylint: disable=too-many-public-methods
             return t, w
         if mn in _UCMP or mn in _SCMP or mn == "INT_CARRY":
             return self.compare(n)
-        width = max([w] + [P.loc_width(c) for c in kids])
+        width = max([w] + [self.vw(c) for c in kids])
         t = self.push(width)
         mark = self.tp
         if mn in _ASSOC:
@@ -412,14 +434,20 @@ class _Gen:  # pylint: disable=too-many-public-methods
 
     def compare(self, n):
         mn, kids, w = n[1], n[2], n[3]
-        width = max(P.loc_width(c) for c in kids)
-        if mn == "INT_CARRY" and P.loc_width(kids[0]) != width:
-            refuse(
-                "the carry over operands of unequal width",
-                "the threshold is the first operand's mask, which the wider side outgrows",
-            )
+        width = max(self.vw(c) for c in kids)
+        for c in kids:  # ``szs`` is the node width, and the signed compares alone read it
+            if c[0] == "loc" and P.loc_width(c) < self.lw[c[1]] and mn in _SCMP:
+                refuse(
+                    "the narrowing read of local %r under %s" % (c[1], mn),
+                    "the evaluator reads the local unmasked but signs it at the node's width",
+                )
         t = self.push(w)
         mark = self.tp
+        if mn == "INT_CARRY":
+            self.carry(t, kids, width)
+            self.tp = mark
+            self.move(t, 1, t, w)
+            return t, w
         wide = self.sat if mn in _SCMP else self.at
         a, b = wide(kids[0], width), wide(kids[1], width)
         self.p.i("LDX", "imm", 0)
@@ -435,10 +463,10 @@ class _Gen:  # pylint: disable=too-many-public-methods
         else:
             swap = mn in ("INT_LESSEQUAL", "INT_SLESSEQUAL")
             lo, hi = (b, a) if swap else (a, b)
-            self.p.i("CLC" if mn == "INT_CARRY" else "SEC")
+            self.p.i("SEC")
             for j in range(width):
                 self.lda(lo + j)
-                self.p.i("ADC" if mn == "INT_CARRY" else "SBC", "abs", hi + j)
+                self.p.i("SBC", "abs", hi + j)
             if mn in _SCMP:
                 self.signfix()
                 self.flagbyte(t, "BPL" if mn == "INT_SLESS" else "BMI")
@@ -448,11 +476,34 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.move(t, 1, t, w)
         return t, w
 
+    def carry(self, t, kids, width):
+        """``(a + b) > mask`` at the FIRST operand's own width: the evaluator's threshold.
+
+        The sum is kept one byte wider than the operands, so the verdict is whether any
+        byte above that mask survived -- true whatever widths the two sides read at."""
+        k = P.loc_width(kids[0])
+        a, b = self.at(kids[0], width), self.at(kids[1], width)
+        s = self.push(width + 1)
+        self.p.i("CLC")
+        for j in range(width):
+            self.lda(a + j)
+            self.p.i("ADC", "abs", b + j)
+            self.sta(s + j)
+        self.p.i("LDA", "imm", 0)
+        self.p.i("ADC", "imm", 0)
+        self.sta(s + width)
+        self.p.i("LDX", "imm", 0)
+        self.lda(s + k)
+        for j in range(k + 1, width + 1):
+            self.p.i("ORA", "abs", s + j)
+        self.flagbyte(t, "BEQ")
+
     def body(self, stmts):
         i = 0
         while i < len(stmts):
             s, nxt = stmts[i], stmts[i + 1] if i + 1 < len(stmts) else None
             mark = self.tp
+            self.p.cut()  # no rel displacement crosses a statement boundary
             if nxt is not None and _paired(s, nxt):
                 self.switch(s, nxt)
                 i += 1
@@ -477,51 +528,63 @@ class _Gen:  # pylint: disable=too-many-public-methods
     def _s_label(self, s):
         self.mark(s[1])
 
+    def wrote(self, name):
+        """A write to the ``sp`` local moves the machine's own SP, which is that slot."""
+        if name == P._SP:
+            self.p.i("LDX", "abs", self.locs[name])
+            self.p.i("TXS")
+
     def _s_asg(self, s):
         a, aw = self.value(s[2])
         self.move(a, aw, self.locs[s[1]], self.lw[s[1]])
+        self.wrote(s[1])
 
     def _s_ret(self, _s):
-        if self.resolving:
-            self.retdyn()
+        if self.calls:
+            self.p.i("JMP", "abs", ("L", "retsolve"))
         else:
             self.p.i("RTS")
 
-    def retdyn(self):
-        """A raw callee's return: the word the slot now holds is the pc, and it resolves."""
-        self.p.i("PLA")
-        self.sta(self.dynv)
-        self.p.i("PLA")
-        self.sta(self.dynv + 1)
-        self.p.i("JMP", "abs", ("L", "retsolve"))
+    def synth(self):
+        """A stand-in pushed pc for a ``pcall``: the surface drops ``ret $R`` (frameval's)."""
+        r = 0xFFFE
+        while (r + 1) & 0xFFFF in self.taken:
+            r -= 1
+        self.taken.add((r + 1) & 0xFFFF)
+        return r
 
-    def rawcall(self, tgt, ret):
-        """The machine call: the pushed word is the program's own ``ret``, as the trick reads it.
+    def pushword(self, ret):
+        """The pushed word is a pc of the program: the evaluator's ``push(ret)``, byte for byte.
 
-        ``framestack.lift_rts_trick``'s callee pulls or rewrites that word, so the
-        stack image is the evaluator's ``push(ret)`` byte for byte."""
+        ``framestack.lift_rts_trick``'s callee pulls or rewrites exactly this image."""
         for j in (1, 0):
             self.p.i("LDA", "imm", (ret >> (8 * j)) & 0xFF)
             self.p.i("PHA")
-        self.p.i("JMP", "abs", ("L", self.target(tgt)))
+
+    def retsite(self, ret):
+        """Where an untouched word returns to: the evaluator's shadow stack, one entry."""
         lbl = self.nl("k")
-        self.p.label(lbl)  # the site the untouched word returns to (the shadow stack)
+        self.p.label(lbl)
         self.sites.append((ret, lbl))
         self.retlabel(ret)
 
+    def pushcall(self, label, ret):
+        """A call site: the program's pc pushed, the transfer, then the site it returns to."""
+        self.pushword(ret)
+        self.p.i("JMP", "abs", ("L", label))
+        self.retsite(ret)
+
     def _s_call(self, s):
-        self.rawcall(s[1], s[2])
+        self.pushcall(self.target(s[1]), s[2])
 
     def _s_callb(self, s):
         """The callee's body is inline, under the pc the call names and no other label."""
         skip = self.nl("s")
-        self.rawcall(s[1], s[2])
+        self.pushcall("pc_%04X" % s[1], s[2])
         self.p.i("JMP", "abs", ("L", skip))
         self.mark(s[1])
-        self.resolving += 1
         self.body(s[3])
-        self.resolving -= 1
-        self.retdyn()
+        self.p.i("JMP", "abs", ("L", "retsolve"))
         self.p.label(skip)
 
     def _s_unobs(self, _s):
@@ -602,6 +665,8 @@ class _Gen:  # pylint: disable=too-many-public-methods
     def _s_for(self, s):
         _k, name, init, last, body = s
         slot, width = self.locs[name], self.lw[name]
+        if name == P._SP:
+            refuse("the ``for`` range over %r" % name, "the machine's SP is not a loop counter")
         self.imm(slot, [(init >> (8 * j)) & 0xFF for j in range(width)])
         head, test, end = self.nl("h"), self.nl("c"), self.nl("x")
         self.p.label(head)
@@ -635,13 +700,14 @@ class _Gen:  # pylint: disable=too-many-public-methods
             refuse("the call to sub_%04X" % s[1], "the argument list is not the parameter list")
         staged = []
         for arg in s[2]:
-            t = self.push(P.loc_width(arg))
+            t = self.push(self.vw(arg))
             a, aw = self.value(arg)
             self.move(a, aw, t, aw)
             staged.append((t, aw))
         for (t, w), name in zip(staged, params):
             self.move(t, w, self.locs[name], self.lw[name])
-        self.p.i("JSR", "abs", ("L", "sub_%04X" % s[1]))
+            self.wrote(name)
+        self.pushcall("sub_%04X" % s[1], self.synth())
 
     def vector(self, s):
         """``dynv`` gets the image word an ``igoto`` reads, wrapping inside its own page."""
@@ -665,27 +731,24 @@ class _Gen:  # pylint: disable=too-many-public-methods
         else:
             self.move(self.at(s[3] if s[0] == "dbr" else s[1], 2), 2, self.dynv, 2)
 
-    def transfer(self, call=False):
+    def transfer(self):
         """Resolve ``dynv`` through the whole compiled table: what no arm claimed."""
-        self.p.i("JSR" if call else "JMP", "abs", ("L", "resolve"))
+        self.p.i("JMP", "abs", ("L", "resolve"))
 
-    def chain(self, pairs, call=False):
-        """Take the arm ``dynv`` names; fall through where the observed set holds none."""
-        end = self.nl("d") if call else None
+    def chain(self, pairs):
+        """Take the arm ``dynv`` names; fall through where the listed set holds none."""
         for pc, lbl in pairs:
+            self.p.cut()
             nxt = self.nl("d")
             for j in (0, 1):
                 self.lda(self.dynv + j)
                 self.p.i("CMP", "imm", (pc >> (8 * j)) & 0xFF)
                 self.p.i("BNE", "rel", ("L", nxt))
-            self.p.i("JSR" if call else "JMP", "abs", ("L", lbl))
-            if call:
-                self.p.i("JMP", "abs", ("L", end))
+            self.p.i("JMP", "abs", ("L", lbl))
             self.p.label(nxt)
-        return end
 
     def retlabel(self, ret):
-        """The JSR continuation a computed transfer may name (the evaluator's contmap)."""
+        """The continuation pc a call site's own pushed word names (frameval's contmap)."""
         pc = (ret + 1) & 0xFFFF
         if pc in self.rets:
             self.rets.discard(pc)
@@ -698,20 +761,18 @@ class _Gen:  # pylint: disable=too-many-public-methods
         cases = sw[2] if call else sw[1]
         arms = [(_pc(lbl), self.nl("a")) for lbl, _b in cases]
         bare = [(_pc(lbl), self.target(_pc(lbl))) for lbl in (sw[1] if call else ())]
-        end = self.chain(arms + bare, call)
-        self.transfer(call)
+        if call:
+            self.pushword(s[2])
+        self.chain(arms + bare)
+        self.transfer()
         skip = self.nl("s")
         if call:
-            self.p.label(end)
-            self.retlabel(s[2])
+            self.retsite(s[2])
             self.p.i("JMP", "abs", ("L", skip))
         for (_v, lbl), (_l, arm) in zip(arms, cases):
             self.p.label(lbl)
             self.body(arm)
-            if call:
-                self.p.i("RTS")
-            else:
-                self.p.i("JMP", "abs", ("L", "fault"))  # an arm that runs on is the fault
+            self.p.i("JMP", "abs", ("L", "retsolve" if call else "fault"))
         if call:
             self.p.label(skip)
 
@@ -729,8 +790,7 @@ class _Gen:  # pylint: disable=too-many-public-methods
 
     def _s_dcall(self, s):
         self.dyn(s)
-        self.transfer(True)
-        self.retlabel(s[2])
+        self.pushcall("resolve", s[2])
 
     def _s_opsw(self, s):
         """The state-variable switch: the dispatch's own operand byte selects the arm."""
@@ -763,13 +823,23 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.p.i("JMP", "abs", ("L", "fault"))
 
     def returner(self):
-        """A raw callee's ``ret``: the call site the word still names, else the pc it holds + 1.
+        """``ret``: out of the frame at its own depth, else the site the word names, else ``w + 1``.
 
-        The two arms are the evaluator's own -- its shadow stack, keyed by the word
-        the site pushed (unique per site), and its ``rmap`` lookup of ``w + 1``."""
+        The three arms are ``frameval``'s own -- ``q >= start``, the shadow stack keyed
+        by the word each site pushed (unique per site), and ``rmap`` where a callee
+        rewrote its slot."""
         self.p.label("retsolve")
+        inner, over = self.nl("r"), self.nl("r")
+        self.p.i("TSX")
+        self.p.i("CPX", "abs", self.saved)
+        self.p.i("BNE", "rel", ("L", inner))
+        self.p.i("RTS")
+        self.p.label(inner)
+        self.p.i("PLA")
+        self.sta(self.dynv)
+        self.p.i("PLA")
+        self.sta(self.dynv + 1)
         self.chain(self.sites)
-        over = self.nl("r")
         self.p.i("INC", "abs", self.dynv)
         self.p.i("BNE", "rel", ("L", over))
         self.p.i("INC", "abs", self.dynv + 1)
@@ -794,16 +864,18 @@ class _Gen:  # pylint: disable=too-many-public-methods
         p.i("TXS")
         p.i("RTS")
         for entry, _params, _rets, stmts in self.prog.procs:
+            p.cut()
             p.label("sub_%04X" % entry)
-            self.resolving = int(entry in self.raw)
             self.body(stmts)
             p.i("JMP", "abs", ("L", "fault"))
-        self.resolving = 0
-        if self.sites:
+        if self.calls:
+            p.cut()
             self.returner()
-        if self.computed:
+        if self.computed or self.calls:
+            p.cut()
             self.resolver()
-        return p.assemble()
+        head = (self.top, self.spans[0][0] + self.spans[0][1] - self.top)
+        return p.assemble([head] + list(self.spans[1:]))
 
 
 class Witness:
@@ -837,14 +909,16 @@ def emit(prog, org=None):
             "the extent-guarded deref (%d pointer extent(s))" % len(prog.extents),
             "the `in` clause is a frame fault the witness raises no equivalent of",
         )
-    base, size = free_span(prog) if org is None else (org, 0x10000 - org)
-    if size < CTRL_BYTES + TEMP_BYTES:
+    spans = [(org, 0x10000 - org)] if org is not None else free_spans(prog)
+    if not spans or spans[0][1] < CTRL_BYTES + TEMP_BYTES:
         refuse("the emission into this image", "no free span holds the witness data block")
-    gen = _Gen(prog, base)
-    code = gen.build()
-    if gen.p.org + len(code) > base + size:
-        refuse("the emission into this image", "the free span is shorter than the emitted code")
+    gen = _Gen(prog, spans)
+    try:
+        code = gen.build()
+    except ValueError as exc:
+        return refuse("the emission into this image", str(exc))
     mem = bytearray(prog.mem0)
-    mem[gen.p.org : gen.p.org + len(code)] = code
-    mem[base : base + CTRL_BYTES] = bytes(CTRL_BYTES)
+    for base, off, n in gen.p.blocks:
+        mem[base : base + n] = code[off : off + n]
+    mem[spans[0][0] : gen.top] = bytes(gen.top - spans[0][0])
     return Witness(prog, mem, gen.p.labels["entry"], gen.fault, code)

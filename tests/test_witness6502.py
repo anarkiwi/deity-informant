@@ -1,9 +1,13 @@
-"""Stage 4's round-trip witness, partial: every normal form run on the machine.
+"""Stage 4's round-trip witness: every normal form and every exemplar on the machine.
 
 Each ``idioms.FORMS`` row is re-emitted as 6502 from the program
 ``test_vocabulary`` checks through the evaluator and replayed on ``PcodeVM``, so
 the checked SID write is witnessed with no evaluator in the trust chain.
 """
+
+import re
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -14,12 +18,22 @@ from deity_informant import frameval
 from deity_informant import structured
 from deity_informant import witness6502 as W
 from deity_informant.asm6502 import Asm
+from deity_informant.c64 import load_psid
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import exemplars  # pylint: disable=wrong-import-position,wrong-import-order
+
+from _corpus import corpus_params
+
+HVSC = ROOT / ".oracle-cache" / "hvsc"
 
 SID, CELL, ALT, PTR, ARR = tv.SID, tv.CELL, tv.ALT, tv.PTR, tv.ARR
 c, m, op, loc, zext = tv.c, tv.m, tv.op, tv.loc, tv.zext
 
 WITNESSED = sorted(tv.CASES)  # the rows this witness claims: the catalog's own ids
 E2E_FRAMES = 24  # the example replayed far enough to cross its script commands
+SWEEP_FRAMES = 200  # per exemplar in CI; tools/witness_sweep.py runs them full length
 
 
 def prog(stmts, procs=(), **kw):
@@ -170,6 +184,15 @@ def test_the_signed_compare_agrees_with_the_evaluator_across_the_overflow_bounda
         for x in edges:
             for y in edges:
                 assert _agrees(op(mn, (c(x, width), c(y, width)))), (mn, width, hex(x), hex(y))
+
+
+def test_the_carry_threshold_is_the_first_operand_s_own_width():
+    """``(a + b) > mask(szs[0])``: the sum is kept a byte wider, so any width pair works."""
+    for x in (0x00, 0x01, 0x7F, 0x80, 0xFF):
+        for y in (0x0000, 0x00FF, 0x0100, 0x8000, 0xFFFF):
+            assert _agrees(op("INT_CARRY", (c(x, 1), c(y, 2)))), (hex(x), hex(y))
+            assert _agrees(op("INT_CARRY", (c(y, 2), c(x, 1)))), (hex(y), hex(x))
+            assert _agrees(op("INT_CARRY", (c(x, 1), c(y & 0xFF, 1)))), (hex(x), hex(y))
 
 
 @pytest.mark.parametrize("mn", ("INT_SLESS", "INT_SLESSEQUAL"))
@@ -413,10 +436,7 @@ REFUSALS = {
         lambda: [("dcall", c(0x1000, 2), 0x1005), ("swg", [("$1000", [])])],
         "no computed goto before it",
     ),
-    "call-nowhere": (
-        lambda: [("call", 0x9999, 0x1005)],
-        r"raw call to \$9999 -- no procedure of the program",
-    ),
+    "call-nowhere": (lambda: [("call", 0x9999, 0x1005)], r"transfer to \$9999"),
     "unknown": (lambda: [("frobnicate", 0x1000)], "no witnessed statement form"),
     "signed": (
         lambda: [store(op("INT_SCARRY", (m(CELL), m(ALT))))],
@@ -424,10 +444,6 @@ REFUSALS = {
     ),
     "unknown-op": (lambda: [store(op("FLOAT_ADD", (m(CELL),)))], "operator FLOAT_ADD"),
     "variable-shift": (lambda: [store(op("INT_LEFT", (m(CELL), m(ALT))))], "variable shift"),
-    "carry-width": (
-        lambda: [store(op("INT_CARRY", (m(CELL), m(ALT, 2))))],
-        "carry over operands of unequal width",
-    ),
     "volatile-read": (lambda: [store(m(0xD012))], r"volatile input read at \$D012"),
     "goto-nowhere": (lambda: [("goto", 0x9999)], r"transfer to \$9999"),
     "depth": (lambda: [store(op("INT_ADD", (m(CELL),) * 600))], "expression depth"),
@@ -449,12 +465,18 @@ def test_the_refusal_table_names_every_statement_form_the_witness_declines():
     assert set(W._STMT_REFUSALS) <= set(REFUSALS)
 
 
-def test_a_callee_reached_both_raw_and_by_pcall_refuses_by_name():
-    """One return convention per procedure: the slot's continuation must have an owner."""
-    callee = [(0x1200, [], [], [("ret", False)])]
-    stmts = [("call", 0x1200, 0x1005), ("pcall", 0x1200, [], []), ("ret", False)]
-    with pytest.raises(W.Refusal, match=r"raw call to \$1200 -- also a pcall entry"):
-        W.emit(prog(stmts, procs=callee))
+def test_one_callee_serves_a_raw_call_and_a_pcall_at_once():
+    """Every site pushes a pc, so the return convention is the program's, not the machine's."""
+    callee = [(0x1200, [], [], [store(c(0x5A)), ("ret", False)])]
+    stmts = [("call", 0x1200, 0x1005), ("pcall", 0x1200, [], []), store(c(0x09)), ("ret", False)]
+    assert run(stmts, procs=callee) == [[(0, 0x5A), (0, 0x5A), (0, 0x09)]]
+
+
+def test_a_raw_call_reaches_a_label_inside_a_procedure_the_program_also_enters():
+    """The corpus shape: the callee is a pc, not an entry, and its ``ret`` still resolves."""
+    callee = [(0x1200, [], [], [store(c(0x11)), ("label", 0x1210), store(c(0x22)), ("ret", False)])]
+    stmts = [("call", 0x1210, 0x1005), store(c(0x09)), ("ret", False)]
+    assert run(stmts, procs=callee) == [[(0, 0x22), (0, 0x09)]]
 
 
 def test_a_declared_volatile_input_refuses_the_whole_program():
@@ -468,16 +490,57 @@ def test_an_extent_guarded_deref_refuses_the_whole_program():
         W.emit(prog([("ret", False)], extents={PTR: (ARR,)}, decls=[tv.decl(ARR, 16)]))
 
 
-def test_a_narrowing_local_read_refuses_by_name():
-    """The evaluator reads a local unmasked; a memory slot reads it by width."""
-    stmts = [("asg", "t", zext(m(CELL))), store(loc("t")), ("ret", False)]
-    with pytest.raises(W.Refusal, match="narrowing read of local 't'"):
+def test_a_narrowing_local_read_carries_the_whole_slot_the_evaluator_holds():
+    """A bare local reads unmasked, so the slot's width is the width every site reads."""
+    stmts = [
+        ("asg", "t", op("INT_ADD", (m(CELL, 2), c(0x1000, 2)), 2)),
+        store(op("INT_LESS", (loc("t"), c(0x2000, 2)))),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0)]]  # $3211 < $2000 is false at the slot's own width
+    p = prog(stmts)
+    want = frameval.Evaluator(frameprog.loads(frameprog.dumps(p)), {}).frames(1)
+    assert W.emit(p).frames(1) == want
+
+
+@pytest.mark.parametrize("mn", ("INT_SLESS", "INT_SLESSEQUAL"))
+def test_a_narrowing_local_read_under_a_signed_compare_refuses_by_name(mn):
+    """``expr._apply`` signs by the node's width but reads the local's value whole."""
+    stmts = [("asg", "t", zext(m(CELL))), store(op(mn, (loc("t"), c(1)))), ("ret", False)]
+    with pytest.raises(W.Refusal, match="narrowing read of local 't' under " + mn):
         W.emit(prog(stmts))
 
 
-def test_the_stack_pointer_local_refuses_by_name():
-    with pytest.raises(W.Refusal, match="stack-pointer local"):
-        W.emit(prog([("asg", "sp", c(0)), ("ret", False)]))
+def test_the_stack_pointer_local_is_the_machine_s_own_sp():
+    """``sp`` is the slot ``frameval`` pushes through, so reading it is TSX and writing TXS."""
+    stmts = [
+        store(loc("sp")),
+        ("asg", "sp", op("INT_SUB", (loc("sp"), c(2)))),
+        store(loc("sp")),
+        ("st", c(0x01FC, 2), c(0x7E)),
+        ("asg", "sp", op("INT_ADD", (loc("sp"), c(2)))),
+        store(m(0x01FC)),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0xFD), (0, 0xFB), (0, 0x7E)]]
+
+
+def test_a_call_moves_the_stack_pointer_local_the_way_the_evaluator_pushes():
+    """The pushed word is two bytes of page one, and ``sp`` reads them off the machine."""
+    callee = [(0x1200, [], [], [store(loc("sp")), store(m(0x01FC)), ("ret", False)])]
+    stmts = [("call", 0x1200, 0x4ED6), store(loc("sp")), ("ret", False)]
+    assert run(stmts, procs=callee) == [[(0, 0xFB), (0, 0xD6), (0, 0xFD)]]
+
+
+def test_a_wide_stack_pointer_local_refuses_by_name():
+    stmts = [("asg", "sp", op("COPY", (loc("sp"),), 2)), ("ret", False)]
+    with pytest.raises(W.Refusal, match="wide stack-pointer local"):
+        W.emit(prog(stmts))
+
+
+def test_a_for_range_over_the_stack_pointer_refuses_by_name():
+    with pytest.raises(W.Refusal, match="``for`` range over 'sp'"):
+        W.emit(prog([("for", "sp", 0, 3, [store(c(1))]), ("ret", False)]))
 
 
 def test_a_call_whose_arguments_are_not_the_parameters_refuses():
@@ -501,6 +564,38 @@ def test_the_assembler_binds_labels_in_both_passes():
     p.label("tab").byte(("LOL", "tab"), ("HIL", "tab"), 0x7F)
     assert p.assemble() == bytes((0xA9, 0x01, 0x4C, 0x05, 0x10, 0x05, 0x10, 0x7F))
     assert p.end == 0x1008
+
+
+def test_the_assembler_bridges_one_free_run_to_the_next_at_a_cut():
+    """A cut is where the emission may continue elsewhere; the hop costs one ``JMP``."""
+    p = Asm(0x1000).i("LDA", "imm", 1).cut().i("LDA", "imm", 2)
+    assert p.assemble([(0x1000, 5), (0x2000, 16)]) == bytes((0xA9, 0x01, 0x4C, 0x00, 0x20, 0xA9, 2))
+    assert p.blocks == [(0x1000, 0, 5), (0x2000, 5, 2)]
+    with pytest.raises(ValueError, match="shorter than the emitted code"):
+        Asm(0x1000).i("LDA", "imm", 1).assemble([(0x1000, 1)])
+    q = Asm(0x1000).i("LDA", "imm", 1).cut().i("LDA", "imm", 2)
+    with pytest.raises(ValueError, match="outruns every free run"):
+        q.assemble([(0x1000, 2), (0x2000, 1)])
+
+
+def _fragmented(p, gap):
+    """Fill every zeroed unowned run but ``gap`` bytes of the largest, so the code must hop."""
+    taken = W._reserved(p)
+    for i, (a, n) in enumerate(W._runs(lambda x: x not in taken and not p.mem0[x])):
+        lo = a + gap if i == 0 else a
+        p.mem0[lo : a + n] = b"\xff" * (a + n - lo)
+    return p
+
+
+def test_the_emission_lays_itself_across_the_image_s_free_runs():
+    """One run holds the data block and little else, so the code continues in the next."""
+    stmts = [store(op("INT_ADD", (m(CELL), c(k)))) for k in range(40)] + [("ret", False)]
+    p = _fragmented(prog(stmts), W.CTRL_BYTES + W.TEMP_BYTES + 32)
+    spans = W.free_spans(p)
+    witness = W.emit(p)
+    assert spans[0][1] < len(witness.code)  # no single run of the image holds it
+    assert len(spans) == len(set(spans)) and spans[0] == W.free_span(p)
+    assert witness.frames(1) == [[(0, (0x11 + k) & 0xFF) for k in range(40)]]
 
 
 def test_the_assembler_refuses_a_duplicate_label_and_a_long_branch():
@@ -533,3 +628,42 @@ def test_the_example_artifact_replays_frame_for_frame(example):
     """The end-to-end gate: re-emitted 6502 against the original routine's projection."""
     p, frames = example
     assert framelog.canonical(W.emit(p).frames(len(frames))) == framelog.canonical(frames)
+
+
+EXEMPLAR_REFUSALS = {  # the closed ledger: an exemplar witnesses, or refuses for this
+    "electrosound": "declared volatile inputs (osc3)",
+}
+
+
+def _exemplar_params():
+    """The exemplars the run resolves, one case per tune (``tools/exemplars.py``)."""
+    want = {rel: exemplars.FAMILY_OF[rel] for rel in exemplars.EXEMPLARS}
+    out = []
+    for path, sub, secs in corpus_params(HVSC):
+        stem = path.with_suffix("").as_posix()
+        for rel, key in want.items():
+            if stem.endswith("/" + rel):
+                out.append(pytest.param(path, sub, secs, key, id="%s-%s" % (key, path.stem)))
+    return out
+
+
+@pytest.mark.parametrize("sid,subtune,secs,family", _exemplar_params())
+def test_an_exemplar_replays_frame_for_frame_off_the_machine(sid, subtune, secs, family):
+    """One tune per player family, re-emitted as 6502 and replayed under the VM.
+
+    The walker's projection is the reference and the machine's is the claim, so no
+    evaluator stands between the two; ``tools/witness_sweep.py`` is the full-length run."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
+    n = min(SWEEP_FRAMES, int(secs * 50))
+    model, _ev = structured.decompile(mem, init, play, n, subtune)
+    p = frameprog.program(model)
+    refusal = EXEMPLAR_REFUSALS.get(family)
+    if refusal is not None:  # a cycle-derived source no machine replay can reproduce
+        with pytest.raises(W.Refusal, match=re.escape(refusal)):
+            W.emit(p)
+        return
+    _trace, walker = frameprog.iota(model, n)
+    held0 = frameval.sid_held0(p)
+    got = framelog.canonical(W.emit(p).frames(n), held0)
+    assert framelog.diff(got, framelog.canonical(walker, held0)) is None
