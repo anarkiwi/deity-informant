@@ -7,6 +7,8 @@ built by ``ptrextent.web`` itself, since an extent is an observation, not a proo
 import sys
 from pathlib import Path
 
+import re
+
 import pytest
 
 from test_shred_regmodel import PAT, _lift, _lift_prog
@@ -46,6 +48,7 @@ def _lifted(name, records):
         ext,
         p.dispatch,
         p.evidence,
+        roles=p.roles,
         landings=p.landings,
     )
     return out, proofs
@@ -76,7 +79,9 @@ def test_an_eligible_mapped_web_resolves_and_annotates():
     """b1's column met b0's extent, so the web is named and its blocks declared."""
     prog, proofs = _walked("cursor_save")
     assert prog.extents == {CELL: (PAT,)}
-    assert "ptr_%04X: u16 in m_%04X" % (CELL, PAT) in _state(prog)
+    assert any(
+        re.search(r"ptr_%04X: (?:\w+ )?u16 in m_%04X" % (CELL, PAT), ln) for ln in _state(prog)
+    )
     assert "*ptr_%04X" % CELL in _body(prog) and "mem[" not in _body(prog)
     assert [p.status for p in proofs] == ["resolved"]
 
@@ -126,7 +131,9 @@ def test_an_ineligible_web_is_no_target():
 def test_a_pair_that_did_not_fuse_carries_no_extent():
     """The grammar puts a block extent on a u16 field, so a byte-lane pair refuses."""
     prog, proofs = _walked("pointer_walk")
-    assert not prog.extents and "ptr_%04X_lo: u8" % CELL in _state(prog)
+    assert not prog.extents and any(
+        re.search(r"ptr_%04X_lo: (?:\w+ )?u8" % CELL, ln) for ln in _state(prog)
+    )
     assert [p.lemma.rsplit("; ", 1)[-1] for p in proofs] == ["web_unnamed"]
 
 

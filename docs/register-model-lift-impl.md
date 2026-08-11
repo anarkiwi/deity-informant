@@ -600,8 +600,8 @@ is an artifact fact; the shredder family is 23), and one law weakened on the rec
 `prog.procs == src.procs` is now the entry/parameter/return identity, because the text is
 the minimized program.
 
-The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,539
-bytes**, aggregate `64f763d93ebf3b1edcc11310b3ef6be6a3818dad517026b8f1874125827a7b2b`;
+The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,387,498
+bytes**, aggregate `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`;
 `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
 and zero refusals; suite **2,748 passed / 490 skipped / 29 xfailed**, oracle 16; the corpus
 text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
@@ -609,9 +609,10 @@ text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
 parse and fixpoint **624 of 624**, **210,034 rewritten sites proved, zero unproved**,
 −4,529 lines with no tune larger; prototype ratchets **324 lines / 773 nodes**. The
 25-exemplar review and `out/eqlift_measure_s4l3.json` are retired with the tool that made
-them. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved and
-cannot until landing 4 turns the role keywords on; what the switch moved is which emitter
-ships.
+them. Stage 4's steering metric has a number for the first time: **13,796 of 18,637 persistent
+cells role-named (74.0%)**, recorded by `splice_sweep` every landing. The headline — tunes
+wearing zero machine shapes — has **not** moved, and cannot until the prototype's fold and
+render layers are re-based onto the artifact, which is landing 4's remaining part.
 
 **The open items, each with its mechanism, as the switch leaves them.**
 - **§5's `_Prune`/`_inline` deletion** (landing 3, next part): not a rendering change but a
@@ -2636,3 +2637,37 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (84 bad, unmoved), parse and fixpoint **624 of 624**, **209,938 rewritten sites proved and
   zero unproved**, −4,625 lines with **no tune larger** (575 smaller). `black --check` and
   `pylint` (10.00/10) clean.
+- **2026-08-11 — stage 4, landing 4 (part): the role keywords are ON, and the steering
+  metric has a number.** Stage 2 built the update-shape reading and stage 4 owed it a
+  consumer; `frameprog.program` is now that consumer.
+  (1) **The mechanism is one call and one map.** `frameprog._roles` takes
+  `roles.census(prog)`'s cell verdicts and `idioms.state_cells(prog)`'s address-to-field
+  map, and fills `FrameProgram.roles`, which `sidprog._field_line` has printed since stage
+  2 and `sidprog.lark`'s `statedef` has parsed since then. Recognition licenses nothing: a
+  cell with no witnessed update, or one carrying an unshaped update, is simply absent and
+  its field stays a legal `uN`. `parse` reads `doc.roles` back rather than recomputing, so
+  the fixpoint is the text's and holds on **624 of 624**.
+  (2) **The metric, recorded by the standing gate.** `tools/splice_sweep.py` now reports
+  `fields` and `roled` per tune and in the rollup, so "persistent cells role-named, rising"
+  is measured every landing rather than asserted: **13,796 of 18,637 = 74.0%** across the
+  corpus. Emitted size is the same run's `d_lines`, unmoved at **−4,529 with no tune
+  larger**.
+  (3) **The §4 review is the whole diff, and it is one shape.** Every tune moved and every
+  moved line is a `state { }` field gaining its keyword — `ptr_005D: cursor u16`,
+  `ctr_5501: counter u8`, `idx_550A: accumulator u8` — with **zero** lines changed outside
+  the state block (checked as a diff predicate on `Hubbard_Rob/Commando`, and the corpus
+  `d_lines` is unmoved, which is the same statement over 624 tunes).
+  (4) **What landing 4 still owes, and it is the prototype's half.** The five pins the plan
+  names — no architectural register as a value, the typed handler switch, the VM operator
+  set, roles carrying their evidence, and declared initial values — are asserted on
+  `examples/state_machine_lift.py`'s **own** `render`, not on the artifact, so the engine
+  turning role keywords on cannot flip them. They flip when the prototype's fold and render
+  layers are re-based onto the artifact, which is the same work the switch named
+  (#182 (1)): the prototype's dialect parser and its byte-lane fold layer both predate the
+  rung-fused text. That re-basing is landing 4's remaining part and it owns all five.
+  (5) **The gates.** `gate_sweep` at full Songlengths **624 / 624 / 624 clean**. Suite
+  **2,740 passed / 490 skipped / 29 xfailed**, oracle 16, `black`/`pylint` clean. Emit
+  identity moves on the review above to
+  `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`, 624 tunes, 0 refused,
+  **28,387,498 bytes** (+128,959: the keywords are emitted bytes). Splice sweep against its
+  control: **zero new, three fixed**, parse and fixpoint 624/624, 210,034 sites proved.
