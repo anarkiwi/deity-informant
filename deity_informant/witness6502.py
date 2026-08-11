@@ -1,9 +1,9 @@
 """witness6502: re-emit a frame program as 6502 and replay it under the VM.
 
-Stage 4's round-trip witness, partial: the dialect (``idioms.FORMS``) and the
-structured statements become machine code run on ``PcodeVM``, so a checked SID
-write stream is witnessed with no evaluator in the trust chain. The computed
-transfers resolve their pc through the compiled label table; the rest refuses.
+Stage 4's round-trip witness: the dialect (``idioms.FORMS``) and the structured
+statements become machine code on ``PcodeVM``, so a checked SID write stream is
+witnessed with no evaluator in the trust chain. Every computed transfer, the raw
+machine call included, resolves its pc through the compiled label table.
 """
 
 from __future__ import annotations
@@ -27,12 +27,11 @@ _UCMP = frozenset(("INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"))
 _SCMP = frozenset(("INT_SLESS", "INT_SLESSEQUAL"))
 _SIGNED = frozenset(("INT_SCARRY",))
 
-_COMPUTED = frozenset(("dgoto", "igoto", "dcall", "dbr"))  # every statement that resolves a pc
+_COMPUTED = frozenset(("dgoto", "igoto", "dcall", "dbr", "call", "callb"))  # resolve a pc
+_RAW = ("call", "callb")
 _STMT_REFUSALS = {
     "swg": "the arm table with no computed goto before it (the pair is the dispatch)",
     "swc": "the arm table with no computed call before it (the pair is the dispatch)",
-    "call": "the raw machine call (a JSR at a pc, not a serialized procedure call)",
-    "callb": "the raw machine call carrying an inline continuation body",
 }
 
 
@@ -67,6 +66,21 @@ def _walk(stmts):
         yield s
         for b in P._stmt_bodies(s):
             yield from _walk(b)
+
+
+def _vec_target(mem0, p):
+    """The word a static image vector holds, read with the 6502's own page wrap."""
+    return mem0[p] | (mem0[(p & 0xFF00) | ((p + 1) & 0xFF)] << 8)
+
+
+def _inline_pcs(stmts, mem0, out):
+    """Pcs a static ``igoto``'s inline target body is marked under (``frameval.seq``)."""
+    for i, s in enumerate(stmts):
+        for b in P._stmt_bodies(s):
+            _inline_pcs(b, mem0, out)
+        nxt = stmts[i + 1] if i + 1 < len(stmts) else None
+        if s[0] == "igoto" and s[2] is None and nxt is not None and not _paired(s, nxt):
+            out.add(_vec_target(mem0, s[1]))
 
 
 def _loc_reads(n, out):
@@ -120,9 +134,13 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.entries = {e for e, _pa, _r, _s in prog.procs}
         self.params = {e: tuple(pa) for e, pa, _r, _s in prog.procs}
         stmts = [s for _e, _pa, _r, st in prog.procs for s in _walk(st)]
-        self.pcs = {s[1] for s in stmts if s[0] in ("label", "opsw")}
-        self.rets = {(s[2] + 1) & 0xFFFF for s in stmts if s[0] == "dcall"} - self.pcs
+        self.pcs = {s[1] for s in stmts if s[0] in ("label", "opsw", "callb")}
+        for _e, _pa, _r, st in prog.procs:
+            _inline_pcs(st, prog.mem0, self.pcs)
+        self.rets = {(s[2] + 1) & 0xFFFF for s in stmts if s[0] in ("dcall",) + _RAW} - self.pcs
         self.pcs |= self.rets
+        self.raw = self._raw_callees(stmts)
+        self.sites, self.resolving = [], 0
         self.computed = any(s[0] in _COMPUTED for s in stmts)
         self.lw = self._local_widths()
         self.fault, self.saved, self.cmp, self.dynv = org, org + 1, org + 2, org + 3
@@ -134,6 +152,22 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.temps = self.tp = base
         self.top = base + TEMP_BYTES
         self.p = Asm(self.top)
+
+    def _raw_callees(self, stmts):
+        """Procedures a raw ``call`` enters: their ``ret`` reads the slot, not the machine's.
+
+        One convention per procedure, so a callee the program also reaches by
+        ``pcall`` -- or the frame entry itself -- is the refusal."""
+        raw = {s[1] for s in stmts if s[0] == "call"}
+        outside = raw - self.entries
+        mixed = raw & ({s[1] for s in stmts if s[0] == "pcall"} | {self.prog.play})
+        for bad, why in ((outside, "no procedure of the program"), (mixed, "also a pcall entry")):
+            if bad:
+                refuse(
+                    "the raw call to $%04X" % min(bad),
+                    "%s carries its return, so the slot's continuation has no owner" % why,
+                )
+        return raw
 
     def _local_widths(self):
         """One memory slot per local, at the width the program reads it."""
@@ -256,6 +290,26 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.move(a, aw, t, w)
         return t
 
+    def sat(self, n, w):
+        """Address of a ``w``-byte sign-extended copy of ``n``'s value.
+
+        The evaluator reads each side of a signed compare at its own width, so a
+        narrow operand's fill is its top byte's sign and not zero."""
+        a, aw = self.value(n)
+        if aw >= w:
+            return a
+        t = self.push(w)
+        self.move(a, aw, t, aw)
+        skip = self.nl("x")
+        self.p.i("LDA", "imm", 0)
+        self.p.i("BIT", "abs", a + aw - 1)
+        self.p.i("BPL", "rel", ("L", skip))
+        self.p.i("LDA", "imm", 0xFF)
+        self.p.label(skip)
+        for j in range(aw, w):
+            self.sta(t + j)
+        return t
+
     def load(self, n):
         addr, sz = n[1], n[2]
         if addr[0] == "const" and addr[2] == 2:
@@ -364,14 +418,10 @@ class _Gen:  # pylint: disable=too-many-public-methods
                 "the carry over operands of unequal width",
                 "the threshold is the first operand's mask, which the wider side outgrows",
             )
-        if mn in _SCMP and P.loc_width(kids[0]) != P.loc_width(kids[1]):
-            refuse(
-                "the signed compare over operands of unequal width",
-                "the evaluator reads each side at its own width and the machine copy zero-extends",
-            )
         t = self.push(w)
         mark = self.tp
-        a, b = self.at(kids[0], width), self.at(kids[1], width)
+        wide = self.sat if mn in _SCMP else self.at
+        a, b = wide(kids[0], width), wide(kids[1], width)
         self.p.i("LDX", "imm", 0)
         if mn in ("INT_EQUAL", "INT_NOTEQUAL"):
             for j in range(width):
@@ -414,18 +464,65 @@ class _Gen:  # pylint: disable=too-many-public-methods
                 if fn is None:
                     refuse("the statement %r" % k, "no witnessed statement form spells it")
                 fn(s)
+                if k == "igoto" and s[2] is None and nxt is not None:
+                    self.mark(_vec_target(self.prog.mem0, s[1]))
             self.tp = mark
             i += 1
 
+    def mark(self, pc):
+        """Bind a serialized pc to the code here, first wins (``frameval.Code.mark``)."""
+        if "pc_%04X" % pc not in self.p.labels:
+            self.p.label("pc_%04X" % pc)
+
     def _s_label(self, s):
-        self.p.label("pc_%04X" % s[1])
+        self.mark(s[1])
 
     def _s_asg(self, s):
         a, aw = self.value(s[2])
         self.move(a, aw, self.locs[s[1]], self.lw[s[1]])
 
     def _s_ret(self, _s):
-        self.p.i("RTS")
+        if self.resolving:
+            self.retdyn()
+        else:
+            self.p.i("RTS")
+
+    def retdyn(self):
+        """A raw callee's return: the word the slot now holds is the pc, and it resolves."""
+        self.p.i("PLA")
+        self.sta(self.dynv)
+        self.p.i("PLA")
+        self.sta(self.dynv + 1)
+        self.p.i("JMP", "abs", ("L", "retsolve"))
+
+    def rawcall(self, tgt, ret):
+        """The machine call: the pushed word is the program's own ``ret``, as the trick reads it.
+
+        ``framestack.lift_rts_trick``'s callee pulls or rewrites that word, so the
+        stack image is the evaluator's ``push(ret)`` byte for byte."""
+        for j in (1, 0):
+            self.p.i("LDA", "imm", (ret >> (8 * j)) & 0xFF)
+            self.p.i("PHA")
+        self.p.i("JMP", "abs", ("L", self.target(tgt)))
+        lbl = self.nl("k")
+        self.p.label(lbl)  # the site the untouched word returns to (the shadow stack)
+        self.sites.append((ret, lbl))
+        self.retlabel(ret)
+
+    def _s_call(self, s):
+        self.rawcall(s[1], s[2])
+
+    def _s_callb(self, s):
+        """The callee's body is inline, under the pc the call names and no other label."""
+        skip = self.nl("s")
+        self.rawcall(s[1], s[2])
+        self.p.i("JMP", "abs", ("L", skip))
+        self.mark(s[1])
+        self.resolving += 1
+        self.body(s[3])
+        self.resolving -= 1
+        self.retdyn()
+        self.p.label(skip)
 
     def _s_unobs(self, _s):
         self.p.i("JMP", "abs", ("L", "fault"))
@@ -549,10 +646,10 @@ class _Gen:  # pylint: disable=too-many-public-methods
     def vector(self, s):
         """``dynv`` gets the image word an ``igoto`` reads, wrapping inside its own page."""
         if s[2] is None:
-            refuse(
-                "the static image vector at $%04X" % s[1],
-                "its target's body follows the transfer inline, under no label of its own",
-            )
+            for j, dst in ((0, self.dynv), (1, self.dynv + 1)):
+                self.lda((s[1] & 0xFF00) | ((s[1] + j) & 0xFF))
+                self.sta(dst)
+            return
         lo, hi = self.nl("v"), self.nl("v")
         self.patch(self.at(s[2], 2), [lo, hi])
         self.p.i("INC", "abs", ("L", hi, 1))  # the 6502 indirect wrap: the page never carries
@@ -665,8 +762,25 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.chain(sorted((pc, self.target(pc)) for pc in self.pcs | self.entries))
         self.p.i("JMP", "abs", ("L", "fault"))
 
+    def returner(self):
+        """A raw callee's ``ret``: the call site the word still names, else the pc it holds + 1.
+
+        The two arms are the evaluator's own -- its shadow stack, keyed by the word
+        the site pushed (unique per site), and its ``rmap`` lookup of ``w + 1``."""
+        self.p.label("retsolve")
+        self.chain(self.sites)
+        over = self.nl("r")
+        self.p.i("INC", "abs", self.dynv)
+        self.p.i("BNE", "rel", ("L", over))
+        self.p.i("INC", "abs", self.dynv + 1)
+        self.p.label(over)
+        self.p.i("JMP", "abs", ("L", "resolve"))
+
     def build(self):
-        """The assembled image: frame entry, fault landing, then the procedures."""
+        """The assembled image: frame entry, fault landing, then the procedures.
+
+        ``run_sub``'s own dummy return puts the frame at the evaluator's stack depth,
+        so a page-one cell the program names is the byte the evaluator reads."""
         p = self.p
         p.label("entry")
         p.i("TSX")
@@ -681,8 +795,12 @@ class _Gen:  # pylint: disable=too-many-public-methods
         p.i("RTS")
         for entry, _params, _rets, stmts in self.prog.procs:
             p.label("sub_%04X" % entry)
+            self.resolving = int(entry in self.raw)
             self.body(stmts)
             p.i("JMP", "abs", ("L", "fault"))
+        self.resolving = 0
+        if self.sites:
+            self.returner()
         if self.computed:
             self.resolver()
         return p.assemble()
