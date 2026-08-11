@@ -45,7 +45,7 @@ XFAIL = dict(strict=True)
 _S3 = "register-model-lift stage 3:"
 _OWNERS = (  # the live owner a stage-3 reason names; the disposition is the strict mark
     "owner: rung (f)",  # frameptr._Ptr: the deref premise and the writer set it reads
-    "owner: rung (d)",  # framefuse: the tune-wide u16 declaration one lane read refuses
+    "owner: rung (d)",  # framefuse: widening a lone half into a read of a write-only sink
     "owner: framestack",  # the sp-relative slot identity a machine-stack hold needs
     "owner: frameproc",  # the bit analyses, their reach, and the promotion they refuse
     "owner: datadecl",  # the registry, and the via: discovery that grows it
@@ -1319,16 +1319,17 @@ def test_init_written_livein_cell_stays_state():
 
 
 _DEREF_REFUSAL = {  # fixture -> the rung (f) premise its *ptr[i] lift states
-    "pointer_walk": "another store may write the pointer",
-    "mux_pair": "another store may write the pointer",
+    "pointer_walk": "a definition is not a lo/hi partner-table entry read",
+    "mux_pair": "a definition is not a lo/hi partner-table entry read",
     "cursor_save": "a definition is not a lo/hi partner-table entry read",
     "writethrough": "a store at an unproven address may write the pointer",
 }
 _DEREF_WHY = (
-    "%s -- rung (f) states the premise %%r, and the writer set it reads is what refuses: "
-    "_writers records only width-2 stores as definitions and _hit excepts only an exact "
-    "word store, so a byte-lane row and a bounded deref store both read as third writers"
-    % _OWNERS[0]
+    "%s -- rung (f) states the premise %%r. Rung (d)'s per-site premise paid the writer "
+    "set: the pair's own byte-lane reload row is a width-2 lane update now, so pointer_walk "
+    "and mux_pair moved off the third-writer refusal onto the definition premise, and what "
+    "_writers still owes is a definition that is a partner-table entry read (writethrough's "
+    "deref store wants frameptr._span off the declared const table's word set)" % _OWNERS[0]
 )
 
 
@@ -1379,23 +1380,21 @@ def test_a_refused_deref_keeps_its_raw_address_on_the_unified_path(name):
 def _fused_cursor(name):
     """True where rung (d) declared the walked pair one ``u16`` field, not two lanes.
 
-    ``framefuse.refusal()`` reads one surviving byte-lane read of the pair as refusing
-    its whole tune-wide declaration, even where an equal word read stands beside it: it
-    is that read, not the second destination or the store order, that discriminates."""
+    LANDED: the premise is per access site, so a lone half is spelled through the
+    word -- a store as ``(w & $FF00) | zext2(v)``, a read as that lane's trunc --
+    and neither a second destination nor the store order discriminates any more."""
     return re.search(r"ptr_%04X: (?:\w+ )?u16" % G.PTR, _state_block(_lift(name))) is not None
 
 
-_FUSE_WHY = (
-    "%s -- framefuse.refusal() reads ONE surviving byte-lane read of the pair as refusing "
-    "the whole tune-wide u16 declaration. Either the declaration becomes per-seat, or the "
-    "lane-update spelling (ptr & $FF00) | zext2(row) is admitted so a lane store is a word "
-    "store; twelve pins share this one owner" % _OWNERS[1]
-)
+def _lane_read(name):
+    """The pair's surviving byte-lane reads are the fused word's own truncs."""
+    body = _body(_lift(name))
+    return "trunc1(ptr_%04X:2)" % G.PTR in body or "trunc1((ptr_%04X:2 >> $08)" % G.PTR in body
 
 
-def _fuse_pin(why):
-    """A rung-(d) pin's mark: its own refusal class beside the measured step 4 verdict."""
-    return pytest.mark.xfail(reason="%s %s; %s" % (_S3, why, _FUSE_WHY), **XFAIL)
+def _lane_update(name, cell):
+    """A lone half store is the word's lane update, not a byte store at the cell."""
+    return "ptr_%04X:2 = ((ptr_%04X:2 & $" % (cell, cell) in _body(_lift(name))
 
 
 def test_a_plain_advance_fuses_its_cursor_pair():
@@ -1435,80 +1434,83 @@ def test_a_word_copy_of_the_advanced_cursor_leaves_it_fused():
     assert _fused_cursor("dual_store_word_copy"), "a word-wide save copy refused the pair"
 
 
-@_fuse_pin("a dual-destination advance keeps the pair byte-wise")
 def test_dual_store_advance_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_advance")
 
 
-@_fuse_pin("store order within a lane does not free the pair")
 def test_dual_store_pair_first_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_pair_first")
 
 
-@_fuse_pin("uninterleaved pair stores still keep it byte-wise")
 def test_dual_store_via_regs_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_via_regs")
 
 
-@_fuse_pin("a hi-first dual-destination advance keeps the pair byte-wise")
 def test_dual_store_hi_first_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_hi_first")
 
 
-@_fuse_pin("a cell-stepped dual store keeps it byte-wise")
 def test_dual_store_computed_fuses_its_cursor_pair():
     assert _fused_cursor("dual_store_computed")
 
 
-@_fuse_pin("a lo-only dual store refuses certification, not just naming")
 def test_dual_store_lo_only_fuses_its_cursor_pair():
-    """One lane's copy is enough: rung (g) then refuses ``def_unliftable``, not the spelling.
+    """One lane's copy is enough: the surviving lo read is the word's own trunc.
 
-    ``ptrcert._def_refusal`` reads the role, so the hi lane refuses as ``computed`` though
-    both lanes extract one named word -- a rule gap the corpus never exhibits (0 webs; the
-    nearest 2 are lo-lane advances spelled through the word), so it is no lift to recover."""
+    ``ptrcert._def_refusal`` reads the role, so rung (g) still refuses the hi lane as
+    ``computed`` -- a rule gap the corpus never exhibits (0 webs) and no part of this
+    pair's declaration, which is what the premise decides."""
     assert _fused_cursor("dual_store_lo_only")
+    assert _lane_read("dual_store_lo_only"), "the surviving lo read kept its byte cell"
 
 
-@_fuse_pin("a stack-spilled cursor has no word form to appeal to")
 def test_stack_spill_cursor_fuses_its_cursor_pair():
-    """The largest group (15 webs), and the one no proven-word-form fix can reach.
+    """The largest group (15 webs): a spill has no word form and needs none.
 
     Corpus-wide the 164 lone-half reads are 130 bare copies to 33 ``INT_ADD``, sinking to
-    ``asg`` (96) and ``st`` (70) and to no ``if`` at all: not one is a page-alignment test
-    or an end-of-block compare, so the byte-wise evidence is spill and carry residue."""
+    ``asg`` (96) and ``st`` (70) and to no ``if`` at all: spill and carry residue, each
+    of which the word's own trunc spells without a word form to appeal to."""
     assert _fused_cursor("stack_spill_cursor")
+    assert _lane_read("stack_spill_cursor"), "the spilled halves kept their byte cells"
 
 
-@_fuse_pin("an unobserved carry arm leaves the hi lane unpaired")
 def test_deferred_carry_cursor_fuses_its_cursor_pair():
-    """The hi lane is in the code but not the text, so no store pairs with the lo one."""
+    """The hi lane is in the code but not the text, so the lo store is the lane update.
+
+    The unobserved carry arm is the wall that leaves the hi lane open, which is what
+    parts this fixture from ``inpage_advance``'s proven page selector below."""
     assert _fused_cursor("deferred_carry_cursor")
+    assert _lane_update("deferred_carry_cursor", G.PTR), "the lone lo store stayed byte-wide"
 
 
-@_fuse_pin("a split lo/hi save-back destination cannot pair")
 def test_table_spill_cursor_fuses_its_cursor_pair():
-    """The advance is already one u16 store; the de-interleaved save-back is what refuses."""
+    """The advance is already one u16 store, and the de-interleaved save-back becomes one.
+
+    The two lane stores meet at the partner table's own row once the pair is a word, so
+    the fixture that had no pairing seat ends with no lane spelling left at all."""
     assert _fused_cursor("table_spill_cursor")
+    assert "m_%04X[x]:2 = ptr_%04X:2" % (G.TBL, G.PTR) in _body(_lift("table_spill_cursor"))
 
 
-@_fuse_pin("interleaved half stores never pair, so the pair refuses")
 def test_unpaired_half_store_fuses_its_cursor_pair():
     """The one rung (d) class no other fixture reaches: no lane read, the stores unpaired.
 
-    ``framefuse.refusal()`` reports the first failing premise only, testing ``lone``
-    before ``unpaired``, so a fixture's stated class is the first that fails and not
-    necessarily the only one - the classes are ordered, not disjoint."""
+    Neither half meets a partner at a seat, so each is its own lane update and the pair
+    is one ``u16`` all the same."""
     assert _fused_cursor("unpaired_half_store")
+    body = _body(_lift("unpaired_half_store"))
+    assert body.count("ptr_%04X:2 = ((ptr_%04X:2 & $" % (G.PTR, G.PTR)) == 2
 
 
 def test_an_inpage_advance_is_never_fused():
-    """Invariant: a bare INC lane with no carry arm never fuses to the wide add (8 of 74).
+    """Invariant: a bare INC lane with no carry arm stays two bytes (8 of 74 webs).
 
-    lo = (lo+k) mod 256 with hi untouched diverges from +:2 at every lane wrap
-    ($14FF -> $1400, not $1500). No operator is missing: hi is a constant page
-    selector, so the honest lift is a u8 offset into the page block, never a u16."""
+    The premise is now the fact the docstring used to assume: ``_page_fixed`` proves no
+    path changes the hi lane -- every store writes the byte it already holds and no wall
+    hides one -- so a lo lane advanced in place is an index into one page, not a word."""
     assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
+    (pr,) = [p for p in _lift_prog["inpage_advance"].proofs if p.kind == "pointer"]
+    assert "in-place lane advance(s) under a hi lane no path changes" in pr.lemma
 
 
 def test_g2_bounds_the_zext_add_store():
@@ -1624,11 +1626,12 @@ def test_a_stack_held_cursor_names_its_slot_and_keeps_its_store():
 
     The deref between push and pull reads an address no analysis resolves, so it may
     not move the slot's value; what it forbids is dropping the store, which is why the
-    cell stays and the pulls read the local the push defined."""
+    cell stays and the pulls read the local the push defined -- as the one hi-first word
+    store rung (d) merges the two restores into."""
     body = _body(_lift("low_held_cursor"))
     assert re.search(r"\bsp\b", body), "the hold lost its sp spelling"
     assert "mem[($0100 | zext2(sp)):2] = s0" in body, "the held slot dropped its store"
-    assert "ptr_0002_lo = s0" in body and "ptr_0002_hi = s1" in body, "a pull stayed in memory"
+    assert "hi-first ptr_%04X:2 = ((zext2(s1) << $08):2 | zext2(s0)):2" % G.PTR in body
 
 
 def test_a_stack_held_cursor_lifts_once_the_slot_is_named():
@@ -1738,21 +1741,25 @@ def test_the_dispatch_arms_read_the_value_and_not_the_cell():
     assert "m_%04X" % TMP not in _state_block(_lift("dispatch_scratch"))
 
 
-@_fuse_pin("a cross-frame lane reload is a masked word update")
 def test_a_phase_split_reload_fuses_its_cursor_pair():
     """Each half store is a lane replacement - (ptr & $FF00) | zext2(row) - so no
-    carry and no new operator is involved; only the lane-update spelling is missing."""
+    carry and no new operator is involved, and the two arms never have to meet.
+
+    The hi lane is proven fixed here and the pair fuses anyway: what refuses a page
+    selector is a lo lane advanced *in place*, which a table row replacement is not."""
     assert _fused_cursor("phase_split_reload")
+    body = _body(_lift("phase_split_reload"))
+    assert body.count("ptr_%04X:2 = ((ptr_%04X:2 & $" % (G.PTR, G.PTR)) == 2
 
 
-@_fuse_pin("a loop-carried LSR/ROR pair is one wide variable shift")
 def test_a_shift_divide_lifts_to_a_wide_shift():
-    """The dialect has >>; what is missing is the loop-to-expression rule, not an operator.
+    """The dialect has >>; the loop-carried rotate is the word's lanes, spelled as such.
 
     Unlike ``inpage_advance`` this fusion is semantically permitted: the loop is a
-    power-of-two divide of one 16-bit value, so the strict xfail is the whole pin -
-    it fails while the pair is byte-wise and XPASSes the day a loop-level rule lands."""
+    power-of-two divide of one 16-bit value, and the loop-to-expression rule that would
+    collapse the rotate to ``ptr >> n`` is rung (d2)'s, not this declaration's."""
     assert _fused_cursor("shift_divide")
+    assert _lane_read("shift_divide"), "the rotated lo lane kept its byte cell"
 
 
 def test_an_entry_balanced_procedure_destacks():
@@ -1803,17 +1810,17 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 19, sorted(pins)
+    assert len(pins) == 7, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
 def test_the_owners_partition_the_family_as_the_ledger_records_it():
-    """The ledger, executable: thirteen pins are rung (d)'s and the rest are named apart.
+    """The ledger, executable: rung (d) is down to its widening guard and no more.
 
-    Twelve are its tune-wide pair declaration and the thirteenth is its widening of a lone
-    lane, so a pin moving between owners moves here too and the log cannot drift."""
+    The twelve pair-premise pins landed with the per-site premise, so what rung (d)
+    still owns is ``lone_lane`` alone; a pin moving owners moves here too."""
     per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
-    assert len(per["owner: rung (d)"]) == 13, per["owner: rung (d)"]
+    assert per["owner: rung (d)"] == ["test_lone_lane_half_owes_no_register_load"]
     assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
     assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]
@@ -1855,7 +1862,7 @@ def test_a_shared_inline_data_callee_evaluates_through_the_skip():
     body = _body(_lift("jsr_inline_skip_two_sites"))
     assert not re.search(r"\n\s+sub_%04X\(" % SPSUB, body), "the slot reader promoted"
     assert body.count("call $%04X ret " % SPSUB) == 2, "the raw call carries no return slot"
-    assert "goto ((((zext2(t1) << $08):2 | zext2(ptr_0004_lo)):2 + $0001):2)" in body
+    assert "goto ((ptr_%04X:2 + $0001):2)" % FTC in body
 
 
 def test_a_two_depth_inline_data_callee_evaluates_through_the_skip():

@@ -594,6 +594,8 @@ code, not the other way round.
   **27 strict xfails** — 21 shredder pins under five owners
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
+  *(Items 5, 6 and 3 landed after this record: the shredder ledger stands at **7** pins —
+  rung (f) 4, rung (d) 1, `datadecl` 1, `eqlift_mem` 1. Decision log, below.)*
 - `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
   `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
   divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
@@ -691,34 +693,18 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
    the parse-and-evaluate gap, taken or refused by name. The close records items 3-8 as
    scheduled, not as waiting.
-3. **rung (d), the pair premise [12 pins, 21 → 9].** `framefuse.refusal()` reads **one**
-   surviving byte-lane read of a pair as refusing the whole tune-wide `u16` declaration.
-   Either the declaration becomes per-seat, or the lane-update spelling
-   `(ptr & $FF00) | zext2(row)` is admitted so a lane store is a word store — a §4 rule
-   admission with a corpus diff. The same premise is the nine-`u8` width gap below, so the
-   landing closes both.
-4. **rung (d), the widening guard [1 pin, 9 → 8].** `lone_lane` is the rung *widening* a lone
+3. **rung (d), the pair premise [12 pins, 19 → 7] — LANDED.** The premise is per access
+   site: a lone half is spelled through the word, a store as the lane update
+   `(ptr & $FF00) | zext2(row)` and a read as that lane's trunc, so nothing about one site
+   refuses another's pairing. What refuses is an indexed half store the pair cannot place, a
+   **page-fixed** pair (a hi lane no path changes under a lo lane advanced in place — the
+   `inpage_advance` fact, proved rather than assumed) and a pair with no word access. The
+   nine-`u8` width gap below is three-ninths of the way closed with it, and the rest is a
+   candidate-evidence question the entry below states. Decision log, 2026-08-11.
+4. **rung (d), the widening guard [1 pin, 7 → 6].** `lone_lane` is the rung *widening* a lone
    half into a read-modify-write of a write-only register; the guard is the SID write-only
    window `$D400`–`$D416`, and the rung must not widen a store whose destination is inside it.
 5. **`framestack`, the slot identity [1 pin, 8 → 7] — LANDED.** `low_held_cursor` needed an
-<<<<<<< Updated upstream
-   sp-relative slot identity because a page-one interval hold is unsound. It is the
-   `(epoch, offset)` key `sp_flow`'s join to bot cannot destroy, plus the reader/writer split:
-   a read refuses only the *removal* of the store (the slot is held), a writer refuses the
-   slot, and the machine's own return push is priced by refusing to span a call at all. The
-   record's exact pricing — "a call provably below it" — was built, measured and **refused**
-   on two tunes; the second of them is an emitter defect it exposed (decision log).
-   `ret_live` did **not** fall out of it either — `_below_sp` refuses every slot at `k > 0`
-   precisely because that is the return address — so #177's per-site resume pc
-   (`call site + inline-data length`) stands as the owed item.
-6. **`frameproc`, the bit analyses and the promotion they refuse [2 pins, 7 → 5].**
-   `g2_store`: `eqlift_mem._lattice` is pure over pass-1 expressions, so it moves to
-   `frameproc` and a **reach** reading takes the min with `addr_bits` — which may not do this
-   itself, because its `INT_OR` recursion needs masks. `sp_scratch_floor`: the cell survives
-   beside a raw `call` the chain havocs at, so what holds it is the promotion
-   `frameproc.slot_reader` refuses, and it flips with (5)'s resume-pc reading, not with
-   `addr_floor`.
-=======
    sp-relative slot identity — push and pull at one entry-relative offset, a call provably
    below it — because a page-one interval hold is unsound. It is the `(epoch, offset)` key
    `sp_flow`'s join to bot cannot destroy, plus the reader/writer split: a read refuses only
@@ -737,7 +723,6 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    a call, so the value spelling names a version no longer available and extraction falls back
    to the cell. The reading is `frameproc._Info.may`, the callee's may-define set; the consumer
    is the wall, so the pin is `eqlift_mem`'s [1 pin, 6 → 5].
->>>>>>> Stashed changes
 7. **rung (f), the writer set [4 pins, 5 → 1].** `_writers` records only width-2 stores as
    definitions and `_hit` excepts only an exact word store, so a declared lo/hi reload row and
    a bounded deref store both read as third writers. Measured per fixture: `pointer_walk` and
@@ -795,13 +780,20 @@ orders anything. All of them may land in any order and in parallel.
   which pattern-match the polished statements. Its gate is `gate_sweep` plus a §4-reviewed
   emit-identity diff, and rung (d2)'s per-site e-graphs go with it only where the same
   admitted rules fire in the per-procedure graph.
-- **The nine-`u8` width gap** (owner: rung (d), plan item 3). On the canonical example nine
-  `u8` fields (`zp_31`, `zp_41`, `zp_4C`, `zp_61`, `zp_6A`, `zp_6C`, `zp_81`, `zp_8C`,
-  `zp_93`) are the *hi* halves of pairs the unified graph fuses (`ctr_0030:2`) and rung (d)
-  did not, so the block declares two bytes where the text reads one word. The reading is
-  `framefuse.apply_rung`'s `state` result against the fused stores the artifact emits.
+- **The nine-`u8` width gap** (owner: rung (d), plan item 3) — **three of nine closed, and
+  the other six are a different question.** `zp_41`, `zp_61` and `zp_81` are gone: their pairs
+  are `ptr_0040`/`ptr_0060`/`ptr_0080` and item 3's per-site premise is what fused them. The
+  remaining six (`zp_31`, `zp_4C`, `zp_6A`, `zp_6C`, `zp_8C`, `zp_93`) carry **no pair proof at
+  all** — `framefuse.candidates` names pointer pairs, dispatch operand words and SID registers,
+  and a counter pair the text already reads as one word (`ctr_0030:2`, `ctr_0092:2`, `zp_4B:2`,
+  `zp_69:2`, `zp_6B:2`, `zp_8B:2`) is none of the three. So this is a **candidate-evidence**
+  gap, not a premise one, and its mechanism is named: rung (d2)'s own fused word is evidence
+  the pair is 16-bit, so `candidates` should read `framemath`'s lifted sites as a fourth
+  source. Owner: rung (d), scheduled with plan item 4 (the widening guard), which is the next
+  landing to touch this rung.
 - **The parse-and-evaluate gap, now owned** (owner: landing 6, and it is three mechanism
-  families, not one). **71** of 624 tunes emit text that faults or diverges when parsed back
+  families, not one). *(Mostly closed 2026-08-11 by rung (d)'s landing: the aliased
+  partner-table parse defect was its carrier. Decision log, below.)* **71** of 624 tunes emit text that faults or diverges when parsed back
   and evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 37
   divergences**, the three sets disjoint. The denotation landing (decision log, 2026-08-11)
   took it from 84, thirteen divergences fixed and none new.
@@ -3240,3 +3232,103 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   eight fixed and zero new**, the lint family **9 → 1**, −7,268 lines with no tune larger
   (585 smaller), **207,073 sites proved, zero unproved**. Suite **2,788 passed / 490 skipped /
   25 xfailed** (oracle included). `black --check` and `pylint` (10.00/10, exit 0) clean.
+- **2026-08-11 — rung (d)'s pair premise becomes per access site, and twelve pins land.**
+  `framefuse.refusal()` read **one** surviving byte-lane access of a pair as refusing that
+  pair's whole tune-wide `u16` declaration. The ledger's item 3 offered two ways out — a
+  per-seat declaration, or admitting the lane-update spelling — and the landing takes the
+  second, which makes the first unnecessary: the declaration stays tune-wide and it is the
+  *access* that moves.
+  (1) **The spelling, and the obligation it carries.** A lone half store becomes the lane
+  update `(w & $FF00) | zext2(v)` — `framefuse._widen`, the rewrite the SID half has run
+  since §7.2 — and a lone half read becomes that lane's own trunc
+  (`frameproc.trunc_lo`/`trunc_hi`, rung (d2)'s spelling). Both are identities on the pair's
+  encoding, and the obligation is §4(d2)'s own law stated over the update: `trunc(lane) = v`
+  and `hi(lane) = hi(w)` with the two duals, **Z3-proved over QF_BV** on `eqlift._Z3Alg` —
+  the algebra `verify_rules` proves the admitted rules on — in
+  `test_the_lane_spelling_is_the_concatenated_value_law`. No idiom is named and no e-graph
+  rule is admitted: the rung writes the identity, the law says it is one.
+  (2) **The write-order hazard stops refusing too, on the SID half's own reading.** Where the
+  second value may read the first cell the halves do not *pack*; each lane widens on its own,
+  which writes them in the program's order and reads the lo the first one wrote. That was
+  already the SID branch; it is now the only branch.
+  (3) **What replaces the proxy is the fact it stood in for: `_page_fixed`.** The one shape
+  the old rule was right about is `inpage_advance` — `lo = (lo+k) mod 256` with `hi` a page
+  selector, which wraps where a word would carry. Its docstring **assumed** "hi is a constant
+  page selector"; the rung now proves it: every store that may reach the hi lane writes the
+  byte `mem0` holds, and no `call`/`dcall`/`swc`/`unobs` wall may hide one. Under such a hi
+  lane a lo lane advanced *in place* (`_lane_advance`, the value reading its own lane through
+  the locals staging it) refuses, and nothing else does. That parts `inpage_advance` from
+  `deferred_carry_cursor`, whose unobserved carry arm is exactly the wall, and from
+  `phase_split_reload`, whose hi lane is fixed but whose lo lane is replaced from a table
+  rather than advanced. The two other refusals are an indexed half store the pair cannot
+  place and a pair with no word access at all. **Every refusal left is strictly narrower than
+  the rule it replaces, so no pair that fused before can refuse now** — the corpus movement is
+  one-way by construction.
+  (4) **The rung publishes the readers for what it spells, and three consumers use them.**
+  `framefuse.lane_of` is `_widen`'s dual and `framefuse.unlane` takes a lane trunc back to the
+  cell it names. `ptrcert._classify` asks both before classifying a definition, which keeps
+  `low_held` (a cursor held through page one) and the byte-lane `block_read` the facts they
+  were — without it the lane update reads as an opaque computed word and `low_held_cursor`
+  goes *eligible*, which would be unsound. `framestack._push_val` reads a lane trunc as the
+  pure push it is, and the RTS trick then lifts **better** than before: the two truncs of one
+  word repack to the word, so `jsr_inline_skip_two_sites` emits
+  `goto ((ptr_0004:2 + $0001):2)` where it emitted a rebuilt pack of two lane locals.
+  (5) **The twelve pins, and two others that moved with them.** Flipped: `dual_store_advance`,
+  `dual_store_pair_first`, `dual_store_via_regs`, `dual_store_hi_first`, `dual_store_computed`,
+  `dual_store_lo_only`, `stack_spill_cursor`, `deferred_carry_cursor`, `table_spill_cursor`,
+  `unpaired_half_store`, `phase_split_reload`, `shift_divide` — the shredder ledger goes
+  **19 → 7** (rung (f) 4, rung (d) 1, `datadecl` 1, `eqlift_mem` 1) and rung (d) owns one,
+  `lone_lane`. Beside them the landing pays part of rung
+  (f)'s recorded premise: #189 (4) said `pointer_walk` and `mux_pair` refuse because the pair's
+  own byte-lane reload row reads as a third writer, and that row is a width-2 lane update now,
+  so both moved off the writer-set refusal onto premise 1 (a definition that is not a
+  partner-table entry read). Neither pin flips — the reasons say the new premise — and
+  `ptrcert` reports one word reload where it reported two byte ones.
+  (6) **Four rules are admitted with it, and they are the law itself.** `lane_lo`, `lane_hi`,
+  `lane_lo_keeps_hi` and `lane_hi_keeps_lo` in `eqlift.RULES` state exactly (1)'s four
+  equalities as rewrites, so `verify_rules` proves them where every other rule is proved and
+  the graph can read a lane update back. They fire only on the spelling this landing writes:
+  measured, they take **1,308 bytes** off the corpus and, where a lane advances twice, they
+  retire the intermediate local the fold otherwise mints (`ptr2 = trunc1(ptr:2)` before
+  `ptr:2 = (… | zext2((ptr2 + $01)))` becomes one statement). The residual growth wants
+  store-to-load forwarding of the word store into the following lane read, which
+  `eqlift_mem`'s memory analysis does not do here; that is named, not owed by this landing.
+  (7) **A pre-existing round-trip defect surfaced and is fixed: an aliased partner table.**
+  `grammar._pair_hi` matched a declared lo/hi partner table by comparing the name the text
+  writes against the name the declaration writes, which are different names whenever the
+  table carries an alias — so `ctr_172E[x]:2` parsed back as **two adjacent bytes** instead of
+  the two declared columns. The emitter has printed that spelling since #173's `_PAIRS`
+  registry; the landing's new packs made 23 tunes emit it over aliased tables, and every one
+  of them failed `splice_sweep`'s parse-and-evaluate gate. Both sides now resolve the alias
+  before they are compared. Ghouls-style unaliased tables were always right, which is why the
+  defect stood — and it was carrying most of the parse-and-evaluate gap: **`splice_sweep`
+  goes 63 bad → 2, zero new and 61 fixed**, the 25 evaluation faults all clearing and the 37
+  divergences going to 1, leaving one lint and one divergence. Parse, fixpoint, sites and
+  larger stay at zero.
+  (8) **The role metric moves with the fusion, and `roles` reads the new spelling.**
+  `roles.updates` reads its term back through `framefuse.unlane`, so a lane step is the step
+  it always was rather than an unshaped update; without it 153 more fields go un-roled.
+  Measured: **18,634 fields → 18,109 and 13,793 role-named → 13,234, 74.0% → 73.1%**. The
+  movement is the fusion itself — 525 of the 559 lost role entries are fields that no longer
+  exist, because a fused pair is one field and not two, and a ratio above half falls when a
+  named field leaves both sides of it. **At most 34 fields lose a role they had**, and that
+  residue is rung (d)'s own: a lane update whose shape `roles.shape` still cannot read.
+  The headline is unmoved — **`zero_arch` 2 of 624**, as landing 4's entry predicts, since
+  what leaves a register spelled is the role pins and extraction order — but the census under
+  it falls, **184,265 architectural register tokens → 183,682**.
+  (9) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,271,645 bytes**,
+  aggregate `8410d058e6b844b04cbd4cafa0c5afc3f8c79d50558ea41dd54e49bc810f7c78`, against
+  `f4d5958e…`/28,306,161 at the base commit — **−34,516 bytes**. Every tune moves because the
+  artifact's own rung-(d) note moves with the premise (+4 bytes each, +2,496 in all); net of
+  that the rung is **−37,012 bytes over 385 tunes — 286 smaller against 99 larger
+  (−49,032 / +12,020) and 239 unchanged in size**. `gate_sweep` at full Songlengths holds
+  **624 build / 624 evaluate / 624 clean**, zero divergences and zero refusals; emitted size
+  is **−7,277 lines with no tune larger** (585 smaller) and **205,796 rewritten sites proved,
+  zero unproved**. The declaration studies are the shape of it: Aces_High's 52 streams read
+  `via ptr_00FB` instead of `via ptr_00FB_lo` and the pair's table gains the extent
+  `-> $15C4..$2581`; Commando gains `m_5711[32] lo m_573E -> $5887..$5D7D`; Ghouls's three
+  cursors lose their `_lo` suffix. Growth is the lane spelling where a lane genuinely survives
+  — a lone store costs the mask and the `zext2` — and shrinkage is the pair stores that now
+  meet at one word store and the declarations that lose a field.
+  (10) **The gates.** Suite **2,805 passed / 490 skipped / 13 xfailed** (oracle included),
+  `black --check` and `pylint` (10.00/10) clean.

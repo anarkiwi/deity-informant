@@ -677,7 +677,14 @@ class _Cert:
         return "hi" if width == 1 and base == root.cell + 1 else None
 
     def _classify(self, root, role, v):
-        """``(kind, premise, shape)`` of one definition, extent contribution absorbed."""
+        """``(kind, premise, shape)`` of one definition, extent contribution absorbed.
+
+        Rung (d) spells a lone half as the word's lane update, so a word definition
+        that is one reads as the lane it replaced -- ``framefuse.lane_of``."""
+        v = FU.unlane(v, root.cell)
+        got = FU.lane_of(v, root.cell) if role == "word" else None
+        if got is not None:
+            return self._classify(root, got[0], got[1])
         width = 2 if role == "word" else 1
         got = _reload(v, role, self.regions, self.mem0, self.wide)
         if got is not None:

@@ -2,7 +2,9 @@
 
 A pair fuses on evidence the model already carries: ``datadecl``'s pointer pairs,
 the paired-index zip closure of a dispatch word, or the SID lo/hi registers the
-canonical section emits adjacent. One lone-half access refuses that pair alone.
+canonical section emits adjacent. The premise is per access site: a lone half is
+spelled through the word -- a store as the lane update ``(w & $FF00) | zext2(v)``,
+a read as that lane's own trunc -- so one site touching one lane refuses nothing.
 """
 
 from __future__ import annotations
@@ -59,6 +61,43 @@ def unpack(val):
         if frameproc.is_op(a, "INT_LEFT") and E.is_const(a[2][1]) and a[2][1][1] == 8:
             return ST._strip_zext(b), ST._strip_zext(a[2][0])
     return None
+
+
+def lane_of(val, lo):
+    """``(role, half value)`` where ``val`` is a lane update of the pair at ``lo``.
+
+    The dual of ``_widen`` and the ONE reader of what it writes: a consumer asking
+    what a word definition is gets the lane it replaced, spelled as the lane."""
+    if not frameproc.is_op(val, "INT_OR", 2, 2):
+        return None
+    for a, b in frameproc.commuted(val[2]):
+        if not frameproc.is_op(a, "INT_AND", 2, 2) or a[2][0] != _word(lo):
+            continue
+        keep = a[2][1]
+        if not E.is_const(keep):
+            continue
+        if keep[1] == 0xFF00:
+            return "lo", ST._strip_zext(b)
+        if keep[1] == 0x00FF and frameproc.is_op(b, "INT_LEFT") and b[2][1] == frameproc.SHIFT8:
+            return "hi", ST._strip_zext(b[2][0])
+    return None
+
+
+def unlane(n, lo):
+    """Every lane read of the pair at ``lo`` back as the byte cell it names.
+
+    The dual of ``_rewrite``'s spelling, so a consumer matching on byte lanes reads
+    the rung's truncs as the cells they replaced and needs no second pattern."""
+    w = _word(lo)
+    if frameproc.trunc_lo(w) == n:
+        return _half(lo)
+    if frameproc.trunc_hi(w) == n:
+        return _half(lo + 1)
+    if n[0] == "mem":
+        return ("mem", unlane(n[1], lo), n[2])
+    if n[0] == "op":
+        return (n[0], n[1], tuple(unlane(c, lo) for c in n[2]), n[3])
+    return n
 
 
 def _word_shape(n, lo, hi):
@@ -349,6 +388,42 @@ def _may_read(n, cell):
     return False
 
 
+def _lane_advance(val, cell, env, at, depth=8):
+    """``val`` stores back what the same lane held: an advance inside one lane.
+
+    The locals under it are read where they were written, so an advance staged
+    through a register is the same fact as one spelled in place."""
+    if _may_read(val, cell):
+        return True
+    if env is None or depth == 0:
+        return False
+    for name in frameproc._locset(val):
+        got = env.value(name, at)
+        if got is not None and _lane_advance(got[1], cell, env, got[0], depth - 1):
+            return True
+    return False
+
+
+_WALLS = frozenset(("call", "dcall", "swc", "unobs"))
+
+
+def _page_fixed(procs, hi, regions, mem0):
+    """No path changes the hi lane, so the pair is a page and a byte index in it.
+
+    A lo lane advanced in place under such a hi lane wraps where a word would
+    carry, so the honest declaration is the two bytes; a wall leaves it open."""
+    at = (hi, frameproc.NOIDX, 0, 1, 0)
+    for _e, _pa, _r, stmts in procs:
+        for s in stmts_of(stmts):
+            if s[0] in _WALLS:
+                return False
+            if s[0] != "st" or not frameproc.overlaps(at, frameproc.store_reach(s, regions)):
+                continue
+            if G.store_width(s[2]) != 1 or not E.is_const(s[2]) or s[2][1] != mem0[hi]:
+                return False
+    return True
+
+
 def stmts_of(stmts):
     """Every statement of a statement list, nested bodies included."""
     stack = [list(stmts)]
@@ -375,32 +450,35 @@ class _Pair:
         "unproven",
         "notaligned",
         "swept",
+        "viewed",
+        "advance",
+        "pagefixed",
     )
 
-    def __init__(self, lo, hi, kind, evidence):
+    def __init__(self, lo, hi, kind, evidence, pagefixed=False):
         self.lo = lo
         self.hi = hi
         self.kind = kind
         self.evidence = evidence
         self.words = self.lone = self.stores = self.unpaired = self.hazard = 0
         self.indexed = self.unproven = self.notaligned = self.swept = 0
+        self.viewed = self.advance = 0
+        self.pagefixed = pagefixed
 
     def refusal(self):
         """The premise's refusal diagnostic, or None where the pair fuses.
 
-        A state pair is one tune-wide declaration, so any lone half refuses it. A
-        SID pair never refuses: freq, pulse and cutoff are 16-bit registers, so
-        the pair is one register whatever the driver's store sites look like."""
+        A lone half is no refusal: it is spelled through the word. What refuses is
+        a lane the pair cannot place (an indexed half store), a lo lane advanced in
+        place beside a hi lane no path changes, and a pair with no word at all."""
         if self.hi != self.lo + 1:
             return "halves are not adjacent"
         if self.kind == "sid":
             return None
-        if self.hazard:
-            return "%d store pair(s) whose second value may read the first cell" % self.hazard
-        if self.lone:
-            return "%d lone-half read(s)" % self.lone
-        if self.unpaired:
-            return "%d unpaired half store(s)" % self.unpaired
+        if self.viewed:
+            return "%d indexed half store(s) the pair cannot place" % self.viewed
+        if self.pagefixed and self.advance:
+            return "%d in-place lane advance(s) under a hi lane no path changes" % self.advance
         if not (self.words or self.stores):
             return "no word access in the play code"
         return None
@@ -415,12 +493,16 @@ class _Pair:
             self.words,
             self.stores,
         )
-        rest = "%d lone-half read(s), %d %s, %d hazard(s)" % (
+        rest = "%d lone-half read(s), %d widened lane store(s), %d hazard(s)" % (
             self.lone,
             self.unpaired,
-            "widened lane store(s)" if self.kind == "sid" else "lone-half store(s)",
             self.hazard,
         )
+        if self.kind != "sid":
+            rest += ", %d in-place advance(s), hi lane %s" % (
+                self.advance,
+                "fixed" if self.pagefixed else "open",
+            )
         if self.kind == "sid":
             rest += (
                 ", %d lane-aligned indexed, %d index unproven, %d index proven off-lane"
@@ -480,11 +562,12 @@ def candidates(model, decls, procs):
 
 
 # ---- the pass ---------------------------------------------------------------------
-def _rewrite(n, p, count):
+def _rewrite(n, p, count, spell=False):
     """Fold word shapes to a word load; count lone-half reads on the way.
 
     A word read already folded (``repolish`` runs the little-endian fold before
-    this rung) is the same evidence the shape is: one access of the whole pair."""
+    this rung) is the same evidence the shape is: one access of the whole pair.
+    Under ``spell`` a surviving lone half reads the word's own trunc instead."""
     if _word_shape(n, p.lo, p.hi) or n == _word(p.lo):
         p.words += count
         return _word(p.lo)
@@ -492,10 +575,13 @@ def _rewrite(n, p, count):
     if k == "mem":
         if n[2] == 1 and n[1] in (("const", p.lo, 2), ("const", p.hi, 2)):
             p.lone += count
-            return n
-        return ("mem", _rewrite(n[1], p, count), n[2])
+            if not spell:
+                return n
+            lane = frameproc.trunc_lo if n[1][1] == p.lo else frameproc.trunc_hi
+            return lane(_word(p.lo))
+        return ("mem", _rewrite(n[1], p, count, spell), n[2])
     if k == "op":
-        return ("op", n[1], tuple(_rewrite(c, p, count) for c in n[2]), n[3])
+        return ("op", n[1], tuple(_rewrite(c, p, count, spell) for c in n[2]), n[3])
     return n
 
 
@@ -606,10 +692,6 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
         at = _pair_at(stmts, i, p, sites, regions, env)
         if at is not None and _may_read(at[3], at[4]):
             p.hazard += count
-            if p.kind != "sid":
-                taken.add(at[0])
-                i += 1
-                continue
             at = None  # the halves cannot pack, but each lane still widens
         if at is not None:
             j, seat, merged = at[:3]
@@ -627,7 +709,7 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
             i += 1
             continue
         half = _store_half(s, p)
-        widen = half is not None and p.kind == "sid"
+        widen = half is not None
         if widen and half[1] is not None:
             ks = _consts(half[1], env, i, ctx) if ctx is not None else None
             widen = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
@@ -636,9 +718,11 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
             p.swept += count if swept else 0
             p.unproven += count if ks is None and not swept else 0
             p.notaligned += count if not (widen or swept or ks is None) else 0
+            p.viewed += count if not widen and p.kind != "sid" else 0
         if half is not None:
             p.unpaired += count
-        new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count))
+            p.advance += count if _lane_advance(s[2], half[0], env, i) else 0
+        new = frameproc._map_exprs(s, lambda x: _rewrite(x, p, count, mutate))
         if mutate:
             stmts[i] = _widen(new, p) if widen else new
             stale = stale or stmts[i] is not s  # a widened store moved its own range
@@ -715,13 +799,15 @@ def contexts(model, decls, procs):
 def apply_rung(model, decls, procs, state, symbols, name_of):
     """Rung (d) in place over ``procs``; returns ``(state fields, proofs)``.
 
-    Per pair, never per tune: a pair whose premise fails keeps its two byte
-    halves and every other pair still fuses. The SID register pairs — freq,
-    pulse and cutoff — fuse on the same footing, per store site (spec 4d)."""
+    Per pair and per access site, never per tune: a lone half is spelled through
+    the word rather than refusing it, and the SID register pairs — freq, pulse
+    and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
     ctx = contexts(model, decls, procs)
+    regions = datadecl.Regions(decls)
     for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
-        p = _Pair(lo, hi, kind, evidence)
+        fixed = kind != "sid" and hi == lo + 1 and _page_fixed(procs, hi, regions, model.mem0)
+        p = _Pair(lo, hi, kind, evidence, fixed)
         if hi == lo + 1:
             for e, _pa, _r, stmts in procs:
                 _visit(stmts, p, False, ctx[e])

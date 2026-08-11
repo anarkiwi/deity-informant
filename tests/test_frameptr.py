@@ -283,16 +283,16 @@ def test_an_unbounded_row_index_refuses_the_site():
     assert "row index bound $FFFF exceeds one row" in _only(proofs).lemma
 
 
-def test_an_unfused_pair_refuses_and_names_its_reason():
-    """However the word folds spell the deref, the unfused pair's deref refuses.
+def test_a_lane_advanced_pair_refuses_and_names_its_reason():
+    """However the word folds spell the deref, a lane-advanced pair's deref refuses.
 
-    The reason names rung (d) or the half-writing ``INC`` depending on which
-    shape the folds leave; the raw ``mem[]`` staying is the law being pinned."""
+    Rung (d) makes the ``INC`` a lane update of the fused word, so the definition
+    is an advance and not a partner-table row; the raw ``mem[]`` staying is the law."""
     model = _fuzz_model(FG.t_lone_half(np.random.default_rng(7)))
     prog = frameprog.program(model)
     pr = next(p for p in prog.proofs if p.kind == "deref")
     assert pr.status == "refused"
-    assert "did not fuse (rung d)" in pr.lemma or "another store may write the pointer" in pr.lemma
+    assert "a definition is not a lo/hi partner-table entry read" in pr.lemma
     assert "mem[" in frameprog.dumps(prog)
 
 

@@ -580,10 +580,13 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("op", "INT_ADD", (idx, ("const", addr, 2)), 2)
 
     def _pair_hi(self, base):
-        """Hi partner address where ``base`` names a declared lo-role table."""
+        """Hi partner address where ``base`` names a declared lo-role table.
+
+        The text and the declaration need not spell the table the same way -- one
+        may carry its alias -- so both sides resolve before they are compared."""
         name = self.rev.get(base, base)
         for d in self.doc.data_decls:
-            if d["base"] == name and d["role"] and d["role"][0] == "lo":
+            if d["role"] and d["role"][0] == "lo" and self.rev.get(d["base"], d["base"]) == name:
                 return self._cell(d["role"][1])
         return None
 

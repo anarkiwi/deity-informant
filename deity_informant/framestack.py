@@ -733,10 +733,16 @@ _PAGE1 = range(0x0100, 0x0200)
 
 
 def _push_val(s):
-    """``(cell, value expression)`` of a pure byte store to a stack-page cell."""
+    """``(cell, value expression)`` of a pure byte store to a stack-page cell.
+
+    A lane trunc of a fused word (rung (d)'s spelling) is as pure as the byte cell
+    it replaced, so the window reads it as one of its two pushes."""
     if s[0] != "st" or s[1][0] != "const" or G.store_width(s[2]) != 1:
         return None
-    if s[2][0] not in ("const", "loc", "mem"):
+    v = s[2]
+    if frameproc.is_op(v, "COPY", 1, 1):
+        v = frameproc.shifted_hi(v[2][0]) or v[2][0]
+    if v[0] not in ("const", "loc", "mem"):
         return None
     return (s[1][1], s[2]) if s[1][1] in _PAGE1 else None
 
