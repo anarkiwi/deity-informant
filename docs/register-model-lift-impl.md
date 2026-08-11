@@ -2499,3 +2499,80 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   than to a pair, so the word add stands beside them. Splice sweep against its control:
   **zero new, three fixed**, parse and fixpoint 624/624, 210,034 sites proved, −4,529 lines
   with no tune larger.
+- **2026-08-11 — stage 4, landing 5: the 25-exemplar witness sweep, and the refusal ledger
+  goes to one.** #185 closed the three refusals the plan had named; running the witness
+  against the exemplar set is what found the rest, and every one of those but the last turned
+  out to be a capability the witness owed rather than a limit of the machine.
+  (1) **The measurement is a tool with its own artifact.** `tools/witness_sweep.py` asks of
+  each tune what the round-trip witness claims — the frame program re-emitted as 6502,
+  replayed under `PcodeVM`, its per-frame projection differenced against the **walker's**, so
+  no evaluator stands anywhere in the chain (`frameprog.iota`'s walker is the reference,
+  `framelog.diff` the verdict). `--exemplars` runs the set `tools/exemplars.py` declares. The
+  first run witnessed **9 of 25**. The per-landing gate is
+  `test_an_exemplar_replays_frame_for_frame_off_the_machine`, which runs the exemplars a
+  corpus run resolves at a bounded 200 frames and carries the refused set as a **closed
+  ledger**: an exemplar not named in it must witness, and one named in it must refuse for
+  exactly that reason, so neither direction drifts silently.
+  (2) **`sp` is not a slot the witness needs: it is the machine's own SP** (12 tunes). The
+  refusal read "the machine's own SP is not a slot" and had the relation backwards —
+  `frameval.Evaluator` takes `self.sp = self.code.slot("sp")`, so the evaluator's stack
+  pointer *is* the program's `sp` local and `push`/`ret` move that same register. Reading the
+  local is therefore `TSX` and writing it `TXS`, and the two agree byte for byte because
+  `vm.run_sub`'s dummy return and `frameval.run_frame`'s `push(0x0001)` leave the frame at
+  the same depth. Still named: a **wide** `sp`, and a `for` range over it.
+  (3) **A bare local reads unmasked, so the slot's width is every site's width** (1 tune).
+  `frameval._expr`'s `loc` case is `r[i]`, so the machine must read the slot and not the
+  node; the local widths reach a fixpoint, since a slot widened at one site widens the
+  assignments that copy it. `expr._apply` reads `szs` — the *node* width — in `INT_SLESS`,
+  `INT_SLESSEQUAL` and `INT_CARRY` alone, so the residual refusal is exactly those.
+  (4) **The carry's threshold is the first operand's own width, and that closes two
+  refusals at once** (1 tune). `INT_CARRY` was emitted as the C flag out of a `width`-byte
+  add, which is `(a + b) > mask(width)` — right only when the operands are equal-width, hence
+  the old "carry over operands of unequal width". `_apply` says `(a + b) > mask(szs[0])`, so
+  the sum is now kept **one byte wider** than the operands and the verdict is whether any
+  byte above `mask(szs[0])` survived. That is width-agnostic, so the unequal-width refusal
+  and the narrowing-read-under-`INT_CARRY` refusal both retire on the same mechanism.
+  (5) **The emission lays itself across the image's free runs** (3 tunes + one crash).
+  `free_span` took the longest run of *zeroed* unowned bytes and refused where the code
+  outgrew it — at full Songlengths three exemplars did, and one (`Ghouls_n_Ghosts`) did not
+  even refuse: `asm6502` computed a branch displacement against a pc past `$FFFF` while
+  `_resolve` had already wrapped the label, so a 3-byte branch measured −65533. The
+  displacement is now taken **mod $10000**, which is the machine's own arithmetic and turns
+  that crash into the refusal it always was. Then `Asm.cut()` marks a boundary no `rel`
+  displacement crosses (statement boundaries, resolver-chain entries, procedure heads), and
+  `assemble(spans)` packs the chunks across `free_spans(prog)` — the zeroed run first, then
+  every disjoint unowned run it leaves — bridging each hop with one `JMP` and reporting
+  `blocks` as `(base, offset, length)`. `_reserved` is what makes a non-zero run admissible:
+  a byte outside it is named by no observed read, write, target, leader or declaration.
+  (6) **One return convention, which also fixed two divergences the unit tests could not
+  see.** #185's raw call left two structural refusals — a callee that is not a procedure
+  entry, and one the program also enters by `pcall` — and the reason they existed is that
+  `pcall`, `dcall` and `swc` still used the machine's `JSR`, so a callee reached both ways
+  had two return conventions. `frameval` has one: **every** call site pushes a pc of the
+  program (`synth()`'s stand-in for a `pcall`, the site's own `ret` otherwise) and every
+  `ret` reads that word back. `retsolve` now takes the frame's own exit where `TSX` equals
+  the saved depth (`frameval`'s `q >= start`), then the site the word names (its shadow
+  stack, keyed by a word unique per site), then `rmap` at `w + 1`. `Grid_Runner` and `Athena`
+  were **faulting** on the mixed convention; the exemplar sweep, not the unit tests, is what
+  saw it.
+  (7) **The one refusal left, and why it is final.** `Atmosphere_II` (Electrosound) declares
+  the volatile input `osc3`: the evaluator pins `$D41B` through `iota`'s recorded trace, and a
+  machine replay has no oscillator to read. Pinning it in the witness would put the
+  evaluator's trace back into the trust chain, which is the one thing the witness exists to
+  keep out. It is the boundary of the claim rather than an owed landing, and the test states
+  it as such. `INT_SCARRY` and a narrowing local read under a signed compare stay refused on
+  their own stated mechanisms; no exemplar reaches either.
+  (8) **The numbers.** `tools/witness_sweep.py --exemplars` at full Songlengths:
+  **24 witnessed / 1 refused, zero diverged**, 525s
+  (`out/witness_sweep_s4l5.json`). Suite **2,776 passed / 490 skipped / 29 xfailed**,
+  `witness6502` and `asm6502` coverage 100%, `black --check` and `pylint` clean, emit
+  identity unmoved at `64f763d9…` (624 tunes, 0 refused, 28,258,539 bytes) since no emitter
+  source is touched.
+  (9) **What the prototype's round-trip pin still needs.**
+  `test_round_trip_witness_is_frame_identical` is **not** flipped here — it looks for
+  `reemit_6502`/`emit_6502`/`assemble_6502` on `sml` or `eqlift_mem` taking the prototype's
+  *folded node map* and its label map, where `witness6502.emit` takes a
+  `frameprog.FrameProgram` and returns a `Witness` whose entry is its own label. The flip
+  therefore needs landing 4's fold-layer re-basing to produce the program, and an image whose
+  `sml.PLAY` reaches the witness entry, since the pin replays through `sml.run_vm`. It is the
+  stage-close agent's, not this landing's.
