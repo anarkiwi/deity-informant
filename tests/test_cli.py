@@ -59,7 +59,8 @@ def test_decompile_emits_the_frame_program_and_verifies_it(tmp_path, capsys):
     assert "verify ok" in err
     text = out_file.read_text()
     assert text.startswith("frameprog 1\n") and "sub_1000(" in text
-    assert " ctr_1010: u8" in text and not re.search(r"@\d|@t\d|@x\(|code\[", text)
+    assert re.search(r"^ ctr_1010: (?:\w+ )?u8", text, re.M)
+    assert not re.search(r"@\d|@t\d|@x\(|code\[", text)
     assert "image {" in text and "evidence {" in text  # 3a: the artifact is total
 
 

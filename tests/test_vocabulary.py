@@ -233,7 +233,7 @@ def test_a_role_rides_with_the_extent_and_the_observed_set_on_one_field():
     text = frameprog.dumps(_roled({"ptr_00FB": "cursor", "m_2000": "flags"}))
     assert " ptr_00FB: cursor u16 in m_3000" in text
     assert " m_2000: flags u8 observed $01 $02" in text
-    assert " m_3000: u8[]" in text  # un-roled stays legal, and means what it did
+    assert re.search(r"^ m_3000: (?:\w+ )?u8\[\]", text, re.M)  # un-roled stays legal
     assert frameprog.dumps(frameprog.loads(text)) == text
 
 
@@ -241,7 +241,8 @@ def test_an_un_roled_program_emits_exactly_the_text_it_always_did():
     """Stage 2 is capability with zero use: no role, no token in the artifact."""
     text = frameprog.dumps(_roled({}))
     assert not any(" %s u" % r in text for r in roles.ROLES)
-    assert " ptr_00FB: u16 in m_3000" in text and " m_2000: u8 observed $01 $02" in text
+    assert re.search(r"^ ptr_00FB: (?:\w+ )?u16 in m_3000", text, re.M)
+    assert re.search(r"^ m_2000: (?:\w+ )?u8 observed \$01 \$02", text, re.M)
 
 
 def test_a_role_the_census_never_names_is_not_a_type():

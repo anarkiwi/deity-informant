@@ -2,7 +2,8 @@
 
 Per tune: the text parses, it is a ``dumps``/``loads`` fixpoint, every local it reads has
 a definition, every rewritten site is Z3-proved (§6), and the parsed program reproduces
-the walker's projection under Gate FP. ``--baseline`` runs the same over the projection
+the walker's projection under Gate FP. The rollup carries stage 4's steering metrics:
+emitted size, and persistent cells role-named. ``--baseline`` runs the same over the projection
 §8 step 4 replaced (``frameproc.render_lines``' own text).
 """
 
@@ -59,6 +60,8 @@ def one(entry, frames, baseline):
             except AssertionError as exc:
                 row["sites"] = str(exc)
         row["lines"] = len(text.splitlines())
+        row["fields"] = len(prog.state)
+        row["roled"] = sum(1 for f in prog.state if f[0] in prog.roles)
         row["sha"] = hashlib.sha256(text.encode()).hexdigest()
         try:
             frameprog.lint(text)
@@ -101,6 +104,8 @@ def rollup(rows):
     got["larger"] = [r["tune"] for r in sized if r["lines"] > r["base_lines"]]
     got["smaller"] = sum(1 for r in sized if r["lines"] < r["base_lines"])
     got["proved"] = sum(r.get("proved", 0) for r in rows)
+    got["fields"] = sum(r.get("fields", 0) for r in rows)
+    got["roled"] = sum(r.get("roled", 0) for r in rows)
     return got
 
 

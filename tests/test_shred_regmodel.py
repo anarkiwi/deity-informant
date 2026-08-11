@@ -1373,7 +1373,7 @@ def _fused_cursor(name):
     ``framefuse.refusal()`` reads one surviving byte-lane read of the pair as refusing
     its whole tune-wide declaration, even where an equal word read stands beside it: it
     is that read, not the second destination or the store order, that discriminates."""
-    return "ptr_%04X: u16" % G.PTR in _state_block(_lift(name))
+    return re.search(r"ptr_%04X: (?:\w+ )?u16" % G.PTR, _state_block(_lift(name))) is not None
 
 
 _FUSE_WHY = (
@@ -1402,7 +1402,8 @@ def test_the_unified_emitter_carries_no_rung_built_pair_declaration():
     assert _fused_cursor("plain_advance")
     block = _state_block(_emit("plain_advance"))
     assert "ptr_%04X: u16" % G.PTR not in block
-    assert "ptr_%04X_lo: u8" % G.PTR in block and "ptr_%04X_hi: u8" % G.PTR in block
+    assert re.search(r"ptr_%04X_lo: (?:\w+ )?u8" % G.PTR, block)
+    assert re.search(r"ptr_%04X_hi: (?:\w+ )?u8" % G.PTR, block)
 
 
 def test_the_rung_built_statements_convert_for_the_unified_emitter():

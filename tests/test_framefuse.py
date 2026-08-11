@@ -78,7 +78,7 @@ def test_pointer_pair_fuses_to_one_u16_state_field():
     model = _model_of(G.t_word_pair)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
-    assert " ptr_0002: u16" in text and "ptr_0002_lo" not in text
+    assert re.search(r"^ ptr_0002: (?:\w+ )?u16", text, re.M) and "ptr_0002_lo" not in text
     assert " table m_1501[1] lo m_1505:" in text and " table m_1505[1] hi m_1501:" in text
     assert "ptr_0002:2 = m_1501[$00]:2" in text
     assert "a = *ptr_0002" in text
@@ -95,7 +95,9 @@ def test_a_lone_half_access_refuses_that_pair():
     model = _model_of(G.t_lone_half)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
-    assert " ptr_0002_lo: u8" in text and " ptr_0002_hi: u8" in text and ": u16" not in text
+    assert re.search(r"^ ptr_0002_lo: (?:\w+ )?u8", text, re.M)
+    assert re.search(r"^ ptr_0002_hi: (?:\w+ )?u8", text, re.M)
+    assert not re.search(r"^ \w+: (?:\w+ )?u16", text, re.M)
     pr = _proof(prog, PTR)
     assert pr.status == "refused" and "lone-half read" in pr.lemma
     assert frameprog.dumps(frameprog.loads(text)) == text
@@ -117,7 +119,8 @@ def test_refusal_is_per_pair_not_per_tune():
     assert _proof(prog, PTR).status == "refused"
     assert _proof(prog, PTR + 2).status == "fused"
     text = frameprog.dumps(prog)
-    assert " ptr_0002_lo: u8" in text and " ptr_0004: u16" in text
+    assert re.search(r"^ ptr_0002_lo: (?:\w+ )?u8", text, re.M)
+    assert re.search(r"^ ptr_0004: (?:\w+ )?u16", text, re.M)
 
 
 def test_a_dispatch_word_fuses_on_the_paired_index_closure():

@@ -17,6 +17,7 @@ from . import frameproc
 from . import frameptr
 from . import framestack
 from . import grammar as G
+from . import idioms
 from . import initcopy
 from . import ptrlift
 from . import sidprog
@@ -529,7 +530,7 @@ def program(model, extents=None):
     resolved.update(lifted)
     prov0, sites, census = _init_copies(model, decls)
     init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
-    return FrameProgram(
+    prog = FrameProgram(
         model.play,
         model.init,
         getattr(model, "subtune", 0),
@@ -550,6 +551,8 @@ def program(model, extents=None):
         _evidence(model, prov0, sites, census),
         landings=framefuse._landings(model),
     )
+    prog.roles = _roles(prog)
+    return prog
 
 
 def _kept_state(prog, procs, to_alias):
@@ -571,6 +574,23 @@ def _kept_state(prog, procs, to_alias):
         gone = a is not None and any(lo <= a <= hi for lo, hi in prog.demoted)
         if not (gone and nm not in named):
             out.append(f)
+    return out
+
+
+def _roles(prog):
+    """``{state field name: role}``: stage 2's update-shape reading of each cell.
+
+    Recognition licenses nothing -- an un-roled field stays a legal ``uN`` -- so a cell
+    with no witnessed update, or one carrying an unshaped update, is simply absent."""
+    from . import roles  # pylint: disable=import-outside-toplevel  # ``roles`` is a field name
+
+    cells = idioms.state_cells(prog)
+    got, _shapes, _residue = roles.census(prog)
+    out = {}
+    for a, role in got.items():
+        name = cells.get(a)
+        if role is not None and name is not None:
+            out[name] = role
     return out
 
 

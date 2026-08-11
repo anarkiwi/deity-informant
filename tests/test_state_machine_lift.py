@@ -565,7 +565,9 @@ def _seeded_render(seed, frames):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4: role-typed emission (zero machine shapes)",
+    reason="register-model-lift stage 4 landing 4 (remaining part): the prototype's fold and "
+    "render layers re-based onto the artifact -- the engine emits role keywords now, but "
+    "this text is sml.render's, which still names a/x/y off the pre-rung eqlift dialect",
     **XFAIL,
 )
 def test_no_architectural_register_survives_as_a_value(role_text):
@@ -577,7 +579,9 @@ def test_no_architectural_register_survives_as_a_value(role_text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4: role-typed emission (typed handler switch)",
+    reason="register-model-lift stage 4 landing 4 (remaining part): classify_roles reads the "
+    "prototype's folded program; the dispatch subject is roles.read_sites' switch_cells, "
+    "which the engine already separates, so this flips with the re-basing",
     **XFAIL,
 )
 def test_smc_dispatch_cells_are_not_data_state(art, role_map):
@@ -587,8 +591,9 @@ def test_smc_dispatch_cells_are_not_data_state(art, role_map):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4: VM families emit their operator sets "
-    "(follin_arity feeds the artifact)",
+    reason="register-model-lift stage 4 landing 4 (remaining part): follin_arity recovers the "
+    "operator set per dispatch arm and nothing emits it; the declaration rides with the "
+    "re-based renderer, which is where an operators block can be spelled",
     **XFAIL,
 )
 def test_vm_family_operator_set_is_emitted(art, role_text):
@@ -604,8 +609,9 @@ def test_vm_family_operator_set_is_emitted(art, role_text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 3: the state { } demotion, whose subject "
-    "is the unconditional unified path (scratch demotion is root extraction's)",
+    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact's own "
+    "demotion landed (#183, root extraction's scratch spans), but this text is "
+    "sml.render's state block, so it flips with the prototype re-based onto the artifact",
     **XFAIL,
 )
 def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
@@ -618,7 +624,12 @@ def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 4: roles carry their evidence", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact carries the "
+    "extent (`in`) and observed clauses already; the evidence rides onto sml.render with "
+    "the re-basing, and the accumulator bound is the one clause the engine still owes",
+    **XFAIL,
+)
 def test_roles_carry_their_evidence(role_map, role_text):
     """A cursor names the block it walks, an accumulator its bound, a vm cell its ops."""
     decls = _state_decls(role_text)
@@ -629,7 +640,12 @@ def test_roles_carry_their_evidence(role_map, role_text):
     )
 
 
-@pytest.mark.xfail(reason="register-model-lift stage 4: init emits declared initializers", **XFAIL)
+@pytest.mark.xfail(
+    reason="register-model-lift stage 4 landing 4 (remaining part): frameprog carries the "
+    "post-init values as prov0/init_census evidence and does not spell them as declaration "
+    "initializers; the spelling lands with the re-based renderer",
+    **XFAIL,
+)
 def test_init_lifts_to_declared_initial_values(art, role_map, role_text, post_init_ram):
     """Each cell's post-init value is its declaration's initializer; only SID writes stay."""
     assert all(0 <= r < 25 for r, _v in art["init_writes"]), "init writes off the SID boundary"
