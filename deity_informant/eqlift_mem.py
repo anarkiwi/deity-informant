@@ -403,9 +403,10 @@ def render_block(stmts, aliases=None):
 def _defined_at(ir, avail):
     """True if every named-local leaf of ``ir`` is a version its base still holds.
 
-    ``avail`` is the site's own ``live()``, which carries the block inputs a base has
-    not been redefined over: a local renders as its base name, so a version the base
-    no longer holds spells another value however available it once was."""
+    ``avail`` is the site's own ``live()``: the versions its bases denote there. A local
+    renders as its base name, so a version the base no longer holds spells another value
+    however available it once was, and one the base holds spells it whether or not an
+    ``asg`` rendered the definition."""
     if not isinstance(ir, tuple):
         return True
     if ir[0] == "loc":
@@ -1320,7 +1321,7 @@ def render_proc(
     pointer cells rung (f) resolved, which a deref address names."""
     deadline = None if budget is None else time.monotonic() + budget
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
-    defs, terms, avail, locw, mempairs = [], [], set(), {}, []
+    defs, terms, locw, mempairs = [], [], {}, []
     src, seeds, memdefs, wrspan, held, volatile = {}, [], [], {}, {}, set()
     inedge, tgts = {}, _targets(stmts)
     dfs, ch = _Defs(src), _Chain()
@@ -1383,17 +1384,18 @@ def render_proc(
         return len(terms) - 1
 
     def live():
-        """The versions a site may spell: a local renders as its base name, so a version
-        the base no longer holds reads as another value however available it once was.
+        """The versions a site may spell: the ones its bases denote here.
 
-        A register local's block input (``.0``) is one such version — spellable exactly
-        while the base has not been redefined over it."""
+        A local renders as its base name, so spellability is **denotation**, not
+        definition: the base spells whatever version it holds, whether an ``asg``
+        rendered it or a boundary produced it, and a version the base has been redefined
+        over spells another value however available it once was. A register local the
+        procedure has not assigned denotes its block input (``.0``)."""
         env = stt["env"]
-        cur = {v for v in env.values() if v in avail or v.rpartition(".")[2] == "0"}
-        return cur | {n + ".0" for n in E.frameproc._ALL_REG_LOCALS if n not in env}
+        return set(env.values()) | {n + ".0" for n in E.frameproc._ALL_REG_LOCALS if n not in env}
 
     def havoc(names):
-        for n in names:  # havoc names have no rendered def: never available to spell
+        for n in names:  # a boundary's value: no def renders it, the base still holds it
             stt["env"][n] = "%s.%d" % (n, fresh())
             src.pop(n, None)
 
@@ -1470,7 +1472,6 @@ def render_proc(
                 held[id(nd)] = stt["env"].get(s[1], s[1] + ".0")
                 stt["env"][s[1]] = name
                 src[s[1]] = s[2]
-                avail.add(name)
             elif k == "st":
                 v = conv(s[2])
                 a = s[1]
@@ -1492,7 +1493,7 @@ def render_proc(
                 if s[1] == "ifnot":
                     cond = E.bnot(cond)
                 ci = add(cond)
-                pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
+                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
                 pre_src, pre_held, pre_ver = dict(src), stt["held"], stt["memv"]
                 then = walk(s[3])
                 then_env = dict(stt["env"])
@@ -1500,13 +1501,11 @@ def render_proc(
                 stt["memv"] = pre_ver
                 src.clear()
                 src.update(pre_src)
-                avail.intersection_update(pre_av)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
                 stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s, pre_held, pre_ver)
                 src.clear()
                 src.update(pre_src)
-                avail.intersection_update(pre_av)
                 for n in set(pre_env) | set(then_env) | set(els_env):
                     c = pre_env.get(n)
                     if not (then_env.get(n) == c and els_env.get(n) == c):
@@ -1516,20 +1515,18 @@ def render_proc(
             elif k in ("loop", "for"):
                 # a ``for``'s counter is written by the header, so it havocs with the body
                 stmts_of, wr = (s[1], set()) if k == "loop" else (s[4], {s[1]})
-                pre_mem, pre_av, pre_held = stt["mem"], set(avail), stt["held"]
+                pre_mem, pre_held = stt["mem"], stt["held"]
                 pre_ver = stt["memv"]
                 havoc(_written(stmts_of) | wr)
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 stt["cyc"] += 1
                 body = walk(stmts_of)
                 stt["cyc"] -= 1
-                avail.intersection_update(pre_av)
                 havoc(_written(stmts_of) | wr)
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 nodes.append(("loop", body) if k == "loop" else ("for", s[1], s[2], s[3], body))
             elif k == "label":
                 if foot is None or foot.joins(s[1]):
-                    avail.clear()
                     if not in_join(s[1]):
                         havoc_all()
                         count("label_reset", "label_forward" if inedge.get(s[1]) else None)
@@ -1557,7 +1554,7 @@ def render_proc(
                 nodes.append(("dcall", ix, s[2]))
             elif k in ("swc", "opsw", "swg"):
                 cases = s[1] if k == "swg" else s[2]
-                pre_env, pre_mem, pre_av = dict(stt["env"]), stt["mem"], set(avail)
+                pre_env, pre_mem = dict(stt["env"]), stt["mem"]
                 pre_src, pre_held, arms = dict(src), stt["held"], []
                 pre_ver = stt["memv"]
                 for lbl, body in cases:
@@ -1567,9 +1564,7 @@ def render_proc(
                         havoc([E.frameproc._SP])  # a call arm is entered by a machine call
                     src.clear()
                     src.update(pre_src)
-                    avail.intersection_update(pre_av)
                     arms.append((lbl, walk(body)))
-                avail.intersection_update(pre_av)
                 stt["mem"], stt["held"], stt["memv"] = pre_mem, pre_held, pre_ver
                 wall(s)
                 nodes.append(("switch", arms, k, None if k == "swg" else s[1]))
@@ -1609,7 +1604,11 @@ def render_proc(
 
     def own_ir(i):
         """The site's own term: position-correct by construction, and what a spent
-        extraction budget falls back to -- extraction is sound at any cutoff."""
+        extraction budget falls back to -- extraction is sound at any cutoff.
+
+        Every leaf of it came from ``conv`` reading the site's own ``env``, so each is a
+        version its base denotes there and the fallback needs no ``_defined_at``: what
+        ``live()`` refuses a candidate for, the own term cannot carry."""
         raw = E._parse_ir(str(terms[i][0]))
         return _to_ir(raw), raw
 
