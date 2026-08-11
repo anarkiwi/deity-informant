@@ -379,3 +379,37 @@ def test_arms_that_leave_sp_at_different_depths_share_no_slot():
     ]
     for slot in _run_spslots(stmts):
         assert slot.why == "the slot is not both stored and read in the procedure"
+
+
+# ---- the slot identity: what a reader may take, and where a call stands ------------
+def _pcall(entry=SUB):
+    return ("pcall", entry, [], [])
+
+
+def _sp_blind_read():
+    return [_spstore(), _spmove(-1), ("asg", "a", ("mem", ("loc", "t0", 2), 1)), _spread(1)]
+
+
+def _sp_page_read():
+    return [_spstore(), _spmove(-1), ("asg", "a", ("mem", ("const", 0x01F0, 2), 1)), _spread(1)]
+
+
+@pytest.mark.parametrize("build", [_sp_blind_read, _sp_page_read])
+def test_a_reader_holds_the_slot_and_refuses_only_its_store(build):
+    """A read moves no value: the identity stands and the cell stays behind it.
+
+    #189's correction is the other half -- a *writer* is what refuses the slot, and
+    the machine's own return-address push is one, so it is priced at the call."""
+    (slot,) = _run_spslots(build())
+    assert slot.why is None and slot.status() == "held"
+    assert slot.proof("s0").lemma.endswith("value held in s0, store kept -- %s" % slot.impure)
+
+
+def test_no_slot_is_live_across_a_call_however_it_stands():
+    """The machine's own return-address push is priced by refusing to span a call.
+
+    A callee that names no page-one cell of its own was measured as a spanning premise
+    and refused on the corpus (see the decision log), so the epoch still closes here."""
+    stmts = [_spstore(), _spmove(-1), _pcall(), _spread(1), _spmove(1)]
+    for slot in _run_spslots(stmts):
+        assert slot.why == "the slot is not both stored and read in the procedure"

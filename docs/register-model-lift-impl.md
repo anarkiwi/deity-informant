@@ -480,9 +480,9 @@ the shredder's `dispatch_scratch_promotes`, and it names its extension below.
   arm's label was never a join (`Footprints.joins` is already False for it); what reset
   the memory was the computed transfer standing before the arm table, and the pairing law
   `frameval.seq` already states is what moved the pin. See the decision log.
-- **The `low_held_cursor` rung landing.** Its premise is exactly the deref span
-  landing 1's read closure computes, but its consumer is `ptrcert` — a rung landing,
-  not stage 3's.
+- **The `low_held_cursor` rung landing — LANDED (2026-08-11), on another premise.** The
+  deref span was never it: the deref is a *read*, and what a read refuses is dropping the
+  slot's store, not the slot's identity. See the decision log.
 - **The `state { }` declaration of a demoted cell.** `frameprog._state_lines` derives
   the block from `_cells(view)` and not from the stores extraction kept, so a cell the
   read closure retired from the body still declares; the fix is a
@@ -700,13 +700,16 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
 4. **rung (d), the widening guard [1 pin, 9 → 8].** `lone_lane` is the rung *widening* a lone
    half into a read-modify-write of a write-only register; the guard is the SID write-only
    window `$D400`–`$D416`, and the rung must not widen a store whose destination is inside it.
-5. **`framestack`, the slot identity [1 pin, 8 → 7].** `low_held_cursor` needs an sp-relative
-   slot identity — push and pull at one entry-relative offset, a call provably below it —
-   because a page-one interval hold is unsound: the machine's own return-address push writes
-   page one and is no `st`, so the enumerated writer set is incomplete.
-   `structured.sp_flow`'s join to bot is what destroys the premise (`_sp_classes`:
-   `sp_callee`, `sp_read`). The same reading pays landing 1's owed `ret_live` — each call
-   site's resume pc is the site plus its inline-data length, unioned as the live-in.
+5. **`framestack`, the slot identity [1 pin, 8 → 7] — LANDED.** `low_held_cursor` needed an
+   sp-relative slot identity because a page-one interval hold is unsound. It is the
+   `(epoch, offset)` key `sp_flow`'s join to bot cannot destroy, plus the reader/writer split:
+   a read refuses only the *removal* of the store (the slot is held), a writer refuses the
+   slot, and the machine's own return push is priced by refusing to span a call at all. The
+   record's exact pricing — "a call provably below it" — was built, measured and **refused**
+   on two tunes; the second of them is an emitter defect it exposed (decision log).
+   `ret_live` did **not** fall out of it either — `_below_sp` refuses every slot at `k > 0`
+   precisely because that is the return address — so #177's per-site resume pc
+   (`call site + inline-data length`) stands as the owed item.
 6. **`frameproc`, the bit analyses and the promotion they refuse [2 pins, 7 → 5].**
    `g2_store`: `eqlift_mem._lattice` is pure over pass-1 expressions, so it moves to
    `frameproc` and a **reach** reading takes the min with `addr_bits` — which may not do this
@@ -3107,3 +3110,65 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `splice_sweep` as in (6) (`out/splice_s4l4c.json`). Suite **2,780 passed / 490 skipped /
   27 xfailed** (oracle excluded; one new case, no pin flipped). `black --check` and `pylint`
   clean at the tree's standing 9.95.
+- **2026-08-11 — `framestack`, the slot identity: a reader holds the slot and a writer
+  refuses it.** #189 refuted 3d's prediction and caught its own hold unsound; this is the
+  premise the record demanded in its place, and it is sp-relative throughout.
+  (1) **What survives the join.** A slot is `(epoch, entry-relative offset)`. `_Marks` and
+  `_slot_at` name it without ever concretizing `sp`, which is exactly what
+  `structured.sp_flow`'s join to bot destroys: a callee entered at two depths keeps its
+  slot identity where `concretize_stack` can fold no address to a cell.
+  (2) **The reader/writer split, which is the whole flip.** `_SpSlot._probe` refused *any*
+  access that may touch a live slot. A read moves no value, so it may not refuse the
+  identity — only the removal of the store. The walk now records `impure` for a reader and
+  `why` for a writer, and a slot with readers is **held**: the store stays and the pulls
+  read the local it defines. `low_held_cursor`'s `(ptr),y` deref between push and pull is
+  exactly such a reader, so `ptrcert._classify` reads the restore as `save_restore` off
+  cursor `$0002` instead of `low_held`, and the web is eligible.
+  (3) **The machine's own push is in the writer set by construction — by refusing to span
+  a call, and the exact pricing is REFUTED.** #189's unsoundness was an enumeration of `st`
+  statements alone. The rung answers it structurally: a call closes the epoch, so no slot is
+  ever live across one and no return-address push of one can reach a slot. The record's
+  "a call provably below it" was then **built and measured**: an epoch spans a call whose
+  callee is stack-silent (its whole call tree names no page-one cell, and it balances) where
+  the live slot stands strictly above the call's displacement. It moved 2 of 624 tunes wrong
+  and `gate_sweep` caught both.
+  `Ultima_III-Exodus` (v2.lww, frame 0, `[15, 10]` against `[15, 12]`) was the silence
+  premise itself: a callee may be entered or left by a `goto`/`label` edge the walk does not
+  carry, so its accesses are not all the accesses that run. Widening the open set to
+  `goto`/`label` made that tune clean.
+  `Allt_under_himmelens_faeste` (`FrameFault: unobserved $0D0F reached`) survived that fix
+  and is **not framestack's**: with three `y` spills around `sub_0B65` promoted away, the
+  artifact loses `y = (y + $01)` inside **`sub_09A0`** — a procedure the rung never touched,
+  whose own header still reads `sub_09A0(y) -> y`. The rendered body drops a definition its
+  header returns, so a register the caller's spill used to carry through memory is now
+  carried in a register whose defining statement root extraction retires. That is the two
+  `_Info`s disagreeing (`frameproc.repolish`'s for the header, `eqlift_mem.render_ctx`'s for
+  the body), and it is a live emitter defect the spanning merely exposed. So the spanning is
+  not landed and the pricing stays structural; whoever takes it must fix that first.
+  (4) **The corpus, §4-reviewed.** `tools/emit_identity.py`: 624 tunes, 0 refused,
+  28,310,783 → **28,306,161 bytes**, `05c3a08a…` →
+  **`f4d5958e0a18ab4c981634879c3e2e85bb4c959fc7c6951624e5ec94a0793635`** (the new baseline),
+  **64 of 624 moved** — 47 smaller (−4,866), 17 larger (+244), none the same size.
+  `Cyberbrain/Arpeggio` (−294) is the shape end to end: the address temporary and the copy
+  go (`t18:2 = (zext2(sp) | $0100):2` / `mem[t18:2] = w39` / `w41 = w39` become
+  `s0 = …` / `mem[(zext2(sp) | $0100):2] = s0` / `ptr_00F4_lo = s0`), and with no page-one
+  definition left on the web `ptr_00EC_lo: cursor u8` + `ptr_00EC_hi: parameter u8` become
+  **one `ptr_00EC: cursor u16`** whose reload is one word row.
+  The larger side is not a price either: on `Amaze/Foolish_Maniacs` (+28) the held value lets
+  rung (d) pair two SID writes into one `hi-first sid.v1.freq_lo[y]:2 = …` word store and the
+  two tables gain their declared `lo`/`hi` roles — 28 bytes for a word store and a declared
+  pair.
+  (5) **What did not fall out: `ret_live`.** The plan expected the resume-pc reading from
+  this analysis. It does not come from it, and the reason is structural: `_below_sp` refuses
+  every slot at `k > 0` *because* that is the caller's live stack — the return address — so
+  this reading never names it. #177's mechanism stands unchanged as the owed item: the
+  live-out of a slot-rewriting callee is the live-in at the pcs its slot may name, per site,
+  `call site + inline-data length`.
+  (6) **The ledger, and the gates.** 21 → **20**, and `framestack` owns none;
+  `test_the_owners_partition_the_family_as_the_ledger_records_it` moves with it.
+  `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
+  and zero refusals. `splice_sweep --against` the recorded artifact: **71 bad, zero new and
+  zero fixed**, −7,268 lines with no tune larger (585 smaller), **207,073 sites proved, zero
+  unproved**, `fields`/`roled` 13,793 of 18,634. Suite **2,786 passed / 490 skipped / 26
+  xfailed** (oracle included) against the base commit's 2,782 / 490 / 27. `black --check` and
+  `pylint` (10.00/10) clean.

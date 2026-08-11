@@ -206,7 +206,8 @@ class _Marks:
 
     An epoch is a run control neither leaves nor enters, so inside one ``sp`` is
     the entry value plus the displacements written between and a slot is
-    ``(epoch, displacement + k)``; two epochs name nothing in common."""
+    ``(epoch, displacement + k)``; two epochs name nothing in common. A call ends
+    one, which is how the machine's own return-address push is priced."""
 
     def __init__(self):
         self.epoch = 0
@@ -306,15 +307,25 @@ class _SpSlot:
     the store claims free stack space, and the procedure balances so no ``ret``
     reads page one for the return address the slot would sit in."""
 
-    __slots__ = ("key", "stores", "reads", "why")
+    __slots__ = ("key", "stores", "reads", "why", "impure")
 
     def __init__(self, key):
         self.key = key
         self.stores = self.reads = 0
-        self.why = None
+        self.why = self.impure = None
 
     def _refuse(self, why):
         self.why = self.why or why
+
+    def _hazard(self, why, writes):
+        """A writer refuses the slot; a reader refuses only dropping its store.
+
+        A read moves no value, so the slot's identity survives one; what does not
+        survive is the removal of the store the reader may name."""
+        if writes:
+            self._refuse(why)
+        else:
+            self.impure = self.impure or why
 
     def run(self, stmts, marks, sp, balanced):
         if not balanced:
@@ -324,31 +335,36 @@ class _SpSlot:
             self._refuse("the slot is not both stored and read in the procedure")
         return self
 
-    def _probe(self, addr, width, mark, sp, defd):
+    def _probe(self, addr, width, mark, sp, defd, writes):
         """One access against the slot: refuse where it may touch what is live."""
         got = _slot_at(addr, mark, sp)
         if got is None:
             near, blind = _touches_page(addr, width)
             if near:
-                self._refuse("another resolvable access may touch the slot")
+                self._hazard("another resolvable access may touch the slot", writes)
             elif blind and defd:
-                self._refuse("an unresolvable address may alias the live slot")
+                self._hazard("an unresolvable address may alias the live slot", writes)
             return
         if got[0] != self.key[0]:
             if defd:
-                self._refuse("an unresolvable address may alias the live slot")
+                self._hazard("an unresolvable address may alias the live slot", writes)
             return
         if width != 1 and any(((got[1] + j) & 0xFF) == self.key[1] for j in range(width)):
-            self._refuse("another resolvable access may touch the slot")
+            self._hazard("another resolvable access may touch the slot", writes)
 
     def _walk(self, stmts, marks, sp, defd):
-        """Must-def over one statement list; returns the state it leaves behind."""
+        """Must-def over one statement list; returns the state it leaves behind.
+
+        A call is a control transfer here, which is also what prices the machine's own
+        return-address push: no slot is live across one, so no push of its can reach one."""
         for i, s in enumerate(stmts):
             k = s[0]
-            defd = defd and k in _STRAIGHT
             mark = marks.at[(id(stmts), i)]
-            for addr, width in _accesses(s):
-                self._probe(addr, width, mark, sp, defd)
+            defd = defd and k in _STRAIGHT
+            acc = _accesses(s)
+            wrote = len(acc) - 1 if k == "st" else -1
+            for j, (addr, width) in enumerate(acc):
+                self._probe(addr, width, mark, sp, defd, j == wrote)
             for x in frameproc._stmt_exprs(s):
                 got = _count_sp(x, self.key, mark, sp)
                 self.reads += got
@@ -365,12 +381,19 @@ class _SpSlot:
                     self._walk(b, marks, sp, False)
         return defd
 
+    def status(self):
+        """``refused``, ``held`` where only the store must stay, else ``named``."""
+        if self.why:
+            return "refused"
+        return "held" if self.impure else "named"
+
     def proof(self, name):
         """The rung-(d0s) record: the premise counts, and the refusal or the local."""
+        held = "value held in %s, store kept -- %s" % (name, self.impure)
         return Proof(
             self.key[1],
             "spslot",
-            "refused" if self.why else "named",
+            self.status(),
             (),
             "sp slot [%d]$%02X: %d store(s), %d read(s); %s"
             % (
@@ -378,7 +401,7 @@ class _SpSlot:
                 self.key[1],
                 self.stores,
                 self.reads,
-                self.why or "data temporary, local %s" % name,
+                self.why or (held if self.impure else "data temporary, local %s" % name),
             ),
         )
 
@@ -412,15 +435,24 @@ def _rewrite_sp_expr(n, names, mark, sp):
     return n
 
 
-def _rewrite_sp(stmts, marks, names, sp):
-    """Slot stores become assignments, slot reads locals; no store is dropped."""
+def _rewrite_sp(stmts, marks, names, sp, held=frozenset()):
+    """Slot stores become assignments, slot reads locals; a ``held`` store stays.
+
+    A held slot keeps its cell -- some reader may name it -- so its store writes
+    the local the pulls read, which is the identity the walk proved."""
+    out = []
     for i, s in enumerate(stmts):
         mark = marks.at[(id(stmts), i)]
         for b in frameproc._stmt_bodies(s):
-            _rewrite_sp(b, marks, names, sp)
+            _rewrite_sp(b, marks, names, sp, held)
         was = _slot_at(s[1], mark, sp) if s[0] == "st" else None
         s = frameproc._map_exprs(s, lambda x, _m=mark: _rewrite_sp_expr(x, names, _m, sp))
-        stmts[i] = ("asg", names[was], s[2]) if was in names else s
+        if was in names:
+            out.append(("asg", names[was], s[2]))
+            s = ("st", s[1], ("loc", names[was])) if was in held else None
+        if s is not None:
+            out.append(s)
+    stmts[:] = out
 
 
 def apply_rung(procs):
@@ -432,7 +464,7 @@ def apply_rung(procs):
     bals, _at_entry = _balances(procs, sp, saves_of)
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
-        names, spnames = {}, {}
+        names, spnames, held = {}, {}, set()
         marks = _Marks()
         _sp_scan(stmts, marks, sp)
         for cell in sorted(_candidates(stmts)):
@@ -451,11 +483,13 @@ def apply_rung(procs):
                 name, n = _fresh(used, n)
                 used.add(name)
                 spnames[key] = name
+                if slot.impure:
+                    held.add(key)
             proofs.append(slot.proof(name))
         if names:
             _rewrite(stmts, names)
         if spnames:
-            _rewrite_sp(stmts, marks, spnames, sp)
+            _rewrite_sp(stmts, marks, spnames, sp, held)
     return proofs
 
 
