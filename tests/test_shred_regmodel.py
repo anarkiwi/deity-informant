@@ -1159,26 +1159,16 @@ def test_fixture_builds_and_gates(name):
     assert _lift(name).startswith("frameprog 1")
 
 
-@pytest.mark.xfail(
-    reason="%s scratch promotion; %s -- 3d landing 1's read closure already retires the "
-    "store, so what stands is the state { } declaration, which frameprog._state_lines "
-    "derives from _cells(view) and not from the stores extraction kept" % (_S3, _MEASURED[2]),
-    **XFAIL,
-)
 def test_scratch_cell_is_a_local_not_state():
+    """FLIPPED at stage 4 landing 3: the store retires and its declaration goes with it.
+
+    3d landing 1's read closure retired the store; the ``state { }`` demotion is what
+    took the field, off root extraction's own scratch spans and nothing else."""
     text = _lift("scratch")
     assert not re.search(r"\bm_%04X\b" % TMP, text), "scratch cell survives as a named cell"
-
-
-def test_the_scratch_store_demotes_on_the_unified_path_and_its_declaration_stays():
-    """Measured after 3d landing 1: the store is gone from the body, the field is not.
-
-    frameprog re-reads the cell at the SID write and keeps the store; the unified path
-    spells the value and retires it, so all that is left of the pin is ``state { }``."""
-    procs = _lift("scratch")[_lift("scratch").index("sub_") :]
-    assert "sid.v1.ctrl = ((t0 & $0F) | $40)" in procs
-    assert not re.search(r"\bm_%04X\b" % TMP, procs), "the store survived"
-    assert re.search(r"\bm_%04X\b" % TMP, _state_block(_lift("scratch"))), "the field went"
+    procs = text[text.index("sub_") :]
+    assert "sid.v1.ctrl = ((t0 & $0F) | $40)" in procs, "the value lost its spelling"
+    assert not re.search(r"\bm_%04X\b" % TMP, _state_block(text)), "the field stayed"
 
 
 @pytest.mark.xfail(
@@ -1799,7 +1789,7 @@ def test_every_stage_three_pin_carries_its_measured_disposition():
     A stage-3 xfail added later fails here until its goal property has been evaluated
     against the cutover's emitter and one of the three verdicts put on its reason."""
     pins = _stage_three_pins()
-    assert len(pins) == 23, sorted(pins)
+    assert len(pins) == 22, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _MEASURED) != 1]
 
 
