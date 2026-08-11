@@ -672,6 +672,20 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    and each of the six left owes the engine a named capability rather than a re-basing. That is
    the landing's real shape, and it is worth more than the schedule it replaces — the re-basing
    is still owed (it is what retires `emit`/`emit_mem`), but it is a cleanup, not a pin-flipper.
+   **And it is not a small cleanup: the trunk was measured** (2026-08-11). Reading the artifact
+   costs four small parser items — the signature (`sub_1000()`, `sub_1485(x) -> a, x`), a width
+   suffix after a bare name (`ctr_0030:2`), the promoted call (`a, x = sub_1485(a)`) and the
+   `trunc1` operator — and rung (d) does **not** take the fold layer's subject away: 69 of the
+   prototype's 95 byte-lane spellings survive in the artifact and it carries **zero** fused
+   `ptr_XXXX` pairs. What it does carry is width. The prototype's AST and `Machine` are
+   byte-typed, the artifact is width-typed, and **21 names wear both a `:2` spelling and a bare
+   byte use** (`ptr_0040_lo` nine times), so the width is the **site's** and not the name's — a
+   name-keyed registry was built and measured and diverges at frame 0. Carrying it per site
+   touches every fold rule, their Z3 proofs, `render`, `classify_roles` and `reroll`, whose
+   voice unification already refuses the artifact's shape ("block of 6 against 8"). So the
+   re-basing is its own landing, and the fold layer it ends with is smaller than the one it
+   starts from: on the artifact only three of the eight `FOLDS` still fire (`pair_set`,
+   `row_read`, `wide_cmp`), because the engine now does the rest.
 2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
    (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
