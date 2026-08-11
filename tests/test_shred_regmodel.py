@@ -1621,30 +1621,26 @@ def test_a_play_written_source_block_stops_the_certification_only():
     assert rec["eligible"] and not rec["lift_refusals"]
 
 
-def test_a_stack_held_cursor_refuses_low_held():
-    """Invariant (b1 iv): the restore reads page one through sp, and sp survives."""
+def test_a_stack_held_cursor_names_its_slot_and_keeps_its_store():
+    """Invariant (b1 iv): the identity is sp-relative, and sp survives with the store.
+
+    The deref between push and pull reads an address no analysis resolves, so it may
+    not move the slot's value; what it forbids is dropping the store, which is why the
+    cell stays and the pulls read the local the push defined."""
+    body = _body(_lift("low_held_cursor"))
+    assert re.search(r"\bsp\b", body), "the hold lost its sp spelling"
+    assert "mem[($0100 | zext2(sp)):2] = s0" in body, "the held slot dropped its store"
+    assert "ptr_0002_lo = s0" in body and "ptr_0002_hi = s1" in body, "a pull stayed in memory"
+
+
+def test_a_stack_held_cursor_lifts_once_the_slot_is_named():
+    """FLIPPED at the slot identity: the restore is the push, so no page-one def stands.
+
+    3d predicted the deref span and that is not the premise. An sp-relative slot the
+    push and the pull name at one entry-relative offset is, with the machine's own
+    return-address push a writer by construction -- the below-sp premise at every call."""
     rec = _cert("low_held_cursor")
-    assert rec["lift_refusals"] == ["low_held"] and not rec["eligible"]
-    assert re.search(r"\bsp\b", _body(_lift("low_held_cursor"))), "the hold lost its sp spelling"
-
-
-@pytest.mark.xfail(
-    reason="%s the hold that cannot name its slot; %s -- 3d predicted the deref span, and "
-    "it is not the premise. A stack hold keyed on the page-one interval its address bits "
-    "give was built and closes (every st into it writes a cursor value), but the machine's "
-    "own return-address push writes page one and is no st, so the writer set is incomplete. "
-    "The premise is an sp-relative slot identity -- push and pull at one entry-relative "
-    "offset, a call provably below it -- which sp_flow's join to bot destroys here "
-    "(_sp_classes: sp_callee, sp_read)" % (_S3, _OWNERS[2]),
-    **XFAIL,
-)
-def test_a_stack_held_cursor_lifts_once_the_deref_is_bounded():
-    """2c measured the blocker and it is neither of 2c's rules (§2 2c correction 5).
-
-    The linkage drops and the balance is proven; rung (d0s) still refuses both
-    slots because the `(ptr),y` deref between push and pull may alias them, and
-    the pair's own extent is refused because it is held through page one."""
-    assert _cert("low_held_cursor")["eligible"]
+    assert rec["eligible"] and rec["lift_refusals"] == []
 
 
 def test_an_unresolvable_store_refuses_the_web_and_keeps_the_spelling():
@@ -1804,7 +1800,7 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 21, sorted(pins)
+    assert len(pins) == 20, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
@@ -1816,7 +1812,7 @@ def test_the_owners_partition_the_family_as_the_ledger_records_it():
     per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
     assert len(per["owner: rung (d)"]) == 13, per["owner: rung (d)"]
     assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
-    assert per["owner: framestack"] == ["test_a_stack_held_cursor_lifts_once_the_deref_is_bounded"]
+    assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]
     assert len(per["owner: frameproc"]) == 2, per["owner: frameproc"]
 
