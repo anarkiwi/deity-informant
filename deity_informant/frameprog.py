@@ -20,7 +20,6 @@ from . import grammar as G
 from . import idioms
 from . import initcopy
 from . import ptrlift
-from . import roles
 from . import sidprog
 from . import structured
 from .grammar import FRAMEPROG_VERSION
@@ -583,6 +582,8 @@ def _roles(prog):
 
     Recognition licenses nothing -- an un-roled field stays a legal ``uN`` -- so a cell
     with no witnessed update, or one carrying an unshaped update, is simply absent."""
+    from . import roles  # pylint: disable=import-outside-toplevel  # ``roles`` is a field name
+
     cells = idioms.state_cells(prog)
     got, _shapes, _residue = roles.census(prog)
     out = {}
