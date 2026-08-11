@@ -49,6 +49,15 @@ _PUSH = O("INT_OR", (Z(L("sp")), N(0x0100, 2)), 2)
 _ROW = O("INT_ADD", (N(0x5428, 2), Z(L("y"))), 2)
 _PTR = O("INT_ADD", (L("p"), Z(L("y"))), 2)
 
+_COUT = O(  # the carry out of ``al + bl + 1``, as the two-step add spells it
+    "INT_OR",
+    (
+        O("INT_CARRY", (L("bl"), L("al")), 1),
+        O("INT_CARRY", (O("INT_ADD", (L("bl"), L("al")), 1), N(1)), 1),
+    ),
+    1,
+)
+
 PACK_ADD = O("INT_ADD", (O("INT_LEFT", (Z(L("h")), N(8, 1)), 2), Z(L("l"))), 2)
 
 CASES = {  # row id -> (setup statements, spellings, the normal form extraction returns)
@@ -86,17 +95,34 @@ CASES = {  # row id -> (setup statements, spellings, the normal form extraction 
         [O("INT_AND", (PK(L("h"), L("l")), N(0xFF, 2)), 2), Z(L("l"))],
         "zext2(l)",
     ),
-    "adc-chain": (
-        (),
-        [
-            PK(
-                O("INT_ADD", (L("ah"), L("bh"), O("INT_CARRY", (L("al"), L("bl")), 1)), 1),
-                O("INT_ADD", (L("al"), L("bl")), 1),
-            ),
-            O("INT_ADD", (PK(L("ah"), L("al")), PK(L("bh"), L("bl"))), 2),
-        ],
-        "(((zext2((ah + bh)) << $08):2 | zext2(al)):2 + zext2(bl)):2",
-    ),
+    "adc-chain": [
+        (
+            (),
+            [
+                PK(
+                    O("INT_ADD", (L("ah"), L("bh"), O("INT_CARRY", (L("al"), L("bl")), 1)), 1),
+                    O("INT_ADD", (L("al"), L("bl")), 1),
+                ),
+                O("INT_ADD", (PK(L("ah"), L("al")), PK(L("bh"), L("bl"))), 2),
+            ],
+            "(((zext2((ah + bh)) << $08):2 | zext2(al)):2 + zext2(bl)):2",
+        ),
+        (  # SEC then ADC a variable stride: the carry IN, and the two-step carry out
+            (),
+            [
+                PK(
+                    O("INT_ADD", (L("ah"), _COUT), 1),
+                    O("INT_ADD", (O("INT_ADD", (L("bl"), L("al")), 1), N(1)), 1),
+                ),
+                O(
+                    "INT_ADD",
+                    (O("INT_ADD", (PK(L("ah"), L("al")), Z(L("bl"))), 2), N(1, 2)),
+                    2,
+                ),
+            ],
+            "(((zext2(ah) << $08):2 | zext2(al)):2 + $0001 + zext2(bl)):2",
+        ),
+    ],
     "sbc-chain": (
         (),
         [
@@ -227,11 +253,17 @@ def test_the_adc_built_pack_converges_on_the_ora_built_one(rules):
     assert eg.check_bool(egg_eq(hs[0]).to(hs[1]))
 
 
-@pytest.mark.parametrize("row", sorted(CASES))
-def test_the_spellings_of_one_idiom_merge_into_one_class(row, rules):
+def _groups(row):
+    """A row's spelling groups: one value each, since two values cannot be one class."""
+    got = CASES[row]
+    return got if isinstance(got, list) else [got]
+
+
+@pytest.mark.parametrize("row,k", [(r, k) for r in sorted(CASES) for k in range(len(_groups(r)))])
+def test_the_spellings_of_one_idiom_merge_into_one_class(row, k, rules):
     """Convergence: every spelling of the idiom is one e-class, and the representative
     extraction returns from each of them is the catalog's normal form."""
-    setup, variants, want = CASES[row]
+    setup, variants, want = _groups(row)[k]
     assert len(variants) > 1, row
     eg = EGraph()
     hs = [eg.let("h%d" % i, t) for i, t in enumerate(_terms(setup, variants))]

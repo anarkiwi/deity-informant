@@ -678,21 +678,28 @@ def _z3_cond(e, env, z3):
 def prove_advance(k, carried, cond, p, z3):
     """Z3-prove ``lo = p + k`` under guard ``cond`` is one u16 add on the pair.
 
-    The guard's meaning is proved, not matched, so every spelling the extractor
-    picks for the same deferred carry folds through this one rule."""
+    The guard's meaning is proved, not matched, so every spelling the extractor picks
+    for the same deferred carry folds through this one rule, and ``k`` is a term as
+    readily as a constant: a variable stride is the same obligation over a free byte."""
     lo, hi = z3.BitVec(p.replace(".", "_"), 16), z3.BitVec("hi", 16)
+    env, bounds = {p: lo}, [z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF)]
+    for n in sorted(_names(k, set()) | _names(cond, set())) if not isinstance(k, int) else ():
+        if n != p:
+            env[n] = z3.BitVec("d_" + n.replace(".", "_"), 16)
+            bounds.append(z3.ULE(env[n], 0xFF))
     try:
-        nocarry = _z3_cond(cond, {p: lo}, z3)
+        nocarry = _z3_cond(cond, env, z3)
+        step = z3.BitVecVal(k, 16) if isinstance(k, int) else _z3_expr(k, env, z3)
     except (KeyError, ValueError):
         return False
-    t = (lo + k) & 0xFF
-    wide = ((hi << 8 | lo) + k) & 0xFFFF
+    t = (lo + step) & 0xFF
+    wide = ((hi << 8 | lo) + step) & 0xFFFF
     s = z3.Solver()
     if carried:
         folded = (z3.If(nocarry, hi & 0xFF, (hi + 1) & 0xFF) << 8 | t) & 0xFFFF
-        s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), folded != wide)
+        s.add(*bounds, folded != wide)
     else:
-        s.add(z3.ULE(lo, 0xFF), z3.ULE(hi, 0xFF), nocarry, ((hi << 8) | t) != wide)
+        s.add(*bounds, nocarry, ((hi << 8) | t) != wide)
     return s.check() == z3.unsat
 
 
@@ -1094,7 +1101,8 @@ def fold(stmts, proofs, targets=None):
         if adv is not None:
             pair, k, carried, cond, p, used = adv
             if prove_advance(k, carried, cond, p, z3):
-                proofs.append("advance(%s,+%d,%s)" % (pair, k, "wide" if carried else "nocarry"))
+                step = k if isinstance(k, int) else _fmt(k)
+                proofs.append("advance(%s,+%s,%s)" % (pair, step, "wide" if carried else "nocarry"))
                 out.append(("adv16", pair, k, carried))
                 i += used
                 continue
@@ -1154,13 +1162,28 @@ def _subst(e, env):
 
 
 def _add_const(e, p):
-    """``k`` if ``e`` is ``p + k`` in either order, else None."""
-    if e[0] != "bin" or e[1] != "+":
+    """The delta ``d`` where ``e`` is ``p + d``, else None.
+
+    An add chain reading ``p`` exactly once is the advance; the rest of the chain is
+    the stride, constant or not, so a table-valued step is the same rule as ``+2``."""
+    terms, stack = [], [e]
+    while stack:
+        x = stack.pop()
+        if x[0] == "bin" and x[1] == "+":
+            stack.extend((x[2], x[3]))
+        else:
+            terms.append(x)
+    if terms.count(("name", p)) != 1:
         return None
-    for a, b in ((e[2], e[3]), (e[3], e[2])):
-        if a == ("name", p) and b[0] == "num":
-            return b[1]
-    return None
+    rest = [t for t in terms if t != ("name", p)]
+    if not rest or any(t[0] == "name" and cell_addr(t[1]) is not None for t in rest):
+        return None
+    if all(t[0] == "num" for t in rest):
+        return sum(t[1] for t in rest) & 0xFF
+    out = rest[0]
+    for t in rest[1:]:
+        out = ("bin", "+", out, t)
+    return out
 
 
 def _match_advance(stmts, i):
@@ -1204,8 +1227,15 @@ def _match_advance(stmts, i):
         return None  # the guard reads the stored cell, or a temporary outlives the window
     cond = _subst(stmts[j][1], env)
     return (
-        ("ptr_%s" % pair, k, carried, cond, lo, j + 1 - i) if _names(cond, set()) == {lo} else None
+        ("ptr_%s" % pair, k, carried, cond, lo, j + 1 - i)
+        if lo in _names(cond, set()) and not (_names(cond, set()) - {lo} - _free(k))
+        else None
     )
+
+
+def _free(k):
+    """The names a stride term reads; a constant stride reads none."""
+    return set() if isinstance(k, int) else _names(k, set())
 
 
 # ---- the classical passes: call resolution, the row read, guard-aware re-rolling ----
@@ -1392,7 +1422,8 @@ class _Unify:
         pair = self.walk(a[1], b[1])
         if pair is _REFUSE:
             return _REFUSE
-        self.proofs.append("reroll_guard(%s,+%d)" % (a[1], a[2]))
+        step = a[2] if isinstance(a[2], int) else _fmt(a[2])
+        self.proofs.append("reroll_guard(%s,+%s)" % (a[1], step))
         return ("adv16", pair, a[2], True)
 
     def walk(self, a, b):
@@ -1811,8 +1842,9 @@ class Machine:
                 self.ram[base + 1], self.ram[base] = hi & 0xFF, lo & 0xFF
             elif op == "adv16":
                 base = cell_addr(s[1] + "_lo")
-                assert s[3] or (self.ram[base] + s[2]) <= 0xFF, "nocarry guard"
-                wide = ((self.ram[base + 1] << 8) | self.ram[base]) + s[2]
+                step = s[2] if isinstance(s[2], int) else self._val(s[2], env)[0]
+                assert s[3] or (self.ram[base] + step) <= 0xFF, "nocarry guard"
+                wide = ((self.ram[base + 1] << 8) | self.ram[base]) + step
                 self.ram[base] = wide & 0xFF
                 self.ram[base + 1] = (wide >> 8) & 0xFF
             elif op == "bf":
@@ -2311,7 +2343,8 @@ def _render(sl, lines, d):
             lines.append("%s%s:u16 = %s:%s" % (pad, s[1], _fmt(s[3]), _fmt(s[2])))
         elif op == "adv16":
             guard = "" if s[3] else "   ; guard: no page cross observed"
-            lines.append("%s%s:u16 += %d%s" % (pad, s[1], s[2], guard))
+            step = s[2] if isinstance(s[2], int) else _fmt(s[2])
+            lines.append("%s%s:u16 += %s%s" % (pad, s[1], step, guard))
         elif op == "w16":
             lo, n, wop, a, b, cy = s[1:]
             tgt = "%s:u%d" % (_addr_name(lo), 8 * n)

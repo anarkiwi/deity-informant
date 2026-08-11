@@ -600,14 +600,14 @@ is an artifact fact; the shredder family is 23), and one law weakened on the rec
 `prog.procs == src.procs` is now the entry/parameter/return identity, because the text is
 the minimized program.
 
-The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,627
-bytes**, aggregate `4b35ed0fd6969cde4a055963ae7fe3b94bdba241a89b566d21e8384fda583a65`;
+The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,539
+bytes**, aggregate `64f763d93ebf3b1edcc11310b3ef6be6a3818dad517026b8f1874125827a7b2b`;
 `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
-and zero refusals; suite **2,746 passed / 490 skipped / 30 xfailed**, oracle 16; the corpus
+and zero refusals; suite **2,748 passed / 490 skipped / 29 xfailed**, oracle 16; the corpus
 text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
 `out/splice_base_s4l3b.json`) **84 bad against the control's 87 — zero new, three fixed**,
-parse and fixpoint **624 of 624**, **210,037 rewritten sites proved, zero unproved**,
-−4,528 lines with no tune larger; prototype ratchets **339 lines / 820 nodes**. The
+parse and fixpoint **624 of 624**, **210,034 rewritten sites proved, zero unproved**,
+−4,529 lines with no tune larger; prototype ratchets **324 lines / 773 nodes**. The
 25-exemplar review and `out/eqlift_measure_s4l3.json` are retired with the tool that made
 them. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved and
 cannot until landing 4 turns the role keywords on; what the switch moved is which emitter
@@ -2462,3 +2462,40 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (6) **The gates.** Suite **2,754 passed / 490 skipped / 30 xfailed** (eight new tests),
   `witness6502` coverage 100%, `black --check` and `pylint` clean, emit identity unmoved at
   `4b35ed0f…` (624 tunes, 0 refused) since no emitter source is touched.
+- **2026-08-11 — stage 4: the variable-stride cursor advance folds, and the pin #180 left
+  ownerless flips.** `test_no_byte_lane_update_of_any_declared_u16` was the one prototype
+  pin whose reason named no landing: "a variable-stride cursor advance stays byte-lane
+  because no admitted rule folds one".
+  (1) **An eqlift rule is not what flips it, and the measurement says why.** In the artifact
+  the shape is `ptr2 = ptr_0040_lo; t5 = (y + ptr2 + $01); ptr_0040_lo = t5;
+  cflag = (carry(y, ptr2) | carry((y + ptr2), $01)); ifnot cflag { } else unobserved $10FE`.
+  There is **no pack to fuse**: the hi lane is never written, and the carry feeds an
+  *unobserved* guard. A value rule cannot take "unobserved" as a premise, so the fold is the
+  guarded one — the prototype's own `advance` rule, which carries its Z3 obligation.
+  (2) **The fold generalizes, obligation unchanged.** `_add_const` reads the stride off an
+  add chain that reads the cell exactly once, whatever the rest of the chain is (refusing a
+  chain that reads another declared cell), so it returns a term as readily as a constant;
+  `prove_advance` gives every free name of the stride and the guard its own byte-bounded
+  bitvector and discharges the same goal. The three voices now prove
+  `advance(ptr_0040,+($01 + y),nocarry)` beside `advance(ptr_0040,+2,nocarry)`, and
+  `lane_updates` is **empty**: `test_no_byte_lane_update_of_any_declared_u16` flips, and
+  `test_declared_u16_state_is_updated_wide_except_the_cursors` loses its exception and its
+  name. The ratchets fall **339 -> 324 lines / 820 -> 773 nodes**.
+  (3) **The rule is admitted anyway, because the idiom is real.** `SEC; ADC <stride>` is a
+  wide add the catalog's `adc-chain` row had no spelling for: `carry_fuse_in` states
+  `(ah + (carry(al,bl) | carry(al+bl, 1)))<<8 | (al+bl+1) == pk(ah,al) + zext(bl) + 1`, Z3-proved
+  with the other 91 (a carry-in of one bounds the sum at `$1FF`, so the OR is the whole
+  carry). `tests/test_eqlift_converge.py` carries it as the row's **second spelling group** —
+  two values cannot be one class, so a catalog row now takes a list of groups — and the row
+  gate stays "every case id is a catalog row".
+  (4) **The gates.** `gate_sweep` at full Songlengths **624 / 624 / 624 clean**. Suite
+  **2,732 passed / 490 skipped / 29 xfailed**, oracle 16. Emit identity moves on a §4 review
+  of **three** tunes (−88 bytes) to
+  `64f763d93ebf3b1edcc11310b3ef6be6a3818dad517026b8f1874125827a7b2b`, 624 tunes, 0 refused,
+  **28,258,539 bytes**: `ATOO/American` and `Butler_Paul/Ace_of_Aces` are strict wins — the
+  byte-lane advance becomes `d3:2 = (ptr_00FB_lo:2 + $0001 + zext2(pos1)):2` and in
+  `Ace_of_Aces` the two half stores fuse to one word column — and
+  `Feil_Georg/A_Spaceman_Came_Travelling` is −1 byte where the lanes go to table rows rather
+  than to a pair, so the word add stands beside them. Splice sweep against its control:
+  **zero new, three fixed**, parse and fixpoint 624/624, 210,034 sites proved, −4,529 lines
+  with no tune larger.

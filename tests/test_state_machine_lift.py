@@ -299,19 +299,17 @@ def test_multi_byte_sid_registers_are_written_wide(text):
         assert "%s:u16 = " % base in text, base
 
 
-def test_declared_u16_state_is_updated_wide_except_the_cursors(art):
-    """Every wide quantity but the cursors is updated only at its own width."""
-    got = [n for n, _a in lane_updates(art["folded"])]
-    assert set(got) == {"v%d_pos" % (v + 1) for v in range(VOICES)}
+def test_declared_u16_state_is_updated_wide(art):
+    """Every wide quantity is updated only at its own width, the cursors included."""
+    assert [n for n, _a in lane_updates(art["folded"])] == []
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift OPEN, no landing owns it: a variable-stride cursor "
-    "advance stays byte-lane because no admitted rule folds one, and admitting a rule "
-    "is a corpus-diff decision (adoption §4) nobody has priced",
-    **XFAIL,
-)
 def test_no_byte_lane_update_of_any_declared_u16(art):
+    """FLIPPED at stage 4: the variable-stride advance folds like the constant one.
+
+    ``_add_const`` reads the stride off an add chain reading the cell once, whatever
+    the rest of the chain is, and ``prove_advance`` discharges the same obligation over
+    a free byte -- so a table-valued step is the same rule as ``+2``."""
     assert lane_updates(art["folded"]) == []
 
 
@@ -415,7 +413,7 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # The goal pinned: properties enumerated from the artifact, xfails naming their stage.
 XFAIL = dict(strict=True)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 339, 820  # lowered by stage 4's cutover: an indexed read names its row
+LINE_PIN, COST_PIN = 324, 773  # lowered by stage 4: the variable-stride advance folds
 # lowers these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",

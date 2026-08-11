@@ -474,6 +474,20 @@ def _r_carry_fuse0(A, w):
     return _pk(A, hi, A.add(al, bl, 1)), A.add(_pk(A, ah, al), A.zext(bl), 2)
 
 
+def _r_carry_fuse_in(A, w):
+    """The ADC chain with a carry IN: ``SEC`` then ``ADC`` a variable stride.
+
+    The lo lane is ``al + bl + 1`` and its carry out is the OR of the two the two-step
+    add spells; at a carry-in of one the sum cannot exceed ``$1FF``, so the OR is the
+    whole carry and the word is one add of the stride plus one."""
+    del w
+    al, ah, bl = (A.tvar(n, 1) for n in ("al", "ah", "bl"))
+    lo = A.add(A.add(bl, al, 1), A.num(1, 1), 1)
+    cout = A.bor(A.carry(bl, al, 1), A.carry(A.add(bl, al, 1), A.num(1, 1), 1), 1)
+    word = A.add(_pk(A, ah, al), A.zext(bl), 2)
+    return _pk(A, A.add(ah, cout, 1), lo), A.add(word, A.num(1, 2), 2)
+
+
 def _r_borrow_fuse(A, w):
     """The SBC chain fuses: ``(ah - (al<bl))<<8 | (al-bl) -> a16 - zext(bl)``."""
     del w
@@ -674,6 +688,7 @@ RULES = (
         ("sub_ne0", (1, 2), _r_sub_ne0),
         ("carry_fuse", (2,), _r_carry_fuse),
         ("carry_fuse0", (2,), _r_carry_fuse0),
+        ("carry_fuse_in", (2,), _r_carry_fuse_in),
         ("borrow_fuse", (2,), _r_borrow_fuse),
         ("borrow_word", (2,), _r_borrow_word),
         ("shl_fuse", (2,), _r_shl_fuse(False)),
