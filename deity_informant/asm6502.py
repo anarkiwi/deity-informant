@@ -1,18 +1,29 @@
-"""asm6502: the two-pass label assembler the 6502 witness emits through.
+"""asm6502: the two-pass label assembler every 6502 emitter in the tree writes through.
 
 The encoding table is ``lifter.OPS``, so what this assembles is exactly what
-``lifter.lift`` decodes and ``PcodeVM`` runs. ``examples/state_machine_lift.Asm``
-and ``tests/_fuzzgen.Asm`` are the same class by copy; stage 4 collapses them here.
+``lifter.lift`` decodes and ``PcodeVM`` runs. The witness, the canonical example
+and the differential fuzzer's generator are all this class: ``ENC`` spells the
+legal 6510, ``ENC_ILLEGAL`` adds every undocumented opcode the lifter models for
+the pair no legal one spells (``AsmIllegal``, which the fuzz corpus needs).
+
+The duplicate policy is measured, not chosen: ``OPS`` maps no ``(mn, mode)`` pair
+to two legal bytes, so lowest-wins and highest-wins agree byte for byte and the
+merge moves no fixture; among the illegal-only pairs the lowest byte wins.
 """
 
 from __future__ import annotations
 
 from .lifter import ILLEGAL_OPCODES, MODE_LEN, OPS
 
-_ENC = {}
+ENC = {}
 for _op in sorted(OPS):
     if _op not in ILLEGAL_OPCODES:
-        _ENC.setdefault(OPS[_op], _op)
+        ENC.setdefault(OPS[_op], _op)
+
+ENC_ILLEGAL = dict(ENC)
+for _op in sorted(OPS):
+    if _op in ILLEGAL_OPCODES:
+        ENC_ILLEGAL.setdefault(OPS[_op], _op)
 
 ONE_BYTE = frozenset(("imm", "zp", "zpx", "zpy", "indx", "indy", "rel"))
 NO_OPERAND = frozenset(("impl", "acc"))
@@ -25,6 +36,8 @@ class Asm:
     ``LOL`` (low byte) or ``HIL`` (high byte); the offset form is how the witness
     patches an instruction's own operand bytes for a computed address.
     """
+
+    ENC = ENC
 
     def __init__(self, org):
         self.org, self.items, self.labels = org, [], {}
@@ -74,7 +87,7 @@ class Asm:
                 pc += 1
                 continue
             _, mn, mode, operand = it
-            out.append(_ENC[(mn, mode)])
+            out.append(self.ENC[(mn, mode)])
             pc += MODE_LEN[mode]
             if mode in NO_OPERAND:
                 continue
@@ -90,3 +103,10 @@ class Asm:
                 out.append(val & 0xFF)
                 out.append((val >> 8) & 0xFF)
         return bytes(out)
+
+
+class AsmIllegal(Asm):
+    """The same assembler over ``ENC_ILLEGAL``: the fuzz corpus stresses undocumented
+    opcodes, which the witness and the example never emit."""
+
+    ENC = ENC_ILLEGAL

@@ -2413,3 +2413,52 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   else — to `4b35ed0fd6969cde4a055963ae7fe3b94bdba241a89b566d21e8384fda583a65`, 624 tunes, 0
   refused, **28,258,627 bytes**. The splice sweep is byte-for-byte the switch's: zero new,
   three fixed, parse and fixpoint 624/624, 210,037 sites proved, −4,528 lines.
+- **2026-08-11 — stage 4, landing 5 (part): the witness's last three refusals close, and the
+  three `Asm` copies collapse onto one.** The ledger goal is zero, so each refusal was taken
+  as capability rather than re-worded.
+  (1) **The raw machine call is the evaluator's stack, on the machine.** `call`/`callb` were
+  refused as "a JSR at a pc, not a serialized procedure call". The mechanism is the one
+  `framestack.lift_rts_trick` reads: the pushed word is a **pc of the serialized program**,
+  so the site pushes `ret` itself (`LDA #hi : PHA : LDA #lo : PHA`, byte for byte the
+  evaluator's `push(ret)`) and transfers with `JMP`, and a raw callee's `ret` pulls that word
+  back instead of `RTS`-ing on it. The pulled word takes the site table first — the
+  evaluator's shadow stack, keyed by the word, which is unique per site — and otherwise
+  resolves `w + 1` through the whole compiled label table, which is the evaluator's `rmap`
+  arm for a callee that rewrote its slot. `callb`'s body is emitted inline under the pc the
+  call names and no other label, as `frameval._s_callb` marks it. Two named refusals remain
+  in that family and both are structural, not mechanical: a raw call to a pc no procedure of
+  the program carries, and a callee the program also enters by `pcall` (one return
+  convention per procedure).
+  (2) **The stack depths already agreed, which is why the trick is witnessable at all.**
+  `vm.run_sub`'s own dummy return leaves the frame at sp `$FD`, and `frameval.run_frame`'s
+  `push(0x0001)` leaves it at `$FD` too, so a page-one cell a destacked program names is the
+  same byte on both sides — a top-level call's word is `$01FC`/`$01FD` either way. The
+  landed tests read the slot back and rewrite it, which is the RTS trick's own shape.
+  (3) **The static image vector marks the body that follows it.** `igoto $P` with no
+  computed pointer reads its word from the image *at run time* (the cell the program may
+  have rewritten, with the 6502's own page wrap) and its target's body follows the transfer
+  inline; `frameval.seq` marks that next statement under the word `mem0` holds, so the
+  witness labels it the same way and the resolver reaches it. Paired with an arm table the
+  mark does not happen, in the evaluator or here.
+  (4) **The signed compare over unequal widths is sign extension, not a refusal.**
+  `expr._apply` reads each side at its **own** width (`_signed(a, szs[0])`), so the machine
+  copy must fill with the top byte's sign (`LDA #0 : BIT top : BPL : LDA #$FF`) and not with
+  zero; the borrow chain and #171's `BVC`/`EOR #$80` correction are then already right. It
+  is differentially checked against the reference evaluator over every boundary pair at both
+  operand orders. `INT_SCARRY` and the unequal-width `INT_CARRY` stay refused on their own
+  stated mechanisms.
+  (5) **The `Asm` merge moves nothing, and that is a measurement.** #178 recorded the copies
+  as semantically different — `_fuzzgen` admits illegal opcodes and resolves duplicate legal
+  `(mn, mode)` pairs to the highest byte where `asm6502` takes the lowest — so the tables
+  were compared before being merged: **`lifter.OPS` maps no `(mn, mode)` pair to two legal
+  opcodes**, so highest-wins and lowest-wins are the same table, and the two pairs that carry
+  both a legal and an illegal byte take the legal one either way. `asm6502.ENC_ILLEGAL` adds
+  the undocumented opcodes for the pairs no legal one spells (lowest byte, as `_fuzzgen` had
+  it) and `AsmIllegal` is the three-line subclass the fuzz corpus imports; the merged dict is
+  `==` to `_fuzzgen._ENC` and **no fixture byte moves**. `examples/state_machine_lift.py`
+  loses its copy for the import and nothing else. What the merge does change for the two
+  adopters is `asm6502`'s two guards — a duplicate label and an out-of-range branch raise
+  rather than pass — and no consumer trips either.
+  (6) **The gates.** Suite **2,754 passed / 490 skipped / 30 xfailed** (eight new tests),
+  `witness6502` coverage 100%, `black --check` and `pylint` clean, emit identity unmoved at
+  `4b35ed0f…` (624 tunes, 0 refused) since no emitter source is touched.

@@ -15,7 +15,7 @@ from deity_informant import framelog
 from deity_informant import grammar as GR
 from deity_informant import render as R
 from deity_informant import structured as S
-from deity_informant.lifter import OPS, MODE_LEN, ILLEGAL_OPCODES
+from deity_informant.asm6502 import Asm
 
 PAL_CLOCK = 985248
 PAL_CYCLES = 19656
@@ -55,73 +55,6 @@ FOLDS = frozenset(
         "reroll_guard",
     )
 )  # fmt: skip -- every rewrite the example applies, each instance Z3-proved
-
-_ENC = {}
-for _op in sorted(OPS):
-    if _op not in ILLEGAL_OPCODES:
-        _ENC.setdefault(OPS[_op], _op)
-_ONE = {"imm", "zp", "zpx", "zpy", "indx", "indy", "rel"}
-
-
-class Asm:
-    """Two-pass label assembler (after tests/_fuzzgen.Asm), legal opcodes only."""
-
-    def __init__(self, org):
-        self.org, self.items, self.labels = org, [], {}
-
-    def i(self, mn, mode="impl", operand=None):
-        self.items.append(("i", mn, mode, operand))
-        return self
-
-    def label(self, name):
-        self.items.append(("label", name))
-        return self
-
-    def byte(self, *vals):
-        for v in vals:
-            self.items.append(("byte", v))
-        return self
-
-    def _resolve(self, operand):
-        if operand is None:
-            return 0
-        if isinstance(operand, int):
-            return operand
-        kind, name = operand[0], operand[1]
-        base = self.labels[name] + (operand[2] if len(operand) > 2 else 0)
-        return {"L": base & 0xFFFF, "LOL": base & 0xFF, "HIL": (base >> 8) & 0xFF}[kind]
-
-    def assemble(self):
-        pc = self.org
-        for it in self.items:
-            if it[0] == "label":
-                self.labels[it[1]] = pc
-            else:
-                pc += 1 if it[0] == "byte" else MODE_LEN[it[2]]
-        out, pc = bytearray(), self.org
-        for it in self.items:
-            if it[0] == "label":
-                continue
-            if it[0] == "byte":
-                out.append(self._resolve(it[1]) & 0xFF)
-                pc += 1
-                continue
-            _, mn, mode, operand = it
-            out.append(_ENC[(mn, mode)])
-            pc += MODE_LEN[mode]
-            if mode == "impl":
-                continue
-            val = self._resolve(operand)
-            if mode == "rel":
-                delta = val - pc
-                assert -128 <= delta <= 127, "branch out of range: %r" % (operand,)
-                out.append(delta & 0xFF)
-            elif mode in _ONE:
-                out.append(val & 0xFF)
-            else:
-                out.append(val & 0xFF)
-                out.append((val >> 8) & 0xFF)
-        return bytes(out)
 
 
 def sid_freq(hz):

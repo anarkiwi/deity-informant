@@ -153,6 +153,13 @@ _SIGNED_EDGES = (0x00, 0x01, 0x7F, 0x80, 0xFF)
 _SIGNED_EDGES16 = (0x0000, 0x7FFF, 0x8000, 0xFFFF)
 
 
+def _agrees(value):
+    """The re-emitted machine against the reference evaluator on one dialect value."""
+    p = tv._prog(value, (), (), ())
+    want = frameval.Evaluator(frameprog.loads(frameprog.dumps(p)), {}).frames(1)
+    return W.emit(p).frames(1) == want
+
+
 @pytest.mark.parametrize("mn", ("INT_SLESS", "INT_SLESSEQUAL"))
 def test_the_signed_compare_agrees_with_the_evaluator_across_the_overflow_boundary(mn):
     """The borrow chain's sign is only true after the ``BVC``/``EOR #$80`` correction.
@@ -162,10 +169,19 @@ def test_the_signed_compare_agrees_with_the_evaluator_across_the_overflow_bounda
     for width, edges in ((1, _SIGNED_EDGES), (2, _SIGNED_EDGES16)):
         for x in edges:
             for y in edges:
-                value = op(mn, (c(x, width), c(y, width)))
-                p = tv._prog(value, (), (), ())
-                want = frameval.Evaluator(frameprog.loads(frameprog.dumps(p)), {}).frames(1)
-                assert W.emit(p).frames(1) == want, (mn, width, hex(x), hex(y))
+                assert _agrees(op(mn, (c(x, width), c(y, width)))), (mn, width, hex(x), hex(y))
+
+
+@pytest.mark.parametrize("mn", ("INT_SLESS", "INT_SLESSEQUAL"))
+def test_the_signed_compare_sign_extends_the_narrow_side_at_both_orders(mn):
+    """The evaluator reads each side at its own width, so widening fills with the sign.
+
+    A zero-extending copy reads $80 as +128 where the evaluator reads -128, and the
+    boundary pairs at both operand orders are what separate the two."""
+    for x in _SIGNED_EDGES:
+        for y in _SIGNED_EDGES16:
+            assert _agrees(op(mn, (c(x, 1), c(y, 2)))), (mn, hex(x), hex(y))
+            assert _agrees(op(mn, (c(y, 2), c(x, 1)))), (mn, hex(y), hex(x))
 
 
 def test_a_for_range_counts_past_a_byte():
@@ -318,6 +334,78 @@ def test_a_jump_through_an_image_vector_reads_the_word_the_vector_holds():
     assert run(stmts) == [[(0, 0x77)]]
 
 
+IMG = 0x2211  # the word ``tv.image`` holds at CELL: a static vector's target pc
+
+
+def test_a_static_image_vector_reaches_the_body_that_follows_it_inline():
+    """The target carries no label: ``frameval.seq`` marks the next statement under it."""
+    assert run([("igoto", CELL, None), store(c(0x77)), ("ret", False)]) == [[(0, 0x77)]]
+
+
+def test_a_static_image_vector_is_read_at_run_time_and_not_pinned_to_the_image():
+    """The cell the program itself rewrote is what the transfer reads, as on the machine."""
+    stmts = [
+        smc(0x1010, CELL),
+        ("igoto", CELL, None),
+        store(c(0xEE)),
+        ("label", 0x1010),
+        store(c(0x77)),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0x77)]]
+    assert run([("igoto", CELL, None), ("label", IMG), store(c(0x55)), ("ret", False)]) == [
+        [(0, 0x55)]
+    ]
+
+
+def test_a_static_image_vector_paired_with_an_arm_table_marks_no_body_of_its_own():
+    """Paired, the arm table is the dispatch: the statement after it is not the target."""
+    arms = [("$2211", [store(c(0x66)), ("ret", False)])]
+    assert run([("igoto", CELL, None), ("swg", arms), store(c(0xEE)), ("ret", False)]) == [
+        [(0, 0x66)]
+    ]
+
+
+SLOT = 0x01FC  # a top-level raw call's pushed word: lo here, hi above it
+
+
+def _rawcall(body, ret=0x1005, tail=()):
+    """A raw ``call`` of a procedure at $1200, its continuation, and the frame's tail."""
+    procs = [(0x1200, [], [], list(body))]
+    return [("call", 0x1200, ret), store(c(0x09)), ("ret", False)] + list(tail), procs
+
+
+def test_a_raw_machine_call_runs_its_callee_and_returns_to_the_call_s_own_successor():
+    """The callee is a procedure, not a ``pcall``: the return is the slot it was handed."""
+    stmts, procs = _rawcall([store(c(0x5A)), ("ret", False)])
+    assert run(stmts, procs=procs) == [[(0, 0x5A), (0, 0x09)]]
+
+
+def test_a_raw_callee_reads_the_return_slot_the_call_pushed():
+    """The stack image is the evaluator's ``push(ret)``: the pc, low byte first."""
+    body = [store(m(SLOT)), store(m(SLOT + 1)), ("ret", False)]
+    stmts, procs = _rawcall(body, ret=0x4ED6)
+    assert run(stmts, procs=procs) == [[(0, 0xD6), (0, 0x4E), (0, 0x09)]]
+
+
+def test_a_raw_callee_that_rewrites_its_slot_returns_where_the_slot_names():
+    """``framestack.lift_rts_trick``'s reading: the RTS goes to the word + 1, resolved."""
+    body = [("st", c(SLOT, 2), c(0x0F)), ("st", c(SLOT + 1, 2), c(0x10)), ("ret", False)]
+    tail = [("label", 0x1010), store(c(0x77)), ("ret", False)]
+    stmts, procs = _rawcall(body, tail=tail)
+    assert run(stmts, procs=procs) == [[(0, 0x77)]]
+
+
+def test_a_raw_call_carrying_an_inline_body_runs_it_under_the_pc_the_call_names():
+    """``callb``: the callee's body is spelled at the call site and labelled by its pc."""
+    stmts = [
+        ("callb", 0x1200, 0x1005, [store(c(0x5A)), ("ret", True)]),
+        store(c(0x09)),
+        ("ret", False),
+    ]
+    assert run(stmts) == [[(0, 0x5A), (0, 0x09)]]
+
+
 REFUSALS = {
     "swg": (lambda: [("swg", [("$1000", [])])], "no computed goto before it"),
     "swc": (lambda: [("swc", ["$1000"], [("$1000", [])])], "no computed call before it"),
@@ -325,9 +413,10 @@ REFUSALS = {
         lambda: [("dcall", c(0x1000, 2), 0x1005), ("swg", [("$1000", [])])],
         "no computed goto before it",
     ),
-    "igoto-static": (lambda: [("igoto", 0x1000, None)], r"static image vector at \$1000"),
-    "call": (lambda: [("call", 0x1200, 0x1005)], "raw machine call"),
-    "callb": (lambda: [("callb", 0x1005, 0x1005, [])], "raw machine call"),
+    "call-nowhere": (
+        lambda: [("call", 0x9999, 0x1005)],
+        r"raw call to \$9999 -- no procedure of the program",
+    ),
     "unknown": (lambda: [("frobnicate", 0x1000)], "no witnessed statement form"),
     "signed": (
         lambda: [store(op("INT_SCARRY", (m(CELL), m(ALT))))],
@@ -358,6 +447,14 @@ def test_a_construct_outside_the_partial_witness_refuses_by_name(rid):
 def test_the_refusal_table_names_every_statement_form_the_witness_declines():
     """The module's own table is the checklist: a form is witnessed or it is named."""
     assert set(W._STMT_REFUSALS) <= set(REFUSALS)
+
+
+def test_a_callee_reached_both_raw_and_by_pcall_refuses_by_name():
+    """One return convention per procedure: the slot's continuation must have an owner."""
+    callee = [(0x1200, [], [], [("ret", False)])]
+    stmts = [("call", 0x1200, 0x1005), ("pcall", 0x1200, [], []), ("ret", False)]
+    with pytest.raises(W.Refusal, match=r"raw call to \$1200 -- also a pcall entry"):
+        W.emit(prog(stmts, procs=callee))
 
 
 def test_a_declared_volatile_input_refuses_the_whole_program():
@@ -428,9 +525,8 @@ def _example():
 def test_the_example_artifact_refuses_nothing_it_uses(example):
     """The artifact dispatches, and every form it carries is compiled rather than declined."""
     kinds = {s[0] for _e, _p, _r, st in example[0].procs for s in W._walk(st)}
-    assert {"dgoto", "swg"} <= kinds  # the table names ``swg`` only where no dispatch pairs it
-    assert not kinds & {"call", "callb"}
-    assert W.emit(example[0]).code
+    assert {"dgoto", "swg"} <= kinds  # the dispatch family the artifact carries
+    assert W.emit(example[0]).code  # and no statement of it refuses
 
 
 def test_the_example_artifact_replays_frame_for_frame(example):

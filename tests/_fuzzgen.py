@@ -1,105 +1,17 @@
 """Seeded synthetic 6510-player generator for the byte-exactness differential fuzzer.
 
-A two-pass label assembler (built on ``deity_informant``'s opcode table) plus
-tagged idiom templates; ``players(per)`` yields a reproducible corpus spanning
-every recorder-stressing idiom class. Imported as ``import _fuzzgen as G``.
+Tagged idiom templates over ``asm6502.AsmIllegal`` (the undocumented-opcode table
+the illegal templates need); ``players(per)`` yields a reproducible corpus
+spanning every recorder-stressing idiom class. Imported as ``import _fuzzgen as G``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from deity_informant.lifter import OPS, MODE_LEN, ILLEGAL_OPCODES
+from deity_informant.asm6502 import AsmIllegal as Asm
 
 SID = 0xD400  # $D400..$D418 SID register file (the observable output set)
-
-# ---- opcode encoder: invert deity's own (opcode -> (mn, mode)) table ---------
-_ENC = {}
-for _op in sorted(OPS):  # legal encodings first: they win any (mn, mode) collision
-    _mn, _md = OPS[_op]
-    if _op not in ILLEGAL_OPCODES:
-        _ENC[(_mn, _md)] = _op
-for _op in sorted(OPS):  # then every illegal the lifter models, lowest byte wins
-    _mn, _md = OPS[_op]
-    if _op in ILLEGAL_OPCODES:
-        _ENC.setdefault((_mn, _md), _op)
-
-_ONE = {"imm", "zp", "zpx", "zpy", "indx", "indy", "rel"}
-
-
-class Asm:
-    """Two-pass label assembler emitting 6510 machine code at ``org``."""
-
-    def __init__(self, org):
-        self.org = org
-        self.items = []
-        self.labels = {}
-        self.end = org
-
-    def i(self, mn, mode="impl", operand=None):
-        self.items.append(("i", mn, mode, operand))
-        return self
-
-    def label(self, name):
-        self.items.append(("label", name))
-        return self
-
-    def byte(self, val):
-        self.items.append(("byte", val & 0xFF))
-        return self
-
-    def _pass_addrs(self):
-        pc = self.org
-        for it in self.items:
-            if it[0] == "label":
-                self.labels[it[1]] = pc
-            elif it[0] == "byte":
-                pc += 1
-            else:
-                pc += MODE_LEN[it[2]]
-        self.end = pc
-
-    def _resolve(self, operand):
-        if operand is None:
-            return 0
-        if isinstance(operand, int):
-            return operand
-        kind = operand[0]
-        off = operand[2] if len(operand) > 2 else 0
-        base = self.labels[operand[1]] + off
-        if kind == "L":
-            return base & 0xFFFF
-        if kind == "LOL":
-            return base & 0xFF
-        if kind == "HIL":
-            return (base >> 8) & 0xFF
-        raise ValueError(operand)
-
-    def assemble(self):
-        self._pass_addrs()
-        out = bytearray()
-        pc = self.org
-        for it in self.items:
-            if it[0] == "label":
-                continue
-            if it[0] == "byte":
-                out.append(it[1])
-                pc += 1
-                continue
-            _, mn, mode, operand = it
-            out.append(_ENC[(mn, mode)])
-            pc += MODE_LEN[mode]
-            if mode in ("impl", "acc"):
-                continue
-            val = self._resolve(operand)
-            if mode == "rel":
-                out.append((val - pc) & 0xFF)
-            elif mode in _ONE:
-                out.append(val & 0xFF)
-            else:
-                out.append(val & 0xFF)
-                out.append((val >> 8) & 0xFF)
-        return bytes(out)
 
 
 class Player:
