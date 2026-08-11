@@ -49,6 +49,7 @@ _OWNERS = (  # the live owner a stage-3 reason names; the disposition is the str
     "owner: framestack",  # the sp-relative slot identity a machine-stack hold needs
     "owner: frameproc",  # the bit analyses, their reach, and the promotion they refuse
     "owner: datadecl",  # the registry, and the via: discovery that grows it
+    "owner: eqlift_mem",  # render_block's wall: what a call retires of the locals
 )
 
 
@@ -181,7 +182,7 @@ def _unnamed_stores(prog):
 
 def _unnamed_store_bounds(prog):
     """G1-resolved reach bound of every store whose address names no datum."""
-    return [frameproc.addr_bits(a, defs) for a, defs in _unnamed_stores(prog)]
+    return [frameproc.addr_reach(a, defs)[1] for a, defs in _unnamed_stores(prog)]
 
 
 def _subterms(e):
@@ -1510,29 +1511,26 @@ def test_an_inpage_advance_is_never_fused():
     assert not _fused_cursor("inpage_advance"), "a byte-wise pair was widened to u16"
 
 
-@pytest.mark.xfail(
-    reason="%s INT_ADD store bound via intervals; %s -- the bound exists already: "
-    "eqlift_mem._lattice states ($00A5, $01A4) where addr_bits states top, and _wr_span "
-    "already documents that each is sound alone so the tighter is. _lattice is pure over "
-    "pass-1 expressions, so it moves to frameproc and a reach reading takes the min; "
-    "addr_bits itself may not, because its INT_OR recursion needs masks" % (_S3, _OWNERS[3]),
-    **XFAIL,
-)
 def test_g2_bounds_the_zext_add_store():
+    """FLIPPED at the reach reading: the tighter of the two bounds is the store's.
+
+    ``frameproc.lattice`` is the rule half and ``addr_floor``/``addr_bits`` the bit half;
+    each is sound alone, so a store no base/index form names is bounded by the min."""
     _lift("g2_store")
     bad = [b for b in _unnamed_store_bounds(_lift_prog["g2_store"]) if b > 0x01FF]
     assert not bad, "a (zext2(y) + $NN) store is still counted top-wide"
 
 
-def test_the_g2_store_is_bounded_by_the_unified_interval():
-    """The pin's goal measured on the unified path: ``mem_rules`` states the interval.
+def test_the_g2_store_bound_is_the_lattice_s_and_not_the_bits():
+    """Why ``addr_bits`` may not take the min itself: it recurses through ``INT_OR``.
 
-    Both sides stand here, so what the pin still pins is the direction the bridge is
-    missing and not an absent bound."""
+    A magnitude bound is unsound under that recursion (the mask is what composes), so the
+    two readings stay apart and only ``reach`` joins them."""
     _lift("g2_store")
     (addr, defs), *rest = _unnamed_stores(_lift_prog["g2_store"])
     assert not rest and frameproc.addr_bits(addr, defs) > 0x01FF
-    assert eqlift_mem._lattice(addr) == (0x00A5, 0x01A4)
+    assert frameproc.lattice(addr) == (0x00A5, 0x01A4) == eqlift_mem._lattice(addr)
+    assert frameproc.addr_reach(addr, defs) == (0x00A5, 0x01A4)
 
 
 def test_the_script_jump_is_fused_and_lift_eligible():
@@ -1763,9 +1761,13 @@ def test_an_entry_balanced_procedure_destacks():
 
 
 @pytest.mark.xfail(
-    reason="%s addr_floor keeps the kept push off zero page; %s -- the cell survives "
-    "beside a raw call the chain havocs at, so what holds it is the promotion "
-    "frameproc.slot_reader refuses and not the floor" % (_S3, _OWNERS[3]),
+    reason="%s the scratch cell beside a promoted call; %s -- neither addr_floor nor the "
+    "memory chain: the chain already keeps the cell (join_mem keeps $0030 across all three "
+    "pcalls, the callee's whole footprint being page one) and slot_reader refuses nothing "
+    "here. What holds it is the wall's *local* havoc -- render_block retires every local at "
+    "a pcall, so the value spelling names a version no longer available and extraction falls "
+    "back to the cell. The reading is frameproc._Info.may, the callee's may-define set; the "
+    "consumer is eqlift_mem.render_block's wall, measured to flip this pin" % (_S3, _OWNERS[5]),
     **XFAIL,
 )
 def test_scratch_beside_kept_sp_fabric_promotes():
@@ -1773,10 +1775,11 @@ def test_scratch_beside_kept_sp_fabric_promotes():
 
 
 def test_a_raw_call_holds_the_scratch_cell_the_promoted_call_would_free():
-    """Cutover order: what the unified path lacks here is the substrate, not the floor.
+    """Control: the raw path keeps the cell for a second reason, and it is not the floor.
 
     The same fixture's cell survives beside a raw ``call`` where frameprog threads a
-    procedure with a register interface, so step 4's splice order decides this one."""
+    procedure with a register interface, so a callee's may-set cannot bound the havoc
+    there whatever the wall does -- that is the raw call's own boundary."""
     assert "sub_%04X(" % SPSUB in _body(_lift("sp_scratch_floor")), "the pcall went"
     body = _emit_body("sp_scratch_floor")
     assert "call $%04X" % SPSUB in body, "the raw path promoted the call after all"
@@ -1800,7 +1803,7 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 20, sorted(pins)
+    assert len(pins) == 19, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
@@ -1814,7 +1817,8 @@ def test_the_owners_partition_the_family_as_the_ledger_records_it():
     assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
     assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]
-    assert len(per["owner: frameproc"]) == 2, per["owner: frameproc"]
+    assert per["owner: frameproc"] == [], "the reach reading landed; frameproc owns none"
+    assert per["owner: eqlift_mem"] == ["test_scratch_beside_kept_sp_fabric_promotes"]
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)

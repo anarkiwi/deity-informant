@@ -701,6 +701,7 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    half into a read-modify-write of a write-only register; the guard is the SID write-only
    window `$D400`–`$D416`, and the rung must not widen a store whose destination is inside it.
 5. **`framestack`, the slot identity [1 pin, 8 → 7] — LANDED.** `low_held_cursor` needed an
+<<<<<<< Updated upstream
    sp-relative slot identity because a page-one interval hold is unsound. It is the
    `(epoch, offset)` key `sp_flow`'s join to bot cannot destroy, plus the reader/writer split:
    a read refuses only the *removal* of the store (the slot is held), a writer refuses the
@@ -717,6 +718,26 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    beside a raw `call` the chain havocs at, so what holds it is the promotion
    `frameproc.slot_reader` refuses, and it flips with (5)'s resume-pc reading, not with
    `addr_floor`.
+=======
+   sp-relative slot identity — push and pull at one entry-relative offset, a call provably
+   below it — because a page-one interval hold is unsound. It is the `(epoch, offset)` key
+   `sp_flow`'s join to bot cannot destroy, plus the reader/writer split: a read refuses only
+   the *removal* of the store (the slot is held), a writer refuses the slot, and a call's own
+   return push is priced at the call. `ret_live` did **not** fall out of it — `_below_sp`
+   refuses every slot at `k > 0` precisely because that is the return address — so #177's
+   per-site resume pc (`call site + inline-data length`) stands as the owed item.
+6. **`frameproc`, the reach reading [1 pin of 2, 7 → 6] — LANDED, and the second pin is
+   re-owned.** `g2_store`: `eqlift_mem._lattice` moved to `frameproc.lattice`,
+   `frameproc.addr_reach` is the min of it and `addr_floor`/`addr_bits`, and `store_reach` takes
+   it; `addr_bits` still may not, its `INT_OR` recursion composing masks under which a
+   magnitude bound is unsound. `sp_scratch_floor` was **measured, and neither the chain nor
+   the floor nor the resume-pc reading holds it**: `_join_mem` already keeps the cell across
+   all three `pcall`s (the callee's whole footprint is page one) and `slot_reader` refuses
+   nothing there. What holds it is `eqlift_mem.render_block`'s wall retiring *every* local at
+   a call, so the value spelling names a version no longer available and extraction falls back
+   to the cell. The reading is `frameproc._Info.may`, the callee's may-define set; the consumer
+   is the wall, so the pin is `eqlift_mem`'s [1 pin, 6 → 5].
+>>>>>>> Stashed changes
 7. **rung (f), the writer set [4 pins, 5 → 1].** `_writers` records only width-2 stores as
    definitions and `_hit` excepts only an exact word store, so a declared lo/hi reload row and
    a bounded deref store both read as third writers. Measured per fixture: `pointer_walk` and
@@ -734,9 +755,10 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    discovery is the mechanism.
 
 Items 3-8 are engine work — rungs (d) and (f), `framestack`, `frameproc`, `datadecl` — not
-emission work, which is why they sit after the stage close rather than inside it. Their only
-ordering constraint is (6) depending on (5); 3, 4, 7 and 8 may land in any order and in
-parallel.
+emission work, which is why they sit after the stage close rather than inside it. The one
+recorded ordering constraint, (6) depending on (5), was **refuted by measurement** when both
+landed: `sp_scratch_floor` never wanted the resume-pc reading, and nothing in the ledger now
+orders anything. All of them may land in any order and in parallel.
 
 **The still-open items, each with its owner and its mechanism.**
 - **Landing 4's two extraction-order items** (owner: landing 4, whose headline metric is
@@ -3172,3 +3194,49 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   unproved**, `fields`/`roled` 13,793 of 18,634. Suite **2,786 passed / 490 skipped / 26
   xfailed** (oracle included) against the base commit's 2,782 / 490 / 27. `black --check` and
   `pylint` (10.00/10) clean.
+- **2026-08-11 — `frameproc`, the reach reading: the tighter of the lattice and the bits,
+  and the lint eight are a call's own definitions.** Two readings of the same question stood
+  apart; this joins them where each is sound, and re-owns the pin the join does not flip.
+  (1) **The reach reading.** `eqlift_mem._lattice` is pure over pass-1 expressions and states
+  a magnitude bound where `addr_bits` states ⊤ — `(zext2(y) + $A5)` is `($00A5, $01A4)` where
+  the bits are every bit the width has. `_wr_span` already recorded that each is sound alone,
+  so the tighter is; only the store chain read them together. The lattice moves to
+  `frameproc.lattice`, `frameproc.addr_reach` is the min, and `store_reach` takes it, so a store
+  no base/index form names carries the bound wherever it is asked about — rungs (d) and (f),
+  the disturbance checks and the emitter's own chain. `addr_bits` still may not take the min
+  itself: its `INT_OR` recursion composes masks, under which a magnitude bound is unsound.
+  `eqlift_mem._lattice` and `_wr_span` are that reading rebound, and `g2_store` flips.
+  (2) **`sp_scratch_floor` is measured and re-owned, and the recorded ordering is refuted.**
+  The plan had it waiting on (5)'s resume-pc reading. It waits on neither that nor
+  `addr_floor` nor the memory chain: `_join_mem` **already keeps** the cell across all three
+  `pcall`s (the callee's whole footprint is page one, measured), and `slot_reader` refuses
+  nothing there. What holds it is `eqlift_mem.render_block`'s wall retiring *every* local at
+  a call, so the value spelling names a version no longer available and extraction falls back
+  to the cell. Bounding the havoc to the callee's may-set was built and **measured to flip
+  the pin**; the reading is `frameproc._Info.may` and the consumer is the wall, so the pin is
+  `eqlift_mem`'s, its landing the emitter's headline metric and not this one's.
+  (3) **The lint nine split eight and one, and the eight are free.** #193 handed this over as
+  frameproc signature truth. Measured, it is two mechanisms.
+  The **eight** read a register after a raw `call` whose callee declares no returns — and the
+  callee **must**-defines it (`50_Shades_of_Gradius`: `call $EDE0` before `sid.reg[x] = a`,
+  with `a` in `must[$EDE0]`). The artifact is right and the *checker* was not: a call that
+  declares no returns still defines what its callee must define, because the machine runs it.
+  `frameproc.must_defines` is that reading and `frameprog.check_locals` takes it, so no
+  emitted byte moves and the family closes.
+  The **one** is not a live-in the analysis misses: a fresh `_Info` over the *finished*
+  program computes `livein[$AE0C] = {a, sp}` and `params = [a, sp]`, while the program's own
+  header reads `sub_AE0C(sp)`. `repolish` freezes signatures by design ("already spelled into
+  every `pcall`"), so a rung that makes a register read appear after the build leaves the
+  header stale. Its landing is a signature refresh that moves every `pcall`'s arguments with
+  the headers, and it is scheduled with `eqlift_mem`'s wall, not taken here.
+  (4) **The ledger and the gates.** 20 → **19**, `frameproc` owns none, and `_OWNERS` grows a
+  sixth entry so `sp_scratch_floor`'s reason names the live owner the measurement gave it.
+  `emit_identity` is **byte-identical** to the base commit — 624 tunes, 0 refused,
+  **28,306,161 bytes**, `f4d5958e…` unmoved, **0 of 624 moved** — which is the measurement of
+  (1) and (3) together: the tighter bound changes no emitted decision the chain's own
+  `_wr_span` did not already take, and a checker moves no bytes by construction.
+  `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
+  and zero refusals. `splice_sweep --against` the recorded artifact: **63 bad against 71,
+  eight fixed and zero new**, the lint family **9 → 1**, −7,268 lines with no tune larger
+  (585 smaller), **207,073 sites proved, zero unproved**. Suite **2,788 passed / 490 skipped /
+  25 xfailed** (oracle included). `black --check` and `pylint` (10.00/10, exit 0) clean.

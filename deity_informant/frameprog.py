@@ -62,12 +62,16 @@ def render_lines(prog):
 
 
 def check_locals(procs):
-    """Assert every local in every procedure is defined before use."""
+    """Assert every local in every procedure is defined before use.
+
+    A call that declares no returns still defines what its callee must define -- the
+    machine runs it -- so the definitions are the procedures' own must-sets."""
+    musts = frameproc.must_defines(procs)
     for entry, params, _rets, stmts in procs:
-        _defined(stmts, set(params), entry)
+        _defined(stmts, set(params), entry, musts)
 
 
-def _defined(stmts, live, entry):
+def _defined(stmts, live, entry, musts):
     for s in stmts:
         k = s[0]
         if k != "for":
@@ -78,8 +82,10 @@ def _defined(stmts, live, entry):
             live.add(s[1])
         elif k == "pcall":
             live.update(s[3])
+        elif k in ("call", "callb"):
+            live.update(musts.get(s[1], ()))
         for body in frameproc._stmt_bodies(s):
-            _defined(body, live, entry)
+            _defined(body, live, entry, musts)
 
 
 class FrameProgram:

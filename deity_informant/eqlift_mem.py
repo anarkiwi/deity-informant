@@ -257,30 +257,7 @@ class _Defs:
         return None if got is None or got[0] == "loc" else got
 
 
-def _lattice(e):
-    """The interval ``mem_rules`` derives for ``e`` itself, or None where it states none.
-
-    Mirrors those rules exactly, wrap guard included: the bridge seeds a fact only
-    where the lattice has none, so no seeded bound can be widened by a derived one."""
-    if e[0] == "const":
-        v = e[1] & E._mask(e[2])
-        return v, v
-    if e[0] != "op":
-        return None
-    mn, kids, w = e[1], e[2], e[3]
-    if mn == "INT_ZEXT":
-        return 0, 255
-    if mn == "INT_AND" and len(kids) == 2 and kids[1][0] == "const":
-        return 0, kids[1][1] & E._mask(w)
-    if mn == "INT_ADD" and len(kids) == 2:
-        got = [_lattice(k) for k in kids]
-        if all(got) and got[0][1] + got[1][1] <= E._mask(w):
-            return got[0][0] + got[1][0], got[0][1] + got[1][1]
-    if mn == "INT_LEFT" and len(kids) == 2 and kids[1][0] == "const":
-        got, n = _lattice(kids[0]), kids[1][1]
-        if got and (got[1] << n) <= E._mask(w):
-            return got[0] << n, got[1] << n
-    return None
+_lattice = E.frameproc.lattice  # the ONE reading of the interval mem_rules derives
 
 
 def addr_interval(e, defs=None):
@@ -422,12 +399,10 @@ _NOFP = (frozenset(), False)  # writes nothing; the call graph's fixpoint resolv
 def _wr_span(e, defs=None):
     """The interval a store address expression can reach, or None where it is ⊤.
 
-    The lattice bound and the bridge's bit bounds are each sound alone, so the tighter of
-    the two is. A join reads it with no env (a local's reaching definition at the join is
-    not the one it carried inside the arm); a chain step reads it with the walk's own."""
-    got = _lattice(e)
-    bits = (E.frameproc.addr_floor(e, defs), E.frameproc.addr_bits(e, defs))
-    got = bits if got is None else (max(got[0], bits[0]), min(got[1], bits[1]))
+    ``frameproc.addr_reach``'s tighter-of-the-two, refused where it says nothing. A join
+    reads it with no env (a local's reaching definition at the join is not the one it
+    carried inside the arm); a chain step reads it with the walk's own."""
+    got = E.frameproc.addr_reach(e, defs)
     return None if got == _TOP or got[0] > got[1] else got
 
 
