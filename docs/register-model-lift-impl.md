@@ -583,30 +583,30 @@ numbers this replaces were carried forward rather than re-run and did not descri
 corrections are stated where they land, and nothing regressed — the record was behind the
 code, not the other way round.
 - `gate_sweep` at full Songlengths: **624 build / 624 evaluate / 624 clean**, zero divergences
-  and zero refusals (`out/gate_s4pr1.json`).
-- `tools/emit_identity.py`: **624 tunes, 0 refused, 28,384,068 bytes**, aggregate
-  `cfab6cfffb137904a1be106d5b2608cd9c19fe682b3f43369b9c9f49c41fb672`. **The recorded
-  baseline was wrong and this is the correction.** `--expect 018ce8f4…` **fails** on main:
-  that aggregate is `out/emit_roles3.json`'s, measured by #187 on a tree not yet rebased onto
-  #186, so it never described main at all. The two differ on **57 tunes — 39 smaller, 14
-  larger, 4 the same size, −4,353 against +923, net −3,430 bytes** — which is #186's own §4
-  review (57 tunes, −4,353 against +913) composed with #187's keyword diff. Every moving byte
-  is therefore already reviewed; what was unreviewed was the arithmetic.
-- Suite: **2,782 passed / 490 skipped / 27 xfailed** (oracle included). The ledger is
+  and zero refusals (`out/gate_s4l4c.json`; held across the denotation landing).
+- `tools/emit_identity.py`: **624 tunes, 0 refused, 28,310,783 bytes**, aggregate
+  `05c3a08ab518e6600bb39791d09e8680090ffa190d2990c7b336bf5a4d747352` (`out/emit_s4l4c.json`).
+  The denotation landing moved it on purpose: **594 tunes — 572 smaller, 19 larger, 3 the
+  same size, −74,509 against +1,224, net −73,285 bytes** against the prior
+  `cfab6cff…`, reviewed by shape in the decision log. The 19 growths are §4's own price
+  order, and are the multi-reader memory forward's first number.
+- Suite: **2,783 passed / 490 skipped / 27 xfailed** (oracle included; 2,780 without it). The ledger is
   **27 strict xfails** — 21 shredder pins under five owners
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
-- `tools/splice_sweep.py` against its control (`out/splice_s4pr1.json` against
-  `out/splice_s4l3b.json`): **84 bad, zero new and zero fixed**, parse and fixpoint **624 of
-  624**, **209,938 rewritten sites proved, zero unproved**, emitted size **−4,625 lines with
-  no tune larger** (575 smaller). The position paragraph had −4,529 lines and 210,034 sites;
-  those are the pre-#186 run's and #187 carried them forward without re-measuring.
+- `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
+  `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
+  divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
+  proved, zero unproved**, emitted size **−7,379 lines with no tune larger** (585 smaller).
+  The remaining gap is **25 evaluation faults, 9 lint, 37 divergences**.
 - The role metric: **13,796 of 18,637 persistent cells role-named (74.0%)**, unmoved since
   #187 turned the keywords on.
-- **The headline has a number for the first time, and it is measured on the artifact.**
+- **The headline has a number, and it is measured on the artifact.**
   `splice_sweep` now reports `arch`/`zero_arch` — the prototype pin's own predicate read over
   the corpus text, architectural registers named as values with hex and comments stripped.
-  **2 of 624 tunes wear zero machine shapes**, 183,648 register tokens in all. The phased plan
+  **2 of 624 tunes wear zero machine shapes**, 184,367 register tokens in all (183,648
+  before the denotation landing, which trades an unrewritten tree for the register holding
+  its value: fewer lines, one more token, and the headline unmoved). The phased plan
   died with this headline at 0 of 624 and it was never measured against the artifact after
   that; the diagnostic that owned it, `tools/lift_residue.py`, reads `prog.procs` — the
   walker's projection, upstream of extraction — so it cannot see the emitted text at all. It
@@ -672,6 +672,20 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    and each of the six left owes the engine a named capability rather than a re-basing. That is
    the landing's real shape, and it is worth more than the schedule it replaces — the re-basing
    is still owed (it is what retires `emit`/`emit_mem`), but it is a cleanup, not a pin-flipper.
+   **And it is not a small cleanup: the trunk was measured** (2026-08-11). Reading the artifact
+   costs four small parser items — the signature (`sub_1000()`, `sub_1485(x) -> a, x`), a width
+   suffix after a bare name (`ctr_0030:2`), the promoted call (`a, x = sub_1485(a)`) and the
+   `trunc1` operator — and rung (d) does **not** take the fold layer's subject away: 69 of the
+   prototype's 95 byte-lane spellings survive in the artifact and it carries **zero** fused
+   `ptr_XXXX` pairs. What it does carry is width. The prototype's AST and `Machine` are
+   byte-typed, the artifact is width-typed, and **21 names wear both a `:2` spelling and a bare
+   byte use** (`ptr_0040_lo` nine times), so the width is the **site's** and not the name's — a
+   name-keyed registry was built and measured and diverges at frame 0. Carrying it per site
+   touches every fold rule, their Z3 proofs, `render`, `classify_roles` and `reroll`, whose
+   voice unification already refuses the artifact's shape ("block of 6 against 8"). So the
+   re-basing is its own landing, and the fold layer it ends with is smaller than the one it
+   starts from: on the artifact only three of the eight `FOLDS` still fire (`pair_set`,
+   `row_read`, `wide_cmp`), because the engine now does the rest.
 2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
    (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
@@ -740,17 +754,17 @@ parallel.
   synthesized def has no original term to be proved equal to. The two validity predicates it
   needs already exist (`_defined_at` and `_Chain.ok`); what does not exist is a place to put
   the node.
-  **`pick_ir`'s price/fallback asymmetry.** An e-graph candidate must pass `ok`,
-  `_defined_at` **and** a non-`None` price; the site's own term is reached only when that set
-  is empty, and is then admitted on `ok` alone — the one-element `kept` is built even when its
-  price is `None`, so the `min` never compares and the fallback runs with **no version and no
-  chain check at all**. Making the own term compete on price was built, **measured and
-  rejected** — it prints a base name for a version the site has already redefined (`x = (x +
-  $01)` where the artifact says `x = (x0 + $01)`, `x0` being a different base local, not a
-  version of `x`, since the printer drops the version and spells only the base). So the fix is
-  not a price change and not "the own term priced": it is a **substitution over the own term's
-  stale leaves**, re-spelling each `("loc", v)` with `v` outside the site's `avail` as whatever
-  base currently denotes that value.
+  **`pick_ir`'s price/fallback asymmetry — CLOSED, and it was `live()`'s, not the
+  fallback's** (decision log, 2026-08-11). The fallback's missing `_defined_at` was measured
+  over all 624 artifacts and admits **0** stale leaves in 89,920 firings: every leaf of the
+  own term came from `conv` reading the site's own `env`, so the base denotes it by
+  construction. The substitution this entry proposed is withdrawn as an empty rewrite, as is
+  the price change #187 rejected. What the same instrumentation found is the asymmetry that
+  was there: `live()` admitted a version only when an `asg` rendered it, so **181,878 of the
+  200,939** candidates it refused named nothing but versions the base still denoted — a
+  boundary's havoc rather than a def. Spellability is denotation, and the change is that
+  predicate; `avail` was its only reader and leaves with it. Fallbacks 89,920 → 14,650,
+  emitted text −2,754 lines over 527 tunes.
 - **§5's `_Prune`/`_inline` deletion** (owner: landing 6). Not a rendering change but a
   rung-input change: `procedures` and `repolish` run them before rungs (d), (d2), (f) and (g),
   which pattern-match the polished statements. Its gate is `gate_sweep` plus a §4-reviewed
@@ -762,23 +776,30 @@ parallel.
   did not, so the block declares two bytes where the text reads one word. The reading is
   `framefuse.apply_rung`'s `state` result against the fused stores the artifact emits.
 - **The parse-and-evaluate gap, now owned** (owner: landing 6, and it is three mechanism
-  families, not one). 84 of 624 tunes emit text that faults or diverges when parsed back and
-  evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 50
-  divergences**, the three sets disjoint, zero new and zero fixed against the control's 87.
-  (1) **lint, 9 tunes**: every one is `local 'a'/'nflag'/'zflag' used before definition` — a
-  register local read by base name at a version no def carries. This is **`pick_ir`'s
-  unguarded fallback firing today**, not a `_share_once` gap and not a price change: the
-  fallback admits the site's own term without `_defined_at`, so a stale leaf prints as its
-  base and the parsed text reads a local nothing defined. That makes it landing 4's, and the
-  cheapest of the three families to close.
+  families, not one). **71** of 624 tunes emit text that faults or diverges when parsed back
+  and evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 37
+  divergences**, the three sets disjoint. The denotation landing (decision log, 2026-08-11)
+  took it from 84, thirteen divergences fixed and none new.
+  (1) **lint, 9 tunes**: every one is `local 'a'/'nflag'/'zflag' used before definition`, and
+  **it is not emission's** — the `--baseline` control (`out/splice_base.json`, which renders
+  `frameproc.render_lines`' text and reaches no e-graph) carries the same nine, and
+  `frameprog.check_locals(prog.procs)` fails on the walker's own projection, cold as well as
+  cached. Two mechanisms, both `frameproc` signature truth: **eight** read a register after an
+  opaque `call` whose callee declares no returns (`callable_` gates `info.rets`, and no
+  measured tune has a procedure with returns) though `frameval._Code` carries locals
+  program-wide across the call; **one** (`International_Karate`, `sub_AE0C(sp)`) reads `a`
+  with no call on the path at all — a live-in `_Info.livein` omits. The owner is the
+  promotion, plan items 5 and 6, not landing 4.
   (2) **faults, 25 tunes**: all 25 are `FrameFault`, 24 `unobserved $XXXX reached`
   and 1 a switch call target outside the observed set — the text's dispatch spelling
   losing a guard's observed set, so the owner is the `swg`/`swc` arm-table headers.
-  (3) **divergences, 50 tunes**: **15 of them are one shape** — frame 0, section `filter`,
+  (3) **divergences, 37 tunes**: **15 of them are one shape** — frame 0, section `filter`,
   position 1, `($16, $08)` against `($16, $10)`, the cutoff *hi* lane off by a single shift —
   which is the declared-pair spelling of items 3 and 1 (`init_lifts_to_declared_initial_values`)
   meeting at `$D415`/`$D416`, and it is the cheapest first bisection in the gap. The remaining
-  35 are one tune each. 3a's totality claim is about the *cache* round trip, which
+  22 are one tune each — the thirteen the denotation landing fixed all came out of that
+  remainder, and the fifteen did not move. 3a's totality claim is about the *cache* round
+  trip, which
   `emit_identity` exercises and which holds; this is a different claim and it does not.
 - **The `_cell_decl` extent/`mut` defect** (owner: `datadecl`, plan item 8; #178 (3)).
   `table X[1] mut 0` on a cell the text writes as `X[x]`, because `_cell_decl` reads
@@ -3005,3 +3026,84 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   only — so no artifact can move and the corpus sweeps are unchanged by construction. Suite
   **2,782 passed / 490 skipped / 27 xfailed** (oracle included) against the base commit's
   2,781 / 490 / 28. `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-11 — stage 4, landing 4 (part): spellability is denotation, not definition —
+  and the nine-tune lint family was never `pick_ir`'s.** #190 (7) recorded the extraction
+  fallback as printing "a base name for a version the site has already redefined", to be
+  repaired by a substitution over the own term's stale leaves, and (4) attributed the lint
+  nine to it. Both were measured before either was built, and neither survived; what the
+  measurement found instead is a bigger item, and it is landing 4's own headline.
+  (1) **The own term has no stale leaf to substitute — corpus-wide, not on a sample.**
+  Instrumented over all 624 cached artifacts: **214,584** extraction sites, **89,920**
+  own-term admissions (41.9% of sites) carrying **100,272** local leaves, **84,909** of them
+  outside the site's `live()` — and **0** that the site's own `env` does not still denote.
+  That is structural, not lucky: every leaf of the own term came from `conv` reading that
+  site's `env`, so the base denotes it by construction and the missing `_defined_at` cannot
+  admit a stale name. The other two unguarded paths measure the same way: the last-resort
+  `min(cands)` fires **0** times, and the **8,268** own-term admissions whose chain price is
+  `None` are the site's own volatile and `mem0` reads, which `_Chain` never steps — not a
+  chain gap. The proposed substitution is therefore **withdrawn as an empty rewrite**.
+  (2) **The nine lint tunes are inherited from the walker's projection, and the control
+  already said so.** `out/splice_base.json` and `out/splice_base_s4l3b.json` — the
+  `--baseline` runs, which render `frameproc.render_lines`' own text and reach neither the
+  e-graph nor `pick_ir` — carry **the same nine tunes with the same nine messages**. And
+  `frameprog.check_locals(prog.procs)` fails on the walker's projection before any rendering,
+  cached and cold (`DI_SWEEP_CACHE=0`) alike. Their two mechanisms, read per tune: **eight**
+  read a register after an opaque `call` whose callee declares no returns —
+  `info.rets` is `_by_reg(returns[e]) if callable_[e] else []` and every measured tune has
+  **zero** procedures with returns, while `frameval._Code` is explicit that "locals are
+  program-wide" across a call, so the text is sound and the *signature* is what is silent;
+  **one** (`International_Karate`, `sub_AE0C(sp)`) reads `a` with no call anywhere on the
+  path — a live-in the parameter list omits (`_Info.livein` → `_by_reg`). Both are
+  `frameproc` signature-truth defects, so the family belongs with the promotion items
+  (plan 5/6), not with extraction, and the ledger's "84 → ~75" is withdrawn with it.
+  (3) **The asymmetry that is real is `live()`'s, and it is what the 42% was.** `live()`
+  admitted a version only when an `asg` had rendered its definition, so every version a
+  *boundary* produced — a call's havoc, a join's, a label's — was unspellable and every
+  candidate naming one was refused. Measured at the fallback sites: of **264,572** candidates,
+  **49,937** are refused for naming the site's own name and **200,939** by `_defined_at` —
+  and **181,878 of those 200,939 (90.5%)** name only versions the base still denotes, with
+  **175,068** of them also priced. The e-graph was being thrown away at nearly half the sites
+  for spellings that were correct. The predicate is **denotation**: a local renders as its
+  base name, so the base spells whatever version it holds, whether an `asg` rendered it or a
+  boundary produced it. `avail` was `live()`'s only reader, so the whole availability
+  bookkeeping — the adds, the arm and loop intersections, the label clear — leaves with it.
+  (4) **What it moved.** Fallbacks **89,920 → 14,650** (−84%). Emitted text **802,035 →
+  799,281 lines, −2,754**, across **527 tunes**. §6 re-proves every site: **207,184 proved,
+  zero unproved** (fewer sites because fewer nodes survive). The lint set is **the same nine,
+  none new and none fixed**, which is the check that the boundary versions the change makes
+  spellable do not become locals a reader cannot follow. The vocabulary case is the second
+  direction of `test_a_stale_local_version_never_spells_a_site`: after a `call` havocs `a`,
+  `(a + $01 - $01)` was the artifact's own spelling and is now `a`.
+  (5) **The §4 review of the corpus diff.** `emit_identity` moves to
+  `05c3a08ab518e6600bb39791d09e8680090ffa190d2990c7b336bf5a4d747352`, **28,310,783 bytes**,
+  **594 tunes moved — 572 smaller, 19 larger, 3 the same size, −74,509 against +1,224, net
+  −73,285**. Every moving line is an admitted rule reaching a site that used to fall back,
+  and the shapes are five: the sign test folds (`((x & $80) != $00)` → `(x <s $00)`), a
+  comparison takes its normal form (`ifnot ($90 <= a)` → `if (a < $90)`, `a == ctr[x]` →
+  `ctr[x] == a`), shifts compose (`((x << $01) << $01)` → `(x << $02)`), an add or an or
+  takes the representative operand order, and a copy the site can now name forwards so its
+  definition line goes (which is where the 572 shrinks are). **The 19 growths are one shape
+  and it is §4's own price order**: with the value spelling admitted, a memory read costs
+  more than it, so `w2 = m_01FD` becomes the status-word rebuild spelled at the reading site
+  — `Cage_Match` (+293) is the largest and is exactly the multi-reader memory forward the
+  position paragraph already owns, which needs a synthesized definition to collapse. The
+  standing item gets a number from this: it now costs +1,224 bytes over 19 tunes.
+  (6) **It closes thirteen of the parse-and-evaluate gap, and the family is not the one
+  the ledger predicted.** `splice_sweep` against `out/splice_s4pr1.json`: **84 bad → 71,
+  zero new and thirteen fixed**, and all thirteen are **divergences** (50 → 37), not the nine
+  lint. A site that fell back spelled its own term, and where that term read a cell the
+  parsed text re-read the cell at a position the evaluator disagreed about; spelling the
+  value the site holds removes the re-read. Emitted size against the control moves
+  **−4,625 → −7,379 lines**, 585 tunes smaller and **none larger**; parse and fixpoint stay
+  **624 of 624**; **207,184 sites proved, zero unproved**. `fields`/`roled` are unmoved at
+  **13,796 of 18,637 (74.0%)**. The headline is honest in both directions: `zero_arch` stays
+  at **2 of 624** and `arch` rises **183,648 → 184,367**, because a site that used to print
+  an unrewritten tree now prints the register the value is in — fewer lines, one more token.
+  `zero_arch` moves with the role pins, not with this.
+  (7) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals (`out/gate_s4l4c.json`). `emit_identity`
+  **624 tunes, 0 refused**, the new baseline in (5) (`out/emit_s4l4c.json`); the recorded
+  `--expect cfab6cff…` fails on purpose and every moving byte is reviewed above.
+  `splice_sweep` as in (6) (`out/splice_s4l4c.json`). Suite **2,780 passed / 490 skipped /
+  27 xfailed** (oracle excluded; one new case, no pin flipped). `black --check` and `pylint`
+  clean at the tree's standing 9.95.

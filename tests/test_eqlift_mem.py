@@ -327,6 +327,34 @@ def test_a_stale_local_version_never_spells_a_site():
     ]
 
 
+def test_a_version_a_boundary_left_still_spells_a_site():
+    """The other direction of the same predicate: spellability is denotation, not
+    definition. A call havocs ``a``, so no ``asg`` renders the version the store reads,
+    but the base denotes it -- the graph competes at the site and folds the round trip
+    away. Spelled off definition every such site falls back to its own term, which is
+    what left ``(a + $01 - $01)`` in the artifact."""
+    stmts = [
+        ("call", 0x1234, 0x1237),
+        (
+            "st",
+            ("const", 0xD404, 2),
+            (
+                "op",
+                "INT_ADD",
+                (
+                    ("op", "INT_ADD", (("loc", "a"), ("const", 1, 1)), 1),
+                    ("const", 0xFF, 1),
+                ),
+                1,
+            ),
+        ),
+    ]
+    assert [ln.strip() for ln in mem.render_proc(stmts)] == [
+        "call $1234 ret $1237",
+        "sid.v1.ctrl = a",
+    ]
+
+
 _ROW = ("op", "INT_ADD", (("const", 0x14A7, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
 _PUSH_PULL = [
     ("st", ("const", 0x01FB, 2), ("mem", _ROW, 1)),
