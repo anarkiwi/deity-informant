@@ -655,11 +655,13 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    a grammar production and a value.
    `round_trip_witness_is_frame_identical` — **the re-basing**, with one constraint: the
    re-emitter exists (`witness6502.emit` takes a `frameprog.FrameProgram` and returns a
-   `Witness`), so the pin waits on a fold layer that hands it one, on the **extent-free**
-   program (`emit` refuses outright on a non-empty `prog.inputs` or `prog.extents`, and
-   `pipeline` passes extents today), and on an image whose `sml.PLAY` reaches the witness
-   entry, since `Witness.entry` is a fresh label in a free span while `sml.run_vm` hard-codes
-   `INIT`/`PLAY` (#188 (9)).
+   `Witness`), so the pin waits on a fold layer that hands it one and on an image whose
+   `sml.PLAY` reaches the witness entry, since `Witness.entry` is a fresh label in a free span
+   while `sml.run_vm` hard-codes `INIT`/`PLAY` (#188 (9)). Measured: the prototype's program
+   has `inputs == []` and `extents == {}`, so neither of `emit`'s two program-level refusals
+   fires, and a three-byte `JMP` at `sml.PLAY` to `Witness.entry` already makes the
+   comparison hold. (The extents `pipeline` passes today go to `eqlift_mem.emit`, a different
+   consumer taking a different shape, and do not reach `frameprog.program`.)
    So the trunk flips **two pins** and re-points the other five at the engine work each
    names; the ledger arithmetic is unchanged (7 pins, 28 → 21) but the landing is a trunk plus
    parallel parts, not one PR.
@@ -714,15 +716,34 @@ parallel.
 
 **The still-open items, each with its owner and its mechanism.**
 - **Landing 4's two extraction-order items** (owner: landing 4, whose headline metric is
-  emitted size). **`_share_once` across roots**: `Cuomo_Jim/Cage_Match` grew 831 bytes on five
-  fewer lines because the PLP status word `m_01FD` is stored once, read three times, and each
-  read re-spells the whole seven-term rebuild; `_share_once` states the rule for a multi-read
-  local and the forward needs it across roots. **`pick_ir`'s price/fallback asymmetry**: the
-  site's own term is reached only when nothing survives `_defined_at`, so a surviving
-  candidate wins on no comparison at all; making the own term compete on price was built,
-  **measured and rejected** — it prints a base name for a version the site has already
-  redefined (`x = (x + $01)` where the artifact says `x = (x0 + $01)`) — so the fix owes a
-  version-correct spelling, not a price change.
+  emitted size). Both were re-read against the code for this record, and both were recorded
+  imprecisely before.
+  **The multi-reader memory forward — and it is not "`_share_once` across roots".**
+  `_share_once`'s scan is *already* over the whole procedure tree, so root scope is not the
+  limit. The limit is that `by_name` is built from `asg` nodes alone: a **store has no name**,
+  so the PLP status word `m_01FD` — stored once and read three times in `Cuomo_Jim/Cage_Match`
+  — is re-extracted per reading site, and the artifact literally repeats a 156-character
+  rebuild four times in one arm (1,092 duplicated characters in a 22,298-byte text; where the
+  same rebuild *is* named, it is because the source program had an `asg` there, not because
+  extraction shared it). Sharing it needs a **synthesized definition**, and three things
+  currently refuse one: the render tree is immutable after `walk` (it is only ever pruned),
+  `terms`/`chosen`/`id(nd)` are a closed parallel structure fixed before extraction, and the
+  §6 proof channel pairs every kept node's term with its pick — `_node_terms`' own invariant
+  is that a term missing there "is invisible to rooting, sharing and the §6 proofs". A
+  synthesized def has no original term to be proved equal to. The two validity predicates it
+  needs already exist (`_defined_at` and `_Chain.ok`); what does not exist is a place to put
+  the node.
+  **`pick_ir`'s price/fallback asymmetry.** An e-graph candidate must pass `ok`,
+  `_defined_at` **and** a non-`None` price; the site's own term is reached only when that set
+  is empty, and is then admitted on `ok` alone — the one-element `kept` is built even when its
+  price is `None`, so the `min` never compares and the fallback runs with **no version and no
+  chain check at all**. Making the own term compete on price was built, **measured and
+  rejected** — it prints a base name for a version the site has already redefined (`x = (x +
+  $01)` where the artifact says `x = (x0 + $01)`, `x0` being a different base local, not a
+  version of `x`, since the printer drops the version and spells only the base). So the fix is
+  not a price change and not "the own term priced": it is a **substitution over the own term's
+  stale leaves**, re-spelling each `("loc", v)` with `v` outside the site's `avail` as whatever
+  base currently denotes that value.
 - **§5's `_Prune`/`_inline` deletion** (owner: landing 6). Not a rendering change but a
   rung-input change: `procedures` and `repolish` run them before rungs (d), (d2), (f) and (g),
   which pattern-match the polished statements. Its gate is `gate_sweep` plus a §4-reviewed
@@ -737,11 +758,14 @@ parallel.
   families, not one). 84 of 624 tunes emit text that faults or diverges when parsed back and
   evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 50
   divergences**, the three sets disjoint, zero new and zero fixed against the control's 87.
-  (1) **lint, 9 tunes**: every one is `local 'a'/'nflag'/'zflag' used before definition` — root
-  extraction's rooting law, a register local read by base name at a version no def carries.
-  It is the same mechanism as `_share_once` above, which is why landing 4 is where the
-  bisection starts. (2) **faults, 25 tunes**: all 25 are `FrameFault`, 24 `unobserved $XXXX
-  reached` and 1 a switch call target outside the observed set — the text's dispatch spelling
+  (1) **lint, 9 tunes**: every one is `local 'a'/'nflag'/'zflag' used before definition` — a
+  register local read by base name at a version no def carries. This is **`pick_ir`'s
+  unguarded fallback firing today**, not a `_share_once` gap and not a price change: the
+  fallback admits the site's own term without `_defined_at`, so a stale leaf prints as its
+  base and the parsed text reads a local nothing defined. That makes it landing 4's, and the
+  cheapest of the three families to close.
+  (2) **faults, 25 tunes**: all 25 are `FrameFault`, 24 `unobserved $XXXX reached`
+  and 1 a switch call target outside the observed set — the text's dispatch spelling
   losing a guard's observed set, so the owner is the `swg`/`swc` arm-table headers.
   (3) **divergences, 50 tunes**: **15 of them are one shape** — frame 0, section `filter`,
   position 1, `($16, $08)` against `($16, $10)`, the cutoff *hi* lane off by a single shift —
@@ -2909,7 +2933,19 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   name per opcode, and a `writes` set `follin_arity` does not compute. Recording this before
   the landing is the point of the record: the ledger arithmetic is unchanged, the schedule is
   not.
-  (7) **The plan is ordered and it ends at zero.** Landing 4 takes seven (28 → 21) across the
+  (7) **The two extraction-order items were both recorded imprecisely, and the code says so.**
+  "`_share_once` across roots" is not the defect: its scan is already over the whole procedure
+  tree. The limit is that `by_name` holds `asg` nodes alone, so a **store has no name** and the
+  `Cage_Match` PLP word is re-extracted per reading site — the artifact repeats one
+  156-character rebuild four times in a single arm, 1,092 duplicated characters in 22,298
+  bytes. Sharing it needs a synthesized definition, which the immutable render tree, the closed
+  `terms`/`chosen`/`id(nd)` structure and the §6 proof channel all refuse; the two validity
+  predicates it would need already exist. And `pick_ir`'s fallback is worse than "wins on no
+  comparison": it is admitted with **no `_defined_at` and no chain check**, which is precisely
+  the 9-tune lint family in (4) — so that family is `pick_ir`'s, not `_share_once`'s, and it is
+  landing 4's cheapest close. The fix remains a substitution over the own term's stale leaves,
+  not a price change.
+  (8) **The plan is ordered and it ends at zero.** Landing 4 takes seven (28 → 21) across the
   trunk and the four parallel parts (6) separates; the stage close takes none and gates on
   three named items; then the engine ledger
   in six landings — rung (d)'s pair premise twelve (21 → 9), its widening guard one (9 → 8),
@@ -2917,7 +2953,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   writer set four (5 → 1), `datadecl`'s `via:` discovery one (1 → 0). The only measured
   ordering constraint is `sp_scratch_floor` depending on `framestack`'s resume-pc reading; the
   rest are disjoint in files and may land in parallel.
-  (8) **The gates.** Documentation, one tool metric and two test edits — no emitter source is
+  (9) **The gates.** Documentation, one tool metric and two test edits — no emitter source is
   touched, so no artifact can move, and the corpus numbers above are the measurement of that.
   `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
   and zero refusals. Suite **2,781 passed / 490 skipped / 28 xfailed** (oracle included),
