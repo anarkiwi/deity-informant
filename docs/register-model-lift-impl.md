@@ -603,7 +603,7 @@ the minimized program.
 The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,387,498
 bytes**, aggregate `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`;
 `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
-and zero refusals; suite **2,748 passed / 490 skipped / 29 xfailed**, oracle 16; the corpus
+and zero refusals; suite **2,776 passed / 490 skipped / 29 xfailed** (oracle included); the corpus
 text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
 `out/splice_base_s4l3b.json`) **84 bad against the control's 87 — zero new, three fixed**,
 parse and fixpoint **624 of 624**, **210,034 rewritten sites proved, zero unproved**,
@@ -2675,7 +2675,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (#182 (1)): the prototype's dialect parser and its byte-lane fold layer both predate the
   rung-fused text. That re-basing is landing 4's remaining part and it owns all five.
   (5) **The gates.** `gate_sweep` at full Songlengths **624 / 624 / 624 clean**. Suite
-  **2,740 passed / 490 skipped / 29 xfailed**, oracle 16, `black`/`pylint` clean. Emit
+  **2,776 passed / 490 skipped / 29 xfailed** (oracle included), `black`/`pylint` clean. Emit
   identity moves on the review above to
   `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`, 624 tunes, 0 refused,
   **28,387,498 bytes** (+128,959: the keywords are emitted bytes). Splice sweep against its
