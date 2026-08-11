@@ -610,17 +610,20 @@ def test_vm_family_operator_set_is_emitted(art, role_text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact's own "
-    "demotion landed (#183, root extraction's scratch spans), but this text is "
-    "sml.render's state block, so it flips with the prototype re-based onto the artifact",
+    reason="register-model-lift stage 4 landing 4 (remaining part): NOT the re-basing -- the "
+    "artifact declares these cells too and prog.demoted is empty by construction. #183's "
+    "_unread demotes a store no read anywhere names, and a write-before-read cell has "
+    "readers by definition, so the two criteria are different questions. What this owes is a "
+    "second demotion notion: frame-boundary liveness-in, a per-frame kill nothing computes",
     **XFAIL,
 )
 def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     """Every declared cell is read before its first write in some frame.
 
-    At pin time the six SMC JMP-operand cells (``m_103F``/``m_1040``,
-    ``m_111D``/``m_111E``, ``m_11FB``/``m_11FC``) are written before every read,
-    which makes them per-frame scratch the extractor owes a demotion."""
+    Thirteen fail: the three SMC JMP-operand pairs the computed transfer loads
+    (``m_10AD``, ``m_11F8``, ``m_1343``, fused ``u16`` by rung (d)) and seven zero-page
+    cells the artifact declares ``parameter`` -- a callee's per-frame arguments, written
+    before they are read every frame."""
     carried = _carried_addrs(art, post_init_ram)
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 

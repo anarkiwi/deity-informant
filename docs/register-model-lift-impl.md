@@ -642,8 +642,16 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    (`Ghouls_n_Ghosts`: 20 arities plus `$85`'s decoded-length escape) but **not the effect
    cells**, and `sidprog.lark` has no `operators`/`ops` production at all, so the pin owes a
    grammar block, a symbolic name per opcode, and a `writes` set nothing computes today.
-   `state_block_holds_no_scratch` — **the re-basing**. #183's demotion is wired end to end
-   (`eqlift_mem._scratch` → `demoted` → `frameprog._kept_state`).
+   `state_block_holds_no_scratch` — **not the re-basing either**, and this was measured after
+   the record first claimed otherwise. The artifact declares the same cells and
+   `prog.demoted` is **empty by construction**: `_unread` demotes only a store that *no read
+   anywhere in the artifact names*, and a write-before-read cell has readers by definition, so
+   the pin's criterion and #183's are different questions — unobservability (order-insensitive,
+   artifact-wide) against frame-boundary liveness-in (order-sensitive, per-frame). Thirteen
+   cells fail, not the six the docstring named (the image layout moved those): the three SMC
+   operand pairs `m_10AD`/`m_11F8`/`m_1343`, fused `u16` by rung (d), and seven zero-page cells
+   the artifact declares `parameter` — a callee's per-frame arguments. It owes a **second
+   demotion notion**, a per-frame kill nothing in `frameprog` or `eqlift_mem` computes.
    `roles_carry_their_evidence` — **not the re-basing**. The `in` clause is
    `ptrlift.apply_rung`'s and appears only when an extents artifact row is passed, so a bare
    `frameprog.program(model)` emits none; `observed` is the dispatch opcode byte set, not an
@@ -660,8 +668,10 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    where `sml.run_vm` hard-codes `INIT`/`PLAY`. The program refuses nothing (`inputs == []`,
    `extents == {}`), and the pin now reads `art["prog"]` rather than the fold tree, which
    strengthens it: the subject is the artifact.
-   So the trunk now flips **one pin** (the scratch demotion) and re-points the other five at
-   the engine work each names; the landing is a trunk plus parallel parts, not one PR.
+   So the trunk flips **no pins at all**: the witness closed on the artifact program alone,
+   and each of the six left owes the engine a named capability rather than a re-basing. That is
+   the landing's real shape, and it is worth more than the schedule it replaces — the re-basing
+   is still owed (it is what retires `emit`/`emit_mem`), but it is a cleanup, not a pin-flipper.
 2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
    (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
@@ -2975,7 +2985,23 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (4) **The ledger.** 28 → **27**: the prototype's family is six, all landing 4's, and
   `test_every_pin_names_the_landing_that_flips_it` moves to six with it, so the count cannot
   drift from this document.
-  (5) **The gates.** `deity_informant/` is untouched — the diff is `examples/` and `tests/`
+  (5) **A correction to this record, one commit old: the scratch pin is not the re-basing's
+  either, so the trunk flips no pins at all.** The entry above had
+  `test_state_block_holds_no_scratch` riding on the re-basing because #183's demotion is
+  wired end to end. Measuring it says otherwise: `prog.demoted` is **empty** on the
+  prototype's program, and empty *by construction* — `eqlift_mem._unread` demotes a store only
+  when no read anywhere in the artifact names the byte, and a cell written before it is read
+  has readers by definition. The pin's criterion is frame-boundary liveness-in (order-sensitive,
+  per-frame); #183's is unobservability (order-insensitive, artifact-wide). They are different
+  questions and no plumbing joins them; what the pin owes is a **second demotion notion**, a
+  per-frame kill nothing computes today. The measurement also dated the pin: thirteen cells
+  fail, not the six its docstring named — the image layout moved those — and the thirteen are
+  the three SMC operand pairs (`m_10AD`, `m_11F8`, `m_1343`, fused `u16` by rung (d)) plus
+  seven zero-page cells the artifact declares `parameter`, which are a callee's per-frame
+  arguments. Both the reason and the docstring now say this. So landing 4's trunk — the
+  re-basing that retires `emit`/`emit_mem` — flips **nothing**; it is a cleanup that removes
+  the second projection, and all six remaining pins are engine capabilities.
+  (6) **The gates.** `deity_informant/` is untouched — the diff is `examples/` and `tests/`
   only — so no artifact can move and the corpus sweeps are unchanged by construction. Suite
   **2,782 passed / 490 skipped / 27 xfailed** (oracle included) against the base commit's
   2,781 / 490 / 28. `black --check` and `pylint` (10.00/10) clean.
