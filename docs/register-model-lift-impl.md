@@ -2680,3 +2680,65 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`, 624 tunes, 0 refused,
   **28,387,498 bytes** (+128,959: the keywords are emitted bytes). Splice sweep against its
   control: **zero new, three fixed**, parse and fixpoint 624/624, 210,034 sites proved.
+- **2026-08-11 — the shredder's re-measure is empty by construction, and the 21 standing
+  pins get owners instead of verdicts.** #177 gave every stage-3 pin one of three
+  dispositions measured against `_emit`, then `_spliced`, then the cutover's emitter. The
+  switch (#182) made `frameprog.dumps` the unified graph, and that retires the whole
+  vocabulary.
+  (1) **The re-measurement is structural, so its flip list is empty and cannot be otherwise.**
+  `_lift` *is* the artifact, every stage-3 pin is `xfail(strict=True)` on it, and a strict
+  mark fails the suite the moment its goal property holds. So
+  `test_the_stage_three_pins_are_measured_against_the_artifact` asserted nothing the marks
+  did not — it re-ran each pin body under a mock that was a no-op for every pin, since none
+  of them reads `_emit` — and it retires. `_MEASURED`'s three verdicts distinguished `emit`
+  from the cutover's emitter, a distinction that died with the switch, and they retire with
+  it.
+  (2) **What a reason still owes is the refusal it was measured at and a live owner.**
+  `_OWNERS` is five: rung (f), rung (d), `framestack`, `frameproc`, `datadecl`.
+  `test_every_stage_three_pin_names_a_live_owner` keeps the one-owner rule and
+  `test_the_owners_partition_the_family_as_the_ledger_records_it` pins the partition, so
+  this ledger and the marks cannot drift apart.
+  (3) **rung (d) owns thirteen.** Twelve are `framefuse.refusal()` reading **one** surviving
+  byte-lane read of the pair as refusing the whole *tune-wide* `u16` declaration
+  (`dual_store_*` ×6, `stack_spill_cursor`, `deferred_carry_cursor`, `table_spill_cursor`,
+  `unpaired_half_store`, `phase_split_reload`, `shift_divide`); either the declaration
+  becomes per-seat or the lane-update spelling `(ptr & $FF00) | zext2(row)` is admitted so a
+  lane store is a word store. The thirteenth is `lone_lane`, where the same rung *widens* a
+  lone half into a read-modify-write of a write-only register and must not.
+  (4) **rung (f) owns four, and the measurement corrects the recorded premise.** `_Writes`
+  over each fixture says: `pointer_walk` and `mux_pair` carry **no wild store and no third
+  writer** — the only spans that hit the pair are the pair's own byte-lane reload stores at
+  `$0002`/`$0003`, which `_hit` does not except and `_writers` does not record as
+  definitions. `writethrough` is the one the deref bound reaches: its store address is
+  `m_1400[x]:2 + $0002`, a row of a **declared const** lo/hi table whose word set `mem0`
+  states, so `frameptr._span` can bound it off the registry — computed, not observed.
+  `cursor_save`'s defs are a save-cell word read and a constant, which wants rung (f) to
+  take a constant word definition and the held-value closure `ptrcert` already runs.
+  (5) **`low_held_cursor` is `framestack`'s, and 3d's prediction is refuted.** The handoff
+  named "exactly the deref span landing 1's read closure computes". It is not. A stack hold
+  keyed on the page-one interval its own address bits give was **built**, and `closure()`
+  admits it — every `st` that may reach the interval writes a cursor value, and `eligible`
+  goes True. It is **unsound as stated**: the machine's own return-address push writes page
+  one and is no `st`, so the enumerated writer set is incomplete, and the program does hold
+  raw calls. The premise it needs is an sp-relative **slot identity** — push and pull at one
+  entry-relative offset, a call provably below it — which is exactly what
+  `structured.sp_flow`'s join to bot destroys here (`_sp_classes`: `sp_callee`, `sp_read`).
+  Not landed, and the owner moves from `ptrcert` to `framestack`.
+  (6) **`computed_rows_map` is `datadecl`'s, and the interval rule is its input.**
+  `extent_unmappable` fires because the rows the run observes are in no declared datum. The
+  `INT_OR` interval is sound and stateable —
+  `hi(a|b) <= 2^ceil(lg(max(hi a, hi b) + 1)) - 1`, `lo(a|b) >= max(lo a, lo b)` — but the
+  e-graph's `lo`/`hi` merge by **join**, so a rule can only widen and the tightening has to
+  sit where `_lattice`/`_ir_span` do. Either way the consumer that turns a span into a
+  *declaration* is `datadecl`'s `via:` discovery, so the rule is the input and discovery is
+  the mechanism.
+  (7) **`frameproc` owns two.** `g2_store`: `_lattice` already states `($00A5, $01A4)` where
+  `addr_bits` states ⊤, and `eqlift_mem._wr_span` already records that each is sound alone
+  so the tighter of the two is. `_lattice` is pure over pass-1 expressions, so it moves to
+  `frameproc` and a **reach** reading takes the min — `addr_bits` itself may not, because
+  its `INT_OR` recursion needs masks and a magnitude bound is unsound there.
+  `sp_scratch_floor`: the cell survives beside a raw `call` the chain havocs at, so what
+  holds it is the promotion `frameproc.slot_reader` refuses, not `addr_floor`.
+  (8) **The gates.** Tests and documentation only -- no emitter source is touched, so no
+  artifact can move -- and the suite is unchanged at the base commit's own counts, with
+  `black --check` and `pylint` (10.00/10) clean.

@@ -1,9 +1,9 @@
 """The register-model shredder (docs/register-model-lift-impl.md).
 
 Each fixture forces one register-model artifact and stays ``xfail(strict=True)``
-until its stage lands; each stage-3 pin also carries the adoption §8 step 4
-disposition measured on ``_lift``, the cutover's own emitter -- one of
-``_MEASURED``'s three verdicts."""
+until its stage lands. ``_lift`` is the artifact since the step-4 switch, so a pin
+whose goal property held would XPASS here; what each reason still owes is the
+measured refusal and the live owner that will move it -- one of ``_OWNERS``."""
 
 import re
 import sys
@@ -43,10 +43,12 @@ HND1 = 0x13E0
 XFAIL = dict(strict=True)
 
 _S3 = "register-model-lift stage 3:"
-_MEASURED = (  # the three §8 step 4 dispositions; every stage-3 reason names one
-    "unified path: holds today",  # a pre-verified flip: step 4 XPASSes the pin
-    "unified path: not an emission property",  # a pre-emission rung verdict step 4 keeps
-    "unified path: refuses, and the mechanism is named",  # emission's, with its owner
+_OWNERS = (  # the live owner a stage-3 reason names; the disposition is the strict mark
+    "owner: rung (f)",  # frameptr._Ptr: the deref premise and the writer set it reads
+    "owner: rung (d)",  # framefuse: the tune-wide u16 declaration one lane read refuses
+    "owner: framestack",  # the sp-relative slot identity a machine-stack hold needs
+    "owner: frameproc",  # the bit analyses, their reach, and the promotion they refuse
+    "owner: datadecl",  # the registry, and the via: discovery that grows it
 )
 
 
@@ -1172,9 +1174,11 @@ def test_scratch_cell_is_a_local_not_state():
 
 
 @pytest.mark.xfail(
-    reason="%s cursor lift; %s -- rung (f)/(g) mints *ptr[i] inside frameprog.program "
-    "and refuses here ('another store may write the pointer'); emit runs no such rung, "
-    "so mem[ stands on both paths for the one premise" % (_S3, _MEASURED[1]),
+    reason="%s cursor lift; %s -- rung (f) refuses 'another store may write the pointer', "
+    "and the stores that hit the pair are the pair's OWN byte-lane reload stores at $0002 "
+    "and $0003 (measured: no wild store, no third writer). _hit excepts only an exact word "
+    "store and _writers records only width-2 stores as definitions, so the declared lo/hi "
+    "reload row is invisible to both" % (_S3, _OWNERS[0]),
     **XFAIL,
 )
 def test_pointer_walk_names_no_raw_address():
@@ -1206,11 +1210,10 @@ def test_borrow_chain_is_one_wide_compare_on_the_unified_path():
 
 
 @pytest.mark.xfail(
-    reason="%s sinks are write-only, no read-back survives; %s -- emit's raw _Builder "
-    "procedures carry the bare byte store, but frameprog's own rung widens the lone half "
-    "to a read-modify-write of the u16 register BEFORE emission, so the cutover's emitter "
-    "is handed the read-back and no admitted rule removes it (measured on the artifact; the "
-    "owner is the widening rung, not the graph)" % (_S3, _MEASURED[2]),
+    reason="%s sinks are write-only, no read-back survives; %s -- the widening rung turns "
+    "the lone half into a read-modify-write of the u16 register before emission, and no "
+    "admitted rule removes a read of a write-only sink. The rung must not widen a store "
+    "whose destination is inside the SID write-only window" % (_S3, _OWNERS[1]),
     **XFAIL,
 )
 def test_lone_lane_half_owes_no_register_load():
@@ -1320,7 +1323,12 @@ _DEREF_REFUSAL = {  # fixture -> the rung (f) premise its *ptr[i] lift states
     "cursor_save": "a definition is not a lo/hi partner-table entry read",
     "writethrough": "a store at an unproven address may write the pointer",
 }
-_DEREF_WHY = "%s -- rung (f)'s premise, %%r, and emit mints no *ptr[i] at all" % _MEASURED[1]
+_DEREF_WHY = (
+    "%s -- rung (f) states the premise %%r, and the writer set it reads is what refuses: "
+    "_writers records only width-2 stores as definitions and _hit excepts only an exact "
+    "word store, so a byte-lane row and a bounded deref store both read as third writers"
+    % _OWNERS[0]
+)
 
 
 @pytest.mark.xfail(
@@ -1377,9 +1385,10 @@ def _fused_cursor(name):
 
 
 _FUSE_WHY = (
-    "%s -- rung (d)/framefuse decides the tune-wide declaration on the statements before "
-    "any emitter runs, and emit reuses frameprog._state_lines' unfused block, so the green "
-    "plain_advance control reads byte-wise there too" % _MEASURED[1]
+    "%s -- framefuse.refusal() reads ONE surviving byte-lane read of the pair as refusing "
+    "the whole tune-wide u16 declaration. Either the declaration becomes per-seat, or the "
+    "lane-update spelling (ptr & $FF00) | zext2(row) is admitted so a lane store is a word "
+    "store; twelve pins share this one owner" % _OWNERS[1]
 )
 
 
@@ -1502,10 +1511,11 @@ def test_an_inpage_advance_is_never_fused():
 
 
 @pytest.mark.xfail(
-    reason="%s INT_ADD store bound via intervals; %s -- the bound exists in the graph "
-    "(mem_rules' lattice states ($00A5, $01A4) here) and the pin reads frameproc."
-    "addr_bits, which states top: addr_interval seeds the graph FROM the bit analysis "
-    "and never back" % (_S3, _MEASURED[1]),
+    reason="%s INT_ADD store bound via intervals; %s -- the bound exists already: "
+    "eqlift_mem._lattice states ($00A5, $01A4) where addr_bits states top, and _wr_span "
+    "already documents that each is sound alone so the tighter is. _lattice is pure over "
+    "pass-1 expressions, so it moves to frameproc and a reach reading takes the min; "
+    "addr_bits itself may not, because its INT_OR recursion needs masks" % (_S3, _OWNERS[3]),
     **XFAIL,
 )
 def test_g2_bounds_the_zext_add_store():
@@ -1619,10 +1629,13 @@ def test_a_stack_held_cursor_refuses_low_held():
 
 
 @pytest.mark.xfail(
-    reason="%s the deref bound the certification cannot give; %s -- ptrcert reads the "
-    "program, and the unified path declines the same forward (the pull still spells "
-    "mem[t0]), so the deref-span quantity stage 3d landing 1's read closure computes is "
-    "the missing premise and its consumer is a rung" % (_S3, _MEASURED[1]),
+    reason="%s the hold that cannot name its slot; %s -- 3d predicted the deref span, and "
+    "it is not the premise. A stack hold keyed on the page-one interval its address bits "
+    "give was built and closes (every st into it writes a cursor value), but the machine's "
+    "own return-address push writes page one and is no st, so the writer set is incomplete. "
+    "The premise is an sp-relative slot identity -- push and pull at one entry-relative "
+    "offset, a call provably below it -- which sp_flow's join to bot destroys here "
+    "(_sp_classes: sp_callee, sp_read)" % (_S3, _OWNERS[2]),
     **XFAIL,
 )
 def test_a_stack_held_cursor_lifts_once_the_deref_is_bounded():
@@ -1660,10 +1673,12 @@ def test_computed_rows_walk_off_the_registry():
 
 
 @pytest.mark.xfail(
-    reason="%s an arithmetic row stays guarded; %s -- the memory sort was the other "
-    "branch of this reason and it does not resolve the row: mem_rules' lattice states "
-    "nothing for ((ctr & $01) << $03) | $80 (INT_OR is in no interval rule), and the "
-    "consumer is ptrextent either way" % (_S3, _MEASURED[1]),
+    reason="%s an arithmetic row lands off the registry; %s -- extent_unmappable fires "
+    "because the rows the run observes are in no declared datum, and an interval for the "
+    "row is the input to that and not the mechanism: INT_OR is in no interval rule (the "
+    "sound pair is hi(a|b) <= next_pow2(max(hi a, hi b)) - 1, lo(a|b) >= max(lo a, lo b)), "
+    "but the consumer that turns a span into a declaration is via: discovery"
+    "" % (_S3, _OWNERS[4]),
     **XFAIL,
 )
 def test_computed_rows_map():
@@ -1752,10 +1767,9 @@ def test_an_entry_balanced_procedure_destacks():
 
 
 @pytest.mark.xfail(
-    reason="%s addr_floor keeps the kept push off zero page; %s -- emit's raw _Builder "
-    "procedures keep the raw call frameprog promotes to a register interface, and the "
-    "chain havocs at its landing label, so the cell survives for want of the promotion "
-    "and not for want of the floor" % (_S3, _MEASURED[2]),
+    reason="%s addr_floor keeps the kept push off zero page; %s -- the cell survives "
+    "beside a raw call the chain havocs at, so what holds it is the promotion "
+    "frameproc.slot_reader refuses and not the floor" % (_S3, _OWNERS[3]),
     **XFAIL,
 )
 def test_scratch_beside_kept_sp_fabric_promotes():
@@ -1783,36 +1797,28 @@ def _stage_three_pins():
     }
 
 
-def test_every_stage_three_pin_carries_its_measured_disposition():
-    """Stage 3's convergence bullet, enforced: no pin may assume it flips at the cutover.
+def test_every_stage_three_pin_names_a_live_owner():
+    """The deferral discipline, enforced: no pin may stand without someone to move it.
 
-    A stage-3 xfail added later fails here until its goal property has been evaluated
-    against the cutover's emitter and one of the three verdicts put on its reason."""
+    The re-measurement the cutover owed is now structural -- ``_lift`` is the artifact,
+    so a pin whose goal property held would XPASS -- and what a reason still owes is the
+    refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
     assert len(pins) == 21, sorted(pins)
-    assert not [n for n, r in pins.items() if sum(v in r for v in _MEASURED) != 1]
+    assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
-_ARTIFACT_XPASS = frozenset()
+def test_the_owners_partition_the_family_as_the_ledger_records_it():
+    """The ledger, executable: thirteen pins are rung (d)'s and the rest are named apart.
 
-
-def test_the_stage_three_pins_are_measured_against_the_artifact():
-    """The re-measurement: every pin's goal property, run against the artifact alone.
-
-    ``_emit`` renders raw ``_Builder`` procedures, so a rung that rewrites a statement
-    before emission is invisible to it and a disposition measured there can be wrong;
-    the artifact is the one that decides, and every pin that flips there has flipped."""
-    from unittest import mock  # pylint: disable=import-outside-toplevel
-
-    passed = set()
-    with mock.patch.dict(globals(), {"_emit": _lift, "_emit_body": lambda n: _body(_lift(n))}):
-        for name in _stage_three_pins():
-            try:
-                globals()[name]()
-            except AssertionError:
-                continue
-            passed.add(name)
-    assert passed == set(_ARTIFACT_XPASS), sorted(passed)
+    Twelve are its tune-wide pair declaration and the thirteenth is its widening of a lone
+    lane, so a pin moving between owners moves here too and the log cannot drift."""
+    per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
+    assert len(per["owner: rung (d)"]) == 13, per["owner: rung (d)"]
+    assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
+    assert per["owner: framestack"] == ["test_a_stack_held_cursor_lifts_once_the_deref_is_bounded"]
+    assert per["owner: datadecl"] == ["test_computed_rows_map"]
+    assert len(per["owner: frameproc"]) == 2, per["owner: frameproc"]
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)
