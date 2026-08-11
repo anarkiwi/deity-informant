@@ -693,7 +693,7 @@ def test_render_proc_real_commando():
 
 
 def test_emit_mem_whole_artifact():
-    """emit_mem renders the whole artifact (header/state/data + all procs) via the
+    """emit_mem renders the prototype's substrate (header/state/data + all procs) via the
     memory graph, deterministically -- the cutover-capable emitter."""
     model = _commando()
     txt = mem.emit_mem(model)

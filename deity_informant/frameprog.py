@@ -8,6 +8,7 @@ opcode switches, declared inputs and the procedural surface; ``parse``/
 from __future__ import annotations
 
 from . import datadecl
+from . import eqlift_mem
 from . import framefuse
 from . import framemath
 from . import frameproc
@@ -19,11 +20,6 @@ from . import ptrlift
 from . import sidprog
 from . import structured
 from .grammar import FRAMEPROG_VERSION
-
-_NAMES = {0xD011: "raster_hi", 0xD012: "raster", 0xD41B: "osc3", 0xD41C: "envelope3"}
-_INPUTS = {a: _NAMES[a] for a in structured._VOL}  # cycle-derived: what iota pins
-_ZERO = structured._VOL0  # constant-0 sources (spec 1.3): neither input nor state
-_SID_LO, _SID_HI = 0xD400, 0xD41C
 
 _NOTES = (
     "; generated from the committed sidprog model (the cycle-exact ground truth)",
@@ -51,105 +47,12 @@ _EVIDENCE_NOTE = (
 )
 
 
-def _scan(node, scalars, arrays):
-    """Collect const-cell and indexed-base memory references under ``node``."""
-    stack = [node]
-    while stack:
-        x = stack.pop()
-        k = x[0]
-        if k == "mem":
-            a = x[1]
-            if a[0] == "const" and a[2] == 2:
-                scalars.add(a[1])
-            else:
-                bi = sidprog._split_index(a)
-                if bi is not None:
-                    arrays.add(bi[0])
-                else:
-                    stack.append(a)
-        elif k == "op":
-            stack.extend(x[2])
+def render_lines(prog):
+    """The pre-switch projection: ``frameproc.render_lines`` over the program's procs.
 
-
-def _cells(view):
-    """(scalar cells, array bases) referenced by the play-phase blocks."""
-    scalars, arrays = set(), set()
-    for blk in view.blocks.values():
-        for ev in blk.events:
-            if ev[0] == "ld":
-                _scan(("mem", ev[2], 1), scalars, arrays)
-            elif ev[0] == "st":
-                _scan(("mem", ev[1], 1), scalars, arrays)
-                _scan(ev[2], scalars, arrays)
-        for i, r in enumerate(blk.regs):
-            if r != ("reg", i):
-                _scan(r, scalars, arrays)
-        for x in sidprog._term_exprs(blk.term):
-            _scan(x, scalars, arrays)
-    return scalars, arrays
-
-
-def _state_fields(view, decls, dispatch, aliases=None):
-    """(state fields, input names): the record header per spec 1.3/2."""
-    scalars, arrays = _cells(view)
-    spans = [(d["base"], d["base"] + d["size"]) for d in decls]
-    names = dict(aliases or {})
-
-    def hidden(a):
-        if a in _INPUTS or a in _ZERO or _SID_LO <= a <= _SID_HI:
-            return True
-        return any(lo <= a < hi for lo, hi in spans)
-
-    def name(a):
-        return names.get(a) or sidprog._addr_name(a)
-
-    inputs = sorted(_INPUTS[a] for a in scalars & set(_INPUTS))
-    fields = [
-        (name(a), 1, False, sorted(dispatch.get(a, ())))
-        for a in sorted((scalars | set(dispatch)) - arrays)
-        if not hidden(a)
-    ]
-    fields += [(name(a), 1, True, []) for a in sorted(arrays) if not hidden(a)]
-    return fields, inputs
-
-
-def _drop_declared(state, decls, symbols):
-    """Drop the state field of every cell a later rung carved into the data section.
-
-    ``_state_fields.hidden`` already refuses a cell inside a declared span; the pair
-    rung carves new spans after it ran, so the same rule is applied once more where
-    its input changed (3a's finding: one cell declared in ``state`` and in ``data``)."""
-    covered = {
-        symbols.get(a) or sidprog._addr_name(a)
-        for d in decls
-        for a in range(d["base"], d["base"] + d["size"])
-    }
-    return [f for f in state if f[0] not in covered]
-
-
-def _field_line(name, width, array, observed, role=None, blocks=()):
-    """One ``state { }`` line; the role qualifies the type and names nothing else."""
-    kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
-    if array:
-        return " %s: %s[]" % (name, kind)
-    ext = (" in " + ", ".join(blocks)) if blocks else ""
-    obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
-    return " %s: %s%s%s" % (name, kind, ext, obs)
-
-
-def _extent_names(extents, symbols):
-    """``{field name: block names}``: the extent map spelled as the state text names it."""
-
-    def spell(a):
-        return symbols.get(a) or G.addr_name(a)
-
-    return {spell(c): [spell(b) for b in sorted(bs)] for c, bs in extents.items()}
-
-
-def _state_lines(view, decls, dispatch):
-    """``state { }`` section lines plus the declared input names."""
-    fields, inputs = _state_fields(view, decls, dispatch)
-    return ["state {"] + [_field_line(*f) for f in fields] + ["}"], inputs
+    What a parsed program renders through, and the switch's own control -- patched over
+    ``FrameProgram.lines`` it gives the text the emitter shipped before §8 step 4."""
+    return frameproc.render_lines(prog.procs, prog.resolved, datadecl.decl_pairs(prog.data_decls))
 
 
 def check_locals(procs):
@@ -197,6 +100,7 @@ class FrameProgram:
         dispatch=(),
         evidence=None,
         roles=(),
+        landings=None,
     ):
         self.play = play
         self.init = init
@@ -217,6 +121,20 @@ class FrameProgram:
         self.roles = dict(roles)  # stage 2: state field name -> the role its updates name
         self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
+        self.landings = None if landings is None else frozenset(landings)  # None: parsed
+        self._lines = None
+
+    def lines(self):
+        """The artifact's procedure lines, rendered once (§8 step 4's unified graph).
+
+        An analysed program renders through ``eqlift_mem``; a parsed one carries no
+        landings and renders through ``frameproc.render_lines``, which is what makes
+        ``dumps(loads(t)) == t`` a gate on the unified emitter rather than an accident."""
+        if self._lines is None:
+            self._lines = (
+                render_lines(self) if self.landings is None else eqlift_mem.artifact_lines(self)
+            )
+        return self._lines
 
 
 def _init_proof(pc, cells, undeclared, computed):
@@ -345,15 +263,6 @@ def _sites(ev):
     return {
         pc: (tuple(staged.get(pc, ())), *counts.get(pc, (0, 0)))
         for pc in sorted(set(staged) | set(counts))
-    }
-
-
-def _decl_pairs(decls):
-    """``{lo base: (hi base, size)}`` off the declared roles, the ONE pair registry."""
-    return {
-        d["base"]: (d["role"][1], d["size"])
-        for d in decls
-        if d.get("role") and d["role"][0] == "lo"
     }
 
 
@@ -514,7 +423,7 @@ def _pair_tables(procs, decls, mem0, mut, code):
         his.add(hi)
         bases[lo]["role"] = ("lo", hi)
         bases[hi]["role"] = ("hi", lo)
-    return _decl_pairs(decls)  # roles persist on the decls: emission stays idempotent
+    return datadecl.decl_pairs(decls)  # roles persist on the decls: emission stays idempotent
 
 
 def _adjoin_pairs(stmts, pairs, regions):
@@ -585,7 +494,7 @@ def program(model, extents=None):
         decls, aliases = datadecl.declarations(model)
     symbols = dict(aliases or {})
     trees, labels, view = sidprog._model_trees(model)
-    state, inputs = _state_fields(view, decls, model.dispatch_sets, symbols)
+    state, inputs = sidprog._state_fields(view, decls, model.dispatch_sets, symbols)
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
     stack_proofs = framestack.apply_rung(procs)
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
@@ -603,7 +512,7 @@ def program(model, extents=None):
             _adjoin_pairs(stmts2, pairs, regions)
         if repr(procs) == before:
             break
-    state = _drop_declared(state, decls, symbols)
+    state = sidprog._drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
     proofs += framestack.drop_sp(procs, model.play, regions)
     resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
@@ -632,6 +541,7 @@ def program(model, extents=None):
         ext,
         model.dispatch_sets,
         _evidence(model, prov0, sites, census),
+        landings=framefuse._landings(model),
     )
 
 
@@ -658,13 +568,13 @@ def dumps(prog):
         "dispatch $%04X: %s" % (pc, " ".join("$%02X" % v for v in sorted(prog.dispatch[pc])))
         for pc in sorted(prog.dispatch)
     )
-    ext = _extent_names(prog.extents, prog.symbols)
-    fields = [_field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in prog.state]
+    ext = sidprog._extent_names(prog.extents, prog.symbols)
+    fields = [sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in prog.state]
     body = ["state {"] + fields + ["}"]
     data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
-    body.extend(frameproc.render_lines(prog.procs, prog.resolved, _decl_pairs(prog.data_decls)))
+    body.extend(prog.lines())
     to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))
@@ -712,7 +622,7 @@ class _IotaWalker(structured.Walker):
         self.dyn_read = self._dyn
 
     def _pin(self, a, v):
-        name = _INPUTS.get(a)
+        name = sidprog._INPUTS.get(a)
         if name is not None:
             key = (self.frame, name)
             k = self._k.get(key, 0)

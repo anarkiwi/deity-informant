@@ -1,8 +1,8 @@
 """Adoption §8 step 4's cutover, pinned on the canonical example.
 
 Step 4 carries the rung-built statements ``frameprog.program`` produces through
-``eqlift_mem.render_proc``, in place of ``frameproc.render_lines``. The cutover gate
-is green; the controls beside it hold each mechanism it took to get there.
+``eqlift_mem.render_proc``: since the switch that is what ``dumps`` renders, and the
+control beside it is ``frameproc.render_lines``, the projection it replaced.
 """
 
 from unittest import mock
@@ -12,7 +12,6 @@ import pytest
 from deity_informant import eqlift
 from deity_informant import eqlift_mem
 from deity_informant import framelog
-from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
 from deity_informant import structured
@@ -29,13 +28,6 @@ def _example():
     return model, FRAMES, frameprog.program(model)
 
 
-def _spliced_text(model, prog):
-    """The step-4 artifact: frameprog's own text with the unified renderer spliced in."""
-    lines = eqlift_mem.artifact_lines(model, prog)
-    with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: lines):
-        return frameprog.dumps(prog)
-
-
 def _copy_terms(node, out):
     """Every ``COPY`` term in a statement tree."""
     if isinstance(node, (list, tuple)):
@@ -46,13 +38,14 @@ def _copy_terms(node, out):
     return out
 
 
-def test_the_example_s_own_emitter_holds_the_three_properties(example):
-    """The control: emission, the text fixpoint and the frame oracle, on frameprog today.
+def test_the_replaced_projection_still_holds_the_three_properties(example):
+    """The control: emission, the text fixpoint and the frame oracle, on the old emitter.
 
-    The cutover gate below runs the same three assertions over the same program, so what
-    it pins is the splice and not the example or the harness."""
+    The cutover gate below runs the same three assertions over the same program through
+    the unified graph, so what it pins is the switch and not the example or the harness."""
     model, frames, prog = example
-    text = frameprog.dumps(prog)
+    with mock.patch.object(frameprog.FrameProgram, "lines", frameprog.render_lines):
+        text = frameprog.dumps(prog)
     assert text.startswith("frameprog ")
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
@@ -73,7 +66,7 @@ def test_the_splice_plumbing_is_not_the_blocker(example):
     Call summaries, footprints, landings and extents all come up on frameprog's own
     procedures, so the blocker below is a statement form and not an API mismatch."""
     model, _frames, prog = example
-    info, foot, _pairs, _derefs = eqlift_mem.render_ctx(model, prog)
+    info, foot, _pairs, _derefs = eqlift_mem.render_ctx(prog)
     assert set(info.procs) == {entry for entry, _p, _r, _s in prog.procs}
     assert all(foot.of(entry) is not None for entry, _p, _r, _s in prog.procs)
 
@@ -92,7 +85,7 @@ def test_the_rung_minted_narrowing_copy_is_a_term(example):
         kid[0] == "loc" and kid[2] == 2 for t in terms for kid in t[2]
     ), "no width-one COPY reads a fused u16 local"
     first, _params, _rets, stmts = prog.procs[0]
-    body = eqlift_mem.render_proc(stmts, prog.symbols, first, eqlift_mem.render_ctx(model, prog)[0])
+    body = eqlift_mem.render_proc(stmts, prog.symbols, first, eqlift_mem.render_ctx(prog)[0])
     assert body and any("trunc1(" in ln for ln in body), "no narrowing read survived"
 
 
@@ -102,7 +95,7 @@ def test_the_signed_compare_the_emitter_spells_is_the_dialect_s(example):
     ``sidprog.lark``'s ``op`` production spells ``<s`` and ``<=s``, and ``sge`` -- the one
     tag with no p-code mnemonic -- prints as the swapped ``<=s``."""
     model, _frames, prog = example
-    text = _spliced_text(model, prog)
+    text = frameprog.dumps(prog)
     assert "<s " in text and "<=s " in text, "the example stopped spelling the signed compare"
     assert ">=s" not in text, "a spelling the dialect has no production for"
     assert frameprog.loads(text) is not None
@@ -114,7 +107,7 @@ def test_the_dispatch_header_and_the_procedure_call_survive_the_splice(example):
     The arm table's header names its dispatch kind, and a ``pcall`` -- which the raw
     ``_Builder`` procedures ``emit_mem`` renders never carry -- is emitted, not dropped."""
     model, _frames, prog = example
-    text = _spliced_text(model, prog)
+    text = frameprog.dumps(prog)
     assert "switch goto {" in text and "switch {" not in text
     assert "= sub_1485(" in text, "the promoted call left the text"
 
@@ -130,7 +123,7 @@ def test_the_unified_walk_refuses_a_statement_it_cannot_lift(example):
 def test_the_spliced_program_reproduces_the_walker_s_projection(example):
     """The cutover's semantic half, LANDED: Gate FP on the spliced text is clean."""
     model, frames, prog = example
-    text = _spliced_text(model, prog)
+    text = frameprog.dumps(prog)
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
 
 
@@ -140,7 +133,7 @@ def test_the_three_memory_spellings_the_cutover_owed_are_in_the_text(example):
     An index *expression* against a declared base, the ``sid.reg`` view of the register
     file, and the declared lo/hi pair read as one word column rather than as the OR."""
     model, _frames, prog = example
-    text = _spliced_text(model, prog)
+    text = frameprog.dumps(prog)
     assert "m_14D3[(ctr_0043 & zp_46)]" in text, "the index expression stayed mem[...]"
     assert "sid.reg[a]" in text, "the register file kept a register name for a byte index"
     assert "m_148F[t3:2]:2" in text, "the declared pair stayed an OR-pack"
@@ -174,7 +167,7 @@ def test_the_spliced_emitter_carries_the_rung_built_statements(example):
     Emission succeeds, the text is a ``dumps``/``loads`` fixpoint, and the program it
     parses back to reproduces the walker's per-frame projection under Gate FP."""
     model, frames, prog = example
-    text = _spliced_text(model, prog)
+    text = frameprog.dumps(prog)
     assert text.startswith("frameprog ")
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None

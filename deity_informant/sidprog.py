@@ -269,6 +269,114 @@ def _image_lines(mem0, cov):
     return out
 
 
+# ---- state section (spec 1.3/2: the record header the play phase reads) --------
+_NAMES = {0xD011: "raster_hi", 0xD012: "raster", 0xD41B: "osc3", 0xD41C: "envelope3"}
+_INPUTS = {a: _NAMES[a] for a in C._VOL}  # cycle-derived: what iota pins
+_ZERO = C._VOL0  # constant-0 sources (spec 1.3): neither input nor state
+_SID_LO, _SID_HI = 0xD400, 0xD41C
+
+
+def _scan(node, scalars, arrays):
+    """Collect const-cell and indexed-base memory references under ``node``."""
+    stack = [node]
+    while stack:
+        x = stack.pop()
+        k = x[0]
+        if k == "mem":
+            a = x[1]
+            if a[0] == "const" and a[2] == 2:
+                scalars.add(a[1])
+            else:
+                bi = _split_index(a)
+                if bi is not None:
+                    arrays.add(bi[0])
+                else:
+                    stack.append(a)
+        elif k == "op":
+            stack.extend(x[2])
+
+
+def _cells(view):
+    """(scalar cells, array bases) referenced by the play-phase blocks."""
+    scalars, arrays = set(), set()
+    for blk in view.blocks.values():
+        for ev in blk.events:
+            if ev[0] == "ld":
+                _scan(("mem", ev[2], 1), scalars, arrays)
+            elif ev[0] == "st":
+                _scan(("mem", ev[1], 1), scalars, arrays)
+                _scan(ev[2], scalars, arrays)
+        for i, r in enumerate(blk.regs):
+            if r != ("reg", i):
+                _scan(r, scalars, arrays)
+        for x in _term_exprs(blk.term):
+            _scan(x, scalars, arrays)
+    return scalars, arrays
+
+
+def _state_fields(view, decls, dispatch, aliases=None):
+    """(state fields, input names): the record header per spec 1.3/2."""
+    scalars, arrays = _cells(view)
+    spans = [(d["base"], d["base"] + d["size"]) for d in decls]
+    names = dict(aliases or {})
+
+    def hidden(a):
+        if a in _INPUTS or a in _ZERO or _SID_LO <= a <= _SID_HI:
+            return True
+        return any(lo <= a < hi for lo, hi in spans)
+
+    def name(a):
+        return names.get(a) or _addr_name(a)
+
+    inputs = sorted(_INPUTS[a] for a in scalars & set(_INPUTS))
+    fields = [
+        (name(a), 1, False, sorted(dispatch.get(a, ())))
+        for a in sorted((scalars | set(dispatch)) - arrays)
+        if not hidden(a)
+    ]
+    fields += [(name(a), 1, True, []) for a in sorted(arrays) if not hidden(a)]
+    return fields, inputs
+
+
+def _drop_declared(state, decls, symbols):
+    """Drop the state field of every cell a later rung carved into the data section.
+
+    ``_state_fields.hidden`` already refuses a cell inside a declared span; the pair
+    rung carves new spans after it ran, so the same rule is applied once more where
+    its input changed (3a's finding: one cell declared in ``state`` and in ``data``)."""
+    covered = {
+        symbols.get(a) or _addr_name(a)
+        for d in decls
+        for a in range(d["base"], d["base"] + d["size"])
+    }
+    return [f for f in state if f[0] not in covered]
+
+
+def _field_line(name, width, array, observed, role=None, blocks=()):
+    """One ``state { }`` line; the role qualifies the type and names nothing else."""
+    kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
+    if array:
+        return " %s: %s[]" % (name, kind)
+    ext = (" in " + ", ".join(blocks)) if blocks else ""
+    obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
+    return " %s: %s%s%s" % (name, kind, ext, obs)
+
+
+def _extent_names(extents, symbols):
+    """``{field name: block names}``: the extent map spelled as the state text names it."""
+
+    def spell(a):
+        return symbols.get(a) or _addr_name(a)
+
+    return {spell(c): [spell(b) for b in sorted(bs)] for c, bs in extents.items()}
+
+
+def _state_lines(view, decls, dispatch):
+    """``state { }`` section lines plus the declared input names."""
+    fields, inputs = _state_fields(view, decls, dispatch)
+    return ["state {"] + [_field_line(*f) for f in fields] + ["}"], inputs
+
+
 # ---- data + symbols sections (song-data declarations, role aliases) -------------
 def _decl_attrs(d):
     parts = []

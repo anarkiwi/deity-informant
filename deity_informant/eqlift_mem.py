@@ -17,7 +17,6 @@ from egglog import EGraph, Expr, function, i64, rewrite, rule, ruleset, set_, un
 from egglog import eq as egg_eq
 
 from . import eqlift as E
-from . import frameprog
 from . import frameptr
 
 _WIDTHS = (1, 2)  # the widths the memory axioms and the interval rules are stated at
@@ -466,6 +465,18 @@ def _rd_span(a, defs=None, ext=None):
         return got
     web = frameptr.deref(a)
     return None if web is None else ext.get(web[0])
+
+
+def _may_read_vol(a, defs=None, ext=None):
+    """True where a load's run-time address may be a volatile cell (spec 1.3).
+
+    A volatile read is not the last store's value -- ``$D012`` counts and ``$D019``
+    reads zero -- so such a load may never be served from the store chain, and two of
+    them may not be equated; the caller gives each one its own opaque memory."""
+    if a[0] == "const":
+        return a[1] & E._mask(a[2]) in E.sidprog._VOLS
+    span = _rd_span(a, defs, ext)
+    return span is None or any(span[0] <= v <= span[1] for v in E.sidprog._VOLS)
 
 
 def _reads_of(e, out):
@@ -1333,7 +1344,9 @@ def render_proc(
             locw.setdefault(e[1], e[2] if len(e) > 2 else 1)
             return E.loc(stt["env"].get(e[1], e[1] + ".0"))
         if k == "mem":
-            return sel(stt["mem"], seed(conv(e[1]), e[1]), e[2])
+            vol = _may_read_vol(e[1], dfs, None if foot is None else foot.ext)
+            m = memk(i64(fresh())) if vol else stt["mem"]
+            return sel(m, seed(conv(e[1]), e[1]), e[2])
         mn, kids, w = e[1], e[2], e[3]
         if mn in _REWIDTH:
             return _rewidth(mn, conv(kids[0]), w)
@@ -2186,14 +2199,12 @@ def _written(stmts):
     return out
 
 
-def render_ctx(model, prog):
+def render_ctx(prog):
     """``(call summaries, footprints, pairs, derefs)`` the unified renderer reads.
 
-    Adoption §8 step 4's emitter context over the rung-built statements: the summary
-    ``repolish`` computed, the landings and extents the memory join consumes, the ONE
-    lo/hi registry, and rung (f)'s resolved pointer cells."""
-    from . import framefuse  # pylint: disable=import-outside-toplevel
-
+    Every part is read off the analysed program: the summary ``repolish`` computed, the
+    landings and extents the memory join consumes, the ONE lo/hi registry and rung (f)'s
+    resolved pointer cells. ``landings`` is the one model fact, carried since ``program``."""
     flat = [(entry, stmts) for entry, _p, _r, stmts in prog.procs]
     info = E.frameproc._Info(flat, prog.play)
     info.summarize()
@@ -2205,32 +2216,44 @@ def render_ctx(model, prog):
     foot = Footprints(
         flat,
         info.open_flow,
-        framefuse._landings(model),
+        prog.landings or (),
         _extent_spans(prog.extents, prog.data_decls),
     )
     return (
         info,
         foot,
-        frameprog._decl_pairs(prog.data_decls),
+        E.datadecl.decl_pairs(prog.data_decls),
         {c for c, _i in prog.resolved.values()},
     )
 
 
-def artifact_lines(model, prog):
-    """``frameproc.render_lines``' replacement: procedure bodies from the unified graph.
+def artifact_lines(prog, proofs=None):
+    """The artifact's procedure lines: every body from the unified graph (§8 step 4).
 
-    The headers are the program's own; every body is one saturation and one root
-    extraction over the procedure's statements (adoption §8 step 4)."""
-    info, foot, pairs, derefs = render_ctx(model, prog)
+    The headers are the program's own; a body is one saturation and one root extraction.
+    ``proofs`` collects §6's per-procedure site record -- SSA names are per procedure, so
+    one merged record would prove the wrong equalities."""
+    info, foot, pairs, derefs = render_ctx(prog)
     out = []
     for entry, params, rets, stmts in prog.procs:
         sig = "sub_%04X(%s)" % (entry, ", ".join(params))
         if rets:
             sig += " -> %s" % ", ".join(rets)
         out.append(sig + " {")
+        rec = None if proofs is None else {}
         body = render_proc(
-            stmts, prog.symbols, entry, info, foot=foot, rets=rets, pairs=pairs, derefs=derefs
+            stmts,
+            prog.symbols,
+            entry,
+            info,
+            proofs=rec,
+            foot=foot,
+            rets=rets,
+            pairs=pairs,
+            derefs=derefs,
         )
+        if rec is not None:
+            proofs.append(rec)
         out.extend(" " + ln for ln in body)
         out.append("}")
     return out
@@ -2265,12 +2288,13 @@ def _work(stmts):
 
 
 def emit_mem(model, proofs=None, stats=None, extents=None):
-    """Whole-artifact text with procedure bodies rendered via ``render_proc``.
+    """The prototype's pre-rung substrate: ``eqlift`` text over raw ``_Builder`` procedures.
 
-    ``proofs`` is a list one §6 site record per procedure is appended to -- SSA names
-    are per procedure, so one merged record would prove the wrong equalities. ``EMIT_S``
-    is divided over the procedures still to render **by work**, so slack from one funds
-    the next and the share tracks what it has to render."""
+    NOT the artifact and never a second projection of it -- since §8 step 4's switch the
+    artifact is ``frameprog.dumps``. Its one consumer is
+    ``examples/state_machine_lift.py``, whose fold layer is stated over the byte lanes
+    rung (d) fuses, and it retires with that layer at landing 4. ``proofs`` takes one §6
+    site record per procedure and ``EMIT_S`` is split over them by work."""
     decls = getattr(model, "data_decls", None)
     aliases = getattr(model, "symbols", None)
     if decls is None:
@@ -2287,7 +2311,7 @@ def emit_mem(model, proofs=None, stats=None, extents=None):
         head.append("sid-init {")
         head.extend("  $%02X = $%02X" % (r, v) for r, v in prologue)
         head.append("}")
-    state, inputs = frameprog._state_lines(view, decls, model.dispatch_sets)
+    state, inputs = E.sidprog._state_lines(view, decls, model.dispatch_sets)
     if inputs:
         head.append("inputs { %s }" % " ".join(inputs))
     header_body, _cov = E.sidprog._data_lines(decls, model.mem0)

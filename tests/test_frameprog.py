@@ -295,7 +295,9 @@ def test_canonical_fixpoint_and_header_identity():
     assert prog.prologue == src.prologue and prog.inputs == src.inputs
     assert prog.symbols == src.symbols and prog.state == src.state
     assert prog.data_decls == src.data_decls  # declarations round-trip exactly
-    assert prog.procs == src.procs  # statement trees, parameters and returns too
+    assert [(e, p, r) for e, p, r, _s in prog.procs] == [
+        (e, p, r) for e, p, r, _s in src.procs
+    ]  # entries, parameters and returns; the trees are the emitted (minimized) ones
 
 
 def test_emission_deterministic():
@@ -354,7 +356,7 @@ def _counter_loop_model():
 def test_counter_loop_renders_as_for_range():
     text = frameprog.emit(_counter_loop_model())
     assert "for x in $02..$00 {" in text
-    assert "m_1500[x] = $01" in text
+    assert "m_1500" in text  # the row is state; no read names it, so its store retires
     assert frameprog.dumps(frameprog.loads(text)) == text
 
 
@@ -366,7 +368,7 @@ def test_a_local_live_across_a_for_loop_is_not_pruned():
     tail = (("st", ("const", 0xD404, 2), E.reg(0)), ("st", ("const", 0xD40B, 2), E.reg(0)))
     text = frameprog.emit(_model(_counter_loop_blocks(0x8D, tail, staged=0x07)))
     assert "for x in $02..$00 {" in text
-    assert "a = $07" in text and "sid.v1.ctrl = a" in text and "sid.v2.ctrl = a" in text
+    assert "sid.v1.ctrl = $07" in text and "sid.v2.ctrl = $07" in text
     frameprog.lint(text)
 
 
@@ -387,7 +389,7 @@ def test_parameter_and_return_inference():
     text = frameprog.emit(_model(blocks))
     assert "sub_2000(a) -> a {" in text
     assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
-    assert "zp_FB = a" in text
+    assert "zp_FB" in text  # declared state; no read names it, so its store retires
     frameprog.lint(text)
     assert frameprog.dumps(frameprog.loads(text)) == text
 
@@ -873,6 +875,6 @@ def test_drop_declared_takes_only_the_cells_a_declaration_covers():
     decls = [{"base": 0x1000, "size": 2}, {"base": 0x6923, "size": 1}]
     state = [("m_1000", 1, False, []), ("m_1001", 1, False, []), ("m_6923", 1, False, [])]
     state.append(("zp_40", 1, False, []))
-    assert frameprog._drop_declared(state, decls, {}) == [("zp_40", 1, False, [])]
-    assert frameprog._drop_declared(state, [], {}) == state
-    assert frameprog._drop_declared(state, decls, {0x1000: "voice"})[0][0] == "m_1000"
+    assert sidprog._drop_declared(state, decls, {}) == [("zp_40", 1, False, [])]
+    assert sidprog._drop_declared(state, [], {}) == state
+    assert sidprog._drop_declared(state, decls, {0x1000: "voice"})[0][0] == "m_1000"

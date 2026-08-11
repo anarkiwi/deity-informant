@@ -570,7 +570,7 @@ class Evaluator:
         The one volatile model is the walker's: its cycle-derived reads are the
         pinned inputs, its constant-0 sources (``structured._VOL0``) read 0 here
         exactly as they do there, whatever byte the state image holds."""
-        name = frameprog._INPUTS.get(a)
+        name = sidprog._INPUTS.get(a)
         if name is None:
             return 0 if a in C._VOL0 else self.m[a]
         if name not in self.inputs:

@@ -561,83 +561,84 @@ the statement set it prints, `pcall` included; and then, on the canonical exampl
 `frameproc._index_of`'s breadth, routes a register-file base through the `sid.reg` view,
 and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word column.
 
-**What step 4 still owes is the unconditional path, and the switch now has a named
-blocker.** `frameprog.dumps` renders through `frameproc.render_lines` still;
-`eqlift_mem.artifact_lines` is what it will call, and the splice in
-`tests/test_step4_splice.py` plus `tools/splice_sweep.py` are the gates, not the artifact.
-The blocker is an **import cycle with a design question inside it**: `eqlift_mem` reads
-`frameprog._state_lines` for the PoC artifact's header, so `frameprog` may not call
-`eqlift_mem` (pylint R0401, and CI fails on it). Three answers, and the switch must pick
-one: move the `state { }` emitter (`_state_fields`/`_field_line`/`_cells` and the
-`_INPUTS`/`_ZERO`/`_SID_*` constants) into `sidprog`, which already holds `_data_lines` and
-the header helpers; hand `eqlift_mem.emit` its header from the caller; or **retire
-`eqlift_mem.emit`/`emit_mem` as the second projection** — with frameprog emitting through
-the unified graph they are a second emitter over the same model, which is exactly what the
-sidprog retirement removed ("there is no second projection left"), and their one consumer
-`tools/eqlift_measure.py` is subsumed by `tools/splice_sweep.py` measuring the real
-artifact. The third is the plan-shaped answer and it deletes the most; it also moves the
-exemplar review onto the corpus sweep, so the 25-exemplar baseline retires with it.
-§5's `_Prune`/`_inline` deletions and rung (d2)'s per-site
-e-graphs are subsumed only where the unified graph is what emits, so they land with that
-switch and with the corpus diff it moves. §5's `eqlift_mem` liveness deletions (`_dce`,
-`_temp_sweep`, `ROOT_EXTRACT` and every `root_extract` parameter) **are landed**, and the
-exemplar review now measures one path against a recorded baseline; the saturation schedule
-is **a round cap and a node bound**, so no clock reading reaches the artifact. Beside the
-switch stand the `state { }` demotion — which has no subject until the unified path
-emits, since scratch demotion is root extraction's and frameprog's own emit has none —
-and the 24 shredder stage-3 pins, which are now measured
-against the cutover's own emitter (`_spliced`) and of which exactly **one** flips there.
-The `returns` set landing 1 owed is **refused, with its reason measured**: the only
-procedures it can relax are the ones `slot_reader` blocks, and those return to a pc the
-call site does not name, so the sound mechanism is a `framestack` reading of each site's
-resume pc rather than an `_Info` relaxation.
+**Step 4's unconditional path is LANDED: `frameprog.dumps` renders through the unified
+graph.** An analysed program (`frameprog.program`) carries `landings` and renders through
+`eqlift_mem.artifact_lines`; a parsed one carries none and renders through
+`frameproc.render_lines`, so `dumps(loads(t)) == t` is a gate on the unified emitter rather
+than an accident, and `frameprog.render_lines(prog)` is the replaced projection kept as the
+control. The import cycle took the **first** of #181's three answers, not the third: the
+`state { }` emitter moved to `sidprog` and `_decl_pairs` to `datadecl`, because measurement
+showed the third — retiring `emit`/`emit_mem` — cannot land here. `emit`'s one consumer is
+`examples/state_machine_lift.py`, the acceptance gate, whose parser fails on the artifact's
+first statement and whose fold layer is stated over byte lanes rung (d) has already fused;
+re-basing it is landing 4's subject. `emit_mem` is named in code as what it is — the
+prototype's pre-rung substrate, one consumer, retiring with that layer — and
+`tools/eqlift_emit.py`/`eqlift_measure.py` are deleted with the 25-exemplar review, which
+moves to the corpus. §5's `eqlift_mem` liveness deletions **are landed**; the saturation
+schedule is **a round cap and a node bound**, so no clock reading reaches the artifact.
+§5's `_Prune`/`_inline` are **not** subsumed and the reason is measured: `procedures` and
+`repolish` run them before rungs (d), (d2), (f) and (g), which pattern-match the polished
+statements, so their deletion is a rung-input change gated by `gate_sweep` plus a full
+emit-identity diff. The `returns` set landing 1 owed is **refused, with its reason
+measured**: the only procedures it can relax are the ones `slot_reader` blocks, and those
+return to a pc the call site does not name, so the sound mechanism is a `framestack`
+reading of each site's resume pc rather than an `_Info` relaxation.
 
-**Landing 2 is closed (#173-#177); landing 3 opens with the emitter made corpus-worthy
-(#179), and the switch itself is what it still owes.** The landings are renumbered from
-here: **3** is the unconditional path (adoption §8 step 4's remainder, with §5's
-`_Prune`/`_inline` and rung (d2) deletions), **4** role-typed emission + steering metrics,
+**Landing 2 is closed (#173-#177); landing 3's emitter was made corpus-worthy (#179) and
+then switched on (#182).** The landings are renumbered from here: **3** is the
+unconditional path (adoption §8 step 4), **4** role-typed emission + steering metrics,
 **5** the witness completed, **6** the housekeeping and the stage close.
 
-Landing 3 part 1 (#179) is landed: the unified renderer is measured on all 624 tunes
-rather than on the canonical example, and the sixteen faults that measurement found are
-fixed. The corpus measurement is now a tool (`tools/splice_sweep.py`): per tune the text
-parses, is a `dumps`/`loads` fixpoint, defines every local it reads, and the program it
-parses back to reproduces the walker's projection. Against the **control** — the same four
-checks over `frameproc.render_lines`' own text, which is where the finding is that 87 of
-624 tunes fail them today — the unified emitter is **zero new failures, three fixed**, a
-`dumps`/`loads` fixpoint on **624 of 624**, and **−4,603 lines with no tune larger** (575
-smaller). Emit identity is **unmoved**, which is what capability with zero use means.
+The switch found two faults, both fixed with the landing. A store forwarded into a
+**volatile** read (`m_D019 = $81` then `$D019` read back `$81`, where it reads zero):
+`eqlift_mem._may_read_vol` now serves any load whose address may be a volatile cell from a
+fresh opaque memory, so neither the chain nor the graph's sharing reaches it. And a word
+stored then read lane by lane came back as its own repack, because no rule stated the dual
+of `pack_hi`/`pack_lo`: `pack_split` is admitted at width 2 and Z3-proved with the other 90.
+One prototype-family pin flipped (`test_borrow_chain_is_one_wide_compare` — the wide compare
+is an artifact fact; the shredder family is 23), and one law weakened on the record: M-FP2's
+`prog.procs == src.procs` is now the entry/parameter/return identity, because the text is
+the minimized program.
 
-The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,506,888
-bytes**, aggregate `bc256138777fb033fc2b3d49d8b54c21218d5c87c3402a1e838eae04a59e3f5b`;
+The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,654
+bytes**, aggregate `f9f025b13d8b4f3ac98aeb884ce194c142de729b834fe843be5b4eedfdb951b4`;
 `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
-and zero refusals; suite **2,738 passed / 490 skipped / 32 xfailed**, oracle 16; the
-25-exemplar review against the new recorded baseline `out/eqlift_measure_s4l3.json`
-**26,909 lines / 1,984 stores**, 13,909 extraction sites, 2,884 changed, 12,226 proved,
-zero faults, refusals, unproved sites and extraction fallbacks; the corpus splice sweep
-`out/splice_s4l3.json` against `out/splice_base.json`; prototype ratchets **339 lines / 820
-nodes**. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved
-and cannot until landing 4 turns the role keywords on; what moved in landing 2 is fidelity
-and determinism, and what moved in landing 3 part 1 is soundness of the emitter that is
-about to become the artifact. The `state { }` demotion still has no subject: scratch
-demotion belongs to root extraction and frameprog's own emit has none, so it has nothing
-to drop until the switch.
+and zero refusals; suite **2,746 passed / 490 skipped / 31 xfailed**, oracle 16; the corpus
+text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
+`out/splice_base_s4l3b.json`) **84 bad against the control's 87 — zero new, three fixed**,
+parse and fixpoint **624 of 624**, **210,037 rewritten sites proved, zero unproved**,
+−4,528 lines with no tune larger; prototype ratchets **339 lines / 820 nodes**. The
+25-exemplar review and `out/eqlift_measure_s4l3.json` are retired with the tool that made
+them. Stage 4's headline metric — tunes wearing zero machine shapes — has **not** moved and
+cannot until landing 4 turns the role keywords on; what the switch moved is which emitter
+ships.
 
-**The open items, each with its mechanism, as landing 3 part 1 leaves them.**
-- **The switch** (landing 3): the import cycle above, then `dumps` reading lines the
-  analysed program carries (a parsed program keeps `render_lines`, which is what makes the
-  fixpoint the gate rather than an accident), then §5's deletions on the corpus diff the
-  switch moves, then the emit-identity baseline re-recorded with a §4 review. `gate_sweep`
-  cannot see the switch — it evaluates the analysed program and never reads the text — so
-  `tools/splice_sweep.py` is the gate that can, and the re-measure of the 24 shredder
-  stage-3 pins moves from `_spliced` to `_lift`, where they become artifact facts.
-- **The parse-and-evaluate gap, newly measured and unowned.** 87 of 624 tunes fail on the
-  emitter that ships today: the emitted text, parsed back and evaluated, faults or diverges
-  where the analysed program does not (27 faults, 9 `lint`, 52 divergences; 84 on the
-  unified emitter, zero of them new). 3a's totality claim is about the *cache* round trip,
-  which `emit_identity` exercises and which holds; this is a different claim and it does
-  not. The tool records both sides (`out/splice_base.json`, `out/splice_s4l3.json`); the
-  diagnosis is a per-tune bisection of the kind #179 ran, and no landing owns it yet.
+**The open items, each with its mechanism, as the switch leaves them.**
+- **§5's `_Prune`/`_inline` deletion** (landing 3, next part): not a rendering change but a
+  rung-input change, since rungs (d), (d2), (f) and (g) pattern-match the polished
+  statements. Its gate is `gate_sweep` plus a §4-reviewed emit-identity diff, and rung
+  (d2)'s per-site e-graphs go with it only where the same admitted rules fire in the
+  per-procedure graph.
+- **The `state { }` demotion now has its subject** (landing 3): the artifact retires a store
+  whose cell no surviving read names (`zp_FB`, `m_1500[x]`, `zp_16` in the hermetic
+  fixtures), and the declaration stays behind it — declaration truth broken by the emitter's
+  own scratch rule. The mechanism is root extraction's `_scratch` set, collected out of
+  `artifact_lines` and dropped from `prog.state` at `dumps`, with the fixpoint as the gate.
+  `test_state_block_holds_no_scratch` is the pin it flips.
+- **A multi-reader memory forward is re-spelled per site.** `Cuomo_Jim/Cage_Match` grew 831
+  bytes on five fewer lines because the PLP status word `m_01FD` is stored once, read three
+  times, and each read re-spells the whole seven-term rebuild. `_share_once` states the rule
+  for a multi-read local; the forward needs it across roots. Owner: landing 4, whose
+  headline metric is emitted size.
+- **The parse-and-evaluate gap, measured and still unowned.** 87 of 624 tunes fail on the
+  replaced projection and **84 on the artifact** — the emitted text, parsed back and
+  evaluated, faults or diverges where the analysed program does not (25 errors, 9 `lint`, 50
+  divergences; zero new against the control, three fixed). 3a's totality claim is about the
+  *cache* round trip, which `emit_identity` exercises and which holds; this is a different
+  claim and it does not. With the switch, text validity is gate-critical and
+  `tools/splice_sweep.py` is the standing per-landing gate that sees it; the diagnosis is a
+  per-tune bisection of the kind #179 ran, and **no landing owns it yet** — it must be
+  taken or refused by name at the stage close.
 - **`ret_live` for a slot-rewriting callee** (landing 1's owed, #177's refusal): a
   `framestack` reading of each call site's resume pc — call site plus inline-data length,
   where `lift_rts_trick` concretizes `sp` — unioned as the live-in. Not an `_Info`
@@ -646,13 +647,14 @@ to drop until the switch.
   text writes as `X[x]`, because `_cell_decl` reads `model.written` at the base alone. It
   is a declaration-truth defect of `_declare_cells` and owes its own measurement.
 - **Landings 4-6** are as their sections state them, none begun: role-typed emission and
-  the steering metrics (landing 4), the witness completed — the raw `call`/`callb` and
-  static-image-vector refusals, the signed compare over unequal operand widths, the three
-  `Asm` copies onto `asm6502.py` (whose tables differ semantically: `_fuzzgen` admits
-  illegal opcodes and resolves duplicate legal `(mn, mode)` pairs to the highest byte where
-  `asm6502` takes the lowest, so the merge moves fixture bytes), the 25-exemplar VM sweep
-  (landing 5), and the song-model retirement, the `swc` in-edge join extension, the
-  `low_held_cursor` ptrcert rung and the stage close (landing 6).
+  the steering metrics, with the prototype's fold layer re-based onto the artifact (landing
+  4); the witness completed — the raw `call`/`callb` and static-image-vector refusals, the
+  signed compare over unequal operand widths, the three `Asm` copies onto `asm6502.py`
+  (whose tables differ semantically: `_fuzzgen` admits illegal opcodes and resolves
+  duplicate legal `(mn, mode)` pairs to the highest byte where `asm6502` takes the lowest,
+  so the merge moves fixture bytes), the 25-exemplar VM sweep (landing 5), and the
+  song-model retirement, the `swc` in-edge join extension, the `low_held_cursor` ptrcert
+  rung and the stage close (landing 6).
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2268,3 +2270,105 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   which is why `render_ctx`/`artifact_lines` sit with the renderer. The three answers are
   in the position paragraph; the third — retiring `emit`/`emit_mem` as the second
   projection — is the one the plan's own precedent points at.
+- **2026-08-11 — stage 4, landing 3: the switch. `frameprog.dumps` renders through the
+  unified graph, the corpus artifact moves, and the two faults the switch found are fixed.**
+  (1) **The recorded answer to the cycle is overturned by measurement, and the measurement
+  is the prototype.** #181 pointed at retiring `emit`/`emit_mem` as the second projection.
+  `emit`'s one consumer is `examples/state_machine_lift.py`, the plan's acceptance gate, and
+  it refuses the artifact twice over. Its dialect parser fails on the artifact's **first**
+  statement (`SyntaxError: trailing ':' in 'ctr_0030:2'`; behind the width suffix stand
+  `pcall`, `carry(`, `trunc1(` and `*ptr[i]`). And its fold layer — `FOLDS`: `pair_set`,
+  `pair_store`, `advance`, `wide_cmp`, `wide16`, `wide24`, `row_read` — is *stated over the
+  byte lanes rung (d)/(d2) has already fused*: where `emit` gives the three-byte ADC chain
+  the artifact gives `q0:2 = ctr_0030:2; ctr_0030:2 = (q0:2 + $2B91):2`, so those proofs have
+  nothing to fire on and fifteen green pins go red. Re-basing the fold layer onto the
+  artifact is landing 4's own subject (role-typed emission moving into the engine), not a
+  line in the switch. So the switch takes the **first** recorded answer for the cycle and
+  says what `emit_mem` now is.
+  (2) **The cycle, closed by moving the reading and not the emitter.** The `state { }`
+  emitter — `_scan`, `_cells`, `_state_fields`, `_drop_declared`, `_field_line`,
+  `_extent_names`, `_state_lines` and the `_INPUTS`/`_ZERO`/`_SID_*` constants — moves to
+  `sidprog`, which already holds `_data_lines`, `_symbol_lines`, `_image_lines`,
+  `_alias_sub` and `_addr_name`; `frameprog._decl_pairs` becomes `datadecl.decl_pairs`. With
+  both readings where their inputs live, `eqlift_mem` imports neither and `frameprog`
+  imports `eqlift_mem` at module scope: no R0401, `pylint deity_informant/` 10.00.
+  `emit_mem`'s docstring now states what it is — the prototype's **pre-rung substrate**, not
+  the artifact and never a second projection of it, one consumer, retiring with the fold
+  layer at landing 4. `tools/eqlift_emit.py` and `tools/eqlift_measure.py` are deleted and
+  the 25-exemplar review with them: it moves to the corpus, as #179 recommended.
+  (3) **What `dumps` renders, and why the fixpoint is still the gate.** `FrameProgram`
+  carries `landings` (`framefuse._landings(model)`, the one model fact `render_ctx` read) and
+  `lines()` renders once — through `eqlift_mem.artifact_lines` when the program is analysed,
+  through `frameproc.render_lines` when it is parsed (`landings is None`). So
+  `dumps(loads(t)) == t` asks whether the unified emitter's text is what `render_lines`
+  prints for the program it parses back to, which is what makes the fixpoint a gate on the
+  emitter rather than an accident, and it holds on **624 of 624**. `frameprog.render_lines(prog)`
+  is the projection step 4 replaced, kept as the control: patched over `FrameProgram.lines`
+  it gives the pre-switch text, and `splice_sweep --baseline` and `test_step4_splice`'s
+  control are the same one call. The block-model rebuild is unaffected by construction —
+  `block_model` reads the evidence channels and the image, never the statements — so the
+  emit identity is the same cold or warm off the sweep cache.
+  (4) **A soundness fault: a store forwarded into a volatile read.** `m_D019 = $81` followed
+  by a read of `$D019` came back `$81`. A volatile load is not the last store's value —
+  `$D012` counts, `$D019` and `$DC0D` read zero (spec 1.3) — and two such loads are not one
+  value. `eqlift_mem._may_read_vol` reads the load's address: a constant in
+  `structured._VOL | _VOL0`, or a span (`_rd_span`, 2b's extents included) that may cover
+  one, or ⊤. Such a load is served from a **fresh opaque memory**, so neither the store
+  chain nor the e-graph's own sharing can reach it. `frameproc` had this refusal
+  (`sidprog._ld_safe`) and the unified chain did not; the fuzz fixture built for exactly
+  this rule (`test_frameval.py::test_constant_zero_sources_read_as_the_walker_reads_them`)
+  is what caught it, and it was invisible before the switch because nothing evaluated the
+  unified text.
+  (5) **A rule the word-store forward needs, admitted and proved.** A word stored and then
+  read lane by lane came back as its own repack —
+  `sid.v1.freq_lo:2 = ((zext2(trunc1((d0:2 >> $08):2)) << $08):2 | zext2(trunc1(d0:2))):2` —
+  because no rule stated the dual of `pack_hi`/`pack_lo`. `pack_split`
+  (`(hi<<8)|lo == x` where the lanes are `trunc(x>>8)`/`trunc(x)`) is admitted at width 2,
+  Z3-proved with the other 90, and the six `test_shred16` byte-shadow cases it broke go
+  green. Every 16-bit datum a 6502 writes wide and reads lane by lane meets it.
+  (6) **§6's all-sites law now runs where the text ships.** `artifact_lines(prog, proofs)`
+  collects one site record per procedure and `tools/splice_sweep.py` verifies them as a
+  check beside `parse`/`lint`/`fixpoint`/`gate`; `eqlift_measure --prove` had been proving
+  `emit`'s sites, which are no longer the artifact's.
+  (7) **One pin flips and one law weakens, both on the record.**
+  `test_borrow_chain_is_one_wide_compare` XPASSed the moment the artifact became the unified
+  text and its xfail is gone — the wide compare is an artifact fact, the family is 23 pins,
+  and the artifact re-measurement (`_spliced` retired onto `_lift`) expects no further
+  XPASS. M-FP2's `prog.procs == src.procs` **weakens**: the text is the minimized program,
+  so the trees it parses back to are the emitted ones. What stands is the entry/parameter/
+  return identity, the text fixpoint and Gate FP.
+  (8) **Five green tests were restated, none deleted, and each restatement is the emitter
+  working.** Single-use values spell at their use (`sid.v1.ctrl = (m_1400 + $10)`, not
+  `s0 = ...`); a store whose cell no surviving read names retires (`zp_FB`, `m_1500[x]`,
+  `zp_16`), which is root extraction's scratch rule and is what finally gives the `state { }`
+  demotion a subject; the byte-lane carry prints as the unsigned compare it is
+  (`((ctr0 + $37) < $37)`), so `test_framemath` asks for the carry in either spelling.
+  (9) **§5's `_Prune`/`_inline` are NOT subsumed by this switch, and the reason is their
+  consumer.** They were listed as replaced by root extraction and `_share_once` "on the
+  unified path", and for the *rendering* that is true. But `frameproc.procedures` and
+  `repolish` run them **before** rungs (d), (d2), (f) and (g), which pattern-match the
+  polished statements — `framemath`'s carry chain, `framefuse`'s pairs, `frameptr`'s derefs.
+  Deleting them is a rung-input change measured by `gate_sweep` plus a full emit-identity
+  diff, not a rendering change, and it is the next part's, with that as its mechanism.
+  (10) **The §4 review, at the sampling the diff justifies.** 623 of 624 tunes moved (one,
+  `Blanchette_Francois/Bird_on_the_Run_II`, is byte-identical); the aggregate is `f9f025b1…` at
+  **28,258,654 bytes**, −248,234. Read by hand: `Akira_K/Data_Data_Data_Data` (−3,097, the
+  largest) is a strict readability win — `nflag = (a <s $00)` for the sign-bit mask,
+  `if (a < $20)` for `ifnot ($20 <= a)`, `ptr_2B99:2 = ptr_2B91:2` where the same pack was
+  printed twice, and single-use loads spelled at their sink. Five tunes grew and
+  `Cuomo_Jim/Cage_Match` (+831 bytes on **five fewer lines**) is why: the PLP status word
+  `m_01FD` is stored once and read three times, and each read re-spells the whole
+  seven-term rebuild instead of naming it. **That is the named finding this review leaves**
+  — a memory forward with more than one reader is re-extracted per site, where `_share_once`
+  names a multi-read local — and its owner is landing 4's steering metrics, whose headline
+  is emitted size.
+  (11) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals. Suite **2,746 passed / 490 skipped / 31
+  xfailed** (one pin flipped; the retired tool took its nine cases), oracle 16, coverage
+  **89.92%**. `tools/emit_identity.py` records the new baseline
+  `f9f025b13d8b4f3ac98aeb884ce194c142de729b834fe843be5b4eedfdb951b4`, 624 tunes, 0 refused,
+  28,258,654 bytes. `tools/splice_sweep.py` at full Songlengths against its own control:
+  **zero new failures, three fixed** (87 -> 84 bad),
+  parse and fixpoint on **624 of 624**, **210,037 rewritten sites proved and zero
+  unproved**, and −4,528 lines with **no tune larger** (575 smaller). `black --check` and
+  `pylint` clean.

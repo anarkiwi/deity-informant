@@ -277,6 +277,15 @@ def _pair_streams(strs):
     return out
 
 
+def decl_pairs(decls):
+    """``{lo base: (hi base, size)}`` off the declared roles, the ONE pair registry."""
+    return {
+        d["base"]: (d["role"][1], d["size"])
+        for d in decls
+        if d.get("role") and d["role"][0] == "lo"
+    }
+
+
 class Regions:
     """The declarations indexed by containment: which declared datum holds a byte.
 

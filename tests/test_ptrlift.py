@@ -46,6 +46,7 @@ def _lifted(name, records):
         ext,
         p.dispatch,
         p.evidence,
+        landings=p.landings,
     )
     return out, proofs
 

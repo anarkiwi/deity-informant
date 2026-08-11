@@ -5,6 +5,8 @@ into the next lane is one 16-bit update bound to a word local; a broken premise
 refuses that site alone; a wrongly lifted site fails Gate FP.
 """
 
+import re
+
 import pytest
 
 from deity_informant import expr as E
@@ -18,6 +20,14 @@ import _fuzzgen as G
 from test_frameprog import _fuzz_model
 
 LO, HI = 0x10, 0x11  # adjacent zero-page lanes, clear of the CPU port
+_CARRY = re.compile(r"carry\(|\(\S+ \+ (\S+)\) < \1(?![\w.])")
+
+
+def _carried(text):
+    """The byte-lane carry in either spelling: ``carry(a, b)`` or the ``(a + b) < b`` it is."""
+    return _CARRY.search(text) is not None
+
+
 SLO, SHI = G.TBL, G.TBL + 0x40  # the same index in two non-adjacent tables
 OUT = 0xD404  # sid.v1.ctrl/attack_decay: observable and not a SID lo/hi pair
 STEP = G.TBL + 0x80
@@ -60,7 +70,7 @@ def test_the_classic_carry_chain_lifts_to_one_word_add():
     assert pr.status == "lifted" and pr.targets == (LO, HI)
     assert "16-bit add: lanes $0010/$0011, adjacent cells" in pr.lemma
     assert "ctr_0010:2 = (ctr_0010:2 + $0037):2" in text  # the sum lands in its own cell
-    assert "carry(" not in text
+    assert not _carried(text)
 
 
 def test_the_borrow_chain_lifts_to_one_word_sub():
@@ -146,7 +156,7 @@ def test_the_hi_lane_reloaded_after_a_write_to_it_refuses_the_site():
     (pr,) = _math(prog)
     assert pr.status == "refused" and pr.targets == (LO, HI)
     assert "an intervening statement changes an operand" in pr.lemma
-    assert ":2 = " not in text and "carry(" in text  # the site is left as two byte updates
+    assert ":2 = " not in text and _carried(text)  # the site is left as two byte updates
 
 
 def test_a_write_to_the_hi_lane_later_than_its_load_is_no_hazard():
@@ -182,11 +192,14 @@ def test_the_c64_world_cybertracker_half_goes_elsewhere(push):
     a.i("RTS")
     model, prog, text = _build("c64world", a, {0x14: 0xF0, 0x15: 0x20, 0x16: 0x00})
     (pr,) = _math(prog, "lifted")
-    assert "carry(" not in text and "(ctr_0014:2 + $0004):2" in text  # the pair reads as u16
+    assert not _carried(text) and "(ctr_0014:2 + $0004):2" in text  # the pair reads as u16
     assert "one u16 store" not in pr.lemma  # the hi half never reaches $15
     assert "ctr_0014 = trunc1(d0:2)" in text
-    dest = "sid.v1.attack_decay" if push else "zp_16"  # destacked, the slot is not a cell
-    assert "%s = trunc1((d0:2 >> $08):2)" % dest in text
+    hi = "trunc1((d0:2 >> $08):2)"
+    if push:  # destacked, the slot is not a cell and the half reaches the sink named
+        assert "sid.v1.attack_decay = %s" % hi in text
+    else:  # its one read forwards, so the cell is unread and root extraction retires it
+        assert "zp_16" not in text[text.index("sub_") :] and hi in text
     assert frameval.gate_fp(model, 8, prog) is None
 
 
@@ -287,7 +300,7 @@ def test_the_refusal_diagnostic_names_the_premise_that_failed(build, want):
     _m, prog, text = build()
     (pr,) = _math(prog)
     assert pr.status == "refused" and pr.lemma.endswith(want)
-    assert "carry(" in text and "d0:2" not in text  # left as the two byte updates
+    assert _carried(text) and "d0:2" not in text  # left as the two byte updates
 
 
 def test_a_write_later_than_the_read_it_would_spoil_is_no_hazard():
@@ -305,7 +318,7 @@ def test_a_write_later_than_the_read_it_would_spoil_is_no_hazard():
     _m, prog, text = _build("late", a, {STEP: 0x37, STEP + 1: 0x02, LO: 0x10, HI: 0x80})
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
-    assert "carry(" not in text and "d0:2 = " in text
+    assert not _carried(text) and "d0:2 = " in text
 
 
 def test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page():
@@ -320,7 +333,7 @@ def test_a_zero_page_store_cannot_disturb_a_lane_outside_the_zero_page():
     _m, prog, text = _build("zpstore", a, {WLO: 0xF0, WHI: 0x20})
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (WLO, WHI)
-    assert "carry(" not in text and "ctr_1450:2 = (ctr_1450:2 + $0150):2" in text
+    assert not _carried(text) and "ctr_1450:2 = (ctr_1450:2 + $0150):2" in text
 
 
 def test_an_unresolved_lane_prints_as_unresolved_and_sites_at_zero():
@@ -339,7 +352,7 @@ def test_the_zero_page_indexed_lanes_lift_but_never_as_one_word_access():
     assert pr.status == "lifted" and pr.targets == (0x20, 0x21)
     assert "16-bit add: lanes $0020/$0021, split tables" in pr.lemma
     assert "one u16 store" not in pr.lemma
-    assert "carry(" not in text and "d0:2 = " in text
+    assert not _carried(text) and "d0:2 = " in text
     assert "]:2" not in text  # no word access at a wrapping address
 
 
@@ -358,7 +371,7 @@ def test_a_wrapping_zero_page_store_may_reach_a_lane_below_its_base():
     (pr,) = _math(prog)
     assert pr.status == "refused"
     assert pr.lemma.endswith("the lo destination may alias the hi lane")
-    assert "carry(" in text and "d0:2" not in text
+    assert _carried(text) and "d0:2" not in text
 
 
 def test_an_absolute_indexed_store_below_the_page_still_reaches_a_zero_page_lane():
@@ -374,7 +387,7 @@ def test_an_absolute_indexed_store_below_the_page_still_reaches_a_zero_page_lane
     (pr,) = _math(prog)
     assert pr.status == "refused"
     assert pr.lemma.endswith("the lo destination may alias the hi lane")
-    assert "carry(" in text and "d0:2" not in text
+    assert _carried(text) and "d0:2" not in text
 
 
 def test_a_sixteen_bit_step_lifts_as_one_word_add():
@@ -387,7 +400,7 @@ def test_a_sixteen_bit_step_lifts_as_one_word_add():
     _m, prog, text = _build("word_step", a, {STEP: 0x37, STEP + 1: 0x02, LO: 0x10, HI: 0x80})
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (LO, HI)
-    assert "carry(" not in text
+    assert not _carried(text)
     assert "zp_10:2 = (zp_10:2 + m_1480:2):2" in text  # both addends fold to u16 reads
 
 
@@ -473,7 +486,7 @@ def test_a_step_wearing_lane_shape_does_not_become_a_lane():
     (pr,) = _math(prog)
     assert pr.status == "lifted" and pr.targets == (SLO, SHI)
     assert "16-bit add: lanes $1400/$1440, split tables" in pr.lemma
-    assert "carry(" not in text
+    assert not _carried(text)
     assert "d0:2 = (m_1400[x]:2 + zext2(m_1480[m_1580[x]])):2" in text
 
 

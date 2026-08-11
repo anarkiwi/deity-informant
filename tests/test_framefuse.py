@@ -260,12 +260,12 @@ def test_a_hi_first_lane_pair_merges_on_an_index_it_can_say_nothing_about():
 
     ``y`` comes from ``osc3``, so no constant set reaches the store and the old
     ``_lww`` gate refused the merge outright -- the pair stayed two byte stores to
-    ``sid.reg[..]``. It merges now, spelled ``hi-first``, and Gate FP holds because
-    the two bytes leave in the order the program wrote them for every ``y``."""
+    ``sid.reg[..]``. It merges now, spelled ``hi-first`` over the index's one read of
+    the input, and Gate FP holds because the two bytes leave in the order written."""
     model = _fuzz_model(_player("hifirst_idx", _hifirst_indexed(), _HF_DATA, _HF_OUTS))
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
-    assert "hi-first sid.v1.freq_lo[((y0 & $01) | $04)]:2 = " in text
+    assert "hi-first sid.v1.freq_lo[((m_D41B & $01) | $04)]:2 = " in text
     body = text.split("sub_", 1)[1]  # the header notes name sid.reg[i] themselves
     assert "sid.reg[" not in body  # neither half survived as a byte store
     assert frameval.gate_fp(model, 64, prog) is None
