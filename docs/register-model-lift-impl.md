@@ -476,10 +476,10 @@ refusals, regressions and fallbacks. The one pin 3d re-pinned rather than flippe
 the shredder's `dispatch_scratch_promotes`, and it names its extension below.
 
 **What 3d hands step 4**, each with its mechanism and its owner:
-- **The `swc`-label extension of the in-edge join.** Landing 1's join excludes
-  dispatch labels by design — an `swc` label arrives with a memory the walk does not
-  name — so the extension is the same mechanism one step out: take the dispatch's own
-  in-edge set as the label's. `dispatch_scratch_promotes` is re-pinned on it.
+- **The `swc`-label extension of the in-edge join — WITHDRAWN (2026-08-11).** The
+  arm's label was never a join (`Footprints.joins` is already False for it); what reset
+  the memory was the computed transfer standing before the arm table, and the pairing law
+  `frameval.seq` already states is what moved the pin. See the decision log.
 - **The `low_held_cursor` rung landing.** Its premise is exactly the deref span
   landing 1's read closure computes, but its consumer is `ptrcert` — a rung landing,
   not stage 3's.
@@ -660,8 +660,9 @@ ships.
   (whose tables differ semantically: `_fuzzgen` admits illegal opcodes and resolves
   duplicate legal `(mn, mode)` pairs to the highest byte where `asm6502` takes the lowest,
   so the merge moves fixture bytes), the 25-exemplar VM sweep (landing 5), and the
-  song-model retirement, the `swc` in-edge join extension, the `low_held_cursor` ptrcert
-  rung and the stage close (landing 6).
+  song-model retirement, the `low_held_cursor` ptrcert rung and the stage close (landing 6).
+  The `swc` in-edge join extension is **withdrawn**: it was measured against the artifact
+  and is not what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2576,3 +2577,62 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   therefore needs landing 4's fold-layer re-basing to produce the program, and an image whose
   `sml.PLAY` reaches the witness entry, since the pin replays through `sml.run_vm`. It is the
   stage-close agent's, not this landing's.
+- **2026-08-11 — the shredder's dispatch pin flips on the pairing law, not on the join it
+  was pinned to.** `dispatch_scratch_promotes` was re-pinned by 3d on "the `swc`-label
+  extension of the in-edge join". Measured against the artifact the switch now emits, that
+  is not its blocker and the extension would not move it.
+  (1) **The predicted mechanism is refuted by measurement.** `Footprints.joins` is already
+  **False** at the arm's label — no `goto`, `call` or bare `swc` label names it and the
+  procedure does not own it — so the label never resets and there is nothing for an in-edge
+  join to join. What resets is the `dgoto` **before** the arm table: a computed transfer
+  havocs, and the arms are walked from the memory it left.
+  (2) **The mechanism that does move it is a law the artifact already states three times.**
+  `frameval.seq`, `witness6502._paired` and `frameproc`'s own `nxt != "swg"` readings all
+  say the same thing: *an arm table belongs to the computed transfer immediately before it
+  and to no other*. So the arms are that transfer's whole successor set, nothing runs
+  between the transfer and an arm, and the memory the arms are entered with is the memory
+  at the transfer. `render_proc`'s walk reads one statement of lookahead (`_armed`) and
+  skips the havoc for a `dgoto`/`igoto` armed by `swg` and a `dcall` armed by `swc`. An
+  unarmed computed transfer still havocs, which `test_an_unarmed_computed_transfer_still_havocs`
+  holds.
+  (3) **A second cause, and it is a bound the reader set threw away.** With the memory
+  carried, the arms spelled the value and the store still declared: the row index
+  `zext(ctr & $01)` gave `_ir_span` the interval `(0, $FF)` for **every** zero extension,
+  so the dispatch table read covered `$1400..$1501` and swallowed the scratch cell at
+  `$1460`. A zero extension is the identity on the value, so it carries its operand's own
+  interval where that interval is inside the byte this dialect extends; the e-graph's
+  `lo`/`hi` merge by join and cannot state this, but a reader interval only has to be
+  **sound**, tightening one only proves more disjointness, and the replacement is never
+  wider than the width bound it replaces.
+  Z3 discharges the weakening it replaces in
+  `test_a_zero_extension_carries_its_operand_s_interval`.
+  (4) **The pin flips and the family is 21.** `test_dispatch_scratch_promotes` XPASSes and
+  its xfail is gone; `test_the_dispatch_arms_do_not_join_the_scratch_write` is re-stated as
+  `test_the_dispatch_arms_read_the_value_and_not_the_cell`, which reads the artifact rather
+  than the retired second projection.
+  (5) **The §4 review: 57 tunes move, 39 smaller, 14 larger, 4 the same size.** −4,353
+  against +913, net **−3,440 bytes**. The reductions are one family and one shape: every
+  Follin VM player (`Ghouls_n_Ghosts` −400, `Gauntlet_III` −404, `Cosmic_Storm` −368,
+  `Chester_Field` −362, ten more at −171..−321) is a dispatch loop whose handlers now read
+  the value the dispatcher wrote instead of reading it back out of the cell.
+  (6) **The growth is one named shape, and it is a defect this landing exposes rather than
+  makes.** `Batman_the_Caped_Crusader` (+468, the largest) is **three lines**: `pcall`
+  register arguments that read `cflag, zflag, nflag` now read the flags' own definitions
+  spelled out. `pick_ir` prices the extracted candidates but reaches the site's *own* term
+  only as a fallback, when nothing else survives `_defined_at` — so any surviving candidate
+  wins on no comparison at all, and the havoc the dispatch used to perform was what made
+  "nothing else survives" true. Making the own term compete on price was built and
+  **measured and rejected**: it prints a base name for a version the site has already
+  redefined (`x = (x + $01)` where the artifact says `x = (x0 + $01)`) and re-spells two
+  flags through `carry(`. The open item is `pick_ir`'s price/fallback asymmetry and its
+  owner is landing 4's extraction order, not this landing.
+  (7) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals. Suite **2,764 passed / 490 skipped / 28
+  xfailed** against the base commit's own 2,760 / 490 / 29 in the same environment — three
+  new cases and the flipped pin. `tools/emit_identity.py` records the new baseline
+  `0497fa3536b93672c4110cb3e3015d9120740a0081ec7dd090f5d7890966a83c`, 624 tunes, 0 refused,
+  **28,255,099 bytes** off `64f763d9…`'s 28,258,539; the review below was re-run after the
+  rebase onto #186 and is byte-for-byte the same, so the two landings are orthogonal. `tools/splice_sweep.py` at full Songlengths: **zero new failures**
+  (84 bad, unmoved), parse and fixpoint **624 of 624**, **209,938 rewritten sites proved and
+  zero unproved**, −4,625 lines with **no tune larger** (575 smaller). `black --check` and
+  `pylint` (10.00/10) clean.

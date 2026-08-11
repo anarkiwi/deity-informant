@@ -1709,24 +1709,23 @@ def test_the_unified_emitter_spells_the_dispatch_header_the_dialect_spells():
     assert body.count("case $%04X" % HND0) == 1 and body.count("case $%04X" % HND1) == 1
 
 
-@pytest.mark.xfail(
-    reason="%s written-before-read joins over a dispatch; %s -- the arms are swc labels, "
-    "which 3d landing 1's in-edge join excludes by design, so each handler reads the cell "
-    "where the straight-line scratch fixture now reads the value" % (_S3, _MEASURED[2]),
-    **XFAIL,
-)
 def test_dispatch_scratch_promotes():
+    """FLIPPED: the arm table is the transfer's successor set, so the arms keep its memory.
+
+    The predicted in-edge-join extension was not the blocker -- the label never reset.
+    The two measured causes were the ``dgoto``'s own havoc, which the arm table right
+    after it makes unnecessary, and a zero extension that dropped its operand's bound."""
     assert not re.search(r"\bm_%04X\b" % TMP, _lift("dispatch_scratch"))
 
 
-def test_the_dispatch_arms_do_not_join_the_scratch_write():
-    """The dispatch pin's mechanism, measured: an ``swc`` label resets where a goto joins.
+def test_the_dispatch_arms_read_the_value_and_not_the_cell():
+    """The flip's own mechanism, stated where the pin cannot: both arms spell the value.
 
-    Both handlers read the cell on the unified path, so extending the in-edge join to the
-    dispatch's own arms is the whole of what this pin waits on."""
-    body = _emit_body("dispatch_scratch")
-    assert "m_%04X = (t0 & $0F)" % TMP in body, "the dispatch store already demoted"
-    assert body.count("sid.v1.ctrl = (m_%04X | $" % TMP) == 2, "an arm forwarded the value"
+    Each handler is entered with the memory standing at the computed transfer, so the
+    store is forwarded rather than read back, and with no reader left the store demotes."""
+    body = _body(_lift("dispatch_scratch"))
+    assert body.count("sid.v1.ctrl = ((t0 & $0F) | $") == 2, "an arm read the cell back"
+    assert "m_%04X" % TMP not in _state_block(_lift("dispatch_scratch"))
 
 
 @_fuse_pin("a cross-frame lane reload is a masked word update")
@@ -1789,7 +1788,7 @@ def test_every_stage_three_pin_carries_its_measured_disposition():
     A stage-3 xfail added later fails here until its goal property has been evaluated
     against the cutover's emitter and one of the three verdicts put on its reason."""
     pins = _stage_three_pins()
-    assert len(pins) == 22, sorted(pins)
+    assert len(pins) == 21, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _MEASURED) != 1]
 
 

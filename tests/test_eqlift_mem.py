@@ -6,6 +6,8 @@ import pytest
 pytest.importorskip("egglog")
 pytest.importorskip("z3")
 
+import z3
+
 from deity_informant import eqlift as E
 from deity_informant import eqlift_mem as mem
 
@@ -886,6 +888,41 @@ def test_a_dispatch_the_next_swg_enumerates_reads_only_its_arms():
     successor-aware cases, so every computed transfer read every register the program
     reads: a flag no arm reads was boundary-live and its definition was rooted."""
     assert mem.render_proc(_DISPATCH)[0].strip() == "goto (ptr)"
+
+
+_ARMED = [
+    ("asg", "v", ("const", 0x05, 1)),
+    ("st", ("const", 0x0040, 1), ("loc", "v")),
+    ("dgoto", ("loc", "p")),
+    ("swg", (("$1000", [("st", ("const", 0xD404, 1), ("mem", ("const", 0x40, 1), 1))]),)),
+]
+
+
+def test_an_armed_dispatch_enters_its_arms_with_the_transfer_s_memory():
+    """``frameval.seq``'s pairing law read on the graph: an arm table belongs to the
+    computed transfer right before it, so nothing runs between them and a store the
+    transfer stands after is forwarded into every arm rather than havoced away."""
+    assert "sid.v1.ctrl = $05" in "\n".join(mem.render_proc(_ARMED))
+
+
+def test_an_unarmed_computed_transfer_still_havocs():
+    """The law's other half: a computed transfer no arm table follows names a successor
+    no list enumerates, so the memory does not cross it."""
+    loose = _ARMED[:3] + [("st", ("const", 0xD404, 1), ("mem", ("const", 0x40, 1), 1))]
+    assert "sid.v1.ctrl = zp_40" in "\n".join(mem.render_proc(loose))
+
+
+def test_a_zero_extension_carries_its_operand_s_interval():
+    """A zext is the identity on the value, so a reader interval keeps the operand's
+    own bound rather than its width's; Z3 discharges the weakening it replaces."""
+    ir = ("zext", ("band", ("loc", "t0"), ("num", 0x01, 1), 1))
+    assert mem._ir_span(ir) == (0, 1)
+    assert mem._ir_span(("add", ir, ("num", 0x1402, 2), 2)) == (0x1402, 0x1403)
+    assert mem._ir_span(("zext", ("loc", "t0"))) == (0, 0xFF)
+    x = z3.BitVec("x", 8)
+    s = z3.Solver()
+    s.add(z3.Not(z3.Implies(z3.ULE(x, 1), z3.ULE(z3.ZeroExt(8, x), z3.BitVecVal(1, 16)))))
+    assert s.check() == z3.unsat
 
 
 def test_a_label_no_edge_enters_is_not_a_join():
