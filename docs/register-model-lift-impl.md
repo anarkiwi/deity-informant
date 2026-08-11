@@ -2657,6 +2657,15 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `ctr_5501: counter u8`, `idx_550A: accumulator u8` — with **zero** lines changed outside
   the state block (checked as a diff predicate on `Hubbard_Rob/Commando`, and the corpus
   `d_lines` is unmoved, which is the same statement over 624 tunes).
+  (4a) **Every pin landing 4 owns now names its mechanism, not a stage.** The five reasons
+  were re-pointed in the same change: each says what re-basing does for it — `role_text` is
+  `sml.render`'s and still names `a`/`x`/`y` off the pre-rung dialect; `classify_roles`
+  reads the folded program where the engine already separates the dispatch subject;
+  `follin_arity` recovers the operator set and nothing spells it; the artifact's own
+  `state { }` demotion landed at #183 but this block is the prototype's; the extent and
+  observed clauses are already in the artifact and the accumulator bound is the one clause
+  the engine still owes; and the post-init values are carried as `prov0`/`init_census`
+  evidence but not spelled as declaration initializers.
   (4) **What landing 4 still owes, and it is the prototype's half.** The five pins the plan
   names — no architectural register as a value, the typed handler switch, the VM operator
   set, roles carrying their evidence, and declared initial values — are asserted on
