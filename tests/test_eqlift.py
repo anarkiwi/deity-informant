@@ -97,7 +97,7 @@ def test_the_narrowing_copy_is_a_term_in_both_algebras():
 
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Commando", "Hubbard_Rob"))
 def test_commando_emit_end_to_end(sid, subtune, secs):
-    """The whole-artifact emit lifts Commando: header, play sub, a representative
+    """The prototype's substrate lifts Commando: header, play sub, a representative
     cell-forward line, deterministically -- from generic rules, no per-tune code."""
     model = _model(sid, subtune, secs)
     text, extra = eqlift_mem.emit(model)
@@ -110,7 +110,7 @@ def test_commando_emit_end_to_end(sid, subtune, secs):
 
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Krakout", "Daglish_Ben"))
 def test_krakout_emit_whole_artifact(sid, subtune, secs):
-    """emit covers calls/switches over the whole model; deterministic."""
+    """The substrate covers calls/switches over the whole model; deterministic."""
     model = _model(sid, subtune, secs)
     text, _ = eqlift_mem.emit(model)
     assert text.startswith("eqlift 0\n") and "state {" in text

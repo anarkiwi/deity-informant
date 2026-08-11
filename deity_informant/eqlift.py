@@ -589,6 +589,16 @@ def _r_pack_lo(A, w):
     return A.band(_pk(A, h, l), A.num(0xFF, 2), 2), A.zext(l)
 
 
+def _r_pack_split(A, w):
+    """The dual of ``pack_hi``/``pack_lo``: a word's two byte lanes repack to the word.
+
+    The unified path meets it wherever a word store forwards to two byte reads, which
+    is every 16-bit datum a 6502 writes wide and reads lane by lane."""
+    del w
+    x = A.tvar("x", 2)
+    return _pk(A, A.trunc(A.shr(x, A.num(8, 1), 2)), A.trunc(x)), x
+
+
 def _r_zext_mask(A, w):
     """A widened byte is already masked to its own width."""
     del w
@@ -678,6 +688,7 @@ RULES = (
         ("pack_add", (2,), _r_pack_add),
         ("pack_hi", (2,), _r_pack_hi),
         ("pack_lo", (2,), _r_pack_lo),
+        ("pack_split", (2,), _r_pack_split),
         ("zext_mask", (2,), _r_zext_mask),
     )
     + tuple(("%s_fuse" % mn, (2,), _r_bit_fuse(mn)) for mn in ("band", "bor", "bxor"))
@@ -1004,7 +1015,7 @@ _SHIFTS = {"shl": "<<", "shr": ">>"}
 class _Printer:
     """Skeleton + chosen IR terms to frameprog-style text lines.
 
-    ``pairs`` is the ONE lo/hi table registry (``frameprog._decl_pairs``): with it a
+    ``pairs`` is the ONE lo/hi table registry (``datadecl.decl_pairs``): with it a
     declared pair's pack spells the word column, without it it stays the OR.
     ``locw`` gives a local's width, which only the SID view's offset fold needs."""
 

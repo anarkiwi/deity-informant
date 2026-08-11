@@ -2,7 +2,7 @@
 
 Each fixture forces one register-model artifact and stays ``xfail(strict=True)``
 until its stage lands; each stage-3 pin also carries the adoption §8 step 4
-disposition measured on ``_spliced``, the cutover's own emitter -- one of
+disposition measured on ``_lift``, the cutover's own emitter -- one of
 ``_MEASURED``'s three verdicts."""
 
 import re
@@ -111,22 +111,6 @@ def _emit(name):
 
 def _emit_body(name):
     return _emit(name)[_emit(name).index("sub_") :]
-
-
-@lru_cache(maxsize=None)
-def _spliced(name):
-    """The cutover's own text: ``render_proc`` over ``frameprog.program``'s statements.
-
-    ``_emit`` renders raw ``_Builder`` procedures, so a rung that rewrites a statement
-    before emission is invisible to it; this is the emitter §8 step 4 installs, with the
-    declarations, the lo/hi registry and the resolved derefs the renderer reads."""
-    from unittest import mock  # pylint: disable=import-outside-toplevel
-
-    model, frames, prog = _build(name)
-    _lift_prog[name], _lift_ctx[name] = prog, (model, frames)
-    out = eqlift_mem.artifact_lines(model, prog)
-    with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: out):
-        return frameprog.dumps(prog)
 
 
 _lift_prog = {}
@@ -1191,10 +1175,10 @@ def test_the_scratch_store_demotes_on_the_unified_path_and_its_declaration_stays
 
     frameprog re-reads the cell at the SID write and keeps the store; the unified path
     spells the value and retires it, so all that is left of the pin is ``state { }``."""
-    assert "sid.v1.ctrl = (m_%04X | $40)" % TMP in _lift("scratch")
-    assert "sid.v1.ctrl = ((t0 & $0F) | $40)" in _emit_body("scratch")
-    assert not re.search(r"\bm_%04X\b" % TMP, _emit_body("scratch")), "the store survived"
-    assert re.search(r"\bm_%04X\b" % TMP, _state_block(_emit("scratch"))), "the field went"
+    procs = _lift("scratch")[_lift("scratch").index("sub_") :]
+    assert "sid.v1.ctrl = ((t0 & $0F) | $40)" in procs
+    assert not re.search(r"\bm_%04X\b" % TMP, procs), "the store survived"
+    assert re.search(r"\bm_%04X\b" % TMP, _state_block(_lift("scratch"))), "the field went"
 
 
 @pytest.mark.xfail(
@@ -1210,14 +1194,11 @@ def test_pointer_walk_names_no_raw_address():
     assert "carry(" not in body, "the pointer advance still carries between lanes"
 
 
-@pytest.mark.xfail(
-    reason="%s wide compare; %s -- the unified graph spells the borrow as the compare "
-    "it is ((ctr0 + $37) < m_1464) where frameprog spells $01 - (zext2(..) <= zext2(..)), "
-    "and step 4 XPASSes this pin -- measured on the cutover's own emitter, not on _emit "
-    "(_spliced; it is the one pin of 24 that flips there)" % (_S3, _MEASURED[0]),
-    **XFAIL,
-)
 def test_borrow_chain_is_one_wide_compare():
+    """FLIPPED at stage 4 landing 3's switch: the artifact spells the borrow as a compare.
+
+    The pin was raised at stage 3 against ``render_lines``' ``$01 - (zext2(..) <= ..)``;
+    the unified graph is what emits now, so the wide compare is an artifact fact."""
     text = _lift("borrow_chain")
     assert "carry(" not in text, "the borrow chain survives as byte-lane carries"
     assert not re.search(r"\$01 - \(zext2", text), "a borrow survives as compare arithmetic"
@@ -1226,9 +1207,9 @@ def test_borrow_chain_is_one_wide_compare():
 def test_borrow_chain_is_one_wide_compare_on_the_unified_path():
     """The pin above, verified on both unified texts: ``emit`` today and the cutover's.
 
-    ``_spliced`` is the one that decides the disposition, because it renders the
+    ``_lift`` is the one that decides the disposition, because it renders the
     rung-built statements the cutover hands the graph."""
-    for text in (_emit("borrow_chain"), _spliced("borrow_chain")):
+    for text in (_emit("borrow_chain"), _lift("borrow_chain")):
         assert "carry(" not in text, "the borrow chain survives as byte-lane carries"
         assert not re.search(r"\$01 - \(zext2", text), "a borrow survives as compare arithmetic"
     assert "(ctr0 + $37) < m_%04X" % (TGT,) in _emit("borrow_chain"), "the normal form went"
@@ -1238,7 +1219,7 @@ def test_borrow_chain_is_one_wide_compare_on_the_unified_path():
     reason="%s sinks are write-only, no read-back survives; %s -- emit's raw _Builder "
     "procedures carry the bare byte store, but frameprog's own rung widens the lone half "
     "to a read-modify-write of the u16 register BEFORE emission, so the cutover's emitter "
-    "is handed the read-back and no admitted rule removes it (measured on _spliced; the "
+    "is handed the read-back and no admitted rule removes it (measured on the artifact; the "
     "owner is the widening rung, not the graph)" % (_S3, _MEASURED[2]),
     **XFAIL,
 )
@@ -1256,7 +1237,7 @@ def test_lone_lane_half_owes_no_register_load_on_the_unified_path():
     text = _emit("lone_lane")
     assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
     assert "sid.v1.freq_hi = t0" in text, "the lone lane lost its byte-wide store"
-    spliced = _spliced("lone_lane")
+    spliced = _lift("lone_lane")
     assert re.search(r"= \(+sid\.", spliced), "the widening rung stopped minting the read-back"
     assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $00FF):2" in spliced
 
@@ -1818,33 +1799,30 @@ def test_every_stage_three_pin_carries_its_measured_disposition():
     A stage-3 xfail added later fails here until its goal property has been evaluated
     against the cutover's emitter and one of the three verdicts put on its reason."""
     pins = _stage_three_pins()
-    assert len(pins) == 24, sorted(pins)
+    assert len(pins) == 23, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _MEASURED) != 1]
 
 
-_SPLICE_XPASS = frozenset(("test_borrow_chain_is_one_wide_compare",))
+_ARTIFACT_XPASS = frozenset()
 
 
-def test_the_stage_three_pins_are_measured_against_the_cutover_emitter():
-    """The re-measurement: every pin's goal property, run against ``_spliced``.
+def test_the_stage_three_pins_are_measured_against_the_artifact():
+    """The re-measurement: every pin's goal property, run against the artifact alone.
 
     ``_emit`` renders raw ``_Builder`` procedures, so a rung that rewrites a statement
     before emission is invisible to it and a disposition measured there can be wrong;
-    the cutover's emitter is the one that decides, and exactly one pin flips on it."""
+    the artifact is the one that decides, and every pin that flips there has flipped."""
     from unittest import mock  # pylint: disable=import-outside-toplevel
 
     passed = set()
-    with mock.patch.dict(
-        globals(),
-        {"_lift": _spliced, "_emit": _spliced, "_emit_body": lambda n: _body(_spliced(n))},
-    ):
+    with mock.patch.dict(globals(), {"_emit": _lift, "_emit_body": lambda n: _body(_lift(n))}):
         for name in _stage_three_pins():
             try:
                 globals()[name]()
             except AssertionError:
                 continue
             passed.add(name)
-    assert passed == set(_SPLICE_XPASS), sorted(passed)
+    assert passed == set(_ARTIFACT_XPASS), sorted(passed)
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)

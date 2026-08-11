@@ -14,6 +14,7 @@ from deity_informant import framelog as F
 from deity_informant import frameproc
 from deity_informant import frameprog
 from deity_informant import frameval
+from deity_informant import sidprog
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 from deity_informant.frameval import FrameFault
@@ -438,7 +439,7 @@ def test_constant_zero_sources_read_as_the_walker_reads_them():
     prog = frameprog.program(model)
     assert not trace and not prog.inputs
     assert not {"m_D019", "m_DC0D"} & {f[0] for f in prog.state}
-    assert set(frameprog._INPUTS) == S._VOL and not set(frameprog._INPUTS) & S._VOL0
+    assert set(sidprog._INPUTS) == S._VOL and not set(sidprog._INPUTS) & S._VOL0
     assert frameval.gate_fp(model, 8) is None
     assert frameval.gate_fp(model, 8, frameprog.loads(frameprog.emit(model))) is None
 
@@ -447,7 +448,7 @@ def test_a_constant_zero_source_declared_as_an_input_faults(monkeypatch):
     """Mutation: declaring one pins a read the walker inlines, so nothing is
     pinned and the first read faults — the divergence this rule removes."""
     model = _fuzz_model(G.t_zero_source(np.random.default_rng(5)))
-    monkeypatch.setitem(frameprog._INPUTS, 0xDC0D, "cia_icr")
+    monkeypatch.setitem(sidprog._INPUTS, 0xDC0D, "cia_icr")
     with pytest.raises(FrameFault, match=r"iota\(0, cia_icr, 0\) past the pinned trace"):
         frameval.gate_fp(model, 8)
 

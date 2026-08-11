@@ -61,7 +61,7 @@ def test_a_straight_line_spill_becomes_a_local():
     (pr,) = _stack(prog)
     assert pr.status == "named" and pr.targets == (LOSLOT,)
     assert pr.lemma.endswith("1 store(s), 1 read(s); data temporary, local s0")
-    assert "s0 = (m_1400 + $10)" in text and "sid.v1.ctrl = s0" in text
+    assert "sid.v1.ctrl = (m_1400 + $10)" in text  # the slot's one use spells its value
     assert "m_01FD" not in text  # not a state field, not a cell
 
 
@@ -144,7 +144,7 @@ def test_a_tsx_save_txs_restore_bracket_dissolves():
     _m, prog, text = _build("spsave", a, {LO: 0x40, HI: 0x02})
     body = text[text.index("sub_") :]
     assert "sp" not in body and "m_01" not in body
-    assert "sid.v1.ctrl = s1" in body and "sid.v1.attack_decay = m_1401" in body
+    assert "sid.v1.ctrl = m_1400" in body and "sid.v1.attack_decay = m_1401" in body
     (sp,) = [p for p in prog.proofs if p.kind == "sp"]
     assert sp.status == "resolved"
 
@@ -162,7 +162,7 @@ def test_a_txs_stack_switch_with_restore_dissolves():
     _m, prog, text = _build("spswitch", a, {LO: 0x41, HI: 0x03})
     body = text[text.index("sub_") :]
     assert "sp" not in body and "m_01" not in body and "m_0080" not in body
-    assert "sid.v1.ctrl = s1" in body and "sid.v1.attack_decay = m_1401" in body
+    assert "sid.v1.ctrl = m_1400" in body and "sid.v1.attack_decay = m_1401" in body
     (sp,) = [p for p in prog.proofs if p.kind == "sp"]
     assert sp.status == "resolved"
 

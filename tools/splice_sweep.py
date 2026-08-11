@@ -1,8 +1,9 @@
-"""Adoption §8 step 4's emitter, measured over the whole cached corpus.
+"""The artifact's text gate, over the whole cached corpus.
 
-Per tune: the text parses, it is a ``dumps``/``loads`` fixpoint, every local it reads
-has a definition, and the parsed program reproduces the walker's projection under Gate
-FP. ``--baseline`` runs the same checks over ``frameproc.render_lines``' own text.
+Per tune: the text parses, it is a ``dumps``/``loads`` fixpoint, every local it reads has
+a definition, every rewritten site is Z3-proved (§6), and the parsed program reproduces
+the walker's projection under Gate FP. ``--baseline`` runs the same over the projection
+§8 step 4 replaced (``frameproc.render_lines``' own text).
 """
 
 import argparse
@@ -25,14 +26,13 @@ USAGE = """\
   python tools/splice_sweep.py --baseline -o out/base.json     # the control
   python tools/splice_sweep.py --tunes Commando --frames 600"""
 
-CHECKS = ("error", "parse", "lint", "fixpoint", "gate")
+CHECKS = ("error", "parse", "lint", "fixpoint", "gate", "sites")
 
 
 def one(entry, frames, baseline):
     """One tune's verdict on each check, or the exception that stopped it."""
     from deity_informant import eqlift_mem
     from deity_informant import frameprog
-    from deity_informant import frameproc
     from deity_informant import frameval
     from deity_informant.c64 import load_psid
 
@@ -45,13 +45,19 @@ def one(entry, frames, baseline):
         mem[0xD418] = 0x0F
         model, _ev = _sweep.decompile(mem, init, play, int(secs * 50), sub)
         prog = frameprog.program(model)
-        row["base_lines"] = len(frameprog.dumps(prog).splitlines())
+        with mock.patch.object(frameprog.FrameProgram, "lines", frameprog.render_lines):
+            row["base_lines"] = len(frameprog.dumps(prog).splitlines())
         if baseline:
-            text = frameprog.dumps(prog)
-        else:
-            lines = eqlift_mem.artifact_lines(model, prog)
-            with mock.patch.object(frameproc, "render_lines", lambda *_a, **_k: lines):
+            with mock.patch.object(frameprog.FrameProgram, "lines", frameprog.render_lines):
                 text = frameprog.dumps(prog)
+        else:
+            proofs = []
+            prog._lines = eqlift_mem.artifact_lines(prog, proofs)  # pylint: disable=W0212
+            text = frameprog.dumps(prog)
+            try:  # verify_sites raises on the first site it cannot prove
+                row["proved"] = sum(eqlift_mem.verify_sites(p) for p in proofs)
+            except AssertionError as exc:
+                row["sites"] = str(exc)
         row["lines"] = len(text.splitlines())
         row["sha"] = hashlib.sha256(text.encode()).hexdigest()
         try:
@@ -94,6 +100,7 @@ def rollup(rows):
     got["d_lines"] = sum(r["lines"] - r["base_lines"] for r in sized)
     got["larger"] = [r["tune"] for r in sized if r["lines"] > r["base_lines"]]
     got["smaller"] = sum(1 for r in sized if r["lines"] < r["base_lines"])
+    got["proved"] = sum(r.get("proved", 0) for r in rows)
     return got
 
 

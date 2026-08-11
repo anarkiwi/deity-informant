@@ -1,7 +1,8 @@
 # eqlift — adopting equality-saturation lifting (implementation plan)
 
-Status: PoC landed (`deity_informant/eqlift.py`, `deity_informant/eqlift_mem.py`,
-`tools/eqlift_emit.py`, `tests/test_eqlift.py`, `tests/test_eqlift_mem.py`); this
+Status: the engine is the artifact's emitter (`deity_informant/eqlift.py`,
+`deity_informant/eqlift_mem.py`, `tests/test_eqlift.py`, `tests/test_eqlift_mem.py`,
+`tools/splice_sweep.py`); this
 doc is the normative contract for solver-verified rewriting over a unified
 value+memory e-graph. "MUST" is a gate. 2026-08-09: the register-model plan
 (docs/register-model-lift-impl.md) adopted this engine as its stage 3; §8's
@@ -131,7 +132,7 @@ passing tests (`tests/test_eqlift_mem.py`).
 - Extraction cost policy: `_COSTS` orders leaves const < cell < local < load, ops
   cheap, `carry` expensive; SID-range cells penalized (outputs, never read back).
   Cost changes MUST be justified by a corpus-artifact diff
-  (`tools/eqlift_emit.py`), not one tune. Egg-side constructor costs and `_COSTS`
+  (`tools/splice_sweep.py`), not one tune. Egg-side constructor costs and `_COSTS`
   MUST stay order-consistent. **The memory sort is part of that order** (stage 3b
   landing 2): `pick_ir` spells a site from memory only as a last resort, so `sel`
   carries `_SEL_COST` rather than egglog's default 1 — at the default, a value class
@@ -169,8 +170,12 @@ names what is real, grep-verified at #156.)
   `_liveness` in its rooting role and `_share_once` as the rule. The measurement
   compares against a recorded baseline artifact, not a second code path.
 - `frameproc._Prune`/`_prune` and `_inline`/`_inline_list`, with the repolish
-  fixpoints that drive them — replaced by root extraction and `_share_once` on
-  the unified path. `_Prune`'s liveness is not scaffolding but the reading the
+  fixpoints that drive them — replaced by root extraction and `_share_once` **for
+  the rendering**, which the switch made unconditional; NOT yet deletable, and the
+  reason is measured (stage 4, landing 3): `frameproc.procedures` and `repolish` run
+  them *before* rungs (d), (d2), (f) and (g), which pattern-match the polished
+  statements, so deleting them is a rung-input change gated by `gate_sweep` plus a
+  full emit-identity diff. `_Prune`'s liveness is not scaffolding but the reading the
   render tree owes: stage 4 landing 3 part 1 put its call-body rule, its `armret`
   stack, its loop-head fixpoint, its `labmap` seed and its `sp`/volatile
   exemptions into `eqlift_mem._liveness`, because the corpus faulted without them.
@@ -252,7 +257,8 @@ procedure text.
    diff is a strict readability win, reviewed tune by tune; flag defaults on.
    **Landed, stage 3b landing 3**: the span join carries what it proves disjoint,
    the in-edge map frees the labels no edge enters, and the 25-exemplar review at
-   full Songlengths (`tools/eqlift_measure.py`, `DI_EQLIFT_EMIT_S=600`) flipped
+   full Songlengths (`tools/eqlift_measure.py`, retired at the switch when the review
+   moved to the corpus; `DI_EQLIFT_EMIT_S=600`) flipped
    `ROOT_EXTRACT` on — ON never emits more lines or stores than OFF, three tunes
    emit fewer, 22 of 25 are byte-identical, every changed site Z3-proved, zero
    faults and zero refusals. `DI_EQLIFT_ROOT_EXTRACT=0` selected the liveness path
@@ -264,7 +270,13 @@ procedure text.
    `dumps`/`loads` fixpoint, `lint`, and Gate FP on the parsed text — against the
    control the same four give on `render_lines`' own text; zero new failures,
    three fixed, the fixpoint on 624 of 624, −4,603 lines and no tune larger, emit
-   identity unmoved. The switch and the deletions are what remains.
+   identity unmoved. **The switch landed (stage 4, landing 3)**: `frameprog.dumps`
+   renders an analysed program through `eqlift_mem.artifact_lines` and a parsed one
+   through `frameproc.render_lines`, so the fixpoint is a gate on the emitter; the
+   sweep gained §6's all-sites proof as a fifth check (210,037 sites proved, zero
+   unproved) and is the standing per-landing text gate. `gate_sweep` 624/624/624
+   clean, emit identity moves to `f9f025b1…` on a reviewed corpus diff. What remains
+   is the §5 deletions, whose consumers are the rungs and not the renderer.
 
 ## 9. Dependency policy
 
