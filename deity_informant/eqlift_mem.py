@@ -1291,6 +1291,7 @@ def render_proc(
     rets=(),
     pairs=None,
     derefs=(),
+    demoted=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
@@ -1641,6 +1642,8 @@ def render_proc(
         info.summarize()
     gone = {id(nd) for nd, p, q in memh if eg.check_bool(egg_eq(p).to(q))}
     scratch = _scratch(wrspan, chosen, foot, entry)
+    if demoted is not None:
+        demoted.update(wrspan[i][:2] for i in scratch if wrspan[i] is not None)
     noop = _self_copies(tree, chosen, held)
     if stats is not None:
         stats["scratch"] = stats.get("scratch", 0) + len(scratch)
@@ -2227,7 +2230,7 @@ def render_ctx(prog):
     )
 
 
-def artifact_lines(prog, proofs=None):
+def artifact_lines(prog, proofs=None, demoted=None):
     """The artifact's procedure lines: every body from the unified graph (§8 step 4).
 
     The headers are the program's own; a body is one saturation and one root extraction.
@@ -2251,6 +2254,7 @@ def artifact_lines(prog, proofs=None):
             rets=rets,
             pairs=pairs,
             derefs=derefs,
+            demoted=demoted,
         )
         if rec is not None:
             proofs.append(rec)

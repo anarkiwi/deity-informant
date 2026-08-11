@@ -562,7 +562,7 @@ the statement set it prints, `pcall` included; and then, on the canonical exampl
 and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word column.
 
 **Step 4's unconditional path is LANDED: `frameprog.dumps` renders through the unified
-graph.** An analysed program (`frameprog.program`) carries `landings` and renders through
+graph, and the `state { }` demotion the switch gave a subject is landed with it.** An analysed program (`frameprog.program`) carries `landings` and renders through
 `eqlift_mem.artifact_lines`; a parsed one carries none and renders through
 `frameproc.render_lines`, so `dumps(loads(t)) == t` is a gate on the unified emitter rather
 than an accident, and `frameprog.render_lines(prog)` is the replaced projection kept as the
@@ -600,10 +600,10 @@ is an artifact fact; the shredder family is 23), and one law weakened on the rec
 `prog.procs == src.procs` is now the entry/parameter/return identity, because the text is
 the minimized program.
 
-The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,654
-bytes**, aggregate `f9f025b13d8b4f3ac98aeb884ce194c142de729b834fe843be5b4eedfdb951b4`;
+The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,258,627
+bytes**, aggregate `4b35ed0fd6969cde4a055963ae7fe3b94bdba241a89b566d21e8384fda583a65`;
 `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
-and zero refusals; suite **2,746 passed / 490 skipped / 31 xfailed**, oracle 16; the corpus
+and zero refusals; suite **2,746 passed / 490 skipped / 30 xfailed**, oracle 16; the corpus
 text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
 `out/splice_base_s4l3b.json`) **84 bad against the control's 87 — zero new, three fixed**,
 parse and fixpoint **624 of 624**, **210,037 rewritten sites proved, zero unproved**,
@@ -619,12 +619,19 @@ ships.
   statements. Its gate is `gate_sweep` plus a §4-reviewed emit-identity diff, and rung
   (d2)'s per-site e-graphs go with it only where the same admitted rules fire in the
   per-procedure graph.
-- **The `state { }` demotion now has its subject** (landing 3): the artifact retires a store
-  whose cell no surviving read names (`zp_FB`, `m_1500[x]`, `zp_16` in the hermetic
-  fixtures), and the declaration stays behind it — declaration truth broken by the emitter's
-  own scratch rule. The mechanism is root extraction's `_scratch` set, collected out of
-  `artifact_lines` and dropped from `prog.state` at `dumps`, with the fixpoint as the gate.
-  `test_state_block_holds_no_scratch` is the pin it flips.
+- **The `state { }` demotion is LANDED**: root extraction's `_scratch` spans are threaded
+  out of `artifact_lines` and `dumps` drops a field a demoted span covers that no emitted
+  line names. `test_scratch_cell_is_a_local_not_state` flipped (the shredder family is 22);
+  the prototype's `test_state_block_holds_no_scratch` does **not** flip, because its subject
+  is `sml.render`'s own state block and not the artifact's — it re-points at landing 4 with
+  the prototype's fold layer.
+- **A second declaration-truth gap: the state block and the emitter disagree about width.**
+  On the canonical example nine `u8` fields (`zp_31`, `zp_41`, `zp_4C`, `zp_61`, `zp_6A`,
+  `zp_6C`, `zp_81`, `zp_8C`, `zp_93`) are the *hi* halves of pairs the unified graph fuses
+  (`ctr_0030:2`) and rung (d) did not, so the block declares two bytes where the text reads
+  one word. The mechanism is rung (d)'s pair premise, which is stricter than the graph's;
+  the reading is `framefuse.apply_rung`'s `state` result against the fused stores the
+  artifact emits, and it is the demotion's neighbour, not the demotion.
 - **A multi-reader memory forward is re-spelled per site.** `Cuomo_Jim/Cage_Match` grew 831
   bytes on five fewer lines because the PLP status word `m_01FD` is stored once, read three
   times, and each read re-spells the whole seven-term rebuild. `_share_once` states the rule
@@ -2372,3 +2379,37 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   parse and fixpoint on **624 of 624**, **210,037 rewritten sites proved and zero
   unproved**, and −4,528 lines with **no tune larger** (575 smaller). `black --check` and
   `pylint` clean.
+- **2026-08-11 — stage 4, landing 3: the `state { }` demotion, off root extraction's own
+  scratch spans.** The switch gave the demotion its subject (the artifact retires a store no
+  reader can observe) and left the declaration behind it, which is a declaration-truth break
+  the emitter itself opened. It closes here.
+  (1) **The mechanism is the extractor's, not the text's.** `eqlift_mem._scratch` already
+  names the store nodes no reader in the artifact can observe — every other procedure's
+  reads plus this one's extracted spellings, over the footprint map — and `wrspan` gives each
+  one its address span. `render_proc` takes a `demoted` out-parameter, `artifact_lines`
+  threads it, `FrameProgram.lines` fills `prog.demoted`, and `dumps` drops a state field
+  whose cell a demoted span covers **and** which no emitted line names. Both conditions:
+  the first keeps a declaration the text still uses, the second keeps a field the extractor
+  never touched, and a parsed program demotes nothing, so `dumps(loads(t)) == t` holds by
+  construction.
+  (2) **The textual rule alone was measured first and rejected.** Dropping every field the
+  emitted text does not name takes nine more fields on the canonical example and breaks
+  twenty tests, `test_vocabulary`'s role and extent laws among them — a field's role, extent
+  and observed set are the declaration's own content, so "the body does not mention it" is
+  not a demotion. Worse, the nine are not scratch at all: they are the *hi* halves of pairs
+  the unified graph fuses (`ctr_0030:2`) and rung (d) did not, so the state block declares
+  two `u8`s where the text reads one `u16`. That is a **second** declaration-truth gap, it
+  is not this one, and it is named in the open items with rung (d) as its owner.
+  (3) **The pin flips.** `test_scratch_cell_is_a_local_not_state` — pinned at stage 3, its
+  disposition measured as "refuses, and the mechanism is named" against the cutover's
+  emitter — XPASSes and its xfail is gone; the shredder family is 22.
+  `test_the_scratch_store_demotes_..._and_its_declaration_stays` retires into it, because
+  nothing is left standing. `tools/storage_census.py` now reports **zero** declared scratch
+  on the fixture that was raised to show one.
+  (4) **The gates.** `gate_sweep` at full Songlengths **624 / 624 / 624 clean**. Suite
+  **2,746 passed / 490 skipped / 30 xfailed** (the pin flipped), oracle 16. Emit identity
+  moves on a two-tune §4 review — `Gray_Fred/Batman_the_Caped_Crusader` drops
+  `idx_1182: u8` and `Gray_Fred/A_New_Kind` drops `m_C06C: u16`, one field each and nothing
+  else — to `4b35ed0fd6969cde4a055963ae7fe3b94bdba241a89b566d21e8384fda583a65`, 624 tunes, 0
+  refused, **28,258,627 bytes**. The splice sweep is byte-for-byte the switch's: zero new,
+  three fixed, parse and fixpoint 624/624, 210,037 sites proved, −4,528 lines.

@@ -106,12 +106,13 @@ def _row(name):
 
 
 def test_scratch_cell_classes_and_verdicts():
+    """The scratch cell is no longer declared: the artifact demotes what nothing reads."""
     row = _row("scratch")
     assert row["frames"] == FRAMES
-    assert row["decl_verdict"]["m_%04X" % TMP] == "framelocal"
+    assert "m_%04X" % TMP not in row["decl_verdict"]
     assert row["decl_verdict"]["ctr_%04X" % CTR] == "persistent"
     assert row["field_verdicts"]["persistent"] >= 1
-    assert row["scratch"] >= 1 and row["persistent"] == 1
+    assert row["scratch"] == 0 and row["persistent"] == 1
 
 
 def test_scratch_has_no_top_sites_and_no_readback():

@@ -7,6 +7,8 @@ opcode switches, declared inputs and the procedural surface; ``parse``/
 
 from __future__ import annotations
 
+import re
+
 from . import datadecl
 from . import eqlift_mem
 from . import framefuse
@@ -45,6 +47,9 @@ _EVIDENCE_NOTE = (
     ";   frameprog.block_model(loads(t)) re-derives the model this text was emitted",
     ";   from, so the artifact is total and the trace need not be repeated",
 )
+
+
+_IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 def render_lines(prog):
@@ -123,6 +128,7 @@ class FrameProgram:
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
         self.landings = None if landings is None else frozenset(landings)  # None: parsed
         self._lines = None
+        self.demoted = set()  # root extraction's scratch spans, filled by ``lines``
 
     def lines(self):
         """The artifact's procedure lines, rendered once (§8 step 4's unified graph).
@@ -131,9 +137,10 @@ class FrameProgram:
         landings and renders through ``frameproc.render_lines``, which is what makes
         ``dumps(loads(t)) == t`` a gate on the unified emitter rather than an accident."""
         if self._lines is None:
-            self._lines = (
-                render_lines(self) if self.landings is None else eqlift_mem.artifact_lines(self)
-            )
+            if self.landings is None:
+                self._lines = render_lines(self)
+            else:
+                self._lines = eqlift_mem.artifact_lines(self, demoted=self.demoted)
         return self._lines
 
 
@@ -545,6 +552,28 @@ def program(model, extents=None):
     )
 
 
+def _kept_state(prog, procs, to_alias):
+    """``prog.state`` less every field root extraction demoted to per-frame scratch.
+
+    A field goes only where the emitter retired its stores as unobservable *and* no
+    emitted line names the cell, so a declaration the text still uses always stays and
+    a parsed program (which demotes nothing) re-derives the same block."""
+    if not prog.demoted:
+        return prog.state
+    named = set(_IDENT.findall("\n".join(procs)))
+    addr = {}
+    for a, nm in prog.symbols.items():
+        addr[nm] = a
+    out = []
+    for f in prog.state:
+        nm = f[0] if to_alias is None else to_alias(f[0])
+        a = addr.get(f[0], G.name_addr(f[0]))
+        gone = a is not None and any(lo <= a <= hi for lo, hi in prog.demoted)
+        if not (gone and nm not in named):
+            out.append(f)
+    return out
+
+
 def dumps(prog):
     """Canonical frameprog text; ``dumps(loads(t)) == t`` for canonical ``t``."""
     if not isinstance(prog, FrameProgram):
@@ -569,15 +598,17 @@ def dumps(prog):
         for pc in sorted(prog.dispatch)
     )
     ext = sidprog._extent_names(prog.extents, prog.symbols)
-    fields = [sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in prog.state]
+    to_alias = sidprog._alias_sub(prog.symbols)
+    procs = prog.lines() if to_alias is None else list(map(to_alias, prog.lines()))
+    state = _kept_state(prog, procs, to_alias)
+    fields = [sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in state]
     body = ["state {"] + fields + ["}"]
     data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
-    body.extend(prog.lines())
-    to_alias = sidprog._alias_sub(prog.symbols)
     if to_alias is not None:
         body = list(map(to_alias, body))
+    body.extend(procs)
     mid = sidprog._symbol_lines(prog.symbols) + _evidence_lines(prog.evidence)
     head.extend(sidprog._image_lines(prog.mem0, cov))
     return "\n".join(head + body[:n] + mid + body[n:]) + "\n"

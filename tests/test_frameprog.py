@@ -152,7 +152,8 @@ def test_volatile_read_declares_input():
     m = _model({(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], events, ("rts",), _regs())})
     text = frameprog.emit(m)
     assert "inputs { raster }" in text
-    assert " zp_FB: u8" in text and "m_D012" not in text.split("proc")[0].split("inputs")[0]
+    assert "m_D012" not in text.split("proc")[0].split("inputs")[0]
+    assert "zp_FB" not in text  # nothing reads the cell: the store and its field demote
 
 
 def test_indexed_state_arrays_and_sid_arrays_excluded():
@@ -162,7 +163,7 @@ def test_indexed_state_arrays_and_sid_arrays_excluded():
     events = [("st", arr, ("const", 1, 1)), ("st", sid, ("const", 2, 1))]
     m = _model({(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], events, ("rts",), _regs())})
     text = frameprog.emit(m)
-    assert " m_1500: u8[]" in text
+    assert "m_1500" not in text  # nothing reads the row: the store and its field demote
     assert "sid.v1.freq_lo: " not in text
 
 
@@ -356,7 +357,7 @@ def _counter_loop_model():
 def test_counter_loop_renders_as_for_range():
     text = frameprog.emit(_counter_loop_model())
     assert "for x in $02..$00 {" in text
-    assert "m_1500" in text  # the row is state; no read names it, so its store retires
+    assert "m_1500" not in text  # no read names the row, so its store and field demote
     assert frameprog.dumps(frameprog.loads(text)) == text
 
 
@@ -389,7 +390,7 @@ def test_parameter_and_return_inference():
     text = frameprog.emit(_model(blocks))
     assert "sub_2000(a) -> a {" in text
     assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
-    assert "zp_FB" in text  # declared state; no read names it, so its store retires
+    assert "zp_FB" not in text  # no read names the cell, so its store and field demote
     frameprog.lint(text)
     assert frameprog.dumps(frameprog.loads(text)) == text
 
