@@ -547,123 +547,189 @@ is **624 build; 624 evaluate / 624 clean**, zero divergences and zero refusals,
 and the shredder's four-fixture family pins the trick (one site, two sites, two
 depths, per-site skip length) rather than the two corpus tunes alone.
 
-**The position (2026-08-10), and the next landing.** Landed: **landing 1**, the
-CyberTracker continuation — the corpus gate is clean for the first time since the
-plan opened, the three `jsr_inline_skip` pins flipped on their own mechanism, and
-the emit baseline moved on a reviewed §4 diff of exactly two tunes; and two parts of
-**landing 2, adoption §8 step 4's cutover** — the narrowing `COPY` is a term
-(`eqlift.trunc`), so the splice reaches the rules, and then the dialect gains the
-signed compare while the unified renderer learns the layout, the dispatch headers and
-the statement set it prints, `pcall` included; and then, on the canonical example,
-**the cutover closes**. Both halves are landed: `frameval.gate_fp` on the spliced text is
-`None`, so the unified emitter's program is the walker's projection, and the text is a
-`dumps`/`loads` fixpoint, because `eqlift._Printer` now reads an address at
-`frameproc._index_of`'s breadth, routes a register-file base through the `sid.reg` view,
-and takes the ONE `_PAIRS` registry so a declared lo/hi pack reads its word column.
+**The position (2026-08-11): the stage-4 record, and the ledger's schedule to zero.**
+Landings 1, 2, 3 and 5 are closed, landing 4 is half landed, and landing 6 is the close.
+**Landing 1** took the CyberTracker `jsr` continuation from the return slot the callee wrote,
+and the corpus gate went clean for the first time since the plan opened (#169). **Landing 2**
+is adoption §8 step 4's cutover, built part by part: the narrowing `COPY` becomes a term so
+the splice reaches the rules (#170); the dialect gains the signed compare while the unified
+renderer learns the layout, the dispatch headers and the statement set it prints, `pcall`
+included (#171); `eqlift._Printer` reads an address at `frameproc._index_of`'s breadth,
+routes a register-file base through the `sid.reg` view and takes the ONE `_PAIRS` registry
+(#173); §5's liveness scaffold is deleted (#174); the saturation schedule becomes a round cap
+and a node bound, so no clock reading reaches the artifact (#175); a cell the data section
+declares stops being declared twice (#176); and the stage-3 pins are re-measured against the
+cutover's own emitter (#177), with landing 1's owed `returns` set **refused on a measured
+reason** — the only procedures it can relax are the ones `slot_reader` blocks, and those
+return to a pc the call site does not name (#178). **Landing 3** made the unified emitter
+corpus-worthy against a control, sixteen faults fixed (#179), gave every pin a live owner and
+named the switch's blocker (#180, #181), then switched: `frameprog.dumps` renders through the
+unified graph (#182) and the `state { }` demotion rides out of root extraction's own
+`_scratch` spans (#183). **Landing 5** completed the witness — its last three refusals close
+and the three `Asm` copies become one (#185), the arm table is read as the transfer's
+successor set (#184), and the 25-exemplar witness sweep runs with the refusal ledger at one
+(#188). **Landing 4** is half landed: the role keywords are ON and the steering metric has a
+number (#187). Beside them, stage 4's own findings — the variable-stride cursor advance folds
+(#186), and the shredder's standing pins carry live owners rather than emitter verdicts
+(#189). The landing numbering is #178's, unchanged: **3** is the unconditional path (adoption
+§8 step 4), **4** role-typed emission plus the steering metrics, **5** the witness completed,
+**6** the housekeeping and the stage close. Landing 5 closed with exactly one refusal and it
+is a claim boundary, not an owed landing: `Atmosphere_II` declares the volatile input `osc3`,
+and pinning `$D41B` in the witness would put the evaluator's trace back into the trust chain
+the witness exists to keep out.
 
-**Step 4's unconditional path is LANDED: `frameprog.dumps` renders through the unified
-graph, and the `state { }` demotion the switch gave a subject is landed with it.** An analysed program (`frameprog.program`) carries `landings` and renders through
-`eqlift_mem.artifact_lines`; a parsed one carries none and renders through
-`frameproc.render_lines`, so `dumps(loads(t)) == t` is a gate on the unified emitter rather
-than an accident, and `frameprog.render_lines(prog)` is the replaced projection kept as the
-control. The import cycle took the **first** of #181's three answers, not the third: the
-`state { }` emitter moved to `sidprog` and `_decl_pairs` to `datadecl`, because measurement
-showed the third — retiring `emit`/`emit_mem` — cannot land here. `emit`'s one consumer is
-`examples/state_machine_lift.py`, the acceptance gate, whose parser fails on the artifact's
-first statement and whose fold layer is stated over byte lanes rung (d) has already fused;
-re-basing it is landing 4's subject. `emit_mem` is named in code as what it is — the
-prototype's pre-rung substrate, one consumer, retiring with that layer — and
-`tools/eqlift_emit.py`/`eqlift_measure.py` are deleted with the 25-exemplar review, which
-moves to the corpus. §5's `eqlift_mem` liveness deletions **are landed**; the saturation
-schedule is **a round cap and a node bound**, so no clock reading reaches the artifact.
-§5's `_Prune`/`_inline` are **not** subsumed and the reason is measured: `procedures` and
-`repolish` run them before rungs (d), (d2), (f) and (g), which pattern-match the polished
-statements, so their deletion is a rung-input change gated by `gate_sweep` plus a full
-emit-identity diff. The `returns` set landing 1 owed is **refused, with its reason
-measured**: the only procedures it can relax are the ones `slot_reader` blocks, and those
-return to a pc the call site does not name, so the sound mechanism is a `framestack`
-reading of each site's resume pc rather than an `_Info` relaxation.
+**The metrics, measured fresh at this record** (one run each, off this commit). Three of the
+numbers this replaces were carried forward rather than re-run and did not describe main; the
+corrections are stated where they land, and nothing regressed — the record was behind the
+code, not the other way round.
+- `gate_sweep` at full Songlengths: **624 build / 624 evaluate / 624 clean**, zero divergences
+  and zero refusals (`out/gate_s4pr1.json`).
+- `tools/emit_identity.py`: **624 tunes, 0 refused, 28,384,068 bytes**, aggregate
+  `cfab6cfffb137904a1be106d5b2608cd9c19fe682b3f43369b9c9f49c41fb672`. **The recorded
+  baseline was wrong and this is the correction.** `--expect 018ce8f4…` **fails** on main:
+  that aggregate is `out/emit_roles3.json`'s, measured by #187 on a tree not yet rebased onto
+  #186, so it never described main at all. The two differ on **57 tunes — 39 smaller, 14
+  larger, 4 the same size, −4,353 against +923, net −3,430 bytes** — which is #186's own §4
+  review (57 tunes, −4,353 against +913) composed with #187's keyword diff. Every moving byte
+  is therefore already reviewed; what was unreviewed was the arithmetic.
+- Suite: **2,781 passed / 490 skipped / 28 xfailed** (oracle included; 2,765 not-oracle
+  plus 16 oracle). The ledger is **28 strict xfails** — 21 shredder pins under five owners
+  (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 7 the prototype's,
+  every one of them landing 4's.
+- `tools/splice_sweep.py` against its control (`out/splice_s4pr1.json` against
+  `out/splice_s4l3b.json`): **84 bad, zero new and zero fixed**, parse and fixpoint **624 of
+  624**, **209,938 rewritten sites proved, zero unproved**, emitted size **−4,625 lines with
+  no tune larger** (575 smaller). The position paragraph had −4,529 lines and 210,034 sites;
+  those are the pre-#186 run's and #187 carried them forward without re-measuring.
+- The role metric: **13,796 of 18,637 persistent cells role-named (74.0%)**, unmoved since
+  #187 turned the keywords on.
+- **The headline has a number for the first time, and it is measured on the artifact.**
+  `splice_sweep` now reports `arch`/`zero_arch` — the prototype pin's own predicate read over
+  the corpus text, architectural registers named as values with hex and comments stripped.
+  **2 of 624 tunes wear zero machine shapes**, 183,648 register tokens in all. The phased plan
+  died with this headline at 0 of 624 and it was never measured against the artifact after
+  that; the diagnostic that owned it, `tools/lift_residue.py`, reads `prog.procs` — the
+  walker's projection, upstream of extraction — so it cannot see the emitted text at all. It
+  stands at **0 of 624 zero-residue tunes and a census sum of 30,910** (the pivot's 30,854,
+  drifted by the rung landings), which is the same reading it gave before the switch and is a
+  statement about a different object. Landing 4 is what moves `zero_arch`, because the five
+  role pins and the two extraction-order items are exactly what leaves a register spelled.
 
-**Landing 2 is closed (#173-#177); landing 3's emitter was made corpus-worthy (#179) and
-then switched on (#182).** The landings are renumbered from here: **3** is the
-unconditional path (adoption §8 step 4), **4** role-typed emission + steering metrics,
-**5** the witness completed, **6** the housekeeping and the stage close.
+**The zero-ledger plan, in order.** Every entry is `xfail(strict=True)`, so the landing that
+reaches its property flips it and cannot pass silently; the bracket is what the landing takes
+off the ledger, and the reasons in the tests carry the same mechanism words.
+1. **Landing 4 — the prototype re-based onto the artifact [7 pins, 28 → 21].** One mechanism
+   moves all seven: `examples/state_machine_lift.py`'s fold layer produces a
+   `frameprog.FrameProgram` and its render layer *is* `frameprog.dumps`, which retires
+   `eqlift_mem.emit`/`emit_mem` — the second projection #181 named and #182 could not reach —
+   and `eqlift_annotate`, `emit`'s one remaining consumer, with them. Per pin:
+   `no_architectural_register_survives_as_a_value` — the rung-fused artifact names no
+   `a`/`x`/`y`, and its corpus reading is `zero_arch` above;
+   `smc_dispatch_cells_are_not_data_state` — `roles.read_sites`' `switch_cells` separation,
+   which the engine already computes; `vm_family_operator_set_is_emitted` — `follin_arity`'s
+   per-arm recovery spelled as an `operators { }` block, the one clause `sidprog.lark` lacks;
+   `state_block_holds_no_scratch` — #183's `_scratch` demotion, already in `artifact_lines`;
+   `roles_carry_their_evidence` — the artifact's `in`/observed clauses, plus the accumulator
+   bound the engine still owes; `init_lifts_to_declared_initial_values` —
+   `prov0`/`init_census` spelled as declaration initializers; and
+   `round_trip_witness_is_frame_identical` — the re-emitter exists (`witness6502.emit` takes a
+   `frameprog.FrameProgram` and returns a `Witness`), so what the pin waits on is a fold layer
+   that hands it one, plus an image whose `sml.PLAY` reaches the witness entry, since the
+   replay is `sml.run_vm`'s (#188 (9)).
+2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
+   (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
+   `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
+   the parse-and-evaluate gap, taken or refused by name. The close records items 3-8 as
+   scheduled, not as waiting.
+3. **rung (d), the pair premise [12 pins, 21 → 9].** `framefuse.refusal()` reads **one**
+   surviving byte-lane read of a pair as refusing the whole tune-wide `u16` declaration.
+   Either the declaration becomes per-seat, or the lane-update spelling
+   `(ptr & $FF00) | zext2(row)` is admitted so a lane store is a word store — a §4 rule
+   admission with a corpus diff. The same premise is the nine-`u8` width gap below, so the
+   landing closes both.
+4. **rung (d), the widening guard [1 pin, 9 → 8].** `lone_lane` is the rung *widening* a lone
+   half into a read-modify-write of a write-only register; the guard is the SID write-only
+   window `$D400`–`$D416`, and the rung must not widen a store whose destination is inside it.
+5. **`framestack`, the slot identity [1 pin, 8 → 7].** `low_held_cursor` needs an sp-relative
+   slot identity — push and pull at one entry-relative offset, a call provably below it —
+   because a page-one interval hold is unsound: the machine's own return-address push writes
+   page one and is no `st`, so the enumerated writer set is incomplete.
+   `structured.sp_flow`'s join to bot is what destroys the premise (`_sp_classes`:
+   `sp_callee`, `sp_read`). The same reading pays landing 1's owed `ret_live` — each call
+   site's resume pc is the site plus its inline-data length, unioned as the live-in.
+6. **`frameproc`, the bit analyses and the promotion they refuse [2 pins, 7 → 5].**
+   `g2_store`: `eqlift_mem._lattice` is pure over pass-1 expressions, so it moves to
+   `frameproc` and a **reach** reading takes the min with `addr_bits` — which may not do this
+   itself, because its `INT_OR` recursion needs masks. `sp_scratch_floor`: the cell survives
+   beside a raw `call` the chain havocs at, so what holds it is the promotion
+   `frameproc.slot_reader` refuses, and it flips with (5)'s resume-pc reading, not with
+   `addr_floor`.
+7. **rung (f), the writer set [4 pins, 5 → 1].** `_writers` records only width-2 stores as
+   definitions and `_hit` excepts only an exact word store, so a declared lo/hi reload row and
+   a bounded deref store both read as third writers. Measured per fixture: `pointer_walk` and
+   `mux_pair` carry no wild store and no third writer, so admitting the pair's own byte-lane
+   reload row as a definition is the whole change; `writethrough`'s store address is a row of
+   a **declared const** lo/hi table whose word set `mem0` states, so `frameptr._span` bounds
+   it off the registry — computed, not observed; `cursor_save` wants rung (f) to take a
+   constant word definition beside the held-value closure `ptrcert` already runs.
+8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0].** `computed_rows_map`'s
+   `extent_unmappable` fires because the rows the run observes are in no declared datum. The
+   `INT_OR` interval is sound and stateable — `hi(a|b) <= 2^ceil(lg(max(hi a, hi b) + 1)) - 1`,
+   `lo(a|b) >= max(lo a, lo b)` — but the e-graph's `lo`/`hi` merge by **join**, so a rule can
+   only widen and the tightening sits where `_lattice`/`_ir_span` do; the consumer that turns
+   a span into a *declaration* is `datadecl`'s `via:` discovery, so the rule is the input and
+   discovery is the mechanism.
 
-The switch found two faults, both fixed with the landing. A store forwarded into a
-**volatile** read (`m_D019 = $81` then `$D019` read back `$81`, where it reads zero):
-`eqlift_mem._may_read_vol` now serves any load whose address may be a volatile cell from a
-fresh opaque memory, so neither the chain nor the graph's sharing reaches it. And a word
-stored then read lane by lane came back as its own repack, because no rule stated the dual
-of `pack_hi`/`pack_lo`: `pack_split` is admitted at width 2 and Z3-proved with the other 90.
-One prototype-family pin flipped (`test_borrow_chain_is_one_wide_compare` — the wide compare
-is an artifact fact; the shredder family is 23), and one law weakened on the record: M-FP2's
-`prog.procs == src.procs` is now the entry/parameter/return identity, because the text is
-the minimized program.
+Items 3-8 are engine work — rungs (d) and (f), `framestack`, `frameproc`, `datadecl` — not
+emission work, which is why they sit after the stage close rather than inside it. Their only
+ordering constraint is (6) depending on (5); 3, 4, 7 and 8 may land in any order and in
+parallel.
 
-The baselines a successor starts from: emit identity **624 tunes, 0 refused, 28,387,498
-bytes**, aggregate `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`;
-`gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
-and zero refusals; suite **2,780 passed / 490 skipped / 28 xfailed** (oracle included); the corpus
-text gate `tools/splice_sweep.py` (`out/splice_s4l3b.json` against its control
-`out/splice_base_s4l3b.json`) **84 bad against the control's 87 — zero new, three fixed**,
-parse and fixpoint **624 of 624**, **210,034 rewritten sites proved, zero unproved**,
-−4,529 lines with no tune larger; prototype ratchets **324 lines / 773 nodes**. The
-25-exemplar review and `out/eqlift_measure_s4l3.json` are retired with the tool that made
-them. Stage 4's steering metric has a number for the first time: **13,796 of 18,637 persistent
-cells role-named (74.0%)**, recorded by `splice_sweep` every landing. The headline — tunes
-wearing zero machine shapes — has **not** moved, and cannot until the prototype's fold and
-render layers are re-based onto the artifact, which is landing 4's remaining part.
+**The still-open items, each with its owner and its mechanism.**
+- **Landing 4's two extraction-order items** (owner: landing 4, whose headline metric is
+  emitted size). **`_share_once` across roots**: `Cuomo_Jim/Cage_Match` grew 831 bytes on five
+  fewer lines because the PLP status word `m_01FD` is stored once, read three times, and each
+  read re-spells the whole seven-term rebuild; `_share_once` states the rule for a multi-read
+  local and the forward needs it across roots. **`pick_ir`'s price/fallback asymmetry**: the
+  site's own term is reached only when nothing survives `_defined_at`, so a surviving
+  candidate wins on no comparison at all; making the own term compete on price was built,
+  **measured and rejected** — it prints a base name for a version the site has already
+  redefined (`x = (x + $01)` where the artifact says `x = (x0 + $01)`) — so the fix owes a
+  version-correct spelling, not a price change.
+- **§5's `_Prune`/`_inline` deletion** (owner: landing 6). Not a rendering change but a
+  rung-input change: `procedures` and `repolish` run them before rungs (d), (d2), (f) and (g),
+  which pattern-match the polished statements. Its gate is `gate_sweep` plus a §4-reviewed
+  emit-identity diff, and rung (d2)'s per-site e-graphs go with it only where the same
+  admitted rules fire in the per-procedure graph.
+- **The nine-`u8` width gap** (owner: rung (d), plan item 3). On the canonical example nine
+  `u8` fields (`zp_31`, `zp_41`, `zp_4C`, `zp_61`, `zp_6A`, `zp_6C`, `zp_81`, `zp_8C`,
+  `zp_93`) are the *hi* halves of pairs the unified graph fuses (`ctr_0030:2`) and rung (d)
+  did not, so the block declares two bytes where the text reads one word. The reading is
+  `framefuse.apply_rung`'s `state` result against the fused stores the artifact emits.
+- **The parse-and-evaluate gap, now owned** (owner: landing 6, and it is three mechanism
+  families, not one). 84 of 624 tunes emit text that faults or diverges when parsed back and
+  evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 50
+  divergences**, the three sets disjoint, zero new and zero fixed against the control's 87.
+  (1) **lint, 9 tunes**: every one is `local 'a'/'nflag'/'zflag' used before definition` — root
+  extraction's rooting law, a register local read by base name at a version no def carries.
+  It is the same mechanism as `_share_once` above, which is why landing 4 is where the
+  bisection starts. (2) **faults, 25 tunes**: all 25 are `FrameFault`, 24 `unobserved $XXXX
+  reached` and 1 a switch call target outside the observed set — the text's dispatch spelling
+  losing a guard's observed set, so the owner is the `swg`/`swc` arm-table headers.
+  (3) **divergences, 50 tunes**: **15 of them are one shape** — frame 0, section `filter`,
+  position 1, `($16, $08)` against `($16, $10)`, the cutoff *hi* lane off by a single shift —
+  which is the declared-pair spelling of items 3 and 1 (`init_lifts_to_declared_initial_values`)
+  meeting at `$D415`/`$D416`, and it is the cheapest first bisection in the gap. The remaining
+  35 are one tune each. 3a's totality claim is about the *cache* round trip, which
+  `emit_identity` exercises and which holds; this is a different claim and it does not.
+- **The `_cell_decl` extent/`mut` defect** (owner: `datadecl`, plan item 8; #178 (3)).
+  `table X[1] mut 0` on a cell the text writes as `X[x]`, because `_cell_decl` reads
+  `model.written` at the base alone. A declaration-truth defect of `_declare_cells` that owes
+  its own measurement.
 
-**The open items, each with its mechanism, as the switch leaves them.**
-- **§5's `_Prune`/`_inline` deletion** (landing 3, next part): not a rendering change but a
-  rung-input change, since rungs (d), (d2), (f) and (g) pattern-match the polished
-  statements. Its gate is `gate_sweep` plus a §4-reviewed emit-identity diff, and rung
-  (d2)'s per-site e-graphs go with it only where the same admitted rules fire in the
-  per-procedure graph.
-- **The `state { }` demotion is LANDED**: root extraction's `_scratch` spans are threaded
-  out of `artifact_lines` and `dumps` drops a field a demoted span covers that no emitted
-  line names. `test_scratch_cell_is_a_local_not_state` flipped (the shredder family is 22);
-  the prototype's `test_state_block_holds_no_scratch` does **not** flip, because its subject
-  is `sml.render`'s own state block and not the artifact's — it re-points at landing 4 with
-  the prototype's fold layer.
-- **A second declaration-truth gap: the state block and the emitter disagree about width.**
-  On the canonical example nine `u8` fields (`zp_31`, `zp_41`, `zp_4C`, `zp_61`, `zp_6A`,
-  `zp_6C`, `zp_81`, `zp_8C`, `zp_93`) are the *hi* halves of pairs the unified graph fuses
-  (`ctr_0030:2`) and rung (d) did not, so the block declares two bytes where the text reads
-  one word. The mechanism is rung (d)'s pair premise, which is stricter than the graph's;
-  the reading is `framefuse.apply_rung`'s `state` result against the fused stores the
-  artifact emits, and it is the demotion's neighbour, not the demotion.
-- **A multi-reader memory forward is re-spelled per site.** `Cuomo_Jim/Cage_Match` grew 831
-  bytes on five fewer lines because the PLP status word `m_01FD` is stored once, read three
-  times, and each read re-spells the whole seven-term rebuild. `_share_once` states the rule
-  for a multi-read local; the forward needs it across roots. Owner: landing 4, whose
-  headline metric is emitted size.
-- **The parse-and-evaluate gap, measured and still unowned.** 87 of 624 tunes fail on the
-  replaced projection and **84 on the artifact** — the emitted text, parsed back and
-  evaluated, faults or diverges where the analysed program does not (25 errors, 9 `lint`, 50
-  divergences; zero new against the control, three fixed). 3a's totality claim is about the
-  *cache* round trip, which `emit_identity` exercises and which holds; this is a different
-  claim and it does not. With the switch, text validity is gate-critical and
-  `tools/splice_sweep.py` is the standing per-landing gate that sees it; the diagnosis is a
-  per-tune bisection of the kind #179 ran, and **no landing owns it yet** — it must be
-  taken or refused by name at the stage close.
-- **`ret_live` for a slot-rewriting callee** (landing 1's owed, #177's refusal): a
-  `framestack` reading of each call site's resume pc — call site plus inline-data length,
-  where `lift_rts_trick` concretizes `sp` — unioned as the live-in. Not an `_Info`
-  relaxation; the shredder's four-fixture family already carries every spelling.
-- **The `_cell_decl` extent/`mut` defect** (#178 (3)): `table X[1] mut 0` on a cell the
-  text writes as `X[x]`, because `_cell_decl` reads `model.written` at the base alone. It
-  is a declaration-truth defect of `_declare_cells` and owes its own measurement.
-- **Landings 4-6** are as their sections state them, none begun: role-typed emission and
-  the steering metrics, with the prototype's fold layer re-based onto the artifact (landing
-  4); the witness completed — the raw `call`/`callb` and static-image-vector refusals, the
-  signed compare over unequal operand widths, the three `Asm` copies onto `asm6502.py`
-  (whose tables differ semantically: `_fuzzgen` admits illegal opcodes and resolves
-  duplicate legal `(mn, mode)` pairs to the highest byte where `asm6502` takes the lowest,
-  so the merge moves fixture bytes), the 25-exemplar VM sweep (landing 5), and the
-  song-model retirement, the `low_held_cursor` ptrcert rung and the stage close (landing 6).
-  The `swc` in-edge join extension is **withdrawn**: it was measured against the artifact
-  and is not what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
+**Landings 4 and 6 are what remain of stage 4**, and their sections above state them. The
+`swc` in-edge join extension is **withdrawn**: it was measured against the artifact and is not
+what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
 
 ## Independent housekeeping (blocks nothing)
 
@@ -2680,6 +2746,9 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `018ce8f4e4f1623c8970cef39c6db88ba735fc606abe9820bd4eb891ca956376`, 624 tunes, 0 refused,
   **28,387,498 bytes** (+128,959: the keywords are emitted bytes). Splice sweep against its
   control: **zero new, three fixed**, parse and fixpoint 624/624, 210,034 sites proved.
+  *(Corrected 2026-08-11: this run was not rebased onto #186, so neither the aggregate nor the
+  splice numbers describe main. Main is `cfab6cff…` / 28,384,068 bytes, −4,625 lines and
+  209,938 sites proved — see the record entry at the end of this log.)*
 - **2026-08-11 — the shredder's re-measure is empty by construction, and the 21 standing
   pins get owners instead of verdicts.** #177 gave every stage-3 pin one of three
   dispositions measured against `_emit`, then `_spliced`, then the cutover's emitter. The
@@ -2742,3 +2811,68 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (8) **The gates.** Tests and documentation only -- no emitter source is touched, so no
   artifact can move -- and the suite is unchanged at the base commit's own counts, with
   `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-11 — the stage-4 record: the metrics are re-measured, the headline gets a number,
+  and every standing pin gets a landing.** #189 gave the shredder's family owners instead of
+  verdicts; this closes the record around them. A record is a measurement, so it was measured
+  rather than carried forward — and three of the recorded numbers did not survive that.
+  (1) **The standing emit-identity baseline never described main.**
+  `--expect 018ce8f4…` **fails** on this commit, which emits
+  `cfab6cfffb137904a1be106d5b2608cd9c19fe682b3f43369b9c9f49c41fb672` over 624 tunes, 0
+  refused, **28,384,068 bytes**. `018ce8f4…` is `out/emit_roles3.json`'s: #187 measured it on
+  a tree that had not been rebased onto #186 and recorded it as the baseline. The two differ
+  on **57 tunes — 39 smaller, 14 larger, 4 the same size, −4,353 against +923, net −3,430
+  bytes** — which is #186's own §4 review (57 tunes, 39/14/4, −4,353 against +913) composed
+  with #187's keyword diff, the +10 being the keywords a moved state block spells differently.
+  So every moving byte was reviewed when it moved; what was never reviewed was the arithmetic,
+  and `--expect` is the gate that should have caught it at #187 and was not run.
+  (2) **Two splice metrics were two landings stale.** The position quoted **−4,529** emitted
+  lines and **210,034** proved sites as landing 4's; both are `out/splice_s4l3b.json`'s, from
+  before #186. A fresh run says **−4,625 lines with no tune larger** (575 smaller) and
+  **209,938 sites proved, zero unproved** — #186's own numbers, so nothing regressed and the
+  record was simply behind. 84 bad against the control, **zero new and zero fixed**; parse and
+  fixpoint **624 of 624**; `fields`/`roled` unmoved at **13,796 of 18,637 (74.0%)**.
+  (3) **The headline is measurable and is now measured, on the artifact.** "Tunes wearing zero
+  machine shapes" died with the phased plan at 0 of 624 and has been asserted ever since. The
+  reading it needs is the prototype pin's own predicate — architectural registers named as
+  values, hex and comments stripped — so `splice_sweep` takes it over the emitted text and
+  reports `arch`/`zero_arch` per tune and in the rollup, the way #187 made `roled` a measured
+  quantity instead of a claim. It stands at **2 of 624**, 183,648 register tokens in all.
+  `tools/lift_residue.py`, which owned the metric before, cannot answer it: it walks
+  `prog.procs`, the walker's projection upstream of extraction, so it has not read the
+  artifact since the switch. It stands at **0 of 624** zero-residue tunes and a census sum of
+  **30,910** against the pivot's 30,854 — the same reading it always gave, about a different
+  object.
+  (4) **The parse-and-evaluate gap gets an owner, and the census splits it into three
+  mechanism families rather than one.** 84 of 624 is **25 evaluation faults, 9 lint, 50
+  divergences**, and the three sets are **disjoint**. The lint nine are one thing —
+  `local 'a'` ×7, `'nflag'`, `'zflag'`, all "used before definition" — which is root
+  extraction's rooting law and the same mechanism as `_share_once` across roots, so landing 4
+  is where its bisection starts. The faults are all `FrameFault`: 24 `unobserved $XXXX
+  reached` and one switch call target outside the observed set, so the owner is the
+  `swg`/`swc` arm-table headers, where the text can lose a guard's observed set. The
+  divergences are not 50 findings: **15 are one shape** — frame 0, section `filter`, position
+  1, `($16, $08)` against `($16, $10)`, the cutoff hi lane off by exactly one shift — which is
+  the declared-pair spelling meeting the missing declaration initializer at `$D415`/`$D416`,
+  and the cheapest bisection in the gap; the other 35 are one tune each. The gap's owner is
+  the stage close, where it is taken or refused by name.
+  (5) **#180's law is executable on both families now, and it found one straggler.**
+  `test_round_trip_witness_is_frame_identical`'s reason was "stage 4: the round-trip witness"
+  — a live stage, but no owner and no mechanism. It names both now, off #188 (9)'s recorded
+  requirements: `witness6502.emit` takes a `frameprog.FrameProgram` and returns a `Witness`,
+  so the pin waits on a fold layer that hands it one plus an image whose `sml.PLAY` reaches
+  the witness entry, since the replay is `sml.run_vm`'s.
+  `test_every_pin_names_the_landing_that_flips_it` pins all seven prototype reasons to landing
+  4 the way `test_the_owners_partition_the_family_as_the_ledger_records_it` pins the
+  shredder's twenty-one, so neither ledger can drift from this document.
+  (6) **The plan is ordered and it ends at zero.** Landing 4 takes seven (28 → 21) on one
+  re-basing; the stage close takes none and gates on three named items; then the engine ledger
+  in six landings — rung (d)'s pair premise twelve (21 → 9), its widening guard one (9 → 8),
+  `framestack`'s slot identity one (8 → 7), `frameproc`'s bit analyses two (7 → 5), rung (f)'s
+  writer set four (5 → 1), `datadecl`'s `via:` discovery one (1 → 0). The only measured
+  ordering constraint is `sp_scratch_floor` depending on `framestack`'s resume-pc reading; the
+  rest are disjoint in files and may land in parallel.
+  (7) **The gates.** Documentation, one tool metric and two test edits — no emitter source is
+  touched, so no artifact can move, and the corpus numbers above are the measurement of that.
+  `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
+  and zero refusals. Suite **2,781 passed / 490 skipped / 28 xfailed** (oracle included),
+  one new case and no pin flipped. `black --check` and `pylint` (10.00/10) clean.

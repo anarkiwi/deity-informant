@@ -3,14 +3,16 @@
 Per tune: the text parses, it is a ``dumps``/``loads`` fixpoint, every local it reads has
 a definition, every rewritten site is Z3-proved (§6), and the parsed program reproduces
 the walker's projection under Gate FP. The rollup carries stage 4's steering metrics:
-emitted size, and persistent cells role-named. ``--baseline`` runs the same over the projection
-§8 step 4 replaced (``frameproc.render_lines``' own text).
+emitted size, persistent cells role-named, and the headline -- tunes wearing zero machine
+shapes. ``--baseline`` runs the same over the projection §8 step 4 replaced
+(``frameproc.render_lines``' own text).
 """
 
 import argparse
 import hashlib
 import json
 import multiprocessing as mp
+import re
 import signal
 import sys
 import time
@@ -28,6 +30,18 @@ USAGE = """\
   python tools/splice_sweep.py --tunes Commando --frames 600"""
 
 CHECKS = ("error", "parse", "lint", "fixpoint", "gate", "sites")
+
+ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_NOISE = re.compile(r"\$[0-9A-Fa-f]+|;[^\n]*")
+
+
+def arch_shapes(text):
+    """How many architectural registers the emitted text names, hex and comments apart.
+
+    The headline metric, as the prototype's own pin states it: a register surviving as a
+    value is a machine shape, and a tune wearing none is one the lift finished."""
+    return sum(1 for w in _WORD.findall(_NOISE.sub("", text)) if w in ARCH)
 
 
 def one(entry, frames, baseline):
@@ -60,6 +74,7 @@ def one(entry, frames, baseline):
             except AssertionError as exc:
                 row["sites"] = str(exc)
         row["lines"] = len(text.splitlines())
+        row["arch"] = arch_shapes(text)
         row["fields"] = len(prog.state)
         row["roled"] = sum(1 for f in prog.state if f[0] in prog.roles)
         row["sha"] = hashlib.sha256(text.encode()).hexdigest()
@@ -106,6 +121,8 @@ def rollup(rows):
     got["proved"] = sum(r.get("proved", 0) for r in rows)
     got["fields"] = sum(r.get("fields", 0) for r in rows)
     got["roled"] = sum(r.get("roled", 0) for r in rows)
+    got["arch"] = sum(r.get("arch", 0) for r in rows)
+    got["zero_arch"] = sum(1 for r in rows if r.get("arch") == 0)
     return got
 
 
