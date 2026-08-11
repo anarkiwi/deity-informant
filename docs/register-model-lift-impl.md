@@ -618,24 +618,51 @@ code, not the other way round.
 **The zero-ledger plan, in order.** Every entry is `xfail(strict=True)`, so the landing that
 reaches its property flips it and cannot pass silently; the bracket is what the landing takes
 off the ledger, and the reasons in the tests carry the same mechanism words.
-1. **Landing 4 — the prototype re-based onto the artifact [7 pins, 28 → 21].** One mechanism
-   moves all seven: `examples/state_machine_lift.py`'s fold layer produces a
+1. **Landing 4 — the prototype re-based onto the artifact [7 pins, 28 → 21].** The re-basing
+   is one change — `examples/state_machine_lift.py`'s fold layer produces a
    `frameprog.FrameProgram` and its render layer *is* `frameprog.dumps`, which retires
-   `eqlift_mem.emit`/`emit_mem` — the second projection #181 named and #182 could not reach —
-   and `eqlift_annotate`, `emit`'s one remaining consumer, with them. Per pin:
-   `no_architectural_register_survives_as_a_value` — the rung-fused artifact names no
-   `a`/`x`/`y`, and its corpus reading is `zero_arch` above;
-   `smc_dispatch_cells_are_not_data_state` — `roles.read_sites`' `switch_cells` separation,
-   which the engine already computes; `vm_family_operator_set_is_emitted` — `follin_arity`'s
-   per-arm recovery spelled as an `operators { }` block, the one clause `sidprog.lark` lacks;
-   `state_block_holds_no_scratch` — #183's `_scratch` demotion, already in `artifact_lines`;
-   `roles_carry_their_evidence` — the artifact's `in`/observed clauses, plus the accumulator
-   bound the engine still owes; `init_lifts_to_declared_initial_values` —
-   `prov0`/`init_census` spelled as declaration initializers; and
-   `round_trip_witness_is_frame_identical` — the re-emitter exists (`witness6502.emit` takes a
-   `frameprog.FrameProgram` and returns a `Witness`), so what the pin waits on is a fold layer
-   that hands it one, plus an image whose `sml.PLAY` reaches the witness entry, since the
-   replay is `sml.run_vm`'s (#188 (9)).
+   `eqlift_mem.emit`/`emit_mem`, the second projection #181 named and #182 could not reach —
+   and the path is already proved on this exact image: `tests/test_witness6502.py`'s
+   `test_the_example_artifact_replays_frame_for_frame` runs `sml.build_image()` →
+   `structured.decompile` → `frameprog.program` → `witness6502.emit(p).frames(n)` and is
+   **green**. But **the re-basing alone flips only three of the seven**, and the scoping that
+   measured this is what says so; the other four owe the engine something and their entries
+   below name it. Per pin:
+   `no_architectural_register_survives_as_a_value` — **not the re-basing**. Measured on
+   `Hubbard_Rob/Commando`, the artifact carries **151 register tokens** (`x` 73, `a` 38, `y`
+   31, `cflag` 7, `vflag` 2), of which exactly one is a `for` header and 150 are body
+   spellings, and corpus-wide only 2 of 624 tunes are at zero. Re-basing makes this pin *read
+   the artifact*; what flips it is the residue itself, and `zero_arch` is the metric that
+   steers it.
+   `smc_dispatch_cells_are_not_data_state` — the engine separates the subject
+   (`roles.read_sites`' `switch_cells` → the `vm` role) but **keeps** the cell in the state
+   block as `vm u8 observed …`, where the pin's predicate is about the prototype's `dgoto`
+   shape; it owes a re-statement against the artifact as well as the re-basing.
+   `vm_family_operator_set_is_emitted` — `follin_arity` recovers per-arm arity and the escape
+   (`Ghouls_n_Ghosts`: 20 arities plus `$85`'s decoded-length escape) but **not the effect
+   cells**, and `sidprog.lark` has no `operators`/`ops` production at all, so the pin owes a
+   grammar block, a symbolic name per opcode, and a `writes` set nothing computes today.
+   `state_block_holds_no_scratch` — **the re-basing**. #183's demotion is wired end to end
+   (`eqlift_mem._scratch` → `demoted` → `frameprog._kept_state`).
+   `roles_carry_their_evidence` — **not the re-basing**. The `in` clause is
+   `ptrlift.apply_rung`'s and appears only when an extents artifact row is passed, so a bare
+   `frameprog.program(model)` emits none; `observed` is the dispatch opcode byte set, not an
+   accumulator bound; and `mask`/`bound` are in no grammar production, with `roles._mask_bound`
+   returning the inner term and discarding the constant. It owes a clause and a carrier.
+   `init_lifts_to_declared_initial_values` — **not the re-basing**. `sidprog.lark`'s `statedef`
+   has no `= HEX` alternative at all, and `prov0` carries a cell's origin *address*, not its
+   value (empty on both tunes measured; 185 of 600 cached artifacts carry any origins). It owes
+   a grammar production and a value.
+   `round_trip_witness_is_frame_identical` — **the re-basing**, with one constraint: the
+   re-emitter exists (`witness6502.emit` takes a `frameprog.FrameProgram` and returns a
+   `Witness`), so the pin waits on a fold layer that hands it one, on the **extent-free**
+   program (`emit` refuses outright on a non-empty `prog.inputs` or `prog.extents`, and
+   `pipeline` passes extents today), and on an image whose `sml.PLAY` reaches the witness
+   entry, since `Witness.entry` is a fresh label in a free span while `sml.run_vm` hard-codes
+   `INIT`/`PLAY` (#188 (9)).
+   So landing 4 takes **three pins on the re-basing** and re-points the other four at the
+   engine work each names; the ledger arithmetic is unchanged (7 pins, 28 → 21) but the
+   landing is two PRs, not one, and the four may run in parallel behind the trunk.
 2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
    (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
    `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
@@ -2864,14 +2891,33 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `test_every_pin_names_the_landing_that_flips_it` pins all seven prototype reasons to landing
   4 the way `test_the_owners_partition_the_family_as_the_ledger_records_it` pins the
   shredder's twenty-one, so neither ledger can drift from this document.
-  (6) **The plan is ordered and it ends at zero.** Landing 4 takes seven (28 → 21) on one
-  re-basing; the stage close takes none and gates on three named items; then the engine ledger
+  (6) **Landing 4 is three pins on the re-basing, not seven, and the scoping is what says
+  so.** The re-basing path is already proved on the prototype's own image —
+  `tests/test_witness6502.py::test_the_example_artifact_replays_frame_for_frame` runs
+  `sml.build_image()` -> `structured.decompile` -> `frameprog.program` ->
+  `witness6502.emit(p).frames(n)` and is green — so the scratch-demotion pin, the witness pin
+  and the artifact reading all ride on it. The other four do not.
+  `no_architectural_register_survives_as_a_value` is the clearest: measured on
+  `Hubbard_Rob/Commando` the artifact carries **151 register tokens** (`x` 73, `a` 38, `y` 31,
+  `cflag` 7, `vflag` 2), of which exactly one is a `for` header, so re-basing makes the pin
+  read the artifact and the residue is what flips it. `roles_carry_their_evidence` wants a
+  clause the grammar has not got (`mask`/`bound`; `roles._mask_bound` returns the inner term
+  and discards the constant) and an `in` clause `ptrlift.apply_rung` only emits when an extents
+  row is passed. `init_lifts_to_declared_initial_values` wants a `statedef` initializer
+  production that does not exist and a value `prov0` does not carry (it holds the origin
+  address). `vm_family_operator_set_is_emitted` wants an `operators { }` production, a symbolic
+  name per opcode, and a `writes` set `follin_arity` does not compute. Recording this before
+  the landing is the point of the record: the ledger arithmetic is unchanged, the schedule is
+  not.
+  (7) **The plan is ordered and it ends at zero.** Landing 4 takes seven (28 → 21) across the
+  trunk and the four parallel parts (6) separates; the stage close takes none and gates on
+  three named items; then the engine ledger
   in six landings — rung (d)'s pair premise twelve (21 → 9), its widening guard one (9 → 8),
   `framestack`'s slot identity one (8 → 7), `frameproc`'s bit analyses two (7 → 5), rung (f)'s
   writer set four (5 → 1), `datadecl`'s `via:` discovery one (1 → 0). The only measured
   ordering constraint is `sp_scratch_floor` depending on `framestack`'s resume-pc reading; the
   rest are disjoint in files and may land in parallel.
-  (7) **The gates.** Documentation, one tool metric and two test edits — no emitter source is
+  (8) **The gates.** Documentation, one tool metric and two test edits — no emitter source is
   touched, so no artifact can move, and the corpus numbers above are the measurement of that.
   `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences
   and zero refusals. Suite **2,781 passed / 490 skipped / 28 xfailed** (oracle included),
