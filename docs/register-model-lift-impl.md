@@ -2576,3 +2576,36 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   therefore needs landing 4's fold-layer re-basing to produce the program, and an image whose
   `sml.PLAY` reaches the witness entry, since the pin replays through `sml.run_vm`. It is the
   stage-close agent's, not this landing's.
+- **2026-08-11 — the shredder's dispatch pin flips on the pairing law, not on the join it
+  was pinned to.** `dispatch_scratch_promotes` was re-pinned by 3d on "the `swc`-label
+  extension of the in-edge join". Measured against the artifact the switch now emits, that
+  is not its blocker and the extension would not move it.
+  (1) **The predicted mechanism is refuted by measurement.** `Footprints.joins` is already
+  **False** at the arm's label — no `goto`, `call` or bare `swc` label names it and the
+  procedure does not own it — so the label never resets and there is nothing for an in-edge
+  join to join. What resets is the `dgoto` **before** the arm table: a computed transfer
+  havocs, and the arms are walked from the memory it left.
+  (2) **The mechanism that does move it is a law the artifact already states three times.**
+  `frameval.seq`, `witness6502._paired` and `frameproc`'s own `nxt != "swg"` readings all
+  say the same thing: *an arm table belongs to the computed transfer immediately before it
+  and to no other*. So the arms are that transfer's whole successor set, nothing runs
+  between the transfer and an arm, and the memory the arms are entered with is the memory
+  at the transfer. `render_proc`'s walk reads one statement of lookahead (`_armed`) and
+  skips the havoc for a `dgoto`/`igoto` armed by `swg` and a `dcall` armed by `swc`. An
+  unarmed computed transfer still havocs, which `test_an_unarmed_computed_transfer_still_havocs`
+  holds.
+  (3) **A second cause, and it is a bound the reader set threw away.** With the memory
+  carried, the arms spelled the value and the store still declared: the row index
+  `zext(ctr & $01)` gave `_ir_span` the interval `(0, $FF)` for **every** zero extension,
+  so the dispatch table read covered `$1400..$1501` and swallowed the scratch cell at
+  `$1460`. A zero extension is the identity on the value, so it carries its operand's own
+  interval where that interval is inside the byte this dialect extends; the e-graph's
+  `lo`/`hi` merge by join and cannot state this, but a reader interval only has to be
+  **sound**, tightening one only proves more disjointness, and the replacement is never
+  wider than the width bound it replaces.
+  Z3 discharges the weakening it replaces in
+  `test_a_zero_extension_carries_its_operand_s_interval`.
+  (4) **The pin flips and the family is 21.** `test_dispatch_scratch_promotes` XPASSes and
+  its xfail is gone; `test_the_dispatch_arms_do_not_join_the_scratch_write` is re-stated as
+  `test_the_dispatch_arms_read_the_value_and_not_the_cell`, which reads the artifact rather
+  than the retired second projection.

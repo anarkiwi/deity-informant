@@ -680,6 +680,18 @@ def _join_mem(pre_mem, stmts, fresh, held=(), enter=None):
     return m, frozenset(kept)
 
 
+_ARMS = {"dgoto": "swg", "igoto": "swg", "dcall": "swc"}  # a transfer and the table that arms it
+
+
+def _armed(s, nxt):
+    """True where the arm table right after ``s`` enumerates its targets.
+
+    ``frameval.seq``'s own pairing law: an arm table belongs to the computed transfer
+    immediately before it and to no other, so the arms are that transfer's whole
+    successor set and the memory they are entered with is the memory at the transfer."""
+    return nxt is not None and nxt[0] == _ARMS.get(s[0])
+
+
 def _collect(tgts):
     """An ``enter`` that records the pc and contributes nothing: the fixpoint resolves it."""
 
@@ -859,13 +871,18 @@ def _ir_span(ir):
     """The address interval an extracted term names, or None where it is ⊤.
 
     ``_lattice``'s rules over the printer IR, wrap guards included; a value read out of
-    memory is bounded by its own width, which is what makes a byte pointer page zero."""
+    memory is bounded by its own width, which is what makes a byte pointer page zero.
+    A zero extension is the identity on the value, so it carries its operand's own
+    interval where that interval is inside the byte this dialect extends -- the
+    e-graph's ``lo``/``hi`` merge by join and cannot state it, but a reader interval
+    only has to be sound, and this one is never wider than the width bound it replaces."""
     k = ir[0]
     if k == "num":
         v = ir[1] & E._mask(ir[2])
         return v, v
     if k == "zext":
-        return 0, 0xFF
+        got = _ir_span(ir[1])
+        return got if got is not None and got[1] <= 0xFF else (0, 0xFF)
     if k == "trunc":
         return 0, 0xFF
     if k == "band" and ir[2][0] == "num":
@@ -1437,8 +1454,9 @@ def render_proc(
 
     def walk(sl):
         nodes = []
-        for s in sl:
+        for i, s in enumerate(sl):
             k = s[0]
+            nxt = sl[i + 1] if i + 1 < len(sl) else None
             if k == "asg":
                 rhs = conv(s[2])
                 name = "%s.%d" % (s[1], fresh())
@@ -1534,7 +1552,8 @@ def render_proc(
                 nodes.append(("callb", s[1], s[2], body))
             elif k == "dcall":
                 ix = add(conv(s[1]))
-                havoc_all()
+                if not _armed(s, nxt):
+                    havoc_all()
                 nodes.append(("dcall", ix, s[2]))
             elif k in ("swc", "opsw", "swg"):
                 cases = s[1] if k == "swg" else s[2]
@@ -1560,11 +1579,13 @@ def render_proc(
                 nodes.append(("dbr", s[1], pair[0], pair[1], s[4]))
             elif k == "dgoto":
                 ix = add(conv(s[1]))
-                havoc_all()
+                if not _armed(s, nxt):
+                    havoc_all()
                 nodes.append(("dgoto", ix))
             elif k == "igoto":
                 ix = add(conv(s[2])) if s[2] is not None else None
-                havoc_all()
+                if not _armed(s, nxt):
+                    havoc_all()
                 nodes.append(("igoto", s[1], ix))
             else:
                 raise ValueError("unliftable statement %r" % (k,))
