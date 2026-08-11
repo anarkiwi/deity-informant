@@ -12,6 +12,7 @@ import sys
 from deity_informant import PcodeVM, lift, run_sub
 from deity_informant import eqlift_mem
 from deity_informant import framelog
+from deity_informant import frameprog
 from deity_informant import grammar as GR
 from deity_informant import render as R
 from deity_informant import structured as S
@@ -2546,6 +2547,20 @@ def adsr_before_gate(per_frame):
     return True
 
 
+def reemit_6502(prog, org=None):
+    """Re-emit the artifact as minimal 6502, entered where ``run_vm`` enters.
+
+    ``witness6502`` places its per-frame entry at a fresh label in a free span; ``PLAY``
+    is the address this example's VM calls, so the image carries a jump between them and
+    nothing else moves."""
+    from deity_informant import witness6502  # pylint: disable=C0415  # optional at import
+
+    got = witness6502.emit(prog, org)
+    mem = bytearray(got.mem)
+    mem[PLAY : PLAY + 3] = bytes((0x4C, got.entry & 0xFF, got.entry >> 8))
+    return mem, {"entry": got.entry, "fault": got.fault}
+
+
 def observed_extents(model, frames):
     """Phase 2b (b0)'s observed extents for this model: ``{pointer cell: block bases}``.
 
@@ -2584,6 +2599,7 @@ def pipeline(frames=FRAMES):
     init_writes, ram0, orig_frames, orig_grids, ram_end = run_vm(mem, frames)
     model, ev = S.decompile(bytearray(mem), INIT, PLAY, frames)
     assert S.Walker(model).run(frames) == ev.wlog, "walker replay is not bit-exact"
+    prog = frameprog.program(model)
     text, _ = eqlift_mem.emit(model, extents=observed_extents(model, frames))
     proofs, folded = [], {}
     for entry in proc_entries(text):
@@ -2603,6 +2619,7 @@ def pipeline(frames=FRAMES):
         "orig_grids": orig_grids,
         "ram_end": ram_end,
         "eqlift_text": text,
+        "prog": prog,
         "folded": folded,
         "rolled": rolled,
         "resolved": resolved,

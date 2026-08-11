@@ -610,17 +610,20 @@ def test_vm_family_operator_set_is_emitted(art, role_text):
 
 
 @pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact's own "
-    "demotion landed (#183, root extraction's scratch spans), but this text is "
-    "sml.render's state block, so it flips with the prototype re-based onto the artifact",
+    reason="register-model-lift stage 4 landing 4 (remaining part): NOT the re-basing -- the "
+    "artifact declares these cells too and prog.demoted is empty by construction. #183's "
+    "_unread demotes a store no read anywhere names, and a write-before-read cell has "
+    "readers by definition, so the two criteria are different questions. What this owes is a "
+    "second demotion notion: frame-boundary liveness-in, a per-frame kill nothing computes",
     **XFAIL,
 )
 def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     """Every declared cell is read before its first write in some frame.
 
-    At pin time the six SMC JMP-operand cells (``m_103F``/``m_1040``,
-    ``m_111D``/``m_111E``, ``m_11FB``/``m_11FC``) are written before every read,
-    which makes them per-frame scratch the extractor owes a demotion."""
+    Thirteen fail: the three SMC JMP-operand pairs the computed transfer loads
+    (``m_10AD``, ``m_11F8``, ``m_1343``, fused ``u16`` by rung (d)) and seven zero-page
+    cells the artifact declares ``parameter`` -- a callee's per-frame arguments, written
+    before they are read every frame."""
     carried = _carried_addrs(art, post_init_ram)
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 
@@ -663,24 +666,17 @@ def test_init_lifts_to_declared_initial_values(art, role_map, role_text, post_in
     assert {k: got.get(k) for k in want} == want
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the re-emitter exists -- "
-    "witness6502.emit takes a frameprog.FrameProgram and returns a Witness -- and what this "
-    "pin waits on is a fold layer that hands it one, plus an image whose sml.PLAY reaches the "
-    "witness entry, since the replay is sml.run_vm's",
-    **XFAIL,
-)
 def test_round_trip_witness_is_frame_identical(art):
     """Minimal 6502 re-emitted from the minimized program replays frame-for-frame.
 
-    No evaluator in the trust chain. The re-emitter is stage 4's work, so today
-    this fails on the missing capability and not on a divergence."""
+    No evaluator in the trust chain: the artifact is assembled to 6502 and run on the
+    machine, and its SID projection is differenced against the original routine's own."""
     emit = next(
         (f for m in (sml, sml.eqlift_mem) for n in REEMIT if callable(f := getattr(m, n, None))),
         None,
     )
     assert emit is not None, "no minimal-6502 re-emission capability"
-    mem, _labels = emit(art["folded"], art["labels"])
+    mem, _labels = emit(art["prog"])
     frames = sml.run_vm(mem, len(art["min_frames"]))[2]
     assert framelog.canonical(frames) == framelog.canonical(art["orig_frames"])
 
@@ -688,15 +684,15 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    All seven are landing 4's and one re-basing moves them, so a pin that acquires a
-    different owner moves the plan's ledger too and the two cannot drift apart."""
+    All six left are landing 4's, so a pin that acquires a different owner moves the
+    plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
         for n, f in sorted(globals().items())
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 7, sorted(pins)
+    assert len(pins) == 6, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 
