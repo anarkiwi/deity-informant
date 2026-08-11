@@ -327,6 +327,43 @@ def addr_floor(n, env=None):
     return 0
 
 
+def lattice(n):
+    """The interval the ``mem_rules`` rewrites derive for ``n`` itself, else None.
+
+    A magnitude bound where a rule states one, wrap guard included: an address the bits
+    cannot bound (``zext2(y) + $A5`` sets every bit its width has) has a bound here."""
+    if n[0] == "const":
+        v = n[1] & E.mask(n[2])
+        return v, v
+    if n[0] != "op":
+        return None
+    mn, kids, w = n[1], n[2], n[3]
+    if mn == "INT_ZEXT":
+        return 0, 255
+    if mn == "INT_AND" and len(kids) == 2 and kids[1][0] == "const":
+        return 0, kids[1][1] & E.mask(w)
+    if mn == "INT_ADD" and len(kids) == 2:
+        got = [lattice(k) for k in kids]
+        if all(got) and got[0][1] + got[1][1] <= E.mask(w):
+            return got[0][0] + got[1][0], got[0][1] + got[1][1]
+    if mn == "INT_LEFT" and len(kids) == 2 and kids[1][0] == "const":
+        got, k = lattice(kids[0]), kids[1][1]
+        if got and (got[1] << k) <= E.mask(w):
+            return got[0] << k, got[1] << k
+    return None
+
+
+def addr_reach(n, env=None):
+    """The interval an address expression may reach: the tighter of the two readings.
+
+    ``addr_floor``/``addr_bits`` bound the bits an address sets, ``lattice`` its
+    magnitude. Each is sound alone, so the tighter of the two is -- which
+    ``addr_bits`` may not do itself, its ``INT_OR`` recursion needing masks."""
+    lo, hi = addr_floor(n, env), addr_bits(n, env)
+    got = lattice(n)
+    return (lo, hi) if got is None else (max(lo, got[0]), min(hi, got[1]))
+
+
 def span(base, idx, regions, mod=0):
     """Tightest sound span for an indexed address at ``base``: the ONE span rule.
 
@@ -373,15 +410,15 @@ def store_ref(stmt, regions):
 
 
 def store_reach(stmt, regions, env=None):
-    """The range a store writes: ``store_ref``, or the bits its address can set.
+    """The range a store writes: ``store_ref``, or the interval its address reaches.
 
     An address the base/index form does not name still bounds the bytes it may
-    reach (``addr_bits``), which holds a zero-page store to ``$00FF`` however
-    unresolvable its index is; a wholly unknown address reaches everything."""
+    reach, which holds a zero-page store to ``$00FF`` however unresolvable its index
+    is; the floor is the join's own reading, so the range here starts at zero."""
     got = store_ref(stmt, regions)
     if got is not None:
         return got
-    return (0, UNRES, addr_bits(stmt[1], env), G.store_width(stmt[2]), 0)
+    return (0, UNRES, addr_reach(stmt[1], env)[1], G.store_width(stmt[2]), 0)
 
 
 def accesses(s):
@@ -3176,6 +3213,17 @@ def _factor_ifs(stmts, root):
         changed = True
         i += len(pre) + len(kept) + len(post)
     return changed
+
+
+def must_defines(procs, play=None):
+    """``entry -> the register locals its body surely defines``, callees included.
+
+    What a raw ``call`` binds: the callee runs, so every register on every path
+    through it is defined after the statement, which is the definition a reader of
+    the text (and ``check_locals``) may take from a call that declares no returns."""
+    info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
+    info.summarize()
+    return {e: info.must[e] & _ALL_REG_LOCALS for e in info.order}
 
 
 def repolish(procs, play, regions=None):
