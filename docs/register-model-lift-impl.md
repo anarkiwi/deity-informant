@@ -618,6 +618,10 @@ code, not the other way round.
   drifted by the rung landings), which is the same reading it gave before the switch and is a
   statement about a different object. Landing 4 is what moves `zero_arch`, because the five
   role pins and the two extraction-order items are exactly what leaves a register spelled.
+  *(The predicate this records was too narrow: it missed the emitter's versioned copies and
+  three register-file names, and it reported no number at all for the temporaries a value
+  also flows through. Widened and re-baselined in the final wave's first landing — decision
+  log, below — `arch` reads 195,409 and `temps` 55,120 with `zero_arch` unmoved at 2.)*
 
 **The zero-ledger plan, in order.** Every entry is `xfail(strict=True)`, so the landing that
 reaches its property flips it and cannot pass silently; the bracket is what the landing takes
@@ -3951,3 +3955,47 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   a minute and buys the exact tune the landing fixed as a CI assertion
   (`test_real_tune_international_karate_header_takes_its_live_in`, which calls `frameprog.emit`
   and so lints).
+- **2026-08-12 — the headline metric measures what the pin is about: a version of a
+  register is the register, and the emitter's own locals are a second residue.** The final
+  wave's first landing is the instrument, not the lift. `splice_sweep.arch_shapes` counted
+  eight bare names against a hand-kept `frozenset`, and the emitter has moved past it twice
+  over.
+  (1) **Two things went uncounted, and both are the pin's own subject.** The emitter copies
+  a register into a version before it overwrites it (`frameproc._Names.fresh` on a register
+  prefix), so `a0` and `cflag0` are the same machine value under a name the predicate did
+  not spell; and `frameproc._REG_LOCAL` carries `iflag`, `dflag`, `bflag` and the unnamed
+  register-file slots `g4`..`g7`/`g15`, none of which the `frozenset` had. The fix is to
+  stop restating the alphabet: `_arch_re()` builds `(?:register)(version)?` from
+  `frameproc._ALL_REG_LOCALS` itself, so a register the emitter gains cannot go uncounted.
+  (2) **The temporaries are a residue too, and they are counted apart.** `t`/`w`/`q`
+  (`frameproc`), `s` (`framestack`), `d` (rung (d2)) and the role prefixes `ptr`/`pos`/`ctr`/
+  `idx` (`datadecl._aliases`) are the second thing a value flows through that is neither
+  declared state nor a width-typed field. `temps` counts them — every bare `[a-z]+\d+` NAME
+  that is not a register and not the grammar's own vocabulary (`u8`/`u16`/`u24`,
+  `zext1`/`zext2`/`trunc1`/`trunc2`) — and the two counters stay separate because the rules
+  that steer them are different: summing them would hide either behind the other. Read over
+  the corpus the classification is total: **zero** bare prefix-and-counter names fall outside
+  it, which is the evidence the alphabet is closed and not a sample.
+  (3) **The tokenizer was wrong in the same direction.** The old `[A-Za-z_]\w*` splits the
+  grammar's dotted `NAME`, so `sid.v1.freq` read as three words. The predicate now uses the
+  grammar's own token, `[A-Za-z_]\w*(?:\.\w+)*`.
+  (4) **The honest new numbers, corpus-wide, and the survey's estimate corrected.**
+  Measured over all 624 cached artifacts **on the merge commit** (`3467a97`, after #206 and
+  #207): `arch` **184,037 → 195,409** (+11,372, **+6.2%**), of which **10,724** are versioned
+  copies and **648** are the three unmodelled flags and the unnamed slots; `temps` is
+  **55,120**, a residue the headline never had a number for. **537 of 624 tunes move**; the
+  median moving tune gains **5.2%** (`March`), the largest relative is `Invention_13` at
+  **+47.4%** and the largest absolute is `50_Shades_of_Gradius`, **747 → 937** (+190). The
+  final-wave survey's estimate of **20–40% per tune** was measured on three hand-picked tunes
+  and does not hold over the corpus: the honest aggregate is 6.2% and only five tunes exceed
+  26%. Measured first at `f9b2fbf` the same predicate read 183,344 → 194,716, reproducing
+  #204's recorded `arch` exactly; the +693 between the two readings is #206/#207's own text
+  movement, and the number recorded here is the merge commit's, per #204 (8).
+  (5) **The headline itself does not move, and that is the finding.** `zero_arch` stays **2
+  of 624**: the two tunes that wear no register wear no version of one either. Neither of
+  them is at zero `temps`, so on the widened reading **no tune in the corpus is free of
+  machine shape** — the pin's remaining distance is larger than the old number said, and it
+  is now measured. `fields` 17,662, `roled` 12,825, `proved` 205,836, size −7,280 lines with
+  no tune larger (586 smaller) and `bad` **0** — `International_Karate`'s standing lint left
+  with #206/#207, not with this. This landing emits no byte: `emit_identity` on the merge
+  commit holds at `73824f53…`/28,381,180.
