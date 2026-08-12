@@ -580,12 +580,6 @@ def test_no_architectural_register_survives_as_a_value(role_text):
     assert not ARCH & names
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): classify_roles reads the "
-    "prototype's folded program; the dispatch subject is roles.read_sites' switch_cells, "
-    "which the engine already separates, so this flips with the re-basing",
-    **XFAIL,
-)
 def test_smc_dispatch_cells_are_not_data_state(art, role_map):
     """A cell whose only reads are the computed transfer is a JMP operand, not state."""
     data, ctrl = _reads_by_kind(art["folded"])
@@ -672,7 +666,7 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    All three left are landing 4's, so a pin that acquires a different owner moves the
+    Both left are landing 4's, so a pin that acquires a different owner moves the
     plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
@@ -680,7 +674,7 @@ def test_every_pin_names_the_landing_that_flips_it():
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 3, sorted(pins)
+    assert len(pins) == 2, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

@@ -1,9 +1,8 @@
 """frameprog: the frame-level artifact, and the one text the project emits.
 
-Generation gives annotation-free region trees (rung (a)), state-variable
-opcode switches, declared inputs and the procedural surface; ``parse``/
-``loads`` read it back over the grammar (``sidprog.lark``).
-"""
+Generation gives annotation-free region trees (rung (a)), state-variable opcode
+switches, declared inputs and the procedural surface; ``parse``/``loads`` read
+it back over the grammar (``sidprog.lark``)."""
 
 from __future__ import annotations
 
@@ -546,6 +545,7 @@ def program(model, extents=None):
     blocked.update(lifted)  # 2b spent its extent on the web: it leaves the top population
     prov0, sites, census = _init_copies(model, decls)
     init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
+    state = _drop_transfer_operands(state, procs, symbols)
     prog = FrameProgram(
         model.play,
         model.init,
@@ -571,6 +571,47 @@ def program(model, extents=None):
     prog.roles, prog.bounds = _roles(prog)
     prog.operators = _operators(model)
     return prog
+
+
+_TARGET_AT = {"dgoto": 1, "dcall": 1, "igoto": 2, "dbr": 3}  # the transfer's own operand
+
+
+def _read_bases(n, out):
+    """Const bases of every memory read inside ``n``, at any width."""
+    stack = [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            base, _idx = frameproc.addr_split(x[1])
+            if base is not None:
+                out.add(base)
+        stack.extend(frameproc._kids(x))
+
+
+def _drop_transfer_operands(state, procs, symbols):
+    """``state`` less every field read only to decide where the machine jumps.
+
+    An SMC dispatch's cell holds no datum another statement observes: it is the
+    transfer, which the artifact spells itself -- the arm table as a ``switch``,
+    its domain in the ``dispatch`` header -- so a ``state`` row besides is
+    machinery declared as data."""
+    ctrl, data = set(), set()
+    for _e, _p, _r, stmts in procs:
+        for s in framefuse.stmts_of(stmts):
+            at = _TARGET_AT.get(s[0])
+            tgt = None if at is None or s[at] is None else s[at]
+            for x in frameproc._stmt_exprs(s):
+                _read_bases(x, ctrl if x is tgt else data)
+            if s[0] == "opsw":
+                ctrl.add(s[1])  # the switch subject is read to dispatch and nowhere else
+    rev, named = {v: k for k, v in symbols.items()}, {}
+    for f in state:
+        base = rev.get(f[0], G.name_addr(f[0]))
+        if base is not None:
+            for a in range(base, base + (1 if f[2] else f[1])):
+                named[a] = f[0]
+    gone = {named[a] for a in ctrl if a in named} - {named[a] for a in data if a in named}
+    return [f for f in state if f[0] not in gone]
 
 
 def _operators(model):
