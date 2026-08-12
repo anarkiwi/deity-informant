@@ -642,16 +642,10 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `vm_family_operator_set_is_emitted` — **LANDED (#200)**, below: the `operators { }`
    production, the name off the handler table, the arity off the cursor advance and the
    writes off the arm's own blocks.
-   `state_block_holds_no_scratch` — **not the re-basing either**, and this was measured after
-   the record first claimed otherwise. The artifact declares the same cells and
-   `prog.demoted` is **empty by construction**: `_unread` demotes only a store that *no read
-   anywhere in the artifact names*, and a write-before-read cell has readers by definition, so
-   the pin's criterion and #183's are different questions — unobservability (order-insensitive,
-   artifact-wide) against frame-boundary liveness-in (order-sensitive, per-frame). Thirteen
-   cells fail, not the six the docstring named (the image layout moved those): the three SMC
-   operand pairs `m_10AD`/`m_11F8`/`m_1343`, fused `u16` by rung (d), and seven zero-page cells
-   the artifact declares `parameter` — a callee's per-frame arguments. It owes a **second
-   demotion notion**, a per-frame kill nothing in `frameprog` or `eqlift_mem` computes.
+   `state_block_holds_no_scratch` — **LANDED (#203)**, below, on the prototype: the second
+   demotion notion is frame-boundary liveness-in, a backward liveness whose exits flow to the
+   frame's own entry because the frame repeats. Nine cells are dead there and go. The engine
+   owes the same notion over `frameproc`'s statement graph, which is a landing of its own.
    `roles_carry_their_evidence` — **not the re-basing**. The `in` clause is
    `ptrlift.apply_rung`'s and appears only when an extents artifact row is passed, so a bare
    `frameprog.program(model)` emits none; `observed` is the dispatch opcode byte set, not an
@@ -3712,3 +3706,41 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   and the second's remainder is now **seven** cells, not thirteen — this landing took the three
   SMC operand pairs off it, and what is left is the zero-page `parameter` cells that are a
   callee's per-frame arguments.
+- **2026-08-12 — stage 4, landing 4 (part): the second demotion notion is frame-boundary
+  liveness, and the instrument that measured the pin was blind to a wide access.** The fifth
+  capability pin, `state_block_holds_no_scratch`, and it took two things: a corrected reading
+  of what fails, and the per-frame kill nothing computed.
+  (1) **The instrument first.** The pin's own `_TracedRam` recorded a first read or a first
+  write per address and ignored **slices** — and every wide access in the machine is a slice
+  (`ram[a:a+n]` for a `w16` read and its store). So the `u24` PWM phase, read as one span
+  before it is written, looked written-first; and the three `u16` porta diffs, written as one
+  span, looked read-first. Marking every byte a slice spans moves the failing set from the
+  record's thirteen to **nine**, and they are different cells: `tick`, `row_src`, `row_val`
+  and the three `v*_diff` pairs. The record's `phase` and `v*_note` were never scratch; its
+  three SMC operand pairs left with #202, one landing earlier.
+  (2) **The notion.** `frame_live_in` is backward liveness over the flattened program whose
+  **exits flow to its own entry**, because the next frame is where they go; the fixpoint over
+  that loop is the frame boundary's live-in set, and a cell outside it carries nothing across
+  the boundary however many readers it has inside one frame. That is the order-sensitive,
+  per-frame question #183's `_unread` cannot ask: `_unread` demotes a store no read anywhere
+  names, and every one of these nine has readers.
+  (3) **What the proof cannot see, the run bounds.** An indexed read's landing is not in the
+  statement, so the evidence run records every address one reached (`Machine.rows`) and a cell
+  some indexed read touched is left alone — observed-primary, and the guard is what makes the
+  zero-page reading exact rather than optimistic. Measured on the prototype the proof and the
+  observation **agree cell for cell**: nine proved dead, nine observed written-before-read,
+  neither set larger than the other.
+  (4) **The prototype.** `classify_roles` drops what `frame_scratch` names, so the nine leave
+  the state block and the role map together, and `classify_roles` now takes the evidence run's
+  length for the same reason `render` does — rendered over more frames than it was folded
+  over, a program leaves the dispatch domain it declares.
+  (5) **The engine still declares them, and the mechanism is named.** `deity_informant/` is
+  untouched by this landing: the artifact's own second demotion is the same liveness over
+  `frameproc`'s statement graph — `if`/`loop`/`for`/`opsw`/`swg`/`swc` bodies, `goto` to a
+  label, `break`/`continue`, and a `call` resolved through the callee's own summary — with the
+  indexed reads bounded by 2b's observed extents rather than by a machine run. `frameproc` has
+  no flattener, which is the whole of the work; it is landing 4's next part and it moves the
+  corpus, where this one cannot.
+  (6) **The ledger.** The prototype's family goes **two → one**. What is left is
+  `no_architectural_register_survives_as_a_value`, whose owner is the residue itself and whose
+  metric is `zero_arch` — the final wave's, not this one's.
