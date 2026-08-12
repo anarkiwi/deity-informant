@@ -594,8 +594,9 @@ code, not the other way round.
   **27 strict xfails** — 21 shredder pins under five owners
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
-  *(Items 5, 6, 3 and 4 landed after this record: the shredder ledger stands at **5** pins —
-  rung (f) 4 and `datadecl` 1 — and rung (d) owns none. Decision log, below.)*
+  *(Items 5, 6, 3, 4, 7 and 8 landed after this record: the shredder ledger stands at **0**
+  pins — every owner has landed — and the suite's one strict xfail is the prototype's.
+  Decision log, below.)*
 - `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
   `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
   divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
@@ -3786,20 +3787,45 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   roles are never written. That is a group-carving/pair-role interaction: a pair whose two
   columns fall inside one carved group can hold no `lo`/`hi` role, and it is the remaining
   blocker on that family. Owner: `datadecl`, unscheduled.
-  (7) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,366,288
-  bytes**, aggregate `46604ed9dde74f3a4f81b2011f8b7d78769fbdc5fec0d99a4eae111a0dd58c98`,
-  against #200's `e0daf5c4…`/28,347,787 — **+18,501 bytes over 136 tunes** (85 larger
+  (7) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,379,441
+  bytes**, aggregate `101669face8476fab8c4e1e998030370dc3c13bad3e17dbc378e00aa83dac841`,
+  against a base measured on the merge commit `982b8df` — `b6c3367c…`/28,360,940 — and the
+  landing's own movement is **+18,501 bytes over 136 tunes** (85 larger
   +22,091, 51 smaller −3,590, none the same size). The growth is the discovery's own price
   and it is one shape: a newly declared block prints its bytes, and its base is a new
   **bound**, so the datum it splits stops at it and the remainder falls back to `image { }`,
   which prints less densely than `data { }`. Amazing_Spider-Man is the largest mover
   (+3,734) and is exactly that: three `stream … via ptr_006E` blocks discovered off the
-  pair's lanes, 37 declarations → 39, and no pair table's role moved.
-  (8) **The recorded baseline drifted again, and this is the second time.** #199 recorded
+  pair's lanes, 37 declarations → 39, and no pair table's role moved. Measured once against
+  #200 and again after the rebase across #201–#203, the movement is the **same 136 tunes and
+  the same +18,501**, so the discovery is orthogonal to the operator set and the SMC
+  demotion: three landings touching one artifact, and their prices add.
+  (8) **The bookkeeping law, stated by a drift and then obeyed.** #199 recorded
   `a403a8aa…`/28,322,337 as CURRENT; measured on this session's cache at `1e002d7` main
-  emits `ae41682c…`/**28,321,441**, 896 bytes apart, so #200's delta and this one are both
-  taken against measurements rather than against the ledger. That is the same failure #190
-  (1) found in `018ce8f4…`: a number recorded from a run that was never re-measured on the
-  merge commit. **The bookkeeping law the close owes**: CURRENT is only ever written from an
-  `emit_identity --expect` that passed *on the merge commit*, and a landing quotes the
-  baseline it measured, never the one it inherited.
+  emitted `ae41682c…`/**28,321,441**, 896 bytes apart, so #200's delta was taken against a
+  measurement rather than against the ledger — the same failure #190 (1) found in
+  `018ce8f4…`, a number recorded from a run never re-measured on the merge commit. **The
+  law**: CURRENT is only ever written from an `emit_identity --expect` that passed *on the
+  merge commit*, and a landing quotes the baseline it measured, never the one it inherited.
+  This landing is the first to follow it, and the base held — `982b8df` re-measured to
+  `b6c3367c…`/28,360,940, reproducing #202's recorded aggregate exactly, which is also the
+  evidence that #203 moved no byte, as its own note claimed.
+  (9) **The gates.** `gate_sweep` at full Songlengths holds **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals: a block declared apart from its neighbour is
+  still the same bytes to the evaluator. `splice_sweep` is **1 bad**, not the standing two —
+  parse, fixpoint, gate and sites all zero, and what is left is `International_Karate`'s
+  `local 'a' used before definition`. `Emax_01`'s divergence, bad since it was first
+  recorded, is clean here; splice was run once and on the branch only, so the credit belongs
+  to the `982b8df`..HEAD span and this landing cannot claim it alone. Emitted size is
+  **−7,280 lines with no tune larger** (586 smaller) and **205,793 rewritten sites proved,
+  zero unproved**. `fields` **17,663 → 17,662** and `arch` **183,345 → 183,344** against
+  #202, one declaration each, with `roled` unmoved at 12,825 and `zero_arch` at 2 of 624.
+  Suite **2,796 passed / 490 skipped / 1 xfailed** hermetic plus **16 oracle**; `black
+  --check` and `pylint` (10.00/10) clean. No e-graph rule is admitted, so `verify_rules` has
+  nothing new to prove.
+  (10) **The ledger.** `datadecl` owns **no** shredder pin, and the family is **1 → 0**:
+  `test_every_stage_three_pin_names_a_live_owner` asserts the set is empty rather than
+  counting it down, so the rule now guards a re-opening rather than a backlog. The suite's
+  one remaining `xfail` is the prototype's
+  `no_architectural_register_survives_as_a_value`, whose metric is `zero_arch` and whose
+  owner is the residue — the final wave's, not stage 3's.
