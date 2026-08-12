@@ -688,9 +688,9 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    re-basing is its own landing, and the fold layer it ends with is smaller than the one it
    starts from: on the artifact only three of the eight `FOLDS` still fire (`pair_set`,
    `row_read`, `wide_cmp`), because the engine now does the rest.
-2. **Landing 6 — the stage close [0 pins, three items gate it].** The song-model retirement
-   (`song_model.py`, `generators.py`, `movefwd.py` have no consumer outside their own tests;
-   `eqlift_annotate` leaves with `emit` at landing 4); §5's `_Prune`/`_inline` deletion; and
+2. **Landing 6 — the stage close [0 pins, two items gate it].** The song-model retirement is
+   **taken** (`song_model.py`, `generators.py`, `movefwd.py` and their tests deleted;
+   `eqlift_annotate` stays with `emit_mem`, which still calls it); §5's `_Prune`/`_inline` deletion; and
    the parse-and-evaluate gap, taken or refused by name. The close records items 3-8 as
    scheduled, not as waiting.
 3. **rung (d), the pair premise [12 pins, 19 → 7] — LANDED.** The premise is per access
@@ -883,11 +883,18 @@ what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
   stage 4, landing 2** by `frameprog._drop_declared`, not by stage 3 as this
   entry claimed — the claim was checked, found false, and the defect was still
   in 18 cells of the 25 exemplars when it was measured.
-- **The song-model modules.** `song_model.py`, `generators.py`, `movefwd.py`,
-  `eqlift_annotate.py` (and `eqlift_mem`'s annotate hook) were the role
-  reading on the wrong substrate; their docs and stale artifacts are deleted.
-  The modules stay tested until stage 4's role-typed artifact replaces their
-  function, then leave.
+- **The song-model modules — RETIRED (2026-08-12), less one.** `song_model.py`,
+  `generators.py`, `movefwd.py`, `eqlift_annotate.py` (and `eqlift_mem`'s annotate
+  hook) were the role reading on the wrong substrate; their docs and stale
+  artifacts were deleted then. The condition on the rest was stage 4's role-typed
+  artifact replacing their function, and it holds: the roles are ON (#187), the
+  artifact carries them, and the import graph is closed — `song_model`,
+  `generators` and `movefwd` are imported by each other and by their own two test
+  files and by nothing else, production or tool. Those three and
+  `tests/test_song_model.py`/`tests/test_movefwd.py` are deleted. `eqlift_annotate`
+  is **not** retired with them: `eqlift_mem.emit_mem` still calls its `aggregate`
+  and `annotate_lines` to label the header, so it leaves with that substrate —
+  `emit`/`emit_mem` and the prototype example — and not before.
 
 ## Risks, against the record
 
@@ -3467,3 +3474,25 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   The two earlier measurements — against #194, and against #195 — gave the same 79 tunes, the
   same 12 growths and the same three shapes (−929 and −896 bytes), with `splice_sweep` at 63
   bad and at 2 bad, zero new and zero fixed each time. This landing is orthogonal to all three.
+- **2026-08-12 — the song-model modules leave, and `eqlift_annotate` does not.** The
+  housekeeping item's condition was stage 4's role-typed artifact replacing their function;
+  #187 turned the roles ON and the artifact carries them, so the item is taken.
+  (1) **The claim, measured before the deletion.** An AST scan of every package module and a
+  grep over `tools/`, `examples/` and the tests: `song_model`, `generators` and `movefwd` are
+  imported by each other, by `tests/test_song_model.py` and `tests/test_movefwd.py`, and by
+  nothing else. The subgraph is closed, so **1,187 lines** go — `song_model.py` (398),
+  `generators.py` (138), `movefwd.py` (135) and the two test files (365, 151).
+  `docs/frameprog.md` §4.1's refused SID-shadow rung keeps its measurement and now records
+  that its detector is retired.
+  (2) **`eqlift_annotate` stays, and the reason is a live consumer, not a schedule.**
+  `eqlift_mem.emit_mem` calls `aggregate` and `annotate_lines` on every header it renders, and
+  `emit`/`emit_mem` are `examples/state_machine_lift.py`'s substrate. It leaves with them; the
+  module's own docstring now says so, so the next reader does not have to re-measure it.
+  (3) **No emitted byte can move, and the gate says so.** Nothing production imports what was
+  deleted, so `emit_identity --expect` reproduces the base commit exactly: **624 tunes, 0
+  refused, 28,371,517 bytes**, aggregate
+  `73e80047254ea6997e4a17909db9fdf3c94d4bd46b737579086e4fc936746bdf` unmoved, **0 of 624
+  moved**. (Measured twice: byte-identical against #196 before the rebase onto #197, and
+  against #197 after it.) Suite **2,772 passed / 490 skipped / 10 xfailed** (oracle excluded,
+  corpus parameters unbounded), coverage **90.08%** — deleting tested code moves the
+  denominator, so it is measured, not assumed. `black --check` and `pylint` (10.00/10) clean.

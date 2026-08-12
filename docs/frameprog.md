@@ -426,7 +426,7 @@ frame(state, in) {
 Drivers stage a frame's register writes in a RAM mirror and flush it to the SID
 (`sid[$D400+i] = B[i]`): Krakout's 25-byte `m_E686`, the per-voice
 `m_10B1[v]`/`m_EFC1[7v]` triples of the tracker-era players, Follin's
-register-poke command. `movefwd.sid_shadows` detects the idiom — a parallel
+register-poke command. `movefwd.sid_shadows` detected the idiom — a parallel
 indexed flush over a *writable* buffer, so read-only pitch tables are excluded —
 and finds one on 146 of the 623 cached tunes.
 
@@ -451,9 +451,11 @@ where the buffer collapses; no static premise bounds the covered register set
 nothing, since freq and pw come from the canonical record. Promoting the mirror
 statically into an index into its bank — the only artifact-level way to name the
 row — is available for about 2% of the emits, because the row a mirror holds is
-a run-time quantity. `movefwd` therefore stays **analysis-only**, and what makes
-the mirror transparent to a consumer is the origin rule of §1.4, which annotates
-rather than moves and so cannot disturb the projection.
+a run-time quantity. `movefwd` was therefore **analysis-only**, and is retired with
+the song-model modules (register-model-lift-impl, housekeeping); the measurement
+above is the record it leaves. What makes the mirror transparent to a consumer is
+the origin rule of §1.4, which annotates rather than moves and so cannot disturb
+the projection.
 
 **Wrap-offset base normalization** (landed, `eqlift_annotate._const_base`). The
 other half of the same diagnosis: a "computed" table base is often a 16-bit
@@ -3068,8 +3070,8 @@ forms already appear in emitted text meaning the same thing -- reusing them woul
 reinterpret every committed ``.frameprog.txt``. ``_map_exprs``
 (``frameproc.py:890``) rebuilds a store as a bare 3-tuple and is the one central
 place a flag would be dropped; the other six ``("st", ...)`` rebuilders in the
-frameprog path are ``frameproc.py`` 426, 950, 1040, 1224 and 2660 and
-``movefwd.py:106``, all of which must carry ``s[3:]`` through. And deleting
+frameprog path were ``frameproc.py`` 426, 950, 1040, 1224 and 2660 and
+``movefwd.py:106`` (since retired), all of which must carry ``s[3:]`` through. And deleting
 ``_lww`` deletes the ``p.kind != "sid"`` clause with it, so non-SID pairs merge
 hi-first too: sound, since RAM order is invisible to the log and ``_bring`` and
 ``_may_read`` still guard the values, but **unsized** -- §7.10.4's 76 counted
