@@ -2,7 +2,9 @@
 
 Each SID register store's value is backtraced through the asg/scratch-store
 dataflow to the constant-base data tables its bytes flow from; freq tables get an
-equal-temperament check that confirms the pitch table and counts its octaves."""
+equal-temperament check that confirms the pitch table and counts its octaves. Its three
+fellow song-model modules are retired; this one stays while ``emit_mem`` annotates a
+header with it, and leaves when that substrate does."""
 
 from __future__ import annotations
 
