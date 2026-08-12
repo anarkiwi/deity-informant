@@ -82,9 +82,12 @@ class _Web:
 def analyse(mem0, decls, procs, state, symbols, resolved, records):
     """Every web ``ptrcert`` names, b0's extent beside it and its premises discharged.
 
-    The certification reads the program rung (f) left, so a site rung (f) already
-    resolved is no ⊤ access and only a web with residue is 2b's to spell."""
-    prog = SimpleNamespace(mem0=mem0, data_decls=decls, procs=procs, resolved=resolved)
+    The certification reads the program rung (f) left, so a site rung (f) proved a
+    block set for is no ⊤ access and only a web with residue is 2b's to spell -- a web
+    rung (f) named on its own maintenance still owes its extent and is one."""
+    prog = SimpleNamespace(
+        mem0=mem0, data_decls=decls, procs=procs, resolved=resolved, proved=resolved
+    )
     recs, _loose = ptrcert.certify(prog)
     mapped = ptrextent.mapped_cells(records)
     blocks = {int(r["root"][1:], 16): _blocks(r) for r in records}

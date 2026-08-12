@@ -74,6 +74,28 @@ def _writethrough():
     return a, data
 
 
+def _writethrough_open():
+    """The same store with a play-written reload table, which rung (f) refuses.
+
+    ``mut`` excludes the row from the const claim, so the pointer's word set is not
+    the registry's and the store stays the top-wide access this census counts."""
+    a = G.Asm(G.ORG)
+    a.i("LDX", "abs", CTR)
+    a.i("LDA", "absx", G.TBL).i("STA", "zp", G.PTR)
+    a.i("LDA", "absx", G.TBL + 2).i("STA", "zp", G.PTR + 1)
+    a.i("LDA", "abs", CTR).i("ORA", "imm", 0x41)
+    a.i("LDY", "imm", 0x02).i("STA", "indy", G.PTR)
+    a.i("LDA", "indy", G.PTR).i("STA", "abs", SID + 4)
+    a.i("LDA", "abs", CTR).i("EOR", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("LDA", "imm", (BLK + 8) & 0xFF).i("STA", "abs", G.TBL + 1)
+    a.i("RTS")
+    data = {CTR: 0, G.PTR: BLK & 0xFF, G.PTR + 1: BLK >> 8}
+    data.update({G.TBL: BLK & 0xFF, G.TBL + 1: (BLK + 8) & 0xFF})
+    data.update({G.TBL + 2: BLK >> 8, G.TBL + 3: (BLK + 8) >> 8})
+    data.update({BLK + k: 0 for k in range(0x10)})
+    return a, data
+
+
 def _recurrent():
     """2b (b3) --close: the whole state is one toggling cell, so frame 2 repeats frame 0."""
     a = G.Asm(G.ORG)
@@ -89,6 +111,7 @@ _PLAYERS = {
     "lone_lane": _lone_lane,
     "pointer_walk": _pointer_walk,
     "writethrough": _writethrough,
+    "writethrough_open": _writethrough_open,
 }
 
 
@@ -149,11 +172,17 @@ def test_pointer_walk_top_loads_carry_their_root():
 
 
 def test_writethrough_top_store_is_classified():
-    row = _row("writethrough")
+    """The store roots at the pointer it writes through, not at the table behind it.
+
+    A destination is an address, so it keeps the pointer word (``_fold_stmt``); where
+    rung (f) proves the word set the store leaves the census, and where the table is
+    play-written it stays, rooted at the pair."""
+    assert _row("writethrough")["top_stores"] == 0, "rung (f) proved the const table's set"
+    row = _row("writethrough_open")
     assert row["top_stores"] == 1
     assert row["wide_classes"] == {"ptr_writethrough": 1}
     (site,) = row["top_store_sites"]
-    assert site["roots"] == ["$%04X" % G.TBL]
+    assert site["roots"] == ["$%04X" % G.PTR]
     assert row["ptr_roots"] == ["$%04X" % G.PTR]
 
 
@@ -225,7 +254,7 @@ def test_field_verdict_prefers_persistence_and_spells_mixes():
 
 
 def test_totals_merge_the_gate_columns():
-    rows = [_row("scratch"), _row("writethrough")]
+    rows = [_row("scratch"), _row("writethrough_open")]
     for row in rows:
         row["tune"] = row.get("tune", "t/%d" % id(row))
     got = storage_census._totals(rows)

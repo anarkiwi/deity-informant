@@ -46,10 +46,14 @@ def test_the_registry_says_which_pointer_walks_the_block():
 
 
 def test_a_write_through_store_is_a_deref_too():
-    """The 38-site write-through class contributes its addresses to its web."""
-    ext = _row("writethrough")["extents"]
-    assert ext["webs"] == 2 and ext["webs_mapped"] == 2
-    assert all(r["blocks"] for r in ext["records"])
+    """The 38-site write-through class contributes its addresses to its own web.
+
+    The store's destination keeps the pointer word, so it derefs the pair rather than
+    rooting a second web at the table its value came from."""
+    ext = _row("writethrough_open")["extents"]
+    assert ext["webs"] == 1 and ext["webs_mapped"] == 1
+    (rec,) = ext["records"]
+    assert rec["root"] == "$0002" and rec["blocks"] and not rec["unmappable"]
 
 
 def test_a_player_with_no_deref_claims_no_extent():

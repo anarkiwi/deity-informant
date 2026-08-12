@@ -9,6 +9,7 @@ that set is one block the address is also a store's source cell (spec 4.6).
 from __future__ import annotations
 
 from . import datadecl
+from . import expr as E
 from . import framefuse as FU
 from . import frameproc
 from . import grammar as G
@@ -16,6 +17,7 @@ from . import streams as ST
 from .structured import Proof
 
 _ROW = 0xFF  # a resolved deref reads one byte row of its target block
+_WEB = 16  # save cells one pointer web closes over
 
 
 # ---- the deref shape ---------------------------------------------------------------
@@ -93,6 +95,39 @@ def _bound(idx, wide):
     return ST._idx_hi(_widen(idx, wide))
 
 
+def const_word(v):
+    """The constant value ``v`` names, else None; packed byte lanes included.
+
+    A pointer set to a literal block arrives as ``zext2($60) | zext2($15) << 8``
+    once the lanes fold, so the row is constant even where no ``const`` node is."""
+    if v[0] == "const":
+        return v[1]
+    if v[0] != "op":
+        return None
+    m = E.mask(frameproc.loc_width(v))
+    if v[1] in ("INT_ZEXT", "COPY"):
+        got = const_word(v[2][0])
+        return None if got is None else got & m
+    kids = [const_word(c) for c in v[2]]
+    if any(c is None for c in kids):
+        return None
+    if v[1] == "INT_OR":
+        out = 0
+        for c in kids:
+            out |= c
+    elif v[1] == "INT_ADD":
+        out = sum(kids)
+    elif v[1] == "INT_AND":
+        out = kids[0]
+        for c in kids[1:]:
+            out &= c
+    elif v[1] == "INT_LEFT" and len(kids) == 2:
+        out = kids[0] << kids[1]
+    else:
+        return None
+    return out & m
+
+
 def _assigns(procs):
     """``(wide local names, local name -> assigned values)``; a local is a byte
     unless some assignment gives it a 16-bit value."""
@@ -108,14 +143,20 @@ def _assigns(procs):
 
 
 # ---- the writers of a pointer field ------------------------------------------------
-def _span(addr, wide, vals, chase=True):
+def _span(addr, wide, vals, words, chase=True):
     """``(lo, hi)`` a store at ``addr`` may reach, else None (unprovable).
 
-    ``base + i`` is the declared-index form; ``x | K`` is the stack (``x | K`` lies
-    in ``[K, K + hi(x)]``); a local address is the union over its assignments. A
-    modular address leaves no page, so it reaches that page and no more."""
+    A deref of a pointer whose word set the registry closes reaches that set plus
+    the row; ``base + i`` is the declared-index form; ``x | K`` is the stack; a
+    local address is the union over its assignments; a modular one keeps its page."""
     if addr[0] == "const" and addr[2] == 2:
         return addr[1], addr[1]
+    got = deref(addr)
+    if got is not None:
+        ws = words.get(got[0])
+        if ws:
+            return min(ws), max(ws) + (0 if got[1] is None else _bound(got[1], wide))
+        return None
     got = frameproc._index_of(addr)
     if got is not None:
         return (0, got[2] - 1) if got[2] else (got[0], got[0] + _bound(got[1], wide))
@@ -125,28 +166,58 @@ def _span(addr, wide, vals, chase=True):
         if len(ks) == 1:
             return ks[0][1], ks[0][1] + _bound(rest[0], wide)
     if addr[0] == "loc" and chase:
-        got = [_span(v, wide, vals, False) for v in vals.get(addr[1], ())]
+        got = [_span(v, wide, vals, words, False) for v in vals.get(addr[1], ())]
         if got and None not in got:
             return min(s[0] for s in got), max(s[1] for s in got)
     return None
 
 
-def _writers(procs, wide, vals):
-    """``(word values stored per cell, spans a store may reach, wild store)``."""
-    defs, spans, wild_store = {}, [], False
+def _word_defs(procs):
+    """The word values stored per cell, keyed by the cell each word store names."""
+    defs = {}
+    for _e, _p, _r, stmts in procs:
+        for s in FU.stmts_of(stmts):
+            if s[0] == "st" and s[1][0] == "const" and s[1][2] == 2 and G.store_width(s[2]) == 2:
+                defs.setdefault(s[1][1], []).append(s[2])
+    return defs
+
+
+def _closed_words(defs, mem0, tabs, wide):
+    """``{cell: every word it may hold}`` where the registry closes the set.
+
+    A declared const lo/hi row and a constant are the two closed shapes; the image
+    word joins them, since a deref before the first definition reads ``mem0``. This
+    is what bounds a deref store off the registry -- computed, never observed."""
+    out = {}
+    for cell, vals in defs.items():
+        words = {mem0[cell] | (mem0[(cell + 1) & 0xFFFF] << 8)}
+        for v in vals:
+            got, tab, _why = _entry_words(mem0, tabs, v, wide)
+            if tab is None:
+                got = const_word(v)
+                if got is None:
+                    break
+                words.add(got & 0xFFFF)
+            else:
+                words |= got
+        else:
+            out[cell] = words
+    return out
+
+
+def _writers(procs, wide, vals, words):
+    """``(spans a store may reach, wild store)`` over every store of ``procs``."""
+    spans, wild_store = [], False
     for _e, _p, _r, stmts in procs:
         for s in FU.stmts_of(stmts):
             if s[0] != "st":
                 continue
-            width = G.store_width(s[2])
-            if s[1][0] == "const" and s[1][2] == 2 and width == 2:
-                defs.setdefault(s[1][1], []).append(s[2])
-            got = _span(s[1], wide, vals)
+            got = _span(s[1], wide, vals, words)
             if got is None:
                 wild_store = True
             else:
-                spans.append((got[0], got[1] + width - 1))
-    return defs, spans, wild_store
+                spans.append((got[0], got[1] + G.store_width(s[2]) - 1))
+    return spans, wild_store
 
 
 def _leg(half):
@@ -175,10 +246,90 @@ def _entry(val):
     return lo[0], hi[0], lo[1]
 
 
+def _entry_words(mem0, tabs, val, wide):
+    """``(target words, table record, refusal)`` for one partner-table entry read.
+
+    The words are read out of ``mem0`` at the *declared* extent -- the rows the
+    index bound reaches, never the trace -- and a ``mut`` offset refuses, since
+    ``mut`` is exactly the play-written lane the const claim excludes (#61)."""
+    ent = _entry(val)
+    if ent is None:
+        return None, None, "a definition is not a lo/hi partner-table entry read"
+    lob, hib, idx = ent
+    glo, ghi = tabs.at(lob), tabs.at(hib)
+    if glo is None or ghi is None:
+        return None, None, "reload table %s is not declared" % G.addr_name(lob)
+    (dlo, off), (dhi, ohi) = glo, ghi
+    if dlo["role"] != ("lo", dhi["base"]) or dhi["role"] != ("hi", dlo["base"]) or off != ohi:
+        why = "%s/%s is not a declared lo/hi partner pair" % (G.addr_name(lob), G.addr_name(hib))
+        return None, None, why
+    if dlo["mut"] or dhi["mut"]:
+        return None, None, "reload table %s has play-written offsets" % G.addr_name(dlo["base"])
+    end = min(dlo["size"], dhi["size"], off + _bound(idx, wide) + 1)
+    lb, hb = dlo["base"], dhi["base"]
+    words = {mem0[lb + j] | (mem0[hb + j] << 8) for j in range(off, end)}
+    return words, (lob, hib, end - off, frameproc._fmt(idx)), None
+
+
+def _row_declared(tabs, base):
+    """True where ``base`` names a row of a declared datum with no ``mut`` offset.
+
+    No bound is asked of the index: a lane replacement makes no target claim for one
+    to hold up, so what the registry is asked is only that the row is const data."""
+    at = tabs.at(base)
+    return at is not None and not at[0]["mut"]
+
+
+def _cell_reads(v):
+    """Every plain const-address memory read under ``v``, as ``(base, width)``."""
+    out, stack = [], [v]
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            if x[1][0] == "const" and x[1][2] == 2:
+                out.append((x[1][1], x[2]))
+            stack.append(x[1])
+        elif x[0] == "op":
+            stack.extend(x[2])
+    return out
+
+
+def _web_value(v, cells):
+    """True where ``v``'s every memory read is a plain read of a web cell.
+
+    An advance, a lane-wise step and a restore all wear this shape: the value is a
+    function of cells the web already owns, so the store making it is the web's own
+    maintenance and not a third writer."""
+    stack, read = [v], False
+    while stack:
+        x = stack.pop()
+        if x[0] == "mem":
+            base, idx = frameproc.addr_split(x[1])
+            if base is None or idx is not None or any(base + o not in cells for o in range(x[2])):
+                return False
+            read = True
+        elif x[0] == "op":
+            stack.extend(x[2])
+        elif x[0] not in ("const", "loc"):
+            return False
+    return read
+
+
 class _Ptr:
     """One pointer state field: the definitions reaching it and what they prove."""
 
-    __slots__ = ("cell", "fused", "tables", "targets", "init", "why")
+    __slots__ = (
+        "cell",
+        "fused",
+        "tables",
+        "targets",
+        "init",
+        "why",
+        "roots",
+        "cells",
+        "maint",
+        "ndefs",
+    )
 
     def __init__(self, cell, fused):
         self.cell = cell
@@ -187,51 +338,96 @@ class _Ptr:
         self.targets = set()
         self.init = 0
         self.why = None
+        self.roots = (cell,)
+        self.cells = {cell, cell + 1}
+        self.maint = 0
+        self.ndefs = 0
 
     def resolve(self, mem0, tabs, w):
         """Discharge the premise over every definition; sets ``why`` on refusal."""
         self.init = mem0[self.cell] | (mem0[(self.cell + 1) & 0xFFFF] << 8)
         if not self.fused:
             self.why = "the lo/hi pair did not fuse (rung d)"
-        elif w.wild:
+            return self
+        self.roots, self.cells = self._close(w.defs)
+        self.ndefs = sum(len(w.defs.get(r, ())) for r in self.roots)
+        if w.wild:
             self.why = "a store at an unproven address may write the pointer"
         elif any(self._hit(lo, hi) for lo, hi in w.spans):
             self.why = "another store may write the pointer"
         else:
-            for val in w.defs.get(self.cell, ()):
-                self.why = self._entry_targets(mem0, tabs, val, w.wide)
-                if self.why is not None:
-                    break
+            for root in self.roots:
+                for val in w.defs.get(root, ()):
+                    self.why = self._absorb(mem0, tabs, val, w.wide, root == self.cell)
+                    if self.why is not None:
+                        return self
         return self
 
-    def _hit(self, lo, hi):
-        """Whether a store span reaches the pair, its own word store excepted."""
-        if lo == self.cell and hi == self.cell + 1:
-            return False
-        return lo <= self.cell + 1 and self.cell <= hi
+    def _close(self, defs):
+        """``(web roots, web cells)``: the pair, plus the save cells it restores from.
 
-    def _entry_targets(self, mem0, tabs, val, wide):
-        """Absorb one definition's target words, or return its refusal."""
-        ent = _entry(val)
-        if ent is None:
-            return "a definition is not a lo/hi partner-table entry read"
-        lob, hib, idx = ent
-        glo, ghi = tabs.at(lob), tabs.at(hib)
-        if glo is None or ghi is None:
-            return "reload table %s is not declared" % G.addr_name(lob)
-        (dlo, off), (dhi, ohi) = glo, ghi
-        if dlo["role"] != ("lo", dhi["base"]) or dhi["role"] != ("hi", dlo["base"]) or off != ohi:
-            return "%s/%s is not a declared lo/hi partner pair" % (
-                G.addr_name(lob),
-                G.addr_name(hib),
-            )
-        if dlo["mut"] or dhi["mut"]:
-            return "reload table %s has play-written offsets" % G.addr_name(dlo["base"])
-        end = min(dlo["size"], dhi["size"], off + _bound(idx, wide) + 1)
-        self.tables.append((lob, hib, end - off, frameproc._fmt(idx)))
-        lb, hb = dlo["base"], dhi["base"]
-        self.targets.update(mem0[lb + j] | (mem0[hb + j] << 8) for j in range(off, end))
-        return None
+        A definition the pair's own cells do not explain may still be the web's, one
+        hop out: the cell it reads joins the web and answers for its own definitions,
+        which is the held-value closure 2a runs, re-asked over the word stores here."""
+        roots, cells = [self.cell], {self.cell, self.cell + 1}
+        for _round in range(_WEB):
+            held = {
+                b
+                for r in roots
+                for v in defs.get(r, ())
+                if not _web_value(v, cells) and const_word(v) is None and _entry(v) is None
+                for b, _w in _cell_reads(v)
+                if b in defs and b not in cells
+            }
+            if not held or len(roots) + len(held) > _WEB:
+                return tuple(roots), cells
+            roots += sorted(held)
+            cells |= {b + o for b in held for o in (0, 1)}
+        return tuple(roots), cells
+
+    def _hit(self, lo, hi):
+        """Whether a store span reaches the web, each root's own word store excepted."""
+        if any(lo == c and hi == c + 1 for c in self.roots):
+            return False
+        return any(lo <= c + 1 and c <= hi for c in self.roots)
+
+    def _absorb(self, mem0, tabs, val, wide, root):
+        """One definition: a declared row, a constant, or the web's own maintenance."""
+        words, tab, why = _entry_words(mem0, tabs, val, wide)
+        if tab is not None:
+            self.tables.append(tab)
+            if root:
+                self.targets |= words
+            return None
+        k = const_word(val)
+        if k is not None:
+            if root:
+                self.targets.add(k & 0xFFFF)
+            return None
+        if _web_value(FU.unlane(val, self.cell), self.cells) or self._lane(tabs, val):
+            self.maint += 1
+            return None
+        return why
+
+    def _lane(self, tabs, val):
+        """Whether ``val`` replaces one lane of the web's word with the web's own row.
+
+        Rung (d) spells a lone half store as the lane update ``(w & $FF00) | zext2(v)``
+        (``framefuse.lane_of``), so a pair whose lanes are reloaded apart never packs one
+        entry: the surviving lane is the web's, and the replacement must be its own row."""
+        got = FU.lane_of(val, self.cell)
+        if got is None:
+            return False
+        half = FU.unlane(got[1], self.cell)
+        if const_word(half) is not None or _web_value(half, self.cells):
+            return True
+        leg = _leg(half)
+        return leg is not None and _row_declared(tabs, leg[0])
+
+    @property
+    def open(self):
+        """Whether the web's own maintenance leaves the target set unclosed."""
+        return bool(self.maint)
 
 
 class _Site:
@@ -265,9 +461,12 @@ class _Site:
         """``(the address the proof supplies, refusal)`` for the provenance rule (spec 4.6).
 
         One target block is one address, so the base is the proof's constant and only
-        the row evaluates; two or more is an address space and refuses."""
+        the row evaluates; two or more is an address space and refuses, and so does an
+        open set -- the web's own maintenance names no block at all."""
         if self.why is not None:
             return None, self.why
+        if self.ptr.open:
+            return None, "the web's own maintenance leaves the target set open"
         blocks = self.blocks()
         if len(blocks) != 1:
             return None, "the proof names %d target blocks, not one address" % len(blocks)
@@ -303,40 +502,65 @@ class _Site:
             "%s/%s[%d]@%s" % (G.addr_name(lo), G.addr_name(hi), n, ix)
             for lo, hi, n, ix in ptr.tables
         )
-        body = "pointer deref *%s[%s] at %d site(s); %d definition(s)%s" % (
+        body = "pointer deref *%s[%s] at %d site(s); %d definition(s), %d table row(s)%s" % (
             G.addr_name(ptr.cell),
             self.text(),
             self.count,
+            ptr.ndefs,
             len(ptr.tables),
             " from " + tabs if tabs else "",
         )
         if self.why is not None:
             return Proof(ptr.cell, "deref", "refused", (), "%s; %s" % (body, self.why))
         blocks = sorted(ptr.targets)
-        lemma = "%s; %d table block(s) %s, init $%04X; row index bound $%02X" % (
+        lemma = "%s; %d table block(s) %s, init $%04X%s; row index bound $%02X" % (
             body,
             len(blocks),
             "$%04X..$%04X" % (blocks[0], blocks[-1]) if blocks else "-",
             ptr.init,
+            "; %d maintenance definition(s), target set open" % ptr.maint if ptr.open else "",
             self.bound,
         )
-        return Proof(ptr.cell, "deref", "resolved", tuple(self.blocks()), lemma)
+        sites = () if ptr.open else tuple(self.blocks())
+        return Proof(ptr.cell, "deref", "resolved", sites, lemma)
 
 
 class _Writes:
-    """What the play code may write: word definitions, spans, wild stores."""
+    """What the play code may write: word definitions, spans, wild stores.
 
-    __slots__ = ("defs", "spans", "wild", "wide")
+    The closed word sets are assumed and then checked: a set bounds the deref stores
+    through its cell, the bound is read back against the cell, and a cell some other
+    store may still reach loses its set and every bound that rested on it."""
 
-    def __init__(self, procs):
+    __slots__ = ("defs", "spans", "wild", "wide", "words")
+
+    def __init__(self, procs, mem0, tabs):
         self.wide, vals = _assigns(procs)
-        self.defs, self.spans, self.wild = _writers(procs, self.wide, vals)
+        self.defs = _word_defs(procs)
+        self.words = _closed_words(self.defs, mem0, tabs, self.wide)
+        for _round in range(len(self.words) + 1):
+            self.spans, self.wild = _writers(procs, self.wide, vals, self.words)
+            bad = [c for c in self.words if self._clobbered(c)]
+            if not bad:
+                return
+            for cell in bad:
+                del self.words[cell]
+        self.spans, self.wild = _writers(procs, self.wide, vals, self.words)
+
+    def _clobbered(self, cell):
+        """Whether a store other than the cell's own word store may reach the cell."""
+        if self.wild:
+            return True
+        return any(
+            not (lo == cell and hi == cell + 1) and lo <= cell + 1 and cell <= hi
+            for lo, hi in self.spans
+        )
 
 
 def analyse(mem0, decls, procs):
     """Every base-less pointer deref site of ``procs``, premise discharged."""
     tabs = datadecl.Regions(decls)
-    w = _Writes(procs)
+    w = _Writes(procs, mem0, tabs)
     ptrs, seen = {}, {}
     for _e, _p, _r, stmts in procs:
         for addr in _addrs(stmts):
@@ -356,13 +580,15 @@ def analyse(mem0, decls, procs):
 
 
 def apply_rung(mem0, decls, procs):
-    """Rung (f) over ``procs``: ``(resolved addresses, proven addresses, proofs)``.
+    """Rung (f) over ``procs``: ``(resolved, block-proved, proven addresses, proofs)``.
 
-    Naming only, exactly as the indexed form of spec 4.2: the trees and every value
-    are untouched, so Gate FP cannot move. The second map is the provenance rule of
-    spec 4.6 — the sites whose proof names one block, so it supplies an address."""
+    Naming only (spec 4.2's indexed form), so Gate FP cannot move. A web named on its
+    own maintenance proves no block set and stays 2b's ⊤ access, its extent the
+    observed one; the third map is spec 4.6's, the sites whose proof names one address."""
     sites = analyse(mem0, decls, procs)
-    resolved = {s.addr: (s.ptr.cell, s.idx) for s in sites if s.why is None}
+    lifted = [s for s in sites if s.why is None]
+    resolved = {s.addr: (s.ptr.cell, s.idx) for s in lifted}
+    blocked = {s.addr: (s.ptr.cell, s.idx) for s in lifted if not s.ptr.open}
     srcs = {s.addr: s.source()[0] for s in sites}
     pinned = {a: e for a, e in srcs.items() if e is not None}
-    return resolved, pinned, [s.proof() for s in sites] + [s.src_proof() for s in sites]
+    return resolved, blocked, pinned, [s.proof() for s in sites] + [s.src_proof() for s in sites]

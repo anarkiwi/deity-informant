@@ -27,7 +27,7 @@ def _lifted(name, records):
     _lift(name)
     p = _lift_prog[name]
     named, ext, proofs = ptrlift.apply_rung(
-        p.mem0, p.data_decls, p.procs, p.state, p.symbols, p.resolved, records
+        p.mem0, p.data_decls, p.procs, p.state, p.symbols, p.proved, records
     )
     out = frameprog.FrameProgram(
         p.play,
@@ -42,6 +42,7 @@ def _lifted(name, records):
         p.mem0,
         p.proofs + proofs,
         {**p.resolved, **named},
+        {**p.proved, **named},
         p.pinned,
         p.prov0,
         p.init_census,
@@ -96,17 +97,20 @@ def test_the_lift_is_naming_only():
 
 
 def test_a_lifted_web_leaves_the_top_access_population():
-    """``ptrcert._top`` skips a resolved address, so the census row must move with it."""
-    _lift("cursor_save")
-    assert storage_census.top_sites(_lift_prog["cursor_save"])["load_top"]
-    prog, _proofs = _walked("cursor_save")
+    """``ptrcert._top`` skips a proved address, so the census row must move with it.
+
+    The subject is a web rung (f) leaves whole: since the writer set landed, a web
+    the rung proves a block set for is already off the population before 2b runs."""
+    _lift("dual_store_advance")
+    assert storage_census.top_sites(_lift_prog["dual_store_advance"])["load_top"]
+    prog, _proofs = _walked("dual_store_advance")
     assert not storage_census.top_sites(prog)["load_top"]
     assert not ptrcert.certify(prog)[0]
 
 
 def test_an_eligible_web_whose_extent_left_the_registry_keeps_its_spelling():
     """b0's own rule: an address in no declared datum is no extent to name."""
-    prog, proofs = _walked("cursor_save", extra=(FOREIGN,))
+    prog, proofs = _walked("dual_store_advance", extra=(FOREIGN,))
     assert not prog.extents and "mem[" in _body(prog)
     assert [(p.status, p.lemma.rsplit("; ", 1)[-1]) for p in proofs] == [
         ("refused", "extent_unmappable")
@@ -142,10 +146,17 @@ def test_a_pair_that_did_not_fuse_carries_no_extent():
 
 
 def test_a_refused_web_leaves_every_other_web_lifted():
-    """Granularity is the web, never the tune: writethrough carries one of each."""
-    prog, proofs = _walked("writethrough")
-    assert sorted(p.status for p in proofs) == ["refused", "resolved"]
-    assert list(prog.extents) == [CELL]
+    """Granularity is the web, never the tune: a row naming one web of two lifts one.
+
+    ``unpaired_half_store`` carries two cursor pairs; b0's row is given for the first
+    alone, so the second refuses on its own extent and the first is unaffected."""
+    _lift("unpaired_half_store")
+    p = _lift_prog["unpaired_half_store"]
+    seen = {int(b[1:], 16) for r in ptrcert.certify(p)[0] for b in r["blocks"]}
+    per, _loose = ptrcert.sites(p)
+    prog, proofs = _lifted("unpaired_half_store", ptrextent.extents(p, {min(per): sorted(seen)}))
+    assert sorted(x.status for x in proofs) == ["refused", "resolved"]
+    assert list(prog.extents) == [min(per)]
 
 
 def test_no_artifact_is_no_change():
