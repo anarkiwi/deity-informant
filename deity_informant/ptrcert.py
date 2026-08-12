@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import Counter
 
 from . import datadecl
-from . import expr as E
 from . import framefuse as FU
 from . import frameproc
 from . import frameptr
@@ -72,8 +71,11 @@ def _stmts(procs):
 
 
 def _top(addr, at, prog):
-    """True where ``addr`` is the top-wide unnamed access the census counts."""
-    if frameproc.addr_split(addr)[0] is not None or addr in prog.resolved:
+    """True where ``addr`` is the top-wide unnamed access the census counts.
+
+    A site rung (f) proved a block set for is no top access; one it merely named on
+    the web's own maintenance still owes 2b its observed extent, so it stays."""
+    if frameproc.addr_split(addr)[0] is not None or addr in getattr(prog, "proved", ()):
         return False
     return frameproc.addr_bits(addr, at) > _STACK
 
@@ -232,39 +234,6 @@ def _reload(v, role, regions, mem0, wide=frozenset()):
         bases.append(d["base"])
         words |= _table_targets(d, other, mem0, off, end)
     return sorted(bases), words
-
-
-def _const(v):
-    """The constant value ``v`` names, else None; packed byte lanes included.
-
-    A pointer set to a literal block arrives as ``zext2($60) | zext2($15) << 8``
-    once the lanes fold, so the row is constant even where no ``const`` node is."""
-    if v[0] == "const":
-        return v[1]
-    if v[0] != "op":
-        return None
-    m = E.mask(frameproc.loc_width(v))
-    if v[1] in ("INT_ZEXT", "COPY"):
-        got = _const(v[2][0])
-        return None if got is None else got & m
-    kids = [_const(c) for c in v[2]]
-    if any(c is None for c in kids):
-        return None
-    if v[1] == "INT_OR":
-        out = 0
-        for c in kids:
-            out |= c
-    elif v[1] == "INT_ADD":
-        out = sum(kids)
-    elif v[1] == "INT_AND":
-        out = kids[0]
-        for c in kids[1:]:
-            out &= c
-    elif v[1] == "INT_LEFT" and len(kids) == 2:
-        out = kids[0] << kids[1]
-    else:
-        return None
-    return out & m
 
 
 def _held(v, width):
@@ -691,7 +660,7 @@ class _Cert:
             root.targets |= got[1]
             names = ", ".join(name_addr(b) for b in got[0])
             return "reload", "row of declared pointer table(s) %s" % names, None
-        k = _const(v)
+        k = frameptr.const_word(v)
         if k is not None:
             if role == "word":
                 root.targets.add(k & 0xFFFF)

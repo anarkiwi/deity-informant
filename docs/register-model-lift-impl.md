@@ -725,14 +725,14 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    a call, so the value spelling names a version no longer available and extraction falls back
    to the cell. The reading is `frameproc._Info.may`, the callee's may-define set; the consumer
    is the wall, so the pin is `eqlift_mem`'s [1 pin, 6 → 5].
-7. **rung (f), the writer set [4 pins, 5 → 1].** `_writers` records only width-2 stores as
-   definitions and `_hit` excepts only an exact word store, so a declared lo/hi reload row and
-   a bounded deref store both read as third writers. Measured per fixture: `pointer_walk` and
-   `mux_pair` carry no wild store and no third writer, so admitting the pair's own byte-lane
-   reload row as a definition is the whole change; `writethrough`'s store address is a row of
-   a **declared const** lo/hi table whose word set `mem0` states, so `frameptr._span` bounds
-   it off the registry — computed, not observed; `cursor_save` wants rung (f) to take a
-   constant word definition beside the held-value closure `ptrcert` already runs.
+7. **rung (f), the writer set [4 pins, 5 → 1] — LANDED.** Premise 1 takes the web's own
+   maintenance — a value whose every memory read is a plain read of a web cell — beside the
+   declared row and the constant word, and the target set **opens** where it does, so the
+   name is given and no block claim is. Premise 4 is over the web (the pair plus the save
+   cells `_close` admits) and a deref store is bounded off the registry, the declared const
+   `lo`/`hi` table's own word set out of `mem0`. `frameproc._fold_stmt` is what made the
+   write-through store nameable: a destination is an address, and folding it as a value had
+   replaced the pointer word with the columns it was loaded from. Decision log, 2026-08-12.
 8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0].** `computed_rows_map`'s
    `extent_unmappable` fires because the rows the run observes are in no declared datum. The
    `INT_OR` interval is sound and stateable — `hi(a|b) <= 2^ceil(lg(max(hi a, hi b) + 1)) - 1`,
@@ -3537,3 +3537,84 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `eqlift_mem`'s wall landed beside it the five are rung (f) 4 and `datadecl` 1. Suite
   **2,789 passed / 490 skipped / 9 xfailed** (oracle included), `black --check` and `pylint`
   (10.00/10) clean.
+- **2026-08-12 — rung (f)'s writer set: a web that maintains itself is no third writer, and
+  the target set pays for the name.** Item 7's four pins were the last rung (f) owned. #189
+  measured the premise they refuse under; #195 moved two of them off the writer set onto
+  premise 1, and this closes all four on one reading — **what a pointer web's own cells
+  explain is the web's, and what it cannot claim is the block set, not the name**.
+  (1) **Premise 1 takes the web's own maintenance.** A definition is admitted where it is a
+  declared `lo`/`hi` partner-table row (today's rule), a **constant word**, or a value whose
+  every memory read is a plain read of a **web cell** (`frameptr._web_value`). An advance
+  `P = P + n`, `mux_pair`'s lane-wise `INC`/`INC` and `cursor_save`'s restore all wear that
+  shape; a computed pointer and a row from outside the web still refuse. `ptrcert._const`
+  moves down to `frameptr.const_word`, where the layer that owns the shape is.
+  (1a) **The lane reload is the same reading, and it is the residue's own shape.** Rung (d)
+  spells a lone half store as the lane update `(w & $FF00) | zext2(v)`, so a pair whose lanes
+  are reloaded *apart* never packs one entry and `_entry` cannot see it. `_Ptr._lane` asks
+  `framefuse.lane_of` what the update replaced and admits it where the surviving lane is the
+  web's and the replacement is the web's own row — a constant, a web read, or a **declared
+  const** table row (`_row_declared`; no bound is asked of its index, since an open target
+  set has no claim for one to hold up). Measured on the three editor families the survey
+  read, this is the residue: `Grid_Runner`'s eight deref sites resolve on it, and it is worth
+  −4,086 bytes over 29 more tunes than the advance alone.
+  (2) **The web is the pair plus the save cells it closes over.** `_close` takes the one hop
+  2a's held-value closure takes: a definition the pair's own cells do not explain may still
+  be the web's if the cell it reads answers for its own word stores. Premise 4 is over that
+  web — a span reaching any root refuses, each root's own word store excepted — so a byte
+  store, an indexed store or a wild store anywhere in the web still voids the whole thing.
+  (3) **The price is the target set, and it is the observed-primary guard.** A web with a
+  maintenance definition is **open**: `targets` claims nothing, the lemma says
+  "target set open", §4.6's provenance rule refuses it by name (`pinned` cannot move, and
+  did not), and the site stays in 2b's ⊤ population so `ptrlift` still gives it the
+  **observed** extent and the `in` clause. `FrameProgram.proved` is that split — rung (f)'s
+  block-proved subset — and `ptrcert._top`/`storage_census.top_sites` read it, so the two
+  instruments still name one population.
+  (4) **`writethrough` wanted a rung input, not a premise.** Its store address was
+  `m_1400[x]:2 + $0002` — the columns the pointer word was *loaded* from, not the pointer —
+  because `_fold_words` folded a store's **destination** as a value: `_fold_word`'s spill
+  trace (`_side_addr` → `Defs.cell`) replaced `zp_02`/`zp_03` with the table reads standing
+  in them. A destination is an address, so `frameproc._fold_stmt` folds it in the address
+  position, where only the plain adjacent shape folds — and the machine's own
+  `mem[(ptr_0002:2 + $0002):2]` survives to be named `*ptr_0002[$0002]`. With it, the store
+  and the read are one deref site, and `frameptr._span` bounds a deref off the registry: the
+  declared const table's word set out of `mem0`, plus the row bound — computed, never
+  observed. The word sets are **assumed and then checked** (`_Writes`): a cell some other
+  store may still reach loses its set and every bound that rested on it, which the corpus
+  never exercises (the aggregate is byte-identical with and without the check).
+  (5) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,347,787
+  bytes**, aggregate `e0daf5c46c1ae46c804d22b6ba874986eeaae3ded1fbc0518740522001d0e8f3`.
+  Every tune moves because the artifact's rung-(f) note moves with the premise (+83 bytes
+  each, +51,792 in all); net of that the rung is **−25,446 bytes over 137 tunes, every one
+  smaller and none larger**, 487 unchanged in size. The movement is one shape and only one:
+  every changed body line is `mem[(ptr:2 + i)]` becoming `*ptr[i]`, which is what a naming
+  rung must look like — Battle_of_the_Village's 88 changed lines are 88 derefs and nothing
+  else.
+  (6) **The base commit's recorded aggregate does not describe main.** #199 recorded
+  `a403a8aa…`/28,322,337 as CURRENT. Measured on this session's cache at `1e002d7`, main
+  emits `ae41682ce7dd3c1a88d37e674db380447f95f34b9059658c092cc213f8ca173f` /
+  **28,321,441** — 896 bytes apart — so the delta above is against a measurement of main and
+  not against the ledger's number. The ledger's number is superseded, as #190 (1) had to
+  supersede `018ce8f4…`.
+  (7) **The gates.** `gate_sweep` at full Songlengths holds **624 build / 624 evaluate /
+  624 clean**, zero divergences and zero refusals. `splice_sweep` is **2 bad — the two
+  standing ones and no others**: `International_Karate`'s `local 'a' used before definition`
+  and `Emax_01`'s one divergence, with parse, fixpoint and sites at zero; emitted size is
+  **−7,280 lines with no tune larger** (586 smaller) and **205,793 rewritten sites proved,
+  zero unproved** (205,796 before: three sites the naming takes out of the rewrite
+  population). The architectural-register census falls **183,534 → 183,345** with
+  `zero_arch` unmoved at 2 of 624; `fields`/`roled` do not move (18,109 / 13,234), since the
+  rung touches no declaration. Suite **2,799 passed / 490 skipped / 5 xfailed**, twice;
+  `black --check` and `pylint` (10.00/10) clean. No e-graph rule is admitted and no value
+  moves, so there is nothing here for `verify_rules` to prove: the rung names and Gate FP
+  cannot move by construction.
+  (8) **The ledger.** rung (f) owns **no** shredder pin: the family is **5 → 1**, and the
+  one left is `datadecl`'s.
+  (9) **Two items the survey of three editor families raised, both re-measured here.** The
+  claim that a false `lo`/`hi` partnership *poisons* premise 1 is **refuted**: `_entry_words`
+  takes `(lob, hib)` from the **code's own** pack and then asks the registry only to agree,
+  so a wrong declaration can starve the rung, never feed it. What it does cost is measured —
+  `Angry_Birds` refuses at `m_202A/m_2035 is not a declared lo/hi partner pair` on a
+  partnership the code reads at one index — and that is `datadecl`'s, taken with item 8.
+  The proof body also read `len(tables)` as its definition count, so a first-definition
+  refusal said "0 definition(s)" on a pointer with five; it names both now (`ndefs` and
+  "table row(s)").

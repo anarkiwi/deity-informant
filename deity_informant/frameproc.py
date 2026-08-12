@@ -2892,10 +2892,23 @@ def _steps_over(a, s, lead, regions):
     return not overlaps(lead, sreach)
 
 
+def _fold_stmt(s, env, at, regions):
+    """``_map_exprs`` with a store's destination folded in the address position.
+
+    A destination is an address, so it folds the plain adjacent shape and traces no
+    spill: a trace replaces the pointer word a deref reads with the columns that
+    word was loaded from, which is the spelling rung (f) reads (frameprog.md 4.4)."""
+    if s[0] != "st":
+        return _map_exprs(s, lambda x: _fold_expr(x, env, at, regions))
+    return ("st", _fold_expr(s[1], env, at, regions, True), _fold_expr(s[2], env, at, regions)) + s[
+        3:
+    ]
+
+
 def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
     env = Defs(stmts, outer, cyclic, foreign if outer is None else None)
     for i, s in enumerate(stmts):
-        stmts[i] = _map_exprs(s, lambda x, _i=i: _fold_expr(x, env, _i, regions))
+        stmts[i] = _fold_stmt(s, env, i, regions)
         for b in _stmt_bodies(stmts[i]):
             _fold_words(b, regions, (env, i), stmts[i][0] in _CYCLIC)
     if regions is None:

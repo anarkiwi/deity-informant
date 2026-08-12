@@ -1174,15 +1174,12 @@ def test_scratch_cell_is_a_local_not_state():
     assert not re.search(r"\bm_%04X\b" % TMP, _state_block(text)), "the field stayed"
 
 
-@pytest.mark.xfail(
-    reason="%s cursor lift; %s -- rung (f) refuses 'another store may write the pointer', "
-    "and the stores that hit the pair are the pair's OWN byte-lane reload stores at $0002 "
-    "and $0003 (measured: no wild store, no third writer). _hit excepts only an exact word "
-    "store and _writers records only width-2 stores as definitions, so the declared lo/hi "
-    "reload row is invisible to both" % (_S3, _OWNERS[0]),
-    **XFAIL,
-)
 def test_pointer_walk_names_no_raw_address():
+    """FLIPPED at rung (f)'s writer set: an advance is the web's own maintenance.
+
+    The pair's only other writer is its own declared reload row, so the writer set
+    admits both and premise 1 takes the advance -- with the target set open, which
+    is what refuses the provenance rule rather than the name."""
     text = _lift("pointer_walk")
     body = text[text.index("sub_") :]
     assert "mem[" not in body, "the walk still reads through a raw address"
@@ -1312,63 +1309,72 @@ def test_init_written_livein_cell_stays_state():
     assert re.search(r"_%04X\b" % POS, _state_block(_lift("init_livein")))
 
 
-_DEREF_REFUSAL = {  # fixture -> the rung (f) premise its *ptr[i] lift states
-    "pointer_walk": "a definition is not a lo/hi partner-table entry read",
-    "mux_pair": "a definition is not a lo/hi partner-table entry read",
-    "cursor_save": "a definition is not a lo/hi partner-table entry read",
-    "writethrough": "a store at an unproven address may write the pointer",
+_DEREF_LIFT = {  # fixture -> the definition shape rung (f)'s *ptr[i] proof took
+    "pointer_walk": "1 maintenance definition(s), target set open",
+    "mux_pair": "1 maintenance definition(s), target set open",
+    "cursor_save": "3 maintenance definition(s), target set open",
+    "writethrough": "2 table block(s) $1580..$1588",
 }
-_DEREF_WHY = (
-    "%s -- rung (f) states the premise %%r. Rung (d)'s per-site premise paid the writer "
-    "set: the pair's own byte-lane reload row is a width-2 lane update now, so pointer_walk "
-    "and mux_pair moved off the third-writer refusal onto the definition premise, and what "
-    "_writers still owes is a definition that is a partner-table entry read (writethrough's "
-    "deref store wants frameptr._span off the declared const table's word set)" % _OWNERS[0]
-)
 
 
-@pytest.mark.xfail(
-    reason="%s multiplexed pair splits per role; %s"
-    % (_S3, _DEREF_WHY % _DEREF_REFUSAL["mux_pair"]),
-    **XFAIL,
-)
 def test_mux_pair_certifies_the_pointer_role():
+    """FLIPPED: a lane-wise step reads the pair's own two cells and nothing else.
+
+    The counter arm's ``INC``/``INC`` is no 16-bit advance and no table row, but its
+    every read is a web cell, so it is the web's own maintenance rather than a second
+    role the pair would have to be split for."""
     text = _lift("mux_pair")
     body = text[text.index("sub_") :]
     assert "mem[" not in body, "the pointer role still reads through a raw address"
 
 
-@pytest.mark.xfail(
-    reason="%s cursor values as data; %s" % (_S3, _DEREF_WHY % _DEREF_REFUSAL["cursor_save"]),
-    **XFAIL,
-)
 def test_cursor_save_restore_lifts_to_cursor_values():
+    """FLIPPED: the save cell joins the web, so a constant and a restore both spell.
+
+    ``_close`` takes the one hop 2a's held-value closure takes: the cell the pair
+    restores from answers for its own word stores, and a store the web does not
+    explain would still refuse the whole web."""
     text = _lift("cursor_save")
     body = text[text.index("sub_") :]
     assert "mem[" not in body, "the saved/restored cursor still derefs a raw address"
 
 
-@pytest.mark.xfail(
-    reason="%s write-through becomes a table write; %s"
-    % (_S3, _DEREF_WHY % _DEREF_REFUSAL["writethrough"]),
-    **XFAIL,
-)
 def test_writethrough_store_becomes_a_bounded_table_write():
+    """FLIPPED: the store's destination is an address, and its bound is the registry's.
+
+    ``_fold_stmt`` stops the spill trace that replaced the pointer word with the
+    columns it was loaded from, and ``_span`` bounds the deref off the declared const
+    table's word set -- computed, never observed -- so no wild store voids the pair."""
     text = _lift("writethrough")
     body = text[text.index("sub_") :]
     assert not re.search(r"^\s*mem\[.*\] = ", body, re.M), "the store still writes through top"
 
 
-@pytest.mark.parametrize("name", sorted(_DEREF_REFUSAL))
-def test_a_refused_deref_keeps_its_raw_address_on_the_unified_path(name):
-    """The four ``mem[`` pins measured together: the refusal is the rung's, on both paths.
+@pytest.mark.parametrize("name", sorted(_DEREF_LIFT))
+def test_a_lifted_deref_names_the_shape_its_proof_took(name):
+    """The four ``mem[`` pins measured together: the lift is the rung's, not the path's.
 
-    Each names the premise rung (f) states; the unified emitter has no deref rung, so its
-    text carries the same raw address and the cutover cannot move any of them."""
+    Each proof names the definition shape it took -- an open target set where the web
+    maintains itself, the declared block set where it does not -- and the unified
+    emitter has no deref rung, so its text still carries the raw address."""
     _lift(name)
     why = [p.lemma for p in _lift_prog[name].proofs if p.kind == "deref"]
-    assert any(_DEREF_REFUSAL[name] in w for w in why), why
+    assert any(_DEREF_LIFT[name] in w for w in why), why
     assert "mem[" in _emit_body(name), "the unified path already named the row"
+
+
+@pytest.mark.parametrize("name", sorted(_DEREF_LIFT))
+def test_an_open_target_set_supplies_no_provenance_address(name):
+    """The observed-primary guard on the four: a name is not a block claim.
+
+    Spec 4.6 reports an address only where the proof names one block, so a web the
+    rung newly lifts on its own maintenance refuses provenance by its open set and
+    the evaluator reports exactly what it reported before."""
+    _lift(name)
+    prog = _lift_prog[name]
+    assert not prog.pinned, "an open or many-block target set pinned a source address"
+    why = [p.lemma for p in prog.proofs if p.kind == "deref-src"]
+    assert all("refused" not in w or w for w in why) and why
 
 
 def _fused_cursor(name):
@@ -1799,18 +1805,18 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 5, sorted(pins)
+    assert len(pins) == 1, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
 def test_the_owners_partition_the_family_as_the_ledger_records_it():
     """The ledger, executable: rung (d) owns none, and the rest are named apart.
 
-    The twelve pair-premise pins landed with the per-site premise and the thirteenth
-    with the write-only guard; a pin moving owners moves here too."""
+    The twelve pair-premise pins landed with the per-site premise, the thirteenth with
+    the write-only guard and rung (f)'s four with the writer set; the family is one."""
     per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
     assert per["owner: rung (d)"] == [], "the widening guard landed; rung (d) owns none"
-    assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
+    assert per["owner: rung (f)"] == [], "the writer set landed; rung (f) owns none"
     assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]
     assert per["owner: frameproc"] == [], "the reach reading landed; frameproc owns none"

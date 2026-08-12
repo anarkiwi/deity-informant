@@ -34,8 +34,9 @@ _NOTES = (
     "; sid.reg[i] is the byte view of the SID register file: a store whose index",
     ";   rung (d) cannot prove, or a lone half of the write-only $D400-$D416, asserts",
     ";   one byte at offset i and names no 16-bit register",
-    "; *ptr[i] (rung f) is a deref whose every definition loads a declared lo/hi",
-    ";   pointer table, so the address is a row of one of that table's blocks",
+    "; *ptr[i] (rung f) is a deref of a pointer web: every definition is a declared",
+    ";   lo/hi table row, a constant or the web's own maintenance, and no other store",
+    ";   may reach it; a web the maintenance opens names no target block set",
     "; registers/temporaries are procedure locals; parameters, returns and",
     ";   for-ranges are inferred from register liveness (serialization-layer)",
 )
@@ -105,6 +106,7 @@ class FrameProgram:
         mem0=None,
         proofs=(),
         resolved=(),
+        proved=None,
         pinned=(),
         prov0=(),
         init_census=None,
@@ -127,6 +129,8 @@ class FrameProgram:
         self.mem0 = bytearray(0x10000) if mem0 is None else mem0
         self.proofs = list(proofs)  # rung (d) pair records, rung (f) deref-site records
         self.resolved = dict(resolved)  # rung (f): deref address -> (pointer cell, index)
+        # rung (f)'s block-proved subset: 2b's top population is what this leaves
+        self.proved = dict(self.resolved if proved is None else proved)
         self.pinned = dict(pinned)  # spec 4.6: deref address -> the address the proof names
         self.prov0 = dict(prov0)  # init-staged cell -> the declared byte it was copied from
         self.init_census = dict(init_census or {})
@@ -531,11 +535,12 @@ def program(model, extents=None):
     state = sidprog._drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
     proofs += framestack.drop_sp(procs, model.play, regions)
-    resolved, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
+    resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
-        model.mem0, decls, procs, state, symbols, resolved, extents
+        model.mem0, decls, procs, state, symbols, blocked, extents
     )
     resolved.update(lifted)
+    blocked.update(lifted)  # 2b spent its extent on the web: it leaves the top population
     prov0, sites, census = _init_copies(model, decls)
     init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
     prog = FrameProgram(
@@ -551,6 +556,7 @@ def program(model, extents=None):
         model.mem0,
         proofs + deref_proofs + lift_proofs + init_proofs,
         resolved,
+        blocked,
         pinned,
         prov0,
         census,

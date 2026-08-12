@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from test_shred_regmodel import _lift, _lift_prog
-from deity_informant import frameproc, ptrcert
+from deity_informant import frameproc, frameptr, ptrcert
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
@@ -60,15 +60,20 @@ def test_cursor_save_closes_the_web_over_the_save_cell():
 
 
 def test_writethrough_store_is_certified_into_its_blocks():
-    """The write-through population certifies, and its store is counted as one."""
-    recs = _cert("writethrough")
+    """The write-through population certifies, and its store is counted as one.
+
+    ``writethrough`` itself left the population when rung (f)'s writer set landed --
+    a const reload table bounds it off the registry -- so the subject is the same
+    store over a pointer whose targets are state cells the registry does not carve."""
+    assert not _cert("writethrough"), "rung (f) proved the const table's write-through"
+    recs = _cert("alias_state")
     assert sum(r["top_stores"] for r in recs.values()) == 1
-    assert all(r["status"] == "block_rooted" for r in recs.values()), recs
+    assert all(r["block_rooted"] for r in recs.values()), recs
 
 
 def test_a_certified_store_is_not_its_neighbour_alias():
     """A store through a certified root is bounded by that root's own blocks."""
-    for rec in _cert("writethrough").values():
+    for rec in _cert("alias_state").values():
         assert not rec["alias_stores"], rec["lemma"]
 
 
@@ -155,7 +160,7 @@ def test_a_packed_constant_word_is_a_constant_row():
     """``zext2($60) | zext2($15) << 8`` is the block $1560, not a computation."""
     lo = ("op", "INT_ZEXT", (("const", 0x60, 1),), 2)
     hi = ("op", "INT_LEFT", (("op", "INT_ZEXT", (("const", 0x15, 1),), 2), ("const", 8, 1)), 2)
-    assert ptrcert._const(("op", "INT_OR", (lo, hi), 2)) == 0x1560
+    assert frameptr.const_word(("op", "INT_OR", (lo, hi), 2)) == 0x1560
 
 
 def _root(**kw):
@@ -267,11 +272,11 @@ def test_every_lift_refusal_is_in_the_plan_vocabulary():
 
 def test_the_column_counts_the_work_it_licenses():
     """b5 reads its site counts off this column, so the column carries them."""
-    _lift("writethrough")
-    got = ptrcert.summary(_lift_prog["writethrough"])
-    assert got["eligible"] == got["roots"] == 2
-    assert got["eligible_loads"] == 1 and got["eligible_stores"] == 1
-    assert got["lift_premises"]["web_closed"] == 2
+    _lift("alias_state")
+    got = ptrcert.summary(_lift_prog["alias_state"])
+    assert got["eligible"] == got["roots"] == 1
+    assert got["eligible_loads"] == 0 and got["eligible_stores"] == 1
+    assert got["lift_premises"]["web_closed"] == 1
 
 
 @pytest.mark.parametrize("name", ("pointer_walk", "cursor_save", "mux_pair", "writethrough"))

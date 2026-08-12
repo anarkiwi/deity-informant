@@ -82,7 +82,7 @@ def _mem0(cells):
 def _run(stmts, decls=(), cells=None):
     """``(resolved, rung-(f) proofs, pinned addresses, provenance proofs)``."""
     procs = [(0x1000, [], [], list(stmts))]
-    resolved, pinned, proofs = frameptr.apply_rung(_mem0(cells or {}), list(decls), procs)
+    resolved, _blocked, pinned, proofs = frameptr.apply_rung(_mem0(cells or {}), list(decls), procs)
     kinds = {k: [p for p in proofs if p.kind == k] for k in ("deref", "deref-src")}
     return resolved, kinds["deref"], pinned, kinds["deref-src"]
 
@@ -158,7 +158,7 @@ def test_a_lane_offset_into_a_declared_table_is_the_same_declaration():
     "extra,why",
     [
         (
-            [_st(PTR, ("op", "INT_ADD", (_word(PTR), ("const", 8, 2)), 2))],
+            [_st(PTR, ("mem", ("op", "INT_ADD", (_zext2(_y()), ("const", 0x1700, 2)), 2), 2))],
             "not a lo/hi partner-table entry read",
         ),
         (
@@ -166,13 +166,51 @@ def test_a_lane_offset_into_a_declared_table_is_the_same_declaration():
             "a store at an unproven address may write the pointer",
         ),
     ],
-    ids=["advance", "wild-store"],
+    ids=["foreign-row", "wild-store"],
 )
 def test_an_unproven_writer_refuses_the_site(extra, why):
-    """An advance and a store the analysis cannot place both refuse the pointer."""
+    """A row from outside the web and an unplaceable store both refuse the pointer."""
     _res, proofs = _sequencer(extra=extra)[:2]
     pr = _only(proofs)
     assert pr.status == "refused" and pr.targets == () and why in pr.lemma
+
+
+def test_an_advance_is_the_webs_own_maintenance_and_opens_the_target_set():
+    """The rung takes an advance and stops claiming a block set for it.
+
+    Every read of ``P = P + 8`` is the pair's own word, so the store is no third
+    writer; the price is the target set, which opens and supplies no address."""
+    advance = [_st(PTR, ("op", "INT_ADD", (_word(PTR), ("const", 8, 2)), 2))]
+    resolved, proofs, pinned, src = _sequencer(extra=advance)
+    pr = _only(proofs)
+    assert pr.status == "resolved" and pr.targets == ()
+    assert "1 maintenance definition(s), target set open" in pr.lemma
+    assert set(resolved) == {_deref(PTR, _y())} and pinned == {}
+    assert _only(src).status == "refused" and "target set open" in _only(src).lemma
+
+
+def test_a_lane_reload_is_the_webs_own_row_and_opens_the_target_set():
+    """Rung (d) spells a lone half store as a lane update, so the pair never packs.
+
+    The surviving lane is the web's and the replacement is a declared const row, so
+    premise 1 takes it: the site names and the target set opens with it."""
+    lane = ("op", "INT_AND", (_word(PTR), ("const", 0xFF00, 2)), 2)
+    half = ("op", "INT_ZEXT", (_at(0x1500, _y()),), 2)
+    reload_ = [_st(PTR, ("op", "INT_OR", (lane, half), 2))]
+    resolved, proofs, pinned, _src = _sequencer(extra=reload_)
+    pr = _only(proofs)
+    assert pr.status == "resolved" and pr.targets == ()
+    assert "1 maintenance definition(s), target set open" in pr.lemma
+    assert set(resolved) == {_deref(PTR, _y())} and pinned == {}
+
+
+def test_a_lane_reload_from_a_play_written_table_refuses():
+    """``mut`` is the play-written lane the const claim excludes, lane or pair."""
+    lane = ("op", "INT_AND", (_word(PTR), ("const", 0xFF00, 2)), 2)
+    half = ("op", "INT_ZEXT", (_at(0x1500, _y()),), 2)
+    reload_ = [_st(PTR, ("op", "INT_OR", (lane, half), 2))]
+    pr = _only(_sequencer(extra=reload_, mut=(0,))[1])
+    assert pr.status == "refused" and "play-written offsets" in pr.lemma
 
 
 def test_a_store_whose_span_reaches_the_pointer_refuses():
@@ -215,7 +253,7 @@ def test_a_store_span_is_proven_or_the_store_is_wild(addr, want):
         "t0": [("op", "INT_ADD", (_zext2(_y()), ("const", 0x1500, 2)), 2)],
         "t1": [("loc", "t0")],
     }
-    assert frameptr._span(addr, set(), vals) == want
+    assert frameptr._span(addr, set(), vals, {}) == want
 
 
 def test_a_play_written_reload_table_refuses():
@@ -283,17 +321,17 @@ def test_an_unbounded_row_index_refuses_the_site():
     assert "row index bound $FFFF exceeds one row" in _only(proofs).lemma
 
 
-def test_a_lane_advanced_pair_refuses_and_names_its_reason():
-    """However the word folds spell the deref, a lane-advanced pair's deref refuses.
+def test_a_lane_advanced_pair_lifts_on_its_own_maintenance():
+    """However the word folds spell the deref, a lane-advanced pair is still the web's.
 
     Rung (d) makes the ``INC`` a lane update of the fused word, so the definition
-    is an advance and not a partner-table row; the raw ``mem[]`` staying is the law."""
+    reads the pair's own cells: the site names, and the target set opens with it."""
     model = _fuzz_model(FG.t_lone_half(np.random.default_rng(7)))
     prog = frameprog.program(model)
     pr = next(p for p in prog.proofs if p.kind == "deref")
-    assert pr.status == "refused"
-    assert "a definition is not a lo/hi partner-table entry read" in pr.lemma
-    assert "mem[" in frameprog.dumps(prog)
+    assert pr.status == "resolved"
+    assert "1 maintenance definition(s), target set open" in pr.lemma
+    assert "mem[" not in frameprog.dumps(prog)
 
 
 # ---- shape recognisers --------------------------------------------------------------
@@ -479,8 +517,8 @@ def test_an_impure_row_index_supplies_no_address():
 
 
 def test_a_site_the_rung_refuses_keeps_the_rungs_own_diagnostic():
-    advance = [_st(PTR, ("op", "INT_ADD", (_word(PTR), ("const", 8, 2)), 2))]
-    _res, pr, pinned, src = _pinned(extra=advance)
+    foreign = [_st(PTR, ("mem", ("op", "INT_ADD", (_zext2(_y()), ("const", 0x1700, 2)), 2), 2))]
+    _res, pr, pinned, src = _pinned(extra=foreign)
     assert pinned == {} and _only(pr).status == "refused"
     assert (
         _only(src).status == "refused"

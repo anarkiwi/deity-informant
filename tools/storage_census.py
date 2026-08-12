@@ -201,6 +201,7 @@ def top_sites(prog):
     from deity_informant import frameproc
 
     out = {"load_top": [], "load_stack": [], "store_top": [], "store_stack": []}
+    proved = getattr(prog, "proved", prog.resolved)  # 2b still owes an unproved name
 
     def record(addr, at, kind):
         bits = frameproc.addr_bits(addr, at)
@@ -222,7 +223,7 @@ def top_sites(prog):
             if not isinstance(x, tuple):
                 continue
             if x[0] == "mem":
-                if frameproc.addr_split(x[1])[0] is None and x[1] not in prog.resolved:
+                if frameproc.addr_split(x[1])[0] is None and x[1] not in proved:
                     record(x[1], at, "load")
                 stack.append(x[1])
             elif x[0] == "op":
@@ -235,7 +236,7 @@ def top_sites(prog):
                 walk(body, (env, k), s[0] in frameproc._CYCLIC)
             at = frameproc.DefsAt(env, k)
             if s[0] == "st":
-                if frameproc.addr_split(s[1])[0] is None and s[1] not in prog.resolved:
+                if frameproc.addr_split(s[1])[0] is None and s[1] not in proved:
                     record(s[1], at, "store")
                 scan(s[2], at)
                 scan(s[1], at)

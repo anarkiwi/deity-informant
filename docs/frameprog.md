@@ -701,8 +701,11 @@ address are one record), against the statement trees and the declarations only:
    partner-table entry read at one index — `framefuse.unpack` splits the fused
    word store, `frameproc._index_of` names each half's base, the two must read
    the same entry, and the two declarations must carry `lo T'` / `hi T` at the
-   same offset. A definition that is not that shape — an advance `P = P + n`, a
-   computed pointer, a store from a non-const source — refuses the site.
+   same offset — or a constant word, or the **web's own maintenance**: a value
+   whose every memory read is a plain read of a web cell (an advance `P = P + n`,
+   a lane-wise step, a restore from a save cell the web closes over). A definition
+   that is none of those — a computed pointer, a row from outside the web —
+   refuses the site.
 2. The value set `{T[k]}` is read out of `prog.mem0` at the **declared** extent
    (`min(size_lo, size_hi, index bound + 1)` entries from the definition's own
    offset), never from the trace, and a table with any `mut` offset refuses:
@@ -710,18 +713,25 @@ address are one record), against the statement trees and the declarations only:
 3. The row index's range is bounded by one byte (`streams._idx_hi` over the
    frameprog local alphabet: a local is a byte unless some assignment gives it a
    16-bit value). A wider bound is not a row and refuses.
-4. No other store may reach the pair. A store's span is its const address, its
-   declared-base index span, the stack page (`sp | $0100` lies in
-   `[$0100, $01FF]`), or the union over a local address's assignments; a store
-   whose address the analysis cannot place at all refuses **every** pointer in
-   that tune, which is the coarsest rule here and the second-largest refusal
-   class below.
+4. No other store may reach the **web** — the pair and every save cell it closes
+   over — each cell's own word store excepted. A store's span is its const address,
+   its declared-base index span, a deref of a pointer whose word set the registry
+   closes (the declared const `lo`/`hi` table's own entries, read out of `mem0`,
+   plus the row bound), the stack page (`sp | $0100` lies in `[$0100, $01FF]`), or
+   the union over a local address's assignments; a store whose address the analysis
+   cannot place at all refuses **every** pointer in that tune, which is the coarsest
+   rule here and the second-largest refusal class below.
 
-**An advance refuses, and it falls out of premise 1 rather than needing a rule of
-its own.** An advanced pointer is `T[k] + n` for an `n` accumulated across frames
-with no static bound, so neither the (block, row) pair nor a range claim survives
-it; the reload-only pointer keeps both. The corpus cost of that choice is 168
-sites (below), and it is the honest one: `P = P + n` is not a table read.
+**An advance is admitted and the target set pays for it, not the name.** An
+advanced pointer is `T[k] + n` for an `n` accumulated across frames with no static
+bound, so no (block, row) pair and no range claim survives it — but the *name* does:
+`P = P + n` reads the pair's own word and nothing else, so it is the web's own
+maintenance and no third writer. Such a web is **open**: `targets` carries no claim,
+the proof lemma says so, the provenance rule of §4.6 refuses it outright, and 2b's
+observed extent (§2b, `ptrlift`) is what bounds it — the rung leaves the site in the
+⊤ population it names, which is the observed-primary guard on a proof that supplies
+no blocks. A web with no maintenance definition stays closed and keeps both claims.
+The 168 refused sites below were measured under the old rule.
 
 Like §4.2 this is **naming, not rewriting**. `apply_rung` returns the set of
 resolved addresses and one `structured.Proof` per site; the statement trees, the
