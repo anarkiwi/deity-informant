@@ -3408,3 +3408,62 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   ledger's 13 less the two pins this flips. `black --check` and `pylint` (10.00/10) clean.
   The prototype ledger goes **six → four**, and
   `test_every_pin_names_the_landing_that_flips_it` moves with it.
+- **2026-08-12 — `eqlift_mem`, the call wall: a call retires what its callee may define, and
+  the scratch pin flips.** #194 measured the mechanism and re-owned the pin to this file; this
+  is that landing, bounded soundly rather than as measured.
+  (1) **The bound.** `render_proc`'s wall retired *every* local at every call, so a value the
+  caller held died at the boundary and extraction fell back to the cell it was stored in. The
+  wall now retires `frameproc._Info.may` — the callee's may-define set, plus a `pcall`'s
+  declared returns — intersected with the locals the walk holds. Nothing else moves: the
+  memory join is untouched, and a switch's wall and every non-call boundary stay whole.
+  (2) **What `may` is not a bound on, and the refusal that follows.** `_Info._may` reads a
+  computed transfer and a `callb`'s writes past its inlined body as `G`, the program's
+  register *read* set — no bound on a local no expression names, and locals are program-wide
+  across a call — and it follows no `goto` leaving its own procedure. `_wall_may` therefore
+  admits an entry only where its whole tree is `asg`/`for`/`call`/`pcall`/`swc` over admitted
+  entries with every `goto` internal, refuses the map entirely under `open_flow`, and
+  **re-proves the closure it reads** rather than trusting it: `summarize` gives up after 24
+  rounds, so an entry whose `may` does not contain its own definitions and its callees' is
+  dropped. A refused callee keeps today's wall exactly — observed-primary, never past it.
+  (3) **The pin, and why its control still holds.** `test_scratch_beside_kept_sp_fabric_promotes`
+  XPASSed and is landed: `$0030`'s only reader was the value spelling, which now crosses all
+  three `pcall`s. Its control is unmoved — the same fixture's raw `call` path still holds the
+  cell, because there the callee is not an admitted entry and its wall stays whole. The ledger
+  is 19 → **18** and `eqlift_mem` owns none; `_OWNERS` keeps its sixth entry with an empty
+  partition, as `framestack`'s and `frameproc`'s.
+  (4) **The corpus diff, §4-reviewed.** `emit_identity`: 624 tunes, 0 refused, 28,372,413 →
+  **28,371,517 bytes**, `703af3a8…` →
+  **`73e80047254ea6997e4a17909db9fdf3c94d4bd46b737579086e4fc936746bdf`** (the new baseline),
+  **79 of 624 moved** — 64 smaller (−1,092), 12 larger (+196), 3 the same size, net **−896**.
+  One mechanism in three directions. **The shrink**: a value the call used to kill is now the
+  constant it holds, and the arithmetic folds around it — `1942` reads `y = (y + $01)` and
+  `… | zext2((y + $01)) …` and now reads `y = $01` and `… | $0002 …`. **The growth**: an
+  argument or an index prints the value or the local it holds instead of the register —
+  `Catacombs` (+46, the largest) turns `sub_1610(y)` into `sub_1610($00)` and `Krakout` (+6)
+  `m_E588[y]` into `m_E588[idx0]`. That is bytes bought with machine shapes, and the headline
+  reads it: `arch` **183,682 → 183,493** (−189), `zero_arch` unmoved at 2. **Size-neutral**:
+  the OR in a page-one address takes the other representative operand order
+  (`($0100 | zext2(sp))` → `(zext2(sp) | $0100)`), §4's own recorded shape.
+  (5) **#192's defect shape did not surface, and it was looked for.** The lint family is the
+  **same one** tune, none new and none fixed, and `Allt_under_himmelens_faeste` — the tune the
+  spanning broke — is one of the three size-neutral moves, its diff the operand order alone:
+  `sub_09A0(y) -> y` still renders `y = (y + $01)`. So the header/body `_Info` disagreement is
+  neither created nor cleared here. #194 (3)'s signature refresh is not taken with this landing
+  after all: its one instance (`International_Karate`, `sub_AE0C(sp)`) is a live-in `repolish`
+  froze before the rung that revealed it, and moving it means re-deriving signatures and
+  rewriting every `pcall`'s arguments in `frameproc`/`frameprog` — the wall bound neither adds
+  nor removes an instance, measured, so it stays that landing's own work.
+  (6) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**,
+  zero divergences and zero refusals (`out/gate_w3.json`). `splice_sweep` against the base
+  commit's run: **2 bad, the same two, zero new and zero fixed** (`Emax_01`'s one Gate FP
+  divergence and `International_Karate`'s one lint, byte for byte the same messages), −7,280
+  lines against −7,277 with no tune larger (585 smaller), **205,793 sites proved, zero
+  unproved**, `fields`/`roled` **13,234 of 18,109** unmoved (`out/splice_w3.json`). Suite
+  **2,790 passed / 490 skipped / 12 xfailed** on the #195 rebase (oracle excluded, corpus
+  parameters unbounded), coverage **88.51%**, and **2,773 / 490 / 24** against #194 before it;
+  on this rebase the shredder file is **117 passed / 6 xfailed** and CI carries the rest.
+  `black --check` and `pylint` (10.00/10) clean.
+  (7) **What this entry replaces.** Everything above is re-measured on the rebase onto #196.
+  The two earlier measurements — against #194, and against #195 — gave the same 79 tunes, the
+  same 12 growths and the same three shapes (−929 and −896 bytes), with `splice_sweep` at 63
+  bad and at 2 bad, zero new and zero fixed each time. This landing is orthogonal to all three.

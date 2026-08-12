@@ -697,6 +697,58 @@ def _targets(stmts, out=None):
     return goto, other
 
 
+_UNMAPPED = frozenset(("dcall", "dbr", "dgoto", "igoto", "callb"))
+
+
+def _may_scan(stmts, e, info, out):
+    """``(call targets, own definitions, unfollowable)``: one list, nested bodies included."""
+    tgts, own, wild = out
+    for s in stmts:
+        k = s[0]
+        if k in ("asg", "for"):
+            own.add(s[1])
+        elif k == "pcall":
+            own.update(s[3])
+            tgts.add(s[1])
+        elif k == "call":
+            tgts.add(s[1])
+        elif k == "swc":
+            tgts.update(int(lbl[1:], 16) for lbl in s[1])
+        elif k == "goto":
+            wild |= s[1] not in info.own_labels[e]
+        elif k in _UNMAPPED:
+            wild = True
+        for b in E.frameproc._stmt_bodies(s):
+            _t, _o, wild = _may_scan(b, e, info, (tgts, own, wild))
+    return tgts, own, wild
+
+
+def _wall_may(info):
+    """``{entry: may-define set}`` for the entries whose ``may`` bounds their call tree.
+
+    ``_Info._may`` reads a computed transfer and a ``callb``'s writes past its inlined body
+    as ``G`` -- the register *read* set, no bound on a local no expression names -- and
+    follows no ``goto`` leaving its procedure; the closure is re-proved, never assumed."""
+    if info is None or info.open_flow:
+        return {}
+    edges, own, ok = {}, {}, set()
+    for e in info.order:
+        edges[e], own[e], wild = _may_scan(info.procs[e], e, info, (set(), set(), False))
+        if not wild:
+            ok.add(e)
+    while True:
+        drop = {
+            e
+            for e in ok
+            if edges[e] - ok
+            or own[e] - info.may[e]
+            or any(info.may[t] - info.may[e] for t in edges[e])
+        }
+        if not drop:
+            return {e: frozenset(info.may[e]) for e in ok}
+        ok -= drop
+
+
 def _labels_of(stmts, out=None):
     out = [] if out is None else out
     for s in stmts:
@@ -1285,6 +1337,7 @@ def render_proc(
     pairs=None,
     derefs=(),
     demoted=None,
+    wall_may=None,
 ):
     """Render a whole procedure (asg/st/if/loop) via the unified graph + printer.
 
@@ -1293,8 +1346,10 @@ def render_proc(
     seconds, which extraction spends; sites past it render own-term. ``rets``
     are the procedure's declared returns, which a valueless ``ret`` names, ``pairs``
     the declared lo/hi table registry the pack rendering reads, and ``derefs`` the
-    pointer cells rung (f) resolved, which a deref address names."""
+    pointer cells rung (f) resolved, which a deref address names. ``wall_may`` is
+    ``_wall_may``'s map, which bounds a call's wall to the callee's may-define set."""
     deadline = None if budget is None else time.monotonic() + budget
+    wall_may = wall_may or {}
     stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
     defs, terms, locw, mempairs = [], [], {}, []
     src, seeds, memdefs, wrspan, held, volatile = {}, [], [], {}, {}, set()
@@ -1423,10 +1478,26 @@ def render_proc(
             stats["in_join_cells"] = stats.get("in_join_cells", 0) + len(at)
         return True
 
+    def call_may(s):
+        """The locals a call's callee may define, or None where the map cannot follow it.
+
+        The wall retires what the boundary may write, and a call writes what its callee
+        may define: a local outside that set holds its version across the call, so a
+        value the caller could spell before it spells after. A callee ``_wall_may``
+        cannot follow answers None -- the whole wall, unchanged."""
+        got = None if s[0] not in ("call", "pcall") else wall_may.get(s[1])
+        if got is None:
+            return None
+        return got | set(s[3]) if s[0] == "pcall" else got
+
     def wall(s):
         """A boundary the locals cannot cross: memory joins over what it can write."""
         pre_mem, pre_held, pre_ver = stt["mem"], stt["held"], stt["memv"]
-        havoc_locals()
+        may = call_may(s)
+        if may is None:
+            havoc_locals()
+        else:
+            havoc((set(stt["env"]) | E.frameproc._ALL_REG_LOCALS) & may)
         stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
 
     def walk(sl):
@@ -2232,7 +2303,7 @@ def artifact_lines(prog, proofs=None, demoted=None):
     ``proofs`` collects §6's per-procedure site record -- SSA names are per procedure, so
     one merged record would prove the wrong equalities."""
     info, foot, pairs, derefs = render_ctx(prog)
-    out = []
+    wall_may, out = _wall_may(info), []
     for entry, params, rets, stmts in prog.procs:
         sig = "sub_%04X(%s)" % (entry, ", ".join(params))
         if rets:
@@ -2250,6 +2321,7 @@ def artifact_lines(prog, proofs=None, demoted=None):
             pairs=pairs,
             derefs=derefs,
             demoted=demoted,
+            wall_may=wall_may,
         )
         if rec is not None:
             proofs.append(rec)
@@ -2336,14 +2408,14 @@ def emit_mem(model, proofs=None, stats=None, extents=None):
     foot = Footprints(
         procs, info.open_flow, framefuse._landings(model), _extent_spans(extents, decls)
     )
-    weights = [_work(stmts) for _e, stmts in procs]
+    weights, wall = [_work(stmts) for _e, stmts in procs], _wall_may(info)
     left = sum(weights)
     for i, (entry, stmts) in enumerate(procs):
         proc_lines.append("sub_%04X {" % entry)
         rec = None if proofs is None else {}
         share = max(0.0, end - time.monotonic()) * (weights[i] / left if left else 1.0)
         left -= weights[i]
-        body = render_proc(stmts, aliases, entry, info, rec, share, stats, foot)
+        body = render_proc(stmts, aliases, entry, info, rec, share, stats, foot, wall_may=wall)
         if rec is not None:
             proofs.append(rec)
         proc_lines.extend(" " + ln for ln in body)
