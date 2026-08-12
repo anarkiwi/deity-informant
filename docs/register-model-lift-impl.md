@@ -594,8 +594,9 @@ code, not the other way round.
   **27 strict xfails** — 21 shredder pins under five owners
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
-  *(Items 5, 6, 3 and 4 landed after this record: the shredder ledger stands at **5** pins —
-  rung (f) 4 and `datadecl` 1 — and rung (d) owns none. Decision log, below.)*
+  *(Items 5, 6, 3, 4, 7 and 8 landed after this record: the shredder ledger stands at **0**
+  pins — every owner has landed — and the suite's one strict xfail is the prototype's.
+  Decision log, below.)*
 - `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
   `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
   divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
@@ -725,13 +726,12 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `lo`/`hi` table's own word set out of `mem0`. `frameproc._fold_stmt` is what made the
    write-through store nameable: a destination is an address, and folding it as a value had
    replaced the pointer word with the columns it was loaded from. Decision log, 2026-08-12.
-8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0].** `computed_rows_map`'s
-   `extent_unmappable` fires because the rows the run observes are in no declared datum. The
-   `INT_OR` interval is sound and stateable — `hi(a|b) <= 2^ceil(lg(max(hi a, hi b) + 1)) - 1`,
-   `lo(a|b) >= max(lo a, lo b)` — but the e-graph's `lo`/`hi` merge by **join**, so a rule can
-   only widen and the tightening sits where `_lattice`/`_ir_span` do; the consumer that turns
-   a span into a *declaration* is `datadecl`'s `via:` discovery, so the rule is the input and
-   discovery is the mechanism.
+8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0] — LANDED.** The anchor set reads the
+   pair's **own lanes**: the constant a lane is reset to, or the bits an `INT_OR` row must
+   set (`expr.floor`, the sound half of the interval — `lo(a|b) >= max(lo a, lo b)`). The
+   run's own reads still bound the extent, so the rule is the input and observation is the
+   guard. Landed beside it: the lo/hi partnership becomes a **co-index** claim
+   (`datadecl._co_indexed`) instead of a zip by sorted base address. Decision log, 2026-08-12.
 
 Items 3-8 are engine work — rungs (d) and (f), `framestack`, `frameproc`, `datadecl` — not
 emission work, which is why they sit after the stage close rather than inside it. The one
@@ -3744,3 +3744,88 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (6) **The ledger.** The prototype's family goes **two → one**. What is left is
   `no_architectural_register_survives_as_a_value`, whose owner is the residue itself and whose
   metric is `zero_arch` — the final wave's, not this one's.
+- **2026-08-12 — `datadecl`'s `via:` discovery reads the pair's own lanes, a partnership
+  becomes a co-index claim, and the shredder family reaches zero.** `computed_rows_map` was
+  the last stage-3 pin. `extent_unmappable` fired because the rows the run observes are in no
+  declared datum: the pair is reloaded from a row the play code *computes*, so it is in no
+  reload table and `_anchors` had nothing to anchor on.
+  (1) **The interval is the input and the discovery is the mechanism, exactly as #189 (6)
+  scoped it.** `expr.floor` states the sound half — `floor(a | b) = floor(a) | floor(b)`,
+  `floor(a & b) = floor(a) & floor(b)`, a widening keeps its operand's — which is the bits a
+  value *must* set and therefore a lower bound on it. It is a reading over the model algebra,
+  not an e-graph rule: the `lo`/`hi` lattice merges by join and can only widen, so nothing is
+  admitted to `RULES` and `verify_rules` has nothing new to prove.
+  (2) **The anchor is the pair's own two lanes.** `streams._update_summary` records a
+  computed lane's floor beside the constants a lane is reset to (`reset_floors`), and
+  `datadecl._lane_words` composes the two sides into candidate words, capped at `_LANES`.
+  `computed_rows`' hi lane resets to `$10` and its lo lane's `((ctr & 1) << 3) | $80` floors
+  at `$80`, so the anchor is `$1080` — and the run's own reads still bound the extent through
+  `_obs_hi`, so a candidate the pair never walks declares nothing. Observation is the guard,
+  which is why the interval may be the input.
+  (3) **A second block stops being swallowed.** `cursor_save`'s constant reset is an anchor
+  now, so its two blocks are declared apart — `stream m_1500[5]` and `stream m_1560[1]` where
+  one `stream m_1500[97]` used to span the gap between them — and rung (g)'s `in` clause
+  names both (`ptr_0002: cursor u16 = $1500 in m_1500, m_1560`).
+  (4) **The lo/hi partnership was asserted from nothing, and is now a co-index claim.** A
+  survey of three editor families found `datadecl` zipping the lo cell's reload tables with
+  the hi cell's **in sorted base order** — `zip(sorted(lts), sorted(hts))` — which publishes a
+  partnership with no evidence that the two columns are ever read together. Two columns of one
+  datum are read at one row or at no row at all, so `_co_indexed` pairs on the index
+  expression the two reload reads share (`reset_rows`). Measured on `Grid_Runner`: the bogus
+  `m_1675`/`m_1678` pairing goes (their reload reads carry different indices) and the two
+  genuine ones, `m_1493`/`m_1496` and `m_1499`/`m_14CB`, stay.
+  (5) **What the false partnership cost, measured — and what it did not.** It does **not**
+  poison rung (f): `frameptr._entry_words` takes `(lob, hib)` from the *code's own* pack and
+  asks the registry only to agree, so a wrong declaration can starve the rung, never feed it.
+  What it corrupts is the declaration — the `->` target range, the co-extensive size and the
+  `_PAIRS` render registry.
+  (6) **One finding this landing does not close, with its mechanism named.**
+  `Angry_Birds` still refuses at `m_202A/m_2035 is not a declared lo/hi partner pair` *after*
+  the co-index fix, and the cause is not the partnership: `m_2035` is a **cobase** of
+  `m_202A` (`table m_202A[21] +m_2035`), so `_regions`/`_groups` carved the two columns as one
+  group and only the group base gets a declaration — `tables.get(0x2035)` is None and the
+  roles are never written. That is a group-carving/pair-role interaction: a pair whose two
+  columns fall inside one carved group can hold no `lo`/`hi` role, and it is the remaining
+  blocker on that family. Owner: `datadecl`, unscheduled.
+  (7) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,379,441
+  bytes**, aggregate `101669face8476fab8c4e1e998030370dc3c13bad3e17dbc378e00aa83dac841`,
+  against a base measured on the merge commit `982b8df` — `b6c3367c…`/28,360,940 — and the
+  landing's own movement is **+18,501 bytes over 136 tunes** (85 larger
+  +22,091, 51 smaller −3,590, none the same size). The growth is the discovery's own price
+  and it is one shape: a newly declared block prints its bytes, and its base is a new
+  **bound**, so the datum it splits stops at it and the remainder falls back to `image { }`,
+  which prints less densely than `data { }`. Amazing_Spider-Man is the largest mover
+  (+3,734) and is exactly that: three `stream … via ptr_006E` blocks discovered off the
+  pair's lanes, 37 declarations → 39, and no pair table's role moved. Measured once against
+  #200 and again after the rebase across #201–#203, the movement is the **same 136 tunes and
+  the same +18,501**, so the discovery is orthogonal to the operator set and the SMC
+  demotion: three landings touching one artifact, and their prices add.
+  (8) **The bookkeeping law, stated by a drift and then obeyed.** #199 recorded
+  `a403a8aa…`/28,322,337 as CURRENT; measured on this session's cache at `1e002d7` main
+  emitted `ae41682c…`/**28,321,441**, 896 bytes apart, so #200's delta was taken against a
+  measurement rather than against the ledger — the same failure #190 (1) found in
+  `018ce8f4…`, a number recorded from a run never re-measured on the merge commit. **The
+  law**: CURRENT is only ever written from an `emit_identity --expect` that passed *on the
+  merge commit*, and a landing quotes the baseline it measured, never the one it inherited.
+  This landing is the first to follow it, and the base held — `982b8df` re-measured to
+  `b6c3367c…`/28,360,940, reproducing #202's recorded aggregate exactly, which is also the
+  evidence that #203 moved no byte, as its own note claimed.
+  (9) **The gates.** `gate_sweep` at full Songlengths holds **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals: a block declared apart from its neighbour is
+  still the same bytes to the evaluator. `splice_sweep` is **1 bad**, not the standing two —
+  parse, fixpoint, gate and sites all zero, and what is left is `International_Karate`'s
+  `local 'a' used before definition`. `Emax_01`'s divergence, bad since it was first
+  recorded, is clean here; splice was run once and on the branch only, so the credit belongs
+  to the `982b8df`..HEAD span and this landing cannot claim it alone. Emitted size is
+  **−7,280 lines with no tune larger** (586 smaller) and **205,793 rewritten sites proved,
+  zero unproved**. `fields` **17,663 → 17,662** and `arch` **183,345 → 183,344** against
+  #202, one declaration each, with `roled` unmoved at 12,825 and `zero_arch` at 2 of 624.
+  Suite **2,796 passed / 490 skipped / 1 xfailed** hermetic plus **16 oracle**; `black
+  --check` and `pylint` (10.00/10) clean. No e-graph rule is admitted, so `verify_rules` has
+  nothing new to prove.
+  (10) **The ledger.** `datadecl` owns **no** shredder pin, and the family is **1 → 0**:
+  `test_every_stage_three_pin_names_a_live_owner` asserts the set is empty rather than
+  counting it down, so the rule now guards a re-opening rather than a backlog. The suite's
+  one remaining `xfail` is the prototype's
+  `no_architectural_register_survives_as_a_value`, whose metric is `zero_arch` and whose
+  owner is the residue — the final wave's, not stage 3's.

@@ -13,6 +13,7 @@ from . import streams as ST
 from .lifter import MODE_LEN, OPS
 
 _LOW = 0x200  # zero page and stack always stay in image {}
+_LANES = 64  # lane-word candidates one pair's own definitions may name
 
 
 def _code_bytes(model):
@@ -252,15 +253,47 @@ def _extent(g, sites, bounds, code, mut=frozenset(), pairtabs=frozenset()):
     return size, _mut_offs(base, size, g["stride"], mut), True
 
 
+def _co_indexed(lrows, hrows):
+    """``[(lo table, hi table)]`` for the columns one index reads together.
+
+    The lo/hi partnership is a *co-index* claim -- two columns of one datum are read
+    at one row or at no row at all -- so it is asserted off the index expression the
+    two reload reads share, never off the order the two base addresses sort in."""
+    his = {}
+    for base, idx in hrows:
+        his.setdefault(repr(idx), []).append(base)
+    out, taken = [], set()
+    for base, idx in lrows:
+        for other in sorted(his.get(repr(idx), ())):
+            if other not in taken and other != base:
+                out.append((base, other))
+                taken.add(other)
+                break
+    return out
+
+
+def _lane_words(lo, hi):
+    """The words a pair's own lane definitions name: a reset value, or its floor.
+
+    A row the play code computes is in no reload table, so ``via:`` reads it off the
+    lanes themselves -- the constant a lane is reset to, or the bits an ``INT_OR``
+    row must set (``expr.floor``), which is the block the walk starts in."""
+    sides = [set(r.get("resets", ())) | set(r.get("reset_floors", ())) for r in (lo, hi)]
+    if not sides[0] or not sides[1] or len(sides[0]) * len(sides[1]) > _LANES:
+        return ()
+    return sorted({(h << 8) | l for l in sides[0] for h in sides[1]})
+
+
 def _pair_recs(cls):
-    """``[(lo, hi, lo_tables, hi_tables)]`` from lo-role pointer records."""
+    """``[(lo, hi, co-indexed row pairs, lane words)]`` from lo-role pointer records."""
     out = []
     for cell in sorted(cls):
         rec = cls[cell]
         if rec["class"] == "pointer" and rec.get("role") == "lo":
             hi = rec["pair"][1]
-            hts = cls.get(hi, {}).get("reload_tables", [])
-            out.append((cell, hi, rec.get("reload_tables", []), hts))
+            hrec = cls.get(hi, {})
+            rows = _co_indexed(rec.get("reload_rows", []), hrec.get("reload_rows", []))
+            out.append((cell, hi, rows, _lane_words(rec, hrec)))
     return out
 
 
@@ -332,9 +365,9 @@ def _anchors(model, pairs, tables):
     mem0 = model.mem0
     regions = Regions(tables.values())
     out = {}
-    for lo, hi, lts, hts in pairs:
-        words = [mem0[lo] | (mem0[hi] << 8)]
-        for lt, ht in zip(sorted(lts), sorted(hts)):
+    for lo, hi, rows, lanes in pairs:
+        words = [mem0[lo] | (mem0[hi] << 8), *lanes]
+        for lt, ht in rows:
             n = min(regions.avail(lt), regions.avail(ht))
             words += [mem0[lt + i] | (mem0[ht + i] << 8) for i in range(n)]
         for w in words:
@@ -416,15 +449,15 @@ def declarations(model):
     starts = [g["base"] for g in groups]
     pairs = _pair_recs(cls)
     mut = model.written
-    pairtabs = {t for _l, _h, lts, hts in pairs for t in list(lts) + list(hts)}
+    pairtabs = {t for _l, _h, rows, _w in pairs for r in rows for t in r}
     tables = _table_decls(sites, groups, sorted(starts), code, mut, pairtabs)
     anchors = _anchors(model, pairs, tables)  # round 2: anchor-bounded extents
     bounds = sorted(set(starts) | set(anchors))
     tables = _table_decls(sites, groups, bounds, code, mut, pairtabs)
     anchors = _anchors(model, pairs, tables)
     bounds = sorted(set(starts) | set(anchors))
-    for _lo, _hi, lts, hts in pairs:
-        for lt, ht in zip(sorted(lts), sorted(hts)):
+    for _lo, _hi, rows, _w in pairs:
+        for lt, ht in rows:
             dl, dh = tables.get(lt), tables.get(ht)
             if dl is None or dh is None:
                 continue

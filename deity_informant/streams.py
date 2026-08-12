@@ -530,7 +530,9 @@ def _update_summary(f, cell):
         "masks": set(),
         "resets": set(),
         "reset_tables": set(),
+        "reset_rows": set(),
         "reset_pairs": set(),
+        "floors": set(),
         "inputs": set(),
         "advance": False,
         "notes": set(),
@@ -548,9 +550,13 @@ def _update_summary(f, cell):
         if E.is_const(vx):
             s["resets"].add(vx[1])
             continue
+        fl = E.floor(vx)
+        if fl:
+            s["floors"].add(fl)
         rd = _read_of(vx)
         if rd is not None and rd[0] == "idx" and rd[1] not in f.model.written:
             s["reset_tables"].add(rd[1])
+            s["reset_rows"].add((rd[1], rd[2]))
         elif rd is not None and rd[0] == "pair":
             s["reset_pairs"].add(rd[1])
         sl = _Slice()
@@ -608,6 +614,7 @@ def classify(model):
             "resets": sorted(s["resets"]),
             "reset_tables": sorted(s["reset_tables"]),
             "reset_pairs": sorted(s["reset_pairs"]),
+            "reset_floors": sorted(s["floors"]),
             "inputs": sorted(s["inputs"]),
             "compares": sorted(compares.get(cell, ())),
             "index_bases": sorted(index_use.get(cell, ())),
@@ -619,6 +626,7 @@ def classify(model):
             rec["role"] = role
             rec["pair"] = (cell, partner) if role == "lo" else (partner, cell)
             rec["reload_tables"] = sorted(s["reset_tables"])
+            rec["reload_rows"] = sorted(s["reset_rows"], key=lambda r: (r[0], repr(r[1])))
             rec["advance"] = s["advance"] or bool(s["deltas"])
             pos, sites = _Slice(), set()
             for _r, _p, prec in pair_of[cell]:

@@ -1660,29 +1660,24 @@ def test_a_call_returned_row_is_no_lift_refusal():
     assert rec["refusals"] == ["ptr_uncertified"]
 
 
-def test_computed_rows_walk_off_the_registry():
-    """Invariant (b0): b1-eligible, and the observed rows land in no declared datum."""
+def test_computed_rows_walk_lands_in_the_block_via_discovery_declares():
+    """Invariant (b0), moved by the discovery: the rows are in a declared datum now.
+
+    2.5's strided-interval walker still owns the *value* set; what moved is the
+    registry the observation is read against, which is what b0 refuses on."""
     rec = _cert("computed_rows")
     assert rec["eligible"] and not rec["lift_refusals"]
     row = _observed("computed_rows")
-    assert row["refusals"] == ["extent_unmappable"] and row["unmappable_foreign"]
-    assert _walk("computed_rows", [row])["extent_foreign"] == {"top_memory": 1}, "2.5: P6 stands"
+    assert not row["refusals"] and not row["unmappable_foreign"]
+    assert _walk("computed_rows", [row])["extent_foreign"] == {}, "2.5: no foreign row left"
 
 
-@pytest.mark.xfail(
-    reason="%s an arithmetic row lands off the registry; %s -- extent_unmappable fires "
-    "because the rows the run observes are in no declared datum, and an interval for the "
-    "row is the input to that and not the mechanism: INT_OR is in no interval rule (the "
-    "sound pair is hi(a|b) <= next_pow2(max(hi a, hi b)) - 1, lo(a|b) >= max(lo a, lo b)), "
-    "but the consumer that turns a span into a declaration is via: discovery"
-    "" % (_S3, _OWNERS[4]),
-    **XFAIL,
-)
 def test_computed_rows_map():
-    """b3 measured this and cannot reach it: the row is arithmetic, not a registry read.
+    """FLIPPED at datadecl's ``via:`` discovery: the pair's own lanes name the block.
 
-    The fixpoint walks declared data for 16-bit LE words; a row built as
-    ``((ctr & 1) << 3) | $80`` is in no block, so only a value-set walker derives it."""
+    A row built as ``((ctr & 1) << 3) | $80`` is in no reload table, so discovery reads
+    it off the lanes: the hi lane's constant reset and the lo lane's ``INT_OR`` floor
+    (``expr.floor``) compose the anchor, and the run's own reads bound the extent."""
     assert not _observed("computed_rows")["refusals"]
 
 
@@ -1801,26 +1796,22 @@ def _stage_three_pins():
 def test_every_stage_three_pin_names_a_live_owner():
     """The deferral discipline, enforced: no pin may stand without someone to move it.
 
-    The re-measurement the cutover owed is now structural -- ``_lift`` is the artifact,
-    so a pin whose goal property held would XPASS -- and what a reason still owes is the
-    refusal it was measured at and exactly one live owner from ``_OWNERS``."""
+    The family is closed, so the rule guards a re-opening rather than a backlog: a
+    reason added here owes the refusal it was measured at and exactly one live owner
+    from ``_OWNERS``, and ``_lift`` being the artifact makes a held goal XPASS."""
     pins = _stage_three_pins()
-    assert len(pins) == 1, sorted(pins)
+    assert not pins, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
 def test_the_owners_partition_the_family_as_the_ledger_records_it():
-    """The ledger, executable: rung (d) owns none, and the rest are named apart.
+    """The ledger, executable: every owner has landed, so the partition is empty.
 
-    The twelve pair-premise pins landed with the per-site premise, the thirteenth with
-    the write-only guard and rung (f)'s four with the writer set; the family is one."""
+    Thirteen pins went to rung (d) (the per-site pair premise, then the widening
+    guard), one each to framestack, frameproc and eqlift_mem, four to rung (f)'s
+    writer set and the last to datadecl's ``via:`` discovery."""
     per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
-    assert per["owner: rung (d)"] == [], "the widening guard landed; rung (d) owns none"
-    assert per["owner: rung (f)"] == [], "the writer set landed; rung (f) owns none"
-    assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
-    assert per["owner: datadecl"] == ["test_computed_rows_map"]
-    assert per["owner: frameproc"] == [], "the reach reading landed; frameproc owns none"
-    assert per["owner: eqlift_mem"] == [], "the wall's bound landed; eqlift_mem owns none"
+    assert per == {o: [] for o in _OWNERS}, per
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)
