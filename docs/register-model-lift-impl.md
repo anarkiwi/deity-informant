@@ -528,8 +528,9 @@ determinism of the rendered text, and a size ratchet on emitted lines and
 extracted term cost).
 
 The artifact: role-typed `state { }` plus the per-frame transition function,
-per-voice unified where the isomorphism is total (else the copies stay); VM
-families emit their operator sets. The witness, when wanted: re-emit minimal
+per-voice unified where the isomorphism is total (else the copies stay); a play
+routine that dispatches through an SMC operand emits the operator set that shape
+carries, whatever family wrote it. The witness, when wanted: re-emit minimal
 6502 from the minimized program and replay it under the VM against the
 oracle — an end-to-end check with no evaluator in the trust chain. (Landed:
 `deity_informant/witness6502.py`, the whole dialect and every dispatch form
@@ -824,7 +825,7 @@ what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
 ## Independent housekeeping (blocks nothing)
 
 - **The Follin arity table — discharged** (2026-08-10, stage 3d, one PR).
-  `follin_script._ARITY` is deleted and `deity_informant/follin_arity.py`
+  `follin_script._ARITY` is deleted and `deity_informant/opdispatch.py`
   recovers what it held, per dispatch arm, off the lifted blocks: the stream is
   the pointer the dispatch's own fetch uses, the operator range is
   `[floor, floor + extent)` with the floor read off the guard that dominates
@@ -834,7 +835,7 @@ what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
   arm's consumption footprint — the stream offsets it fetches, walked at each
   block's least `Y` so the reading does not depend on where the lifter cut. On
   Ghouls that reproduces **all 20** transcribed arities op for op;
-  `tests/test_follin_arity.py` holds the transcription as the discharge
+  `tests/test_opdispatch.py` holds the transcription as the discharge
   witness, and the decoder now takes its lengths from the model it is decoding.
   Three findings. (1) The catalog's definition — net `Y` delta, constant on all
   paths — holds on 18 of the 20 and is **one short on `$87`/`$8A`**, the arms

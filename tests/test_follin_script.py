@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from deity_informant import follin_arity as FA
 from deity_informant import follin_script as fscript
+from deity_informant import opdispatch as OD
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
@@ -16,7 +16,7 @@ HVSC = Path(__file__).resolve().parent.parent / ".oracle-cache" / "hvsc"
 
 GRAM = fscript.Grammar(
     arity={0x83: 1, 0x84: 1, 0x86: 0, 0x87: 2, 0x8A: 2, 0x8B: 0, 0x8D: 1},
-    escape={0x85: FA.Escape(3, 2, 1, frozenset(range(0x80)))},
+    escape={0x85: OD.Escape(3, 2, 1, frozenset(range(0x80)))},
 )
 
 
@@ -125,10 +125,10 @@ def test_escape_that_runs_away_or_is_not_pairs_reads_bad():
     mem = bytearray(0x10000)
     mem[0x1000], mem[0x1002] = 0x85, 0x80
     reads = set(range(0x1000, 0x1100))
-    endless = fscript.Grammar({}, {0x85: FA.Escape(3, 2, 1, frozenset(range(0x100)))})
+    endless = fscript.Grammar({}, {0x85: OD.Escape(3, 2, 1, frozenset(range(0x100)))})
     ops, _c = fscript._decode_seg(bytes(mem), 0x1000, reads, set(), set(), endless)
     assert [o.name for o in ops] == ["bad"]
-    wide = fscript.Grammar({}, {0x85: FA.Escape(2, 3, 1, frozenset(range(0x80)))})
+    wide = fscript.Grammar({}, {0x85: OD.Escape(2, 3, 1, frozenset(range(0x80)))})
     ops2, _c = fscript._decode_seg(bytes(mem), 0x1000, reads, set(), set(), wide)
     assert [o.name for o in ops2] == ["bad"]
 

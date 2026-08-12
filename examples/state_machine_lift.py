@@ -11,10 +11,10 @@ import sys
 
 from deity_informant import PcodeVM, lift, run_sub
 from deity_informant import eqlift_mem
-from deity_informant import follin_arity as FA
 from deity_informant import framelog
 from deity_informant import frameprog
 from deity_informant import grammar as GR
+from deity_informant import opdispatch as OD
 from deity_informant import render as R
 from deity_informant import sidprog as SP
 from deity_informant import structured as S
@@ -2506,7 +2506,7 @@ _VM = None
 def vm_grammar():
     """``(operator set, operator floor, datum arity)``: the image's own script VM.
 
-    ``follin_arity`` reads it off the dispatch's handler tables and its arms; the
+    ``opdispatch`` reads it off the dispatch's handler tables and its arms; the
     image's labels name each arm, and a stream byte below the operator floor is
     the datum form, whose arity is the arm that guard sends it to."""
     global _VM  # pylint: disable=global-statement
@@ -2514,8 +2514,8 @@ def vm_grammar():
         mem, labels = build_image()
         model = S.decompile(bytearray(mem), INIT, PLAY, FRAMES)[0]
         names = {a: m.group(1) for n, a in labels.items() for m in [_CMD_LABEL.fullmatch(n)] if m}
-        site = FA.sites(model)[0]
-        _VM = (FA.operator_set(model, names), site.floor, FA.default_arm(model, site).arity)
+        site = OD.sites(model)[0]
+        _VM = (OD.operator_set(model, names), site.floor, OD.default_arm(model, site).arity)
     return _VM
 
 

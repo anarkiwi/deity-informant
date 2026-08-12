@@ -1,15 +1,13 @@
-"""Follin command-script lane: decode the per-voice sequencer script.
+"""Test-only witness that the hand ``_ARITY`` table is discharged.
 
-Decodes the operand grammar validated in docs/follin-dispatch-study.md from the
-recovered zp script pointers, following call/jump control flow, and certifies
-every consumed byte was observed fetched. Operator lengths come from
-``follin_arity``, read off each dispatch arm of the model being decoded, so
-this lane holds no per-tune table: the hand transcription is discharged.
+No production path imports it: it decodes a Follin per-voice script from the
+recovered zp pointers at lengths ``opdispatch`` reads off the model, so the study
+(docs/follin-dispatch-study.md) survives as ``_NAME``'s labels and as no length.
 """
 
 from collections import namedtuple
 
-from . import follin_arity, streams
+from . import opdispatch, streams
 
 _TURNS = 128  # decoded-length turns before a variable-arity op reads as junk
 _NAME = {
@@ -45,7 +43,7 @@ Grammar = namedtuple("Grammar", "arity escape")
 
 def grammar(model):
     """The model's own operator lengths: constant arities and decoded escapes."""
-    arity, escape, _refused = follin_arity.operators(model)
+    arity, escape, _refused = opdispatch.operators(model)
     return Grammar(arity, escape)
 
 
