@@ -426,7 +426,7 @@ REEMIT = ("reemit_6502", "emit_6502", "assemble_6502")
 SEED_CODE = (
     "from examples.state_machine_lift import classify_roles, pipeline, render;"
     "a = pipeline(frames=%d);"
-    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded']), %d))"
+    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded'], %d), %d))"
 )
 DECL = re.compile(r"^\s{2}(\w+):\s*(\w+)\s+(\S+)(.*)$")
 OPSET = re.compile(r"^[^\n]*\b(?:operators|ops)\b[^\n]*\{$", re.M)
@@ -531,14 +531,17 @@ class _TracedRam(bytearray):
         super().__init__(*args)
         self.first = {}
 
+    def _mark(self, i, kind):
+        """A wide access is a slice, and every byte it spans took that access."""
+        for a in [i] if isinstance(i, int) else range(*i.indices(len(self))):
+            self.first.setdefault(a, kind)
+
     def __getitem__(self, i):
-        if isinstance(i, int):
-            self.first.setdefault(i, "r")
+        self._mark(i, "r")
         return super().__getitem__(i)
 
     def __setitem__(self, i, value):
-        if isinstance(i, int):
-            self.first.setdefault(i, "w")
+        self._mark(i, "w")
         super().__setitem__(i, value)
 
 
@@ -557,7 +560,7 @@ def _carried_addrs(art, ram0):
 
 def _seeded_render(seed, frames):
     got = subprocess.run(
-        [sys.executable, "-c", SEED_CODE % (frames, frames)],
+        [sys.executable, "-c", SEED_CODE % (frames, frames, frames)],
         cwd=str(Path(__file__).resolve().parent.parent),
         env=dict(os.environ, PYTHONHASHSEED=seed),
         check=True,
@@ -598,21 +601,12 @@ def test_vm_family_operator_set_is_emitted(art, role_text):
         assert re.search(pat, role_text, re.M), "%s prints as raw bytes" % name
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): NOT the re-basing -- the "
-    "artifact declares these cells too and prog.demoted is empty by construction. #183's "
-    "_unread demotes a store no read anywhere names, and a write-before-read cell has "
-    "readers by definition, so the two criteria are different questions. What this owes is a "
-    "second demotion notion: frame-boundary liveness-in, a per-frame kill nothing computes",
-    **XFAIL,
-)
 def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     """Every declared cell is read before its first write in some frame.
 
-    Thirteen fail: the three SMC JMP-operand pairs the computed transfer loads
-    (``m_10AD``, ``m_11F8``, ``m_1343``, fused ``u16`` by rung (d)) and seven zero-page
-    cells the artifact declares ``parameter`` -- a callee's per-frame arguments, written
-    before they are read every frame."""
+    A wide access is a slice, so the tracer marks every byte it spans: without that
+    the ``u24`` phase read as one span looked written first and the ``u16`` diffs
+    written as one span looked read first."""
     carried = _carried_addrs(art, post_init_ram)
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 
@@ -666,7 +660,7 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    Both left are landing 4's, so a pin that acquires a different owner moves the
+    The one left is landing 4's, so a pin that acquires a different owner moves the
     plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
@@ -674,7 +668,7 @@ def test_every_pin_names_the_landing_that_flips_it():
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 2, sorted(pins)
+    assert len(pins) == 1, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

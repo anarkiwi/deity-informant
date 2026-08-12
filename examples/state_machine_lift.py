@@ -1722,6 +1722,7 @@ class Machine:
 
     def __init__(self, flats, ram0):
         self.flats, self.ram, self.out = flats, bytearray(ram0), []
+        self.rows = set()  # every address an indexed read landed on, over the run
 
     def _val(self, e, env):
         k = e[0]
@@ -1733,12 +1734,11 @@ class Machine:
                 return self.ram[addr], 1
             return env[e[1]], 1
         if k == "index":
-            if e[1] == "mem":
-                a, _ = self._val(e[2], env)
-                return self.ram[a & 0xFFFF], 1
-            base = cell_addr(e[1])
+            base = 0 if e[1] == "mem" else cell_addr(e[1])
             i, _ = self._val(e[2], env)
-            return self.ram[(base + i) & 0xFFFF], 1
+            addr = (base + i) & 0xFFFF
+            self.rows.add(addr)  # where an indexed read landed: the run's own bound
+            return self.ram[addr], 1
         if k == "call" and e[1] == "zext2":
             return self._val(e[2][0], env)[0], 2
         if k == "call" and e[1] == "carry":
@@ -1911,6 +1911,121 @@ def _field_update(name, r):
     )
 
 
+def _val_cells(e, out):
+    """Cell addresses a value expression reads, at the width the machine reads them."""
+    if not isinstance(e, tuple) or not e:
+        return
+    if e[0] == "name":
+        addr = cell_addr(e[1])
+        if addr is not None:
+            out.add(addr)
+        return
+    if e[0] == "num":
+        return
+    if e[0] == "index":
+        _val_cells(e[2], out)  # the row itself is a table's; its index is a read
+        return
+    if e[0] == "wcmp":
+        for src in (e[2], e[3]):
+            if src[0] != "const":
+                out.update(range(src[1], src[1] + src[2]))
+        return
+    for kid in e[1:]:
+        for x in kid if isinstance(kid, list) else (kid,):
+            _val_cells(x, out)
+
+
+def _op_cells(op):
+    """``(cells the flattened op reads, cells it certainly overwrites)``."""
+    k, use, defs = op[0], set(), set()
+    if k == "asg":
+        _val_cells(op[2], use)
+        addr = None if sid_target(op[1]) is not None else cell_addr(op[1])
+        if addr is not None:
+            defs.add(addr)
+    elif k == "sto":
+        _val_cells(op[2], use)
+        _val_cells(op[3], use)
+    elif k == "st16":
+        use.update(a for a in map(cell_addr, op[2:4]) if a is not None)
+        _val_cells(op[4], use)
+    elif k == "w16":
+        lo, n, _wop, a, b, carry = op[1:]
+        for src in (a, b):
+            if isinstance(src, tuple) and src[0] != "const":
+                use.update(range(src[1], src[1] + src[2]))
+        defs.update(range(lo, lo + n))
+        if carry is not None:
+            defs.add(carry)
+    elif k == "rd16":
+        _val_cells(op[4], use)
+        defs.update((op[1], op[1] + 1))
+    elif k in ("set16", "adv16"):
+        base = cell_addr(op[1] + "_lo")
+        if k == "adv16":
+            use.update((base, base + 1))
+        for x in op[2:4] if k == "set16" else op[2:3]:
+            _val_cells(x, use)
+        defs.update((base, base + 1))
+    elif k in ("bf", "dsw"):
+        _val_cells(op[1], use)
+    return use, defs
+
+
+def _flat_succs(ops, i):
+    """The flattened op indices control can reach from ``i``."""
+    k = ops[i][0]
+    if k == "jmp":
+        return [ops[i][1]]
+    if k == "bf":
+        return [i + 1, ops[i][2]]
+    if k == "dsw":
+        return sorted(set(ops[i][2].values()))
+    if k in ("ret", "fault"):
+        return []
+    return [i + 1] if i + 1 < len(ops) else []
+
+
+def frame_live_in(flat):
+    """The cells live where the frame starts, as a fixpoint over the frame's repeat.
+
+    Backward liveness whose exits flow to the frame's own entry, because the next
+    frame is where they go: a cell not in the result carries nothing across the
+    boundary, whatever it is read for inside one frame."""
+    ops = flat.ops
+    cells = [_op_cells(o) for o in ops]
+    succ = [_flat_succs(ops, i) for i in range(len(ops))]
+    entry, live = set(), [set() for _ in ops]
+    while ops:
+        for _round in range(len(ops) + 2):
+            changed = False
+            for i in range(len(ops) - 1, -1, -1):
+                out = set(entry) if not succ[i] else set().union(*(live[j] for j in succ[i]))
+                got = cells[i][0] | (out - cells[i][1])
+                if got != live[i]:
+                    live[i], changed = got, True
+            if not changed:
+                break
+        if live[0] <= entry:
+            return entry
+        entry |= live[0]
+    return entry
+
+
+def frame_scratch(procs, frames=FRAMES):
+    """Declared cells the frame kills before reading: per-frame locals, not state.
+
+    The proof is frame-boundary liveness-in; the one thing it cannot see is where
+    an indexed read lands, so the evidence run bounds that -- a cell some indexed
+    read reached is left alone, which is the observed-primary guard."""
+    ram0, _labels = _post_init()
+    machine = Machine({e: Flat(s) for e, s in expand(procs).items()}, bytearray(ram0))
+    for _ in range(frames):
+        machine.frame()
+    live = frame_live_in(Flat(expand(procs)[PLAY]))
+    return {a for a in range(0x10000) if a not in live and a not in machine.rows}
+
+
 def transfer_operands(procs):
     """Cells every read of which is a computed transfer's own target.
 
@@ -1929,7 +2044,7 @@ def transfer_operands(procs):
     return {n for n in ctrl - data if cell_addr(n) is not None}
 
 
-def classify_roles(procs):
+def classify_roles(procs, frames=FRAMES):
     """Read each state cell's role off its folded update shapes (the plan's rule).
 
     Locals are inlined per straight-line run, so a cell updated through a temporary
@@ -1989,7 +2104,9 @@ def classify_roles(procs):
         if a is not None:
             roles.setdefault(_addr_name(a), "parameter")
     machinery = {_addr_name(cell_addr(n)) for n in transfer_operands(procs)}
-    return {n: r for n, r in roles.items() if n not in machinery}
+    dead = frame_scratch(procs, frames)
+    gone = {n for n in roles if cell_addr(n) in dead}
+    return {n: r for n, r in roles.items() if n not in machinery | gone}
 
 
 _SIDV = re.compile(r"sid\.v([123])\.")
