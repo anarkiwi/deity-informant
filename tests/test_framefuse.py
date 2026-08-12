@@ -1,16 +1,18 @@
 """Rung (d), 16-bit fusion: the premise, the per-pair refusal and the law.
 
 Covers docs/frameprog.md 4(d): a proven lo/hi pair becomes one u16 state field,
-one lone-half access refuses that pair alone, and a wrongly fused pair fails
-Gate FP (the M-FP3 mutation evidence).
+a lone half is spelled through that word, and a wrongly fused pair fails Gate FP
+(the M-FP3 mutation evidence).
 """
 
 import re
 
 import numpy as np
 import pytest
+import z3
 
 from deity_informant import datadecl
+from deity_informant import eqlift
 from deity_informant import framefuse
 from deity_informant import framelog as F
 from deity_informant import frameproc
@@ -90,32 +92,38 @@ def test_pointer_pair_fuses_to_one_u16_state_field():
     assert frameval.gate_fp(model, 8) is None
 
 
-def test_a_lone_half_access_refuses_that_pair():
-    """`INC lo` is a half access: the pair stays two u8 fields and the tune still gates."""
+def test_a_lone_half_access_is_spelled_through_the_word():
+    """`INC lo` is a half access: it reads the word's trunc and writes its lane.
+
+    The pair is one ``u16`` field beside it, which is the per-site premise: the
+    site keeps its own lane and no other site's pairing is refused for it."""
     model = _model_of(G.t_lone_half)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
-    assert re.search(r"^ ptr_0002_lo: (?:\w+ )?u8", text, re.M)
-    assert re.search(r"^ ptr_0002_hi: (?:\w+ )?u8", text, re.M)
-    assert not re.search(r"^ \w+: (?:\w+ )?u16", text, re.M)
+    assert re.search(r"^ ptr_0002: (?:\w+ )?u16", text, re.M)
+    assert not re.search(r"^ ptr_0002_(?:lo|hi):", text, re.M)
+    assert "ptr_0002:2 = ((ptr_0002:2 & $FF00):2 | zext2((trunc1(ptr_0002:2) + $01))):2" in text
     pr = _proof(prog, PTR)
-    assert pr.status == "refused" and "lone-half read" in pr.lemma
+    assert pr.status == "partial" and "1 widened lane store(s)" in pr.lemma
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, 8) is None
 
 
 def test_refusal_is_per_pair_not_per_tune():
-    """Two pairs, one with a lone half: the other still fuses."""
+    """Two pairs, one a page-fixed in-place advance: the other still fuses.
+
+    ``INC lo`` under a hi lane no store touches is an index into one page, so that
+    pair keeps its two bytes; the reloaded pair beside it is unaffected."""
     a = G.Asm(G.ORG)
-    for zp, tbl in ((PTR, TBL), (PTR + 2, TBL + 8)):
-        a.i("LDA", "abs", tbl).i("STA", "zp", zp)
-        a.i("LDA", "abs", tbl + 1).i("STA", "zp", zp + 1)
+    a.i("LDA", "abs", TBL + 8).i("STA", "zp", PTR + 2)
+    a.i("LDA", "abs", TBL + 9).i("STA", "zp", PTR + 3)
     a.i("INC", "zp", PTR)
     a.i("LDY", "imm", 0)
     a.i("LDA", "indy", PTR).i("STA", "abs", SID)
     a.i("LDA", "indy", PTR + 2).i("STA", "abs", SID + 1).i("RTS")
-    data = {TBL: 0x40, TBL + 1: 0x14, TBL + 8: 0x41, TBL + 9: 0x14, 0x1440: 0x11, 0x1441: 0x22}
+    data = {PTR: 0x40, PTR + 1: 0x14, TBL + 8: 0x41, TBL + 9: 0x14, 0x1440: 0x11, 0x1441: 0x22}
     prog = frameprog.program(_fuzz_model(_player("two", a.assemble(), data, (SID, SID + 1))))
+    assert "hi lane no path changes" in _proof(prog, PTR).lemma
     assert _proof(prog, PTR).status == "refused"
     assert _proof(prog, PTR + 2).status == "fused"
     text = frameprog.dumps(prog)
@@ -141,28 +149,34 @@ def _force(prog, lo, hi, kind="pointer"):
 
 
 def _split_pair():
-    """lo at $02 and hi at $04: stored as a pair, but not adjacent cells."""
+    """lo at $02 and hi at $04: stored as a pair, but not adjacent cells.
+
+    The two lanes are read before they are written, so the record carries both the
+    cell a forced word would leave unwritten and the one it would read instead."""
     stmts = [
-        _st(0x02, _byte(TBL)),
-        _st(0x04, _byte(TBL + 1)),
         _st(0xD400, _byte(0x02)),
         _st(0xD401, _byte(0x04)),
+        _st(0x02, _byte(TBL)),
+        _st(0x04, _byte(TBL + 1)),
     ]
-    return stmts, {TBL: 0x11, TBL + 1: 0x22, 0x04: 0x77}
+    return stmts, {TBL: 0x11, TBL + 1: 0x22, 0x02: 0x33, 0x03: 0x44, 0x04: 0x77}
 
 
 def test_fusing_non_adjacent_halves_moves_the_record():
-    """A word at lo is lo and lo+1: fusing a partner elsewhere leaves it unwritten."""
+    """A word at lo is lo and lo+1: a partner elsewhere is the wrong cell both ways."""
     stmts, cells = _split_pair()
     good = frameval.eval_fp(_hand(stmts, cells), {}, 1)
     forced = _hand(stmts, cells)
     _force(forced, 0x02, 0x04)
-    assert _stmts(forced)[0][2][0] == "op"  # the two half stores became one word store
+    assert _stmts(forced)[2][2][0] == "op"  # the two half stores became one word store
     assert frameval.eval_fp(forced, {}, 1) != good
 
 
-def test_the_write_order_hazard_refuses_rather_than_reordering():
-    """A hi value that may read the lo cell would see the stale byte once fused."""
+def test_the_write_order_hazard_widens_rather_than_packing():
+    """A hi value that may read the lo cell would see the stale byte once packed.
+
+    So the two halves do not meet at a seat; each becomes its own lane update,
+    which writes them in the order the program did and reads the lo it wrote."""
     deref = ("op", "INT_ADD", (framefuse._word(0x02), ("const", 1, 2)), 2)
     stmts = [
         _st(0x02, _byte(TBL)),
@@ -173,7 +187,7 @@ def test_the_write_order_hazard_refuses_rather_than_reordering():
     prog = _hand(stmts, cells)
     p = framefuse._Pair(0x02, 0x03, "pointer", "hand")
     framefuse._visit(_stmts(prog), p, False)
-    assert p.hazard == 1 and "may read the first cell" in p.refusal()
+    assert p.hazard == 1 and p.refusal() is None
     good = frameval.eval_fp(prog, {}, 1)
     hand = list(stmts)
     hand[0:2] = [_st(0x02, framefuse._pack(stmts[0][2], stmts[1][2], hi_first=False))]
@@ -339,9 +353,12 @@ def test_a_fused_sid_store_keeps_its_per_half_provenance():
     "lo,hi,counts,want",
     [
         (0x02, 0x04, {"words": 1}, "halves are not adjacent"),
-        (0x02, 0x03, {"hazard": 1}, "may read the first cell"),
-        (0x02, 0x03, {"lone": 2, "words": 1}, "2 lone-half read(s)"),
-        (0x02, 0x03, {"unpaired": 1, "words": 1}, "1 unpaired half store(s)"),
+        (0x02, 0x03, {"hazard": 1, "words": 1}, None),
+        (0x02, 0x03, {"lone": 2, "words": 1}, None),
+        (0x02, 0x03, {"unpaired": 1, "words": 1}, None),
+        (0x02, 0x03, {"viewed": 1, "words": 1}, "1 indexed half store(s)"),
+        (0x02, 0x03, {"advance": 2, "pagefixed": True, "words": 1}, "2 in-place lane advance"),
+        (0x02, 0x03, {"advance": 2, "words": 1}, None),
         (0x02, 0x03, {}, "no word access in the play code"),
         (0x02, 0x03, {"words": 1}, None),
     ],
@@ -352,8 +369,46 @@ def test_the_refusal_diagnostic_names_the_premise_that_failed(lo, hi, counts, wa
         setattr(p, name, v)
     why = p.refusal()
     assert why is None if want is None else want in why
-    assert p.proof().status == ("fused" if want is None else "refused")
+    clean = not (p.lone or p.unpaired)
+    assert p.proof().status == ("refused" if want else ("fused" if clean else "partial"))
     assert p.proof().targets == (lo, hi)
+
+
+def test_the_lane_spelling_is_the_concatenated_value_law():
+    """Z3 over QF_BV: a lane update's two lanes are a width-2 function of the prior pair.
+
+    The obligation every newly admitted fuse carries, stated as framemath states it
+    and proved on the algebra ``eqlift.verify_rules`` proves its rules on."""
+    alg = eqlift._Z3Alg()
+    w, v = alg.tvar("w", 2), alg.tvar("v", 1)
+    up_lo = alg.bor(alg.band(w, alg.num(0xFF00, 2), 2), alg.zext(v), 2)
+    up_hi = alg.bor(alg.band(w, alg.num(0x00FF, 2), 2), alg.shl(alg.zext(v), alg.num(8, 1), 2), 2)
+
+    def hi(x):
+        return alg.trunc(alg.shr(x, alg.num(8, 1), 2))
+
+    for got, want in (
+        (alg.trunc(up_lo), v),
+        (hi(up_lo), hi(w)),
+        (alg.trunc(up_hi), alg.trunc(w)),
+        (hi(up_hi), v),
+    ):
+        s = z3.Solver()
+        s.add(*alg.constraints)
+        s.add(got != want)
+        assert s.check() == z3.unsat, "the lane spelling is not the pair it claims"
+
+
+def test_the_rung_reads_back_every_lane_it_spells():
+    """``lane_of`` and ``unlane`` are the duals of ``_widen`` and the trunc spelling."""
+    val = ("mem", ("const", TBL, 2), 1)
+    for role, cell in (("lo", 0x02), ("hi", 0x03)):
+        st = framefuse._widen(_st(cell, val), framefuse._Pair(0x02, 0x03, "pointer", "unit"))
+        assert framefuse.lane_of(st[2], 0x02) == (role, val)
+    assert framefuse.lane_of(framefuse._pack(val, val), 0x02) is None
+    word = framefuse._word(0x02)
+    packed = framefuse._pack(frameproc.trunc_lo(word), frameproc.trunc_hi(word))
+    assert framefuse.unlane(packed, 0x02) == framefuse._pack(_byte(0x02), _byte(0x03))
 
 
 def test_unpack_reads_only_the_canonical_word_shape():

@@ -39,6 +39,7 @@ def test_all_rules_z3_verified():
     proved = eqlift.verify_rules()
     assert len(proved) == sum(len(widths) for _n, widths, _b in eqlift.RULES)
     assert ("sign_ne", 1) in proved and ("carry_fuse", 2) in proved
+    assert {("lane_lo", 2), ("lane_hi", 2)} <= set(proved), "rung (d)'s lane law is unproved"
 
 
 def test_verification_rejects_a_wrong_rule():

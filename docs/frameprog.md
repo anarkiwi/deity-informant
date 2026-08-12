@@ -333,9 +333,10 @@ a rule with a Z3 proof or a named refusal.
   per pair:
   provably written/consumed as a word — the datadecl pointer-pair machinery
   (`lo`/`hi` partner attrs) plus the paired-index zip invariant
-  (follin-dispatch-study §4), every read using the half only inside
-  `lo | hi<<8` shapes. Any lone-half access refuses that pair (stays split;
-  per-pair, not per-tune). Gate: FP + a fusion proof record per pair.
+  (follin-dispatch-study §4). A lone-half access is spelled through the word
+  rather than refusing the pair (§4.3); what refuses is an indexed half store, a
+  page-fixed lane advance, or no word access at all. Gate: FP + a fusion proof
+  record per pair.
 - **(d2) 16-bit arithmetic lifting** (landed, `deity_informant/framemath.py`;
   §4.3 and §7.5 for the measurement). A driver maintaining 16-bit state in 8-bit
   registers writes the update twice — the lo lane, then whatever crosses into the
@@ -514,9 +515,8 @@ committed model, never by shape-matching the text: a **pointer pair** from the
 `streams` classifier that `datadecl`'s `lo`/`hi` partner attributes are built on,
 or a **dispatch operand word** the paired-index zip closure proved
 (follin-dispatch-study §4). The premise is then discharged against the statement
-trees — the halves are adjacent cells, every read of a half sits inside a
-`lo | hi<<8` shape, and the two half stores are adjacent statements whose second
-value provably cannot read the first cell — and each candidate leaves a
+trees — the halves are adjacent cells, and the pair carries at least one access of
+the whole word — and each candidate leaves a
 `structured.Proof` on `FrameProgram.proofs`, fused or refused, carrying the
 evidence, the counts and the refusal. Fusion is notation over two adjacent cells:
 `m_0021:2` reads and writes exactly the bytes the two halves did, in the same
@@ -526,16 +526,37 @@ as the two byte loads did). A fused pair is one `u16` `state { }` field named of
 its `_lo` suffix; the width suffix is the grammar's, now carried by an lvalue and
 by the indexed and raw memref forms as well ([grammar.md](grammar.md)).
 
-**Two granularities, one rule.** A *state* pair is a tune-wide declaration, so
-one lone-half access anywhere refuses it outright and it stays two `u8` fields —
-per pair, never per tune, and the rest of the tune still fuses. A *SID* register
-pair declares nothing beyond the two statements it rewrites: freq, pulse and
-cutoff are last-write-wins and §1.1 emits lo,hi adjacent whatever order the
-driver wrote them in, so its premise is per store site — an adjacent lo/hi pair
-at one index fuses (hi-first included: the packed value keeps the driver's
-evaluation order and the merged store carries its *write* order, spelled
-`hi-first`, so the merge owes no fact about the index — §7.10.4), and a lone half
-elsewhere leaves that site alone.
+**One granularity, and it is the access site.** A *state* pair is a tune-wide
+declaration, but a lone half is no longer a refusal of it: the half is spelled
+through the word, a store as the lane update `(w & $FF00) | zext2(v)` (`_widen`,
+the SID half's own rewrite) and a read as that lane's trunc
+(`frameproc.trunc_lo`/`trunc_hi`), so a site touching one lane leaves every other
+site's pairing alone. The obligation each such fuse carries is §4(d2)'s own law —
+the concatenated values are a width-2 function of the prior pair — Z3-proved over
+QF_BV in `tests/test_framefuse.py`. A *SID* register pair declares nothing beyond
+the two statements it rewrites (freq, pulse and cutoff are last-write-wins and
+§1.1 emits lo,hi adjacent whatever order the driver wrote them in), so an adjacent
+lo/hi pair at one index fuses — hi-first included: the packed value keeps the
+driver's evaluation order and the merged store carries its *write* order, spelled
+`hi-first`, so the merge owes no fact about the index (§7.10.4).
+
+**What still refuses, stated over the pair.** An **indexed half store** the pair
+cannot place (its address may land on either lane, so no lane update writes it); a
+**page-fixed** pair — a hi lane no path changes, every store to it writing the byte
+`mem0` holds with no `call`/`dcall`/`swc`/`unobs` wall to hide one, whose lo lane is
+advanced *in place*, which is an index into one page and not a word ($14FF steps to
+$1400, and the honest declaration is the byte); and a pair with **no word access at
+all**. The write-order hazard stops refusing: the two halves do not pack, and each
+widens on its own, which writes them in the program's order and reads the lo the
+first one wrote. Every one of these is a strictly narrower refusal than the
+tune-wide lone-half rule it replaces, so no pair that fused before can refuse now.
+
+**The rung publishes the readers for what it spells.** `framefuse.lane_of` is
+`_widen`'s dual — a word definition that is a lane update reads back as `(role,
+half)` — and `framefuse.unlane` takes a lane trunc back to the byte cell it names.
+`ptrcert._classify` asks both before classifying a definition, so a page-one hold
+(`low_held`) and a byte-lane `block_read` are the same facts they were; and
+`framestack._push_val` reads a lane trunc as the pure push it is.
 
 Measured 2026-07-31, 682 cached tunes, PSID start subtune, 200-frame windows
 (650 decompile, 649 reach the gate). **Gate FP 649/649 and the canonical

@@ -129,8 +129,11 @@ def test_an_ineligible_web_is_no_target():
 
 
 def test_a_pair_that_did_not_fuse_carries_no_extent():
-    """The grammar puts a block extent on a u16 field, so a byte-lane pair refuses."""
-    prog, proofs = _walked("pointer_walk")
+    """The grammar puts a block extent on a u16 field, so a byte-lane pair refuses.
+
+    ``inpage_advance`` is the pair rung (d) still keeps byte-wise: its hi lane is a
+    page selector no path changes, so there is no word for an extent to sit on."""
+    prog, proofs = _walked("inpage_advance")
     assert not prog.extents and any(
         re.search(r"ptr_%04X_lo: (?:\w+ )?u8" % CELL, ln) for ln in _state(prog)
     )

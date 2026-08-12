@@ -790,6 +790,7 @@ _DECL_TRUTH = {  # the declaration studies, as the frame program spells them
     "Hubbard_Rob-Commando": [
         "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:",
         "table m_56F9[3] lo m_56FC -> $576B..$57EC observed:",
+        "table m_5711[32] lo m_573E -> $5887..$5D7D observed:",  # the pair rung (d) now fuses
         "table m_56FC[3] hi m_56F9 -> $576B..$57EC observed:",
         " stride 8 ",  # instrument records at m_5591
         "stream m_576B[",
@@ -800,20 +801,19 @@ _DECL_TRUTH = {  # the declaration studies, as the frame program spells them
         "alias pos_54EE = m_54EE",
     ],
     "Cadaver-Aces_High": [
-        "table m_155C[52] lo m_1590",
+        "table m_155C[52] lo m_1590 -> $15C4..$2581 observed:",  # the fused pair's extent
         "stream m_15C4[",
-        "via ptr_00FB_lo cmp $00 $FE $FF observed:",  # unfused: the lo half names it
-        "alias ptr_00FB_lo = zp_FB",
-        "alias ptr_00FB_hi = zp_FC",
+        "via ptr_00FB cmp $00 $FE $FF observed:",  # rung (d)'s per-site premise fused it
+        "alias ptr_00FB = zp_FB",
     ],
     "Follin_Tim-Ghouls_n_Ghosts": [
         "stream m_7338[",
         "stream m_75F7[",
         "stream m_77A8[",
-        "via ptr_0021_lo ",
-        "via ptr_0023_lo ",
-        "via ptr_0025_lo ",
-        "alias ptr_0021_lo = zp_21",
+        "via ptr_0021 ",
+        "via ptr_0023 ",
+        "via ptr_0025 ",
+        "alias ptr_0021 = zp_21",
     ],
 }
 

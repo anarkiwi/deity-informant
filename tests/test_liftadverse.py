@@ -102,10 +102,10 @@ def test_an_index_read_back_from_a_cell_the_play_code_rewrites_must_not_widen():
 
 # ---- forcing a wrong fusion moves the record -------------------------------------
 def test_fusing_halves_a_wrapping_store_may_alias_moves_the_record():
-    """Wizball's shape forced: the refusal is load-bearing, not decoration.
+    """Wizball's shape forced: the hazard is load-bearing, not decoration.
 
     The hi half is read through a cell the lo store may reach, so packing the two
-    reads the byte the lo store just wrote."""
+    reads the byte the lo store just wrote -- which is why each lane widens alone."""
     deref = ("op", "INT_ADD", (FF._word(0x04), ("const", 1, 2)), 2)
     stmts = [
         ("st", ("const", 0x04, 2), ("mem", ("const", G.TBL, 2), 1)),
@@ -116,7 +116,7 @@ def test_fusing_halves_a_wrapping_store_may_alias_moves_the_record():
     prog = _hand(stmts, cells)
     pair = FF._Pair(0x04, 0x05, "pointer", "hand")
     FF._visit(prog.procs[0][3], pair, False)
-    assert pair.hazard == 1 and "may read the first cell" in pair.refusal()
+    assert pair.hazard == 1 and pair.refusal() is None
     good = frameval.eval_fp(prog, {}, 1)
     forced = list(stmts)
     forced[0:2] = [("st", ("const", 0x04, 2), FF._pack(stmts[0][2], stmts[1][2], hi_first=False))]

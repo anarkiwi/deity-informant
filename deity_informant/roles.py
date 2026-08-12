@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict, namedtuple
 
+from . import framefuse as FF
 from . import frameproc as P
 from . import idioms
 
@@ -199,14 +200,24 @@ Update = namedtuple("Update", "base field shape value site entry")
 
 
 def updates(prog):
-    """One ``Update`` per witnessed cell-update slice, its shape read off the term."""
+    """One ``Update`` per witnessed cell-update slice, its shape read off the term.
+
+    A fused pair's lane reads are the word's truncs (rung (d)), so the term is read
+    back through ``framefuse.unlane`` and a lane step is the step it always was."""
     cells = idioms.state_cells(prog)
     byfield = defaultdict(set)
     for a, f in cells.items():
         byfield[f].add(a)
     _sid, upd = idioms.obligations(prog)
     return [
-        Update(ob.base, ob.field, shape(ob.value, byfield[ob.field]), ob.value, ob.site, ob.entry)
+        Update(
+            ob.base,
+            ob.field,
+            shape(FF.unlane(ob.value, ob.base), byfield[ob.field]),
+            ob.value,
+            ob.site,
+            ob.entry,
+        )
         for ob in upd
         if ob.base is not None
     ]

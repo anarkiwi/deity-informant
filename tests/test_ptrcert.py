@@ -33,9 +33,13 @@ def test_scratch_player_has_no_pointer_root():
 
 
 def test_pointer_walk_names_its_reload_and_its_advance():
-    """The mixed reload+advance walk classifies as the plan's own two kinds."""
+    """The mixed reload+advance walk classifies as the plan's own two kinds.
+
+    One reload, not two: rung (d)'s per-site premise merges the pair's own byte-lane
+    reload row into a word store, so the definition is the word the table holds."""
     rec = _cert("pointer_walk")["$0002"]
-    assert rec["kinds"]["reload"] == 2 and rec["kinds"]["advance"] == 1
+    assert rec["kinds"]["reload"] == 1 and rec["kinds"]["advance"] == 1
+    assert [d["role"] for d in rec["defs"]] == ["word", "word"]
     assert rec["kinds"]["other"] == 0 and rec["block_rooted"]
     assert any("declared pointer table" in d["premise"] for d in rec["defs"])
     assert any("in-block advance" in d["premise"] for d in rec["defs"])

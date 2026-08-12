@@ -613,6 +613,40 @@ def _r_pack_split(A, w):
     return _pk(A, A.trunc(A.shr(x, A.num(8, 1), 2)), A.trunc(x)), x
 
 
+def _r_lane_lo(A, w):
+    """Rung (d)'s lo lane update read back as its lo lane: the update's own value.
+
+    ``framefuse._widen`` writes ``(x & $FF00) | zext(v)`` for a lone lo half, so a
+    later read of that lane is ``v`` and a read of the hi lane is ``x``'s."""
+    del w
+    x, v = A.tvar("x", 2), A.tvar("v", 1)
+    return A.trunc(A.bor(A.band(x, A.num(0xFF00, 2), 2), A.zext(v), 2)), v
+
+
+def _r_lane_hi(A, w):
+    """And the hi lane update read back as its hi lane."""
+    del w
+    x, v = A.tvar("x", 2), A.tvar("v", 1)
+    lane = A.bor(A.band(x, A.num(0x00FF, 2), 2), A.shl(A.zext(v), A.num(8, 1), 2), 2)
+    return A.trunc(A.shr(lane, A.num(8, 1), 2)), v
+
+
+def _r_lane_lo_keeps_hi(A, w):
+    """A lo lane update leaves the hi lane exactly where it was."""
+    del w
+    x, v = A.tvar("x", 2), A.tvar("v", 1)
+    lane = A.bor(A.band(x, A.num(0xFF00, 2), 2), A.zext(v), 2)
+    return A.shr(lane, A.num(8, 1), 2), A.shr(x, A.num(8, 1), 2)
+
+
+def _r_lane_hi_keeps_lo(A, w):
+    """And a hi lane update leaves the lo lane where it was."""
+    del w
+    x, v = A.tvar("x", 2), A.tvar("v", 1)
+    lane = A.bor(A.band(x, A.num(0x00FF, 2), 2), A.shl(A.zext(v), A.num(8, 1), 2), 2)
+    return A.trunc(lane), A.trunc(x)
+
+
 def _r_zext_mask(A, w):
     """A widened byte is already masked to its own width."""
     del w
@@ -705,6 +739,10 @@ RULES = (
         ("pack_lo", (2,), _r_pack_lo),
         ("pack_split", (2,), _r_pack_split),
         ("zext_mask", (2,), _r_zext_mask),
+        ("lane_lo", (2,), _r_lane_lo),
+        ("lane_hi", (2,), _r_lane_hi),
+        ("lane_lo_keeps_hi", (2,), _r_lane_lo_keeps_hi),
+        ("lane_hi_keeps_lo", (2,), _r_lane_hi_keeps_lo),
     )
     + tuple(("%s_fuse" % mn, (2,), _r_bit_fuse(mn)) for mn in ("band", "bor", "bxor"))
     + _SHIFT_FOLDS
