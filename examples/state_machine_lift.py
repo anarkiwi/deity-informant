@@ -2328,27 +2328,35 @@ def _mask_bounds(procs):
     return {n: k for n, k in out.items() if k is not None}
 
 
-def state_evidence(procs, roles, widths, frames=FRAMES):
-    """``{cell: (blocks, bound)}``: the evidence each roled declaration owes.
+def _cell_base(name):
+    """The first RAM address a state-cell name covers, lane names included."""
+    a = cell_addr(name)
+    return cell_addr(name + "_lo") if a is None else a
 
-    A cursor names the block its walk lands in, by the image's own labels; an
-    accumulator names the constant the program masks it with, else the extent
-    its values are witnessed in over this program's own run."""
+
+def state_evidence(procs, roles, widths, frames=FRAMES):
+    """``{cell: (initial value, blocks, bound)}``: what each declaration owes.
+
+    The initial value is what init left in the cell; a cursor names the block its
+    walk lands in, by the image's own labels; an accumulator names the constant
+    the program masks it with, else the extent its own run witnesses."""
     ram0, labels = _post_init()
-    want = {n: widths[n] for n, r in roles.items() if r in ("cursor", "accumulator")}
-    addrs = {n: cell_addr(n) if cell_addr(n) is not None else cell_addr(n + "_lo") for n in want}
+    addrs = {n: _cell_base(n) for n in widths}
+    want = [n for n, r in roles.items() if r in ("cursor", "accumulator")]
     machine = Machine({e: Flat(s) for e, s in procs.items()}, bytearray(ram0))
     seen = {n: set() for n in want}
     for _ in range(frames):
-        for n, a in addrs.items():
-            seen[n].add(int.from_bytes(machine.ram[a : a + want[n]], "little"))
+        for n in want:
+            seen[n].add(int.from_bytes(machine.ram[addrs[n] : addrs[n] + widths[n]], "little"))
         machine.frame()
     masks, out = _mask_bounds(procs), {}
-    for n, values in seen.items():
+    for n, a in addrs.items():
+        blocks, bound, values = (), None, seen.get(n)
         if roles[n] == "cursor":
-            out[n] = (sorted({_block_at(labels, v) for v in values}), None)
-        else:
-            out[n] = ((), ("mask", masks[n]) if n in masks else ("bound", min(values), max(values)))
+            blocks = sorted({_block_at(labels, v) for v in values})
+        elif values is not None:
+            bound = ("mask", masks[n]) if n in masks else ("bound", min(values), max(values))
+        out[n] = (int.from_bytes(ram0[a : a + widths[n]], "little"), blocks, bound)
     return out
 
 
@@ -2364,8 +2372,9 @@ def render(procs, roles, frames=FRAMES):
     widths = {n: wide.get(n, 2 if _PAIRBASE.match(n) and not _PAIRRE.match(n) else 1) for n in show}
     ev = state_evidence(flat, show, widths, frames)
     for n in sorted(show, key=lambda n: (_ORDER[roles[n]], pretty(n))):
-        blocks, bound = ev.get(n, ((), None))
-        lines.append(" " + SP._field_line(pretty(n), widths[n], False, (), roles[n], blocks, bound))
+        init, blocks, bound = ev[n]
+        line = SP._field_line(pretty(n), widths[n], False, (), roles[n], blocks, bound, init)
+        lines.append(" " + line)
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
     lines.extend(voice_record(procs))

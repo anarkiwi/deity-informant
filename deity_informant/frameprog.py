@@ -605,6 +605,19 @@ def _roles(prog):
     return out, spelled
 
 
+def _initial(mem0, rev, name, width, array):
+    """The value the init phase leaves in a state field, off the flat image itself.
+
+    ``decompile`` keeps init's image and not its trace, so the cell's own bytes are
+    the reading (spec 4.5's ``prov0`` names where each came from, never what it is)."""
+    if array:
+        return None
+    addr = rev[name] if name in rev else G.name_addr(name)
+    if addr is None or addr + width > len(mem0):
+        return None
+    return int.from_bytes(mem0[addr : addr + width], "little")
+
+
 def dumps(prog):
     """Canonical frameprog text; ``dumps(loads(t)) == t`` for canonical ``t``."""
     if not isinstance(prog, FrameProgram):
@@ -632,8 +645,15 @@ def dumps(prog):
     to_alias = sidprog._alias_sub(prog.symbols)
     procs = prog.lines() if to_alias is None else list(map(to_alias, prog.lines()))
     state = _kept_state(prog, procs, to_alias)
+    rev = {nm: a for a, nm in prog.symbols.items()}
     fields = [
-        sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ()), prog.bounds.get(f[0]))
+        sidprog._field_line(
+            *f,
+            prog.roles.get(f[0]),
+            ext.get(f[0], ()),
+            prog.bounds.get(f[0]),
+            _initial(prog.mem0, rev, *f[:3]),
+        )
         for f in state
     ]
     body = ["state {"] + fields + ["}"]
@@ -653,6 +673,11 @@ def parse(text):
     doc = G.parse_document(text, "frameprog")
     if doc.init is None or doc.play is None:
         raise ValueError("missing init/play header")
+    rev = {nm: a for a, nm in doc.symbols.items()}
+    for name, width, array, _obs in doc.state:
+        got = doc.initial.get(name)
+        if got is not None and got != _initial(doc.mem0, rev, name, width, array):
+            raise ValueError("state field %s: initial value is not the image's" % name)
     return FrameProgram(
         doc.play,
         doc.init,

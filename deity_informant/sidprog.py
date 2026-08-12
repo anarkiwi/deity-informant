@@ -352,17 +352,19 @@ def _drop_declared(state, decls, symbols):
     return [f for f in state if f[0] not in covered]
 
 
-def _field_line(name, width, array, observed, role=None, blocks=(), bound=None):
+def _field_line(name, width, array, observed, role=None, blocks=(), bound=None, init=None):
     """One ``state { }`` line; the role qualifies the type and names nothing else.
 
     The bound is the cell's own evidence: the constant its steps are taken under,
-    or the extent its values are witnessed in."""
+    or the extent its values are witnessed in; the initial value is what the init
+    phase left in the cell, so the block reads without the image behind it."""
     kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
     if array:
         return " %s: %s[]" % (name, kind)
+    val = "" if init is None else " = $%0*X" % (2 * width, init)
     ext = (" in " + ", ".join(blocks)) if blocks else ""
     obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
-    return " %s: %s%s%s%s" % (name, kind, ext, obs, bound_clause(bound, width))
+    return " %s: %s%s%s%s%s" % (name, kind, val, ext, obs, bound_clause(bound, width))
 
 
 def bound_clause(bound, width):

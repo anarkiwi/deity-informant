@@ -60,8 +60,11 @@ evline: "code" span* _NL               -> ev_code
 span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" [srole] NAME [array] [statext] [statobs] [statbnd] _NL
+statedef: NAME ":" [srole] NAME [array] [statinit] [statext] [statobs] [statbnd] _NL
 array: "[" "]"
+// the initial value: the byte the init phase leaves in the cell, so the state
+// block reads without the image behind it (stage 4 landing 4)
+statinit: "=" HEX
 statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
 // the accumulator's bound (stage 4 landing 4): the constant the program ands the

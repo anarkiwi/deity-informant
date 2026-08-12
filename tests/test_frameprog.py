@@ -137,14 +137,14 @@ def test_opcode_cell_renders_as_state_variable_switch():
     assert "switch m_1000 {" in text and "code[" not in text
     assert "case $A9: {" in text and "case $EA: {" in text
     assert frameprog.dumps(frameprog.loads(text)) == text
-    assert re.search(r"^ m_1000: (?:\w+ )?u8 observed \$A9 \$EA", text, re.M)
+    assert re.search(r"^ m_1000: (?:\w+ )?u8 = \$A9 observed \$A9 \$EA", text, re.M)
 
 
 def test_single_variant_opcode_cell_keeps_one_arm_switch():
     blocks = {(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("rts",), _regs())}
     text = frameprog.emit(_model(blocks, dispatch={0x1000: {0xA9}}))
     assert "switch m_1000 {" in text and "case $A9: {" in text
-    assert re.search(r"^ m_1000: (?:\w+ )?u8 observed \$A9", text, re.M)
+    assert re.search(r"^ m_1000: (?:\w+ )?u8 = \$A9 observed \$A9", text, re.M)
 
 
 def test_volatile_read_declares_input():
@@ -174,7 +174,8 @@ def test_declared_tables_and_aliases_carry_over():
     assert "table m_1480[8] stride 2 +m_1481:" in text
     assert "alias ptr_0060 = zp_60" in text  # rung (d) fused the pair: one name
     assert frameprog.dumps(frameprog.loads(text)) == text
-    assert re.search(r"^ ptr_0060: (?:\w+ )?u16", text, re.M) and " zp_60: u8" not in text
+    assert re.search(r"^ ptr_0060: (?:\w+ )?u16 = \$0000$", text, re.M)  # the alias resolves
+    assert " zp_60: u8" not in text
     assert "ptr_0060:2 = " in text and "zp_60 = " not in text
     assert " m_1400" not in text.split("data {")[0]  # table cells are not state
     assert not _ANNOT.search(text)
@@ -593,8 +594,8 @@ def test_block_extent_round_trips_as_an_int_keyed_side_map():
     """The extent rides beside the 4-tuple fields: cell address -> block bases."""
     state = [("zp_21", 2, False, []), ("zp_02", 1, False, [])]
     text = frameprog.dumps(_extent_prog(state, {0x21: (0x7338, 0x7401)}))
-    assert re.search(r"^ zp_21: (?:\w+ )?u16 in m_7338, m_7401$", text, re.M)
-    assert re.search(r"^ zp_02: (?:\w+ )?u8$", text, re.M)
+    assert re.search(r"^ zp_21: (?:\w+ )?u16 = \$0000 in m_7338, m_7401$", text, re.M)
+    assert re.search(r"^ zp_02: (?:\w+ )?u8 = \$00$", text, re.M)
     prog = frameprog.loads(text)
     assert prog.extents == {0x21: (0x7338, 0x7401)} and prog.state == state
     assert frameprog.dumps(prog) == text  # M-FP2 over the new production
@@ -604,7 +605,9 @@ def test_block_extent_emits_ascending_and_before_the_observed_values():
     """Ascending block order and the clause's seat are the canonical form."""
     state = [("zp_21", 2, False, [0x01])]
     text = frameprog.dumps(_extent_prog(state, {0x21: (0x7401, 0x1000, 0x7338)}))
-    assert re.search(r"^ zp_21: (?:\w+ )?u16 in m_1000, m_7338, m_7401 observed \$01$", text, re.M)
+    assert re.search(
+        r"^ zp_21: (?:\w+ )?u16 = \$0000 in m_1000, m_7338, m_7401 observed \$01$", text, re.M
+    )
     prog = frameprog.loads(text)
     assert prog.extents == {0x21: (0x1000, 0x7338, 0x7401)}
     assert frameprog.dumps(prog) == text
@@ -616,7 +619,7 @@ def test_block_extent_is_spelled_through_the_symbol_table():
     text = frameprog.dumps(
         _extent_prog(state, {0x21: (0x7338,)}, {0x21: "ptr_0021", 0x7338: "song"})
     )
-    assert re.search(r"^ ptr_0021: (?:\w+ )?u16 in song$", text, re.M)
+    assert re.search(r"^ ptr_0021: (?:\w+ )?u16 = \$0000 in song$", text, re.M)
     assert "alias song = m_7338" in text
     prog = frameprog.loads(text)
     assert prog.extents == {0x21: (0x7338,)}
@@ -627,7 +630,7 @@ def test_a_field_without_an_extent_emits_exactly_what_it_did():
     """The clause and its note are the whole delta: a program with none is unmoved."""
     state = [("zp_21", 2, False, [])]
     plain = frameprog.dumps(_extent_prog(state, {}))
-    assert re.search(r"^ zp_21: (?:\w+ )?u16$", plain, re.M)
+    assert re.search(r"^ zp_21: (?:\w+ )?u16 = \$0000$", plain, re.M)
     assert frameprog._EXTENT_NOTE[0] not in plain
     note = "\n".join(frameprog._EXTENT_NOTE) + "\n"
     got = frameprog.dumps(_extent_prog(state, {0x21: (0x7338,)}))
@@ -864,7 +867,7 @@ def test_no_cell_is_declared_in_both_state_and_data(sid, subtune, secs):
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
     assert "table m_6923[1] mut 0 lo m_6925:" in text  # the pair is declared, once
-    assert "\n m_6923: u8\n" not in text and "\n m_6925: u8\n" not in text
+    assert "\n m_6923: u8" not in text and "\n m_6925: u8" not in text
     covered = {
         prog.symbols.get(a) or addr_name(a)
         for d in prog.data_decls

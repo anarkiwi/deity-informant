@@ -80,7 +80,8 @@ def test_an_eligible_mapped_web_resolves_and_annotates():
     prog, proofs = _walked("cursor_save")
     assert prog.extents == {CELL: (PAT,)}
     assert any(
-        re.search(r"ptr_%04X: (?:\w+ )?u16 in m_%04X" % (CELL, PAT), ln) for ln in _state(prog)
+        re.search(r"ptr_%04X: (?:\w+ )?u16 = \$[0-9A-F]{4} in m_%04X" % (CELL, PAT), ln)
+        for ln in _state(prog)
     )
     assert "*ptr_%04X" % CELL in _body(prog) and "mem[" not in _body(prog)
     assert [p.status for p in proofs] == ["resolved"]
