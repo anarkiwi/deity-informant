@@ -1911,6 +1911,24 @@ def _field_update(name, r):
     )
 
 
+def transfer_operands(procs):
+    """Cells every read of which is a computed transfer's own target.
+
+    A cell the program reads only to decide where it jumps holds no datum any
+    other statement observes: it is the SMC dispatch's operand, and the artifact
+    spells the transfer itself, so it is machinery rather than data state."""
+    ctrl, data = set(), set()
+    for s in _walk_stmts(procs):
+        into = ctrl if s[0] == "dgoto" else data
+        for part in s[1:]:
+            _names(part, into)
+        if s[0] == "st16":
+            into.update(n for n in s[2:4] if cell_addr(n) is not None)
+        elif s[0] == "adv16":
+            into.add(s[1])
+    return {n for n in ctrl - data if cell_addr(n) is not None}
+
+
 def classify_roles(procs):
     """Read each state cell's role off its folded update shapes (the plan's rule).
 
@@ -1970,7 +1988,8 @@ def classify_roles(procs):
         a = cell_addr(name)
         if a is not None:
             roles.setdefault(_addr_name(a), "parameter")
-    return roles
+    machinery = {_addr_name(cell_addr(n)) for n in transfer_operands(procs)}
+    return {n: r for n, r in roles.items() if n not in machinery}
 
 
 _SIDV = re.compile(r"sid\.v([123])\.")

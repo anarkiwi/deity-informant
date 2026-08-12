@@ -636,10 +636,9 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    spellings, and corpus-wide only 2 of 624 tunes are at zero. Re-basing makes this pin *read
    the artifact*; what flips it is the residue itself, and `zero_arch` is the metric that
    steers it.
-   `smc_dispatch_cells_are_not_data_state` — the engine separates the subject
-   (`roles.read_sites`' `switch_cells` → the `vm` role) but **keeps** the cell in the state
-   block as `vm u8 observed …`, where the pin's predicate is about the prototype's `dgoto`
-   shape; it owes a re-statement against the artifact as well as the re-basing.
+   `smc_dispatch_cells_are_not_data_state` — **LANDED (#202)**, below: a cell every read of
+   which decides where the machine jumps is the transfer, and the transfer is already spelled,
+   so the state row beside it goes.
    `vm_family_operator_set_is_emitted` — **LANDED (#200)**, below: the `operators { }`
    production, the name off the handler table, the arity off the cursor advance and the
    writes off the arm's own blocks.
@@ -3677,3 +3676,39 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `roled` **13,234 of 18,109** and `zero_arch` **2 of 624**, all unmoved: the block declares,
   it does not rewrite. Suite (hermetic) **2,780 passed / 490 skipped / 8 xfailed**.
   `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-12 — stage 4, landing 4 (part): an SMC dispatch cell is the transfer, so it stops
+  being declared beside it.** The fourth capability pin,
+  `smc_dispatch_cells_are_not_data_state`. The reading is one law on both sides: **a cell every
+  read of which decides where the machine jumps holds no datum another statement observes.**
+  (1) **What the artifact already spelled twice.** An SMC dispatch's opcode cell rides the
+  `dispatch $107A: $69 $E9` header *and* the state block as `m_107A: vm u8 observed $69 $E9`;
+  a computed transfer's operand cell rode the state block as a `parameter` nothing but the
+  `goto (…)` reads. `frameprog._drop_transfer_operands` reads the procedures once, splits every
+  memory read into the transfer-target positions (`dgoto`/`dcall`/`igoto`/`dbr`, and an
+  `opsw` subject) and everything else, and drops the state row of a field that appears only in
+  the first. A cell the driver *also* reads as data keeps its row — the tune that toggles its
+  own `ADC`/`SBC` opcode (`a = (m_107A ^ $80)`) still declares `m_107A`, because that read is
+  a datum and the rule is about reads, not about addresses.
+  (2) **The prototype, same law in its own dialect.** `sml.transfer_operands` splits reads by
+  `dgoto` exactly as the pin's own predicate does, and `classify_roles` drops what it names:
+  `m_10AD`, `m_10AE`, `m_11F8`, `m_11F9`, `m_1343`, `m_1344` — the three voice copies' JMP
+  operand pairs — leave the state block, 323 lines → 317. The pin flips.
+  (3) **The corpus moves one way.** Against #201: **169 of 624 tunes move, every one smaller,
+  −12,653 bytes and none larger**, 0 refused — **28,360,940 bytes**, aggregate
+  `b6c3367c7aba17e6de2239662c82d96fb33904d4a46f9952bed67b5fab968470`. `splice_sweep`'s field
+  count falls **18,109 → 17,663** and `roled` **13,234 → 12,825**, which is the measurement of
+  the claim: 446 declarations were machinery and 409 of them carried a role. `1K_Tune` is the
+  shape read by hand — exactly one line goes, ` m_105E: parameter u8 = $B8`, and no other line
+  in the file changes.
+  (4) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**,
+  zero divergences and zero refusals: a declaration the evaluator never read cannot move a
+  frame. `splice_sweep` **parse and fixpoint 624 of 624**, **2 bad** (the two known),
+  **205,793 sites proved, zero unproved**, `zero_arch` **2 of 624** unmoved. Suite
+  **2,791 passed / 490 skipped / 3 xfailed** hermetic — the two `test_frameprog` cases that
+  pinned the double declaration now pin its absence and the header that carries the domain.
+  `black --check` and `pylint` (10.00/10) clean.
+  (5) **The ledger.** The prototype's family goes **three → two**:
+  `no_architectural_register_survives_as_a_value` and `state_block_holds_no_scratch` are left,
+  and the second's remainder is now **seven** cells, not thirteen — this landing took the three
+  SMC operand pairs off it, and what is left is the zero-page `parameter` cells that are a
+  callee's per-frame arguments.

@@ -137,14 +137,16 @@ def test_opcode_cell_renders_as_state_variable_switch():
     assert "switch m_1000 {" in text and "code[" not in text
     assert "case $A9: {" in text and "case $EA: {" in text
     assert frameprog.dumps(frameprog.loads(text)) == text
-    assert re.search(r"^ m_1000: (?:\w+ )?u8 = \$A9 observed \$A9 \$EA", text, re.M)
+    assert "dispatch $1000: $A9 $EA" in text  # the domain rides the header
+    assert not re.search(r"^ m_1000:", text, re.M), "the switch subject is not data state"
 
 
 def test_single_variant_opcode_cell_keeps_one_arm_switch():
     blocks = {(0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("rts",), _regs())}
     text = frameprog.emit(_model(blocks, dispatch={0x1000: {0xA9}}))
     assert "switch m_1000 {" in text and "case $A9: {" in text
-    assert re.search(r"^ m_1000: (?:\w+ )?u8 = \$A9 observed \$A9", text, re.M)
+    assert "dispatch $1000: $A9" in text
+    assert not re.search(r"^ m_1000:", text, re.M), "the switch subject is not data state"
 
 
 def test_volatile_read_declares_input():
