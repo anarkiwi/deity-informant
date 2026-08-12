@@ -259,7 +259,8 @@ def test_variable_arity_dispatch_operator(art, text):
     arities = {len(arg) // 2 for s in SCRIPTS for op, arg in s if op == "raw"}
     assert arities == {0, 1, 2}, "the operator's arity is not data-dependent"
     copies = 1 + VOICES - len(art["unify"]["unified"])  # the loop body plus the copies
-    assert text.count("op ") - text.count("loop ") == 4 * copies, "a handler left the dispatch"
+    arms = re.findall(r"^\s*op \S+: \{$", text, re.M)  # the case headers, not the declarations
+    assert len(arms) == 4 * copies, "a handler left the dispatch"
     assert text.count("sid.reg[a] = ") == copies, "the raw write is not a span store"
     assert len({g[17] for g in art["orig_grids"]}) > 1, "no raw command ran"
 
@@ -591,12 +592,6 @@ def test_smc_dispatch_cells_are_not_data_state(art, role_map):
     assert not sorted(set(role_map) & (ctrl - data))
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): follin_arity recovers the "
-    "operator set per dispatch arm and nothing emits it; the declaration rides with the "
-    "re-based renderer, which is where an operators block can be spelled",
-    **XFAIL,
-)
 def test_vm_family_operator_set_is_emitted(art, role_text):
     """The interpreter's grammar is declared and its scripts print decoded."""
     want = {m.group(1) for k in art["labels"] for m in [re.fullmatch(r"v\d+_c_(\w+)", k)] if m}
@@ -677,7 +672,7 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    All four left are landing 4's, so a pin that acquires a different owner moves the
+    All three left are landing 4's, so a pin that acquires a different owner moves the
     plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
@@ -685,7 +680,7 @@ def test_every_pin_names_the_landing_that_flips_it():
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 4, sorted(pins)
+    assert len(pins) == 3, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

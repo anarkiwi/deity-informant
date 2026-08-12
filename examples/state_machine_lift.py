@@ -11,6 +11,7 @@ import sys
 
 from deity_informant import PcodeVM, lift, run_sub
 from deity_informant import eqlift_mem
+from deity_informant import follin_arity as FA
 from deity_informant import framelog
 from deity_informant import frameprog
 from deity_informant import grammar as GR
@@ -1914,7 +1915,8 @@ def classify_roles(procs):
     """Read each state cell's role off its folded update shapes (the plan's rule).
 
     Locals are inlined per straight-line run, so a cell updated through a temporary
-    is read at the same shape as one updated in place."""
+    is read at the same shape as one updated in place; a cell only the computed
+    transfer reads is that transfer's operand and no field of the record."""
     shapes, read = {}, set()
 
     def walk(sl):
@@ -2360,10 +2362,93 @@ def state_evidence(procs, roles, widths, frames=FRAMES):
     return out
 
 
+_CMD_LABEL = re.compile(r"v\d+_c_(\w+)$")
+_SCRIPT_LABEL = re.compile(r"script\d+$")
+_VM = None
+
+
+def vm_grammar():
+    """``(operator set, operator floor, datum arity)``: the image's own script VM.
+
+    ``follin_arity`` reads it off the dispatch's handler tables and its arms; the
+    image's labels name each arm, and a stream byte below the operator floor is
+    the datum form, whose arity is the arm that guard sends it to."""
+    global _VM  # pylint: disable=global-statement
+    if _VM is None:
+        mem, labels = build_image()
+        model = S.decompile(bytearray(mem), INIT, PLAY, FRAMES)[0]
+        names = {a: m.group(1) for n, a in labels.items() for m in [_CMD_LABEL.fullmatch(n)] if m}
+        site = FA.sites(model)[0]
+        _VM = (FA.operator_set(model, names), site.floor, FA.default_arm(model, site).arity)
+    return _VM
+
+
+def _field_cover(show, widths):
+    """``{address: field name}`` over every byte the declared state fields span."""
+    out = {}
+    for n in show:
+        base = _cell_base(n)
+        for k in range(widths[n]):
+            out[base + k] = pretty(n)
+    return out
+
+
+def _writes_shown(writes, cover):
+    """An operator's writes as the state block names them, a lane through its field."""
+    out = set()
+    for w in writes:
+        addr = cell_addr(w)
+        out.add(cover.get(addr) or pretty(w) if addr is not None else w)
+    return sorted(out)
+
+
+def _item(head, ram, addr, n):
+    return head + "".join(" $%02X" % ram[(addr + k) & 0xFFFF] for k in range(n))
+
+
+def _decode_script(ram, base, end, vm):
+    """One script's items: a named operator per opcode, the datum form below the floor."""
+    ops, floor, datum = vm
+    out, addr = [], base
+    while addr < end:
+        b = ram[addr]
+        if b < floor:
+            out.append(_item("$%02X" % b, ram, addr + 1, datum))
+            addr += 1 + datum
+            continue
+        got = ops.get(b)
+        if got is None:
+            out.append("$%02X ?" % b)
+            break
+        n, rep = got[1], got[2]
+        if rep is not None:
+            lo, hi, at, tail = rep
+            i = addr + at
+            while i < end and lo <= ram[i] <= hi:
+                i += got[1]
+            n = i + tail - addr - 1
+        out.append(_item(got[0], ram, addr + 1, n))
+        addr += 1 + n
+    return out
+
+
+def script_lines(vm):
+    """Each script decoded through the recovered grammar, at the image's own labels."""
+    ram, labels = _post_init()
+    marks = sorted(labels.values())
+    out = []
+    for name in sorted(k for k in labels if _SCRIPT_LABEL.fullmatch(k)):
+        base = labels[name]
+        end = next((a for a in marks if a > base), len(ram))
+        items = ", ".join(_decode_script(ram, base, end, vm))
+        out.append("%s $%04X: %s" % (name, base, items))
+    return out
+
+
 def render(procs, roles, frames=FRAMES):
     """Print the folded program as the role-typed state machine.
 
-    The field line is spelled by ``sidprog._field_line`` itself, so it is the
+    The field and operator lines are spelled by ``sidprog`` itself, so they are the
     dialect's own. ``frames`` is the evidence run's length and is the fold's own:
     rendered over more frames, a program leaves the dispatch domain it declares."""
     flat = expand(procs)
@@ -2376,7 +2461,15 @@ def render(procs, roles, frames=FRAMES):
         line = SP._field_line(pretty(n), widths[n], False, (), roles[n], blocks, bound, init)
         lines.append(" " + line)
     lines.append("}")
+    vm = vm_grammar()
+    cover = _field_cover(show, widths)
+    lines.extend(
+        SP._operator_lines(
+            {k: (v[0], v[1], v[2], _writes_shown(v[3], cover)) for k, v in vm[0].items()}
+        )
+    )
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
+    lines.extend(script_lines(vm))
     lines.extend(voice_record(procs))
     for entry, stmts in sorted(procs.items()):
         lines.append("play {" if entry == PLAY else "sub_%04X {" % entry)

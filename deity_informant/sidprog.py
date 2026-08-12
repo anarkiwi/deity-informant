@@ -377,6 +377,28 @@ def bound_clause(bound, width):
     return " %s %s" % (bound[0], "..".join("$%0*X" % (2 * width, v) for v in bound[1:]))
 
 
+def op_line(opcode, name, arity, repeat, writes):
+    """One ``operators { }`` line (sidprog.lark ``opdef``).
+
+    The arity is the operand bytes the arm consumes; a decoded-length arm spells
+    the run its guard byte continues rather than a length it does not have."""
+    rep = "" if repeat is None else " repeat $%02X..$%02X at %d tail %d" % repeat
+    return " op %s $%02X arity %d%s writes%s" % (
+        name,
+        opcode,
+        arity,
+        rep,
+        "".join(" " + w for w in writes),
+    )
+
+
+def _operator_lines(operators):
+    """``operators { }`` section lines, empty for a program declaring no operator."""
+    if not operators:
+        return []
+    return ["operators {"] + [op_line(k, *operators[k]) for k in sorted(operators)] + ["}"]
+
+
 def _extent_names(extents, symbols):
     """``{field name: block names}``: the extent map spelled as the state text names it."""
 

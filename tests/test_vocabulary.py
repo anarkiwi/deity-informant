@@ -191,7 +191,7 @@ _STATE = (
 )
 
 
-def _roled(assigned, bounds=()):
+def _roled(assigned, bounds=(), ops=()):
     stmts = [("st", c(SID, 2), m(CELL)), ("ret", False)]
     return frameprog.FrameProgram(
         0x1000,
@@ -204,6 +204,7 @@ def _roled(assigned, bounds=()):
         symbols={PTR: "ptr_00FB"},
         roles=assigned,
         bounds=bounds,
+        operators=ops,
     )
 
 
@@ -380,6 +381,71 @@ def test_the_signed_compare_reads_the_sign_and_the_unsigned_one_does_not():
         frameprog.loads(frameprog.dumps(_prog(op("INT_LESS", (hi, c(0))), (), (), ()))), {}
     )
     assert signed.frames(1) == [[(0, 1)]] and unsigned.frames(1) == [[(0, 0)]]
+
+
+# The operator declarations, one case per `opdef` shape, enumerated off the grammar.
+OPERATORS = {
+    "fixed": (
+        {0x80: ("vib", 1, None, ("ptr_00FB", "sid.reg"))},
+        " op vib $80 arity 1 writes ptr_00FB sid.reg",
+    ),
+    "repeat": (
+        {0x83: ("raw", 2, (0x00, 0x7F, 1, 1), ())},
+        " op raw $83 arity 2 repeat $00..$7F at 1 tail 1 writes",
+    ),
+}
+
+
+def _opdef_clauses():
+    lark = (Path(G.__file__).parent / "sidprog.lark").read_text(encoding="utf-8")
+    body = re.search(r"^opdef:(.*)$", lark, re.M).group(1)
+    return re.findall(r'"([a-z]+)"', body + re.search(r"^oprep:(.*)$", lark, re.M).group(1))
+
+
+def test_the_operator_clauses_are_enumerated_from_the_grammar():
+    """A clause the `opdef` production gains and this checklist does not owes a case."""
+    assert _opdef_clauses() == ["op", "arity", "writes", "repeat", "at", "tail"]
+    assert sorted(OPERATORS) == ["fixed", "repeat"]  # the optional run clause, taken and not
+
+
+@pytest.mark.parametrize("shape", sorted(OPERATORS))
+def test_an_operator_set_is_spellable_and_changes_no_execution(shape):
+    """A VM family's operator set is declarative: it is read back and it runs the same."""
+    ops, spelling = OPERATORS[shape]
+    text = frameprog.dumps(_roled({}, ops=ops))
+    assert spelling in text
+    prog = frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+    assert prog.operators == ops
+    assert frameval.Evaluator(prog, {}).frames(1) == frameval.Evaluator(
+        frameprog.loads(frameprog.dumps(_roled({}))), {}
+    ).frames(1)
+
+
+def test_a_driver_with_no_operator_set_emits_exactly_the_text_it_always_did():
+    """Capability with zero use: no dispatch, no operator, no token in the artifact."""
+    assert not re.search(r"\b(?:operators|arity|writes)\b", frameprog.dumps(_roled({})))
+
+
+def test_an_opcode_declared_twice_is_refused():
+    """The set is a map from opcode to arm, so a second reading of one opcode is none."""
+    text = frameprog.dumps(_roled({}, ops=OPERATORS["fixed"][0]))
+    line = OPERATORS["fixed"][1]
+    with pytest.raises(ValueError, match="declared twice"):
+        frameprog.loads(text.replace(line, line + "\n" + line, 1))
+
+
+def test_the_operator_set_is_the_dispatch_arms_own_and_is_not_transcribed():
+    """The prototype's four operators are read off its handler tables and its arms."""
+    sml = pytest.importorskip("examples.state_machine_lift")
+    ops, floor, datum = sml.vm_grammar()
+    assert floor == 0x80 and datum == 1
+    assert {v[0]: (v[1], v[2]) for v in ops.values()} == {
+        "vib": (1, None),
+        "off": (1, None),
+        "loop": (2, None),
+        "raw": (2, (0x00, 0x7F, 1, 1)),
+    }
 
 
 def test_a_named_unknown_carries_no_spelling_obligation():

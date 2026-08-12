@@ -11,6 +11,7 @@ import re
 
 from . import datadecl
 from . import eqlift_mem
+from . import follin_arity
 from . import framefuse
 from . import framemath
 from . import frameproc
@@ -115,6 +116,7 @@ class FrameProgram:
         evidence=None,
         roles=(),
         bounds=(),
+        operators=(),
         landings=None,
     ):
         self.play = play
@@ -137,6 +139,7 @@ class FrameProgram:
         self.extents = dict(extents)  # 2b: pointer cell -> the block bases its derefs land in
         self.roles = dict(roles)  # stage 2: state field name -> the role its updates name
         self.bounds = dict(bounds)  # stage 4: field name -> ("mask", k) / ("bound", lo, hi)
+        self.operators = dict(operators)  # stage 4: opcode -> (name, arity, repeat, writes)
         self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
         self.landings = None if landings is None else frozenset(landings)  # None: parsed
@@ -566,7 +569,17 @@ def program(model, extents=None):
         landings=framefuse._landings(model),
     )
     prog.roles, prog.bounds = _roles(prog)
+    prog.operators = _operators(model)
     return prog
+
+
+def _operators(model):
+    """``{opcode: (name, arity, repeat, writes)}``: the script VM's own operator set.
+
+    A family whose play routine dispatches through an SMC operand has an operator
+    set, and it is recovered rather than transcribed (``follin_arity``): a driver
+    with no such dispatch declares none, which is most of the corpus."""
+    return {op: tuple(rec) for op, rec in follin_arity.operator_set(model).items()}
 
 
 def _kept_state(prog, procs, to_alias):
@@ -662,7 +675,7 @@ def dumps(prog):
         )
         for f in state
     ]
-    body = ["state {"] + fields + ["}"]
+    body = ["state {"] + fields + ["}"] + sidprog._operator_lines(prog.operators)
     data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
     n = len(body)
@@ -704,6 +717,7 @@ def parse(text):
         evidence=doc.evidence,
         roles=doc.roles,
         bounds=doc.bounds,
+        operators=doc.operators,
     )
 
 
