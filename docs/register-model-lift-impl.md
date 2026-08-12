@@ -640,10 +640,9 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    (`roles.read_sites`' `switch_cells` → the `vm` role) but **keeps** the cell in the state
    block as `vm u8 observed …`, where the pin's predicate is about the prototype's `dgoto`
    shape; it owes a re-statement against the artifact as well as the re-basing.
-   `vm_family_operator_set_is_emitted` — `follin_arity` recovers per-arm arity and the escape
-   (`Ghouls_n_Ghosts`: 20 arities plus `$85`'s decoded-length escape) but **not the effect
-   cells**, and `sidprog.lark` has no `operators`/`ops` production at all, so the pin owes a
-   grammar block, a symbolic name per opcode, and a `writes` set nothing computes today.
+   `vm_family_operator_set_is_emitted` — **LANDED (#200)**, below: the `operators { }`
+   production, the name off the handler table, the arity off the cursor advance and the
+   writes off the arm's own blocks.
    `state_block_holds_no_scratch` — **not the re-basing either**, and this was measured after
    the record first claimed otherwise. The artifact declares the same cells and
    `prog.demoted` is **empty by construction**: `_unread` demotes only a store that *no read
@@ -3618,3 +3617,63 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   The proof body also read `len(tables)` as its definition count, so a first-definition
   refusal said "0 definition(s)" on a pointer with five; it names both now (`ndefs` and
   "table row(s)").
+- **2026-08-12 — stage 4, landing 4 (part): the VM operator set is emitted, and every field of
+  it is read off the dispatch.** The third capability pin. `sidprog.lark` gains
+  `operators_sec`/`opdef`/`oprep`, `FrameProgram.operators` carries it, and
+  `follin_arity.operator_set` fills it — which makes that module production code and closes
+  #193's orphan note, since until now nothing but its own tests read it.
+  (1) **The four readings, each off the arm.** The **name** is the handler the paired
+  `cmdlo`/`cmdhi` tables select at that opcode: the image's own label for it where a caller
+  supplies one (the prototype's `v0_c_vib` → `vib`), else `h_XXXX`, the address. The **arity**
+  is the arm's cursor advance in operand bytes. A decoded-length arm has no constant arity, so
+  it spells its **run** instead — `repeat $00..$7F at 1 tail 1`, the byte span that continues
+  the operand groups, the offset the first guard byte sits at and the bytes consumed past it —
+  and its arity is one group. The **writes** are the cells the arm's own blocks assign, which
+  is the arm body *together with* the block its label heads: a fold leaves `c_off` a bare
+  `break` whose work sits at that label, and the walk covers both because it stops at the
+  block that moves the cursor, not at the case arm. Voice copies are one operator set at
+  several seats, so the name is the first seat's and the writes are the union over them; an
+  operator the seats disagree on is refused, exactly as `operators` already refused it.
+  (2) **Two capabilities the readings needed, both guarded.** The escape's `trailer` was
+  inferred from the counter's net `Y` delta, which is right only where the arm's advance *is*
+  `Y`; the prototype's `TYA; SEC; ADC ptr` carries in and advances one further, so `walk` now
+  reads the advance off the arm's own cursor store (`_pair_live` + `_eval_pair`, the cursor
+  lane bound to two probes so a move that depends on it is no advance) and the trailer is that
+  minus the guard offset. Follin's `(3, 2, 1)` is unmoved on both exemplars — the reading
+  reproduces what was right and fixes what was not. And an arm that **calls** was refused
+  outright (`arm terminator jsr`); a callee that neither fetches the arm's stream nor moves
+  the counter cannot change what the arm consumes, so the arm now reads through it and any
+  other callee still refuses. That is what lets the datum arm below the operator floor be read
+  at all: `default_arm` walks the guard's other edge, and the prototype's note form is
+  `arity 1` off its own `pos += 2`, not a transcribed 2.
+  (3) **The prototype prints its scripts decoded.** `sml.render` spells the block through
+  `sidprog.op_line` itself, so the example cannot spell a clause the grammar has not got, and
+  each script decodes through the recovered grammar at the image's own labels:
+  `script1 $1540: vib $00, raw $09 $00 $0A $04 $FF, $00 $30, …, off $08, loop $40 $15` — the
+  `loop` operand is the script's own base, and the walk lands exactly on the next label.
+  A byte below the floor is spelled as itself with its operands, because the datum form is
+  the guard's else-arm and not an entry of the operator table the pin reads.
+  (4) **The corpus, and it is one shape.** Control reproduced at the base commit rather than
+  carried forward: **624 tunes, 0 refused, 28,347,787 bytes**, aggregate `e0daf5c4…`. With the
+  block: **624 tunes, 0 refused, 28,373,593 bytes**, aggregate
+  `54c58a3dffd4575d1f4eb07de476267d3dd055bc3896da324c08fbe4a1c18230`. **14 of 624 tunes move,
+  every one larger, +25,806 bytes and none smaller** — and all fourteen are the Follin family,
+  the corpus's one script-VM driver: `Ghouls_n_Ghosts` +2,563 for 21 declarations,
+  `Gauntlet_III` +2,565, `Cosmic_Storm` +2,545. Nothing else in the corpus dispatches through
+  an SMC operand, so nothing else declares an operator, which is capability with zero use
+  everywhere it has no reading to make.
+  (5) **The control is reproduced, not carried forward, and it has to be.** Measured against
+  #199 the same way, the control came out **896 bytes under** its recorded `a403a8aa…`/
+  28,322,337 -- before any of this landing, so not this landing's. The one difference in
+  conditions is a `.sweep-cache` shared with a second branch's concurrent runs, which is
+  exactly why every number here is a fresh pair measured under one condition. The gap is
+  handed on as a measurement item, not a diagnosis.
+  (6) **The ledger.** The prototype's family goes **four → three** and
+  `test_every_pin_names_the_landing_that_flips_it` moves with it.
+  (7) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624 clean**,
+  zero divergences and zero refusals. `splice_sweep`: **parse and fixpoint 624 of 624** over
+  the new production -- the block round-trips through `dumps(loads(t)) == t` like every other
+  section -- **2 bad** (the two known), **205,793 sites proved, zero unproved**, `fields`/
+  `roled` **13,234 of 18,109** and `zero_arch` **2 of 624**, all unmoved: the block declares,
+  it does not rewrite. Suite (hermetic) **2,780 passed / 490 skipped / 8 xfailed**.
+  `black --check` and `pylint` (10.00/10) clean.

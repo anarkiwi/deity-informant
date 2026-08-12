@@ -107,7 +107,7 @@ fails when it drifts; regenerate with
 
 start: frameprog_doc
 
-frameprog_doc: fphead _fheader* image_sec? state_sec? data_sec? symbols_sec? evidence_sec? sub*
+frameprog_doc: fphead _fheader* image_sec? state_sec? operators_sec? data_sec? symbols_sec? evidence_sec? sub*
 fphead: "frameprog" INT _NL
 
 _fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set
@@ -175,6 +175,16 @@ statbnd: "mask" HEX -> st_mask
 // the role qualifies the field's type: it names how the cell is updated and
 // licenses nothing, so an un-roled uN stays legal (register-model-lift stage 2)
 !srole: "cursor" | "accumulator" | "counter" | "flags" | "parameter" | "vm"
+
+// ---- operator section (a script VM's own operator set; stage 4 landing 4) -----
+// One line per opcode of an SMC-operand dispatch. The name is the handler the
+// paired tables select at that opcode, the arity is the operand bytes the arm
+// consumes -- its cursor advance -- and the writes are the cells the arm's own
+// blocks assign. A decoded-length arm repeats its operand group while the byte
+// at `at + k*arity` stays in the span, and consumes `tail` bytes past it.
+operators_sec: "operators" "{" _NL opdef* "}" _NL
+opdef: "op" NAME HEX "arity" INT [oprep] "writes" NAME* _NL
+oprep: "repeat" HEX ".." HEX "at" INT "tail" INT
 
 // ---- procedures ----------------------------------------------------------------
 sub: NAME "(" params ")" [rets] "{" _NL fitem* "}" _NL

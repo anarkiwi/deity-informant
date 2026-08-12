@@ -239,6 +239,7 @@ class Document:
         self.roles = {}  # stage 2: state field name -> the role its updates name
         self.bounds = {}  # stage 4: field name -> ("mask", k) or ("bound", lo, hi)
         self.initial = {}  # stage 4: field name -> the value the init phase leaves in it
+        self.operators = {}  # stage 4: opcode -> (name, arity, repeat, writes)
         self.labels = set()
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
         self.evidence = new_evidence()  # frameprog: the block-model rebuild channels
@@ -483,6 +484,25 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
             self.doc.extents[name] = c[5]
         if c[7]:
             self.doc.bounds[name] = c[7]
+
+    # -- operators (the script VM's own operator set) ---------------------------
+    def operators_sec(self, c):
+        return None
+
+    def oprep(self, c):
+        lo, hi = _hexval(c[0]), _hexval(c[1])
+        if lo > hi:
+            raise ValueError("operator run $%02X..$%02X is not a span" % (lo, hi))
+        return (lo, hi, int(c[2]), int(c[3]))
+
+    def opdef(self, c):
+        """One operator: its handler's name, its operand bytes, the cells it writes."""
+        name, opcode, arity = str(c[0]), _hexval(c[1]), int(c[2])
+        if opcode > 0xFF:
+            raise ValueError("operator $%X is not a byte" % opcode)
+        if opcode in self.doc.operators:
+            raise ValueError("operator $%02X is declared twice" % opcode)
+        self.doc.operators[opcode] = (name, arity, c[3], tuple(str(t) for t in c[4:]))
 
     # -- expressions -----------------------------------------------------------
     def e_hex(self, c):
