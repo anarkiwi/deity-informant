@@ -11,7 +11,7 @@ import re
 
 import pytest
 
-from test_shred_regmodel import PAT, _lift, _lift_prog
+from test_shred_regmodel import PAT, PAT2, _lift, _lift_prog
 from deity_informant import frameprog, ptrcert, ptrextent, ptrlift
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -77,9 +77,13 @@ def _body(prog):
 
 
 def test_an_eligible_mapped_web_resolves_and_annotates():
-    """b1's column met b0's extent, so the web is named and its blocks declared."""
+    """b1's column met b0's extent, so the web is named and its blocks declared.
+
+    Both blocks: ``via:`` discovery reads the constant the cursor is set to off the
+    pair's own lanes, so the second block is declared where it used to be swallowed
+    by the first block's extent."""
     prog, proofs = _walked("cursor_save")
-    assert prog.extents == {CELL: (PAT,)}
+    assert prog.extents == {CELL: (PAT, PAT2)}
     assert any(
         re.search(r"ptr_%04X: (?:\w+ )?u16 = \$[0-9A-F]{4} in m_%04X" % (CELL, PAT), ln)
         for ln in _state(prog)

@@ -32,6 +32,25 @@ def reg(i):
     return ("reg", i)
 
 
+def floor(n):
+    """Bits the value must set: every value ``n`` names is at or above this.
+
+    ``a | b`` must set what either side must, ``a & b`` only what both must, and a
+    widening keeps its operand's -- the sound half of the ``INT_OR`` interval the
+    e-graph's join lattice cannot state (register-model-lift, decision log #189)."""
+    m = mask(width(n))
+    if n[0] == "const":
+        return n[1] & m
+    if n[0] != "op" or len(n[2]) != (1 if n[1] in ("INT_ZEXT", "COPY") else 2):
+        return 0
+    if n[1] in ("INT_ZEXT", "COPY"):
+        return floor(n[2][0]) & m
+    if n[1] in ("INT_OR", "INT_AND"):
+        a, b = (floor(c) for c in n[2])
+        return (a | b if n[1] == "INT_OR" else a & b) & m
+    return 0
+
+
 def uni(n, sz=1):
     return ("uni", n, sz)
 

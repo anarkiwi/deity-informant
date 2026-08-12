@@ -725,13 +725,12 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `lo`/`hi` table's own word set out of `mem0`. `frameproc._fold_stmt` is what made the
    write-through store nameable: a destination is an address, and folding it as a value had
    replaced the pointer word with the columns it was loaded from. Decision log, 2026-08-12.
-8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0].** `computed_rows_map`'s
-   `extent_unmappable` fires because the rows the run observes are in no declared datum. The
-   `INT_OR` interval is sound and stateable — `hi(a|b) <= 2^ceil(lg(max(hi a, hi b) + 1)) - 1`,
-   `lo(a|b) >= max(lo a, lo b)` — but the e-graph's `lo`/`hi` merge by **join**, so a rule can
-   only widen and the tightening sits where `_lattice`/`_ir_span` do; the consumer that turns
-   a span into a *declaration* is `datadecl`'s `via:` discovery, so the rule is the input and
-   discovery is the mechanism.
+8. **`datadecl`, the `via:` discovery [1 pin, 1 → 0] — LANDED.** The anchor set reads the
+   pair's **own lanes**: the constant a lane is reset to, or the bits an `INT_OR` row must
+   set (`expr.floor`, the sound half of the interval — `lo(a|b) >= max(lo a, lo b)`). The
+   run's own reads still bound the extent, so the rule is the input and observation is the
+   guard. Landed beside it: the lo/hi partnership becomes a **co-index** claim
+   (`datadecl._co_indexed`) instead of a zip by sorted base address. Decision log, 2026-08-12.
 
 Items 3-8 are engine work — rungs (d) and (f), `framestack`, `frameproc`, `datadecl` — not
 emission work, which is why they sit after the stage close rather than inside it. The one
@@ -3744,3 +3743,63 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   (6) **The ledger.** The prototype's family goes **two → one**. What is left is
   `no_architectural_register_survives_as_a_value`, whose owner is the residue itself and whose
   metric is `zero_arch` — the final wave's, not this one's.
+- **2026-08-12 — `datadecl`'s `via:` discovery reads the pair's own lanes, a partnership
+  becomes a co-index claim, and the shredder family reaches zero.** `computed_rows_map` was
+  the last stage-3 pin. `extent_unmappable` fired because the rows the run observes are in no
+  declared datum: the pair is reloaded from a row the play code *computes*, so it is in no
+  reload table and `_anchors` had nothing to anchor on.
+  (1) **The interval is the input and the discovery is the mechanism, exactly as #189 (6)
+  scoped it.** `expr.floor` states the sound half — `floor(a | b) = floor(a) | floor(b)`,
+  `floor(a & b) = floor(a) & floor(b)`, a widening keeps its operand's — which is the bits a
+  value *must* set and therefore a lower bound on it. It is a reading over the model algebra,
+  not an e-graph rule: the `lo`/`hi` lattice merges by join and can only widen, so nothing is
+  admitted to `RULES` and `verify_rules` has nothing new to prove.
+  (2) **The anchor is the pair's own two lanes.** `streams._update_summary` records a
+  computed lane's floor beside the constants a lane is reset to (`reset_floors`), and
+  `datadecl._lane_words` composes the two sides into candidate words, capped at `_LANES`.
+  `computed_rows`' hi lane resets to `$10` and its lo lane's `((ctr & 1) << 3) | $80` floors
+  at `$80`, so the anchor is `$1080` — and the run's own reads still bound the extent through
+  `_obs_hi`, so a candidate the pair never walks declares nothing. Observation is the guard,
+  which is why the interval may be the input.
+  (3) **A second block stops being swallowed.** `cursor_save`'s constant reset is an anchor
+  now, so its two blocks are declared apart — `stream m_1500[5]` and `stream m_1560[1]` where
+  one `stream m_1500[97]` used to span the gap between them — and rung (g)'s `in` clause
+  names both (`ptr_0002: cursor u16 = $1500 in m_1500, m_1560`).
+  (4) **The lo/hi partnership was asserted from nothing, and is now a co-index claim.** A
+  survey of three editor families found `datadecl` zipping the lo cell's reload tables with
+  the hi cell's **in sorted base order** — `zip(sorted(lts), sorted(hts))` — which publishes a
+  partnership with no evidence that the two columns are ever read together. Two columns of one
+  datum are read at one row or at no row at all, so `_co_indexed` pairs on the index
+  expression the two reload reads share (`reset_rows`). Measured on `Grid_Runner`: the bogus
+  `m_1675`/`m_1678` pairing goes (their reload reads carry different indices) and the two
+  genuine ones, `m_1493`/`m_1496` and `m_1499`/`m_14CB`, stay.
+  (5) **What the false partnership cost, measured — and what it did not.** It does **not**
+  poison rung (f): `frameptr._entry_words` takes `(lob, hib)` from the *code's own* pack and
+  asks the registry only to agree, so a wrong declaration can starve the rung, never feed it.
+  What it corrupts is the declaration — the `->` target range, the co-extensive size and the
+  `_PAIRS` render registry.
+  (6) **One finding this landing does not close, with its mechanism named.**
+  `Angry_Birds` still refuses at `m_202A/m_2035 is not a declared lo/hi partner pair` *after*
+  the co-index fix, and the cause is not the partnership: `m_2035` is a **cobase** of
+  `m_202A` (`table m_202A[21] +m_2035`), so `_regions`/`_groups` carved the two columns as one
+  group and only the group base gets a declaration — `tables.get(0x2035)` is None and the
+  roles are never written. That is a group-carving/pair-role interaction: a pair whose two
+  columns fall inside one carved group can hold no `lo`/`hi` role, and it is the remaining
+  blocker on that family. Owner: `datadecl`, unscheduled.
+  (7) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,366,288
+  bytes**, aggregate `46604ed9dde74f3a4f81b2011f8b7d78769fbdc5fec0d99a4eae111a0dd58c98`,
+  against #200's `e0daf5c4…`/28,347,787 — **+18,501 bytes over 136 tunes** (85 larger
+  +22,091, 51 smaller −3,590, none the same size). The growth is the discovery's own price
+  and it is one shape: a newly declared block prints its bytes, and its base is a new
+  **bound**, so the datum it splits stops at it and the remainder falls back to `image { }`,
+  which prints less densely than `data { }`. Amazing_Spider-Man is the largest mover
+  (+3,734) and is exactly that: three `stream … via ptr_006E` blocks discovered off the
+  pair's lanes, 37 declarations → 39, and no pair table's role moved.
+  (8) **The recorded baseline drifted again, and this is the second time.** #199 recorded
+  `a403a8aa…`/28,322,337 as CURRENT; measured on this session's cache at `1e002d7` main
+  emits `ae41682c…`/**28,321,441**, 896 bytes apart, so #200's delta and this one are both
+  taken against measurements rather than against the ledger. That is the same failure #190
+  (1) found in `018ce8f4…`: a number recorded from a run that was never re-measured on the
+  merge commit. **The bookkeeping law the close owes**: CURRENT is only ever written from an
+  `emit_identity --expect` that passed *on the merge commit*, and a landing quotes the
+  baseline it measured, never the one it inherited.

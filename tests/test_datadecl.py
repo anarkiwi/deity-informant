@@ -149,3 +149,17 @@ def test_regions_read_mut_as_a_lane_when_strided_and_a_cell_when_flat():
     assert r.const_at(0x2000) and not r.const_at(0x2001) and not r.const_at(0x2003)
     assert r.const_at(0x3004) and not r.const_at(0x3005) and r.const_at(0x300F)
     assert not r.const_at(0x2100) and not r.const_at(0x1FFF)
+
+
+def test_the_lo_hi_partnership_is_a_co_index_claim_not_an_address_order():
+    """Two columns of one datum are read at one row or at no row at all.
+
+    The zip by sorted base address asserted a partnership from nothing but the order
+    the two tables happen to sit in; the index the two reload reads share is the
+    evidence, and a lo column no hi column meets at one index takes no role."""
+    y, w = ("op", "INT_ZEXT", (("reg", 2),), 2), ("op", "INT_ZEXT", (("reg", 3),), 2)
+    lrows = [(0x1493, y), (0x1499, w), (0x1678, y)]
+    hrows = [(0x1496, y), (0x14CB, w), (0x1675, ("op", "INT_ZEXT", (("reg", 9),), 2))]
+    assert D._co_indexed(lrows, hrows) == [(0x1493, 0x1496), (0x1499, 0x14CB)]
+    assert D._co_indexed([(0x1000, y)], [(0x2000, w)]) == []
+    assert D._co_indexed([(0x1000, y)], [(0x1000, y)]) == [], "a column is no partner"
