@@ -1767,17 +1767,12 @@ def test_an_entry_balanced_procedure_destacks():
     assert not re.search(r"\bsp\b", _body(_lift("sp_fix_balance")))
 
 
-@pytest.mark.xfail(
-    reason="%s the scratch cell beside a promoted call; %s -- neither addr_floor nor the "
-    "memory chain: the chain already keeps the cell (join_mem keeps $0030 across all three "
-    "pcalls, the callee's whole footprint being page one) and slot_reader refuses nothing "
-    "here. What holds it is the wall's *local* havoc -- render_block retires every local at "
-    "a pcall, so the value spelling names a version no longer available and extraction falls "
-    "back to the cell. The reading is frameproc._Info.may, the callee's may-define set; the "
-    "consumer is eqlift_mem.render_block's wall, measured to flip this pin" % (_S3, _OWNERS[5]),
-    **XFAIL,
-)
 def test_scratch_beside_kept_sp_fabric_promotes():
+    """Landed: a call's wall retires what its callee may define, not every local.
+
+    The chain already kept $0030 across all three ``pcall``s; what held the cell was the
+    wall retiring every local, so the stored value named a version no site could spell.
+    Bounded to ``frameproc._Info.may``, it crosses the calls and the cell's reader goes."""
     assert not re.search(r"\bzp_%02X\b" % ZTMP, _lift("sp_scratch_floor"))
 
 
@@ -1810,7 +1805,7 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 7, sorted(pins)
+    assert len(pins) == 6, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
@@ -1825,7 +1820,7 @@ def test_the_owners_partition_the_family_as_the_ledger_records_it():
     assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]
     assert per["owner: frameproc"] == [], "the reach reading landed; frameproc owns none"
-    assert per["owner: eqlift_mem"] == ["test_scratch_beside_kept_sp_fabric_promotes"]
+    assert per["owner: eqlift_mem"] == [], "the wall's bound landed; eqlift_mem owns none"
 
 
 @pytest.mark.parametrize("name", _SKIP_FAMILY)
