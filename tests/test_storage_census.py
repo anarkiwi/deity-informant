@@ -130,12 +130,16 @@ def test_write_echo_is_netted_out():
 
 
 def test_lone_lane_readback_is_counted_net_and_static():
+    """The census counts a read-back of a write-only sink, and there is none to count.
+
+    Rung (d)'s widening guard is what took it to zero: a lone half inside
+    $D400-$D416 stays a byte store, so no word is completed around it."""
     row = _row("lone_lane")
-    assert row["readback_sites"] == 1
-    assert row["sid_net_reads"] > 0
+    assert row["readback_sites"] == 0
+    assert row["sid_net_reads"] == 0
     _model, prog = _built("lone_lane")
     sites, _edges = lift_residue.census(prog)
-    assert sum(s["sig"] == "sid_readback" for s in sites) == 1
+    assert sum(s["sig"] == "sid_readback" for s in sites) == 0
 
 
 def test_pointer_walk_top_loads_carry_their_root():

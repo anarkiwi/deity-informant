@@ -45,7 +45,7 @@ XFAIL = dict(strict=True)
 _S3 = "register-model-lift stage 3:"
 _OWNERS = (  # the live owner a stage-3 reason names; the disposition is the strict mark
     "owner: rung (f)",  # frameptr._Ptr: the deref premise and the writer set it reads
-    "owner: rung (d)",  # framefuse: widening a lone half into a read of a write-only sink
+    "owner: rung (d)",  # framefuse: the pair premise and the SID write-only guard, both landed
     "owner: framestack",  # the sp-relative slot identity a machine-stack hold needs
     "owner: frameproc",  # the bit analyses, their reach, and the promotion they refuse
     "owner: datadecl",  # the registry, and the via: discovery that grows it
@@ -1210,30 +1210,24 @@ def test_borrow_chain_is_one_wide_compare_on_the_unified_path():
     assert "(ctr0 + $37) < m_%04X" % (TGT,) in _emit("borrow_chain"), "the normal form went"
 
 
-@pytest.mark.xfail(
-    reason="%s sinks are write-only, no read-back survives; %s -- the widening rung turns "
-    "the lone half into a read-modify-write of the u16 register before emission, and no "
-    "admitted rule removes a read of a write-only sink. The rung must not widen a store "
-    "whose destination is inside the SID write-only window" % (_S3, _OWNERS[1]),
-    **XFAIL,
-)
 def test_lone_lane_half_owes_no_register_load():
+    """FLIPPED at the widening guard: $D400-$D416 is write-only, so no word is completed.
+
+    Widening a lone half is a read-modify-write of the register, and inside the window
+    there is nothing to read; the half stays the byte store it is at the register file."""
     text = _lift("lone_lane")
     assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
+    assert "sid.v1.freq_hi = t0" in _body(text), "the lone lane lost its byte-wide store"
 
 
 def test_lone_lane_half_owes_no_register_load_on_the_unified_path():
-    """The two unified texts disagree, and that is the disposition's correction.
+    """The two unified texts agree now, and that is what the guard closed.
 
-    ``emit`` renders the bare byte store off a raw ``_Builder`` procedure; the cutover's
-    emitter is handed the rung's read-modify-write of the u16 register and keeps it, so
-    this pin does not flip at step 4 and the widening rung owns it."""
-    text = _emit("lone_lane")
-    assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
-    assert "sid.v1.freq_hi = t0" in text, "the lone lane lost its byte-wide store"
-    spliced = _lift("lone_lane")
-    assert re.search(r"= \(+sid\.", spliced), "the widening rung stopped minting the read-back"
-    assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $00FF):2" in spliced
+    ``emit`` renders the bare byte store off a raw ``_Builder`` procedure and the cutover's
+    emitter is handed the same byte store, because the widening rung refuses the window."""
+    for text in (_emit("lone_lane"), _lift("lone_lane")):
+        assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
+        assert "sid.v1.freq_hi = t0" in text, "the lone lane lost its byte-wide store"
 
 
 def _body(text):
@@ -1805,17 +1799,17 @@ def test_every_stage_three_pin_names_a_live_owner():
     so a pin whose goal property held would XPASS -- and what a reason still owes is the
     refusal it was measured at and exactly one live owner from ``_OWNERS``."""
     pins = _stage_three_pins()
-    assert len(pins) == 6, sorted(pins)
+    assert len(pins) == 5, sorted(pins)
     assert not [n for n, r in pins.items() if sum(v in r for v in _OWNERS) != 1]
 
 
 def test_the_owners_partition_the_family_as_the_ledger_records_it():
-    """The ledger, executable: rung (d) is down to its widening guard and no more.
+    """The ledger, executable: rung (d) owns none, and the rest are named apart.
 
-    The twelve pair-premise pins landed with the per-site premise, so what rung (d)
-    still owns is ``lone_lane`` alone; a pin moving owners moves here too."""
+    The twelve pair-premise pins landed with the per-site premise and the thirteenth
+    with the write-only guard; a pin moving owners moves here too."""
     per = {o: sorted(n for n, r in _stage_three_pins().items() if o in r) for o in _OWNERS}
-    assert per["owner: rung (d)"] == ["test_lone_lane_half_owes_no_register_load"]
+    assert per["owner: rung (d)"] == [], "the widening guard landed; rung (d) owns none"
     assert len(per["owner: rung (f)"]) == 4, per["owner: rung (f)"]
     assert per["owner: framestack"] == [], "the slot identity landed; framestack owns none"
     assert per["owner: datadecl"] == ["test_computed_rows_map"]

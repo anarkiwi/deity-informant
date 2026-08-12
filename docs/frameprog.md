@@ -574,10 +574,13 @@ occurrences are **unchanged at 10280**, because what fusion names is the pointer
 *word* and the deref it feeds still has no const base for §4.2's indexed form to
 name — precisely the residue §4(f) inherits.
 
-**SID fusion is unconditional.** Freq, pulse width and cutoff are 16-bit
-registers, the projection emits their halves adjacent, and the frame program is
-the deliverable — so the word is the form, and there is no switch that leaves a
-proven pair split (there was one, `sid_fusion=`; it is gone). Measured 2026-08-01
+**SID fusion is unconditional, and it is a merge.** Freq, pulse width and cutoff
+are 16-bit registers, the projection emits their halves adjacent, and the frame
+program is the deliverable — so the word is the form, and there is no switch that
+leaves a proven pair split (there was one, `sid_fusion=`; it is gone). The word is
+only ever built out of two stores the driver made: the write-only window forbids
+the read-modify-write a lone half would need (§7.2), so a lane the program wrote
+byte-wide stays byte-wide. Measured 2026-08-01
 on the same corpus and window: **Gate FP 649/649 and the canonical fixpoint
 649/649**, unchanged with the rung at full reach.
 
@@ -1309,9 +1312,13 @@ why `stable` diffs whole traces (§7.4).
 
 Nothing narrower than 16 bits can be written to them, so they are typed that
 way unconditionally rather than fused only where a driver happens to write both
-halves adjacently. `framefuse._widen` turns a lone lane store into the `u16`
-store it is, the other lane keeping its value; `_Pair.refusal` never refuses a
-SID pair; `framelog.canonical(frames, held0)` reports the whole word when either
+halves adjacently, and `_Pair.refusal` never refuses a SID pair. What the rung
+may **not** do is invent the write: `$D400`–`$D416` is write-only, so completing
+the word around a lone half would read a register the machine cannot read, and
+`framefuse.write_only` keeps every such half the byte it is — at the `sid.reg[i]`
+view where its index is symbolic, at its own name where it is not. A SID word
+store is therefore always two halves the program itself wrote, brought together
+by `_pair_at`; `framelog.canonical(frames, held0)` reports the whole word when either
 lane is written, seeded from `frameval.sid_held0(prog)` (`prog.mem0`) and passed
 to **both** sides in `gate_fp`.
 
@@ -2211,9 +2218,10 @@ The five steps that were taken, in the order they were taken (all landed):
    is **812**: **802 index unproven, 10 index proven off-lane, 0 unindexed**.
    Beside it, 5330 byte-wide stores to the 8-bit registers (2539 indexed, 2791
    not), which have no 16-bit form and were never the target, and 1498 indexed
-   word stores already 16-bit. `plain_lane` at 0 is the check that rung (d)
-   widens every unindexed lane store, so zero *is* reached where the register is
-   identified.
+   word stores already 16-bit. `plain_lane` at 0 was the check that rung (d)
+   widened every unindexed lane store. **The widening is withdrawn** — it read a
+   write-only register back (§7.2) — so what the column measures now is the
+   *placement* proof alone and the store stays the byte the driver wrote.
    **The residue proofs can only relabel is 10 stores, 1.2% of the lane column**,
    so the paragraph above is right about `$CA6E` and wrong about the scale:
    nothing measured forecloses the other 802. Steps 2-5 are worth doing, and step
