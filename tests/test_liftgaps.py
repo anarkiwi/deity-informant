@@ -124,8 +124,8 @@ def test_a_lane_index_set_in_a_branch_arm_widens_on_the_join_union():
     a.i("LDA", "abs", G.TBL + 1).i("STA", "absy", G.SID).i("RTS")
     outs = tuple(G.SID + k for k in range(0x19))
     _proofs, text = _run("arm_index", a, {G.TBL: 0x01, G.TBL + 1: 0x42}, outs)
-    assert "sid.v1.freq_lo[y]:2 = " in text  # the union {$00, $07} is all lane lo
-    assert "sid.reg[y]" not in text
+    assert "sid.reg[y] = " in text  # placed on lane lo, and the window keeps it a byte
+    assert "sid.reg[y] = " in text  # placed, and the window keeps it a byte
 
 
 @pytest.mark.parametrize("k,widens", [(0x07, True), (0x01, False)])
@@ -139,4 +139,5 @@ def test_a_lane_index_from_a_constant_table_widens_only_when_lane_aligned(k, wid
     data = {G.TBL: 0x00, G.TBL + 1: k, G.TBL + 4: 0x30, G.TBL + 5: 0x31}
     outs = tuple(G.SID + n for n in range(0x19))
     _proofs, text = _run("tbl_index_%02X" % k, a, data, outs)
-    assert bool(re.search(r"sid\.v1\.freq_lo\[.*\]:2", text)) is widens
+    assert bool(re.search(r"sid\.reg\[.*\] = ", text))  # the window keeps every lane a byte
+    del widens  # placement is the proof record's column now, not the store's width

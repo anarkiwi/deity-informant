@@ -303,21 +303,20 @@ def test_dropping_a_hi_first_store_s_order_moves_the_record():
     assert frameval.gate_fp(model, 64, prog) is not None
 
 
-def test_a_lone_sid_half_widens_to_the_word_store_it_is():
-    """Freq is a 16-bit register, so a lone hi store still writes the whole word.
+def test_a_lone_sid_half_stays_the_byte_the_machine_wrote():
+    """Freq is a 16-bit register, but $D400-$D416 is write-only: no word can be completed.
 
-    Nothing narrower can reach it: the store widens and the lo lane keeps its
-    value, which is why a SID pair has no per-site premise left to refuse."""
+    Widening reads the other lane back, and there is nothing there to read, so the
+    lone half stays a byte store and rung (d) invents no write to the SID at all."""
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0).i("LDA", "absx", TBL).i("STA", "abs", 0xD401).i("RTS")
     model = _fuzz_model(_player("lonehalf", a.assemble(), {TBL: 0x10}, {0xD401}))
     prog = frameprog.program(model)
     sid = [p for p in prog.proofs if p.kind == "sid"]
     assert [(p.targets, p.status) for p in sid] == [((0xD400, 0xD401), "partial")]
-    assert "1 widened lane store(s)" in sid[0].lemma
     text = frameprog.dumps(prog)
-    assert "sid.v1.freq_hi = " not in text  # no byte-wide store to a 16-bit register
-    assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $00FF):2 | (zext2(m_1400) << $08):2):2" in text
+    assert "sid.v1.freq_hi = m_1400" in text, "the lone lane lost its byte-wide store"
+    assert not re.search(r"= \(+sid\.", text), "a write-only SID register is read back"
     assert frameval.gate_fp(model, 8, prog) is None
 
 
@@ -475,12 +474,13 @@ def _voice_loop(name, index_table):
     return _proof(prog, SID).lemma, frameprog.dumps(prog)
 
 
-def test_a_constant_index_table_of_lane_starts_widens_the_indexed_store():
-    """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers."""
+def test_a_constant_index_table_of_lane_starts_places_the_indexed_store():
+    """`$00 $07 $0E` puts `$D400,Y` on each voice's freq lo, all 16-bit registers.
+
+    The placement is proved and the proof record says so; the store still writes the
+    byte it wrote, because completing the word would read a write-only register."""
     lemma, text = _voice_loop("idx_ok", [0x00, 0x07, 0x0E])
-    assert re.search(
-        r"sid\.v1\.freq_lo\[.*\]:2 = \(\(sid\.v1\.freq_lo\[.*\]:2 & \$FF00\):2 \| zext2\(", text
-    )
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
@@ -577,11 +577,10 @@ def _spill_loop(name, between=()):
     return _proof(prog, SID).lemma, frameprog.dumps(prog)
 
 
-def test_an_index_spilled_through_a_ram_cell_widens_on_the_store_in_force():
+def test_an_index_spilled_through_a_ram_cell_places_on_the_store_in_force():
     """No declaration can make a play-written cell const; the store that wrote it can."""
     lemma, text = _spill_loop("spill_ok")
-    idx = "sid.v1.freq_lo[m_%04X]" % G.CNT
-    assert "%s:2 = ((%s:2 & $FF00):2 | zext2(m_1408[x])):2" % (idx, idx) in text
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 
@@ -722,10 +721,10 @@ def _call_voice(name, offsets):
     return _proof(prog, SID).lemma, frameprog.dumps(prog)
 
 
-def test_the_constants_the_call_sites_pass_widen_the_callee_lane_store():
+def test_the_constants_the_call_sites_pass_place_the_callee_lane_store():
     """A parameter holds the union of what its call sites pass, `$00 $07 $0E` here."""
     lemma, text = _call_voice("param_ok", (0x00, 0x07, 0x0E))
-    assert "sid.v1.freq_lo[y]:2 = ((sid.v1.freq_lo[y]:2 & $FF00):2 | zext2(a)):2" in text
+    assert re.search(r"sid\.reg\[.*\] = ", text) and "freq_lo[" not in text
     assert "1 lane-aligned indexed, 0 index unproven, 0 index proven off-lane" in lemma
 
 

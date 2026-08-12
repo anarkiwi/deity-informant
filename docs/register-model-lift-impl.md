@@ -594,8 +594,8 @@ code, not the other way round.
   **27 strict xfails** — 21 shredder pins under five owners
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
-  *(Items 5, 6 and 3 landed after this record: the shredder ledger stands at **7** pins —
-  rung (f) 4, rung (d) 1, `datadecl` 1, `eqlift_mem` 1. Decision log, below.)*
+  *(Items 5, 6, 3 and 4 landed after this record: the shredder ledger stands at **5** pins —
+  rung (f) 4 and `datadecl` 1 — and rung (d) owns none. Decision log, below.)*
 - `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
   `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
   divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
@@ -701,9 +701,11 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    `inpage_advance` fact, proved rather than assumed) and a pair with no word access. The
    nine-`u8` width gap below is three-ninths of the way closed with it, and the rest is a
    candidate-evidence question the entry below states. Decision log, 2026-08-11.
-4. **rung (d), the widening guard [1 pin, 7 → 6].** `lone_lane` is the rung *widening* a lone
-   half into a read-modify-write of a write-only register; the guard is the SID write-only
-   window `$D400`–`$D416`, and the rung must not widen a store whose destination is inside it.
+4. **rung (d), the widening guard [1 pin, 6 → 5] — LANDED.** `lone_lane` was the rung
+   *widening* a lone half into a read-modify-write of a write-only register.
+   `framefuse.write_only` refuses that inside `$D400`–`$D416`, which is every lane there is,
+   so a SID word store is now always two stores the driver made and a lone half stays the
+   byte it wrote. Decision log, 2026-08-12.
 5. **`framestack`, the slot identity [1 pin, 8 → 7] — LANDED.** `low_held_cursor` needed an
    sp-relative slot identity — push and pull at one entry-relative offset, a call provably
    below it — because a page-one interval hold is unsound. It is the `(epoch, offset)` key
@@ -3496,3 +3498,42 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   against #197 after it.) Suite **2,772 passed / 490 skipped / 10 xfailed** (oracle excluded,
   corpus parameters unbounded), coverage **90.08%** — deleting tested code moves the
   denominator, so it is measured, not assumed. `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-12 — rung (d)'s widening guard: the SID window is write-only, so the rung invents
+  no write at all.** `lone_lane` was the last shredder pin rung (d) owned. `framefuse._widen`
+  turned a lone lane store into `(reg & K) | v` — a **read** of `$D400`–`$D416`, which the
+  machine cannot read and no admitted rule removes. `framefuse.write_only` refuses the
+  widening inside the window, and the half stays the byte the driver wrote: at `sid.reg[i]`
+  where its index is symbolic, at its own register name where it is not.
+  (1) **The guard is the window, not the fixture.** The pin's fixture is an unindexed store to
+  `$D401`, but every lane the widening reached is inside `$D400`–`$D416` — freq, pulse and
+  cutoff are the only 16-bit registers and their eight lanes are all of it — so the guard
+  retires the *whole* widening, indexed and not. What survives is `_pair_at`: a SID word store
+  is now always **two stores the driver itself made**, brought together. That is a better law
+  than the one it replaces, and it is the one §4.3 and §7.2 now state.
+  (2) **The placement proof stays, because it is the residue's metric.** `_lane_aligned`,
+  `_lane_sweep` and `_consts` still run and still fill `indexed`/`unproven`/`notaligned`/
+  `swept` on the pair's proof record — §7.10's lane column, which `tools/fuse_measure.py`
+  reads. What changed is what the rung *does* with a proved placement: nothing, because
+  placing a byte is not a licence to write a word.
+  (3) **The price, stated.** §7.10's headline was "Commando is 16-clean — zero byte-wide SID
+  lane accesses, named or viewed". It is not any more: three lane stores whose partner never
+  meets them stay bytes at the view, and `test_real_tune_frameprog_commando_gate` says so
+  rather than asserting a claim the guard withdrew. `storage_census`' `readback_sites` and
+  `lift_residue`'s `sid_readback` signature go to **zero** on the fixture that raised the pin —
+  they exist to count exactly this — and `frameval`'s canonical-record test loses the two
+  hi-lane writes the widening used to put on the wire, which is the machine's own record.
+  (4) **The corpus, and the price is negative.** `emit_identity`: **624 tunes, 0 refused,
+  28,322,337 bytes**, aggregate
+  `a403a8aab3a6630ab2ef28fdc9a5fe369a0bc8fd5654f0884fd0e33387c63ff6`, against
+  `703af3a8…`/28,372,413 at the base commit — **−50,076 bytes**. Net of the artifact note the guard adds (+6 bytes a tune) it is
+  **−53,820 over all 624 tunes, every one smaller and none larger**: a byte at the register
+  file is shorter than the read-modify-write it replaces, so the honest form is also the
+  small one. `gate_sweep` at full Songlengths holds **624 build / 624 evaluate / 624 clean**,
+  zero divergences and zero refusals; `splice_sweep` is **2 bad, zero new and zero fixed**
+  with 205,796 sites proved and zero unproved, and the architectural-register census falls
+  **183,682 → 183,534** with `zero_arch` unmoved at 2 of 624. Field and role counts do not
+  move at all — this landing touches no state declaration.
+  (5) **The ledger.** rung (d) owns **no** shredder pin: the family is **6 → 5**, and with
+  `eqlift_mem`'s wall landed beside it the five are rung (f) 4 and `datadecl` 1. Suite
+  **2,789 passed / 490 skipped / 9 xfailed** (oracle included), `black --check` and `pylint`
+  (10.00/10) clean.

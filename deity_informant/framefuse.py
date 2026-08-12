@@ -20,6 +20,7 @@ from .structured import Proof
 
 _SID_LO = 0xD400
 _SID_HI = 0xD41C  # the last register the frame log records
+_WRITE_ONLY = (0xD400, 0xD416)  # the SID window a widened store would have to read back
 _LOGGED = (_SID_LO, frameproc.NOIDX, _SID_HI - _SID_LO, 1, 0)
 
 
@@ -351,6 +352,14 @@ def _lane_sweep(cell, idx, env, at):
     return ks is not None and _covering(cell, ks)
 
 
+def write_only(cell):
+    """The destination is a register the machine can only write.
+
+    Completing the word around a lone half reads the other lane back, and inside
+    this window there is nothing to read: the half stays a byte at the file."""
+    return _WRITE_ONLY[0] <= cell <= _WRITE_ONLY[1]
+
+
 def _widen(s, p):
     """A lone lane store as the u16 store it is, the other lane keeping its value.
 
@@ -671,8 +680,8 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
     """One statement list: fuse paired stores, fold word reads, count refusals.
 
     The list is rewritten as it is scanned, so the environment and the half-store
-    index are rebuilt whenever a statement moved: a stale one would answer for
-    the wrong statement. ``taken`` is the partner a merge already accounted for."""
+    index are rebuilt whenever a statement moved. Placement is measured whether or
+    not the lane widens, because the columns are the residue's own metric."""
     count = 0 if mutate else 1
     regions = None if ctx is None else ctx[0]
     foreign = ctx[4] if ctx is not None and outer is None else None
@@ -709,16 +718,17 @@ def _visit(stmts, p, mutate, ctx=None, outer=None, cyclic=False):
             i += 1
             continue
         half = _store_half(s, p)
-        widen = half is not None
-        if widen and half[1] is not None:
+        placed = half is not None
+        if placed and half[1] is not None:
             ks = _consts(half[1], env, i, ctx) if ctx is not None else None
-            widen = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
-            swept = not widen and _lane_sweep(half[0], half[1], env, i)
-            p.indexed += count if widen else 0
+            placed = _lane_aligned(p, ks)  # an unproven index is work, an off-lane one is not
+            swept = not placed and _lane_sweep(half[0], half[1], env, i)
+            p.indexed += count if placed else 0
             p.swept += count if swept else 0
             p.unproven += count if ks is None and not swept else 0
-            p.notaligned += count if not (widen or swept or ks is None) else 0
-            p.viewed += count if not widen and p.kind != "sid" else 0
+            p.notaligned += count if not (placed or swept or ks is None) else 0
+            p.viewed += count if not placed and p.kind != "sid" else 0
+        widen = placed and not write_only(half[0])
         if half is not None:
             p.unpaired += count
             p.advance += count if _lane_advance(s[2], half[0], env, i) else 0

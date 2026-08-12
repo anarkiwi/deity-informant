@@ -108,7 +108,7 @@ def test_cycle_and_penalty_annotations_stripped():
     text = frameprog.emit(m)
     assert not _ANNOT.search(text)
     # pen-free single-use load inlines, into the u16 store a freq lane write is
-    assert "sid.v1.freq_lo:2 = ((sid.v1.freq_lo:2 & $FF00):2 | zext2(m_1500)):2" in text
+    assert "sid.v1.freq_lo = m_1500" in text  # a lone half in the write-only window
     assert re.search(r"^ m_1500: (?:\w+ )?u8", text, re.M)  # non-SID cell is state
     assert "sid.v1.freq_lo: " not in text  # SID cells are outputs, not state
 
@@ -424,11 +424,14 @@ def test_real_tune_frameprog_commando_gate(sid, subtune, secs):
     assert "table pos_54EC[3] mut 0 1 2 observed:" in text  # a per-voice array, every entry written
     assert "table m_5428[192] stride 2 +m_5429 +m_542A +m_542B observed:" in text
     assert "for x in $02..$00 {" in text  # voice-state init counter loop
-    # 16-clean (7.7) and canonical (7.9): the strided pitch table reads as u16 rows
+    # canonical (7.9): the strided pitch table reads as u16 rows wherever a pair meets
     assert re.search(r"sid\.v1\.freq_lo\[\w+\]:2 = m_5428\[\w+\]:2", text)
     assert re.search(r"sid\.v1\.pw_lo\[\w+\]:2 = m_5591\[\w+\]:2", text)
     body = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith(";"))
-    assert "sid.reg[" not in body
+    # not 16-clean, and it may not be: three lane stores whose partner never meets them
+    # stay bytes at the register file, because $D400-$D416 cannot be read back (rung d)
+    assert body.count("sid.reg[") == 3
+    assert not re.search(r"= \(+sid\.", body), "a write-only SID register is read back"
     assert not re.search(r"sid\.v1\.(freq|pw)_(lo|hi)\[\w+\] =", text)
     assert text.count("mem[") == 0  # rung (f) resolves every deref this tune has
     assert len(re.findall(r"\*ptr_\w+\[", text)) == 5  # the pointer-pair derefs, named

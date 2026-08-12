@@ -94,8 +94,8 @@ def test_frame_buffer_flushes_one_canonical_record():
     """Spec 1.1/1.4: writes buffer per frame, the single projection collapses."""
     prog = frameprog.program(_sid_model([(4, 0x10), (0, 0x11), (0, 0x22), (4, 0x13)]))
     raw = frameval.Evaluator(prog, {}).frames(2)
-    # each freq_lo store is a u16 store: it puts both lanes on the wire
-    assert raw[0] == [(4, 0x10), (0, 0x11), (1, 0), (0, 0x22), (1, 0), (4, 0x13)] == raw[1]
+    # a lone freq_lo half stays the byte it is: $D400-$D416 is write-only (rung d)
+    assert raw[0] == [(4, 0x10), (0, 0x11), (0, 0x22), (4, 0x13)] == raw[1]
     rec = F.canonical(raw)[0]
     assert rec[0] == ((0, 0x22), (1, 0x00))  # freq collapses to one word, hi lane held
     assert rec[1] == ((4, 0x10), (4, 0x13))  # ctrl keeps both writes in order
