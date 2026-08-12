@@ -89,12 +89,12 @@ def _step(n, cells):
 
 
 def _mask_bound(n):
-    """``x`` where ``n`` is ``x & K``: an accumulator's bound is spelled as a mask."""
+    """``(x, K)`` where ``n`` is ``x & K``: an accumulator's bound is spelled as a mask."""
     if not P.is_op(n, "INT_AND", arity=2):
         return None
     for x, k in P.commuted(n[2]):
         if k[0] == "const":
-            return x
+            return x, k[1]
     return None
 
 
@@ -116,23 +116,33 @@ def _bitwise(n, cells):
     return n[0] == "op" and n[1] in _BITOPS and _carries(n, cells)
 
 
-def shape(value, cells):
-    """The update's form relative to the cell it lands on, or None for residue."""
+def reading(value, cells):
+    """``(shape, mask)``: the update's form, and the constant its step is taken under.
+
+    The mask is the bound the program itself spells (stage 2's accumulator), kept
+    here because the declaration carries it as evidence; it is None where the step
+    is unmasked or the update has no step at all."""
     n = _peel(value, cells)
     if not reads_self(n, cells) or _self(n, cells):
-        return SET  # a copy of the cell is an assignment, not a shape of its own
-    got = _step(n, cells)
+        return SET, None  # a copy of the cell is an assignment, not a shape of its own
+    got, mask = _step(n, cells), None
     if got is None:
         inner = _mask_bound(n)
-        got = None if inner is None else _step(inner, cells)
-        n = n if got is None else inner
+        got = None if inner is None else _step(inner[0], cells)
+        if got is not None:
+            n, mask = inner[0], inner[1]
     if got is None:
-        return FIELD if _bitwise(n, cells) else None
+        return (FIELD if _bitwise(n, cells) else None), None
     sign, delta = got
     if delta[0] != "const":
-        return STEP_UP if sign > 0 else STEP_DOWN
+        return (STEP_UP if sign > 0 else STEP_DOWN), mask
     k = sign * _signed(delta[1], P.loc_width(n))
-    return DEC if k == -1 else (STEP_UP if k >= 0 else STEP_DOWN)
+    return (DEC if k == -1 else (STEP_UP if k >= 0 else STEP_DOWN)), mask
+
+
+def shape(value, cells):
+    """The update's form relative to the cell it lands on, or None for residue."""
+    return reading(value, cells)[0]
 
 
 def _bases(n, out):
@@ -196,7 +206,7 @@ def role(shapes, base, addr_cells, switch_cells):
     return "flags" if FIELD in shapes else "parameter"
 
 
-Update = namedtuple("Update", "base field shape value site entry")
+Update = namedtuple("Update", "base field shape mask value site entry")
 
 
 def updates(prog):
@@ -209,29 +219,27 @@ def updates(prog):
     for a, f in cells.items():
         byfield[f].add(a)
     _sid, upd = idioms.obligations(prog)
-    return [
-        Update(
-            ob.base,
-            ob.field,
-            shape(FF.unlane(ob.value, ob.base), byfield[ob.field]),
-            ob.value,
-            ob.site,
-            ob.entry,
-        )
-        for ob in upd
-        if ob.base is not None
-    ]
+    out = []
+    for ob in upd:
+        if ob.base is not None:
+            got, mask = reading(FF.unlane(ob.value, ob.base), byfield[ob.field])
+            out.append(Update(ob.base, ob.field, got, mask, ob.value, ob.site, ob.entry))
+    return out
 
 
 def census(prog):
-    """``(cell -> role, cell -> shapes, residue updates)``: one program's reading.
+    """``(cell -> role, cell -> shapes, residue updates, cell -> mask)``: one reading.
 
     A cell carrying an unshaped update is left un-roled; the residue is the
-    unshaped updates themselves, so a common residual shape names a missing role."""
+    unshaped updates themselves, so a common residual shape names a missing role.
+    A cell's mask is evidence only where its masked steps agree on one constant."""
     addr_cells, switch_cells = read_sites(prog)
     got = updates(prog)
-    shapes = defaultdict(set)
+    shapes, masks = defaultdict(set), defaultdict(set)
     for u in got:
         shapes[u.base].add(u.shape)
+        if u.mask is not None:
+            masks[u.base].add(u.mask)
     roles = {b: role(s, b, addr_cells, switch_cells) for b, s in shapes.items()}
-    return roles, dict(shapes), [u for u in got if u.shape is None]
+    bounds = {b: k.pop() for b, k in masks.items() if len(k) == 1}
+    return roles, dict(shapes), [u for u in got if u.shape is None], bounds

@@ -161,10 +161,17 @@ evline: "code" span* _NL               -> ev_code
 span: HEX [".." HEX]
 
 state_sec: "state" "{" _NL statedef* "}" _NL
-statedef: NAME ":" [srole] NAME [array] [statext] [statobs] _NL
+statedef: NAME ":" [srole] NAME [array] [statinit] [statext] [statobs] [statbnd] _NL
 array: "[" "]"
+// the initial value: the byte the init phase leaves in the cell, so the state
+// block reads without the image behind it (stage 4 landing 4)
+statinit: "=" HEX
 statext: "in" NAME ("," NAME)*
 statobs: "observed" HEX*
+// the accumulator's bound (stage 4 landing 4): the constant the program ands the
+// cell with, else the extent its values are witnessed in over the run
+statbnd: "mask" HEX -> st_mask
+       | "bound" HEX ".." HEX -> st_bound
 // the role qualifies the field's type: it names how the cell is updated and
 // licenses nothing, so an un-roled uN stays legal (register-model-lift stage 2)
 !srole: "cursor" | "accumulator" | "counter" | "flags" | "parameter" | "vm"

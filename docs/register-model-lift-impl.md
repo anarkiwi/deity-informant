@@ -3332,3 +3332,79 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   meet at one word store and the declarations that lose a field.
   (10) **The gates.** Suite **2,805 passed / 490 skipped / 13 xfailed** (oracle included),
   `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-12 — the two declaration clauses #190 (6) scoped: the bound a step is taken
+  under, and the value init left in the cell.** Two of the three capability pins, each owing
+  "a grammar production and a carrier that does not exist"; both productions are `statedef`'s
+  and both carriers were already in the program, unread.
+  (1) **The evidence clause.** `statbnd` is `mask $K` — the constant the cell's own steps are
+  taken under — or `bound $lo..$hi`, the extent its values are witnessed in. It is a scalar
+  field's, refused wider than its field, and it rides after `in`/`observed`. Emission drops a
+  bound the field cannot hold rather than spelling it, so the text stays parseable by
+  construction.
+  (2) **Its carrier is the census, which computed the constant and discarded it.**
+  `roles._mask_bound` returned the inner term alone; it returns `(x, K)`, `roles.reading`
+  reports a shape with the mask its step was taken under, and `census` names a cell's bound
+  only where its masked steps agree on **one** constant. It rides on `FrameProgram.bounds`
+  beside `roles`, exactly as 2b's extents ride.
+  (3) **The initializer clause, and the value `prov0` could not carry.** `statedef` had no
+  `= HEX` alternative at all. The value is the flat image's own: `decompile` keeps init's
+  image and not its trace, so `mem0[cell]` **is** what init left there, while `prov0` names
+  the origin *address* a byte was copied from and never what it is. Measured on the
+  prototype, `prog.mem0` and a `run_vm(mem, 0)` agree on every declared cell, and `prov0` is
+  empty there — which is why the pin could not be read off it. Because the clause is a
+  reading of the image rather than a fact beside it, `parse` **checks** it: a declared value
+  that is not `mem0`'s is refused, as is one wider than its field or one on an array field.
+  (4) **The corpus moves twice, and both diffs are one shape each.** Against a base run of
+  this branch's parent (`cbf029b`), reproduced rather than carried forward — **624 tunes, 0
+  refused, 28,271,645 bytes**, aggregate
+  `8410d058e6b844b04cbd4cafa0c5afc3f8c79d50558ea41dd54e49bc810f7c78`.
+  The bound clause alone moves **13 of 624 tunes, +144 bytes**, every one larger — 16 clauses
+  of nine characters (`Advanced_Pinball_Simulator` 3, `Ark_Pandora` 2, eleven tunes 1 each),
+  and every moving line the same idiom read twice: `ctr_B49D = ((ctr_B49D + $01) & $0F)`
+  becomes `ctr_B49D: accumulator u8 mask $0F`, `Ark_Pandora`'s two `mask $03` — the wrapping
+  table index stage 2's census called "the bound spelled as a mask". The initializer moves
+  every tune that declares a scalar cell, one clause per declaration and nothing else per
+  line: **624 of 624 tunes, all larger, +100,768 bytes (+0.36%)**, aggregate
+  `703af3a820d6b548b47b507db6d8eea57127e7a74dd6218f5c5be171fdcefa8b` over **28,372,413
+  bytes**; the bound clause alone stands at
+  `a284e4f074182a9a3c44fcee63fddb54927781437cb12b274e594ac5ca4ee406`. `Hubbard_Rob/Commando`
+  is the shape read by hand: five state lines change and no other line in the file --
+  `ptr_00FB: cursor u16` becomes `ptr_00FB: cursor u16 = $15E2`, the address in the song
+  data its walk starts at.
+  (5) **The prototype prints through the engine's own field line now.** `sml.render` spells
+  its state block with `sidprog._field_line` itself, so the example cannot spell a clause the
+  grammar has not got, and its 59 declarations all carry an initial value:
+  `v1_pos: cursor u16 = $14EB in script0` (the cursor's own script, named by the image's
+  labels), `log_idx: accumulator u8 = $00 mask $0F`,
+  `v1_pitch: accumulator u16 = $15ED bound $1167..$1A13` (the note range, measured).
+  `render` gained `frames` — the evidence run's length, which is the fold's own: rendered
+  over more frames than it was folded over, a program leaves the dispatch domain it declares.
+  (6) **Both pins are restated against the artifact where they read past it.**
+  `init_lifts_to_declared_initial_values` compared at one byte per cell and over cells no
+  declaration names; it reads at the **declared width** over the **declared cells**, so a
+  lane a `u16` spans is one value with its pair rather than a field of its own — and it now
+  also asserts that every declared cell carries one, which the old form did not.
+  (7) **The third pin is measured, not taken.** `vm_family_operator_set_is_emitted` owes an
+  `operators { }` production, a symbolic name per opcode, an arity and a `writes` set, and
+  the reading is now known on both sides. In the prototype the dispatch arms are already
+  emitted (`dispatch { op $10AF: ... }`) and the image's labels name them (`v0_c_vib` →
+  `vib`, `off`, `loop`, `raw`); an arm's arity is its cursor advance (`pos += 2` → 1,
+  `set16` from the stream → 2, the variable advance `pos += (y + 1)` → the decoded length
+  whose run ends at the first byte with bit 7 set), and its `writes` set is what its own
+  statements assign — **but the arm's statements are not all in the arm**: `c_off` folds to
+  a bare `break` whose work sits at the block its label heads, so the reading is the union of
+  the arm body and its label's block. On the engine side `follin_arity.operators(model)`
+  gives arity and escape per opcode and **no** name and no writes; the names are the handler
+  table's (`cmdlo`/`cmdhi` at opcode index) and the writes are the arm's own statements, the
+  same union. It is the next landing, and it is landing 4's remaining part.
+  (8) **The gates.** `gate_sweep` at full Songlengths **624 build / 624 evaluate / 624
+  clean**, zero divergences and zero refusals. `splice_sweep --against` the recorded
+  artifact (`splice_s4l4c.json`, which predates #192-#195): **2 bad, zero new and 69 fixed**
+  -- one lint and one divergence left -- **parse and fixpoint 624 of 624** over both new
+  productions, **205,796 sites proved, zero unproved**, −7,277 lines with no tune larger
+  (585 smaller), `fields`/`roled` **13,234 of 18,109**, `zero_arch` **2 of 624**: every
+  splice number is #195's, unmoved. Suite (hermetic, `-m "not oracle"`) **2,801 passed / 490
+  skipped / 11 xfailed**, the
+  ledger's 13 less the two pins this flips. `black --check` and `pylint` (10.00/10) clean.
+  The prototype ledger goes **six → four**, and
+  `test_every_pin_names_the_landing_that_flips_it` moves with it.

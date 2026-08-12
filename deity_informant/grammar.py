@@ -237,6 +237,8 @@ class Document:
         self.resolved = {}  # rung (f): deref address -> (pointer cell, index or None)
         self.extents = {}  # 2b: pointer cell -> the declared block bases its derefs land in
         self.roles = {}  # stage 2: state field name -> the role its updates name
+        self.bounds = {}  # stage 4: field name -> ("mask", k) or ("bound", lo, hi)
+        self.initial = {}  # stage 4: field name -> the value the init phase leaves in it
         self.labels = set()
         self.subs = []  # frameprog: [(entry, params, rets, statements)]
         self.evidence = new_evidence()  # frameprog: the block-model rebuild channels
@@ -449,18 +451,38 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
     def srole(self, c):
         return str(c[0])
 
+    def st_mask(self, c):
+        return ("mask", _hexval(c[0]))
+
+    def st_bound(self, c):
+        return ("bound", _hexval(c[0]), _hexval(c[1]))
+
+    def statinit(self, c):
+        return _hexval(c[0])
+
     def statedef(self, c):
         """A block extent is a pointer's, so it is a scalar u16 field's alone."""
         name, kind = str(c[0]), str(c[2])
         if kind not in ("u8", "u16"):
             raise ValueError("unknown state type %r" % kind)
-        if c[4] and (kind != "u16" or c[3] is not None):
+        width = int(kind[1:]) // 8
+        if c[5] and (kind != "u16" or c[3] is not None):
             raise ValueError("state field %s: a block extent is a u16 field's" % name)
-        self.doc.state.append((name, int(kind[1:]) // 8, c[3] is not None, c[5] or []))
+        if (c[4] is not None or c[7]) and c[3] is not None:
+            raise ValueError("state field %s: a value is a scalar field's" % name)
+        if any(v >> (8 * width) for v in (c[7] or ())[1:]):
+            raise ValueError("state field %s: bound wider than the field" % name)
+        if c[4] is not None and c[4] >> (8 * width):
+            raise ValueError("state field %s: initial value wider than the field" % name)
+        self.doc.state.append((name, width, c[3] is not None, c[6] or []))
         if c[1]:
             self.doc.roles[name] = c[1]
-        if c[4]:
-            self.doc.extents[name] = c[4]
+        if c[4] is not None:
+            self.doc.initial[name] = c[4]
+        if c[5]:
+            self.doc.extents[name] = c[5]
+        if c[7]:
+            self.doc.bounds[name] = c[7]
 
     # -- expressions -----------------------------------------------------------
     def e_hex(self, c):

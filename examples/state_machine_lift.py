@@ -15,6 +15,7 @@ from deity_informant import framelog
 from deity_informant import frameprog
 from deity_informant import grammar as GR
 from deity_informant import render as R
+from deity_informant import sidprog as SP
 from deity_informant import structured as S
 from deity_informant.asm6502 import Asm
 
@@ -2278,18 +2279,102 @@ def declared_roles(procs, roles):
     return {n: r for n, r in roles.items() if n in wide or cell_addr(n) not in covered}
 
 
-def render(procs, roles):
+_POST_INIT = None
+
+
+def _post_init():
+    """RAM as the routine's own init leaves it, plus the image's labels.
+
+    The init phase is no part of the folded play program, so evidence about
+    where a cell starts is read where the program itself writes it."""
+    global _POST_INIT  # pylint: disable=global-statement
+    if _POST_INIT is None:
+        mem, labels = build_image()
+        _POST_INIT = (bytes(run_vm(mem, 0)[1]), labels)
+    return _POST_INIT
+
+
+def _block_at(labels, addr):
+    """The image label whose span holds ``addr``: the block a walk lands in."""
+    got = [(a, n) for n, a in labels.items() if a <= addr]
+    return max(got)[1] if got else None
+
+
+def _walk_stmts(procs):
+    def walk(stmts):
+        for s in stmts:
+            yield s
+            for b in _bodies(s):
+                yield from walk(b)
+
+    for stmts in procs.values():
+        yield from walk(stmts)
+
+
+def _mask_bounds(procs):
+    """``{cell: K}`` where the program ands the cell with one constant.
+
+    ``roles._mask_bound``'s reading in the prototype's dialect: an accumulator's
+    bound is spelled as a mask, whether or not the step shares the statement. A
+    cell masked with two constants has no one bound, so it carries none."""
+    out = {}
+    for s in _walk_stmts(procs):
+        if s[0] != "asg" or cell_addr(s[1]) is None or s[2][0] != "bin" or s[2][1] != "&":
+            continue
+        r, name = s[2], _addr_name(cell_addr(s[1]))
+        for x, k in ((r[2], r[3]), (r[3], r[2])):
+            if k[0] == "num" and x == ("name", s[1]):
+                out[name] = k[1] if out.get(name, k[1]) == k[1] else None
+    return {n: k for n, k in out.items() if k is not None}
+
+
+def _cell_base(name):
+    """The first RAM address a state-cell name covers, lane names included."""
+    a = cell_addr(name)
+    return cell_addr(name + "_lo") if a is None else a
+
+
+def state_evidence(procs, roles, widths, frames=FRAMES):
+    """``{cell: (initial value, blocks, bound)}``: what each declaration owes.
+
+    The initial value is what init left in the cell; a cursor names the block its
+    walk lands in, by the image's own labels; an accumulator names the constant
+    the program masks it with, else the extent its own run witnesses."""
+    ram0, labels = _post_init()
+    addrs = {n: _cell_base(n) for n in widths}
+    want = [n for n, r in roles.items() if r in ("cursor", "accumulator")]
+    machine = Machine({e: Flat(s) for e, s in procs.items()}, bytearray(ram0))
+    seen = {n: set() for n in want}
+    for _ in range(frames):
+        for n in want:
+            seen[n].add(int.from_bytes(machine.ram[addrs[n] : addrs[n] + widths[n]], "little"))
+        machine.frame()
+    masks, out = _mask_bounds(procs), {}
+    for n, a in addrs.items():
+        blocks, bound, values = (), None, seen.get(n)
+        if roles[n] == "cursor":
+            blocks = sorted({_block_at(labels, v) for v in values})
+        elif values is not None:
+            bound = ("mask", masks[n]) if n in masks else ("bound", min(values), max(values))
+        out[n] = (int.from_bytes(ram0[a : a + widths[n]], "little"), blocks, bound)
+    return out
+
+
+def render(procs, roles, frames=FRAMES):
     """Print the folded program as the role-typed state machine.
 
-    The field line is the dialect's own (``name: <role> uN``, sidprog.lark
-    ``statedef``), so what this prints is what stage 4 emits."""
+    The field line is spelled by ``sidprog._field_line`` itself, so it is the
+    dialect's own. ``frames`` is the evidence run's length and is the fold's own:
+    rendered over more frames, a program leaves the dispatch domain it declares."""
     flat = expand(procs)
     lines, wide = ["state {"], wide_cells(flat)
     show = declared_roles(flat, roles)
+    widths = {n: wide.get(n, 2 if _PAIRBASE.match(n) and not _PAIRRE.match(n) else 1) for n in show}
+    ev = state_evidence(flat, show, widths, frames)
     for n in sorted(show, key=lambda n: (_ORDER[roles[n]], pretty(n))):
-        lane = _PAIRBASE.match(n) and not _PAIRRE.match(n)
-        w = "u%d" % (8 * wide.get(n, 2 if lane else 1))
-        lines.append("  %s: %s %s" % (pretty(n), roles[n], w))
+        init, blocks, bound = ev[n]
+        line = SP._field_line(pretty(n), widths[n], False, (), roles[n], blocks, bound, init)
+        lines.append(" " + line)
     lines.append("}")
     lines.append("pitch: u16[%d] = %s" % (len(NOTES), " ".join("$%04X" % f for f in NOTES)))
     lines.extend(voice_record(procs))

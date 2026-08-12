@@ -425,7 +425,7 @@ REEMIT = ("reemit_6502", "emit_6502", "assemble_6502")
 SEED_CODE = (
     "from examples.state_machine_lift import classify_roles, pipeline, render;"
     "a = pipeline(frames=%d);"
-    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded'])))"
+    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded']), %d))"
 )
 DECL = re.compile(r"^\s{2}(\w+):\s*(\w+)\s+(\S+)(.*)$")
 OPSET = re.compile(r"^[^\n]*\b(?:operators|ops)\b[^\n]*\{$", re.M)
@@ -556,7 +556,7 @@ def _carried_addrs(art, ram0):
 
 def _seeded_render(seed, frames):
     got = subprocess.run(
-        [sys.executable, "-c", SEED_CODE % frames],
+        [sys.executable, "-c", SEED_CODE % (frames, frames)],
         cwd=str(Path(__file__).resolve().parent.parent),
         env=dict(os.environ, PYTHONHASHSEED=seed),
         check=True,
@@ -628,12 +628,6 @@ def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact carries the "
-    "extent (`in`) and observed clauses already; the evidence rides onto sml.render with "
-    "the re-basing, and the accumulator bound is the one clause the engine still owes",
-    **XFAIL,
-)
 def test_roles_carry_their_evidence(role_map, role_text):
     """A cursor names the block it walks, an accumulator its bound, a vm cell its ops."""
     decls = _state_decls(role_text)
@@ -644,26 +638,25 @@ def test_roles_carry_their_evidence(role_map, role_text):
     )
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): frameprog carries the "
-    "post-init values as prov0/init_census evidence and does not spell them as declaration "
-    "initializers; the spelling lands with the re-based renderer",
-    **XFAIL,
-)
 def test_init_lifts_to_declared_initial_values(art, role_map, role_text, post_init_ram):
-    """Each cell's post-init value is its declaration's initializer; only SID writes stay."""
+    """Each declared cell's post-init value is its initializer; only SID writes stay.
+
+    Read at the declared width, over the declared cells: a lane a ``u16`` spans is
+    not a field of its own, so the pair's two bytes are one value."""
     assert all(0 <= r < 25 for r, _v in art["init_writes"]), "init writes off the SID boundary"
     decls, want = _state_decls(role_text), {}
     for n in role_map:
-        addrs = _addrs(n)
-        if addrs:
-            want[pretty(n)] = sum(post_init_ram[a] << (8 * i) for i, a in enumerate(addrs))
+        name, addrs = pretty(n), _addrs(n)
+        if addrs and name in decls:
+            w = int(decls[name][1][1:]) // 8
+            want[name] = int.from_bytes(bytes(post_init_ram[addrs[0] : addrs[0] + w]), "little")
     got = {}
     for name, decl in decls.items():
         m = re.search(r"=\s*\$([0-9A-Fa-f]+)", decl[2])
         if m:
             got[name] = int(m.group(1), 16)
-    assert {k: got.get(k) for k in want} == want
+    assert sorted(want) == sorted(decls), "a declared cell names no post-init value"
+    assert got == want
 
 
 def test_round_trip_witness_is_frame_identical(art):
@@ -684,7 +677,7 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    All six left are landing 4's, so a pin that acquires a different owner moves the
+    All four left are landing 4's, so a pin that acquires a different owner moves the
     plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
@@ -692,7 +685,7 @@ def test_every_pin_names_the_landing_that_flips_it():
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 6, sorted(pins)
+    assert len(pins) == 4, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

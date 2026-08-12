@@ -32,7 +32,7 @@ def reading(prog):
     """``(role counts, shape counts, residue records)`` over one frame program."""
     from deity_informant import frameproc, roles
 
-    got, shapes, residue = roles.census(prog)
+    got, shapes, residue, _bounds = roles.census(prog)
     out = [
         {
             "shape": lift_residue._skeleton(u.value, 3),
