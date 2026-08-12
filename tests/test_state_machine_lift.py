@@ -425,7 +425,7 @@ REEMIT = ("reemit_6502", "emit_6502", "assemble_6502")
 SEED_CODE = (
     "from examples.state_machine_lift import classify_roles, pipeline, render;"
     "a = pipeline(frames=%d);"
-    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded'])))"
+    "import sys; sys.stdout.write(render(a['rolled'], classify_roles(a['folded']), %d))"
 )
 DECL = re.compile(r"^\s{2}(\w+):\s*(\w+)\s+(\S+)(.*)$")
 OPSET = re.compile(r"^[^\n]*\b(?:operators|ops)\b[^\n]*\{$", re.M)
@@ -556,7 +556,7 @@ def _carried_addrs(art, ram0):
 
 def _seeded_render(seed, frames):
     got = subprocess.run(
-        [sys.executable, "-c", SEED_CODE % frames],
+        [sys.executable, "-c", SEED_CODE % (frames, frames)],
         cwd=str(Path(__file__).resolve().parent.parent),
         env=dict(os.environ, PYTHONHASHSEED=seed),
         check=True,
@@ -628,12 +628,6 @@ def test_state_block_holds_no_scratch(art, role_map, post_init_ram):
     assert not sorted(n for n in role_map if _addrs(n) and not set(_addrs(n)) & carried)
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the artifact carries the "
-    "extent (`in`) and observed clauses already; the evidence rides onto sml.render with "
-    "the re-basing, and the accumulator bound is the one clause the engine still owes",
-    **XFAIL,
-)
 def test_roles_carry_their_evidence(role_map, role_text):
     """A cursor names the block it walks, an accumulator its bound, a vm cell its ops."""
     decls = _state_decls(role_text)
@@ -684,7 +678,7 @@ def test_round_trip_witness_is_frame_identical(art):
 def test_every_pin_names_the_landing_that_flips_it():
     """#180's law, executable here as it already is on the shredder's family.
 
-    All six left are landing 4's, so a pin that acquires a different owner moves the
+    All five left are landing 4's, so a pin that acquires a different owner moves the
     plan's ledger too and the two cannot drift apart."""
     pins = {
         n: m.kwargs["reason"]
@@ -692,7 +686,7 @@ def test_every_pin_names_the_landing_that_flips_it():
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 6, sorted(pins)
+    assert len(pins) == 5, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

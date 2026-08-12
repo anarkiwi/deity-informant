@@ -352,14 +352,27 @@ def _drop_declared(state, decls, symbols):
     return [f for f in state if f[0] not in covered]
 
 
-def _field_line(name, width, array, observed, role=None, blocks=()):
-    """One ``state { }`` line; the role qualifies the type and names nothing else."""
+def _field_line(name, width, array, observed, role=None, blocks=(), bound=None):
+    """One ``state { }`` line; the role qualifies the type and names nothing else.
+
+    The bound is the cell's own evidence: the constant its steps are taken under,
+    or the extent its values are witnessed in."""
     kind = "%s u%d" % (role, 8 * width) if role else "u%d" % (8 * width)
     if array:
         return " %s: %s[]" % (name, kind)
     ext = (" in " + ", ".join(blocks)) if blocks else ""
     obs = (" observed " + " ".join("$%02X" % v for v in observed)) if observed else ""
-    return " %s: %s%s%s" % (name, kind, ext, obs)
+    return " %s: %s%s%s%s" % (name, kind, ext, obs, bound_clause(bound, width))
+
+
+def bound_clause(bound, width):
+    """The ``mask``/``bound`` suffix of a state line (sidprog.lark ``statbnd``).
+
+    A value the field cannot hold is no reading of it, so it is dropped rather
+    than spelled: the text stays parseable by construction."""
+    if not bound or any(v >> (8 * width) for v in bound[1:]):
+        return ""
+    return " %s %s" % (bound[0], "..".join("$%0*X" % (2 * width, v) for v in bound[1:]))
 
 
 def _extent_names(extents, symbols):

@@ -191,7 +191,7 @@ _STATE = (
 )
 
 
-def _roled(assigned):
+def _roled(assigned, bounds=()):
     stmts = [("st", c(SID, 2), m(CELL)), ("ret", False)]
     return frameprog.FrameProgram(
         0x1000,
@@ -203,6 +203,7 @@ def _roled(assigned):
         decls=[decl(ARR, 16)],
         symbols={PTR: "ptr_00FB"},
         roles=assigned,
+        bounds=bounds,
     )
 
 
@@ -243,6 +244,70 @@ def test_an_un_roled_program_emits_exactly_the_text_it_always_did():
     assert not any(" %s u" % r in text for r in roles.ROLES)
     assert re.search(r"^ ptr_00FB: (?:\w+ )?u16 in m_3000", text, re.M)
     assert re.search(r"^ m_2000: (?:\w+ )?u8 observed \$01 \$02", text, re.M)
+
+
+# The bound clauses, one case per ``statbnd`` alternative, enumerated off the grammar.
+BOUNDS = {
+    "st_mask": (("mask", 0x0F), "mask $0F"),
+    "st_bound": (("bound", 0x00, 0x0F), "bound $00..$0F"),
+}
+
+
+def _statbnd_alternatives():
+    lark = (Path(G.__file__).parent / "sidprog.lark").read_text(encoding="utf-8")
+    block = re.search(r"^statbnd:(.*?)^\S", lark, re.M | re.S).group(1)
+    return sorted(re.findall(r"->\s*(\w+)", block))
+
+
+def test_the_bound_spellings_are_enumerated_from_the_grammar():
+    """A spelling the grammar gains and this checklist does not owes a case."""
+    assert sorted(BOUNDS) == _statbnd_alternatives()
+
+
+@pytest.mark.parametrize("alt", sorted(BOUNDS))
+def test_a_bound_is_spellable_on_a_state_field_and_changes_no_execution(alt):
+    """An accumulator's evidence rides on its declaration and runs identically."""
+    bound, spelling = BOUNDS[alt]
+    text = frameprog.dumps(_roled({"m_2000": "accumulator"}, {"m_2000": bound}))
+    assert " m_2000: accumulator u8 observed $01 $02 %s" % spelling in text
+    prog = frameprog.loads(text)
+    assert frameprog.dumps(prog) == text
+    assert prog.bounds == {"m_2000": bound}
+    assert frameval.Evaluator(prog, {}).frames(1) == frameval.Evaluator(
+        frameprog.loads(frameprog.dumps(_roled({}))), {}
+    ).frames(1)
+
+
+def test_a_bound_rides_with_the_extent_on_a_pointer_field():
+    """The clauses compose on one line, in the order the grammar spells them."""
+    text = frameprog.dumps(_roled({"ptr_00FB": "cursor"}, {"ptr_00FB": ("bound", ARR, ARR + 15)}))
+    assert " ptr_00FB: cursor u16 in m_3000 bound $3000..$300F" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
+
+
+def test_a_bound_the_field_cannot_hold_is_not_spelled_and_is_refused():
+    """Emission drops a value wider than the field; the parser refuses it outright."""
+    text = frameprog.dumps(_roled({"m_2000": "accumulator"}, {"m_2000": ("mask", 0x0FFF)}))
+    assert re.search(r"^ m_2000: accumulator u8 observed \$01 \$02$", text, re.M)
+    with pytest.raises(ValueError, match="bound wider than the field"):
+        frameprog.loads(text.replace(" observed $01 $02", " observed $01 $02 mask $0FFF"))
+
+
+def test_an_unbounded_program_emits_exactly_the_text_it_always_did():
+    """Capability with zero use: no bound, no token in the artifact."""
+    text = frameprog.dumps(_roled({n: "accumulator" for n, *_r in _STATE}))
+    assert not re.search(r"\b(?:mask|bound)\b", text)
+
+
+def test_the_census_names_the_constant_the_step_is_taken_under():
+    """The carrier is the census: a masked step spells its bound on the declaration."""
+    step = op("INT_AND", (op("INT_ADD", (m(CELL), c(3))), c(0x1F)))
+    stmts = [("st", c(CELL, 2), step), ("ret", False)]
+    prog = frameprog.FrameProgram(
+        0x1000, 0x0F00, state=(("m_2000", 1, False, []),), procs=[(0x1000, [], [], stmts)]
+    )
+    got, _shapes, _residue, bounds = roles.census(prog)
+    assert got == {CELL: "accumulator"} and bounds == {CELL: 0x1F}
 
 
 def test_a_role_the_census_never_names_is_not_a_type():

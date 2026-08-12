@@ -3332,3 +3332,42 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   meet at one word store and the declarations that lose a field.
   (10) **The gates.** Suite **2,805 passed / 490 skipped / 13 xfailed** (oracle included),
   `black --check` and `pylint` (10.00/10) clean.
+- **2026-08-12 — the role evidence clause: a bound is a mask where the program spells one,
+  and an extent where it does not.** #190 (6) scoped `roles_carry_their_evidence` as owing "a
+  clause and a carrier", and both are here. (1) **The clause.** `sidprog.lark`'s `statedef`
+  gains `statbnd`: `mask $K`, the constant the cell's own steps are taken under, and
+  `bound $lo..$hi`, the extent its values are witnessed in. It is a scalar field's, it is
+  refused wider than its field (so emission drops what it cannot spell and the text stays
+  parseable by construction), and it rides after `in`/`observed` on one line. (2) **The
+  carrier is the census, which was already computing the constant and throwing it away.**
+  `roles._mask_bound` returned the inner term alone; it returns `(x, K)`, `roles.reading`
+  reports a shape with the mask its step was taken under, and `census` names a cell's bound
+  only where its masked steps agree on one constant. `frameprog.program` carries the result on
+  `FrameProgram.bounds` beside `roles`, and `dumps`/`parse` round-trip it. (3) **The corpus
+  moves by 16 cells and the shape is one idiom.** `emit_identity` **624 tunes, 0 refused,
+  28,306,305 bytes**, aggregate
+  `871b409cdf056fae47e9076abc2eecc24e20aebe5e150a91cb896bead44ab363`, against a base run of
+  this commit's parent that reproduced the recorded `f4d5958e…` / 28,306,161 exactly.
+  **13 of 624 tunes moved, every one larger, +144 bytes**, which is 16 clauses of nine
+  characters: `Advanced_Pinball_Simulator` 3, `Ark_Pandora` 2, eleven tunes 1 each. Every
+  moving line is the same idiom read twice — `ctr_B49D = ((ctr_B49D + $01) & $0F)` becomes
+  `ctr_B49D: accumulator u8 mask $0F`, and `Ark_Pandora`'s two are `mask $03` — a wrapping
+  table index, which is what stage 2's census called "the bound spelled as a mask" (62 cells
+  over the exemplars). No other line in any of the 13 moved. (4) **The prototype's renderer
+  prints through the engine's own field line now**, `sidprog._field_line` itself, so the
+  example cannot spell a clause the grammar has not got. Its three cursors name the block
+  their walk lands in by the image's own labels (`in script0`/`script1`/`script2`, one script
+  per voice), `log_idx` carries `mask $0F`, and the other eleven accumulators carry the extent
+  their own run witnesses — `v1_pitch: accumulator u16 = ... bound $1167..$1A13` is the note
+  range, `phase: accumulator u24 bound $000000..$FFA698` a free-running one, and both are
+  measured rather than asserted. Evidence needs the init image and a run, so `render` gained
+  `frames` (the fold's own count: rendered longer, a program leaves the dispatch domain it
+  declares) and the prototype reads its post-init RAM once. (5) **The gates.** `gate_sweep`
+  at full Songlengths **624 build / 624 evaluate / 624 clean**, zero divergences and zero
+  refusals. `splice_sweep --against` the recorded artifact reproduces #194's reading
+  unmoved -- **63 bad, zero new and eight fixed** (those eight are #193/#194's, the control
+  predating them), **parse and fixpoint 624 of 624** over the new production, **207,073 sites
+  proved, zero unproved**, −7,268 lines with no tune larger. Suite (hermetic, `-m "not oracle"`) **2,780 passed / 490 skipped / 24 xfailed**, the
+  ledger's 25 less the pin this flips. `black --check` and `pylint` (10.00/10) clean.
+  The ledger: the prototype's six become **five**, and `test_every_pin_names_the_landing_that_flips_it`
+  moves with it.

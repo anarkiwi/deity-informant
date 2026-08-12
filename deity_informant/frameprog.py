@@ -112,6 +112,7 @@ class FrameProgram:
         dispatch=(),
         evidence=None,
         roles=(),
+        bounds=(),
         landings=None,
     ):
         self.play = play
@@ -131,6 +132,7 @@ class FrameProgram:
         self.init_census = dict(init_census or {})
         self.extents = dict(extents)  # 2b: pointer cell -> the block bases its derefs land in
         self.roles = dict(roles)  # stage 2: state field name -> the role its updates name
+        self.bounds = dict(bounds)  # stage 4: field name -> ("mask", k) / ("bound", lo, hi)
         self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
         self.landings = None if landings is None else frozenset(landings)  # None: parsed
@@ -557,7 +559,7 @@ def program(model, extents=None):
         _evidence(model, prov0, sites, census),
         landings=framefuse._landings(model),
     )
-    prog.roles = _roles(prog)
+    prog.roles, prog.bounds = _roles(prog)
     return prog
 
 
@@ -584,20 +586,23 @@ def _kept_state(prog, procs, to_alias):
 
 
 def _roles(prog):
-    """``{state field name: role}``: stage 2's update-shape reading of each cell.
+    """``({field: role}, {field: ("mask", k)})``: stage 2's reading of each cell.
 
     Recognition licenses nothing -- an un-roled field stays a legal ``uN`` -- so a cell
-    with no witnessed update, or one carrying an unshaped update, is simply absent."""
+    with no witnessed update, or one carrying an unshaped update, is simply absent. The
+    mask is the bound the cell's own steps are taken under, carried as its evidence."""
     from . import roles  # pylint: disable=import-outside-toplevel  # ``roles`` is a field name
 
     cells = idioms.state_cells(prog)
-    got, _shapes, _residue = roles.census(prog)
-    out = {}
+    got, _shapes, _residue, bounds = roles.census(prog)
+    out, spelled = {}, {}
     for a, role in got.items():
         name = cells.get(a)
         if role is not None and name is not None:
             out[name] = role
-    return out
+            if a in bounds:
+                spelled[name] = ("mask", bounds[a])
+    return out, spelled
 
 
 def dumps(prog):
@@ -627,7 +632,10 @@ def dumps(prog):
     to_alias = sidprog._alias_sub(prog.symbols)
     procs = prog.lines() if to_alias is None else list(map(to_alias, prog.lines()))
     state = _kept_state(prog, procs, to_alias)
-    fields = [sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ())) for f in state]
+    fields = [
+        sidprog._field_line(*f, prog.roles.get(f[0]), ext.get(f[0], ()), prog.bounds.get(f[0]))
+        for f in state
+    ]
     body = ["state {"] + fields + ["}"]
     data_out, cov = sidprog._data_lines(prog.data_decls, prog.mem0)
     body.extend(data_out)
@@ -664,6 +672,7 @@ def parse(text):
         dispatch=doc.dispatch_sets,
         evidence=doc.evidence,
         roles=doc.roles,
+        bounds=doc.bounds,
     )
 
 

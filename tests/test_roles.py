@@ -116,7 +116,7 @@ def test_a_word_lane_write_reads_off_the_lane_and_not_the_read_back():
 
 
 def test_a_bound_spelled_as_a_mask_does_not_hide_the_step_under_it():
-    assert roles._mask_bound(op("INT_AND", (SELF, c(7)))) == SELF
+    assert roles._mask_bound(op("INT_AND", (SELF, c(7)))) == (SELF, 7)
     assert roles._mask_bound(op("INT_AND", (SELF, m(0x2100)))) is None
 
 
@@ -154,7 +154,7 @@ def test_the_census_reads_a_program_s_cells_and_names_its_residue():
         ],
         state=tuple((n, 1, False, []) for n in ("m_2000", "m_2100", "m_3000", "m_2200")),
     )
-    got, shapes, residue = roles.census(prog)
+    got, shapes, residue, _bounds = roles.census(prog)
     assert got == {CELL: "counter", 0x2100: None, ARR: "parameter", 0x2200: "cursor"}
     assert shapes[CELL] == {"dec"} and shapes[0x2100] == {None}
     assert [(u.base, u.shape) for u in residue] == [(0x2100, None)]
