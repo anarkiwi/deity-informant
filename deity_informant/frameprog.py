@@ -143,7 +143,18 @@ class FrameProgram:
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
         self.landings = None if landings is None else frozenset(landings)  # None: parsed
         self._lines = None
+        self._webs = None
         self.demoted = set()  # root extraction's scratch spans, filled by ``lines``
+
+    def webs(self):
+        """``entry -> frameproc.ProcWebs``: the analysis unit, computed once.
+
+        A machine name carries one web per quantity it happens to hold, so the web
+        and not the name is what a denotation can be attached to; a web the
+        analysis refuses keeps its spelling and is counted, never merged away."""
+        if self._webs is None:
+            self._webs = frameproc.webs(self.procs)
+        return self._webs
 
     def lines(self):
         """The artifact's procedure lines, rendered once (§8 step 4's unified graph).

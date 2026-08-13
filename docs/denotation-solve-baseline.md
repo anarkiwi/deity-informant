@@ -79,8 +79,39 @@ All 113 named families: 613 tunes, 596 distinct (596 with the identity erased).
 | header+data bytes | 22356758 |
 | procedure-body bytes | 6008416 (21.2%) |
 
+## (4) L1 -- the web census
+
+Measured with `tools/web_census.py` over the same 624 cached artifacts, off the settled
+statement trees (`frameprog.program(...).webs()`, after `repolish`/`resign`). A web is the
+set of definitions that reach a common read; it is refused, and keeps its machine
+spelling, when it is live where the procedure begins, when an opaque call or a transfer
+the graph cannot enumerate defines or reads it, or when its sites disagree on a width.
+
+| measure | value |
+|---|---|
+| procedures | 1805 |
+| webs | 72095 |
+| refused | 18859 (26.2%) |
+| -- `entry` (live at procedure entry) | 6837 |
+| -- `opaque` (opaque call / unenumerable transfer) | 14334 |
+| -- `width` (sites disagree) | 0 |
+| locals | 32674 |
+| locals carrying 2 or more webs | 7581 (23.2%) |
+| of those, machine names | 4518 |
+| widest single spelling | `a`, 96 webs in one procedure |
+
+Two readings. **The quotient is real and large**: 32,674 spellings carry 72,095 webs, so
+a name-keyed analysis is deciding one thing where the value structure has 2.2, and 4,518
+machine names carry more than one quantity apiece -- §1's Exhibit A is the corpus's shape,
+not Commando's. **The width class is empty**: `_norm_widths` already normalises to one
+spelling per name and rung (d) has fused every pair it can, so no surviving web has sites
+that disagree. The refusals that do bite are `opaque` (14,334) and `entry` (6,837), which
+is what L2's ⊤ population starts from.
+
 ## Coverage
 
+- webs: 624 of 624 cached tunes at full Songlengths, nothing re-emitted; the census reads
+  the same artifacts the emit-identity gate hashes.
 - census and quotient: 624 of 624 cached tunes at full Songlengths, every artifact
   already in `.sweep-cache` at the current package fingerprint -- nothing re-emitted.
   11 tunes carry no SIDId name and are out of the family rollup (they keep the `-`
