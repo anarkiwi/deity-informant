@@ -3830,3 +3830,64 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   one remaining `xfail` is the prototype's
   `no_architectural_register_survives_as_a_value`, whose metric is `zero_arch` and whose
   owner is the residue — the final wave's, not stage 3's.
+
+- **2026-08-12 — the operator recovery is named for the shape it gates on, and two recorded
+  defects land beside it (#205).** The question was why a generic mechanism carried a family's
+  name, and the reading was checked before anything moved: the module gates on a `jmpd` whose
+  SMC operand cells one paired lo/hi handler table writes, takes its stream from the guard's
+  own fetch, its operator range from that guard's floor plus the tables' spacing, and its
+  arities from the arms — every reading off the model, not one transcribed constant. The
+  **mechanism** was already family-free; the **name** was not, and a name is what a reader
+  believes the premise is.
+  (1) **`follin_arity` is `deity_informant/opdispatch.py`** (`git mv`, so the history reads
+  through), with `tests/test_follin_arity.py` → `tests/test_opdispatch.py` and the importers
+  (`frameprog`, `follin_script`, `examples/state_machine_lift.py`) rewired. The docstrings say
+  the shape: the module opens on the `jmpd` it gates on rather than on a script VM in general,
+  and the seats that tile one handler region stop being "voice copies" — a refusal now reads
+  `dispatch seats recover arities [...]`, because what disagrees is the copies of one
+  dispatch, whatever put them there. Nothing about the recovery changed: the arms, the tables
+  and the escape are read exactly as they were.
+  (2) **`follin_script` now says what it is.** No production path imports it — `frameprog`
+  reaches `opdispatch` directly — so it is the test-only witness that the hand `_ARITY` table
+  is discharged, and its docstring opens with that role. The family study is cited
+  (docs/follin-dispatch-study.md) and not embedded: what survives in the module is `_NAME`'s
+  operator labels and no length at all.
+  (3) **D2 — `base[index]:2` is not always two adjacent bytes, and docs/grammar.md said it
+  was.** Where the base is a table declared `lo T`, the emitter renders the **pair row**
+  `(base[i], T[i])` — `frameproc._pair_pack` off the ONE `datadecl.decl_pairs` registry — and
+  the reader takes it back the same way (`grammar._pair_addrs`), so the round trips already
+  pinned the denotation while the document contradicted it. It is load-bearing on real data:
+  `Grid_Runner` declares `table m_1493[3] lo m_1496`, whose row 0 is the pattern pointer
+  `$167B`, and the adjacent reading of the same row gives `$0D7B`. The grammar doc now states
+  the pair row, names the `lo`/`hi` attributes as the disambiguator, and says that a base
+  without a `lo` attribute carries the adjacent word rung (d) fuses.
+  (4) **D4 — a proof named a cell the document does not declare, and the fix is the emitter's
+  own substitution.** Rung (f)'s records read `*zp_FE[y]` where `state { }` declares
+  `ptr_00FE`, so `FrameProgram.proofs` joined to no row by name. The first cut threaded an
+  alias map into `frameptr`'s proof methods and was **withdrawn on its own measurement**: it
+  named the pointer cell and left the index (`m_1441` where the text says `pos_1441`), because
+  an index is an expression and not a cell. What is total is `frameprog._aliased`, one call at
+  the point the program is built, running `sidprog._alias_sub` — the emitter's own
+  bijection-checked body substitution — over every rung's lemmas at once. So the proofs are
+  spelled by the same rule the body is, `framemath` and `framestack` included, and no rung
+  gained a parameter.
+  (5) **The doc sweep, and what it did not find.** `docs/idiom-catalog.md` and the plan's
+  housekeeping entry cite the module by path and now cite `opdispatch`; stage 4's artifact
+  paragraph said "VM families emit their operator sets" and now says a play routine that
+  dispatches through an SMC operand emits the set that shape carries. `docs/frameprog.md` was
+  swept and needed nothing — its Follin mentions are the study's §4 paired-index zip closure
+  (a normative citation) and two named exemplars (the `+$0F`/`+$1E` mirror handlers, the
+  register-poke command), which are examples, not premises. Decision-log entries are left
+  verbatim: they are what was decided when it was decided, and a path they name is read
+  through this entry.
+  (6) **The gates, and the point of running them on a rename.** `emit_identity` reproduces
+  **`101669face8476fab8c4e1e998030370dc3c13bad3e17dbc378e00aa83dac841`, 624 tunes, 0 refused,
+  28,379,441 bytes** — `--expect` passed, so not one artifact byte moved, which is what a
+  landing that claims to move only names owes. `gate_sweep` at full Songlengths is **624 build
+  / 624 evaluate / 624 clean**, zero divergences and zero refusals; `splice_sweep` is **1 bad**
+  (`International_Karate`'s lint, the next landing's), with parse, fixpoint, gate and sites
+  zero, **205,793 sites proved**, `fields` 17,662, `roled` 12,825, `arch` 183,344 and
+  `zero_arch` 2 of 624 — every one of them #204's number unmoved. Suite **2,796 passed / 490
+  skipped / 1 xfailed**, coverage 90.07%, `black --check` and `pylint` 10.00/10 clean. D4 is
+  the reason the proofs could move while the identity did not: `FrameProgram.proofs` is not in
+  the emitted text, so the join it fixes is for a consumer of the program, not of the document.
