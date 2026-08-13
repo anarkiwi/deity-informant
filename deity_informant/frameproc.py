@@ -2537,6 +2537,21 @@ class _Printer:
 
 
 # ---- driver ------------------------------------------------------------------------
+def summaries(flat, play):
+    """The program-wide summary of ``(entry, statements)`` pairs, at its fixpoint.
+
+    A signature is a summary of the bodies, so it is read at the same fixpoint
+    wherever it is read: the build takes one here and ``resign`` takes another."""
+    info = _Info(flat, play)
+    info.summarize()
+    for _round in range(3):
+        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
+        info.summarize()
+        if before == (info.params, info.rets):
+            break
+    return info
+
+
 def procedures(trees, labels, view, dispatch, aliases, play):
     """``(entry, params, rets, statements)`` per procedure under passes 1-3."""
     cell_aliases = dict(aliases or {})
@@ -2544,13 +2559,7 @@ def procedures(trees, labels, view, dispatch, aliases, play):
     for entry, root in trees:
         builder = _Builder(labels, dispatch, view, _Conv(_Names(cell_aliases)))
         procs.append((entry, builder.proc(root)))
-    info = _Info(procs, play)
-    info.summarize()
-    for _round in range(3):
-        before = ({e: list(v) for e, v in info.params.items()}, dict(info.rets))
-        info.summarize()
-        if before == (info.params, info.rets):
-            break
+    info = summaries(procs, play)
     _rewrite_calls(info)
     for _round in range(16):
         pruned = _prune(info)
@@ -3239,12 +3248,42 @@ def must_defines(procs, play=None):
     return {e: info.must[e] & _ALL_REG_LOCALS for e in info.order}
 
 
+def _respell_calls(stmts, info, old):
+    """Move every ``pcall``'s arguments onto its callee's re-derived parameter list.
+
+    A parameter that survives keeps the argument already spelled at it -- the passes
+    may have folded a value in there -- so the refresh writes only what it adds, and
+    a call whose callee's signature is unmoved is textually unmoved."""
+    for i, s in enumerate(stmts):
+        if s[0] == "pcall" and info.callable_.get(s[1]):
+            was = dict(zip(old.get(s[1], ()), s[2]))
+            args = [was[p] if p in was else ("loc", p) for p in info.params[s[1]]]
+            stmts[i] = ("pcall", s[1], args, list(info.rets[s[1]]))
+        for b in _stmt_bodies(stmts[i]):
+            _respell_calls(b, info, old)
+
+
+def resign(procs, play):
+    """Re-derive every signature over the settled bodies, ``pcall`` arguments with them.
+
+    ``repolish`` holds ``params``/``rets`` while its passes move the bodies, so a
+    register they leave live-in is read under a header that never took it
+    (`International_Karate`'s `sub_AE0C`). Nothing promotes: only spellings move."""
+    old = {e: list(pa) for e, pa, _r, _s in procs}
+    info = summaries([(e, stmts) for e, _p, _r, stmts in procs], play)
+    for _e, _pa, _r, stmts in procs:
+        _respell_calls(stmts, info, old)
+    for k, (e, _pa, _r, stmts) in enumerate(procs):
+        procs[k] = (e, list(info.params[e]), list(info.rets[e]), stmts)
+    return info
+
+
 def repolish(procs, play, regions=None):
     """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
 
-    Signatures are already spelled into every ``pcall``, so ``params``/``rets``
-    stay as the build fixed them; only the bodies move, ahead of rung (f)
-    keying ``resolved`` by the final address expressions."""
+    Signatures hold across it -- ``params``/``rets`` stay as the build fixed them
+    and only the bodies move, ahead of rung (f) keying ``resolved`` by the final
+    address expressions -- and ``resign`` re-derives them once the passes settle."""
     info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
     info.summarize()
     info.params = {e: list(p) for e, p, _r, _s in procs}

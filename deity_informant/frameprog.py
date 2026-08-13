@@ -552,6 +552,7 @@ def program(model, extents=None):
     )
     resolved.update(lifted)
     blocked.update(lifted)  # 2b spent its extent on the web: it leaves the top population
+    frameproc.resign(procs, model.play)  # the bodies have settled: the headers are theirs now
     prov0, sites, census = _init_copies(model, decls)
     init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
     state = _drop_transfer_operands(state, procs, symbols)
