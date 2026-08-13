@@ -3832,7 +3832,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   owner is the residue — the final wave's, not stage 3's.
 
 - **2026-08-12 — the operator recovery is named for the shape it gates on, and two recorded
-  defects land beside it (#205).** The question was why a generic mechanism carried a family's
+  defects land beside it (#206).** The question was why a generic mechanism carried a family's
   name, and the reading was checked before anything moved: the module gates on a `jmpd` whose
   SMC operand cells one paired lo/hi handler table writes, takes its stream from the guard's
   own fetch, its operator range from that guard's floor plus the tables' spacing, and its
