@@ -141,13 +141,21 @@ Value sites by constructor: `byte` 36429, `idx` 28270, `const` 3396, `lane` 2369
 | cause | count | what it is |
 |---|---:|---|
 | `op` | 43808 | an operator §3.1's lattice has no constructor for -- counters, accumulators, carries, compares |
-| `entry` | 41737 | the web is live where the procedure begins (§3.2's stated refusal) |
-| `opaque` | 32891 | an opaque call or an unenumerable transfer defines or reads it (§3.2's stated refusal) |
+| `entry` + `opaque` | 74628 | the web is live where the procedure begins, or an opaque call or unenumerable transfer defines or reads it (§3.2's two stated refusals) |
 | `cell` | 22341 | it reads a cell or table that is itself ⊤, almost always for `op` |
 | `addr` | 19701 | a memory site whose address names no declared base: an unlifted pointer, a stack slot |
 | `mixed` | 5301 | the facts join across constructors the lattice does not cross |
 | `call` | 4148 | a call return |
 | `nofact` | 1006 | no site states anything |
+
+**`entry` and `opaque` are reported as their sum, and the earlier split of it
+(41,737 / 32,891) is withdrawn.** A2 chose between the two causes by iterating
+`Web.refusals`, an unordered `set`, so a web carrying both took whichever the
+iteration reached first; the sum is reproducible and the split is not. Forcing the
+two orders over the same twelve tunes gives `entry` 430 / `opaque` 724 one way and
+114 / 1,040 the other, sum 1,154 both ways, and every other cause is unchanged to
+the unit. A3 seeds the parameter refusal first and the opaque one after, so the
+split is decided by the code rather than by a hash seed.
 
 ⊤ by cause, deref sites (16,750 in all): `addr` 12985, `mixed` 2107, `cell` 1658 (the
 pointer's own cell is ⊤).
@@ -218,11 +226,185 @@ escaping transfers (`goto` out of the procedure, a depth-carrying `ret`, `dcall`
 than an entry -- `_Info` has no summary for a label either, which is why the engine's own
 `may` set falls back to every register there too.
 
+## (6) L2b -- the interprocedural scope, the scalar constructors, and ⊤ split
+
+Measured with the same `tools/denote_census.py` over the same 624 cached artifacts.
+**A3 emits no byte either** -- `tools/emit_identity.py` reproduces
+`7a63a89f37370af29ad7b541ff11ef21529cd5b9b7a1ec26c2aced39bbd71e1d`, 28,365,174 bytes,
+0 refused. The solve is `deity_informant/denote.py` §§7-8 of
+[denotation.md](denotation.md); the L2 column is the same corpus re-measured with the
+split instrument added and **no rule, join or refusal touched**, so the two columns are
+comparable cause for cause.
+
+| measure | L2 | L2b |
+|---|---:|---:|
+| value sites non-⊤ | 70884 (29.31%) | **87349 (36.12%)** |
+| deref sites non-⊤ | 85075 (83.55%) | 85216 (83.69%) |
+| **deref sites through a lifted pointer, non-⊤** | **661 of 2319 (28.50%)** | **661 of 2319 (28.50%)** |
+| webs non-⊤ | 19048 (26.62%) | 26008 (36.35%) |
+| persistent cells non-⊤ | 4738 of 18967 | 5737 of 18967 |
+| declared tables non-⊤ | 14389 of 14389 | 14389 of 14389 |
+
+Value sites by constructor: `byte` 36408, `idx` 30019, `pred` 9739, `const` 3613,
+`lane` 2378, `acc` 2246, `count` 1552, `flags` 765, `row` 388, `addr` 241.
+
+Rule tally: `table-row` 20703, `compare-value` 7174, `index-use` 4154, `field-select`
+2245, `counter-step` 2244, `pair-row` 2006, `word-pack` 1788, `carry-value` 1773,
+`cell-read` 1301, `param-arg` 1212, `bit-field` 972, `accumulate` 719, `cursor-step` 641,
+`lane-table` 624, `deref-row` 598, `lane-pack` 412, `addr-row` 98, `affine-const` 33,
+`staged-init` 33. `call-return` reaches 2087 unknowns.
+
+### ⊤, split by §5's two halves
+
+| | L2 refused | L2 unvoc | L2b refused | L2b unvoc |
+|---|---:|---:|---:|---:|
+| **value sites** | **113160** | **57773** | **116719** | **37749** |
+| `entry` | 15287 | | 23169 | |
+| `opaque` | 59341 | | 44470 | |
+| `call` | 4148 | | 1379 | |
+| `recursion` | -- | | 16 | |
+| `mixed` | 5301 | | 11194 | |
+| `addr` | 19701 | | 20822 | |
+| `cell` | 8376 | 13965 | 14209 | 9521 |
+| `nofact` | 1006 | | 1460 | |
+| `op` | | 43808 | | 28228 |
+| **deref sites** | **15269** | **1481** | **16357** | **252** |
+| `addr` | 12985 | | 12985 | |
+| `mixed` | 2107 | | 1966 | |
+| `cell` | 177 | 1481 | 1406 | 252 |
+
+(The L2 `entry`/`opaque` rows are one run of an unordered iteration; only their sum,
+74,628, is reproducible -- see §5 above. L2b's are decided by the code.)
+
+### The verdict: L3 and L4 do NOT proceed
+
+§4 entry 4 gates them on two conditions, and **both fail**:
+
+- **Pointer-deref reach must clear 60%.** It is **28.50%, exactly the L2 baseline**:
+  661 of 2,319. Nothing moved. This is the number that predicts whether L4 removes
+  pointers or renames a few, and it predicts the latter.
+- **The `⊤-refused` half must fall materially.** It **rose**, 113,160 → 116,719
+  (+3.1%). What fell is the *other* half: `⊤-unvocabularised` 57,773 → 37,749
+  (−34.7%), and total ⊤ 170,933 → 154,468 (−9.6%).
+
+Nothing was tuned to move either number and no site was refiled between the halves to
+flatter one. The refused half rising is not a regression, and it is the landing's
+sharpest finding: **a vocabulary extension converts unvocabularised ⊤ into refused ⊤,
+because once a shape has a word what remains is an undischarged premise rather than a
+missing constructor.** It is visible cause by cause -- `op` −15,580 against `mixed`
++5,893 (a web whose facts now name two different constructors where they used to name
+one ⊤), `addr` +1,121 (the lane-inserted pointer words, (7.3) below), and `cell`'s own
+split inverting, 13,965 unvoc → 9,521 while its refused share goes 8,376 → 14,209.
+Read together with the deref half -- where unvocabularised falls 1,481 → 252, an 83%
+drop -- the residue is now legible where it was not, and it is legible as *refusals*.
+
+### (7.1) What the interprocedural scope moved
+
+`param-arg` types 1,212 parameter webs off their call sites' arguments and
+`call-return` flows 2,087 `pcall` returns back. Cause for cause:
+`entry` + `opaque` + `call` + `recursion` goes **78,776 → 69,034 (−12.4%)**.
+
+What still widens, and why, in the charter's own words:
+
+- **`opaque` (44,470)** -- an escaping transfer (`goto` out of the procedure, a
+  depth-carrying `ret`, `dcall`/`dgoto`/`dbr`), a `swc` arm set, and a `call` whose
+  target is a *label inside* a procedure rather than an entry. §4 entry 4 states these
+  widen to ⊤, and they are `frameproc._Graph`'s refusal about the *body*, not a scope
+  the call graph can reach.
+- **`entry` (23,169)** -- the call graph does not close: the play entry itself, a
+  procedure a foreign `goto` enters, an RTS-trick landing, a `call`/`callb`/`swc`
+  target, or a program-wide `open_flow`. `frameproc.Calls` decides this and L2b reuses
+  its decision rather than restating it.
+- **`call` (1,379)** -- the callee's control falls off its end, so the register there is
+  nobody's stated return.
+- **`recursion` (16)** -- §4's charter widens a recursive parameter. The fixpoint would
+  in fact converge through the cycle; the rule is kept because it is what was specified.
+
+### (7.2) roles against the lattice, cell for cell
+
+12,101 cells are in both populations. The two answers match on 3,496 (28.89%, the 356
+cells neither names included) and differ on 8,605 -- but that is two different findings
+and they are counted apart:
+
+| | count |
+|---|---:|
+| both name something | 3626 |
+| -- and name the same thing | 3140 |
+| -- and name different things | **486 (13.4%)** |
+| the lattice is ⊤, roles names it | **8083** |
+| roles names nothing, the lattice names it | **36** |
+| neither names it | 356 |
+
+The matrix (roles → lattice): `parameter→parameter` 1920, `cursor→cursor` 650,
+`accumulator→accumulator` 325, `flags→flags` 156, `counter→counter` 89;
+`cursor→parameter` 231, `parameter→cursor` 118, `cursor→accumulator` 69,
+`parameter→accumulator` 21, `parameter→counter` 20, `parameter→flags` 16,
+`accumulator→cursor` 6, `-→flags` 34, `vm→flags` 2, `cursor→counter` 1,
+`cursor→flags` 1, `accumulator→parameter` 1; ⊤ against `parameter` 4944, `counter` 1290,
+`cursor` 1150, `accumulator` 560, `flags` 133, `vm` 6.
+
+Three readings, none of which is "one of them is wrong":
+
+1. **The dominant disagreement is not a conflict.** 8,083 of 8,605 are cells roles
+   names and the lattice leaves ⊤. roles reads only the *shape of the update term*,
+   which is always available; the lattice must also place the value, and where it
+   cannot the cell is ⊤. That is the two analyses answering different questions, and it
+   is why roles "licenses nothing" is the right status quo for roles as it stands.
+2. **The real conflict is 486 cells (13.4% of the cells both name).** `cursor` against
+   `parameter` in both directions is 349 of them: roles calls a cell a cursor because
+   *an address reads it*, and the lattice calls it `byte`/`const` because its
+   definitions are a declared datum. Both statements are true of the same cell; the
+   vocabulary conflates "what it is" with "what it is used for". This is the finding a
+   deletion of `roles.py` (A5 / L5) must resolve, and it is not resolvable by preferring
+   one side.
+3. **`vm` has no constructor and `pred` has no role.** 6 of the 8 dispatch-subject
+   cells are ⊤ (a dispatch subject is a control fact), and 9,739 predicate sites
+   roles has no word for. The old backlog's "12 of 35" is a *different* comparison --
+   the engine's roles against the prototype's -- and it is not this one; nothing here
+   reproduces or contradicts it.
+
+### (7.3) The pointer residue, named
+
+Pointer-deref reach did not move, and the reason is now measured rather than guessed.
+The census says it first: of the 1,658 ⊤ pointer-rooted derefs, **L2 classed 1,481
+(89.3%) as `⊤-unvocabularised`** -- "the lattice has no word for this" -- and L2b
+classes **252 (15.2%)** so. The other 1,406 became stated refusals, because the shapes
+are the catalog's `word-pack` and `lane-insert` rows and the lattice now reads both.
+
+Read at the fixpoint, deduped, over all 624 artifacts with no error: those 1,658 sites
+go through **262 distinct pointer cells**, whose causes are `addr` 113, `op` 58, `cell`
+56, ⊥ 18, `mixed` 11 and 6 with no unknown at all; site for site, `addr` 1,178, `op`
+249, `cell` 86, ⊥ 117, `nokey` 17, `mixed` 11. Their definitions are **303 `word-pack`,
+335 `lane-insert` and 87 neither**, and the two rows are what decides the number:
+
+- **219 of the 303 `word-pack` definitions do name a declared `lo`/`hi` pair** and yield
+  `addr(S,⊥)`. Not one of them has two byte lanes and no pair; the other 84 have a lane
+  that is not a `byte` at all. **The pair certification is not what is missing.**
+- **The same cells carry 335 `lane-insert` definitions, and a lane insert claims
+  nothing.** It is two stores, and between them the cell holds one old lane and one new
+  one -- a value a deref may reach and that the pair's block set does not contain
+  ([denotation.md](denotation.md) §4, third clause). So the cell is
+  `addr(S,⊥) ⊔ ⊤ = ⊤`. **A cell loaded whole from a declared pair and also patched one
+  lane at a time is the shape**, and what it waits on is an *ordering proof*, not a
+  declaration.
+- **And that proof would not close it either.** 147 of the 262 cells carry a lane
+  insert; of those, only 13 have both merged lanes denoting a declared byte (1 a pair,
+  12 not), and the other 134 have a lane that is itself ⊤ -- `0:top` 53, `0:top|1:top`
+  33, `0:byte|1:top` 21 are the three commonest shapes.
+
+**L4's expected reach is unchanged at 661 of 2,319.** What would move it is an ordering
+proof over lane inserts, and its ceiling is small; neither it nor anything else here is
+a denotation-lattice change, which is why L2b does not make one up.
+
 ## Coverage
 
 - webs and denotations: 624 of 624 cached tunes at full Songlengths, nothing re-emitted;
   both censuses read the same artifacts the emit-identity gate hashes, and the denotation
   census was run twice with identical totals.
+- the L2 column of §6 is the same 624 artifacts re-measured with HEAD's `denote.py`
+  verbatim plus the `Record.src` bookkeeping the split needs; it reproduces every L2
+  number of §5 to the unit, the `entry`/`opaque` split excepted, which is the finding
+  §5 now records.
 - census and quotient: 624 of 624 cached tunes at full Songlengths, every artifact
   already in `.sweep-cache` at the current package fingerprint -- nothing re-emitted.
   11 tunes carry no SIDId name and are out of the family rollup (they keep the `-`

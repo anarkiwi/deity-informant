@@ -226,25 +226,73 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
    sites, both Commando exhibits solve), but only 28.50% of the derefs that go
    through a lifted pointer get a declared block set, so L4's expected reach is
    661 sites and not 2,319. **L3–L6 are not started.**
-4. **L3 — the voice record.** `lane` denotations become `[3]` state arrays and
+4. **L2b — the vocabulary extension, taken instead of proceeding.** L2's ⊤ is
+   two populations the solve excluded by construction, and both are *the same
+   operation at a larger scope* (§7.2), so closing them completes the mechanism
+   rather than adding a rung:
+   **(a) interprocedural scope** — an entry-live web is a **parameter**, so the
+   solve extends across the call graph with procedures as nodes: a parameter's
+   denotation is the meet over its call sites' arguments, a return's flows back
+   to the callers, recursion and unresolvable transfers widen to ⊤. This is
+   46.1% of L2's ⊤ value sites (`entry` 41,737, `opaque` 32,891, `call` 4,148)
+   under one mechanism.
+   **(b) scalar constructors** — 38.7% of L2's ⊤ is counters, accumulators,
+   carries and compares, for which §3.1 has no constructor. They are
+   `⊤-unvocabularised` (§5), and the vocabulary that names them already exists
+   and licenses nothing: `roles.py`'s `cursor`/`accumulator`/`counter`/`flags`.
+   Folding roles in **as lattice constructors** makes one classification where
+   there are two, and it is on A5's deletion list either way — a role that
+   licenses nothing is exactly the "computes the fact and refuses to consume it"
+   shape §2 diagnoses.
+   *Gate: emit-identity byte-identical; the §5 census re-measured with ⊤ split
+   into refused and unvocabularised.* **What it decides:** L3 and L4 proceed
+   together when pointer-deref reach clears **60%** (L2 baseline 28.50%) and the
+   `⊤-refused` half falls materially; below that the finding is about the
+   analysis, not the emitter, and it is reported rather than emitted around.
+   **Taken, and L3/L4 DO NOT PROCEED**: `denote._CallGraph`/`_seed_param`/
+   `_seed_ret` (the scope), the `flags`/`acc`/`count`/`pred` constructors and
+   their rules (the vocabulary), `Solve.klass`/`roles` and the census split,
+   [denotation.md](denotation.md) §§7–8, `tests/test_denote.py`. Emit-identity is
+   byte-identical (`7a63a89f…`, 28,365,174 bytes, 0 refused).
+   **Both gate conditions fail, and they are reported rather than moved.**
+   *Pointer-deref reach is 661 of 2,319 = **28.50%**, exactly the L2 baseline*
+   against the 60% floor. *`⊤-refused` **rose**, 113,160 → 116,719 (+3.1%)*; what
+   fell is `⊤-unvocabularised`, 57,773 → 37,749 (−34.7%), and total ⊤,
+   170,933 → 154,468 (−9.6%). Value-site reach goes 29.31% → 36.12%.
+   That the refused half rises is the landing's own finding and not a regression:
+   **a vocabulary extension converts unvocabularised ⊤ into refused ⊤**, because
+   once a shape has a word what is left is an undischarged premise. The
+   interprocedural scope moves `entry`+`opaque`+`call`+`recursion` 78,776 →
+   69,034 (−12.4%), typing 1,212 parameter webs and 2,087 returns; `opaque`
+   (escaping and unenumerable transfers) is untouched by design, since this entry
+   itself says those widen to ⊤. The pointer number does not move because the
+   premise it waits on is not a lattice one: the 1,658 ⊤ pointer derefs go through
+   262 cells whose definitions are 303 `word-pack` and 335 `lane-insert`, **219 of
+   the packs do name a declared `lo`/`hi` pair and none fails for want of one**,
+   and the same cells are also patched one lane at a time — a shape whose transient
+   makes the pair's block set unsound as `S` without an ordering proof, so
+   `addr(S,⊥) ⊔ ⊤ = ⊤`. What the split did buy there is legibility: L2 classed
+   1,481 of those 1,658 sites `⊤-unvocabularised`, L2b classes 252. Census and
+   diagnosis: [denotation-solve-baseline.md](denotation-solve-baseline.md) §6.
+5. **L3 — the voice record.** `lane` denotations become `[3]` state arrays and
    `sid.v[voice]`; the induction variable is the voice. First landing whose text
    moves. *Gate: Gate FP + reviewed 25-exemplar diff.* Expected reach: the 526
    of 1,200 artifacts carrying the displacement table, the 955 indexing SID by a
    register, and all 432 register-spelled `for` headers.
-5. **L4 — pointer demotion.** `addr(S,·)` state fields are replaced by
+6. **L4 — pointer demotion.** `addr(S,·)` state fields are replaced by
    `idx(T)`; derefs become two-level declared accesses; the grammar gains the
    production and `frameval` learns to resolve it. **This is the first change
    that moves the state shape, so "the text cannot move" is no longer the
    argument — Gate FP is.** Expected reach: the 365 sites §4.6 refuses for
    naming 2+ blocks, plus the `via` stream declarations, which become the block
    table's rows.
-6. **L5 — subsume and delete.** The rung modules the solve replaces come out:
+7. **L5 — subsume and delete.** The rung modules the solve replaces come out:
    `frameptr` (594), `ptrlift` (114), `ptrcert` (1,157), `ptrextent` (183),
    `framefuse` (831), `framemath` (954), `roles` (245) — ~4,078 lines of premise
    code, plus the bespoke bound in `streams`. A landing that adds the solve and
    keeps the ladder beside it has failed: two analyses that can disagree is the
    condition this proposal exists to end.
-7. **L6 — close.** One analysis, one refusal class (⊤), one emitter; the
+8. **L6 — close.** One analysis, one refusal class (⊤), one emitter; the
    backlog's four "reducers" are consequences, not entries: the multi-reader
    forward is a shared denotation (a named value needs no synthesized
    definition), per-frame demotion is a denotation dead at the frame boundary,
@@ -252,13 +300,39 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
 
 ## 5. The metrics, chosen so they cannot be gamed
 
+**Amended after L0 and L2, because two of the three quantitative criteria failed
+on their specification rather than on the work.** Criterion 3 measured the
+witness backend (§7.3). L2's value-site fraction diluted its denominator with
+every scalar site the lattice was never drawn to type, while its deref fraction
+inflated its own with every declared-table address the engine could already
+place — the two errors run in opposite directions, which is what a denominator
+nobody stated looks like. The discipline that follows is the fix:
+
+> **Every metric names its denominator and states what it predicts.** A number
+> that predicts nothing about the next landing is not a gate, whatever it
+> measures.
+
+And the primary number splits, because the two halves mean different things and
+only one of them is a cost:
+
+- **`⊤-refused`** — sites the solve *could* type but will not, because a premise
+  is undischarged (an entry-live web, an opaque transfer, an unplaceable store).
+  This is what soundness costs, and it is the number a landing reduces.
+- **`⊤-unvocabularised`** — sites for which the lattice has no constructor at
+  all. This is a **design gap, not a refusal**: it is closed by adding a
+  constructor, never by weakening a premise, and it must never be reported as if
+  the shape were absent from the corpus.
+
 Reported together, per landing, corpus-wide:
 
-- **`⊤-sites`** — value sites with no denotation. The primary number; it is what
-  the work actually reduces.
+- **`⊤-refused` and `⊤-unvocabularised`**, separately, each by cause.
+- **Pointer-deref reach** — derefs through a lifted pointer that get a declared
+  block set. **L2 baseline: 661 of 2,319 = 28.50%.** This is the number that
+  predicts whether L4 removes pointers or merely renames a few, and it is L4's
+  own gate.
 - **`arch` / `temps`** — machine names and emitter temporaries, the existing
-  `splice_sweep` predicate. Kept **only** as a pair with `⊤-sites`: `arch` down
-  with `⊤-sites` flat is a rename and is rejected in review.
+  `splice_sweep` predicate. Kept **only** as a pair with `⊤-refused`: `arch`
+  down with the ⊤ population flat is a rename and is rejected in review.
 - **`zero_arch`** — tunes wearing no machine shape (today 2 of 624).
 - **Gate FP and emit-identity**, unchanged in role.
 
