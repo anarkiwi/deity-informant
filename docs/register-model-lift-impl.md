@@ -596,8 +596,9 @@ code, not the other way round.
   (rung (d) 13, rung (f) 4, `frameproc` 2, `framestack` 1, `datadecl` 1) and 6 the prototype's,
   every one of them landing 4's. The witness pin flipped at #191, below.
   *(Items 5, 6, 3, 4, 7 and 8 landed after this record: the shredder ledger stands at **0**
-  pins — every owner has landed — and the suite's one strict xfail is the prototype's.
-  Decision log, below.)*
+  pins — every owner has landed — and the prototype's last one,
+  `no_architectural_register_survives_as_a_value`, flipped with the naming pass. The
+  ledger is **0** strict xfails and the suite carries none. Decision log, below.)*
 - `tools/splice_sweep.py` against its control (`out/splice_s4l4c.json` against
   `out/splice_s4pr1.json`): **71 bad, zero new and thirteen fixed** — the thirteen all
   divergences (50 → 37) — parse and fixpoint **624 of 624**, **207,184 rewritten sites
@@ -636,12 +637,14 @@ off the ledger, and the reasons in the tests carry the same mechanism words.
    **green**. But **the re-basing alone flips only two of the seven**, and the scoping that
    measured this is what says so; the other five owe the engine something and their entries
    below name it. Per pin:
-   `no_architectural_register_survives_as_a_value` — **not the re-basing**. Measured on
-   `Hubbard_Rob/Commando`, the artifact carries **151 register tokens** (`x` 73, `a` 38, `y`
-   31, `cflag` 7, `vflag` 2), of which exactly one is a `for` header and 150 are body
-   spellings, and corpus-wide only 2 of 624 tunes are at zero. Re-basing makes this pin *read
-   the artifact*; what flips it is the residue itself, and `zero_arch` is the metric that
-   steers it.
+   `no_architectural_register_survives_as_a_value` — **LANDED**, below, and the scoping was
+   right that the re-basing is not what flips it. What flips it is the naming pass the
+   residue always named: a register is a machine location, so what earns a name is the
+   **web** — the definitions that reach a common read — and the prototype had no such pass
+   at all. The engine's own `arch` is untouched by it: measured on `Hubbard_Rob/Commando`
+   the artifact still carries 151 register tokens, corpus-wide `zero_arch` is still 2 of
+   624, and the pin was always the prototype's projection. This is the suite's **last**
+   pin: it holds **zero** `xfail`s.
    `smc_dispatch_cells_are_not_data_state` — **LANDED (#202)**, below: a cell every read of
    which decides where the machine jumps is the transfer, and the transfer is already spelled,
    so the state row beside it goes.
@@ -4120,3 +4123,59 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `deity_informant/` module is touched. Suite **2,807 passed / 490 skipped / 1 xfailed**
   hermetic (2,804 before; three new cases, no pin flipped). `black --check` and `pylint`
   clean. The pin stands with #208's owner: naming the residue is the next part.
+- **2026-08-13 — the trunk re-basing, part 2: a register is a machine location, so what
+  earns a name is the web — and the suite's last pin flips.** #208 named the owner of the
+  53 remaining register tokens as "the prototype's render layer, still un-re-based", and
+  named the mechanism as a local per definition where `frameproc._Names` would allocate
+  one. Built and measured, the mechanism is that and one thing more, and the one thing
+  more is what makes it an analysis rather than a rename.
+  (1) **What a name is for.** A register is shared by every value that passes through it,
+  so renaming `a` to `t9` would say nothing. What is one value is the **web**: the
+  definitions that reach a common read. `name_locals` computes reaching definitions over
+  `Flat`'s own CFG — the one `dead_local_defs` already uses — unions the defs at each read,
+  and gives each web one local. On the prototype's `PLAY` before the folds there are **31**
+  webs over 7 register names, so the pass *separates* far more than it renames: two
+  independent loads of `a` are two values and get two names, while a loop-carried counter's
+  `y = $00` and `y = (y + $01)` are one web and get one, because the back edge makes each
+  reach the other's read.
+  (2) **What it refuses, which is the reason a green assertion means something.** Three
+  kinds of web get no name: one live where the procedure begins (a live-in the ABI owns,
+  not the body), one an opaque `call` defines (the callee's, spelled by no statement here),
+  and one whose sites do not agree on a width — the last resting directly on part 1, since
+  the width is the site's and a web read as a byte at one site and as a word at another is
+  not one width-typed quantity. On this artifact **none** of the three fires
+  (`art["unnamed"] == []`), and the pin asserts that alongside its own predicate, so the
+  text cannot go clean by a web being quietly left alone.
+  (3) **The flip, on the engine's own instrument.** `splice_sweep.arch_shapes` — the
+  widened predicate the final wave's first landing built — reads the prototype's `role_text`
+  at `arch` **53 → 0** and `temps` **25 → 53**, reproducing #208's recorded 53/25 exactly
+  before the change. The four shapes close together because they were one mechanism: the
+  unnamed load destination, its read-back, the branch predicate over it and the VM's
+  computed SID index are all reads of one web
+  (`voice_t6 = mem[…]` / `if (voice_t6 <s $00)` / `sid.reg[voice_t6] = …`). The trade is
+  honest and is the same one landing 1 measured on the engine: the residue moves alphabet.
+  It is not the same *claim*, though — a temporary is a definition a reader can follow to
+  its one value, and a register is a location, which is what the pin has said since #180.
+  (4) **The pin flips, and the suite reaches ZERO xfails.** `2,804 / 490 / 1` becomes
+  **2,809 passed / 490 skipped / 0 xfailed** hermetic. `test_every_pin_names_the_landing_
+  that_flips_it` now asserts the enumeration is *empty* and keeps #180's law for anything
+  re-pinned later. Nothing was forced: `art["unnamed"]` is empty, the frame projection,
+  the write-application grid, the independent engine, the sidplayfp/sidtrace oracle and the
+  round-trip 6502 witness all hold unchanged over the renamed program — which is what makes
+  the renaming semantics-preserving rather than asserted.
+  (5) **The ratchets go down, not up.** `LINE_PIN` **324 → 311** and `COST_PIN` **773 →
+  759**, both re-pinned at the measured value. The rendered line count does not move at all
+  (311 either way): the pass renames, it does not add statements. Re-rolling is unmoved —
+  voices 1 and 2 still unify, voice 3 still refuses by its filter block, and the per-voice
+  webs alpha-rename through `_voice_name`'s existing local branch, so the loop's declared
+  parameters are what they were.
+  (6) **What is still owed, and is not this.** The pipeline still folds `eqlift_mem.emit`'s
+  text. `emit`/`emit_mem` and `eqlift_annotate` therefore do not retire yet, the fold layer
+  is not yet the smaller one #193 measured on the artifact, and `classify_roles` still
+  re-derives roles the artifact declares. Those are the trunk's part 3; the pin does not
+  wait on them and no longer names them.
+  (7) **The gates.** `emit_identity` **624 tunes, 0 refused, 28,365,174 bytes**,
+  `7a63a89f…` reproduced under `--expect`: no `deity_informant/` module is touched and the
+  corpus does not move. `gate_sweep` at full Songlengths **624 of 624 clean**, zero
+  divergences and zero refusals. `splice_sweep` **0 bad**. `black --check` and `pylint`
+  clean.
