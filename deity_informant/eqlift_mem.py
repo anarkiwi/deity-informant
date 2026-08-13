@@ -1350,9 +1350,10 @@ def render_proc(
     ``_wall_may``'s map, which bounds a call's wall to the callee's may-define set."""
     deadline = None if budget is None else time.monotonic() + budget
     wall_may = wall_may or {}
-    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0}
+    stt = {"env": {}, "mem": mem0(), "k": 0, "held": frozenset(), "memv": 0, "cyc": 0, "bit": {}}
     defs, terms, locw, mempairs = [], [], {}, []
     src, seeds, memdefs, wrspan, held, volatile = {}, [], [], {}, {}, set()
+    copy = {}  # SSA version -> the version a plain ``x = y`` copied it from
     inedge, tgts = {}, _targets(stmts)
     dfs, ch = _Defs(src), _Chain()
 
@@ -1384,6 +1385,28 @@ def render_proc(
         stt["held"], stt["memv"] = kept, pre_ver
         return remember(m, kept)
 
+    def held_bit(ver):
+        """The constant an enclosing branch established for this version, else None.
+
+        A copy is an alias, so the fact reaches ``cflag0 = cflag`` as well as ``cflag``;
+        the key is the SSA version, so a redefinition or a havoc simply misses."""
+        seen = set()
+        while ver not in stt["bit"] and ver in copy and ver not in seen:
+            seen.add(ver)
+            ver = copy[ver]
+        return stt["bit"].get(ver)
+
+    def guard_facts(s):
+        """``(then, else)`` maps of version -> value the branch establishes on each arm.
+
+        A branch tests nonzero, so a guard that is its own truth value is a *constant* in
+        each arm: the carry a ``BCC`` splits on is $00 below it and $01 beside it."""
+        if s[2][0] != "loc" or not E.bit_valued(s[2], src):
+            return {}, {}
+        ver = stt["env"].get(s[2][1], s[2][1] + ".0")
+        on, off = {ver: 1}, {ver: 0}  # the arms the flag is set and clear on, in that order
+        return (on, off) if s[1] == "if" else (off, on)
+
     def conv(e):
         k = e[0]
         if k == "const":
@@ -1391,7 +1414,9 @@ def render_proc(
         if k == "loc":
             # a parameter is read at a width no ``asg`` in this procedure states
             locw.setdefault(e[1], e[2] if len(e) > 2 else 1)
-            return E.loc(stt["env"].get(e[1], e[1] + ".0"))
+            ver = stt["env"].get(e[1], e[1] + ".0")
+            got = held_bit(ver)
+            return E.loc(ver) if got is None else E.num(got, 1)
         if k == "mem":
             vol = _may_read_vol(e[1], dfs, None if foot is None else foot.ext)
             m = memk(i64(fresh())) if vol else stt["mem"]
@@ -1516,6 +1541,8 @@ def render_proc(
                 if E.frameproc._reads_vol(s[2]):
                     volatile.add(id(nd))  # an input read's order is observable (iota)
                 held[id(nd)] = stt["env"].get(s[1], s[1] + ".0")
+                if s[2][0] == "loc":
+                    copy[name] = stt["env"].get(s[2][1], s[2][1] + ".0")
                 stt["env"][s[1]] = name
                 src[s[1]] = s[2]
             elif k == "st":
@@ -1541,14 +1568,19 @@ def render_proc(
                 ci = add(cond)
                 pre_env, pre_mem = dict(stt["env"]), stt["mem"]
                 pre_src, pre_held, pre_ver = dict(src), stt["held"], stt["memv"]
+                yes, no = guard_facts(s)
+                pre_bit = stt["bit"]
+                stt["bit"] = dict(pre_bit, **yes)
                 then = walk(s[3])
                 then_env = dict(stt["env"])
                 stt["env"], stt["mem"], stt["held"] = dict(pre_env), pre_mem, pre_held
                 stt["memv"] = pre_ver
                 src.clear()
                 src.update(pre_src)
+                stt["bit"] = dict(pre_bit, **no)
                 els = walk(s[4])
                 els_env = dict(stt["env"])
+                stt["bit"] = pre_bit
                 stt["env"], stt["mem"] = dict(pre_env), join_mem(pre_mem, s, pre_held, pre_ver)
                 src.clear()
                 src.update(pre_src)

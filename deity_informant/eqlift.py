@@ -507,6 +507,18 @@ def _r_borrow_word(A, w):
     return _pk(A, hi, A.sub(al, bl, 1)), A.sub(_pk(A, ah, al), _pk(A, bh, bl), 2)
 
 
+def _r_wide_cmp(A, w):
+    """What the borrow chain *tests*, where ``borrow_word`` states what it computes.
+
+    ``SEC / SBC lo / SBC hi / BCS`` leaves the branch a compare nested in a compare; the
+    two byte borrows concatenate to one width-2 compare of the concatenated operands."""
+    del w
+    al, ah, bl, bh = (A.tvar(n, 1) for n in ("al", "ah", "bl", "bh"))
+    lo = A.ule(A.zext(bl), A.zext(al))
+    hi = A.ule(A.add(A.zext(bh), A.zext(A.sub(A.num(1, 1), lo, 1)), 2), A.zext(ah))
+    return hi, A.ule(_pk(A, bh, bl), _pk(A, ah, al))
+
+
 def _r_bit_fuse(mn):
     """A bitwise op distributes over the pack, so two lanes of it are one word op."""
 
@@ -725,6 +737,7 @@ RULES = (
         ("carry_fuse_in", (2,), _r_carry_fuse_in),
         ("borrow_fuse", (2,), _r_borrow_fuse),
         ("borrow_word", (2,), _r_borrow_word),
+        ("wide_cmp", (2,), _r_wide_cmp),
         ("shl_fuse", (2,), _r_shl_fuse(False)),
         ("rol_fuse", (2,), _r_shl_fuse(True)),
         ("shr_fuse", (2,), _r_shr_fuse(False)),
@@ -833,6 +846,39 @@ _OPS = {
 }
 
 _CMP_TAGS = frozenset(("eq", "ne", "ult", "ule", "slt", "sge"))
+
+# a pass-1 op whose result is 0 or 1, and the ops that keep that property
+BIT_OPS = frozenset(
+    (
+        "INT_EQUAL",
+        "INT_NOTEQUAL",
+        "INT_LESS",
+        "INT_LESSEQUAL",
+        "INT_SLESS",
+        "INT_SLESSEQUAL",
+        "INT_CARRY",
+    )
+)
+BIT_COMB = frozenset(("INT_OR", "INT_AND", "INT_XOR"))
+
+
+def bit_valued(e, defs=None, seen=()):
+    """True where a pass-1 expression computes 0 or 1, so a branch on it is its value.
+
+    ``defs`` resolves a local to what defined it, which is how a flag reaches its
+    branch: ``frameproc`` names the compare before ``BCC`` reads the name."""
+    k = e[0]
+    if k == "const":
+        return e[1] in (0, 1)
+    if k == "loc":
+        got = None if defs is None else defs.get(e[1])
+        return got is not None and e[1] not in seen and bit_valued(got, defs, seen + (e[1],))
+    if k != "op":
+        return False
+    if e[1] in BIT_OPS:
+        return True
+    return e[1] in BIT_COMB and all(bit_valued(c, defs, seen) for c in e[2])
+
 
 _EGG_FNS = {
     "num": num,

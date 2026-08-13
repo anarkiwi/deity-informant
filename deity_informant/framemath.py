@@ -17,18 +17,7 @@ from .structured import Proof
 
 _W = ("word",)  # the packed lanes, standing for the word local inside a form
 _WNAME = "@w"
-_FLAGS = frozenset(
-    (
-        "INT_EQUAL",
-        "INT_NOTEQUAL",
-        "INT_LESS",
-        "INT_LESSEQUAL",
-        "INT_SLESS",
-        "INT_SLESSEQUAL",
-        "INT_CARRY",
-    )
-)
-_BITWISE = frozenset(("INT_OR", "INT_AND", "INT_XOR"))
+_FLAGS, _BITWISE = EQ.BIT_OPS, EQ.BIT_COMB  # one alphabet, shared with the path condition
 _COUNT = {1: "INT_ADD", 0xFF: "INT_SUB"}  # the predicated step, times the predicate
 _COMM = frozenset(("add", "band", "bor", "bxor"))
 _ITERS, _STEP, _VARIANTS = 25, 1, 8
