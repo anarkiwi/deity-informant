@@ -4195,3 +4195,31 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   corpus does not move. `gate_sweep` at full Songlengths **624 of 624 clean**, zero
   divergences and zero refusals. `splice_sweep` **0 bad**. `black --check` and `pylint`
   clean.
+- **2026-08-13 — the trunk re-basing, part 3 (part): the header is the binding, and a
+  store is as wide as the value it stores.** Two of part 3's own mechanisms, taken apart
+  from the fold rewrite because neither depends on it and both are measured on the
+  artifact today. Neither moves an emitted byte on either path.
+  (1) **`resolve_calls` resolves the promotion.** A leaf callee reached by
+  `a, x = sub_1485(a)` was silently *retired* while its site stayed — the walk matched
+  `("call", entry)` alone, so feeding it the artifact produced a dangling call. The site
+  is now substituted the way its header reads: the parameter copies
+  (`sub_1485(x)` against the argument `a` is `x = a`), the callee's own statements, then
+  the returns read back where the targets differ from them. Two things refuse rather than
+  guess: a parameter copy that would overwrite a register a later argument still reads,
+  and a header that does not agree with the callee's own `ret`. And a callee any site
+  still reaches **stays**, so a refusal can no longer leave a call with no body — which is
+  what the negative case asserts.
+  (2) **The store takes the site's width.** `Machine` wrote one byte for every `asg`,
+  whatever the value's width, and truncated every local to a byte. It now writes
+  `_wid(rhs)` little-endian bytes to a cell, the same number to a SID sink (so
+  `sid.v1.freq_lo:2 = …` is the two-register write it says it is), and keeps a local at
+  its own width. On the eqlift path this changes **nothing** and cannot: measured, that
+  text has **zero** cell or sink stores at a width other than one. On the artifact there
+  are **32**, over 20 distinct destinations, so the evaluator could not have executed it
+  at all before this.
+  (3) **The gates.** Suite **2,811 passed / 490 skipped / 0 xfailed** hermetic (two new
+  cases). `emit_identity` **624 tunes, 0 refused, 28,365,174 bytes**, `7a63a89f…`
+  reproduced under `--expect`; `gate_sweep` **624 of 624 clean**, zero divergences and
+  zero refusals; `splice_sweep` **0 bad**, `arch` 193,979 and `temps` 54,986 unmoved.
+  `black --check` and `pylint` clean. What part 3 still owes is the fold rewrite and the
+  role decision, both priced in the entry above.

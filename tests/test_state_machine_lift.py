@@ -748,6 +748,43 @@ def test_round_trip_witness_is_frame_identical(art):
     assert framelog.canonical(frames) == framelog.canonical(art["orig_frames"])
 
 
+def test_the_promoted_call_resolves_by_its_header(art):
+    """``a, x = sub_1485(a)`` against ``sub_1485(x) -> a, x``: the header is the binding.
+
+    Without the header there is no binding, so the promotion refuses -- and the callee
+    then stays, because a resolution that leaves a site unreached would be a dangling
+    call rather than a smaller program."""
+    text = art["artifact"]
+    sigs = sml.proc_signatures(text)
+    raw = {e: sml.extract_proc(text, e) for e in sml.proc_entries(text)}
+    got, resolved = sml.resolve_calls(raw, sigs)
+    assert resolved == (0x1485,) and list(got) == [PLAY]
+    lines = []
+    sml._render(got[PLAY], lines, 0)  # pylint: disable=protected-access
+    site = [i for i, ln in enumerate(lines) if ln.strip() == "x = a"]
+    assert site, "the parameter copy the header states is missing"
+    for i in site:
+        assert [ln.strip() for ln in lines[i + 1 : i + 3]] == ["a = m_14A7[x]", "x = m_14BD[x]"]
+    kept, none = sml.resolve_calls(raw, {})
+    assert not none and sorted(kept) == sorted(raw), "a refused promotion dropped its callee"
+    assert [s for s in _walk(kept[PLAY]) if s[0] == "pcall"], "the refused site lost its call"
+
+
+def test_a_store_is_as_wide_as_the_value_it_stores(art):
+    """The site's width reaches memory: a ``:2`` store writes two bytes, not one."""
+    ram = bytearray(sml.run_vm(art["mem"], 0)[1])
+    prog = [
+        ("asg", "zp_49", sml.parse_expr("$1234:2")),
+        ("asg", "zp_4B", sml.parse_expr("$56")),
+        ("asg", "sid.v1.freq_lo", sml.parse_expr("$ABCD:2")),
+    ]
+    machine = sml.Machine({PLAY: sml.Flat(prog)}, ram)
+    machine.frame()
+    assert (machine.ram[0x49], machine.ram[0x4A]) == (0x34, 0x12)
+    assert (machine.ram[0x4B], machine.ram[0x4C]) == (0x56, ram[0x4C])
+    assert machine.out == [(0, 0xCD), (1, 0xAB)], machine.out
+
+
 def _walk_names(x):
     """Every ``name`` leaf of a folded statement or term."""
     if isinstance(x, tuple) and x and x[0] == "name":

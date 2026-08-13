@@ -1322,22 +1322,53 @@ def _leaf_callee(stmts):
     return body
 
 
-def resolve_calls(procs):
+def _promoted(s, body, sigs):
+    """The promoted call substituted at its site, or None where the binding clobbers.
+
+    The header is what binds: ``a, x = sub_1485(a)`` against ``sub_1485(x) -> a, x`` is
+    the parameter copies, the callee's own statements, and the returns read back. A
+    parameter copy that would overwrite a register a later argument still reads refuses,
+    because then the copies are not the header's binding."""
+    _kw, targets, entry, args = s
+    params, rets = sigs.get(entry, ((), ()))
+    got = body[-1][1] if body and body[-1][0] == "ret" else ()
+    if (len(params), len(rets)) != (len(args), len(targets)) or tuple(rets) != tuple(got):
+        return None
+    for k, p in enumerate(params):
+        if any(p in _names(a, set()) for a in args[k + 1 :]):
+            return None
+    copies = [("asg", p, a) for p, a in zip(params, args) if (a[0], a[1]) != ("name", p)]
+    back = [("asg", t, ("name", r, 1)) for t, r in zip(targets, rets) if t != r]
+    return copies + list(body[:-1]) + back
+
+
+def resolve_calls(procs, sigs=None):
     """Resolve every leaf callee into its call sites; return ``(procs, resolved)``.
 
     A resolved callee is reached by no root afterwards -- the rule root extraction
-    retires an unobservable store by -- so it leaves with the calls."""
+    retires an unobservable store by -- so it leaves with the calls. A callee some site
+    still reaches stays, so a refused promotion can never leave a dangling call."""
+    sigs = sigs or {}
     bodies = {e: _leaf_callee(s) for e, s in procs.items() if e != PLAY}
     bodies = {e: b for e, b in bodies.items() if b is not None}
     if not bodies:
         return procs, ()
+    left = set()
 
     def walk(sl):
         out = []
         for s in sl:
             if s[0] == "call" and s[1] in bodies:
-                out.extend(bodies[s[1]])
+                out.extend(
+                    bodies[s[1]][:-1] if bodies[s[1]][-1:] == [("ret", ())] else bodies[s[1]]
+                )
                 continue
+            if s[0] == "pcall" and s[2] in bodies:
+                got = _promoted(s, procs[s[2]], sigs)
+                if got is not None:
+                    out.extend(got)
+                    continue
+                left.add(s[2])
             if s[0] == "if":
                 s = ("if", s[1], walk(s[2]), walk(s[3]))
             elif s[0] == "loop":
@@ -1347,7 +1378,9 @@ def resolve_calls(procs):
             out.append(s)
         return out
 
-    return {e: walk(s) for e, s in procs.items() if e not in bodies}, tuple(sorted(bodies))
+    got = {e: walk(s) for e, s in procs.items()}
+    gone = sorted(e for e in bodies if e not in left)
+    return {e: s for e, s in got.items() if e not in gone}, tuple(gone)
 
 
 def prove_row(lo, z3):
@@ -1872,16 +1905,17 @@ class Machine:
             s = ops[pc]
             op = s[0]
             if op == "asg":
-                sid = sid_target(s[1])
-                v = self._val(s[2], env)[0]
+                sid, (v, w) = sid_target(s[1]), self._val(s[2], env)
+                v &= (1 << (8 * w)) - 1  # the store is as wide as the value it stores
                 if sid is not None:
-                    self._write(SID + sid, v)
+                    for j in range(w):
+                        self._write(SID + sid + j, v >> (8 * j))
                 else:
                     addr = cell_addr(s[1])
                     if addr is not None:
-                        self.ram[addr] = v & 0xFF
+                        self.ram[addr : addr + w] = v.to_bytes(w, "little")
                     else:
-                        env[s[1]] = v & 0xFF
+                        env[s[1]] = v
             elif op == "sto":
                 base = 0 if s[1] == "mem" else _store_addr(s[1])
                 assert base is not None, "span store through an unnamed row: %r" % (s[1],)
