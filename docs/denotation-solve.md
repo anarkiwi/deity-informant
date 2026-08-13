@@ -182,7 +182,9 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
 
 1. **L0 — instrument.** Denotation census and the §5 metrics over the corpus, no
    engine change. Produces the honest baseline the rest is measured against.
-   *Gate: emit-identity byte-identical.*
+   *Gate: emit-identity byte-identical.* **Taken**: `tools/denotation_l0.py`,
+   `docs/denotation-solve-baseline.md` (census and quotient over all 624 cached
+   artifacts, re-lift over 18 tunes of the nine largest families).
 2. **L1 — webs before names.** The analysis unit becomes the web; the printer
    still spells registers. *Gate: emit-identity byte-identical* — a pure
    refactor, and a strong one, because any text movement is a bug.
