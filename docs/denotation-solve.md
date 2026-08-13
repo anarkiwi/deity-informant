@@ -249,6 +249,31 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
    together when pointer-deref reach clears **60%** (L2 baseline 28.50%) and the
    `⊤-refused` half falls materially; below that the finding is about the
    analysis, not the emitter, and it is reported rather than emitted around.
+   **Taken, and L3/L4 DO NOT PROCEED**: `denote._CallGraph`/`_seed_param`/
+   `_seed_ret` (the scope), the `flags`/`acc`/`count`/`pred` constructors and
+   their rules (the vocabulary), `Solve.klass`/`roles` and the census split,
+   [denotation.md](denotation.md) §§7–8, `tests/test_denote.py`. Emit-identity is
+   byte-identical (`7a63a89f…`, 28,365,174 bytes, 0 refused).
+   **Both gate conditions fail, and they are reported rather than moved.**
+   *Pointer-deref reach is 661 of 2,319 = **28.50%**, exactly the L2 baseline*
+   against the 60% floor. *`⊤-refused` **rose**, 113,160 → 116,719 (+3.1%)*; what
+   fell is `⊤-unvocabularised`, 57,773 → 37,749 (−34.7%), and total ⊤,
+   170,933 → 154,468 (−9.6%). Value-site reach goes 29.31% → 36.12%.
+   That the refused half rises is the landing's own finding and not a regression:
+   **a vocabulary extension converts unvocabularised ⊤ into refused ⊤**, because
+   once a shape has a word what is left is an undischarged premise. The
+   interprocedural scope moves `entry`+`opaque`+`call`+`recursion` 78,776 →
+   69,034 (−12.4%), typing 1,212 parameter webs and 2,087 returns; `opaque`
+   (escaping and unenumerable transfers) is untouched by design, since this entry
+   itself says those widen to ⊤. The pointer number does not move because the
+   premise it waits on is not a lattice one: the 1,658 ⊤ pointer derefs go through
+   262 cells whose definitions are 303 `word-pack` and 335 `lane-insert`, **219 of
+   the packs do name a declared `lo`/`hi` pair and none fails for want of one**,
+   and the same cells are also patched one lane at a time — a shape whose transient
+   makes the pair's block set unsound as `S` without an ordering proof, so
+   `addr(S,⊥) ⊔ ⊤ = ⊤`. What the split did buy there is legibility: L2 classed
+   1,481 of those 1,658 sites `⊤-unvocabularised`, L2b classes 252. Census and
+   diagnosis: [denotation-solve-baseline.md](denotation-solve-baseline.md) §6.
 5. **L3 — the voice record.** `lane` denotations become `[3]` state arrays and
    `sid.v[voice]`; the induction variable is the voice. First landing whose text
    moves. *Gate: Gate FP + reviewed 25-exemplar diff.* Expected reach: the 526

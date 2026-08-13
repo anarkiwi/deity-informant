@@ -16,22 +16,39 @@ CHANNELS = 3  # the SID's voice count: the domain a ``lane`` denotation is affin
 BOT = ("bot",)
 TOP = ("top",)
 
-T_ENTRY = "entry"  # the web is live where the procedure begins
+T_ENTRY = "entry"  # a parameter whose call sites this program cannot enumerate
 T_OPAQUE = "opaque"  # an opaque call or an unenumerable transfer defines it
-T_CALL = "call"  # a call return: the callee's own denotation is not solved
+T_CALL = "call"  # a call return the callee's own returns do not state
+T_RECUR = "recursion"  # the procedure is on a call cycle, which §4's charter widens at
 T_MIXED = "mixed"  # the facts join across constructors the lattice does not cross
 T_OP = "op"  # an operator with no transfer rule
 T_ADDR = "addr"  # a memory site whose address names no declared base
 T_CELL = "cell"  # it reads a cell or table whose own denotation is ⊤
 T_NOFACT = "nofact"  # no site states anything about it
 T_ROUNDS = "rounds"  # the fact set had not settled at the round cap
-CAUSES = (T_ENTRY, T_OPAQUE, T_CALL, T_MIXED, T_OP, T_ADDR, T_CELL, T_NOFACT, T_ROUNDS)
+CAUSES = (
+    T_ENTRY,
+    T_OPAQUE,
+    T_CALL,
+    T_RECUR,
+    T_MIXED,
+    T_OP,
+    T_ADDR,
+    T_CELL,
+    T_NOFACT,
+    T_ROUNDS,
+)
 
-KINDS = ("const", "lane", "idx", "row", "addr", "byte")
+UNVOCAB = (T_OP,)  # §5's split: the one cause that is a design gap, not a refusal
+REFUSED, UNVOC = "refused", "unvocabularised"
+
+KINDS = ("const", "lane", "idx", "row", "addr", "byte", "flags", "acc", "count", "pred")
 RULES = (  # the transfer rules of docs/denotation.md §4, tallied so the census reads per rule
     "lane-table",
     "table-row",
     "pair-row",
+    "word-pack",
+    "lane-pack",
     "deref-row",
     "cell-read",
     "staged-init",
@@ -40,10 +57,50 @@ RULES = (  # the transfer rules of docs/denotation.md §4, tallied so the census
     "cursor-step",
     "affine-const",
     "index-use",
+    "counter-step",
+    "accumulate",
+    "bit-field",
+    "compare-value",
+    "carry-value",
+    "param-arg",
+    "call-return",
 )
+
+ROLE_OF = {  # roles.py's vocabulary as lattice constructors: one classification, not two
+    "idx": "cursor",
+    "row": "cursor",
+    "addr": "cursor",
+    "count": "counter",
+    "acc": "accumulator",
+    "flags": "flags",
+    "const": "parameter",
+    "byte": "parameter",
+    "lane": "parameter",
+}
 
 _ROUNDS = 24  # the fixpoint cap every other sweep in this package runs under
 _BITS = ("INT_AND", "INT_OR", "INT_XOR", "INT_LEFT", "INT_RIGHT", "INT_SRIGHT")
+_SHIFTS = ("INT_LEFT", "INT_RIGHT", "INT_SRIGHT")  # only the first operand is the datum
+_COMPARES = (  # docs/idiom-catalog.md's ``compare-value``, given the constructor it owed
+    "INT_EQUAL",
+    "INT_NOTEQUAL",
+    "INT_LESS",
+    "INT_LESSEQUAL",
+    "INT_SLESS",
+    "INT_SLESSEQUAL",
+    "BOOL_AND",
+    "BOOL_OR",
+    "BOOL_XOR",
+    "BOOL_NEGATE",
+)
+_CARRIES = ("INT_CARRY", "INT_SCARRY", "INT_SBORROW")  # ... and its ``carry-value``
+_LANES = 2  # a pointer word's byte lanes: the 6502 assembles a u16 from two
+_STOPS = ("ret", "goto", "cont", "brk", "unobs", "dbr", "dgoto", "igoto", "dcall")
+
+COUNT = ("count",)  # roles' ``counter``: some step is the machine's own DEC
+ACC = ("acc",)  # roles' ``accumulator``: stepped by any other constant, or by a value
+FLAGS = ("flags",)  # roles' ``flags``: the update recombines the quantity bitwise
+PRED = ("pred",)  # a one-bit result: the catalog's two scalar named-unknowns, closed
 
 
 def kind(d):
@@ -102,6 +159,21 @@ def join(a, b):  # pylint: disable=too-many-return-statements
         return hi if _legal_row(lo[1], _extent(hi)) else TOP
     if lo[0] in ("idx", "row") and hi[0] == "byte":
         return lo
+    return _join_scalar(lo, hi)
+
+
+def _join_scalar(lo, hi):
+    """The scalar crossings: a datum stepped or masked is what the update reads it as.
+
+    ``acc ⊑ count`` is roles' own precedence stated as an order -- a quantity some
+    step decrements is a counter whatever its other steps do -- so the chain
+    ``⊥ ⊑ acc ⊑ count ⊑ ⊤`` is two high and the height stays finite."""
+    if hi[0] == "pred":
+        return PRED if lo[0] == "const" and lo[1] in (0, 1) else TOP
+    if hi[0] in ("acc", "count"):
+        return hi if lo[0] in ("const", "byte", "acc") else TOP
+    if hi[0] == "flags":
+        return FLAGS if lo[0] in ("const", "byte") else TOP
     return TOP
 
 
@@ -120,6 +192,74 @@ def _consts(vals):
     return TOP
 
 
+def _lane_term(n):
+    """``(lane, value)`` where ``n`` is one byte lane of a word: the catalog's ``word-pack``."""
+    if frameproc.is_op(n, "INT_LEFT", 2, 2) and n[2][1] == frameproc.SHIFT8:
+        return 1, frameproc.strip_zext(n[2][0])
+    return (0, n[2][0]) if frameproc.is_op(n, "INT_ZEXT", 2, 1) else None
+
+
+_KEPT = {0x00FF: 0, 0xFF00: 1}  # the lane a mask preserves of the word it reads back
+
+
+def _kept_lane(n, self_read):
+    """The lane an ``x & K`` term preserves of the quantity's own word, else None."""
+    if not frameproc.is_op(n, "INT_AND", 2, 2):
+        return None
+    for w, k in frameproc.commuted(n[2]):
+        if k[0] == "const" and k[1] in _KEPT and self_read(w):
+            return _KEPT[k[1]]
+    return None
+
+
+def _word_lanes(x, self_read):
+    """``(lane -> value, preserved lanes)`` where ``x`` assembles a two-byte word.
+
+    The catalog's ``word-pack`` writes both lanes in one term and its ``lane-insert``
+    writes one and reads the other back, so both shapes are this decomposition and
+    the second is completed by the definition that writes the other lane."""
+    if not frameproc.is_op(x, "INT_OR", 2, 2):
+        return None
+    lanes, kept = {}, set()
+    for n in x[2]:
+        got = _lane_term(n)
+        if got is not None and got[0] not in lanes:
+            lanes[got[0]] = got[1]
+            continue
+        got = _kept_lane(n, self_read)
+        if got is None or got in kept:
+            return None
+        kept.add(got)
+    return None if not lanes or set(lanes) | kept != set(range(_LANES)) else (lanes, kept)
+
+
+def _cyclic(edges):
+    """The entries on a call cycle: §4's charter widens a recursive parameter to ⊤."""
+    reach = {e: set(t) for e, t in edges.items()}
+    for _round in range(len(reach) + 1):
+        grew = False
+        for ts in reach.values():
+            more = set().union(*(reach.get(t, ()) for t in ts)) if ts else set()
+            grew |= not more <= ts
+            ts |= more
+        if not grew:
+            break
+    return frozenset(e for e, ts in reach.items() if e in ts)
+
+
+def _entered(procs):
+    """Procedures a ``goto`` from another procedure enters: a caller no call site names."""
+    targets = {}
+    for entry, _pa, _rets, stmts in procs:
+        targets[entry] = {s[1] for _v, _i, s in frameproc.envs(stmts) if s[0] == "goto"}
+    out = set()
+    for entry, _pa, _rets, stmts in procs:
+        alien = frozenset(t for e2, ts in targets.items() if e2 != entry for t in ts)
+        if any(s[0] == "label" and s[1] in alien for _v, _i, s in frameproc.envs(stmts)):
+            out.add(entry)
+    return out
+
+
 def _affine(data):
     """``(a, b)`` where ``data`` is the non-degenerate affine image ``a + b·v``."""
     if len(data) != CHANNELS:
@@ -131,7 +271,7 @@ def _affine(data):
 class Record:
     """One unknown's solution and why: the rules that fired and what they read."""
 
-    __slots__ = ("key", "den", "cause", "rules", "sel", "spell")
+    __slots__ = ("key", "den", "cause", "rules", "sel", "spell", "half", "src")
 
     def __init__(self, key, spell):
         self.key = key
@@ -140,6 +280,8 @@ class Record:
         self.cause = T_NOFACT
         self.rules = set()
         self.sel = set()
+        self.half = {}  # lane -> what a lane-insert definition wrote there
+        self.src = None  # the unknown a ``cell`` refusal inherits its §5 class from
 
     def __repr__(self):
         return "Record(%s=%s, %s, %d sel)" % (
@@ -207,6 +349,35 @@ class Decls:
         return out
 
 
+class _CallGraph:
+    """The enumerable call sites of each procedure, and the cycles among them.
+
+    ``frameproc.Calls`` already decides when a parameter's call sites are the whole
+    story -- an open computed transfer, an RTS-trick landing, a foreign ``goto``, no
+    caller at all; this adds the statement paths the solve evaluates an argument at,
+    and the call cycles §4's charter widens a recursive parameter at."""
+
+    def __init__(self, prog, trees):
+        self.open = prog.landings is None  # a parsed program states no RTS-trick landing
+        opaque = _entered(prog.procs) | set(prog.landings or ())
+        self.calls = frameproc.Calls(prog.procs, prog.play, opaque)
+        self.sites, edges = {}, {}
+        for entry, _pa, _rets, _st in prog.procs:
+            for path, s in trees[entry].items():
+                if s[0] == "pcall":
+                    self.sites.setdefault(s[1], []).append((entry, path, s[2]))
+                if s[0] in ("pcall", "call", "callb"):
+                    edges.setdefault(entry, set()).add(s[1])
+        self.recursive = _cyclic(edges)
+
+    def args(self, entry, name):
+        """``(caller, path, argument)`` per call site, None where the call graph is open."""
+        if self.open or entry in self.recursive or self.calls.args(entry, name) is None:
+            return None
+        k = self.calls.params[entry].index(name)
+        return [(c, p, a[k]) for c, p, a in self.sites.get(entry, ())]
+
+
 def _paths(stmts, out, path=()):
     """``statement path -> statement`` over one procedure's forest."""
     for i, s in enumerate(stmts):
@@ -270,6 +441,8 @@ class Solve:
         self.facts = {}
         self.rounds = 0
         self._trees = {e: _paths(stmts, {}) for e, _p, _r, stmts in prog.procs}
+        self._body = {e: stmts for e, _p, _r, stmts in prog.procs}
+        self._cg = _CallGraph(prog, self._trees)
         self._chan = set()
         self._sites = []
         self._width = {}
@@ -304,12 +477,57 @@ class Solve:
             pw = self.pws[entry]
             for web in pw.webs:
                 key = self._key_web(entry, web)
-                for cls in web.refusals:
-                    self._top(key, T_ENTRY if cls == frameproc.WEB_ENTRY else T_OPAQUE)
+                if frameproc.WEB_ENTRY in web.refusals:
+                    self._seed_param(entry, web.name, key)
+                if web.refusals - {frameproc.WEB_ENTRY}:
+                    self._top(key, T_OPAQUE)
             for path, s in self._trees[entry].items():
                 self._seed_stmt(entry, path, s, pw)
             self._seed_uses(entry, stmts, ())
         self._seed_image()
+
+    def _seed_param(self, entry, name, key):
+        """§4's interprocedural scope: a parameter is the meet over its arguments.
+
+        A recursive procedure, an open computed transfer and an escaping entry all
+        leave the call sites unenumerable, and there the parameter keeps L2's own
+        refusal rather than a claim the call graph does not carry."""
+        if entry in self._cg.recursive:
+            return self._top(key, T_RECUR)
+        got = self._cg.args(entry, name)
+        if got is None:
+            return self._top(key, T_ENTRY)
+        for caller, path, arg in got:
+            self._fact(key, ("arg", caller, path, arg))
+        return None
+
+    def _seed_ret(self, entry, path, s, pw):
+        """A ``pcall`` return is what the callee's own ``ret`` statements leave live."""
+        for name in s[3]:
+            web = pw.at_def(path, name)
+            if web is None:
+                continue
+            key = self._key_web(entry, web)
+            got = self._ret_webs(s[1], name)
+            if got is None:
+                self._top(key, T_CALL)
+            for k in got or ():
+                self._fact(key, ("retof", k))
+
+    def _ret_webs(self, callee, name):
+        """The webs a callee leaves in ``name`` at its returns, None where control falls off."""
+        body = self._body.get(callee)
+        if not body or body[-1][0] not in _STOPS:
+            return None  # control falls off the end: the register there is nobody's return
+        pw, out = self.pws[callee], []
+        for path, s in self._trees[callee].items():
+            if s[0] != "ret":
+                continue
+            web = pw.at_use(path, name)
+            if web is None:
+                return None
+            out.append(self._key_web(callee, web))
+        return out or None
 
     def _seed_image(self):
         """What init left in a persistent unknown: the image's own bytes are a definition."""
@@ -331,9 +549,10 @@ class Solve:
             web = pw.at_def(path, s[1])
             if web is not None:
                 self._for_facts(self._key_web(entry, web), s)
-        elif k in ("pcall", "call"):
-            names = s[3] if k == "pcall" else sorted(frameproc._ALL_REG_LOCALS)
-            for n in names:
+        elif k == "pcall":
+            self._seed_ret(entry, path, s, pw)
+        elif k == "call":
+            for n in sorted(frameproc._ALL_REG_LOCALS):
                 web = pw.at_def(path, n)
                 if web is not None:
                     self._top(self._key_web(entry, web), T_CALL)
@@ -443,10 +662,10 @@ class Solve:
             grew |= self._role(entry, path, got[1], ("row", den[1], self.decls.span(den[1])))
         return grew
 
-    def _resolve(self, key):
+    def _resolve(self, key):  # pylint: disable=too-many-branches
         """One unknown's denotation: the value facts joined, then the role's refinement."""
         rec = self.rec[key]
-        rec.rules, rec.sel, rec.cause = set(), set(), None
+        rec.rules, rec.sel, rec.cause, rec.half, rec.src = set(), set(), None, {}, None
         facts = self.facts.get(key, ())
         if not facts:
             rec.den, rec.cause = TOP, T_NOFACT
@@ -456,6 +675,7 @@ class Solve:
             if f[0] == "role":
                 role = join(role, (f[1], f[2], f[3]))
         cause, consts, value, init, defs = None, [], BOT, None, False
+        pending = False  # a definition whose own inputs have not settled says nothing yet
         for f in facts:
             if f[0] == "role":
                 continue
@@ -468,10 +688,24 @@ class Solve:
             elif f[0] == "lit":
                 defs = True
                 value = join(value, self._refine(f[1], role, rec))
+            elif f[0] == "retof":
+                defs = True
+                rec.rules.add("call-return")
+                rec.sel.add(f[1])
+                got = self.val.get(f[1], BOT)
+                pending |= got == BOT
+                value = join(value, self._refine(got, role, rec))
             else:
                 defs = True
+                if f[0] == "arg":
+                    rec.rules.add("param-arg")
                 got = self._ev(f[1], f[2], f[3], rec)
+                pending |= got == BOT
                 value = join(value, self._refine(got, role, rec))
+        if rec.half:
+            got = self._lane_pack(rec)
+            pending |= got == BOT
+            value = join(value, self._refine(got, role, rec))
         if consts:
             got = _consts(consts)
             if got[0] == "lane" and key not in self._chan:
@@ -479,7 +713,7 @@ class Solve:
             else:
                 rec.rules.add("affine-const")
             value = join(value, self._refine(got, role, rec))
-        if init is not None:
+        if init is not None and not pending:
             value = self._staged(value, init, role, rec, defs or bool(consts))
         rec.den = value
         rec.cause = cause or rec.cause or (T_MIXED if value == TOP else None)
@@ -540,8 +774,7 @@ class Solve:
                 return ("byte", den[1])
             if den == BOT:
                 return BOT  # the pointer has no denotation yet: this round says nothing
-            rec.cause = rec.cause or T_CELL
-            return TOP
+            return self._top_cell(("c", got[0]), rec)
         base, idx = frameproc.addr_split(addr)
         if base is None:
             rec.cause = rec.cause or T_ADDR
@@ -576,13 +809,20 @@ class Solve:
             return got
         return ("byte", frozenset([base]))
 
+    def _top_cell(self, src, rec):
+        """A ⊤ read out of another unknown, carrying which unknown it came from.
+
+        §5's split is a property of the *cause*, so a site refused for reading a
+        refused cell must inherit that cell's class rather than be filed as a gap."""
+        if rec.cause is None:
+            rec.cause, rec.src = T_CELL, src
+        return TOP
+
     def _through(self, key, rec):
         """Read one persistent unknown; a ⊤ there is a ⊤ here, and says so."""
         rec.sel.add(key)
         got = self.val.get(key, BOT)
-        if got == TOP:
-            rec.cause = rec.cause or T_CELL
-        return got
+        return self._top_cell(key, rec) if got == TOP else got
 
     def _declared(self, base, width, rec):
         """A read of a declared datum at a constant address: the declaration is the fact."""
@@ -604,44 +844,112 @@ class Solve:
         if mn in ("INT_ZEXT", "COPY"):
             return self._ev(entry, path, kids[0], rec)
         if mn in ("INT_ADD", "INT_SUB"):
-            return self._ev_add(entry, path, kids, rec)
-        if mn in _BITS and kids[-1][0] == "const":
-            return self._ev_field(entry, path, kids, rec)
+            return self._ev_add(entry, path, mn, kids, rec)
+        if mn in _COMPARES:
+            rec.rules.add("compare-value")
+            return PRED
+        if mn in _CARRIES:
+            rec.rules.add("carry-value")
+            return PRED
+        if mn in _BITS:
+            return self._ev_bits(entry, path, mn, kids, rec)
         rec.cause = rec.cause or T_OP
         return TOP
 
     def _ev_pack(self, entry, path, x, rec):
-        """The catalog's ``word-pack`` of a declared ``lo``/``hi`` row: §3.3's pair rule.
+        """The catalog's ``word-pack``/``lane-insert`` of a declared ``lo``/``hi`` row.
 
         The two columns the printer spells ``T[i]:2`` are two byte loads until the
-        renderer joins them, so the pointer's own definition is this shape."""
+        renderer joins them, and that is one store of one word. A driver that writes
+        one lane at a time is a different shape and ``_lane_pack`` says why."""
         got = frameproc.packed_cells(x)
-        if got is None or got[2] is None:
+        if got is not None and got[2] is not None:
+            pair = frameproc.pair_site(self.decls.pairs, got[0], got[2])
+            if pair is not None and pair[0] == got[1]:
+                rec.rules.add("pair-row")
+                sel = self._index_key(entry, path, got[2])
+                if sel is not None:
+                    rec.sel.add(sel)
+                return ("addr", self.decls.blocks(got[0]), BOT)
+        got = _word_lanes(x, lambda n: self._self_read(n, entry, path, rec))
+        if got is None:
             return None
-        pair = frameproc.pair_site(self.decls.pairs, got[0], got[2])
-        if pair is None or pair[0] != got[1]:
-            return None
-        rec.rules.add("pair-row")
-        sel = self._index_key(entry, path, got[2])
-        if sel is not None:
-            rec.sel.add(sel)
-        return ("addr", self.decls.blocks(got[0]), BOT)
-
-    def _ev_field(self, entry, path, kids, rec):
-        """A mask, set or shift against a literal keeps the datum's declared source."""
-        base = self._ev(entry, path, kids[0], rec)
-        if base == BOT:
+        lanes = {ln: self._ev(entry, path, v, rec) for ln, v in got[0].items()}
+        if got[1]:  # a lane insert: the preserved lane is another definition's own write
+            for ln, den in lanes.items():
+                rec.half[ln] = join(rec.half.get(ln, BOT), den)
             return BOT
-        if base[0] == "byte":
+        rec.rules.add("word-pack")
+        return self._lane_word(lanes, rec)
+
+    def _lane_pack(self, rec):
+        """A word written one lane at a time: recognised, and claimed for nothing.
+
+        Between the two stores the cell holds one old lane and one new one, and that
+        transient is a value a deref may reach, so the pair's block set is not a
+        sound ``S`` here the way a single ``word-pack`` store's is. The shape is
+        named so the cause reads ``addr`` -- a word naming no declared base -- rather
+        than ``op``, which would file a stated refusal as a missing constructor."""
+        if BOT in rec.half.values():
+            return BOT  # a lane has no denotation yet: this round says nothing
+        rec.rules.add("lane-pack")
+        rec.cause = rec.cause or T_ADDR
+        return TOP
+
+    def _lane_word(self, lanes, rec):
+        """``addr(blocks(T), ⊥)`` where two byte lanes are one declared pair's columns."""
+        if BOT in lanes.values():
+            return BOT  # a lane has no denotation yet: this round says nothing
+        if set(lanes) == set(range(_LANES)) and all(v[0] == "byte" for v in lanes.values()):
+            for b in sorted(lanes[0][1]):
+                got = self.decls.pairs.get(b)
+                if got is not None and got[0] in lanes[1][1]:
+                    return ("addr", self.decls.blocks(b), BOT)
+        rec.cause = rec.cause or T_ADDR
+        return TOP
+
+    def _self_read(self, n, entry, path, rec):
+        """Whether ``n`` reads the very unknown being resolved: roles' self-reference."""
+        if rec.key[0] == "c":
+            return n[0] == "mem" and frameproc.addr_split(n[1]) == (rec.key[1], None)
+        if rec.key[0] != "w" or n[0] != "loc":
+            return False
+        web = self.pws[entry].at_use(path, n[1])
+        return web is not None and ("w", entry, web.root) == rec.key
+
+    def _ev_bits(self, entry, path, mn, kids, rec):
+        """A bit operator: a field select over declared sources, or roles' own ``flags``."""
+        datum = kids[:1] if mn in _SHIFTS else kids
+        if any(self._self_read(frameproc.strip_zext(c), entry, path, rec) for c in datum):
+            rec.rules.add("bit-field")
+            return FLAGS
+        parts = [self._ev(entry, path, c, rec) for c in datum]
+        if BOT in parts:
+            return BOT
+        if FLAGS in parts:
+            rec.rules.add("bit-field")
+            return FLAGS
+        if any(p[0] == "byte" for p in parts) and all(p[0] in ("byte", "const") for p in parts):
             rec.rules.add("field-select")
-            return base
+            return ("byte", frozenset().union(*(p[1] for p in parts if p[0] == "byte")))
         rec.cause = rec.cause or T_OP
         return TOP
 
-    def _ev_add(self, entry, path, kids, rec):
-        parts = [self._ev(entry, path, c, rec) for c in kids]
-        if BOT in parts:
-            return BOT
+    def _ev_add(self, entry, path, mn, kids, rec):
+        """``addr + row`` is ``addr``; the quantity's own operand is its own denotation.
+
+        Reading the self operand out of the solution rather than re-evaluating it is
+        what the fixpoint means, and it keeps a cell's own ⊤ from being charged to the
+        step that reads it back."""
+        me = [
+            i
+            for i, c in enumerate(kids)
+            if self._self_read(frameproc.strip_zext(c), entry, path, rec)
+        ]
+        parts = [
+            self.val.get(rec.key, BOT) if i in me else self._ev(entry, path, c, rec)
+            for i, c in enumerate(kids)
+        ]
         at = [i for i, p in enumerate(parts) if p[0] in ("addr", "row", "idx")]
         if len(at) == 1 and all(p[0] == "const" for i, p in enumerate(parts) if i != at[0]):
             base = parts[at[0]]
@@ -650,8 +958,27 @@ class Solve:
                 return base
             rec.rules.add("cursor-step")
             return (base[0], base[1], None)
-        rec.cause = rec.cause or T_OP
-        return TOP
+        if BOT in parts:
+            return BOT  # the quantity has no denotation yet: this round says nothing
+        return self._ev_step(mn, kids, parts, me, rec)
+
+    def _ev_step(self, mn, kids, parts, me, rec):
+        """roles' own reading: a quantity stepped by a constant counts, by a value accumulates.
+
+        A step of the machine's own ``DEC`` is roles' ``counter`` and every other step
+        its ``accumulator``, which is why ``acc ⊑ count``: the join is that precedence.
+        A subtraction the quantity is not the left of is a negation, not a step."""
+        if len(me) != 1 or (mn == "INT_SUB" and me[0]):
+            rec.cause = rec.cause or T_OP
+            return TOP
+        rest = [p for i, p in enumerate(parts) if i != me[0]]
+        if not all(p[0] == "const" for p in rest):
+            rec.rules.add("accumulate")
+            return ACC
+        rec.rules.add("counter-step")
+        mod = 1 << (8 * frameproc.loc_width(kids[me[0]]))
+        dec = (1 if mn == "INT_SUB" else -1) % mod
+        return COUNT if any(p[1] % mod == dec for p in rest) else ACC
 
     def denote_use(self, entry, path, name):
         """The denotation of one read of ``name``, ``⊤`` where the web refuses."""
@@ -663,8 +990,20 @@ class Solve:
         web = self.pws[entry].at_def(path, name)
         return TOP if web is None else self.val.get(self._key_web(entry, web), TOP)
 
+    def klass(self, key, seen=None):
+        """§5's split of one unknown's ⊤: what soundness costs, or what has no word.
+
+        ``cell`` is not a class of its own -- it is whatever the unknown it reads
+        was -- so the chain is followed, and a cycle among ⊤ cells reads as refused."""
+        rec = self.rec.get(key)
+        if rec is None or rec.cause is None:
+            return REFUSED
+        if rec.cause != T_CELL or rec.src is None or (seen and key in seen):
+            return UNVOC if rec.cause in UNVOCAB else REFUSED
+        return self.klass(rec.src, (seen or frozenset()) | {key})
+
     def value_sites(self):
-        """``(denotation, cause)`` per local occurrence: the §5 ``⊤-sites`` population."""
+        """``(denotation, cause, class)`` per local occurrence: §5's ``⊤-sites`` population."""
         out = []
         for entry, _pa, _rets, _stmts in self.prog.procs:
             pw = self.pws[entry]
@@ -677,12 +1016,12 @@ class Solve:
 
     def _site_den(self, web, entry):
         if web is None:
-            return (TOP, T_OPAQUE)
+            return (TOP, T_OPAQUE, REFUSED)
         key = self._key_web(entry, web)
-        return (self.val.get(key, TOP), self.rec[key].cause)
+        return (self.val.get(key, TOP), self.rec[key].cause, self.klass(key))
 
     def deref_sites(self):
-        """``(denotation, cause, pointer-rooted)`` per non-constant memory access.
+        """``(denotation, cause, class, pointer-rooted)`` per non-constant memory access.
 
         A deref site owes a denotation for *where it lands*, so it is typed by the
         address's ``addr(S,·)`` and not by the byte the access yields."""
@@ -691,7 +1030,8 @@ class Solve:
             rec = Record(("s", entry, path), "site")
             rec.cause = None
             den = self._addr_den(entry, path, n, rec)
-            out.append((den, rec.cause, n[1] in self.res))
+            klass = REFUSED if rec.src is None else self.klass(rec.src)
+            out.append((den, rec.cause, klass, n[1] in self.res))
         return out
 
     def _addr_den(self, entry, path, n, rec):
@@ -700,8 +1040,7 @@ class Solve:
         if got is not None:
             den = self.val.get(("c", got[0]), BOT)
             if den[0] != "addr":
-                rec.cause = T_CELL
-                return TOP
+                return self._top_cell(("c", got[0]), rec)
             return ("addr", den[1], BOT if got[1] is None else self._index_den(entry, path, got[1]))
         base, idx = frameproc.addr_split(addr)
         if base is None:
@@ -728,14 +1067,34 @@ class Solve:
             idx = idx[2][0]
         return ("const", idx[1]) if idx[0] == "const" else TOP
 
+    def roles(self):
+        """``cell -> the roles-vocabulary name its denotation carries``, None where ⊤.
+
+        The lattice's own reading of what roles.py classifies, so the two can be put
+        side by side on the cells both name (docs/denotation-solve.md §4 entry 4(b)).
+        A constructor roles has no word for answers with its own name, so "the
+        vocabularies differ" never reads as "the lattice said nothing"."""
+        out = {}
+        for key, rec in self.rec.items():
+            if key[0] == "c":
+                got = None if rec.den in (TOP, BOT) else ROLE_OF.get(rec.den[0], rec.den[0])
+                out[key[1]] = got
+        return out
+
     def census(self):
-        """The plan's §5 census over one program: sites, constructors and ⊤ by cause."""
+        """The plan's §5 census over one program: sites, constructors and ⊤ by cause.
+
+        ⊤ is reported twice over: ``*top_`` is every ⊤ by cause and ``*unv_`` the
+        share of it §5 calls ``⊤-unvocabularised``, so the refused half is the
+        difference and neither can be moved without moving the other."""
         out = {"procs": len(self.prog.procs), "unknowns": len(self.rec)}
         out.update({"value_sites": 0, "deref_sites": 0, "deref_ptr": 0, "deref_ptr_typed": 0})
         out.update({"v_" + k: 0 for k in KINDS})
         out.update({"d_" + k: 0 for k in KINDS})
         out.update({"vtop_" + c: 0 for c in CAUSES})
+        out.update({"vunv_" + c: 0 for c in CAUSES})
         out.update({"dtop_" + c: 0 for c in CAUSES})
+        out.update({"dunv_" + c: 0 for c in CAUSES})
         out.update({"u_" + k: 0 for k in ("w", "c", "t")})
         out.update({"utyped_" + k: 0 for k in ("w", "c", "t")})
         out.update({"rule_" + r: 0 for r in RULES})
@@ -744,17 +1103,20 @@ class Solve:
             out["utyped_" + key[0]] += rec.den not in (TOP, BOT)
             for r in rec.rules:
                 out["rule_" + r] += 1
-        for den, cause in self.value_sites():
+        for den, cause, klass in self.value_sites():
             out["value_sites"] += 1
             if den in (TOP, BOT):
-                out["vtop_" + (cause if den == TOP else T_NOFACT)] += 1
+                got = cause if den == TOP else T_NOFACT
+                out["vtop_" + got] += 1
+                out["vunv_" + got] += den == TOP and klass == UNVOC
             else:
                 out["v_" + den[0]] += 1
-        for den, cause, ptr in self.deref_sites():
+        for den, cause, klass, ptr in self.deref_sites():
             out["deref_sites"] += 1
             out["deref_ptr"] += ptr
             if den in (TOP, BOT):
                 out["dtop_" + (cause or T_NOFACT)] += 1
+                out["dunv_" + (cause or T_NOFACT)] += klass == UNVOC
             else:
                 out["d_" + den[0]] += 1
                 out["deref_ptr_typed"] += ptr
