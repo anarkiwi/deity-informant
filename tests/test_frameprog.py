@@ -398,12 +398,60 @@ def test_parameter_and_return_inference():
     assert frameprog.dumps(frameprog.loads(text)) == text
 
 
+def test_a_settled_body_re_derives_its_signature_and_moves_its_arguments():
+    """A frozen signature is re-read off the bodies, and every ``pcall`` follows it."""
+    inc = ("op", "INT_ADD", (("loc", "y"), ("const", 1, 1)), 1)
+    caller = [
+        ("pcall", 0x2000, [], []),  # the build's spelling, before the callee grew a live-in
+        ("st", ("const", 0xD400, 2), ("loc", "a")),
+        ("ret", False),
+    ]
+    procs = [(0x1000, [], [], caller), (0x2000, [], [], [("asg", "a", inc), ("ret", False)])]
+    frameproc.resign(procs, 0x1000)
+    assert (procs[1][1], procs[1][2]) == (["y"], ["a"])
+    assert caller[0] == ("pcall", 0x2000, [("loc", "y")], ["a"])
+    assert "  a = sub_2000(y)" in frameproc.render_lines(procs)
+
+
+def test_a_raw_call_is_not_promoted_by_the_signature_refresh():
+    """The refresh moves arguments; how a call is made is the build's decision."""
+    procs = [
+        (0x1000, [], [], [("call", 0x2000), ("ret", False)]),
+        (0x2000, [], [], [("asg", "a", ("const", 5, 1)), ("ret", False)]),
+    ]
+    frameproc.resign(procs, 0x1000)
+    assert procs[0][3][0] == ("call", 0x2000)
+
+
 def _commando():
     return [
         pytest.param(path, sub, secs, id="Hubbard_Rob-Commando")
         for path, sub, secs in corpus_params(HVSC)
         if path.stem == "Commando" and path.parent.name == "Hubbard_Rob"
     ]
+
+
+def _karate():
+    return [
+        pytest.param(path, sub, secs, id="Hubbard_Rob-International_Karate")
+        for path, sub, secs in corpus_params(HVSC)
+        if path.stem == "International_Karate" and path.parent.name == "Hubbard_Rob"
+    ]
+
+
+@pytest.mark.parametrize("sid,subtune,secs", _karate())
+def test_real_tune_international_karate_header_takes_its_live_in(sid, subtune, secs):
+    """The last parse-and-evaluate lint: a signature frozen before the passes settled.
+
+    ``repolish`` left `a` live-in at the play entry under a header that took only
+    `sp`, so the emitted text read a local it never defined; `emit` lints, and did
+    not survive that. The refresh is what the header says here."""
+    mem, _load, init, play = load_psid(sid.read_bytes())
+    mem[0xD418] = 0x0F
+    model, _ev = S.decompile(mem, init, play, int(secs * 50), subtune)
+    text = frameprog.emit(model)  # check_locals: this raised before the refresh
+    assert "sub_AE0C(a, sp) {" in text
+    assert frameprog.dumps(frameprog.loads(text)) == text
 
 
 @pytest.mark.parametrize("sid,subtune,secs", _commando())

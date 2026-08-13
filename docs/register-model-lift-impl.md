@@ -786,7 +786,14 @@ orders anything. All of them may land in any order and in parallel.
   the pair is 16-bit, so `candidates` should read `framemath`'s lifted sites as a fourth
   source. Owner: rung (d), scheduled with plan item 4 (the widening guard), which is the next
   landing to touch this rung.
-- **The parse-and-evaluate gap, now owned** (owner: landing 6, and it is three mechanism
+- **The parse-and-evaluate gap — CLOSED (2026-08-13), and what follows is what it was.**
+  `splice_sweep` reports **0 bad of 624**: parse, lint, fixpoint, gate and sites all zero. The
+  faults and the divergences went with rung (d)'s per-site premise and the denotation landing,
+  the eight opaque-call lint tunes with the promotion, and the last one —
+  `International_Karate` — with the signature refresh (decision log, below). The zero-new law
+  now guards an **empty set**, so a tune that emits text it cannot parse and evaluate is a
+  regression with a name rather than one more of a standing population. The record as it stood
+  (owner: landing 6, and it is three mechanism
   families, not one). *(Mostly closed 2026-08-11 by rung (d)'s landing: the aliased
   partner-table parse defect was its carrier. Decision log, below.)* **71** of 624 tunes emit text that faults or diverges when parsed back
   and evaluated, where the analysed program does not — **25 evaluation faults, 9 lint, 37
@@ -3891,3 +3898,56 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   skipped / 1 xfailed**, coverage 90.07%, `black --check` and `pylint` 10.00/10 clean. D4 is
   the reason the proofs could move while the identity did not: `FrameProgram.proofs` is not in
   the emitted text, so the join it fixes is for a consumer of the program, not of the document.
+- **2026-08-13 — the signature refresh: a header is re-read off the bodies once the passes
+  settle, and the parse-and-evaluate gap closes (#207).** `repolish` freezes `params`/`rets` by
+  design — the `pcall`s already spell them — while its prune, inline, word fold and `if`
+  factoring move the bodies underneath. On `International_Karate` that left `a` live-in at the
+  play entry under a header reading `sub_AE0C(sp)`: a fresh `_Info` over the finished program
+  computes `livein[$AE0C] = {a, sp}`, the text reads a local it never defines, and
+  `frameprog.emit` — which lints — could not emit the tune at all. **The emitter already had
+  the right answer**: `eqlift_mem.render_ctx` builds exactly that fresh summary and renders
+  the *body* against it, while the *header* came from the frozen tuple. So this is not new
+  analysis; it is the header being the same reading the body already is.
+  (1) **`frameproc.resign`, after the last pass that moves a statement** (`frameprog.program`,
+  below rung (g)). It re-derives `params`/`rets` at the build's own fixpoint — that
+  summarize-until-stable loop is now `frameproc.summaries`, one function with two callers
+  instead of two copies — and writes them back into the procedure tuples.
+  (2) **The arguments move with the header, and only where they must.** The first cut respelled
+  every `pcall` argument as `("loc", param)` and the first test that saw it said no:
+  `test_parameter_and_return_inference` reads `a = sub_2000($05)`, a constant the inline pass
+  folded into the argument, and a blanket respelling puts the local back — text quality lost,
+  and a definition the pruner removed could leave the local undefined. So `_respell_calls`
+  keys the old arguments by the callee's *old* parameter names, keeps every surviving one and
+  writes `("loc", p)` only for a parameter the refresh adds. A call whose callee's signature
+  is unmoved is textually unmoved, which is why the corpus diff is the size it is.
+  (3) **Nothing is promoted.** A raw `call` stays a raw call: callability is the build's
+  reading, and re-promoting on a fresh one would change *how* a call is made rather than what
+  it passes. `test_a_raw_call_is_not_promoted_by_the_signature_refresh` pins that.
+  (4) **The corpus moved, and it is two shapes read off the diffs.** `emit_identity`:
+  **624 tunes, 0 refused, 28,381,180 bytes**, aggregate
+  `73824f53941b1d6494e93c6bb1ec5393821096ea99b59ad6fd47915553398d8e`, against #206's
+  `101669fa…`/28,379,441 — **208 tunes moved, 130 larger, 78 smaller, none the same size, net
+  +1,739 bytes**. The shrinks are a signature that **over-declared**: `Antics`'s `sub_C380`
+  was `-> a, cflag, zflag, nflag` where only `cflag` survives its callers, so three names
+  leave the header and every call site with them (`3_Tunes`, `Cool_Air` the same shape). The
+  growths are a signature that **under-declared**: `Densetsu_no_Stafy-Coral_Reef` called
+  `sub_1B58()` with an empty interface where the callee both needs and defines five registers,
+  and it now reads `a, x, y, cflag, zflag = sub_1B58(a, x, y, cflag, zflag)`. `A_New_Kind` is
+  the argument rule working: `sub_C3CB(m_C111[y])` keeps the folded expression at its
+  parameter and gains `x` beside it, rather than being respelled back to a local.
+  (5) **The gates, and the milestone.** `splice_sweep` is **0 bad of 624** — error, parse,
+  lint, fixpoint, gate and sites all zero, `new: []`, `fixed: 1` — so the parse-and-evaluate
+  gap **closes completely** and the zero-new law now guards an empty set. `gate_sweep` at full
+  Songlengths is **624 build / 624 evaluate / 624 clean**, zero divergences and zero refusals:
+  a truer header changes no register the machine writes. Suite **2,799 passed / 490 skipped /
+  1 xfailed**, coverage 90.10%, `black --check` and `pylint` 10.00/10. `proved` 205,793 →
+  **205,836** and `arch` 183,344 → **184,037**: the headline metric moves *up* by 693 tokens
+  and that is the honest direction — a register interface the text left unspelled is now
+  spelled, and `zero_arch` is unmoved at 2 of 624, `fields` at 17,662, `roled` at 12,825.
+  (6) **`International_Karate` is pinned, on a cost that was measured rather than feared.**
+  The tune is 645 s, 2.5x the longest pin before it, and every corpus-parametrized file runs
+  every pin — the reason to hesitate. Measured, the whole hermetic suite goes **523 s → 577 s**
+  with the pin and three new tests, and #206's corpus job ran 11m22s, so the guard costs about
+  a minute and buys the exact tune the landing fixed as a CI assertion
+  (`test_real_tune_international_karate_header_takes_its_live_in`, which calls `frameprog.emit`
+  and so lints).

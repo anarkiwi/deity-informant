@@ -157,6 +157,7 @@ PINNED = (  # named by a test; always resolved, since a cap that drops one drops
     "MUSICIANS/G/Galway_Martin/Athena.sid",
     "MUSICIANS/G/Goto80/Automatas.sid",
     "MUSICIANS/H/Hubbard_Rob/Commando.sid",
+    "MUSICIANS/H/Hubbard_Rob/International_Karate.sid",
     "MUSICIANS/L/Linus/64_Forever.sid",
     "MUSICIANS/S/Slaygon/A_Lot_of_Coke_part_8.sid",
 )
