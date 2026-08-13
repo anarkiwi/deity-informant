@@ -2,7 +2,7 @@
 
 Pass 1 lifts registers/temporaries to named locals, pass 2 infers procedure
 parameters/returns from register liveness, pass 3 renders counter loops as
-for-ranges; all three are emit-side over the committed model's region trees.
+for-ranges; ``ProcWebs`` is the def-use web, which is the unit a name is not.
 """
 
 from __future__ import annotations
@@ -1130,7 +1130,10 @@ def _sugar(n):
 
 class _Conv:
     """One block to statements: loads and shared values become named locals,
-    register out-exprs become sequenced assignments (pre-copies on conflict)."""
+    register out-exprs become sequenced assignments (pre-copies on conflict).
+
+    Name-keyed, not web-keyed (A1): this builds the trees the webs are computed
+    over, so there is no forest here to reach a definition through."""
 
     def __init__(self, names):
         self.names = names
@@ -1555,7 +1558,11 @@ def slot_reader(stmts):
 
 # ---- pass 2: interprocedural register liveness -----------------------------------
 class _Info:
-    """Program-wide summaries: live-in, may/must-define, returns, callability."""
+    """Program-wide summaries: live-in, may/must-define, returns, callability.
+
+    Name-keyed, not web-keyed (A1): live-in and returns become the procedure
+    header's own registers, so a per-web signature spells a header the printer
+    does not have; and this runs inside ``repolish``, over unsettled trees."""
 
     def __init__(self, procs, play):
         self.procs = dict(procs)
@@ -2930,6 +2937,384 @@ def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
         i += 1
 
 
+# ---- def-use webs: the analysis unit a machine name is not ------------------------
+WEB_ENTRY = "entry"  # the web is live where the procedure begins
+WEB_OPAQUE = "opaque"  # an opaque call, or a transfer this module cannot enumerate, defines it
+WEB_WIDTH = "width"  # the web's sites do not agree on a width
+WEB_REFUSALS = (WEB_ENTRY, WEB_OPAQUE, WEB_WIDTH)
+
+_AT_ENTRY = -1  # the pseudo-definition every name carries where the procedure begins
+_NEXT = object()  # a successor placeholder: whichever node is emitted after this one
+_EMPTY = frozenset()
+
+
+class Web:
+    """One def-use web: the definitions that reach a common read, closed.
+
+    ``def_widths`` is what ``_loc_widths`` records at the web's definitions (a
+    ``pcall`` return is 0, unknown); ``widths`` is the width its sites actually
+    spell, which is what ``WEB_WIDTH`` reads."""
+
+    __slots__ = ("name", "root", "defs", "uses", "def_widths", "widths", "refusals")
+
+    def __init__(self, name, root):
+        self.name = name
+        self.root = root
+        self.defs = []
+        self.uses = []
+        self.def_widths = set()
+        self.widths = set()
+        self.refusals = set()
+
+    def __repr__(self):
+        return "Web(%s@%d, %d defs, %d uses, %s)" % (
+            self.name,
+            self.root[0],
+            len(self.defs),
+            len(self.uses),
+            "|".join(sorted(self.refusals)) or "typed",
+        )
+
+
+class _Union:
+    """Union-find over definition keys: one web is one named quantity."""
+
+    __slots__ = ("up",)
+
+    def __init__(self):
+        self.up = {}
+
+    def find(self, k):
+        self.up.setdefault(k, k)
+        while self.up[k] != k:
+            self.up[k] = k = self.up[self.up[k]]
+        return k
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        self.up[max(ra, rb)] = min(ra, rb)
+
+
+def _own_labels(stmts, out):
+    for s in stmts:
+        if s[0] == "label":
+            out.add(s[1])
+        for b in _stmt_bodies(s):
+            _own_labels(b, out)
+    return out
+
+
+def _uses_of(n, out):
+    """Every local ``n`` reads, each carrying the width its own site spells."""
+    stack = [n]
+    while stack:
+        x = stack.pop()
+        if x[0] == "loc":
+            out.setdefault(x[1], set()).add(loc_width(x))
+        else:
+            stack.extend(_kids(x))
+    return out
+
+
+def _named_locals(stmts, out):
+    """Every local the forest names, as a definition or as a read."""
+    for s in stmts:
+        for x in _stmt_exprs(s):
+            _uses_of(x, out)
+        if s[0] in ("asg", "for"):
+            out.setdefault(s[1], set())
+        elif s[0] == "pcall":
+            for n in s[3]:
+                out.setdefault(n, set())
+        for b in _stmt_bodies(s):
+            _named_locals(b, out)
+    return out
+
+
+def _site(s):
+    """``(definitions -> width, reads -> widths)`` of one statement, its own only."""
+    defs, uses = {}, {}
+    if s is None:
+        return defs, uses
+    for x in _stmt_exprs(s):
+        _uses_of(x, uses)
+    k = s[0]
+    if k == "asg":
+        defs[s[1]] = G.store_width(s[2])
+    elif k == "for":
+        defs[s[1]] = 1
+    elif k == "pcall":
+        defs.update({n: 0 for n in s[3]})
+    return defs, uses
+
+
+class _Graph:
+    """One procedure's statement forest as a flow graph, one node per statement.
+
+    Join nodes stand where control merges and every ``goto``/``cont``/``brk``
+    resolves to a node, so a transfer this module cannot enumerate becomes an
+    opaque node -- a refused web -- rather than a missing edge and a split one."""
+
+    def __init__(self, stmts, rets=(), regs=_EMPTY):
+        self.stmt, self.succ, self.path = [], [], []
+        self.labels, self.opaque, self.escape = {}, set(), set()
+        self.own = _own_labels(stmts, set())
+        self.regs = regs
+        self.rets = frozenset(rets) & regs
+        self._tick = 0
+        self._walk(stmts, [], ())
+        self._emit(None, [], None)  # the sink control falls off the end into
+        self.succ = [
+            [i + 1 if t is _NEXT else self.labels[t] for t in ss] for i, ss in enumerate(self.succ)
+        ]
+
+    def _emit(self, s, succ, path):
+        self.stmt.append(s)
+        self.succ.append(list(succ))
+        self.path.append(path)
+        return len(self.stmt) - 1
+
+    def _syn(self, tag):
+        self._tick += 1
+        return (tag, self._tick)
+
+    def _join(self, key):
+        self.labels[key] = self._emit(None, [_NEXT], None)
+
+    def _stop(self, s, path, escaping):
+        at = self._emit(s, [], path)
+        if escaping:
+            self.escape.add(at)
+        return at
+
+    def _cases(self, s, bodies, loops, here, from_head):
+        end = self._syn("end")
+        heads = [self._syn("case") for _ in bodies]
+        at = self._emit(s, heads + from_head(end), here)
+        for bi, b in enumerate(bodies):
+            self._join(heads[bi])
+            self._walk(b, loops, here + (bi,))
+            self._emit(None, [end], None)
+        self._join(end)
+        return at
+
+    def _walk(self, stmts, loops, path):  # pylint: disable=too-many-branches
+        for k, s in enumerate(stmts):
+            here, op = path + (k,), s[0]
+            nxt = stmts[k + 1][0] if k + 1 < len(stmts) else None
+            if op == "label":
+                self.labels[("lbl", s[1])] = self._emit(s, [_NEXT], here)
+            elif op in ("asg", "st", "pcall"):
+                self._emit(s, [_NEXT], here)
+            elif op == "call":
+                self.opaque.add(self._emit(s, [_NEXT], here))
+            elif op == "callb":
+                self._emit(s, [_NEXT], here)  # the callee's own statements are right here
+                self._walk(s[3], loops, here + (0,))
+            elif op == "if":
+                els, end = self._syn("else"), self._syn("end")
+                self._emit(s, [_NEXT, els], here)
+                self._walk(s[3], loops, here + (0,))
+                self._emit(None, [end], None)
+                self._join(els)
+                self._walk(s[4], loops, here + (1,))
+                self._join(end)
+            elif op in ("loop", "for"):
+                head, out = self._syn("head"), self._syn("break")
+                if op == "for":
+                    self.labels[head] = self._emit(s, [_NEXT, out], here)
+                else:
+                    self._join(head)
+                self._walk(s[1] if op == "loop" else s[4], loops + [(head, out)], here + (0,))
+                self._emit(None, [head], None)
+                self._join(out)
+            elif op == "goto":
+                if s[1] in self.own:
+                    self._emit(s, [("lbl", s[1])], here)
+                else:
+                    self._stop(s, here, True)
+            elif op in ("cont", "brk"):
+                if loops:
+                    self._emit(s, [loops[-1][0 if op == "cont" else 1]], here)
+                else:
+                    self._stop(s, here, True)
+            elif op == "ret":
+                self._stop(s, here, bool(s[1]))
+            elif op == "unobs":
+                self._stop(s, here, False)
+            elif op in ("opsw", "swg"):
+                self._cases(s, _stmt_bodies(s), loops, here, lambda _e: [])
+            elif op == "swc":
+                self.opaque.add(self._cases(s, _stmt_bodies(s), loops, here, lambda e: [e]))
+            elif op == "dcall" and nxt == "swc":
+                self._emit(s, [_NEXT], here)
+            elif op == "dgoto" and nxt == "swg":
+                self._emit(s, [_NEXT], here)
+            elif op == "igoto" and (nxt == "swg" or s[2] is None):
+                self._emit(s, [_NEXT], here)
+            elif op in ("dcall", "dgoto", "igoto", "dbr"):
+                at = self._stop(s, here, True)
+                if op == "dcall":
+                    self.opaque.add(at)
+            else:
+                raise ValueError("unexpected statement %r" % (op,))
+
+    def sites(self):
+        """``[(definitions, reads)]`` per node, the machine's own edges included.
+
+        An opaque call defines and reads every register the procedure names (the
+        ABI is not in the text) and a transfer that leaves carries them out to a
+        reader the graph does not hold, so a web at either is refused."""
+        out = []
+        for i, s in enumerate(self.stmt):
+            defs, uses = _site(s)
+            if i in self.opaque:
+                defs.update({r: None for r in self.regs})
+                uses.update({r: {1} for r in self.regs})
+            if i in self.escape:
+                uses.update({r: {1} for r in self.regs})
+            elif s is not None and s[0] == "ret":
+                uses.update({r: {1} for r in self.rets})
+            out.append((defs, uses))
+        return out
+
+
+def _reaching(graph, sites):
+    """``(node, name) -> the definition keys reaching that read``; ``-1`` is entry.
+
+    Two definitions that reach one read are one quantity, and this is the relation
+    that says which. One name's definitions never reach another's, so each name is
+    its own bit-vector sweep rather than a row of one joint map."""
+    defs, uses, succ = {}, {}, graph.succ
+    for i, (d, u) in enumerate(sites):
+        for n in d:
+            defs.setdefault(n, []).append(i)
+        for n in u:
+            uses.setdefault(n, []).append(i)
+    out = {}
+    for name, at in uses.items():
+        made = defs.get(name, ())
+        keys = [(i, name) for i in made] + [(_AT_ENTRY, name)]
+        if not made:
+            out.update({(i, name): frozenset(keys) for i in at})
+            continue
+        bit = {i: 1 << k for k, i in enumerate(made)}
+        ins = [0] * len(succ)
+        ins[0] = 1 << len(made)
+        work = [0]
+        while work:
+            i = work.pop()
+            cur = bit.get(i) or ins[i]
+            for j in succ[i]:
+                if ins[j] | cur != ins[j]:
+                    ins[j] |= cur
+                    work.append(j)
+        for i in at:
+            m = ins[i] or 1 << len(made)
+            out[(i, name)] = frozenset(k for b, k in enumerate(keys) if m >> b & 1)
+    return out
+
+
+class ProcWebs:
+    """One procedure's def-use webs, with an identity queryable per site.
+
+    ``at_def``/``at_use`` answer with the web a statement's definition or read
+    belongs to; ``of_name`` answers with every web one machine spelling carries,
+    which is the denotation plan's Exhibit A measured rather than asserted."""
+
+    __slots__ = ("entry", "webs", "_bydef", "_byuse", "_byname")
+
+    def __init__(self, entry, stmts, rets=()):
+        graph = _Graph(stmts, rets, _ALL_REG_LOCALS & set(_named_locals(stmts, {})))
+        sites = graph.sites()
+        reach = _reaching(graph, sites)
+        union, at_use = _Union(), {}
+        for i, (_d, use) in enumerate(sites):
+            for n in use:
+                keys = sorted(reach[(i, n)])
+                for k in keys[1:]:
+                    union.union(keys[0], k)
+                at_use[(i, n)] = keys[0]
+        body, self._bydef, self._byuse = {}, {}, {}
+        for i, (defs, use) in enumerate(sites):
+            for n, w in defs.items():
+                web = self._web(body, union.find((i, n)), n)
+                web.defs.append(graph.path[i])
+                if w is not None:
+                    web.def_widths.add(w)
+                    if w:
+                        web.widths.add(w)
+                if i in graph.opaque:
+                    web.refusals.add(WEB_OPAQUE)
+                self._bydef[(graph.path[i], n)] = web
+            for n, ws in use.items():
+                web = self._web(body, union.find(at_use[(i, n)]), n)
+                web.uses.append(graph.path[i])
+                web.widths |= ws
+                if i in graph.opaque or i in graph.escape:
+                    web.refusals.add(WEB_OPAQUE)
+                self._byuse[(graph.path[i], n)] = web
+        self.entry = entry
+        self.webs = [body[r] for r in sorted(body)]
+        self._byname = {}
+        for web in self.webs:
+            if web.root[0] == _AT_ENTRY:
+                web.refusals.add(WEB_ENTRY)
+            if len(web.widths) > 1:
+                web.refusals.add(WEB_WIDTH)
+            self._byname.setdefault(web.name, []).append(web)
+
+    @staticmethod
+    def _web(body, root, name):
+        got = body.get(root)
+        if got is None:
+            got = body[root] = Web(name, root)
+        return got
+
+    def at_def(self, path, name):
+        """The web the definition of ``name`` at statement ``path`` belongs to."""
+        return self._bydef.get((path, name))
+
+    def at_use(self, path, name):
+        """The web the read of ``name`` at statement ``path`` belongs to."""
+        return self._byuse.get((path, name))
+
+    def of_name(self, name):
+        """Every web the machine spelling ``name`` carries, in definition order."""
+        return tuple(self._byname.get(name, ()))
+
+    def names(self):
+        """Every local spelling the procedure carries, webs or not."""
+        return sorted(self._byname)
+
+    def counts(self):
+        """``webs``, ``refused``, and one tally per refusal class."""
+        out = {"webs": len(self.webs), "refused": sum(1 for w in self.webs if w.refusals)}
+        for cls in WEB_REFUSALS:
+            out[cls] = sum(1 for w in self.webs if cls in w.refusals)
+        return out
+
+
+def webs(procs):
+    """``entry -> ProcWebs`` over settled statement trees: the analysis unit.
+
+    A procedure's declared returns are the registers its ``ret`` leaves live, so
+    the 4-tuple list is the input; nothing here reads or writes a spelling, which
+    is what lets a web be computed before it is nameable."""
+    return {e: ProcWebs(e, stmts, rets) for e, _pa, rets, stmts in procs}
+
+
+def web_counts(procs):
+    """The plan's §5 web metric over one program: totals and refusals by class."""
+    out = {"procs": 0, "webs": 0, "refused": 0}
+    out.update({cls: 0 for cls in WEB_REFUSALS})
+    for pw in webs(procs).values():
+        out["procs"] += 1
+        for k, v in pw.counts().items():
+            out[k] += v
+    return out
+
+
 def _loc_widths(stmts, widths):
     """Definition widths per local over the forest; a pcall return is unknown."""
     for s in stmts:
@@ -2944,14 +3329,27 @@ def _loc_widths(stmts, widths):
             _loc_widths(b, widths)
 
 
-def _norm_widths(stmts, params):
+def _width_webs(stmts, rets=()):
+    """``name -> the definition widths of each web that name carries``."""
+    out = {}
+    for web in ProcWebs(None, stmts, rets).webs:
+        out.setdefault(web.name, []).append(web.def_widths)
+    return out
+
+
+def _norm_widths(stmts, params, rets=()):
     """A local every definition of which is a word spells ``:2`` at every use.
 
-    The converter writes some references bare; one spelling per name is what the
-    half matchers and the folds key on, so the width law is normalized here."""
-    widths = {}
-    _loc_widths(stmts, widths)
-    words = {n for n, ws in widths.items() if ws == {2} and n not in params}
+    A width belongs to the site, so the widths are gathered per def-use web and a
+    name promotes only where every web it carries is a word web: the printer
+    spells names, so promoting one web of a name and not another moves the text."""
+    words = {
+        n
+        for n, group in _width_webs(stmts, rets).items()
+        if n not in params
+        and any(ws == {2} for ws in group)
+        and not any(ws and ws != {2} for ws in group)
+    }
 
     def f(x):
         for n in sorted(words):
@@ -3240,9 +3638,9 @@ def _factor_ifs(stmts, root):
 def must_defines(procs, play=None):
     """``entry -> the register locals its body surely defines``, callees included.
 
-    What a raw ``call`` binds: the callee runs, so every register on every path
-    through it is defined after the statement, which is the definition a reader of
-    the text (and ``check_locals``) may take from a call that declares no returns."""
+    What a raw ``call`` binds, as a reader of the text takes it: the callee runs, so
+    every register on every path through it is defined after the statement. Name-keyed
+    and not web-keyed (A1): that reader has the spelling and no web to ask about."""
     info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
     info.summarize()
     return {e: info.must[e] & _ALL_REG_LOCALS for e in info.order}
@@ -3298,7 +3696,7 @@ def repolish(procs, play, regions=None):
         inlined = _inline(info)
         factored = False
         for e, stmts in info.procs.items():
-            _norm_widths(stmts, info.params.get(e, ()))
+            _norm_widths(stmts, info.params.get(e, ()), info.rets.get(e, ()))
             factored |= _pair_locals(stmts, info.params.get(e, ()), info.rets.get(e, ()), counter)
         gotos = {
             e: {s[1] for _v, _i, s in envs(st) if s[0] == "goto"} for e, st in info.procs.items()

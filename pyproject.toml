@@ -69,6 +69,7 @@ omit = [
     "tools/gate_sweep.py",
     "tools/showcase.py",
     "tools/splice_sweep.py",
+    "tools/web_census.py",
     "tools/witness_sweep.py",
 ]
 

@@ -4265,3 +4265,53 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   zero refusals; `splice_sweep` **0 bad**, `arch` 193,979 and `temps` 54,986 unmoved.
   `black --check` and `pylint` clean. What part 3 still owes is the fold rewrite and the
   role decision, both priced in the entry above.
+- **2026-08-13 — denotation solve L1: webs before names.** The analysis unit stops being
+  the machine location. `frameproc.ProcWebs` reads a settled procedure's statement forest
+  as a flow graph — one node per statement, a join node wherever control merges, every
+  `goto`/`continue`/`break` an edge, a transfer the graph cannot enumerate an opaque node
+  rather than a missing edge — and closes reaching definitions into def-use webs: the
+  definitions that reach one read are one quantity. Nothing renames and no emitted
+  character moves, which is the whole gate.
+  (1) **The web has an identity and the refusals have names.** `at_def`/`at_use` answer
+  per site, `of_name` answers with every web one machine spelling carries, `counts()`
+  tallies the three classes under which a web is refused rather than merged: `entry`
+  (live where the procedure begins), `opaque` (an opaque call, or a transfer that leaves,
+  defines or reads it), `width` (its sites do not agree). A refused web keeps exactly
+  today's behaviour and is counted.
+  (2) **One analysis re-keyed, three left name-keyed with the reason in the docstring.**
+  `_norm_widths` now gathers definition widths **per web** and promotes a name only where
+  every web it carries is a word web. That is byte-identical by construction, not by luck:
+  the webs partition every `asg`/`for`/`pcall` definition, so the union of a name's webs'
+  widths *is* the name's widths, and "union == {2}" and "every non-empty web == {2}" are
+  the same predicate. The narrowing to the name is the honest half — the printer spells
+  names, so promoting one web and not another would move text, and that is L3's business.
+  `_Info`/`_Flow` stay name-keyed because live-in and returns become the header's own
+  registers and a per-web signature spells a header the printer does not have (and they
+  run inside `repolish`, over unsettled trees); `must_defines` stays name-keyed because
+  its consumer is a reader of the text, who has a spelling and no web to ask about;
+  `_Conv` stays name-keyed because it *builds* the trees the webs are computed over.
+  (3) **The pin: Commando's `y` is eight webs, not one and not five.** §1's Exhibit A
+  reads five denotations off the emitted text. Over the settled trees the count is
+  **eight**, and the extra three are not a disagreement: the SID voice displacement
+  `m_54EB` is defined at four sites that no read joins (the `freq_lo` write, the
+  `sid.reg[y+1]` gate-pair, the note-on block, the release block), and `y = m_5518` — the
+  pulse-width table row, which the emitted text shows folded as `m_5591[m_5518]` — is a
+  sixth quantity. `test_commando_y_carries_eight_webs` asserts the definition spellings of
+  all eight, not just the count, so the pin says *which* quantities, and the same
+  procedure's 47 webs are 0 refused.
+  (4) **The corpus number, which is what L2 is measured against.** `tools/web_census.py`
+  over all 624 cached artifacts: **72,095 webs over 1,805 procedures, 18,859 refused
+  (26.2%) — `entry` 6,837, `opaque` 14,334, `width` 0**. 32,674 locals carry those webs,
+  so a name-keyed analysis decides one thing where the value structure has 2.2; **7,581
+  spellings carry two or more webs and 4,518 of those are machine names**, in 621 of 624
+  tunes, the widest a single `a` at 96. The `width` class being empty is a result, not an
+  omission: `_norm_widths` already normalises to one spelling per name and rung (d) has
+  fused every pair it can, so no surviving web has sites that disagree. `entry` and
+  `opaque` are the population L2's ⊤ starts from.
+  (5) **The gates.** `emit_identity` on the merge base `14286fe` and on this branch are
+  the same measurement: **624 tunes, 0 refused, 28,365,174 bytes**, aggregate
+  `7a63a89f37370af29ad7b541ff11ef21529cd5b9b7a1ec26c2aced39bbd71e1d` both times, and the
+  branch run reproduces it under `--expect`. `gate_sweep` was not re-run: its input is the
+  emitted artifact and the artifact is byte-identical, so the run would be the recorded
+  one. Suite green with the 11 new cases, `black --check` and `pylint` clean, coverage
+  gate held.

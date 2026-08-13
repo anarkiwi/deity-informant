@@ -192,6 +192,10 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
 2. **L1 — webs before names.** The analysis unit becomes the web; the printer
    still spells registers. *Gate: emit-identity byte-identical* — a pure
    refactor, and a strong one, because any text movement is a bug.
+   **Taken**: `frameproc.ProcWebs`/`webs`/`web_counts`, `FrameProgram.webs()`,
+   `tools/web_census.py`, `tests/test_frameweb.py`; width normalisation re-keyed,
+   the liveness and the block converter left name-keyed with the reason in the
+   docstring. Census in [denotation-solve-baseline.md](denotation-solve-baseline.md) §4.
 3. **L2 — the solve.** Lattice, transfer rules, worklist, evidence records. No
    emission change. *Gate: emit-identity byte-identical; census moves off L0's
    baseline.* **Kill criterion: if fewer than 60% of value sites and 80% of
