@@ -4079,3 +4079,44 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   `arch` 89 / `temps` 65 where the prototype wears `arch` 53 / `temps` 25. Forcing the pin
   would require naming those values, which is the re-basing, so the `xfail(strict)` stands
   and its owner is recorded here.
+- **2026-08-13 — the trunk re-basing, part 1: the prototype's parser reads the artifact,
+  and a width belongs to the site.** #193 measured the trunk's price as four parser items
+  plus one blocker; this takes the four and answers the blocker, with the pipeline still
+  reading the pre-rung text so the two dialects can be differenced rather than swapped.
+  (1) **The four items, and what was already there.** `_suffix` and the statement regexes
+  already tolerated `:2` after a parenthesis, an index and an assignment target, and
+  `trunc1` already parsed as a generic call — so the gap was narrower than the survey said
+  and narrower in a specific place. What was missing is the **signature** (`sub_1000(x) {`,
+  `sub_1485(x) -> a, x {`: `proc_entries` matched `sub_XXXX {` alone, so the artifact
+  presented *zero* procedures), the width suffix after a **bare name** (`ctr_0030:2`, the
+  one position `_suffix` was never called from — `SyntaxError: trailing ':'`), the
+  **promoted call** (`a, x = sub_1485(a)`, whose left side is not a single target) and
+  `ret a, x`. `trunc1`/`trunc2` are now the dialect's own truncation in all three
+  interpreters — `_z3_expr`, `_z3_eval` and `Machine._val` — rather than an unmodelled call.
+  (2) **The blocker's answer: the width is recorded on the term, not on the name.** #193's
+  name-keyed registry diverged at frame 0 because the artifact does not type names. Measured
+  on this image's own artifact: **6** names are *read* at two widths (`zp_44`, `zp_4D`,
+  `zp_64`, `zp_6D`, `zp_84`, `zp_8D`) and **15** wear two widths once write sites are counted
+  with read sites (`m_0345`, `m_034C`, `m_0353`, `zp_49`, `zp_50`, `zp_69`, `zp_70`, `zp_89`,
+  `zp_90` beside the six). So every expression node carries the width its **site** spells,
+  the parser takes it from the suffix where there is one and from the dialect's own rule
+  where there is not, and `_wid` is a read of the term rather than a re-derivation. The
+  evaluator follows: a `name` or an `index` at width `w` is `w` little-endian bytes of RAM,
+  and an indexed read marks every byte it spans as a row the run reached.
+  (3) **The store's width is its own value's, at every assignment — measured, not assumed.**
+  Over all **163** assignments of the artifact, the target's suffix equals the width of the
+  term on the right in **163**, so the statement shape needs no second width and the
+  invariant is a test rather than a convention.
+  (4) **What it does not move.** The pipeline still folds the `eqlift_mem.emit` text: its
+  emitted text, the artifact it now also carries (`art["artifact"]`, `frameprog.dumps` of the
+  same program) and `role_text` are byte-identical to the base commit, and every proof kind
+  still fires. `observed_extents` returns b0's rows rather than one consumer's reading of
+  them, so `frameprog.program` gets rung (g)'s own input and `ptrextent.mapped_blocks` is
+  taken at the eqlift call site; the round-trip witness is frame-identical over the lifted
+  program. One correction rides along: `_wid` read a *signed* compare as its operands' width
+  where `Machine._val` had always returned a byte, and the two now agree.
+  (5) **The gates.** `emit_identity` **624 tunes, 0 refused, 28,365,174 bytes**,
+  `7a63a89f…` — `--expect` reproduced, so the corpus does not move and cannot: no
+  `deity_informant/` module is touched. Suite **2,807 passed / 490 skipped / 1 xfailed**
+  hermetic (2,804 before; three new cases, no pin flipped). `black --check` and `pylint`
+  clean. The pin stands with #208's owner: naming the residue is the next part.

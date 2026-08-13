@@ -212,6 +212,95 @@ def test_helper_procedure_and_its_boundary(art, text):
     assert list(art["folded"]) == [PLAY] and "call sub_" not in text
 
 
+def test_the_parser_reads_the_engine_s_own_artifact(art):
+    """#193's four measured items: the signature, the width suffix, the promotion, trunc1.
+
+    The subject is ``frameprog.dumps`` -- the text the engine emits, not the pre-rung
+    dialect the prototype has read until now -- and every procedure of it parses."""
+    text = art["artifact"]
+    sigs = sml.proc_signatures(text)
+    assert sigs == {PLAY: (("x",), ()), 0x1485: (("x",), ("a", "x"))}
+    assert sml.proc_entries(text) == sorted(sigs)
+    asts = {e: sml.extract_proc(text, e) for e in sigs}
+    assert all(asts.values())
+    assert asts[0x1485][-1] == ("ret", ("a", "x")), "the header's returns are not spelled"
+    kinds = set()
+
+    def walk(x):
+        if isinstance(x, tuple) and x:
+            kinds.add(x[0])
+            if x[0] == "call":
+                kinds.add(x[1])
+        if isinstance(x, (tuple, list)):
+            for kid in x:
+                walk(kid)
+
+    walk(list(asts.values()))
+    assert {"pcall", "trunc1", "zext2"} <= kinds, sorted(kinds)
+
+
+def _sites(asts):
+    """``name -> {width}`` over every read site the parsed artifact spells."""
+    out = {}
+
+    def walk(x):
+        if isinstance(x, tuple) and x and x[0] == "name":
+            out.setdefault(x[1], set()).add(sml._wid(x))  # pylint: disable=protected-access
+        if isinstance(x, (tuple, list)):
+            for kid in x:
+                walk(kid)
+
+    walk(asts)
+    return out
+
+
+def test_a_width_belongs_to_the_site_and_not_to_the_name(art):
+    """#193's blocker, measured: the artifact is width-typed and a name wears both.
+
+    A name-keyed width registry cannot state this artifact, so the parser records the
+    width the *site* spells. The store's width is its own value's, at every assignment."""
+    text = art["artifact"]
+    asts = [sml.extract_proc(text, e) for e in sml.proc_entries(text)]
+    reads = _sites(asts)
+    assert sorted(n for n, w in reads.items() if len(w) > 1) == [
+        "zp_44",
+        "zp_4D",
+        "zp_64",
+        "zp_6D",
+        "zp_84",
+        "zp_8D",
+    ]
+    both, mismatch = set(), []
+    for line in (ln.strip() for ln in text.splitlines()):
+        line = line[9:] if line.startswith("hi-first ") else line
+        m = re.fullmatch(r"([\w.]+)(?::(\d))? = (.*)", line)
+        if not m:
+            continue
+        want = int(m.group(2) or 1)
+        if want != sml._wid(sml.parse_expr(m.group(3))):  # pylint: disable=protected-access
+            mismatch.append(line)
+        if want in reads.get(m.group(1), {want}) and len(reads.get(m.group(1), ())) > 1:
+            both.add(m.group(1))
+        reads.setdefault(m.group(1), set()).add(want)
+    assert not mismatch, "a store's width is not the width of the value it stores"
+    assert len(sorted(n for n, w in reads.items() if len(w) > 1)) == 15
+
+
+def test_the_prototype_evaluates_a_promoted_call_off_the_header(art):
+    """The promotion executes by its header: the params bind and only the returns land."""
+    text = art["artifact"]
+    sigs = sml.proc_signatures(text)
+    body = sml.extract_proc(text, 0x1485)
+    call = ("pcall", ("a", "x"), 0x1485, (("name", "x", 1),))
+    flats = {PLAY: sml.Flat([call]), 0x1485: sml.Flat(body)}
+    machine = sml.Machine(flats, sml.run_vm(art["mem"], 0)[1], sigs)
+    env = {"x": 5, "y": 9}
+    machine._run(PLAY, env)  # pylint: disable=protected-access
+    ram = machine.ram
+    assert (env["a"], env["x"]) == (ram[0x14A7 + 5], ram[0x14BD + 5])
+    assert env["y"] == 9, "the promotion defined a register its header does not return"
+
+
 def test_stack_spill_forwards(text):
     """3d landing 1: the pull is spelled from the pushed value and the store demotes.
 
