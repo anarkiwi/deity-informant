@@ -4169,11 +4169,27 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   voices 1 and 2 still unify, voice 3 still refuses by its filter block, and the per-voice
   webs alpha-rename through `_voice_name`'s existing local branch, so the loop's declared
   parameters are what they were.
-  (6) **What is still owed, and is not this.** The pipeline still folds `eqlift_mem.emit`'s
-  text. `emit`/`emit_mem` and `eqlift_annotate` therefore do not retire yet, the fold layer
-  is not yet the smaller one #193 measured on the artifact, and `classify_roles` still
-  re-derives roles the artifact declares. Those are the trunk's part 3; the pin does not
-  wait on them and no longer names them.
+  (6) **What is still owed — measured here, so part 3 starts from numbers.** The pipeline
+  still folds `eqlift_mem.emit`'s text, so `emit`/`emit_mem` and `eqlift_annotate` do not
+  retire yet. Two measurements taken on this commit say what part 3 actually costs, and
+  both say it is a **rewrite of what the example claims**, not a port.
+  *The fold layer.* Handing `fold()` the artifact's own procedures fires **`wide_cmp`
+  alone, 3 proofs**, against the 48 the eqlift path produces across all eight kinds — #193
+  predicted three of eight and the honest number on this image is one of eight, because
+  rung (d) has already fused every pair and every wide update the prototype was proving.
+  So `FOLDS` shrinks to what the engine leaves, and `test_folds_all_proved`,
+  `test_carry_outlives_its_add`, `test_portamento_is_one_wide_compare` and
+  `test_note_fetch_is_one_u16_row_read` stop being about proofs the prototype discharges
+  and become about statements the artifact already carries.
+  *The roles.* Resolving the artifact's `symbols` aliases, its declared roles and
+  `classify_roles`'s derivation share **35** cells and **agree on 23**; the **12**
+  disagreements are one shape — the engine reads `zp_36`/`zp_37`/`zp_38`, the `_43`/`_63`/
+  `_83` counters and the `_40`/`_60`/`_80` pointer lanes as `cursor` where the prototype
+  derives `accumulator` or `parameter`. So "read the artifact's roles instead of
+  re-deriving" is a decision about **which reading is right**, and whichever wins moves
+  `test_roles_are_the_plan_s_own_and_the_field_line_is_the_dialect_s`'s per-voice
+  assertions. That is the trunk's part 3, and it is scheduled with the fold rewrite because
+  the same tests move with both. The pin does not wait on either and no longer names them.
   (7) **The gates.** `emit_identity` **624 tunes, 0 refused, 28,365,174 bytes**,
   `7a63a89f…` reproduced under `--expect`: no `deity_informant/` module is touched and the
   corpus does not move. `gate_sweep` at full Songlengths **624 of 624 clean**, zero
