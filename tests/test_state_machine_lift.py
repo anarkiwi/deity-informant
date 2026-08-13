@@ -2,7 +2,8 @@
 
 The plan's stages MUST keep this pipeline green: playroutine -> decompile ->
 minimize -> Z3-proved wide folds -> role-typed state machine -> frame oracles.
-Pending shapes are ``xfail(strict=True)``, named by the stage that flips them."""
+A pending shape is ``xfail(strict=True)`` named by the stage that flips it, and
+since the naming pass there are **none**: every property here holds."""
 
 import os
 import re
@@ -350,7 +351,9 @@ def test_variable_arity_dispatch_operator(art, text):
     copies = 1 + VOICES - len(art["unify"]["unified"])  # the loop body plus the copies
     arms = re.findall(r"^\s*op \S+: \{$", text, re.M)  # the case headers, not the declarations
     assert len(arms) == 4 * copies, "a handler left the dispatch"
-    assert text.count("sid.reg[a] = ") == copies, "the raw write is not a span store"
+    span = re.findall(r"sid\.reg\[(\w+)\] = ", text)
+    assert len(span) == copies, "the raw write is not a span store"
+    assert not ARCH & set(span), "the span store's index is a machine register"
     assert len({g[17] for g in art["orig_grids"]}) > 1, "no raw command ran"
 
 
@@ -500,11 +503,11 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
     assert abs(seconds(mine) - wav_frames(art) * FRAME_S) <= FRAME_S
 
 
-# The goal pinned: properties enumerated from the artifact, xfails naming their stage.
-XFAIL = dict(strict=True)
-OWNER = "stage 4 landing 4 (remaining part)"  # the live owner every pin here names (#180)
+# The goal, no longer pinned: the properties are enumerated from the artifact and every
+# one of them holds. A shape that stops holding is re-pinned with ``XFAIL`` and an OWNER.
+OWNER = "stage 4 landing 4 (remaining part)"  # the live owner a pin here would name (#180)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 324, 773  # lowered by stage 4: the variable-stride advance folds
+LINE_PIN, COST_PIN = 311, 759  # lowered by the naming pass: a register web is one local
 # lowers these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
@@ -658,18 +661,17 @@ def _seeded_render(seed, frames):
     return got.stdout
 
 
-@pytest.mark.xfail(
-    reason="register-model-lift stage 4 landing 4 (remaining part): the prototype's fold and "
-    "render layers re-based onto the artifact -- the engine emits role keywords now, but "
-    "this text is sml.render's, which still names a/x/y off the pre-rung eqlift dialect",
-    **XFAIL,
-)
-def test_no_architectural_register_survives_as_a_value(role_text):
+def test_no_architectural_register_survives_as_a_value(role_text, art):
     """Every value flows through declared state or a width-typed local.
 
-    At pin time the lifted text still names ``a`` and ``y``."""
+    FLIPPED: ``name_locals`` gives every register web a local of its own, so a value
+    the folds left unnamed no longer wears the machine location it passed through.
+    A web whose sites disagree on a width, or that an opaque call defines, or that is
+    live where the procedure begins, is **refused** rather than renamed -- so a green
+    assertion here says the artifact has no such web, not that one was papered over."""
     names = set(re.findall(r"[A-Za-z_]\w*", re.sub(r"\$[0-9A-Fa-f]+|;.*", "", role_text)))
     assert not ARCH & names
+    assert art["unnamed"] == [], "a register web the pass refused still spells itself"
 
 
 def test_smc_dispatch_cells_are_not_data_state(art, role_map):
@@ -746,18 +748,52 @@ def test_round_trip_witness_is_frame_identical(art):
     assert framelog.canonical(frames) == framelog.canonical(art["orig_frames"])
 
 
-def test_every_pin_names_the_landing_that_flips_it():
-    """#180's law, executable here as it already is on the shredder's family.
+def _walk_names(x):
+    """Every ``name`` leaf of a folded statement or term."""
+    if isinstance(x, tuple) and x and x[0] == "name":
+        yield x[1]
+    if isinstance(x, (tuple, list)):
+        for kid in x:
+            yield from _walk_names(kid)
 
-    The one left is landing 4's, so a pin that acquires a different owner moves the
-    plan's ledger too and the two cannot drift apart."""
+
+def test_a_register_web_is_one_value_and_gets_one_name(art):
+    """The naming pass's own subject: the webs, their widths and what it refuses.
+
+    A register is a machine location every value passing through it shares, so what
+    earns a name is the *web* -- the definitions that reach a common read. The webs are
+    counted here, so a later change cannot merge two values into one name, or split one
+    across two, without moving the number."""
+    play = art["folded"][PLAY]
+    flat = sml.Flat(play)
+    # pylint: disable=protected-access
+    sites, at_use, body, _webs = sml._register_webs(flat.ops)
+    assert (len(body), len(at_use)) == (0, 0), "the pipeline left a register web unnamed"
+    assert not sites or not [d or u for d, u in sites if d or u]
+    eq = art["eqlift_text"]
+    raw = {e: sml.extract_proc(eq, e) for e in sml.proc_entries(eq)}
+    before = sml.Flat(sml.resolve_calls(raw)[0][PLAY])
+    _s2, at2, body2, _w2 = sml._register_webs(before.ops)
+    assert len(body2) == 31, sorted(body2)
+    assert {w for widths, _keys in body2.values() for w in widths} == {1}, "a web spans two widths"
+    assert not [k for _w, keys in body2.values() for k in keys if k[0] < 0], "a live-in web"
+    assert len({at2[k] for k in at2}) <= len(body2)
+    assert ARCH & set(_walk_names(before.ops)), "nothing to name in the first place"
+
+
+def test_every_pin_names_the_landing_that_flips_it():
+    """#180's law, over a suite that has no pin left to name.
+
+    The last one was ``no_architectural_register_survives_as_a_value`` and the naming
+    pass flips it, so the enumeration is empty and the law holds over nothing. The
+    second assertion is what a pin added back here must satisfy."""
     pins = {
         n: m.kwargs["reason"]
         for n, f in sorted(globals().items())
         for m in getattr(f, "pytestmark", ())
         if m.name == "xfail" and "reason" in m.kwargs
     }
-    assert len(pins) == 1, sorted(pins)
+    assert not pins, sorted(pins)
     assert not [n for n, r in pins.items() if OWNER not in r]
 
 

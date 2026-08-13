@@ -1718,37 +1718,42 @@ class Flat:
     """Flatten folded statements to ops with resolved labels for execution."""
 
     def __init__(self, stmts):
-        self.ops, self.labels, self.fix = [], {}, []
-        self._walk(stmts, [])
+        self.ops, self.labels, self.fix, self.at = [], {}, [], []
+        self._walk(stmts, [], ())
         for at, lbl in self.fix:
             self.ops[at] = self.ops[at][:-1] + (self.labels[lbl],)
 
+    def _emit(self, op, path=None):
+        """One op, and the structured statement it came from (``None`` where synthetic)."""
+        self.ops.append(op)
+        self.at.append(path)
+
     def _jmp(self, lbl):
         self.fix.append((len(self.ops), lbl))
-        self.ops.append(("jmp", lbl))
+        self._emit(("jmp", lbl))
 
-    def _walk(self, stmts, loops):
+    def _walk(self, stmts, loops, path):
         k = 0
         while k < len(stmts):
-            s = stmts[k]
+            s, here = stmts[k], path + (k,)
             op = s[0]
             if op == "label":
                 self.labels[s[1]] = len(self.ops)
             elif op in ("asg", "sto", "call", "pcall", "st16", "set16", "adv16", "w16", "rd16"):
-                self.ops.append(s)
+                self._emit(s, here)
             elif op == "if":
                 l_else, l_end = "@f%d" % len(self.ops), "@e%d" % len(self.ops)
                 self.fix.append((len(self.ops), l_else))
-                self.ops.append(("bf", s[1], l_else))
-                self._walk(s[2], loops)
+                self._emit(("bf", s[1], l_else), here)
+                self._walk(s[2], loops, here + (0,))
                 self._jmp(l_end)
                 self.labels[l_else] = len(self.ops)
-                self._walk(s[3], loops)
+                self._walk(s[3], loops, here + (1,))
                 self.labels[l_end] = len(self.ops)
             elif op == "loop":
                 start, end = "@l%d" % len(self.ops), "@x%d" % len(self.ops)
                 self.labels[start] = len(self.ops)
-                self._walk(s[1], loops + [(start, end)])
+                self._walk(s[1], loops + [(start, end)], here + (0,))
                 self._jmp(start)
                 self.labels[end] = len(self.ops)
             elif op == "continue":
@@ -1761,17 +1766,17 @@ class Flat:
                 nxt = stmts[k + 1]
                 assert nxt[0] == "switch", "computed goto without its dispatch"
                 table, l_end = {}, "@s%d" % len(self.ops)
-                self.ops.append(("dsw", s[1], table))
-                for lbl, body in nxt[1]:
+                self._emit(("dsw", s[1], table), here)
+                for bi, (lbl, body) in enumerate(nxt[1]):
                     table[int(lbl[1:], 16)] = len(self.ops)
-                    self._walk(body, loops)
+                    self._walk(body, loops, path + (k + 1, bi))
                     self._jmp(l_end)
                 self.labels[l_end] = len(self.ops)
                 k += 1
             elif op == "unobserved":
-                self.ops.append(("fault", s[1]))
+                self._emit(("fault", s[1]), here)
             elif op == "ret":
-                self.ops.append(("ret",))
+                self._emit(("ret",), here)
             else:
                 raise ValueError("flatten: %r" % (s,))
             k += 1
@@ -2405,6 +2410,221 @@ def dead_local_defs(stmts):
     return dead
 
 
+# ---- the naming pass: a definition gets a name, and no value stays in a register ----
+
+_ARCH = _REGS + ("sp",)  # the machine's own locations, and the pin's own alphabet
+
+
+def _reg_sites(x, out):
+    """``register -> {width}`` over the read sites a term spells."""
+    if isinstance(x, tuple) and x and x[0] == "name":
+        if x[1] in _ARCH:
+            out.setdefault(x[1], set()).add(_wid(x))
+        return out
+    if isinstance(x, (tuple, list)):
+        for kid in x:
+            _reg_sites(kid, out)
+    return out
+
+
+def _op_regs(op):
+    """``(defs, uses)`` of one flattened op, each register carrying its site's width."""
+    k, defs, uses = op[0], {}, {}
+    if k == "asg":
+        _reg_sites(op[2], uses)
+        if op[1] in _ARCH:
+            defs[op[1]] = _wid(op[2])
+    elif k == "pcall":
+        _reg_sites(op[3], uses)
+        defs.update({n: 1 for n in op[1] if n in _ARCH})
+    elif k == "call":  # opaque: the ABI defines and reads every register it passes
+        defs.update({n: 1 for n in _CALL_REGS})
+        uses.update({n: {1} for n in _CALL_REGS})
+    elif k == "ret":
+        uses.update({n: {1} for n in (op[1] if len(op) > 1 else ()) if n in _ARCH})
+    else:
+        for part in op[1:]:
+            _reg_sites(part, uses)
+    return defs, uses
+
+
+def _reaching(ops, sites):
+    """Reaching definitions at each op, keyed ``(op index, register)``; ``-1`` is entry.
+
+    A register is a machine location, so what makes a *value* out of one is the web its
+    definitions and reads form: two defs that reach one read are one quantity."""
+    regs = sorted({r for d, u in sites for r in list(d) + list(u)})
+    ins = [{} for _ in ops]
+    ins[0] = {r: frozenset({(-1, r)}) for r in regs}
+    work, seen = [0], set()
+    while work:
+        i = work.pop()
+        cur = dict(ins[i])
+        cur.update({r: frozenset({(i, r)}) for r in sites[i][0]})
+        for j in _flat_succs(ops, i):
+            got, moved = dict(ins[j]), i not in seen
+            for r, ds in cur.items():
+                if not got.get(r, frozenset()) >= ds:
+                    got[r], moved = got.get(r, frozenset()) | ds, True
+            if moved:
+                ins[j] = got
+                work.append(j)
+        seen.add(i)
+    return ins
+
+
+class _Webs:
+    """Union-find over definition keys: one web is one named quantity."""
+
+    def __init__(self):
+        self.up = {}
+
+    def find(self, k):
+        self.up.setdefault(k, k)
+        while self.up[k] != k:
+            self.up[k] = k = self.up[self.up[k]]
+        return k
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        self.up[max(ra, rb)] = min(ra, rb)
+
+
+def _register_webs(ops):
+    """``(web -> (widths, keys), use site -> web)`` over one flattened procedure."""
+    sites = [_op_regs(o) for o in ops]
+    ins = _reaching(ops, sites)
+    webs, at_use = _Webs(), {}
+    for i, (_d, use) in enumerate(sites):
+        for r in use:
+            keys = sorted(ins[i].get(r, frozenset({(-1, r)})))
+            for k in keys[1:]:
+                webs.union(keys[0], k)
+            at_use[(i, r)] = keys[0]
+    body = {}
+    for i, (defs, use) in enumerate(sites):
+        for r, w in defs.items():
+            widths, keys = body.setdefault(webs.find((i, r)), (set(), set()))
+            widths.add(w)
+            keys.add((i, r))
+        for r, ws in use.items():
+            widths, keys = body.setdefault(webs.find(at_use[(i, r)]), (set(), set()))
+            widths.update(ws)
+            keys.add(at_use[(i, r)])
+    return sites, {k: webs.find(v) for k, v in at_use.items()}, body, webs
+
+
+def _rename_term(x, ren):
+    if isinstance(x, tuple):
+        if x and x[0] == "name":
+            return (x[0], ren.get(x[1], x[1])) + x[2:]
+        return tuple(_rename_term(k, ren) for k in x)
+    if isinstance(x, list):
+        return [_rename_term(k, ren) for k in x]
+    return x
+
+
+def _rename_stmt(s, got):
+    """One statement under ``(definitions, reads)`` renamings of its own site."""
+    if got is None:
+        return s
+    defs, use = got
+    if s[0] == "asg":
+        return ("asg", defs.get(s[1], s[1]), _rename_term(s[2], use))
+    if s[0] == "pcall":
+        return ("pcall", tuple(defs.get(n, n) for n in s[1]), s[2], _rename_term(s[3], use))
+    if s[0] == "ret":
+        return ("ret", tuple(use.get(n, n) for n in s[1]))
+    # a body is a list and is walked on its own path: never renamed from here
+    return (s[0],) + tuple(p if isinstance(p, list) else _rename_term(p, use) for p in s[1:])
+
+
+def _rewrite(stmts, ren, path=()):
+    out = []
+    for i, s in enumerate(stmts):
+        here = path + (i,)
+        bodies = _bodies(s)
+        s = _rename_stmt(s, ren.get(here))
+        for bi, b in enumerate(bodies):
+            s = _replace_body(s, bi, _rewrite(b, ren, here + (bi,)))
+        out.append(s)
+    return out
+
+
+def _local_names(procs):
+    """Every local name the emitter already spelled, so a fresh one collides with none."""
+    out = set()
+
+    def walk(x):
+        if isinstance(x, tuple) and x and x[0] == "name":
+            out.add(x[1])
+        if isinstance(x, tuple) and x and x[0] in ("asg", "pcall"):
+            out.update(x[1] if x[0] == "pcall" else (x[1],))
+        if isinstance(x, (tuple, list)):
+            for kid in x:
+                walk(kid)
+
+    walk(list(procs.values()))
+    return out
+
+
+NAMED = "t"  # the emitter's own prefix for a value with no role of its own
+
+
+def _fresh(taken):
+    """Local names in order, skipping every one the emitter already spelled."""
+    k = 0
+    while True:
+        got = "%s%d" % (NAMED, k)
+        k += 1
+        if got not in taken:
+            taken.add(got)
+            yield got
+
+
+def name_locals(procs):
+    """Give every register web a width-typed local, and report the webs that refuse.
+
+    ``frameproc._Names`` allocates a local per definition and the prototype never did,
+    so a value the folds left unnamed kept the register it happened to be in. A web is
+    the value: the definitions that reach one read are one quantity, and a web that is
+    live where the procedure begins, that an opaque call defines, or whose sites do not
+    agree on a width is **not** named -- those are the machine's, and they are recorded
+    rather than renamed."""
+    fresh = _fresh(_local_names(procs))
+    out, refused = {}, []
+    for entry, stmts in sorted(procs.items()):
+        flat = Flat(stmts)
+        sites, at_use, body, webs = _register_webs(flat.ops)
+        opaque = {
+            webs.find((i, r)) for i, o in enumerate(flat.ops) if o[0] == "call" for r in sites[i][0]
+        }
+        names = {}
+        for root in sorted(body):
+            widths, keys = body[root]
+            why = None
+            if any(i < 0 for i, _r in keys):
+                why = "live where the procedure begins"
+            elif root in opaque:
+                why = "an opaque call defines it"
+            elif len(widths) != 1:
+                why = "its sites spell widths %s" % sorted(widths)
+            if why is not None:
+                refused.append(("%s in sub_%04X" % (sorted({r for _i, r in keys})[0], entry), why))
+                continue
+            names[root] = next(fresh)
+        ren = {}
+        for i, (defs, use) in enumerate(sites):
+            if flat.at[i] is None or not (defs or use):
+                continue
+            d = {r: names[webs.find((i, r))] for r in defs if webs.find((i, r)) in names}
+            u = {r: names[at_use[(i, r)]] for r in use if at_use[(i, r)] in names}
+            if d or u:
+                ren[flat.at[i]] = (d, u)
+        out[entry] = _rewrite(stmts, ren)
+    return out, refused
+
+
 def _bodies(s):
     if s[0] == "if":
         return [s[2], s[3]]
@@ -3001,6 +3221,7 @@ def pipeline(frames=FRAMES):
     folded, resolved = resolve_calls(folded)
     tables = pair_tables(labels)
     folded = {e: drop_dead_locals(row_reads(s, proofs, tables)) for e, s in folded.items()}
+    folded, unnamed = name_locals(folded)
     rolled, unify = reroll(folded, proofs)
     machine = Machine({e: Flat(s) for e, s in expand(rolled).items()}, ram0)
     min_frames = [machine.frame() for _ in range(frames)]
@@ -3018,6 +3239,7 @@ def pipeline(frames=FRAMES):
         "rolled": rolled,
         "resolved": resolved,
         "unify": unify,
+        "unnamed": unnamed,
         "boundary": boundary(model),
         "proofs": proofs,
         "min_frames": min_frames,
