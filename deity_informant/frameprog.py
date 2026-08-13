@@ -153,7 +153,7 @@ class FrameProgram:
         and not the name is what a denotation can be attached to; a web the
         analysis refuses keeps its spelling and is counted, never merged away."""
         if self._webs is None:
-            self._webs = frameproc.webs(self.procs)
+            self._webs = frameproc.webs(self.procs, self.play)
         return self._webs
 
     def lines(self):

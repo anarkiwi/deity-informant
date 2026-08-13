@@ -63,6 +63,7 @@ source = ["deity_informant"]
 omit = [
     "tools/_sweep.py",
     "tools/denotation_l0.py",
+    "tools/denote_census.py",
     "tools/emit_identity.py",
     "tools/fetch_corpus.py",
     "tools/fuse_measure.py",

@@ -209,6 +209,23 @@ Every landing gates on the full suite, `gate_sweep` at full Songlengths
    baseline.* **Kill criterion: if fewer than 60% of value sites and 80% of
    deref sites reach a non-⊤ denotation, stop here and report** — the shape is
    not in the corpus and no emitter change will find it.
+   **Taken, and it STOPS**: `deity_informant/denote.py`, `tools/denote_census.py`,
+   `tests/test_denote.py`, [denotation.md](denotation.md); the `opaque` refusal
+   bounded by `frameproc.call_summaries`. Emit-identity is byte-identical.
+   Measured corpus-wide: **value sites 29.31%** (70,884 of 241,817) against the
+   60% floor, **deref sites 83.55%** (85,075 of 101,825) against the 80% floor.
+   The deref half clears; the value half does not, and it is §5's primary
+   number, so L2 reports rather than proceeding. The diagnosis is in
+   [denotation-solve-baseline.md](denotation-solve-baseline.md) §5: 46.1% of the
+   ⊤ value sites are the `entry`/`opaque`/`call` refusals §3.2 already states —
+   an entry-live web is a *parameter*, which is an interprocedural fact this
+   landing does not compute — and 38.7% is scalar arithmetic and the cells it
+   feeds, for which §3.1's lattice has no constructor **by design**. Neither is
+   "the shape is not in the corpus". The mechanism the plan was built for does
+   work where it applies (all 14,389 declared tables type, `idx` reaches 28,270
+   sites, both Commando exhibits solve), but only 28.50% of the derefs that go
+   through a lifted pointer get a declared block set, so L4's expected reach is
+   661 sites and not 2,319. **L3–L6 are not started.**
 4. **L3 — the voice record.** `lane` denotations become `[3]` state arrays and
    `sid.v[voice]`; the induction variable is the voice. First landing whose text
    moves. *Gate: Gate FP + reviewed 25-exemplar diff.* Expected reach: the 526
