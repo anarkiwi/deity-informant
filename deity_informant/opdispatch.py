@@ -1,8 +1,8 @@
-"""Recover a script-VM operator set from its dispatch arms.
+"""Recover a script-VM operator set from an SMC-operand dispatch's arms.
 
-Nothing here is transcribed: the stream is the pointer the dispatch's own fetch
-uses, the operator range is the guard's floor plus the handler tables' spacing,
-and an operator's name, arity and writes are what its arm is.
+The subject is a shape and no driver family: a ``jmpd`` whose operand cells one
+paired lo/hi handler table writes, guarded on a byte the stream pointer's own
+fetch supplies. Stream, operator range, name, arity and writes are read off it.
 """
 
 import heapq
@@ -394,7 +394,7 @@ def sites(model):
     """Every SMC-operand dispatch site of the model, its operator table recovered.
 
     The sites are recovered together: the extent of one handler table is the
-    displacement to the next, since the voice copies tile one region."""
+    displacement to the next, since the seats' tables tile one region."""
     ana = getattr(model, "analysis", None)  # a hand-built block model carries none
     if ana is None:
         return ()
@@ -474,8 +474,8 @@ def operator_set(model, names=None):
     The name is the handler the paired tables select (``names`` gives the image's
     label for it, else its address), the arity the operand bytes the arm consumes
     and ``repeat`` the run a decoded-length arm's guard byte continues; the writes
-    are the cells the arm's own blocks assign. Voice copies are one set at several
-    seats, so the name is the first seat's and the writes the union over them."""
+    are the cells the arm's own blocks assign. Tiled copies of a dispatch are one
+    set at several seats: the name is the first seat's, the writes their union."""
     try:
         arities, escapes, refusals = operators(model)
     except (Refused, S.DecompileError):
@@ -513,8 +513,8 @@ def operator_set(model, names=None):
 def operators(model):
     """``(arities, escapes, refusals)`` over every dispatch site of the model.
 
-    A family's voice copies are one operator set at three seats; an operator
-    the copies disagree on is a refusal, not a majority vote."""
+    Tiled copies of one dispatch are one operator set at several seats; an
+    operator the seats disagree on is a refusal, not a majority vote."""
     cache, per = {}, {}
     for site in sites(model):
         for op in sorted(site.ops):
@@ -526,11 +526,11 @@ def operators(model):
         if bad:
             refusals[op] = bad[0]
         elif len(shapes) != 1:
-            refusals[op] = "voice copies recover arities %s" % sorted(shapes)
+            refusals[op] = "dispatch seats recover arities %s" % sorted(shapes)
         elif arms[0].arity is None:
             escs = {a.escape for a in arms}
             if len(escs) != 1:
-                refusals[op] = "voice copies recover %d escapes" % len(escs)
+                refusals[op] = "dispatch seats recover %d escapes" % len(escs)
             else:
                 escapes[op] = arms[0].escape
         else:

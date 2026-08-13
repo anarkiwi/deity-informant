@@ -62,6 +62,17 @@ absent for the one byte a 6502 access moves and `:2` for the 16-bit forms rung
 stored, so the width is stated once. `state { }` fields are `u8` or `u16`
 accordingly.
 
+`:2` denotes two **adjacent** bytes in every form but one. Where the indexed
+form's base is a table `data { }` declares `lo T`, `base[index]:2` is the **pair
+row** `(base[index], T[index])` — the datum's two columns, at whatever distance
+the declaration puts between them — and it reads as
+`zext2(T[index]) << 8 | zext2(base[index])`, stores as those two byte stores. So
+the `lo`/`hi` attributes are the disambiguator and a consumer must read the
+declaration before a `:2` row: `Grid_Runner` declares `table m_1493[3] lo
+m_1496`, whose row `m_1493[0]:2` is the pattern pointer `$167B`, three bytes
+apart, where the adjacent reading gives `$0D7B`. A base with no `lo` attribute
+carries no pair row, so its `:2` is the adjacent word rung (d) fuses.
+
 A `state { }` field may carry a **block extent** — `ptr_0021: u16 in m_7338,
 m_7401` — naming the declared data blocks the derefs through that pointer land
 in. An extent is a pointer's, so only a scalar `u16` field carries one; each

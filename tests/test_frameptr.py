@@ -443,6 +443,8 @@ def test_the_pointer_sequencer_resolves_and_still_gates():
     pr = next(p for p in prog.proofs if p.kind == "deref")
     assert pr.status == "resolved" and len(pr.targets) == 5  # 4 table blocks plus the init word
     assert "*ptr_0002[pos_1441]" in text and "mem[" not in text
+    # a proof joins to state { } by name, so it spells the alias the document declares
+    assert pr.lemma.startswith("pointer deref *ptr_0002[pos_1441]")
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, 6, prog) is None
 

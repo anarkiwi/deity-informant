@@ -18,11 +18,12 @@ ghidra/6510/data/languages/*.sla
 *.pdf
 nomoresecrets.pdf
 
-# oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed)
-.oracle-cache/
+# oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed;
+# no trailing slash, so a symlink to a shared cache is ignored as well as a dir)
+.oracle-cache
 
 # frameprog artifact cache for the sweeps (content-keyed, never committed)
-.sweep-cache/
+.sweep-cache
 
 # local artifacts
 .venv/

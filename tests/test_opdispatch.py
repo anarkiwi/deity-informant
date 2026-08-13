@@ -1,16 +1,16 @@
-"""Operator arity recovered from dispatch arms, and the Follin table's discharge.
+"""``opdispatch``: the shape on a miniature, and the Follin table's discharge.
 
 ``TRANSCRIBED`` is ``follin_script._ARITY`` as it stood until stage 3d -- 20
-lengths hand-copied from docs/follin-dispatch-study.md §3 -- kept here as the
-discharge witness the recovery must reproduce op for op.
+lengths hand-copied from docs/follin-dispatch-study.md §3 -- kept as the
+discharge witness the recovery must reproduce op for op on that family.
 """
 
 from pathlib import Path
 
 import pytest
 
-from deity_informant import follin_arity as FA
 from deity_informant import follin_script as fscript
+from deity_informant import opdispatch as OD
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
@@ -91,7 +91,7 @@ def _model(sid, subtune):
 
 def test_mini_site_is_read_off_the_dispatch_not_told():
     """Stream, entry Y, tables and operator range all come from the model."""
-    (site,) = FA.sites(_mini())
+    (site,) = OD.sites(_mini())
     assert site.pc == 0x101E and site.stream == (0x20, 0x21)
     assert site.tables == (0x1F80, 0x1F84) and site.entry_y == 1
     assert site.ops == {0x80: 0x1030, 0x81: 0x1038, 0x82: 0x103D, 0x83: 0x104A}
@@ -100,15 +100,15 @@ def test_mini_site_is_read_off_the_dispatch_not_told():
 def test_mini_arities_escape_and_the_control_arm():
     """Constant arities, the pointer-rewriting arm, and the decoded-length escape."""
     model = _mini()
-    (site,) = FA.sites(model)
-    arms = {op: FA.arm(model, site, op) for op in site.ops}
+    (site,) = OD.sites(model)
+    arms = {op: OD.arm(model, site, op) for op in site.ops}
     assert {op: a.arity for op, a in arms.items()} == {0x80: 1, 0x81: 0, 0x82: 2, 0x83: None}
     assert arms[0x82].delta == 1, "the rewriting arm's Y delta is one short of its arity"
     assert arms[0x80].delta == 1 and arms[0x81].delta == 0
     esc = arms[0x83].escape
     assert (esc.first, esc.stride, esc.trailer) == (3, 2, 1)
     assert esc.cont == frozenset(range(0x80))
-    assert FA.operators(model) == ({0x80: 1, 0x81: 0, 0x82: 2}, {0x83: esc}, {})
+    assert OD.operators(model) == ({0x80: 1, 0x81: 0, 0x82: 2}, {0x83: esc}, {})
 
 
 def test_mini_script_decodes_through_the_recovered_grammar():
@@ -130,9 +130,9 @@ def test_mini_script_decodes_through_the_recovered_grammar():
 def test_mini_unliftable_arm_is_a_named_refusal():
     """A table entry that does not lift refuses by name; the others still recover."""
     model = _mini(hole=True)
-    (site,) = FA.sites(model)
+    (site,) = OD.sites(model)
     assert sorted(site.ops) == [0x80, 0x81, 0x82, 0x83, 0x84]
-    arities, escapes, refusals = FA.operators(model)
+    arities, escapes, refusals = OD.operators(model)
     assert arities == {0x80: 1, 0x81: 0, 0x82: 2} and list(escapes) == [0x83]
     assert list(refusals) == [0x84] and "$1060" in refusals[0x84]
 
@@ -142,14 +142,14 @@ def test_no_dispatch_recovers_nothing():
     mem = bytearray(0x10000)
     mem[INIT], mem[PLAY] = 0x60, 0x60
     model = S.decompile(mem, INIT, PLAY, 2)[0]
-    assert FA.sites(model) == () and FA.operators(model) == ({}, {}, {})
+    assert OD.sites(model) == () and OD.operators(model) == ({}, {}, {})
     assert fscript.decode(model) == []
 
 
 @pytest.mark.parametrize("sid,subtune", _tune("Ghouls_n_Ghosts", "Follin_Tim"))
 def test_ghouls_recovery_equals_the_transcription(sid, subtune):
     """The discharge: 20 arities recovered equal the hand table, $85 escapes."""
-    arities, escapes, refusals = FA.operators(_model(sid, subtune))
+    arities, escapes, refusals = OD.operators(_model(sid, subtune))
     assert refusals == {}
     assert arities == TRANSCRIBED
     assert list(escapes) == [0x85]
@@ -161,7 +161,7 @@ def test_ghouls_recovery_equals_the_transcription(sid, subtune):
 @pytest.mark.parametrize("sid,subtune", _tune("Ghouls_n_Ghosts", "Follin_Tim"))
 def test_ghouls_sites_are_three_voice_copies(sid, subtune):
     """Three dispatches, one per voice stream, over the same 21-slot operator range."""
-    sites = FA.sites(_model(sid, subtune))
+    sites = OD.sites(_model(sid, subtune))
     assert [s.pc for s in sites] == [0x6374, 0x6561, 0x6750]
     assert [s.stream for s in sites] == [(0x21, 0x22), (0x23, 0x24), (0x25, 0x26)]
     assert [s.tables for s in sites] == [(0x6C37, 0x6C76), (0x6C4C, 0x6C8B), (0x6C61, 0x6CA0)]
@@ -173,10 +173,10 @@ def test_ghouls_sites_are_three_voice_copies(sid, subtune):
 def test_ghouls_net_y_delta_falls_one_short_on_the_rewriting_arms(sid, subtune):
     """The catalog's net-Y-delta definition holds except where the arm rewrites."""
     model = _model(sid, subtune)
-    site = FA.sites(model)[0]
+    site = OD.sites(model)[0]
     short = set()
     for op in sorted(TRANSCRIBED):
-        got = FA.arm(model, site, op)
+        got = OD.arm(model, site, op)
         assert got.arity == TRANSCRIBED[op], "$%02X" % op
         if got.delta != got.arity:
             short.add(op)
@@ -188,8 +188,8 @@ def test_ghouls_net_y_delta_falls_one_short_on_the_rewriting_arms(sid, subtune):
 def test_agent_x_ii_is_a_second_build_with_its_own_operator_set(sid, subtune):
     """Why the table was debt: the family's other exemplar has other lengths."""
     model = _model(sid, subtune)
-    arities, escapes, refusals = FA.operators(model)
-    sites = FA.sites(model)
+    arities, escapes, refusals = OD.operators(model)
+    sites = OD.sites(model)
     assert [s.pc for s in sites] == [0x69E7, 0x6CD4, 0x6FC3]
     assert all(sorted(s.ops) == list(range(0x80, 0x91)) for s in sites)
     assert arities[0x84] == 0 and TRANSCRIBED[0x84] == 1

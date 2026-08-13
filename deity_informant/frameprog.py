@@ -10,7 +10,6 @@ import re
 
 from . import datadecl
 from . import eqlift_mem
-from . import follin_arity
 from . import framefuse
 from . import framemath
 from . import frameproc
@@ -19,6 +18,7 @@ from . import framestack
 from . import grammar as G
 from . import idioms
 from . import initcopy
+from . import opdispatch
 from . import ptrlift
 from . import sidprog
 from . import structured
@@ -157,6 +157,15 @@ class FrameProgram:
             else:
                 self._lines = eqlift_mem.artifact_lines(self, demoted=self.demoted)
         return self._lines
+
+
+def _aliased(proofs, symbols):
+    """Every proof lemma spelled as the document spells its cells.
+
+    A rung names cells canonically, the artifact declares the aliases, and a record
+    that says ``*zp_FE`` joins to no ``state { }`` row: it is the body substitution."""
+    sub = sidprog._alias_sub(symbols)
+    return proofs if sub is None else [p._replace(lemma=sub(p.lemma)) for p in proofs]
 
 
 def _init_proof(pc, cells, undeclared, computed):
@@ -557,7 +566,7 @@ def program(model, extents=None):
         symbols,
         procs,
         model.mem0,
-        proofs + deref_proofs + lift_proofs + init_proofs,
+        _aliased(proofs + deref_proofs + lift_proofs + init_proofs, symbols),
         resolved,
         blocked,
         pinned,
@@ -617,10 +626,10 @@ def _drop_transfer_operands(state, procs, symbols):
 def _operators(model):
     """``{opcode: (name, arity, repeat, writes)}``: the script VM's own operator set.
 
-    A family whose play routine dispatches through an SMC operand has an operator
-    set, and it is recovered rather than transcribed (``follin_arity``): a driver
-    with no such dispatch declares none, which is most of the corpus."""
-    return {op: tuple(rec) for op, rec in follin_arity.operator_set(model).items()}
+    A play routine that dispatches through an SMC operand has an operator set,
+    and it is recovered rather than transcribed (``opdispatch``): a driver with
+    no such dispatch declares none, which is most of the corpus."""
+    return {op: tuple(rec) for op, rec in opdispatch.operator_set(model).items()}
 
 
 def _kept_state(prog, procs, to_alias):

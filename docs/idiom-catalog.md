@@ -254,7 +254,7 @@ Stage 1 was not to re-derive what the repository already enumerated:
 ## The Follin arity debt — discharged (stage 3d)
 
 `follin_script._ARITY` was a hand-transcribed per-tune table and the one
-standing exception to the governance rule; `deity_informant/follin_arity.py`
+standing exception to the governance rule; `deity_informant/opdispatch.py`
 recovers it and it is deleted, so no table stands in its place. The definition
 this section recorded — **an operator's arity is the net `Y` delta of its
 dispatch arm, constant on all paths through that arm** — is mechanical because
@@ -284,7 +284,7 @@ stride 2, trailer 1, continue while the byte is under `$80` — and the decoder
 consumes exactly that, so the escape is derived per build rather than written
 in. An arm with no such loop stays a named refusal with its reason.
 
-The discharge is executable: `tests/test_follin_arity.py` holds the 20-entry
+The discharge is executable: `tests/test_opdispatch.py` holds the 20-entry
 transcription as the witness and asserts the recovery reproduces it op for op
 on `Ghouls_n_Ghosts`. It also holds the reason the table was debt —
 `Agent_X_II` is a second build with 17 operators of its own, `$84` taking no
