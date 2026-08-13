@@ -3999,3 +3999,83 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   no tune larger (586 smaller) and `bad` **0** — `International_Karate`'s standing lint left
   with #206/#207, not with this. This landing emits no byte: `emit_identity` on the merge
   commit holds at `73824f53…`/28,381,180.
+- **2026-08-13 — a branch is the carry's own evidence: a flag it splits on is a constant in
+  its arms, and the borrow chain beneath it becomes one word compare.** The final wave's
+  second landing. The survey put the residue at `framemath._pairs` nominating destinations
+  only; the measurement said otherwise, and the measurement is what landed.
+  (1) **What was actually blocking, measured before anything moved.** The exemplar
+  (`Grid_Runner`, the `$104A` arm) carries a 200-char `cflag` chain the survey said should
+  spell `ptr_00FE:2 <= ((zext2(y) << $08) | zext2(a))`, and every lemma that spelling needs
+  is already admitted — `borrow_fuse`, `borrow_word`, `sbc_borrow`, `carry_ult`,
+  `carry_comm`. Instrumented over three tunes' artifacts, **every** SBC borrow chain carries
+  a *symbolic* carry-in (`($01 - cflag)`) and the constant-carry-in form those lemmas match
+  occurs **zero** times; `cflag = $01` is never emitted at all. The site was not
+  un-nominated, it was un-matchable, and no nomination rule would have changed that.
+  (2) **The carry is constant, and the branch is what says so.** The exemplar's own text:
+  `cflag = ($02 <= w12)` then `ifnot cflag { … + cflag … } else { … ($01 - cflag) … }`. The
+  ADC arm runs at carry **clear** and the SBC arm at carry **set** — the program's `BCC`
+  decided the carry-in and the emitter re-read the flag as an unknown in both arms. A branch
+  tests *nonzero*, so a guard that is its own truth value is a **constant** in each arm.
+  (3) **The mechanism, and its soundness argument.** `eqlift_mem.render_proc` keeps
+  `stt["bit"]`, a map from **SSA version** to the value an enclosing branch fixed, pushed for
+  the `then` arm and inverted for the `else`; `conv` returns `num` instead of `loc` for a
+  version the map holds. Keying on the version *is* the argument: a redefinition allocates a
+  new version and every boundary havocs into one, so a fact cannot outlive the value it is
+  about, and a label inside an arm — the one way another path could enter it — havocs every
+  local before the fact could be read. No e-graph equality is asserted, which would be
+  unsound: the graph is one graph for the whole procedure and the other arm reads it. A plain
+  `x = y` is an alias, so `copy` carries the fact to `cflag0` as well as `cflag`. The guard's
+  0/1-ness is `eqlift.bit_valued`, whose alphabet `framemath._bit` now shares rather than
+  restates, and whose obligation is discharged in QF_BV rather than asserted: every compare,
+  `carry` and `bnot` in `_Z3Alg` is proved `<= 1`.
+  (4) **The rule, and its honest weight.** `wide_cmp` is one rewrite, Z3-proved over QF_BV
+  like every other: at a carry-in of one the two byte borrows concatenate to
+  `ule(pk(bh,bl), pk(ah,al))` — what the chain *tests*, where `borrow_word` states what it
+  computes. Extraction takes it only where the pack is cheaper than the chain, which is where
+  the operands really are words, and on the exemplar it produces the survey's spelling
+  verbatim. Its measured weight is **near zero**: A/B'd against the path condition alone it
+  moves `arch` by **+1** on `Grid_Runner` and by nothing on `Angry_Birds`, trading a shared
+  temporary and a line for one more register token. It is kept because it states the relation
+  the branch is asking, not because it moves the metric. **The reducer is the path
+  condition**, and the two are recorded apart so neither borrows the other's credit.
+  (5) **The equality generalization is measured and refused.** A guard whose flag is
+  `INT_EQUAL(loc, const)` also fixes the compared local on the arm the equality holds. Built,
+  and it moved **zero of 63** sampled tunes — byte-identical to the bit fact alone — while
+  costing a sense obligation that had already produced one wrong answer in development: the
+  fact belongs to the arm the *flag* is set on, which for `ifnot` is the `else`, and `gate_fp`
+  caught the inversion on two tunes before it left the working tree. Withdrawn as
+  measured-empty. It was never on main, so nothing regresses with it.
+  (6) **The corpus, §4-reviewed.** `emit_identity`: **624 tunes, 0 refused, 28,365,174
+  bytes**, aggregate `7a63a89f37370af29ad7b541ff11ef21529cd5b9b7a1ec26c2aced39bbd71e1d`,
+  against the merge commit `978f31a`'s `73824f53…`/28,381,180 — the landing's own movement is
+  **−16,006 bytes**. Measured once at `49a300a` and again after the rebase across #205/#207,
+  the movement is the **same −16,006 bytes, the same `arch` −1,430 and the same `temps`
+  −134**, so the path condition is orthogonal to the operator renaming and the header
+  re-read: three landings touching one artifact, and their prices add.
+  (7) **The gates.** `gate_sweep` **624 build / 624 evaluate / 624 clean**, zero divergences
+  and zero refusals — a value the branch already decided is the same value. `splice_sweep` is
+  **0 bad**: parse, lint, fixpoint, gate and sites all zero, **205,743 rewritten sites proved,
+  zero unproved** (205,836 before — 93 fewer sites, because a folded carry-in is a site that
+  no longer exists). Emitted size **−7,373 lines with no tune larger** (586 smaller) against
+  the projection, `fields` 17,662 and `roled` 12,825 unmoved. `arch` **195,409 → 193,979**
+  (**−1,430**, −0.73%) and `temps` **55,120 → 54,986** (−134). Suite **2,804 passed / 490
+  skipped / 1 xfailed** hermetic; `black --check` and `pylint` (10.00/10 on `deity_informant/`
+  and on `tools/`) clean. One rule is admitted, and `verify_rules` proves it.
+  (8) **The pin does not flip, and its remaining owners are named rather than forced.**
+  `zero_arch` stays **2 of 624**, and on the prototype's own `role_text` — the object the pin
+  reads — **53** register tokens remain (`y` 26, `a` 23, `x` 4) with **25** temporaries beside
+  them. They are one mechanism in four shapes, and none of them is a carry: **23** are a
+  register *as the destination* of a load the fold left unnamed
+  (`a = mem[((zext2(voice_pos_hi) << $08) | zext2(voice_pos_lo))]`), **18** are that same
+  unnamed value read back on the right of an assignment (`voice_note = pitch[x]`, where `x`
+  is a table index with no declared role in this projection), **8** are the branch predicate
+  over it (`if ($00 <=s a)`), and **4** are the VM's own computed SID index
+  (`sid.reg[a] = …`). The owner is **the prototype's render layer, still un-re-based**: it
+  names a value only where `classify_roles` gives it a role, so an intermediate with no role
+  keeps the register the fold left it in — where `frameproc._Names` would allocate a `t`/`w`/
+  role-prefixed local. That is stage 4 landing 4's remaining part, not a rung and not the
+  residue, and landing 1's `temps` counter is what makes it legible: the two projections
+  spell **the same residue in two alphabets**, the engine's artifact for this image wearing
+  `arch` 89 / `temps` 65 where the prototype wears `arch` 53 / `temps` 25. Forcing the pin
+  would require naming those values, which is the re-basing, so the `xfail(strict)` stands
+  and its owner is recorded here.

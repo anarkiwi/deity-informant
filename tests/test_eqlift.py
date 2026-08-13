@@ -79,6 +79,41 @@ def test_a_zero_carry_term_is_identically_zero():
     assert ("num", 0, 1) not in _saturate(("carry", x, ("num", 1, 1), 1))
 
 
+def _pk(h, l):
+    return ("bor", ("shl", ("zext", h), ("num", 8, 1), 2), ("zext", l), 2)
+
+
+def test_the_branch_borrow_chain_is_one_word_compare():
+    """rung (d2)'s law over a predicate: what the chain tests, not what it computes."""
+    al, ah, bl, bh = (("cell", a, 1, 0) for a in (0x10, 0x11, 0x20, 0x21))
+    lo = ("ule", ("zext", bl), ("zext", al))
+    chain = ("ule", ("add", ("zext", bh), ("zext", ("sub", ("num", 1, 1), lo, 1)), 2), ("zext", ah))
+    got = _saturate(chain)
+    assert ("ule", _pk(bh, bl), _pk(ah, al)) in got
+
+
+def test_a_branch_on_a_flag_makes_it_a_constant_in_its_arms():
+    """The path condition's own law: a guard that is its own truth value is 0/1 below it."""
+    cmps = [("op", mn, (("loc", "x"), ("loc", "y")), 1) for mn in sorted(eqlift.BIT_OPS)]
+    assert all(eqlift.bit_valued(e) for e in cmps)
+    assert eqlift.bit_valued(("op", "INT_AND", tuple(cmps[:2]), 1))
+    assert not eqlift.bit_valued(("op", "INT_ADD", tuple(cmps[:2]), 1))
+    assert not eqlift.bit_valued(("loc", "cflag"))  # with no defs nothing is known
+    assert eqlift.bit_valued(("loc", "cflag"), {"cflag": cmps[0]})
+    assert not eqlift.bit_valued(("loc", "a"), {"a": ("loc", "b"), "b": ("loc", "a")})
+
+
+def test_every_flag_op_really_computes_zero_or_one():
+    """The obligation the path condition rides on, discharged in QF_BV rather than asserted."""
+    alg = eqlift._Z3Alg()
+    x, y = alg.tvar("x", 1), alg.tvar("y", 1)
+    ones = [fn(x, y) for fn in (alg.eq, alg.ne, alg.ult, alg.ule, alg.slt, alg.sge)]
+    for got in ones + [alg.carry(x, y, 1), alg.bnot(x)]:
+        s = z3.Solver()
+        s.add(z3.UGT(got, 1))
+        assert s.check() == z3.unsat, got
+
+
 def test_the_narrowing_copy_is_a_term_in_both_algebras():
     """``trunc`` is ``zext``'s dual, so rung (d2)'s width-one ``COPY`` converts (step 4).
 

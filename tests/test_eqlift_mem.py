@@ -1113,3 +1113,49 @@ def test_a_carry_wears_the_lane_it_is_a_carry_out_of():
         E.pass1_node(("carry", ("loc", "a.0"), ("loc", "b.0"), 2), [("loc", "a"), ("loc", "b")])[3]
         == 1
     )
+
+
+_SBC_HI = (
+    "op",
+    "INT_LESSEQUAL",
+    (
+        (
+            "op",
+            "INT_ADD",
+            (
+                ("op", "INT_ZEXT", (("mem", ("const", 0x21, 1), 1),), 2),
+                (
+                    "op",
+                    "INT_ZEXT",
+                    (("op", "INT_SUB", (("const", 1, 1), ("loc", "c")), 1),),
+                    2,
+                ),
+            ),
+            2,
+        ),
+        ("op", "INT_ZEXT", (("mem", ("const", 0x11, 1), 1),), 2),
+    ),
+    1,
+)
+
+
+def _borrow_chain(word):
+    """``SEC`` by branch, then the hi lane's borrow out: the shape a ``BCS`` leaves."""
+    return [
+        ("asg", "c", ("op", "INT_LESSEQUAL", (("mem", ("const", 0x20, 1), 1), ("loc", "a")), 1)),
+        ("asg", "c0", ("loc", "c")),
+        ("if", word, ("loc", "c"), [("st", ("const", 0xD404, 2), _SBC_HI)], []),
+    ]
+
+
+def test_a_branch_on_a_flag_fixes_it_in_the_arm():
+    """The carry a branch splits on is a constant beside it, so the chain stops naming it.
+
+    Without the path condition the arm spells ``($01 - c)`` -- the borrow of a subtract
+    whose carry in the branch itself decided."""
+    got = " ".join(ln.strip() for ln in mem.render_proc(_borrow_chain("if")))
+    assert "$01 - c" not in got, got
+    assert "zp_21" in got and "zp_11" in got
+    other = " ".join(ln.strip() for ln in mem.render_proc(_borrow_chain("ifnot")))
+    assert "$01 - " not in other, other  # the else sense: the flag is clear in the arm
+    assert other != got, "both senses render the same, so the arm's value is not read"
