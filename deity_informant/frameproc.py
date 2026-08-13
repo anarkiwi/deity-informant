@@ -3055,12 +3055,14 @@ class _Graph:
     resolves to a node, so a transfer this module cannot enumerate becomes an
     opaque node -- a refused web -- rather than a missing edge and a split one."""
 
-    def __init__(self, stmts, rets=(), regs=_EMPTY):
+    def __init__(self, stmts, rets=(), regs=_EMPTY, calls=None):
         self.stmt, self.succ, self.path = [], [], []
         self.labels, self.opaque, self.escape = {}, set(), set()
         self.own = _own_labels(stmts, set())
         self.regs = regs
         self.rets = frozenset(rets) & regs
+        self.calls = calls or {}  # callee entry -> (may-define, live-in), both register-only
+        self.summed = {}  # node -> the callee summary bounding what it defines and reads
         self._tick = 0
         self._walk(stmts, [], ())
         self._emit(None, [], None)  # the sink control falls off the end into
@@ -3080,6 +3082,19 @@ class _Graph:
 
     def _join(self, key):
         self.labels[key] = self._emit(None, [_NEXT], None)
+
+    def _summed(self, at, summary):
+        """Bound a call node by its callee's summary, or refuse it as opaque.
+
+        A raw ``call`` runs a body this program holds, so what it defines is that
+        body's may-set and what it reads its live-in; a register in neither flows
+        through untouched. Only a callee with no summary -- a target outside the
+        program, or a transfer the graph cannot enumerate -- is the ABI-free case
+        the ``opaque`` refusal was stated for."""
+        if summary is None:
+            self.opaque.add(at)
+        else:
+            self.summed[at] = (summary[0] & self.regs, summary[1] & self.regs)
 
     def _stop(self, s, path, escaping):
         at = self._emit(s, [], path)
@@ -3107,7 +3122,7 @@ class _Graph:
             elif op in ("asg", "st", "pcall"):
                 self._emit(s, [_NEXT], here)
             elif op == "call":
-                self.opaque.add(self._emit(s, [_NEXT], here))
+                self._summed(self._emit(s, [_NEXT], here), self.calls.get(s[1]))
             elif op == "callb":
                 self._emit(s, [_NEXT], here)  # the callee's own statements are right here
                 self._walk(s[3], loops, here + (0,))
@@ -3164,13 +3179,19 @@ class _Graph:
 
         An opaque call defines and reads every register the procedure names (the
         ABI is not in the text) and a transfer that leaves carries them out to a
-        reader the graph does not hold, so a web at either is refused."""
+        reader the graph does not hold, so a web at either is refused. A call whose
+        callee the program holds is bounded by that callee's summary instead, and
+        is no refusal: the registers it names are the ones it touches."""
         out = []
         for i, s in enumerate(self.stmt):
             defs, uses = _site(s)
             if i in self.opaque:
                 defs.update({r: None for r in self.regs})
                 uses.update({r: {1} for r in self.regs})
+            elif i in self.summed:
+                may, livein = self.summed[i]
+                defs.update({r: None for r in may})
+                uses.update({r: {1} for r in livein})
             if i in self.escape:
                 uses.update({r: {1} for r in self.regs})
             elif s is not None and s[0] == "ret":
@@ -3224,8 +3245,8 @@ class ProcWebs:
 
     __slots__ = ("entry", "webs", "_bydef", "_byuse", "_byname")
 
-    def __init__(self, entry, stmts, rets=()):
-        graph = _Graph(stmts, rets, _ALL_REG_LOCALS & set(_named_locals(stmts, {})))
+    def __init__(self, entry, stmts, rets=(), calls=None):
+        graph = _Graph(stmts, rets, _ALL_REG_LOCALS & set(_named_locals(stmts, {})), calls)
         sites = graph.sites()
         reach = _reaching(graph, sites)
         union, at_use = _Union(), {}
@@ -3295,20 +3316,36 @@ class ProcWebs:
         return out
 
 
-def webs(procs):
+def call_summaries(procs, play=None):
+    """``entry -> (may-define, live-in)`` per procedure, registers only.
+
+    What a raw ``call`` to that entry actually touches. The pair is the one
+    ``_Info`` already computes for the header inference, read at its fixpoint, so
+    the web graph and the printed signatures answer out of one summary."""
+    info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
+    info.summarize()
+    return {
+        e: (info.may[e] & _ALL_REG_LOCALS, info.livein[e] & _ALL_REG_LOCALS) for e in info.order
+    }
+
+
+def webs(procs, play=None):
     """``entry -> ProcWebs`` over settled statement trees: the analysis unit.
 
     A procedure's declared returns are the registers its ``ret`` leaves live, so
     the 4-tuple list is the input; nothing here reads or writes a spelling, which
-    is what lets a web be computed before it is nameable."""
-    return {e: ProcWebs(e, stmts, rets) for e, _pa, rets, stmts in procs}
+    is what lets a web be computed before it is nameable. The call summaries bound
+    what a ``call`` node defines and reads, so a callee this program holds refuses
+    nothing -- only a target outside it does."""
+    calls = call_summaries(procs, play)
+    return {e: ProcWebs(e, stmts, rets, calls) for e, _pa, rets, stmts in procs}
 
 
-def web_counts(procs):
+def web_counts(procs, play=None):
     """The plan's §5 web metric over one program: totals and refusals by class."""
     out = {"procs": 0, "webs": 0, "refused": 0}
     out.update({cls: 0 for cls in WEB_REFUSALS})
-    for pw in webs(procs).values():
+    for pw in webs(procs, play).values():
         out["procs"] += 1
         for k, v in pw.counts().items():
             out[k] += v

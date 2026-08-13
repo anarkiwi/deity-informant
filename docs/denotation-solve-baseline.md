@@ -108,10 +108,121 @@ spelling per name and rung (d) has fused every pair it can, so no surviving web 
 that disagree. The refusals that do bite are `opaque` (14,334) and `entry` (6,837), which
 is what L2's ⊤ population starts from.
 
+## (5) L2 -- the denotation census, and the kill criterion
+
+Measured with `tools/denote_census.py` over the same 624 cached artifacts, off the same
+settled statement trees. The solve is `deity_informant/denote.py`; its lattice, join and
+transfer rules are [denotation.md](denotation.md). **A2 emits no byte** --
+`tools/emit_identity.py` reproduces `7a63a89f...`, 28,365,174 bytes, 0 refused.
+
+A **value site** is one occurrence of a local, a definition or a read: exactly the
+population `arch`/`temps` count. A **deref site** is one memory access whose address is
+not a compile-time constant, typed by *where it lands* (`addr(S,r)`) rather than by the
+byte it yields.
+
+| measure | value |
+|---|---|
+| value sites | 241817 |
+| -- non-⊤ | **70884 (29.31%)** |
+| deref sites | 101825 |
+| -- non-⊤ | **85075 (83.55%)** |
+| deref sites through a lifted pointer | 2319 |
+| -- non-⊤ | 661 (28.50%) |
+| webs | 71555 |
+| -- non-⊤ | 19048 (26.62%) |
+| persistent cells non-⊤ | 4738 of 18967 |
+| declared tables non-⊤ | 14389 of 14389 |
+
+Value sites by constructor: `byte` 36429, `idx` 28270, `const` 3396, `lane` 2369, `row`
+251, `addr` 169. Deref sites are `addr` by construction: 85075.
+
+⊤ by cause, value sites (170,933 in all):
+
+| cause | count | what it is |
+|---|---:|---|
+| `op` | 43808 | an operator §3.1's lattice has no constructor for -- counters, accumulators, carries, compares |
+| `entry` | 41737 | the web is live where the procedure begins (§3.2's stated refusal) |
+| `opaque` | 32891 | an opaque call or an unenumerable transfer defines or reads it (§3.2's stated refusal) |
+| `cell` | 22341 | it reads a cell or table that is itself ⊤, almost always for `op` |
+| `addr` | 19701 | a memory site whose address names no declared base: an unlifted pointer, a stack slot |
+| `mixed` | 5301 | the facts join across constructors the lattice does not cross |
+| `call` | 4148 | a call return |
+| `nofact` | 1006 | no site states anything |
+
+⊤ by cause, deref sites (16,750 in all): `addr` 12985, `mixed` 2107, `cell` 1658 (the
+pointer's own cell is ⊤).
+
+Rule tally, so the census can be read per rule rather than as one number: `table-row`
+19710, `index-use` 3725, `field-select` 2087, `pair-row` 2006, `cell-read` 1048,
+`lane-table` 619, `cursor-step` 613, `deref-row` 598, `addr-row` 73, `affine-const` 33,
+`staged-init` 33.
+
+### The verdict: STOP
+
+§4's L2 kill criterion is 60% of value sites and 80% of deref sites. **Value sites reach
+29.31%.** Deref sites reach 83.55% and clear their threshold; the value-site rate does
+not, and it is the plan's primary number (§5: "the primary number; it is what the work
+actually reduces"). **L2 stops here and reports.** Nothing was tuned to move it and the
+lattice was not extended to chase it.
+
+*(§4 spells the criterion with "and", which would read as "stop only if both fail". The
+A2 instruction spells it with "or". Both readings are recorded here: under "or" this is a
+STOP, under "and" it is not, and the deref rate is the half that passes.)*
+
+### What the ⊤ population actually is
+
+Three findings, none of which is "the shape is not in the corpus":
+
+**(1) 46.1% of the ⊤ value sites are refusals the plan already stated, not lattice
+gaps.** `entry` + `opaque` + `call` is 78,776 of 170,933. §3.2 names all three in advance:
+"A web that is live at procedure entry, defined by an opaque call, or whose sites disagree
+after the solve stays ⊤ and keeps its machine spelling." An entry-live web is a
+*parameter*, and its denotation is the caller's argument -- an interprocedural fact this
+landing does not compute. These are not evidence about the corpus's shape; they are the
+analysis unit's own boundary, and they are the population an interprocedural landing would
+address.
+
+**(2) 38.7% is scalar arithmetic and the cells it feeds.** `op` + `cell` is 66,149. A
+driver's register traffic is mostly counters, envelope accumulators, carries, borrows and
+comparison results. §3.1's lattice has **no constructor for a scalar quantity** -- by
+design, since it was drawn to close the *pointer and lane* residue of §1. So these sites
+are ⊤ correctly: the lattice does not claim them and must not. This is the finding that
+decides the criterion, and it is a statement about the lattice's scope rather than about
+the corpus.
+
+**(3) The mechanism the plan was built for does work, where it applies.** All 14,389
+declared tables type; `idx` reaches 28,270 sites; `pair-row` fires 2,006 times and
+`lane-table` 619; the deref population is 83.55% placed. Commando's own exhibits both
+solve: `m_54EB` is `lane(0,7)` and `ptr_005F` is `addr(S,·)` over the 32 declared blocks
+`$5887..$5D7D` with its selector web named (`tests/test_denote.py`). But **only 28.50% of
+the derefs that go through a lifted pointer get a declared block set** -- 1,658 of 2,319
+have a pointer cell the solve leaves ⊤ -- which is better than §4.6's 366 of 3,929 (9.3%)
+and nowhere near closing. L4's expected reach is that 661, not the 2,319.
+
+### The `opaque` refusal, tightened
+
+A2 bounds a raw `call` by its callee's own may-define and live-in sets
+(`frameproc.call_summaries`), so a register the callee does not touch flows through.
+
+| | A1 | A2 |
+|---|---:|---:|
+| webs | 72095 | 71555 |
+| refused | 18859 (26.2%) | 16841 (23.5%) |
+| -- `entry` | 6837 | 6712 |
+| -- `opaque` | 14334 | **12238** |
+| -- `width` | 0 | 0 |
+
+−2,096 opaque refusals (−14.6%). The residue is not raw calls to procedures: it is
+escaping transfers (`goto` out of the procedure, a depth-carrying `ret`, `dcall`/`dgoto`/
+`dbr`), `swc` arm sets, and `call`s whose target is a *label inside* a procedure rather
+than an entry -- `_Info` has no summary for a label either, which is why the engine's own
+`may` set falls back to every register there too.
+
 ## Coverage
 
-- webs: 624 of 624 cached tunes at full Songlengths, nothing re-emitted; the census reads
-  the same artifacts the emit-identity gate hashes.
+- webs and denotations: 624 of 624 cached tunes at full Songlengths, nothing re-emitted;
+  both censuses read the same artifacts the emit-identity gate hashes, and the denotation
+  census was run twice with identical totals.
 - census and quotient: 624 of 624 cached tunes at full Songlengths, every artifact
   already in `.sweep-cache` at the current package fingerprint -- nothing re-emitted.
   11 tunes carry no SIDId name and are out of the family rollup (they keep the `-`
