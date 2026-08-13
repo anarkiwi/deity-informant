@@ -5,6 +5,9 @@ Step 4 carries the rung-built statements ``frameprog.program`` produces through
 control beside it is ``frameproc.render_lines``, the projection it replaced.
 """
 
+import re
+import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -13,8 +16,13 @@ from deity_informant import eqlift
 from deity_informant import eqlift_mem
 from deity_informant import framelog
 from deity_informant import frameprog
+from deity_informant import frameproc
 from deity_informant import frameval
 from deity_informant import structured
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+
+import splice_sweep
 
 FRAMES = 24  # the count the witness e2e pin replays: far enough to cross the scripts
 
@@ -171,3 +179,21 @@ def test_the_spliced_emitter_carries_the_rung_built_statements(example):
     assert text.startswith("frameprog ")
     assert frameprog.dumps(frameprog.loads(text)) == text
     assert frameval.gate_fp(model, frames, frameprog.loads(text)) is None
+
+
+def test_the_headline_metric_counts_every_register_a_version_hides(example):
+    """``arch``/``temps``: a copied register is still the register, a width type is not.
+
+    The predicate is read off ``frameproc``'s own allocator, so a register the emitter
+    gains cannot go uncounted, and the two residues stay apart."""
+    assert splice_sweep._arch_re().pattern.count("|") == len(frameproc._ALL_REG_LOCALS) - 1
+    arch, temps = splice_sweep.arch_shapes(
+        "a = cflag0\niflag = g4\nzp_00: parameter u8 = $00\nt3 = zext2(y1) ; a a a\n"
+    )
+    assert (arch, temps) == (5, 1)  # a cflag0 iflag g4 y1 | t3; u8/zext2 are the grammar's
+    _model, _frames, prog = example
+    text = splice_sweep._NOISE.sub("", frameprog.dumps(prog))
+    old = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
+    arch, temps = splice_sweep.arch_shapes(text)
+    assert arch >= sum(1 for w in re.findall(r"[A-Za-z_]\w*", text) if w in old)
+    assert temps, "the second residue reads zero on an artifact full of ``t``/``ptr`` locals"

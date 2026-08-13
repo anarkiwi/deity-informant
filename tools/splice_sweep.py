@@ -31,17 +31,40 @@ USAGE = """\
 
 CHECKS = ("error", "parse", "lint", "fixpoint", "gate", "sites")
 
-ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-_WORD = re.compile(r"[A-Za-z_]\w*")
+_NAME = re.compile(r"[A-Za-z_]\w*(?:\.\w+)*")  # the grammar's NAME token, dots and all
 _NOISE = re.compile(r"\$[0-9A-Fa-f]+|;[^\n]*")
+_LOCAL = re.compile(r"[a-z]+\d+")  # an emitter-allocated local: a prefix and a counter
+_GRAMMAR = re.compile(r"u\d+|zext[12]|trunc[12]")  # width types and the widening operators
+_ARCH = None
+
+
+def _arch_re():
+    """``(register)(version)?`` over the alphabet ``frameproc`` itself allocates.
+
+    Read off the package, not restated here: a hand-kept copy is what let the metric
+    miss ``iflag``/``dflag``/``bflag`` and the unnamed register-file slots."""
+    global _ARCH  # pylint: disable=global-statement
+    if _ARCH is None:
+        from deity_informant import frameproc  # pylint: disable=import-outside-toplevel
+
+        regs = sorted(frameproc._ALL_REG_LOCALS, key=len, reverse=True)  # pylint: disable=W0212
+        _ARCH = re.compile(r"(?:%s)\d*" % "|".join(regs))
+    return _ARCH
 
 
 def arch_shapes(text):
-    """How many architectural registers the emitted text names, hex and comments apart.
+    """``(arch, temps)``: the machine shapes the emitted text names, hex and comments apart.
 
-    The headline metric, as the prototype's own pin states it: a register surviving as a
-    value is a machine shape, and a tune wearing none is one the lift finished."""
-    return sum(1 for w in _WORD.findall(_NOISE.sub("", text)) if w in ARCH)
+    A register survives as a value under its own name and under every version the emitter
+    copies it into (``a0``, ``cflag0``), so the predicate is the versioned one; the other
+    emitter locals are the second residue, counted apart because they steer separately."""
+    arch, temps, pat = 0, 0, _arch_re()
+    for w in _NAME.findall(_NOISE.sub("", text)):
+        if pat.fullmatch(w):
+            arch += 1
+        elif _LOCAL.fullmatch(w) and not _GRAMMAR.fullmatch(w):
+            temps += 1
+    return arch, temps
 
 
 def one(entry, frames, baseline):
@@ -74,7 +97,7 @@ def one(entry, frames, baseline):
             except AssertionError as exc:
                 row["sites"] = str(exc)
         row["lines"] = len(text.splitlines())
-        row["arch"] = arch_shapes(text)
+        row["arch"], row["temps"] = arch_shapes(text)
         row["fields"] = len(prog.state)
         row["roled"] = sum(1 for f in prog.state if f[0] in prog.roles)
         row["sha"] = hashlib.sha256(text.encode()).hexdigest()
@@ -122,6 +145,7 @@ def rollup(rows):
     got["fields"] = sum(r.get("fields", 0) for r in rows)
     got["roled"] = sum(r.get("roled", 0) for r in rows)
     got["arch"] = sum(r.get("arch", 0) for r in rows)
+    got["temps"] = sum(r.get("temps", 0) for r in rows)
     got["zero_arch"] = sum(1 for r in rows if r.get("arch") == 0)
     return got
 
