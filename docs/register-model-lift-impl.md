@@ -836,6 +836,48 @@ orders anything. All of them may land in any order and in parallel.
 `swc` in-edge join extension is **withdrawn**: it was measured against the artifact and is not
 what `dispatch_scratch_promotes` waited on (decision log, 2026-08-11).
 
+**The position (2026-08-13): the ledger is zero, and the backlog is the record.**
+The suite carries **zero** `xfail`s — 2,811 passed at #211, every pin flipped by its
+own mechanism or retired with its reason, and the guards assert the empty sets
+(`test_every_stage_three_pin_names_a_live_owner` holds the shredder set empty;
+the prototype's pins are green beside `art["unnamed"] == []`, so a text cannot go
+clean by omission). The gates at this record: `gate_sweep` **624 / 624 / 624**,
+zero divergences and zero refusals; `emit_identity` **624 tunes, 0 refused,
+28,365,174 bytes**, aggregate `7a63a89f…`, measured on the merge commit;
+`splice_sweep` **0 bad of 624** with **205,743 sites proved and zero unproved**;
+`arch` 193,979, `temps` 54,986, `zero_arch` **2 of 624**; prototype ratchets
+**311 lines / 759 nodes**; the witness at 24 of 25 exemplars with its one
+claim-boundary refusal (`osc3`). The backlog is not a queue of hopes — every
+entry above and below carries its owner and mechanism; the two that are
+*decisions* rather than landings are named as such:
+- **Trunk part 3 is a decision about the example's claims, not a port** (#211's
+  record): handing the prototype's fold layer the artifact fires one of eight
+  folds (rung (d) fused the rest), and the artifact's declared roles disagree
+  with `classify_roles` on **12 of 35** shared cells in one shape — the engine
+  reads script cursors and pointer lanes as `cursor` where the prototype derives
+  `accumulator`/`parameter`. Retiring `eqlift_mem.emit`/`emit_mem` (and
+  `eqlift_annotate` with them) waits on choosing which reading the role
+  vocabulary means; the choice moves the per-voice assertions.
+- **The corpus headline is the long game**: `zero_arch` 2 of 624 on the widened
+  metric, and no tune is free of machine shape once `temps` counts. The measured
+  reducers, in expected yield order: naming a repeated pure subexpression once
+  (~11% of body characters on the surveyed families; blocked on a node slot for
+  a synthesized definition in the §6 channel — the multi-reader entry above);
+  the SID-mirror constant-trip unroll (146 of 623 tunes carry a mirror; a
+  control-flow identity, not §4.1's refused relabel) behind single-predecessor
+  label splicing and for-range recovery (the in-edge map already closes 6,350 of
+  7,278 labels); SMC-operand candidate evidence from the artifact's own `:2`
+  reads (the six-`u8` gap above, and defMON's un-roled operand runs); and the
+  engine-side per-frame demotion (frame-boundary liveness over `frameproc`'s
+  statement graph — the flattener is the work).
+- Standing named residue, unchanged from their entries: the `Angry_Birds`
+  cobase (two columns carved as one group leave the second no declaration to
+  carry a role); the resume-pc `ret_live` reading (#177's refusal is the record
+  of the unsound version); the #192 header/body `_Info` disagreement (recorded,
+  watched at #197, unsurfaced since); and the one unexplained 896-byte baseline
+  drift (suspected `.sweep-cache` concurrency; every baseline since #204 has
+  reproduced exactly, measured on merge commits per the bookkeeping law).
+
 ## Independent housekeeping (blocks nothing)
 
 - **The Follin arity table — discharged** (2026-08-10, stage 3d, one PR).
