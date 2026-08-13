@@ -401,9 +401,20 @@ class Tok:
 
 
 def _suffix(tk):
+    """The width a site spells after a term (``:2``), in bytes, else ``None``."""
+    w = None
     while tk.peek() == ":":
         tk.next()
-        tk.next()
+        w = int(tk.next())
+    return w
+
+
+def _at(e, w):
+    """Re-state a term at the width its own site spells, where the site spells one."""
+    return e if w is None or w == e[-1] else e[:-1] + (w,)
+
+
+_WIDE1 = frozenset(("trunc1", "trunc2", "carry"))  # the dialect's byte-valued operators
 
 
 def _atom(tk):
@@ -411,16 +422,17 @@ def _atom(tk):
     if t == "(":
         e = _expr(tk, 0)
         tk.expect(")")
-        _suffix(tk)
-        return e
+        return _at(e, _suffix(tk))
     if t == "!":
-        return ("not", _atom(tk))
+        return ("not", _atom(tk), 1)
     if t == "-":
-        return ("neg", _atom(tk))
+        e = _atom(tk)
+        return ("neg", e, _wid(e))
     if t.startswith("$"):
-        return ("num", int(t[1:], 16))
+        v = int(t[1:], 16)
+        return _at(("num", v, 2 if v > 0xFF else 1), _suffix(tk))
     if t.isdigit():
-        return ("num", int(t))
+        return ("num", int(t), 1)
     if tk.peek() == "(":
         tk.next()
         args = [_expr(tk, 0)]
@@ -428,16 +440,23 @@ def _atom(tk):
             tk.next()
             args.append(_expr(tk, 0))
         tk.expect(")")
-        _suffix(tk)
-        return ("call", t, tuple(args))
+        w = 2 if t == "zext2" else 1 if t in _WIDE1 else max(_wid(a) for a in args)
+        return _at(("call", t, tuple(args), w), _suffix(tk))
     if tk.peek() == "[":
         tk.next()
         idx = _expr(tk, 0)
         _suffix(tk)
         tk.expect("]")
-        _suffix(tk)
-        return ("index", t, idx)
-    return ("name", t)
+        return _at(("index", t, idx, 1), _suffix(tk))
+    return _at(("name", t, 1), _suffix(tk))
+
+
+def _bin_wid(op, a, b):
+    if op == "<<":
+        return 2
+    if op in _UCMP or op in ("==", "!=") or op.endswith("s"):
+        return 1
+    return max(_wid(a), _wid(b))
 
 
 def _expr(tk, minp):
@@ -445,7 +464,7 @@ def _expr(tk, minp):
     while tk.peek() in _BIN and _BIN[tk.peek()] >= minp:
         op = tk.next()
         rhs = _expr(tk, _BIN[op] + 1)
-        lhs = ("bin", op, lhs, rhs)
+        lhs = ("bin", op, lhs, rhs, _bin_wid(op, lhs, rhs))
     return lhs
 
 
@@ -457,10 +476,30 @@ def parse_expr(text):
     return e
 
 
+def _args(text):
+    """A call's argument list, parsed as terms rather than split on commas."""
+    tk, out = Tok(text), []
+    while tk.peek() is not None:
+        out.append(_expr(tk, 0))
+        if tk.peek() == ",":
+            tk.next()
+        elif tk.peek() is not None:
+            raise SyntaxError("args: %r" % text)
+    return tuple(out)
+
+
+def _namelist(text):
+    """The comma-separated register list a signature, a ``ret`` or a promotion spells."""
+    return tuple(n.strip() for n in text.split(",") if n.strip())
+
+
+_PROMOTED = re.compile(r"([\w.]+(?:\s*,\s*[\w.]+)*) = sub_([0-9A-Fa-f]{4})\((.*)\)")
+
+
 def _guard(word, cond):
     """The condition an ``if``/``ifnot`` header states: the dialect's word is the negation."""
     e = parse_expr(cond.strip())
-    return ("not", e) if word == "ifnot" else e
+    return ("not", e, 1) if word == "ifnot" else e
 
 
 def parse_block(lines, i):
@@ -475,8 +514,10 @@ def parse_block(lines, i):
             return out, i
         if re.fullmatch(r"\$[0-9A-Fa-f]+:", line):
             out.append(("label", line[:-1]))
-        elif line in ("continue", "break", "ret") or line.startswith("ret "):
-            out.append((line.split()[0],))
+        elif line == "ret" or line.startswith("ret "):
+            out.append(("ret", _namelist(line[3:])))
+        elif line in ("continue", "break"):
+            out.append((line,))
         elif line.startswith("unobserved"):
             out.append(("unobserved", line.split()[1]))
         elif line.startswith("goto ("):
@@ -514,6 +555,11 @@ def parse_block(lines, i):
             out.append(("if", _guard(word, tail[:-1]), then, els))
         else:
             line = line[9:] if line.startswith("hi-first ") else line
+            m = _PROMOTED.fullmatch(line)
+            if m:  # the promoted call: its returns are named at the site that reads them
+                out.append(("pcall", _namelist(m.group(1)), int(m.group(2), 16), _args(m.group(3))))
+                i += 1
+                continue
             m = re.fullmatch(r"([\w.]+)\[(.*)\](?::\d)? = (.*)", line)
             if m:  # a span store: the row the index names, not a state cell
                 out.append(("sto", m.group(1), parse_expr(m.group(2)), parse_expr(m.group(3))))
@@ -527,15 +573,30 @@ def parse_block(lines, i):
     raise SyntaxError("unterminated block")
 
 
+_PROC = re.compile(r"^sub_([0-9A-Fa-f]{4})\s*(?:\(([^)]*)\))?\s*(?:->\s*([^{]*?))?\s*\{", re.M)
+
+
 def proc_entries(text):
     """Entry addresses of every procedure the emitter printed, in text order."""
-    return [int(m, 16) for m in re.findall(r"^sub_([0-9A-Fa-f]{4}) \{", text, re.M)]
+    return [int(m.group(1), 16) for m in _PROC.finditer(text)]
+
+
+def proc_signatures(text):
+    """``entry -> (params, returns)``: the artifact's own header, where it spells one.
+
+    The engine states a procedure's register interface in its header; reading it here
+    is reading the artifact rather than re-deriving what it already says."""
+    return {
+        int(m.group(1), 16): (_namelist(m.group(2) or ""), _namelist(m.group(3) or ""))
+        for m in _PROC.finditer(text)
+    }
 
 
 def extract_proc(text, entry):
     lines = text.splitlines()
     for i, ln in enumerate(lines):
-        if ln.startswith("sub_%04X {" % entry):
+        m = _PROC.fullmatch(ln)
+        if m and int(m.group(1), 16) == entry:
             return parse_block(lines, i + 1)[0]
     raise KeyError("sub_%04X not in emitted text" % entry)
 
@@ -569,22 +630,15 @@ def is_shadow(name):
 _UCMP = {"<": "ULT", "<=": "ULE", ">": "UGT", ">=": "UGE"}
 
 
+_WIDTHED = frozenset(("num", "name", "call", "index", "bin", "not", "neg"))
+
+
 def _wid(e):
-    """Byte width of a term, by the dialect's own rule (as ``Machine._val`` reads it)."""
-    k = e[0]
-    if k == "num":
-        return 2 if e[1] > 0xFF else 1
-    if k == "call":
-        return 2 if e[1] == "zext2" else 1
-    if k == "bin":
-        if e[1] == "<<":
-            return 2
-        if e[1] in _UCMP or e[1] in ("==", "!="):
-            return 1
-        return max(_wid(e[2]), _wid(e[3]))
-    if k == "neg":
-        return _wid(e[1])
-    return 1
+    """Byte width of a term, read off the **site**: the parser records what it spells.
+
+    A name wears no one width in this dialect -- the same cell is read `:2` at one site
+    and as a bare byte at another -- so the width belongs to the term, not the name."""
+    return e[-1] if e[0] in _WIDTHED else 1
 
 
 def _z3_expr(e, env, z3, w=16):
@@ -599,6 +653,8 @@ def _z3_expr(e, env, z3, w=16):
         return z3.If(_z3_expr(e[1], env, z3, w) == zero, one, zero)
     if k == "call" and e[1] == "zext2":
         return _z3_expr(e[2][0], env, z3, w)
+    if k == "call" and e[1] in ("trunc1", "trunc2"):
+        return _z3_expr(e[2][0], env, z3, w) & ((1 << (8 * int(e[1][-1]))) - 1)
     if k == "call" and e[1] == "carry":
         a, b = (_z3_expr(x, env, z3, w) for x in e[2])
         return z3.If(z3.ULT(z3.BitVecVal(0xFF, w), a + b), one, zero)
@@ -617,6 +673,11 @@ def _z3_expr(e, env, z3, w=16):
         a, b = _z3_expr(e[2], env, z3, w), _z3_expr(e[3], env, z3, w)
         return z3.If(a == b if e[1] == "==" else a != b, one, zero)
     raise ValueError("z3: %r" % (e,))
+
+
+def _direct(*terms):
+    """The names a term list reads directly, whatever width each site spells them at."""
+    return {t[1] for t in terms if t[0] == "name"}
 
 
 def _names(e, out):
@@ -801,6 +862,8 @@ def _z3_eval(e, env):
         return int(_z3_eval(e[1], env) == 0)
     if k == "call" and e[1] == "zext2":
         return _z3_eval(e[2][0], env)
+    if k == "call" and e[1] in ("trunc1", "trunc2"):
+        return _z3_eval(e[2][0], env) & ((1 << (8 * int(e[1][-1]))) - 1)
     if k == "call" and e[1] == "carry":
         return int(_z3_eval(e[2][0], env) + _z3_eval(e[2][1], env) > 0xFF)
     a, b = _z3_eval(e[2], env), _z3_eval(e[3], env)
@@ -1041,7 +1104,7 @@ def _lane_src(rhs, last, defs):
     _names(rhs, ns)
     for cell, (pos, stored) in last.items():
         if stored == rhs and all(defs.get(x, -1) <= pos for x in ns):
-            return ("name", cell)
+            return ("name", cell, 1)  # the run's lanes are bytes: the cell is one
     return rhs
 
 
@@ -1154,13 +1217,13 @@ def _subst(e, env):
     if e[0] == "name":
         return env.get(e[1], e)
     if e[0] in ("not", "neg"):
-        return (e[0], _subst(e[1], env))
+        return (e[0], _subst(e[1], env), e[2])
     if e[0] == "bin":
-        return (e[0], e[1], _subst(e[2], env), _subst(e[3], env))
+        return (e[0], e[1], _subst(e[2], env), _subst(e[3], env), e[4])
     if e[0] == "call":
-        return (e[0], e[1], tuple(_subst(a, env) for a in e[2]))
+        return (e[0], e[1], tuple(_subst(a, env) for a in e[2]), e[3])
     if e[0] == "index":
-        return (e[0], e[1], _subst(e[2], env))
+        return (e[0], e[1], _subst(e[2], env), e[3])
     return e
 
 
@@ -1176,16 +1239,17 @@ def _add_const(e, p):
             stack.extend((x[2], x[3]))
         else:
             terms.append(x)
-    if terms.count(("name", p)) != 1:
+    same = [t for t in terms if t[0] == "name" and t[1] == p]
+    if len(same) != 1:
         return None
-    rest = [t for t in terms if t != ("name", p)]
+    rest = [t for t in terms if t is not same[0]]
     if not rest or any(t[0] == "name" and cell_addr(t[1]) is not None for t in rest):
         return None
     if all(t[0] == "num" for t in rest):
         return sum(t[1] for t in rest) & 0xFF
     out = rest[0]
     for t in rest[1:]:
-        out = ("bin", "+", out, t)
+        out = ("bin", "+", out, t, _bin_wid("+", out, t))
     return out
 
 
@@ -1218,8 +1282,8 @@ def _match_advance(stmts, i):
     hi = "ptr_%s_hi" % pair
     els = stmts[j][3]
     if els in (
-        [("asg", hi, ("bin", "+", ("name", hi), ("num", 1)))],
-        [("asg", hi, ("bin", "+", ("num", 1), ("name", hi)))],
+        [("asg", hi, ("bin", "+", ("name", hi, 1), ("num", 1, 1), 1))],
+        [("asg", hi, ("bin", "+", ("num", 1, 1), ("name", hi, 1), 1))],
     ):
         carried = True
     elif len(els) == 1 and els[0][0] == "unobserved":
@@ -1249,7 +1313,7 @@ def _leaf_callee(stmts):
 
     Its post-state is the composition of its own assignments, so the body substituted
     at a call site is exactly what the call's returns mean in the caller."""
-    if len(stmts) < 2 or stmts[-1] != ("ret",):
+    if len(stmts) < 2 or stmts[-1][0] != "ret":
         return None
     body = stmts[:-1]
     for s in body:
@@ -1332,7 +1396,7 @@ def _match_row(stmts, i):
     lo, hi = _store_addr(win[2][1]), _store_addr(win[3][1])
     if lo is None or hi is None or hi != lo + 1:
         return None
-    if (win[2][2], win[3][2]) != (("name", r1), ("name", r2)):
+    if [(x[0], x[1]) for x in (win[2][2], win[3][2])] != [("name", r1), ("name", r2)]:
         return None
     return lo, ld1[1], ld2[1], ld1[2]
 
@@ -1670,7 +1734,7 @@ class Flat:
             op = s[0]
             if op == "label":
                 self.labels[s[1]] = len(self.ops)
-            elif op in ("asg", "sto", "call", "st16", "set16", "adv16", "w16", "rd16"):
+            elif op in ("asg", "sto", "call", "pcall", "st16", "set16", "adv16", "w16", "rd16"):
                 self.ops.append(s)
             elif op == "if":
                 l_else, l_end = "@f%d" % len(self.ops), "@e%d" % len(self.ops)
@@ -1720,27 +1784,32 @@ _REGS = _CALL_REGS + ("cflag", "zflag", "nflag", "vflag")  # the call ABI's own 
 class Machine:
     """Execute the flattened, folded procedures over post-init RAM per frame."""
 
-    def __init__(self, flats, ram0):
+    def __init__(self, flats, ram0, sigs=None):
         self.flats, self.ram, self.out = flats, bytearray(ram0), []
+        self.sigs = sigs or {}  # the artifact's own headers: a promoted call binds by them
         self.rows = set()  # every address an indexed read landed on, over the run
 
     def _val(self, e, env):
         k = e[0]
+        n = _wid(e)
         if k == "num":
-            return e[1], 2 if e[1] > 0xFF else 1
-        if k == "name":
+            return e[1], n
+        if k == "name":  # the site's width, not the name's: one cell wears both
             addr = cell_addr(e[1])
             if addr is not None:
-                return self.ram[addr], 1
-            return env[e[1]], 1
+                return int.from_bytes(bytes(self.ram[addr : addr + n]), "little"), n
+            return env[e[1]] & ((1 << (8 * n)) - 1), n
         if k == "index":
             base = 0 if e[1] == "mem" else cell_addr(e[1])
             i, _ = self._val(e[2], env)
             addr = (base + i) & 0xFFFF
-            self.rows.add(addr)  # where an indexed read landed: the run's own bound
-            return self.ram[addr], 1
+            for j in range(n):  # where an indexed read landed: the run's own bound
+                self.rows.add((addr + j) & 0xFFFF)
+            return int.from_bytes(bytes(self.ram[addr : addr + n]), "little"), n
         if k == "call" and e[1] == "zext2":
             return self._val(e[2][0], env)[0], 2
+        if k == "call" and e[1] in ("trunc1", "trunc2"):
+            return self._val(e[2][0], env)[0] & ((1 << (8 * n)) - 1), n
         if k == "call" and e[1] == "carry":
             a, _ = self._val(e[2][0], env)
             b, _ = self._val(e[2][1], env)
@@ -1755,7 +1824,6 @@ class Machine:
             return (-v) & (0xFFFF if w == 2 else 0xFF), w
         a, wa = self._val(e[2], env)
         b, wb = self._val(e[3], env)
-        w = max(wa, wb)
         op = e[1]
         if op in ("==", "!=", "<", ">=", "<=", ">", "<s", ">=s", "<=s", ">s"):
             if op.endswith("s"):
@@ -1773,9 +1841,7 @@ class Machine:
             "<<": a << b,
             ">>": a >> b,
         }[op]
-        if op == "<<":
-            return val & 0xFFFF, 2
-        return val & (0xFFFF if w == 2 else 0xFF), w
+        return val & ((1 << (8 * n)) - 1), n
 
     def _src(self, src):
         if src[0] == "const":
@@ -1819,6 +1885,14 @@ class Machine:
                 sub = {k: env[k] for k in _REGS if k in env}
                 self._run(s[1], sub)
                 env.update(sub)
+            elif op == "pcall":  # the promotion: the header binds, and only it returns
+                params, rets = self.sigs[s[2]]
+                vals = [self._val(a, env)[0] for a in s[3]]
+                sub = dict(zip(params, vals))
+                self._run(s[2], sub)
+                assert len(rets) == len(s[1]), "promoted call against its header"
+                for tgt, src in zip(s[1], rets):
+                    env[tgt] = sub[src] & 0xFF
             elif op == "st16":
                 reg = sid_target(s[1] + "_lo")
                 wide = (self.ram[cell_addr(s[3])] << 8) | self.ram[cell_addr(s[2])]
@@ -2072,8 +2146,9 @@ def classify_roles(procs, frames=FRAMES):
                 if cell_addr(s[1]) is None:
                     env[s[1]] = r
                 else:
-                    inc = r[0] == "bin" and r[1] in "+-" and ("name", s[1]) in (r[2], r[3])
-                    ctr = r[0] == "bin" and r[1] == "-" and r[2][0] == "name" and r[3] == ("num", 1)
+                    add = r[0] == "bin" and r[1] in "+-"
+                    inc = add and s[1] in _direct(r[2], r[3])
+                    ctr = add and r[1] == "-" and r[2][0] == "name" and r[3][:2] == ("num", 1)
                     got = "dec" if ctr else "inc" if inc else "set"
                     key = _addr_name(cell_addr(s[1]))
                     shapes.setdefault(key, set()).add("field" if _field_update(s[1], r) else got)
@@ -2461,7 +2536,7 @@ def _mask_bounds(procs):
             continue
         r, name = s[2], _addr_name(cell_addr(s[1]))
         for x, k in ((r[2], r[3]), (r[3], r[2])):
-            if k[0] == "num" and x == ("name", s[1]):
+            if k[0] == "num" and x[0] == "name" and x[1] == s[1]:
                 out[name] = k[1] if out.get(name, k[1]) == k[1] else None
     return {n: k for n, k in out.items() if k is not None}
 
@@ -2876,10 +2951,11 @@ def reemit_6502(prog, org=None):
 
 
 def observed_extents(model, frames):
-    """Phase 2b (b0)'s observed extents for this model: ``{pointer cell: block bases}``.
+    """Phase 2b (b0)'s observed-extent rows for this model, as rung (g) reads them.
 
     The run resolves every deref concretely, so where each web's derefs landed is an
-    observation; stage 3d's read closure bounds a deref with it, and never with more."""
+    observation; stage 3d's read closure bounds a deref with it, and never with more.
+    ``ptrextent.mapped_blocks`` is the one reading of the rows, taken by each consumer."""
     from deity_informant import frameprog, frameval, ptrextent  # pylint: disable=C0415
 
     prog = frameprog.program(model)
@@ -2889,7 +2965,7 @@ def observed_extents(model, frames):
     for f in range(frames):
         ev.frame = f
         ev.run_frame()
-    return ptrextent.mapped_blocks(ptrextent.extents(prog, probe.hits))
+    return ptrextent.extents(prog, probe.hits)
 
 
 def boundary(model):
@@ -2913,8 +2989,11 @@ def pipeline(frames=FRAMES):
     init_writes, ram0, orig_frames, orig_grids, ram_end = run_vm(mem, frames)
     model, ev = S.decompile(bytearray(mem), INIT, PLAY, frames)
     assert S.Walker(model).run(frames) == ev.wlog, "walker replay is not bit-exact"
-    prog = frameprog.program(model)
-    text, _ = eqlift_mem.emit(model, extents=observed_extents(model, frames))
+    from deity_informant import ptrextent  # pylint: disable=import-outside-toplevel
+
+    rows = observed_extents(model, frames)
+    prog = frameprog.program(model, extents=rows)
+    text, _ = eqlift_mem.emit(model, extents=ptrextent.mapped_blocks(rows))
     proofs, folded = [], {}
     for entry in proc_entries(text):
         ast = extract_proc(text, entry)
@@ -2934,6 +3013,7 @@ def pipeline(frames=FRAMES):
         "ram_end": ram_end,
         "eqlift_text": text,
         "prog": prog,
+        "artifact": frameprog.dumps(prog),
         "folded": folded,
         "rolled": rolled,
         "resolved": resolved,
