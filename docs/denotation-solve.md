@@ -28,6 +28,14 @@ downstream premise that reads "the local's range" (`streams._idx_hi`, and throug
 it rung (f) premise 3 and `datadecl`) is deciding over a machine location, not a
 value.
 
+**Measured at A1, the exhibit reads low.** The five above are the *denotations*
+this table read off the emitted text; over the settled statement trees `y`
+resolves to **eight def-use webs** (`tests/test_frameweb.py`), because the voice
+displacement `m_54EB` is defined at four sites no read joins and the pulse-width
+table row `y = m_5518` — which the text shows folded into `m_5591[m_5518]` — is a
+sixth quantity the text never spells. In the same procedure `a` is **9** webs and
+`x` is **3**. The exhibit is the argument's floor, not its ceiling.
+
 **Exhibit B — the pointer's index is an unnamed register web.** The two pointers
 are reloaded, never computed:
 
