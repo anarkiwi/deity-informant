@@ -54,18 +54,22 @@ spellings. Rung (e) excused this shape explicitly ("index-looped drivers …
 are already parameterized and need no rung-(e) work"); they are parameterized
 *by a machine register*, which is exactly the residue.
 
-**The corpus says the shape is the norm, not Commando's quirk.** 1,200 cached
-artifacts sampled from `.sweep-cache` (stale-tolerant: shape prevalence only):
+**The corpus says the shape is the norm, not Commando's quirk.** Measured at full
+coverage — all 624 cached artifacts at full Songlengths, L0
+([denotation-solve-baseline.md](denotation-solve-baseline.md)); the drafting
+figures from a 1,200-artifact stale-cache sample are superseded and agreed
+within a point on every prevalence:
 
 | measure | count |
 |---|---|
-| artifacts indexing a SID write by a machine register | 955 (80%) |
-| artifacts declaring a `[3]` table holding `00 07 0E` | 526 (44%) |
-| `for` headers whose induction variable is a machine register | 432 of 432 |
-| flag tokens spelled as values | 39,738 |
-| raw `mem[` sites | 19,074 |
-| `stream … via ptr` declarations | 23,386 |
-| median `arch` per artifact | 307 |
+| artifacts indexing a SID write by a machine register | 539 of 624 (86.4%), 3,788 sites |
+| artifacts declaring a `[3]` table holding `00 07 0E` | 271 (43.4%) |
+| `for` headers whose induction variable is a machine register | 239 of 239 |
+| raw `mem[` sites | 8,609 |
+| `*deref` sites | 2,180 |
+| `stream … via ptr` declarations | 12,424 |
+| median `arch` per artifact | 303 |
+| procedure body share of emitted bytes | 21.2% |
 
 **And the ladder's own numbers already record the deadlock.** §4.6's provenance
 rule resolves **1 site of 3,929**; **365** refuse for naming "2 or more target
@@ -274,20 +278,22 @@ that is the smell that the decomposition has fractured again.**
 | **V4 the family quotient** | tunes → one player + N song data instances | anti-unification across a family, partitioned by an *independent* signal (SIDId bytes, opcode-shingle MinHash) — so it is not circular | unbuilt; tooling in tree (`tools/player_id.py`, `tools/family_cluster.py`) |
 | **V5 the normal form** | — | idempotence, not derivation | unmeasured |
 
-**V4 is the real ceiling, and it has a number.** The 624-tune corpus carries
-**147 distinct SIDId player identifications** (11 unnamed) and **173
-opcode-shingle clusters**. Nine families cover **347 of 624 tunes (56%)**:
-GoatTracker 90, DMC 84, Music_Assembler 51, FutureComposer 36, Soundmonitor 27,
-SidWizard 18, Master_Composer 15, JCH_NewPlayer 13, Rob_Hubbard 13. At maximum
-lift those 347 tunes emit **nine** frame functions, not 347. Today the corpus
-emits 624 distinct texts.
+**V4 is the real ceiling, and L0 measured both ends of it.** The 624-tune corpus
+carries **147 distinct SIDId player identifications** (11 tunes unnamed) and
+**173 opcode-shingle clusters**. Folded to families, nine cover **373 tunes**:
+GoatTracker 90, DMC 84, Music_Assembler 54, FutureComposer 47, Soundmonitor 30,
+JCH_NewPlayer 21, SidWizard 19, Master_Composer 15, Rob_Hubbard 13. At maximum
+lift those 373 tunes emit **nine** frame functions. **Today they emit 362, and
+the 613 named tunes emit 596** — normalisation already merges 17 corpus-wide
+(relocated groups), and Master_Composer already emits 7 texts for 15 tunes,
+which is the one family where the quotient is visibly working.
 
 That is the ungameable statement of "lifted": **two tunes running one player must
 emit one program and differ only in `data { }`.** If they don't, the driver was
 not lifted — the tune was.
 
-**And it is where the artifact stops being a decompilation.** Today 78.1% of
-emitted bytes are header/data/evidence and 21.9% is procedure text. At V4 the
+**And it is where the artifact stops being a decompilation.** Today 78.8% of
+emitted bytes are header/data/evidence and 21.2% is procedure text. At V4 the
 per-tune artifact is the song data in the player's own recovered schema plus a
 reference to the shared player; `image { }` and `evidence { }` are trace
 scaffolding that a schema-total artifact no longer needs. The output stops being
@@ -303,16 +309,38 @@ All five are mechanically checkable with in-tree machinery; none reads emitted
 text as evidence of anything but itself.
 
 1. **⊤-sites zero** outside the named residue of §7.4.
-2. **Family quotient**: distinct emitted frame functions ≈ distinct players
-   (147/173, against 624 today).
-3. **Idempotence under re-lift**: `decompile(witness6502.emit(P)) == P`.
-   `witness6502` already emits 6502 from the artifact and replays it, so this
-   is a convergence test the tree can run today. An artifact that shrinks on
-   re-lift was not minimal.
+2. **Family quotient**: distinct emitted frame functions ≈ distinct players.
+   **Measured at L0: 613 named tunes emit 596 distinct normalised frame
+   functions; the nine largest families cover 373 tunes and emit 362.** The
+   near-miss is the number that matters and it is the plan's strongest
+   evidence: with generated names renumbered, median in-family pairwise line
+   Jaccard is **0.07–0.28**; with identity erased entirely (shape only) it is
+   **0.41–0.95**, corpus median 0.55, best pairs 0.98–1.00. Same-player tunes
+   are roughly half-shared structurally and near-zero by identity, so **the gap
+   is a naming/denotation gap, not a structural one** — which is exactly what
+   §3 solves.
+3. **Idempotence under re-lift** — **demoted to a diagnostic at L0; it is not a
+   gate.** `decompile(witness6502.emit(P)) == P` measures the *witness backend*,
+   not the lift: `witness6502` allocates no registers and spills every
+   expression to a data block in a free span, so the re-lift declares those
+   spill cells as state and re-derives every temporary as a memory site. All 18
+   tunes measured came back **differs-larger, median 6.9×**, with a median
+   **87%** of re-lift lines naming a witness spill cell — and the sample was
+   deliberately biased toward convergence (the two smallest artifacts per
+   family), which strengthens the negative. Nothing shrank, so there is no
+   evidence here of un-extracted structure either. The criterion becomes usable
+   only when the comparison quotients out the witness's scratch span (the cells
+   are identifiable — they lie in a span the tune left free) or the witness
+   stops spilling; until then it says nothing about minimality and MUST NOT be
+   cited as if it did.
 4. **Cross-tune Gate FP**: every tune of a family verifies through the one
    shared program plus its own data.
 5. **Data-only diff**: two tunes of a family differ in `data { }` and nowhere
    else.
+
+Criteria 2, 4 and 5 carry the ceiling. Criterion 1 carries §3. Criterion 3 is a
+diagnostic until its confound is removed, and the removal is not queued: it is
+work on the witness, not on the lift.
 
 Criteria 2–5 are cross-tune, which the plan's own law already demands
 ("verification never samples"): the corpus is the gate, not the sample.
