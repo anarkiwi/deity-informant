@@ -9,7 +9,7 @@ import re
 import pytest
 
 import _callgen as G
-from deity_informant import frameprog, frameval
+from deity_informant import frameproc, frameprog, frameval
 from deity_informant.lifter import OPS
 from deity_informant.structured import DecompileError
 
@@ -106,6 +106,9 @@ CLEAN = (
     ("leaf-call", "mid/cell"),
     ("leaf-call", "tail/sid"),
     ("leaf-call", "tail/cell"),
+    ("arm-liveout", "eor1"),
+    ("arm-liveout", "eor3"),
+    ("arm-liveout", "eor5"),
     ("multi-site", "2-site/X"),
     ("multi-site", "2-site/Y"),
     ("multi-site", "2-site/no-arg"),
@@ -184,6 +187,9 @@ FAULTS = {
 BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bodies share
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
+    ("arm-liveout", "eor1"),
+    ("arm-liveout", "eor3"),
+    ("arm-liveout", "eor5"),
     ("shared-tail", "tone/X"),
     ("shared-tail", "tone/Y"),
     ("shared-tail", "alt/X"),
@@ -279,6 +285,29 @@ def test_shape_breaks_one_way_under_every_spelling(row):
     """The property the suite exists for: the mechanism is the shape's, not the spelling's."""
     got = {v.label: G.kinds(row, v.label) for v in G.BY_ROW[row].variants}
     assert len(set(got.values())) == 1, sorted(set(got.values()))
+
+
+@pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["arm-liveout"].variants])
+def test_a_dispatch_arm_is_no_break_level_and_keeps_what_the_merge_reads(label):
+    """A `switch goto` arm's `break` names the enclosing loop, not the switch.
+
+    ``frameval._arms`` hands the arms the context it was given, so a liveness pushing
+    a level per arm reads the arm's own continuation for the loop's exit and prunes
+    the definition the text after the merge reads."""
+    arms = [b for _l, b in _swg_arms(G.parsed("arm-liveout", label).procs[0][3])]
+    assert len(arms) == 2
+    assert all(any(s[0] == "asg" and s[1] == "x" for s in b) for b in arms), arms
+
+
+def _swg_arms(stmts, out=None):
+    """Every ``switch goto`` case body a statement list carries."""
+    out = [] if out is None else out
+    for s in stmts:
+        if s[0] == "swg":
+            out += list(s[1])
+        for b in frameproc._stmt_bodies(s):
+            _swg_arms(b, out)
+    return out
 
 
 def test_the_invariant_holds_exactly_where_no_pin_names_a_mechanism():

@@ -1206,14 +1206,18 @@ def _liveness(tree, info, entry, chosen, volatile=()):
         if k == "unobs":
             return set()
         if k == "switch":
-            out = set()
+            out, call = set(), nd[2] == "swc"
+            held = (list(brk), list(cont))
             for _lbl, arm in nd[1]:
-                brk.append(set(live))
-                armret.append(set(live))  # a call arm's ret continues after the dispatch
+                if call:  # a call arm is entered by the machine, so no region here encloses it
+                    brk.clear()
+                    cont.clear()
+                    armret.append(set(live))  # its ret continues after the dispatch
                 out |= seq(arm, set(live))  # an arm that falls off its end continues here
-                armret.pop()
-                brk.pop()
-            return out if nd[2] in ("swg", "opsw") else out | set(info.G)
+                if call:
+                    armret.pop()
+                    brk[:], cont[:] = held
+            return out | set(info.G) if call else out
         if k in ("dcall", "dgoto"):
             want = "swc" if k == "dcall" else "swg"
             return (live if _dispatch(nxt) == want else set(info.G)) | uses(nd[1])

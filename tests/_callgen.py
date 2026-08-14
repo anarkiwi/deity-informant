@@ -755,6 +755,32 @@ def _brk_vector():
     )
 
 
+def _arm_liveout():
+    """`arm-liveout`: a computed-goto arm's register, read past the merge it breaks to.
+
+    The arms join at a tail the structurer scopes, so each leaves by ``break``; the
+    tail reads the register the arm set, which the scope's exit live set must carry."""
+
+    def subs(p, k):
+        p.label("vt0").i("LDX", "zp", ROW).i("JMP", "abs", ("L", "join"))
+        p.label("vt1").i("LDA", "zp", ROW).i("EOR", "imm", k).i("AND", "imm", 7).i("TAX")
+        p.i("JMP", "abs", ("L", "join"))
+        p.label("join")  # four stores: wider than the tail-duplication bound, so it joins
+        for j, table in enumerate(("tone", "alt", "alt", "tone")):
+            col(p, "X", table)
+            p.i("STA", "abs", SID + j)
+        p.i("RTS")
+
+    def play(p):
+        bump(p)
+        p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("TAX")
+        p.i("LDA", "absx", ("L", "veclo")).i("STA", "zp", PTR)
+        p.i("LDA", "absx", ("L", "vechi")).i("STA", "zp", PTR + 1)
+        p.i("JMP", "ind", PTR)
+
+    return I.cap(V("eor%d" % k, play, lambda p, x=k: subs(p, x)) for k in (1, 3, 5))
+
+
 def _shared_tail():
     """`shared-tail`: two sole-site callees leaving by a JMP into one shared block.
 
@@ -787,6 +813,7 @@ def _shared_tail():
 SHAPES = (
     Shape("leaf-call", "one static site on a leaf", I.tab_data, _leaf_call()),
     Shape("shared-tail", "two callees, one shared tail", I.tab_data, _shared_tail()),
+    Shape("arm-liveout", "a dispatch arm's register past the merge", vec_data, _arm_liveout()),
     Shape("multi-site", "two and three sites on one leaf", I.tab_data, _multi_site()),
     Shape("nested", "play -> A -> B", I.tab_data, _nested()),
     Shape("arg-pass", "one argument, every register", I.tab_data, _arg_pass()),
