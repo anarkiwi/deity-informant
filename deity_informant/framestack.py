@@ -17,6 +17,8 @@ from .structured import Proof
 _PAGE = range(0x0100, 0x0200)
 _STRAIGHT = ("asg", "st", "if")  # the only forms that transfer no control
 _OPAQUE = frameproc._ANYCALL | frozenset(("label",))  # a machine push, and an open join
+_EXITS = frameproc._EXITS  # ``cont``/``brk``: the one edge whose target the text names
+_CYCLIC = frameproc._CYCLIC  # the regions a levelled exit counts out through
 
 
 def _addr(cell):
@@ -60,21 +62,59 @@ def _candidates(stmts):
     }
 
 
+def _has_read(stmts, reads, has):
+    """``has[(list, i)]``: statement ``i``, bodies included, reads the slot."""
+    out = False
+    for i, s in enumerate(stmts):
+        got = bool(reads(stmts, i, s))
+        for b in frameproc._stmt_bodies(s):
+            got = _has_read(b, reads, has) or got
+        has[(id(stmts), i)] = got
+        out = out or got
+    return out
+
+
+def _may_read(stmts, reads, tail=False, out=None, has=None):
+    """``out[(list, i)]``: a read of the slot may still be evaluated at statement ``i``.
+
+    The interval the locality premise is about: an access matters where it stands
+    between a store and a read, and a loop's back edge re-reaches its body's own
+    reads, so inside one every position sees them."""
+    if has is None:
+        has, out = {}, {}
+        _has_read(stmts, reads, has)
+    total = tail
+    for i in range(len(stmts) - 1, -1, -1):
+        s = stmts[i]
+        after = total or has[(id(stmts), i)]
+        out[(id(stmts), i)] = after
+        inner = after if s[0] in _CYCLIC else total
+        for b in frameproc._stmt_bodies(s):
+            _may_read(b, reads, inner, out, has)
+        total = after
+    return out
+
+
 class _Slot:
     """One const stack cell: the must-def walk over a procedure and its refusal."""
 
-    __slots__ = ("cell", "stores", "reads", "why")
+    __slots__ = ("cell", "stores", "reads", "why", "live")
 
     def __init__(self, cell):
         self.cell = cell
         self.stores = self.reads = 0
         self.why = None
+        self.live = {}
 
     def _refuse(self, why):
         self.why = self.why or why
 
     def run(self, stmts, shared):
         """The walk over a whole procedure, plus the both-ends and privacy premises."""
+        want = ("mem", _addr(self.cell), 1)
+        self.live = _may_read(
+            stmts, lambda l, i, s: sum(_count(x, want) for x in frameproc._stmt_exprs(s))
+        )
         self._walk(stmts, False)
         if not (self.stores and self.reads):
             self._refuse("the slot is not both stored and read in the procedure")
@@ -90,8 +130,9 @@ class _Slot:
         what holds on its far side. The arms of an ``if`` intersect, so a slot written
         in both and read in the shared tail is a local with two definitions."""
         want = ("mem", _addr(self.cell), 1)
-        for s in stmts:
+        for i, s in enumerate(stmts):
             k = s[0]
+            live = defd and self.live[(id(stmts), i)]
             acc = _accesses(s)
             wrote = len(acc) - 1 if k == "st" else -1  # the store's own address is the last
             for j, (addr, width) in enumerate(acc):
@@ -100,7 +141,7 @@ class _Slot:
                 )
                 if near:
                     self._refuse("another resolvable access may touch the slot")
-                elif blind and defd and j == wrote:
+                elif blind and live and j == wrote:
                     self._refuse("an unresolvable store may alias the live slot")
             for x in frameproc._stmt_exprs(s):
                 got = _count(x, want)
@@ -246,13 +287,27 @@ def _neutral(s, sp, saves):
     return True
 
 
+def _kept(alias, s):
+    """The aliases that stand at a region's head: those its body never rebinds.
+
+    A local the body assigns names no displacement on the next iteration, so it
+    leaves; one nothing in the region touches spells the same cell throughout."""
+    gone = set()
+    for x in FF.stmts_of([s]):
+        if x[0] in ("asg", "for"):
+            gone.add(x[1])
+        elif x[0] == "pcall":
+            gone.update(x[3])
+    return {n: v for n, v in alias.items() if n not in gone}
+
+
 def _sp_scan(stmts, marks, sp, saves=frozenset()):
     """Mark every statement of the list, bodies included, opening epochs as needed."""
     for i, s in enumerate(stmts):
         k = s[0]
         marks.mark(stmts, i)  # a statement's operands are read before it transfers
         through = k in _CYCLIC and _neutral(s, sp, saves)
-        head = (marks.epoch, marks.disp, {})  # a local the body rewrites aliases nothing
+        head = (marks.epoch, marks.disp, _kept(marks.alias, s) if through else {})
         if k not in _STRAIGHT and not through:
             marks.bump()
         if k == "if":
@@ -330,12 +385,13 @@ class _SpSlot:
     the store claims free stack space, and the procedure balances so no ``ret``
     reads page one for the return address the slot would sit in."""
 
-    __slots__ = ("key", "stores", "reads", "why", "impure")
+    __slots__ = ("key", "stores", "reads", "why", "impure", "live")
 
     def __init__(self, key):
         self.key = key
         self.stores = self.reads = 0
         self.why = self.impure = None
+        self.live = {}
 
     def _refuse(self, why):
         self.why = self.why or why
@@ -353,23 +409,29 @@ class _SpSlot:
     def run(self, stmts, marks, sp, balanced):
         if not balanced:
             self._refuse("the procedure's stack effect is not zero")
+
+        def reads(lst, i, s):
+            mark = marks.at[(id(lst), i)]
+            return sum(_count_sp(x, self.key, mark, sp) for x in frameproc._stmt_exprs(s))
+
+        self.live = _may_read(stmts, reads)
         self._walk(stmts, marks, sp, False)
         if not (self.stores and self.reads):
             self._refuse("the slot is not both stored and read in the procedure")
         return self
 
-    def _probe(self, addr, width, mark, sp, defd, writes):
+    def _probe(self, addr, width, mark, sp, live, writes):
         """One access against the slot: refuse where it may touch what is live."""
         got = _slot_at(addr, mark, sp)
         if got is None:
             near, blind = _touches_page(addr, width)
             if near:
                 self._hazard("another resolvable access may touch the slot", writes)
-            elif blind and defd:
+            elif blind and live:
                 self._hazard("an unresolvable address may alias the live slot", writes)
             return
         if got[0] != self.key[0]:
-            if defd:
+            if live:
                 self._hazard("an unresolvable address may alias the live slot", writes)
             return
         if width != 1 and any(((got[1] + j) & 0xFF) == self.key[1] for j in range(width)):
@@ -384,10 +446,11 @@ class _SpSlot:
         for i, s in enumerate(stmts):
             k = s[0]
             mark = marks.at[(id(stmts), i)]
+            live = defd and self.live[(id(stmts), i)]
             acc = _accesses(s)
             wrote = len(acc) - 1 if k == "st" else -1
             for j, (addr, width) in enumerate(acc):
-                self._probe(addr, width, mark, sp, defd, j == wrote)
+                self._probe(addr, width, mark, sp, live, j == wrote)
             for x in frameproc._stmt_exprs(s):
                 got = _count_sp(x, self.key, mark, sp)
                 self.reads += got
@@ -728,8 +791,6 @@ class _Unbalanced(Exception):
 _ENTRY = ("entry", 0)  # the displacement a procedure is entered and must return at
 _INLINED = frozenset(("callb", "swc"))  # a callee's body: its ``ret`` is the call's edge
 _EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"))
-_EXITS = frameproc._EXITS  # ``cont``/``brk``: the one edge whose target the text names
-_CYCLIC = frameproc._CYCLIC  # the regions a levelled exit counts out through
 
 
 def _join(a, b):
