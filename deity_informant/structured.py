@@ -1554,25 +1554,26 @@ class Analysis:
 
     def concretize_stack(self):
         """Replace SP-pure event address expressions with constants where the
-        entry SP is proven constant (makes push/pull cells first-class)."""
+        entry SP is proven constant (makes push/pull cells first-class).
+
+        All of them or none: the cell a fold names is the one the *traced* frame had,
+        and an access the walk cannot name may be to any cell, so naming its
+        neighbours would part a spill from its read-back the moment the frame moves
+        (a call the removal takes out is two bytes of it)."""
+        folds = []
         for key, blk in self.model.blocks.items():
             sp = self.sp_in.get(key)
-            if not isinstance(sp, int):
-                continue
-            changed = False
             for j, ev in enumerate(blk.events):
-                if ev[0] == "ld" and not E.is_const(ev[2]):
-                    a = _sp_eval(ev[2], sp)
-                    if a is not None:
-                        blk.events[j] = ("ld", ev[1], E.konst(a & 0xFFFF, 2))
-                        changed = True
-                elif ev[0] == "st" and not E.is_const(ev[1]):
-                    a = _sp_eval(ev[1], sp)
-                    if a is not None:
-                        blk.events[j] = ("st", E.konst(a & 0xFFFF, 2), ev[2])
-                        changed = True
-            if changed:
-                blk.fn = None
+                addr = ev[2] if ev[0] == "ld" else ev[1] if ev[0] == "st" else None
+                if addr is None or E.is_const(addr) or not _sp_pure(addr):
+                    continue
+                a = _sp_eval(addr, sp) if isinstance(sp, int) else None
+                if a is None:
+                    return  # an access no fold can name: the frame names none of them
+                folds.append((blk, j, ev, E.konst(a & 0xFFFF, 2)))
+        for blk, j, ev, cell in folds:
+            blk.events[j] = ("ld", ev[1], cell) if ev[0] == "ld" else ("st", cell, ev[2])
+            blk.fn = None
         self._cell_stores = None
 
     # -- dominators ----------------------------------------------------------
@@ -1977,6 +1978,17 @@ def _eval1(n, var, v, model):
         raise _NotPure()
     vals = [_eval1(c, var, v, model) for c in n[2]]
     return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
+
+
+def _sp_pure(n):
+    """Whether ``n`` is built from the entry SP and constants alone."""
+    if n[0] == "reg":
+        return n[1] == 3
+    if n[0] == "const":
+        return False  # a constant alone is already the cell it names
+    if n[0] != "op":
+        return False
+    return any(_sp_pure(c) for c in n[2]) and all(_sp_pure(c) or E.is_const(c) for c in n[2])
 
 
 def _sp_eval(n, sp):

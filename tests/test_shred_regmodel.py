@@ -1323,11 +1323,15 @@ def test_a_raw_call_at_the_entry_displacement_drops_its_linkage():
 
 
 def test_a_displaced_raw_call_keeps_the_stack_pointer():
-    """Invariant (2c): dropping the displacement would move the pushed return."""
+    """Invariant (2c): dropping the displacement would move the pushed return.
+
+    The class the ledger records is now the read, not the linkage: the spill's cell is
+    only first-class where every page-one access is (``concretize_stack``), and this
+    fixture's computed-goto landing leaves one that no fold can name."""
     body = _body(_lift("sp_call_displaced"))
     assert "call $" in body, "the fixture lost the raw call it pins"
     assert re.search(r"\bsp\b", body), "a displaced raw call lost sp"
-    assert _sp_classes("sp_call_displaced") == ["sp_linked"]
+    assert _sp_classes("sp_call_displaced") == ["sp_read"]
 
 
 def test_covering_sweep_stays_byte_wide():

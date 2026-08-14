@@ -273,11 +273,11 @@ def _structure_once(model, entry, allow):
     def placed(target, callers, sole, site, chain):
         """Region for a callee's body placed at this site, or None where it may not be.
 
-        A sole site owns the body: it shares the label bookkeeping, so it may not overlap
-        an enclosing procedure. Every further site, and every site whose callee plain flow
-        also reaches, takes its own copy -- exact where each block may be carried by one
-        (``procpass.Carry``), the region does not run through the call line, and the copy
-        binds no label."""
+        A sole site owns the body, but only text nobody placed is its own: it shares the
+        label bookkeeping, so where its region runs through one already emitted it takes
+        a copy first and shares only if that refuses. Every other site copies outright --
+        exact where each block may be carried by one (``procpass.Carry``), the region does
+        not run through the call line, and the copy binds no label."""
         if not model.variants(target) or target in chain:
             return None
         cfg = _proc_cfg(model, target)
@@ -285,6 +285,10 @@ def _structure_once(model, entry, allow):
             return copied(target, callers, site, cfg, chain)
         if target in callers or set(cfg[0]) & callers or target in emitted:
             return None
+        if set(cfg[0]) & emitted:
+            got = copied(target, callers, site, cfg, chain)
+            if got is not None:
+                return got
         top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
         return Region("seq", top) if top else None
 

@@ -17,19 +17,11 @@ XFAIL = {"strict": True}
 
 _PIN = "call suite: "
 
-M_BODY_LABEL = (
-    "the inlined body binds a pc: some transfer may name it, and the ret the removal "
-    "answers is what answers that transfer, so frameproc keeps the call form -- the "
-    "`call $PC ret $PC { .. }` wrapper at a splice, `call (expr) ret $PC` plus "
-    "`switch call` at a dispatch arm (bound_pcs); duplicating the shared tail per "
-    "site is the removal. defMON's $12BE is the corpus shape: $1006's continuation "
-    "and $1003's flow both reach it, so whichever body is placed first binds it and "
-    "the other gotos it, and Automatas keeps a `callb` for each"
-)
-M_TAIL_TRANSFER = (
-    "the inlined body leaves by a goto, not by its own ret: it returns through the "
-    "pushed word from wherever it landed, so the splice (or the dispatch arm) keeps "
-    "its call form (frameproc.escapes) -- the tail's own text has to move with it"
+M_SPILL_SPAN = (
+    "a control transfer stands between the store and its read-back, and rung (d0)'s "
+    "locality is a store dominating every read with none between (framestack), so the "
+    "balanced spill stays a page-one access at one displacement and sp stays the "
+    "procedure's parameter -- defMON's $01FB sentinel, held across the whole tick"
 )
 M_RET_WORD = (
     "the callee returns from a displacement it moved: it pulls the word the machine "
@@ -67,9 +59,8 @@ M_SP_LOOP_PUSH = (
 )
 
 MECHANISMS = (
-    M_BODY_LABEL,
-    M_TAIL_TRANSFER,
     M_RET_WORD,
+    M_SPILL_SPAN,
     M_SELF_CALL,
     M_SHARED_HANDLER,
     M_S_RELOCATED,
@@ -84,16 +75,12 @@ M_BRK_TERM = (
 )
 
 PINS = {
-    ("shared-tail", "tone/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("shared-tail", "tone/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("shared-tail", "alt/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
+    ("spill-span", "tone/tight"): (M_SPILL_SPAN,),
+    ("spill-span", "tone/wide"): (M_SPILL_SPAN,),
+    ("spill-span", "alt/tight"): (M_SPILL_SPAN,),
+    ("spill-span", "alt/wide"): (M_SPILL_SPAN,),
     ("rts-trick", "loop"): (M_SP_LOOP_PUSH,),
-    ("arm-landing", "tone/tight"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("arm-landing", "tone/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("arm-landing", "alt/tight"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("arm-landing", "alt/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("mixed-handler", "head/vt0"): (M_SHARED_HANDLER,),
     ("mixed-handler", "head/vt1"): (M_SHARED_HANDLER,),
     ("mixed-handler", "tail/vt0"): (M_SHARED_HANDLER,),
@@ -158,6 +145,14 @@ CLEAN = (
     ("copied-smc", "tone/post"),
     ("copied-smc", "alt/tail"),
     ("copied-smc", "alt/post"),
+    ("shared-tail", "tone/X"),
+    ("shared-tail", "tone/Y"),
+    ("shared-tail", "alt/X"),
+    ("shared-tail", "alt/Y"),
+    ("arm-landing", "tone/tight"),
+    ("arm-landing", "tone/gap"),
+    ("arm-landing", "alt/tight"),
+    ("arm-landing", "alt/gap"),
     ("branchy-callee", "cc/dey"),
     ("branchy-callee", "cc/iny"),
     ("branchy-callee", "cs/dey"),
@@ -225,13 +220,9 @@ FAULTS = {
     ("arg-pass", "stack-pla"): "store into the stack page $01FC",
 }
 
-BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bodies share
+BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a relocated switch's own pc
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
-    ("arm-landing", "tone/tight"),
-    ("arm-landing", "tone/gap"),
-    ("arm-landing", "alt/tight"),
-    ("arm-landing", "alt/gap"),
     ("arm-liveout", "eor1"),
     ("arm-liveout", "eor3"),
     ("arm-liveout", "eor5"),
@@ -239,10 +230,6 @@ BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bod
     ("copied-smc", "tone/post"),
     ("copied-smc", "alt/tail"),
     ("copied-smc", "alt/post"),
-    ("shared-tail", "tone/X"),
-    ("shared-tail", "tone/Y"),
-    ("shared-tail", "alt/X"),
-    ("shared-tail", "alt/Y"),
 ) + tuple(("rts-trick", v.label) for v in G.BY_ROW["rts-trick"].variants)
 
 

@@ -746,6 +746,32 @@ def _two_callers():
     )
 
 
+def _spill_span():
+    """`spill-span`: a balanced page-one spill the tick's own control flow separates.
+
+    Both ends stand at one displacement, so the cell is the artifact's own and the
+    frame rule answers it -- but a store whose read-back a transfer stands between is
+    not rung (d0)'s locality, so the pair stays page one: defMON's $01FB sentinel."""
+
+    def play(p, table, wide):
+        p.i("LDA", "zp", ROW).i("PHA")
+        if wide:
+            p.i("LDX", "zp", ROW)
+            col(p, "X", table)
+            p.i("STA", "abs", SID + 1)
+        p.i("LDX", "imm", 0x03)
+        p.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
+        p.i("PLA").i("TAX")
+        col(p, "X", table)
+        p.i("STA", "abs", SID)
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (t, "wide" if w else "tight"), lambda p, a=t, b=w: play(p, a, b))
+        for t, w in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
 def _deep_copy():
     """`deep-copy`: two sites on a callee that calls in turn, so a copy carries a call.
 
@@ -1109,6 +1135,7 @@ SHAPES = (
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),
     Shape("deep-copy", "two sites on a callee that calls", I.tab_data, _deep_copy()),
+    Shape("spill-span", "a spill a transfer stands inside", I.tab_data, _spill_span()),
     Shape("copied-dispatch", "two sites on a computed call", vec_data, _copied_dispatch()),
     Shape("copied-smc", "two sites on a patched-opcode dispatch", I.tab_data, _copied_smc()),
     Shape(

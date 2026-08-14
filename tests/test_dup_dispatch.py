@@ -139,14 +139,13 @@ def test_a_sole_site_callee_is_spliced_and_both_copies_are_exact():
 
 
 M_SHARED_TAIL = (
-    "a region the one procedure binds a pc for: the tail two inlined bodies share (or "
-    "two arms of one computed call), the RTS-trick landing folded in beside the play "
+    "a region the one procedure binds a pc for: the RTS-trick landing folded in beside "
+    "the play "
     "text, and the pc a relocated SMC dispatch stood at, which `desmc` labels once for "
     "however many copies carry it. Each is reached by a transfer that resolves through "
-    "the program-wide map, so a copy of the procedure would bind the pc twice "
-    "(test_call_lift.M_BODY_LABEL names the mechanism that leaves the first two)"
+    "the program-wide map, so a copy of the procedure would bind the pc twice"
 )
-_BINDS = ("shared-tail", "rts-trick", "arm-landing", "copied-smc")
+_BINDS = ("rts-trick", "copied-smc")
 
 
 def _copy_safe():
