@@ -33,16 +33,11 @@ M_RET_WORD = (
     "pushed and pushes one back, so frameproc.sp_balanced refuses the splice and the "
     "call, the interior ret and sp all stay (720_Degrees $C31D is the corpus shape)"
 )
-M_SHARED_SUB = (
-    "two or more static sites are not inlinable as the plan is written: Plan.inline is "
-    "a {callee: sole site} map and cannot name two, so the callee stays a `sub` and "
-    "every site stays a `pcall`; duplicating the body is the removal, and it is exact "
-    "where the body binds no pc"
-)
 M_SELF_CALL = (
-    "a self-call is one of its own callee's static sites, so the callee has two and "
-    "stays a sub; a tail self-call is a loop and a non-tail one a bounded unroll, and "
-    "Plan has a form for neither"
+    "a recursive callee reaches a block whose terminator is a `jsr` -- its own call --"
+    " so procpass.copies_ok refuses to place a copy per site and it stays a `sub` under"
+    " a `pcall`; a tail self-call is a loop and a non-tail one a bounded unroll, and"
+    " Plan has a form for neither"
 )
 M_LANDING_PROC = (
     "a resolved computed goto's landing is nobody's call target, so procpass never "
@@ -64,17 +59,6 @@ M_S_AS_VALUE = (
     "of the register itself (sp_read): modelling S as a value is what removes this, "
     "and until then sp is a parameter of the procedure"
 )
-M_PAGE_ONE_CELL = (
-    "a page-one cell no forwarding removes is an ordinary memory access: it survives "
-    "wherever the store and the read are not in one frame, and no rung relocates a "
-    "$0100..$01FF address off the page"
-)
-M_PAGE_ONE_BLIND = (
-    "an `(zp),Y` address is a LOAD-derived base the lift leaves symbolic, so the "
-    "store-load pair a single frame writes and reads back is not forwarded away: the "
-    "access survives into the text, and the evaluator lands it in page one where the "
-    "same frame spelled `abs` keeps no access at all"
-)
 M_SP_LOOP_PUSH = (
     "a push inside a loop stands at no one displacement: the model's SP flow leaves "
     "the body's entry sp bot, so concretize_stack names no cell, rung (d0r) has no "
@@ -85,14 +69,11 @@ MECHANISMS = (
     M_BODY_LABEL,
     M_TAIL_TRANSFER,
     M_RET_WORD,
-    M_SHARED_SUB,
     M_SELF_CALL,
     M_LANDING_PROC,
     M_SWITCH_CALL,
     M_S_RELOCATED,
     M_S_AS_VALUE,
-    M_PAGE_ONE_CELL,
-    M_PAGE_ONE_BLIND,
     M_SP_LOOP_PUSH,
 )
 
@@ -107,12 +88,6 @@ PINS = {
     ("shared-tail", "tone/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("shared-tail", "alt/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("multi-site", "2-site/X"): (M_SHARED_SUB,),
-    ("multi-site", "2-site/Y"): (M_SHARED_SUB,),
-    ("multi-site", "2-site/no-arg"): (M_SHARED_SUB,),
-    ("multi-site", "3-site/X"): (M_SHARED_SUB,),
-    ("multi-site", "3-site/Y"): (M_SHARED_SUB,),
-    ("multi-site", "3-site/no-arg"): (M_SHARED_SUB,),
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
     ("rts-trick", "const"): (M_LANDING_PROC,),
     ("rts-trick", "arith"): (M_LANDING_PROC,),
@@ -130,24 +105,9 @@ PINS = {
     ("deep-recursion", "const/around"): (M_SELF_CALL,),
     ("deep-recursion", "row/after"): (M_SELF_CALL,),
     ("deep-recursion", "row/around"): (M_SELF_CALL,),
-    ("two-callers", "X/sid"): (M_SHARED_SUB,),
-    ("two-callers", "X/cell"): (M_SHARED_SUB,),
-    ("two-callers", "Y/sid"): (M_SHARED_SUB,),
-    ("two-callers", "Y/cell"): (M_SHARED_SUB,),
-    ("two-callers", "cell/sid"): (M_SHARED_SUB,),
-    ("two-callers", "cell/cell"): (M_SHARED_SUB,),
-    ("branchy-callee", "cc/dey"): (M_SHARED_SUB,),
-    ("branchy-callee", "cc/iny"): (M_SHARED_SUB,),
-    ("branchy-callee", "cs/dey"): (M_SHARED_SUB,),
-    ("branchy-callee", "cs/iny"): (M_SHARED_SUB,),
     ("stack-move", "row/push"): (M_S_RELOCATED,),
-    ("s-illegal", "las/page1"): (M_S_AS_VALUE, M_PAGE_ONE_CELL),
+    ("s-illegal", "las/page1"): (M_S_AS_VALUE,),
     ("s-illegal", "las/far"): (M_S_AS_VALUE,),
-    ("page-one-cell", "abs/cross"): (M_PAGE_ONE_CELL,),
-    ("page-one-cell", "absx/cross"): (M_PAGE_ONE_CELL,),
-    ("page-one-cell", "absy/cross"): (M_PAGE_ONE_CELL,),
-    ("page-one-cell", "indy/same"): (M_PAGE_ONE_BLIND,),
-    ("page-one-cell", "indy/cross"): (M_PAGE_ONE_CELL,),
 }
 
 # what already holds, and must keep holding
@@ -158,6 +118,22 @@ CLEAN = (
     ("leaf-call", "mid/cell"),
     ("leaf-call", "tail/sid"),
     ("leaf-call", "tail/cell"),
+    ("multi-site", "2-site/X"),
+    ("multi-site", "2-site/Y"),
+    ("multi-site", "2-site/no-arg"),
+    ("multi-site", "3-site/X"),
+    ("multi-site", "3-site/Y"),
+    ("multi-site", "3-site/no-arg"),
+    ("two-callers", "X/sid"),
+    ("two-callers", "X/cell"),
+    ("two-callers", "Y/sid"),
+    ("two-callers", "Y/cell"),
+    ("two-callers", "cell/sid"),
+    ("two-callers", "cell/cell"),
+    ("branchy-callee", "cc/dey"),
+    ("branchy-callee", "cc/iny"),
+    ("branchy-callee", "cs/dey"),
+    ("branchy-callee", "cs/iny"),
     ("nested", "X/tail"),
     ("nested", "X/post"),
     ("nested", "Y/tail"),
@@ -187,8 +163,13 @@ CLEAN = (
     ("s-illegal", "tas/page1"),
     ("s-illegal", "tas/far"),
     ("page-one-cell", "abs/same"),
+    ("page-one-cell", "abs/cross"),
     ("page-one-cell", "absx/same"),
+    ("page-one-cell", "absx/cross"),
     ("page-one-cell", "absy/same"),
+    ("page-one-cell", "absy/cross"),
+    ("page-one-cell", "indy/same"),
+    ("page-one-cell", "indy/cross"),
     ("irq-frame", "hw"),
     ("irq-frame", "cinv"),
 )
@@ -198,21 +179,12 @@ SPLITS = {
     "rts-trick": (M_SP_LOOP_PUSH,),
     "vector-call": (M_SWITCH_CALL,),
     "stack-move": (M_S_RELOCATED,),
-    "s-illegal": (M_S_AS_VALUE, M_PAGE_ONE_CELL),
-    "page-one-cell": (M_PAGE_ONE_CELL, M_PAGE_ONE_BLIND),
+    "s-illegal": (M_S_AS_VALUE,),
 }
 
 # the protected-region fault a variant's text raises, at the cell it concretely reaches
 FAULTS = {
-    ("arg-pass", "stack-pla"): "store into the stack page $01FD",
-    ("page-one-cell", "abs/cross"): "load from the stack page $0108",
-    ("page-one-cell", "absx/cross"): "load from the stack page $0100",
-    ("page-one-cell", "absy/cross"): "load from the stack page $0100",
-    ("page-one-cell", "indy/cross"): "load from the stack page $0100",
-    ("page-one-cell", "indy/same"): "store into the stack page $0100",
-    ("rts-trick", "loop"): "store into the stack page $01FD",
-    ("s-illegal", "las/page1"): "load from the stack page $0100",
-    ("stack-move", "row/push"): "store into the stack page $0140",
+    ("arg-pass", "stack-pla"): "store into the stack page $01FC",
 }
 
 BINDS_PC = (  # a computed dispatch arm, and a callee tail two inlined bodies share

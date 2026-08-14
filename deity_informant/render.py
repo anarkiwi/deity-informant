@@ -285,18 +285,27 @@ def _structure_once(model, entry, allow):
         return Region("seq", top) if top else None
 
     def callee(target, site, callers):
-        """Region for a single-call-site static callee owned by its call line,
-        or None: not planned for this site, recursive, already emitted, or a
-        callee region overlapping any enclosing procedure."""
-        if inline.get(target) != site or target in callers or target in emitted:
-            return None
-        if not model.variants(target):
+        """Region for a static callee owned by its call line, or None: not planned
+        for this site, recursive, or overlapping any enclosing procedure.
+
+        A sole site owns the body; every further site takes its own copy, which is
+        exact where the copy binds no pc (``split``'s rule, at a call line)."""
+        sites = inline.get(target, ())
+        if site not in sites or target in callers or not model.variants(target):
             return None
         cfg = _proc_cfg(model, target)
         if set(cfg[0]) & callers:
             return None
-        top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
-        return Region("seq", top) if top else None
+        if len(sites) == 1:
+            if target in emitted:
+                return None
+            top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
+            return Region("seq", top) if top else None
+        labs = set()
+        top = _proc(model, target, cfg, (set(), labs, _no_body, _no_body, gate), callers)
+        if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
+            return None
+        return Region("seq", [_as_copy(r) for r in top[0].a])
 
     shared = (emitted, labels, handler, callee, gate)
     top = _proc(model, entry, _proc_cfg(model, entry), shared, frozenset())
@@ -625,15 +634,7 @@ def _reachable(pc, succ, nodeset, stop=None):
     return seen
 
 
-def _copyable(model, pc):
-    """A block a split may duplicate: one variant, no dispatch table and no call.
-
-    A dispatch pc and a call line are each named by the statement that carries
-    them (``opsw``, ``call``), so a second copy would name them twice."""
-    variants = getattr(model, "all_variants", model.variants)(pc)
-    if len(variants) != 1 or pc in getattr(model, "dispatch_pcs", ()):
-        return False
-    return model.blocks[variants[0]].term[0] != "jsr"
+_copyable = procpass.copyable  # the ONE reading of "a copy may carry this block"
 
 
 def _no_body(*_args):

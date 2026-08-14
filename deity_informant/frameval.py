@@ -33,28 +33,40 @@ class FrameFault(RuntimeError):
     """The frame program left its guarded envelope (fault, never improvise)."""
 
 
+def _in_frame(a, sz, top):
+    """The first byte of a ``sz``-byte access at ``a`` the machine's live frame owns.
+
+    Page one at or above the stack top holds what ``run_frame`` and each surviving
+    call pushed; below the top it is free space, and an access there is an artifact
+    datum like any other cell (8.4)."""
+    for j in range(sz):
+        c = (a + j) & 0xFFFF
+        if c in _STACK and (c & 0xFF) > top:
+            return c
+    return None
+
+
 def _protected(prog):
-    """Cell -> the region it belongs to: the two memories a statement may not name.
+    """Cell -> the region it belongs to: executable memory no statement may name.
 
-    Executable memory is the program's own (``desmc.executable``), the stack page every
-    program's, since it is the machine's and not the artifact's. A code byte in page one
-    is code first, so the de-SMC diagnostic is unchanged where the two overlap."""
-    out = dict.fromkeys(_STACK, _STACK_REGION)
-    out.update(dict.fromkeys(desmc.executable(prog), _CODE_REGION))
-    return out
+    Page one is not here: what the machine owns in it is decided at the access, by
+    where the stack pointer stands (``_in_frame``)."""
+    return dict.fromkeys(desmc.executable(prog), _CODE_REGION)
 
 
-def _off_stack(f, sz):
-    """``f`` refusing an address any byte of which lands in the stack page.
+def _off_stack(f, sz, spx, stale):
+    """``f`` refusing an address any byte of which is the machine's, not the artifact's.
 
-    Loads are covered as well as stores: the artifact spells no ``sp``, so a page-one
-    read is frame state left on the machine stack, and nothing relocates it the way
-    de-SMC relocates a code byte. The address is concrete here and static nowhere."""
+    Above the stack top the cell holds a word the artifact never wrote; in ``stale`` a
+    push has crossed the byte the artifact left there. The address is concrete here."""
 
     def one(r, m, rd):
         a = f(r, m, rd)
-        if 0x0100 - sz < a <= 0x01FF:
-            raise FrameFault("load from %s $%04X" % (_STACK_REGION, max(a, 0x0100)))
+        bad = _in_frame(a, sz, r[spx])
+        if bad is None:
+            bad = next((c for c in ((a + j) & 0xFFFF for j in range(sz)) if c in stale), None)
+        if bad is not None:
+            raise FrameFault("load from %s $%04X" % (_STACK_REGION, bad))
         return a
 
     return one
@@ -196,22 +208,19 @@ def _seat(probe, check):
 _width = frameproc.loc_width  # loc leaves carry their own width; every other node is E.width
 
 
-def _load(n, slot, probe=None):
+def _load(n, slot, probe=None, spx=0, stale=frozenset()):
     addr, sz = n[1], n[2]
     if addr[0] == "const":
         cells = [(addr[1] + j) & 0xFFFF for j in range(sz)]
-        bad = [c for c in cells if c in _STACK]
-        if bad:  # a named page-one cell is refused at build, as a named code byte is
-            raise FrameFault("load from %s $%04X" % (_STACK_REGION, bad[0]))
-        if sidprog._ld_safe(addr):
+        if sidprog._ld_safe(addr) and not any(c in _STACK for c in cells):
             if sz == 1:
                 a = cells[0]
                 return lambda r, m, rd: m[a]
             return lambda r, m, rd: sum(m[c] << (8 * j) for j, c in enumerate(cells))
-    fa = _expr(addr, slot, probe)
+    fa = _expr(addr, slot, probe, spx, stale)
     if probe is not None:
         fa = probe(addr, fa, sz)
-    fa = _off_stack(fa, sz)
+    fa = _off_stack(fa, sz, spx, stale)
     if sz == 1:
         return lambda r, m, rd: rd(fa(r, m, rd))
     return lambda r, m, rd: sum(rd((fa(r, m, rd) + j) & 0xFFFF) << (8 * j) for j in range(sz))
@@ -261,7 +270,7 @@ def _taint(n):
     return []
 
 
-def _expr(n, slot, probe=None):
+def _expr(n, slot, probe=None, spx=0, stale=frozenset()):
     """Closure ``(r, m, rd) -> value`` for one frameprog expression node.
 
     ``probe`` is the address-seat wrapper -- b0's read-only observer, 2b's extent
@@ -275,11 +284,11 @@ def _expr(n, slot, probe=None):
         i = slot(n[1])
         return lambda r, m, rd: r[i]
     if k == "mem":
-        return _load(n, slot, probe)
+        return _load(n, slot, probe, spx, stale)
     if k != "op":
         raise FrameFault("unexpected expression node %r" % (k,))
     mn, sz = n[1], n[3]
-    fs = tuple(_expr(c, slot, probe) for c in n[2])
+    fs = tuple(_expr(c, slot, probe, spx, stale) for c in n[2])
     szs = [_width(c) for c in n[2]]
     return lambda r, m, rd: E._apply(mn, [f(r, m, rd) for f in fs], szs, sz)
 
@@ -304,6 +313,9 @@ class _Code:
         self.tagged = set()
         self.ops = []
         self.idx = {}
+        self.spx = self.slot("sp")  # the register the machine's live frame is read off
+        self.owned = set()  # page-one cells the artifact wrote and no push has crossed
+        self.stale = set()  # ... and the ones a push did cross: reading one reads the word
         self.pcmap = {}
         self.entries = {}
         self.fix = []
@@ -357,7 +369,7 @@ class _Code:
         self.fix.append((len(self.ops) - 1, field, pc))
 
     def expr(self, n):
-        return _expr(n, self.slot, self.probe)
+        return _expr(n, self.slot, self.probe, self.spx, self.stale)
 
     def addr(self, n, sz):
         """A store's address closure, wrapped: a write-through deref is one too."""
@@ -367,16 +379,17 @@ class _Code:
     def store_addr(self, n, sz):
         """A store address that provably leaves the protected regions (``_protected``).
 
-        A const one is refused here -- a program that stores into its own instruction
-        stream or onto the machine stack must not be emitted; a computed one faults at
-        the cell, so each invariant is machine-checked and never a claim."""
-        cells = self.protect
-        if n[0] == "const":
-            bad = [c for c in ((n[1] + j) & 0xFFFF for j in range(sz)) if c in cells]
-            if bad:
-                raise FrameFault("store into %s $%04X" % (cells[bad[0]], bad[0]))
-            return self.addr(n, sz)
+        A const code byte is refused here -- a program that stores into its own
+        instruction stream must not be emitted; page one and a computed address fault
+        at the cell, so each invariant is machine-checked and never a claim."""
+        cells, spx, owned, stale = self.protect, self.spx, self.owned, self.stale
+        span = [(n[1] + j) & 0xFFFF for j in range(sz)] if n[0] == "const" else []
+        bad = [c for c in span if c in cells]
+        if bad:
+            raise FrameFault("store into %s $%04X" % (cells[bad[0]], bad[0]))
         f = self.addr(n, sz)
+        if span and not any(c in _STACK for c in span):
+            return f
 
         def checked(r, m, rd):
             a = f(r, m, rd)
@@ -384,6 +397,13 @@ class _Code:
                 who = cells.get((a + j) & 0xFFFF)
                 if who is not None:
                     raise FrameFault("store into %s $%04X" % (who, (a + j) & 0xFFFF))
+            hit = _in_frame(a, sz, r[spx])
+            if hit is not None:
+                raise FrameFault("store into %s $%04X" % (_STACK_REGION, hit))
+            for c in ((a + j) & 0xFFFF for j in range(sz)):
+                if c in _STACK:
+                    owned.add(c)
+                    stale.discard(c)
             return a
 
         return checked
@@ -714,14 +734,20 @@ class Evaluator:
 
         ``sp`` and the pushed return bytes are machine-faithful: call/ret move the
         shared stack register, and a ``ret`` continues at the slot the callee left.
-        The push is the machine's own, so the stack-page protection never sees it."""
+        A push over a cell the artifact wrote is the one way the evaluator changes
+        state behind the program's back: the cell goes stale and reading it faults."""
         ops, r, m, rd, s = self.code.ops, self.r, self.m, self._rd, self.sp
         rmap, prov, ploc = self.code.rmap, self.prov, self.ploc
+        owned, stale = self.code.owned, self.code.stale
 
         def push(ret):
             p = r[s] & 0xFF
-            m[0x100 + p] = (ret >> 8) & 0xFF
             q = (p - 1) & 0xFF
+            for c in (0x100 + p, 0x100 + q):
+                if c in owned:  # the artifact's byte is gone: reading it back is the fault
+                    owned.discard(c)
+                    stale.add(c)
+            m[0x100 + p] = (ret >> 8) & 0xFF
             m[0x100 + q] = ret & 0xFF
             r[s] = (q - 1) & 0xFF
 

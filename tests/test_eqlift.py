@@ -1,6 +1,7 @@
 """Equality-saturation lift: Z3 rule-admission gate, plus the whole-artifact
 emit over the Commando/Krakout tunes (no targeted per-tune code)."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import z3
 
 from deity_informant import eqlift
 from deity_informant import eqlift_mem
+from deity_informant import procpass
 from deity_informant import structured as S
 from deity_informant.c64 import load_psid
 
@@ -146,10 +148,15 @@ def test_commando_emit_end_to_end(sid, subtune, secs):
 
 @pytest.mark.parametrize("sid,subtune,secs", _tune("Krakout", "Daglish_Ben"))
 def test_krakout_emit_whole_artifact(sid, subtune, secs):
-    """The substrate covers calls/switches over the whole model; deterministic."""
+    """The substrate covers calls/switches over the whole model; deterministic.
+
+    ``$E536``/``$E578`` reach only copyable blocks, so their bodies are duplicated at
+    each of their several static sites and the play routine is the only procedure."""
     model = _model(sid, subtune, secs)
     text, _ = eqlift_mem.emit(model)
     assert text.startswith("eqlift 0\n") and "state {" in text
-    assert "sub_E001 {" in text and "sub_E536 {" in text and "sub_E578 {" in text
+    assert re.findall(r"(?m)^sub_[0-9A-F]{4} \{", text) == ["sub_E001 {"]
+    copied = {t: len(s) for t, s in procpass.plan(model).inline.items() if len(s) > 1}
+    assert copied == {0xE536: 3, 0xE578: 2}
     assert "switch call {" in text and "call $" in text
     assert eqlift_mem.emit(model)[0] == text  # emission is deterministic

@@ -377,6 +377,8 @@ def test_a_local_live_across_a_for_loop_is_not_pruned():
 
 
 def test_parameter_and_return_inference():
+    """``sub_2000``'s nested ``JSR`` is a terminator no copy carries, so its two static
+    sites keep it a procedure and its header states the register interface."""
     inc = ("op", "INT_ADD", (E.reg(0), ("const", 1, 1)), 1)
     callee = _regs()
     callee[0] = inc
@@ -388,7 +390,9 @@ def test_parameter_and_return_inference():
         (0x1008, 0x85): Block(
             0x1008, 0x85, [0x1008], [("st", ("const", 0x00FB, 2), E.reg(0))], ("rts",), _regs()
         ),
-        (0x2000, 0x69): Block(0x2000, 0x69, [0x2000], [], ("rts",), callee),
+        (0x2000, 0x69): Block(0x2000, 0x69, [0x2000], [], ("jsr", 0x3000, 0x2002, None), callee),
+        (0x2003, 0x60): Block(0x2003, 0x60, [0x2003], [], ("rts",), _regs()),
+        (0x3000, 0x60): Block(0x3000, 0x60, [0x3000], [], ("rts",), _regs()),
     }
     text = frameprog.emit(_model(blocks))
     assert "sub_2000(a) -> a {" in text
@@ -823,8 +827,13 @@ def _flow_blk(pc, term):
     return Block(pc, 0, [pc], [], term, _regs())
 
 
-def _call_model(callers):
+def _call_model(callers, nested=False):
+    """``nested`` gives the callee a ``JSR`` of its own, a terminator no copy carries."""
     blocks = {(0x2000, 0): _flow_blk(0x2000, ("rts",))}
+    if nested:
+        blocks[(0x2000, 0)] = _flow_blk(0x2000, ("jsr", 0x3000, 0x2002, None))
+        blocks[(0x2003, 0)] = _flow_blk(0x2003, ("rts",))
+        blocks[(0x3000, 0)] = _flow_blk(0x3000, ("rts",))
     for i, pc in enumerate(callers):
         blocks[(pc, 0)] = _flow_blk(pc, ("jsr", 0x2000, pc + 2, None))
         nxt = callers[i + 1] if i + 1 < len(callers) else None
@@ -833,11 +842,16 @@ def _call_model(callers):
 
 
 def test_a_sole_static_call_site_owns_the_callee_body():
-    """``_model_trees``: one caller splices the callee in, two keep it a procedure."""
+    """``_model_trees``: one caller splices the callee in, two keep a non-copyable one.
+
+    Two sites duplicate a copyable body instead, so the second half's callee carries
+    the nested ``JSR`` that refuses the copy."""
     one = frameprog.emit(_call_model([0x1000]))
     assert "sub_1000() {\n  ret\n}\n" in one and "call" not in one and "sub_2000(" not in one
     assert frameprog.dumps(frameprog.loads(one)) == one
-    two = frameprog.emit(_call_model([0x1000, 0x1100]))
+    copied = frameprog.emit(_call_model([0x1000, 0x1100]))
+    assert "sub_2000(" not in copied and "call" not in copied
+    two = frameprog.emit(_call_model([0x1000, 0x1100], nested=True))
     assert "sub_2000() {" in two and two.count("  sub_2000()\n") == 2
     assert frameprog.dumps(frameprog.loads(two)) == two
 

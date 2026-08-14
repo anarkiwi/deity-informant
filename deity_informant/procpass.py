@@ -83,9 +83,21 @@ def _idoms(entry, succ, nodes):
     return idom, rpo_num
 
 
+def copyable(model, pc):
+    """A block a copy may carry: one variant, no dispatch table and no call.
+
+    A dispatch pc and a call line are each named by the statement that carries them
+    (``opsw``, ``call``), so a second copy would name them twice."""
+    variants = getattr(model, "all_variants", model.variants)(pc)
+    if len(variants) != 1 or pc in getattr(model, "dispatch_pcs", ()):
+        return False
+    return model.blocks[variants[0]].term[0] != "jsr"
+
+
 class Plan:
     """``entries``: proc entry pcs (play first, then ascending); ``inline``:
-    static callee -> its sole call-site pc; ``homes``: block pc -> proc entry."""
+    static callee -> the call-site pcs its body is placed at; ``homes``: block pc
+    -> proc entry."""
 
     __slots__ = ("entries", "inline", "homes")
 
@@ -157,13 +169,30 @@ def _plan(model):
     inline = {}
     parent = {}  # nested entry -> call-site pc whose proc owns its body
     procs = set()
+
+    def copies_ok(t):
+        """Whether every block the callee reaches may be carried by a copy per site."""
+        seen, stack = set(), [t]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if not copyable(model, n):
+                return False
+            stack.extend(s for s in intra.get(n, ()) if s in pcs)
+        return True
+
     for t in sorted(targets):
         if t == play or t not in pcs:
             continue
         ss = static_sites.get(t, ())
         if len(ss) == 1 and count.get(t, 0) == 0 and idom.get(t) in ss:
-            inline[t] = idom[t]
+            inline[t] = frozenset(ss)
             parent[t] = idom[t]
+        elif len(ss) > 1 and count.get(t, 0) == 0 and copies_ok(t):
+            inline[t] = frozenset(ss)  # duplication is exact where the body binds no pc
+            parent[t] = min(ss)
         elif count.get(t) == 1 and t not in static_sites and t in dyn_sites:
             parent[t] = min(dyn_sites[t])  # sole dyn site: switch-call arm home
         elif t not in flown:

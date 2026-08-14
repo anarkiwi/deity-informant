@@ -3288,7 +3288,7 @@ def main(argv=None):
         print(art["eqlift_text"])
         return 0
     kinds = {p.split("(")[0] for p in art["proofs"]}
-    assert kinds == FOLDS, kinds
+    assert kinds == FOLDS - {"row_read"}, kinds  # the copied helper retires it (_scratch)
     assert framelog.canonical(art["min_frames"]) == framelog.canonical(
         art["orig_frames"]
     ), "minimized program diverges from the VM frame projection"

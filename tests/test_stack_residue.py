@@ -37,6 +37,15 @@ CONTROL = (("saved-recursion", "pha/const"), ("saved-recursion", "pha/row"))
 RESIDUE = tuple(
     ("carry-recursion", "%s/pha" % w) for w in ("volatile", "overwrite", "lossy", "multi")
 )
+# the cell each descent reads above the machine's live stack top, one per depth
+PARKED = {
+    ("saved-recursion", "pha/const"): 0x01F5,
+    ("saved-recursion", "pha/row"): 0x01FB,
+    ("carry-recursion", "volatile/pha"): 0x01F5,
+    ("carry-recursion", "overwrite/pha"): 0x01F5,
+    ("carry-recursion", "lossy/pha"): 0x01F5,
+    ("carry-recursion", "multi/pha"): 0x01F2,
+}
 
 OPEN = ("closed", "partial", "input", "wide", "computed", "roundtrip")
 ARMS = {"closed": 4, "partial": 2, "input": 2, "wide": 4, "computed": 2, "roundtrip": 2}
@@ -70,12 +79,15 @@ def test_a_non_tail_self_call_alone_leaves_no_stack_behind(row, label):
     "row,label", CONTROL + RESIDUE, ids=["%s:%s" % v for v in CONTROL + RESIDUE]
 )
 def test_a_value_parked_in_page_one_keeps_sp_and_faults(row, label):
-    """Page one as the value stack: sp threads the recursion and the protection fires."""
+    """Page one as the value stack: sp threads the recursion and the protection fires.
+
+    The descent parks its byte above the live stack top, which is the machine's own
+    frame however deep the recursion has pushed."""
     assert K.page_one(row, label) == (0x0100,)
     entry = G.parsed(row, label).procs[1][0]
     got = G.violations(row, label)
     assert "sp: parameter of sub_$%04X" % entry in got
-    assert "fault: store into the stack page $01FB" in got
+    assert "fault: load from the stack page $%04X" % PARKED[(row, label)] in got
 
 
 @pytest.mark.parametrize("row,label", CONTROL, ids=["%s:%s" % v for v in CONTROL])

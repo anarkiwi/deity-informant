@@ -585,34 +585,38 @@ def _tree_keys(root, dups=None):
     return keys
 
 
-def _inlined_arms(trees):
-    """Call targets whose body tree is inlined at a call line or case arm."""
-    out = set()
-    stack = [root for _e, root in trees]
-    while stack:
-        r = stack.pop()
+def _scan_calls(items, bodied, bare):
+    """Static call targets in one sequence: bodied at the site, or still named by it."""
+    for i, r in enumerate(items):
         k = r.kind
-        if k == "seq":
-            stack.extend(r.a)
+        if k == "block":
+            t = r.a.term
+            nxt = items[i + 1] if i + 1 < len(items) else None
+            if t[0] == "jsr" and t[1] is not None:
+                inlined = nxt is not None and nxt.kind == "call" and nxt.b is not None
+                (bodied if inlined else bare).add(t[1])
+        elif k == "seq":
+            _scan_calls(r.a, bodied, bare)
         elif k == "loop":
-            stack.append(r.a)
+            _scan_calls([r.a], bodied, bare)
         elif k == "if":
-            stack.extend(c for c in (r.b, r.c) if c is not None)
+            _scan_calls([c for c in (r.b, r.c) if c is not None], bodied, bare)
         elif k == "call":
             if r.b is not None:
-                out.add(r.a)
-                stack.append(r.b)
+                bodied.add(r.a)
+                _scan_calls([r.b], bodied, bare)
         elif k == "switch":
             for _lbl, body in r.a[1]:
-                if body is None:
-                    continue
-                if body.kind == "call":
-                    if body.b is not None:
-                        out.add(body.a)
-                        stack.append(body.b)
-                else:
-                    stack.append(body)
-    return out
+                if body is not None:
+                    _scan_calls([body], bodied, bare)
+
+
+def _inlined_arms(trees):
+    """Call targets every site places the body of: no call line still names them."""
+    bodied, bare = set(), set()
+    for _e, root in trees:
+        _scan_calls([root], bodied, bare)
+    return bodied - bare
 
 
 def _model_trees(model):
@@ -647,10 +651,12 @@ def _model_trees(model):
         trees.append((entry, root))
 
     def left_keys():
+        """Blocks no tree placed; a callee every site copied is nobody's landing."""
+        want = need - _inlined_arms(trees)
         return sorted(
             k
             for k in view.blocks
-            if k not in done and not (k in dupped and k[0] not in need and k[0] not in labels)
+            if k not in done and not (k in dupped and k[0] not in want and k[0] not in labels)
         )
 
     for entry in plan.entries:

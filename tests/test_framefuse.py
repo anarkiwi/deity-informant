@@ -709,11 +709,15 @@ def test_a_computed_jump_refuses_every_label_join():
 
 
 def _call_voice(name, offsets):
-    """Also_Bad's shape: three call sites, each passing the callee's lane index."""
+    """Also_Bad's shape: three call sites, each passing the callee's lane index.
+
+    The callee's own nested ``JSR`` is a terminator no copy carries, so the several
+    static sites keep it a procedure rather than duplicating its body at each."""
     a = G.Asm(G.ORG)
     for k, off in enumerate(offsets):
         a.i("LDA", "imm", 0x30 + k).i("LDY", "imm", off).i("JSR", "abs", ("L", "sub"))
-    a.i("RTS").label("sub").i("STA", "absy", SID).i("RTS")
+    a.i("RTS").label("sub").i("STA", "absy", SID).i("JSR", "abs", ("L", "leaf")).i("RTS")
+    a.label("leaf").i("RTS")
     outs = tuple(SID + k for k in range(0x19))
     model = _fuzz_model(_player(name, a.assemble(), None, outs))
     prog = frameprog.program(model)

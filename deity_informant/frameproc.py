@@ -573,7 +573,6 @@ _OWN = frozenset(("if", "loop", "for", "opsw", "swg"))  # bodies whose ``ret`` i
 _ARMED = frozenset(("swg", "swc"))  # an arm table its computed transfer must stay beside
 _ANYCALL = frozenset(("call", "callb", "pcall", "dcall", "swc"))
 _PC_ARMS = {"swg": 1, "opsw": 2, "swc": 2}  # where a form carries its arm labels
-_ESCAPES = frozenset(("goto", "dgoto", "igoto", "dbr"))  # a transfer that leaves the list
 
 
 def bound_pcs(stmts, out=None):
@@ -655,11 +654,17 @@ def _read_locals(stmts, out=None):
 def escapes(stmts):
     """Whether the list may leave by a transfer rather than by its own ``ret``.
 
-    A callee that tail-transfers out returns through the pushed word from wherever
-    it landed, so its text spliced at the site would take the ``ret`` there for the
-    procedure's own."""
-    for s in stmts:
-        if s[0] in _ESCAPES or any(escapes(b) for b in _stmt_bodies(s)):
+    A callee that tail-transfers out returns through the pushed word from wherever it
+    landed. A computed transfer its own arm table or static vector answers lands in
+    the list itself, so that one leaves nothing behind."""
+    for i, s in enumerate(stmts):
+        k = s[0]
+        nxt = stmts[i + 1][0] if i + 1 < len(stmts) else None
+        if k in ("goto", "dbr"):
+            return True
+        if k in ("dgoto", "igoto") and nxt != "swg" and not (k == "igoto" and s[2] is None):
+            return True
+        if any(escapes(b) for b in _stmt_bodies(s)):
             return True
     return False
 

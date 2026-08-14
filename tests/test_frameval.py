@@ -239,8 +239,8 @@ def test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell():
     assert mem0[0x0803] != mem0[0x0807]  # the re-read index would name a different byte
 
 
-def test_the_cell_a_return_address_would_overwrite_is_refused_before_it_is_staged():
-    """No statement stages a byte where the machine's own push lands (8.4).
+def test_the_cell_a_return_address_overwrote_is_refused_when_it_is_read_back():
+    """No statement reads a byte the machine's own push replaced (8.4).
 
     The provenance question the protection answers away: a pushed return byte is not
     the table byte that stood in the cell before it, and the stack page is the only
@@ -257,7 +257,7 @@ def test_the_cell_a_return_address_would_overwrite_is_refused_before_it_is_stage
         ("ret", False),
     ]
     prog = _progs([(0x1000, [], [], stmts), (0x1100, [], [], [("ret", False)])], mem0=mem0)
-    with pytest.raises(FrameFault, match=r"store into the stack page \$01FC"):
+    with pytest.raises(FrameFault, match=r"load from the stack page \$01FC"):
         frameval.eval_src(prog, {}, 1)
 
 
@@ -488,31 +488,35 @@ def _through_x(base):
     return ("op", "INT_ADD", (("const", base, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
 
 
-def test_a_named_page_one_cell_is_refused_at_build_in_either_direction():
-    """The stack page is the machine's, so a statement may neither write nor read it."""
-    with pytest.raises(FrameFault, match=r"store into the stack page \$01FC"):
-        frameval.eval_fp(_prog([("st", ("const", 0x01FC, 2), ("const", 1, 1))]), {}, 1)
-    with pytest.raises(FrameFault, match=r"load from the stack page \$0100"):
-        frameval.eval_fp(_prog([_wr(4, 0), ("st", ("const", 0xD405, 2), _cell(0x0100))]), {}, 1)
-    with pytest.raises(FrameFault, match=r"load from the stack page \$0100"):
+def test_a_named_cell_the_machine_holds_is_refused_in_either_direction():
+    """The machine's live frame is its own, so a statement may neither write nor read it.
+
+    Page one below the stack top is the artifact's memory like any other cell (8.4)."""
+    with pytest.raises(FrameFault, match=r"store into the stack page \$01FE"):
+        frameval.eval_fp(_prog([("st", ("const", 0x01FE, 2), ("const", 1, 1))]), {}, 1)
+    with pytest.raises(FrameFault, match=r"load from the stack page \$01FE"):
+        frameval.eval_fp(_prog([_wr(4, 0), ("st", ("const", 0xD405, 2), _cell(0x01FE))]), {}, 1)
+    with pytest.raises(FrameFault, match=r"load from the stack page \$01FE"):
         frameval.eval_fp(
-            _prog([("st", ("const", 0xD405, 2), ("mem", ("const", 0x00FF, 2), 2))]), {}, 1
+            _prog([("st", ("const", 0xD405, 2), ("mem", ("const", 0x01FD, 2), 2))]), {}, 1
         )
+    ok = [("st", ("const", 0x0100, 2), ("const", 1, 1)), _wr(5, 0), ("ret", False)]
+    assert len(frameval.eval_fp(_prog(ok), {}, 1)) == 1
 
 
 def test_a_computed_page_one_access_faults_at_the_cell_it_reaches():
     """Undecidable statically, exact here: the address is concrete at evaluation."""
-    st = [("asg", "x", ("const", 0x0C, 1)), ("st", _through_x(0x00F8), ("const", 7, 1))]
-    with pytest.raises(FrameFault, match=r"store into the stack page \$0104"):
+    st = [("asg", "x", ("const", 0xFE, 1)), ("st", _through_x(0x0100), ("const", 7, 1))]
+    with pytest.raises(FrameFault, match=r"store into the stack page \$01FE"):
         frameval.eval_fp(_prog(st), {}, 1)
     ld = [
-        ("asg", "x", ("const", 0x0C, 1)),
-        ("st", ("const", 0xD405, 2), ("mem", _through_x(0x00F8), 1)),
+        ("asg", "x", ("const", 0xFE, 1)),
+        ("st", ("const", 0xD405, 2), ("mem", _through_x(0x0100), 1)),
     ]
-    with pytest.raises(FrameFault, match=r"load from the stack page \$0104"):
+    with pytest.raises(FrameFault, match=r"load from the stack page \$01FE"):
         frameval.eval_fp(_prog(ld), {}, 1)
     ok = ld[:1] + [("asg", "x", ("const", 0x02, 1))] + ld[1:] + [("ret", False)]
-    assert len(frameval.eval_fp(_prog(ok), {}, 1)) == 1  # the same statement, one page down
+    assert len(frameval.eval_fp(_prog(ok), {}, 1)) == 1  # the same statement, below the top
 
 
 def test_a_code_byte_in_page_one_is_code_first():
@@ -621,18 +625,13 @@ def _lot_of_coke():
     ]
 
 
-M_SURVIVING_PUSH = (
-    "the play routine pushes and the sp removal could not prove the frame balanced, so "
-    "the emitted store through sp stays: it is a stack access, and the stack page is "
-    "protected exactly as executable memory is (docs/denotation-solve.md 8.4)"
-)
-
-
 @pytest.mark.oracle
-@pytest.mark.xfail(strict=True, reason=M_SURVIVING_PUSH)
 @pytest.mark.parametrize("sid,subtune", _lot_of_coke())
 def test_gate_fp_goto_liveness_regression(sid, subtune):
-    """The tune whose voice-2 pulse width diverged by one accumulator step."""
+    """The tune whose voice-2 pulse width diverged by one accumulator step.
+
+    Its surviving push stands below the live stack top, which is the artifact's own
+    memory now that page one is owned at the access and not by the page (8.4)."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, 300, subtune)

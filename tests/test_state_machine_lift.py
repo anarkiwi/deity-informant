@@ -86,8 +86,9 @@ def _line(text, needle):
 
 
 def test_folds_all_proved(art):
+    """Every fold the example applies but ``row_read``, which its copied callee retires."""
     kinds = {p.split("(")[0] for p in art["proofs"]}
-    assert kinds == set(FOLDS)
+    assert kinds == set(FOLDS) - {"row_read"}
     got = set(art["proofs"])
     for b in ZPV:  # every voice folds on its own cursor, note pair and slide
         assert "pair_set(ptr_%04X)" % b in got
@@ -202,29 +203,43 @@ def test_wrapping_zero_page_row(art, text):
 
 
 def test_helper_procedure_and_its_boundary(art, text):
-    """The JSR is a procedure of its own, and its returns resolve into the caller.
+    """FLIPPED: the JSR reaches only copyable blocks, so it is no procedure of its own.
 
-    3d landing 3: pass 2 still names the params and returns; the row read needs the
-    lanes in one place, so the leaf callee is resolved at its sites and leaves."""
-    sub = next(e for e in art["boundary"] if e != PLAY)
-    assert art["boundary"][sub] == (("x",), ("a", "x"))
-    assert art["boundary"][PLAY] == ((), ())
-    assert art["resolved"] == (sub,)
+    Its body is duplicated at each of its static sites rather than called, so the model
+    states one boundary, the resolver is left nothing to resolve, and no call remains."""
+    assert art["boundary"] == {PLAY: ((), ())}
+    assert art["resolved"] == ()
     assert list(art["folded"]) == [PLAY] and "call sub_" not in text
+    assert "sub_" not in text, "a callee survived as a procedure"
+
+
+# The promotion the artifact stopped spelling: its one callee is copied at every site.
+PROMOTED = """\
+sub_%04X() {
+  a, x = sub_1485(a)
+  ret
+}
+sub_1485(x) -> a, x {
+  a = m_14A7[x]
+  x = m_14BD[x]
+  ret a, x
+}
+""" % PLAY
 
 
 def test_the_parser_reads_the_engine_s_own_artifact(art):
     """#193's four measured items: the signature, the width suffix, the promotion, trunc1.
 
     The subject is ``frameprog.dumps`` -- the text the engine emits, not the pre-rung
-    dialect the prototype has read until now -- and every procedure of it parses."""
+    dialect the prototype has read until now -- which is now one procedure, so the
+    promotion item is read off ``PROMOTED`` instead."""
     text = art["artifact"]
     sigs = sml.proc_signatures(text)
-    assert sigs == {PLAY: (("x",), ()), 0x1485: (("x",), ("a", "x"))}
+    assert sigs == {PLAY: ((), ())}
     assert sml.proc_entries(text) == sorted(sigs)
     asts = {e: sml.extract_proc(text, e) for e in sigs}
     assert all(asts.values())
-    assert asts[0x1485][-1] == ("ret", ("a", "x")), "the header's returns are not spelled"
+    assert asts[PLAY][-1] == ("ret", ()), "the header spells returns the body does not"
     kinds = set()
 
     def walk(x):
@@ -237,7 +252,9 @@ def test_the_parser_reads_the_engine_s_own_artifact(art):
                 walk(kid)
 
     walk(list(asts.values()))
-    assert {"pcall", "trunc1", "zext2"} <= kinds, sorted(kinds)
+    assert {"trunc1", "zext2"} <= kinds, sorted(str(k) for k in kinds)
+    walk(sml.extract_proc(PROMOTED, PLAY))
+    assert "pcall" in kinds, "the parser lost the promoted call"
 
 
 def _sites(asts):
@@ -288,10 +305,12 @@ def test_a_width_belongs_to_the_site_and_not_to_the_name(art):
 
 
 def test_the_prototype_evaluates_a_promoted_call_off_the_header(art):
-    """The promotion executes by its header: the params bind and only the returns land."""
-    text = art["artifact"]
-    sigs = sml.proc_signatures(text)
-    body = sml.extract_proc(text, 0x1485)
+    """The promotion executes by its header: the params bind and only the returns land.
+
+    The engine copies the example's one callee at every site, so the two-procedure text
+    the promotion runs over is ``PROMOTED`` rather than the artifact."""
+    sigs = sml.proc_signatures(PROMOTED)
+    body = sml.extract_proc(PROMOTED, 0x1485)
     call = ("pcall", ("a", "x"), 0x1485, (("name", "x", 1),))
     flats = {PLAY: sml.Flat([call]), 0x1485: sml.Flat(body)}
     machine = sml.Machine(flats, sml.run_vm(art["mem"], 0)[1], sigs)
@@ -303,11 +322,12 @@ def test_the_prototype_evaluates_a_promoted_call_off_the_header(art):
 
 
 def test_stack_spill_forwards(text):
-    """3d landing 1: the pull is spelled from the pushed value and the store demotes.
+    """3d landing 1: the pull is spelled from the pushed value; the store now survives.
 
-    The reader set is artifact-wide, so the slot dies only once the script derefs are
-    bounded -- 2b's observed extents are what bound them, consumed and never extended."""
-    assert not re.search(r"m_01[0-9A-F]{2}", text), "the PHA/PLA spill survives as a cell"
+    Scratch demotion closes over the procedure holding the store, and the copied body's
+    procedure reads an unbounded address, so the slot stays as a write-only cell."""
+    assert not re.search(r"= .*m_01[0-9A-F]{2}", text), "the pull re-reads the spill cell"
+    assert re.search(r"^\s*m_01[0-9A-F]{2} = ", text, re.M), "no spill store at all"
 
 
 def test_portamento_is_one_wide_compare(art, text):
@@ -407,14 +427,14 @@ def test_no_byte_lane_update_of_any_declared_u16(art):
 
 
 def test_note_fetch_is_one_u16_row_read(art, text):
-    """3d landing 3: the declared pair read at one index is one u16 row read.
+    """FLIPPED by the copied callee: the declared pair stays two column reads.
 
-    The lanes met once the leaf callee's returns resolved into the caller; the pair is
-    the site's own declaration and the spelling is the image's own table label."""
-    assert not re.search(r"v\d_note_(?:lo|hi) = ", text), "the note keeps split lanes"
-    assert re.search(r"v\d_note = pitch\[", text), "the pitch table is still two rows"
-    assert "voice_note = pitch[" in text, "the unified slice kept the split lanes"
-    assert art["proofs"].count("row_read(m_14A7,m_14BD)") == VOICES
+    The undemoted spill store sits between the columns at every copied site, so no site
+    matches the pair and each declared lane is written on its own."""
+    assert re.search(r"v\d_note_hi = ", text), "the note pair folded back to one row read"
+    assert "voice_note_hi = " in text, "the unified slice folded the pair"
+    assert not re.search(r"v\d_note = pitch\[", text), "the pitch table is one row again"
+    assert art["proofs"].count("row_read(m_14A7,m_14BD)") == 0
 
 
 def test_the_loop_expands_to_the_program_it_rolled(art):
@@ -507,7 +527,7 @@ def test_wav_renders_and_the_two_spans_agree(art, tmp_path):
 # one of them holds. A shape that stops holding is re-pinned with ``XFAIL`` and an OWNER.
 OWNER = "stage 4 landing 4 (remaining part)"  # the live owner a pin here would name (#180)
 ARCH = frozenset(("a", "x", "y", "sp", "cflag", "nflag", "zflag", "vflag"))
-LINE_PIN, COST_PIN = 311, 759  # lowered by the naming pass: a register web is one local
+LINE_PIN, COST_PIN = 322, 785  # measured 322/785: the copied callee body is at three sites
 # lowers these, never raises — only a feature landing re-pins them upward
 EVIDENCE = {  # per role, the clause its declaration owes (sidprog.lark statedef)
     "cursor": r"\bin\s+\w+",
@@ -748,15 +768,14 @@ def test_round_trip_witness_is_frame_identical(art):
     assert framelog.canonical(frames) == framelog.canonical(art["orig_frames"])
 
 
-def test_the_promoted_call_resolves_by_its_header(art):
+def test_the_promoted_call_resolves_by_its_header():
     """``a, x = sub_1485(a)`` against ``sub_1485(x) -> a, x``: the header is the binding.
 
-    Without the header there is no binding, so the promotion refuses -- and the callee
-    then stays, because a resolution that leaves a site unreached would be a dangling
-    call rather than a smaller program."""
-    text = art["artifact"]
-    sigs = sml.proc_signatures(text)
-    raw = {e: sml.extract_proc(text, e) for e in sml.proc_entries(text)}
+    Without the header there is no binding, so the promotion refuses and the callee then
+    stays, because a resolution leaving a site unreached would be a dangling call. The
+    engine copies the example's one callee, so the text resolved is ``PROMOTED``."""
+    sigs = sml.proc_signatures(PROMOTED)
+    raw = {e: sml.extract_proc(PROMOTED, e) for e in sml.proc_entries(PROMOTED)}
     got, resolved = sml.resolve_calls(raw, sigs)
     assert resolved == (0x1485,) and list(got) == [PLAY]
     lines = []

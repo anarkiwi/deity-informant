@@ -65,7 +65,6 @@ _PROT_FIXTURES = (  # read off the evaluator below, never annotated
     "jsr_inline_skip_two_depths",
     "jsr_inline_skip_two_sites",
     "jsr_inline_skip_varlen",
-    "low_held_cursor",
     "sp_call_displaced",
     "sp_loop_edge",
     "sp_scratch_floor",
@@ -1658,7 +1657,6 @@ def test_a_play_written_source_block_stops_the_certification_only():
     assert rec["eligible"] and not rec["lift_refusals"]
 
 
-@_PROT_PIN
 def test_a_stack_held_cursor_names_its_slot_and_keeps_its_store():
     """Invariant (b1 iv): the identity is sp-relative, and sp survives with the store.
 
@@ -1672,7 +1670,6 @@ def test_a_stack_held_cursor_names_its_slot_and_keeps_its_store():
     assert "hi-first ptr_%04X:2 = ((zext2(s1) << $08):2 | zext2(s0)):2" % G.PTR in body
 
 
-@_PROT_PIN
 def test_a_stack_held_cursor_lifts_once_the_slot_is_named():
     """FLIPPED at the slot identity: the restore is the push, so no page-one def stands.
 

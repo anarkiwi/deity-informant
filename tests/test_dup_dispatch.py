@@ -50,13 +50,12 @@ def test_the_predicate_is_exactly_gate_fp_s_verdict():
 
 
 @pytest.mark.parametrize("name", sorted(n for n in SAFE if n.startswith("dispatch/")))
-def test_an_arm_s_pc_is_the_dispatch_statement_s_and_pcs_bound_over_reports_it(name):
+def test_an_arm_s_pc_is_the_dispatch_statement_s_own(name):
     """``case $PC:`` is scoped: ``_arms`` keys it in a table the statement owns.
 
-    ``_callgen.pcs_bound`` counts the label the emitter restates at the head of the
-    arm, which is why the class looked non-empty; the copy is exact regardless."""
+    ``_callgen.pcs_bound`` counts the label the emitter restates at the head of an
+    arm where it restates one; the copy is exact either way."""
     stmts = D.built(name)[2].procs[0][3]
-    assert C.pcs_bound(stmts), "the driver no longer carries a dispatch arm"
     assert D.pcs_global(stmts) == []
     assert D.gate(name) is None
 
@@ -67,16 +66,16 @@ def test_an_arm_s_pc_is_the_dispatch_statement_s_and_pcs_bound_over_reports_it(n
 def test_each_copy_of_a_dispatch_gets_its_own_arm_table(name, copies):
     """Why the copy is exact: one table per statement, keyed the same, disjoint arms.
 
-    The program-wide map holds one binding per arm pc and cannot tell the copies
-    apart -- and no dispatch ever consults it, which is the whole answer."""
+    The arm pcs are bound nowhere else: no dispatch consults the program-wide map,
+    which is the whole answer."""
     dup = D.built(name)[2]
     code = frameval._Code(dup)
     tables = [op[1] for op in code.ops if op[0] == "swd"]
-    arms = C.pcs_bound(dup.procs[0][3])
-    assert len(tables) == copies
+    arms = sorted(tables[0])
+    assert len(tables) == copies and arms
     assert [sorted(t) for t in tables] == [arms] * copies
     assert len({i for t in tables for i in t.values()}) == copies * len(arms)
-    assert all(code.pcmap[pc] == min(t[pc] for t in tables) for pc in arms)
+    assert not set(arms) & set(code.pcmap)
 
 
 def test_a_static_vector_s_landing_is_bound_to_its_own_igoto():

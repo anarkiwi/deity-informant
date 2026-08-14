@@ -112,12 +112,13 @@ def test_the_signed_compare_the_emitter_spells_is_the_dialect_s(example):
 def test_the_dispatch_header_and_the_procedure_call_survive_the_splice(example):
     """#161's substrate facts, LANDED, on frameprog's own rung-built procedures.
 
-    The arm table's header names its dispatch kind, and a ``pcall`` -- which the raw
-    ``_Builder`` procedures ``emit_mem`` renders never carry -- is emitted, not dropped."""
-    model, _frames, prog = example
+    The arm table's header names its dispatch kind, and the example's one callee reaches
+    only copyable blocks, so its body is duplicated at each of its three static sites."""
+    _model, _frames, prog = example
     text = frameprog.dumps(prog)
     assert "switch goto {" in text and "switch {" not in text
-    assert "= sub_1485(" in text, "the promoted call left the text"
+    assert len(prog.procs) == 1 and "= sub_" not in text, "a callee stayed a procedure"
+    assert text.count(" = m_14BD[") == 3, "the callee body is not at every site"
 
 
 def test_the_unified_walk_refuses_a_statement_it_cannot_lift(example):
