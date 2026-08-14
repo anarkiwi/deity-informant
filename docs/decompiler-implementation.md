@@ -222,9 +222,16 @@ total, **invertible** structural analysis:
   law: every reachable block appears at least once, as exactly one labelled
   primary or as verified duplicate copies alone. Duplication is bounded to
   tiny reconvergence tails (single variant, ≤ 3 stores, rts or static-jump
-  terminator, no loop membership) replacing gotos; the copy count is the
-  `dup_blocks` metric. (Prototype: faithfulness was only a pytest walk over
-  an advisory view; the view concept is abolished.)
+  terminator, no loop membership) replacing gotos, plus controlled node
+  splitting (Janssen & Corporaal, TOPLAS 19(6) 1997) at RC-set nodes — the
+  retreating-edge heads that do not dominate their source, i.e. the entries
+  that make a region irreducible. A split copies the region reachable from
+  that entry, cut at the arm's join, and is kept only where it empties a
+  label; the bounds are `render._SPLIT_BLOCKS` blocks per split,
+  `_SPLIT_TOTAL` × the procedure's block count in total and `_SPLIT_DEPTH`
+  nested splits, so an irreducible region cannot blow up exponentially. The
+  copy count is the `dup_blocks` metric. (Prototype: faithfulness was only a
+  pytest walk over an advisory view; the view concept is abolished.)
 - **Dispatch recovery** (done in prototype, keep + extend): opcode-SMC →
   `switch code[$XXXX]`; computed jump/call → dispatch over the proven target
   set; same-subject comparison chains → `switch subject { case c: … }` with the

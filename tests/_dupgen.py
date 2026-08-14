@@ -219,10 +219,11 @@ def _early_ret():
 
 
 def _irreducible():
-    """A callee entered at two points of one loop, so the structurer emits the join.
+    """A callee entered at two points of one loop: the join node splitting folds.
 
-    Neither entry dominates the other, ``label $PC`` stays in the callee's own region
-    and a ``goto`` in it reaches -- the binding a copy collides on."""
+    Neither entry dominates the other, so the structurer used to leave ``label $PC``
+    and a ``goto`` reaching it; ``render``'s RC-set split copies the second entry's
+    region into its own path and the loop nests."""
     p = Asm(ORG)
     _head(p)
     _open_sites(p, 2, "isub")
@@ -246,7 +247,7 @@ DRIVERS = {
     "irreducible": _irreducible,
 }
 
-REFUSED = ("irreducible",)  # drivers whose callee binds a pc no dispatch statement scopes
+REFUSED = ()  # no driver's callee binds a pc: node splitting folds the one join that did
 
 
 @lru_cache(maxsize=None)

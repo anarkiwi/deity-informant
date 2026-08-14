@@ -15,9 +15,10 @@ SAFE = tuple(n for n in D.DRIVERS if n not in D.REFUSED)
 
 M_GOTO_JOIN = (
     "a `goto $PC` reaching a `label $PC` in the same region is the one binding no "
-    "dispatch statement scopes: an irreducible callee keeps the join the structurer "
-    "cannot fold, two copies bind the pc twice and `_Code._link` resolves every "
-    "reference to the first -- folding the join away is the fix, not naming it"
+    "dispatch statement scopes: two copies bind the pc twice and `_Code._link` "
+    "resolves every reference to the first, so the fix is to fold the join away -- "
+    "controlled node splitting copies the RC-set entry into its own predecessor's "
+    "path, and the multi-entry loop that forced the label nests as a loop"
 )
 
 
@@ -103,10 +104,16 @@ def test_duplication_removes_violation_classes_and_adds_none(name):
     assert D.kinds(name) <= D.kinds(name, "base") - {"pcall", "procedures"}
 
 
-def test_the_refusal_class_is_the_goto_join_alone():
-    """Named, counted and visible: one driver, one mechanism, one bound pc."""
-    assert D.pcs_global(D.built("irreducible")[1].procs[1][3]) == [0x103D]
-    assert D.gate("irreducible") == "fault: runaway frame program"
+def test_the_goto_join_is_split_away_and_the_loop_nests():
+    """The class that was the refusal, emptied at its source rather than named.
+
+    The two-entry loop the structurer could not fold is copied into the second
+    entry's own path, so the callee binds no pc and the copy needs no label."""
+    base = D.built("irreducible")[1]
+    assert [D.pcs_global(p[3]) for p in base.procs] == [[], []]
+    assert "goto $" not in D.text("irreducible", "base")
+    assert D.text("irreducible", "base").count("loop {") == 1
+    assert D.gate("irreducible") is None and not D.violations("irreducible")
     assert "goto" in M_GOTO_JOIN and "label" in M_GOTO_JOIN
 
 

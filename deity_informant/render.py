@@ -60,6 +60,10 @@ _REGS = {0: "A", 1: "X", 2: "Y", 3: "SP", 8: "C", 9: "Z", 10: "I", 11: "D", 13: 
 
 _IO = {0xD012: "raster()", 0xD011: "raster_hi()", 0xD41B: "osc3()", 0xD41C: "env3()"}
 
+_SPLIT_BLOCKS = 16  # blocks one node split may copy
+_SPLIT_TOTAL = 1  # blocks a procedure may duplicate, as a multiple of its own count
+_SPLIT_DEPTH = 3  # splits nested in a split, so one copy may be structured in turn
+
 
 def _mem_text(addr):
     """A memory reference: named cell, IO source, or ``base[index]`` array."""
@@ -216,9 +220,37 @@ def _dispatch_gates(model):
     return count, static
 
 
+class _Splits:
+    """The pcs a structuring pass may split at, and the ones it did."""
+
+    __slots__ = ("allow", "chosen")
+
+    def __init__(self, allow):
+        self.allow = allow
+        self.chosen = set()
+
+
 def _structure(model, entry):
+    """Region tree + labels, split only where splitting empties a label.
+
+    Pass one splits nothing and names the bound pcs; each pass after it splits
+    at that set less the pcs a split did not free, which decreases, so the
+    duplication kept is the duplication that paid (Janssen & Corporaal 1997)."""
+    plain = _structure_once(model, entry, frozenset())
+    allow = frozenset(plain[1])
+    while allow:
+        root, labels, gate = _structure_once(model, entry, allow)
+        waste = gate.chosen & labels & allow
+        if not waste:
+            return root, labels
+        allow -= waste
+    return plain[0], plain[1]
+
+
+def _structure_once(model, entry, allow):
     emitted = set()
     labels = set()
+    gate = _Splits(allow)
     sites, static_subs = _dispatch_gates(model)
     inline = procpass.plan(model).inline
     play = getattr(model, "play", None)
@@ -235,7 +267,7 @@ def _structure(model, entry):
         cfg = _proc_cfg(model, target)
         if set(cfg[0]) & callers:
             return None
-        top = _proc(model, target, cfg, (emitted, labels, handler, callee), callers)
+        top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
         return Region("seq", top) if top else None
 
     def callee(target, site, callers):
@@ -249,19 +281,19 @@ def _structure(model, entry):
         cfg = _proc_cfg(model, target)
         if set(cfg[0]) & callers:
             return None
-        top = _proc(model, target, cfg, (emitted, labels, handler, callee), callers)
+        top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
         return Region("seq", top) if top else None
 
-    shared = (emitted, labels, handler, callee)
+    shared = (emitted, labels, handler, callee, gate)
     top = _proc(model, entry, _proc_cfg(model, entry), shared, frozenset())
-    return Region("seq", top), labels
+    return Region("seq", top), labels, gate
 
 
-def _proc(model, entry, cfg, shared, outer):
+def _proc(model, entry, cfg, shared, outer, depth=_SPLIT_DEPTH, stop=None, quota=None):
     """Top regions for one procedure or inlined-handler CFG; ``shared`` carries
     the emitted/label bookkeeping across nested handler regions."""
     nodes, succ, pred = cfg
-    emitted, labels, handler, callee = shared
+    emitted, labels, handler, callee, gate = shared
     if not nodes:
         return []
     idom, rpo = _idoms(entry, succ, nodes)
@@ -278,6 +310,13 @@ def _proc(model, entry, cfg, shared, outer):
             if p is None or p == n:
                 return False
             n = p
+
+    rcset = {  # CNS's RC-set: retreating-edge heads that do not dominate their source
+        h
+        for s in nodes
+        for h in succ.get(s, ())
+        if h in nodeset and rpo.get(h, 0) <= rpo.get(s, 0) and not dominates(h, s)
+    }
 
     headers = {}
     for s in nodes:
@@ -338,9 +377,66 @@ def _proc(model, entry, cfg, shared, outer):
         return callee(target, site, nodeset | outer)
 
     loop_pcs = set().union(*headers.values()) if headers else set()
+    if quota is None:
+        quota = [_SPLIT_TOTAL * len(nodes)]
 
     def dup(pc):
         return None if pc in loop_pcs else _dup_tail(model, pc)
+
+    def split(pc, loops, stop=None):
+        """Controlled node splitting: an RC-set node copied into *this*
+        predecessor's path, so the multi-entry loop it heads becomes one the
+        structurer can nest (Janssen & Corporaal, TOPLAS 19(6) 1997). None
+        where the copy is not exact, still binds a pc, or outruns the quota."""
+        if depth <= 0 or pc not in rcset or pc == stop or quota[0] <= 0:
+            return None
+        if depth == _SPLIT_DEPTH and pc not in gate.allow:
+            return None
+        region = _reachable(pc, succ, nodeset, stop)
+        cost = len(region) - (stop in region)
+        if cost > _SPLIT_BLOCKS or cost > quota[0]:
+            return None
+        if any(h in region or x in region for h, x in loops):
+            return None
+        if not all(_copyable(model, n) for n in region if n != stop):
+            return None
+        sub_labels = set()
+        cut = (
+            [n for n in nodes if n in region],
+            {n: [] if n == stop else [s for s in succ.get(n, ()) if s in region] for n in region},
+            {n: [p for p in pred[n] if p in region] for n in region},
+        )
+        spent = quota[0]
+        quota[0] -= cost
+        top = _proc(
+            model,
+            pc,
+            cut,
+            (set(), sub_labels, _no_body, _no_body, gate),
+            outer | nodeset,
+            depth - 1,
+            stop,
+            quota,
+        )
+        if sub_labels or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
+            quota[0] = spent
+            return None
+        if depth == _SPLIT_DEPTH:
+            gate.chosen.add(pc)
+        return [_as_copy(r) for r in top[0].a]
+
+    def stray(pc, loops, seq):
+        """Place a copy of ``pc`` here, or label it and go to it (the fallback)."""
+        copy = dup(pc)
+        if copy is not None and copy[1] is not None:
+            seq.extend(copy)
+            return
+        copy = split(pc, loops)
+        if copy is not None:
+            seq.extend(copy)
+            return
+        labels.add(pc)
+        seq.append(Region("goto", pc))
 
     def build(pc, stop, loops):
         seq = []
@@ -352,12 +448,7 @@ def _proc(model, entry, cfg, shared, outer):
                 seq.append(Region("brk"))
                 return Region("seq", seq)
             if pc in emitted:
-                copy = dup(pc)
-                if copy is not None and copy[1] is not None:
-                    seq.extend(copy)
-                    return Region("seq", seq)
-                labels.add(pc)
-                seq.append(Region("goto", pc))
+                stray(pc, loops, seq)
                 return Region("seq", seq)
             if pc in headers and (not loops or loops[-1][0] != pc):
                 ex = loop_exit(pc)
@@ -371,7 +462,7 @@ def _proc(model, entry, cfg, shared, outer):
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr)
+                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr, split)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
@@ -383,7 +474,7 @@ def _proc(model, entry, cfg, shared, outer):
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr)
+            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr, split)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
@@ -393,15 +484,10 @@ def _proc(model, entry, cfg, shared, outer):
             if fr(pc):
                 seq.append(Region("frontier", pc))
                 return Region("seq", seq)
-            copy = dup(pc)
-            if copy is not None and copy[1] is not None:
-                seq.extend(copy)
-                return Region("seq", seq)
-            labels.add(pc)
-            seq.append(Region("goto", pc))
+            stray(pc, loops, seq)
         return Region("seq", seq)
 
-    top = [build(entry, None, [])]
+    top = [build(entry, stop, [])]
     # coverage: chain heads first; a serialization view defers foreign-claimable pcs
     deferrable = hasattr(model, "hidden")
     gpred = _static_preds(model) if deferrable else None
@@ -436,6 +522,57 @@ def _static_preds(model):
     return gp
 
 
+def _reachable(pc, succ, nodeset, stop=None):
+    """Nodes reachable from ``pc`` inside ``nodeset``, cut at ``stop``.
+
+    Closed under ``succ`` bar ``stop``, so a copy of it leaves only where the
+    machine leaves the procedure or where the caller places the continuation."""
+    seen, stack = set(), [pc]
+    while stack:
+        n = stack.pop()
+        if n in seen or n not in nodeset:
+            continue
+        seen.add(n)
+        if n != stop:
+            stack.extend(succ.get(n, ()))
+    return seen
+
+
+def _copyable(model, pc):
+    """A block a split may duplicate: one variant, no dispatch table and no call.
+
+    A dispatch pc and a call line are each named by the statement that carries
+    them (``opsw``, ``call``), so a second copy would name them twice."""
+    variants = getattr(model, "all_variants", model.variants)(pc)
+    if len(variants) != 1 or pc in getattr(model, "dispatch_pcs", ()):
+        return False
+    return model.blocks[variants[0]].term[0] != "jsr"
+
+
+def _no_body(*_args):
+    """Handler/callee inlining, refused: a copy owns no body a primary placed."""
+    return None
+
+
+def _as_copy(region):
+    """``region`` with every block leaf marked a duplicate (labelled nowhere)."""
+    k = region.kind
+    if k == "block":
+        return Region("block", region.a, None, region.b if region.b is not None else region.c)
+    if k == "seq":
+        return Region("seq", [_as_copy(r) for r in region.a])
+    if k == "loop":
+        return Region("loop", _as_copy(region.a))
+    if k == "if":
+        return Region("if", region.a, _as_copy(region.b), _as_copy(region.c))
+    if k == "call":
+        return Region("call", region.a, None if region.b is None else _as_copy(region.b))
+    if k == "switch":
+        sel, cases = region.a
+        return Region("switch", (sel, [(l, _as_copy(b)) for l, b in cases]), region.b)
+    return region
+
+
 def _dup_tail(model, pc):
     """Duplicable tiny tail block (single variant, <= 3 stores, rts or static
     jump terminator): ``[copy, flow]`` regions with flow None for a jump whose
@@ -455,7 +592,7 @@ def _dup_tail(model, pc):
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc, fr = ctx
+    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc, fr, _split = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
@@ -618,8 +755,9 @@ def _has_stmts(region):
 
 def _side(ctx, target, join, loops, parent):
     """A conditional arm: continue/break for loop edges, an inlined region when
-    owned or last-claimable, a duplicated tiny tail, else a labelled goto."""
-    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc, fr = ctx
+    owned or last-claimable, a duplicated tiny tail, a node split, else a
+    labelled goto."""
+    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc, fr, split = ctx
     if target == join:
         return Region("seq", [])
     if loops and target == loops[-1][0]:
@@ -641,6 +779,9 @@ def _side(ctx, target, join, loops, parent):
             return Region("seq", copy[:1] + [Region("brk")])
     if fr(target):
         return Region("seq", [Region("frontier", target)])
+    copy = split(target, loops, join)
+    if copy is not None:
+        return Region("seq", copy)
     labels.add(target)
     return Region("seq", [Region("goto", target)])
 
