@@ -300,6 +300,29 @@ def _two_level():
     return p
 
 
+def _merge_past_loop():
+    """``_ladder``'s join with a whole loop standing between the branch and it.
+
+    The scope the merge needs runs from the block that dominates it, and that block
+    is before the cycle, so the scope would contain the loop rather than the
+    branching that reaches the merge -- ``render._proc``'s ``straddles``."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 1, "psub")
+    p.label("psub").i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", "l2"))
+    p.i("LDY", "imm", 0)
+    p.label("plp").i("TYA").i("CLC").i("ADC", "zp", ROW).i("AND", "imm", 7).i("TAX")
+    p.i("LDA", "absx", ("L", "tone")).i("STA", "abs", SID)
+    p.i("INY").i("CPY", "imm", 4).i("BNE", "rel", ("L", "plp"))
+    p.i("LDA", "zp", ROW).i("AND", "imm", 2).i("BEQ", "rel", ("L", "m"))
+    p.i("JMP", "abs", ("L", "j"))
+    p.label("l2").i("LDA", "zp", CNT).i("EOR", "imm", 0x0F).i("STA", "abs", SID + 1)
+    _fat_tail(p, "m", SID + 2)
+    p.label("j").i("RTS")
+    I.tab_data(p)
+    return p
+
+
 def _loop_merge():
     """``_ladder``'s join inside a cycle: the shape the scope mechanism refuses."""
     p = Asm(ORG)
@@ -335,6 +358,7 @@ SHAPES = {  # the reducible label class: what a scope and a levelled exit close
     "arm-merge": _arm_merge,
     "two-level": _two_level,
     "loop-merge": _loop_merge,
+    "merge-past-loop": _merge_past_loop,
 }
 
 M_LOOP_MERGE = (
@@ -343,7 +367,14 @@ M_LOOP_MERGE = (
     "the mechanism structures acyclic branching only and a merge inside a loop "
     "keeps its `label $PC`"
 )
-PINNED = {"loop-merge": M_LOOP_MERGE}
+M_MERGE_STRADDLE = (
+    "the merge's dominator stands before a whole loop, so the scope that would "
+    "place it (render._proc's `straddles`) would contain that cycle rather than the "
+    "branching that reaches the merge; the nesting stays the CFG's and the merge "
+    "keeps its `label $PC` -- Alice/Abstrack $165B and $169B, the other half of the "
+    "one rule that a scope may not cut a cycle"
+)
+PINNED = {"loop-merge": M_LOOP_MERGE, "merge-past-loop": M_MERGE_STRADDLE}
 
 
 @lru_cache(maxsize=None)

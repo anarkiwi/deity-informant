@@ -80,8 +80,21 @@ def _loops(entry, cfg):
     return idom, rpo, headers, rc, pred
 
 
+def _homed(view, pc):
+    """``(entry, cfg)`` of the planned procedure whose CFG carries ``pc``."""
+    from deity_informant import codec, render
+
+    for entry in codec.procedures(view):
+        cfg = render._proc_cfg(view, entry)  # pylint: disable=protected-access
+        if pc in set(cfg[0]):
+            return entry, cfg
+    return None, None
+
+
 def _label_class(pc, entry, cfg):
     """Why the scoped-merge framework left ``pc`` a label rather than a scope."""
+    if entry is None:
+        return "unhomed"
     idom, rpo, headers, rc, pred = _loops(entry, cfg)
     anchor = idom.get(pc)
     if anchor is None or anchor == pc:
@@ -102,7 +115,7 @@ def _label_class(pc, entry, cfg):
 
 def _call_class(model, view, target, bodies):
     """The class keeping one call line: the copy refusal, named."""
-    from deity_informant import procpass, render
+    from deity_informant import procpass
 
     if target is None:
         return "computed-call"
@@ -114,8 +127,7 @@ def _call_class(model, view, target, bodies):
     pcs = _bound_pcs(stmts)
     if not pcs:
         return "copyable-but-uncopied"
-    cfg = render._proc_cfg(view, target)  # pylint: disable=protected-access
-    return "label:" + ",".join(sorted({_label_class(p, target, cfg) for p in pcs}))
+    return "label:" + ",".join(sorted({_label_class(p, *_homed(view, p)) for p in pcs}))
 
 
 def _sp_classes(prog):

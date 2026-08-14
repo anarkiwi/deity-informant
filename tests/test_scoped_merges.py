@@ -67,3 +67,15 @@ def test_the_state_machine_arm_merge_breaks_out_of_the_switch():
 def test_a_merge_inside_a_loop_is_scoped_too():
     """Pinned: the ladder's own join, one cycle in, still binds its pc."""
     assert [D.pcs_global(p[3]) for p in D.built("loop-merge")[1].procs] == [[]]
+
+
+@pytest.mark.xfail(strict=True, reason=D.M_MERGE_STRADDLE)
+def test_a_merge_a_loop_stands_before_is_scoped_too():
+    """Pinned: the same join with the cycle between its dominator and it."""
+    assert [D.pcs_global(p[3]) for p in D.built("merge-past-loop")[1].procs] == [[]]
+
+
+def test_the_two_pinned_shapes_are_the_two_halves_of_one_rule():
+    """A scope may not cut a cycle: neither inside one, nor around one."""
+    assert set(D.PINNED) == {"loop-merge", "merge-past-loop"}
+    assert all("cycle" in m for m in D.PINNED.values())
