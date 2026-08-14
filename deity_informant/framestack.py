@@ -893,9 +893,7 @@ def _page_one_free(procs, sp, regions):
     for _e, _pa, _r, stmts in procs:
         for env, k, s in frameproc.envs(stmts):
             at = frameproc.DefsAt(env, k)
-            if s[0] == "opsw" and s[1] in _PAGE:
-                return False  # the dispatch reads its operand cell, which _accesses misses
-            for addr, width in _accesses(s):
+            for addr, width in _accesses(s) + list(frameproc.machine_reads(s)):
                 if sp in frameproc._locset(addr):
                     continue
                 if not _off_page(addr, width, at, regions):

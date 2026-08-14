@@ -439,6 +439,46 @@ def accesses(s):
 _STK_PAGE = ("const", 0x0100, 2)
 
 
+def sp_addr(k=0, sp=None):
+    """``(zext2(sp [+ $k]) | $0100)``: the page-one address the machine reaches at.
+
+    ``sp_disp``'s inverse and the one spelling of it -- the lift writes exactly this
+    for ``PHA``/``PLA``, so an address stated here is bounded the way that one is."""
+    sp = _SP if sp is None else sp
+    inner = ("loc", sp) if not k else ("op", "INT_ADD", (("loc", sp), ("const", k, 1)), 1)
+    return ("op", "INT_OR", (("op", "INT_ZEXT", (inner,), 2), _STK_PAGE), 2)
+
+
+def machine_reads(s, sp=_SP):
+    """``(address, width)`` a statement reads that none of its expressions names.
+
+    A ``ret``/``brk`` reads page one through ``sp``, a static ``igoto`` the vector word,
+    an ``opsw`` its operand cell; omitting one calls a transfer's own definition unread.
+    ``sp`` None is rung (d0')'s drop: a ret then reads the machine's push, no store."""
+    k = s[0]
+    if k in ("ret", "brk"):
+        return () if sp is None else ((sp_addr(1, sp), 2),)
+    if k == "igoto":
+        return () if s[2] is not None else ((("const", s[1], 2), 2),)
+    return ((("const", s[1], 2), 1),) if k == "opsw" else ()
+
+
+def sp_kept(procs):
+    """Whether the program still carries ``sp``: rung (d0') would not drop it.
+
+    A parameter, a return, an update or a read -- the four places ``_strip_sp``
+    empties -- so this is the drop's verdict read back off the program."""
+    for _e, params, rets, stmts in procs:
+        if _SP in set(params) | set(rets):
+            return True
+        for _env, _i, s in envs(stmts):
+            if s[0] == "asg" and s[1] == _SP:
+                return True
+            if any(_SP in _locset(x) for x in _stmt_exprs(s)):
+                return True
+    return False
+
+
 def sp_disp(addr, sp=None):
     """``k`` of a ``(zext2(sp [+ $k]) | $0100)`` address, else None.
 
@@ -1473,10 +1513,7 @@ class _Builder:
         if nxt is not None and nxt.kind == "call":
             if k != "jsr" or term[3] is not None:
                 raise ValueError("call body without a static call terminator")
-            self.arm += 1
-            body = self.capture(sidprog._items(nxt.b))
-            self.arm -= 1
-            out.append(("callb", term[1], term[2], body))
+            self.splice(self.capture(sidprog._items(nxt.b)), (term[2] + 1) & 0xFFFF, out)
             return 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
             self._termlines(term, out)
@@ -1503,6 +1540,18 @@ class _Builder:
         self._termlines(term, out)
         return 2 if nxt is not None and nxt.kind == "exit" else 1
 
+    def splice(self, body, cont, out):
+        """A callee's body at its call site, its returns landing at ``cont``.
+
+        ``cont`` is the call's own continuation pc, so an early return is a goto to
+        a pc the machine names; the label is the continuation's where it carries one
+        and one bound here where it does not."""
+        while body and body[-1][0] == "ret":
+            body.pop()
+        out.extend(body)
+        if _ret_to_goto(body, cont) and cont not in self.labels:
+            out.append(("label", cont))
+
     def _termlines(self, term, out):
         k = term[0]
         if k in ("goto", "jmp"):
@@ -1520,6 +1569,18 @@ class _Builder:
                 out.append(("call", term[1], term[2]))
         else:
             out.append(("ret", self.arm > 0))
+
+
+def _ret_to_goto(stmts, cont):
+    """Every ``ret`` left in a spliced body becomes a goto; whether any was."""
+    got = False
+    for i, s in enumerate(stmts):
+        if s[0] == "ret":
+            stmts[i] = ("goto", cont)
+            got = True
+        for b in _stmt_bodies(s):
+            got |= _ret_to_goto(b, cont)
+    return got
 
 
 def _signed(k):

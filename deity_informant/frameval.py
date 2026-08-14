@@ -23,9 +23,41 @@ from .render import name_addr
 _GUARD = 8_000_000
 _REG_INIT = {frameproc._reg_local(i): (0xFF if i == 3 else 0) for i in range(16)}
 
+# ---- the protected regions: machine locations no frame program names -------------
+_STACK = range(0x0100, 0x0200)
+_CODE_REGION = "executable memory"  # de-SMC (docs/frameprog.md 2.1)
+_STACK_REGION = "the stack page"  # the machine stack (docs/denotation-solve.md 8.4)
+
 
 class FrameFault(RuntimeError):
     """The frame program left its guarded envelope (fault, never improvise)."""
+
+
+def _protected(prog):
+    """Cell -> the region it belongs to: the two memories a statement may not name.
+
+    Executable memory is the program's own (``desmc.executable``), the stack page every
+    program's, since it is the machine's and not the artifact's. A code byte in page one
+    is code first, so the de-SMC diagnostic is unchanged where the two overlap."""
+    out = dict.fromkeys(_STACK, _STACK_REGION)
+    out.update(dict.fromkeys(desmc.executable(prog), _CODE_REGION))
+    return out
+
+
+def _off_stack(f, sz):
+    """``f`` refusing an address any byte of which lands in the stack page.
+
+    Loads are covered as well as stores: the artifact spells no ``sp``, so a page-one
+    read is frame state left on the machine stack, and nothing relocates it the way
+    de-SMC relocates a code byte. The address is concrete here and static nowhere."""
+
+    def one(r, m, rd):
+        a = f(r, m, rd)
+        if 0x0100 - sz < a <= 0x01FF:
+            raise FrameFault("load from %s $%04X" % (_STACK_REGION, max(a, 0x0100)))
+        return a
+
+    return one
 
 
 # ---- the extent guard: an annotated web derefs inside its own blocks ------------
@@ -166,15 +198,20 @@ _width = frameproc.loc_width  # loc leaves carry their own width; every other no
 
 def _load(n, slot, probe=None):
     addr, sz = n[1], n[2]
-    if addr[0] == "const" and sidprog._ld_safe(addr):
+    if addr[0] == "const":
         cells = [(addr[1] + j) & 0xFFFF for j in range(sz)]
-        if sz == 1:
-            a = cells[0]
-            return lambda r, m, rd: m[a]
-        return lambda r, m, rd: sum(m[c] << (8 * j) for j, c in enumerate(cells))
+        bad = [c for c in cells if c in _STACK]
+        if bad:  # a named page-one cell is refused at build, as a named code byte is
+            raise FrameFault("load from %s $%04X" % (_STACK_REGION, bad[0]))
+        if sidprog._ld_safe(addr):
+            if sz == 1:
+                a = cells[0]
+                return lambda r, m, rd: m[a]
+            return lambda r, m, rd: sum(m[c] << (8 * j) for j, c in enumerate(cells))
     fa = _expr(addr, slot, probe)
     if probe is not None:
         fa = probe(addr, fa, sz)
+    fa = _off_stack(fa, sz)
     if sz == 1:
         return lambda r, m, rd: rd(fa(r, m, rd))
     return lambda r, m, rd: sum(rd((fa(r, m, rd) + j) & 0xFFFF) << (8 * j) for j in range(sz))
@@ -260,7 +297,7 @@ class _Code:
 
     def __init__(self, prog, watch=(), pin=None, probe=None):
         self.mem0 = prog.mem0
-        self.code = desmc.executable(prog)  # the memory no store of a de-SMC program reaches
+        self.protect = _protected(prog)  # the memory no store of the program reaches
         self.probe = _seat(probe, _guard(prog))  # both seats carry the same wrapper
         self.pin = dict(getattr(prog, "pinned", ()) if pin is None else pin)
         self.watch = {id(s): i for i, s in enumerate(watch)}
@@ -328,26 +365,25 @@ class _Code:
         return f if self.probe is None else self.probe(n, f, sz)
 
     def store_addr(self, n, sz):
-        """A store address that provably leaves executable memory (docs/frameprog.md 2).
+        """A store address that provably leaves the protected regions (``_protected``).
 
         A const one is refused here -- a program that stores into its own instruction
-        stream is not de-SMC'd and must not be emitted; a computed one faults at the
-        cell, so the invariant is machine-checked and never a claim."""
-        cells = self.code
+        stream or onto the machine stack must not be emitted; a computed one faults at
+        the cell, so each invariant is machine-checked and never a claim."""
+        cells = self.protect
         if n[0] == "const":
             bad = [c for c in ((n[1] + j) & 0xFFFF for j in range(sz)) if c in cells]
             if bad:
-                raise FrameFault("store into executable memory $%04X" % bad[0])
+                raise FrameFault("store into %s $%04X" % (cells[bad[0]], bad[0]))
             return self.addr(n, sz)
         f = self.addr(n, sz)
-        if not cells:
-            return f
 
         def checked(r, m, rd):
             a = f(r, m, rd)
             for j in range(sz):
-                if (a + j) & 0xFFFF in cells:
-                    raise FrameFault("store into executable memory $%04X" % ((a + j) & 0xFFFF))
+                who = cells.get((a + j) & 0xFFFF)
+                if who is not None:
+                    raise FrameFault("store into %s $%04X" % (who, (a + j) & 0xFFFF))
             return a
 
         return checked
@@ -654,9 +690,9 @@ class Evaluator:
     def run_frame(self):
         """One play invocation; the frame's buffered ``(reg, val)`` SID writes.
 
-        ``sp`` and the pushed return bytes are machine-faithful: call/ret move
-        the shared stack register the program itself reads back (TSX/TXS), and a
-        ``ret`` continues at the slot the callee left, not at its call's successor."""
+        ``sp`` and the pushed return bytes are machine-faithful: call/ret move the
+        shared stack register, and a ``ret`` continues at the slot the callee left.
+        The push is the machine's own, so the stack-page protection never sees it."""
         ops, r, m, rd, s = self.code.ops, self.r, self.m, self._rd, self.sp
         rmap, prov, ploc = self.code.rmap, self.prov, self.ploc
 
@@ -666,9 +702,6 @@ class Evaluator:
             q = (p - 1) & 0xFF
             m[0x100 + q] = ret & 0xFF
             r[s] = (q - 1) & 0xFF
-            if prov is not None:
-                prov.pop(0x100 + p, None)
-                prov.pop(0x100 + q, None)
 
         self.k.clear()
         if self.acc is not None:

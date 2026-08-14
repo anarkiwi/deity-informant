@@ -54,14 +54,7 @@ def is_arch(tok):
 
 def cached_text(entry):
     """The artifact ``_sweep`` stored for this tune at full Songlengths, or None."""
-    from deity_informant.c64 import load_psid  # pylint: disable=import-outside-toplevel
-
-    sid, sub, secs = entry
-    mem, _load, init, play = load_psid(Path(sid).read_bytes())
-    mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
-    key = _sweep._key(mem, init, play, int(secs * 50), sub, {})  # pylint: disable=W0212
-    got = _sweep._read(_sweep.ARTIFACTS / ("%s.fp.gz" % key))  # pylint: disable=W0212
-    return None if got is None else got[1]
+    return _sweep.artifact_text(entry)
 
 
 def split_artifact(text):

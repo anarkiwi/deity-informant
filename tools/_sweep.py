@@ -178,15 +178,31 @@ def decompile(mem, init, play, frames, subtune=0, **kw):
 def build(mem, init, play, frames, subtune=0, extents=None, **kw):
     """``(model, frame program, evidence)``: the cached decompile plus rung (g).
 
-    The stored artifact is always the extent-free program, which is the canonical
-    form and the one a rebuild reads; only an ``--extents`` run emits twice."""
+    The program handed back is the artifact read back, not ``frameprog.program``'s
+    pre-render object, so no gate can judge what the emission does not ship. The
+    stored artifact stays the extent-free text; only ``--extents`` emits twice."""
     from deity_informant import frameprog
 
     model, ev, path = _serve(mem, init, play, frames, subtune, kw)
-    prog = frameprog.program(model, extents)
+    text = frameprog.dumps(frameprog.program(model, extents))
     if path is not None:
-        _store(path, ev, frameprog.dumps(prog if extents is None else frameprog.program(model)))
-    return model, prog, ev
+        _store(path, ev, text if extents is None else frameprog.dumps(frameprog.program(model)))
+    return model, frameprog.loads(text), ev
+
+
+def artifact_text(entry):
+    """The frameprog text cached for one ``entries()`` row, or None where none is.
+
+    Every sweep builds at the full Songlengths length from the same image, so that
+    image and this key are what name a tune's artifact: a text census reads it here
+    rather than re-deriving the key beside the one the writer used."""
+    from deity_informant.c64 import load_psid
+
+    sid, subtune, secs = entry
+    mem, _load, init, play = load_psid(Path(sid).read_bytes())
+    mem[0xD418] = 0x0F  # the filter volume the corpus is swept at
+    got = _read(ARTIFACTS / ("%s.fp.gz" % _key(mem, init, play, int(secs * 50), subtune, {})))
+    return None if got is None else got[1]
 
 
 def _read(path):

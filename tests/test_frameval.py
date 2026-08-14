@@ -74,14 +74,18 @@ def test_gate_fp_fuzz_players(p):
 
 
 @pytest.mark.parametrize("kernal", [True, False], ids=["cinv", "hw"])
-def test_gate_fp_handler_driven_entry(kernal):
-    """Gate FP holds for a ``play == 0`` tune: the frame program reproduces the
-    walker across the dispatch stub, the vector goto and the handler's RTI."""
+def test_handler_driven_entry_names_the_stack_page(kernal):
+    """A ``play == 0`` tune's emitted procedure IS the dispatch stub, which pushes.
+
+    The stub stores the return word and P on the machine stack and the handler's RTI
+    reads them back, so the artifact names page one and the protection faults; the
+    removal owed here is the stub, not a weaker check (docs/denotation-solve.md 8.4)."""
     mem, init = G.irq_image(0x0314 if kernal else 0xFFFE, kernal)
     model, _ev = S.decompile(mem, init, 0, 8, img=G.IRQ_IMAGE)
     prog = frameprog.loads(frameprog.emit(model))
-    assert frameval.gate_fp(model, 8) is None
-    assert frameval.gate_fp(model, 8, prog) is None
+    for p in (None, prog):
+        with pytest.raises(FrameFault, match="the stack page"):
+            frameval.gate_fp(model, 8, p)
 
 
 def test_gate_fp_runs_on_the_parsed_artifact():
@@ -233,8 +237,12 @@ def test_a_staging_index_reread_at_the_reading_site_names_the_wrong_cell():
     assert mem0[0x0803] != mem0[0x0807]  # the re-read index would name a different byte
 
 
-def test_eval_src_forgets_a_cell_the_return_address_overwrote():
-    """A pushed return byte is not the table byte that stood in the cell before it."""
+def test_the_cell_a_return_address_would_overwrite_is_refused_before_it_is_staged():
+    """No statement stages a byte where the machine's own push lands (8.4).
+
+    The provenance question the protection answers away: a pushed return byte is not
+    the table byte that stood in the cell before it, and the stack page is the only
+    memory the evaluator writes behind the program's back."""
     mem0 = bytearray(0x10000)
     mem0[0x0803] = 0x5A
     idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
@@ -242,16 +250,13 @@ def test_eval_src_forgets_a_cell_the_return_address_overwrote():
     stmts = [
         ("asg", "i", ("const", 3, 1)),
         _staged(0x01FC, load),
-        _staged(0x00C0, load),
         ("call", 0x1100, 0x1005),
         ("st", ("const", 0xD405, 2), _cell(0x01FC)),
-        ("st", ("const", 0xD406, 2), _cell(0x00C0)),
         ("ret", False),
     ]
     prog = _progs([(0x1000, [], [], stmts), (0x1100, [], [], [("ret", False)])], mem0=mem0)
-    frames, srcs = frameval.eval_src(prog, {}, 1)
-    assert frames[0] == [(5, 0x05), (6, 0x5A)]
-    assert srcs == [[(0x01FC,), (0x0803, 0x00C0)]]
+    with pytest.raises(FrameFault, match=r"store into the stack page \$01FC"):
+        frameval.eval_src(prog, {}, 1)
 
 
 def _row(k=0):
@@ -476,6 +481,54 @@ def test_unlinkable_targets_fault_at_compile_time():
         frameval.eval_fp(_prog([("ret", False)], play=0x2000), {}, 1)
 
 
+def _through_x(base):
+    """``mem[base + zext(x)]``: an address no static bound rules page one out of."""
+    return ("op", "INT_ADD", (("const", base, 2), ("op", "INT_ZEXT", (("loc", "x"),), 2)), 2)
+
+
+def test_a_named_page_one_cell_is_refused_at_build_in_either_direction():
+    """The stack page is the machine's, so a statement may neither write nor read it."""
+    with pytest.raises(FrameFault, match=r"store into the stack page \$01FC"):
+        frameval.eval_fp(_prog([("st", ("const", 0x01FC, 2), ("const", 1, 1))]), {}, 1)
+    with pytest.raises(FrameFault, match=r"load from the stack page \$0100"):
+        frameval.eval_fp(_prog([_wr(4, 0), ("st", ("const", 0xD405, 2), _cell(0x0100))]), {}, 1)
+    with pytest.raises(FrameFault, match=r"load from the stack page \$0100"):
+        frameval.eval_fp(
+            _prog([("st", ("const", 0xD405, 2), ("mem", ("const", 0x00FF, 2), 2))]), {}, 1
+        )
+
+
+def test_a_computed_page_one_access_faults_at_the_cell_it_reaches():
+    """Undecidable statically, exact here: the address is concrete at evaluation."""
+    st = [("asg", "x", ("const", 0x0C, 1)), ("st", _through_x(0x00F8), ("const", 7, 1))]
+    with pytest.raises(FrameFault, match=r"store into the stack page \$0104"):
+        frameval.eval_fp(_prog(st), {}, 1)
+    ld = [
+        ("asg", "x", ("const", 0x0C, 1)),
+        ("st", ("const", 0xD405, 2), ("mem", _through_x(0x00F8), 1)),
+    ]
+    with pytest.raises(FrameFault, match=r"load from the stack page \$0104"):
+        frameval.eval_fp(_prog(ld), {}, 1)
+    ok = ld[:1] + [("asg", "x", ("const", 0x02, 1))] + ld[1:] + [("ret", False)]
+    assert len(frameval.eval_fp(_prog(ok), {}, 1)) == 1  # the same statement, one page down
+
+
+def test_a_code_byte_in_page_one_is_code_first():
+    """The regions overlap on a page-one instruction, and de-SMC's diagnostic wins."""
+    mem0 = bytearray(0x10000)
+    mem0[0x01F0] = 0xEA
+    prog = frameprog.FrameProgram(
+        0x1000,
+        0x0F00,
+        procs=[(0x1000, [], [], [("st", ("const", 0x01F0, 2), ("const", 1, 1))])],
+        mem0=mem0,
+        evidence={"code": [0x01F0]},
+    )
+    assert frameval._protected(prog)[0x01F0] == "executable memory"
+    with pytest.raises(FrameFault, match=r"store into executable memory \$01F0"):
+        frameval.eval_fp(prog, {}, 1)
+
+
 def _goto_into_later_arm():
     """A procedure whose forward goto reaches a label consuming a live local.
 
@@ -566,7 +619,15 @@ def _lot_of_coke():
     ]
 
 
+M_SURVIVING_PUSH = (
+    "the play routine pushes and the sp removal could not prove the frame balanced, so "
+    "the emitted store through sp stays: it is a stack access, and the stack page is "
+    "protected exactly as executable memory is (docs/denotation-solve.md 8.4)"
+)
+
+
 @pytest.mark.oracle
+@pytest.mark.xfail(strict=True, reason=M_SURVIVING_PUSH)
 @pytest.mark.parametrize("sid,subtune", _lot_of_coke())
 def test_gate_fp_goto_liveness_regression(sid, subtune):
     """The tune whose voice-2 pulse width diverged by one accumulator step."""

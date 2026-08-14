@@ -79,6 +79,7 @@ ROLE_OF = {  # roles.py's vocabulary as lattice constructors: one classification
 }
 
 _ROUNDS = 24  # the fixpoint cap every other sweep in this package runs under
+_RELAX = 2  # the widenings a ⊥ still standing at a settled round is put through
 _BITS = ("INT_AND", "INT_OR", "INT_XOR", "INT_LEFT", "INT_RIGHT", "INT_SRIGHT")
 _SHIFTS = ("INT_LEFT", "INT_RIGHT", "INT_SRIGHT")  # only the first operand is the datum
 _COMPARES = (  # docs/idiom-catalog.md's ``compare-value``, given the constructor it owed
@@ -429,7 +430,16 @@ class Solve:
 
     A definition says what a value is built from and an index use says what it
     selects, so each unknown carries a fact set; the rounds re-evaluate it, since a
-    role fact at a deref needs the pointer's own block set to exist first."""
+    role fact at a deref needs the pointer's own block set to exist first.
+
+    ⊥ is *unvisited*, so a definition whose own inputs are still ⊥ is held back for
+    a later round rather than answered. An unknown the rounds settle at ⊥ is one no
+    fact bootstraps -- its definitions read itself, or an unknown nothing states --
+    and there the hold is what keeps it below ⊤, which is below every real answer
+    and so in neither of §5's buckets. ``_relax`` releases the hold in two steps and
+    only at a settled round, so nothing that would still have moved is widened:
+    first the quantity's own operand, whose value the step rules do not read, then
+    every ⊥ read, which is ⊤ carrying the unknown it came from."""
 
     def __init__(self, prog):
         self.prog = prog
@@ -446,6 +456,7 @@ class Solve:
         self._chan = set()
         self._sites = []
         self._width = {}
+        self._relax = 0
         self._seed()
         self._run()
 
@@ -618,13 +629,19 @@ class Solve:
         """Whether this access is the word read of a declared ``lo``/``hi`` pair."""
         return width == 2 and base in self.decls.pairs
 
-    def _index_key(self, entry, path, idx):
+    def _index_key(self, entry, path, idx, make=True):
+        """The unknown an index expression names; ``make`` off, only one that exists.
+
+        The census reads the solution and may not extend it: an unknown keyed after
+        the rounds have run carries no facts and no denotation, and reads as ⊥."""
         name = _index_local(idx)
         if name is not None:
             web = self.pws[entry].at_use(path, name)
             return None if web is None else self._key_web(entry, web)
         got = _index_cell(idx, self.decls)
-        return None if got is None else self._key(got, G.addr_name(got[1]))
+        if got is None or not (make or got in self.rec):
+            return None
+        return self._key(got, G.addr_name(got[1]))
 
     def _role(self, entry, path, idx, role):
         key = self._index_key(entry, path, idx)
@@ -643,11 +660,22 @@ class Solve:
                 vals[key] = got
             moved = vals != self.val or len(self.rec) != len(vals)
             self.val = vals
-            if not (grew or moved):
+            if grew or moved:
+                continue
+            stuck = [k for k, v in self.val.items() if v == BOT]
+            if not stuck:
                 return
-        for key, rec in self.rec.items():
-            if self.val[key] != TOP:
-                self.val[key], rec.den, rec.cause = TOP, TOP, T_ROUNDS
+            if self._relax == _RELAX:
+                self._widen(stuck, T_NOFACT)  # no fact of its own, at either widening
+                return
+            self._relax += 1
+        self._widen([k for k in self.rec if self.val[k] != TOP], T_ROUNDS)
+
+    def _widen(self, keys, cause):
+        """Whatever the round cap or the ⊥ ladder left below ⊤, put at ⊤ with a cause."""
+        for key in keys:
+            rec = self.rec[key]
+            self.val[key], rec.den, rec.cause = TOP, TOP, cause
 
     def _derive(self):
         """Role facts a resolved pointer makes statable: ``*ptr[i]`` bounds ``i``."""
@@ -692,7 +720,7 @@ class Solve:
                 defs = True
                 rec.rules.add("call-return")
                 rec.sel.add(f[1])
-                got = self.val.get(f[1], BOT)
+                got = self._value(f[1], rec)
                 pending |= got == BOT
                 value = join(value, self._refine(got, role, rec))
             else:
@@ -742,6 +770,20 @@ class Solve:
             return TOP
         return value
 
+    def _value(self, key, rec):
+        """One unknown's current value, a settled ⊥ read as the ⊤ it has become."""
+        got = self.val.get(key, BOT)
+        return self._top_cell(key, rec) if got == BOT and self._relax == _RELAX else got
+
+    def _own(self, rec):
+        """The value the quantity's own operand carries, a settled ⊥ read as ⊤.
+
+        The step rules read which operand is the quantity, never what it denotes, so
+        this widening costs nothing the step could have stated -- and it is what
+        lets a cell only its own step defines say ``count``/``acc`` rather than ⊥."""
+        got = self.val.get(rec.key, BOT)
+        return TOP if got == BOT and self._relax else got
+
     def _ev(self, entry, path, x, rec):
         k = x[0]
         if k == "const":
@@ -761,14 +803,14 @@ class Solve:
             return TOP
         key = self._key_web(entry, web)
         rec.sel.add(key)
-        return self.val.get(key, BOT)
+        return self._value(key, rec)
 
     def _ev_mem(self, entry, path, x, rec):
         """A load: the deref rule, then the declared-table rules of §3.3."""
         addr, width = x[1], x[2]
         got = self.res.get(addr)
         if got is not None:
-            den = self.val.get(("c", got[0]), BOT)
+            den = self._value(("c", got[0]), rec)
             if den[0] == "addr":
                 rec.rules.add("deref-row")
                 return ("byte", den[1])
@@ -821,7 +863,7 @@ class Solve:
     def _through(self, key, rec):
         """Read one persistent unknown; a ⊤ there is a ⊤ here, and says so."""
         rec.sel.add(key)
-        got = self.val.get(key, BOT)
+        got = self._value(key, rec)
         return self._top_cell(key, rec) if got == TOP else got
 
     def _declared(self, base, width, rec):
@@ -947,8 +989,7 @@ class Solve:
             if self._self_read(frameproc.strip_zext(c), entry, path, rec)
         ]
         parts = [
-            self.val.get(rec.key, BOT) if i in me else self._ev(entry, path, c, rec)
-            for i, c in enumerate(kids)
+            self._own(rec) if i in me else self._ev(entry, path, c, rec) for i, c in enumerate(kids)
         ]
         at = [i for i, p in enumerate(parts) if p[0] in ("addr", "row", "idx")]
         if len(at) == 1 and all(p[0] == "const" for i, p in enumerate(parts) if i != at[0]):
@@ -1060,7 +1101,7 @@ class Solve:
     def _index_den(self, entry, path, idx):
         if idx is None:
             return BOT
-        key = self._index_key(entry, path, idx)
+        key = self._index_key(entry, path, idx, make=False)
         if key is not None:
             return self.val.get(key, TOP)
         if frameproc.is_op(idx, "INT_ZEXT", 2):

@@ -507,6 +507,24 @@ def _mem_reads(stmts, ext=None):
     return frozenset(spans), wild
 
 
+def _machine_reads(stmts, ext=None, sp=None):
+    """(read spans, wild) of the operands the machine reads and no expression names.
+
+    ``frameproc.machine_reads`` over the forest, held apart from ``_mem_reads``
+    because extraction cannot retire one: a spelling the e-graph rewrote is still a
+    ``ret`` reading page one, so this set is asked of the rendering procedure too."""
+    spans, wild = set(), False
+    for env, i, s in E.frameproc.envs(stmts):
+        defs = E.frameproc.DefsAt(env, i)
+        for a, w in E.frameproc.machine_reads(s, sp):
+            got = _rd_span(a, defs, ext)
+            if got is None:
+                wild = True
+            else:
+                spans.add((got[0], got[1], w))
+    return frozenset(spans), wild
+
+
 def _mem_writes(stmts, enter=None, out_goto=False):
     """(write spans, wild) footprint of a statement list: what running it may store.
 
@@ -767,11 +785,22 @@ class Footprints:
     map cannot follow. ``joins(pc)`` reads the same map's in-edges at a label, and
     ``unread`` the same traversal's read spans: what no reader in the artifact names."""
 
-    __slots__ = ("own", "calls", "owner", "fp", "entered", "landings", "wall", "rd", "ext")
+    __slots__ = (
+        "own",
+        "calls",
+        "owner",
+        "fp",
+        "entered",
+        "landings",
+        "wall",
+        "rd",
+        "mach",
+        "ext",
+    )
 
-    def __init__(self, procs=(), open_flow=True, landings=(), extents=None):
+    def __init__(self, procs=(), open_flow=True, landings=(), extents=None, sp=None):
         procs = list(procs)
-        self.own, self.calls, self.owner, self.rd = {}, {}, {}, {}
+        self.own, self.calls, self.owner, self.rd, self.mach = {}, {}, {}, {}, {}
         self.ext = dict(extents or {})
         self.wall, self.landings = bool(open_flow), frozenset(landings)
         for entry, stmts in procs:
@@ -782,6 +811,7 @@ class Footprints:
             self.own[entry] = _mem_writes(stmts, _collect(tgts), out_goto=True)
             self.calls[entry] = frozenset(tgts)
             self.rd[entry] = _mem_reads(stmts, extents)
+            self.mach[entry] = _machine_reads(stmts, extents, sp)
         self.entered = frozenset().union(*self.calls.values()) if self.calls else frozenset()
         self.fp = self._close()
 
@@ -821,11 +851,14 @@ class Footprints:
         store answers to every read the program holds, wherever it sits. The rendering
         procedure is left out so its caller can offer the reads its *extraction* kept;
         every other procedure is read at its statements, which is the conservative
-        side of the same question."""
+        side of the same question. Its *machine* reads stay in: extraction retires a
+        spelling, not a ``ret``'s read of page one or an ``igoto``'s of its vector."""
         spans, wild = set(), self.wall
         for entry, (sp, wd) in self.rd.items():
-            if entry == skip:
-                continue
+            if entry != skip:
+                spans |= sp
+                wild = wild or wd
+        for sp, wd in self.mach.values():
             spans |= sp
             wild = wild or wd
         return _cover(spans), wild
@@ -2319,6 +2352,7 @@ def render_ctx(prog):
         info.open_flow,
         prog.landings or (),
         _extent_spans(prog.extents, prog.data_decls),
+        E.frameproc._SP if E.frameproc.sp_kept(prog.procs) else None,
     )
     return (
         info,

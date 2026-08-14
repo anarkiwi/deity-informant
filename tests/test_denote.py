@@ -443,6 +443,78 @@ def test_a_site_refused_for_reading_a_refused_cell_inherits_that_cells_class():
     assert got["vtop_cell"] and got["vunv_cell"] == got["vtop_cell"]
 
 
+# ---- ⊥ is unvisited: the ladder that leaves none of it standing -----------------------
+def _step(addr, by=1, other=()):
+    """A cell its own step defines, plus whatever else ``other`` defines it by."""
+    upd = ("st", C(addr, 2), ("op", "INT_ADD", (cell(addr), C(by)), 1))
+    return [upd] + list(other)
+
+
+def test_a_cell_only_its_own_step_defines_states_what_the_step_makes_it():
+    """The self-step ⊥ leak: the cycle is the only definition, so nothing bootstraps it.
+
+    ``_ev_add`` reads the quantity's own operand out of the solution and the step
+    rules read *which* operand it is, never what it denotes, so the widening that
+    breaks the cycle costs the step nothing it could have said."""
+    sol = D.solve(program([(0x1000, [], [], _step(0x3000, 0xFF))]))
+    assert sol.val[("c", 0x3000)] == D.COUNT, "the machine's own DEC, with no reset store"
+    assert "counter-step" in sol.rec[("c", 0x3000)].rules
+    sol = D.solve(program([(0x1000, [], [], _step(0x3000, 2))]))
+    assert sol.val[("c", 0x3000)] == D.ACC and sol.rounds > 1
+
+
+def test_a_definition_the_solve_cannot_place_widens_its_readers_instead_of_dropping_out():
+    """⊥ joined as the identity is a definition that never reached the join at all.
+
+    A cell stepped by its own value is ``acc``; a use of it as a table index says
+    ``idx``; the two do not cross, so the read is ⊤ -- and reporting ``idx`` there
+    would be reporting what the *other* facts said."""
+    decl = table(0x2000, bytes(32))
+    body = _step(0x3000, 2, [("asg", "a", cell(0x3000)), ("st", C(0x3100, 2), idx(0x2000, L("a")))])
+    sol = D.solve(program([(0x1000, [], [], body)], [decl]))
+    assert sol.val[("c", 0x3000)] == D.ACC
+    assert sol.denote_use(0x1000, (2,), "a") == D.TOP
+    (rec,) = [r for k, r in sol.rec.items() if r.spell.endswith(":a")]
+    assert rec.cause == D.T_MIXED
+
+
+def test_a_quantity_no_fact_bootstraps_is_top_carrying_the_unknown_it_read():
+    """The second widening: what the first cannot state is ⊤, and says whose ⊤ it is."""
+    thru = ("op", "INT_LEFT", (L("w0"), C(1)), 1)
+    body = [("asg", "w0", cell(0x3000)), ("st", C(0x3000, 2), thru)]
+    sol = D.solve(program([(0x1000, [], [], body)]))
+    assert sol.val[("c", 0x3000)] == D.TOP, "the self-reference is through a web, so no rule fires"
+    (rec,) = [r for k, r in sol.rec.items() if r.spell.endswith(":w0")]
+    assert rec.cause == D.T_CELL and rec.src == ("c", 0x3000)
+    assert sol.klass(rec.key) == D.UNVOC, "the chain ends at the operator, and says so"
+
+
+def test_no_site_can_rest_at_bottom_once_the_worklist_has_settled():
+    """The invariant, not the example: ⊥ is below ⊤, so a site left there is in
+    neither of §5's buckets and every published reach figure carries it silently."""
+    thru = ("op", "INT_LEFT", (L("w0"), C(1)), 1)
+    progs = [
+        program([(0x1000, [], [], _step(0x3000))]),
+        program([(0x1000, [], [], _step(0x3000, 2, [("asg", "a", cell(0x3000))]))]),
+        program([(0x1000, [], [], [("asg", "w0", cell(0x3000)), ("st", C(0x3000, 2), thru)])]),
+        program([(0x1000, [], [], [("st", C(0x3000, 2), cell(0x3000, 2))])]),
+        program(
+            [(0x1000, [], [], _step(0x2000, 2, [("st", C(0x3000, 2), idx(0x2000, L("x")))]))],
+            [table(0x2000, bytes(32))],
+        ),
+    ]
+    for prog in progs:
+        sol = D.solve(prog)
+        assert all(v != D.BOT for v in sol.val.values())
+        assert all(r.den != D.BOT for r in sol.rec.values())
+        assert all(d != D.BOT for d, _c, _k in sol.value_sites())
+        assert all(d != D.BOT for d, _c, _k, _p in sol.deref_sites())
+        assert all(r.den != D.BOT for r in sol.rec.values()), "the census keys none of its own"
+        for den, cause, klass in sol.value_sites():  # §5's two buckets, and no third
+            assert D.kind(den) in D.KINDS or (den == D.TOP and cause in D.CAUSES)
+            assert klass in (D.REFUSED, D.UNVOC)
+
+
 # ---- the opaque refusal, bounded by the callee's own summary --------------------------
 def test_a_call_refuses_only_the_registers_its_callee_touches():
     """A2's refusal tightening: the ABI is in the text where the callee is."""

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from deity_informant import frameprog
+from deity_informant import frameproc
 from deity_informant import framestack
 from deity_informant import frameval
 import _fuzzgen as G
@@ -17,16 +18,20 @@ from test_frameprog import _fuzz_model
 
 OUT = 0xD404  # sid.v1.ctrl/attack_decay: observable and not a SID lo/hi pair
 LO, HI = G.TBL, G.TBL + 1
-SUB = 0x1300
+SUB, SUB2 = 0x1300, 0x1310
 LOSLOT, HISLOT = 0x01FD, 0x01FC  # the two slots a two-byte push at reset ``sp`` takes
 
 
 def _check(player):
-    """``(model, program, text)`` for a player, gate, fixpoint and locals checked."""
+    """``(model, program, text)`` for a player, gate, fixpoint and locals checked.
+
+    The text is gated as well as the trees: a store the renderer drops as unread is
+    only sound where nothing reads it, and a machine transfer is a reader."""
     model = _fuzz_model(player)
     prog = frameprog.program(model)
     text = frameprog.dumps(prog)
     assert frameval.gate_fp(model, 8, prog) is None
+    assert frameval.gate_fp(model, 8, frameprog.loads(text)) is None
     assert frameprog.dumps(frameprog.loads(text)) == text
     frameprog.check_locals(prog.procs)
     return model, prog, text
@@ -126,6 +131,35 @@ def test_the_rts_trick_is_the_goto_it_always_was():
     assert rts.status == "resolved" and "goto ($1320)" in rts.lemma
     (sp,) = [p for p in prog.proofs if p.kind == "sp"]
     assert sp.status == "resolved" and "no reader" in sp.lemma
+
+
+def _rts_dispatch():
+    """Two arms push two targets, so no adjacency window spans the pair."""
+    a = G.Asm(G.ORG)
+    a.i("INC", "abs", G.CNT).i("LDA", "abs", G.CNT).i("AND", "imm", 0x01)
+    a.i("BEQ", "rel", ("L", "down"))
+    a.i("LDA", "imm", (SUB - 1) >> 8).i("PHA").i("LDA", "imm", (SUB - 1) & 0xFF).i("PHA")
+    a.i("JMP", "abs", ("L", "tail"))
+    a.label("down")
+    a.i("LDA", "imm", (SUB2 - 1) >> 8).i("PHA").i("LDA", "imm", (SUB2 - 1) & 0xFF).i("PHA")
+    a.label("tail").i("RTS")
+    data = {G.CNT: 0, LO: 0x40}
+    for base, out in ((SUB, OUT), (SUB2, OUT + 1)):
+        code = G.Asm(base).i("LDA", "abs", LO).i("STA", "abs", out).i("RTS").assemble()
+        data.update({base + k: b for k, b in enumerate(code)})
+    return _build("rtsdispatch", a, data, frames=4)
+
+
+def test_a_two_arm_rts_dispatch_keeps_the_pushes_its_ret_reads():
+    """The trick no window lifts: the ``ret`` is the reader of what the arms pushed.
+
+    Neither arm's push pair is adjacent to the ``ret``, so the dispatch survives as
+    one; its operand is the cell pair, and a reader set that omits the ret's own read
+    of page one calls those stores unread and deletes the target with them."""
+    _m, prog, text = _rts_dispatch()
+    assert not [p for p in prog.proofs if p.kind == "rts"]  # no window lifts this one
+    assert all(p.status == "refused" for p in _stack(prog))
+    assert text.count("m_%04X = " % LOSLOT) == 2 and text.count("m_%04X = " % HISLOT) == 2
 
 
 def test_a_tsx_save_txs_restore_bracket_dissolves():
@@ -274,11 +308,7 @@ def test_a_slot_read_inside_another_address_becomes_the_local_too():
 
 # ---- rung (d0s): the slot named through sp ---------------------------------------
 SPN = "sp"
-
-
-def _spaddr(k=0):
-    inner = ("loc", SPN) if k == 0 else ("op", "INT_ADD", (("loc", SPN), ("const", k & 0xFF, 1)), 1)
-    return ("op", "INT_OR", (("op", "INT_ZEXT", (inner,), 2), ("const", 0x0100, 2)), 2)
+_spaddr = frameproc.sp_addr  # the ONE spelling of a page-one address through ``sp``
 
 
 def _spstore(k=0, val=("const", 7, 1)):

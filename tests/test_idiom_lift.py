@@ -36,10 +36,10 @@ M_LANE_NARROW = (
     "a narrowing COPY keeps the word's own denotation, so a pointer's low lane types "
     "as the pointer rather than as a byte of the pair's lo column"
 )
-M_BOT_SELF_STEP = (
-    "the self-step ⊥ leak: _ev_add yields ⊥ while the quantity's own operand is ⊥ and "
-    "_staged is suppressed while a definition is pending, so a cell only its own step "
-    "defines never leaves ⊥ -- below ⊤, so the §5 census never counts it"
+M_SELF_VIA_LOCAL = (
+    "the quantity reaches its own update through a local web, and _self_read matches "
+    "only a direct read of the cell, so bit-field never fires: the shift reads the "
+    "cell's own ⊤ back and the operator takes the blame for it"
 )
 M_MEM_SHIFT = (
     "a memory-RMW shift fires bit-field on the quantity reaching the top of the shift, "
@@ -55,8 +55,9 @@ M_READ_ONLY_CELL = (
     "nothing to fire on and every read of it is ⊤/cell"
 )
 M_STAGED_PTR = (
-    "the same, one step worse for a pointer: a word init stages and play never stores "
-    "has no unknown, so _ev_mem's deref reads ⊥ and the byte it yields stays ⊥"
+    "the same for a pointer: a word init stages and play never stores has no unknown, "
+    "so _ev_mem's deref reads a cell nothing states, the byte it yields is ⊤/cell and "
+    "the cell that keeps it is ⊤/mixed"
 )
 M_INDEX_LOCAL = (
     "an index read into a local before its use puts the index role on the local web, "
@@ -77,7 +78,7 @@ MECHANISMS = (
     M_LANE_ORDER,
     M_LANE_EXTRACT,
     M_LANE_NARROW,
-    M_BOT_SELF_STEP,
+    M_SELF_VIA_LOCAL,
     M_MEM_SHIFT,
     M_UNROLLED,
     M_ZP_ROW,
@@ -110,18 +111,10 @@ PINS = {
     ("lo-byte", "lo/lax"): M_LANE_NARROW,
     ("lo-byte", "lo/tay"): M_LANE_NARROW,
     ("lo-byte", "lo/pha"): M_LANE_NARROW,
-    ("adc-chain", "pair/imm"): M_BOT_SELF_STEP,
-    ("adc-chain", "pair/tab"): M_BOT_SELF_STEP,
-    ("adc-chain", "branch/imm"): M_BOT_SELF_STEP,
-    ("adc-chain", "branch/tab"): M_BOT_SELF_STEP,
-    ("sbc-chain", "pair/imm"): M_BOT_SELF_STEP,
-    ("sbc-chain", "pair/tab"): M_BOT_SELF_STEP,
-    ("sbc-chain", "branch/imm"): M_BOT_SELF_STEP,
-    ("sbc-chain", "branch/tab"): M_BOT_SELF_STEP,
     ("shift-chain", "lsr4-mem"): M_MEM_SHIFT,
     ("shift-chain", "asl2-mem"): M_MEM_SHIFT,
-    ("flag-bit", "asl-adc"): M_BOT_SELF_STEP,
-    ("flag-bit", "slo"): M_BOT_SELF_STEP,
+    ("flag-bit", "asl-adc"): M_SELF_VIA_LOCAL,
+    ("flag-bit", "slo"): M_SELF_VIA_LOCAL,
     ("table-row", "unrolled/X"): M_UNROLLED,
     ("zp-row", "zpx"): M_ZP_ROW,
     ("zp-row", "zpx-tax"): M_ZP_ROW,
@@ -151,10 +144,8 @@ SPLITS = {
     "word-pack": (M_SMC,),
     "lane-insert": (M_SMC, M_UNOBS_CARRY, M_LANE_ORDER),
     "hi-byte": (M_LANE_EXTRACT,),
-    "adc-chain": (M_BOT_SELF_STEP,),
-    "sbc-chain": (M_BOT_SELF_STEP,),
     "shift-chain": (M_MEM_SHIFT,),
-    "flag-bit": (M_BOT_SELF_STEP,),
+    "flag-bit": (M_SELF_VIA_LOCAL,),
     "table-row": (M_UNROLLED,),
     "cell-read": (M_READ_ONLY_CELL,),
     "deref-row": (M_SMC, M_STAGED_PTR),
