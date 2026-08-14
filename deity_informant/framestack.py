@@ -231,27 +231,49 @@ class _Marks:
         self.at[(id(stmts), i)] = (self.epoch, self.disp, self.alias)
 
 
-def _sp_scan(stmts, marks, sp):
+def _neutral(s, sp, saves):
+    """Whether a loop leaves ``sp`` at its head on the back edge and every exit.
+
+    The displacement walk asked of the region alone: where it holds, ``sp`` at a
+    point of the body is the head's plus what the text wrote between, in every
+    iteration, so the head's epoch is the one the whole region stands in."""
+    flow = _SpFlow(sp, saves, {})
+    try:
+        for b in frameproc._stmt_bodies(s):
+            _join(flow.run(b, _ENTRY), _ENTRY)
+    except _Unbalanced:
+        return False
+    return True
+
+
+def _sp_scan(stmts, marks, sp, saves=frozenset()):
     """Mark every statement of the list, bodies included, opening epochs as needed."""
     for i, s in enumerate(stmts):
         k = s[0]
         marks.mark(stmts, i)  # a statement's operands are read before it transfers
-        if k not in _STRAIGHT:
+        through = k in _CYCLIC and _neutral(s, sp, saves)
+        head = (marks.epoch, marks.disp, {})  # a local the body rewrites aliases nothing
+        if k not in _STRAIGHT and not through:
             marks.bump()
         if k == "if":
             here, arms = marks.state(), []
             for b in frameproc._stmt_bodies(s):
                 marks.restore(here)
-                _sp_scan(b, marks, sp)
+                _sp_scan(b, marks, sp, saves)
                 arms.append(marks.state())
             if len({(a[0], a[1]) for a in arms}) == 1:
                 marks.restore(arms[0] if len(arms) == 1 else (arms[0][0], arms[0][1], {}))
             else:
                 marks.bump()
+        elif through:
+            for b in frameproc._stmt_bodies(s):
+                marks.restore(head)
+                _sp_scan(b, marks, sp, saves)
+            marks.restore(head)
         else:
             for b in frameproc._stmt_bodies(s):
                 marks.bump()
-                _sp_scan(b, marks, sp)
+                _sp_scan(b, marks, sp, saves)
                 marks.bump()
         if k in ("asg", "for"):
             marks.alias = {n: v for n, v in marks.alias.items() if n != s[1]}
@@ -356,12 +378,12 @@ class _SpSlot:
     def _walk(self, stmts, marks, sp, defd):
         """Must-def over one statement list; returns the state it leaves behind.
 
-        A call is a control transfer here, which is also what prices the machine's own
-        return-address push: no slot is live across one, so no push of its can reach one."""
+        Rung (d0)'s reading of the region tree against a relative cell: a call's own
+        return-address push and a label are what unmake a definition, so no slot is
+        live across one and no push of its can reach one."""
         for i, s in enumerate(stmts):
             k = s[0]
             mark = marks.at[(id(stmts), i)]
-            defd = defd and k in _STRAIGHT
             acc = _accesses(s)
             wrote = len(acc) - 1 if k == "st" else -1
             for j, (addr, width) in enumerate(acc):
@@ -374,12 +396,11 @@ class _SpSlot:
             if k == "st" and _slot_at(s[1], mark, sp) == self.key and G.store_width(s[2]) == 1:
                 self.stores += 1
                 defd = True
-            if k == "if":
-                arms = [self._walk(b, marks, sp, defd) for b in frameproc._stmt_bodies(s)]
-                defd = all(arms)
-            else:
-                for b in frameproc._stmt_bodies(s):
-                    self._walk(b, marks, sp, False)
+            opaque = k in _OPAQUE  # a callee's body is entered past the machine's push
+            arms = [
+                self._walk(b, marks, sp, not opaque and defd) for b in frameproc._stmt_bodies(s)
+            ]
+            defd = all(arms) if k == "if" else (defd and all(arms) and not opaque)
         return defd
 
     def status(self):
@@ -520,7 +541,7 @@ def _ret_proof(cell, why):
     )
 
 
-def _lift_rets(procs, sp, spin):
+def _lift_rets(procs, sp, spin, saves_of):
     """A ``ret`` whose slot the procedure itself defines is the computed goto it is.
 
     The value question rung (d0) already asks -- is every read of this cell dominated
@@ -534,7 +555,7 @@ def _lift_rets(procs, sp, spin):
         if not isinstance(entry_sp, int):
             continue
         marks = _Marks()
-        _sp_scan(stmts, marks, sp)
+        _sp_scan(stmts, marks, sp, saves_of[e])
         sites = _ret_sites(stmts, marks, entry_sp, [])
         if not sites:
             continue
@@ -555,15 +576,15 @@ def apply_rung(procs, spin=None, exits=None):
     """Rungs (d0r), (d0) and (d0s) in place over ``procs``; the per-slot proofs."""
     used, proofs, n = _used_names(procs), [], 0
     sp = frameproc._SP
-    proofs += _lift_rets(procs, sp, spin or {})
-    prints = [_footprint(p[3]) for p in procs]
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
+    proofs += _lift_rets(procs, sp, spin or {}, saves_of)
+    prints = [_footprint(p[3]) for p in procs]
     bals, _at_entry = _balances(procs, sp, saves_of, exits)
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
         names, spnames, held = {}, {}, set()
         marks = _Marks()
-        _sp_scan(stmts, marks, sp)
+        _sp_scan(stmts, marks, sp, saves_of[_e])
         for cell in sorted(_candidates(stmts)):
             slot = _Slot(cell).run(stmts, shared)
             name = None

@@ -1303,16 +1303,16 @@ def test_an_unbalanced_procedure_keeps_its_stack_pointer():
     assert _sp_classes("sp_unbalanced") == ["sp_unbalanced"]
 
 
-def test_a_loop_edge_at_a_displacement_no_longer_unbalances_the_frame():
+def test_a_loop_edge_at_a_displacement_destacks_the_spill_it_spans():
     """A structured exit names the loop it leaves, so its head is where it lands.
 
     2c withdrew the general relaxation because a label or a dispatch arm may be entered
-    by a jump no list enumerates; this is the one edge whose target the text names. What
-    keeps sp is the fixture's two call depths: ``concretize_stack`` folds no bot cell."""
+    by a jump no list enumerates; this is the one edge whose target the text names, so
+    the epoch reaches through it and the spill between PHA and PLA is a value."""
     text = _lift("sp_loop_edge")
-    assert re.search(r"\bsp\b", _body(text)), "the kept spill lost sp"
-    assert "$0100" in text, "the spill lost its stack-page identity"
-    assert _sp_classes("sp_loop_edge") == ["sp_read"]
+    assert not re.search(r"\bsp\b", _body(text)), "the destacked spill kept sp"
+    assert "$0100" not in _body(text), "a page-one access survived the destack"
+    assert _sp_classes("sp_loop_edge") == []
 
 
 def test_a_raw_call_at_the_entry_displacement_drops_its_linkage():
