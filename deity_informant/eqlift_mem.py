@@ -890,6 +890,30 @@ def _child_bodies(nd):
     return ()
 
 
+_TERMS = frozenset(("cont", "brk", "ret", "goto", "unobs", "dgoto", "igoto"))
+
+
+def _no_own_cont(body, depth=0):
+    """Whether no ``cont`` in ``body`` names the loop ``depth`` levels out."""
+    for nd in body:
+        if nd[0] in ("cont", "brk"):
+            if nd[0] == "cont" and E.frameproc.exit_level(nd) == depth + 1:
+                return False
+            continue
+        inner = depth + 1 if nd[0] in ("loop", "for") else depth
+        if not all(_no_own_cont(b, inner) for b in _child_bodies(nd)):
+            return False
+    return True
+
+
+def _single_trip(body):
+    """Whether a loop body's back edge is unreachable: no own ``cont``, no fall-through.
+
+    A scope the structurer placed for a forward merge is exactly this, and its
+    head needs no fixpoint -- which is what keeps nested scopes from squaring."""
+    return bool(body) and body[-1][0] in _TERMS and _no_own_cont(body)
+
+
 def _loc_names(ir, out):
     if isinstance(ir, tuple):
         if ir[0] == "loc":
@@ -1132,7 +1156,8 @@ def _liveness(tree, info, entry, chosen, volatile=()):
         if k in ("loop", "for"):
             body = nd[1] if k == "loop" else nd[4]
             head = set()
-            for _i in range(24):
+            rounds = 0 if k == "loop" and _single_trip(body) else 24
+            for _i in range(rounds):
                 h = loop(body, live, head)
                 if k == "for":
                     h.discard(nd[1])
@@ -1174,10 +1199,10 @@ def _liveness(tree, info, entry, chosen, volatile=()):
             if nd[1]:
                 return set(armret[-1]) if armret else set(info.G)
             return set(info.ret_live(entry))
-        if k == "cont":
-            return set(cont[-1]) if cont else set(info.G)
-        if k == "brk":
-            return set(brk[-1]) if brk else set(info.G)
+        if k in ("cont", "brk"):
+            stack = cont if k == "cont" else brk
+            n = E.frameproc.exit_level(nd)
+            return set(stack[-n]) if len(stack) >= n else set(info.G)
         if k == "unobs":
             return set()
         if k == "switch":
@@ -1896,7 +1921,9 @@ def render_proc(
                 named = rets and not nd[1]
                 pr.line("ret %s" % ", ".join(rets) if named else "ret", d + 1)
             elif nd[0] in ("cont", "brk"):
-                pr.line("continue" if nd[0] == "cont" else "break", d)
+                n = E.frameproc.exit_level(nd)
+                word = "continue" if nd[0] == "cont" else "break"
+                pr.line(word + ("" if n == 1 else " %d" % n), d)
             elif nd[0] == "unobs":
                 pr.line("unobserved $%04X" % nd[1], d)
             elif nd[0] == "call":

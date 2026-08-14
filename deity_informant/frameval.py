@@ -480,11 +480,17 @@ class _Code:
         self.emit(("jmp", None))
         self.ref(s[1])
 
-    def _s_cont(self, _s, ctx):
-        ctx[0].append(self.emit(("jmp", None)))
+    def _exit(self, s, ctx, half):
+        n = frameproc.exit_level(s)
+        if not ctx or len(ctx) < n:
+            raise FrameFault("%s %d outside %d enclosing regions" % (s[0], n, len(ctx or ())))
+        ctx[-n][half].append(self.emit(("jmp", None)))
 
-    def _s_brk(self, _s, ctx):
-        ctx[1].append(self.emit(("jmp", None)))
+    def _s_cont(self, s, ctx):
+        self._exit(s, ctx, 0)
+
+    def _s_brk(self, s, ctx):
+        self._exit(s, ctx, 1)
 
     def _s_if(self, s, ctx):
         _k, word, cond, then, els = s
@@ -498,23 +504,23 @@ class _Code:
         else:
             self.patch(j, 3)
 
-    def _s_loop(self, s, _ctx):
+    def _s_loop(self, s, ctx):
         head = len(self.ops)
         conts, brks = [], []
-        self.seq(s[1], (conts, brks))
+        self.seq(s[1], (ctx or ()) + ((conts, brks),))
         self.emit(("jmp", head))
         for i in conts:
             self.patch(i, 1, head)
         for i in brks:
             self.patch(i, 1)
 
-    def _s_for(self, s, _ctx):
+    def _s_for(self, s, ctx):
         _k, name, init, last, body = s
         i = self.slot(name)
         self.emit(("asg", i, lambda r, m, rd, v=init: v, (None, ()), None))
         head = len(self.ops)
         conts, brks = [], []
-        self.seq(body, (conts, brks))
+        self.seq(body, (ctx or ()) + ((conts, brks),))
         test = self.emit(("fortest", i, last, None))
         self.emit(("forstep", i, 1 if last >= init else -1))
         self.emit(("jmp", head))

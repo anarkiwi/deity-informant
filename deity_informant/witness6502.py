@@ -656,11 +656,17 @@ class _Gen:  # pylint: disable=too-many-public-methods
         self.p.i("JMP", "abs", ("L", head))
         self.p.label(end)
 
-    def _s_cont(self, _s):
-        self.p.i("JMP", "abs", ("L", self.loops[-1][0]))
+    def _exit(self, s, half):
+        n = P.exit_level(s)
+        if len(self.loops) < n:
+            refuse("%s %d" % (s[0], n), "it names more regions than enclose it")
+        self.p.i("JMP", "abs", ("L", self.loops[-n][half]))
 
-    def _s_brk(self, _s):
-        self.p.i("JMP", "abs", ("L", self.loops[-1][1]))
+    def _s_cont(self, s):
+        self._exit(s, 0)
+
+    def _s_brk(self, s):
+        self._exit(s, 1)
 
     def _s_for(self, s):
         _k, name, init, last, body = s

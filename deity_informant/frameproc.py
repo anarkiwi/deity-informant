@@ -223,6 +223,7 @@ def _subst_loc(n, name, repl):
 
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
 _CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
+_EXITS = frozenset(("cont", "brk"))
 NOIDX = object()  # "the caller is not a store, so no index is shared"
 UNRES = object()  # "the base is not named, so only the bits the address sets bound it"
 
@@ -560,6 +561,11 @@ def disturbs(stmt, exprs, regions):
     Index expressions may only be compared when the read is a direct load here;
     one captured earlier can be structurally equal yet hold a stale index."""
     return False if stmt[0] != "st" else reads(exprs, store_reach(stmt, regions), regions)
+
+
+def exit_level(s):
+    """How many enclosing regions a ``cont``/``brk`` leaves; 1 is the bare form."""
+    return s[1] if len(s) > 1 and s[1] is not None else 1
 
 
 def hi_first(s):
@@ -1475,8 +1481,8 @@ class _Builder:
                 out.append(("goto", r.a))
             elif k == "frontier":
                 out.append(("unobs", r.a))
-            elif k in ("cont", "brk"):
-                out.append((k,))
+            elif k in _EXITS:
+                out.append((k,) if (r.a or 1) == 1 else (k, r.a))
             else:
                 raise ValueError("unexpected %s region in sequence" % k)
             i += 1
@@ -1812,6 +1818,9 @@ class _Flow:
     def _loop_head(self, s, live):
         body = s[1] if s[0] == "loop" else s[4]
         head = set()
+        if s[0] == "loop" and not _own_conts(body) and not self.info._must(body)[1]:
+            return head  # single-trip scope: no back edge reaches the head
+
         for _i in range(24):
             f = _Flow(self.info, self.entry)
             f.armret = list(self.armret)
@@ -1871,10 +1880,10 @@ class _Flow:
             if pc in info.procs:
                 return set(info.livein[pc])
             return set(info.G)
-        if k == "cont":
-            return set(self.cont[-1]) if self.cont else set(info.G)
-        if k == "brk":
-            return set(self.brk[-1]) if self.brk else set(info.G)
+        if k in _EXITS:
+            stack = self.cont if k == "cont" else self.brk
+            n = exit_level(s)
+            return set(stack[-n]) if len(stack) >= n else set(info.G)
         if k == "unobs":
             return set()
         if k == "ret":
@@ -2024,15 +2033,20 @@ def _use_count(s, name):
     return n
 
 
-def _escapes(s, out):
-    """Collect cont/brk statements of ``s`` bound to the enclosing loop."""
+def _escapes(s, out, depth=0):
+    """Collect cont/brk statements of ``s`` bound to the enclosing loop.
+
+    A levelled exit inside a nested region is bound here when its level counts
+    out exactly as far as this loop, so nested bodies are walked too."""
     k = s[0]
-    if k in ("cont", "brk"):
-        out.add(k)
-    elif k not in ("loop", "for"):
-        for b in _stmt_bodies(s):
-            for s2 in b:
-                _escapes(s2, out)
+    if k in _EXITS:
+        if exit_level(s) == depth + 1:
+            out.add(k)
+        return out
+    inner = depth + 1 if k in _CYCLIC else depth
+    for b in _stmt_bodies(s):
+        for s2 in b:
+            _escapes(s2, out, inner)
     return out
 
 
@@ -2178,14 +2192,15 @@ def _mentions(s, name):
     return any(_mentions(s2, name) for b in _stmt_bodies(s) for s2 in b)
 
 
-def _own_conts(stmts):
+def _own_conts(stmts, depth=0):
     n = 0
     for s in stmts:
-        if s[0] == "cont":
-            n += 1
-        elif s[0] not in ("loop", "for"):
+        if s[0] in _EXITS:
+            n += s[0] == "cont" and exit_level(s) == depth + 1
+        else:
+            inner = depth + 1 if s[0] in _CYCLIC else depth
             for b in _stmt_bodies(s):
-                n += _own_conts(b)
+                n += _own_conts(b, inner)
     return n
 
 
@@ -2570,10 +2585,9 @@ class _Printer:
             self.line("goto $%04X" % s[1], d)
         elif k == "unobs":
             self.line("unobserved $%04X" % s[1], d)
-        elif k == "cont":
-            self.line("continue", d)
-        elif k == "brk":
-            self.line("break", d)
+        elif k in _EXITS:
+            n = exit_level(s)
+            self.line(("continue" if k == "cont" else "break") + ("" if n == 1 else " %d" % n), d)
         elif k == "ret":
             if not s[1] and self.rets:
                 self.line("ret %s" % ", ".join(self.rets), d + 1)
@@ -3214,9 +3228,10 @@ class _Graph:
                     self._emit(s, [("lbl", s[1])], here)
                 else:
                     self._stop(s, here, True)
-            elif op in ("cont", "brk"):
-                if loops:
-                    self._emit(s, [loops[-1][0 if op == "cont" else 1]], here)
+            elif op in _EXITS:
+                n = exit_level(s)
+                if len(loops) >= n:
+                    self._emit(s, [loops[-n][0 if op == "cont" else 1]], here)
                 else:
                     self._stop(s, here, True)
             elif op == "ret":

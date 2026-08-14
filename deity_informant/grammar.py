@@ -206,6 +206,16 @@ def _hexval(tok):
     return int(str(tok)[1:], 16)
 
 
+def _level(tok):
+    """An exit's level: None where the innermost region is meant (the bare form)."""
+    if tok is None:
+        return None
+    n = int(str(tok))
+    if n < 2:
+        raise ValueError("exit level %d is the bare form; write it bare" % n)
+    return n
+
+
 def _const(tok):
     d = str(tok)[1:]
     return ("const", int(d, 16), max(1, len(d) // 2))
@@ -736,10 +746,10 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
         return ("flow", "unobs", _hexval(c[0]))
 
     def fl_cont(self, c):
-        return ("flow", "cont", None)
+        return ("flow", "cont", _level(c[0]))
 
     def fl_brk(self, c):
-        return ("flow", "brk", None)
+        return ("flow", "brk", _level(c[0]))
 
     def els_none(self, c):
         return ("else", None)

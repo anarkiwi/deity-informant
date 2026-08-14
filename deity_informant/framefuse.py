@@ -299,15 +299,20 @@ def _lane_aligned(p, ks):
 _LEAVES = frozenset(("ret", "goto", "dgoto", "dbr", "igoto", "swg", "unobs"))
 
 
-def _escapes(body, own=True):
+def _escapes(body, depth=0):
     """Control may leave the loop before its counter has taken every value.
 
-    ``brk`` and ``cont`` belong to the nearest enclosing cycle, so they count only
-    outside a nested one; a return or a jump leaves whatever it is nested in."""
+    ``brk`` and ``cont`` belong to the cycle their level counts out to, so a
+    nested one's exit counts here only where it names this one; a return or a
+    jump leaves whatever it is nested in."""
     for s in body:
-        if s[0] in _LEAVES or (own and s[0] in ("brk", "cont")):
+        if s[0] in _LEAVES:
             return True
-        inner = own and s[0] not in frameproc._CYCLIC
+        if s[0] in ("brk", "cont"):
+            if frameproc.exit_level(s) > depth:
+                return True
+            continue
+        inner = depth + 1 if s[0] in frameproc._CYCLIC else depth
         if any(_escapes(b, inner) for b in frameproc._stmt_bodies(s)):
             return True
     return False

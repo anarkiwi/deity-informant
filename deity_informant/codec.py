@@ -37,9 +37,9 @@ def _leaf_pc(region, loops):
     if k in ("goto", "frontier"):  # frontier: a verified edge to a never-observed pc
         return region.a
     if k == "cont":
-        return loops[-1][0]
+        return loops[-(region.a or 1)][0]
     if k == "brk":
-        return loops[-1][1]
+        return loops[-(region.a or 1)][1]
     if k == "loop":
         return _entry(region.a, None, loops)
     if k == "switch" and region.b:

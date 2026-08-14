@@ -135,10 +135,13 @@ cgoto: "goto" "(" expr ")" _NL
 igoto: "igoto" HEX _NL -> igoto_static
      | "igoto" "(" expr ")" _NL -> igoto_dyn
 fretline: "ret" (NAME ("," NAME)*)? _NL
+// the level is how many enclosing regions the exit leaves, innermost 1 (absent);
+// a `loop` whose body always breaks is a scope, so this is the only form a
+// forward merge needs (DREAM, NDSS 2015; Peterson/Kasami/Tokura CACM 1973)
 flowline: "goto" HEX _NL -> fl_goto
         | "unobserved" HEX _NL -> fl_unobs
-        | "continue" _NL -> fl_cont
-        | "break" _NL -> fl_brk
+        | "continue" [INT] _NL -> fl_cont
+        | "break" [INT] _NL -> fl_brk
 
 ifw: "if" -> w_if
    | "ifnot" -> w_ifnot

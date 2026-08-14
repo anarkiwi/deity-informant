@@ -516,8 +516,9 @@ def parse_block(lines, i):
             out.append(("label", line[:-1]))
         elif line == "ret" or line.startswith("ret "):
             out.append(("ret", _namelist(line[3:])))
-        elif line in ("continue", "break"):
-            out.append((line,))
+        elif re.fullmatch(r"(continue|break)( \d+)?", line):
+            word, _sep, lvl = line.partition(" ")
+            out.append((word, int(lvl) if lvl else 1))
         elif line.startswith("unobserved"):
             out.append(("unobserved", line.split()[1]))
         elif line.startswith("goto ("):
@@ -1789,10 +1790,8 @@ class Flat:
                 self._walk(s[1], loops + [(start, end)], here + (0,))
                 self._jmp(start)
                 self.labels[end] = len(self.ops)
-            elif op == "continue":
-                self._jmp(loops[-1][0])
-            elif op == "break":
-                self._jmp(loops[-1][1])
+            elif op in ("continue", "break"):
+                self._jmp(loops[-s[1]][0 if op == "continue" else 1])
             elif op == "goto":
                 self._jmp(s[1])
             elif op == "dgoto":
@@ -3025,6 +3024,8 @@ def _render(sl, lines, d):
             lines.append("%sgoto %s" % (pad, s[1]))
         elif op == "unobserved":
             lines.append("%sunobserved %s" % (pad, s[1]))
+        elif op in ("continue", "break"):
+            lines.append("%s%s%s" % (pad, op, "" if s[1] == 1 else " %d" % s[1]))
         else:
             lines.append("%s%s" % (pad, op))
 

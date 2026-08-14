@@ -63,6 +63,7 @@ _IO = {0xD012: "raster()", 0xD011: "raster_hi()", 0xD41B: "osc3()", 0xD41C: "env
 _SPLIT_BLOCKS = 16  # blocks one node split may copy
 _SPLIT_TOTAL = 1  # blocks a procedure may duplicate, as a multiple of its own count
 _SPLIT_DEPTH = 3  # splits nested in a split, so one copy may be structured in turn
+_STRUCT_ROUNDS = 4  # structuring passes the allow set is refined over
 
 
 def _mem_text(addr):
@@ -202,6 +203,16 @@ class Region:
         self.c = c
 
 
+def _cat(*regions):
+    """One flat ``seq`` of the given regions; a nested ``seq`` is spliced in."""
+    items = []
+    for r in regions:
+        if r is None:
+            continue
+        items.extend(r.a if r.kind == "seq" else [r])
+    return Region("seq", items)
+
+
 def _is_frontier(model, pc):
     """A statically proven edge target with no serialized block anywhere."""
     return not getattr(model, "all_variants", model.variants)(pc)
@@ -221,7 +232,7 @@ def _dispatch_gates(model):
 
 
 class _Splits:
-    """The pcs a structuring pass may split at, and the ones it did."""
+    """The pcs a structuring pass may scope or split at, and the ones it did."""
 
     __slots__ = ("allow", "chosen")
 
@@ -231,20 +242,23 @@ class _Splits:
 
 
 def _structure(model, entry):
-    """Region tree + labels, split only where splitting empties a label.
+    """Region tree + labels, scoped or split only where that empties a label.
 
-    Pass one splits nothing and names the bound pcs; each pass after it splits
-    at that set less the pcs a split did not free, which decreases, so the
-    duplication kept is the duplication that paid (Janssen & Corporaal 1997)."""
-    plain = _structure_once(model, entry, frozenset())
-    allow = frozenset(plain[1])
-    while allow:
-        root, labels, gate = _structure_once(model, entry, allow)
-        waste = gate.chosen & labels & allow
-        if not waste:
-            return root, labels
-        allow -= waste
-    return plain[0], plain[1]
+    Pass one uses neither and names the bound pcs; each pass after it enables
+    both at that set less the pcs they did not free, which decreases (Janssen &
+    Corporaal 1997; Yakdan et al., NDSS 2015)."""
+    best = _structure_once(model, entry, frozenset())
+    allow = frozenset(best[1])
+    seen = set()
+    for _round in range(_STRUCT_ROUNDS):
+        if not allow or allow in seen:
+            break
+        seen.add(allow)
+        got = _structure_once(model, entry, allow)
+        if len(got[1]) < len(best[1]):  # never worse than the pass that used neither
+            best = got
+        allow = (allow | frozenset(got[1])) - (got[2].chosen & got[1])
+    return best[0], best[1]
 
 
 def _structure_once(model, entry, allow):
@@ -438,54 +452,127 @@ def _proc(model, entry, cfg, shared, outer, depth=_SPLIT_DEPTH, stop=None, quota
         labels.add(pc)
         seq.append(Region("goto", pc))
 
+    def straddles(anchor, m):
+        """Whether a scope from ``anchor`` to ``m`` would swallow a whole loop.
+
+        Such a scope re-nests a cycle rather than the branching that reaches the
+        merge, so the label stays and the loop nesting is the one the CFG has."""
+        lo, hi = rpo.get(anchor, 0), rpo.get(m, 0)
+        return any(lo < rpo.get(h, 0) < hi for h in headers)
+
+    scoped = {}  # anchor pc -> the forward merges it dominates, in RPO order
+    for m in sorted(gate.allow & nodeset, key=lambda p: rpo.get(p, 0)):
+        anchor = idom.get(m)
+        if anchor is None or anchor == m or m in headers or len(pred[m]) < 2:
+            continue
+        if m not in rcset and not straddles(anchor, m):  # splitting owns the RC-set
+            scoped.setdefault(anchor, []).append(m)
+
+    def scopes_at(pc, stop, loops):
+        """Merges to place as scopes here: dominated by ``pc``, ahead of ``stop``.
+
+        None inside a cycle: a scope there re-nests a loop's interior, and every
+        exit in it would count past the loop it belongs to."""
+        if any(h is not None for h, _x in loops):
+            return []
+        end = rpo.get(stop, 1 << 30) if stop is not None else 1 << 30
+        return [m for m in scoped.get(pc, ()) if m not in emitted and rpo.get(m, 0) < end]
+
+    def wrap(pc, mids, stop, loops):
+        """``pc``'s region inside one single-trip loop per merge, innermost first.
+
+        Every edge to a merge becomes a levelled ``break``, so a reducible flow
+        needs no label (Peterson, Kasami & Tokura, CACM 16(8) 1973)."""
+        targets = mids + ([stop] if stop is not None else [])
+        frames = [
+            loops + [(None, t) for t in reversed(targets[i:])] for i in range(len(targets) + 1)
+        ]
+        gate.chosen.update(mids)
+        region, falls = build_x(pc, targets[0], frames[0])
+        for i, tgt in enumerate(targets):
+            region = Region("loop", _cat(region, Region("brk", 1) if falls else None))
+            falls = True
+            nxt = targets[i + 1] if i + 1 < len(targets) else None
+            if nxt is not None or stop is None:
+                chunk, falls = build_x(tgt, nxt, frames[i + 1])
+                region = _cat(region, chunk)
+        return region, falls
+
+    def leave(pc, loops):
+        """``Region`` for a pc the frame stack already names, innermost first."""
+        for lvl, (hdr, ex) in enumerate(reversed(loops), 1):
+            if hdr is not None and pc == hdr and pc in emitted:
+                return Region("cont", lvl)
+            if pc == ex:
+                return Region("brk", lvl)
+        return None
+
     def build(pc, stop, loops):
+        return build_x(pc, stop, loops)[0]
+
+    def build_x(pc, stop, loops):
         seq = []
         while pc is not None and pc in nodeset and pc != stop:
-            if loops and pc == loops[-1][0] and pc in emitted:
-                seq.append(Region("cont"))
-                return Region("seq", seq)
-            if loops and pc == loops[-1][1]:
-                seq.append(Region("brk"))
-                return Region("seq", seq)
+            out = leave(pc, loops)
+            if out is not None:
+                seq.append(out)
+                return Region("seq", seq), False
             if pc in emitted:
                 stray(pc, loops, seq)
-                return Region("seq", seq)
-            if pc in headers and (not loops or loops[-1][0] != pc):
+                return Region("seq", seq), False
+            if pc in headers and not any(pc == h for h, _x in loops):
                 ex = loop_exit(pc)
                 seq.append(Region("loop", build(pc, None, loops + [(pc, ex)])))
                 if ex is None or ex not in nodeset:
-                    return Region("seq", seq)
+                    return Region("seq", seq), False
                 pc = ex
                 continue
+            mids = scopes_at(pc, stop, loops)  # after the header: a loop's merges scope inside it
+            if mids:
+                region, falls = wrap(pc, mids, stop, loops)
+                return _cat(Region("seq", seq), region), falls
             emitted.add(pc)
             variants = model.variants(pc)
+            ctx = (
+                build,
+                owned,
+                claim,
+                merge_join,
+                dup,
+                labels,
+                nodeset,
+                sub,
+                subc,
+                fr,
+                split,
+                leave,
+            )
             if pc in getattr(model, "dispatch_pcs", ()) and len(variants) > 1:
                 join = ipdom.get(pc)
                 join = join if join in nodeset else None
-                ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr, split)
                 cases = [
                     ("$%02X" % key[1], _case(ctx, model, key, join, loops))
                     for key in sorted(variants)
                 ]
                 seq.append(Region("switch", ("code[$%04X]" % pc, cases), [pc]))
                 if join is None:
-                    return Region("seq", seq)
+                    return Region("seq", seq), False
                 pc = join
                 continue
             blk = model.blocks[variants[0]]
             seq.append(Region("block", blk, pc))
-            ctx = (build, owned, claim, merge_join, dup, labels, nodeset, sub, subc, fr, split)
             extra, nxt = _term_flow(ctx, model, blk, pc, loops, ipdom)
             seq.extend(extra)
             if nxt is None:
-                return Region("seq", seq)
+                return Region("seq", seq), False
             pc = nxt
         if pc is not None and pc not in nodeset and pc != stop:
             if fr(pc):
                 seq.append(Region("frontier", pc))
-                return Region("seq", seq)
+                return Region("seq", seq), False
             stray(pc, loops, seq)
-        return Region("seq", seq)
+            return Region("seq", seq), False
+        return Region("seq", seq), True
 
     top = [build(entry, stop, [])]
     # coverage: chain heads first; a serialization view defers foreign-claimable pcs
@@ -592,7 +679,7 @@ def _dup_tail(model, pc):
 def _term_flow(ctx, model, blk, pc, loops, ipdom):
     """Regions + continuation pc for a block's terminator (branch, call, jump-
     table switch, or return)."""
-    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc, fr, _split = ctx
+    _build, _owned, _claim, merge_join, _dup, labels, nodeset, sub, subc, fr, _split, _lv = ctx
     term = blk.term
     if term[0] == "br":
         join = ipdom.get(pc)
@@ -757,13 +844,12 @@ def _side(ctx, target, join, loops, parent):
     """A conditional arm: continue/break for loop edges, an inlined region when
     owned or last-claimable, a duplicated tiny tail, a node split, else a
     labelled goto."""
-    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc, fr, split = ctx
+    build, owned, claim, _mj, dup, labels, nodeset, _sub, _subc, fr, split, leave = ctx
     if target == join:
         return Region("seq", [])
-    if loops and target == loops[-1][0]:
-        return Region("seq", [Region("cont")])
-    if loops and target == loops[-1][1]:
-        return Region("seq", [Region("brk")])
+    out = leave(target, loops)
+    if out is not None:
+        return Region("seq", [out])
     if target in nodeset and (owned(target, parent) or claim(target, parent)):
         return build(target, join, loops)
     copy = dup(target)
@@ -773,10 +859,9 @@ def _side(ctx, target, join, loops, parent):
         nxt = copy[0].a.term[1]  # jump tail: its continuation must place here
         if nxt == join:
             return Region("seq", copy[:1])
-        if loops and nxt == loops[-1][0]:
-            return Region("seq", copy[:1] + [Region("cont")])
-        if loops and nxt == loops[-1][1]:
-            return Region("seq", copy[:1] + [Region("brk")])
+        out = leave(nxt, loops)
+        if out is not None:
+            return Region("seq", copy[:1] + [out])
     if fr(target):
         return Region("seq", [Region("frontier", target)])
     copy = split(target, loops, join)
@@ -891,10 +976,9 @@ def _emit(region, model, lines, depth, labels):
             lines.append("%sinlined sub_%04X {" % (pad, region.a))
             _emit(region.b, model, lines, depth + 1, labels)
             lines.append(pad + "}")
-    elif k == "cont":
-        lines.append(pad + "continue")
-    elif k == "brk":
-        lines.append(pad + "break")
+    elif k in ("cont", "brk"):
+        n = region.a or 1
+        lines.append(pad + ("continue" if k == "cont" else "break") + ("" if n == 1 else " %d" % n))
     elif k == "goto":
         lines.append("%sgoto L_%04X" % (pad, region.a))
     elif k == "frontier":

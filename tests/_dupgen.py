@@ -237,6 +237,87 @@ def _irreducible():
     return p
 
 
+def _fat_tail(p, name, base):
+    """A merge too big for the tiny-tail copy, so only structure can place it once."""
+    p.label(name).i("LDA", "zp", CNT)
+    for k in range(4):
+        p.i("STA", "abs", base + k)
+
+
+def _ladder():
+    """A join at a non-immediate post-dominator: two arms meet before the branch's own.
+
+    ``m`` is reached from both arms while one arm also reaches the post-dominator
+    directly, so the structurer's join is not ``m`` and a label used to bind it."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 1, "lsub")
+    p.label("lsub").i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", "l2"))
+    p.i("LDA", "zp", CNT).i("STA", "abs", SID)
+    p.i("LDA", "zp", ROW).i("AND", "imm", 2).i("BEQ", "rel", ("L", "m"))
+    p.i("JMP", "abs", ("L", "j"))
+    p.label("l2").i("LDA", "zp", CNT).i("EOR", "imm", 0x0F).i("STA", "abs", SID + 1)
+    _fat_tail(p, "m", SID + 2)
+    p.label("j").i("RTS")
+    I.tab_data(p)
+    return p
+
+
+def _arm_merge():
+    """Two arms of a computed goto meeting at a tail: a merge inside a state machine."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 1)
+    _dispatch_body(p)
+    p.label("vt0").i("LDA", "zp", CNT).i("EOR", "imm", 0x0F).i("STA", "abs", SID)
+    p.i("JMP", "abs", ("L", "tail"))
+    p.label("vt1").i("LDX", "zp", ROW).i("LDA", "absx", ("L", "tone")).i("STA", "abs", SID + 1)
+    _fat_tail(p, "tail", SID + 2)
+    p.i("RTS")
+    _vectors(p)
+    return p
+
+
+def _two_level():
+    """An inner loop leaving the outer one: an exit only a levelled word names.
+
+    The row cursor rotates the column, so on half the frames the inner loop runs
+    to its own bound and the outer one turns over, and on the rest it leaves both."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 1, "tsub")
+    p.label("tsub").i("LDA", "imm", 0).i("STA", "zp", I.TMP)
+    p.label("outer").i("LDY", "imm", 0)
+    p.label("inner").i("TYA").i("CLC").i("ADC", "zp", ROW).i("AND", "imm", 7).i("TAX")
+    p.i("LDA", "absx", ("L", "tone")).i("CMP", "imm", 0x80).i("BCS", "rel", ("L", "done"))
+    p.i("STA", "abs", SID)
+    p.i("INY").i("CPY", "imm", 4).i("BNE", "rel", ("L", "inner"))
+    p.i("INC", "zp", I.TMP).i("LDA", "zp", I.TMP).i("CMP", "imm", 3)
+    p.i("BNE", "rel", ("L", "outer"))
+    _fat_tail(p, "done", SID + 2)
+    p.i("RTS")
+    I.tab_data(p)
+    return p
+
+
+def _loop_merge():
+    """``_ladder``'s join inside a cycle: the shape the scope mechanism refuses."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 1, "msub")
+    p.label("msub").i("LDY", "imm", 0)
+    p.label("inner").i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", "l2"))
+    p.i("LDA", "absy", ("L", "tone")).i("STA", "abs", SID)
+    p.i("LDA", "zp", ROW).i("AND", "imm", 2).i("BEQ", "rel", ("L", "m"))
+    p.i("JMP", "abs", ("L", "j"))
+    p.label("l2").i("LDA", "absy", ("L", "alt")).i("EOR", "imm", 0x0F).i("STA", "abs", SID + 1)
+    _fat_tail(p, "m", SID + 2)
+    p.label("j").i("INY").i("CPY", "imm", 4).i("BNE", "rel", ("L", "inner"))
+    p.i("RTS")
+    I.tab_data(p)
+    return p
+
+
 DRIVERS = {
     "dispatch/2-site": lambda: _dispatch(2),
     "dispatch/3-site": lambda: _dispatch(3),
@@ -249,11 +330,26 @@ DRIVERS = {
 
 REFUSED = ()  # no driver's callee binds a pc: node splitting folds the one join that did
 
+SHAPES = {  # the reducible label class: what a scope and a levelled exit close
+    "ladder": _ladder,
+    "arm-merge": _arm_merge,
+    "two-level": _two_level,
+    "loop-merge": _loop_merge,
+}
+
+M_LOOP_MERGE = (
+    "a scope is a `loop` whose body always breaks, so placing one inside a cycle "
+    "would re-nest that cycle's interior and shift every exit level in it by one; "
+    "the mechanism structures acyclic branching only and a merge inside a loop "
+    "keeps its `label $PC`"
+)
+PINNED = {"loop-merge": M_LOOP_MERGE}
+
 
 @lru_cache(maxsize=None)
 def built(name):
     """``(model, base program, duplicated program)``, both programs read back canonical."""
-    p = DRIVERS[name]()
+    p = {**DRIVERS, **SHAPES}[name]()
     code = p.assemble()
     mem = bytearray(0x10000)
     mem[ORG : ORG + len(code)] = code

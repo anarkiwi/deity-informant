@@ -1339,10 +1339,9 @@ class _Printer:
             self.line("goto $%04X" % nd[1], d)
         elif k == "unobs":
             self.line("unobserved $%04X" % nd[1], d)
-        elif k == "cont":
-            self.line("continue", d)
-        elif k == "brk":
-            self.line("break", d)
+        elif k in ("cont", "brk"):
+            n = frameproc.exit_level(nd)
+            self.line(("continue" if k == "cont" else "break") + ("" if n == 1 else " %d" % n), d)
         elif k == "ret":
             self.line("ret", d + 1)
         elif k == "call":
