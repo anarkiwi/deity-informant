@@ -47,9 +47,12 @@ def test_a_two_level_exit_names_its_own_loop():
 
 
 def test_a_ladder_becomes_one_scope_and_no_copy():
-    """The merge is placed once: a scope, not a duplicated tail (no growth by copy)."""
+    """The merge is placed once: a scope, not a duplicated tail (no growth by copy).
+
+    The second scope is the procedure's own exit (8.4), which ``one_exit`` opens where
+    the first of its several returns stands."""
     text = D.text("ladder", "base")
-    assert text.count("loop {") == 1
+    assert text.count("loop {") == 2
     assert text.count("sid.v1.ctrl") == 1
 
 

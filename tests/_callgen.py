@@ -755,8 +755,38 @@ def _brk_vector():
     )
 
 
+def _shared_tail():
+    """`shared-tail`: two sole-site callees leaving by a JMP into one shared block.
+
+    The first inlined body places the tail and binds its pc; the second leaves by a
+    goto into that copy. Neither exit is a ``ret`` the splice can answer."""
+
+    def subs(p, table, reg):
+        for name, tab in (("leafa", "tone"), ("leafb", table)):
+            p.label(name).i("LDX", "zp", ROW)
+            col(p, "X", tab)
+            p.i("STA", "abs", SID + 1)
+            p.i("JMP", "abs", ("L", "shared"))
+        p.label("shared").i("LD" + reg, "zp", ROW)
+        col(p, reg, "alt")
+        for k in range(4):  # wider than the tail-duplication bound, so the second copy gotos
+            p.i("STA", "abs", SID + 2 + k)
+        p.i("RTS")
+
+    def play(p):
+        p.i("JSR", "abs", ("L", "leafa"))
+        p.i("JSR", "abs", ("L", "leafb"))
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (t, r), play, lambda p, a=t, b=r: subs(p, a, b))
+        for t, r in itertools.product(("tone", "alt"), ("X", "Y"))
+    )
+
+
 SHAPES = (
     Shape("leaf-call", "one static site on a leaf", I.tab_data, _leaf_call()),
+    Shape("shared-tail", "two callees, one shared tail", I.tab_data, _shared_tail()),
     Shape("multi-site", "two and three sites on one leaf", I.tab_data, _multi_site()),
     Shape("nested", "play -> A -> B", I.tab_data, _nested()),
     Shape("arg-pass", "one argument, every register", I.tab_data, _arg_pass()),

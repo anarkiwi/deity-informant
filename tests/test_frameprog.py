@@ -833,9 +833,9 @@ def _call_model(callers):
 
 
 def test_a_sole_static_call_site_owns_the_callee_body():
-    """``_model_trees``: one caller inlines the callee, two keep it a procedure."""
+    """``_model_trees``: one caller splices the callee in, two keep it a procedure."""
     one = frameprog.emit(_call_model([0x1000]))
-    assert "  call $2000 ret $1002 {" in one and "sub_2000(" not in one
+    assert "sub_1000() {\n  ret\n}\n" in one and "call" not in one and "sub_2000(" not in one
     assert frameprog.dumps(frameprog.loads(one)) == one
     two = frameprog.emit(_call_model([0x1000, 0x1100]))
     assert "sub_2000() {" in two and two.count("  sub_2000()\n") == 2

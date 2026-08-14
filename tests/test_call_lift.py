@@ -17,11 +17,21 @@ XFAIL = {"strict": True}
 
 _PIN = "call suite: "
 
-M_CALLB = (
-    "sole-site inline keeps its wrapper: procpass.Plan.inline proves the callee "
-    "dominated by its one static site and render nests the body there, but the form "
-    "emitted is still `call $PC ret $PC { .. }` -- the call statement and the callee's "
-    "own ret both survive inside the one procedure"
+M_BODY_LABEL = (
+    "the inlined body binds a pc: some transfer may name it, and the ret the splice "
+    "removes is what answers that transfer, so frameproc._Builder.splice keeps the "
+    "`call $PC ret $PC { .. }` wrapper (bound_pcs); duplicating the shared tail per "
+    "site is the removal"
+)
+M_TAIL_TRANSFER = (
+    "the inlined body leaves by a goto, not by its own ret: it returns through the "
+    "pushed word from wherever it landed, so the splice keeps the wrapper "
+    "(frameproc.escapes) -- the tail's own text has to move to the site with it"
+)
+M_RET_WORD = (
+    "the callee returns from a displacement it moved: it pulls the word the machine "
+    "pushed and pushes one back, so frameproc.sp_balanced refuses the splice and the "
+    "call, the interior ret and sp all stay (720_Degrees $C31D is the corpus shape)"
 )
 M_SHARED_SUB = (
     "two or more static sites are not inlinable as the plan is written: Plan.inline is "
@@ -34,11 +44,6 @@ M_SELF_CALL = (
     "stays a sub; a tail self-call is a loop and a non-tail one a bounded unroll, and "
     "Plan has a form for neither"
 )
-M_MULTI_EXIT = (
-    "the machine's several returns are several ret statements: a tail transfer's "
-    "target block and a dispatch arm each keep their own rts, and nothing joins them "
-    "into the procedure's single exit"
-)
 M_LANDING_PROC = (
     "a resolved computed goto's landing is nobody's call target, so procpass never "
     "sees it as an inline candidate: it becomes its own proc entry and the emitted "
@@ -49,17 +54,6 @@ M_SWITCH_CALL = (
     "plus `switch call { case .. }`: the arms are already nested at the site, but the "
     "dcall statement and the arms' own rets stay"
 )
-M_SP_LINKED = (
-    "framestack.drop_sp refuses while a raw call keeps the machine stack alive "
-    "(sp_linked): the pushed argument is named through sp, so the parameter and the "
-    "updates survive the drop"
-)
-M_SP_UNBALANCED = (
-    "the pull/push return-address dance leaves _SpFlow unable to prove the procedure "
-    "stands where it entered (sp_unbalanced), so sp stays and the re-push survives as "
-    "a page-one word copy"
-)
-
 M_S_RELOCATED = (
     "a TXS from a computed value is an absolute write to sp, not a displacement, so "
     "_SpFlow cannot prove the frame stands where it entered (sp_unbalanced): sp stays "
@@ -88,14 +82,13 @@ M_SP_LOOP_PUSH = (
 )
 
 MECHANISMS = (
-    M_CALLB,
+    M_BODY_LABEL,
+    M_TAIL_TRANSFER,
+    M_RET_WORD,
     M_SHARED_SUB,
     M_SELF_CALL,
-    M_MULTI_EXIT,
     M_LANDING_PROC,
     M_SWITCH_CALL,
-    M_SP_LINKED,
-    M_SP_UNBALANCED,
     M_S_RELOCATED,
     M_S_AS_VALUE,
     M_PAGE_ONE_CELL,
@@ -110,35 +103,17 @@ M_BRK_TERM = (
 )
 
 PINS = {
-    ("leaf-call", "head/sid"): (M_CALLB,),
-    ("leaf-call", "head/cell"): (M_CALLB,),
-    ("leaf-call", "mid/sid"): (M_CALLB,),
-    ("leaf-call", "mid/cell"): (M_CALLB,),
-    ("leaf-call", "tail/sid"): (M_CALLB,),
-    ("leaf-call", "tail/cell"): (M_CALLB,),
+    ("shared-tail", "tone/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("shared-tail", "tone/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("shared-tail", "alt/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("multi-site", "2-site/X"): (M_SHARED_SUB,),
     ("multi-site", "2-site/Y"): (M_SHARED_SUB,),
     ("multi-site", "2-site/no-arg"): (M_SHARED_SUB,),
     ("multi-site", "3-site/X"): (M_SHARED_SUB,),
     ("multi-site", "3-site/Y"): (M_SHARED_SUB,),
     ("multi-site", "3-site/no-arg"): (M_SHARED_SUB,),
-    ("nested", "X/tail"): (M_CALLB,),
-    ("nested", "X/post"): (M_CALLB,),
-    ("nested", "Y/tail"): (M_CALLB,),
-    ("nested", "Y/post"): (M_CALLB,),
-    ("arg-pass", "a"): (M_CALLB,),
-    ("arg-pass", "x"): (M_CALLB,),
-    ("arg-pass", "y"): (M_CALLB,),
-    ("arg-pass", "cell"): (M_CALLB,),
-    ("arg-pass", "stack-tsx"): (M_CALLB, M_SP_LINKED),
-    ("arg-pass", "stack-pla"): (M_CALLB, M_SP_UNBALANCED),
-    ("ret-value", "a"): (M_CALLB,),
-    ("ret-value", "x"): (M_CALLB,),
-    ("ret-value", "y"): (M_CALLB,),
-    ("ret-value", "carry"): (M_CALLB,),
-    ("ret-value", "cell"): (M_CALLB,),
-    ("tail-call", "shared"): (M_CALLB,),
-    ("tail-call", "cond"): (M_MULTI_EXIT,),
+    ("arg-pass", "stack-pla"): (M_RET_WORD,),
     ("rts-trick", "const"): (M_LANDING_PROC,),
     ("rts-trick", "arith"): (M_LANDING_PROC,),
     ("rts-trick", "two-arm"): (M_LANDING_PROC,),
@@ -146,9 +121,7 @@ PINS = {
     ("rts-trick", "table"): (M_LANDING_PROC,),
     ("rts-trick", "ptr"): (M_LANDING_PROC,),
     ("rts-trick", "open"): (M_LANDING_PROC,),
-    ("vector-call", "jmpind"): (M_MULTI_EXIT,),
     ("vector-call", "smc-jsr"): (M_SWITCH_CALL,),
-    ("vector-call", "smc-jmp"): (M_MULTI_EXIT,),
     ("tail-recursion", "x/const"): (M_SELF_CALL,),
     ("tail-recursion", "x/row"): (M_SELF_CALL,),
     ("tail-recursion", "cell/const"): (M_SELF_CALL,),
@@ -157,12 +130,12 @@ PINS = {
     ("deep-recursion", "const/around"): (M_SELF_CALL,),
     ("deep-recursion", "row/after"): (M_SELF_CALL,),
     ("deep-recursion", "row/around"): (M_SELF_CALL,),
-    ("two-callers", "X/sid"): (M_CALLB, M_SHARED_SUB),
-    ("two-callers", "X/cell"): (M_CALLB, M_SHARED_SUB),
-    ("two-callers", "Y/sid"): (M_CALLB, M_SHARED_SUB),
-    ("two-callers", "Y/cell"): (M_CALLB, M_SHARED_SUB),
-    ("two-callers", "cell/sid"): (M_CALLB, M_SHARED_SUB),
-    ("two-callers", "cell/cell"): (M_CALLB, M_SHARED_SUB),
+    ("two-callers", "X/sid"): (M_SHARED_SUB,),
+    ("two-callers", "X/cell"): (M_SHARED_SUB,),
+    ("two-callers", "Y/sid"): (M_SHARED_SUB,),
+    ("two-callers", "Y/cell"): (M_SHARED_SUB,),
+    ("two-callers", "cell/sid"): (M_SHARED_SUB,),
+    ("two-callers", "cell/cell"): (M_SHARED_SUB,),
     ("branchy-callee", "cc/dey"): (M_SHARED_SUB,),
     ("branchy-callee", "cc/iny"): (M_SHARED_SUB,),
     ("branchy-callee", "cs/dey"): (M_SHARED_SUB,),
@@ -179,7 +152,31 @@ PINS = {
 
 # what already holds, and must keep holding
 CLEAN = (
+    ("leaf-call", "head/sid"),
+    ("leaf-call", "head/cell"),
+    ("leaf-call", "mid/sid"),
+    ("leaf-call", "mid/cell"),
+    ("leaf-call", "tail/sid"),
+    ("leaf-call", "tail/cell"),
+    ("nested", "X/tail"),
+    ("nested", "X/post"),
+    ("nested", "Y/tail"),
+    ("nested", "Y/post"),
+    ("arg-pass", "a"),
+    ("arg-pass", "x"),
+    ("arg-pass", "y"),
+    ("arg-pass", "cell"),
+    ("arg-pass", "stack-tsx"),
+    ("ret-value", "a"),
+    ("ret-value", "x"),
+    ("ret-value", "y"),
+    ("ret-value", "carry"),
+    ("ret-value", "cell"),
     ("tail-call", "only"),
+    ("tail-call", "shared"),
+    ("tail-call", "cond"),
+    ("vector-call", "jmpind"),
+    ("vector-call", "smc-jmp"),
     ("flag-record", "plp/tight"),
     ("flag-record", "plp/across"),
     ("flag-record", "pla/tight"),
@@ -197,10 +194,9 @@ CLEAN = (
 )
 
 SPLITS = {
-    "arg-pass": (M_SP_LINKED, M_SP_UNBALANCED),
-    "tail-call": (M_CALLB, M_MULTI_EXIT),
+    "arg-pass": (M_RET_WORD,),
     "rts-trick": (M_SP_LOOP_PUSH,),
-    "vector-call": (M_SWITCH_CALL, M_MULTI_EXIT),
+    "vector-call": (M_SWITCH_CALL,),
     "stack-move": (M_S_RELOCATED,),
     "s-illegal": (M_S_AS_VALUE, M_PAGE_ONE_CELL),
     "page-one-cell": (M_PAGE_ONE_CELL, M_PAGE_ONE_BLIND),
@@ -209,7 +205,6 @@ SPLITS = {
 # the protected-region fault a variant's text raises, at the cell it concretely reaches
 FAULTS = {
     ("arg-pass", "stack-pla"): "store into the stack page $01FD",
-    ("arg-pass", "stack-tsx"): "store into the stack page $01FD",
     ("page-one-cell", "abs/cross"): "load from the stack page $0108",
     ("page-one-cell", "absx/cross"): "load from the stack page $0100",
     ("page-one-cell", "absy/cross"): "load from the stack page $0100",
@@ -220,9 +215,13 @@ FAULTS = {
     ("stack-move", "row/push"): "store into the stack page $0140",
 }
 
-DISPATCH_ARMS = (
+BINDS_PC = (  # a computed dispatch arm, and a callee tail two inlined bodies share
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
+    ("shared-tail", "tone/X"),
+    ("shared-tail", "tone/Y"),
+    ("shared-tail", "alt/X"),
+    ("shared-tail", "alt/Y"),
 )
 
 
@@ -333,10 +332,10 @@ def test_no_called_body_binds_a_pc_a_copy_would_collide_on():
     assert not bad
 
 
-def test_the_bound_pcs_are_the_computed_dispatch_arms_alone():
-    """Where context-qualified pcs would be needed: an arm the structurer could not fold."""
+def test_the_bound_pcs_are_the_dispatch_arms_and_the_shared_tail():
+    """Where context-qualified pcs would be needed: a fold the structurer could not do."""
     got = {v for v in G.ALL if any(G.pcs_bound(s) for _e, _p, _r, s in G.parsed(*v).procs)}
-    assert got == set(DISPATCH_ARMS)
+    assert got == set(BINDS_PC)
 
 
 def test_every_pin_names_a_live_mechanism():

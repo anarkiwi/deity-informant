@@ -890,7 +890,7 @@ def _child_bodies(nd):
     return ()
 
 
-_TERMS = frozenset(("cont", "brk", "ret", "goto", "unobs", "dgoto", "igoto"))
+_TERMS = E.frameproc.TERMS  # the ONE reading of "this list leaves control here"
 
 
 def _no_own_cont(body, depth=0):
@@ -1653,11 +1653,13 @@ def render_proc(
                 stmts_of, wr = (s[1], set()) if k == "loop" else (s[4], {s[1]})
                 pre_mem, pre_held = stt["mem"], stt["held"]
                 pre_ver = stt["memv"]
-                havoc(_written(stmts_of) | wr)
-                stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
-                stt["cyc"] += 1
+                cyclic = k == "for" or not E.frameproc.single_trip(stmts_of)
+                if cyclic:  # a single-trip scope has no back edge: the body reads what entered
+                    havoc(_written(stmts_of) | wr)
+                    stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
+                stt["cyc"] += cyclic
                 body = walk(stmts_of)
-                stt["cyc"] -= 1
+                stt["cyc"] -= cyclic
                 havoc(_written(stmts_of) | wr)
                 stt["mem"] = join_mem(pre_mem, s, pre_held, pre_ver)
                 nodes.append(("loop", body) if k == "loop" else ("for", s[1], s[2], s[3], body))
@@ -2339,10 +2341,12 @@ class Proc(Straight):
                 self.env[n] = E.loc("%s@%d" % (n, self._fresh()))
 
     def _loop(self, stmt):
+        """A single-trip scope has no back edge, so its body reads what entered it."""
         body, pre_mem, pre_held = stmt[1], self.mem, self.held
         w = _written(body)
-        self._havoc_locs(w)
-        self._join(pre_mem, [stmt], pre_held)
+        if not E.frameproc.single_trip(body):
+            self._havoc_locs(w)
+            self._join(pre_mem, [stmt], pre_held)
         self.run(body)
         self._havoc_locs(w)
         self._join(pre_mem, [stmt], pre_held)

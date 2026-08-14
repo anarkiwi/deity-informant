@@ -58,13 +58,10 @@ _ARITH = re.compile(r"^\s*goto \(.*\(\(m_D41B & \$01\) << \$04\).*\)$", re.M)
 def test_a_non_tail_self_call_alone_leaves_no_stack_behind(row, label):
     """Class 1's base case: the call survives, the machine stack does not.
 
-    Every finding is a call-graph class. ``mutual-recursion``'s second routine has
-    one static site, so it is a ``callb`` -- an inlined block whose ret is interior."""
+    Every finding is a call-graph class: the recursive routine stays a ``sub`` under a
+    ``pcall``, and ``mutual-recursion``'s second routine is spliced into it."""
     entry = G.parsed(row, label).procs[1][0]
     want = ["pcall: $%04X" % entry, "procedures: 2"]
-    if row == "mutual-recursion":
-        lab = K.labels(row, label)
-        want += ["call: $%04X" % lab["mrb" if entry == lab["mra"] else "mra"], "interior ret"]
     assert not K.page_one(row, label)
     assert G.violations(row, label) == tuple(sorted(want))
 

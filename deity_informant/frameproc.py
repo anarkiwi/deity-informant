@@ -568,6 +568,152 @@ def exit_level(s):
     return s[1] if len(s) > 1 and s[1] is not None else 1
 
 
+TERMS = frozenset(("cont", "brk", "ret", "goto", "unobs", "dgoto", "igoto"))
+_OWN = frozenset(("if", "loop", "for", "opsw", "swg"))  # bodies whose ``ret`` is this list's
+_ARMED = frozenset(("swg", "swc"))  # an arm table its computed transfer must stay beside
+_ANYCALL = frozenset(("call", "callb", "pcall", "dcall", "swc"))
+_PC_ARMS = {"swg": 1, "opsw": 2, "swc": 2}  # where a form carries its arm labels
+_ESCAPES = frozenset(("goto", "dgoto", "igoto", "dbr"))  # a transfer that leaves the list
+
+
+def bound_pcs(stmts, out=None):
+    """The pcs a statement list *defines* as a transfer target, arms included.
+
+    A label is a pc in the grammar, so a list binding one may neither be copied
+    (two copies bind it twice) nor spliced (a transfer to it would run past the
+    ``ret`` the splice removes)."""
+    out = [] if out is None else out
+    for s in stmts:
+        if s[0] == "label":
+            out.append(s[1])
+        at = _PC_ARMS.get(s[0])
+        if at is not None:
+            out += [b[0] for b in s[at] if isinstance(b[0], int)]
+        if s[0] == "swc":
+            out += [lbl for lbl in s[1] if isinstance(lbl, int)]
+        for b in _stmt_bodies(s):
+            bound_pcs(b, out)
+    return sorted(set(out))
+
+
+def calls_in(stmts):
+    """Whether any statement in ``stmts``, bodies included, is a call."""
+    for s in stmts:
+        if s[0] in _ANYCALL or any(calls_in(b) for b in _stmt_bodies(s)):
+            return True
+    return False
+
+
+def _sp_walk(stmts, at):
+    """``(displacement the list leaves, every ``ret`` in it stood at the entry)``."""
+    ok = True
+    for s in stmts:
+        k = s[0]
+        if k == "asg" and s[1] == _SP:
+            d = sp_delta(s[2], _SP)
+            at = None if d is None or at is None else (at + d) & 0xFF
+            continue
+        if k == "ret":
+            ok = ok and at == 0
+            continue
+        outs = []
+        for b in _stmt_bodies(s):
+            end, good = _sp_walk(b, at)
+            ok = ok and good
+            outs.append(end)
+        if k in _CYCLIC:
+            at = at if outs and outs[0] == at else None
+        elif outs:
+            at = outs[0] if all(o == outs[0] for o in outs) else None
+    return at, ok
+
+
+def sp_balanced(stmts):
+    """Whether every ``ret`` in ``stmts`` stands where the list was entered.
+
+    The build-time reading of framestack's displacement walk: a body returning from
+    a displacement it moved returns through a word it moved, so its text spliced at
+    the call site takes that ``ret`` for the caller's own (720_Degrees $C31D)."""
+    return _sp_walk(stmts, 0)[1]
+
+
+def _read_locals(stmts, out=None):
+    """Every local any statement in ``stmts`` writes or reads, bodies included."""
+    out = set() if out is None else out
+    for s in stmts:
+        if s[0] in ("asg", "for"):
+            out.add(s[1])
+        elif s[0] == "pcall":
+            out.update(s[3])
+        for x in _stmt_exprs(s):
+            out |= _locset(x)
+        for b in _stmt_bodies(s):
+            _read_locals(b, out)
+    return out
+
+
+def escapes(stmts):
+    """Whether the list may leave by a transfer rather than by its own ``ret``.
+
+    A callee that tail-transfers out returns through the pushed word from wherever
+    it landed, so its text spliced at the site would take the ``ret`` there for the
+    procedure's own."""
+    for s in stmts:
+        if s[0] in _ESCAPES or any(escapes(b) for b in _stmt_bodies(s)):
+            return True
+    return False
+
+
+def _brk(level):
+    """A ``break`` leaving ``level`` enclosing regions, in the canonical spelling."""
+    return ("brk",) if level == 1 else ("brk", level)
+
+
+def _rets_in(stmts, depth=0, out=None):
+    """``(list, index, loops it stands in)`` of every ``ret`` this list returns by.
+
+    A ``swc`` arm and a ``callb`` body are another procedure's text: their ``ret``
+    is that callee's edge, not this list's, so the walk does not enter them."""
+    out = [] if out is None else out
+    for i, s in enumerate(stmts):
+        if s[0] == "ret":
+            out.append((stmts, i, depth))
+        elif s[0] in _OWN:
+            for b in _stmt_bodies(s):
+                _rets_in(b, depth + (s[0] in _CYCLIC), out)
+    return out
+
+
+def scope(stmts):
+    """``stmts`` as one single-trip scope every ``ret`` in it leaves by.
+
+    A scope is a ``loop`` whose body always breaks (34e9d96), so several returns
+    become one exit with no region production and no label."""
+    for lst, i, depth in _rets_in(stmts):
+        lst[i] = _brk(depth + 1)
+    if not stmts or stmts[-1][0] not in TERMS:
+        stmts.append(("brk",))
+    return [("loop", stmts)]
+
+
+def one_exit(procs):
+    """Each procedure's several returns as its one own last (8.4).
+
+    The scope opens at the first statement any return stands in. A procedure that
+    still calls or still names ``sp`` keeps its returns: one may be a call's edge
+    back or a page-one word the machine returns through, not this procedure's exit."""
+    for k, (e, params, rets, stmts) in enumerate(procs):
+        if calls_in(stmts) or _SP in set(params) | _read_locals(stmts):
+            continue
+        at = next((i for i, s in enumerate(stmts) if _rets_in([s])), None)
+        if at is None or (at == len(stmts) - 1 and stmts[at][0] == "ret"):
+            continue
+        if stmts[at][0] in _ARMED:  # the computed transfer that arms it stands before it
+            at -= 1
+        stmts[at:] = scope(stmts[at:]) + [("ret", False)]
+        procs[k] = (e, params, rets, stmts)
+
+
 def hi_first(s):
     """True where a word store emits its high byte before its low byte.
 
@@ -1506,6 +1652,20 @@ class _Builder:
         out.extend(stmts)
         return self._flow(term, blk.pcs[-1], nxt, out)
 
+    def splice(self, target, ret, body):
+        """An inlined callee's statements as the caller's own (8.4).
+
+        The RTS is an edge to the call's continuation: a body leaving by one
+        trailing ``ret`` splices bare, one leaving by several through a scope. A
+        body binding a pc, leaving by a transfer or returning from a displacement
+        it moved keeps its wrapper."""
+        if bound_pcs(body) or escapes(body) or not sp_balanced(body):
+            return [("callb", target, ret, body)]
+        rets = _rets_in(body)
+        if len(rets) == 1 and body and body[-1][0] == "ret":
+            return body[:-1]
+        return scope(body) if rets else body
+
     def _flow(self, term, site, nxt, out):
         k = term[0]
         if nxt is not None and nxt.kind == "if":
@@ -1522,7 +1682,7 @@ class _Builder:
             self.arm += 1
             body = self.capture(sidprog._items(nxt.b))
             self.arm -= 1
-            out.append(("callb", term[1], term[2], body))
+            out.extend(self.splice(term[1], term[2], body))
             return 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
             self._termlines(term, out)
@@ -2202,6 +2362,14 @@ def _own_conts(stmts, depth=0):
             for b in _stmt_bodies(s):
                 n += _own_conts(b, inner)
     return n
+
+
+def single_trip(body):
+    """Whether a loop body's back edge is unreachable: no own ``cont``, no fall-through.
+
+    A scope the structurer or ``one_exit`` placed is exactly this, and nothing that
+    follows it needs the join a back edge would force."""
+    return bool(body) and body[-1][0] in TERMS and not _own_conts(body)
 
 
 def _defs_name(s, name):
