@@ -480,7 +480,7 @@ that is a property of the problem rather than of the engine:
 | L2 | the solve (#215) | **STOP**: value sites 29.31% non-⊤ against a 60% floor; the exhibits solve (`lane(0,7)`, `addr(S,·)` with its selector named) but pointer-deref reach is 661 of 2,319 |
 | L2b | vocabulary extension (#216) | value reach 29.31% → 36.12%, `⊤-unvocabularised` −35%; **pointer-deref reach unmoved at 28.50%**, so L3/L4 did not proceed |
 | — | canonical idiom suite (#217) | 137 variants over all 23 rows in **5.6 s**; 6 rows invariant, 17 not; 72 strict xfails naming 14 mechanisms |
-| L-SMC | de-SMC (#218) | **in flight, not landed** — the invariant is memory protection: no store may reach executable memory |
+| L-SMC | de-SMC (#218) | **landed**: zero writes to executable memory **624/624** (baseline 364 of 624 wrote code), Gate FP **624/624 clean**, zero refusals corpus-wide |
 
 ### 8.2 The method changed, and that is the substantive result
 
@@ -521,6 +521,37 @@ not need.**
   Measured: opcode/vector patching is rare and 2-way (23 dispatch cells over 6 of
   400 artifacts, max variant set 2), so there is no multiplication to fear.
 - **Procedure structure is factoring done to save space** (§8.4).
+
+De-SMC landed as **one** rewrite rather than four, because the classes are one
+shape at different widths: `desmc.py` relocates every const base an emitted
+access names inside an executed-instruction span, each maximal run of code pages
+moving by one displacement so every index offset survives. The corpus carried a
+fifth class the design did not name — **patched branch displacements**, 44 cells
+over 32 tunes — and it relocated identically, which is the test of a mechanism
+against a rule set. Baseline census: 3,577 patched cells (immediate 2,482,
+abs-operand 550, vector 441, branch 44, opcode 60), **zero** of which were an
+operand on one path and an opcode on another, so the refusal class anticipated in
+advance does not exist in this corpus. Emitted text grew +812,065 bytes (+2.9%,
+405 tunes larger, none smaller) — the moved pages in `image { }` — and byte
+identity was correctly not the gate.
+
+Two engineering findings the landing paid for:
+**the evidence is not enough to pick a destination** (a page free by the evidence
+still carried bytes some path loads, breaking 64 tunes; the destination must also
+be vacant in the image, with the vacancy test admitting the relocation's own copy
+so re-emission is stable), and **precision belongs at the address, not the index
+bound** (bounding a patched indexed store by its index width over-approximates
+into neighbouring data and refused 10 tunes; declaring the run as
+`relocated $LO..$HI -> $DST` and naming its code lets the bound over-approximate
+with nothing refusing).
+
+**What de-SMC did not buy, stated plainly:** the `smc-operand` idiom pins did not
+flip. The operand pair is now a fused `u16` cell outside the instruction stream,
+but `datadecl.declarations` is carved *before* relocation, so a patched indexed
+read is still skipped and no `stream … via` anchor may sit on a code cell; the
+reload tables take no `lo`/`hi` roles and the deref stays unlifted. Making
+declarations see the relocation is its own landing, and the pin text now names
+that blocker so its fix flips it.
 
 Recovery — the voice record, the sequencer levels, the family quotient — comes
 *after*, because each removal deletes a class of accident that recovery would
