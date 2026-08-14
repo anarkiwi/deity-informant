@@ -594,3 +594,99 @@ the voice record, the sequencer levels, the effect machines. That is the point a
 which the structural design (channels from the observed write map, records from
 the selector's value set, levels from address-position reachability) has nothing
 machine-shaped left to see through.
+
+## 9. The next removal: the address space leaves the state (2026-08-14)
+
+§8.4's removal has landed on `stack-removal`: the call graph and the machine
+stack went as one feature (the rung ladder was retired for the reason §8.4
+predicted — no slot proof can admit a spill that lives across a call, and the
+evaluator keeps page one machine-owned while any call form exists). Commando and
+Grid_Runner hold the one-procedure invariant; Automatas is at 0 calls / 0
+page-one faults with its last `sp` tokens one pinned mechanism away
+(M_SPILL_SPAN); corpus-wide, call lines fell 42% and the §8.4-clean count more
+than doubled, with every landing gated at zero clean→worse.
+
+After it, the largest remaining machine accident is the **state model itself**:
+bytes at addresses, because the 6502 offers nothing else. Every structure the
+tune has was flattened through that model — 16-bit values into carry-threaded
+byte columns (the 8-bit ALU), records into parallel byte arrays (`freqlo,x` /
+`freqhi,x`: struct-of-arrays, because `abs,X` is the only indexing), booleans
+into flag bytes, fields into masks. §7.10.1 measured the flattening as the four
+largest residue classes in the output (`carry_val` 5,524 sites, `word_pack`
+4,472, `hi_byte`/`lo_byte` 4,293), and its blocking matrix showed they are one
+feature, not four.
+
+Two facts make the removal well-posed, and both were established the hard way:
+
+- **Gate FP observes the SID write stream and the declared inputs. Nothing
+  else.** Private-state addresses are unobservable; two programs keeping the
+  same values under different layouts are indistinguishable at the gate.
+- **An address is semantics only where an unresolved access may alias it.** The
+  64K array is the top of the aliasing lattice — the "else" branch of naming —
+  not the state model. Two corollaries the prior framing got wrong: an
+  *operation's* width is a value-graph fact (the carry edge threads or it does
+  not), while a *destination's* width is placement the program owns — a
+  discarded or rerouted half is a `trunc` of the lifted word, never a
+  counterexample, and the C64_World pin guards editing placement, not
+  acknowledging width; and where a web is closed, layout is free.
+
+**The invariant, in the same form as §8.4:** every private-state access names a
+declared datum, and **a datum is its closed web, not its address**. The state
+block is typed named declarations; an address is provenance on a closed web and
+semantics only on an open one; the open count is the per-tune residue. Binary at
+the datum; the corpus figure is the fraction of state bytes web-closed, driven
+to 1.0 or named.
+
+**The mechanism is one verdict, not a ladder.** Closure — every reaching
+definition and use of a web resolved, no ⊤ access able to touch it — is a read
+of machinery that already exists (L1's web partition, G1's reach bounds, the
+extent guard). Three consequences fall out of the one verdict:
+
+1. **Width becomes denotational.** Over a closed web the carry-threaded column
+   pair *is* one `u16` variable, unconditionally; the column, lane-thread and
+   pure-loop closed-form axioms (`sbc-chain`/`adc-chain`/`shift-pair`, the
+   catalog's own rows, with SID-Wizard's `player.asm:1747` as the wide-add
+   canonical cite) run over the same graph, and `carry(..)`-as-value,
+   hand-packs and lane extracts leave the expression language.
+2. **Flags return to control.** A flag def whose only consumers are branches is
+   those branches' condition; a dead flag def drops; a flag stored as data is a
+   named refusal.
+3. **Records are a layout theorem.** Parallel byte arrays driven by one index
+   web are one array of records — the struct-of-arrays accident inverted, which
+   is §8.5's "channels from the observed write map" arriving as a consequence
+   of closure rather than a framework of its own.
+
+**The exhibit is Commando's slide step** (the region a defined-but-unread lane
+review surfaced). Today: two `u8` cells written by a subtraction, a borrow
+chain and a bit-per-iteration ROR loop, read once as `idx_5508:2`. After:
+
+    step: u16                                      ; @ $5508 (provenance)
+    step = (freq_a[i]:2 - freq_b[i]:2) >> (speed + 1)
+    acc  = acc + step * n
+
+and the four voice arrays under the one `x` web regroup as
+`voice[x].{pos, gate, ctr, idx}`. The lanes cease to exist as declared cells,
+so the audit question they raised cannot recur.
+
+**Refusals to name in advance**, each owing a driver: an open web keeps its
+address (that is the residue metric, not a failure — today's genuine
+pointer-deref remainder); a pair with no carry edge stays two `u8` facts; SID
+registers and declared volatile inputs stay addressed, being the observable
+interface; an image table read by a computed index stays a declared array with
+a proven extent; store *events* keep their order and framing — value width
+lifts, event timing is placement.
+
+**Gates, per the standing doctrine.** Gate FP byte-exact and unmoved by
+construction — re-layout of unobservable state cannot move the log, and the
+evaluator executes the named model directly. Round-trip totality holds through
+provenance. Drivers first: the idiom suite plus three canonical shapes — the
+parallel-array record, the discarded-half word (C64_World minimised, asserting
+the lift rather than the refusal), the open-web fallback. The corpus runs once:
+closure fraction per tune, expression residue at zero, open webs counted and
+named.
+
+What this deletes: the ALU residue as a campaign of its own, destination-fusion
+rules as semantics, the lanes-of dialect question, and the address-anchored
+half of `datadecl`'s carving. What recovery then faces is §8.5 over variables
+and records — the family quotient (one player per family) taken over a language
+with no memory map left in it.
