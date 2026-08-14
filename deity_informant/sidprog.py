@@ -607,7 +607,11 @@ def _scan_calls(items, bodied, bare):
                 _scan_calls([r.b], bodied, bare)
         elif k == "switch":
             for _lbl, body in r.a[1]:
-                if body is not None:
+                if body is None:
+                    continue
+                if body.kind == "call" and body.b is None:
+                    bare.add(body.a)  # a dispatch arm no site placed still names its pc
+                else:
                     _scan_calls([body], bodied, bare)
 
 

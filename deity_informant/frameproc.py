@@ -1704,16 +1704,19 @@ class _Builder:
         break out of. ``splice``'s guards, read at an arm: one the plan left a
         procedure, one binding a pc some other site's transfer lands on (whose
         ``ret`` answers *that* site), one leaving by a transfer, or one returning
-        from a displacement it moved keeps the call form."""
+        from a displacement it moved keeps the call form. So does an arm whose own
+        pc is bound program-wide: the scoped form binds nothing, and what resolves
+        through that pc -- another site's bare arm -- would then find no target."""
         bare = [lbl for lbl, arm in cases if arm is None or arm.b is None]
-        bodied = []
+        bodied, named = [], False
         for lbl, arm in cases:
             if arm is not None and arm.b is not None:
+                named = named or arm.a in self.labels
                 self.arm += 1
                 bodied.append((lbl, self.capture(sidprog._items(arm.b))))
                 self.arm -= 1
         blocked = (bound_pcs(b) or escapes(b) or not sp_balanced(b) for _l, b in bodied)
-        if bare or any(blocked):
+        if bare or named or any(blocked):
             out.append(("dcall", term[3], term[2]))
             out.append(("swc", bare, bodied))
             return

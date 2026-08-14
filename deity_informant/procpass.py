@@ -109,6 +109,7 @@ class Carry:
         "counts",
         "calls",
         "static",
+        "dyn_sites",
         "dispatch",
         "_memo",
     )
@@ -118,6 +119,7 @@ class Carry:
         graph = _graph(model)
         self.intra = graph[1]
         self.static = set(graph[3])
+        self.dyn_sites = graph[4]
         self.preds = {}
         for pc, outs in self.intra.items():
             for s in outs:
@@ -146,10 +148,10 @@ class Carry:
             if n in seen:
                 continue
             seen.add(n)
-            if not self.block(n):
-                return False
             stack.extend(s for s in self.intra.get(n, ()) if s in self.intra)
-        return all(self.reached_inside(d, seen) for d in seen & self.dispatch)
+        return all(self.block(n, seen) for n in seen) and all(
+            self.reached_inside(d, seen) for d in seen & self.dispatch
+        )
 
     def reached_inside(self, pc, body):
         """Whether only ``body``'s own flow reaches ``pc``.
@@ -159,38 +161,42 @@ class Carry:
         have to pick one of them, so no copy carries a dispatch reached from outside."""
         return pc not in self.landings and not self.preds.get(pc, set()) - body
 
-    def block(self, pc):
-        """Whether a copy may carry ``pc``: every variant's own transfer, and the cell.
+    def block(self, pc, body):
+        """Whether a copy of ``body`` may carry ``pc``: each variant's transfer, and the cell.
 
         A declared dispatch is a ``switch`` over a state cell the copy reads like any
-        other, so what a second one must not name twice is a pc, not the cell."""
+        other, so what a second one must not name twice is a pc, not the cell -- and a
+        one-variant dispatch is a plain block leaf in a copy, which drops its ``opsw``."""
         variants = getattr(self.model, "all_variants", self.model.variants)(pc)
-        if not variants:
+        if not variants or (pc in self.dispatch and len(variants) < 2):
             return False
         if len(variants) > 1 and pc not in self.dispatch:
             return False
-        return all(self.term(self.model.blocks[key]) for key in variants)
+        return all(self.term(self.model.blocks[key], body) for key in variants)
 
-    def term(self, blk):
-        """Whether a copy may carry one block variant's terminator."""
+    def term(self, blk, body):
+        """Whether a copy of ``body`` may carry one block variant's terminator."""
         if blk.term[0] != "jsr":
             return True
         if blk.term[1] is None:
-            return self.armed(blk.pcs[-1])
+            return self.armed(blk.pcs[-1], body)
         if self.counts.get(blk.term[1], 0):
             return False  # a callee a computed goto also lands on is that flow's
         return self.body(blk.term[1])
 
-    def armed(self, site):
-        """Whether a copy may carry the computed call at ``site``: every arm with it.
+    def armed(self, site, body):
+        """Whether a copy of ``body`` may carry the computed call at ``site``.
 
-        An arm the copy places is the copy's own text, so the dispatch is the
-        statement-scoped ``switch goto`` and binds no arm pc program-wide."""
+        Every arm is the copy's own text, so the dispatch is the statement-scoped
+        ``switch goto`` and binds no arm pc program-wide -- which a site outside the
+        body that left the same arm bare would still be resolving through, so every
+        site dispatching over the arm has to be inside the body too."""
         tgts = set(self.model.dyn_targets.get(site, ()))
         return bool(tgts) and all(
             self.calls.get(t) == self.counts.get(t)
             and t not in self.static
             and t != getattr(self.model, "play", None)
+            and self.dyn_sites.get(t, set()) <= body
             and self.body(t)
             for t in tgts
         )

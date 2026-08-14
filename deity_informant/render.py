@@ -277,7 +277,7 @@ def _structure_once(model, entry, allow):
         an enclosing procedure. Every further site, and every site whose callee plain flow
         also reaches, takes its own copy -- exact where each block may be carried by one
         (``procpass.Carry``), the region does not run through the call line, and the copy
-        binds no label and leaves no call line the callee's pc is bound at twice."""
+        binds no label."""
         if not model.variants(target) or target in chain:
             return None
         cfg = _proc_cfg(model, target)
@@ -292,27 +292,17 @@ def _structure_once(model, entry, allow):
         """The callee's body as this site's own copy, or None where it may not be."""
         if site in cfg[0] or not procpass.carry(model).body(target):
             return None
-        labs, left = set(), []
+        labs = set()
         deep = chain | {target}
-        nest = (set(), labs, _copied(handler, deep, left), _copied(callee, deep, left), gate)
+        nest = (set(), labs, _copied(handler, deep), _copied(callee, deep), gate)
         top = _proc(model, target, cfg, nest, callers)
-        if labs or left or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
+        if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
             return None
         return Region("seq", [_as_copy(r) for r in top[0].a])
 
-    def _copied(place, chain, left):
-        """``place`` inside a copy: its body is a copy too, and never the sole one.
-
-        A refusal is the copy's own answer: the line it stands at would keep its call
-        form, so ``left`` records it and the copy is not taken."""
-
-        def go(target, site, callers):
-            got = place(target, site, callers, chain, False)
-            if got is None:
-                left.append(target)
-            return got
-
-        return go
+    def _copied(place, chain):
+        """``place`` inside a copy: its body is a copy too, and never the sole one."""
+        return lambda target, site, callers: place(target, site, callers, chain, False)
 
     def handler(target, site, callers, chain=frozenset(), sole=None):
         """Region for a computed-call handler nested in its dispatch arm, or None:
