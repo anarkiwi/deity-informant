@@ -466,6 +466,31 @@ def _dispatch_share():
     )
 
 
+def _flown_copy():
+    """`flown-copy`: a callee two static sites call and plain flow also reaches.
+
+    No site owns the body -- the flow does -- so the removal is a copy per site beside
+    it, which is exact where every block of the body may be carried by one. Grid_Runner
+    calls its $10DA twice and then walks into it with the third index."""
+
+    def play(p, table, gap):
+        for off in (0, 3):
+            idx(p, "X", off)
+            p.i("JSR", "abs", ("L", "fbody"))
+        if gap:
+            p.i("LDA", "zp", ROW).i("STA", "abs", SID + 3)
+        idx(p, "X", 5)
+        bump(p)
+        p.label("fbody").i("LDA", "zp", ROW).i("STA", "abs", SID + 1)
+        col(p, "X", table)
+        p.i("STA", "abs", SID).i("RTS")
+
+    return I.cap(
+        V("%s/%s" % (t, "gap" if g else "tight"), lambda p, a=t, b=g: play(p, a, b))
+        for t, g in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
 def _shared_entry():
     """`shared-entry`: two entries into one routine, the second calling the first's flow.
 
@@ -985,6 +1010,7 @@ SHAPES = (
     Shape("arm-landing", "two arms of one call, one tail", vec_data, _arm_landing()),
     Shape("mixed-handler", "an arm a static call also names", vec_data, _mixed_handler()),
     Shape("shared-entry", "two entries into one routine", I.tab_data, _shared_entry()),
+    Shape("flown-copy", "two sites and a flow into one body", I.tab_data, _flown_copy()),
     Shape("tail-recursion", "the recursive call a return follows", I.tab_data, _tail_recursion()),
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),

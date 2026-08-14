@@ -266,41 +266,55 @@ def _structure_once(model, entry, allow):
     inline = procpass.plan(model).inline
     play = getattr(model, "play", None)
 
-    def placed(target, callers, sole):
-        """Region for a callee's body placed at this site, or None where it may not
-        be: recursive, blockless, or overlapping any enclosing procedure.
+    def placed(target, callers, sole, site, chain):
+        """Region for a callee's body placed at this site, or None where it may not be.
 
-        A sole site owns the body and shares the label bookkeeping; every further
-        site takes its own copy, which is exact where the copy binds no pc
-        (``split``'s rule, at a call line)."""
-        if target in callers or not model.variants(target):
+        A sole site owns the body: it shares the label bookkeeping, so it may not overlap
+        an enclosing procedure. Every further site, and every site whose callee plain flow
+        also reaches, takes its own copy -- exact where each block may be carried by one
+        (``_copyable``), the region does not run through the call line, and the copy binds
+        no label. A body a copy carries is a copy in turn, so its own callees splice."""
+        if not model.variants(target) or target in chain:
             return None
         cfg = _proc_cfg(model, target)
-        if set(cfg[0]) & callers:
-            return None
         if sole:
-            if target in emitted:
+            if target in callers or set(cfg[0]) & callers or target in emitted:
                 return None
             top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
             return Region("seq", top) if top else None
+        if site in cfg[0] or not all(_copyable(model, n) for n in cfg[0]):
+            return None
         labs = set()
-        top = _proc(model, target, cfg, (set(), labs, _no_body, _no_body, gate), callers)
+        deep = chain | {target}
+        nest = (set(), labs, _copied(handler, deep), _copied(callee, deep), gate)
+        top = _proc(model, target, cfg, nest, callers)
         if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
             return None
         return Region("seq", [_as_copy(r) for r in top[0].a])
 
-    def handler(target, callers):
+    def _copied(place, chain):
+        """``place`` inside a copy: its body is a copy too, and never the sole one."""
+        return lambda target, site, callers: place(target, site, callers, chain, False)
+
+    def handler(target, site, callers, chain=frozenset(), sole=None):
         """Region for a computed-call handler nested in its dispatch arm, or None:
         a computed goto also lands there, a static sub, or the play entry."""
         if calls.get(target) != sites.get(target) or target in static_subs or target == play:
             return None
-        return placed(target, callers, sites.get(target) == 1)
+        own = sites.get(target) == 1 if sole is None else sole
+        return placed(target, callers, own, site, chain)
 
-    def callee(target, site, callers):
+    def callee(target, site, callers, chain=frozenset(), sole=None):
         """Region for a static callee owned by its call line, or None where the plan
-        placed no body at this site."""
+        placed no body at this site.
+
+        A callee plain flow also reaches is owned by that flow, so its sole call site
+        takes a copy like any further one would."""
         ss = inline.get(target, ())
-        return placed(target, callers, len(ss) == 1) if site in ss else None
+        if site not in ss:
+            return None
+        own = len(ss) == 1 and target not in callers if sole is None else sole
+        return placed(target, callers, own, site, chain)
 
     shared = (emitted, labels, handler, callee, gate)
     top = _proc(model, entry, _proc_cfg(model, entry), shared, frozenset())
@@ -388,8 +402,8 @@ def _proc(model, entry, cfg, shared, outer, depth=_SPLIT_DEPTH, stop=None, quota
     def fr(pc):
         return _is_frontier(model, pc)
 
-    def sub(target):
-        return handler(target, nodeset | outer)
+    def sub(target, site):
+        return handler(target, site, nodeset | outer)
 
     def subc(target, site):
         return callee(target, site, nodeset | outer)
@@ -696,7 +710,7 @@ def _term_flow(ctx, model, blk, pc, loops, ipdom):
     if term[0] == "jsr":
         if term[1] is None:  # computed call: dispatch over the handler set
             targets = model.dyn_targets.get(blk.pcs[-1], [])
-            cases = [("$%04X" % t, Region("call", t, sub(t))) for t in targets]
+            cases = [("$%04X" % t, Region("call", t, sub(t, pc))) for t in targets]
             return [Region("switch", ("call", cases), [])], (term[2] + 1) & 0xFFFF
         body = subc(term[1], pc)
         if body is not None:  # single-site callee: owned region after the call line

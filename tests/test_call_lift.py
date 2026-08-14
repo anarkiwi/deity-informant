@@ -47,12 +47,13 @@ M_SHARED_HANDLER = (
     "`switch call { $PC .. }`; copying it at the static sites as well is the removal"
 )
 M_FLOWN_CALLEE = (
-    "a call target plain flow also reaches is dominated by no call site, so "
-    "procpass._plan places its body nowhere and the `call $PC` line stays; the text "
-    "it names is the flow's, whose own `ret` is then interior. Copying it at the "
-    "site is the removal, and procpass.copies_ok is what bounds that (defMON's "
-    "$1022 under $1003 and $1006 carries an SMC dispatch and six call lines, so no "
-    "copy may carry it: Automatas keeps all three of its call sites)"
+    "a call target plain flow also reaches is dominated by no call site, so only the "
+    "flow may own its text and every site has to take a copy instead -- which "
+    "procpass.copies_ok bounds. Where the body carries a block no copy may (a call "
+    "line, an SMC dispatch, a computed call), the site keeps its `call $PC` line and "
+    "the flow's own `ret` is then interior. `flown-copy` is the shape once the bound "
+    "holds; defMON's $1022 under $1003 and $1006 carries three two-variant SMC "
+    "dispatch blocks and six call lines, so Automatas keeps all three of its sites"
 )
 M_S_RELOCATED = (
     "a TXS from a computed value is an absolute write to sp, not a displacement, so "
@@ -142,6 +143,10 @@ CLEAN = (
     ("multi-site", "3-site/X"),
     ("multi-site", "3-site/Y"),
     ("multi-site", "3-site/no-arg"),
+    ("flown-copy", "tone/tight"),
+    ("flown-copy", "tone/gap"),
+    ("flown-copy", "alt/tight"),
+    ("flown-copy", "alt/gap"),
     ("two-callers", "X/sid"),
     ("two-callers", "X/cell"),
     ("two-callers", "Y/sid"),

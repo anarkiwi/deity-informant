@@ -138,16 +138,20 @@ def _rts_trick():
     """ASL/04's three per-voice passes: ``JSR`` into a label of the calling list itself.
 
     The in-edge a map built from ``goto`` alone misses, and the guard's own finding:
-    the index at the store is entered from two call sites as well as by fall-through."""
+    the index at the store is entered from two call sites as well as by fall-through.
+    The pass keeps its own call line, which is what makes the edges raw: its body
+    carries one, so no site may take the copy the flown-callee removal would place."""
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0x00)
     a.i("JSR", "abs", ("L", "voice")).i("JSR", "abs", ("L", "step"))
     a.label("step").i("INX")
     a.label("voice")
-    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
+    a.i("JSR", "abs", ("L", "tick"))
     a.i("STA", "zpx", ZPX)
     a.i("LDA", "zpx", ZPX).i("AND", "imm", 0x0F).i("ORA", "imm", 0x20).i("STA", "abs", SID + 4)
     a.i("RTS")
+    a.label("tick")
+    a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR).i("RTS")
     data = {CTR: 0}
     data.update({ZPX + k: 0 for k in range(0x10)})
     return a, data
