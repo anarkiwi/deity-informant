@@ -229,6 +229,7 @@ class Document:
         self.subtune = 0
         self.prologue = []
         self.dispatch_sets = {}
+        self.relocated = []
         self.mem0 = bytearray(0x10000)
         self.data_decls = []
         self.symbols = {}
@@ -309,6 +310,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def dispatch_set(self, c):
         self.doc.dispatch_sets[_hexval(c[0])] = {_hexval(t) for t in c[1:]}
+
+    def relocated(self, c):
+        self.doc.relocated.append(tuple(_hexval(t) for t in c))
 
     def inputs_sec(self, c):
         self.doc.inputs = [str(t) for t in c]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from . import datadecl
+from . import desmc
 from . import eqlift_mem
 from . import framefuse
 from . import framemath
@@ -117,6 +118,7 @@ class FrameProgram:
         bounds=(),
         operators=(),
         landings=None,
+        relocated=(),
     ):
         self.play = play
         self.init = init
@@ -140,6 +142,7 @@ class FrameProgram:
         self.bounds = dict(bounds)  # stage 4: field name -> ("mask", k) / ("bound", lo, hi)
         self.operators = dict(operators)  # stage 4: opcode -> (name, arity, repeat, writes)
         self.dispatch = {pc: set(v) for pc, v in dict(dispatch).items()}  # opcode-cell sets
+        self.relocated = [tuple(b) for b in relocated]  # de-SMC: (first, last, destination)
         self.evidence = evidence or G.new_evidence()  # 3a: the block-model rebuild channels
         self.landings = None if landings is None else frozenset(landings)  # None: parsed
         self._lines = None
@@ -538,17 +541,21 @@ def program(model, extents=None):
     trees, labels, view = sidprog._model_trees(model)
     state, inputs = sidprog._state_fields(view, decls, model.dispatch_sets, symbols)
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
+    smc, state, symbols = desmc.apply_rung(model, decls, procs, state, symbols)
+    mem0 = smc.seed(model.mem0)  # a relocated page carries the bytes its source page holds
     stack_proofs = framestack.apply_rung(procs)
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs, decls)
     regions = datadecl.Regions(decls)
     frameproc.repolish(procs, model.play, regions)
-    state, proofs = framefuse.apply_rung(model, decls, procs, state, symbols, G.addr_name)
-    code = set(datadecl._code_bytes(model))
+    state, proofs = framefuse.apply_rung(
+        model, decls, procs, state, symbols, G.addr_name, smc, mem0
+    )
+    code = smc.code
     for _pass in range(4):
         before = repr(procs)
         frameproc.repolish(procs, model.play, regions)
-        pairs = _pair_tables(procs, decls, model.mem0, model.written, code)
+        pairs = _pair_tables(procs, decls, mem0, model.written, code)
         regions = datadecl.Regions(decls)  # the rung re-carves decls: containment follows
         for _e2, _pa2, _r2, stmts2 in procs:
             _adjoin_pairs(stmts2, pairs, regions)
@@ -557,9 +564,9 @@ def program(model, extents=None):
     state = sidprog._drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
     proofs += framestack.drop_sp(procs, model.play, regions)
-    resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(model.mem0, decls, procs)
+    resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
-        model.mem0, decls, procs, state, symbols, blocked, extents
+        mem0, decls, procs, state, symbols, blocked, extents
     )
     resolved.update(lifted)
     blocked.update(lifted)  # 2b spent its extent on the web: it leaves the top population
@@ -577,7 +584,7 @@ def program(model, extents=None):
         decls,
         symbols,
         procs,
-        model.mem0,
+        mem0,
         _aliased(proofs + deref_proofs + lift_proofs + init_proofs, symbols),
         resolved,
         blocked,
@@ -588,6 +595,7 @@ def program(model, extents=None):
         model.dispatch_sets,
         _evidence(model, prov0, sites, census),
         landings=framefuse._landings(model),
+        relocated=smc.blocks(),
     )
     prog.roles, prog.bounds = _roles(prog)
     prog.operators = _operators(model)
@@ -722,6 +730,7 @@ def dumps(prog):
         "dispatch $%04X: %s" % (pc, " ".join("$%02X" % v for v in sorted(prog.dispatch[pc])))
         for pc in sorted(prog.dispatch)
     )
+    head.extend("relocated $%04X..$%04X -> $%04X" % b for b in sorted(prog.relocated))
     ext = sidprog._extent_names(prog.extents, prog.symbols)
     to_alias = sidprog._alias_sub(prog.symbols)
     procs = prog.lines() if to_alias is None else list(map(to_alias, prog.lines()))
@@ -776,6 +785,7 @@ def parse(text):
         init_census=doc.evidence["census"],
         extents=doc.extents,
         dispatch=doc.dispatch_sets,
+        relocated=doc.relocated,
         evidence=doc.evidence,
         roles=doc.roles,
         bounds=doc.bounds,

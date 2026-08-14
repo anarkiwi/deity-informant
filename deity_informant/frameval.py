@@ -8,6 +8,7 @@ buffer per frame and flush through the single projection ``framelog.canonical``.
 from __future__ import annotations
 
 from . import datadecl
+from . import desmc
 from . import expr as E
 from . import framefuse
 from . import framelog
@@ -108,9 +109,43 @@ class Extent:
         return many
 
 
+class Relocated:
+    """The de-SMC address seat: ``relocated`` moves the instruction stream, not the state.
+
+    A run's declaration names its **code** bytes at the destination; every other byte of
+    it is still itself, so an access that lands on a play-written cell of the run reads
+    and writes that cell where the rest of the program does (docs/frameprog.md 2)."""
+
+    __slots__ = ("state", "runs")
+
+    def __init__(self, prog):
+        code = desmc.executable(prog)
+        data = set(prog.evidence.get("written", ()) or ()) - code
+        self.runs = [(dst, dst + hi - lo, dst - lo) for lo, hi, dst in prog.relocated]
+        self.state = {c for lo, hi, _d in prog.relocated for c in data if lo <= c <= hi}
+
+    def __call__(self, addr, f, width):
+        """``f`` translated where the address is based in a moved run, else ``f`` itself."""
+        base, _idx = frameproc.addr_split(addr)
+        got = [d for lo, hi, d in self.runs if lo <= base <= hi] if base is not None else []
+        if not got or not self.state:
+            return f
+        disp, state = got[0], self.state
+
+        def one(r, m, rd):
+            a = f(r, m, rd)
+            src = (a - disp) & 0xFFFF
+            return src if any((src + j) & 0xFFFF in state for j in range(width)) else a
+
+        return one
+
+
 def _guard(prog):
     """The guard a program's own annotations ask for: none where it declares none."""
-    return Extent(prog) if getattr(prog, "extents", None) else None
+    got = Extent(prog) if getattr(prog, "extents", None) else None
+    if not getattr(prog, "relocated", None):
+        return got
+    return _seat(Relocated(prog), got)
 
 
 def _seat(probe, check):
@@ -225,6 +260,7 @@ class _Code:
 
     def __init__(self, prog, watch=(), pin=None, probe=None):
         self.mem0 = prog.mem0
+        self.code = desmc.executable(prog)  # the memory no store of a de-SMC program reaches
         self.probe = _seat(probe, _guard(prog))  # both seats carry the same wrapper
         self.pin = dict(getattr(prog, "pinned", ()) if pin is None else pin)
         self.watch = {id(s): i for i, s in enumerate(watch)}
@@ -291,6 +327,31 @@ class _Code:
         f = self.expr(n)
         return f if self.probe is None else self.probe(n, f, sz)
 
+    def store_addr(self, n, sz):
+        """A store address that provably leaves executable memory (docs/frameprog.md 2).
+
+        A const one is refused here -- a program that stores into its own instruction
+        stream is not de-SMC'd and must not be emitted; a computed one faults at the
+        cell, so the invariant is machine-checked and never a claim."""
+        cells = self.code
+        if n[0] == "const":
+            bad = [c for c in ((n[1] + j) & 0xFFFF for j in range(sz)) if c in cells]
+            if bad:
+                raise FrameFault("store into executable memory $%04X" % bad[0])
+            return self.addr(n, sz)
+        f = self.addr(n, sz)
+        if not cells:
+            return f
+
+        def checked(r, m, rd):
+            a = f(r, m, rd)
+            for j in range(sz):
+                if (a + j) & 0xFFFF in cells:
+                    raise FrameFault("store into executable memory $%04X" % ((a + j) & 0xFFFF))
+            return a
+
+        return checked
+
     # -- statements ---------------------------------------------------------------
     def seq(self, stmts, ctx):
         i = 0
@@ -337,13 +398,15 @@ class _Code:
     def _s_st(self, s, _ctx):
         sz = G.store_width(s[2])
         if sz == 1:
-            self.emit(("st", self.addr(s[1], 1), self.expr(s[2]), self.deriv(s[2]), self.tag(s)))
+            self.emit(
+                ("st", self.store_addr(s[1], 1), self.expr(s[2]), self.deriv(s[2]), self.tag(s))
+            )
             return
         halves = framefuse.unpack(s[2]) or (s[2],) * sz
         derv = tuple(self.deriv(h) for h in halves)
         # The byte order is the store's own: ascending unless it says otherwise.
         order = tuple(range(sz))[:: -1 if frameproc.hi_first(s) else 1]
-        self.emit(("stw", self.addr(s[1], sz), self.expr(s[2]), derv, self.tag(s), order))
+        self.emit(("stw", self.store_addr(s[1], sz), self.expr(s[2]), derv, self.tag(s), order))
 
     def deriv(self, val):
         """``(address closure, taint slots)``: where a stored byte may be copied from.

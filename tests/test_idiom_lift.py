@@ -15,9 +15,10 @@ XFAIL = dict(strict=True)
 _PIN = "idiom suite: "
 
 M_SMC = (
-    "smc-operand: the pointer lives in an instruction's own operand bytes, so the two "
-    "lane cells are declared as separate columns rather than one lo/hi pair and "
-    "pair-row/word-pack have nothing to fire on"
+    "smc-operand: de-SMC moves the operand pair out of the instruction stream and fuses "
+    "it (docs/frameprog.md 2.1), but the declarations are carved before it, so "
+    "datadecl._read_pcs skips a patched indexed read and no `via` anchor may sit on a "
+    "code cell -- the reload tables take no lo/hi roles and the deref stays unlifted"
 )
 M_UNOBS_CARRY = (
     "unobserved carry: a 16-bit step whose carry arm the frame window never takes "

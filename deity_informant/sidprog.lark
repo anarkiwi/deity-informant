@@ -9,7 +9,7 @@ start: frameprog_doc
 frameprog_doc: fphead _fheader* image_sec? state_sec? operators_sec? data_sec? symbols_sec? evidence_sec? sub*
 fphead: "frameprog" INT _NL
 
-_fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set
+_fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set | relocated
 
 play: "play" HEX _NL
 init: "init" HEX _NL
@@ -17,6 +17,7 @@ subtune: "subtune" INT _NL
 sidinit: _SIDINIT "{" _NL sidwrite* "}" _NL
 sidwrite: HEX "=" HEX _NL
 dispatch_set: "dispatch" HEX ":" HEX* _NL
+relocated: "relocated" HEX ".." HEX "->" HEX _NL
 inputs_sec: "inputs" "{" NAME* "}" _NL
 
 // ---- image / data / symbols / state sections ---------------------------------
