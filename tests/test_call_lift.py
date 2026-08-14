@@ -17,12 +17,6 @@ XFAIL = {"strict": True}
 
 _PIN = "call suite: "
 
-M_SPILL_SPAN = (
-    "a control transfer stands between the store and its read-back, and rung (d0)'s "
-    "locality is a store dominating every read with none between (framestack), so the "
-    "balanced spill stays a page-one access at one displacement and sp stays the "
-    "procedure's parameter -- defMON's $01FB sentinel, held across the whole tick"
-)
 M_RET_WORD = (
     "the callee returns from a displacement it moved: it pulls the word the machine "
     "pushed and pushes one back, so frameproc.sp_balanced refuses the splice and the "
@@ -60,7 +54,6 @@ M_SP_LOOP_PUSH = (
 
 MECHANISMS = (
     M_RET_WORD,
-    M_SPILL_SPAN,
     M_SELF_CALL,
     M_SHARED_HANDLER,
     M_S_RELOCATED,
@@ -76,10 +69,6 @@ M_BRK_TERM = (
 
 PINS = {
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
-    ("spill-span", "tone/tight"): (M_SPILL_SPAN,),
-    ("spill-span", "tone/wide"): (M_SPILL_SPAN,),
-    ("spill-span", "alt/tight"): (M_SPILL_SPAN,),
-    ("spill-span", "alt/wide"): (M_SPILL_SPAN,),
     ("rts-trick", "loop"): (M_SP_LOOP_PUSH,),
     ("mixed-handler", "head/vt0"): (M_SHARED_HANDLER,),
     ("mixed-handler", "head/vt1"): (M_SHARED_HANDLER,),
@@ -119,6 +108,10 @@ CLEAN = (
     ("multi-site", "3-site/X"),
     ("multi-site", "3-site/Y"),
     ("multi-site", "3-site/no-arg"),
+    ("spill-span", "tone/tight"),
+    ("spill-span", "tone/wide"),
+    ("spill-span", "alt/tight"),
+    ("spill-span", "alt/wide"),
     ("flown-copy", "tone/tight"),
     ("flown-copy", "tone/gap"),
     ("flown-copy", "alt/tight"),

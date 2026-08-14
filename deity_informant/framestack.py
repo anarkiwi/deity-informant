@@ -2,7 +2,8 @@
 
 ``PHA``/``PLA`` at a statically known ``sp`` lower to a store and a load at a
 constant stack-page cell, so a register spill reads back as tune state. A slot
-every read of which a store dominates, no control transfer between, is a local.
+every read of which a store dominates, none of the procedure's own accesses
+between, is a local: the domination is asked over the structured region tree.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from .structured import Proof
 
 _PAGE = range(0x0100, 0x0200)
 _STRAIGHT = ("asg", "st", "if")  # the only forms that transfer no control
+_OPAQUE = frameproc._ANYCALL | frozenset(("label",))  # a machine push, and an open join
 
 
 def _addr(cell):
@@ -83,10 +85,10 @@ class _Slot:
     def _walk(self, stmts, defd):
         """Must-def over one statement list; returns the state it leaves behind.
 
-        A control transfer kills the definition *after* its own operands are read,
-        which is when the machine reads them. The arms of an ``if`` intersect: a slot
-        written in both arms and read in the shared tail is a local with two definitions.
-        """
+        A definition is monotone: only a call's own push and a join no list enumerates
+        unmake it, so a region is entered with what stands before it and hands back
+        what holds on its far side. The arms of an ``if`` intersect, so a slot written
+        in both and read in the shared tail is a local with two definitions."""
         want = ("mem", _addr(self.cell), 1)
         for s in stmts:
             k = s[0]
@@ -108,13 +110,9 @@ class _Slot:
             if k == "st" and (s[1], G.store_width(s[2])) == want[1:]:
                 self.stores += 1
                 defd = True
-            if k == "if":
-                arms = [self._walk(b, defd) for b in frameproc._stmt_bodies(s)]
-                defd = all(arms)  # both arms walk, whatever the first leaves behind
-            else:
-                for b in frameproc._stmt_bodies(s):
-                    self._walk(b, False)
-                defd = defd and k in _STRAIGHT
+            opaque = k in _OPAQUE  # a callee's body is entered past the machine's push
+            arms = [self._walk(b, not opaque and defd) for b in frameproc._stmt_bodies(s)]
+            defd = all(arms) if k == "if" else (defd and all(arms) and not opaque)
         return defd
 
     def proof(self, name):
@@ -709,6 +707,8 @@ class _Unbalanced(Exception):
 _ENTRY = ("entry", 0)  # the displacement a procedure is entered and must return at
 _INLINED = frozenset(("callb", "swc"))  # a callee's body: its ``ret`` is the call's edge
 _EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"))
+_EXITS = frameproc._EXITS  # ``cont``/``brk``: the one edge whose target the text names
+_CYCLIC = frameproc._CYCLIC  # the regions a levelled exit counts out through
 
 
 def _join(a, b):
@@ -731,11 +731,12 @@ class _SpFlow:
         self.at_entry = True
         self.exit_disp = exit_disp
         self.top = True
+        self.heads = []
 
     def run(self, stmts, st):
         """The exit state where every edge holds, else ``_Unbalanced``."""
         self.entry, self.at_entry, self.caps = st, True, {}
-        self.top = True
+        self.top, self.heads = True, []
         return self.walk(stmts, st)
 
     def returns(self, st):
@@ -760,6 +761,15 @@ class _SpFlow:
             raise _Unbalanced
         return self.entry
 
+    def exits(self, s, st):
+        """A ``continue``/``break``: the head of the loop it names is where it lands.
+
+        A structured exit's target is enumerated -- the level counts the enclosing
+        loops -- so it holds at that head rather than at the procedure's entry, which
+        is what lets a spill stand live across a loop."""
+        n = frameproc.exit_level(s)
+        return _join(st, self.heads[-n]) if len(self.heads) >= n else self.leaves(st)
+
     def update(self, v, st):
         """One ``sp = ..`` assignment against the state in force."""
         d = _sp_delta(v, self.sp)
@@ -775,11 +785,12 @@ class _SpFlow:
         """A callee inlined at the call: its own ``ret`` edges stand where it began."""
         outer, self.entry = self.entry, st
         top, self.top = self.top, False
+        heads, self.heads = self.heads, []
         try:
             for b in frameproc._stmt_bodies(s):
                 _join(self.walk(b, st), st)
         finally:
-            self.entry, self.top = outer, top
+            self.entry, self.top, self.heads = outer, top, heads
         return st
 
     def call(self, st):
@@ -801,6 +812,8 @@ class _SpFlow:
             return self.call(st)
         if k == "ret" and self.top and self.exit_disp:
             return self.returns(st)
+        if k in _EXITS:
+            return self.exits(s, st)
         if k in _EDGES:
             return self.leaves(st)
         if k == "if":
@@ -808,8 +821,14 @@ class _SpFlow:
         if k in _INLINED:
             return self.body(s, self.call(st))
         if k in ("loop", "for", "opsw", "swg"):
-            for b in frameproc._stmt_bodies(s):
-                _join(self.walk(b, st), st)
+            if k in _CYCLIC:
+                self.heads.append(st)
+            try:
+                for b in frameproc._stmt_bodies(s):
+                    _join(self.walk(b, st), st)
+            finally:
+                if k in _CYCLIC:
+                    self.heads.pop()
             return st
         if k in _RAW_CALLS:
             return self.call(st)

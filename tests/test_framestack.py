@@ -238,8 +238,19 @@ def _read_first():
     return [_read(), _store()]
 
 
-def _control_between():
-    return [_store(), ("ret", False), _read()]
+def _loop_between():
+    """The landed rule: a region between the two ends carries the definition."""
+    return [_store(), ("loop", [("asg", "t1", ("const", 0, 1)), ("brk", None)]), _read()]
+
+
+def _call_between():
+    """The machine's own push is the one page-one write no operand names."""
+    return [_store(), ("call", 0x2000, 0x1234), _read()]
+
+
+def _label_between():
+    """A join the list does not enumerate: a ``goto`` elsewhere may reach it."""
+    return [_store(), ("label", 0x1234), _read()]
 
 
 def _one_arm_only():
@@ -271,7 +282,9 @@ def _word_store():
     [
         (_clean, None),
         (_read_first, "a read is not dominated by a store of the slot"),
-        (_control_between, "a read is not dominated by a store of the slot"),
+        (_loop_between, None),
+        (_call_between, "a read is not dominated by a store of the slot"),
+        (_label_between, "a read is not dominated by a store of the slot"),
         (_one_arm_only, "a read is not dominated by a store of the slot"),
         (_stack_peek, "another resolvable access may touch the slot"),
         (_blind_store, "an unresolvable store may alias the live slot"),
