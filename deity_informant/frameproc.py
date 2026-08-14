@@ -2845,6 +2845,32 @@ def _fold_chain(n, env, at, regions):
     return n
 
 
+def const_value(n):
+    """The one value the expression denotes, else None: a fold over constant leaves."""
+    if n[0] == "const":
+        return n[1] & E.mask(n[2])
+    if n[0] != "op":
+        return None
+    vals = [const_value(c) for c in n[2]]
+    if any(v is None for v in vals):
+        return None
+    return E._apply(n[1], vals, [E.width(c) for c in n[2]], n[3])
+
+
+def _pin_targets(stmts):
+    """A computed goto whose operand denotes one value transfers to that pc.
+
+    Every definition reaching the transfer was a constant, so the value question
+    answered it outright and the text says so rather than restating the arithmetic."""
+    for i, s in enumerate(stmts):
+        for b in _stmt_bodies(s):
+            _pin_targets(b)
+        if s[0] == "dgoto" and s[1][0] != "const":
+            got = const_value(s[1])
+            if got is not None:
+                stmts[i] = ("dgoto", ("const", got & 0xFFFF, 2))
+
+
 def _fold_expr(n, env, at, regions, in_addr=False):
     if n[0] == "mem":
         n = ("mem", _fold_expr(n[1], env, at, regions, True), n[2])
@@ -3781,6 +3807,7 @@ def repolish(procs, play, regions=None):
         for e, stmts in info.procs.items():
             foreign = frozenset(t for e2, ts in gotos.items() if e2 != e for t in ts)
             _fold_words(stmts, regions, foreign=foreign)
+            _pin_targets(stmts)
             factored |= _factor_ifs(stmts, stmts)
         if not (pruned or inlined or factored):
             break

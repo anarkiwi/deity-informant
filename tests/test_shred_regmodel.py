@@ -1053,7 +1053,7 @@ def _jsr_inline_skip():
     """Stage 4 (control): the trick at one call site, and it lifts today.
 
     The lone raw call writes the return slot at a concrete stack cell, so the
-    callee's rewrite of that cell is a constant push pair and ``lift_rts_trick``
+    callee's rewrite of that cell is a constant push pair and rung (d0r)
     turns it into the goto it is - the continuation the machine takes."""
     a = G.Asm(G.ORG)
     _skip_head(a)
@@ -1875,7 +1875,7 @@ def test_a_single_site_inline_skip_lifts_through_its_return_slot():
 
     The lone raw ``call`` writes the return slot at a concrete stack cell, so
     the callee's rewrite of it is the constant push pair 7.9 reads and
-    ``framestack.lift_rts_trick`` gives it the goto the machine takes."""
+    rung (d0r) gives it the goto the machine takes."""
     assert _gate("jsr_inline_skip") is None
 
 
@@ -1884,7 +1884,7 @@ def test_a_shared_inline_data_callee_evaluates_through_the_skip():
     """#155's shape with the callee shared, which is what makes it a procedure.
 
     The promotion is refused (``frameproc.slot_reader``), so the raw call writes
-    the return slot the callee steps and ``lift_rts_trick`` reads the goto off it."""
+    the return slot the callee steps and rung (d0r) reads the goto off it."""
     assert _gate("jsr_inline_skip_two_sites") is None
     body = _body(_lift("jsr_inline_skip_two_sites"))
     assert not re.search(r"\n\s+sub_%04X\(" % SPSUB, body), "the slot reader promoted"

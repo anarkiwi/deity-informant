@@ -146,10 +146,16 @@ def vec_data(p):
 
 
 def trick_data(p):
-    """The same columns holding ``target - 1``: what an RTS trick pushes."""
+    """The same columns holding ``target - 1``: what an RTS trick pushes.
+
+    ``trkw`` is the same words interleaved, which is what a loop or a pointer walks;
+    ``st2``/``st3`` sit in it unreached, so the trace closes two of four rows."""
     I.tab_data(p)
     p.label("trklo").byte(("LOL", "st0", -1), ("LOL", "st1", -1))
     p.label("trkhi").byte(("HIL", "st0", -1), ("HIL", "st1", -1))
+    p.label("trkw")
+    for nm in ("st0", "st1", "st2", "st3"):
+        p.byte(("LOL", nm, -1), ("HIL", nm, -1))
 
 
 def _stub(p, name, table):
@@ -166,9 +172,11 @@ def _vec_stubs(p):
 
 
 def _trick_stubs(p):
-    """The pair an RTS trick's declared columns name, one short of each."""
+    """The leaves an RTS trick's declared columns name, one short of each."""
     _stub(p, "st0", "tone")
     _stub(p, "st1", "alt")
+    _stub(p, "st2", "tone")
+    _stub(p, "st3", "alt")
 
 
 def _leaf_call():
@@ -345,15 +353,36 @@ def _tail_call():
 
 
 def _rts_trick():
-    """`rts-trick`: the target word pushed and returned into (``_fuzzgen.t_rts_trick``)."""
+    """`rts-trick`: the target word pushed and returned into (``_fuzzgen.t_rts_trick``).
+
+    Seven spellings of one question -- what value reaches the cell the ``RTS`` reads:
+    adjacent, arithmetic, split across branch arms, in a loop, out of a table, out of
+    a pointer, and ``open``, whose four-row table the trace closes two rows of."""
 
     def push(p, name):
         p.i("LDA", "imm", ("HIL", name, -1)).i("PHA")
         p.i("LDA", "imm", ("LOL", name, -1)).i("PHA")
 
+    def word_ptr(p):
+        """``ptr = trkw + 2 * (row & 1)``: the pointer the pushed word is read through."""
+        p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("ASL", "acc")
+        p.i("CLC").i("ADC", "imm", ("LOL", "trkw")).i("STA", "zp", PTR)
+        p.i("LDA", "imm", ("HIL", "trkw")).i("ADC", "imm", 0).i("STA", "zp", PTR + 1)
+
+    def push_ptr(p):
+        """``(ptr),Y`` hi then lo: the real tunes' spelling, blind to the static base."""
+        p.i("LDY", "imm", 1).i("LDA", "indy", PTR).i("PHA")
+        p.i("DEY").i("LDA", "indy", PTR).i("PHA")
+
     def play(p, how):
         bump(p)
-        if how == "const":
+        if how == "arith":  # the pushed byte is an op node, not a const/loc/mem one
+            p.i("LDA", "imm", ("HIL", "st0", -1)).i("PHA")
+            p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("STA", "zp", CNT)
+            p.i("ASL", "acc").i("ASL", "acc").i("ASL", "acc")
+            p.i("CLC").i("ADC", "zp", CNT)
+            p.i("CLC").i("ADC", "imm", ("LOL", "st0", -1)).i("PHA")
+        elif how == "const":
             push(p, "st0")
         elif how == "two-arm":
             p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", "even"))
@@ -362,13 +391,24 @@ def _rts_trick():
             p.label("even")
             push(p, "st0")
             p.label("go")
-        else:
+        elif how == "loop":
+            p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("ASL", "acc").i("ORA", "imm", 1)
+            p.i("TAX").i("LDY", "imm", 1)
+            p.label("tlp").i("LDA", "absx", ("L", "trkw")).i("PHA")
+            p.i("DEX").i("DEY").i("BPL", "rel", ("L", "tlp"))
+        elif how == "table":
             p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("TAX")
             p.i("LDA", "absx", ("L", "trkhi")).i("PHA")
             p.i("LDA", "absx", ("L", "trklo")).i("PHA")
+        else:
+            word_ptr(p)
+            if how == "open":
+                p.i("LDA", "zp", CNT).i("CLC").i("ADC", "zp", PTR).i("STA", "zp", PTR)
+                p.i("LDA", "imm", 0).i("ADC", "zp", PTR + 1).i("STA", "zp", PTR + 1)
+            push_ptr(p)
         p.i("RTS")
 
-    spells = ("const", "two-arm", "table")
+    spells = ("const", "arith", "two-arm", "loop", "table", "ptr", "open")
     return I.cap(V(s, lambda p, h=s: play(p, h), _trick_stubs) for s in spells)
 
 

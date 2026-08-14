@@ -128,17 +128,18 @@ def test_a_call_between_the_push_and_the_pull_refuses():
 
 
 def test_the_rts_trick_is_the_goto_it_always_was():
-    """``PHA``/``PHA``/``RTS`` dispatch: the push pair and the displacement lift.
+    """``PHA``/``PHA``/``RTS`` dispatch: the slot's own value decides what the ret is.
 
-    A constant trick is one dispatch -- control lands at the pushed word plus
-    one -- so the stores, the ``sp`` update and the ret become ``goto ($1320)``,
-    the procedure balances, and rung (d0') drops ``sp`` outright."""
+    ``machine_reads`` names the cell pair the ``RTS`` reads, rung (d0r) spells it as
+    the goto's operand, rung (d0) proves the procedure's own stores dominate it, and
+    the two pushes become locals the value folds away."""
     _m, prog, text = _check(G.t_rts_trick(np.random.default_rng(5)))
-    assert not _stack(prog, "named")
+    assert [p.targets[0] for p in _stack(prog, "named")] == [HISLOT, LOSLOT]
     assert "goto ($1320)" in text
     assert "m_01FD = " not in text and "m_01FC = " not in text and "sp = " not in text
     (rts,) = [p for p in prog.proofs if p.kind == "rts"]
-    assert rts.status == "resolved" and "goto ($1320)" in rts.lemma
+    assert rts.status == "resolved" and rts.targets == (HISLOT,)
+    assert "the procedure's own stores reach it" in rts.lemma
     (sp,) = [p for p in prog.proofs if p.kind == "sp"]
     assert sp.status == "resolved" and "no reader" in sp.lemma
 
@@ -160,17 +161,18 @@ def _rts_dispatch():
     return _build("rtsdispatch", a, data, frames=4)
 
 
-@_PROT_PIN
-def test_a_two_arm_rts_dispatch_keeps_the_pushes_its_ret_reads():
-    """The trick no window lifts: the ``ret`` is the reader of what the arms pushed.
+def test_a_two_arm_rts_dispatch_is_one_computed_goto():
+    """The trick no adjacency window could lift: the pushes are in the branch arms.
 
-    Neither arm's push pair is adjacent to the ``ret``, so the dispatch survives as
-    one; its operand is the cell pair, and a reader set that omits the ret's own read
-    of page one calls those stores unread and deletes the target with them."""
+    The value question does not care where the stores are, only that they dominate
+    the read, so the arms' two definitions are one local with two definitions and the
+    dispatch is the goto on it -- no page-one cell and no ``sp`` survive."""
     _m, prog, text = _rts_dispatch()
-    assert not [p for p in prog.proofs if p.kind == "rts"]  # no window lifts this one
-    assert all(p.status == "refused" for p in _stack(prog))
-    assert text.count("m_%04X = " % LOSLOT) == 2 and text.count("m_%04X = " % HISLOT) == 2
+    (rts,) = [p for p in prog.proofs if p.kind == "rts"]
+    assert rts.status == "resolved" and rts.targets == (HISLOT,)
+    assert all(p.status == "named" and "2 store(s), 1 read(s)" in p.lemma for p in _stack(prog))
+    assert "m_01F" not in text and "sp" not in text[text.index("sub_") :]
+    assert "goto ((((zext2(s1) << $08):2 | zext2(s0)):2 + $0001):2)" in text
 
 
 def test_a_tsx_save_txs_restore_bracket_dissolves():
@@ -256,6 +258,10 @@ def _blind_store_before():
     return [("st", ("loc", "t0", 2), ("const", 0, 1))] + _clean()
 
 
+def _blind_load():
+    return [_store(), ("asg", "t1", ("mem", ("loc", "t0", 2), 1)), _read()]
+
+
 def _word_store():
     return [("st", ("const", CELL, 2), ("mem", ("const", 0x1400, 2), 2)), _read()]
 
@@ -268,8 +274,9 @@ def _word_store():
         (_control_between, "a read is not dominated by a store of the slot"),
         (_one_arm_only, "a read is not dominated by a store of the slot"),
         (_stack_peek, "another resolvable access may touch the slot"),
-        (_blind_store, "an unresolvable address may alias the live slot"),
+        (_blind_store, "an unresolvable store may alias the live slot"),
         (_blind_store_before, None),
+        (_blind_load, None),  # a load moves no value; page one is protected at evaluation
         (_word_store, "another resolvable access may touch the slot"),
     ],
 )

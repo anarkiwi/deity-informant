@@ -81,6 +81,11 @@ M_PAGE_ONE_BLIND = (
     "access survives into the text, and the evaluator lands it in page one where the "
     "same frame spelled `abs` keeps no access at all"
 )
+M_SP_LOOP_PUSH = (
+    "a push inside a loop stands at no one displacement: the model's SP flow leaves "
+    "the body's entry sp bot, so concretize_stack names no cell, rung (d0r) has no "
+    "return slot to ask the value question of, and the pushes stay sp-relative stores"
+)
 M_IRQ_STUB = (
     "a play $0000 tune enters through c64.irq_stubs, so the emitted procedure is the "
     "dispatch stub: it pushes the return word and P itself, the handler's RTI is a "
@@ -100,6 +105,7 @@ MECHANISMS = (
     M_S_AS_VALUE,
     M_PAGE_ONE_CELL,
     M_PAGE_ONE_BLIND,
+    M_SP_LOOP_PUSH,
     M_IRQ_STUB,
 )
 
@@ -140,8 +146,12 @@ PINS = {
     ("tail-call", "shared"): (M_CALLB,),
     ("tail-call", "cond"): (M_MULTI_EXIT,),
     ("rts-trick", "const"): (M_LANDING_PROC,),
-    ("rts-trick", "two-arm"): (M_LANDING_PROC, M_SP_UNBALANCED),
+    ("rts-trick", "arith"): (M_LANDING_PROC,),
+    ("rts-trick", "two-arm"): (M_LANDING_PROC,),
+    ("rts-trick", "loop"): (M_LANDING_PROC, M_SP_LOOP_PUSH),
     ("rts-trick", "table"): (M_LANDING_PROC,),
+    ("rts-trick", "ptr"): (M_LANDING_PROC,),
+    ("rts-trick", "open"): (M_LANDING_PROC,),
     ("vector-call", "jmpind"): (M_MULTI_EXIT,),
     ("vector-call", "smc-jsr"): (M_SWITCH_CALL,),
     ("vector-call", "smc-jmp"): (M_MULTI_EXIT,),
@@ -195,7 +205,7 @@ CLEAN = (
 SPLITS = {
     "arg-pass": (M_SP_LINKED, M_SP_UNBALANCED),
     "tail-call": (M_CALLB, M_MULTI_EXIT),
-    "rts-trick": (M_SP_UNBALANCED,),
+    "rts-trick": (M_SP_LOOP_PUSH,),
     "vector-call": (M_SWITCH_CALL, M_MULTI_EXIT),
     "stack-move": (M_S_RELOCATED,),
     "s-illegal": (M_S_AS_VALUE, M_PAGE_ONE_CELL),
@@ -213,7 +223,7 @@ FAULTS = {
     ("page-one-cell", "absy/cross"): "load from the stack page $0100",
     ("page-one-cell", "indy/cross"): "load from the stack page $0100",
     ("page-one-cell", "indy/same"): "store into the stack page $0100",
-    ("rts-trick", "two-arm"): "store into the stack page $01FD",
+    ("rts-trick", "loop"): "store into the stack page $01FD",
     ("s-illegal", "las/page1"): "load from the stack page $0100",
     ("stack-move", "row/push"): "store into the stack page $0140",
 }

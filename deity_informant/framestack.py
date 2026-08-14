@@ -83,21 +83,23 @@ class _Slot:
     def _walk(self, stmts, defd):
         """Must-def over one statement list; returns the state it leaves behind.
 
-        A control transfer kills the definition, so a read reached through one is
-        undominated. The arms of an ``if`` intersect: a slot written in both arms
-        and read in the shared tail is a local with two definitions."""
+        A control transfer kills the definition *after* its own operands are read,
+        which is when the machine reads them. The arms of an ``if`` intersect: a slot
+        written in both arms and read in the shared tail is a local with two definitions.
+        """
         want = ("mem", _addr(self.cell), 1)
         for s in stmts:
             k = s[0]
-            defd = defd and k in _STRAIGHT
-            for addr, width in _accesses(s):
+            acc = _accesses(s)
+            wrote = len(acc) - 1 if k == "st" else -1  # the store's own address is the last
+            for j, (addr, width) in enumerate(acc):
                 near, blind = (
                     (False, False) if (addr, width) == want[1:] else _hit(addr, width, self.cell)
                 )
                 if near:
                     self._refuse("another resolvable access may touch the slot")
-                elif blind and defd:
-                    self._refuse("an unresolvable address may alias the live slot")
+                elif blind and defd and j == wrote:
+                    self._refuse("an unresolvable store may alias the live slot")
             for x in frameproc._stmt_exprs(s):
                 got = _count(x, want)
                 self.reads += got
@@ -112,6 +114,7 @@ class _Slot:
             else:
                 for b in frameproc._stmt_bodies(s):
                     self._walk(b, False)
+                defd = defd and k in _STRAIGHT
         return defd
 
     def proof(self, name):
@@ -234,9 +237,9 @@ def _sp_scan(stmts, marks, sp):
     """Mark every statement of the list, bodies included, opening epochs as needed."""
     for i, s in enumerate(stmts):
         k = s[0]
+        marks.mark(stmts, i)  # a statement's operands are read before it transfers
         if k not in _STRAIGHT:
             marks.bump()
-        marks.mark(stmts, i)
         if k == "if":
             here, arms = marks.state(), []
             for b in frameproc._stmt_bodies(s):
@@ -455,11 +458,107 @@ def _rewrite_sp(stmts, marks, names, sp, held=frozenset()):
     stmts[:] = out
 
 
-def apply_rung(procs):
-    """Rungs (d0) and (d0s) in place over ``procs``; returns the per-slot proofs."""
-    used, proofs, n = _used_names(procs), [], 0
+# ---- rung (d0r): the return slot's own value decides what a ``ret`` is -----------
+
+
+def _page_cell(cell):
+    """The stack-page cell ``cell`` names; the byte wraps inside page one."""
+    return 0x0100 | (cell & 0xFF)
+
+
+def _ret_word(cell):
+    """``mem[cell]:2 + 1``: where the machine lands, spelled as the two bytes it reads.
+
+    ``machine_reads`` names this operand and no expression did; spelling it as the
+    byte pair is what puts it in reach of the slot walk, which reads bytes."""
+    halves = tuple(("mem", _addr(_page_cell(c)), 1) for c in (cell, cell + 1))
+    return ("op", "INT_ADD", (frameproc.le_pack(*halves), ("const", 1, 2)), 2)
+
+
+def _ret_sites(stmts, marks, entry_sp, out):
+    """``(list, index, ret, cell)`` of every ``ret`` whose slot the walk pins.
+
+    The cell is the entry ``sp`` plus the displacement written since; an epoch the
+    walk did not open at the entry names no displacement, so it is left alone."""
+    for i, s in enumerate(stmts):
+        for b in frameproc._stmt_bodies(s):
+            _ret_sites(b, marks, entry_sp, out)
+        if s[0] != "ret":
+            continue
+        epoch, disp, _alias = marks.at[(id(stmts), i)]
+        if not epoch:
+            out.append((stmts, i, s, 0x0100 | ((entry_sp + disp + 1) & 0xFF)))
+    return out
+
+
+def _pull(sp):
+    """``sp = sp + 2``: the two bytes the ``RTS`` takes back off the stack."""
+    return ("asg", sp, ("op", "INT_ADD", (("loc", sp), ("const", 2, 1)), 1))
+
+
+def _propose(sites, sp):
+    """Every site's ``ret`` rewritten as the pull it makes and the goto it takes."""
+    for stmts, i, _was, cell in sorted(sites, key=lambda t: -t[1]):
+        stmts[i] = ("dgoto", _ret_word(cell))
+        stmts.insert(i, _pull(sp))
+
+
+def _revert(sites, refused):
+    """The proposal undone at every site whose slot the walk refused."""
+    for stmts, i, was, cell in sorted(sites, key=lambda t: -t[1]):
+        if refused.get(cell) or refused.get(_page_cell(cell + 1)):
+            stmts[i : i + 2] = [was]
+
+
+def _ret_proof(cell, why):
+    """The rung-(d0r) record: the slot's value answered the ``ret``, or did not."""
+    return Proof(
+        cell,
+        "rts",
+        "refused" if why else "resolved",
+        (cell,),
+        "return slot $%04X: %s"
+        % (cell, why or "the procedure's own stores reach it, so the ret is a goto"),
+    )
+
+
+def _lift_rets(procs, sp, spin):
+    """A ``ret`` whose slot the procedure itself defines is the computed goto it is.
+
+    The value question rung (d0) already asks -- is every read of this cell dominated
+    by a store of the program's own -- asked of the operand ``machine_reads`` names.
+    Where the answer is no, the slot holds the caller's pushed word and the ret stays.
+    """
+    proofs = []
     prints = [_footprint(p[3]) for p in procs]
+    for k, (e, _params, _rets, stmts) in enumerate(procs):
+        entry_sp = spin.get(e)
+        if not isinstance(entry_sp, int):
+            continue
+        marks = _Marks()
+        _sp_scan(stmts, marks, sp)
+        sites = _ret_sites(stmts, marks, entry_sp, [])
+        if not sites:
+            continue
+        _propose(sites, sp)
+        shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
+        want = sorted({_page_cell(c + j) for _l, _i, _w, c in sites for j in (0, 1)})
+        walked = {c: _Slot(c).run(stmts, shared) for c in want}
+        refused = {c: w.why for c, w in walked.items()}
+        for _l, _i, _w, c in sites:
+            hi = _page_cell(c + 1)
+            if walked[c].stores or walked[hi].stores:  # an ordinary return states nothing
+                proofs.append(_ret_proof(c, refused[c] or refused[hi]))
+        _revert(sites, refused)
+    return proofs
+
+
+def apply_rung(procs, spin=None):
+    """Rungs (d0r), (d0) and (d0s) in place over ``procs``; the per-slot proofs."""
+    used, proofs, n = _used_names(procs), [], 0
     sp = frameproc._SP
+    proofs += _lift_rets(procs, sp, spin or {})
+    prints = [_footprint(p[3]) for p in procs]
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
     bals, _at_entry = _balances(procs, sp, saves_of)
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
@@ -727,130 +826,6 @@ def _balances(procs, sp, saves_of):
         pending -= won
         ask = {e for e in pending if deps[e] & won}
     return bal, at_entry
-
-
-_PAGE1 = range(0x0100, 0x0200)
-
-
-def _push_val(s):
-    """``(cell, value expression)`` of a pure byte store to a stack-page cell.
-
-    A lane trunc of a fused word (rung (d)'s spelling) is as pure as the byte cell
-    it replaced, so the window reads it as one of its two pushes."""
-    if s[0] != "st" or s[1][0] != "const" or G.store_width(s[2]) != 1:
-        return None
-    v = s[2]
-    if frameproc.is_op(v, "COPY", 1, 1):
-        v = frameproc.shifted_hi(v[2][0]) or v[2][0]
-    if v[0] not in ("const", "loc", "mem"):
-        return None
-    return (s[1][1], s[2]) if s[1][1] in _PAGE1 else None
-
-
-def _disturbs_vals(s, names, reads):
-    """The interval statement may change what the pushed values read."""
-    if s[0] == "asg":
-        return s[1] in names
-    reach = frameproc.store_reach(s, None)
-    for (rb, ri, rm), rw in reads:
-        if frameproc.overlaps(reach, (rb, ri, frameproc.span(rb, ri, None, rm), rw, rm)):
-            return True
-    return False
-
-
-def _trick_window(lst, i, sp):
-    """``(positions, target expr)`` of an RTS trick led by the push at ``i``.
-
-    Two pure pushes to adjacent stack cells, the -2 displacement, and the ret
-    it flows into, nothing between touching the cells, the values, ``sp`` or
-    control: the machine reads PCL at the lower cell, PCH above, and lands one
-    past the word, so the ret is a goto on it (docs/frameprog.md 7.9)."""
-    first = _push_val(lst[i])
-    if first is None:
-        return None
-    cells = {first[0]: first[1]}
-    keep = [i]
-    disp = None
-    for j in range(i + 1, min(i + 8, len(lst))):
-        s = lst[j]
-        if s[0] == "ret":
-            if disp is None or len(cells) != 2:
-                return None
-            lo_cell = min(cells)
-            if max(cells) != lo_cell + 1:
-                return None
-            lo, hi = cells[lo_cell], cells[max(cells)]
-            if lo[0] == "const" and hi[0] == "const":
-                target = ("const", (((hi[1] << 8) | lo[1]) + 1) & 0xFFFF, 2)
-            else:
-                pack = frameproc.le_pack(lo, hi)
-                target = ("op", "INT_ADD", (pack, ("const", 1, 2)), 2)
-            return keep + [disp, j], target
-        if s[0] == "asg" and s[1] == sp:
-            if disp is not None or _sp_delta(s[2], sp) != -2 % 256:
-                return None
-            disp = j
-            continue
-        got = _push_val(s)
-        if got is not None and len(cells) < 2:
-            cells[got[0]] = got[1]
-            keep.append(j)
-            continue
-        if s[0] not in ("asg", "st"):
-            return None
-        if s[0] == "st" and s[1][0] == "const" and s[1][1] in _PAGE1:
-            return None
-        names = set().union(*(frameproc._locset(v) for v in cells.values()))
-        reads = [r for v in cells.values() for r in frameproc.mem_refs(v) if r[0] is not None]
-        if any(r[0] is None for v in cells.values() for r in frameproc.mem_refs(v)):
-            return None
-        if _disturbs_vals(s, names, reads):
-            return None
-    return None
-
-
-def lift_rts_trick(procs):
-    """A constant RTS trick becomes the goto it is (docs/frameprog.md 7.9).
-
-    The push pair, the displacement and the ret are one dispatch: control lands
-    at the pushed word plus one, which the evaluator resolves through the same
-    map the machine path read. The procedure then balances, and rung (d0')
-    drops ``sp`` with no further rule; a ret carrying declared returns stays."""
-    sp = frameproc._SP
-    out = []
-    for _e, _pa, rets, stmts in procs:
-        if rets:
-            continue
-        out += _lift_tricks(stmts, sp)
-    return out
-
-
-def _lift_tricks(stmts, sp):
-    proofs = []
-    for s in stmts:
-        for b in frameproc._stmt_bodies(s):
-            proofs += _lift_tricks(b, sp)
-    i = 0
-    while i < len(stmts):
-        got = _trick_window(stmts, i, sp)
-        if got is None:
-            i += 1
-            continue
-        positions, target = got
-        stmts[positions[-1]] = ("dgoto", target)
-        for j in sorted(positions[:-1], reverse=True):
-            del stmts[j]
-        where = "$%04X" % target[1] if target[0] == "const" else "the pushed word + 1"
-        proofs.append(
-            Proof(
-                target[1] if target[0] == "const" else 0,
-                "rts",
-                "resolved",
-                (target[1],) if target[0] == "const" else (),
-                "rts trick: the push pair and the displacement are goto (%s)" % where,
-            )
-        )
-    return proofs
 
 
 SP_CLASSES = {

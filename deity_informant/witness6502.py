@@ -556,7 +556,7 @@ class _Gen:  # pylint: disable=too-many-public-methods
     def pushword(self, ret):
         """The pushed word is a pc of the program: the evaluator's ``push(ret)``, byte for byte.
 
-        ``framestack.lift_rts_trick``'s callee pulls or rewrites exactly this image."""
+        rung (d0r)'s callee pulls or rewrites exactly this image."""
         for j in (1, 0):
             self.p.i("LDA", "imm", (ret >> (8 * j)) & 0xFF)
             self.p.i("PHA")

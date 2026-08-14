@@ -412,7 +412,7 @@ def test_a_raw_callee_reads_the_return_slot_the_call_pushed():
 
 
 def test_a_raw_callee_that_rewrites_its_slot_returns_where_the_slot_names():
-    """``framestack.lift_rts_trick``'s reading: the RTS goes to the word + 1, resolved."""
+    """rung (d0r)'s reading: the RTS goes to the word + 1, resolved."""
     body = [("st", c(SLOT, 2), c(0x0F)), ("st", c(SLOT + 1, 2), c(0x10)), ("ret", False)]
     tail = [("label", 0x1010), store(c(0x77)), ("ret", False)]
     stmts, procs = _rawcall(body, tail=tail)

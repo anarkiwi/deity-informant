@@ -2051,7 +2051,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   rewrote the return word was ignored. It now records the word it pushed beside the
   frame, and a `ret` takes the shadow continuation **only where the slot still holds
   that word**; otherwise the slot's own word resolves through the same `rmap` the
-  RTS-trick `dgoto` reads. Where `sp` concretizes, `framestack.lift_rts_trick` still
+  RTS-trick `dgoto` reads. Where `sp` concretizes, rung (d0r) still
   turns the constant push pair into that `dgoto` and no `ret` runs; where it does not —
   the corpus spelling, one callee at two depths — the `ret` is the whole mechanism.
   (3) **Three pins flip on their own mechanism, and the fixture family is the claim.**
@@ -2391,7 +2391,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   the rule is empty where it is sound and unsound where it is not empty.
   (3) **The mechanism that would work, named.** The live-out of a slot-rewriting callee is
   the live-in at the pcs its slot may name. Those are derivable per site by the same reading
-  `framestack.lift_rts_trick` uses where `sp` concretizes — call site plus inline-data length
+  rung (d0r) uses where `sp` concretizes — call site plus inline-data length
   — and the shredder's four-fixture family already carries every spelling (one site, two
   sites, two depths, per-site length). A `ret_live` that unions the live-in at each site's
   resume pc is sound; `returns` accumulated at the call statement is not. That is the landing
@@ -2640,7 +2640,7 @@ Adopted decisions, newest last. Pre-pivot narratives: git history
   as capability rather than re-worded.
   (1) **The raw machine call is the evaluator's stack, on the machine.** `call`/`callb` were
   refused as "a JSR at a pc, not a serialized procedure call". The mechanism is the one
-  `framestack.lift_rts_trick` reads: the pushed word is a **pc of the serialized program**,
+  rung (d0r) reads: the pushed word is a **pc of the serialized program**,
   so the site pushes `ret` itself (`LDA #hi : PHA : LDA #lo : PHA`, byte for byte the
   evaluator's `push(ret)`) and transfers with `JMP`, and a raw callee's `ret` pulls that word
   back instead of `RTS`-ing on it. The pulled word takes the site table first — the

@@ -528,6 +528,19 @@ def _hi_partner(stmts, i, hi, idx, v, regions):
     return None
 
 
+def _entry_sp(model):
+    """``{pc: sp}`` of every block entered at one proven stack pointer (SP flow).
+
+    Rung (d0r) names the cell a ``ret`` reads through this; a pc whose variants
+    disagree, or that the flow left ``bot``, names none and is left out."""
+    ana = getattr(model, "analysis", None)
+    out = {}
+    for key, sp in (getattr(ana, "sp_in", None) or {}).items():
+        got = out.get(key[0], sp)
+        out[key[0]] = sp if got == sp and isinstance(sp, int) else None
+    return {pc: sp for pc, sp in out.items() if sp is not None}
+
+
 def program(model, extents=None):
     """The frame program of a committed block model (entry translation, rungs a-g).
 
@@ -543,7 +556,7 @@ def program(model, extents=None):
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
     smc, state, symbols = desmc.apply_rung(model, decls, procs, state, symbols)
     mem0 = smc.seed(model.mem0)  # a relocated page carries the bytes its source page holds
-    stack_proofs = framestack.apply_rung(procs)
+    stack_proofs = framestack.apply_rung(procs, _entry_sp(model))
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs, decls)
     regions = datadecl.Regions(decls)
@@ -562,7 +575,7 @@ def program(model, extents=None):
         if repr(procs) == before:
             break
     state = sidprog._drop_declared(state, decls, symbols)
-    proofs = stack_proofs + math_proofs + proofs + framestack.lift_rts_trick(procs)
+    proofs = stack_proofs + math_proofs + proofs
     proofs += framestack.drop_sp(procs, model.play, regions)
     resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(

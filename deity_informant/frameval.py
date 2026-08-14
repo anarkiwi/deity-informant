@@ -402,11 +402,27 @@ class _Code:
                     self.swc(nxt, s[2])
                 i += 2
                 continue
-            self.stmt(s, ctx)
             if s[0] == "igoto" and s[2] is None and nxt is not None:
-                p = s[1]  # static vector: the image target's body follows inline
-                self.mark(self.mem0[p] | (self.mem0[(p & 0xFF00) | ((p + 1) & 0xFF)] << 8))
+                self.vecgoto(s)
+                i += 1
+                continue
+            self.stmt(s, ctx)
             i += 1
+
+    def vecgoto(self, s):
+        """A static vector's goto, whose landing body follows it inline.
+
+        The landing is bound to this statement as well as program-wide: a region
+        copied to several sites carries one such binding per copy, and only the
+        statement's own table tells them apart (the arms of a ``switch goto`` are
+        scoped the same way). The program-wide bind stays, so a transfer from
+        outside still resolves exactly as it did."""
+        self.dyn(s)
+        d = self.emit(("swd", None))
+        p = s[1]
+        land = self.mem0[p] | (self.mem0[(p & 0xFF00) | ((p + 1) & 0xFF)] << 8)
+        self.patch(d, 1, {land: len(self.ops)})
+        self.mark(land)
 
     def stmt(self, s, ctx):
         k = s[0]

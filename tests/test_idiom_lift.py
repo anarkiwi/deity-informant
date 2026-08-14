@@ -143,7 +143,6 @@ SPLITS = {
     "pair-row": (M_SMC,),
     "word-pack": (M_SMC,),
     "lane-insert": (M_SMC, M_UNOBS_CARRY, M_LANE_ORDER),
-    "hi-byte": (M_LANE_EXTRACT,),
     "shift-chain": (M_MEM_SHIFT,),
     "flag-bit": (M_SELF_VIA_LOCAL,),
     "table-row": (M_UNROLLED,),
