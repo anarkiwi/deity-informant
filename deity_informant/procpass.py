@@ -94,6 +94,22 @@ def copyable(model, pc):
     return model.blocks[variants[0]].term[0] != "jsr"
 
 
+def dyn_gates(model):
+    """``(sites, calls)``: dyn-site multiplicity per target, and the call-site half.
+
+    A target some computed *goto* also reaches is a landing of the reaching
+    procedure's own flow, so only a target every dyn site *calls* may be placed as a
+    dispatch arm; where several call it, each site takes its own copy."""
+    jsr = {b.pcs[-1] for b in model.blocks.values() if b.term[0] == "jsr" and b.term[1] is None}
+    sites, calls = {}, {}
+    for site, tgts in model.dyn_targets.items():
+        for t in set(tgts):
+            sites[t] = sites.get(t, 0) + 1
+            if site in jsr:
+                calls[t] = calls.get(t, 0) + 1
+    return sites, calls
+
+
 class Plan:
     """``entries``: proc entry pcs (play first, then ascending); ``inline``:
     static callee -> the call-site pcs its body is placed at; ``homes``: block pc
@@ -162,10 +178,7 @@ def _plan(model):
     for p in idom:
         if p != _ROOT:
             flown.update(intra[p])
-    count = {}  # dyn-site multiplicity per target (mirrors render._dispatch_gates)
-    for tgts in model.dyn_targets.values():
-        for t in set(tgts):
-            count[t] = count.get(t, 0) + 1
+    count, calls = dyn_gates(model)  # mirrors render._dispatch_gates
     inline = {}
     parent = {}  # nested entry -> call-site pc whose proc owns its body
     procs = set()
@@ -193,8 +206,13 @@ def _plan(model):
         elif len(ss) > 1 and count.get(t, 0) == 0 and copies_ok(t):
             inline[t] = frozenset(ss)  # duplication is exact where the body binds no pc
             parent[t] = min(ss)
-        elif count.get(t) == 1 and t not in static_sites and t in dyn_sites:
-            parent[t] = min(dyn_sites[t])  # sole dyn site: switch-call arm home
+        elif (
+            t in dyn_sites
+            and t not in static_sites
+            and calls.get(t) == count.get(t)
+            and (count[t] == 1 or copies_ok(t))
+        ):
+            parent[t] = min(dyn_sites[t])  # arm home: the sole site owns it, several copy it
         elif t not in flown:
             procs.add(t)
     entryset = {play} | set(parent) | procs

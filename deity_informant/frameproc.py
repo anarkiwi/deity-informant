@@ -224,6 +224,17 @@ def _subst_loc(n, name, repl):
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
 _CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
 _EXITS = frozenset(("cont", "brk"))
+
+
+def rereads(s):
+    """Whether ``s``'s body may run a second time over what the first left.
+
+    A ``loop`` the passes placed as a scope leaves by its own end and continues
+    nowhere, so it has no back edge and a definition before it stands inside it
+    (the reading ``eqlift_mem`` already takes of one)."""
+    return s[0] in _CYCLIC and not (s[0] == "loop" and single_trip(s[1]))
+
+
 NOIDX = object()  # "the caller is not a store, so no index is shared"
 UNRES = object()  # "the base is not named, so only the bits the address sets bound it"
 
@@ -689,6 +700,19 @@ def _rets_in(stmts, depth=0, out=None):
     return out
 
 
+def leaves(stmts):
+    """Whether control cannot run off the end of ``stmts``.
+
+    A terminator ends it, and so does the arm table of one: every arm of a
+    computed transfer leaves by its own end, so the table is that transfer's own
+    exits laid out."""
+    if not stmts:
+        return False
+    if stmts[-1][0] in TERMS:
+        return True
+    return stmts[-1][0] == "swg" and len(stmts) > 1 and stmts[-2][0] in ("dgoto", "igoto")
+
+
 def scope(stmts):
     """``stmts`` as one single-trip scope every ``ret`` in it leaves by.
 
@@ -696,7 +720,7 @@ def scope(stmts):
     become one exit with no region production and no label."""
     for lst, i, depth in _rets_in(stmts):
         lst[i] = _brk(depth + 1)
-    if not stmts or stmts[-1][0] not in TERMS:
+    if not leaves(stmts):
         stmts.append(("brk",))
     return [("loop", stmts)]
 
@@ -849,7 +873,7 @@ class _Jumps:
             elif s[0] in _COMPUTED:
                 self.computed = True
             for b in _stmt_bodies(s):
-                self._scan(Defs(b, (env, k), s[0] in _CYCLIC))
+                self._scan(Defs(b, (env, k), rereads(s)))
 
 
 class Defs:
@@ -952,7 +976,7 @@ class Defs:
         if s[0] == "st" and self._hits(k, cell, regions):
             return True
         return any(
-            Defs(b, (self, k), s[0] in _CYCLIC)._writes(j, cell, regions)
+            Defs(b, (self, k), rereads(s))._writes(j, cell, regions)
             for b in _stmt_bodies(s)
             for j in range(len(b))
         )
@@ -975,7 +999,7 @@ class Defs:
         if s[0] == "st" and self._hits(k, cell, regions):
             return writes is not None and writes.store_misses(self, k, s, cell)
         return all(
-            Defs(b, (self, k), s[0] in _CYCLIC)._crossable(j, cell, regions, labels, writes)
+            Defs(b, (self, k), rereads(s))._crossable(j, cell, regions, labels, writes)
             for b in _stmt_bodies(s)
             for j in range(len(b))
         )
@@ -1117,7 +1141,7 @@ def envs(stmts, outer=None, cyclic=False):
     for i, s in enumerate(stmts):
         yield env, i, s
         for b in _stmt_bodies(s):
-            yield from envs(b, (env, i), s[0] in _CYCLIC)
+            yield from envs(b, (env, i), rereads(s))
 
 
 def _transfers(s, nxt):
@@ -1278,7 +1302,7 @@ def canon_addrs(stmts, outer=None, cyclic=False):
     env = Defs(stmts, outer, cyclic)
     for k, s in enumerate(stmts):
         for b in _stmt_bodies(s):
-            canon_addrs(b, (env, k), s[0] in _CYCLIC)
+            canon_addrs(b, (env, k), rereads(s))
         if s[0] == "st":
             s = ("st", _one_addr(s[1], env, k), s[2]) + s[3:]
         stmts[k] = _map_exprs(s, lambda n, e=env, i=k: _addr_exprs(n, e, i))
@@ -1671,6 +1695,27 @@ class _Builder:
             return body[:-1]
         return scope(body) if rets else body
 
+    def callsw(self, term, cases, out):
+        """A computed call's arm table as a structured dispatch (8.4).
+
+        Every arm is already the caller's own text and every arm's ``ret`` is the
+        call's edge back, so the site is a ``switch goto`` inside a scope the arms
+        break out of. An arm the plan left a procedure of its own, one leaving by a
+        transfer or one returning from a displacement it moved keeps the call
+        form -- there the ``ret`` is not this site's join."""
+        bare = [lbl for lbl, arm in cases if arm is None or arm.b is None]
+        bodied = []
+        for lbl, arm in cases:
+            if arm is not None and arm.b is not None:
+                self.arm += 1
+                bodied.append((lbl, self.capture(sidprog._items(arm.b))))
+                self.arm -= 1
+        if bare or any(escapes(b) or not sp_balanced(b) for _l, b in bodied):
+            out.append(("dcall", term[3], term[2]))
+            out.append(("swc", bare, bodied))
+            return
+        out.extend(scope([("dgoto", term[3]), ("swg", bodied)]))
+
     def _flow(self, term, site, nxt, out):
         k = term[0]
         if nxt is not None and nxt.kind == "if":
@@ -1690,21 +1735,15 @@ class _Builder:
             out.extend(self.splice(term[1], term[2], body))
             return 2
         if nxt is not None and nxt.kind == "switch" and not nxt.b:
-            self._termlines(term, out)
             sel, cases = nxt.a
+            if sel == "call":
+                self.callsw(term, cases, out)
+                return 2
+            self._termlines(term, out)
             vector = k == "jmpind" and term[1] is not None
             if vector and self.view is not None and not self.view.dyn_targets.get(site):
                 for _lbl, arm in cases:
                     self.seq(sidprog._items(arm), out)
-            elif sel == "call":
-                bare = [lbl for lbl, arm in cases if arm is None or arm.b is None]
-                bodied = []
-                for lbl, arm in cases:
-                    if arm is not None and arm.b is not None:
-                        self.arm += 1
-                        bodied.append((lbl, self.capture(sidprog._items(arm.b))))
-                        self.arm -= 1
-                out.append(("swc", bare, bodied))
             else:
                 arms = [(lbl, self.capture(sidprog._items(arm))) for lbl, arm in cases]
                 out.append(("swg", arms))
@@ -2372,9 +2411,9 @@ def _own_conts(stmts, depth=0):
 def single_trip(body):
     """Whether a loop body's back edge is unreachable: no own ``cont``, no fall-through.
 
-    A scope the structurer or ``one_exit`` placed is exactly this, and nothing that
-    follows it needs the join a back edge would force."""
-    return bool(body) and body[-1][0] in TERMS and not _own_conts(body)
+    A scope the structurer, ``splice`` or ``one_exit`` placed is exactly this, and
+    nothing that follows it needs the join a back edge would force."""
+    return leaves(body) and not _own_conts(body)
 
 
 def _defs_name(s, name):
@@ -3179,7 +3218,7 @@ def _fold_words(stmts, regions, outer=None, cyclic=False, foreign=None):
     for i, s in enumerate(stmts):
         stmts[i] = _fold_stmt(s, env, i, regions)
         for b in _stmt_bodies(stmts[i]):
-            _fold_words(b, regions, (env, i), stmts[i][0] in _CYCLIC)
+            _fold_words(b, regions, (env, i), rereads(stmts[i]))
     if regions is None:
         return
     i = 0

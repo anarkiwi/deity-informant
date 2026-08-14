@@ -39,10 +39,11 @@ M_SELF_CALL = (
     " a `pcall`; a tail self-call is a loop and a non-tail one a bounded unroll, and"
     " Plan has a form for neither"
 )
-M_SWITCH_CALL = (
-    "a computed call whose target set the trace closed emits `call (expr) ret $PC` "
-    "plus `switch call { case .. }`: the arms are already nested at the site, but the "
-    "dcall statement and the arms' own rets stay"
+M_SHARED_HANDLER = (
+    "a computed call's arm a static JSR also names is a procedure of its own "
+    "(render._dispatch_gates' static_subs, procpass's static_sites), so no site places "
+    "its body: the arm stays bare and the site keeps `call (expr) ret $PC` plus "
+    "`switch call { $PC .. }`; copying it at the static sites as well is the removal"
 )
 M_S_RELOCATED = (
     "a TXS from a computed value is an absolute write to sp, not a displacement, so "
@@ -65,7 +66,7 @@ MECHANISMS = (
     M_TAIL_TRANSFER,
     M_RET_WORD,
     M_SELF_CALL,
-    M_SWITCH_CALL,
+    M_SHARED_HANDLER,
     M_S_RELOCATED,
     M_S_AS_VALUE,
     M_SP_LOOP_PUSH,
@@ -84,7 +85,10 @@ PINS = {
     ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
     ("rts-trick", "loop"): (M_SP_LOOP_PUSH,),
-    ("vector-call", "smc-jsr"): (M_SWITCH_CALL,),
+    ("mixed-handler", "head/vt0"): (M_SHARED_HANDLER,),
+    ("mixed-handler", "head/vt1"): (M_SHARED_HANDLER,),
+    ("mixed-handler", "tail/vt0"): (M_SHARED_HANDLER,),
+    ("mixed-handler", "tail/vt1"): (M_SHARED_HANDLER,),
     ("tail-recursion", "x/const"): (M_SELF_CALL,),
     ("tail-recursion", "x/row"): (M_SELF_CALL,),
     ("tail-recursion", "cell/const"): (M_SELF_CALL,),
@@ -144,6 +148,11 @@ CLEAN = (
     ("tail-call", "cond"),
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
+    ("vector-call", "smc-jsr"),
+    ("dispatch-share", "same/tight"),
+    ("dispatch-share", "same/gap"),
+    ("dispatch-share", "skew/tight"),
+    ("dispatch-share", "skew/gap"),
     ("flag-record", "plp/tight"),
     ("flag-record", "plp/across"),
     ("flag-record", "pla/tight"),
@@ -174,7 +183,6 @@ CLEAN = (
 SPLITS = {
     "arg-pass": (M_RET_WORD,),
     "rts-trick": (M_SP_LOOP_PUSH,),
-    "vector-call": (M_SWITCH_CALL,),
     "stack-move": (M_S_RELOCATED,),
     "s-illegal": (M_S_AS_VALUE,),
 }

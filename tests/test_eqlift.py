@@ -151,12 +151,13 @@ def test_krakout_emit_whole_artifact(sid, subtune, secs):
     """The substrate covers calls/switches over the whole model; deterministic.
 
     ``$E536``/``$E578`` reach only copyable blocks, so their bodies are duplicated at
-    each of their several static sites and the play routine is the only procedure."""
+    each of their several static sites and the play routine is the only procedure. Its
+    computed call is a ``switch goto`` in a scope, which is what 8.4 leaves of one."""
     model = _model(sid, subtune, secs)
     text, _ = eqlift_mem.emit(model)
     assert text.startswith("eqlift 0\n") and "state {" in text
     assert re.findall(r"(?m)^sub_[0-9A-F]{4} \{", text) == ["sub_E001 {"]
     copied = {t: len(s) for t, s in procpass.plan(model).inline.items() if len(s) > 1}
     assert copied == {0xE536: 3, 0xE578: 2}
-    assert "switch call {" in text and "call $" in text
+    assert "switch goto {" in text and "call $" in text
     assert eqlift_mem.emit(model)[0] == text  # emission is deterministic

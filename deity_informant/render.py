@@ -219,16 +219,13 @@ def _is_frontier(model, pc):
 
 
 def _dispatch_gates(model):
-    """Handler-inlining gates: dyn-site multiplicity per target and the static
-    call targets (real procedures are never inlined into a dispatch arm)."""
-    count = {}
-    for tgts in model.dyn_targets.values():
-        for t in set(tgts):
-            count[t] = count.get(t, 0) + 1
+    """Handler-inlining gates: ``procpass.dyn_gates`` plus the static call targets
+    (real procedures are never inlined into a dispatch arm)."""
+    sites, calls = procpass.dyn_gates(model)
     static = {
         b.term[1] for b in model.blocks.values() if b.term[0] == "jsr" and b.term[1] is not None
     }
-    return count, static
+    return sites, calls, static
 
 
 class _Splits:
@@ -265,38 +262,23 @@ def _structure_once(model, entry, allow):
     emitted = set()
     labels = set()
     gate = _Splits(allow)
-    sites, static_subs = _dispatch_gates(model)
+    sites, calls, static_subs = _dispatch_gates(model)
     inline = procpass.plan(model).inline
     play = getattr(model, "play", None)
 
-    def handler(target, callers):
-        """Region for a computed-call handler nested in its dispatch arm, or
-        None: shared site, static sub, play entry, already emitted, or a
-        handler region overlapping any enclosing procedure."""
-        shared_entry = sites.get(target) != 1 or target in static_subs or target == play
-        if shared_entry or target in emitted or target in callers:
-            return None
-        if not model.variants(target):
+    def placed(target, callers, sole):
+        """Region for a callee's body placed at this site, or None where it may not
+        be: recursive, blockless, or overlapping any enclosing procedure.
+
+        A sole site owns the body and shares the label bookkeeping; every further
+        site takes its own copy, which is exact where the copy binds no pc
+        (``split``'s rule, at a call line)."""
+        if target in callers or not model.variants(target):
             return None
         cfg = _proc_cfg(model, target)
         if set(cfg[0]) & callers:
             return None
-        top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
-        return Region("seq", top) if top else None
-
-    def callee(target, site, callers):
-        """Region for a static callee owned by its call line, or None: not planned
-        for this site, recursive, or overlapping any enclosing procedure.
-
-        A sole site owns the body; every further site takes its own copy, which is
-        exact where the copy binds no pc (``split``'s rule, at a call line)."""
-        sites = inline.get(target, ())
-        if site not in sites or target in callers or not model.variants(target):
-            return None
-        cfg = _proc_cfg(model, target)
-        if set(cfg[0]) & callers:
-            return None
-        if len(sites) == 1:
+        if sole:
             if target in emitted:
                 return None
             top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
@@ -306,6 +288,19 @@ def _structure_once(model, entry, allow):
         if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
             return None
         return Region("seq", [_as_copy(r) for r in top[0].a])
+
+    def handler(target, callers):
+        """Region for a computed-call handler nested in its dispatch arm, or None:
+        a computed goto also lands there, a static sub, or the play entry."""
+        if calls.get(target) != sites.get(target) or target in static_subs or target == play:
+            return None
+        return placed(target, callers, sites.get(target) == 1)
+
+    def callee(target, site, callers):
+        """Region for a static callee owned by its call line, or None where the plan
+        placed no body at this site."""
+        ss = inline.get(target, ())
+        return placed(target, callers, len(ss) == 1) if site in ss else None
 
     shared = (emitted, labels, handler, callee, gate)
     top = _proc(model, entry, _proc_cfg(model, entry), shared, frozenset())

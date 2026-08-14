@@ -433,6 +433,57 @@ def _vector_call():
     return I.cap(V(s, lambda p, h=s: play(p, h), _vec_stubs) for s in spells)
 
 
+def _smc_site(p, name, twist):
+    """One computed call: the target patched into a JSR operand, then taken."""
+    p.i("LDA", "zp", ROW)
+    if twist:
+        p.i("EOR", "imm", twist)
+    p.i("AND", "imm", 1).i("TAX")
+    p.i("LDA", "absx", ("L", "veclo")).i("STA", "abs", ("L", name, 1))
+    p.i("LDA", "absx", ("L", "vechi")).i("STA", "abs", ("L", name, 2))
+    p.label(name).i("JSR", "abs", ("L", "vt0"))
+
+
+def _dispatch_share():
+    """`dispatch-share`: two computed-call sites over one arm set (Grid_Runner's shape).
+
+    No site owns an arm, so the removal is the copy per site the static duplication
+    bound already licenses, and each copy's ``ret`` is its own site's join."""
+
+    def play(p, twist, gap):
+        bump(p)
+        _smc_site(p, "sa", 0)
+        if gap:
+            p.i("LDA", "zp", ROW).i("STA", "abs", SID + 3)
+        _smc_site(p, "sb", twist)
+
+    return I.cap(
+        V(
+            "%s/%s" % ("skew" if t else "same", "gap" if g else "tight"),
+            lambda p, a=t, b=g: play(p, a, b),
+            _vec_stubs,
+        )
+        for t, g in itertools.product((0, 1), (0, 1))
+    )
+
+
+def _mixed_handler():
+    """`mixed-handler`: an arm a static JSR also names, so the arm is a sub of its own."""
+
+    def play(p, where, who):
+        bump(p)
+        if where == "head":
+            p.i("JSR", "abs", ("L", who))
+        _smc_site(p, "site", 0)
+        if where == "tail":
+            p.i("JSR", "abs", ("L", who))
+
+    return I.cap(
+        V("%s/%s" % (w, t), lambda p, a=w, b=t: play(p, a, b), _vec_stubs)
+        for w, t in itertools.product(("head", "tail"), ("vt0", "vt1"))
+    )
+
+
 def _tail_recursion():
     """`tail-recursion`: the recursive call the return follows -- the corpus's only one.
 
@@ -821,6 +872,8 @@ SHAPES = (
     Shape("tail-call", "a JMP into a subroutine", I.tab_data, _tail_call()),
     Shape("rts-trick", "the pushed target returned into", trick_data, _rts_trick()),
     Shape("vector-call", "the target read out of a cell", vec_data, _vector_call()),
+    Shape("dispatch-share", "two computed-call sites, one arm set", vec_data, _dispatch_share()),
+    Shape("mixed-handler", "an arm a static call also names", vec_data, _mixed_handler()),
     Shape("tail-recursion", "the recursive call a return follows", I.tab_data, _tail_recursion()),
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),
