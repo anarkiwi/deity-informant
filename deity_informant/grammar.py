@@ -227,6 +227,7 @@ class Document:
         self.play = None
         self.init = None
         self.subtune = 0
+        self.entry_frame = 2  # bytes the invocation convention pushes below the frame
         self.prologue = []
         self.dispatch_sets = {}
         self.relocated = []
@@ -301,6 +302,9 @@ class _Reader(lark.Transformer):  # pylint: disable=too-many-public-methods
 
     def subtune(self, c):
         self.doc.subtune = int(c[0])
+
+    def entry_frame(self, c):
+        self.doc.entry_frame = int(c[0])
 
     def sidwrite(self, c):
         return (_hexval(c[0]), _hexval(c[1]))

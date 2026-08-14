@@ -553,14 +553,14 @@ def _lift_rets(procs, sp, spin):
     return proofs
 
 
-def apply_rung(procs, spin=None):
+def apply_rung(procs, spin=None, exits=None):
     """Rungs (d0r), (d0) and (d0s) in place over ``procs``; the per-slot proofs."""
     used, proofs, n = _used_names(procs), [], 0
     sp = frameproc._SP
     proofs += _lift_rets(procs, sp, spin or {})
     prints = [_footprint(p[3]) for p in procs]
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
-    bals, _at_entry = _balances(procs, sp, saves_of)
+    bals, _at_entry = _balances(procs, sp, saves_of, exits)
     for k, (_e, _params, _rets, stmts) in enumerate(procs):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
         names, spnames, held = {}, {}, set()
@@ -590,6 +590,21 @@ def apply_rung(procs, spin=None):
         if spnames:
             _rewrite_sp(stmts, marks, spnames, sp, held)
     return proofs
+
+
+def entry_frame(play_frame):
+    """The stack cells the invocation convention pushed below the frame's entry."""
+    return range(0x0200 - play_frame, 0x0200)
+
+
+def drop_entry_frame(state, procs, symbols, name_of, play_frame):
+    """Drop state declaring a convention-frame cell no surviving statement names.
+
+    The pushed return word, the P a handler's RTI pops and the KERNAL A/X/Y save
+    are the caller's frame, not the frame program's state."""
+    used = _used_names(procs)
+    gone = {symbols.get(c) or name_of(c) for c in entry_frame(play_frame)} - used
+    return [f for f in state if f[0] not in gone]
 
 
 def drop_state(state, proofs, symbols, name_of):
@@ -710,15 +725,25 @@ class _SpFlow:
     records it under its cell, a restore returns to it, a constant load opens a new
     base (TXS). Every point control may leave or enter stands at the entry."""
 
-    def __init__(self, sp, saves, bal):
+    def __init__(self, sp, saves, bal, exit_disp=0):
         self.sp, self.saves, self.bal, self.caps = sp, saves, bal, {}
         self.entry = None
         self.at_entry = True
+        self.exit_disp = exit_disp
+        self.top = True
 
     def run(self, stmts, st):
         """The exit state where every edge holds, else ``_Unbalanced``."""
         self.entry, self.at_entry, self.caps = st, True, {}
+        self.top = True
         return self.walk(stmts, st)
+
+    def returns(self, st):
+        """The frame boundary: ``exit_disp`` is what the entry convention pushed and
+        the terminator does not pop -- the KERNAL A/X/Y save a CINV handler restores."""
+        if st != (self.entry[0], (self.entry[1] + self.exit_disp) & 0xFF):
+            raise _Unbalanced
+        return self.entry
 
     def walk(self, stmts, st):
         for s in stmts:
@@ -749,11 +774,12 @@ class _SpFlow:
     def body(self, s, st):
         """A callee inlined at the call: its own ``ret`` edges stand where it began."""
         outer, self.entry = self.entry, st
+        top, self.top = self.top, False
         try:
             for b in frameproc._stmt_bodies(s):
                 _join(self.walk(b, st), st)
         finally:
-            self.entry = outer
+            self.entry, self.top = outer, top
         return st
 
     def call(self, st):
@@ -773,6 +799,8 @@ class _SpFlow:
             if self.sp in s[3] and not self.bal.get(s[1]):
                 raise _Unbalanced  # the callee hands sp back from a place unproven
             return self.call(st)
+        if k == "ret" and self.top and self.exit_disp:
+            return self.returns(st)
         if k in _EDGES:
             return self.leaves(st)
         if k == "if":
@@ -793,16 +821,16 @@ def _sp_state(stmts, st, sp, saves, bal=None):
     return _run_flow(stmts, sp, saves, bal or {}, st)[0]
 
 
-def _run_flow(stmts, sp, saves, bal, st=_ENTRY):
+def _run_flow(stmts, sp, saves, bal, st=_ENTRY, exit_disp=0):
     """``(exit state or None, every call stood at the entry displacement)``."""
-    flow = _SpFlow(sp, saves, bal)
+    flow = _SpFlow(sp, saves, bal, exit_disp)
     try:
         return flow.run(stmts, st), flow.at_entry
     except _Unbalanced:
         return None, False
 
 
-def _balances(procs, sp, saves_of):
+def _balances(procs, sp, saves_of, exits=None):
     """Per procedure: ``sp`` stands at its entry displacement on every edge.
 
     A ``pcall`` handing ``sp`` back preserves the caller's displacement exactly where
@@ -818,7 +846,7 @@ def _balances(procs, sp, saves_of):
     while ask:
         won = set()
         for e in sorted(ask):
-            st, calls = _run_flow(body[e], sp, saves_of[e], bal)
+            st, calls = _run_flow(body[e], sp, saves_of[e], bal, exit_disp=(exits or {}).get(e, 0))
             if st == _ENTRY:
                 won.add(e)
                 at_entry[e] = calls
@@ -876,7 +904,7 @@ def _page_one_free(procs, sp, regions):
     return True
 
 
-def drop_sp(procs, play, regions=None):
+def drop_sp(procs, play, regions=None, exits=None):
     """``sp`` leaves the program where nothing reads it; one proof per keeper.
 
     The updates, the parameter and every threading argument go. A raw call's
@@ -885,7 +913,7 @@ def drop_sp(procs, play, regions=None):
     sp = frameproc._SP
     need, calls_of = {}, {}
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
-    bal, at_entry = _balances(procs, sp, saves_of)
+    bal, at_entry = _balances(procs, sp, saves_of, exits)
     linked = _raw_called(procs) and not (
         all(at_entry.values()) or _page_one_free(procs, sp, regions)
     )

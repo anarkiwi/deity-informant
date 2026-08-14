@@ -121,11 +121,12 @@ start: frameprog_doc
 frameprog_doc: fphead _fheader* image_sec? state_sec? operators_sec? data_sec? symbols_sec? evidence_sec? sub*
 fphead: "frameprog" INT _NL
 
-_fheader: play | init | subtune | sidinit | inputs_sec | dispatch_set | relocated
+_fheader: play | init | entry_frame | subtune | sidinit | inputs_sec | dispatch_set | relocated
 
 play: "play" HEX _NL
 init: "init" HEX _NL
 subtune: "subtune" INT _NL
+entry_frame: _ENTRYFRAME INT _NL
 sidinit: _SIDINIT "{" _NL sidwrite* "}" _NL
 sidwrite: HEX "=" HEX _NL
 dispatch_set: "dispatch" HEX ":" HEX* _NL
@@ -297,6 +298,7 @@ HEXBYTES: /[0-9A-F]+/
 INT: /\d+/
 NAME: /[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_0-9]+)*/
 _SIDINIT.5: "sid-init"
+_ENTRYFRAME.5: "entry-frame"
 // a word store's own byte-emission order (frameprog form); hyphenated, so no
 // NAME can spell it and no symbol alias can shadow it
 _HIFIRST.5: "hi-first"

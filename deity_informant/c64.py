@@ -1,9 +1,8 @@
 """C64 environment helpers for driving playroutines in :class:`PcodeVM`.
 
 ``PcodeVM`` already models the C64's VIC/CIA/SID volatile IO; this adds the
-surrounding machine facts a host needs to enter a tune faithfully: power-on
-RAM, installed interrupt-vector discovery, and the synthetic ROM-free IRQ
-dispatch path (:func:`irq_stubs`) that makes a handler entry a subroutine call.
+machine facts a host needs to enter a tune: power-on RAM, installed
+interrupt-vector discovery, and the ROM-free KERNAL IRQ epilogue.
 """
 
 from __future__ import annotations
@@ -23,10 +22,6 @@ _STUBS = (
     (0xEA81, _EPILOGUE),
     (0xFEBC, _EPILOGUE),
 )
-IRQ_DISPATCH = 0xFF33  # entry: set I, push the 6510 IRQ frame, enter the vector
-IRQ_RETURN = 0xFF41  # the interrupted program: its RTS balances the caller's frame
-KERNAL_IRQ = 0xFF48  # KERNAL hardware-IRQ prologue: save A/X/Y, JMP (CINV)
-_P_IRQ = 0x20  # interrupted-program status pushed for the RTI (I clear)
 
 
 def poweron_ram():
@@ -74,43 +69,19 @@ def installed_handler(mem, written, img):
     return None if found is None else (read_vector(mem, found[0]), found[1])
 
 
-def install_kernal_irq_stubs(vm):
-    """Write the KERNAL IRQ epilogue ($EA31 body NOPs to $EA81: pull Y/X/A, RTI)."""
-    for addr, code in _STUBS:
-        vm.mem[addr : addr + len(code)] = code
+def install_kernal_irq_stubs(vm, img=(0, 0)):
+    """Write the KERNAL IRQ epilogue ($EA31 body NOPs to $EA81: pull Y/X/A, RTI).
 
-
-def irq_stubs(vec, kernal):
-    """``[(addr, code)]`` of the ROM-free dispatch path through vector ``vec``.
-
-    ``$FF33`` pushes the frame a 6510 IRQ pushes (return pc ``$FF41``, then P)
-    and enters the vector -- via the ``$FF48`` KERNAL prologue and ``$EA31``
-    return when ``kernal``; ``$FF41`` is the interrupted program's RTS.
-    """
-    tail = (0x4C, KERNAL_IRQ & 0xFF, KERNAL_IRQ >> 8) if kernal else (0x6C, vec & 0xFF, vec >> 8)
-    frame = (0x78, 0xA9, IRQ_RETURN >> 8, 0x48, 0xA9, IRQ_RETURN & 0xFF, 0x48, 0xA9, _P_IRQ, 0x48)
-    stubs = [(IRQ_DISPATCH, bytes(frame + tail)), (IRQ_RETURN, b"\x60")]
-    if kernal:
-        prologue = (0x48, 0x8A, 0x48, 0x98, 0x48, 0x6C, vec & 0xFF, vec >> 8)
-        stubs.append((KERNAL_IRQ, bytes(prologue)))
-        stubs.extend(_STUBS)
-    return stubs
-
-
-def install_irq_entry(vm, vec, kernal, img=(0, 0)):
-    """Install :func:`irq_stubs` into ``vm``; returns the per-frame entry pc.
-
-    Raises ``ValueError`` when the load image ``img`` claims a stub address: the
-    tune's own bytes live there and the host cannot fake the machine under them.
+    Raises ``ValueError`` when the load image ``img`` claims one: the tune's own
+    bytes live there and the host cannot fake the machine under them.
     """
     lo, hi = img
-    for addr, code in irq_stubs(vec, kernal):
+    for addr, code in _STUBS:
         if lo < addr + len(code) and addr < hi:
             raise ValueError(
-                "load image $%04X-$%04X covers the IRQ dispatch stub at $%04X" % (lo, hi, addr)
+                "load image $%04X-$%04X covers the KERNAL IRQ epilogue at $%04X" % (lo, hi, addr)
             )
         vm.mem[addr : addr + len(code)] = code
-    return IRQ_DISPATCH
 
 
 def _psid_body(data):

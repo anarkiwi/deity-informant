@@ -9,7 +9,7 @@ import re
 import pytest
 
 import _callgen as G
-from deity_informant import frameval
+from deity_informant import frameprog, frameval
 from deity_informant.lifter import OPS
 from deity_informant.structured import DecompileError
 
@@ -86,11 +86,6 @@ M_SP_LOOP_PUSH = (
     "the body's entry sp bot, so concretize_stack names no cell, rung (d0r) has no "
     "return slot to ask the value question of, and the pushes stay sp-relative stores"
 )
-M_IRQ_STUB = (
-    "a play $0000 tune enters through c64.irq_stubs, so the emitted procedure is the "
-    "dispatch stub: it pushes the return word and P itself, the handler's RTI is a "
-    "computed goto through that page-one pair, and the stub's own RTS is an interior ret"
-)
 
 MECHANISMS = (
     M_CALLB,
@@ -106,7 +101,6 @@ MECHANISMS = (
     M_PAGE_ONE_CELL,
     M_PAGE_ONE_BLIND,
     M_SP_LOOP_PUSH,
-    M_IRQ_STUB,
 )
 
 M_BRK_TERM = (
@@ -181,8 +175,6 @@ PINS = {
     ("page-one-cell", "absy/cross"): (M_PAGE_ONE_CELL,),
     ("page-one-cell", "indy/same"): (M_PAGE_ONE_BLIND,),
     ("page-one-cell", "indy/cross"): (M_PAGE_ONE_CELL,),
-    ("irq-frame", "hw"): (M_IRQ_STUB,),
-    ("irq-frame", "cinv"): (M_IRQ_STUB,),
 }
 
 # what already holds, and must keep holding
@@ -200,6 +192,8 @@ CLEAN = (
     ("page-one-cell", "abs/same"),
     ("page-one-cell", "absx/same"),
     ("page-one-cell", "absy/same"),
+    ("irq-frame", "hw"),
+    ("irq-frame", "cinv"),
 )
 
 SPLITS = {
@@ -216,8 +210,6 @@ SPLITS = {
 FAULTS = {
     ("arg-pass", "stack-pla"): "store into the stack page $01FD",
     ("arg-pass", "stack-tsx"): "store into the stack page $01FD",
-    ("irq-frame", "cinv"): "store into the stack page $01FD",
-    ("irq-frame", "hw"): "store into the stack page $01FD",
     ("page-one-cell", "abs/cross"): "load from the stack page $0108",
     ("page-one-cell", "absx/cross"): "load from the stack page $0100",
     ("page-one-cell", "absy/cross"): "load from the stack page $0100",
@@ -231,8 +223,6 @@ FAULTS = {
 DISPATCH_ARMS = (
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
-    ("irq-frame", "hw"),  # RTI is a computed goto, so its landing is an arm too
-    ("irq-frame", "cinv"),
 )
 
 
@@ -273,6 +263,33 @@ def test_variant_reproduces_the_write_log(row, label):
         frameval.gate_fp(model, G.FRAMES, prog)
 
 
+@pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["irq-frame"].variants])
+def test_the_artifact_carries_the_convention_it_was_entered_over(label):
+    """3a for a handler frame: the entry convention is a header fact, not lifted text.
+
+    Nothing in the image says how many bytes were pushed below the handler, so the
+    text states it and the rebuild re-derives the same program from the text alone."""
+    text = G.text("irq-frame", label)
+    prog = frameprog.loads(text)
+    assert prog.entry_frame == (6 if label == "cinv" else 3)
+    rebuilt = frameprog.block_model(prog)
+    assert frameprog.dumps(frameprog.program(rebuilt)) == text
+
+
+@pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["irq-frame"].variants])
+def test_the_frame_the_artifact_cuts_is_the_machine_s_own(label):
+    """Where a frame starts moved; which writes fall in it did not (spec 1.4).
+
+    The raw 6510 takes one interrupt per frame and the artifact runs one procedure
+    per frame: the two write lists agree frame by frame, so no write crossed into a
+    neighbour. The driver writes either side of its cursor bump, so a shift shows."""
+    want = G.machine_frames("irq-frame", label)
+    trace, _walker = frameprog.iota(G.built("irq-frame", label)[0], G.FRAMES)
+    got = frameval.Evaluator(G.parsed("irq-frame", label), trace).frames(G.FRAMES)
+    assert got == want
+    assert len({tuple(f) for f in want}) > 1, "a constant log proves no alignment"
+
+
 def test_the_faulting_variants_are_exactly_the_ones_the_protection_names():
     """The fault table is read off the evaluator, so a shape may not fault unnamed."""
     got = {v: G.fault(*v)[0].split(": ", 1)[1] for v in G.ALL if G.fault(*v)}
@@ -283,8 +300,6 @@ def test_the_faulting_variants_are_exactly_the_ones_the_protection_names():
 @pytest.mark.parametrize("row,label", [pytest.param(r, l, id="%s:%s" % (r, l)) for r, l in G.ALL])
 def test_the_gate_judges_the_artifact_and_nothing_else(row, label):
     """One object: the program the gate evaluates is the text, read back and canonical."""
-    from deity_informant import frameprog
-
     assert frameprog.dumps(G.parsed(row, label)) == G.text(row, label)
 
 

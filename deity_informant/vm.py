@@ -250,19 +250,33 @@ def run_sub(vm, pc, cache, lifter):
     return pc
 
 
-def run_irq(vm, handler, cache, lifter):
-    """Enter ``handler`` like a hardware IRQ; run until its RTI unwinds the frame.
+IRQ_FRAME = 3  # bytes a 6510 IRQ pushes: the return word, then P
+KERNAL_FRAME = 6  # ... plus the KERNAL $FF48 prologue's A/X/Y save, for a CINV handler
 
-    Pushes the CPU interrupt frame (return address then status), sets I, and runs
-    from ``handler`` until the balancing RTI climbs the stack back. The ROM-free
-    equivalent, as 6510 code the decompiler can model, is ``c64.irq_stubs``.
+
+def irq_push(vm, ret_pc, kernal=False):
+    """Push the frame a handler is entered over, and set I: the invocation convention.
+
+    The 6510 pushes the return word and P; the KERNAL hardware-IRQ prologue then
+    pushes A/X/Y before ``JMP (CINV)``, which is the ABI a ``$0314`` handler's
+    ``PLA;TAY;PLA;TAX;PLA`` (or ``JMP $EA81``) epilogue undoes.
     """
     reg = vm.reg
-    start = reg[3]
-    vm._push(0x00)  # sentinel return hi
-    vm._push(0x00)  # sentinel return lo
+    vm._push((ret_pc >> 8) & 0xFF)
+    vm._push(ret_pc & 0xFF)
     vm._push_status()
-    reg[10] = 1  # I set on IRQ entry
+    reg[10] = 1
+    if kernal:
+        for i in range(3):  # A, X, Y
+            vm._push(reg[i])
+    return KERNAL_FRAME if kernal else IRQ_FRAME
+
+
+def run_irq(vm, handler, cache, lifter, kernal=False, ret_pc=0):
+    """Enter ``handler`` like an interrupt; run until its RTI unwinds the frame."""
+    reg = vm.reg
+    start = reg[3]
+    irq_push(vm, ret_pc, kernal)
     pc = handler
     n = 0
     while reg[3] < start:
@@ -274,11 +288,7 @@ def run_irq(vm, handler, cache, lifter):
 
 
 def _take_irq(vm, handler, ret_pc, enter):
-    reg = vm.reg
-    vm._push((ret_pc >> 8) & 0xFF)
-    vm._push(ret_pc & 0xFF)
-    vm._push_status()
-    reg[10] = 1  # I set on IRQ entry
+    irq_push(vm, ret_pc)
     enter(vm)
     return handler
 

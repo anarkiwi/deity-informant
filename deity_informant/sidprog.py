@@ -672,10 +672,13 @@ class BlockModel:
     """Hand-built stand-in for a committed ``structured.Model``: pc-keyed blocks
     plus the header fields, with ``written`` taken from the dispatch table."""
 
-    def __init__(self, mem0, init, play, blocks, dispatch, subtune=0, prologue=(), dyn=None):
+    def __init__(
+        self, mem0, init, play, blocks, dispatch, subtune=0, prologue=(), dyn=None, play_frame=2
+    ):
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
+        self.play_frame = play_frame
         self.subtune = subtune
         self.prologue = list(prologue)
         self.blocks = blocks

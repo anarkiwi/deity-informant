@@ -15,8 +15,8 @@ from . import c64
 from . import codec
 from . import expr as E
 from . import initcopy
-from .lifter import MODE_LEN, OPS, STATUS_BITS, lift
-from .vm import PcodeVM
+from .lifter import MODE_LEN, OPS, lift
+from .vm import IRQ_FRAME, KERNAL_FRAME, PcodeVM, irq_push
 
 Proof = namedtuple("Proof", "site kind status targets lemma")
 """Per-site certification record. ``targets`` is always the serialized
@@ -35,6 +35,22 @@ _VOL = frozenset((0xD011, 0xD012, 0xD41B, 0xD41C))
 _VOL0 = frozenset((0xD019, 0xDC0D))  # constant-0 sources under the per-frame driver
 _GUARD = 8_000_000
 _BLOCK_CAP = 64
+_IRQ_RET = 0x0002  # the interrupted program a frame returns to: run_sub's sentinel too
+
+
+def _ret_pop(term):
+    """Bytes an ``rts`` terminator pops: 2 for RTS, 3 for an RTI (P below the word)."""
+    return term[1] if len(term) > 1 else 2
+
+
+def frame_exit(play_frame):
+    """Convention bytes the frame body must consume itself, its terminator aside.
+
+    Zero for a called play routine and for a hardware-vector handler; the KERNAL
+    A/X/Y save for a CINV one, which its own epilogue pulls back."""
+    return play_frame - (2 if play_frame == 2 else IRQ_FRAME)
+
+
 SID_LO, SID_HI = 0xD400, 0xD418
 
 
@@ -122,6 +138,7 @@ class Evidence:
         closure=None,
         play=None,
         init_copy=None,
+        play_frame=2,
     ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
@@ -134,8 +151,9 @@ class Evidence:
         self.prologue = prologue  # [(reg, val)] order-preserved, timing non-normative
         self.mem0 = mem0  # post-init snapshot: the play program's initial image
         self.closure = closure  # run-to-recurrence Closure record (None: scan off)
-        self.play = play  # resolved per-frame entry (the IRQ stub when play == 0)
+        self.play = play  # resolved per-frame entry (the handler when play == 0)
         self.init_copy = init_copy  # initcopy.Tracer over the init run (None: off)
+        self.play_frame = play_frame  # bytes the invocation convention pushed below it
 
 
 def _frame_digest(vm, cells):
@@ -152,10 +170,11 @@ def _frame_digest(vm, cells):
 
 
 def irq_entry(vm, img):
-    """Per-frame entry pc for a ``play == 0`` tune: the installed vector's stub.
+    """``(handler pc, kernal)``: the frame program of a ``play == 0`` tune.
 
-    Init has run, so the vector it wrote is discoverable; the dispatch stubs make
-    entering the handler an ordinary subroutine call (:func:`c64.irq_stubs`)."""
+    Init has run, so the vector it wrote is discoverable; the handler that vector
+    names IS the frame program, entered over the convention frame :func:`vm.irq_push`
+    writes. A CINV handler may exit through the ROM-free KERNAL epilogue."""
     found = c64.installed_vector(vm.mem, vm.written, img or (0, 0))
     if found is None:
         raise DecompileError(
@@ -163,12 +182,15 @@ def irq_entry(vm, img):
             " (CINV $0314 / hardware $FFFE / NMI $0318): no per-frame entry exists"
         )
     vec, kernal = found
-    if not c64.read_vector(vm.mem, vec):
+    handler = c64.read_vector(vm.mem, vec)
+    if not handler:
         raise DecompileError("interrupt vector $%04X installed as $0000" % vec)
-    try:
-        return c64.install_irq_entry(vm, vec, kernal, img or (0, 0))
-    except ValueError as e:
-        raise DecompileError(str(e)) from e
+    if kernal:
+        try:
+            c64.install_kernal_irq_stubs(vm, img or (0, 0))
+        except ValueError as e:
+            raise DecompileError(str(e)) from e
+    return handler, kernal
 
 
 def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
@@ -186,11 +208,14 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
     cache = {}
     reg = vm.reg
 
-    def run_entry(entry, acc=0, phase="play", tr=None):
+    def run_entry(entry, acc=0, phase="play", tr=None, kernal=None):
         start = reg[3]
         reg[0] = acc & 0xFF
-        vm._push(0x00)
-        vm._push(0x01)
+        if kernal is None:
+            vm._push(0x00)
+            vm._push(0x01)
+        else:
+            irq_push(vm, _IRQ_RET, kernal)
         pc = entry
         n = 0
         while reg[3] < start:
@@ -227,7 +252,9 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             " until its own handler fires needs the driver cadence (v2/P-INT)" % exc
         ) from exc
     vm.capture(False)
-    play = play or irq_entry(vm, img)
+    kernal = None
+    if not play:
+        play, kernal = irq_entry(vm, img)
     prologue = [(r, v) for _c, r, v in vm.wlog]
     mem0 = bytes(vm.mem)
     pcs.clear()
@@ -249,7 +276,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if prev != f:
                 first, recur = prev, f
         try:
-            run_entry(play)
+            run_entry(play, kernal=kernal)
         except (KeyError, RuntimeError) as exc:
             if f < frames:
                 raise
@@ -286,6 +313,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
         closure,
         play,
         tracer,
+        2 if kernal is None else (KERNAL_FRAME if kernal else IRQ_FRAME),
     )
 
 
@@ -504,29 +532,10 @@ class _BlockBuilder:
         elif kind == "jsr":
             ret = (pc + rec["len"] - 1) & 0xFFFF
             self.term = ("jsr", None if dyn is not None else ctrl[1], ret, dyn)
-        elif kind == "rts":
-            self.term = ("rts",)
-        elif kind == "rti":
-            self.term = ("jmpd", self._rti())
+        elif kind in ("rts", "rti"):
+            self.term = ("rts",) if kind == "rts" else ("rts", 3)
         else:
             raise DecompileError("control %r at %04X not modeled" % (kind, pc))
-
-    def _pull(self, off):
-        """Symbolic stack byte ``off`` above sp (the 6510 pull address)."""
-        a = E.op("INT_ADD", [self.sreg[3], E.konst(off, 1)], 1)
-        return self._slot(E.op("INT_OR", [E.op("INT_ZEXT", [a], 2), E.konst(0x100, 2)], 2))
-
-    def _rti(self):
-        """RTI as data flow: pull P into the flag registers, yield the pulled pc.
-
-        The terminator is then an ordinary dynamic goto, guarded by the observed
-        target set like every other computed transfer."""
-        p, lo, hi = self._pull(1), self._pull(2), self._pull(3)
-        for idx, sh in STATUS_BITS:
-            src = p if sh == 0 else E.op("INT_RIGHT", [p, E.konst(sh, 1)], 1)
-            self.sreg[idx] = E.op("INT_AND", [src, E.konst(1, 1)], 1)
-        self.sreg[3] = E.op("INT_ADD", [self.sreg[3], E.konst(3, 1)], 1)
-        return self._word(lo, hi)
 
 
 # ---- compile a Block to a python closure --------------------------------------
@@ -1525,8 +1534,8 @@ class Analysis:
                     self.sp_in[key] = new
                     work.append(key)
 
-        for entry in (model.init, model.play):
-            push(entry, 0xFD)
+        push(model.init, 0xFD)
+        push(model.play, (0xFF - model.play_frame) & 0xFF)
         while work:
             key = work.pop()
             blk = model.blocks[key]
@@ -1536,7 +1545,7 @@ class Analysis:
             term = blk.term
             rts = term[0] == "rts"  # observed continuations: an rts-dispatch has no other edge
             tgts = sorted(model.ev_targets.get(blk.pcs[-1], ())) if rts else self.succ_targets(blk)
-            delta = -2 if term[0] == "jsr" else (2 if rts else 0)
+            delta = -2 if term[0] == "jsr" else (_ret_pop(term) if rts else 0)
             for pc in tgts:
                 push(pc, (out + delta) & 0xFF if isinstance(out, int) else out)
             if term[0] == "jsr":
@@ -2555,6 +2564,7 @@ class Model:
         self.mem0 = bytes(mem0)
         self.init = init
         self.play = play
+        self.play_frame = evidence.play_frame  # the invocation convention's pushed bytes
         self.subtune = subtune
         self.prologue = list(evidence.prologue)
         self.sound = sound  # strict mode: any guard-live (uncertified) site fails the build
@@ -2667,13 +2677,15 @@ class Walker:
             raise WalkError("target $%04X at $%04X outside observed set" % (pc, blk.pcs[-1]))
         return pc
 
-    def _run_entry(self, entry, acc=0):
+    def _run_entry(self, entry, acc=0, frame=2):
         model = self.model
         m = self.m
         start = self.r[3]
         self.r[0] = acc & 0xFF
         self._push(0x00)
-        self._push(0x01)
+        self._push(0x01 if frame == 2 else _IRQ_RET & 0xFF)
+        for b in ([0x20] + self.r[:3])[: frame - 2]:  # P, then the KERNAL A/X/Y save
+            self._push(b)
         pc = entry
         n = 0
         while self.r[3] < start:
@@ -2707,18 +2719,19 @@ class Walker:
                 self._push(ret >> 8)
                 self._push(ret & 0xFF)
                 pc = tgt if dynx is None else self._guard(blk, x)
-            else:  # rts
-                sp = (self.r[3] + 1) & 0xFF
+            else:  # rts (an RTI pops P below the word and returns to it, not past it)
+                pop = _ret_pop(term)
+                sp = (self.r[3] + pop - 1) & 0xFF
                 lo = m[0x100 + sp]
                 sp = (sp + 1) & 0xFF
                 hi = m[0x100 + sp]
                 self.r[3] = sp
-                pc = ((hi << 8) | lo) + 1 & 0xFFFF
+                pc = ((hi << 8) | lo) + (pop == 2) & 0xFFFF
             n += 1
             if n > _GUARD:
                 raise WalkError("runaway at %04X" % pc)
 
     def run(self, frames):
         for _ in range(frames):
-            self._run_entry(self.model.play)
+            self._run_entry(self.model.play, frame=self.model.play_frame)
         return self.wlog

@@ -13,10 +13,12 @@ from collections import namedtuple
 from functools import lru_cache
 
 import _idiomgen as I
+from deity_informant import c64 as C
 from deity_informant import frameproc, frameprog, frameval
 from deity_informant import structured as S
 from deity_informant.asm6502 import AsmIllegal as Asm
 from deity_informant.lifter import OPS, lift
+from deity_informant.vm import PcodeVM, run_irq, run_sub
 
 SID = I.SID
 ORG = I.ORG
@@ -704,13 +706,19 @@ def _handler_seed(p, vec, name="play"):
 
 
 def _irq_frame():
-    """`irq-frame`: the player that IS the handler, so its exit is an RTI, not an RTS."""
+    """`irq-frame`: the player that IS the handler, so its exit is an RTI, not an RTS.
+
+    A write at each end of the body, either side of the cursor bump, so the pair one
+    frame emits names its own frame: a boundary off by one shows as a shifted pair."""
 
     def play(p, vec):
         p.i("LDX", "zp", ROW)
         col(p, "X")
         p.i("STA", "abs", SID)
         bump(p)
+        p.i("LDX", "zp", ROW)
+        col(p, "X", "alt")
+        p.i("STA", "abs", SID + 1)
         if vec == "cinv":
             p.i("PLA").i("TAY").i("PLA").i("TAX").i("PLA")  # the KERNAL prologue's frame
         p.i("RTI")
@@ -832,6 +840,30 @@ PAGE_ONE_COVERED = frozenset(
     for op, word in instructions(*v)
     if op not in STACK_OPCODES and "page1" in touches(op, word)
 )
+
+
+@lru_cache(maxsize=None)
+def machine_frames(row, label, nframes=FRAMES):
+    """Per-frame ``(reg, val)`` SID writes of the raw 6510, at the machine's cadence.
+
+    Init runs as a subroutine, then one interrupt per frame straight into the vector
+    the driver installed -- no model, no artifact, so the frames it cuts are the
+    machine's own and an artifact frame that moved a write disagrees with it."""
+    mem, init, play, _size = image(row, label)
+    if play:
+        raise ValueError("%s:%s is not an interrupt frame" % (row, label))
+    vm = PcodeVM(bytearray(mem))
+    vm.wlog = []
+    cache = {}
+    run_sub(vm, init, cache, lift)
+    kernal = label == "cinv"
+    handler = C.read_vector(vm.mem, _VECS[label][0])
+    out = []
+    for _f in range(nframes):
+        at = len(vm.wlog)
+        run_irq(vm, handler, cache, lift, kernal)
+        out.append([(r, v) for _c, r, v in vm.wlog[at:]])
+    return out
 
 
 @lru_cache(maxsize=None)

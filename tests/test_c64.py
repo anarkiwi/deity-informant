@@ -1,4 +1,4 @@
-"""C64 environment helpers: power-on RAM, handler discovery, IRQ dispatch stubs."""
+"""C64 environment helpers: power-on RAM, handler discovery, the KERNAL epilogue."""
 
 import pytest
 
@@ -69,28 +69,10 @@ def test_install_kernal_irq_stubs_writes_return_path():
     assert vm.mem[0xFEBC:0xFEC2] == epilogue  # NMI epilogue
 
 
-def test_install_irq_entry_dispatches_through_the_kernal_prologue():
+def test_install_kernal_irq_stubs_refuses_a_load_image_over_the_epilogue():
     vm = PcodeVM(bytearray(0x10000))
-    assert c64.install_irq_entry(vm, 0x0314, True) == c64.IRQ_DISPATCH
-    assert vm.mem[c64.IRQ_DISPATCH] == 0x78  # SEI, then the pushed IRQ frame
-    assert vm.mem[c64.IRQ_DISPATCH + 10 : c64.IRQ_DISPATCH + 13] == bytes((0x4C, 0x48, 0xFF))
-    assert vm.mem[c64.IRQ_RETURN] == 0x60  # the interrupted program: RTS
-    assert vm.mem[c64.KERNAL_IRQ : c64.KERNAL_IRQ + 8] == bytes(
-        (0x48, 0x8A, 0x48, 0x98, 0x48, 0x6C, 0x14, 0x03)
-    )
-
-
-def test_install_irq_entry_without_the_kernal_enters_the_vector_directly():
-    vm = PcodeVM(bytearray(0x10000))
-    c64.install_irq_entry(vm, 0xFFFE, False)
-    assert vm.mem[c64.IRQ_DISPATCH + 10 : c64.IRQ_DISPATCH + 13] == bytes((0x6C, 0xFE, 0xFF))
-    assert vm.mem[c64.KERNAL_IRQ] == 0  # no KERNAL A/X/Y save on this path
-
-
-def test_install_irq_entry_refuses_a_load_image_over_a_stub():
-    vm = PcodeVM(bytearray(0x10000))
-    with pytest.raises(ValueError, match=r"stub at \$FF33"):
-        c64.install_irq_entry(vm, 0x0314, True, (0xFF00, 0x10000))
+    with pytest.raises(ValueError, match=r"epilogue at \$EA31"):
+        c64.install_kernal_irq_stubs(vm, (0xEA00, 0xEB00))
 
 
 def test_psid_image_bounds_match_the_loaded_cells():

@@ -303,28 +303,28 @@ implementation MUST:
 ### 8.1 Landed: the per-frame handler entry (one call per frame)
 
 Handler discovery and decompilation are in, at the v1 cadence (one handler
-invocation per frame). The entry convention is **not** a flag any executor
-carries: after init, `structured.trace` installs the machine facts a hardware
-IRQ supplies as 6510 code in the RAM under the KERNAL (`c64.irq_stubs`) and
-makes `play` the entry stub's address, so every executor — evidence VM,
-`structured.Walker`, `frameval` — enters it as the same
-ordinary subroutine they already agree on:
+invocation per frame). **The frame program is the handler itself.** After init,
+`c64.installed_vector` reads the vector init wrote (CINV `$0314`, hardware
+`$FFFE`, NMI `$0318`, in that order; else a CINV lying inside the load image)
+and `play` becomes the handler that vector names.
 
-```
- $FF33  SEI; push $FF41, then P=$20   the frame a 6510 IRQ pushes
-        JMP $FF48 / JMP (vector)      KERNAL CINV path, or the raw vector
- $FF48  PHA TXA PHA TYA PHA           the KERNAL $FF48 A/X/Y save
-        JMP ($0314)                   re-read every frame: a swapped CINV is followed
- $EA31  (NOP body) .. $EA81 PLA TAY PLA TAX PLA RTI     the KERNAL epilogue
- $FF41  RTS                           the interrupted program: balances the frame
-```
+The bytes pushed below it are the **invocation convention**, not text: `vm.irq_push`
+writes the 6510's return word and P, plus the KERNAL `$FF48` prologue's A/X/Y save
+when the tune drives CINV, and `structured.Evidence.play_frame` records how many.
+`RTI` is then the frame boundary — `_BlockBuilder` lowers it to the `rts`
+terminator that pops three, so every executor returns from the frame there and
+neither the pushed word nor P is ever named. A CINV handler's own epilogue
+(`PLA TAY PLA TAX PLA`, or `JMP $EA81` through the ROM-free stubs
+`c64.install_kernal_irq_stubs` writes) pulls the convention's A/X/Y back, so the
+frame body's stack effect is `play_frame` minus the terminator's pop: rung (d0')
+is asked for that displacement rather than zero and the drop still holds.
 
-`RTI` is modeled without a new terminator kind: `_BlockBuilder` lowers it to
-data flow (pull P into the flag registers, sp += 3) plus a dynamic goto to the
-pulled pc, so it is guarded by the observed target set like every other
-computed transfer and every executor inherits it from the shared block IR.
+Nothing in the image says how many bytes were pushed, so the artifact states it:
+`entry-frame N` in the header, emitted only when it is not a called play routine's
+two, and `frameprog.block_model` re-derives the same program from it.
+
 Refusals are explicit: no installed vector, a vector installed as `$0000`, or a
-load image that claims a stub address.
+load image that claims the KERNAL epilogue a CINV handler may exit through.
 
 Still v2: the driver cadence (multi-speed CIA/raster ticks, nesting, idle) and
 the interrupt-source state a handler polls — `$D019`/`$DC0D` read as the

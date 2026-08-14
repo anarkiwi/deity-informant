@@ -119,9 +119,11 @@ class FrameProgram:
         operators=(),
         landings=None,
         relocated=(),
+        entry_frame=2,
     ):
         self.play = play
         self.init = init
+        self.entry_frame = entry_frame  # the convention's pushed bytes (2: a called play)
         self.subtune = subtune
         self.prologue = list(prologue)
         self.inputs = list(inputs)
@@ -291,6 +293,7 @@ def block_model(prog, sound=False):
         closure=clo,
         play=prog.play,
         init_copy=initcopy.Reduced(_origins(ev), _sites(ev), ev["census"]),
+        play_frame=prog.entry_frame,
     )
     return structured.Model(mem0, prog.init, prog.play, evidence, prog.subtune, sound).build_all()
 
@@ -556,7 +559,8 @@ def program(model, extents=None):
     procs = frameproc.procedures(trees, labels, view, set(model.dispatch_sets), symbols, model.play)
     smc, state, symbols = desmc.apply_rung(model, decls, procs, state, symbols)
     mem0 = smc.seed(model.mem0)  # a relocated page carries the bytes its source page holds
-    stack_proofs = framestack.apply_rung(procs, _entry_sp(model))
+    exits = {model.play: structured.frame_exit(model.play_frame)}
+    stack_proofs = framestack.apply_rung(procs, _entry_sp(model), exits)
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs, decls)
     regions = datadecl.Regions(decls)
@@ -576,7 +580,7 @@ def program(model, extents=None):
             break
     state = sidprog._drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs
-    proofs += framestack.drop_sp(procs, model.play, regions)
+    proofs += framestack.drop_sp(procs, model.play, regions, exits)
     resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
         mem0, decls, procs, state, symbols, blocked, extents
@@ -587,6 +591,7 @@ def program(model, extents=None):
     prov0, sites, census = _init_copies(model, decls)
     init_proofs = [_init_proof(pc, *v) for pc, v in sites.items()]
     state = _drop_transfer_operands(state, procs, symbols)
+    state = framestack.drop_entry_frame(state, procs, symbols, G.addr_name, model.play_frame)
     prog = FrameProgram(
         model.play,
         model.init,
@@ -609,6 +614,7 @@ def program(model, extents=None):
         _evidence(model, prov0, sites, census),
         landings=framefuse._landings(model),
         relocated=smc.blocks(),
+        entry_frame=model.play_frame,
     )
     prog.roles, prog.bounds = _roles(prog)
     prog.operators = _operators(model)
@@ -731,6 +737,8 @@ def dumps(prog):
     head.extend(_EVIDENCE_NOTE)
     head.append("play $%04X" % prog.play)
     head.append("init $%04X" % prog.init)
+    if prog.entry_frame != 2:
+        head.append("entry-frame %d" % prog.entry_frame)
     if prog.subtune:
         head.append("subtune %d" % prog.subtune)
     if prog.prologue:
@@ -803,6 +811,7 @@ def parse(text):
         roles=doc.roles,
         bounds=doc.bounds,
         operators=doc.operators,
+        entry_frame=doc.entry_frame,
     )
 
 

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from deity_informant import c64
 from deity_informant import frameprog
 from deity_informant import structured as S
+from deity_informant import vm
 from deity_informant.c64 import load_psid
 
 import _fuzzgen as G
@@ -258,14 +258,16 @@ def test_paired_constant_pair_and_indexed_mix_proves():
     "vec,kernal", [(0x0314, True), (0xFFFE, False), (0x0318, False)], ids=["cinv", "hw", "nmi"]
 )
 def test_handler_driven_entry_replays_bit_exact(vec, kernal):
-    """``play == 0``: the installed vector's dispatch stub is the frame entry, and
-    the handler's RTI is data flow plus a guarded goto (both executors agree)."""
+    """``play == 0``: the installed handler IS the frame entry and its RTI the
+    boundary -- the convention's frame is pushed, never lifted (both executors agree)."""
     mem, init = G.irq_image(vec, kernal)
     model = _verify(mem, init, 0, 8, img=G.IRQ_IMAGE)
-    assert model.play == c64.IRQ_DISPATCH
+    assert model.play == G.IRQ_HANDLER
+    assert model.play_frame == (vm.KERNAL_FRAME if kernal else vm.IRQ_FRAME)
     assert [v for _c, _r, v in S.Walker(model).run(8)] == list(range(1, 9))
-    rti = next(blk for blk in model.blocks.values() if blk.term[0] == "jmpd")
-    assert set(model.dyn_targets[rti.pcs[-1]]) == {c64.IRQ_RETURN}
+    assert not [blk for blk in model.blocks.values() if blk.term[0] == "jmpd"]
+    rti = next(blk for blk in model.blocks.values() if blk.term == ("rts", 3))
+    assert rti.pcs[-1] in model.pcs
 
 
 def test_play_zero_without_an_installed_vector_refuses():
@@ -291,11 +293,11 @@ def test_play_zero_with_a_zeroed_vector_refuses():
         S.decompile(mem, init, 0, 4, img=G.IRQ_IMAGE)
 
 
-def test_load_image_over_the_dispatch_stub_refuses():
-    """The tune's own bytes live under the stub: refuse rather than fake them."""
+def test_load_image_over_the_kernal_epilogue_refuses():
+    """The tune's own bytes live under the epilogue: refuse rather than fake them."""
     mem, init = G.irq_image()
-    with pytest.raises(S.DecompileError, match=r"dispatch stub at \$FF33"):
-        S.decompile(mem, init, 0, 4, img=(0xFF00, 0x10000))
+    with pytest.raises(S.DecompileError, match=r"epilogue at \$EA31"):
+        S.decompile(mem, init, 0, 4, img=(0xEA00, 0xEB00))
 
 
 def _tunes():

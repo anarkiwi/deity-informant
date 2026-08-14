@@ -5,6 +5,7 @@ mutation evidence (dropped write, swapped ctrl order, wrong iota index) and the
 guarded-envelope faults (unobserved arm, undeclared input, trace exhaustion).
 """
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -74,18 +75,19 @@ def test_gate_fp_fuzz_players(p):
 
 
 @pytest.mark.parametrize("kernal", [True, False], ids=["cinv", "hw"])
-def test_handler_driven_entry_names_the_stack_page(kernal):
-    """A ``play == 0`` tune's emitted procedure IS the dispatch stub, which pushes.
+def test_handler_driven_entry_names_no_stack_page(kernal):
+    """A ``play == 0`` tune's emitted procedure IS the handler, which names no page.
 
-    The stub stores the return word and P on the machine stack and the handler's RTI
-    reads them back, so the artifact names page one and the protection faults; the
-    removal owed here is the stub, not a weaker check (docs/denotation-solve.md 8.4)."""
+    The convention frame the handler is entered over is the caller's, so the artifact
+    spells neither its push nor the RTI's read of it and the armed stack-page
+    protection sees nothing (docs/denotation-solve.md 8.4)."""
     mem, init = G.irq_image(0x0314 if kernal else 0xFFFE, kernal)
     model, _ev = S.decompile(mem, init, 0, 8, img=G.IRQ_IMAGE)
     prog = frameprog.loads(frameprog.emit(model))
+    assert not re.search(r"m_01[0-9A-F]{2}", frameprog.dumps(prog))
+    assert not frameproc.sp_kept(prog.procs)
     for p in (None, prog):
-        with pytest.raises(FrameFault, match="the stack page"):
-            frameval.gate_fp(model, 8, p)
+        assert frameval.gate_fp(model, 8, p) is None
 
 
 def test_gate_fp_runs_on_the_parsed_artifact():

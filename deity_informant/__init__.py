@@ -31,6 +31,7 @@ from .vm import (
     run_sub,
     run_irq,
     run_irq_driven,
+    irq_push,
 )
 from .recorder import record, Recording, RecVM
 from .expr import ExprTooComplex
@@ -44,8 +45,6 @@ from .c64 import (
     installed_handler,
     installed_vector,
     install_kernal_irq_stubs,
-    install_irq_entry,
-    irq_stubs,
 )
 
 try:
@@ -66,6 +65,7 @@ __all__ = [
     "run_sub",
     "run_irq",
     "run_irq_driven",
+    "irq_push",
     "record",
     "Recording",
     "RecVM",
@@ -79,7 +79,5 @@ __all__ = [
     "installed_handler",
     "installed_vector",
     "install_kernal_irq_stubs",
-    "install_irq_entry",
-    "irq_stubs",
     "__version__",
 ]
