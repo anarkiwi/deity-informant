@@ -468,3 +468,129 @@ that is a property of the problem rather than of the engine:
   the same rule rung (e) already carries for voices. Synthesizing a guard to
   force two tunes into one player is the failure mode that would make criterion
   2 a lie, and it is banned by the same clause.
+
+## 8. The position (2026-08-14): what landed, what the method became
+
+### 8.1 The landings
+
+| # | landing | result |
+|---|---|---|
+| L0 | instrument (#213) | baseline measured; criterion 3 demoted to a diagnostic on its own evidence |
+| L1 | webs before names (#214) | **emit-identity byte-identical**; 72,095 webs / 1,805 procedures, 26.2% refused; 7,581 spellings carry 2+ webs, 4,518 of them machine names, in 621 of 624 tunes |
+| L2 | the solve (#215) | **STOP**: value sites 29.31% non-⊤ against a 60% floor; the exhibits solve (`lane(0,7)`, `addr(S,·)` with its selector named) but pointer-deref reach is 661 of 2,319 |
+| L2b | vocabulary extension (#216) | value reach 29.31% → 36.12%, `⊤-unvocabularised` −35%; **pointer-deref reach unmoved at 28.50%**, so L3/L4 did not proceed |
+| — | canonical idiom suite (#217) | 137 variants over all 23 rows in **5.6 s**; 6 rows invariant, 17 not; 72 strict xfails naming 14 mechanisms |
+| L-SMC | de-SMC (#218) | **landed**: zero writes to executable memory **624/624** (baseline 364 of 624 wrote code), Gate FP **624/624 clean**, zero refusals corpus-wide |
+
+### 8.2 The method changed, and that is the substantive result
+
+The corpus sweep was the development loop for the first four landings and it was
+the wrong instrument: hours per answer, aggregates that moved for reasons no
+aggregate could name, and three criteria that failed on their **denominators**
+rather than on the work (§5, §7.3). Canonical synthesis replaced it — minimal
+complete drivers assembled from first principles, lifted and solved, **seconds
+per answer** — and it immediately did what the sweeps could not:
+
+- it refuted two of the three diagnoses the seed produced, with programs. The
+  "three spellings of one 16-bit step give three denotations" defect is
+  **observation, not spelling**: with the carry arm taken, all three normalise
+  identically, and the `ADC` pair was immune only because it is unconditional.
+  The "general scalar vocabulary absorbs the specific address idiom" claim is
+  false in its causal part: `join` is commutative and carries no match order at
+  all;
+- it confirmed and localised the one that held: **0 of 9** self-modified-operand
+  spellings reach `addr`, because the operand bytes are declared as separate
+  lane columns and `pair-row` has nothing to fire on;
+- it surfaced a defect nobody was looking for: a cell whose only definition is
+  its own step never leaves **⊥**, and ⊥ is *below* ⊤, so §5's census counted
+  those sites neither typed nor refused. Every reach figure above carries that
+  silent third bucket.
+
+**The corpus verifies; it does not search.** A claim is proved on a generated
+program first and confirmed corpus-wide once, at the end.
+
+### 8.3 The ordering principle the work now follows
+
+Two removals came before any recovery, and they share a shape: **each undoes an
+optimisation the author made for the machine, which the frame-program level does
+not need.**
+
+- **Self-modification is an indirection inlined to save cycles.** Patching an
+  operand *is* a deref with the pointer in code space; patching a vector *is* an
+  indirect call; patching an opcode *is* a mode flag tested at that site.
+  Measured: opcode/vector patching is rare and 2-way (23 dispatch cells over 6 of
+  400 artifacts, max variant set 2), so there is no multiplication to fear.
+- **Procedure structure is factoring done to save space** (§8.4).
+
+De-SMC landed as **one** rewrite rather than four, because the classes are one
+shape at different widths: `desmc.py` relocates every const base an emitted
+access names inside an executed-instruction span, each maximal run of code pages
+moving by one displacement so every index offset survives. The corpus carried a
+fifth class the design did not name — **patched branch displacements**, 44 cells
+over 32 tunes — and it relocated identically, which is the test of a mechanism
+against a rule set. Baseline census: 3,577 patched cells (immediate 2,482,
+abs-operand 550, vector 441, branch 44, opcode 60), **zero** of which were an
+operand on one path and an opcode on another, so the refusal class anticipated in
+advance does not exist in this corpus. Emitted text grew +812,065 bytes (+2.9%,
+405 tunes larger, none smaller) — the moved pages in `image { }` — and byte
+identity was correctly not the gate.
+
+Two engineering findings the landing paid for:
+**the evidence is not enough to pick a destination** (a page free by the evidence
+still carried bytes some path loads, breaking 64 tunes; the destination must also
+be vacant in the image, with the vacancy test admitting the relocation's own copy
+so re-emission is stable), and **precision belongs at the address, not the index
+bound** (bounding a patched indexed store by its index width over-approximates
+into neighbouring data and refused 10 tunes; declaring the run as
+`relocated $LO..$HI -> $DST` and naming its code lets the bound over-approximate
+with nothing refusing).
+
+**What de-SMC did not buy, stated plainly:** the `smc-operand` idiom pins did not
+flip. The operand pair is now a fused `u16` cell outside the instruction stream,
+but `datadecl.declarations` is carved *before* relocation, so a patched indexed
+read is still skipped and no `stream … via` anchor may sit on a code cell; the
+reload tables take no `lo`/`hi` roles and the deref stays unlifted. Making
+declarations see the relocation is its own landing, and the pin text now names
+that blocker so its fix flips it.
+
+Recovery — the voice record, the sequencer levels, the family quotient — comes
+*after*, because each removal deletes a class of accident that recovery would
+otherwise have to model.
+
+### 8.4 The next removal: the play routine is one procedure
+
+After de-SMC, the largest remaining machine accident is the **call graph**.
+
+- It is the biggest measured ⊤ population: L2b left `entry` 23,169, `opaque`
+  44,470, `call` 1,379 and `recursion` 16 — **69,034 sites**, refused because a
+  parameter's denotation is an interprocedural fact.
+- It is cheap to remove: **2.9 procedures per artifact on average** (max 26), and
+  Commando is already one. A player is a few KB under a hard frame budget; it was
+  factored for space, and space is not a frame-program cost.
+- It deletes machinery rather than adding it: `framestack`, `slot_reader`,
+  `pcall`, parameter/return inference, the `stack-slot` catalog row and the whole
+  interprocedural scope L2b built all become unreachable.
+- Every later analysis becomes **intraprocedural**, which is what makes the
+  structural recovery (§8.5) tractable.
+- De-SMC is its enabler: once computed transfers are declared-table gotos, the
+  targets inlining must resolve are already named.
+
+**The invariant, in the same form as memory protection:** the emitted frame
+program holds **exactly one procedure and no call, return or stack access**.
+Binary, machine-checked, not a percentage.
+
+**Refusals to name in advance**, each owing a disassembly and a fixture per the
+claims discipline: genuine recursion (expected absent — a player has no stack
+depth to spare, and that must be proven, not assumed); a computed transfer whose
+target set the trace never closed (already guarded, stays guarded); and a helper
+whose inlined copies exceed the observed call sites, which is a bound, not a
+blow-up.
+
+### 8.5 What recovery then faces
+
+With SMC and the call graph gone, the artifact is one procedure over declared
+data with no code writes — and the residue is exactly the *structure* §7 names:
+the voice record, the sequencer levels, the effect machines. That is the point at
+which the structural design (channels from the observed write map, records from
+the selector's value set, levels from address-position reachability) has nothing
+machine-shaped left to see through.
