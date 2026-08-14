@@ -37,6 +37,7 @@ BLK = G.TBL + 0x180  # RAM block a pointer stores through
 STK = G.TBL + 0x1C0  # split return-stack columns, lo at STK, hi at STK+3 (m_6B25 shape)
 SPSUB = 0x1300  # a subroutine two call depths reach, so its sp never concretizes
 SPMID = 0x1340  # the second depth
+SPARM = 0x1380  # a callee a computed goto also lands on, so no site places its body
 HND0 = 0x13C0  # dispatch handler stubs (the SMC-operand jmp's observed targets)
 HND1 = 0x13E0
 
@@ -781,15 +782,30 @@ def _sp_scratch_floor():
     """Stage 3: zero-page scratch beside kept sp fabric still promotes.
 
     Without frameproc.addr_floor the kept push (zext2(sp)|$0100) reaches an
-    interval from zero and spuriously threatens every zero-page cell."""
-    a, data, frames = _sp_body(_sp_loop_sub())
+    interval from zero and spuriously threatens every zero-page cell. SPSUB calls
+    the computed goto's landing, so no site places its body and its sites stay raw."""
+    a, data, frames = _sp_body(_sp_arm_sub())
     a2 = G.Asm(G.ORG)
     a2.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR)
     a2.i("AND", "imm", 0x0F).i("STA", "zp", ZTMP)
     a2.i("JSR", "abs", SPSUB).i("JSR", "abs", SPMID).i("JSR", "abs", SPMID)
-    a2.i("LDA", "zp", ZTMP).i("ORA", "imm", 0x21).i("STA", "abs", SID + 4).i("RTS")
-    data[ZTMP] = 0
+    a2.i("LDA", "zp", ZTMP).i("ORA", "imm", 0x21).i("STA", "abs", SID + 4)
+    a2.i("LDA", "abs", CTR).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "alt")).i("RTS")
+    _vec_goto(a2.label("alt"), SPARM)
+    arm = G.Asm(SPARM).i("LDA", "abs", CTR).i("AND", "imm", 0x07).i("STA", "abs", TMP).i("RTS")
+    data.update({ZTMP: 0, TMP: 0, G.VEC: 0, G.VEC + 1: 0})
+    data.update({SPARM + k: b for k, b in enumerate(arm.assemble())})
     return a2, data, frames
+
+
+def _sp_arm_sub():
+    """The loop sub with a call to the computed goto's landing, so no site places it."""
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDX", "imm", 0x03)
+    sub.label("lp").i("DEX").i("BNE", "rel", ("L", "lp"))
+    sub.i("JSR", "abs", SPARM)
+    sub.i("PLA").i("EOR", "abs", TMP).i("RTS")
+    return sub
 
 
 def _sp_loop_sub():
@@ -925,13 +941,25 @@ def _sp_unbalanced():
     return a, data, 8
 
 
-def _raw_call_body(a, sub):
-    """A player whose ``JSR SPSUB`` stays a raw call: a tail ``JMP`` blocks the pcall.
+def _vec_goto(a, tgt):
+    """A computed goto onto ``tgt``: the vector is written at runtime, so it is dyn.
 
-    ``frameproc`` will not give a procedure a register interface once another
-    procedure jumps into it, so the machine, not the text, threads this call."""
-    a.label("alt").i("JMP", "abs", SPSUB)
-    data = {CTR: 0, TMP: 0}
+    ``structured`` only seeds a ``jmpind`` site when its vector cells are written,
+    and the committed target set is the trace's, so the site must execute."""
+    a.i("LDA", "imm", tgt & 0xFF).i("STA", "abs", G.VEC)
+    a.i("LDA", "imm", tgt >> 8).i("STA", "abs", G.VEC + 1)
+    a.i("JMP", "ind", G.VEC)
+    return a
+
+
+def _raw_call_body(a, sub):
+    """A player whose ``JSR SPSUB`` stays a raw call: a computed goto also lands there.
+
+    The executed ``JMP (vec)`` makes SPSUB a landing of the caller's own flow, so
+    ``procpass`` places its body at no site (``dyn_gates`` count) and the machine,
+    not the text, threads the call."""
+    _vec_goto(a.label("alt"), SPSUB)
+    data = {CTR: 0, TMP: 0, G.VEC: 0, G.VEC + 1: 0}
     data.update({SPSUB + k: b for k, b in enumerate(sub.assemble())})
     return a, data, 8
 

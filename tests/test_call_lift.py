@@ -22,7 +22,9 @@ M_BODY_LABEL = (
     "answers is what answers that transfer, so frameproc keeps the call form -- the "
     "`call $PC ret $PC { .. }` wrapper at a splice, `call (expr) ret $PC` plus "
     "`switch call` at a dispatch arm (bound_pcs); duplicating the shared tail per "
-    "site is the removal"
+    "site is the removal. defMON's $12BE is the corpus shape: $1006's continuation "
+    "and $1003's flow both reach it, so whichever body is placed first binds it and "
+    "the other gotos it, and Automatas keeps a `callb` for each"
 )
 M_TAIL_TRANSFER = (
     "the inlined body leaves by a goto, not by its own ret: it returns through the "
@@ -36,7 +38,8 @@ M_RET_WORD = (
 )
 M_SELF_CALL = (
     "a recursive callee reaches a block whose terminator is a `jsr` -- its own call --"
-    " so procpass.copies_ok refuses to place a copy per site and it stays a `sub` under"
+    " so procpass.Carry judges its callee -- itself -- and a cycle of calls is carried"
+    " by none, so it stays a `sub` under"
     " a `pcall`; a tail self-call is a loop and a non-tail one a bounded unroll, and"
     " Plan has a form for neither"
 )
@@ -45,15 +48,6 @@ M_SHARED_HANDLER = (
     "(render._dispatch_gates' static_subs, procpass's static_sites), so no site places "
     "its body: the arm stays bare and the site keeps `call (expr) ret $PC` plus "
     "`switch call { $PC .. }`; copying it at the static sites as well is the removal"
-)
-M_FLOWN_CALLEE = (
-    "a call target plain flow also reaches is dominated by no call site, so only the "
-    "flow may own its text and every site has to take a copy instead -- which "
-    "procpass.copies_ok bounds. Where the body carries a block no copy may (a call "
-    "line, an SMC dispatch, a computed call), the site keeps its `call $PC` line and "
-    "the flow's own `ret` is then interior. `flown-copy` is the shape once the bound "
-    "holds; defMON's $1022 under $1003 and $1006 carries three two-variant SMC "
-    "dispatch blocks and six call lines, so Automatas keeps all three of its sites"
 )
 M_S_RELOCATED = (
     "a TXS from a computed value is an absolute write to sp, not a displacement, so "
@@ -78,7 +72,6 @@ MECHANISMS = (
     M_RET_WORD,
     M_SELF_CALL,
     M_SHARED_HANDLER,
-    M_FLOWN_CALLEE,
     M_S_RELOCATED,
     M_S_AS_VALUE,
     M_SP_LOOP_PUSH,
@@ -101,10 +94,6 @@ PINS = {
     ("arm-landing", "tone/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arm-landing", "alt/tight"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arm-landing", "alt/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
-    ("shared-entry", "tone/tail"): (M_FLOWN_CALLEE,),
-    ("shared-entry", "tone/post"): (M_FLOWN_CALLEE,),
-    ("shared-entry", "alt/tail"): (M_FLOWN_CALLEE,),
-    ("shared-entry", "alt/post"): (M_FLOWN_CALLEE,),
     ("mixed-handler", "head/vt0"): (M_SHARED_HANDLER,),
     ("mixed-handler", "head/vt1"): (M_SHARED_HANDLER,),
     ("mixed-handler", "tail/vt0"): (M_SHARED_HANDLER,),
@@ -153,6 +142,22 @@ CLEAN = (
     ("two-callers", "Y/cell"),
     ("two-callers", "cell/sid"),
     ("two-callers", "cell/cell"),
+    ("shared-entry", "tone/tail"),
+    ("shared-entry", "tone/post"),
+    ("shared-entry", "alt/tail"),
+    ("shared-entry", "alt/post"),
+    ("deep-copy", "tone/tail"),
+    ("deep-copy", "tone/post"),
+    ("deep-copy", "alt/tail"),
+    ("deep-copy", "alt/post"),
+    ("copied-dispatch", "same/tight"),
+    ("copied-dispatch", "same/gap"),
+    ("copied-dispatch", "skew/tight"),
+    ("copied-dispatch", "skew/gap"),
+    ("copied-smc", "tone/tail"),
+    ("copied-smc", "tone/post"),
+    ("copied-smc", "alt/tail"),
+    ("copied-smc", "alt/post"),
     ("branchy-callee", "cc/dey"),
     ("branchy-callee", "cc/iny"),
     ("branchy-callee", "cs/dey"),
@@ -227,13 +232,13 @@ BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bod
     ("arm-landing", "tone/gap"),
     ("arm-landing", "alt/tight"),
     ("arm-landing", "alt/gap"),
-    ("shared-entry", "tone/tail"),
-    ("shared-entry", "tone/post"),
-    ("shared-entry", "alt/tail"),
-    ("shared-entry", "alt/post"),
     ("arm-liveout", "eor1"),
     ("arm-liveout", "eor3"),
     ("arm-liveout", "eor5"),
+    ("copied-smc", "tone/tail"),
+    ("copied-smc", "tone/post"),
+    ("copied-smc", "alt/tail"),
+    ("copied-smc", "alt/post"),
     ("shared-tail", "tone/X"),
     ("shared-tail", "tone/Y"),
     ("shared-tail", "alt/X"),

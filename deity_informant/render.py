@@ -228,6 +228,9 @@ def _dispatch_gates(model):
     return sites, calls, static
 
 
+DYN_SWITCH = frozenset(("goto", "call"))  # the selectors a block's own transfer answers
+
+
 class _Splits:
     """The pcs a structuring pass may scope or split at, and the ones it did."""
 
@@ -263,7 +266,8 @@ def _structure_once(model, entry, allow):
     labels = set()
     gate = _Splits(allow)
     sites, calls, static_subs = _dispatch_gates(model)
-    inline = procpass.plan(model).inline
+    plan = procpass.plan(model)
+    inline = plan.inline
     play = getattr(model, "play", None)
 
     def placed(target, callers, sole, site, chain):
@@ -272,29 +276,43 @@ def _structure_once(model, entry, allow):
         A sole site owns the body: it shares the label bookkeeping, so it may not overlap
         an enclosing procedure. Every further site, and every site whose callee plain flow
         also reaches, takes its own copy -- exact where each block may be carried by one
-        (``_copyable``), the region does not run through the call line, and the copy binds
-        no label. A body a copy carries is a copy in turn, so its own callees splice."""
+        (``procpass.Carry``), the region does not run through the call line, and the copy
+        binds no label and leaves no call line the callee's pc is bound at twice."""
         if not model.variants(target) or target in chain:
             return None
         cfg = _proc_cfg(model, target)
-        if sole:
-            if target in callers or set(cfg[0]) & callers or target in emitted:
-                return None
-            top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
-            return Region("seq", top) if top else None
-        if site in cfg[0] or not all(_copyable(model, n) for n in cfg[0]):
+        if not sole:
+            return copied(target, callers, site, cfg, chain)
+        if target in callers or set(cfg[0]) & callers or target in emitted:
             return None
-        labs = set()
+        top = _proc(model, target, cfg, (emitted, labels, handler, callee, gate), callers)
+        return Region("seq", top) if top else None
+
+    def copied(target, callers, site, cfg, chain):
+        """The callee's body as this site's own copy, or None where it may not be."""
+        if site in cfg[0] or not procpass.carry(model).body(target):
+            return None
+        labs, left = set(), []
         deep = chain | {target}
-        nest = (set(), labs, _copied(handler, deep), _copied(callee, deep), gate)
+        nest = (set(), labs, _copied(handler, deep, left), _copied(callee, deep, left), gate)
         top = _proc(model, target, cfg, nest, callers)
-        if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
+        if labs or left or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
             return None
         return Region("seq", [_as_copy(r) for r in top[0].a])
 
-    def _copied(place, chain):
-        """``place`` inside a copy: its body is a copy too, and never the sole one."""
-        return lambda target, site, callers: place(target, site, callers, chain, False)
+    def _copied(place, chain, left):
+        """``place`` inside a copy: its body is a copy too, and never the sole one.
+
+        A refusal is the copy's own answer: the line it stands at would keep its call
+        form, so ``left`` records it and the copy is not taken."""
+
+        def go(target, site, callers):
+            got = place(target, site, callers, chain, False)
+            if got is None:
+                left.append(target)
+            return got
+
+        return go
 
     def handler(target, site, callers, chain=frozenset(), sole=None):
         """Region for a computed-call handler nested in its dispatch arm, or None:
@@ -309,11 +327,11 @@ def _structure_once(model, entry, allow):
         placed no body at this site.
 
         A callee plain flow also reaches is owned by that flow, so its sole call site
-        takes a copy like any further one would."""
+        takes a copy like any further one would (``Plan.sole`` is the dominance)."""
         ss = inline.get(target, ())
         if site not in ss:
             return None
-        own = len(ss) == 1 and target not in callers if sole is None else sole
+        own = target in plan.sole and target not in callers if sole is None else sole
         return placed(target, callers, own, site, chain)
 
     shared = (emitted, labels, handler, callee, gate)
@@ -643,7 +661,7 @@ def _reachable(pc, succ, nodeset, stop=None):
     return seen
 
 
-_copyable = procpass.copyable  # the ONE reading of "a copy may carry this block"
+_copyable = procpass.copyable  # a block on its own text; a whole body is procpass.Carry
 
 
 def _no_body(*_args):
@@ -666,7 +684,8 @@ def _as_copy(region):
         return Region("call", region.a, None if region.b is None else _as_copy(region.b))
     if k == "switch":
         sel, cases = region.a
-        return Region("switch", (sel, [(l, _as_copy(b)) for l, b in cases]), region.b)
+        arms = [(l, _as_copy(b)) for l, b in cases]
+        return Region("switch", (sel, arms), None, region.b or region.c)
     return region
 
 

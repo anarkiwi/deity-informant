@@ -1,8 +1,8 @@
 """Interprocedural procedure/ownership pass over the committed model.
 
-``plan`` builds the call graph, marks single-call-site procedures for inlining
-at their call site (dominance-proven), and homes every block in the procedure
-whose entry dominates it considering all callers.
+``plan`` builds the call graph, places a callee's body at the site that dominates
+it or, where none does, a copy at every site (``Carry``), and homes every block in
+the procedure whose entry dominates it considering all callers.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def _idoms(entry, succ, nodes):
 
 
 def copyable(model, pc):
-    """A block a copy may carry: one variant, no dispatch table and no call.
+    """A block a copy may carry on its own text: one variant, no dispatch, no call.
 
     A dispatch pc and a call line are each named by the statement that carries them
     (``opsw``, ``call``), so a second copy would name them twice."""
@@ -92,6 +92,117 @@ def copyable(model, pc):
     if len(variants) != 1 or pc in getattr(model, "dispatch_pcs", ()):
         return False
     return model.blocks[variants[0]].term[0] != "jsr"
+
+
+class Carry:
+    """Which bodies a copy per call site may carry (docs/denotation-solve.md 8.4).
+
+    A call line says nothing until its callee is judged, because inside a copy the
+    callee's body is a copy in turn and the line goes with it: a body is judged
+    callees-first over the call graph, and a cycle of calls is carried by none."""
+
+    __slots__ = (
+        "model",
+        "intra",
+        "preds",
+        "landings",
+        "counts",
+        "calls",
+        "static",
+        "dispatch",
+        "_memo",
+    )
+
+    def __init__(self, model):
+        self.model = model
+        graph = _graph(model)
+        self.intra = graph[1]
+        self.static = set(graph[3])
+        self.preds = {}
+        for pc, outs in self.intra.items():
+            for s in outs:
+                self.preds.setdefault(s, set()).add(pc)
+        self.landings = set(getattr(model, "need", ()))
+        for tgts in model.dyn_targets.values():
+            self.landings.update(tgts)
+        self.counts, self.calls = dyn_gates(model)
+        self.dispatch = set(getattr(model, "dispatch_pcs", ()))
+        self._memo = {}
+
+    def body(self, target):
+        """Whether every block ``target`` reaches may be carried by a copy per site."""
+        got = self._memo.get(target)
+        if got is None:
+            self._memo[target] = False  # in progress: a recursive callee carries nothing
+            self._memo[target] = got = self._body(target)
+        return got
+
+    def _body(self, target):
+        if target not in self.intra:
+            return False
+        seen, stack = set(), [target]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if not self.block(n):
+                return False
+            stack.extend(s for s in self.intra.get(n, ()) if s in self.intra)
+        return all(self.reached_inside(d, seen) for d in seen & self.dispatch)
+
+    def reached_inside(self, pc, body):
+        """Whether only ``body``'s own flow reaches ``pc``.
+
+        A relocated dispatch keeps a label at the pc it stood at (``desmc``), which is
+        one binding for however many copies carry it: a transfer from outside would
+        have to pick one of them, so no copy carries a dispatch reached from outside."""
+        return pc not in self.landings and not self.preds.get(pc, set()) - body
+
+    def block(self, pc):
+        """Whether a copy may carry ``pc``: every variant's own transfer, and the cell.
+
+        A declared dispatch is a ``switch`` over a state cell the copy reads like any
+        other, so what a second one must not name twice is a pc, not the cell."""
+        variants = getattr(self.model, "all_variants", self.model.variants)(pc)
+        if not variants:
+            return False
+        if len(variants) > 1 and pc not in self.dispatch:
+            return False
+        return all(self.term(self.model.blocks[key]) for key in variants)
+
+    def term(self, blk):
+        """Whether a copy may carry one block variant's terminator."""
+        if blk.term[0] != "jsr":
+            return True
+        if blk.term[1] is None:
+            return self.armed(blk.pcs[-1])
+        if self.counts.get(blk.term[1], 0):
+            return False  # a callee a computed goto also lands on is that flow's
+        return self.body(blk.term[1])
+
+    def armed(self, site):
+        """Whether a copy may carry the computed call at ``site``: every arm with it.
+
+        An arm the copy places is the copy's own text, so the dispatch is the
+        statement-scoped ``switch goto`` and binds no arm pc program-wide."""
+        tgts = set(self.model.dyn_targets.get(site, ()))
+        return bool(tgts) and all(
+            self.calls.get(t) == self.counts.get(t)
+            and t not in self.static
+            and t != getattr(self.model, "play", None)
+            and self.body(t)
+            for t in tgts
+        )
+
+
+def carry(model):
+    """Memoized :class:`Carry` for a model (or a serialization view)."""
+    c = getattr(model, "_proc_carry", None)
+    if c is None:
+        c = Carry(model)
+        model._proc_carry = c
+    return c
 
 
 def dyn_gates(model):
@@ -112,14 +223,16 @@ def dyn_gates(model):
 
 class Plan:
     """``entries``: proc entry pcs (play first, then ascending); ``inline``:
-    static callee -> the call-site pcs its body is placed at; ``homes``: block pc
+    static callee -> the call-site pcs its body is placed at; ``sole``: the callees
+    of those their one site dominates, which own their body; ``homes``: block pc
     -> proc entry."""
 
-    __slots__ = ("entries", "inline", "homes")
+    __slots__ = ("entries", "inline", "sole", "homes")
 
-    def __init__(self, entries, inline, homes):
+    def __init__(self, entries, inline, sole, homes):
         self.entries = entries
         self.inline = inline
+        self.sole = sole
         self.homes = homes
 
 
@@ -180,21 +293,11 @@ def _plan(model):
             flown.update(intra[p])
     count, calls = dyn_gates(model)  # mirrors render._dispatch_gates
     inline = {}
+    sole = set()  # callees their one call site dominates: that site owns the body
     parent = {}  # nested entry -> call-site pc whose proc owns its body
     procs = set()
 
-    def copies_ok(t):
-        """Whether every block the callee reaches may be carried by a copy per site."""
-        seen, stack = set(), [t]
-        while stack:
-            n = stack.pop()
-            if n in seen:
-                continue
-            seen.add(n)
-            if not copyable(model, n):
-                return False
-            stack.extend(s for s in intra.get(n, ()) if s in pcs)
-        return True
+    copies_ok = carry(model).body
 
     for t in sorted(targets):
         if t == play or t not in pcs:
@@ -202,8 +305,9 @@ def _plan(model):
         ss = static_sites.get(t, ())
         if len(ss) == 1 and count.get(t, 0) == 0 and idom.get(t) in ss:
             inline[t] = frozenset(ss)
+            sole.add(t)
             parent[t] = idom[t]
-        elif len(ss) > 1 and count.get(t, 0) == 0 and copies_ok(t):
+        elif ss and count.get(t, 0) == 0 and copies_ok(t):
             inline[t] = frozenset(ss)  # duplication is exact where the body binds no pc
             parent[t] = min(ss)
         elif (
@@ -257,7 +361,7 @@ def _plan(model):
         p = proc_of(e) if e is not None else None
         if p is not None:
             homes[pc] = p
-    return Plan([play] + sorted(procs - {play}), inline, homes)
+    return Plan([play] + sorted(procs - {play}), inline, sole, homes)
 
 
 def plan(model):

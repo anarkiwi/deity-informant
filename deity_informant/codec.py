@@ -42,8 +42,8 @@ def _leaf_pc(region, loops):
         return loops[-(region.a or 1)][1]
     if k == "loop":
         return _entry(region.a, None, loops)
-    if k == "switch" and region.b:
-        return region.b[0]
+    if k == "switch" and (region.b or region.c):
+        return (region.b or region.c)[0]
     return None
 
 
@@ -134,7 +134,7 @@ class _Flatten:
                 self.seq(nxt.b.a if nxt.b.kind == "seq" else [nxt.b], None, [])
             self._record(blk, pc, {self._follow(items, i + 2, follow, loops)})
             return i + 2
-        if nxt is not None and nxt.kind == "switch" and not nxt.b:
+        if nxt is not None and nxt.kind == "switch" and nxt.a[0] in R.DYN_SWITCH:
             sel, cases = nxt.a
             if sel == "call":
                 for _label, arm in cases:  # inlined handler: an independent sub-CFG
@@ -153,8 +153,8 @@ class _Flatten:
     def _dispatch(self, items, i, follow, loops):
         r = items[i]
         _sel, cases = r.a
-        pc = r.b[0]
-        self.visited.append(pc)
+        pc = (r.b or r.c)[0]
+        (self.visited if r.b else self.dups).append(pc)  # a copy of a dispatch is a leaf too
         join = self._follow(items, i + 1, follow, loops)
         for _label, body in cases:
             arm = body.a if body.kind == "seq" else [body]

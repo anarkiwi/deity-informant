@@ -16,6 +16,7 @@ from . import expr as E
 from . import grammar as G
 from . import sidprog
 from . import structured as C
+from .render import DYN_SWITCH as _DYN_SWITCH
 
 _REG_LOCAL = {
     0: "a",
@@ -1648,10 +1649,10 @@ class _Builder:
             elif k == "loop":
                 out.append(("loop", self.capture(sidprog._items(r.a))))
             elif k == "switch":
-                if r.b and r.b[0] in self.labels:
+                if r.b and r.b[0] in self.labels:  # a copy of one is labelled nowhere
                     out.append(("label", r.b[0]))
                 cases = [(lbl, self.capture(sidprog._items(body))) for lbl, body in r.a[1]]
-                out.append(("opsw", r.b[0], cases))
+                out.append(("opsw", (r.b or r.c)[0], cases))
             elif k == "goto":
                 out.append(("goto", r.a))
             elif k == "frontier":
@@ -1736,7 +1737,7 @@ class _Builder:
             self.arm -= 1
             out.extend(self.splice(term[1], term[2], body))
             return 2
-        if nxt is not None and nxt.kind == "switch" and not nxt.b:
+        if nxt is not None and nxt.kind == "switch" and nxt.a[0] in _DYN_SWITCH:
             sel, cases = nxt.a
             if sel == "call":
                 self.callsw(term, cases, out)

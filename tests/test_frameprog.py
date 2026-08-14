@@ -81,11 +81,11 @@ def _regs():
     return [E.reg(i) for i in range(16)]
 
 
-def _model(blocks, dispatch=None, mem0=None, play=0x1000):
+def _model(blocks, dispatch=None, mem0=None, play=0x1000, dyn=None):
     mem0 = mem0 if mem0 is not None else bytearray(0x10000)
     for pc, op0 in blocks:
         mem0[pc] = mem0[pc] or op0
-    return sidprog.BlockModel(mem0, 0x0F00, play, blocks, dispatch or {})
+    return sidprog.BlockModel(mem0, 0x0F00, play, blocks, dispatch or {}, dyn=dyn)
 
 
 def test_header_version_and_notes():
@@ -377,8 +377,9 @@ def test_a_local_live_across_a_for_loop_is_not_pruned():
 
 
 def test_parameter_and_return_inference():
-    """``sub_2000``'s nested ``JSR`` is a terminator no copy carries, so its two static
-    sites keep it a procedure and its header states the register interface."""
+    """``sub_2000`` calls a target a computed goto also lands on, which is that flow's,
+    so no site may place its body: its two static sites keep it a procedure and its
+    header states the register interface."""
     inc = ("op", "INT_ADD", (E.reg(0), ("const", 1, 1)), 1)
     callee = _regs()
     callee[0] = inc
@@ -388,13 +389,19 @@ def test_parameter_and_return_inference():
         (0x1000, 0xA9): Block(0x1000, 0xA9, [0x1000], [], ("jsr", 0x2000, 0x1004, None), caller),
         (0x1005, 0x20): Block(0x1005, 0x20, [0x1005], [], ("jsr", 0x2000, 0x1007, None), _regs()),
         (0x1008, 0x85): Block(
-            0x1008, 0x85, [0x1008], [("st", ("const", 0x00FB, 2), E.reg(0))], ("rts",), _regs()
+            0x1008,
+            0x85,
+            [0x1008],
+            [("st", ("const", 0x00FB, 2), E.reg(0))],
+            ("goto", 0x100A),
+            _regs(),
         ),
+        (0x100A, 0x6C): Block(0x100A, 0x6C, [0x100A], [], ("jmpd", E.reg(0)), _regs()),
         (0x2000, 0x69): Block(0x2000, 0x69, [0x2000], [], ("jsr", 0x3000, 0x2002, None), callee),
         (0x2003, 0x60): Block(0x2003, 0x60, [0x2003], [], ("rts",), _regs()),
         (0x3000, 0x60): Block(0x3000, 0x60, [0x3000], [], ("rts",), _regs()),
     }
-    text = frameprog.emit(_model(blocks))
+    text = frameprog.emit(_model(blocks, dyn={0x100A: [0x3000]}))
     assert "sub_2000(a) -> a {" in text
     assert "a = sub_2000($05)" in text and "a = sub_2000(a)" in text
     assert "zp_FB" not in text  # no read names the cell, so its store and field demote
@@ -828,24 +835,28 @@ def _flow_blk(pc, term):
 
 
 def _call_model(callers, nested=False):
-    """``nested`` gives the callee a ``JSR`` of its own, a terminator no copy carries."""
+    """``nested`` gives the callee a ``JSR`` of $3000, which a computed goto in the
+    play flow also lands on: $3000 is that flow's, so no site may place the body."""
     blocks = {(0x2000, 0): _flow_blk(0x2000, ("rts",))}
+    dyn, tail = None, None
     if nested:
         blocks[(0x2000, 0)] = _flow_blk(0x2000, ("jsr", 0x3000, 0x2002, None))
         blocks[(0x2003, 0)] = _flow_blk(0x2003, ("rts",))
         blocks[(0x3000, 0)] = _flow_blk(0x3000, ("rts",))
+        blocks[(0x1200, 0)] = _flow_blk(0x1200, ("jmpd", ("mem", ("const", 0x00FB, 2), 2)))
+        dyn, tail = {0x1200: [0x3000]}, 0x1200
     for i, pc in enumerate(callers):
         blocks[(pc, 0)] = _flow_blk(pc, ("jsr", 0x2000, pc + 2, None))
-        nxt = callers[i + 1] if i + 1 < len(callers) else None
+        nxt = callers[i + 1] if i + 1 < len(callers) else tail
         blocks[(pc + 3, 0)] = _flow_blk(pc + 3, ("goto", nxt) if nxt is not None else ("rts",))
-    return sidprog.BlockModel(bytearray(0x10000), 0x0F00, callers[0], blocks, {})
+    return sidprog.BlockModel(bytearray(0x10000), 0x0F00, callers[0], blocks, {}, dyn=dyn)
 
 
 def test_a_sole_static_call_site_owns_the_callee_body():
     """``_model_trees``: one caller splices the callee in, two keep a non-copyable one.
 
-    Two sites duplicate a copyable body instead, so the second half's callee carries
-    the nested ``JSR`` that refuses the copy."""
+    Two sites duplicate a copyable body instead, so the second half's callee calls the
+    computed goto's landing, which refuses the copy."""
     one = frameprog.emit(_call_model([0x1000]))
     assert "sub_1000() {\n  ret\n}\n" in one and "call" not in one and "sub_2000(" not in one
     assert frameprog.dumps(frameprog.loads(one)) == one

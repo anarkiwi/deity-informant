@@ -1,8 +1,8 @@
 """Hermetic tests for the Phase 2.5 instrument (docs/register-model-lift-impl.md).
 
-The domain's rules are checked against the evaluator's own semantics by exhaustion
-over small intervals, and the walk against synthesized players -- including the
-divergence guard, which is the soundness check that matters."""
+The domain's rules are checked against the evaluator's own semantics by exhaustion over
+small intervals, and the walk against synthesized players -- including the divergence
+guard, which is the soundness check that matters."""
 
 import sys
 from functools import lru_cache
@@ -137,10 +137,10 @@ def _zpx_open():
 def _rts_trick():
     """ASL/04's three per-voice passes: ``JSR`` into a label of the calling list itself.
 
-    The in-edge a map built from ``goto`` alone misses, and the guard's own finding:
-    the index at the store is entered from two call sites as well as by fall-through.
-    The pass keeps its own call line, which is what makes the edges raw: its body
-    carries one, so no site may take the copy the flown-callee removal would place."""
+    The in-edge a map built from ``goto`` alone misses: the index at the store is entered
+    from two call sites as well as by fall-through. ``voice`` leaves through a written
+    vector, so ``tick`` is a computed goto's landing as well as a call target: that flow
+    owns it, no site may place its body, and the three call lines stay raw."""
     a = G.Asm(G.ORG)
     a.i("LDX", "imm", 0x00)
     a.i("JSR", "abs", ("L", "voice")).i("JSR", "abs", ("L", "step"))
@@ -149,7 +149,9 @@ def _rts_trick():
     a.i("JSR", "abs", ("L", "tick"))
     a.i("STA", "zpx", ZPX)
     a.i("LDA", "zpx", ZPX).i("AND", "imm", 0x0F).i("ORA", "imm", 0x20).i("STA", "abs", SID + 4)
-    a.i("RTS")
+    a.i("LDA", "imm", ("LOL", "tick")).i("STA", "zp", G.PTR)
+    a.i("LDA", "imm", ("HIL", "tick")).i("STA", "zp", G.PTR + 1)
+    a.i("JMP", "ind", G.PTR)
     a.label("tick")
     a.i("LDA", "abs", CTR).i("CLC").i("ADC", "imm", 0x01).i("STA", "abs", CTR).i("RTS")
     data = {CTR: 0}

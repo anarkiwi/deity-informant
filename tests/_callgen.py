@@ -466,6 +466,70 @@ def _dispatch_share():
     )
 
 
+def _copied_smc():
+    """`copied-smc`: two static sites on a body whose dispatch is a patched opcode.
+
+    The declared two-variant cell is the early-return trick -- one variant returns,
+    the other runs the tick -- so the body is two specializations of one text:
+    defMON's $10D8 (Automatas), which its $1022 carries."""
+
+    def subs(p, table, post):
+        p.label("mid").i("LDA", "zp", ROW).i("STA", "abs", SID + 1)
+        p.label("gate").i("LDA", "imm", 0x00)
+        p.i("LDX", "zp", ROW)
+        col(p, "X", table)
+        p.i("STA", "abs", SID)
+        if post:
+            p.i("LDA", "zp", ROW).i("STA", "abs", SID + 2)
+        p.i("RTS")
+
+    def play(p):
+        p.i("LDA", "zp", ROW).i("AND", "imm", 0x01).i("BNE", "rel", ("L", "run"))
+        p.i("LDA", "imm", 0x60).i("JMP", "abs", ("L", "set"))  # RTS: the sub-frame arm
+        p.label("run").i("LDA", "imm", 0xA9)  # LDA #: the main-tick arm
+        p.label("set").i("STA", "abs", ("L", "gate"))
+        p.i("JSR", "abs", ("L", "mid"))
+        p.i("LDA", "zp", ROW).i("STA", "abs", SID + 3)
+        p.i("JSR", "abs", ("L", "mid"))
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (t, "post" if q else "tail"), play, lambda p, a=t, b=q: subs(p, a, b))
+        for t, q in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
+def _copied_dispatch():
+    """`copied-dispatch`: two static sites on a body that dispatches a computed call.
+
+    The arms are the copy's own text, so each copy's dispatch is a statement-scoped
+    ``switch goto`` -- Grid_Runner's $114E over its $11FA and $120F."""
+
+    def subs(p, gap):
+        p.label("outer").i("LDA", "zp", ROW).i("STA", "abs", SID + 1)
+        _smc_site(p, "sa", 0)
+        if gap:
+            p.i("LDA", "zp", ROW).i("STA", "abs", SID + 3)
+        p.i("RTS")
+        _vec_stubs(p)
+
+    def play(p, twist):
+        p.i("JSR", "abs", ("L", "outer"))
+        if twist:
+            p.i("LDA", "zp", ROW).i("EOR", "imm", 3).i("STA", "zp", ROW)
+        p.i("JSR", "abs", ("L", "outer"))
+        bump(p)
+
+    return I.cap(
+        V(
+            "%s/%s" % ("skew" if t else "same", "gap" if g else "tight"),
+            lambda p, a=t: play(p, a),
+            lambda p, b=g: subs(p, b),
+        )
+        for t, g in itertools.product((0, 1), (0, 1))
+    )
+
+
 def _flown_copy():
     """`flown-copy`: a callee two static sites call and plain flow also reaches.
 
@@ -679,6 +743,36 @@ def _two_callers():
     return I.cap(
         V("%s/%s" % (h, sk), play, lambda p, a=h, b=sk: subs(p, a, b))
         for h, sk in itertools.product(("X", "Y", "cell"), ("sid", "cell"))
+    )
+
+
+def _deep_copy():
+    """`deep-copy`: two sites on a callee that calls in turn, so a copy carries a call.
+
+    A call line says nothing about copying until its own callee is judged, so the body
+    is judged callees-first -- Automatas' $1022 over its six `jsr $168C`."""
+
+    def subs(p, table, post):
+        p.label("mid").i("LDA", "zp", ROW).i("STA", "abs", SID + 1)
+        p.i("JSR", "abs", ("L", "leaf"))
+        if post:
+            p.i("LDX", "zp", ROW)
+            col(p, "X", "alt")
+            p.i("STA", "abs", SID + 2)
+        p.i("RTS")
+        p.label("leaf").i("LDX", "zp", ROW)
+        col(p, "X", table)
+        p.i("STA", "abs", SID).i("RTS")
+
+    def play(p):
+        p.i("JSR", "abs", ("L", "mid"))
+        p.i("LDA", "zp", ROW).i("STA", "abs", SID + 3)
+        p.i("JSR", "abs", ("L", "mid"))
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (t, "post" if q else "tail"), play, lambda p, a=t, b=q: subs(p, a, b))
+        for t, q in itertools.product(("tone", "alt"), (0, 1))
     )
 
 
@@ -1014,6 +1108,9 @@ SHAPES = (
     Shape("tail-recursion", "the recursive call a return follows", I.tab_data, _tail_recursion()),
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),
+    Shape("deep-copy", "two sites on a callee that calls", I.tab_data, _deep_copy()),
+    Shape("copied-dispatch", "two sites on a computed call", vec_data, _copied_dispatch()),
+    Shape("copied-smc", "two sites on a patched-opcode dispatch", I.tab_data, _copied_smc()),
     Shape(
         "branchy-callee",
         "an internal branch and loop, two sites",

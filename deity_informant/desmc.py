@@ -126,6 +126,7 @@ class Relocation:
         self.disp = {}  # source page -> the displacement its cluster moves by
         self.refusals = {}  # cause -> the bases left in place
         self.moved = False
+        self.labelled = set()  # relocated switch pcs already bound, so copies bind none
 
     def refuse(self, cause, base):
         self.refusals.setdefault(cause, set()).add(base)
@@ -182,9 +183,11 @@ class Relocation:
         while i < len(stmts):
             s = stmts[i]
             got = self.stmt(s)
-            if got[0] == "opsw" and got[1] != s[1] and not (i and stmts[i - 1] == ("label", s[1])):
-                stmts.insert(i, ("label", s[1]))  # the pc the switch stood at is still a target
-                i += 1
+            if got[0] == "opsw" and got[1] != s[1] and s[1] not in self.labelled:
+                self.labelled.add(s[1])
+                if not (i and stmts[i - 1] == ("label", s[1])):
+                    stmts.insert(i, ("label", s[1]))  # the pc the switch stood at is a target
+                    i += 1
             stmts[i] = got
             for body in frameproc._stmt_bodies(got):
                 self.seq(body)

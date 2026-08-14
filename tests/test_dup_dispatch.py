@@ -126,25 +126,27 @@ def test_the_goto_join_is_split_away_and_the_loop_nests():
 def test_a_sole_site_callee_is_spliced_and_both_copies_are_exact():
     """The splice: an inlined callee is the caller's own text, several returns and all.
 
-    Its returns become one scope, so the body binds no pc and carries no call line a
-    copy would have to name twice."""
-    base = D.built("early-ret")[1]
-    assert D.violations("early-ret", "base") == ("pcall: $1032", "procedures: 2")
-    assert [D.pcs_global(p[3]) for p in base.procs] == [[], []]
-    assert D.text("early-ret", "base").count("loop {") == 1
-    assert D.text("early-ret").count("loop {") == 2  # one scope per duplicated site
+    ``Carry`` now places the body at both sites itself, so the base is already the one
+    call-free procedure and ``duplicate`` has nothing left to copy: each site carries its
+    own scope of the early returns, and the copy is the base's own text."""
+    base, dup = D.built("early-ret")[1:]
+    assert not D.violations("early-ret", "base")
+    assert [D.pcs_global(p[3]) for p in base.procs] == [[]]
+    assert D.text("early-ret", "base").count("loop {") == 2  # one scope per spliced site
+    assert D.text("early-ret") == D.text("early-ret", "base")
+    assert [D.pcs_global(p[3]) for p in dup.procs] == [[]]
     assert not D.violations("early-ret") and D.gate("early-ret") is None
 
 
 M_SHARED_TAIL = (
     "a region the one procedure binds a pc for: the tail two inlined bodies share (or "
     "two arms of one computed call), the RTS-trick landing folded in beside the play "
-    "text, and the callee text a `call` line still names because plain flow reaches it "
-    "too. Each is reached by a transfer that resolves through the program-wide map, so "
-    "a copy of the procedure would bind the pc twice (test_call_lift.M_BODY_LABEL and "
-    "M_FLOWN_CALLEE name the mechanisms that leave them)"
+    "text, and the pc a relocated SMC dispatch stood at, which `desmc` labels once for "
+    "however many copies carry it. Each is reached by a transfer that resolves through "
+    "the program-wide map, so a copy of the procedure would bind the pc twice "
+    "(test_call_lift.M_BODY_LABEL names the mechanism that leaves the first two)"
 )
-_BINDS = ("shared-tail", "rts-trick", "arm-landing", "shared-entry")
+_BINDS = ("shared-tail", "rts-trick", "arm-landing", "copied-smc")
 
 
 def _copy_safe():
