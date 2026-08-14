@@ -69,7 +69,6 @@ _PROT_FIXTURES = (  # read off the evaluator below, never annotated
     "sp_call_displaced",
     "sp_loop_edge",
     "sp_scratch_floor",
-    "stack_spill_cursor",
 )
 _PROT_PIN = pytest.mark.xfail(reason=_PROT_REASON, strict=True)
 
@@ -524,7 +523,10 @@ def _stack_spill_cursor():
     """Stage 3 (A): the cursor pushed a lane at a time, so no word form exists at all.
 
     The 6502 has no 16-bit push and the stack descends, so the hi half lands at the
-    lower address: nothing packs. The hi-first restore pair still merges."""
+    lower address: nothing packs. The hi-first restore pair still merges.
+
+    Unpinned at rung (d0r): the blind ``(ptr),y`` load between the pushes is a read,
+    and a read cannot redefine the slot, so the walk no longer refuses over it."""
     a = G.Asm(G.ORG)
     a.i("LDA", "zp", G.PTR).i("PHA").i("LDA", "zp", G.PTR + 1).i("PHA")
     a.i("LDX", "abs", CTR)

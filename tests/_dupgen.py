@@ -39,12 +39,12 @@ def _arm_bodies(s):
 def pcs_global(stmts, out=None):
     """The pcs a copy of ``stmts`` would collide on: its *program-wide* bindings.
 
-    An arm and a static vector's landing resolve through their own statement's
-    table; a ``label`` a ``goto`` reaches, an ``opsw``'s pc and a ``callb``'s
-    callee pc are the procedure's, and two copies bind each twice."""
+    ``goto $PC`` -> ``label $PC`` is the only pair resolved through ``_Code.pcmap``,
+    which ``_link`` answers with the first copy. An arm and a static vector's landing
+    go through their statement's own table; a ``callb``'s ends read neither."""
     out = [] if out is None else out
     for s in stmts:
-        if s[0] in ("label", "opsw", "callb"):
+        if s[0] == "label":
             out.append(s[1])
         bodies = _arm_bodies(s) if s[0] in _CASE_PCS else frameproc._stmt_bodies(s)
         for b in bodies:
@@ -201,11 +201,11 @@ def _static_vector():
     return p
 
 
-def _goto_join():
-    """A callee with an early return, spliced: its continuation label is a goto join.
+def _early_ret():
+    """A sole-site callee with an early return: one ``callb``, copied to both sites.
 
-    ``frameproc._Ser.splice`` mints the label at the inner call's continuation pc and
-    a ``goto`` in the same region reaches it -- the binding a copy collides on."""
+    The block call is where the splice used to mint a continuation label; its entry
+    is an op index and its ``ret`` pops its own frame, so the copy is exact."""
     p = Asm(ORG)
     _head(p)
     _open_sites(p, 2, "bsub")
@@ -218,16 +218,35 @@ def _goto_join():
     return p
 
 
+def _irreducible():
+    """A callee entered at two points of one loop, so the structurer emits the join.
+
+    Neither entry dominates the other, ``label $PC`` stays in the callee's own region
+    and a ``goto`` in it reaches -- the binding a copy collides on."""
+    p = Asm(ORG)
+    _head(p)
+    _open_sites(p, 2, "isub")
+    p.label("isub").i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", "e0"))
+    p.i("JMP", "abs", ("L", "mid"))
+    p.label("e0").i("LDA", "zp", CNT)
+    p.label("top").i("EOR", "imm", 0x0F).i("STA", "abs", SID)
+    p.label("mid").i("CLC").i("ADC", "imm", 1).i("STA", "zp", CNT)
+    p.i("DEC", "zp", I.TMP).i("BNE", "rel", ("L", "top")).i("RTS")
+    I.tab_data(p)
+    return p
+
+
 DRIVERS = {
     "dispatch/2-site": lambda: _dispatch(2),
     "dispatch/3-site": lambda: _dispatch(3),
     "dispatch/nested": _nested,
     "dispatch/arm-calls": _arm_calls,
     "static-vector": _static_vector,
-    "goto-join": _goto_join,
+    "early-ret": _early_ret,
+    "irreducible": _irreducible,
 }
 
-REFUSED = ("goto-join",)  # drivers whose callee binds a pc no dispatch statement scopes
+REFUSED = ("irreducible",)  # drivers whose callee binds a pc no dispatch statement scopes
 
 
 @lru_cache(maxsize=None)

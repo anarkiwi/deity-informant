@@ -15,9 +15,9 @@ SAFE = tuple(n for n in D.DRIVERS if n not in D.REFUSED)
 
 M_GOTO_JOIN = (
     "a `goto $PC` reaching a `label $PC` in the same region is the one binding no "
-    "dispatch statement scopes: `frameproc._Ser.splice` mints it at an inlined "
-    "callee's continuation pc, two copies bind it twice and `_Code._link` resolves "
-    "every reference to the first -- folding the join away is the fix, not naming it"
+    "dispatch statement scopes: an irreducible callee keeps the join the structurer "
+    "cannot fold, two copies bind the pc twice and `_Code._link` resolves every "
+    "reference to the first -- folding the join away is the fix, not naming it"
 )
 
 
@@ -105,9 +105,19 @@ def test_duplication_removes_violation_classes_and_adds_none(name):
 
 def test_the_refusal_class_is_the_goto_join_alone():
     """Named, counted and visible: one driver, one mechanism, one bound pc."""
-    assert D.pcs_global(D.built("goto-join")[1].procs[1][3]) == [0x1035]
-    assert D.gate("goto-join") == "fault: runaway frame program"
-    assert "goto" in M_GOTO_JOIN and "splice" in M_GOTO_JOIN
+    assert D.pcs_global(D.built("irreducible")[1].procs[1][3]) == [0x103D]
+    assert D.gate("irreducible") == "fault: runaway frame program"
+    assert "goto" in M_GOTO_JOIN and "label" in M_GOTO_JOIN
+
+
+def test_a_sole_site_callee_is_a_block_call_and_both_copies_are_exact():
+    """The class the splice revert took out: a `callb` binds no pc a copy collides on."""
+    base = D.built("early-ret")[1]
+    kind, pc, ret, _body = base.procs[1][3][0]
+    assert kind == "callb"
+    assert [D.pcs_global(p[3]) for p in base.procs] == [[], []]
+    assert D.text("early-ret").count("call $%04X ret $%04X" % (pc, ret)) == 2
+    assert D.gate("early-ret") is None
 
 
 @pytest.mark.parametrize("row,label", [pytest.param(r, l, id="%s:%s" % (r, l)) for r, l in C.ALL])

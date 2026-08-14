@@ -38,9 +38,8 @@ RESIDUE = tuple(
     ("carry-recursion", "%s/pha" % w) for w in ("volatile", "overwrite", "lossy", "multi")
 )
 
-OPEN_OK = ("closed", "partial", "input", "wide")
-OPEN_BAD = ("computed", "roundtrip")
-ARMS = {"closed": 4, "partial": 2, "input": 2, "wide": 4}
+OPEN = ("closed", "partial", "input", "wide", "computed", "roundtrip")
+ARMS = {"closed": 4, "partial": 2, "input": 2, "wide": 4, "computed": 2, "roundtrip": 2}
 
 _PUSH = re.compile(r"^\s*mem\[\(\$0100.*?\):2\] = (.+)$", re.M)
 _RESTORED = re.compile(r"^m_[0-9A-F]{4}\[ctr_00F5\]$")
@@ -52,22 +51,22 @@ M_CARRIED_VALUE = (
     "removal may re-run it to recompute the byte. The removal would have to declare an "
     "array the image does not contain, which is machinery added; refuse it"
 )
-M_ARITH_PUSH = (
-    "framestack._push_val admits a pushed byte that is const, loc or mem and refuses "
-    "an op node, so an RTS dispatch whose target is arithmetic never matches "
-    "_trick_window: the pushed bytes stay as named page-one cells, the displacement "
-    "stays, and no transfer statement is emitted at all"
-)
+_ARITH = re.compile(r"^\s*goto \(.*\(\(m_D41B & \$01\) << \$04\).*\)$", re.M)
 
 
 @pytest.mark.parametrize("row,label", CLEAN, ids=["%s:%s" % v for v in CLEAN])
 def test_a_non_tail_self_call_alone_leaves_no_stack_behind(row, label):
-    """Class 1's base case: the call survives, the machine stack does not."""
+    """Class 1's base case: the call survives, the machine stack does not.
+
+    Every finding is a call-graph class. ``mutual-recursion``'s second routine has
+    one static site, so it is a ``callb`` -- an inlined block whose ret is interior."""
+    entry = G.parsed(row, label).procs[1][0]
+    want = ["pcall: $%04X" % entry, "procedures: 2"]
+    if row == "mutual-recursion":
+        lab = K.labels(row, label)
+        want += ["call: $%04X" % lab["mrb" if entry == lab["mra"] else "mra"], "interior ret"]
     assert not K.page_one(row, label)
-    assert G.violations(row, label) == (
-        "pcall: $%04X" % G.parsed(row, label).procs[1][0],
-        "procedures: 2",
-    )
+    assert G.violations(row, label) == tuple(sorted(want))
 
 
 @pytest.mark.parametrize(
@@ -152,15 +151,15 @@ def test_mutual_recursion_is_the_self_call_after_the_sole_site_inline(label):
     assert "sub_%04X()" % prog.procs[1][0] in K.bodies("mutual-recursion", label)
 
 
-@pytest.mark.parametrize("label", OPEN_OK)
+@pytest.mark.parametrize("label", OPEN)
 def test_an_rts_dispatch_the_trace_did_not_close_is_still_a_resolved_goto(label):
-    """Class 2 is empty as a stack residue: the push goes, closed or not."""
+    """Class 2 is empty as a stack residue: the push goes, closed or not, table or not."""
     assert not K.page_one("open-dispatch", label)
     assert G.violations("open-dispatch", label) == ("procedures: %d" % (ARMS[label] + 1),)
     assert "goto (" in K.bodies("open-dispatch", label)
 
 
-@pytest.mark.parametrize("label", OPEN_OK)
+@pytest.mark.parametrize("label", OPEN)
 def test_the_guard_is_the_observed_arm_set_the_evidence_channel_states(label):
     """Guarded, never claimed: the arms the trace ran, and a faulting default."""
     prog = G.parsed("open-dispatch", label)
@@ -179,15 +178,16 @@ def test_a_partially_observed_arm_set_narrows_its_own_table():
     assert not {lab["sa1"], lab["sa3"]} & seats
 
 
-@pytest.mark.parametrize("label", OPEN_BAD)
-def test_an_arithmetic_push_keeps_its_stores_and_emits_no_transfer(label):
-    """The residue nobody named: not the target set, the pushed byte's own form."""
+@pytest.mark.parametrize("label", ("computed", "roundtrip"))
+def test_an_arithmetic_push_is_the_goto_its_own_operand_names(label):
+    """The pushed byte's form decides nothing: rung (d0r) asks the slot, not the shape.
+
+    The window this replaced matched a push pair of const, loc or mem alone, so an
+    arithmetic target left both cells, the displacement and the ret standing."""
     body = K.bodies("open-dispatch", label)
-    assert "m_01FD = $10" in body
-    assert re.search(r"m_01FC = \(\$[0-9A-F]{2} \+ \(\(m_D41B & \$01\) << \$04\)\)", body)
-    assert "sp = (sp - $02)" in body and "goto" not in body
-    assert "fault: store into the stack page $01FD" in G.violations("open-dispatch", label)
-    assert "_push_val" in M_ARITH_PUSH
+    assert _ARITH.search(body), "the arithmetic is not the goto's operand"
+    assert not re.search(r"\bm_01[0-9A-F]{2}\b|\bsp\b", body)
+    assert not K.page_one("open-dispatch", label)
 
 
 def test_the_arms_are_one_page_and_one_stride_so_the_arithmetic_is_a_target():
@@ -202,7 +202,7 @@ def test_the_arms_are_one_page_and_one_stride_so_the_arithmetic_is_a_target():
 def test_every_driver_reproduces_its_own_write_log(row, label):
     """The lift is correct today, so no verdict above rests on a lifter bug."""
     model, prog = G.built(row, label)
-    if (row, label) in CONTROL + RESIDUE or label in OPEN_BAD:
+    if (row, label) in CONTROL + RESIDUE:
         with pytest.raises(frameval.FrameFault, match="the stack page"):
             frameval.gate_fp(model, G.FRAMES, prog)
         return
