@@ -1700,9 +1700,10 @@ class _Builder:
 
         Every arm is already the caller's own text and every arm's ``ret`` is the
         call's edge back, so the site is a ``switch goto`` inside a scope the arms
-        break out of. An arm the plan left a procedure of its own, one leaving by a
-        transfer or one returning from a displacement it moved keeps the call
-        form -- there the ``ret`` is not this site's join."""
+        break out of. ``splice``'s guards, read at an arm: one the plan left a
+        procedure, one binding a pc some other site's transfer lands on (whose
+        ``ret`` answers *that* site), one leaving by a transfer, or one returning
+        from a displacement it moved keeps the call form."""
         bare = [lbl for lbl, arm in cases if arm is None or arm.b is None]
         bodied = []
         for lbl, arm in cases:
@@ -1710,7 +1711,8 @@ class _Builder:
                 self.arm += 1
                 bodied.append((lbl, self.capture(sidprog._items(arm.b))))
                 self.arm -= 1
-        if bare or any(escapes(b) or not sp_balanced(b) for _l, b in bodied):
+        blocked = (bound_pcs(b) or escapes(b) or not sp_balanced(b) for _l, b in bodied)
+        if bare or any(blocked):
             out.append(("dcall", term[3], term[2]))
             out.append(("swc", bare, bodied))
             return

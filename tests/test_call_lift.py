@@ -18,15 +18,16 @@ XFAIL = {"strict": True}
 _PIN = "call suite: "
 
 M_BODY_LABEL = (
-    "the inlined body binds a pc: some transfer may name it, and the ret the splice "
-    "removes is what answers that transfer, so frameproc._Builder.splice keeps the "
-    "`call $PC ret $PC { .. }` wrapper (bound_pcs); duplicating the shared tail per "
+    "the inlined body binds a pc: some transfer may name it, and the ret the removal "
+    "answers is what answers that transfer, so frameproc keeps the call form -- the "
+    "`call $PC ret $PC { .. }` wrapper at a splice, `call (expr) ret $PC` plus "
+    "`switch call` at a dispatch arm (bound_pcs); duplicating the shared tail per "
     "site is the removal"
 )
 M_TAIL_TRANSFER = (
     "the inlined body leaves by a goto, not by its own ret: it returns through the "
-    "pushed word from wherever it landed, so the splice keeps the wrapper "
-    "(frameproc.escapes) -- the tail's own text has to move to the site with it"
+    "pushed word from wherever it landed, so the splice (or the dispatch arm) keeps "
+    "its call form (frameproc.escapes) -- the tail's own text has to move with it"
 )
 M_RET_WORD = (
     "the callee returns from a displacement it moved: it pulls the word the machine "
@@ -44,6 +45,14 @@ M_SHARED_HANDLER = (
     "(render._dispatch_gates' static_subs, procpass's static_sites), so no site places "
     "its body: the arm stays bare and the site keeps `call (expr) ret $PC` plus "
     "`switch call { $PC .. }`; copying it at the static sites as well is the removal"
+)
+M_FLOWN_CALLEE = (
+    "a call target plain flow also reaches is dominated by no call site, so "
+    "procpass._plan places its body nowhere and the `call $PC` line stays; the text "
+    "it names is the flow's, whose own `ret` is then interior. Copying it at the "
+    "site is the removal, and procpass.copies_ok is what bounds that (defMON's "
+    "$1022 under $1003 and $1006 carries an SMC dispatch and six call lines, so no "
+    "copy may carry it: Automatas keeps all three of its call sites)"
 )
 M_S_RELOCATED = (
     "a TXS from a computed value is an absolute write to sp, not a displacement, so "
@@ -67,6 +76,7 @@ MECHANISMS = (
     M_RET_WORD,
     M_SELF_CALL,
     M_SHARED_HANDLER,
+    M_FLOWN_CALLEE,
     M_S_RELOCATED,
     M_S_AS_VALUE,
     M_SP_LOOP_PUSH,
@@ -85,6 +95,14 @@ PINS = {
     ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
     ("rts-trick", "loop"): (M_SP_LOOP_PUSH,),
+    ("arm-landing", "tone/tight"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("arm-landing", "tone/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("arm-landing", "alt/tight"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("arm-landing", "alt/gap"): (M_BODY_LABEL, M_TAIL_TRANSFER),
+    ("shared-entry", "tone/tail"): (M_FLOWN_CALLEE,),
+    ("shared-entry", "tone/post"): (M_FLOWN_CALLEE,),
+    ("shared-entry", "alt/tail"): (M_FLOWN_CALLEE,),
+    ("shared-entry", "alt/post"): (M_FLOWN_CALLEE,),
     ("mixed-handler", "head/vt0"): (M_SHARED_HANDLER,),
     ("mixed-handler", "head/vt1"): (M_SHARED_HANDLER,),
     ("mixed-handler", "tail/vt0"): (M_SHARED_HANDLER,),
@@ -195,6 +213,14 @@ FAULTS = {
 BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bodies share
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
+    ("arm-landing", "tone/tight"),
+    ("arm-landing", "tone/gap"),
+    ("arm-landing", "alt/tight"),
+    ("arm-landing", "alt/gap"),
+    ("shared-entry", "tone/tail"),
+    ("shared-entry", "tone/post"),
+    ("shared-entry", "alt/tail"),
+    ("shared-entry", "alt/post"),
     ("arm-liveout", "eor1"),
     ("arm-liveout", "eor3"),
     ("arm-liveout", "eor5"),

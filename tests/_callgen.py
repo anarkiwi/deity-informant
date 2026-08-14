@@ -467,6 +467,71 @@ def _dispatch_share():
     )
 
 
+def _shared_entry():
+    """`shared-entry`: two entries into one routine, the second calling the first's flow.
+
+    ``enta`` falls through into ``body``; ``entb`` JSRs it. No call site dominates
+    ``body``, so no site owns it -- defMON's $1003 / $1006 / $1022 (Automatas)."""
+
+    def subs(p, table, post):
+        p.label("enta").i("LDX", "zp", ROW)
+        col(p, "X")
+        p.i("STA", "abs", SID + 1)
+        p.label("body").i("LDX", "zp", ROW)
+        col(p, "X", table)
+        p.i("STA", "abs", SID).i("RTS")
+        p.label("entb").i("LDA", "zp", ROW).i("STA", "abs", SID + 2)
+        p.i("JSR", "abs", ("L", "body"))
+        if post:
+            p.i("LDX", "zp", ROW)
+            col(p, "X", "alt")
+            p.i("STA", "abs", SID + 3)
+        p.i("RTS")
+
+    def play(p):
+        p.i("JSR", "abs", ("L", "enta")).i("JSR", "abs", ("L", "entb"))
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (t, "post" if q else "tail"), play, lambda p, a=t, b=q: subs(p, a, b))
+        for t, q in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
+def _arm_landing():
+    """`arm-landing`: two arms of one computed call sharing a tail.
+
+    The first arm places the tail and binds its pc; the second leaves by a goto into
+    it. Neither exit is a ``ret`` the site's scope may break to (8_Mikies_a_Week's
+    $104D, where a second dispatch lands in the first site's arm)."""
+
+    def subs(p, table):
+        p.label("vt0").i("LDX", "zp", ROW)
+        col(p, "X")
+        p.i("STA", "abs", SID + 1).i("JMP", "abs", ("L", "mid"))
+        p.label("vt1").i("LDA", "zp", ROW).i("STA", "abs", SID + 2)
+        p.label("mid").i("LDX", "zp", ROW)
+        col(p, "X", table)
+        for k in range(4):  # wider than the tail-duplication bound, so the second gotos
+            p.i("STA", "abs", SID + 3 + k)
+        p.i("RTS")
+
+    def play(p, gap):
+        bump(p)
+        _smc_site(p, "site", 0)
+        if gap:
+            p.i("LDA", "zp", ROW).i("STA", "abs", SID + 7)
+
+    return I.cap(
+        V(
+            "%s/%s" % (tab, "gap" if g else "tight"),
+            lambda p, b=g: play(p, b),
+            lambda p, a=tab: subs(p, a),
+        )
+        for tab, g in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
 def _mixed_handler():
     """`mixed-handler`: an arm a static JSR also names, so the arm is a sub of its own."""
 
@@ -873,7 +938,9 @@ SHAPES = (
     Shape("rts-trick", "the pushed target returned into", trick_data, _rts_trick()),
     Shape("vector-call", "the target read out of a cell", vec_data, _vector_call()),
     Shape("dispatch-share", "two computed-call sites, one arm set", vec_data, _dispatch_share()),
+    Shape("arm-landing", "two arms of one call, one tail", vec_data, _arm_landing()),
     Shape("mixed-handler", "an arm a static call also names", vec_data, _mixed_handler()),
+    Shape("shared-entry", "two entries into one routine", I.tab_data, _shared_entry()),
     Shape("tail-recursion", "the recursive call a return follows", I.tab_data, _tail_recursion()),
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),
