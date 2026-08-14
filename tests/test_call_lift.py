@@ -65,9 +65,10 @@ M_S_AS_VALUE = (
     "and until then sp is a parameter of the procedure"
 )
 M_SP_LOOP_PUSH = (
-    "a push inside a loop stands at no one displacement: the model's SP flow leaves "
-    "the body's entry sp bot, so concretize_stack names no cell, rung (d0r) has no "
-    "return slot to ask the value question of, and the pushes stay sp-relative stores"
+    "a push a loop body or one branch arm carries stands at no one displacement: the "
+    "model's SP flow leaves the join's sp bot, so concretize_stack names no cell, rung "
+    "(d0r) has no return slot to ask the value question of, and the pushes stay "
+    "sp-relative stores"
 )
 
 MECHANISMS = (
@@ -118,6 +119,10 @@ PINS = {
     ("stack-move", "row/push"): (M_S_RELOCATED,),
     ("s-illegal", "las/page1"): (M_S_AS_VALUE,),
     ("s-illegal", "las/far"): (M_S_AS_VALUE,),
+    ("page-one-spill", "loop/col"): (M_SP_LOOP_PUSH,),
+    ("page-one-spill", "loop/row"): (M_SP_LOOP_PUSH,),
+    ("page-one-spill", "arm/col"): (M_SP_LOOP_PUSH,),
+    ("page-one-spill", "arm/row"): (M_SP_LOOP_PUSH,),
 }
 
 # what already holds, and must keep holding
@@ -319,6 +324,17 @@ def test_shape_breaks_one_way_under_every_spelling(row):
     """The property the suite exists for: the mechanism is the shape's, not the spelling's."""
     got = {v.label: G.kinds(row, v.label) for v in G.BY_ROW[row].variants}
     assert len(set(got.values())) == 1, sorted(set(got.values()))
+
+
+@pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["page-one-spill"].variants])
+def test_a_cell_the_artifact_pushed_reads_back_where_it_left_it(label):
+    """Page one is owned at the access by the artifact's own writes, ahead of sp (8.4).
+
+    The spill survives as a page-one access (``sp`` is the variant's whole residue) and
+    the text's own ``sp`` stands below the cell where it is read, so the frame rule
+    alone answers the machine for a byte no push has crossed."""
+    assert G.kinds("page-one-spill", label) == ("sp",)
+    assert not G.fault("page-one-spill", label)
 
 
 @pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["arm-liveout"].variants])

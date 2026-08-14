@@ -1,9 +1,8 @@
 """The canonical call suite: one call form, many machine spellings, one procedure.
 
 A **shape** is a call form realised as a minimal complete driver; a **variant** is one
-machine spelling of it. ``violations`` reads the docs/denotation-solve.md 8.4
-invariant off the parsed program, and ``touches`` computes off the opcode table
-which opcodes a driver must answer for.
+machine spelling of it. ``violations`` reads the docs/denotation-solve.md 8.4 invariant
+off the parsed program; ``touches`` computes which opcodes a driver must answer for.
 """
 
 from __future__ import annotations
@@ -811,6 +810,51 @@ def _page_one_cell():
     )
 
 
+def _page_one_spill():
+    """`page-one-spill`: a cell the artifact pushed, read back below the live top.
+
+    The second push stands at no one displacement, so ``sp`` survives, its updates
+    coalesce at the exits, and every re-read of the spill is spelled at a cell the
+    text's own ``sp`` now stands below -- holding the byte the artifact put there."""
+
+    def value(p, src):
+        """The byte the driver spills: a declared column, or the cursor itself."""
+        if src == "col":
+            p.i("LDX", "zp", ROW)
+            col(p, "X")
+        else:
+            p.i("LDA", "zp", ROW)
+
+    def odd(p, name):
+        """``if (row & 1)``: the arm whose push the join can give no displacement."""
+        p.i("LDA", "zp", ROW).i("AND", "imm", 1).i("BEQ", "rel", ("L", name))
+
+    def play(p, where, src):
+        value(p, src)
+        p.i("PHA")
+        if where == "loop":
+            p.i("LDY", "imm", 1)
+            p.label("lp").i("LDA", "zp", ROW).i("PHA").i("DEY").i("BPL", "rel", ("L", "lp"))
+            p.i("PLA").i("PLA")
+        else:
+            odd(p, "sk")
+            p.i("LDA", "zp", ROW).i("PHA")
+            p.label("sk")
+        p.i("TSX").i("LDA", "absx", 0x0101)  # the spilled cell, above the live top
+        p.i("STA", "abs", SID)
+        if where == "arm":
+            odd(p, "sk2")
+            p.i("PLA")
+            p.label("sk2")
+        p.i("PLA")
+        bump(p)
+
+    return I.cap(
+        V("%s/%s" % (w, s), lambda p, a=w, b=s: play(p, a, b))
+        for w, s in itertools.product(("loop", "arm"), ("col", "row"))
+    )
+
+
 _VECS = {"cinv": (0x0314, 0x0315), "hw": (0xFFFE, 0xFFFF)}
 
 
@@ -954,6 +998,7 @@ SHAPES = (
     Shape("stack-move", "a player that relocates S", I.tab_data, _stack_move()),
     Shape("s-illegal", "the illegals whose operand is S", I.tab_data, _s_illegal()),
     Shape("page-one-cell", "page one as plain memory", I.tab_data, _page_one_cell()),
+    Shape("page-one-spill", "a pushed cell read below the top", I.tab_data, _page_one_spill()),
     Shape("irq-frame", "the player that is the handler", I.tab_data, _irq_frame()),
     Shape("brk-vector", "BRK answered by a vector", I.tab_data, _brk_vector(), False),
 )

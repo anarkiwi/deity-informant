@@ -37,15 +37,6 @@ CONTROL = (("saved-recursion", "pha/const"), ("saved-recursion", "pha/row"))
 RESIDUE = tuple(
     ("carry-recursion", "%s/pha" % w) for w in ("volatile", "overwrite", "lossy", "multi")
 )
-# the cell each descent reads above the machine's live stack top, one per depth
-PARKED = {
-    ("saved-recursion", "pha/const"): 0x01F5,
-    ("saved-recursion", "pha/row"): 0x01FB,
-    ("carry-recursion", "volatile/pha"): 0x01F5,
-    ("carry-recursion", "overwrite/pha"): 0x01F5,
-    ("carry-recursion", "lossy/pha"): 0x01F5,
-    ("carry-recursion", "multi/pha"): 0x01F2,
-}
 
 OPEN = ("closed", "partial", "input", "wide", "computed", "roundtrip")
 ARMS = {"closed": 4, "partial": 2, "input": 2, "wide": 4, "computed": 2, "roundtrip": 2}
@@ -78,16 +69,17 @@ def test_a_non_tail_self_call_alone_leaves_no_stack_behind(row, label):
 @pytest.mark.parametrize(
     "row,label", CONTROL + RESIDUE, ids=["%s:%s" % v for v in CONTROL + RESIDUE]
 )
-def test_a_value_parked_in_page_one_keeps_sp_and_faults(row, label):
-    """Page one as the value stack: sp threads the recursion and the protection fires.
+def test_a_value_parked_in_page_one_keeps_sp_and_reads_back_as_the_artifact_s(row, label):
+    """Page one as the value stack: sp threads the recursion, and only sp is the residue.
 
-    The descent parks its byte above the live stack top, which is the machine's own
-    frame however deep the recursion has pushed."""
+    Each descent parks its byte above the live stack top the next activation's pushed
+    return word stands below, so the cell is the artifact's own however deep the
+    recursion has gone: the read resolves and the whole finding is the call graph."""
     assert K.page_one(row, label) == (0x0100,)
     entry = G.parsed(row, label).procs[1][0]
     got = G.violations(row, label)
     assert "sp: parameter of sub_$%04X" % entry in got
-    assert "fault: load from the stack page $%04X" % PARKED[(row, label)] in got
+    assert not [f for f in got if f.startswith("fault:")], got
 
 
 @pytest.mark.parametrize("row,label", CONTROL, ids=["%s:%s" % v for v in CONTROL])
@@ -214,8 +206,4 @@ def test_the_arms_are_one_page_and_one_stride_so_the_arithmetic_is_a_target():
 def test_every_driver_reproduces_its_own_write_log(row, label):
     """The lift is correct today, so no verdict above rests on a lifter bug."""
     model, prog = G.built(row, label)
-    if (row, label) in CONTROL + RESIDUE:
-        with pytest.raises(frameval.FrameFault, match="the stack page"):
-            frameval.gate_fp(model, G.FRAMES, prog)
-        return
     assert frameval.gate_fp(model, G.FRAMES, prog) is None

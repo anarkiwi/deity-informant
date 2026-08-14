@@ -261,6 +261,46 @@ def test_the_cell_a_return_address_overwrote_is_refused_when_it_is_read_back():
         frameval.eval_src(prog, {}, 1)
 
 
+def _sp_step(k):
+    return ("asg", "sp", ("op", "INT_ADD", (("loc", "sp"), ("const", k & 0xFF, 1)), 1))
+
+
+def test_a_cell_the_program_wrote_reads_back_after_it_moved_sp_below_it():
+    """Page one is owned at the access by the writes, ahead of the frame rule (8.4).
+
+    The store stands where the page is free; ``sp`` then drops below the cell, which is
+    where a destacked ``PHA`` leaves it. No push has crossed the byte, so it is still
+    the artifact's -- the frame rule alone would read it as the machine's."""
+    stmts = [
+        _staged(0x01FD, ("const", 0x5A, 1)),
+        _sp_step(-2),
+        ("st", ("const", 0xD405, 2), _cell(0x01FD)),
+        _sp_step(2),
+        ("ret", False),
+    ]
+    flat = [s for s in stmts if s[0] != "asg"]  # the same text, with sp left standing
+    assert frameval.eval_fp(_prog(stmts), {}, 1)[0][1] == ((5, 0x5A),)
+    assert frameval.eval_fp(_prog(stmts), {}, 1) == frameval.eval_fp(_prog(flat), {}, 1)
+
+
+def test_the_frame_rule_still_answers_for_a_page_one_cell_no_write_of_the_program_owns():
+    """The one relaxation: a cell the program wrote. Every other byte stays the frame's.
+
+    ``$01FE`` is what ``run_frame`` pushed and ``$01FC`` what the surviving call did, so
+    dropping ``sp`` below them buys the program nothing."""
+    for cell in (0x01FE, 0x01FC):
+        stmts = [
+            _sp_step(-2),
+            ("call", 0x1100, 0x1005),
+            ("st", ("const", 0xD405, 2), _cell(cell)),
+            _sp_step(2),
+            ("ret", False),
+        ]
+        prog = _progs([(0x1000, [], [], stmts), (0x1100, [], [], [("ret", False)])])
+        with pytest.raises(FrameFault, match=r"load from the stack page \$%04X" % cell):
+            frameval.eval_fp(prog, {}, 1)
+
+
 def _row(k=0):
     idx = ("op", "INT_ZEXT", (("loc", "i"),), 2)
     return ("mem", ("op", "INT_ADD", (("const", 0x0800 + k, 2), idx), 2), 1)

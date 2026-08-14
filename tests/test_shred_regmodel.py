@@ -65,9 +65,6 @@ _PROT_FIXTURES = (  # read off the evaluator below, never annotated
     "jsr_inline_skip_two_depths",
     "jsr_inline_skip_two_sites",
     "jsr_inline_skip_varlen",
-    "sp_call_displaced",
-    "sp_loop_edge",
-    "sp_scratch_floor",
 )
 _PROT_PIN = pytest.mark.xfail(reason=_PROT_REASON, strict=True)
 
@@ -1278,7 +1275,6 @@ def test_an_unbalanced_procedure_keeps_its_stack_pointer():
     assert _sp_classes("sp_unbalanced") == ["sp_unbalanced"]
 
 
-@_PROT_PIN
 def test_a_loop_edge_at_a_displacement_keeps_the_stack_pointer():
     """Invariant, and 2c's own measured bound: an interior edge is not relaxable.
 
@@ -1298,7 +1294,6 @@ def test_a_raw_call_at_the_entry_displacement_drops_its_linkage():
     assert not re.search(r"\bsp\b", body), "the stack pointer survived"
 
 
-@_PROT_PIN
 def test_a_displaced_raw_call_keeps_the_stack_pointer():
     """Invariant (2c): dropping the displacement would move the pushed return."""
     body = _body(_lift("sp_call_displaced"))
@@ -1808,7 +1803,6 @@ def test_scratch_beside_kept_sp_fabric_promotes():
     assert not re.search(r"\bzp_%02X\b" % ZTMP, _lift("sp_scratch_floor"))
 
 
-@_PROT_PIN
 def test_a_raw_call_holds_the_scratch_cell_the_promoted_call_would_free():
     """Control: the raw path keeps the cell for a second reason, and it is not the floor.
 
