@@ -685,6 +685,27 @@ the lift rather than the refusal), the open-web fallback. The corpus runs once:
 closure fraction per tune, expression residue at zero, open webs counted and
 named.
 
+**Reviewed against the two hardest families (2026-08-14), with two amendments.**
+Automatas is ready almost by renaming: zero undeclared census, zero stack, and
+its whole play body holds two computed accesses (the in-flight spill pair).
+Ghouls_n_Ghosts holds under stress and sharpens the section: the interpreter is
+already a declared operator algebra (`operators { }`, 21 ops with arities and
+write-sets), the script "program counter" is a closed cursor web per voice, and
+the script-level `call`/`ret`/`loop` — the feared interpreted stack — is
+depth-1 per-voice scalars (`m_6B1F`/`m_6B22` pair rows, `ctr_0069-6B`,
+`zp_30-35`): record fields, no stack semantics. Its 81 computed accesses are
+all one shape, cursor-driven image reads, and its `undeclared 6999` is script
+data awaiting the same extent proof that bounds those reads — one mechanism,
+two numbers. The amendments: (1) closure accounting is three-way — **closed
+web / closed by extent / open** — since a cursor-driven read of a proven
+declared array retains address semantics deliberately and must not count
+against the family doing it right; (2) record formation has **two licenses**:
+the index web (struct-of-arrays under one index — GoatTracker, Hubbard) and
+**base-displacement isomorphism** (code-copied voice instances — Follin,
+defMON, and the copies call-flattening itself manufactures), the latter being
+the law `test_voices_are_isomorphic_up_to_base_displacement` already pins and
+the seed of §8.5's quotient.
+
 What this deletes: the ALU residue as a campaign of its own, destination-fusion
 rules as semantics, the lanes-of dialect question, and the address-anchored
 half of `datadecl`'s carving. What recovery then faces is §8.5 over variables
