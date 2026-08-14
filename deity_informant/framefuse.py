@@ -562,10 +562,15 @@ def _sid_pairs(procs):
     return {(b, b + 1): ("sid", note) for b in sorted(bases)}
 
 
-def candidates(model, decls, procs):
-    """``{(lo, hi): (kind, evidence)}`` over every pair the model attests."""
+def candidates(model, decls, procs, smc=None):
+    """``{(lo, hi): (kind, evidence)}`` over every pair the model attests.
+
+    A pair the de-SMC rung relocated is named by the model at its code address, so
+    the key follows the cell (``desmc``); the evidence for it is unchanged."""
     out = dict(_pointer_pairs(model, decls))
     out.update(_dispatch_pairs(model))
+    if smc is not None and smc.moved:
+        out = {tuple(smc.cell(c) for c in k): v for k, v in out.items()}
     out.update(_sid_pairs(procs))
     return out
 
@@ -781,13 +786,14 @@ def _landings(model):
     return out
 
 
-def contexts(model, decls, procs):
+def contexts(model, decls, procs, mem0=None):
     """Per-procedure ``(regions, mem0, params, entry, foreign)``, call sites solved.
 
     ``foreign`` is the goto targets every *other* procedure carries: a label among
     them is an entry no local walk saw, refusing its join, and a procedure so
     entered is opaque to the union, with the RTS landings (7.7 (4))."""
     regions = datadecl.Regions(decls)
+    mem0 = model.mem0 if mem0 is None else mem0
     targets = {}
     for e, _pa, _r, stmts in procs:
         targets[e] = {s[1] for s in stmts_of(stmts) if s[0] == "goto"}
@@ -800,23 +806,24 @@ def contexts(model, decls, procs):
         if any(s[0] == "label" and s[1] in foreign[e] for s in stmts_of(stmts))
     }
     calls = frameproc.Calls(procs, model.play, _landings(model) | entered)
-    writes = _MayWrite(procs, regions, model.mem0)
-    params = _Params(calls, regions, model.mem0, writes)
+    writes = _MayWrite(procs, regions, mem0)
+    params = _Params(calls, regions, mem0, writes)
     params.fill(procs)
-    return {e: (regions, model.mem0, params, e, foreign[e], writes) for e, _pa, _r, _s in procs}
+    return {e: (regions, mem0, params, e, foreign[e], writes) for e, _pa, _r, _s in procs}
 
 
-def apply_rung(model, decls, procs, state, symbols, name_of):
+def apply_rung(model, decls, procs, state, symbols, name_of, smc=None, mem0=None):
     """Rung (d) in place over ``procs``; returns ``(state fields, proofs)``.
 
     Per pair and per access site, never per tune: a lone half is spelled through
     the word rather than refusing it, and the SID register pairs — freq, pulse
     and cutoff — fuse on the same footing, per store site (spec 4d)."""
     proofs, fused = [], []
-    ctx = contexts(model, decls, procs)
+    mem0 = model.mem0 if mem0 is None else mem0
+    ctx = contexts(model, decls, procs, mem0)
     regions = datadecl.Regions(decls)
-    for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs).items()):
-        fixed = kind != "sid" and hi == lo + 1 and _page_fixed(procs, hi, regions, model.mem0)
+    for (lo, hi), (kind, evidence) in sorted(candidates(model, decls, procs, smc).items()):
+        fixed = kind != "sid" and hi == lo + 1 and _page_fixed(procs, hi, regions, mem0)
         p = _Pair(lo, hi, kind, evidence, fixed)
         if hi == lo + 1:
             for e, _pa, _r, stmts in procs:

@@ -238,6 +238,47 @@ serializes exactly its trace-observed set behind a runtime guard):
   check and no self-reference-elimination stage; the mapping is total by
   definition.
 
+### 2.1 The invariant, implemented: relocation (`deity_informant/desmc.py`)
+
+The mapping above was **nominal** until 2026-08-14: a patched byte was called a
+state variable while the artifact still spelled it at the address the instruction
+occupies, so `frameval`'s state image and its instruction stream were one array and
+"SMC is removed" was a claim about vocabulary. It is now a machine-checked property
+of every artifact:
+
+- **The code bytes an emitted access names are relocated.** `desmc.Relocation` takes
+  the executed-instruction spans (`datadecl._code_bytes`), collects every const base an
+  emitted access lands on inside them, and moves each maximal run of pages by one
+  displacement onto free pages — free by the *evidence* (not code, not `written`, not
+  observed-read, not a declared region, never page 0/1 or the IO window), so a rebuild
+  of the artifact allocates the same ones. One displacement per run preserves every
+  index offset, so `STA $1023,X` stays one array access. Preference is for a low
+  destination, because an over-approximated index span reaches upward and a cell under
+  every table base collides with none (`framefuse._may_read`).
+- **The seed is the image's.** A moved page carries the bytes the page it left holds,
+  so the pre-first-patch value is read off the image and never invented, a state
+  field's `= $XX` is that value, and a span reads the image's own byte past the
+  patched ones. A destination must be vacant *in the image* and not merely unnamed by
+  the evidence — a page nothing names may still carry bytes some path loads — and the
+  test admits a page already holding this relocation's own copy, so a re-emission
+  makes the same choice.
+- **The artifact says so.** `relocated $LO..$HI -> $DST` in the header declares each
+  run; the four SMC classes need no separate vocabulary, because a patched operand is a
+  pointer the author inlined, a patched immediate a value cell, a patched vector an
+  indirect call and a patched opcode a mode flag — one relocation carries all four.
+- **A run's declaration names its code bytes, not its cells.** Every other byte of the
+  run is still itself, so an access that lands on a play-written non-code cell of the
+  run reads and writes that cell where the rest of the program does
+  (`frameval.Relocated`, the third address seat). This is what makes the index
+  over-approximation harmless: precision moves to the address, not to the bound.
+- **The gate.** `frameval` refuses at build a store whose const address lies in an
+  executed-instruction span, and faults at the cell for a computed one; the invariant is
+  therefore binary and checked on every Gate FP run, and `tools/desmc_gate.py` reports
+  it per tune over the corpus. Baseline before the landing: **364 of 624 tunes stored
+  into executable memory** (3,577 patched cells — immediate 2,482, abs-operand 550,
+  vector 441, branch-displacement 44, opcode 60; **zero cells were an operand on one
+  path and an opcode on another**).
+
 Refusal boundary (honest): the mapping is total over the model's committed
 variant and target sets. An executed play-phase store into code whose cell
 is not classified operand/opcode/vector — unbounded play-time code copy —
