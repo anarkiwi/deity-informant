@@ -14,7 +14,7 @@ from . import expr as E
 from . import grammar as G
 from . import procpass
 from . import structured as C
-from .render import _static_preds
+from .render import Region, _static_preds
 
 # the grammar layer owns the name/address bijection and the region shape
 _kids = G.kids
@@ -661,6 +661,7 @@ def _model_trees(model):
 
     for entry in plan.entries:
         build(entry, homed - by_home.get(entry, set()))
+    planned = len(trees)
     left = left_keys()
     while left:
         view.hidden = set(placed)
@@ -669,8 +670,26 @@ def _model_trees(model):
         if len(still) == len(left):
             raise ValueError("blocks unreachable from any procedure: %s" % still[:4])
         left = still
-    labels |= (need & set(view._by_pc)) - _inlined_arms(trees)
-    return trees, labels - owners, view
+    bodied, bare = set(), set()
+    for _e, root in trees:
+        _scan_calls([root], bodied, bare)
+    labels |= (need & set(view._by_pc)) - (bodied - bare)
+    fold = [e for e, _r in trees[planned:] if e not in bodied | bare]
+    owners -= set(fold)  # a folded fragment is reached by its label alone
+    return _fold_fragments(trees, planned, set(fold)), labels - owners, view
+
+
+def _fold_fragments(trees, planned, fold):
+    """Every leftover fragment no call names, appended to the first procedure.
+
+    A resolved computed goto's landing is nobody's call target, so it is a labelled
+    region of the one procedure and not a procedure of its own (8.4)."""
+    if not trees or not fold:
+        return trees
+    entry, root = trees[0]
+    tail = [r for e, tree in trees[planned:] if e in fold for r in _items(tree)]
+    rest = [(e, t) for e, t in trees[planned:] if e not in fold]
+    return [(entry, Region("seq", _items(root) + tail))] + trees[1:planned] + rest
 
 
 # ---- a bare block model (the fields the structurer and frameprog read) -----------

@@ -39,11 +39,6 @@ M_SELF_CALL = (
     " a `pcall`; a tail self-call is a loop and a non-tail one a bounded unroll, and"
     " Plan has a form for neither"
 )
-M_LANDING_PROC = (
-    "a resolved computed goto's landing is nobody's call target, so procpass never "
-    "sees it as an inline candidate: it becomes its own proc entry and the emitted "
-    "`goto` crosses procedures"
-)
 M_SWITCH_CALL = (
     "a computed call whose target set the trace closed emits `call (expr) ret $PC` "
     "plus `switch call { case .. }`: the arms are already nested at the site, but the "
@@ -70,7 +65,6 @@ MECHANISMS = (
     M_TAIL_TRANSFER,
     M_RET_WORD,
     M_SELF_CALL,
-    M_LANDING_PROC,
     M_SWITCH_CALL,
     M_S_RELOCATED,
     M_S_AS_VALUE,
@@ -89,13 +83,7 @@ PINS = {
     ("shared-tail", "alt/X"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("shared-tail", "alt/Y"): (M_BODY_LABEL, M_TAIL_TRANSFER),
     ("arg-pass", "stack-pla"): (M_RET_WORD,),
-    ("rts-trick", "const"): (M_LANDING_PROC,),
-    ("rts-trick", "arith"): (M_LANDING_PROC,),
-    ("rts-trick", "two-arm"): (M_LANDING_PROC,),
-    ("rts-trick", "loop"): (M_LANDING_PROC, M_SP_LOOP_PUSH),
-    ("rts-trick", "table"): (M_LANDING_PROC,),
-    ("rts-trick", "ptr"): (M_LANDING_PROC,),
-    ("rts-trick", "open"): (M_LANDING_PROC,),
+    ("rts-trick", "loop"): (M_SP_LOOP_PUSH,),
     ("vector-call", "smc-jsr"): (M_SWITCH_CALL,),
     ("tail-recursion", "x/const"): (M_SELF_CALL,),
     ("tail-recursion", "x/row"): (M_SELF_CALL,),
@@ -170,6 +158,12 @@ CLEAN = (
     ("page-one-cell", "absy/cross"),
     ("page-one-cell", "indy/same"),
     ("page-one-cell", "indy/cross"),
+    ("rts-trick", "const"),
+    ("rts-trick", "arith"),
+    ("rts-trick", "two-arm"),
+    ("rts-trick", "table"),
+    ("rts-trick", "ptr"),
+    ("rts-trick", "open"),
     ("irq-frame", "hw"),
     ("irq-frame", "cinv"),
 )
@@ -187,14 +181,14 @@ FAULTS = {
     ("arg-pass", "stack-pla"): "store into the stack page $01FC",
 }
 
-BINDS_PC = (  # a computed dispatch arm, and a callee tail two inlined bodies share
+BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a tail two inlined bodies share
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
     ("shared-tail", "tone/X"),
     ("shared-tail", "tone/Y"),
     ("shared-tail", "alt/X"),
     ("shared-tail", "alt/Y"),
-)
+) + tuple(("rts-trick", v.label) for v in G.BY_ROW["rts-trick"].variants)
 
 
 def _variants():

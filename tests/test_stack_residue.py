@@ -162,9 +162,11 @@ def test_mutual_recursion_is_the_self_call_after_the_sole_site_inline(label):
 
 @pytest.mark.parametrize("label", OPEN)
 def test_an_rts_dispatch_the_trace_did_not_close_is_still_a_resolved_goto(label):
-    """Class 2 is empty as a stack residue: the push goes, closed or not, table or not."""
+    """Class 2 is empty as a stack residue: the push goes, closed or not, table or not.
+
+    The landings are labelled regions of the one procedure, so the invariant holds."""
     assert not K.page_one("open-dispatch", label)
-    assert G.violations("open-dispatch", label) == ("procedures: %d" % (ARMS[label] + 1),)
+    assert G.violations("open-dispatch", label) == ()
     assert "goto (" in K.bodies("open-dispatch", label)
 
 
@@ -175,7 +177,7 @@ def test_the_guard_is_the_observed_arm_set_the_evidence_channel_states(label):
     seen = K.targets("open-dispatch", label)
     arms = seen[min(pc for pc in seen if pc > prog.procs[0][0])]
     assert len(arms) == ARMS[label]
-    assert set(arms) == {p[0] for p in prog.procs[1:]}
+    assert set(arms) == set(G.pcs_bound(prog.procs[0][3]))
 
 
 def test_a_partially_observed_arm_set_narrows_its_own_table():
@@ -183,7 +185,8 @@ def test_a_partially_observed_arm_set_narrows_its_own_table():
     lab = K.labels("open-dispatch", "partial")
     assert lab["sa1"] - lab["sa0"] == K.STRIDE
     assert "stride 2" in G.text("open-dispatch", "partial")
-    seats = {p[0] for p in G.parsed("open-dispatch", "partial").procs}
+    prog = G.parsed("open-dispatch", "partial")
+    seats = {p[0] for p in prog.procs} | set(G.pcs_bound(prog.procs[0][3]))
     assert not {lab["sa1"], lab["sa3"]} & seats
 
 

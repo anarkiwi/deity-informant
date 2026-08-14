@@ -37,9 +37,14 @@ def test_the_duplicated_text_round_trips_whatever_it_denotes(name):
 
 
 @pytest.mark.parametrize("name", sorted(SAFE))
-def test_a_pc_binding_region_copies_exactly_where_no_pc_is_program_wide(name):
-    """The answer: a computed dispatch duplicates cleanly, at 2 sites, 3 and nested."""
-    assert D.pcs_global(D.built(name)[2].procs[0][3]) == []
+def test_a_pc_binding_region_copies_exactly_where_each_pc_is_bound_once(name):
+    """The answer: a computed dispatch duplicates cleanly, at 2 sites, 3 and nested.
+
+    A landing the arms share is folded into the procedure once and reached by the
+    copies' own tables, so no pc the copies carry is bound twice."""
+    stmts = D.built(name)[2].procs[0][3]
+    bound = D.pcs_global(stmts)
+    assert len(bound) == len(set(bound))
     assert D.gate(name) is None
 
 
@@ -56,7 +61,8 @@ def test_an_arm_s_pc_is_the_dispatch_statement_s_own(name):
     ``_callgen.pcs_bound`` counts the label the emitter restates at the head of an
     arm where it restates one; the copy is exact either way."""
     stmts = D.built(name)[2].procs[0][3]
-    assert D.pcs_global(stmts) == []
+    bound = D.pcs_global(stmts)
+    assert len(bound) == len(set(bound))
     assert D.gate(name) is None
 
 
@@ -66,8 +72,8 @@ def test_an_arm_s_pc_is_the_dispatch_statement_s_own(name):
 def test_each_copy_of_a_dispatch_gets_its_own_arm_table(name, copies):
     """Why the copy is exact: one table per statement, keyed the same, disjoint arms.
 
-    The arm pcs are bound nowhere else: no dispatch consults the program-wide map,
-    which is the whole answer."""
+    The program-wide map binds each arm pc at the folded landing and at none of the
+    copies -- and no dispatch ever consults it, which is the whole answer."""
     dup = D.built(name)[2]
     code = frameval._Code(dup)
     tables = [op[1] for op in code.ops if op[0] == "swd"]
@@ -75,7 +81,8 @@ def test_each_copy_of_a_dispatch_gets_its_own_arm_table(name, copies):
     assert len(tables) == copies and arms
     assert [sorted(t) for t in tables] == [arms] * copies
     assert len({i for t in tables for i in t.values()}) == copies * len(arms)
-    assert not set(arms) & set(code.pcmap)
+    assert all(pc in code.pcmap for pc in arms)
+    assert not {code.pcmap[pc] for pc in arms} & {i for t in tables for i in t.values()}
 
 
 def test_a_static_vector_s_landing_is_bound_to_its_own_igoto():
@@ -130,19 +137,19 @@ def test_a_sole_site_callee_is_spliced_and_both_copies_are_exact():
 
 
 M_SHARED_TAIL = (
-    "the tail two inlined bodies share binds its pc: the first copy places it and the "
-    "second reaches it by a goto, so the procedure is not copy-safe as it stands "
-    "(test_call_lift.M_BODY_LABEL names the same machinery)"
+    "a region the one procedure binds a pc for: the tail two inlined bodies share, and "
+    "the RTS-trick landing folded in beside the play text. Each is reached by a transfer "
+    "that resolves through the program-wide map, so a copy of the procedure would bind "
+    "the pc twice (test_call_lift.M_BODY_LABEL names the first)"
 )
+_BINDS = ("shared-tail", "rts-trick")
 
 
 def _copy_safe():
     """Every call-suite variant, pinned where its procedure binds a program-wide pc."""
     out = []
     for row, label in C.ALL:
-        mark = (
-            [pytest.mark.xfail(strict=True, reason=M_SHARED_TAIL)] if row == "shared-tail" else []
-        )
+        mark = [pytest.mark.xfail(strict=True, reason=M_SHARED_TAIL)] if row in _BINDS else []
         out.append(pytest.param(row, label, marks=mark, id="%s:%s" % (row, label)))
     return out
 
