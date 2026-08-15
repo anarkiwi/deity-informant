@@ -1155,17 +1155,16 @@ def _liveness(tree, info, entry, chosen, volatile=()):
             return seq(nd[2], set(live)) | seq(nd[3], set(live)) | uses(nd[1])
         if k in ("loop", "for"):
             body = nd[1] if k == "loop" else nd[4]
-            fall = live if k == "for" else ()  # a for's last trip falls out of the loop
             head = set()
             rounds = 0 if k == "loop" and _single_trip(body) else 24
             for _i in range(rounds):
-                h = loop(body, live, head, fall)
+                h = loop(body, live, head)
                 if k == "for":
                     h.discard(nd[1])
                 if h <= head:
                     break
                 head |= h
-            out = loop(body, live, head, fall)
+            out = loop(body, live, head)
             if k == "for":
                 out |= live  # a for leaves by its own bottom: a loop leaves only by brk
                 out.discard(nd[1])  # the counter the for defines on entry is dead above
@@ -1254,10 +1253,10 @@ def _liveness(tree, info, entry, chosen, volatile=()):
             nxt = nd
         return live
 
-    def loop(body, brk_live, head, fall=()):
+    def loop(body, brk_live, head):
         brk.append(set(brk_live))
         cont.append(set(head))
-        out = seq(body, set(head) | set(fall))
+        out = seq(body, set(head))
         brk.pop()
         cont.pop()
         return out

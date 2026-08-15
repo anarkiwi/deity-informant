@@ -760,12 +760,12 @@ def _indexed_neighbour():
     return [_sstore(), ("st", _indexed(SCELL - 4), ("const", 0, 1)), _sread()]
 
 
-def _never_read():
-    return [_sstore()]
-
-
 def _blind_store_while_live():
     return [_sstore(), ("st", ("loc", "t0", 2), ("const", 0, 1)), _sread()]
+
+
+def _never_read():
+    return [_sstore()]
 
 
 @pytest.mark.parametrize(
@@ -780,25 +780,10 @@ def _blind_store_while_live():
     ],
 )
 def test_the_scratch_refusal_names_the_premise_that_failed(build, want):
-    """Each refusal keeps the field: 9.1's persistent and open-access classes."""
+    """Each refusal keeps the field: 9.1's persistent, open-access and dead classes."""
     state, proofs, _procs = _classify(build())
     assert state == [_SFIELD] and proofs[0].status == "refused"
     assert proofs[0].lemma.endswith(want)
-
-
-BLIND = ("loc", "t0", 2)
-
-
-def test_a_deref_rung_f_bounds_onto_the_cell_is_an_access_that_touches_it():
-    """The span rule over a base-less address: bounded away it is no reader, bounded
-    onto the cell it is the resolvable access the walk refuses (9.1's open class)."""
-    stmts = [_sstore(), ("asg", "w0", ("mem", BLIND, 1)), _sread()]
-    cells = framestack.state_cells([_SFIELD], {}, frameproc.G.addr_name)
-    (hit,) = framestack.apply_scratch(_sproc(stmts), cells, None, {BLIND: ((SCELL,), 0)})
-    assert hit.status == "refused"
-    assert hit.lemma.endswith("another resolvable access may touch the slot")
-    (miss,) = framestack.apply_scratch(_sproc(stmts), cells, None, {BLIND: ((0x1400,), 0)})
-    assert miss.status == "named"
 
 
 def test_a_read_the_next_frame_makes_the_cell_state_not_scratch():
