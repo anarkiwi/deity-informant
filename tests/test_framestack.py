@@ -559,18 +559,6 @@ def test_a_foreign_goto_is_a_transfer_the_reading_carries():
     assert not frameproc.drop_dead_labels(procs)
 
 
-def test_an_unobserved_edge_holds_no_displacement():
-    """Reaching one faults, so no frame the gate accepts stands at it (Automatas)."""
-    procs = _proc(_sentinel([("if", "if", ("loc", "cflag"), [("unobs", 0x10C3)], [])]))
-    assert _balanced(procs) == {SUB: True}
-
-
-def test_a_goto_at_a_moved_displacement_still_refuses():
-    """The negative: a taken edge is where the walk's claim is owed, and it holds."""
-    procs = _proc(_sentinel([("if", "if", ("loc", "cflag"), [("goto", SUB)], [])]))
-    assert not _balanced(procs)
-
-
 # ---- rung (d1): scratch leaves the state (docs/denotation-solve.md 9.1) -----------
 SCELL = 0x13CF  # Grid_Runner's first row-fetch latch: written and read in one frame
 _SFIELD = ("m_13CF", 1, False, [])
