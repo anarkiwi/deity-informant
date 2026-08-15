@@ -153,11 +153,22 @@ def _obs_hi(by_pc, pcs, lo, hi):
 
 
 def _run_reads(g, rd_pcs, by_pc):
-    """Sorted addresses the group's read sites were observed to index."""
+    """``(addresses observed, cells one access read contiguously from the base)``.
+
+    A contiguous run is a traversal of the datum the base names, so the declaration
+    holds every cell of it; a sparse read map is an index leaving its declaration and
+    evidences no extent (a byte index spans 256 cells it never touches)."""
     pcs = set()
     for b in g["fields"]:
         pcs |= rd_pcs.get(("t", b), set())
-    return sorted({a for pc in pcs for a in by_pc.get(pc, ())})
+    seen = [set(by_pc.get(pc, ())) for pc in pcs]
+    run = 0
+    for s in seen:
+        n = 0
+        while g["base"] + n in s:
+            n += 1
+        run = max(run, n)
+    return sorted(set().union(*seen, set())), run
 
 
 def _alias(p, g):
@@ -167,6 +178,14 @@ def _alias(p, g):
     half their extent, so ``g`` is a field of ``p`` rather than the next block."""
     d = g["base"] - p["base"]
     return 0 < 2 * d < p["top"] - p["base"] and g["top"] - p["top"] == d
+
+
+def _covered(p, g):
+    """True where ``p``'s traversal reads every cell ``g`` was seen to name.
+
+    A base the run passes over is a field of the datum traversed; one whose own reads
+    leave the run is the next datum, and absorbing it would declare it short."""
+    return p["base"] <= g["base"] <= g["top"] < p["base"] + p["run"]
 
 
 def _witnessed(g, sites):
@@ -179,26 +198,28 @@ def _witnessed(g, sites):
 
 
 def _regions(groups, sites, rd_pcs, by_pc, code):
-    """Witnessed regions off the code image, alias bases absorbed into their region.
+    """Witnessed regions off the code image; alias and interior bases absorbed.
 
-    A declaration starts at its base and carries that byte, so one based on an
-    executed instruction byte would carve code into ``data { }``; spec 2 reads a
-    code cell as the state variable it is. The next code byte bounds it anyway."""
+    A base on an executed instruction byte would carve code into ``data { }``, and
+    the next code byte bounds a region anyway; a base whose whole read map lies
+    inside a neighbour's traversed run is a field of it rather than the next block."""
     out = []
     oncode = set(code)
     for g in groups:
         if g["base"] in oncode:
             continue
-        reads = _run_reads(g, rd_pcs, by_pc)
-        g = dict(g, reads=reads, top=reads[-1] if reads else -1)
+        reads, run = _run_reads(g, rd_pcs, by_pc)
+        g = dict(g, reads=reads, top=reads[-1] if reads else -1, run=run)
         if not _witnessed(g, sites):
             continue
-        if out and _alias(out[-1], g) and _next_bound((), code, out[-1]["base"]) > g["base"]:
+        alias = bool(out) and _alias(out[-1], g)
+        inside = bool(out) and not alias and _covered(out[-1], g)
+        if (alias or inside) and _next_bound((), code, out[-1]["base"]) > g["base"]:
             p = out[-1]
             p["fields"] = p["fields"] + g["fields"]
             p["stride"] = max(p["stride"], g["stride"])
             p["reads"] = sorted(set(p["reads"]) | set(g["reads"]))
-            p["top"] = g["top"]
+            p["top"] = max(p["top"], g["top"])
         else:
             out.append(g)
     return out

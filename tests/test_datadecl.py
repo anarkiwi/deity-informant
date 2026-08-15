@@ -110,6 +110,38 @@ def test_alias_base_is_absorbed_into_the_region_it_indexes():
     assert not D._alias(lo, block)  # the next block is not a field of the first
 
 
+def test_a_traversed_run_carries_the_bases_inside_it():
+    """Grid_Runner's SID blit: 25 cells read at one site are one datum, not three.
+
+    Its base carved one row because the next base truncated it, so the four latches
+    at the far end of the run declared as loose state."""
+    blit = _grp(0x2000, range(0x2000, 0x2019))
+    out = _regions([blit, _grp(0x2001, [0x2001]), _grp(0x2002, range(0x2002, 0x2004))])
+    assert [g["base"] for g in out] == [0x2000]
+    assert out[0]["fields"] == [0x2000, 0x2001, 0x2002]
+    mut = frozenset(range(0x2000, 0x2019))
+    sites = _sites(0x2000, 0x2001, 0x2002)
+    assert D._extent(out[0], sites, [0x2000, 0x2019], [], mut)[0] == 0x19
+
+
+def test_a_sparse_read_map_swallows_no_neighbour():
+    """Puke's note table overruns onto a declared neighbour; it does not own it.
+
+    An index that leaves its declaration reads a cell of the next one, which is the
+    aliasing the read map reports -- not evidence of a wider extent."""
+    over = _grp(0x2000, [0x2000, 0x2001, 0x2041, 0x2060])
+    out = _regions([over, _grp(0x2040, range(0x2040, 0x2060))])
+    assert [g["base"] for g in out] == [0x2000, 0x2040]
+    assert D._extent(out[0], _sites(0x2000), [0x2000, 0x2040], [])[0] == 0x40
+
+
+def test_a_run_stops_at_the_first_cell_it_was_not_seen_to_read():
+    """The run is contiguity from the base, so a gap ends what the traversal proves."""
+    reach = [*range(0x2000, 0x2004), 0x2010]
+    out = _regions([_grp(0x2000, reach), _grp(0x2002, [0x2002]), _grp(0x2010, [0x2010])])
+    assert [g["base"] for g in out] == [0x2000, 0x2010]
+
+
 def test_unwitnessed_base_neither_declares_nor_bounds():
     """A base with no observed read must not truncate its neighbour to nothing."""
     out = _regions([_grp(0x2000, range(0x2000, 0x2060)), _grp(0x2001)])
