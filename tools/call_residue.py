@@ -131,10 +131,14 @@ def _call_class(model, view, target, bodies):
 
 
 def _sp_classes(prog):
-    """The ``drop_sp`` refusal class per procedure that keeps ``sp``."""
-    return sorted(
-        p.lemma.split(":", 1)[0] for p in prog.proofs if p.kind == "sp" and p.status == "refused"
-    )
+    """The refusal class of every stack proof the program carries, ``sp`` and slots."""
+    out = []
+    for p in prog.proofs:
+        if p.status == "refused" and p.kind in ("sp", "spslot", "stack"):
+            out.append("%s: %s" % (p.kind, p.lemma.split("; ")[-1].split(":", 1)[0]))
+        elif p.kind == "spslot" and p.status == "held":
+            out.append("spslot: held")
+    return sorted(out)
 
 
 def _walk(stmts, last, out):
@@ -149,7 +153,7 @@ def _walk(stmts, last, out):
 
 
 def _one(entry, frames):
-    from deity_informant import frameval, sidprog
+    from deity_informant import frameprog, frameval, sidprog
     from deity_informant.c64 import load_psid
 
     sid, sub, secs = entry
@@ -166,7 +170,7 @@ def _one(entry, frames):
     row["call_classes"] = sorted(
         Counter(_call_class(model, view, t, bodies) for _k, t in got["calls"]).items()
     )
-    row["sp_classes"] = sorted(Counter(_sp_classes(prog)).items())
+    row["sp_classes"] = sorted(Counter(_sp_classes(frameprog.program(model))).items())
     try:
         frameval.gate_fp(model, n, prog)
     except frameval.FrameFault as exc:
