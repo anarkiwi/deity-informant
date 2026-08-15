@@ -901,3 +901,72 @@ Commando machine (frame clock -> period-8 vibrato triangle and row timer in
 parallel -> wrap triggers the cursor cascade -> note-on reloads slide step and
 duration). The graph is the player; the constants, tables and scripts are the
 tune — the family quotient's concrete object.
+
+### 9.4 A traversed run is one datum, and the copy class was a landing (2026-08-15)
+
+**§9.3's under-carve is Grid_Runner's, and its evidence is contiguity.** `LDA $13BA,X`
+over `CPX #$19` reads twenty-five cells at one site — the SID shadow file — and the
+carve gave its base one row, because `$13BB` and `$13BC` carve their own and a group
+boundary truncates its neighbour. The declaration is now the run: `m_13BA[25]`, with
+`$13BB`/`$13BC`/`$13BD` as its cobases and the four latches `m_13CF..m_13D2` at
+offsets 21..24. They are interior rows of an honest table, which is what §9.3 said
+they were owed.
+
+**Contiguity is what separates the two witnesses.** A byte index spans 256 cells it
+never touches, so the furthest address an access was *seen* at evidences no extent —
+the reading §9.3 already measured and rejected. A run read without a gap is a
+traversal of the datum the base names, and every cell of it belongs to that
+declaration. Puke's `LDA $16A7,Y` is the sparse shape: nine addresses over 121 rows,
+and the row it lands on, `$171F`, is a play-written cell between five other declared
+tables. It is not an under-carve and does not widen; the read escapes its declaration
+and `framestack.read_reach` holds `$171F` exactly as §9.3 left it. The two witnesses
+are two shapes, not one defect.
+
+**The aliasing guard is the absorbed base's own read map**, and it was found by
+running the corpus rather than by reasoning. Absorbing on the base alone let a run
+swallow a neighbour it does not cover and declare it short: Fist_II_Legend's `$2284`
+carries a 62-cell extent, `$227C`'s nine-cell run took it as one field, and
+`$2285..$22C1` fell out of `data { }` with one cell landing in `state { }` — the only
+tune in the corpus whose state rose. A base is a field of a run only where the run
+reads every cell that base was seen to name; a base whose read map leaves the run is
+the next datum.
+
+Measured, both gates complete against `3f9a56c`: **Gate FP unmoved on all 614 built
+tunes** (613 clean, 1 diverged, 10 refused, no tune in a different class), **inv_probe
+unmoved on all 624** (253 clean / 360 residue / 10 fault / 1 diverged), and calls,
+rets, `sp` tokens and procedures identical at 1,263 / 1,131 / 3,181 / 931 — the carve
+touches no call or stack structure. Corpus state fields **16,199 → 16,161**, ten tunes
+falling and **none rising**; Grid_Runner 12 → 8, and Commando 12, Automatas 76,
+Puke 17, Wizball 230, Ghouls_n_Ghosts 141, Blueprint 20 all unmoved.
+
+**The dead-store verdict stays out, for the reason §9.3 gave and now re-measured.**
+The carve moves cells from `state { }` into declared tables; it does not change which
+private cells the scratch walk holds, and Automatas — the one tune the verdict was
+worth anything on — declares the same 76 fields before and after. So the verdict is
+still worth 76 → 74 on one tune against `test_single_use_load_inlines_at_its_use_site`'s
+subject, and what it needs is still a driver whose dead store is not the thing being
+tested.
+
+**`copyable-but-uncopied` was not unexplained: every one of its sites names a landing.**
+`procpass.Carry` asks `reached_inside` of the dispatch pcs a body holds and never of
+the body's own entry, so a callee that a computed transfer also lands on reads as
+copyable — while a copy binds no pc and the landing needs one bound, so the labelled
+procedure stays and the call line with it. Rambo's `$2054` is the shape: two static
+sites, `Carry` assenting, the emitted body binding nothing, and `$2054` in the
+serialization view's `need`. Corpus-wide the class is **225 sites / 72 tunes, and all
+225 are landings** — the residue map now names them `landing-callee`, and the class of
+calls no mechanism explains is empty.
+
+**Measured and rejected**, each on eighteen representatives (the ten tunes carrying the
+most of the class plus the exemplars), 113 calls and 43 procedures at baseline:
+moving the premise into `Carry` — refusing a body any of whose blocks a transfer from
+outside reaches — takes calls to **282** and procedures to **93**, because `Carry.body`
+is transitive and one landing refuses every body that reaches it; asking it of the
+entry alone is no better, **282** and **93** again. The refusal is real and it is
+already priced; what the ranking owed was its name.
+
+`tools/call_residue.py` also read the verdict off the raw model rather than the
+serialization view the plan decided over, so `Carry`'s landing set was empty in the
+tool and full in the pass. Reading it off the view moves `no-body` 310 → 323 (104 → 113
+tunes) and `carry-refused` 141 → 128 (66 → 57) at unchanged total calls: the same 1,263
+lines, attributed to the mechanism that actually holds them.
