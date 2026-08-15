@@ -745,6 +745,47 @@ the claim. Binary per web; the per-tune figure is state fields before/after.
 Ordering: this lands first within §9 — before width and records — because it
 deletes cells outright, so every later verdict has fewer webs to close.
 
+### 9.2 What landed, and the two loop readings it priced (2026-08-15)
+
+**§8.4's invariant is reached on Automatas** — one procedure, no call, no return,
+no `sp`, no page-one access, Gate FP clean — by two corrections to the destack
+rungs and by wiring §9.1 into the emit.
+
+- **The fault is the bottom of the displacement lattice.** Reaching `unobserved`
+  is a fault (`frameval._s_unobs`), so the displacement walk holds nothing there
+  and a faulted path constrains no join. Reading it as an edge standing at the
+  entry refused balances that hold.
+- **Every surviving call pushes.** `frameval.run_frame` pushes a return word at a
+  text-threaded `pcall` as much as at a raw call, so the drop's linkage guard is
+  about every call, not the forms the machine threads. This *fixed* eleven
+  corpus tunes that faulted at baseline (`load from the stack page $01FC`).
+- **The held verdict is provisional.** Rung (d0s) holds a slot where an
+  unresolvable address may alias it; those addresses are pointer derefs, which
+  rung (f) bounds — but only once rung (d) has fused the pair. `deref_bounds`
+  takes rung (f)'s reading where fusion has run, and `drop_spills` re-asks the
+  held verdict: page one is the machine's, and where every procedure balances the
+  pushed return word stands above every entry-epoch slot.
+- **Two loop readings.** A `for` leaves by its own bottom, so its body's last trip
+  falls out of the loop — reading the body's fall-through as the head alone made a
+  loop-carried local dead at its own update. And a levelled exit escapes as many
+  loops as its level counts, where the inline context carried only the innermost.
+  Neither could be reached by a memory cell; the accumulator §9.1 dissolves is
+  exactly the shape that reaches them.
+
+Measured: Commando 25 → 15 state fields, Blueprint 20 → 19; both corpus gates with
+zero clean→worse.
+
+**What §9.1 still owes.** Grid_Runner's four latches (`m_13CF..m_13D2`) are read
+only by the covering blit `sid.reg[x] = m_13BA[x]`, which the walk counts as no
+read of any cell it covers, so they classify as neither scratch nor state. A
+dead-store verdict over them was measured and rejected: it diverged Gate FP on
+Grid_Runner (filter, frame 2) and Automatas (v1.lww, frame 33). The mechanism
+owed is an indexed read as a read of every cell its span covers. `$040B`/`$0414`/
+`$045D` — SMC vector high bytes no store reaches — likewise still declare as
+state; `framestack.unwritten` names them, and demoting them is a data
+declaration rather than a role, since a constant is not an update shape and
+`roles.ROLES` is closed over the update shapes.
+
 ## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
 
 §8.5's machine — clocked, triggered, bounded accumulators cascading into SID
