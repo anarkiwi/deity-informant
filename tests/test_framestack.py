@@ -837,6 +837,30 @@ def test_an_indexed_store_that_may_reach_the_cell_is_a_write():
     assert framestack.unwritten(procs, {SCELL}, regions) == set()
 
 
+def _demote(stmts, state=(_SFIELD,)):
+    """``(state after the demotion, the declarations it carved)``."""
+    decls, mem0 = [], bytearray(0x10000)
+    mem0[SCELL] = 0x2A
+    state = frameprog._declare_constants(
+        decls, _sproc(stmts), list(state), {}, datadecl.Regions(()), mem0, set(), set()
+    )
+    return state, decls
+
+
+def test_a_state_cell_no_store_reaches_declares_as_data_and_not_as_a_role():
+    """Grid_Runner's ``$040B``/``$0414``/``$045D``: a constant is not an update shape."""
+    state, decls = _demote([_sread()])
+    assert state == []
+    assert [(d["kind"], d["base"], d["size"], d["data"], d["role"]) for d in decls] == [
+        ("table", SCELL, 1, b"\x2a", None)
+    ]
+
+
+def test_a_state_cell_a_store_reaches_stays_declared_as_state():
+    """The demotion is ``unwritten``'s verdict, so one store holds the field."""
+    assert _demote([_sread(), _sstore()]) == ([_SFIELD], [])
+
+
 # ---- the read set an index carries (docs/denotation-solve.md 9.2) -----------------
 def test_an_access_naming_one_address_is_the_exact_load_and_no_wider_reader():
     """``read_reach``: a plain load is the read the rewrite redirects, so it is not one."""

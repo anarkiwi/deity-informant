@@ -424,6 +424,26 @@ def _declare_cells(decls, cells, vetoed, words, mem0, mut, code):
         decls.sort(key=lambda d: d["base"])
 
 
+def _declare_constants(decls, procs, state, symbols, regions, mem0, mut, code):
+    """Carve every state cell no store may reach into the data section (9.2).
+
+    A cell the frame only ever reads is a constant, and a constant is not an update
+    shape, so it demotes to a declaration rather than to a role."""
+    cells = framestack.state_cells(state, symbols, G.addr_name)
+    covered = {a for d in decls for a in range(d["base"], d["base"] + d["size"])}
+    left = framestack.unwritten(procs, set(cells) - covered - code, regions)
+    new = [
+        _cell_decl(c, None, mem0, mut)
+        for c in sorted(left)
+        if datadecl._LOW <= c < 0xD000 or c >= 0xE000
+    ]
+    if not new:
+        return state
+    decls.extend(new)
+    decls.sort(key=lambda d: d["base"])
+    return sidprog._drop_declared(state, decls, symbols)
+
+
 def _pair_tables(procs, decls, mem0, mut, code):
     """Declare the split lo/hi table pairs the value graph packs (7.9 (a)).
 
@@ -591,6 +611,7 @@ def program(model, extents=None):
     state = framestack.drop_scratch(state, scratch, symbols, G.addr_name)
     frameproc.repolish(procs, model.play, regions, landings)  # the wires forward away
     proofs += scratch
+    state = _declare_constants(decls, procs, state, symbols, regions, mem0, model.written, code)
     resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
         mem0, decls, procs, state, symbols, blocked, extents
