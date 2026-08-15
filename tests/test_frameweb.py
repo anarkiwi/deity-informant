@@ -165,7 +165,9 @@ def test_commando_y_carries_eight_webs(sid, subtune, secs):
 
     The document reads five *denotations* off the emitted text; over the settled
     trees the voice displacement ``m_54EB`` is defined at four sites no read joins,
-    so the analysis unit splits ``y`` eight ways where the name splits it none."""
+    so the analysis unit splits ``y`` eight ways where the name splits it none. The
+    repeat count reads as a local since rung (d1): the web is the value, not the
+    cell it was spelled through (9.1)."""
     mem, _load, init, play = load_psid(sid.read_bytes())
     mem[0xD418] = 0x0F
     model, _ev = S.decompile(mem, init, play, int(secs * 50), subtune)
@@ -176,13 +178,13 @@ def test_commando_y_carries_eight_webs(sid, subtune, secs):
     got = sorted(tuple(sorted(F._fmt(at[p][2]) for p in w.defs)) for w in pw.of_name("y"))
     assert got == [
         ("(y + $01)", "m_54EF[x]"),  # the pattern row cursor
-        ("(y - $01)", "m_550C"),  # the portamento repeat count
+        ("(y - $01)", "s7"),  # the portamento repeat count, a per-frame wire since 9.1
         ("(y1 << $01)",),  # a row of the pitch table
         ("m_54EB",),  # the SID voice displacement, at four sites no read joins
         ("m_54EB",),
         ("m_54EB",),
         ("m_54EB",),
-        ("m_5518",),  # the pulse-width table row
+        ("s8",),  # the pulse-width table row, likewise a wire
     ]
-    assert len(pw.of_name("x")) == 3 and len(pw.of_name("a")) == 9
-    assert pw.counts() == {"webs": 47, "refused": 0, "entry": 0, "opaque": 0, "width": 0}
+    assert len(pw.of_name("x")) == 3 and len(pw.of_name("a")) == 8
+    assert pw.counts() == {"webs": 56, "refused": 0, "entry": 0, "opaque": 0, "width": 0}
