@@ -235,16 +235,26 @@ class _Splits:
     """The pcs a structuring pass may scope or split at, the ones it did, and the
     ones a copy refused for binding them asked the next pass to free."""
 
-    __slots__ = ("allow", "chosen", "wanted")
+    __slots__ = ("allow", "chosen", "wanted", "refused")
 
     def __init__(self, allow):
         self.allow = allow
         self.chosen = set()
         self.wanted = set()
+        self.refused = 0
+
+
+def _rank(got):
+    """A pass is better where it kept fewer call lines, and then fewer labels.
+
+    A label is a name inside one procedure; a refused body is a procedure and the
+    call line that reaches it, so the pass that places one has removed the larger
+    accident even where it costs a label (docs/denotation-solve.md 9.7)."""
+    return got[2].refused, len(got[1])
 
 
 def _structure(model, entry):
-    """Region tree + labels, scoped or split only where that empties a label.
+    """Region tree + labels, scoped or split where that places a body, then a label.
 
     Pass one uses neither and names the bound pcs; each pass after it enables both
     at that set less the pcs they did not free (Janssen & Corporaal 1997; Yakdan et
@@ -257,7 +267,7 @@ def _structure(model, entry):
             break
         seen.add(allow)
         got = _structure_once(model, entry, allow)
-        if len(got[1]) < len(best[1]):  # never worse than the pass that used neither
+        if _rank(got) < _rank(best):  # never worse than the pass that used neither
             best = got
         allow = (allow | frozenset(got[1]) | got[2].wanted) - (got[2].chosen & got[1])
     return best[0], best[1]
@@ -303,6 +313,13 @@ def _structure_once(model, entry, allow):
     play = getattr(model, "play", None)
 
     def placed(target, callers, sole, site, chain):
+        """``_placed``, counting the sites that kept their call line."""
+        got = _placed(target, callers, sole, site, chain)
+        if got is None:
+            gate.refused += 1
+        return got
+
+    def _placed(target, callers, sole, site, chain):
         """Region for a callee's body placed at this site, or None where it may not be.
 
         A sole site owns the body, but only text nobody placed is its own: it shares the

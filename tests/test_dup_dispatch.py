@@ -113,12 +113,14 @@ def test_duplication_removes_violation_classes_and_adds_none(name):
 def test_the_goto_join_is_split_away_and_the_loop_nests():
     """The class that was the refusal, emptied at its source rather than named.
 
-    The two-entry loop the structurer could not fold is copied into the second
-    entry's own path, so the callee binds no pc and the copy needs no label."""
-    base = D.built("irreducible")[1]
-    assert [D.pcs_global(p[3]) for p in base.procs] == [[], []]
+    Ranking a pass by the bodies it refused places the two-entry loop at both of its
+    sites, so the base is already the one call-free procedure and ``duplicate`` has
+    nothing left to copy: each site carries its own loop and neither binds a pc."""
+    base, dup = D.built("irreducible")[1:]
+    assert [D.pcs_global(p[3]) for p in base.procs] == [[]]
     assert "goto $" not in D.text("irreducible", "base")
-    assert D.text("irreducible", "base").count("loop {") == 1
+    assert D.text("irreducible", "base").count("loop {") == 2  # one copy per placed site
+    assert [D.pcs_global(p[3]) for p in dup.procs] == [[]]
     assert D.gate("irreducible") is None and not D.violations("irreducible")
     assert "goto" in M_GOTO_JOIN and "label" in M_GOTO_JOIN
 

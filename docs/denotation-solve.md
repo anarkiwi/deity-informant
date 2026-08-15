@@ -1136,3 +1136,91 @@ and it is now the honest one: 57 bodies a copy places whose stack effect
 `sp_balanced` cannot prove zero after the two edges it was misreading are fixed.
 Its representative is the shape the third mispricing will name, and the two removals
 still ahead of it are `landing-callee` (107) and `no-body` (99).
+
+### 9.7 A copy binds no pc, and the evaluator homed one anyway (2026-08-15)
+
+**§9.6's blocker was not `desmc`'s, and the cells it named are not the divergence.**
+The ranked-passes configuration puts `Battle_of_the_Village` and `Fist_II_Legend`
+clean → diverged, and the de-SMC relocated operand cells `$0363`/`$08DC`/`$05F5`
+differ between the two passes from frame 0 in every run — the label-minimal pass
+lowers them to slots and the ranked pass keeps them as cells, and both spellings
+carry the same value. The cell that actually diverges is a fourth one the bisect
+never reached: `$08AB`, the relocated nibble operand behind
+`sid.v2.sustain_release = (*ptr_00FE[$04] & $F0) | m_08AB`. It is written twice per
+frame, `$0B` then `$0D`, and under the ranked pass it is written `$0B` twice — which
+is exactly the divergence the gate reports, `v1.ord` `(13,$FB)` for `(13,$FD)`.
+
+**The reaching definition that is wrong is a pc's, not a byte's.**
+`frameval._Code._s_callb` binds the callee's own entry pc to the body it splices, and
+`mark` is "first wins". One splice site is one home and the rule is invisible. The
+ranked pass splices `$1873` at nine sites, `$18C8` at ten and `$1176` at three, so
+those addresses have nine, ten and three homes and the winner is emission order:
+`sub_1801`'s own `goto $1873`, which should reach the `$1873:` block spliced into
+`sub_1801`, resolves into the *first* copy instead — the one inside the play body's
+first voice. All three voice copies run their own `m_0363 = y`, but only the first
+copy's `$18C8` body ever runs, and it runs twice, reading the first voice's
+`idx_104E` both times. The label-minimal pass binds no pc twice, which is the whole
+of why it gates clean and why the verdict read as a question about ordering.
+
+`bound_pcs` already carries the premise — "two copies bind it twice" — and refuses to
+*splice* a body binding a pc; what it never asked is whether the body's own entry is
+one. That is §9.4's observation (`Carry` asks `reached_inside` "never of the body's
+own entry") arriving at the evaluator, and `frameproc.callsw` had already reached it
+for arms, refusing an arm "whose own pc is bound program-wide". A copy binds no pc:
+a spliced body's callee pc is homed last and only where that copy is the only copy of
+it, so a placement or a label always wins and two copies home nothing. Drivers:
+`test_two_copies_of_one_callee_leave_its_pc_to_the_home`,
+`test_a_sole_copy_still_homes_its_callee_pc`.
+
+**Measured alone, both gates complete against `a52f1f7`:** Gate FP unmoved on all 614
+built tunes (613 clean, 1 diverged, 10 refused, no tune in a different class) and
+inv_probe unmoved on all 624 (278 clean / 335 residue / 9 page-one / 1 ret-target /
+1 diverged). The rule keys on a callee spliced at two sites, and the label-minimal
+pass makes none, so the corpus it can move is empty until the ranking changes.
+
+**With the blocker gone, ranking passes by refused bodies holds and lands.**
+`_structure` kept the pass with fewest labels; a label is a name inside one procedure
+while a refused body is a procedure and the call line reaching it, so the ranking is
+`(refused, labels)`. Both gates complete: **Gate FP unmoved on all 614** (613 clean,
+1 diverged, 10 refused, every tune in the same class), **inv_probe 278 → 284**
+§8.4-clean of 624 with **zero clean→worse** and no fault moved — `Lostro`, `Accord`,
+`3SID_Test_3SID`, `Art_Gallery_I`, `Another_Intro_Tune` and `Absence_of_Faith` reach
+the invariant. Call lines **1,096 → 1,002**, procedures **903 → 863** and **no tune's
+procedure count rose**: this is the first configuration measured that removes
+procedures and keeps both gates. Its price is the one §9.6 named — interior rets
+**1,179 → 1,362**, `sp` tokens **2,966 → 3,735**, state fields **16,076 → 16,098** —
+and it costs `test_the_goto_join_is_split_away_and_the_loop_nests` its two-procedure
+subject, the `irreducible` driver's base now being the one call-free procedure with a
+copy of the loop at each site, as `early-ret` already was.
+
+| class | a52f1f7 | now |
+|---|---|---|
+| `label:*` | 305 | 413 |
+| `wrapped-body` (all) | 214 | 296 |
+| `wrapped-body:escapes` | 38 | 135 |
+| `carry-refused` | 125 | 125 |
+| `computed-call` (`arm-landing`) | 108 | 104 |
+| `wrapped-body:binds-pc,escapes` | 81 | 78 |
+| `wrapped-body:sp-unbalanced` | 57 | 57 |
+| `wrapped-body:binds-pc` | 34 | 21 |
+| `no-body` | 99 | 40 |
+| `landing-callee` | 107 | 24 |
+
+**What the wrapped-body classes are, read on their carriers.** They are not 296
+shapes. `wrapped-body:escapes` (135, 17 tunes) is on its two largest carriers —
+`Broken_Bottle` 25 and `Battle_of_the_Village` 22 — **every** body leaving by a `dbr`,
+the de-SMC relocated operand's own computed branch, into a pc another procedure
+homes: 46 and 52 such branches over three callees each (`$18C8`/`$1873`/`$1176` and
+`$193A`/`$18E5`/`$11C3`/`$1873`). They are not tail transfers the one-procedure form
+turns into gotos, and the removal they want is the branch's target, not the wrapper.
+`wrapped-body:sp-unbalanced` (57, 4 tunes) is **47 sites of two callees in one tune**,
+Lft's `A_Chipful_of_Love_for_You` at `$13F3` (32) and `$13F1` (15) — §9.6's own unhide
+representative, one shape times its copy count rather than a class. The two `binds-pc`
+rows are the thin ones, at most six sites per tune over 49 and 15 tunes.
+
+**What §9.7 leaves.** `label:*` (413) is now the largest class and `wrapped-body`
+(296) the second, both grown by the ranking that emptied `no-body` (99 → 40) and
+`landing-callee` (107 → 24). The pc-homing rule closes the callee entry; a label
+*inside* two spliced bodies is the same hazard one level down, unreached on this
+corpus — no built tune binds a pc twice after the rule — and it is what a scoped
+resolution would have to answer if a later mechanism reaches it.
