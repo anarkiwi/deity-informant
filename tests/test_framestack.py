@@ -728,11 +728,11 @@ def _sproc(stmts):
     return [(SUB, [], [], list(stmts))]
 
 
-def _classify(stmts, state=(_SFIELD,)):
+def _classify(stmts, state=(_SFIELD,), reach=(), regions=None):
     """``(state after the rung, the one proof it wrote)``."""
     procs = _sproc(stmts)
     cells = framestack.state_cells(list(state), {}, frameproc.G.addr_name)
-    proofs = framestack.apply_scratch(procs, cells)
+    proofs = framestack.apply_scratch(procs, cells, regions, None, reach)
     return framestack.drop_scratch(list(state), proofs, {}, frameproc.G.addr_name), proofs, procs
 
 
@@ -760,12 +760,12 @@ def _indexed_neighbour():
     return [_sstore(), ("st", _indexed(SCELL - 4), ("const", 0, 1)), _sread()]
 
 
-def _blind_store_while_live():
-    return [_sstore(), ("st", ("loc", "t0", 2), ("const", 0, 1)), _sread()]
-
-
 def _never_read():
     return [_sstore()]
+
+
+def _blind_store_while_live():
+    return [_sstore(), ("st", ("loc", "t0", 2), ("const", 0, 1)), _sread()]
 
 
 @pytest.mark.parametrize(
@@ -780,10 +780,25 @@ def _never_read():
     ],
 )
 def test_the_scratch_refusal_names_the_premise_that_failed(build, want):
-    """Each refusal keeps the field: 9.1's persistent, open-access and dead classes."""
+    """Each refusal keeps the field: 9.1's persistent and open-access classes."""
     state, proofs, _procs = _classify(build())
     assert state == [_SFIELD] and proofs[0].status == "refused"
     assert proofs[0].lemma.endswith(want)
+
+
+BLIND = ("loc", "t0", 2)
+
+
+def test_a_deref_rung_f_bounds_onto_the_cell_is_an_access_that_touches_it():
+    """The span rule over a base-less address: bounded away it is no reader, bounded
+    onto the cell it is the resolvable access the walk refuses (9.1's open class)."""
+    stmts = [_sstore(), ("asg", "w0", ("mem", BLIND, 1)), _sread()]
+    cells = framestack.state_cells([_SFIELD], {}, frameproc.G.addr_name)
+    (hit,) = framestack.apply_scratch(_sproc(stmts), cells, None, {BLIND: ((SCELL,), 0)})
+    assert hit.status == "refused"
+    assert hit.lemma.endswith("another resolvable access may touch the slot")
+    (miss,) = framestack.apply_scratch(_sproc(stmts), cells, None, {BLIND: ((0x1400,), 0)})
+    assert miss.status == "named"
 
 
 def test_a_read_the_next_frame_makes_the_cell_state_not_scratch():
@@ -820,3 +835,51 @@ def test_an_indexed_store_that_may_reach_the_cell_is_a_write():
     regions = datadecl.Regions(())
     procs = _sproc([("st", _indexed(SCELL - 4), ("const", 0, 1))])
     assert framestack.unwritten(procs, {SCELL}, regions) == set()
+
+
+# ---- the read set an index carries (docs/denotation-solve.md 9.2) -----------------
+def test_an_access_naming_one_address_is_the_exact_load_and_no_wider_reader():
+    """``read_reach``: a plain load is the read the rewrite redirects, so it is not one."""
+    assert framestack.read_reach({(0x15AC, SCELL), (0x15E9, SCELL)}) == set()
+
+
+def test_an_access_seen_at_two_addresses_reads_every_one_of_them():
+    """The blit and the overrunning table row: one site, every cell it was seen at."""
+    blit = {(0x10A9, c) for c in range(0x13BA, SCELL + 1)}
+    assert framestack.read_reach(blit) == {c for c in range(0x13BA, SCELL + 1)}
+
+
+def _carved(base, size):
+    return datadecl.Regions(({"base": base, "size": size},))
+
+
+def test_a_table_row_the_index_overruns_onto_the_cell_holds_its_store():
+    """Puke's ``$171F``: three stores, a dominated read, and ``m_16A7[a]`` reaching it.
+
+    The carve bounds the index to its own declaration and the row leaves it, so the
+    span rule alone names a wire the machine still reads (9.2's Gate FP verdict)."""
+    row = ("asg", "w1", ("mem", _indexed(SCELL - 0x78, "a"), 1))
+    stmts, regions = [_sstore(), _sread(), row], _carved(SCELL - 0x78, 8)
+    state, proofs, _procs = _classify(stmts, regions=regions)
+    assert state == [] and proofs[0].status == "named"
+    state, proofs, procs = _classify(stmts, reach={SCELL}, regions=regions)
+    assert state == [_SFIELD] and proofs[0].status == "refused"
+    assert proofs[0].lemma.endswith("an indexed access was seen to name the slot")
+    assert procs[0][3][0] == _sstore()
+
+
+def test_a_covering_blit_is_a_read_of_every_latch_it_covers():
+    """Grid_Runner's ``sid.reg[x] = m_13BA[x]``: the four latches are read, not dead."""
+    blit = ("st", _indexed(0xD400), ("mem", _indexed(0x13BA), 1))
+    stmts, regions = [_sstore(), _sread(), blit], _carved(0x13BA, 1)
+    state, proofs, _procs = _classify(stmts, reach={SCELL}, regions=regions)
+    assert state == [_SFIELD] and proofs[0].status == "refused"
+    assert proofs[0].lemma.endswith("an indexed access was seen to name the slot")
+
+
+def test_an_unresolvable_read_may_name_the_cell_and_holds_it():
+    """9.1's open class: a deref rung (f) does not bound reaches every private cell."""
+    stmts = [_sstore(), ("asg", "w0", ("mem", BLIND, 1)), _sread()]
+    state, proofs, _procs = _classify(stmts)
+    assert state == [_SFIELD] and proofs[0].status == "refused"
+    assert proofs[0].lemma.endswith("an unresolvable read may name the slot")

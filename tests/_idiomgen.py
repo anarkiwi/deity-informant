@@ -99,6 +99,18 @@ def deref(p, kind="indy", dst=None):
         p.i("STA", "zp", dst)
 
 
+def carry(p):
+    """Every observed cell read before this frame writes it: the row's datum persists.
+
+    docs/denotation-solve.md 9.1: a cell every read of which a same-frame store
+    dominates is a wire and leaves the state block, so a row whose claim is about a
+    *datum* has to declare one -- the value, not the spelling, is what is asserted."""
+    p.i("LDA", "imm", 0)
+    for c in STATE:
+        p.i("ORA", "zp", c)
+    p.i("STA", "abs", SID + 0x18)
+
+
 def wrap(p, then=None):
     """``row += 1``; at the block's end wrap to 0 and run ``then``."""
     p.i("INC", "zp", ROW)
@@ -748,6 +760,7 @@ def image(row, label):
         var.seed(p)
     p.i("RTS")
     p.label("play")
+    carry(p)
     var.play(p)
     p.i("RTS")
     shape.data(p)

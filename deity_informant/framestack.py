@@ -37,14 +37,37 @@ def _byte(cell):
     return (cell, frameproc.NOIDX, 0, 1, 0)
 
 
-def _hit(addr, width, cell, regions=None):
+def _in_run(base, n, lo, hi):
+    """Whether the ``n`` bytes from ``base``, wrapping at $FFFF, meet ``lo..hi``."""
+    end = base + n - 1
+    if end > 0xFFFF:
+        return base <= hi or lo <= (end & 0xFFFF)
+    return base <= hi and lo <= end
+
+
+def read_reach(reads):
+    """Cells an access naming more than one address was observed to load.
+
+    A carve names the datum an index rides and does not bound the index, so the ONE
+    span rule misses a table read that overruns one. An access reading one address is
+    the exact load the rewrite redirects; any other is a reader of all it was seen at."""
+    at_pc = {}
+    for pc, a in reads or ():
+        at_pc.setdefault(pc, set()).add(a)
+    return set().union(*(c for c in at_pc.values() if len(c) > 1), set())
+
+
+def _hit(addr, width, cell, regions=None, bounds=None):
     """``(may touch ``cell``, address unresolvable)`` of a ``width``-byte access.
 
     The ONE span rule (``frameproc.span``): an index reaches no further than the
-    declaration holding its base, so a declared table's neighbour is not aliased by
-    the whole index width -- which is what lets a cell beside one classify at all."""
+    declaration holding its base. A base-less deref is bounded the same way, by
+    rung (f)'s value set for its pointer (``deref_bounds``)."""
     got = frameproc.addr_range(addr, width)
     if got is None:
+        rows = (bounds or {}).get(addr)
+        if rows is not None:
+            return any(_in_run(t, rows[1] + width, cell, cell) for t in rows[0]), False
         base, wide = _span(addr)
         if base is None:
             return False, True
@@ -118,14 +141,15 @@ def _may_read(stmts, reads, tail=False, out=None, has=None):
 class _Slot:
     """One const stack cell: the must-def walk over a procedure and its refusal."""
 
-    __slots__ = ("cell", "stores", "reads", "why", "live", "regions")
+    __slots__ = ("cell", "stores", "reads", "why", "live", "regions", "bounds", "reach", "owned")
 
-    def __init__(self, cell, regions=None):
+    def __init__(self, cell, regions=None, bounds=None, reach=(), owned=True):
         self.cell = cell
         self.stores = self.reads = 0
         self.why = None
         self.live = {}
-        self.regions = regions
+        self.regions, self.bounds, self.reach = regions, bounds, reach
+        self.owned = owned  # the slot's page is the machine's, so no address of it is blind
 
     def _refuse(self, why):
         self.why = self.why or why
@@ -139,6 +163,8 @@ class _Slot:
         self._walk(stmts, False)
         if not (self.stores and self.reads):
             self._refuse("the slot is not both stored and read in the procedure")
+        if self.cell in self.reach:
+            self._refuse("an indexed access was seen to name the slot")
         if self.cell in shared:
             self._refuse("another procedure may touch the slot")
         return self
@@ -160,10 +186,12 @@ class _Slot:
                 near, blind = (
                     (False, False)
                     if (addr, width) == want[1:]
-                    else _hit(addr, width, self.cell, self.regions)
+                    else _hit(addr, width, self.cell, self.regions, self.bounds)
                 )
                 if near:
                     self._refuse("another resolvable access may touch the slot")
+                elif blind and j != wrote and not self.owned:
+                    self._refuse("an unresolvable read may name the slot")
                 elif blind and live and j == wrote:
                     self._refuse("an unresolvable store may alias the live slot")
             for x in frameproc._stmt_exprs(s):
@@ -750,7 +778,7 @@ def _scratch_proof(cell, slot, name):
     )
 
 
-def apply_scratch(procs, cells, regions=None, used=None, counter=0):
+def apply_scratch(procs, cells, regions=None, bounds=None, reach=(), used=None, counter=0):
     """Every private state cell every read of which a same-frame store dominates.
 
     ``_Slot`` asked of absolute private memory rather than page one: the procedure is
@@ -763,7 +791,7 @@ def apply_scratch(procs, cells, regions=None, used=None, counter=0):
         shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
         names = {}
         for cell in sorted(set(cells) & _candidates(stmts, 0, 0xFFFF)):
-            slot = _Slot(cell, regions).run(stmts, shared)
+            slot = _Slot(cell, regions, bounds, reach, owned=False).run(stmts, shared)
             name = None
             if slot.why is None:
                 name, n = _fresh(used, n)
@@ -1076,14 +1104,6 @@ SP_CLASSES = {
 _PAGE_RANGE = (_PAGE[0], None, len(_PAGE) - 1, 1, 0)
 
 
-def _hits_page(base, n):
-    """Whether the ``n`` bytes from ``base``, wrapping at $FFFF, include a page-one cell."""
-    end = base + n - 1
-    if end > 0xFFFF:
-        return base <= _PAGE[-1] or _PAGE[0] <= (end & 0xFFFF)
-    return base <= _PAGE[-1] and _PAGE[0] <= end
-
-
 def deref_bounds(mem0, decls, procs):
     """``{address: (target words, row bound)}`` of every deref rung (f) bounds.
 
@@ -1107,7 +1127,7 @@ def _off_page(addr, width, at, regions, bounds=None):
     if got is None:
         rows = (bounds or {}).get(addr)
         if rows is not None:
-            return not any(_hits_page(t, rows[1] + width) for t in rows[0])
+            return not any(_in_run(t, rows[1] + width, _PAGE[0], _PAGE[-1]) for t in rows[0])
         lo = frameproc.addr_floor(addr, at)
         hi = frameproc.addr_bits(addr, at)
         return hi + width - 1 < _PAGE[0] or lo > _PAGE[-1]

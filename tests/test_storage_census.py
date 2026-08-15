@@ -264,14 +264,19 @@ def test_totals_merge_the_gate_columns():
 
 
 def test_census_matches_the_dynamic_oracle_of_the_evaluator():
-    """The image sees every state cell the program declares as touched or not."""
+    """The image sees every state cell the program declares as touched or not.
+
+    Rung (d1) took the scratch cell out of the address space (9.1), so the oracle
+    records no traffic at it at all: it is a wire, and the persistent cell is what
+    the image still carries across the frame boundary."""
     model, prog = _built("scratch")
     image, ran, fault = storage_census.evaluate(model, prog, FRAMES)
     assert (ran, fault) == (FRAMES, None)
-    assert image.writes[TMP] == FRAMES and image.reads[TMP] == FRAMES
-    assert image.first[TMP][0] == "w"
-    cls = storage_census.cell_classes(image)
-    assert cls[TMP] == "framelocal" and cls[CTR] == "persistent"
+    cls = storage_census.cell_classes(image)  # the recorders are defaultdicts: read first
+    assert not image.writes.get(TMP) and not image.reads.get(TMP)
+    assert not image.first.get(TMP)
+    assert image.writes[CTR] == FRAMES and image.reads[CTR] == FRAMES
+    assert TMP not in cls and cls[CTR] == "persistent"
     assert not any(SID <= a <= SID + 0x1C for a in cls)
 
 

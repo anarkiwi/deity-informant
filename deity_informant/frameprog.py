@@ -585,6 +585,12 @@ def program(model, extents=None):
     bounds = framestack.deref_bounds(mem0, decls, procs)  # rung (f)'s reading, before it runs
     proofs += framestack.drop_spills(procs, model.play, regions, bounds, exits)
     proofs += framestack.drop_sp(procs, model.play, regions, exits, bounds)
+    cells = framestack.state_cells(state, symbols, G.addr_name)
+    reach = framestack.read_reach(getattr(model, "reads", None))
+    scratch = framestack.apply_scratch(procs, cells, regions, bounds, reach)
+    state = framestack.drop_scratch(state, scratch, symbols, G.addr_name)
+    frameproc.repolish(procs, model.play, regions, landings)  # the wires forward away
+    proofs += scratch
     resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
         mem0, decls, procs, state, symbols, blocked, extents
