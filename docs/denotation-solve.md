@@ -1038,3 +1038,101 @@ the suite already carries (`_callgen._arm_landing`): a second arm leaves by a `g
 the first arm's tail. So the class is `arm-landing` at corpus scale, not
 `M_SHARED_HANDLER` — the removal it wants is for every transfer naming an arm pc to carry
 its own copy, which is the same principle the rejected unhide reached for and priced.
+
+### 9.6 The fault is the bottom of every walk that reads one (2026-08-15)
+
+**§9.5's two largest measured-and-rejected experiments were rejected on one defect,
+and it was not theirs.** Both — ranking passes by refused bodies, and unhiding a
+homed body for a copy — put the same three clean tunes into `load from the stack
+page`: `Arcade_Hustlers`, `Broken_Bottle`, `Box13`. All three fault at the same
+cell, **`$01F9`**, and the cell is **stale**: the artifact stored there and a
+surviving call's pushed return word crossed it before the artifact read it back.
+
+**The writer is the artifact's own `PHA` at `$16C0`, and the rule that mispriced it
+is `framestack._sp_scan`'s epoch.** A slot is `(epoch, displacement)`, and an epoch
+ends at every form outside `_STRAIGHT` — which `unobs` was. So `if (y == $30)
+unobserved $16D4`, sitting between the push and the pull, joined a faulted arm
+against a falling-through one, disagreed, and bumped. The pull `mem[(sp+1)|$0100]`
+then landed in the next epoch as key `(17, 1)`, a slot no store ever made, while its
+push kept key `(15, 0)`. Two *other* spills held that same key with matched pulls, so
+`_SpSlot(15,0)` counted **3 stores, 2 reads**, passed "stored and read in the
+procedure", named the slot, and `_rewrite_sp` deleted all three stores — including
+the one whose reader stayed. The text then read a page-one cell it never wrote. On
+the machine the byte survives; in the evaluator the deeper placement puts a push on
+it. §9.2 had already priced the fault as bottom in `_SpFlow` (`_BOT`) and in
+`sp_balanced`; the epoch walk was the reading that did not have it. A faulted path
+rejoins nothing, so it opens no epoch.
+
+Measured alone, both gates complete against `f54b97f`: Gate FP unmoved on all 614
+built tunes, inv_probe **273 → 278** §8.4-clean of 624 with zero clean→worse.
+Interior rets **1,154 → 1,080**, `sp` tokens **3,232 → 2,830**, state fields
+**16,162 → 16,069**, at unchanged calls 1,186 and procedures 903.
+
+**`wrapped-body:sp-unbalanced` was the same rule in a third walk, twice.**
+`frameproc.sp_balanced` is the splice's own reading of the displacement, and it
+joined into the fall-through two edges that reach no fall-through. A `ret` arm's
+displacement was one — `sp -= 1; if c { sp += 1; ret } sp += 1; ret`, both paths
+pulling what the push made, left the tail's `ret` at an unknown depth. A `loop`'s
+body fall-through read as its exit was the other, when a loop's exit is where its
+`break`s stand: Atmosphere_II's pull sits in a nested loop a `break 2` leaves, and
+the loop it counts out of never sees the back edge. `loops` is `_SpFlow.heads` read
+in this walk. Both gates complete: Gate FP unmoved, inv_probe 278 clean, zero
+clean→worse. The class **38 → 10**, call lines **1,186 → 1,158**, rets **→ 1,026**,
+`sp` tokens **→ 2,827**, `sp` procs **896 → 738**; Atmosphere_II 15 → 2 calls,
+Big_K_O 12 → 2, Borje_and_Bengt_part_2 5 → 0.
+
+**With the blocker gone, the unhide holds and lands.** `_model_trees` hides every
+block another planned procedure homes, so a callee whose sites sit in two procedures
+has `model.variants(target)` empty at the second and `placed` refuses before `copied`
+is asked. A copy binds no pc, so the homing proves nothing about the second site.
+Both gates complete: Gate FP unmoved on all 614, inv_probe 278 clean, zero
+clean→worse, no fault moved. Call lines **1,158 → 1,096**, `landing-callee`
+**157 → 107**, `no-body` **136 → 99**. The depth it moves is §9.5's own
+reclassification, now on evidence: a body a copy places keeps its call line where its
+stack effect is not zero, so `wrapped-body:sp-unbalanced` **10 → 57**, rets
+**1,026 → 1,179**, `sp` tokens **2,827 → 2,966**, and procedures do not fall. What it
+manufactures beside the removals is still wrapped bodies, and the third mispricing
+behind them is the next mechanism. Driver: `homed-body`.
+
+**Measured and rejected: ranking passes by refused bodies.** Re-measured on top of
+the two fixes it reaches **1,062** calls and **863** procedures — the only
+configuration measured that removes procedures — and the three faults are gone. It
+is refused on a second, unrelated defect: `Battle_of_the_Village` and
+`Fist_II_Legend` go clean → diverged (frame 14 `v1.ord` `(13,$FB)` for `(13,$FD)`;
+frame 3026 `v1.lww`). Bisected, the whole movement is one entry, `$1003`, and it is
+not the splitting framework (disabling it does not clear the divergence). The
+divergent state is the de-SMC relocated operand cells `$0363`/`$08DC`/`$05F5`: the
+ranked pass keeps `m_0363` a cell where the label-minimal pass threads the same
+value through a lowered slot, and the two disagree about which definition reaches
+the read. What that pass owes is the SMC operand's own reaching definition, which is
+`desmc`'s question and not the structurer's.
+
+**The map at the end of §9.6**, both gates complete against `f54b97f`: Gate FP
+unmoved on all 614 built (613 clean, 1 diverged, 10 refused), inv_probe **273 → 278**
+§8.4-clean of 624, zero clean→worse at either, no fault moved (9 page-one, 1
+ret-target, 1 diverged, unchanged). Call lines **1,186 → 1,096**, procedures 903,
+interior rets 1,154 → 1,179, `sp` tokens 3,232 → 2,966, `sp` procs **896 → 745**.
+
+| class | f54b97f | now |
+|---|---|---|
+| `landing-callee` | 157 | 107 |
+| `no-body` | 136 | 99 |
+| `carry-refused` | 125 | 125 |
+| `computed-call` (`arm-landing`) | 108 | 108 |
+| `wrapped-body:binds-pc,escapes` | 81 | 80 |
+| `wrapped-body:sp-unbalanced` | 38 | 57 |
+| `wrapped-body:escapes` | 38 | 38 |
+| `wrapped-body:binds-pc` | 34 | 34 |
+| `label:*` | 326 | 305 |
+
+The `sp` cascade is the epoch fix's, not the copies': `spslot: a read is not
+dominated by a store of the slot` **18 → 0** and `spslot: the slot is not both stored
+and read in the procedure` **101 → 44** — the two verdicts a bumped epoch
+manufactured — carrying `sp: sp_read` 163 → 133, `sp: sp_callee` 29 → 8 and
+`spslot: held` 164 → 140 with them. `label:no-anchor` **24 → 3**.
+
+**What §9.6 leaves.** `wrapped-body:sp-unbalanced` is the largest class that grew,
+and it is now the honest one: 57 bodies a copy places whose stack effect
+`sp_balanced` cannot prove zero after the two edges it was misreading are fixed.
+Its representative is the shape the third mispricing will name, and the two removals
+still ahead of it are `landing-callee` (107) and `no-body` (99).
