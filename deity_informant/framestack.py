@@ -16,7 +16,7 @@ from . import grammar as G
 from .structured import Proof
 
 _PAGE = range(0x0100, 0x0200)
-_STRAIGHT = ("asg", "st", "if")  # the only forms that transfer no control
+_STRAIGHT = ("asg", "st", "if", "unobs")  # opens no epoch: transfers nothing, or faults out
 _OPAQUE = frameproc._ANYCALL | frozenset(("label",))  # a machine push, and an open join
 _EXITS = frameproc._EXITS  # ``cont``/``brk``: the one edge whose target the text names
 _CYCLIC = frameproc._CYCLIC  # the regions a levelled exit counts out through

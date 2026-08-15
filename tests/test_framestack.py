@@ -576,6 +576,27 @@ def test_a_procedure_no_path_leaves_stands_where_it_entered():
     assert _balanced(_proc([_spmove(-1), ("unobs", 0x847A)])) == {SUB: True}
 
 
+_GUARD = ("if", "if", ("loc", "cflag"), [("unobs", 0x847A)], [])
+
+
+def test_a_faulted_arm_opens_no_epoch_so_the_pull_names_its_own_push():
+    """The same bottom, read by the epoch walk: a guard rejoins nothing, so it ends
+    no epoch and the pull behind it is a read of the slot the push made."""
+    (slot,) = _run_spslots([_spstore(), _spmove(-1), _GUARD, _spread(1), _spmove(1)])
+    assert slot.why is None and (slot.stores, slot.reads) == (1, 1)
+
+
+def test_a_pull_the_epoch_walk_loses_still_holds_its_own_push():
+    """Arcade_Hustlers' ``$01F9``: two spills at one displacement, the second's pull
+    behind a guard. An epoch the fault opened hid that pull, and the slot the two
+    stores shared read as stored-and-read on the first pull alone -- so the rewrite
+    dropped a store whose reader stayed, and the text read a cell it never wrote."""
+    stmts = [_spstore(), _spmove(-1), _spread(1), _spmove(1)]
+    stmts += [_spstore(), _spmove(-1), _GUARD, _spread(1), _spmove(1)]
+    (slot,) = _run_spslots(stmts)
+    assert slot.why is None and (slot.stores, slot.reads) == (2, 2)
+
+
 def test_a_real_edge_at_a_displacement_still_refuses_the_balance():
     """The negative: a ``goto`` is a transfer control takes, and it must stand."""
     assert not _balanced(_proc([_spstore(), _spmove(-1), ("goto", 0x10B8), _spread(1)]))
