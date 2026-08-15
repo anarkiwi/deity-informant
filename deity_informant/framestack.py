@@ -809,7 +809,7 @@ def _sp_uses(stmts, calls, sp, saves, linked=True):
     drops with the callee, recorded in ``calls``; a save store is fabric."""
     for s in stmts:
         k = s[0]
-        if k in _RAW_CALLS and linked:
+        if k in frameproc._ANYCALL and linked:
             return "sp_linked"
         if k == "asg" and s[1] == sp:
             continue
@@ -887,12 +887,17 @@ class _Unbalanced(Exception):
 
 
 _ENTRY = ("entry", 0)  # the displacement a procedure is entered and must return at
+_BOT = ("bot", 0)  # reaching ``unobserved`` is a fault, so no displacement holds there
 _INLINED = frozenset(("callb", "swc"))  # a callee's body: its ``ret`` is the call's edge
-_EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"))
+_EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "dgoto", "igoto", "dbr"))
 
 
 def _join(a, b):
-    """The one displacement two edges into a point carry, else ``_Unbalanced``."""
+    """The one displacement two edges into a point carry, else ``_Unbalanced``.
+
+    A faulted path carries none, so it constrains nothing the other edge says."""
+    if a is _BOT or b is _BOT:
+        return b if a is _BOT else a
     if a != b:
         raise _Unbalanced
     return a
@@ -981,6 +986,8 @@ class _SpFlow:
 
     def step(self, s, st):
         k = s[0]
+        if st is _BOT or k == "unobs":  # the fault is the bottom of the displacement lattice
+            return _BOT
         if k == "st" and s[1][0] == "const" and s[2] == ("loc", self.sp) and s[1][1] in self.saves:
             self.caps[s[1][1]] = st
             return st
@@ -1021,10 +1028,13 @@ def _sp_state(stmts, st, sp, saves, bal=None):
 
 
 def _run_flow(stmts, sp, saves, bal, st=_ENTRY, exit_disp=0):
-    """``(exit state or None, every call stood at the entry displacement)``."""
+    """``(exit state or None, every call stood at the entry displacement)``.
+
+    A body no path leaves stands where it entered: the fault is not an exit."""
     flow = _SpFlow(sp, saves, bal, exit_disp)
     try:
-        return flow.run(stmts, st), flow.at_entry
+        got = flow.run(stmts, st)
+        return (st if got is _BOT else got), flow.at_entry
     except _Unbalanced:
         return None, False
 
@@ -1057,7 +1067,7 @@ def _balances(procs, sp, saves_of, exits=None):
 
 SP_CLASSES = {
     "sp_unbalanced": "the procedure's stack effect is not zero",
-    "sp_linked": "a raw call keeps the machine stack alive",
+    "sp_linked": "a surviving call pushes a return word the drop would move",
     "sp_read": "an access rung (d0) could not destack reads sp",
     "sp_callee": "a callee keeps sp, so the threading argument stays",
 }
@@ -1081,9 +1091,12 @@ def _off_page(addr, width, at, regions):
     return not frameproc.overlaps((base, idx, span, width, mod), _PAGE_RANGE)
 
 
-def _raw_called(procs):
-    """Some procedure makes a call the machine, not the text, threads."""
-    return any(s[0] in _RAW_CALLS for _e, _pa, _r, b in procs for s in FF.stmts_of(b))
+def _called(procs):
+    """Some procedure makes a call, of any form.
+
+    The machine pushes a return word at every one of them, a text-threaded
+    ``pcall`` included (``frameval.run_frame``), so the drop moves them all."""
+    return any(s[0] in frameproc._ANYCALL for _e, _pa, _r, b in procs for s in FF.stmts_of(b))
 
 
 def _page_one_free(procs, sp, regions):
@@ -1106,16 +1119,15 @@ def _page_one_free(procs, sp, regions):
 def drop_sp(procs, play, regions=None, exits=None):
     """``sp`` leaves the program where nothing reads it; one proof per keeper.
 
-    The updates, the parameter and every threading argument go. A raw call's
-    linkage goes with them where the drop cannot move the machine's pushed return
-    bytes -- every call at the entry displacement -- or where nothing reads them."""
+    The updates, the parameter and every threading argument go. A surviving
+    call's linkage goes with them where the drop cannot move the machine's pushed
+    return bytes -- every call at the entry displacement -- or where nothing reads
+    page one at all."""
     sp = frameproc._SP
     need, calls_of = {}, {}
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
     bal, at_entry = _balances(procs, sp, saves_of, exits)
-    linked = _raw_called(procs) and not (
-        all(at_entry.values()) or _page_one_free(procs, sp, regions)
-    )
+    linked = _called(procs) and not (all(at_entry.values()) or _page_one_free(procs, sp, regions))
     for e, _pa, _rets, stmts in procs:
         calls = []
         why = None if bal.get(e) else "sp_unbalanced"

@@ -559,6 +559,58 @@ def test_a_foreign_goto_is_a_transfer_the_reading_carries():
     assert not frameproc.drop_dead_labels(procs)
 
 
+# ---- the fault is the bottom of the displacement lattice --------------------------
+def test_an_unobserved_arm_carries_no_displacement_and_the_balance_holds():
+    """Reaching ``unobserved`` is a fault (``frameval._s_unobs``): nothing continues.
+
+    Blueprint's shape -- a guard between the push and the pull -- so the walk that
+    reads the arm as an edge standing at the entry refuses a balance that holds."""
+    guard = ("if", "if", ("loc", "cflag"), [("unobs", 0x847A)], [])
+    assert _balanced(_proc(_sentinel([guard]))) == {SUB: True}
+    assert _balanced(_proc([_spstore(), _spmove(-1), guard, _spread(1), _spmove(1)])) == {SUB: True}
+
+
+def test_a_procedure_no_path_leaves_stands_where_it_entered():
+    """Every path faults, so no edge states a displacement and the balance is vacuous."""
+    assert _balanced(_proc([_spmove(-1), ("unobs", 0x847A)])) == {SUB: True}
+
+
+def test_a_real_edge_at_a_displacement_still_refuses_the_balance():
+    """The negative: a ``goto`` is a transfer control takes, and it must stand."""
+    assert not _balanced(_proc([_spstore(), _spmove(-1), ("goto", 0x10B8), _spread(1)]))
+
+
+# ---- rung (d0'): the drop moves every pushed return word, threaded or not ---------
+def _page_datum(stmts):
+    """Blueprint minimised: a page-one datum written, spanned by a call, read back."""
+    return _proc([_store(("loc", "a"))] + list(stmts) + [_read()]) + [(SUB2, [], [], [])]
+
+
+def _sp_proofs(procs):
+    return sorted(p.lemma.split(":", 1)[0] for p in framestack.drop_sp(procs, SUB))
+
+
+def test_a_text_threaded_call_at_a_displacement_keeps_the_stack_pointer():
+    """``frameval.run_frame`` pushes a return word at a ``pcall`` too, so the drop
+    moves it onto the datum the artifact parked below the stack top."""
+    procs = _page_datum([_spmove(-1), _pcall(SUB2), _spmove(1)])
+    assert _sp_proofs(procs) == ["sp_linked"]
+    assert framestack.SP_CLASSES["sp_linked"].startswith("a surviving call")
+
+
+def test_a_text_threaded_call_at_the_entry_displacement_drops_its_linkage():
+    """The positive: the push does not move, so the datum stands and ``sp`` goes."""
+    procs = _page_datum([_pcall(SUB2)])
+    assert _sp_proofs(procs) == ["sp"]
+    assert not [s for s in framestack.FF.stmts_of(procs[0][3]) if s[0] == "asg" and s[1] == SPN]
+
+
+def test_a_displaced_call_over_no_page_one_datum_still_drops_its_linkage():
+    """The other disjunct: nothing surviving names page one, so nothing moved."""
+    procs = _proc([_spmove(-1), _pcall(SUB2), _spmove(1)]) + [(SUB2, [], [], [])]
+    assert _sp_proofs(procs) == ["sp"]
+
+
 # ---- rung (d1): scratch leaves the state (docs/denotation-solve.md 9.1) -----------
 SCELL = 0x13CF  # Grid_Runner's first row-fetch latch: written and read in one frame
 _SFIELD = ("m_13CF", 1, False, [])
