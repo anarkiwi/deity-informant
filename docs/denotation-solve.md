@@ -749,7 +749,9 @@ deletes cells outright, so every later verdict has fewer webs to close.
 
 **§8.4's invariant is reached on Automatas** — one procedure, no call, no return,
 no `sp`, no page-one access, Gate FP clean — by two corrections to the destack
-rungs and by wiring §9.1 into the emit.
+rungs. §9.1's rung was wired to the emit, measured, and **reverted**: it costs a
+Gate FP verdict (below). The two loop readings it exposed are wrong on their own
+terms and stayed.
 
 - **The fault is the bottom of the displacement lattice.** Reaching `unobserved`
   is a fault (`frameval._s_unobs`), so the displacement walk holds nothing there
@@ -772,19 +774,31 @@ rungs and by wiring §9.1 into the emit.
   Neither could be reached by a memory cell; the accumulator §9.1 dissolves is
   exactly the shape that reaches them.
 
-Measured: Commando 25 → 15 state fields, Blueprint 20 → 19; both corpus gates with
-zero clean→worse.
+Measured on the two landed rungs: both corpus gates with zero clean→worse, Gate FP
+568 → 612 clean of 614 built (44 tunes that faulted at baseline now gate), inv_probe
+232 → 238 §8.4-clean.
 
-**What §9.1 still owes.** Grid_Runner's four latches (`m_13CF..m_13D2`) are read
-only by the covering blit `sid.reg[x] = m_13BA[x]`, which the walk counts as no
-read of any cell it covers, so they classify as neither scratch nor state. A
-dead-store verdict over them was measured and rejected: it diverged Gate FP on
-Grid_Runner (filter, frame 2) and Automatas (v1.lww, frame 33). The mechanism
-owed is an indexed read as a read of every cell its span covers. `$040B`/`$0414`/
-`$045D` — SMC vector high bytes no store reaches — likewise still declare as
-state; `framestack.unwritten` names them, and demoting them is a data
-declaration rather than a role, since a constant is not an update shape and
-`roles.ROLES` is closed over the update shapes.
+**What §9.1 owes, measured.** Wired to the emit the rung takes Commando 25 → 15
+state fields and Blueprint 20 → 19, and it moves the log on exactly one corpus
+tune: `Compo_Music_1-Puke_4_4`, clean → diverged at frame 796 (`v0.lww`, got
+`(1,255)`, want `(1,33)`), on the single cell `$171F` — three stores, two reads,
+every read dominated, and dropping the two stores the emitted text does not read
+changes what the machine writes. **The walk's read set is not the whole read
+set**, and that is the premise the rung owes before it lands.
+
+Two more owed mechanisms, both named by Grid_Runner:
+
+- Its four latches (`m_13CF..m_13D2`) are read only by the covering blit
+  `sid.reg[x] = m_13BA[x]`, which the walk counts as no read of any cell it
+  covers, so they classify as neither scratch nor state. A dead-store verdict
+  over them was measured and rejected: it diverged Gate FP on Grid_Runner
+  (filter, frame 2) and Automatas (`v1.lww`, frame 33). What is owed is an
+  indexed read read as a read of every cell its span covers — the same
+  mechanism the `$171F` divergence points at.
+- `$040B`/`$0414`/`$045D`, SMC vector high bytes no store reaches, still declare
+  as state. `framestack.unwritten` names them, and demoting them is a **data
+  declaration**, not a role: a constant is not an update shape and `roles.ROLES`
+  is closed over the update shapes (`test_the_shape_and_role_vocabularies_are_closed`).
 
 ## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
 
