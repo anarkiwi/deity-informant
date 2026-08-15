@@ -62,6 +62,7 @@ def _one(entry, frames):
     model, prog, _ev = _sweep.build(mem, init, play, full, sub)
     row = {**_sweep.row_head(entry), "frames": n, "wall_s": round(time.monotonic() - t0, 1)}
     row.update(_counts(prog))
+    row["state"] = len(prog.state)
     row["text"] = len(frameprog.dumps(prog))
     trace, _walker = frameprog.iota(model, n)
     try:

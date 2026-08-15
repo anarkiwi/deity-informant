@@ -25,9 +25,9 @@ nomoresecrets.pdf
 # frameprog artifact cache for the sweeps (content-keyed, never committed)
 .sweep-cache
 
-# local artifacts
-.venv/
-out/
+# local artifacts (no trailing slash, so a symlink to a shared tree is ignored too)
+.venv
+out
 core
 core.*
 

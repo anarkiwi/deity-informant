@@ -113,21 +113,40 @@ def _label_class(pc, entry, cfg):
     return "unclassified"
 
 
-def _call_class(model, view, target, bodies):
-    """The class keeping one call line: the copy refusal, named."""
+def _reach(carry, target):
+    """The blocks a callee's body covers, the walk ``procpass.Carry`` judges."""
+    seen, stack = set(), [target]
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        stack.extend(s for s in carry.intra.get(n, ()) if s in carry.intra)
+    return seen
+
+
+def _call_class(view, target, bodies):
+    """The class keeping one call line: the copy refusal, named.
+
+    The verdict is read off the serialization view, the object the plan decided over:
+    ``Carry`` asks ``reached_inside`` of the dispatch pcs a body holds but never of the
+    body's own entry, so a callee a transfer from outside lands on reads as copyable."""
     from deity_informant import procpass
 
     if target is None:
         return "computed-call"
-    if not procpass.carry(model).body(target):
+    carry = procpass.carry(view)
+    if not carry.body(target):
         return "carry-refused"
     stmts = bodies.get(target)
     if stmts is None:
         return "no-body"
     pcs = _bound_pcs(stmts)
-    if not pcs:
-        return "copyable-but-uncopied"
-    return "label:" + ",".join(sorted({_label_class(p, *_homed(view, p)) for p in pcs}))
+    if pcs:
+        return "label:" + ",".join(sorted({_label_class(p, *_homed(view, p)) for p in pcs}))
+    if not carry.reached_inside(target, _reach(carry, target)):
+        return "landing-callee"
+    return "copyable-but-uncopied"
 
 
 def _sp_classes(prog):
@@ -168,7 +187,7 @@ def _one(entry, frames):
     view = sidprog._SortedView(model)  # pylint: disable=protected-access
     bodies = {e: s for e, _p, _r, s in prog.procs}
     row["call_classes"] = sorted(
-        Counter(_call_class(model, view, t, bodies) for _k, t in got["calls"]).items()
+        Counter(_call_class(view, t, bodies) for _k, t in got["calls"]).items()
     )
     row["sp_classes"] = sorted(Counter(_sp_classes(frameprog.program(model))).items())
     try:
