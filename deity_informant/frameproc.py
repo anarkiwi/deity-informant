@@ -225,6 +225,7 @@ def _subst_loc(n, name, repl):
 _WILD = frozenset(("call", "dcall", "swc", "dbr", "dgoto", "igoto", "label"))
 _CYCLIC = frozenset(("loop", "for"))  # a back edge re-reads what the body wrote
 _EXITS = frozenset(("cont", "brk"))
+_BOT = ("bot", 0)  # reaching ``unobserved`` is a fault, so no displacement holds there
 
 
 def rereads(s):
@@ -692,27 +693,47 @@ def calls_in(stmts):
     return False
 
 
-def _sp_walk(stmts, at):
-    """``(displacement the list leaves, every ``ret`` in it stood at the entry)``."""
+def _one_of(vals, dflt):
+    """The one value ``vals`` agrees on, ``dflt`` where it is empty, else None."""
+    if not vals:
+        return dflt
+    return vals[0] if all(v == vals[0] for v in vals) else None
+
+
+def _sp_walk(stmts, at, loops=()):
+    """``(displacement the list leaves, every ``ret`` in it stood at the entry)``.
+
+    A list leaving by its own ``ret``, a levelled exit or the ``unobserved`` fault
+    reaches no fall-through: it returns ``_BOT`` and constrains no join (9.2's
+    bottom). ``loops`` carries each enclosing cycle's head and what lands past it."""
     ok = True
     for s in stmts:
         k = s[0]
+        if k == "unobs":
+            return _BOT, ok
         if k == "asg" and s[1] == _SP:
             d = sp_delta(s[2], _SP)
             at = None if d is None or at is None else (at + d) & 0xFF
             continue
         if k == "ret":
-            ok = ok and at == 0
-            continue
-        outs = []
+            return _BOT, ok and at == 0
+        if k in _EXITS:
+            n = exit_level(s)
+            if len(loops) >= n:
+                head, past = loops[-n]
+                past.append(at if k == "brk" else head if at == head else None)
+            return _BOT, ok
+        past, outs = [], []
+        inner = loops + ((at, past),) if k in _CYCLIC else loops
         for b in _stmt_bodies(s):
-            end, good = _sp_walk(b, at)
+            end, good = _sp_walk(b, at, inner)
             ok = ok and good
-            outs.append(end)
+            if end is not _BOT:
+                outs.append(end)
         if k in _CYCLIC:
-            at = at if outs and outs[0] == at else None
+            at = None if any(o != at for o in outs) else _one_of(past, at)
         elif outs:
-            at = outs[0] if all(o == outs[0] for o in outs) else None
+            at = _one_of(outs, at)
     return at, ok
 
 

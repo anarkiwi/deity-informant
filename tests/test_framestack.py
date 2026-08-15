@@ -602,6 +602,34 @@ def test_a_real_edge_at_a_displacement_still_refuses_the_balance():
     assert not _balanced(_proc([_spstore(), _spmove(-1), ("goto", 0x10B8), _spread(1)]))
 
 
+# ---- the same bottom in the splice's own reading (``frameproc.sp_balanced``) ------
+def test_an_arm_that_returns_carries_its_displacement_to_no_fall_through():
+    """Both paths pull what the push made; the arm that leaves by ``ret`` reaches
+    the tail's ``ret`` on no edge, so its displacement joins nothing there."""
+    arm = [_spmove(1), ("ret", False)]
+    body = [_spstore(), _spmove(-1), ("if", "if", ("loc", "cflag"), arm, [])]
+    assert frameproc.sp_balanced(body + [_spmove(1), ("ret", False)])
+
+
+def test_a_levelled_break_lands_past_the_loop_it_counts_out_of():
+    """Atmosphere_II's shape: the pull is in a nested loop a ``break 2`` leaves, so
+    the loop's exit is where its breaks stand and never its body's fall-through."""
+    inner = [
+        ("if", "if", ("loc", "cflag"), [("brk",)], []),
+        _spmove(1),
+        ("brk", 2),
+    ]
+    body = [("loop", [_spstore(), _spmove(-1), ("loop", inner), _spmove(1), ("brk",)])]
+    assert frameproc.sp_balanced(body + [("ret", False)])
+
+
+def test_a_break_that_leaves_the_loop_at_another_depth_still_refuses():
+    """The negative: two exits at two displacements name no one state past the loop."""
+    inner = [("if", "if", ("loc", "cflag"), [("brk",)], []), _spmove(1), ("brk",)]
+    body = [("loop", [_spstore(), _spmove(-1), ("loop", inner), ("brk",)])]
+    assert not frameproc.sp_balanced(body + [("ret", False)])
+
+
 # ---- rung (d0'): the drop moves every pushed return word, threaded or not ---------
 def _page_datum(stmts):
     """Blueprint minimised: a page-one datum written, spanned by a call, read back."""
