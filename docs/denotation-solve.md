@@ -970,3 +970,71 @@ serialization view the plan decided over, so `Carry`'s landing set was empty in 
 tool and full in the pass. Reading it off the view moves `no-body` 310 → 323 (104 → 113
 tunes) and `carry-refused` 141 → 128 (66 → 57) at unchanged total calls: the same 1,263
 lines, attributed to the mechanism that actually holds them.
+
+### 9.5 A refused copy's labels are the fixpoint's evidence (2026-08-15)
+
+**`no-body` was two classes, and the ranking could not tell them apart.** A call line
+whose target names no placed procedure is either a bare `call $PC` no site could place,
+or a `callb` — the body *is* at the site and only `frameproc.splice`'s wrapper survives,
+because the body binds a pc, leaves by a transfer, or does not balance the stack. Reading
+the statement kind rather than the target alone splits the class at baseline into
+**`no-body` 153** and **`wrapped-body` 173** (`binds-pc,escapes` 81, `escapes` 38,
+`binds-pc` 34, `sp-unbalanced` 15, and two mixed rows), which are different mechanisms:
+the first is a placement refusal, the second is a splice refusal over a placed body.
+
+**The placement refusal is a discarded fixpoint step.** `render._structure` minimises
+labels by re-running the structuring pass with a growing `allow` set — the pcs a scope or
+split may be placed at — seeded from the labels the previous pass emitted. A callee's copy
+is structured inside that pass (`copied`), and where the copy would bind a pc it is
+refused and *thrown away with the pcs it found*. Those pcs are exactly the evidence the
+fixpoint needs, and they never reached it: the pass that could have scoped them was never
+run. `gate.wanted` carries them out of the refused copy and into the next round's `allow`.
+D_V's `3SID_Test_3SID` is the shape at its clearest — one callee, eight static sites, the
+copy refused at every one for `$3294`/`$336F`, and with those pcs allowed the fourth round
+places all eight and the tune is one call-free procedure.
+
+Measured, both gates complete against `818dcb7`: **Gate FP unmoved on every one of 614
+built tunes** (613 clean, 1 diverged, 10 refused, no tune in a different class), and
+**inv_probe 253 → 273 §8.4-clean of 624** with **zero clean→worse** and no fault moved.
+Corpus call lines **1,263 → 1,186**, procedures **931 → 903**, 29 tunes falling and two
+rising (`Big_K_O` 5 → 12, `Atmosphere_II` 7 → 15, each trading a procedure for wrapped
+bodies). The ranking moves `landing-callee` 225 → 157, `no-body` 153 → 136 and
+`label:no-anchor` 39 → 24, against `wrapped-body:sp-unbalanced` 15 → 38: a body a copy
+now places is still a call line where its stack effect is not zero, which is
+`M_S_RELOCATED`'s refusal reached one step later. `sp` proofs are flat at 894 → 896.
+
+**Measured and rejected**, both on the corpus with both gates:
+
+- **Ranking passes by refused bodies before labels.** `_structure` keeps the pass with
+  fewest labels; where a later round places eight bodies and costs one label, the earlier
+  pass wins. Ranking `(refused, labels)` instead takes calls to **1,127** — but it puts
+  three clean tunes into `load from the stack page` (`Arcade_Hustlers`, `Broken_Bottle`,
+  `Box13`), raises interior `ret`s **1,131 → 1,414** and `sp` **894 → 954**, and makes 18
+  tunes worse. A label is cheaper than a spliced body that faults.
+- **Unhiding a homed body for the copy.** `_model_trees` hides the blocks another
+  procedure homes or placed, which refuses the copy outright (`model.variants(target)` is
+  empty) — Lft's `A_Chipful_of_Love_for_You` refuses `$13F3` at all 32 sites this way.
+  Making the body `procpass.Carry` licensed visible for the length of one copy attempt
+  reaches **1,086** calls, the largest movement measured, and is rejected on the same
+  evidence: the same three faults, `ret`s **1,131 → 1,595**, `sp` **894 → 961**, 19 tunes
+  worse. What it manufactures is wrapped bodies, not removals.
+- **The copy license read as independent of the landing.** `procpass._plan` places a copy
+  at every static site only where `count[t] == 0`, so a callee a computed *goto* also
+  lands on falls off the end of the chain and is placed nowhere. Dropping that guard is
+  right in principle — a copy binds no pc, so the landing keeps its own — and the driver
+  it was diagnosed on becomes call-free, but the corpus population is one site: calls
+  **1,263 → 1,262**. It also costs `test_shred_regmodel`'s two raw-call fixtures their
+  subject, `_raw_call_body` being built on exactly that gap, so it stays out until a shape
+  carries the raw call for a refusal this does not remove.
+
+**`computed-call` is not a bare arm.** On its three largest tunes (`8_Mikies_a_Week`,
+`Aggressive_Argumentation`, `80s_Gritty_Urban_Tales`) every arm of every computed call is
+placeable and placed — no arm is a static sub, none is refused by `Carry`, and the emitted
+text carries `case $PC: { .. }` bodies throughout. What survives is the *form*:
+`frameproc.callsw` keeps `dcall` + `switch call` where an arm's own pc is bound
+program-wide (`named`), because the scoped `switch goto` binds nothing and whatever
+resolves through that pc would find no target. `8_Mikies_a_Week`'s `$104D` is the witness
+the suite already carries (`_callgen._arm_landing`): a second arm leaves by a `goto` into
+the first arm's tail. So the class is `arm-landing` at corpus scale, not
+`M_SHARED_HANDLER` — the removal it wants is for every transfer naming an arm pc to carry
+its own copy, which is the same principle the rejected unhide reached for and priced.

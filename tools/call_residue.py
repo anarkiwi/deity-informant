@@ -125,7 +125,23 @@ def _reach(carry, target):
     return seen
 
 
-def _call_class(view, target, bodies):
+def _wrapper_class(body):
+    """Why ``frameproc.splice`` kept a placed body's call wrapper (the ``callb`` form)."""
+    from deity_informant import frameproc
+
+    why = [
+        n
+        for n, hit in (
+            ("binds-pc", frameproc.bound_pcs(body)),
+            ("escapes", frameproc.escapes(body)),
+            ("sp-unbalanced", not frameproc.sp_balanced(body)),
+        )
+        if hit
+    ]
+    return "wrapped-body:" + ",".join(why or ["unclassified"])
+
+
+def _call_class(view, target, bodies, stmt=None):
     """The class keeping one call line: the copy refusal, named.
 
     The verdict is read off the serialization view, the object the plan decided over:
@@ -133,6 +149,8 @@ def _call_class(view, target, bodies):
     body's own entry, so a callee a transfer from outside lands on reads as copyable."""
     from deity_informant import procpass
 
+    if stmt is not None and stmt[0] == "callb":
+        return _wrapper_class(stmt[3])  # the body is at the site; the wrapper is the residue
     if target is None:
         return "computed-call"
     carry = procpass.carry(view)
@@ -163,7 +181,7 @@ def _sp_classes(prog):
 def _walk(stmts, last, out):
     for i, s in enumerate(stmts):
         if s[0] in _CALLS:
-            out["calls"].append((s[0], s[1] if isinstance(s[1], int) else None))
+            out["calls"].append((s, s[1] if isinstance(s[1], int) else None))
         elif s[0] == "ret" and not (stmts is last and i == len(stmts) - 1):
             out["rets"] += 1
         for b in _bodies_of(s):
@@ -187,7 +205,7 @@ def _one(entry, frames):
     view = sidprog._SortedView(model)  # pylint: disable=protected-access
     bodies = {e: s for e, _p, _r, s in prog.procs}
     row["call_classes"] = sorted(
-        Counter(_call_class(view, t, bodies) for _k, t in got["calls"]).items()
+        Counter(_call_class(view, t, bodies, s) for s, t in got["calls"]).items()
     )
     row["sp_classes"] = sorted(Counter(_sp_classes(frameprog.program(model))).items())
     try:

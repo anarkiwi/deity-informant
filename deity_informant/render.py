@@ -232,23 +232,25 @@ DYN_SWITCH = frozenset(("goto", "call"))  # the selectors a block's own transfer
 
 
 class _Splits:
-    """The pcs a structuring pass may scope or split at, and the ones it did."""
+    """The pcs a structuring pass may scope or split at, the ones it did, and the
+    ones a copy refused for binding them asked the next pass to free."""
 
-    __slots__ = ("allow", "chosen")
+    __slots__ = ("allow", "chosen", "wanted")
 
     def __init__(self, allow):
         self.allow = allow
         self.chosen = set()
+        self.wanted = set()
 
 
 def _structure(model, entry):
     """Region tree + labels, scoped or split only where that empties a label.
 
-    Pass one uses neither and names the bound pcs; each pass after it enables
-    both at that set less the pcs they did not free, which decreases (Janssen &
-    Corporaal 1997; Yakdan et al., NDSS 2015)."""
+    Pass one uses neither and names the bound pcs; each pass after it enables both
+    at that set less the pcs they did not free (Janssen & Corporaal 1997; Yakdan et
+    al., NDSS 2015). A copy refused for a pc it would bind asks for that pc too."""
     best = _structure_once(model, entry, frozenset())
-    allow = frozenset(best[1])
+    allow = frozenset(best[1]) | best[2].wanted
     seen = set()
     for _round in range(_STRUCT_ROUNDS):
         if not allow or allow in seen:
@@ -257,7 +259,7 @@ def _structure(model, entry):
         got = _structure_once(model, entry, allow)
         if len(got[1]) < len(best[1]):  # never worse than the pass that used neither
             best = got
-        allow = (allow | frozenset(got[1])) - (got[2].chosen & got[1])
+        allow = (allow | frozenset(got[1]) | got[2].wanted) - (got[2].chosen & got[1])
     return best[0], best[1]
 
 
@@ -301,6 +303,7 @@ def _structure_once(model, entry, allow):
         nest = (set(), labs, _copied(handler, deep), _copied(callee, deep), gate)
         top = _proc(model, target, cfg, nest, callers)
         if labs or len(top) != 1 or top[0].kind != "seq" or not top[0].a:
+            gate.wanted |= labs - gate.allow  # the pcs a scope would have to free
             return None
         return Region("seq", [_as_copy(r) for r in top[0].a])
 
