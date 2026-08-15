@@ -62,36 +62,35 @@ def _candidates(stmts):
     }
 
 
-def _has_read(stmts, slot, has):
+def _has_read(stmts, reads, has):
     """``has[(list, i)]``: statement ``i``, bodies included, reads the slot."""
     out = False
     for i, s in enumerate(stmts):
-        got = bool(slot(stmts, i, s)[0])
+        got = bool(reads(stmts, i, s))
         for b in frameproc._stmt_bodies(s):
-            got = _has_read(b, slot, has) or got
+            got = _has_read(b, reads, has) or got
         has[(id(stmts), i)] = got
         out = out or got
     return out
 
 
-def _may_read(stmts, slot, tail=False, out=None, has=None):
+def _may_read(stmts, reads, tail=False, out=None, has=None):
     """``out[(list, i)]``: a read of the slot may still be evaluated at statement ``i``.
 
-    The interval the locality premise is about, so it is liveness: a store of the
-    slot's own ends it, a read opens it, and a loop's back edge re-reaches its
-    body's own reads, so inside one every position sees them."""
+    The interval the locality premise is about: an access matters where it stands
+    between a store and a read, and a loop's back edge re-reaches its body's own
+    reads, so inside one every position sees them."""
     if has is None:
         has, out = {}, {}
-        _has_read(stmts, slot, has)
+        _has_read(stmts, reads, has)
     total = tail
     for i in range(len(stmts) - 1, -1, -1):
         s = stmts[i]
-        here = has[(id(stmts), i)]
-        after = here or (total and not slot(stmts, i, s)[1])
+        after = total or has[(id(stmts), i)]
         out[(id(stmts), i)] = after
         inner = after if s[0] in _CYCLIC else total
         for b in frameproc._stmt_bodies(s):
-            _may_read(b, slot, inner, out, has)
+            _may_read(b, reads, inner, out, has)
         total = after
     return out
 
@@ -113,12 +112,9 @@ class _Slot:
     def run(self, stmts, shared):
         """The walk over a whole procedure, plus the both-ends and privacy premises."""
         want = ("mem", _addr(self.cell), 1)
-
-        def slot(_lst, _i, s):
-            reads = sum(_count(x, want) for x in frameproc._stmt_exprs(s))
-            return reads, s[0] == "st" and (s[1], G.store_width(s[2])) == want[1:]
-
-        self.live = _may_read(stmts, slot)
+        self.live = _may_read(
+            stmts, lambda l, i, s: sum(_count(x, want) for x in frameproc._stmt_exprs(s))
+        )
         self._walk(stmts, False)
         if not (self.stores and self.reads):
             self._refuse("the slot is not both stored and read in the procedure")
@@ -414,15 +410,11 @@ class _SpSlot:
         if not balanced:
             self._refuse("the procedure's stack effect is not zero")
 
-        def slot(lst, i, s):
+        def reads(lst, i, s):
             mark = marks.at[(id(lst), i)]
-            reads = sum(_count_sp(x, self.key, mark, sp) for x in frameproc._stmt_exprs(s))
-            kills = (
-                s[0] == "st" and _slot_at(s[1], mark, sp) == self.key and G.store_width(s[2]) == 1
-            )
-            return reads, kills
+            return sum(_count_sp(x, self.key, mark, sp) for x in frameproc._stmt_exprs(s))
 
-        self.live = _may_read(stmts, slot)
+        self.live = _may_read(stmts, reads)
         self._walk(stmts, marks, sp, False)
         if not (self.stores and self.reads):
             self._refuse("the slot is not both stored and read in the procedure")
