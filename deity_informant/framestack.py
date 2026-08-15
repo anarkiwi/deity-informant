@@ -31,34 +31,53 @@ def _span(addr):
     return base, 0 if idx is None else E.mask(FF._w(idx))
 
 
-def _hit(addr, width, cell):
-    """``(may touch ``cell``, address unresolvable)`` of a ``width``-byte access."""
-    base, span = _span(addr)
-    if base is None:
-        return False, True
-    return base <= cell <= base + span + width - 1, False
+def _byte(cell):
+    """One byte at ``cell`` as an ``overlaps`` range."""
+    return (cell, frameproc.NOIDX, 0, 1, 0)
+
+
+def _hit(addr, width, cell, regions=None):
+    """``(may touch ``cell``, address unresolvable)`` of a ``width``-byte access.
+
+    The ONE span rule (``frameproc.span``): an index reaches no further than the
+    declaration holding its base, so a declared table's neighbour is not aliased by
+    the whole index width -- which is what lets a cell beside one classify at all."""
+    got = frameproc.addr_range(addr, width)
+    if got is None:
+        base, wide = _span(addr)
+        if base is None:
+            return False, True
+        return base <= cell <= base + wide + width - 1, False
+    base, idx, mod = got
+    rng = (base, idx, frameproc.span(base, idx, regions, mod), width, mod)
+    return frameproc.overlaps(rng, _byte(cell)), False
 
 
 _accesses = frameproc.accesses  # the ONE reading of a statement's memory operands
 
 
-def _footprint(stmts):
-    """Stack-page cells the procedure's resolvable addresses may touch."""
+def _footprint(stmts, lo=_PAGE[0], hi=_PAGE[-1], regions=None):
+    """Cells of ``lo..hi`` the procedure's resolvable addresses may touch."""
     out = set()
     for s in FF.stmts_of(stmts):
         for addr, width in _accesses(s):
-            base, span = _span(addr)
+            got = frameproc.addr_range(addr, width)
+            if got is None:
+                base, wide = _span(addr)
+            else:
+                base, wide = got[0], frameproc.span(got[0], got[1], regions, got[2])
+                wide = hi - lo if got[2] else wide
             if base is not None:
-                out.update(range(max(base, _PAGE[0]), min(base + span + width, _PAGE[-1] + 1)))
+                out.update(range(max(base, lo), min(base + wide + width, hi + 1)))
     return out
 
 
-def _candidates(stmts):
-    """Const stack-page cells some store in the procedure addresses."""
+def _candidates(stmts, lo=_PAGE[0], hi=_PAGE[-1]):
+    """Const cells of ``lo..hi`` some byte store in the procedure addresses."""
     return {
         s[1][1]
         for s in FF.stmts_of(stmts)
-        if s[0] == "st" and s[1][0] == "const" and s[1][2] == 2 and s[1][1] in _PAGE
+        if s[0] == "st" and s[1][0] == "const" and s[1][2] == 2 and lo <= s[1][1] <= hi
     }
 
 
@@ -98,13 +117,14 @@ def _may_read(stmts, reads, tail=False, out=None, has=None):
 class _Slot:
     """One const stack cell: the must-def walk over a procedure and its refusal."""
 
-    __slots__ = ("cell", "stores", "reads", "why", "live")
+    __slots__ = ("cell", "stores", "reads", "why", "live", "regions")
 
-    def __init__(self, cell):
+    def __init__(self, cell, regions=None):
         self.cell = cell
         self.stores = self.reads = 0
         self.why = None
         self.live = {}
+        self.regions = regions
 
     def _refuse(self, why):
         self.why = self.why or why
@@ -137,7 +157,9 @@ class _Slot:
             wrote = len(acc) - 1 if k == "st" else -1  # the store's own address is the last
             for j, (addr, width) in enumerate(acc):
                 near, blind = (
-                    (False, False) if (addr, width) == want[1:] else _hit(addr, width, self.cell)
+                    (False, False)
+                    if (addr, width) == want[1:]
+                    else _hit(addr, width, self.cell, self.regions)
                 )
                 if near:
                     self._refuse("another resolvable access may touch the slot")
@@ -697,6 +719,82 @@ def drop_state(state, proofs, symbols, name_of):
             (named if p.status == "named" else kept).update(p.targets)
     gone = {symbols.pop(c, None) or name_of(c) for c in named - kept}
     return [f for f in state if f[0] not in gone]
+
+
+# ---- rung (d1): scratch leaves the state (docs/denotation-solve.md 9.1) ----------
+def state_cells(state, symbols, name_of):
+    """``{address: field}`` of the scalar state block; an array base is its web, not a cell.
+
+    An indexed field's web splits per offset and each classifies alone, which this
+    rung does not decide, so a declared array keeps its address (9.1's refusal)."""
+    rev = {v: k for k, v in symbols.items()}
+    out = {}
+    for f in state:
+        base = rev.get(f[0], G.name_addr(f[0]))
+        if base is not None and not f[2] and not f[3]:
+            for a in range(base, base + f[1]):
+                out[a] = f[0]
+    return out
+
+
+def _scratch_proof(cell, slot, name):
+    """The rung-(d1) record: a scratch web is a wire, and its refusal names the premise."""
+    why = slot.why or "per-frame scratch, local %s" % name
+    return Proof(
+        cell,
+        "scratch",
+        "refused" if slot.why else "named",
+        (cell,),
+        "state cell $%04X: %d store(s), %d read(s); %s" % (cell, slot.stores, slot.reads, why),
+    )
+
+
+def apply_scratch(procs, cells, regions=None, used=None, counter=0):
+    """Every private state cell every read of which a same-frame store dominates.
+
+    ``_Slot`` asked of absolute private memory rather than page one: the procedure is
+    the frame, so a read no store of the frame dominates is last frame's value and the
+    cell is state. The rest is a wire, and its stores become assignments."""
+    used = _used_names(procs) if used is None else used
+    prints = [_footprint(p[3], 0, 0xFFFF, regions) for p in procs]
+    proofs, n = [], counter
+    for k, (_e, _pa, _r, stmts) in enumerate(procs):
+        shared = set().union(*(f for j, f in enumerate(prints) if j != k), set())
+        names = {}
+        for cell in sorted(set(cells) & _candidates(stmts, 0, 0xFFFF)):
+            slot = _Slot(cell, regions).run(stmts, shared)
+            name = None
+            if slot.why is None:
+                name, n = _fresh(used, n)
+                used.add(name)
+                names[_addr(cell)] = name
+            proofs.append(_scratch_proof(cell, slot, name))
+        if names:
+            _rewrite(stmts, names)
+    return proofs
+
+
+def drop_scratch(state, proofs, symbols, name_of):
+    """Drop the state field of every cell this rung proved a wire in every procedure."""
+    named, kept = set(), set()
+    for p in proofs:
+        if p.kind == "scratch":
+            (named if p.status == "named" else kept).update(p.targets)
+    gone = {symbols.pop(c, None) or name_of(c) for c in named - kept}
+    return [f for f in state if f[0] not in gone]
+
+
+def unwritten(procs, cells, regions):
+    """Cells no store in any procedure may reach: declared state that is a constant.
+
+    ``Defs._hits`` is the one reading of what a store may touch, declared span and
+    address bits alike, so the question is asked of it rather than re-derived."""
+    left = set(cells)
+    for _e, _pa, _r, stmts in procs:
+        for env, i, s in frameproc.envs(stmts):
+            if s[0] == "st" and left:
+                left -= {c for c in left if env._hits(i, c, regions)}
+    return left
 
 
 # ---- rung (d0'): the stack fabric leaves the frame program -----------------------

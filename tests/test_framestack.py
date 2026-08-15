@@ -8,6 +8,7 @@ slot is a synthetic local, and every control use of the stack refuses.
 import numpy as np
 import pytest
 
+from deity_informant import datadecl
 from deity_informant import frameprog
 from deity_informant import frameproc
 from deity_informant import framestack
@@ -568,3 +569,114 @@ def test_a_goto_at_a_moved_displacement_still_refuses():
     """The negative: a taken edge is where the walk's claim is owed, and it holds."""
     procs = _proc(_sentinel([("if", "if", ("loc", "cflag"), [("goto", SUB)], [])]))
     assert not _balanced(procs)
+
+
+# ---- rung (d1): scratch leaves the state (docs/denotation-solve.md 9.1) -----------
+SCELL = 0x13CF  # Grid_Runner's first row-fetch latch: written and read in one frame
+_SFIELD = ("m_13CF", 1, False, [])
+
+
+def _sstore(val=("const", 7, 1), cell=SCELL):
+    return ("st", ("const", cell, 2), val)
+
+
+def _sread(name="w0", cell=SCELL):
+    return ("asg", name, ("mem", ("const", cell, 2), 1))
+
+
+def _sproc(stmts):
+    return [(SUB, [], [], list(stmts))]
+
+
+def _classify(stmts, state=(_SFIELD,)):
+    """``(state after the rung, the one proof it wrote)``."""
+    procs = _sproc(stmts)
+    cells = framestack.state_cells(list(state), {}, frameproc.G.addr_name)
+    proofs = framestack.apply_scratch(procs, cells)
+    return framestack.drop_scratch(list(state), proofs, {}, frameproc.G.addr_name), proofs, procs
+
+
+def test_a_cell_every_read_of_which_a_same_frame_store_dominates_leaves_the_state():
+    """The wire: the store is an assignment, the read a local, the field is gone."""
+    state, proofs, procs = _classify([_sstore(), _sread()])
+    assert state == []
+    assert [(p.kind, p.status) for p in proofs] == [("scratch", "named")]
+    assert procs[0][3][0][0] == "asg" and procs[0][3][1][2][0] == "loc"
+
+
+def _first_frame_read():
+    return [_sread(), _sstore()]
+
+
+def _loop_reads_first():
+    return [("loop", [_sread(), _sstore(), ("brk", None)])]
+
+
+def _one_arm_stores():
+    return [("if", "if", ("loc", "cflag"), [_sstore()], []), _sread()]
+
+
+def _indexed_neighbour():
+    return [_sstore(), ("st", _indexed(SCELL - 4), ("const", 0, 1)), _sread()]
+
+
+def _blind_store_while_live():
+    return [_sstore(), ("st", ("loc", "t0", 2), ("const", 0, 1)), _sread()]
+
+
+def _never_read():
+    return [_sstore()]
+
+
+@pytest.mark.parametrize(
+    "build,want",
+    [
+        (_first_frame_read, "a read is not dominated by a store of the slot"),
+        (_loop_reads_first, "a read is not dominated by a store of the slot"),
+        (_one_arm_stores, "a read is not dominated by a store of the slot"),
+        (_indexed_neighbour, "another resolvable access may touch the slot"),
+        (_blind_store_while_live, "an unresolvable store may alias the live slot"),
+        (_never_read, "the slot is not both stored and read in the procedure"),
+    ],
+)
+def test_the_scratch_refusal_names_the_premise_that_failed(build, want):
+    """Each refusal keeps the field: 9.1's persistent, open-access and dead classes."""
+    state, proofs, _procs = _classify(build())
+    assert state == [_SFIELD] and proofs[0].status == "refused"
+    assert proofs[0].lemma.endswith(want)
+
+
+def test_a_read_the_next_frame_makes_the_cell_state_not_scratch():
+    """The frame is the procedure, so the first-trip read is last frame's value."""
+    state, _p, _procs = _classify([("loop", [_sread(), _sstore(), ("cont", None)])])
+    assert state == [_SFIELD]
+
+
+def test_a_declared_array_and_a_dispatch_cell_are_no_candidates():
+    """The web of an indexed field splits per offset, and a dispatch cell is control."""
+    arr, disp = ("m_13CF", 1, True, []), ("m_13CF", 1, False, [0x69, 0xE9])
+    for f in (arr, disp):
+        assert framestack.state_cells([f], {}, frameproc.G.addr_name) == {}
+
+
+def test_a_cell_a_second_procedure_may_touch_stays_state():
+    """Privacy is the premise: the other procedure's footprint refuses the cell."""
+    procs = _sproc([_sstore(), _sread()]) + [(SUB2, [], [], [_sread("w1")])]
+    cells = framestack.state_cells([_SFIELD], {}, frameproc.G.addr_name)
+    proofs = framestack.apply_scratch(procs, cells)
+    assert [p.status for p in proofs] == ["refused"]
+    assert proofs[0].lemma.endswith("another procedure may touch the slot")
+
+
+def test_a_state_cell_no_store_may_reach_is_a_constant():
+    """Grid_Runner's ``m_040B``/``m_0414``/``m_045D``: initialised, never written."""
+    regions = datadecl.Regions(())
+    procs = _sproc([_sread(), _sstore(cell=0x1400)])
+    assert framestack.unwritten(procs, {SCELL, 0x1400}, regions) == {SCELL}
+
+
+def test_an_indexed_store_that_may_reach_the_cell_is_a_write():
+    """``unwritten`` asks ``Defs._hits``, so a span that covers the cell counts."""
+    regions = datadecl.Regions(())
+    procs = _sproc([("st", _indexed(SCELL - 4), ("const", 0, 1))])
+    assert framestack.unwritten(procs, {SCELL}, regions) == set()
