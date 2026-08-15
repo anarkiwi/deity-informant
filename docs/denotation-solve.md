@@ -1344,3 +1344,58 @@ The playbook's protocol binds the execution: no discoveries — every shape
 the fold meets is a playbook row, because the playbook enumerates the
 execution's idioms, and the fold never sees the text's.
 
+### 11.6 Operational baseline for the executing session
+
+Branch `stack-removal`, origin `github.com/anarkiwi/deity-informant`. All
+figures at the commit carrying this section.
+
+**Verification anchors (must hold before and after):**
+- Suite: `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 .venv/bin/python -m pytest
+  tests/ -m "not oracle" -n 12 -q` -> **3733 passed / 492 skipped / 110
+  xfailed / 0 failed**. Repo-root `.venv`; bare `python` has no pytest.
+- Gate FP (`tools/gate_sweep.py`): 614 built — **613 clean / 1 diverged
+  (`Alternative_World_Games`) / 10 refused**. The observable must not move:
+  per-tune byte-identical logs, zero clean->worse.
+- inv_probe (`tools/inv_probe.py`): **284 §8.4-clean / 329 residue / 9
+  page-one fault / 1 ret-target / 1 diverged**; calls 1,002 / procs 863 /
+  state fields ~16,098. The fold's exit criterion: §8.4+§9.1 hold **by
+  construction on all 624**, or a tune fails loudly with a playbook-cited
+  reason.
+- Gates run cold (any package edit re-keys `.sweep-cache`; fingerprint is a
+  SHA over sources): run sequentially, `nohup`, `-j 24`, suite first so
+  nothing starves. Worktrees need `.oracle-cache`/`.sweep-cache` symlinked
+  from the repo root. Tune ids are cache-relative paths (bare stems can be
+  ambiguous — eight stems name two tunes).
+- Style gates: `black`; `pylint` 10.00 on `deity_informant/` and `tools/`
+  (CI invocation). No script over 60s CPU. Readers, not probes:
+  `tools/dump_tune.py`, `tools/inv_probe.py`, `tools/call_residue.py`,
+  `tools/gate_sweep.py`.
+
+**The assets the fold consumes:** `lifter.py` (all 105 illegals, the ground
+truth), `vm.py` (`run_sub`/`run_irq`/`run_irq_driven`), `recorder.py` (481
+lines — residualises invocations over entry state; contract in
+docs/symbolic-recorder.md, pipeline in docs/smc-recovery.md),
+`framelog.canonical`, `frameval.gate_fp`, the grammar (`sidprog.lark`,
+`grammar.py` — the dialect is already one-procedure-shaped).
+
+**The deletion surface (current line counts):** `framestack.py` 1,253 whole;
+`render.py` placement half (of 1,094: CNS, scoped merges, allow fixpoint,
+rank); `procpass.py` 379 (copy/splice planning); `frameval.py` call/ret/sp
+arms + frame matching + stack-page protection (of 955); `frameproc.py`
+balance/epoch/`entered_pcs`/sp machinery (of 4,176); `desmc.py` relocation
+half (of 244); extent proofs `ptrextent.py` 183 and parts of `ptrcert.py`
+1,157 where observed address sets state the answer. Tests whose subjects
+cease to exist: `test_framestack.py` 958, `test_call_lift.py` 450,
+`test_dup_dispatch.py` 165, `test_stack_residue.py` 209, plus pins across
+the suite — re-point `_callgen.violations()` to pass en masse.
+
+**Order of work:** (1) `framepath` builds and gates on the three witnesses
+(Commando, Grid_Runner, Automatas — all at the invariant today, so their
+folded artifacts must byte-match their logs and their text should not
+regress in size class); (2) corpus gate behind a switch, old pipeline
+intact; (3) flip the default when 624/624 builds clean; (4) mass-delete; (5)
+final gates + suite + docs (§11 marked landed; playbook rows updated). The
+10 refused / 1 diverged baseline tunes are old-pipeline build errors — the
+fold re-diagnoses them via the playbook SYM table; they are not licenses to
+regress the 613.
+

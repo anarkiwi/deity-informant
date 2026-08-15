@@ -96,8 +96,8 @@ All 105 documented NMOS 6510 illegals lifted as genuine P-Code (not stubs), sema
 ## Docs
 
 - [docs/design.md](docs/design.md) — architecture (lifter + VM, SLEIGH module, raw vs high P-Code, cycle layer).
-- [docs/register-model-lift-impl.md](docs/register-model-lift-impl.md) — the active plan: lift the play routine to a role-typed state machine by canonical-source idiom derivation + equality-saturation minimization (goal, law, landed record, four stages).
-- [docs/denotation-solve.md](docs/denotation-solve.md) — the successor plan: the register and pointer residues are one fixpoint, solved as a denotation lattice over the existing e-graph; the ceiling (one player per family, not one per tune) and the five criteria that measure it.
+- [docs/denotation-solve.md](docs/denotation-solve.md) — **the active plan: §11, the fold** — the contract is dynamic, so the program is recovered by folding the recorder's execution paths, deleting the static call/stack/label campaigns wholesale; §§8–10 are the landed record and the recovery layers above it; §11.6 is the operational baseline for the executing session.
+- [docs/register-model-lift-impl.md](docs/register-model-lift-impl.md) — historical: the register-model lift by canonical-source idiom derivation + equality-saturation minimization (goal, law, landed record, four stages).
 - [docs/playbook.md](docs/playbook.md) — the closed set of 6502 player idioms and this machinery's known failure modes, symptom-first, each row naming the mechanism that answers it. Read before diagnosing anything.
 - [docs/idiom-catalog.md](docs/idiom-catalog.md) — the driver-idiom inventory derived from the canonical player sources: per idiom, its canonical and exemplar cites and the normal form it must reduce to. The coverage claim the corpus census no longer makes.
 - [docs/eqlift-adoption.md](docs/eqlift-adoption.md) — the normative contract for the equality-saturation engine: rule governance, the memory axioms, verification laws.
