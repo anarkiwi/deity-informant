@@ -1220,7 +1220,21 @@ rows are the thin ones, at most six sites per tune over 49 and 15 tunes.
 
 **What §9.7 leaves.** `label:*` (413) is now the largest class and `wrapped-body`
 (296) the second, both grown by the ranking that emptied `no-body` (99 → 40) and
-`landing-callee` (107 → 24). The pc-homing rule closes the callee entry; a label
-*inside* two spliced bodies is the same hazard one level down, unreached on this
-corpus — no built tune binds a pc twice after the rule — and it is what a scoped
-resolution would have to answer if a later mechanism reaches it.
+`landing-callee` (107 → 24).
+
+**What the rule does not close, measured.** A binding gate over the corpus — every
+`mark` a build makes, counted — says **18 of 624 tunes still bind some pc twice, 63
+pcs in all, and none of them is a copy's**. Of the 16 tunes that splice one callee at
+several sites, 15 now bind nothing twice; the sixteenth (`Arkanoid`) does, from
+binders that are not copies. Read on three of them the binders are `swc` arms and
+`_s_opsw` dispatch pcs and nothing else: `8_Mikies_a_Week`'s `$1040` is four `swc`
+arms, `Automatas`'s `$03B8`/`$03BF`/`$03D8` are two `_s_opsw` each, `Arkanoid`'s three
+are `swc` throughout. That family is the `arm-landing` one §9.5 already named and
+priced, and it is not the flat-map hazard the rule closed: a `swc`/`opsw` dispatch
+resolves through its own statement's table before `pcmap`, so a twice-bound arm still
+lands in its own switch, and `frameproc.callsw` keeps the call form exactly where an
+arm's pc is bound program-wide so a transfer from outside finds the placed procedure.
+The residue the rule leaves is therefore a guarded one, and what would still be
+unguarded — a `label` *inside* two spliced bodies, resolved through `pcmap` alone — no
+built tune produces. A scoped resolution is what that would want if a later mechanism
+reaches it.
