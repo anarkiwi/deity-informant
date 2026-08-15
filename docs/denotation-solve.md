@@ -730,12 +730,17 @@ reads them same-frame) is argument passing through memory and becomes ports.
 The state block then declares *persistent state only*, which is the precondition
 that makes §9's closure and record formation small.
 
-Refusals: a cell an open web may reach stays addressed (§9's residue); a cell
-read before any same-frame write on any non-faulting path is persistent —
-semantic, not intentional, so a dual-use leftover byte (defMON) stays state; a
-read reachable only through an `unobserved` guard is scratch with the guard
-carrying the claim. Binary per cell; the per-tune figure is state fields
-before/after.
+The unit is the web, not the cell. An overlaid cell — two objects
+time-sharing one address with disjoint live ranges (7,581 spellings carry 2+
+webs, L1; defMON's `$1800` region holds load-phase tables and the runtime
+pitch LUT) — splits into its webs first, and each web classifies on its own: a
+cell can host a scratch web and a persistent web at once. A connected web whose
+value crosses uses is one datum, whatever it is used for.
+
+Refusals: a web an open access may reach stays addressed (§9's residue); a web
+read before any same-frame write on a non-faulting path is persistent; a read
+reachable only through an `unobserved` guard is scratch with the guard carrying
+the claim. Binary per web; the per-tune figure is state fields before/after.
 
 Ordering: this lands first within §9 — before width and records — because it
 deletes cells outright, so every later verdict has fewer webs to close.
