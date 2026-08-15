@@ -711,3 +711,71 @@ rules as semantics, the lanes-of dialect question, and the address-anchored
 half of `datadecl`'s carving. What recovery then faces is §8.5 over variables
 and records — the family quotient (one player per family) taken over a language
 with no memory map left in it.
+
+### 9.1 The first landing: scratch leaves the state
+
+**A private cell is scratch iff every read of it is dominated by a same-frame
+write.** Gate FP observes frame boundaries; a cell dead at every frame exit is
+not state — it is a wire. The rule is rung (d0)'s locality question asked of
+*all* private memory, and in a flat call-free procedure it is a single
+dominating-store/available-load pass: page one was never special, and the stack
+campaign was this landing restricted to one page. Generalizing it deletes the
+special-casing along with the cells.
+
+Consequences, measured on the exemplars: Wizball's working set — 138 role-less
+zp cells, the corpus maximum, zero page used as the machine's register file for
+per-frame synthesis — largely dissolves into locals and then into expressions;
+Follin's op-argument unpacking (`op $8E arity 4 writes zp_87..zp_8C`, handler
+reads them same-frame) is argument passing through memory and becomes ports.
+The state block then declares *persistent state only*, which is the precondition
+that makes §9's closure and record formation small.
+
+Refusals: a cell an open web may reach stays addressed (§9's residue); a cell
+read before any same-frame write on any non-faulting path is persistent —
+semantic, not intentional, so a dual-use leftover byte (defMON) stays state; a
+read reachable only through an `unobserved` guard is scratch with the guard
+carrying the claim. Binary per cell; the per-tune figure is state fields
+before/after.
+
+Ordering: this lands first within §9 — before width and records — because it
+deletes cells outright, so every later verdict has fewer webs to close.
+
+## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
+
+§8.5's machine — clocked, triggered, bounded accumulators cascading into SID
+writes — needs no instrumentation to recover. The post-removal artifact is a
+closed term: total semantics, closed webs, structured control, every open edge
+guarded. Every question a run would answer is decidable by reading:
+
+- **Accumulator spec = a cell's update sites plus their dominating guards.**
+  The unguarded `ctr = ctr - 1` is the step and the clock; the reload dominated
+  by the wrap comparison is the bound and the reload source. One to three sites
+  per cell in a flat procedure; all four parameters are the text.
+- **Trigger edge = dominance, not coincidence.** B is triggered by A exactly
+  where B's reload site is dominated by A's wrap condition — a region-tree
+  fact, read once.
+- **Cascade order = statement order. Clock dividers = gating nesting.** A cell
+  updated only inside another counter's wrap arm is the divided clock.
+- **Ports = the leaves**: a step drawn from a table row or an `iota` input.
+- **Mode-dependent cells**: update sites under two mode guards are two
+  accumulators selected by a static mode variable, read off the `switch`.
+
+The observational facts the graph needs are already embedded — `unobserved`
+guards, observed dispatch sets, loop evidence, declared inputs. The text is the
+trace's residue; running it again to learn structure would re-derive what the
+guards state. The run survives as verification only: the transliterated machine
+replays `framelog.canonical` once, the gate it always was.
+
+The pattern, named because it recurred five times: rungs collapsed into one
+rewrite, the census into a gate, destination rules into placement, addresses
+into webs, instrumentation into transliteration. Each mechanism was sized for
+the pre-removal problem; the artifact remaining is a few hundred statements of
+arithmetic on named variables, and passes over it are one syntax-directed walk.
+
+Metric: fraction of state cells whose update sites transliterate; residue
+spelled inline (the machine is hybrid by construction). Drivers first: a
+synthesized divider -> row -> arpeggio cascade recovered exactly, then the
+Commando machine (frame clock -> period-8 vibrato triangle and row timer in
+parallel -> wrap triggers the cursor cascade -> note-on reloads slide step and
+duration). The graph is the player; the constants, tables and scripts are the
+tune — the family quotient's concrete object.
