@@ -851,6 +851,17 @@ mechanism, and it is `datadecl`'s, not the destack's: a table read at index 24 w
 a one-row carve is an under-carved extent, and §9's record formation wants it right
 anyway.
 
+**The dead-store verdict itself, re-measured on the completed read set and held
+back.** It no longer diverges — Grid_Runner, Automatas, Puke and Blueprint all gate
+clean, which is the read set doing its work — but what it is worth is Automatas
+76 → 74 and nothing at all on the other three, because the figures §9.2 recorded
+for it were the unsound drops. Against that it costs
+`test_single_use_load_inlines_at_its_use_site` its subject: the driver's consumer is
+a page-one store nothing reads, so the verdict deletes the statement whose rendering
+it asserts. A verdict worth two fields on one tune does not buy an unrelated
+driver's subject, so it stays out; what it needs first is a shape whose dead store
+is not the thing being tested.
+
 ## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
 
 §8.5's machine — clocked, triggered, bounded accumulators cascading into SID
