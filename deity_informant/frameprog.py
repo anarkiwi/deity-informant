@@ -560,18 +560,20 @@ def program(model, extents=None):
     smc, state, symbols = desmc.apply_rung(model, decls, procs, state, symbols)
     mem0 = smc.seed(model.mem0)  # a relocated page carries the bytes its source page holds
     exits = {model.play: structured.frame_exit(model.play_frame)}
+    landings = framefuse._landings(model)
+    frameproc.drop_dead_labels(procs, landings)  # a label no transfer names is no join
     stack_proofs = framestack.apply_rung(procs, _entry_sp(model), exits)
     state = framestack.drop_state(state, stack_proofs, symbols, G.addr_name)
     math_proofs = framemath.apply_rung(procs, decls)
     regions = datadecl.Regions(decls)
-    frameproc.repolish(procs, model.play, regions)
+    frameproc.repolish(procs, model.play, regions, landings)
     state, proofs = framefuse.apply_rung(
         model, decls, procs, state, symbols, G.addr_name, smc, mem0
     )
     code = smc.code
     for _pass in range(4):
         before = repr(procs)
-        frameproc.repolish(procs, model.play, regions)
+        frameproc.repolish(procs, model.play, regions, landings)
         pairs = _pair_tables(procs, decls, mem0, model.written, code)
         regions = datadecl.Regions(decls)  # the rung re-carves decls: containment follows
         for _e2, _pa2, _r2, stmts2 in procs:
@@ -613,7 +615,7 @@ def program(model, extents=None):
         ext,
         model.dispatch_sets,
         _evidence(model, prov0, sites, census),
-        landings=framefuse._landings(model),
+        landings=landings,
         relocated=smc.blocks(),
         entry_frame=model.play_frame,
     )

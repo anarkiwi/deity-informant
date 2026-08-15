@@ -213,16 +213,12 @@ FAULTS = {
     ("arg-pass", "stack-pla"): "store into the stack page $01FC",
 }
 
-BINDS_PC = (  # a dispatch arm, an RTS-trick landing, and a relocated switch's own pc
+BINDS_PC = (  # a dispatch arm and an RTS-trick landing: what a transfer still names
     ("vector-call", "jmpind"),
     ("vector-call", "smc-jmp"),
     ("arm-liveout", "eor1"),
     ("arm-liveout", "eor3"),
     ("arm-liveout", "eor5"),
-    ("copied-smc", "tone/tail"),
-    ("copied-smc", "tone/post"),
-    ("copied-smc", "alt/tail"),
-    ("copied-smc", "alt/post"),
 ) + tuple(("rts-trick", v.label) for v in G.BY_ROW["rts-trick"].variants)
 
 

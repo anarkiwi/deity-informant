@@ -790,7 +790,8 @@ class _Unbalanced(Exception):
 
 _ENTRY = ("entry", 0)  # the displacement a procedure is entered and must return at
 _INLINED = frozenset(("callb", "swc"))  # a callee's body: its ``ret`` is the call's edge
-_EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "unobs", "dgoto", "igoto", "dbr"))
+_EDGES = frozenset(("ret", "label", "goto", "cont", "brk", "dgoto", "igoto", "dbr"))
+_FAULT = "unobs"  # reaching one faults, so no frame the gate accepts ever stands there
 
 
 def _join(a, b):
@@ -898,6 +899,8 @@ class _SpFlow:
             return self.exits(s, st)
         if k in _EDGES:
             return self.leaves(st)
+        if k == _FAULT:
+            return st
         if k == "if":
             return _join(self.walk(s[3], st), self.walk(s[4], st))
         if k in _INLINED:

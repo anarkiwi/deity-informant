@@ -474,3 +474,97 @@ def test_no_slot_is_live_across_a_call_however_it_stands():
     stmts = [_spstore(), _spmove(-1), _pcall(), _spread(1), _spmove(1)]
     for slot in _run_spslots(stmts):
         assert slot.why == "the slot is not both stored and read in the procedure"
+
+
+# ---- a label no transfer names is not a point control enters ----------------------
+def _proc(stmts, entry=SUB):
+    return [(entry, [SPN], [], stmts)]
+
+
+def _sentinel(interior):
+    """Automatas minimised: a spill, a loop carrying ``interior``, and the pull.
+
+    The displacement inside the loop is -1, so anything the walk reads as an entry
+    there refuses the balance and ``sp`` survives the whole rung."""
+    return [
+        _spstore(0, ("loc", "a")),
+        _spmove(-1),
+        ("loop", list(interior) + [("brk", None)]),
+        _spread(1),
+        _spmove(1),
+    ]
+
+
+def _balanced(procs):
+    sp = frameproc._SP
+    saves = {e: framestack._saves(st, sp) for e, _pa, _r, st in procs}
+    return framestack._balances(procs, sp, saves)[0]
+
+
+def test_an_unreferenced_interior_label_is_dropped_and_the_loop_balances():
+    """The Automatas sentinel: three dispatch pcs, and no goto or arm names one."""
+    procs = _proc(_sentinel([("label", 0x10B8), ("st", ("const", OUT, 2), ("loc", "a"))]))
+    assert frameproc.entered_pcs(procs) == {SUB}
+    assert not _balanced(procs)
+    assert frameproc.drop_dead_labels(procs)
+    assert not [s for s in framestack.FF.stmts_of(procs[0][3]) if s[0] == "label"]
+    assert _balanced(procs) == {SUB: True}
+
+
+@pytest.mark.parametrize(
+    "namer",
+    [
+        lambda pc: ("goto", pc),
+        lambda pc: ("swg", [("$%04X" % pc, [("brk", None)])]),
+        lambda pc: ("swc", ["$%04X" % pc], []),
+        lambda pc: ("call", pc, 0x1234),
+    ],
+    ids=["goto", "swg-arm", "swc-label", "call"],
+)
+def test_a_label_a_transfer_does_name_is_kept_and_the_balance_still_refuses(namer):
+    """The negative: an enumerated entry is an entry, whatever spells it."""
+    procs = _proc(_sentinel([("label", 0x10B8)]) + [namer(0x10B8)])
+    assert 0x10B8 in frameproc.entered_pcs(procs)
+    assert not frameproc.drop_dead_labels(procs)
+    assert not _balanced(procs)
+
+
+def test_a_computed_transfer_with_no_arm_table_refuses_the_whole_reading():
+    """A dispatch no list enumerates may land on any label, so none is dropped."""
+    procs = _proc(_sentinel([("label", 0x10B8)]) + [("dgoto", ("mem", ("const", 2, 2), 2))])
+    assert frameproc.entered_pcs(procs) is None
+    assert not frameproc.drop_dead_labels(procs)
+
+
+def test_a_computed_transfer_beside_its_arm_table_lands_on_the_arms():
+    """``dgoto``/``swg`` is the enumerated dispatch: the arms, and nothing else."""
+    arms = ("swg", [("$10B8", [("brk", None)])])
+    procs = _proc(_sentinel([("label", 0x10B8), ("label", 0x10BF)]) + [("dgoto", None), arms])
+    assert frameproc.entered_pcs(procs) == {SUB, 0x10B8}
+    assert frameproc.drop_dead_labels(procs)
+    assert [s[1] for s in framestack.FF.stmts_of(procs[0][3]) if s[0] == "label"] == [0x10B8]
+
+
+def test_a_landing_no_transfer_spells_keeps_its_label():
+    """An RTS-trick landing is entered by a manufactured return, not by a transfer."""
+    procs = _proc(_sentinel([("label", 0x10B8)]))
+    assert not frameproc.drop_dead_labels(procs, entered=(0x10B8,))
+    assert frameproc.drop_dead_labels(procs)
+
+
+def test_a_foreign_goto_is_a_transfer_the_reading_carries():
+    """The procedures are read together, so another one's goto names the label."""
+    procs = _proc(_sentinel([("label", 0x10B8)])) + [(SUB2, [], [], [("goto", 0x10B8)])]
+    assert not frameproc.drop_dead_labels(procs)
+
+
+def test_an_unobserved_edge_holds_no_displacement():
+    """Reaching one faults, so no frame the gate accepts stands at it (Automatas)."""
+    procs = _proc(_sentinel([("if", "if", ("loc", "cflag"), [("unobs", 0x10C3)], [])]))
+    assert _balanced(procs) == {SUB: True}
+
+
+def test_a_goto_at_a_moved_displacement_still_refuses():
+    """The negative: a taken edge is where the walk's claim is owed, and it holds."""
+    procs = _proc(_sentinel([("if", "if", ("loc", "cflag"), [("goto", SUB)], [])]))
+    assert not _balanced(procs)

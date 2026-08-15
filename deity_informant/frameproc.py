@@ -607,6 +607,83 @@ def bound_pcs(stmts, out=None):
     return sorted(set(out))
 
 
+_ARM_FOR = {"dgoto": "swg", "igoto": "swg", "dcall": "swc"}  # the table that enumerates it
+_PC_AT = {"goto": (1,), "unobs": (1,), "pcall": (1,), "call": (1, 2), "callb": (1, 2)}
+
+
+def _pc_val(x):
+    """The pc an arm label or transfer operand spells, or None where it names none."""
+    if isinstance(x, int):
+        return x
+    if isinstance(x, str) and x[:1] == "$":
+        try:
+            return int(x[1:], 16)
+        except ValueError:
+            return None
+    return None
+
+
+def _entered_scan(stmts, out):
+    for j, s in enumerate(stmts):
+        k = s[0]
+        for at in _PC_AT.get(k, ()):
+            got = _pc_val(s[at])
+            if got is not None:
+                out.add(got)
+        at = _PC_ARMS.get(k)
+        if at is not None:
+            out.update(p for p in (_pc_val(b[0]) for b in s[at]) if p is not None)
+        if k == "swc":
+            out.update(p for p in map(_pc_val, s[1]) if p is not None)
+        want = _ARM_FOR.get(k)
+        if k == "dbr" or (want is not None and (j + 1 >= len(stmts) or stmts[j + 1][0] != want)):
+            return False
+        for b in _stmt_bodies(s):
+            if not _entered_scan(b, out):
+                return False
+    return True
+
+
+def entered_pcs(procs, extra=()):
+    """The pcs some transfer may name, or None where one names a pc no list enumerates.
+
+    The dual of ``bound_pcs``: a computed transfer beside its arm table lands on the
+    arms, and one without a table can land anywhere, which is what refuses the reading."""
+    out = {e for e, _p, _r, _s in procs} | set(extra)
+    for _e, _p, _r, stmts in procs:
+        if not _entered_scan(stmts, out):
+            return None
+    return out
+
+
+def _drop_labels(stmts, keep):
+    changed = False
+    for i in range(len(stmts) - 1, -1, -1):
+        s = stmts[i]
+        for b in _stmt_bodies(s):
+            changed |= _drop_labels(b, keep)
+        if s[0] == "label" and s[1] not in keep:
+            del stmts[i]
+            changed = True
+    return changed
+
+
+def drop_dead_labels(procs, entered=()):
+    """Delete every ``label`` no transfer names: it is not a point control enters.
+
+    Label-entry conservatism -- a join whose in-edges no walk can enumerate, which
+    kills definitions and the displacement balance -- is owed to the pcs control may
+    arrive at. One no goto, arm table, call, procedure entry or landing names is
+    reached only by falling into it, so nothing joins there."""
+    keep = entered_pcs(procs, entered)
+    if keep is None:
+        return False
+    changed = False
+    for _e, _p, _r, stmts in procs:
+        changed |= _drop_labels(stmts, keep)
+    return changed
+
+
 def calls_in(stmts):
     """Whether any statement in ``stmts``, bodies included, is a call."""
     for s in stmts:
@@ -4012,12 +4089,13 @@ def resign(procs, play):
     return info
 
 
-def repolish(procs, play, regions=None):
+def repolish(procs, play, regions=None, landings=()):
     """A prune+inline fixpoint after the rungs: the 16-bit lift writes new temps.
 
     Signatures hold across it -- ``params``/``rets`` stay as the build fixed them
     and only the bodies move, ahead of rung (f) keying ``resolved`` by the final
     address expressions -- and ``resign`` re-derives them once the passes settle."""
+    drop_dead_labels(procs, landings)
     info = _Info([(e, stmts) for e, _p, _r, stmts in procs], play)
     info.summarize()
     info.params = {e: list(p) for e, p, _r, _s in procs}

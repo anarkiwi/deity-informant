@@ -140,12 +140,11 @@ def test_a_sole_site_callee_is_spliced_and_both_copies_are_exact():
 
 M_SHARED_TAIL = (
     "a region the one procedure binds a pc for: the RTS-trick landing folded in beside "
-    "the play "
-    "text, and the pc a relocated SMC dispatch stood at, which `desmc` labels once for "
-    "however many copies carry it. Each is reached by a transfer that resolves through "
-    "the program-wide map, so a copy of the procedure would bind the pc twice"
+    "the play text, reached by a transfer that resolves through the program-wide map, so "
+    "a copy of the procedure would bind the pc twice. The relocated SMC dispatch left "
+    "this class when rung (d1) dropped the label no transfer names (9.1)"
 )
-_BINDS = ("rts-trick", "copied-smc")
+_BINDS = ("rts-trick",)
 
 
 def _copy_safe():
