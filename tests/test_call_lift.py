@@ -13,6 +13,8 @@ from deity_informant import frameproc, frameprog, frameval
 from deity_informant.lifter import OPS
 from deity_informant.structured import DecompileError
 
+_ANY = frameproc._ANYCALL  # pylint: disable=protected-access
+
 XFAIL = {"strict": True}
 
 _PIN = "call suite: "
@@ -89,6 +91,10 @@ PINS = {
     ("page-one-spill", "loop/row"): (M_SP_LOOP_PUSH,),
     ("page-one-spill", "arm/col"): (M_SP_LOOP_PUSH,),
     ("page-one-spill", "arm/row"): (M_SP_LOOP_PUSH,),
+    ("homed-body", "tone/before"): (M_SELF_CALL,),
+    ("homed-body", "tone/after"): (M_SELF_CALL,),
+    ("homed-body", "alt/before"): (M_SELF_CALL,),
+    ("homed-body", "alt/after"): (M_SELF_CALL,),
 }
 
 # what already holds, and must keep holding
@@ -363,7 +369,13 @@ def test_no_called_body_binds_a_pc_a_copy_would_collide_on():
     assert not bad
 
 
-def test_the_bound_pcs_are_the_dispatch_arms_and_the_shared_tail():
+@pytest.mark.parametrize("label", [v.label for v in G.BY_ROW["homed-body"].variants])
+def test_a_body_another_procedure_homes_is_still_copied_at_its_other_site(label):
+    """The serialization view hides what one procedure homes, and a copy binds no pc,
+    so the site in the other procedure carries its own: only the self-call is left."""
+    _model, prog = G.built("homed-body", label)
+    got = [s for _e, _p, _r, b in prog.procs for _env, _i, s in frameproc.envs(b) if s[0] in _ANY]
+    assert {s[1] for s in got} == {prog.procs[1][0]}  # the recursion, and nothing else
     """Where context-qualified pcs would be needed: a fold the structurer could not do."""
     got = {v for v in G.ALL if any(G.pcs_bound(s) for _e, _p, _r, s in G.parsed(*v).procs)}
     assert got == set(BINDS_PC)

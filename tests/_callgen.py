@@ -709,6 +709,40 @@ def _deep_recursion():
     )
 
 
+def _homed_body():
+    """`homed-body`: a leaf two procedures call, so one of them homes its body.
+
+    The recursion keeps ``rec`` a procedure of its own, so the leaf's two sites sit in
+    two procedures and the plan homes the body under one; the other's site sees no
+    variant at all (Lft's `A_Chipful_of_Love_for_You`, `$13F3` at all 32 sites)."""
+
+    def subs(p, table):
+        p.label("rec").i("LDA", "zp", CNT).i("BEQ", "rel", ("L", "recout"))
+        p.i("DEC", "zp", CNT).i("JSR", "abs", ("L", "rec"))
+        p.i("JSR", "abs", ("L", "leaf")).i("STA", "abs", SID + 1)
+        p.label("recout").i("RTS")
+        p.label("leaf").i("LDX", "zp", ROW)
+        col(p, "X", table)
+        p.i("STA", "abs", SID).i("RTS")
+
+    def play(p, first):
+        if first:
+            p.i("JSR", "abs", ("L", "leaf")).i("STA", "abs", SID + 2)
+        p.i("LDA", "imm", 3).i("STA", "zp", CNT).i("JSR", "abs", ("L", "rec"))
+        if not first:
+            p.i("JSR", "abs", ("L", "leaf")).i("STA", "abs", SID + 2)
+        bump(p)
+
+    return I.cap(
+        V(
+            "%s/%s" % (t, "before" if f else "after"),
+            lambda p, b=f: play(p, b),
+            lambda p, a=t: subs(p, a),
+        )
+        for t, f in itertools.product(("tone", "alt"), (0, 1))
+    )
+
+
 def _two_callers():
     """`two-callers`: one leaf under two callers, so the copies land in two contexts."""
 
@@ -1134,6 +1168,7 @@ SHAPES = (
     Shape("tail-recursion", "the recursive call a return follows", I.tab_data, _tail_recursion()),
     Shape("deep-recursion", "work after the recursive call", I.tab_data, _deep_recursion()),
     Shape("two-callers", "one leaf under two callers", I.tab_data, _two_callers()),
+    Shape("homed-body", "a leaf another procedure homes", I.tab_data, _homed_body()),
     Shape("deep-copy", "two sites on a callee that calls", I.tab_data, _deep_copy()),
     Shape("spill-span", "a spill a transfer stands inside", I.tab_data, _spill_span()),
     Shape("copied-dispatch", "two sites on a computed call", vec_data, _copied_dispatch()),

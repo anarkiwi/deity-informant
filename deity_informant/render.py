@@ -263,6 +263,36 @@ def _structure(model, entry):
     return best[0], best[1]
 
 
+def _carried(model, target):
+    """The pcs a ``Carry``-licensed body covers, as the copy would have to carry them."""
+    carry = procpass.carry(model)
+    if not carry.body(target):
+        return frozenset()
+    seen, stack = set(), [target]
+    while stack:
+        n = stack.pop()
+        if n not in seen:
+            seen.add(n)
+            stack.extend(t for t in carry.intra.get(n, ()) if t in carry.intra)
+    return frozenset(seen)
+
+
+def _unhidden_copy(model, target, attempt):
+    """``attempt`` run with the body another procedure homes visible, or None.
+
+    A copy binds no pc, so a body the serialization view hid because another
+    procedure placed it is still a body this site may carry its own copy of."""
+    hidden = getattr(model, "hidden", None)
+    free = _carried(model, target) & hidden if hidden else frozenset()
+    if not free:
+        return None
+    model.hidden = hidden - free
+    try:
+        return attempt(_proc_cfg(model, target))
+    finally:
+        model.hidden = hidden
+
+
 def _structure_once(model, entry, allow):
     emitted = set()
     labels = set()
@@ -280,8 +310,12 @@ def _structure_once(model, entry, allow):
         a copy first and shares only if that refuses. Every other site copies outright --
         exact where each block may be carried by one (``procpass.Carry``), the region does
         not run through the call line, and the copy binds no label."""
-        if not model.variants(target) or target in chain:
+        if target in chain:
             return None
+        if not model.variants(target):
+            return _unhidden_copy(
+                model, target, lambda cfg: copied(target, callers, site, cfg, chain)
+            )
         cfg = _proc_cfg(model, target)
         if not sole:
             return copied(target, callers, site, cfg, chain)
