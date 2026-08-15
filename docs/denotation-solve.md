@@ -862,46 +862,6 @@ it asserts. A verdict worth two fields on one tune does not buy an unrelated
 driver's subject, so it stays out; what it needs first is a shape whose dead store
 is not the thing being tested.
 
-## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
-
-§8.5's machine — clocked, triggered, bounded accumulators cascading into SID
-writes — needs no instrumentation to recover. The post-removal artifact is a
-closed term: total semantics, closed webs, structured control, every open edge
-guarded. Every question a run would answer is decidable by reading:
-
-- **Accumulator spec = a cell's update sites plus their dominating guards.**
-  The unguarded `ctr = ctr - 1` is the step and the clock; the reload dominated
-  by the wrap comparison is the bound and the reload source. One to three sites
-  per cell in a flat procedure; all four parameters are the text.
-- **Trigger edge = dominance, not coincidence.** B is triggered by A exactly
-  where B's reload site is dominated by A's wrap condition — a region-tree
-  fact, read once.
-- **Cascade order = statement order. Clock dividers = gating nesting.** A cell
-  updated only inside another counter's wrap arm is the divided clock.
-- **Ports = the leaves**: a step drawn from a table row or an `iota` input.
-- **Mode-dependent cells**: update sites under two mode guards are two
-  accumulators selected by a static mode variable, read off the `switch`.
-
-The observational facts the graph needs are already embedded — `unobserved`
-guards, observed dispatch sets, loop evidence, declared inputs. The text is the
-trace's residue; running it again to learn structure would re-derive what the
-guards state. The run survives as verification only: the transliterated machine
-replays `framelog.canonical` once, the gate it always was.
-
-The pattern, named because it recurred five times: rungs collapsed into one
-rewrite, the census into a gate, destination rules into placement, addresses
-into webs, instrumentation into transliteration. Each mechanism was sized for
-the pre-removal problem; the artifact remaining is a few hundred statements of
-arithmetic on named variables, and passes over it are one syntax-directed walk.
-
-Metric: fraction of state cells whose update sites transliterate; residue
-spelled inline (the machine is hybrid by construction). Drivers first: a
-synthesized divider -> row -> arpeggio cascade recovered exactly, then the
-Commando machine (frame clock -> period-8 vibrato triangle and row timer in
-parallel -> wrap triggers the cursor cascade -> note-on reloads slide step and
-duration). The graph is the player; the constants, tables and scripts are the
-tune — the family quotient's concrete object.
-
 ### 9.4 A traversed run is one datum, and the copy class was a landing (2026-08-15)
 
 **§9.3's under-carve is Grid_Runner's, and its evidence is contiguity.** `LDA $13BA,X`
@@ -1238,3 +1198,149 @@ The residue the rule leaves is therefore a guarded one, and what would still be
 unguarded — a `label` *inside* two spliced bodies, resolved through `pcmap` alone — no
 built tune produces. A scoped resolution is what that would want if a later mechanism
 reaches it.
+
+## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
+
+§8.5's machine — clocked, triggered, bounded accumulators cascading into SID
+writes — needs no instrumentation to recover. The post-removal artifact is a
+closed term: total semantics, closed webs, structured control, every open edge
+guarded. Every question a run would answer is decidable by reading:
+
+- **Accumulator spec = a cell's update sites plus their dominating guards.**
+  The unguarded `ctr = ctr - 1` is the step and the clock; the reload dominated
+  by the wrap comparison is the bound and the reload source. One to three sites
+  per cell in a flat procedure; all four parameters are the text.
+- **Trigger edge = dominance, not coincidence.** B is triggered by A exactly
+  where B's reload site is dominated by A's wrap condition — a region-tree
+  fact, read once.
+- **Cascade order = statement order. Clock dividers = gating nesting.** A cell
+  updated only inside another counter's wrap arm is the divided clock.
+- **Ports = the leaves**: a step drawn from a table row or an `iota` input.
+- **Mode-dependent cells**: update sites under two mode guards are two
+  accumulators selected by a static mode variable, read off the `switch`.
+
+The observational facts the graph needs are already embedded — `unobserved`
+guards, observed dispatch sets, loop evidence, declared inputs. The text is the
+trace's residue; running it again to learn structure would re-derive what the
+guards state. The run survives as verification only: the transliterated machine
+replays `framelog.canonical` once, the gate it always was.
+
+The pattern, named because it recurred five times: rungs collapsed into one
+rewrite, the census into a gate, destination rules into placement, addresses
+into webs, instrumentation into transliteration. Each mechanism was sized for
+the pre-removal problem; the artifact remaining is a few hundred statements of
+arithmetic on named variables, and passes over it are one syntax-directed walk.
+
+Metric: fraction of state cells whose update sites transliterate; residue
+spelled inline (the machine is hybrid by construction). Drivers first: a
+synthesized divider -> row -> arpeggio cascade recovered exactly, then the
+Commando machine (frame clock -> period-8 vibrato triangle and row timer in
+parallel -> wrap triggers the cursor cascade -> note-on reloads slide step and
+duration). The graph is the player; the constants, tables and scripts are the
+tune — the family quotient's concrete object.
+
+## 11. The fold: the execution is the program (2026-08-15)
+
+### 11.1 The audit: fifty phases against a contract that never asked for them
+
+The frameprog contract is dynamic. Its normative claim is the per-frame
+canonical SID write stream over a pinned trace, verified by a reference
+evaluator, with faulting guards at every edge the trace did not take —
+inputs pinned by `iota`, dispatch tables guarded by their observed sets,
+`unobserved` arms that fault. Nothing in the contract requires a static
+theory of the machine program.
+
+Yet the pipeline satisfies this dynamic contract by static means: lift the
+instruction stream, build a block model, structure it into procedures, and
+then remove machine features from the *text* one campaign at a time — SMC,
+calls, stack, labels, scratch — each removal a static theory (balance walks,
+epoch scans, copy plans, placement fixpoints, homing rules, span rules) with
+refusal classes, each refusal class the next phase. Fifty-six commits on this
+branch alone, +7,676 lines, to move surviving call lines from 2,165 to 1,002
+— asymptotic by construction, because every static theory meets every static
+hard case: placement, aliasing, balance, extent. `framestack.py` is 1,253
+lines whose entire purpose is to re-derive statically what every execution
+states concretely: where `sp` stood. The equation grows a term per phase and
+diverges. The corrections that repeatedly reset this campaign — a spill is a
+store, page one is memory, scratch is frame-locality, a label nothing names
+is nothing, there are no stack-dependent programs — were all one correction:
+**at execution time none of these problems exist.**
+
+### 11.2 The proposal: fold the execution, not the text
+
+The recorder already executes bit-identically to the VM while residualising
+data flow over the entry state. The program is recovered from it directly:
+
+1. **Per invocation, a path**: the sequence of branch decisions taken, with
+   effects residualised over the frame-entry state. A path has no calls (a
+   callee's instructions are simply present), no stack (every push/pull is a
+   concrete cell the residualisation forwards through), no labels, no SMC (a
+   pc that executes different bytes on different frames is two paths).
+2. **Merge the invocations.** Identical paths dedupe. The first divergence
+   between two paths is a residualised branch condition — an `if`. A
+   divergence caused by a patched cell is a `switch` on that cell with the
+   observed variants as arms. A direction never taken is an `unobserved`
+   guard. This is the contract's own epistemology, produced natively rather
+   than re-proven statically.
+3. **Re-roll structure where it repeats**: a run of isomorphic segments with
+   induction structure is a `for`/`loop` (the voice loop, the copy loops) —
+   the base-displacement isomorphism license of §9. Where re-rolling fails,
+   honest unrolling stands (current artifacts already carry per-voice copies;
+   Automatas grew +53% under the static copy campaign for the same reason).
+4. **State is read-before-write across invocations.** Scratch cannot appear
+   in the artifact at all — §9.1 holds by construction, per web, because the
+   fold forwards every frame-local value. Width (§9) and the accumulator
+   transliteration (§10) operate on the folded output unchanged, on simpler
+   input.
+
+The §8.4 and §9.1 invariants then hold **by construction for every tune that
+builds**: there is no call, label, sp token or scratch field in the
+representation to remove. The residue classes of §§9.4–9.7 — `label:*`,
+`wrapped-body`, `carry-refused`, `arm-landing`, `no-body`, `landing-callee`,
+every `spslot`/`sp_*` row — are not solved; they are deleted, because they
+are properties of a representation the artifact no longer passes through.
+Zero on 624/624 in one landing, not asymptotically.
+
+### 11.3 What it deletes, what it keeps
+
+Deleted (with their tests): `framestack.py` entire (1,253); the placement
+half of `render` (CNS, scoped merges, the allow fixpoint, the rank — the
+label-minimisation problem no longer exists); `procpass`'s copy/splice
+planning; `frameval`'s call/ret/sp arms, frame matching and stack-page
+protection; the balance/entered-pcs/epoch machinery in `frameproc`; the
+relocation half of `desmc` (the walker executes SMC natively and the
+artifact carries no code image — the contract already said so); extent
+proofs that observed address sets state directly. Conservatively over five
+thousand lines of mechanism plus a comparable body of tests whose subjects
+cease to exist.
+
+Kept: the lifter (the complete 6510 set — the ground truth), the VM, walker
+and recorder (the reverse-engineering assets the fold consumes), `framelog`
+and both gates, the grammar and dialect (the folded program serialises to the
+same one-procedure text), the width/role/carve layers over folded output, and
+the driver suites — `violations()` passes en masse rather than pin by pin.
+
+### 11.4 Risks, named with their answers
+
+- **Path-set size.** Players are small machines; distinct paths over a full
+  song number in the dozens, and the merge is a DAG with shared prefixes.
+  The worst case is the Follin interpreter, whose per-frame path varies with
+  the script — segmented at its own op boundaries (the `operators` table the
+  artifact already carries), each op body folds independently.
+- **Unroll blowup.** Bounded by the re-roll pass and gated by the size
+  ratchet; where a loop resists re-rolling the artifact is larger, not
+  wrong.
+- **Totality.** `block_model(loads(text))` rebuilds the path DAG — the text
+  is the DAG; the obligation gets easier, not harder.
+- **The gate is unchanged.** Gate FP remains the arbiter, and the fold's
+  output must reproduce the same canonical log the static pipeline's did.
+
+### 11.5 The session plan
+
+One module (`framepath`): path signatures, the merge, re-roll, emission —
+a few hundred lines against the recorder's existing API. Trim the evaluator.
+Re-point the drivers. Mass-delete the static campaigns. Run both gates once.
+The playbook's protocol binds the execution: no discoveries — every shape
+the fold meets is a playbook row, because the playbook enumerates the
+execution's idioms, and the fold never sees the text's.
+
