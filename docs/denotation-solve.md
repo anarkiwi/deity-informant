@@ -800,6 +800,57 @@ Two more owed mechanisms, both named by Grid_Runner:
   declaration**, not a role: a constant is not an update shape and `roles.ROLES`
   is closed over the update shapes (`test_the_shape_and_role_vocabularies_are_closed`).
 
+### 9.3 The read set an index carries, and 9.1 landed on it (2026-08-15)
+
+**The reader §9.2 owed a name is `LDA $16A7,Y` at Puke's `$15C9`.** The carve gives
+that table 96 rows, `Y` reaches 120, and the row it lands on is `$171F` itself, so
+the ONE span rule — an index reaches no further than the declaration holding its
+base — counted the overrunning row as no read of the cell it loads and rung (d1)
+named a wire the machine still reads. Grid_Runner's `sid.reg[x] = m_13BA[x]` is the
+same shape at a one-row carve reaching twenty-five: one defect, both witnesses.
+
+**A carve names the datum an index rides; it does not bound the index.** The
+evidence that one leaves its declaration is the observed read map, a channel the
+model already carries and the artifact already emits, over exactly the window the
+gate replays. An access seen at one address is the exact load the rewrite
+redirects; an access seen at more is a reader of every cell it was seen at.
+`framestack.read_reach` is that set and the walk refuses on it, so `$171F` and the
+four latches hold their stores. The span rule stays what it was — the model's
+reading of which datum an access names — and the evidence says where it is wrong.
+
+Two further refusals landed with it, both §9.1's own:
+
+- **A read through an address rung (f) does not bound** moves a value the rewrite
+  cannot follow, so the cell stays addressed (§9's open-web residue). Page one keeps
+  the leniency it had, `_page_one_free` protecting it at evaluation.
+- **A cell no store may reach is a constant**, and the demotion is a data
+  declaration: `frameprog._cell_decl` is the carving a loose cell already had, so
+  the form is the one-element byte table the grammar and the round trip already
+  carry, and `roles.ROLES` stays closed over the update shapes.
+
+Measured, both gates complete against `6950e97`: **Gate FP unmoved on every one of
+614 built tunes** (613 clean, 1 diverged, 10 refused, no tune in a different class),
+inv_probe unmoved on all 624 (253 clean / 360 residue / 10 fault / 1 diverged).
+Corpus state fields **17,330 → 16,199**, 408 tunes falling and **none rising**;
+Commando 25 → 12, Grid_Runner 15 → 12, Automatas 77 → 76, Wizball 233 → 230,
+Ghouls_n_Ghosts 145 → 141, Puke 20 → 17 with `$171F` held.
+
+**Measured and rejected on the way**, each on the same exemplars: bounding an index
+by its own value graph (a `for` range where one exists, `frameproc.addr_reach`
+otherwise) is sound and useless — a byte index covers 256 cells, and Commando keeps
+all 25 fields; bounding it by the furthest cell an access was *seen* to read
+over-approximates a sparse read set — Commando's `LDA $5429,Y` reaches `$5511` and
+never the fields between, and Commando keeps 23.
+
+**What the latches say.** Grid_Runner's `m_13CF..m_13D2` do not fall and cannot: the
+blit reads them, and a cell an indexed read may load is a cell the rewrite cannot
+redirect. The dead-store verdict §9.2 recorded is now refused by that premise rather
+than by luck, so the 15 → 11 it promised was never available. The four latches are
+state until the blit's own extent is the declaration it rides — which is the next
+mechanism, and it is `datadecl`'s, not the destack's: a table read at index 24 with
+a one-row carve is an under-carved extent, and §9's record formation wants it right
+anyway.
+
 ## 10. The recovery: the accumulator machine is a transliteration (2026-08-15)
 
 §8.5's machine — clocked, triggered, bounded accumulators cascading into SID
