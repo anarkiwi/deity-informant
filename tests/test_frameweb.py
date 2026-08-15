@@ -143,6 +143,40 @@ def test_the_width_law_is_the_conjunction_over_the_names_webs():
     assert sorted(len(g) for g in F._width_webs(mixed).values()) == [2]
 
 
+# ---- the two loop readings a loop-carried local reaches -------------------------
+def _repolish(body):
+    procs = [(0x1000, [], [], list(body))]
+    F.repolish(procs, 0x1000, None, ())
+    return procs[0][3]
+
+
+def _acc(name):
+    return ("op", "INT_XOR", (cell(0x1059), L(name)), 1)
+
+
+def test_a_for_body_falls_out_of_its_loop_so_the_local_it_carries_lives():
+    """A ``for`` leaves by its own bottom: the last trip's end is the loop's live-out.
+
+    Read as the head alone, the update of an accumulator the body carries is dead at
+    its own site and the sum outside reads the pre-loop constant."""
+    body = [
+        ("asg", "s1", C(0)),
+        ("for", "y", 3, 0, [("asg", "s1", _acc("s1"))]),
+        ("st", C(0xD404, 2), L("s1")),
+    ]
+    assert _repolish(body) == body
+
+
+def test_a_levelled_exit_lands_on_the_loop_its_level_counts_out_to():
+    """``continue 2`` re-reads the outer loop's head, so the definition before it
+    stands and the inline context has to carry every enclosing loop, not one."""
+    step = [("asg", "s1", ("op", "INT_ADD", (L("s1"), C(1)), 1))]
+    inner = ("loop", step + [("if", "if", ("op", "INT_NOTEQUAL", (L("s1"), C(3)), 1), [], [])])
+    inner[1][-1][3].append(("cont", 2))
+    body = [("asg", "s1", C(0)), ("loop", [inner, ("brk", None)]), ("st", C(0xD404, 2), L("s1"))]
+    assert _repolish(body) == body
+
+
 def _tune(stem, parent):
     return [
         pytest.param(path, sub, secs, id="%s-%s" % (parent, stem))

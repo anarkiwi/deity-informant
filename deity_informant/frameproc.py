@@ -2102,6 +2102,14 @@ class _Flow:
             out |= _locset(x)
         return out
 
+    def _body_out(self, s, live, head):
+        """What is live where the body falls through: the head, and a ``for``'s own exit.
+
+        A ``loop`` leaves only by ``brk``, so its body's end wraps to the head alone; a
+        ``for`` leaves by its own bottom, so the last trip's end is the loop's live-out
+        and a local the body carries reads there."""
+        return set(head) | (set(live) if s[0] == "for" else set())
+
     def _loop_head(self, s, live):
         body = s[1] if s[0] == "loop" else s[4]
         head = set()
@@ -2113,7 +2121,7 @@ class _Flow:
             f.armret = list(self.armret)
             f.brk = self.brk + [set(live)]
             f.cont = self.cont + [head]
-            h = f.seq(body, set(head))
+            h = f.seq(body, self._body_out(s, live, head))
             if s[0] == "for":
                 h.discard(s[1])
             if h <= head:
@@ -2150,7 +2158,7 @@ class _Flow:
                 self.loop_head[id(s)] = set(head)
             self.brk.append(set(live))
             self.cont.append(head)
-            out = self.seq(s[1] if k == "loop" else s[4], set(head))
+            out = self.seq(s[1] if k == "loop" else s[4], self._body_out(s, live, head))
             self.brk.pop()
             self.cont.pop()
             if k == "for":
@@ -2321,14 +2329,14 @@ def _use_count(s, name):
 
 
 def _escapes(s, out, depth=0):
-    """Collect cont/brk statements of ``s`` bound to the enclosing loop.
+    """``(kind, loops out)`` of every cont/brk of ``s``, counted from ``s``'s own list.
 
-    A levelled exit inside a nested region is bound here when its level counts
-    out exactly as far as this loop, so nested bodies are walked too."""
+    A levelled exit inside a nested region counts out through the loops between it and
+    here, so the loop it binds is that many out; a level the nesting swallows binds a
+    loop inside ``s`` and escapes nothing."""
     k = s[0]
     if k in _EXITS:
-        if exit_level(s) == depth + 1:
-            out.add(k)
+        out.add((k, exit_level(s) - depth))
         return out
     inner = depth + 1 if k in _CYCLIC else depth
     for b in _stmt_bodies(s):
@@ -2337,35 +2345,39 @@ def _escapes(s, out, depth=0):
     return out
 
 
-def _esc_hit(s, name, head, after):
-    esc = _escapes(s, set())
-    if "cont" in esc and (head is None or name in head):
-        return True
-    return "brk" in esc and (after is None or name in after)
+def _esc_hit(s, name, loops):
+    """Whether an exit of ``s`` lands where ``name`` is still read.
+
+    ``loops`` is ``(head, after)`` per enclosing loop, innermost last: a ``continue 2``
+    binds the second one out, and a level no enclosing loop answers is unknown."""
+    for kind, lvl in _escapes(s, set()):
+        if lvl < 1:
+            continue  # the loop it binds stands inside ``s``
+        if lvl > len(loops):
+            return True
+        got = loops[-lvl][0 if kind == "cont" else 1]
+        if got is None or name in got:
+            return True
+    return False
 
 
 class _InlineCtx:
-    """Per-list inlining context: liveness annotations plus loop scope."""
+    """Per-list inlining context: liveness annotations plus the enclosing loop stack."""
 
-    __slots__ = ("info", "entry", "liveout", "loop_head", "head", "after")
+    __slots__ = ("info", "entry", "liveout", "loop_head", "loops")
 
-    def __init__(self, info, entry, liveout, loop_head, head=None, after=None):
+    def __init__(self, info, entry, liveout, loop_head, loops=()):
         self.info = info
         self.entry = entry
         self.liveout = liveout
         self.loop_head = loop_head
-        self.head = head
-        self.after = after
+        self.loops = loops
 
     def enter(self, s):
         if s[0] in ("loop", "for"):
+            got = (self.loop_head.get(id(s)), self.liveout.get(id(s)))
             return _InlineCtx(
-                self.info,
-                self.entry,
-                self.liveout,
-                self.loop_head,
-                self.loop_head.get(id(s)),
-                self.liveout.get(id(s)),
+                self.info, self.entry, self.liveout, self.loop_head, self.loops + (got,)
             )
         return self
 
@@ -2376,7 +2388,7 @@ def _find_use(items, start, name, e, ctx):
     Sound for multi-def names: the def dominates the same-list use (no label
     in between), so every path to the use passes the def."""
     info, entry, liveout = ctx.info, ctx.entry, ctx.liveout
-    head, after = ctx.head, ctx.after
+    loops = ctx.loops
     elocs = _locset(e)
     has_mem = _reads_mem(e)
     for j in range(start, len(items)):
@@ -2392,14 +2404,14 @@ def _find_use(items, start, name, e, ctx):
             top = sum(_use_count_expr(x, name) for x in _stmt_exprs(s))
             if has_mem and top != cnt:
                 return None
-            if _esc_hit(s, name, head, after):
+            if _esc_hit(s, name, loops):
                 return None
             if name not in targets and name in liveout.get(id(s), (name,)):
                 return None  # a later (possibly non-textual) consumer remains
             return j
         if name in dd or dd & elocs or _invis_name(s, name, info, entry):
             return None
-        if _esc_hit(s, name, head, after):
+        if _esc_hit(s, name, loops):
             return None
         if has_mem and s[0] != "asg":
             return None
