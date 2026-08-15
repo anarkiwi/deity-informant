@@ -14,6 +14,7 @@ from deity_informant import frameproc
 from deity_informant import framestack
 from deity_informant import frameval
 import _fuzzgen as G
+import test_frameptr as P
 
 from test_frameprog import _fuzz_model
 
@@ -609,6 +610,105 @@ def test_a_displaced_call_over_no_page_one_datum_still_drops_its_linkage():
     """The other disjunct: nothing surviving names page one, so nothing moved."""
     procs = _proc([_spmove(-1), _pcall(SUB2), _spmove(1)]) + [(SUB2, [], [], [])]
     assert _sp_proofs(procs) == ["sp"]
+
+
+# ---- the held store, re-asked where rung (f) has an answer ------------------------
+def _ptr_procs(extra=()):
+    """A pointer reloaded from a declared lo/hi pair and dereferenced at a row."""
+    stmts = [
+        ("asg", "y", ("mem", ("const", 0x1600, 2), 1)),
+        P._st(P.PTR, P._load(0x1500, 0x1502, ("loc", "y"))),
+        *extra,
+        ("st", ("const", OUT, 2), ("mem", P._deref(P.PTR, ("loc", "y")), 1)),
+    ]
+    return [(SUB, [], [], stmts)], P._pair(0x1500, 0x1502, 2)
+
+
+def _defs_at(stmts, i=0):
+    return frameproc.DefsAt(frameproc.Defs(stmts, None, False), i)
+
+
+def test_a_deref_rung_f_bounds_names_its_target_words_and_leaves_the_page():
+    """The ordering gap: the pointer's value set is rung (f)'s and needs rung (d).
+
+    Unbounded, the address may be any cell and the aliasing question must refuse;
+    bounded, the two declared blocks are where it lands and page one is not one."""
+    procs, decls = _ptr_procs()
+    addr = P._deref(P.PTR, ("loc", "y"))
+    bounds = framestack.deref_bounds(P._mem0(P._TAB), decls, procs)
+    assert bounds[addr] == ((0x0000, 0x1400, 0x1440), 0xFF)  # the rows, the image's own
+    at = _defs_at(procs[0][3])
+    assert not framestack._off_page(addr, 1, at, None, None)
+    assert framestack._off_page(addr, 1, at, None, bounds)
+
+
+def test_a_deref_whose_targets_reach_page_one_is_not_off_the_page():
+    """The negative: the bound is read, not assumed -- a word in page one counts."""
+    procs, decls = _ptr_procs()
+    addr = P._deref(P.PTR, ("loc", "y"))
+    cells = {**P._TAB, P.PTR: 0xF0, P.PTR + 1: 0x01}  # the image's own word is $01F0
+    bounds = framestack.deref_bounds(P._mem0(cells), decls, procs)
+    assert bounds[addr] == ((0x01F0, 0x1400, 0x1440), 0xFF)
+    assert not framestack._off_page(addr, 1, _defs_at(procs[0][3]), None, bounds)
+
+
+def _held(tail):
+    """Automatas minimised: the value parked below the live top, and ``tail`` after."""
+    return _proc([("st", _spaddr(0), ("loc", "a"))] + list(tail))
+
+
+SP_UNBALANCED = framestack.SP_CLASSES["sp_unbalanced"]
+
+
+def _spill_lemma(procs, bounds=None):
+    (pr,) = framestack.drop_spills(procs, SUB, None, bounds)
+    return pr.status, pr.lemma
+
+
+def test_a_held_store_no_read_may_name_is_dead():
+    """Page one is the machine's, so a store the artifact cannot read back is not one."""
+    procs = _held([("st", ("const", OUT, 2), ("loc", "a")), ("ret", None)])
+    assert _spill_lemma(procs) == (
+        "resolved",
+        "spill: 1 held store(s) dropped; " "page one has no reader",
+    )
+    assert [s[0] for s in procs[0][3]] == ["st", "ret"]
+
+
+@pytest.mark.parametrize(
+    "tail,want",
+    [
+        ([_spread(0)], "no entry-epoch spill store"),
+        ([("asg", "w0", ("mem", ("const", 0x01F0, 2), 1))], "no entry-epoch spill store"),
+        ([("asg", "w0", ("mem", ("loc", "t0", 2), 1))], "no entry-epoch spill store"),
+        ([("st", ("const", 0x01F0, 2), ("const", 0, 1))], "no entry-epoch spill store"),
+        ([("igoto", 0x01F5, None)], "the machine names a page-one cell of its own"),
+        ([_spmove(-1)], SP_UNBALANCED),
+    ],
+    ids=["slot-read", "page-read", "blind-read", "foreign-store", "machine-read", "unbalanced"],
+)
+def test_a_held_store_a_reader_may_name_stays(tail, want):
+    """Each refusal names the reader: the store is only dead where none can see it."""
+    status, lemma = _spill_lemma(_held(list(tail) + [("ret", None)]))
+    assert status == "refused" and want in lemma
+
+
+def test_a_push_a_loop_carries_is_not_an_entry_slot():
+    """The RTS trick (``rts-trick:loop``): the push a loop body carries stands at no
+    displacement the entry names, so the ``ret`` reading it back is not excluded."""
+    procs = _proc([("loop", [("st", _spaddr(0), ("loc", "a")), _spmove(-1), ("brk", None)])])
+    assert _spill_lemma(procs) == (
+        "refused",
+        "spill: a page-one access is no entry-epoch " "spill store",
+    )
+
+
+def test_the_bound_is_what_releases_the_blind_reader():
+    """The whole ordering point: the same text, refused unbounded and dead bounded."""
+    blind = ("mem", ("loc", "t0", 2), 1)
+    tail = [("st", ("const", OUT, 2), blind), ("ret", None)]
+    assert _spill_lemma(_held(tail))[0] == "refused"
+    assert _spill_lemma(_held(tail), {blind[1]: ((0x1400,), 0)})[0] == "resolved"
 
 
 # ---- rung (d1): scratch leaves the state (docs/denotation-solve.md 9.1) -----------

@@ -913,6 +913,28 @@ def _sp_spill():
     return _sp_body(sub)
 
 
+def _sp_spill_over_deref():
+    """Automatas minimised: a spill live across a self-built pointer's deref.
+
+    Rung (d0s) cannot bound the deref -- rung (f) rests on rung (d)'s fusion, which
+    has not run at that point -- so the slot is held and its kept store reads sp.
+    The same question after rung (d) has an answer, and the store is dead."""
+    sub = G.Asm(SPSUB)
+    sub.i("PHA").i("LDA", "abs", CTR).i("AND", "imm", 0x01).i("TAX")
+    sub.i("LDA", "absx", G.VEC).i("STA", "zp", G.PTR)
+    sub.i("LDA", "absx", G.VEC + 4).i("STA", "zp", G.PTR + 1)
+    sub.i("LDY", "imm", 0).i("LDA", "indy", G.PTR).i("STA", "abs", TMP)
+    sub.i("PLA").i("EOR", "imm", 0x02).i("RTS")
+    a, data, frames = _sp_body(sub)
+    base = G.TBL + 0x40
+    for k in range(2):
+        data[G.VEC + k] = (base + 8 * k) & 0xFF
+        data[G.VEC + 4 + k] = (base + 8 * k) >> 8
+        data[base + 8 * k] = 0x20 + k
+    data[TMP] = 0
+    return a, data, frames
+
+
 def _sp_loop_edge():
     """Invariant: a loop edge standing at a displacement keeps sp -- 2c's own bound."""
     return _sp_body(_sp_loop_sub())
@@ -1180,6 +1202,7 @@ _FIXTURES = {
     "dispatch_scratch": _dispatch_scratch,
     "g2_store": _g2_store,
     "sp_spill": _sp_spill,
+    "sp_spill_over_deref": _sp_spill_over_deref,
     "sp_unbalanced": _sp_unbalanced,
     "sp_loop_edge": _sp_loop_edge,
     "sp_call_at_entry": _sp_call_at_entry,
@@ -1292,6 +1315,25 @@ def _body(text):
 def test_sp_relative_spill_leaves_no_stack_pointer():
     """Phase 1 (LANDED): the spill is a local and no procedure threads sp."""
     assert not re.search(r"\bsp\b", _body(_lift("sp_spill"))), "the stack pointer survived"
+
+
+def test_a_spill_live_across_a_bounded_deref_still_leaves_the_stack_pointer():
+    """The ordering gap: rung (d0s) holds the slot, and rung (f)'s bound releases it.
+
+    Both halves are asserted here -- the held verdict, so the driver keeps proving
+    what it was built for, and the empty page it leaves once the deref is bounded."""
+    text = _lift("sp_spill_over_deref")
+    held = [p for p in _lift_prog["sp_spill_over_deref"].proofs if p.status == "held"]
+    assert [p.kind for p in held] == ["spslot"]
+    assert held[0].lemma.endswith("an unresolvable address may alias the live slot")
+    body = _body(text)
+    assert not re.search(r"\bsp\b", body), "the held store kept the stack pointer"
+    code = body[body.index("sub_") :]
+    assert not re.search(r"\$01[0-9A-F]{2}|m_01", code), "a page-one access survived the destack"
+    assert _sp_classes("sp_spill_over_deref") == []
+    (spill,) = [p for p in _lift_prog["sp_spill_over_deref"].proofs if p.kind == "spill"]
+    assert spill.status == "resolved"  # the callee is inlined at three sites
+    assert "3 held store(s) dropped" in spill.lemma
 
 
 def test_an_unbalanced_procedure_keeps_its_stack_pointer():

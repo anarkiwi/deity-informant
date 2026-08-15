@@ -11,6 +11,7 @@ from __future__ import annotations
 from . import expr as E
 from . import framefuse as FF
 from . import frameproc
+from . import frameptr
 from . import grammar as G
 from .structured import Proof
 
@@ -1075,14 +1076,38 @@ SP_CLASSES = {
 _PAGE_RANGE = (_PAGE[0], None, len(_PAGE) - 1, 1, 0)
 
 
-def _off_page(addr, width, at, regions):
+def _hits_page(base, n):
+    """Whether the ``n`` bytes from ``base``, wrapping at $FFFF, include a page-one cell."""
+    end = base + n - 1
+    if end > 0xFFFF:
+        return base <= _PAGE[-1] or _PAGE[0] <= (end & 0xFFFF)
+    return base <= _PAGE[-1] and _PAGE[0] <= end
+
+
+def deref_bounds(mem0, decls, procs):
+    """``{address: (target words, row bound)}`` of every deref rung (f) bounds.
+
+    The aliasing question a destack walk asks of a base-less address is rung (f)'s
+    own, and rung (f) rests on rung (d) having fused the pointer's lo/hi pair, so
+    it is asked where fusion has run rather than re-derived from the address."""
+    return {
+        s.addr: (tuple(s.blocks()), s.bound)
+        for s in frameptr.analyse(mem0, decls, procs)
+        if s.why is None
+    }
+
+
+def _off_page(addr, width, at, regions, bounds=None):
     """Every address the expression names lies outside the stack page.
 
     The resolvable form is bounded by the ONE span rule (a modular ``zp,X`` address
-    never leaves the zero page), the rest by the bits the address may set and 2a's
-    ``addr_floor``, the bits it must."""
+    never leaves the zero page), a base-less deref by ``deref_bounds``, the rest by
+    the bits the address may set and 2a's ``addr_floor``, the bits it must."""
     got = frameproc.addr_range(addr, width)
     if got is None:
+        rows = (bounds or {}).get(addr)
+        if rows is not None:
+            return not any(_hits_page(t, rows[1] + width) for t in rows[0])
         lo = frameproc.addr_floor(addr, at)
         hi = frameproc.addr_bits(addr, at)
         return hi + width - 1 < _PAGE[0] or lo > _PAGE[-1]
@@ -1099,7 +1124,60 @@ def _called(procs):
     return any(s[0] in frameproc._ANYCALL for _e, _pa, _r, b in procs for s in FF.stmts_of(b))
 
 
-def _page_one_free(procs, sp, regions):
+def _spill_proof(play, why, n=0):
+    """The rung-(d0h) record: the held stores went, or the page still has a reader."""
+    return Proof(
+        play,
+        "spill",
+        "refused" if why else "resolved",
+        (),
+        "spill: %s" % (why or "%d held store(s) dropped; page one has no reader" % n),
+    )
+
+
+def drop_spills(procs, play, regions=None, bounds=None, exits=None):
+    """Rung (d0s)'s ``held`` verdict re-asked where rung (f) has an answer.
+
+    The readers the destack walk could not resolve are pointer derefs, which rung (f)
+    bounds only once rung (d) fuses the pair. Page one is the machine's, and where
+    every procedure balances its pushed return word stands above every entry slot."""
+    sp = frameproc._SP
+    saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
+    sites = {}
+    for _e, _pa, _r, stmts in procs:
+        marks = _Marks()
+        _sp_scan(stmts, marks, sp, saves_of[_e])
+        for env, i, s in frameproc.envs(stmts):
+            at = frameproc.DefsAt(env, i)
+            mark = marks.at[(id(env.lst), i)]
+            acc = _accesses(s)
+            wrote = len(acc) - 1 if s[0] == "st" else -1
+            for j, (addr, width) in enumerate(acc):
+                if _off_page(addr, width, at, regions, bounds):
+                    continue
+                got = _slot_at(addr, mark, sp)
+                if j != wrote or got is None or got[0] or not _below_sp(got[1]):
+                    return [_spill_proof(play, "a page-one access is no entry-epoch spill store")]
+                sites.setdefault(id(env.lst), (env.lst, set()))[1].add(i)
+            for addr, width in frameproc.machine_reads(s, sp):
+                if sp in frameproc._locset(addr):
+                    continue  # the balance below is what stands this above every slot
+                if not _off_page(addr, width, at, regions, bounds):
+                    return [_spill_proof(play, "the machine names a page-one cell of its own")]
+    if not sites:
+        return [_spill_proof(play, None)]
+    bal, _at_entry = _balances(procs, sp, saves_of, exits)
+    if not all(bal.get(e) for e, _pa, _r, _s in procs):
+        return [_spill_proof(play, SP_CLASSES["sp_unbalanced"])]
+    n = 0
+    for lst, idxs in sites.values():
+        for i in sorted(idxs, reverse=True):
+            del lst[i]
+            n += 1
+    return [_spill_proof(play, None, n)]
+
+
+def _page_one_free(procs, sp, regions, bounds=None):
     """No surviving access may reach the stack page other than through ``sp``.
 
     The second premise the raw call's linkage may rest on: the drop moves where the
@@ -1111,12 +1189,12 @@ def _page_one_free(procs, sp, regions):
             for addr, width in _accesses(s) + list(frameproc.machine_reads(s)):
                 if sp in frameproc._locset(addr):
                     continue
-                if not _off_page(addr, width, at, regions):
+                if not _off_page(addr, width, at, regions, bounds):
                     return False
     return True
 
 
-def drop_sp(procs, play, regions=None, exits=None):
+def drop_sp(procs, play, regions=None, exits=None, bounds=None):
     """``sp`` leaves the program where nothing reads it; one proof per keeper.
 
     The updates, the parameter and every threading argument go. A surviving
@@ -1127,7 +1205,8 @@ def drop_sp(procs, play, regions=None, exits=None):
     need, calls_of = {}, {}
     saves_of = {e: _saves(stmts, sp) for e, _pa, _r, stmts in procs}
     bal, at_entry = _balances(procs, sp, saves_of, exits)
-    linked = _called(procs) and not (all(at_entry.values()) or _page_one_free(procs, sp, regions))
+    free = _page_one_free(procs, sp, regions, bounds)
+    linked = _called(procs) and not (all(at_entry.values()) or free)
     for e, _pa, _rets, stmts in procs:
         calls = []
         why = None if bal.get(e) else "sp_unbalanced"

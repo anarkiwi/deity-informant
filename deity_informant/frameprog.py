@@ -582,7 +582,9 @@ def program(model, extents=None):
             break
     state = sidprog._drop_declared(state, decls, symbols)
     proofs = stack_proofs + math_proofs + proofs
-    proofs += framestack.drop_sp(procs, model.play, regions, exits)
+    bounds = framestack.deref_bounds(mem0, decls, procs)  # rung (f)'s reading, before it runs
+    proofs += framestack.drop_spills(procs, model.play, regions, bounds, exits)
+    proofs += framestack.drop_sp(procs, model.play, regions, exits, bounds)
     resolved, blocked, pinned, deref_proofs = frameptr.apply_rung(mem0, decls, procs)
     lifted, ext, lift_proofs = ptrlift.apply_rung(
         mem0, decls, procs, state, symbols, blocked, extents
