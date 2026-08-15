@@ -7,6 +7,8 @@ buffer per frame and flush through the single projection ``framelog.canonical``.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from . import datadecl
 from . import desmc
 from . import expr as E
@@ -342,12 +344,14 @@ class _Code:
         self.fix = []
         self.barefix = []
         self.conts = {}
+        self.copies = []  # (callee pc, body op) per spliced body: a copy's own home
         self.params = {e: [self.slot(p) for p in ps] for e, ps, _r, _s in prog.procs}
         for entry, _params, _rets, stmts in prog.procs:
             self.entries.setdefault(entry, len(self.ops))
             self.mark(entry)
             self.seq(stmts, None)
             self.emit(("fault", "sub_%04X fell through" % entry))
+        self._home_copies()
         for i, field, pc in self.fix:
             self.patch(i, field, self._link(pc))
         for i, pc in self.barefix:
@@ -359,6 +363,17 @@ class _Code:
     def mark(self, pc, i=None):
         """Bind a serialized pc to an op index (first wins)."""
         self.pcmap.setdefault(pc, len(self.ops) if i is None else i)
+
+    def _home_copies(self):
+        """Home a spliced body's callee pc, but only where that copy is the only one.
+
+        A copy binds no pc, so it may stand as a pc's home only when nothing else
+        does and no sibling copy competes; two copies of one callee name one address
+        and the choice between them would be emission order, not semantics."""
+        sole = Counter(pc for pc, _i in self.copies)
+        for pc, i in self.copies:
+            if sole[pc] == 1:
+                self.mark(pc, i)
 
     def cont(self, i, ret):
         """Bind a JSR continuation ``ret + 1`` to the op after the call (contmap)."""
@@ -611,7 +626,7 @@ class _Code:
         c = self.emit(("call", None, s[2]))
         self.cont(c, s[2])
         skip = self.emit(("jmp", None))
-        self.mark(s[1])
+        self.copies.append((s[1], len(self.ops)))
         self.patch(c, 1)
         self.seq(s[3], None)
         self.emit(("ret",))

@@ -434,6 +434,31 @@ def test_mutation_wrong_iota_index_is_detected():
     assert F.diff(frameval.eval_fp(prog, swapped, nf), want) is not None
 
 
+def test_two_copies_of_one_callee_leave_its_pc_to_the_home():
+    """A copy binds no pc, so a transfer names the placed body and not a splice.
+
+    Two ``callb`` sites of one callee are two copies of one address; homing the pc
+    at either would make the target emission order (docs/denotation-solve.md 9.6)."""
+    main = [
+        ("callb", 0x2000, 0x1002, [_wr(0, 0x0A), ("ret", True)]),
+        ("callb", 0x2000, 0x1005, [_wr(0, 0x0B), ("ret", True)]),
+        ("call", 0x3000, 0x1008),
+        ("ret", True),
+    ]
+    home = [("goto", 0x2000), ("label", 0x2000), _wr(0, 0x0C), ("ret", True)]
+    procs = [(0x1000, [], [], main), (0x3000, [], [], home)]
+    got = frameval.Evaluator(_progs(procs), {}).frames(1)
+    assert got[0] == [(0, 0x0A), (0, 0x0B), (0, 0x0C)]
+
+
+def test_a_sole_copy_still_homes_its_callee_pc():
+    """One splice is the only body that address has, so a transfer may land on it."""
+    main = [("callb", 0x2000, 0x1002, [_wr(0, 0x0A), ("ret", True)]), ("call", 0x3000, 0x1005)]
+    procs = [(0x1000, [], [], main + [("ret", True)]), (0x3000, [], [], [("goto", 0x2000)])]
+    got = frameval.Evaluator(_progs(procs), {}).frames(1)
+    assert got[0] == [(0, 0x0A), (0, 0x0A)]
+
+
 def test_call_and_dispatch_forms_execute_in_order():
     """Every transfer form: static/inlined/parameterized call, computed goto/call."""
     mem0 = bytearray(0x10000)
