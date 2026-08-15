@@ -109,7 +109,7 @@ def test_cycle_and_penalty_annotations_stripped():
     assert not _ANNOT.search(text)
     # pen-free single-use load inlines, into the u16 store a freq lane write is
     assert "sid.v1.freq_lo = m_1500" in text  # a lone half in the write-only window
-    assert re.search(r"^ m_1500: (?:\w+ )?u8", text, re.M)  # non-SID cell is state
+    assert " table m_1500[1]:" in text  # no store reaches it: a constant, declared (9.2)
     assert "sid.v1.freq_lo: " not in text  # SID cells are outputs, not state
 
 
