@@ -127,7 +127,8 @@ certified under *both* SID models; collapse of the `$D012` busy-wait to
 write-band/row-advance blocks into `for v`; pointer-broadcast unification (four
 patched operand pairs → one 16-bit pointer variable); sidTAB grammar table from
 the `$168C` decision tree; 16-bit arithmetic folding; family name dictionary
-(undefmon labels).
+(undefmon labels). Copy folding and 16-bit folding landed (§6.1); the other
+three did not.
 
 **Out of scope for this prototype:** Blackbird's `(zp,X)`, `NOP #imm` overlap
 and LZ unpacker (they are the next target and get no special casing here);
@@ -405,7 +406,7 @@ against the committed traces after S5/S6 landed. Printed forms:
 | E10 | Commando certified by the same code | songs 1 and 2, 0 divergences, no flags but `--song` |
 | E11 | `tuneprog.md` reads like appendix A | see below; asserted mechanically in `tests/tuneprog/test_hvsc_print.py` |
 | E12 | interpreter and generated Python agree | 2,000-call prefix on every certificate (500 for the 10 s model-override run) |
-| E13 | every invocation <= 60 s CPU | trace 149,025 calls in ~2 chunks; front end + S4 0.2 s, verification 9.2 s (16,136 calls/s), S5/S6 + printing 0.1 s |
+| E13 | every invocation <= 60 s CPU | trace 149,025 calls in ~2 chunks; front end + S4 0.2 s, verification 9.2 s (16,136 calls/s), S5/S6 + printing 0.4 s |
 
 E11, the printed Automatas tuneprog (`tuneprog.md`, verbatim excerpts, `...` elides):
 
@@ -419,86 +420,128 @@ state     voice[3] stride 49, 30 fields
             .timer $1129 $11B1 $1239   timer          (three unrolled copies)
             .ptr_2 .ptr_3 .ptr_4 .ptr_5              ptr, ditto
             .timer_4 $12BF .timer_5 $1352 timer ; .cursor_12CE .freq_idx .cursor_1361 cursor
-            .b1019 .b101A .b101B .b101E .b101F .b1020 .b1021 .b1161 .b116F .b117D .b1194 .b12CC
+            .b1019 .b101A .b101E .b101F .b1020 .b1021 .b1161 .b116F .b117D .b1194 .b12CC
+          filter.acc $10B6 u16 lo|hi $10BE  acc ; filter.step $10B9 u16 lo|hi $10C0
           call_counter $0FE4 phase ; res_route $10AA / mode_vol $10AF sid_image ; ptr $00FB
-const     FREQ $1554 361 bytes  freq_table  12-TET lo|hi, 156 entries (59 below one octave)
+const     FREQ $1554 361 bytes u16  freq_table  12-TET lo|hi, 156 entries (59 below one octave)
           T1800 T1900 T1A00 T1A80 T1B00 T1C00 T1D00 T1E00 T1F00.. T2C8F..   table
 inputs    $D012 raster at $14CE, 2227 reads (init) ; $D41B sid_readback at $14E3, 1 read
 
-tick(sp):                                # $0FE3, 150,000 calls
+tick():                                  # $0FE3, 152,000 calls
     if (call_counter & 7) != 0:
-        sub(sp=(sp + $FE))
+        sub()
     else:
         main()
     call_counter += 1
     return
 
-main():                                  # $1022, 150,000 calls
-    t1 = voice[0].pw_hi
-    sid[0].pw_lo = voice[0].pw_lo
-    sid[0].pw_hi = t1
-    t2 = voice[0].freq_hi
-    sid[0].freq_lo = voice[0].freq_lo
-    sid[0].freq_hi = t2
-    ...                                  # voices 1 and 2, then:
-    sid[0].ctrl = (voice[0].ctrl ^ voice[0].ctrl_eor)
+main():                                  # $1022, 152,000 calls
+    writeout()
+    filter()
+    switch b10D8:                        # the sub-tick gate
+        case $60:
+            return
+        case $A9:
+            row_advance()                # main ticks only
+            cascades()
+            oscillator()
+            return
+
+sub():                                   # $1006, 133,000 calls
+    saved = b10D8
+    b10D8 = $60                          # patch main's exit to RTS
+    main()
+    b10D8 = saved
+    cascades()
+    oscillator()
+    return
+
+writeout():                              # $1022, 152,000 calls
+    for v in 0, 1, 2:
+        sid[v].pw_lo = voice[v].pw_lo
+        sid[v].pw_hi = voice[v].pw_hi
+        sid[v].freq_lo = voice[v].freq_lo
+        sid[v].freq_hi = voice[v].freq_hi
+        sid[v].sr = voice[v].sr
+        sid[v].ad = voice[v].ad
+        sid[v].ctrl = (voice[v].ctrl ^ voice[v].ctrl_eor)
     sid.res_route = res_route
     sid.mode_vol = (mode_vol | $F)
+    return
+
+filter():                                # $1022, 152,000 calls
     switch b10B8:                        # the patched ADC/SBC: the filter slide sign
-      case $69: ...  case $E9: ...
-    switch b10D8:                        # the sub-tick gate
-      case $60: return
-      case $A9: ...                      # row advance, main ticks only
-    ...                                  # six cascade blocks, each calling row_apply
-    for v in 2, 1, 0:                    # x450,000 -- the SBX #$31 oscillator
-        t51 = voice[v].b101B
-        if t51 == 0:
-            t53 = voice[v].freq_idx
-            t54 = FREQ[$24 + t53]
-            t55 = voice[v].b101F
-            voice[v].freq_lo = (t54 + t55)
-            voice[v].freq_hi = FREQ[$C0 + t53]
-        else: ...                        # slide accumulator, then the pulse bounce
+        case $69:
+            filter.acc += filter.step
+            a19 = filter.acc_hi
+            n30 = filter.acc_hi < 0
+        case $E9:
+            filter.acc -= (filter.step + 1)
+            ...
+    if n30 == 0: a20 = a19 else: a20 = b10CE       # the accumulator clamps at the sign
+    filter.acc_hi = a20
+    t4 = ((filter.acc_hi + b10CA) + carry)         # carry: the 16-bit op's, into the cutoff
+    if ((((filter.acc_hi + b10CA) + carry) < 0) or (t4 < 2)):
+        a22 = b10CE
+    else:
+        a22 = t4
+    sid.cutoff_hi = a22
+    return
 
-sub(sp):                                 # $1006, 131,250 calls
-    b01FB = b10D8
-    b10D8 = $60                          # patch main's exit to RTS
-    sp4 = main()
-    b10D8 = b01FB
-    t2 = voice[0].timer_4
-    ...                                  # its own clone of the cascades and oscillator
+cascades():                              # $12BE, 152,000 calls
+    for v in 0, 1:                       # two of the six blocks are one shape
+        if voice[v].timer_4 == 0:
+            ...                          # the sidTAB row pointer and its wrap
+            voice[v].timer_4 = T1E00[y35]
+            voice[v].cursor_12CE = (y35 + 1)
+            row_apply(a=T1800[y35], x=(v * $31))
+        else:
+            if voice[v].timer_4 >= 0:
+                voice[v].timer_4 -= 1
+    ...                                  # the other four blocks, whose shapes differ
 
-row_apply(a, x):                         # $168C, 100,890 calls
+oscillator():                            # $13E4, 152,000 calls
+    for v in 2, 1, 0:                    # x456,000 -- the SBX #$31 loop
+        if voice[v].freq_idx == 0:
+            voice[v].freq_lo = (FREQ[$24 + voice[v].freq_idx_2] + voice[v].b101F)
+            voice[v].freq_hi = FREQ[$C0 + voice[v].freq_idx_2]
+        else:
+            if (voice[v].freq_idx << 1) >= 0:
+                voice[v].acc_2 += FREQ[voice[v].freq_idx << 1]       # the slide, 16-bit
+            else:
+                voice[v].acc_2 -= (FREQ[$14D4 + (voice[v].freq_idx << 1)] + ...)
+            voice[v].freq = (voice[v].acc_2 + FREQ[$24 + voice[v].freq_idx_2])
+        ...                              # then the pulse bounce
+
+row_advance():                           # $10D8, 19,000 calls
+    ...                                  # the arranger row, the pattern pointers,
+    ...                                  # then the three per-voice row timers
+
+row_apply(a, x):                         # $168C, 103,249 calls
     ptr = a
-    y1 = 0
-    t3 = T2C8F[(ptr[1] << 8) | ptr]
     ...                                  # the sidTAB column decoder
 ```
 
 and Commando song 1 (`tuneprog.md`, verbatim), the design's section 4 illustration:
 
 ```
-tick(sp):                                # $5012, 11,780 calls
+tick():                                  # $5012, 11,780 calls
     timer_7 += 1                         # the free-running frame counter
-    t1 = phase                           # $5519 mstatus, the tick's first test
-    v1 = (t1 & $40) != 0
-    if t1 < 0: trap 'untaken'            # the "music off" path never ran
-    if v1 != 0:                          # lazy init
+    if phase < 0: trap 'untaken'         # $5519 mstatus; the "music off" path never ran
+    if (phase & $40) != 0:               # lazy init
         timer_7 = 0
-        x11 = 2
         for v in 2, 1, 0:
-            FREQ[$A4 + v] = 0            # the per-voice cells the freq table overruns into
-            FREQ[$A7 + v] = 0
+            FREQ[v + $A4] = 0            # the per-voice cells the freq table overruns into
+            FREQ[v + $A7] = 0
             voice[v].timer = 0
-            FREQ[$B3 + v] = 0
+            FREQ[v + $B3] = 0
         phase = 0
-    x1 = 2
-    t5 = timer_5                         # $5513 speedctr
+    t2 = timer_5                         # $5513 speedctr
     timer_5 -= 1
     if timer_5 >= 0: ...
     else: timer_5 = b5517                # = speed
     for v in 2, 1, 0:                    # x35,340 -- the voice loop, X carried through $5504
-        FREQ[163] = FREQ[$A0 + v]        # the voice -> SID offset table
+        FREQ[163] = FREQ[v + $A0]        # the voice -> SID offset table
         if timer_5 != b5517: ...         # soundwork
         else: ...                        # tick boundary: lengthleft, fetch_note, gate off
 ```
@@ -519,11 +562,12 @@ tick(sp):                                # $5012, 11,780 calls
   joins the table's tail with the per-voice cells that follow it -- exactly the
   overrun the design predicts (section 6, "traps"). The merged region is still
   recognised as the note table (`FREQ`, u16le, 80 entries at the traced horizon).
-- **S5/S6 do not edit the IR.** Structuring and recovery are a *view* over the
-  certified S4 program (block merging and inlining, both semantics-preserving,
-  then a print-only dead-value pass). `tuneprog.S5.json`/`.S6.json` are
-  annotations; the certificate's `stage` reads `S6` with a `presentation` note,
-  and the tests assert the S4 JSON is byte-identical before and after.
+- **S5/S6 do not edit the IR.** Everything below is a *view*: a copy of the
+  certified S4 program that structuring, texture removal, 16-bit views,
+  outlining and copy folding reshape, plus a print-only dead-value pass.
+  `tuneprog.S5.json`/`.S6.json` are annotations; the certificate's `stage` reads
+  `S6` with a `presentation` note, and the tests assert the S4 JSON is
+  byte-identical before and after (`pipeline.present` is the whole stack).
 - **Names are role-derived, so appendix A's semantic names do not all appear.**
   `pw_lo`/`freq_hi`/`ctrl_eor` come from the data flow into a SID register,
   `timer`/`counter` from `DEC`/`INC` with a reload, `cursor`/`ptr` from being an
@@ -533,13 +577,47 @@ tick(sp):                                # $5012, 11,780 calls
   reading, not the trace.
 - **At a short horizon the note table is two parallel columns.** `FREQ_LO`/`FREQ_HI`
   at 30 s; over the full run the TR overrun merges them into one `FREQ` region.
-- **The three row-advance blocks stay unrolled** (the plan's stretch goal of copy
-  folding is not implemented). Their per-voice cells are nevertheless one struct
-  view: three regions of equal shape written by the same pcs a constant 136 bytes
-  apart are recognised as one field (`voice[v].timer` at `$1129 $11B1 $1239`).
+- **Copies fold when their shapes are equal, and only then** (`unroll.py`). The
+  write-out is one `for v in 0, 1, 2:` over seven registers: every difference
+  between the copies is a constant that steps by the struct stride (49), by the
+  SID voice size (7) or by the argument scale (`row_apply(x=(v * $31))`), the
+  region ids agree, and one region is walked with one stride. Of the six cascade
+  blocks two pairs fold (`for v in 0, 1:`); the rest differ in shape -- one tests
+  a wrap the others do not -- and stay unrolled, as do the three row-advance
+  blocks (they read three different table regions). A group view over cells that
+  are *renamed* rather than indexed (cascade A's `timer_4`/`cursor_12CE` against
+  cascade B's `timer_5`/`cursor_1361`) is not synthesised, so those six blocks
+  never become one loop.
+- **Runs become helpers when they are shared or when they name a part**
+  (`fold.py`). `main` is `writeout(); filter(); switch {row_advance(); cascades();
+  oscillator()}` and `sub` is the RTS patch, `main()`, then the two helpers it
+  shares -- one printed copy each, ~200 duplicated lines gone. A run is outlined
+  only when no live value crosses its boundary, and two runs share a helper only
+  when their alpha-renamed statement form is equal (the machine's frame pushes
+  and the arguments no callee reads are excluded, as the printer drops both);
+  `sub`'s clone, which S4 block merging glued to its own prologue, is matched by
+  skipping that prologue.
+- **The machine texture is gone from the hot path.** No `sp` (a push and a pop
+  of one stack slot become `saved = ...`/`... = saved`, and a JSR frame is the
+  call), no `goto` (nested tests that share a target print as `or`/`and`), 156
+  machine temporaries down to 27 (a value folds into its uses across statements
+  that cannot alias it -- regions are disjoint -- but never past a store to its
+  own region, a call or another input read), and the filter's carry chain prints
+  as `filter.acc += filter.step` over a named `lo|hi` view after the two patched
+  ADC/SBC cells are proved to be one variable and their switches merged.
 - **The `$D012` busy-wait collapses** to `while input($D012) != $FC: pass`, and
   the printer keeps the machine's own plumbing (JSR frames, register copies
   nothing reads) out of the text without touching the executable IR.
+- **What is still texture.** Five `carry(` remain, none in `main` or `filter`:
+  three page-crossing assertions on the pattern pointers in `row_advance` (a
+  16-bit add whose high byte the tune never touches, so there is no second byte
+  to fold with) and two in the oscillator, where the frequency add's carry is
+  consumed by the pulse bounce as a borrow. The filter's clamp prints its pre-
+  and post-clamp high byte as two values (`a19`, `a20`) because only one of the
+  two definitions of the stored byte folds. A folded run whose first copy is not
+  element 0 prints `voice[v + 1]` (the 30 s horizon's cascade fold) instead of
+  renumbering the loop. Cells no role reaches still print as `b101B`/`b1194`,
+  and `voice[v].acc_2`/`freq_idx_2` show where two fields want one name.
 
 ---
 

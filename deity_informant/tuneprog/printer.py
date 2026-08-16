@@ -12,10 +12,12 @@ from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var
 from .recover import GLOBAL_REG, VOICE_REG
 from .ssa import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
+from .word import R16, W16, uses16
 
 SID_LO, SID_HI = 0xD400, 0xD418
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
+COMM = ("+", "|", "&", "^")
 IND = "    "
 
 
@@ -57,6 +59,9 @@ def _stmt_roots(prog, s, defs, params, out):
         defs.setdefault(s.n, []).append(s.e)
         if _impure(s.e):
             uses_of(s.e, out)
+    elif t is W16:
+        uses16(s.a, out)
+        uses16(s.e, out)
     elif t is Assert or (t is Store and s.cls != "raw"):
         stmt_uses(s, out)
     elif t is Call:
@@ -138,6 +143,7 @@ class Printer:
         self.proc = ""
         self.defs = {}
         self.inline = {}
+        self.lastsrc = None
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -145,6 +151,8 @@ class Printer:
         if n in self.alias:
             a, s = self.alias[n]
             return a if s == 1 else "%s*%d" % (a, s)
+        if n.startswith("$"):
+            return n[1:]
         if n in self.tmp:
             return self.tmp[n]
         base = n.split("#")[0]
@@ -154,30 +162,63 @@ class Printer:
         self.tmp[n] = out = out + (n.split("#")[1] if base in REGVAR.values() and "#" in n else "")
         return out
 
-    def cell(self, rid, addr, idx=None):
+    def pair(self, lo, hi, a):
+        """A 16-bit view reference: the pair's name, indexed like its low half."""
+        name = self.names.u16.get((lo, hi))
+        if name is None:
+            return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
+        return self.cell(lo, *self.addr_of(a, self.rgn.get(lo)), name=name)
+
+    def load16(self, rid, a):
+        return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
+
+    def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         r = self.rgn.get(rid)
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
-        name = self.names.region.get(rid, "r%d" % rid)
+        name = name or self.names.region.get(rid, "r%d" % rid)
         view = self.names.view.get(rid)
         elem = self.names.elem.get(rid)
+        field = name if name != self.names.region.get(rid) else view[1] if view else name
+        if view is not None and elem is None:
+            return "%s[%s].%s" % (view[0], self.index(r, addr, idx), field)
         if view is not None:
-            g, fname = view
-            i = self.index(r, addr, idx) if elem is None else str(elem)
-            return "%s[%s].%s" % (g, i, fname)
+            return "%s[%d].%s%s" % (view[0], elem, field, self.offset(r, addr, idx))
         if r.size == 1 or (idx is None and addr == r.base and r.size <= 2):
             return name
         return "%s[%s]" % (name, self.index(r, addr, idx))
+
+    def offset(self, r, addr, idx):
+        """The byte offset inside one element of a struct view, or ``''``."""
+        if idx is None:
+            return "" if addr == r.base else "[%d]" % (addr - r.base)
+        return "[%s]" % (self.ivar(idx, 1) or _bare(self.expr(idx, False)))
 
     def index(self, r, addr, idx):
         """The element index of an access: a constant, or the loop variable."""
         if idx is None:
             return str((addr - r.base) // max(r.stride, 1))
-        if type(idx) is Var and idx.n in self.alias and self.alias[idx.n][1] == r.stride:
-            return self.alias[idx.n][0]
+        hit = self.ivar(idx, r.stride)
+        if hit is not None:
+            return hit
         e = _bare(self.expr(idx, False))
         return e if r.stride == 1 else "%s/%d" % (e, r.stride)
+
+    def ivar(self, idx, stride):
+        """The loop variable, when the index is it scaled by the element size."""
+        t, step = type(idx), max(stride, 1)
+        if t is Var and idx.n in self.alias and self.alias[idx.n][1] == stride:
+            return self.alias[idx.n][0]
+        if t is not Bin:
+            return None
+        if idx.op == "*" and type(idx.b) is Const and type(idx.a) is Var:
+            hit = self.alias.get(idx.a.n)
+            return hit[0] if hit is not None and hit[1] == 1 and idx.b.v == step else None
+        if idx.op == "+" and type(idx.a) is Const and not idx.a.v % step:
+            inner = self.ivar(idx.b, stride)
+            return None if inner is None else "%s + %s" % (inner, _hex(idx.a.v // step))
+        return None
 
     def addr_of(self, e, r):
         """``(constant address, index expression)`` of an access to region ``r``."""
@@ -191,11 +232,15 @@ class Printer:
                     return k.v, Bin("+", Const(k.v - r.base), i, 2) if k.v != r.base else i
         return None, e
 
-    def sid(self, addr):
+    def sid(self, addr, idx=None):
+        """``sid[v].reg`` for a register write, the voice indexed by a copy loop."""
         if addr in GLOBAL_REG:
             return "sid.%s" % GLOBAL_REG[addr]
         v, k = divmod(addr - SID_LO, 7)
-        return "sid[%d].%s" % (v, VOICE_REG[k])
+        if idx is None:
+            return "sid[%d].%s" % (v, VOICE_REG[k])
+        i = self.ivar(idx, 7) or _bare(self.expr(idx, False))
+        return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -210,11 +255,14 @@ class Printer:
             return self.expr(self.inline[e.n], top) if e.n in self.inline else self.var(e.n)
         if t is Load:
             return self.load(e)
+        if t is R16:
+            return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
         if e.op == "&" and type(b) is Const and b.v == 0x80:
             return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
-            return "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
+            s = "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
+            return s if top else "(%s)" % s
         if e.op in CMP and type(a) is Const and type(b) is not Const:
             s = "%s %s %s" % (self.expr(b, False), MIRROR[e.op], self.expr(a, False))
             return s if top else "(%s)" % s
@@ -236,6 +284,8 @@ class Printer:
     # ---- statements --------------------------------------------------------
     def stmt(self, s):
         t = type(s)
+        if t is W16:
+            return self.word(s)
         if t is Let:
             return "%s = %s" % (self.var(s.n), self.expr(s.e))
         if t is Assert:
@@ -243,6 +293,19 @@ class Printer:
         if t is Call:
             return self.call(s)
         return self.store(s)
+
+    def word(self, s):
+        """A folded 16-bit assignment, compound when the pair is its own operand."""
+        lhs, e = self.pair(s.lo, s.hi, s.a), s.e
+        sides = ((e.a, e.b), (e.b, e.a)) if type(e) is Bin and e.op in COMM else ((e.a, e.b),)
+        for x, y in sides if type(e) is Bin else ():
+            if (
+                type(x) is R16
+                and (x.lo, x.hi) == (s.lo, s.hi)
+                and _bare(self.expr(x, False)) == lhs
+            ):
+                return "%s %s= %s" % (lhs, e.op, self.expr(y, False))
+        return "%s = %s" % (lhs, self.expr(e))
 
     def call(self, s):
         p = self.prog.procs[s.proc]
@@ -258,10 +321,12 @@ class Printer:
     def store(self, s):
         r = self.rgn.get(s.r)
         addr, idx = self.addr_of(s.a, r)
-        if s.cls == "io" and addr is not None and SID_LO <= addr <= SID_HI:
-            lhs = self.sid(addr)
-        elif s.cls == "io":
-            lhs = "io[%s]" % (_hex(addr) if addr is not None else self.expr(s.a, False))
+        if s.cls == "io":
+            base, i = _split(s.a)
+            if base is not None and SID_LO <= base <= SID_HI:
+                lhs = self.sid(base, i)
+            else:
+                lhs = "io[%s]" % (_hex(base) if base is not None else self.expr(s.a, False))
         else:
             lhs = self.cell(s.r, addr, idx)
         out = self.compound(lhs, s, addr)
@@ -289,6 +354,17 @@ def _bare(s):
     return s[1:-1] if s.startswith("(") and s.endswith(")") else s
 
 
+def _split(e):
+    """``(base, index)`` of an address: a constant, or a constant plus an index."""
+    if type(e) is Const:
+        return e.v, None
+    if type(e) is Bin and e.op == "+":
+        for k, i in ((e.a, e.b), (e.b, e.a)):
+            if type(k) is Const:
+                return k.v, i
+    return None, e
+
+
 def _signbit(e):
     return type(e) is Bin and e.op == "&" and type(e.b) is Const and e.b.v == 0x80
 
@@ -306,6 +382,7 @@ class Body(Printer):
 
     def render(self, name, body):
         self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
+        self.lastsrc = None
         p = self.prog.procs[name]
         args = ", ".join(REGVAR[i].lower() for i in self.params[name])
         head = "%s(%s):" % (self.names.procs.get(name, name), args)
@@ -342,7 +419,8 @@ class Body(Printer):
             return []
         self.mem = {}
         self.defs = {s.n: s.e for s in stmts if type(s) is Let}
-        head = ["%s# $%04X" % (pad, n.src)] if self.pcs else []
+        head = ["%s# $%04X" % (pad, n.src)] if self.pcs and n.src != self.lastsrc else []
+        self.lastsrc = n.src
         return head + [pad + self.stmt(s) for s in stmts]
 
     def cond(self, n, proc, depth):
@@ -536,10 +614,25 @@ def _state(prog, names):
                     names.notes.get(rids[0], ""),
                 )
             )
+    half = {r for p in names.u16 for r in p}
+    for (lo, hi), name in sorted(names.u16.items(), key=lambda kv: _base(prog, kv[0][0])):
+        if lo in names.view:
+            continue
+        out.append(
+            "%-16s $%04X %-14s %-10s %s"
+            % (
+                name,
+                _base(prog, lo),
+                "u16",
+                names.role.get(lo, ""),
+                "lo|hi $%04X" % _base(prog, hi),
+            )
+        )
     for r in sorted(prog.storage, key=lambda x: x.base):
         if r.id < 0 or r.id in names.view or r.kind not in ("state", "init_constant"):
             continue
-        out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
+        if r.id not in half:
+            out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
     return out
 
 

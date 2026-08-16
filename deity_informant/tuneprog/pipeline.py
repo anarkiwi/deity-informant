@@ -14,7 +14,7 @@ import pickle
 import time
 from pathlib import Path
 
-from . import emit, ir, printer, recover, ssa, structure, verify as V
+from . import emit, fold, ir, printer, recover, ssa, structure, texture, unroll, verify as V, word
 from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
@@ -184,6 +184,25 @@ def _node(n):
     return d
 
 
+def present(prog):
+    """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
+
+    Structuring, texture removal, 16-bit views, outlining and copy folding; the
+    argument is never touched.
+    """
+    view = structure.view(prog, printer.needed(prog)[0])
+    texture.clean(view)
+    structure.inline(view, printer.needed(view)[0])
+    texture.tidy(view)
+    names = recover.recover(view, structure.structure(view))
+    word.fold16(view, names)
+    fold.outline(view, names, *printer.needed(view))
+    st = structure.structure(view)
+    live, params = printer.needed(view)
+    unroll.unroll(st, live, fold.livearg(view, params))
+    return view, st, names
+
+
 def stage_print(args, out, prog=None):
     """S5 + S6 over the certified IR, then ``tuneprog.md`` (design section 4 text form)."""
     prog = prog or ir.Tuneprog.load(out / "tuneprog.S4.json")
@@ -193,9 +212,7 @@ def stage_print(args, out, prog=None):
         doc["stage"] = "S6"
         doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
         emit.write_certificate(cert, doc)
-    view = structure.view(prog, printer.needed(prog)[0])
-    st = structure.structure(view)
-    names = recover.recover(view, st)
+    view, st, names = present(prog)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))

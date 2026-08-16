@@ -12,23 +12,9 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 
-from .ir import (
-    Bin,
-    Call,
-    Const,
-    Goto,
-    If,
-    Let,
-    Load,
-    Return,
-    Store,
-    Switch,
-    Trap,
-    Var,
-    evalbin,
-    succs,
-)
-from .ssa import merge_chains, preds_of, prune, sub_expr, use_counts
+from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Trap, Var, evalbin, succs
+from .inline import loads as inline_loads
+from .ssa import merge_chains, preds_of, prune
 
 EXIT = "$exit"
 CAP = 256
@@ -93,69 +79,6 @@ class Exit:
 
 
 # ---- the presentation copy ---------------------------------------------------
-def _pure(e):
-    t = type(e)
-    if t is Load:
-        return False
-    return _pure(e.a) and _pure(e.b) if t is Bin else True
-
-
-def _sub_stmt(s, fn):
-    t = type(s)
-    if t is Let:
-        s.e = sub_expr(s.e, fn)
-    elif t is Store:
-        s.a = sub_expr(s.a, fn)
-        s.v = sub_expr(s.v, fn)
-    elif t.__name__ == "Call":
-        s.args = tuple(sub_expr(a, fn) for a in s.args)
-    elif t.__name__ == "Assert":
-        s.e = sub_expr(s.e, fn)
-
-
-def _sub_term(t, fn):
-    k = type(t)
-    if k is If:
-        t.c = sub_expr(t.c, fn)
-    elif k is Switch:
-        t.e = sub_expr(t.e, fn)
-    elif k is Return:
-        t.vals = tuple(sub_expr(v, fn) for v in t.vals)
-
-
-def _folder(avail, gone):
-    def fn(e):
-        if type(e) is not Var or e.n not in avail:
-            return e
-        gone.add(e.n)
-        return avail.pop(e.n)
-
-    return fn
-
-
-def _inline_loads(proc, live=None):
-    """Fold a single-use value into its use inside a block; a store ends a load's life."""
-    if live is not None:
-        for b in proc.blocks.values():
-            b.stmts = [s for s in b.stmts if type(s) is not Let or s.n in live]
-            if type(b.term) is Return:
-                b.term = Return()
-    uses = use_counts(proc)
-    for b in proc.blocks.values():
-        avail, gone = {}, set()
-        fn = _folder(avail, gone)
-        for s in b.stmts:
-            _sub_stmt(s, fn)
-            if type(s) is Store or type(s).__name__ == "Call":
-                avail = {n: e for n, e in avail.items() if _pure(e)}
-                fn = _folder(avail, gone)
-            if type(s) is Let and uses[s.n] == 1:
-                avail[s.n] = s.e
-        _sub_term(b.term, fn)
-        b.stmts = [s for s in b.stmts if not (type(s) is Let and s.n in gone)]
-    return proc
-
-
 def view(prog, live=None):
     """A copy of ``prog`` shaped for reading; with ``live`` it also drops dead values.
 
@@ -167,8 +90,15 @@ def view(prog, live=None):
     for name, p in out.procs.items():
         prune(p)
         merge_chains(p)
-        _inline_loads(p, None if live is None else live[name])
+        inline_loads(p, None if live is None else live[name])
     return out
+
+
+def inline(prog, live):
+    """Re-run the value folding after the texture passes reshaped the blocks."""
+    for name, p in prog.procs.items():
+        inline_loads(p, live[name])
+    return prog
 
 
 # ---- graphs ------------------------------------------------------------------
@@ -294,6 +224,16 @@ class _Values:
         return None
 
 
+def _trivial(proc, lbl):
+    """The exit a statement-free block is, so a jump to it prints as that exit."""
+    b = proc.blocks[lbl]
+    if b.stmts:
+        return None
+    if type(b.term) is Return:
+        return Exit("return")
+    return Exit("trap", b.term.why) if type(b.term) is Trap else None
+
+
 def _leaves(proc, body, lbl):
     """The successors of ``lbl`` that leave the loop for a path the trace took."""
     return [s for s in succs(proc.blocks[lbl].term) if s not in body and not _dead(proc, s)]
@@ -406,8 +346,10 @@ class _Structurer:
                 out.append(Jump("break", hit[0]))
                 break
             if n in self.done:
-                self.labels.add(n)
-                out.append(Jump("goto", n))
+                end = _trivial(self.proc, n)
+                out.append(end if end is not None else Jump("goto", n))
+                if end is None:
+                    self.labels.add(n)
                 break
             if n in self.loops and not any(c[0] == n for c in ctx):
                 node, n = self.loop(n, ctx)
