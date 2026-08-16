@@ -12,10 +12,12 @@ from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var
 from .recover import GLOBAL_REG, VOICE_REG
 from .ssa import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
+from .word import R16, W16, uses16
 
 SID_LO, SID_HI = 0xD400, 0xD418
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
+COMM = ("+", "|", "&", "^")
 IND = "    "
 
 
@@ -57,6 +59,9 @@ def _stmt_roots(prog, s, defs, params, out):
         defs.setdefault(s.n, []).append(s.e)
         if _impure(s.e):
             uses_of(s.e, out)
+    elif t is W16:
+        uses16(s.a, out)
+        uses16(s.e, out)
     elif t is Assert or (t is Store and s.cls != "raw"):
         stmt_uses(s, out)
     elif t is Call:
@@ -156,18 +161,28 @@ class Printer:
         self.tmp[n] = out = out + (n.split("#")[1] if base in REGVAR.values() and "#" in n else "")
         return out
 
-    def cell(self, rid, addr, idx=None):
+    def pair(self, lo, hi, a):
+        """A 16-bit view reference: the pair's name, indexed like its low half."""
+        name = self.names.u16.get((lo, hi))
+        if name is None:
+            return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
+        return self.cell(lo, *self.addr_of(a, self.rgn.get(lo)), name=name)
+
+    def load16(self, rid, a):
+        return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
+
+    def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         r = self.rgn.get(rid)
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
-        name = self.names.region.get(rid, "r%d" % rid)
+        name = name or self.names.region.get(rid, "r%d" % rid)
         view = self.names.view.get(rid)
         elem = self.names.elem.get(rid)
         if view is not None:
             g, fname = view
-            i = self.index(r, addr, idx) if elem is None else str(elem)
-            return "%s[%s].%s" % (g, i, fname)
+            i = self.index(r, addr, idx) if elem is None or idx is not None else str(elem)
+            return "%s[%s].%s" % (g, i, name if name != self.names.region.get(rid) else fname)
         if r.size == 1 or (idx is None and addr == r.base and r.size <= 2):
             return name
         return "%s[%s]" % (name, self.index(r, addr, idx))
@@ -212,11 +227,14 @@ class Printer:
             return self.expr(self.inline[e.n], top) if e.n in self.inline else self.var(e.n)
         if t is Load:
             return self.load(e)
+        if t is R16:
+            return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
         if e.op == "&" and type(b) is Const and b.v == 0x80:
             return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
-            return "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
+            s = "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
+            return s if top else "(%s)" % s
         if e.op in CMP and type(a) is Const and type(b) is not Const:
             s = "%s %s %s" % (self.expr(b, False), MIRROR[e.op], self.expr(a, False))
             return s if top else "(%s)" % s
@@ -238,6 +256,8 @@ class Printer:
     # ---- statements --------------------------------------------------------
     def stmt(self, s):
         t = type(s)
+        if t is W16:
+            return self.word(s)
         if t is Let:
             return "%s = %s" % (self.var(s.n), self.expr(s.e))
         if t is Assert:
@@ -245,6 +265,19 @@ class Printer:
         if t is Call:
             return self.call(s)
         return self.store(s)
+
+    def word(self, s):
+        """A folded 16-bit assignment, compound when the pair is its own operand."""
+        lhs, e = self.pair(s.lo, s.hi, s.a), s.e
+        sides = ((e.a, e.b), (e.b, e.a)) if type(e) is Bin and e.op in COMM else ((e.a, e.b),)
+        for x, y in sides if type(e) is Bin else ():
+            if (
+                type(x) is R16
+                and (x.lo, x.hi) == (s.lo, s.hi)
+                and _bare(self.expr(x, False)) == lhs
+            ):
+                return "%s %s= %s" % (lhs, e.op, self.expr(y, False))
+        return "%s = %s" % (lhs, self.expr(e))
 
     def call(self, s):
         p = self.prog.procs[s.proc]
@@ -538,10 +571,25 @@ def _state(prog, names):
                     names.notes.get(rids[0], ""),
                 )
             )
+    half = {r for p in names.u16 for r in p}
+    for (lo, hi), name in sorted(names.u16.items(), key=lambda kv: _base(prog, kv[0][0])):
+        if lo in names.view:
+            continue
+        out.append(
+            "%-16s $%04X %-14s %-10s %s"
+            % (
+                name,
+                _base(prog, lo),
+                "u16",
+                names.role.get(lo, ""),
+                "lo|hi $%04X" % _base(prog, hi),
+            )
+        )
     for r in sorted(prog.storage, key=lambda x: x.base):
         if r.id < 0 or r.id in names.view or r.kind not in ("state", "init_constant"):
             continue
-        out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
+        if r.id not in half:
+            out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
     return out
 
 

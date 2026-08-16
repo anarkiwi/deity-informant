@@ -14,7 +14,7 @@ import pickle
 import time
 from pathlib import Path
 
-from . import emit, ir, printer, recover, ssa, structure, texture, verify as V
+from . import emit, ir, printer, recover, ssa, structure, texture, verify as V, word
 from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
@@ -196,8 +196,9 @@ def stage_print(args, out, prog=None):
     view = structure.view(prog, printer.needed(prog)[0])
     texture.clean(view)
     structure.inline(view, printer.needed(view)[0])
+    names = recover.recover(view, structure.structure(view))
+    word.fold16(view, names)
     st = structure.structure(view)
-    names = recover.recover(view, st)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))

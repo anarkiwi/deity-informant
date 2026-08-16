@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .idioms import CMP, _neg
+from .idioms import CMP, _neg, fold
 from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
 from .ssa import apply_stmt, apply_term, merge_chains, preds_of, prune, sub_expr, use_counts
+
+STACK = (0x0100, 0x01FF)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +171,24 @@ def _not(c):
     return _neg(c) if type(c) is Bin and c.op in CMP else Bin("==", c, Const(0), 1)
 
 
+def zerocarry(prog):
+    """``carry(x, 0)`` is zero: a byte value plus nothing never carries."""
+    n = [0]
+
+    def fn(e):
+        if type(e) is Bin and e.op == "carry" and type(e.b) is Const and not e.b.v:
+            n[0] += 1
+            return Const(0, 1)
+        return fold(e)
+
+    for p in prog.procs.values():
+        for b in p.blocks.values():
+            for s in b.stmts:
+                apply_stmt(s, fn)
+            apply_term(b.term, fn)
+    return n[0]
+
+
 # ---- single-definition values ------------------------------------------------
 def propagate(proc, rounds=8):
     """Forward a name that has one definition in the procedure (copy/constant).
@@ -231,7 +251,7 @@ def pin(prog):
     n = [0]
 
     def fn(e):
-        if type(e) is Load and type(e.a) is not Const and e.hi - e.lo + 1 == e.w:
+        if type(e) is Load and type(e.a) is not Const and _pinned(e):
             n[0] += 1
             return Load(e.cls, Const(e.lo, 2), e.w, e.lo, e.hi, e.r)
         return e
@@ -239,12 +259,17 @@ def pin(prog):
     for p in prog.procs.values():
         for b in p.blocks.values():
             for s in b.stmts:
-                if type(s) is Store and type(s.a) is not Const and s.hi - s.lo + 1 == s.w:
+                if type(s) is Store and type(s.a) is not Const and _pinned(s):
                     s.a = Const(s.lo, 2)
                     n[0] += 1
                 apply_stmt(s, fn)
             apply_term(b.term, fn)
     return n[0]
+
+
+def _pinned(x):
+    """A stack access whose envelope is one slot: the frame pointer is not data."""
+    return x.hi - x.lo + 1 == x.w and STACK[0] <= x.lo <= STACK[1]
 
 
 # ---- stack slots as values ---------------------------------------------------
@@ -438,6 +463,7 @@ def _copy(s):
 
 def clean(prog):
     """Every texture pass over a presentation copy of ``prog``."""
+    zerocarry(prog)
     pin(prog)
     mirrors(prog)
     stack_temps(prog)

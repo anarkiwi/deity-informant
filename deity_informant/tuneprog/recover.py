@@ -43,6 +43,8 @@ class Names:
     elem: dict = field(default_factory=dict)
     phase: tuple = None
     notes: dict = field(default_factory=dict)
+    u16: dict = field(default_factory=dict)
+    u16group: dict = field(default_factory=dict)
 
     def of(self, rid):
         return self.region.get(rid, "r%d" % rid)
@@ -60,6 +62,7 @@ class Names:
                 for k, v in sorted(self.region.items())
             ],
             "groups": {g: dict(v, members=sorted(v["members"])) for g, v in self.groups.items()},
+            "u16": [{"lo": lo, "hi": hi, "name": n} for (lo, hi), n in sorted(self.u16.items())],
             "procs": self.procs,
             "phase": None if self.phase is None else {"region": self.phase[0]},
         }
@@ -210,15 +213,26 @@ def sid_image(facts):
     return {k: (n, m) for k, (n, m) in out.items()}
 
 
+def _value_walk(e):
+    """The operators of a value, address arithmetic excluded."""
+    yield e
+    if type(e) is Bin:
+        yield from _value_walk(e.a)
+        yield from _value_walk(e.b)
+
+
 def _update_role(facts, rid):
     """``counter``/``timer``/``acc`` from the shape of a region's own updates."""
-    steps = set()
+    steps, arith = set(), False
     for e in facts.updates.get(rid, ()):
-        for x in _walk(e):
-            if type(x) is Bin and x.op in ("+", "-") and type(x.b) is Const:
+        for x in _value_walk(e):
+            if type(x) is not Bin or x.op not in ("+", "-"):
+                continue
+            arith = True
+            if type(x.b) is Const and type(x.a) is Load and x.a.r == rid:
                 steps.add(x.b.v if x.op == "+" else -x.b.v)
     if not steps:
-        return "acc" if rid in facts.updates else ""
+        return "acc" if arith else ""
     if steps <= {1, -1, 255, -255}:
         return "timer" if rid in facts.plain else "counter"
     return "acc"
