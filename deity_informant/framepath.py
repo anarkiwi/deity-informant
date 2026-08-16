@@ -7,6 +7,8 @@ rejoins at the next shared control fact; frame-locality forwards through locals.
 
 from __future__ import annotations
 
+import sys
+
 from bisect import bisect_left
 
 from . import datadecl
@@ -315,21 +317,21 @@ def _posmap(seq, tab, maps):
     return got
 
 
-def _nth_at(posmap, key, n, lo, hi):
-    """The ``n``-th position of guard ``key`` in ``[lo, hi)``, else None."""
+def _nth_last_at(posmap, key, m, lo, hi):
+    """The ``m``-th-from-last position of guard ``key`` in ``[lo, hi)``, else None."""
     ps = posmap.get(key)
     if not ps:
         return None
-    i = bisect_left(ps, lo) + n
-    return ps[i] if i < len(ps) and ps[i] < hi else None
+    i = bisect_left(ps, hi) - m
+    return ps[i] if i >= 0 and ps[i] >= lo else None
 
 
 def _anchor(ranges, tab, maps):
     """Per-range stop positions of the cheapest shared control fact, else None.
 
-    Occurrences count from the fork, so a loop-repeated site aligns iteration
-    with iteration. Each arm replays its own items whatever anchor is chosen,
-    so the bounded scan takes the best rejoin it sees, not a proven minimum."""
+    Occurrences count backwards from the shared frame exit, so a loop-repeated
+    site aligns iteration with iteration however the divergent arms differ;
+    the bounded scan takes the best rejoin it sees, not a proven minimum."""
     seq, lo, hi = min(ranges, key=lambda r: r[2] - r[1])
     base = _posmap(seq, tab, maps)
     best_score, best_stops = None, None
@@ -341,10 +343,10 @@ def _anchor(ranges, tab, maps):
         if tried > _ANCHOR_TRIES and best_stops is not None:
             break
         key = tab.items[seq[p]][1:4]
-        nth = bisect_left(base[key], p) - bisect_left(base[key], lo + 1)
+        m = bisect_left(base[key], hi) - bisect_left(base[key], p)
         stops = []
         for r in ranges:
-            q = _nth_at(_posmap(r[0], tab, maps), key, nth, r[1] + 1, r[2])
+            q = _nth_last_at(_posmap(r[0], tab, maps), key, m, r[1] + 1, r[2])
             if q is None:
                 stops = None
                 break
@@ -372,11 +374,16 @@ def _merge(ranges, out, tab, maps=None, anchors=True):
             out.append(tab.items[next(iter(heads))])
             ranges = [(i, lo + 1, hi) for i, lo, hi in ranges]
             continue
-        ranges = _fork(ranges, out, tab, maps, anchors)
+        _fork(ranges, out, tab, maps, anchors)
+        return
 
 
 def _fork(ranges, out, tab, maps, anchors):
-    """One divergence: partition on the shared fact, rejoin at a common anchor."""
+    """One divergence: partition on the shared fact, rejoin at a common anchor.
+
+    An anchor is a bet that the paths reconverge there; the continuation is
+    merged inside the bet, so a false rejoin rolls back to honest arm-to-end
+    duplication, which bottoms out at single paths and cannot diverge."""
     heads = [tab.items[seq[lo]] for seq, lo, _hi in ranges]
     fams = {h[1:4] for h in heads if h[0] == "ck"}
     if len(fams) != 1 or any(h[0] != "ck" for h in heads):
@@ -385,19 +392,30 @@ def _fork(ranges, out, tab, maps, anchors):
             % " / ".join(sorted({repr(h[:3]) for h in heads}))
         )
     site, kind, expr = next(iter(fams))
-    stops = _anchor(ranges, tab, maps) if anchors else None
-    if stops is None:
-        stops = [hi for _i, _lo, hi in ranges]
-    groups = {}
-    for r, h, stop in zip(ranges, heads, stops):
-        groups.setdefault(h[4], []).append((r[0], r[1] + 1, stop))
-    arms = []
-    for obs in sorted(groups):
-        body = []
-        _merge(groups[obs], body, tab, maps, anchors)
-        arms.append((obs, tuple(body)))
-    out.append(("fork", site, kind, expr, tuple(arms)))
-    return [(r[0], stop, r[2]) for r, stop in zip(ranges, stops)]
+    ends = [hi for _i, _lo, hi in ranges]
+    attempts = []
+    if anchors:
+        stops = _anchor(ranges, tab, maps)
+        if stops is not None and stops != ends:
+            attempts.append(stops)
+    attempts.append(ends)
+    mark = len(out)
+    for stops in attempts:
+        try:
+            groups = {}
+            for r, h, stop in zip(ranges, heads, stops):
+                groups.setdefault(h[4], []).append((r[0], r[1] + 1, stop))
+            arms = []
+            for obs in sorted(groups):
+                body = []
+                _merge(groups[obs], body, tab, maps, anchors)
+                arms.append((obs, tuple(body)))
+            out.append(("fork", site, kind, expr, tuple(arms)))
+            _merge([(r[0], stop, r[2]) for r, stop in zip(ranges, stops)], out, tab, maps, anchors)
+            return
+        except FoldError:
+            del out[mark:]
+    raise FoldError("no consistent fork at $%04X" % site)
 
 
 # ---- emission: items to dialect statements --------------------------------------
@@ -526,11 +544,12 @@ def fold(model, frames, assertion=False):
     keep = {frameproc._reg_local(i) for i in xl.regs_read}
     ranges = [(s, 0, len(s)) for s in seqs]
     merged = []
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 200_000))  # fork chains are item-bounded
     try:
         _merge(ranges, merged, tab)
-    except FoldError:
-        merged = []
-        _merge(ranges, merged, tab, anchors=False)
+    finally:
+        sys.setrecursionlimit(limit)
     stmts = _stmts(_sweep(tuple(merged), keep))
     params = frameproc._by_reg(keep)
     return stmts, params, xl.uni_addrs
