@@ -11,6 +11,8 @@ caller and the CFG has no cross-procedure fall-through:
 * a matched ``rts``/``rti`` returns the frame's current procedure; an unmatched
   one, a ``JMP (ind)``, and a jump whose operand is an SMC cell become a
   ``switch`` over the observed targets with a ``trap`` default;
+* both directions of an executed branch are successors; a direction the trace
+  never took is marked ``trap`` (the trace-closed product);
 * a pc executed with several opcodes becomes a variant switch on the opcode
   cell, with arms for values a decompiled writer stored but that never executed
   marked ``unverified``.
@@ -90,8 +92,9 @@ def _index(trace):
     return out, keys, {pc: sorted(v) for pc, v in variants.items()}
 
 
-def _ref(to, entries, tail=False):
-    return {"to": to, "tail": bool(tail or to in entries)}
+def _ref(to, entries, tail=False, trap=False):
+    """A successor reference: ``tail`` calls the entry and returns, ``trap`` was never taken."""
+    return {"to": to, "tail": bool(tail or to in entries), "trap": bool(trap)}
 
 
 def _switch(expr, targets, entries):
@@ -136,7 +139,7 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
         for op in ops:
             node = _node(trace, pc, op, out, keys, tails, lifted)
             proc.nodes[(pc, op)] = node
-            work.extend(r["to"] for r in node["succ"] if not r["tail"])
+            work.extend(r["to"] for r in node["succ"] if not r["tail"] and not r["trap"])
 
 
 def _writer_variants(trace, pc, ops):
@@ -190,6 +193,15 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["term"] = "return"
         return node
     flow = [(t, k) for t, k, _n in edges]
+    if ls is not None and ls.ctrl[0] == "br" and not node["computed"]:
+        # Both directions of an executed branch are nodes; a direction the trace
+        # never took is a trap (the trace-closed product of design section 3).
+        seen = {t for t, _k in flow}
+        tgt, fall = ls.ctrl[3], ls.ctrl[4]
+        node["term"] = "branch"
+        node["taken"] = tgt
+        node["succ"] = [_ref(a, tails, trap=a not in seen) for a in (tgt, fall)]
+        return node
     if not flow:
         return node
     if len(flow) == 1:
@@ -209,9 +221,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         return node
     kinds = {k for _t, k in flow}
     if kinds <= {"br_taken", "br_not", "tail"} and len(flow) == 2 and not node["computed"]:
-        taken = next(
-            t for t, k in flow if k in ("br_taken", "tail") and _is_taken(trace, pc, op, t)
-        )
+        taken = next(t for t, k in flow if k in ("br_taken", "tail"))
         node["term"] = "branch"
         node["succ"] = [_ref(t, tails) for t, _k in sorted(flow, key=lambda x: x[0] != taken)]
         node["taken"] = taken
@@ -221,11 +231,6 @@ def _node(trace, pc, op, out, keys, tails, lifted):
     node["switch"] = sw
     node["succ"] = [c[1] for c in sw["cases"]]
     return node
-
-
-def _is_taken(trace, pc, op, t):
-    e = trace.edges.get((pc, op, t))
-    return e is not None and e[0] in ("br_taken", "tail", "jmp")
 
 
 def _expr(ls, default):

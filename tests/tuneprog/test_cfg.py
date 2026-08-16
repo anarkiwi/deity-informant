@@ -300,3 +300,23 @@ def test_patched_jmp_with_one_observed_target_is_still_a_switch():
     assert n["term"] == "switch" and n["computed"]
     assert n["switch"]["expr"]["kind"] == "cell"
     assert [c[0] for c in n["switch"]["cases"]] == [code.labels["one"]]
+
+
+def test_unexecuted_branch_direction_is_a_trap():
+    code = asm(
+        PLAY,
+        "init: RTS",
+        "play: LDX #$01",
+        "br: BEQ dead",
+        "STA $D400",
+        "RTS",
+        "dead: STA $D401",
+        "RTS",
+    )
+    _T, procs = _procs(code, calls=2)
+    tick = _by_entry(procs, code.labels["play"])
+    n = [x for x in tick.nodes.values() if x["pc"] == code.labels["br"]][0]
+    assert n["term"] == "branch" and n["taken"] == code.labels["dead"]
+    assert n["succ"][0] == {"to": code.labels["dead"], "tail": False, "trap": True}
+    assert n["succ"][1] == {"to": code.labels["br"] + 2, "tail": False, "trap": False}
+    assert code.labels["dead"] not in {x["pc"] for x in tick.nodes.values()}
