@@ -49,10 +49,19 @@ def _impure(e):
     return _impure(e.a) or _impure(e.b) if t is Bin else False
 
 
-def _call_roots(callee, want, s, out):
-    for i, a in zip(callee.params, s.args):
-        if i in want:
-            uses_of(a, out)
+def _stmt_roots(prog, s, defs, params, out):
+    """Record a statement's definition and, when it has an effect, what it reads."""
+    t = type(s)
+    if t is Let:
+        defs.setdefault(s.n, []).append(s.e)
+        if _impure(s.e):
+            uses_of(s.e, out)
+    elif t is Assert or (t is Store and s.cls != "raw"):
+        stmt_uses(s, out)
+    elif t is Call:
+        for i, a in zip(prog.procs[s.proc].params, s.args):
+            if i in params.get(s.proc, ()):
+                uses_of(a, out)
 
 
 def _roots(prog, name, params, rets):
@@ -61,17 +70,7 @@ def _roots(prog, name, params, rets):
     defs, out = {}, set()
     for b in p.blocks.values():
         for s in b.stmts:
-            t = type(s)
-            if t is Let:
-                defs.setdefault(s.n, []).append(s.e)
-                if _impure(s.e):
-                    uses_of(s.e, out)
-            elif t is Store and s.cls != "raw":
-                stmt_uses(s, out)
-            elif t is Assert:
-                stmt_uses(s, out)
-            elif t is Call:
-                _call_roots(prog.procs[s.proc], params.get(s.proc, ()), s, out)
+            _stmt_roots(prog, s, defs, params, out)
         if type(b.term) is Return:
             for i, v in zip(p.rets, b.term.vals):
                 if i in rets[name]:
@@ -103,12 +102,10 @@ def needed(prog, rounds=3):
             params[name] = tuple(i for i in prog.procs[name].params if REGVAR[i] in used[name])
         want = {n: set() for n in prog.procs}
         for name, p in prog.procs.items():
-            for b in p.blocks.values():
-                for s in b.stmts:
-                    if type(s) is Call:
-                        for i, r in zip(prog.procs[s.proc].rets, s.rets):
-                            if r in used[name]:
-                                want[s.proc].add(i)
+            for s in [x for b in p.blocks.values() for x in b.stmts if type(x) is Call]:
+                want[s.proc] |= {
+                    i for i, r in zip(prog.procs[s.proc].rets, s.rets) if r in used[name]
+                }
         if want == rets:
             break
         rets = want
@@ -138,6 +135,7 @@ class Printer:
         self.hide = frozenset()
         self.fors = 0
         self.proc = ""
+        self.defs = {}
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -176,9 +174,8 @@ class Printer:
             return str((addr - r.base) // max(r.stride, 1))
         if type(idx) is Var and idx.n in self.alias and self.alias[idx.n][1] == r.stride:
             return self.alias[idx.n][0]
-        e = self.expr(idx, False)
-        e = e[1:-1] if e.startswith("(") and e.endswith(")") else e
-        return e if r.stride == 1 else "(%s)/%d" % (e, r.stride)
+        e = _bare(self.expr(idx, False))
+        return e if r.stride == 1 else "%s/%d" % (e, r.stride)
 
     def addr_of(self, e, r):
         """``(constant address, index expression)`` of an access to region ``r``."""
@@ -265,18 +262,15 @@ class Printer:
         out = self.compound(lhs, s, addr)
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:
-            self.mem[s.v] = lhs
+            self.mem[fold(s.v)] = lhs
         return out
 
     def compound(self, lhs, s, addr):
         """``x += k`` when the stored value is the cell's own value plus a constant."""
         v = fold(s.v)
         if type(v) is Bin and v.op in ("+", "-", "&", "|", "^", "<<", ">>"):
-            if (
-                type(v.a) is Load
-                and v.a.r == s.r
-                and self.addr_of(v.a.a, self.rgn.get(s.r))[0] == addr
-            ):
+            a = self.defs.get(v.a.n, v.a) if type(v.a) is Var else v.a
+            if type(a) is Load and a.r == s.r and self.addr_of(a.a, self.rgn.get(s.r))[0] == addr:
                 if type(v.b) is Const and v.op in ("+", "-") and v.b.v > 0xF0:
                     return "%s %s= %s" % (lhs, "-" if v.op == "+" else "+", _hex(0x100 - v.b.v))
                 return "%s %s= %s" % (lhs, v.op, self.expr(v.b, False))
@@ -284,6 +278,10 @@ class Printer:
 
     def forget(self, rid):
         self.mem = {k: v for k, v in self.mem.items() if not _reads(k, rid)}
+
+
+def _bare(s):
+    return s[1:-1] if s.startswith("(") and s.endswith(")") else s
 
 
 def _signbit(e):
@@ -338,17 +336,19 @@ class Body(Printer):
         if not stmts:
             return []
         self.mem = {}
+        self.defs = {s.n: s.e for s in stmts if type(s) is Let}
         head = ["%s# $%04X" % (pad, n.src)] if self.pcs else []
         return head + [pad + self.stmt(s) for s in stmts]
 
     def cond(self, n, proc, depth):
         pad = IND * depth
-        then, els = self.nodes(n.then, proc, depth + 1), self.nodes(n.els, proc, depth + 1)
         c, flip = self.expr(n.c), False
+        neg = self.negate(n.c)
+        then, els = self.nodes(n.then, proc, depth + 1), self.nodes(n.els, proc, depth + 1)
         if then == [IND * (depth + 1) + "pass"] and els != [IND * (depth + 1) + "pass"]:
             then, els, flip = els, ["%spass" % (IND * (depth + 1))], True
         if flip:
-            c = self.negate(n.c)
+            c = neg
         if len(then) == 1 and len(els) == 1 and els[-1].endswith("pass"):
             return ["%sif %s: %s" % (pad, c, then[0].strip())]
         if len(then) == 1 and len(els) == 1:
@@ -364,7 +364,7 @@ class Body(Printer):
     def case(self, n, proc, depth):
         pad = IND * depth
         out = ["%sswitch %s:" % (pad, self.expr(n.e))]
-        for v, b in n.cases:
+        for v, b in n.cases:  # pylint: disable=redefined-argument-from-local
             out.append("%s%scase %s:" % (pad, IND, _hex(v)))
             out.extend(self.nodes(b, proc, depth + 2))
         return out

@@ -21,9 +21,17 @@ Middle and back end (the executable program and its certificate):
 * :mod:`.verify` (S8) -- per-call differential verification against the trace,
   periodicity, chunked and resumable.
 
-``tools/tuneprog_certify.py`` drives the whole pipeline over a ``.sid`` file.
-The module-level entry points ``build.build_ir``, ``ssa.simplify``,
-``emit.emit_python`` and ``verify.verify`` are the stage boundaries.
+Presentation over the certified program (it is never edited):
+
+* :mod:`.structure` (S5) -- loops, if/else, switch, ``for``, the phase variable.
+* :mod:`.recover` (S6) -- struct views, roles and names for the storage.
+* :mod:`.printer` (S7 text form) -- ``tuneprog.md``, anatomy-style pseudocode.
+
+:mod:`.pipeline` drives all of it; ``tools/tuneprog_certify.py`` and
+``deity-informant tuneprog`` are wrappers around it. The module-level entry
+points ``build.build_ir``, ``ssa.simplify``, ``emit.emit_python``,
+``verify.verify``, ``structure.structure`` and ``recover.recover`` are the stage
+boundaries.
 """
 
 from __future__ import annotations
@@ -39,6 +47,10 @@ from .ssa import simplify
 from .idioms import rewrite
 from .emit import PyProgram, certificate, emit_python, write_certificate
 from .verify import Reference, Verifier, certify
+from .structure import view
+from .recover import Names
+from .printer import render
+from .pipeline import build
 
 __all__ = [
     "CIA",
@@ -81,4 +93,8 @@ __all__ = [
     "Reference",
     "Verifier",
     "certify",
+    "view",
+    "Names",
+    "render",
+    "build",
 ]
