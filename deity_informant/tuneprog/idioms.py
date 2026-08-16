@@ -92,6 +92,9 @@ def fold(e):
     if op in ("==", "!=") and v == 0 and type(a) is Bin and a.op == "-" and a.w == 1:
         if width(a.a) == 1 and width(a.b) == 1:
             return Bin(op, a.a, a.b, 1)
+    if op in ("==", "!=") and v == 0 and type(a) is Bin and a.op == "|" and type(a.b) is Const:
+        if a.b.v:  # ORA #imm with a bit set is never zero: a known-flag branch
+            return Const(0 if op == "==" else 1, 1)
     return e
 
 

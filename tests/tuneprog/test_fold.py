@@ -211,6 +211,69 @@ def test_a_run_only_one_procedure_has_stays_where_it_is():
     assert "writeout()" not in doc and "sid[0].sr = 9" in doc
 
 
+# ---- shared tails ------------------------------------------------------------
+def test_a_shared_tail_two_jumps_reach_becomes_a_procedure_instead_of_a_goto():
+    # GT2's mt_loadregs: every voice path ends `JMP $140F`, one arm returns early.
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "STA wave",
+        "RTS",
+        "play: INC cnt",
+        "LDA cnt",
+        "AND #$03",
+        "BEQ zero",
+        "CMP #$01",
+        "BEQ one",
+        "LDX #$0E",
+        "LDA #$99",
+        "STA $D406,X",
+        "RTS",
+        "one: LDX #$00",
+        "LDA #$21",
+        "STA wave",
+        "JMP loadregs",
+        "zero: LDX #$07",
+        "LDA #$41",
+        "STA wave",
+        "loadregs: LDA wave",
+        "AND #$FE",
+        "STA $D404,X",
+        "LDA #$00",
+        "STA $D405,X",
+        "RTS",
+        "wave: BRK",
+        "cnt: BRK",
+    )
+    doc = _text(code, calls=8)
+    assert "goto" not in doc, doc
+    head = [l for l in doc.splitlines() if l.startswith("p_%04X(x):" % code.labels["loadregs"])]
+    assert head, doc  # the tail is a procedure taking the voice index it reads
+    assert doc.count("sid[x/7].ctrl") == 1 and doc.count("(x=") == 2  # one copy, two calls
+
+
+def test_a_tail_promotion_that_would_not_pay_is_rolled_back():
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: INC cnt",
+        "LDA cnt",
+        "AND #$01",
+        "BNE odd",
+        "LDA #$21",
+        "JMP out",
+        "odd: LDA #$41",
+        "out: STA $D404",
+        "RTS",
+        "cnt: BRK",
+    )
+    doc = _text(code, calls=8)
+    assert "goto" not in doc and "p_" not in doc  # an if/else needs no helper
+
+
 # ---- the stack ---------------------------------------------------------------
 def test_a_balanced_push_and_pop_is_a_temporary_and_hides_the_stack_pointer():
     code = asm(

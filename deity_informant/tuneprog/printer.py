@@ -277,6 +277,11 @@ class Printer:
         if t is R16:
             return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
+        if e.op in ("==", "!=") and type(b) is Const:
+            hit = self.mem.get(Bin("-", a, b, 1))
+            if hit is not None:  # x == k is the cell that holds x - k against zero
+                s = "%s %s 0" % (hit, e.op)
+                return s if top else "(%s)" % s
         if e.op == "&" and type(b) is Const and b.v == 0x80:
             return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
@@ -453,7 +458,8 @@ class Body(Printer):
         pad = IND * depth
         c, flip = self.expr(n.c), False
         neg = self.negate(n.c)
-        then, els = self.nodes(n.then, proc, depth + 1), self.nodes(n.els, proc, depth + 1)
+        both = self.arms([n.then, n.els], proc, depth + 1)
+        then, els = both[0], both[1]
         if then == [IND * (depth + 1) + "pass"] and els != [IND * (depth + 1) + "pass"]:
             then, els, flip = els, ["%spass" % (IND * (depth + 1))], True
         if flip:
@@ -465,6 +471,15 @@ class Body(Printer):
         out = ["%sif %s:" % (pad, c)] + then
         return out if els[-1].endswith("pass") and len(els) == 1 else out + ["%selse:" % pad] + els
 
+    def arms(self, bodies, proc, depth):
+        """Render sibling arms: each starts from the state the test saw, none survives."""
+        saved, out = dict(self.mem), []
+        for b in bodies:
+            self.mem = dict(saved)
+            out.append(self.nodes(b, proc, depth))
+        self.mem = {}
+        return out
+
     def negate(self, c):
         if type(c) is Bin and c.op in NEG:
             return self.expr(Bin(NEG[c.op], c.a, c.b, c.w))
@@ -473,9 +488,10 @@ class Body(Printer):
     def case(self, n, proc, depth):
         pad = IND * depth
         out = ["%sswitch %s:" % (pad, self.expr(n.e))]
-        for v, b in n.cases:  # pylint: disable=redefined-argument-from-local
+        arms = self.arms([b for _v, b in n.cases], proc, depth + 2)
+        for (v, _b), body in zip(n.cases, arms):
             out.append("%s%scase %s:" % (pad, IND, _hex(v)))
-            out.extend(self.nodes(b, proc, depth + 2))
+            out.extend(body)
         return out
 
     def forloop(self, n, proc, depth):
@@ -487,7 +503,7 @@ class Body(Printer):
         self.alias[n.var] = (var, n.scale)
         self.hide |= n.hide
         self.fors += 1
-        body = self.nodes(_strip(n.body, n.label, self.hide), proc, depth + 1)
+        body = self.arms([_strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
 
@@ -496,7 +512,8 @@ class Body(Printer):
         spin = self.spin(n)
         if spin is not None:
             return ["%swhile %s: pass%s" % (pad, spin, _times(n.count))]
-        return ["%swhile True:%s" % (pad, _times(n.count))] + self.nodes(n.body, proc, depth + 1)
+        body = self.arms([n.body], proc, depth + 1)[0]
+        return ["%swhile True:%s" % (pad, _times(n.count))] + body
 
     def spin(self, n):
         """A body that only reads and tests is a busy-wait: ``while cond: pass``."""

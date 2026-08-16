@@ -14,7 +14,8 @@ import pickle
 import time
 from pathlib import Path
 
-from . import emit, fold, ir, printer, recover, ssa, structure, texture, unroll, verify as V, word
+from . import emit, fold, ir, printer, recover, ssa, structure, tails, texture, unroll
+from . import verify as V, word
 from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
@@ -197,6 +198,7 @@ def present(prog):
     names = recover.recover(view, structure.structure(view))
     word.fold16(view, names)
     fold.outline(view, names, *printer.needed(view))
+    tails.promote_tails(view, names)
     st = structure.structure(view)
     live, params = printer.needed(view)
     unroll.unroll(st, live, fold.livearg(view, params))
