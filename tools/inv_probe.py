@@ -88,9 +88,19 @@ def one(entry, frames=None, fold=False):
 GRAPH_FRAMES = 200  # the fold survey's window: the channels saturate long before it
 
 
+def _opkey(ops, bs):
+    """The variant bytes a node must split on: the opcode, and a branch's displacement.
+
+    A patched immediate/absolute operand is a read of the patched cell (playbook M1/M2,
+    fold doc 4), so splitting the node on it would inflate an SMC tune for nothing; a
+    patched opcode (M4) or branch displacement (M5) is a different instruction."""
+    return bs[:2] if ops[bs[0]][1] == "rel" else bs[:1]
+
+
 def _graph(entry, frames):
     from deity_informant import structured as S
     from deity_informant.c64 import load_psid
+    from deity_informant.lifter import OPS
 
     sid, sub, secs = entry
     mem, _load, init, play = load_psid(Path(sid).read_bytes())
@@ -102,17 +112,25 @@ def _graph(entry, frames):
     viol = g.sp_violations()
     multi = odd = 0
     for node in g.nodes:
-        if node[1][0] != 0x60 or not node[2]:  # RTS; an empty context returns the invocation
+        if node[1][0] != 0x60:  # RTS
             continue
         succ = {s[0] for s in g.edges.get(node, ())}
+        if not succ:  # the invocation's own balancing return: the trace ends at it
+            continue
         multi += len(succ) > 1
-        odd += succ != {(node[2][-1] + 3) & 0xFFFF}
+        odd += succ != ({(node[2][-1] + 3) & 0xFFFF} if node[2] else set())
+    ctxs = {(node[0], node[2]) for node in g.nodes}
+    ops = {(node[0], _opkey(OPS, node[1]), node[2], node[3]) for node in g.nodes}
     return {
         **_sweep.row_head(entry),
         "frames": n,
         "pcs": pcs,
         "nodes": len(g.nodes),
+        "nodes_op": len(ops),
+        "nodes_pcctx": len(ctxs),
         "ratio": round(len(g.nodes) / max(pcs, 1), 2),
+        "ratio_op": round(len(ops) / max(pcs, 1), 2),
+        "ratio_pcctx": round(len(ctxs) / max(pcs, 1), 2),
         "depth": g.depth,
         "sp_viol": len(viol),
         "sp_examples": [[pc, list(ctx), sorted(g.sp_of[(pc, ctx)])] for pc, ctx in viol[:3]],
@@ -153,8 +171,8 @@ def _pick(vals, q):
 
 
 _ROW = (
-    "%-44s f%-5d pcs %-5d nodes %-6d ratio %-5.2f depth %d viol %d rts %d/%d"
-    " insns %-9d rbw %-5d ld %-5d st %-5d %.1fs"
+    "%-44s f%-5d pcs %-5d nodes %-6d ratio %-5.2f op %-5.2f pcctx %-5.2f depth %d viol %d"
+    " rts %d/%d insns %-9d rbw %-5d ld %-5d st %-5d %.1fs"
 )
 
 
@@ -175,6 +193,8 @@ def graph_report(rows):
                     "pcs",
                     "nodes",
                     "ratio",
+                    "ratio_op",
+                    "ratio_pcctx",
                     "depth",
                     "sp_viol",
                     "rts_multi",
@@ -191,11 +211,13 @@ def graph_report(rows):
             print("    sp_viol $%04X ctx %s sp %s" % (pc, [hex(c) for c in ctx], sps))
     print("%6d tunes, %d traced" % (len(rows), len(ok)))
     if ok:
-        ratios = sorted(r["ratio"] for r in ok)
-        print(
-            "ratio median %.2f p90 %.2f max %.2f"
-            % (_pick(ratios, 0.5), _pick(ratios, 0.9), ratios[-1])
-        )
+        for key in ("ratio", "ratio_op", "ratio_pcctx"):
+            vals = sorted(r[key] for r in ok)
+            top = max(ok, key=lambda r, k=key: r[k])
+            print(
+                "%-12s median %.2f p90 %.2f max %.2f (%s)"
+                % (key, _pick(vals, 0.5), _pick(vals, 0.9), vals[-1], top["tune"])
+            )
         hist = {}
         for r in ok:
             hist[r["depth"]] = hist.get(r["depth"], 0) + 1
