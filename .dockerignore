@@ -5,3 +5,9 @@
 .pytest_cache
 ghidra/6510/data/languages/6502.slaspec
 ghidra/6510/data/languages/6510.sla
+.venv
+.oracle-cache
+.sweep-cache
+.hypothesis
+.coverage
+out

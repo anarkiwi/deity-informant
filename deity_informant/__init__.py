@@ -9,7 +9,7 @@ Two products from one opcode table:
   *and* decompiler, and pypcode, become illegal-aware.
 
 Illegal-opcode semantics and cycles follow "No More Secrets - NMOS 6510
-Unintended Opcodes" (v0.91); see ``docs/illegal-opcodes.md``.
+Unintended Opcodes".
 """
 
 from __future__ import annotations
@@ -32,13 +32,7 @@ from .vm import (
     run_irq,
     run_irq_driven,
 )
-from .recorder import record, Recording, RecVM
-from .expr import ExprTooComplex
-from . import expr
 from . import c64
-from . import render
-from . import sidprog
-from . import structured
 from .c64 import (
     poweron_ram,
     installed_handler,
@@ -46,6 +40,7 @@ from .c64 import (
     install_kernal_irq_stubs,
     install_irq_entry,
     irq_stubs,
+    load_psid,
 )
 
 try:
@@ -66,20 +61,13 @@ __all__ = [
     "run_sub",
     "run_irq",
     "run_irq_driven",
-    "record",
-    "Recording",
-    "RecVM",
-    "ExprTooComplex",
-    "expr",
     "c64",
-    "render",
-    "sidprog",
-    "structured",
     "poweron_ram",
     "installed_handler",
     "installed_vector",
     "install_kernal_irq_stubs",
     "install_irq_entry",
     "irq_stubs",
+    "load_psid",
     "__version__",
 ]

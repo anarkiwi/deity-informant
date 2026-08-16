@@ -18,7 +18,7 @@ py65 = pytest.importorskip("py65.devices.mpu6502")
 
 ITERS = 200
 
-# py65 charges $CE DEC abs 3 cycles; the NMOS 6502 takes 6 (docs/cycle-times.md).
+# py65 charges $CE DEC abs 3 cycles; the NMOS 6502 takes 6.
 PY65_CYCLE_DEFECT = {0xCE: 3}
 
 

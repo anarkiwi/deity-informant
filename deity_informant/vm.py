@@ -223,7 +223,7 @@ class PcodeVM:
             r[i] = (p >> s) & 1
 
     def _push(self, val):
-        """Push one byte to the stack (driver synthetic frames); recorder-overridable seam."""
+        """Push one byte to the stack (driver synthetic frames); subclass-overridable seam."""
         self.mem[0x100 + self.reg[3]] = val & 0xFF
         self.reg[3] = (self.reg[3] - 1) & 0xFF
 
@@ -255,7 +255,7 @@ def run_irq(vm, handler, cache, lifter):
 
     Pushes the CPU interrupt frame (return address then status), sets I, and runs
     from ``handler`` until the balancing RTI climbs the stack back. The ROM-free
-    equivalent, as 6510 code the decompiler can model, is ``c64.irq_stubs``.
+    equivalent, as 6510 code, is ``c64.irq_stubs``.
     """
     reg = vm.reg
     start = reg[3]

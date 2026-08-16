@@ -8,8 +8,6 @@ dispatch path (:func:`irq_stubs`) that makes a handler entry a subroutine call.
 
 from __future__ import annotations
 
-import hashlib
-import re
 import struct
 
 IRQ_VEC = (0x0314, 0x0315)  # CINV (KERNAL A/X/Y-save ABI)
@@ -146,32 +144,3 @@ def psid_songs(data):
     """``(songs, startsong)`` from the PSID header (both 1-based)."""
     songs, startsong = struct.unpack(">HH", data[0x0E:0x12])
     return songs, startsong
-
-
-def song_lengths(text):
-    """``{md5: [seconds per subtune]}`` parsed from HVSC ``Songlengths.md5``."""
-    out = {}
-    for line in text.splitlines():
-        if "=" not in line or not re.match(r"^[0-9a-f]{32}=", line):
-            continue
-        md5, times = line.split("=", 1)
-        secs = []
-        for t in times.split():
-            mm, _, ss = t.partition(":")
-            secs.append(int(mm) * 60 + int(float(ss)))
-        out[md5] = secs
-    return out
-
-
-def song_seconds(data, lengths, subtune=None):
-    """Full ``Songlengths`` duration of one subtune (0-based; default startsong).
-
-    ``lengths`` is :func:`song_lengths` output; None when the tune is unknown.
-    Short evidence windows under-trace playroutines -- always use full length.
-    """
-    secs = lengths.get(hashlib.md5(data).hexdigest())
-    if not secs:
-        return None
-    if subtune is None:
-        subtune = psid_songs(data)[1] - 1
-    return secs[subtune] if 0 <= subtune < len(secs) else secs[0]

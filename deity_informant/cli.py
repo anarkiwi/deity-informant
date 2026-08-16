@@ -4,7 +4,6 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
-  decompile    decompile a tune (.sid or raw) to frameprog structured text
   emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
 """
 
@@ -18,12 +17,6 @@ from pathlib import Path
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
-from . import c64
-from . import frameprog
-from . import frameval
-from . import render as render_mod
-from . import structured
-from .c64 import load_psid, psid_songs
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
 from .vm import PcodeVM, run_sub
 
@@ -82,85 +75,6 @@ def cmd_run(args):
     return 0
 
 
-_SONGLENGTHS = Path(".oracle-cache/hvsc/Songlengths.md5")
-
-
-def _full_frames(data, subtune):
-    """Full-Songlengths frame count (50Hz), or None when unresolvable."""
-    if data[:4] not in (b"PSID", b"RSID") or not _SONGLENGTHS.is_file():
-        return None
-    lengths = c64.song_lengths(_SONGLENGTHS.read_text(encoding="latin-1"))
-    secs = c64.song_seconds(data, lengths, subtune)
-    return secs * 50 if secs else None
-
-
-def _verify(model, prog, text, frames, writes):
-    """Artifact laws: canonical fixpoint, block-model rebuild, Gate FP."""
-    if frameprog.dumps(frameprog.loads(text)) != text:
-        sys.stderr.write("verify FAILED: text is not a loads/dumps fixpoint\n")
-        return 1
-    rebuilt = frameprog.block_model(frameprog.loads(text))
-    if frameprog.dumps(frameprog.program(rebuilt)) != text:
-        sys.stderr.write("verify FAILED: the artifact does not rebuild its own program\n")
-        return 1
-    got = frameval.gate_fp(model, frames, prog)
-    if got is not None:
-        sys.stderr.write("verify FAILED: Gate FP diverges at %r\n" % (got,))
-        return 1
-    sys.stderr.write(
-        "verify ok: %d frames, %d cycle-stamped writes reproduced by the frame program\n"
-        % (frames, writes)
-    )
-    return 0
-
-
-def cmd_decompile(args):
-    data = Path(args.file).read_bytes()
-    subtune = args.subtune
-    if data[:4] in (b"PSID", b"RSID"):
-        mem, _l, init, play = load_psid(data)
-        _songs, startsong = psid_songs(data)
-        init = args.init if args.init is not None else init
-        play = args.play if args.play is not None else play
-        img = c64.psid_image(data)
-        if subtune is None:
-            subtune = startsong - 1
-    else:
-        mem, n = _load(args.file, args.org)
-        init, play = args.init, args.play
-        img = (args.org, args.org + n)
-    subtune = subtune or 0
-    if args.frames is None:
-        args.frames = _full_frames(data, subtune)
-        if args.frames is None:
-            sys.stderr.write(
-                "no Songlengths duration for this input: pass --frames FULL_SONG_FRAMES\n"
-                "(short evidence windows under-trace playroutines; use the full length)\n"
-            )
-            return 1
-    mem[0xD418] = 0x0F
-    try:
-        model, ev = structured.decompile(
-            mem, init, play, args.frames, subtune, args.sound, args.close, args.close_cap, img
-        )
-    except structured.DecompileError as e:
-        sys.stderr.write("decompile failed: %s\n" % e)
-        return 1
-    if args.report:
-        sys.stderr.write(structured.format_report(model))
-    prog = None if args.structured and not args.verify else frameprog.program(model)
-    text = render_mod.render(model) if args.structured else frameprog.dumps(prog)
-    if args.verify:
-        rc = _verify(model, prog, frameprog.dumps(prog), args.frames, len(ev.wlog))
-        if rc:
-            return rc
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
-    return 0
-
-
 def cmd_emit_sleigh(args):
     build = Path(__file__).resolve().parent.parent / "ghidra" / "6510" / "build.py"
     if not build.is_file():
@@ -208,39 +122,6 @@ def main(argv=None):
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--frames", type=int, default=1)
     p.set_defaults(fn=cmd_run)
-
-    p = sub.add_parser("decompile", help="decompile a tune (.sid or raw) to frameprog text")
-    org(p)
-    p.add_argument("--init", type=lambda x: int(x, 0), default=None)
-    p.add_argument("--play", type=lambda x: int(x, 0), default=None)
-    p.add_argument("--subtune", type=int, default=None, help="0-based (default: PSID startsong)")
-    p.add_argument("--structured", action="store_true", help="emit the readable structured view")
-    p.add_argument(
-        "--frames",
-        type=int,
-        default=None,
-        help="evidence/verify window (default: the tune's full Songlengths duration)",
-    )
-    p.add_argument("-o", "--out", help="write the emitted text to FILE (default stdout)")
-    p.add_argument("--verify", action="store_true", help="fixpoint + artifact rebuild + Gate FP")
-    p.add_argument(
-        "--report", action="store_true", help="print the per-site proof report to stderr"
-    )
-    p.add_argument(
-        "--sound", action="store_true", help="fail unless every control guard is certified dead"
-    )
-    p.add_argument(
-        "--close",
-        action="store_true",
-        help="run play past the window until the state recurs (certifies every guard)",
-    )
-    p.add_argument(
-        "--close-cap",
-        type=int,
-        default=None,
-        help="closure frame cap (default max(4x window, 60000))",
-    )
-    p.set_defaults(fn=cmd_decompile)
 
     p = sub.add_parser("emit-sleigh", help="build the 6510 SLEIGH module")
     p.add_argument("-o", "--out", help="languages dir to install the built module into")

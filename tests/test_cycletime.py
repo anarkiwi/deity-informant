@@ -2,7 +2,7 @@
 
 On the NMOS 6502 cost is a function of (class, addressing mode) alone, with no
 per-opcode exceptions, so a per-family table pins all 256 entries -- and catches
-a single-entry typo. References and audit method: docs/cycle-times.md.
+a single-entry typo.
 """
 
 import pytest

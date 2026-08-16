@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Self-contained C64 "HELLO, WORLD!" demo: illegal opcodes + self-modifying code.
 
-Depends only on ``deity_informant`` (no pysidtracker/HVSC, unlike the other
-examples here). A 33-byte program at load address ``$1000`` writes the 13 screen
-codes for ``HELLO, WORLD!`` into C64 screen RAM ``$0400..$040C`` using two
-load-bearing NMOS illegal opcodes and genuine self-modifying code:
+Depends only on ``deity_informant``. A 33-byte program at load address ``$1000``
+writes the 13 screen codes for ``HELLO, WORLD!`` into C64 screen RAM
+``$0400..$040C`` using two load-bearing NMOS illegal opcodes and genuine
+self-modifying code:
 
 * **LAX $1013,Y** (``$BF``) loads A and X with the next (bit-inverted) message
   byte and sets Z; the ``BEQ`` terminator test rides on LAX's Z flag.
@@ -28,8 +28,7 @@ from deity_informant import ILLEGAL_OPCODES, OPS, PcodeVM, lift, run_sub
 
 ORG = 0x1000
 
-# Raw code+data laid at $1000 (what the VM and Ghidra load). Comment column
-# mirrors the assembly listing in docs/hello-world.md.
+# Raw code+data laid at $1000 (what the VM and Ghidra load).
 PROGRAM = bytes.fromhex(
     "A000"  # $1000  LDY #$00
     "BF1310"  # $1002  LAX $1013,Y   ; illegal: A=X=data[Y]; Z=1 at terminator

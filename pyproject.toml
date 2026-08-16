@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deity-informant"
-version = "0.4.1"
+version = "0.5.0"
 description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,18 +22,12 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-# frameprog rung (d2) reads its 16-bit lifts off the Z3-proven egglog rule set, so
-# the solver stack is core, not an extra; egglog's minor is pinned (its str form is parsed).
-dependencies = ["jennings>=0.1.0", "lark>=1.2", "egglog>=13,<14", "z3-solver"]
+dependencies = ["jennings>=0.1.0"]
 
 [project.optional-dependencies]
-oracle = ["py65", "pysidtracker", "zstandard"]
+oracle = ["pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
-# egglog str-form of extracted exprs is parsed; pin minor so it stays stable.
-eqlift = ["egglog>=13,<14", "z3-solver"]
-# pysidtracker is dev-only tooling: tools/fetch_corpus.py imports it at module
-# scope and CI lints tools/, so pylint must be able to resolve it.
-dev = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis", "build", "black", "pylint", "py65", "pypcode", "numpy", "egglog>=13,<14", "z3-solver", "pysidtracker"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "numpy"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -45,9 +39,6 @@ deity-informant = "deity_informant.cli:main"
 [tool.setuptools.packages.find]
 include = ["deity_informant*"]
 
-[tool.setuptools.package-data]
-deity_informant = ["*.lark"]
-
 [tool.pytest.ini_options]
 markers = [
     "oracle: byte-exact SID grid vs the Dockerized sidtrace oracle (needs Docker + HVSC)",
@@ -55,24 +46,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["deity_informant"]
-
-[tool.coverage.report]
-# Corpus/network drivers: they need HVSC or the net, so they cannot run in the
-# hermetic job and would sit at a permanent 0% that only dilutes the signal.
-# black and pylint still cover them.
-omit = [
-    "tools/_sweep.py",
-    "tools/denotation_l0.py",
-    "tools/denote_census.py",
-    "tools/emit_identity.py",
-    "tools/fetch_corpus.py",
-    "tools/fuse_measure.py",
-    "tools/gate_sweep.py",
-    "tools/showcase.py",
-    "tools/splice_sweep.py",
-    "tools/web_census.py",
-    "tools/witness_sweep.py",
-]
 
 [tool.black]
 line-length = 100

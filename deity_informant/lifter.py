@@ -7,9 +7,8 @@ family), with correct cycle counts. JAM/KIL halt. An unimplemented opcode is a
 hard error, never a silent skip.
 
 Semantics and cycle counts follow "No More Secrets - NMOS 6510 Unintended
-Opcodes" (v0.91); see docs/illegal-opcodes.md for the per-opcode citations. The
-static cycle tables below are frozen (no runtime py65 dependency) and were
-cross-checked against the NMS reference chart.
+Opcodes" (v0.91). The static cycle tables below are frozen (no runtime py65
+dependency) and were cross-checked against the NMS reference chart.
 """
 
 from __future__ import annotations
@@ -197,7 +196,7 @@ def _ea(e, mem, pc, mode, pmap=None):
     raise ValueError(mode)
 
 
-# ---- cycle tables: base + EXTRACYCLES page-cross/branch penalty (docs/cycle-times.md)
+# ---- cycle tables: base + EXTRACYCLES page-cross/branch penalty
 CYCLETIME = (
     7,
     6,

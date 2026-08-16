@@ -1,7 +1,7 @@
 """The SLEIGH 6510 illegal set must equal the Python lifter's illegal set.
 
 This is the single-source-of-truth guard: the executable truth (deity_informant.OPS,
-oracle-validated) and the decompiler truth (6510_illegal.sinc) are independent
+oracle-validated) and the SLEIGH truth (6510_illegal.sinc) are independent
 encodings, so they must not silently diverge. Where pypcode is installed, this
 also compiles+loads the 6510 spec and asserts it decodes every illegal opcode
 (stock 6502 throws BadDataError on all of them).

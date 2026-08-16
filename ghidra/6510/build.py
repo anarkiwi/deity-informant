@@ -36,7 +36,7 @@ def find_base_slaspec() -> Path:
         if p.is_file():
             return p
     try:
-        import pypcode  # noqa: PLC0415
+        import pypcode  # pylint: disable=import-outside-toplevel
 
         p = Path(pypcode.__file__).parent / "processors/6502/data/languages/6502.slaspec"
         if p.is_file():
@@ -56,7 +56,7 @@ def find_sleigh() -> str:
         if p.is_file():
             return str(p)
     try:
-        import pypcode  # noqa: PLC0415
+        import pypcode  # pylint: disable=import-outside-toplevel
 
         p = Path(pypcode.__file__).parent / "bin/sleigh"
         if p.is_file():
