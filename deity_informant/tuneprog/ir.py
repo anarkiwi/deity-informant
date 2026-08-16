@@ -538,4 +538,4 @@ class Interp:
             elif k is Trap:
                 raise TrapError(term.why, "$%04X %s" % (blk.src, blk.label))
             else:
-                return [self.ev(v, F) for v in term.vals]
+                return tuple(self.ev(v, F) for v in term.vals)

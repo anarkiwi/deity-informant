@@ -111,36 +111,45 @@ def foldall(proc):
     return n[0]
 
 
-def _consumer(avail, dead):
-    """Substitutes an available single-use value and marks its definition dead."""
+def _size(e):
+    """Operator count of an expression (leaves are free)."""
+    return 1 + _size(e.a) + _size(e.b) if type(e) is Bin else 0
+
+
+def _consumer(avail, hits):
+    """Substitutes an available value into every use of it in this block."""
 
     def fn(e):
-        hit = avail.pop(e.n, None) if type(e) is Var else None
+        hit = avail.get(e.n) if type(e) is Var else None
         if hit is None:
             return e
-        dead.add(hit[0])
-        return hit[1]
+        hits[0] += 1
+        return hit
 
     return fn
 
 
-def inline(proc):
-    """Fold a pure, load-free, single-use value into its use in the same block."""
+def inline(proc, limit=3):
+    """Fold a pure, load-free value into its uses in the same block.
+
+    A single use always moves; a small expression (at most ``limit`` operators --
+    the shape a flag definition has) also moves into several uses, which is what
+    puts a compare under both the branch that reads it and the value it returns.
+    Definitions left without uses are removed by :func:`~.ssa.dce`.
+    """
     uses = use_counts(proc)
-    n = 0
+    hits = [0]
     for b in proc.blocks.values():
-        avail, dead = {}, set()
-        fn = _consumer(avail, dead)
-        for i, s in enumerate(b.stmts):
+        avail = {}
+        fn = _consumer(avail, hits)
+        for s in b.stmts:
             if type(s) is not Phi:
                 apply_stmt(s, fn)
-            if type(s) is Let and uses[s.n] == 1 and pure(s.e) and _noload(s.e):
-                avail[s.n] = (i, s.e)
+            if type(s) is Let and pure(s.e) and _noload(s.e):
+                if uses[s.n] == 1 or _size(s.e) <= limit:
+                    avail[s.n] = s.e
         apply_term(b.term, fn)
-        if dead:
-            b.stmts = [s for i, s in enumerate(b.stmts) if i not in dead]
-            n += len(dead)
-    return n
+    return hits[0]
 
 
 def rewrite(proc):

@@ -157,7 +157,7 @@ def _stmts(blk, out, fn):
             pre = []
             args = [_ex(a, pre, fn) for a in s.args]
             out.extend(pre)
-            lhs = ", ".join(_san(r) for r in s.rets)
+            lhs = ", ".join(_san(r) for r in s.rets) + ("," if len(s.rets) == 1 else "")
             call = "%s(S, m%s)" % (_pname(s.proc), "".join(", " + a for a in args))
             out.append("%s = %s" % (lhs, call) if lhs else call)
         elif t is Assert:
@@ -318,6 +318,7 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     """The design's ``certificate.json`` document."""
     return {
         "tune": prog.meta.get("name"),
+        "sid_model": prog.meta.get("sid_model"),
         "oracle": oracle or "deity_informant.PcodeVM@%s" % __version__,
         "reference_validated_against": prog.meta.get("reference_validated_against", "none"),
         "compared": compared or ["init writes", "tick sid writes", "tick schedule effects"],

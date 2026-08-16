@@ -13,7 +13,7 @@ over the opcode cell, patched jumps/branches and ``JMP (ind)``/RTS-trick returns
 become ``switch`` over the computed target with a ``trap`` default, an untaken
 branch direction is a ``trap`` block, a tail edge is ``call f; return``.
 
-Public API: :func:`build`, :func:`ops_to_stmts`, :func:`straightline`.
+Public API: :func:`build_ir`, :func:`ops_to_stmts`, :func:`straightline`.
 """
 
 from __future__ import annotations
@@ -462,7 +462,7 @@ def _machine_image(trace):
     ]
 
 
-def build(trace, lifted, regions, procs, meta=None):
+def build_ir(trace, lifted, regions, procs, meta=None):
     """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (design section 4)."""
     store = _Storage(trace, regions)
     b = _Builder(trace, lifted, store, procs)

@@ -14,6 +14,7 @@ Passes, each semantics-preserving with :class:`~.ir.Interp` as the oracle:
 * :func:`copyprop` -- forward a ``let v = w``;
 * :func:`constprop` -- forward a ``let v = k`` and fold a load of a ``const``
   region at a known address into its byte;
+* :func:`fold_branches` -- a constant test becomes a jump and its dead arm goes;
 * :func:`dce` -- drop values nobody reads (the bulk of the P-Code flag ops); a
   load that can consume a pinned input is never dropped.
 
@@ -42,6 +43,7 @@ from .ir import (
     Return,
     Store,
     Switch,
+    Trap,
     Var,
     retarget,
     succs,
@@ -204,11 +206,34 @@ def liveness(proc):
 
 # ---- CFG shaping -------------------------------------------------------------
 def prune(proc):
-    """Drop blocks unreachable from the entry."""
+    """Drop blocks unreachable from the entry (and phi arguments from dead edges)."""
     keep = set(proc.order())
-    for lbl in [l for l in proc.blocks if l not in keep]:
+    gone = [l for l in proc.blocks if l not in keep]
+    for lbl in gone:
         del proc.blocks[lbl]
+    if gone:
+        for b in proc.blocks.values():
+            for s in b.stmts:
+                if type(s) is Phi:
+                    s.args = {p: v for p, v in s.args.items() if p in keep}
     return proc
+
+
+def fold_branches(proc):
+    """A terminator whose test is constant becomes a jump; the arm it never takes dies."""
+    n = 0
+    for b in proc.blocks.values():
+        t = b.term
+        if type(t) is If and type(t.c) is Const:
+            b.term = Goto(t.t if t.c.v else t.f)
+            n += 1
+        elif type(t) is Switch and type(t.e) is Const:
+            hit = [l for v, l in t.cases if v == t.e.v]
+            b.term = Goto(hit[0]) if hit else Trap("switch")
+            n += 1
+    if n:
+        prune(proc)
+    return n
 
 
 def merge_chains(proc):
@@ -455,7 +480,7 @@ def simplify(prog, peephole=None, rounds=8):
         split_critical(p)
         to_ssa(p)
         for _ in range(rounds):
-            n = copyprop(p) + constprop(p, prog.storage) + dce(p)
+            n = copyprop(p) + constprop(p, prog.storage) + fold_branches(p) + dce(p)
             if peephole is not None:
                 n += peephole(p)
             if not n:

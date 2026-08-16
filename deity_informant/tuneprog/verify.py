@@ -117,10 +117,11 @@ class Verifier:
         return self
 
     # ---- the machine's side of a tick --------------------------------------
-    def _enter(self):
+    def _enter(self, kind="sub"):
+        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame."""
         M = self.M
         M.push(0x00)
-        if self.ref.entry["kind"] == "sub":
+        if kind == "sub":
             M.push(0x01)
         else:
             M.push(0x00)
@@ -140,7 +141,7 @@ class Verifier:
         M.sid.clear()
         M.io.clear()
         M.src.clear()
-        self._enter()
+        self._enter()  # init is always entered as a subroutine (machine.init_runner)
         t0 = time.process_time()
         try:
             self._call_proc(self.init)
@@ -209,7 +210,7 @@ class Verifier:
         M.sid.clear()
         M.io.clear()
         M.src.clear()
-        self._enter()
+        self._enter(self.ref.entry["kind"])
         try:
             self._call_proc(self.tick)
         except TrapError as e:

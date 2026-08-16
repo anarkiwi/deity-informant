@@ -22,6 +22,8 @@ Middle and back end (the executable program and its certificate):
   periodicity, chunked and resumable.
 
 ``tools/tuneprog_certify.py`` drives the whole pipeline over a ``.sid`` file.
+The module-level entry points ``build.build_ir``, ``ssa.simplify``,
+``emit.emit_python`` and ``verify.verify`` are the stage boundaries.
 """
 
 from __future__ import annotations
@@ -32,11 +34,11 @@ from .lift import LiftedSite, lift_site, lift_trace
 from .regions import Region, build_regions, index_regions
 from .cfg import Proc, build_procs, procs_json
 from .ir import Block, Interp, Machine, Rgn, TrapError, Tuneprog
-from .build import build, ops_to_stmts, straightline
+from .build import build_ir, ops_to_stmts, straightline
 from .ssa import simplify
 from .idioms import rewrite
 from .emit import PyProgram, certificate, emit_python, write_certificate
-from .verify import Reference, Verifier, certify, verify
+from .verify import Reference, Verifier, certify
 
 __all__ = [
     "CIA",
@@ -67,7 +69,7 @@ __all__ = [
     "Rgn",
     "TrapError",
     "Tuneprog",
-    "build",
+    "build_ir",
     "ops_to_stmts",
     "straightline",
     "simplify",
@@ -79,5 +81,4 @@ __all__ = [
     "Reference",
     "Verifier",
     "certify",
-    "verify",
 ]
