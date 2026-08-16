@@ -68,7 +68,11 @@ def _expr(e, c):
 
 def _addr(e, c, rid):
     """Walk an address: its constants are that region's, so one stride serves it."""
-    keep, c.reg = c.reg, "@%d" % rid
+    return _tagged(e, c, "@%d" % rid)
+
+
+def _tagged(e, c, tag):
+    keep, c.reg = c.reg, tag
     out = _expr(e, c)
     c.reg = keep
     return out
@@ -93,10 +97,17 @@ def _stmt(s, c):
         te, e = _expr(s.e, c)
         return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)
     if t is Call:
-        pairs = [_expr(a, c) for a in s.args]
+        # Arguments the printer drops are machine plumbing: neither shape nor hole.
         keep = c.keep.get(s.proc)
-        toks = [t for i, (t, _x) in enumerate(pairs) if keep is None or keep[i]]
-        return ("call", s.proc, tuple(toks)), Call(s.proc, tuple(x for _t, x in pairs), s.rets)
+        toks, args = [], []
+        for i, a in enumerate(s.args):
+            if keep is not None and not keep[i]:
+                args.append(a)
+                continue
+            tok, x = _tagged(a, c, "!%s#%d" % (s.proc, i))
+            toks.append(tok)
+            args.append(x)
+        return ("call", s.proc, tuple(toks)), Call(s.proc, tuple(args), s.rets)
     if t is Assert:
         tok, e = _expr(s.e, c)
         return ("assert", s.why, tok), Assert(e, s.why)
@@ -138,11 +149,15 @@ def _many(items, c, fn):
 
 
 def units_of(body):
-    """Sibling nodes, with every block's statements as units of their own."""
+    """Sibling nodes, with every block's statements as units of their own.
+
+    A JSR frame push is not a unit: the printer never shows it, so it is not part
+    of a shape -- which is what lets a tail call join the run of ordinary calls.
+    """
     out = []
     for n in body:
         if type(n) is Blk:
-            out += [("s", s, n) for s in n.stmts]
+            out += [("s", s, n) for s in n.stmts if type(s) is not Store or s.cls != "raw"]
         else:
             out.append(("n", n, None))
     return out
@@ -260,8 +275,8 @@ def _run(units, i, minunits, keep=None):
 
 
 def _size(units):
-    """The statements a run of units prints, nested nodes included."""
-    return sum(_stmts(o) if k == "n" else 1 for k, o, _b in units)
+    """The statements a run of units prints; a call weighs the procedure it stands for."""
+    return sum(_stmts(o) if k == "n" else MINSTMT if type(o) is Call else 1 for k, o, _b in units)
 
 
 def _stmts(n):
@@ -277,9 +292,9 @@ def _stmts(n):
     return 0
 
 
-def _abstract(units, step, var):
+def _abstract(units, step, var, keep=None):
     """Copy 0 with each stepping constant replaced by the loop index."""
-    c = _Ctx(set(), step, var)
+    c = _Ctx(set(), step, var, keep)
     return [(k, (_stmt if k == "s" else _node)(o, c)[1], b) for k, o, b in units]
 
 
@@ -303,7 +318,7 @@ def _body(body, minunits, n, live, keep):
         length, k, step = hit
         var = "$i%d" % n[0]
         n[0] += 1
-        seg = _abstract(units[i : i + length], step, var)
+        seg = _abstract(units[i : i + length], step, var, keep)
         out.append(("n", For(var, tuple(range(k)), _rebuild(seg), 1, frozenset(), "", 0), None))
         i += length * k
     return _rebuild(out)

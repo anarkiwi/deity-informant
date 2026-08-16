@@ -1,11 +1,13 @@
 """S6 -- machine texture removal over the presentation copy of the S4 IR.
 
-Each pass rewrites the *view* only and is justified structurally: empty-block
-threading, short-circuit conditions, stack slots as values, mirror cells, switch
-merging and 16-bit carry chains (see each function).
+Each pass rewrites the *view* only and is justified structurally (see each
+function): empty-block threading, short-circuit conditions, stack slots as
+values, mirror cells, switch merging, 16-bit carry chains.
 """
 
 from __future__ import annotations
+
+import networkx as nx
 
 from .idioms import CMP, _neg, fold
 from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
@@ -282,33 +284,73 @@ def written(prog):
 
 
 def stack_temps(prog):
-    """A one-byte cell stored once and loaded once in one block becomes a value.
+    """A cell stored once and loaded once in one block becomes a value.
 
-    The store is the program's only writer of the region and regions are disjoint,
-    so the load reads exactly that value and nothing else can observe the cell.
+    Regions are disjoint and this is their only writer, so the load reads that
+    value. A stack slot may also span blocks (a PHA and the PLA a branch away)
+    when the store dominates the load and both address it with one pure
+    expression, which SSA names make one value even at two call depths.
     """
     st, ld = accesses(prog)
     size = {r.id: r.size for r in prog.storage}
+    frame = {r.id for r in prog.storage if STACK[0] <= r.base <= STACK[1]}
     wr = written(prog)
-    out = 0
+    doms, out = {}, 0
     for rid, stores in sorted(st.items()):
         loads = ld.get(rid, [])
-        if len(stores) != 1 or len(loads) != 1 or stores[0][:2] != loads[0][:2]:
+        if len(stores) != 1 or len(loads) != 1 or stores[0][0] != loads[0][0]:
             continue
-        (pname, lbl, si), li = stores[0], loads[0][2]
-        blk = prog.procs[pname].blocks[lbl]
-        calls = [s for s in blk.stmts[si:li] if type(s) is Call]
-        if size.get(rid) != 1 or li <= si or any(rid in wr[s.proc] for s in calls):
+        (pname, lbl, si), (_p, llbl, li) = stores[0], loads[0]
+        proc = prog.procs[pname]
+        blk = proc.blocks[lbl]
+        if lbl != llbl and (rid not in frame or not _reaches(proc, doms, lbl, llbl)):
+            continue
+        if lbl == llbl and si >= li:
+            continue
+        calls = [s for s in blk.stmts[si:li] if type(s) is Call] if lbl == llbl else []
+        if any(rid in wr[s.proc] for s in calls):
+            continue
+        if size.get(rid) != 1 and not (
+            rid in frame and _same_addr(blk.stmts[si], proc.blocks[llbl], li, rid)
+        ):
             continue
         name = "$saved" if not out else "$saved%d" % (out + 1)
         blk.stmts[si] = Let(name, blk.stmts[si].v)
         fn = _reader(rid, name)
-        for s in blk.stmts[si + 1 :]:
-            apply_stmt(s, fn)
-        apply_term(blk.term, fn)
+        for b in proc.blocks.values():
+            for s in b.stmts:
+                apply_stmt(s, fn)
+            apply_term(b.term, fn)
         prog.storage = [x for x in prog.storage if x.id != rid]
         out += 1
     return out
+
+
+def _reaches(proc, doms, lbl, llbl):
+    """True when block ``lbl`` lies on every path from the entry to ``llbl``."""
+    if id(proc) not in doms:
+        doms[id(proc)] = nx.immediate_dominators(_graph(proc), proc.entry)
+    idom, cur = doms[id(proc)], llbl
+    while idom.get(cur, cur) != cur:
+        cur = idom[cur]
+        if cur == lbl:
+            return True
+    return False
+
+
+def _graph(proc):
+    g = nx.DiGraph()
+    g.add_nodes_from(proc.blocks)
+    for lbl, b in proc.blocks.items():
+        g.add_edges_from((lbl, s) for s in succs(b.term))
+    return g
+
+
+def _same_addr(store, blk, li, rid):
+    """True when the one load of the region reads the address the store wrote."""
+    node = blk.stmts[li] if li < len(blk.stmts) else blk.term
+    hit = [x for e in _exprs(node) for x in walk(e) if type(x) is Load and x.r == rid]
+    return bool(hit) and all(x.a == store.a and _movable(x.a) for x in hit)
 
 
 def _reader(rid, name):

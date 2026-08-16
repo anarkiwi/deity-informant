@@ -1,5 +1,7 @@
 """S6 presentation: copy folding, outlining, machine texture (hermetic snippets)."""
 
+import re
+
 from deity_informant.tuneprog import pipeline, printer, texture
 from deity_informant.tuneprog.ir import Block, Const, Goto, If, Proc, Return, Store, Var
 
@@ -69,6 +71,36 @@ def test_three_isomorphic_copies_fold_into_one_for_over_the_index():
     assert "for v in 0, 1, 2:" in body
     assert "sid[v].ctrl = ctrl[v]" in body
     assert body.count("sid[v].") == 3 and "sid[0]." not in body
+
+
+def test_three_calls_of_one_procedure_with_stepping_arguments_fold():
+    # GT2's voice loop: JSR, JSR, then the third call by falling into the routine.
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "LDX #$0E",
+        "il: STA $1200,X",
+        "DEX",
+        "BPL il",
+        "RTS",
+        "play: INC cnt",
+        "LDX #$00",
+        "JSR chn",
+        "LDX #$07",
+        "JSR chn",
+        "LDX #$0E",
+        "chn: LDA cnt",
+        "AND #$0F",
+        "STA $1200,X",
+        "LDA $1200,X",
+        "STA $D404",
+        "RTS",
+        "cnt: BRK",
+    )
+    body = "\n".join(_body(_text(code, calls=8), "tick"))
+    assert "for v in 0, 1, 2:" in body, body
+    assert re.search(r"for v in 0, 1, 2:\n\s+\w+\(x=\(v \* 7\)\)", body), body
 
 
 def test_a_copy_that_differs_in_one_operand_does_not_fold():
@@ -202,6 +234,33 @@ def test_a_balanced_push_and_pop_is_a_temporary_and_hides_the_stack_pointer():
     )
     doc = _text(code)
     assert "saved = b" in doc and "= saved" in doc
+    assert "sp" not in doc
+
+
+def test_a_push_and_a_pop_a_branch_apart_are_still_one_temporary():
+    # GT2 holds a byte over a compare, so the PLA sits in another block than the PHA.
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA flag",
+        "STA cnt",
+        "RTS",
+        "play: LDA cnt",
+        "AND #$07",
+        "PHA",
+        "CMP #$05",
+        "BCC low",
+        "LDA #$01",
+        "STA $D404",
+        "low: PLA",
+        "STA flag",
+        "INC cnt",
+        "RTS",
+        "flag: BRK",
+        "cnt: BRK",
+    )
+    doc = _text(code, calls=8)
+    assert "saved = " in doc and "= saved" in doc
     assert "sp" not in doc
 
 
