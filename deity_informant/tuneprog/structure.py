@@ -138,6 +138,8 @@ def _inline_loads(proc, live=None):
     if live is not None:
         for b in proc.blocks.values():
             b.stmts = [s for s in b.stmts if type(s) is not Let or s.n in live]
+            if type(b.term) is Return:
+                b.term = Return()
     uses = use_counts(proc)
     for b in proc.blocks.values():
         avail, gone = {}, set()
@@ -485,15 +487,15 @@ def walk(body):
                 yield from walk(b)
 
 
-def _one_region(e, out, defs):
+def _one_region(e, out, defs, seen=()):
     """Collect the regions ``e`` loads from; False when it reads anything else."""
     t = type(e)
     if t is Const:
         return True
     if t is Bin:
-        return _one_region(e.a, out, defs) and _one_region(e.b, out, defs)
+        return _one_region(e.a, out, defs, seen) and _one_region(e.b, out, defs, seen)
     if t is Var:
-        return e.n in defs and _one_region(defs[e.n], out, defs)
+        return e.n in defs and e.n not in seen and _one_region(defs[e.n], out, defs, seen + (e.n,))
     if t is Load and type(e.a) is Const:
         out.add(e.r)
         return True

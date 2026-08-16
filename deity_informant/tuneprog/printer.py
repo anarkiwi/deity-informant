@@ -136,6 +136,7 @@ class Printer:
         self.fors = 0
         self.proc = ""
         self.defs = {}
+        self.inline = {}
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -205,7 +206,7 @@ class Printer:
         if t is Const:
             return _hex(e.v)
         if t is Var:
-            return self.var(e.n)
+            return self.expr(self.inline[e.n], top) if e.n in self.inline else self.var(e.n)
         if t is Load:
             return self.load(e)
         a, b = e.a, e.b
@@ -378,33 +379,62 @@ class Body(Printer):
         self.alias[n.var] = (var, n.scale)
         self.hide |= n.hide
         self.fors += 1
-        body = self.nodes(_strip(n.body, n.label), proc, depth + 1)
+        body = self.nodes(_strip(n.body, n.label, self.hide), proc, depth + 1)
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
 
     def loop(self, n, proc, depth):
         pad = IND * depth
-        body = self.nodes(n.body, proc, depth + 1)
-        tail = [l for l in body if l.strip() and not l.strip().startswith("#")]
-        if len(tail) == 2 and tail[0].strip().startswith("if ") and "= input(" in tail[0]:
-            return ["%swhile %s: pass%s" % (pad, tail[0].strip()[3:], _times(n.count))]
-        return ["%swhile True:%s" % (pad, _times(n.count))] + body
+        spin = self.spin(n)
+        if spin is not None:
+            return ["%swhile %s: pass%s" % (pad, spin, _times(n.count))]
+        return ["%swhile True:%s" % (pad, _times(n.count))] + self.nodes(n.body, proc, depth + 1)
+
+    def spin(self, n):
+        """A body that only reads and tests is a busy-wait: ``while cond: pass``."""
+        conds = [x for x in n.body if type(x) is Cond]
+        if any(type(x) not in (Blk, Cond, Jump) for x in n.body) or len(conds) != 1:
+            return None
+        c = conds[0]
+        blks = [x for x in n.body + c.then + c.els if type(x) is Blk]
+        if any(type(s) is not Let for b in blks for s in b.stmts):
+            return None
+        if any(type(x) not in (Blk, Jump) for x in c.then + c.els):
+            return None
+        jumps = ([x for x in c.then if type(x) is Jump], [x for x in c.els if type(x) is Jump])
+        arms = [k for k, b in zip("tf", jumps) if any(x.kind == "continue" for x in b)]
+        if len(arms) != 1:
+            return None
+        self.inline = {s.n: s.e for b in blks for s in b.stmts}
+        out = self.expr(c.c) if arms[0] == "t" else self.negate(c.c)
+        self.inline = {}
+        return out
 
 
 def _hidden(s, hide):
     return type(s) is Let and s.n in hide
 
 
-def _strip(body, label):
-    """Drop the induction test a ``for`` header already states."""
+def _strip(body, label, hide):
+    """Drop the induction test and the back edge a ``for`` header already states."""
     out = []
     for n in body:
-        if type(n) is Cond and all(type(x) is Jump for x in n.then + n.els):
+        if type(n) is Cond and _jumps_only(n.then + n.els, hide):
             continue
         if type(n) is Jump and n.label == label:
             continue
         out.append(n)
     return out
+
+
+def _jumps_only(nodes, hide):
+    """True when a branch arm only jumps (its blocks are empty or hidden)."""
+    for n in nodes:
+        if type(n) is Jump:
+            continue
+        if type(n) is not Blk or any(not _hidden(s, hide) for s in n.stmts):
+            return False
+    return True
 
 
 def _ivar(n):

@@ -196,7 +196,7 @@ def sid_image(facts):
     for addr, v in facts.sid:
         if _ops(v) > MAXOPS:
             continue
-        leaves = [x for x in _leaf_loads(v) if type(x.a) is Const and x.r in facts.rgn]
+        leaves = [x for x in _leaf_loads(v) if x.r in facts.rgn]
         op = next((y.op for y in _walk(v) if type(y) is Bin), "")
         for i, x in enumerate(leaves):
             name, voice = _sid_name(addr)
@@ -204,7 +204,8 @@ def sid_image(facts):
                 name = "%s_%s" % (name, OPNAME.get(op, i))
             r = facts.rgn[x.r]
             hit = out.setdefault(x.r, [name, {}])
-            hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
+            if type(x.a) is Const:
+                hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
     return {k: (n, m) for k, (n, m) in out.items()}
 
 
@@ -260,12 +261,18 @@ def _freq_layout(data, least=48, most=256):
             if n - cut < least or not is_octave_ramp(list(hi[cut:])):
                 continue
             v = [(h << 8) | l for l, h in zip(lo[cut:], hi[cut:])]
-            if (
-                all(b >= a for a, b in zip(v, v[1:]))
-                and sum(b > a for a, b in zip(v, v[1:])) >= least
-            ):
+            if _semitones(v) >= least:
                 return "12-TET %s, %d entries (%d below one octave)" % (name, n, cut)
     return ""
+
+
+def _semitones(v, lo=1.04, hi=1.08):
+    """The longest run of consecutive entries one 12-TET semitone apart."""
+    best = run = 0
+    for a, b in zip(v, v[1:]):
+        run = run + 1 if a and lo < b / a < hi else 0
+        best = max(best, run)
+    return best
 
 
 def _tables(prog, facts, names):
@@ -410,9 +417,8 @@ def recover(prog, structured=None):
         if r.id < 0 or r.id in names.region or r.kind not in ("state", "init_constant"):
             continue
         ptr = r.id in facts.addr or (r.size == 2 and r.id in facts.index)
-        role = names.role.get(r.id) or ("ptr" if ptr else "") or _update_role(facts, r.id)
-        if not role and r.id in facts.index:
-            role = "cursor"
+        role = names.role.get(r.id) or ("ptr" if ptr else "")
+        role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
         names.role[r.id] = role
         _uniq(names, r.id, _basename(r, role, facts, names))
     if names.phase is not None:
