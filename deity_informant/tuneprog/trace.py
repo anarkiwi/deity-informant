@@ -42,7 +42,7 @@ from ..lifter import OPS, MODE_LEN, STATUS_BITS, lift
 from ..vm import PcodeVM, _emit_line, _rd_expr, _lhs
 from .. import c64
 from .machine import CIA, CIA1_BASE, CIA2_BASE, Refusal, init_runner, port_bank
-from .tracedata import Trace
+from .tracedata import Trace, site_key
 
 PH_INIT, PH_PLAY = 1, 2
 IDX_REG = {"absx": 1, "zpx": 1, "indx": 1, "absy": 2, "zpy": 2, "indy": 2}
@@ -71,14 +71,6 @@ def input_kind(addr):
     if IO_LO <= addr <= IO_HI:
         return "io"
     return "uninit_ram"
-
-
-def site_key(pc, opcode, insn_bytes, cells):
-    """``(pc, opcode, fixed operand bytes)``; operand bytes in ``cells`` drop out."""
-    fixed = tuple(
-        None if (pc + k) & 0xFFFF in cells else insn_bytes[k] for k in range(1, len(insn_bytes))
-    )
-    return pc, opcode, fixed
 
 
 def _emit_attr(mn, out, ins, i):
@@ -476,7 +468,8 @@ class Tracer:
         # design S2: an operand byte any traced procedure writes -- in any phase,
         # init included -- is a variable, so it drops out of the site key and the
         # lift loads it. Init-only cells fold back to constants in S4, per phase.
-        cells = {a for a in vm.written_play | vm.written_init if vm.code[a]}
+        code = {a for a, c in enumerate(vm.code) if c}
+        cells = code & (vm.written_play | vm.written_init)
         sites = {}
         for sk, count in vm.count.items():
             pc, bb = sk
@@ -536,6 +529,7 @@ class Tracer:
             written_init=set(vm.written_init),
             written_play=set(vm.written_play),
             cells=cells,
+            code=code,
             cell_values={a: set(v) for a, v in vm.wr_values.items() if a in cells},
             jsr_targets=jsr_targets,
             wlog=_arrays(vm.sidlog),

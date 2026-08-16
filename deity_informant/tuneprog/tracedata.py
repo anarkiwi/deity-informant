@@ -1,7 +1,8 @@
-"""The recorded trace: the S1 result type and its ``trace.json``/``trace.npz`` form.
+"""The recorded trace: the S1 result type, its files, and the union of several.
 
 Split from :mod:`.trace` (which produces it) so the record type can be loaded and
-queried without the tracer. ``Trace`` is re-exported from :mod:`.trace`.
+queried without the tracer. :func:`merge` is the ``--songs all`` front end's input:
+one program from every subtune's trace, keyed by the union of their SMC cells.
 """
 
 from __future__ import annotations
@@ -12,6 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+
+def site_key(pc, opcode, insn_bytes, cells):
+    """``(pc, opcode, fixed operand bytes)``; operand bytes in ``cells`` drop out."""
+    fixed = tuple(
+        None if (pc + k) & 0xFFFF in cells else insn_bytes[k] for k in range(1, len(insn_bytes))
+    )
+    return pc, opcode, fixed
 
 
 @dataclass
@@ -38,6 +47,7 @@ class Trace:
     written_init: set = field(default_factory=set)
     written_play: set = field(default_factory=set)
     cells: set = field(default_factory=set)
+    code: set = field(default_factory=set)
     cell_values: dict = field(default_factory=dict)
     jsr_targets: set = field(default_factory=set)
     wlog: dict = field(default_factory=dict)
@@ -110,6 +120,7 @@ class Trace:
             "written_init": sorted(self.written_init),
             "written_play": sorted(self.written_play),
             "cells": sorted(self.cells),
+            "code": sorted(self.code),
             "cell_values": [[a, sorted(v)] for a, v in sorted(self.cell_values.items())],
             "jsr_targets": sorted(self.jsr_targets),
         }
@@ -172,8 +183,118 @@ class Trace:
         t.written_init = set(doc["written_init"])
         t.written_play = set(doc["written_play"])
         t.cells = set(doc["cells"])
+        t.code = set(doc.get("code", ()))
         t.cell_values = {a: set(v) for a, v in doc["cell_values"]}
         t.jsr_targets = set(doc["jsr_targets"])
         t.wlog = {k[5:]: z[k] for k in z.files if k.startswith("wlog_")}
         t.iolog = {k[6:]: z[k] for k in z.files if k.startswith("iolog_")}
         return t
+
+
+def _rekey(trace, cells, out):
+    """Merge ``trace``'s sites into ``out`` under the wider cell set ``cells``.
+
+    A wider cell set only blanks more operand bytes, so keys can merge but never
+    split: every variant of one key still maps to one key.
+    """
+    for s in trace.sites.values():
+        k = site_key(s["pc"], s["opcode"], s["variants"][0], cells)
+        d = out.get(k)
+        if d is None:
+            d = out[k] = {
+                "pc": s["pc"],
+                "opcode": s["opcode"],
+                "count": 0,
+                "phases": 0,
+                "variants": [],
+                "idx": set(),
+                "reads": {},
+                "writes": {},
+            }
+        d["count"] += s["count"]
+        d["phases"] |= s["phases"]
+        d["variants"] += s["variants"]
+        d["idx"].update(s["idx"])
+        for name in ("reads", "writes"):
+            for i, a in s[name].items():
+                d[name].setdefault(i, set()).update(a)
+    return out
+
+
+def _counters(dst, src, keys):
+    for k in keys:
+        dst[k].update(src[k])
+
+
+def merge(traces):
+    """One :class:`Trace` over every subtune: shared code, subtune 0's logs.
+
+    Sites, edges, calls, returns and the written sets are the union; the write log,
+    inputs and state hashes stay the first trace's, because verification runs each
+    subtune against its own trace.
+    """
+    first = traces[0]
+    code = set().union(*(t.code for t in traces))
+    written_init = set().union(*(t.written_init for t in traces))
+    written_play = set().union(*(t.written_play for t in traces))
+    cells = code & (written_init | written_play)
+    jsr = set().union(*(t.jsr_targets for t in traces))
+    out = Trace(
+        meta={**first.meta, "songs_traced": [t.meta["song"] for t in traces]},
+        image_pre=first.image_pre,
+        image_post_init=first.image_post_init,
+        inputs=first.inputs,
+        init_writes=first.init_writes,
+        written_init=written_init,
+        written_play=written_play,
+        cells=cells,
+        code=code,
+        jsr_targets=jsr,
+        wlog=first.wlog,
+        iolog=first.iolog,
+        state_hash=first.state_hash,
+        footprint_size=first.footprint_size,
+    )
+    for t in traces:
+        _rekey(t, cells, out.sites)
+        for e, (kind, n) in t.edges.items():
+            hit = out.edges.get(e)
+            out.edges[e] = [
+                kind if hit is None else _kind(hit[0], kind),
+                n + (hit[1] if hit else 0),
+            ]
+        for k, v in t.calls.items():
+            d = out.calls.setdefault(k, {"targets": Counter(), "ret_pc": v["ret_pc"], "count": 0})
+            d["targets"].update(v["targets"])
+            d["count"] += v["count"]
+        for k, v in t.rets.items():
+            d = out.rets.setdefault(
+                k,
+                {"matched": Counter(), "targets": Counter(), "unmatched": 0, "loose": Counter()},
+            )
+            _counters(d, v, ("matched", "targets", "loose"))
+            d["unmatched"] += v["unmatched"]
+        for k, v in t.summaries.items():
+            d = out.summaries.setdefault(k, {"rd": 0, "wr": 0, "count": 0})
+            d["rd"] |= v["rd"]
+            d["wr"] |= v["wr"]
+            d["count"] += v["count"]
+        for k, v in t.input_sites.items():
+            d = out.input_sites.setdefault(k, {"kind": v["kind"], "count": 0, "phase": 0})
+            d["count"] += v["count"]
+            d["phase"] |= v["phase"]
+        for a, vs in t.cell_values.items():
+            if a in cells:
+                out.cell_values.setdefault(a, set()).update(vs)
+    for s in out.sites.values():
+        s["idx"] = sorted(s["idx"])
+        s["variants"] = sorted(set(s["variants"]))
+    for (_f, _o, t), e in out.edges.items():
+        if t in jsr and e[0] in ("fall", "br_taken", "br_not", "jmp"):
+            e[0] = "tail"
+    return out
+
+
+def _kind(a, b):
+    """The edge kind two subtunes agree on: a tail entry wins over a plain jump."""
+    return a if a == b else ("tail" if "tail" in (a, b) else a)
