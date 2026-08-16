@@ -15,6 +15,11 @@ reads its operand as a variable:
 * patched ``jmp``/``jsr``/branch operands -> a computed control target
   (``LiftedSite.ctrl_cell``), which :mod:`.cfg` turns into a switch.
 
+Known limitation, inherited from the lifter and the base VM: ``SHA (zp),Y``
+($93) folds the *pointer's* high byte into its stored value at lift time, so
+neither residualisation nor the VM's ``(pc, bytes)`` record cache reacts to that
+pointer changing. No SID player in the survey executes it.
+
 Public API: :func:`lift_site`, :func:`lift_trace`, :class:`LiftedSite`.
 """
 

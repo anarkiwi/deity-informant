@@ -17,8 +17,13 @@ Public API:
 * ``site_key(pc, opcode, bytes, cells)`` -- ``(pc, opcode, fixed operand bytes)``
   with play-written SMC cells excluded (``None`` placeholders).
 
-Sites are keyed by :func:`site_key`; ``reads``/``writes`` are keyed by
-``(pc, opcode)`` because the P-Code op list's shape depends only on the opcode.
+Sites are keyed by :func:`site_key`, so two executions of one pc merge only when
+they differ in play-written cell bytes; a variant with a different *fixed*
+operand is a separate site with its own access sets.
+
+The CIA model of :mod:`.machine` answers every ``$DCxx``/``$DDxx`` timer and ICR
+read, which supersedes the base VM's ``ciaicr`` flag: a ``TraceVM`` driven by
+``run_irq_driven`` would not see that driver's raised CIA source.
 """
 
 from __future__ import annotations
@@ -207,7 +212,7 @@ class TraceVM(PcodeVM):
         rec["phase"] |= self.phase
         if self.policy == "replay":
             nxt = next(self.replay, None)
-            if nxt is None or nxt[3] != addr:
+            if nxt is None or nxt[3] != addr or nxt[1] != site:
                 raise Refusal("input replay mismatch", "at $%04X call %d" % (addr, self.call))
             return nxt[4]
         self.inputs.append((self.call, site, i, addr, value))
