@@ -367,7 +367,11 @@ def _push(stack, fresh, n):
 
 
 def from_ssa(proc):
-    """Replace phis with copies at the end of each predecessor (temps first)."""
+    """Replace phis with copies at the end of each predecessor.
+
+    The copies are sequential, so they go through temporaries only when this
+    predecessor's phi sources include a phi destination (the swap case).
+    """
     for lbl, b in proc.blocks.items():
         phis = [s for s in b.stmts if type(s) is Phi]
         if not phis:
@@ -375,9 +379,12 @@ def from_ssa(proc):
         b.stmts = [s for s in b.stmts if type(s) is not Phi]
         for p in dict.fromkeys(q for s in phis for q in s.args):
             pb = proc.blocks[p]
-            tmp = [("%s$t%d" % (lbl, i), s) for i, s in enumerate(phis)]
-            pb.stmts.extend(Let(t, Var(s.args[p])) for t, s in tmp)
-            pb.stmts.extend(Let(s.n, Var(t)) for t, s in tmp)
+            if {s.n for s in phis} & {s.args[p] for s in phis}:
+                tmp = [("%s$t%d" % (lbl, i), s) for i, s in enumerate(phis)]
+                pb.stmts.extend(Let(t, Var(s.args[p])) for t, s in tmp)
+                pb.stmts.extend(Let(s.n, Var(t)) for t, s in tmp)
+            else:
+                pb.stmts.extend(Let(s.n, Var(s.args[p])) for s in phis)
     return proc
 
 

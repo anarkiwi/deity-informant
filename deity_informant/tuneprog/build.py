@@ -40,6 +40,7 @@ from .ir import (
     succs,
 )
 from .regions import index_regions
+from .ssa import liveness
 
 BINOP = {
     "INT_ADD": "+",
@@ -398,7 +399,7 @@ def _wire(procs):
                     q = procs[s.proc]
                     s.args = tuple(Var(REGVAR[i]) for i in q.params)
                     s.rets = tuple(REGVAR[i] for i in q.rets)
-        p.params = tuple(sorted({REGIDX[n] for n in live_in(p)} | set(p.rets)))
+        p.params = tuple(sorted({REGIDX[n] for n in liveness(p)[p.entry]} | set(p.rets)))
     return procs
 
 
@@ -408,60 +409,6 @@ def _isreg(s):
 
 def _callees(p):
     return {s.proc for b in p.blocks.values() for s in b.stmts if type(s) is Call}
-
-
-def _uses(e, out):
-    t = type(e)
-    if t is Var:
-        if e.n in REGIDX:
-            out.add(e.n)
-    elif t is Bin:
-        _uses(e.a, out)
-        _uses(e.b, out)
-    elif t is Load:
-        _uses(e.a, out)
-    return out
-
-
-def live_in(proc):
-    """Register names live on entry to ``proc`` (backward dataflow over its blocks)."""
-    preds = {}
-    for lbl, b in proc.blocks.items():
-        preds.setdefault(lbl, [])
-        for s in succs(b.term):
-            preds.setdefault(s, []).append(lbl)
-    live = {lbl: set() for lbl in proc.blocks}
-    work = list(proc.blocks)
-    while work:
-        lbl = work.pop()
-        b = proc.blocks[lbl]
-        cur = set()
-        for s in succs(b.term):
-            cur |= live.get(s, set())
-        t = type(b.term)
-        if t is If:
-            _uses(b.term.c, cur)
-        elif t is Switch:
-            _uses(b.term.e, cur)
-        elif t is Return:
-            for v in b.term.vals:
-                _uses(v, cur)
-        for s in reversed(b.stmts):
-            k = type(s)
-            if k is Let:
-                cur.discard(s.n)
-                _uses(s.e, cur)
-            elif k is Store:
-                _uses(s.a, cur)
-                _uses(s.v, cur)
-            elif k is Call:
-                cur.difference_update(s.rets)
-                for a in s.args:
-                    _uses(a, cur)
-        if cur != live[lbl]:
-            live[lbl] = cur
-            work.extend(preds.get(lbl, ()))
-    return live[proc.entry]
 
 
 def _machine_image(trace):
