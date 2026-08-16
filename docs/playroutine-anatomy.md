@@ -1,22 +1,28 @@
 # Anatomy of C64 playroutines — a field guide for decompiler writers
 
-Six players reverse engineered to the byte: Rob Hubbard (Commando, 1985), Martin
-Galway (Comic Bakery, 1986), Tim Follin (Ghouls'n'Ghosts, 1989), JCH NewPlayer
-(v21, 1991), GoatTracker 2 (v2.73 export, 2000s), SID Wizard (Hermit, 2010s).
-Every claim below was checked against an annotated, execution-counted
-disassembly of the tune named, against a per-frame log of the SID writes it
-produces, and, where the author's source survives (Galway, GoatTracker, SID
-Wizard, and McSweeney's commented Hubbard disassembly), against that source.
-This document is self-contained.
+Seven players reverse engineered to the byte: Rob Hubbard (Commando, 1985),
+Martin Galway (Comic Bakery, 1986), Tim Follin (Ghouls'n'Ghosts, 1989), JCH
+NewPlayer 20 with its 4-track sample build (Easy Does It, 1991), GoatTracker 2
+(v2.73 export), SID Wizard (Hermit's own tunes, 1.6 and 1.9 exports), defMON
+(Goto80's Automatas, 8× multispeed). Every claim below was checked against an
+annotated, execution-counted disassembly of the tune named, against a per-call
+log of the SID writes it produces, and, where source survives (Galway's own
+`wizball.asm`, GoatTracker's `player.s`, SID Wizard's `player.asm`, the undefmon
+reassembly of defMON, and McSweeney's commented Hubbard disassembly), against
+that source. Two blanket statements in this text — "no illegal opcodes" and "no
+volatile reads" for the first six — were verified mechanically over every
+executed and every statically reachable instruction, not inferred. This document
+is self-contained.
 
 Contents
 
 1. The machine as a playroutine sees it
 2. What every playroutine is
-3. Six players in depth
+3. Seven players in depth
    3.1 Hubbard — Commando · 3.2 Galway — Comic Bakery · 3.3 GoatTracker 2 ·
-   3.4 SID Wizard · 3.5 JCH NewPlayer 21 · 3.6 Follin — Ghouls'n'Ghosts
-4. The same machine six ways — comparison
+   3.4 SID Wizard · 3.5 JCH NewPlayer 20 (+sample track) · 3.6 Follin —
+   Ghouls'n'Ghosts · 3.7 defMON — Automatas
+4. The same machine seven ways — comparison
 5. 6502 techniques catalogue, with the reasons behind them
 6. What a decompiler must model, and how
 7. Traps
@@ -60,10 +66,15 @@ Consequences that shape every player:
   19656 cycles at 50.125 Hz. A player that takes 1000–3000 cycles per call is
   "cheap"; rastertime is measured in raster lines (63 cycles).
 
-Illegal (undocumented) opcodes are used in some modern players for size/speed
-(`LAX`, `SAX`, `DCP`, `ISC`, `SBX`, `ANC`, `ALR`, `ARR`, `SLO`, `RLA`, `SRE`,
-`RRA`); none of the six players below uses any. Decode them anyway — a
-decompiler that stops on `$AF` will lose the rest of the routine.
+Illegal (undocumented) opcodes are load-bearing in modern hand-written players.
+Of the seven analysed here, six use none (verified both dynamically — no executed
+instruction is illegal — and by a static walk of the unexecuted code); defMON
+(§3.7) executes `SBX #imm` (X = (A & X) − imm, sets flags like CMP), `SAX abs`
+(store A & X), `LAX zp` / `LAX (zp),Y` (load A and X), `ANC #imm` (AND, then
+C = bit 7) and `ALR #imm` (AND then LSR). Others seen in the wild: `DCP`, `ISC`,
+`ARR`, `SLO`, `RLA`, `SRE`, `RRA`. A decompiler must decode all of them with
+correct flag semantics — one that stops on `$AF` loses the rest of the routine,
+and one that treats `SBX` as `CMP` gets X wrong.
 
 ### 1.2 Memory map relevant to players
 
@@ -105,12 +116,15 @@ Semantics that drive player structure:
 - **ADSR delay bug and hard restart.** The envelope rate counter is not reset by
   gate. If a note is started while the previous release counter is "past" the
   new attack's compare value, the attack is delayed (up to ~30 ms) or the note
-  can effectively be lost. From ~1988 on every serious player does *hard
-  restart*: some frames (typically 1–2, exact value is a family-defining
-  constant) before the next note it writes gate off and AD/SR = a reset value
-  ($0F00, $0000, $F800 …), and at note-on it may pulse the TEST bit ($08 in the
-  control byte) to reset the oscillator. Hubbard/Galway-era players predate the
-  technique and instead cut notes with SR=0 or accept the delay.
+  can effectively be lost. Tracker-era players do *hard restart*: some frames
+  (1–2; the exact offset is a family-defining constant) before the next note
+  they write gate off and AD/SR = a reset value ($0F00 here for JCH, GoatTracker
+  and SID Wizard's defaults; $0000, $F800 elsewhere), and at note-on they may
+  pulse the TEST bit ($08 in the control byte) to reset the oscillator. Of the
+  seven: JCH, GoatTracker and SID Wizard implement it in code; defMON leaves it
+  to the data (a sidTAB row program does exactly the same writes); Hubbard,
+  Galway and Follin do not do it at all (Hubbard cuts notes with SR=0, Galway
+  pulses TEST at note-on).
 - **Frequency is a table lookup.** Every player has a 96-entry (8 octaves × 12,
   or 7 × 12 + extras) table of 16-bit values, either as two 96-byte tables
   (lo/hi, indexed by note number) or interleaved (indexed by 2×note). Vibrato,
@@ -145,7 +159,7 @@ Semantics that drive player structure:
   divides its own frame counter, or runs effects at the higher rate and the
   sequencer at frame rate. From the decompiler's view it changes only how often
   the routine runs and how the tick counter is scaled.
-- **Voice loop.** All six players process 3 voices per call, either in a loop
+- **Voice loop.** All seven players process 3 voices per call (JCH adds a 4th, non-SID track), either in a loop
   with X = voice (0..2 or 2..0, `DEX/INX` + branch) or unrolled three times
   with different absolute addresses. Some process the *sequencer* in a loop and
   the *SID write-out* unrolled, or vice versa (§4).
@@ -154,7 +168,7 @@ Semantics that drive player structure:
 
 ## 2. What every playroutine is
 
-Strip away the idioms and each of the six players is the same object:
+Strip away the idioms and each of the seven players is the same object:
 
 ```
 STATE   : per-voice record  V[3]      (10–40 bytes each: cursors, counters, shadows)
@@ -172,22 +186,22 @@ PLAY()  : G.tick--                                     ; tempo divider
 
 The vocabulary (names vary; the concepts do not):
 
-| concept | Hubbard | Galway | Follin | JCH | GoatTracker | SID Wizard |
-|---|---|---|---|---|---|---|
-| top level | song table (3 songs × 3 track ptrs) | tune table (6 × 3 sequence ptrs) + effect blocks | subtune → 3 track ptrs (+ SFX lists) | subtune header (4 track ptrs, speed) | song → 3 orderlist ptrs | subtune (3 orderlist offsets, tempos) |
-| per-voice list of blocks | track: pattern numbers, $FF loop / $FE stop | none — the sequence *is* the program (call/jmp/for-next) | none — one byte stream with call/loop/jmp | track: [transpose] pattern, $FF/$FE | orderlist: pattern, repeat, transpose, loop | orderlist: pattern, transpose, volume, tempo, stop, loop |
-| block of notes | pattern: (len+flags,[instr\|porta],pitch)* $FF | sequence: `note dur` + commands | track: notes [+len] + commands | pattern: dur/instr/super/note/rest/hold, $7F | pattern: [instr][fx] note/rest/keyoff/on / packed rest, $00 | pattern: 1–4-byte rows, packed rest, $FF len |
-| sound definition | 8-byte SID image + fx bits | 29-byte record (FM/PM segments, wave, ADSR, gate/release) | commands latch state (`$85` raw pokes = ADSR) | 8 bytes + wave/pulse/filter pointers | 9 columns + table pointers, gate timer, first wave | 16-byte header + inline WF/PW/filter tables |
-| per-frame modulation | vibrato, pulse, porta, drum, skydive, arp | FM ramp/arp, PM ramp, gate & release timers | vibrato/slide, trill, porta, pulse bounce, blip, filter bounce | wave table, pulse/filter programs, slide, vibrato | wave/pulse/filter/speed tables, 5 effects | WF/PW/filter tables, chords, vibrato types, slide/porta, kb-tracking |
-| tempo | speed/song; tick = speed+1 frames | song-loaded duration table; raw frames | none: durations are frames | speed; step = speed+1 frames | tempo/channel; row = tempo+1 frames | tempo program; 3-phase tick |
-| hard restart | none | none (TEST pulse) | none | 2 frames early, `$09` on note frame | gatetimer frames early, firstwave with TEST | tick 0/1 HR ADSR, tick 2 TEST wave |
+| concept | Hubbard | Galway | Follin | JCH | GoatTracker | SID Wizard | defMON |
+|---|---|---|---|---|---|---|---|
+| top level | song table (3 songs × 3 track ptrs) | tune table (6 × 3 sequence ptrs) + effect blocks | subtune → 3 track ptrs (+ SFX lists) | subtune header (4 track ptrs, speed) | song → 3 orderlist ptrs | subtune (3 orderlist offsets, tempos) | arranger rows (3 pattern nrs/row, `$FF` jump); subtune = start row |
+| per-voice list of blocks | track: pattern numbers, $FF loop / $FE stop | none — the sequence *is* the program (call/jmp/for-next) | none — one byte stream with call/loop/jmp | track: [transpose] pattern, $FF/$FE | orderlist: pattern, repeat, transpose, loop | orderlist: pattern, transpose, volume, tempo, stop, loop | the arranger column |
+| block of notes | pattern: (len+flags,[instr\|porta],pitch)* $FF | sequence: `note dur` + commands | track: notes [+len] + commands | pattern: dur/instr/super/note/rest/hold, $7F | pattern: [instr][fx] note/rest/keyoff/on / packed rest, $00 | pattern: 1–4-byte rows, packed rest, $FF len | pattern: rows `flag [A] [B] [note]`, flag = END/sidcallA/sidcallB/note + duration |
+| sound definition | 8-byte SID image + fx bits | 29-byte record (FM/PM segments, wave, ADSR, gate/release) | commands latch state (`$85` raw pokes = ADSR) | 8 bytes + wave/pulse/filter pointers | 9 columns + table pointers, gate timer, first wave | 16-byte header + inline WF/PW/filter tables | none: sidTAB rows (variable-length register-column records with delay + jump) are the instrument |
+| per-frame modulation | vibrato, pulse, porta, drum, skydive, arp | FM ramp/arp, PM ramp, gate & release timers | vibrato/slide, trill, porta, pulse bounce, blip, filter bounce | wave table, pulse/filter programs, slide, vibrato | wave/pulse/filter/speed tables, 5 effects | WF/PW/filter tables, chords, vibrato types, slide/porta, kb-tracking | sidTAB row programs at up to 8×/frame (two cascades per voice), slide acc, pulse bounce, filter acc |
+| tempo | speed/song; tick = speed+1 frames | song-loaded duration table; raw frames | none: durations are frames | speed; step = speed+1 frames | tempo/channel; row = tempo+1 frames | tempo program; 3-phase tick | CIA 8×/frame; row = (d+2) main ticks; sidTAB row = DL+1 calls |
+| hard restart | none | none (TEST pulse) | none | 2 frames early, `$09` on note frame | gatetimer frames early, firstwave with TEST | tick 0/1 HR ADSR, tick 2 TEST wave | a sidTAB row program (WGx=00 AD=0F SR=00 → WGx=09 → sound) |
 
 The decompiler's job is therefore three recoveries: (1) the STATE layout — which
 memory bytes are per-voice fields and which are global; (2) the TABLES — which
 byte ranges are score, sound, tuning, and their grammars; (3) PLAY as a
 structured procedure over (1) and (2). Everything in §5–§6 serves those three.
 
-## 3. Six players in depth
+## 3. Seven players in depth
 
 Each subsection has the same shape: identity → memory/state → entry points →
 the play routine as pseudocode → data grammars → SID write schedule → what
@@ -1257,7 +1271,7 @@ Dead in the exemplars: multispeed (EOTW), SFX and slowdown (Emomyst; slowdown co
 - **Timing**: no cycle dependence anywhere; frame semantics only. The single trap is the slowdown gate: the first play call after init does nothing (Emomyst), and the first tick-0 runs the WF-table from index 0 of instrument 0 (garbage rows before any note; test bit keeps it silent).
 - **Traps**: `LDA #imm` operands that are variables look like constants in a static disassembly (29 SMC sites flagged by the trace, several more written only in unexercised paths — take the writer set from §1.3, not from coverage); `.byte $BC` (`LDY abs,X`) at PTN_SEQ is meant to be overwritten by the editor — in exports it is ordinary code; EOTW's empty chord table aliases TEMPOTBL ($409E) — same address, two roles; big-FX numbers $17–$1B all point at the next real handler (shared label), and dead handlers are one-byte `RTS`s that several table entries share.
 
-### 3.5 JCH NewPlayer 20/21 — Easy Does It (1991)
+### 3.5 JCH NewPlayer 20, 4-track sample build — Easy Does It (1991)
 
 
 #### 3.5.0 Identity
@@ -1841,48 +1855,287 @@ Dead/unreached in this tune: note byte $00 (rest path $6377), `$93` (one-shot no
 - Timing: nothing is cycle-sensitive; order of SID writes within a frame is deterministic and given in §5; the model needs no raster/timer inputs. Play returns a value the host may use.
 - Traps: (1) `$85` writes go anywhere in $D400–$D47F (X = data byte < $80) — a decompiler must model it as `SID[r] = v` with r data-dependent, not as fixed register writes; (2) note index up to 97+transpose can exceed the 97-entry table (reads spill into the hi table / SFX table: bug tolerated by the data); (3) `$8D` writes `D404` before the note in the same frame — the observable gate sequence depends on data order, not on a fixed per-frame register order; (4) the rip's stub at $7316 is overwritten by the copy it triggers (init is not re-entrant without re-loading; PSID players re-load the image per subtune); (5) the two `LDA $74; CMP #v` insertions break naive "three identical blocks" alignment by 2 bytes; (6) `$94` handler bug (both bytes to $6A05) — dead but present.
 
-@@DEFMON@@
+### 3.7 defMON (Frantic) — Goto80, Automatas (2013 export)
 
-## 4. The same machine six ways — comparison
+
+#### 3.7.0 Identity
+
+| item | value |
+|---|---|
+| file | `MUSICIANS/G/Goto80/Automatas.sid`, PSID, load $0FD0–$2FAF (8192 bytes of image), init $0FD0, play $0FE3, 1 subtune, 5:23 |
+| speed | CIA-timed: init programs CIA-1 timer A = $0998 (2456 cycles) → play is called 8.0× per PAL frame. The wrapper's counter (`INC $0FE4`, the operand of `LDA #` at $0FE3) selects **main tick** (`JSR $1003`, every 8th call, first call included) or **sub tick** (`JSR $1006`, the other 7). |
+| player | $1000–$177E code (1919 bytes; 811 executed instruction sites, the only unexecuted code being the AF>0 detune path $1448–$1473 and the RE raw store $170B–$170F), $177F–$17FF `NOP` padding, frequency table $1554–$168B inside the code band |
+| song data | $1800/$1900 sidTAB row pointers lo/hi (213 rows), $1A00/$1A80 pattern pointers lo/hi (96 slots, 37 used), $1B00/$1C00/$1D00 arranger V0/V1/V2 (168 rows + loop marker), $1E00 sidTAB DL (delay) per row, $1F00–$29C8 patterns, $2C8F–$2FAF sidTAB rows (last row ends exactly at the file end) |
+| SMC | 89 patched instruction cells (83 whose bytes varied in 24000 calls): 4 opcode cells, the rest are immediates/operand addresses used as variables — the *entire* per-voice state and SID register image live inside instructions |
+| illegal opcodes | 9 sites executed: `SAX abs` ×3, `SBX #` ×2, `LAX zp`, `LAX (zp),Y`, `ANC #`, `ALR #` (see §6) |
+| volatile reads | init only: busy-wait on `$D012` = $FC then one read of `$D41B` (SID model detection). Play reads no hardware. |
+| provenance | the exported player is the editor's IRQ player band ($1000–$17FF of the defMON image, the undefmon project's byte-exact reassembly `defmon.asm`) minus the editor-only bits: no arranger repeat counter (editor $10F1–$1115 → export's plain jump $10F1–$10F8), no `STX→JMP` voice-mute patching of the SID band, no SID#2 mirror; every remaining routine matches the source instruction-for-instruction at addresses shifted by −$23..−$24 after $10F8. Bytes $0FF6–$0FFB `69 43 32 30 30 39` = "iC2009" (exporter stamp, never executed). |
+
+#### 3.7.1 Memory map and state
+
+##### Code
+
+| range | routine (undefmon label) | role |
+|---|---|---|
+| $0FD0–$0FE2 | wrapper init | counter=0; `JSR $1000`; CIA1 TA ← $0998 |
+| $0FE3–$0FF5 | wrapper play | `LDA #cnt; AND #7; BNE sub; JSR $1003; JMP +; sub: JSR $1006; INC cnt; RTS` |
+| $1000/$1003 | jump table | `JMP $14FE` init(A=start row) / `JMP $1022` main tick |
+| $1006–$1018 | player_sound_update (sub tick) | `LDA $10D8; PHA; LDA #$60; STA $10D8; JSR $1022; PLA; STA $10D8; JMP $12BE` |
+| $1019–$1021, $104A–$1052, $107B–$1083 | VoiceRecord v0/v1/v2 (9 data bytes each, stride $31) | slide acc lo/hi, AF, –, –, PS, detune (0/1/2), voice bit (1/2/4), complement ($FE/$FD/$FB) |
+| $1022–$1049, $1053–$107A, $1084–$10A8 | SID write band v0/v1/v2 (49 bytes each) | `LDX #pwlo; LDA #pwhi; STX $D402; STA $D403; LDX #flo; LDA #fhi; STX $D400; STA $D401; LDX #SR; LDY #AD; LDA #WG; EOR #WGx; STX $D406; STY $D405; STA $D404; JMP next` |
+| $10A9–$10B4 | globals | `LDA #res/route; STA $D417; LDA #mode; ORA #$0F; STA $D418` |
+| $10B5–$10D7 | filter cutoff slide + clamp + `NOP/ASL` + `STA $D416` | see §3 |
+| $10D8–$10DB | sub-frame sentinel | `LDA #flag` (opcode patched to `RTS` on sub ticks); `BPL $1126` |
+| $10DC–$1125 | song advance | flag&$0F → all row timers; arranger row → pattern pointers |
+| $1126–$11AD, $11AE–$1235, $1236–$12BD | row advance v0/v1/v2 (136 bytes each, unrolled) | row timer, prepare, consume (§3) |
+| $12BE–$12EE, $12EF–$131F, $1320–$1350 | sidTAB cascade 1 (sidcall A) v0/v1/v2 (49 bytes each) | DL countdown → fetch next row → `JSR $168C` |
+| $1351–$1381, $1382–$13B2, $13B3–$13E3 | sidTAB cascade 2 (sidcall B) v0/v1/v2 (49 bytes each) | same |
+| $13E4–$14CA | pitch / pulse oscillator, X = $62,$31,$00 | freq = table[note] (+slide acc or detune) → freq immediates; PS pulse bounce |
+| $14CB–$14FD | SID model detect | raster wait, osc3 read → patch $10CE (`CMP #`) and $10D4 (`NOP`/`ASL`) |
+| $14FE–$1553 | init | clear SID, filter cells, per-voice cells; cascade counters ← $FF; flag ← $80 |
+| $1554–$15EF / $15F0–$168B | freq lo / freq hi | 156 × u8 each: 12-TET from ~1 Hz (index 12) to $FFFF (index 155); indices 0–11 = 0,0,1,1,2,2,4,4,8,8,12,12 |
+| $168C–$177E | sidtab_row_apply(A=row lo, $FC=row hi, X=voice·$31) | column decoder (§4) |
+
+##### State — every per-voice variable is a byte inside a 49-byte-strided code block, addressed `abs,X` with X ∈ {$00,$31,$62}
+
+| v0 addr | inside | meaning | writers → readers |
+|---|---|---|---|
+| $1019/$101A | data | slide accumulator lo/hi (16-bit, signed) | oscillator, note-on (0), init → oscillator |
+| $101B | data | AF: 0 none · $80–$BF slide up · $C0–$FF slide down, bits 0-5 = speed index · $01–$7F fixed detune (dead) | sidTAB AF, note-on (0) → oscillator |
+| $101E | data | PS: signed pulse step per call (bit 7 = add) | sidTAB PS, oscillator (sign flip) → oscillator |
+| $101F | data | detune 0/1/2 (constant) | — → oscillator |
+| $1020/$1021 | data | voice bit / complement (constants) | — → RE column |
+| $1023 / $1025 | `LDX #`/`LDA #` operands | PW lo / PW hi (SID image) | sidTAB PW, PS sweep → SID |
+| $102D / $102F | `LDX #`/`LDA #` | freq lo / hi (SID image) | oscillator → SID |
+| $1037 / $1039 | `LDX #`/`LDY #` | SR / AD (SID image) | sidTAB SR/AD, init → SID |
+| $103B / $103D | `LDA #`/`EOR #` | WG control byte / WGx EOR mask; SID gets WG^WGx | sidTAB, init → SID |
+| $1129 | `LDY #` at $1128 | row timer (main ticks; −1 = consume next row) | consume, song advance, DEC |
+| $114A/$114B, $1165/$1166, $1173/$1174, $1181/$1182 | `LDA abs`/`LDA abs,Y` operands | pattern pointer (the $1165 copy is the master; the other three are broadcast copies) | song advance, consume (+= row length) |
+| $1161/$116F/$117D/$1194 | `LDA #`×3, `LDX #` | current row flag byte pre-shifted <<1, <<2, <<3 and raw | prepare → consume |
+| $12BF / $1352 | `LDA #` | cascade A / B counter (DL countdown; $FF = idle) | consume (0), cascade, init ($FF) |
+| $12CE / $1361 | `LDY #` | cascade A / B row index (next row to apply) | consume, cascade |
+| $12CC | data | pattern note (base pitch) | consume → TR column |
+| $135E | data | current note index (base + TR) | consume, TR → oscillator |
+
+Global (all immediates unless noted): $10AA res/route ($D417 image), $10AF mode ($D418 hi nibble), $10B6/$10BE cutoff acc lo/hi, $10B9/$10C0 slide step lo/hi, $10B8/$10BF opcode `ADC`/`SBC` (direction), $10CA CP offset, $10CE clamp/reload constant (2 or 0), $10D4 opcode `NOP`/`ASL`, $10D8 opcode `LDA #`/`RTS`, $10D9 flag (bit 7 = song advance pending, low nibble = gap), $10EB arranger row, $0FE4 call counter. Zero page: only `$FB/$FC` (row pointer for `(zp),Y`) and `$96` (flag scratch), all inside `$168C`.
+
+#### 3.7.2 Entry points and conventions
+
+- **init** (`$0FD0` → `$1000` → `$14FE`, A = subtune): `STA $10EB` — the subtune number *is the arranger start row*. Zero $D400–$D417 (not $D418); zero the six filter cells and $10AA/$10AF; SID-model detect (§6); for X = $62,$31,$00: cascade indices, AD/SR/WG/WGx immediates, AF, PS, note ← 0, cascade counters ← $FF; `$10D9 ← $80` (song advance on first main tick). Then the wrapper zeroes the call counter and sets the CIA period. No relocation, no pointer fix-ups: the export is assembled for $1000.
+- **play** (`$0FE3`): no arguments; A/X/Y clobbered. Main tick = `$1022` straight through (write-out → filter → row advance → cascades → oscillator → `RTS` at $14CA). Sub tick = write-out → filter, then the sentinel `RTS` at $10D8 returns to `$1012`, which restores the `LDA #` opcode and `JMP $12BE` (cascades → oscillator → RTS). So per call: **always** write-out + filter + both cascades + oscillator; **main only**: row advance. Sub-frame effects therefore run at 8× frame rate; the sequencer at 1×.
+- Register conventions: `X = voice·$31` in the oscillator loop and in `$168C` (also the offset for cascade/write-band cells); in the row-advance blocks X = 0 (used as a zero source: `STX counter`, `STX slide cells`) and briefly the flag byte (`LDX #flag` → `SAX`); Y = row byte cursor (`(FB),Y` in $168C, `abs,Y` in consume) or table index (`$1800,Y` cascade, arranger `,Y`). A carries the row lo byte into `$168C`; `$FC` the hi byte.
+- Flags: `ASL` of the flag byte puts bit 7 into C and bit 6 into N so one shift feeds `BPL`/`BCC`/`BIT`; `SBX #$31` sets N for the loop test; `ANC #$7F` yields C=0 for the following `ADC`.
+- No JSR except `$1022` (from $1003/$100F), `$168C` (6 cascade sites), `$14CB` (init); every other transfer is a `JMP`/branch chain, and blocks fall through voice to voice.
+
+#### 3.7.3 The play routine
+
+```
+wrapper():                                       ; $0FE3, 8× per frame
+  if (cnt++ & 7) == 0: main()  else: sub()
+
+main():   writeout(); filter(); rowadvance(); cascades(); oscillator()
+sub():    writeout(); filter();                  cascades(); oscillator()   ; via the RTS patch at $10D8
+
+writeout():                                      ; $1022–$10B4, 25 stores, values = immediates
+  for v: D402/3 = PW ; D400/1 = FREQ ; D406 = SR ; D405 = AD ; D404 = WG ^ WGx
+  D417 = RE ; D418 = FV | $0F
+filter():                                        ; $10B5–$10D7
+  acc = acc ±16 step                              ; opcode-encoded direction; step 0 = hold
+  if acc.hi < 0: acc.hi = thr                     ; thr = 2 (6581) / 0 (8580)
+  c = acc.hi + CP ; if c < 0 or c < thr: c = thr  ; CP = per-row cutoff offset
+  D416 = c  (or c<<1 on 8580)                     ; D415 never written (always 0 from init)
+```
+```
+rowadvance():                                    ; $10D8: LDA #flag ; BPL voices
+  if flag < 0:                                   ; a voice hit an END row last tick
+      gap = flag & $0F ; flag = gap ; timer[0..2] = gap
+      y = arrow ; p = V0[y] ; if p >= $80: y = V1[y] ; p = V0[y]     ; $FF marker: jump to row V1[y]
+      pattern ptr[v] = patptr[Vv[y]] for v in 0..2 ; arrow = y+1     ; patched into 4 LDA operands per voice
+  for v in 0,1,2 (unrolled):                     ; $1126 / $11AE / $1236
+      if timer[v] < 0:  CONSUME(v)
+      elif --timer[v] < 0: PREPARE(v)
+PREPARE(v):  broadcast ptr into the three LDA operands; f = pat[0]; flag_raw=f; f1=f<<1; f2=f<<2; f3=f<<3
+CONSUME(v):  y = 1
+      if f1 < 0 (bit6): cascA.idx = pat[y++] ; cascA.cnt = 0          ; sidcall A starts next cascade pass
+      if f2 < 0 (bit5): cascB.idx = pat[y++] ; cascB.cnt = 0          ; sidcall B
+      if f3 < 0 (bit4): note = base = pat[y++] ; slide acc = 0 ; AF = 0
+      if flag_raw < 0 (bit7): flag = flag_raw ; return                ; END: pointer not advanced; song advance next tick
+      ptr += y ; timer[v] = flag_raw & $0F                             ; SAX
+```
+Row length = `d+2` main ticks (consume tick, `d` decrements, the tick that reaches −1 prepares, next tick consumes) — verified: pattern 6's `d = 1,14,0,14,0,10,…` gave consume-to-consume gaps of 3,16,2,16,2,12 ticks; END rows also cost `d+2` (consume, next tick song-advance sets all timers to `d`, …). Summing `d+2` over the 168 arranger rows gives 16128 ticks = 322.6 s = the HVSC length 5:23. All three voices' patterns in a song row have equal total length; an END in *any* voice resynchronises all three (all timers ← gap).
+
+```
+cascades():                                      ; six 49-byte blocks: A0 A1 A2 B0 B1 B2
+  for each block: if cnt == 0: APPLY ; elif cnt < 0: skip ; else cnt--
+APPLY:  y = idx ; if hi[y] == 0: y = lo[y]        ; JP row: redirect (and continue from there)
+        $FC = hi[y] ; cnt = DL[y] ; A = lo[y] ; idx = y+1 ; X = voice·$31 ; JSR $168C
+```
+A row is applied for `DL+1` calls (DL = 0 → every call = 8× per frame; DL ≥ $80 → hold this row forever, i.e. program end).
+
+```
+oscillator():                                    ; $13E4, X = $62, $31, $00 (SBX #$31)
+  af = AF[v]
+  if af == 0:      freq = tab[36 + note] + detune (lo only, no carry)
+  elif af < 0:     acc ±= tab[af & $3F] (16-bit; bit 6 = down) ; freq = tab[36+note] + acc
+  else (dead):     freq = tab[36+note] + (tab[note+af+12] − tab[note+af+11])   ; fixed detune
+  ps = PS[v]
+  if ps > 0:  pw.lo -= ps ; on borrow: if pw.hi == 0: pw.lo = 1, ps = −ps  else pw.hi--
+  if ps < 0:  pw.lo += ps&$7F (ANC clears C) ; on carry: if pw.hi == $0F: pw.lo = $F8, ps = −ps  else pw.hi++
+```
+(Sweeps and slides therefore advance 8× per frame; a note-on zeroes acc/AF, so a slide must be restarted by the sidTAB.)
+
+`$168C` row apply — see §4; every column write is a store into one of the immediates above.
+
+#### 3.7.4 Data formats
+
+**Arranger** ($1B00/$1C00/$1D00, one byte per voice per song row, indexed by the arranger row): pattern number (< $80); V0 = $FF marks a jump, the target row is V1's byte (V2's byte — the editor's repeat count — is ignored by the export). Automatas: 168 rows, marker at 168 → row 0. Init's A selects the start row (subtune = start position).
+
+**Pattern** (pointer table $1A00/$1A80, 96 slots): a byte stream of rows:
+```
+flag  b7 END (song advance after this row; the row is not consumed past)   b6 sidcall A follows   b5 sidcall B follows   b4 note follows   b0-3 duration d  (row lasts d+2 ticks)
+[A]   sidTAB row index for cascade A          [B]  row index for cascade B          [note]  0..$7F, freq index = note+36 (+TR)
+```
+Automatas: 37 patterns, 477 rows; d ∈ {1:157, 4:142, 15:66, 10:33, 0:23, 14:21, 7:20, …}; hi-nibble classes: 0 (bare rest/hold) 115, 4 (note only) 133, 2/6 (B only / A+B) 74, 1/5/7 (note+…) 91, END rows 37; notes 12..100.
+
+**sidTAB row** (213 rows; each = pointer table entry lo/hi at $1800/$1900 → variable-length record, plus DL at $1E00; hi = 0 marks a JP whose lo = target row):
+```
+byte 0  flags1: b6 WG (control byte)  b7 WGx (EOR mask)  b5 AD  b4 SR  b3 TR  b2 AF  b1 PW      — bytes follow IN THIS ORDER (b6 before b7)
+byte n  flags2: b7 PS  b6 RE  b5 FV  b4 CP  b3 ACID(2 bytes: lo, hi)                              — b0-2 unused
+```
+Column semantics (writer in `$168C`):
+| col | store | meaning |
+|---|---|---|
+| WG | $103B,X | SID control byte proper (waveform, sync/ring/test, gate) |
+| WGx | $103D,X | EOR mask applied at write-out: `D404 = WG ^ WGx` — gate/test toggling without knowing the waveform (`EOR=01` gate flip, `09` test+gate) |
+| AD / SR | $1039,X / $1037,X | envelope bytes |
+| TR | $135E,X = byte + base note ($12CC,X) | note relative to the pattern note (arpeggio, drum pitch); freq index may exceed the table (e.g. TR=$40) — reads run into the hi table |
+| AF | $101B,X | slide: $80\|dir\|speed (bit 6 = down, speed = table index 0..63 → units per call), 0 = off |
+| PW | $1025,X = byte ; $1023,X = byte & $F0 | 12-bit PW from one byte: PW = (b&$0F)<<8 \| (b&$F0) |
+| PS | $101E,X | signed pulse step per call, bouncing between $0001 and $0FF8 |
+| RE | $10AA | 0 → clear this voice's routing bit; bit 3 set → `$10AA = ($10AA & $0F) \| byte \| voicebit` (resonance nibble + route this voice); other → raw (dead) |
+| FV | $10AF | $D418 high nibble (filter mode); volume is a constant $0F |
+| CP | $10CA | cutoff offset added to the accumulator's high byte before clamping |
+| ACID | lo,hi | hi < $80: cutoff acc = hi:lo, step = 0 (absolute set); hi ≥ $80: step = (hi&$3F):lo, direction = hi bit 6 (1 = down; patches `ADC`↔`SBC` opcodes at $10B8/$10BF) |
+| DL | $1E00,Y | calls to hold this row minus one; ≥ $80 = stop |
+| JP | hi==0 | jump to row lo (loop point) |
+Column census over the 213 rows: WGx 61, WG 51, AF 53, TR 45, SR 40, AD 39, CP 35, RE 24, ACID 19, PW 13, PS 11, FV 7, empty 17, JP 21. Every row's decoded length equals the distance to the next pointer (rows are stored consecutively), and the last row ends at $2FAF = end of image.
+
+Typical programs (row: DL cols): hard restart = `2A: 0F WGx=00 AD=0F SR=00` (16 calls = 2 frames gate off, ADSR reset) → `2B: 07 WGx=09` (8 calls test+gate) → `2C: 00 WG=50 WGx=05 AD=01 SR=51 TR=20` (sound); arpeggio = `72: 00 TR=00 AF=00 · 73: 00 TR=05 · 74: 00 TR=07 · 75: JP→72` (one row per call: 3-note chord cycling at 133 Hz); filter offset ramp = `11..19: 03 CP=FC,F8,…,E0`; drum = `27: 05 WG=80 WGx=01 AD=05 SR=00 TR=40 AF=F4 RE=00` (noise, +64 semitones, fast slide down); PW sweep started by `PS=1F`.
+
+**Instrument** = nothing: a defMON "instrument" is whichever sidTAB row a step's sidcall points at plus the rows it chains to (DL/JP). Two sidcalls per step give two concurrent programs per voice (e.g. tone + filter).
+
+**Frequency table**: 156 entries; the same table supplies pitch (`+36+note`), slide speeds (`entry[af&$3F]`, so speeds are exponentially spaced) and the dead detune path.
+
+#### 3.7.5 SID write schedule
+
+Every call (8× per frame), first thing, in this order: `D402 D403 D400 D401 D406 D405 D404` for voice 1, same for voice 2, voice 3, then `D417 D418`, then (after the filter arithmetic) `D416`. 25 stores from immediates; `D415` is only written by init (0). What the chip receives at call k is the image as left by call k−1 (one-call latency = 1/8 frame). Gate on/off, test bit, ADSR resets, hard restart — all are sidTAB rows writing WG/WGx/AD/SR at DL granularity; the player has no notion of note-on/off (a pattern note only sets the pitch, resets the slide and starts up to two row programs). No reads of any SID/VIC/CIA register in play; init reads `$D012` (raster wait) and `$D41B` (model detection).
+
+Verified in the log: init call 0 flushes zeros; the first note frame (call 33 = frame 4.1: pattern 6's first row `d=1` = 3 ticks of silence, then `sc1=10 n=12`); pulse `$09/$0A` on voice 2 stepping by $1F every call and bouncing; cutoff `$16` stepping every call.
+
+#### 3.7.6 Techniques specific to this player
+
+| technique | citation | why |
+|---|---|---|
+| **The SID image is code**: 7 register values per voice + 2 globals live as `LDX #/LDY #/LDA #/EOR #` operands in a 25-store block | $1022–$10B4 | the write-out is straight-line immediate loads and absolute stores — 2+4 cycles per register, no indexing, no shadow copy loop |
+| **All per-voice code blocks are exactly 49 bytes** so one X (voice·$31) indexes cells inside the write band, both cascade blocks and the voice records | `$1023,X`, `$12CC,X`, `$135E,X`, `$12BF+$31v` … | struct-of-code: the "record" is the instruction stream; stride = block size |
+| **Opcode as sub-frame gate**: `$10D8` `LDA #flag` ↔ `RTS`, patched by `$1006` around a `JSR $1022` and restored | $1006–$1015 | one entry point serves both cadences; the sub path skips exactly the sequencer with 2 stores |
+| **Opcode as sign**: `ADC #` ↔ `SBC #` at $10B8/$10BF for cutoff slide direction | patched at $1767/$1778, $176A/$177B | direction costs no test |
+| **Opcode as configuration**: `NOP` ↔ `ASL` at $10D4 chosen once from SID model | $14F9 | 8580/6581 cutoff scaling for free at run time |
+| **SID model detection**: raster wait, `$FF→$D412/$D40E/$D40F`, `$20→$D412`, read `$D41B`, bit 0 selects | $14CB–$14FD | the standard osc3 model test; makes the filter range hardware-dependent |
+| **Pointer broadcast instead of ZP indirection**: pattern pointer patched into 4 `LDA abs[,Y]` operands at prepare time | $1131–$1148 (×3) | row reads become 4-cycle `abs,Y`; the pointer add is done with `ADC/INC` on the master copy |
+| **Pre-shifted flag copies** (`f<<1`, `f<<2`, `f<<3`) stored into `LDA #`/`LDX #` operands, tested with `BPL` | $114F–$1158, $1160/$116E/$117C | each field test is 2+2 cycles, no `AND` |
+| **`SAX` to mask-and-store** (`LDA #$0F; SAX timer` = timer ← flag & $0F) | $11A9–$11AB, $1231, $12B9 | 1 instruction instead of `TXA; AND; STA` (A must stay… it doesn't matter, X holds the flag) |
+| **`SBX #$31`** as loop counter step (`TXA; SBX #$31; BMI`) | $14C2, $154A | X −= $31 with N set, no `SEC/SBC/TAX` |
+| **`ANC #$7F`** = `AND #$7F` + `CLC` (bit 7 of the result is 0) before `ADC` | $147C | saves the `CLC` |
+| **`ALR #$7F`** = `AND #$7F; LSR` | $1771 | halves the masked ACID hi byte in one instruction |
+| **`LAX zp` / `LAX (zp),Y`** to hold the flag word in both A and X (`TXA` re-tests are 1 byte) and to fetch a 16-bit value in two registers | $1726, $1745 | register pressure in the column decoder |
+| **`ASL` of a flag byte to split bits 7/6 into C/N**, `BIT` for bit 5 (V) | $1694–$16A9, $16EF | one shift, three flags |
+| **`BEQ`/`BMI`/`DEC` three-way** on a countdown immediate | cascade heads $12BE, $12EF … | 0 = fire, <0 = idle, >0 = wait, in 8 bytes |
+| **DL/JP bytecode tables in parallel arrays** (ptr lo/hi + delay), JP encoded as hi = 0 | $1800/$1900/$1E00 | table = program with loops |
+| **Row records with flag-bit presence** (variable length, order fixed by test order) | `$168C` | dense storage of sparse register updates |
+| **PW packed into one byte** (`b&$0F`<<8 \| `b&$F0`) | $16E2–$16E7 | 8-bit resolution of the 12-bit register in one column |
+| **EOR mask column** on the control byte | $103C, `$103D,X` | gate/test edits are waveform-independent |
+| **Bounce arithmetic on the SID image itself** (PS sweep patches the PW immediates; slide acc added to freq immediates) | $147B–$14BF, $1419–$142C | no separate working copy |
+| **Constant per-voice detune (0/1/2 units)** added to freq lo | $1439 | de-phases unison voices; lo-only add drops carry |
+| **Voice arbitration of the filter by bit masks in the record** (`AND $1021,X` / `ORA $1020,X`) | $1713, $1720 | routing without shifts |
+| **Subtune = start row** (`STA $10EB`) | $14FE | zero-cost subtune support |
+| **`INC` on an operand** as the call counter | $0FF2 | — |
+
+#### 3.7.7 What it reduces to
+
+The player is **two rates and three tables**. Per voice the state is 9 record bytes + 8 SID-image bytes + 2 cascade cursors + 2 counters + timer + note/base (≈ 24 bytes); globally 10 filter/status bytes. Every call: copy image to SID; step the filter accumulator; step six DL counters and, when one expires, decode one variable-length row into the image (`$168C`); recompute pitch (table + slide acc) and bounce the pulse. Every 8th call: decrement three row timers and, when one expires, take the next 1–4-byte pattern row (start ≤2 row programs, set the note). Every 8th call when an END was hit: advance the arranger, reload three pattern pointers.
+
+There are no envelopes, vibrato, portamento, arpeggio or hard-restart *mechanisms*: the sidTAB rows are the instrument, played at up to 400 Hz, and every classic effect is a row loop (`TR` rows = arpeggio, `AF` rows = vibrato/slide, `CP` rows = filter LFO, `WGx`/`AD`/`SR` rows = gate and hard restart). SMC is storage: 4 opcode cells (`RTS` gate, `ADC/SBC` sign, `NOP/ASL` scale, plus the same `ADC/SBC` pair) and ~85 operand cells that are ordinary variables in a struct-of-code layout. Volatile inputs: `$D41B` bit 0 once at init (SID model), `$D012` as a wait — after init the output is a pure function of (start row, call index) *per SID model*. Illegal opcodes: 6 kinds, 9 sites, all for register economy.
+
+Dead in this tune: AF positive (fixed detune) path $1448–$1473 and the RE "raw" store $170B — nothing else; every other instruction of the export executes. Between the editor and the export: arranger repeat counts and per-voice mute (`STX→JMP`) are stripped, SID#2 mirror absent; between tunes only the data and the CIA period differ (Automatas 8×; other exports use 1×/2×/4× — the DL/PS/AF units scale with it).
+
+The player in ~30 lines:
+```
+call():                       ; every 1/8 frame
+  SID[0..24] = image          ; immediates
+  acc ±= step ; D416 = clamp(acc.hi + CP)
+  if main tick:
+     if flag<0: gap=flag&15; timers=gap; row=arranger[arrow]; (jump if $FF); ptr[v]=pat[row[v]]; arrow++
+     for v: if timer[v]<0: consume row (A/B row idx→cascade cnt=0, note→base/note, END→flag, ptr+=len, timer=d)
+            elif --timer[v]<0: prepare (broadcast ptr, preload flag)
+  for each of 6 cascades: if cnt==0: apply row (JP redirect, cnt=DL, idx++) elif cnt>0: cnt--
+  for v: freq = tab[36+note] + (AF<0 ? (acc ±= tab[AF&63]) : detune) ; if PS: pw ±= PS with bounce
+```
+
+#### 3.7.8 Decompiler notes
+
+- **Code/data boundary**: everything $1000–$177E executes; the frequency table $1554–$168B sits inside the code band and is reached only by `,Y` loads; the nine-byte voice records at $1019/$104A/$107B and the note cells $12CC/$135E (+$31) are data inside code. Rule: a byte is data iff some executed instruction reads/writes it through a data mode — here that set is exactly the 89 operand cells + those records.
+- **The register file is the instruction stream.** Model each `LDX #/LDA #/LDY #/EOR #` in the write band as a load from a named per-voice variable (`pw_lo[v]` …) and each `STA cell,X` as a store to it. Because X = v·$31 addresses cells inside *code*, the per-voice struct is recovered by collecting all `abs,X` operands executed with X ∈ {0,$31,$62} and reading field = operand − block base; the SID band's 8 immediates, the two cascade blocks' 4 cells and the record's 9 bytes fall out as three sub-structs at strides $31.
+- **Opcode cells** ($10D8, $10B8, $10BF, $10D4): 1-bit variables. $10D8 is `if (subtick) return;` — lift the sub path as a second procedure that shares the write-out block (the parent's `JSR $1022` + patched `RTS` is a call to `writeout_and_filter()`). $10B8/$10BF: `acc += dir ? −step : +step`. $10D4: `scale ∈ {1,2}` fixed at init from a hardware input.
+- **Pointer-in-operand**: `$1165/$1166` is a 16-bit pointer variable; the three broadcast copies are just cached reads (treat `LDA $xxxx,Y` at $1164/$1172/$1180 and `LDA $xxxx` at $1149 as `ptr[Y]`).
+- **Cadence**: the top-level phase variable is the wrapper's `cnt & 7`; inside, `flag` (bit 7), the three `timer`s (sign/zero) and six cascade counters (0 / <0 / >0) are the only control state. Recover those first; everything else is straight-line.
+- **Row grammars** are the `ASL/BPL/BCC/BIT/AND` test order in `$168C` (flags1) and the four `BPL` on pre-shifted copies in consume (pattern flag) — lift them as tokenizers with the field order given in §4 (note WG before WGx although WGx is bit 7).
+- **Timing model**: a row lasts d+2 main ticks (8·(d+2) calls); a sidTAB row DL+1 calls; the SID sees the image one call late; the ACID/PS/AF units are per call. A verifier must run at call granularity (8/frame), not frame granularity.
+- **Volatile**: `$D41B` at init decides `$10CE`/`$10D4` — a decompiler must either pin the SID model or carry it as a parameter; `$D012` wait is a no-op semantically.
+- **Illegal opcodes** must decode: `SAX abs` (M ← A&X, no flags), `SBX #` (X ← (A&X)−imm, C/N/Z), `LAX` (A,X ← M), `ANC #` (A ← A&imm, C ← bit7), `ALR #` (A ← (A&imm)>>1, C ← old bit 0). A stock 6502 disassembler stops dead at $8F/$CB/$A7/$B3/$2B/$4B.
+- **Traps**: the detune add drops its carry ($1439–$1442); TR can index past the 156-entry table (reads spill into the hi table); the row-advance blocks use `LDX #0` as a zero source, so `STX` there means "store 0" (not X = voice); END rows are consumed twice in a sense (consume sets flag, next tick song advance) — the pattern pointer is not advanced past END; `d` of an END row is the inter-pattern gap; the three `RE` semantics depend on bit 3 of the byte; sc rows are shared between voices and both cascades (a row is a program, not an instrument); rows D5–D7 in the pointer table point outside the image (unused).
+
+## 4. The same machine seven ways — comparison
 
 Measured on the exemplars (main subtune, 1500 frames, PAL): mean/max instructions
-and cycles per play call, then the structural choices.
+and cycles per play call (defMON: per call, 8 calls/frame), then the structural choices.
 
-| | Hubbard 1985 | Galway 1986 | Follin 1989 | JCH NP20(+digi) 1991 | GoatTracker 2.73 | SID Wizard 1.6/1.9 |
-|---|---|---|---|---|---|---|
-| player code | ≈1.3 KB (incl. sfx) | 3158 B | 2947 B | 2275 B (906 insns) | 1098 B (433 insns) | 1918–2400 B |
-| insns/frame mean · max | 264 · 375 | 195 · 994 | 128 · 711 | 439 · 678 | 312 · 472 | 413 · 549 |
-| cycles/frame mean · max | 894 · 1336 | 665 · 3365 | 385 · 2196 | 1586 · 2394 | 1083 · 1632 | 1402 · 1832 |
-| voice code | loop, X = voice 2..0 | 3 unrolled copies | 3 unrolled copies | loop, X = track 3..0 | loop, X = 0/7/14 (tail-call third) | 3 × `LDX #n; JSR DOTRACK` |
-| per-voice state | 12 B, stride-1 arrays | ≈100 B (S 29+24, D 39, ZP) | 27 ZP B + 6 SMC cells | ≈45 B, rows 3/4 | 35 B in five 7-field blocks | 34 B, stride-7 bunches |
-| voice → SID | Y from `00 07 0E` table | absolute per copy | absolute per copy | Y from `00 07 0E` | X itself | X itself |
-| zero page | $5D–$60 (2 pointers) | $F0–$FF | $21–$97 (all state) | $FB/$FC (+$FD/$FE NMI) | $FC/$FD | $02/$03 (or $FE/$FF) |
-| tempo | speed table/song; tick = speed+1 frames | song-loaded 17-entry duration table + raw frames | none: durations are frames | speed; step = speed+1 frames; funk from filter entry 0 | tempo per channel; row = tempo+1 frames; funktempo | tempo *program*; row = tempo frames; tick 0/1/2 phases |
-| score structure | song→3 tracks (pattern nrs, $FF/$FE)→patterns (len/flags[,instr\|porta],pitch) | 3 sequences: `note dur` + 15 commands (call/ret/for/next/jmp/transpose/poke/load) | 3 byte streams: notes + 21 commands (call/ret/loop/jmp/pokes/effect setters) | 4 tracks ([$80\|T] pat, $FF/$FE) → patterns (dur/instr/super/note/rest/hold/end) | orderlists (pat, $D0 repeat, $E0 trans, $FF loop) → patterns (instr, fx, note/rest/keyoff/on, packed rest, 0 end) | orderlists (pat, transpose, volume, tempo, $FE/$FF) → patterns (1–4 byte rows, bit-7 continuation, packed rest, $FF+len) |
-| instrument | 8-byte SID image + fx bits | 29-byte record → 39-byte working record | none: commands latch state ($85 raw pokes) | 8 bytes + wave/pulse/filter table pointers | 9 columns + wave/pulse/filter/speed tables | 16-byte header + inline WF/PW/filter tables |
-| modulation engines | vibrato, pulse, porta, drum, skydive, arp (bit flags) | FM (4-seg 16-bit ramp or 8-step arp), PM (2-seg), gate/release timers | vibrato/slide, trill, porta (index space), pulse bounce, blip, filter bounce | wave/arp table, pulse & filter 4-byte programs, slide, growing vibrato | wave/pulse/filter/speed tables, 5 continuous effects | WF/PW/filter tables (same machine), chords, 4 vibrato types, slide/porta, keyboard tracking |
-| dispatch | bit tests + compare | patched JMP ← word tables (index = command byte) | patched JMP ← lo/hi tables (index = command byte) | compare chain | patched JSR/JMP low byte ← tables | patched `BCC` offset ×2, patched `JMP` ← word table |
-| SMC in play | 1 opcode cell (DEC/INC) | 3 JMP operands (+2 init-time bytes) | 3 JMP operands + 21 immediate cells | none (NMI: 6 cells) | 11 immediates + 4 jump low bytes | ≈27 immediates + 3 dispatch operands (+30–36 init relocation) |
-| SID writes/frame | on change; freq/ctrl per effect | on change; filter/vol always | on change; filter always | 8 per voice + filter, all from shadows | 25 (ghost image flush) | 19 unconditional (5/voice + 4) |
-| hard restart | none (SR=0 cut at note end) | none (TEST pulse at note-on) | none | N−2 gate off + $0F00, N: `$09` | gatetimer frames early: AD $0F SR $00 gate off; tick 0 firstwave (test) | tick 0/1 HR ADSR + gate off; tick 2 test-bit wave |
-| filter | none | shadows only (unused) | global cutoff bounce | 4-byte program, one owner voice, $D416 only | global program, ghost | 3-byte program, owner voice, 11-bit fixed point |
-| interrupt use | none (PSID play) | none | none | raster IRQ wrapper + CIA2 NMI sample player | none | none (multispeed via extra entry) |
-| illegal opcodes / JMP (ind) / RTS trick | – / – / – | – / `Code` cmd only / `Code` cmd | – / – / – | – / – / – | – / – / – | – / – / – |
-| volatile reads | none | none | none | none | none | none |
+| | Hubbard 1985 | Galway 1986 | Follin 1989 | JCH NP20(+digi) 1991 | GoatTracker 2.73 | SID Wizard 1.6/1.9 | defMON (Automatas) |
+|---|---|---|---|---|---|---|---|
+| player code | ≈1.3 KB (incl. sfx) | 3158 B | 2947 B | 2275 B (906 insns) | 1098 B (433 insns) | 1918–2400 B | 1919 B (811 insn sites) |
+| insns/frame mean · max | 264 · 375 | 195 · 994 | 128 · 711 | 439 · 678 | 312 · 472 | 413 · 549 | 230 (main) / 195 (sub) per call ≈ 1600/frame |
+| cycles/frame mean · max | 894 · 1336 | 665 · 3365 | 385 · 2196 | 1586 · 2394 | 1083 · 1632 | 1402 · 1832 | 711 / 612 per call ≈ 5000/frame |
+| voice code | loop, X = voice 2..0 | 3 unrolled copies | 3 unrolled copies | loop, X = track 3..0 | loop, X = 0/7/14 (tail-call third) | 3 × `LDX #n; JSR DOTRACK` | 3 unrolled 49-byte blocks per phase + `SBX #$31` loop for the oscillator |
+| per-voice state | 12 B, stride-1 arrays | ≈100 B (S 29+24, D 39, ZP) | 27 ZP B + 6 SMC cells | ≈45 B, rows 3/4 | 35 B in five 7-field blocks | 34 B, stride-7 bunches | ≈24 B: 9 record bytes + 8 image immediates + cascade cells, all inside code |
+| voice → SID | Y from `00 07 0E` table | absolute per copy | absolute per copy | Y from `00 07 0E` | X itself | X itself | absolute per band |
+| zero page | $5D–$60 (2 pointers) | $F0–$FF | $21–$97 (all state) | $FB/$FC (+$FD/$FE NMI) | $FC/$FD | $02/$03 (or $FE/$FF) | $FB/$FC, $96 |
+| tempo | speed table/song; tick = speed+1 frames | song-loaded 17-entry duration table + raw frames | none: durations are frames | speed; step = speed+1 frames; funk from filter entry 0 | tempo per channel; row = tempo+1 frames; funktempo | tempo *program*; row = tempo frames; tick 0/1/2 phases | CIA 8×/frame; row = d+2 main ticks; sidTAB row = DL+1 calls |
+| score structure | song→3 tracks (pattern nrs, $FF/$FE)→patterns (len/flags[,instr\|porta],pitch) | 3 sequences: `note dur` + 15 commands (call/ret/for/next/jmp/transpose/poke/load) | 3 byte streams: notes + 21 commands (call/ret/loop/jmp/pokes/effect setters) | 4 tracks ([$80\|T] pat, $FF/$FE) → patterns (dur/instr/super/note/rest/hold/end) | orderlists (pat, $D0 repeat, $E0 trans, $FF loop) → patterns (instr, fx, note/rest/keyoff/on, packed rest, 0 end) | orderlists (pat, transpose, volume, tempo, $FE/$FF) → patterns (1–4 byte rows, bit-7 continuation, packed rest, $FF+len) | arranger (3 pattern nrs/row, `$FF` jump) → patterns of `flag [A] [B] [note]` rows |
+| instrument | 8-byte SID image + fx bits | 29-byte record → 39-byte working record | none: commands latch state ($85 raw pokes) | 8 bytes + wave/pulse/filter table pointers | 9 columns + wave/pulse/filter/speed tables | 16-byte header + inline WF/PW/filter tables | none: sidTAB row programs (2 per step) |
+| modulation engines | vibrato, pulse, porta, drum, skydive, arp (bit flags) | FM (4-seg 16-bit ramp or 8-step arp), PM (2-seg), gate/release timers | vibrato/slide, trill, porta (index space), pulse bounce, blip, filter bounce | wave/arp table, pulse & filter 4-byte programs, slide, growing vibrato | wave/pulse/filter/speed tables, 5 continuous effects | WF/PW/filter tables (same machine), chords, 4 vibrato types, slide/porta, keyboard tracking | sidTAB rows @ up to 400 Hz, slide acc, pulse bounce, filter acc ± opcode-signed step |
+| dispatch | bit tests + compare | patched JMP ← word tables (index = command byte) | patched JMP ← lo/hi tables (index = command byte) | compare chain | patched JSR/JMP low byte ← tables | patched `BCC` offset ×2, patched `JMP` ← word table | flag-bit tests (`ASL`/`BPL`/`BIT`), presence-bit records |
+| SMC in play | 1 opcode cell (DEC/INC) | 3 JMP operands (+2 init-time bytes) | 3 JMP operands + 21 immediate cells | none (NMI: 6 cells) | 11 immediates + 4 jump low bytes | ≈27 immediates + 3 dispatch operands (+30–36 init relocation) | 4 opcode cells + ≈85 operand cells (state = code) |
+| SID writes/frame | on change; freq/ctrl per effect | on change; filter/vol always | on change; filter always | 8 per voice + filter, all from shadows | 25 (ghost image flush) | 19 unconditional (5/voice + 4) | 25 per call from immediates (200/frame) |
+| hard restart | none (SR=0 cut at note end) | none (TEST pulse at note-on) | none | N−2 gate off + $0F00, N: `$09` | gatetimer frames early: AD $0F SR $00 gate off; tick 0 firstwave (test) | tick 0/1 HR ADSR + gate off; tick 2 test-bit wave | data (row program) |
+| filter | none | shadows only (unused) | global cutoff bounce | 4-byte program, one owner voice, $D416 only | global program, ghost | 3-byte program, owner voice, 11-bit fixed point | 16-bit accumulator ± step + per-row offset, clamped; model-scaled |
+| interrupt use | none (PSID play) | none | none | raster IRQ wrapper + CIA2 NMI sample player | none | none (multispeed via extra entry) | CIA1 timer 8×/frame (PSID speed bit) |
+| illegal opcodes / JMP (ind) / RTS trick | – / – / – | – / `Code` cmd only / `Code` cmd | – / – / – | – / – / – | – / – / – | – / – / – | SBX SAX LAX ANC ALR / – / – |
+| volatile reads | none | none | none | none | none | none | init: `$D012` wait, `$D41B` model test |
 
-Observations that hold across all six:
+Observations that hold across all seven:
 
 1. **State per voice is small (12–45 bytes, ~100 with Galway's working record) and flat.** No player uses a linked structure, a heap, or recursion. The whole state of a tune at any frame is those bytes plus a handful of globals — which is what makes frame-level replay verification tractable.
 2. **The frame is a fixed pipeline**: sequencer decision (rarely) then modulation (always) then output. Two players (JCH, GoatTracker) pipeline the sequencer 2 frames early to implement hard restart; SID Wizard splits it into three ticks. In every case the "phase" is a small counter compared with constants — the decompiler should recover the phase variable first, because every other branch is conditioned on it.
-3. **Effects are one-step-per-frame machines with 1–3 bytes of state**: a counter, a direction/phase, an accumulator. Table-driven variants add a cursor into a byte table with `set / step-for-N / jump / hold` rows; four of the six players use that same row vocabulary.
+3. **Effects are one-step-per-frame machines with 1–3 bytes of state**: a counter, a direction/phase, an accumulator. Table-driven variants add a cursor into a byte table with `set / step-for-N / jump / hold` rows; five of the seven (GoatTracker, JCH, SID Wizard, defMON, and Galway's segment records) use that same row vocabulary.
 4. **Dispatch is by patched jump when the command set is large (Galway 15, Follin 21, GoatTracker 16+5, SID Wizard 31+14+8) and by compare chain when it is small (Hubbard, JCH ~6 classes).** All patched-jump sites read a constant table, so the target set is statically known.
 5. **SMC is storage, not code generation.** 100 % of play-time SMC in these six is: an operand byte used as a variable, a jump operand used as a switch, or (once) an opcode used as a 1-bit variable. Init-time SMC is relocation. There is no run-time code synthesis.
-6. **Nothing is volatile.** No exemplar reads $D012, $D41B/$D41C or a timer inside play; the sample-playing JCH build reads shared RAM from an NMI but the SID-writing path is deterministic. A tune's SID output is a function of (subtune, frame index).
-7. **The unrolled players are the oldest** (Galway, Follin): they trade 1–1.6 KB of ROM for the freedom to use every register in the sequencer, and are the ones whose "voice struct" must be recovered by *diffing three code copies*. The indexed players (Hubbard, JCH, GT, SW) expose the struct directly through `,X`.
+6. **Nothing is volatile inside play.** No exemplar reads $D012, $D41B/$D41C or a timer inside play; the sample-playing JCH build reads shared RAM from an NMI but the SID-writing path is deterministic. A tune's SID output is a function of (subtune, frame index) — plus, for defMON, the SID model detected once at init.
+7. **The unrolled players are the oldest and the newest** (Galway, Follin; defMON): they trade ROM for the freedom to use every register, and are the ones whose "voice struct" must be recovered by *diffing three code copies*. The indexed players (Hubbard, JCH, GT, SW) expose the struct directly through `,X`. defMON is the extreme: it unrolls *and* indexes, by making every per-voice block exactly $31 bytes so `abs,X` reaches cells inside code.
+8. **Multispeed changes cadence, not structure.** defMON runs its write-out, filter, table programs and oscillator 8× per frame and its sequencer 1×, using one entry point and an opcode cell as the gate; JCH's sample channel and SID Wizard's `MULPLY` entry are the other forms. The decompiler's frame model becomes a call model with a cadence variable.
 
 ## 5. 6502 techniques catalogue, with the reasons behind them
 
-Every technique below is used by at least one of the six players; the citations
+Every technique below is used by at least one of the seven players; the citations
 are exemplar addresses from §3. They are grouped by the resource being saved,
 because that is how the authors chose them. A decompiler needs each one twice:
 to recognise it, and to know what it *means* (the "model" column).
@@ -1897,6 +2150,7 @@ to recognise it, and to know what it *means* (the "model" column).
 | **Full unrolling**: three copies of the voice code with different absolute operands; no voice register at all | Follin (3 × 493 B + 3 × handlers), Galway (3 × ~800 B) | diff the copies; operands that differ by the record stride are fields; fold into `voice(v)` |
 | **Offset tables for shared helpers** into unrolled records: `LDX voice; LDA off,X; …,Y` | Galway ($8D83/$8D86/$8D89) | index arithmetic on the record base |
 | **Instrument = SID register image**: the record's bytes are copied straight to consecutive registers | Hubbard (8-byte instrument, 14-byte sfx image), Galway (S record $16..$1A → $D402..$D406, 31-byte effect blocks), Follin (`$85` = literal (reg,val) list) | typed as `struct sid_voice`; the copy loop is a memcpy |
+| **The SID image is code**: register values live as `LDX #/LDY #/LDA #/EOR #` operands in a straight-line store block; per-voice blocks are all $31 bytes so X = voice·$31 indexes cells *inside* code (write band, both cascade blocks, 9-byte records) | defMON ($1022–$10B4 write band; `$1023,X`, `$12CC,X` …) | struct-of-code: fields at (operand − block base) with stride $31; the write-out is 25 loads-of-variables + stores |
 | **Live state inside the instrument record**: pulse width mutated in place | Hubbard ($5591/$5592 rewritten) | shared mutable data — aliasing between voices on the same instrument |
 
 ### 5.2 Index-register economy
@@ -1909,6 +2163,7 @@ to recognise it, and to know what it *means* (the "model" column).
 | Register-held 16-bit accumulators (`TXA ADC lo TAX TYA ADC hi TAY`) across a whole loop | Galway FM/PM loops ($850E) | a 16-bit local held in X:Y |
 | `INX/DEX` on the high byte after `BCC/BCS` for 16-bit ± with the value split A:X | Follin vibrato ($626C) | 16-bit add |
 | Y as byte cursor of a `(zp),Y` stream, reset to 0 at each fetch, and `ptr += Y` at the end (`TYA CLC ADC zp STA zp BCC INC zp+1`) | Follin ($6356), Galway (`PC += A`), Hubbard keeps a stored index instead | stream cursor; the pointer bump is `ptr += consumed` |
+| Illegal opcodes for register economy: `SAX abs` (M ← A&X: mask-and-store), `SBX #$31` (X ← (A&X)−$31, N/Z/C: loop step and test in one), `LAX zp` / `LAX (zp),Y` (A and X ← M), `ANC #$7F` (AND with C ← 0 = an implicit CLC before ADC), `ALR #$7F` (AND then LSR) | defMON ($11A9, $14C2/$154A, $1726/$1745, $147C, $1771) | decode with exact flag semantics; `SBX` is not `CMP` |
 
 ### 5.3 Flags as data
 
@@ -1952,6 +2207,10 @@ to recognise it, and to know what it *means* (the "model" column).
 | Opcode as a 1-bit variable (`DEC` ↔ `INC`) | Hubbard $53DE | `x += dir` |
 | Operand of a `STA` chosen from a table of addresses (computed store) | Follin ($6219 ← $622E,X) | indexed store through an address table |
 | Register save into the operands of the restoring `LDA #/LDY #` (interrupt handler) | JCH NMI ($4168/$416A) | spill slots |
+| Opcode as sub-frame gate: `LDA #flag` ↔ `RTS` patched around a `JSR` so one routine serves two cadences | defMON $10D8 (`$1006` patches, calls `$1022`, restores, continues at `$12BE`) | `writeout_and_filter()` shared by two procedures |
+| Opcode as arithmetic sign (`ADC #`↔`SBC #`) and as configuration (`NOP`↔`ASL` chosen at init from a hardware read) | defMON $10B8/$10BF, $10D4 | 1-bit variables; the config one is a parameter |
+| Pointer broadcast: one pointer patched into four `LDA abs[,Y]` operands at prepare time instead of a ZP indirect | defMON $1131–$1148 ×3 | cached reads of one 16-bit variable |
+| Pre-shifted copies of a flag byte (`f<<1`, `f<<2`, `f<<3`) stored into `LDA #` operands and tested with `BPL` | defMON $114F–$1158 | bit tests without `AND` |
 | Constants of an interrupt handler patched from a descriptor (`CMP #end`, `LDA #loop`) | JCH ($413A/$4140/$4144/$4148) | variables with a mute-flag critical section |
 | Multiply by SMC (`STA op; ASL; ADC #imm` = A×3) | GoatTracker `mt_init` when NUMSONGS>1 | constant folding |
 | Patching *data tables* from the song (commands that overwrite an instrument's wave pointer or an envelope entry) | JCH ($4CE5/$4CE6, $4EC7), Hubbard pulse in instrument | the table is mutable state, not a constant |
@@ -2149,13 +2408,13 @@ every effect routine becomes unconditional inside its arm.
 
 ### 6.5 Self-modifying code, classified
 
-Every SMC site in the six players is one of these, and each has a clean model:
+Every SMC site in the seven players is one of these, and each has a clean model:
 
 | form | example | model |
 |---|---|---|
 | operand byte = variable | `LDA #imm` whose imm is stored by another instruction (tempo, transpose, current instrument) | a byte variable; the instruction reads it |
 | operand address = pointer | `LDA $xxxx,Y` whose $xxxx is patched with a table/pattern address | a 16-bit pointer variable; `LDA (ptr),Y` |
-| opcode byte = boolean | Hubbard $53DE `DEC`↔`INC` selecting sweep direction | a 1-bit variable, `x += dir ? +1 : −1` |
+| opcode byte = boolean | Hubbard $53DE `DEC`↔`INC` selecting sweep direction; defMON `ADC`↔`SBC` (filter slide sign), `NOP`↔`ASL` (8580 cutoff scale, set once at init), `LDA #`↔`RTS` (sub-tick gate that makes one entry point serve two cadences) | a 1-bit variable, `x += dir ? +1 : −1`; `if (subtick) return` |
 | branch offset / JMP operand = code address | dispatch by patching a jump (Galway, Follin, GoatTracker, SID Wizard `BCC` offsets) | a switch on a variable of enumerated type |
 | operand of a `STA` = computed store target | Follin $6219 (which voice's fixed-length cell to clear) | indexed store through an address table |
 | register save into `LDA #/LDY #` operands | JCH NMI | spill slots |
@@ -2167,20 +2426,26 @@ The practical rule: disassemble the image *after* init has run (the "post-init
 image"), record every write whose target lies inside an executed instruction, and
 give each such operand cell a variable name. Opcode-cell patches are the only
 ones needing per-variant lifting, and they have tiny observed domains (2 in
-Hubbard, the only case in six players). Counted over the exemplars: play-time
+Hubbard and defMON's four cells). Counted over the exemplars: play-time
 SMC = Hubbard 1 opcode cell; Galway 3 jump operands; Follin 3 jump operands + 21
 immediates + 1 store operand; JCH 0 on the IRQ path (6 in the NMI); GoatTracker
 11 immediates + 4 jump low bytes; SID Wizard ≈27 immediates + 3 dispatch
-operands. Init-time: SID Wizard 30–36 relocations, Galway 3, JCH 0, others 0.
+operands; defMON 4 opcode cells + ≈85 operand cells (the entire per-voice
+state and SID image). Init-time: SID Wizard 30–36 relocations, Galway 3,
+defMON 2 (SID-model patch), JCH 0, others 0.
 
 ### 6.6 Values that are not functions of the program
 
 Volatile inputs: $D012/$D011 (raster), $DC04–$DC0D (CIA timers/ICR), $D41B/$D41C
 (SID oscillator/envelope 3 — used as random sources by some players), and the
 song number passed to init. A player that reads none of them is a pure function
-of (song, frame index); all six here are (JCH's sample NMI reads RAM shared
-with play, but the SID-writing path stays deterministic); note which reads
-exist and treat them as inputs to be pinned by a trace.
+of (song, frame index); six of the seven are (JCH's sample NMI reads RAM shared
+with play, but the SID-writing path stays deterministic). defMON is the
+exception in a way that matters: init busy-waits on `$D012` (semantically a
+no-op) and reads `$D41B` once after poking oscillator 3 — the standard SID-model
+test — and patches two cells (`CMP #2/#0`, `NOP/ASL`) that scale the filter for
+6581 vs 8580. Its output is a function of (start row, call index, SID model): a
+decompiler must carry the model as a parameter or pin it.
 
 ### 6.7 What to verify against
 
@@ -2260,6 +2525,20 @@ players. Each was observed in the exemplar named.
   frames early, ghost latency, tick phases), not a constant in the code —
   verify it from a write log, not from reading the source.
 
+**Multispeed and hardware dependence (defMON)**
+- The frame is not the unit: sidTAB rows last DL+1 *calls* (8 per frame), the
+  SID sees the image one call late, and a verifier at frame granularity misses
+  every 400 Hz arpeggio. Model at call granularity with the wrapper's
+  `cnt & 7` as the phase.
+- Output depends on the SID model read once at init (`$D41B` after poking
+  oscillator 3): two patched cells scale the filter. Pin or parameterise.
+- `LDX #0` in the row-advance blocks makes X a *zero source* (`STX cell` = store
+  0), while in the oscillator X = voice·$31: the same register has two roles in
+  one routine — recover roles per region, not per routine.
+- The detune add drops its carry; TR rows can index past the 156-entry
+  frequency table; the pattern pointer is not advanced past an END row (the
+  END row's duration nibble is the inter-pattern gap).
+
 **Bugs in the players (present in shipped tunes)**
 - SID Wizard 1.6: `LDA FREQTBH,X` on the first note frame indexes by voice
   offset instead of pitch (masked by the TEST bit; fixed in 1.9).
@@ -2308,6 +2587,7 @@ mode(hi nibble)|volume · `$D41B/$D41C` read-only osc3/env3.
 | Follin | `≥ $80` command (21, fixed arg counts, `$85` list ends on `≥ $80`); `$01–$7F` note [+len]; `$00` rest |
 | JCH | `$80–$9F` dur (bit 4 tie) · `$A0–$BF` instr · `$C0–$FF` super · `$00` rest · `$7E` hold · `$7F` end; track `$80|T`, `$FF`, `$FE` |
 | GoatTracker | `$01–$3F` instr · `$40–$4F` fx (+param) · `$50–$5F` fx-only · `$60–$BC` note · `$BD` rest `$BE` keyoff `$BF` keyon · `$C0+` packed rest · `$00` end; orderlist `$D0+` repeat, `$E0+` transpose, `$FF pos` loop |
+| defMON | pattern row `flag [A] [B] [note]`: flag b7 END, b6 sidcall A, b5 sidcall B, b4 note, b0–3 duration (row = d+2 ticks); arranger byte < $80 pattern, V0 = $FF jump to V1's byte |
 | SID Wizard | rows of 1–4 bytes with bit-7 continuation; note `$60–$6F` vib, `$70–$77` packed rest, `$78–$7E` note-FX; ins `$3F` legato, `$40+` ins-FX; fx `≥ $20` small / `< $20` big+value; `$FF len` end; orderlist `$80–$9F` transpose `$A0–$AF` volume `$B0–$EF` tempo `$FE` stop `$FF pos` loop |
 
 ### 8.4 Table-program vocabularies
@@ -2322,3 +2602,4 @@ mode(hi nibble)|volume · `$D41B/$D41C` read-only osc3/env3.
 | Galway FM/PM | record fields | 4 (2) signed 16-bit gradients × durations, delay, loop policy bits `$81`; FMC bit 3 = 8-entry arp list |
 | Follin | commands | `$8E` vibrato(4), `$91` trill(3), `$92` porta(1), `$80` pulse(3), `$88` filter(8), `$8F` blip(4) — no tables |
 | Hubbard | instrument bits | fx bit0 drum, bit1 skydive, bit2 arp, bit3 8-bit pulse run; vib depth; pulse speed |
+| defMON sidTAB | flags1 {WGx b7, WG b6, AD b5, SR b4, TR b3, AF b2, PW b1} then flags2 {PS b7, RE b6, FV b5, CP b4, ACID b3 (2 bytes)}, values follow in test order; DL table = calls−1 (≥$80 stop); pointer hi = 0 → JP to lo | register-column records = the instrument, chained by DL/JP |
