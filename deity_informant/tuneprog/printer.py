@@ -143,6 +143,7 @@ class Printer:
         self.proc = ""
         self.defs = {}
         self.inline = {}
+        self.lastsrc = None
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -381,6 +382,7 @@ class Body(Printer):
 
     def render(self, name, body):
         self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
+        self.lastsrc = None
         p = self.prog.procs[name]
         args = ", ".join(REGVAR[i].lower() for i in self.params[name])
         head = "%s(%s):" % (self.names.procs.get(name, name), args)
@@ -417,7 +419,8 @@ class Body(Printer):
             return []
         self.mem = {}
         self.defs = {s.n: s.e for s in stmts if type(s) is Let}
-        head = ["%s# $%04X" % (pad, n.src)] if self.pcs else []
+        head = ["%s# $%04X" % (pad, n.src)] if self.pcs and n.src != self.lastsrc else []
+        self.lastsrc = n.src
         return head + [pad + self.stmt(s) for s in stmts]
 
     def cond(self, n, proc, depth):
