@@ -1,12 +1,13 @@
 """E11: the printed tuneprog of the two exemplars (marked ``hvsc``; short horizons).
 
 Asserts the shape the plan's appendix A and anatomy 3.7.7 call for -- two rates,
-the SID image write-out, the struct views, the oscillator ``for`` -- and that S5/S6
-left the certified S4 program byte-identical.
+the write-out folded over the voice index, one helper per role, 16-bit filter
+views, no stack pointer, no goto -- and that S5/S6 left the S4 program identical.
 """
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ pytest.importorskip("pysidtracker")
 from pysidtracker.testing import resolve_tune  # noqa: E402
 
 from deity_informant import cli  # noqa: E402
-from deity_informant.tuneprog import pipeline, printer, recover, structure  # noqa: E402
+from deity_informant.tuneprog import pipeline, printer  # noqa: E402
 from deity_informant.tuneprog.machine import find_entries  # noqa: E402
 from deity_informant.tuneprog.trace import Tracer  # noqa: E402
 from deity_informant.tuneprog.verify import verify  # noqa: E402
@@ -36,8 +37,13 @@ def _tune(relpath):
     return Path(path).read_bytes()
 
 
+_DONE = {}
+
+
 def _printed(relpath, seconds, song=None):
-    """Trace, build, verify, then structure/recover/print: ``(text, names, prog, v)``."""
+    """Trace, build, verify, then present and print: ``(text, names, prog, v, calls)``."""
+    if (relpath, seconds, song) in _DONE:
+        return _DONE[(relpath, seconds, song)]
     data = _tune(relpath)
     img, schedule = find_entries(data)
     entry = schedule[0]
@@ -49,12 +55,30 @@ def _printed(relpath, seconds, song=None):
     prog, _r, _p = pipeline.build(trace, Path(relpath).name)
     before = prog.to_json()
     v = verify(prog, trace, calls=calls, prefix=200)
-    view = structure.view(prog, printer.needed(prog)[0])
-    st = structure.structure(view)
-    names = recover.recover(view, st)
+    view, st, names = pipeline.present(prog)
     text = printer.render(view, st, names)
     assert prog.to_json() == before  # S5/S6 annotate; the certified program is untouched
-    return text, names, prog, v, calls
+    _DONE[(relpath, seconds, song)] = (text, names, prog, v, calls)
+    return _DONE[(relpath, seconds, song)]
+
+
+def _body(doc, name):
+    """The lines of one printed procedure."""
+    out, on = [], False
+    for line in doc.splitlines():
+        if line.startswith("%s(" % name):
+            on = True
+            continue
+        if on and (line.startswith("```") or (line and not line.startswith(" "))):
+            break
+        if on:
+            out.append(line)
+    return out
+
+
+def _temps(doc):
+    """The distinct machine temporaries the program section still names."""
+    return set(re.findall(r"\b[tnac]\d+\b", doc.split("## program")[1]))
 
 
 def _fields(names, group="voice"):
@@ -74,8 +98,6 @@ def test_automatas_prints_the_shape_of_the_anatomy_player():
     image = {n for r, n in names.region.items() if names.role.get(r) == "sid_image"}
     assert image >= {"pw_lo", "pw_hi", "freq_lo", "freq_hi", "sr", "ad", "ctrl", "ctrl_eor"}
     assert len(_fields(names) & image) >= 8
-    for v_i in range(3):
-        assert "sid[%d].ctrl = " % v_i in text
     assert "sid.res_route = " in text and "sid.mode_vol = " in text
 
     # struct-of-code: the voice view is stride 49 and holds the cascade counters
@@ -84,12 +106,57 @@ def test_automatas_prints_the_shape_of_the_anatomy_player():
 
     # the oscillator loop over X in {$62,$31,0} prints as a for over the voice index
     assert "for v in 2, 1, 0:" in text
-    assert "voice[v].freq_lo = " in text and "FREQ_LO[" in text
+    assert "voice[v].freq" in text and "FREQ" in text
 
     # the frequency table, the filter switch on the patched opcode, the raster wait
     assert "freq_table" in [names.role.get(r) for r in names.region]
     assert "switch " in text and "case " in text
     assert "while input($D012)" in text
+
+
+def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
+    text, _names, _prog, _v, _calls = _printed(AUTOMATAS, seconds=30)
+    helpers = ("writeout", "filter", "row_advance", "cascades", "oscillator")
+    for name in helpers:
+        assert text.count("\n%s():" % name) == 1, name
+
+    # the write-out is one copy of the seven per-voice registers over the index
+    out = _body(text, "writeout")
+    assert "    for v in 0, 1, 2:" in out
+    assert len([l for l in out if "sid[v]." in l]) == 7
+    assert not any("sid[0]." in l or "sid[1]." in l for l in out)
+
+    # main and sub call the helpers instead of holding a copy each
+    main, sub = _body(text, "main"), _body(text, "sub")
+    assert [l.strip() for l in main if l.strip().endswith("()")] == [
+        "writeout()",
+        "filter()",
+        "row_advance()",
+        "cascades()",
+        "oscillator()",
+    ]
+    assert "    cascades()" in sub and "    oscillator()" in sub
+    assert len(main) < 20 and len(sub) < 12
+
+
+def test_automatas_has_no_machine_texture_left_in_the_hot_path():
+    text, names, _prog, _v, _calls = _printed(AUTOMATAS, seconds=30)
+
+    # the stack pointer is not data here: the JSR frames and the PHA/PLA pair go
+    assert not re.search(r"\bsp\d*\b", text)
+    assert "saved = " in text and "= saved" in text
+
+    # the filter accumulator is one 16-bit view stepped by one 16-bit operand
+    acc = [n for n in names.u16.values() if n.endswith("acc")]
+    assert acc and any(n.endswith("step") for n in names.u16.values())
+    body = "\n".join(_body(text, "filter"))
+    assert "%s += " % acc[0] in body and "%s -= " % acc[0] in body
+    assert "carry(" not in body and "carry(" not in "\n".join(_body(text, "main"))
+    assert "u16" in text.split("## program")[0]
+
+    # the goto residue and the machine temporaries are gone (191 before S6's texture)
+    assert "goto" not in text
+    assert len(_temps(text)) <= 76, sorted(_temps(text))
 
 
 def test_the_cli_subcommand_decompiles_commando_at_a_short_horizon(tmp_path):
@@ -121,3 +188,7 @@ def test_commando_prints_the_shape_of_the_design_illustration():
     # the note table and the pointer-borne pattern stream
     assert "FREQ" in text and "ptr" in text
     assert "sid[" in text or "io[" in text
+
+    # the machine texture goes here too: no stack pointer, and the speed divider
+    assert not re.search(r"\bsp\d*\b", text)
+    assert "timer_5 -= 1" in text or "timer -= 1" in text
