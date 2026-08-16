@@ -32,6 +32,10 @@ class Recording:
         self.regs = []
         self.entry = []
         self.uni = []
+        self.sigs = []  # per-invocation path signature (pass 1)
+        self.rbw = set()  # cells read before written within some invocation
+        self.comp_st = set()  # cells a computed/patched-operand store reached
+        self.paths = []  # per-invocation event stream incl. ("uni", n, addr) reads
 
     def replay(self, i):
         """Reconstruct invocation ``i``'s observable write sequence from ``slog``
@@ -60,7 +64,11 @@ class RecVM(PcodeVM):
         self.collect = False
         self.emit = True
         self.assertion = True
+        self.light = False  # skip repeat-frame symbolic mirroring (framepath)
         self.sig = 0
+        self.rbw = set()  # pass 1: cells loaded before this invocation wrote them
+        self.comp_st = set()  # pass 1: computed-address store targets
+        self.patch_st = {}  # pass 1: (pc, op) -> (srcs, targets) operand-derived stores
         self.reset_invocation()
 
     def reset_invocation(self):
@@ -161,6 +169,10 @@ class RecVM(PcodeVM):
             (self.sreg if out[0] == "r" else self.suni)[out[1]] = sexpr
 
     def _exec(self, rec, pc):
+        if self.light and not (self.emit or self.collect):
+            # repeat frame under a light record: concrete state carry only
+            (rec.get("_f") or self.compile_record(rec))(self.reg, self.uniq, self._rd, self._wr)
+            return
         prov = rec["prov"]
         pmap = prov["ops"]
         emit = self.emit
@@ -173,6 +185,7 @@ class RecVM(PcodeVM):
                 self._mix(0x51E0000 ^ (cvals[0] & 0xFFFF))
                 self._wr(cvals[0], cvals[1], sz)
                 if self.collect:
+                    self._st_targets(pc, i, ins[0], pmap, cvals[0], sz)
                     self._mark(cvals[0] & 0xFFFF, sz)
                 elif emit:
                     self._store(
@@ -188,8 +201,7 @@ class RecVM(PcodeVM):
                 self._mix(0x10AD0000 ^ addr)
                 cval = self._rd(cvals[0], sz)
                 if self.collect:
-                    if self._aliases(addr, sz):
-                        self.alias_sites.add((pc, i))
+                    self._ld_collect(pc, i, addr, sz)
                     sexpr = None
                 elif emit:
                     saddr = self._sval(ins[0], i, 0, pmap, pc)
@@ -208,6 +220,27 @@ class RecVM(PcodeVM):
             sexpr = svals[0] if mn == "COPY" else E.op(mn, svals, out[2])
             self._setout(out, cval, sexpr)
 
+    def _ld_collect(self, pc, i, addr, sz):
+        """Pass 1: alias-flag the site; count a non-volatile read of unwritten cells."""
+        if self._aliases(addr, sz):
+            self.alias_sites.add((pc, i))
+        if not (self.volatile and _volatile(addr)):
+            for k in range(sz):
+                c = (addr + k) & 0xFFFF
+                if c not in self.written:
+                    self.rbw.add(c)
+
+    def _st_targets(self, pc, i, avn, pmap, addr, sz):
+        """Pass 1: cells a computed- or operand-derived store reaches."""
+        if avn[0] != "c":
+            for k in range(sz):
+                self.comp_st.add((addr + k) & 0xFFFF)
+            return
+        p = pmap.get((i, 0))
+        if p is not None:
+            got = self.patch_st.setdefault((pc, i), (p[0], set()))
+            got[1].update((addr + k) & 0xFFFF for k in range(sz))
+
     def _mark(self, addr, sz):
         for k in range(sz):
             self.written.add((addr + k) & 0xFFFF)
@@ -217,20 +250,31 @@ class RecVM(PcodeVM):
 
     def _loadsym(self, site, addr, saddr, sz, cval):
         if sz != 1:
-            return E.uni(self._newuni(cval, sz), sz)
+            return E.uni(self._newuni(cval, sz, addr), sz)
         if self.volatile and _volatile(addr):
-            return E.uni(self._newuni(cval, 1), 1)
+            return E.uni(self._newuni(cval, 1, addr), 1)
         if addr in self.written:
             if not E.is_const(saddr):
                 self._fact(site[0], "place", saddr, addr)
+                self._ld_event(saddr, addr, sz)
             return E.cur(E.konst(addr, 2), 1, self.cell_ver[addr], self.cell_expr[addr])
-        if site in self.alias_sites and not E.is_const(saddr):
-            self._fact(site[0], "place", saddr, addr)
+        if not E.is_const(saddr):
+            if site in self.alias_sites:
+                self._fact(site[0], "place", saddr, addr)
+            self._ld_event(saddr, addr, sz)
         return E.mem(saddr, 1)
 
-    def _newuni(self, cval, sz):
+    def _ld_event(self, saddr, addr, sz):
+        evolved = E.simplify(E.to_evolved(saddr, self.cell_ver))
+        self.events.append(("ld", self.pos, evolved, addr, sz))
+        self.pos += 1
+
+    def _newuni(self, cval, sz, addr=None):
         n = len(self.uni_vals)
         self.uni_vals[n] = cval & E.mask(sz)
+        if self.emit and addr is not None:
+            self.events.append(("uni", self.pos, n, addr, sz))
+            self.pos += 1
         return n
 
     def _justify(self, pc, prov):
@@ -260,6 +304,11 @@ class RecVM(PcodeVM):
         if rec is None:
             rec = lifter(mem, pc)
             cache[k] = rec
+        if self.collect:  # executing an instruction reads its own bytes
+            for i in range(rec["len"]):
+                c = (pc + i) & 0xFFFF
+                if c not in self.written:
+                    self.rbw.add(c)
         ctrl, nxt = self.run_record(rec, pc)
         t = ctrl[0]
         if t == "next":
@@ -308,6 +357,8 @@ class RecVM(PcodeVM):
         if self.emit:
             self.sreg[3] = E.op("INT_ADD", [self.sreg[3], E.konst(1, 1)], 1)
         addr = 0x100 + self.reg[3]
+        if self.collect and addr not in self.written:
+            self.rbw.add(addr)
         return self.mem[addr], (self._byte(addr) if self.emit else None)
 
     def _jsr(self, pc, rec, target):
@@ -343,6 +394,8 @@ class RecVM(PcodeVM):
         self.reg[10] = 1
         if self.emit:
             self.sreg[10] = E.konst(1, 1)
+        if self.collect:
+            self.rbw.update(c for c in (0xFFFE, 0xFFFF) if c not in self.written)
         target = self.mem[0xFFFE] | (self.mem[0xFFFF] << 8)
         if self.emit and (0xFFFE in self.mutable or 0xFFFF in self.mutable):
             vex = self._word(self._byte(0xFFFE), self._byte(0xFFFF))
@@ -352,6 +405,8 @@ class RecVM(PcodeVM):
     def _jmpind(self, pc, ptr):
         a_lo = ptr
         a_hi = (ptr & 0xFF00) | ((ptr + 1) & 0xFF)
+        if self.collect:
+            self.rbw.update(c for c in (a_lo, a_hi) if c not in self.written)
         target = self.mem[a_lo] | (self.mem[a_hi] << 8)
         if self.emit and (a_lo in self.mutable or a_hi in self.mutable):
             vex = self._word(self._byte(a_lo), self._byte(a_hi))
@@ -386,6 +441,8 @@ class RecVM(PcodeVM):
     def _check(self):
         image = bytearray(self.entry_mem)
         for ev in self.events:
+            if ev[0] in ("uni", "ld"):
+                continue
             if ev[0] == "store":
                 _, _pos, addr, evolved, sz, cval = ev
                 v = E.evaluate(evolved, self.entry_mem, self.entry_reg, image, self.uni_vals)
@@ -415,15 +472,34 @@ class RecVM(PcodeVM):
         return [
             ("st", e[2], e[3], e[4]) if e[0] == "store" else ("ck", e[2], e[3], e[5], e[6])
             for e in self.events
+            if e[0] not in ("uni", "ld")
         ]
 
+    def public_path(self):
+        """``public_events`` plus every read, in machine order: ``("uni", n,
+        addr, sz)`` allocated slot ``n``; ``("ld", saddr, addr, sz)`` is a
+        computed load, its evolved address and the cell it landed on."""
+        out = []
+        for e in self.events:
+            if e[0] == "store":
+                out.append(("st", e[2], e[3], e[4]))
+            elif e[0] == "fact":
+                out.append(("ck", e[2], e[3], e[5], e[6]))
+            elif e[0] == "uni":
+                out.append(("uni", e[2], e[3], e[4]))
+            else:
+                out.append(("ld", e[2], e[3], e[4]))
+        return out
 
-def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertion=True):
+
+def record(
+    vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertion=True, light=False
+):
     """Record ``invocations`` runs of ``driver`` from ``entry`` into artifacts.
 
     ``driver(vm, entry, cache, lifter)`` is any VM driver; ``outputs`` is the
-    observable address set. A concrete pre-pass fixes the exact mutable-cell set
-    before the recording pass residualises against it.
+    observable address set; a concrete pre-pass fixes the exact mutable set first.
+    ``light`` keeps templates only (no snapshots, no ``replay``), repeats compiled.
     """
     E.clear_simplify_cache()
     E.clear_form_caches()
@@ -451,7 +527,14 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
         vm.reg = list(init_reg)
     vm.outputs, vm.mutable, vm.collect, vm.assertion = outset, mutable, False, assertion
     vm.alias_sites = set(pre.alias_sites)
+    vm.light = light
     res = Recording(outset)
+    res.rbw = set(pre.rbw)
+    res.comp_st = set(pre.comp_st)
+    for (pc, _i), (srcs, cells) in pre.patch_st.items():
+        if any((pc + off) & 0xFFFF in mutable for off in srcs):
+            res.comp_st |= cells
+    res.sigs = list(sigs)
     cache = {}
     tmpl = {}
     for idx in range(invocations):
@@ -468,6 +551,7 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
                 list(vm.out_seq),
                 vm.public_events(),
                 list(vm.regs_out),
+                vm.public_path(),
             )
             tmpl[sigs[idx]] = cached
         res.F.append(cached[0])
@@ -476,6 +560,10 @@ def record(vm_or_mem, driver, entry, outputs, invocations, lifter=lift, assertio
         res.out_seq.append(cached[3])
         res.events.append(cached[4])
         res.regs.append(cached[5])
-        res.entry.append((vm.entry_mem, tuple(vm.entry_reg)))
-        res.uni.append(dict(vm.uni_vals))
+        res.paths.append(cached[6])
+        if not light:
+            res.entry.append((vm.entry_mem, tuple(vm.entry_reg)))
+            res.uni.append(dict(vm.uni_vals))
+        elif not res.entry:
+            res.entry.append((None, tuple(vm.entry_reg)))
     return res

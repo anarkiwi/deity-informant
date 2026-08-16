@@ -73,9 +73,11 @@ class _Page:
 def _protected(prog):
     """Cell -> the region it belongs to: executable memory no statement may name.
 
-    Page one is not here: what the machine owns in it is decided at the access, by
-    what the artifact wrote and where the stack pointer stands (``_Page``)."""
-    return dict.fromkeys(desmc.executable(prog), _CODE_REGION)
+    A cell the play phase also writes is state by observation (11: a patched cell
+    is a variable), so only never-written code bytes are protected. Page one is not
+    here: ownership in it is decided at the access (``_Page``)."""
+    written = set(prog.evidence.get("written", ()) or ()) | set(prog.dispatch)
+    return dict.fromkeys(desmc.executable(prog) - written, _CODE_REGION)
 
 
 def _off_stack(f, sz, page):

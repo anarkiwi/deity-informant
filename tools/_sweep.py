@@ -175,18 +175,47 @@ def decompile(mem, init, play, frames, subtune=0, **kw):
     return model, ev
 
 
-def build(mem, init, play, frames, subtune=0, extents=None, **kw):
+def build(mem, init, play, frames, subtune=0, extents=None, fold=False, **kw):
     """``(model, frame program, evidence)``: the cached decompile plus rung (g).
 
-    The program handed back is the artifact read back, not ``frameprog.program``'s
-    pre-render object, so no gate can judge what the emission does not ship. The
-    stored artifact stays the extent-free text; only ``--extents`` emits twice."""
+    The program handed back is the artifact read back, so no gate can judge what
+    the emission does not ship; the stored artifact stays the extent-free text.
+    ``fold=True`` emits through ``framepath`` (11): the artifact is the fold."""
     from deity_informant import frameprog
 
+    if fold:
+        return _build_fold(mem, init, play, frames, subtune, kw)
     model, ev, path = _serve(mem, init, play, frames, subtune, kw)
     text = frameprog.dumps(frameprog.program(model, extents))
     if path is not None:
         _store(path, ev, text if extents is None else frameprog.dumps(frameprog.program(model)))
+    return model, frameprog.loads(text), ev
+
+
+def _build_fold(mem, init, play, frames, subtune, kw):
+    """The fold's build: the stored artifact IS the program, so a hit re-runs nothing."""
+    from deity_informant import codec
+    from deity_informant import frameprog
+    from deity_informant import framepath
+    from deity_informant import structured as S
+
+    mode = os.environ.get(CACHE_ENV, "").lower()
+    path = None
+    if mode not in ("0", "off", "no"):
+        key = _key(mem, init, play, frames, subtune, {**kw, "fold": True})
+        path = ARTIFACTS / ("%s.fp.gz" % key)
+        got = _read(path) if mode != "refresh" else None
+        if got is not None:
+            rec, text = got
+            prog = frameprog.loads(text)
+            model = frameprog.block_model(prog, kw.get("sound", False))
+            codec.verify(model)
+            return model, prog, Replayed(rec["wlog_sha"], rec["wlog_len"])
+    model, ev = S.decompile(mem, init, play, frames, subtune, **kw)
+    ev.wlog_sha, ev.wlog_len, ev.cached = _digest(ev.wlog), len(ev.wlog), False
+    text = frameprog.dumps(framepath.program(model, frames))
+    if path is not None:
+        _store(path, ev, text)
     return model, frameprog.loads(text), ev
 
 

@@ -49,7 +49,7 @@ def _counts(prog):
     return out
 
 
-def _one(entry, frames):
+def _one(entry, frames, fold=False):
     from deity_informant import frameprog, frameval
     from deity_informant.c64 import load_psid
 
@@ -59,7 +59,7 @@ def _one(entry, frames):
     full = int(secs * 50)
     n = full if frames is None else min(frames, full)
     t0 = time.monotonic()
-    model, prog, _ev = _sweep.build(mem, init, play, full, sub)
+    model, prog, _ev = _sweep.build(mem, init, play, full, sub, fold=fold)
     row = {**_sweep.row_head(entry), "frames": n, "wall_s": round(time.monotonic() - t0, 1)}
     row.update(_counts(prog))
     row["state"] = len(prog.state)
@@ -74,11 +74,11 @@ def _one(entry, frames):
     return row
 
 
-def one(entry, frames=None):
+def one(entry, frames=None, fold=False):
     """One tune's invariant row; ``fault`` where the evaluator refused the text."""
     try:
         signal.alarm(_sweep.CAP_S)
-        return _one(entry, frames)
+        return _one(entry, frames, fold)
     except Exception as exc:  # pylint: disable=broad-except
         return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
     finally:
@@ -104,12 +104,13 @@ def main():
     ap.add_argument("--frames", type=int)
     ap.add_argument("-j", "--procs", type=int, default=24)
     ap.add_argument("-o", "--out", default=str(ROOT / "out" / "inv_probe.json"))
+    ap.add_argument("--fold", action="store_true", help="emit through framepath (11)")
     args = ap.parse_args()
     tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
     if not tunes:
         sys.exit("no cached tune matched")
     with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
-        rows = pool.starmap(one, [(e, args.frames) for e in tunes])
+        rows = pool.starmap(one, [(e, args.frames, args.fold) for e in tunes])
     tally = {}
     for r in rows:
         k = klass(r)

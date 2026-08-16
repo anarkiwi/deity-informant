@@ -24,7 +24,7 @@ USAGE = """\
   python tools/gate_sweep.py --tunes Comic_Bakery,Krakout -o out/gate.json"""
 
 
-def _one(entry, frames, extents):
+def _one(entry, frames, extents, fold=False):
     from deity_informant import frameval
     from deity_informant.c64 import load_psid
 
@@ -34,18 +34,18 @@ def _one(entry, frames, extents):
     full = int(secs * 50)
     n = full if frames is None else min(frames, full)
     t0 = time.monotonic()
-    model, prog, _ev = _sweep.build(mem, init, play, full, sub, extents)
+    model, prog, _ev = _sweep.build(mem, init, play, full, sub, extents, fold=fold)
     got = frameval.gate_fp(model, n, prog)
     row = {**_sweep.row_head(entry), "frames": n, "wall_s": round(time.monotonic() - t0, 1)}
     row["gate"] = None if got is None else list(got)
     return row
 
 
-def one(entry, frames=None, extents=None):
+def one(entry, frames=None, extents=None, fold=False):
     """One tune's verdict: ``gate`` is None where the program reproduces the log."""
     try:
         signal.alarm(_sweep.CAP_S)
-        return _one(entry, frames, extents)
+        return _one(entry, frames, extents, fold)
     except Exception as exc:  # pylint: disable=broad-except
         return {**_sweep.row_head(entry), "error": "%s: %s" % (type(exc).__name__, exc)}
     finally:
@@ -67,6 +67,7 @@ def main():
         help="Phase 2b (b0) artifact: rung (g) reads it, and a run that outruns a"
         " recorded horizon fails",
     )
+    ap.add_argument("--fold", action="store_true", help="emit through framepath (11)")
     args = ap.parse_args()
 
     tunes = _sweep.entries(args.tunes.split(",") if args.tunes else None)
@@ -76,7 +77,7 @@ def main():
     lifts = _records(art)
     t0 = time.monotonic()
     with mp.Pool(min(len(tunes), args.procs), _sweep.arm) as pool:
-        jobs = [(e, args.frames, lifts.get(_sweep.tune_id(e[0]))) for e in tunes]
+        jobs = [(e, args.frames, lifts.get(_sweep.tune_id(e[0])), args.fold) for e in tunes]
         rows = _sweep.check_rows(pool.starmap(one, jobs))
     built = [r for r in rows if "error" not in r]
     failed = sorted((r for r in built if r["gate"] is not None), key=lambda r: r["tune"])

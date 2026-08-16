@@ -19,7 +19,7 @@ machine order, with ASCII diagrams — see [smc-recovery.md](smc-recovery.md).
 from deity_informant import record, run_sub, lift
 
 rec = record(mem_or_vm, run_sub, entry, outputs=range(0x0400, 0x040D),
-             invocations=N, lifter=lift, assertion=True)
+             invocations=N, lifter=lift, assertion=True, light=False)
 
 rec.F[i]        # {addr: (entry_pure_expr, sz)} end-of-invocation values
 rec.facts[i]    # [(site, kind, expr, observed)] control-flow / placement folds
@@ -27,11 +27,25 @@ rec.slog[i]     # [(pos, addr, expr, sz)] position-attributed store log
 rec.out_seq[i]  # [(addr, expr)] ordered writes to `outputs`
 rec.events[i]   # facts+stores interleaved in machine order (evolved forms):
                 #   ("ck", site, kind, expr, observed) | ("st", addr, expr, sz)
+rec.paths[i]    # events plus every read, in machine order:
+                #   + ("uni", n, addr, sz) opaque read that allocated slot n
+                #   + ("ld", saddr, addr, sz) computed load: evolved address
+                #     expression and the concrete cell it landed on this frame
 rec.regs[i]     # [16] end-of-invocation register templates (evolved forms)
 rec.entry[i]    # (entry_mem, entry_reg) snapshot
 rec.uni[i]      # {n: value} opaque (volatile) reads observed this invocation
+rec.sigs[i]     # 64-bit path signature (pass 1); equal sig => shared template
+rec.rbw         # cells some invocation read before writing (loads, pulls,
+                # executed instruction bytes, and transfer vectors all count)
+rec.comp_st     # cells reached by a computed- or patched-operand store
 rec.replay(i)   # reconstruct the observable write sequence from slog + entry
 ```
+
+`light=True` keeps only the per-signature templates: no per-invocation entry
+snapshots or `uni` values are stored (so `replay` is unavailable) and repeat
+frames carry state concretely through compiled records instead of the
+symbolic interpreter. `framepath` (docs/denotation-solve.md 11) records this
+way and folds `paths`/`regs`/`sigs`/`rbw`/`comp_st` into the frame program.
 
 `events`/`regs` complete the per-invocation state transition: `F` is the memory
 transition, `regs` the register transition, and `events` the position-faithful
