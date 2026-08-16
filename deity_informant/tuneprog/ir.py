@@ -401,6 +401,9 @@ class Machine:
             self.W.add(a)
         self.m[a] = v
 
+    def trap(self, why, detail=""):
+        raise TrapError(why, detail)
+
     def env(self, a, lo, hi, src=0):
         raise TrapError("envelope", "$%04X outside [$%04X,$%04X] at $%04X" % (a, lo, hi, src))
 
@@ -440,7 +443,8 @@ class Machine:
 
 
 # ---- reference interpreter ---------------------------------------------------
-def _bin(op, a, b, w):
+def evalbin(op, a, b, w):
+    """One binary op, byte-exactly as ``vm._emit_line`` generates it."""
     if op == "+":
         return (a + b) & MASK[w]
     if op == "-":
@@ -483,7 +487,7 @@ class Interp:
         if t is Const:
             return e.v
         if t is Bin:
-            return _bin(e.op, self.ev(e.a, F), self.ev(e.b, F), e.w)
+            return evalbin(e.op, self.ev(e.a, F), self.ev(e.b, F), e.w)
         a = self.ev(e.a, F)
         if not e.lo <= a <= e.hi or a + e.w - 1 > e.hi:
             self.M.env(a, e.lo, e.hi)

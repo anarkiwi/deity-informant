@@ -445,6 +445,23 @@ def live_in(proc):
     return live[proc.entry]
 
 
+def _machine_image(trace):
+    """Pre-init contents of the bands a tuneprog may read without an access relation.
+
+    The load image, the stack page and the RAM under I/O are ``known`` to the
+    machine from the start (the tracer pins no input for them), so a tuneprog that
+    rebuilds its memory from storage alone needs their bytes even where no traced
+    op touched them.
+    """
+    lo, hi = trace.meta["load"]
+    pre = trace.image_pre
+    spans = (("image_band", lo, hi), ("image_stack", 0x100, 0x200), ("image_io", 0xD000, 0xE000))
+    return [
+        Rgn(-1 - i, n, a, b - a, "image", 1, bytes(pre[a:b]), ())
+        for i, (n, a, b) in enumerate(spans)
+    ]
+
+
 def build(trace, lifted, regions, procs, meta=None):
     """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (design section 4)."""
     store = _Storage(trace, regions)
@@ -464,7 +481,8 @@ def build(trace, lifted, regions, procs, meta=None):
         storage=[
             Rgn(r.id, r.name, r.base, r.size, r.kind, r.stride, r.init_bytes, tuple(r.fields))
             for r in regions
-        ],
+        ]
+        + _machine_image(trace),
         inputs=[
             [k[0], k[1], v["kind"], v["count"], v["phase"]] for k, v in trace.input_sites.items()
         ],
