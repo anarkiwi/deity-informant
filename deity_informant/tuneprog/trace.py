@@ -196,8 +196,7 @@ class TraceVM(PcodeVM):
                 v = self.cia[1].read(a, self.cycles)
             if v is None:
                 v = PcodeVM._rd(self, a, 1)
-            kind = input_kind(a)
-            return v if kind == "ack" else self._input(a, v, i, kind)
+            return self._input(a, v, i, input_kind(a))
         v = self.mem[a]
         if not self.known[a]:
             v = self._input(a, v, i, "uninit_ram")
