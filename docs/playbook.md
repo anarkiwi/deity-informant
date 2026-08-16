@@ -1,117 +1,116 @@
-# The playbook: every 6502 player idiom, every known failure mode
+# The playbook: every 6502 player idiom, and the fact that answers it
 
-The 6502 is not complicated. Its player idioms are a closed set, enumerated
-below with the mechanism that answers each. **Read this before probing
-anything.** A "new" case must be written as *nearest row + exact delta*; an
-empty delta means apply the named mechanism — no new name, no probe scripts,
-no guessing code. A new row lands only together with its mechanism and driver.
-Targets are absolute: **zero stack, zero scratch, zero calls on 624/624** — a
-corpus tune in a "semantic" refusal class is a misdiagnosis (S11).
+The 6502 player idioms are a closed set. What each one *is* — with the binary
+evidence, per family — is docs/playroutine-anatomy.md; this page is the
+decompiler's side of that table: for each idiom, the **execution fact** that
+resolves it under the program-point fold (docs/fold-by-program-point.md) and
+the **construct** it becomes. Read this before probing anything. A "new" case
+is written as *nearest row + exact delta*; an empty delta means apply the row.
+A new row lands only with its driver. Targets are absolute and by construction:
+**zero calls, zero stack, zero scratch, zero SMC on every tune that builds**; a
+tune that cannot is refused with a row named here, never built worse.
 
-## SYM. Start here: fault symptom -> known causes, in order of prior
+Vocabulary: **node** = `(pc, bytes, ctx, sp)`; **ctx** = the JSR sites whose return
+bytes are on the stack; **`sp(n)`** = the stack pointer at node `n` (part of the key); **F-cov / F-var / F-ctx / F-loc / F-vol** = the five trace facts
+(fold doc §2).
+
+## SYM. Fault symptom → known causes, in order of prior
 
 | symptom | check, in order |
 |---|---|
-| `load/store into the stack page $01xx` | (1) surviving call's machine push over a destacked spill — count the tune's call lines first; (2) a walk deleted a store whose reader used a different slot key — F6/F2; (3) plain page-one data cell mis-protected — S10/F8 |
-| `ret/switch/goto target $X outside the observed set` | (1) a pc bound twice / first-wins map — F1; (2) label pruned that a transfer names — check `frameproc.entered_pcs`; (3) dispatch table under-closed — D5 |
-| one-cell divergence at frame N | (1) an indexed/covering read the walk did not count — F4 (`framestack.read_reach`); (2) under-carved extent — F5/L6; (3) dead-store drop of a machine-read byte — F4 |
-| `runaway frame program` | loop-carried def killed by liveness — F2 (`for` live-out; levelled exits) |
-| clean tune -> `unobserved reached` | deeper placement runs a previously skipped path; expected reclassification — verify the guard, not the placement |
+| refused: `context/sp depth over the cap` | (1) genuine recursion — S11, corpus-absent, so first suspect (2) the walker's context maintenance (a frame drop the `sp` rule did not pop, an interrupt entry not modelled as its own base). A coroutine stack (Lft: `TXS` from a saved value, `RTS` over a page-one word the program stores) is *not* this: `sp` is in the node key, so it is bounded and builds (S6 over S10) |
+| refused: `stack cell is also a data cell` | S10: a `$01xx` absolute access lands on a `stk_XX` cell — the tune uses page one as RAM *and* as stack in the same span; model page one as memory for the tune |
+| one-cell divergence at frame N | (1) a scratch cell inside a computed access hull that was elided anyway — the hull clause (§5) missed a site (F-loc) (2) an operand cell written in play that the lifter's `prov` did not mark (F-var) |
+| `unobserved` reached on a clean tune | the window grew and a new edge ran — reclassification, verify the guard |
+| text grows with the window | impossible by construction (`|G|` saturates); if seen, a node key carries something per-execution — F9 |
+| text ≫ static text | (1) context inflation on a tiny helper — measured, bounded, unify (L3) only if the gate asks (2) structurer duplication on an irreducible region — a structurer issue, not a fold issue |
+| verdict changes with pass order | F3 — fix the rule, not the order |
 | value right, cells wrong | destination fusion without layout proof — A10 |
-| verdict changes with pass order | F3 — the rule is order-dependent; fix the rule, not the order |
-| artifact scales with the trace (template count ~ frames; folded text >> static text) | (1) a guard observation is data, not control — F9 (Commando: place guards pinning table reads to the note played, 11,750 frames -> 5,915 templates where 1,302 control shapes exist); (2) only after F9 is excluded: an unrolled loop resisting re-roll — §11.2(3) |
-| `no consistent fork` / `divergence without a shared guard` | (1) two guard kinds at one control point — guard identity not site-global, F9+F6; (2) a genuinely unshared divergence — read the recorder facts at the site before naming anything new. Chain `_fork`'s swallowed errors (innermost first) to see the real head mismatch |
 
 ## S. Stack idioms — the complete real-world set
 
-| id | shape | is | answered by |
+| id | shape | is | fact | construct |
+|---|---|---|---|---|
+| S1 | `JSR/RTS` | call linkage | F-ctx: edge into `ctx+[site]`, `RTS` edge back to `site+3` in the parent | nothing — edges; the callee's nodes are inlined once per ctx |
+| S2 | `PHA / JSR / PLA` | save-around-call (defMON `$1009`) | `sp(n)` | `stk_XX = a … a = stk_XX`; copy-propagates away |
+| S3 | `PHA .. PLA` across straight/branchy/looped flow | spill | `sp(n)` | the same local; liveness like any register local |
+| S4 | `LDA zp/PHA ×2 .. PLA/STA ×2` | pointer save | `sp(n)` | two locals |
+| S5 | entry `PHA/TXA/PHA/TYA/PHA` | invocation convention | header `entry-frame N`; entry `sp = $FF−N` | never lifted |
+| S6 | push hi/lo, `RTS` | computed goto | `RTS` whose observed successors are not the ctx's return | `switch goto ((zext2(stk_hi)<<8 \| stk_lo)+1)` over the observed targets; the locals carry the pushed table reads |
+| S7 | `PLA/PLA` frame drop; pull-adjust-push inline params | computed goto + param reads | the return-byte locals are bound constants; the ctx pops by `sp` | constants fold; params become `mem[const+k]` |
+| S8 | `TSX/STX .. LDX/TXS` | context bracket | `sp(n)` constant on both sides | `x = const`; `TXS` emits nothing |
+| S9 | constant `TXS` | stack init | init fact | nothing |
+| S10 | absolute `$01xx`, no `sp` | page one as RAM | F-loc; refused if it aliases a `stk_XX` | ordinary cell |
+| S11 | recursion carrying depth | **corpus-absent** | depth cap | refused, row named |
+| S12 | coroutine / switched stack: `TSX/STX save … LDX save/TXS … RTS` (Lft `$13E4–$13F0`) | a second stack the program keeps in page one | `sp` is in the node key; the `RTS` pops S10 cells | S6 `switch goto` over the stored word; bounded copies per depth |
+
+## M. Self-modification idioms (no code image exists)
+
+| id | shape | fact | construct |
 |---|---|---|---|
-| S1 | `JSR/RTS` | call linkage | splice/copy (`procpass`, `render.placed`); no call form ⇒ no push |
-| S2 | `PHA / JSR / PLA` | save-around-call (defMON `$1009`) | inline first; pair forwards as plain store/load |
-| S3 | `PHA .. PLA` across straight/branchy/looped flow | spill | structured must-def (`framestack._Slot/_SpSlot`) |
-| S4 | `LDA zp/PHA ×2 .. PLA/STA ×2` | pointer save (Alice `$1003`) | S3, two bytes |
-| S5 | entry `PHA/TXA/PHA/TYA/PHA` etc. | invocation convention | header fact `entry-frame N`; never lifted text |
-| S6 | push hi/lo, `RTS` | computed goto | rung (d0r) -> `goto (word+1)` |
-| S7 | `PLA/PLA` frame drop; pull-adjust-push inline params (C64_World `$4921`) | computed goto + param reads | arithmetic lifts (sources fuse); placement stays (A10) |
-| S8 | `TSX/STX .. LDX/TXS` | context bracket | bracket dissolution (`_saves`, `_SpFlow` caps) |
-| S9 | constant `TXS` | stack init | init fact, `(abs,v)` base |
-| S10 | absolute `$01xx` access, no sp | page one as spare RAM | ordinary cell; ownership at the access (`frameval._Page`); the page is not special |
-| S11 | recursion carrying value / `LAS`/`TAS` / data `TXS` | **corpus-absent** | synthetic soundness drivers only; a corpus match = misdiagnosis |
-
-## M. Self-modification idioms (all land as declared state post-de-SMC)
-
-| id | shape | is |
-|---|---|---|
-| M1 | immediate-operand patch | a variable |
-| M2 | abs-operand patch | a base/pointer variable (carve rules apply after relocation) |
-| M3 | vector patch | a dispatch variable (`vec`/`swd`) |
-| M4 | opcode patch (`$60` sentinel, defMON `$10B8/BF/D8`) | 2-variant mode dispatch (`opsw`, guarded, faulting default) |
-| M5 | branch-displacement patch | mode variant |
-| M6 | `INC` on an operand cell (Automatas `$0FE4`) | a counter stored in code |
-
-Relocated cells are ordinary data afterwards: F1 (homing) and F5 (carving)
-apply to them exactly as to any cell.
+| M1 | immediate-operand patch | operand cell ∈ `written` (F-var) | read of the state field (`_residual`) |
+| M2 | abs-operand patch | same, word | `mem[word + index]`; carve/deref rungs after |
+| M3 | vector patch / `JMP` operand rewrite | F-vol observed target set | `switch goto` with `unobserved` default; `dispatch` header |
+| M4 | opcode patch (`$60` sentinel, defMON `$10B8/BF/D8`, Hubbard `$53DE`) | ≥2 byte variants at one pc ⇒ variant nodes | `switch cell { case v: … }` faulting default (`opsw`) |
+| M5 | branch-displacement patch (`dbr`) | variant nodes on the operand | same `switch`; targets interior |
+| M6 | `INC` on an operand cell (Automatas `$0FE4`) | store to a lifter operand cell | store to the field; the operand read is a read |
+| M7 | init-time relocation / block copy (SID Wizard fixups, rip loaders, pack `JMP $xx00`) | before `mem0` | nothing — one variant in play |
+| M8 | code cells read as data (Automatas voice array) | data reads of operand cells | reads of the same fields |
 
 ## D. Dispatch and control idioms
 
-| id | shape | answered by |
-|---|---|---|
-| D1 | handler table -> `jmp` operand rewrite (Follin `$6360`) | `jmpd` + declared tables (`opdispatch`) |
-| D2 | RTS dispatch | = S6 |
-| D3 | `JMP (vec)` | `vec`/`gdyn` |
-| D4 | multi-entry routine / shared tail (defMON `$1003/$1006/$1022`) | per-site copies; fixpoint-allow labels; single-owner homing |
-| D5 | `swc`/`opsw` arms | resolve through their own table before `pcmap`; may bind pcs legitimately (arm-landing) |
-| D6 | patched-displacement computed branch (`dbr`) | targets must be interior to the one procedure (open class) |
+| id | shape | fact | construct |
+|---|---|---|---|
+| D1 | handler table → `jmp` operand rewrite (Follin `$6360`, Galway `$8323`) | M3 | `switch goto` |
+| D2 | RTS dispatch | S6 | `switch goto` |
+| D3 | `JMP (vec)` | F-vol | `switch goto` |
+| D4 | multi-entry routine / shared tail (defMON `$1003/$1006/$1022`, GT `mt_execchn` fall-through) | nodes shared; ctx distinguishes call entries | structurer duplicates irreducible entries; no ownership rule |
+| D5 | `JSR`/`JMP` low-byte patch (GoatTracker `$1289/$1295/$131E`) | the transfer's target is a variant (F-var); ctx keyed by the resolved callee | edges per observed target; `switch goto` if >1 |
+| D6 | `BCC *+2` with patched offset (SID Wizard `$1951/$1A13`) | M5 | `switch` on the operand cell |
+| D7 | opcode-patched `RTS` around a `JSR` (defMON `$10D8`) | M4 inside ctx `[$100F]` | `switch cell { RTS: ret-edge; LDA #: … }` |
 
-## A. Arithmetic idioms (width is denotational — §9)
+## A. Arithmetic idioms (width is denotational — denotation-solve §9)
 
-| id | shape | is |
-|---|---|---|
-| A1 | `ADC/SBC` column chain | wide add/sub (SID-Wizard `player.asm:1747`, GT `mt_effect_3`) |
-| A2 | `CMP` lo / `SBC` hi | wide compare |
-| A3 | `ADC lo / BCC / INC hi` | wide add, carry spelled in control |
-| A4 | `ROR/ROL` threading lanes (Wizball FILTER) | wide shift |
-| A5 | shift loop | variable-shift divide; pure-loop closed form |
-| A6 | add loop | multiply; same |
-| A7 | table transform (`EXPTAB`, speed tables) | edit-time multiply/divide, already frame-level |
-| A8 | `AND #$0F/#$F0` packing | two values in one byte (defMON flag/dur) |
-| A9 | the carry def-use edge decides | edge threads ⇒ one wide value; broken/absent ⇒ genuinely two bytes |
-| A10 | one wide value, halves to unrelated places | sources fuse unconditionally; a discarded half is `trunc`; store fusion needs layout proof |
+Unchanged: A1 `ADC/SBC` column chain = wide add; A2 `CMP` lo / `SBC` hi = wide
+compare; A3 `ADC lo / BCC / INC hi` = wide add with carry as control; A4
+`ROR/ROL` lane threading; A5 shift loop; A6 add loop; A7 table transform; A8
+`AND #$0F/#$F0` packing; A9 the carry def-use edge decides width; A10 one wide
+value, halves to unrelated places (sources fuse; store fusion needs layout
+proof). Two facts the anatomy added, both about *flags as data* (anatomy §5.3):
+a carry consumed tens of instructions after its `CMP` (GoatTracker), and a carry
+*inherited* into `ADC` with no `CLC` (Hubbard `$523D`, a data-dependent +1) —
+model C as a value with a definition site, never as "the last compare".
 
 ## L. Data-layout idioms
 
-| id | shape | note |
-|---|---|---|
-| L1 | struct-of-arrays voice fields (`tbl,x` ×3) | record by index web |
-| L2 | channel structs, stride N (Grid_Runner: 7) | mut-index pattern `0,N,2N` |
-| L3 | unrolled per-voice code copies | one field spelled const + indexed; unify per web (isomorphism license) |
-| L4 | lo/hi pair tables: adjacent, interleaved (`+partner`), split (+21 Follin) | pair-row family |
-| L5 | shadow block + blit (`sid.reg[x] = tbl[x]`) | covering read of every latch — count via `read_reach` |
-| L6 | index overruns the carve | contiguous traversed run ⇒ one datum (absorb, `datadecl`); sparse map ⇒ NOT an extent (Puke `$171F`) |
-| L7 | zp as register file (Wizball, 138 cells) | scratch = frame-locality (§9.1), per web |
+Unchanged rows L1–L7 (struct-of-arrays voice fields; stride-N channel structs;
+author-unrolled per-voice copies; lo/hi pair tables; shadow block + blit; index
+overruns the carve; zp as register file). Two additions from the anatomy: **L8
+struct-of-code** — per-voice blocks all $31 bytes so `abs,X` indexes cells
+inside code (defMON): fields = operand − block base, stride = block size, all
+F-var; **L9 register image as immediates** (defMON write band): the SID image is
+`LDX #/LDA #` operands = fields, the write-out is 25 loads-of-fields.
 
-## F. Known failure modes of THIS machinery (check before naming anything new)
+## F. Failure modes of the machinery — what survives the fold
 
 | id | mode | rule |
 |---|---|---|
-| F1 | first-wins pc maps (`setdefault`) | a pc has one owner or none; two copies home nothing; placement/label beats copy |
-| F2 | opaque-edge conservatism | a fault edge is lattice bottom (`unobs` joins nothing); a levelled exit lands past the loop it counts out of; a `for` leaves by its own bottom |
-| F3 | order-dependent verdicts | every verdict a fixpoint or order-free; if reordering passes changes output, the rule is wrong, not the order |
-| F4 | paired-analysis coverage gaps | reads must use the same span/extent machinery as hazards; both ends of a spill on one sp basis; arm liveness = loop's, not arm's |
-| F5 | under-carved extents | a carve must cover the observed read map; absorption guarded by full coverage |
-| F6 | wrong unit | the web, not the cell: slot keys must match across push/pull; overlaid cells split per web |
-| F7 | post-inline coarsening | per-procedure premises re-checked after flattening |
-| F8 | guard at the wrong layer | ownership at the access, not the page; a held slot's guard sits where the cell is made |
-| F9 | data pinned as control | a guard's observation must be a control fact (a branch direction, a variant set), never a data value; pinning a computed read to its one concrete address turns song data into fork arms and the artifact scales with the trace, not the code. The address fact is membership: obs = the site's image-read set minus scratch, or the one scratch cell a forward names (singleton). The guard's identity (site, kind, expr) must itself be site-global — a per-execution kind choice recreates the fault as a fork-family mismatch (Commando $5380, mixed scratch-hit/image-read site); per-execution variation lives only in the observation, where a fork is the honest divergence (the scratch arm forwards, the image arm walks). The tell: an obs that varies with song position. The invariant, generally: every emitted item — guard, name, key — is a deterministic function of the translated prefix plus site-global facts, never of the concrete cell an access landed on (the pin has hidden in a guard obs, in a guard kind, and in a load local keyed by the landed cell's store version; a path-accumulated counter is the same fault at a rejoin). A data-read guard is a staleness envelope, not an observed-primary claim: its one job is excluding the scratch cells whose stores were elided, so it renders as the observed hull split at interior scratch cells — an exact sparse set spelled term-by-term is the trace in the text again (Commando: 5,997 terms for two note columns). Control guards (branches, dispatch, opcode variants) keep exact observed sets |
+| F3 | order-dependent verdicts | every verdict a fixpoint or order-free |
+| F6 | wrong unit | the web, not the cell; overlaid cells split per web |
+| F8 | guard at the wrong layer | a guard is a fact about a control point (branch, dispatch, variant), placed at that node |
+| F9 | data pinned as control | a guard's observation is a control fact, never a data value; an emitted item is a function of the node and site-global facts, never of the concrete cell an access hit. Under the program-point fold there is no place to pin: computed accesses are `mem[expr]`; scratch inside a computed hull stays memory |
+| F10 | the unit was the path | a fold over linear paths scales with the trace and needs rejoin bets; the unit is the program point (fold doc §1) |
+
+Retired with their subjects: F1 (pc ownership — no copies to home), F2
+(opaque-edge conservatism — no epochs), F4 (paired-analysis coverage — no spans),
+F5 (under-carved extents as *soundness* — hulls are trace facts; carving is
+declaration quality), F7 (post-inline coarsening — nothing is inlined by a pass).
 
 ## P. Protocol
 
-1. SYM table first; then the idiom sections. Cite rows by id in findings.
-2. "New" = nearest row + delta. Empty delta ⇒ apply the row's mechanism.
-3. New rows land with mechanism + driver in the same change, or not at all.
-4. No probabilistic probing. Claims come from drivers and the named readers
-   (`tools/dump_tune.py`, `tools/call_residue.py`, `tools/inv_probe.py`,
-   `tools/gate_sweep.py`).
-5. Gates: drivers first; both corpus gates once per mechanism; zero
-   clean→worse; depth movement explained. Doctrine details: docs/frameprog.md
-   §7.10, docs/denotation-solve.md §9–§10.
+1. SYM table first; then the idiom sections; cite rows by id.
+2. "New" = nearest row + delta; empty delta ⇒ apply the row.
+3. New rows land with a driver in the same change.
+4. Claims come from drivers and readers (`tools/dump_tune.py`,
+   `tools/inv_probe.py`, `tools/gate_sweep.py`); no probabilistic probing.
+5. Gates: drivers first; corpus gate once per mechanism; zero clean→worse.
