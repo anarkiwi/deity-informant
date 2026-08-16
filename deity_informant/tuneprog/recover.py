@@ -16,7 +16,7 @@ SID_LO, SID_HI = 0xD400, 0xD418
 VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
 GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
 OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
-DEPTH, MAXOPS = 4, 2
+DEPTH, MAXOPS, MAXPAIRS = 4, 2, 24
 
 try:
     from pysidtracker.notefreq import is_octave_ramp
@@ -351,13 +351,30 @@ def _procs(prog, facts, names, structured):
 
 
 def _freq(prog, names):
-    """Name every region that holds a note-frequency table, whatever its kind."""
-    for r in prog.storage:
-        note = _freq_layout(r.init) if r.id >= 0 and 8 <= r.size <= 4096 else ""
+    """Name every note-frequency table: one region, or two adjacent parallel columns."""
+    rs = [r for r in prog.storage if r.id >= 0 and 8 <= r.size <= 4096]
+    for r in rs:
+        note = _freq_layout(r.init)
         if note:
-            names.role[r.id] = "freq_table"
-            names.notes[r.id] = note
-            _uniq(names, r.id, "FREQ")
+            _name_freq(names, [r], note, ["FREQ"])
+    sized = {}
+    for r in rs:
+        sized.setdefault((r.size, r.kind), []).append(r)
+    for group in sorted(sized.values(), key=lambda g: -g[0].size):
+        for a, q in [(a, q) for a in group for q in group if a.base < q.base][:MAXPAIRS]:
+            if {a.id, q.id} & set(names.region):
+                continue
+            note = _freq_layout(a.init + q.init)
+            if note:
+                cols = ["FREQ_LO", "FREQ_HI"] if "lo|hi" in note else ["FREQ_HI", "FREQ_LO"]
+                _name_freq(names, [a, q], note, cols)
+
+
+def _name_freq(names, regions, note, cols):
+    for r, col in zip(regions, cols):
+        names.role[r.id] = "freq_table"
+        names.notes[r.id] = note
+        _uniq(names, r.id, col)
 
 
 def _unrolled(prog, facts, names):

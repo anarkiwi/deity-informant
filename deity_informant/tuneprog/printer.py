@@ -15,6 +15,7 @@ from .structure import Blk, Case, Cond, For, Jump, Loop
 
 SID_LO, SID_HI = 0xD400, 0xD418
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
+MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
 IND = "    "
 
 
@@ -214,6 +215,9 @@ class Printer:
             return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
             return "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
+        if e.op in CMP and type(a) is Const and type(b) is not Const:
+            s = "%s %s %s" % (self.expr(b, False), MIRROR[e.op], self.expr(a, False))
+            return s if top else "(%s)" % s
         if e.op == "carry":
             return "carry(%s + %s)" % (self.expr(a, False), self.expr(b, False))
         s = "%s %s %s" % (self.expr(a, False), e.op, self.expr(b, False))
