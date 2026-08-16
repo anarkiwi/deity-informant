@@ -9,6 +9,10 @@ justify each decision (§9) and the plan to build it (§11).
 
 Companion: [playroutine-anatomy.md](playroutine-anatomy.md) (what players are,
 byte for byte). This document says how to recover that structure automatically.
+Status: the prototype in [prototype-automatas.md](prototype-automatas.md) realises
+S0–S8 in `deity_informant/tuneprog/` and certifies defMON's Automatas completely
+(149,025 calls, 0 divergences, period 129,024) and Commando; its §6.1 lists what
+each design claim measured.
 
 Contents
 
