@@ -85,7 +85,8 @@ def _per_call(trace, calls):
 
 
 def test_automatas_front_end():
-    entry, calls, trace, lifted, regions, procs = _front_end(_tune(AUTOMATAS), seconds=20)
+    data = _tune(AUTOMATAS)
+    entry, calls, trace, lifted, regions, procs = _front_end(data, seconds=20)
 
     # schedule (doc section 2: CIA-1 TA = $0998 -> 2457 cycles, 8 ticks per frame)
     assert (entry.kind, entry.addr, entry.cycles_per_tick, entry.source) == (
@@ -146,6 +147,9 @@ def test_automatas_front_end():
 
     # 24 SID writes per call (7 registers x 3 voices + $D417 + $D418 + $D416)
     assert len([c for c in trace.wlog["call"] if c < calls]) == 24 * calls
+
+    # the instrumented VM stays byte-exact against the plain one on the hard tune
+    assert _per_call(trace, calls) == _reference_writes(data, calls, entry.cycles_per_tick)
 
 
 def test_commando_front_end_smoke():
