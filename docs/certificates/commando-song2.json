@@ -1,0 +1,48 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 17617,
+  "ir_blocks": 100,
+  "ir_procs": 3,
+  "ir_statements": 276,
+  "regions": 62,
+  "sites": 312,
+  "trace_calls": 11780,
+  "verify_cpu_seconds": 0.7
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 20498,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-16T18:52:47Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stage": "S4",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": false,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": null,
+   "inputs_pinned": 11780,
+   "interp_prefix": 2000,
+   "period": null,
+   "seconds": 235.01,
+   "song": 2,
+   "ticks": 11780,
+   "trace_first_repeat": null,
+   "trace_period": null
+  }
+ ],
+ "tune": "Commando.sid"
+}
