@@ -17,6 +17,7 @@ VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
 GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
 OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
 DEPTH, MAXOPS, MAXPAIRS = 4, 2, 24
+MAXROLE = 8  # elements: above this a region is a block, not a variable
 
 try:
     from pysidtracker.notefreq import is_octave_ramp
@@ -310,6 +311,11 @@ def _uniq(names, rid, want):
     return n
 
 
+def _elems(r):
+    """How many elements a region's stride divides it into."""
+    return -(-r.size // max(r.stride, 1))
+
+
 def _basename(r, role, facts, names):
     """The name a region gets from its role, its target, or its address."""
     if role == "cursor":
@@ -436,7 +442,13 @@ def recover(prog, structured=None):
         names.phase = _phase(structured[tick], prog.storage)
     _freq(prog, names)
     names.groups = _groups(prog, names)
-    for rid, (fname, _elems) in sorted(sid_image(facts).items()):
+    for rid, (fname, elems) in sorted(sid_image(facts).items()):
+        r = facts.rgn[rid]
+        # a region is the SID image when its elements are, not when a few of a
+        # hundred zero-page bytes reach a register (an indexed read names no
+        # element, so it is the whole region by construction)
+        if elems and 2 * len(elems) < _elems(r):
+            continue
         names.role[rid] = "sid_image"
         _uniq(names, rid, fname)
     for r in prog.storage:
@@ -444,7 +456,10 @@ def recover(prog, structured=None):
             continue
         ptr = r.id in facts.addr or (r.size == 2 and r.id in facts.index)
         role = names.role.get(r.id) or ("ptr" if ptr else "")
-        role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
+        # a role one accessor proves names a scalar or a small struct field, not a
+        # block one init loop happened to make one region (Follin's zero page)
+        if _elems(r) <= MAXROLE:
+            role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
         names.role[r.id] = role
         _uniq(names, r.id, _basename(r, role, facts, names))
     if names.phase is not None:

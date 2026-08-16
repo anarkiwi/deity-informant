@@ -469,8 +469,13 @@ def _procs(body):
 
 
 def phase(body, storage):
-    """``(region, test, procs on the true arm, procs on the false arm)`` of the tick."""
-    kinds = {r.id: r.kind for r in storage}
+    """``(region, test, procs on the true arm, procs on the false arm)`` of the tick.
+
+    The phase is a state *scalar* (design S5), so a test that reads one byte of a
+    larger region -- Follin's tick opens on `active[0]` inside the 118-byte
+    zero-page block -- is a test, not a phase.
+    """
+    rgn = {r.id: r for r in storage}
     defs = _lets(n for n in walk(body) if type(n) is Blk)
     for n in walk(body):
         if type(n) is not Cond:
@@ -478,6 +483,8 @@ def phase(body, storage):
         rs = set()
         if not _one_region(n.c, rs, defs) or len(rs) != 1:
             return None
-        r = rs.pop()
-        return None if kinds.get(r) != "state" else (r, n.c, _procs(n.then), _procs(n.els))
+        r = rgn.get(rs.pop())
+        if r is None or r.kind != "state" or r.size != 1:
+            return None
+        return (r.id, n.c, _procs(n.then), _procs(n.els))
     return None

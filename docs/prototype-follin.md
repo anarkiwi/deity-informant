@@ -10,8 +10,7 @@ and a rip loader whose `init` patches its own compare. Every subtune is certifie
 exists; Automatas, Commando and SID Wizard's Emomyst certify with the same
 pipeline.
 
-Contents: 1 why Follin · 2 ground truth · 3 what broke and the generic fix ·
-4 evidence · 5 the printed tick · 6 certificates · 7 what remains
+Contents: 1 why · 2 ground truth · 3 what broke · 4 evidence · 5 the printed tick · 6 certificates · 7 what remains
 
 ## 1. Why Follin
 
@@ -35,7 +34,7 @@ Contents: 1 why Follin · 2 ground truth · 3 what broke and the generic fix ·
 | container | PSID v2, load $2980–$733F, init $6110 (A = subtune), play $6234, 32 subtunes, PAL, one call per frame (19,656 cycles), no CIA, no IRQ installed |
 | subtunes | 0–10 music (0–5 end with a stop, 6–10 loop), 11–31 sound effects; HVSC lengths 259.3, 102, 12.5, 10, 4, 127, 171.1, 147.5, 138.3, 113, 170.1 s then 0.1–13 s |
 | player | $6110–$6CB6 code; voices $6234/$6421/$6610 (493 B each, identical modulo ZP operands +1/+2 and one `CMP #v` insertion at $65C7/$67B6); filter $67FF; 21 handlers × 3 at $6858–$6CB6 |
-| state | zero page $21–$97: stride 1 for bytes, stride 2 for the pointer/word pairs; `init` clears it with one `STA $21,X` loop, so the access relation makes it **one 118-byte region** |
+| state | zero page $21–$97: stride 1 for bytes, stride 2 for the pointer/word pairs; `init` clears it with one `STA $21,X` loop, so the access relation makes it **one 118-byte region** (`b0021` in the print) |
 | SMC cells | pulse mode $62EE/$64DB/$66CA, vib dir $6269/$6456/$6645, trill phase $629E/$648B/$667A, fixed length $640F/$65FE/$67ED, filter dir $6800 and bounds $6813/$6819/$682D/$6833, dispatch $6375/$6562/$6751 (2 B each), the SFX store operand $6219, the loader's `CPY #` at $29D8 |
 | inputs | none volatile: no `$D012`, `$D41B`, timer or VIC read anywhere |
 | SID schedule | voice 0 → 1 → 2 → filter; `$D415`/`$D416` every frame; `init` writes $08 then $00 to `$D400–$D41C` (four writes past the last register) |
@@ -102,11 +101,11 @@ subtune's write log left where verification needs it. What `init` writes is type
 | 2 | data-dependent SID address | `sid.reg[a327] = b730E[...]` inside the `$85` list loop; the write's envelope is `$D400–$D418`, and `(addr, val)` equality is part of the certificate |
 | 3 | computed store operand | in the SFX subtunes' `init`: a store **through** `load16($6219)` whose region is `[$640F, $67ED]` — exactly the three voices' fixed-length cells (song 16) |
 | 4 | 32 subtunes from the pre-init image | all 32 certified, 0 divergences, 0 envelope traps; 31 complete via a period (§6) |
-| 5 | play returns a value | `return ((phase[90] \| phase[91]) \| phase[92])` = `$7B \| $7C \| $7D`; not part of the certificate |
+| 5 | play returns a value | `return ((b0021[90] \| b0021[91]) \| b0021[92])` = `$7B \| $7C \| $7D`; not part of the certificate |
 | 6 | three unrolled voices fold | **no** — see §7; the three copies are not the same trace-closed program (188/211/199 of a 229-offset template, 163 common) |
 | 7 | SMC immediates as variables | 35 cells (24 play-written, 11 init-patched); every play-written cell is a load at its instruction, every init-only cell is a constant in the tick and a store in `init`; 76 cells in the `--songs all` build |
 | 8 | `init` writes $08 then $00 to `$D400–$D41C` | 58 init writes, `$D41C` down to `$D400`, values `{8, 0}` — compared byte for byte by the certificate |
-| — | genericity, budget | Automatas (149,025 calls, period 129,024, both SID models), Commando songs 1–2, Emomyst at 10 s: 0 divergences with the same code. Song 1 is traced and verified in one 14 s invocation: 1,177 sites → 68 regions → 4 procedures → 1,242 statements |
+| - | genericity, budget | Automatas (149,025 calls, period 129,024, both SID models), Commando songs 1–2, Emomyst at 10 s: 0 divergences with the same code. Song 1 is traced and verified in one 14 s invocation: 1,177 sites → 68 regions → 4 procedures → 1,242 statements |
 
 ---
 
@@ -114,50 +113,50 @@ subtune's write log left where verification needs it. What `init` writes is type
 
 ```
 tick():                                  # $6234, 16,000 calls
-    if phase[90] < 0:                              # active[0] = $FF
+    if b0021[90] < 0:                              # active[0] = $FF
         ...                                        # attack blip end
-        if phase[54] != 0:                         # vibrato delay set
+        if b0021[54] != 0:                         # vibrato delay set
             ...
             sid[0].freq_lo = a381                  # freq += (dir ? +depth : -depth)
             sid[0].freq_hi = x55
-            phase[84] = a381
-            phase[87] = x55
+            b0021[84] = a381
+            b0021[87] = x55
             if t5 == 1:
-                phase[99] = (phase[102] << 1)
+                b0021[99] = (b0021[102] << 1)
                 b6269 = (t2 ^ $FF)                 # the SMC vibrato direction
-        if phase[66] != 0: writeout2()             # portamento, outlined
+        if b0021[66] != 0: writeout2()             # portamento, outlined
         if timer != 0:                             # $62EE pulse mode (1 = hold)
             ...
-                sid[0].pw_lo = phase[30]
-                sid[0].pw_hi = phase[31]
+                sid[0].pw_lo = b0021[30]
+                sid[0].pw_hi = b0021[31]
         # $6338
-        phase[6] -= 1                              # dur
-        if ((phase[111] == phase[6]) or (phase[27] == 0)):
-            sid[0].ctrl = (phase[9] & $FE)         # gate off
-            phase[27] += 1
-        phase[27] -= 1                             # the INC/DEC floor idiom
-        if phase[6] == 0:
+        b0021[6] -= 1                              # dur
+        if ((b0021[111] == b0021[6]) or (b0021[27] == 0)):
+            sid[0].ctrl = (b0021[9] & $FE)         # gate off
+            b0021[27] += 1
+        b0021[27] -= 1                             # the INC/DEC floor idiom
+        if b0021[6] == 0:
             while True:   # x911                   # the sequencer
-                t15 = b730E[(phase[1] << 8) | phase[0]]
+                t15 = b730E[(b0021[1] << 8) | b0021[0]]
                 if t15 >= 0: break                 # a note byte leaves the loop
                 b6375 = T6CB7[t15 - $80]           # the patched JMP, tables at base-$80
                 b6375[1] = T6CF6[t15 - $80]
                 switch b6375:
                     case $6858:                    # $82 loop begin
-                        phase[12] = b730E[((phase[1] << 8) | phase[0]) + 1]
+                        b0021[12] = b730E[((b0021[1] << 8) | b0021[0]) + 1]
                         ...
                         continue
                     case $68EE:                    # $84 fixed note length
-                        b640F = b730E[((phase[1] << 8) | phase[0]) + 1]
+                        b640F = b730E[((b0021[1] << 8) | b0021[0]) + 1]
                         y85 = 2
                         goto L6356_98
                     case $6909:                    # $85 raw register list
                         y89 = 1
-                        a327 = b730E[((phase[1] << 8) | phase[0]) + 1]
+                        a327 = b730E[((b0021[1] << 8) | b0021[0]) + 1]
                         while True:   # x98
                             y91 = (y89 + 2)
-                            sid.reg[a327] = b730E[((phase[1] << 8) | phase[0]) + (y89 + 1)]
-                            t25 = b730E[((phase[1] << 8) | phase[0]) + (y89 + 2)]
+                            sid.reg[a327] = b730E[((b0021[1] << 8) | b0021[0]) + (y89 + 1)]
+                            t25 = b730E[((b0021[1] << 8) | b0021[0]) + (y89 + 2)]
                             if t25 >= 0:
                                 y89 = y91
                                 a327 = t25
@@ -166,32 +165,32 @@ tick():                                  # $6234, 16,000 calls
                         ...
                     case $693F:                    # $8D waveform
                         sid[0].ctrl = t26
-                        phase[9] = t26
+                        b0021[9] = t26
                         timer = b63D4              # pulse mode for the next note
                     ...                            # 11 more commands this track sends
                     case $6AD0: trap 'unverified'  # $87, $88, $89, $8F, $91: in the
                     case $6A0B: trap 'unverified'  # table, never sent by this track
                     ...
             # $6381 note fetch
-            phase[69] = x44
+            b0021[69] = x44
             sid[0].freq_lo = freq_lo_2[x44 - $13]  # notetab[note + transpose]
-            phase[84] = freq_lo_2[x44 - $13]
-            phase[87] = freq_hi_2[x44 - $13]
-            sid[0].freq_hi = phase[87]
-            sid[0].ctrl = (phase[9] | 1)           # gate on
+            b0021[84] = freq_lo_2[x44 - $13]
+            b0021[87] = freq_hi_2[x44 - $13]
+            sid[0].freq_hi = b0021[87]
+            sid[0].ctrl = (b0021[9] | 1)           # gate on
             if b640F != 0:                         # $84 fixed length, else a byte
                 y81 = 1
                 a301 = b640F
             else:
                 y81 = 2
-                a301 = b730E[((phase[1] << 8) | phase[0]) + 1]
-            phase[6] = a301
+                a301 = b730E[((b0021[1] << 8) | b0021[0]) + 1]
+            b0021[6] = a301
             ...
     goto L6421_A5                                  # voice 1, then voice 2, then:
         ...
-        sid.cutoff_lo = phase[78]                  # $67FF the filter sweep
-        sid.cutoff_hi = (((((t69 >> 1) | (((phase[79] >> 1) & 1) << 7)) >> 1) | ((t69 & 1) << 7)) | phase[117])
-        return ((phase[90] | phase[91]) | phase[92])
+        sid.cutoff_lo = b0021[78]                  # $67FF the filter sweep
+        sid.cutoff_hi = (((((t69 >> 1) | (((b0021[79] >> 1) & 1) << 7)) >> 1) | ((t69 & 1) << 7)) | b0021[117])
+        return ((b0021[90] | b0021[91]) | b0021[92])
 ```
 
 ---
@@ -224,9 +223,9 @@ their results are unchanged (0 divergences; Automatas period 129,024 at 149,024)
 
 - **The three voice copies do not fold into `for v in 0, 1, 2`.** The reason is
   not the operand vectors: mapped onto the 229-offset template (correcting for
-  the two-byte `CMP #v` insertion), voice 0 executed 188 offsets, voice 1 211 and
-  voice 2 199, with only 163 common to all three and 18–41 offsets each copy
-  misses that another ran. Three copies of one template that ran *different
+  the two-byte `CMP #v` insertion), the voices executed 188, 211 and 199 offsets,
+  only 163 common to all three, each missing 18–41 another ran. Three copies of
+  one template that ran *different
   subsets of it* are three different trace-closed programs, so the isomorphism
   test fails on shape before it ever reaches an operand. Behind that sit three
   more obstacles: the per-voice SMC cells are separate regions and **not equally
@@ -238,7 +237,7 @@ their results are unchanged (0 divergences; Automatas period 129,024 at 149,024)
   instead of an affine step, is what this needs.
 - **Names.** The whole of `$21–$97` is one region (init clears it with one loop)
   and is walked by 200 constant addresses, not by an index, so the stride view
-  never fires and per-voice fields print as `phase[90]` rather than
+  never fires and per-voice fields print as `b0021[90]` rather than
   `voice[0].active`. Splitting a region by the offsets parallel code copies touch
   would name it, and is the machinery the fold needs.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
