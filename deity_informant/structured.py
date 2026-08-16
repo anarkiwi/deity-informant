@@ -35,6 +35,7 @@ _VOL = frozenset((0xD011, 0xD012, 0xD41B, 0xD41C))
 _VOL0 = frozenset((0xD019, 0xDC0D))  # constant-0 sources under the per-frame driver
 _GUARD = 8_000_000
 _BLOCK_CAP = 64
+_CTX_CAP = 24  # call-context depth a play invocation may reach (recursion: playbook S11)
 _IRQ_RET = 0x0002  # the interrupted program a frame returns to: run_sub's sentinel too
 
 
@@ -81,7 +82,7 @@ def _dyn_read(m, a, c):
 
 # ---- P1: evidence (full-length concrete trace; doubles as the oracle run) ----
 class _EvidenceVM(PcodeVM):
-    """Evidence VM; ``capture`` swaps in the load/store address recorders for init."""
+    """Evidence VM; ``capture`` swaps in init's address recorders, ``record`` the fold's."""
 
     def __init__(self, mem):
         super().__init__(mem)
@@ -90,6 +91,8 @@ class _EvidenceVM(PcodeVM):
         self.pc = 0
         self.la = []
         self.sa = []
+        self.g = None
+        self.wrote = set()  # cells written so far in the current play invocation
         self.rdf, self.wrf = self._rd, self._wr
 
     def _exec(self, rec, pc):
@@ -98,6 +101,32 @@ class _EvidenceVM(PcodeVM):
     def capture(self, on):
         """Record each record's load/store addresses, or stop (the play phase pays nothing)."""
         self.rdf, self.wrf = (self._rd_cap, self._wr_cap) if on else (self._rd, self._wr)
+
+    def record(self, g):
+        """Swap in the F-loc/F-vol recorders of ``g``; the static path never sees them."""
+        self.g = g
+        self.rdf, self.wrf = self._rd_g, self._wr_g
+
+    def _rd_g(self, addr, sz):
+        pc, g, wrote = self.pc, self.g, self.wrote
+        site = g.ld_sites.setdefault(pc, set())
+        for i in range(sz):
+            a = (addr + i) & 0xFFFF
+            site.add(a)
+            if a not in wrote:
+                g.rbw.add(a)
+            if a in _VOL or a in _VOL0:
+                g.vol.add((pc, a))
+        return self._rd(addr, sz)
+
+    def _wr_g(self, addr, val, sz):
+        wrote = self.wrote
+        site = self.g.st_sites.setdefault(self.pc, set())
+        for i in range(sz):
+            a = (addr + i) & 0xFFFF
+            site.add(a)
+            wrote.add(a)
+        self._wr(addr, val, sz)
 
     def _rd_cap(self, addr, sz):
         self.la.append(addr & 0xFFFF)
@@ -117,6 +146,48 @@ class _EvidenceVM(PcodeVM):
         for i in range(sz):
             self.written.add((addr + i) & 0xFFFF)
         super()._wr(addr, val, sz)
+
+
+class Graph:
+    """The five trace facts of docs/fold-by-program-point.md 2, over the play phase.
+
+    A **node** is ``(pc, own bytes, ctx, sp)``; **ctx** is the JSR pcs whose return
+    bytes are still on the stack and ``sp`` the stack pointer before the instruction.
+    F-cov is ``nodes``/``edges`` (no edge crosses an invocation boundary), F-var is
+    ``variants``, F-ctx is ``sp_of`` (``sp`` is a function of ``(pc, ctx)`` where it
+    is empty of violations), F-loc is ``rbw`` (read before written within one
+    invocation, unioned) with the per-site address sets ``ld_sites``/``st_sites``,
+    F-vol is ``vol``. ``depth`` is the deepest context and ``insns`` the play-phase
+    instruction count."""
+
+    __slots__ = (
+        "nodes",
+        "edges",
+        "sp_of",
+        "variants",
+        "rbw",
+        "ld_sites",
+        "st_sites",
+        "vol",
+        "depth",
+        "insns",
+    )
+
+    def __init__(self):
+        self.nodes = set()
+        self.edges = {}
+        self.sp_of = {}
+        self.variants = {}
+        self.rbw = set()
+        self.ld_sites = {}
+        self.st_sites = {}
+        self.vol = set()
+        self.depth = 0
+        self.insns = 0
+
+    def sp_violations(self):
+        """The ``(pc, ctx)`` whose observed ``sp`` is not one value (the F-ctx refusal)."""
+        return sorted(k for k, v in self.sp_of.items() if len(v) > 1)
 
 
 class Evidence:
@@ -139,6 +210,7 @@ class Evidence:
         play=None,
         init_copy=None,
         play_frame=2,
+        graph=None,
     ):
         self.pcs = pcs  # {pc: set(opcode bytes executed there)}
         self.leaders = leaders
@@ -154,6 +226,7 @@ class Evidence:
         self.play = play  # resolved per-frame entry (the handler when play == 0)
         self.init_copy = init_copy  # initcopy.Tracer over the init run (None: off)
         self.play_frame = play_frame  # bytes the invocation convention pushed below it
+        self.graph = graph  # Graph of the play phase (None: the fold channels were off)
 
 
 def _frame_digest(vm, cells):
@@ -193,13 +266,12 @@ def irq_entry(vm, img):
     return handler, kernal
 
 
-def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
+def trace(mem, init, play, frames, subtune=0, cap=0, img=None, graph=False):
     """Play-phase evidence over ``frames`` calls from the post-init snapshot.
 
-    ``subtune`` (0-based) is passed to init in A; the cycle counter is zeroed at
-    the boundary. ``cap`` > 0 plays past ``frames`` until the frame-entry state
-    recurs (or ``cap`` frames). ``play == 0`` drives :func:`irq_entry` over ``img``.
-    """
+    ``subtune`` (0-based) reaches init in A; the cycle counter is zeroed at the boundary.
+    ``cap`` > 0 plays past ``frames`` to the frame-entry state's recurrence (or ``cap``).
+    ``play == 0`` drives :func:`irq_entry` over ``img``; ``graph`` builds the :class:`Graph`."""
     vm = _EvidenceVM(mem)
     vm.wlog = []
     pcs = {}
@@ -208,7 +280,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
     cache = {}
     reg = vm.reg
 
-    def run_entry(entry, acc=0, phase="play", tr=None, kernal=None):
+    def run_entry(entry, acc=0, phase="play", tr=None, kernal=None, g=None):
         start = reg[3]
         reg[0] = acc & 0xFF
         if kernal is None:
@@ -218,6 +290,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             irq_push(vm, _IRQ_RET, kernal)
         pc = entry
         n = 0
+        ctx, cx, prev = [], (), None
         while reg[3] < start:
             op = vm.mem[pc]
             pcs.setdefault(pc, set()).add(op)
@@ -226,6 +299,19 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if tr is not None:
                 del vm.la[:]
                 del vm.sa[:]
+            if g is not None:
+                sp = reg[3]
+                while ctx and ctx[-1][1] < sp:
+                    ctx.pop()
+                    cx = cx[:-1]
+                node = (pc, key[1 : 1 + MODE_LEN[OPS[op][1]]], cx, sp)
+                g.nodes.add(node)
+                g.variants.setdefault(pc, set()).add(node[1])
+                g.sp_of.setdefault((pc, cx), set()).add(sp)
+                if prev is not None:
+                    g.edges.setdefault(prev, set()).add(node)
+                prev = node
+                g.insns += 1
             nxt = vm.step(pc, cache, lift)
             if tr is not None:
                 tr.step(cache[key], pc, vm.la, vm.sa)
@@ -235,6 +321,15 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if kind != "next" and (kind != "br" or nxt != fall):
                 leaders.add(nxt)
                 targets.setdefault(pc, set()).add(nxt)
+            if g is not None and kind == "jsr":
+                ctx.append((pc, reg[3]))
+                cx += (pc,)
+                if len(cx) > _CTX_CAP:
+                    raise DecompileError(
+                        "call context depth %d over cap %d at $%04X: recursion (playbook S11)"
+                        % (len(cx), _CTX_CAP, pc)
+                    )
+                g.depth = max(g.depth, len(cx))
             pc = nxt
             n += 1
             if n > _GUARD:
@@ -265,6 +360,9 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
     vm.reads.clear()
     vm.wlog = []
     vm.cycles = 0
+    g = Graph() if graph else None
+    if g is not None:
+        vm.record(g)
     seen, cells = {}, []
     first = recur = None
     note, boundary, f = "", None, 0
@@ -276,7 +374,9 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
             if prev != f:
                 first, recur = prev, f
         try:
-            run_entry(play, kernal=kernal)
+            if g is not None:
+                vm.wrote.clear()
+            run_entry(play, kernal=kernal, g=g)
         except (KeyError, RuntimeError) as exc:
             if f < frames:
                 raise
@@ -314,6 +414,7 @@ def trace(mem, init, play, frames, subtune=0, cap=0, img=None):
         play,
         tracer,
         2 if kernal is None else (KERNAL_FRAME if kernal else IRQ_FRAME),
+        g,
     )
 
 
