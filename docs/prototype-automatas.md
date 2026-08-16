@@ -18,6 +18,7 @@ Contents
 4. Package layout, data structures, file formats
 5. Stage-by-stage implementation
 6. Acceptance: the evidence table
+6.1 Results (measured)
 7. Work plan (ordered, parallelisable), tests, CI, budgets
 8. Risks specific to this tune, and fallbacks
 9. Appendix A — target shape of the printed tuneprog
@@ -380,6 +381,165 @@ count as divergences. Chunked and resumable like the tracer.
 
 Everything in E3–E9 is checked mechanically against expected values written
 into `tests/tuneprog/test_automatas.py` from Appendix B and anatomy §3.7.
+
+---
+
+## 6.1 Results (measured)
+
+Certificates: `docs/certificates/{automatas,automatas-6581,automatas-8580,commando-song1,commando-song2}.json`,
+produced by `tools/tuneprog_certify.py` (= `deity-informant tuneprog`) and re-run
+against the committed traces after S5/S6 landed. Printed forms:
+`tuneprog.md` per output directory (E11 excerpts below).
+
+| id | expected | measured |
+|---|---|---|
+| E1 | 0 divergences over the whole song, both SID models | **0**, 149,025 calls from init, under the traced model and under `--sid-model 6581` and `8580` separately (three certificates); Commando songs 1 and 2 likewise 0 over 11,780 calls each |
+| E2 | period 129,024, `complete: true` | **period 129,024, first repeat at call 149,024** (transient 20,000), trace and tuneprog hashes agree at the same `(k, k+p)`; `complete: true` |
+| E3 | one entry, 2457 cycles/tick, `cnt & 7` at the top of the tick | `schedule = [sub $0FE3, 2457, cia_timer]` (8.0 calls/frame); the printed tick is `if (call_counter & 7) != 0: sub() else: main()` |
+| E4 | every play-written operand cell is a load | **88 cells** (110 play-written bytes), all of them constant-address loads in the IR, `$0FE4` included |
+| E5 | opcode cells become switches | `$10D8` {`LDA #`, `RTS`}, `$10B8`/`$10BF` {`ADC`, `SBC`} -- three variant switches with a trap default; `$10D4` has one arm per model (no writer-derived arm: init's writer stores a value the trace computes, so the second variant comes from the model override) |
+| E6 | procedures, clone-per-entry, exact RTS accounting | **8 procedures** (`init`, `tick`, `p_1000`, `p_1003`, `p_1006`, `p_1022`, `p_14CB`, `p_168C`), 305 blocks, **0 unmatched RTS**, 6 JSR targets, `$1022` entered by both `JMP` and `JSR` |
+| E7 | >= 8 stride-49 triples, no envelope trap | **21 stride-49 regions** of 102, **0 envelope traps** over the whole song |
+| E8 | six illegal-opcode kinds on the hot path | **6** (`ANC`, `ALR`, `SAX`, `LAX zp`, `LAX (zp),Y`, `SBX`) |
+| E9 | two input sites, both in init | `$D012` at `$14CE` (2,227 reads) and `$D41B` at `$14E3` (1 read), both `init`; play consumes none |
+| E10 | Commando certified by the same code | songs 1 and 2, 0 divergences, no flags but `--song` |
+| E11 | `tuneprog.md` reads like appendix A | see below; asserted mechanically in `tests/tuneprog/test_hvsc_print.py` |
+| E12 | interpreter and generated Python agree | 2,000-call prefix on every certificate (500 for the 10 s model-override run) |
+| E13 | every invocation <= 60 s CPU | trace 149,025 calls in ~2 chunks; front end + S4 0.2 s, verification 9.2 s (16,136 calls/s), S5/S6 + printing 0.1 s |
+
+E11, the printed Automatas tuneprog (`tuneprog.md`, verbatim excerpts, `...` elides):
+
+```
+meta      entry sub $0FE3 every 2457 cycles (8.0 calls/frame, cia_timer)
+          phase call_counter selects the rate
+          certified 149,025 calls, 0 divergences, period 129,024, first repeat at
+          call 149,024 (complete), stage S6
+state     voice[3] stride 49, 30 fields
+            .pw_lo .pw_hi .freq_lo .freq_hi .sr .ad .ctrl .ctrl_eor   sid_image
+            .timer $1129 $11B1 $1239   timer          (three unrolled copies)
+            .ptr_2 .ptr_3 .ptr_4 .ptr_5              ptr, ditto
+            .timer_4 $12BF .timer_5 $1352 timer ; .cursor_12CE .freq_idx .cursor_1361 cursor
+            .b1019 .b101A .b101B .b101E .b101F .b1020 .b1021 .b1161 .b116F .b117D .b1194 .b12CC
+          call_counter $0FE4 phase ; res_route $10AA / mode_vol $10AF sid_image ; ptr $00FB
+const     FREQ $1554 361 bytes  freq_table  12-TET lo|hi, 156 entries (59 below one octave)
+          T1800 T1900 T1A00 T1A80 T1B00 T1C00 T1D00 T1E00 T1F00.. T2C8F..   table
+inputs    $D012 raster at $14CE, 2227 reads (init) ; $D41B sid_readback at $14E3, 1 read
+
+tick(sp):                                # $0FE3, 150,000 calls
+    if (call_counter & 7) != 0:
+        sub(sp=(sp + $FE))
+    else:
+        main()
+    call_counter += 1
+    return
+
+main():                                  # $1022, 150,000 calls
+    t1 = voice[0].pw_hi
+    sid[0].pw_lo = voice[0].pw_lo
+    sid[0].pw_hi = t1
+    t2 = voice[0].freq_hi
+    sid[0].freq_lo = voice[0].freq_lo
+    sid[0].freq_hi = t2
+    ...                                  # voices 1 and 2, then:
+    sid[0].ctrl = (voice[0].ctrl ^ voice[0].ctrl_eor)
+    sid.res_route = res_route
+    sid.mode_vol = (mode_vol | $F)
+    switch b10B8:                        # the patched ADC/SBC: the filter slide sign
+      case $69: ...  case $E9: ...
+    switch b10D8:                        # the sub-tick gate
+      case $60: return
+      case $A9: ...                      # row advance, main ticks only
+    ...                                  # six cascade blocks, each calling row_apply
+    for v in 2, 1, 0:                    # x450,000 -- the SBX #$31 oscillator
+        t51 = voice[v].b101B
+        if t51 == 0:
+            t53 = voice[v].freq_idx
+            t54 = FREQ[$24 + t53]
+            t55 = voice[v].b101F
+            voice[v].freq_lo = (t54 + t55)
+            voice[v].freq_hi = FREQ[$C0 + t53]
+        else: ...                        # slide accumulator, then the pulse bounce
+
+sub(sp):                                 # $1006, 131,250 calls
+    b01FB = b10D8
+    b10D8 = $60                          # patch main's exit to RTS
+    sp4 = main()
+    b10D8 = b01FB
+    t2 = voice[0].timer_4
+    ...                                  # its own clone of the cascades and oscillator
+
+row_apply(a, x):                         # $168C, 100,890 calls
+    ptr = a
+    y1 = 0
+    t3 = T2C8F[(ptr[1] << 8) | ptr]
+    ...                                  # the sidTAB column decoder
+```
+
+and Commando song 1 (`tuneprog.md`, verbatim), the design's section 4 illustration:
+
+```
+tick(sp):                                # $5012, 11,780 calls
+    timer_7 += 1                         # the free-running frame counter
+    t1 = phase                           # $5519 mstatus, the tick's first test
+    v1 = (t1 & $40) != 0
+    if t1 < 0: trap 'untaken'            # the "music off" path never ran
+    if v1 != 0:                          # lazy init
+        timer_7 = 0
+        x11 = 2
+        for v in 2, 1, 0:
+            FREQ[$A4 + v] = 0            # the per-voice cells the freq table overruns into
+            FREQ[$A7 + v] = 0
+            voice[v].timer = 0
+            FREQ[$B3 + v] = 0
+        phase = 0
+    x1 = 2
+    t5 = timer_5                         # $5513 speedctr
+    timer_5 -= 1
+    if timer_5 >= 0: ...
+    else: timer_5 = b5517                # = speed
+    for v in 2, 1, 0:                    # x35,340 -- the voice loop, X carried through $5504
+        FREQ[163] = FREQ[$A0 + v]        # the voice -> SID offset table
+        if timer_5 != b5517: ...         # soundwork
+        else: ...                        # tick boundary: lengthleft, fetch_note, gate off
+```
+
+**Reconciliations with the plan**
+
+- **811 executed sites (section 2) is a static count.** The anatomy's 811 counts
+  instruction starts in the executed *bytes*; the tracer counts executed pcs:
+  616 at 30 s, **648 pcs / 651 site keys over the full run** (a pc with two
+  opcode variants is two keys). No dead code was missed; the difference is the
+  counting rule.
+- **`$10D4`'s second variant is not writer-derived.** Init computes the value it
+  stores from `$D41B`, so the decompiled writer offers no constant to enumerate;
+  the arm exists only under the other SID model. Both models are therefore
+  certified separately (`--sid-model`), which is stronger than one unverified arm.
+- **Commando's `$54EF`/`$54F8` merge into the frequency-table region.** The
+  vibrato reads entry `note+1` and overruns the 96-entry table, so union-find
+  joins the table's tail with the per-voice cells that follow it -- exactly the
+  overrun the design predicts (section 6, "traps"). The merged region is still
+  recognised as the note table (`FREQ`, u16le, 80 entries at the traced horizon).
+- **S5/S6 do not edit the IR.** Structuring and recovery are a *view* over the
+  certified S4 program (block merging and inlining, both semantics-preserving,
+  then a print-only dead-value pass). `tuneprog.S5.json`/`.S6.json` are
+  annotations; the certificate's `stage` reads `S6` with a `presentation` note,
+  and the tests assert the S4 JSON is byte-identical before and after.
+- **Names are role-derived, so appendix A's semantic names do not all appear.**
+  `pw_lo`/`freq_hi`/`ctrl_eor` come from the data flow into a SID register,
+  `timer`/`counter` from `DEC`/`INC` with a reload, `cursor`/`ptr` from being an
+  index or an address, `FREQ` from the octave ramp, `voice[v]` from stride and
+  element count. Fields no role reaches (`af`, `ps`, `detune`, the pre-shifted
+  flag copies) print as `voice[v].b101B` etc.; naming them needs the anatomy's
+  reading, not the trace.
+- **At a short horizon the note table is two parallel columns.** `FREQ_LO`/`FREQ_HI`
+  at 30 s; over the full run the TR overrun merges them into one `FREQ` region.
+- **The three row-advance blocks stay unrolled** (the plan's stretch goal of copy
+  folding is not implemented). Their per-voice cells are nevertheless one struct
+  view: three regions of equal shape written by the same pcs a constant 136 bytes
+  apart are recognised as one field (`voice[v].timer` at `$1129 $11B1 $1239`).
+- **The `$D012` busy-wait collapses** to `while input($D012) != $FC: pass`, and
+  the printer keeps the machine's own plumbing (JSR frames, register copies
+  nothing reads) out of the text without touching the executable IR.
 
 ---
 

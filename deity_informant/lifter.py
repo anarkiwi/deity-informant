@@ -729,11 +729,15 @@ def lift(mem, pc):
     eav = _ea(e, mem, pc, mode, pmap) if mode in MEM_MODES else None
     imm = mem[(pc + 1) & 0xFFFF]
 
+    def immc():
+        """The immediate operand as a const varnode, recorded in ``pmap``."""
+        vn = C(imm)
+        pmap[id(vn)] = ([1], "id")
+        return vn
+
     def rd():
         if mode == "imm":
-            vn = C(imm)
-            pmap[id(vn)] = ([1], "id")
-            return vn
+            return immc()
         if mode == "acc":
             return A
         return e.op("LOAD", e.tmp(), eav)
@@ -889,21 +893,21 @@ def lift(mem, pc):
         e.op("COPY", X, v)
         e.nz(A)
     elif mn == "LXA":  # $AB: A,X = (A | CONST) & imm  (NMS p.53, magic constant)
-        v = e.op("INT_AND", e.tmp(), e.op("INT_OR", e.tmp(), A, C(MAGIC)), C(imm))
+        v = e.op("INT_AND", e.tmp(), e.op("INT_OR", e.tmp(), A, C(MAGIC)), immc())
         e.op("COPY", A, v)
         e.op("COPY", X, v)
         e.nz(A)
     elif mn == "ANC":
-        e.op("INT_AND", A, A, C(imm))
+        e.op("INT_AND", A, A, immc())
         e.nz(A)
         e.op("INT_NOTEQUAL", FC, e.op("INT_AND", e.tmp(), A, C(0x80)), C(0))
     elif mn == "ALR":
-        e.op("INT_AND", A, A, C(imm))
+        e.op("INT_AND", A, A, immc())
         e.op("COPY", FC, e.op("INT_AND", e.tmp(), A, C(1)))
         e.op("INT_RIGHT", A, A, C(1))
         e.nz(A)
     elif mn == "ARR":
-        e.op("INT_AND", A, A, C(imm))
+        e.op("INT_AND", A, A, immc())
         r = e.op(
             "INT_OR",
             e.tmp(),
@@ -918,8 +922,8 @@ def lift(mem, pc):
         e.op("INT_XOR", FV, b6, b5)
     elif mn == "SBX":
         ax = e.op("INT_AND", e.tmp(), A, X)
-        e.op("INT_LESSEQUAL", FC, C(imm), ax)
-        e.op("INT_SUB", X, ax, C(imm))
+        e.op("INT_LESSEQUAL", FC, immc(), ax)
+        e.op("INT_SUB", X, ax, immc())
         e.nz(X)
     elif mn == "LAS":
         v = e.op("INT_AND", e.tmp(), e.op("LOAD", e.tmp(), eav), SP)
@@ -929,7 +933,7 @@ def lift(mem, pc):
         e.nz(v)
     elif mn == "ANE":  # $8B: A = (A | CONST) & X & imm  (NMS p.51, magic constant)
         e.op(
-            "INT_AND", A, e.op("INT_AND", e.tmp(), e.op("INT_OR", e.tmp(), A, C(MAGIC)), X), C(imm)
+            "INT_AND", A, e.op("INT_AND", e.tmp(), e.op("INT_OR", e.tmp(), A, C(MAGIC)), X), immc()
         )
         e.nz(A)
     elif mn in ("SHA", "SHX", "SHY", "TAS"):

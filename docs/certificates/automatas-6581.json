@@ -1,0 +1,49 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 15964,
+  "ir_blocks": 305,
+  "ir_procs": 8,
+  "ir_statements": 1070,
+  "regions": 102,
+  "sites": 651,
+  "trace_calls": 149025,
+  "verify_cpu_seconds": 9.3
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4067,
+  "cycles_per_tick": 2457,
+  "kind": "sub",
+  "source": "cia_timer"
+ },
+ "generated": "2026-08-16T20:12:16Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": "6581",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 2457,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 149024,
+   "inputs_pinned": 2228,
+   "interp_prefix": 2000,
+   "period": 129024,
+   "seconds": 371.64,
+   "song": 1,
+   "ticks": 149025,
+   "trace_first_repeat": 149024,
+   "trace_period": 129024
+  }
+ ],
+ "tune": "Automatas.sid"
+}

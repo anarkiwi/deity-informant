@@ -22,12 +22,12 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-dependencies = ["jennings>=0.1.0"]
+dependencies = ["jennings>=0.1.0", "numpy", "networkx"]
 
 [project.optional-dependencies]
 oracle = ["pysidtracker", "zstandard"]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "numpy"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -42,6 +42,7 @@ include = ["deity_informant*"]
 [tool.pytest.ini_options]
 markers = [
     "oracle: byte-exact SID grid vs the Dockerized sidtrace oracle (needs Docker + HVSC)",
+    "hvsc: tuneprog front end on real HVSC tunes (needs an HVSC tree or the tune cache)",
 ]
 
 [tool.coverage.run]
@@ -61,7 +62,10 @@ good-names = ["A", "X", "Y", "S", "SP", "C", "e", "vm", "op", "mn", "md", "t", "
 
 [tool.pylint."messages control"]
 # missing-docstring off: short helpers (C/e/nz) and tests carry no docstrings.
+# unidiomatic-typecheck off: the tuneprog IR dispatches on exact node type over a
+# closed set of dataclasses, where isinstance would be both looser and slower.
 disable = [
+    "unidiomatic-typecheck",
     "missing-module-docstring",
     "missing-class-docstring",
     "missing-function-docstring",

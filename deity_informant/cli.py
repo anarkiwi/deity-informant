@@ -4,6 +4,7 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
+  tuneprog     decompile a .sid into a certified per-tick program + pseudocode
   emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
 """
 
@@ -18,6 +19,7 @@ from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
+from .tuneprog import pipeline
 from .vm import PcodeVM, run_sub
 
 
@@ -75,6 +77,10 @@ def cmd_run(args):
     return 0
 
 
+def cmd_tuneprog(args):
+    return pipeline.run(args)
+
+
 def cmd_emit_sleigh(args):
     build = Path(__file__).resolve().parent.parent / "ghidra" / "6510" / "build.py"
     if not build.is_file():
@@ -122,6 +128,13 @@ def main(argv=None):
     p.add_argument("--play", type=lambda x: int(x, 0), default=None)
     p.add_argument("--frames", type=int, default=1)
     p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser(
+        "tuneprog",
+        help="decompile TUNE.sid into a certified tuneprog (IR, Python, certificate, pseudocode)",
+    )
+    pipeline.add_args(p)
+    p.set_defaults(fn=cmd_tuneprog)
 
     p = sub.add_parser("emit-sleigh", help="build the 6510 SLEIGH module")
     p.add_argument("-o", "--out", help="languages dir to install the built module into")
