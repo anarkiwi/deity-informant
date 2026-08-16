@@ -143,8 +143,12 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
 
 
 def _writer_variants(trace, pc, ops):
-    """Opcodes a decompiled writer stored into the cell at ``pc`` but never executed."""
-    return sorted(v for v in trace.cell_values.get(pc, ()) if v not in ops and v in OPS)
+    """Byte values a writer stored into the opcode cell at ``pc`` that never executed.
+
+    Every byte decodes (the lifter covers all 256 NMOS opcodes), so each is an arm;
+    they are unverified because no execution of that variant was observed.
+    """
+    return sorted(v for v in trace.cell_values.get(pc, ()) if v not in ops)
 
 
 def _variant_arms(trace, pc, ops):
