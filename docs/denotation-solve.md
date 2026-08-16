@@ -1241,6 +1241,18 @@ tune — the family quotient's concrete object.
 
 ## 11. The fold: the execution is the program (2026-08-15)
 
+> **Superseded in part (2026-08-16).** §11.1 (the audit) and §11.3–11.4's
+> deletion surface and gates stand. §11.2's *unit* — merge whole-frame linear
+> paths residualised over the frame entry state — is withdrawn: implemented as
+> `framepath` (11.5), it produced Commando text of 2,183 lines at 500 frames
+> growing to 2,835 at 3,000 (static: 215), with the voice loop spelled three
+> times and rejoins guessed by anchors; the F9 pins are intrinsic to
+> residualising over entry, not a guard-observation choice. The corrected
+> design — fold by **program point** `(pc, bytes, ctx)` with `sp` and context
+> read off the trace, calls as edges, stack cells as locals, guards only on
+> control facts — is docs/fold-by-program-point.md, with the measurements and
+> the plan. Everything below is kept as the record of the reasoning.
+
 ### 11.1 The audit: fifty phases against a contract that never asked for them
 
 The frameprog contract is dynamic. Its normative claim is the per-frame
