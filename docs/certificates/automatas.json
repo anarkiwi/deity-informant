@@ -5,14 +5,14 @@
   "tick schedule effects"
  ],
  "cost": {
-  "calls_per_second": 16030,
+  "calls_per_second": 16136,
   "ir_blocks": 305,
   "ir_procs": 8,
   "ir_statements": 1070,
   "regions": 102,
   "sites": 651,
   "trace_calls": 149025,
-  "verify_cpu_seconds": 9.3
+  "verify_cpu_seconds": 9.2
  },
  "divergence": null,
  "entry": {
@@ -21,11 +21,12 @@
   "kind": "sub",
   "source": "cia_timer"
  },
- "generated": "2026-08-16T18:52:58Z",
+ "generated": "2026-08-16T20:12:05Z",
  "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
  "sid_model": null,
- "stage": "S4",
+ "stage": "S6",
  "subtunes": [
   {
    "closure": "trace",

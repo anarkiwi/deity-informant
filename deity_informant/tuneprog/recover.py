@@ -276,19 +276,13 @@ def _semitones(v, lo=1.04, hi=1.08):
 
 
 def _tables(prog, facts, names):
-    """Const regions: the note-frequency table, tables read through an index, arrays."""
+    """Read-only regions: an array read through an index is a table; the rest keep an address."""
     indexed = {t for s in facts.index.values() for t in s}
     for r in prog.storage:
-        if r.id < 0 or r.kind not in ("const", "image", "init_constant") or r.size < 8:
+        if r.id < 0 or r.id in names.region or r.kind not in ("const", "image", "init_constant"):
             continue
-        note = _freq_layout(r.init) if r.size <= 4096 else ""
-        if note and r.id not in names.region:
-            names.role[r.id] = "freq_table"
-            names.notes[r.id] = note
-            _uniq(names, r.id, "FREQ")
-        elif r.id not in names.region:
-            names.role[r.id] = names.role.get(r.id) or ("table" if r.id in indexed else "")
-            _uniq(names, r.id, "b%04X" % r.base if r.id in names.view else "T%04X" % r.base)
+        names.role[r.id] = names.role.get(r.id) or ("table" if r.id in indexed else "")
+        _uniq(names, r.id, "b%04X" % r.base if r.id in names.view else "T%04X" % r.base)
 
 
 def _uniq(names, rid, want):

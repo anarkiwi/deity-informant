@@ -28,10 +28,10 @@ Presentation over the certified program (it is never edited):
 * :mod:`.printer` (S7 text form) -- ``tuneprog.md``, anatomy-style pseudocode.
 
 :mod:`.pipeline` drives all of it; ``tools/tuneprog_certify.py`` and
-``deity-informant tuneprog`` are wrappers around it. The module-level entry
-points ``build.build_ir``, ``ssa.simplify``, ``emit.emit_python``,
-``verify.verify``, ``structure.structure`` and ``recover.recover`` are the stage
-boundaries.
+``deity-informant tuneprog`` are wrappers around it. The stage boundaries are the
+module-level entry points ``build.build_ir``, ``ssa.simplify``,
+``emit.emit_python``, ``verify.verify``, ``structure.structure``,
+``recover.recover`` and ``printer.render``.
 """
 
 from __future__ import annotations
@@ -50,7 +50,6 @@ from .verify import Reference, Verifier, certify
 from .structure import view
 from .recover import Names
 from .printer import render
-from .pipeline import build
 
 __all__ = [
     "CIA",
@@ -96,5 +95,4 @@ __all__ = [
     "view",
     "Names",
     "render",
-    "build",
 ]
