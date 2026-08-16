@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from .ir import Bin, If, Let, Load, Return, Store, Switch, Trap, Var, succs
+from .ir import Bin, Const, If, Let, Load, Return, Store, Switch, Trap, Var, retval, succs
 from .ssa import preds_of, stmt_uses, sub_expr, term_uses, use_counts
 
 
@@ -199,10 +199,17 @@ def loads(proc, live=None):
     or an input read stops the move.
     """
     if live is not None:
+        want = retval(proc)
+        slot = proc.rets.index(0) if want is not None else None
         for b in proc.blocks.values():
             b.stmts = [s for s in b.stmts if type(s) is not Let or s.n in live]
             if type(b.term) is Return:
-                b.term = Return()
+                # the machine's return plumbing goes; the value the host reads stays
+                b.term = Return(
+                    ()
+                    if slot is None
+                    else tuple(v if i == slot else Const(0) for i, v in enumerate(b.term.vals))
+                )
     uses, where, preds = use_counts(proc), _positions(proc), preds_of(proc)
     latches = _latches(proc, preds)
     defs = {}

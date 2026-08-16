@@ -12,7 +12,22 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 
-from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Trap, Var, evalbin, succs
+from .ir import (
+    Bin,
+    Call,
+    Const,
+    Goto,
+    If,
+    Let,
+    Load,
+    Return,
+    Store,
+    Trap,
+    Var,
+    evalbin,
+    retval,
+    succs,
+)
 from .inline import loads as inline_loads
 from .ssa import merge_chains, preds_of, prune
 
@@ -76,6 +91,7 @@ class Jump:
 class Exit:
     kind: str  # return | trap
     why: str = ""
+    e: object = None  # the value a `return` hands back, when a reader wants it
 
 
 # ---- the presentation copy ---------------------------------------------------
@@ -230,7 +246,7 @@ def _trivial(proc, lbl):
     if b.stmts:
         return None
     if type(b.term) is Return:
-        return Exit("return")
+        return Exit("return", "", retval(proc))
     return Exit("trap", b.term.why) if type(b.term) is Trap else None
 
 
@@ -376,7 +392,7 @@ class _Structurer:
         if k is Goto:
             return t.to
         if k is Return:
-            out.append(Exit("return"))
+            out.append(Exit("return", "", retval(self.proc)))
             return None
         if k is Trap:
             out.append(Exit("trap", t.why))
