@@ -14,7 +14,7 @@ import pickle
 import time
 from pathlib import Path
 
-from . import emit, fold, ir, printer, recover, ssa, structure, texture, verify as V, word
+from . import emit, fold, ir, printer, recover, ssa, structure, texture, unroll, verify as V, word
 from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
@@ -201,6 +201,8 @@ def stage_print(args, out, prog=None):
     word.fold16(view, names)
     fold.outline(view, names, *printer.needed(view))
     st = structure.structure(view)
+    live, params = printer.needed(view)
+    unroll.unroll(st, live, fold.livearg(view, params))
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))

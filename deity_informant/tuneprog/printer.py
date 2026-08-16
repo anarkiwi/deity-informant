@@ -147,11 +147,11 @@ class Printer:
     # ---- names -------------------------------------------------------------
     def var(self, n):
         """A printed variable name: registers keep their letter, uniques become tN."""
-        if n.startswith("$"):
-            return n[1:]
         if n in self.alias:
             a, s = self.alias[n]
             return a if s == 1 else "%s*%d" % (a, s)
+        if n.startswith("$"):
+            return n[1:]
         if n in self.tmp:
             return self.tmp[n]
         base = n.split("#")[0]
@@ -179,22 +179,45 @@ class Printer:
         name = name or self.names.region.get(rid, "r%d" % rid)
         view = self.names.view.get(rid)
         elem = self.names.elem.get(rid)
+        field = name if name != self.names.region.get(rid) else view[1] if view else name
+        if view is not None and elem is None:
+            return "%s[%s].%s" % (view[0], self.index(r, addr, idx), field)
         if view is not None:
-            g, fname = view
-            i = self.index(r, addr, idx) if elem is None or idx is not None else str(elem)
-            return "%s[%s].%s" % (g, i, name if name != self.names.region.get(rid) else fname)
+            return "%s[%d].%s%s" % (view[0], elem, field, self.offset(r, addr, idx))
         if r.size == 1 or (idx is None and addr == r.base and r.size <= 2):
             return name
         return "%s[%s]" % (name, self.index(r, addr, idx))
+
+    def offset(self, r, addr, idx):
+        """The byte offset inside one element of a struct view, or ``''``."""
+        if idx is None:
+            return "" if addr == r.base else "[%d]" % (addr - r.base)
+        return "[%s]" % (self.ivar(idx, 1) or _bare(self.expr(idx, False)))
 
     def index(self, r, addr, idx):
         """The element index of an access: a constant, or the loop variable."""
         if idx is None:
             return str((addr - r.base) // max(r.stride, 1))
-        if type(idx) is Var and idx.n in self.alias and self.alias[idx.n][1] == r.stride:
-            return self.alias[idx.n][0]
+        hit = self.ivar(idx, r.stride)
+        if hit is not None:
+            return hit
         e = _bare(self.expr(idx, False))
         return e if r.stride == 1 else "%s/%d" % (e, r.stride)
+
+    def ivar(self, idx, stride):
+        """The loop variable, when the index is it scaled by the element size."""
+        t, step = type(idx), max(stride, 1)
+        if t is Var and idx.n in self.alias and self.alias[idx.n][1] == stride:
+            return self.alias[idx.n][0]
+        if t is not Bin:
+            return None
+        if idx.op == "*" and type(idx.b) is Const and type(idx.a) is Var:
+            hit = self.alias.get(idx.a.n)
+            return hit[0] if hit is not None and hit[1] == 1 and idx.b.v == step else None
+        if idx.op == "+" and type(idx.a) is Const and not idx.a.v % step:
+            inner = self.ivar(idx.b, stride)
+            return None if inner is None else "%s + %d" % (inner, idx.a.v // step)
+        return None
 
     def addr_of(self, e, r):
         """``(constant address, index expression)`` of an access to region ``r``."""
@@ -208,11 +231,15 @@ class Printer:
                     return k.v, Bin("+", Const(k.v - r.base), i, 2) if k.v != r.base else i
         return None, e
 
-    def sid(self, addr):
+    def sid(self, addr, idx=None):
+        """``sid[v].reg`` for a register write, the voice indexed by a copy loop."""
         if addr in GLOBAL_REG:
             return "sid.%s" % GLOBAL_REG[addr]
         v, k = divmod(addr - SID_LO, 7)
-        return "sid[%d].%s" % (v, VOICE_REG[k])
+        if idx is None:
+            return "sid[%d].%s" % (v, VOICE_REG[k])
+        i = self.ivar(idx, 7) or _bare(self.expr(idx, False))
+        return "sid[%s].%s" % ("%s + %d" % (i, v) if v else i, VOICE_REG[k])
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -293,10 +320,12 @@ class Printer:
     def store(self, s):
         r = self.rgn.get(s.r)
         addr, idx = self.addr_of(s.a, r)
-        if s.cls == "io" and addr is not None and SID_LO <= addr <= SID_HI:
-            lhs = self.sid(addr)
-        elif s.cls == "io":
-            lhs = "io[%s]" % (_hex(addr) if addr is not None else self.expr(s.a, False))
+        if s.cls == "io":
+            base, i = _split(s.a)
+            if base is not None and SID_LO <= base <= SID_HI:
+                lhs = self.sid(base, i)
+            else:
+                lhs = "io[%s]" % (_hex(base) if base is not None else self.expr(s.a, False))
         else:
             lhs = self.cell(s.r, addr, idx)
         out = self.compound(lhs, s, addr)
@@ -322,6 +351,17 @@ class Printer:
 
 def _bare(s):
     return s[1:-1] if s.startswith("(") and s.endswith(")") else s
+
+
+def _split(e):
+    """``(base, index)`` of an address: a constant, or a constant plus an index."""
+    if type(e) is Const:
+        return e.v, None
+    if type(e) is Bin and e.op == "+":
+        for k, i in ((e.a, e.b), (e.b, e.a)):
+            if type(k) is Const:
+                return k.v, i
+    return None, e
 
 
 def _signbit(e):

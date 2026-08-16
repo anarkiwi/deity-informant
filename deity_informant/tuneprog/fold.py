@@ -389,10 +389,15 @@ def select(cands):
     return out
 
 
+def livearg(prog, params):
+    """``{proc: [is this argument printed]}`` -- the rest is machine plumbing."""
+    return {n: [i in params.get(n, ()) for i in p.params] for n, p in prog.procs.items()}
+
+
 def outline(prog, names, live, params=None):
     """Replace every accepted candidate by a call to a helper procedure."""
     split_roles(prog, names)
-    keep = {n: [i in (params or {}).get(n, ()) for i in p.params] for n, p in prog.procs.items()}
+    keep = livearg(prog, params or {})
     groups = {}
     for c in select(candidates(prog, names)):
         if crossing(prog, c, live):
