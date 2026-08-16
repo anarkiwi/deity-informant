@@ -402,12 +402,13 @@ def outline(prog, names, live, params=None):
     for c in select(candidates(prog, names)):
         if crossing(prog, c, live):
             continue
-        key = _match(prog, c, groups, keep)
-        if key not in groups and _whole(prog, c):
-            continue
-        groups.setdefault(key, []).append(c)
+        groups.setdefault(_match(prog, c, groups, keep), []).append(c)
     out, count = {}, Counter(c.proc for g in groups.values() for c in g)
-    worth = [g for g in groups.values() if len(g) > 1 or count[g[0].proc] > 1]
+    worth = [
+        g
+        for g in groups.values()
+        if len(g) > 1 or (count[g[0].proc] > 1 and not _whole(prog, g[0]))
+    ]
     for group in sorted(worth, key=lambda g: g[0].role):
         group.sort(key=lambda c: (c.skip, c.proc))
         name = _unique(prog, group[0].role)
@@ -419,35 +420,48 @@ def outline(prog, names, live, params=None):
 
 
 def _match(prog, c, groups, keep):
-    """The group of an equal run, aligning whichever entry block has a prologue."""
+    """The group of an equal run; a prologue on either side is left behind."""
     for key, group in list(groups.items()):
         other = group[0]
         if other.role != c.role or other.proc == c.proc:
             continue
-        d = _entrylen(prog, c) - _entrylen(prog, other)
-        if d >= 0:
-            c.skip = d
-            if canon(prog.procs[c.proc], c, keep) == key:
-                return key
-            c.skip = 0
-        elif len(group) == 1:
-            other.skip = -d
-            got = canon(prog.procs[other.proc], other, keep)
-            if canon(prog.procs[c.proc], c, keep) == got:
-                groups[got] = groups.pop(key)
-                return got
-            other.skip = 0
+        hit = _align(prog, c, other, keep, len(group) == 1)
+        if hit is None:
+            continue
+        if hit != key:
+            groups[hit] = groups.pop(key)
+        return hit
+    c.skip = 0
     return canon(prog.procs[c.proc], c, keep)
+
+
+def _align(prog, c, other, keep, movable, limit=24):
+    """The shared key when skipping a prologue on either side makes the runs equal."""
+    d = _rawlen(prog, c) - _rawlen(prog, other)
+    was = other.skip
+    for sa in range(max(0, d), max(0, d) + limit):
+        sb = sa - d
+        if sa > _rawlen(prog, c) or sb < 0 or sb > _rawlen(prog, other):
+            break
+        if sb != was and not movable:
+            continue
+        c.skip, other.skip = sa, sb
+        if c.stmts(prog) < MINSTMT:
+            break
+        if canon(prog.procs[c.proc], c, keep) == canon(prog.procs[other.proc], other, keep):
+            return canon(prog.procs[other.proc], other, keep)
+    c.skip, other.skip = 0, was
+    return None
+
+
+def _rawlen(prog, c):
+    return len(prog.procs[c.proc].blocks[c.entry].stmts)
 
 
 def _whole(prog, c):
     """A run that is its whole procedure: naming it again buys the reader nothing."""
     p = prog.procs[c.proc]
     return c.entry == p.entry and not c.skip and len(c.blocks) == len(p.blocks)
-
-
-def _entrylen(prog, c):
-    return len(prog.procs[c.proc].blocks[c.entry].stmts) - c.skip
 
 
 def _unique(prog, want):

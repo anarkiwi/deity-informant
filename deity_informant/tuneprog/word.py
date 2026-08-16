@@ -126,12 +126,14 @@ def _parses(e):
         if type(e.a) is Bin and e.a.op == "+":
             out.append(("+", e.a.a, e.a.b, e.b))
         out.append(("+", e.a, e.b, Const(0)))
-    if e.op == "-" and type(e.b) is Bin and e.b.op == "+":
-        y, c = e.b.a, e.b.b
-        if type(c) is Bin and c.op == "-" and type(c.a) is Const and c.a.v == 1:
-            out.append(("-", e.a, y, c.b))
-        elif type(c) is Const and c.v == 1:
-            out.append(("-", e.a, y, Const(0)))
+    if e.op == "-":
+        if type(e.b) is Bin and e.b.op == "+":
+            y, c = e.b.a, e.b.b
+            if type(c) is Bin and c.op == "-" and type(c.a) is Const and c.a.v == 1:
+                out.append(("-", e.a, y, c.b))
+            elif type(c) is Const and c.v == 1:
+                out.append(("-", e.a, y, Const(0)))
+        out.append(("-", e.a, e.b, Const(1)))
     return out
 
 
@@ -153,7 +155,7 @@ def _operand(lo, hi):
 
 def _value(op, x, y, cin):
     """The 16-bit right-hand side of a folded chain."""
-    if type(cin) is Const and cin.v == 0:
+    if type(cin) is Const and cin.v == (0 if op == "+" else 1):
         return Bin(op, x, y, 2)
     if op == "+":
         return Bin("+", Bin("+", x, y, 2), cin, 2)

@@ -20,6 +20,7 @@ class _Ctx:
     def __init__(self, defs, subs=None, var="", keep=None):
         self.defs = defs
         self.keep = keep or {}
+        self.reg = ""
         self.holes = []
         self.subs = list(subs or ())
         self.sub = subs is not None
@@ -30,7 +31,7 @@ class _Ctx:
     def hole(self, kind, v, w=1):
         """Record (or replace) one constant or region id of the segment."""
         if not self.sub:
-            self.holes.append((kind, v))
+            self.holes.append((kind + self.reg if kind == "k" else kind, v))
             return None
         d = self.subs.pop(0)
         if kind != "k" or not d:
@@ -50,12 +51,12 @@ def _expr(e, c):
         return ("v", c.name(e.n)), e
     if t is Load:
         c.hole("r", e.r)
-        tok, a = _expr(e.a, c)
+        tok, a = _addr(e.a, c, e.r)
         return ("l", e.cls, e.w, tok), Load(e.cls, a, e.w, e.lo, e.hi, e.r)
     if t is R16:
         c.hole("r", e.lo)
         c.hole("r", e.hi)
-        tok, a = _expr(e.a, c)
+        tok, a = _addr(e.a, c, e.lo)
         return ("r16", tok), R16(e.lo, e.hi, a)
     if t is Bin:
         ta, a = _expr(e.a, c)
@@ -63,6 +64,14 @@ def _expr(e, c):
         return ("b", e.op, e.w, ta, tb), Bin(e.op, a, b, e.w)
     c.bad = True
     return ("?",), e
+
+
+def _addr(e, c, rid):
+    """Walk an address: its constants are that region's, so one stride serves it."""
+    keep, c.reg = c.reg, "@%d" % rid
+    out = _expr(e, c)
+    c.reg = keep
+    return out
 
 
 def _stmt(s, c):
@@ -74,13 +83,13 @@ def _stmt(s, c):
         return ("raw",), s
     if t is Store:
         c.hole("r", s.r)
-        ta, a = _expr(s.a, c)
+        ta, a = _addr(s.a, c, s.r)
         tv, v = _expr(s.v, c)
         return ("st", s.cls, s.w, ta, tv), Store(s.cls, a, v, s.w, s.lo, s.hi, s.r, s.src)
     if t is W16:
         c.hole("r", s.lo)
         c.hole("r", s.hi)
-        ta, a = _expr(s.a, c)
+        ta, a = _addr(s.a, c, s.lo)
         te, e = _expr(s.e, c)
         return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)
     if t is Call:
@@ -199,13 +208,17 @@ def _node_defs(n, out):
 
 
 def steps(runs):
-    """The per-hole step when copy i is copy 0 plus i times it, else ``None``."""
-    out = []
+    """The per-hole step when copy i is copy 0 plus i times it, else ``None``.
+
+    One region is walked with one stride: the constants of its addresses must
+    agree, and at least one of them must move, or the copies index nothing.
+    """
+    out, by = [], {}
     for j, (kind, v0) in enumerate(runs[0]):
         vals = [r[j] for r in runs]
         if any(k != kind for k, _v in vals):
             return None
-        if kind != "k":
+        if kind == "r":
             if any(v != v0 for _k, v in vals):
                 return None
             out.append(0)
@@ -213,8 +226,10 @@ def steps(runs):
         d = vals[1][1] - v0
         if any(v != v0 + i * d for i, (_k, v) in enumerate(vals)):
             return None
+        if kind != "k" and d:
+            by.setdefault(kind, set()).add(d)
         out.append(d)
-    return out
+    return None if not by or any(len(v) > 1 for v in by.values()) else out
 
 
 def _run(units, i, minunits, keep=None):

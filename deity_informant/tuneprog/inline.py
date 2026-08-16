@@ -61,15 +61,18 @@ def _reads(e, pred):
     return _reads(e.a, pred) or _reads(e.b, pred) if t is Bin else False
 
 
-def _clobbers(s, e):  # noqa: D401
-    """True when statement ``s`` can change the value of ``e``.
+def _clobbers(s, e):
+    """True when statement ``s`` can change the value of ``e``, or reorder its input.
 
     Regions are disjoint by construction, so a load of region R survives every
-    store to another region and every ``sidw``/``iow``; a call may write anything.
+    store to another region and every ``sidw``/``iow``; a call may write anything
+    and one input read never moves past another.
     """
     t = type(s)
     if t.__name__ == "Call":
         return not _pure(e)
+    if _reads(e, _input) and any(_reads(x, _input) for x in _exprs(s)):
+        return True
     if t is not Store:
         return False
     if s.cls == "io":
@@ -77,6 +80,14 @@ def _clobbers(s, e):  # noqa: D401
     if s.cls == "raw":
         return _reads(e, lambda x: x.cls == "raw")
     return _reads(e, lambda x: x.r < 0 or x.r == s.r or s.r < 0)
+
+
+def _exprs(s):
+    """The expressions a statement evaluates."""
+    t = type(s)
+    if t is Store:
+        return (s.a, s.v)
+    return (s.e,) if hasattr(s, "e") else ()
 
 
 def _cost(e):
@@ -153,15 +164,30 @@ def _kills_run(proc, lbl, lo, hi, ls):
     return any(_kills(s, ls) for s in proc.blocks[lbl].stmts[lo:hi])
 
 
+class _Tally:
+    """A ``set``-shaped sink that keeps every occurrence, not every name."""
+
+    __slots__ = ("hits",)
+
+    def __init__(self):
+        self.hits = []
+
+    def add(self, n):
+        self.hits.append(n)
+
+    def update(self, it):
+        self.hits.extend(it)
+
+
 def _positions(proc):
-    """``{name: [(block, statement index)]}`` of every use; the terminator is last."""
+    """``{name: [(block, index)] once per use}``; the terminator counts last."""
     where = {}
     for lbl, b in proc.blocks.items():
-        for i, s in enumerate(b.stmts):
-            for u in stmt_uses(s, set()):
+        for i, s in enumerate(list(b.stmts) + [b.term]):
+            t = _Tally()
+            (term_uses if i == len(b.stmts) else stmt_uses)(s, t)
+            for u in t.hits:
                 where.setdefault(u, []).append((lbl, i))
-        for u in term_uses(b.term, set()):
-            where.setdefault(u, []).append((lbl, len(b.stmts)))
     return where
 
 

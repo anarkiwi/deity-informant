@@ -184,15 +184,12 @@ def _node(n):
     return d
 
 
-def stage_print(args, out, prog=None):
-    """S5 + S6 over the certified IR, then ``tuneprog.md`` (design section 4 text form)."""
-    prog = prog or ir.Tuneprog.load(out / "tuneprog.S4.json")
-    cert = out / "certificate.json"
-    doc = json.loads(cert.read_text()) if cert.exists() else None
-    if doc is not None and doc.get("stage") == "S4":
-        doc["stage"] = "S6"
-        doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
-        emit.write_certificate(cert, doc)
+def present(prog):
+    """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
+
+    Structuring, texture removal, 16-bit views, outlining and copy folding; the
+    argument is never touched.
+    """
     view = structure.view(prog, printer.needed(prog)[0])
     texture.clean(view)
     structure.inline(view, printer.needed(view)[0])
@@ -203,6 +200,19 @@ def stage_print(args, out, prog=None):
     st = structure.structure(view)
     live, params = printer.needed(view)
     unroll.unroll(st, live, fold.livearg(view, params))
+    return view, st, names
+
+
+def stage_print(args, out, prog=None):
+    """S5 + S6 over the certified IR, then ``tuneprog.md`` (design section 4 text form)."""
+    prog = prog or ir.Tuneprog.load(out / "tuneprog.S4.json")
+    cert = out / "certificate.json"
+    doc = json.loads(cert.read_text()) if cert.exists() else None
+    if doc is not None and doc.get("stage") == "S4":
+        doc["stage"] = "S6"
+        doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
+        emit.write_certificate(cert, doc)
+    view, st, names = present(prog)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))
