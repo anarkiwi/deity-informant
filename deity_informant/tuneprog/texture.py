@@ -437,6 +437,13 @@ def _copy(s):
     return Call(s.proc, s.args, s.rets) if t is Call else s
 
 
+def tidy(prog):
+    """Drop the jump blocks the later passes emptied."""
+    for p in prog.procs.values():
+        thread_empty(p)
+    return prog
+
+
 def clean(prog):
     """Every texture pass over a presentation copy of ``prog``."""
     zerocarry(prog)

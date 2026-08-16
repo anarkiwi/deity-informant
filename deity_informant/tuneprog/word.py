@@ -174,16 +174,16 @@ def _match(lo, hi, defs):
     return None
 
 
-def _sites(proc, defs, lbl, i, s):
-    """The definitions of the value ``s`` stores, as ``(block, index, expression)``."""
-    if type(s.v) is not Var:
-        return [(lbl, i, s.v)]
+def _sites(proc, defs, lbl, i, e, seen=()):
+    """The definitions of a stored value, copies followed, as ``(block, index, value)``."""
+    if type(e) is not Var or e.n in seen:
+        return [(lbl, i, e)]
     out = []
     for l2, b in proc.blocks.items():
         for j, x in enumerate(b.stmts):
-            if type(x) is Let and x.n == s.v.n:
-                out.append((l2, j, x.e))
-    return out or [(lbl, i, _expand(s.v, defs))]
+            if type(x) is Let and x.n == e.n:
+                out += _sites(proc, defs, l2, j, x.e, seen + (e.n,))
+    return out or [(lbl, i, _expand(e, defs))]
 
 
 def _local(proc, defs, lbl, at):
@@ -196,9 +196,9 @@ def _local(proc, defs, lbl, at):
 
 
 def _plan(proc, defs, lbl, i, s, taken):
-    """``[(block, put index, drop index, W16, carry, value)]`` for a high-byte store."""
-    out = []
-    for dlbl, didx, expr in _sites(proc, defs, lbl, i, s):
+    """``([(block, put, drop, W16, carry, value)], every definition folded)``."""
+    out, whole = [], True
+    for dlbl, didx, expr in _sites(proc, defs, lbl, i, s.v):
         local = _local(proc, defs, dlbl, didx)
         hit = None
         for j in range(didx - 1, -1, -1):
@@ -212,9 +212,10 @@ def _plan(proc, defs, lbl, i, s, taken):
                 hit = (dlbl, didx, j, W16(lo.r, s.r, lo.a, got[0], lo.src), got[1], expr)
                 break
         if hit is None:
-            return None
-        out.append(hit)
-    return out
+            whole = False
+        else:
+            out.append(hit)
+    return (out, whole) if out else None
 
 
 def _crosses(proc, lbl, i, j, rlo, rhi):
@@ -272,7 +273,7 @@ def _rewrite(proc, sites, fn):
     for lbl, b in proc.blocks.items():
         if lbl in pre:
             continue
-        start = sites.get(lbl, -1) + 1
+        start = sites.get(lbl, 0)
         for s in b.stmts[start:]:
             apply_stmt(s, fn)
         apply_term(b.term, fn)
@@ -305,31 +306,36 @@ def fold16(prog, names=None):
         ]
         for lbl, i in stores:
             s = proc.blocks[lbl].stmts[i]
-            plan = None if (lbl, i) in taken else _plan(proc, _defs(proc), lbl, i, s, taken)
-            if plan is None:
+            got = None if (lbl, i) in taken else _plan(proc, _defs(proc), lbl, i, s, taken)
+            if got is None:
                 continue
+            plan, whole = got
             taken |= {(lbl, i)} | {(l, k) for l, _p, k, _w, _c, _v in plan}
             taken |= {(l, p) for l, p, _k, _w, _c, _v in plan}
             for l, p, k, w, _c, _v in plan:
-                put[(l, p)] = w
+                put[(l, p)] = [w] if whole else [w, proc.blocks[l].stmts[p]]
                 drop.setdefault(l, set()).add(k)
-            if (lbl, i) not in put:
+            if whole and (lbl, i) not in put:
                 drop.setdefault(lbl, set()).add(i)
-            _finish(proc, s, plan, drop, taken)
+            _finish(proc, s, plan, drop, taken, whole)
             pairs += [(w.lo, w.hi, w.e) for _l, _p, _k, w, _c, _v in plan]
         for lbl, b in proc.blocks.items():
             gone = drop.get(lbl, ())
-            b.stmts[:] = [put.get((lbl, j), x) for j, x in enumerate(b.stmts) if j not in gone]
+            out = []
+            for j, x in enumerate(b.stmts):
+                if j not in gone:
+                    out += put.get((lbl, j), [x])
+            b.stmts[:] = out
     if names is not None:
         _name(prog, names, pairs)
     return pairs
 
 
-def _finish(proc, s, plan, drop, taken):
+def _finish(proc, s, plan, drop, taken, whole=True):
     """Rename what the fold subsumes: the stored byte and its carry out."""
     sites = {l: p for l, p, _k, _w, _c, _v in plan}
     carries = [c for _l, _p, _k, _w, c, _v in plan]
-    vals = [v for _l, _p, _k, _w, _c, v in plan] + [s.v]
+    vals = [v for _l, _p, _k, _w, _c, v in plan] + ([s.v] if whole else [])
     whole, where = _carry_defs(proc, carries)
     ren = {n: "$carry" for n in whole}
     _rewrite(proc, sites, _subst(s, carries, vals, ren))
