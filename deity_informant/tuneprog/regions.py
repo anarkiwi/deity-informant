@@ -31,7 +31,13 @@ from .trace import IO_LO, IO_HI, IDX_REG
 
 @dataclass
 class Region:
-    """One storage region: a connected component of the access relation."""
+    """One storage region: a connected component of the access relation.
+
+    ``addrs`` is the exact address set; ``base``/``size`` are its extent and
+    ``init_bytes`` the pre-init image over that extent, so an address ``a`` reads
+    ``init_bytes[a - base]``. A sparse region (stride > 1) therefore carries the
+    bytes between its cells too -- for an SMC region those are instruction bytes.
+    """
 
     id: int
     name: str
