@@ -10,8 +10,6 @@ and a rip loader whose `init` patches its own compare. Every subtune is certifie
 exists; Automatas, Commando and SID Wizard's Emomyst certify with the same
 pipeline.
 
-Contents: 1 why · 2 ground truth · 3 what broke · 4 evidence · 5 the printed tick · 6 certificates · 7 what remains
-
 ## 1. Why Follin
 
 | design mechanism | how Ghouls'n'Ghosts stresses it |
@@ -197,10 +195,10 @@ tick():                                  # $6234, 16,000 calls
 
 ## 6. Certificates
 
-`docs/certificates/ghouls-songNN.json`, produced by `tools/tuneprog_certify.py
-… --song N --until-period --seconds S --budget 45 --resume` (music: 2.4 × the
-HVSC length + 20 s, to cover the transient plus one loop; effects: 400 s).
-All 32: **0 divergences, 0 envelope traps**.
+`docs/certificates/ghouls-songNN.json`, from `tools/tuneprog_certify.py … --song N
+--until-period --seconds S --budget 45 --resume` (music: 2.4 × the HVSC length +
+20 s, covering the transient plus one loop; effects: 400 s). All 32: **0
+divergences, 0 envelope traps**.
 
 | subtune | ticks | s | period | complete |
 |---|---|---|---|---|
@@ -209,13 +207,14 @@ All 32: **0 divergences, 0 envelope traps**.
 | 12–20, 22–32 (effects) | 6–1,265 | 0.1–25 | 1 (617 for 22, 505 for 31) | yes |
 | 21 (effect) | 20,049 | 400 | none | no — horizon only |
 
-`ghouls-songs-all.json`: one tuneprog (1,442 sites, 75 regions, 4 procedures,
-1,567 statements) from the union of all 32 traces, verified subtune by subtune —
-220,049 calls, 0 divergences, 31 of 32 complete.
+`ghouls-songs-all.json`: one tuneprog (1,442 sites, 75 regions, 1,567 statements)
+from the union of all 32 traces, verified subtune by subtune — 220,049 calls,
+0 divergences, 31 of 32 complete.
 
 Automatas (`automatas.json`, `-6581`, `-8580`) and Commando (`commando-song1/2`)
-were regenerated because the front-end rule changes their site count and IR size;
-their results are unchanged (0 divergences; Automatas period 129,024 at 149,024).
+were re-run on the new front end and come out *byte-identical* apart from the
+timestamp — same 651 sites, 102 regions, 1,070 statements, same period 129,024 at
+call 149,024 — so the committed files stand.
 
 ---
 
