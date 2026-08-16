@@ -52,7 +52,7 @@ jobs:
           key: oracle-csv-${{ hashFiles('tests/test_oracle.py') }}
       - name: Oracle test
         run: pytest tests/ -m oracle -n auto
-      - name: tuneprog front end on HVSC exemplars
+      - name: tuneprog front end, certificates and printed form on HVSC exemplars
         run: pytest tests/ -m hvsc -n auto
 
   ghidra-integration:

@@ -176,7 +176,16 @@ def test_certify_tool_smoke(tmp_path):
         cwd=ROOT,
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    for name in ("trace.json", "regions.json", "procs.json", "tuneprog.S4.json", "tuneprog.py"):
+    for name in (
+        "trace.json",
+        "regions.json",
+        "procs.json",
+        "tuneprog.S4.json",
+        "tuneprog.py",
+        "tuneprog.S5.json",
+        "tuneprog.S6.json",
+        "tuneprog.md",
+    ):
         assert (out / name).exists(), name
     cert = json.loads((out / "certificate.json").read_text())
     assert cert["divergence"] is None and cert["subtunes"][0]["divergences"] == 0

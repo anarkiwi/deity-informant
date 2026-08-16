@@ -5,6 +5,7 @@ the SID image write-out, the struct views, the oscillator ``for`` -- and that S5
 left the certified S4 program byte-identical.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -14,6 +15,7 @@ pytest.importorskip("pysidtracker")
 
 from pysidtracker.testing import resolve_tune  # noqa: E402
 
+from deity_informant import cli  # noqa: E402
 from deity_informant.tuneprog import pipeline, printer, recover, structure  # noqa: E402
 from deity_informant.tuneprog.machine import find_entries  # noqa: E402
 from deity_informant.tuneprog.trace import Tracer  # noqa: E402
@@ -88,6 +90,18 @@ def test_automatas_prints_the_shape_of_the_anatomy_player():
     assert "freq_table" in [names.role.get(r) for r in names.region]
     assert "switch " in text and "case " in text
     assert "while input($D012)" in text
+
+
+def test_the_cli_subcommand_decompiles_commando_at_a_short_horizon(tmp_path):
+    sid = tmp_path / "Commando.sid"
+    sid.write_bytes(_tune(COMMANDO))
+    out = tmp_path / "out"
+    assert cli.main(["tuneprog", str(sid), "--out", str(out), "--seconds", "5"]) == 0
+    doc = (out / "tuneprog.md").read_text()
+    assert doc.startswith("# tuneprog: Commando.sid")
+    assert "## program" in doc and "tick(" in doc
+    cert = json.loads((out / "certificate.json").read_text())
+    assert cert["divergence"] is None and cert["stage"] == "S6"
 
 
 def test_commando_prints_the_shape_of_the_design_illustration():
