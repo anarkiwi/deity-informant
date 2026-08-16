@@ -37,6 +37,7 @@ class Names:
 
     region: dict = field(default_factory=dict)
     role: dict = field(default_factory=dict)
+    image: dict = field(default_factory=dict)
     view: dict = field(default_factory=dict)
     groups: dict = field(default_factory=dict)
     procs: dict = field(default_factory=dict)
@@ -61,6 +62,7 @@ class Names:
                 }
                 for k, v in sorted(self.region.items())
             ],
+            "image": [{"region": k, "delta": v} for k, v in sorted(self.image.items())],
             "groups": {g: dict(v, members=sorted(v["members"])) for g, v in self.groups.items()},
             "u16": [{"lo": lo, "hi": hi, "name": n} for (lo, hi), n in sorted(self.u16.items())],
             "procs": self.procs,
@@ -128,6 +130,7 @@ class Facts:
         self.prog = prog
         self.rgn = {r.id: r for r in prog.storage}
         self.sid = []
+        self.copies = []
         self.updates = {}
         self.plain = set()
         self.index = {}
@@ -149,10 +152,10 @@ class Facts:
                     defs[s.n] = s.e
                 self.value(name, _expand(s.e, defs))
             elif type(s) is Store:
-                v = _expand(s.v, defs)
+                v, a = _expand(s.v, defs), _expand(s.a, defs)
                 self.value(name, v)
-                self.value(name, _expand(s.a, defs))
-                self.store(name, s, v)
+                self.value(name, a)
+                self.store(name, s, v, a)
             elif type(s) is Call:
                 for a in s.args:
                     self.value(name, _expand(a, defs))
@@ -168,10 +171,14 @@ class Facts:
                 if y.w == 2:
                     self.addr.add(y.r)
 
-    def store(self, name, s, v):
+    def store(self, name, s, v, a=None):
         """Record a store: the SID image, and whether it updates its own region."""
-        if s.cls == "io" and type(s.a) is Const and SID_LO <= s.a.v <= SID_HI:
-            self.sid.append((s.a.v, v))
+        if s.cls == "io":
+            base, idx = _split(a if a is not None else s.a)
+            if base is not None and SID_LO <= base <= SID_HI:
+                (self.sid if idx is None else self.copies).append(
+                    (base, v) if idx is None else (base, idx, v)
+                )
         if s.r < 0:
             return
         self.writes[name].add(s.r)
@@ -183,6 +190,17 @@ class Facts:
             self.updates.setdefault(s.r, set()).add(v)
         else:
             self.plain.add(s.r)
+
+
+def _split(e):
+    """``(constant base, index)`` of an address expression."""
+    if type(e) is Const:
+        return e.v, None
+    if type(e) is Bin and e.op == "+":
+        for k, i in ((e.a, e.b), (e.b, e.a)):
+            if type(k) is Const:
+                return k.v, i
+    return None, e
 
 
 # ---- roles -------------------------------------------------------------------
@@ -211,6 +229,27 @@ def sid_image(facts):
             if type(x.a) is Const:
                 hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
     return {k: (n, m) for k, (n, m) in out.items()}
+
+
+def image_copy(facts):
+    """``{region: delta}`` for a region a loop copies byte-for-byte into the SID.
+
+    ``sidw($D400 + i, load(R, base + i))`` with one index expression is a shadow
+    of the register file: byte ``a`` of ``R`` is register ``a + delta``, so the
+    flush loop prints as a copy and every other access to ``R`` by its register.
+    """
+    out = {}
+    for base, idx, v in facts.copies:
+        if type(v) is not Load or v.r not in facts.rgn:
+            continue
+        rbase, ridx = _split(v.a)
+        if rbase is None or ridx != idx:
+            continue
+        r = facts.rgn[v.r]
+        if r.kind == "io" or rbase != r.base:
+            continue
+        out[v.r] = base - rbase
+    return out
 
 
 def _value_walk(e):
@@ -297,6 +336,8 @@ def _tables(prog, facts, names):
         if r.id < 0 or r.id in names.region or r.kind not in ("const", "image", "init_constant"):
             continue
         names.role[r.id] = names.role.get(r.id) or ("table" if r.id in indexed else "")
+        if r.zero < r.base:
+            names.notes[r.id] = "%d-based, read at $%04X,i" % (r.base - r.zero, r.zero)
         _uniq(names, r.id, "b%04X" % r.base if r.id in names.view else "T%04X" % r.base)
 
 
@@ -436,7 +477,14 @@ def recover(prog, structured=None):
         names.phase = _phase(structured[tick], prog.storage)
     _freq(prog, names)
     names.groups = _groups(prog, names)
+    names.image = image_copy(facts)
+    for rid, delta in sorted(names.image.items()):
+        names.role[rid] = "sid_image"
+        names.notes[rid] = "flushed to $%04X.." % (facts.rgn[rid].base + delta)
+        _uniq(names, rid, "ghost")
     for rid, (fname, _elems) in sorted(sid_image(facts).items()):
+        if rid in names.image:
+            continue
         names.role[rid] = "sid_image"
         _uniq(names, rid, fname)
     for r in prog.storage:

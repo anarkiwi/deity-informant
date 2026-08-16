@@ -192,6 +192,12 @@ class Rgn:
     stride: int = 1
     init: bytes = b""
     fields: tuple = ()
+    origin: int = 0
+
+    @property
+    def zero(self):
+        """The address index 0 has: the recovered origin, or the base."""
+        return self.origin or self.base
 
 
 @dataclass(slots=True)

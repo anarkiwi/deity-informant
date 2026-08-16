@@ -178,6 +178,8 @@ class Printer:
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
         name = name or self.names.region.get(rid, "r%d" % rid)
+        if rid in self.names.image and addr is not None:
+            return self.regcell(name, addr + self.names.image[rid], _unoffset(idx, addr - r.zero))
         view = self.names.view.get(rid)
         elem = self.names.elem.get(rid)
         field = name if name != self.names.region.get(rid) else view[1] if view else name
@@ -198,12 +200,12 @@ class Printer:
     def index(self, r, addr, idx):
         """The element index of an access: a constant, or the loop variable."""
         if idx is None:
-            return str((addr - r.base) // max(r.stride, 1))
+            return str((addr - r.zero) // max(r.stride, 1))
         hit = self.ivar(idx, r.stride)
         if hit is not None:
             return hit
-        e = _bare(self.expr(idx, False))
-        return e if r.stride == 1 else "%s/%d" % (e, r.stride)
+        e = self.expr(idx, False)
+        return _bare(e) if r.stride == 1 else "%s/%d" % (e, r.stride)
 
     def ivar(self, idx, stride):
         """The loop variable, when the index is it scaled by the element size."""
@@ -221,26 +223,43 @@ class Printer:
         return None
 
     def addr_of(self, e, r):
-        """``(constant address, index expression)`` of an access to region ``r``."""
+        """``(constant address, index expression)`` of an access to region ``r``.
+
+        Indices count from the region's origin, so a 1-based table read at
+        ``base-1,Y`` prints ``T[y]`` and its look-ahead sibling ``T[y + 1]``.
+        """
         if type(e) is Const:
             return e.v, None
         if type(e) is Bin and e.op == "+" and r is not None:
             for k, i in ((e.a, e.b), (e.b, e.a)):
-                if type(k) is Const and k.v == r.base:
-                    return k.v, i
-                if type(k) is Const and r.base <= k.v <= r.base + r.size:
-                    return k.v, Bin("+", Const(k.v - r.base), i, 2) if k.v != r.base else i
+                if type(k) is Const and r.zero <= k.v <= r.base + r.size:
+                    d = k.v - r.zero
+                    return k.v, Bin("+", Const(d), i, 2) if d else i
         return None, e
 
-    def sid(self, addr, idx=None):
-        """``sid[v].reg`` for a register write, the voice indexed by a copy loop."""
-        if addr in GLOBAL_REG:
-            return "sid.%s" % GLOBAL_REG[addr]
+    def regcell(self, name, addr, idx=None):
+        """``sid[v].reg`` / ``ghost[r]``: a register file cell, by voice or by index.
+
+        A voice-scaled index (the loop variable of a per-voice loop, or an index
+        the region's stride says is one) names the register; an index that walks
+        the registers themselves (a flush loop) leaves the register to the index.
+        """
+        if idx is None and addr in GLOBAL_REG:
+            return "%s.%s" % (name, GLOBAL_REG[addr])
         v, k = divmod(addr - SID_LO, 7)
         if idx is None:
-            return "sid[%d].%s" % (v, VOICE_REG[k])
-        i = self.ivar(idx, 7) or _bare(self.expr(idx, False))
-        return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+            return "%s[%d].%s" % (name, v, VOICE_REG[k])
+        i = self.ivar(idx, 7)
+        if i is None:
+            flat = self.ivar(idx, 1)
+            if flat is not None:
+                off = addr - SID_LO
+                return "%s[%s]" % (name, "%s + %s" % (flat, _hex(off)) if off else flat)
+            i = "%s/7" % self.expr(idx, False)
+        return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+
+    def sid(self, addr, idx=None):
+        return self.regcell("sid", addr, idx)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -352,6 +371,13 @@ class Printer:
 
 def _bare(s):
     return s[1:-1] if s.startswith("(") and s.endswith(")") else s
+
+
+def _unoffset(idx, d):
+    """An index with the constant :meth:`Printer.addr_of` folded into it removed."""
+    if d and type(idx) is Bin and idx.op == "+" and type(idx.a) is Const and idx.a.v == d:
+        return idx.b
+    return idx
 
 
 def _split(e):

@@ -151,7 +151,7 @@ def test_names_are_unique_stable_and_serialisable():
     assert names.region == again.region
     assert len(set(names.region.values())) == len(names.region)
     doc = names.to_dict()
-    assert doc["regions"] and set(doc) == {"regions", "groups", "procs", "phase", "u16"}
+    assert doc["regions"] and set(doc) == {"regions", "groups", "image", "procs", "phase", "u16"}
     assert names.of(-99) == "r-99"
 
 
@@ -189,3 +189,62 @@ def test_a_procedure_that_decodes_a_record_through_a_pointer_is_row_apply():
     )
     _view, names = _names(code, calls=2)
     assert "row_apply" in names.procs.values()
+
+
+GHOST = 0x1200
+
+
+def ghost_tune(*play):
+    """A tune with a 25-byte block a loop flushes into the SID, GoatTracker style."""
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "LDX #$18",
+        "zl: STA $1200,X",
+        "DEX",
+        "BPL zl",
+        "RTS",
+        "play: LDX #$18",
+        "fl: LDA $1200,X",
+        "STA $D400,X",
+        "DEX",
+        "BPL fl",
+        *play,
+        "INC cnt",
+        "RTS",
+        "cnt: BRK",
+    )
+
+
+def test_a_loop_that_copies_a_block_into_the_registers_is_the_sid_image():
+    view, names = _names(ghost_tune("LDA cnt", "AND #$FE", "STA $1204"), calls=3)
+    rid = next(r for r, k in names.role.items() if k == "sid_image")
+    assert next(x for x in view.storage if x.id == rid).base == GHOST
+    assert names.region[rid] == "ghost" and names.image[rid] == 0xD400 - GHOST
+    assert names.to_dict()["image"] == [{"region": rid, "delta": 0xD400 - GHOST}]
+
+
+def test_a_block_the_sid_never_reads_wholesale_is_not_an_image():
+    view, names = _names(
+        asm(
+            PLAY,
+            "init: LDA #$00",
+            "STA cnt",
+            "LDX #$18",
+            "zl: STA $1200,X",
+            "DEX",
+            "BPL zl",
+            "RTS",
+            "play: LDX #$18",
+            "fl: LDA $1200,X",
+            "STA $1300,X",  # a copy that is not the register file
+            "DEX",
+            "BPL fl",
+            "INC cnt",
+            "RTS",
+            "cnt: BRK",
+        ),
+        calls=3,
+    )
+    assert not names.image and view.storage

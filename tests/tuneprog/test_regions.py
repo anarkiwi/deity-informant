@@ -214,3 +214,34 @@ def test_pointer_pair_gets_no_index_domain_from_the_stream_access():
     assert ptr.addrs == (0x00FB, 0x00FC) and ptr.stride == 1 and ptr.fields == (0,)
     stream = _at(R, 0x2000)
     assert stream.stride == 7 and stream.addrs == (0x2000, 0x2007, 0x200E)
+
+
+def test_a_one_based_table_recovers_the_address_its_index_counts_from():
+    # GT2's 1-based tables: entry n at base+n-1, so every read is `base-1,Y` with
+    # Y >= 1 and the region's own base is `operand + the smallest index observed`.
+    code = asm(
+        PLAY,
+        "init: LDA #$01",
+        "STA idx",
+        "RTS",
+        "play: LDY idx",
+        "LDA tab-1,Y",
+        "STA $D400",
+        "LDA tab,Y",
+        "STA $D401",
+        "INC idx",
+        "RTS",
+        "idx: BRK",
+        "tab: BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+    )
+    _T, R = _build(code, calls=3)
+    tab = code.labels["tab"]
+    r = _at(R, tab)
+    assert r.base == tab and r.origin == tab - 1 and r.kind == "const"
+    assert r.addrs[0] == tab  # the operand byte belongs to whatever precedes it
+    assert _at(R, code.labels["idx"]).origin == code.labels["idx"]  # a scalar counts from itself
