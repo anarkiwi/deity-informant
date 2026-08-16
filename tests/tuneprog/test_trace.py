@@ -375,3 +375,71 @@ def test_trace_queries():
     T, _ = trace_prog({PLAY: play, 0x1020: asm(0x1020, "RTS")}, init=0x1020, play=PLAY, calls=2)
     assert T.writers_of(PLAY + 1) == T.site_at(PLAY + 5)
     assert T.writers_of(0x9999) == []
+
+
+def test_longer_opcode_variant_marks_its_operand_byte_as_a_cell():
+    # $gate starts as RTS (1 byte) and is patched to LDA # (2 bytes): the operand
+    # byte only becomes an instruction byte on the second variant.
+    play = asm(
+        PLAY,
+        "JSR gate",
+        "LDA #$A9",
+        "STA gate",
+        "INC gate+1",
+        "RTS",
+        "gate: RTS",
+        "BRK",
+        "RTS",
+    )
+    T, _ = trace_prog({PLAY: play, 0x1100: asm(0x1100, "RTS")}, init=0x1100, play=PLAY, calls=4)
+    g = play.labels["gate"]
+    assert {g, g + 1} <= T.cells
+    assert sorted(k[1] for k in T.site_at(g)) == [0x60, 0xA9]
+    assert (g, 0xA9, (None,)) in T.sites  # one site, not one per operand value
+
+
+def test_site_keys_split_on_a_fixed_operand_and_keep_their_own_access_sets():
+    # init runs the probe, patches its operand, and play runs it again: two site
+    # keys, each with the address it really touched.
+    init = asm(
+        0x1100,
+        "start: JSR probe",
+        "LDA #$13",
+        "STA probe+2",
+        "RTS",
+        "probe: LDA $1200",
+        "RTS",
+    )
+    play = asm(PLAY, "JSR $%04X" % init.labels["probe"], "RTS")
+    T, _ = trace_prog(
+        {PLAY: play, 0x1100: init},
+        init=0x1100,
+        play=PLAY,
+        calls=3,
+        data={0x1200: 1, 0x1300: 2},
+    )
+    keys = sorted(T.site_at(init.labels["probe"]))
+    assert [k[2] for k in keys] == [(0x00, 0x12), (0x00, 0x13)]
+    assert [list(T.sites[k]["reads"].values()) for k in keys] == [[{0x1200}], [{0x1300}]]
+    assert [T.sites[k]["count"] for k in keys] == [1, 3]
+
+
+def test_periodicity_needs_a_window_with_no_inputs():
+    body = ("INC $1100", "LDA $1100", "CMP #$03", "BNE out", "LDA #$00", "STA $1100", "out: RTS")
+    quiet = asm(PLAY, *body)
+    noisy = asm(PLAY, "LDA $D012", *body)
+    blocks = {0x1200: asm(0x1200, "RTS")}
+    T, _ = trace_prog({**blocks, PLAY: quiet}, init=0x1200, play=PLAY, calls=9, data={0x1100: 0})
+    assert T.meta["period"] == 3
+    N, _ = trace_prog({**blocks, PLAY: noisy}, init=0x1200, play=PLAY, calls=9, data={0x1100: 0})
+    assert N.meta["period"] is None  # an input was consumed inside every window
+
+
+def test_rti_and_brk_register_effects_are_in_the_call_summary():
+    handler = asm(0x1200, "LDA #$05", "STA $D400", "RTI")
+    img = sid_image({0x1100: asm(0x1100, "RTS"), 0x1200: handler}, 0x1100, 0)
+    t = Tracer(img, Entry("irq", 0x1200, 19656, "pal_video"))
+    t.run_init()
+    t.run_calls(1)
+    T = t.trace()
+    assert T.summaries[0x1200]["wr"] & (1 << 8)  # RTI restored C from the pushed status

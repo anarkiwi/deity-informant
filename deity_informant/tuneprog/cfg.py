@@ -44,7 +44,8 @@ class Proc:
 
     name: str
     entry: int
-    kind: str  # init | tick | sub
+    kind: str  # init | tick | sub -- the first of roles
+    roles: tuple = ()
     nodes: dict = field(default_factory=dict)  # (pc, opcode) -> node dict
     variant_switch: dict = field(default_factory=dict)  # pc -> {"cell", "arms"}
     summary: dict = field(default_factory=dict)
@@ -58,6 +59,7 @@ class Proc:
             "name": self.name,
             "entry": self.entry,
             "kind": self.kind,
+            "roles": list(self.roles),
             "nodes": [dict(n, key=list(n["key"])) for n in self.nodes.values()],
             "variant_switch": [{"pc": pc, **v} for pc, v in sorted(self.variant_switch.items())],
             "summary": self.summary,
@@ -66,19 +68,25 @@ class Proc:
 
 
 def _entry_names(trace):
+    """``({addr: name}, {addr: [role]})`` -- one procedure per entry address.
+
+    An address can hold several roles (an ``init`` that is also the play entry, a
+    tick entry that is also a JSR target); the first is the procedure's ``kind``.
+    """
     init = trace.meta["init"]
     ticks = [e["addr"] for e in trace.meta["schedule"]]
-    names, kinds = {}, {}
-    names[init], kinds[init] = "init", "init"
-    for i, a in enumerate(ticks):
-        if a not in names:
-            names[a] = "tick" if len(ticks) == 1 else "tick%d" % i
-            kinds[a] = "tick"
-    for a in sorted(trace.jsr_targets):
-        if a not in names:
-            names[a] = "p_%04X" % a
-            kinds[a] = "sub"
-    return names, kinds
+    names, roles = {}, {}
+    for a, role, name in (
+        [(init, "init", "init")]
+        + [(a, "tick", "tick" if len(ticks) == 1 else "tick%d" % i) for i, a in enumerate(ticks)]
+        + [(a, "sub", "p_%04X" % a) for a in sorted(trace.jsr_targets)]
+    ):
+        if a in roles:
+            if role not in roles[a]:
+                roles[a].append(role)
+            continue
+        names[a], roles[a] = name, [role]
+    return names, roles
 
 
 def _index(trace):
@@ -110,14 +118,14 @@ def build_procs(trace, lifted=None, regions=None):
 
     Raises :class:`Refusal` (``recursion``) when the JSR call graph has a cycle.
     """
-    names, kinds = _entry_names(trace)
+    names, roles = _entry_names(trace)
     out, keys, variants = _index(trace)
     entries = set(names)
     tails = set(trace.jsr_targets)
     procs = {}
     callgraph = {}
     for entry in sorted(entries):
-        proc = Proc(name=names[entry], entry=entry, kind=kinds[entry])
+        proc = Proc(name=names[entry], entry=entry, kind=roles[entry][0], roles=tuple(roles[entry]))
         _walk(trace, proc, entry, out, keys, variants, tails, lifted)
         proc.summary = _summary(trace, proc, regions)
         callgraph[entry] = {t for n in proc.nodes.values() for t in n["call"] if not n["tail_call"]}
@@ -152,6 +160,7 @@ def _writer_variants(trace, pc, ops):
 
 
 def _variant_arms(trace, pc, ops):
+    """Arms of the opcode-cell switch; an ``unverified`` arm has no node -- trap it."""
     arms = [{"opcode": op, "unverified": False} for op in ops]
     arms += [{"opcode": v, "unverified": True} for v in _writer_variants(trace, pc, ops)]
     return {"cell": pc, "arms": arms}
@@ -191,20 +200,20 @@ def _node(trace, pc, op, out, keys, tails, lifted):
     if rets is not None:
         if rets["unmatched"]:
             node["term"] = "switch"
-            sw = node["switch"] = _switch({"kind": "stack"}, rets["targets"], tails)
+            sw = node["switch"] = _switch({"kind": "stack"}, rets["loose"], tails)
             node["succ"] = [c[1] for c in sw["cases"]]
         else:
             node["term"] = "return"
         return node
     flow = [(t, k) for t, k, _n in edges]
-    if ls is not None and ls.ctrl[0] == "br" and not node["computed"]:
+    arms = _branch_arms(ls, site, pc, op)
+    if arms is not None and not node["computed"]:
         # Both directions of an executed branch are nodes; a direction the trace
         # never took is a trap (the trace-closed product of design section 3).
         seen = {t for t, _k in flow}
-        tgt, fall = ls.ctrl[3], ls.ctrl[4]
         node["term"] = "branch"
-        node["taken"] = tgt
-        node["succ"] = [_ref(a, tails, trap=a not in seen) for a in (tgt, fall)]
+        node["taken"] = arms[0]
+        node["succ"] = [_ref(a, tails, trap=a not in seen) for a in arms]
         return node
     if not flow:
         return node
@@ -224,17 +233,21 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["succ"] = [_ref(t, tails)]
         return node
     kinds = {k for _t, k in flow}
-    if kinds <= {"br_taken", "br_not", "tail"} and len(flow) == 2 and not node["computed"]:
-        taken = next(t for t, k in flow if k in ("br_taken", "tail"))
-        node["term"] = "branch"
-        node["succ"] = [_ref(t, tails) for t, _k in sorted(flow, key=lambda x: x[0] != taken)]
-        node["taken"] = taken
-        return node
     node["term"] = "switch"
     sw = _switch(_expr(ls, "jmpind" if "jmpind" in kinds else "cell"), [t for t, _k in flow], tails)
     node["switch"] = sw
     node["succ"] = [c[1] for c in sw["cases"]]
     return node
+
+
+def _branch_arms(ls, site, pc, op):
+    """``(taken, fall-through)`` of a relative branch, or ``None`` if not one."""
+    if ls is not None:
+        return (ls.ctrl[3], ls.ctrl[4]) if ls.ctrl[0] == "br" else None
+    if OPS[op][1] != "rel":
+        return None
+    rel = site["variants"][0][1]
+    return ((pc + 2 + (rel - 256 if rel & 0x80 else rel)) & 0xFFFF, (pc + 2) & 0xFFFF)
 
 
 def _expr(ls, default):

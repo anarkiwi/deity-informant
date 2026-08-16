@@ -91,7 +91,14 @@ class Trace:
                 for (p, o), v in self.calls.items()
             ],
             "rets": [
-                [p, o, v["unmatched"], sorted(v["matched"].items()), sorted(v["targets"].items())]
+                [
+                    p,
+                    o,
+                    v["unmatched"],
+                    sorted(v["matched"].items()),
+                    sorted(v["targets"].items()),
+                    sorted(v["loose"].items()),
+                ]
                 for (p, o), v in self.rets.items()
             ],
             "summaries": [[k, v["rd"], v["wr"], v["count"]] for k, v in self.summaries.items()],
@@ -148,8 +155,13 @@ class Trace:
             for p, o, r, c, tg in doc["calls"]
         }
         t.rets = {
-            (p, o): {"matched": Counter(dict(m)), "targets": Counter(dict(tg)), "unmatched": u}
-            for p, o, u, m, tg in doc["rets"]
+            (p, o): {
+                "matched": Counter(dict(m)),
+                "targets": Counter(dict(tg)),
+                "unmatched": u,
+                "loose": Counter(dict(lo)),
+            }
+            for p, o, u, m, tg, lo in doc["rets"]
         }
         t.summaries = {k: {"rd": a, "wr": b, "count": c} for k, a, b, c in doc["summaries"]}
         t.inputs = [tuple(x) for x in doc["inputs"]]

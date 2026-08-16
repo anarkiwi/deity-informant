@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..lifter import OPS, MODE_LEN, lift
+from ..lifter import OPS, MODE_LEN, STATUS_BITS, lift
 from ..vm import PcodeVM, _emit_line, _rd_expr, _lhs
 from .. import c64
 from .machine import CIA, CIA1_BASE, CIA2_BASE, Refusal, init_runner, port_bank
@@ -46,6 +46,7 @@ REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
 CALL_BUDGET = 400_000
 MAX_CELL_VALUES = 16
 _KIND = {"jmp": "jmp", "jmpind": "jmpind", "jsr": "jsr", "brk": "brk"}
+_FLAGS = sum(1 << i for i, _b in STATUS_BITS)
 
 
 def input_kind(addr):
@@ -98,6 +99,11 @@ def _reg_masks(rec):
         wr |= 1 << 3
         if stk in ("rts", "rti"):
             rd |= 1 << 3
+        if stk == "rti":  # step() pops the status byte into the flag registers
+            wr |= _FLAGS
+        elif stk == "brk":  # step() pushes the status byte and sets I
+            rd |= _FLAGS & ~wr
+            wr |= _FLAGS | (1 << 10)
     return rd, wr
 
 
@@ -121,8 +127,6 @@ class TraceVM(PcodeVM):
         self.inband = bytearray(0x10000)
         self.inband[image.lo : image.hi] = b"\1" * (image.hi - image.lo)
         self.count = Counter()
-        self.first_bytes = {}
-        self.variants = defaultdict(set)
         self.sitephase = {}
         self.reads = defaultdict(dict)
         self.writes = defaultdict(dict)
@@ -141,10 +145,13 @@ class TraceVM(PcodeVM):
         self.init_writes = []
         self.inputs = []
         self.input_sites = {}
-        self.wl = tuple(array(t) for t in "IHBI")  # call, addr, val, cycle
-        self.io = tuple(array(t) for t in "IHBI")
+        # column arrays (call, addr, val, cycle); the base VM's own wlog hook is
+        # unused because _wr is fully overridden.
+        self.sidlog = tuple(array(t) for t in "IHBI")
+        self.iolog = tuple(array(t) for t in "IHBI")
         self.tick_rd = self.tick_wr = 0
-        self._rs = self._ws = {}
+        self._rs = {}
+        self._ws = {}
         self._pc = self._op = 0
         self._r0 = (0, 0, 0)
 
@@ -229,7 +236,7 @@ class TraceVM(PcodeVM):
             self.bank = port_bank(mem)
 
     def _io_write(self, a, b):
-        log = self.wl if SID_LO <= a <= SID_HI else self.io
+        log = self.sidlog if SID_LO <= a <= SID_HI else self.iolog
         log[0].append(self.call & 0xFFFFFFFF)
         log[1].append(a)
         log[2].append(b)
@@ -253,18 +260,15 @@ class TraceVM(PcodeVM):
         key = (pc, b0, mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF])
         mode = OPS[b0][1]
         bb = key[1 : 1 + MODE_LEN[mode]]
-        sk = (pc, b0)
+        sk = (pc, bb)
         self._pc = pc
         self._op = b0
-        self.count[sk] += 1
-        self.sitephase[sk] = self.sitephase.get(sk, 0) | self.phase
-        fb = self.first_bytes.get(pc)
-        if fb is None:
-            self.first_bytes[pc] = bb
+        n = self.count[sk]
+        self.count[sk] = n + 1
+        if not n:  # first execution of these exact bytes: they are instruction bytes
             for k in range(len(bb)):
                 self.code[(pc + k) & 0xFFFF] = 1
-        elif fb != bb:
-            self.variants[pc].add(bb)
+        self.sitephase[sk] = self.sitephase.get(sk, 0) | self.phase
         r = IDX_REG.get(mode)
         if r is not None:
             self.idx[sk].add(self.reg[r])
@@ -324,7 +328,12 @@ class TraceVM(PcodeVM):
     def _return(self, sk, nxt):
         r = self.rets.get(sk)
         if r is None:
-            r = self.rets[sk] = {"matched": Counter(), "unmatched": 0, "targets": Counter()}
+            r = self.rets[sk] = {
+                "matched": Counter(),
+                "unmatched": 0,
+                "targets": Counter(),
+                "loose": Counter(),
+            }
         r["targets"][nxt] += 1
         if self.shadow and self.shadow[-1][1] == nxt:
             site, _ret, target, frd, fwr = self.shadow.pop()
@@ -341,6 +350,7 @@ class TraceVM(PcodeVM):
             s["count"] += 1
         else:
             r["unmatched"] += 1
+            r["loose"][nxt] += 1
             self.unmatched_rts += 1
 
 
@@ -370,7 +380,9 @@ class Tracer:
         init_runner(vm, self.image.init, self.cache, lift, **kw)
         vm.shadow.clear()
         vm.phase = PH_PLAY
-        if self.entry.kind == "irq" and not self.image.lo <= 0xEA31 < self.image.hi:
+        if self.entry.kind == "irq" and not any(
+            self.image.lo <= a < self.image.hi for a in (0xEA31, 0xEA81, 0xFEBC)
+        ):
             c64.install_kernal_irq_stubs(vm)
         self.image_post_init = bytes(vm.mem)
         return self
@@ -424,11 +436,14 @@ class Tracer:
         self.state_hash.append(v)
         self.footprint.append(n)
         if self.period is None:
+            ninp = len(vm.inputs)
             prev = self.hashes.get((n, v))
             if prev is None:
-                self.hashes[(n, v)] = self.calls_done
-            else:
-                self.period = self.calls_done - prev
+                self.hashes[(n, v)] = (self.calls_done, ninp)
+            elif prev[1] == ninp:
+                # design S1: a repeat is a witness only with no inputs consumed
+                # between the two calls (otherwise the next tick may differ).
+                self.period = self.calls_done - prev[0]
                 self.first_repeat = self.calls_done
 
     # ---- resume ------------------------------------------------------------
@@ -454,25 +469,31 @@ class Tracer:
         vm = self.vm
         cells = {a for a in vm.written_play if vm.code[a]}
         sites = {}
-        for (pc, opcode), count in vm.count.items():
-            variants = [
-                bytes(v) for v in ({vm.first_bytes[pc]} | vm.variants[pc]) if v[0] == opcode
-            ]
-            for v in variants or [bytes(vm.first_bytes[pc])]:
-                key = site_key(pc, opcode, v, cells)
-                s = sites.get(key)
-                if s is None:
-                    s = sites[key] = {
-                        "pc": pc,
-                        "opcode": opcode,
-                        "count": count,
-                        "phases": vm.sitephase[(pc, opcode)],
-                        "variants": [],
-                        "idx": sorted(vm.idx.get((pc, opcode), ())),
-                        "reads": {i: set(a) for i, a in vm.reads[(pc, opcode)].items()},
-                        "writes": {i: set(a) for i, a in vm.writes[(pc, opcode)].items()},
-                    }
-                s["variants"].append(v)
+        for sk, count in vm.count.items():
+            pc, bb = sk
+            key = site_key(pc, bb[0], bb, cells)
+            s = sites.get(key)
+            if s is None:
+                s = sites[key] = {
+                    "pc": pc,
+                    "opcode": bb[0],
+                    "count": 0,
+                    "phases": 0,
+                    "variants": [],
+                    "idx": set(),
+                    "reads": {},
+                    "writes": {},
+                }
+            s["count"] += count
+            s["phases"] |= vm.sitephase[sk]
+            s["variants"].append(bytes(bb))
+            s["idx"] |= vm.idx.get(sk, set())
+            for name, src in (("reads", vm.reads), ("writes", vm.writes)):
+                for i, a in src.get(sk, {}).items():
+                    s[name].setdefault(i, set()).update(a)
+        for s in sites.values():
+            s["idx"] = sorted(s["idx"])
+            s["variants"].sort()
         jsr_targets = {t for c in vm.calls.values() for t in c["targets"]}
         edges = {k: list(v) for k, v in vm.edges.items()}
         for (_f, _o, t), e in edges.items():
@@ -508,8 +529,8 @@ class Tracer:
             cells=cells,
             cell_values={a: set(v) for a, v in vm.wr_values.items() if a in cells},
             jsr_targets=jsr_targets,
-            wlog=_arrays(vm.wl),
-            iolog=_arrays(vm.io),
+            wlog=_arrays(vm.sidlog),
+            iolog=_arrays(vm.iolog),
             state_hash=np.frombuffer(self.state_hash, dtype=np.uint64).copy(),
             footprint_size=np.frombuffer(self.footprint, dtype=np.uint32).copy(),
         )

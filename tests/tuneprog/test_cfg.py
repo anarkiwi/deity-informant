@@ -320,3 +320,52 @@ def test_unexecuted_branch_direction_is_a_trap():
     assert n["succ"][0] == {"to": code.labels["dead"], "tail": False, "trap": True}
     assert n["succ"][1] == {"to": code.labels["br"] + 2, "tail": False, "trap": False}
     assert code.labels["dead"] not in {x["pc"] for x in tick.nodes.values()}
+
+
+def test_branch_arms_are_exact_without_lifted_sites():
+    code = asm(PLAY, "init: RTS", "play: LDX #$00", "br: BNE skip", "NOP", "skip: RTS")
+    T, _ = trace_prog({PLAY: code}, init=code.labels["init"], play=code.labels["play"], calls=1)
+    procs = build_procs(T)  # no lifted sites: the arms come from the operand byte
+    tick = _by_entry(procs, code.labels["play"])
+    n = [x for x in tick.nodes.values() if x["pc"] == code.labels["br"]][0]
+    assert n["term"] == "branch" and n["taken"] == code.labels["skip"]
+    assert n["succ"][0]["trap"] and not n["succ"][1]["trap"]
+
+
+def test_entry_that_is_both_init_and_the_tick_keeps_both_roles():
+    code = asm(PLAY, "entry: LDA #$07", "STA $D400", "RTS")
+    T, _ = trace_prog({PLAY: code}, init=PLAY, play=PLAY, calls=2)
+    procs = build_procs(T, lift_trace(T))
+    assert len(procs) == 1
+    p = next(iter(procs.values()))
+    assert p.entry == PLAY and p.kind == "init" and p.roles == ("init", "tick")
+    assert p.to_dict()["roles"] == ["init", "tick"]
+
+
+def test_unmatched_return_switch_lists_only_the_loose_targets():
+    # one RTS site reached both by a JSR (matched) and by an RTS trick (unmatched).
+    code = asm(
+        PLAY,
+        "init: RTS",
+        "play: INC cnt",
+        "LDA cnt",
+        "AND #$01",
+        "BNE viajsr",
+        "LDA #>alt-1",
+        "PHA",
+        "LDA #<alt-1",
+        "PHA",
+        "JMP rts_site",
+        "viajsr: JSR rts_site",
+        "JMP done",
+        "alt: NOP",
+        "done: RTS",
+        "rts_site: RTS",
+        "cnt: BRK",
+    )
+    T, procs = _procs(code, calls=4)
+    assert T.meta["unmatched_rts"] == 2
+    site = _by_entry(procs, code.labels["rts_site"])
+    n = next(iter(site.nodes.values()))
+    assert n["term"] == "switch" and n["switch"]["expr"]["kind"] == "stack"
+    assert [c[0] for c in n["switch"]["cases"]] == [code.labels["alt"]]

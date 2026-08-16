@@ -186,3 +186,31 @@ def test_region_count_and_build_without_lifted_sites():
     R = build_regions(T)  # no lifted sites: the trace's own access relation only
     r = _at(R, 0x1500)
     assert r.count == 2 and r.size == 2 and r.stride == 1
+
+
+def test_pointer_pair_gets_no_index_domain_from_the_stream_access():
+    # (zp),Y with Y in {0,7,14}: only the target load is affine in Y, so the
+    # two-byte pointer must not inherit stride 7.
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA $FB",
+        "LDA #$20",
+        "STA $FC",
+        "RTS",
+        "play: LDY #$0E",
+        "LDX #$FF",
+        "loop: LDA ($FB),Y",
+        "STA $D400",
+        "TYA",
+        "SBX #$07",
+        "TXA",
+        "TAY",
+        "BPL loop",
+        "RTS",
+    )
+    _T, R = _build(code, data={a: 1 for a in range(0x2000, 0x2010)})
+    ptr = _at(R, 0x00FB)
+    assert ptr.addrs == (0x00FB, 0x00FC) and ptr.stride == 1 and ptr.fields == (0,)
+    stream = _at(R, 0x2000)
+    assert stream.stride == 7 and stream.addrs == (0x2000, 0x2007, 0x200E)

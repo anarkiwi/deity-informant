@@ -126,9 +126,14 @@ class CIA:
     def underflows(self, cycles):
         return (cycles - self.t0) // (self.latch + 1) if self.running else 0
 
+    def _off(self, addr):
+        """Register index within this chip's page (the CIA mirrors every 16 bytes)."""
+        d = addr - self.base
+        return (d & 0x0F) if 0 <= d < 0x100 else -1
+
     def read(self, addr, cycles):
         """Value for ``addr``, or ``None`` when this chip does not model it."""
-        off = addr - self.base
+        off = self._off(addr)
         if off == 0x04 or off == 0x05:
             v = self.latch - self._elapsed(cycles) if self.running else self.counter
             return (v >> 8) & 0xFF if off == 0x05 else v & 0xFF
@@ -140,14 +145,15 @@ class CIA:
         return None
 
     def write(self, addr, val, cycles):
-        off = addr - self.base
-        if off == 0x04:
-            self.latch = (self.latch & 0xFF00) | (val & 0xFF)
-        elif off == 0x05:
-            self.latch = (self.latch & 0x00FF) | ((val & 0xFF) << 8)
-            if not self.running:
-                self.counter = self.latch
-                self.t0 = cycles
+        off = self._off(addr)
+        if off == 0x04 or off == 0x05:
+            if off == 0x04:
+                self.latch = (self.latch & 0xFF00) | (val & 0xFF)
+            else:
+                self.latch = (self.latch & 0x00FF) | ((val & 0xFF) << 8)
+            self.counter = self.latch
+            self.t0 = cycles  # restart the count so underflows stay monotone
+            self.cycles0 = 0
         elif off == 0x0E:
             if val & 0x10:  # force load
                 self.counter = self.latch

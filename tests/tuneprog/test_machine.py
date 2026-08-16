@@ -122,3 +122,24 @@ def test_init_runner_refuses_runaway():
     with pytest.raises(Refusal) as e:
         init_runner(vm, 0x1000, {}, lift, budget=500)
     assert e.value.reason == "init runaway"
+
+
+def test_cia_registers_mirror_every_sixteen_bytes():
+    c = CIA(CIA1_BASE)
+    c.write(CIA1_BASE + 0x14, 0x40, 0)  # $DC14 mirrors $DC04
+    c.write(CIA1_BASE + 0x15, 0x00, 0)
+    c.write(CIA1_BASE + 0x1E, 0x11, 0)  # $DC1E mirrors $DC0E
+    assert c.latch == 0x0040 and c.running
+    assert c.read(CIA1_BASE + 0x14, 0x10) == c.read(CIA1_BASE + 4, 0x10) == 0x30
+    assert c.read(CIA1_BASE + 0x100, 0) is None
+
+
+def test_cia_latch_rewrite_keeps_underflows_monotone():
+    c = CIA(CIA1_BASE)
+    c.write(CIA1_BASE + 4, 0x10, 0)
+    c.write(CIA1_BASE + 5, 0x00, 0)
+    c.write(CIA1_BASE + 0x0E, 0x11, 0)
+    assert c.read(CIA1_BASE + 0x0D, 0x100) & 1  # underflowed
+    c.write(CIA1_BASE + 5, 0x10, 0x100)  # a much longer period, mid-flight
+    assert c.read(CIA1_BASE + 0x0D, 0x120) == 0  # not due yet, and not wedged
+    assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # still fires later

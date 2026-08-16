@@ -10,6 +10,8 @@ reads its operand as a variable:
 * ``abs``/``abs,X``/``abs,Y`` address bytes -> a 16-bit load folded into the
   address expression;
 * ``(zp),Y`` pointer-address bytes -> ``load(cell)`` and ``load(cell) + 1``;
+* ``idx_ops`` reports which memory ops are affine in X or Y, so S3 attaches an
+  index domain only to the access that really uses it;
 * patched ``jmp``/``jsr``/branch operands -> a computed control target
   (``LiftedSite.ctrl_cell``), which :mod:`.cfg` turns into a switch.
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..lifter import OPS, C, lift
+from .trace import site_key
 
 
 @dataclass
@@ -38,6 +41,7 @@ class LiftedSite:
     src_map: list = field(default_factory=list)  # new op index -> original index (-1 synthetic)
     cell_loads: list = field(default_factory=list)  # (addr, size) reads of residualised cells
     ptr_pairs: list = field(default_factory=list)  # (op_lo, op_hi) original indices of a zp ptr
+    idx_ops: dict = field(default_factory=dict)  # original op index -> "X" | "Y"
     ctrl_cell: tuple = None  # (addr, size, form) when the control target is patched
     cyc: int = 0
 
@@ -90,6 +94,40 @@ class _Res:
         return t
 
 
+_IDX = {1: "X", 2: "Y"}
+
+
+def _taint(vn, seen):
+    if vn[0] == "r":
+        r = _IDX.get(vn[1])
+        return {r} if r else set()
+    return seen.get(vn[1], set()) if vn[0] == "u" else set()
+
+
+def _indexed_ops(ops):
+    """``{op index: 'X'|'Y'}`` for memory ops whose address is affine in an index.
+
+    Taint propagates through arithmetic only: a ``LOAD`` breaks the affine
+    relation, so an ``(zp,X)`` pointer fetch is X-indexed while the stream access
+    it feeds is not, and a ``(zp),Y`` pointer fetch is not indexed while the
+    stream access is.
+    """
+    seen, out = {}, {}
+    for i, (mn, res, ins) in enumerate(ops):
+        if mn in ("LOAD", "STORE"):
+            marks = _taint(ins[0], seen)
+            if marks:
+                out[i] = sorted(marks)[0]
+            if mn == "LOAD":
+                continue
+        if res is not None and res[0] == "u":
+            marks = set()
+            for vn in ins:
+                marks |= _taint(vn, seen)
+            seen[res[1]] = marks
+    return out
+
+
 def _ptr_pairs(ops, provops):
     """``(lo op, hi op)`` indices of every ``(zp),Y`` pointer fetch in ``ops``."""
     lo = {}
@@ -115,12 +153,15 @@ def lift_site(image, site, cells, key=None, variant=None):
     pc = site["pc"]
     v = variant if variant is not None else site["variants"][0]
     m = image if isinstance(image, bytearray) else bytearray(image)
-    saved = bytes(m[pc : pc + len(v)])
-    m[pc : pc + len(v)] = v
+    at = [(pc + k) & 0xFFFF for k in range(len(v))]
+    saved = [m[a] for a in at]
+    for a, b in zip(at, v):
+        m[a] = b
     try:
         rec = lift(m, pc)
     finally:
-        m[pc : pc + len(v)] = saved
+        for a, b in zip(at, saved):
+            m[a] = b
     prov = rec["prov"]
     res = _Res(rec["ops"])
     ops, src_map = [], []
@@ -144,7 +185,7 @@ def lift_site(image, site, cells, key=None, variant=None):
         res.loads.append((ctrl_cell[0], ctrl_cell[1]))
     mn, mode = OPS[site["opcode"]]
     return LiftedSite(
-        key=key if key is not None else (pc, site["opcode"], tuple(v[1:])),
+        key=key if key is not None else site_key(pc, site["opcode"], v, cells),
         pc=pc,
         opcode=site["opcode"],
         length=rec["len"],
@@ -155,6 +196,7 @@ def lift_site(image, site, cells, key=None, variant=None):
         src_map=src_map,
         cell_loads=res.loads,
         ptr_pairs=_ptr_pairs(rec["ops"], prov["ops"]),
+        idx_ops=_indexed_ops(rec["ops"]),
         ctrl_cell=ctrl_cell,
         cyc=rec["cyc"],
     )

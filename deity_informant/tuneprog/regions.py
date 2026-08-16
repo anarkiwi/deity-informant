@@ -11,11 +11,12 @@ components, and types each component:
 ``io`` (``$D000-$DFFF``). Regions may lie inside executed instruction bytes --
 that is what an SMC operand cell is.
 
-``stride`` comes from the observed index-register domains (falling back to the
-address spacing) and ``fields`` are the accessors' base offsets modulo it, so a
-struct-of-arrays layout (stride 1) or a struct-of-code layout (stride 49) falls
-out of the trace. Each accessor keeps its observed extent (the envelope an
-indexed access must stay inside).
+``stride`` comes from the index-register domain of the accesses that are really
+affine in X or Y (``LiftedSite.idx_ops``, so a ``(zp),Y`` pointer fetch carries
+no domain), falling back to the address spacing; ``fields`` are the accessors'
+base offsets modulo it, so a struct-of-arrays layout (stride 1) or a
+struct-of-code layout (stride 49) falls out of the trace. Each accessor keeps
+its observed extent (the envelope an indexed access must stay inside).
 
 Public API: :func:`build_regions`, :func:`index_regions`, :class:`Region`.
 """
@@ -172,7 +173,9 @@ def build_regions(trace, lifted=None):
     for key, i, mode, addrs in accesses:
         r = by_root[dsu.find(next(iter(addrs)))]
         s = trace.sites[key]
-        idx = s["idx"] if OPS[key[1]][1] in IDX_REG else []
+        ls = (lifted or {}).get(key)
+        indexed = i in ls.idx_ops if ls is not None else OPS[key[1]][1] in IDX_REG
+        idx = s["idx"] if indexed else []
         r.accessors.append(
             {
                 "site": key,
