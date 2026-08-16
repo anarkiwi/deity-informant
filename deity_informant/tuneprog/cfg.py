@@ -110,7 +110,7 @@ def build_procs(trace, lifted=None, regions=None):
     names, kinds = _entry_names(trace)
     out, keys, variants = _index(trace)
     entries = set(names)
-    tails = {a for a in trace.jsr_targets}
+    tails = set(trace.jsr_targets)
     procs = {}
     callgraph = {}
     for entry in sorted(entries):
@@ -131,7 +131,7 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
             continue
         seen.add(pc)
         ops = variants[pc]
-        if len(ops) > 1:
+        if len(ops) > 1 or _writer_variants(trace, pc, ops):
             proc.variant_switch[pc] = _variant_arms(trace, pc, ops)
         for op in ops:
             node = _node(trace, pc, op, out, keys, tails, lifted)
@@ -139,11 +139,14 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
             work.extend(r["to"] for r in node["succ"] if not r["tail"])
 
 
+def _writer_variants(trace, pc, ops):
+    """Opcodes a decompiled writer stored into the cell at ``pc`` but never executed."""
+    return sorted(v for v in trace.cell_values.get(pc, ()) if v not in ops and v in OPS)
+
+
 def _variant_arms(trace, pc, ops):
     arms = [{"opcode": op, "unverified": False} for op in ops]
-    for v in sorted(trace.cell_values.get(pc, ())):
-        if v not in ops and v in OPS:
-            arms.append({"opcode": v, "unverified": True})
+    arms += [{"opcode": v, "unverified": True} for v in _writer_variants(trace, pc, ops)]
     return {"cell": pc, "arms": arms}
 
 
@@ -178,8 +181,8 @@ def _node(trace, pc, op, out, keys, tails, lifted):
     if rets is not None:
         if rets["unmatched"]:
             node["term"] = "switch"
-            node["switch"] = _switch({"kind": "stack"}, rets["targets"], tails)
-            node["succ"] = [c[1] for c in node["switch"]["cases"]]
+            sw = node["switch"] = _switch({"kind": "stack"}, rets["targets"], tails)
+            node["succ"] = [c[1] for c in sw["cases"]]
         else:
             node["term"] = "return"
         return node
@@ -194,8 +197,9 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["call"] = [t]
         elif k == "jmpind" or node["computed"]:
             node["term"] = "switch"
-            node["switch"] = _switch(_expr(ls, "jmpind" if k == "jmpind" else "cell"), [t], tails)
-            node["succ"] = [c[1] for c in node["switch"]["cases"]]
+            sw = _switch(_expr(ls, "jmpind" if k == "jmpind" else "cell"), [t], tails)
+            node["switch"] = sw
+            node["succ"] = [c[1] for c in sw["cases"]]
         else:
             node["term"] = "goto"
             node["succ"] = [_ref(t, tails)]
@@ -210,10 +214,9 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         node["taken"] = taken
         return node
     node["term"] = "switch"
-    node["switch"] = _switch(
-        _expr(ls, "jmpind" if "jmpind" in kinds else "cell"), [t for t, _k in flow], tails
-    )
-    node["succ"] = [c[1] for c in node["switch"]["cases"]]
+    sw = _switch(_expr(ls, "jmpind" if "jmpind" in kinds else "cell"), [t for t, _k in flow], tails)
+    node["switch"] = sw
+    node["succ"] = [c[1] for c in sw["cases"]]
     return node
 
 

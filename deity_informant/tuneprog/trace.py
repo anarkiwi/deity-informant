@@ -69,9 +69,9 @@ def input_kind(addr):
 def site_key(pc, opcode, insn_bytes, cells):
     """``(pc, opcode, fixed operand bytes)``; operand bytes in ``cells`` drop out."""
     fixed = tuple(
-        None if ((pc + k) & 0xFFFF) in cells else insn_bytes[k] for k in range(1, len(insn_bytes))
+        None if (pc + k) & 0xFFFF in cells else insn_bytes[k] for k in range(1, len(insn_bytes))
     )
-    return (pc, opcode, fixed)
+    return pc, opcode, fixed
 
 
 def _emit_attr(mn, out, ins, i):
@@ -518,7 +518,7 @@ class Tracer:
         init_runner(vm, self.image.init, self.cache, lift, **kw)
         vm.shadow.clear()
         vm.phase = PH_PLAY
-        if self.entry.kind == "irq" and not (self.image.lo <= 0xEA31 < self.image.hi):
+        if self.entry.kind == "irq" and not self.image.lo <= 0xEA31 < self.image.hi:
             c64.install_kernal_irq_stubs(vm)
         self.image_post_init = bytes(vm.mem)
         return self

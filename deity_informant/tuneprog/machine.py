@@ -14,6 +14,10 @@ Public API:
   underflow) so an init busy-wait on ``$DC04``/``$DC0D`` terminates.
 """
 
+# pysidtracker is an optional extra: its imports are deferred into the functions
+# that need it so the front end loads without it.
+# pylint: disable=import-outside-toplevel
+
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
@@ -158,9 +162,7 @@ class CIA:
 def _cadence(data):
     """``(cycles_per_tick, source)`` from ``pysidtracker``, else a PAL frame."""
     try:
-        from pysidtracker.cadence import (
-            playroutine_cadence,
-        )  # pylint: disable=import-outside-toplevel
+        from pysidtracker.cadence import playroutine_cadence
     except ImportError:  # pragma: no cover - pysidtracker is an optional extra
         return PAL_FRAME, "assumed_pal"
     cad = playroutine_cadence(data)
@@ -170,8 +172,8 @@ def _cadence(data):
 def _init_topology(data):
     """Installed vectors/latches observed by ``pysidtracker.trace_init``."""
     try:
-        from pysidtracker.image import SidImage  # pylint: disable=import-outside-toplevel
-        from pysidtracker.trace import trace_init  # pylint: disable=import-outside-toplevel
+        from pysidtracker.image import SidImage
+        from pysidtracker.trace import trace_init
     except ImportError:  # pragma: no cover - pysidtracker is an optional extra
         return None
     return trace_init(SidImage.from_bytes(data), play_calls=0)

@@ -40,7 +40,7 @@ _ASM = Assembler(_Mpu())
 
 
 _LABEL = re.compile(r"^([A-Za-z_]\w*):\s*(.*)$")
-_WORD = re.compile(r"(?<![$\w])[A-Za-z_]\w*")
+_WORD = re.compile(r"(?<![$\w])([<>]?)([A-Za-z_]\w*)(\s*[+-]\s*\d+)?")
 
 
 class Code(bytes):
@@ -50,15 +50,24 @@ class Code(bytes):
 
 
 def _subst(operand, resolve):
-    return _WORD.sub(
-        lambda m: m.group(0) if m.group(0).upper() in "AXY" else resolve(m.group(0)), operand
-    )
+    def rep(m):
+        half, name, off = m.groups()
+        if name.upper() in ("A", "X", "Y") and not half:
+            return m.group(0)
+        v = resolve(name) + (int(off.replace(" ", "")) if off else 0)
+        if half:
+            return "$%02X" % ((v & 0xFF) if half == "<" else (v >> 8))
+        return "$%04X" % v
+
+    return _WORD.sub(rep, operand)
 
 
 def asm(org, *lines):
     """Assemble ``lines`` at ``org``. ``name:`` defines a label; a bare word is one.
 
     Two passes, so forward references work: ``asm(0x1000, "loop: DEX", "BNE loop")``.
+    ``label+N``/``label-N`` and ``#<label``/``#>label`` (low/high byte) are understood;
+    labels named A, X or Y are not (they read as registers).
     """
     labels = {}
     out = b""
@@ -66,15 +75,17 @@ def asm(org, *lines):
         out = bytearray()
         pc = org
         for ln in lines:
-            m = _LABEL.match(ln)
-            if m:
+            while True:
+                m = _LABEL.match(ln)
+                if not m:
+                    break
                 labels[m.group(1)] = pc
                 ln = m.group(2)
-                if not ln.strip():
-                    continue
+            if not ln.strip():
+                continue
             parts = ln.split(None, 1)
             if len(parts) > 1:
-                resolve = (lambda n: "$%04X" % labels[n]) if final else (lambda n: "$FFFF")
+                resolve = labels.__getitem__ if final else (lambda n: 0xFFF0)
                 ln = parts[0] + " " + _subst(parts[1], resolve)
             b = _ASM.assemble(ln, pc)
             out += bytes(b)
