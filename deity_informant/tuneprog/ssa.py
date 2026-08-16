@@ -17,7 +17,8 @@ Passes, each semantics-preserving with :class:`~.ir.Interp` as the oracle:
   in the procedures ``init`` never reaches -- see :func:`simplify`);
 * :func:`fold_branches` -- a constant test becomes a jump and its dead arm goes;
 * :func:`dce` -- drop values nobody reads (the bulk of the P-Code flag ops); a
-  load that can consume a pinned input is never dropped.
+  load that can consume a pinned input is never dropped;
+* :func:`canonical` -- fix the block order the JSON records.
 
 :func:`simplify` is the S4 driver: it runs the passes to a fixpoint, with an
 optional peephole hook (:mod:`.idioms`).
@@ -261,7 +262,7 @@ def split_critical(proc):
     preds = preds_of(proc)
     for lbl in list(proc.blocks):
         b = proc.blocks[lbl]
-        for s in set(succs(b.term)):
+        for s in sorted(set(succs(b.term))):
             if len(succs(b.term)) > 1 and len(preds[s]) > 1:
                 mid = "%s$%s" % (lbl, s)
                 proc.blocks[mid] = Block(mid, [], Goto(s), b.src)
@@ -536,6 +537,18 @@ def constprop(proc, tables=None, folds=None):
     return hits[0] + _forward(proc, lambda e: type(e) is Const)
 
 
+def canonical(proc):
+    """Order the blocks reachable-first in reverse postorder, the rest by label.
+
+    Block order is presentation, but it is what the emitted JSON records, so it is
+    fixed here rather than left to the order the passes happened to build.
+    """
+    order = proc.order()
+    rest = sorted(set(proc.blocks) - set(order))
+    proc.blocks = {l: proc.blocks[l] for l in order + rest}
+    return proc
+
+
 def simplify(prog, peephole=None, rounds=8, folds=None):
     """The S4 pipeline over every procedure: SSA, passes to a fixpoint, out of SSA.
 
@@ -558,5 +571,6 @@ def simplify(prog, peephole=None, rounds=8, folds=None):
                 break
         from_ssa(p)
         merge_chains(p)
+        canonical(p)
     prog.meta["stage"] = "S4"
     return prog

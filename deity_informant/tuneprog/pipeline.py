@@ -14,7 +14,20 @@ import pickle
 import time
 from pathlib import Path
 
-from . import emit, fold, ir, printer, recover, ssa, structure, texture, unroll, verify as V, word
+from . import (
+    emit,
+    fold,
+    ir,
+    jumptab,
+    printer,
+    recover,
+    ssa,
+    structure,
+    texture,
+    unroll,
+    verify as V,
+    word,
+)
 from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
@@ -108,6 +121,7 @@ def build(trace, name=None, sid_model=None):
     ssa.simplify(
         prog, rewrite, folds=ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
     )
+    jumptab.enumerate_targets(prog)
     return prog, regions, procs
 
 
