@@ -121,10 +121,11 @@ Semantics that drive player structure:
   they write gate off and AD/SR = a reset value ($0F00 here for JCH, GoatTracker
   and SID Wizard's defaults; $0000, $F800 elsewhere), and at note-on they may
   pulse the TEST bit ($08 in the control byte) to reset the oscillator. Of the
-  seven: JCH, GoatTracker and SID Wizard implement it in code; defMON leaves it
+  eight: JCH, GoatTracker and SID Wizard implement it in code; defMON leaves it
   to the data (a sidTAB row program does exactly the same writes); Hubbard,
-  Galway and Follin do not do it at all (Hubbard cuts notes with SR=0, Galway
-  pulses TEST at note-on).
+  Galway, Follin and Walker do not do it at all (Hubbard cuts notes with SR=0,
+  Galway pulses TEST at note-on, Walker retriggers the gate off/on inside one
+  call).
 - **Frequency is a table lookup.** Every player has a 96-entry (8 octaves × 12,
   or 7 × 12 + extras) table of 16-bit values, either as two 96-byte tables
   (lo/hi, indexed by note number) or interleaved (indexed by 2×note). Vibrato,
@@ -2389,7 +2390,7 @@ Observations that hold across all eight:
 
 1. **State per voice is small (12–45 bytes, ~100 with Galway's working record) and flat.** No player uses a linked structure, a heap, or recursion. The whole state of a tune at any frame is those bytes plus a handful of globals — which is what makes frame-level replay verification tractable.
 2. **The frame is a fixed pipeline**: sequencer decision (rarely) then modulation (always) then output. Two players (JCH, GoatTracker) pipeline the sequencer 2 frames early to implement hard restart; SID Wizard splits it into three ticks. In every case the "phase" is a small counter compared with constants — the decompiler should recover the phase variable first, because every other branch is conditioned on it.
-3. **Effects are one-step-per-frame machines with 1–3 bytes of state**: a counter, a direction/phase, an accumulator. Table-driven variants add a cursor into a byte table with `set / step-for-N / jump / hold` rows; five of the seven (GoatTracker, JCH, SID Wizard, defMON, and Galway's segment records) use that same row vocabulary.
+3. **Effects are one-step-per-frame machines with 1–3 bytes of state**: a counter, a direction/phase, an accumulator. Table-driven variants add a cursor into a byte table with `set / step-for-N / jump / hold` rows; five of the eight (GoatTracker, JCH, SID Wizard, defMON, and Galway's segment records) use that same row vocabulary; Walker's four LFOs are the parameter-record form of the same idea.
 4. **Dispatch is by patched jump when the command set is large (Galway 15, Follin 21, GoatTracker 16+5, SID Wizard 31+14+8) and by compare chain when it is small (Hubbard, JCH ~6 classes).** All patched-jump sites read a constant table, so the target set is statically known.
 5. **SMC is storage, not code generation.** 100 % of play-time SMC in these six is: an operand byte used as a variable, a jump operand used as a switch, or (once) an opcode used as a 1-bit variable. Init-time SMC is relocation. There is no run-time code synthesis.
 6. **Almost nothing is volatile.** No exemplar reads $D011/$D012 or a timer inside play; the sample-playing JCH build reads shared RAM from an NMI but the SID-writing path is deterministic; Walker reads $D41B only into an additive modulation offset (a data sink, never a branch condition). A tune's SID output is a function of (subtune, call index) — plus, for defMON, the SID model detected once at init, and for Walker, the pinned $D41B stream.
@@ -2740,7 +2741,7 @@ length of every subtune has captured the program.
 
 ## 7. Traps
 
-Concrete things that broke, or would break, a naive decompiler on these seven
+Concrete things that broke, or would break, a naive decompiler on these eight
 players. Each was observed in the exemplar named.
 
 **Flags**
