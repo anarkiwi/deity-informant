@@ -19,6 +19,8 @@ corpus tune in a "semantic" refusal class is a misdiagnosis (S11).
 | clean tune -> `unobserved reached` | deeper placement runs a previously skipped path; expected reclassification — verify the guard, not the placement |
 | value right, cells wrong | destination fusion without layout proof — A10 |
 | verdict changes with pass order | F3 — the rule is order-dependent; fix the rule, not the order |
+| artifact scales with the trace (template count ~ frames; folded text >> static text) | (1) a guard observation is data, not control — F9 (Commando: place guards pinning table reads to the note played, 11,750 frames -> 5,915 templates where 1,302 control shapes exist); (2) only after F9 is excluded: an unrolled loop resisting re-roll — §11.2(3) |
+| `no consistent fork` / `divergence without a shared guard` | (1) two guard kinds at one control point — guard identity not site-global, F9+F6; (2) a genuinely unshared divergence — read the recorder facts at the site before naming anything new. Chain `_fork`'s swallowed errors (innermost first) to see the real head mismatch |
 
 ## S. Stack idioms — the complete real-world set
 
@@ -100,6 +102,7 @@ apply to them exactly as to any cell.
 | F6 | wrong unit | the web, not the cell: slot keys must match across push/pull; overlaid cells split per web |
 | F7 | post-inline coarsening | per-procedure premises re-checked after flattening |
 | F8 | guard at the wrong layer | ownership at the access, not the page; a held slot's guard sits where the cell is made |
+| F9 | data pinned as control | a guard's observation must be a control fact (a branch direction, a variant set), never a data value; pinning a computed read to its one concrete address turns song data into fork arms and the artifact scales with the trace, not the code. The address fact is membership: obs = the site's image-read set minus scratch, or the one scratch cell a forward names (singleton). The guard's identity (site, kind, expr) must itself be site-global — a per-execution kind choice recreates the fault as a fork-family mismatch (Commando $5380, mixed scratch-hit/image-read site); per-execution variation lives only in the observation, where a fork is the honest divergence (the scratch arm forwards, the image arm walks). The tell: an obs that varies with song position. The invariant, generally: every emitted item — guard, name, key — is a deterministic function of the translated prefix plus site-global facts, never of the concrete cell an access landed on (the pin has hidden in a guard obs, in a guard kind, and in a load local keyed by the landed cell's store version; a path-accumulated counter is the same fault at a rejoin). A data-read guard is a staleness envelope, not an observed-primary claim: its one job is excluding the scratch cells whose stores were elided, so it renders as the observed hull split at interior scratch cells — an exact sparse set spelled term-by-term is the trace in the text again (Commando: 5,997 terms for two note columns). Control guards (branches, dispatch, opcode variants) keep exact observed sets |
 
 ## P. Protocol
 

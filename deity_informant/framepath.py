@@ -116,11 +116,27 @@ def _cfold(n, cvals):
     return E._apply(n[1], vals, [frameproc.loc_width(c) for c in n[2]], n[3])
 
 
+def _lsets(rec, scratch):
+    """Per computed-load site, every address it was observed to load, less scratch.
+
+    Site-global, so an image read's address fact is one item every template
+    shares; a scratch cell is subtracted because the forward names that cell
+    and guards it by its own singleton (F9)."""
+    sites = {}
+    for _i, path in _uniq(rec.paths):
+        for j in range(len(path) - 1):
+            ev, nxt = path[j], path[j + 1]
+            if ev[0] == "ck" and ev[2] == "place" and nxt[0] == "ld" and nxt[2] == ev[4]:
+                sites.setdefault(ev[1], set()).add(ev[4])
+    return {site: tuple(sorted(obs - scratch)) for site, obs in sites.items()}
+
+
 class _Xl:
     """One template's event stream as translated, mergeable items."""
 
-    def __init__(self, scratch):
+    def __init__(self, scratch, lsets):
         self.scratch = scratch
+        self.lsets = lsets
         self.regs_read = set()
         self.uni_addrs = set()
         self.snap = set()  # cells some expression reads at entry value after a store
@@ -156,7 +172,7 @@ class _Xl:
                 else:
                     r = ("mem", a, n[2])
             else:
-                name = self.lnames.get((_lkey(a), 0))
+                name = env["lname"].get(_lkey(a))  # the unwritten-cell read: occurrence 0
                 if name is None or name not in env["lds"]:
                     raise FoldError("computed read with no materialised load: %r" % (a,))
                 r = ("loc", name)
@@ -178,12 +194,16 @@ class _Xl:
         """Materialise a computed load at its own position, where what the
         machine loaded is still live: the evolving image, or the forwarding
         local when the load aliased a frame-local cell (its place fact pins
-        which). The cell's store version keys the local, so an aliased re-load
-        never rebinds what an earlier load's consumers still read."""
-        ver = env["ver"].get(addr, 0)
-        name = self.lnames.setdefault((_lkey(saddr), ver), "l%d" % len(self.lnames))
+        which). The address form's occurrence index keys the local, so the name
+        is a function of the translated prefix and a re-load never rebinds what
+        an earlier load's consumers still read (F9)."""
+        key = _lkey(saddr)
+        k = env["occ"].get(key, 0)
+        env["occ"][key] = k + 1
+        name = self.lnames.setdefault((key, k), "l%d" % len(self.lnames))
         env["lds"].add(name)
-        env["curld"][(addr, ver)] = name
+        env["lname"].setdefault(key, name)
+        env["curld"][(addr, env["ver"].get(addr, 0))] = name
         if addr in self.scratch and addr in env["wr"]:
             return ("asg", name, ("loc", _sname(addr)))
         return ("asg", name, ("mem", self._tr(saddr, env, memo), sz))
@@ -220,7 +240,8 @@ class _Xl:
         A drop must be path-independent or the merge desynchronises, so each
         occurrence only votes: the site drops when every vote everywhere folds."""
         v = _cfold(expr, env["cvals"])
-        if v is not None and v != obs:
+        hit = v in obs if kind == "placein" else v == obs
+        if v is not None and not hit:
             raise FoldError("constant %s guard at $%04X misses %r" % (kind, site, obs))
         key = (site, kind)
         self.foldable[key] = self.foldable.get(key, True) and v is not None
@@ -236,6 +257,8 @@ class _Xl:
             "lds": set(),
             "ver": {},
             "curld": {},
+            "occ": {},
+            "lname": {},
         }
         memo = {}
         out = [("asg", "e_%04X" % a, ("mem", ("const", a, 2), 1)) for a in sorted(self.snap)]
@@ -252,7 +275,12 @@ class _Xl:
                     env["ver"][ev[1]] = env["ver"].get(ev[1], 0) + 1
                     memo.clear()
                     continue
-                self._guard(out, env, site, "place", self._tr(saddr, env, memo), obs)
+                kind, fact = "place", obs
+                if k == "ld" and ev[2] == obs:
+                    kind = "placein"
+                    fwd = obs in self.scratch and obs in env["wr"]
+                    fact = (obs,) if fwd else self.lsets[site]
+                self._guard(out, env, site, kind, self._tr(saddr, env, memo), fact)
             if k == "uni":
                 out.append(self._uni_item(env, ev[1], ev[2], ev[3]))
             elif k == "ld":
@@ -424,7 +452,65 @@ def _eq(expr, obs):
     return ("op", "INT_EQUAL", (expr, ("const", obs & E.mask(w), w)), 1)
 
 
-def _stmts(items):
+def _le(a, b):
+    return ("op", "INT_LESSEQUAL", (a, b), 1)
+
+
+def _interior(lo, hi, sset):
+    """A frame-local cell lies strictly inside ``[lo, hi]``, so a range would widen."""
+    i = bisect_left(sset, lo + 1)
+    return i < len(sset) and sset[i] < hi
+
+
+def _spans(obs, sset):
+    """The observed set as ``(lo, hi, stride)`` spans, stride 0 naming one address.
+
+    A uniform stride carries the whole set when it is a power of two; otherwise
+    the maximal stride-1 runs of three or more addresses become ranges."""
+    if len(obs) >= 3:
+        strides = {b - a for a, b in zip(obs, obs[1:])}
+        k = min(strides)
+        if len(strides) == 1 and k > 1 and not k & (k - 1) and not _interior(obs[0], obs[-1], sset):
+            return [(obs[0], obs[-1], k)]
+    out = []
+    run = [obs[0]]
+    for a in obs[1:]:
+        if a == run[-1] + 1:
+            run.append(a)
+            continue
+        out.extend(_run(run, sset))
+        run = [a]
+    out.extend(_run(run, sset))
+    return out
+
+
+def _run(run, sset):
+    if len(run) >= 3 and not _interior(run[0], run[-1], sset):
+        return [(run[0], run[-1], 1)]
+    return [(a, a, 0) for a in run]
+
+
+def _test(kind, expr, obs, sset=()):
+    """The guard's condition: membership in the observed set for ``placein``.
+
+    ``INT_EQUAL``/``INT_LESSEQUAL`` yield width-1 0/1, so the flat ``INT_OR`` of
+    the spans is a boolean or and each span's parts a boolean and."""
+    if kind != "placein":
+        return _eq(expr, obs)
+    w = frameproc.loc_width(expr)
+    terms = []
+    for lo, hi, k in _spans(obs, sset):
+        if not k:
+            terms.append(_eq(expr, lo))
+            continue
+        parts = [_le(("const", lo & E.mask(w), w), expr), _le(expr, ("const", hi & E.mask(w), w))]
+        if k > 1:
+            parts.append(_eq(("op", "INT_AND", (expr, ("const", k - 1, w)), w), lo & (k - 1)))
+        terms.append(("op", "INT_AND", tuple(parts), 1))
+    return terms[0] if len(terms) == 1 else ("op", "INT_OR", tuple(terms), 1)
+
+
+def _stmts(items, sset):
     out = []
     for it in items:
         k = it[0]
@@ -439,15 +525,16 @@ def _stmts(items):
             if kind == "branch":
                 out.append(("if", "if" if obs == 0 else "ifnot", expr, [("unobs", site)], []))
             else:
-                out.append(("if", "ifnot", _eq(expr, obs), [("unobs", site)], []))
+                cond = _test(kind, expr, obs, sset)
+                out.append(("if", "ifnot", cond, [("unobs", site)], []))
         else:
             _k, site, kind, expr, arms = it
             if kind == "branch" and len(arms) == 2 and {a[0] for a in arms} == {0, 1}:
-                out.append(("if", "if", expr, _stmts(arms[1][1]), _stmts(arms[0][1])))
+                out.append(("if", "if", expr, _stmts(arms[1][1], sset), _stmts(arms[0][1], sset)))
                 continue
             node = [("unobs", site)]
             for obs, body in reversed(arms):
-                node = [("if", "if", _eq(expr, obs), _stmts(body), node)]
+                node = [("if", "if", _test(kind, expr, obs, sset), _stmts(body, sset), node)]
             out.extend(node)
     return out
 
@@ -528,7 +615,8 @@ def _state_fields(stmts, decls, dispatch, uni_addrs):
 def fold(model, frames, assertion=False):
     """``(statements, params, opaque-read cells)`` of the folded frame body."""
     rec = _record(model, frames, assertion)
-    xl = _Xl(_scratch(rec))
+    scratch = _scratch(rec)
+    xl = _Xl(scratch, _lsets(rec, scratch))
     templates = []
     for _round in range(64):  # the read/rebind/snapshot sets close monotonically
         before = (set(xl.regs_read), set(xl.snap), set(xl.reb))
@@ -550,7 +638,7 @@ def fold(model, frames, assertion=False):
         _merge(ranges, merged, tab)
     finally:
         sys.setrecursionlimit(limit)
-    stmts = _stmts(_sweep(tuple(merged), keep))
+    stmts = _stmts(_sweep(tuple(merged), keep), tuple(sorted(scratch)))
     params = frameproc._by_reg(keep)
     return stmts, params, xl.uni_addrs
 

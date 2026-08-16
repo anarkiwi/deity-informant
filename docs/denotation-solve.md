@@ -1327,9 +1327,12 @@ the driver suites — `violations()` passes en masse rather than pin by pin.
   The worst case is the Follin interpreter, whose per-frame path varies with
   the script — segmented at its own op boundaries (the `operators` table the
   artifact already carries), each op body folds independently.
-- **Unroll blowup.** Bounded by the re-roll pass and gated by the size
-  ratchet; where a loop resists re-rolling the artifact is larger, not
-  wrong.
+- **Size.** (Amended 2026-08-16; the earlier "larger, not wrong" allowance is
+  discarded.) Size is a gate, not a metric: the folded text must not exceed
+  the static pipeline's per tune. A folded artifact that scales with the
+  trace instead of the code is wrong — the fold is missing an abstraction
+  the static text already had (playbook F9: a guard observation that is
+  data, not control; then unrolled loops the re-roll must recover).
 - **Totality.** `block_model(loads(text))` rebuilds the path DAG — the text
   is the DAG; the obligation gets easier, not harder.
 - **The gate is unchanged.** Gate FP remains the arbiter, and the fold's
@@ -1391,8 +1394,8 @@ the suite — re-point `_callgen.violations()` to pass en masse.
 
 **Order of work:** (1) `framepath` builds and gates on the three witnesses
 (Commando, Grid_Runner, Automatas — all at the invariant today, so their
-folded artifacts must byte-match their logs and their text should not
-regress in size class); (2) corpus gate behind a switch, old pipeline
+folded artifacts must byte-match their logs and their text must not exceed
+the static pipeline's); (2) corpus gate behind a switch, old pipeline
 intact; (3) flip the default when 624/624 builds clean; (4) mass-delete; (5)
 final gates + suite + docs (§11 marked landed; playbook rows updated). The
 10 refused / 1 diverged baseline tunes are old-pipeline build errors — the
