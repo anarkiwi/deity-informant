@@ -142,7 +142,8 @@ class Facts:
         defs = {}
         for s in b.stmts:
             if type(s) is Let:
-                defs[s.n] = s.e
+                if not s.n.startswith("$"):
+                    defs[s.n] = s.e
                 self.value(name, _expand(s.e, defs))
             elif type(s) is Store:
                 v = _expand(s.v, defs)

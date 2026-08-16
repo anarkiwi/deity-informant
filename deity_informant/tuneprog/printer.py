@@ -142,6 +142,8 @@ class Printer:
     # ---- names -------------------------------------------------------------
     def var(self, n):
         """A printed variable name: registers keep their letter, uniques become tN."""
+        if n.startswith("$"):
+            return n[1:]
         if n in self.alias:
             a, s = self.alias[n]
             return a if s == 1 else "%s*%d" % (a, s)
