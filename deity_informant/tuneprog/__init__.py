@@ -14,8 +14,8 @@ from __future__ import annotations
 from .machine import CIA, Entry, MachineImage, Refusal, find_entries, init_runner, port_bank
 from .trace import Trace, TraceVM, Tracer, input_kind, run_trace, site_key
 from .lift import LiftedSite, lift_site, lift_trace
-from .regions import Region, build_regions
-from .cfg import Proc, build_procs
+from .regions import Region, build_regions, index_regions
+from .cfg import Proc, build_procs, procs_json
 
 __all__ = [
     "CIA",
@@ -36,6 +36,8 @@ __all__ = [
     "lift_trace",
     "Region",
     "build_regions",
+    "index_regions",
     "Proc",
     "build_procs",
+    "procs_json",
 ]
