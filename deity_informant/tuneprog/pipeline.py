@@ -105,7 +105,9 @@ def build(trace, name=None, sid_model=None):
     regions = build_regions(trace, lifted)
     procs = build_procs(trace, lifted, regions)
     prog = build_ir(trace, lifted, regions, procs, meta={"name": name, "sid_model": sid_model})
-    ssa.simplify(prog, rewrite)
+    ssa.simplify(
+        prog, rewrite, folds=ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
+    )
     return prog, regions, procs
 
 

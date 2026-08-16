@@ -58,7 +58,9 @@ def _certify(relpath, seconds, prefix, song=None, override=None):
     procs = build_procs(trace, lifted, regions)
     prog = build_ir(trace, lifted, regions, procs, meta={"name": Path(relpath).name})
     raw = _counts(prog) + (_load_addrs(prog),)
-    ssa.simplify(prog, rewrite)
+    ssa.simplify(
+        prog, rewrite, folds=ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
+    )
     src = emit.emit_python(prog)
     v = verify(prog, trace, calls=calls, prefix=prefix, src=src)
     return prog, trace, v, certify(prog, v, prefix=prefix), calls, raw
@@ -77,7 +79,7 @@ def _counts(prog):
     return n, sum(s.n.split("#")[0] in ("C", "Z", "N", "V") for s in lets)
 
 
-def _load_addrs(prog):
+def _load_addrs(prog, procs=None):
     """Every constant address the program loads from (E4: SMC cells are loads)."""
     out = set()
 
@@ -90,7 +92,9 @@ def _load_addrs(prog):
             walk(e.a)
             walk(e.b)
 
-    for p in prog.procs.values():
+    for n, p in prog.procs.items():
+        if procs is not None and n not in procs:
+            continue
         for b in p.blocks.values():
             for s in b.stmts:
                 for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
@@ -127,8 +131,13 @@ def test_automatas_certified_over_thirty_seconds_of_music():
         "source": "cia_timer",
     }
     # E4: every play-written operand cell is read by a load at its instruction
-    assert T.cells and T.cells <= raw[2]
-    assert 0x0FE4 in T.cells  # the wrapper's own call counter
+    play_cells = T.cells & T.written_play
+    assert play_cells and play_cells <= raw[2]
+    assert 0x0FE4 in play_cells  # the wrapper's own call counter
+    # cells init patches are cells too, and the tick folds them back to constants
+    assert 0x10D4 in T.cells and 0x10D4 not in T.written_play  # the model's NOP/ASL
+    tick = set(prog.procs) - ssa.init_reachable(prog)
+    assert not _load_addrs(prog, tick) & (T.cells - T.written_play)
     # 24 SID writes a call, all of them from the tuneprog's own statements
     assert len(v.M.sid) == 24
     assert sub["inputs_pinned"] == 2228  # the init raster wait plus one $D41B read

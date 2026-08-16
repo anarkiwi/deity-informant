@@ -15,11 +15,13 @@ Public API:
 * ``Trace`` -- the recorded run; ``save(dir)``/``load(dir)`` as ``trace.json``
   (structure) + ``trace.npz`` (bulk arrays).
 * ``site_key(pc, opcode, bytes, cells)`` -- ``(pc, opcode, fixed operand bytes)``
-  with play-written SMC cells excluded (``None`` placeholders).
+  with SMC cells excluded (``None`` placeholders).
 
 Sites are keyed by :func:`site_key`, so two executions of one pc merge only when
-they differ in play-written cell bytes; a variant with a different *fixed*
-operand is a separate site with its own access sets.
+they differ in cell bytes; a variant with a different *fixed* operand is a
+separate site with its own access sets. A cell is an instruction byte *any*
+traced procedure writes, init included, so an operand init patches between two
+executions is one site that loads it, not two sites with two constants.
 
 The CIA model of :mod:`.machine` answers every ``$DCxx``/``$DDxx`` timer and ICR
 read, which supersedes the base VM's ``ciaicr`` flag: a ``TraceVM`` driven by
@@ -471,7 +473,10 @@ class Tracer:
     # ---- result ------------------------------------------------------------
     def trace(self):
         vm = self.vm
-        cells = {a for a in vm.written_play if vm.code[a]}
+        # design S2: an operand byte any traced procedure writes -- in any phase,
+        # init included -- is a variable, so it drops out of the site key and the
+        # lift loads it. Init-only cells fold back to constants in S4, per phase.
+        cells = {a for a in vm.written_play | vm.written_init if vm.code[a]}
         sites = {}
         for sk, count in vm.count.items():
             pc, bb = sk

@@ -12,8 +12,9 @@ Passes, each semantics-preserving with :class:`~.ir.Interp` as the oracle:
 * :func:`to_ssa` / :func:`from_ssa` -- dominance-frontier phi insertion and
   renaming, then phi elimination through copies on split critical edges;
 * :func:`copyprop` -- forward a ``let v = w``;
-* :func:`constprop` -- forward a ``let v = k`` and fold a load of a ``const``
-  region at a known address into its byte;
+* :func:`constprop` -- forward a ``let v = k`` and fold a load of a read-only
+  region at a known address into its byte (``const`` everywhere, ``init_constant``
+  in the procedures ``init`` never reaches -- see :func:`simplify`);
 * :func:`fold_branches` -- a constant test becomes a jump and its dead arm goes;
 * :func:`dce` -- drop values nobody reads (the bulk of the P-Code flag ops); a
   load that can consume a pinned input is never dropped.
@@ -457,21 +458,76 @@ def copyprop(proc):
     return _forward(proc, lambda e: type(e) is Var)
 
 
-def constprop(proc, storage=None):
-    """Fold loads of read-only regions, then forward ``let v = k``."""
+def const_tables(storage):
+    """``{region id: (base, bytes)}`` of the read-only regions a known-address load folds."""
+    return {r.id: (r.base, r.init) for r in storage if r.kind == "const"}
+
+
+class Folds:
+    """What a load at a known address folds to once ``init(song)`` has run.
+
+    A byte folds when it is an SMC cell (an instruction byte some traced procedure
+    writes -- an ordinary init-written variable keeps its load, and its name) or a
+    neighbour of one inside the same access, and when no play-time store ever
+    changes it. Design S2: "cells patched only by init are constants as far as the
+    tick code is concerned"; :func:`simplify` applies it only outside init, where
+    the value exists.
+    """
+
+    __slots__ = ("post", "cells", "mutable")
+
+    def __init__(self, post, cells, mutable):
+        self.post = post
+        self.cells = frozenset(cells)
+        self.mutable = frozenset(mutable)
+
+    def at(self, addr, w):
+        """The little-endian constant of the ``w`` bytes at ``addr``, or ``None``."""
+        rng = range(addr, addr + w)
+        if self.mutable.intersection(rng) or not self.cells.intersection(rng):
+            return None
+        return int.from_bytes(bytes(self.post[a] for a in rng), "little")
+
+
+def init_reachable(prog):
+    """Names of the procedures ``init`` can reach through the call graph."""
+    start = prog.meta.get("init_proc")
+    seen = set()
+    work = [start] if start in prog.procs else []
+    while work:
+        n = work.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        work.extend(
+            s.proc
+            for b in prog.procs[n].blocks.values()
+            for s in b.stmts
+            if type(s) is Call and s.proc in prog.procs
+        )
+    return seen
+
+
+def constprop(proc, tables=None, folds=None):
+    """Fold known-address loads of ``tables``/``folds``, then forward ``let v = k``."""
     hits = [0]
-    if storage:
-        const = {r.id: r for r in storage if r.kind == "const"}
+    if tables or folds is not None:
 
         def fold(e):
-            if type(e) is not Load or type(e.a) is not Const or e.r not in const:
+            if type(e) is not Load or type(e.a) is not Const:
                 return e
-            r = const[e.r]
-            off = e.a.v - r.base
-            if off < 0 or off + e.w > len(r.init):
+            hit = (tables or {}).get(e.r)
+            if hit is not None:
+                base, data = hit
+                off = e.a.v - base
+                if 0 <= off and off + e.w <= len(data):
+                    hits[0] += 1
+                    return Const(int.from_bytes(data[off : off + e.w], "little"), e.w)
+            v = folds.at(e.a.v, e.w) if folds is not None and e.cls != "io" else None
+            if v is None:
                 return e
             hits[0] += 1
-            return Const(int.from_bytes(r.init[off : off + e.w], "little"), e.w)
+            return Const(v, e.w)
 
         for b in proc.blocks.values():
             for s in b.stmts:
@@ -480,14 +536,22 @@ def constprop(proc, storage=None):
     return hits[0] + _forward(proc, lambda e: type(e) is Const)
 
 
-def simplify(prog, peephole=None, rounds=8):
-    """The S4 pipeline over every procedure: SSA, passes to a fixpoint, out of SSA."""
-    for p in prog.procs.values():
+def simplify(prog, peephole=None, rounds=8, folds=None):
+    """The S4 pipeline over every procedure: SSA, passes to a fixpoint, out of SSA.
+
+    With ``folds`` (a :class:`Folds`) the procedures ``init`` never reaches fold
+    their loads of init-patched instruction bytes to the constants ``init(song)``
+    left there; inside init the same loads stay, because the value is the store's.
+    """
+    inits = init_reachable(prog)
+    tables = const_tables(prog.storage)
+    for name, p in prog.procs.items():
+        f = None if name in inits else folds
         merge_chains(p)
         split_critical(p)
         to_ssa(p)
         for _ in range(rounds):
-            n = copyprop(p) + constprop(p, prog.storage) + fold_branches(p) + dce(p)
+            n = copyprop(p) + constprop(p, tables, f) + fold_branches(p) + dce(p)
             if peephole is not None:
                 n += peephole(p)
             if not n:

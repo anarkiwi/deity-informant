@@ -12,7 +12,8 @@ caller and the CFG has no cross-procedure fall-through:
   one, a ``JMP (ind)``, and a jump whose operand is an SMC cell become a
   ``switch`` over the observed targets with a ``trap`` default;
 * both directions of an executed branch are successors; a direction the trace
-  never took is marked ``trap`` (the trace-closed product);
+  never took is marked ``trap`` (the trace-closed product), and a branch with a
+  patched offset keeps its condition with a switch on the taken side;
 * a pc executed with several opcodes becomes a variant switch on the opcode
   cell, with arms for values a decompiled writer stored but that never executed
   marked ``unverified``.
@@ -147,7 +148,9 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
         for op in ops:
             node = _node(trace, pc, op, out, keys, tails, lifted)
             proc.nodes[(pc, op)] = node
-            work.extend(r["to"] for r in node["succ"] if not r["tail"] and not r["trap"])
+            sw = node["switch"]
+            refs = list(node["succ"]) + ([c[1] for c in sw["cases"]] if sw else [])
+            work.extend(r["to"] for r in refs if not r["tail"] and not r["trap"])
 
 
 def _writer_variants(trace, pc, ops):
@@ -207,13 +210,24 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         return node
     flow = [(t, k) for t, k, _n in edges]
     arms = _branch_arms(ls, site, pc, op)
-    if arms is not None and not node["computed"]:
+    if arms is not None:
         # Both directions of an executed branch are nodes; a direction the trace
-        # never took is a trap (the trace-closed product of design section 3).
+        # never took is a trap (the trace-closed product of design section 3). A
+        # branch whose offset byte is an SMC cell keeps its condition and puts the
+        # observed targets of the taken direction in a switch.
         seen = {t for t, _k in flow}
         node["term"] = "branch"
         node["taken"] = arms[0]
-        node["succ"] = [_ref(a, tails, trap=a not in seen) for a in arms]
+        if not node["computed"]:
+            node["succ"] = [_ref(a, tails, trap=a not in seen) for a in arms]
+            return node
+        taken = sorted(t for t in seen if t != arms[1])
+        node["succ"] = [
+            _ref(taken[0] if taken else arms[0], tails, trap=not taken),
+            _ref(arms[1], tails, trap=arms[1] not in seen),
+        ]
+        if taken:
+            node["switch"] = _switch(_expr(ls, "cell"), taken, tails)
         return node
     if not flow:
         return node

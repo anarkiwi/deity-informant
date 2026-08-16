@@ -12,6 +12,7 @@ from deity_informant.tuneprog.trace import (
     site_key,
 )
 from deity_informant import lift
+from deity_informant.tuneprog.lift import lift_trace
 
 from _asm import asm, sid_image, trace_prog
 
@@ -398,9 +399,9 @@ def test_longer_opcode_variant_marks_its_operand_byte_as_a_cell():
     assert (g, 0xA9, (None,)) in T.sites  # one site, not one per operand value
 
 
-def test_site_keys_split_on_a_fixed_operand_and_keep_their_own_access_sets():
-    # init runs the probe, patches its operand, and play runs it again: two site
-    # keys, each with the address it really touched.
+def test_an_operand_init_patches_is_one_site_that_loads_it():
+    # init runs the probe, patches its operand, and play runs it again: one site
+    # whose key drops the patched byte and whose read set is what it touched.
     init = asm(
         0x1100,
         "start: JSR probe",
@@ -418,10 +419,13 @@ def test_site_keys_split_on_a_fixed_operand_and_keep_their_own_access_sets():
         calls=3,
         data={0x1200: 1, 0x1300: 2},
     )
-    keys = sorted(T.site_at(init.labels["probe"]))
-    assert [k[2] for k in keys] == [(0x00, 0x12), (0x00, 0x13)]
-    assert [list(T.sites[k]["reads"].values()) for k in keys] == [[{0x1200}], [{0x1300}]]
-    assert [T.sites[k]["count"] for k in keys] == [1, 3]
+    probe = init.labels["probe"]
+    keys = sorted(T.site_at(probe))
+    assert [k[2] for k in keys] == [(0x00, None)]
+    assert list(T.sites[keys[0]]["reads"].values()) == [{0x1200, 0x1300}]
+    assert T.sites[keys[0]]["count"] == 4
+    assert probe + 2 in T.cells and probe + 2 not in T.written_play
+    assert lift_trace(T)[keys[0]].cell_loads == [(probe + 1, 2)]  # the whole address
 
 
 def test_periodicity_needs_a_window_with_no_inputs():

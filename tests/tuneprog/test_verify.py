@@ -35,6 +35,47 @@ def test_clean_run_has_no_divergence_and_matches_the_state_hashes():
     assert cert["cost"]["ir_statements"] > 0
 
 
+def test_init_that_patches_its_own_operand_between_two_loops():
+    """Follin's rip loader: one copy routine, its ``CPY #`` count patched per block.
+
+    The operand is written *and consumed* inside init, with a different value each
+    time, so keying the site on the post-init byte would run the first block's loop
+    with the second block's count.
+    """
+    code = asm(
+        PLAY,
+        "init: LDX #$00",
+        "LDA #$02",
+        "JSR fill",
+        "LDX #$20",
+        "LDA #$05",
+        "JSR fill",
+        "RTS",
+        "fill: STA lim+1",
+        "STX dst+1",
+        "LDY #$00",
+        "lp: LDA #$AA",
+        "dst: STA $1300,Y",
+        "INY",
+        "lim: CPY #$00",
+        "BNE lp",
+        "RTS",
+        "play: LDA $1303",
+        "STA $D400",
+        "LDA $1322",
+        "STA $D401",
+        "RTS",
+    )
+    data = {a: 0 for a in range(0x1300, 0x1326)}
+    T, prog = tuneprog(code, calls=3, s4=True, data=data)
+    lim, dst = code.labels["lim"], code.labels["dst"]
+    assert [k[2] for k in T.site_at(lim)] == [(None,)]  # one site, its count a load
+    assert [k[2] for k in T.site_at(dst)] == [(None, 0x13)]
+    assert T.image_post_init[0x1303] == 0  # only two bytes went to the first block
+    assert T.image_post_init[0x1322] == 0xAA
+    assert verify(prog, T, calls=3, prefix=2).div is None
+
+
 def test_periodicity_witness_agrees_with_the_tracer():
     T, prog = tuneprog(counter(*PERIODIC), calls=12, s4=True)
     assert T.meta["period"] == 4
