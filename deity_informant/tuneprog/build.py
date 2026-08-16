@@ -227,8 +227,27 @@ class _Builder:
             self.keys.setdefault((key[0], key[1]), []).append(key)
 
     def key_of(self, pc, op, phase):
+        """The site key to lift for this pc under ``phase``.
+
+        One (pc, opcode) has several keys only when an operand byte that play
+        never writes differs between phases (an init-only patch). Play wins, since
+        the tick code is what a certificate is about; a procedure that runs in
+        both phases with such an operand would need per-phase cloning.
+        """
         ks = self.keys[(pc, op)]
-        return next((k for k in ks if self.trace.sites[k]["phases"] & phase), ks[0])
+        for want in (phase & ~PH_INIT, phase):
+            hit = next((k for k in ks if self.trace.sites[k]["phases"] & want), None)
+            if hit is not None:
+                return hit
+        return ks[0]
+
+    def phase_of(self, cp):
+        """The phases the trace ran this procedure in (init, play, or both)."""
+        m = 0
+        for pc, op in cp.nodes:
+            for k in self.keys.get((pc, op), ()):
+                m |= self.trace.sites[k]["phases"]
+        return m or 2
 
     def label(self, cp, pc):
         """The label control enters ``pc`` at: the variant dispatch, else the node."""
@@ -238,7 +257,7 @@ class _Builder:
         return "L%04X_%02X" % (pc, ops[0]) if ops else "X%04X" % pc
 
     def build_proc(self, cp):
-        phase = PH_INIT if cp.kind == "init" else 2
+        phase = self.phase_of(cp)
         init_phase = bool(phase & PH_INIT)
         blocks = {}
         for pc, vs in cp.variant_switch.items():
