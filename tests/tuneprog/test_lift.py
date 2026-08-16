@@ -1,6 +1,9 @@
 """S2a: residualisation of SMC operand cells, opcode variants, computed control."""
 
-from deity_informant.lifter import lift
+import pytest
+
+from deity_informant import PcodeVM
+from deity_informant.lifter import MODE_LEN, OPS, lift
 from deity_informant.tuneprog.lift import lift_site, lift_trace
 
 from _asm import asm, trace_prog
@@ -105,3 +108,55 @@ def test_lift_site_accepts_a_bare_site_record():
     ls = lift_site(T.image_post_init, T.sites[key], set())
     assert ls.pc == PLAY and ls.opcode == 0xA9 and ls.length == 2 and ls.cyc == 2
     assert ls.key == (PLAY, 0xA9, (0x07,))
+
+
+def _run_ops(mem, ops, regs):
+    vm = PcodeVM(mem)
+    vm.volatile = False
+    vm.reg[:] = regs
+    PcodeVM.compile_record(vm, {"ops": ops})(vm.reg, vm.uniq, vm._rd, vm._wr)
+    return list(vm.reg), bytes(vm.mem)
+
+
+def _residual_case(mem, op, n):
+    mem[PLAY] = op
+    mem[PLAY + 1 : PLAY + n] = bytes((0x47, 0x20))[: n - 1]
+    site = {"pc": PLAY, "opcode": op, "variants": [bytes(mem[PLAY : PLAY + n])]}
+    return lift_site(bytearray(mem), site, {PLAY + i for i in range(1, n)})
+
+
+def test_every_operand_byte_residualises_and_stays_equivalent():
+    # Sweep all 256 opcodes: with every operand byte declared an SMC cell, the
+    # residualised P-Code must read the operand from memory and still compute
+    # exactly what the plain lift computes against the same image.
+    mem = bytearray(0x10000)
+    mem[0x47], mem[0x48] = 0x9A, 0x20  # zero-page pointer -> $209A
+    mem[0x49], mem[0x4A] = 0xBC, 0x20
+    for a in range(0x2000, 0x2100):
+        mem[a] = a & 0xFF
+    regs = [0x5D, 0x02, 0x03, 0xFF, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+    modes = set()
+    for op in range(256):
+        mn, mode = OPS[op]
+        n = MODE_LEN[mode]
+        if n == 1:
+            continue
+        modes.add(mode)
+        ls = _residual_case(mem, op, n)
+        ref = lift(bytearray(mem), PLAY)
+        ignores_operand = not ref["ops"] and ref["prov"]["ctrl"] is None  # only NOP #imm
+        assert ls.cell_loads or ignores_operand, "%s %s ($%02X) residualised nothing" % (
+            mn,
+            mode,
+            op,
+        )
+        assert _run_ops(bytes(mem), ls.ops, regs) == _run_ops(bytes(mem), ref["ops"], regs), mn
+    assert modes == {"imm", "zp", "zpx", "zpy", "abs", "absx", "absy", "indx", "indy", "ind", "rel"}
+
+
+def test_control_operands_residualise_to_a_computed_target():
+    mem = bytearray(0x10000)
+    for op, form in ((0x4C, "word"), (0x20, "word"), (0x6C, "word"), (0xD0, "rel")):
+        ls = _residual_case(mem, op, MODE_LEN[OPS[op][1]])
+        assert ls.ctrl_cell[0] == PLAY + 1 and ls.ctrl_cell[2] == form
+        assert ls.computed_control
