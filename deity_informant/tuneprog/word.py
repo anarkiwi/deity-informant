@@ -408,7 +408,7 @@ def _name(prog, names, pairs):
         want = base if not group else "%s.%s" % (group, base)
         names.u16[(lo, hi)] = _uniq(names, want, (lo, hi))
         names.u16group[(lo, hi)] = group
-        for rid, half in ((lo, "lo"), (hi, "hi")):
+        for rid, half in ((lo, "lo"), (hi, "hi")) if lo != hi else ():
             cur = names.region.get(rid, "")
             if rid not in names.view and cur[:-2].lower() != base.lower() + "_":
                 names.region[rid] = "%s_%s" % (names.u16[(lo, hi)], half)
@@ -423,6 +423,8 @@ def _r16s(e):
 def _basename(names, rgn, lo, hi, kind):
     """``freq`` from ``freq_lo``/``freq_hi``, else the role, else the address."""
     a, b = names.region.get(lo, ""), names.region.get(hi, "")
+    if lo == hi and a:
+        return a
     low = (a[:-2].lower(), b[:-2].lower(), a[-2:].lower(), b[-2:].lower())
     if a and b and low[0] == low[1] and low[2:] == ("lo", "hi"):
         return a[:-3] if a[-3] == "_" else a[:-2]

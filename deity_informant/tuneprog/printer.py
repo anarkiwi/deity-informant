@@ -216,7 +216,7 @@ class Printer:
             return hit[0] if hit is not None and hit[1] == 1 and idx.b.v == step else None
         if idx.op == "+" and type(idx.a) is Const and not idx.a.v % step:
             inner = self.ivar(idx.b, stride)
-            return None if inner is None else "%s + %d" % (inner, idx.a.v // step)
+            return None if inner is None else "%s + %s" % (inner, _hex(idx.a.v // step))
         return None
 
     def addr_of(self, e, r):
@@ -239,7 +239,7 @@ class Printer:
         if idx is None:
             return "sid[%d].%s" % (v, VOICE_REG[k])
         i = self.ivar(idx, 7) or _bare(self.expr(idx, False))
-        return "sid[%s].%s" % ("%s + %d" % (i, v) if v else i, VOICE_REG[k])
+        return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
