@@ -57,7 +57,7 @@ def _certify(relpath, seconds, prefix, song=None, override=None):
     regions = build_regions(trace, lifted)
     procs = build_procs(trace, lifted, regions)
     prog = build_ir(trace, lifted, regions, procs, meta={"name": Path(relpath).name})
-    raw = _counts(prog)
+    raw = _counts(prog) + (_load_addrs(prog),)
     ssa.simplify(prog, rewrite)
     src = emit.emit_python(prog)
     v = verify(prog, trace, calls=calls, prefix=prefix, src=src)
@@ -75,6 +75,28 @@ def _counts(prog):
     ]
     n = sum(len(b.stmts) for p in prog.procs.values() for b in p.blocks.values())
     return n, sum(s.n.split("#")[0] in ("C", "Z", "N", "V") for s in lets)
+
+
+def _load_addrs(prog):
+    """Every constant address the program loads from (E4: SMC cells are loads)."""
+    out = set()
+
+    def walk(e):
+        if type(e).__name__ == "Load":
+            if type(e.a).__name__ == "Const":
+                out.update(range(e.a.v, e.a.v + e.w))
+            walk(e.a)
+        elif type(e).__name__ == "Bin":
+            walk(e.a)
+            walk(e.b)
+
+    for p in prog.procs.values():
+        for b in p.blocks.values():
+            for s in b.stmts:
+                for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
+                    if e is not None:
+                        walk(e)
+    return out
 
 
 def test_commando_certified_over_a_minute_of_music():
@@ -104,6 +126,9 @@ def test_automatas_certified_over_thirty_seconds_of_music():
         "cycles_per_tick": 2457,
         "source": "cia_timer",
     }
+    # E4: every play-written operand cell is read by a load at its instruction
+    assert T.cells and T.cells <= raw[2]
+    assert 0x0FE4 in T.cells  # the wrapper's own call counter
     # 24 SID writes a call, all of them from the tuneprog's own statements
     assert len(v.M.sid) == 24
     assert sub["inputs_pinned"] == 2228  # the init raster wait plus one $D41B read
