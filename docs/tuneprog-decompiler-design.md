@@ -129,6 +129,17 @@ re-implementation on other targets (the tuneprog is executable and portable).
    (sidplayfp) is the ground-truth oracle; `networkx` for dominators/loops;
    `numpy` for trace arrays. New code is the tuneprog-specific middle: regions,
    SSA over P-code, structuring, idioms, emit, verify.
+8. **Lift every executed instruction; present none of them.** Instruction-level
+   lifting is where soundness is cheapest (the lifter exists and is validated
+   against py65 and sidplayfp), so the pipeline never guesses at an idiom's
+   meaning — but the *output* is at the level of the anatomy's pseudocode
+   because SSA + DCE discard almost everything an instruction says (flags,
+   register shuffles, addressing modes, self-modification). What is
+   deliberately *not* modelled: unexecuted code (dead for the tune, `trap`),
+   cycle-level timing (only as an optional annotation), CPU registers/flags
+   and the stack across ticks (dead by construction; the trace verifies it),
+   the SID/VIC/CIA as devices (inputs are pinned, outputs are lists), and any
+   musical semantics beyond what the exact storage typing yields.
 
 ---
 
