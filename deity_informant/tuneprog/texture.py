@@ -7,33 +7,11 @@ merging and 16-bit carry chains (see each function).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from .idioms import CMP, _neg, fold
 from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
 from .ssa import apply_stmt, apply_term, merge_chains, preds_of, prune, sub_expr, use_counts
 
 STACK = (0x0100, 0x01FF)
-
-
-@dataclass(frozen=True, slots=True)
-class R16:
-    """A 16-bit read of the ``lo``/``hi`` region pair addressed by ``a``."""
-
-    lo: int
-    hi: int
-    a: object
-
-
-@dataclass(slots=True)
-class W16:
-    """A 16-bit assignment ``pair[a] = e`` over the ``lo``/``hi`` region pair."""
-
-    lo: int
-    hi: int
-    a: object
-    e: object
-    src: int = 0
 
 
 def _exprs(node):
@@ -42,8 +20,6 @@ def _exprs(node):
         return (node.e,)
     if t is Store:
         return (node.a, node.v)
-    if t is W16:
-        return (node.a, node.e)
     if t is Call:
         return node.args
     if t is If:
@@ -62,7 +38,7 @@ def walk(e):
     if t is Bin:
         yield from walk(e.a)
         yield from walk(e.b)
-    elif t is Load or t is R16:
+    elif t is Load:
         yield from walk(e.a)
 
 
