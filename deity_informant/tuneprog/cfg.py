@@ -151,6 +151,9 @@ def _variant_arms(trace, pc, ops):
 
 
 def _node(trace, pc, op, out, keys, tails, lifted):
+    # One (pc, opcode) can carry several site keys when an operand byte is patched
+    # by init only (constant, but a different constant per phase); the first is
+    # representative because the control behaviour is the opcode's.
     key = keys[(pc, op)][0]
     site = trace.sites[key]
     ls = (lifted or {}).get(key)

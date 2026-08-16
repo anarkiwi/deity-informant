@@ -3,7 +3,14 @@
 import pytest
 
 from deity_informant.tuneprog.machine import Entry, Refusal, init_runner
-from deity_informant.tuneprog.trace import Trace, Tracer, input_kind, run_trace, site_key
+from deity_informant.tuneprog.trace import (
+    Trace,
+    Tracer,
+    TraceVM,
+    input_kind,
+    run_trace,
+    site_key,
+)
 from deity_informant import lift
 
 from _asm import asm, sid_image, trace_prog
@@ -326,3 +333,45 @@ def test_irq_entry_is_driven_like_a_hardware_interrupt():
 
 def test_init_runner_is_reused_by_the_tracer():
     assert init_runner is not None and lift is not None
+
+
+def test_multi_byte_access_is_attributed_byte_by_byte():
+    # residualised 16-bit cell loads use the LOAD/STORE size contract of the base VM.
+    img = sid_image({PLAY: asm(PLAY, "RTS")}, PLAY, PLAY, {0x1001: 0x34, 0x1002: 0x12})
+    vm = TraceVM(img.mem, img)
+    vm._rs, vm._ws = {}, {}
+    assert vm._rd(0x1001, 2, 3) == 0x1234
+    assert vm._rs[3] == {0x1001, 0x1002}
+    vm._wr(0x2000, 0xBEEF, 2, 4)
+    assert vm._ws[4] == {0x2000, 0x2001}
+    assert vm.mem[0x2000] == 0xEF and vm.mem[0x2001] == 0xBE
+
+
+def test_banked_out_io_read_and_vic_ack():
+    play = asm(
+        PLAY,
+        "LDA #$07",
+        "STA $D019",  # ack: clears the VIC interrupt-source flag
+        "LDA #$2F",
+        "STA $00",
+        "LDA #$34",
+        "STA $01",
+        "LDA $D400",  # RAM under I/O, not a SID read-back input
+        "STA $1100",
+        "LDA #$37",
+        "STA $01",
+        "RTS",
+    )
+    T, tr = trace_prog(
+        {PLAY: play, 0x1200: asm(0x1200, "RTS")}, init=0x1200, play=PLAY, calls=1, data={0x1100: 0}
+    )
+    assert 0xD400 not in {k[1] for k in T.input_sites}
+    assert tr.vm.vicirq == 0
+    assert (0xD019, 0x07) in [(int(a), int(v)) for a, v in zip(T.iolog["addr"], T.iolog["val"])]
+
+
+def test_trace_queries():
+    play = asm(PLAY, "smc: LDA #$00", "STA $D400", "INC smc+1", "RTS")
+    T, _ = trace_prog({PLAY: play, 0x1020: asm(0x1020, "RTS")}, init=0x1020, play=PLAY, calls=2)
+    assert T.writers_of(PLAY + 1) == T.site_at(PLAY + 5)
+    assert T.writers_of(0x9999) == []

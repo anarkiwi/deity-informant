@@ -173,3 +173,16 @@ def test_accessor_envelope_and_index_regions():
     assert index_regions(R)[0x1403] is r
     d = r.to_dict()
     assert d["stride"] == 1 and d["base"] == 0x1400 and d["kind"] in ("const", "image")
+
+
+def test_region_count_and_build_without_lifted_sites():
+    code = asm(PLAY, "init: RTS", "play: LDX #$01", "STA $1500,X", "DEX", "BPL play+2", "RTS")
+    T, _ = trace_prog(
+        {PLAY: code},
+        init=code.labels["init"],
+        play=code.labels["play"],
+        data={0x1500: 0, 0x1501: 0},
+    )
+    R = build_regions(T)  # no lifted sites: the trace's own access relation only
+    r = _at(R, 0x1500)
+    assert r.count == 2 and r.size == 2 and r.stride == 1

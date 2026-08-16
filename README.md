@@ -7,6 +7,7 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl"}` raw P-Code; `CYCLETIME`/`EXTRACYCLES` tables.
 - `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers.
 - `deity_informant/c64.py` — power-on RAM, PSID/RSID loader, IRQ vector discovery, ROM-free IRQ dispatch stubs.
+- `deity_informant/tuneprog/` — tuneprog decompiler front end: `machine.py` (S0 image, entries/cadence, init runner, 6510 port + CIA models), `trace.py`/`tracedata.py` (S1 op-level tracer, logs, pinned inputs, state hashes, resume), `lift.py` (S2a residualised lift: SMC cells become loads), `cfg.py` (S2b procedures, clone-per-entry, computed switches), `regions.py` (S3 storage typing).
 - `deity_informant/cli.py` — `deity-informant` console script.
 - `ghidra/6510/` — SLEIGH module (`6510.slaspec` = stock 6502 + generated `6510_illegal.sinc`), `build.py`, and a headless Ghidra integration test (`headless/`, run via `Dockerfile.ghidra`).
 - `examples/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
@@ -36,6 +37,12 @@ deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/i
 ```python
 from deity_informant import lift, PcodeVM, run_sub
 vm = PcodeVM(mem); run_sub(vm, entry, {}, lift)   # execute a subroutine to its RTS
+
+from deity_informant.tuneprog import find_entries, run_trace, lift_trace, build_regions, build_procs
+image, schedule = find_entries(open("tune.sid", "rb").read())
+trace = run_trace(image, schedule[0], calls=1000)         # S0/S1: one instrumented run
+lifted = lift_trace(trace)                                # S2a: SMC operand cells -> loads
+regions, procs = build_regions(trace, lifted), build_procs(trace, lifted)   # S3 / S2b
 ```
 
 ## Ghidra
@@ -51,8 +58,9 @@ Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` o
 ```bash
 black --check deity_informant/ tests/ examples/ ghidra/ && pylint deity_informant/
 python ghidra/6510/build.py
-pytest tests/ -m "not oracle" -n auto --cov=deity_informant --cov-fail-under=85
+pytest tests/ -m "not oracle and not hvsc" -n auto --cov=deity_informant --cov-fail-under=85
 pytest tests/ -m oracle -n auto      # sidplayfp oracle (Docker + HVSC)
+pytest tests/ -m hvsc -n auto        # tuneprog front end on HVSC exemplars ($HVSC or the tune cache)
 ```
 
 ## References

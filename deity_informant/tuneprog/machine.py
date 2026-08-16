@@ -4,8 +4,8 @@ Public API:
 
 * ``MachineImage.from_sid(data)`` -- 64 KiB pre-init image (power-on RAM overlaid
   with the load band) plus the header facts a driver needs.
-* ``find_entries(data, mem=None, written=None)`` -- the tick schedule as
-  ``[Entry(kind, addr, cycles_per_tick, source)]``; raises :class:`Refusal`.
+* ``find_entries(data, mem=None, written=None)`` -- ``(MachineImage, [Entry(kind,
+  addr, cycles_per_tick, source)])``; raises :class:`Refusal`.
 * ``init_runner(vm, pc, cache, lifter, budget)`` -- run ``init`` to its balancing
   RTS or to a ``JMP *`` idle loop; returns the idle pc or ``None``.
 * ``port_bank(mem)`` -- ``$D000-$DFFF`` mapping (``io``/``charrom``/``ram``) from
@@ -180,7 +180,7 @@ def _init_topology(data):
 
 
 def find_entries(data, mem=None, written=None):
-    """The tick schedule of ``data`` as ``[Entry]``.
+    """``(MachineImage, [Entry])`` -- the pre-init image and the tick schedule of ``data``.
 
     ``play != 0`` gives a ``sub`` entry at the header play address; otherwise the
     installed handler is taken from the init trace, falling back to

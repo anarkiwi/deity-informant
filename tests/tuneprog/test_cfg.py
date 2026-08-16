@@ -254,3 +254,49 @@ def test_procs_json_is_serialisable():
     assert {p["name"] for p in doc["procs"]} == set(procs)
     p = [x for x in doc["procs"] if x["name"] == "tick"][0]
     assert p["kind"] == "tick" and p["nodes"] and p["exits"]
+
+
+def _patched_source(mask):
+    return (
+        PLAY,
+        "init: RTS",
+        "play: LDA jsr1+1",
+        "EOR #$%02X" % mask,
+        "STA jsr1+1",
+        "jsr1: JSR one",
+        "RTS",
+        "one: STA $D400",
+        "RTS",
+        "two: STA $D401",
+        "RTS",
+    )
+
+
+def test_patched_jsr_operand_becomes_a_computed_call():
+    probe = asm(*_patched_source(0))
+    code = asm(*_patched_source(probe.labels["one"] ^ probe.labels["two"]))
+    _T, procs = _procs(code, calls=2)
+    tick = _by_entry(procs, code.labels["play"])
+    n = [x for x in tick.nodes.values() if x["pc"] == code.labels["jsr1"]][0]
+    assert n["term"] == "call" and n["computed"]
+    assert sorted(n["call"]) == sorted([code.labels["one"], code.labels["two"]])
+    assert n["switch"]["expr"] == {"kind": "cell", "addr": code.labels["jsr1"] + 1, "size": 2}
+    assert [p.entry for p in procs.values() if p.kind == "sub"]
+
+
+def test_patched_jmp_with_one_observed_target_is_still_a_switch():
+    code = asm(
+        PLAY,
+        "init: RTS",
+        "play: LDA jmp1+1",
+        "STA jmp1+1",  # the operand is a written cell even though the value never changes
+        "jmp1: JMP one",
+        "one: STA $D400",
+        "RTS",
+    )
+    _T, procs = _procs(code, calls=2)
+    tick = _by_entry(procs, code.labels["play"])
+    n = [x for x in tick.nodes.values() if x["pc"] == code.labels["jmp1"]][0]
+    assert n["term"] == "switch" and n["computed"]
+    assert n["switch"]["expr"]["kind"] == "cell"
+    assert [c[0] for c in n["switch"]["cases"]] == [code.labels["one"]]

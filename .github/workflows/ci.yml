@@ -23,7 +23,7 @@ jobs:
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
         run: python ghidra/6510/build.py
       - name: Test
-        run: pytest tests/ -m "not oracle" -n auto --cov=deity_informant --cov-fail-under=85
+        run: pytest tests/ -m "not oracle and not hvsc" -n auto --cov=deity_informant --cov-fail-under=85
 
   oracle:
     # Byte-exact SID register-grid comparison of deity's VM against the
@@ -52,6 +52,8 @@ jobs:
           key: oracle-csv-${{ hashFiles('tests/test_oracle.py') }}
       - name: Oracle test
         run: pytest tests/ -m oracle -n auto
+      - name: tuneprog front end on HVSC exemplars
+        run: pytest tests/ -m hvsc -n auto
 
   ghidra-integration:
     # End-to-end test under the actual Ghidra headless analyzer (not just libsla/
