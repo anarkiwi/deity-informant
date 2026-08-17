@@ -110,9 +110,12 @@ def test_ghouls_voice_copies_fold_once_the_siblings_are_closed():
     gaps = {tuple(b[1] - a[1] for a, b in zip(c, c[1:])) for c in cells.values()}
     assert any(len(set(g)) > 1 for g in gaps), gaps
 
-    # the zero page block is a field table, not `b0021[90]`, on the voice path
+    # the zero page block is a field table on the voice path: what is left of
+    # `b0021[...]` is the filter's own cells and the voice number, which are not
+    # per-voice at all
     voiced = [l for l in tick if "b0021[" in l]
-    assert len(voiced) <= 8 and not any("b0021[9" in l for l in voiced), voiced
+    assert not any("b0021[9" in l for l in voiced), voiced
+    assert len(voiced) * 4 < lines.count("voice[v]."), voiced
     assert len(view.procs["tick"].blocks) < 200
 
 

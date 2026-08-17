@@ -64,12 +64,15 @@ def copy_groups(prog, names, folds=None, facts=None):
         if f.get("node") is not None:
             f["node"].group = g
         cells = {}
+        # a run one relocation apart proves its mapping inside the loop it folded
+        # and nowhere else; a static template's copies are that everywhere
+        local = f.get("node") is not None
         for cell in sorted(f["slots"], key=lambda c: (c[1] is None, c[1], c[0])):
             want = cell_field(prog, facts, names, cell, sidf)
             name = unique_name(want, set(cells))
             cells[name] = list(f["slots"][cell])
             for j, other in enumerate(f["slots"][cell]):
-                names.slots.setdefault(tuple(other), []).append((g, name, j))
+                names.slots.setdefault(tuple(other), []).append((g, name, j, local))
         names.groups[g] = {"stride": 0, "n": f["n"], "members": [], "cells": cells}
     return names
 

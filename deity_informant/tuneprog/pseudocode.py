@@ -87,12 +87,16 @@ class Printer:
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
 
     def slot(self, hits, rid, addr, idx):
-        """``voice[v].field`` for a cell a per-copy address table names.
+        """``voice[v].field`` for a cell a per-copy address table names, or ``None``.
 
         A cell two folds both name (the tick's voices, and the loop init copies
-        them with) belongs to whichever of them is being printed.
+        them with) belongs to whichever of them is being printed; a local group
+        names nothing outside the loop that proved it.
         """
-        g, fname, j = next((h for h in hits if h[0] == self.fgroup), hits[0])
+        hit = next((h for h in hits if h[0] == self.fgroup), hits[0])
+        g, fname, j, local = hit
+        if local and g != self.fgroup:
+            return None
         i = self.fvar if g == self.fgroup and self.fvar else str(j)
         out = "%s[%s].%s" % (g, i, fname)
         r = self.rgn.get(rid)
@@ -127,8 +131,9 @@ class Printer:
     def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         hit = self.names.slots.get((rid, addr))
+        hit = self.slot(hit, rid, addr, idx) if hit else None
         if hit is not None:
-            return self.slot(hit, rid, addr, idx)
+            return hit
         r = self.rgn.get(rid)
         if rid in self.names.split and r is not None and addr is not None:
             hit = self.field(rid, r, addr, idx)

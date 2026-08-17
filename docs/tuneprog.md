@@ -17,6 +17,8 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | **cell** | an instruction byte some traced procedure writes — a self-modified operand or opcode |
 | **region** | a connected component of the access relation: one storage object, with a base, extent, stride and initial bytes |
 | **view** | a presentation copy of the certified program; S5/S6 rewrite the view and never the program |
+| **sibling copies** | k static copies of one template an unrolled player wrote out (Follin's three voices, defMON's cascade blocks) |
+| **closure** | giving every copy the arms its siblings ran, so k trace-closed programs become one shape (`--closure siblings`) |
 | **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table` |
 | **phase** | the state scalar a tick tests to pick its rate (defMON's `& 7` call counter) |
 | **tick** | one call of the play entry, at the cadence S0 discovered; the horizon flag spells it `--calls`, the certificate field `ticks` |
@@ -30,11 +32,12 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py` |
+| S2c | sibling closure (presentation): the static correspondence between k copies of one template, and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes | `ssa.py`, `idioms.py` |
 | S5 | structuring: loops, if/else, switch, counted `for`, the phase | `structure.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, stack frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, stack frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -48,28 +51,38 @@ traversals every stage shares.
 
 ```
 front end     machine 243  tracevm 325  trace 257  tracedata 300  lift 227
-              cfg 309  regions 226  jumptab 179
+              cfg 309  regions 226  jumptab 179  siblings 330  closure 173
 program       ir 401  interp 228  irwalk 308  graph 70  build 481
               ssa 423  idioms 357  emit 337  verify 299
-presentation  structure 455  inline 199  texture 475  frame 320  word 369
-              fold 472  tails 165  unroll 342  recover 488  live 96
-text          pseudocode 498  printer 149
-driver        pipeline 386  __init__ 114
-baseline      ghidra_facts 219  ghidra_compare 182   33 modules, 9,899 lines
+presentation  structure 500  inline 199  texture 475  frame 320  word 369
+              fold 472  tails 165  copyfold 487  unroll 395  live 96
+              facts 214  recover 316  views 153
+text          pseudocode 356  printer 349
+driver        pipeline 451  __init__ 114
+baseline      ghidra_facts 219  ghidra_compare 182   38 modules, 11,305 lines
 ```
 
 Stage entry points, which are also the module boundaries:
 `machine.find_entries`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `emit.emit_python`,
-`verify.verify`, `structure.structure`, `recover.recover`, `printer.render`.
+`verify.verify`, `siblings.correspond`, `closure.close`, `structure.structure`,
+`copyfold.apply`, `recover.recover`, `views.decorate`, `printer.render`.
 
 ## Use
 
 ```bash
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-    [--sid-model 6581|8580] [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
+    [--sid-model 6581|8580] [--closure siblings|none] \
+    [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
 ```
+
+`--closure siblings` (the default) is S2c: before printing, the sibling copies of
+one template each get the arms their siblings ran, and the copies then print once
+over a loop index. It changes nothing that is certified -- `tuneprog.S4.json`,
+`tuneprog.py` and `certificate.json` are the trace-closed program either way --
+and `--closure none` prints that program as it is. What the closure added is
+counted in the `closure` line of `tuneprog.md` and in `tuneprog.S6.json`.
 
 `tools/tuneprog_certify.py` is the same pipeline as a standalone driver. Both
 are chunked: a long run exits 2 while work remains, so each invocation stays
@@ -97,7 +110,7 @@ Artefacts in `--out DIR`:
 | `tuneprog.S4.json` | the certified program |
 | `tuneprog.py` | generated Python, one function per procedure |
 | `certificate.json` | S8 |
-| `tuneprog.S5.json`, `tuneprog.S6.json` | the structured shape, the recovered names |
+| `tuneprog.S5.json`, `tuneprog.S6.json` | the structured shape, the recovered names and group views (with the closure's own counts) |
 | `tuneprog.md` | the pseudocode |
 | `state.json`, `tracer.pkl`, `verify.pkl` | resume state |
 
@@ -107,8 +120,10 @@ Python API:
 from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog.tracedata import Trace
 
-prog, regions, procs = pipeline.build(Trace.load("out/tune"), "TUNE.sid")   # S2..S4
-view, structured, names = pipeline.present(prog)                            # S5/S6
+trace = Trace.load("out/tune")
+prog, regions, procs = pipeline.build(trace, "TUNE.sid")            # S2..S4
+closed, sibs, stats = pipeline.closed(trace, prog, "TUNE.sid")      # S2c (presentation)
+view, structured, names = pipeline.present(closed, sibs)            # S5/S6
 ```
 
 ## Certificate schema
@@ -168,21 +183,25 @@ Hubbard's counters running free, so it is certified to its HVSC length.
 
 ## Known gaps
 
-- **Trace closure.** The product is trace-closed: a branch direction or a table
-  entry the run never took becomes `trap 'untaken'` / `trap 'unverified'`, not a
-  decompiled path. `jumptab` closes a patched jump statically over the table's
-  observed extent, which recovers most but not all arms (14 of 16 in
+- **Trace closure.** The certified product is trace-closed: a branch direction or
+  a table entry the run never took becomes `trap 'untaken'` / `trap 'unverified'`,
+  not a decompiled path. `jumptab` closes a patched jump statically over the
+  table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
-  region and stay unlisted.
-- **One region per init loop.** An `init` that clears a block with one loop joins
-  every variable in it into one region (Follin's `$21–$97`, GoatTracker's blocks
-  A+B, SID Wizard's 105-byte `b1024`); the play-time accesses are stride 7 and
-  would split it. A per-phase stride view is the fix, and would also give those
-  fields names instead of `b1024[$16 + x]`.
-- **Unrolled voices fold only when the copies ran the same code.** Follin's three
-  493-byte voice copies executed different subsets of one template, so the
-  isomorphism test fails on shape; their SMC cells are also unequally spaced, so
-  no affine step describes them.
+  region and stay unlisted. `--closure siblings` recovers the arms *another copy
+  of the same template* ran, which is most of them where a player unrolls its
+  voices, but only for the printed form.
+- **The closure is unverified code.** The arms a sibling ran are lifted into the
+  copies that never reached them, under those copies' own operands. They are
+  reachable only through edges that were a `trap` before, the added sites have
+  count 0, and the closed program is the same front end's product from the closed
+  trace -- but no execution ever took them, and the `closure` line says how many
+  statements that is (Follin song 1: 44 of 283).
+- **A copy is found by its static shape, so a short horizon finds less of it.**
+  Discovery starts at pcs the trace executed and pairs a dispatch's arms by how
+  far their targets align; over 30 s of *Automatas* one cascade run folds and over
+  the whole song both do, nested. What folds is therefore a function of the
+  horizon, and the certificate's horizon is what the exemplar documents report.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.

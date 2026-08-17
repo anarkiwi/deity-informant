@@ -252,3 +252,23 @@ def test_a_block_one_init_loop_made_one_region_splits_into_its_play_time_records
     body = "\n".join(_body(text, "tick"))
     assert re.search(r"voice\[[vx][/7]*\]\.f0\d", body), body
     assert not re.search(r"b10\w\w\[[^]]*x", body), body  # its records, not its address
+
+
+def test_parallel_jump_tables_pair_in_table_order():
+    # two handlers, one copy each in three columns, the copies interleaved as
+    # Follin's are: handler 0 at $2000/$2010/$2020, handler 1 at $2008/$2018/$2028
+    code = {}
+    for h, body in enumerate((["LDA $30", "STA $D404", "RTS"], ["LDX $31", "INX", "STX $32"])):
+        for j in range(3):
+            code[0x2000 + 0x10 * j + 8 * h] = asm(0x2000 + 0x10 * j + 8 * h, *body)
+    img = bytearray(0x10000)
+    for at, b in code.items():
+        img[at : at + len(b)] = b
+    arms = [[0x2000, 0x2008], [0x2010, 0x2018], [0x2020, 0x2028]]
+    assert siblings.pair_arms(img, arms, (0x2000, 0x2030)) == [
+        (0x2000, 0x2010, 0x2020),
+        (0x2008, 0x2018, 0x2028),
+    ]
+    # an entry only one column carries pairs with nothing
+    arms[0] = [0x2000, 0x2004, 0x2008]
+    assert len(siblings.pair_arms(img, arms, (0x2000, 0x2030))) == 2
