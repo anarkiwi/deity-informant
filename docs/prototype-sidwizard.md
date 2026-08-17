@@ -77,8 +77,8 @@ forms in each output directory's `tuneprog.md`. The HVSC tests
 | W9 | jump dispatch | `switch b19D0`: BIGFXTABLE's 31 words, **25** distinct in-band targets (21 unverified; six dead handlers share one `RTS`) | 25 |
 | W10 | the voice loop | `for v in 0, 1, 2: row_apply(x=($E - (v * 7)))` — the three `LDX #n; JSR DOTRACK` print once | same |
 | W11 | the slowdown gate | the first play call writes **nothing**; the dither reload folds to `phase = $FF` | absent (no SLOWDOWN in 1.9) |
-| W12 | the stack | **0** `sp`, 15 forwarded slots; `PHP`/`PLP` leaves only the carry | **0** `sp`, 13 slots; the zero-page save prints `saved = ptr … ptr = saved` around the tick |
-| W13 | structuring | **0** `goto`, 46 `trap 'untaken'`, 32 `trap 'unverified'` in 1,411 printed lines | 0 `goto`, 51, 46 in 1,394 |
+| W12 | the stack | **0** `sp`, **10** forwarded frame slots; `PHP`/`PLP` leaves only the carry | **0** `sp`, **12** slots; the zero-page save prints `saved = ptr … ptr = saved` around the tick |
+| W13 | structuring | **0** `goto`, 46 `trap 'untaken'`, 32 `trap 'unverified'` in 1,419 printed lines | 0 `goto`, 51, 46 in 1,394 |
 | W14 | cost | trace 12,000 calls in 32 s CPU, verify 8,084 in 0.9 s (8,617 calls/s): **one** invocation inside the 45 s budget | trace 16,000 in 33 s, verify 14,465 in 1.3 s |
 | W15 | genericity | Automatas, Commando, all 32 Ghouls'n'Ghosts subtunes and both GoatTracker tunes certify with the same code (31 `hvsc` tests) | — |
 
@@ -135,7 +135,7 @@ row_apply(x):                            # $124D DOTRACK, 35,997 calls
         b1024[$2F + x] = 0
         t5 = b1024[$18 + x]                        # PTNPOS
         if b1024[$15 + x] != 0:                    # PACKCNT: a packed rest
-            p_12B5(x=x, r4=t5)
+            p_12B5(x=x, r7=t5)
             return
         else:
             t6 = T1C6A[((ptr[1] << 8) | ptr) + t5] # the row's note byte
