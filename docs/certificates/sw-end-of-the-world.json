@@ -1,0 +1,49 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 10916,
+  "ir_blocks": 361,
+  "ir_procs": 16,
+  "ir_statements": 1050,
+  "regions": 94,
+  "sites": 821,
+  "trace_calls": 14465,
+  "verify_cpu_seconds": 1.3
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 10499,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-17T01:51:55Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 14464,
+   "inputs_pinned": 2,
+   "interp_prefix": 2000,
+   "period": 7688,
+   "seconds": 288.58,
+   "song": 1,
+   "ticks": 14465,
+   "trace_first_repeat": 14464,
+   "trace_period": 7688
+  }
+ ],
+ "tune": "End_of_the_World.sid"
+}
