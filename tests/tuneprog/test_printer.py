@@ -1,6 +1,7 @@
 """The pseudocode printer and the pipeline's print stage (hermetic snippets)."""
 
 import json
+import re
 
 from deity_informant import cli
 from deity_informant.tuneprog import pipeline, printer, recover, structure
@@ -72,6 +73,50 @@ def test_an_input_wait_collapses_to_a_while_over_the_input():
     doc = _text(code, calls=2)
     assert "while input($D012)" in doc
     assert "$D012 raster" in doc
+
+
+def test_a_ghost_image_prints_as_the_registers_it_mirrors():
+    from test_recover import ghost_tune  # pylint: disable=import-outside-toplevel
+
+    doc = _text(ghost_tune("LDX #$07", "LDA cnt", "AND #$FE", "STA $1204,X"), calls=3)
+    assert "sid.reg[v] = ghost.reg[v]" in doc  # the flush loop, register by register
+    assert "ghost[1].ctrl = " in doc  # a write at a constant address, by its register
+    assert "ghost " in doc and "sid_image" in doc and "flushed to $D400" in doc
+
+
+def test_a_one_based_table_prints_the_index_the_tune_uses():
+    code = asm(
+        PLAY,
+        "init: LDA #$01",
+        "STA idx",
+        "LDA #$00",
+        "STA cell",
+        "STA cell2",
+        "RTS",
+        "play: LDY idx",
+        "LDA tab-1,Y",
+        "STA cell",
+        "LDA tab,Y",
+        "STA cell2",
+        "INC idx",
+        "LDA cell",
+        "STA $D400",
+        "RTS",
+        "idx: BRK",
+        "cell: BRK",
+        "cell2: BRK",
+        "tab: BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+    )
+    doc, tab = _text(code, calls=3), "T%04X" % code.labels["tab"]
+    idx = re.search(r"%s\[(\w+)\]" % tab, doc)
+    assert idx, doc  # the table's own index, not the operand plus it
+    assert "%s[1 + %s]" % (tab, idx.group(1)) in doc  # its look-ahead sibling
+    assert "1-based, read at $%04X,i" % (code.labels["tab"] - 1) in doc
 
 
 def test_the_pc_annotation_is_optional():

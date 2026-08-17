@@ -23,6 +23,7 @@ from . import (
     recover,
     ssa,
     structure,
+    tails,
     texture,
     unroll,
     verify as V,
@@ -312,6 +313,7 @@ def present(prog):
     names = recover.recover(view, structure.structure(view))
     word.fold16(view, names)
     fold.outline(view, names, *printer.needed(view))
+    tails.promote_tails(view, names)
     st = structure.structure(view)
     live, params = printer.needed(view)
     unroll.unroll(st, live, fold.livearg(view, params))

@@ -181,6 +181,8 @@ class Printer:
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
         name = name or self.names.region.get(rid, "r%d" % rid)
+        if rid in self.names.image and addr is not None:
+            return self.regcell(name, addr + self.names.image[rid], _unoffset(idx, addr - r.zero))
         view = self.names.view.get(rid)
         elem = self.names.elem.get(rid)
         field = name if name != self.names.region.get(rid) else view[1] if view else name
@@ -201,12 +203,12 @@ class Printer:
     def index(self, r, addr, idx):
         """The element index of an access: a constant, or the loop variable."""
         if idx is None:
-            return str((addr - r.base) // max(r.stride, 1))
+            return str((addr - r.zero) // max(r.stride, 1))
         hit = self.ivar(idx, r.stride)
         if hit is not None:
             return hit
-        e = _bare(self.expr(idx, False))
-        return e if r.stride == 1 else "%s/%d" % (e, r.stride)
+        e = self.expr(idx, False)
+        return _bare(e) if r.stride == 1 else "%s/%d" % (e, r.stride)
 
     def ivar(self, idx, stride):
         """The loop variable, when the index is it scaled by the element size."""
@@ -227,9 +229,9 @@ class Printer:
         """``(constant address, index expression)`` of an access to region ``r``.
 
         The literal operand is not the table start (anatomy section 7: 1-based
-        tables read as ``base-1,Y``, Follin's dispatch tables placed at
-        ``base-$80``), so the distance from the region's own base moves into the
-        index and the reference reads ``T[i - $80]``.
+        tables read as ``base-1,Y``, dispatch tables placed at ``base-$80``), so
+        indices count from the region's recovered origin and the distance from it
+        moves into the index: ``T[y]``, and a look-ahead sibling ``T[y + 1]``.
         """
         if type(e) is Const:
             return e.v, None
@@ -237,33 +239,42 @@ class Printer:
             for k, i in ((e.a, e.b), (e.b, e.a)):
                 if type(k) is not Const or abs(k.v - r.base) > INDEX_MAX:
                     continue
-                if k.v == r.base:
-                    return k.v, i
-                if k.v > r.base:
-                    return k.v, Bin("+", Const(k.v - r.base), i, 2)
-                return k.v, Bin("-", i, Const(r.base - k.v, 2), 2)
+                if k.v < r.zero:
+                    return k.v, Bin("-", i, Const(r.zero - k.v, 2), 2)
+                d = k.v - r.zero
+                return k.v, Bin("+", Const(d), i, 2) if d else i
         return None, e
 
-    def sid(self, addr, idx=None):
-        """``sid[v].reg`` for a register write; ``sid.reg[i]`` when the register is data.
+    def regcell(self, name, addr, idx=None):
+        """``sid[v].reg`` by voice; ``NAME.reg[i]`` when the register is data.
 
-        An index that steps by the 7-byte voice block is a voice (a copy loop, or a
-        voice-offset table); anything else selects the *register*, which Follin's
-        ``$85`` command and every ``LDY #$1C`` clear loop really do (anatomy 3.6.8
-        trap 1: "the register is a variable").
+        An index that steps by the 7-byte voice block is a voice (a copy loop, a
+        voice-offset table, a routine's voice argument); anything else selects the
+        *register*, which a clear loop over the register file really does.
         """
         if idx is None:
             if addr in GLOBAL_REG:
-                return "sid.%s" % GLOBAL_REG[addr]
+                return "%s.%s" % (name, GLOBAL_REG[addr])
             v, k = divmod(addr - SID_LO, 7)
-            return "sid[%d].%s" % (v, VOICE_REG[k])
-        i = self.ivar(idx, 7)
-        if i is not None:
-            v, k = divmod(addr - SID_LO, 7)
-            return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
-        off = addr - SID_LO
-        e = _bare(self.expr(idx, False))
-        return "sid.reg[%s]" % ("%s + %s" % (_hex(off), e) if off else e)
+            return "%s[%d].%s" % (name, v, VOICE_REG[k])
+        i = self.voiced(idx) if addr - SID_LO < 21 else None
+        if i is None:
+            off = addr - SID_LO
+            e = _bare(self.expr(idx, False))
+            return "%s.reg[%s]" % (name, "%s + %s" % (_hex(off), e) if off else e)
+        v, k = divmod(addr - SID_LO, 7)
+        return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+
+    def voiced(self, idx):
+        """The index as a voice number, when something proves it steps by seven."""
+        hit = self.ivar(idx, 7)
+        if hit is not None:
+            return hit
+        n = idx.n if type(idx) is Var else None
+        return "%s/7" % self.expr(idx, False) if self.names.scale.get(n) == 7 else None
+
+    def sid(self, addr, idx=None):
+        return self.regcell("sid", addr, idx)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -281,6 +292,11 @@ class Printer:
         if t is R16:
             return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
+        if e.op in ("==", "!=") and type(b) is Const:
+            hit = self.mem.get(Bin("-", a, b, 1))
+            if hit is not None:  # x == k is the cell that holds x - k against zero
+                s = "%s %s 0" % (hit, e.op)
+                return s if top else "(%s)" % s
         if e.op == "&" and type(b) is Const and b.v == 0x80:
             return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
@@ -377,6 +393,13 @@ def _bare(s):
     return s[1:-1] if s.startswith("(") and s.endswith(")") else s
 
 
+def _unoffset(idx, d):
+    """An index with the constant :meth:`Printer.addr_of` folded into it removed."""
+    if d and type(idx) is Bin and idx.op == "+" and type(idx.a) is Const and idx.a.v == d:
+        return idx.b
+    return idx
+
+
 def _split(e):
     """``(base, index)`` of an address: a constant, or a constant plus an index."""
     if type(e) is Const:
@@ -452,7 +475,8 @@ class Body(Printer):
         pad = IND * depth
         c, flip = self.expr(n.c), False
         neg = self.negate(n.c)
-        then, els = self.nodes(n.then, proc, depth + 1), self.nodes(n.els, proc, depth + 1)
+        both = self.arms([n.then, n.els], proc, depth + 1)
+        then, els = both[0], both[1]
         if then == [IND * (depth + 1) + "pass"] and els != [IND * (depth + 1) + "pass"]:
             then, els, flip = els, ["%spass" % (IND * (depth + 1))], True
         if flip:
@@ -464,6 +488,15 @@ class Body(Printer):
         out = ["%sif %s:" % (pad, c)] + then
         return out if els[-1].endswith("pass") and len(els) == 1 else out + ["%selse:" % pad] + els
 
+    def arms(self, bodies, proc, depth):
+        """Render sibling arms: each starts from the state the test saw, none survives."""
+        saved, out = dict(self.mem), []
+        for b in bodies:
+            self.mem = dict(saved)
+            out.append(self.nodes(b, proc, depth))
+        self.mem = {}
+        return out
+
     def negate(self, c):
         if type(c) is Bin and c.op in NEG:
             return self.expr(Bin(NEG[c.op], c.a, c.b, c.w))
@@ -472,9 +505,10 @@ class Body(Printer):
     def case(self, n, proc, depth):
         pad = IND * depth
         out = ["%sswitch %s:" % (pad, self.expr(n.e))]
-        for v, b in n.cases:  # pylint: disable=redefined-argument-from-local
+        arms = self.arms([b for _v, b in n.cases], proc, depth + 2)
+        for (v, _b), body in zip(n.cases, arms):
             out.append("%s%scase %s:" % (pad, IND, _hex(v)))
-            out.extend(self.nodes(b, proc, depth + 2))
+            out.extend(body)
         return out
 
     def forloop(self, n, proc, depth):
@@ -486,7 +520,7 @@ class Body(Printer):
         self.alias[n.var] = (var, n.scale)
         self.hide |= n.hide
         self.fors += 1
-        body = self.nodes(_strip(n.body, n.label, self.hide), proc, depth + 1)
+        body = self.arms([_strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
 
@@ -495,7 +529,8 @@ class Body(Printer):
         spin = self.spin(n)
         if spin is not None:
             return ["%swhile %s: pass%s" % (pad, spin, _times(n.count))]
-        return ["%swhile True:%s" % (pad, _times(n.count))] + self.nodes(n.body, proc, depth + 1)
+        body = self.arms([n.body], proc, depth + 1)[0]
+        return ["%swhile True:%s" % (pad, _times(n.count))] + body
 
     def spin(self, n):
         """A body that only reads and tests is a busy-wait: ``while cond: pass``."""

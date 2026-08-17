@@ -51,6 +51,7 @@ class Region:
     fields: tuple = ()
     accessors: list = field(default_factory=list)
     init_bytes: bytes = b""
+    origin: int = 0
 
     @property
     def count(self):
@@ -64,6 +65,7 @@ class Region:
             "size": self.size,
             "kind": self.kind,
             "stride": self.stride,
+            "origin": self.origin,
             "fields": list(self.fields),
             "addrs": list(self.addrs),
             "init": self.init_bytes.hex(),
@@ -203,7 +205,19 @@ def build_regions(trace, lifted=None, init_kind="init_constant"):
         r.stride = g or 1
         r.fields = tuple(sorted({(a["base"] - r.base) % r.stride for a in r.accessors}))
         r.init_bytes = bytes(pre[r.base : r.base + r.size]) if r.kind != "io" else b""
+        r.origin = _origin(r)
     return regions
+
+
+def _origin(r):
+    """The address index 0 has: ``operand + minimum observed index`` (design S6).
+
+    A 1-based table is read at ``base-1,Y`` with ``Y >= 1``, so its lowest operand
+    lies one byte below the region; indexing from that origin prints the table's
+    own index (``T[y]``, and its look-ahead sibling as ``T[y + 1]``).
+    """
+    ops = [a["base"] - min(a["idx"]) for a in r.accessors if a["idx"]]
+    return min(ops + [r.base])
 
 
 def index_regions(regions):

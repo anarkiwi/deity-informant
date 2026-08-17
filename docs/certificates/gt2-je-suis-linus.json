@@ -1,0 +1,49 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 10445,
+  "ir_blocks": 245,
+  "ir_procs": 14,
+  "ir_statements": 580,
+  "regions": 73,
+  "sites": 437,
+  "trace_calls": 8236,
+  "verify_cpu_seconds": 0.8
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4099,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-17T00:24:04Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 8235,
+   "inputs_pinned": 0,
+   "interp_prefix": 2000,
+   "period": 6720,
+   "seconds": 164.31,
+   "song": 1,
+   "ticks": 8236,
+   "trace_first_repeat": 8235,
+   "trace_period": 6720
+  }
+ ],
+ "tune": "Je_suis_Linus_le_salaud.sid"
+}

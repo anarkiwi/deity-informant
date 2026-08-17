@@ -462,7 +462,17 @@ def build_ir(trace, lifted, regions, procs, meta=None):
     return Tuneprog(
         meta=m,
         storage=[
-            Rgn(r.id, r.name, r.base, r.size, r.kind, r.stride, r.init_bytes, tuple(r.fields))
+            Rgn(
+                r.id,
+                r.name,
+                r.base,
+                r.size,
+                r.kind,
+                r.stride,
+                r.init_bytes,
+                tuple(r.fields),
+                r.origin,
+            )
             for r in regions
         ]
         + _machine_image(trace),
