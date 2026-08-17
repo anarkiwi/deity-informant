@@ -284,35 +284,23 @@ def written(prog):
 
 
 def stack_temps(prog):
-    """A cell stored once and loaded once in one block becomes a value.
+    """A cell stored once and read where that store reaches becomes a value.
 
-    Regions are disjoint and this is their only writer, so the load reads that
-    value. A stack slot may also span blocks (a PHA and the PLA a branch away)
-    when the store dominates the load and both address it with one pure
-    expression, which SSA names make one value even at two call depths.
+    Regions are disjoint and this is the only writer, so every read the store
+    reaches sees that value: inside one block by order, and for a stack slot
+    (a PHA and the PLA a branch away) by dominance over one address expression.
     """
     st, ld = accesses(prog)
-    size = {r.id: r.size for r in prog.storage}
-    frame = {r.id for r in prog.storage if STACK[0] <= r.base <= STACK[1]}
-    wr = written(prog)
-    doms, out = {}, 0
+    ctx = _Slots(prog)
+    out = 0
     for rid, stores in sorted(st.items()):
         loads = ld.get(rid, [])
-        if len(stores) != 1 or len(loads) != 1 or stores[0][0] != loads[0][0]:
+        if len(stores) != 1 or not loads or any(l[0] != stores[0][0] for l in loads):
             continue
-        (pname, lbl, si), (_p, llbl, li) = stores[0], loads[0]
+        pname, lbl, si = stores[0]
         proc = prog.procs[pname]
         blk = proc.blocks[lbl]
-        if lbl != llbl and (rid not in frame or not _reaches(proc, doms, lbl, llbl)):
-            continue
-        if lbl == llbl and si >= li:
-            continue
-        calls = [s for s in blk.stmts[si:li] if type(s) is Call] if lbl == llbl else []
-        if any(rid in wr[s.proc] for s in calls):
-            continue
-        if size.get(rid) != 1 and not (
-            rid in frame and _same_addr(blk.stmts[si], proc.blocks[llbl], li, rid)
-        ):
+        if not all(ctx.forwards(proc, rid, (lbl, si), l[1], l[2]) for l in loads):
             continue
         name = "$saved" if not out else "$saved%d" % (out + 1)
         blk.stmts[si] = Let(name, blk.stmts[si].v)
@@ -326,16 +314,38 @@ def stack_temps(prog):
     return out
 
 
-def _reaches(proc, doms, lbl, llbl):
-    """True when block ``lbl`` lies on every path from the entry to ``llbl``."""
-    if id(proc) not in doms:
-        doms[id(proc)] = nx.immediate_dominators(_graph(proc), proc.entry)
-    idom, cur = doms[id(proc)], llbl
-    while idom.get(cur, cur) != cur:
-        cur = idom[cur]
-        if cur == lbl:
+class _Slots:
+    """Decides whether one store reaches one read of the same cell."""
+
+    def __init__(self, prog):
+        self.size = {r.id: r.size for r in prog.storage}
+        self.frame = {r.id for r in prog.storage if STACK[0] <= r.base <= STACK[1]}
+        self.wr = written(prog)
+        self.doms = {}
+
+    def forwards(self, proc, rid, store, llbl, li):
+        lbl, si = store
+        blk = proc.blocks[lbl]
+        if lbl == llbl:
+            calls = [s for s in blk.stmts[si:li] if type(s) is Call]
+            if si >= li or any(rid in self.wr[s.proc] for s in calls):
+                return False
+        elif rid not in self.frame or not self._reaches(proc, lbl, llbl):
+            return False
+        if self.size.get(rid) == 1:
             return True
-    return False
+        return rid in self.frame and _same_addr(blk.stmts[si], proc.blocks[llbl], li, rid)
+
+    def _reaches(self, proc, lbl, llbl):
+        """True when block ``lbl`` lies on every path from the entry to ``llbl``."""
+        if id(proc) not in self.doms:
+            self.doms[id(proc)] = nx.immediate_dominators(_graph(proc), proc.entry)
+        idom, cur = self.doms[id(proc)], llbl
+        while idom.get(cur, cur) != cur:
+            cur = idom[cur]
+            if cur == lbl:
+                return True
+        return False
 
 
 def _graph(proc):
