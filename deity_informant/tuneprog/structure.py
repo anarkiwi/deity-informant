@@ -63,7 +63,11 @@ class Loop:
 
 @dataclass
 class For:
-    """A counted loop: ``var`` takes ``values``; ``hide`` are its stepping lets."""
+    """A counted loop: ``var`` takes ``values``; ``hide`` are its stepping lets.
+
+    ``group`` names the struct view the index selects, when the loop is a fold of
+    sibling copies (:mod:`.copyfold`).
+    """
 
     var: str
     values: tuple
@@ -72,6 +76,7 @@ class For:
     hide: frozenset = frozenset()
     label: str = ""
     count: int = 0
+    group: str = ""
 
 
 @dataclass
@@ -292,8 +297,9 @@ def _returns(proc, term, want):
 
 # ---- the structurer ----------------------------------------------------------
 class _Structurer:
-    def __init__(self, proc, want=()):
+    def __init__(self, proc, want=(), folds=()):
         self.want = want
+        self.folds = folds or {}
         self.proc = proc
         self.g = cfg(proc)
         self.preds = preds_of(proc)
@@ -371,27 +377,33 @@ class _Structurer:
         body, latches = self.loops[h]
         outs = sorted({s for l in body for s in _leaves(self.proc, body, l)})
         exit_lbl = max(outs, key=lambda l: (self.proc.blocks[l].count, l)) if outs else None
-        ind = induction(self.proc, h, body, latches, self.preds)
+        hit = self.folds.get(h)
+        ind = None if hit else induction(self.proc, h, body, latches, self.preds)
         inner = self.head(h, ctx + ((h, exit_lbl),))
         count = self.proc.blocks[h].count
+        if hit is not None:
+            vals = tuple(range(hit["n"]))
+            return For(hit["var"], vals, inner, 1, frozenset(), h, count, hit["group"]), exit_lbl
         if ind is None:
             return Loop(inner, h, count), exit_lbl
         var, vals, scale, hide = ind
         return For(var, vals, inner, scale, hide, h, count), exit_lbl
 
 
-def structure_proc(proc, want=()):
+def structure_proc(proc, want=(), folds=()):
     """The structured body of one procedure."""
-    return _Structurer(proc, want).run()
+    return _Structurer(proc, want, folds).run()
 
 
 def structure(prog, want=None):
     """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first).
 
     ``want`` is ``{procedure: the return registers its callers read}`` (see
-    :func:`wants`), so a procedure that computes a byte for its caller prints it.
+    :func:`wants`), so a procedure that computes a byte for its caller prints it;
+    ``prog.meta['folds']`` names the loops :mod:`.copyfold` made.
     """
-    return {n: structure_proc(p, (want or {}).get(n, ())) for n, p in prog.procs.items()}
+    folds = prog.meta.get("folds") or {}
+    return {n: structure_proc(p, (want or {}).get(n, ()), folds) for n, p in prog.procs.items()}
 
 
 # ---- phase recognition -------------------------------------------------------

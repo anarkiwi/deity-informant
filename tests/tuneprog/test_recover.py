@@ -151,7 +151,15 @@ def test_names_are_unique_stable_and_serialisable():
     assert names.region == again.region
     assert len(set(names.region.values())) == len(names.region)
     doc = names.to_dict()
-    assert doc["regions"] and set(doc) == {"regions", "groups", "image", "procs", "phase", "u16"}
+    assert doc["regions"] and set(doc) == {
+        "regions",
+        "groups",
+        "image",
+        "procs",
+        "phase",
+        "u16",
+        "closure",
+    }
     assert names.of(-99) == "r-99"
 
 

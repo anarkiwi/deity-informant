@@ -191,7 +191,7 @@ class Trace:
         return t
 
 
-def _rekey(trace, cells, out):
+def rekey(trace, cells, out):
     """Merge ``trace``'s sites into ``out`` under the wider cell set ``cells``.
 
     A wider cell set only blanks more operand bytes, so keys can merge but never
@@ -256,7 +256,7 @@ def merge(traces):
         footprint_size=first.footprint_size,
     )
     for t in traces:
-        _rekey(t, cells, out.sites)
+        rekey(t, cells, out.sites)
         for e, (kind, n) in t.edges.items():
             hit = out.edges.get(e)
             out.edges[e] = [
