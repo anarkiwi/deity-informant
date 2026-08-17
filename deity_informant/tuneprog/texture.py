@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import networkx as nx
 
-from .idioms import CMP, _neg, fold
+from .frame import fresh, frames
+from .idioms import CMP, _neg, bitfields, fold
 from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
 from .ssa import merge_chains, preds_of, prune
 from .irwalk import apply_stmt, apply_term, sub_expr, use_counts
@@ -284,7 +285,7 @@ def written(prog):
     return out
 
 
-def stack_temps(prog):
+def stack_temps(prog, make=None):
     """A cell stored once and read where that store reaches becomes a value.
 
     Regions are disjoint and this is the only writer, so every read the store
@@ -293,6 +294,7 @@ def stack_temps(prog):
     """
     st, ld = accesses(prog)
     ctx = _Slots(prog)
+    make = make or fresh(prog)
     out = 0
     for rid, stores in sorted(st.items()):
         loads = ld.get(rid, [])
@@ -303,7 +305,7 @@ def stack_temps(prog):
         blk = proc.blocks[lbl]
         if not all(ctx.forwards(proc, rid, (lbl, si), l[1], l[2]) for l in loads):
             continue
-        name = "$saved" if not out else "$saved%d" % (out + 1)
+        name = make()
         blk.stmts[si] = Let(name, blk.stmts[si].v)
         fn = _reader(rid, name)
         for b in proc.blocks.values():
@@ -497,12 +499,20 @@ def tidy(prog):
     return prog
 
 
-def clean(prog):
-    """Every texture pass over a presentation copy of ``prog``."""
+def clean(prog, frameinfo=None):
+    """Every texture pass over a presentation copy of ``prog``.
+
+    ``frameinfo`` is :func:`~.frame.deltas` of the certified program, whose stack
+    arithmetic the view has already dropped.
+    """
     zerocarry(prog)
+    make = fresh(prog)
+    frames(prog, frameinfo, make)
+    for p in prog.procs.values():
+        bitfields(p)
     pin(prog)
     mirrors(prog)
-    stack_temps(prog)
+    stack_temps(prog, make)
     for p in prog.procs.values():
         propagate(p)
         thread_empty(p)

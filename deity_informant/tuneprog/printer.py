@@ -297,8 +297,6 @@ class Printer:
             if hit is not None:  # x == k is the cell that holds x - k against zero
                 s = "%s %s 0" % (hit, e.op)
                 return s if top else "(%s)" % s
-        if e.op == "&" and type(b) is Const and b.v == 0x80:
-            return self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
             s = "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
             return s if top else "(%s)" % s
