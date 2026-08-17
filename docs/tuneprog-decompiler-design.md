@@ -15,6 +15,8 @@ S0–S8 in `deity_informant/tuneprog/` and certifies defMON's Automatas complete
 each design claim measured. [prototype-follin.md](prototype-follin.md) is the
 second exemplar: all 32 subtunes of Follin's Ghouls'n'Ghosts, and the corrections
 the operand-cell rule and the patched-branch model needed to get there.
+[tuneprog.md](tuneprog.md) is the guide to what was built: module map, stages,
+tools, certificate schema and the exemplars it is certified on.
 
 Contents
 
