@@ -249,12 +249,13 @@ class Printer:
         v, k = divmod(addr - SID_LO, 7)
         if idx is None:
             return "%s[%d].%s" % (name, v, VOICE_REG[k])
-        i = self.ivar(idx, 7)
+        i = self.ivar(idx, 7) if v < 3 else None
         if i is None:
             flat = self.ivar(idx, 1)
-            if flat is not None:
+            if flat is not None or v >= 3:
                 off = addr - SID_LO
-                return "%s[%s]" % (name, "%s + %s" % (flat, _hex(off)) if off else flat)
+                e = flat or _bare(self.expr(idx, False))
+                return "%s[%s]" % (name, "%s + %s" % (e, _hex(off)) if off else e)
             i = "%s/7" % self.expr(idx, False)
         return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
 
