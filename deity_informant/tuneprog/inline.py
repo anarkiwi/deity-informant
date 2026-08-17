@@ -11,10 +11,10 @@ from .graph import cfg, idoms, natural_loops, preds_of
 from .ir import Bin, Call, Const, Let, Load, Return, Store, Var, retval, succs
 from .irwalk import (
     Uses,
+    any_load,
     apply_stmt,
     apply_term,
     loadfree,
-    loads,
     node_exprs,
     renamer,
     stmt_uses,
@@ -35,16 +35,15 @@ def _clobbers(s, e):
     t = type(s)
     if t is Call:
         return not loadfree(e)
-    ls = loads(e)
-    if any(_input(x) for x in ls) and any(_input(y) for x in node_exprs(s) for y in loads(x)):
+    if any_load(e, _input) and any(any_load(x, _input) for x in node_exprs(s)):
         return True
     if t is not Store:
         return False
     if s.cls == "io":
-        return any(x.cls == "io" for x in ls)
+        return any_load(e, lambda x: x.cls == "io")
     if s.cls == "raw":  # a JSR frame is memory: it clobbers the slots it covers
-        return any(x.lo <= s.hi and x.hi >= s.lo for x in ls)
-    return any(x.r < 0 or x.r == s.r or s.r < 0 for x in ls)
+        return any_load(e, lambda x: x.lo <= s.hi and x.hi >= s.lo)
+    return any_load(e, lambda x: x.r < 0 or x.r == s.r or s.r < 0)
 
 
 def _cost(e):

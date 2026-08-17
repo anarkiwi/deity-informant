@@ -22,7 +22,7 @@ from .ir import (
     Var,
     W16,
 )
-from .irwalk import addr_split, loads
+from .irwalk import addr_split, any_load
 from .live import needed, printable
 from .recover import GLOBAL_REG, VOICE_REG
 from .structure import Blk, Case, Cond, For, Jump, Loop
@@ -311,7 +311,7 @@ def _signbit(e):
 
 def _reads(e, rid):
     """True when the value of ``e`` loads from region ``rid``."""
-    return any(x.r == rid for x in loads(e))
+    return any_load(e, lambda x: x.r == rid)
 
 
 # ---- structured body ---------------------------------------------------------

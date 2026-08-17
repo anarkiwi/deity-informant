@@ -68,9 +68,3 @@ def natural_loops(g, idom, preds):
             body.add(x)
             stack.extend(preds.get(x, ()))
     return loops
-
-
-def loops_of(proc, g=None, preds=None):
-    """``{header: (body, latches)}`` of ``proc``, dominators computed here."""
-    g = cfg(proc) if g is None else g
-    return natural_loops(g, idoms(proc, g), preds_of(proc) if preds is None else preds)

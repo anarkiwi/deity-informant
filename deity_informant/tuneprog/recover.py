@@ -75,11 +75,6 @@ class Names:
 
 
 # ---- expression facts --------------------------------------------------------
-def _expand(e, defs):
-    """``e`` with block-local names substituted (bounded), for leaf analysis."""
-    return expand(e, defs, DEPTH)
-
-
 def _ops(e):
     return sum(1 for x in walk(e) if type(x) is Bin)
 
@@ -123,15 +118,15 @@ class Facts:
             if type(s) is Let:
                 if not s.n.startswith("$"):
                     defs[s.n] = s.e
-                self.value(name, _expand(s.e, defs))
+                self.value(name, expand(s.e, defs, DEPTH))
             elif type(s) is Store:
-                v, a = _expand(s.v, defs), _expand(s.a, defs)
+                v, a = expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH)
                 self.value(name, v)
                 self.value(name, a)
                 self.store(name, s, v, a)
             elif type(s) is Call:
                 for a in s.args:
-                    self.value(name, _expand(a, defs))
+                    self.value(name, expand(a, defs, DEPTH))
 
     def value(self, name, e):
         """Record what an expression reads: regions, index uses, pointer uses."""

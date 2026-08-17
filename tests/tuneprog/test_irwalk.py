@@ -56,7 +56,7 @@ def test_node_exprs_names_what_each_node_evaluates():
     ]
     for node, want in cases:
         assert tuple(W.node_exprs(node)) == want, node
-    assert W.node_loads(Call("f", (LD, IO), ())) == [LD, IO]
+    assert list(W.node_loads(Call("f", (LD, IO), ()))) == [LD, IO]
 
 
 def test_sub_expr_rebuilds_through_loads_and_the_word_view():
@@ -76,9 +76,21 @@ def test_pure_loadfree_and_addr_split():
 
 def test_expand_substitutes_names_to_a_bounded_depth():
     defs = {"a": Bin("+", Var("b"), Const(1), 1), "b": Const(2)}
-    assert W.expand(Var("a"), defs) == Bin("+", Const(2), Const(1), 1)
+    assert W.expand(Var("a"), defs, 4) == Bin("+", Const(2), Const(1), 1)
     assert W.expand(Var("a"), defs, 1) == Bin("+", Var("b"), Const(1), 1)
     assert W.expand(Load("ram", Var("a"), 1), defs, 2).a.a == Const(2)
+
+
+def test_any_load_stops_at_the_first_hit():
+    seen = []
+
+    def pred(x):
+        seen.append(x.r)
+        return x.r == 3
+
+    assert W.any_load(Bin("|", LD, LD, 1), pred) and seen == [3]
+    assert not W.any_load(Bin("+", Var("A"), Const(1), 1), pred)
+    assert W.any_load(R16(1, 2, LD), lambda x: x.r == 3)
 
 
 # ---- statements --------------------------------------------------------------

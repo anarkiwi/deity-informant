@@ -63,13 +63,18 @@ def test_postdoms_are_empty_when_nothing_returns():
     assert G.postdoms(G.cfg(proc), proc) == {}
 
 
+def _loops(proc):
+    g = G.cfg(proc)
+    return G.natural_loops(g, G.idoms(proc, g), G.preds_of(proc))
+
+
 def test_natural_loops_find_the_body_and_the_latch_of_a_back_edge():
     proc = _loop()
-    loops = G.loops_of(proc)
+    loops = _loops(proc)
     assert set(loops) == {"h"}
     body, latches = loops["h"]
     assert body == {"h", "body"} and latches == {"body"}
 
 
 def test_a_graph_without_a_back_edge_has_no_loop():
-    assert G.loops_of(_diamond()) == {}
+    assert _loops(_diamond()) == {}

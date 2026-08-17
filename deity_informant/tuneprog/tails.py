@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 
-from .graph import cfg, idoms, loops_of, preds_of
+from .graph import cfg, idoms, natural_loops, preds_of
 from .ir import Block, Call, Proc, REGIDX, REGVAR, Return, Var, retarget, retval, succs
 from .irwalk import apply_stmt, apply_term, defs_of, stmt_uses, term_uses, unique_name
 from .ssa import prune
@@ -80,7 +80,7 @@ def _tails(proc):
     """``[(statements, label, region)]`` for every multi-entry region with no exit."""
     g, preds = cfg(proc), preds_of(proc)
     idom = idoms(proc, g)
-    heads = set(loops_of(proc, g, preds))
+    heads = set(natural_loops(g, idom, preds))
     dom = {}
     for n in g:
         cur = n

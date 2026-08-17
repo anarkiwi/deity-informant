@@ -47,6 +47,16 @@ def loads(e):
     return [x for x in walk(e) if type(x) is Load]
 
 
+def any_load(e, pred):
+    """True when some load in ``e`` satisfies ``pred``; stops at the first hit."""
+    t = type(e)
+    if t is Load:
+        return pred(e) or any_load(e.a, pred)
+    if t is Bin:
+        return any_load(e.a, pred) or any_load(e.b, pred)
+    return any_load(e.a, pred) if t is R16 else False
+
+
 def sub_expr(e, fn):
     """Bottom-up rewrite of ``e``; ``fn`` sees each node after its children."""
     t = type(e)
@@ -65,7 +75,7 @@ def sub_expr(e, fn):
     return fn(e)
 
 
-def expand(e, defs, depth=4):
+def expand(e, defs, depth):
     """``e`` with every name ``defs`` maps replaced by its value, ``depth`` deep."""
     t = type(e)
     if t is Var and depth > 0 and e.n in defs:
@@ -108,7 +118,11 @@ def addr_split(e):
 
 # ---- statements and terminators ----------------------------------------------
 def node_exprs(node):
-    """The expressions one statement or terminator evaluates."""
+    """The expressions one statement or terminator evaluates.
+
+    Every node type is listed: one added to :mod:`.ir` and not to this table is
+    invisible to every traversal at once.
+    """
     t = type(node)
     if t is Let or t is Assert:
         return (node.e,)
@@ -129,7 +143,7 @@ def node_exprs(node):
 
 def node_loads(node):
     """Every :class:`~.ir.Load` one statement or terminator reads."""
-    return [x for e in node_exprs(node) for x in walk(e) if type(x) is Load]
+    return (x for e in node_exprs(node) for x in walk(e) if type(x) is Load)
 
 
 def apply_stmt(s, fn):

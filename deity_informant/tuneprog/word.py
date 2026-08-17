@@ -7,8 +7,6 @@ matching cell consumes, so the two statements are one assignment over a named
 
 from __future__ import annotations
 
-from functools import partial
-
 from .idioms import fold
 from .ir import Bin, Call, Const, Let, Load, R16, Store, Var, W16, succs
 from .irwalk import (
@@ -24,7 +22,6 @@ from .irwalk import (
 )
 
 DEPTH = 8
-_expand = partial(expand, depth=DEPTH)
 
 
 def _nofold(e):
@@ -110,9 +107,9 @@ def _value(op, x, y, cin):
 
 def _match(lo, hi, defs):
     """``(16-bit value, carry expression)`` when ``hi`` continues ``lo``'s chain."""
-    for opl, xl, yl, cl in _parses(_expand(lo, defs)):
+    for opl, xl, yl, cl in _parses(expand(lo, defs, DEPTH)):
         want = _norm(_carryof(opl, xl, yl, cl))
-        for oph, xh, yh, ch in _parses(_expand(hi, defs)):
+        for oph, xh, yh, ch in _parses(expand(hi, defs, DEPTH)):
             if oph != opl or not _same(_norm(ch), want):
                 continue
             for a, b in ((xh, yh), (yh, xh)) if opl == "+" else ((xh, yh),):
@@ -131,7 +128,7 @@ def _sites(proc, defs, lbl, i, e, seen=()):
         for j, x in enumerate(b.stmts):
             if type(x) is Let and x.n == e.n:
                 out += _sites(proc, defs, l2, j, x.e, seen + (e.n,))
-    return out or [(lbl, i, _expand(e, defs))]
+    return out or [(lbl, i, expand(e, defs, DEPTH))]
 
 
 def _local(proc, defs, lbl, at):
@@ -186,7 +183,7 @@ def _carry_defs(proc, carries):
         for j, x in enumerate(b.stmts):
             if type(x) is not Let:
                 continue
-            hit = any(_same(_norm(_expand(x.e, local)), c) for c in carries)
+            hit = any(_same(_norm(expand(x.e, local, DEPTH)), c) for c in carries)
             a, n = seen.get(x.n, (0, 0))
             seen[x.n] = (a + hit, n + 1)
             if hit:
