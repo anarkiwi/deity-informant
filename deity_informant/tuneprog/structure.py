@@ -10,8 +10,6 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
-import networkx as nx
-
 from .ir import (
     Bin,
     Call,
@@ -29,10 +27,10 @@ from .ir import (
     retval,
     succs,
 )
+from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
 from .inline import loads as inline_loads
-from .ssa import merge_chains, preds_of, prune
+from .ssa import merge_chains, prune
 
-EXIT = "$exit"
 CAP = 256
 
 
@@ -116,45 +114,6 @@ def inline(prog, live, keep=None):
     for name, p in prog.procs.items():
         inline_loads(p, live[name], (keep or {}).get(name, ()))
     return prog
-
-
-# ---- graphs ------------------------------------------------------------------
-def _cfg(proc):
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    for lbl, b in proc.blocks.items():
-        g.add_edges_from((lbl, s) for s in succs(b.term))
-    return g
-
-
-def _postdoms(g, proc):
-    """Immediate post-dominators through a virtual exit; a trap never reaches it."""
-    r = nx.DiGraph()
-    r.add_nodes_from(g)
-    r.add_edges_from((b, a) for a, b in g.edges)
-    r.add_edges_from((EXIT, n) for n in g if type(proc.blocks[n].term) is Return)
-    return nx.immediate_dominators(r, EXIT) if EXIT in r else {}
-
-
-def _natural_loops(g, idom, preds):
-    """``{header: (body labels, latch labels)}`` from the back edges."""
-    loops = {}
-    for u, v in g.edges:
-        d = u
-        while d is not None and d != v and idom.get(d) != d:
-            d = idom.get(d)
-        if d != v:
-            continue
-        body, latches = loops.setdefault(v, (set([v]), set()))
-        latches.add(u)
-        stack = [u]
-        while stack:
-            x = stack.pop()
-            if x in body:
-                continue
-            body.add(x)
-            stack.extend(preds.get(x, ()))
-    return loops
 
 
 # ---- counted loops -----------------------------------------------------------
@@ -341,11 +300,11 @@ class _Structurer:
     def __init__(self, proc, want=()):
         self.want = want
         self.proc = proc
-        self.g = _cfg(proc)
+        self.g = cfg(proc)
         self.preds = preds_of(proc)
-        self.idom = nx.immediate_dominators(self.g, proc.entry)
-        self.ipdom = _postdoms(self.g, proc)
-        self.loops = _natural_loops(self.g, self.idom, self.preds)
+        self.idom = idoms(proc, self.g)
+        self.ipdom = postdoms(self.g, proc)
+        self.loops = natural_loops(self.g, self.idom, self.preds)
         self.done = set()
         self.labels = set()
 

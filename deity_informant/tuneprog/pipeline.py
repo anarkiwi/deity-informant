@@ -41,7 +41,6 @@ from .tracedata import Trace, merge
 
 MODEL_D41B = {"6581": 0x00, "8580": 0x01}
 MORE = 2
-STAGES = ("trace", "front", "verify", "print", "done")
 
 
 def add_args(ap):

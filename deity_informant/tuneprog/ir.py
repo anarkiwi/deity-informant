@@ -27,8 +27,10 @@ import json
 from dataclasses import dataclass, field
 from hashlib import blake2b
 
-SID_LO, SID_HI = 0xD400, 0xD7FF
+SID_LO, SID_HI = 0xD400, 0xD7FF  # the SID decode band
+SID_REG_LO, SID_REG_HI = 0xD400, 0xD418  # the register file inside it
 IO_LO, IO_HI = 0xD000, 0xDFFF
+STACK_LO, STACK_HI = 0x0100, 0x01FF
 MASK = (0, 0xFF, 0xFFFF)
 REG_NAMES = {0: "A", 1: "X", 2: "Y", 3: "SP", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 REGVAR = {i: REG_NAMES.get(i, "r%d" % i) for i in range(16)}
@@ -79,6 +81,15 @@ class Bin:
     w: int = 1
 
 
+@dataclass(frozen=True, slots=True)
+class R16:
+    """S6 only -- a 16-bit read of the ``lo``/``hi`` region pair addressed by ``a``."""
+
+    lo: int
+    hi: int
+    a: object
+
+
 # ---- statements --------------------------------------------------------------
 @dataclass(slots=True)
 class Let:
@@ -115,6 +126,17 @@ class Assert:
 class Phi:
     n: str
     args: dict = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class W16:
+    """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` pair at ``a``."""
+
+    lo: int
+    hi: int
+    a: object
+    e: object
+    src: int = 0
 
 
 # ---- terminators -------------------------------------------------------------

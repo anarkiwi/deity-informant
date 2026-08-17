@@ -27,7 +27,7 @@ Public API: :func:`rewrite` (the pass :func:`~.ssa.simplify` calls),
 from __future__ import annotations
 
 from .ir import Bin, Call, Const, Let, Load, MASK, Phi, Store, Var, evalbin
-from .irwalk import apply_stmt, apply_term, pure, sub_expr, use_counts
+from .irwalk import apply_stmt, apply_term, loadfree, node_exprs, pure, sub_expr, use_counts
 
 CMP = ("==", "!=", "<", "<=")
 BITDEPTH = 8
@@ -55,13 +55,6 @@ def _neg(e):
     if e.op == "<":
         return Bin("<=", e.b, e.a, e.w)
     return Bin("<", e.b, e.a, e.w)
-
-
-def _noload(e):
-    t = type(e)
-    if t is Load:
-        return False
-    return _noload(e.a) and _noload(e.b) if t is Bin else True
 
 
 def fold(e):
@@ -152,7 +145,7 @@ def inline(proc, limit=3):
         for s in b.stmts:
             if type(s) is not Phi:
                 apply_stmt(s, fn)
-            if type(s) is Let and pure(s.e) and _noload(s.e):
+            if type(s) is Let and pure(s.e) and loadfree(s.e):
                 if uses[s.n] == 1 or _size(s.e) <= limit:
                     avail[s.n] = s.e
         apply_term(b.term, fn)
@@ -294,17 +287,11 @@ def _bituses(proc):
     bits = {}
     for b in proc.blocks.values():
         for s in b.stmts:
-            for e in _reads(s):
+            for e in node_exprs(s):
                 _scan(e, bits)
-        for e in _reads(b.term):
+        for e in node_exprs(b.term):
             _scan(e, bits)
     return bits
-
-
-def _reads(node):
-    parts = (getattr(node, "e", None), getattr(node, "a", None), getattr(node, "v", None))
-    parts += (getattr(node, "c", None),) + tuple(getattr(node, "args", ()))
-    return [x for x in parts + tuple(getattr(node, "vals", ())) if x is not None]
 
 
 def bitfields(proc):

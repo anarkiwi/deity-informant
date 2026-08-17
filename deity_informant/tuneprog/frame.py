@@ -7,24 +7,13 @@ pointer its caller holds. A pointer that is not a constant offset keeps its stac
 
 from __future__ import annotations
 
-from .ir import Bin, Call, Const, Let, Load, Return, Store, Var, succs
-from .irwalk import apply_stmt, apply_term
-from .ssa import preds_of
+from .graph import preds_of
+from .ir import Bin, Call, Const, Let, Return, STACK_HI, STACK_LO, Store, Var, succs
+from .irwalk import apply_stmt, apply_term, call_order, node_loads, reachable, single_defs
 
-STACK = (0x0100, 0x01FF)
 SP = "SP"
 SPREG = 3
 DEPTH = 6
-
-
-def _defs(proc):
-    """``{name: expression}`` for every name exactly one ``Let`` defines."""
-    out = {}
-    for b in proc.blocks.values():
-        for s in b.stmts:
-            if type(s) is Let:
-                out.setdefault(s.n, []).append(s.e)
-    return {n: v[0] for n, v in out.items() if len(v) == 1}
 
 
 def _delta(e, off, defs, depth=DEPTH):
@@ -58,7 +47,7 @@ def _sp_defs(prog, s, off, defs, exits):
 
 def offsets(prog, proc, exits):
     """``{name: entry-relative stack offset}``, ``None`` where a value is not one."""
-    off, defs = {SP: 0}, _defs(proc)
+    off, defs = {SP: 0}, single_defs(proc)
     for _ in range(len(proc.blocks) + 2):
         changed = False
         for b in proc.blocks.values():
@@ -94,47 +83,8 @@ def exit_delta(prog, proc, off, defs, exits):
     return seen.pop() if len(seen) == 1 else None
 
 
-def _order(prog):
-    """Procedure names, callees before callers (the call graph is acyclic)."""
-    out, seen = [], set()
-
-    def visit(n):
-        if n in seen or n not in prog.procs:
-            return
-        seen.add(n)
-        for b in prog.procs[n].blocks.values():
-            for s in b.stmts:
-                if type(s) is Call:
-                    visit(s.proc)
-        out.append(n)
-
-    for n in prog.procs:
-        visit(n)
-    return out
-
-
-def _walk(e):
-    t = type(e)
-    if t is Load:
-        yield e
-        yield from _walk(e.a)
-    elif t is Bin:
-        yield from _walk(e.a)
-        yield from _walk(e.b)
-
-
-def _reads(node):
-    """Every ``Load`` a statement or a terminator evaluates."""
-    parts = (getattr(node, "e", None), getattr(node, "a", None), getattr(node, "v", None))
-    parts += (getattr(node, "c", None),) + tuple(getattr(node, "args", ()))
-    parts += tuple(getattr(node, "vals", ()))
-    for e in parts:
-        if e is not None:
-            yield from _walk(e)
-
-
 def _touches(x):
-    return x.lo <= STACK[1] and x.hi >= STACK[0]
+    return x.lo <= STACK_HI and x.hi >= STACK_LO
 
 
 def _slot(e, off, defs, depth=DEPTH):
@@ -144,7 +94,7 @@ def _slot(e, off, defs, depth=DEPTH):
     if type(e) is not Bin or e.op not in ("|", "+"):
         return None
     for k, x in ((e.a, e.b), (e.b, e.a)):
-        if type(k) is Const and k.v == STACK[0]:
+        if type(k) is Const and k.v == STACK_LO:
             d = _delta(x, off, defs)
             return None if d is None else d & 0xFF
     return None
@@ -156,7 +106,7 @@ def events(proc, off, defs):
     for lbl, b in proc.blocks.items():
         evs = []
         for i, node in list(enumerate(b.stmts)) + [(len(b.stmts), b.term)]:
-            for x in _reads(node):
+            for x in node_loads(node):
                 if not _touches(x):
                     continue
                 slot = _slot(x.a, off, defs)
@@ -244,24 +194,11 @@ def _find(par, x):
     return x
 
 
-def _split(s, name, keep):
+def _as_value(s, name, keep):
     """A push as the value it pushed, keeping the write while a frame may be foreign."""
     out = [Let(name, s.v)]
     if keep:
         out.append(Store(s.cls, s.a, Var(name), s.w, s.lo, s.hi, s.r, s.src))
-    return out
-
-
-def _callees(prog, name):
-    """Every procedure ``name`` can reach, itself excluded."""
-    out, work = set(), [name]
-    while work:
-        n = work.pop()
-        for b in prog.procs[n].blocks.values():
-            for s in b.stmts:
-                if type(s) is Call and s.proc not in out and s.proc in prog.procs:
-                    out.add(s.proc)
-                    work.append(s.proc)
     return out
 
 
@@ -317,10 +254,10 @@ def deltas(prog):
     arithmetic nothing reads, and its uses would then have no definition left.
     """
     exits, offs = {}, {}
-    for name in _order(prog):
+    for name in call_order(prog):
         proc = prog.procs[name]
         offs[name] = offsets(prog, proc, exits)
-        exits[name] = exit_delta(prog, proc, offs[name], _defs(proc), exits)
+        exits[name] = exit_delta(prog, proc, offs[name], single_defs(proc), exits)
     return exits, offs
 
 
@@ -329,9 +266,9 @@ def frames(prog, info=None, make=None):
     make = make or fresh(prog)
     exits, offs = info or deltas(prog)
     plans, foreign, out = {}, {}, 0
-    for name in _order(prog):
+    for name in call_order(prog):
         proc = prog.procs[name]
-        defs = _defs(proc)
+        defs = single_defs(proc)
         off = offs.get(name) or offsets(prog, proc, exits)
         evs = events(proc, off, defs)
         reach = {} if evs is None else _reaching(proc, evs)
@@ -339,12 +276,12 @@ def frames(prog, info=None, make=None):
         plans[name] = () if evs is None else _plan(proc, evs, reach)
     for name, plan in plans.items():
         proc = prog.procs[name]
-        keep = any(foreign[c] for c in _callees(prog, name))
+        keep = any(foreign[c] for c in reachable(prog, name) - {name})
         edits, sub = {}, {}
         for pushes, keys in plan:
             var = make()
             for lbl, i in pushes:
-                edits[(lbl, i)] = _split(proc.blocks[lbl].stmts[i], var, keep)
+                edits[(lbl, i)] = _as_value(proc.blocks[lbl].stmts[i], var, keep)
             sub.update({k: Var(var) for k in keys})
             out += 1
         _apply(proc, sub)
@@ -376,8 +313,8 @@ def _drop(prog):
     for p in prog.procs.values():
         for b in p.blocks.values():
             for s in list(b.stmts) + [b.term]:
-                live.update(x.r for x in _reads(s))
+                live.update(x.r for x in node_loads(s))
                 if type(s) is Store:
                     live.add(s.r)
-    prog.storage = [r for r in prog.storage if r.id in live or not STACK[0] <= r.base <= STACK[1]]
+    prog.storage = [r for r in prog.storage if r.id in live or not STACK_LO <= r.base <= STACK_HI]
     return prog

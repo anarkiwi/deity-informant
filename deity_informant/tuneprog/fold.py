@@ -11,33 +11,36 @@ from collections import Counter
 
 import networkx as nx
 
-from .ir import Block, Call, Const, Goto, If, Let, Load, Proc, Return, Store, Switch, Var, succs
-from .inline import _natural_loops
-from .ssa import preds_of, prune
-from .irwalk import defs_of, stmt_uses, term_uses
-from .word import R16, W16, uses16
+from .graph import EXIT, cfg, idoms, natural_loops, preds_of
+from .ir import (
+    Block,
+    Call,
+    Const,
+    Goto,
+    If,
+    Let,
+    Load,
+    Proc,
+    R16,
+    Return,
+    SID_REG_HI,
+    SID_REG_LO,
+    Store,
+    Switch,
+    Var,
+    W16,
+    retarget,
+    succs,
+)
+from .irwalk import defs_of, node_exprs, reachable, stmt_uses, term_uses, unique_name, walk
+from .ssa import prune
 
-EXIT = "$exit"
 ORDER = ("cascades", "oscillator", "writeout", "filter", "row_advance")
-SID_LO, SID_HI = 0xD400, 0xD418
 CUTOFF = (0xD415, 0xD416)
 MINSTMT = 5
 
 
 # ---- regions -----------------------------------------------------------------
-def cfg(proc):
-    """The control-flow graph with a virtual exit every return reaches."""
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    g.add_node(EXIT)
-    for lbl, b in proc.blocks.items():
-        for s in succs(b.term):
-            g.add_edge(lbl, s)
-        if type(b.term) is Return:
-            g.add_edge(lbl, EXIT)
-    return g
-
-
 def chain(g, root, stop):
     """The blocks every path from ``root`` to ``stop`` passes through, in order."""
     if root not in g or stop not in g:
@@ -81,6 +84,11 @@ def sese(proc, preds, blocks, h, x):
 
 
 # ---- roles -------------------------------------------------------------------
+def _sidreg(addr):
+    """True when ``addr`` is one of the SID's own registers."""
+    return SID_REG_LO <= addr <= SID_REG_HI
+
+
 def written(s):
     t = type(s)
     if t is W16:
@@ -90,24 +98,13 @@ def written(s):
 
 def loaded(s):
     out = set()
-    for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
-        if e is not None:
-            for x in _walk(e):
-                if type(x) is Load:
-                    out.add(x.r)
-                elif type(x) is R16:
-                    out |= {x.lo, x.hi}
+    for e in node_exprs(s):
+        for x in walk(e):
+            if type(x) is Load:
+                out.add(x.r)
+            elif type(x) is R16:
+                out |= {x.lo, x.hi}
     return out
-
-
-def _walk(e):
-    yield e
-    t = type(e)
-    if t is Load or t is R16:
-        yield from _walk(e.a)
-    elif t is not Const and t is not Var and hasattr(e, "b"):
-        yield from _walk(e.a)
-        yield from _walk(e.b)
 
 
 class Roles:
@@ -124,7 +121,7 @@ class Roles:
 
     def io(self, s):
         """``writeout``/``filter`` for a SID register store: the runs a block splits at."""
-        if type(s) is Store and s.cls == "io" and type(s.a) is Const and SID_LO <= s.a.v <= SID_HI:
+        if type(s) is Store and s.cls == "io" and type(s.a) is Const and _sidreg(s.a.v):
             return "filter" if s.a.v in CUTOFF else "writeout"
         return ""
 
@@ -200,34 +197,21 @@ class Cand:
 def candidates(prog, names):
     """Every role-named run in the program, deepest first."""
     roles, out = Roles(prog, names), []
-    hot = _hot(prog)
+    hot = reachable(prog, prog.meta.get("tick_proc"))
     for pname, proc in prog.procs.items():
         if pname not in hot:
             continue
-        g, preds = cfg(proc), preds_of(proc)
+        g, preds = cfg(proc, EXIT), preds_of(proc)
         graph = (g, preds, set(), _loops(proc, g, preds))
         _chains(prog, roles, pname, proc, (proc.entry, EXIT), graph, 0, out)
     return out
 
 
-def _hot(prog):
-    """The procedures a tick reaches: init-only code is not worth a helper."""
-    seen, work = set(), [prog.meta.get("tick_proc")]
-    while work:
-        n = work.pop()
-        if n in seen or n not in prog.procs:
-            continue
-        seen.add(n)
-        work += [s.proc for b in prog.procs[n].blocks.values() for s in b.stmts if type(s) is Call]
-    return seen
-
-
 def _loops(proc, g, preds):
     """Every block inside a natural loop: a chain never cuts one in half."""
     g = g.subgraph([n for n in g if n != EXIT])
-    idom = nx.immediate_dominators(g, proc.entry)
     out = set()
-    for body, _latches in _natural_loops(g, idom, preds).values():
+    for body, _latches in natural_loops(g, idoms(proc, g), preds).values():
         out |= body
     return out
 
@@ -359,21 +343,13 @@ def crossing(prog, cand, live):
         for i, s in enumerate(b.stmts):
             here = lbl in cand.blocks and i >= first
             (inside if here else outside).update(defs_of(s))
-            (used_in if here else outside).update(_uses(s, set()))
+            (used_in if here else outside).update(stmt_uses(s, set()))
         if lbl in cand.blocks:
             term_uses(b.term, used_in)
         else:
             term_uses(b.term, outside)
     keep = {n for n in live.get(cand.proc, set()) if not n.startswith("$")}
     return ((inside & outside) | (used_in - inside)) & keep
-
-
-def _uses(s, out):
-    if type(s) is W16:
-        uses16(s.a, out)
-        uses16(s.e, out)
-        return out
-    return stmt_uses(s, out)
 
 
 # ---- outlining ---------------------------------------------------------------
@@ -412,7 +388,7 @@ def outline(prog, names, live, params=None):
     ]
     for group in sorted(worth, key=lambda g: g[0].role):
         group.sort(key=lambda c: (c.skip, c.proc))
-        name = _unique(prog, group[0].role)
+        name = unique_name(group[0].role, prog.procs, sep="")
         for c in group:
             _extract(prog, c, name, name in out)
             out[name] = group
@@ -465,13 +441,6 @@ def _whole(prog, c):
     return c.entry == p.entry and not c.skip and len(c.blocks) == len(p.blocks)
 
 
-def _unique(prog, want):
-    out, i = want, 2
-    while out in prog.procs:
-        out, i = "%s%d" % (want, i), i + 1
-    return out
-
-
 def _extract(prog, cand, name, exists):
     """Move the run into ``name`` (once) and leave a call behind."""
     proc = prog.procs[cand.proc]
@@ -500,17 +469,4 @@ def _returns(proc, exit_lbl):
             b.term = Return()
         elif exit_lbl in succs(b.term):
             proc.blocks.setdefault(EXIT, Block(EXIT, [], Return()))
-            b.term = _retarget(b.term, exit_lbl, EXIT)
-
-
-def _retarget(term, old, new):
-    k = type(term)
-    if k is If:
-        return If(term.c, new if term.t == old else term.t, new if term.f == old else term.f)
-    if k is Switch:
-        return Switch(
-            term.e,
-            tuple((v, new if l == old else l) for v, l in term.cases),
-            new if term.default == old else term.default,
-        )
-    return term
+            b.term = retarget(b.term, exit_lbl, EXIT)

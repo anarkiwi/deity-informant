@@ -18,6 +18,7 @@ Public API: :func:`build_ir`, :func:`ops_to_stmts`, :func:`straightline`.
 
 from __future__ import annotations
 
+from ..lifter import STATUS_BITS
 from .ir import (
     Block,
     Bin,
@@ -37,8 +38,11 @@ from .ir import (
     Trap,
     Tuneprog,
     Var,
+    STACK_LO,
+    STACK_HI,
     succs,
 )
+from .irwalk import callees
 from .regions import index_regions
 from .ssa import liveness
 
@@ -57,7 +61,6 @@ BINOP = {
     "INT_CARRY": "carry",
 }
 PH_INIT = 1
-STACK = (0x0100, 0x01FF)
 
 
 def _vn(v, blk):
@@ -117,7 +120,7 @@ class _Storage:
         lo, hi = trace.meta["load"]
         self.k0 = bytearray(0x10000)
         self.k0[lo:hi] = b"\1" * (hi - lo)
-        self.k0[STACK[0] : STACK[1] + 1] = b"\1" * 0x100
+        self.k0[STACK_LO : STACK_HI + 1] = b"\1" * 0x100
         self.k1 = bytearray(self.k0)
         for a in trace.written_init:
             self.k1[a] = 1
@@ -147,7 +150,6 @@ class _Storage:
 
 
 SP = REGVAR[3]
-STATUS_BITS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
 
 
 def _spaddr(out, blk, tag):
@@ -395,7 +397,7 @@ def _wire(procs):
         if n in seen:
             return
         seen.add(n)
-        for c in _callees(procs[n]):
+        for c in callees(procs[n]):
             visit(c)
         order.append(n)
 
@@ -404,7 +406,7 @@ def _wire(procs):
     for n in order:
         p = procs[n]
         rets = {REGIDX[s.n] for b in p.blocks.values() for s in b.stmts if _isreg(s)}
-        for c in _callees(p):
+        for c in callees(p):
             rets |= set(procs[c].rets)
         p.rets = tuple(sorted(rets))
         vals = tuple(Var(REGVAR[i]) for i in p.rets)
@@ -422,10 +424,6 @@ def _wire(procs):
 
 def _isreg(s):
     return type(s) is Let and s.n in REGIDX
-
-
-def _callees(p):
-    return {s.proc for b in p.blocks.values() for s in b.stmts if type(s) is Call}
 
 
 def _machine_image(trace):

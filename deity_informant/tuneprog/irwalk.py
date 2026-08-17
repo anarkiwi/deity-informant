@@ -1,16 +1,50 @@
-"""Traversal of the IR: rewrite every expression a statement reads, collect its names.
+"""Traversal of the IR: sub-expressions, the values a node reads, names, call order.
 
-The passes of :mod:`.ssa` and every S5/S6 presentation module share these walks,
-so they live apart from the pass that first needed them.
+Every pass of :mod:`.ssa` and every S5/S6 presentation module shares these walks,
+so they live apart from the pass that first needed them. The S6 word view
+(:class:`~.ir.R16`/:class:`~.ir.W16`) is walked like any other node.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 
-from .ir import Assert, Bin, Call, If, Let, Load, Phi, REGIDX, Return, Store, Switch, Var
+from .ir import (
+    Assert,
+    Bin,
+    Call,
+    Const,
+    If,
+    Let,
+    Load,
+    Phi,
+    R16,
+    REGIDX,
+    Return,
+    Store,
+    Switch,
+    Var,
+    W16,
+)
 
 IMPURE = ("io", "chk")  # a load of these classes can consume a pinned input
+
+
+# ---- expressions -------------------------------------------------------------
+def walk(e):
+    """Every sub-expression of ``e``, itself first."""
+    yield e
+    t = type(e)
+    if t is Bin:
+        yield from walk(e.a)
+        yield from walk(e.b)
+    elif t is Load or t is R16:
+        yield from walk(e.a)
+
+
+def loads(e):
+    """Every :class:`~.ir.Load` the value of ``e`` reads."""
+    return [x for x in walk(e) if type(x) is Load]
 
 
 def sub_expr(e, fn):
@@ -24,7 +58,78 @@ def sub_expr(e, fn):
         a = sub_expr(e.a, fn)
         if a is not e.a:
             e = Load(e.cls, a, e.w, e.lo, e.hi, e.r)
+    elif t is R16:
+        a = sub_expr(e.a, fn)
+        if a is not e.a:
+            e = R16(e.lo, e.hi, a)
     return fn(e)
+
+
+def expand(e, defs, depth=4):
+    """``e`` with every name ``defs`` maps replaced by its value, ``depth`` deep."""
+    t = type(e)
+    if t is Var and depth > 0 and e.n in defs:
+        return expand(defs[e.n], defs, depth - 1)
+    if t is Bin:
+        return Bin(e.op, expand(e.a, defs, depth), expand(e.b, defs, depth), e.w)
+    if t is Load:
+        return Load(e.cls, expand(e.a, defs, depth), e.w, e.lo, e.hi, e.r)
+    return e
+
+
+def pure(e):
+    """True when evaluating ``e`` has no effect (a pinned input read has one)."""
+    t = type(e)
+    if t is Load:
+        return e.cls not in IMPURE and pure(e.a)
+    if t is Bin:
+        return pure(e.a) and pure(e.b)
+    return True
+
+
+def loadfree(e):
+    """True when ``e`` reads no memory at all: its value is register algebra."""
+    t = type(e)
+    if t is Load:
+        return False
+    return loadfree(e.a) and loadfree(e.b) if t is Bin else True
+
+
+def addr_split(e):
+    """``(constant base, index)`` of an address expression; ``(None, e)`` if neither."""
+    if type(e) is Const:
+        return e.v, None
+    if type(e) is Bin and e.op == "+":
+        for k, i in ((e.a, e.b), (e.b, e.a)):
+            if type(k) is Const:
+                return k.v, i
+    return None, e
+
+
+# ---- statements and terminators ----------------------------------------------
+def node_exprs(node):
+    """The expressions one statement or terminator evaluates."""
+    t = type(node)
+    if t is Let or t is Assert:
+        return (node.e,)
+    if t is Store:
+        return (node.a, node.v)
+    if t is W16:
+        return (node.a, node.e)
+    if t is Call:
+        return node.args
+    if t is If:
+        return (node.c,)
+    if t is Switch:
+        return (node.e,)
+    if t is Return:
+        return node.vals
+    return ()
+
+
+def node_loads(node):
+    """Every :class:`~.ir.Load` one statement or terminator reads."""
+    return [x for e in node_exprs(node) for x in walk(e) if type(x) is Load]
 
 
 def apply_stmt(s, fn):
@@ -37,6 +142,9 @@ def apply_stmt(s, fn):
         s.v = sub_expr(s.v, fn)
     elif t is Call:
         s.args = tuple(sub_expr(a, fn) for a in s.args)
+    elif t is W16:
+        s.a = sub_expr(s.a, fn)
+        s.e = sub_expr(s.e, fn)
     elif t is not Phi:
         s.e = sub_expr(s.e, fn)
 
@@ -51,6 +159,7 @@ def apply_term(t, fn):
         t.vals = tuple(sub_expr(v, fn) for v in t.vals)
 
 
+# ---- names -------------------------------------------------------------------
 def defs_of(s):
     t = type(s)
     if t is Let or t is Phi:
@@ -66,70 +175,120 @@ def uses_of(e, out, regs_only=False):
     elif t is Bin:
         uses_of(e.a, out, regs_only)
         uses_of(e.b, out, regs_only)
-    elif t is Load:
+    elif t is Load or t is R16:
         uses_of(e.a, out, regs_only)
     return out
 
 
 def stmt_uses(s, out, regs_only=False):
     """Collect the names a statement reads (phi arguments belong to its predecessors)."""
-    t = type(s)
-    if t is Let or t is Assert:
-        uses_of(s.e, out, regs_only)
-    elif t is Store:
-        uses_of(s.a, out, regs_only)
-        uses_of(s.v, out, regs_only)
-    elif t is Call:
-        for a in s.args:
-            uses_of(a, out, regs_only)
-    elif t is Phi and not regs_only:
-        out.update(s.args.values())
+    if type(s) is Phi:
+        if not regs_only:
+            out.update(s.args.values())
+        return out
+    for e in node_exprs(s):
+        uses_of(e, out, regs_only)
     return out
 
 
 def term_uses(t, out, regs_only=False):
-    k = type(t)
-    if k is If:
-        uses_of(t.c, out, regs_only)
-    elif k is Switch:
-        uses_of(t.e, out, regs_only)
-    elif k is Return:
-        for v in t.vals:
-            uses_of(v, out, regs_only)
+    for e in node_exprs(t):
+        uses_of(e, out, regs_only)
     return out
 
 
-class _Tally:
-    """A ``set``-shaped sink that counts instead of collecting."""
+class Uses:
+    """A ``set``-shaped sink that keeps every occurrence, not every name."""
 
-    __slots__ = ("c",)
+    __slots__ = ("hits",)
 
     def __init__(self):
-        self.c = Counter()
+        self.hits = []
 
     def add(self, n):
-        self.c[n] += 1
+        self.hits.append(n)
 
     def update(self, it):
-        for n in it:
-            self.c[n] += 1
+        self.hits.extend(it)
 
 
 def use_counts(proc):
     """``Counter`` of every use of every variable in ``proc`` (phi arguments included)."""
-    t = _Tally()
+    t = Uses()
     for b in proc.blocks.values():
         for s in b.stmts:
             stmt_uses(s, t)
         term_uses(b.term, t)
-    return t.c
+    return Counter(t.hits)
 
 
-def pure(e):
-    """True when evaluating ``e`` has no effect (a pinned input read has one)."""
-    t = type(e)
-    if t is Load:
-        return e.cls not in IMPURE and pure(e.a)
-    if t is Bin:
-        return pure(e.a) and pure(e.b)
-    return True
+def renamer(sub):
+    """A :func:`sub_expr` function that replaces every ``Var`` name ``sub`` maps."""
+
+    def fn(e):
+        return sub.get(e.n, e) if type(e) is Var else e
+
+    return fn
+
+
+def single_defs(proc):
+    """``{name: expression}`` for every name exactly one ``Let`` of ``proc`` defines."""
+    out = {}
+    for b in proc.blocks.values():
+        for s in b.stmts:
+            if type(s) is Let:
+                out.setdefault(s.n, []).append(s.e)
+    return {n: v[0] for n, v in out.items() if len(v) == 1}
+
+
+def unique_name(want, taken, sep="_"):
+    """``want``, suffixed until it is not in ``taken``."""
+    out, i = want, 2
+    while out in taken:
+        out, i = "%s%s%d" % (want, sep, i), i + 1
+    return out
+
+
+# ---- procedures and the call graph -------------------------------------------
+def callees(proc):
+    """The procedures one procedure calls directly, in program order."""
+    return list(
+        dict.fromkeys(s.proc for b in proc.blocks.values() for s in b.stmts if type(s) is Call)
+    )
+
+
+def call_order(prog):
+    """Procedure names, callees before callers (the call graph is acyclic)."""
+    out, seen = [], set()
+
+    def visit(n):
+        if n in seen or n not in prog.procs:
+            return
+        seen.add(n)
+        for c in callees(prog.procs[n]):
+            visit(c)
+        out.append(n)
+
+    for n in prog.procs:
+        visit(n)
+    return out
+
+
+def reachable(prog, root):
+    """The procedures ``root`` reaches through calls, itself included."""
+    seen, work = set(), [root] if root in prog.procs else []
+    while work:
+        n = work.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        work.extend(c for c in callees(prog.procs[n]) if c in prog.procs)
+    return seen
+
+
+def forwarder(proc):
+    """The procedure ``proc`` exists only to call, or ``None``."""
+    stmts = [s for b in proc.blocks.values() for s in b.stmts]
+    if len(proc.blocks) == 1 and len(stmts) == 1 and type(stmts[0]) is Call:
+        return stmts[0].proc
+    return None

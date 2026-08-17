@@ -7,47 +7,42 @@ values, mirror cells, switch merging, 16-bit carry chains.
 
 from __future__ import annotations
 
-import networkx as nx
-
 from .frame import fresh, frames
+from .graph import idoms, preds_of
 from .idioms import CMP, _neg, bitfields, fold
-from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
-from .ssa import merge_chains, preds_of, prune
-from .irwalk import apply_stmt, apply_term, sub_expr, use_counts
-
-STACK = (0x0100, 0x01FF)
-
-
-def _exprs(node):
-    t = type(node)
-    if t is Let:
-        return (node.e,)
-    if t is Store:
-        return (node.a, node.v)
-    if t is Call:
-        return node.args
-    if t is If:
-        return (node.c,)
-    if t is Switch:
-        return (node.e,)
-    if t is Return:
-        return node.vals
-    return (node.e,) if hasattr(node, "e") else ()
-
-
-def walk(e):
-    """Every sub-expression of ``e``, itself first."""
-    yield e
-    t = type(e)
-    if t is Bin:
-        yield from walk(e.a)
-        yield from walk(e.b)
-    elif t is Load:
-        yield from walk(e.a)
+from .ir import (
+    Bin,
+    Call,
+    Const,
+    Goto,
+    If,
+    Let,
+    Load,
+    STACK_HI,
+    STACK_LO,
+    Store,
+    Switch,
+    Var,
+    retarget,
+    succs,
+)
+from .irwalk import (
+    apply_stmt,
+    apply_term,
+    defs_of,
+    loads as loads_in,
+    node_loads,
+    pure,
+    renamer,
+    sub_expr,
+    use_counts,
+)
+from .ssa import merge_chains, prune
 
 
 def loads_of(node):
-    return [x for e in _exprs(node) for x in walk(e) if type(x) is Load and x.r >= 0]
+    """Every load of a real region one statement or terminator reads."""
+    return [x for x in node_loads(node) if x.r >= 0]
 
 
 # ---- empty-block threading ---------------------------------------------------
@@ -61,24 +56,11 @@ def thread_empty(proc):
                 continue
             for other in proc.blocks.values():
                 if lbl in succs(other.term):
-                    other.term = _retarget(other.term, lbl, b.term.to)
+                    other.term = retarget(other.term, lbl, b.term.to)
             del proc.blocks[lbl]
             changed, n = True, n + 1
     prune(proc)
     return n
-
-
-def _retarget(term, old, new):
-    k = type(term)
-    if k is Goto:
-        return Goto(new)
-    if k is If:
-        return If(term.c, new if term.t == old else term.t, new if term.f == old else term.f)
-    return Switch(
-        term.e,
-        tuple((v, new if l == old else l) for v, l in term.cases),
-        new if term.default == old else term.default,
-    )
 
 
 # ---- short-circuit conditions ------------------------------------------------
@@ -133,18 +115,10 @@ def _testonly(proc, lbl, preds, uses):
         return None
     vals = {}
     for s in b.stmts:
-        if type(s) is not Let or not _movable(s.e) or uses[s.n] != 1:
+        if type(s) is not Let or not pure(s.e) or uses[s.n] != 1:
             return None
         vals[s.n] = s.e
     return sub_expr(b.term.c, lambda e: vals.get(e.n, e) if type(e) is Var else e)
-
-
-def _movable(e):
-    """A value a condition may evaluate: pure, and never an input read."""
-    t = type(e)
-    if t is Load:
-        return e.cls not in ("io", "chk") and _movable(e.a)
-    return _movable(e.a) and _movable(e.b) if t is Bin else True
 
 
 def _not(c):
@@ -182,7 +156,7 @@ def propagate(proc, rounds=8):
         defs = {}
         for b in proc.blocks.values():
             for s in b.stmts:
-                for name in _defines(s):
+                for name in defs_of(s):
                     defs.setdefault(name, []).append(s.e if type(s) is Let else None)
         one = {k: v[0] for k, v in defs.items() if len(v) == 1 and v[0] is not None}
         sub = {
@@ -192,7 +166,7 @@ def propagate(proc, rounds=8):
         }
         if not sub:
             return n
-        fn = _subber(sub)
+        fn = renamer(sub)
         hit = 0
         for b in proc.blocks.values():
             for s in b.stmts:
@@ -204,20 +178,6 @@ def propagate(proc, rounds=8):
         if not hit:
             return n
     return n
-
-
-def _subber(sub):
-    def fn(e):
-        return sub.get(e.n, e) if type(e) is Var else e
-
-    return fn
-
-
-def _defines(s):
-    t = type(s)
-    if t is Let:
-        return (s.n,)
-    return s.rets if t is Call else ()
 
 
 # ---- pinned addresses --------------------------------------------------------
@@ -249,7 +209,7 @@ def pin(prog):
 
 def _pinned(x):
     """A stack access whose envelope is one slot: the frame pointer is not data."""
-    return x.hi - x.lo + 1 == x.w and STACK[0] <= x.lo <= STACK[1]
+    return x.hi - x.lo + 1 == x.w and STACK_LO <= x.lo <= STACK_HI
 
 
 # ---- stack slots as values ---------------------------------------------------
@@ -297,13 +257,13 @@ def stack_temps(prog, make=None):
     make = make or fresh(prog)
     out = 0
     for rid, stores in sorted(st.items()):
-        loads = ld.get(rid, [])
-        if len(stores) != 1 or not loads or any(l[0] != stores[0][0] for l in loads):
+        reads = ld.get(rid, [])
+        if len(stores) != 1 or not reads or any(l[0] != stores[0][0] for l in reads):
             continue
         pname, lbl, si = stores[0]
         proc = prog.procs[pname]
         blk = proc.blocks[lbl]
-        if not all(ctx.forwards(proc, rid, (lbl, si), l[1], l[2]) for l in loads):
+        if not all(ctx.forwards(proc, rid, (lbl, si), l[1], l[2]) for l in reads):
             continue
         name = make()
         blk.stmts[si] = Let(name, blk.stmts[si].v)
@@ -322,7 +282,7 @@ class _Slots:
 
     def __init__(self, prog):
         self.size = {r.id: r.size for r in prog.storage}
-        self.frame = {r.id for r in prog.storage if STACK[0] <= r.base <= STACK[1]}
+        self.frame = {r.id for r in prog.storage if STACK_LO <= r.base <= STACK_HI}
         self.wr = written(prog)
         self.doms = {}
 
@@ -342,7 +302,7 @@ class _Slots:
     def _reaches(self, proc, lbl, llbl):
         """True when block ``lbl`` lies on every path from the entry to ``llbl``."""
         if id(proc) not in self.doms:
-            self.doms[id(proc)] = nx.immediate_dominators(_graph(proc), proc.entry)
+            self.doms[id(proc)] = idoms(proc)
         idom, cur = self.doms[id(proc)], llbl
         while idom.get(cur, cur) != cur:
             cur = idom[cur]
@@ -351,19 +311,11 @@ class _Slots:
         return False
 
 
-def _graph(proc):
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    for lbl, b in proc.blocks.items():
-        g.add_edges_from((lbl, s) for s in succs(b.term))
-    return g
-
-
 def _same_addr(store, blk, li, rid):
     """True when the one load of the region reads the address the store wrote."""
     node = blk.stmts[li] if li < len(blk.stmts) else blk.term
-    hit = [x for e in _exprs(node) for x in walk(e) if type(x) is Load and x.r == rid]
-    return bool(hit) and all(x.a == store.a and _movable(x.a) for x in hit)
+    hit = [x for x in node_loads(node) if x.r == rid]
+    return bool(hit) and all(x.a == store.a and pure(x.a) for x in hit)
 
 
 def _reader(rid, name):
@@ -475,7 +427,7 @@ def _stable(proc, term, mid):
     """The two selectors are the same value and nothing between them writes it."""
     if proc.blocks[mid].term.e != term.e:
         return False
-    rs = {x.r for x in walk(term.e) if type(x) is Load}
+    rs = {x.r for x in loads_in(term.e)}
     for name in [a for _v, a in term.cases] + [mid]:
         for s in proc.blocks[name].stmts:
             if type(s) is Call or (type(s) is Store and (s.r in rs or s.r < 0)):

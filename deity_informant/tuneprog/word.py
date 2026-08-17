@@ -7,67 +7,24 @@ matching cell consumes, so the two statements are one assignment over a named
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from functools import partial
 
 from .idioms import fold
-from .ir import Bin, Const, Let, Load, Store, Var, succs
-from .irwalk import apply_stmt, apply_term, sub_expr
+from .ir import Bin, Call, Const, Let, Load, R16, Store, Var, W16, succs
+from .irwalk import (
+    addr_split,
+    apply_stmt,
+    apply_term,
+    expand,
+    node_loads,
+    single_defs,
+    sub_expr,
+    unique_name,
+    walk,
+)
 
 DEPTH = 8
-
-
-@dataclass(frozen=True, slots=True)
-class R16:
-    """A 16-bit read of the ``lo``/``hi`` region pair addressed by ``a``."""
-
-    lo: int
-    hi: int
-    a: object
-
-
-@dataclass(slots=True)
-class W16:
-    """A 16-bit assignment of ``e`` to the ``lo``/``hi`` pair addressed by ``a``."""
-
-    lo: int
-    hi: int
-    a: object
-    e: object
-    src: int = 0
-
-
-def uses16(e, out):
-    """Collect the names ``e`` reads, ``R16`` included."""
-    t = type(e)
-    if t is Var:
-        out.add(e.n)
-    elif t is Bin:
-        uses16(e.a, out)
-        uses16(e.b, out)
-    elif t is Load or t is R16:
-        uses16(e.a, out)
-    return out
-
-
-def _defs(proc):
-    out = {}
-    for lbl, b in proc.blocks.items():
-        for i, s in enumerate(b.stmts):
-            if type(s) is Let:
-                out.setdefault(s.n, []).append((lbl, i, s.e))
-    return {n: v[0] for n, v in out.items() if len(v) == 1}
-
-
-def _expand(e, defs, depth=DEPTH):
-    """``e`` with every single-definition name replaced by its value."""
-    t = type(e)
-    if t is Var and depth and e.n in defs:
-        return _expand(defs[e.n][2], defs, depth - 1)
-    if t is Bin:
-        return Bin(e.op, _expand(e.a, defs, depth), _expand(e.b, defs, depth), e.w)
-    if t is Load:
-        return Load(e.cls, _expand(e.a, defs, depth), e.w, e.lo, e.hi, e.r)
-    return e
+_expand = partial(expand, depth=DEPTH)
 
 
 def _nofold(e):
@@ -97,21 +54,10 @@ def _same(a, b):
     return a == b
 
 
-def _split(a):
-    """``(base, index)`` of an address: a constant, or a constant plus an index."""
-    if type(a) is Const:
-        return a.v, None
-    if type(a) is Bin and a.op == "+":
-        for k, i in ((a.a, a.b), (a.b, a.a)):
-            if type(k) is Const:
-                return k.v, i
-    return None, None
-
-
 def _pairs(al, ah):
     """True when two addresses differ only in their constant base."""
-    bl, il = _split(al)
-    bh, ih = _split(ah)
+    bl, il = addr_split(al)
+    bh, ih = addr_split(ah)
     if bl is None or bh is None or bl == bh:
         return False
     return (il is None and ih is None) or (il is not None and ih is not None and _same(il, ih))
@@ -191,9 +137,9 @@ def _sites(proc, defs, lbl, i, e, seen=()):
 def _local(proc, defs, lbl, at):
     """``defs`` plus the values this block defines before ``at``."""
     out = dict(defs)
-    for i, x in enumerate(proc.blocks[lbl].stmts[:at]):
+    for x in proc.blocks[lbl].stmts[:at]:
         if type(x) is Let:
-            out[x.n] = (lbl, i, x.e)
+            out[x.n] = x.e
     return out
 
 
@@ -223,26 +169,18 @@ def _plan(proc, defs, lbl, i, s, taken):
 def _crosses(proc, lbl, i, j, rlo, rhi):
     """True when the two halves are separated by a call or an access to the pair."""
     for x in proc.blocks[lbl].stmts[i + 1 : j]:
-        if type(x).__name__ == "Call":
+        if type(x) is Call:
             return True
         if type(x) is Store and (x.r in (rlo, rhi) or x.r < 0):
             return True
-        if any(y.r == rlo for y in _walk16(x)):
+        if any(y.r == rlo for y in node_loads(x)):
             return True
     return False
 
 
-def _walk16(s):
-    for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
-        if e is not None:
-            for x in _walk(e):
-                if type(x) is Load:
-                    yield x
-
-
 def _carry_defs(proc, carries):
     """``(names defined only by these carries, the positions of every such def)``."""
-    defs, seen, where = _defs(proc), {}, []
+    defs, seen, where = single_defs(proc), {}, []
     for lbl, b in proc.blocks.items():
         local = _local(proc, defs, lbl, len(b.stmts))
         for j, x in enumerate(b.stmts):
@@ -308,7 +246,7 @@ def fold16(prog, names=None):
         ]
         for lbl, i in stores:
             s = proc.blocks[lbl].stmts[i]
-            got = None if (lbl, i) in taken else _plan(proc, _defs(proc), lbl, i, s, taken)
+            got = None if (lbl, i) in taken else _plan(proc, single_defs(proc), lbl, i, s, taken)
             if got is None:
                 continue
             plan, whole = got
@@ -366,7 +304,7 @@ def _feeds(prog, want=range(0xD415, 0xD419)):
 
 
 def _sources(e, defs, out, seen, depth=DEPTH):
-    for x in _walk(e):
+    for x in walk(e):
         if type(x) is Load:
             out.add(x.r)
         elif type(x) is Var and x.n not in seen and depth:
@@ -374,16 +312,6 @@ def _sources(e, defs, out, seen, depth=DEPTH):
             for d in defs.get(x.n, ()):
                 _sources(d, defs, out, seen, depth - 1)
     return out
-
-
-def _walk(e):
-    yield e
-    t = type(e)
-    if t is Bin:
-        yield from _walk(e.a)
-        yield from _walk(e.b)
-    elif t is Load or t is R16:
-        yield from _walk(e.a)
 
 
 def _name(prog, names, pairs):
@@ -441,7 +369,4 @@ def _uniq(names, want, own=()):
     taken = (set(names.region.values()) | set(names.u16.values())) - {
         names.region.get(r) for r in own
     }
-    out, i = want, 2
-    while out in taken:
-        out, i = "%s_%d" % (want, i), i + 1
-    return out
+    return unique_name(want, taken)

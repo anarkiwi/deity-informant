@@ -8,13 +8,27 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .idioms import CMP, fold
-from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var, retval
+from .ir import (
+    Assert,
+    Bin,
+    Call,
+    Const,
+    Let,
+    Load,
+    R16,
+    REGVAR,
+    Return,
+    SID_REG_HI,
+    SID_REG_LO,
+    Store,
+    Var,
+    W16,
+    retval,
+)
+from .irwalk import addr_split, call_order, forwarder, loads, pure, stmt_uses, term_uses, uses_of
 from .recover import GLOBAL_REG, VOICE_REG
-from .irwalk import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
-from .word import R16, W16, uses16
 
-SID_LO, SID_HI = 0xD400, 0xD418
 INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
@@ -27,43 +41,14 @@ def _hex(v):
 
 
 # ---- what is worth printing --------------------------------------------------
-def _order(prog):
-    """Procedure names, callees before callers."""
-    out, seen = [], set()
-
-    def visit(n):
-        if n in seen:
-            return
-        seen.add(n)
-        for b in prog.procs[n].blocks.values():
-            for s in b.stmts:
-                if type(s) is Call:
-                    visit(s.proc)
-        out.append(n)
-
-    for n in prog.procs:
-        visit(n)
-    return out
-
-
-def _impure(e):
-    t = type(e)
-    if t is Load:
-        return e.cls in ("io", "chk") or _impure(e.a)
-    return _impure(e.a) or _impure(e.b) if t is Bin else False
-
-
 def _stmt_roots(prog, s, defs, params, out):
     """Record a statement's definition and, when it has an effect, what it reads."""
     t = type(s)
     if t is Let:
         defs.setdefault(s.n, []).append(s.e)
-        if _impure(s.e):
+        if not pure(s.e):
             uses_of(s.e, out)
-    elif t is W16:
-        uses16(s.a, out)
-        uses16(s.e, out)
-    elif t is Assert or (t is Store and s.cls != "raw"):
+    elif t is W16 or t is Assert or (t is Store and s.cls != "raw"):
         stmt_uses(s, out)
     elif t is Call:
         for i, a in zip(prog.procs[s.proc].params, s.args):
@@ -106,7 +91,7 @@ def needed(prog, rounds=3):
     used, params = {}, {}
     for _ in range(rounds):
         used, params = {}, {}
-        for name in _order(prog):
+        for name in call_order(prog):
             used[name] = _roots(prog, name, params, rets)
             params[name] = tuple(i for i in prog.procs[name].params if REGVAR[i] in used[name])
         want = {n: ({0} if retval(p) is not None else set()) for n, p in prog.procs.items()}
@@ -124,7 +109,7 @@ def needed(prog, rounds=3):
 def _keep(s, live):
     t = type(s)
     if t is Let:
-        return s.n in live or _impure(s.e)
+        return s.n in live or not pure(s.e)
     return t is not Store or s.cls != "raw"
 
 
@@ -255,14 +240,14 @@ class Printer:
         if idx is None:
             if addr in GLOBAL_REG:
                 return "%s.%s" % (name, GLOBAL_REG[addr])
-            v, k = divmod(addr - SID_LO, 7)
+            v, k = divmod(addr - SID_REG_LO, 7)
             return "%s[%d].%s" % (name, v, VOICE_REG[k])
-        i = self.voiced(idx) if addr - SID_LO < 21 else None
+        i = self.voiced(idx) if addr - SID_REG_LO < 21 else None
         if i is None:
-            off = addr - SID_LO
+            off = addr - SID_REG_LO
             e = _bare(self.expr(idx, False))
             return "%s.reg[%s]" % (name, "%s + %s" % (_hex(off), e) if off else e)
-        v, k = divmod(addr - SID_LO, 7)
+        v, k = divmod(addr - SID_REG_LO, 7)
         return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
 
     def voiced(self, idx):
@@ -359,8 +344,8 @@ class Printer:
         r = self.rgn.get(s.r)
         addr, idx = self.addr_of(s.a, r)
         if s.cls == "io":
-            base, i = _split(s.a)
-            if base is not None and SID_LO <= base <= SID_HI:
+            base, i = addr_split(s.a)
+            if base is not None and SID_REG_LO <= base <= SID_REG_HI:
                 lhs = self.sid(base, i)
             else:
                 lhs = "io[%s]" % (_hex(base) if base is not None else self.expr(s.a, False))
@@ -398,26 +383,13 @@ def _unoffset(idx, d):
     return idx
 
 
-def _split(e):
-    """``(base, index)`` of an address: a constant, or a constant plus an index."""
-    if type(e) is Const:
-        return e.v, None
-    if type(e) is Bin and e.op == "+":
-        for k, i in ((e.a, e.b), (e.b, e.a)):
-            if type(k) is Const:
-                return k.v, i
-    return None, e
-
-
 def _signbit(e):
     return type(e) is Bin and e.op == "&" and type(e.b) is Const and e.b.v == 0x80
 
 
 def _reads(e, rid):
-    t = type(e)
-    if t is Load:
-        return e.r == rid or _reads(e.a, rid)
-    return _reads(e.a, rid) or _reads(e.b, rid) if t is Bin else False
+    """True when the value of ``e`` loads from region ``rid``."""
+    return any(x.r == rid for x in loads(e))
 
 
 # ---- structured body ---------------------------------------------------------
@@ -734,16 +706,10 @@ def render(prog, structured, names, cert=None, pcs=True):
     return "\n".join(out) + "\n"
 
 
-def _forwarder(p):
-    """A procedure that is nothing but a call to another one."""
-    stmts = [s for b in p.blocks.values() for s in b.stmts]
-    return len(p.blocks) == 1 and len(stmts) == 1 and type(stmts[0]) is Call
-
-
 def _procs_order(prog):
     """The tick first, then what it calls, then init and the rest; forwarders elided."""
     tick, init = prog.meta.get("tick_proc"), prog.meta.get("init_proc")
-    hot = [n for n in reversed(_order(prog)) if n != init]
+    hot = [n for n in reversed(call_order(prog)) if n != init]
     order = [n for n in (tick,) if n in hot] + [n for n in hot if n != tick]
     order += [n for n in prog.procs if n not in order]
-    return [n for n in order if not _forwarder(prog.procs[n])]
+    return [n for n in order if forwarder(prog.procs[n]) is None]

@@ -7,9 +7,9 @@ over copy 0; equal alpha-renamed skeletons and affine steps are the proof.
 
 from __future__ import annotations
 
-from .ir import Assert, Bin, Call, Const, Let, Load, Store, Var
-from .structure import Blk, Case, Cond, Exit, For, Loop
-from .word import R16, W16
+from .ir import Assert, Bin, Call, Const, Let, Load, R16, Store, Var, W16
+from .irwalk import defs_of, stmt_uses, uses_of
+from .structure import Blk, Case, Cond, Exit, For, Loop, walk
 
 MINSTMT = 6
 
@@ -197,34 +197,21 @@ def _defined(units):
     """The names a run defines: only those may be renamed between copies."""
     out = set()
     for kind, obj, _b in units:
-        (_stmt_defs if kind == "s" else _node_defs)(obj, out)
+        if kind == "s":
+            out.update(defs_of(obj))
+        else:
+            _node_defs(obj, out)
     return out
 
 
-def _stmt_defs(s, out):
-    if type(s) is Let:
-        out.add(s.n)
-    elif type(s) is Call:
-        out.update(s.rets)
-
-
 def _node_defs(n, out):
-    t = type(n)
-    if t is Blk:
-        for s in n.stmts:
-            _stmt_defs(s, out)
-    elif t is Cond:
-        for x in n.then + n.els:
-            _node_defs(x, out)
-    elif t is Case:
-        for _v, b in n.cases:
-            for x in b:
-                _node_defs(x, out)
-    elif t is For or t is Loop:
-        for x in n.body:
-            _node_defs(x, out)
-        if t is For:
-            out.add(n.var)
+    """Every name a structured node and its children define."""
+    for x in walk([n]):
+        if type(x) is Blk:
+            for s in x.stmts:
+                out.update(defs_of(s))
+        elif type(x) is For:
+            out.add(x.var)
 
 
 def steps(runs):
@@ -285,16 +272,8 @@ def _size(units):
 
 
 def _stmts(n):
-    t = type(n)
-    if t is Blk:
-        return len(n.stmts)
-    if t is Cond:
-        return sum(_stmts(x) for x in n.then + n.els)
-    if t is Case:
-        return sum(_stmts(x) for _v, b in n.cases for x in b)
-    if t is For or t is Loop:
-        return sum(_stmts(x) for x in n.body)
-    return 0
+    """The statements a structured node prints, its children included."""
+    return sum(len(x.stmts) for x in walk([n]) if type(x) is Blk)
 
 
 def _abstract(units, step, var, keep=None):
@@ -334,46 +313,21 @@ def _escapes(units, i, span, live):
     inside = _defined(units[i : i + span])
     after = set()
     for kind, obj, _b in units[:i] + units[i + span :]:
-        (_uses if kind == "s" else _node_uses)(obj, after)
+        (stmt_uses if kind == "s" else _node_uses)(obj, after)
     return bool(inside & after & live)
 
 
-def _uses(s, out):
-    for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
-        if e is not None:
-            _expr_uses(e, out)
-    for a in getattr(s, "args", ()):
-        _expr_uses(a, out)
-
-
-def _expr_uses(e, out):
-    t = type(e)
-    if t is Var:
-        out.add(e.n)
-    elif t is Bin:
-        _expr_uses(e.a, out)
-        _expr_uses(e.b, out)
-    elif t is Load or t is R16:
-        _expr_uses(e.a, out)
-
-
 def _node_uses(n, out):
-    t = type(n)
-    if t is Blk:
-        for s in n.stmts:
-            _uses(s, out)
-    elif t is Cond:
-        _expr_uses(n.c, out)
-        for x in n.then + n.els:
-            _node_uses(x, out)
-    elif t is Case:
-        _expr_uses(n.e, out)
-        for _v, b in n.cases:
-            for x in b:
-                _node_uses(x, out)
-    elif t is For or t is Loop:
-        for x in n.body:
-            _node_uses(x, out)
+    """Every name a structured node and its children read."""
+    for x in walk([n]):
+        t = type(x)
+        if t is Blk:
+            for s in x.stmts:
+                stmt_uses(s, out)
+        elif t is Cond:
+            uses_of(x.c, out)
+        elif t is Case:
+            uses_of(x.e, out)
 
 
 def _recurse(n, minunits, count, live, keep):

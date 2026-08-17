@@ -46,15 +46,8 @@ from .ir import (
     retarget,
     succs,
 )
-from .irwalk import apply_stmt, apply_term, defs_of, pure, stmt_uses, term_uses
-
-
-def preds_of(proc):
-    preds = {lbl: [] for lbl in proc.blocks}
-    for lbl, b in proc.blocks.items():
-        for s in succs(b.term):
-            preds[s].append(lbl)
-    return preds
+from .graph import cfg, preds_of
+from .irwalk import apply_stmt, apply_term, defs_of, pure, reachable, stmt_uses, term_uses
 
 
 def liveness(proc):
@@ -144,11 +137,7 @@ def split_critical(proc):
 
 # ---- SSA ---------------------------------------------------------------------
 def _frontiers(proc, preds):
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    for lbl, b in proc.blocks.items():
-        g.add_edges_from((lbl, s) for s in succs(b.term))
-    idom = nx.immediate_dominators(g, proc.entry)
+    idom = nx.immediate_dominators(cfg(proc), proc.entry)
     df = defaultdict(set)
     for lbl, ps in preds.items():
         if len(ps) < 2:
@@ -364,21 +353,7 @@ class Folds:
 
 def init_reachable(prog):
     """Names of the procedures ``init`` can reach through the call graph."""
-    start = prog.meta.get("init_proc")
-    seen = set()
-    work = [start] if start in prog.procs else []
-    while work:
-        n = work.pop()
-        if n in seen:
-            continue
-        seen.add(n)
-        work.extend(
-            s.proc
-            for b in prog.procs[n].blocks.values()
-            for s in b.stmts
-            if type(s) is Call and s.proc in prog.procs
-        )
-    return seen
+    return reachable(prog, prog.meta.get("init_proc"))
 
 
 def constprop(proc, tables=None, folds=None):
