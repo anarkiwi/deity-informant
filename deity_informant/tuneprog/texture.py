@@ -30,7 +30,7 @@ from .irwalk import (
     apply_stmt,
     apply_term,
     defs_of,
-    loads as loads_in,
+    loads,
     node_loads,
     pure,
     renamer,
@@ -427,7 +427,7 @@ def _stable(proc, term, mid):
     """The two selectors are the same value and nothing between them writes it."""
     if proc.blocks[mid].term.e != term.e:
         return False
-    rs = {x.r for x in loads_in(term.e)}
+    rs = {x.r for x in loads(term.e)}
     for name in [a for _v, a in term.cases] + [mid]:
         for s in proc.blocks[name].stmts:
             if type(s) is Call or (type(s) is Store and (s.r in rs or s.r < 0)):
