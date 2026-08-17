@@ -32,7 +32,7 @@ def md_procs(text):
 
 
 def ours(out_dir):
-    """Our per-procedure metrics, keyed by entry address."""
+    """``({entry: metrics}, {pc: raw P-Code ops})`` for one pipeline directory."""
     out = Path(out_dir)
     trace = Trace.load(out)
     lifted = lift_trace(trace)
@@ -54,6 +54,7 @@ def ours(out_dir):
         rows[entry] = {
             "name": proc.name,
             "entry": entry,
+            "pcs": sorted(pcs),
             "sites": len(pcs),
             "raw_pcode_ops": sum(by_pc.get(p, 0) for p in pcs),
             "stmts": sum(len(b.stmts) for b in blocks),
@@ -62,7 +63,7 @@ def ours(out_dir):
             "lines": lines,
             "gotos": gotos,
         }
-    return rows
+    return rows, by_pc
 
 
 def _per(d, k):
@@ -98,7 +99,7 @@ def compare(out_dir, ghidra_dir, tol=TOL):
     """The joined per-procedure table plus the coverage and semantic oracles."""
     g = json.loads((Path(ghidra_dir) / "stats.json").read_text())
     theirs = {int(r["entry"], 16): r for r in g["per_function"]}
-    mine = ours(out_dir)
+    mine, by_pc = ours(out_dir)
     rows = []
     for entry in sorted(set(mine) | set(theirs)):
         m, t = mine.get(entry), theirs.get(entry)
@@ -110,10 +111,13 @@ def compare(out_dir, ghidra_dir, tol=TOL):
             "detail": "" if not (m and t) else _flag(m, t, tol)[1],
         }
         rows.append(row)
+    # procedures are cloned per entry, so distinct pcs -- not the per-proc sum
+    union = {p for r in mine.values() for p in r.pop("pcs")}
     tot_m = {
-        k: sum(r[k] for r in mine.values())
-        for k in ("sites", "raw_pcode_ops", "stmts", "blocks", "lets", "lines", "gotos")
+        k: sum(r[k] for r in mine.values()) for k in ("stmts", "blocks", "lets", "lines", "gotos")
     }
+    tot_m["sites"] = len(union)
+    tot_m["raw_pcode_ops"] = sum(by_pc.get(p, 0) for p in union)
     doc = {
         "tolerance": tol,
         "totals": {"ours": tot_m, "ghidra": {k: g[k] for k in g if k != "per_function"}},
