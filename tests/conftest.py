@@ -30,7 +30,7 @@ def ctx6510(tmp_path_factory):
     langdir.mkdir(parents=True)
     build = ROOT / "ghidra" / "6510" / "build.py"
     r = subprocess.run(
-        ["python3", str(build), "--install", str(langdir)],
+        [sys.executable, str(build), "--install", str(langdir)],
         capture_output=True,
         text=True,
         check=False,
