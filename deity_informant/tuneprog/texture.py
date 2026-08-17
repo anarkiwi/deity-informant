@@ -499,15 +499,15 @@ def tidy(prog):
     return prog
 
 
-def clean(prog, exits=None):
+def clean(prog, frameinfo=None):
     """Every texture pass over a presentation copy of ``prog``.
 
-    ``exits`` is :func:`~.frame.deltas` of the certified program: the view drops
-    the return values a procedure's stack balance is read from.
+    ``frameinfo`` is :func:`~.frame.deltas` of the certified program, whose stack
+    arithmetic the view has already dropped.
     """
     zerocarry(prog)
     make = fresh(prog)
-    frames(prog, exits, make)
+    frames(prog, frameinfo, make)
     for p in prog.procs.values():
         bitfields(p)
     pin(prog)

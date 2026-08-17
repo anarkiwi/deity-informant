@@ -252,6 +252,19 @@ def _split(s, name, keep):
     return out
 
 
+def _callees(prog, name):
+    """Every procedure ``name`` can reach, itself excluded."""
+    out, work = set(), [name]
+    while work:
+        n = work.pop()
+        for b in prog.procs[n].blocks.values():
+            for s in b.stmts:
+                if type(s) is Call and s.proc not in out and s.proc in prog.procs:
+                    out.add(s.proc)
+                    work.append(s.proc)
+    return out
+
+
 def _foreign(evs, reach):
     """True when a procedure can read a frame that is not its own.
 
@@ -298,35 +311,40 @@ def fresh(prog):
 
 
 def deltas(prog):
-    """``{procedure: the stack offset it returns at}``, callees first."""
-    exits = {}
+    """``({procedure: exit offset}, {procedure: {value: offset}})``, callees first.
+
+    Measured on the certified program: the presentation copy drops the stack
+    arithmetic nothing reads, and its uses would then have no definition left.
+    """
+    exits, offs = {}, {}
     for name in _order(prog):
         proc = prog.procs[name]
-        defs = _defs(proc)
-        exits[name] = exit_delta(prog, proc, offsets(prog, proc, exits), defs, exits)
-    return exits
+        offs[name] = offsets(prog, proc, exits)
+        exits[name] = exit_delta(prog, proc, offs[name], _defs(proc), exits)
+    return exits, offs
 
 
-def frames(prog, exits=None, make=None):
+def frames(prog, info=None, make=None):
     """Forward every frame slot a procedure pushes and pops; returns the slot count."""
     make = make or fresh(prog)
-    exits, out = dict(exits or deltas(prog)), 0
-    plans, foreign = {}, False
+    exits, offs = info or deltas(prog)
+    plans, foreign, out = {}, {}, 0
     for name in _order(prog):
         proc = prog.procs[name]
         defs = _defs(proc)
-        off = offsets(prog, proc, exits)
+        off = offs.get(name) or offsets(prog, proc, exits)
         evs = events(proc, off, defs)
         reach = {} if evs is None else _reaching(proc, evs)
-        foreign = foreign or _foreign(evs, reach)
+        foreign[name] = _foreign(evs, reach)
         plans[name] = () if evs is None else _plan(proc, evs, reach)
     for name, plan in plans.items():
         proc = prog.procs[name]
+        keep = any(foreign[c] for c in _callees(prog, name))
         edits, sub = {}, {}
         for pushes, keys in plan:
             var = make()
             for lbl, i in pushes:
-                edits[(lbl, i)] = _split(proc.blocks[lbl].stmts[i], var, foreign)
+                edits[(lbl, i)] = _split(proc.blocks[lbl].stmts[i], var, keep)
             sub.update({k: Var(var) for k in keys})
             out += 1
         _apply(proc, sub)

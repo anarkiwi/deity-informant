@@ -8,6 +8,8 @@ cursor, a zero-page pair used as an address is a pointer, equal strides one view
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import reduce
+from math import gcd
 
 from .ir import Bin, Call, Const, Let, Load, Store, Var
 from .structure import phase as _phase
@@ -250,7 +252,8 @@ def _scales(facts):
     """
     out = {}
     for n, rids in facts.idxvar.items():
-        s = max((facts.rgn[r].stride for r in rids if r in facts.rgn), default=1)
+        strides = [facts.rgn[r].stride for r in rids if r in facts.rgn]
+        s = reduce(gcd, [x for x in strides if x > 1], 0)
         if s > 1:
             out[n] = s
     return out
