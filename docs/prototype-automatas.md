@@ -142,6 +142,9 @@ over its HVSC length in the same test run.
 
 ## 4. Package layout, data structures, file formats
 
+The layout as planned; for the layout as built, and its line counts, see
+[`tuneprog.md`](tuneprog.md).
+
 ```
 deity_informant/tuneprog/
   __init__.py
@@ -315,7 +318,7 @@ instruction bytes — regions may include code addresses.
   only); `ASL A`/`BPL`/`BCC` on a flag byte → bit tests; `ANC #$7F` → `and` +
   `C = 0`; `SBX #imm` → `X = (A & X) − imm` with flags; `LAX` → two `let`s;
   `SAX` → `store(A & X)`.
-- `ir.Interp`: the reference executor over the JSON IR with the flat memory
+- `interp.Interp`: the reference executor over the JSON IR with the flat memory
   image as backing store; regions are views; envelope asserts on every indexed
   access; `sidw`/`iow`/`input` hooks. **Certificate #1** is produced here (S8).
 
@@ -353,7 +356,7 @@ detector rejects the 12 leading pseudo-entries); names by role and voice.
 ### S8 — `verify.py`
 
 `verify(tuneprog, trace, calls, resume)`: run `init(song)` then `tick()` × N on
-the emitted Python (and, on a shorter prefix, on `ir.Interp` to prove codegen =
+the emitted Python (and, on a shorter prefix, on `interp.Interp` to prove codegen =
 interpreter), feeding pinned inputs; compare per-call `(addr, val)` lists and
 init's list with the reference; on mismatch report tick, index, expected/got
 and the IR statement's origin site; compute the tuneprog's own state hash per
@@ -377,7 +380,7 @@ count as divergences. Chunked and resumable like the tracer.
 | E9 | inputs | exactly two input sites (`$D012` wait, `$D41B`), both in init; play consumes none | as stated |
 | E10 | genericity | `Commando.sid` certified at S4 over its HVSC length by the same code, no flags | 0 divergences |
 | E11 | readability | `tuneprog.md` has the structure of Appendix A: two rates, three tables, per-call `writeout → filter → cascades → oscillator`, main-only row advance; per-voice fields named by role | reviewer checklist |
-| E12 | codegen = interpreter | `ir.Interp` and `tuneprog.py` agree on a 5,000-call prefix | 0 divergences |
+| E12 | codegen = interpreter | `interp.Interp` and `tuneprog.py` agree on a 5,000-call prefix | 0 divergences |
 | E13 | budgets | any single script invocation ≤ 60 s CPU via chunking; full E1 wall ≤ 15 min on one core-equivalent | measured, reported in the certificate's `cost` |
 
 Everything in E3–E9 is checked mechanically against expected values written

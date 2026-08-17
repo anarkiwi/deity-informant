@@ -1,8 +1,8 @@
 """The end-to-end driver: trace -> lift -> regions -> procs -> IR -> S4 -> verify -> text.
 
 Every stage's artefacts land in one output directory and the long stages are
-chunked against a CPU budget, so a 149k-call certificate is a handful of short
-runs (:func:`main` returns ``MORE`` while work remains). ``tools/tuneprog_certify.py``
+chunked against a CPU budget, so a long certificate is a handful of short runs
+(:func:`run` returns ``MORE`` while work remains). ``tools/tuneprog_certify.py``
 and ``deity-informant tuneprog`` are both thin wrappers around it.
 """
 
@@ -21,6 +21,7 @@ from . import (
     ghidra_facts,
     ir,
     jumptab,
+    live as L,
     printer,
     recover,
     ssa,
@@ -42,7 +43,6 @@ from .tracedata import Trace, merge
 
 MODEL_D41B = {"6581": 0x00, "8580": 0x01}
 MORE = 2
-STAGES = ("trace", "front", "verify", "print", "done")
 
 
 def add_args(ap):
@@ -312,17 +312,18 @@ def present(prog):
     Structuring, texture removal, 16-bit views, outlining and copy folding; the
     argument is never touched.
     """
-    keep = structure.wants(prog, printer.needed(prog)[0])
-    view = structure.view(prog, printer.needed(prog)[0], keep)
+    live = L.needed(prog)[0]
+    keep = L.wants(prog, live)
+    view = structure.view(prog, live, keep)
     texture.clean(view, frame.deltas(prog))
-    structure.inline(view, printer.needed(view)[0], keep)
+    structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
     names = recover.recover(view, structure.structure(view))
     word.fold16(view, names)
-    fold.outline(view, names, *printer.needed(view))
+    fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
-    live, params = printer.needed(view)
-    st = structure.structure(view, structure.wants(view, live))
+    live, params = L.needed(view)
+    st = structure.structure(view, L.wants(view, live))
     unroll.unroll(st, live, fold.livearg(view, params))
     return view, st, names
 

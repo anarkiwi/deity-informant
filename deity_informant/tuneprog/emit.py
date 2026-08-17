@@ -1,13 +1,13 @@
 """S7 -- Python code generation for a tuneprog, and the certificate writer.
 
 One Python function per IR procedure over ``(S, m, *params) -> rets``: ``m`` is
-the flat image and ``S`` the :class:`~.ir.Machine` that owns the marks, the write
+the flat image and ``S`` the :class:`~.interp.Machine` that owns the marks, the write
 log and the pinned input stream. Blocks are laid out along their hottest chain
 (the trace's execution counts), so control usually falls through; what does not
 is a label assignment dispatched by a nested ``if lbl <= i`` cascade, grouped so
 a jump costs a handful of comparisons rather than a scan.
 
-Generated code and :class:`~.ir.Interp` must agree: :mod:`.verify` checks that on
+Generated code and :class:`~.interp.Interp` must agree: :mod:`.verify` checks that on
 a prefix of every certified run (evidence E12).
 
 Public API: :func:`emit_python`, :func:`compile_prog`, :class:`PyProgram`,
@@ -300,7 +300,7 @@ def compile_prog(src, name="tuneprog"):
 
 
 class PyProgram:
-    """The generated module behind :class:`~.ir.Interp`'s interface."""
+    """The generated module behind :class:`~.interp.Interp`'s interface."""
 
     def __init__(self, prog, machine, ns=None, src=None):
         self.prog = prog

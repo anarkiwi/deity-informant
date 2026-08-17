@@ -13,7 +13,7 @@ address set, same keyed blake2b), so the tuneprog's own periodicity ``(k, p)``
 is directly comparable with the trace's -- the second half of the certificate.
 
 Verification is chunked: :meth:`Verifier.run` stops on a CPU budget and
-:meth:`Verifier.state` pickles everything needed to resume, so a 149k-call
+:meth:`Verifier.state` pickles everything needed to resume, so a long
 certificate fits inside repeated short invocations.
 
 Public API: :class:`Reference`, :class:`Verifier`, :func:`verify`.
@@ -25,12 +25,13 @@ import time
 
 import numpy as np
 
+from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
-from .ir import Interp, Machine, TrapError
-from .trace import REG_IN
+from .interp import Interp, Machine
+from .ir import TrapError
+from .tracevm import REG_IN
 
 PAL, NTSC = 985248, 1022730
-STATUS_BITS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
 INIT_CALL = 0xFFFFFFFF
 
 

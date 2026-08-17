@@ -71,7 +71,7 @@ target on a call that fell through (`trap 'switch'`). `cfg.py` now emits
 `if cond: switch(target) else: fall-through`, with the taken side's observed
 targets in the switch (`build._branch_switch`).
 
-**Presentation** (`printer.py`, no IR change): a SID store whose index does not
+**Presentation** (`pseudocode.py`, no IR change): a SID store whose index does not
 step by the 7-byte voice block prints as `sid.reg[i]`, because the *register* is
 what the index selects (`$85`, and every `LDY #$1C` clear loop); a table's
 literal operand moves into the index, so `LDA $6C37,X` on a region based at

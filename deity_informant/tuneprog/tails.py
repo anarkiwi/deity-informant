@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import copy
 
-import networkx as nx
-
+from .graph import cfg, idoms, natural_loops, preds_of
 from .ir import Block, Call, Proc, REGIDX, REGVAR, Return, Var, retarget, retval, succs
-from .inline import _natural_loops
-from .ssa import apply_stmt, apply_term, defs_of, preds_of, prune, stmt_uses, term_uses
-from .structure import _cfg, Jump, structure_proc, walk  # pylint: disable=protected-access
-from .word import W16, uses16
+from .irwalk import apply_stmt, apply_term, defs_of, stmt_uses, term_uses, unique_name
+from .ssa import prune
+from .structure import Jump, structure_proc, walk
 
 SPARE = tuple(i for i in range(16) if REGVAR[i].startswith("r"))
 
@@ -80,9 +78,9 @@ def _one(prog, name, names, cur):
 
 def _tails(proc):
     """``[(statements, label, region)]`` for every multi-entry region with no exit."""
-    g, preds = _cfg(proc), preds_of(proc)
-    idom = nx.immediate_dominators(g, proc.entry)
-    heads = set(_natural_loops(g, idom, preds))
+    g, preds = cfg(proc), preds_of(proc)
+    idom = idoms(proc, g)
+    heads = set(natural_loops(g, idom, preds))
     dom = {}
     for n in g:
         cur = n
@@ -107,11 +105,7 @@ def _crossers(proc, region):
         b = proc.blocks[lbl]
         for s in b.stmts:
             inside.update(defs_of(s))
-            if type(s) is W16:
-                uses16(s.a, used)
-                uses16(s.e, used)
-            else:
-                stmt_uses(s, used)
+            stmt_uses(s, used)
         term_uses(b.term, used)
     return used - inside
 
@@ -135,7 +129,7 @@ def _promote(prog, name, lbl, region):
     slots = _slots(_crossers(proc, region))
     if slots is None:
         return None
-    hname = _unique(prog, "p_%04X" % proc.blocks[lbl].src)
+    hname = unique_name("p_%04X" % proc.blocks[lbl].src, prog.procs, sep="_")
     blocks = copy.deepcopy({l: proc.blocks[l] for l in region})
     helper = Proc(hname, tuple(sorted(slots.values())), proc.rets, blocks, lbl, "helper")
     _rename(helper, {k: REGVAR[v] for k, v in slots.items()})
@@ -169,10 +163,3 @@ def _rename(proc, sub):
             apply_stmt(s, fn)
         apply_term(b.term, fn)
     return proc
-
-
-def _unique(prog, want):
-    out, i = want, 2
-    while out in prog.procs:
-        out, i = "%s_%d" % (want, i), i + 1
-    return out

@@ -3,16 +3,15 @@
 import pytest
 
 from deity_informant.tuneprog import structure as S
+from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
     Bin,
     Block,
     Const,
     Goto,
     If,
-    Interp,
     Let,
     Load,
-    Machine,
     Proc,
     Return,
     Store,

@@ -29,10 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..lifter import OPS
+from .ir import REG_NAMES
 from .machine import Refusal
-
-REG_NAMES = {0: "A", 1: "X", 2: "Y", 3: "SP", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
-FLOW = ("fall", "br_taken", "br_not", "jmp")
 
 
 def _names(mask):

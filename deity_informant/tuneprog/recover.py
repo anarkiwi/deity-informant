@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from functools import reduce
 from math import gcd
 
-from .ir import Bin, Call, Const, Let, Load, Store, Var
+from .ir import Bin, Call, Const, Let, Load, SID_REG_HI, SID_REG_LO, Store, Var
+from .irwalk import addr_split, expand, forwarder, loads, reachable, unique_name, walk
 from .structure import phase as _phase
 
-SID_LO, SID_HI = 0xD400, 0xD418
 VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
 GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
 OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
@@ -75,56 +75,19 @@ class Names:
 
 
 # ---- expression facts --------------------------------------------------------
-def _expand(e, defs, depth=DEPTH):
-    """``e`` with block-local names substituted (bounded), for leaf analysis."""
-    t = type(e)
-    if t is Var and depth > 0 and e.n in defs:
-        return _expand(defs[e.n], defs, depth - 1)
-    if t is Bin:
-        return Bin(e.op, _expand(e.a, defs, depth), _expand(e.b, defs, depth), e.w)
-    if t is Load:
-        return Load(e.cls, _expand(e.a, defs, depth), e.w, e.lo, e.hi, e.r)
-    return e
-
-
-def _walk(e):
-    t = type(e)
-    yield e
-    if t is Bin:
-        yield from _walk(e.a)
-        yield from _walk(e.b)
-    elif t is Load:
-        yield from _walk(e.a)
-
-
 def _ops(e):
-    return sum(1 for x in _walk(e) if type(x) is Bin)
-
-
-def _loads(e):
-    return [x for x in _walk(e) if type(x) is Load]
+    return sum(1 for x in walk(e) if type(x) is Bin)
 
 
 def _leaf_loads(e):
     """The loads of ``e`` that are values, not parts of an address."""
-    inner = {id(y) for x in _walk(e) if type(x) is Load for y in _walk(x.a)}
-    return [x for x in _walk(e) if type(x) is Load and id(x) not in inner]
+    ls = loads(e)
+    inner = {id(y) for x in ls for y in walk(x.a)}
+    return [x for x in ls if id(x) not in inner]
 
 
 def _same_cell(a, b):
     return a.v == b.v if type(a) is Const and type(b) is Const else a == b
-
-
-def _reachable(prog, root):
-    """The procedures reachable from ``root`` through calls."""
-    seen, work = set(), [root] if root in prog.procs else []
-    while work:
-        n = work.pop()
-        if n in seen:
-            continue
-        seen.add(n)
-        work += [s.proc for b in prog.procs[n].blocks.values() for s in b.stmts if type(s) is Call]
-    return seen
 
 
 class Facts:
@@ -132,7 +95,7 @@ class Facts:
 
     def __init__(self, prog):
         self.prog = prog
-        self.rgn = {r.id: r for r in prog.storage}
+        self.rgn = prog.by_id()
         self.sid = []
         self.copies = []
         self.idxvar = {}
@@ -143,7 +106,7 @@ class Facts:
         self.reads = {}
         self.writes = {}
         self.wpc = {}
-        self.tick = _reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
+        self.tick = reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
         for name, p in prog.procs.items():
             self.reads[name], self.writes[name] = set(), set()
             for b in p.blocks.values():
@@ -155,39 +118,37 @@ class Facts:
             if type(s) is Let:
                 if not s.n.startswith("$"):
                     defs[s.n] = s.e
-                self.value(name, _expand(s.e, defs))
+                self.value(name, expand(s.e, defs, DEPTH))
             elif type(s) is Store:
-                v, a = _expand(s.v, defs), _expand(s.a, defs)
+                v, a = expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH)
                 self.value(name, v)
                 self.value(name, a)
                 self.store(name, s, v, a)
             elif type(s) is Call:
                 for a in s.args:
-                    self.value(name, _expand(a, defs))
+                    self.value(name, expand(a, defs, DEPTH))
 
     def value(self, name, e):
         """Record what an expression reads: regions, index uses, pointer uses."""
-        for x in _walk(e):
-            if type(x) is not Load:
-                continue
+        for x in loads(e):
             self.reads[name].add(x.r)
             self.walks(x.r, x.a)
-            for y in _loads(x.a):
+            for y in loads(x.a):
                 self.index.setdefault(y.r, set()).add(x.r)
                 if y.w == 2:
                     self.addr.add(y.r)
 
     def walks(self, rid, a):
         """Record that a bare index variable walks the elements of region ``rid``."""
-        base, i = _split(a)
+        base, i = addr_split(a)
         if base is not None and type(i) is Var:
             self.idxvar.setdefault(i.n, set()).add(rid)
 
     def store(self, name, s, v, a=None):
         """Record a store: the SID image, and whether it updates its own region."""
         if s.cls == "io":
-            base, idx = _split(a if a is not None else s.a)
-            if base is not None and SID_LO <= base <= SID_HI:
+            base, idx = addr_split(a if a is not None else s.a)
+            if base is not None and SID_REG_LO <= base <= SID_REG_HI:
                 (self.sid if idx is None else self.copies).append(
                     (base, v) if idx is None else (base, idx, v)
                 )
@@ -205,23 +166,12 @@ class Facts:
             self.plain.add(s.r)
 
 
-def _split(e):
-    """``(constant base, index)`` of an address expression."""
-    if type(e) is Const:
-        return e.v, None
-    if type(e) is Bin and e.op == "+":
-        for k, i in ((e.a, e.b), (e.b, e.a)):
-            if type(k) is Const:
-                return k.v, i
-    return None, e
-
-
 # ---- roles -------------------------------------------------------------------
 def _sid_name(addr):
     """``(field name, voice)`` for a SID register address."""
     if addr in GLOBAL_REG:
         return GLOBAL_REG[addr], None
-    v, k = divmod(addr - SID_LO, 7)
+    v, k = divmod(addr - SID_REG_LO, 7)
     return VOICE_REG[k], v
 
 
@@ -232,7 +182,7 @@ def sid_image(facts):
         if _ops(v) > MAXOPS:
             continue
         leaves = [x for x in _leaf_loads(v) if x.r in facts.rgn]
-        op = next((y.op for y in _walk(v) if type(y) is Bin), "")
+        op = next((y.op for y in walk(v) if type(y) is Bin), "")
         for i, x in enumerate(leaves):
             name, voice = _sid_name(addr)
             if i:
@@ -270,7 +220,7 @@ def image_copy(facts):
     for base, idx, v in facts.copies:
         if type(v) is not Load or v.r not in facts.rgn:
             continue
-        rbase, ridx = _split(v.a)
+        rbase, ridx = addr_split(v.a)
         if rbase is None or ridx != idx:
             continue
         r = facts.rgn[v.r]
@@ -371,11 +321,7 @@ def _tables(prog, facts, names):
 
 def _uniq(names, rid, want):
     """Give region ``rid`` the name ``want``, made unique against the ones taken."""
-    taken = set(names.region.values())
-    n, i = want, 2
-    while n in taken:
-        n, i = "%s_%d" % (want, i), i + 1
-    names.region[rid] = n
+    names.region[rid] = n = unique_name(want, set(names.region.values()))
     return n
 
 
@@ -396,20 +342,13 @@ def _basename(r, role, facts, names):
 
 
 def _unique_proc(names, want):
-    taken = set(names.procs.values())
-    n, i = want, 2
-    while n in taken:
-        n, i = "%s%d" % (want, i), i + 1
-    return n
+    return unique_name(want, set(names.procs.values()), sep="")
 
 
 def _tail_target(prog, name):
     """The procedure ``name`` exists only to call, or ``name`` itself."""
-    p = prog.procs[name]
-    stmts = [s for b in p.blocks.values() for s in b.stmts]
-    if len(p.blocks) == 1 and len(stmts) == 1 and type(stmts[0]) is Call:
-        return _tail_target(prog, stmts[0].proc)
-    return name
+    tgt = forwarder(prog.procs[name])
+    return _tail_target(prog, tgt) if tgt is not None else name
 
 
 def _procs(prog, facts, names, structured):

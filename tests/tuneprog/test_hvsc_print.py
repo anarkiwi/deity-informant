@@ -6,74 +6,15 @@ views, no stack pointer, no goto -- and that S5/S6 left the S4 program identical
 """
 
 import json
-import os
 import re
-from pathlib import Path
 
 import pytest
 
-pytest.importorskip("pysidtracker")
+from deity_informant import cli
 
-from pysidtracker.testing import resolve_tune  # noqa: E402
-
-from deity_informant import cli  # noqa: E402
-from deity_informant.tuneprog import pipeline, printer  # noqa: E402
-from deity_informant.tuneprog.machine import find_entries  # noqa: E402
-from deity_informant.tuneprog.trace import Tracer  # noqa: E402
-from deity_informant.tuneprog.verify import verify  # noqa: E402
+from _hvsc import AUTOMATAS, COMMANDO, body, decompiled, tune
 
 pytestmark = pytest.mark.hvsc
-
-_CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache")) / "hvsc"
-PAL_CLOCK = 985248
-AUTOMATAS = "MUSICIANS/G/Goto80/Automatas.sid"
-COMMANDO = "MUSICIANS/H/Hubbard_Rob/Commando.sid"
-
-
-def _tune(relpath):
-    path = resolve_tune(relpath, cache_dir=_CACHE)
-    if path is None:
-        pytest.skip("%s unavailable (no HVSC tree, no cache, offline)" % relpath)
-    return Path(path).read_bytes()
-
-
-_DONE = {}
-
-
-def _printed(relpath, seconds, song=None):
-    """Trace, build, verify, then present and print: ``(text, names, prog, v, calls)``."""
-    if (relpath, seconds, song) in _DONE:
-        return _DONE[(relpath, seconds, song)]
-    data = _tune(relpath)
-    img, schedule = find_entries(data)
-    entry = schedule[0]
-    calls = int(seconds * PAL_CLOCK / entry.cycles_per_tick)
-    tracer = Tracer(img, entry, song=song)
-    tracer.run_init()
-    tracer.run_calls(calls)
-    trace = tracer.trace()
-    prog, _r, _p = pipeline.build(trace, Path(relpath).name)
-    before = prog.to_json()
-    v = verify(prog, trace, calls=calls, prefix=200)
-    view, st, names = pipeline.present(prog)
-    text = printer.render(view, st, names)
-    assert prog.to_json() == before  # S5/S6 annotate; the certified program is untouched
-    _DONE[(relpath, seconds, song)] = (text, names, prog, v, calls)
-    return _DONE[(relpath, seconds, song)]
-
-
-def _body(doc, name):
-    """The lines of one printed procedure."""
-    out, on = [], False
-    for line in doc.splitlines():
-        if line.startswith("%s(" % name):
-            on = True
-            continue
-        if on and (line.startswith("```") or (line and not line.startswith(" "))):
-            break
-        if on:
-            out.append(line)
-    return out
 
 
 def _temps(doc):
@@ -86,7 +27,8 @@ def _fields(names, group="voice"):
 
 
 def test_automatas_prints_the_shape_of_the_anatomy_player():
-    text, names, _prog, v, calls = _printed(AUTOMATAS, seconds=30)
+    run = decompiled(AUTOMATAS, seconds=30)
+    text, names, v, calls = run.text, run.names, run.v, run.calls
     assert v.div is None and v.call == calls
 
     # two rates: the wrapper's call counter selects main or sub
@@ -115,19 +57,20 @@ def test_automatas_prints_the_shape_of_the_anatomy_player():
 
 
 def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
-    text, _names, _prog, _v, _calls = _printed(AUTOMATAS, seconds=30)
+    run = decompiled(AUTOMATAS, seconds=30)
+    text = run.text
     helpers = ("writeout", "filter", "row_advance", "cascades", "oscillator")
     for name in helpers:
         assert text.count("\n%s():" % name) == 1, name
 
     # the write-out is one copy of the seven per-voice registers over the index
-    out = _body(text, "writeout")
+    out = body(text, "writeout")
     assert "    for v in 0, 1, 2:" in out
     assert len([l for l in out if "sid[v]." in l]) == 7
     assert not any("sid[0]." in l or "sid[1]." in l for l in out)
 
     # main and sub call the helpers instead of holding a copy each
-    main, sub = _body(text, "main"), _body(text, "sub")
+    main, sub = body(text, "main"), body(text, "sub")
     assert [l.strip() for l in main if l.strip().endswith("()")] == [
         "writeout()",
         "filter()",
@@ -140,7 +83,8 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
 
 
 def test_automatas_has_no_machine_texture_left_in_the_hot_path():
-    text, names, _prog, _v, _calls = _printed(AUTOMATAS, seconds=30)
+    run = decompiled(AUTOMATAS, seconds=30)
+    text, names = run.text, run.names
 
     # the stack pointer is not data here: the JSR frames and the PHA/PLA pair go
     assert not re.search(r"\bsp\d*\b", text)
@@ -149,9 +93,9 @@ def test_automatas_has_no_machine_texture_left_in_the_hot_path():
     # the filter accumulator is one 16-bit view stepped by one 16-bit operand
     acc = [n for n in names.u16.values() if n.endswith("acc")]
     assert acc and any(n.endswith("step") for n in names.u16.values())
-    body = "\n".join(_body(text, "filter"))
-    assert "%s += " % acc[0] in body and "%s -= " % acc[0] in body
-    assert "carry(" not in body and "carry(" not in "\n".join(_body(text, "main"))
+    filt = "\n".join(body(text, "filter"))
+    assert "%s += " % acc[0] in filt and "%s -= " % acc[0] in filt
+    assert "carry(" not in filt and "carry(" not in "\n".join(body(text, "main"))
     assert "u16" in text.split("## program")[0]
 
     # the goto residue and the machine temporaries are gone (191 before S6's texture)
@@ -161,7 +105,7 @@ def test_automatas_has_no_machine_texture_left_in_the_hot_path():
 
 def test_the_cli_subcommand_decompiles_commando_at_a_short_horizon(tmp_path):
     sid = tmp_path / "Commando.sid"
-    sid.write_bytes(_tune(COMMANDO))
+    sid.write_bytes(tune(COMMANDO))
     out = tmp_path / "out"
     assert cli.main(["tuneprog", str(sid), "--out", str(out), "--seconds", "5"]) == 0
     doc = (out / "tuneprog.md").read_text()
@@ -172,7 +116,8 @@ def test_the_cli_subcommand_decompiles_commando_at_a_short_horizon(tmp_path):
 
 
 def test_commando_prints_the_shape_of_the_design_illustration():
-    text, names, _prog, v, calls = _printed(COMMANDO, seconds=20, song=0)
+    run = decompiled(COMMANDO, seconds=20, song=0)
+    text, names, v, calls = run.text, run.names, run.v, run.calls
     assert v.div is None and v.call == calls
 
     # the speed divider, exactly the design's S5 illustration

@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-
-import networkx as nx
+from math import gcd
 
 from .ir import (
     Bin,
@@ -29,10 +28,10 @@ from .ir import (
     retval,
     succs,
 )
-from .inline import loads as inline_loads
-from .ssa import merge_chains, preds_of, prune
+from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
+from .inline import values as inline_values
+from .ssa import merge_chains, prune
 
-EXIT = "$exit"
 CAP = 256
 
 
@@ -107,54 +106,15 @@ def view(prog, live=None, keep=None):
     for name, p in out.procs.items():
         prune(p)
         merge_chains(p)
-        inline_loads(p, None if live is None else live[name], (keep or {}).get(name, ()))
+        inline_values(p, None if live is None else live[name], (keep or {}).get(name, ()))
     return out
 
 
 def inline(prog, live, keep=None):
     """Re-run the value folding after the texture passes reshaped the blocks."""
     for name, p in prog.procs.items():
-        inline_loads(p, live[name], (keep or {}).get(name, ()))
+        inline_values(p, live[name], (keep or {}).get(name, ()))
     return prog
-
-
-# ---- graphs ------------------------------------------------------------------
-def _cfg(proc):
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    for lbl, b in proc.blocks.items():
-        g.add_edges_from((lbl, s) for s in succs(b.term))
-    return g
-
-
-def _postdoms(g, proc):
-    """Immediate post-dominators through a virtual exit; a trap never reaches it."""
-    r = nx.DiGraph()
-    r.add_nodes_from(g)
-    r.add_edges_from((b, a) for a, b in g.edges)
-    r.add_edges_from((EXIT, n) for n in g if type(proc.blocks[n].term) is Return)
-    return nx.immediate_dominators(r, EXIT) if EXIT in r else {}
-
-
-def _natural_loops(g, idom, preds):
-    """``{header: (body labels, latch labels)}`` from the back edges."""
-    loops = {}
-    for u, v in g.edges:
-        d = u
-        while d is not None and d != v and idom.get(d) != d:
-            d = idom.get(d)
-        if d != v:
-            continue
-        body, latches = loops.setdefault(v, (set([v]), set()))
-        latches.add(u)
-        stack = [u]
-        while stack:
-            x = stack.pop()
-            if x in body:
-                continue
-            body.add(x)
-            stack.extend(preds.get(x, ()))
-    return loops
 
 
 # ---- counted loops -----------------------------------------------------------
@@ -276,12 +236,6 @@ def _exit_tests(proc, body):
     return out
 
 
-def _gcd(a, b):
-    while b:
-        a, b = b, a % b
-    return a
-
-
 def _domain(k, var, step, vals, tests):
     """The values the loop header runs with, by iterating the recurrence to its exit."""
     out = []
@@ -326,7 +280,7 @@ def induction(proc, header, body, latches, preds=None):
             if vals and len(vals) > 1 and _plausible(proc, header, body, latches, preds, len(vals)):
                 scale = 0
                 for v in vals:
-                    scale = _gcd(scale, v)
+                    scale = gcd(scale, v)
                 return s.n, tuple(vals), scale or 1, frozenset({s.n, s.e.n})
     return None
 
@@ -341,11 +295,11 @@ class _Structurer:
     def __init__(self, proc, want=()):
         self.want = want
         self.proc = proc
-        self.g = _cfg(proc)
+        self.g = cfg(proc)
         self.preds = preds_of(proc)
-        self.idom = nx.immediate_dominators(self.g, proc.entry)
-        self.ipdom = _postdoms(self.g, proc)
-        self.loops = _natural_loops(self.g, self.idom, self.preds)
+        self.idom = idoms(proc, self.g)
+        self.ipdom = postdoms(self.g, proc)
+        self.loops = natural_loops(self.g, self.idom, self.preds)
         self.done = set()
         self.labels = set()
 
@@ -429,18 +383,6 @@ class _Structurer:
 def structure_proc(proc, want=()):
     """The structured body of one procedure."""
     return _Structurer(proc, want).run()
-
-
-def wants(prog, live):
-    """``{procedure: the return registers a caller reads}`` (design section 6.2)."""
-    out = {n: set() for n in prog.procs}
-    for name, p in prog.procs.items():
-        for b in p.blocks.values():
-            for s in b.stmts:
-                if type(s) is Call and s.proc in out:
-                    q = prog.procs[s.proc]
-                    out[s.proc] |= {i for i, r in zip(q.rets, s.rets) if r in live[name]}
-    return out
 
 
 def structure(prog, want=None):
