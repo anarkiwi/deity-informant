@@ -75,7 +75,7 @@ printed forms in each output directory's `tuneprog.md`. The HVSC tests
 | G9 | 1-based tables | **18** regions whose origin is `base-1` (wavetbl `$16F9`, notetbl, the nine instrument columns at stride 30, pulse/filter/speed columns), 30 with an origin below their base | 17 |
 | G10 | structuring | **0** `goto`, **0** `sp`, 12 `trap 'untaken'` arms (branch directions the song never takes) in 1,202 printed lines | 0 `goto`, 0 `sp`, 15 traps |
 | G11 | cost | trace 12,000 calls in 23 s CPU, verify 8,236 calls in 0.8 s (10,445 calls/s), front end + presentation ~1 s: one invocation, under the 60 s budget | trace 24 s, verify 1.0 s |
-| G12 | genericity | Automatas, Commando, Ghouls'n'Ghosts and Emomyst certify unchanged by the same code (`tests/tuneprog/test_hvsc*.py`, 21 tests) | — |
+| G12 | genericity | Automatas, Commando, Ghouls'n'Ghosts and Emomyst certify unchanged by the same code (`tests/tuneprog/test_hvsc*.py`, 21 tests); re-running `docs/certificates/automatas.json` (149,025 calls) and `commando-song1.json` (11,780) reproduces them field for field, so they stand as committed | — |
 
 ## 5. The printed tuneprog (verbatim, `...` elides)
 
