@@ -107,10 +107,12 @@ blocks to none.
 ### Reading it
 
 **Right.** With the cell context applied Ghidra decompiles all four tunes with *zero* unresolved control flow,
-and every SMC cell reaching the C is a global (`smc_100a`, `smc_12ef`) read and written like any other
-variable: the abstraction really is mechanical, and a mature decompiler performs it once the facts are in the
-database. Patched dispatches resolve -- the four `JumpTable.writeOverride` calls on GoatTracker and
-Ghouls'n'Ghosts become switches over our target sets -- and S6 region names carry over (`T1900[cursor_12CE]`).
+and the cells become named globals (`smc_100a`, `smc_12ef`) read and written like any other variable: 79 of
+Automatas' 87 cell bytes and 20 of Ghouls'n'Ghosts' 29 appear that way in the C, against 0 and 1 without the
+facts. (GoatTracker's 3 of 14 is the crashed `row_apply`, where the rest live.) The abstraction really is
+mechanical, and a mature decompiler performs it once the facts are in the database. Patched dispatches resolve
+-- the four `JumpTable.writeOverride` calls on GoatTracker and Ghouls'n'Ghosts become switches over our target
+sets -- and S6 region names carry over (`T1900[cursor_12CE]`).
 
 **Bigger.** Ghidra's high P-Code is 6.4x (Automatas), 10.6x (Commando) and 5.8x (Ghouls'n'Ghosts) our S4
 statement count; its C is 1.2-3.8x our printed form. That is the honest shape of the efficiency claim: on the
