@@ -13,7 +13,7 @@ address set, same keyed blake2b), so the tuneprog's own periodicity ``(k, p)``
 is directly comparable with the trace's -- the second half of the certificate.
 
 Verification is chunked: :meth:`Verifier.run` stops on a CPU budget and
-:meth:`Verifier.state` pickles everything needed to resume, so a 149k-call
+:meth:`Verifier.state` pickles everything needed to resume, so a long
 certificate fits inside repeated short invocations.
 
 Public API: :class:`Reference`, :class:`Verifier`, :func:`verify`.

@@ -8,6 +8,7 @@ Front end (trace-driven recovery):
 * :mod:`.lift` (S2a) -- residualised lift (SMC cells become loads).
 * :mod:`.cfg` (S2b) -- procedures, clones, tail calls, computed switches.
 * :mod:`.regions` (S3) -- storage typing from the exact access relation.
+* :mod:`.jumptab` (S2) -- the static closure of a patched ``JMP``'s table.
 
 Middle and back end (the executable program and its certificate):
 
@@ -25,7 +26,11 @@ Middle and back end (the executable program and its certificate):
 Presentation over the certified program (it is never edited):
 
 * :mod:`.structure` (S5) -- loops, if/else, switch, ``for``, the phase variable.
+* :mod:`.inline` / :mod:`.texture` / :mod:`.frame` / :mod:`.word` (S6) -- value
+  folding, machine-texture removal, stack frames as values, 16-bit views.
 * :mod:`.recover` (S6) -- struct views, roles and names for the storage.
+* :mod:`.fold` / :mod:`.tails` / :mod:`.unroll` (S6) -- outlined helpers, shared
+  tails as procedures, isomorphic copies as one ``for``.
 * :mod:`.live` (S6) -- the values, arguments and returns a reader must see.
 * :mod:`.pseudocode` / :mod:`.printer` (S7 text form) -- the rendered statements
   and the ``tuneprog.md`` document around them.
@@ -35,7 +40,7 @@ Presentation over the certified program (it is never edited):
 module-level entry points ``build.build_ir``, ``ssa.simplify``,
 ``emit.emit_python``, ``verify.verify``, ``structure.structure``,
 ``recover.recover`` and ``printer.render``. :mod:`.irwalk` and :mod:`.graph` are
-the traversals every stage shares.
+the traversals every stage shares; ``docs/tuneprog.md`` is the guide.
 """
 
 from __future__ import annotations

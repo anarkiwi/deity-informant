@@ -4,8 +4,8 @@
 A thin wrapper around :mod:`deity_informant.tuneprog.pipeline`, which is also what
 ``deity-informant tuneprog`` runs. Every stage's artefacts land in ``--out DIR``
 and the long stages are chunked: each invocation works for ``--budget`` CPU
-seconds and exits 2 when there is more to do, so a 149k-call certificate is a
-handful of short runs::
+seconds and exits 2 when there is more to do, so a long certificate is a handful
+of short runs::
 
     until python3 tools/tuneprog_certify.py TUNE.sid --out out/tune --until-period --resume
     do :; done

@@ -1,8 +1,8 @@
 """The end-to-end driver: trace -> lift -> regions -> procs -> IR -> S4 -> verify -> text.
 
 Every stage's artefacts land in one output directory and the long stages are
-chunked against a CPU budget, so a 149k-call certificate is a handful of short
-runs (:func:`main` returns ``MORE`` while work remains). ``tools/tuneprog_certify.py``
+chunked against a CPU budget, so a long certificate is a handful of short runs
+(:func:`run` returns ``MORE`` while work remains). ``tools/tuneprog_certify.py``
 and ``deity-informant tuneprog`` are both thin wrappers around it.
 """
 
@@ -308,8 +308,9 @@ def present(prog):
     Structuring, texture removal, 16-bit views, outlining and copy folding; the
     argument is never touched.
     """
-    keep = L.wants(prog, L.needed(prog)[0])
-    view = structure.view(prog, L.needed(prog)[0], keep)
+    live = L.needed(prog)[0]
+    keep = L.wants(prog, live)
+    view = structure.view(prog, live, keep)
     texture.clean(view, frame.deltas(prog))
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
