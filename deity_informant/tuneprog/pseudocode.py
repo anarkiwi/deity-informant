@@ -183,9 +183,6 @@ class Printer:
         n = idx.n if type(idx) is Var else None
         return "%s/7" % self.expr(idx, False) if self.names.scale.get(n) == 7 else None
 
-    def sid(self, addr, idx=None):
-        return self.regcell("sid", addr, idx)
-
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
         e = fold(e)
@@ -271,7 +268,7 @@ class Printer:
         if s.cls == "io":
             base, i = addr_split(s.a)
             if base is not None and SID_REG_LO <= base <= SID_REG_HI:
-                lhs = self.sid(base, i)
+                lhs = self.regcell("sid", base, i)
             else:
                 lhs = "io[%s]" % (_hex(base) if base is not None else self.expr(s.a, False))
         else:

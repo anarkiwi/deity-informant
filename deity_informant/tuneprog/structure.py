@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from math import gcd
 
 from .ir import (
     Bin,
@@ -28,7 +29,7 @@ from .ir import (
     succs,
 )
 from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
-from .inline import loads as inline_loads
+from .inline import values as inline_values
 from .ssa import merge_chains, prune
 
 CAP = 256
@@ -105,14 +106,14 @@ def view(prog, live=None, keep=None):
     for name, p in out.procs.items():
         prune(p)
         merge_chains(p)
-        inline_loads(p, None if live is None else live[name], (keep or {}).get(name, ()))
+        inline_values(p, None if live is None else live[name], (keep or {}).get(name, ()))
     return out
 
 
 def inline(prog, live, keep=None):
     """Re-run the value folding after the texture passes reshaped the blocks."""
     for name, p in prog.procs.items():
-        inline_loads(p, live[name], (keep or {}).get(name, ()))
+        inline_values(p, live[name], (keep or {}).get(name, ()))
     return prog
 
 
@@ -235,12 +236,6 @@ def _exit_tests(proc, body):
     return out
 
 
-def _gcd(a, b):
-    while b:
-        a, b = b, a % b
-    return a
-
-
 def _domain(k, var, step, vals, tests):
     """The values the loop header runs with, by iterating the recurrence to its exit."""
     out = []
@@ -285,7 +280,7 @@ def induction(proc, header, body, latches, preds=None):
             if vals and len(vals) > 1 and _plausible(proc, header, body, latches, preds, len(vals)):
                 scale = 0
                 for v in vals:
-                    scale = _gcd(scale, v)
+                    scale = gcd(scale, v)
                 return s.n, tuple(vals), scale or 1, frozenset({s.n, s.e.n})
     return None
 

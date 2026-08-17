@@ -14,7 +14,7 @@ from .irwalk import (
     apply_stmt,
     apply_term,
     loadfree,
-    loads as loads_of,
+    loads,
     node_exprs,
     renamer,
     stmt_uses,
@@ -35,8 +35,8 @@ def _clobbers(s, e):
     t = type(s)
     if t is Call:
         return not loadfree(e)
-    ls = loads_of(e)
-    if any(_input(x) for x in ls) and any(_input(y) for x in node_exprs(s) for y in loads_of(x)):
+    ls = loads(e)
+    if any(_input(x) for x in ls) and any(_input(y) for x in node_exprs(s) for y in loads(x)):
         return True
     if t is not Store:
         return False
@@ -123,7 +123,7 @@ def _positions(proc):
     return where
 
 
-def loads(proc, live=None, keep=()):
+def values(proc, live=None, keep=()):
     """Fold a value into its uses, past statements that cannot alias it.
 
     A use may sit in another block when that block is reachable only through the

@@ -50,12 +50,15 @@ def tune_path(name, hvsc=None):
 
 
 def horizon(subs):
-    """The horizon options the certificate's tick counts imply."""
+    """The horizon options the certificate's tick counts imply.
+
+    A subtune that stopped one tick past its first repeat was traced with
+    ``--until-period``; a ``--songs all`` run shares one tick target across every
+    subtune, so it carries both.
+    """
     s = subs[0]
     if len(subs) > 1:
-        return (
-            ["--until-period"] if all(x["complete"] for x in subs) else ["--calls", str(s["ticks"])]
-        )
+        return ["--until-period", "--calls", str(max(x["ticks"] for x in subs))]
     if s["first_repeat"] is not None and s["ticks"] == s["first_repeat"] + 1:
         return ["--until-period"]
     return ["--calls", str(s["ticks"])]

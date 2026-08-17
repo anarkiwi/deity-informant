@@ -8,10 +8,10 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .irwalk import call_order, forwarder
+from .machine import PAL_FRAME
 from .pseudocode import Body, num
 
 # ---- the document ------------------------------------------------------------
-FRAME = 19656
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
 
@@ -19,7 +19,7 @@ def _meta(prog, names, cert):
     """The ``meta`` block: entry, cadence, subtunes, model, certificate."""
     m = prog.meta
     e = m.get("entry", {})
-    rate = FRAME / e.get("cycles_per_tick", FRAME)
+    rate = PAL_FRAME / e.get("cycles_per_tick", PAL_FRAME)
     out = [
         "entry     %s $%04X every %d cycles (%.1f calls/frame, %s)"
         % (e.get("kind"), e.get("addr", 0), e.get("cycles_per_tick", 0), rate, e.get("source")),

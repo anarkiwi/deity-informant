@@ -25,13 +25,13 @@ import time
 
 import numpy as np
 
+from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
 from .interp import Interp, Machine
 from .ir import TrapError
 from .tracevm import REG_IN
 
 PAL, NTSC = 985248, 1022730
-STATUS_BITS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
 INIT_CALL = 0xFFFFFFFF
 
 

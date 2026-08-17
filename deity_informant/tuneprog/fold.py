@@ -89,7 +89,7 @@ def _sidreg(addr):
     return SID_REG_LO <= addr <= SID_REG_HI
 
 
-def written(s):
+def stored(s):
     t = type(s)
     if t is W16:
         return {s.lo, s.hi}
@@ -132,7 +132,7 @@ class Roles:
             return "cascades" if s.proc in self.decoder else ""
         if self.io(s):
             return self.io(s)
-        wr, rd = written(s), loaded(s)
+        wr, rd = stored(s), loaded(s)
         if wr & self.filt or rd & self.filt:
             return "filter"
         if rd & self.freq and wr & self.image:
