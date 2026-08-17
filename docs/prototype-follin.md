@@ -78,6 +78,22 @@ literal operand moves into the index, so `LDA $6C37,X` on a region based at
 `$6CB7` prints `T6CB7[cmd - $80]`; and a play entry's `A` prints as the tick's
 `return` when every exit agrees on one computed expression (`ir.retval`).
 
+**Sibling closure and the fold** (`siblings.py`, `closure.py`, `copyfold.py`,
+`views.py`; S2c/S6, presentation only). The three voices are three copies of one
+static template, and the alignment of their instruction streams recovers that
+from the post-init image: equal opcodes advance all three, and a resync steps
+over the `CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag.
+The dispatch is where the copies stop being one stream, so its arms are paired in
+table order by how far their targets align, which carries the correspondence into
+the handlers. Each copy then gets the arms its siblings ran -- the same site,
+under that copy's own operands, with count 0 and reachable only through edges that
+were a `trap` before -- and the front end builds a second program from the closed
+trace. That program's copies are one program modulo a renaming, so it prints once
+over `for v in 0, 1, 2`, with a group view whose fields are a per-copy address
+table rather than a stride (section 5). The certified S4 program, its Python and
+its certificate are the trace-closed ones either way; `--closure none` prints
+them.
+
 **Static jump-table arms** (`jumptab.py`): when both halves of a patched `JMP`
 operand are copied from constant tables indexed by one value, the table's
 remaining entries are targets too, and become arms that `trap 'unverified'`
@@ -100,7 +116,7 @@ subtune's write log left where verification needs it. What `init` writes is type
 | 3 | computed store operand | in the SFX subtunes' `init`: a store **through** `load16($6219)` whose region is `[$640F, $67ED]` — exactly the three voices' fixed-length cells (song 16) |
 | 4 | 32 subtunes from the pre-init image | all 32 certified, 0 divergences, 0 envelope traps; 31 complete via a period (§6) |
 | 5 | play returns a value | `return ((b0021[90] \| b0021[91]) \| b0021[92])` = `$7B \| $7C \| $7D`; not part of the certificate |
-| 6 | three unrolled voices fold | **no** — see §7; the three copies are not the same trace-closed program (188/211/199 of a 229-offset template, 163 common) |
+| 6 | three unrolled voices fold | **yes, once the siblings are closed**: the copies ran 188/211/199 of a 229-offset template (163 common), so the trace-closed programs differ in shape before any operand does; of the 420 aligned rows the copies executed 308/380/329, and the closure lifts 189 sites so that all three have the same 402 (the 18 left are rows no copy ever reached, so no sibling can donate them). One family, one loop, 44 of 283 printed statements unverified; the whole document goes from 1,421 lines to 666 |
 | 7 | SMC immediates as variables | 35 cells (24 play-written, 11 init-patched); every play-written cell is a load at its instruction, every init-only cell is a constant in the tick and a store in `init`; 76 cells in the `--songs all` build |
 | 8 | `init` writes $08 then $00 to `$D400–$D41C` | 58 init writes, `$D41C` down to `$D400`, values `{8, 0}` — compared byte for byte by the certificate |
 | - | genericity, budget | Automatas (149,025 calls, period 129,024, both SID models), Commando songs 1–2, Emomyst at 10 s: 0 divergences with the same code. Song 1 is traced and verified in one 14 s invocation: 1,177 sites → 68 regions → 4 procedures → 1,242 statements |
@@ -109,87 +125,87 @@ subtune's write log left where verification needs it. What `init` writes is type
 
 ## 5. The printed `tick()` (`tuneprog.md`, verbatim; `...` elides)
 
+One loop over the three voices, the 21-way command switch inside it, and every
+per-voice cell a field of a group whose per-copy addresses the state header lists
+once -- including the SMC cells no stride describes (`$62EE`/`$64DB`/`$66CA`).
+
 ```
+closure   siblings: 1 family, 189 sites lifted, 1 loop over 3 copies;
+          44 of 283 statements unverified
+state     voice[3]  per-copy cells, 51 fields
+            .b0021   $0021 $0023 $0025 ; .timer   $0022 $0024 $0026   the stream pointer
+            .pw_lo   $003F $0041 $0043 ; .pw_hi   $0040 $0042 $0044
+            .freq_lo $0075 $0076 $0077 ; .freq_hi $0078 $0079 $007A
+            .counter_2 $007B $007C $007D                    active[v] = $FF
+            .b6269   $6269 $6456 $6645                      the vibrato direction
+            .timer_9 $62EE $64DB $66CA                      the pulse mode
+            .b6375   $6375 $6562 $6751                      the patched JMP
+            .b640F   $640F $65FE $67ED                      the $84 fixed length
+            .b6C37   $6C37 $6C4C $6C61 ; .b6C76 $6C76 $6C8B $6CA0   the two tables
+          b0021 $0021 118 bytes                 the block init clears in one loop
+          ...                                   b6800, b6813 .. -- the filter's own
+
 tick():                                  # $6234, 16,000 calls
-    if b0021[90] < 0:                              # active[0] = $FF
-        ...                                        # attack blip end
-        if b0021[54] != 0:                         # vibrato delay set
+    for v in 0, 1, 2:   # x48,000
+        if voice[v].counter_2 < 0:
+            if voice[v].timer_8 != 0:
+                ...                                        # attack blip end
+                sid[v].freq_lo = voice[v].freq_lo
+                sid[v].ctrl = (voice[v].ctrl | 1)
+            if voice[v].b0057 != 0:                        # vibrato delay set
+                ...
+                sid[v].freq_lo = a448                      # +/- depth by the direction
+                sid[v].freq_hi = x55
+                voice[v].freq_lo = a448
+                if voice[v].timer_7 == 0:
+                    voice[v].timer_7 = (voice[v].b0087 << 1)
+                    voice[v].b6269 = (t3 ^ $FF)             # the SMC vibrato direction
+            if voice[v].timer_9 != 0:                      # $62EE pulse mode (1 = hold)
+                ...
+                    sid[v].pw_lo = voice[v].pw_lo
+                    sid[v].pw_hi = voice[v].pw_hi
+            # $6338
+            voice[v].timer_4 -= 1                          # dur
             ...
-            sid[0].freq_lo = a381                  # freq += (dir ? +depth : -depth)
-            sid[0].freq_hi = x55
-            b0021[84] = a381
-            b0021[87] = x55
-            if t5 == 1:
-                b0021[99] = (b0021[102] << 1)
-                b6269 = (t2 ^ $FF)                 # the SMC vibrato direction
-        if b0021[66] != 0: writeout2()             # portamento, outlined
-        if timer != 0:                             # $62EE pulse mode (1 = hold)
-            ...
-                sid[0].pw_lo = b0021[30]
-                sid[0].pw_hi = b0021[31]
-        # $6338
-        b0021[6] -= 1                              # dur
-        if ((b0021[111] == b0021[6]) or (b0021[27] == 0)):
-            sid[0].ctrl = (b0021[9] & $FE)         # gate off
-            b0021[27] += 1
-        b0021[27] -= 1                             # the INC/DEC floor idiom
-        if b0021[6] == 0:
-            while True:   # x911                   # the sequencer
-                t15 = b730E[(b0021[1] << 8) | b0021[0]]
-                if t15 >= 0: break                 # a note byte leaves the loop
-                b6375 = T6CB7[t15 - $80]           # the patched JMP, tables at base-$80
-                b6375[1] = T6CF6[t15 - $80]
-                switch b6375:
-                    case $6858:                    # $82 loop begin
-                        b0021[12] = b730E[((b0021[1] << 8) | b0021[0]) + 1]
-                        ...
-                        continue
-                    case $68EE:                    # $84 fixed note length
-                        b640F = b730E[((b0021[1] << 8) | b0021[0]) + 1]
-                        y85 = 2
-                        goto L6356_98
-                    case $6909:                    # $85 raw register list
-                        y89 = 1
-                        a327 = b730E[((b0021[1] << 8) | b0021[0]) + 1]
-                        while True:   # x98
-                            y91 = (y89 + 2)
-                            sid.reg[a327] = b730E[((b0021[1] << 8) | b0021[0]) + (y89 + 1)]
-                            t25 = b730E[((b0021[1] << 8) | b0021[0]) + (y89 + 2)]
-                            if t25 >= 0:
-                                y89 = y91
-                                a327 = t25
-                                continue
-                            break
-                        ...
-                    case $693F:                    # $8D waveform
-                        sid[0].ctrl = t26
-                        b0021[9] = t26
-                        timer = b63D4              # pulse mode for the next note
-                    ...                            # 11 more commands this track sends
-                    case $6AD0: trap 'unverified'  # $87, $88, $89, $8F, $91: in the
-                    case $6A0B: trap 'unverified'  # table, never sent by this track
-                    ...
+            if voice[v].timer_2 == 0:
+                while True:   # x2,773                     # the sequencer
+                    t19 = b730E[(voice[v].timer << 8) | voice[v].b0021]
+                    if t19 >= 0: break                     # a note byte leaves the loop
+                    voice[v].b6375 = voice[v].b6C37[t19]   # the patched JMP, tables at base-$80
+                    voice[v].b6375_2 = voice[v].b6C76[t19]
+                    switch voice[v].b6375:
+                        case $6858:                        # $82 loop begin
+                            voice[v].timer_3 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
+                            ...
+                            continue
+                        case $68EE:                        # $84 fixed note length
+                            voice[v].b640F = b730E[...]
+                            goto L6356_98                  # back into the sequencer
+                        case $6909:                        # $85 raw register list
+                            while True:   # x191
+                                sid.reg[a369] = b730E[...] # the register is a variable
+                                ...
+                        case $693F:                        # $8D waveform
+                            sid[v].ctrl = t26
+                            voice[v].ctrl = t26
+                            voice[v].timer_9 = voice[v].b63D4
+                        ...                                # 21 arms in all: the 18 some
+                        case $6AD0: trap 'unverified'      # voice sent, and 3 none did
             # $6381 note fetch
-            b0021[69] = x44
-            sid[0].freq_lo = freq_lo_2[x44 - $13]  # notetab[note + transpose]
-            b0021[84] = freq_lo_2[x44 - $13]
-            b0021[87] = freq_hi_2[x44 - $13]
-            sid[0].freq_hi = b0021[87]
-            sid[0].ctrl = (b0021[9] | 1)           # gate on
-            if b640F != 0:                         # $84 fixed length, else a byte
-                y81 = 1
-                a301 = b640F
-            else:
-                y81 = 2
-                a301 = b730E[((b0021[1] << 8) | b0021[0]) + 1]
-            b0021[6] = a301
+            voice[v].b0066 = x44
+            sid[v].freq_lo = T6D48[voice[v].b0066]         # notetab[note + transpose]
+            sid[v].ctrl = (voice[v].ctrl | 1)              # gate on
             ...
-    goto L6421_A5                                  # voice 1, then voice 2, then:
-        ...
-        sid.cutoff_lo = b0021[78]                  # $67FF the filter sweep
-        sid.cutoff_hi = (((((t69 >> 1) | (((b0021[79] >> 1) & 1) << 7)) >> 1) | ((t69 & 1) << 7)) | b0021[117])
-        return ((b0021[90] | b0021[91]) | b0021[92])
+    if b6800 != 0: trap 'untaken'                          # $67FF the filter sweep
+    sid.cutoff_lo = b0021[78]
+    sid.cutoff_hi = (((((t46 >> 1) | ...) >> 1) | ...) | b0021[117])
+    return ((voice[0].counter_2 | voice[1].counter_2) | voice[2].counter_2)
 ```
+
+Where a voice ends its own note the arm now reads `continue`, not `goto L6421_A5`:
+the chain edge into the next copy is the loop's back edge. What is left of
+`b0021[...]` is the filter's own cells and `$74`, the voice number -- the parts of
+the zero-page block that are not per-voice at all.
 
 ---
 
@@ -226,25 +242,43 @@ call 149,024 — so the committed files stand.
 
 ## 7. What remains
 
-- **The three voice copies do not fold into `for v in 0, 1, 2`.** The reason is
-  not the operand vectors: mapped onto the 229-offset template (correcting for
-  the two-byte `CMP #v` insertion), the voices executed 188, 211 and 199 offsets,
-  only 163 common to all three, each missing 18–41 another ran. Three copies of
-  one template that ran *different
-  subsets of it* are three different trace-closed programs, so the isomorphism
-  test fails on shape before it ever reaches an operand. Behind that sit three
-  more obstacles: the per-voice SMC cells are separate regions and **not equally
-  spaced** (`$62EE`, `$64DB`, `$66CA`), so no affine step describes them; the
-  shared zero-page region is walked with two strides (1 for bytes, 2 for the word
-  pairs); and the sequencer arms contain `goto`s to per-voice labels, which
-  `unroll` does not tokenise. A static (rather than trace-closed) product of the
-  three copies, plus a parallel-region *group* view with a per-copy address table
-  instead of an affine step, is what this needs.
-- **Names.** The whole of `$21–$97` is one region (init clears it with one loop)
-  and is walked by 200 constant addresses, not by an index, so the stride view
-  never fires and per-voice fields print as `b0021[90]` rather than
-  `voice[0].active`. Splitting a region by the offsets parallel code copies touch
-  would name it, and is the machinery the fold needs.
+Two of the four obstacles this section used to list are gone. **The three voice
+copies fold** (§3, §4 row 6, §5): the closure gives every copy the arms its
+siblings ran, and `copyfold` proves the copies one program modulo a renaming --
+equal alpha-renamed skeletons, every differing address consistent with one
+per-copy mapping, every other differing constant affine in the index. The
+unequally spaced SMC cells (`$62EE`/`$64DB`/`$66CA`) are that mapping, listed once
+in the state header; the `goto`s to per-voice labels became one label per arm and
+the chain edge into the next voice became `continue`.
+
+- **The closure's arms are unverified.** 189 of the closed program's sites are a
+  sibling's, lifted under this copy's operands: reachable only through edges that
+  were a `trap`, count 0, and part of a program the same front end builds from the
+  closed trace -- but no execution took them. 44 of the 283 printed statements are
+  theirs, and the `closure` line says so. The certified S4 program is the
+  trace-closed one, and `--closure none` prints it (1,421 lines, three copies).
+- **What is left of the zero page is what is not per-voice.** `$21–$97` is still
+  one region -- init clears it with one loop -- but the fold names 51 of its cells
+  by their per-copy address table, so what still prints as `b0021[...]` is the
+  filter's own accumulator and bounds and `$74`, the voice number. A stride view
+  cannot split the rest: those cells are reached by constant addresses, not by an
+  index, so there is nothing for `views.field_split` to key on.
+- **Three of the 21 arms are still `trap 'unverified'`,** and the folded switch
+  is copy 0's. The dispatch's arms pair in table order by how far their targets
+  align, which closes every arm some voice sent (18 of 21); the three no voice
+  sent have no donor. The two entries per copy past the 21-entry table (the
+  extent rule over-reaching, §4 row 1) pair with nothing and are left out of the
+  shape, so the printed switch has copy 0's 21 arms rather than copy 1's 23.
+- **The music subtunes fold; most of the effects do not.** Songs 1–11, 16 and 20
+  fold their three voices (1–61 unverified statements of 99–283). A sound effect
+  uses one or two voices, so the copy that runs nothing never reaches its
+  dispatch, its arms have nothing to pair with, and the handler bodies the other
+  copies ran stay outside the copies -- a cross-copy edge, which the fold
+  refuses.
+- **The `--songs all` union does not fold.** One voice's stream read is access
+  class `chk` where the others' are `ram`: over 32 subtunes that voice reaches
+  bytes outside the written set, and a load of a different class is a different
+  program. The union's closure still lifts 9 sites.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317

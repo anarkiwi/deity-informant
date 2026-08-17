@@ -12,7 +12,7 @@ import pytest
 
 from deity_informant import cli
 
-from _hvsc import AUTOMATAS, COMMANDO, body, decompiled, tune
+from _hvsc import AUTOMATAS, COMMANDO, body, decompiled, folded, tune
 
 pytestmark = pytest.mark.hvsc
 
@@ -80,6 +80,24 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
     ]
     assert "    cascades()" in sub and "    oscillator()" in sub
     assert len(main) < 20 and len(sub) < 12
+
+
+def test_automatas_cascade_blocks_fold_over_the_voice_index():
+    # the six blocks are three voices of cascade A and three of B; each run of
+    # three is one program over the voice index once the copies are closed
+    text, names, _view, _prog = folded(AUTOMATAS, seconds=30)
+    assert names.closure["loops"] >= 2 and names.closure["folded"][:2] == [3, 3]
+    hit = [
+        b
+        for b in (body(text, n) for n in names.procs.values())
+        if b and b[0].strip().startswith("for v in 0, 1, 2:") and "timer_4" in "\n".join(b)
+    ]
+    assert len(hit) == 1, text
+    lines = "\n".join(hit[0])
+    assert lines.count("voice[v].timer_4") >= 3 and "voice[v].cursor_12CE" in lines
+    assert set(names.closure["folded"]) == {3}
+    # over the whole song the two runs fold again into `for c: for v:` over a
+    # per-copy table of A's and B's counters (docs/prototype-automatas.md 6.1)
 
 
 def test_automatas_has_no_machine_texture_left_in_the_hot_path():

@@ -171,12 +171,13 @@ p_1337(a, x):                            # $1337 HARDRST, 4,776 calls
 
 ## 6. What remains
 
-- **`b1024` is one 105-byte region.** `init` zeroes VARIABLES with one loop, so
-  the access relation joins all five bunches; the play-time accesses are `abs,X`
-  with X ∈ {0,7,14} and would split it into five stride-7 records. This is
-  GoatTracker's blocks A+B at five times the size, and the same per-phase stride
-  view would fix both — it is what would turn `b1024[$16 + x]` into
-  `voice[v].spdcnt`.
+- **`b1024` prints as fifteen records now.** `init` zeroes VARIABLES with one
+  loop, so the access relation still joins all five bunches into one region; the
+  tick's `abs,X` with X ∈ {0,7,14} is the stride `views.field_split` splits it by,
+  so `b1024[$16 + x]` is `rec[x/7 + 3].timer_2` -- bunch 1, voice x/7 -- and the
+  roles the cells carry (`timer`, `acc`, `cursor`) name five of the seven fields.
+  What is still missing is the *word*: SPDCNT is `timer_2` because a timer is what
+  the trace shows it to be.
 - **Names are role-derived.** `timer` is CWEPCNT, `freq_idx` CKBDTRK, `b1464`
   TABLRST: the trace shows the shapes, not the words. A family dictionary keyed
   on the SID Wizard signature would name them from `player.asm`.

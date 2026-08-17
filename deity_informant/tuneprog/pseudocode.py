@@ -23,9 +23,8 @@ from .ir import (
     W16,
 )
 from .irwalk import addr_split, any_load
-from .live import needed, printable
-from .recover import GLOBAL_REG, VOICE_REG
-from .structure import Blk, Case, Cond, For, Jump, Loop
+from .live import needed
+from .facts import GLOBAL_REG, VOICE_REG
 
 INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
@@ -53,6 +52,8 @@ class Printer:
         self.mem = {}
         self.hide = frozenset()
         self.fors = 0
+        self.fgroup = ""
+        self.fvar = ""
         self.proc = ""
         self.defs = {}
         self.inline = {}
@@ -85,9 +86,59 @@ class Printer:
     def load16(self, rid, a):
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
 
+    def slot(self, hits, rid, addr, idx):
+        """``voice[v].field`` for a cell a per-copy address table names, or ``None``.
+
+        A cell two folds both name (the tick's voices, and the loop init copies
+        them with) belongs to whichever of them is being printed; a local group
+        names nothing outside the loop that proved it.
+        """
+        hit = next((h for h in hits if h[0] == self.fgroup), hits[0])
+        g, fname, j, local = hit
+        if local and g != self.fgroup:
+            return None
+        i = self.fvar if g == self.fgroup and self.fvar else str(j)
+        out = "%s[%s].%s" % (g, i, fname)
+        r = self.rgn.get(rid)
+        if idx is None:
+            return out
+        return "%s[%s]" % (out, self.index(r, addr, idx) if r else _bare(self.expr(idx, False)))
+
+    def field(self, rid, r, addr, idx):
+        """``rec[i].field`` for a block the play-phase stride splits into records.
+
+        An access whose index does not step by that stride is not one of its
+        elements (a cursor reading the block as a table), and keeps its address.
+        """
+        g, stride, fields = self.names.split[rid]
+        off, elem = (addr - r.zero) % stride, (addr - r.zero) // stride
+        idx = _unoffset(idx, addr - r.zero)
+        i = str(elem)
+        if idx is not None:
+            hit = self.ivar(idx, stride) or self.scaled(idx, stride)
+            if hit is None:
+                return None
+            i = hit if not elem else "%s + %d" % (hit, elem)
+        return "%s[%s].%s" % (g, i, fields.get(off, "f%02X" % off))
+
+    def scaled(self, idx, stride):
+        """The index as an element number, when something proves it steps by ``stride``."""
+        n = idx.n if type(idx) is Var else None
+        return (
+            "%s/%d" % (self.expr(idx, False), stride) if self.names.scale.get(n) == stride else None
+        )
+
     def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
+        hit = self.names.slots.get((rid, addr))
+        hit = self.slot(hit, rid, addr, idx) if hit else None
+        if hit is not None:
+            return hit
         r = self.rgn.get(rid)
+        if rid in self.names.split and r is not None and addr is not None:
+            hit = self.field(rid, r, addr, idx)
+            if hit is not None:
+                return hit
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
         name = name or self.names.region.get(rid, "r%d" % rid)
@@ -177,11 +228,7 @@ class Printer:
 
     def voiced(self, idx):
         """The index as a voice number, when something proves it steps by seven."""
-        hit = self.ivar(idx, 7)
-        if hit is not None:
-            return hit
-        n = idx.n if type(idx) is Var else None
-        return "%s/7" % self.expr(idx, False) if self.names.scale.get(n) == 7 else None
+        return self.ivar(idx, 7) or self.scaled(idx, 7)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -312,187 +359,3 @@ def _signbit(e):
 def _reads(e, rid):
     """True when the value of ``e`` loads from region ``rid``."""
     return any_load(e, lambda x: x.r == rid)
-
-
-# ---- structured body ---------------------------------------------------------
-class Body(Printer):
-    """Renders structured nodes into indented pseudocode lines."""
-
-    def render(self, name, body):
-        self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
-        self.lastsrc = None
-        p = self.prog.procs[name]
-        args = ", ".join(REGVAR[i].lower() for i in self.params[name])
-        head = "%s(%s):" % (self.names.procs.get(name, name), args)
-        out = ["%-40s # $%04X, %s calls" % (head, p.blocks[p.entry].src, num(_calls(p)))]
-        return out + self.nodes(body, name, 1)
-
-    def nodes(self, body, proc, depth):
-        out = []
-        for n in body:
-            out.extend(self.node(n, proc, depth))
-        return out or [IND * depth + "pass"]
-
-    def node(self, n, proc, depth):
-        pad = IND * depth
-        t = type(n)
-        if t is Blk:
-            return self.blk(n, proc, pad)
-        if t is Cond:
-            return self.cond(n, proc, depth)
-        if t is Case:
-            return self.case(n, proc, depth)
-        if t is For:
-            return self.forloop(n, proc, depth)
-        if t is Loop:
-            return self.loop(n, proc, depth)
-        if t is Jump:
-            return [pad + (n.kind if n.kind != "goto" else "goto %s" % n.label)]
-        if n.kind != "return":
-            return [pad + "trap %r" % n.why]
-        return [pad + ("return %s" % self.expr(n.e) if n.e is not None else "return")]
-
-    def blk(self, n, proc, pad):
-        live = self.live[proc]
-        stmts = [s for s in n.stmts if printable(s, live) and not _hidden(s, self.hide)]
-        if not stmts:
-            return []
-        self.mem = {}
-        self.defs = {s.n: s.e for s in stmts if type(s) is Let}
-        head = ["%s# $%04X" % (pad, n.src)] if self.pcs and n.src != self.lastsrc else []
-        self.lastsrc = n.src
-        return head + [pad + self.stmt(s) for s in stmts]
-
-    def cond(self, n, proc, depth):
-        pad = IND * depth
-        c, flip = self.expr(n.c), False
-        neg = self.negate(n.c)
-        both = self.arms([n.then, n.els], proc, depth + 1)
-        then, els = both[0], both[1]
-        if then == [IND * (depth + 1) + "pass"] and els != [IND * (depth + 1) + "pass"]:
-            then, els, flip = els, ["%spass" % (IND * (depth + 1))], True
-        if flip:
-            c = neg
-        if len(then) == 1 and len(els) == 1 and els[-1].endswith("pass"):
-            return ["%sif %s: %s" % (pad, c, then[0].strip())]
-        if len(then) == 1 and len(els) == 1:
-            return ["%sif %s: %s else: %s" % (pad, c, then[0].strip(), els[0].strip())]
-        out = ["%sif %s:" % (pad, c)] + then
-        return out if els[-1].endswith("pass") and len(els) == 1 else out + ["%selse:" % pad] + els
-
-    def arms(self, bodies, proc, depth):
-        """Render sibling arms: each starts from the state the test saw, none survives."""
-        saved, out = dict(self.mem), []
-        for b in bodies:
-            self.mem = dict(saved)
-            out.append(self.nodes(b, proc, depth))
-        self.mem = {}
-        return out
-
-    def negate(self, c):
-        if type(c) is Bin and c.op in NEG:
-            return self.expr(Bin(NEG[c.op], c.a, c.b, c.w))
-        return "not %s" % self.expr(c)
-
-    def case(self, n, proc, depth):
-        pad = IND * depth
-        out = ["%sswitch %s:" % (pad, self.expr(n.e))]
-        arms = self.arms([b for _v, b in n.cases], proc, depth + 2)
-        for (v, _b), body in zip(n.cases, arms):
-            out.append("%s%scase %s:" % (pad, IND, _hex(v)))
-            out.extend(body)
-        return out
-
-    def forloop(self, n, proc, depth):
-        pad = IND * depth
-        vals = tuple(v // n.scale for v in n.values)
-        rng = _range(vals)
-        alias, hide = dict(self.alias), set(self.hide)
-        var = _ivar(self.fors)
-        self.alias[n.var] = (var, n.scale)
-        self.hide |= n.hide
-        self.fors += 1
-        body = self.arms([_strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
-        self.alias, self.hide, self.fors = alias, hide, self.fors - 1
-        return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
-
-    def loop(self, n, proc, depth):
-        pad = IND * depth
-        spin = self.spin(n)
-        if spin is not None:
-            return ["%swhile %s: pass%s" % (pad, spin, _times(n.count))]
-        body = self.arms([n.body], proc, depth + 1)[0]
-        return ["%swhile True:%s" % (pad, _times(n.count))] + body
-
-    def spin(self, n):
-        """A body that only reads and tests is a busy-wait: ``while cond: pass``."""
-        conds = [x for x in n.body if type(x) is Cond]
-        if any(type(x) not in (Blk, Cond, Jump) for x in n.body) or len(conds) != 1:
-            return None
-        c = conds[0]
-        blks = [x for x in n.body + c.then + c.els if type(x) is Blk]
-        if any(type(s) is not Let for b in blks for s in b.stmts):
-            return None
-        if any(type(x) not in (Blk, Jump) for x in c.then + c.els):
-            return None
-        jumps = ([x for x in c.then if type(x) is Jump], [x for x in c.els if type(x) is Jump])
-        arms = [k for k, b in zip("tf", jumps) if any(x.kind == "continue" for x in b)]
-        if len(arms) != 1:
-            return None
-        self.inline = {s.n: s.e for b in blks for s in b.stmts}
-        out = self.expr(c.c) if arms[0] == "t" else self.negate(c.c)
-        self.inline = {}
-        return out
-
-
-def _hidden(s, hide):
-    return type(s) is Let and s.n in hide
-
-
-def _strip(body, label, hide):
-    """Drop the induction test and the back edge a ``for`` header already states."""
-    out = []
-    for n in body:
-        if type(n) is Cond and _jumps_only(n.then + n.els, hide):
-            continue
-        if type(n) is Jump and n.label == label:
-            continue
-        out.append(n)
-    return out
-
-
-def _jumps_only(nodes, hide):
-    """True when a branch arm only jumps (its blocks are empty or hidden)."""
-    for n in nodes:
-        if type(n) is Jump:
-            continue
-        if type(n) is not Blk or any(not _hidden(s, hide) for s in n.stmts):
-            return False
-    return True
-
-
-def _ivar(n):
-    return "vwxyz"[min(n, 4)]
-
-
-def _range(vals):
-    if len(vals) > 3 and vals == tuple(
-        range(
-            vals[0], vals[-1] + (1 if vals[0] < vals[-1] else -1), 1 if vals[0] < vals[-1] else -1
-        )
-    ):
-        return "%d..%d" % (vals[0], vals[-1])
-    return ", ".join(str(v) for v in vals)
-
-
-def _times(n):
-    return "" if not n else "   # x%s" % num(n)
-
-
-def num(n):
-    """A count with thousands separators."""
-    return "{:,}".format(n)
-
-
-def _calls(p):
-    return p.blocks[p.entry].count

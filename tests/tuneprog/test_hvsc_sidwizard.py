@@ -116,8 +116,11 @@ def test_emomyst_prints_one_dotrack_over_the_three_voices():
     lines = "\n".join(body(text, "row_apply"))
 
     # the tempo test: SEC; SBC TEMPOTBL-1,Y; BEQ new row; BVC same row (the V flag)
-    assert re.search(r"if \(\(b1024\[\$16 \+ x\] \^ \w+\) & \(", lines), lines
-    assert "b1024[$16 + x] += 1" in lines  # SPDCNT is post-incremented
+    # SPDCNT is one field of VARIABLES, which init clears as one block and the
+    # tick walks at stride 7: bunch 1 ($1024 + $15), voice x/7 (views.field_split)
+    spdcnt = r"rec\[x/7 \+ 3\]\.\w+"
+    assert re.search(r"if \(\(%s \^ \w+\) & \(" % spdcnt, lines), lines
+    assert re.search(r"%s \+= 1" % spdcnt, lines), lines  # SPDCNT is post-incremented
     assert lines.count("if t4 == 0:") == 1 and "if t4 == 2:" in lines
 
 

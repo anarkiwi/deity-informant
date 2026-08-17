@@ -8,18 +8,17 @@ cursor, a zero-page pair used as an address is a pointer, equal strides one view
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import reduce
-from math import gcd
-
-from .ir import Bin, Call, Const, Let, Load, SID_REG_HI, SID_REG_LO, Store, Var
-from .irwalk import addr_split, expand, forwarder, loads, reachable, unique_name, walk
+from .facts import (
+    Facts,
+    MAXPAIRS,
+    MAXROLE,
+    image_copy,
+    sid_image,
+    update_role,
+    _scales,
+)
+from .irwalk import forwarder, unique_name
 from .structure import phase as _phase
-
-VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
-GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
-OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
-DEPTH, MAXOPS, MAXPAIRS = 4, 2, 24
-MAXROLE = 8  # elements: above this a region is a block, not a variable
 
 try:
     from pysidtracker.notefreq import is_octave_ramp
@@ -50,6 +49,9 @@ class Names:
     notes: dict = field(default_factory=dict)
     u16: dict = field(default_factory=dict)
     u16group: dict = field(default_factory=dict)
+    slots: dict = field(default_factory=dict)
+    split: dict = field(default_factory=dict)
+    closure: dict = None
 
     def of(self, rid):
         return self.region.get(rid, "r%d" % rid)
@@ -68,193 +70,14 @@ class Names:
             ],
             "image": [{"region": k, "delta": v} for k, v in sorted(self.image.items())],
             "groups": {g: dict(v, members=sorted(v["members"])) for g, v in self.groups.items()},
+            "closure": self.closure,
             "u16": [{"lo": lo, "hi": hi, "name": n} for (lo, hi), n in sorted(self.u16.items())],
             "procs": self.procs,
             "phase": None if self.phase is None else {"region": self.phase[0]},
         }
 
 
-# ---- expression facts --------------------------------------------------------
-def _ops(e):
-    return sum(1 for x in walk(e) if type(x) is Bin)
-
-
-def _leaf_loads(e):
-    """The loads of ``e`` that are values, not parts of an address."""
-    ls = loads(e)
-    inner = {id(y) for x in ls for y in walk(x.a)}
-    return [x for x in ls if id(x) not in inner]
-
-
-def _same_cell(a, b):
-    return a.v == b.v if type(a) is Const and type(b) is Const else a == b
-
-
-class Facts:
-    """Everything the roles are derived from, gathered in one pass over the IR."""
-
-    def __init__(self, prog):
-        self.prog = prog
-        self.rgn = prog.by_id()
-        self.sid = []
-        self.copies = []
-        self.idxvar = {}
-        self.updates = {}
-        self.plain = set()
-        self.index = {}
-        self.addr = set()
-        self.reads = {}
-        self.writes = {}
-        self.wpc = {}
-        self.tick = reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
-        for name, p in prog.procs.items():
-            self.reads[name], self.writes[name] = set(), set()
-            for b in p.blocks.values():
-                self.block(name, b)
-
-    def block(self, name, b):
-        defs = {}
-        for s in b.stmts:
-            if type(s) is Let:
-                if not s.n.startswith("$"):
-                    defs[s.n] = s.e
-                self.value(name, expand(s.e, defs, DEPTH))
-            elif type(s) is Store:
-                v, a = expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH)
-                self.value(name, v)
-                self.value(name, a)
-                self.store(name, s, v, a)
-            elif type(s) is Call:
-                for a in s.args:
-                    self.value(name, expand(a, defs, DEPTH))
-
-    def value(self, name, e):
-        """Record what an expression reads: regions, index uses, pointer uses."""
-        for x in loads(e):
-            self.reads[name].add(x.r)
-            self.walks(x.r, x.a)
-            for y in loads(x.a):
-                self.index.setdefault(y.r, set()).add(x.r)
-                if y.w == 2:
-                    self.addr.add(y.r)
-
-    def walks(self, rid, a):
-        """Record that a bare index variable walks the elements of region ``rid``."""
-        base, i = addr_split(a)
-        if base is not None and type(i) is Var:
-            self.idxvar.setdefault(i.n, set()).add(rid)
-
-    def store(self, name, s, v, a=None):
-        """Record a store: the SID image, and whether it updates its own region."""
-        if s.cls == "io":
-            base, idx = addr_split(a if a is not None else s.a)
-            if base is not None and SID_REG_LO <= base <= SID_REG_HI:
-                (self.sid if idx is None else self.copies).append(
-                    (base, v) if idx is None else (base, idx, v)
-                )
-        if s.r < 0:
-            return
-        self.walks(s.r, a if a is not None else s.a)
-        self.writes[name].add(s.r)
-        self.wpc.setdefault(s.r, set()).add(s.src)
-        if name not in self.tick:
-            return
-        same = [x for x in _leaf_loads(v) if x.r == s.r and _same_cell(x.a, s.a)]
-        if same and _ops(v) <= MAXOPS:
-            self.updates.setdefault(s.r, set()).add(v)
-        else:
-            self.plain.add(s.r)
-
-
 # ---- roles -------------------------------------------------------------------
-def _sid_name(addr):
-    """``(field name, voice)`` for a SID register address."""
-    if addr in GLOBAL_REG:
-        return GLOBAL_REG[addr], None
-    v, k = divmod(addr - SID_REG_LO, 7)
-    return VOICE_REG[k], v
-
-
-def sid_image(facts):
-    """``{region: (field name, {element: voice})}`` for the regions the SID image reads."""
-    out = {}
-    for addr, v in facts.sid:
-        if _ops(v) > MAXOPS:
-            continue
-        leaves = [x for x in _leaf_loads(v) if x.r in facts.rgn]
-        op = next((y.op for y in walk(v) if type(y) is Bin), "")
-        for i, x in enumerate(leaves):
-            name, voice = _sid_name(addr)
-            if i:
-                name = "%s_%s" % (name, OPNAME.get(op, i))
-            r = facts.rgn[x.r]
-            hit = out.setdefault(x.r, [name, {}])
-            if type(x.a) is Const:
-                hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
-    return {k: (n, m) for k, (n, m) in out.items()}
-
-
-def _scales(facts):
-    """``{index name: stride}`` for a value that walks a record wider than a byte.
-
-    An index the program uses to reach a 7-byte record is a voice wherever else it
-    appears -- which is what makes ``$14CE,X`` voice ``x/7``'s control register.
-    """
-    out = {}
-    for n, rids in facts.idxvar.items():
-        strides = [facts.rgn[r].stride for r in rids if r in facts.rgn]
-        s = reduce(gcd, [x for x in strides if x > 1], 0)
-        if s > 1:
-            out[n] = s
-    return out
-
-
-def image_copy(facts):
-    """``{region: delta}`` for a region a loop copies byte-for-byte into the SID.
-
-    ``sidw($D400 + i, load(R, base + i))`` with one index expression is a shadow
-    of the register file: byte ``a`` of ``R`` is register ``a + delta``, so the
-    flush loop prints as a copy and every other access to ``R`` by its register.
-    """
-    out = {}
-    for base, idx, v in facts.copies:
-        if type(v) is not Load or v.r not in facts.rgn:
-            continue
-        rbase, ridx = addr_split(v.a)
-        if rbase is None or ridx != idx:
-            continue
-        r = facts.rgn[v.r]
-        if r.kind != "state" or rbase != r.base:  # a table is read, never a shadow
-            continue
-        out[v.r] = base - rbase
-    return out
-
-
-def _value_walk(e):
-    """The operators of a value, address arithmetic excluded."""
-    yield e
-    if type(e) is Bin:
-        yield from _value_walk(e.a)
-        yield from _value_walk(e.b)
-
-
-def _update_role(facts, rid):
-    """``counter``/``timer``/``acc`` from the shape of a region's own updates."""
-    steps, arith = set(), False
-    for e in facts.updates.get(rid, ()):
-        for x in _value_walk(e):
-            if type(x) is not Bin or x.op not in ("+", "-"):
-                continue
-            arith = True
-            if type(x.b) is Const and type(x.a) is Load and x.a.r == rid:
-                steps.add(x.b.v if x.op == "+" else -x.b.v)
-    if not steps:
-        return "acc" if arith else ""
-    if steps <= {1, -1, 255, -255}:
-        return "timer" if rid in facts.plain else "counter"
-    return "acc"
-
-
 def _groups(prog, names):
     """Struct views: regions of equal stride and element count are one view."""
     groups = {}
@@ -328,6 +151,11 @@ def _uniq(names, rid, want):
 def _elems(r):
     """How many elements a region's stride divides it into."""
     return -(-r.size // max(r.stride, 1))
+
+
+def _update_role(facts, rid):
+    """The role a region's own updates give it."""
+    return update_role(facts.updates.get(rid, ()), rid in facts.plain, rid)
 
 
 def _basename(r, role, facts, names):

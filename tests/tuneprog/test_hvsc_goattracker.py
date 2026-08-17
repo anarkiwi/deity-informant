@@ -85,6 +85,20 @@ def test_je_suis_linus_prints_its_voice_loop_and_per_voice_records():
     assert "voice[x/7]." in text
 
 
+def test_blocks_a_and_b_print_as_the_records_their_play_time_stride_names():
+    # init clears $1461..$148A with one loop, so the access relation joins blocks
+    # A and B into one region; the tick walks it at stride 7
+    run = decompiled(LINUS, seconds=30)
+    text, names = run.text, run.names
+    split = [(r, v) for r, v in names.split.items() if v[1] == 7]
+    assert len(split) == 1, names.split
+    g, _stride, fields = split[0][1]
+    assert names.groups[g]["n"] == 6 and len(fields) >= 5
+    assert re.search(r"%s\[x/7( \+ 3)?\]\.\w+" % g, text), text
+    # init still clears the whole block with one loop, at stride 1
+    assert "b1461[v] = 0" in text and not re.search(r"b1461\[\$?\w+ \+", text), text
+
+
 def test_je_suis_linus_recovers_the_base_of_its_one_based_tables():
     run = decompiled(LINUS, seconds=30)
     regions = run.regions

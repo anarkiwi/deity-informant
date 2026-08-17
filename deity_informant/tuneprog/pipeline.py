@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 
 from . import (
+    closure as C,
+    copyfold,
     emit,
     fold,
     frame,
@@ -24,12 +26,14 @@ from . import (
     live as L,
     printer,
     recover,
+    siblings,
     ssa,
     structure,
     tails,
     texture,
     unroll,
     verify as V,
+    views,
     word,
 )
 from .build import build_ir
@@ -59,6 +63,12 @@ def add_args(ap):
     ap.add_argument("--sid-model", choices=sorted(MODEL_D41B), help="pin $D41B bit 0")
     ap.add_argument("--no-verify", action="store_true", help="skip S8 (no certificate)")
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
+    ap.add_argument(
+        "--closure",
+        choices=("siblings", "none"),
+        default="siblings",
+        help="S6: give sibling copies the arms their siblings ran, and fold them",
+    )
     ap.add_argument(
         "--ghidra-facts", action="store_true", help="also write OUT/ghidra for headless Ghidra"
     )
@@ -306,7 +316,30 @@ def _node(n):
     return d
 
 
-def present(prog):
+def closed(trace, prog, name=None, sid_model=None, union=False):
+    """``(program, families, stats)``: ``prog`` with every sibling copy's arms.
+
+    The certified program is untouched; what comes back is a second program the
+    same front end builds from the closed trace, for S5/S6 to present.
+    """
+    img, band = trace.image_post_init, tuple(trace.meta["load"])
+    fams = siblings.correspond(prog, img, {k[0] for k in trace.sites}, band)
+    if not fams:
+        return prog, None, {"families": 0, "sites_added": 0, "edges_added": 0}
+    ctrace, stats = C.close(trace, fams)
+    cprog = build(ctrace, name, sid_model, union)[0]
+    pcs = {k[0] for k in ctrace.sites}
+    return cprog, lambda p: siblings.correspond(p, img, pcs, band), stats
+
+
+def _fold(view, sibs):
+    """Fold the sibling copies of ``view`` in place, with the printed arguments."""
+    if sibs is None:
+        return {}
+    return copyfold.apply(view, sibs(view), fold.livearg(view, L.needed(view)[1]))
+
+
+def present(prog, sibs=None):
     """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
 
     Structuring, texture removal, 16-bit views, outlining and copy folding; the
@@ -318,14 +351,40 @@ def present(prog):
     texture.clean(view, frame.deltas(prog))
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
+    _fold(view, sibs)
     names = recover.recover(view, structure.structure(view))
+    views.decorate(view, names)
     word.fold16(view, names)
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
+    # copies outlining moved into a shared helper fold there instead
+    _fold(view, sibs)
+    views.decorate(view, names)
     live, params = L.needed(view)
     st = structure.structure(view, L.wants(view, live))
-    unroll.unroll(st, live, fold.livearg(view, params))
+    _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
+    views.decorate(view, names, groups)
     return view, st, names
+
+
+def _closure_stats(view, pcs):
+    """What the sibling closure added: the loops it folded, and what is unverified.
+
+    A statement of a site no execution reached is unverified: it is the sibling
+    copy's, lifted here, and the trap it replaced is what the certificate saw.
+    """
+    pcs, stmts, unverified = set(pcs), 0, 0
+    for p in view.procs.values():
+        for b in p.blocks.values():
+            stmts += len(b.stmts)
+            unverified += len(b.stmts) if b.src in pcs else 0
+    folds = list((view.meta.get("folds") or {}).values())
+    return {
+        "statements": stmts,
+        "unverified": unverified,
+        "loops": len(folds),
+        "folded": sorted(f["n"] for f in folds),
+    }
 
 
 def stage_print(args, out, prog=None):
@@ -337,7 +396,13 @@ def stage_print(args, out, prog=None):
         doc["stage"] = "S6"
         doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
         emit.write_certificate(cert, doc)
-    view, st, names = present(prog)
+    src, sibs, stats = prog, None, None
+    if getattr(args, "closure", "none") == "siblings":
+        src, sibs, stats = closed(
+            Trace.load(out), prog, Path(args.sid).name, args.sid_model, args.songs == "all"
+        )
+    view, st, names = present(src, sibs)
+    names.closure = stats and dict(stats, **_closure_stats(view, stats.pop("pcs", ())))
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))

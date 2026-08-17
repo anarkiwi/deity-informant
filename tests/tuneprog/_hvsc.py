@@ -84,6 +84,7 @@ class Run:
     names: object = None
     entry: object = None
     before: object = None
+    fold: tuple = None
 
 
 _DONE = {}
@@ -108,6 +109,18 @@ def decompiled(relpath, seconds, song=None, prefix=200, until_period=False, text
         # S5/S6 annotate the certified program; they never edit it
         assert run.prog.to_json() == run.before
     return run
+
+
+def folded(relpath, seconds, song=None, until_period=False, prefix=200):
+    """``(text, names, view, closed program)`` of one tune through the sibling closure."""
+    run = decompiled(relpath, seconds, song=song, until_period=until_period, prefix=prefix)
+    if run.fold is None:
+        src, sibs, stats = pipeline.closed(run.trace, run.prog, Path(relpath).name)
+        view, st, names = pipeline.present(src, sibs)
+        names.closure = dict(stats, **pipeline._closure_stats(view, stats.pop("pcs", ())))
+        assert run.prog.to_json() == run.before  # the certified program is not the folded one
+        run.fold = (printer.render(view, st, names), names, view, src)
+    return run.fold
 
 
 def load_addrs(prog, procs=None):

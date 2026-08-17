@@ -169,11 +169,15 @@ p_1406/p_140F: pattptr, then ghost[x/7].ctrl = wave & gate
 
 ## 6. What remains
 
-- **Blocks A+B are one 42-byte region.** `init` zeroes them with one 42-byte loop,
-  so the access relation joins them; the play-time accesses are stride 7 and would
-  split them into two 7-field records. A per-phase stride view would recover that,
-  and would also give the block a role again (over eight elements it keeps its
-  address, `b1461[$17 + x]`, which is honest but wordless).
+- **Blocks A+B print as six records now, not as two.** `init` zeroes them with
+  one 42-byte loop, so the access relation still joins them into one region; the
+  tick walks it with an index that reaches a 7-byte record elsewhere, and that
+  stride is what `views.field_split` splits it by. `b1461[$17 + x]` is
+  `rec[x/7 + 3].f02` -- element 3 is voice 0 of block B -- with the offsets and
+  the roles they carry listed once in the state header. The split is per access:
+  a cursor that reads the block as a table keeps the block's address, because the
+  cursor does not step by seven. What the six records do not have is a *name*: the
+  fields are `f00`..`f06` where no role reaches them.
 - **Names are role-derived.** `timer_2` is the row counter, `cursor_1490` the
   instrument, `b148D` the tempo: the trace shows the shapes, not the words. A
   family dictionary keyed on the GT2 signature would name them from `player.s`,

@@ -492,16 +492,19 @@ filter():                                # $1022, 152,000 calls
     return
 
 cascades():                              # $12BE, 152,000 calls
-    for v in 0, 1:                       # two of the six blocks are one shape
-        if voice[v].timer_4 == 0:
-            ...                          # the sidTAB row pointer and its wrap
-            voice[v].timer_4 = T1E00[y35]
-            voice[v].cursor_12CE = (y35 + 1)
-            row_apply(a=T1800[y35], x=(v * $31))
-        else:
-            if voice[v].timer_4 >= 0:
-                voice[v].timer_4 -= 1
-    ...                                  # the other four blocks, whose shapes differ
+    for v in 0, 1:                       # the cascade: copy[0] is A, copy[1] is B
+        for w in 0, 1, 2:   # x456,000   # the voice
+            if copy[v].timer_4[w] == 0:
+                ...                      # the sidTAB row pointer and its wrap
+                copy[v].timer_4[w] = T1E00[y35]
+                copy[v].cursor_12CE[w] = (y35 + 1)
+                row_apply(a=T1800[y35], x=(w * $31))
+            else:
+                if copy[v].timer_4[w] >= 0:
+                    copy[v].timer_4[w] -= 1
+    return                               # state: copy[2] per-copy cells, 2 fields
+                                         #   .timer_4      $12BF $1352
+                                         #   .cursor_12CE  $12CE $1361
 
 oscillator():                            # $13E4, 152,000 calls
     for v in 2, 1, 0:                    # x456,000 -- the SBX #$31 loop
@@ -580,17 +583,20 @@ tick():                                  # $5012, 11,780 calls
   reading, not the trace.
 - **At a short horizon the note table is two parallel columns.** `FREQ_LO`/`FREQ_HI`
   at 30 s; over the full run the TR overrun merges them into one `FREQ` region.
-- **Copies fold when their shapes are equal, and only then** (`unroll.py`). The
-  write-out is one `for v in 0, 1, 2:` over seven registers: every difference
-  between the copies is a constant that steps by the struct stride (49), by the
-  SID voice size (7) or by the argument scale (`row_apply(x=(v * $31))`), the
-  region ids agree, and one region is walked with one stride. Of the six cascade
-  blocks two pairs fold (`for v in 0, 1:`); the rest differ in shape -- one tests
-  a wrap the others do not -- and stay unrolled, as do the three row-advance
-  blocks (they read three different table regions). A group view over cells that
-  are *renamed* rather than indexed (cascade A's `timer_4`/`cursor_12CE` against
-  cascade B's `timer_5`/`cursor_1361`) is not synthesised, so those six blocks
-  never become one loop.
+- **Copies fold when their shapes are equal, and only then** (`unroll.py`,
+  `copyfold.py`). The write-out is one `for v in 0, 1, 2:` over seven registers:
+  every difference between the copies is a constant that steps by the struct
+  stride (49), by the SID voice size (7) or by the argument scale
+  (`row_apply(x=(v * $31))`), the region ids agree, and one region is walked with
+  one stride. The six cascade blocks are three voices of cascade A and three of B:
+  each run of three is a chain of static copies, which `copyfold` folds into one
+  loop, and the two loops that leaves differ only in the regions they walk
+  (`timer_4`/`cursor_12CE` against `timer_5`/`cursor_1361`) -- one relocation, $93
+  apart, over two cells -- so `unroll` folds them again into
+  `for v in 0, 1: for w in 0, 1, 2:` over a `copy[v].timer_4[w]` group view whose
+  per-copy addresses the state header lists. The whole document goes from 717
+  lines to 637. The three row-advance blocks still do not fold: they read three
+  different table regions, whose addresses are not one relocation of each other.
 - **Runs become helpers when they are shared or when they name a part**
   (`fold.py`). `main` is `writeout(); filter(); switch {row_advance(); cascades();
   oscillator()}` and `sub` is the RTS patch, `main()`, then the two helpers it

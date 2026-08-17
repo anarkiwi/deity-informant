@@ -60,6 +60,17 @@ def printed(code, calls=6, **kw):
     return printer.render(view, st, names, pcs=False)
 
 
+def closed(code, calls=6, **kw):
+    """The printed sibling closure of a snippet: ``(text, stats, view, program, trace)``."""
+    trace, prog = tuneprog(code, calls=calls, s4=True, **kw)
+    before = prog.to_json()
+    src, sibs, stats = pipeline.closed(trace, prog, "snippet")
+    view, st, names = pipeline.present(src, sibs)
+    assert prog.to_json() == before  # the certified program is never the one folded
+    names.closure = dict(stats, **pipeline._closure_stats(view, stats.get("pcs", ())))
+    return printer.render(view, st, names, pcs=False), names.closure, view, src, trace
+
+
 def proc_body(doc, name):
     """The lines of one printed procedure."""
     out, on = [], False
