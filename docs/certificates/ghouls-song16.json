@@ -5,8 +5,8 @@
   "tick schedule effects"
  ],
  "cost": {
-  "calls_per_second": 39740,
-  "ir_blocks": 199,
+  "calls_per_second": 40448,
+  "ir_blocks": 258,
   "ir_procs": 2,
   "ir_statements": 445,
   "regions": 70,
@@ -21,12 +21,11 @@
   "kind": "sub",
   "source": "pal_video"
  },
- "generated": "2026-08-16T23:38:28Z",
+ "generated": "2026-08-17T02:13:49Z",
  "oracle": "deity_informant.PcodeVM@0.5.0",
- "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
  "sid_model": null,
- "stage": "S6",
+ "stage": "S4",
  "subtunes": [
   {
    "closure": "trace",
