@@ -14,14 +14,14 @@ import networkx as nx
 from .ir import Block, Call, Proc, REGIDX, REGVAR, Return, Var, retarget, retval, succs
 from .inline import _natural_loops
 from .ssa import apply_stmt, apply_term, defs_of, preds_of, prune, stmt_uses, term_uses
-from .structure import Jump, structure_proc, walk
+from .structure import _cfg, Jump, structure_proc, walk  # pylint: disable=protected-access
 from .word import W16, uses16
 
 SPARE = tuple(i for i in range(16) if REGVAR[i].startswith("r"))
 
 
 def promote_tails(prog, names=None, rounds=256):
-    """Promote every shared tail that does not make the ``goto`` residue worse."""
+    """Promote shared tails while the ``goto`` residue does not grow, best state kept."""
     return sum(_promote_proc(prog, n, names, rounds) for n in list(prog.procs))
 
 
@@ -43,13 +43,18 @@ def _promote_proc(prog, name, names, rounds):
         if cur < best:
             best, mark = cur, len(steps)
     for hname, undo in reversed(steps[mark:]):
-        proc.blocks = undo[0]
-        for p, term in undo[1].items():
-            proc.blocks[p].term = term
-        del prog.procs[hname]
-        if names is not None:
-            names.procs.pop(hname, None)
+        _revert(prog, proc, hname, undo, names)
     return mark
+
+
+def _revert(prog, proc, hname, undo, names=None):
+    """Put back the blocks a promotion moved, and drop the procedure it made."""
+    proc.blocks = undo[0]
+    for p, term in undo[1].items():
+        proc.blocks[p].term = term
+    del prog.procs[hname]
+    if names is not None:
+        names.procs.pop(hname, None)
 
 
 def _gotos(proc):
@@ -69,20 +74,13 @@ def _one(prog, name, names, cur):
             if names is not None:
                 names.procs[made] = made
             return now, made, undo
-        proc.blocks = undo[0]
-        for p, term in undo[1].items():
-            proc.blocks[p].term = term
-        del prog.procs[made]
+        _revert(prog, proc, made, undo)
     return None
 
 
 def _tails(proc):
     """``[(statements, label, region)]`` for every multi-entry region with no exit."""
-    g = nx.DiGraph()
-    g.add_nodes_from(proc.blocks)
-    for lbl, b in proc.blocks.items():
-        g.add_edges_from((lbl, s) for s in succs(b.term))
-    preds = preds_of(proc)
+    g, preds = _cfg(proc), preds_of(proc)
     idom = nx.immediate_dominators(g, proc.entry)
     heads = set(_natural_loops(g, idom, preds))
     dom = {}
