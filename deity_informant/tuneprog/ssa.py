@@ -6,7 +6,7 @@ single-assignment (:mod:`.build` names them per block), so phi nodes appear only
 for the 6510 register file, and pruned insertion (a phi only where the variable
 is live) keeps that to the handful of values that really cross a branch.
 
-Passes, each semantics-preserving with :class:`~.ir.Interp` as the oracle:
+Passes, each semantics-preserving with :class:`~.interp.Interp` as the oracle:
 
 * :func:`merge_chains` -- glue single-successor/single-predecessor runs;
 * :func:`to_ssa` / :func:`from_ssa` -- dominance-frontier phi insertion and

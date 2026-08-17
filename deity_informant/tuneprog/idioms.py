@@ -1,7 +1,7 @@
 """S4 peepholes on the SSA form: 6510 idioms become ordinary expressions.
 
 Two rewrites, both semantics-preserving and both re-verified against
-:class:`~.ir.Interp`:
+:class:`~.interp.Interp`:
 
 * :func:`inline` folds a pure single-use value into its use *inside one block*,
   which is what puts a flag's defining expression under the branch that reads it

@@ -3,15 +3,16 @@
 Front end (trace-driven recovery):
 
 * :mod:`.machine` (S0) -- machine image, entry/cadence discovery, init runner.
-* :mod:`.trace` (S1) -- op-level tracer: sites, edges, logs, inputs, hashes.
+* :mod:`.tracevm` / :mod:`.trace` (S1) -- op-level tracing VM and the tracer
+  that drives it: sites, edges, logs, inputs, per-tick state hashes.
 * :mod:`.lift` (S2a) -- residualised lift (SMC cells become loads).
 * :mod:`.cfg` (S2b) -- procedures, clones, tail calls, computed switches.
 * :mod:`.regions` (S3) -- storage typing from the exact access relation.
 
 Middle and back end (the executable program and its certificate):
 
-* :mod:`.ir` -- the IR of design section 4, its JSON form, the machine state and
-  the reference interpreter that defines the semantics.
+* :mod:`.ir` -- the IR of design section 4, its JSON form and its algebra;
+  :mod:`.interp` -- the machine state and the reference interpreter (the semantics).
 * :mod:`.build` -- front end -> IR: one procedure per CFG procedure, one block
   per node, memory ops typed by region and envelope.
 * :mod:`.ssa` (S4) -- SSA over registers/flags/uniques, DCE, copy and constant
@@ -25,23 +26,28 @@ Presentation over the certified program (it is never edited):
 
 * :mod:`.structure` (S5) -- loops, if/else, switch, ``for``, the phase variable.
 * :mod:`.recover` (S6) -- struct views, roles and names for the storage.
-* :mod:`.printer` (S7 text form) -- ``tuneprog.md``, anatomy-style pseudocode.
+* :mod:`.live` (S6) -- the values, arguments and returns a reader must see.
+* :mod:`.pseudocode` / :mod:`.printer` (S7 text form) -- the rendered statements
+  and the ``tuneprog.md`` document around them.
 
 :mod:`.pipeline` drives all of it; ``tools/tuneprog_certify.py`` and
 ``deity-informant tuneprog`` are wrappers around it. The stage boundaries are the
 module-level entry points ``build.build_ir``, ``ssa.simplify``,
 ``emit.emit_python``, ``verify.verify``, ``structure.structure``,
-``recover.recover`` and ``printer.render``.
+``recover.recover`` and ``printer.render``. :mod:`.irwalk` and :mod:`.graph` are
+the traversals every stage shares.
 """
 
 from __future__ import annotations
 
 from .machine import CIA, Entry, MachineImage, Refusal, find_entries, init_runner, port_bank
-from .trace import Trace, TraceVM, Tracer, input_kind, run_trace, site_key
+from .trace import Trace, Tracer, run_trace, site_key
+from .tracevm import TraceVM, input_kind
 from .lift import LiftedSite, lift_site, lift_trace
 from .regions import Region, build_regions, index_regions
 from .cfg import Proc, build_procs, procs_json
-from .ir import Block, Interp, Machine, Rgn, TrapError, Tuneprog
+from .interp import Interp, Machine
+from .ir import Block, Rgn, TrapError, Tuneprog
 from .build import build_ir, ops_to_stmts, straightline
 from .ssa import simplify
 from .idioms import rewrite

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from deity_informant.tuneprog import emit
+from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
     Assert,
     Block,
@@ -13,7 +14,6 @@ from deity_informant.tuneprog.ir import (
     If,
     Let,
     Load,
-    Machine,
     Proc,
     Return,
     Store,

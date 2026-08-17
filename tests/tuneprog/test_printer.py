@@ -4,7 +4,7 @@ import json
 import re
 
 from deity_informant import cli
-from deity_informant.tuneprog import pipeline, printer, recover, structure
+from deity_informant.tuneprog import live, pipeline, printer, pseudocode, recover, structure
 from deity_informant.tuneprog.ir import Tuneprog
 
 from _asm import asm, psid
@@ -13,7 +13,7 @@ from _prog import PLAY, counter, tuneprog
 
 def _text(code, calls=6, pcs=True):
     _T, prog = tuneprog(code, calls=calls, s4=True)
-    view = structure.view(prog, printer.needed(prog)[0])
+    view = structure.view(prog, live.needed(prog)[0])
     st = structure.structure(view)
     return printer.render(view, st, recover.recover(view, st), pcs=pcs)
 
@@ -250,7 +250,7 @@ def test_the_printed_program_names_every_procedure_it_prints():
         calls=3,
         s4=True,
     )
-    view = structure.view(prog, printer.needed(prog)[0])
+    view = structure.view(prog, live.needed(prog)[0])
     st = structure.structure(view)
     names = recover.recover(view, st)
     doc = printer.render(view, st, names)
@@ -265,5 +265,5 @@ def test_rendering_needs_no_certificate():
 
 def test_an_unknown_region_prints_as_raw_memory():
     _T, prog = tuneprog(counter("LDA #$07", "STA $D400"), calls=2, s4=True)
-    p = printer.Printer(prog, recover.recover(prog))
+    p = pseudocode.Printer(prog, recover.recover(prog))
     assert p.cell(-99, 0x1234) == "mem[$1234]"

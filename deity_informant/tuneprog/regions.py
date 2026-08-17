@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from math import gcd
 
 from ..lifter import OPS
-from .trace import IO_LO, IO_HI, IDX_REG
+from .ir import IO_HI, IO_LO
+from .tracevm import IDX_REG
 
 
 @dataclass

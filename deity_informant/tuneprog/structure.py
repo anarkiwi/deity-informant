@@ -390,18 +390,6 @@ def structure_proc(proc, want=()):
     return _Structurer(proc, want).run()
 
 
-def wants(prog, live):
-    """``{procedure: the return registers a caller reads}`` (design section 6.2)."""
-    out = {n: set() for n in prog.procs}
-    for name, p in prog.procs.items():
-        for b in p.blocks.values():
-            for s in b.stmts:
-                if type(s) is Call and s.proc in out:
-                    q = prog.procs[s.proc]
-                    out[s.proc] |= {i for i, r in zip(q.rets, s.rets) if r in live[name]}
-    return out
-
-
 def structure(prog, want=None):
     """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first).
 

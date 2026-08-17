@@ -20,6 +20,7 @@ from . import (
     frame,
     ir,
     jumptab,
+    live as L,
     printer,
     recover,
     ssa,
@@ -307,17 +308,17 @@ def present(prog):
     Structuring, texture removal, 16-bit views, outlining and copy folding; the
     argument is never touched.
     """
-    keep = structure.wants(prog, printer.needed(prog)[0])
-    view = structure.view(prog, printer.needed(prog)[0], keep)
+    keep = L.wants(prog, L.needed(prog)[0])
+    view = structure.view(prog, L.needed(prog)[0], keep)
     texture.clean(view, frame.deltas(prog))
-    structure.inline(view, printer.needed(view)[0], keep)
+    structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
     names = recover.recover(view, structure.structure(view))
     word.fold16(view, names)
-    fold.outline(view, names, *printer.needed(view))
+    fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
-    live, params = printer.needed(view)
-    st = structure.structure(view, structure.wants(view, live))
+    live, params = L.needed(view)
+    st = structure.structure(view, L.wants(view, live))
     unroll.unroll(st, live, fold.livearg(view, params))
     return view, st, names
 

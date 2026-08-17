@@ -2,7 +2,7 @@
 
 import re
 
-from deity_informant.tuneprog import frame, idioms, pipeline, printer, structure
+from deity_informant.tuneprog import frame, idioms, live, pipeline, printer, structure
 from deity_informant.tuneprog.ir import Let, Var
 
 from _asm import asm
@@ -20,7 +20,7 @@ def _view(code, calls=6, **kw):
     """The presentation copy after the frame pass alone."""
     _T, prog = tuneprog(code, calls=calls, s4=True, **kw)
     exits = frame.deltas(prog)
-    view = structure.view(prog, printer.needed(prog)[0])
+    view = structure.view(prog, live.needed(prog)[0])
     return view, frame.frames(view, exits)
 
 
