@@ -18,7 +18,7 @@ Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-foll
 | **view** | a presentation copy of the certified program; S5/S6 rewrite the view and never the program |
 | **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table` |
 | **phase** | the state scalar a tick tests to pick its rate (defMON's `& 7` call counter) |
-| **tick** | one call of the play entry, at the cadence S0 discovered |
+| **tick** | one call of the play entry, at the cadence S0 discovered; the horizon flag spells it `--calls`, the certificate field `ticks` |
 | **certificate** | `certificate.json`: what was compared, over how many ticks, with what divergence and periodicity |
 
 ## Pipeline
