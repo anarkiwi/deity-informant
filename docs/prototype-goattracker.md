@@ -42,13 +42,18 @@ special case exists anywhere in the pipeline.
 
 | symptom on GT2 | generic fix | where |
 |---|---|---|
-| the ghost block printed as `timer_4[v]`, the flush loop as `sid[v].freq_lo = timer_4[v]` | a region a loop copies byte-for-byte into `$D400..` is a **SID image**: `sidw($D400+i, load(R, base+i))` with one index expression gives the delta from region byte to register, so every access to it prints by the register it mirrors (`ghost.reg[v]`, `ghost[v].ctrl`, `ghost.mode_vol`); an index the program elsewhere walks a 7-byte record with is a voice, which is what makes `$14CE,X` voice `x/7`'s control register | `recover.image_copy`, `recover._scales`, `printer.regcell` |
+| the ghost block printed as `timer_4[v]`, the flush loop as `sid[v].freq_lo = timer_4[v]` | a region a loop copies byte-for-byte into `$D400..` is a **SID image**: `sidw($D400+i, load(R, base+i))` with one index expression gives the delta from region byte to register, so every access to it prints by the register it mirrors (`ghost.reg[v]`, `ghost[x/7].ctrl`, `ghost.mode_vol`); an index the program elsewhere walks a 7-byte record with is a voice, which is what makes `$14CE,X` voice `x/7`'s control register | `recover.image_copy`, `recover._scales`, `printer.regcell` |
 | `T16F9[$16F8 + y]` — the operand printed instead of the index | a region records the address its index counts from (**origin** = operand + the smallest index observed); indices print from it, so a 1-based table reads `T[y]`, its look-ahead sibling `T[y + 1]`, and the note says how far the origin sits below the base | `regions._origin`, `Rgn.zero`, `printer.addr_of` |
 | the three `execchn` calls printed one after another, threading `sp` | (a) a cell stored once is forwarded to every read that store reaches — for a stack slot across blocks, by dominance over one pure address, which collapses a `PHA` and the `PLA` a branch away; (b) a call argument's constant is evidence of a copy index, arguments the printer drops are not part of a shape, and a JSR frame push is not a unit — so the fall-through third call joins the run | `texture.stack_temps`, `unroll` |
 | 21 `goto`s in `execchn` (shared tails, entry into the middle) | a region several jumps reach and nothing leaves **is a procedure** — the routine the player enters by `JMP`. It is promoted, its parameters are the registers that cross into it, each jump becomes a tail call, and a promotion that does not lower the residue is rolled back | `tails.promote_tails` |
 | `if t1 == 1:` for `DEC counter,X; BEQ` | an arm renders from the state its test saw and nothing survives the join, so `x == k` prints as the cell that holds `x - k` against zero: `if voice[v].counter == 0` | `printer.arms`, `printer.expr` |
 | `if (a10 \| $F0) == 0: trap 'untaken'` | `ORA #imm` with a bit set is never zero, so the known-flag branch folds and the dead arm goes | `idioms.fold` |
 | `T1876[(p + (y + 1))/22]` mis-parenthesised | an index scaled by a stride keeps its parentheses | `printer.index` |
+
+Nothing else was needed: the residualised one-byte operand cell, the `switch`
+over its observed targets, the static closure of that switch from the table its
+writer copies from, and the clone-per-entry procedures all arrived with the two
+earlier exemplars and fired on GT2 unchanged.
 
 ## 4. Results (measured)
 
