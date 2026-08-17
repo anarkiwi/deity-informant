@@ -82,9 +82,9 @@ program section.
 | tune | sites (G/us) | raw ops (G/us) | high ops / S4 stmts | C / md lines | gotos (G/us) | unresolved | dropped blocks | decompile |
 |---|---|---|---|---|---|---|---|---|
 | Automatas | 582/615 | 1995/2177 | 6112 / 958 | 839 / 221 | 0/0 | 0 | 0 | 575 ms |
-| Commando (song 1) | 320/353 | 1302/1501 | 3584 / 337 | 345 / 277 | 2/1 | 0 | 0 | 301 ms |
+| Commando (song 1) | 320/353 | 1302/1501 | 3584 / 337 | 345 / 278 | 2/1 | 0 | 0 | 301 ms |
 | GoatTracker (Je suis Linus) | 304/422 | 1318/1725 | 435 / 541 | 258 / 155 | 0/0 | 0 | 105 | 397 ms + 1 crash |
-| Ghouls'n'Ghosts (song 1) | 664/718 | 2018/2743 | 3918 / 678 | 795 / 637 | 29/15 | 0 | 6 | 634 ms |
+| Ghouls'n'Ghosts (song 1) | 664/718 | 2018/2743 | 3918 / 678 | 795 / 685 | 29/15 | 0 | 6 | 634 ms |
 
 Pipeline wall time (trace + S2-S4 + verify + print + facts): 12 s, 3 s, 3 s, 3 s. Headless Ghidra wall time
 (JVM start, import, analysis, decompile, emulate): 18-19 s per tune; the decompile column is `DecompInterface`
