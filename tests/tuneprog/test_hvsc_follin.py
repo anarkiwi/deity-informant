@@ -11,6 +11,7 @@ from deity_informant.tuneprog import ssa
 from deity_informant.tuneprog.ir import Const, Let, Load, Store, Switch, Var, retval
 
 from _hvsc import EMOMYST, GNG, body as proc_body, decompiled, folded, switches
+from deity_informant.tuneprog.verify import verify
 
 pytestmark = pytest.mark.hvsc
 
@@ -88,7 +89,7 @@ def test_ghouls_song_one_over_thirty_seconds():
 
 
 def test_ghouls_voice_copies_fold_once_the_siblings_are_closed():
-    text, names, view = folded(GNG, seconds=30, song=0, prefix=500)
+    text, names, view, _closed = folded(GNG, seconds=30, song=0, prefix=500)
     c = names.closure
     assert c["families"] == 1 and c["copies"] == [3] and c["loops"] == 1
     assert c["sites_added"] > 100 and 0 < c["unverified"] < c["statements"]
@@ -117,6 +118,18 @@ def test_ghouls_voice_copies_fold_once_the_siblings_are_closed():
     assert not any("b0021[9" in l for l in voiced), voiced
     assert len(voiced) * 4 < lines.count("voice[v]."), voiced
     assert len(view.procs["tick"].blocks) < 200
+
+
+def test_the_closed_ghouls_program_still_reproduces_every_sid_write():
+    # the arms the closure lifted are reachable only through edges that were a
+    # trap, so the closed program is the certified one on every path the trace took
+    _text, names, _view, closed = folded(GNG, seconds=30, song=0, prefix=500)
+    run = decompiled(GNG, seconds=30, song=0, prefix=500, text=False)
+    v = verify(closed, run.trace, calls=run.calls, prefix=0)
+    assert v.div is None and v.call == run.calls
+    assert names.closure["sites_added"] > 100
+    tick = closed.procs["tick"].blocks
+    assert sum(1 for b in tick.values() if b.count == 0) > 20  # and none of them ran
 
 
 def test_ghouls_sound_effect_subtune_is_complete():

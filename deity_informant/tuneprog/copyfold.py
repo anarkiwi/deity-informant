@@ -34,7 +34,6 @@ from .facts import MAXROLE
 from .siblings import Copies
 from .ssa import prune
 
-LATCH = "$fold%d"
 SID_VOICE = 7  # the SID's per-voice register block
 
 
@@ -329,7 +328,7 @@ def entries(proc, fam, sets):
     return out
 
 
-def _exits(proc, blocks, inside):
+def _exits(proc, blocks):
     """The labels a copy leaves to that are neither its own nor a bare trap."""
     out = set()
     for lbl in blocks:
@@ -354,8 +353,7 @@ def foldable(proc, fam):
     ents = entries(proc, fam, sets)
     if ents is None:
         return None
-    inside = set().union(*sets)
-    after = _exits(proc, sets[-1], inside)
+    after = _exits(proc, sets[-1])
     rets = any(type(proc.blocks[l].term) is Return for l in sets[-1])
     if len(after) > 1 or (not after and not rets):
         return None
@@ -363,7 +361,7 @@ def foldable(proc, fam):
     preds = _preds(proc)
     for j, blocks in enumerate(sets):
         want = {ents[j + 1]} if j + 1 < len(ents) else set([after]) - {None}
-        if _exits(proc, blocks, inside) - want:
+        if _exits(proc, blocks) - want:
             return None
         if j and preds.get(ents[j], set()) - sets[j] - sets[j - 1]:
             return None

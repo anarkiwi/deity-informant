@@ -85,7 +85,7 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
 def test_automatas_cascade_blocks_fold_over_the_voice_index():
     # the six blocks are three voices of cascade A and three of B; each run of
     # three is one program over the voice index once the copies are closed
-    text, names, _view = folded(AUTOMATAS, seconds=30)
+    text, names, _view, _prog = folded(AUTOMATAS, seconds=30)
     assert names.closure["loops"] >= 2 and names.closure["folded"][:2] == [3, 3]
     hit = [
         b
