@@ -26,7 +26,7 @@ optional peephole hook (:mod:`.idioms`).
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import networkx as nx
 
@@ -40,8 +40,6 @@ from .ir import (
     Load,
     Phi,
     REGIDX,
-    Return,
-    Store,
     Switch,
     Trap,
     Var,
