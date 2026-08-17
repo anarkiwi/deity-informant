@@ -11,7 +11,6 @@ from .irwalk import call_order, forwarder
 from .machine import PAL_FRAME
 from .pseudocode import Body, num
 
-# ---- the document ------------------------------------------------------------
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
 

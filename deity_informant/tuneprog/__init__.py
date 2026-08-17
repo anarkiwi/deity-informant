@@ -60,6 +60,7 @@ from .emit import PyProgram, certificate, emit_python, write_certificate
 from .verify import Reference, Verifier, certify
 from .structure import view
 from .recover import Names
+from .live import needed, wants
 from .printer import render
 
 __all__ = [
@@ -105,5 +106,7 @@ __all__ = [
     "certify",
     "view",
     "Names",
+    "needed",
+    "wants",
     "render",
 ]
