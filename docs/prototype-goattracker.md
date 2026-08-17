@@ -62,7 +62,7 @@ printed forms in each output directory's `tuneprog.md`. The HVSC tests
 | G1 | per-call equivalence from init to the first state repeat | **0** divergences over 8,236 calls, 0 envelope traps | **0** over 9,956 calls |
 | G2 | periodicity witness, `complete: true` | period **6,720** calls (134.4 s = the HVSC length), first repeat at call 8,235 | period **8,640** (172.8 s), first repeat at 9,955 |
 | G3 | front end | 437 sites, 73 regions (29 state, 43 const), 14 procedures, 245 blocks, 580 statements | 433 sites, 73 regions, 14 procedures, 234 blocks, 569 statements |
-| G4 | ghost image | one `sid_image` region `$14CA`, 25 bytes, delta `$D400-$14CA`; the flush prints `for v in 24..0: sid.reg[v] = ghost.reg[v]`, the per-voice writes `ghost[v].ctrl` | same at `$B0F5` |
+| G4 | ghost image | one `sid_image` region `$14CA`, 25 bytes, delta `$D400-$14CA`; the flush prints `for v in 24..0: sid.reg[v] = ghost.reg[v]`, the per-voice writes `ghost[x/7].ctrl` | same at `$B0F5` |
 | G5 | patched low-byte dispatch | `switch` over `$1289`/`$1295`: 9 tick-0 handlers the trace dispatched plus the table's own entries (**14** arms, 7 `trap 'unverified'`), `$131E` (4 of 5 effects), `$1445` (1); every high byte constant, no default | 13 arms, 4 effects |
 | G6 | SMC immediates | **14** play-written cells, every one a `load` at its instruction; 10 are one-byte scalars, three of them named by their role (`cursor_1141`, `timer`, `acc`), the rest `bXXXX` | 13 cells |
 | G7 | voice loop | `for v in 0, 1, 2: row_apply(x=(v * 7))` — the three calls print once, the third being the fall-through | same |
