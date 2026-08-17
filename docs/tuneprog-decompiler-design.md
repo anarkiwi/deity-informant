@@ -10,9 +10,10 @@ justify each decision (§9) and the plan to build it (§11).
 Companion: [playroutine-anatomy.md](playroutine-anatomy.md) (what players are,
 byte for byte). This document says how to recover that structure automatically.
 Status: the prototype in [prototype-automatas.md](prototype-automatas.md) realises
-S0–S8 in `deity_informant/tuneprog/` and certifies defMON's Automatas completely
-(149,025 calls, 0 divergences, period 129,024) and Commando; its §6.1 lists what
-each design claim measured. [prototype-follin.md](prototype-follin.md) is the
+S0–S8 in `deity_informant/tuneprog/`; five families are certified (Automatas,
+Commando, Ghouls'n'Ghosts, GoatTracker 2, SID Wizard — 42 certificates) and
+[tuneprog-plan.md](tuneprog-plan.md) records the lessons, the backlog, the
+fold/stack gate and the next prototypes. [prototype-follin.md](prototype-follin.md) is the
 second exemplar: all 32 subtunes of Follin's Ghouls'n'Ghosts, and the corrections
 the operand-cell rule and the patched-branch model needed to get there.
 [tuneprog.md](tuneprog.md) is the guide to what was built: module map, stages,
