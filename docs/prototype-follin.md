@@ -269,6 +269,16 @@ the chain edge into the next voice became `continue`.
   sent have no donor. The two entries per copy past the 21-entry table (the
   extent rule over-reaching, §4 row 1) pair with nothing and are left out of the
   shape, so the printed switch has copy 0's 21 arms rather than copy 1's 23.
+- **The music subtunes fold; most of the effects do not.** Songs 1–11, 16 and 20
+  fold their three voices (1–61 unverified statements of 99–283). A sound effect
+  uses one or two voices, so the copy that runs nothing never reaches its
+  dispatch, its arms have nothing to pair with, and the handler bodies the other
+  copies ran stay outside the copies -- a cross-copy edge, which the fold
+  refuses.
+- **The `--songs all` union does not fold.** One voice's stream read is access
+  class `chk` where the others' are `ram`: over 32 subtunes that voice reaches
+  bytes outside the written set, and a load of a different class is a different
+  program. The union's closure still lifts 9 sites.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317
