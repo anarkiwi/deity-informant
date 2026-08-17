@@ -331,6 +331,7 @@ class _Structurer:
                 break
             back = self.latches.get(n)
             if back is not None and any(c[0] == back for c in ctx):
+                self.done.add(n)
                 out.append(Jump("continue", back))
                 break
             if n in self.done:

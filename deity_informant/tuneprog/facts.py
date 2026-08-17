@@ -125,7 +125,7 @@ class Facts:
         if name not in self.tick:
             return
         same = [x for x in leaf_loads(v) if x.r == s.r and same_cell(x.a, s.a)]
-        cell = (s.r, a.v if type(a) is Const else None)
+        cell = (s.r, addr_split(a)[0])
         if same and ops(v) <= MAXOPS:
             self.updates.setdefault(s.r, set()).add(v)
             self.cellupd.setdefault(cell, set()).add(v)

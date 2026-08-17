@@ -50,6 +50,7 @@ class Names:
     u16: dict = field(default_factory=dict)
     u16group: dict = field(default_factory=dict)
     slots: dict = field(default_factory=dict)
+    split: dict = field(default_factory=dict)
     closure: dict = None
 
     def of(self, rid):

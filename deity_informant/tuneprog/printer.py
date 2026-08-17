@@ -228,6 +228,14 @@ def _state(prog, names):
     """The ``state`` block: struct views first, then the scalars."""
     out = []
     for g, d in sorted(names.groups.items()):
+        if d.get("split") is not None:
+            r = _rgn(prog, d["split"])
+            out.append(
+                "%s[%d]  $%04X %d bytes, stride %d, %d fields"
+                % (g, d["n"], r.base, r.size, d["stride"], len(d["fields"]))
+            )
+            out += ["  .%-14s +%d" % (f, k) for k, f in sorted(d["fields"].items())]
+            continue
         if d.get("cells"):
             out.append("%s[%d]  per-copy cells, %d fields" % (g, d["n"], len(d["cells"])))
             out += [

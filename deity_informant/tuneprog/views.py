@@ -7,9 +7,9 @@ instead: one field, one address per copy, listed once in the state header.
 
 from __future__ import annotations
 
-from .ir import Const
-from .irwalk import unique_name
-from .facts import Facts, MAXOPS, leaf_loads, ops, sid_name, update_role
+from .facts import Facts, MAXOPS, MAXROLE, leaf_loads, ops, sid_name, update_role
+from .ir import Const, Store
+from .irwalk import addr_split, node_loads, unique_name
 
 
 def sid_fields(facts):
@@ -76,4 +76,78 @@ def copy_groups(prog, names, folds=None, facts=None):
 
 def decorate(prog, names, folds=None):
     """Every group view the S6 passes add over the recovered names."""
-    return copy_groups(prog, names, folds, Facts(prog))
+    facts = Facts(prog)
+    copy_groups(prog, names, folds, facts)
+    return field_split(prog, names, facts)
+
+
+def _offsets(prog, rgn):
+    """``{region: {offset an access names}}`` over every load and store."""
+    out = {}
+    for p in prog.procs.values():
+        for b in p.blocks.values():
+            for s in list(b.stmts) + [b.term]:
+                for x in node_loads(s):
+                    _offset(out, rgn, x.r, x.a)
+                if type(s) is Store and s.r >= 0:
+                    _offset(out, rgn, s.r, s.a)
+    return out
+
+
+def _offset(out, rgn, rid, a):
+    r = rgn.get(rid)
+    base = addr_split(a)[0]
+    if r is not None and base is not None and r.base <= base <= r.base + r.size:
+        out.setdefault(rid, set()).add(base - r.zero)
+
+
+def field_split(prog, names, facts):
+    """Split a block one init loop made one region into the fields play walks.
+
+    ``init`` clears GoatTracker's blocks A+B and SID Wizard's VARIABLES with one
+    loop, so the access relation joins them; the tick walks them at the stride of
+    an index that reaches a record elsewhere, which is what names their fields.
+    """
+    rgn, sidf = prog.by_id(), sid_fields(facts)
+    scales = {}
+    for n, rids in facts.idxvar.items():
+        for rid in rids if (names.scale.get(n) or 1) > 1 else ():
+            scales.setdefault(rid, set()).add(names.scale[n])
+    offsets = _offsets(prog, rgn)
+    for r in prog.storage:
+        s = scales.get(r.id, set())
+        if len(s) != 1 or not _splittable(r, names):
+            continue
+        s = s.pop()
+        n = r.size // s
+        if n < 2:
+            continue
+        fields = {}
+        for k in sorted({o % s for o in offsets.get(r.id, ())}):
+            want = _field_role(facts, r, k, s, offsets[r.id]) or sidf.get(r.zero + k, "")
+            fields[k] = unique_name(want or "f%02X" % k, set(fields.values()))
+        g = unique_name("voice" if n == 3 else "rec", set(names.groups))
+        names.split[r.id] = (g, s, fields)
+        names.groups[g] = {"stride": s, "n": n, "members": [], "split": r.id, "fields": fields}
+    return names
+
+
+def _field_role(facts, r, k, s, offsets):
+    """The role every element's copy of one field shares."""
+    upd, plain = set(), False
+    for o in (o for o in offsets if o % s == k):
+        upd |= facts.cellupd.get((r.id, r.zero + o), set())
+        plain = plain or (r.id, r.zero + o) in facts.cellplain
+    return update_role(upd, plain, r.id)
+
+
+def _splittable(r, names):
+    """True when a region is a block the stride view has not already named."""
+    return (
+        r.id >= 0
+        and r.kind in ("state", "init_constant")
+        and r.id not in names.view
+        and r.id not in names.image
+        and r.id not in names.split
+        and -(-r.size // max(r.stride, 1)) > MAXROLE
+    )

@@ -96,12 +96,40 @@ class Printer:
             return out
         return "%s[%s]" % (out, self.index(r, addr, idx) if r else _bare(self.expr(idx, False)))
 
+    def field(self, rid, r, addr, idx):
+        """``rec[i].field`` for a block the play-phase stride splits into records.
+
+        An access whose index does not step by that stride is not one of its
+        elements (a cursor reading the block as a table), and keeps its address.
+        """
+        g, stride, fields = self.names.split[rid]
+        off, elem = (addr - r.zero) % stride, (addr - r.zero) // stride
+        idx = _unoffset(idx, addr - r.zero)
+        i = str(elem)
+        if idx is not None:
+            hit = self.ivar(idx, stride) or self.scaled(idx, stride)
+            if hit is None:
+                return None
+            i = hit if not elem else "%s + %d" % (hit, elem)
+        return "%s[%s].%s" % (g, i, fields.get(off, "f%02X" % off))
+
+    def scaled(self, idx, stride):
+        """The index as an element number, when something proves it steps by ``stride``."""
+        n = idx.n if type(idx) is Var else None
+        return (
+            "%s/%d" % (self.expr(idx, False), stride) if self.names.scale.get(n) == stride else None
+        )
+
     def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         hit = self.names.slots.get((rid, addr))
         if hit is not None:
             return self.slot(hit, rid, addr, idx)
         r = self.rgn.get(rid)
+        if rid in self.names.split and r is not None and addr is not None:
+            hit = self.field(rid, r, addr, idx)
+            if hit is not None:
+                return hit
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
         name = name or self.names.region.get(rid, "r%d" % rid)
@@ -191,11 +219,7 @@ class Printer:
 
     def voiced(self, idx):
         """The index as a voice number, when something proves it steps by seven."""
-        hit = self.ivar(idx, 7)
-        if hit is not None:
-            return hit
-        n = idx.n if type(idx) is Var else None
-        return "%s/7" % self.expr(idx, False) if self.names.scale.get(n) == 7 else None
+        return self.ivar(idx, 7) or self.scaled(idx, 7)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
