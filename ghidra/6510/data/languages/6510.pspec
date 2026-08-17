@@ -9,6 +9,11 @@
     <symbol name="IRQ" address="FFFE" entry="true" type="code_ptr"/>
   </default_symbols>
 
+  <!-- C64 I/O window: VIC/SID/CIA registers are not RAM, so reads must not fold -->
+  <volatile outputop="write_volatile" inputop="read_volatile">
+    <range space="RAM" first="0xd000" last="0xdfff"/>
+  </volatile>
+
   <default_memory_blocks>
     <memory_block name="ZERO_PAGE" start_address="0x0000" length="0x0100" initialized="false"/>
     <memory_block name="STACK" start_address="0x0100" length="0x0100" initialized="false"/>

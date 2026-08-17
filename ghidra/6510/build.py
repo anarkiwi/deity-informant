@@ -24,8 +24,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import smc
+
 HERE = Path(__file__).resolve().parent
 LANGDIR = HERE / "data" / "languages"
+GENERATED = ("6502.slaspec", "6510_context.sinc", "6510_smc.sinc")
 
 
 def find_base_slaspec() -> Path:
@@ -78,7 +81,12 @@ def main(argv=None):
 
     base = find_base_slaspec()
     sleigh = args.sleigh or find_sleigh()
-    shutil.copy(base, LANGDIR / "6502.slaspec")  # build artifact; not committed
+    # generated build artifacts; SLEIGH wants context defined before constructors
+    (LANGDIR / "6502.slaspec").write_text(smc.patch_base(base.read_text()))
+    (LANGDIR / "6510_context.sinc").write_text(smc.CONTEXT)
+    (LANGDIR / "6510_smc.sinc").write_text(
+        smc.smc_sinc((LANGDIR / "6510_illegal.sinc").read_text())
+    )
 
     cmd = [sleigh]
     if args.magic:
@@ -102,10 +110,10 @@ def main(argv=None):
         # the .sla against it, so the SLEIGH sources must be installed too -- ours
         # plus the stock 6502 @include sources. Copy .slaspec/.sinc only, never the
         # stock .ldefs (that would register a duplicate 6502 language).
-        for name in ("6510.slaspec", "6510_illegal.sinc"):
-            shutil.copy(LANGDIR / name, dst / name)
         for src in list(base.parent.glob("*.slaspec")) + list(base.parent.glob("*.sinc")):
             shutil.copy(src, dst / src.name)
+        for name in ("6510.slaspec", "6510_illegal.sinc") + GENERATED:
+            shutil.copy(LANGDIR / name, dst / name)
         # Ghidra discovers a Processor module only via a Module.manifest at the
         # module root (`.../<name>/data/languages` -> root is two levels up); without
         # it analyzeHeadless reports "Unsupported language". pypcode ignores it.

@@ -56,10 +56,12 @@ jobs:
         run: pytest tests/ -m hvsc -n auto
 
   ghidra-integration:
-    # End-to-end test under the actual Ghidra headless analyzer (not just libsla/
-    # pypcode): imports the hello-world demo as 6510:LE:16:default and asserts the
-    # illegal LAX/ISC opcodes decode and yield P-Code. Ghidra + JDK live in a
-    # multistage image (Dockerfile.ghidra); the ~500MB Ghidra layer is GHA-cached.
+    # End-to-end tests under the actual Ghidra headless analyzer (not just libsla/
+    # pypcode), all four in ghidra/6510/headless/run.sh: the illegal LAX/ISC decode,
+    # the hello-world SMC export (the self-modified STA must decompile as a store
+    # through its own operand cell), the complexity/coverage oracle, and the P-Code
+    # emulator semantic oracle. Ghidra + JDK live in a multistage image
+    # (Dockerfile.ghidra); the ~500MB Ghidra layer is GHA-cached.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

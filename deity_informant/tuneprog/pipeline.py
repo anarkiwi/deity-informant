@@ -18,6 +18,7 @@ from . import (
     emit,
     fold,
     frame,
+    ghidra_facts,
     ir,
     jumptab,
     printer,
@@ -58,6 +59,9 @@ def add_args(ap):
     ap.add_argument("--sid-model", choices=sorted(MODEL_D41B), help="pin $D41B bit 0")
     ap.add_argument("--no-verify", action="store_true", help="skip S8 (no certificate)")
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
+    ap.add_argument(
+        "--ghidra-facts", action="store_true", help="also write OUT/ghidra for headless Ghidra"
+    )
     ap.add_argument("--budget", type=float, default=45.0, help="CPU seconds per invocation")
     ap.add_argument("--chunk", type=int, default=4000, help="ticks per progress step")
     ap.add_argument("--prefix", type=int, default=2000, help="calls to re-run on the interpreter")
@@ -358,6 +362,8 @@ def run(args, log=print):
         if st["stage"] == "print":
             if not args.no_text:
                 stage_print(args, out, prog)
+            if getattr(args, "ghidra_facts", False):
+                log("  ghidra facts -> %s" % ghidra_facts.export(out))
             st["stage"] = "done"
     finally:
         (out / "state.json").write_text(json.dumps(st, indent=1, sort_keys=True))
