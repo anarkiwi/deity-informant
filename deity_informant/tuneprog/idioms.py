@@ -83,6 +83,8 @@ def fold(e):
             return a
         if type(a) is Bin and a.op == "&" and type(a.b) is Const:
             return Bin("&", a.a, Const(a.b.v & v, w), w)
+    if op in ("<<", ">>") and type(a) is Bin and a.op == op and type(a.b) is Const:
+        return Bin(op, a.a, Const(a.b.v + v, w), w)  # a shift chain is one shift
     if op in ("|", "^") and type(a) is Bin and a.op == op and type(a.b) is Const:
         return Bin(op, a.a, Const(evalbin(op, a.b.v, v, w), w), w)
     if op in ("+", "-") and type(a) is Bin and a.op in ("+", "-") and a.w == w:

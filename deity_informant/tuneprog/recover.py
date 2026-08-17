@@ -271,7 +271,7 @@ def image_copy(facts):
         if rbase is None or ridx != idx:
             continue
         r = facts.rgn[v.r]
-        if r.kind == "io" or rbase != r.base:
+        if r.kind != "state" or rbase != r.base:  # a table is read, never a shadow
             continue
         out[v.r] = base - rbase
     return out
