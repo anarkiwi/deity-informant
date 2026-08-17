@@ -443,13 +443,13 @@ def wants(prog, live):
     return out
 
 
-def structure(prog, wants=None):
+def structure(prog, want=None):
     """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first).
 
-    ``wants`` is ``{procedure: the return registers its callers read}``, so a
-    procedure that computes a byte for its caller prints what it hands back.
+    ``want`` is ``{procedure: the return registers its callers read}`` (see
+    :func:`wants`), so a procedure that computes a byte for its caller prints it.
     """
-    return {n: structure_proc(p, (wants or {}).get(n, ())) for n, p in prog.procs.items()}
+    return {n: structure_proc(p, (want or {}).get(n, ())) for n, p in prog.procs.items()}
 
 
 # ---- phase recognition -------------------------------------------------------
