@@ -13,7 +13,8 @@ import networkx as nx
 
 from .ir import Block, Call, Const, Goto, If, Let, Load, Proc, Return, Store, Switch, Var, succs
 from .inline import _natural_loops
-from .ssa import defs_of, preds_of, prune, stmt_uses, term_uses
+from .ssa import preds_of, prune
+from .irwalk import defs_of, stmt_uses, term_uses
 from .word import R16, W16, uses16
 
 EXIT = "$exit"

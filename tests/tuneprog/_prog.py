@@ -5,7 +5,7 @@ from deity_informant.tuneprog.cfg import build_procs
 from deity_informant.tuneprog.idioms import rewrite
 from deity_informant.tuneprog.lift import lift_trace
 from deity_informant.tuneprog.regions import build_regions
-from deity_informant.tuneprog.ssa import simplify
+from deity_informant.tuneprog.ssa import Folds, simplify
 
 from _asm import asm, trace_prog
 
@@ -34,7 +34,7 @@ def tuneprog(code, calls=4, s4=False, **kw):
     T, _tr, L, R, P = front(code, calls=calls, **kw)
     prog = build_ir(T, L, R, P, meta={"name": "snippet"})
     if s4:
-        simplify(prog, rewrite)
+        simplify(prog, rewrite, folds=Folds(T.image_post_init, T.cells, T.written_play))
     return T, prog
 
 

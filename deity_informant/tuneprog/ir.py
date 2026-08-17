@@ -283,6 +283,27 @@ def dec(j):
     return t(*[dec(a) for a in j[1:]])
 
 
+def retval(proc):
+    """The value a play entry hands the host in ``A``, when it is a computed one.
+
+    A register that merely survives to the ``RTS`` (a leftover accumulator, anatomy
+    section 7's junk store in return position) is not a return value; one expression
+    that every exit agrees on is (Follin's ``A = $7B | $7C | $7D``, anatomy 3.6.0).
+    """
+    if proc.kind != "tick" or 0 not in proc.rets:
+        return None
+    i = proc.rets.index(0)
+    vals = {
+        b.term.vals[i]
+        for b in proc.blocks.values()
+        if type(b.term) is Return and len(b.term.vals) > i
+    }
+    if len(vals) != 1:
+        return None
+    v = vals.pop()
+    return None if type(v) is Var else v
+
+
 def succs(term):
     """Successor labels of a terminator, in control order."""
     k = type(term)

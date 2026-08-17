@@ -8,13 +8,14 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .idioms import CMP, fold
-from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var
+from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var, retval
 from .recover import GLOBAL_REG, VOICE_REG
-from .ssa import stmt_uses, term_uses, uses_of
+from .irwalk import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
 from .word import R16, W16, uses16
 
 SID_LO, SID_HI = 0xD400, 0xD418
+INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
 COMM = ("+", "|", "&", "^")
@@ -99,14 +100,16 @@ def needed(prog, rounds=3):
     A procedure's return values are live only where a caller reads them, which
     takes one pass per call-graph level to settle.
     """
-    rets = {n: set() for n in prog.procs}
+    # a play entry's A is the tune's return value (anatomy 3.6.0, 6.2): nobody in
+    # the program reads it, but the host does, so it is a root of its own.
+    rets = {n: ({0} if retval(p) is not None else set()) for n, p in prog.procs.items()}
     used, params = {}, {}
     for _ in range(rounds):
         used, params = {}, {}
         for name in _order(prog):
             used[name] = _roots(prog, name, params, rets)
             params[name] = tuple(i for i in prog.procs[name].params if REGVAR[i] in used[name])
-        want = {n: set() for n in prog.procs}
+        want = {n: ({0} if retval(p) is not None else set()) for n, p in prog.procs.items()}
         for name, p in prog.procs.items():
             for s in [x for b in p.blocks.values() for x in b.stmts if type(x) is Call]:
                 want[s.proc] |= {
@@ -221,26 +224,46 @@ class Printer:
         return None
 
     def addr_of(self, e, r):
-        """``(constant address, index expression)`` of an access to region ``r``."""
+        """``(constant address, index expression)`` of an access to region ``r``.
+
+        The literal operand is not the table start (anatomy section 7: 1-based
+        tables read as ``base-1,Y``, Follin's dispatch tables placed at
+        ``base-$80``), so the distance from the region's own base moves into the
+        index and the reference reads ``T[i - $80]``.
+        """
         if type(e) is Const:
             return e.v, None
         if type(e) is Bin and e.op == "+" and r is not None:
             for k, i in ((e.a, e.b), (e.b, e.a)):
-                if type(k) is Const and k.v == r.base:
+                if type(k) is not Const or abs(k.v - r.base) > INDEX_MAX:
+                    continue
+                if k.v == r.base:
                     return k.v, i
-                if type(k) is Const and r.base <= k.v <= r.base + r.size:
-                    return k.v, Bin("+", Const(k.v - r.base), i, 2) if k.v != r.base else i
+                if k.v > r.base:
+                    return k.v, Bin("+", Const(k.v - r.base), i, 2)
+                return k.v, Bin("-", i, Const(r.base - k.v, 2), 2)
         return None, e
 
     def sid(self, addr, idx=None):
-        """``sid[v].reg`` for a register write, the voice indexed by a copy loop."""
-        if addr in GLOBAL_REG:
-            return "sid.%s" % GLOBAL_REG[addr]
-        v, k = divmod(addr - SID_LO, 7)
+        """``sid[v].reg`` for a register write; ``sid.reg[i]`` when the register is data.
+
+        An index that steps by the 7-byte voice block is a voice (a copy loop, or a
+        voice-offset table); anything else selects the *register*, which Follin's
+        ``$85`` command and every ``LDY #$1C`` clear loop really do (anatomy 3.6.8
+        trap 1: "the register is a variable").
+        """
         if idx is None:
+            if addr in GLOBAL_REG:
+                return "sid.%s" % GLOBAL_REG[addr]
+            v, k = divmod(addr - SID_LO, 7)
             return "sid[%d].%s" % (v, VOICE_REG[k])
-        i = self.ivar(idx, 7) or _bare(self.expr(idx, False))
-        return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+        i = self.ivar(idx, 7)
+        if i is not None:
+            v, k = divmod(addr - SID_LO, 7)
+            return "sid[%s].%s" % ("%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+        off = addr - SID_LO
+        e = _bare(self.expr(idx, False))
+        return "sid.reg[%s]" % ("%s + %s" % (_hex(off), e) if off else e)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -410,7 +433,9 @@ class Body(Printer):
             return self.loop(n, proc, depth)
         if t is Jump:
             return [pad + (n.kind if n.kind != "goto" else "goto %s" % n.label)]
-        return [pad + ("return" if n.kind == "return" else "trap %r" % n.why)]
+        if n.kind != "return":
+            return [pad + "trap %r" % n.why]
+        return [pad + ("return %s" % self.expr(n.e) if n.e is not None else "return")]
 
     def blk(self, n, proc, pad):
         live = self.live[proc]

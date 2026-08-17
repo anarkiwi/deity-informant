@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from .idioms import fold
 from .ir import Bin, Const, Let, Load, Store, Var, succs
-from .ssa import apply_stmt, apply_term, sub_expr
+from .irwalk import apply_stmt, apply_term, sub_expr
 
 DEPTH = 8
 
