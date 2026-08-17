@@ -158,8 +158,8 @@ def main(argv=None):
     ap.add_argument("--only", action="append", help="reproduce only these certificates")
     ap.add_argument("--hvsc", help="HVSC root (default $HVSC, then the tune cache)")
     ap.add_argument("--resume", action="store_true", help="keep what earlier invocations did")
-    ap.add_argument("--budget", type=float, default=50.0, help="CPU seconds per invocation")
-    ap.add_argument("--chunk", type=float, default=25.0, help="CPU seconds per pipeline call")
+    ap.add_argument("--budget", type=float, default=45.0, help="CPU seconds per invocation")
+    ap.add_argument("--chunk", type=float, default=20.0, help="CPU seconds per pipeline call")
     args = ap.parse_args(argv)
 
     out = Path(args.out)

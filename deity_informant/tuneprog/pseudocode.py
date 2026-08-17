@@ -46,7 +46,7 @@ class Printer:
         self.prog = prog
         self.names = names
         self.pcs = pcs
-        self.rgn = {r.id: r for r in prog.storage}
+        self.rgn = prog.by_id()
         self.live, self.params = needed(prog)
         self.alias = {}
         self.tmp = {}

@@ -316,7 +316,7 @@ def _sources(e, defs, out, seen, depth=DEPTH):
 
 def _name(prog, names, pairs):
     """Name every folded pair, its halves, and the group its data flows to."""
-    rgn = {r.id: r for r in prog.storage}
+    rgn = prog.by_id()
     filt, seen, kind = _feeds(prog), {}, {}
     for lo, hi, e in pairs:
         ops = [(x.lo, x.hi) for x in _r16s(e)]

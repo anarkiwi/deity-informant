@@ -100,7 +100,7 @@ class Facts:
 
     def __init__(self, prog):
         self.prog = prog
-        self.rgn = {r.id: r for r in prog.storage}
+        self.rgn = prog.by_id()
         self.sid = []
         self.copies = []
         self.idxvar = {}

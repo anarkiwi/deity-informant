@@ -137,7 +137,7 @@ def enumerate_targets(prog, code=(), addrs=None, limit=64):
     """Add a patched jump's unobserved table targets as ``unverified`` arms; count them."""
     band = prog.meta.get("load", (0, 0x10000))
     image = prog.image()
-    rgn = {r.id: r for r in prog.storage}
+    rgn = prog.by_id()
     addr_owner = owners(prog, code, addrs)
     added = 0
     for proc in prog.procs.values():

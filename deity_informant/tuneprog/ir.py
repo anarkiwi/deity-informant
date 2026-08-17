@@ -228,6 +228,10 @@ class Tuneprog:
     inputs: list = field(default_factory=list)
     procs: dict = field(default_factory=dict)
 
+    def by_id(self):
+        """``{region id: region}`` over the program's storage."""
+        return {r.id: r for r in self.storage}
+
     def image(self):
         """The pre-init 64 KiB image rebuilt from the regions' initial contents."""
         m = bytearray(0x10000)
