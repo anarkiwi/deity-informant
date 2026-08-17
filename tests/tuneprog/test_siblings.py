@@ -7,7 +7,7 @@ from deity_informant.tuneprog.ir import Trap
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
-from _prog import PLAY, closed as _closed, proc_body as _body, tuneprog
+from _prog import PLAY, closed as _closed, printed as _text, proc_body as _body, tuneprog
 
 VOICE = """
     LDA {st}
@@ -159,3 +159,96 @@ def test_a_hole_the_copies_disagree_on_must_map_or_step():
     assert copyfold.plan([[("r", 1), ("r", 1)], [("r", 2), ("r", 3)]]) == (None, None)
     assert copyfold.plan([[("k", 1)], [("k", 2)], [("k", 9)]]) == (None, None)
     assert copyfold.plan([[("k", 1)], [("k", 3)], [("k", 5)]])[0] == [("affine", 2)]
+
+
+# ---- group views over a mapping, and over a play-time stride ------------------
+def relocated(skew=0):
+    """Two copies of one block; ``skew`` moves one cell out of the relocation."""
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDA a0",
+        "CLC",
+        "ADC #$01",
+        "STA a0",
+        "STA $D404",
+        "LDA b0",
+        "CLC",
+        "ADC #$01",
+        "STA b0",
+        "STA $D405",
+        "LDA a1",
+        "CLC",
+        "ADC #$01",
+        "STA a1",
+        "STA $D404",
+        "LDA b1",
+        "CLC",
+        "ADC #$01",
+        "STA b1",
+        "STA $D405",
+        "INC cnt",
+        "RTS",
+        "a0: BRK",
+        "b0: BRK",
+        *["BRK"] * 8,
+        "a1: BRK",
+        *["BRK"] * skew,
+        "b1: BRK",
+        "cnt: BRK",
+    )
+
+
+def test_two_runs_one_relocation_apart_fold_over_a_per_copy_table():
+    text = _text(relocated())
+    body = "\n".join(_body(text, "tick"))
+    assert "for v in 0, 1:" in body, body
+    assert re.search(r"copy\[v\]\.\w+", body), body
+    assert "per-copy cells, 2 fields" in text, text
+
+
+def test_two_runs_whose_cells_are_not_one_relocation_do_not_fold():
+    # b's copy sits one byte further on than a's: two mappings, not one
+    assert "for v in 0, 1:" not in "\n".join(_body(_text(relocated(skew=1)), "tick"))
+
+
+def blocks():
+    """A block init clears with one loop, walked at stride 7 by the tick."""
+    return asm(
+        PLAY,
+        "init: LDX #$14",
+        "lp: LDA #$00",
+        "STA blk,X",
+        "DEX",
+        "BPL lp",
+        "STA cnt",
+        "RTS",
+        "play: LDX #$00",
+        "lp2: LDA blk,X",
+        "STA sh,X",
+        "LDA blk+3,X",
+        "STA $D404",
+        "TXA",
+        "CLC",
+        "ADC #$07",
+        "TAX",
+        "CMP #$15",
+        "BNE lp2",
+        "INC cnt",
+        "RTS",
+        "blk: BRK",
+        *["BRK"] * 20,
+        "sh: BRK",
+        *["BRK"] * 20,
+        "cnt: BRK",
+    )
+
+
+def test_a_block_one_init_loop_made_one_region_splits_into_its_play_time_records():
+    text = _text(blocks())
+    assert re.search(r"\w+\[3\]  \$\w+ 21 bytes, stride 7, 2 fields", text), text
+    body = "\n".join(_body(text, "tick"))
+    assert re.search(r"voice\[[vx][/7]*\]\.f0\d", body), body
+    assert not re.search(r"b10\w\w\[[^]]*x", body), body  # its records, not its address

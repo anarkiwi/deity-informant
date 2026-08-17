@@ -10,7 +10,7 @@ import pytest
 from deity_informant.tuneprog import ssa
 from deity_informant.tuneprog.ir import Const, Let, Load, Store, Switch, Var, retval
 
-from _hvsc import EMOMYST, GNG, decompiled, switches
+from _hvsc import EMOMYST, GNG, body as proc_body, decompiled, folded, switches
 
 pytestmark = pytest.mark.hvsc
 
@@ -74,9 +74,9 @@ def test_ghouls_song_one_over_thirty_seconds():
     assert {v for _a, v in clear} == {0x08, 0x00}
     assert clear[0][0] == 0xD41C and clear[-1][0] == 0xD400
 
-    # 6: the three voice copies are not one `for v`, and this is why -- each copy
-    # ran a different subset of the shared template, so their trace-closed
-    # programs differ in size before any operand does.
+    # 6: each copy ran a different subset of the shared template, so the
+    # trace-closed copies differ in size before any operand does -- which is what
+    # the sibling closure repairs (below)
     bounds = VOICE + (0x67FF,)
     reached = [len([k for k in trace.sites if bounds[i] <= k[0] < bounds[i + 1]]) for i in range(3)]
     assert min(reached) > 100 and len(set(reached)) > 1, reached
@@ -85,6 +85,35 @@ def test_ghouls_song_one_over_thirty_seconds():
     assert "sid.reg[" in doc  # 2: the data-dependent register prints as one
     assert "return (" in doc  # 5
     assert "for v in" in doc  # copy folding is on: the init clear and the $88 arm
+
+
+def test_ghouls_voice_copies_fold_once_the_siblings_are_closed():
+    text, names, view = folded(GNG, seconds=30, song=0, prefix=500)
+    c = names.closure
+    assert c["families"] == 1 and c["copies"] == [3] and c["loops"] == 1
+    assert c["sites_added"] > 100 and 0 < c["unverified"] < c["statements"]
+
+    tick = proc_body(text, "tick")
+    assert tick[0].strip().startswith("for v in 0, 1, 2:"), tick[:2]
+    lines = "\n".join(tick)
+    # the 21-way command switch is inside the loop, over the voice's own cell
+    sw = [i for i, l in enumerate(tick) if l.strip().startswith("switch voice[v].")]
+    assert len(sw) == 1 and tick[sw[0]].startswith(" " * 8), tick[sw[0] : sw[0] + 2]
+    assert lines.count("case $") >= 14
+
+    # every per-voice cell prints as a field of the group, the SMC cells included
+    assert lines.count("voice[v].") > 100 and "sid[v].freq_lo" in lines
+    cells = names.groups["voice"]["cells"]
+    assert len(cells) > 40 and all(len(c) == 3 for c in cells.values())
+    smc = {c[0][1] for c in cells.values()}
+    assert {0x62EE, 0x6269, 0x640F} <= smc  # the unequally spaced operand cells
+    gaps = {tuple(b[1] - a[1] for a, b in zip(c, c[1:])) for c in cells.values()}
+    assert any(len(set(g)) > 1 for g in gaps), gaps
+
+    # the zero page block is a field table, not `b0021[90]`, on the voice path
+    voiced = [l for l in tick if "b0021[" in l]
+    assert len(voiced) <= 8 and not any("b0021[9" in l for l in voiced), voiced
+    assert len(view.procs["tick"].blocks) < 200
 
 
 def test_ghouls_sound_effect_subtune_is_complete():

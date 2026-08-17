@@ -69,6 +69,11 @@ def _inband(pc, band):
     return band[0] <= pc < band[1]
 
 
+def _next(stop, pc, band):
+    """Where a stream that starts at ``pc`` must stop: the next copy, or the band."""
+    return min([s for s in stop if s > pc] + [band[1]])
+
+
 def align(image, a, b, stop=frozenset(), band=(0, 0x10000), limit=LIMIT):
     """``[(pc_a, pc_b)]``: the instruction streams at ``a`` and ``b``, aligned.
 
@@ -76,10 +81,10 @@ def align(image, a, b, stop=frozenset(), band=(0, 0x10000), limit=LIMIT):
     ``LOOK`` instructions on one side. Either stream stops at another copy's
     base, so one copy never aligns with the next.
     """
-    sa, sb = set(stop) - {a}, set(stop) - {b}
+    lim = (_next(stop, a, band), _next(stop, b, band))
     out = []
     while len(out) < limit:
-        if a in sa or b in sb or not _inband(a, band) or not _inband(b, band):
+        if not band[0] <= a < lim[0] or not band[0] <= b < lim[1]:
             break
         if image[a] == image[b]:
             out.append((a, b))
@@ -267,7 +272,11 @@ def _lcs(image, rows, other, band):
     ok = [[False] * m for _ in range(n)]
     for i in range(n - 1, -1, -1):
         for j in range(m - 1, -1, -1):
-            ok[i][j] = len(align(image, rows[i][-1], other[j], band=band, limit=64)) >= MINARM
+            # an arm both copies name is one handler, not a copy of one: a table
+            # whose extent rule over-reached carries its neighbour's entries
+            ok[i][j] = rows[i][-1] != other[j] and (
+                len(align(image, rows[i][-1], other[j], band=band, limit=64)) >= MINARM
+            )
             hit = best[i + 1][j + 1] + 1 if ok[i][j] else 0
             best[i][j] = max(hit, best[i + 1][j], best[i][j + 1])
     out, i, j = [], 0, 0
