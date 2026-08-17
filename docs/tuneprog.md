@@ -47,12 +47,12 @@ traversals every stage shares.
 ```
 front end     machine 243   tracevm 325  trace 252    tracedata 300  lift 227
               cfg 309       regions 226  jumptab 179
-program       ir 397        interp 228   irwalk 294   graph 76       build 481
+program       ir 401        interp 228   irwalk 308   graph 70       build 481
               ssa 423       idioms 357   emit 337     verify 299
-presentation  structure 455 inline 200   texture 475  frame 320      word 372
-              fold 472      tails 165    unroll 342   recover 493    live 96
-text          pseudocode 498  printer 150
-driver        pipeline 380  __init__ 109                       31 modules, 9,480 lines
+presentation  structure 455 inline 199   texture 475  frame 320      word 369
+              fold 472      tails 165    unroll 342   recover 488    live 96
+text          pseudocode 498  printer 149
+driver        pipeline 380  __init__ 112                       31 modules, 9,485 lines
 ```
 
 Stage entry points, which are also the module boundaries:
