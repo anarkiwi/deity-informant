@@ -192,24 +192,25 @@ def _positions(proc):
     return where
 
 
-def loads(proc, live=None):
+def loads(proc, live=None, keep=()):
     """Fold a value into its uses, past statements that cannot alias it.
 
     A use may sit in another block when that block is reachable only through the
     definition's; regions are disjoint, so only a store to the same region, a call
-    or an input read stops the move.
+    or an input read stops the move. ``keep`` names the return registers a reader
+    wants: the host's, and the ones a caller reads.
     """
     if live is not None:
-        want = retval(proc)
-        slot = proc.rets.index(0) if want is not None else None
+        want = {0} if retval(proc) is not None else set()
+        slots = {proc.rets.index(i) for i in want | set(keep) if i in proc.rets}
         for b in proc.blocks.values():
             b.stmts = [s for s in b.stmts if type(s) is not Let or s.n in live]
             if type(b.term) is Return:
-                # the machine's return plumbing goes; the value the host reads stays
+                # the machine's return plumbing goes; the values a reader wants stay
                 b.term = Return(
                     ()
-                    if slot is None
-                    else tuple(v if i == slot else Const(0) for i, v in enumerate(b.term.vals))
+                    if not slots
+                    else tuple(v if i in slots else Const(0) for i, v in enumerate(b.term.vals))
                 )
     uses, where, preds = use_counts(proc), _positions(proc), preds_of(proc)
     latches = _latches(proc, preds)

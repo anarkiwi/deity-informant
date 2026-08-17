@@ -25,6 +25,7 @@ from .ir import (
     Trap,
     Var,
     evalbin,
+    retexpr,
     retval,
     succs,
 )
@@ -95,7 +96,7 @@ class Exit:
 
 
 # ---- the presentation copy ---------------------------------------------------
-def view(prog, live=None):
+def view(prog, live=None, keep=None):
     """A copy of ``prog`` shaped for reading; with ``live`` it also drops dead values.
 
     Without ``live`` the copy is semantics-preserving (block merging and inlining
@@ -106,14 +107,14 @@ def view(prog, live=None):
     for name, p in out.procs.items():
         prune(p)
         merge_chains(p)
-        inline_loads(p, None if live is None else live[name])
+        inline_loads(p, None if live is None else live[name], (keep or {}).get(name, ()))
     return out
 
 
-def inline(prog, live):
+def inline(prog, live, keep=None):
     """Re-run the value folding after the texture passes reshaped the blocks."""
     for name, p in prog.procs.items():
-        inline_loads(p, live[name])
+        inline_loads(p, live[name], (keep or {}).get(name, ()))
     return prog
 
 
@@ -240,13 +241,13 @@ class _Values:
         return None
 
 
-def _trivial(proc, lbl):
+def _trivial(proc, lbl, want=()):
     """The exit a statement-free block is, so a jump to it prints as that exit."""
     b = proc.blocks[lbl]
     if b.stmts:
         return None
     if type(b.term) is Return:
-        return Exit("return", "", retval(proc))
+        return Exit("return", "", _returns(proc, b.term, want))
     return Exit("trap", b.term.why) if type(b.term) is Trap else None
 
 
@@ -330,9 +331,15 @@ def induction(proc, header, body, latches, preds=None):
     return None
 
 
+def _returns(proc, term, want):
+    """What a ``return`` shows: the tick's own value, or the register a caller reads."""
+    return retval(proc) if proc.kind == "tick" else retexpr(proc, term, want)
+
+
 # ---- the structurer ----------------------------------------------------------
 class _Structurer:
-    def __init__(self, proc):
+    def __init__(self, proc, want=()):
+        self.want = want
         self.proc = proc
         self.g = _cfg(proc)
         self.preds = preds_of(proc)
@@ -362,7 +369,7 @@ class _Structurer:
                 out.append(Jump("break", hit[0]))
                 break
             if n in self.done:
-                end = _trivial(self.proc, n)
+                end = _trivial(self.proc, n, self.want)
                 out.append(end if end is not None else Jump("goto", n))
                 if end is None:
                     self.labels.add(n)
@@ -392,7 +399,7 @@ class _Structurer:
         if k is Goto:
             return t.to
         if k is Return:
-            out.append(Exit("return", "", retval(self.proc)))
+            out.append(Exit("return", "", _returns(self.proc, t, self.want)))
             return None
         if k is Trap:
             out.append(Exit("trap", t.why))
@@ -419,14 +426,30 @@ class _Structurer:
         return For(var, vals, inner, scale, hide, h, count), exit_lbl
 
 
-def structure_proc(proc):
+def structure_proc(proc, want=()):
     """The structured body of one procedure."""
-    return _Structurer(proc).run()
+    return _Structurer(proc, want).run()
 
 
-def structure(prog):
-    """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first)."""
-    return {n: structure_proc(p) for n, p in prog.procs.items()}
+def wants(prog, live):
+    """``{procedure: the return registers a caller reads}`` (design section 6.2)."""
+    out = {n: set() for n in prog.procs}
+    for name, p in prog.procs.items():
+        for b in p.blocks.values():
+            for s in b.stmts:
+                if type(s) is Call and s.proc in out:
+                    q = prog.procs[s.proc]
+                    out[s.proc] |= {i for i, r in zip(q.rets, s.rets) if r in live[name]}
+    return out
+
+
+def structure(prog, wants=None):
+    """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first).
+
+    ``wants`` is ``{procedure: the return registers its callers read}``, so a
+    procedure that computes a byte for its caller prints what it hands back.
+    """
+    return {n: structure_proc(p, (wants or {}).get(n, ())) for n, p in prog.procs.items()}
 
 
 # ---- phase recognition -------------------------------------------------------

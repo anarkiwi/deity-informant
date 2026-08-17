@@ -140,7 +140,10 @@ def _node(n, c):
         tb, body = _many(n.body, c, _node)
         return ("loop", tb), Loop(body, n.label, n.count)
     if t is Exit:
-        return ("exit", n.kind, n.why), n
+        if n.e is None:
+            return ("exit", n.kind, n.why), n
+        tok, e = _expr(n.e, c)
+        return ("exit", n.kind, n.why, tok), Exit(n.kind, n.why, e)
     c.bad = True
     return ("?",), n
 
