@@ -38,6 +38,15 @@ def ops(e):
     return sum(1 for x in value_walk(e) if type(x) is Bin)
 
 
+def reach(e):
+    """How far a value is from a cell, its addressing included.
+
+    A register's shadow is a byte or a table entry away; a stream a pointer pair
+    walks is further, and is not a shadow of anything.
+    """
+    return sum(1 for x in walk(e) if type(x) is Bin)
+
+
 def leaf_loads(e):
     """The loads of ``e`` that are values, not parts of an address."""
     ls = loads(e)
@@ -146,7 +155,7 @@ def sid_image(facts):
     """``{region: (field name, {element: voice})}`` for the regions the SID image reads."""
     out = {}
     for addr, v in facts.sid:
-        if ops(v) > MAXOPS:
+        if reach(v) > MAXOPS:
             continue
         leaves = [x for x in leaf_loads(v) if x.r in facts.rgn]
         op = next((y.op for y in walk(v) if type(y) is Bin), "")

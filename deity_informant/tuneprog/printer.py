@@ -289,7 +289,8 @@ def _state(prog, names):
                 "lo|hi $%04X" % _base(prog, hi),
             )
         )
-    cells = {rid for rid, _a in names.slots}
+    # a scalar a local group names only inside its loop is still its own row
+    cells = {rid for (rid, _a), hits in names.slots.items() if any(not h[3] for h in hits)}
     for r in sorted(prog.storage, key=lambda x: x.base):
         if r.id < 0 or r.id in names.view or r.kind not in ("state", "init_constant"):
             continue
