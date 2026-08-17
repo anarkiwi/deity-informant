@@ -11,7 +11,7 @@ import copy
 
 import networkx as nx
 
-from .ir import Block, Call, Proc, REGIDX, REGVAR, Return, Var, retarget, succs
+from .ir import Block, Call, Proc, REGIDX, REGVAR, Return, Var, retarget, retval, succs
 from .inline import _natural_loops
 from .ssa import apply_stmt, apply_term, defs_of, preds_of, prune, stmt_uses, term_uses
 from .structure import Jump, structure_proc, walk
@@ -26,16 +26,30 @@ def promote_tails(prog, names=None, rounds=256):
 
 
 def _promote_proc(prog, name, names, rounds):
-    made = 0
-    cur = _gotos(prog.procs[name])
+    """Promote while the residue does not grow, then keep the best state seen."""
+    proc = prog.procs[name]
+    if retval(proc) is not None:
+        return 0  # the text shows what this procedure returns: keep its exits
+    cur = best = _gotos(proc)
+    steps, mark = [], 0
     for _ in range(rounds):
         if not cur:
             break
         hit = _one(prog, name, names, cur)
         if hit is None:
             break
-        made, cur = made + 1, hit
-    return made
+        cur, hname, undo = hit
+        steps.append((hname, undo))
+        if cur < best:
+            best, mark = cur, len(steps)
+    for hname, undo in reversed(steps[mark:]):
+        proc.blocks = undo[0]
+        for p, term in undo[1].items():
+            proc.blocks[p].term = term
+        del prog.procs[hname]
+        if names is not None:
+            names.procs.pop(hname, None)
+    return mark
 
 
 def _gotos(proc):
@@ -43,7 +57,7 @@ def _gotos(proc):
 
 
 def _one(prog, name, names, cur):
-    """Promote the smallest tail that leaves the residue no worse; new goto count."""
+    """Promote the smallest tail that leaves the residue no worse; its undo record."""
     proc = prog.procs[name]
     for _size, lbl, region in _tails(proc):
         hit = _promote(prog, name, lbl, region)
@@ -54,7 +68,7 @@ def _one(prog, name, names, cur):
         if now <= cur:
             if names is not None:
                 names.procs[made] = made
-            return now
+            return now, made, undo
         proc.blocks = undo[0]
         for p, term in undo[1].items():
             proc.blocks[p].term = term

@@ -309,6 +309,8 @@ class _Builder:
             f = ls.ctrl[1] if ls is not None else ["r", 14, 1]
             cond = Bin("==", Var(REGVAR[f[1]]), Const(ls.ctrl[2] if ls is not None else 1), 1)
             arms = [self._succ(cp, blk, r, extra, i) for i, r in enumerate(node["succ"])]
+            if node["switch"] is not None:  # patched offset: the taken side is computed
+                arms[0] = self._branch_switch(cp, blk, node, ls, extra, init_phase)
             blk.term = If(cond, arms[0], arms[1])
         elif term == "switch":
             e = _ctrl_expr(node, ls, self.store, pc, init_phase, lbl, blk.stmts)
@@ -320,6 +322,21 @@ class _Builder:
         elif term == "goto":
             blk.term = Goto(self._succ(cp, blk, node["succ"][0], extra, 0))
         return [blk] + extra
+
+    def _branch_switch(self, cp, blk, node, ls, extra, init_phase):
+        """The taken side of a branch whose offset is an SMC cell: a computed goto."""
+        b = Block("S%s" % blk.label, [], None, blk.src)
+        e = _ctrl_expr(node, ls, self.store, node["pc"], init_phase, b.label, b.stmts)
+        b.term = Switch(
+            e,
+            tuple(
+                (v, self._succ(cp, b, r, extra, i))
+                for i, (v, r) in enumerate(node["switch"]["cases"])
+            ),
+            "",
+        )
+        extra.append(b)
+        return b.label
 
     def _call(self, cp, blk, node, extra, init_phase):
         ret = self._succ(cp, blk, node["succ"][0], extra, 0)

@@ -8,13 +8,14 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .idioms import CMP, fold
-from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var
+from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var, retval
 from .recover import GLOBAL_REG, VOICE_REG
-from .ssa import stmt_uses, term_uses, uses_of
+from .irwalk import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
 from .word import R16, W16, uses16
 
 SID_LO, SID_HI = 0xD400, 0xD418
+INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
 COMM = ("+", "|", "&", "^")
@@ -99,14 +100,16 @@ def needed(prog, rounds=3):
     A procedure's return values are live only where a caller reads them, which
     takes one pass per call-graph level to settle.
     """
-    rets = {n: set() for n in prog.procs}
+    # a play entry's A is the tune's return value (anatomy 3.6.0, 6.2): nobody in
+    # the program reads it, but the host does, so it is a root of its own.
+    rets = {n: ({0} if retval(p) is not None else set()) for n, p in prog.procs.items()}
     used, params = {}, {}
     for _ in range(rounds):
         used, params = {}, {}
         for name in _order(prog):
             used[name] = _roots(prog, name, params, rets)
             params[name] = tuple(i for i in prog.procs[name].params if REGVAR[i] in used[name])
-        want = {n: set() for n in prog.procs}
+        want = {n: ({0} if retval(p) is not None else set()) for n, p in prog.procs.items()}
         for name, p in prog.procs.items():
             for s in [x for b in p.blocks.values() for x in b.stmts if type(x) is Call]:
                 want[s.proc] |= {
@@ -225,39 +228,50 @@ class Printer:
     def addr_of(self, e, r):
         """``(constant address, index expression)`` of an access to region ``r``.
 
-        Indices count from the region's origin, so a 1-based table read at
-        ``base-1,Y`` prints ``T[y]`` and its look-ahead sibling ``T[y + 1]``.
+        The literal operand is not the table start (anatomy section 7: 1-based
+        tables read as ``base-1,Y``, dispatch tables placed at ``base-$80``), so
+        indices count from the region's recovered origin and the distance from it
+        moves into the index: ``T[y]``, and a look-ahead sibling ``T[y + 1]``.
         """
         if type(e) is Const:
             return e.v, None
         if type(e) is Bin and e.op == "+" and r is not None:
             for k, i in ((e.a, e.b), (e.b, e.a)):
-                if type(k) is Const and r.zero <= k.v <= r.base + r.size:
-                    d = k.v - r.zero
-                    return k.v, Bin("+", Const(d), i, 2) if d else i
+                if type(k) is not Const or abs(k.v - r.base) > INDEX_MAX:
+                    continue
+                if k.v < r.zero:
+                    return k.v, Bin("-", i, Const(r.zero - k.v, 2), 2)
+                d = k.v - r.zero
+                return k.v, Bin("+", Const(d), i, 2) if d else i
         return None, e
 
     def regcell(self, name, addr, idx=None):
-        """``sid[v].reg`` / ``ghost[r]``: a register file cell, by voice or by index.
+        """``sid[v].reg`` by voice; ``NAME.reg[i]`` when the register is data.
 
-        A voice-scaled index (the loop variable of a per-voice loop, or an index
-        the region's stride says is one) names the register; an index that walks
-        the registers themselves (a flush loop) leaves the register to the index.
+        An index that steps by the 7-byte voice block is a voice (a copy loop, a
+        voice-offset table, a routine's voice argument); anything else selects the
+        *register*, which a clear loop over the register file really does.
         """
-        if idx is None and addr in GLOBAL_REG:
-            return "%s.%s" % (name, GLOBAL_REG[addr])
-        v, k = divmod(addr - SID_LO, 7)
         if idx is None:
+            if addr in GLOBAL_REG:
+                return "%s.%s" % (name, GLOBAL_REG[addr])
+            v, k = divmod(addr - SID_LO, 7)
             return "%s[%d].%s" % (name, v, VOICE_REG[k])
-        i = self.ivar(idx, 7) if v < 3 else None
+        i = self.voiced(idx) if addr - SID_LO < 21 else None
         if i is None:
-            flat = self.ivar(idx, 1)
-            if flat is not None or v >= 3:
-                off = addr - SID_LO
-                e = flat or _bare(self.expr(idx, False))
-                return "%s[%s]" % (name, "%s + %s" % (e, _hex(off)) if off else e)
-            i = "%s/7" % self.expr(idx, False)
+            off = addr - SID_LO
+            e = _bare(self.expr(idx, False))
+            return "%s.reg[%s]" % (name, "%s + %s" % (_hex(off), e) if off else e)
+        v, k = divmod(addr - SID_LO, 7)
         return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+
+    def voiced(self, idx):
+        """The index as a voice number, when something proves it steps by seven."""
+        hit = self.ivar(idx, 7)
+        if hit is not None:
+            return hit
+        n = idx.n if type(idx) is Var else None
+        return "%s/7" % self.expr(idx, False) if self.names.scale.get(n) == 7 else None
 
     def sid(self, addr, idx=None):
         return self.regcell("sid", addr, idx)
@@ -442,7 +456,9 @@ class Body(Printer):
             return self.loop(n, proc, depth)
         if t is Jump:
             return [pad + (n.kind if n.kind != "goto" else "goto %s" % n.label)]
-        return [pad + ("return" if n.kind == "return" else "trap %r" % n.why)]
+        if n.kind != "return":
+            return [pad + "trap %r" % n.why]
+        return [pad + ("return %s" % self.expr(n.e) if n.e is not None else "return")]
 
     def blk(self, n, proc, pad):
         live = self.live[proc]

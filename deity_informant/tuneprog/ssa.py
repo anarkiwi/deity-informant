@@ -12,11 +12,13 @@ Passes, each semantics-preserving with :class:`~.ir.Interp` as the oracle:
 * :func:`to_ssa` / :func:`from_ssa` -- dominance-frontier phi insertion and
   renaming, then phi elimination through copies on split critical edges;
 * :func:`copyprop` -- forward a ``let v = w``;
-* :func:`constprop` -- forward a ``let v = k`` and fold a load of a ``const``
-  region at a known address into its byte;
+* :func:`constprop` -- forward a ``let v = k`` and fold a load of a read-only
+  region at a known address into its byte (``const`` everywhere, ``init_constant``
+  in the procedures ``init`` never reaches -- see :func:`simplify`);
 * :func:`fold_branches` -- a constant test becomes a jump and its dead arm goes;
 * :func:`dce` -- drop values nobody reads (the bulk of the P-Code flag ops); a
-  load that can consume a pinned input is never dropped.
+  load that can consume a pinned input is never dropped;
+* :func:`canonical` -- fix the block order the JSON records.
 
 :func:`simplify` is the S4 driver: it runs the passes to a fixpoint, with an
 optional peephole hook (:mod:`.idioms`).
@@ -24,13 +26,11 @@ optional peephole hook (:mod:`.idioms`).
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import networkx as nx
 
 from .ir import (
-    Assert,
-    Bin,
     Block,
     Call,
     Const,
@@ -40,139 +40,13 @@ from .ir import (
     Load,
     Phi,
     REGIDX,
-    Return,
-    Store,
     Switch,
     Trap,
     Var,
     retarget,
     succs,
 )
-
-IMPURE = ("io", "chk")
-
-
-# ---- expression and statement plumbing --------------------------------------
-def sub_expr(e, fn):
-    """Bottom-up rewrite of ``e``; ``fn`` sees each node after its children."""
-    t = type(e)
-    if t is Bin:
-        a, b = sub_expr(e.a, fn), sub_expr(e.b, fn)
-        if a is not e.a or b is not e.b:
-            e = Bin(e.op, a, b, e.w)
-    elif t is Load:
-        a = sub_expr(e.a, fn)
-        if a is not e.a:
-            e = Load(e.cls, a, e.w, e.lo, e.hi, e.r)
-    return fn(e)
-
-
-def apply_stmt(s, fn):
-    """Rewrite every expression a statement reads (phi arguments are names)."""
-    t = type(s)
-    if t is Let:
-        s.e = sub_expr(s.e, fn)
-    elif t is Store:
-        s.a = sub_expr(s.a, fn)
-        s.v = sub_expr(s.v, fn)
-    elif t is Call:
-        s.args = tuple(sub_expr(a, fn) for a in s.args)
-    elif t is not Phi:
-        s.e = sub_expr(s.e, fn)
-
-
-def apply_term(t, fn):
-    k = type(t)
-    if k is If:
-        t.c = sub_expr(t.c, fn)
-    elif k is Switch:
-        t.e = sub_expr(t.e, fn)
-    elif k is Return:
-        t.vals = tuple(sub_expr(v, fn) for v in t.vals)
-
-
-def defs_of(s):
-    t = type(s)
-    if t is Let or t is Phi:
-        return (s.n,)
-    return s.rets if t is Call else ()
-
-
-def uses_of(e, out, regs_only=False):
-    t = type(e)
-    if t is Var:
-        if not regs_only or e.n in REGIDX:
-            out.add(e.n)
-    elif t is Bin:
-        uses_of(e.a, out, regs_only)
-        uses_of(e.b, out, regs_only)
-    elif t is Load:
-        uses_of(e.a, out, regs_only)
-    return out
-
-
-def stmt_uses(s, out, regs_only=False):
-    """Collect the names a statement reads (phi arguments belong to its predecessors)."""
-    t = type(s)
-    if t is Let or t is Assert:
-        uses_of(s.e, out, regs_only)
-    elif t is Store:
-        uses_of(s.a, out, regs_only)
-        uses_of(s.v, out, regs_only)
-    elif t is Call:
-        for a in s.args:
-            uses_of(a, out, regs_only)
-    elif t is Phi and not regs_only:
-        out.update(s.args.values())
-    return out
-
-
-def term_uses(t, out, regs_only=False):
-    k = type(t)
-    if k is If:
-        uses_of(t.c, out, regs_only)
-    elif k is Switch:
-        uses_of(t.e, out, regs_only)
-    elif k is Return:
-        for v in t.vals:
-            uses_of(v, out, regs_only)
-    return out
-
-
-class _Tally:
-    """A ``set``-shaped sink that counts instead of collecting."""
-
-    __slots__ = ("c",)
-
-    def __init__(self):
-        self.c = Counter()
-
-    def add(self, n):
-        self.c[n] += 1
-
-    def update(self, it):
-        for n in it:
-            self.c[n] += 1
-
-
-def use_counts(proc):
-    """``Counter`` of every use of every variable in ``proc`` (phi arguments included)."""
-    t = _Tally()
-    for b in proc.blocks.values():
-        for s in b.stmts:
-            stmt_uses(s, t)
-        term_uses(b.term, t)
-    return t.c
-
-
-def pure(e):
-    """True when evaluating ``e`` has no effect (a pinned input read has one)."""
-    t = type(e)
-    if t is Load:
-        return e.cls not in IMPURE and pure(e.a)
-    if t is Bin:
-        return pure(e.a) and pure(e.b)
-    return True
+from .irwalk import apply_stmt, apply_term, defs_of, pure, stmt_uses, term_uses
 
 
 def preds_of(proc):
@@ -260,7 +134,7 @@ def split_critical(proc):
     preds = preds_of(proc)
     for lbl in list(proc.blocks):
         b = proc.blocks[lbl]
-        for s in set(succs(b.term)):
+        for s in sorted(set(succs(b.term))):
             if len(succs(b.term)) > 1 and len(preds[s]) > 1:
                 mid = "%s$%s" % (lbl, s)
                 proc.blocks[mid] = Block(mid, [], Goto(s), b.src)
@@ -457,21 +331,76 @@ def copyprop(proc):
     return _forward(proc, lambda e: type(e) is Var)
 
 
-def constprop(proc, storage=None):
-    """Fold loads of read-only regions, then forward ``let v = k``."""
+def const_tables(storage):
+    """``{region id: (base, bytes)}`` of the read-only regions a known-address load folds."""
+    return {r.id: (r.base, r.init) for r in storage if r.kind == "const"}
+
+
+class Folds:
+    """What a load at a known address folds to once ``init(song)`` has run.
+
+    A byte folds when it is an SMC cell (an instruction byte some traced procedure
+    writes -- an ordinary init-written variable keeps its load, and its name) or a
+    neighbour of one inside the same access, and when no play-time store ever
+    changes it. Design S2: "cells patched only by init are constants as far as the
+    tick code is concerned"; :func:`simplify` applies it only outside init, where
+    the value exists.
+    """
+
+    __slots__ = ("post", "cells", "mutable")
+
+    def __init__(self, post, cells, mutable):
+        self.post = post
+        self.cells = frozenset(cells)
+        self.mutable = frozenset(mutable)
+
+    def at(self, addr, w):
+        """The little-endian constant of the ``w`` bytes at ``addr``, or ``None``."""
+        rng = range(addr, addr + w)
+        if self.mutable.intersection(rng) or not self.cells.intersection(rng):
+            return None
+        return int.from_bytes(bytes(self.post[a] for a in rng), "little")
+
+
+def init_reachable(prog):
+    """Names of the procedures ``init`` can reach through the call graph."""
+    start = prog.meta.get("init_proc")
+    seen = set()
+    work = [start] if start in prog.procs else []
+    while work:
+        n = work.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        work.extend(
+            s.proc
+            for b in prog.procs[n].blocks.values()
+            for s in b.stmts
+            if type(s) is Call and s.proc in prog.procs
+        )
+    return seen
+
+
+def constprop(proc, tables=None, folds=None):
+    """Fold known-address loads of ``tables``/``folds``, then forward ``let v = k``."""
     hits = [0]
-    if storage:
-        const = {r.id: r for r in storage if r.kind == "const"}
+    if tables or folds is not None:
 
         def fold(e):
-            if type(e) is not Load or type(e.a) is not Const or e.r not in const:
+            if type(e) is not Load or type(e.a) is not Const:
                 return e
-            r = const[e.r]
-            off = e.a.v - r.base
-            if off < 0 or off + e.w > len(r.init):
+            hit = (tables or {}).get(e.r)
+            if hit is not None:
+                base, data = hit
+                off = e.a.v - base
+                if 0 <= off and off + e.w <= len(data):
+                    hits[0] += 1
+                    return Const(int.from_bytes(data[off : off + e.w], "little"), e.w)
+            v = folds.at(e.a.v, e.w) if folds is not None and e.cls != "io" else None
+            if v is None:
                 return e
             hits[0] += 1
-            return Const(int.from_bytes(r.init[off : off + e.w], "little"), e.w)
+            return Const(v, e.w)
 
         for b in proc.blocks.values():
             for s in b.stmts:
@@ -480,19 +409,40 @@ def constprop(proc, storage=None):
     return hits[0] + _forward(proc, lambda e: type(e) is Const)
 
 
-def simplify(prog, peephole=None, rounds=8):
-    """The S4 pipeline over every procedure: SSA, passes to a fixpoint, out of SSA."""
-    for p in prog.procs.values():
+def canonical(proc):
+    """Order the blocks reachable-first in reverse postorder, the rest by label.
+
+    Block order is presentation, but it is what the emitted JSON records, so it is
+    fixed here rather than left to the order the passes happened to build.
+    """
+    order = proc.order()
+    rest = sorted(set(proc.blocks) - set(order))
+    proc.blocks = {l: proc.blocks[l] for l in order + rest}
+    return proc
+
+
+def simplify(prog, peephole=None, rounds=8, folds=None):
+    """The S4 pipeline over every procedure: SSA, passes to a fixpoint, out of SSA.
+
+    With ``folds`` (a :class:`Folds`) the procedures ``init`` never reaches fold
+    their loads of init-patched instruction bytes to the constants ``init(song)``
+    left there; inside init the same loads stay, because the value is the store's.
+    """
+    inits = init_reachable(prog)
+    tables = const_tables(prog.storage)
+    for name, p in prog.procs.items():
+        f = None if name in inits else folds
         merge_chains(p)
         split_critical(p)
         to_ssa(p)
         for _ in range(rounds):
-            n = copyprop(p) + constprop(p, prog.storage) + fold_branches(p) + dce(p)
+            n = copyprop(p) + constprop(p, tables, f) + fold_branches(p) + dce(p)
             if peephole is not None:
                 n += peephole(p)
             if not n:
                 break
         from_ssa(p)
         merge_chains(p)
+        canonical(p)
     prog.meta["stage"] = "S4"
     return prog

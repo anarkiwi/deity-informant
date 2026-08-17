@@ -17,6 +17,7 @@ VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
 GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
 OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
 DEPTH, MAXOPS, MAXPAIRS = 4, 2, 24
+MAXROLE = 8  # elements: above this a region is a block, not a variable
 
 try:
     from pysidtracker.notefreq import is_octave_ramp
@@ -38,6 +39,7 @@ class Names:
     region: dict = field(default_factory=dict)
     role: dict = field(default_factory=dict)
     image: dict = field(default_factory=dict)
+    scale: dict = field(default_factory=dict)
     view: dict = field(default_factory=dict)
     groups: dict = field(default_factory=dict)
     procs: dict = field(default_factory=dict)
@@ -131,6 +133,7 @@ class Facts:
         self.rgn = {r.id: r for r in prog.storage}
         self.sid = []
         self.copies = []
+        self.idxvar = {}
         self.updates = {}
         self.plain = set()
         self.index = {}
@@ -166,10 +169,17 @@ class Facts:
             if type(x) is not Load:
                 continue
             self.reads[name].add(x.r)
+            self.walks(x.r, x.a)
             for y in _loads(x.a):
                 self.index.setdefault(y.r, set()).add(x.r)
                 if y.w == 2:
                     self.addr.add(y.r)
+
+    def walks(self, rid, a):
+        """Record that a bare index variable walks the elements of region ``rid``."""
+        base, i = _split(a)
+        if base is not None and type(i) is Var:
+            self.idxvar.setdefault(i.n, set()).add(rid)
 
     def store(self, name, s, v, a=None):
         """Record a store: the SID image, and whether it updates its own region."""
@@ -181,6 +191,7 @@ class Facts:
                 )
         if s.r < 0:
             return
+        self.walks(s.r, a if a is not None else s.a)
         self.writes[name].add(s.r)
         self.wpc.setdefault(s.r, set()).add(s.src)
         if name not in self.tick:
@@ -229,6 +240,20 @@ def sid_image(facts):
             if type(x.a) is Const:
                 hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
     return {k: (n, m) for k, (n, m) in out.items()}
+
+
+def _scales(facts):
+    """``{index name: stride}`` for a value that walks a record wider than a byte.
+
+    An index the program uses to reach a 7-byte record is a voice wherever else it
+    appears -- which is what makes ``$14CE,X`` voice ``x/7``'s control register.
+    """
+    out = {}
+    for n, rids in facts.idxvar.items():
+        s = max((facts.rgn[r].stride for r in rids if r in facts.rgn), default=1)
+        if s > 1:
+            out[n] = s
+    return out
 
 
 def image_copy(facts):
@@ -349,6 +374,11 @@ def _uniq(names, rid, want):
         n, i = "%s_%d" % (want, i), i + 1
     names.region[rid] = n
     return n
+
+
+def _elems(r):
+    """How many elements a region's stride divides it into."""
+    return -(-r.size // max(r.stride, 1))
 
 
 def _basename(r, role, facts, names):
@@ -477,13 +507,18 @@ def recover(prog, structured=None):
         names.phase = _phase(structured[tick], prog.storage)
     _freq(prog, names)
     names.groups = _groups(prog, names)
+    names.scale = _scales(facts)
     names.image = image_copy(facts)
     for rid, delta in sorted(names.image.items()):
         names.role[rid] = "sid_image"
         names.notes[rid] = "flushed to $%04X.." % (facts.rgn[rid].base + delta)
         _uniq(names, rid, "ghost")
-    for rid, (fname, _elems) in sorted(sid_image(facts).items()):
-        if rid in names.image:
+    for rid, (fname, elems) in sorted(sid_image(facts).items()):
+        r = facts.rgn[rid]
+        # a region is the SID image when its elements are, not when a few of a
+        # hundred zero-page bytes reach a register (an indexed read names no
+        # element, so it is the whole region by construction)
+        if rid in names.image or (elems and 2 * len(elems) < _elems(r)):
             continue
         names.role[rid] = "sid_image"
         _uniq(names, rid, fname)
@@ -492,7 +527,10 @@ def recover(prog, structured=None):
             continue
         ptr = r.id in facts.addr or (r.size == 2 and r.id in facts.index)
         role = names.role.get(r.id) or ("ptr" if ptr else "")
-        role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
+        # a role one accessor proves names a scalar or a small struct field, not a
+        # block one init loop happened to make one region (Follin's zero page)
+        if _elems(r) <= MAXROLE:
+            role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
         names.role[r.id] = role
         _uniq(names, r.id, _basename(r, role, facts, names))
     if names.phase is not None:

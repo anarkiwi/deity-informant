@@ -12,7 +12,9 @@ byte for byte). This document says how to recover that structure automatically.
 Status: the prototype in [prototype-automatas.md](prototype-automatas.md) realises
 S0–S8 in `deity_informant/tuneprog/` and certifies defMON's Automatas completely
 (149,025 calls, 0 divergences, period 129,024) and Commando; its §6.1 lists what
-each design claim measured.
+each design claim measured. [prototype-follin.md](prototype-follin.md) is the
+second exemplar: all 32 subtunes of Follin's Ghouls'n'Ghosts, and the corrections
+the operand-cell rule and the patched-branch model needed to get there.
 
 Contents
 
@@ -332,15 +334,21 @@ A repeat `(k, k+p)` with no input reads is the periodicity witness.
 **Lift.** Each site → its raw P-code record (`lift`), taken from the *post-init
 image bytes of that variant*. Then residualise:
 
-- *operand cells*: an operand byte that any traced op writes (in any phase after
-  init, i.e. play-time SMC) is a variable: the lifter's `prov` map says which
-  const varnodes derive from which byte offsets; replace them with `LOAD` from
-  the cell address (immediates → `load(cell)`; absolute address bytes → the
-  address becomes `load16(cell)` + index; branch offsets and JMP operands →
-  computed control, below). Cells patched only by `init` (SID Wizard's
-  relocations, Galway's API vectors) are constants as far as the tick code is
-  concerned; since `init` is decompiled too they stay `state` cells that
-  `init` stores and the tick loads, and the printer folds them per subtune.
+- *operand cells*: an operand byte that any traced op writes **in any phase,
+  `init` included**, is a variable: the lifter's `prov` map says which const
+  varnodes derive from which byte offsets; replace them with `LOAD` from the cell
+  address (immediates → `load(cell)`; absolute address bytes → the address becomes
+  `load16(cell)` + index; branch offsets and JMP operands → computed control,
+  below — a patched *conditional* branch keeps its condition and puts the taken
+  side's targets in the switch). Excluding `init` from the rule is wrong even for
+  the tick's sake: Follin's rip loader patches the operand of its own `CPY #` once
+  per song block and consumes it inside `init`, so a site keyed on the post-init
+  byte runs the first block's copy loop with the second block's count. Cells
+  patched only by `init` (SID Wizard's relocations, Galway's API vectors) are
+  constants as far as the tick code is concerned: S4 folds a known-address load to
+  its post-init byte in the procedures `init` never reaches, so the residualisation
+  costs the tick nothing, while `init` itself keeps the load its own store defines
+  and a multi-subtune build folds nothing.
 - *opcode cells*: a pc with several opcode variants → one node per variant,
   entered through `switch(load(pc)) {variant: node ...; default: trap}`.
 

@@ -6,7 +6,8 @@ by one op (plus the cell reads :mod:`.lift` residualised, plus the two halves of
 a zero-page pointer, which are one 16-bit access in two ops), takes connected
 components, and types each component:
 
-``state`` (written at play time) / ``init_constant`` (written by init only) /
+``state`` (written at play time, or by init in a union build) / ``init_constant``
+(written by init only) /
 ``const`` (read-only, inside the load band) / ``image`` (read-only, outside it) /
 ``io`` (``$D000-$DFFF``). Regions may lie inside executed instruction bytes --
 that is what an SMC operand cell is.
@@ -135,19 +136,24 @@ def _domain_gcd(values):
     return g
 
 
-def _kind(addrs, trace):
+def _kind(addrs, trace, init_kind="init_constant"):
     if any(IO_LO <= a <= IO_HI for a in addrs):
         return "io"
     if addrs & trace.written_play:
         return "state"
     if addrs & trace.written_init:
-        return "init_constant"
+        return init_kind
     lo, hi = trace.meta["load"]
     return "const" if all(lo <= a < hi for a in addrs) else "image"
 
 
-def build_regions(trace, lifted=None):
-    """Regions of ``trace``; ``lifted`` adds the residualised cell reads."""
+def build_regions(trace, lifted=None, init_kind="init_constant"):
+    """Regions of ``trace``; ``lifted`` adds the residualised cell reads.
+
+    ``init_kind`` types what only ``init`` writes: ``init_constant`` for one
+    subtune (the printer folds it), ``state`` for a union over subtunes, where the
+    bytes are whatever that subtune's init put there.
+    """
     accesses = _accesses(trace, lifted)
     dsu = _DSU()
     for _key, _i, _m, addrs in accesses:
@@ -161,7 +167,7 @@ def build_regions(trace, lifted=None):
     regions = []
     for n, (root, addrs) in enumerate(sorted(groups.items(), key=lambda kv: min(kv[1]))):
         base = min(addrs)
-        kind = _kind(addrs, trace)
+        kind = _kind(addrs, trace, init_kind)
         r = Region(
             id=n,
             name="%s_%04X" % (kind, base),

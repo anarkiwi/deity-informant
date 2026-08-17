@@ -1,0 +1,49 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 58413,
+  "ir_blocks": 112,
+  "ir_procs": 2,
+  "ir_statements": 221,
+  "regions": 46,
+  "sites": 271,
+  "trace_calls": 72,
+  "verify_cpu_seconds": 0.0
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 25140,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-16T23:38:38Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 71,
+   "inputs_pinned": 0,
+   "interp_prefix": 2000,
+   "period": 1,
+   "seconds": 1.44,
+   "song": 23,
+   "ticks": 72,
+   "trace_first_repeat": 71,
+   "trace_period": 1
+  }
+ ],
+ "tune": "Ghouls_n_Ghosts.sid"
+}

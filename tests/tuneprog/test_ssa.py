@@ -144,6 +144,66 @@ def test_constprop_folds_a_const_table_load():
     assert 0x5A in consts or any(type(s.v) is Const and s.v.v == 0x5A for s in st)
 
 
+def test_an_init_patched_immediate_folds_to_a_constant_in_the_tick():
+    # the SID Wizard shape: init writes an immediate operand of the play code once.
+    # The site loads the cell (it is not a constant of the file), and S4 folds that
+    # load back to the byte init left there -- but only outside init.
+    code = asm(
+        PLAY,
+        "init: LDA #$2A",
+        "STA vol+1",
+        "RTS",
+        "play: vol: LDA #$00",
+        "STA $D418",
+        "RTS",
+    )
+    T, prog = tuneprog(code, calls=2, s4=True)
+    cell = code.labels["vol"] + 1
+    assert cell in T.cells and cell not in T.written_play
+    tick = prog.procs["tick"]
+    assert not [
+        s
+        for b in tick.blocks.values()
+        for s in b.stmts
+        if type(s) is Let and type(s.e) is ir.Load and type(s.e.a) is Const and s.e.a.v == cell
+    ]
+    assert any(
+        type(s) is ir.Store and s.cls == "io" and type(s.v) is Const and s.v.v == 0x2A
+        for b in tick.blocks.values()
+        for s in b.stmts
+    )
+    # init itself never folds: the cell has no value there until its own store runs
+    assert any(
+        type(s) is ir.Store and type(s.a) is Const and s.a.v == cell
+        for b in prog.procs["init"].blocks.values()
+        for s in b.stmts
+    )
+    assert verify(prog, T, calls=2).div is None
+
+
+def test_an_init_written_variable_is_not_folded_away():
+    # only *cells* fold: an ordinary byte init writes stays a named load, so the
+    # printer can still show the variable (and --songs all stays sound).
+    code = asm(
+        PLAY,
+        "init: LDA #$2A",
+        "STA v",
+        "RTS",
+        "play: LDA v",
+        "STA $D418",
+        "RTS",
+        "v: BRK",
+    )
+    _T, prog = tuneprog(code, calls=2, s4=True)
+    loads = [
+        s.e.a.v
+        for b in prog.procs["tick"].blocks.values()
+        for s in b.stmts
+        if type(s) is Let and type(s.e) is ir.Load and type(s.e.a) is Const
+    ]
+    assert code.labels["v"] in loads
+
+
 def test_copyprop_chains_and_merge_chains():
     blocks = {
         "A": Block("A", [Let("t1", Var("A")), Let("t2", Var("t1"))], Goto("B")),

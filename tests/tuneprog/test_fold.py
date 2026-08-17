@@ -250,7 +250,7 @@ def test_a_shared_tail_two_jumps_reach_becomes_a_procedure_instead_of_a_goto():
     assert "goto" not in doc, doc
     head = [l for l in doc.splitlines() if l.startswith("p_%04X(x):" % code.labels["loadregs"])]
     assert head, doc  # the tail is a procedure taking the voice index it reads
-    assert doc.count("sid[x/7].ctrl") == 1 and doc.count("(x=") == 2  # one copy, two calls
+    assert doc.count("sid.reg[4 + x]") == 1 and doc.count("(x=") == 2  # one copy, two calls
 
 
 def test_a_tail_promotion_that_would_not_pay_is_rolled_back():

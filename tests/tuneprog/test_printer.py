@@ -79,8 +79,8 @@ def test_a_ghost_image_prints_as_the_registers_it_mirrors():
     from test_recover import ghost_tune  # pylint: disable=import-outside-toplevel
 
     doc = _text(ghost_tune("LDX #$07", "LDA cnt", "AND #$FE", "STA $1204,X"), calls=3)
-    assert "sid[v] = ghost[v]" in doc  # the flush loop, register by register
-    assert "ghost[1].ctrl = " in doc  # a per-voice write, named by its register
+    assert "sid.reg[v] = ghost.reg[v]" in doc  # the flush loop, register by register
+    assert "ghost[1].ctrl = " in doc  # a write at a constant address, by its register
     assert "ghost " in doc and "sid_image" in doc and "flushed to $D400" in doc
 
 

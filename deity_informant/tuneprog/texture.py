@@ -11,7 +11,8 @@ import networkx as nx
 
 from .idioms import CMP, _neg, fold
 from .ir import Bin, Call, Const, Goto, If, Let, Load, Return, Store, Switch, Var, succs
-from .ssa import apply_stmt, apply_term, merge_chains, preds_of, prune, sub_expr, use_counts
+from .ssa import merge_chains, preds_of, prune
+from .irwalk import apply_stmt, apply_term, sub_expr, use_counts
 
 STACK = (0x0100, 0x01FF)
 

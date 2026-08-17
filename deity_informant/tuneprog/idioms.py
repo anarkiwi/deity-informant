@@ -27,7 +27,7 @@ Public API: :func:`rewrite` (the pass :func:`~.ssa.simplify` calls),
 from __future__ import annotations
 
 from .ir import Bin, Const, Let, Load, MASK, Phi, Store, Var, evalbin
-from .ssa import apply_stmt, apply_term, pure, sub_expr, use_counts
+from .irwalk import apply_stmt, apply_term, pure, sub_expr, use_counts
 
 CMP = ("==", "!=", "<", "<=")
 _ID0 = ("+", "-", "|", "^", "<<", ">>")

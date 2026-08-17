@@ -120,7 +120,7 @@ def test_je_suis_linus_is_certified_and_flushes_a_ghost_image():
     assert len(ghost) == 1 and names.region[ghost[0]] == "ghost"
     img = next(r for r in prog.storage if r.id == ghost[0])
     assert (img.base, img.size, names.image[ghost[0]]) == (0x14CA, 25, 0xD400 - 0x14CA)
-    assert "for v in 24..0:" in text and "sid[v] = ghost[v]" in text
+    assert "for v in 24..0:" in text and "sid.reg[v] = ghost.reg[v]" in text
     assert "ghost[x/7].ctrl = " in text and "ghost[x/7].freq_lo" in text
     assert "ghost.mode_vol = " in text and "ghost.res_route = " in text
 
@@ -137,9 +137,10 @@ def test_je_suis_linus_dispatches_through_the_patched_low_bytes():
     assert {0x1289, 0x1295, 0x131E} <= trace.cells  # the low byte is the variable
     assert not {0x128A, 0x1296, 0x131F} & trace.cells  # the high byte is a constant
 
-    # every arm is a target the trace took; the default traps
+    # the table's own entries are arms too: what the trace never dispatched traps
     sw = [b.term for p in prog.procs.values() for b in p.blocks.values() if type(b.term) is Switch]
     assert sw and all(t.default == "" for t in sw)
+    assert len(cells[0x1289]) >= 12 and text.count("trap 'unverified'") >= 7
     assert "switch b1295:" in text and "case $1006:" in text
 
 
@@ -203,7 +204,7 @@ def test_do_it_again_is_the_same_player_at_another_address():
     assert len(ghost) == 1 and names.region[ghost[0]] == "ghost"
     img = next(r for r in prog.storage if r.id == ghost[0])
     assert img.size == 25 and names.image[ghost[0]] == 0xD400 - img.base
-    assert "sid[v] = ghost[v]" in text and "for v in 24..0:" in text
+    assert "sid.reg[v] = ghost.reg[v]" in text and "for v in 24..0:" in text
     assert re.search(r"for v in 0, 1, 2:\n\s+\w+\(x=\(v \* 7\)\)", text), text
     assert names.groups["voice"]["stride"] == 7
     assert len(_dispatch(prog)) >= 3 and len(trace.cells) >= 10
