@@ -47,12 +47,12 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 243   tracevm 325  trace 252    tracedata 300  lift 227
-              cfg 309       regions 226  jumptab 179
-program       ir 401        interp 228   irwalk 308   graph 70       build 481
-              ssa 423       idioms 357   emit 337     verify 299
-presentation  structure 455 inline 199   texture 475  frame 320      word 369
-              fold 472      tails 165    unroll 342   recover 488    live 96
+front end     machine 243  tracevm 325  trace 257  tracedata 300  lift 227
+              cfg 309  regions 226  jumptab 179
+program       ir 401  interp 228  irwalk 308  graph 70  build 481
+              ssa 423  idioms 357  emit 337  verify 299
+presentation  structure 455  inline 199  texture 475  frame 320  word 369
+              fold 472  tails 165  unroll 342  recover 488  live 96
 text          pseudocode 498  printer 149
 driver        pipeline 386  __init__ 114
 baseline      ghidra_facts 219  ghidra_compare 182   33 modules, 9,899 lines
