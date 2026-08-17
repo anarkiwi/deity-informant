@@ -11,7 +11,8 @@ from __future__ import annotations
 import networkx as nx
 
 from .ir import Bin, Const, If, Let, Load, Return, Store, Switch, Trap, Var, retval, succs
-from .ssa import preds_of, stmt_uses, sub_expr, term_uses, use_counts
+from .ssa import preds_of
+from .irwalk import stmt_uses, sub_expr, term_uses, use_counts
 
 
 def _pure(e):

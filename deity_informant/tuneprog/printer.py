@@ -10,7 +10,7 @@ from __future__ import annotations
 from .idioms import CMP, fold
 from .ir import REGVAR, Assert, Bin, Call, Const, Let, Load, Return, Store, Var, retval
 from .recover import GLOBAL_REG, VOICE_REG
-from .ssa import stmt_uses, term_uses, uses_of
+from .irwalk import stmt_uses, term_uses, uses_of
 from .structure import Blk, Case, Cond, For, Jump, Loop
 from .word import R16, W16, uses16
 
