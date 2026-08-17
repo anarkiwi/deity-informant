@@ -1,9 +1,8 @@
-"""S2 static closure -- a patched ``JMP``'s domain from the tables its writers copy.
+"""S2 static closure -- a patched jump's domain from the tables its writers copy.
 
-``LDA T1,X; STA J+1; LDA T2,X; STA J+2; JMP`` is a switch whose observed arms are
-the commands the trace met; the rest of the table is a known target set, added as
-arms that ``trap "unverified"``. The domain is the tables' own observed extent,
-interior gaps included (design S2/S6, anatomy 3.6.8).
+``LDA T,X; STA J+1`` before a ``JMP`` or an always-taken branch is a switch; the
+table's other entries are targets too, and become arms that ``trap "unverified"``.
+A table runs to the nearest instruction or foreign region, on its layout's step.
 """
 
 from __future__ import annotations
@@ -54,55 +53,127 @@ def _source(addr, writers, rgn, image):
     return hit and ("table",) + hit
 
 
-def _domain(sources):
-    """Index values every table source covers, in order."""
+def _domain(sources, spans, cap):
+    """Index values every table source covers, on the step its layout implies.
+
+    Halves one byte apart are a table of words, so its entries are two apart;
+    parallel columns (and a one-byte table) step by one.
+    """
+    tabs = [s for s in sources if s[0] == "table"]
+    step = 2 if len(tabs) == 2 == len(sources) and abs(tabs[0][2] - tabs[1][2]) == 1 else 1
     lo, hi = None, None
-    for s in sources:
-        if s[0] != "table":
-            continue
-        a, b = s[1].base - s[2], s[1].base + s[1].size - s[2]
-        lo, hi = (a if lo is None else max(lo, a)), (b if hi is None else min(hi, b))
-    return range(lo, hi) if lo is not None and lo < hi else range(0)
+    for _t, r, base, _i in tabs:
+        a, b = spans.get(r.id, (r.base, r.base + r.size))
+        lo = a - base if lo is None else max(lo, a - base)
+        hi = b - base if hi is None else min(hi, b - base)
+    lo = 0 if lo is None else max(lo, 0)  # the index register is an unsigned byte
+    if not tabs or lo >= hi:
+        return range(0)
+    first = lo + ((tabs[0][1].base - tabs[0][2]) - lo) % step
+    return range(first, hi, step) if (hi - first + step - 1) // step <= cap else range(0)
+
+
+def _cell(term, defs):
+    """``(cell address, width, branch base)`` of a computed target, or ``None``.
+
+    A patched ``JMP`` reads its operand as one 16-bit value; a patched branch reads
+    one byte and sign-extends it onto the address after the instruction.
+    """
+    e = _resolve(term.e, defs)
+    if type(e) is Load and e.w == 2 and type(e.a) is Const:
+        return e.a.v, 2, None
+    if type(e) is not Bin or e.op != "-" or type(e.a) is not Bin or e.a.op != "+":
+        return None
+    sign, add = e.b, e.a
+    base = next((x for x in (add.a, add.b) if type(x) is Const), None)
+    cell = next((x for x in (add.a, add.b) if type(x) is not Const), None)
+    if base is None or type(sign) is not Bin or sign.op != "<<":
+        return None
+    if type(sign.a) is not Bin or sign.a.op != "&" or sign.a.a != cell:
+        return None
+    hit = _resolve(cell, defs)
+    ok = type(hit) is Load and hit.w == 1 and type(hit.a) is Const
+    return (hit.a.v, 1, base.v) if ok else None
 
 
 def _byte(src, x, image):
     return image[src[2] + x] if src[0] == "table" else src[1]
 
 
-def _cell(term, defs):
-    """The constant address of a switch over a 16-bit load, or ``None``."""
-    e = _resolve(term.e, defs)
-    return e.a.v if type(e) is Load and e.w == 2 and type(e.a) is Const else None
+def _target(srcs, x, image, base):
+    """The address arm ``x`` of the table jumps to."""
+    if base is None:
+        return _byte(srcs[0], x, image) | (_byte(srcs[1], x, image) << 8)
+    b = _byte(srcs[0], x, image)
+    return (base + b - ((b & 0x80) << 1)) & 0xFFFF
 
 
-def enumerate_targets(prog, limit=64):
+def owners(prog, code, addrs=None):
+    """``{address: region}`` for every byte an access touched; an instruction is ``-1``."""
+    out = {a: -1 for a in code}
+    for r in prog.storage:
+        if r.id < 0:
+            continue
+        for a in (addrs or {}).get(r.id) or range(r.base, r.base + r.size):
+            out[a] = r.id
+    return out
+
+
+def span(r, own, addr_owner, band):
+    """A table's static extent: out to the nearest instruction or foreign access.
+
+    The columns of one table are not foreign to each other, which is what lets a
+    table of words grow past the halves it interleaves with.
+    """
+    a, b = r.base, r.base + r.size
+    while a > band[0] and addr_owner.get(a - 1, r.id) in own:
+        a -= 1
+    while b < band[1] and addr_owner.get(b, r.id) in own:
+        b += 1
+    return a, b
+
+
+def enumerate_targets(prog, code=(), addrs=None, limit=64):
     """Add a patched jump's unobserved table targets as ``unverified`` arms; count them."""
-    lo, hi = prog.meta.get("load", (0, 0x10000))
+    band = prog.meta.get("load", (0, 0x10000))
     image = prog.image()
     rgn = {r.id: r for r in prog.storage}
+    addr_owner = owners(prog, code, addrs)
     added = 0
     for proc in prog.procs.values():
         defs = _defs(proc)
         writers = _writers(proc, defs)
         for b in list(proc.blocks.values()):
-            if type(b.term) is not Switch or (cell := _cell(b.term, defs)) is None:
+            hit = _cell(b.term, defs) if type(b.term) is Switch else None
+            if hit is None:
                 continue
-            srcs = [_source(cell + k, writers, rgn, image) for k in (0, 1)]
+            cell, width, base = hit
+            srcs = [_source(cell + k, writers, rgn, image) for k in range(width)]
             if not all(srcs) or not any(s[0] == "table" for s in srcs):
                 continue
             idx = {s[3] for s in srcs if s[0] == "table"}
-            dom = _domain(srcs) if len(idx) == 1 else range(0)
-            seen = {v for v, _l in b.term.cases}
-            extra = []
-            for x in dom if len(dom) <= limit else ():
-                t = _byte(srcs[0], x, image) | (_byte(srcs[1], x, image) << 8)
-                if t in seen or not lo <= t < hi:
-                    continue
-                seen.add(t)
-                lbl = "U%04X_%04X" % (cell, t)
-                proc.blocks[lbl] = Block(lbl, [], Trap("unverified"), t)
-                extra.append((t, lbl))
-                added += 1
-            if extra:
-                b.term = Switch(b.term.e, tuple(b.term.cases) + tuple(extra), b.term.default)
+            cols = {s[1].id for s in srcs if s[0] == "table"}
+            ext = {i: span(rgn[i], cols, addr_owner, band) for i in cols}
+            dom = _domain(srcs, ext, limit) if len(idx) == 1 else range(0)
+            added += _arms(proc, b, srcs, dom, image, base, band, addr_owner)
     return added
+
+
+def _arms(proc, b, srcs, dom, image, base, band, owner=()):
+    """Give the block an arm for every table entry the trace never dispatched.
+
+    An entry that addresses a byte some access reads is data, not a target.
+    """
+    seen = {v for v, _l in b.term.cases}
+    extra = []
+    for x in dom:
+        t = _target(srcs, x, image, base)
+        if t in seen or not band[0] <= t < band[1] or owner.get(t, -1) >= 0:
+            continue
+        seen.add(t)
+        lbl = "U%04X_%04X" % (b.src, t)
+        proc.blocks[lbl] = Block(lbl, [], Trap("unverified"), t)
+        extra.append((t, lbl))
+    if extra:
+        b.term = Switch(b.term.e, tuple(b.term.cases) + tuple(extra), b.term.default)
+    return len(extra)

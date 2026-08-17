@@ -289,6 +289,15 @@ def dec(j):
     return t(*[dec(a) for a in j[1:]])
 
 
+def retexpr(proc, term, want):
+    """The value one ``Return`` hands back, when a caller reads exactly one register."""
+    regs = [i for i in want if i in proc.rets]
+    if len(regs) != 1:
+        return None
+    v = term.vals[proc.rets.index(regs[0])] if len(term.vals) > proc.rets.index(regs[0]) else None
+    return None if v is None or type(v) is Var else v
+
+
 def retval(proc):
     """The value a play entry hands the host in ``A``, when it is a computed one.
 

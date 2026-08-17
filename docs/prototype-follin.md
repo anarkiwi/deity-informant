@@ -95,7 +95,7 @@ subtune's write log left where verification needs it. What `init` writes is type
 
 | # | claim | measured |
 |---|---|---|
-| 1 | patched-`JMP` dispatch becomes a switch | three switches on `load16($6375/$6562/$6751)`, **19 arms each** (14/18/15 observed + 5/1/4 statically enumerated, `trap 'unverified'`) — the 19 commands the tables carry; `$93`/`$94` lie outside the observed table extent |
+| 1 | patched-`JMP` dispatch becomes a switch | three switches on `load16($6375/$6562/$6751)`, **21/23/23 arms** (14/18/15 observed, the rest statically enumerated as `trap 'unverified'`) — the commands the tables carry, `$93`/`$94` included since the SID Wizard pass made a table run out to the nearest instruction or foreign access rather than stopping at the bytes an accessor touched (two of the 23 are that rule over-reaching past the 21-entry table) |
 | 2 | data-dependent SID address | `sid.reg[a327] = b730E[...]` inside the `$85` list loop; the write's envelope is `$D400–$D418`, and `(addr, val)` equality is part of the certificate |
 | 3 | computed store operand | in the SFX subtunes' `init`: a store **through** `load16($6219)` whose region is `[$640F, $67ED]` — exactly the three voices' fixed-length cells (song 16) |
 | 4 | 32 subtunes from the pre-init image | all 32 certified, 0 divergences, 0 envelope traps; 31 complete via a period (§6) |
@@ -210,6 +210,12 @@ divergences, 0 envelope traps**.
 `ghouls-songs-all.json`: one tuneprog (1,442 sites, 75 regions, 1,567 statements)
 from the union of all 32 traces, verified subtune by subtune — 220,049 calls,
 0 divergences, 31 of 32 complete.
+
+All 33 were re-run after the SID Wizard pass changed how far a jump table
+reaches ([prototype-sidwizard.md](prototype-sidwizard.md) §3): every certified
+result — ticks, periods, completeness, 0 divergences — is unchanged, and only the
+`ir_blocks` count moves, by the arms the new extent adds (and the ones below a
+table's base it no longer invents).
 
 Automatas (`automatas.json`, `-6581`, `-8580`) and Commando (`commando-song1/2`)
 were re-run on the new front end and come out *byte-identical* apart from the

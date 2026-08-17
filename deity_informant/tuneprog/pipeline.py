@@ -17,6 +17,7 @@ from pathlib import Path
 from . import (
     emit,
     fold,
+    frame,
     ir,
     jumptab,
     printer,
@@ -175,7 +176,8 @@ def build(trace, name=None, sid_model=None, union=False):
     prog = build_ir(trace, lifted, regions, procs, meta={"name": name, "sid_model": sid_model})
     folds = None if union else ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
     ssa.simplify(prog, rewrite, folds=folds)
-    jumptab.enumerate_targets(prog)
+    code = {a for k, l in lifted.items() for a in range(k[0], k[0] + l.length)}
+    jumptab.enumerate_targets(prog, code, {r.id: r.addrs for r in regions})
     return prog, regions, procs
 
 
@@ -306,16 +308,17 @@ def present(prog):
     Structuring, texture removal, 16-bit views, outlining and copy folding; the
     argument is never touched.
     """
-    view = structure.view(prog, printer.needed(prog)[0])
-    texture.clean(view)
-    structure.inline(view, printer.needed(view)[0])
+    keep = structure.wants(prog, printer.needed(prog)[0])
+    view = structure.view(prog, printer.needed(prog)[0], keep)
+    texture.clean(view, frame.deltas(prog))
+    structure.inline(view, printer.needed(view)[0], keep)
     texture.tidy(view)
     names = recover.recover(view, structure.structure(view))
     word.fold16(view, names)
     fold.outline(view, names, *printer.needed(view))
     tails.promote_tails(view, names)
-    st = structure.structure(view)
     live, params = printer.needed(view)
+    st = structure.structure(view, structure.wants(view, live))
     unroll.unroll(st, live, fold.livearg(view, params))
     return view, st, names
 
