@@ -2,34 +2,11 @@
 
 import re
 
-from deity_informant.tuneprog import pipeline, printer, texture
+from deity_informant.tuneprog import texture
 from deity_informant.tuneprog.ir import Block, Const, Goto, If, Proc, Return, Store, Var
 
 from _asm import asm
-from _prog import PLAY, tuneprog
-
-
-def _text(code, calls=6, **kw):
-    """The printed tuneprog of a snippet, through the whole presentation stack."""
-    _T, prog = tuneprog(code, calls=calls, s4=True, **kw)
-    before = prog.to_json()
-    view, st, names = pipeline.present(prog)
-    assert prog.to_json() == before
-    return printer.render(view, st, names, pcs=False)
-
-
-def _body(doc, name):
-    """The lines of one printed procedure."""
-    out, on = [], False
-    for line in doc.splitlines():
-        if line.startswith("%s(" % name):
-            on = True
-            continue
-        if on and (line.startswith("```") or line and not line.startswith(" ")):
-            break
-        if on:
-            out.append(line)
-    return out
+from _prog import PLAY, printed as _text, proc_body as _body, tuneprog
 
 
 # ---- copy folding ------------------------------------------------------------

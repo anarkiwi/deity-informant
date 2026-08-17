@@ -1,5 +1,6 @@
-"""Snippet -> tuneprog helpers shared by the IR, SSA, idiom, codegen and verify tests."""
+"""Snippet -> tuneprog helpers shared by the IR, SSA, idiom, codegen and print tests."""
 
+from deity_informant.tuneprog import pipeline, printer
 from deity_informant.tuneprog.build import build_ir
 from deity_informant.tuneprog.cfg import build_procs
 from deity_informant.tuneprog.idioms import rewrite
@@ -48,3 +49,26 @@ def counter(*lines, cnt=True):
     if cnt:
         src += ["cnt: BRK"]
     return asm(PLAY, *src)
+
+
+def printed(code, calls=6, **kw):
+    """The printed tuneprog of a snippet, through the whole presentation stack."""
+    _T, prog = tuneprog(code, calls=calls, s4=True, **kw)
+    before = prog.to_json()
+    view, st, names = pipeline.present(prog)
+    assert prog.to_json() == before  # S5/S6 annotate; the certified program is untouched
+    return printer.render(view, st, names, pcs=False)
+
+
+def proc_body(doc, name):
+    """The lines of one printed procedure."""
+    out, on = [], False
+    for line in doc.splitlines():
+        if line.startswith("%s(" % name):
+            on = True
+            continue
+        if on and (line.startswith("```") or (line and not line.startswith(" "))):
+            break
+        if on:
+            out.append(line)
+    return out

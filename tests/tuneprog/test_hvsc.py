@@ -6,50 +6,16 @@ Automatas (defMON, anatomy 3.7) checks the facts of
 per-call SID write list to the plain :class:`~deity_informant.vm.PcodeVM`.
 """
 
-import os
-from pathlib import Path
-
 import pytest
 
-pytest.importorskip("pysidtracker")
+from deity_informant import PcodeVM, c64, lift, run_sub
+from deity_informant.lifter import ILLEGAL_OPCODES
+from deity_informant.tuneprog.cfg import procs_json
+from deity_informant.tuneprog.regions import index_regions
 
-from pysidtracker.testing import resolve_tune  # noqa: E402
-
-from deity_informant import PcodeVM, c64, lift, run_sub  # noqa: E402
-from deity_informant.lifter import ILLEGAL_OPCODES  # noqa: E402
-from deity_informant.tuneprog.cfg import build_procs, procs_json  # noqa: E402
-from deity_informant.tuneprog.lift import lift_trace  # noqa: E402
-from deity_informant.tuneprog.machine import find_entries  # noqa: E402
-from deity_informant.tuneprog.regions import build_regions, index_regions  # noqa: E402
-from deity_informant.tuneprog.trace import Tracer  # noqa: E402
+from _hvsc import AUTOMATAS, COMMANDO, front_end, tune
 
 pytestmark = pytest.mark.hvsc
-
-_CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache")) / "hvsc"
-PAL_CLOCK = 985248
-AUTOMATAS = "MUSICIANS/G/Goto80/Automatas.sid"
-COMMANDO = "MUSICIANS/H/Hubbard_Rob/Commando.sid"
-
-
-def _tune(relpath):
-    path = resolve_tune(relpath, cache_dir=_CACHE)
-    if path is None:
-        pytest.skip("%s unavailable (no HVSC tree, no cache, offline)" % relpath)
-    return Path(path).read_bytes()
-
-
-def _front_end(data, seconds):
-    """Trace ``seconds`` of music, then lift, type storage and build procedures."""
-    img, schedule = find_entries(data)
-    entry = schedule[0]
-    calls = int(seconds * PAL_CLOCK / entry.cycles_per_tick)
-    tracer = Tracer(img, entry)
-    tracer.run_init()
-    tracer.run_calls(calls)
-    trace = tracer.trace()
-    lifted = lift_trace(trace)
-    regions = build_regions(trace, lifted)
-    return entry, calls, trace, lifted, regions, build_procs(trace, lifted, regions)
 
 
 def _reference_writes(data, calls, cycles_per_tick):
@@ -85,8 +51,8 @@ def _per_call(trace, calls):
 
 
 def test_automatas_front_end():
-    data = _tune(AUTOMATAS)
-    entry, calls, trace, lifted, regions, procs = _front_end(data, seconds=20)
+    data = tune(AUTOMATAS)
+    entry, calls, trace, lifted, regions, procs = front_end(AUTOMATAS, seconds=20)
 
     # schedule (doc section 2: CIA-1 TA = $0998 -> 2457 cycles, 8 ticks per frame)
     assert (entry.kind, entry.addr, entry.cycles_per_tick, entry.source) == (
@@ -153,8 +119,8 @@ def test_automatas_front_end():
 
 
 def test_commando_front_end_smoke():
-    data = _tune(COMMANDO)
-    entry, calls, trace, _lifted, regions, procs = _front_end(data, seconds=10)
+    data = tune(COMMANDO)
+    entry, calls, trace, _lifted, regions, procs = front_end(COMMANDO, seconds=10)
     assert (entry.kind, entry.addr, entry.source) == ("sub", 0x5012, "pal_video")
     assert trace.meta["unmatched_rts"] == 0 and trace.sites and procs
     assert {p.kind for p in procs.values()} == {"init", "tick", "sub"}

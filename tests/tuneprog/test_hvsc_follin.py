@@ -5,60 +5,18 @@ fixpoint, and Emomyst (whose init patches ~30 operands through a relocation loop
 at 10 s. The full 32-subtune certificates are ``docs/certificates/ghouls-*.json``.
 """
 
-import os
-from pathlib import Path
-
 import pytest
 
-pytest.importorskip("pysidtracker")
+from deity_informant.tuneprog import ssa
+from deity_informant.tuneprog.ir import Const, Let, Load, Store, Switch, Var, retval
 
-from pysidtracker.testing import resolve_tune  # noqa: E402
-
-from deity_informant.tuneprog import pipeline, printer, ssa  # noqa: E402
-from deity_informant.tuneprog.ir import (  # noqa: E402
-    Const,
-    Let,
-    Load,
-    Store,
-    Switch,
-    Var,
-    retval,
-)
-from deity_informant.tuneprog.machine import find_entries  # noqa: E402
-from deity_informant.tuneprog.trace import Tracer  # noqa: E402
-from deity_informant.tuneprog.verify import certify, verify  # noqa: E402
+from _hvsc import EMOMYST, GNG, decompiled, switches
 
 pytestmark = pytest.mark.hvsc
 
-_CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache")) / "hvsc"
-PAL_CLOCK = 985248
-GNG = "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid"
-EMOMYST = "MUSICIANS/H/Hermit/Emomyst.sid"
 DISPATCH = (0x6375, 0x6562, 0x6751)  # the three voices' patched JMP operands
 VOICE = (0x6234, 0x6421, 0x6610)  # the three copies of the 493-byte template
 SMC = (0x62EE, 0x64DB, 0x66CA, 0x6269, 0x640F, 0x65FE, 0x67ED, 0x6800)
-
-
-def _tune(relpath):
-    path = resolve_tune(relpath, cache_dir=_CACHE)
-    if path is None:
-        pytest.skip("%s unavailable (no HVSC tree, no cache, offline)" % relpath)
-    return Path(path).read_bytes()
-
-
-def _run(relpath, seconds, song=None, until_period=False, prefix=500):
-    """Trace, decompile, verify: ``(trace, prog, verifier, certificate)``."""
-    img, schedule = find_entries(_tune(relpath))
-    entry = schedule[0]
-    calls = int(seconds * PAL_CLOCK / entry.cycles_per_tick)
-    tr = Tracer(img, entry, song=song)
-    tr.run_init()
-    while tr.calls_done < calls and not (until_period and tr.period is not None):
-        tr.run_calls(min(256, calls - tr.calls_done))
-    trace = tr.trace()
-    prog, _regions, _procs = pipeline.build(trace, Path(relpath).name)
-    v = verify(prog, trace, calls=trace.meta["calls"], prefix=prefix)
-    return trace, prog, v, certify(prog, v, prefix=prefix)
 
 
 def _stmts(prog):
@@ -71,26 +29,12 @@ def _defs(proc):
 
 def _switches(prog, cell):
     """Switches whose value is the 16-bit load of ``cell`` (a patched JMP operand)."""
-    out = []
-    for p in prog.procs.values():
-        defs = _defs(p)
-        for b in p.blocks.values():
-            t = b.term
-            if type(t) is not Switch:
-                continue
-            e = defs.get(t.e.n, t.e) if type(t.e) is Var else t.e
-            if type(e) is Load and e.w == 2 and type(e.a) is Const and e.a.v == cell:
-                out.append(t)
-    return out
-
-
-def _text(prog):
-    view, st, names = pipeline.present(prog)
-    return printer.render(view, st, names, None)
+    return [t for a, _w, t in switches(prog, width=2) if a == cell]
 
 
 def test_ghouls_song_one_over_thirty_seconds():
-    trace, prog, v, cert = _run(GNG, seconds=30, song=0)
+    run = decompiled(GNG, seconds=30, song=0, prefix=500, text=False)
+    trace, prog, v, cert = run.trace, run.prog, run.v, run.cert
     sub = cert["subtunes"][0]
     assert cert["divergence"] is None and v.div is None
     assert sub["divergences"] == 0 and sub["envelope_traps"] == 0 and sub["seconds"] > 29
@@ -137,14 +81,15 @@ def test_ghouls_song_one_over_thirty_seconds():
     reached = [len([k for k in trace.sites if bounds[i] <= k[0] < bounds[i + 1]]) for i in range(3)]
     assert min(reached) > 100 and len(set(reached)) > 1, reached
 
-    doc = _text(prog)
+    doc = decompiled(GNG, seconds=30, song=0, prefix=500).text
     assert "sid.reg[" in doc  # 2: the data-dependent register prints as one
     assert "return (" in doc  # 5
     assert "for v in" in doc  # copy folding is on: the init clear and the $88 arm
 
 
 def test_ghouls_sound_effect_subtune_is_complete():
-    trace, prog, v, cert = _run(GNG, seconds=25, song=15, until_period=True, prefix=100)
+    run = decompiled(GNG, seconds=25, song=15, until_period=True, prefix=100, text=False)
+    trace, prog, v, cert = run.trace, run.prog, run.v, run.cert
     sub = cert["subtunes"][0]
     assert sub["divergences"] == 0 and sub["envelope_traps"] == 0
     assert sub["complete"] and sub["period"] == 1  # the effect ends and the state stops
@@ -167,7 +112,8 @@ def test_ghouls_sound_effect_subtune_is_complete():
 
 
 def test_sid_wizard_still_certifies_after_the_init_cell_rule():
-    trace, prog, v, cert = _run(EMOMYST, seconds=10)
+    run = decompiled(EMOMYST, seconds=10, prefix=500, text=False)
+    trace, prog, v, cert = run.trace, run.prog, run.v, run.cert
     assert cert["divergence"] is None and v.div is None
     assert cert["subtunes"][0]["divergences"] == 0
     # init relocates the player, so most of its cells are init-only; the tick code

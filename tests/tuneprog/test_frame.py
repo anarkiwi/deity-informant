@@ -2,18 +2,11 @@
 
 import re
 
-from deity_informant.tuneprog import frame, idioms, live, pipeline, printer, structure
+from deity_informant.tuneprog import frame, idioms, live, structure
 from deity_informant.tuneprog.ir import Let, Var
 
 from _asm import asm
-from _prog import PLAY, tuneprog
-
-
-def _text(code, calls=6, **kw):
-    """The printed tuneprog of a snippet, through the whole presentation stack."""
-    _T, prog = tuneprog(code, calls=calls, s4=True, **kw)
-    view, st, names = pipeline.present(prog)
-    return printer.render(view, st, names, pcs=False)
+from _prog import PLAY, printed as _text, tuneprog
 
 
 def _view(code, calls=6, **kw):
