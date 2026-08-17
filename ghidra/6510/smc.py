@@ -167,9 +167,25 @@ def smc_sinc(illegal_text):
     )
 
 
-def inject_context(base_text):
-    """``base_text`` with the context include after its last register definition."""
+# stock pushes inst_next and returns to it: self-consistent, one byte off hardware
+STACK = ((":JSR", "inst_next;", "inst_next - 1;"), (":RTS", "return [tmp];", "return [tmp+1];"))
+
+
+def _in_ctor(text, head, old, new):
+    """Replace ``old`` inside the constructor starting with ``head`` only."""
+    i = text.find("\n" + head)
+    j = text.find("\n}", i)
+    if i < 0 or j < 0 or old not in text[i:j]:
+        return text
+    return text[:i] + text[i:j].replace(old, new, 1) + text[j:]
+
+
+def patch_base(base_text):
+    """``base_text`` with the context include and the hardware JSR/RTS convention."""
     lines = base_text.splitlines()
     i = max(n for n, l in enumerate(lines) if l.startswith("define register"))
     lines.insert(i + 1, '@include "6510_context.sinc"')
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+    for head, old, new in STACK:
+        text = _in_ctor(text, head, old, new)
+    return text

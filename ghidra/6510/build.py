@@ -82,7 +82,7 @@ def main(argv=None):
     base = find_base_slaspec()
     sleigh = args.sleigh or find_sleigh()
     # generated build artifacts; SLEIGH wants context defined before constructors
-    (LANGDIR / "6502.slaspec").write_text(smc.inject_context(base.read_text()))
+    (LANGDIR / "6502.slaspec").write_text(smc.patch_base(base.read_text()))
     (LANGDIR / "6510_context.sinc").write_text(smc.CONTEXT)
     (LANGDIR / "6510_smc.sinc").write_text(
         smc.smc_sinc((LANGDIR / "6510_illegal.sinc").read_text())

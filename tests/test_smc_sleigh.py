@@ -111,6 +111,18 @@ def test_smc_var_guards_the_instruction_with_a_return(ctx6510):
     assert "RETURN" not in _kinds(_ops(ctx6510, EOR_PC))
 
 
+def test_jsr_rts_use_the_hardware_stack_convention(ctx6510):
+    """A 6510 program can read its own return address, so it must be ``ret - 1``."""
+    ops = list(ctx6510.translate(bytes.fromhex("201234"), 0x2000, 0, 1).ops)
+    store = next(o for o in ops if o.opcode.name == "STORE")
+    src = _defs(ops)[(store.inputs[2].space.name, store.inputs[2].offset)]
+    assert src.opcode.name == "INT_SUB" and src.inputs[0].offset == 0x2003
+    rts = list(ctx6510.translate(bytes.fromhex("60"), 0x2000, 0, 1).ops)
+    ret = next(o for o in rts if o.opcode.name == "RETURN")
+    add = _defs(rts)[(ret.inputs[0].space.name, ret.inputs[0].offset)]
+    assert add.opcode.name == "INT_ADD" and add.inputs[1].offset == 1
+
+
 def test_default_context_decodes_the_whole_demo_unchanged(ctx6510):
     d = ctx6510.disassemble(PROGRAM, ORG, 0)
     assert [i.mnem for i in d.instructions][:6] == ["LDY", "LAX", "BEQ", "EOR", "STA", "ISC"]
