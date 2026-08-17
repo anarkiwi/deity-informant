@@ -12,7 +12,7 @@ from .irwalk import call_order, forwarder
 from .live import printable
 from .machine import PAL_FRAME
 from .pseudocode import IND, NEG, Printer, _hex
-from .structure import Blk, Case, Cond, For, Jump, Loop
+from .structure import Blk, Case, Cond, For, Jump, Loop, hidden, strip
 
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
@@ -56,7 +56,7 @@ class Body(Printer):
 
     def blk(self, n, proc, pad):
         live = self.live[proc]
-        stmts = [s for s in n.stmts if printable(s, live) and not _hidden(s, self.hide)]
+        stmts = [s for s in n.stmts if printable(s, live) and not hidden(s, self.hide)]
         if not stmts:
             return []
         self.mem = {}
@@ -117,7 +117,7 @@ class Body(Printer):
         self.fors += 1
         if n.group:
             self.fgroup, self.fvar = n.group, var
-        body = self.arms([_strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
+        body = self.arms([strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
         self.fgroup, self.fvar = group, fvar
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
@@ -149,32 +149,6 @@ class Body(Printer):
         out = self.expr(c.c) if arms[0] == "t" else self.negate(c.c)
         self.inline = {}
         return out
-
-
-def _hidden(s, hide):
-    return type(s) is Let and s.n in hide
-
-
-def _strip(body, label, hide):
-    """Drop the induction test and the back edge a ``for`` header already states."""
-    out = []
-    for n in body:
-        if type(n) is Cond and _jumps_only(n.then + n.els, hide):
-            continue
-        if type(n) is Jump and n.label == label:
-            continue
-        out.append(n)
-    return out
-
-
-def _jumps_only(nodes, hide):
-    """True when a branch arm only jumps (its blocks are empty or hidden)."""
-    for n in nodes:
-        if type(n) is Jump:
-            continue
-        if type(n) is not Blk or any(not _hidden(s, hide) for s in n.stmts):
-            return False
-    return True
 
 
 def _ivar(n):

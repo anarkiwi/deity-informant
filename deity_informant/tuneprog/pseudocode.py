@@ -86,18 +86,21 @@ class Printer:
     def load16(self, rid, a):
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
 
-    def slot(self, hit, idx):
+    def slot(self, hit, rid, addr, idx):
         """``voice[v].field`` for a cell a per-copy address table names."""
         g, fname, j = hit
         i = self.fvar if g == self.fgroup and self.fvar else str(j)
         out = "%s[%s].%s" % (g, i, fname)
-        return out if idx is None else "%s[%s]" % (out, _bare(self.expr(idx, False)))
+        r = self.rgn.get(rid)
+        if idx is None:
+            return out
+        return "%s[%s]" % (out, self.index(r, addr, idx) if r else _bare(self.expr(idx, False)))
 
     def cell(self, rid, addr, idx=None, name=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         hit = self.names.slots.get((rid, addr))
         if hit is not None:
-            return self.slot(hit, idx)
+            return self.slot(hit, rid, addr, idx)
         r = self.rgn.get(rid)
         if r is None:
             return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))

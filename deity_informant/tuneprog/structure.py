@@ -300,6 +300,7 @@ class _Structurer:
     def __init__(self, proc, want=(), folds=()):
         self.want = want
         self.folds = folds or {}
+        self.latches = {f["latch"]: h for h, f in self.folds.items() if h in proc.blocks}
         self.proc = proc
         self.g = cfg(proc)
         self.preds = preds_of(proc)
@@ -327,6 +328,10 @@ class _Structurer:
             hit = next((c for c in ctx if c[1] == n), None)
             if hit is not None:
                 out.append(Jump("break", hit[0]))
+                break
+            back = self.latches.get(n)
+            if back is not None and any(c[0] == back for c in ctx):
+                out.append(Jump("continue", back))
                 break
             if n in self.done:
                 end = _trivial(self.proc, n, self.want)
@@ -404,6 +409,33 @@ def structure(prog, want=None):
     """
     folds = prog.meta.get("folds") or {}
     return {n: structure_proc(p, (want or {}).get(n, ()), folds) for n, p in prog.procs.items()}
+
+
+def hidden(s, hide):
+    """True when a statement is a ``for`` header's own stepping let."""
+    return type(s) is Let and s.n in hide
+
+
+def strip(body, label, hide):
+    """Drop the induction test and the back edge a ``for`` header already states."""
+    out = []
+    for n in body:
+        if type(n) is Cond and jumps_only(n.then + n.els, hide):
+            continue
+        if type(n) is Jump and n.label == label:
+            continue
+        out.append(n)
+    return out
+
+
+def jumps_only(nodes, hide):
+    """True when a branch arm only jumps (its blocks are empty or hidden)."""
+    for n in nodes:
+        if type(n) is Jump:
+            continue
+        if type(n) is not Blk or any(not hidden(s, hide) for s in n.stmts):
+            return False
+    return True
 
 
 # ---- phase recognition -------------------------------------------------------

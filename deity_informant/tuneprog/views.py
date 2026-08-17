@@ -30,7 +30,7 @@ def cell_field(prog, facts, names, cell, sidf):
     """The field name one ``(region, address)`` slot gets: role, register, or address."""
     rid, addr = cell
     r = facts.rgn.get(rid)
-    if r is not None and r.size <= 2 and rid in names.region:
+    if r is not None and rid in names.region and (r.size <= 2 or addr == r.base):
         return names.region[rid]
     if addr is None:
         return names.of(rid)
@@ -44,23 +44,25 @@ def cell_field(prog, facts, names, cell, sidf):
     return "b%04X" % addr
 
 
-def copy_groups(prog, names, facts=None):
-    """Name every sibling fold's slots: ``voice[v].field`` over a per-copy table.
+def copy_groups(prog, names, folds=None, facts=None):
+    """Name a fold's slots: ``voice[v].field`` over a per-copy address table.
 
-    The slots come from :mod:`.copyfold`, which proved the copies one program
-    modulo this table; here they only get names.
+    The slots come from :mod:`.copyfold` and :mod:`.unroll`, which proved the
+    copies one program modulo this table; here they only get names.
     """
-    folds = prog.meta.get("folds") or {}
+    folds = list((prog.meta.get("folds") or {}).values()) + list(folds or ())
     if not folds:
         return names
     facts = facts or Facts(prog)
     sidf = sid_fields(facts)
-    for f in folds.values():
+    for f in folds:
         if not f["slots"] or f.get("named"):
             continue
         f["named"] = True
         g = unique_name(f["group"], set(names.groups))
         f["group"] = g
+        if f.get("node") is not None:
+            f["node"].group = g
         cells = {}
         for cell in sorted(f["slots"], key=lambda c: (c[1] is None, c[1], c[0])):
             want = cell_field(prog, facts, names, cell, sidf)
@@ -72,8 +74,6 @@ def copy_groups(prog, names, facts=None):
     return names
 
 
-def decorate(prog, names):
+def decorate(prog, names, folds=None):
     """Every group view the S6 passes add over the recovered names."""
-    facts = Facts(prog)
-    copy_groups(prog, names, facts)
-    return names
+    return copy_groups(prog, names, folds, Facts(prog))

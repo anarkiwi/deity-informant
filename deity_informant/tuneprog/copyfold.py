@@ -22,6 +22,8 @@ from .ir import (
     Store,
     Switch,
     Trap,
+    SID_REG_HI,
+    SID_REG_LO,
     Var,
     W16,
     retarget,
@@ -33,6 +35,7 @@ from .siblings import Copies
 from .ssa import prune
 
 LATCH = "$fold%d"
+SID_VOICE = 7  # the SID's per-voice register block
 
 
 class _Ctx:
@@ -217,20 +220,27 @@ def elems(r):
     return -(-r.size // max(r.stride, 1))
 
 
-def _affine(rgn, rid, vals, k):
-    """True when the addresses are one stride view's, so an index prints them.
+def indexed(rgn, rids, vals, k):
+    """How a run's differing addresses print: as an ``index``, as a ``table``, or ``no``.
 
-    Anything else -- the SID register file, and the cells of a block one init
-    loop made one region -- needs the per-copy table instead.
+    One index serves one region a stride view already walks; addresses in
+    different regions need the per-copy table; the SID's own register file is
+    indexed by voice and by nothing else.
     """
-    r = rgn.get(rid)
-    if r is None or r.kind == "io":
-        return True
+    if rids is None:
+        return "index"
     d = vals[1] - vals[0]
-    return not d % max(r.stride, 1) and k <= elems(r) <= MAXROLE
+    if all(SID_REG_LO <= v <= SID_REG_HI for v in vals):
+        return "index" if not d % SID_VOICE else "no"
+    if len(set(rids)) > 1:
+        return "table"
+    r = rgn.get(rids[0])
+    if r is None or r.kind == "io":
+        return "index"
+    return "index" if not d % max(r.stride, 1) and k <= elems(r) <= MAXROLE else "table"
 
 
-def plan(holes, io=frozenset(), rgn=None):
+def plan(holes, rgn=None):
     """The per-hole substitution plan and the group slots, or ``(None, None)``.
 
     A region id and an address may differ when one mapping explains every use of
@@ -252,12 +262,10 @@ def plan(holes, io=frozenset(), rgn=None):
             out.append(("keep",))
             continue
         rids = [x[int(kind[2:])][1] for x in holes] if kind.startswith("k@") else None
-        if (
-            rids is not None
-            and rids[0] >= 0
-            and rids[0] not in io
-            and not _affine(rgn or {}, rids[0], vals, len(holes))
-        ):
+        how = indexed(rgn or {}, rids, vals, len(holes))
+        if how == "no":
+            return None, None
+        if how == "table":
             key = (rids[0], vals[0])
             if slots.setdefault(key, tuple(zip(rids, vals))) != tuple(zip(rids, vals)):
                 return None, None
@@ -357,7 +365,7 @@ def foldable(proc, fam):
     return sets, ents, after
 
 
-def check(proc, ents, sets, after, io=frozenset(), keep=None, rgn=None, base=None):
+def check(proc, ents, sets, after, keep=None, rgn=None, base=None):
     """``(plan, slots, orders, retnext, skip)`` when the copies are one program.
 
     The copies after the first fix the shape; the first may carry a prologue (S4
@@ -380,14 +388,14 @@ def check(proc, ents, sets, after, io=frozenset(), keep=None, rgn=None, base=Non
     for skip in range(top + 1):
         toks, holes, order, _b = _shape(proc, sets[0], ents[0], ents[1], keep=keep, skip=skip)
         if toks is not None and toks == shapes[0][0]:
-            p, slots = plan([holes] + [s[1] for s in shapes], io, rgn)
+            p, slots = plan([holes] + [s[1] for s in shapes], rgn)
             if p is None:
                 return None
             return p, slots, [order] + [s[2] for s in shapes], retnext, skip
     return None
 
 
-def fold(proc, fam, var, latch, io=frozenset(), keep=None, rgn=None):
+def fold(proc, fam, var, latch, keep=None, rgn=None):
     """Fold ``fam``'s copies in ``proc`` into a loop over ``var``; returns its slots.
 
     Copy 0 keeps the code with the index substituted, the chain edge becomes the
@@ -397,7 +405,7 @@ def fold(proc, fam, var, latch, io=frozenset(), keep=None, rgn=None):
     if hit is None:
         return None
     sets, ents, after = hit
-    got = check(proc, ents, sets, after, io, keep, rgn, fam.bases[0])
+    got = check(proc, ents, sets, after, keep, rgn, fam.bases[0])
     if got is None:
         return None
     subs, slots, orders, _ret, skip = got
@@ -423,7 +431,7 @@ def fold(proc, fam, var, latch, io=frozenset(), keep=None, rgn=None):
     for lbl in sets[0] | {header}:
         proc.blocks[lbl].term = retarget(proc.blocks[lbl].term, ents[1], latch)
     prune(proc)
-    return {"var": var, "n": k, "header": header, "slots": slots, "order": order}
+    return {"var": var, "n": k, "header": header, "latch": latch, "slots": slots, "order": order}
 
 
 def parts(fam, p):
@@ -451,7 +459,6 @@ def apply(prog, fams, keep=None):
     Presentation only: the argument is a view, and what the fold removes is k-1
     copies of code the remaining one now stands for.
     """
-    io = {r.id for r in prog.storage if r.kind == "io"}
     rgn = prog.by_id()
     out = prog.meta.setdefault("folds", {})
     n = sum(len(v) for v in out.values())
@@ -461,7 +468,7 @@ def apply(prog, fams, keep=None):
             continue
         for run in _runs(fam):
             got = [
-                fold(proc, f, "$fv%d" % (n + i), "$fold%d" % (n + i), io, keep, rgn)
+                fold(proc, f, "$fv%d" % (n + i), "$fold%d" % (n + i), keep, rgn)
                 for i, f in enumerate(run)
             ]
             got = [g for g in got if g is not None]

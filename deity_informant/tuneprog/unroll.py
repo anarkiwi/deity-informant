@@ -7,18 +7,21 @@ over copy 0; equal alpha-renamed skeletons and affine steps are the proof.
 
 from __future__ import annotations
 
+from .copyfold import indexed
 from .ir import Assert, Bin, Call, Const, Let, Load, R16, Store, Var, W16
 from .irwalk import defs_of, stmt_uses, uses_of
-from .structure import Blk, Case, Cond, Exit, For, Loop, walk
+from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, strip, walk
 
 MINSTMT = 6
+MINSLOTS = 2  # cells a mapped run must relocate before the mapping is evidence
 
 
 class _Ctx:
     """Walks a segment, collecting its holes or substituting the loop index."""
 
-    def __init__(self, defs, subs=None, var="", keep=None):
+    def __init__(self, defs, subs=None, var="", keep=None, labels=()):
         self.defs = defs
+        self.labels = labels
         self.keep = keep or {}
         self.reg = ""
         self.holes = []
@@ -44,6 +47,11 @@ class _Ctx:
     def name(self, n):
         return self.ren.setdefault(n, "$%d" % len(self.ren)) if n in self.defs else n
 
+    def region(self, r):
+        """Record a region id; its address constants are tagged with its hole."""
+        self.hole("r", r)
+        return "@%d" % (len(self.holes) - 1 if not self.sub else 0)
+
 
 def _expr(e, c):
     t = type(e)
@@ -52,13 +60,12 @@ def _expr(e, c):
     if t is Var:
         return ("v", c.name(e.n)), e
     if t is Load:
-        c.hole("r", e.r)
-        tok, a = _addr(e.a, c, e.r)
+        tok, a = _addr(e.a, c, c.region(e.r))
         return ("l", e.cls, e.w, tok), Load(e.cls, a, e.w, e.lo, e.hi, e.r)
     if t is R16:
-        c.hole("r", e.lo)
-        c.hole("r", e.hi)
-        tok, a = _addr(e.a, c, e.lo)
+        tag = c.region(e.lo)
+        c.region(e.hi)
+        tok, a = _addr(e.a, c, tag)
         return ("r16", tok), R16(e.lo, e.hi, a)
     if t is Bin:
         ta, a = _expr(e.a, c)
@@ -68,9 +75,9 @@ def _expr(e, c):
     return ("?",), e
 
 
-def _addr(e, c, rid):
+def _addr(e, c, tag):
     """Walk an address: its constants are that region's, so one stride serves it."""
-    return _tagged(e, c, "@%d" % rid)
+    return _tagged(e, c, tag)
 
 
 def _tagged(e, c, tag):
@@ -88,14 +95,13 @@ def _stmt(s, c):
     if t is Store and s.cls == "raw":
         return ("raw",), s
     if t is Store:
-        c.hole("r", s.r)
-        ta, a = _addr(s.a, c, s.r)
+        ta, a = _addr(s.a, c, c.region(s.r))
         tv, v = _expr(s.v, c)
         return ("st", s.cls, s.w, ta, tv), Store(s.cls, a, v, s.w, s.lo, s.hi, s.r, s.src)
     if t is W16:
-        c.hole("r", s.lo)
-        c.hole("r", s.hi)
-        ta, a = _addr(s.a, c, s.lo)
+        tag = c.region(s.lo)
+        c.region(s.hi)
+        ta, a = _addr(s.a, c, tag)
         te, e = _expr(s.e, c)
         return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)
     if t is Call:
@@ -133,12 +139,18 @@ def _node(n, c):
         toks = tuple((v, t) for v, (t, _b) in arms)
         return ("case", tok, toks), Case(e, tuple((v, b) for v, (_t, b) in arms), n.src)
     if t is For:
-        tb, body = _many(n.body, c, _node)
-        node = For(n.var, n.values, body, n.scale, n.hide, n.label, n.count)
+        # the induction test and the back edge print as the header, so they are
+        # not part of the shape either
+        tb, body = _many(strip(n.body, n.label, n.hide), c, _node)
+        node = For(n.var, n.values, body, n.scale, n.hide, n.label, n.count, n.group)
         return ("for", c.name(n.var), n.values, n.scale, tb), node
     if t is Loop:
         tb, body = _many(n.body, c, _node)
         return ("loop", tb), Loop(body, n.label, n.count)
+    if t is Jump:
+        # a jump inside the segment names the segment's own loop; one that leaves
+        # it names a label the copies must share
+        return ("jump", n.kind) + (() if n.label in c.labels else (n.label,)), n
     if t is Exit:
         if n.e is None:
             return ("exit", n.kind, n.why), n
@@ -188,9 +200,21 @@ def _rebuild(units):
 
 
 def _skeleton(units, defs, keep=None):
-    c = _Ctx(defs, keep=keep)
+    c = _Ctx(defs, keep=keep, labels=_labels(units))
     toks = [(_stmt if k == "s" else _node)(o, c)[0] for k, o, _b in units]
     return (None if c.bad else tuple(toks)), c.holes
+
+
+def _labels(units):
+    """The loop and block labels a run defines, which its own jumps may name."""
+    out = set()
+    for kind, obj, blk in units:
+        if kind == "s":
+            out.add(blk.label)
+            continue
+        for x in walk([obj]):
+            out.add(getattr(x, "label", ""))
+    return out
 
 
 def _defined(units):
@@ -214,33 +238,57 @@ def _node_defs(n, out):
             out.add(x.var)
 
 
-def steps(runs):
-    """The per-hole step when copy i is copy 0 plus i times it, else ``None``.
+def steps(runs, rgn=None):
+    """``(per-hole step, per-copy cells)`` when copy i is copy 0 over an index.
 
-    One region is walked with one stride: the constants of its addresses must
-    agree, and at least one of them must move, or the copies index nothing.
+    A constant steps affinely; a region id and the addresses inside it may
+    instead differ by one mapping, which is the per-copy address table a group
+    view prints. One region is still walked with one stride.
     """
-    out, by = [], {}
+    out, by, slots, rmap = [], {}, {}, {}
     for j, (kind, v0) in enumerate(runs[0]):
         vals = [r[j] for r in runs]
         if any(k != kind for k, _v in vals):
-            return None
+            return None, None
+        vs = [v for _k, v in vals]
         if kind == "r":
-            if any(v != v0 for _k, v in vals):
-                return None
+            if len(set(vs)) > 1 and rmap.setdefault(v0, tuple(vs)) != tuple(vs):
+                return None, None
             out.append(0)
             continue
-        d = vals[1][1] - v0
-        if any(v != v0 + i * d for i, (_k, v) in enumerate(vals)):
-            return None
+        rids = [r[int(kind[2:])][1] for r in runs] if kind.startswith("k@") else None
+        how = indexed(rgn or {}, rids, vs, len(runs)) if len(set(vs)) > 1 else "index"
+        if how == "no":
+            return None, None
+        if how == "table":
+            key = (rids[0], v0)
+            if slots.setdefault(key, tuple(zip(rids, vs))) != tuple(zip(rids, vs)):
+                return None, None
+            out.append(0)
+            continue
+        d = vs[1] - v0
+        if any(v != v0 + i * d for i, v in enumerate(vs)):
+            return None, None
         if kind != "k" and d:
-            by.setdefault(kind, set()).add(d)
+            by.setdefault(rids[0] if rids is not None else kind, set()).add(d)
         out.append(d)
-    return None if not by or any(len(v) > 1 for v in by.values()) else out
+    if (not by and not slots) or any(len(v) > 1 for v in by.values()):
+        return None, None
+    if slots and (len(slots) < MINSLOTS or len({_delta(c) for c in slots.values()}) > 1):
+        # without a static correspondence to appeal to, the only mapping a run
+        # proves is one relocation: several cells, every one of copy i the same
+        # distance on from copy 0's
+        return None, None
+    return out, slots
 
 
-def _run(units, i, minunits, keep=None):
-    """``(length, copies, steps)`` of the best isomorphic run starting at ``i``."""
+def _delta(cells):
+    """Where copy ``j``'s cell sits relative to copy 0's, for one field."""
+    return tuple(a - cells[0][1] for _r, a in cells)
+
+
+def _run(units, i, minunits, keep=None, rgn=None):
+    """``(length, copies, steps, cells)`` of the best isomorphic run starting at ``i``."""
     best, hit = None, None
     for length in range(1, (len(units) - i) // 2 + 1):
         sk, holes = _skeleton(units[i : i + length], _defined(units[i : i + length]), keep)
@@ -256,12 +304,12 @@ def _run(units, i, minunits, keep=None):
             k += 1
         size = _size(units[i : i + length])
         for copies in range(k, 1, -1):
-            step = steps(runs[:copies])
+            step, slots = steps(runs[:copies], rgn)
             if step is None or copies * size < minunits:
                 continue
             score = (copies * length, length)
             if best is None or score > best:
-                best, hit = score, (length, copies, step)
+                best, hit = score, (length, copies, step, slots)
             break
     return hit
 
@@ -278,32 +326,39 @@ def _stmts(n):
 
 def _abstract(units, step, var, keep=None):
     """Copy 0 with each stepping constant replaced by the loop index."""
-    c = _Ctx(set(), step, var, keep)
+    c = _Ctx(set(), step, var, keep, _labels(units))
     return [(k, (_stmt if k == "s" else _node)(o, c)[1], b) for k, o, b in units]
 
 
-def unroll(structured, live=None, keep=None, minunits=MINSTMT):
-    """Fold every isomorphic sibling run into a ``for`` over the copy index."""
-    n = [0]
+def unroll(structured, live=None, keep=None, minunits=MINSTMT, rgn=None):
+    """Fold every isomorphic sibling run into a ``for`` over the copy index.
+
+    Returns the loops made and, for each, the per-copy cells one mapping
+    explained -- the group view :mod:`.views` names.
+    """
+    n, out = [0], []
     for name, body in structured.items():
-        structured[name] = _body(body, minunits, n, (live or {}).get(name, set()), keep)
-    return n[0]
+        structured[name] = _body(body, minunits, n, (live or {}).get(name, set()), keep, rgn, out)
+    return n[0], out
 
 
-def _body(body, minunits, n, live, keep):
-    body = [_recurse(x, minunits, n, live, keep) for x in body]
+def _body(body, minunits, n, live, keep, rgn=None, groups=None):
+    body = [_recurse(x, minunits, n, live, keep, rgn, groups) for x in body]
     units, out, i = units_of(body), [], 0
     while i < len(units):
-        hit = _run(units, i, minunits, keep)
+        hit = _run(units, i, minunits, keep, rgn)
         if hit is None or _escapes(units, i, hit[0] * hit[1], live):
             out.append(units[i])
             i += 1
             continue
-        length, k, step = hit
+        length, k, step, slots = hit
         var = "$i%d" % n[0]
         n[0] += 1
         seg = _abstract(units[i : i + length], step, var, keep)
-        out.append(("n", For(var, tuple(range(k)), _rebuild(seg), 1, frozenset(), "", 0), None))
+        node = For(var, tuple(range(k)), _rebuild(seg), 1, frozenset(), "", 0)
+        out.append(("n", node, None))
+        if slots and groups is not None:
+            groups.append({"var": var, "n": k, "slots": slots, "node": node, "group": "copy"})
         i += length * k
     return _rebuild(out)
 
@@ -330,13 +385,14 @@ def _node_uses(n, out):
             uses_of(x.e, out)
 
 
-def _recurse(n, minunits, count, live, keep):
+def _recurse(n, minunits, count, live, keep, rgn=None, groups=None):
     t = type(n)
+    args = (minunits, count, live, keep, rgn, groups)
     if t is Cond:
-        n.then = _body(n.then, minunits, count, live, keep)
-        n.els = _body(n.els, minunits, count, live, keep)
+        n.then = _body(n.then, *args)
+        n.els = _body(n.els, *args)
     elif t is Case:
-        n.cases = tuple((v, _body(b, minunits, count, live, keep)) for v, b in n.cases)
+        n.cases = tuple((v, _body(b, *args)) for v, b in n.cases)
     elif t is For or t is Loop:
-        n.body = _body(n.body, minunits, count, live, keep)
+        n.body = _body(n.body, *args)
     return n

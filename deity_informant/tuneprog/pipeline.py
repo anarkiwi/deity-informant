@@ -362,7 +362,8 @@ def present(prog, sibs=None):
     views.decorate(view, names)
     live, params = L.needed(view)
     st = structure.structure(view, L.wants(view, live))
-    unroll.unroll(st, live, fold.livearg(view, params))
+    _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
+    views.decorate(view, names, groups)
     return view, st, names
 
 
