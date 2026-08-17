@@ -69,7 +69,7 @@ def copy_groups(prog, names, folds=None, facts=None):
             name = unique_name(want, set(cells))
             cells[name] = list(f["slots"][cell])
             for j, other in enumerate(f["slots"][cell]):
-                names.slots[tuple(other)] = (g, name, j)
+                names.slots.setdefault(tuple(other), []).append((g, name, j))
         names.groups[g] = {"stride": 0, "n": f["n"], "members": [], "cells": cells}
     return names
 

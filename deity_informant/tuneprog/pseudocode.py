@@ -86,9 +86,13 @@ class Printer:
     def load16(self, rid, a):
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
 
-    def slot(self, hit, rid, addr, idx):
-        """``voice[v].field`` for a cell a per-copy address table names."""
-        g, fname, j = hit
+    def slot(self, hits, rid, addr, idx):
+        """``voice[v].field`` for a cell a per-copy address table names.
+
+        A cell two folds both name (the tick's voices, and the loop init copies
+        them with) belongs to whichever of them is being printed.
+        """
+        g, fname, j = next((h for h in hits if h[0] == self.fgroup), hits[0])
         i = self.fvar if g == self.fgroup and self.fvar else str(j)
         out = "%s[%s].%s" % (g, i, fname)
         r = self.rgn.get(rid)

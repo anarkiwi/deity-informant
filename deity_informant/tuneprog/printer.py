@@ -198,6 +198,20 @@ def _meta(prog, names, cert):
     ]
     if names.phase is not None:
         out.append("phase     %s selects the rate" % names.region.get(names.phase[0], "?"))
+    if names.closure and names.closure.get("families"):
+        c = names.closure
+        out.append(
+            "closure   siblings: %s, %s sites lifted, %s over %s copies; "
+            "%s of %s statements unverified"
+            % (
+                _plural(c["families"], "family", "families"),
+                num(c["sites_added"]),
+                _plural(c["loops"], "loop", "loops"),
+                ", ".join(str(n) for n in c["folded"]) or "-",
+                num(c["unverified"]),
+                num(c["statements"]),
+            )
+        )
     if cert:
         s = cert["subtunes"][0]
         out.append(
@@ -212,6 +226,10 @@ def _meta(prog, names, cert):
             )
         )
     return out
+
+
+def _plural(n, one, many):
+    return "%d %s" % (n, one if n == 1 else many)
 
 
 def _row(r, names, extra=""):
@@ -271,9 +289,12 @@ def _state(prog, names):
                 "lo|hi $%04X" % _base(prog, hi),
             )
         )
+    cells = {rid for rid, _a in names.slots}
     for r in sorted(prog.storage, key=lambda x: x.base):
         if r.id < 0 or r.id in names.view or r.kind not in ("state", "init_constant"):
             continue
+        if r.id in cells and r.size <= 2:
+            continue  # a scalar the group view already lists, address by address
         if r.id not in half:
             out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
     return out

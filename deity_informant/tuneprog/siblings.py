@@ -175,15 +175,20 @@ def chained(proc, fam):
     return True
 
 
-def leftmax(image, bases, pcs):
-    """True when no executed instruction extends every copy backwards.
+def grow(image, bases, pcs, limit=LIMIT):
+    """``bases`` moved back while one instruction extends every copy the same way.
 
-    A family every copy can grow to the left is a shifted view of a longer one,
-    so only the maximal one is kept.
+    A seed matches the middle of a template as readily as its start (Follin's
+    voices differ in their first three instructions), so a family is grown left
+    to the copy's real entry and families that reach the same one are one.
     """
-    pred = {p + ilen(image, p): p for p in pcs}
-    ps = [pred.get(b) for b in bases]
-    return None in ps or len({image[p] for p in ps}) > 1
+    pred = {(p + ilen(image, p)) & 0xFFFF: p for p in pcs}
+    for _ in range(limit):
+        ps = [pred.get(b) for b in bases]
+        if None in ps or len({image[p] for p in ps}) > 1 or len(set(ps)) != len(ps):
+            return tuple(bases)
+        bases = ps
+    return tuple(bases)
 
 
 def _holds(proc, fam):
@@ -197,16 +202,31 @@ def _holds(proc, fam):
     return all(b in srcs for b in fam.bases[1:]) and bool(span[0] & set(srcs))
 
 
+def snap(proc, bases):
+    """The bases moved back to the blocks they sit in: a copy starts where one does.
+
+    Lockstep growth stops at the instruction one copy has and another has not, so
+    the front end's own block boundaries say where the copy really begins.
+    """
+    srcs = sorted(_srcs(proc))
+    out = [max((s for s in srcs if s <= b), default=None) for b in bases]
+    return None if None in out or len(set(out)) != len(out) else tuple(out)
+
+
 def chains(prog, image, pcs, band):
     """Every chained sibling family of ``prog``, widest first, non-overlapping."""
-    cands = []
+    cands, seen = [], set()
     for bases in _seeds(image, pcs, band):
-        fam = family(image, bases, band) if leftmax(image, bases, pcs) else None
-        if fam is None:
-            continue
+        bases = grow(image, bases, pcs)
         for name, proc in prog.procs.items():
-            if _holds(proc, fam) and chained(proc, fam):
-                cands.append(Copies(fam.bases, fam.rows, name))
+            for cand in dict.fromkeys([snap(proc, bases), bases]):
+                if cand is None or (name, cand) in seen:
+                    continue
+                seen.add((name, cand))
+                fam = family(image, cand, band)
+                if fam is not None and _holds(proc, fam) and chained(proc, fam):
+                    cands.append(Copies(fam.bases, fam.rows, name))
+                    break
     return _select(cands)
 
 
@@ -293,5 +313,9 @@ def extend(prog, image, fam, band, rounds=4):
 
 
 def correspond(prog, image, pcs, band):
-    """Every sibling family of ``prog``: chained, then extended through its arms."""
-    return [extend(prog, image, fam, band) for fam in chains(prog, image, pcs, band)]
+    """Every sibling family of ``prog``: chained, then extended through its arms.
+
+    Extending can swallow a smaller family whole (a handler the dispatch reaches
+    is a chain of its own), so the widest are chosen again afterwards.
+    """
+    return _select([extend(prog, image, fam, band) for fam in chains(prog, image, pcs, band)])

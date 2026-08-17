@@ -76,10 +76,7 @@ class _Ctx:
         how = self.subs.pop(0)
         if how[0] != "affine":
             return None
-        step = Bin("*", Var(self.var), Const(abs(how[1]), w), w)
-        if not v:
-            return step if how[1] > 0 else Bin("-", Const(0, w), step, w)
-        return Bin("+" if how[1] > 0 else "-", Const(v, w), step, w)
+        return _step(self.var, how[1], v, w)
 
     def name(self, n):
         return self.ren.setdefault(n, "$%d" % len(self.ren)) if n in self.defs else n
@@ -88,6 +85,14 @@ class _Ctx:
         """Record a region id; its address constants are tagged with its hole."""
         self.hole("r", r)
         return "@%d" % (len(self.holes) - 1 if self.subs is None else 0)
+
+
+def _step(var, d, v, w):
+    """``v`` plus ``d`` times the loop index, as an expression."""
+    step = Var(var) if abs(d) == 1 else Bin("*", Var(var), Const(abs(d), w), w)
+    if not v:
+        return step if d > 0 else Bin("-", Const(0, w), step, w)
+    return Bin("+" if d > 0 else "-", Const(v, w), step, w)
 
 
 def _expr(e, c, tag=""):

@@ -7,7 +7,7 @@ over copy 0; equal alpha-renamed skeletons and affine steps are the proof.
 
 from __future__ import annotations
 
-from .copyfold import indexed
+from .copyfold import _step, indexed
 from .ir import Assert, Bin, Call, Const, Let, Load, R16, Store, Var, W16
 from .irwalk import defs_of, stmt_uses, uses_of
 from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, strip, walk
@@ -39,10 +39,7 @@ class _Ctx:
         d = self.subs.pop(0)
         if kind != "k" or not d:
             return None
-        step = Bin("*", Var(self.var), Const(abs(d), w), w)
-        if not v:
-            return step if d > 0 else Bin("-", Const(0, w), step, w)
-        return Bin("+" if d > 0 else "-", Const(v, w), step, w)
+        return _step(self.var, d, v, w)
 
     def name(self, n):
         return self.ren.setdefault(n, "$%d" % len(self.ren)) if n in self.defs else n

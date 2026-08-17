@@ -367,6 +367,26 @@ def present(prog, sibs=None):
     return view, st, names
 
 
+def _closure_stats(view, pcs):
+    """What the sibling closure added: the loops it folded, and what is unverified.
+
+    A statement of a site no execution reached is unverified: it is the sibling
+    copy's, lifted here, and the trap it replaced is what the certificate saw.
+    """
+    pcs, stmts, unverified = set(pcs), 0, 0
+    for p in view.procs.values():
+        for b in p.blocks.values():
+            stmts += len(b.stmts)
+            unverified += len(b.stmts) if b.src in pcs else 0
+    folds = list((view.meta.get("folds") or {}).values())
+    return {
+        "statements": stmts,
+        "unverified": unverified,
+        "loops": len(folds),
+        "folded": sorted(f["n"] for f in folds),
+    }
+
+
 def stage_print(args, out, prog=None):
     """S5 + S6 over the certified IR, then ``tuneprog.md`` (design section 4 text form)."""
     prog = prog or ir.Tuneprog.load(out / "tuneprog.S4.json")
@@ -382,7 +402,7 @@ def stage_print(args, out, prog=None):
             Trace.load(out), prog, Path(args.sid).name, args.sid_model, args.songs == "all"
         )
     view, st, names = present(src, sibs)
-    names.closure = stats
+    names.closure = stats and dict(stats, **_closure_stats(view, stats.pop("pcs", ())))
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))
