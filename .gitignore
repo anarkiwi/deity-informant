@@ -32,3 +32,5 @@ core.*
 # agent worktrees / local harness state
 .claude/
 .nfs*
+ghidra/6510/data/languages/6510_smc.sinc
+ghidra/6510/data/languages/6510_context.sinc

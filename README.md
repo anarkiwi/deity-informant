@@ -15,6 +15,7 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `docs/playroutine-anatomy.md` — field guide: nine C64 playroutines reverse engineered to the byte (Hubbard, Galway, Follin, Walker, JCH, GoatTracker, SID Wizard, defMON, lft's Blackbird), the 6502 technique catalogue behind them, and what a decompiler must model.
 - `docs/tuneprog-decompiler-design.md` — design of the tuneprog decompiler (SID tune -> certified per-tick-equivalent high-level program): definitions, pipeline, IR, verification, HVSC survey, plan.
 - `docs/prototype-automatas.md`, `-follin.md`, `-goattracker.md`, `-sidwizard.md` — the four certified exemplars (defMON, Follin's *Ghouls'n'Ghosts*, GoatTracker 2, SID Wizard 1.6/1.9): ground truth, what broke, the generic fix, the evidence.
+- `docs/ghidra-highpcode-export.md` — the independent baseline: the trace's SMC cells as SLEIGH context values, the facts export, the headless high-P-Code/C export, and the oracles that compare Ghidra with the tuneprog.
 - `tools/tuneprog_certify.py` — end-to-end certification driver (`TUNE.sid --out DIR`), chunked against a CPU budget; `docs/certificates/` holds the certificates for the exemplars. `tools/tuneprog_recert.py` reproduces every one of them and diffs it field for field.
 - `tools/survey/` — HVSC survey instruments behind that design: `tracer.py` (dynamic per-site tracer on `PcodeVM`), `run.py` (stratified parallel driver), `headers.py` (static census), `report.py` (markdown tables).
 

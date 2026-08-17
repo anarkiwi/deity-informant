@@ -28,6 +28,8 @@ from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
+# VM register slot -> SLEIGH register name, for the post-init CPU state
+CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 
 
 class Tracer:
@@ -40,6 +42,7 @@ class Tracer:
         self.vm = TraceVM(image.mem, image, policy=policy, inputs=inputs, override=override)
         self.cache = {}
         self.image_post_init = None
+        self.post_init_regs = None
         self.calls_done = 0
         self.hashes = {}
         self.period = None
@@ -61,6 +64,7 @@ class Tracer:
         ):
             c64.install_kernal_irq_stubs(vm)
         self.image_post_init = bytes(vm.mem)
+        self.post_init_regs = {n: int(vm.reg[i]) for i, n in CPU_REGS.items()}
         return self
 
     def run_calls(self, n, budget=CALL_BUDGET):
@@ -190,6 +194,7 @@ class Tracer:
             "first_repeat": self.first_repeat,
             "unmatched_rts": vm.unmatched_rts,
             "max_depth": vm.max_depth,
+            "post_init_regs": self.post_init_regs,
             **self.image.meta(),
         }
         return Trace(

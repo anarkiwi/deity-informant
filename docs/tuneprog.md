@@ -7,6 +7,7 @@ traced playroutine tick for tick, plus a readable pseudocode form of it.
 Design: [`tuneprog-decompiler-design.md`](tuneprog-decompiler-design.md).
 Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-follin.md),
 [goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md).
+Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 ## Vocabulary
 
@@ -36,6 +37,7 @@ Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-foll
 | S6 | presentation over a view: value inlining, machine-texture removal, stack frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
+| — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
 
 `pipeline.py` drives every stage into one output directory. The IR itself
 (`ir.py`) and its reference interpreter (`interp.py`) are the semantics every
@@ -52,7 +54,8 @@ program       ir 401        interp 228   irwalk 308   graph 70       build 481
 presentation  structure 455 inline 199   texture 475  frame 320      word 369
               fold 472      tails 165    unroll 342   recover 488    live 96
 text          pseudocode 498  printer 149
-driver        pipeline 380  __init__ 112                       31 modules, 9,485 lines
+driver        pipeline 386  __init__ 114
+baseline      ghidra_facts 219  ghidra_compare 182   33 modules, 9,899 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -65,7 +68,7 @@ Stage entry points, which are also the module boundaries:
 ```bash
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-    [--sid-model 6581|8580] [--resume] [--budget S] [--no-verify] [--no-text]
+    [--sid-model 6581|8580] [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
 ```
 
 `tools/tuneprog_certify.py` is the same pipeline as a standalone driver. Both

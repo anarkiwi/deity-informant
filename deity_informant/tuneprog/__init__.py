@@ -40,7 +40,9 @@ Presentation over the certified program (it is never edited):
 module-level entry points ``build.build_ir``, ``ssa.simplify``,
 ``emit.emit_python``, ``verify.verify``, ``structure.structure``,
 ``recover.recover`` and ``printer.render``. :mod:`.irwalk` and :mod:`.graph` are
-the traversals every stage shares; ``docs/tuneprog.md`` is the guide.
+the traversals every stage shares, and :mod:`.ghidra_facts` / :mod:`.ghidra_compare`
+export the trace's facts to a headless Ghidra and score the two decompilations
+against each other. ``docs/tuneprog.md`` is the guide.
 """
 
 from __future__ import annotations
