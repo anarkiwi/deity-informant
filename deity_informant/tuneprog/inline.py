@@ -78,8 +78,8 @@ def _clobbers(s, e):
         return False
     if s.cls == "io":
         return _reads(e, lambda x: x.cls == "io")
-    if s.cls == "raw":
-        return _reads(e, lambda x: x.cls == "raw")
+    if s.cls == "raw":  # a JSR frame is memory: it clobbers the slots it covers
+        return _reads(e, lambda x: x.lo <= s.hi and x.hi >= s.lo)
     return _reads(e, lambda x: x.r < 0 or x.r == s.r or s.r < 0)
 
 

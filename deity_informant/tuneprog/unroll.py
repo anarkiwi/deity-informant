@@ -36,8 +36,10 @@ class _Ctx:
         d = self.subs.pop(0)
         if kind != "k" or not d:
             return None
-        step = Bin("*", Var(self.var), Const(d, w), w)
-        return step if not v else Bin("+", Const(v, w), step, w)
+        step = Bin("*", Var(self.var), Const(abs(d), w), w)
+        if not v:
+            return step if d > 0 else Bin("-", Const(0, w), step, w)
+        return Bin("+" if d > 0 else "-", Const(v, w), step, w)
 
     def name(self, n):
         return self.ren.setdefault(n, "$%d" % len(self.ren)) if n in self.defs else n

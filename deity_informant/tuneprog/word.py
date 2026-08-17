@@ -207,7 +207,7 @@ def _plan(proc, defs, lbl, i, s, taken):
             lo = proc.blocks[dlbl].stmts[j]
             if type(lo) is not Store or lo.w != 1 or lo.r < 0 or (dlbl, j) in taken:
                 continue
-            if lo.r == s.r or not _pairs(lo.a, s.a) or _crosses(proc, dlbl, j, didx, lo.r, s.r):
+            if lo.a == s.a or not _pairs(lo.a, s.a) or _crosses(proc, dlbl, j, didx, lo.r, s.r):
                 continue
             got = _match(lo.v, expr, local)
             if got is not None:
@@ -430,6 +430,10 @@ def _basename(names, rgn, lo, hi, kind):
         return a[:-3] if a[-3] == "_" else a[:-2]
     if kind == "acc" or names.role.get(lo) == "acc":
         return "acc"
+    if kind == "operand" and rgn[lo].kind == "const":
+        return a or "T%04X" % rgn[lo].base
+    if kind == "operand" and rgn[lo].kind == "init_constant":
+        return "base"
     return "step" if kind == "operand" else "w%04X" % rgn[lo].base
 
 

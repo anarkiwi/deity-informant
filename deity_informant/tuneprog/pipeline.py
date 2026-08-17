@@ -17,6 +17,7 @@ from pathlib import Path
 from . import (
     emit,
     fold,
+    frame,
     ir,
     jumptab,
     printer,
@@ -307,7 +308,7 @@ def present(prog):
     argument is never touched.
     """
     view = structure.view(prog, printer.needed(prog)[0])
-    texture.clean(view)
+    texture.clean(view, frame.deltas(prog))
     structure.inline(view, printer.needed(view)[0])
     texture.tidy(view)
     names = recover.recover(view, structure.structure(view))
