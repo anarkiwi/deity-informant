@@ -54,6 +54,8 @@ class Trace:
     iolog: dict = field(default_factory=dict)
     state_hash: object = None
     footprint_size: object = None
+    state_hash_free: object = None
+    footprint_free: object = None
 
     def site_at(self, pc):
         """All site keys recorded at ``pc`` (>1 when the pc is an opcode cell)."""
@@ -131,6 +133,8 @@ class Trace:
             image_post_init=np.frombuffer(self.image_post_init, dtype=np.uint8),
             state_hash=self.state_hash,
             footprint_size=self.footprint_size,
+            state_hash_free=self.state_hash_free,
+            footprint_free=self.footprint_free,
             **{"wlog_" + k: v for k, v in self.wlog.items()},
             **{"iolog_" + k: v for k, v in self.iolog.items()},
         )
@@ -142,12 +146,16 @@ class Trace:
         path = Path(path)
         doc = json.loads((path / "trace.json").read_text())
         z = np.load(path / "trace.npz")
+        if "state_hash_free" not in z.files:
+            raise ValueError("%s predates the two-footprint trace: re-trace it" % path)
         t = cls(
             meta=doc["meta"],
             image_pre=z["image_pre"].tobytes(),
             image_post_init=z["image_post_init"].tobytes(),
             state_hash=z["state_hash"],
             footprint_size=z["footprint_size"],
+            state_hash_free=z["state_hash_free"],
+            footprint_free=z["footprint_free"],
         )
         for pc, op, fixed, count, ph, variants, idx, rd, wr in doc["sites"]:
             t.sites[(pc, op, tuple(fixed))] = {
@@ -254,6 +262,8 @@ def merge(traces):
         iolog=first.iolog,
         state_hash=first.state_hash,
         footprint_size=first.footprint_size,
+        state_hash_free=first.state_hash_free,
+        footprint_free=first.footprint_free,
     )
     for t in traces:
         rekey(t, cells, out.sites)

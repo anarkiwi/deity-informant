@@ -109,28 +109,28 @@ def stage_trace(args, out, st, t0, log=print):
     img, schedule = find_entries(Path(args.sid).read_bytes())
     entry = schedule[0]
     resume = out / "tracer.pkl"
-    if args.resume and resume.exists():
-        tr = Tracer.load(resume)
-    else:
+    tr = Tracer.load(resume) if args.resume and resume.exists() else None
+    if tr is None:
         override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
         tr = Tracer(img, entry, song=args.song - 1 if args.song else None, override=override)
         tr.run_init()
     target = _target(args, entry)
-    while tr.calls_done < target and not (args.until_period and tr.period is not None):
+    while tr.calls_done < target and not (args.until_period and tr.witness() is not None):
         tr.run_calls(min(args.chunk, target - tr.calls_done))
         st["calls"] = tr.calls_done
         log(
             "  traced %d calls (%.0fs cpu)%s"
-            % (tr.calls_done, time.process_time() - t0, "" if tr.period is None else " period!")
+            % (tr.calls_done, time.process_time() - t0, "" if tr.witness() is None else " period!")
         )
         if time.process_time() - t0 > args.budget:
             break
-    done = tr.calls_done >= target or (args.until_period and tr.period is not None)
+    done = tr.calls_done >= target or (args.until_period and tr.witness() is not None)
     tr.save(resume)
     if not done:
         return False
     trace = tr.trace()
-    st["calls"] = tr.first_repeat + 1 if args.until_period and tr.period else tr.calls_done
+    hit = tr.witness()
+    st["calls"] = hit + 1 if args.until_period and hit is not None else tr.calls_done
     trace.save(out)
     st.update(period=tr.period, first_repeat=tr.first_repeat, stage="front")
     return True
@@ -151,17 +151,16 @@ def trace_all(args, out, st, t0, log=print):
         if song in done:
             continue
         resume = out / ("tracer%02d.pkl" % song)
-        if args.resume and resume.exists():
-            tr = Tracer.load(resume)
-        else:
+        tr = Tracer.load(resume) if args.resume and resume.exists() else None
+        if tr is None:
             override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
             tr = Tracer(img, entry, song=song - 1, override=override)
             tr.run_init()
-        while tr.calls_done < target and not (args.until_period and tr.period is not None):
+        while tr.calls_done < target and not (args.until_period and tr.witness() is not None):
             tr.run_calls(min(args.chunk, target - tr.calls_done))
             if time.process_time() - t0 > args.budget:
                 break
-        if tr.calls_done < target and not (args.until_period and tr.period is not None):
+        if tr.calls_done < target and not (args.until_period and tr.witness() is not None):
             tr.save(resume)
             log("  song %d: %d calls (%.0fs cpu)" % (song, tr.calls_done, time.process_time() - t0))
             return False

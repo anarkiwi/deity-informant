@@ -265,7 +265,8 @@ it can only break one, which is what the tests below are for.
    reads, unbalanced pushes across calls) keeps an explicit `stack` region of the
    proven depth and an `SP` value in the procedures that touch it — nowhere
    else. The certificate records `"stack": "eliminated"` or
-   `"stack": {"residual_depth": n, "procs": [...]}`.
+   `"stack": {"depth": n, "procs": [...]}` (#237 wrote `residual_depth`; it is
+   `depth`, and `"unknown"` where an access is not a slot).
 3. `emit.py`/`interp.py`: drop `SP` from params/rets when eliminated; the
    `raw` access class stays only for the residual case; `ir.py` gains nothing
    new (slot values are `Let`s).

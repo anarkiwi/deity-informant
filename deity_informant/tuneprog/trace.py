@@ -29,8 +29,54 @@ from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
+VERSION = 2  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
+
+
+class _Stream:
+    """One per-tick state hash over a footprint, and its periodicity witness.
+
+    ``free`` leaves the stack page out: it is the machine's own scratch, which a
+    program :func:`~.stack.eliminate` proved stack-free can neither read nor write.
+    """
+
+    __slots__ = ("free", "hashes", "period", "first_repeat", "rows", "nrows", "_fp", "_n")
+
+    def __init__(self, free):
+        self.free = free
+        self.hashes = {}
+        self.period = None
+        self.first_repeat = None
+        self.rows = array("Q")
+        self.nrows = array("I")
+        self._fp = ()
+        self._n = -1
+
+    def hash(self, vm, call):
+        """Hash this tick's footprint; a repeat with no input consumed is a witness."""
+        w = vm.written_play
+        if self._n != len(w):
+            self._n = len(w)
+            self._fp = tuple(sorted(a for a in w if not (self.free and STACK_LO <= a <= STACK_HI)))
+        n = len(self._fp)
+        h = blake2b(
+            bytes(map(vm.mem.__getitem__, self._fp)), digest_size=8, key=n.to_bytes(4, "little")
+        ).digest()
+        v = int.from_bytes(h, "little")
+        self.rows.append(v)
+        self.nrows.append(n)
+        if self.period is None:
+            ninp = len(vm.inputs)
+            prev = self.hashes.get((n, v))
+            if prev is None:
+                self.hashes[(n, v)] = (call, ninp)
+            elif prev[1] == ninp:
+                # design S1: a repeat is a witness only with no inputs consumed
+                # between the two calls (otherwise the next tick may differ).
+                self.period = call - prev[0]
+                self.first_repeat = call
+        return v, n
 
 
 class Tracer:
@@ -45,13 +91,10 @@ class Tracer:
         self.image_post_init = None
         self.post_init_regs = None
         self.calls_done = 0
-        self.hashes = {}
         self.period = None
         self.first_repeat = None
-        self.state_hash = array("Q")
-        self.footprint = array("I")
-        self._fp = ()
-        self._nfp = -1
+        self.free = _Stream(True)
+        self.full = _Stream(False)
 
     def run_init(self, budget=None):
         vm = self.vm
@@ -106,38 +149,31 @@ class Tracer:
         self.calls_done += 1
 
     def _hash(self):
-        """Hash the play footprint; the stack page is the machine's, not the tune's."""
+        """Hash this tick under both footprints, with and without the stack page.
+
+        Which one a certificate may claim periodicity on depends on a program that
+        does not exist yet (:func:`~.stack.eliminate`), so both witnesses are kept.
+        """
         vm = self.vm
-        if self._nfp != len(vm.written_play):
-            self._nfp = len(vm.written_play)
-            self._fp = tuple(sorted(a for a in vm.written_play if not STACK_LO <= a <= STACK_HI))
-        mem = vm.mem
-        n = len(self._fp)
-        h = blake2b(
-            bytes(map(mem.__getitem__, self._fp)), digest_size=8, key=n.to_bytes(4, "little")
-        ).digest()
-        v = int.from_bytes(h, "little")
-        self.state_hash.append(v)
-        self.footprint.append(n)
-        if self.period is None:
-            ninp = len(vm.inputs)
-            prev = self.hashes.get((n, v))
-            if prev is None:
-                self.hashes[(n, v)] = (self.calls_done, ninp)
-            elif prev[1] == ninp:
-                # design S1: a repeat is a witness only with no inputs consumed
-                # between the two calls (otherwise the next tick may differ).
-                self.period = self.calls_done - prev[0]
-                self.first_repeat = self.calls_done
+        self.full.hash(vm, self.calls_done)
+        self.free.hash(vm, self.calls_done)
+        self.period, self.first_repeat = self.full.period, self.full.first_repeat
+
+    def witness(self):
+        """The earliest tick either footprint repeated at, or ``None``."""
+        hits = [s.first_repeat for s in (self.full, self.free) if s.first_repeat is not None]
+        return min(hits) if hits else None
 
     # ---- resume ------------------------------------------------------------
     def save(self, path):
-        Path(path).write_bytes(pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL))
+        Path(path).write_bytes(pickle.dumps((VERSION, self), protocol=pickle.HIGHEST_PROTOCOL))
         return path
 
     @staticmethod
     def load(path):
-        return pickle.loads(Path(path).read_bytes())
+        """The pickled tracer, or ``None`` when an older version wrote it."""
+        obj = pickle.loads(Path(path).read_bytes())
+        return obj[1] if isinstance(obj, tuple) and obj[0] == VERSION else None
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -194,8 +230,10 @@ class Tracer:
             "calls": self.calls_done,
             "insns": vm.insns,
             "cycles": vm.cycles,
-            "period": self.period,
-            "first_repeat": self.first_repeat,
+            "period": self.full.period,
+            "first_repeat": self.full.first_repeat,
+            "period_free": self.free.period,
+            "first_repeat_free": self.free.first_repeat,
             "unmatched_rts": vm.unmatched_rts,
             "max_depth": vm.max_depth,
             "post_init_regs": self.post_init_regs,
@@ -221,8 +259,10 @@ class Tracer:
             jsr_targets=jsr_targets,
             wlog=_arrays(vm.sidlog),
             iolog=_arrays(vm.iolog),
-            state_hash=np.frombuffer(self.state_hash, dtype=np.uint64).copy(),
-            footprint_size=np.frombuffer(self.footprint, dtype=np.uint32).copy(),
+            state_hash=np.frombuffer(self.full.rows, dtype=np.uint64).copy(),
+            footprint_size=np.frombuffer(self.full.nrows, dtype=np.uint32).copy(),
+            state_hash_free=np.frombuffer(self.free.rows, dtype=np.uint64).copy(),
+            footprint_free=np.frombuffer(self.free.nrows, dtype=np.uint32).copy(),
         )
 
 

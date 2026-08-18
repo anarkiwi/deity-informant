@@ -72,8 +72,8 @@ class Machine:
         self.inp = list(inputs)
         self.icur = 0
         self.override = dict(override or {})
-        self._fp = ()
-        self._nfp = -1
+        self._fp = [(), ()]
+        self._nfp = [-1, -1]
 
     # ---- the 6510 port: I/O mapped only when both port bits allow it ---------
     def setbank(self):
@@ -83,8 +83,8 @@ class Machine:
     def play_phase(self):
         """Switch the footprint set to the play-written one (init keeps its own)."""
         self.W = set()
-        self._fp = ()
-        self._nfp = -1
+        self._fp = [(), ()]
+        self._nfp = [-1, -1]
         return self
 
     def take_input(self, a):
@@ -153,18 +153,22 @@ class Machine:
         if a <= 1:
             self.setbank()
 
-    def hash(self):
+    def hash(self, free=False):
         """``(footprint size, blake2b digest)`` -- the tracer's periodicity witness.
 
-        The stack page is machine texture, not tune state, so it is outside the
-        footprint on both sides (:meth:`~.trace.Tracer._hash`).
+        ``free`` leaves out the stack page, which is what a program :mod:`.stack`
+        proved stack-free writes nothing to (:class:`~.trace._Stream`).
         """
-        if self._nfp != len(self.W):
-            self._nfp = len(self.W)
-            self._fp = tuple(sorted(a for a in self.W if not STACK_LO <= a <= STACK_HI))
-        n = len(self._fp)
+        i = 1 if free else 0
+        if self._nfp[i] != len(self.W):
+            self._nfp[i] = len(self.W)
+            self._fp[i] = tuple(
+                sorted(a for a in self.W if not (free and STACK_LO <= a <= STACK_HI))
+            )
+        fp = self._fp[i]
+        n = len(fp)
         h = blake2b(
-            bytes(map(self.m.__getitem__, self._fp)), digest_size=8, key=n.to_bytes(4, "little")
+            bytes(map(self.m.__getitem__, fp)), digest_size=8, key=n.to_bytes(4, "little")
         ).digest()
         return n, int.from_bytes(h, "little")
 

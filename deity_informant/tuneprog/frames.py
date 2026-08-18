@@ -16,21 +16,24 @@ from .irwalk import apply_stmt, apply_term, call_order, node_loads, single_defs
 SP = "SP"
 SPREG = 3
 SLOT = "$saved"
-DEPTH = 6
 UNSET = ()  # no information yet: a value the fixpoint has not reached
 
 
-def _delta(e, off, defs, depth=DEPTH):
-    """The entry-relative stack offset ``e`` holds, ``None``, or :data:`UNSET`."""
+def _delta(e, off, defs, seen=()):
+    """The entry-relative stack offset ``e`` holds, ``None``, or :data:`UNSET`.
+
+    ``seen`` are the names already walked: a definition chain that comes back to
+    one of them is a cycle, and cycles hold no offset.
+    """
     t = type(e)
     if t is Var:
         if e.n in off:
             return off[e.n]
-        if depth and e.n in defs:
-            return _delta(defs[e.n], off, defs, depth - 1)
+        if e.n in defs and e.n not in seen:
+            return _delta(defs[e.n], off, defs, seen + (e.n,))
         return UNSET if e.n.split("#")[0] == SP else None
     if t is Bin and e.op in ("+", "-") and type(e.b) is Const:
-        d = _delta(e.a, off, defs, depth)
+        d = _delta(e.a, off, defs, seen)
         if d is None or d is UNSET:
             return d
         return (d + (e.b.v if e.op == "+" else -e.b.v)) & 0xFF
@@ -67,7 +70,8 @@ def _sp_defs(prog, s, off, defs, exits):
 def offsets(prog, proc, exits):
     """``{name: entry-relative stack offset}``, ``None`` where a value is not one."""
     off, defs = {SP: 0}, single_defs(proc)
-    for _ in range(len(proc.blocks) + 2):
+    changed = True
+    while changed:
         changed = False
         for b in proc.blocks.values():
             for s in b.stmts:
@@ -79,8 +83,6 @@ def offsets(prog, proc, exits):
                         v = None  # two definitions disagree: not one offset
                     if old is UNSET or old != v:
                         off[n], changed = v, True
-        if not changed:
-            break
     return off
 
 
@@ -125,10 +127,12 @@ def touches(x):
     return x.lo <= STACK_HI and x.hi >= STACK_LO
 
 
-def _slot(e, off, defs, depth=DEPTH):
+def _slot(e, off, defs):
     """The frame slot an address expression names, or ``None``."""
-    while type(e) is Var and depth and e.n in defs:
-        e, depth = defs[e.n], depth - 1
+    seen = set()
+    while type(e) is Var and e.n in defs and e.n not in seen:
+        seen.add(e.n)
+        e = defs[e.n]
     if type(e) is not Bin or e.op not in ("|", "+"):
         return None
     for k, x in ((e.a, e.b), (e.b, e.a)):
@@ -172,7 +176,8 @@ def _reaching(proc, evs):
     seed = {s: {None} for s in slots}
     preds, ins = preds_of(proc), {lbl: {} for lbl in proc.blocks}
     ins[proc.entry] = {s: set(v) for s, v in seed.items()}
-    for _ in range(len(proc.blocks) + 1):
+    changed = True
+    while changed:
         changed = False
         for lbl in proc.blocks:
             cur = {s: set(v) for s, v in seed.items()} if lbl == proc.entry else {}
@@ -181,8 +186,6 @@ def _reaching(proc, evs):
                     cur.setdefault(slot, set()).update(keys)
             if cur != ins[lbl]:
                 ins[lbl], changed = cur, True
-        if not changed:
-            break
     out = {}
     for lbl, e in evs.items():
         cur = {k: set(v) for k, v in ins[lbl].items()}
@@ -288,10 +291,14 @@ class Frame:
 
     @property
     def depth(self):
-        """Bytes of frame the procedure's own pushes prove, ``None`` when unknown."""
+        """Bytes below its entry pointer the procedure provably touches, or ``None``.
+
+        Every placed access counts, read as well as written; a slot above the entry
+        is the caller's frame and is no depth of this one.
+        """
         if self.events is None:
             return None
-        slots = [s for e in self.events.values() for _i, k, s, _n in e if k == "store"]
+        slots = [s for e in self.events.values() for _i, _k, s, _n in e]
         return max([1 - (s - 0x100 if s >= 0x80 else s) for s in slots] + [0])
 
 

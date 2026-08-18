@@ -318,7 +318,7 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     """The design's ``certificate.json`` document.
 
     ``stack`` is ``"eliminated"`` where the program has no machine stack left, else
-    the depth and the procedures that kept one (:func:`~.frames.eliminate`).
+    the depth and the procedures that kept one (:func:`~.stack.eliminate`).
     """
     return {
         "tune": prog.meta.get("name"),

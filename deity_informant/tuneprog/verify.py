@@ -33,6 +33,7 @@ from .tracevm import REG_IN
 
 PAL, NTSC = 985248, 1022730
 INIT_CALL = 0xFFFFFFFF
+STATE_VERSION = 2  # resume-state layout; an older pickle restarts rather than resumes
 
 
 def _packed(log, calls):
@@ -56,6 +57,10 @@ class Reference:
         self.iopk, self.ioix, self.init_io = _packed(trace.iolog, self.calls)
         self.state_hash = np.asarray(trace.state_hash)
         self.footprint = np.asarray(trace.footprint_size)
+        self.state_hash_free = np.asarray(trace.state_hash_free)
+        self.footprint_free = np.asarray(trace.footprint_free)
+        self.period_free = trace.meta.get("period_free")
+        self.first_repeat_free = trace.meta.get("first_repeat_free")
         self.inputs = [i for i in trace.inputs if i[3] < REG_IN]
         self.regs = {}
         for c, _site, _op, addr, val in trace.inputs:
@@ -66,6 +71,18 @@ class Reference:
         self.entry = trace.meta["entry"]
         self.song = trace.meta["song"]
         self.load = tuple(trace.meta["load"])
+
+    def hashes(self, free):
+        """The per-tick ``(footprint sizes, digests)`` of the footprint ``free`` picks."""
+        if free:
+            return self.footprint_free, self.state_hash_free
+        return self.footprint, self.state_hash
+
+    def periodicity(self, free):
+        """The ``(period, first repeat)`` witness of that same footprint."""
+        if free:
+            return self.period_free, self.first_repeat_free
+        return self.period, self.first_repeat
 
     def sid(self, call):
         return self.sidpk[self.sidix[call] : self.sidix[call + 1]].tolist()
@@ -84,6 +101,10 @@ class Verifier:
     def __init__(self, prog, ref, backend="py", src=None):
         self.prog = prog
         self.ref = ref
+        # a program S4 proved stack-free writes no stack page, so its footprint --
+        # and the periodicity it may claim -- is the one without that page; a
+        # residual program keeps the whole write set, and must claim on that.
+        self.free = prog.meta.get("stack") == "eliminated"
         self.backend = backend
         self.M = Machine(prog.image(), ref.load, inputs=ref.inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)
@@ -100,6 +121,7 @@ class Verifier:
     # ---- state (chunked runs) ----------------------------------------------
     def state(self):
         return {
+            "v": STATE_VERSION,
             "M": self.M,
             "call": self.call,
             "hashes": self.hashes,
@@ -111,6 +133,9 @@ class Verifier:
         }
 
     def restore(self, st):
+        """Resume from :meth:`state`; a state an older layout wrote starts over."""
+        if st.get("v") != STATE_VERSION:
+            return self
         self.M = st["M"]
         self.exe.M = self.M
         for k in ("call", "hashes", "period", "first_repeat", "div", "nreg", "seconds"):
@@ -219,8 +244,9 @@ class Verifier:
             return False
         if not self._compare(c, self.ref.sid(c), self.ref.io(c)):
             return False
-        n, h = M.hash()
-        if n != self.ref.footprint[c] or h != self.ref.state_hash[c]:
+        n, h = M.hash(self.free)
+        sizes, digests = self.ref.hashes(self.free)
+        if n != sizes[c] or h != digests[c]:
             self.div = {"tick": c, "index": -1, "compared": "state hash"}
             return False
         if self.period is None:
@@ -237,6 +263,7 @@ class Verifier:
     # ---- certificate --------------------------------------------------------
     def subtune(self):
         e = self.ref.entry
+        tperiod, tfirst = self.ref.periodicity(self.free)
         clock = NTSC if "ntsc" in e["source"] else PAL
         done = self.call
         return {
@@ -247,15 +274,15 @@ class Verifier:
             "inputs_pinned": self.M.icur + self.nreg,
             "period": self.period,
             "first_repeat": self.first_repeat,
-            "trace_period": self.ref.period,
-            "trace_first_repeat": self.ref.first_repeat,
+            "trace_period": tperiod,
+            "trace_first_repeat": tfirst,
             "complete": bool(
                 self.period is not None
                 and self.first_repeat is not None
                 and self.div is None
                 and done > self.first_repeat
-                and self.period == self.ref.period
-                and self.first_repeat == self.ref.first_repeat
+                and self.period == tperiod
+                and self.first_repeat == tfirst
             ),
             "closure": "trace",
             "envelope_traps": int(self.div is not None and self.div.get("trap") == "envelope"),

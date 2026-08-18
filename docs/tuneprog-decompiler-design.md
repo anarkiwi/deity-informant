@@ -331,7 +331,9 @@ the same arrays (§11).
 
 State footprint = the set of RAM addresses written by any tick so far;
 `hash(footprint contents)` per tick with the footprint size as part of the key.
-A repeat `(k, k+p)` with no input reads is the periodicity witness.
+A repeat `(k, k+p)` with no input reads is the periodicity witness. Two footprints
+are hashed, that one and it without the stack page, because only S4 can say which
+one a certificate may claim on (S4, stack elimination).
 
 ### S2 — Lift and residualise; CFG and procedures
 
@@ -466,11 +468,13 @@ of the real front end removes.
   a scratch area addressed by a non-constant offset, a `TSX`-relative read of
   another frame, an interrupt entry frame — can see any byte of the page, so
   the program keeps its machine stack and the certificate names the procedures
-  that made it residual. The page is outside the periodicity footprint on both
-  sides (the tracer's hash and the machine's hash exclude it — a `PHA` is machine
-  texture, like the JSR frames the `raw` class already keeps out of the write
-  log), so this moves no certificate except where stack scratch had been delaying
-  a state repeat, which only shortens the horizon.
+  that made it residual. Which footprint the periodicity witness may use follows
+  from that same proof, so the tracer hashes both (S1): the whole play-written
+  set, and it without the stack page. An eliminated program writes no stack page
+  and claims on the page-exclusive stream; a residual program claims on the
+  page-inclusive one, because a stack byte it reads back is state like any other.
+  Elimination therefore moves no certificate's period, and can only shorten a
+  horizon.
 - Result: an executable, register-free, flag-free, stack-free, SMC-free program
   in basic-block form. **This is the first certified product** (S8 runs here).
 

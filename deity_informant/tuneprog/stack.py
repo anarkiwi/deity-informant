@@ -106,7 +106,9 @@ def _copies(proc):
             if type(s) is Let and type(s.e) is Var and defs[s.n] == 1 and defs[s.e.n] <= 1:
                 sub[s.n] = s.e
     for k, v in list(sub.items()):
-        while type(v) is Var and v.n in sub and sub[v.n] is not v:
+        seen = {k}
+        while type(v) is Var and v.n in sub and v.n not in seen:
+            seen.add(v.n)
             v = sub[v.n]
         sub[k] = v
     if sub:
@@ -145,23 +147,24 @@ def _drop_sp(prog):
     return prog
 
 
-def _reads_sp(proc):
-    """True when a statement still reads a stack-pointer value: it is data here."""
-    used = set()
+def _holds_sp(proc):
+    """True when a stack-pointer value survives here, read or defined: it is data."""
+    names = set()
     for b in proc.blocks.values():
         for s in b.stmts:
-            stmt_uses(s, used)
-        term_uses(b.term, used)
-    return any(n.split("#")[0] == SP for n in used)
+            stmt_uses(s, names)
+            names.update(defs_of(s))
+        term_uses(b.term, names)
+    return any(n.split("#")[0] == SP for n in names)
 
 
 def _depth(prog, info):
-    """The stack depth a residual program is proven to use, or ``None``."""
+    """The stack depth a residual program is proven to use, or ``"unknown"``."""
     out = {}
     for name in call_order(prog):
         own = info[name].depth
         if own is None:
-            return None
+            return "unknown"
         below = [
             out[s.proc]
             for b in prog.procs[name].blocks.values()
@@ -191,11 +194,11 @@ def eliminate(prog):
             dce(p)
             _copies(p)
             dce(p)
-        bad = sorted(n for n, p in out.procs.items() if _reads_sp(p))
+        bad = sorted(n for n, p in out.procs.items() if _holds_sp(p))
         if not bad:
             for p in out.procs.values():
                 merge_chains(p)
                 canonical(p)
             prog.procs, prog.storage = out.procs, drop_regions(out).storage
             return "eliminated"
-    return {"residual_depth": _depth(out, info), "procs": bad}
+    return {"depth": _depth(out, info), "procs": bad}
