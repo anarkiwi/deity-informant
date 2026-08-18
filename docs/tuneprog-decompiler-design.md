@@ -146,7 +146,8 @@ re-implementation on other targets (the tuneprog is executable and portable).
    register shuffles, addressing modes, self-modification). What is
    deliberately *not* modelled: unexecuted code (dead for the tune, `trap`),
    cycle-level timing (only as an optional annotation), CPU registers/flags
-   and the stack across ticks (dead by construction; the trace verifies it),
+   and the stack (registers and flags are procedure-local values; the stack is
+   eliminated in S4 or explicitly residual),
    the SID/VIC/CIA as devices (inputs are pinned, outputs are lists), and any
    musical semantics beyond what the exact storage typing yields.
 
@@ -357,8 +358,9 @@ image bytes of that variant*. Then residualise:
 
 **Edges.** From observed successors. `JMP (ind)`, RTS-trick returns, and
 patched jumps/branches become `switch(target expression) {observed targets;
-default: trap}` where the expression is the pointer/cell/stack value read at
-that site (e.g. `switch(load16($6375))` for Follin's patched JMP; the domain is
+default: trap}` where the expression is the pointer or cell read at that site,
+or -- once S4 has eliminated the stack -- the halves an RTS trick pushed
+(e.g. `switch(load16($6375))` for Follin's patched JMP; the domain is
 also known statically when the writers copy from a constant table — S6 names
 it as a jump table).
 
@@ -451,11 +453,26 @@ of the real front end removes.
   snippets): compare+branch → relational; `DEC/INC` + branch → `if --x < 0`;
   8-bit add/sub carry chains on adjacent scalars or lo/hi arrays → 16-bit ops;
   `ASL;TAY;LDA t,Y;LDA t+1,Y` → `T16[i]`; `INC lo;BNE;INC hi` → `ptr += 1`;
-  shift loops → variable shifts; `BIT` N/V tests → `(m & $80)`, `(m & $40)`;
-  `PHA…PLA` pairs → temporaries (the stack region is modelled exactly like any
-  other; the peephole just names them).
-- Result: an executable, register-free, flag-free, SMC-free program in
-  basic-block form. **This is the first certified product** (S8 runs here).
+  shift loops → variable shifts; `BIT` N/V tests → `(m & $80)`, `(m & $40)`.
+- Stack elimination (`frames.py` proves it, `stack.py` does it, once the
+  passes have converged): a
+  procedure's stack pointer is its entry value plus its own pushes and pops, so
+  every access names a slot. Where every load on the page is *must*-defined by
+  pushes of its own frame, the page is dead storage: a push becomes the value
+  its pops read (two pushes one pop can read are one value with two
+  definitions), a `PHP`/`PLP` round trip leaves the flag algebra the bit
+  idioms already fold, a return-address push is the continuation the `Call`
+  carries, and `SP` leaves every signature. A read the analysis cannot place —
+  a scratch area addressed by a non-constant offset, a `TSX`-relative read of
+  another frame, an interrupt entry frame — can see any byte of the page, so
+  the program keeps its machine stack and the certificate names the procedures
+  that made it residual. The page is outside the periodicity footprint on both
+  sides (the tracer's hash and the machine's hash exclude it — a `PHA` is machine
+  texture, like the JSR frames the `raw` class already keeps out of the write
+  log), so this moves no certificate except where stack scratch had been delaying
+  a state repeat, which only shortens the horizon.
+- Result: an executable, register-free, flag-free, stack-free, SMC-free program
+  in basic-block form. **This is the first certified product** (S8 runs here).
 
 ### S5 — Structuring
 
@@ -522,7 +539,7 @@ gate/TEST edge multiset) is offered as a diagnostic, not as the certificate.
 | anatomy item | where | mechanism |
 |---|---|---|
 | struct-of-arrays stride 1 / stride 7, voice→SID offset tables, `CPX` chains, unrolled voices, unrolled modulators (§5.1) | S3, S5, S6 | regions with index domains → strides/fields; voice-loop recognition; copy folding |
-| index-register borrowing, Y reloads, stack as scratch, register-held 16-bit accumulators, `INX/DEX` hi-byte adjust (§5.2) | S4 | SSA makes registers disappear; PHA/PLA and 16-bit idioms are peepholes |
+| index-register borrowing, Y reloads, stack as scratch, register-held 16-bit accumulators, `INX/DEX` hi-byte adjust (§5.2) | S4 | SSA makes registers disappear; a PHA/PLA pair is one value (`frames.py`/`stack.py`), a scratch *area* keeps a residual stack; 16-bit idioms are peepholes |
 | illegal opcodes incl. `NOP #imm` overlapping streams (§5.2) | S1/S2 | trace keys sites by (pc, bytes); the lifter already knows all 105 illegals; two overlapping decodings are two sites |
 | flags as data: `BIT` N/V, V from SBC, tick number as bit mask, C across JSR, C across 8–40 instructions, branch into `CLC;SBC`, 9-bit shift via carry (§5.3, §7) | S4 | flags are SSA values; call summaries carry them across JSR |
 | tail JMPs, shared tails, fall-through tail calls, loops entered from the middle, `BIT` skip chains, RTS trick, patched JMP/JSR/branch dispatch, compare-chain dispatch, entry into the middle of a routine (§5.4) | S2, S5 | observed edges; clone-per-entry; unmatched RTS / patched operand → switch over observed targets; structuring |

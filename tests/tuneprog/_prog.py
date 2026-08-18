@@ -7,6 +7,7 @@ from deity_informant.tuneprog.idioms import rewrite
 from deity_informant.tuneprog.lift import lift_trace
 from deity_informant.tuneprog.regions import build_regions
 from deity_informant.tuneprog.ssa import Folds, simplify
+from deity_informant.tuneprog.stack import eliminate
 
 from _asm import asm, trace_prog
 
@@ -30,12 +31,18 @@ def front(code, calls=4, data=None, blocks=None, play=None, init=None, **kw):
     return T, tr, L, R, build_procs(T, L, R)
 
 
-def tuneprog(code, calls=4, s4=False, **kw):
-    """``(Trace, Tuneprog)`` for a snippet, optionally after the S4 passes."""
+def tuneprog(code, calls=4, s4=False, stack=True, **kw):
+    """``(Trace, Tuneprog)`` for a snippet, optionally after the S4 passes.
+
+    ``stack=False`` keeps the machine stack the S4 elimination would remove, which
+    is what the differential tests compare against.
+    """
     T, _tr, L, R, P = front(code, calls=calls, **kw)
     prog = build_ir(T, L, R, P, meta={"name": "snippet"})
     if s4:
         simplify(prog, rewrite, folds=Folds(T.image_post_init, T.cells, T.written_play))
+        if stack:
+            prog.meta["stack"] = eliminate(prog)
     return T, prog
 
 

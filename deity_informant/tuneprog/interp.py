@@ -20,6 +20,8 @@ from .ir import (
     REGVAR,
     SID_HI,
     SID_LO,
+    STACK_HI,
+    STACK_LO,
     Store,
     Switch,
     Trap,
@@ -51,6 +53,7 @@ class Machine:
         "icur",
         "override",
         "_fp",
+        "_nfp",
     )
 
     def __init__(self, image, load=(0, 0), inputs=(), override=None):
@@ -70,6 +73,7 @@ class Machine:
         self.icur = 0
         self.override = dict(override or {})
         self._fp = ()
+        self._nfp = -1
 
     # ---- the 6510 port: I/O mapped only when both port bits allow it ---------
     def setbank(self):
@@ -80,6 +84,7 @@ class Machine:
         """Switch the footprint set to the play-written one (init keeps its own)."""
         self.W = set()
         self._fp = ()
+        self._nfp = -1
         return self
 
     def take_input(self, a):
@@ -149,9 +154,14 @@ class Machine:
             self.setbank()
 
     def hash(self):
-        """``(footprint size, blake2b digest)`` -- the tracer's periodicity witness."""
-        if len(self._fp) != len(self.W):
-            self._fp = tuple(sorted(self.W))
+        """``(footprint size, blake2b digest)`` -- the tracer's periodicity witness.
+
+        The stack page is machine texture, not tune state, so it is outside the
+        footprint on both sides (:meth:`~.trace.Tracer._hash`).
+        """
+        if self._nfp != len(self.W):
+            self._nfp = len(self.W)
+            self._fp = tuple(sorted(a for a in self.W if not STACK_LO <= a <= STACK_HI))
         n = len(self._fp)
         h = blake2b(
             bytes(map(self.m.__getitem__, self._fp)), digest_size=8, key=n.to_bytes(4, "little")

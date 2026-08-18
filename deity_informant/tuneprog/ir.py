@@ -15,7 +15,8 @@ access classes mirror the tracer exactly: ``ram`` (plain memory), ``chk``
 (memory when the byte was ever written or is inside the load image, else a
 pinned input) and ``io`` ($D000-$DFFF, a SID write / an ``iow`` / RAM under I/O
 depending on the 6510 port). ``raw`` is memory without marks: the CPU's own
-JSR/RTS frames, which the tracer's write log and footprint do not see either.
+JSR/RTS frames, which the tracer's write log and footprint do not see either and
+which :mod:`.stack` removes unless the program's stack is residual.
 
 :class:`~.interp.Interp` over a :class:`~.interp.Machine` is the semantics:
 everything else (SSA, idioms, generated Python) is verified against it.

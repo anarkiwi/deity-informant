@@ -8,7 +8,7 @@
   "calls_per_second": 24188,
   "ir_blocks": 308,
   "ir_procs": 4,
-  "ir_statements": 694,
+  "ir_statements": 681,
   "regions": 58,
   "sites": 722,
   "trace_calls": 626,
@@ -25,6 +25,7 @@
  "oracle": "deity_informant.PcodeVM@0.5.0",
  "reference_validated_against": "none",
  "sid_model": null,
+ "stack": "eliminated",
  "stage": "S4",
  "subtunes": [
   {

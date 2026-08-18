@@ -167,6 +167,9 @@ def test_an_irq_entry_pops_its_frame_and_restores_the_flags():
     v = verify(prog, T, calls=5)
     assert v.div is None and v.call == 5
     assert v.M.regs[3] == 0xFF  # the RTI frame is balanced across every call
+    # the status byte the machine pushed is a frame the tick did not write, so the
+    # stack stays (a residual class of its own -- see tests/tuneprog/test_frames.py)
+    assert prog.meta["stack"]["procs"] == ["tick"]
 
 
 def test_brk_is_refused_as_an_unmodelled_frame():

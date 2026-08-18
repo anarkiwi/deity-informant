@@ -35,9 +35,9 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S2c | sibling closure (presentation): the static correspondence between k copies of one template, and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
-| S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes | `ssa.py`, `idioms.py` |
+| S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for`, the phase | `structure.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, stack frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -50,21 +50,22 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 243  tracevm 325  trace 257  tracedata 300  lift 227
+front end     machine 243  tracevm 325  trace 261  tracedata 300  lift 227
               cfg 309  regions 226  jumptab 179  siblings 330  closure 173
-program       ir 401  interp 228  irwalk 308  graph 70  build 481
-              ssa 423  idioms 357  emit 337  verify 299
-presentation  structure 500  inline 199  texture 475  frame 320  word 369
-              fold 472  tails 165  copyfold 487  unroll 395  live 96
-              facts 214  recover 316  views 153
-text          pseudocode 356  printer 349
-driver        pipeline 451  __init__ 114
-baseline      ghidra_facts 219  ghidra_compare 182   38 modules, 11,305 lines
+program       ir 401  interp 238  irwalk 308  graph 70  build 481
+              ssa 423  frames 364  stack 201  idioms 357  emit 342  verify 299
+presentation  structure 500  inline 199  texture 475  frame 44  word 369
+              fold 472  tails 165  copyfold 485  unroll 395  live 96
+              facts 223  recover 316  views 156
+text          pseudocode 361  printer 350
+driver        pipeline 453  __init__ 118
+baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,636 lines
 ```
 
 Stage entry points, which are also the module boundaries:
 `machine.find_entries`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
-`regions.build_regions`, `build.build_ir`, `ssa.simplify`, `emit.emit_python`,
+`regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
+`emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `closure.close`, `structure.structure`,
 `copyfold.apply`, `recover.recover`, `views.decorate`, `printer.render`.
 
@@ -136,6 +137,7 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
+  "stack": "eliminated",               // else {"residual_depth": n, "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
   "cost": {"trace_calls": 149025, "sites": 651, "regions": 102,
@@ -157,6 +159,20 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
 tick and with the same period as the trace, with no divergence. Otherwise the
 program is certified only to the horizon it ran.
 
+`stack` is `"eliminated"` when no machine stack is left: every push is a value
+its pops read, a return address is the continuation the `Call` already carries,
+and no procedure takes or returns `SP`. It is `{"residual_depth": n, "procs":
+[...]}` when a procedure reads stack bytes its own frame did not write -- a
+scratch area whose pointer is not a constant offset, a `TSX`-relative read of
+another frame, an interrupt entry frame's status byte, the pointer used as data
+-- and then the whole program keeps the stack, since such a read can see any byte
+of the page. The page is outside the periodicity footprint on both sides (the
+tracer's hash and the machine's hash exclude it), so eliminating it moves no
+certificate's ticks, period or divergence — with one measured exception: a state
+repeat that stack scratch used to delay is now found earlier, which shortened
+`gt2-do-it-again`'s `--until-period` horizon from 9,956 to 8,659 ticks at the same
+period (8,640) and still `complete`.
+
 ## Certified exemplars
 
 Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
@@ -164,17 +180,17 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 
 | certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | closure |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 305 | 1,070 | 102 | complete |
-| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 305 | 1,070 | 102 | complete |
-| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 304 | 1,059 | 102 | complete |
-| `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 361 | 58 | horizon |
-| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 100 | 276 | 62 | horizon |
-| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 74–450 | 181–1,294 | 39–70 | complete (31 of 32) |
-| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 520 | 1,567 | 75 | complete (31 of 32) |
-| `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 580 | 73 | complete |
-| `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 9,956 | 3m19s | 8,640 | 14 | 234 | 569 | 73 | complete |
-| `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 1,054 | 96 | complete |
-| `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 1,050 | 94 | complete |
+| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
+| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
+| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 304 | 984 | 102 | complete |
+| `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
+| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 100 | 274 | 62 | horizon |
+| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 74–450 | 180–1,281 | 39–70 | complete (31 of 32) |
+| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 520 | 1,553 | 75 | complete (31 of 32) |
+| `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
+| `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
+| `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 951 | 96 | complete |
+| `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `ghouls-song21` is the
 one subtune with no state repeat inside 400 s (two voices keep a portamento and a

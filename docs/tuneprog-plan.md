@@ -28,10 +28,10 @@ Contents
 
 | | |
 |---|---|
-| certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 843,188 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
+| certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 38 modules, ≈ 11,300 lines, none over 500; 372 hermetic + 35 HVSC tests, 94 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 40 modules, ≈ 11,600 lines, none over 500; 380 hermetic + 35 HVSC tests, 94 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
 | merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding |
 
@@ -45,7 +45,7 @@ certificates on `main`.
 
 | design claim (§ in the design) | evidence |
 |---|---|
-| per-tick equivalence is the right observable and is checkable cheaply (§1, §7) | 42 certificates, 843,188 ticks, 0 divergences, 0 envelope traps; a full-song certificate costs seconds to a few minutes in Python |
+| per-tick equivalence is the right observable and is checkable cheaply (§1, §7) | 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; a full-song certificate costs seconds to a few minutes in Python |
 | dynamic first: executed sites + exact access relation give the code, the storage and the CFG (§2, §5) | every mechanism the nine exemplars document came out of the generic front end without tune-specific code: SMC operand/opcode cells, pointer broadcast, patched `JMP`/`JSR`/branch dispatch, illegal opcodes incl. `NOP #imm` overlap, `(zp,X)`, init calling into play, data-dependent SID addresses, computed store operands, IRQ entries, subtunes, return values, stack frames |
 | exact regions with envelope asserts (§5 S3) | envelope traps never fired in any certificate; per-voice fields appear as size-3 arrays at strides 1/7/49 exactly as predicted; the two region weaknesses found (one-loop init merges, table overrun merges) are presentation, not correctness |
 | flags/registers vanish under SSA; SMC becomes loads (§5 S4) | printed forms have no `sp`, no flags, no `carry(` except genuine borrows; the certified IR is 1.0–1.6 statements per executed instruction (Automatas 651 → 1,070; GT2 437 → 580; SW 859 → 1,054; Follin 1,177 → 1,242) |
@@ -176,7 +176,9 @@ Deduplicated from every stage's report; owner = the module that would change.
 | `printer`/`pseudocode` memo invalidation with 16-bit views; `node_exprs` unknown-node guard | consolidation | quality | irwalk, pseudocode |
 | Ghidra function bodies vs clone-per-entry (`ghidra_partial` rows) | Ghidra export | oracle | ghidra_compare |
 | numba tracer/executor if the campaign needs it | design §11 | performance | trace, emit |
-| **stack elimination in S4** (§7) — gate item | user gate | core | build, ssa, emit, interp, frame |
+| ~~stack elimination in S4 (§7) — gate item~~ *done (#237)* | user gate | core | frames, stack |
+| an `RTI` entry tune is residual: the status byte the machine pushed at the interrupt is a frame the tick never wrote, so its stack stays (model the entry frame as the tick's contract instead) | stack elimination (#237) | core | build, verify |
+| a residual stack is whole-program: one unplaceable read keeps `SP` in every procedure, where an interprocedural frame layout would localise it | stack elimination (#237) | core, precision | frames, stack |
 
 ## 6. Gate: fold and stack before any new family
 
@@ -203,13 +205,37 @@ they are about the *core* matching the design rather than about breadth:
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
    read by another frame) may keep an explicit residual stack, and the
-   certificate says so. §7 is the specification.
+   certificate says so. §7 is the specification. *Status after #237:* **met**.
+   `frames.py` proves the slots (a symbolic `SP` offset per value with a constant
+   required at every join, must-def reaching over the slots, groups by union-find)
+   and `stack.py` rewrites what that proves; all 42 certificates reproduce with
+   `"stack": "eliminated"`, and every `tuneprog.py` has 0 occurrences of `SP` and
+   no stack-page access left. S4 statements fall 0.3–11 % (Automatas 1,070 → 995,
+   Follin song 1 1,242 → 1,229, the union 1,567 → 1,553, GT2 580 → 526, SW 1,054 →
+   951 and 1,050 → 935); ticks, period, `complete` and divergence are unchanged
+   except that `gt2-do-it-again`'s state repeat, which its stack scratch had been
+   delaying, is now found at 8,658 instead of 9,955 — same period, still complete,
+   a shorter horizon. Printed forms differ only in the header statement count,
+   `saved` numbering, a copy the fold now removes, and the spare register a
+   promoted tail's argument takes. The three uncertified exemplars are stack-free
+   too (Blackbird, Galway, Walker at 10 s of music). What stays residual, by proof
+   and not by guess: a stack scratch *area* whose pointer is not a constant
+   offset, a `TSX`-relative read of another frame, an `RTI` entry frame's status
+   byte, and the pointer read as data — and then the whole program keeps its
+   stack, since such a read can see any byte of the page.
 
 Until both hold, the queue in §8 waits; the only allowed work is on these two
 items and on measurement (the campaign driver may be *written* but not used to
 admit families). §10 is the execution order.
 
 ## 7. Gate 2 — stack elimination in S4: the work
+
+*Done in #237; §6 item 2 records what it measured. One premise below was wrong:
+a `PHA` is an ordinary store, so the tracer did log its address in the play
+footprint and the state hash did cover the stack page. The page is now outside
+the footprint on both sides — machine texture, like the JSR frames the `raw`
+class already keeps out of the write log — which is what lets the eliminated
+program hash the same state as the trace.*
 
 **Where things stand.** `build.py`/`ir.py` model calls with explicit frame
 pushes (`Store(raw, 256|SP, ret)`), `SP` is register index 3 in every
