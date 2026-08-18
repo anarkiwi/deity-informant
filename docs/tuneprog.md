@@ -50,16 +50,16 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 243  tracevm 325  trace 261  tracedata 300  lift 227
+front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
               cfg 309  regions 226  jumptab 179  siblings 330  closure 173
-program       ir 401  interp 238  irwalk 308  graph 70  build 481
-              ssa 423  frames 364  stack 201  idioms 357  emit 342  verify 299
+program       ir 402  interp 242  irwalk 308  graph 70  build 481
+              ssa 423  frames 371  stack 204  idioms 357  emit 342  verify 326
 presentation  structure 500  inline 199  texture 475  frame 44  word 369
               fold 472  tails 165  copyfold 485  unroll 395  live 96
               facts 223  recover 316  views 156
-text          pseudocode 361  printer 350
-driver        pipeline 453  __init__ 118
-baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,636 lines
+text          pseudocode 361  printer 359
+driver        pipeline 452  __init__ 118
+baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,735 lines
 ```
 
 Stage entry points, which are also the module boundaries:
