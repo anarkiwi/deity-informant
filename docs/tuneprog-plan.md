@@ -1,4 +1,4 @@
-# tuneprog — plan v2: what prototyping taught, what to prototype next
+# tuneprog — plan v3: what prototyping taught, the two gates, what to prototype next
 
 Companion to [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md) (the
 design), [tuneprog.md](tuneprog.md) (what is built) and the five
@@ -16,9 +16,11 @@ Contents
 4. Ghidra, prior SMC work, and the RTS-trick family — are we leveraging them?
 5. Backlog (deduplicated from every stage's "what remains")
 6. Gate: fold and stack before any new family
-7. Stack elimination in S4 — the work
+7. Gate 2 — stack elimination in S4: the work
+7b. Gate 1 — the copy index as an IR value: the work
 8. Next prototypes, ranked
 9. Keeping the project small
+10. Execution: one agent at a time, in this order
 
 ---
 
@@ -181,15 +183,22 @@ Deduplicated from every stage's report; owner = the module that would change.
 Two things must be true before another tune family is admitted, both because
 they are about the *core* matching the design rather than about breadth:
 
-1. **The copy fold succeeds on Follin** — the three unrolled voice copies print
-   once as `for v in 0, 1, 2:` with the 21-way command switch inside, via
-   closure by siblings and the group/per-phase views (L2, L3), with every
-   certificate reproducing. *Status after #234:* true for the music subtunes
-   (song 1 and songs 2–11, 16, 20), with the boundary listed under L2 — the
-   effect subtunes and the union program still print three copies, three arms
-   remain unverified traps, and 44 of 283 printed statements are closure arms
-   verified for another voice. Whether that satisfies the gate is a judgement
-   call; this document records the boundary rather than declaring it met.
+1. **The copy index is an IR value and the folded program certifies.** k sibling
+   copies of one template (Follin's voices, defMON's cascades) are one procedure
+   body under `for v in 0..k-1` *in the certified S4 program*, every per-copy
+   operand an address through a per-copy table `T[v]`, coverage recorded per
+   `(template site, v)`, and the certificate reproduces on the folded program.
+   *Review of #234 (2026-08-18):* the fold was placed at the end of a lossy
+   pipeline and asked to prove a syntactic identity the pipeline had destroyed
+   (trace closure drops arms, S4 merges block starts, SSA renames); the exact
+   correspondence (`Copies.addrmap`) was reconstructed through ten thresholds
+   (`GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT/NEAR/MINSLOTS/MINSTMT`),
+   two tokenisers (`unroll`, `copyfold`) and a second program build; the closed
+   program's "0 divergences" is tautological (lifted arms have count 0); every
+   listed boundary (SFX subtunes, the union's `chk`/`ram` class, row-advance
+   blocks, horizon-dependent discovery) is one cause. The gate is therefore
+   **not met** and is re-specified in §7b; #234's mechanism is the prototype
+   that found the requirements.
 2. **The certified executable is stack-free** — the S4 program has no `SP`
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
@@ -198,9 +207,9 @@ they are about the *core* matching the design rather than about breadth:
 
 Until both hold, the queue in §8 waits; the only allowed work is on these two
 items and on measurement (the campaign driver may be *written* but not used to
-admit families).
+admit families). §10 is the execution order.
 
-## 7. Stack elimination in S4 — the work
+## 7. Gate 2 — stack elimination in S4: the work
 
 **Where things stand.** `build.py`/`ir.py` model calls with explicit frame
 pushes (`Store(raw, 256|SP, ret)`), `SP` is register index 3 in every
@@ -247,6 +256,59 @@ it can only break one, which is what the tests below are for.
 5. Docs: `tuneprog.md` (module map, certificate field), the design's S4 wording
    ("registers, flags and the stack do not exist in the IR" becomes true for the
    executable), this plan (§6 gate closed).
+
+## 7b. Gate 1 — the copy index as an IR value: the work
+
+**Principle.** Copy identity is a property of the post-init image and the
+access relation, not of the decompiled output. The correspondence is computed
+exactly once, and copy *j* executing site *s* is the template site executed with
+`v = j`. Nothing is "lifted"; coverage is a vector over `v`.
+
+**Stage A — exact correspondence (`siblings.py` only).**
+- Bases come from the CFG: a chain is a run of blocks where copy *j*'s exit edge
+  enters copy *j+1*'s entry; the parallel dispatch tables are found through
+  their writers (`jumptab`).
+- Each pair of copies is aligned by a gapped sequence alignment of the
+  `(opcode, mode)` streams (`difflib.SequenceMatcher`, one algorithm, no resync
+  window); rows are the matched instructions.
+- A family is accepted iff the per-copy operand map (`Copies.addrmap`) is
+  consistent over every row — an ambiguity is a refusal, never a deletion — and
+  every copy is chained. Threshold constants are removed; anything that survives
+  must be a proof property (a chain edge exists, a map is a function).
+- Tests are property tests: k copies of a random template under a random
+  operand map with random per-copy arm coverage → one family with that map;
+  a random unrelated stream sharing a prefix → none. Follin s1, Automatas (30 s
+  and full song) find the same families as #234; GT2/SW find none.
+
+**Stage B — copy index in the front end.**
+- `cfg.py`: a *merge* pass after procedures are built and before `build_ir`:
+  the k copies' sites collapse onto the template's under `Copies.pcmap`; the
+  chain edge from copy *j* to *j+1* becomes `v += 1; if v < k: entry`, the
+  entry is preceded by `v = 0`; per-site execution counts become a vector over
+  `v` in the trace summary (`tracedata`).
+- `build.py`: an operand that differs across copies is an address
+  `T_x[v]` where `T_x` is a synthetic per-copy table region (`kind:
+  "copymap"`, k entries); an affine map is the same table and prints as a
+  stride later. Patched-`JMP` dispatch is keyed by the table *index* the
+  writers read (`jumptab`), so the k parallel tables are one `T[v][cmd]` and
+  arms pair by equal case value.
+- `regions.py`: the region of a `T_x[v]` access is the union over `v` (Follin's
+  `$62EE/$64DB/$66CA` become one 3-element region — the group view is then a
+  region, not a naming pass).
+- Verification is unchanged: `v` is an ordinary `Let`; the certificate gains
+  `"copies": {families, per-statement coverage}` and `unverified` = statements
+  whose coverage vector has a zero — per statement, printed as such.
+- Deleted: `closure.py`, the second-program build in `pipeline.closed`, the
+  `--closure` flag. `copyfold`/`unroll` are no longer needed for chained copies
+  (the S4 program is already folded); they are consolidated in stage C.
+- Acceptance: Follin song 1 folds *in S4* and certifies with 0 divergences;
+  SFX subtunes and `--songs all` fold (the silent voice is a `v` with zero
+  counts); `tools/tuneprog_recert.py` 42/42 (bytes change; ticks/period/
+  complete/divergence do not); every module ≤ 500 lines.
+
+**Stage C — consolidation.** One view pass over the table representation
+replaces `copyfold.py` + `unroll.py`; `views.py` names `T_x` fields; docs
+(`tuneprog.md`, the prototype records, this plan: gate closed).
 
 ## 8. Next prototypes, ranked
 
@@ -297,3 +359,22 @@ BASIC programs.
   leave `tuneprog.py` byte-identical or explain the change.
 - Prototype docs are records; the living documents are the design, this plan
   and `tuneprog.md`.
+
+## 10. Execution: one agent at a time, in this order
+
+One Opus agent per stage in its own worktree (`PYTHONPATH` pinned), the
+certificate as acceptance, a read-only reviewer between stage and merge. Order:
+
+| # | stage | owns | acceptance |
+|---|---|---|---|
+| 1 | gate 2 — stack (§7) | `build.py`, `ssa.py`, `emit.py`, `interp.py`, `frame.py`→`frames.py`, `verify.py`, tests | §7 items 1–5; hermetic differential tests; `SP` absent from every exemplar `tuneprog.py`; 42/42 recert |
+| 2 | gate 1 stage A (§7b) | `siblings.py`, `tests/tuneprog/test_siblings.py` | thresholds gone; property tests; same families on Follin/Automatas, none on GT2/SW |
+| 3 | gate 1 stage B (§7b) | `cfg.py`, `build.py`, `regions.py`, `tracedata.py`, `jumptab.py`, `pipeline.py`, `verify.py`; delete `closure.py` | Follin s1 folds in S4, 0 divergences; per-statement coverage in the certificate; SFX and union fold; 42/42 recert |
+| 4 | gate 1 stage C (§7b) | `copyfold.py`+`unroll.py`→one pass, `views.py`, docs | recert green; one tokeniser; plan v3 gates closed |
+| — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |
+
+Every brief carries the global directives (no tuning constants — a threshold is
+a proof property or is removed; black/pylint/xdist; coverage > 85 %; 60 s CPU
+per script, use `--budget`/`--resume`), commits to a branch, opens a PR, watches
+CI, merges on green, and ends with a "what remains" list that becomes this
+plan's backlog. The campaign (§8 #1) runs after stage 4.
