@@ -81,7 +81,7 @@ def _forward(proc, frame, make):
             name, pop = _popname(proc, keys, defs)
             val = Var(_slotname(proc, name, make) if name else make())
             edits.update({k: val.n for k in pushes})
-            gone.add(pop)
+            gone.update({pop} - {None})
         else:
             val = _slotted(proc, val, defs, make)
         sub.update({k: val for k in keys})

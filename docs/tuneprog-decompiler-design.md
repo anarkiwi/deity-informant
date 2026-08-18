@@ -467,7 +467,10 @@ of the real front end removes.
   another frame, an interrupt entry frame — can see any byte of the page, so
   the program keeps its machine stack and the certificate names the procedures
   that made it residual. The page is outside the periodicity footprint on both
-  sides, so this never moves a certificate.
+  sides (the tracer's hash and the machine's hash exclude it — a `PHA` is machine
+  texture, like the JSR frames the `raw` class already keeps out of the write
+  log), so this moves no certificate except where stack scratch had been delaying
+  a state repeat, which only shortens the horizon.
 - Result: an executable, register-free, flag-free, stack-free, SMC-free program
   in basic-block form. **This is the first certified product** (S8 runs here).
 

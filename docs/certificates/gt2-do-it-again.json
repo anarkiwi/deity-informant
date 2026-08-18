@@ -8,10 +8,10 @@
   "calls_per_second": 10576,
   "ir_blocks": 236,
   "ir_procs": 14,
-  "ir_statements": 569,
+  "ir_statements": 516,
   "regions": 73,
   "sites": 433,
-  "trace_calls": 9956,
+  "trace_calls": 8659,
   "verify_cpu_seconds": 0.9
  },
  "divergence": null,
@@ -26,6 +26,7 @@
  "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
  "sid_model": null,
+ "stack": "eliminated",
  "stage": "S6",
  "subtunes": [
   {
@@ -34,14 +35,14 @@
    "cycles_per_tick": 19656,
    "divergences": 0,
    "envelope_traps": 0,
-   "first_repeat": 9955,
+   "first_repeat": 8658,
    "inputs_pinned": 0,
    "interp_prefix": 2000,
    "period": 8640,
-   "seconds": 198.63,
+   "seconds": 172.75,
    "song": 1,
-   "ticks": 9956,
-   "trace_first_repeat": 9955,
+   "ticks": 8659,
+   "trace_first_repeat": 8658,
    "trace_period": 8640
   }
  ],

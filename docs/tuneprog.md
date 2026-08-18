@@ -59,7 +59,7 @@ presentation  structure 500  inline 199  texture 475  frame 44  word 369
               facts 223  recover 316  views 156
 text          pseudocode 361  printer 350
 driver        pipeline 453  __init__ 118
-baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,635 lines
+baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,636 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -168,7 +168,10 @@ another frame, an interrupt entry frame's status byte, the pointer used as data
 -- and then the whole program keeps the stack, since such a read can see any byte
 of the page. The page is outside the periodicity footprint on both sides (the
 tracer's hash and the machine's hash exclude it), so eliminating it moves no
-certificate's ticks, period or divergence.
+certificate's ticks, period or divergence — with one measured exception: a state
+repeat that stack scratch used to delay is now found earlier, which shortened
+`gt2-do-it-again`'s `--until-period` horizon from 9,956 to 8,659 ticks at the same
+period (8,640) and still `complete`.
 
 ## Certified exemplars
 
@@ -177,17 +180,17 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 
 | certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | closure |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 305 | 1,070 | 102 | complete |
-| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 305 | 1,070 | 102 | complete |
-| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 304 | 1,059 | 102 | complete |
-| `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 361 | 58 | horizon |
-| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 100 | 276 | 62 | horizon |
-| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 74–450 | 181–1,294 | 39–70 | complete (31 of 32) |
-| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 520 | 1,567 | 75 | complete (31 of 32) |
-| `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 580 | 73 | complete |
-| `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 9,956 | 3m19s | 8,640 | 14 | 234 | 569 | 73 | complete |
-| `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 1,054 | 96 | complete |
-| `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 1,050 | 94 | complete |
+| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
+| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
+| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 304 | 984 | 102 | complete |
+| `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
+| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 100 | 274 | 62 | horizon |
+| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 74–450 | 180–1,281 | 39–70 | complete (31 of 32) |
+| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 520 | 1,553 | 75 | complete (31 of 32) |
+| `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
+| `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
+| `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 951 | 96 | complete |
+| `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `ghouls-song21` is the
 one subtune with no state repeat inside 400 s (two voices keep a portamento and a

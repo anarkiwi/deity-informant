@@ -8,7 +8,7 @@
   "calls_per_second": 17661,
   "ir_blocks": 100,
   "ir_procs": 3,
-  "ir_statements": 276,
+  "ir_statements": 274,
   "regions": 62,
   "sites": 312,
   "trace_calls": 11780,
@@ -26,6 +26,7 @@
  "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
  "sid_model": null,
+ "stack": "eliminated",
  "stage": "S6",
  "subtunes": [
   {
