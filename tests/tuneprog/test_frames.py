@@ -9,7 +9,18 @@ import re
 
 from deity_informant.tuneprog import frames, idioms, live, stack, structure
 from deity_informant.tuneprog.frame import frames as name_frames
-from deity_informant.tuneprog.ir import Let, Load, STACK_HI, STACK_LO, Store, Var, enc
+from deity_informant.tuneprog.ir import (
+    Block,
+    Let,
+    Load,
+    Proc,
+    Return,
+    STACK_HI,
+    STACK_LO,
+    Store,
+    Var,
+    enc,
+)
 from deity_informant.tuneprog.irwalk import defs_of, node_loads, stmt_uses, term_uses
 from deity_informant.tuneprog.verify import verify
 
@@ -379,6 +390,14 @@ def test_the_view_still_names_the_frames_of_a_residual_program():
     view = structure.view(prog, live.needed(prog)[0])
     assert name_frames(view, frames.deltas(prog)) == 1  # the pair is named, the push stays
     assert [s for s in _accesses(view) if type(s) is Store]
+
+
+def test_the_copy_fold_terminates_on_a_cycle_of_copies():
+    """``A = B`` and ``B = A``, each the only definition, must not chase forever."""
+    blk = Block("b0", [Let("A#1", Var("B#1")), Let("B#1", Var("A#1"))], Return((Var("A#1"),)))
+    proc = Proc("p", (), (0,), {"b0": blk}, "b0")
+    stack._copies(proc)
+    assert [type(s.e) for s in proc.blocks["b0"].stmts] == [Var, Var]
 
 
 def test_a_bit_of_a_packed_value_folds_to_the_value_that_packed_it():
