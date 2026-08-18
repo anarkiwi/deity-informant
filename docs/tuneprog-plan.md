@@ -393,7 +393,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 
 | # | stage | owns | acceptance |
 |---|---|---|---|
-| 1 | gate 2 — stack (§7) | `build.py`, `ssa.py`, `emit.py`, `interp.py`, `frame.py`→`frames.py`, `verify.py`, tests | §7 items 1–5; hermetic differential tests; `SP` absent from every exemplar `tuneprog.py`; 42/42 recert |
+| 1 | ~~gate 2 — stack (§7)~~ *done (#237)* | `frames.py`, `stack.py`, `frame.py`, `interp.py`, `trace.py`, `emit.py`, `pipeline.py`, tests | met: `SP` absent from all 42 exemplar `tuneprog.py`, 42/42 recert, §6 item 2 for the measurements |
 | 2 | gate 1 stage A (§7b) | `siblings.py`, `tests/tuneprog/test_siblings.py` | thresholds gone; property tests; same families on Follin/Automatas, none on GT2/SW |
 | 3 | gate 1 stage B (§7b) | `cfg.py`, `build.py`, `regions.py`, `tracedata.py`, `jumptab.py`, `pipeline.py`, `verify.py`; delete `closure.py` | Follin s1 folds in S4, 0 divergences; per-statement coverage in the certificate; SFX and union fold; 42/42 recert |
 | 4 | gate 1 stage C (§7b) | `copyfold.py`+`unroll.py`→one pass, `views.py`, docs | recert green; one tokeniser; plan v3 gates closed |
