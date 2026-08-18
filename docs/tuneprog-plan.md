@@ -179,6 +179,7 @@ Deduplicated from every stage's report; owner = the module that would change.
 | ~~stack elimination in S4 (§7) — gate item~~ *done (#237)* | user gate | core | frames, stack |
 | an `RTI` entry tune is residual: the status byte the machine pushed at the interrupt is a frame the tick never wrote, so its stack stays (model the entry frame as the tick's contract instead) | stack elimination (#237) | core | build, verify |
 | a residual stack is whole-program: one unplaceable read keeps `SP` in every procedure, where an interprocedural frame layout would localise it | stack elimination (#237) | core, precision | frames, stack |
+| `--until-period` stops at the earliest repeat of either footprint, so a *residual* tune may stop before the page-inclusive repeat it must certify on (re-trace with `--calls`, or trace on after S4 has decided) | stack footprint (#239) | horizon policy | pipeline, trace |
 
 ## 6. Gate: fold and stack before any new family
 
@@ -218,11 +219,15 @@ they are about the *core* matching the design rather than about breadth:
    a shorter horizon. Printed forms differ only in the header statement count,
    `saved` numbering, a copy the fold now removes, and the spare register a
    promoted tail's argument takes. The three uncertified exemplars are stack-free
-   too (Blackbird, Galway, Walker at 10 s of music). What stays residual, by proof
-   and not by guess: a stack scratch *area* whose pointer is not a constant
-   offset, a `TSX`-relative read of another frame, an `RTI` entry frame's status
-   byte, and the pointer read as data — and then the whole program keeps its
-   stack, since such a read can see any byte of the page.
+   too (Blackbird, Galway, Walker at 10 s of music). *Amended by #239:* #237 also
+   dropped the stack page from the state hash unconditionally, which let a
+   residual program claim a periodicity its scratch byte contradicts; the tracer
+   now hashes both footprints and the certificate claims on the one the program's
+   proven stack status allows. What stays residual, by proof and not by guess: a
+   stack scratch *area* whose pointer is not a constant offset, a `TSX`-relative
+   read of another frame, an `RTI` entry frame's status byte, and the pointer
+   read as data — and then the whole program keeps its stack, since such a read
+   can see any byte of the page.
 
 Until both hold, the queue in §8 waits; the only allowed work is on these two
 items and on measurement (the campaign driver may be *written* but not used to
