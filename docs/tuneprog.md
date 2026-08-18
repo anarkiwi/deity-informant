@@ -35,9 +35,9 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S2c | sibling closure (presentation): the static correspondence between k copies of one template, and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
-| S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes | `ssa.py`, `idioms.py` |
+| S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for`, the phase | `structure.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, stack frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -50,21 +50,22 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 243  tracevm 325  trace 257  tracedata 300  lift 227
+front end     machine 243  tracevm 325  trace 261  tracedata 300  lift 227
               cfg 309  regions 226  jumptab 179  siblings 330  closure 173
-program       ir 401  interp 228  irwalk 308  graph 70  build 481
-              ssa 423  idioms 357  emit 337  verify 299
-presentation  structure 500  inline 199  texture 475  frame 320  word 369
-              fold 472  tails 165  copyfold 487  unroll 395  live 96
-              facts 214  recover 316  views 153
-text          pseudocode 356  printer 349
-driver        pipeline 451  __init__ 114
-baseline      ghidra_facts 219  ghidra_compare 182   38 modules, 11,305 lines
+program       ir 401  interp 238  irwalk 308  graph 70  build 481
+              ssa 423  frames 364  stack 201  idioms 357  emit 342  verify 299
+presentation  structure 500  inline 199  texture 475  frame 44  word 369
+              fold 472  tails 165  copyfold 485  unroll 395  live 96
+              facts 223  recover 316  views 156
+text          pseudocode 361  printer 350
+driver        pipeline 453  __init__ 118
+baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,635 lines
 ```
 
 Stage entry points, which are also the module boundaries:
 `machine.find_entries`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
-`regions.build_regions`, `build.build_ir`, `ssa.simplify`, `emit.emit_python`,
+`regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
+`emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `closure.close`, `structure.structure`,
 `copyfold.apply`, `recover.recover`, `views.decorate`, `printer.render`.
 
@@ -136,6 +137,7 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
+  "stack": "eliminated",               // else {"residual_depth": n, "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
   "cost": {"trace_calls": 149025, "sites": 651, "regions": 102,
@@ -156,6 +158,17 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
 `complete` means the run closed: the tuneprog reached a state repeat at the same
 tick and with the same period as the trace, with no divergence. Otherwise the
 program is certified only to the horizon it ran.
+
+`stack` is `"eliminated"` when no machine stack is left: every push is a value
+its pops read, a return address is the continuation the `Call` already carries,
+and no procedure takes or returns `SP`. It is `{"residual_depth": n, "procs":
+[...]}` when a procedure reads stack bytes its own frame did not write -- a
+scratch area whose pointer is not a constant offset, a `TSX`-relative read of
+another frame, an interrupt entry frame's status byte, the pointer used as data
+-- and then the whole program keeps the stack, since such a read can see any byte
+of the page. The page is outside the periodicity footprint on both sides (the
+tracer's hash and the machine's hash exclude it), so eliminating it moves no
+certificate's ticks, period or divergence.
 
 ## Certified exemplars
 

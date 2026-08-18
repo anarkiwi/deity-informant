@@ -315,7 +315,11 @@ class PyProgram:
 
 # ---- certificate (design section 7) -----------------------------------------
 def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, compared=None):
-    """The design's ``certificate.json`` document."""
+    """The design's ``certificate.json`` document.
+
+    ``stack`` is ``"eliminated"`` where the program has no machine stack left, else
+    the depth and the procedures that kept one (:func:`~.frames.eliminate`).
+    """
     return {
         "tune": prog.meta.get("name"),
         "sid_model": prog.meta.get("sid_model"),
@@ -324,6 +328,7 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
         "compared": compared or ["init writes", "tick sid writes", "tick schedule effects"],
         "entry": prog.meta.get("entry"),
         "subtunes": subtunes,
+        "stack": prog.meta.get("stack"),
         "stage": stage,
         "divergence": divergence,
         "cost": cost,

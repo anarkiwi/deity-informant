@@ -23,6 +23,7 @@ import numpy as np
 
 from ..lifter import lift
 from .. import c64
+from .ir import STACK_HI, STACK_LO
 from .machine import Refusal, init_runner
 from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
@@ -50,6 +51,7 @@ class Tracer:
         self.state_hash = array("Q")
         self.footprint = array("I")
         self._fp = ()
+        self._nfp = -1
 
     def run_init(self, budget=None):
         vm = self.vm
@@ -104,9 +106,11 @@ class Tracer:
         self.calls_done += 1
 
     def _hash(self):
+        """Hash the play footprint; the stack page is the machine's, not the tune's."""
         vm = self.vm
-        if len(self._fp) != len(vm.written_play):
-            self._fp = tuple(sorted(vm.written_play))
+        if self._nfp != len(vm.written_play):
+            self._nfp = len(vm.written_play)
+            self._fp = tuple(sorted(a for a in vm.written_play if not STACK_LO <= a <= STACK_HI))
         mem = vm.mem
         n = len(self._fp)
         h = blake2b(

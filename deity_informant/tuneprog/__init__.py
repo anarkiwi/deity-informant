@@ -18,7 +18,8 @@ Middle and back end (the executable program and its certificate):
   per node, memory ops typed by region and envelope.
 * :mod:`.ssa` (S4) -- SSA over registers/flags/uniques, DCE, copy and constant
   propagation; :mod:`.idioms` (S4) -- peepholes that turn the 6510's flag
-  algebra back into relational tests.
+  algebra back into relational tests; :mod:`.frames` / :mod:`.stack` (S4) -- the
+  machine stack as frames, eliminated where every load is its own frame's push.
 * :mod:`.emit` (S7) -- Python code generation and the certificate writer.
 * :mod:`.verify` (S8) -- per-call differential verification against the trace,
   periodicity, chunked and resumable.
@@ -27,7 +28,8 @@ Presentation over the certified program (it is never edited):
 
 * :mod:`.structure` (S5) -- loops, if/else, switch, ``for``, the phase variable.
 * :mod:`.inline` / :mod:`.texture` / :mod:`.frame` / :mod:`.word` (S6) -- value
-  folding, machine-texture removal, stack frames as values, 16-bit views.
+  folding, machine-texture removal, naming a residual program's frames, 16-bit
+  views.
 * :mod:`.recover` (S6) -- struct views, roles and names for the storage.
 * :mod:`.fold` / :mod:`.tails` / :mod:`.unroll` (S6) -- outlined helpers, shared
   tails as procedures, isomorphic copies as one ``for``.
@@ -38,7 +40,7 @@ Presentation over the certified program (it is never edited):
 :mod:`.pipeline` drives all of it; ``tools/tuneprog_certify.py`` and
 ``deity-informant tuneprog`` are wrappers around it. The stage boundaries are the
 module-level entry points ``build.build_ir``, ``ssa.simplify``,
-``emit.emit_python``, ``verify.verify``, ``structure.structure``,
+``stack.eliminate``, ``emit.emit_python``, ``verify.verify``, ``structure.structure``,
 ``recover.recover`` and ``printer.render``. :mod:`.irwalk` and :mod:`.graph` are
 the traversals every stage shares, and :mod:`.ghidra_facts` / :mod:`.ghidra_compare`
 export the trace's facts to a headless Ghidra and score the two decompilations
@@ -57,6 +59,7 @@ from .interp import Interp, Machine
 from .ir import Block, Rgn, TrapError, Tuneprog
 from .build import build_ir, ops_to_stmts, straightline
 from .ssa import simplify
+from .stack import eliminate
 from .idioms import rewrite
 from .emit import PyProgram, certificate, emit_python, write_certificate
 from .verify import Reference, Verifier, certify
@@ -98,6 +101,7 @@ __all__ = [
     "ops_to_stmts",
     "straightline",
     "simplify",
+    "eliminate",
     "rewrite",
     "PyProgram",
     "certificate",

@@ -28,6 +28,7 @@ from . import (
     recover,
     siblings,
     ssa,
+    stack,
     structure,
     tails,
     texture,
@@ -190,6 +191,7 @@ def build(trace, name=None, sid_model=None, union=False):
     prog = build_ir(trace, lifted, regions, procs, meta={"name": name, "sid_model": sid_model})
     folds = None if union else ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
     ssa.simplify(prog, rewrite, folds=folds)
+    prog.meta["stack"] = stack.eliminate(prog)
     code = {a for k, l in lifted.items() for a in range(k[0], k[0] + l.length)}
     jumptab.enumerate_targets(prog, code, {r.id: r.addrs for r in regions})
     return prog, regions, procs
