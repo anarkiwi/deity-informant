@@ -215,17 +215,26 @@ def _meta(prog, names, cert):
     if cert:
         s = cert["subtunes"][0]
         out.append(
-            "certified %s calls, %s divergences, period %s, first repeat at call %s (%s), stage %s"
+            "certified %s calls, %s divergences, period %s, first repeat at call %s (%s),"
+            " stack %s, stage %s"
             % (
                 num(s["ticks"]),
                 s["divergences"],
                 num(s["period"]) if s["period"] else "none",
                 num(s["first_repeat"]) if s["first_repeat"] is not None else "-",
                 "complete" if s["complete"] else "horizon",
+                _stack(cert.get("stack")),
                 cert.get("stage"),
             )
         )
     return out
+
+
+def _stack(v):
+    """The certificate's stack field in one phrase."""
+    if isinstance(v, dict):
+        return "residual, depth %s in %s" % (v.get("depth"), ", ".join(v.get("procs", ())))
+    return v or "?"
 
 
 def _plural(n, one, many):

@@ -9,8 +9,19 @@ import re
 
 from deity_informant.tuneprog import frames, idioms, live, stack, structure
 from deity_informant.tuneprog.frame import frames as name_frames
-from deity_informant.tuneprog.ir import Let, Load, STACK_HI, STACK_LO, Store, Var, enc
-from deity_informant.tuneprog.irwalk import node_loads
+from deity_informant.tuneprog.ir import (
+    Block,
+    Let,
+    Load,
+    Proc,
+    Return,
+    STACK_HI,
+    STACK_LO,
+    Store,
+    Var,
+    enc,
+)
+from deity_informant.tuneprog.irwalk import defs_of, node_loads, stmt_uses, term_uses
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
@@ -233,7 +244,7 @@ def test_a_push_inside_a_loop_keeps_the_stack_pointer():
         "cnt: BRK",
     )
     prog = residual(code)
-    assert prog.meta["stack"]["residual_depth"] is None  # the depth is not a constant
+    assert prog.meta["stack"]["depth"] == "unknown"  # the pointer is not a slot here
     assert "sp" in _text(code)
 
 
@@ -266,7 +277,7 @@ def test_a_stack_pointer_read_as_data_keeps_the_stack():
         "cnt: BRK",
     )
     prog = residual(code)
-    assert prog.meta["stack"]["residual_depth"] == 0  # nothing is pushed, either
+    assert prog.meta["stack"]["depth"] == 0  # the pointer is data, but no frame is used
 
 
 def test_a_php_plp_round_trip_leaves_the_carry_and_drops_the_flag_byte():
@@ -362,7 +373,7 @@ def test_the_certificate_field_names_the_procedures_that_kept_a_stack():
         "cnt: BRK",
     )
     _t, prog = tuneprog(code, calls=4, s4=True)
-    assert sorted(prog.meta["stack"]) == ["procs", "residual_depth"]
+    assert sorted(prog.meta["stack"]) == ["depth", "procs"]
     assert prog.meta["stack"]["procs"] == ["tick"]
 
 
@@ -379,6 +390,14 @@ def test_the_view_still_names_the_frames_of_a_residual_program():
     view = structure.view(prog, live.needed(prog)[0])
     assert name_frames(view, frames.deltas(prog)) == 1  # the pair is named, the push stays
     assert [s for s in _accesses(view) if type(s) is Store]
+
+
+def test_the_copy_fold_terminates_on_a_cycle_of_copies():
+    """``A = B`` and ``B = A``, each the only definition, must not chase forever."""
+    blk = Block("b0", [Let("A#1", Var("B#1")), Let("B#1", Var("A#1"))], Return((Var("A#1"),)))
+    proc = Proc("p", (), (0,), {"b0": blk}, "b0")
+    stack._copies(proc)
+    assert [type(s.e) for s in proc.blocks["b0"].stmts] == [Var, Var]
 
 
 def test_a_bit_of_a_packed_value_folds_to_the_value_that_packed_it():
@@ -400,11 +419,31 @@ def _pack():
     return out
 
 
-def test_the_stack_page_is_outside_the_periodicity_footprint():
-    """The trace's pushes write the page and the eliminated program does not.
+def test_a_residual_program_claims_periodicity_on_the_whole_footprint():
+    """The scratch byte is the only state here: leaving the page out would say period 1."""
+    code = asm(
+        PLAY,
+        "init: RTS",
+        "play: TSX",
+        "LDA $0100,X",
+        "CLC",
+        "ADC #$01",
+        "STA $0100,X",
+        "STA $D400",
+        "RTS",
+    )
+    trace, prog = tuneprog(code, calls=600, s4=True)
+    assert prog.meta["stack"]["procs"] == ["tick"]
+    assert (trace.meta["period_free"], trace.meta["first_repeat_free"]) == (1, 1)
+    assert (trace.meta["period"], trace.meta["first_repeat"]) == (256, 256)
+    v = verify(prog, trace, calls=600)
+    sub = v.subtune()
+    assert v.div is None and not v.free
+    assert (sub["period"], sub["trace_period"], sub["complete"]) == (256, 256, True)
 
-    Both still hash the same state every tick, which is what :func:`both` verifies.
-    """
+
+def test_an_eliminated_program_claims_periodicity_without_the_page():
+    """Its pushes are values, so the page it no longer writes is out of the footprint."""
     code = asm(
         PLAY,
         "init: LDA #$00",
@@ -418,6 +457,40 @@ def test_the_stack_page_is_outside_the_periodicity_footprint():
         "RTS",
         "cnt: BRK",
     )
-    trace, _kept, gone = both(code)
-    assert [a for a in trace.written_play if STACK_LO <= a <= STACK_HI]
-    assert not _accesses(gone)
+    trace, prog = tuneprog(code, calls=600, s4=True)
+    assert prog.meta["stack"] == "eliminated"
+    assert [a for a in trace.written_play if STACK_LO <= a <= STACK_HI]  # the trace pushed
+    v = verify(prog, trace, calls=600)
+    sub = v.subtune()
+    assert v.div is None and v.free
+    assert sub["trace_period"] == trace.meta["period_free"] == 256
+    assert (sub["period"], sub["complete"]) == (256, True)
+
+
+def test_an_eliminated_program_keeps_no_stack_pointer_anywhere():
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDA cnt",
+        "PHA",
+        "JSR work",
+        "PLA",
+        "STA $D400",
+        "INC cnt",
+        "RTS",
+        "work: LDA #$07",
+        "STA $D404",
+        "RTS",
+        "cnt: BRK",
+    )
+    prog = eliminated(code)
+    names = set()
+    for p in prog.procs.values():
+        for b in p.blocks.values():
+            for st in b.stmts:
+                stmt_uses(st, names)
+                names.update(defs_of(st))
+            term_uses(b.term, names)
+    assert not [n for n in names if n.split("#")[0] == frames.SP]

@@ -137,7 +137,7 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
-  "stack": "eliminated",               // else {"residual_depth": n, "procs": [...]}
+  "stack": "eliminated",               // else {"depth": n|"unknown", "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
   "cost": {"trace_calls": 149025, "sites": 651, "regions": 102,
@@ -161,17 +161,27 @@ program is certified only to the horizon it ran.
 
 `stack` is `"eliminated"` when no machine stack is left: every push is a value
 its pops read, a return address is the continuation the `Call` already carries,
-and no procedure takes or returns `SP`. It is `{"residual_depth": n, "procs":
+and no procedure takes or returns `SP`. It is `{"depth": n | "unknown", "procs":
 [...]}` when a procedure reads stack bytes its own frame did not write -- a
 scratch area whose pointer is not a constant offset, a `TSX`-relative read of
 another frame, an interrupt entry frame's status byte, the pointer used as data
 -- and then the whole program keeps the stack, since such a read can see any byte
-of the page. The page is outside the periodicity footprint on both sides (the
-tracer's hash and the machine's hash exclude it), so eliminating it moves no
-certificate's ticks, period or divergence — with one measured exception: a state
-repeat that stack scratch used to delay is now found earlier, which shortened
-`gt2-do-it-again`'s `--until-period` horizon from 9,956 to 8,659 ticks at the same
-period (8,640) and still `complete`.
+of the page. `depth` is the deepest slot below an entry pointer the analysis
+placed (reads and writes, callees included), `"unknown"` where an access is not a
+slot at all.
+
+The tracer hashes **two** footprints per tick, because which one a certificate may
+claim periodicity on is not known until S4 has run: the whole play-written set,
+and that set without the stack page. A program whose stack was eliminated writes
+no stack page, so its `period`, `first_repeat` and `complete` come from the
+page-exclusive stream; a residual program keeps its pushes and must claim on the
+page-inclusive one — a stack byte it reads back is state like any other, and
+hashing without it would report a period the tune does not have. `--until-period`
+stops at the earliest repeat of either stream, so a residual tune may need
+`--calls` to reach the page-inclusive repeat it certifies on. Eliminating a stack
+therefore moves no certificate's period or divergence, and can only shorten a
+horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
+(8,640), still `complete`.
 
 ## Certified exemplars
 
