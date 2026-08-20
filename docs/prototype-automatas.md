@@ -583,20 +583,26 @@ tick():                                  # $5012, 11,780 calls
   reading, not the trace.
 - **At a short horizon the note table is two parallel columns.** `FREQ_LO`/`FREQ_HI`
   at 30 s; over the full run the TR overrun merges them into one `FREQ` region.
-- **Copies fold when their shapes are equal, and only then** (`unroll.py`,
-  `copyfold.py`). The write-out is one `for v in 0, 1, 2:` over seven registers:
-  every difference between the copies is a constant that steps by the struct
-  stride (49), by the SID voice size (7) or by the argument scale
-  (`row_apply(x=(v * $31))`), the region ids agree, and one region is walked with
-  one stride. The six cascade blocks are three voices of cascade A and three of B:
-  each run of three is a chain of static copies, which `copyfold` folds into one
-  loop, and the two loops that leaves differ only in the regions they walk
-  (`timer_4`/`cursor_12CE` against `timer_5`/`cursor_1361`) -- one relocation, $93
-  apart, over two cells -- so `unroll` folds them again into
-  `for v in 0, 1: for w in 0, 1, 2:` over a `copy[v].timer_4[w]` group view whose
-  per-copy addresses the state header lists. The whole document goes from 717
-  lines to 637. The three row-advance blocks still do not fold: they read three
-  different table regions, whose addresses are not one relocation of each other.
+- **Copies fold when their shapes are equal, and only then** (`unroll.py`). The
+  write-out is one `for v in 0, 1, 2:` over seven registers: every difference
+  between the copies is a constant that steps by the struct stride (49), by the
+  SID voice size (7) or by the argument scale (`row_apply(x=(v * $31))`), the
+  region ids agree, and one region is walked with one stride.
+- **The cascade is one body under the copy index** (`copyrows.py`,
+  `copymerge.py`; S2c, in the certified program). The cascade at `$12BE` is five
+  chained copies of one 18-row block over per-copy cells, in both the procedure
+  that falls into it and the one that jumps to it; the fold makes each of them one
+  body over `v`, with the three addresses the copies disagree on in one per-copy
+  table -- shared between the two, since two clones of one procedure are not two
+  copies of its data, which is what lets `fold.outline` keep them one helper.
+  The oscillator's `$16CD` pair folds the same way. Two families refuse: `$112A`
+  ×3 and `$16AB` ×2 each have an edge that leaves one copy for another anywhere
+  but the chain edge, which `v` cannot name -- the reason is in the certificate's
+  `copies.refused` and in the printed header, and their copies stay as they were.
+  At 30 s the S4 program falls from 895 statements to 815; the printed document
+  from 880 lines to 801. The three row-advance blocks still do not fold: they read
+  three different table regions, whose addresses are not one relocation of each
+  other, and no chain edge joins them.
 - **Runs become helpers when they are shared or when they name a part**
   (`fold.py`). `main` is `writeout(); filter(); switch {row_advance(); cascades();
   oscillator()}` and `sub` is the RTS patch, `main()`, then the two helpers it

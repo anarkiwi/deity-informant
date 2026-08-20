@@ -78,26 +78,38 @@ literal operand moves into the index, so `LDA $6C37,X` on a region based at
 `$6CB7` prints `T6CB7[cmd - $80]`; and a play entry's `A` prints as the tick's
 `return` when every exit agrees on one computed expression (`ir.retval`).
 
-**Sibling closure and the fold** (`siblings.py`, `closure.py`, `copyfold.py`,
-`views.py`; S2c/S6, presentation only). The three voices are three copies of one
-static template, and the alignment of their instruction streams recovers that
-from the post-init image: equal opcodes advance all three, and a gap holds the
-`CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag.
-The dispatch is where the copies stop being one stream, so its arms are paired in
-table order by how far their targets align, which carries the correspondence into
-the handlers. *Amended by #241:* discovery is exact -- the bases are the chain the
-built procedures already carry, each pair of copies is one `difflib` alignment in
-which only a gap may separate them, and the family holds only while every copy's
-operand map is a function (an indexed base whose index is data, `STA $D400,X`,
-names something else than the same literal under `abs`); the ten thresholds are
-gone and song 1's family is the same three voices over 419 rows. Each copy then gets the arms its siblings ran -- the same site,
-under that copy's own operands, with count 0 and reachable only through edges that
-were a `trap` before -- and the front end builds a second program from the closed
-trace. That program's copies are one program modulo a renaming, so it prints once
-over `for v in 0, 1, 2`, with a group view whose fields are a per-copy address
-table rather than a stride (section 5). The certified S4 program, its Python and
-its certificate are the trace-closed ones either way; `--closure none` prints
-them.
+**Sibling copies and the copy index** (`siblings.py`, `copyrows.py`,
+`copymerge.py`; S2c, in the certified program). The three voices are three copies
+of one static template, and the alignment of their instruction streams recovers
+that from the post-init image: equal opcodes advance all three, and a gap holds
+the `CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag. The
+dispatch is where the copies stop being one stream, so its arms are paired by
+their index in the parallel tables `jumptab.dispatch` reads, which carries the
+correspondence into the handlers. *Amended by #241:* discovery is exact -- the
+bases are the chain the built procedures already carry, each pair of copies is one
+`difflib` alignment in which only a gap may separate them, and the family holds
+only while every copy's operand map is a function (an indexed base whose index is
+data, `STA $D400,X`, names something else than the same literal under `abs`); the
+ten thresholds are gone and song 1's family is the same three voices over 419
+rows.
+
+*Amended by this stage:* the correspondence is now spent before the IR exists.
+Copy *j* executing a template row **is** that row executed with `v = j`, so the
+front end builds the rows once: an operand the copies disagree on becomes a load
+from a per-copy column `T_x[v]` (one read-only table, 59 columns for song 1, in a
+band no access, no code and no other region can see -- outside the load image,
+outside the stack page and outside I/O, where every byte is a pinned input to the
+program whatever it holds); the chain edge from voice *j* to voice *j+1* becomes
+`v += 1; if v < 3: header`; the count of a site becomes a vector over `v`, and a
+zero says no execution of that voice reached that row -- the statement is the one
+another voice ran, at the address the correspondence says this one names, and it
+is marked unverified per statement. What the index cannot name is refused, not
+approximated: a row whose copies do not lift to one shape (three `LDA #imm` whose
+operand is a cell in one voice and not in another) stays three rows under a
+`switch (v)`, and so does the dispatch, since each voice's patched `JMP` holds its
+own target -- the arms then pair by the body they share, not by a case value.
+Nothing is lifted into a second program, and `--no-merge` builds what S2b built
+before.
 
 **Static jump-table arms** (`jumptab.py`): when both halves of a patched `JMP`
 operand are copied from constant tables indexed by one value, the table's

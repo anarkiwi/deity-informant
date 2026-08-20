@@ -18,7 +18,9 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | **region** | a connected component of the access relation: one storage object, with a base, extent, stride and initial bytes |
 | **view** | a presentation copy of the certified program; S5/S6 rewrite the view and never the program |
 | **sibling copies** | k static copies of one template an unrolled player wrote out (Follin's three voices, defMON's cascade blocks) |
-| **closure** | giving every copy the arms its siblings ran, so k trace-closed programs become one shape (`--closure siblings`) |
+| **copy index** | the value `v` a merged family runs over: copy *j* executing a template row is that row executed with `v = j` |
+| **column** | a per-copy table `T_x[v]` the merge reads an operand from where the copies name different addresses |
+| **coverage** | a merged block's execution count per copy; a zero says no execution of that copy reached it, and the statement is unverified |
 | **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table` |
 | **phase** | the state scalar a tick tests to pick its rate (defMON's `& 7` call counter) |
 | **tick** | one call of the play entry, at the cadence S0 discovered; the horizon flag spells it `--calls`, the certificate field `ticks` |
@@ -32,12 +34,12 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py` |
-| S2c | sibling closure (presentation): the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
+| S2c | sibling copies as one body: the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- then the fold that makes the copy index a value, so the certified program has one body under `v` with a per-copy column table | `siblings.py`, `copyrows.py`, `copymerge.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for`, the phase | `structure.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, struct views and roles, outlining, shared tails, copy folding | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `copyfold.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, struct views and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -51,39 +53,42 @@ traversals every stage shares.
 
 ```
 front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
-              cfg 309  regions 226  jumptab 179  siblings 424  closure 173
-program       ir 402  interp 242  irwalk 308  graph 70  build 481
-              ssa 423  frames 371  stack 204  idioms 357  emit 342  verify 326
+              cfg 309  regions 228  jumptab 209  siblings 395
+              copyrows 401  copymerge 165
+program       ir 415  interp 242  irwalk 309  graph 70  lower 197  build 450
+              ssa 427  frames 371  stack 204  idioms 357  emit 348  verify 326
 presentation  structure 500  inline 199  texture 475  frame 44  word 369
               fold 472  tails 165  copyfold 485  unroll 395  live 96
-              facts 223  recover 316  views 156
-text          pseudocode 361  printer 359
-driver        pipeline 452  __init__ 118
-baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,829 lines
+              facts 223  recover 320  views 156
+text          pseudocode 361  printer 369
+driver        pipeline 421  __init__ 119
+baseline      ghidra_facts 219  ghidra_compare 182   42 modules, 12,399 lines
 ```
 
 Stage entry points, which are also the module boundaries:
 `machine.find_entries`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
 `emit.emit_python`,
-`verify.verify`, `siblings.correspond`, `closure.close`, `structure.structure`,
-`copyfold.apply`, `recover.recover`, `views.decorate`, `printer.render`.
+`verify.verify`, `siblings.correspond`, `copymerge.plan`, `structure.structure`,
+`recover.recover`, `views.decorate`, `printer.render`.
 
 ## Use
 
 ```bash
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-    [--sid-model 6581|8580] [--closure siblings|none] \
+    [--sid-model 6581|8580] [--no-merge] \
     [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
 ```
 
-`--closure siblings` (the default) is S2c: before printing, the sibling copies of
-one template each get the arms their siblings ran, and the copies then print once
-over a loop index. It changes nothing that is certified -- `tuneprog.S4.json`,
-`tuneprog.py` and `certificate.json` are the trace-closed program either way --
-and `--closure none` prints that program as it is. What the closure added is
-counted in the `closure` line of `tuneprog.md` and in `tuneprog.S6.json`.
+S2c is on by default: where the front end proves k chained copies of one
+template, the certified program holds one body under the copy index `v`, with
+every operand the copies disagree on read from a per-copy column `T_x[v]`. It
+changes what is certified -- `tuneprog.S4.json`, `tuneprog.py` and
+`certificate.json` are the folded program -- and `--no-merge` builds what S2b
+built before it, which is what the two differ by. What folded, what refused and
+what no copy ran are in the `copies` line of `tuneprog.md`, in the certificate's
+`copies` and in `tuneprog.S6.json`.
 
 `tools/tuneprog_certify.py` is the same pipeline as a standalone driver. Both
 are chunked: a long run exits 2 while work remains, so each invocation stays
@@ -111,7 +116,7 @@ Artefacts in `--out DIR`:
 | `tuneprog.S4.json` | the certified program |
 | `tuneprog.py` | generated Python, one function per procedure |
 | `certificate.json` | S8 |
-| `tuneprog.S5.json`, `tuneprog.S6.json` | the structured shape, the recovered names and group views (with the closure's own counts) |
+| `tuneprog.S5.json`, `tuneprog.S6.json` | the structured shape, the recovered names and group views (with the fold's own counts) |
 | `tuneprog.md` | the pseudocode |
 | `state.json`, `tracer.pkl`, `verify.pkl` | resume state |
 
@@ -122,9 +127,8 @@ from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog.tracedata import Trace
 
 trace = Trace.load("out/tune")
-prog, regions, procs = pipeline.build(trace, "TUNE.sid")            # S2..S4
-closed, sibs, stats = pipeline.closed(trace, prog, "TUNE.sid")      # S2c (presentation)
-view, structured, names = pipeline.present(closed, sibs)            # S5/S6
+prog, regions, procs = pipeline.build(trace, "TUNE.sid")            # S2..S4, copies folded
+view, structured, names = pipeline.present(prog)                    # S5/S6
 ```
 
 ## Certificate schema
@@ -151,9 +155,27 @@ view, structured, names = pipeline.present(closed, sibs)            # S5/S6
       "complete": true,                // period found, agrees with the trace, no divergence
       "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000
   }],
+  "copies": {                          // only where a family folded or refused
+    "families": [{"proc": "tick", "bases": ["$12BE", "$12EF", "$1320", "$1351", "$1382"],
+                  "copies": 5, "rows": 18, "columns": 3, "table": "$0200"}],
+    "refused": [{"proc": "p_1022", "base": "$112A",
+                 "why": "an edge from copy 0 enters copy 1"}],
+    "statements": 52,                  // statements inside a merged block
+    "unverified": 30,                  // of those, in a block some copy never ran
+    "coverage": {"1,1,1,1,1": 22, "1,0,0,0,0": 12, "0,1,1,1,1": 18}  // by copy pattern
+  },
   "generated": "2026-08-16T20:12:05Z"
 }
 ```
+
+`copies` is the fold S2c proved. A family is k chained copies of one template
+that became one body under the copy index; `rows` is how many instructions
+folded, `columns` how many operands the copies disagree on (each one a per-copy
+table entry at `table`). `coverage` counts merged statements by which copies ran
+them: a `0` is a statement the trace saw in another copy and the correspondence
+says is this one's too, which the printed program marks per statement. A family
+the index cannot name -- a cross-copy edge, an operand no table can express --
+is `refused` with its reason, and its copies stay k bodies.
 
 `complete` means the run closed: the tuneprog reached a state repeat at the same
 tick and with the same period as the trace, with no divergence. Otherwise the
@@ -214,20 +236,24 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   not a decompiled path. `jumptab` closes a patched jump statically over the
   table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
-  region and stay unlisted. `--closure siblings` recovers the arms *another copy
-  of the same template* ran, which is most of them where a player unrolls its
-  voices, but only for the printed form.
-- **The closure is unverified code.** The arms a sibling ran are lifted into the
-  copies that never reached them, under those copies' own operands. They are
-  reachable only through edges that were a `trap` before, the added sites have
-  count 0, and the closed program is the same front end's product from the closed
-  trace -- but no execution ever took them, and the `closure` line says how many
-  statements that is (Follin song 1: 44 of 283).
+  region and stay unlisted. Where a player unrolls its voices, a row one copy ran
+  is every copy's row, which the fold makes one statement -- and marks unverified
+  for the copies that never reached it.
+- **A merged row a copy never ran is unverified code.** The statement is the one
+  the trace saw in another copy, at the address the correspondence says this copy
+  names. It is reachable only where the copy's own control flow goes there, its
+  coverage entry is 0, the certificate counts it, and the printed program marks it
+  per statement (Follin song 1 at 30 s: 240 of 428 merged statements).
 - **A copy is found by its static shape, so a short horizon finds less of it.**
   Discovery starts at pcs the trace executed and pairs a dispatch's arms by how
-  far their targets align; over 30 s of *Automatas* one cascade run folds and over
-  the whole song both do, nested. What folds is therefore a function of the
-  horizon, and the certificate's horizon is what the exemplar documents report.
+  far their targets align; over 30 s of *Automatas* the two cascade runs fold and
+  two smaller families refuse. What folds is therefore a function of the horizon,
+  and the certificate's horizon is what the exemplar documents report.
+- **What the copy index cannot name refuses.** An edge that leaves one copy for
+  another anywhere but the chain edge, a row whose copies do not lift to one
+  shape, an opcode cell inside a copy: the first refuses the family whole, the
+  others keep that row as k rows under a `switch (v)`. The reason is in the
+  certificate and in the printed header, never a silent approximation.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.

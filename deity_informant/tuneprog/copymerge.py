@@ -80,8 +80,7 @@ def _place(trace, regions, size, taken):
     for a, b in ((0, 0x200), (lo, hi), (0xD000, 0xE000)):
         busy[a:b] = b"\1" * (b - a)
     for r in regions:
-        for a in r.addrs:
-            busy[a] = 1
+        busy[r.base : r.base + r.size] = b"\1" * r.size  # a sparse region owns its span
     for a in trace.code | trace.written_play | trace.written_init | taken:
         busy[a] = 1
     run = 0
