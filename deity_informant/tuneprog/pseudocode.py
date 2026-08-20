@@ -346,33 +346,33 @@ class Printer:
                 lhs = "io[%s]" % (hexlit(base) if base is not None else self.expr(s.a, False))
         else:
             lhs = self.colref(s.r, s.a) or self.cell(s.r, addr, idx)
-        out = self.compound(lhs, s, addr)
+        out = self.compound(lhs, s, (addr, idx))
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:
             self.mem[fold(s.v)] = lhs
         return out
 
-    def compound(self, lhs, s, addr):
+    def compound(self, lhs, s, split):
         """``x += k`` when the stored value is the cell's own value plus a constant."""
         v = fold(s.v)
         if type(v) is Bin and v.op in ("+", "-", "&", "|", "^", "<<", ">>"):
             a = self.defs.get(v.a.n, v.a) if type(v.a) is Var else v.a
-            if type(a) is Load and a.r == s.r and self.same_cell(a.a, s.a, s.r, addr):
+            if type(a) is Load and a.r == s.r and self.same_cell(a.a, s.a, s.r, split):
                 if type(v.b) is Const and v.op in ("+", "-") and v.b.v > 0xF0:
                     return "%s %s= %s" % (lhs, "-" if v.op == "+" else "+", hexlit(0x100 - v.b.v))
                 return "%s %s= %s" % (lhs, v.op, self.expr(v.b, False))
         return "%s = %s" % (lhs, self.expr(s.v))
 
-    def same_cell(self, load, store, rid, addr):
+    def same_cell(self, load, store, rid, split):
         """True when a load names the very cell a store writes.
 
-        A literal address is compared through the region's origin; one the program
-        computes -- a per-copy column, an indexed pointer -- names the same cell
-        only when it is the same expression.
+        A literal address is compared through the region's origin -- base *and*
+        index, since one element on is a different cell; an address the program
+        computes names the same cell only when it is the same expression.
         """
-        if addr is None:
+        if split[0] is None:
             return load == store
-        return self.addr_of(load, self.rgn.get(rid))[0] == addr
+        return self.addr_of(load, self.rgn.get(rid)) == split
 
     def forget(self, rid):
         self.mem = {k: v for k, v in self.mem.items() if not _reads(k, rid)}
