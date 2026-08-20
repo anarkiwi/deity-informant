@@ -36,6 +36,8 @@ EMOMYST = "MUSICIANS/H/Hermit/Emomyst.sid"
 EOTW = "MUSICIANS/H/Hermit/End_of_the_World.sid"
 LINUS = "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid"
 DIA = "MUSICIANS/L/Linus/Do_It_Again.sid"
+KNOB = "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid"
+GULDKORN = "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid"
 
 
 def tune_file(relpath):

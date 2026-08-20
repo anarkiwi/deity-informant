@@ -6,7 +6,8 @@ traced playroutine tick for tick, plus a readable pseudocode form of it.
 
 Design: [`tuneprog-decompiler-design.md`](tuneprog-decompiler-design.md).
 Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-follin.md),
-[goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md).
+[goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md),
+[jch](prototype-jch.md).
 Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 ## Vocabulary
@@ -256,6 +257,16 @@ of the page. `depth` is the deepest slot below an entry pointer the analysis
 placed (reads and writes, callees included), `"unknown"` where an access is not a
 slot at all.
 
+The **6510 port** decides what `$D000-$DFFF` is at every access: the pre-init
+image carries the port a KERNAL-initialised host leaves (`$00 = $2F`,
+`$01 = $37`), the program's own machine carries those two bytes (`image_port`),
+and the tracer records which `(pc, op)` pairs reached a chip. An address the run
+only ever touched with I/O banked out is the RAM under the chip: it types as
+ordinary storage, its accesses are `ram`/`chk`, and a region lying under the SID
+register file takes the `sid_image` role at delta 0 (`ghost.reg[i]`). An access
+that did reach the chip keeps the `io` class in the same region, so a write with
+I/O mapped is still a SID write. See [prototype-jch.md](prototype-jch.md).
+
 The tracer hashes **two** footprints per tick, because which one a certificate may
 claim periodicity on is not known until S4 has run: the whole play-written set,
 and that set without the stack page. A program whose stack was eliminated writes
@@ -285,10 +296,14 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 299 | 770 | 45 | complete (31 of 32) |
 | `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
 | `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
+| `jch-knob-at-night` | I_Could_Eat_a_Knob_at_Night.sid | JCH NewPlayer V20 + a banking wrapper | 8,577 | 2m51s | 1 | 9 | 155 | 472 | 99 | complete |
+| `jch-guldkorn-intro` | Guldkornekspressen_Intro.sid | JCH NewPlayer V20 | 2,401 | 0m48s | 1,512 | 2 | 160 | 443 | 103 | complete |
 | `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 951 | 96 | complete |
 | `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
 
-Every one has `divergences: 0` and `envelope_traps: 0`. `ghouls-song21` is the
+Every one has `divergences: 0` and `envelope_traps: 0`. `jch-knob-at-night`'s
+period of 1 is a song that *stops*: its tracks end, the player writes nothing
+more and the state is a fixed point from tick 8,576 on. `ghouls-song21` is the
 one subtune with no state repeat inside 400 s (two voices keep a portamento and a
 trill moving), so it is certified to a 20,049-tick horizon. Both `commando`
 subtunes are certified to their HVSC length for the same reason, measured with

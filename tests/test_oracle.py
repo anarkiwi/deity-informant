@@ -85,3 +85,54 @@ def test_render_matches_oracle(tune_id, relpath):
     assert aligned_match(
         expected, rendered, max_lead=4
     ), f"{tune_id}: deity render != sidtrace oracle over {len(expected)} frames"
+
+
+KNOB = "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid"
+BANKED_FRAMES = 500
+
+
+def _tick_grid(path, nframes):
+    """Per-tick ``$D400..$D418`` from the tuneprog tracer's own SID write log.
+
+    The log holds what reached the chip, so a player that writes the RAM under
+    the SID (I/O banked out) contributes nothing to it -- which is the point.
+    """
+    from deity_informant.tuneprog.machine import find_entries
+    from deity_informant.tuneprog.trace import Tracer
+
+    img, schedule = find_entries(Path(path).read_bytes())
+    tr = Tracer(img, schedule[0])
+    tr.run_init()
+    tr.run_calls(nframes)
+    log = tr.trace().wlog
+    rows, cur, i = [], [0] * reg.SID_REG_COUNT, 0
+    calls = [int(c) for c in log["call"]]
+    while i < len(calls) and calls[i] > nframes:
+        i += 1  # the init phase logs call = 0xFFFFFFFF
+    for frame in range(nframes):
+        while i < len(calls) and calls[i] == frame:
+            a = int(log["addr"][i]) - 0xD400
+            if 0 <= a < reg.SID_REG_COUNT:
+                cur[a] = int(log["val"][i])
+            i += 1
+        rows.append([(cur[k] & 0xF) if k in _PW else cur[k] for k in range(reg.SID_REG_COUNT)])
+    return rows
+
+
+@pytest.mark.oracle
+def test_a_player_run_with_io_banked_out_writes_no_register():
+    """Puterman's V20 wrapper: only its flush reaches the chip, and the oracle agrees.
+
+    With the 6510 port's direction byte wrong, ``STA $01`` banks nothing, the
+    player's own 25 writes a frame reach the SID as well, and every frame differs.
+    """
+    path = resolve_tune(KNOB, cache_dir=_CACHE / "hvsc")
+    if path is None:
+        raise TuneFetchError("Puterman/I_Could_Eat_a_Knob_at_Night unavailable")
+    expected = oracle_grid(
+        path, oracle_cache=_CACHE / "csv", seconds=BANKED_FRAMES // 50 + 2, frames=BANKED_FRAMES
+    )
+    assert len(expected) >= BANKED_FRAMES, f"oracle only {len(expected)} frames -- short render"
+    rendered = _tick_grid(path, len(expected))
+    bad = [i for i, (a, b) in enumerate(zip(expected, rendered)) if a != b]
+    assert not bad, f"frames {bad[:3]} differ: {expected[bad[0]]} != {rendered[bad[0]]}"

@@ -28,12 +28,12 @@ Contents
 
 | | |
 |---|---|
-| certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
+| certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2, JCH NewPlayer V20 ×2 — 44 certificates, 852,869 ticks, 0 divergences, 0 envelope traps; 40 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
-| refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 45 modules, 13,198 lines, none over 500; 478 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_period.py`, `tools/tuneprog_ghidra.py` |
+| refused by design | JCH Easy Does It (NMI sample mixer = second interrupt); the plain V20 engine inside it is certified twice ([prototype-jch.md](prototype-jch.md)) |
+| code | `deity_informant/tuneprog/`, 45 modules, 13,320 lines, none over 500; 491 hermetic + 43 HVSC + 4 oracle tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (44/44 reproduce), `tools/tuneprog_period.py`, `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
-| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach · #249 certificate accounting |
+| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach · #249 plan (the P-JCH row) · #250 certificate accounting · #251 JCH NewPlayer V20 |
 
 Fourteen stages, each an Opus agent with the certificate as its acceptance test:
 front end → certified core → presentation → fold/texture → Follin →
@@ -54,9 +54,10 @@ certificates on `main`. **Both gates of §6 are met.**
 | the design's cost model | trace 277 k instructions/s, verify 10–16 k calls/s; the whole HVSC at song length is ≈ 300 CPU-hours — a few hours on this machine, no fast tracer needed yet |
 | Ghidra cannot be the core but can be a baseline (§8) | with our facts applied through a SLEIGH context register, Ghidra's decompiler abstracts SMC mechanically (79/87 of Automatas' cell bytes become globals) and its high P-code is 5.8–10.6× our S4 statements — see [ghidra-highpcode-export.md](ghidra-highpcode-export.md) |
 
-Coverage of the anatomy: 8 of the 9 exemplar players are certified or certify at
-a short horizon (Blackbird, Galway, Walker pass 15 s unchanged; JCH is refused
-by design — its NMI sample mixer is a second interrupt).
+Coverage of the anatomy: **all 9** exemplar players are certified or certify at a
+short horizon (Blackbird, Galway, Walker pass 15 s unchanged). JCH's engine is
+certified on two plain V20 builds; only the *sample* build of §3.5 stays refused,
+its NMI mixer being a second interrupt.
 
 ## 3. Lessons that change the design or the plan
 
@@ -201,6 +202,11 @@ Deduplicated from every stage's report; owner = the module that would change.
 | ~~`--songs all` resume state for mixed stop reasons~~ *done (P2): the trace stage kept a bare list of finished subtunes, so a subtune was skipped on resume whatever horizon the resuming invocation asked for — a run interrupted under `--calls N` and resumed under `--until-period` certified subtunes at different, unrecorded horizons in one certificate. Each subtune now carries `{calls, stop, horizon}` (`stop` = period / horizon / budget), a record from another horizon rewinds that subtune to S1, and `verify.pkl` carries the reference length it was taken against* | Follin | tool | pipeline |
 | ~~`printer`/`pseudocode` memo invalidation with 16-bit views; `node_exprs` unknown-node guard~~ *done (P2): the memo (value expression → the cell that holds it) dropped an entry only when the entry's key read the written region, never when the cell itself lived there; `word.fold16`'s `W16` made it reachable because the renderer invalidated neither half, and a call invalidated nothing. Entries carry their region and `forget` drops both directions; `node_exprs` raises on a node no table lists* | consolidation | quality | irwalk, pseudocode |
 | under `--songs all` a subtune that stops on a period is certified at `ceil((first_repeat+1)/chunk)*chunk` ticks, so its tick count depends on `--chunk`, where the single-song path certifies `first_repeat + 1` | P2 | tool | pipeline |
+| a block one init loop made, walked as `base + n*k + v` -- element inside, field outside -- is the *transpose* of the stride view and keeps its flat address (JCH's `$1014` 12 bytes and `$1748` 21 bytes; the split needs an index whose scale is a record width, and here the scale is 1) | P-JCH (#251) | presentation | views |
+| a SID register offset taken from a per-track table (`$1743,X` = 0, 7, 14) prints as `sid.reg[5 + voice[v].b1740]`, not `sid[v].ad`: nothing in the tune walks a 7-byte record, so `facts.scales` has no evidence, and folding the table read into the loop that indexes it is what #248 refused | P-JCH (#251) | presentation | facts, views |
+| a loop body's joins are `goto`: JCH's per-voice DAG converges on the write-out and the effects block from several arms, both inside the `DEX; BMI` body, so `tails.promote_tails` (a region several jumps reach and *nothing leaves*) cannot promote them -- 7 `goto` in each V20 tune against 0 in GoatTracker, whose shared tails sit in a called procedure | P-JCH (#251) | presentation | tails, structure |
+| comparing a tick's writes against a *sampler* needs their cycles, which the trace has and the comparison did not use: a tune that spends a data-driven delay between register writes (Puterman's V20 wrapper, 168 -> 10,248 cycles from a tick's first SID write to its last) puts its last writes past the point `sidtrace` reads the grid at, so 494 of 3,000 frames differ by call index and **0** once each write is attributed by its cycle (sample point measured at ~9,000 cycles into the frame). Worth a shared helper if the campaign compares grids at scale | P-JCH (#251) | oracle | trace, testing |
+| a write to `$D000-$DFFF` with I/O mapped also writes the RAM under it, in the tracer and in the interpreter alike (`tracevm._wr`, `interp.iostore`), where the hardware writes only the chip. Invisible until #251 made that RAM observable storage, and still unobservable in every exemplar (both sides agree, so no certificate can see it; the two new tunes match the oracle write for write). The honest model is two planes -- the chip and the RAM beneath -- which the address-keyed footprint, region relation and state hash all assume away, so it waits for a tune that discriminates | P-JCH (#251) review | model | tracevm, interp |
 | Ghidra function bodies vs clone-per-entry (`ghidra_partial` rows) | Ghidra export | oracle | ghidra_compare |
 | numba tracer/executor if the campaign needs it | design §11 | performance | trace, emit |
 | ~~stack elimination in S4 (§7) — gate item~~ *done (#237)* | user gate | core | frames, stack |
@@ -220,7 +226,7 @@ one Opus agent per package with a read-only review before each merge, as §10.
 | **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
 | **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
 | **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
-| **P-JCH V20 family** (2026-08-20) | certify plain NewPlayer V20 — `Puterman/I_Could_Eat_a_Knob_at_Night.sid` (the anatomy's V20 reference, play `$10C1`, ordinary `sub` entry) + one JCH-authored V20 tune; generic fixes only, `docs/prototype-jch.md`; exercises width-3 stride views, 4-column table programs, prefetch/commit phases, funk tempo, voice *loop* (no families) | small-medium | the largest HVSC family (~1,737 tunes) certified before the sweep; both §6 gates are met so admission is legitimate. The **sample build** (Easy Does It, NMI second interrupt) stays deferred with the §8 item 3 prototype — its scoping (interleaved schedule, cross-context reads as pinned inputs, NMI at instruction boundaries, RTI frame as contract) is recorded in the session notes and is data-gated on the sweep |
+| ~~**P-JCH V20 family**~~ *done (#251)*: `Puterman/I_Could_Eat_a_Knob_at_Night.sid` 8,577 ticks and `JCH/Guldkornekspressen_Intro.sid` 2,401 ticks, both **complete**, 0 divergences, 0 envelope traps, stack eliminated, no sibling family (JCH loops), 0 SMC cells in the player; five generic fixes, all in the machine model or the printer: the 6510 port's reset state, the port bytes in the program's image, the chip-vs-RAM class per access at $D000-$DFFF, the RAM under the register file as a shadow at delta 0, and a recurrence is not a busy-wait. both traces reproduce the `sidplayfp` grid write for write ([prototype-jch.md](prototype-jch.md)) | small-medium | done; recert 44/44 |
 | **P6 fold presentation** | the `for` a merged body with k entries does not get · a fold that costs more than it saves · a role that moves with a united region | small-medium | P1's four new rows; presentation only, so it can wait for the campaign's data |
 | **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) · an edge into another copy's non-entry row (measured: costs more than it buys) | — | |
 
@@ -229,9 +235,9 @@ remainder.** P1/P2 first because they change certificate claims the campaign
 would otherwise measure stale; the V20 family stage precedes the sweep so the
 largest family's issues close by generalization on two tunes rather than at
 scale; P3 (RTI contract, residual horizon) follows it; NMI/sample deferred,
-data-gated on the sweep. P1 and P2 are done; the campaign is also what re-ranks
-the two rows P2 left open (the periodicity reduction and the closed program's
-structuring).
+data-gated on the sweep. P1, P2 and P-JCH are done; the campaign is also what
+re-ranks the two rows P2 left open (the periodicity reduction and the closed
+program's structuring) and the three P-JCH left (below).
 
 ## 6. Gate: fold and stack before any new family
 

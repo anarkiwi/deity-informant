@@ -3,8 +3,11 @@
 import pytest
 
 from deity_informant.tuneprog import closure, pipeline, printer
+from deity_informant.tuneprog.cfg import build_procs
 from deity_informant.tuneprog.ir import Load, Trap
 from deity_informant.tuneprog.irwalk import node_exprs, walk
+from deity_informant.tuneprog.lift import lift_trace
+from deity_informant.tuneprog.regions import build_regions
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
@@ -166,3 +169,23 @@ def test_a_closed_access_carries_the_envelope_the_image_states():
         if type(x) is Load
     }
     assert ("chk", tab, tab + 0xFF) in envs, envs
+
+
+def test_a_closed_trace_refuses_to_be_saved(tmp_path):
+    """The stamp is not in the file format, so a reload would call the sites executed."""
+    trace, _prog = built(joining())
+    with pytest.raises(ValueError):
+        trace.save(tmp_path / "t")
+
+
+def test_only_a_synthesised_site_carries_the_closed_stamp():
+    """A zero-count site is closed code only where the closure wrote it."""
+    trace, _prog = built(joining())
+    stamped = {k for k, s in trace.sites.items() if s.get("closed")}
+    assert stamped and all(not trace.sites[k]["count"] for k in stamped)
+    for s in trace.sites.values():
+        s["count"] = 0  # a site nothing ran is still not the image's statement
+    lifted = lift_trace(trace)
+    procs = build_procs(trace, lifted, build_regions(trace, lifted))
+    shut = {n["pc"] for p in procs.values() for n in p.nodes.values() if n["closed"]}
+    assert shut == {trace.sites[k]["pc"] for k in stamped}

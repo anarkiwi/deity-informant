@@ -56,6 +56,7 @@ class Trace:
     footprint_size: object = None
     state_hash_free: object = None
     footprint_free: object = None
+    chip_ops: set = None  # (pc, op index) pairs that reached a chip; None = every one did
 
     def site_at(self, pc):
         """All site keys recorded at ``pc`` (>1 when the pc is an opcode cell)."""
@@ -76,9 +77,24 @@ class Trace:
         """Site keys whose write footprint contains ``addr``."""
         return [k for k, s in self.sites.items() if any(addr in w for w in s["writes"].values())]
 
+    def is_chip(self, pc, op):
+        """True where this op reached the chip at $D000-$DFFF rather than the RAM under it.
+
+        The 6510 port decides, so the tracer records the ops that ran with I/O
+        mapped; a trace that recorded none (an older one) says every op did.
+        """
+        return self.chip_ops is None or (pc, op) in self.chip_ops
+
     # ---- serialisation -----------------------------------------------------
     def save(self, path):
-        """Write ``trace.json`` (structure) + ``trace.npz`` (bulk arrays) into ``path``."""
+        """Write ``trace.json`` (structure) + ``trace.npz`` (bulk arrays) into ``path``.
+
+        Refuses a trace :func:`~.closure.close_static` has run on: its synthesised
+        sites carry a stamp this format does not hold, and a reload would take them
+        for executed code.
+        """
+        if any(s.get("closed") for s in self.sites.values()):
+            raise ValueError("a statically closed trace is an in-memory product; do not save it")
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         doc = {
@@ -121,6 +137,7 @@ class Trace:
             "init_writes": self.init_writes,
             "written_init": sorted(self.written_init),
             "written_play": sorted(self.written_play),
+            "chip_ops": None if self.chip_ops is None else sorted(self.chip_ops),
             "cells": sorted(self.cells),
             "code": sorted(self.code),
             "cell_values": [[a, sorted(v)] for a, v in sorted(self.cell_values.items())],
@@ -190,6 +207,8 @@ class Trace:
         t.init_writes = [tuple(x) for x in doc["init_writes"]]
         t.written_init = set(doc["written_init"])
         t.written_play = set(doc["written_play"])
+        chip = doc.get("chip_ops")
+        t.chip_ops = None if chip is None else set(map(tuple, chip))
         t.cells = set(doc["cells"])
         t.code = set(doc.get("code", ()))
         t.cell_values = {a: set(v) for a, v in doc["cell_values"]}
@@ -220,6 +239,7 @@ def rekey(trace, cells, out):
                 "writes": {},
             }
         d["count"] += s["count"]
+        d["closed"] = d.get("closed", False) or s.get("closed", False)
         d["phases"] |= s["phases"]
         d["variants"] += s["variants"]
         d["idx"].update(s["idx"])
@@ -245,6 +265,11 @@ def merge(traces):
     code = set().union(*(t.code for t in traces))
     written_init = set().union(*(t.written_init for t in traces))
     written_play = set().union(*(t.written_play for t in traces))
+    chip = (
+        None
+        if any(t.chip_ops is None for t in traces)
+        else set().union(*(t.chip_ops for t in traces))
+    )
     cells = code & (written_init | written_play)
     jsr = set().union(*(t.jsr_targets for t in traces))
     out = Trace(
@@ -255,6 +280,7 @@ def merge(traces):
         init_writes=first.init_writes,
         written_init=written_init,
         written_play=written_play,
+        chip_ops=chip,
         cells=cells,
         code=code,
         jsr_targets=jsr,

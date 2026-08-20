@@ -30,6 +30,8 @@ TUNES = {
     "Emomyst.sid": "MUSICIANS/H/Hermit/Emomyst.sid",
     "End_of_the_World.sid": "MUSICIANS/H/Hermit/End_of_the_World.sid",
     "Ghouls_n_Ghosts.sid": "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
+    "Guldkornekspressen_Intro.sid": "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid",
+    "I_Could_Eat_a_Knob_at_Night.sid": "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid",
     "Je_suis_Linus_le_salaud.sid": "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid",
 }
 COLS = "%-22s %-26s %-9s %9s %9s %-8s %s"

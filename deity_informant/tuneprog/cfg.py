@@ -183,7 +183,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         "key": key,
         "mnemonic": OPS[op][0],
         "count": site["count"],
-        "closed": not site["count"],
+        "closed": bool(site.get("closed")),
         "call": [],
         "tail_call": False,
         "computed": bool(ls is not None and ls.computed_control),
