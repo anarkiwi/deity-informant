@@ -144,54 +144,108 @@ subtune's write log left where verification needs it. What `init` writes is type
 
 One body over the copy index, the three voices' dispatches inside it over one set
 of arm bodies, and every statement no voice of its own ran marked where it is.
-The columns the copies disagree on are read once at the top of the loop; naming
-them `voice[v].field` and printing the loop as `for v in 0, 1, 2` is the view
-pass stage C owns, so what stands here is the shape, not the vocabulary.
+Every column the copies disagree on prints as the operand it stands for — an
+affine one through the stride vocabulary (`sid[v].freq_lo`, `b640F[v]`), the rest
+as a field of the group view whose per-copy addresses the state header lists once
+(`$62EE`/`$64DB`/`$66CA`). Two of the 60 columns keep their table read: no rule
+names them, so their addresses stay visible. Measured on the certified song 1
+(12,997 calls): the document is 755 lines and `tick()` 493 of them, against 794
+and 578 before the view pass.
 
 ```
+program   4 procedures, 176 blocks, 293 statements, 42 regions
 copies    1 family over 3 copies, 400 rows; 133 of 471 statements unverified (marked)
-certified 16,000 calls, 0 divergences, period 1, first repeat at call 12,996 (complete)
+certified 12,997 calls, 0 divergences, period 1, first repeat at call 12,996 (complete)
+
+voice[3]  per-copy cells, stride 6, 51 fields
+  .b0021          $0021 $0023 $0025            # the stream pointer
+  .timer          $0022 $0024 $0026
+  .pw_lo          $003F $0041 $0043 ; .pw_hi   $0040 $0042 $0044
+  .freq_lo        $0075 $0076 $0077 ; .freq_hi $0078 $0079 $007A
+  .counter_2      $007B $007C $007D            # active[v] = $FF
+  .b6269          $6269 $6456 $6645            # the vibrato direction
+  .b62EE          $62EE $64DB $66CA            # the pulse mode
+  .b6375          $6375 $6562 $6751            # the patched JMP
+  .b6C37          $6C37 $6C4C $6C61            # the two arm tables
+  ...                                          # 51 fields in all
+b0021            $0021 118 bytes               # what is left is not per-voice
 
 tick():                                  # $6234, 48,000 calls
-    t1 = 0
-    while True:   # x48,000
-        t2 = copies_6234[t1 << 1]                      # the per-copy columns, 60 of them:
-        t3 = copies_6234[6 + (t1 << 1)]                # $0021/$0023/$0025, the stream pointer
-        ...                                            # $62EE/$64DB/$66CA, the pulse mode
-        t61 = copies_6234[$15F + (t1 << 1)]            # $6375/$6562/$6751, the patched JMP
-        if b0021[t2] < 0:
-            if b0021[t3] != 0:
+    for v in 0, 1, 2:   # x48,000
+        # $6234
+        t1 = copies_6234[$13E + (v << 1)]      # the two columns no rule names
+        t2 = copies_6234[$144 + (v << 1)]
+        if voice[v].counter_2 < 0:
+            if voice[v].timer_8 != 0:
                 # $623F
-                t62 = b0021[t3]  # unverified (ran for v = 1)
-                b0021[t3] -= 1  # unverified (ran for v = 1)
-                if b0021[t3] != 0: trap 'untaken'
+                t3 = voice[v].timer_8  # unverified (ran for v = 1)
+                voice[v].timer_8 -= 1  # unverified (ran for v = 1)
+                if voice[v].timer_8 != 0: trap 'untaken'
                 # $6243
-                io[t5] = b0021[t4]  # unverified (ran for v = 1)
-                io[t7] = b0021[t6]  # unverified (ran for v = 1)
+                sid[v].freq_lo = voice[v].freq_lo  # unverified (ran for v = 1)
+                sid[v].freq_hi = voice[v].freq_hi  # unverified (ran for v = 1)
+                if voice[v].b0036 == 0: trap 'untaken'
+                # $6251
+                sid[v].ctrl = (voice[v].ctrl | 1)  # unverified (ran for v = 1)
             ...
-                # $6366                                # the sequencer's patched JMP
-                b6375[t37] = T6CB7[t36 + t80]          # written through the copy's own cell
-                b6375[t39] = T6CF6[t38 + t80]
-                switch t1:                             # each voice dispatches on its own
-                    case 0:
-                        switch b6375[0]:
-                            case $6858:                # $82 loop begin
-                                b0021[t52] = b730E[((b0021[t35] << 8) | b0021[t34]) + 1]
-                                ...
-                                continue
-                            case $68A3: ...            # 7 arms voice 1 sent
-                    case 1:
-                        switch b6375[493]:
-                            case $6871: goto L6858_B1  # the same body, voice 2's target
-                            case $68F7:                # an arm only voice 2 sent
-                                b640F[t48/495] = b730E[...]  # unverified (ran for v = 1)
-                                ...
-                    case 2:
-                        switch b6375[988]:
-                            case $688A: goto L6858_B1
-                            ...                        # 21 bodies for 27 targets in all
-                switch t1:                             # the `CMP #v` one voice has and
-                    case 0:                            # another has not: three rows, not one
+                # $627A                                 # +/- depth by the direction
+                sid[v].freq_lo = a156
+                sid[v].freq_hi = x18
+                voice[v].freq_lo = a156
+                voice[v].freq_hi = x18
+            ...
+            if voice[v].timer_2 == 0:
+                while True:   # x2,773                  # the sequencer
+                    # $6360
+                    t21 = b730E[(voice[v].timer << 8) | voice[v].b0021]
+                    if t21 >= 0:
+                        break                           # a note byte leaves the loop
+                    else:
+                        # $6366                         # the patched JMP, tables at base-$80
+                        voice[v].b6375 = voice[v].b6C37[t21]
+                        voice[v].b6376 = voice[v].b6C76[t21]
+                        switch v:                       # each voice dispatches on its own
+                            case 0:
+                                switch voice[v].b6375:
+                                    case $6858:         # $82 loop begin
+                                        # $6858
+                                        voice[v].timer_3 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
+                                        t22 = voice[v].b0021
+                                        voice[v].b0030 = (t22 + 2)
+                                        voice[v].b0021 += 2
+                                        ...
+                                        continue
+                                    case $68EE:         # $84 fixed note length
+                                        # $68EE
+                                        b640F[v] = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
+                                        y10 = 2
+                                        goto L6356_98   # back into the sequencer
+                                    case $6909:         # $85 raw register list
+                                        # $6909
+                                        y14 = 1
+                                        a75 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
+                                        while True:   # x191
+                                            # $690B
+                                            y16 = (y14 + 2)
+                                            sid.reg[a75] = b730E[...]   # the register is a variable
+                                            ...
+                            case 1:
+                                switch voice[v].b6375:
+                                    case $6871:
+                                        goto L6858_B1   # the same body, voice 2's target
+                                    case $68B2:
+                                        goto L68A3_C6
+                                    ...
+                                    case $6ADD:         # an arm only voice 2 sent
+                                        voice[v].b0093 = b730E[...]  # unverified (ran for v = 1, 2)
+                                        ...
+                            case 2:
+                                switch voice[v].b6375:
+                                    case $688A:
+                                        goto L6858_B1
+                                    ...                 # 47 cases over 21 bodies in all
+                switch v:                               # the `CMP #v` one voice has and
+                    case 0:                             # another has not: three rows, not one
                         # $63D8
                         z47 = b0021[83] == 0
                     case 1:
@@ -201,20 +255,20 @@ tick():                                  # $6234, 48,000 calls
                         # $67B6
                         z47 = b0021[83] == 2
                 ...
-                # $641D                         # the chain edge into the next voice
-                t108 = (t1 + 1)
-                if (t1 + 1) < 3:                       # the third voice falls out of the run
-                    t1 = t108
-                    continue
-    ...
-    return ((b0021[90] | b0021[91]) | b0021[92])
+    if b6800 != 0: trap 'untaken'                       # $67FF the filter sweep
+    # $683C
+    sid.cutoff_lo = b0021[78]
+    b0021[117] = (b0021[78] >> 3)
+    t49 = ((b0021[79] >> 2) | ((b0021[79] & 1) << 7))
+    sid.cutoff_hi = (((((t49 >> 1) | (((b0021[79] >> 1) & 1) << 7)) >> 1) | ((t49 & 1) << 7)) | b0021[117])
+    return ((voice[0].counter_2 | voice[1].counter_2) | voice[2].counter_2)
 ```
 
-Where a voice ends its own note the arm reads `continue`, not `goto L6421_A5`:
-the chain edge into the next copy is the loop's back edge, and the increment of
-the index is the only thing between them. What is left of `b0021[...]` under a
-constant index is what is not per-voice at all -- the filter's own cells and
-`$74`, the voice number.
+The chain edge into the next copy is the loop's back edge, so where a voice ends
+its own note the arm reads `continue`, not `goto L6421_A5`, and the `v += 1; if v
+< 3` the merge laid down is the `for` header itself. What is left of `b0021[...]`
+under a constant index is what is not per-voice at all — the filter's own cells
+and `$74`, the voice number.
 
 ---
 
@@ -264,11 +318,13 @@ same statement with a zero in its coverage vector, marked where it prints.
   statement -- no lifted site, no second program, no count-0 block reachable only
   through a former trap.
 - **What is left of the zero page is what is not per-voice.** `$21–$97` is still
-  one region -- init clears it with one loop -- and the fold now reads its
-  per-voice cells through the family's columns, so what still prints as
-  `b0021[...]` is the filter's own accumulator and bounds and `$74`, the voice
-  number. Naming a column `voice[v].field` is stage C's view pass; until then the
-  columns print as `copies_6234[...]` and the loop as a `while` over the index.
+  one region -- init clears it with one loop -- and the fold reads its per-voice
+  cells through the family's columns, so what still prints as `b0021[...]` is the
+  filter's own accumulator and bounds and `$74`, the voice number. Since #244 the
+  columns print as the operands they stand for: 51 fields of one `voice[3]` view
+  whose per-copy addresses the state header lists once, `sid[v].freq_lo` where the
+  copies step by the SID's voice block, and `copies_6234[...]` for the two of 60
+  columns no rule names, whose addresses stay visible.
 - **The dispatch stays three dispatches over one set of arm bodies.** Each voice's
   patched `JMP` holds *its own* target, and the three copies' handlers are
   interleaved at unequal offsets, so no key pairs the arms by value: the merged

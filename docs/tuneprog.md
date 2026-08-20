@@ -38,8 +38,8 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
-| S5 | structuring: loops, if/else, switch, counted `for`, the phase | `structure.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, struct views and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `word.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain or a family's copies), the phase | `structure.py`, `loops.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -54,15 +54,15 @@ traversals every stage shares.
 ```
 front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
               cfg 309  regions 228  jumptab 209  siblings 395
-              copyrows 401  copymerge 165
-program       ir 415  interp 242  irwalk 309  graph 70  lower 197  build 450
-              ssa 427  frames 371  stack 204  idioms 357  emit 348  verify 326
-presentation  structure 500  inline 199  texture 475  frame 44  word 369
-              fold 472  tails 165  copyfold 485  unroll 395  live 96
-              facts 223  recover 320  views 156
-text          pseudocode 361  printer 369
-driver        pipeline 421  __init__ 119
-baseline      ghidra_facts 219  ghidra_compare 182   42 modules, 12,399 lines
+              copyrows 456  copymerge 165
+program       ir 429  interp 247  irwalk 309  graph 70  lower 204  build 448
+              ssa 431  frames 371  stack 204  idioms 357  emit 367  verify 326
+presentation  structure 344  loops 217  inline 199  texture 475  frame 44
+              word 369  fold 472  tails 165  copyview 217  unroll 395  live 96
+              facts 223  recover 320  views 209
+text          pseudocode 362  printer 371
+driver        pipeline 424  __init__ 119
+baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,353 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -70,7 +70,7 @@ Stage entry points, which are also the module boundaries:
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
 `emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `copymerge.plan`, `structure.structure`,
-`recover.recover`, `views.decorate`, `printer.render`.
+`recover.recover`, `copyview.expand`, `views.decorate`, `printer.render`.
 
 ## Use
 
@@ -259,6 +259,17 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   not the program's region typing: the regions a folded access unites are united
   once for the whole program, so a tune where one family folds and another refuses
   carries the accepted family's region typing everywhere.
+- **A column prints as the operand it stands for.** S6 reads the per-copy table
+  once (`copyview.py`): a column whose values step affinely becomes that step in
+  `v`, so the existing stride vocabulary prints it (`sid[v].freq_lo` by the
+  7-byte voice block, `b640F[v]` by the region's own stride); one whose values do
+  not becomes copy 0's own operand plus a group slot, which `views.py` names
+  `voice[v].field` and lists address by address once in the state header. A
+  column whose copies name different offsets of a record, or whose readers name
+  more than one region, keeps its table read with the address visible -- two of
+  Follin's 60 columns, two of *Automatas*' five. The loop itself is a `for v in
+  0..k-1` over the coverage vector the correspondence proved, so the `v += 1; if
+  v < k` chain edge is the header and never a statement.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.
