@@ -89,7 +89,7 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J6 | the frequency table | `FREQ` 12-TET u16le, 79 entries reached | **95** entries, `freq_table` role, `12-TET u16le` |
 | J7 | the two-phase tick | `phase -= 1` on the tick counter, `if phase == 0:` the commit arm, the prefetch arm two frames earlier, hard restart `AD = $F`/`SR = 0` with the gate mask `$FE` before it | same |
 | J8 | the voice loop is a loop | `for v in 2, 1, 0:` (DEX/BMI), **no** sibling family (`copies` absent from both certificates) | same |
-| J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost.reg[…]`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush is the only chip write | not applicable (no wrapper): 3 `io` regions, the writes are `sid.reg[…]` |
+| J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost.reg[…]`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush holds every chip write of the tick | not applicable (no wrapper): 3 `io` regions, the writes are `sid.reg[…]` |
 | J10 | pinned inputs | **2** (the uninitialised `$FB`/`$FC` the player saves and restores), down from 18,777 | 2, plus the subtune number in `A` at init |
 | J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp` once each write is attributed to the frame the oracle samples it in (§6); by call index alone, 494 frames differ, in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon, by call index |
 | J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, 7 `goto` in 562 printed lines | 0 `sp`, 0 unverified, 16 untaken, 7 `goto` in 528 lines |
