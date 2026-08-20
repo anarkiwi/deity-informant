@@ -339,9 +339,9 @@ same statement with a zero in its coverage vector, marked where it prints.
   so copy *j*'s writer is that expression with each column read replaced by its
   *j*th entry. The `BPL` over the stream byte bounds the index at 128 and up, and
   a copy's table holds the entries between the sibling bases, so each voice's
-  switch is exactly 21 arms with none displaced (at 30 s: 3 `trap 'unverified'`
-  arms → 39; the certified song 1 gains 16 arm blocks, 254 → 270, and not one
-  statement).
+  switch is exactly 21 arms with none displaced -- at 30 s and in the certified
+  song 1 alike (30 s: 3 `trap 'unverified'` arms → 39; the certificate gains 16
+  arm blocks, 254 → 270, and not one statement).
 - **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
   read is access class `chk` where the others' are `ram`, because over 32 subtunes
   that voice reaches bytes outside the written set -- is not a question the fold
