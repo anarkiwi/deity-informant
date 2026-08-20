@@ -13,6 +13,7 @@ from deity_informant.tuneprog import copymerge, copyrows, pipeline, siblings
 from deity_informant.tuneprog.emit import PyProgram
 from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
+    Bin,
     Const,
     Goto,
     Let,
@@ -415,4 +416,41 @@ def test_an_edge_into_another_copy_s_row_refuses_the_family():
             "why": "an edge from copy 0 enters copy 1",
         }
     ]
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
+
+
+def early():
+    """Two chained copies whose every exit is the next copy's entry, early or not."""
+    return asm(
+        PLAY,
+        "init: LDA #$02",
+        "STA st",
+        "STA st+1",
+        "LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play:",
+        *_pre("c0", "st", "$D404", "c1", "c1"),
+        *_pre("c1", "st+1", "$D40B", "after", "after"),
+        "after: INC cnt",
+        "RTS",
+        "st: BRK",
+        "BRK",
+        "tmp: BRK",
+        "cnt: BRK",
+    )
+
+
+def test_an_early_exit_to_the_next_copy_s_entry_advances_the_index():
+    """Each exit is the run leaving copy j for copy j+1, so each is ``v += 1``."""
+    trace, prog = _prog(early(), calls=6)
+    doc = prog.meta["copies"]
+    assert not doc["refused"] and doc["families"][0]["rows"] == 7
+    steps = [
+        b
+        for b in prog.procs["tick"].blocks.values()
+        for s in b.stmts
+        if type(s) is Let and s.n.startswith("cv") and type(s.e) is Bin
+    ]
+    assert len(steps) == 3  # the two early exits and the one at the end of the body
     assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
