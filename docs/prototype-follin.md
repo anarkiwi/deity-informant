@@ -78,26 +78,38 @@ literal operand moves into the index, so `LDA $6C37,X` on a region based at
 `$6CB7` prints `T6CB7[cmd - $80]`; and a play entry's `A` prints as the tick's
 `return` when every exit agrees on one computed expression (`ir.retval`).
 
-**Sibling closure and the fold** (`siblings.py`, `closure.py`, `copyfold.py`,
-`views.py`; S2c/S6, presentation only). The three voices are three copies of one
-static template, and the alignment of their instruction streams recovers that
-from the post-init image: equal opcodes advance all three, and a gap holds the
-`CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag.
-The dispatch is where the copies stop being one stream, so its arms are paired in
-table order by how far their targets align, which carries the correspondence into
-the handlers. *Amended by #241:* discovery is exact -- the bases are the chain the
-built procedures already carry, each pair of copies is one `difflib` alignment in
-which only a gap may separate them, and the family holds only while every copy's
-operand map is a function (an indexed base whose index is data, `STA $D400,X`,
-names something else than the same literal under `abs`); the ten thresholds are
-gone and song 1's family is the same three voices over 419 rows. Each copy then gets the arms its siblings ran -- the same site,
-under that copy's own operands, with count 0 and reachable only through edges that
-were a `trap` before -- and the front end builds a second program from the closed
-trace. That program's copies are one program modulo a renaming, so it prints once
-over `for v in 0, 1, 2`, with a group view whose fields are a per-copy address
-table rather than a stride (section 5). The certified S4 program, its Python and
-its certificate are the trace-closed ones either way; `--closure none` prints
-them.
+**Sibling copies and the copy index** (`siblings.py`, `copyrows.py`,
+`copymerge.py`; S2c, in the certified program). The three voices are three copies
+of one static template, and the alignment of their instruction streams recovers
+that from the post-init image: equal opcodes advance all three, and a gap holds
+the `CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag. The
+dispatch is where the copies stop being one stream, so its arms are paired by
+their index in the parallel tables `jumptab.dispatch` reads, which carries the
+correspondence into the handlers. *Amended by #241:* discovery is exact -- the
+bases are the chain the built procedures already carry, each pair of copies is one
+`difflib` alignment in which only a gap may separate them, and the family holds
+only while every copy's operand map is a function (an indexed base whose index is
+data, `STA $D400,X`, names something else than the same literal under `abs`); the
+ten thresholds are gone and song 1's family is the same three voices over 419
+rows.
+
+*Amended by this stage:* the correspondence is now spent before the IR exists.
+Copy *j* executing a template row **is** that row executed with `v = j`, so the
+front end builds the rows once: an operand the copies disagree on becomes a load
+from a per-copy column `T_x[v]` (one read-only table, 59 columns for song 1, in a
+band no access, no code and no other region can see -- outside the load image,
+outside the stack page and outside I/O, where every byte is a pinned input to the
+program whatever it holds); the chain edge from voice *j* to voice *j+1* becomes
+`v += 1; if v < 3: header`; the count of a site becomes a vector over `v`, and a
+zero says no execution of that voice reached that row -- the statement is the one
+another voice ran, at the address the correspondence says this one names, and it
+is marked unverified per statement. What the index cannot name is refused, not
+approximated: a row whose copies do not lift to one shape (three `LDA #imm` whose
+operand is a cell in one voice and not in another) stays three rows under a
+`switch (v)`, and so does the dispatch, since each voice's patched `JMP` holds its
+own target -- the arms then pair by the body they share, not by a case value.
+Nothing is lifted into a second program, and `--no-merge` builds what S2b built
+before.
 
 **Static jump-table arms** (`jumptab.py`): when both halves of a patched `JMP`
 operand are copied from constant tables indexed by one value, the table's
@@ -121,7 +133,7 @@ subtune's write log left where verification needs it. What `init` writes is type
 | 3 | computed store operand | in the SFX subtunes' `init`: a store **through** `load16($6219)` whose region is `[$640F, $67ED]` — exactly the three voices' fixed-length cells (song 16) |
 | 4 | 32 subtunes from the pre-init image | all 32 certified, 0 divergences, 0 envelope traps; 31 complete via a period (§6) |
 | 5 | play returns a value | `return ((b0021[90] \| b0021[91]) \| b0021[92])` = `$7B \| $7C \| $7D`; not part of the certificate |
-| 6 | three unrolled voices fold | **yes, once the siblings are closed**: the copies ran 188/211/199 of a 229-offset template (163 common), so the trace-closed programs differ in shape before any operand does; of the 420 aligned rows the copies executed 308/380/329, and the closure lifts 189 sites so that all three have the same 402 (the 18 left are rows no copy ever reached, so no sibling can donate them). One family, one loop, 44 of 283 printed statements unverified; the whole document goes from 1,421 lines to 666 |
+| 6 | three unrolled voices fold | **yes, in the certified program** (#242): one family of three copies, 400 of the 419 aligned rows folded (the 19 left are rows whose copies do not lift to one shape, or whose successors cross copies -- they stay three rows under a `switch (v)`), 60 per-copy columns. Coverage says what each voice ran: 338 statements all three, 77 only voice 2, 29 voices 2 and 3, 19 voices 1 and 3, 8 voices 1 and 2 -- 133 of 471 merged statements are unverified for some voice and marked there. S4 falls from 1,229 statements in 450 blocks to 671 in 254; the printed document from 1,421 lines to 794 |
 | 7 | SMC immediates as variables | 35 cells (24 play-written, 11 init-patched); every play-written cell is a load at its instruction, every init-only cell is a constant in the tick and a store in `init`; 76 cells in the `--songs all` build |
 | 8 | `init` writes $08 then $00 to `$D400–$D41C` | 58 init writes, `$D41C` down to `$D400`, values `{8, 0}` — compared byte for byte by the certificate |
 | - | genericity, budget | Automatas (149,025 calls, period 129,024, both SID models), Commando songs 1–2, Emomyst at 10 s: 0 divergences with the same code. Song 1 is traced and verified in one 14 s invocation: 1,177 sites → 68 regions → 4 procedures → 1,242 statements |
@@ -130,87 +142,79 @@ subtune's write log left where verification needs it. What `init` writes is type
 
 ## 5. The printed `tick()` (`tuneprog.md`, verbatim; `...` elides)
 
-One loop over the three voices, the 21-way command switch inside it, and every
-per-voice cell a field of a group whose per-copy addresses the state header lists
-once -- including the SMC cells no stride describes (`$62EE`/`$64DB`/`$66CA`).
+One body over the copy index, the three voices' dispatches inside it over one set
+of arm bodies, and every statement no voice of its own ran marked where it is.
+The columns the copies disagree on are read once at the top of the loop; naming
+them `voice[v].field` and printing the loop as `for v in 0, 1, 2` is the view
+pass stage C owns, so what stands here is the shape, not the vocabulary.
 
 ```
-closure   siblings: 1 family, 189 sites lifted, 1 loop over 3 copies;
-          44 of 283 statements unverified
-state     voice[3]  per-copy cells, 51 fields
-            .b0021   $0021 $0023 $0025 ; .timer   $0022 $0024 $0026   the stream pointer
-            .pw_lo   $003F $0041 $0043 ; .pw_hi   $0040 $0042 $0044
-            .freq_lo $0075 $0076 $0077 ; .freq_hi $0078 $0079 $007A
-            .counter_2 $007B $007C $007D                    active[v] = $FF
-            .b6269   $6269 $6456 $6645                      the vibrato direction
-            .timer_9 $62EE $64DB $66CA                      the pulse mode
-            .b6375   $6375 $6562 $6751                      the patched JMP
-            .b640F   $640F $65FE $67ED                      the $84 fixed length
-            .b6C37   $6C37 $6C4C $6C61 ; .b6C76 $6C76 $6C8B $6CA0   the two tables
-          b0021 $0021 118 bytes                 the block init clears in one loop
-          ...                                   b6800, b6813 .. -- the filter's own
+copies    1 family over 3 copies, 400 rows; 133 of 471 statements unverified (marked)
+certified 16,000 calls, 0 divergences, period 1, first repeat at call 12,996 (complete)
 
-tick():                                  # $6234, 16,000 calls
-    for v in 0, 1, 2:   # x48,000
-        if voice[v].counter_2 < 0:
-            if voice[v].timer_8 != 0:
-                ...                                        # attack blip end
-                sid[v].freq_lo = voice[v].freq_lo
-                sid[v].ctrl = (voice[v].ctrl | 1)
-            if voice[v].b0057 != 0:                        # vibrato delay set
-                ...
-                sid[v].freq_lo = a448                      # +/- depth by the direction
-                sid[v].freq_hi = x55
-                voice[v].freq_lo = a448
-                if voice[v].timer_7 == 0:
-                    voice[v].timer_7 = (voice[v].b0087 << 1)
-                    voice[v].b6269 = (t3 ^ $FF)             # the SMC vibrato direction
-            if voice[v].timer_9 != 0:                      # $62EE pulse mode (1 = hold)
-                ...
-                    sid[v].pw_lo = voice[v].pw_lo
-                    sid[v].pw_hi = voice[v].pw_hi
-            # $6338
-            voice[v].timer_4 -= 1                          # dur
+tick():                                  # $6234, 48,000 calls
+    t1 = 0
+    while True:   # x48,000
+        t2 = copies_6234[t1 << 1]                      # the per-copy columns, 60 of them:
+        t3 = copies_6234[6 + (t1 << 1)]                # $0021/$0023/$0025, the stream pointer
+        ...                                            # $62EE/$64DB/$66CA, the pulse mode
+        t61 = copies_6234[$15F + (t1 << 1)]            # $6375/$6562/$6751, the patched JMP
+        if b0021[t2] < 0:
+            if b0021[t3] != 0:
+                # $623F
+                t62 = b0021[t3]  # unverified (ran for v = 1)
+                b0021[t3] -= 1  # unverified (ran for v = 1)
+                if b0021[t3] != 0: trap 'untaken'
+                # $6243
+                io[t5] = b0021[t4]  # unverified (ran for v = 1)
+                io[t7] = b0021[t6]  # unverified (ran for v = 1)
             ...
-            if voice[v].timer_2 == 0:
-                while True:   # x2,773                     # the sequencer
-                    t19 = b730E[(voice[v].timer << 8) | voice[v].b0021]
-                    if t19 >= 0: break                     # a note byte leaves the loop
-                    voice[v].b6375 = voice[v].b6C37[t19]   # the patched JMP, tables at base-$80
-                    voice[v].b6375_2 = voice[v].b6C76[t19]
-                    switch voice[v].b6375:
-                        case $6858:                        # $82 loop begin
-                            voice[v].timer_3 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
-                            ...
-                            continue
-                        case $68EE:                        # $84 fixed note length
-                            voice[v].b640F = b730E[...]
-                            goto L6356_98                  # back into the sequencer
-                        case $6909:                        # $85 raw register list
-                            while True:   # x191
-                                sid.reg[a369] = b730E[...] # the register is a variable
+                # $6366                                # the sequencer's patched JMP
+                b6375[t37] = T6CB7[t36 + t80]          # written through the copy's own cell
+                b6375[t39] = T6CF6[t38 + t80]
+                switch t1:                             # each voice dispatches on its own
+                    case 0:
+                        switch b6375[0]:
+                            case $6858:                # $82 loop begin
+                                b0021[t52] = b730E[((b0021[t35] << 8) | b0021[t34]) + 1]
                                 ...
-                        case $693F:                        # $8D waveform
-                            sid[v].ctrl = t26
-                            voice[v].ctrl = t26
-                            voice[v].timer_9 = voice[v].b63D4
-                        ...                                # 21 arms in all: the 18 some
-                        case $6AD0: trap 'unverified'      # voice sent, and 3 none did
-            # $6381 note fetch
-            voice[v].b0066 = x44
-            sid[v].freq_lo = T6D48[voice[v].b0066]         # notetab[note + transpose]
-            sid[v].ctrl = (voice[v].ctrl | 1)              # gate on
-            ...
-    if b6800 != 0: trap 'untaken'                          # $67FF the filter sweep
-    sid.cutoff_lo = b0021[78]
-    sid.cutoff_hi = (((((t46 >> 1) | ...) >> 1) | ...) | b0021[117])
-    return ((voice[0].counter_2 | voice[1].counter_2) | voice[2].counter_2)
+                                continue
+                            case $68A3: ...            # 7 arms voice 1 sent
+                    case 1:
+                        switch b6375[493]:
+                            case $6871: goto L6858_B1  # the same body, voice 2's target
+                            case $68F7:                # an arm only voice 2 sent
+                                b640F[t48/495] = b730E[...]  # unverified (ran for v = 1)
+                                ...
+                    case 2:
+                        switch b6375[988]:
+                            case $688A: goto L6858_B1
+                            ...                        # 21 bodies for 27 targets in all
+                switch t1:                             # the `CMP #v` one voice has and
+                    case 0:                            # another has not: three rows, not one
+                        # $63D8
+                        z47 = b0021[83] == 0
+                    case 1:
+                        # $65C7
+                        z47 = b0021[83] == 1
+                    case 2:
+                        # $67B6
+                        z47 = b0021[83] == 2
+                ...
+                # $641D                         # the chain edge into the next voice
+                t108 = (t1 + 1)
+                if (t1 + 1) < 3:                       # the third voice falls out of the run
+                    t1 = t108
+                    continue
+    ...
+    return ((b0021[90] | b0021[91]) | b0021[92])
 ```
 
-Where a voice ends its own note the arm now reads `continue`, not `goto L6421_A5`:
-the chain edge into the next copy is the loop's back edge. What is left of
-`b0021[...]` is the filter's own cells and `$74`, the voice number -- the parts of
-the zero-page block that are not per-voice at all.
+Where a voice ends its own note the arm reads `continue`, not `goto L6421_A5`:
+the chain edge into the next copy is the loop's back edge, and the increment of
+the index is the only thing between them. What is left of `b0021[...]` under a
+constant index is what is not per-voice at all -- the filter's own cells and
+`$74`, the voice number.
 
 ---
 
@@ -247,43 +251,46 @@ call 149,024 — so the committed files stand.
 
 ## 7. What remains
 
-Two of the four obstacles this section used to list are gone. **The three voice
-copies fold** (§3, §4 row 6, §5): the closure gives every copy the arms its
-siblings ran, and `copyfold` proves the copies one program modulo a renaming --
-equal alpha-renamed skeletons, every differing address consistent with one
-per-copy mapping, every other differing constant affine in the index. The
-unequally spaced SMC cells (`$62EE`/`$64DB`/`$66CA`) are that mapping, listed once
-in the state header; the `goto`s to per-voice labels became one label per arm and
-the chain edge into the next voice became `continue`.
+Four of the six obstacles this section listed after #234 are gone. **The three
+voice copies are one body in the certified program** (§3, §4 row 6, §5): copy *j*
+executing a template row is that row executed with `v = j`, the unequally spaced
+SMC cells (`$62EE`/`$64DB`/`$66CA`) are one column of the family's per-copy table,
+the chain edge into the next voice is `v += 1`, and a row a voice never ran is the
+same statement with a zero in its coverage vector, marked where it prints.
 
-- **The closure's arms are unverified.** 189 of the closed program's sites are a
-  sibling's, lifted under this copy's operands: reachable only through edges that
-  were a `trap`, count 0, and part of a program the same front end builds from the
-  closed trace -- but no execution took them. 44 of the 283 printed statements are
-  theirs, and the `closure` line says so. The certified S4 program is the
-  trace-closed one, and `--closure none` prints it (1,421 lines, three copies).
+- **A merged row a voice never ran is unverified.** It is the statement another
+  voice ran, at the address the correspondence says this voice names. Its coverage
+  entry is 0, the certificate counts it, and the printed program says so per
+  statement -- no lifted site, no second program, no count-0 block reachable only
+  through a former trap.
 - **What is left of the zero page is what is not per-voice.** `$21–$97` is still
-  one region -- init clears it with one loop -- but the fold names 51 of its cells
-  by their per-copy address table, so what still prints as `b0021[...]` is the
-  filter's own accumulator and bounds and `$74`, the voice number. A stride view
-  cannot split the rest: those cells are reached by constant addresses, not by an
-  index, so there is nothing for `views.field_split` to key on.
-- **Three of the 21 arms are still `trap 'unverified'`,** and the folded switch
-  is copy 0's. The dispatch's arms pair in table order by how far their targets
-  align, which closes every arm some voice sent (18 of 21); the three no voice
-  sent have no donor. The two entries per copy past the 21-entry table (the
-  extent rule over-reaching, §4 row 1) pair with nothing and are left out of the
-  shape, so the printed switch has copy 0's 21 arms rather than copy 1's 23.
-- **The music subtunes fold; most of the effects do not.** Songs 1–11, 16 and 20
-  fold their three voices (1–61 unverified statements of 99–283). A sound effect
-  uses one or two voices, so the copy that runs nothing never reaches its
-  dispatch, its arms have nothing to pair with, and the handler bodies the other
-  copies ran stay outside the copies -- a cross-copy edge, which the fold
-  refuses.
-- **The `--songs all` union does not fold.** One voice's stream read is access
-  class `chk` where the others' are `ram`: over 32 subtunes that voice reaches
-  bytes outside the written set, and a load of a different class is a different
-  program. The union's closure still lifts 9 sites.
+  one region -- init clears it with one loop -- and the fold now reads its
+  per-voice cells through the family's columns, so what still prints as
+  `b0021[...]` is the filter's own accumulator and bounds and `$74`, the voice
+  number. Naming a column `voice[v].field` is stage C's view pass; until then the
+  columns print as `copies_6234[...]` and the loop as a `while` over the index.
+- **The dispatch stays three dispatches over one set of arm bodies.** Each voice's
+  patched `JMP` holds *its own* target, and the three copies' handlers are
+  interleaved at unequal offsets, so no key pairs the arms by value: the merged
+  node is `switch (v)` into each voice's own switch, whose arms jump to the one
+  merged body per command. Every arm some voice sent is that body; an arm no voice
+  sent is `trap 'unverified'` as before. Keying on the table index the writers
+  read cannot help, because the cell is written a tick earlier and read as memory.
+- **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
+  read is access class `chk` where the others' are `ram`, because over 32 subtunes
+  that voice reaches bytes outside the written set -- is not a question the fold
+  asks any more: the union over `v` of a folded access is *one* region with one
+  envelope, so the class is the union's. The union program goes from 1,553
+  statements in 520 blocks over 75 regions to 770 in 294 over 45, with 5 of its
+  481 merged statements unverified.
+- **Every subtune folds or refuses with a reason, and all 32 certify.** At the
+  certificate's own horizon the three voices fold in songs 1–11, 16, 26, 28,
+  30–32; two voices fold in 12, 13, 15, 21, 22, 24; song 20 folds a 4-copy family;
+  and 14, 17, 18, 19, 23, 25, 27, 29 refuse with *an edge from copy 0 enters copy
+  1* -- an effect that uses one voice branches out of the copy the chain proof
+  established, and only the chain edge may increment `v`. A silent voice is no
+  longer the obstacle it was in #234: what it never ran is a zero in the coverage
+  vector, not a missing donor.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317

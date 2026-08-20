@@ -108,6 +108,36 @@ def _target(srcs, x, image, base):
     return (base + b - ((b & 0x80) << 1)) & 0xFFFF
 
 
+def dispatch(proc, rgn, image, band):
+    """``{block entry: {table index: arm target}}`` of every patched jump a table writes.
+
+    An arm's index in its own table is what pairs it with the arm a parallel copy
+    dispatches; an arm two indices reach names no one index, and pairs with nothing.
+    """
+    defs = _defs(proc)
+    writers = _writers(proc, defs)
+    out = {}
+    for b in proc.blocks.values():
+        hit = _cell(b.term, defs) if type(b.term) is Switch else None
+        if hit is None:
+            continue
+        cell, width, base = hit
+        srcs = [_source(cell + k, writers, rgn, image) for k in range(width)]
+        tabs = [s for s in srcs if s and s[0] == "table"]
+        if not all(srcs) or not tabs or len({t[3] for t in tabs}) != 1:
+            continue
+        cases = {v for v, _l in b.term.cases}
+        hits = {}
+        for x in range(0x100):  # the index register is an unsigned byte
+            if any(not band[0] <= t[2] + x < band[1] for t in tabs):
+                continue
+            t = _target(srcs, x, image, base)
+            if t in cases:
+                hits.setdefault(t, []).append(x)
+        out.setdefault(b.src, {}).update({x[0]: t for t, x in hits.items() if len(x) == 1})
+    return out
+
+
 def owners(prog, code, addrs=None):
     """``{address: region}`` for every byte an access touched; an instruction is ``-1``."""
     out = {a: -1 for a in code}

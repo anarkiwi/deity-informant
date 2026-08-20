@@ -38,6 +38,7 @@ from .ir import (
     Var,
     succs,
 )
+from .copymerge import report as copies_report
 from .idioms import CMP, width
 
 GROUP = 24
@@ -319,8 +320,10 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
 
     ``stack`` is ``"eliminated"`` where the program has no machine stack left, else
     the depth and the procedures that kept one (:func:`~.stack.eliminate`).
+    ``copies`` is the merged families and their per-statement coverage, if any.
     """
-    return {
+    copies = copies_report(prog)
+    doc = {
         "tune": prog.meta.get("name"),
         "sid_model": prog.meta.get("sid_model"),
         "oracle": oracle or "deity_informant.PcodeVM@%s" % __version__,
@@ -334,6 +337,9 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
         "cost": cost,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if copies is not None:
+        doc["copies"] = copies
+    return doc
 
 
 def write_certificate(path, doc):

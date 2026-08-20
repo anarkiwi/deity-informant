@@ -1,6 +1,6 @@
 """Snippet -> tuneprog helpers shared by the IR, SSA, idiom, codegen and print tests."""
 
-from deity_informant.tuneprog import pipeline, printer
+from deity_informant.tuneprog import copymerge, pipeline, printer
 from deity_informant.tuneprog.build import build_ir
 from deity_informant.tuneprog.cfg import build_procs
 from deity_informant.tuneprog.idioms import rewrite
@@ -67,15 +67,13 @@ def printed(code, calls=6, **kw):
     return printer.render(view, st, names, pcs=False)
 
 
-def closed(code, calls=6, **kw):
-    """The printed sibling closure of a snippet: ``(text, stats, view, program, trace)``."""
-    trace, prog = tuneprog(code, calls=calls, s4=True, **kw)
-    before = prog.to_json()
-    src, sibs, stats = pipeline.closed(trace, prog, "snippet")
-    view, st, names = pipeline.present(src, sibs)
-    assert prog.to_json() == before  # the certified program is never the one folded
-    names.closure = dict(stats, **pipeline._closure_stats(view, stats.get("pcs", ())))
-    return printer.render(view, st, names, pcs=False), names.closure, view, src, trace
+def merged(code, calls=6, **kw):
+    """A snippet with its sibling copies folded: ``(text, copies, view, program, trace)``."""
+    T, _tr, _L, _R, _P = front(code, calls=calls, **kw)
+    prog = pipeline.build(T, "snippet")[0]
+    view, st, names = pipeline.present(prog)
+    names.copies = copymerge.report(prog)
+    return printer.render(view, st, names, pcs=False), names.copies, view, prog, T
 
 
 def proc_body(doc, name):

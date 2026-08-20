@@ -18,7 +18,6 @@ Public API: :func:`build_ir`, :func:`ops_to_stmts`, :func:`straightline`.
 
 from __future__ import annotations
 
-from ..lifter import STATUS_BITS
 from .ir import (
     Block,
     Bin,
@@ -27,203 +26,44 @@ from .ir import (
     Goto,
     If,
     Let,
-    Load,
     Proc,
     REGIDX,
     REGVAR,
     Return,
     Rgn,
-    Store,
     Switch,
     Trap,
     Tuneprog,
     Var,
-    STACK_LO,
-    STACK_HI,
     succs,
 )
+from .copymerge import Plan
+from .lower import (
+    PH_INIT,
+    Storage,
+    add_sp,
+    column,
+    ctrl_expr,
+    ops_to_stmts,
+    pop_status,
+    push16,
+    tgt,
+)
 from .irwalk import callees
-from .regions import index_regions
+from .machine import Refusal
 from .ssa import liveness
-
-BINOP = {
-    "INT_ADD": "+",
-    "INT_SUB": "-",
-    "INT_AND": "&",
-    "INT_OR": "|",
-    "INT_XOR": "^",
-    "INT_LEFT": "<<",
-    "INT_RIGHT": ">>",
-    "INT_EQUAL": "==",
-    "INT_NOTEQUAL": "!=",
-    "INT_LESS": "<",
-    "INT_LESSEQUAL": "<=",
-    "INT_CARRY": "carry",
-}
-PH_INIT = 1
-
-
-def _vn(v, blk):
-    """A varnode as an IR expression (registers by name, uniques per block)."""
-    if v[0] == "c":
-        return Const(v[1], v[2])
-    if v[0] == "r":
-        return Var(REGVAR[v[1]], v[2])
-    return Var("u%d_%s" % (v[1], blk), v[2])
-
-
-def _name(v, blk):
-    return REGVAR[v[1]] if v[0] == "r" else "u%d_%s" % (v[1], blk)
-
-
-def ops_to_stmts(ops, resolve=None, blk="0", src=0, src_map=None):
-    """Residualised P-Code ``ops`` as IR statements.
-
-    ``resolve(op index, size, is_store) -> (cls, lo, hi, region id)`` types each
-    memory access; the default is untyped RAM over the whole address space.
-    """
-    out = []
-    for i, (mn, res, ins) in enumerate(ops):
-        j = src_map[i] if src_map is not None else i
-        if mn == "STORE":
-            cls, lo, hi, rid = resolve(j, ins[1][2], True) if resolve else ("ram", 0, 0xFFFF, -1)
-            out.append(Store(cls, _vn(ins[0], blk), _vn(ins[1], blk), ins[1][2], lo, hi, rid, src))
-        elif mn == "LOAD":
-            cls, lo, hi, rid = resolve(j, res[2], False) if resolve else ("ram", 0, 0xFFFF, -1)
-            out.append(Let(_name(res, blk), Load(cls, _vn(ins[0], blk), res[2], lo, hi, rid)))
-        elif mn in ("COPY", "INT_ZEXT"):
-            out.append(Let(_name(res, blk), _vn(ins[0], blk)))
-        else:
-            w = ins[0][2] if mn == "INT_CARRY" else res[2]
-            out.append(Let(_name(res, blk), Bin(BINOP[mn], _vn(ins[0], blk), _vn(ins[1], blk), w)))
-    return out
-
-
-def straightline(ops, name="f", resolve=None):
-    """A one-block :class:`~.ir.Proc` over every register (the fuzz-test shape)."""
-    regs = tuple(range(16))
-    blocks = {
-        "b0": Block("b0", ops_to_stmts(ops, resolve), Return(tuple(Var(REGVAR[i]) for i in regs)))
-    }
-    return Proc(name, regs, regs, blocks, "b0", "sub")
-
-
-class _Storage:
-    """Resolves an access to (class, envelope, region) from the trace's access relation."""
-
-    def __init__(self, trace, regions):
-        self.by_addr = index_regions(regions)
-        self.acc = {}
-        for r in regions:
-            for a in r.accessors:
-                self.acc.setdefault((tuple(a["site"]), a["op"]), (a["extent"], r))
-        lo, hi = trace.meta["load"]
-        self.k0 = bytearray(0x10000)
-        self.k0[lo:hi] = b"\1" * (hi - lo)
-        self.k0[STACK_LO : STACK_HI + 1] = b"\1" * 0x100
-        self.k1 = bytearray(self.k0)
-        for a in trace.written_init:
-            self.k1[a] = 1
-
-    def cls(self, lo, hi, kind, init_phase):
-        if kind == "io":
-            return "io"
-        k = self.k0 if init_phase else self.k1
-        return "ram" if all(k[a] for a in range(lo, hi + 1)) else "chk"
-
-    def at(self, addr, size, init_phase):
-        """Type an access at a known constant address (control cells, stack)."""
-        r = self.by_addr.get(addr)
-        lo, hi = (addr, addr + size - 1) if r is None else (r.base, r.base + r.size - 1)
-        kind = "io" if r is None and 0xD000 <= addr <= 0xDFFF else (r.kind if r else "state")
-        return self.cls(addr, addr + size - 1, kind, init_phase), lo, hi, (r.id if r else -1)
-
-    def resolver(self, key, init_phase):
-        def resolve(i, size, _store):
-            hit = self.acc.get((key, i))
-            if hit is None:
-                return "chk", 0, 0xFFFF, -1
-            (lo, hi), r = hit
-            return self.cls(lo, hi, r.kind, init_phase), lo, max(hi, lo + size - 1), r.id
-
-        return resolve
-
-
-SP = REGVAR[3]
-
-
-def _spaddr(out, blk, tag):
-    """``$0100 | SP`` as an expression (the stack pointer's current byte)."""
-    n = "sp%s_%s" % (tag, blk)
-    out.append(Let(n, Bin("|", Const(0x100, 2), Var(SP), 2)))
-    return Var(n, 2)
-
-
-def _add_sp(out, delta):
-    out.append(Let(SP, Bin("+" if delta > 0 else "-", Var(SP), Const(abs(delta)), 1)))
-
-
-def _push16(out, blk, val, src):
-    """The JSR frame: return address high byte then low, SP down by two."""
-    for tag, e in (("h", Const((val >> 8) & 0xFF)), ("l", Const(val & 0xFF))):
-        a = _spaddr(out, blk, tag)
-        out.append(Store("raw", a, e, 1, 0x100, 0x1FF, -1, src))
-        _add_sp(out, -1)
-
-
-def _pop_status(out, blk):
-    """The RTI frame: status byte back into the six flag registers, then the pc."""
-    _add_sp(out, 1)
-    a = _spaddr(out, blk, "p")
-    out.append(Let("pstat_%s" % blk, Load("ram", a, 1, 0x100, 0x1FF, -1)))
-    for idx, sh in STATUS_BITS:
-        src = Var("pstat_%s" % blk, 1)
-        out.append(
-            Let(
-                REGVAR[idx],
-                Bin("&", src if not sh else Bin(">>", src, Const(sh), 1), Const(1), 1),
-            )
-        )
-
-
-def _tgt(store, addr, size, init_phase, blk, out):
-    """Emit the load of a computed-control cell; returns its expression."""
-    cls, lo, hi, rid = store.at(addr, size, init_phase)
-    n = "t_%s" % blk
-    out.append(Let(n, Load(cls, Const(addr, 2), size, lo, hi, rid)))
-    return Var(n, size)
-
-
-def _ctrl_expr(node, ls, store, pc, init_phase, blk, out):
-    """The switch expression of a computed jump/branch/return, with its loads."""
-    ex = node["switch"]["expr"]
-    if ex["kind"] == "stack":
-        for half in ("lo", "hi"):
-            _add_sp(out, 1)
-            a = _spaddr(out, blk, half)
-            out.append(Let("p_%s_%s" % (half, blk), Load("ram", a, 1, 0x100, 0x1FF, -1)))
-        w = Bin("|", Var("p_lo_%s" % blk, 1), Bin("<<", Var("p_hi_%s" % blk, 1), Const(8), 2), 2)
-        return Bin("+", w, Const(1, 2), 2)
-    if ex["kind"] == "jmpind":
-        ptr = ex["ptr"]
-        lo8 = _tgt(store, ptr, 1, init_phase, blk + "l", out)
-        hi8 = _tgt(store, (ptr & 0xFF00) | ((ptr + 1) & 0xFF), 1, init_phase, blk + "h", out)
-        return Bin("|", lo8, Bin("<<", hi8, Const(8), 2), 2)
-    cell = _tgt(store, ex["addr"], ex["size"], init_phase, blk, out)
-    if ex["size"] == 2 or ls is None or ls.ctrl[0] != "br":
-        return cell
-    base = Bin("+", Const((pc + 2) & 0xFFFF, 2), cell, 2)
-    return Bin("-", base, Bin("<<", Bin("&", cell, Const(0x80), 1), Const(1), 2), 2)
 
 
 class _Builder:
     """One IR procedure per :class:`~.cfg.Proc`."""
 
-    def __init__(self, trace, lifted, store, procs):
+    def __init__(self, trace, lifted, store, procs, plan=None):
         self.trace = trace
         self.lifted = lifted
         self.store = store
         self.procs = procs
+        self.plan = plan if plan is not None else Plan()
+        self.extra = {}
         self.byentry = {p.entry: p.name for p in procs.values()}
         self.keys = {}
         for key in trace.sites:
@@ -254,10 +94,57 @@ class _Builder:
 
     def label(self, cp, pc):
         """The label control enters ``pc`` at: the variant dispatch, else the node."""
+        pc = self.plan.tmpl(cp.name, pc)
         if pc in cp.variant_switch:
             return "V%04X" % pc
-        ops = [op for (p, op) in cp.nodes if p == pc]
+        op = self.plan.op_at(cp.name, pc)
+        ops = [op] if op is not None else [o for (p, o) in cp.nodes if p == pc]
         return "L%04X_%02X" % (pc, ops[0]) if ops else "X%04X" % pc
+
+    def enter(self, cp, pc, src):
+        """The label an edge from ``src`` really enters.
+
+        An edge from outside a family enters the copy that holds its target, and
+        the prologue it goes through says which copy that is.
+        """
+        fam = self.plan.owner(cp.name, pc)
+        if fam is None or (src is not None and fam.column(src) is not None):
+            return self.label(cp, pc)
+        if pc == fam.entry:
+            return "Z%04X" % fam.entry
+        lbl = "Q%04X" % pc
+        if lbl not in self.extra:
+            head = self.header(cp, fam, pc)
+            self.extra[lbl] = Block(lbl, [Let(fam.var, Const(fam.column(pc)))], Goto(head), pc)
+        return lbl
+
+    def header(self, cp, fam, pc):
+        """The block that reads copy ``v``'s columns and enters the body at ``pc``."""
+        if pc == fam.entry:
+            return "H%04X" % fam.entry
+        if not fam.hoist:
+            return self.label(cp, pc)
+        lbl = "M%04X" % pc
+        if lbl not in self.extra:
+            self.extra[lbl] = Block(lbl, self.columns(fam), Goto(self.label(cp, pc)), pc)
+        return lbl
+
+    def columns(self, fam):
+        """The per-copy columns, read once where one header dominates their uses."""
+        if not fam.hoist:
+            return []
+        return [Let(fam.col(c), column(fam, c, w)) for c, (w, _v) in enumerate(fam.cols)]
+
+    def fam_blocks(self, cp, fam):
+        """The loop the copy index runs: ``v = 0``, the header its columns load in."""
+        head, zero = "H%04X" % fam.entry, "Z%04X" % fam.entry
+        mn = self.plan.node(cp.name, fam.entry, self.plan.op_at(cp.name, fam.entry))
+        cover = mn.counts if mn is not None else ()
+        n = sum(cover)
+        return [
+            Block(head, self.columns(fam), Goto(self.label(cp, fam.entry)), fam.entry, n, cover),
+            Block(zero, [Let(fam.var, Const(0))], Goto(head), fam.entry, n),
+        ]
 
     def build_proc(self, cp):
         phase = self.phase_of(cp)
@@ -272,78 +159,115 @@ class _Builder:
                 else:
                     arms.append((a["opcode"], "L%04X_%02X" % (pc, a["opcode"])))
             out = []
-            e = _tgt(self.store, vs["cell"], 1, init_phase, "V%04X" % pc, out)
+            e = tgt(self.store, vs["cell"], 1, init_phase, "V%04X" % pc, out)
             blocks["V%04X" % pc] = Block("V%04X" % pc, out, Switch(e, tuple(arms), ""), pc)
             for b in sub:
                 blocks[b.label] = b
+        built = set()
         for (pc, op), node in cp.nodes.items():
-            for b in self.node_blocks(cp, pc, op, node, phase):
+            if (cp.name, pc, op) in self.plan.absorbed:
+                continue
+            mn = self.plan.node(cp.name, pc, op)
+            built.add((pc, op))
+            for b in self.node_blocks(cp, pc, op, node if mn is None else mn.node, phase, mn):
                 blocks[b.label] = b
-        proc = Proc(cp.name, (), (), blocks, self.label(cp, cp.entry), cp.kind)
-        return proc
+        for pc, op, mn in self.plan.nodes_of(cp.name):  # a row copy 0 never ran
+            if (pc, op) not in built:
+                for b in self.node_blocks(cp, pc, op, mn.node, phase, mn):
+                    blocks[b.label] = b
+        for fam in self.plan.fams_of(cp.name):
+            for b in self.fam_blocks(cp, fam):
+                blocks[b.label] = b
+        entry = self.enter(cp, cp.entry, None)
+        blocks.update(self.extra)
+        self.extra = {}
+        return Proc(cp.name, (), (), blocks, entry, cp.kind)
 
-    def node_blocks(self, cp, pc, op, node, phase):
+    def node_blocks(self, cp, pc, op, node, phase, mn=None):
         lbl = "L%04X_%02X" % (pc, op)
-        key = self.key_of(pc, op, phase)
-        ls = self.lifted.get(key)
         init_phase = bool(phase & PH_INIT)
-        stmts = (
-            ops_to_stmts(ls.ops, self.store.resolver(key, init_phase), lbl, pc, ls.src_map)
-            if ls is not None
-            else []
+        if mn is None:
+            key = self.key_of(pc, op, phase)
+            ls, resolve = self.lifted.get(key), self.store.resolver(key, init_phase)
+        else:
+            ls = mn.ls
+            resolve = self.store.resolver_many(mn.keys, init_phase)
+        fam = None if mn is None else mn.fam
+        stmts = ops_to_stmts(ls.ops, resolve, lbl, pc, ls.src_map, fam) if ls is not None else []
+        blk = Block(
+            lbl, stmts, Trap("unreached"), pc, node["count"], () if mn is None else mn.counts
         )
-        blk = Block(lbl, stmts, Trap("unreached"), pc, node["count"])
         extra = []
         term = node["term"]
         if node["mnemonic"] in ("BRK", "JAM"):
             blk.term = Trap(node["mnemonic"].lower())
         elif term == "return":
             if node["mnemonic"] == "RTI":
-                _pop_status(blk.stmts, lbl)
-            _add_sp(blk.stmts, 2)
+                pop_status(blk.stmts, lbl)
+            add_sp(blk.stmts, 2)
             blk.term = Return()
         elif term == "call":
-            self._call(cp, blk, node, extra, init_phase)
+            self._call(cp, blk, node, extra, init_phase, mn)
         elif term == "tail":
             blk.stmts.append(Call(self.byentry[node["call"][0]]))
             blk.term = Return()
         elif term == "branch":
             f = ls.ctrl[1] if ls is not None else ["r", 14, 1]
             cond = Bin("==", Var(REGVAR[f[1]]), Const(ls.ctrl[2] if ls is not None else 1), 1)
-            arms = [self._succ(cp, blk, r, extra, i) for i, r in enumerate(node["succ"])]
+            arms = [self._succ(cp, blk, r, extra, i, mn) for i, r in enumerate(node["succ"])]
             if node["switch"] is not None:  # patched offset: the taken side is computed
-                arms[0] = self._branch_switch(cp, blk, node, ls, extra, init_phase)
+                arms[0] = self._branch_switch(cp, blk, node, ls, extra, init_phase, mn)
             blk.term = If(cond, arms[0], arms[1])
         elif term == "switch":
-            e = _ctrl_expr(node, ls, self.store, pc, init_phase, lbl, blk.stmts)
-            cases = tuple(
-                (v, self._succ(cp, blk, r, extra, i))
-                for i, (v, r) in enumerate(node["switch"]["cases"])
-            )
-            blk.term = Switch(e, cases, "")
+            blk.term = self._switch(cp, blk, node, ls, extra, init_phase, mn)
         elif term == "goto":
-            blk.term = Goto(self._succ(cp, blk, node["succ"][0], extra, 0))
+            blk.term = Goto(self._succ(cp, blk, node["succ"][0], extra, 0, mn))
         return [blk] + extra
 
-    def _branch_switch(self, cp, blk, node, ls, extra, init_phase):
-        """The taken side of a branch whose offset is an SMC cell: a computed goto."""
-        b = Block("S%s" % blk.label, [], None, blk.src)
-        e = _ctrl_expr(node, ls, self.store, node["pc"], init_phase, b.label, b.stmts)
-        b.term = Switch(
-            e,
-            tuple(
-                (v, self._succ(cp, b, r, extra, i))
-                for i, (v, r) in enumerate(node["switch"]["cases"])
-            ),
-            "",
+    def _switch(self, cp, blk, node, ls, extra, init_phase, mn=None):
+        """A computed jump: one switch, or one per copy under a switch on ``v``."""
+        if mn is not None and "per" in node["switch"]:
+            return self._percopy(cp, blk, node, extra, init_phase, mn)
+        e = ctrl_expr(node, ls, self.store, node["pc"], init_phase, blk.label, blk.stmts)
+        cases = tuple(
+            (v, self._succ(cp, blk, r, extra, i, mn))
+            for i, (v, r) in enumerate(node["switch"]["cases"])
         )
+        return Switch(e, cases, "")
+
+    def _percopy(self, cp, blk, node, extra, init_phase, mn):
+        """``switch (v)`` into the dispatch each copy really has, arms folded.
+
+        The cell holds the copy's own target, so the copies key on their own
+        values; what pairs them is the arm body, which is one row of the family.
+        """
+        cases = []
+        for j, sw in enumerate(node["switch"]["per"]):
+            if sw is None:
+                continue
+            b = Block("P%s_%d" % (blk.label, j), [], None, blk.src, 0, blk.cover)
+            ls = mn.per[j]
+            nj = dict(node, switch=sw, pc=ls.pc)
+            e = ctrl_expr(nj, ls, self.store, ls.pc, init_phase, b.label, b.stmts)
+            arms = tuple(
+                (v, self._succ(cp, b, r, extra, i, mn)) for i, (v, r) in enumerate(sw["cases"])
+            )
+            b.term = Switch(e, arms, "")
+            extra.append(b)
+            cases.append((j, b.label))
+        return Switch(Var(mn.fam.var), tuple(cases), "")
+
+    def _branch_switch(self, cp, blk, node, ls, extra, init_phase, mn=None):
+        """The taken side of a branch whose offset is an SMC cell: a computed goto."""
+        b = Block("S%s" % blk.label, [], None, blk.src, 0, blk.cover)
+        b.term = self._switch(cp, b, node, ls, extra, init_phase, mn)
         extra.append(b)
         return b.label
 
-    def _call(self, cp, blk, node, extra, init_phase):
-        ret = self._succ(cp, blk, node["succ"][0], extra, 0)
+    def _call(self, cp, blk, node, extra, init_phase, mn=None):
+        ret = self._succ(cp, blk, node["succ"][0], extra, 0, mn)
         ls = self.lifted.get(node["key"])
-        _push16(
+        push16(
             blk.stmts, blk.label, (node["pc"] + (ls.length if ls else 3) - 1) & 0xFFFF, node["pc"]
         )
         if node["switch"] is None:
@@ -357,7 +281,7 @@ class _Builder:
             )
             extra.append(b)
             cases.append((t, b.label))
-        e = _ctrl_expr(
+        e = ctrl_expr(
             node,
             self.lifted.get(node["key"]),
             self.store,
@@ -368,15 +292,40 @@ class _Builder:
         )
         blk.term = Switch(e, tuple(cases), "")
 
-    def _succ(self, cp, blk, ref, extra, i):
+    def _succ(self, cp, blk, ref, extra, i, mn=None):
         """A successor reference as a label: trap block, tail-call block, or the node."""
+        if "per" in ref:
+            return self._split(cp, blk, ref["per"], extra, i, mn)
+        if "chain" in ref:
+            return self._next_copy(cp, blk, ref["chain"], extra, i, mn.fam, ref["to"])
+        fam = None if ref["trap"] or ref["tail"] else self.plan.chain(cp.name, blk.src, ref["to"])
+        if fam is not None:
+            out = {"to": 0, "tail": False, "trap": True}
+            return self._next_copy(cp, blk, out, extra, i, fam, self.plan.tmpl(cp.name, ref["to"]))
         if ref["trap"]:
             b = Block("X%s_%d" % (blk.label, i), [], Trap("untaken"), blk.src)
         elif ref["tail"]:
             b = Block("T%s_%d" % (blk.label, i), [Call(self.byentry[ref["to"]])], Return(), blk.src)
         else:
-            return self.label(cp, ref["to"])
+            return self.enter(cp, ref["to"], blk.src)
         extra.append(b)
+        return b.label
+
+    def _split(self, cp, blk, refs, extra, i, mn):
+        """``switch (v)``: the successor each copy really has, where they differ."""
+        b = Block("P%s_%d" % (blk.label, i), [], None, blk.src, 0, blk.cover)
+        extra.append(b)
+        cases = tuple((j, self._succ(cp, b, r, extra, j, mn)) for j, r in enumerate(refs))
+        b.term = Switch(Var(mn.fam.var), cases, "")
+        return b.label
+
+    def _next_copy(self, cp, blk, out, extra, i, fam, to):
+        """The chain edge: ``v += 1``, into the next copy while one is left."""
+        b = Block("I%s_%d" % (blk.label, i), [], None, blk.src, 0, blk.cover)
+        b.stmts.append(Let(fam.var, Bin("+", Var(fam.var), Const(1), 1)))
+        extra.append(b)
+        cond = Bin("<", Var(fam.var), Const(fam.k), 1)
+        b.term = If(cond, self.header(cp, fam, to), self._succ(cp, b, out, extra, 0, None))
         return b.label
 
 
@@ -418,7 +367,10 @@ def _wire(procs):
                     q = procs[s.proc]
                     s.args = tuple(Var(REGVAR[i]) for i in q.params)
                     s.rets = tuple(REGVAR[i] for i in q.rets)
-        p.params = tuple(sorted({REGIDX[n] for n in liveness(p)[p.entry]} | set(p.rets)))
+        live = liveness(p)[p.entry]
+        if not live <= set(REGIDX):
+            raise Refusal("copy index", "%s live at %s: %s" % (p.name, p.entry, sorted(live)))
+        p.params = tuple(sorted({REGIDX[n] for n in live} | set(p.rets)))
     return procs
 
 
@@ -443,10 +395,22 @@ def _machine_image(trace):
     ]
 
 
-def build_ir(trace, lifted, regions, procs, meta=None):
+def _copy_tables(plan):
+    """One read-only region per distinct set of merged columns: copy by copy."""
+    out = {}
+    for f in plan.fams:
+        if f.size:
+            out.setdefault(
+                f.rid,
+                Rgn(f.rid, "copies_%04X" % f.entry, f.base, f.size, "copymap", 1, f.bytes(), ()),
+            )
+    return list(out.values())
+
+
+def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
     """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (design section 4)."""
-    store = _Storage(trace, regions)
-    b = _Builder(trace, lifted, store, procs)
+    store = Storage(trace, regions)
+    b = _Builder(trace, lifted, store, procs, plan)
     out = {name: b.build_proc(cp) for name, cp in procs.items()}
     for p in out.values():
         _seal(p)
@@ -457,6 +421,8 @@ def build_ir(trace, lifted, regions, procs, meta=None):
     m["tick_proc"] = tick[0] if tick else None
     m["init_proc"] = next((p.name for p in procs.values() if p.kind == "init"), None)
     m["stage"] = "S2"
+    if b.plan.fams or b.plan.refused:
+        m["copies"] = b.plan.to_dict()
     return Tuneprog(
         meta=m,
         storage=[
@@ -473,7 +439,8 @@ def build_ir(trace, lifted, regions, procs, meta=None):
             )
             for r in regions
         ]
-        + _machine_image(trace),
+        + _machine_image(trace)
+        + _copy_tables(b.plan),
         inputs=[
             [k[0], k[1], v["kind"], v["count"], v["phase"]] for k, v in trace.input_sites.items()
         ],

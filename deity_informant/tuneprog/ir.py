@@ -35,6 +35,16 @@ MASK = (0, 0xFF, 0xFFFF)
 REG_NAMES = {0: "A", 1: "X", 2: "Y", 3: "SP", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 REGVAR = {i: REG_NAMES.get(i, "r%d" % i) for i in range(16)}
 REGIDX = {v: k for k, v in REGVAR.items()}
+COPYVAR, COLVAR = "cv", "cx"  # the copy index and its columns (:mod:`.copymerge`)
+
+
+def copyval(n):
+    """True for a value the copy fold made: the index, or one of its columns.
+
+    Both cross blocks, so liveness must see them; only the index is ever assigned
+    twice, so only it takes a phi.
+    """
+    return n.startswith(COPYVAR) or n.startswith(COLVAR)
 
 
 class TrapError(Exception):
@@ -173,11 +183,14 @@ class Trap:
 
 @dataclass(slots=True)
 class Block:
+    """One basic block; ``cover`` counts its executions per copy (:mod:`.copymerge`)."""
+
     label: str
     stmts: list = field(default_factory=list)
     term: object = field(default_factory=Return)
     src: int = 0
     count: int = 0
+    cover: tuple = ()
 
 
 @dataclass(slots=True)

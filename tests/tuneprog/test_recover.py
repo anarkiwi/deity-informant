@@ -158,7 +158,7 @@ def test_names_are_unique_stable_and_serialisable():
         "procs",
         "phase",
         "u16",
-        "closure",
+        "copies",
     }
     assert names.of(-99) == "r-99"
 

@@ -6,7 +6,7 @@ import pytest
 import deity_informant as P
 from deity_informant.lifter import MODE_LEN, OPS
 from deity_informant.tuneprog import ir, ssa
-from deity_informant.tuneprog.build import ops_to_stmts
+from deity_informant.tuneprog.lower import ops_to_stmts
 from deity_informant.tuneprog.idioms import rewrite
 from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (

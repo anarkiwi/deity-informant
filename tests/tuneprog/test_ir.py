@@ -8,7 +8,7 @@ import pytest
 import deity_informant as P
 from deity_informant.lifter import ILLEGAL_OPCODES, MODE_LEN, OPS
 from deity_informant.tuneprog import ir
-from deity_informant.tuneprog.build import ops_to_stmts, straightline
+from deity_informant.tuneprog.lower import ops_to_stmts, straightline
 from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
     Block,
