@@ -15,7 +15,7 @@ from .facts import (
     image_copy,
     sid_image,
     update_role,
-    _scales,
+    scales,
 )
 from .irwalk import forwarder, unique_name
 from .structure import phase as _phase
@@ -277,7 +277,7 @@ def recover(prog, structured=None):
         names.phase = _phase(structured[tick], prog.storage)
     _freq(prog, names)
     names.groups = _groups(prog, names)
-    names.scale = _scales(facts)
+    names.scale = scales(facts)
     names.image = image_copy(facts)
     for rid, delta in sorted(names.image.items()):
         names.role[rid] = "sid_image"

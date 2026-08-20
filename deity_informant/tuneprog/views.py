@@ -8,8 +8,43 @@ instead: one field, one address per copy, listed once in the state header.
 from __future__ import annotations
 
 from .facts import Facts, MAXOPS, MAXROLE, leaf_loads, ops, sid_name, update_role
-from .ir import Const, Store
+from .ir import Bin, Const, SID_REG_HI, SID_REG_LO, Store, Var
 from .irwalk import addr_split, node_loads, unique_name
+
+SID_VOICE = 7  # the SID's per-voice register block
+
+
+def elems(r):
+    """How many elements a region's stride divides it into."""
+    return -(-r.size // max(r.stride, 1))
+
+
+def indexed(rgn, rids, vals, k):
+    """How differing addresses print: as an ``index``, as a ``table``, or ``no``.
+
+    One index serves one region a stride view already walks; addresses in
+    different regions need the per-copy table; the SID's own register file is
+    indexed by voice and by nothing else.
+    """
+    if rids is None:
+        return "index"
+    d = vals[1] - vals[0]
+    if all(SID_REG_LO <= v <= SID_REG_HI for v in vals):
+        return "index" if not d % SID_VOICE else "no"
+    if len(set(rids)) > 1:
+        return "table"
+    r = rgn.get(rids[0])
+    if r is None or r.kind == "io":
+        return "index"
+    return "index" if not d % max(r.stride, 1) and k <= elems(r) <= MAXROLE else "table"
+
+
+def step(var, d, v, w):
+    """``v`` plus ``d`` times the copy index, as an expression."""
+    out = Var(var) if abs(d) == 1 else Bin("*", Var(var), Const(abs(d), w), w)
+    if not v:
+        return out if d > 0 else Bin("-", Const(0, w), out, w)
+    return Bin("+" if d > 0 else "-", Const(v, w), out, w)
 
 
 def sid_fields(facts):
@@ -47,10 +82,10 @@ def cell_field(prog, facts, names, cell, sidf):
 def copy_groups(prog, names, folds=None, facts=None):
     """Name a fold's slots: ``voice[v].field`` over a per-copy address table.
 
-    The slots come from :mod:`.copyfold` and :mod:`.unroll`, which proved the
+    The slots come from :mod:`.copyview` and :mod:`.unroll`, which proved the
     copies one program modulo this table; here they only get names.
     """
-    folds = list((prog.meta.get("folds") or {}).values()) + list(folds or ())
+    folds = list(prog.meta.get("copyviews") or ()) + list(folds or ())
     if not folds:
         return names
     facts = facts or Facts(prog)
@@ -152,5 +187,5 @@ def _splittable(r, names):
         and r.id not in names.view
         and r.id not in names.image
         and r.id not in names.split
-        and -(-r.size // max(r.stride, 1)) > MAXROLE
+        and elems(r) > MAXROLE
     )

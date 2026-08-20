@@ -33,7 +33,7 @@ COMM = ("+", "|", "&", "^")
 IND = "    "
 
 
-def _hex(v):
+def hexlit(v):
     return str(v) if v < 10 else "$%X" % v
 
 
@@ -52,8 +52,7 @@ class Printer:
         self.mem = {}
         self.hide = frozenset()
         self.fors = 0
-        self.fgroup = ""
-        self.fvar = ""
+        self.fvars = {}
         self.proc = ""
         self.defs = {}
         self.inline = {}
@@ -93,15 +92,17 @@ class Printer:
         them with) belongs to whichever of them is being printed; a local group
         names nothing outside the loop that proved it.
         """
-        hit = next((h for h in hits if h[0] == self.fgroup), hits[0])
+        hit = next((h for h in hits if h[0] in self.fvars), hits[0])
         g, fname, j, local = hit
-        if local and g != self.fgroup:
+        if local and g not in self.fvars:
             return None
-        i = self.fvar if g == self.fgroup and self.fvar else str(j)
+        i = self.fvars.get(g) or str(j)
         out = "%s[%s].%s" % (g, i, fname)
         r = self.rgn.get(rid)
         if idx is None:
             return out
+        if r is not None and addr != r.zero:
+            return None  # an index counts from the region's origin, not from a cell inside it
         return "%s[%s]" % (out, self.index(r, addr, idx) if r else _bare(self.expr(idx, False)))
 
     def field(self, rid, r, addr, idx):
@@ -140,7 +141,7 @@ class Printer:
             if hit is not None:
                 return hit
         if r is None:
-            return "mem[%s]" % (self.expr(idx) if idx is not None else _hex(addr))
+            return "mem[%s]" % (self.expr(idx) if idx is not None else hexlit(addr))
         name = name or self.names.region.get(rid, "r%d" % rid)
         if rid in self.names.image and addr is not None:
             return self.regcell(name, addr + self.names.image[rid], _unoffset(idx, addr - r.zero))
@@ -183,7 +184,7 @@ class Printer:
             return hit[0] if hit is not None and hit[1] == 1 and idx.b.v == step else None
         if idx.op == "+" and type(idx.a) is Const and not idx.a.v % step:
             inner = self.ivar(idx.b, stride)
-            return None if inner is None else "%s + %s" % (inner, _hex(idx.a.v // step))
+            return None if inner is None else "%s + %s" % (inner, hexlit(idx.a.v // step))
         return None
 
     def addr_of(self, e, r):
@@ -222,9 +223,9 @@ class Printer:
         if i is None:
             off = addr - SID_REG_LO
             e = _bare(self.expr(idx, False))
-            return "%s.reg[%s]" % (name, "%s + %s" % (_hex(off), e) if off else e)
+            return "%s.reg[%s]" % (name, "%s + %s" % (hexlit(off), e) if off else e)
         v, k = divmod(addr - SID_REG_LO, 7)
-        return "%s[%s].%s" % (name, "%s + %s" % (i, _hex(v)) if v else i, VOICE_REG[k])
+        return "%s[%s].%s" % (name, "%s + %s" % (i, hexlit(v)) if v else i, VOICE_REG[k])
 
     def voiced(self, idx):
         """The index as a voice number, when something proves it steps by seven."""
@@ -238,7 +239,7 @@ class Printer:
             return hit
         t = type(e)
         if t is Const:
-            return _hex(e.v)
+            return hexlit(e.v)
         if t is Var:
             return self.expr(self.inline[e.n], top) if e.n in self.inline else self.var(e.n)
         if t is Load:
@@ -269,7 +270,7 @@ class Printer:
         r = self.rgn.get(e.r)
         addr, idx = self.addr_of(e.a, r)
         if r is None and addr is not None:
-            return "mem[%s]" % _hex(addr)
+            return "mem[%s]" % hexlit(addr)
         return self.cell(e.r, addr, idx)
 
     # ---- statements --------------------------------------------------------
@@ -317,7 +318,7 @@ class Printer:
             if base is not None and SID_REG_LO <= base <= SID_REG_HI:
                 lhs = self.regcell("sid", base, i)
             else:
-                lhs = "io[%s]" % (_hex(base) if base is not None else self.expr(s.a, False))
+                lhs = "io[%s]" % (hexlit(base) if base is not None else self.expr(s.a, False))
         else:
             lhs = self.cell(s.r, addr, idx)
         out = self.compound(lhs, s, addr)
@@ -333,7 +334,7 @@ class Printer:
             a = self.defs.get(v.a.n, v.a) if type(v.a) is Var else v.a
             if type(a) is Load and a.r == s.r and self.addr_of(a.a, self.rgn.get(s.r))[0] == addr:
                 if type(v.b) is Const and v.op in ("+", "-") and v.b.v > 0xF0:
-                    return "%s %s= %s" % (lhs, "-" if v.op == "+" else "+", _hex(0x100 - v.b.v))
+                    return "%s %s= %s" % (lhs, "-" if v.op == "+" else "+", hexlit(0x100 - v.b.v))
                 return "%s %s= %s" % (lhs, v.op, self.expr(v.b, False))
         return "%s = %s" % (lhs, self.expr(s.v))
 

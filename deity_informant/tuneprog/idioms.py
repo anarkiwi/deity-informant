@@ -47,7 +47,7 @@ def _isbool(e):
     return type(e) is Bin and e.op in CMP
 
 
-def _neg(e):
+def negated(e):
     if e.op == "==":
         return Bin("!=", e.a, e.b, e.w)
     if e.op == "!=":
@@ -85,7 +85,7 @@ def fold(e):
             k = (a.b.v if a.op == "+" else -a.b.v) + (v if op == "+" else -v)
             return Bin("+", a.a, Const(k & MASK[w], w), w)
     if op in ("==", "!=") and _isbool(a) and v in (0, 1):
-        return a if (v == 1) == (op == "==") else _neg(a)
+        return a if (v == 1) == (op == "==") else negated(a)
     if op in ("==", "!=") and v == 0 and type(a) is Bin and a.op == "-" and a.w == 1:
         if width(a.a) == 1 and width(a.b) == 1:
             return Bin(op, a.a, a.b, 1)

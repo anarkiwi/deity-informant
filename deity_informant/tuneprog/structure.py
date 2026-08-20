@@ -9,26 +9,22 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from math import gcd
 
 from .ir import (
     Bin,
-    Call,
     Const,
     Goto,
     If,
     Let,
     Load,
     Return,
-    Store,
     Trap,
     Var,
-    evalbin,
     retexpr,
     retval,
-    succs,
 )
 from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
+from .loops import copies, induction, leaves, stepping
 from .inline import values as inline_values
 from .ssa import merge_chains, prune
 
@@ -65,8 +61,8 @@ class Loop:
 class For:
     """A counted loop: ``var`` takes ``values``; ``hide`` are its stepping lets.
 
-    ``group`` names the struct view the index selects, when the loop is a fold of
-    sibling copies (:mod:`.copyfold`).
+    ``group`` names the struct view the index selects, when the loop runs over
+    sibling copies (:mod:`.copyview`).
     """
 
     var: str
@@ -123,89 +119,6 @@ def inline(prog, live, keep=None):
 
 
 # ---- counted loops -----------------------------------------------------------
-class _Values:
-    """Constant folding over a procedure: SSA names, and cells through their stores.
-
-    A name folds when every definition of it agrees; a byte cell folds when every
-    store that reaches the load agrees, which is what carries an index register
-    through the save/restore pair the 6510 uses when it runs out of registers.
-    """
-
-    def __init__(self, proc, labels=None, budget=20000):
-        self.proc = proc
-        self.preds = preds_of(proc)
-        self.defs, self.budget, self.rcache = {}, budget, {}
-        for lbl in proc.blocks if labels is None else labels:
-            for i, st in enumerate(proc.blocks[lbl].stmts):
-                if type(st) is Let:
-                    self.defs.setdefault(st.n, []).append((lbl, i, st.e))
-
-    def val(self, e, env, seen=frozenset(), at=None):
-        """The constant value of ``e`` at position ``at`` under ``env``, or ``None``."""
-        self.budget -= 1
-        if self.budget < 0:
-            return None
-        t = type(e)
-        if t is Const:
-            return e.v
-        if t is Var:
-            if e.n in env:
-                return env[e.n]
-            return None if e.n in seen else self.agree(self.defs.get(e.n, ()), env, seen | {e.n})
-        if t is Bin:
-            a, b = self.val(e.a, env, seen, at), self.val(e.b, env, seen, at)
-            return None if a is None or b is None else evalbin(e.op, a, b, e.w)
-        if t is Load and type(e.a) is Const and e.w == 1 and e.cls != "io" and at is not None:
-            k = ("mem", at, e.a.v)
-            src = None if k in seen else self.reaching(at, e.a.v)
-            return None if src is None else self.agree(src, env, seen | {k})
-        return None
-
-    def agree(self, defs, env, seen):
-        vals = {self.val(x, env, seen, (lbl, i)) for lbl, i, x in defs}
-        return vals.pop() if len(vals) == 1 else None
-
-    def reaching(self, at, addr):
-        """The stores of ``addr`` that reach ``at``; ``None`` if any path has none."""
-        if (at, addr) in self.rcache:
-            return self.rcache[(at, addr)]
-        self.rcache[(at, addr)] = None
-        out, seen, work = [], set(), [at]
-        while work:
-            self.budget -= 1
-            lbl, i = work.pop()
-            hit = self.last_store(lbl, i, addr)
-            if hit is False or self.budget < 0:
-                return None
-            if hit is not None:
-                out.append(hit)
-                continue
-            if not self.preds.get(lbl):
-                return None
-            for q in self.preds[lbl]:
-                pos = (q, len(self.proc.blocks[q].stmts))
-                if pos not in seen:
-                    seen.add(pos)
-                    work.append(pos)
-        self.rcache[(at, addr)] = out
-        return out
-
-    def last_store(self, lbl, i, addr):
-        """``(lbl, j, value)`` of the last store to ``addr`` before ``i``, False if opaque."""
-        for j in range(i - 1, -1, -1):
-            s = self.proc.blocks[lbl].stmts[j]
-            if type(s) is Call:
-                return False
-            if type(s) is not Store or s.cls == "raw":
-                continue
-            if type(s.a) is Const:
-                if s.a.v <= addr < s.a.v + s.w:
-                    return (lbl, j, s.v) if s.w == 1 else False
-            elif s.lo <= addr <= s.hi:
-                return False
-        return None
-
-
 def _trivial(proc, lbl, want=()):
     """The exit a statement-free block is, so a jump to it prints as that exit."""
     b = proc.blocks[lbl]
@@ -216,80 +129,6 @@ def _trivial(proc, lbl, want=()):
     return Exit("trap", b.term.why) if type(b.term) is Trap else None
 
 
-def _leaves(proc, body, lbl):
-    """The successors of ``lbl`` that leave the loop for a path the trace took."""
-    return [s for s in succs(proc.blocks[lbl].term) if s not in body and not _dead(proc, s)]
-
-
-def _dead(proc, lbl):
-    return type(proc.blocks[lbl].term) is Trap
-
-
-def _exit_tests(proc, body):
-    """``[(condition, the truth of it that exits)]`` for every edge leaving the loop."""
-    out = []
-    for lbl in sorted(body):
-        t = proc.blocks[lbl].term
-        if type(t) is not If:
-            continue
-        leaves = _leaves(proc, body, lbl)
-        at = (lbl, len(proc.blocks[lbl].stmts))
-        if t.t in leaves:
-            out.append((t.c, True, at))
-        elif t.f in leaves:
-            out.append((t.c, False, at))
-    return out
-
-
-def _domain(k, var, step, vals, tests):
-    """The values the loop header runs with, by iterating the recurrence to its exit."""
-    out = []
-    while len(out) < CAP:
-        out.append(k)
-        for cond, when, at in tests:
-            v = vals.val(cond, {var: k}, at=at)
-            if v is None:
-                return None
-            if bool(v) == when:
-                return out
-        k = vals.val(step[2], {var: k}, at=(step[0], step[1]))
-        if k is None or k in out:
-            return None
-    return None
-
-
-def _plausible(proc, header, body, latches, preds, n):
-    """The trace agrees: every entry to the loop ran the header ``n`` times."""
-    hits = proc.blocks[header].count
-    if not hits:
-        return True
-    outside = sum(proc.blocks[p].count for p in preds[header] if p not in body)
-    back = hits - sum(proc.blocks[l].count for l in latches)
-    return any(e > 0 and hits == e * n for e in (outside, back))
-
-
-def induction(proc, header, body, latches, preds=None):
-    """``(var, values, scale, hide)`` when the loop is counted, else ``None``."""
-    preds = preds_of(proc) if preds is None else preds
-    tests = _exit_tests(proc, body)
-    if not tests:
-        return None
-    inner = _Values(proc)
-    outer = _Values(proc, [l for l in proc.blocks if l not in body])
-    for latch in sorted(latches):
-        for i, s in enumerate(proc.blocks[latch].stmts):
-            if type(s) is not Let or type(s.e) is not Var:
-                continue
-            k = outer.val(Var(s.n), {})
-            vals = None if k is None else _domain(k, s.n, (latch, i, s.e), inner, tests)
-            if vals and len(vals) > 1 and _plausible(proc, header, body, latches, preds, len(vals)):
-                scale = 0
-                for v in vals:
-                    scale = gcd(scale, v)
-                return s.n, tuple(vals), scale or 1, frozenset({s.n, s.e.n})
-    return None
-
-
 def _returns(proc, term, want):
     """What a ``return`` shows: the tick's own value, or the register a caller reads."""
     return retval(proc) if proc.kind == "tick" else retexpr(proc, term, want)
@@ -297,10 +136,8 @@ def _returns(proc, term, want):
 
 # ---- the structurer ----------------------------------------------------------
 class _Structurer:
-    def __init__(self, proc, want=(), folds=()):
+    def __init__(self, proc, want=()):
         self.want = want
-        self.folds = folds or {}
-        self.latches = {f["latch"]: h for h, f in self.folds.items() if h in proc.blocks}
         self.proc = proc
         self.g = cfg(proc)
         self.preds = preds_of(proc)
@@ -328,11 +165,6 @@ class _Structurer:
             hit = next((c for c in ctx if c[1] == n), None)
             if hit is not None:
                 out.append(Jump("break", hit[0]))
-                break
-            back = self.latches.get(n)
-            if back is not None and any(c[0] == back for c in ctx):
-                self.done.add(n)
-                out.append(Jump("continue", back))
                 break
             if n in self.done:
                 end = _trivial(self.proc, n, self.want)
@@ -381,35 +213,33 @@ class _Structurer:
 
     def loop(self, h, ctx):
         body, latches = self.loops[h]
-        outs = sorted({s for l in body for s in _leaves(self.proc, body, l)})
+        outs = sorted({s for l in body for s in leaves(self.proc, body, l)})
         exit_lbl = max(outs, key=lambda l: (self.proc.blocks[l].count, l)) if outs else None
-        hit = self.folds.get(h)
-        ind = None if hit else induction(self.proc, h, body, latches, self.preds)
+        hit = copies(self.proc, h, latches)
+        ind = induction(self.proc, h, body, latches, self.preds) if hit is None else None
         inner = self.head(h, ctx + ((h, exit_lbl),))
         count = self.proc.blocks[h].count
         if hit is not None:
-            vals = tuple(range(hit["n"]))
-            return For(hit["var"], vals, inner, 1, frozenset(), h, count, hit["group"]), exit_lbl
+            hide = frozenset(stepping(self.proc, latches, hit[0]))
+            return For(hit[0], tuple(range(hit[1])), inner, 1, hide, h, count), exit_lbl
         if ind is None:
             return Loop(inner, h, count), exit_lbl
         var, vals, scale, hide = ind
         return For(var, vals, inner, scale, hide, h, count), exit_lbl
 
 
-def structure_proc(proc, want=(), folds=()):
+def structure_proc(proc, want=()):
     """The structured body of one procedure."""
-    return _Structurer(proc, want, folds).run()
+    return _Structurer(proc, want).run()
 
 
 def structure(prog, want=None):
     """``{proc name: [node]}`` over ``prog`` (run :func:`view` on it first).
 
     ``want`` is ``{procedure: the return registers its callers read}`` (see
-    :func:`wants`), so a procedure that computes a byte for its caller prints it;
-    ``prog.meta['folds']`` names the loops :mod:`.copyfold` made.
+    :func:`wants`), so a procedure that computes a byte for its caller prints it.
     """
-    folds = prog.meta.get("folds") or {}
-    return {n: structure_proc(p, (want or {}).get(n, ()), folds) for n, p in prog.procs.items()}
+    return {n: structure_proc(p, (want or {}).get(n, ())) for n, p in prog.procs.items()}
 
 
 def hidden(s, hide):
@@ -417,22 +247,36 @@ def hidden(s, hide):
     return type(s) is Let and s.n in hide
 
 
-def strip(body, label, hide):
-    """Drop the induction test and the back edge a ``for`` header already states."""
+def strip(body, label, hide, top=True):
+    """Drop the induction test and the back edge a ``for`` header already states.
+
+    A family's chain edge sits wherever the copy ended its own work, so the test
+    is looked for down the branches; only the outermost back edge is implied.
+    """
     out = []
     for n in body:
-        if type(n) is Cond and jumps_only(n.then + n.els, hide):
+        t = type(n)
+        if t is Cond and jumps_only(n.then + n.els, hide, label):
             continue
-        if type(n) is Jump and n.label == label:
+        if t is Jump and n.label == label and top:
             continue
-        out.append(n)
+        if t is Cond:
+            out.append(
+                Cond(n.c, strip(n.then, label, hide, False), strip(n.els, label, hide, False))
+            )
+        elif t is Case:
+            out.append(
+                Case(n.e, tuple((v, strip(b, label, hide, False)) for v, b in n.cases), n.src)
+            )
+        else:
+            out.append(n)
     return out
 
 
-def jumps_only(nodes, hide):
-    """True when a branch arm only jumps (its blocks are empty or hidden)."""
+def jumps_only(nodes, hide, label=""):
+    """True when a branch arm only jumps to ``label`` (its blocks are empty or hidden)."""
     for n in nodes:
-        if type(n) is Jump:
+        if type(n) is Jump and (not label or n.label == label):
             continue
         if type(n) is not Blk or any(not hidden(s, hide) for s in n.stmts):
             return False

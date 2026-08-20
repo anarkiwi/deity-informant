@@ -170,7 +170,7 @@ def sid_image(facts):
     return {k: (n, m) for k, (n, m) in out.items()}
 
 
-def _scales(facts):
+def scales(facts):
     """``{index name: stride}`` for a value that walks a record wider than a byte.
 
     An index the program uses to reach a 7-byte record is a voice wherever else it

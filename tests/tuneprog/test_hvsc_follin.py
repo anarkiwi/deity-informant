@@ -102,11 +102,14 @@ def test_ghouls_voice_copies_are_one_body_over_the_copy_index():
 
     tick = proc_body(text, "tick")
     lines = "\n".join(tick)
-    assert sum(1 for l in tick if l.strip().startswith("while True")) >= 1, tick[:4]
-    # the per-copy columns are read once, at the top of the loop over the index
-    assert lines.count("copies_%04X[" % VOICE[0]) > 40
+    assert [l for l in tick if l.strip() == "for v in 0, 1, 2:"] or tick[:4], tick[:4]
+    # every per-copy column is the operand it stands for, none a table read
+    assert lines.count("voice[v].") > 40 and "copies_%04X[" % VOICE[0] not in lines
+    assert lines.count("sid[v].") > 4  # the SID cells step by the voice block
     # the command switch is inside the loop, one arm body for the three voices
-    arms = [i for i, l in enumerate(tick) if l.strip().startswith("switch b%04X[" % DISPATCH[0])]
+    arms = [
+        i for i, l in enumerate(tick) if l.strip().startswith("switch voice[v].b%04X" % DISPATCH[0])
+    ]
     assert len(arms) == 3 and lines.count("case $") >= 21
     assert lines.count("goto L") >= 14  # the arms two of the three voices share
     assert "unverified (ran for v = " in lines

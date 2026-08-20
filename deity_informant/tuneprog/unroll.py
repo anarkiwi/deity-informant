@@ -7,10 +7,10 @@ over copy 0; equal alpha-renamed skeletons and affine steps are the proof.
 
 from __future__ import annotations
 
-from .copyfold import _step, indexed
 from .ir import Assert, Bin, Call, Const, Let, Load, R16, Store, Var, W16
 from .irwalk import defs_of, stmt_uses, uses_of
 from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, strip, walk
+from .views import indexed, step
 
 MINSTMT = 6
 MINSLOTS = 2  # cells a mapped run must relocate before the mapping is evidence
@@ -39,7 +39,7 @@ class _Ctx:
         d = self.subs.pop(0)
         if kind != "k" or not d:
             return None
-        return _step(self.var, d, v, w)
+        return step(self.var, d, v, w)
 
     def name(self, n):
         return self.ren.setdefault(n, "$%d" % len(self.ren)) if n in self.defs else n
@@ -301,12 +301,12 @@ def _run(units, i, minunits, keep=None, rgn=None):
             k += 1
         size = _size(units[i : i + length])
         for copies in range(k, 1, -1):
-            step, slots = steps(runs[:copies], rgn)
-            if step is None or copies * size < minunits:
+            deltas, slots = steps(runs[:copies], rgn)
+            if deltas is None or copies * size < minunits:
                 continue
             score = (copies * length, length)
             if best is None or score > best:
-                best, hit = score, (length, copies, step, slots)
+                best, hit = score, (length, copies, deltas, slots)
             break
     return hit
 
@@ -321,9 +321,9 @@ def _stmts(n):
     return sum(len(x.stmts) for x in walk([n]) if type(x) is Blk)
 
 
-def _abstract(units, step, var, keep=None):
+def _abstract(units, deltas, var, keep=None):
     """Copy 0 with each stepping constant replaced by the loop index."""
-    c = _Ctx(set(), step, var, keep, _labels(units))
+    c = _Ctx(set(), deltas, var, keep, _labels(units))
     return [(k, (_stmt if k == "s" else _node)(o, c)[1], b) for k, o, b in units]
 
 
@@ -348,10 +348,10 @@ def _body(body, minunits, n, live, keep, rgn=None, groups=None):
             out.append(units[i])
             i += 1
             continue
-        length, k, step, slots = hit
+        length, k, deltas, slots = hit
         var = "$i%d" % n[0]
         n[0] += 1
-        seg = _abstract(units[i : i + length], step, var, keep)
+        seg = _abstract(units[i : i + length], deltas, var, keep)
         node = For(var, tuple(range(k)), _rebuild(seg), 1, frozenset(), "", 0)
         out.append(("n", node, None))
         if slots and groups is not None:
