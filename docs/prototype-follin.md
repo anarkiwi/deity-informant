@@ -340,8 +340,10 @@ same statement with a zero in its coverage vector, marked where it prints.
   *j*th entry. The three tables are parallel, so each starts at index 129 and
   holds the 21 the bases are apart, and the `BPL` over the stream byte proves the
   index is 128 or more: each voice's switch is exactly 21 arms with none
-  displaced, at 30 s and in the certified song 1 alike (30 s: 3 `trap 'unverified'`
-  arms → 39; the certificate gains 16 arm blocks, 254 → 270, and no statement).
+  displaced, at 30 s and in the certified song 1 alike. At 30 s the merged program
+  goes from 7/12/8 arms to 21/21/21 (3 `trap 'unverified'` arms → 39) and the
+  unmerged one, whose extent over-reached, from 25/25/23 to 22/21/21; the
+  certificate gains 16 arm blocks, 254 → 270, and no statement.
 - **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
   read is access class `chk` where the others' are `ram`, because over 32 subtunes
   that voice reaches bytes outside the written set -- is not a question the fold
