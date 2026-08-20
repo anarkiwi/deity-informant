@@ -274,7 +274,7 @@ horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
 Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 `horizon` = certified to the tick count shown.
 
-| certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | closure |
+| certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | certified |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
 | `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
