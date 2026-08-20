@@ -23,7 +23,7 @@ from .ir import (
     Var,
     W16,
 )
-from .irwalk import addr_split, any_load, walk
+from .irwalk import addr_split, walk
 from .live import needed
 from .facts import GLOBAL_REG, VOICE_REG
 
@@ -242,7 +242,7 @@ class Printer:
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
         e = fold(e)
-        hit = self.mem.get(e)
+        hit = self.held(e)
         if hit is not None:
             return hit
         t = type(e)
@@ -256,7 +256,7 @@ class Printer:
             return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
         if e.op in ("==", "!=") and type(b) is Const:
-            hit = self.mem.get(Bin("-", a, b, 1))
+            hit = self.held(Bin("-", a, b, 1))
             if hit is not None:  # x == k is the cell that holds x - k against zero
                 s = "%s %s 0" % (hit, e.op)
                 return s if top else "(%s)" % s
@@ -315,7 +315,7 @@ class Printer:
 
     def word(self, s):
         """A folded 16-bit assignment, compound when the pair is its own operand."""
-        lhs, e = self.pair(s.lo, s.hi, s.a), s.e
+        lhs, e, out = self.pair(s.lo, s.hi, s.a), s.e, None
         sides = ((e.a, e.b), (e.b, e.a)) if type(e) is Bin and e.op in COMM else ((e.a, e.b),)
         for x, y in sides if type(e) is Bin else ():
             if (
@@ -323,8 +323,12 @@ class Printer:
                 and (x.lo, x.hi) == (s.lo, s.hi)
                 and _bare(self.expr(x, False)) == lhs
             ):
-                return "%s %s= %s" % (lhs, e.op, self.expr(y, False))
-        return "%s = %s" % (lhs, self.expr(e))
+                out = "%s %s= %s" % (lhs, e.op, self.expr(y, False))
+                break
+        if out is None:
+            out = "%s = %s" % (lhs, self.expr(e))
+        self.forget(s.lo, s.hi)
+        return out
 
     def call(self, s):
         p = self.prog.procs[s.proc]
@@ -335,6 +339,7 @@ class Printer:
             if i in self.params[s.proc]
         ]
         call = "%s(%s)" % (self.names.procs.get(s.proc, s.proc), ", ".join(args))
+        self.mem = {}  # the callee writes what it likes: no cell still holds what it held
         return "%s = %s" % (", ".join(lhs), call) if lhs else call
 
     def store(self, s):
@@ -351,7 +356,7 @@ class Printer:
         out = self.compound(lhs, s, (addr, idx))
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:
-            self.mem[fold(s.v)] = lhs
+            self.mem[fold(s.v)] = (lhs, s.r)
         return out
 
     def compound(self, lhs, s, split):
@@ -376,8 +381,14 @@ class Printer:
             return load == store
         return self.addr_of(load, self.rgn.get(rid)) == split
 
-    def forget(self, rid):
-        self.mem = {k: v for k, v in self.mem.items() if not _reads(k, rid)}
+    def held(self, e):
+        """The cell that holds the value of ``e``, or ``None``."""
+        hit = self.mem.get(e)
+        return hit[0] if hit is not None else None
+
+    def forget(self, *rids):
+        """Drop what a write to ``rids`` invalidates: their own cells, and values reading them."""
+        self.mem = {k: v for k, v in self.mem.items() if v[1] not in rids and not _reads(k, rids)}
 
 
 def _copyidx(e):
@@ -404,6 +415,10 @@ def _signbit(e):
     return type(e) is Bin and e.op == "&" and type(e.b) is Const and e.b.v == 0x80
 
 
-def _reads(e, rid):
-    """True when the value of ``e`` loads from region ``rid``."""
-    return any_load(e, lambda x: x.r == rid)
+def _reads(e, rids):
+    """True when the value of ``e`` reads one of ``rids``, through a byte or a pair."""
+    return any(
+        (x.lo in rids or x.hi in rids) if type(x) is R16 else x.r in rids
+        for x in walk(e)
+        if type(x) in (Load, R16)
+    )

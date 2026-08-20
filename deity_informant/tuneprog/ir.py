@@ -183,7 +183,11 @@ class Trap:
 
 @dataclass(slots=True)
 class Block:
-    """One basic block; ``cover`` counts its executions per copy (:mod:`.copymerge`)."""
+    """One basic block; ``cover`` counts its executions per copy (:mod:`.copymerge`).
+
+    ``closed`` names the pass that put an unexecuted block here (:mod:`.closure`);
+    it is orthogonal to ``cover``, which is about copies the trace did reach.
+    """
 
     label: str
     stmts: list = field(default_factory=list)
@@ -191,6 +195,7 @@ class Block:
     src: int = 0
     count: int = 0
     cover: tuple = ()
+    closed: str = ""
 
 
 @dataclass(slots=True)

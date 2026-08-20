@@ -183,6 +183,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         "key": key,
         "mnemonic": OPS[op][0],
         "count": site["count"],
+        "closed": not site["count"],
         "call": [],
         "tail_call": False,
         "computed": bool(ls is not None and ls.computed_control),
@@ -207,7 +208,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["term"] = "return"
         return node
     flow = [(t, k) for t, k, _n in edges]
-    arms = _branch_arms(ls, site, pc, op)
+    arms = branch_arms(ls, site, pc, op)
     if arms is not None:
         # Both directions of an executed branch are nodes; a direction the trace
         # never took is a trap (the trace-closed product of design section 3). A
@@ -252,7 +253,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
     return node
 
 
-def _branch_arms(ls, site, pc, op):
+def branch_arms(ls, site, pc, op):
     """``(taken, fall-through)`` of a relative branch, or ``None`` if not one."""
     if ls is not None:
         return (ls.ctrl[3], ls.ctrl[4]) if ls.ctrl[0] == "br" else None

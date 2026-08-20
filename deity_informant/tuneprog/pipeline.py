@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from . import (
+    closure,
     copymerge,
     copyview,
     emit,
@@ -68,6 +69,12 @@ def add_args(ap):
         "--no-merge", action="store_true", help="do not fold sibling copies onto one body"
     )
     ap.add_argument(
+        "--closure",
+        choices=("trace", "static"),
+        default="trace",
+        help="also close the untaken branch directions the image states (unverified code)",
+    )
+    ap.add_argument(
         "--ghidra-facts", action="store_true", help="also write OUT/ghidra for headless Ghidra"
     )
     ap.add_argument("--budget", type=float, default=45.0, help="CPU seconds per invocation")
@@ -81,13 +88,56 @@ def parser(prog="tuneprog"):
     return add_args(argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0]))
 
 
-def _state(out, resume):
+def _horizon(args):
+    """What decides where a subtune stops; a record made under another one is stale."""
+    return [args.calls, args.seconds, args.max_calls, bool(args.until_period), args.chunk]
+
+
+def _stops(st, args):
+    """Drop the ``--songs all`` trace records another horizon wrote, and what they fed.
+
+    A stale record means the subtune must be traced again, so the run rewinds to
+    S1 and forgets that subtune's verification; a layout without records (an
+    older run's ``traced`` list) keeps nothing.
+    """
+    old = st.get("traced")
+    keep = {}
+    if isinstance(old, dict):
+        keep = {k: v for k, v in old.items() if v.get("horizon") == _horizon(args)}
+    st["traced"] = keep
+    if len(keep) != len(old or ()):
+        st["stage"] = "trace"
+        st["subtunes"] = [x for x in st.get("subtunes", ()) if str(x["song"]) in keep]
+        st.pop("divergence", None)  # the run that found it is the one being redone
+    return st
+
+
+def _build(args):
+    """What decides the program the front end builds; a change invalidates it."""
+    return [args.closure, bool(args.no_merge), args.songs, args.sid_model]
+
+
+def _state(out, args):
     p = out / "state.json"
-    return json.loads(p.read_text()) if resume and p.exists() else {"stage": "trace", "calls": 0}
+    st = json.loads(p.read_text()) if args.resume and p.exists() else {"stage": "trace", "calls": 0}
+    if st.get("build") not in (None, _build(args)) and st["stage"] != "trace":
+        # the S4 program on disk is not the one these options ask for, and a
+        # verifier's machine state belongs to the program that produced it
+        st.update(stage="front", subtunes=[])
+        st.pop("divergence", None)
+        (out / "verify.pkl").unlink(missing_ok=True)
+    return _stops(st, args) if args.songs == "all" else st
 
 
 def _subdir(out, song):
     return out / ("s%02d" % song)
+
+
+def _stop(args, tr, target):
+    """Why this subtune stopped: a state repeat, the tick horizon, or not yet (budget)."""
+    if args.until_period and tr.witness() is not None:
+        return "period"
+    return "horizon" if tr.calls_done >= target else None
 
 
 def _target(args, entry):
@@ -136,19 +186,21 @@ def stage_trace(args, out, st, t0, log=print):
 def trace_all(args, out, st, t0, log=print):
     """Trace every subtune to its own directory, then merge them into one trace.
 
-    Each subtune keeps its trace (verification runs against it); the merged trace
-    is the union program the front end decompiles.
+    Each subtune keeps its trace (verification runs against it) and its own record
+    -- ticks, stop reason, horizon -- so subtunes that stop for different reasons
+    resume independently. The merged trace is what the front end decompiles.
     """
     img, schedule = find_entries(Path(args.sid).read_bytes())
     entry = schedule[0]
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
-    done = st.setdefault("traced", [])
+    done = st.setdefault("traced", {})
     target = _target(args, entry)
     for song in songs:
-        if song in done:
+        rec = done.get(str(song))
+        if rec and rec["stop"]:
             continue
         resume = out / ("tracer%02d.pkl" % song)
-        tr = Tracer.load(resume) if args.resume and resume.exists() else None
+        tr = Tracer.load(resume) if rec and args.resume and resume.exists() else None
         if tr is None:
             override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
             tr = Tracer(img, entry, song=song - 1, override=override)
@@ -157,16 +209,18 @@ def trace_all(args, out, st, t0, log=print):
             tr.run_calls(min(args.chunk, target - tr.calls_done))
             if time.process_time() - t0 > args.budget:
                 break
-        if tr.calls_done < target and not (args.until_period and tr.witness() is not None):
+        stop = _stop(args, tr, target)
+        done[str(song)] = {"calls": tr.calls_done, "stop": stop, "horizon": _horizon(args)}
+        st["calls"] = tr.calls_done
+        if stop is None:
             tr.save(resume)
             log("  song %d: %d calls (%.0fs cpu)" % (song, tr.calls_done, time.process_time() - t0))
             return False
         tr.trace().save(_subdir(out, song))
         resume.unlink(missing_ok=True)
-        done.append(song)
         log(
-            "  song %d traced: %d calls (%.0fs cpu)"
-            % (song, tr.calls_done, time.process_time() - t0)
+            "  song %d traced: %d calls, %s (%.0fs cpu)"
+            % (song, tr.calls_done, stop, time.process_time() - t0)
         )
         if time.process_time() - t0 > args.budget:
             return False
@@ -186,30 +240,38 @@ def _s4(trace, lifted, regions, procs, meta, union, plan=None):
     return prog
 
 
-def build(trace, name=None, sid_model=None, union=False, copies=True, log=None):
+def _front(trace, kind, unite=()):
+    """Lift, type storage, build procedures: the front-end products of one trace."""
+    lifted = lift_trace(trace)
+    regions = build_regions(trace, lifted, init_kind=kind, unite=unite)
+    return lifted, regions, build_procs(trace, lifted, regions)
+
+
+def build(trace, name=None, sid_model=None, union=False, copies=True, static=False, log=None):
     """Front end -> IR -> S4: the certified program, plus its front-end products.
 
-    ``union`` is the ``--songs all`` build: what init writes is per-subtune state,
-    so its regions are typed ``state`` and no cell folds to a constant. The first
-    program says where the sibling copies are; the certified one folds them.
+    ``union`` is the ``--songs all`` build, whose regions are ``state``. Copies are
+    discovered on the *trace-closed* program -- :mod:`.closure` deletes the blocks
+    that seed discovery -- and planned against the closed procedures.
     """
-    lifted = lift_trace(trace)
     kind = "state" if union else "init_constant"
     meta = {"name": name, "sid_model": sid_model}
-    regions = build_regions(trace, lifted, init_kind=kind)
-    procs = build_procs(trace, lifted, regions)
+    lifted, regions, procs = _front(trace, kind)
     prog = _s4(trace, lifted, regions, procs, meta, union)
+    band = tuple(trace.meta["load"])
+    fams = siblings.correspond(prog, trace.image_post_init, band) if copies else []
+    if static:
+        closure.close_static(trace)
+        lifted, regions, procs = _front(trace, kind)
+        prog = _s4(trace, lifted, regions, procs, meta, union)
     if not copies:
         return prog, regions, procs
-    band = tuple(trace.meta["load"])
-    fams = siblings.correspond(prog, trace.image_post_init, band)
     plan = copymerge.plan(procs, trace, lifted, fams, regions, log)
     if not plan:
         if plan.refused:
             prog.meta["copies"] = plan.to_dict()
         return prog, regions, procs
-    regions = build_regions(trace, lifted, init_kind=kind, unite=plan.unions)
-    procs = build_procs(trace, lifted, regions)
+    lifted, regions, procs = _front(trace, kind, unite=plan.unions)
     return _s4(trace, lifted, regions, procs, meta, union, plan), regions, procs
 
 
@@ -222,12 +284,14 @@ def stage_front(args, out, st):
         args.sid_model,
         union=args.songs == "all",
         copies=not args.no_merge,
+        static=args.closure == "static",
     )
     (out / "regions.json").write_text(json.dumps([r.to_dict() for r in regions]))
     (out / "procs.json").write_text(json.dumps(procs_json(procs)))
     prog.save(out / "tuneprog.S4.json")
     (out / "tuneprog.py").write_text(emit.emit_python(prog))
     st.update(
+        build=_build(args),
         sites=len(trace.sites),
         regions=len(regions),
         procs=len(procs),
@@ -248,16 +312,17 @@ def verify_all(args, out, st, t0, prog, log=print):
             continue
         ref = V.Reference(Trace.load(_subdir(out, song)))
         v = V.Verifier(prog, ref, src=src)
-        if saved.get("song") == song:
+        if saved.get("song") == song and saved.get("calls") == ref.calls:
             v.restore(saved["state"])
         while v.call < ref.calls and v.div is None:
             v.run(ref.calls, budget=v.seconds + max(1.0, args.budget - (time.process_time() - t0)))
             if time.process_time() - t0 > args.budget:
                 break
         if v.call < ref.calls and v.div is None:
-            resume.write_bytes(pickle.dumps({"song": song, "state": v.state()}))
+            resume.write_bytes(pickle.dumps({"song": song, "calls": ref.calls, "state": v.state()}))
             log("  song %d: verified %d/%d calls" % (song, v.call, ref.calls))
             return False
+        resume.unlink(missing_ok=True)
         subs.append(dict(v.subtune(), interp_prefix=0))
         log("  song %d verified (%d calls, %.0fs cpu)" % (song, v.call, time.process_time() - t0))
         if v.div is not None:
@@ -387,7 +452,7 @@ def run(args, log=print):
     """Drive the stages under ``args``; returns the process exit code."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    st = _state(out, args.resume)
+    st = _state(out, args)
     t0 = time.process_time()
     prog = None
     try:

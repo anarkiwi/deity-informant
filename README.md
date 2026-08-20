@@ -17,7 +17,7 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `docs/tuneprog-plan.md` — plan v3 after the first prototyping round: lessons, backlog, the fold/stack gate (both items met) with its work specs, next prototypes, Ghidra/SMC leverage assessment.
 - `docs/prototype-automatas.md`, `-follin.md`, `-goattracker.md`, `-sidwizard.md` — the four certified exemplars (defMON, Follin's *Ghouls'n'Ghosts*, GoatTracker 2, SID Wizard 1.6/1.9): ground truth, what broke, the generic fix, the evidence.
 - `docs/ghidra-highpcode-export.md` — the independent baseline: the trace's SMC cells as SLEIGH context values, the facts export, the headless high-P-Code/C export, and the oracles that compare Ghidra with the tuneprog.
-- `tools/tuneprog_certify.py` — end-to-end certification driver (`TUNE.sid --out DIR`), chunked against a CPU budget; `docs/certificates/` holds the certificates for the exemplars. `tools/tuneprog_recert.py` reproduces every one of them and diffs it field for field.
+- `tools/tuneprog_certify.py` — end-to-end certification driver (`TUNE.sid --out DIR`), chunked against a CPU budget; `docs/certificates/` holds the certificates for the exemplars. `tools/tuneprog_recert.py` reproduces every one of them and diffs it field for field. `tools/tuneprog_period.py` classifies why a subtune has no state repeat (counter, drifting accumulator, or aperiodic).
 - `tools/survey/` — HVSC survey instruments behind that design: `tracer.py` (dynamic per-site tracer on `PcodeVM`), `run.py` (stratified parallel driver), `headers.py` (static census), `report.py` (markdown tables).
 
 ## Install
@@ -34,7 +34,7 @@ deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]   # illegal
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                    # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]      # execute in PcodeVM, dump $D400.. grid
 deity-informant tuneprog TUNE.sid --out DIR [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-                       [--sid-model 6581|8580] [--closure siblings|none] [--resume] [--budget S] [--no-verify] [--no-text]
+                       [--sid-model 6581|8580] [--no-merge] [--closure trace|static] [--resume] [--budget S] [--no-verify] [--no-text]
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/install the 6510 SLEIGH module
 ```
 
@@ -49,14 +49,14 @@ image, schedule = find_entries(open("tune.sid", "rb").read())
 trace = run_trace(image, schedule[0], calls=1000)         # S0/S1: one instrumented run
 prog, regions, procs = pipeline.build(trace, "tune.sid")  # S2/S3/S4: the certified program
 cert = verify.certify(prog, verify.verify(prog, trace))   # S8: per-call equivalence + periodicity
-closed, sibs, stats = pipeline.closed(trace, prog, "tune.sid")  # S2c: the sibling closure
-view, structured, names = pipeline.present(closed, sibs)  # S5/S6 over a copy
+view, structured, names = pipeline.present(prog)          # S5/S6 over a copy
 text = printer.render(view, structured, names, cert)      # S7: tuneprog.md
 ```
 
 ```bash
 python3 tools/tuneprog_certify.py TUNE.sid --out DIR --until-period --resume   # exit 2 = run again
 python3 tools/tuneprog_recert.py --out out/recert --resume                     # reproduce every certificate
+python3 tools/tuneprog_period.py TUNE.sid --song 1 --out DIR --resume          # why a subtune never repeats
 ```
 
 ## Ghidra

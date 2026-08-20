@@ -8,7 +8,7 @@ from deity_informant.tuneprog import live, pipeline, printer, pseudocode, recove
 from deity_informant.tuneprog.ir import Tuneprog
 
 from _asm import asm, psid
-from _prog import PLAY, counter, tuneprog
+from _prog import PLAY, counter, printed, proc_body, tuneprog
 
 
 def _text(code, calls=6, pcs=True):
@@ -149,6 +149,73 @@ def test_compound_assignment_and_the_signed_test_read_as_source():
     )
     doc = _text(code)
     assert "timer -= 1" in doc and "if timer < 0:" in doc
+
+
+def test_a_folded_word_write_forgets_the_cells_it_overwrote():
+    """The S6 fold leaves one ``W16`` where the two half stores were, which must
+    invalidate the value memo of both halves: the low cell no longer holds what
+    the store before the fold site put there."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA plo",
+        "STA phi",
+        "STA out",
+        "LDA #$03",
+        "STA tmp",
+        "RTS",
+        "play: LDA tmp",
+        "ASL A",
+        "STA plo",
+        "LDA plo",
+        "CLC",
+        "ADC #$05",
+        "STA plo",
+        "LDA phi",
+        "ADC #$01",
+        "STA phi",
+        "LDA tmp",
+        "ASL A",
+        "STA out",
+        "RTS",
+        "plo: BRK",
+        "phi: BRK",
+        "out: BRK",
+        "tmp: BRK",
+    )
+    body = "\n".join(proc_body(printed(code), "tick"))
+    assert "acc += $105" in body  # the pair folded: no store of its own remains
+    assert body.count("(b1034 << 1)") == 2 and "= acc_lo" not in body
+
+
+def test_a_call_forgets_the_cells_the_callee_may_overwrite():
+    """The same memo, the other way a cell stops holding what was stored into it."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cell",
+        "STA out",
+        "LDA #$03",
+        "STA tmp",
+        "RTS",
+        "play: LDA tmp",
+        "ASL A",
+        "STA cell",
+        "JSR sub",
+        "LDA tmp",
+        "ASL A",
+        "STA out",
+        "RTS",
+        "sub: LDA #$09",
+        "STA cell",
+        "STA $D404",
+        "RTS",
+        "cell: BRK",
+        "out: BRK",
+        "tmp: BRK",
+    )
+    body = "\n".join(proc_body(printed(code), "tick"))
+    assert "p_1020()" in body and body.count("(b102B << 1)") == 2
 
 
 def _tune(tmp_path):

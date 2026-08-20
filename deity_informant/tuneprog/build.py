@@ -37,6 +37,7 @@ from .ir import (
     Var,
     succs,
 )
+from .closure import static_resolver
 from .copymerge import Plan
 from .lower import (
     PH_INIT,
@@ -192,10 +193,21 @@ class _Builder:
         else:
             ls = mn.ls
             resolve = self.store.resolver_many(mn.keys, init_phase)
+        # A copy that ran the row covers it: closed means no copy of it ran at all.
+        closed = "static" if node.get("closed") and not (mn and any(mn.counts)) else ""
+        if closed and ls is not None:
+            resolve = static_resolver(ls, mn and mn.fam)
         fam = None if mn is None else mn.fam
         stmts = ops_to_stmts(ls.ops, resolve, lbl, pc, ls.src_map, fam) if ls is not None else []
+        # A closed block has no copy coverage: it is nothing any copy failed to run.
         blk = Block(
-            lbl, stmts, Trap("unreached"), pc, node["count"], () if mn is None else mn.counts
+            lbl,
+            stmts,
+            Trap("unstated" if closed else "unreached"),
+            pc,
+            node["count"],
+            () if mn is None or closed else mn.counts,
+            closed,
         )
         extra = []
         term = node["term"]
@@ -222,7 +234,10 @@ class _Builder:
             blk.term = self._switch(cp, blk, node, ls, extra, init_phase, mn)
         elif term == "goto":
             blk.term = Goto(self._succ(cp, blk, node["succ"][0], extra, 0, mn))
-        return [blk] + extra
+        out = [blk] + extra
+        for b in out:
+            b.closed = closed
+        return out
 
     def _switch(self, cp, blk, node, ls, extra, init_phase, mn=None):
         """A computed jump: one switch, or one per copy under a switch on ``v``."""

@@ -31,9 +31,9 @@ Contents
 | certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 43 modules, 12,631 lines, none over 500; 450 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 45 modules, 13,198 lines, none over 500; 478 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_period.py`, `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
-| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach |
+| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach · #249 certificate accounting |
 
 Fourteen stages, each an Opus agent with the certificate as its acceptance test:
 front end → certified core → presentation → fold/texture → Follin →
@@ -50,7 +50,7 @@ certificates on `main`. **Both gates of §6 are met.**
 | dynamic first: executed sites + exact access relation give the code, the storage and the CFG (§2, §5) | every mechanism the nine exemplars document came out of the generic front end without tune-specific code: SMC operand/opcode cells, pointer broadcast, patched `JMP`/`JSR`/branch dispatch, illegal opcodes incl. `NOP #imm` overlap, `(zp,X)`, init calling into play, data-dependent SID addresses, computed store operands, IRQ entries, subtunes, return values, stack frames |
 | exact regions with envelope asserts (§5 S3) | envelope traps never fired in any certificate; per-voice fields appear as size-3 arrays at strides 1/7/49 exactly as predicted; the two region weaknesses found (one-loop init merges, table overrun merges) are presentation, not correctness |
 | flags/registers vanish under SSA; SMC becomes loads (§5 S4) | printed forms have no `sp`, no flags, no `carry(` except genuine borrows; the certified IR is 1.0–1.6 statements per executed instruction (Automatas 651 → 1,070; GT2 437 → 580; SW 859 → 1,054; Follin 1,177 → 1,242) |
-| periodicity upgrades a horizon to completeness (§1, §7) | 38 of 42 certificates are complete (plus 31/32 subtunes of the union program); the exceptions are aperiodic modulation (Follin sub 21: portamento + trill never re-align) and a loop with a free-running counter (Commando: state period = lcm(loop, 256) frames, beyond the horizon) |
+| periodicity upgrades a horizon to completeness (§1, §7) | 38 of 42 certificates are complete (plus 31/32 subtunes of the union program); the four exceptions are all aperiodic modulation, measured (P2, `tools/tuneprog_period.py`): Follin sub 21's portamento + trill never re-align, and both Commando subtunes drift a per-voice pulse-width accumulator whose full byte is the SID write — 41,898 of 48,192 tick write lists differ at song 1's 11,808-tick pattern loop |
 | the design's cost model | trace 277 k instructions/s, verify 10–16 k calls/s; the whole HVSC at song length is ≈ 300 CPU-hours — a few hours on this machine, no fast tracer needed yet |
 | Ghidra cannot be the core but can be a baseline (§8) | with our facts applied through a SLEIGH context register, Ghidra's decompiler abstracts SMC mechanically (79/87 of Automatas' cell bytes become globals) and its high P-code is 5.8–10.6× our S4 statements — see [ghidra-highpcode-export.md](ghidra-highpcode-export.md) |
 
@@ -100,12 +100,24 @@ family ~5 % of tunes share an executed opcode sequence, but 6-gram similarity is
 *alignment* (our own n-gram/structure alignment or Ghidra Version Tracking),
 never through reuse of a decompilation.
 
-**L6 — Certificates want a periodicity proof, not just a witness.** Hashing
-found periods for looping songs; Commando's free-running frame counter pushes
-the state period to lcm(loop, 256), which a hash cannot reach at song length.
-A structural argument (the counter is read only as `& 7`/`& 1`, or the loop
-length divides the counter period) would certify it complete. Small item, high
-value for the campaign's completeness rate.
+**L6 — Certificates want a periodicity proof, not just a witness — but measure
+the obstruction before proving anything.** Hashing found periods for looping
+songs, and the diagnosis of the four that stayed open was wrong. Measured in P2
+with `tools/tuneprog_period.py` (per-cell smallest period over 60,000 ticks, the
+SID stream's own period, per-loop drift): Commando song 1's patterns do loop, at
+11,808 ticks, and its frame counter `$5525` is real — period 256, `+32` a loop,
+read only as `& 1` and `& 7`, so a masked-residue hash would dispose of it. It
+is not what blocks the repeat. Three per-voice pulse-width accumulators
+(`pw += rate` a tick) come back to a *different* value each loop, their full
+byte is the `$D402`/`$D409`/`$D410` write, and 41,898 of 48,192 tick write lists
+differ at the loop; song 2 is the same shape and its counter's period already
+divides its loop. A value that *is* an observable can never be reduced away, so
+both subtunes sit where Follin sub 21 sits: aperiodic, not certifiable by any
+sound argument at a practical horizon. The lcm/mask proof is therefore
+unbuilt — no exemplar exercises it, and an unexercised reduction in the
+certificate path is exactly the shape of a false `complete`. What ships instead
+is the classifier that decides the question (`period.py`, verdicts `periodic` /
+`state only` / `aperiodic`); the campaign's population data re-ranks the proof.
 
 **L7 — The tick model is right; the inputs are the residual risk.** Ghidra's
 emulator agreed byte-for-byte with our trace on Automatas and Commando and
@@ -163,7 +175,7 @@ Deduplicated from every stage's report; owner = the module that would change.
 
 | item | source | kind | owner |
 |---|---|---|---|
-| bounded static closure of untaken branch directions (marks unverified; removes most `trap 'untaken'`) | design §3, every prototype | correctness-neutral, presentation | cfg/build |
+| ~~bounded static closure of untaken branch directions~~ *done (P2): `closure.py` walks each untaken direction as far as the post-init image states it and joins the instructions to the trace as zero-coverage sites, so the same front end builds them; it stops at a self-modified byte, an access the stack could see, `JMP (ind)`, a `JSR` no traced procedure answers, `BRK`/`JAM` or the edge of the image, and those paths keep their trap. Every closed statement is marked per statement and counted in the certificate's `closure` block. Measured at 30 s: `trap 'untaken'` 18/15/28/49 → 5/0/3/1 on Automatas/GT2/GNG/SW, 17-60 arms closed apiece, verified statements +4.6-16.7 %, 0 divergences, `stack: eliminated` unmoved, families ≥ before. Off by default (`--closure static`): it costs the covered program its structuring (row below), so the certified product stays trace-closed, which is the second product design §3 always named* | design §3, every prototype | correctness-neutral, presentation | cfg/build, closure |
 | ~~fold the sound-effect subtunes~~ *done (#242): a silent voice is a zero in the coverage vector; 24 of Follin's 32 subtunes fold at least one family and 8 refuse on a cross-copy edge (below)* | copy fold (#234) | presentation | siblings, copymerge |
 | ~~mark unverified statements per statement in the printed text~~ *done (#242)* | copy fold (#234) | presentation, honesty | printer, pseudocode |
 | ~~fold the `--songs all` union~~ *done (#242): the union over `v` of a folded access is one region, so the class question the copies differed on goes away* | copy fold (#234) | presentation | copymerge, build |
@@ -176,7 +188,9 @@ Deduplicated from every stage's report; owner = the module that would change.
 | folding a copy nothing ran costs more than it saves: Follin's 17-19, 25, 27, 29 grow ~6 % of statements and ~20 % of blocks, since the columns and the `switch (v)` are new and there was no second body to remove. What it buys is names for the per-voice cells and a coverage vector that says the silent voice's code is this code | P1 (#248) | presentation | copymerge |
 | a merged access unites its regions, so a role one copy's access carried can move with them (Follin 17-19: the frequency tables print as `T6D56`/`T6DB7`, not `sid_image`) | P1 (#248) | naming | regions, recover |
 | an edge into another copy at a row that is not that copy's entry (*Automatas*' `$16AB` at 30 s). Lowering it as `v += 1; goto` that template row is sound and folds it, but measured: the merged body then has two entries, which costs a `goto` and the `ad`/`ctrl` field names -- refused as the narrower rule says | P1 (#248) | fold reach | copyrows |
-| periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
+| a sibling family is discovered from whatever block boundaries the program happens to have -- a copy base is found because a `trap 'untaken'` block carried its pc as a `src`, and `closure` deletes exactly those blocks. Measured: Automatas' `p_1022` 3×44 family is entered at `$119A`/`$1222`, neither of which is a block entry once the arms are closed, so `Cfg.enters` finds no edge into it and a 2-copy candidate at `$1197` wins and then refuses. Worked around in P2 by discovering copies on the trace-closed program; the deep fix is to enumerate candidate bases from the image and the chain relation, not from block entries. Two one-liners that do NOT suffice, each measured: `Cfg.ran` looking up `runs` instead of bisecting `srcs`, and `_cfg` skipping closed blocks | P2 | fold reach | siblings |
+| the closed program is a different shape for the *covered* code: once closed edges exist the front end builds more predecessors and the structurer nests less. GT2's `Je_suis_Linus` goes from 0 to 21 `goto` (and loses the name `cursor_1141`), three of GNG's 60 columns print as table reads, SW gains 3. Not a presentation trick: cutting the closed blocks out of the S5 view entirely still prints 21 `goto`. Fix is to structure a closed region apart from the covered one -- the covered program structured exactly as today and the closed arms attached subordinately, so closed edges stop reshaping dominance for covered code; `--closure static` becomes the default when GT2 prints 0 `goto` with it on | P2 | presentation | structure, closure |
+| ~~periodicity proof for free-running counters (lcm argument)~~ *refuted (P2): the row's own exemplar does not have that shape. `period.py` + `tools/tuneprog_period.py` classify why a subtune has no repeat — each cell's smallest period, the SID stream's own period, per-loop drift — and put both Commando subtunes and `ghouls-song21` in the `aperiodic` class: the drifting cells are per-voice pulse-width accumulators whose full byte is the SID write, and Commando song 2's frame counter already divides its loop. Nothing certified needs the mask proof; re-rank it on the campaign's population, and keep it fail-closed (an unclassifiable read keeps the whole cell)* | Commando | certificate | verify, period |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
 | family name dictionaries by structural alignment | all | naming | recover |
@@ -184,8 +198,9 @@ Deduplicated from every stage's report; owner = the module that would change.
 | 16-bit views for halves stored by unrelated instructions (Follin freq shadow, pulse width) | Follin, SW | presentation | word |
 | sign-extension/flag-algebra printing (`sext(table[i])`, `if (tempo & $80)`) | SW | presentation | pseudocode |
 | ~~index range for jump-table extents (Follin 23 vs 21 arms)~~ *done (P1) intraprocedurally: a merged family's k tables are parallel, so they start at the same index (the region's own base as the lowest base names it) and each holds the gap between two bases; the branches on the one path into a dispatch then prove a range for the index (sign test, equality, compare) which cuts into that layout and never moves it. The layout is an inference like the extent rule, not a proof; the range is a proof, and is applied last so it can only remove entries -- Follin's three dispatches are 21 arms each, none displaced. Not built interprocedurally: SID Wizard's two dispatches do take their index as an argument, but what the caller's `CMP #$60` proves ([96, 256)) is already inside the extent (123..127 and 125..127), so the walk would cost code and buy nothing measurable* | SW | closure | jumptab |
-| `--songs all` resume state for mixed stop reasons | Follin | tool | pipeline |
-| `printer`/`pseudocode` memo invalidation with 16-bit views; `node_exprs` unknown-node guard | consolidation | quality | irwalk, pseudocode |
+| ~~`--songs all` resume state for mixed stop reasons~~ *done (P2): the trace stage kept a bare list of finished subtunes, so a subtune was skipped on resume whatever horizon the resuming invocation asked for — a run interrupted under `--calls N` and resumed under `--until-period` certified subtunes at different, unrecorded horizons in one certificate. Each subtune now carries `{calls, stop, horizon}` (`stop` = period / horizon / budget), a record from another horizon rewinds that subtune to S1, and `verify.pkl` carries the reference length it was taken against* | Follin | tool | pipeline |
+| ~~`printer`/`pseudocode` memo invalidation with 16-bit views; `node_exprs` unknown-node guard~~ *done (P2): the memo (value expression → the cell that holds it) dropped an entry only when the entry's key read the written region, never when the cell itself lived there; `word.fold16`'s `W16` made it reachable because the renderer invalidated neither half, and a call invalidated nothing. Entries carry their region and `forget` drops both directions; `node_exprs` raises on a node no table lists* | consolidation | quality | irwalk, pseudocode |
+| under `--songs all` a subtune that stops on a period is certified at `ceil((first_repeat+1)/chunk)*chunk` ticks, so its tick count depends on `--chunk`, where the single-song path certifies `first_repeat + 1` | P2 | tool | pipeline |
 | Ghidra function bodies vs clone-per-entry (`ghidra_partial` rows) | Ghidra export | oracle | ghidra_compare |
 | numba tracer/executor if the campaign needs it | design §11 | performance | trace, emit |
 | ~~stack elimination in S4 (§7) — gate item~~ *done (#237)* | user gate | core | frames, stack |
@@ -201,7 +216,7 @@ one Opus agent per package with a read-only review before each merge, as §10.
 | pkg | rows | size | note |
 |---|---|---|---|
 | ~~**P1 fold reach**~~ *done*: cross-copy edge (the rule held; ownership was the refusal) · dispatch closure over a per-copy column base · index range for extents (intraprocedural) · `unroll` copy-0 constant guard | medium | S4 changes for newly folded families; recert 42/42 with ticks/period/complete/divergences fixed |
-| **P2 certificate accounting** | lcm periodicity proof · bounded static closure of untaken directions (per-statement unverified) · memo invalidation/`node_exprs` guard · `--songs all` resume | medium | changes what certificates claim, so lands before the campaign |
+| ~~**P2 certificate accounting**~~ *done*: lcm periodicity proof (refuted by measurement -- `period.py` classifies the obstruction and puts Commando where `ghouls-song21` is) · bounded static closure (`closure.py`, behind `--closure static`; the fold's discovery moved onto the trace-closed program so the closure cannot take a family away) · memo invalidation and the `node_exprs` guard · `--songs all` per-subtune stop reasons | medium | recert 42/42 unchanged: the certified product is still the trace-closed one |
 | **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
 | **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
 | **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
@@ -214,8 +229,9 @@ remainder.** P1/P2 first because they change certificate claims the campaign
 would otherwise measure stale; the V20 family stage precedes the sweep so the
 largest family's issues close by generalization on two tunes rather than at
 scale; P3 (RTI contract, residual horizon) follows it; NMI/sample deferred,
-data-gated on the sweep. P1 is done (#248); P2 is
-next.
+data-gated on the sweep. P1 and P2 are done; the campaign is also what re-ranks
+the two rows P2 left open (the periodicity reduction and the closed program's
+structuring).
 
 ## 6. Gate: fold and stack before any new family
 

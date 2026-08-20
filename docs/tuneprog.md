@@ -34,6 +34,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py`, over a per-copy column base and the range a branch proves for the index |
+| S2b' | the bounded static closure of untaken branch directions, as zero-coverage sites the same front end builds (`--closure static`) | `closure.py` |
 | S2c | sibling copies as one body: the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- then the fold that makes the copy index a value, so the certified program has one body under `v` with a per-copy column table | `siblings.py`, `copyrows.py`, `copymerge.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
@@ -53,16 +54,17 @@ traversals every stage shares.
 
 ```
 front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
-              cfg 309  regions 228  jumptab 368  siblings 395
+              cfg 310  regions 228  jumptab 368  siblings 395  closure 338
               copyrows 453  copymerge 165
-program       ir 429  interp 247  irwalk 309  graph 70  lower 204  build 448
-              ssa 431  frames 371  stack 204  idioms 357  emit 367  verify 326
+program       ir 434  interp 247  irwalk 315  graph 70  lower 204  build 463
+              ssa 431  frames 371  stack 204  idioms 357  emit 372  verify 328
+              period 110
 presentation  structure 345  loops 217  inline 199  texture 475  frame 44
               word 369  fold 472  tails 165  copyview 279  unroll 399  live 96
               facts 223  recover 323  views 213
-text          pseudocode 409  printer 371
-driver        pipeline 425  __init__ 121
-baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,631 lines
+text          pseudocode 424  printer 384
+driver        pipeline 477  __init__ 123
+baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,198 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -77,7 +79,7 @@ Stage entry points, which are also the module boundaries:
 ```bash
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-    [--sid-model 6581|8580] [--no-merge] \
+    [--sid-model 6581|8580] [--no-merge] [--closure trace|static] \
     [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
 ```
 
@@ -89,6 +91,12 @@ changes what is certified -- `tuneprog.S4.json`, `tuneprog.py` and
 built before it, which is what the two differ by. What folded, what refused and
 what no copy ran are in the `copies` line of `tuneprog.md`, in the certificate's
 `copies` and in `tuneprog.S6.json`.
+
+`--closure static` decompiles the untaken branch directions the post-init image
+states, as code no execution covers (the `closure` block of the certificate, the
+per-statement mark, and `closure: "static"` per subtune). It is off by default:
+it removes nearly every `trap 'untaken'` and costs the *covered* program its
+structuring (below).
 
 `tools/tuneprog_certify.py` is the same pipeline as a standalone driver. Both
 are chunked: a long run exits 2 while work remains, so each invocation stays
@@ -107,6 +115,20 @@ do :; done
 until python3 tools/tuneprog_recert.py --out out/recert --resume; do :; done
 ```
 
+`tools/tuneprog_period.py` says why a subtune the certificate could not close
+has no state repeat (`period.py`): it samples every footprint cell and every SID
+write per tick and reports each cell's own smallest period, the loop the SID
+stream has (if any), and the cells whose period does not divide it — a counter,
+or an accumulator with a constant drift per loop. Its verdict is `periodic`,
+`state only` (the blockers never reach the SID, so a reduced state could certify
+the tune) or `aperiodic` (the SID stream itself does not repeat, so nothing can).
+The window must cover at least two loops; sample well past the horizon.
+
+```bash
+until python3 tools/tuneprog_period.py TUNE.sid --song 1 --calls 60000 \
+    --out out/period --resume; do :; done
+```
+
 Artefacts in `--out DIR`:
 
 | file | stage |
@@ -118,7 +140,7 @@ Artefacts in `--out DIR`:
 | `certificate.json` | S8 |
 | `tuneprog.S5.json`, `tuneprog.S6.json` | the structured shape, the recovered names and group views (with the fold's own counts) |
 | `tuneprog.md` | the pseudocode |
-| `state.json`, `tracer.pkl`, `verify.pkl` | resume state |
+| `state.json`, `tracer.pkl`, `verify.pkl` | resume state (a `--songs all` run records each subtune's ticks, stop reason and horizon) |
 
 Python API:
 
@@ -155,6 +177,14 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
       "complete": true,                // period found, agrees with the trace, no divergence
       "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000
   }],
+  "closure": {                         // only under --closure static
+    "arms": 22, "closed": 17,          // untaken branch directions found / closed
+    "instructions": 39,                // instructions the image stated
+    "stops": {"smc_cell": 4, "stack": 1},      // where the walk refused, by reason
+    "blocks": 9, "statements": 57,     // what only a closed path reaches
+    "verified_statements": 745,        // the rest of the program
+    "untaken": 8, "frontier": 0        // traps left: directions, and stated-out paths
+  },
   "copies": {                          // only where a family folded or refused
     "families": [{"proc": "tick", "bases": ["$12BE", "$12EF", "$1320", "$1351", "$1382"],
                   "copies": 5, "rows": 18, "columns": 3, "table": "$0200"}],
@@ -176,6 +206,40 @@ them: a `0` is a statement the trace saw in another copy and the correspondence
 says is this one's too, which the printed program marks per statement. A family
 the index cannot name -- a cross-copy edge, an operand no table can express --
 is `refused` with its reason, and its copies stay k bodies.
+
+`closure` appears under `--closure static`, the bounded static walk of the branch
+directions the trace never took. From each one it follows what the post-init
+image *states* — no byte any decompiled procedure writes, no access the stack
+could see, a target the image names, a `JSR` a traced procedure answers — and those
+instructions join the trace as zero-coverage sites, so the same front end builds
+them and the same S4 runs on them; where the image is silent the walk stops and
+that path ends in `trap 'unstated'`. `arms`/`closed` count the directions,
+`stops` says why the rest refused, and `blocks`/`statements` are what *only* a
+closed path reaches: the marked blocks plus the split edges and prologues a
+later pass made out of a closed edge. Those statements are covered by no
+execution — the printed program marks every one `# unverified (static closure)`
+— and the subtune's `closure` field reads `static` rather than `trace`. Closed
+code is reachable only through edges that were traps, so the verified behaviour
+is unchanged: the per-tick state hashes, `period`, `complete` and `divergences`
+are the same certificate's. `untaken` counts the trap blocks left under that
+name — a direction the walk refused, and the arms of a folded row no copy ran.
+
+It is **not the default**, and the committed certificates are all trace-closed.
+Measured at 30 s of music, `--closure trace` → `--closure static`:
+
+| exemplar | printed lines | `goto` | `trap 'untaken'` | closed statements |
+| --- | ---: | ---: | ---: | ---: |
+| Automatas | 775 → 849 | 6 → 8 | 18 → 5 | 25 |
+| `gt2-je-suis-linus` | 1,170 → 1,058 | 0 → 23 | 15 → 0 | 13 |
+| `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 39 |
+| `sw-emomyst` | 1,316 → 1,844 | 0 → 2 | 49 → 1 | 63 |
+
+The traps go, and the *covered* program is structured worse: once the closed
+edges exist the front end gives covered blocks more predecessors and the
+structurer nests less. That is not the closed text getting in the way — cutting
+the closed blocks out of the S5 view entirely still prints 21 of GoatTracker's
+23 `goto` — so the default stays `trace` until the structurer handles a closed
+region apart from the covered one.
 
 `complete` means the run closed: the tuneprog reached a state repeat at the same
 tick and with the same period as the trace, with no divergence. Otherwise the
@@ -210,7 +274,7 @@ horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
 Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 `horizon` = certified to the tick count shown.
 
-| certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | closure |
+| certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | certified |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
 | `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
@@ -226,14 +290,26 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `ghouls-song21` is the
 one subtune with no state repeat inside 400 s (two voices keep a portamento and a
-trill moving), so it is certified to a 20,049-tick horizon. `commando` has
-Hubbard's counters running free, so it is certified to its HVSC length.
+trill moving), so it is certified to a 20,049-tick horizon. Both `commando`
+subtunes are certified to their HVSC length for the same reason, measured with
+`tools/tuneprog_period.py` over 60,000 ticks (20 minutes of music): song 1's
+patterns loop at 11,808 ticks, but its three per-voice pulse-width accumulators
+(`$5591`/`$55A1`/`$55B9`, each `pw += rate` a tick) do not come back to where
+they were — 41,898 of 48,192 tick write lists differ at that lag, on `$D410` and
+its two siblings. Hubbard's free-running frame counter `$5525` is real (period
+256, `+32` a loop, read only as `& 1` and `& 7`) but is not what blocks the
+repeat: reducing it to its masked residue still leaves the accumulators, whose
+full byte *is* the SID write, and in song 2 its period already divides that
+subtune's loop. Verdict `aperiodic`, the same class as `ghouls-song21`.
 
 ## Known gaps
 
 - **Trace closure.** The certified product is trace-closed: a branch direction or
   a table entry the run never took becomes `trap 'untaken'` / `trap 'unverified'`,
-  not a decompiled path. `jumptab` closes a patched jump statically over the
+  not a decompiled path. `--closure static` decompiles the untaken directions the
+  post-init image states (`closure.py`, the `closure` block of the certificate,
+  the walk's frontier as `trap 'unstated'`), at the presentation cost measured
+  above. `jumptab` closes a patched jump statically over the
   table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
   region and stay unlisted. Two bounds narrow that extent where they apply, and
@@ -307,6 +383,16 @@ Hubbard's counters running free, so it is certified to its HVSC length.
 - **Sign extension and flag algebra print as written.** A patched branch
   dispatcher keeps `(base + off) - ((off & $80) << 1)`, and a `BVC` after `SBC`
   prints the overflow expression rather than the bit test it stands for.
+- **Periodicity is a hash of the whole footprint, so one drifting cell hides it.**
+  A cell whose own period does not divide the music loop pushes the state period
+  to the lcm of the two. A *reduced* hash would certify the tune where every
+  observable-affecting read of such a cell goes through a mask (`& 7`, `& 1`) --
+  the residue's period then divides the loop -- but nothing in the certified set
+  needs it: `tools/tuneprog_period.py` puts both `commando` subtunes and
+  `ghouls-song21` in the `aperiodic` class, where the drifting cell's full byte
+  is itself a SID write and no reduction is sound. The rule the classifier
+  applies, and any reduction that follows it, is fail-closed: a read shape it
+  cannot classify keeps the whole cell.
 - **Refusals.** A second armed interrupt source (CIA-2 timer, NMI vector), a
   recursive JSR call graph, an `init` that never returns inside its budget, and a
   play routine that runs past its instruction budget are diagnosed and refused,

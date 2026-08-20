@@ -11,8 +11,10 @@ import re
 import pytest
 
 from deity_informant import cli
+from deity_informant.tuneprog import closure, pipeline
+from deity_informant.tuneprog.verify import verify
 
-from _hvsc import AUTOMATAS, COMMANDO, body, decompiled, folded, tune
+from _hvsc import AUTOMATAS, COMMANDO, body, decompiled, folded, traced, tune
 
 pytestmark = pytest.mark.hvsc
 
@@ -161,3 +163,34 @@ def test_commando_prints_the_shape_of_the_design_illustration():
     # the machine texture goes here too: no stack pointer, and the speed divider
     assert not re.search(r"\bsp\d*\b", text)
     assert "timer_5 -= 1" in text or "timer -= 1" in text
+
+
+def test_the_static_closure_decompiles_the_untaken_arms_of_an_exemplar():
+    """``--closure static``: the arms the image states become code, the fold survives.
+
+    The certified default is trace-closed; this is the second product, and what it
+    must not do is change what an execution covered or take a family away.
+    """
+    trace = traced(AUTOMATAS, seconds=30, song=0)[1]
+    plain = pipeline.build(trace, "Automatas.sid")[0]
+    closed = pipeline.build(trace, "Automatas.sid", static=True)[0]
+    rep = closure.report(closed)
+    assert closure.report(plain) == {} and rep["closed"] > rep["arms"] // 2
+    assert rep["untaken"] < len(_traps(plain)) and rep["blocks"] and rep["statements"]
+    fams = [f["copies"] for f in closed.meta["copies"]["families"]]
+    assert fams == [f["copies"] for f in plain.meta["copies"]["families"]]
+    assert closed.meta["stack"] == plain.meta["stack"] == "eliminated"
+    v = verify(closed, trace, calls=trace.meta["calls"])
+    assert v.div is None and v.subtune()["closure"] == "static"
+    assert (
+        v.subtune()["period"] == verify(plain, trace, calls=trace.meta["calls"]).subtune()["period"]
+    )
+
+
+def _traps(prog):
+    return [
+        b
+        for p in prog.procs.values()
+        for b in p.blocks.values()
+        if getattr(b.term, "why", "") == "untaken"
+    ]

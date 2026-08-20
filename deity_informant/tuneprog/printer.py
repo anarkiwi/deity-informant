@@ -7,6 +7,7 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 
 from __future__ import annotations
 
+from .closure import closed_blocks
 from .ir import Bin, Let, REGVAR, copyval
 from .irwalk import call_order, forwarder
 from .live import printable
@@ -19,6 +20,16 @@ PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
 class Body(Printer):
     """Renders structured nodes into indented pseudocode lines."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._shut = {}
+
+    def shut(self, proc):
+        """The blocks of ``proc`` only the static closure reaches, computed once."""
+        if proc not in self._shut:
+            self._shut[proc] = closed_blocks(self.prog.procs[proc])
+        return self._shut[proc]
 
     def render(self, name, body):
         self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
@@ -70,8 +81,10 @@ class Body(Printer):
         return head + [pad + self.stmt(s) + mark for s in stmts]
 
     def unverified(self, proc, label):
-        """The mark a statement no copy of its row ran carries: which ``v`` did run it."""
+        """The mark a statement no execution covers carries: the static closure, or which ``v``."""
         b = self.prog.procs[proc].blocks.get(label)
+        if label in self.shut(proc):
+            return "  # unverified (static closure)"
         cover = tuple(getattr(b, "cover", ()) or ())
         if not cover or 0 not in cover:
             return ""
