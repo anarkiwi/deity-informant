@@ -149,19 +149,21 @@ affine one through the stride vocabulary (`sid[v].freq_lo`, `b640F[v]`), the res
 as a field of the group view whose per-copy addresses the state header lists once
 (`$62EE`/`$64DB`/`$66CA`). Two of the 60 columns keep their table read: no rule
 names them, so their addresses stay visible. Measured on the certified song 1
-(12,997 calls): the document is 755 lines and `tick()` 493 of them, against 794
+(12,997 calls): the document is 757 lines and `tick()` 495 of them, against 794
 and 578 before the view pass.
 
 ```
-program   4 procedures, 176 blocks, 293 statements, 42 regions
+program   4 procedures, 176 blocks, 295 statements, 42 regions
 copies    1 family over 3 copies, 400 rows; 133 of 471 statements unverified (marked)
-certified 12,997 calls, 0 divergences, period 1, first repeat at call 12,996 (complete)
+certified 12,997 calls, 0 divergences, period 1, first repeat at call 12,996 (complete), ...
 
 voice[3]  per-copy cells, stride 6, 51 fields
   .b0021          $0021 $0023 $0025            # the stream pointer
   .timer          $0022 $0024 $0026
-  .pw_lo          $003F $0041 $0043 ; .pw_hi   $0040 $0042 $0044
-  .freq_lo        $0075 $0076 $0077 ; .freq_hi $0078 $0079 $007A
+  .pw_lo          $003F $0041 $0043
+  .pw_hi          $0040 $0042 $0044
+  .freq_lo        $0075 $0076 $0077
+  .freq_hi        $0078 $0079 $007A
   .counter_2      $007B $007C $007D            # active[v] = $FF
   .b6269          $6269 $6456 $6645            # the vibrato direction
   .b62EE          $62EE $64DB $66CA            # the pulse mode
@@ -206,12 +208,12 @@ tick():                                  # $6234, 48,000 calls
                         voice[v].b6376 = voice[v].b6C76[t21]
                         switch v:                       # each voice dispatches on its own
                             case 0:
-                                switch voice[v].b6375:
+                                switch voice[0].b6375:
                                     case $6858:         # $82 loop begin
                                         # $6858
                                         voice[v].timer_3 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
                                         t22 = voice[v].b0021
-                                        voice[v].b0030 = (t22 + 2)
+                                        voice[v].b0030 += 2
                                         voice[v].b0021 += 2
                                         ...
                                         continue
@@ -230,7 +232,7 @@ tick():                                  # $6234, 48,000 calls
                                             sid.reg[a75] = b730E[...]   # the register is a variable
                                             ...
                             case 1:
-                                switch voice[v].b6375:
+                                switch voice[1].b6375:
                                     case $6871:
                                         goto L6858_B1   # the same body, voice 2's target
                                     case $68B2:
@@ -240,7 +242,7 @@ tick():                                  # $6234, 48,000 calls
                                         voice[v].b0093 = b730E[...]  # unverified (ran for v = 1, 2)
                                         ...
                             case 2:
-                                switch voice[v].b6375:
+                                switch voice[2].b6375:
                                     case $688A:
                                         goto L6858_B1
                                     ...                 # 47 cases over 21 bodies in all
@@ -259,8 +261,8 @@ tick():                                  # $6234, 48,000 calls
     # $683C
     sid.cutoff_lo = b0021[78]
     b0021[117] = (b0021[78] >> 3)
-    t49 = ((b0021[79] >> 2) | ((b0021[79] & 1) << 7))
-    sid.cutoff_hi = (((((t49 >> 1) | (((b0021[79] >> 1) & 1) << 7)) >> 1) | ((t49 & 1) << 7)) | b0021[117])
+    t51 = ((b0021[79] >> 2) | ((b0021[79] & 1) << 7))
+    sid.cutoff_hi = (((((t51 >> 1) | (((b0021[79] >> 1) & 1) << 7)) >> 1) | ((t51 & 1) << 7)) | b0021[117])
     return ((voice[0].counter_2 | voice[1].counter_2) | voice[2].counter_2)
 ```
 

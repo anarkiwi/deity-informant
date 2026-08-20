@@ -31,7 +31,7 @@ Contents
 | certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 43 modules, 12,353 lines, none over 500; 431 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 43 modules, 12,449 lines, none over 500; 432 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
 | merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view |
 
@@ -220,11 +220,13 @@ they are about the *core* matching the design rather than about breadth:
    coverage vector the correspondence proved, so the chain edge and the `v += 1`
    are the header. Measured (presentation only; `tuneprog.py`, `certificate.json`
    and every certificate byte-identical, recert 42/42): Follin's certified song 1
-   is 755 printed lines with `tick()` 493 of them (794/578 before), 51 named
+   is 757 printed lines with `tick()` 495 of them (794/578 before), 51 named
    per-copy fields in one `voice[3]` view, 2 of 60 columns left as table reads;
-   *Automatas* at 30 s 800 → 782 lines with both cascades `for v in 0..4` over
-   `rec2[v]`; GoatTracker ×2, SID Wizard ×2 and Commando print byte-identically to
-   what stage B produced, having no family. `copyfold.py` is gone, `unroll.py`
+   *Automatas* 744 → 716 lines over the whole song (800 → 782 at 30 s) with both
+   cascades `for v in 0..k-1` over `rec2[v]`; GoatTracker ×2, SID Wizard ×2 and
+   Commando song 1 print byte-identically to what stage B produced, having no
+   family, and Commando song 2's 2-copy family at `$5301` becomes a `for w in 0, 1`
+   over `copy0[w].timer`. `copyfold.py` is gone, `unroll.py`
    keeps only the view-level fold with no static correspondence, and the
    presentation layer has no cross-module private imports left.
    *Review of #234 (2026-08-18):* the fold was placed at the end of a lossy
@@ -434,31 +436,38 @@ Measurements are in §6 item 1 and §10 row 3.
 replaces `copyfold.py` + `unroll.py`; `views.py` names `T_x` fields; docs
 (`tuneprog.md`, the prototype records, this plan: gate closed).
 
-*Outcome (#244).* `copyview.py` (217 lines) is that pass: it collects every
+*Outcome (#244).* `copyview.py` (273 lines) is that pass: it collects every
 column of the view, the accesses that read it and the copy index each occurrence
 names, then decides once per column. Values that step affinely become that step
 in `v`, so nothing new prints them -- `regcell`'s 7-byte voice block gives
-`sid[v].freq_lo`, a region's own stride gives `b640F[v]`; values that do not
-become copy 0's own operand plus a group slot, which `views.copy_groups` names
-through the same role/SID-shadow/`b%04X` vocabulary and the state header lists
-address by address. Two rules refuse rather than invent a name: a column whose
-copies sit at different offsets of a record is not one field, and a column its
-readers reach through more than one region has no region to name it -- both keep
-the table read, address visible (2 of Follin's 60 columns, 2 of *Automatas*'
-five). Where a family's indexed columns select exactly a stride view's regions the
-two are one view under one name, which is what makes Follin's certified song 1 one
-`voice[3]` of 51 fields. The loop comes from `loops.copies`: a merged family's
-`for` runs the coverage vector, not a recurrence the exit tests must re-derive
-(*Automatas*' cascade leaves its loop through a `switch` arm, which `induction`
-cannot read), and `strip` follows the branches so the chain edge is the header
-wherever the copy ended its work. `copyfold.py` is deleted, `_step`/`indexed`/
-`elems` move into `views.py` as the algebra `unroll` and `copyview` share, and
-`structure.py` splits (`loops.py`) to stay under 500 lines. **What it does not
-do:** `unroll.py` still finds only consecutive isomorphic runs inside one body
-with no static correspondence -- it folds Follin's init copies and *Automatas*'
-write-out, and still does not fold the three row-advance blocks (§5); a group slot
-with an index prints from the region's origin, so a clear loop over a block whose
-first cell a family names reads `voice[0].b0021[v]`.
+`sid[v].freq_lo`, a region's own stride gives `b640F[v]`; values that do not keep
+their table read and are named by the group view `views.copy_groups` builds from
+the same role/SID-shadow/`b%04X` vocabulary, which the state header lists address
+by address. **The named column keeps its read on purpose**: substituting copy 0's
+operand was tried and is unsound -- an operand every copy agrees on can equal a
+slot's address, and inside the loop nothing tells the two apart (Commando song 2
+holds one of each at `$551A`), so the printed index is the copy the *access* names
+and a constant stays copy *j*'s own cell. The field names still come from the
+addresses, through a substituted twin of the view (`copyview.naming_facts`). Two
+rules refuse rather than invent a name: a column whose copies sit at different
+offsets of a record is not one field, and two columns whose copy 0 agrees but
+whose copies do not are two fields and neither gets a name -- both keep the read,
+address visible (2 of Follin's 60 columns, 2 of *Automatas*' five). Where a
+family's indexed columns select exactly a stride view's regions the two are one
+view under one name, which is what makes Follin's certified song 1 one `voice[3]`
+of 51 fields. The loop comes from `loops.copies`: a merged family's `for` runs the
+coverage vector, not a recurrence the exit tests must re-derive (*Automatas*'
+cascade leaves its loop through a `switch` arm, which `induction` cannot read),
+and `strip` follows the branches so the chain edge is the header wherever the copy
+ended its work -- only where nothing follows it, since a test mid-body guards the
+statements after it. `copyfold.py` is deleted, `_step`/`indexed`/`elems` move into
+`views.py` as the algebra `unroll` and `copyview` share, and `structure.py` splits
+(`loops.py`) to stay under 500 lines. **What it does not do:** `unroll.py` still
+finds only consecutive isomorphic runs inside one body with no static
+correspondence -- it folds Follin's init copies and *Automatas*' write-out, and
+still does not fold the three row-advance blocks (§5); a group slot with an index
+prints from the cell, so a clear loop over a block whose first cell a family names
+reads `voice[0].b0021[v]`.
 
 ## 8. Next prototypes, ranked
 
@@ -520,7 +529,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 | 1 | ~~gate 2 — stack (§7)~~ *done (#237)* | `frames.py`, `stack.py`, `frame.py`, `interp.py`, `trace.py`, `emit.py`, `pipeline.py`, tests | met: `SP` absent from all 42 exemplar `tuneprog.py`, 42/42 recert, §6 item 2 for the measurements |
 | 2 | ~~gate 1 stage A (§7b)~~ *done (#241)* | `siblings.py`, `tests/tuneprog/test_siblings.py` | met: `GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT` gone; property tests over seeded random templates; Follin s1 one family of three voices (419 rows vs 420, printed text identical), Automatas' two cascade runs still fold (763 → 759 lines), GT2 ×2 and SW ×2 none; 42/42 recert |
 | 3 | ~~gate 1 stage B (§7b)~~ *done (#242)* | `copyrows.py`, `copymerge.py` (new), `build.py`+`lower.py`, `regions.py`, `jumptab.py`, `ssa.py`, `ir.py`, `printer.py`, `pipeline.py`, `emit.py`; `closure.py` deleted | met: Follin song 1 is one body of 400 folded rows over 60 per-copy columns and certifies unchanged (1,229 statements in 441 blocks → 671 in 254, 68 regions → 44, 133 of 471 merged statements unverified and marked per statement); the `--songs all` union folds too (1,553 → 770, 520 → 294, 75 → 45, 5 unverified); *Automatas* folds its 6-copy cascade in both procedures that hold it (995 → 805, 305 → 241) and refuses two families with their reason; 24 of Follin's 32 subtunes fold at least one family and 8 refuse; GoatTracker ×2 and SID Wizard ×2 have no family and are byte-identical; `tools/tuneprog_recert.py` 42/42, with ticks, period, `complete` and divergences unchanged everywhere |
-| 4 | ~~gate 1 stage C (§7b)~~ *done (#244)* | `copyview.py` (new), `loops.py` (new), `views.py`, `structure.py`, `printer.py`, `pseudocode.py`, `pipeline.py`, `unroll.py`; `copyfold.py` deleted; docs | met: one tokeniser (`unroll`), no cross-module private imports in the presentation layer, every module ≤ 500 lines; Follin's certified song 1 794 → 755 printed lines (`tick()` 578 → 493) as one `for v in 0, 1, 2` with the 21-arm switch inside and 51 `voice[v].` fields, *Automatas* 800 → 782 with both cascades `for v in 0..4`, GT2 ×2 / SW ×2 / Commando byte-identical; `tools/tuneprog_recert.py` 42/42 with every certificate byte-identical |
+| 4 | ~~gate 1 stage C (§7b)~~ *done (#244)* | `copyview.py` (new), `loops.py` (new), `views.py`, `structure.py`, `printer.py`, `pseudocode.py`, `pipeline.py`, `unroll.py`; `copyfold.py` deleted; docs | met: one tokeniser (`unroll`), no cross-module private imports in the presentation layer, every module ≤ 500 lines; Follin's certified song 1 794 → 757 printed lines (`tick()` 578 → 495) as one `for v in 0, 1, 2` with the 21-arm switch inside and 51 `voice[v].` fields, *Automatas* 800 → 782 at 30 s (744 → 716 over the whole song) with both cascades `for v in 0..k-1`, GT2 ×2 / SW ×2 / Commando song 1 byte-identical; `tools/tuneprog_recert.py` 42/42 with every certificate byte-identical |
 | — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |
 
 Every brief carries the global directives (no tuning constants — a threshold is

@@ -57,12 +57,12 @@ front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
               copyrows 456  copymerge 165
 program       ir 429  interp 247  irwalk 309  graph 70  lower 204  build 448
               ssa 431  frames 371  stack 204  idioms 357  emit 367  verify 326
-presentation  structure 344  loops 217  inline 199  texture 475  frame 44
-              word 369  fold 472  tails 165  copyview 217  unroll 395  live 96
-              facts 223  recover 320  views 209
-text          pseudocode 362  printer 371
-driver        pipeline 424  __init__ 119
-baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,353 lines
+presentation  structure 349  loops 217  inline 199  texture 475  frame 44
+              word 369  fold 472  tails 165  copyview 273  unroll 395  live 96
+              facts 223  recover 321  views 213
+text          pseudocode 391  printer 371
+driver        pipeline 425  __init__ 119
+baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,449 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -263,13 +263,17 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   once (`copyview.py`): a column whose values step affinely becomes that step in
   `v`, so the existing stride vocabulary prints it (`sid[v].freq_lo` by the
   7-byte voice block, `b640F[v]` by the region's own stride); one whose values do
-  not becomes copy 0's own operand plus a group slot, which `views.py` names
-  `voice[v].field` and lists address by address once in the state header. A
-  column whose copies name different offsets of a record, or whose readers name
-  more than one region, keeps its table read with the address visible -- two of
-  Follin's 60 columns, two of *Automatas*' five. The loop itself is a `for v in
-  0..k-1` over the coverage vector the correspondence proved, so the `v += 1; if
-  v < k` chain edge is the header and never a statement.
+  not keeps its read, and the group view `views.py` names prints it
+  `voice[v].field`, address by address in the state header. The read stays
+  because substituting copy 0's operand cannot be told from an operand every copy
+  agrees on that happens to hold the same address, so the printed index is the
+  copy the *access* names; a plain constant is copy *j*'s own cell wherever it
+  stands. What no rule names keeps its table read with the address visible -- two
+  of Follin's 60 columns, two of *Automatas*' five -- and the field names come
+  from a substituted twin of the view, since a role is a property of the address.
+  The loop itself is a `for v in 0..k-1` over the coverage vector the
+  correspondence proved, so the `v += 1; if v < k` chain edge is the header and
+  never a statement.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.
