@@ -212,13 +212,13 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 
 | certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | closure |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
-| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 305 | 995 | 102 | complete |
-| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 304 | 984 | 102 | complete |
+| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 241 | 805 | 98 | complete |
+| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 241 | 805 | 98 | complete |
+| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 240 | 794 | 98 | complete |
 | `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
-| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 100 | 274 | 62 | horizon |
-| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 74–450 | 180–1,281 | 39–70 | complete (31 of 32) |
-| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 520 | 1,553 | 75 | complete (31 of 32) |
+| `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 101 | 278 | 61 | horizon |
+| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 75–288 | 180–2,122 | 37–70 | complete (31 of 32) |
+| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 294 | 770 | 45 | complete (31 of 32) |
 | `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
 | `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
 | `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 951 | 96 | complete |
@@ -243,7 +243,7 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   the trace saw in another copy, at the address the correspondence says this copy
   names. It is reachable only where the copy's own control flow goes there, its
   coverage entry is 0, the certificate counts it, and the printed program marks it
-  per statement (Follin song 1 at 30 s: 240 of 428 merged statements).
+  per statement (`ghouls-song01`: 133 of 471 merged statements).
 - **A copy is found by its static shape, so a short horizon finds less of it.**
   Discovery starts at pcs the trace executed and pairs a dispatch's arms by how
   far their targets align; over 30 s of *Automatas* the two cascade runs fold and

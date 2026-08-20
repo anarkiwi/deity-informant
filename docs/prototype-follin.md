@@ -276,6 +276,13 @@ same statement with a zero in its coverage vector, marked where it prints.
   merged body per command. Every arm some voice sent is that body; an arm no voice
   sent is `trap 'unverified'` as before. Keying on the table index the writers
   read cannot help, because the cell is written a tick earlier and read as memory.
+- **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
+  read is access class `chk` where the others' are `ram`, because over 32 subtunes
+  that voice reaches bytes outside the written set -- is not a question the fold
+  asks any more: the union over `v` of a folded access is *one* region with one
+  envelope, so the class is the union's. The union program goes from 1,553
+  statements in 520 blocks over 75 regions to 770 in 294 over 45, with 5 of its
+  481 merged statements unverified.
 - **Every subtune folds or refuses with a reason, and all 32 certify.** At the
   certificate's own horizon the three voices fold in songs 1–11, 16, 26, 28,
   30–32; two voices fold in 12, 13, 15, 21, 22, 24; song 20 folds a 4-copy family;
