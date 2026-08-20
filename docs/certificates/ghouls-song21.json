@@ -6,9 +6,9 @@
  ],
  "copies": {
   "coverage": {
-   "0,1": 84,
-   "1,0": 4,
-   "1,1": 34
+   "0,1": 85,
+   "1,0": 3,
+   "1,1": 3
   },
   "families": [
    {
@@ -24,14 +24,14 @@
    }
   ],
   "refused": [],
-  "statements": 122,
+  "statements": 91,
   "unverified": 88
  },
  "cost": {
   "calls_per_second": 50480,
   "ir_blocks": 192,
   "ir_procs": 2,
-  "ir_statements": 568,
+  "ir_statements": 401,
   "regions": 68,
   "sites": 417,
   "trace_calls": 20049,

@@ -32,7 +32,7 @@
   "calls_per_second": 28735,
   "ir_blocks": 288,
   "ir_procs": 2,
-  "ir_statements": 539,
+  "ir_statements": 527,
   "regions": 70,
   "sites": 553,
   "trace_calls": 96,

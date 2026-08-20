@@ -391,7 +391,12 @@ load image, the stack page and I/O, where every byte is a pinned input to the
 program whatever it holds), so the address arithmetic is ordinary 16-bit and no
 access class, executor or image size changed. Two families whose columns hold the
 same bytes share one table, which is what keeps a procedure and its clone one
-outlined helper. `v` takes a phi like a register (`ir.copyval`), and `from_ssa`
+outlined helper. The columns are read once at the loop header where that header
+dominates their uses -- the family nothing enters but its own entry -- and at the
+use itself otherwise, where the read is part of an address expression and costs no
+statement: giving every entry point its own reading block cost a table's worth of
+statements per entry (Follin's subtune 11 grew to 2,122 statements from 1,141
+that way; it is 644 under the dominance rule). `v` takes a phi like a register (`ir.copyval`), and `from_ssa`
 now names its swap temporary for the edge, without which the stack analysis loses
 `SP` at a loop header and the program keeps a stack it does not have. **What the
 index cannot name refuses**: a row whose copies do not lift to one shape stays k

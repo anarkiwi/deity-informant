@@ -6,11 +6,11 @@
  ],
  "copies": {
   "coverage": {
-   "0,0,1": 95,
-   "0,1,1": 126,
-   "1,0,0": 156,
+   "0,0,1": 38,
+   "0,1,1": 69,
+   "1,0,0": 43,
    "1,0,1": 4,
-   "1,1,1": 1280
+   "1,1,1": 257
   },
   "families": [
    {
@@ -33,14 +33,14 @@
     "why": "the entry row does not fold"
    }
   ],
-  "statements": 1661,
-  "unverified": 381
+  "statements": 411,
+  "unverified": 154
  },
  "cost": {
   "calls_per_second": 24372,
   "ir_blocks": 253,
   "ir_procs": 4,
-  "ir_statements": 2122,
+  "ir_statements": 644,
   "regions": 43,
   "sites": 1115,
   "trace_calls": 13280,

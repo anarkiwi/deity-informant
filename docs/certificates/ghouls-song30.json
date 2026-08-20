@@ -8,8 +8,8 @@
   "coverage": {
    "0,1,1": 0,
    "1,0,0": 2,
-   "1,1,0": 126,
-   "1,1,1": 87
+   "1,1,0": 128,
+   "1,1,1": 5
   },
   "families": [
    {
@@ -44,14 +44,14 @@
     "why": "an edge from copy 1 enters copy 2"
    }
   ],
-  "statements": 215,
-  "unverified": 128
+  "statements": 135,
+  "unverified": 130
  },
  "cost": {
   "calls_per_second": 29546,
   "ir_blocks": 149,
   "ir_procs": 2,
-  "ir_statements": 926,
+  "ir_statements": 382,
   "regions": 50,
   "sites": 493,
   "trace_calls": 166,

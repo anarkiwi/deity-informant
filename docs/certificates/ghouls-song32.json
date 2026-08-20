@@ -10,9 +10,9 @@
    "0,1,1": 1,
    "1,0": 8,
    "1,0,0": 2,
-   "1,1": 4,
-   "1,1,0": 76,
-   "1,1,1": 75
+   "1,1": 2,
+   "1,1,0": 78,
+   "1,1,1": 5
   },
   "families": [
    {
@@ -52,14 +52,14 @@
    }
   ],
   "refused": [],
-  "statements": 197,
-  "unverified": 118
+  "statements": 127,
+  "unverified": 120
  },
  "cost": {
   "calls_per_second": 43342,
   "ir_blocks": 139,
   "ir_procs": 2,
-  "ir_statements": 737,
+  "ir_statements": 329,
   "regions": 46,
   "sites": 391,
   "trace_calls": 112,
