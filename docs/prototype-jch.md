@@ -227,7 +227,8 @@ writeout():                              # $10E9, 8,577 calls
   instrument). The state block proper needs nothing: its rows are separate
   regions and print `voice[v].field` already.
 - **`sid.reg[5 + voice[v].b1740]` where GoatTracker prints `sid[v].ad`.** V20
-  takes the voice's register offset from a per-track table (`$1743,X` = 0, 7, 14)
+  takes the voice's register offset from a per-track table (`$1740,X` = 0, 7, 14;
+  `$1743,X` next to it is the V20 fine-tune constant)
   rather than from the index, so the printer sees a load, not a stride: nothing
   in the tune walks a 7-byte record, which is the evidence `facts.scales` wants.
   The offset is a constant per copy, so the copy-index vocabulary could fold it,
@@ -239,6 +240,12 @@ writeout():                              # $10E9, 8,577 calls
   latch, so `tails.promote_tails` (a region several jumps reach and *nothing
   leaves*) cannot promote them into procedures the way it promoted GoatTracker's
   `execchn` tails. Structuring a loop body's joins is the open item.
+- **A chip write also writes the RAM under it, in our model.** `tracevm._wr` and
+  `interp.iostore` both keep `mem[a] = b` for a store the port sent to the chip,
+  where the hardware leaves the RAM beneath untouched. Nothing observes it here —
+  both sides agree, so no certificate can see the difference, and both tunes match
+  the oracle write for write — but the RAM under I/O is now storage the front end
+  types, so the two planes want separating once a tune discriminates (§5 backlog).
 - **Names are role-derived.** `phase` is the tick counter, `b1747` the speed,
   `b1748[v + 9]` the pattern position, `voice[v].b17BC` the staged gate mask: the
   trace shows the shapes, not the words. A family dictionary keyed on the V20

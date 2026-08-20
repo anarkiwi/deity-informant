@@ -171,6 +171,13 @@ def test_a_closed_access_carries_the_envelope_the_image_states():
     assert ("chk", tab, tab + 0xFF) in envs, envs
 
 
+def test_a_closed_trace_refuses_to_be_saved(tmp_path):
+    """The stamp is not in the file format, so a reload would call the sites executed."""
+    trace, _prog = built(joining())
+    with pytest.raises(ValueError):
+        trace.save(tmp_path / "t")
+
+
 def test_only_a_synthesised_site_carries_the_closed_stamp():
     """A zero-count site is closed code only where the closure wrote it."""
     trace, _prog = built(joining())

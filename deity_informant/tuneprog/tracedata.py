@@ -87,7 +87,14 @@ class Trace:
 
     # ---- serialisation -----------------------------------------------------
     def save(self, path):
-        """Write ``trace.json`` (structure) + ``trace.npz`` (bulk arrays) into ``path``."""
+        """Write ``trace.json`` (structure) + ``trace.npz`` (bulk arrays) into ``path``.
+
+        Refuses a trace :func:`~.closure.close_static` has run on: its synthesised
+        sites carry a stamp this format does not hold, and a reload would take them
+        for executed code.
+        """
+        if any(s.get("closed") for s in self.sites.values()):
+            raise ValueError("a statically closed trace is an in-memory product; do not save it")
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         doc = {
@@ -232,6 +239,7 @@ def rekey(trace, cells, out):
                 "writes": {},
             }
         d["count"] += s["count"]
+        d["closed"] = d.get("closed", False) or s.get("closed", False)
         d["phases"] |= s["phases"]
         d["variants"] += s["variants"]
         d["idx"].update(s["idx"])

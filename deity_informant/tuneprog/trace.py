@@ -29,7 +29,7 @@ from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
-VERSION = 2  # resume-state layout; an older pickle restarts rather than resumes
+VERSION = 3  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 

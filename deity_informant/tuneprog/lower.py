@@ -122,7 +122,7 @@ class Storage:
         """Type an access at a known constant address (control cells, stack)."""
         r = self.by_addr.get(addr)
         lo, hi = (addr, addr + size - 1) if r is None else (r.base, r.base + r.size - 1)
-        kind = "io" if r is None and 0xD000 <= addr <= 0xDFFF else (r.kind if r else "state")
+        kind = "io" if IO_LO <= addr <= IO_HI else (r.kind if r else "state")
         return self.cls(addr, addr + size - 1, kind, init_phase), lo, hi, (r.id if r else -1)
 
     def resolver(self, key, init_phase):

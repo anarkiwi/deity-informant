@@ -122,7 +122,7 @@ def _ram_io(trace, accesses):
     """
     out = set()
     for key, i, _m, addrs in accesses:
-        if not trace.is_chip(key[0], i):
+        if i >= 0 and not trace.is_chip(key[0], i):
             out.update(a for a in addrs if IO_LO <= a <= IO_HI)
     return frozenset(out)
 
