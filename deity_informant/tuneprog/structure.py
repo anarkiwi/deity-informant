@@ -256,9 +256,7 @@ def strip(body, label, hide, top=True, tail=True):
     out = []
     for n in reversed(body):
         t = type(n)
-        if t is Jump and n.label == label:
-            if not top:
-                out.append(n)
+        if t is Jump and n.label == label and top and tail:
             continue
         if t is Cond and tail and jumps_only(n.then + n.els, hide, label):
             continue

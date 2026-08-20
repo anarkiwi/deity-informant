@@ -14,7 +14,7 @@ from deity_informant.tuneprog.recover import Names
 from deity_informant.tuneprog.irwalk import node_exprs, walk
 
 from _asm import asm
-from _prog import PLAY, front, merged, proc_body as _body
+from _prog import PLAY, front, merged, printed as _text, proc_body as _body
 
 VOICE = """
     LDA {st}
@@ -273,4 +273,42 @@ def test_same_cell_refuses_two_computed_addresses_that_differ():
     p = printer.Body(view, Names(), pcs=False)
     lo = Load("ram", Const(0x200), 2, 0x200, 0x205, -4)
     hi = Load("ram", Const(0x206), 2, 0x206, 0x20B, -4)
-    assert p.same_cell(lo, lo, 0, None) and not p.same_cell(lo, hi, 0, None)
+    assert p.same_cell(lo, lo, 0, (None, lo)) and not p.same_cell(lo, hi, 0, (None, hi))
+
+
+TABLE = """
+init: LDA #$00
+    STA cnt
+    RTS
+play: LDA cnt
+    AND #$03
+    TAY
+    LDA tab,Y
+    CLC
+    ADC #$01
+    {step}
+    STA tab,Y
+    INC cnt
+    RTS
+tab: BRK
+"""
+
+
+def _table(step):
+    src = TABLE.format(step=step)
+    return asm(PLAY, *[l.strip() for l in src.split("\n") if l.strip()], *["BRK"] * 7, "cnt: BRK")
+
+
+def test_one_element_on_is_a_different_cell_not_a_compound():
+    """``tab[i + 1] = tab[i] + 1`` must not print as ``tab[i + 1] += 1``.
+
+    The literal base is the same for both accesses, so only the index tells the
+    two cells apart -- a compound that ignores it asserts a read the program
+    never makes.
+    """
+    shifted = "\n".join(_body(_text(_table("INY"), calls=6), "tick"))
+    assert not [l for l in shifted.splitlines() if "+= 1" in l and "[" in l], shifted
+    assert [l for l in shifted.splitlines() if re.search(r"\+ 1\] = \(t\d+ \+ 1\)", l)], shifted
+    # the control: same index on both sides is a real compound
+    same = "\n".join(_body(_text(_table("NOP"), calls=6), "tick"))
+    assert [l for l in same.splitlines() if re.search(r"\[.*\] \+= 1", l)], same
