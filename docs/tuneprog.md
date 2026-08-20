@@ -209,8 +209,8 @@ is `refused` with its reason, and its copies stay k bodies.
 
 `closure` appears under `--closure static`, the bounded static walk of the branch
 directions the trace never took. From each one it follows what the post-init
-image *states* — an instruction no writer patches, no access the stack could
-see, a target the image names, a `JSR` a traced procedure answers — and those
+image *states* — no byte any decompiled procedure writes, no access the stack
+could see, a target the image names, a `JSR` a traced procedure answers — and those
 instructions join the trace as zero-coverage sites, so the same front end builds
 them and the same S4 runs on them; where the image is silent the walk stops and
 that path ends in `trap 'unstated'`. `arms`/`closed` count the directions,
@@ -237,8 +237,8 @@ Measured at 30 s of music, `--closure trace` → `--closure static`:
 The traps go, and the *covered* program is structured worse: once the closed
 edges exist the front end gives covered blocks more predecessors and the
 structurer nests less. That is not the closed text getting in the way — cutting
-the closed blocks out of the S5 view entirely still prints GoatTracker's 21
-`goto` — so the default stays `trace` until the structurer handles a closed
+the closed blocks out of the S5 view entirely still prints 21 of GoatTracker's
+23 `goto` — so the default stays `trace` until the structurer handles a closed
 region apart from the covered one.
 
 `complete` means the run closed: the tuneprog reached a state repeat at the same

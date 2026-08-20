@@ -180,8 +180,8 @@ Two products come out of S4, as planned. The **trace-closed** tuneprog — only
 executed code; unexecuted branch directions and unobserved SMC opcode variants
 become `trap` — is the certified core and the default. `--closure static` builds
 the **closed** tuneprog as well: from every untaken branch direction a bounded
-walk follows what the post-init image *states* (instructions no writer patches,
-no access the stack could see, targets the image names, a `JSR` a traced
+walk follows what the post-init image *states* (no byte a decompiled procedure
+writes, no access the stack could see, targets the image names, a `JSR` a traced
 procedure answers) and those instructions join the trace as zero-coverage sites,
 so the same front end builds them; where the image is silent the walk stops and
 the trap survives. Closed code is faithful if the lifter is (validated against
