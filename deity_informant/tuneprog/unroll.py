@@ -240,9 +240,9 @@ def steps(runs, rgn=None):
 
     A constant steps affinely; a region id and the addresses inside it may
     instead differ by one mapping, which is the per-copy address table a group
-    view prints. One region is still walked with one stride.
+    view prints. A cell every copy shares may not equal a mapped one.
     """
-    out, by, slots, rmap = [], {}, {}, {}
+    out, by, slots, rmap, plain = [], {}, {}, {}, set()
     for j, (kind, v0) in enumerate(runs[0]):
         vals = [r[j] for r in runs]
         if any(k != kind for k, _v in vals):
@@ -254,6 +254,8 @@ def steps(runs, rgn=None):
             out.append(0)
             continue
         rids = [r[int(kind[2:])][1] for r in runs] if kind.startswith("k@") else None
+        if rids is not None and len(set(vs)) == 1:
+            plain.add((rids[0], v0))
         how = indexed(rgn or {}, rids, vs, len(runs)) if len(set(vs)) > 1 else "index"
         if how == "no":
             return None, None
@@ -271,6 +273,8 @@ def steps(runs, rgn=None):
         out.append(d)
     if (not by and not slots) or any(len(v) > 1 for v in by.values()):
         return None, None
+    if slots.keys() & plain:
+        return None, None  # copy 0's constant is all the body holds, slot or not
     if slots and (len(slots) < MINSLOTS or len({_delta(c) for c in slots.values()}) > 1):
         # without a static correspondence to appeal to, the only mapping a run
         # proves is one relocation: several cells, every one of copy i the same
