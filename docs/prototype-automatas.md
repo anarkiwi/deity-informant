@@ -614,10 +614,12 @@ tick():                                  # $5012, 11,780 calls
   copy 0's tail and a preamble of copy 1's that no template row covers, so they
   are nobody's and the run leaves the family and re-enters it at the row. What
   they read is still three unrelated table regions, so the columns keep their
-  table read where no field name covers them. `$16AB` ×2 refuses still: its skip
+  table read where no field name covers them. At 30 s `$16AB` ×2 refuses still: its skip
   enters the next copy at that copy's fourth row, not at its entry, and only a
   copy's own entry advances `v` -- the reason is in the certificate's
   `copies.refused` and in the printed header, and its copies stay as they were.
+  Over the whole song that pair is not a family at all, so the certificate
+  refuses nothing.
   Over the whole song the S4 program falls from 895 statements to 733 (241 blocks
   to 227, 98 regions to 80); at 30 s from 815 to 754. The merged row-advance body
   has k entries, since each copy's preamble is its own, so it prints as a `while`
