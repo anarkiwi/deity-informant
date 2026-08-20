@@ -418,12 +418,15 @@ meta      entry sub $0FE3 every 2457 cycles (8.0 calls/frame, cia_timer)
           phase call_counter selects the rate
           certified 149,025 calls, 0 divergences, period 129,024, first repeat at
           call 149,024 (complete), stage S6
-state     voice[3] stride 49, 30 fields
-            .pw_lo .pw_hi .freq_lo .freq_hi .sr .ad .ctrl .ctrl_eor   sid_image
-            .timer $1129 $11B1 $1239   timer          (three unrolled copies)
-            .ptr_2 .ptr_3 .ptr_4 .ptr_5              ptr, ditto
-            .timer_4 $12BF .timer_5 $1352 timer ; .cursor_12CE .freq_idx .cursor_1361 cursor
-            .b1019 .b101A .b101E .b101F .b1020 .b1021 .b1161 .b116F .b117D .b1194 .b12CC
+state     copy[2] per-copy cells, 10 fields          (the row-advance pair)
+            .timer $1129 $11B1 ; .ptr_2 $114A $11D2 ; .b1161 .ptr_3 .ptr_3_2 ..
+          rec2[6] stride 49, 2 fields                 (the six cascade blocks)
+            .timer_4 $12BF timer ; .cursor_12CE $12CE cursor
+          voice[3] stride 49, 24 fields
+            .pw_lo .freq_lo .freq_hi .sr .ad .ctrl .ctrl_eor           sid_image
+            .timer $1129 $11B1 $1239   timer ; .freq_idx $135E  cursor
+            .ptr_2 .ptr_3 .ptr_4 .ptr_5                                ptr
+            .acc $1019 acc ; .b101A .b101E .b101F .b1020 .b1021 .b1161 .b116F ..
           filter.acc $10B6 u16 lo|hi $10BE  acc ; filter.step $10B9 u16 lo|hi $10C0
           call_counter $0FE4 phase ; res_route $10AA / mode_vol $10AF sid_image ; ptr $00FB
 const     FREQ $1554 361 bytes u16  freq_table  12-TET lo|hi, 156 entries (59 below one octave)
@@ -491,20 +494,29 @@ filter():                                # $1022, 152,000 calls
     sid.cutoff_hi = a22
     return
 
-cascades():                              # $12BE, 152,000 calls
-    for v in 0, 1:                       # the cascade: copy[0] is A, copy[1] is B
-        for w in 0, 1, 2:   # x456,000   # the voice
-            if copy[v].timer_4[w] == 0:
-                ...                      # the sidTAB row pointer and its wrap
-                copy[v].timer_4[w] = T1E00[y35]
-                copy[v].cursor_12CE[w] = (y35 + 1)
-                row_apply(a=T1800[y35], x=(w * $31))
+cascades():                              # $12BE, 912,000 calls
+    for v in 0..5:   # x912,000          # the six cascade blocks, one body
+        # $12BE
+        t1 = copies_12BE[v + $18]        # the one column no rule names
+        if rec2[v].timer_4 == 0:
+            if T1900[rec2[v].cursor_12CE] != 0:
+                # $12CD
+                y10 = rec2[v].cursor_12CE
+                a59 = T1900[rec2[v].cursor_12CE]
             else:
-                if copy[v].timer_4[w] >= 0:
-                    copy[v].timer_4[w] -= 1
-    return                               # state: copy[2] per-copy cells, 2 fields
-                                         #   .timer_4      $12BF $1352
-                                         #   .cursor_12CE  $12CE $1361
+                # $12D4                  # the sidTAB row pointer wraps
+                y10 = T1824[rec2[v].cursor_12CE]
+                a59 = T1900[T1824[rec2[v].cursor_12CE]]
+            # $12DB
+            ptr[1] = a59
+            rec2[v].timer_4 = T1E00[y10]
+            rec2[v].cursor_12CE = (y10 + 1)
+            row_apply(a=T1800[y10], x=t1)
+        else:
+            if rec2[v].timer_4 >= 0:
+                # $12C4
+                rec2[v].timer_4 -= 1
+    return
 
 oscillator():                            # $13E4, 152,000 calls
     for v in 2, 1, 0:                    # x456,000 -- the SBX #$31 loop
@@ -604,6 +616,19 @@ tick():                                  # $5012, 11,780 calls
   from 880 lines to 801. The three row-advance blocks still do not fold: they read
   three different table regions, whose addresses are not one relocation of each
   other, and no chain edge joins them.
+- **The cascade prints as its own loop** (`copyview.py`, `loops.py`; S6, #244).
+  Each merged cascade is `for v in 0..5:` over the whole song (`0..4` at 30 s, where
+  cascade B1 never runs) with the row cursor and timer as
+  `rec2[v].cursor_12CE`/`rec2[v].timer_4` — the columns whose values
+  step by the 49-byte record become that step in `v`, and the printer's existing
+  stride view names the field. Two columns keep their table read
+  (`copies_12BE[v + $18]`, the `row_apply` argument, and `copies_16CD[...]` in the
+  oscillator pair): their copies name cells at different offsets of one record, so
+  no field name covers them and the address stays visible. The `for` comes from
+  the coverage vector, not from the exit tests — this loop leaves through a
+  `switch` arm, which the recurrence analysis cannot read. The printed document
+  falls 744 → 716 lines over the whole song (800 → 782 at 30 s), and
+  `fold.outline` still keeps the procedure and its clone one `cascades()` helper.
 - **Runs become helpers when they are shared or when they name a part**
   (`fold.py`). `main` is `writeout(); filter(); switch {row_advance(); cascades();
   oscillator()}` and `sub` is the RTS patch, `main()`, then the two helpers it
