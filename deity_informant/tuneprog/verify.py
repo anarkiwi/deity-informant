@@ -284,7 +284,9 @@ class Verifier:
                 and self.period == tperiod
                 and self.first_repeat == tfirst
             ),
-            "closure": "trace",
+            "closure": (
+                "static" if (self.prog.meta.get("static_closure") or {}).get("closed") else "trace"
+            ),
             "envelope_traps": int(self.div is not None and self.div.get("trap") == "envelope"),
             "divergences": int(self.div is not None),
         }

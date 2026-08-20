@@ -39,6 +39,7 @@ from .ir import (
     Var,
     succs,
 )
+from .closure import report as closure_report
 from .copymerge import report as copies_report
 from .idioms import CMP, width
 
@@ -339,9 +340,11 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
 
     ``stack`` is ``"eliminated"`` where the program has no machine stack left, else
     the depth and the procedures that kept one (:func:`~.stack.eliminate`).
-    ``copies`` is the merged families and their per-statement coverage, if any.
+    ``copies`` is the merged families and their per-statement coverage, if any,
+    ``closure`` what the bounded static walk added and what stayed trapped.
     """
     copies = copies_report(prog)
+    closed = closure_report(prog)
     doc = {
         "tune": prog.meta.get("name"),
         "sid_model": prog.meta.get("sid_model"),
@@ -358,6 +361,8 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     }
     if copies is not None:
         doc["copies"] = copies
+    if closed:
+        doc["closure"] = closed
     return doc
 
 

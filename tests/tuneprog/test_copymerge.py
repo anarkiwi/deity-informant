@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from deity_informant.tuneprog import copymerge, copyrows, pipeline, siblings
+from deity_informant.tuneprog import closure, copymerge, copyrows, pipeline, siblings
 from deity_informant.tuneprog.emit import PyProgram
 from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
@@ -80,10 +80,10 @@ def voices(extra2="NOP"):
     )
 
 
-def _prog(code, calls=8):
+def _prog(code, calls=8, static=True):
     """The certified program of a snippet, with its copies folded."""
     trace = front(code, calls=calls)[0]
-    return trace, pipeline.build(trace, "snippet")[0]
+    return trace, pipeline.build(trace, "snippet", static=static)[0]
 
 
 def test_three_chained_copies_become_one_body_over_the_copy_index():
@@ -145,10 +145,17 @@ def test_the_columns_hold_each_copy_s_own_addresses():
 
 
 def test_an_instruction_one_copy_alone_carries_keeps_the_fold():
-    """A copy with a statement of its own folds the rows it shares and no others."""
+    """A copy with a statement of its own folds the rows it shares and no others.
+
+    The fold is what the trace-closed program says it is: closing the arms adds
+    code, and the same 8 rows fold either way.
+    """
     trace, prog = _prog(voices(extra2="INC cnt"))
     fam = prog.meta["copies"]["families"][0]
     assert fam["copies"] == 3 and fam["rows"] == 8
+    assert (
+        _prog(voices(extra2="INC cnt"), static=False)[1].meta["copies"]["families"][0]["rows"] == 8
+    )
     v = verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"])
     assert v.div is None
     body = "\n".join(_body(merged(voices(extra2="INC cnt"))[0], "tick"))
@@ -237,23 +244,32 @@ def arms(stray=False):
     )
 
 
+def _names(lbl, addr):
+    """True when a successor label names ``addr``: an edge split (``a$b``) names both."""
+    return ("L%04X" % addr) in lbl
+
+
 def _armterm(prog, code):
     """The terminator of the folded arm, whose rows only the last copy executed."""
     src = code.labels["c0a"]
-    hit = [b for p in prog.procs.values() for b in p.blocks.values() if b.src == src]
+    hit = [b for p in prog.procs.values() for b in p.blocks.values() if b.src == src and b.cover]
     assert len(hit) == 1, hit
     return hit[0]
 
 
 def test_a_copy_that_never_ran_a_row_keeps_the_target_its_own_image_names():
-    """Copies that ran agree; the copy that did not says the same, so it folds."""
+    """Copies that ran agree; the copy that did not says the same, so it folds.
+
+    The static closure supplies the arm as each copy's own code; the row folds
+    either way, and the copies that never ran it keep their coverage zero.
+    """
     code = arms()
     trace, prog = _prog(code)
     fam = prog.meta["copies"]["families"][0]
     assert fam["copies"] == 3 and not prog.meta["copies"]["refused"]
     b = _armterm(prog, code)
     assert tuple(b.cover) == (0, 0, 8), b.cover
-    assert type(b.term) is Goto and prog.procs["tick"].blocks[b.term.to].src == code.labels["join"]
+    assert type(b.term) is Goto and _names(b.term.to, code.labels["join"])
     assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
 
 
@@ -261,7 +277,8 @@ def test_a_copy_whose_image_names_another_target_is_not_given_its_siblings():
     """The copies that ran agree on ``join``; copy 0's own image says ``miss``.
 
     Nothing may hand copy 0 its siblings' target: the successor splits on the copy
-    index and every copy that never ran the row traps.
+    index, and each copy gets what its own image names -- the static closure where
+    it states one, a trap in the trace-closed program.
     """
     code = arms(stray=True)
     trace, prog = _prog(code)
@@ -270,8 +287,28 @@ def test_a_copy_whose_image_names_another_target_is_not_given_its_siblings():
     assert type(b.term) is Switch and str(b.term.e) == str(Var("cv0#2", 1)), b.term
     arm = dict(b.term.cases)
     blocks = prog.procs["tick"].blocks
-    assert blocks[arm[2]].src == code.labels["join"]  # the copy that ran keeps its own
-    assert all(type(blocks[arm[j]].term) is Trap for j in (0, 1)), b.term
+    assert _names(arm[2], code.labels["join"])  # the copy that ran keeps its own
+    assert _names(arm[0], code.labels["miss"]) and blocks[arm[0]].closed == "static"
+    assert _names(arm[1], code.labels["join"])
+    plain = _prog(code, static=False)[1]
+    cases = dict(_armterm(plain, code).term.cases)
+    assert all(type(plain.procs["tick"].blocks[cases[j]].term) is Trap for j in (0, 1))
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
+
+
+@pytest.mark.parametrize("stray", (False, True))
+def test_the_static_closure_supplies_the_arm_no_copy_ran(stray):
+    """The closure supplies the arm as code, and the family folds all the same.
+
+    Discovery runs on the trace-closed program, so the blocks the closure removes
+    do not decide what a family is.
+    """
+    code = arms(stray=stray)
+    trace, prog = _prog(code)
+    rep = closure.report(prog)
+    assert rep["arms"] == rep["closed"] == 3 and rep["blocks"]
+    fam = prog.meta["copies"]["families"][0]
+    assert fam["copies"] == 3 and not prog.meta["copies"]["refused"]
     assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
 
 

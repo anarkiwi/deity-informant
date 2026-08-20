@@ -176,12 +176,19 @@ Stage outputs are files, so each stage is independently testable and a failure
 is diagnosed at its stage. S8 runs after every IR-changing stage; the emitted
 certificate names the last stage that verified.
 
-Two products come out of S4 already: a **trace-closed** tuneprog (only executed
-code; unexecuted branch directions and unobserved SMC opcode variants become
-`trap`) — the certified core — and, optionally, a **closed** tuneprog that also
-lifts statically reachable code from executed branch sites (bounded walk),
-which is faithful if the lifter is (it is validated against py65/sidplayfp) but
-unverified by execution and marked as such.
+Two products come out of S4, as planned. The **trace-closed** tuneprog — only
+executed code; unexecuted branch directions and unobserved SMC opcode variants
+become `trap` — is the certified core and the default. `--closure static` builds
+the **closed** tuneprog as well: from every untaken branch direction a bounded
+walk follows what the post-init image *states* (instructions no writer patches,
+no access the stack could see, targets the image names, a `JSR` a traced
+procedure answers) and those instructions join the trace as zero-coverage sites,
+so the same front end builds them; where the image is silent the walk stops and
+the trap survives. Closed code is faithful if the lifter is (validated against
+py65/sidplayfp) but covered by no execution: it is marked per statement, counted
+in the certificate, and reachable only through edges that were traps, so the
+verified behaviour is the same program's. It is not the default because the
+closed edges reshape the *covered* program for the structurer (§5 S5).
 
 ---
 

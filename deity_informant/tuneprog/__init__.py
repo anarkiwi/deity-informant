@@ -8,7 +8,9 @@ Front end (trace-driven recovery):
 * :mod:`.lift` (S2a) -- residualised lift (SMC cells become loads).
 * :mod:`.cfg` (S2b) -- procedures, clones, tail calls, computed switches.
 * :mod:`.regions` (S3) -- storage typing from the exact access relation.
-* :mod:`.jumptab` (S2) -- the static closure of a patched ``JMP``'s table.
+* :mod:`.jumptab` (S2) -- the static closure of a patched ``JMP``'s table;
+  :mod:`.closure` (S2) -- the bounded static closure of the branch directions the
+  trace never took, as zero-coverage sites the same front end builds.
 
 Middle and back end (the executable program and its certificate):
 
@@ -22,7 +24,8 @@ Middle and back end (the executable program and its certificate):
   machine stack as frames, eliminated where every load is its own frame's push.
 * :mod:`.emit` (S7) -- Python code generation and the certificate writer.
 * :mod:`.verify` (S8) -- per-call differential verification against the trace,
-  periodicity, chunked and resumable.
+  periodicity, chunked and resumable; :mod:`.period` -- why a subtune that never
+  repeated does not (counter, drifting accumulator, or an aperiodic tune).
 
 Presentation over the certified program (it is never edited):
 

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from . import (
+    closure,
     copymerge,
     copyview,
     emit,
@@ -66,6 +67,12 @@ def add_args(ap):
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
     ap.add_argument(
         "--no-merge", action="store_true", help="do not fold sibling copies onto one body"
+    )
+    ap.add_argument(
+        "--closure",
+        choices=("trace", "static"),
+        default="trace",
+        help="also close the untaken branch directions the image states (unverified code)",
     )
     ap.add_argument(
         "--ghidra-facts", action="store_true", help="also write OUT/ghidra for headless Ghidra"
@@ -221,30 +228,38 @@ def _s4(trace, lifted, regions, procs, meta, union, plan=None):
     return prog
 
 
-def build(trace, name=None, sid_model=None, union=False, copies=True, log=None):
+def _front(trace, kind, unite=()):
+    """Lift, type storage, build procedures: the front-end products of one trace."""
+    lifted = lift_trace(trace)
+    regions = build_regions(trace, lifted, init_kind=kind, unite=unite)
+    return lifted, regions, build_procs(trace, lifted, regions)
+
+
+def build(trace, name=None, sid_model=None, union=False, copies=True, static=False, log=None):
     """Front end -> IR -> S4: the certified program, plus its front-end products.
 
-    ``union`` is the ``--songs all`` build: what init writes is per-subtune state,
-    so its regions are typed ``state`` and no cell folds to a constant. The first
-    program says where the sibling copies are; the certified one folds them.
+    ``union`` is the ``--songs all`` build, whose regions are ``state``. Copies are
+    discovered on the *trace-closed* program -- :mod:`.closure` deletes the blocks
+    that seed discovery -- and planned against the closed procedures.
     """
-    lifted = lift_trace(trace)
     kind = "state" if union else "init_constant"
     meta = {"name": name, "sid_model": sid_model}
-    regions = build_regions(trace, lifted, init_kind=kind)
-    procs = build_procs(trace, lifted, regions)
+    lifted, regions, procs = _front(trace, kind)
     prog = _s4(trace, lifted, regions, procs, meta, union)
+    band = tuple(trace.meta["load"])
+    fams = siblings.correspond(prog, trace.image_post_init, band) if copies else []
+    if static:
+        closure.close_static(trace)
+        lifted, regions, procs = _front(trace, kind)
+        prog = _s4(trace, lifted, regions, procs, meta, union)
     if not copies:
         return prog, regions, procs
-    band = tuple(trace.meta["load"])
-    fams = siblings.correspond(prog, trace.image_post_init, band)
     plan = copymerge.plan(procs, trace, lifted, fams, regions, log)
     if not plan:
         if plan.refused:
             prog.meta["copies"] = plan.to_dict()
         return prog, regions, procs
-    regions = build_regions(trace, lifted, init_kind=kind, unite=plan.unions)
-    procs = build_procs(trace, lifted, regions)
+    lifted, regions, procs = _front(trace, kind, unite=plan.unions)
     return _s4(trace, lifted, regions, procs, meta, union, plan), regions, procs
 
 
@@ -257,6 +272,7 @@ def stage_front(args, out, st):
         args.sid_model,
         union=args.songs == "all",
         copies=not args.no_merge,
+        static=args.closure == "static",
     )
     (out / "regions.json").write_text(json.dumps([r.to_dict() for r in regions]))
     (out / "procs.json").write_text(json.dumps(procs_json(procs)))
