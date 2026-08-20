@@ -178,12 +178,12 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
       "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000
   }],
   "closure": {                         // only under --closure static
-    "arms": 19, "closed": 18,          // untaken branch directions found / closed
-    "instructions": 120,               // instructions the image stated
-    "stops": {"foreign_jsr": 3, "stack": 2},   // where the walk refused, by reason
-    "blocks": 35, "statements": 141,   // what only a closed path reaches
-    "verified_statements": 335,        // the rest of the program
-    "untaken": 2, "frontier": 3        // traps left: directions, and stated-out paths
+    "arms": 22, "closed": 19,          // untaken branch directions found / closed
+    "instructions": 67,                // instructions the image stated
+    "stops": {"stack": 3},             // where the walk refused, by reason
+    "blocks": 11, "statements": 61,    // what only a closed path reaches
+    "verified_statements": 745,        // the rest of the program
+    "untaken": 4, "frontier": 0        // traps left: directions, and stated-out paths
   },
   "copies": {                          // only where a family folded or refused
     "families": [{"proc": "tick", "bases": ["$12BE", "$12EF", "$1320", "$1351", "$1382"],
