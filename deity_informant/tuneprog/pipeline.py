@@ -81,13 +81,44 @@ def parser(prog="tuneprog"):
     return add_args(argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0]))
 
 
-def _state(out, resume):
+def _horizon(args):
+    """What decides where a subtune stops; a record made under another one is stale."""
+    return [args.calls, args.seconds, args.max_calls, bool(args.until_period), args.chunk]
+
+
+def _stops(st, args):
+    """Drop the ``--songs all`` trace records another horizon wrote, and what they fed.
+
+    A stale record means the subtune must be traced again, so the run rewinds to
+    S1 and forgets that subtune's verification; a layout without records (an
+    older run's ``traced`` list) keeps nothing.
+    """
+    old = st.get("traced")
+    keep = {}
+    if isinstance(old, dict):
+        keep = {k: v for k, v in old.items() if v.get("horizon") == _horizon(args)}
+    st["traced"] = keep
+    if len(keep) != len(old or ()):
+        st["stage"] = "trace"
+        st["subtunes"] = [x for x in st.get("subtunes", ()) if str(x["song"]) in keep]
+    return st
+
+
+def _state(out, args):
     p = out / "state.json"
-    return json.loads(p.read_text()) if resume and p.exists() else {"stage": "trace", "calls": 0}
+    st = json.loads(p.read_text()) if args.resume and p.exists() else {"stage": "trace", "calls": 0}
+    return _stops(st, args) if args.songs == "all" else st
 
 
 def _subdir(out, song):
     return out / ("s%02d" % song)
+
+
+def _stop(args, tr, target):
+    """Why this subtune stopped: a state repeat, the tick horizon, or not yet (budget)."""
+    if args.until_period and tr.witness() is not None:
+        return "period"
+    return "horizon" if tr.calls_done >= target else None
 
 
 def _target(args, entry):
@@ -136,19 +167,21 @@ def stage_trace(args, out, st, t0, log=print):
 def trace_all(args, out, st, t0, log=print):
     """Trace every subtune to its own directory, then merge them into one trace.
 
-    Each subtune keeps its trace (verification runs against it); the merged trace
-    is the union program the front end decompiles.
+    Each subtune keeps its trace (verification runs against it) and its own record
+    -- ticks, stop reason, horizon -- so subtunes that stop for different reasons
+    resume independently. The merged trace is what the front end decompiles.
     """
     img, schedule = find_entries(Path(args.sid).read_bytes())
     entry = schedule[0]
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
-    done = st.setdefault("traced", [])
+    done = st.setdefault("traced", {})
     target = _target(args, entry)
     for song in songs:
-        if song in done:
+        rec = done.get(str(song))
+        if rec and rec["stop"]:
             continue
         resume = out / ("tracer%02d.pkl" % song)
-        tr = Tracer.load(resume) if args.resume and resume.exists() else None
+        tr = Tracer.load(resume) if rec and args.resume and resume.exists() else None
         if tr is None:
             override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
             tr = Tracer(img, entry, song=song - 1, override=override)
@@ -157,16 +190,18 @@ def trace_all(args, out, st, t0, log=print):
             tr.run_calls(min(args.chunk, target - tr.calls_done))
             if time.process_time() - t0 > args.budget:
                 break
-        if tr.calls_done < target and not (args.until_period and tr.witness() is not None):
+        stop = _stop(args, tr, target)
+        done[str(song)] = {"calls": tr.calls_done, "stop": stop, "horizon": _horizon(args)}
+        st["calls"] = tr.calls_done
+        if stop is None:
             tr.save(resume)
             log("  song %d: %d calls (%.0fs cpu)" % (song, tr.calls_done, time.process_time() - t0))
             return False
         tr.trace().save(_subdir(out, song))
         resume.unlink(missing_ok=True)
-        done.append(song)
         log(
-            "  song %d traced: %d calls (%.0fs cpu)"
-            % (song, tr.calls_done, time.process_time() - t0)
+            "  song %d traced: %d calls, %s (%.0fs cpu)"
+            % (song, tr.calls_done, stop, time.process_time() - t0)
         )
         if time.process_time() - t0 > args.budget:
             return False
@@ -248,16 +283,17 @@ def verify_all(args, out, st, t0, prog, log=print):
             continue
         ref = V.Reference(Trace.load(_subdir(out, song)))
         v = V.Verifier(prog, ref, src=src)
-        if saved.get("song") == song:
+        if saved.get("song") == song and saved.get("calls") == ref.calls:
             v.restore(saved["state"])
         while v.call < ref.calls and v.div is None:
             v.run(ref.calls, budget=v.seconds + max(1.0, args.budget - (time.process_time() - t0)))
             if time.process_time() - t0 > args.budget:
                 break
         if v.call < ref.calls and v.div is None:
-            resume.write_bytes(pickle.dumps({"song": song, "state": v.state()}))
+            resume.write_bytes(pickle.dumps({"song": song, "calls": ref.calls, "state": v.state()}))
             log("  song %d: verified %d/%d calls" % (song, v.call, ref.calls))
             return False
+        resume.unlink(missing_ok=True)
         subs.append(dict(v.subtune(), interp_prefix=0))
         log("  song %d verified (%d calls, %.0fs cpu)" % (song, v.call, time.process_time() - t0))
         if v.div is not None:
@@ -387,7 +423,7 @@ def run(args, log=print):
     """Drive the stages under ``args``; returns the process exit code."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    st = _state(out, args.resume)
+    st = _state(out, args)
     t0 = time.process_time()
     prog = None
     try:
