@@ -251,8 +251,8 @@ call 149,024 — so the committed files stand.
 
 ## 7. What remains
 
-Two of the four obstacles this section used to list are gone. **The three voice
-copies are one body in the certified program** (§3, §4 row 6, §5): copy *j*
+Four of the six obstacles this section listed after #234 are gone. **The three
+voice copies are one body in the certified program** (§3, §4 row 6, §5): copy *j*
 executing a template row is that row executed with `v = j`, the unequally spaced
 SMC cells (`$62EE`/`$64DB`/`$66CA`) are one column of the family's per-copy table,
 the chain edge into the next voice is `v += 1`, and a row a voice never ran is the
