@@ -338,7 +338,7 @@ same statement with a zero in its coverage vector, marked where it prints.
   cell *and* its table base through per-copy columns, and a column is read-only,
   so copy *j*'s writer is that expression with each column read replaced by its
   *j*th entry. The `BPL` over the stream byte bounds the index at 128 and up, and
-  a copy's table holds the entries between the sibling bases, so each voice's
+  a copy's table is bounded by the sibling bases one index reads, so each voice's
   switch is exactly 21 arms with none displaced -- at 30 s and in the certified
   song 1 alike (30 s: 3 `trap 'unverified'` arms → 39; the certificate gains 16
   arm blocks, 254 → 270, and not one statement).

@@ -236,15 +236,18 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   not a decompiled path. `jumptab` closes a patched jump statically over the
   table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
-  region and stay unlisted. Two proofs bound that extent where they exist, and
-  only ever tighten it: the range the branches on the one path into the dispatch
-  prove for the index (a sign test, an equality, a compare -- Follin's `BPL` over
-  the stream byte puts its command table at 128 and up), and, for a merged family,
-  the entries one copy's table holds, which is the gap between the sibling bases
-  the same index reads. A folded writer names its cell *and* its table base
-  through per-copy columns; since a column is read-only, copy *j*'s writer is that
-  expression with each column read replaced by its *j*th entry, and the same
-  enumeration runs on each -- Follin song 1's three voices show 21 arms apiece.
+  region and stay unlisted. Two bounds narrow that extent where they apply, and
+  both can only remove candidates, never add one: the range the branches on the
+  one path into the dispatch *prove* for the index (a sign test, an equality, a
+  compare -- Follin's `BPL` over the stream byte puts its command table at 128 and
+  up), and, for a merged family, the entries one copy's table holds -- the gap
+  between the sibling bases, since one index reads them all. The second is the
+  extent rule reading what the merge knows, not a proof: like "out to the nearest
+  instruction", it is a layout inference, and it errs towards claiming less.
+  A folded writer names its cell *and* its table base through per-copy columns;
+  since a column is read-only, copy *j*'s writer is that expression with each
+  column read replaced by its *j*th entry, and the same enumeration runs on each
+  -- Follin song 1's three voices show 21 arms apiece.
   Where a player unrolls its voices, a row one copy ran
   is every copy's row, which the fold makes one statement -- and marks unverified
   for the copies that never reached it.
