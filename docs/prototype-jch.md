@@ -12,8 +12,9 @@ whose exemplar is the 4-track *sample* build; the plain V20 is the same engine
 minus every `CPX #$03` branch and the track-4 code). V20 is the largest HVSC
 family (~1,737 tunes), so the point is not two tunes but that the family's idioms
 come out of the generic pipeline. Both tunes carry a **complete** certificate,
-and both traces match the `sidplayfp` oracle's register grid — the first time
-that has been checked frame by frame outside `tests/test_oracle.py`.
+and both traces reproduce the `sidplayfp` oracle's register grid write for write
+— the first time that has been checked frame by frame outside
+`tests/test_oracle.py`.
 
 ## 1. Why JCH V20, and what it adds
 
@@ -90,7 +91,7 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J8 | the voice loop is a loop | `for v in 2, 1, 0:` (DEX/BMI), **no** sibling family (`copies` absent from both certificates) | same |
 | J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost.reg[…]`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush is the only chip write | not applicable (no wrapper): 3 `io` regions, the writes are `sid.reg[…]` |
 | J10 | pinned inputs | **2** (the uninitialised `$FB`/`$FC` the player saves and restores), down from 18,777 | 2, plus the subtune number in `A` at init |
-| J11 | the oracle | 2,506 of 3,000 frames byte-exact against `sidplayfp`; the rest differ only in the five registers the wrapper writes last (§6) | **2,401 of 2,401** byte-exact — the whole certified horizon |
+| J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp` once each write is attributed to the frame the oracle samples it in (§6); by call index alone, 494 frames differ, in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon, by call index |
 | J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, 7 `goto` in 562 printed lines | 0 `sp`, 0 unverified, 16 untaken, 7 `goto` in 528 lines |
 | J13 | cost | trace 12,000 ticks in ~100 s CPU over three chunks, verify 8,577 ticks in 2.3 s (3,717 ticks/s) | trace 4,000 in 9 s, verify 2,401 in 0.2 s (10,855 ticks/s) |
 | J14 | genericity | the other 42 certificates reproduce field for field (`tools/tuneprog_recert.py`, 44/44) and the hermetic suite is unchanged | — |
@@ -201,16 +202,20 @@ writeout():                              # $10E9, 8,577 calls
 
 ## 6. What remains
 
-- **The tick model has no cycle budget.** The Puterman wrapper takes a delay
-  count from its own data stream and spends it between each of the 25 register
-  writes: the span from a tick's first SID write to its last grows from 168
-  cycles at tick 100 to 10,248 at tick 2,550. Against the `sidplayfp` oracle the
-  first 2,506 of 3,000 frames are byte-exact and the remaining 494 differ in
-  exactly the five registers written last (voice 1's), whose write has moved past
-  the point the oracle samples the frame at. The certificate is unaffected — it
-  compares the tuneprog against our trace, and the trace against the oracle is
-  what this measures — but a cycle-accurate schedule inside a tick is the
-  boundary. The JCH build is byte-exact over its whole certified horizon.
+- **A tick is instantaneous, and one tune's music is *when* inside it.** The
+  Puterman wrapper takes a delay count from its own data stream and spends it
+  between each of the 25 register writes: the span from a tick's first SID write
+  to its last grows from 168 cycles at tick 100 to 10,248 at tick 2,550. A
+  per-frame grid built by call index then differs from the `sidplayfp` oracle on
+  494 of 3,000 frames, in exactly the five registers written last — and the
+  values are not wrong: attributing each write to the frame the oracle *samples*
+  it in (the trace carries every write's cycle) makes the difference **0 of
+  3,000**, with the sample point measured at ≈9,000 cycles into the frame (0
+  frames differ at 9,000, 6 at 9,200, 16 at 8,800). So the SID stream is right
+  write for write; what the per-tick model does not carry into the *comparison*
+  is the offset inside the tick, which only matters against a sampler that reads
+  the registers mid-frame. The JCH build never writes that late, and matches by
+  call index alone.
 - **The two init-cleared blocks are the transpose of the stride view.** `init`
   clears `$1014` (12 bytes) and `$1748` (21) with one loop each, so the access
   relation joins each into one region; the tick then walks them as
