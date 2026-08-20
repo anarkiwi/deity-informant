@@ -61,7 +61,7 @@ def _copy(e, j, defs, rgn):
     return e
 
 
-def _writers(proc, defs, rgn=None):
+def _writers(proc, defs, rgn):
     """``{address: value expression}`` for every byte address exactly one store writes.
 
     A store the copy index folded writes its cell per copy: the address is a column
@@ -112,7 +112,7 @@ def _index(e, defs, rgn):
     return None
 
 
-def _source(addr, writers, rgn, image, defs=None):
+def _source(addr, writers, rgn, image, defs):
     """``("table", r, base, idx, stop)`` when a writer copies the byte, else ``("const", v)``.
 
     ``stop`` is how many entries a copy's table holds: a merged writer names one
