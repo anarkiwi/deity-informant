@@ -284,7 +284,10 @@ def recover(prog, structured=None, facts=None):
     names.image = image_copy(facts)
     for rid, delta in sorted(names.image.items()):
         names.role[rid] = "sid_image"
-        names.notes[rid] = "flushed to $%04X.." % (facts.rgn[rid].base + delta)
+        base = facts.rgn[rid].base
+        names.notes[rid] = (
+            "the RAM under $%04X.." % base if not delta else ("flushed to $%04X.." % (base + delta))
+        )
         _uniq(names, rid, "ghost")
     for rid, (fname, elems) in sorted(sid_image(facts).items()):
         r = facts.rgn[rid]

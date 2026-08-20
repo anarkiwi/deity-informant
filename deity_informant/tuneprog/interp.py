@@ -65,6 +65,7 @@ class Machine:
         self.k = bytearray(0x10000)
         self.k[load[0] : load[1]] = b"\1" * (load[1] - load[0])
         self.k[0x100:0x200] = b"\1" * 0x100
+        self.k[0xD000:0xE000] = b"\1" * 0x1000  # the RAM under I/O: image bytes, never pinned
         self.W = set()
         self.bank = 2
         self.setbank()

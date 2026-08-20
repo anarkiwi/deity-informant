@@ -253,6 +253,7 @@ class Tracer:
             init_writes=vm.init_writes,
             written_init=set(vm.written_init),
             written_play=set(vm.written_play),
+            chip_ops=set(vm.chip_ops),
             cells=cells,
             code=code,
             cell_values={a: set(v) for a, v in vm.wr_values.items() if a in cells},

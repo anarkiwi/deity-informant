@@ -191,8 +191,13 @@ def image_copy(facts):
     ``sidw($D400 + i, load(R, base + i))`` with one index expression is a shadow
     of the register file: byte ``a`` of ``R`` is register ``a + delta``, so the
     flush loop prints as a copy and every other access to ``R`` by its register.
+    The RAM under the register file is one by aliasing, at delta 0.
     """
-    out = {}
+    out = {
+        rid: 0
+        for rid, r in facts.rgn.items()
+        if r.kind == "state" and SID_REG_LO <= r.base and r.base + r.size - 1 <= SID_REG_HI
+    }
     for base, idx, v in facts.copies:
         if type(v) is not Load or v.r not in facts.rgn:
             continue

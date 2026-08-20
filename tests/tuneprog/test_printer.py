@@ -75,6 +75,25 @@ def test_an_input_wait_collapses_to_a_while_over_the_input():
     assert "$D012 raster" in doc
 
 
+def test_a_delay_loop_keeps_its_body_instead_of_folding_into_a_wait():
+    """A value the body defines from itself is a recurrence: it cannot be substituted."""
+    code = asm(
+        PLAY,
+        "init: LDA #$05",
+        "STA dly",
+        "RTS",
+        "play: LDA #$07",
+        "STA $D400",
+        "LDY dly",
+        "lp: DEY",
+        "BPL lp",
+        "RTS",
+        "dly: BRK",
+    )
+    doc = _text(code, calls=3)
+    assert "while True:" in doc and "pass" not in doc, doc
+
+
 def test_a_ghost_image_prints_as_the_registers_it_mirrors():
     from test_recover import ghost_tune  # pylint: disable=import-outside-toplevel
 

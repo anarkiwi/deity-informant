@@ -399,11 +399,18 @@ def _machine_image(trace):
     The load image, the stack page and the RAM under I/O are ``known`` to the
     machine from the start (the tracer pins no input for them), so a tuneprog that
     rebuilds its memory from storage alone needs their bytes even where no traced
-    op touched them.
+    op touched them. The 6510 port ($00/$01) is machine state too: it decides
+    whether $D000-$DFFF is I/O or RAM, and a tune that banks I/O out writes only
+    the port byte, leaving the direction byte in no region at all.
     """
     lo, hi = trace.meta["load"]
     pre = trace.image_pre
-    spans = (("image_band", lo, hi), ("image_stack", 0x100, 0x200), ("image_io", 0xD000, 0xE000))
+    spans = (
+        ("image_band", lo, hi),
+        ("image_port", 0x0000, 0x0002),
+        ("image_stack", 0x100, 0x200),
+        ("image_io", 0xD000, 0xE000),
+    )
     return [
         Rgn(-1 - i, n, a, b - a, "image", 1, bytes(pre[a:b]), ())
         for i, (n, a, b) in enumerate(spans)

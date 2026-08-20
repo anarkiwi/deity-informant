@@ -113,6 +113,7 @@ class TraceVM(PcodeVM):
         self.insns = 0
         self.written_init = set()
         self.written_play = set()
+        self.chip_ops = set()
         self.wr_values = defaultdict(set)
         self.init_writes = []
         self.inputs = []
@@ -163,6 +164,7 @@ class TraceVM(PcodeVM):
                 v = self.cia[1].read(a, self.cycles)
             if v is None:
                 v = PcodeVM._rd(self, a, 1)
+            self.chip_ops.add((self._pc, i))
             return self._input(a, v, i, input_kind(a))
         v = self.mem[a]
         if not self.known[a]:
@@ -194,6 +196,7 @@ class TraceVM(PcodeVM):
             b = (val >> (8 * k)) & 0xFF
             s.add(a)
             if IO_LO <= a <= IO_HI and self.bank == "io":
+                self.chip_ops.add((self._pc, i))
                 self._io_write(a, b)
             else:
                 self.known[a] = 1

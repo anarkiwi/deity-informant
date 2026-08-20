@@ -113,6 +113,20 @@ def _accesses(trace, lifted):
     return out
 
 
+def _ram_io(trace, accesses):
+    """$D000-$DFFF addresses an access reached as memory, the 6510 port having I/O out.
+
+    Those bytes are storage like any other, so their region types like any other;
+    the chip the same addresses decode to when I/O is mapped is not storage, and
+    :class:`~.lower.Storage` keeps the accesses that reach it in the ``io`` class.
+    """
+    out = set()
+    for key, i, _m, addrs in accesses:
+        if not trace.is_chip(key[0], i):
+            out.update(a for a in addrs if IO_LO <= a <= IO_HI)
+    return frozenset(out)
+
+
 def _pointer_unions(trace, lifted):
     """Address sets of ``(zp),Y`` pointer pairs: the two fetch ops are one access."""
     out = []
@@ -137,8 +151,8 @@ def _domain_gcd(values):
     return g
 
 
-def _kind(addrs, trace, init_kind="init_constant"):
-    if any(IO_LO <= a <= IO_HI for a in addrs):
+def _kind(addrs, trace, init_kind="init_constant", ram=frozenset()):
+    if any(IO_LO <= a <= IO_HI for a in addrs) and not addrs & ram:
         return "io"
     if addrs & trace.written_play:
         return "state"
@@ -156,6 +170,7 @@ def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
     names accesses a copy fold made one, whose region is then their union.
     """
     accesses = _accesses(trace, lifted)
+    ram_io = _ram_io(trace, accesses)
     dsu = _DSU()
     for _key, _i, _m, addrs in accesses:
         dsu.union(addrs)
@@ -170,7 +185,7 @@ def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
     regions = []
     for n, (root, addrs) in enumerate(sorted(groups.items(), key=lambda kv: min(kv[1]))):
         base = min(addrs)
-        kind = _kind(addrs, trace, init_kind)
+        kind = _kind(addrs, trace, init_kind, ram_io)
         r = Region(
             id=n,
             name="%s_%04X" % (kind, base),

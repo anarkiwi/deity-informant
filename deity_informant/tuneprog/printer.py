@@ -8,8 +8,8 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .closure import closed_blocks
-from .ir import Bin, Let, REGVAR, copyval
-from .irwalk import call_order, forwarder
+from .ir import Bin, Let, REGVAR, Var, copyval
+from .irwalk import call_order, forwarder, walk as ewalk
 from .live import printable
 from .machine import PAL_FRAME
 from .pseudocode import IND, NEG, Printer, hexlit
@@ -170,10 +170,31 @@ class Body(Printer):
         arms = [k for k, b in zip("tf", jumps) if any(x.kind == "continue" for x in b)]
         if len(arms) != 1:
             return None
-        self.inline = {s.n: s.e for b in blks for s in b.stmts}
+        defs = {s.n: s.e for b in blks for s in b.stmts}
+        if not _acyclic(defs):
+            return None  # a value the body defines from itself is a recurrence, not a wait
+        self.inline = defs
         out = self.expr(c.c) if arms[0] == "t" else self.negate(c.c)
         self.inline = {}
         return out
+
+
+def _acyclic(defs):
+    """True where no definition in ``defs`` reads itself, through any chain of them."""
+    state = {}
+
+    def reach(n):
+        st = state.get(n)
+        if st is not None:
+            return st
+        state[n] = 0
+        for x in ewalk(defs[n]):
+            if type(x) is Var and x.n in defs and not reach(x.n):
+                return 0
+        state[n] = 1
+        return 1
+
+    return all(reach(n) for n in defs)
 
 
 def _ivar(n):

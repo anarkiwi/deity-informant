@@ -1,0 +1,50 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 3717,
+  "ir_blocks": 155,
+  "ir_procs": 9,
+  "ir_statements": 472,
+  "regions": 99,
+  "sites": 567,
+  "trace_calls": 8577,
+  "verify_cpu_seconds": 2.3
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 3587,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-20T23:15:46Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 8576,
+   "inputs_pinned": 2,
+   "interp_prefix": 2000,
+   "period": 1,
+   "seconds": 171.11,
+   "song": 1,
+   "ticks": 8577,
+   "trace_first_repeat": 8576,
+   "trace_period": 1
+  }
+ ],
+ "tune": "I_Could_Eat_a_Knob_at_Night.sid"
+}

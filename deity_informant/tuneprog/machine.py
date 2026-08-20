@@ -71,6 +71,7 @@ class MachineImage:
         mem = bytearray(c64.poweron_ram())
         mem[lo:hi] = band[lo:hi]
         mem[0xD418] = 0x0F  # PSID cold start: host leaves maximum volume
+        mem[0], mem[1] = 0x2F, 0x37  # the 6510 port a KERNAL-initialised host leaves
         songs, startsong = c64.psid_songs(data)
         return cls(bytes(mem), lo, hi, init, play, songs, startsong)
 

@@ -1,0 +1,50 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 10855,
+  "ir_blocks": 160,
+  "ir_procs": 2,
+  "ir_statements": 443,
+  "regions": 103,
+  "sites": 572,
+  "trace_calls": 2401,
+  "verify_cpu_seconds": 0.2
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4099,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-20T23:20:30Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 2400,
+   "inputs_pinned": 2,
+   "interp_prefix": 2000,
+   "period": 1512,
+   "seconds": 47.9,
+   "song": 1,
+   "ticks": 2401,
+   "trace_first_repeat": 2400,
+   "trace_period": 1512
+  }
+ ],
+ "tune": "Guldkornekspressen_Intro.sid"
+}

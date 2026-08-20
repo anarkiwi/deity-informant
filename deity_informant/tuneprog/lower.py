@@ -10,7 +10,8 @@ Public API: :func:`ops_to_stmts`, :func:`straightline`, :class:`Storage`.
 from __future__ import annotations
 
 from ..lifter import STATUS_BITS
-from .ir import Bin, Block, Const, Let, Load, Proc, REGVAR, Return, Store, Var, STACK_LO, STACK_HI
+from .ir import Bin, Block, Const, IO_HI, IO_LO, Let, Load, Proc, REGVAR, Return, Store, Var
+from .ir import STACK_LO, STACK_HI
 from .regions import index_regions
 
 BINOP = {
@@ -92,6 +93,7 @@ class Storage:
     """Resolves an access to (class, envelope, region) from the trace's access relation."""
 
     def __init__(self, trace, regions):
+        self.trace = trace
         self.by_addr = index_regions(regions)
         self.acc = {}
         for r in regions:
@@ -101,9 +103,14 @@ class Storage:
         self.k0 = bytearray(0x10000)
         self.k0[lo:hi] = b"\1" * (hi - lo)
         self.k0[STACK_LO : STACK_HI + 1] = b"\1" * 0x100
+        self.k0[IO_LO : IO_HI + 1] = b"\1" * (IO_HI + 1 - IO_LO)
         self.k1 = bytearray(self.k0)
         for a in trace.written_init:
             self.k1[a] = 1
+
+    def chip(self, keys, i):
+        """True where this access reached a chip at $D000-$DFFF rather than the RAM under it."""
+        return any(self.trace.is_chip(k[0], i) for k in keys if k is not None)
 
     def cls(self, lo, hi, kind, init_phase):
         if kind == "io":
@@ -132,7 +139,10 @@ class Storage:
             lo = min(h[0][0] for h in hits)
             hi = max(h[0][1] for h in hits)
             r = hits[0][1]
-            return self.cls(lo, hi, r.kind, init_phase), lo, max(hi, lo + size - 1), r.id
+            cls = self.cls(lo, hi, r.kind, init_phase)
+            if cls != "io" and lo <= IO_HI and hi >= IO_LO and self.chip(keys, i):
+                cls = "io"  # the RAM under I/O is a region; this access reached the chip
+            return cls, lo, max(hi, lo + size - 1), r.id
 
         return resolve
 
