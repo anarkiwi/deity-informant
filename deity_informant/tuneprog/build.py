@@ -26,7 +26,6 @@ from .ir import (
     Goto,
     If,
     Let,
-    Load,
     Proc,
     REGIDX,
     REGVAR,
@@ -43,6 +42,7 @@ from .lower import (
     PH_INIT,
     Storage,
     add_sp,
+    column,
     ctrl_expr,
     ops_to_stmts,
     pop_status,
@@ -122,20 +122,18 @@ class _Builder:
         """The block that reads copy ``v``'s columns and enters the body at ``pc``."""
         if pc == fam.entry:
             return "H%04X" % fam.entry
+        if not fam.hoist:
+            return self.label(cp, pc)
         lbl = "M%04X" % pc
         if lbl not in self.extra:
             self.extra[lbl] = Block(lbl, self.columns(fam), Goto(self.label(cp, pc)), pc)
         return lbl
 
     def columns(self, fam):
-        """The per-copy columns of one family, read for the copy ``v`` names."""
-        out = []
-        for c, (w, _vals) in enumerate(fam.cols):
-            lo = fam.base + fam.offset(c)
-            idx = Var(fam.var) if w == 1 else Bin("<<", Var(fam.var), Const(1), 2)
-            a = Bin("+", Const(lo, 2), idx, 2)
-            out.append(Let(fam.col(c), Load("ram", a, w, lo, lo + w * fam.k - 1, fam.rid)))
-        return out
+        """The per-copy columns, read once where one header dominates their uses."""
+        if not fam.hoist:
+            return []
+        return [Let(fam.col(c), column(fam, c, w)) for c, (w, _v) in enumerate(fam.cols)]
 
     def fam_blocks(self, cp, fam):
         """The loop the copy index runs: ``v = 0``, the header its columns load in."""

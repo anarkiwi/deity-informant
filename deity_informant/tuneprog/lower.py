@@ -31,6 +31,13 @@ PH_INIT = 1
 SP = REGVAR[3]
 
 
+def column(fam, c, w):
+    """``T_c[v]``: the value copy ``v`` names where the copies name different ones."""
+    lo = fam.base + fam.offset(c)
+    idx = Var(fam.var) if w == 1 else Bin("<<", Var(fam.var), Const(1), 2)
+    return Load("ram", Bin("+", Const(lo, 2), idx, 2), w, lo, lo + w * fam.k - 1, fam.rid)
+
+
 def _vn(v, blk, fam=None):
     """A varnode as an IR expression (registers by name, uniques per block)."""
     if v[0] == "c":
@@ -38,7 +45,7 @@ def _vn(v, blk, fam=None):
     if v[0] == "r":
         return Var(REGVAR[v[1]], v[2])
     if v[0] == "h":
-        return Var(fam.col(v[1]), v[2])
+        return Var(fam.col(v[1]), v[2]) if fam.hoist else column(fam, v[1], v[2])
     return Var("u%d_%s" % (v[1], blk), v[2])
 
 

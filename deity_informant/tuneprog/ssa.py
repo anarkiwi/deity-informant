@@ -325,8 +325,12 @@ def copyprop(proc):
 
 
 def const_tables(storage):
-    """``{region id: (base, bytes)}`` of the read-only regions a known-address load folds."""
-    return {r.id: (r.base, r.init) for r in storage if r.kind == "const"}
+    """``{region id: (base, bytes)}`` of the read-only regions a known-address load folds.
+
+    A copy fold's per-copy columns are read-only by construction, so a column read
+    at a copy the program already knows is that copy's byte.
+    """
+    return {r.id: (r.base, r.init) for r in storage if r.kind in ("const", "copymap")}
 
 
 class Folds:

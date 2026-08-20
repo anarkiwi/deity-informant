@@ -31,6 +31,7 @@ class Fam:
     own: dict = field(default_factory=dict)  # address -> the copy that holds it
     base: int = 0  # where the columns live (assigned by the front end)
     rid: int = -1
+    hoist: bool = True  # one entry dominates the body, so the columns are read there
 
     @property
     def k(self):
@@ -364,6 +365,21 @@ def _sound(cp, fam, tmpl):
     return None
 
 
+def _entries(cp, fam):
+    """The addresses an edge from outside the family enters it at.
+
+    The columns are read once at the loop header only where that header dominates
+    the body, which is exactly the family nothing enters but its own entry.
+    """
+    out = {cp.entry} if fam.column(cp.entry) is not None else set()
+    for (pc, _op), n in cp.nodes.items():
+        if fam.column(pc) is not None:
+            continue
+        refs = list(n["succ"]) + ([r for _v, r in n["switch"]["cases"]] if n["switch"] else [])
+        out |= {r["to"] for r in refs if not r["tail"] and fam.column(r["to"]) is not None}
+    return out
+
+
 def family(cp, sib, idx, ctx):
     """``(Fam, nodes, unions, template map)`` for one sibling family, or a refusal."""
     trace, lifted, image = ctx
@@ -396,6 +412,7 @@ def family(cp, sib, idx, ctx):
     why = _sound(cp, fam, tmpl)
     if why:
         return why
+    fam.hoist = _entries(cp, fam) <= {fam.entry}
     fam.rows = tuple(keep[t0][0] for t0 in sorted(keep))
     fam.cols = tuple(w_vals for w_vals, _c in sorted(cols.items(), key=lambda kv: kv[1]))
     return fam, nodes, unions, tmpl
