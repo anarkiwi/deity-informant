@@ -213,7 +213,7 @@ tick():                                  # $6234, 48,000 calls
                                         # $6858
                                         voice[v].timer_3 = b730E[((voice[v].timer << 8) | voice[v].b0021) + 1]
                                         t22 = voice[v].b0021
-                                        voice[v].b0030 += 2
+                                        voice[v].b0030 = (t22 + 2)
                                         voice[v].b0021 += 2
                                         ...
                                         continue
