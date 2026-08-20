@@ -337,11 +337,11 @@ same statement with a zero in its coverage vector, marked where it prints.
   Since P1 those unsent arms are enumerated again: the merged writer names its
   cell *and* its table base through per-copy columns, and a column is read-only,
   so copy *j*'s writer is that expression with each column read replaced by its
-  *j*th entry. The `BPL` over the stream byte bounds the index at 128 and up, and
-  a copy's table is bounded by the sibling bases one index reads, so each voice's
-  switch is exactly 21 arms with none displaced -- at 30 s and in the certified
-  song 1 alike (30 s: 3 `trap 'unverified'` arms → 39; the certificate gains 16
-  arm blocks, 254 → 270, and not one statement).
+  *j*th entry. The three tables are parallel, so each starts at index 129 and
+  holds the 21 the bases are apart, and the `BPL` over the stream byte proves the
+  index is 128 or more: each voice's switch is exactly 21 arms with none
+  displaced, at 30 s and in the certified song 1 alike (30 s: 3 `trap 'unverified'`
+  arms → 39; the certificate gains 16 arm blocks, 254 → 270, and no statement).
 - **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
   read is access class `chk` where the others' are `ram`, because over 32 subtunes
   that voice reaches bytes outside the written set -- is not a question the fold

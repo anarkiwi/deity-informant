@@ -237,13 +237,14 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
   region and stay unlisted. Two bounds narrow that extent where they apply, and
-  both can only remove candidates, never add one: the range the branches on the
-  one path into the dispatch *prove* for the index (a sign test, an equality, a
-  compare -- Follin's `BPL` over the stream byte puts its command table at 128 and
-  up), and, for a merged family, the entries one copy's table holds -- the gap
-  between the sibling bases, since one index reads them all. The second is the
-  extent rule reading what the merge knows, not a proof: like "out to the nearest
-  instruction", it is a layout inference, and it errs towards claiming less.
+  neither can add a candidate the extent rule did not already carry: a merged
+  family's k tables are parallel, so they start at the same index -- the region's
+  own base as the lowest of the k bases names it -- and each holds the gap between
+  two bases; and the branches on the one path into the dispatch *prove* a range
+  for the index (a sign test, an equality, a compare -- Follin's `BPL` over the
+  stream byte puts its command table at 128 and up), which cuts into that layout
+  and never moves it. The layout is an inference like "out to the nearest
+  instruction", not a proof; the range is a proof, and it is applied last.
   A folded writer names its cell *and* its table base through per-copy columns;
   since a column is read-only, copy *j*'s writer is that expression with each
   column read replaced by its *j*th entry, and the same enumeration runs on each

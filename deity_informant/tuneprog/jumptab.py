@@ -45,10 +45,10 @@ def _copy(e, j, defs, rgn):
     A subexpression that holds no column is itself, name and all, which is what a
     range proof over the index needs.
     """
-    vals = _column(e, defs, rgn)
-    if vals is not None:
-        return Const(vals[j], e.w) if j < len(vals) else None
     x = _resolve(e, defs)
+    vals = _column(x, defs, rgn)
+    if vals is not None:
+        return Const(vals[j], x.w) if j < len(vals) else None
     if type(x) is Bin:
         a, b = _copy(x.a, j, defs, rgn), _copy(x.b, j, defs, rgn)
         if a is None or b is None:
@@ -114,10 +114,11 @@ def _index(e, defs, rgn):
 
 
 def _source(addr, writers, rgn, image, defs):
-    """``("table", r, base, idx, stop)`` when a writer copies the byte, else ``("const", v)``.
+    """``("table", r, base, idx, layout)`` when a writer copies the byte, else ``("const", v)``.
 
-    ``stop`` is how many entries a copy's table holds: a merged writer names one
-    table per copy, they are k images of one table, and one index reads them all.
+    ``layout`` is ``(first index, entries)`` of one copy's table: a merged writer
+    names k parallel tables that one index reads, so they start at the same index
+    -- the region's own base as the lowest base names it -- and each holds the gap.
     """
     got = writers.get(addr)
     if got is None:
@@ -128,13 +129,8 @@ def _source(addr, writers, rgn, image, defs):
         return None
     bases = sorted({t[1] for t in (_table(x, rgn) for x in alts) if t})
     gaps = [b - a for a, b in zip(bases, bases[1:])]
-    return (
-        "table",
-        hit[0],
-        hit[1],
-        _index(plain, defs, rgn) or hit[2],
-        min(gaps, default=0) or None,
-    )
+    layout = (hit[0].base - bases[0], min(gaps)) if gaps else None
+    return ("table", hit[0], hit[1], _index(plain, defs, rgn) or hit[2], layout)
 
 
 def _domain(sources, spans, cap, idx=None):
@@ -147,16 +143,15 @@ def _domain(sources, spans, cap, idx=None):
     tabs = [s for s in sources if s[0] == "table"]
     step = 2 if len(tabs) == 2 == len(sources) and abs(tabs[0][2] - tabs[1][2]) == 1 else 1
     lo, hi = None, None
-    for _t, r, base, _i, _stop in tabs:
+    for _t, r, base, _i, layout in tabs:
         a, b = spans.get(r.id, (r.base, r.base + r.size))
+        if layout is not None:  # a copy's own table, where its siblings' begin and end
+            a, b = max(a, base + layout[0]), min(b, base + sum(layout))
         lo = a - base if lo is None else max(lo, a - base)
         hi = b - base if hi is None else min(hi, b - base)
     lo = 0 if lo is None else max(lo, 0)  # the index register is an unsigned byte
     if idx is not None and hi is not None:
         lo, hi = max(lo, idx[0]), min(hi, idx[1])
-    # one index reads every copy's table, so a copy's ends where the next begins
-    ahead = [s[4] for s in tabs if s[4] is not None]
-    hi = hi if not ahead or hi is None else min(hi, lo + min(ahead))
     if not tabs or lo >= hi:
         return range(0)
     first = lo + ((tabs[0][1].base - tabs[0][2]) - lo) % step
@@ -176,7 +171,8 @@ def _split(c, w):
     """``(name, lo, hi)`` the condition ``c`` proves when it holds, or ``None``.
 
     The three tests a 6502 leaves after SSA: the sign bit, an equality, and the
-    compare a borrow reports.
+    compare a borrow reports. ``<`` is P-code's unsigned compare (:mod:`.ir`), so
+    each of them cuts the byte's range into an interval.
     """
     if type(c) is not Bin or c.op not in ("==", "<"):
         return None
@@ -205,13 +201,18 @@ def _edge(term, to, w):
     return (n, hi, 1 << (8 * w)) if lo == 0 else None
 
 
-def _range(label, e, preds):
+def _defined(b, n):
+    """True when block ``b`` assigns ``n``: a name a phi destructed has more than one."""
+    return b is not None and any(type(s) is Let and s.n == n for s in b.stmts)
+
+
+def _range(blocks, label, e, preds):
     """The range the branches on the one path into ``label`` prove for ``e``.
 
-    Only a value a branch tested is bounded; where nothing is proven the caller's
-    extent rule stands.
+    A branch above the block that last assigned the name tested another value, so
+    the walk stops there; where nothing is proven the caller's extent rule stands.
     """
-    if type(e) is not Var:
+    if type(e) is not Var or _defined(blocks.get(label), e.n):
         return None
     lo, hi, seen = 0, 1 << (8 * e.w), set()
     while label not in seen:
@@ -222,6 +223,8 @@ def _range(label, e, preds):
         got = _edge(ps[0].term, label, e.w)
         if got is not None and got[0] == e.n:
             lo, hi = max(lo, got[1]), min(hi, got[2])
+        if _defined(ps[0], e.n):
+            break
         label = ps[0].label
     return (lo, hi) if (lo, hi) != (0, 1 << (8 * e.w)) else None
 
@@ -339,7 +342,7 @@ def enumerate_targets(prog, code=(), addrs=None, limit=64):
             cols = {s[1].id for s in srcs if s[0] == "table"}
             ext = {i: span(rgn[i], cols, addr_owner, band) for i in cols}
             one = next(iter(idx)) if len(idx) == 1 else None
-            got = None if one is None else _range(b.label, one, preds)
+            got = None if one is None else _range(proc.blocks, b.label, one, preds)
             dom = _domain(srcs, ext, limit, got) if one is not None else range(0)
             added += _arms(proc, b, srcs, dom, image, base, band, addr_owner)
     return added

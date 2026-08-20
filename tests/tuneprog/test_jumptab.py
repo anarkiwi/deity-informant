@@ -169,33 +169,43 @@ def test_a_table_reaches_the_entries_no_accessor_touched():
 
 
 # ---- the range a branch proves for a dispatch index ---------------------------
-def _guarded(c):
-    """One block that branches on ``c`` into two, as :func:`jumptab._range` sees it."""
+def _guarded(c, again=()):
+    """One block that branches on ``c`` into two, as :func:`jumptab._range` sees it.
+
+    ``again`` are statements the taken arm runs, where a phi's destructed copy
+    would reassign the very name the branch tested.
+    """
     blocks = {
         "b0": Block("b0", [], If(c, "t", "f")),
-        "t": Block("t", [], Trap("untaken")),
+        "t": Block("t", list(again), Trap("untaken")),
         "f": Block("f", [], Trap("untaken")),
     }
-    return jumptab._preds(Proc("tick", (), (), blocks, "b0", "sub"))
+    return blocks, jumptab._preds(Proc("tick", (), (), blocks, "b0", "sub"))
 
 
 SIGN = Bin("==", Bin("&", Var("x"), Const(0x80), 1), Const(0), 1)
 
 
 def test_a_sign_test_bounds_the_index_on_both_of_its_arms():
-    preds = _guarded(SIGN)
-    assert jumptab._range("t", Var("x"), preds) == (0, 128)
-    assert jumptab._range("f", Var("x"), preds) == (128, 256)
-    assert jumptab._range("f", Var("y"), preds) is None  # another value is not bounded
+    blocks, preds = _guarded(SIGN)
+    assert jumptab._range(blocks, "t", Var("x"), preds) == (0, 128)
+    assert jumptab._range(blocks, "f", Var("x"), preds) == (128, 256)
+    assert jumptab._range(blocks, "f", Var("y"), preds) is None  # another value is free
 
 
 def test_a_compare_and_an_equality_bound_the_index():
-    preds = _guarded(Bin("<", Var("x"), Const(21), 1))
-    assert jumptab._range("t", Var("x"), preds) == (0, 21)
-    assert jumptab._range("f", Var("x"), preds) == (21, 256)
-    preds = _guarded(Bin("==", Var("x"), Const(7), 1))
-    assert jumptab._range("t", Var("x"), preds) == (7, 8)
-    assert jumptab._range("f", Var("x"), preds) is None  # not-equal is not an interval
+    blocks, preds = _guarded(Bin("<", Var("x"), Const(21), 1))
+    assert jumptab._range(blocks, "t", Var("x"), preds) == (0, 21)
+    assert jumptab._range(blocks, "f", Var("x"), preds) == (21, 256)
+    blocks, preds = _guarded(Bin("==", Var("x"), Const(7), 1))
+    assert jumptab._range(blocks, "t", Var("x"), preds) == (7, 8)
+    assert jumptab._range(blocks, "f", Var("x"), preds) is None  # != is not an interval
+
+
+def test_a_branch_above_the_name_s_last_assignment_proves_nothing():
+    """A phi the front end destructed reassigns the name, so the test above is another value."""
+    blocks, preds = _guarded(SIGN, again=[Let("x", Const(9))])
+    assert jumptab._range(blocks, "t", Var("x"), preds) is None
 
 
 def test_a_join_proves_nothing_the_index_must_hold():
@@ -206,7 +216,7 @@ def test_a_join_proves_nothing_the_index_must_hold():
         "join": Block("join", [], Trap("untaken")),
     }
     preds = jumptab._preds(Proc("tick", (), (), blocks, "b0", "sub"))
-    assert jumptab._range("join", Var("x"), preds) is None
+    assert jumptab._range(blocks, "join", Var("x"), preds) is None
 
 
 # ---- a merged writer names its cell and its table per copy --------------------
@@ -244,7 +254,7 @@ def test_a_folded_store_writes_its_cell_once_per_copy():
     assert sorted(writers) == list(CELLS)
     got = jumptab._source(0x2010, writers, rgn, bytes(0x10000), jumptab._defs(proc))
     assert got[0] == "table" and got[1] is TAB and got[2] == 0x4000
-    assert got[3] == Var("i") and got[4] == 0x15  # the index, and one table's entries
+    assert got[3] == Var("i") and got[4] == (0, 0x15)  # the index, and the table's extent
 
 
 def test_a_copy_reads_the_column_entry_its_own_index_names():
@@ -253,3 +263,25 @@ def test_a_copy_reads_the_column_entry_its_own_index_names():
     e = defs["t"]
     assert [jumptab._copy(e, j, defs, rgn).a.a.v for j in range(4)] == list(BASES)
     assert jumptab._copy(e, 0, defs, rgn).a.b == Var("i")  # the index keeps its name
+
+
+def _tab(layout, base=0x4000):
+    """One table source of a merged writer: ``(region, base, index, layout)``."""
+    return ("table", TAB, base, Var("i"), layout)
+
+
+def test_a_proven_index_may_cut_into_a_copy_s_table_but_never_slide_it():
+    """The layout says where the table is; a range proof only ever removes entries."""
+    ext = {TAB.id: (0x4000, 0x4000 + 200)}
+    src = [_tab((0, 21))]
+    assert list(jumptab._domain(src, ext, 64)) == list(range(0, 21))
+    assert list(jumptab._domain(src, ext, 64, (4, 256))) == list(range(4, 21))
+    assert list(jumptab._domain(src, ext, 64, (0, 8))) == list(range(0, 8))
+
+
+def test_a_table_the_extent_walked_back_past_starts_where_its_siblings_do():
+    """Follin's shape: the extent reaches below the table, the layout does not."""
+    ext = {TAB.id: (0x4000 + 41, 0x4000 + 276)}
+    src = [_tab((129, 21))]
+    assert list(jumptab._domain(src, ext, 64)) == list(range(129, 150))
+    assert list(jumptab._domain(src, ext, 64, (128, 256))) == list(range(129, 150))

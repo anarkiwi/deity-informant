@@ -146,9 +146,9 @@ def own(bases, rows, image):
     """``{address: copy}``: what each copy holds, from its rows and the chain.
 
     Two rows of one copy own everything between them, from the first row on: what
-    the alignment stepped over before it is the image of no row, so ``v`` cannot
-    name it. An arm body sits where its siblings' do, so address order alone does
-    not say whose it is.
+    the alignment stepped over before it is the image of no row, so no index names
+    it -- an edge there leaves the family, which re-enters at the row itself. An
+    arm body sits where its siblings' do, so address order does not say whose.
     """
     out, k = {}, len(bases)
     at = sorted((p, j) for r in rows for j, p in enumerate(r))
