@@ -1,8 +1,9 @@
 """S2 static closure -- a patched jump's domain from the tables its writers copy.
 
-``LDA T,X; STA J+1`` before a ``JMP`` or an always-taken branch is a switch; the
-table's other entries are targets too, and become arms that ``trap "unverified"``.
-A table runs to the nearest instruction or foreign region, on its layout's step.
+``LDA T,X; STA J+1`` before a ``JMP`` or an always-taken branch is a switch, and
+the table's other entries ``trap "unverified"``. A table runs to the nearest
+instruction or foreign region, on its layout's step, inside the range the branches
+into the dispatch prove for the index; a merged writer names one table per copy.
 """
 
 from __future__ import annotations
