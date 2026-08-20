@@ -112,6 +112,22 @@ def _stops(st, args):
     return st
 
 
+def _stops_one(st, args, out):
+    """The single-song analogue of :func:`_stops`: rewind a run taken at another horizon.
+
+    A tracer resumed under a horizon nobody asked for certifies that many ticks
+    (a shorter target never re-traces), so a mismatch goes back to S1 and forgets
+    the verification the old target produced.
+    """
+    if st.get("horizon") not in (None, _horizon(args)):
+        st.update(stage="trace", subtunes=[])
+        st.pop("divergence", None)
+        for name in ("verify.pkl", "tracer.pkl"):
+            (out / name).unlink(missing_ok=True)
+    st["horizon"] = _horizon(args)
+    return st
+
+
 def _build(args):
     """What decides the program the front end builds; a change invalidates it."""
     return [args.closure, bool(args.no_merge), args.songs, args.sid_model]
@@ -126,7 +142,7 @@ def _state(out, args):
         st.update(stage="front", subtunes=[])
         st.pop("divergence", None)
         (out / "verify.pkl").unlink(missing_ok=True)
-    return _stops(st, args) if args.songs == "all" else st
+    return _stops(st, args) if args.songs == "all" else _stops_one(st, args, out)
 
 
 def _subdir(out, song):

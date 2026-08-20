@@ -180,3 +180,15 @@ def test_changing_a_build_option_rebuilds_instead_of_resuming(tmp_path):
     doc = json.loads((out / "certificate.json").read_text())
     assert doc["closure"]["arms"] >= 0 and doc["subtunes"][0]["ticks"] == 8
     assert json.loads((out / "state.json").read_text())["build"][0] == "static"
+
+
+def test_a_single_song_resumed_under_another_horizon_is_retraced(tmp_path):
+    """A tracer past the new target would certify ticks nobody asked for."""
+    out = tmp_path / "o"
+    sid = _mixed(tmp_path)
+    argv = [str(sid), "--out", str(out), "--song", "2", "--no-text", "--prefix", "0"]
+    assert pipeline.main(argv + ["--calls", "12"]) == 0
+    assert pipeline.main(argv + ["--calls", "6", "--resume"]) == 0
+    doc = json.loads((out / "certificate.json").read_text())
+    assert doc["subtunes"][0]["ticks"] == 6 and doc["subtunes"][0]["divergences"] == 0
+    assert json.loads((out / "state.json").read_text())["horizon"][0] == 6
