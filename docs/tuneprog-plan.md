@@ -189,6 +189,24 @@ Deduplicated from every stage's report; owner = the module that would change.
 | a residual stack is whole-program: one unplaceable read keeps `SP` in every procedure, where an interprocedural frame layout would localise it | stack elimination (#237) | core, precision | frames, stack |
 | `--until-period` stops at the earliest repeat of either footprint, so a *residual* tune may stop before the page-inclusive repeat it must certify on (re-trace with `--calls`, or trace on after S4 has decided) | stack footprint (#239) | horizon policy | pipeline, trace |
 
+### 5b. Execution packages (2026-08-20)
+
+The open rows above, grouped by owner-module overlap into one agent stage each;
+one Opus agent per package with a read-only review before each merge, as §10.
+
+| pkg | rows | size | note |
+|---|---|---|---|
+| **P1 fold reach** | cross-copy edge (target = next copy's entry ⇒ `v += 1`, else refuse) · dispatch closure over a per-copy column base · interprocedural index range for extents · `unroll` copy-0 constant guard | medium | S4 changes for newly folded families; recert 42/42 with ticks/period/complete/divergences fixed |
+| **P2 certificate accounting** | lcm periodicity proof · bounded static closure of untaken directions (per-statement unverified) · memo invalidation/`node_exprs` guard · `--songs all` resume | medium | changes what certificates claim, so lands before the campaign |
+| **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
+| **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
+| **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
+| **not now** | row-advance blocks (no proof to appeal to: accepted boundary) · NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) | — | |
+
+Order: **P1 → P2 → campaign (§8 item 1) → P3 → data-ranked remainder.** P1/P2
+first because they change certificate claims the campaign would otherwise
+measure stale; P3 follows the campaign's class sizes.
+
 ## 6. Gate: fold and stack before any new family
 
 Two things must be true before another tune family is admitted, both because
