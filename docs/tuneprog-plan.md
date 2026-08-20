@@ -160,10 +160,13 @@ Deduplicated from every stage's report; owner = the module that would change.
 | item | source | kind | owner |
 |---|---|---|---|
 | bounded static closure of untaken branch directions (marks unverified; removes most `trap 'untaken'`) | design §3, every prototype | correctness-neutral, presentation | cfg/build |
-| fold the sound-effect subtunes: apply the sibling closure one level up (a silent copy adopts the dispatch its siblings ran, all arms unverified for it) — or accept as the boundary | copy fold (#234) | presentation | siblings, closure |
-| mark unverified closure statements per statement in the printed text (today: a header count only) | copy fold (#234) | presentation, honesty | printer, pseudocode |
-| fold the `--songs all` union (one voice's `chk` stream read vs `ram`) | copy fold (#234) | presentation | closure, build |
-| Automatas' row-advance blocks (three unrelated table regions) | copy fold (#234) | presentation | unroll, views |
+| ~~fold the sound-effect subtunes~~ *done (#242): a silent voice is a zero in the coverage vector; 24 of Follin's 32 subtunes fold at least one family and 8 refuse on a cross-copy edge (below)* | copy fold (#234) | presentation | siblings, copymerge |
+| ~~mark unverified statements per statement in the printed text~~ *done (#242)* | copy fold (#234) | presentation, honesty | printer, pseudocode |
+| ~~fold the `--songs all` union~~ *done (#242): the union over `v` of a folded access is one region, so the class question the copies differed on goes away* | copy fold (#234) | presentation | copymerge, build |
+| Automatas' row-advance blocks (three unrelated table regions, and no chain edge joins them) | copy fold (#234) | presentation | unroll, views |
+| an edge that leaves one copy for another anywhere but the chain edge refuses the family (Follin's 8 one-voice effects, *Automatas*' `$112A` ×3 and `$16AB` ×2): a proof that such an edge *is* the run leaving copy *j* for copy *j+1*, and not a jump into code the copies share | copy index (#242) | fold reach | copyrows |
+| a merged family's patched dispatch loses `jumptab`'s static table closure: the writers' store address is a per-copy column, not a constant, so the table's unobserved arms are no longer enumerated (Follin song 1 at 30 s: 49 `trap 'unverified'` arms become 3) | copy index (#242) | closure | jumptab, copymerge |
+| a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`: the `for v in 0..k-1` shape and `voice[v].field` naming are the view pass stage C owns | copy index (#242) | presentation | views, structure |
 | periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
