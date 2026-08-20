@@ -150,12 +150,13 @@ def _rewrite(view, tabs, byvar, subs):
             ]
 
 
-def _folds(cols, slots):
+def _folds(cols, slots, indexed_rgn):
     """One record per family, clones sharing one table sharing one group view."""
     fams = {}
     for k, col in cols.items():
         for name in (n.split("#")[0] for n in col.vars if n):
-            f = fams.setdefault(name, {"n": col.k, "slots": {}})
+            f = fams.setdefault(name, {"n": col.k, "slots": {}, "views": set()})
+            f["views"] |= indexed_rgn.get(k, set())
             if k in slots:
                 f["slots"][slots[k][0]] = list(slots[k])
     out, seen = [], {}
@@ -164,11 +165,13 @@ def _folds(cols, slots):
         sig = (f["n"], tuple(sorted(f["slots"])))
         if sig[1] and sig in seen:
             seen[sig]["vars"] += (base,)
+            seen[sig]["views"] |= f["views"]
             continue
         rec = {
             "vars": (base,),
             "n": f["n"],
             "slots": f["slots"],
+            "views": f["views"],
             "group": "voice" if f["n"] == 3 else "copy%d" % len(out),
         }
         out.append(rec)
@@ -186,17 +189,20 @@ def expand(view):
     if not tabs:
         return []
     cols, byvar = _collect(view, tabs)
-    subs, slots, rgn = {}, {}, view.by_id()
+    subs, slots, byrgn, rgn = {}, {}, {}, view.by_id()
     for k, col in cols.items():
         plan, cells = _plan(col, rgn)
-        if plan is not None:
-            subs[k] = plan
-            if cells is not None:
-                slots[k] = cells
+        if plan is None:
+            continue
+        subs[k] = plan
+        if cells is not None:
+            slots[k] = cells
+        elif plan[0] == "index" and col.target is not None and col.target >= 0:
+            byrgn[k] = {col.target}
     if not subs:
         return []
     _rewrite(view, tabs, byvar, subs)
-    out = _folds(cols, slots)
+    out = _folds(cols, slots, byrgn)
     view.meta["copyviews"] = out
     return out
 

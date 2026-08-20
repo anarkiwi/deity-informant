@@ -275,17 +275,17 @@ def _state(prog, names):
             )
             out += ["  .%-14s +%d" % (f, k) for k, f in sorted(d["fields"].items())]
             continue
-        if d.get("cells"):
-            out.append("%s[%d]  per-copy cells, %d fields" % (g, d["n"], len(d["cells"])))
-            out += [
-                "  .%-14s %s" % (f, " ".join("$%04X" % a for _r, a in cells))
-                for f, cells in d["cells"].items()
-            ]
-            continue
+        cells = d.get("cells") or {}
         fields = {}
         for rid in sorted(set(d["members"]), key=lambda i: _base(prog, i)):
             fields.setdefault(names.view[rid][1], []).append(rid)
-        out.append("%s[%d]  stride %d, %d fields" % (g, d["n"], d["stride"], len(fields)))
+        what = (["per-copy cells"] if cells else []) + (
+            ["stride %d" % d["stride"]] if fields else []
+        )
+        out.append("%s[%d]  %s, %d fields" % (g, d["n"], ", ".join(what), len(cells) + len(fields)))
+        out += [
+            "  .%-14s %s" % (f, " ".join("$%04X" % a for _r, a in cs)) for f, cs in cells.items()
+        ]
         for fname, rids in fields.items():
             out.append(
                 "  .%-14s %-24s %-10s %s"

@@ -94,7 +94,8 @@ def copy_groups(prog, names, folds=None, facts=None):
         if not f["slots"] or f.get("named"):
             continue
         f["named"] = True
-        g = unique_name(f["group"], set(names.groups))
+        held = _same_view(names.groups.get(f["group"]), f)
+        g = f["group"] if held else unique_name(f["group"], set(names.groups))
         f["group"] = g
         if f.get("node") is not None:
             f["node"].group = g
@@ -108,8 +109,25 @@ def copy_groups(prog, names, folds=None, facts=None):
             cells[name] = list(f["slots"][cell])
             for j, other in enumerate(f["slots"][cell]):
                 names.slots.setdefault(tuple(other), []).append((g, name, j, local))
-        names.groups[g] = {"stride": 0, "n": f["n"], "members": [], "cells": cells}
+        names.groups[g] = {
+            "stride": held["stride"] if held else 0,
+            "n": f["n"],
+            "members": held["members"] if held else [],
+            "cells": cells,
+        }
     return names
+
+
+def _same_view(held, f):
+    """A stride view whose every element this family's index selects: one view, not two.
+
+    Equal strides and the copy map are two proofs of the same struct, so the
+    fold's cells and the view's fields join under one name.
+    """
+    members = held.get("members") if held else None
+    if not members or held["n"] != f["n"] or held.get("cells"):
+        return None
+    return held if set(members) <= set(f.get("views") or ()) else None
 
 
 def decorate(prog, names, folds=None):

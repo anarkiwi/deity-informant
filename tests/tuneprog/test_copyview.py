@@ -7,8 +7,9 @@ The substitution must be exact -- an affine plan evaluated at ``v = j`` is copy
 
 import random
 
-from deity_informant.tuneprog import copyview, live as L, pipeline, structure
+from deity_informant.tuneprog import copyview, live as L, pipeline, structure, views
 from deity_informant.tuneprog.ir import Const, Load, Let, Rgn, Var
+from deity_informant.tuneprog.recover import Names
 from deity_informant.tuneprog.irwalk import node_exprs, walk
 
 from _asm import asm
@@ -201,3 +202,27 @@ def test_a_column_read_left_in_place_still_loads_from_its_table():
             for x in walk(e):
                 if type(x) is Load and x.r in tabs:
                     assert copyview._key(x, tabs) is not None
+
+
+def test_a_stride_view_the_copy_index_selects_joins_the_fold_s_group():
+    _prog, view = _view(voices())
+    copies = copyview.expand(view)
+    f = next(x for x in copies if x["slots"])
+    names = Names(groups={"voice": {"stride": 6, "n": f["n"], "members": [7, 8]}})
+    names.view = {7: ("voice", "a"), 8: ("voice", "b")}
+    f["views"], f["named"] = {7, 8}, False
+    views.copy_groups(view, names, [])
+    g = names.groups["voice"]
+    assert g["members"] == [7, 8] and g["cells"] and g["stride"] == 6
+    assert list(names.groups) == ["voice"]  # one view, not two
+
+
+def test_a_stride_view_the_index_does_not_select_keeps_its_own_name():
+    _prog, view = _view(voices())
+    copies = copyview.expand(view)
+    f = next(x for x in copies if x["slots"])
+    names = Names(groups={"voice": {"stride": 6, "n": f["n"], "members": [7, 8]}})
+    names.view = {7: ("voice", "a"), 8: ("voice", "b")}
+    f["views"], f["named"] = {7}, False
+    views.copy_groups(view, names, [])
+    assert sorted(names.groups) == ["voice", "voice_2"]
