@@ -1,5 +1,7 @@
 """The shared IR traversal: sub-expressions, node reads, names, the call graph."""
 
+import pytest
+
 from deity_informant.tuneprog import irwalk as W
 from deity_informant.tuneprog.ir import (
     Assert,
@@ -57,6 +59,17 @@ def test_node_exprs_names_what_each_node_evaluates():
     for node, want in cases:
         assert tuple(W.node_exprs(node)) == want, node
     assert list(W.node_loads(Call("f", (LD, IO), ()))) == [LD, IO]
+    assert set(W.NO_EXPRS) == {Phi, Goto, Trap}
+
+
+def test_node_exprs_raises_on_a_node_type_no_table_lists():
+    class Fence:  # an IR node added to neither table
+        e = LD
+
+    with pytest.raises(TypeError, match="Fence"):
+        W.node_exprs(Fence())
+    with pytest.raises(TypeError, match="Fence"):
+        list(W.node_loads(Fence()))
 
 
 def test_sub_expr_rebuilds_through_loads_and_the_word_view():

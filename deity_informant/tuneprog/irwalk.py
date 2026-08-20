@@ -14,6 +14,7 @@ from .ir import (
     Bin,
     Call,
     Const,
+    Goto,
     If,
     Let,
     Load,
@@ -24,11 +25,13 @@ from .ir import (
     Return,
     Store,
     Switch,
+    Trap,
     Var,
     W16,
 )
 
 IMPURE = ("io", "chk")  # a load of these classes can consume a pinned input
+NO_EXPRS = frozenset((Phi, Goto, Trap))  # nodes that evaluate nothing: names and labels only
 
 
 # ---- expressions -------------------------------------------------------------
@@ -121,8 +124,9 @@ def addr_split(e):
 def node_exprs(node):
     """The expressions one statement or terminator evaluates.
 
-    Every node type is listed: one added to :mod:`.ir` and not to this table is
-    invisible to every traversal at once.
+    Every node type is listed, :data:`NO_EXPRS` included: a type added to
+    :mod:`.ir` and to neither raises rather than going silently invisible to
+    every traversal at once.
     """
     t = type(node)
     if t is Let or t is Assert:
@@ -139,7 +143,9 @@ def node_exprs(node):
         return (node.e,)
     if t is Return:
         return node.vals
-    return ()
+    if t in NO_EXPRS:
+        return ()
+    raise TypeError("node_exprs: unknown IR node %s" % t.__name__)
 
 
 def node_loads(node):
