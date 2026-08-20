@@ -590,8 +590,9 @@ tick():                                  # $5012, 11,780 calls
   region ids agree, and one region is walked with one stride.
 - **The cascade is one body under the copy index** (`copyrows.py`,
   `copymerge.py`; S2c, in the certified program). The cascade at `$12BE` is five
-  chained copies of one 18-row block over per-copy cells, in both the procedure
-  that falls into it and the one that jumps to it; the fold makes each of them one
+  chained copies of one 18-row block over per-copy cells at 30 s -- six of 19 rows
+  over the whole song, where cascade B1 runs -- in both the procedure that falls
+  into it and the one that jumps to it; the fold makes each of them one
   body over `v`, with the three addresses the copies disagree on in one per-copy
   table -- shared between the two, since two clones of one procedure are not two
   copies of its data, which is what lets `fold.outline` keep them one helper.
