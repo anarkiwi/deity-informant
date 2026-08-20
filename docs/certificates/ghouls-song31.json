@@ -6,7 +6,7 @@
  ],
  "copies": {
   "coverage": {
-   "0,0,1": 83,
+   "0,0,1": 81,
    "1,1,0": 0,
    "1,1,1": 0
   },
@@ -25,12 +25,12 @@
    }
   ],
   "refused": [],
-  "statements": 83,
-  "unverified": 83
+  "statements": 81,
+  "unverified": 81
  },
  "cost": {
   "calls_per_second": 64547,
-  "ir_blocks": 113,
+  "ir_blocks": 119,
   "ir_procs": 2,
   "ir_statements": 255,
   "regions": 48,

@@ -358,6 +358,20 @@ def retval(proc):
     return None if type(v) is Var else v
 
 
+def copymap_bands(storage):
+    """``[(lo, hi)]`` of the per-copy column tables a copy fold laid down.
+
+    The tables are read-only by construction, so a store that lands in one is a
+    path the front end never proved: both executors trap on it.
+    """
+    return [(r.base, r.base + r.size - 1) for r in storage if r.kind == "copymap"]
+
+
+def hits_band(bands, a, w):
+    """True when a ``w``-byte access at ``a`` touches one of ``bands``."""
+    return any(lo <= a + w - 1 and a <= hi for lo, hi in bands)
+
+
 def succs(term):
     """Successor labels of a terminator, in control order."""
     k = type(term)

@@ -70,10 +70,11 @@ class Plan:
 
 
 def _place(trace, regions, size, taken):
-    """A band of ``size`` bytes no access, no code and no other region can see.
+    """A band of ``size`` bytes outside every region's span, the code and the writes.
 
     Outside the load image, the stack page and I/O every byte is unknown to the
-    machine, so a read of one is a pinned input whatever the byte holds.
+    machine, so a *read* the front end did not put there is a pinned input whatever
+    the byte holds; a *store* that lands in the band traps (:func:`~.ir.hits_band`).
     """
     lo, hi = trace.meta["load"]
     busy = bytearray(SPACE)

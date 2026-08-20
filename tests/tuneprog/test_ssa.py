@@ -21,6 +21,7 @@ from deity_informant.tuneprog.ir import (
     Return,
     Var,
 )
+from deity_informant.tuneprog.irwalk import single_defs
 from deity_informant.tuneprog.verify import verify
 
 import _common as H
@@ -231,6 +232,57 @@ def test_split_critical_breaks_multi_way_to_multi_entry_edges():
     ssa.split_critical(proc)
     assert len(proc.blocks) == 4
     assert proc.blocks["A"].term.t == "A$M" and proc.blocks["A$M"].term.to == "M"
+
+
+def _cycle(names, args):
+    """A loop whose header phis permute ``names``, on the latch edge ``L``.
+
+    The phis are simultaneous, so eliminating them into sequential copies must go
+    through temporaries -- and each edge needs its own, or a name one edge wrote
+    is read by the other.
+    """
+    entry = [Let(n, Const(i + 1)) for i, n in enumerate(names)] + [Let("X", Const(0))]
+    phis = [Phi(n, {"A": n, "L": args[n]}) for n in names]
+    body = [Let("X", Bin("+", Var("X"), Const(1), 1))]
+    blocks = {
+        "A": Block("A", entry, Goto("H")),
+        "H": Block("H", phis + body, If(Bin("<", Var("X"), Const(3), 1), "L", "E")),
+        "L": Block("L", [], Goto("H")),
+        "E": Block("E", [], Return(tuple(Var(n) for n in names))),
+    }
+    return Proc("f", (), tuple(range(len(names))), blocks, "A")
+
+
+def _interp(proc):
+    return Interp(ir.Tuneprog(procs={"f": proc}), Machine(bytes(0x10000))).run("f", ())
+
+
+@pytest.mark.parametrize(
+    "names,args",
+    [
+        (("A", "X0"), {"A": "X0", "X0": "A"}),  # a swap
+        (("A", "X0", "X1"), {"A": "X0", "X0": "X1", "X1": "A"}),  # a 3-cycle
+    ],
+)
+def test_from_ssa_names_a_swap_temporary_for_its_edge(names, args):
+    """Phis are simultaneous: two turns of the loop permute the values twice."""
+    proc = _cycle(names, args)
+    at = {n: i for i, n in enumerate(names)}
+    want = list(range(1, len(names) + 1))
+    for _ in range(2):  # the header is entered three times, so the phis apply twice
+        want = [want[at[args[n]]] for n in names]
+    ssa.from_ssa(proc)
+    assert not [s for b in proc.blocks.values() for s in b.stmts if type(s) is Phi]
+    assert _interp(proc) == tuple(want)
+
+
+def test_a_swap_temporary_is_named_for_its_edge_and_defined_once():
+    """The stack analysis walks definitions: a name two edges define holds no offset."""
+    proc = _cycle(("A", "X0"), {"A": "X0", "X0": "A"})
+    ssa.from_ssa(proc)
+    tmp = [s.n for b in proc.blocks.values() for s in b.stmts if type(s) is Let and "$t" in s.n]
+    assert len(tmp) == 4 and len(set(tmp)) == 4, tmp  # two per edge, two edges
+    assert set(tmp) <= set(single_defs(proc))  # so a definition chain can be walked
 
 
 def test_unreachable_blocks_are_pruned():

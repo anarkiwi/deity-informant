@@ -6,7 +6,7 @@
  ],
  "copies": {
   "coverage": {
-   "0,0,1": 4,
+   "0,0,1": 2,
    "0,1,1": 69,
    "1,0,0": 51,
    "1,1": 5,
@@ -45,12 +45,12 @@
     "why": "the entry row does not fold"
    }
   ],
-  "statements": 449,
-  "unverified": 158
+  "statements": 447,
+  "unverified": 156
  },
  "cost": {
   "calls_per_second": 20795,
-  "ir_blocks": 243,
+  "ir_blocks": 246,
   "ir_procs": 4,
   "ir_statements": 653,
   "regions": 40,

@@ -7,8 +7,22 @@ against the same trace, and mark what no copy of a row ran.
 
 import re
 
+import pytest
+
 from deity_informant.tuneprog import copymerge, copyrows, pipeline, siblings
-from deity_informant.tuneprog.ir import Const, Let, Load, Var
+from deity_informant.tuneprog.emit import PyProgram
+from deity_informant.tuneprog.interp import Interp, Machine
+from deity_informant.tuneprog.ir import (
+    Const,
+    Goto,
+    Let,
+    Load,
+    Store,
+    Switch,
+    Trap,
+    TrapError,
+    Var,
+)
 from deity_informant.tuneprog.irwalk import walk
 from deity_informant.tuneprog.verify import verify
 
@@ -165,3 +179,116 @@ def test_the_index_is_an_ordinary_value_the_loop_counts():
         if type(s) is Let and s.n.startswith("cv") and type(s.e) is Const
     ]
     assert zero and all(s.e.v == 0 for s in zero)
+
+
+ARM = """
+LDA {st}
+BNE {v}a
+LDA #$01
+STA {reg}
+JMP {nxt}
+{v}a: LDA #$02
+STA {reg}
+JMP {arm}
+"""
+
+
+def _arm(v, st, reg, nxt, arm):
+    """One copy: a chained body whose arm leaves the run at ``arm``."""
+    src = ARM.format(v=v, st=st, reg=reg, nxt=nxt, arm=arm)
+    lines = [l.strip() for l in src.split("\n") if l.strip()]
+    return [("%s: " % v if i == 0 else "") + l for i, l in enumerate(lines)]
+
+
+def arms(stray=False):
+    """Three chained copies whose arm only the last one ever runs.
+
+    ``stray`` gives copy 0's arm -- which no execution reaches -- an image target
+    of its own, where the copies that ran agree on another.
+    """
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA st",
+        "STA st+1",
+        "STA cnt",
+        "LDA #$01",
+        "STA st+2",
+        "RTS",
+        "play:",
+        *_arm("c0", "st", "$D404", "c1", "miss" if stray else "join"),
+        *_arm("c1", "st+1", "$D40B", "c2", "join"),
+        *_arm("c2", "st+2", "$D412", "after", "join"),
+        "after: INC cnt",
+        "RTS",
+        "join: INC cnt",
+        "RTS",
+        "miss: LDA #$09",
+        "STA cnt",
+        "RTS",
+        "st: BRK",
+        "BRK",
+        "BRK",
+        "cnt: BRK",
+    )
+
+
+def _armterm(prog, code):
+    """The terminator of the folded arm, whose rows only the last copy executed."""
+    src = code.labels["c0a"]
+    hit = [b for p in prog.procs.values() for b in p.blocks.values() if b.src == src]
+    assert len(hit) == 1, hit
+    return hit[0]
+
+
+def test_a_copy_that_never_ran_a_row_keeps_the_target_its_own_image_names():
+    """Copies that ran agree; the copy that did not says the same, so it folds."""
+    code = arms()
+    trace, prog = _prog(code)
+    fam = prog.meta["copies"]["families"][0]
+    assert fam["copies"] == 3 and not prog.meta["copies"]["refused"]
+    b = _armterm(prog, code)
+    assert tuple(b.cover) == (0, 0, 8), b.cover
+    assert type(b.term) is Goto and prog.procs["tick"].blocks[b.term.to].src == code.labels["join"]
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
+
+
+def test_a_copy_whose_image_names_another_target_is_not_given_its_siblings():
+    """The copies that ran agree on ``join``; copy 0's own image says ``miss``.
+
+    Nothing may hand copy 0 its siblings' target: the successor splits on the copy
+    index and every copy that never ran the row traps.
+    """
+    code = arms(stray=True)
+    trace, prog = _prog(code)
+    b = _armterm(prog, code)
+    assert tuple(b.cover) == (0, 0, 8), b.cover
+    assert type(b.term) is Switch and str(b.term.e) == str(Var("cv0#2", 1)), b.term
+    arm = dict(b.term.cases)
+    blocks = prog.procs["tick"].blocks
+    assert blocks[arm[2]].src == code.labels["join"]  # the copy that ran keeps its own
+    assert all(type(blocks[arm[j]].term) is Trap for j in (0, 1)), b.term
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
+
+
+def test_a_store_that_could_reach_a_column_table_traps_in_both_executors():
+    """The columns are read-only: a store whose envelope reaches one may not write it.
+
+    An access the front end could not place carries the whole address space, so
+    the guard is what keeps a path no execution proved from rewriting a column.
+    """
+    trace, prog = _prog(voices())
+    r = next(x for x in prog.storage if x.kind == "copymap")
+    tick = prog.procs[prog.meta["tick_proc"]]
+    at = tick.blocks[tick.entry]
+    at.stmts.insert(0, Store("ram", Var("A"), Const(1), 1, 0, 0xFFFF, -1, at.src))
+    args = [r.base if i == 0 else 0 for i in tick.params]
+    for run in (
+        lambda m: Interp(prog, m).run(tick.name, args),
+        lambda m: PyProgram(prog, m).run(tick.name, args),
+    ):
+        machine = Machine(prog.image(), tuple(trace.meta["load"]))
+        with pytest.raises(TrapError) as bad:
+            run(machine)
+        assert bad.value.why == "copymap", bad.value
+        assert machine.m[r.base] == r.init[0]  # and the column still holds its byte

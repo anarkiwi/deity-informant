@@ -217,7 +217,7 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 240 | 794 | 98 | complete |
 | `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
 | `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 101 | 278 | 61 | horizon |
-| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 75–288 | 180–671 | 37–70 | complete (31 of 32) |
+| `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 75–291 | 180–671 | 37–70 | complete (31 of 32) |
 | `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 294 | 770 | 45 | complete (31 of 32) |
 | `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
 | `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
@@ -251,9 +251,14 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   and the certificate's horizon is what the exemplar documents report.
 - **What the copy index cannot name refuses.** An edge that leaves one copy for
   another anywhere but the chain edge, a row whose copies do not lift to one
-  shape, an opcode cell inside a copy: the first refuses the family whole, the
-  others keep that row as k rows under a `switch (v)`. The reason is in the
-  certificate and in the printed header, never a silent approximation.
+  shape, an opcode cell inside a copy, a successor a copy that never ran the row
+  names differently in the image: the first refuses the family whole, the others
+  keep that row as k rows under a `switch (v)`, where every copy that did not run
+  it traps. The reason is in the certificate and in the printed header, never a
+  silent approximation. A refused family leaves its *code* as S2b built it, but
+  not the program's region typing: the regions a folded access unites are united
+  once for the whole program, so a tune where one family folds and another refuses
+  carries the accepted family's region typing everywhere.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.
