@@ -8,7 +8,7 @@
   "coverage": {
    "0,1,1": 0,
    "1,0,0": 2,
-   "1,1,0": 128,
+   "1,1,0": 135,
    "1,1,1": 5
   },
   "families": [
@@ -35,23 +35,29 @@
     "proc": "tick",
     "rows": 14,
     "table": "$02F6"
-   }
-  ],
-  "refused": [
+   },
    {
-    "base": "$6941",
+    "bases": [
+     "$6941",
+     "$694F",
+     "$6968"
+    ],
+    "columns": 2,
+    "copies": 3,
     "proc": "tick",
-    "why": "an edge from copy 1 enters copy 2"
+    "rows": 8,
+    "table": "$0320"
    }
   ],
-  "statements": 135,
-  "unverified": 130
+  "refused": [],
+  "statements": 142,
+  "unverified": 137
  },
  "cost": {
   "calls_per_second": 29546,
-  "ir_blocks": 149,
+  "ir_blocks": 191,
   "ir_procs": 2,
-  "ir_statements": 382,
+  "ir_statements": 383,
   "regions": 50,
   "sites": 493,
   "trace_calls": 166,

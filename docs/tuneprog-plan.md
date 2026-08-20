@@ -31,9 +31,9 @@ Contents
 | certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 43 modules, 12,469 lines, none over 500; 434 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 43 modules, 12,631 lines, none over 500; 450 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
-| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view |
+| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach |
 
 Fourteen stages, each an Opus agent with the certificate as its acceptance test:
 front end → certified core → presentation → fold/texture → Follin →
@@ -167,11 +167,15 @@ Deduplicated from every stage's report; owner = the module that would change.
 | ~~fold the sound-effect subtunes~~ *done (#242): a silent voice is a zero in the coverage vector; 24 of Follin's 32 subtunes fold at least one family and 8 refuse on a cross-copy edge (below)* | copy fold (#234) | presentation | siblings, copymerge |
 | ~~mark unverified statements per statement in the printed text~~ *done (#242)* | copy fold (#234) | presentation, honesty | printer, pseudocode |
 | ~~fold the `--songs all` union~~ *done (#242): the union over `v` of a folded access is one region, so the class question the copies differed on goes away* | copy fold (#234) | presentation | copymerge, build |
-| *Automatas*' row-advance blocks: `unroll` covers consecutive isomorphic runs inside one body (Follin's init copies, *Automatas*' write-out), and these three read three unrelated table regions whose addresses are not one relocation of each other, so it does not fold them and no chain edge joins them for the copy index either | copy fold (#234), stage C (#244) | presentation | unroll, views |
-| an edge that leaves one copy for another anywhere but the chain edge refuses the family (Follin's 8 one-voice effects, *Automatas*' `$112A` ×3 and `$16AB` ×2): a proof that such an edge *is* the run leaving copy *j* for copy *j+1*, and not a jump into code the copies share. **This is the remaining boundary of the SFX-subtune fold** and the only one left on §6 item 1 | copy index (#242), stage C (#244) | fold reach | copyrows |
-| a merged family's patched dispatch loses `jumptab`'s static table closure: the writers' store address is a per-copy column, not a constant, so the table's unobserved arms are no longer enumerated (Follin song 1 at 30 s: 49 `trap 'unverified'` arms become 3) | copy index (#242) | closure | jumptab, copymerge |
+| ~~*Automatas*' row-advance blocks~~ *done (P1), not by `unroll` but by the copy index: a chain does join them, and what refused it was ownership of the two instructions before copy 1's first row. One 45-row body over 22 columns; the columns whose copies name unrelated regions keep their table read* | copy fold (#234), stage C (#244) | presentation | unroll, views |
+| ~~an edge that leaves one copy for another anywhere but the chain edge refuses the family~~ *done (P1): the rule was already the right one -- an edge to `bases[j+1]` is the advance -- and what refused was ownership. A copy holds only what its rows hold, from its first row on; the stream the alignment stepped over before it (copy j's own tail, then a preamble copy j+1 alone has) is the image of no row and belongs to nobody. Follin's 8 one-voice effects and* Automatas' `$112A` *fold and verify;* `$16AB` *refuses still: its skip enters the next copy at that copy's fourth row, and only a copy's own entry advances the run* | copy index (#242), stage C (#244) | fold reach | copyrows |
+| ~~a merged family's patched dispatch loses `jumptab`'s static table closure~~ *done (P1): a column is read-only, so copy j's writer is its expression with each column read replaced by that copy's entry, and the same enumeration runs per copy (Follin song 1 at 30 s: 3 arms → 39, three dispatches of 21 each)* | copy index (#242) | closure | jumptab, copymerge |
 | ~~a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`~~ *done (#244): `copyview.py` prints every column as the operand it stands for and `loops.copies` makes the loop a `for v in 0..k-1`; a column whose copies name different offsets of a record, or whose readers name more than one region, keeps its table read* | copy index (#242) | presentation | views, structure |
-| `unroll`'s view-level fold substitutes copy 0's constants into the loop it makes, so a constant of that body equal to one of its slots would print with the loop index -- the family columns stopped doing this in #244 by keeping their read; `unroll` has no column to keep | stage C (#244) | presentation, honesty | unroll, views |
+| ~~`unroll`'s view-level fold substitutes copy 0's constants into the loop it makes~~ *done (P1): a constant that does not step keeps its literal already; where it equals a cell the run relocates, nothing inside the loop tells the two apart and the run does not fold* | stage C (#244) | presentation, honesty | unroll, views |
+| a merged family whose copies have preambles of their own has k entries, so `loops.copies` makes no `for` and the structurer leaves a `goto` (*Automatas*' row-advance blocks: 2; Follin's one-voice subtunes: a `while` over the index) | P1 (#248) | presentation | loops, structure |
+| folding a copy nothing ran costs more than it saves: Follin's 17-19, 25, 27, 29 grow ~6 % of statements and ~20 % of blocks, since the columns and the `switch (v)` are new and there was no second body to remove. What it buys is names for the per-voice cells and a coverage vector that says the silent voice's code is this code | P1 (#248) | presentation | copymerge |
+| a merged access unites its regions, so a role one copy's access carried can move with them (Follin 17-19: the frequency tables print as `T6D56`/`T6DB7`, not `sid_image`) | P1 (#248) | naming | regions, recover |
+| an edge into another copy at a row that is not that copy's entry (*Automatas*' `$16AB` at 30 s). Lowering it as `v += 1; goto` that template row is sound and folds it, but measured: the merged body then has two entries, which costs a `goto` and the `ad`/`ctrl` field names -- refused as the narrower rule says | P1 (#248) | fold reach | copyrows |
 | periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
@@ -179,7 +183,7 @@ Deduplicated from every stage's report; owner = the module that would change.
 | second interrupt schedule (NMI + IRQ sharing regions) | design §10, JCH | scope | machine/trace/verify |
 | 16-bit views for halves stored by unrelated instructions (Follin freq shadow, pulse width) | Follin, SW | presentation | word |
 | sign-extension/flag-algebra printing (`sext(table[i])`, `if (tempo & $80)`) | SW | presentation | pseudocode |
-| interprocedural index range for jump-table extents (Follin 23 vs 21 arms) | SW | closure | jumptab |
+| ~~index range for jump-table extents (Follin 23 vs 21 arms)~~ *done (P1) intraprocedurally: a merged family's k tables are parallel, so they start at the same index (the region's own base as the lowest base names it) and each holds the gap between two bases; the branches on the one path into a dispatch then prove a range for the index (sign test, equality, compare) which cuts into that layout and never moves it. The layout is an inference like the extent rule, not a proof; the range is a proof, and is applied last so it can only remove entries -- Follin's three dispatches are 21 arms each, none displaced. Not built interprocedurally: SID Wizard's two dispatches do take their index as an argument, but what the caller's `CMP #$60` proves ([96, 256)) is already inside the extent (123..127 and 125..127), so the walk would cost code and buy nothing measurable* | SW | closure | jumptab |
 | `--songs all` resume state for mixed stop reasons | Follin | tool | pipeline |
 | `printer`/`pseudocode` memo invalidation with 16-bit views; `node_exprs` unknown-node guard | consolidation | quality | irwalk, pseudocode |
 | Ghidra function bodies vs clone-per-entry (`ghidra_partial` rows) | Ghidra export | oracle | ghidra_compare |
@@ -196,16 +200,18 @@ one Opus agent per package with a read-only review before each merge, as §10.
 
 | pkg | rows | size | note |
 |---|---|---|---|
-| **P1 fold reach** | cross-copy edge (target = next copy's entry ⇒ `v += 1`, else refuse) · dispatch closure over a per-copy column base · interprocedural index range for extents · `unroll` copy-0 constant guard | medium | S4 changes for newly folded families; recert 42/42 with ticks/period/complete/divergences fixed |
+| ~~**P1 fold reach**~~ *done*: cross-copy edge (the rule held; ownership was the refusal) · dispatch closure over a per-copy column base · index range for extents (intraprocedural) · `unroll` copy-0 constant guard | medium | S4 changes for newly folded families; recert 42/42 with ticks/period/complete/divergences fixed |
 | **P2 certificate accounting** | lcm periodicity proof · bounded static closure of untaken directions (per-statement unverified) · memo invalidation/`node_exprs` guard · `--songs all` resume | medium | changes what certificates claim, so lands before the campaign |
 | **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
 | **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
 | **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
-| **not now** | row-advance blocks (no proof to appeal to: accepted boundary) · NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) | — | |
+| **P6 fold presentation** | the `for` a merged body with k entries does not get · a fold that costs more than it saves · a role that moves with a united region | small-medium | P1's four new rows; presentation only, so it can wait for the campaign's data |
+| **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) · an edge into another copy's non-entry row (measured: costs more than it buys) | — | |
 
 Order: **P1 → P2 → campaign (§8 item 1) → P3 → data-ranked remainder.** P1/P2
 first because they change certificate claims the campaign would otherwise
-measure stale; P3 follows the campaign's class sizes.
+measure stale; P3 follows the campaign's class sizes. P1 is done (#248); P2 is
+next.
 
 ## 6. Gate: fold and stack before any new family
 
@@ -258,9 +264,16 @@ they are about the *core* matching the design rather than about breadth:
    listed boundary (SFX subtunes, the union's `chk`/`ram` class, row-advance
    blocks, horizon-dependent discovery) is one cause. That review is what §7b
    re-specified; #234's mechanism was the prototype that found the requirements.
-   **What remains a boundary, not a gap:** 8 of Follin's 32 subtunes still refuse
-   their family on a cross-copy edge (§5), and a merged family's patched dispatch
-   loses `jumptab`'s static table closure (§5).
+   *P1 closes both boundaries this listed.* The 8 one-voice subtunes refused on
+   ownership, not on the rule: a copy holds only what its rows hold, and the
+   stream an alignment stepped over before a copy's first row is the image of no
+   row, so `v` cannot name it and the run leaves the family there and re-enters at
+   the row. And a merged dispatch enumerates again, per copy: a column is
+   read-only, so copy *j*'s writer is that expression with each column read
+   replaced by its *j*th entry. **What remains a boundary:** an edge into another
+   copy anywhere but at that copy's own entry (*Automatas*' `$16AB` at 30 s), and
+   a merged body whose copies have preambles of their own has k entries, which the
+   structurer prints with a `goto` and no `for`.
 2. **The certified executable is stack-free** — the S4 program has no `SP`
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
@@ -557,6 +570,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 | 2 | ~~gate 1 stage A (§7b)~~ *done (#241)* | `siblings.py`, `tests/tuneprog/test_siblings.py` | met: `GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT` gone; property tests over seeded random templates; Follin s1 one family of three voices (419 rows vs 420, printed text identical), Automatas' two cascade runs still fold (763 → 759 lines), GT2 ×2 and SW ×2 none; 42/42 recert |
 | 3 | ~~gate 1 stage B (§7b)~~ *done (#242)* | `copyrows.py`, `copymerge.py` (new), `build.py`+`lower.py`, `regions.py`, `jumptab.py`, `ssa.py`, `ir.py`, `printer.py`, `pipeline.py`, `emit.py`; `closure.py` deleted | met: Follin song 1 is one body of 400 folded rows over 60 per-copy columns and certifies unchanged (1,229 statements in 441 blocks → 671 in 254, 68 regions → 44, 133 of 471 merged statements unverified and marked per statement); the `--songs all` union folds too (1,553 → 770, 520 → 294, 75 → 45, 5 unverified); *Automatas* folds its 6-copy cascade in both procedures that hold it (995 → 805, 305 → 241) and refuses two families with their reason; 24 of Follin's 32 subtunes fold at least one family and 8 refuse; GoatTracker ×2 and SID Wizard ×2 have no family and are byte-identical; `tools/tuneprog_recert.py` 42/42, with ticks, period, `complete` and divergences unchanged everywhere |
 | 4 | ~~gate 1 stage C (§7b)~~ *done (#244)* | `copyview.py` (new), `loops.py` (new), `views.py`, `structure.py`, `printer.py`, `pseudocode.py`, `pipeline.py`, `unroll.py`; `copyfold.py` deleted; docs | met: one tokeniser (`unroll`), no cross-module private imports in the presentation layer, every module ≤ 500 lines; Follin's certified song 1 794 → 757 printed lines (`tick()` 578 → 495) as one `for v in 0, 1, 2` with the 21-arm switch inside and 51 `voice[v].` fields, *Automatas* 800 → 782 at 30 s (744 → 716 over the whole song) with both cascades `for v in 0..k-1`, GT2 ×2 / SW ×2 / Commando song 1 byte-identical; `tools/tuneprog_recert.py` 42/42 with every certificate byte-identical |
+| 5 | ~~P1 — fold reach (§5b)~~ *done (#248)* | `copyrows.py`, `jumptab.py`, `unroll.py`, `recover.py`, `pseudocode.py`, tests, docs | met: the 8 one-voice Follin subtunes, their `$6941` triple in 28/30 and *Automatas*' `$112A` fold and verify (`$16AB` refuses with the narrower reason); Follin's three dispatches enumerate 21 arms each with none displaced (3 → 39 unverified arms at 30 s; the certified song 1 gains 16 arm blocks and no statement); *Automatas* 805 → 733 statements, 241 → 227 blocks, 98 → 80 regions; subtune 14 199 → 106 blocks, 255 → 212 statements, 52 → 39 regions; `tools/tuneprog_recert.py` 42/42 with ticks, period, `first_repeat`, `complete`, divergences and envelope traps unmoved everywhere |
 | — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |
 
 Every brief carries the global directives (no tuning constants — a threshold is

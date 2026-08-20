@@ -90,10 +90,12 @@ def _groups(prog, names):
             continue
         groups.setdefault((r.stride, n), []).append(r.id)
     out = {}
+    three = {k: v for k, v in groups.items() if k[1] == 3 and len(v) > 1}
+    best = max(sorted(three), key=lambda k: len(three[k]), default=None)  # the widest is voice
     for i, ((stride, n), members) in enumerate(sorted(groups.items())):
         if len(members) < 2:
             continue
-        g = "voice" if n == 3 else "rec%d" % (i + 1)
+        g = unique_name("voice" if (stride, n) == best else "rec%d" % (i + 1), out)
         out[g] = {"stride": stride, "n": n, "members": members}
         for rid in members:
             names.view[rid] = (g, "")

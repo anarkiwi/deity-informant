@@ -29,7 +29,7 @@
   "unverified": 5
  },
  "cost": {
-  "ir_blocks": 294,
+  "ir_blocks": 299,
   "ir_procs": 4,
   "ir_statements": 770,
   "regions": 45,

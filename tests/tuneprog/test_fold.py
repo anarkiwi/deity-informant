@@ -2,8 +2,18 @@
 
 import re
 
-from deity_informant.tuneprog import texture
-from deity_informant.tuneprog.ir import Block, Const, Goto, If, Proc, Return, Store, Var
+from deity_informant.tuneprog import texture, unroll
+from deity_informant.tuneprog.ir import (
+    Block,
+    Const,
+    Goto,
+    If,
+    Proc,
+    Return,
+    Rgn,
+    Store,
+    Var,
+)
 
 from _asm import asm
 from _prog import PLAY, printed as _text, proc_body as _body, tuneprog
@@ -592,3 +602,31 @@ def test_a_patched_opcode_pair_becomes_one_switch_over_a_16_bit_step():
     assert body.count("switch ") == 1, body
     assert "acc += $1234" in body and "acc -= " in body
     assert "carry(" not in body
+
+
+def _run(shared=None):
+    """Two copies of a run that relocates two cells, plus a constant both share."""
+    a = [("r", 1), ("k@0", 0x551A), ("k@0", 0x5520)]
+    b = [("r", 1), ("k@0", 0x561A), ("k@0", 0x5620)]
+    if shared is not None:
+        a, b = a + [("k@0", shared)], b + [("k@0", shared)]
+    return [a, b]
+
+
+CELL = {1: Rgn(1, "cells", 0x551A, 1, "state", 1, b"\0", ())}
+
+
+def test_a_run_that_relocates_two_cells_is_one_mapping():
+    deltas, slots = unroll.steps(_run(), CELL)
+    assert deltas == [0, 0, 0] and len(slots) == 2
+    assert sorted(slots) == [(1, 0x551A), (1, 0x5520)]
+
+
+def test_a_constant_every_copy_shares_does_not_step_with_the_index():
+    deltas, slots = unroll.steps(_run(shared=0x5600), CELL)
+    assert deltas == [0, 0, 0, 0] and len(slots) == 2  # the constant keeps its literal
+
+
+def test_a_shared_constant_equal_to_a_slot_refuses_the_fold():
+    """Copy 0's constant is all the folded body holds: slot and cell look alike."""
+    assert unroll.steps(_run(shared=0x551A), CELL) == (None, None)

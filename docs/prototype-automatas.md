@@ -608,14 +608,24 @@ tick():                                  # $5012, 11,780 calls
   body over `v`, with the three addresses the copies disagree on in one per-copy
   table -- shared between the two, since two clones of one procedure are not two
   copies of its data, which is what lets `fold.outline` keep them one helper.
-  The oscillator's `$16CD` pair folds the same way. Two families refuse: `$112A`
-  ×3 and `$16AB` ×2 each have an edge that leaves one copy for another anywhere
-  but the chain edge, which `v` cannot name -- the reason is in the certificate's
-  `copies.refused` and in the printed header, and their copies stay as they were.
-  At 30 s the S4 program falls from 895 statements to 815; the printed document
-  from 880 lines to 801. The three row-advance blocks still do not fold: they read
-  three different table regions, whose addresses are not one relocation of each
-  other, and no chain edge joins them.
+  The oscillator's `$16CD` pair folds the same way. The three row-advance blocks
+  fold too (P1): `$112A`/`$119A`/`$1222` are one 45-row body over 22 columns, once
+  a copy holds only what its rows hold -- the two instructions before `$11B2` are
+  copy 0's tail and a preamble of copy 1's that no template row covers, so they
+  are nobody's and the run leaves the family and re-enters it at the row. What
+  they read is still three unrelated table regions, so the columns keep their
+  table read where no field name covers them. At 30 s `$16AB` ×2 refuses still: its skip
+  enters the next copy at that copy's fourth row, not at its entry, and only a
+  copy's own entry advances `v` -- the reason is in the certificate's
+  `copies.refused` and in the printed header, and its copies stay as they were.
+  Over the whole song that pair is not a family at all, so the certificate
+  refuses nothing.
+  Over the whole song the S4 program falls from 895 statements to 733 (241 blocks
+  to 227, 98 regions to 80); at 30 s from 815 to 754. The *printed* document does
+  not follow it down: the merged row-advance body has k entries, since each copy's
+  preamble is its own, so it prints as a `while` with a `switch` on the index and
+  six `goto`s rather than a `for`, and the copies' cells are listed field by field
+  in the state header -- 782 → 774 lines at 30 s, 716 → 759 over the whole song.
 - **The cascade prints as its own loop** (`copyview.py`, `loops.py`; S6, #244).
   Each merged cascade is `for v in 0..5:` over the whole song (`0..4` at 30 s, where
   cascade B1 never runs) with the row cursor and timer as

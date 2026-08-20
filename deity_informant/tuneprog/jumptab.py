@@ -1,13 +1,14 @@
 """S2 static closure -- a patched jump's domain from the tables its writers copy.
 
-``LDA T,X; STA J+1`` before a ``JMP`` or an always-taken branch is a switch; the
-table's other entries are targets too, and become arms that ``trap "unverified"``.
-A table runs to the nearest instruction or foreign region, on its layout's step.
+``LDA T,X; STA J+1`` before a ``JMP`` or an always-taken branch is a switch, and
+the table's other entries ``trap "unverified"``. A table runs to the nearest
+instruction or foreign region, on its layout's step, inside the range the branches
+into the dispatch prove for the index; a merged writer names one table per copy.
 """
 
 from __future__ import annotations
 
-from .ir import Bin, Block, Const, Let, Load, Store, Switch, Trap, Var
+from .ir import Bin, Block, Const, If, Let, Load, Store, Switch, Trap, Var, succs
 
 
 def _defs(proc):
@@ -21,13 +22,67 @@ def _resolve(e, defs, seen=()):
     return e
 
 
-def _writers(proc, defs):
-    """``{address: value expression}`` for every byte address exactly one store writes."""
+def _column(e, defs, rgn):
+    """The k values a per-copy column stands for, or ``None``.
+
+    A column is a read-only table of one operand the copies disagree on
+    (:mod:`.copymerge`), so copy *j*'s value of the expression is its *j*th entry.
+    """
+    e = _resolve(e, defs)
+    if type(e) is not Load:
+        return None
+    r = rgn.get(e.r) if rgn else None
+    if r is None or r.kind != "copymap":
+        return None
+    off = e.lo - r.base
+    n = (e.hi + 1 - e.lo) // e.w
+    return [int.from_bytes(r.init[off + j * e.w : off + (j + 1) * e.w], "little") for j in range(n)]
+
+
+def _copy(e, j, defs, rgn):
+    """``e`` as copy ``j`` names it: every column read is that copy's constant.
+
+    A subexpression that holds no column is itself, name and all, which is what a
+    range proof over the index needs.
+    """
+    x = _resolve(e, defs)
+    vals = _column(x, defs, rgn)
+    if vals is not None:
+        return Const(vals[j], x.w) if j < len(vals) else None
+    if type(x) is Bin:
+        a, b = _copy(x.a, j, defs, rgn), _copy(x.b, j, defs, rgn)
+        if a is None or b is None:
+            return None
+        return e if a is x.a and b is x.b else Bin(x.op, a, b, x.w)
+    if type(x) is Load:
+        a = _copy(x.a, j, defs, rgn)
+        if a is None:
+            return None
+        return e if a is x.a else Load(x.cls, a, x.w, x.lo, x.hi, x.r)
+    return e
+
+
+def _writers(proc, defs, rgn):
+    """``{address: value expression}`` for every byte address exactly one store writes.
+
+    A store the copy index folded writes its cell per copy: the address is a column
+    and the value is that copy's, which is what keeps a merged dispatch enumerable.
+    """
     out = {}
     for b in proc.blocks.values():
         for s in b.stmts:
-            if type(s) is Store and s.w == 1 and type(s.a) is Const:
-                out.setdefault(s.a.v, []).append(_resolve(s.v, defs))
+            if type(s) is not Store or s.w != 1:
+                continue
+            plain = _resolve(s.v, defs)
+            if type(s.a) is Const:
+                out.setdefault(s.a.v, []).append((plain, (), plain))
+                continue
+            cells = _column(s.a, defs, rgn) or ()
+            vals = [_copy(s.v, j, defs, rgn) for j in range(len(cells))]
+            alts = tuple(v for v in vals if v is not None)
+            for j, a in enumerate(cells):
+                if vals[j] is not None:
+                    out.setdefault(a, []).append((vals[j], alts, plain))
     return {a: v[0] for a, v in out.items() if len(v) == 1}
 
 
@@ -44,33 +99,134 @@ def _table(e, rgn):
     return None
 
 
-def _source(addr, writers, rgn, image):
-    """``("table", r, base, idx)`` when a writer copies the byte, else ``("const", v)``."""
-    w = writers.get(addr)
-    if w is None:
+def _index(e, defs, rgn):
+    """The index of a ``LDA table,X``, as the program itself names it.
+
+    A merged writer reads the base through a column, so the index is what is left
+    of the address once the base is taken away.
+    """
+    if type(e) is not Load or type(e.a) is not Bin or e.a.op != "+":
+        return None
+    for k, i in ((e.a.a, e.a.b), (e.a.b, e.a.a)):
+        if type(k) is Const or _column(k, defs, rgn) is not None:
+            return i
+    return None
+
+
+def _source(addr, writers, rgn, image, defs):
+    """``("table", r, base, idx, layout)`` when a writer copies the byte, else ``("const", v)``.
+
+    ``layout`` is ``(first index, entries)`` of one copy's table: a merged writer
+    names k parallel tables that one index reads, so they start at the same index
+    -- the region's own base as the lowest base names it -- and each holds the gap.
+    """
+    got = writers.get(addr)
+    if got is None:
         return ("const", image[addr])
-    hit = _table(w, rgn)
-    return hit and ("table",) + hit
+    val, alts, plain = got
+    hit = _table(val, rgn)
+    if hit is None:
+        return None
+    bases = sorted({t[1] for t in (_table(x, rgn) for x in alts) if t})
+    gaps = [b - a for a, b in zip(bases, bases[1:])]
+    layout = (hit[0].base - bases[0], min(gaps)) if gaps else None
+    return ("table", hit[0], hit[1], _index(plain, defs, rgn) or hit[2], layout)
 
 
-def _domain(sources, spans, cap):
+def _domain(sources, spans, cap, idx=None):
     """Index values every table source covers, on the step its layout implies.
 
     Halves one byte apart are a table of words, so its entries are two apart;
-    parallel columns (and a one-byte table) step by one.
+    parallel columns (and a one-byte table) step by one. ``idx`` is the range the
+    index is proven to hold, which only ever tightens the extent.
     """
     tabs = [s for s in sources if s[0] == "table"]
     step = 2 if len(tabs) == 2 == len(sources) and abs(tabs[0][2] - tabs[1][2]) == 1 else 1
     lo, hi = None, None
-    for _t, r, base, _i in tabs:
+    for _t, r, base, _i, layout in tabs:
         a, b = spans.get(r.id, (r.base, r.base + r.size))
+        if layout is not None:  # a copy's own table, where its siblings' begin and end
+            a, b = max(a, base + layout[0]), min(b, base + sum(layout))
         lo = a - base if lo is None else max(lo, a - base)
         hi = b - base if hi is None else min(hi, b - base)
     lo = 0 if lo is None else max(lo, 0)  # the index register is an unsigned byte
+    if idx is not None and hi is not None:
+        lo, hi = max(lo, idx[0]), min(hi, idx[1])
     if not tabs or lo >= hi:
         return range(0)
     first = lo + ((tabs[0][1].base - tabs[0][2]) - lo) % step
     return range(first, hi, step) if (hi - first + step - 1) // step <= cap else range(0)
+
+
+def _preds(proc):
+    """``{label: [block with an edge into it]}``."""
+    out = {}
+    for b in proc.blocks.values():
+        for t in succs(b.term):
+            out.setdefault(t, []).append(b)
+    return out
+
+
+def _split(c, w):
+    """``(name, lo, hi)`` the condition ``c`` proves when it holds, or ``None``.
+
+    The three tests a 6502 leaves after SSA: the sign bit, an equality, and the
+    compare a borrow reports. ``<`` is P-code's unsigned compare (:mod:`.ir`), so
+    each of them cuts the byte's range into an interval.
+    """
+    if type(c) is not Bin or c.op not in ("==", "<"):
+        return None
+    a, b = c.a, c.b
+    if c.op == "<" and type(a) is Var and type(b) is Const:
+        return (a.n, 0, b.v)
+    if c.op != "==" or type(b) is not Const:
+        return None
+    if type(a) is Var:
+        return (a.n, b.v, b.v + 1)
+    sign = 1 << (8 * w - 1)
+    ok = type(a) is Bin and a.op == "&" and type(a.a) is Var and type(a.b) is Const
+    return (a.a.n, 0, sign) if ok and a.b.v == sign and b.v == 0 else None
+
+
+def _edge(term, to, w):
+    """``(name, lo, hi)`` an edge into ``to`` proves; a negated split keeps its half."""
+    if type(term) is not If:
+        return None
+    got = _split(term.c, w)
+    if got is None or to not in (term.t, term.f) or term.t == term.f:
+        return None
+    n, lo, hi = got
+    if to == term.t:
+        return got
+    return (n, hi, 1 << (8 * w)) if lo == 0 else None
+
+
+def _defined(b, n):
+    """True when block ``b`` assigns ``n``: a name a phi destructed has more than one."""
+    return b is not None and any(type(s) is Let and s.n == n for s in b.stmts)
+
+
+def _range(blocks, label, e, preds):
+    """The range the branches on the one path into ``label`` prove for ``e``.
+
+    A branch above the block that last assigned the name tested another value, so
+    the walk stops there; where nothing is proven the caller's extent rule stands.
+    """
+    if type(e) is not Var or _defined(blocks.get(label), e.n):
+        return None
+    lo, hi, seen = 0, 1 << (8 * e.w), set()
+    while label not in seen:
+        seen.add(label)
+        ps = preds.get(label) or []
+        if len(ps) != 1:
+            break
+        got = _edge(ps[0].term, label, e.w)
+        if got is not None and got[0] == e.n:
+            lo, hi = max(lo, got[1]), min(hi, got[2])
+        if _defined(ps[0], e.n):
+            break
+        label = ps[0].label
+    return (lo, hi) if (lo, hi) != (0, 1 << (8 * e.w)) else None
 
 
 def _cell(term, defs):
@@ -115,14 +271,14 @@ def dispatch(proc, rgn, image, band):
     dispatches; an arm two indices reach names no one index, and pairs with nothing.
     """
     defs = _defs(proc)
-    writers = _writers(proc, defs)
+    writers = _writers(proc, defs, rgn)
     out = {}
     for b in proc.blocks.values():
         hit = _cell(b.term, defs) if type(b.term) is Switch else None
         if hit is None:
             continue
         cell, width, base = hit
-        srcs = [_source(cell + k, writers, rgn, image) for k in range(width)]
+        srcs = [_source(cell + k, writers, rgn, image, defs) for k in range(width)]
         tabs = [s for s in srcs if s and s[0] == "table"]
         if not all(srcs) or not tabs or len({t[3] for t in tabs}) != 1:
             continue
@@ -172,19 +328,22 @@ def enumerate_targets(prog, code=(), addrs=None, limit=64):
     added = 0
     for proc in prog.procs.values():
         defs = _defs(proc)
-        writers = _writers(proc, defs)
+        writers = _writers(proc, defs, rgn)
+        preds = _preds(proc)
         for b in list(proc.blocks.values()):
             hit = _cell(b.term, defs) if type(b.term) is Switch else None
             if hit is None:
                 continue
             cell, width, base = hit
-            srcs = [_source(cell + k, writers, rgn, image) for k in range(width)]
+            srcs = [_source(cell + k, writers, rgn, image, defs) for k in range(width)]
             if not all(srcs) or not any(s[0] == "table" for s in srcs):
                 continue
             idx = {s[3] for s in srcs if s[0] == "table"}
             cols = {s[1].id for s in srcs if s[0] == "table"}
             ext = {i: span(rgn[i], cols, addr_owner, band) for i in cols}
-            dom = _domain(srcs, ext, limit) if len(idx) == 1 else range(0)
+            one = next(iter(idx)) if len(idx) == 1 else None
+            got = None if one is None else _range(proc.blocks, b.label, one, preds)
+            dom = _domain(srcs, ext, limit, got) if one is not None else range(0)
             added += _arms(proc, b, srcs, dom, image, base, band, addr_owner)
     return added
 
