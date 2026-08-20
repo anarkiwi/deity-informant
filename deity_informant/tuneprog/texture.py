@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .frame import fresh, frames
 from .graph import idoms, preds_of
-from .idioms import CMP, _neg, bitfields, fold
+from .idioms import CMP, negated, bitfields, fold
 from .ir import (
     Bin,
     Call,
@@ -122,7 +122,7 @@ def _testonly(proc, lbl, preds, uses):
 
 
 def _not(c):
-    return _neg(c) if type(c) is Bin and c.op in CMP else Bin("==", c, Const(0), 1)
+    return negated(c) if type(c) is Bin and c.op in CMP else Bin("==", c, Const(0), 1)
 
 
 def zerocarry(prog):

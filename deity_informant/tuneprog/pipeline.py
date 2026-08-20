@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import (
     copymerge,
+    copyview,
     emit,
     fold,
     frame,
@@ -346,11 +347,13 @@ def present(prog):
     live = L.needed(prog)[0]
     keep = L.wants(prog, live)
     view = structure.view(prog, live, keep)
+    copies = copyview.expand(view)
     texture.clean(view, frame.deltas(prog))
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
-    names = recover.recover(view, structure.structure(view))
-    views.decorate(view, names)
+    facts = copyview.naming_facts(view)
+    names = recover.recover(view, structure.structure(view), facts)
+    views.decorate(view, names, facts=facts)
     word.fold16(view, names)
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
@@ -359,6 +362,7 @@ def present(prog):
     st = structure.structure(view, L.wants(view, live))
     _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
     views.decorate(view, names, groups)
+    copyview.mark(st, copies)
     return view, st, names
 
 

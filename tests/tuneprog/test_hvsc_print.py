@@ -97,7 +97,7 @@ def test_automatas_cascade_blocks_fold_over_the_voice_index():
     ]
     assert len(hit) == 1, text  # both procedures hold it; one helper carries it
     lines = "\n".join(hit[0])
-    assert lines.count("while True") == 1 and "timer_4" in lines
+    assert lines.count("for v in 0..4:") == 1 and "rec2[v].timer_4" in lines
     assert [f["why"] for f in doc["refused"]]  # and what the index cannot name
 
 

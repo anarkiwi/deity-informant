@@ -8,8 +8,43 @@ instead: one field, one address per copy, listed once in the state header.
 from __future__ import annotations
 
 from .facts import Facts, MAXOPS, MAXROLE, leaf_loads, ops, sid_name, update_role
-from .ir import Const, Store
+from .ir import Bin, Const, SID_REG_HI, SID_REG_LO, Store, Var
 from .irwalk import addr_split, node_loads, unique_name
+
+SID_VOICE = 7  # the SID's per-voice register block
+
+
+def elems(r):
+    """How many elements a region's stride divides it into."""
+    return -(-r.size // max(r.stride, 1))
+
+
+def indexed(rgn, rids, vals, k):
+    """How differing addresses print: as an ``index``, as a ``table``, or ``no``.
+
+    One index serves one region a stride view already walks; addresses in
+    different regions need the per-copy table; the SID's own register file is
+    indexed by voice and by nothing else.
+    """
+    if rids is None:
+        return "index"
+    d = vals[1] - vals[0]
+    if all(SID_REG_LO <= v <= SID_REG_HI for v in vals):
+        return "index" if not d % SID_VOICE else "no"
+    if len(set(rids)) > 1:
+        return "table"
+    r = rgn.get(rids[0])
+    if r is None or r.kind == "io":
+        return "index"
+    return "index" if not d % max(r.stride, 1) and k <= elems(r) <= MAXROLE else "table"
+
+
+def step(var, d, v, w):
+    """``v`` plus ``d`` times the copy index, as an expression."""
+    out = Var(var) if abs(d) == 1 else Bin("*", Var(var), Const(abs(d), w), w)
+    if not v:
+        return out if d > 0 else Bin("-", Const(0, w), out, w)
+    return Bin("+" if d > 0 else "-", Const(v, w), out, w)
 
 
 def sid_fields(facts):
@@ -47,10 +82,10 @@ def cell_field(prog, facts, names, cell, sidf):
 def copy_groups(prog, names, folds=None, facts=None):
     """Name a fold's slots: ``voice[v].field`` over a per-copy address table.
 
-    The slots come from :mod:`.copyfold` and :mod:`.unroll`, which proved the
+    The slots come from :mod:`.copyview` and :mod:`.unroll`, which proved the
     copies one program modulo this table; here they only get names.
     """
-    folds = list((prog.meta.get("folds") or {}).values()) + list(folds or ())
+    folds = list(prog.meta.get("copyviews") or ()) + list(folds or ())
     if not folds:
         return names
     facts = facts or Facts(prog)
@@ -59,11 +94,12 @@ def copy_groups(prog, names, folds=None, facts=None):
         if not f["slots"] or f.get("named"):
             continue
         f["named"] = True
-        g = unique_name(f["group"], set(names.groups))
+        held = _same_view(names.groups.get(f["group"]), f)
+        g = f["group"] if held else unique_name(f["group"], set(names.groups))
         f["group"] = g
         if f.get("node") is not None:
             f["node"].group = g
-        cells = {}
+        cells, named = {}, {}
         # a run one relocation apart proves its mapping inside the loop it folded
         # and nowhere else; a static template's copies are that everywhere
         local = f.get("node") is not None
@@ -71,15 +107,36 @@ def copy_groups(prog, names, folds=None, facts=None):
             want = cell_field(prog, facts, names, cell, sidf)
             name = unique_name(want, set(cells))
             cells[name] = list(f["slots"][cell])
+            named[cell] = name
             for j, other in enumerate(f["slots"][cell]):
                 names.slots.setdefault(tuple(other), []).append((g, name, j, local))
-        names.groups[g] = {"stride": 0, "n": f["n"], "members": [], "cells": cells}
+        for key, cell in (f.get("columns") or {}).items():
+            if cell in named:
+                names.column[key] = (g, named[cell], cell[0])
+        names.groups[g] = {
+            "stride": held["stride"] if held else 0,
+            "n": f["n"],
+            "members": held["members"] if held else [],
+            "cells": cells,
+        }
     return names
 
 
-def decorate(prog, names, folds=None):
+def _same_view(held, f):
+    """A stride view whose every element this family's index selects: one view, not two.
+
+    Equal strides and the copy map are two proofs of the same struct, so the
+    fold's cells and the view's fields join under one name.
+    """
+    members = held.get("members") if held else None
+    if not members or held["n"] != f["n"] or held.get("cells"):
+        return None
+    return held if set(members) <= set(f.get("views") or ()) else None
+
+
+def decorate(prog, names, folds=None, facts=None):
     """Every group view the S6 passes add over the recovered names."""
-    facts = Facts(prog)
+    facts = facts or Facts(prog)
     copy_groups(prog, names, folds, facts)
     return field_split(prog, names, facts)
 
@@ -152,5 +209,5 @@ def _splittable(r, names):
         and r.id not in names.view
         and r.id not in names.image
         and r.id not in names.split
-        and -(-r.size // max(r.stride, 1)) > MAXROLE
+        and elems(r) > MAXROLE
     )

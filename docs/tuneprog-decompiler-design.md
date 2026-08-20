@@ -499,11 +499,18 @@ changes semantics; the state-machine form remains available as fallback.
   stride 1) likewise. Ghost/shadow detection: a region whose bytes flow
   unchanged into `sidw` (GT2's 25-byte image, JCH's shadows) → `sid_image`
   role, and the flush loop prints as `sid[0..24] = image`.
-- **Unrolled copies** (Galway/Follin voices, Walker's four modulators): find
-  procedures/loop bodies whose IR is identical modulo operands, with operand
-  vectors affine in a copy index; merge into one parameterised procedure and
-  union the regions (this *edits* IR → re-verify). Optional; without it the
-  output is correct but three times longer.
+- **Unrolled copies** (Galway/Follin voices, Walker's four modulators): *moved
+  to S2c* — the correspondence between k static copies of one template is a
+  property of the post-init image, so it is computed once before the IR exists
+  and the certified program already holds one body under the copy index `v`
+  (`siblings.py`, `copyrows.py`, `copymerge.py`; §5 S2c). What S6 still does is
+  print it: a per-copy column `T_x[v]` becomes the operand it stands for — an
+  affine one through the stride vocabulary (`sid[v].freq_lo`), any other through
+  a group view (`voice[v].field`) whose addresses the state header lists once —
+  and the family's loop prints as `for v in 0..k-1` (`copyview.py`). A column
+  neither rule names keeps its table read. `unroll.py` keeps the *view-level*
+  fold for consecutive isomorphic runs inside one body, which no static
+  correspondence covers.
 - **Tables**: element width from index scaling, parallel columns (same index
   into regions at constant offset), 1-based (`base−1,Y` with observed Y ≥ 1),
   pointer tables (lo/hi columns whose values are addresses read by streams),

@@ -15,7 +15,7 @@ from .facts import (
     image_copy,
     sid_image,
     update_role,
-    _scales,
+    scales,
 )
 from .irwalk import forwarder, unique_name
 from .structure import phase as _phase
@@ -50,6 +50,7 @@ class Names:
     u16: dict = field(default_factory=dict)
     u16group: dict = field(default_factory=dict)
     slots: dict = field(default_factory=dict)
+    column: dict = field(default_factory=dict)
     split: dict = field(default_factory=dict)
     copies: dict = None
 
@@ -268,16 +269,16 @@ def _shifted(facts, rs, d):
     return all(2 * len({x + i * d for x in pcs[0]} & p) >= len(p) for i, p in enumerate(pcs))
 
 
-def recover(prog, structured=None):
+def recover(prog, structured=None, facts=None):
     """The :class:`Names` for ``prog``; pass :func:`~.structure.structure`'s result."""
-    facts = Facts(prog)
+    facts = facts or Facts(prog)
     names = Names()
     tick = prog.meta.get("tick_proc")
     if structured and tick in structured:
         names.phase = _phase(structured[tick], prog.storage)
     _freq(prog, names)
     names.groups = _groups(prog, names)
-    names.scale = _scales(facts)
+    names.scale = scales(facts)
     names.image = image_copy(facts)
     for rid, delta in sorted(names.image.items()):
         names.role[rid] = "sid_image"

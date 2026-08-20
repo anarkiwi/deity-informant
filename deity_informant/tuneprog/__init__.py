@@ -26,13 +26,15 @@ Middle and back end (the executable program and its certificate):
 
 Presentation over the certified program (it is never edited):
 
-* :mod:`.structure` (S5) -- loops, if/else, switch, ``for``, the phase variable.
+* :mod:`.structure` / :mod:`.loops` (S5) -- loops, if/else, switch, the ``for``
+  a recurrence or a family's copies makes, the phase variable.
 * :mod:`.inline` / :mod:`.texture` / :mod:`.frame` / :mod:`.word` (S6) -- value
   folding, machine-texture removal, naming a residual program's frames, 16-bit
   views.
-* :mod:`.recover` (S6) -- struct views, roles and names for the storage.
+* :mod:`.recover` / :mod:`.views` / :mod:`.copyview` (S6) -- struct views, roles
+  and names for the storage; a per-copy column as the operand it stands for.
 * :mod:`.fold` / :mod:`.tails` / :mod:`.unroll` (S6) -- outlined helpers, shared
-  tails as procedures, isomorphic copies as one ``for``.
+  tails as procedures, consecutive isomorphic runs as one ``for``.
 * :mod:`.live` (S6) -- the values, arguments and returns a reader must see.
 * :mod:`.pseudocode` / :mod:`.printer` (S7 text form) -- the rendered statements
   and the ``tuneprog.md`` document around them.

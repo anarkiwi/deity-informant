@@ -92,8 +92,11 @@ def test_three_chained_copies_become_one_body_over_the_copy_index():
     assert doc["families"][0]["columns"] > 0 and not doc["refused"]
     text = merged(voices())[0]
     body = "\n".join(_body(text, "tick"))
-    assert "while True" in body and body.count("io[") >= 1, body
-    assert re.search(r"copies_\w+\[", body), body  # the per-copy columns, read once
+    assert "for v in 0, 1, 2:" in body, body  # S6 prints the index, not the table
+    assert "sid[v].ctrl" in body, body  # the SID column steps by the voice block
+    # copy 0's own cell sits in the code, not in the record the others share, so
+    # no one name covers that column and its table read stays
+    assert re.search(r"copies_\w+\[", body), body
     assert "unverified (ran for v = " in body, body
     _ = trace
 

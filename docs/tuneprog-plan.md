@@ -31,15 +31,16 @@ Contents
 | certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2 — 42 certificates, 841,891 ticks, 0 divergences, 0 envelope traps; 38 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt) |
-| code | `deity_informant/tuneprog/`, 40 modules, ≈ 11,600 lines, none over 500; 380 hermetic + 35 HVSC tests, 94 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 43 modules, 12,457 lines, none over 500; 432 hermetic + 35 HVSC tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (42/42 reproduce), `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
-| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding |
+| merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view |
 
-Ten stages, each an Opus agent with the certificate as its acceptance test:
+Fourteen stages, each an Opus agent with the certificate as its acceptance test:
 front end → certified core → presentation → fold/texture → Follin →
-GoatTracker ∥ SID Wizard ∥ Ghidra export → consolidation → copy folding. Every
+GoatTracker ∥ SID Wizard ∥ Ghidra export → consolidation → copy folding →
+stack elimination → the copy index (correspondence, front end, view). Every
 stage merged on green CI; `tools/tuneprog_recert.py` reproduces all 42
-certificates on `main`.
+certificates on `main`. **Both gates of §6 are met.**
 
 ## 2. What the prototypes proved
 
@@ -75,7 +76,7 @@ are honest noise. Two closures earn their place: *closure by siblings* (lift the
 arms one copy ran into its isomorphic copies, marked unverified) and the
 bounded static walk the design already named. Both add unverified statements
 that the certificate must count separately; both leave verified behaviour
-untouched. *Outcome (PR #234).* Both closures exist: `siblings.py` recovers k copies of one template from the post-init image (opcode-stream alignment with resync over an insertion, a chain check, extension through the dispatch by order-preserving arm matching); `closure.py` lifts the arms one copy executed into its siblings under their own operands, and the same front end builds a second, *closed* program that verifies against the same trace with 0 divergences (`--closure siblings|none`, default on). `copyfold.py` proves the fold (equal alpha-renamed token streams, one per-copy address mapping, affine constants). Follin song 1's `tick()` is now one `for v in 0, 1, 2:` with the 21-arm command switch inside (1,421 → 669 printed lines); Automatas' cascades fold twice (`for v in 0, 1: for w in 0, 1, 2`, 717 → 637). **What it does not do**, stated as its boundary: (a) Follin's 19 sound-effect subtunes do not fold — an effect uses one or two voices and the silent voice never reaches its dispatch, so its arms have nothing to pair with and the other voices' handler bodies become a cross-copy edge, which the fold refuses (songs 1–11, 16, 20 fold); (b) the `--songs all` union does not fold — one voice's stream read is access class `chk` (it reaches bytes outside the written set over 32 subtunes) while the others are `ram`; (c) three of the 21 command arms stay `trap 'unverified'` because no voice ever sent them, and the two per-copy entries past the table pair with nothing; (d) **44 of Follin song 1's 283 printed statements are unverified** — closure arms lifted from a sibling voice that ran them; the printer reports this only as a header count, not per statement; (e) Automatas' three row-advance blocks (three unrelated table regions) do not fold; (f) discovery depends on the horizon (Automatas' cascades fold fully only over the whole song). So the printed program is no longer purely trace-closed; it carries code verified for a *different* voice, guarded by the same branches that were traps before.
+untouched. *Outcome (PR #234).* Both closures exist: `siblings.py` recovers k copies of one template from the post-init image (opcode-stream alignment with resync over an insertion, a chain check, extension through the dispatch by order-preserving arm matching); `closure.py` lifts the arms one copy executed into its siblings under their own operands, and the same front end builds a second, *closed* program that verifies against the same trace with 0 divergences (`--closure siblings|none`, default on). `copyfold.py` proves the fold (equal alpha-renamed token streams, one per-copy address mapping, affine constants). Follin song 1's `tick()` is now one `for v in 0, 1, 2:` with the 21-arm command switch inside (1,421 → 669 printed lines); Automatas' cascades fold twice (`for v in 0, 1: for w in 0, 1, 2`, 717 → 637). **What it does not do**, stated as its boundary: (a) Follin's 19 sound-effect subtunes do not fold — an effect uses one or two voices and the silent voice never reaches its dispatch, so its arms have nothing to pair with and the other voices' handler bodies become a cross-copy edge, which the fold refuses (songs 1–11, 16, 20 fold); (b) the `--songs all` union does not fold — one voice's stream read is access class `chk` (it reaches bytes outside the written set over 32 subtunes) while the others are `ram`; (c) three of the 21 command arms stay `trap 'unverified'` because no voice ever sent them, and the two per-copy entries past the table pair with nothing; (d) **44 of Follin song 1's 283 printed statements are unverified** — closure arms lifted from a sibling voice that ran them; the printer reports this only as a header count, not per statement; (e) Automatas' three row-advance blocks (three unrelated table regions) do not fold; (f) discovery depends on the horizon (Automatas' cascades fold fully only over the whole song). So the printed program is no longer purely trace-closed; it carries code verified for a *different* voice, guarded by the same branches that were traps before. *Superseded by #241–#244* (§6 item 1, §7b): the correspondence is now exact and spent in the front end, `closure.py` and `copyfold.py` are gone, (a)–(d) are answered and (e)–(f) stand as backlog.
 
 **L3 — Regions need per-phase views.** One-loop init clears (`STA $21,X` over
 `$21–$97`, GT2's blocks A+B, SID Wizard's 105-byte VARIABLES) merge every field
@@ -88,7 +89,10 @@ frames, 16-bit views, tokens; the consolidation pass merged 69 duplicated
 helpers. The stable core is: views over regions (stride, group table, origin,
 element width, per-phase), a naming plane (role → name, family dictionary →
 name), and structural passes proven by alpha-equivalence. New mechanisms should
-be expressed in that vocabulary or not added.
+be expressed in that vocabulary or not added. *Confirmed by #244:* the copy view
+adds no naming rule — an affine column prints through the stride vocabulary that
+already existed and any other through the group-slot plane, and a column neither
+describes keeps its address visible.
 
 **L5 — Copy identity in the wild is structural, not byte-level.** Within a
 family ~5 % of tunes share an executed opcode sequence, but 6-gram similarity is
@@ -163,10 +167,11 @@ Deduplicated from every stage's report; owner = the module that would change.
 | ~~fold the sound-effect subtunes~~ *done (#242): a silent voice is a zero in the coverage vector; 24 of Follin's 32 subtunes fold at least one family and 8 refuse on a cross-copy edge (below)* | copy fold (#234) | presentation | siblings, copymerge |
 | ~~mark unverified statements per statement in the printed text~~ *done (#242)* | copy fold (#234) | presentation, honesty | printer, pseudocode |
 | ~~fold the `--songs all` union~~ *done (#242): the union over `v` of a folded access is one region, so the class question the copies differed on goes away* | copy fold (#234) | presentation | copymerge, build |
-| Automatas' row-advance blocks (three unrelated table regions, and no chain edge joins them) | copy fold (#234) | presentation | unroll, views |
-| an edge that leaves one copy for another anywhere but the chain edge refuses the family (Follin's 8 one-voice effects, *Automatas*' `$112A` ×3 and `$16AB` ×2): a proof that such an edge *is* the run leaving copy *j* for copy *j+1*, and not a jump into code the copies share | copy index (#242) | fold reach | copyrows |
+| *Automatas*' row-advance blocks: `unroll` covers consecutive isomorphic runs inside one body (Follin's init copies, *Automatas*' write-out), and these three read three unrelated table regions whose addresses are not one relocation of each other, so it does not fold them and no chain edge joins them for the copy index either | copy fold (#234), stage C (#244) | presentation | unroll, views |
+| an edge that leaves one copy for another anywhere but the chain edge refuses the family (Follin's 8 one-voice effects, *Automatas*' `$112A` ×3 and `$16AB` ×2): a proof that such an edge *is* the run leaving copy *j* for copy *j+1*, and not a jump into code the copies share. **This is the remaining boundary of the SFX-subtune fold** and the only one left on §6 item 1 | copy index (#242), stage C (#244) | fold reach | copyrows |
 | a merged family's patched dispatch loses `jumptab`'s static table closure: the writers' store address is a per-copy column, not a constant, so the table's unobserved arms are no longer enumerated (Follin song 1 at 30 s: 49 `trap 'unverified'` arms become 3) | copy index (#242) | closure | jumptab, copymerge |
-| a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`: the `for v in 0..k-1` shape and `voice[v].field` naming are the view pass stage C owns | copy index (#242) | presentation | views, structure |
+| ~~a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`~~ *done (#244): `copyview.py` prints every column as the operand it stands for and `loops.copies` makes the loop a `for v in 0..k-1`; a column whose copies name different offsets of a record, or whose readers name more than one region, keeps its table read* | copy index (#242) | presentation | views, structure |
+| `unroll`'s view-level fold substitutes copy 0's constants into the loop it makes, so a constant of that body equal to one of its slots would print with the loop index -- the family columns stopped doing this in #244 by keeping their read; `unroll` has no column to keep | stage C (#244) | presentation, honesty | unroll, views |
 | periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
@@ -194,7 +199,7 @@ they are about the *core* matching the design rather than about breadth:
    body under `for v in 0..k-1` *in the certified S4 program*, every per-copy
    operand an address through a per-copy table `T[v]`, coverage recorded per
    `(template site, v)`, and the certificate reproduces on the folded program.
-   *Status after stage B (#242):* **met.** The correspondence is spent before the
+   *Status after stage C (#244):* **met.** The correspondence is spent before the
    IR exists: `copyrows.py` decides what folds, `copymerge.py` plans it, and
    `build.py` lays the rows once -- an operand the copies disagree on is a load
    from a per-copy column `T_x[v]`, the chain edge is `v += 1; if v < k: header`,
@@ -206,7 +211,25 @@ they are about the *core* matching the design rather than about breadth:
    share one arm body), and a cross-copy edge anywhere but the chain refuses the
    family. `closure.py` and `--closure` are gone; `--no-merge` builds what S2b
    built. All 42 certificates reproduce with `copies` added and the statement,
-   block and region counts of the folded program.
+   block and region counts of the folded program. Stage C (#244) spends the
+   representation in the text: one S6 pass (`copyview.py`) reads each per-copy
+   column once and prints it as the operand it stands for -- an affine column as
+   that step in `v`, through the stride vocabulary that already existed
+   (`sid[v].freq_lo`, `b640F[v]`), any other as copy 0's own operand plus a group
+   slot `views.py` names `voice[v].field` and lists address by address in the
+   state header -- and a family's loop prints as `for v in 0..k-1` over the
+   coverage vector the correspondence proved, so the chain edge and the `v += 1`
+   are the header. Measured (presentation only; `tuneprog.py`, `certificate.json`
+   and every certificate byte-identical, recert 42/42): Follin's certified song 1
+   is 757 printed lines with `tick()` 495 of them (794/578 before), 51 named
+   per-copy fields in one `voice[3]` view, 2 of 60 columns left as table reads;
+   *Automatas* 744 → 716 lines over the whole song (800 → 782 at 30 s) with both
+   cascades `for v in 0..k-1` over `rec2[v]`; GoatTracker ×2, SID Wizard ×2 and
+   Commando song 1 print byte-identically to what stage B produced, having no
+   family, and Commando song 2's 2-copy family at `$5301` becomes a `for w in 0, 1`
+   over `copy0[w].timer`. `copyfold.py` is gone, `unroll.py`
+   keeps only the view-level fold with no static correspondence, and the
+   presentation layer has no cross-module private imports left.
    *Review of #234 (2026-08-18):* the fold was placed at the end of a lossy
    pipeline and asked to prove a syntactic identity the pipeline had destroyed
    (trace closure drops arms, S4 merges block starts, SSA renames); the exact
@@ -215,10 +238,11 @@ they are about the *core* matching the design rather than about breadth:
    two tokenisers (`unroll`, `copyfold`) and a second program build; the closed
    program's "0 divergences" is tautological (lifted arms have count 0); every
    listed boundary (SFX subtunes, the union's `chk`/`ram` class, row-advance
-   blocks, horizon-dependent discovery) is one cause. The gate is therefore
-   **not met** and is re-specified in §7b; #234's mechanism is the prototype
-   that found the requirements. *Stage A is done (#241): the correspondence is
-   exact and its thresholds are gone; stages B and C remain.*
+   blocks, horizon-dependent discovery) is one cause. That review is what §7b
+   re-specified; #234's mechanism was the prototype that found the requirements.
+   **What remains a boundary, not a gap:** 8 of Follin's 32 subtunes still refuse
+   their family on a cross-copy edge (§5), and a merged family's patched dispatch
+   loses `jumptab`'s static table closure (§5).
 2. **The certified executable is stack-free** — the S4 program has no `SP`
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
@@ -413,6 +437,43 @@ Measurements are in §6 item 1 and §10 row 3.
 replaces `copyfold.py` + `unroll.py`; `views.py` names `T_x` fields; docs
 (`tuneprog.md`, the prototype records, this plan: gate closed).
 
+*Outcome (#244).* `copyview.py` (279 lines) is that pass: it collects every
+column of the view, the accesses that read it and the copy index each occurrence
+names, then decides once per column. Values that step affinely become that step
+in `v`, so nothing new prints them -- `regcell`'s 7-byte voice block gives
+`sid[v].freq_lo`, a region's own stride gives `b640F[v]`; values that do not keep
+their table read and are named by the group view `views.copy_groups` builds from
+the same role/SID-shadow/`b%04X` vocabulary, which the state header lists address
+by address. **The named column keeps its read on purpose**: substituting copy 0's
+operand was tried and is unsound -- an operand every copy agrees on can equal a
+slot's address, and inside the loop nothing tells the two apart (Commando song 2
+holds one of each at `$551A`), so the printed index is the copy the *access* names
+and a constant stays copy *j*'s own cell. The field names still come from the
+addresses, through a substituted twin of the view (`copyview.naming_facts`). Two
+rules refuse rather than invent a name: a column whose copies sit at different
+offsets of a record is not one field, and two columns whose copy 0 agrees but
+whose copies do not are two fields and neither gets a name -- both keep the read,
+address visible (2 of Follin's 60 columns, 2 of *Automatas*' five). Where a
+family's indexed columns select exactly a stride view's regions the two are one
+view under one name, which is what makes Follin's certified song 1 one `voice[3]`
+of 51 fields. The loop comes from `loops.copies`: a merged family's `for` runs the
+coverage vector, not a recurrence the exit tests must re-derive (*Automatas*'
+cascade leaves its loop through a `switch` arm, which `induction` cannot read),
+and `strip` follows the branches so the chain edge is the header wherever the copy
+ended its work -- only where nothing follows it, since a test mid-body guards the
+statements after it. `copyfold.py` is deleted, `_step`/`indexed`/`elems` move into
+`views.py` as the algebra `unroll` and `copyview` share, and `structure.py` splits
+(`loops.py`) to stay under 500 lines. **What it does not do:** `unroll.py` still
+finds only consecutive isomorphic runs inside one body with no static
+correspondence -- it folds Follin's init copies and *Automatas*' write-out, and
+still does not fold the three row-advance blocks (§5); a group slot with an index
+prints from the cell, so a clear loop over a block whose first cell a family names
+reads `voice[0].b0021[v]`; and `unroll`'s own groups still substitute copy 0's
+constants into the loop they made, which carries the same ambiguity the family
+columns no longer do -- bounded to that loop by the `local` flag, but a run whose
+body holds a constant equal to one of its slots would print it with the loop
+index (§5).
+
 ## 8. Next prototypes, ranked
 
 The question is which few prototypes buy the most information before the
@@ -473,7 +534,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 | 1 | ~~gate 2 — stack (§7)~~ *done (#237)* | `frames.py`, `stack.py`, `frame.py`, `interp.py`, `trace.py`, `emit.py`, `pipeline.py`, tests | met: `SP` absent from all 42 exemplar `tuneprog.py`, 42/42 recert, §6 item 2 for the measurements |
 | 2 | ~~gate 1 stage A (§7b)~~ *done (#241)* | `siblings.py`, `tests/tuneprog/test_siblings.py` | met: `GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT` gone; property tests over seeded random templates; Follin s1 one family of three voices (419 rows vs 420, printed text identical), Automatas' two cascade runs still fold (763 → 759 lines), GT2 ×2 and SW ×2 none; 42/42 recert |
 | 3 | ~~gate 1 stage B (§7b)~~ *done (#242)* | `copyrows.py`, `copymerge.py` (new), `build.py`+`lower.py`, `regions.py`, `jumptab.py`, `ssa.py`, `ir.py`, `printer.py`, `pipeline.py`, `emit.py`; `closure.py` deleted | met: Follin song 1 is one body of 400 folded rows over 60 per-copy columns and certifies unchanged (1,229 statements in 441 blocks → 671 in 254, 68 regions → 44, 133 of 471 merged statements unverified and marked per statement); the `--songs all` union folds too (1,553 → 770, 520 → 294, 75 → 45, 5 unverified); *Automatas* folds its 6-copy cascade in both procedures that hold it (995 → 805, 305 → 241) and refuses two families with their reason; 24 of Follin's 32 subtunes fold at least one family and 8 refuse; GoatTracker ×2 and SID Wizard ×2 have no family and are byte-identical; `tools/tuneprog_recert.py` 42/42, with ticks, period, `complete` and divergences unchanged everywhere |
-| 4 | gate 1 stage C (§7b) | `copyfold.py`+`unroll.py`→one pass, `views.py`, docs | recert green; one tokeniser; plan v3 gates closed |
+| 4 | ~~gate 1 stage C (§7b)~~ *done (#244)* | `copyview.py` (new), `loops.py` (new), `views.py`, `structure.py`, `printer.py`, `pseudocode.py`, `pipeline.py`, `unroll.py`; `copyfold.py` deleted; docs | met: one tokeniser (`unroll`), no cross-module private imports in the presentation layer, every module ≤ 500 lines; Follin's certified song 1 794 → 757 printed lines (`tick()` 578 → 495) as one `for v in 0, 1, 2` with the 21-arm switch inside and 51 `voice[v].` fields, *Automatas* 800 → 782 at 30 s (744 → 716 over the whole song) with both cascades `for v in 0..k-1`, GT2 ×2 / SW ×2 / Commando song 1 byte-identical; `tools/tuneprog_recert.py` 42/42 with every certificate byte-identical |
 | — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |
 
 Every brief carries the global directives (no tuning constants — a threshold is

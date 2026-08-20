@@ -7,12 +7,12 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 
 from __future__ import annotations
 
-from .ir import Bin, Let, REGVAR
+from .ir import Bin, Let, REGVAR, copyval
 from .irwalk import call_order, forwarder
 from .live import printable
 from .machine import PAL_FRAME
-from .pseudocode import IND, NEG, Printer, _hex
-from .structure import Blk, Case, Cond, For, Jump, Loop, hidden, strip
+from .pseudocode import IND, NEG, Printer, hexlit
+from .structure import Blk, Case, Cond, For, Jump, Loop, hidden, strip, walk
 
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
@@ -23,6 +23,9 @@ class Body(Printer):
     def render(self, name, body):
         self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
         self.lastsrc = None
+        self.hide = frozenset(
+            n for x in walk(body) if type(x) is For and copyval(x.var) for n in x.hide
+        )
         p = self.prog.procs[name]
         args = ", ".join(REGVAR[i].lower() for i in self.params[name])
         head = "%s(%s):" % (self.names.procs.get(name, name), args)
@@ -111,7 +114,7 @@ class Body(Printer):
         out = ["%sswitch %s:" % (pad, self.expr(n.e))]
         arms = self.arms([b for _v, b in n.cases], proc, depth + 2)
         for (v, _b), body in zip(n.cases, arms):
-            out.append("%s%scase %s:" % (pad, IND, _hex(v)))
+            out.append("%s%scase %s:" % (pad, IND, hexlit(v)))
             out.extend(body)
         return out
 
@@ -119,17 +122,16 @@ class Body(Printer):
         pad = IND * depth
         vals = tuple(v // n.scale for v in n.values)
         rng = _range(vals)
-        alias, hide = dict(self.alias), set(self.hide)
-        group, fvar = self.fgroup, self.fvar
+        alias, hide, fvars = dict(self.alias), set(self.hide), dict(self.fvars)
         var = _ivar(self.fors)
         self.alias[n.var] = (var, n.scale)
         self.hide |= n.hide
         self.fors += 1
         if n.group:
-            self.fgroup, self.fvar = n.group, var
+            self.fvars[n.group] = var
         body = self.arms([strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
-        self.fgroup, self.fvar = group, fvar
+        self.fvars = fvars
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
 
     def loop(self, n, proc, depth):
@@ -273,17 +275,17 @@ def _state(prog, names):
             )
             out += ["  .%-14s +%d" % (f, k) for k, f in sorted(d["fields"].items())]
             continue
-        if d.get("cells"):
-            out.append("%s[%d]  per-copy cells, %d fields" % (g, d["n"], len(d["cells"])))
-            out += [
-                "  .%-14s %s" % (f, " ".join("$%04X" % a for _r, a in cells))
-                for f, cells in d["cells"].items()
-            ]
-            continue
+        cells = d.get("cells") or {}
         fields = {}
         for rid in sorted(set(d["members"]), key=lambda i: _base(prog, i)):
             fields.setdefault(names.view[rid][1], []).append(rid)
-        out.append("%s[%d]  stride %d, %d fields" % (g, d["n"], d["stride"], len(fields)))
+        what = (["per-copy cells"] if cells else []) + (
+            ["stride %d" % d["stride"]] if fields else []
+        )
+        out.append("%s[%d]  %s, %d fields" % (g, d["n"], ", ".join(what), len(cells) + len(fields)))
+        out += [
+            "  .%-14s %s" % (f, " ".join("$%04X" % a for _r, a in cs)) for f, cs in cells.items()
+        ]
         for fname, rids in fields.items():
             out.append(
                 "  .%-14s %-24s %-10s %s"
