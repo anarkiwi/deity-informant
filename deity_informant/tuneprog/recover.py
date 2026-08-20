@@ -50,6 +50,7 @@ class Names:
     u16: dict = field(default_factory=dict)
     u16group: dict = field(default_factory=dict)
     slots: dict = field(default_factory=dict)
+    column: dict = field(default_factory=dict)
     split: dict = field(default_factory=dict)
     copies: dict = None
 
@@ -268,9 +269,9 @@ def _shifted(facts, rs, d):
     return all(2 * len({x + i * d for x in pcs[0]} & p) >= len(p) for i, p in enumerate(pcs))
 
 
-def recover(prog, structured=None):
+def recover(prog, structured=None, facts=None):
     """The :class:`Names` for ``prog``; pass :func:`~.structure.structure`'s result."""
-    facts = Facts(prog)
+    facts = facts or Facts(prog)
     names = Names()
     tick = prog.meta.get("tick_proc")
     if structured and tick in structured:

@@ -99,7 +99,7 @@ def copy_groups(prog, names, folds=None, facts=None):
         f["group"] = g
         if f.get("node") is not None:
             f["node"].group = g
-        cells = {}
+        cells, named = {}, {}
         # a run one relocation apart proves its mapping inside the loop it folded
         # and nowhere else; a static template's copies are that everywhere
         local = f.get("node") is not None
@@ -107,8 +107,12 @@ def copy_groups(prog, names, folds=None, facts=None):
             want = cell_field(prog, facts, names, cell, sidf)
             name = unique_name(want, set(cells))
             cells[name] = list(f["slots"][cell])
+            named[cell] = name
             for j, other in enumerate(f["slots"][cell]):
                 names.slots.setdefault(tuple(other), []).append((g, name, j, local))
+        for key, cell in (f.get("columns") or {}).items():
+            if cell in named:
+                names.column[key] = (g, named[cell], cell[0])
         names.groups[g] = {
             "stride": held["stride"] if held else 0,
             "n": f["n"],
@@ -130,9 +134,9 @@ def _same_view(held, f):
     return held if set(members) <= set(f.get("views") or ()) else None
 
 
-def decorate(prog, names, folds=None):
+def decorate(prog, names, folds=None, facts=None):
     """Every group view the S6 passes add over the recovered names."""
-    facts = Facts(prog)
+    facts = facts or Facts(prog)
     copy_groups(prog, names, folds, facts)
     return field_split(prog, names, facts)
 

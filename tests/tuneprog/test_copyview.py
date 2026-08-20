@@ -7,7 +7,7 @@ The substitution must be exact -- an affine plan evaluated at ``v = j`` is copy
 
 import random
 
-from deity_informant.tuneprog import copyview, live as L, pipeline, structure, views
+from deity_informant.tuneprog import copyview, live as L, pipeline, printer, structure, views
 from deity_informant.tuneprog.ir import Const, Load, Let, Rgn, Var
 from deity_informant.tuneprog.recover import Names
 from deity_informant.tuneprog.irwalk import node_exprs, walk
@@ -121,7 +121,7 @@ def test_every_affine_substitution_reproduces_each_copy_s_own_operand():
     assert hits
 
 
-def test_every_table_substitution_names_exactly_the_copies_own_cells():
+def test_every_group_view_column_names_exactly_the_copies_own_cells():
     _prog, view = _view(voices())
     _tabs, cols = _cols(view)
     hits = 0
@@ -129,15 +129,18 @@ def test_every_table_substitution_names_exactly_the_copies_own_cells():
         plan, cells = copyview._plan(col, view.by_id())
         if cells is None:
             continue
-        assert [a for _r, a in cells] == col.vals and plan == ("const", col.vals[0], col.w)
+        # the read stays, so the printed index is the copy the access itself names
+        assert [a for _r, a in cells] == col.vals and plan == ("read",)
         hits += 1
     assert hits
 
 
-def test_the_view_keeps_only_the_column_reads_no_rule_could_name():
+def test_the_view_keeps_the_column_reads_a_group_view_names_and_no_others():
     _prog, view = _view(voices())
     tabs, cols = _cols(view)
-    kept = {k for k, c in cols.items() if copyview._plan(c, view.by_id())[0] is None}
+    plans = {k: copyview._plan(c, view.by_id())[0] for k, c in cols.items()}
+    kept = {k for k, p in plans.items() if p is None or p[0] == "read"}
+    assert kept and any(p is not None and p[0] == "index" for p in plans.values())
     copyview.expand(view)
     assert _reads(view, tabs) == kept
     names = {s.n for s in _stmts(view) if type(s) is Let}
@@ -190,7 +193,7 @@ def test_random_columns_either_reproduce_their_values_or_keep_the_read():
             assert [_eval(e, j) for j in range(k)] == vals
         elif cells is not None:
             assert [a for _r, a in cells] == vals
-    assert seen == {"index", "const"}  # both rules fire over the sample
+    assert seen == {"index", "read"}  # both rules fire over the sample
 
 
 def test_a_column_read_left_in_place_still_loads_from_its_table():
@@ -226,3 +229,21 @@ def test_a_stride_view_the_index_does_not_select_keeps_its_own_name():
     f["views"], f["named"] = {7}, False
     views.copy_groups(view, names, [])
     assert sorted(names.groups) == ["voice", "voice_2"]
+
+
+def test_a_constant_of_the_merged_body_never_borrows_the_loop_index():
+    """A family's cell names the copy it belongs to wherever the address is a constant.
+
+    Only the column read is indexed by ``v``; an operand every copy agrees on is
+    copy *j*'s own byte, and printing it as ``g[v].field`` would be a lie.
+    """
+    _prog, view = _view(voices())
+    copies = copyview.expand(view)
+    names = Names()
+    views.copy_groups(view, names, copies)
+    hits = [h for hs in names.slots.values() for h in hs]
+    assert hits and all(not local for _g, _n, _j, local in hits)
+    p = printer.Body(view, names, pcs=False)
+    p.fvars = {hits[0][0]: "v"}
+    rid, addr = next(k for k, hs in names.slots.items() if hs[0][2] == 1)
+    assert p.slot(names.slots[(rid, addr)], rid, addr, None).endswith("[1].%s" % hits[0][1])

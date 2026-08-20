@@ -102,15 +102,22 @@ def test_ghouls_voice_copies_are_one_body_over_the_copy_index():
 
     tick = proc_body(text, "tick")
     lines = "\n".join(tick)
-    assert [l for l in tick if l.strip() == "for v in 0, 1, 2:"] or tick[:4], tick[:4]
+    assert [l for l in tick if l.strip().startswith("for v in 0, 1, 2:")], tick[:4]
     # every per-copy column is the operand it stands for, none a table read
     assert lines.count("voice[v].") > 40 and "copies_%04X[" % VOICE[0] not in lines
     assert lines.count("sid[v].") > 4  # the SID cells step by the voice block
-    # the command switch is inside the loop, one arm body for the three voices
+    # the command switch is inside the loop, one arm body for the three voices;
+    # each voice dispatches on its own cell, which is a constant, not the column
     arms = [
-        i for i, l in enumerate(tick) if l.strip().startswith("switch voice[v].b%04X" % DISPATCH[0])
+        i for i, l in enumerate(tick) if l.strip() == "switch voice[%d].b%04X:" % (0, DISPATCH[0])
     ]
-    assert len(arms) == 3 and lines.count("case $") >= 21
+    arms += [
+        i for i, l in enumerate(tick) if l.strip() == "switch voice[%d].b%04X:" % (1, DISPATCH[0])
+    ]
+    arms += [
+        i for i, l in enumerate(tick) if l.strip() == "switch voice[%d].b%04X:" % (2, DISPATCH[0])
+    ]
+    assert len(arms) == 3 and sum(1 for l in tick if l.strip().startswith("case $")) >= 21
     assert lines.count("goto L") >= 14  # the arms two of the three voices share
     assert "unverified (ran for v = " in lines
     assert len(view.procs["tick"].blocks) < 250

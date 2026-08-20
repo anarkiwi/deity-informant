@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from math import gcd
 
-from .ir import Bin, Call, Const, If, Let, Load, Store, Trap, Var, copyval, evalbin, succs
+from .ir import Bin, COPYVAR, Call, Const, If, Let, Load, Store, Trap, Var, copyval, evalbin, succs
 from .graph import preds_of
 
 CAP = 256  # how far a recurrence is iterated before its domain is refused
@@ -161,7 +161,7 @@ def copies(proc, header, latches):
             s.n
             for l in sorted(latches)
             for s in proc.blocks[l].stmts
-            if type(s) is Let and copyval(s.n) and type(s.e) is Var
+            if type(s) is Let and s.n.startswith(COPYVAR) and type(s.e) is Var
         ),
         None,
     )

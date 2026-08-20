@@ -251,15 +251,20 @@ def strip(body, label, hide, top=True):
     """Drop the induction test and the back edge a ``for`` header already states.
 
     A family's chain edge sits wherever the copy ended its own work, so the test
-    is looked for down the branches; only the outermost back edge is implied.
+    is looked for down the branches -- but only where nothing follows it, since a
+    test mid-body guards the statements after it. Only the outermost back edge is
+    implied.
     """
-    out = []
-    for n in body:
+    out, tail = [], True
+    for n in reversed(body):
         t = type(n)
-        if t is Cond and jumps_only(n.then + n.els, hide, label):
+        if t is Jump and n.label == label:
+            if not top:
+                out.append(n)
             continue
-        if t is Jump and n.label == label and top:
+        if t is Cond and tail and jumps_only(n.then + n.els, hide, label):
             continue
+        tail = False
         if t is Cond:
             out.append(
                 Cond(n.c, strip(n.then, label, hide, False), strip(n.els, label, hide, False))
@@ -270,7 +275,7 @@ def strip(body, label, hide, top=True):
             )
         else:
             out.append(n)
-    return out
+    return out[::-1]
 
 
 def jumps_only(nodes, hide, label=""):

@@ -13,6 +13,7 @@ from .ir import (
     Bin,
     Call,
     Const,
+    COPYVAR,
     Let,
     Load,
     R16,
@@ -22,7 +23,7 @@ from .ir import (
     Var,
     W16,
 )
-from .irwalk import addr_split, any_load
+from .irwalk import addr_split, any_load, walk
 from .live import needed
 from .facts import GLOBAL_REG, VOICE_REG
 
@@ -80,7 +81,7 @@ class Printer:
         name = self.names.u16.get((lo, hi))
         if name is None:
             return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
-        return self.cell(lo, *self.addr_of(a, self.rgn.get(lo)), name=name)
+        return self.colref(lo, a) or self.cell(lo, *self.addr_of(a, self.rgn.get(lo)), name=name)
 
     def load16(self, rid, a):
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
@@ -96,14 +97,19 @@ class Printer:
         g, fname, j, local = hit
         if local and g not in self.fvars:
             return None
-        i = self.fvars.get(g) or str(j)
+        # a family's cell is copy j's own address wherever it stands; only the
+        # local fold, which substituted copy 0's constants, reads the loop index
+        i = (self.fvars.get(g) or str(j)) if local else str(j)
         out = "%s[%s].%s" % (g, i, fname)
         r = self.rgn.get(rid)
         if idx is None:
             return out
-        if r is not None and addr != r.zero:
-            return None  # an index counts from the region's origin, not from a cell inside it
-        return "%s[%s]" % (out, self.index(r, addr, idx) if r else _bare(self.expr(idx, False)))
+        if r is None:
+            return "%s[%s]" % (out, _bare(self.expr(idx, False)))
+        inner = _unoffset(idx, addr - r.zero)
+        if addr != r.zero and inner is idx:
+            return None  # the index counts from the region, not from this cell
+        return "%s[%s]" % (out, self.index(r, r.zero, inner))
 
     def field(self, rid, r, addr, idx):
         """``rec[i].field`` for a block the play-phase stride splits into records.
@@ -267,11 +273,29 @@ class Printer:
         if e.cls == "io":
             a = self.addr_of(e.a, None)[0]
             return "input($%04X)" % a if a is not None else "input(%s)" % self.expr(e.a, False)
+        hit = self.colref(e.r, e.a)
+        if hit is not None:
+            return hit
         r = self.rgn.get(e.r)
         addr, idx = self.addr_of(e.a, r)
         if r is None and addr is not None:
             return "mem[%s]" % hexlit(addr)
         return self.cell(e.r, addr, idx)
+
+    def colref(self, rid, a):
+        """``voice[v].field`` for an access through a per-copy column, or ``None``.
+
+        The column read is the address, so the index is the copy the access
+        itself names -- no constant of the merged body can be mistaken for it.
+        """
+        base, rest = (a.a, a.b) if type(a) is Bin and a.op == "+" else (a, None)
+        for x, y in ((base, rest), (rest, base)) if rest is not None else ((base, None),):
+            hit = self.names.column.get((x.r, x.lo)) if type(x) is Load else None
+            if hit is None or hit[2] != rid:
+                continue
+            out = "%s[%s].%s" % (hit[0], self.expr(_copyidx(x.a), False), hit[1])
+            return out if y is None else "%s[%s]" % (out, _bare(self.expr(y, False)))
+        return None
 
     # ---- statements --------------------------------------------------------
     def stmt(self, s):
@@ -320,7 +344,7 @@ class Printer:
             else:
                 lhs = "io[%s]" % (hexlit(base) if base is not None else self.expr(s.a, False))
         else:
-            lhs = self.cell(s.r, addr, idx)
+            lhs = self.colref(s.r, s.a) or self.cell(s.r, addr, idx)
         out = self.compound(lhs, s, addr)
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:
@@ -340,6 +364,11 @@ class Printer:
 
     def forget(self, rid):
         self.mem = {k: v for k, v in self.mem.items() if not _reads(k, rid)}
+
+
+def _copyidx(a):
+    """The copy index a column read's address names."""
+    return next((x for x in walk(a) if type(x) is Var and x.n.startswith(COPYVAR)), Const(0))
 
 
 def _bare(s):
