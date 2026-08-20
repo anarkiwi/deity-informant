@@ -64,7 +64,7 @@ presentation  structure 345  loops 217  inline 199  texture 475  frame 44
               facts 223  recover 323  views 213
 text          pseudocode 424  printer 384
 driver        pipeline 477  __init__ 123
-baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,196 lines
+baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,198 lines
 ```
 
 Stage entry points, which are also the module boundaries:
