@@ -172,6 +172,10 @@ Deduplicated from every stage's report; owner = the module that would change.
 | ~~a merged family's patched dispatch loses `jumptab`'s static table closure~~ *done (P1): a column is read-only, so copy j's writer is its expression with each column read replaced by that copy's entry, and the same enumeration runs per copy (Follin song 1 at 30 s: 3 arms → 39, three dispatches of 21 each)* | copy index (#242) | closure | jumptab, copymerge |
 | ~~a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`~~ *done (#244): `copyview.py` prints every column as the operand it stands for and `loops.copies` makes the loop a `for v in 0..k-1`; a column whose copies name different offsets of a record, or whose readers name more than one region, keeps its table read* | copy index (#242) | presentation | views, structure |
 | ~~`unroll`'s view-level fold substitutes copy 0's constants into the loop it makes~~ *done (P1): a constant that does not step keeps its literal already; where it equals a cell the run relocates, nothing inside the loop tells the two apart and the run does not fold* | stage C (#244) | presentation, honesty | unroll, views |
+| a merged family whose copies have preambles of their own has k entries, so `loops.copies` makes no `for` and the structurer leaves a `goto` (*Automatas*' row-advance blocks: 2; Follin's one-voice subtunes: a `while` over the index) | P1 (#248) | presentation | loops, structure |
+| folding a copy nothing ran costs more than it saves: Follin's 17-19, 25, 27, 29 grow ~6 % of statements and ~20 % of blocks, since the columns and the `switch (v)` are new and there was no second body to remove. What it buys is names for the per-voice cells and a coverage vector that says the silent voice's code is this code | P1 (#248) | presentation | copymerge |
+| a merged access unites its regions, so a role one copy's access carried can move with them (Follin 17-19: the frequency tables print as `T6D56`/`T6DB7`, not `sid_image`) | P1 (#248) | naming | regions, recover |
+| an edge into another copy at a row that is not that copy's entry (*Automatas*' `$16AB` at 30 s). Lowering it as `v += 1; goto` that template row is sound and folds it, but measured: the merged body then has two entries, which costs a `goto` and the `ad`/`ctrl` field names -- refused as the narrower rule says | P1 (#248) | fold reach | copyrows |
 | periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
@@ -201,7 +205,8 @@ one Opus agent per package with a read-only review before each merge, as §10.
 | **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
 | **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
 | **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
-| **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) | — | |
+| **P6 fold presentation** | the `for` a merged body with k entries does not get · a fold that costs more than it saves · a role that moves with a united region | small-medium | P1's four new rows; presentation only, so it can wait for the campaign's data |
+| **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) · an edge into another copy's non-entry row (measured: costs more than it buys) | — | |
 
 Order: **P1 → P2 → campaign (§8 item 1) → P3 → data-ranked remainder.** P1/P2
 first because they change certificate claims the campaign would otherwise
