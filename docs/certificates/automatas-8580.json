@@ -4,12 +4,70 @@
   "tick sid writes",
   "tick schedule effects"
  ],
+ "copies": {
+  "coverage": {
+   "1,1": 10,
+   "1,1,1,1,1,1": 44
+  },
+  "families": [
+   {
+    "bases": [
+     "$12BE",
+     "$12EF",
+     "$1320",
+     "$1351",
+     "$1382",
+     "$13B3"
+    ],
+    "columns": 3,
+    "copies": 6,
+    "proc": "p_1006",
+    "rows": 19,
+    "table": "$0200"
+   },
+   {
+    "bases": [
+     "$12BE",
+     "$12EF",
+     "$1320",
+     "$1351",
+     "$1382",
+     "$13B3"
+    ],
+    "columns": 3,
+    "copies": 6,
+    "proc": "p_1022",
+    "rows": 19,
+    "table": "$0200"
+   },
+   {
+    "bases": [
+     "$16CD",
+     "$16D9"
+    ],
+    "columns": 2,
+    "copies": 2,
+    "proc": "p_168C",
+    "rows": 6,
+    "table": "$021E"
+   }
+  ],
+  "refused": [
+   {
+    "base": "$112A",
+    "proc": "p_1022",
+    "why": "an edge from copy 0 enters copy 1"
+   }
+  ],
+  "statements": 54,
+  "unverified": 0
+ },
  "cost": {
   "calls_per_second": 15907,
-  "ir_blocks": 304,
+  "ir_blocks": 240,
   "ir_procs": 8,
-  "ir_statements": 984,
-  "regions": 102,
+  "ir_statements": 794,
+  "regions": 98,
   "sites": 652,
   "trace_calls": 149025,
   "verify_cpu_seconds": 9.4

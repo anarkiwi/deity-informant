@@ -260,42 +260,38 @@ call 149,024 — so the committed files stand.
 ## 7. What remains
 
 Two of the four obstacles this section used to list are gone. **The three voice
-copies fold** (§3, §4 row 6, §5): the closure gives every copy the arms its
-siblings ran, and `copyfold` proves the copies one program modulo a renaming --
-equal alpha-renamed skeletons, every differing address consistent with one
-per-copy mapping, every other differing constant affine in the index. The
-unequally spaced SMC cells (`$62EE`/`$64DB`/`$66CA`) are that mapping, listed once
-in the state header; the `goto`s to per-voice labels became one label per arm and
-the chain edge into the next voice became `continue`.
+copies are one body in the certified program** (§3, §4 row 6, §5): copy *j*
+executing a template row is that row executed with `v = j`, the unequally spaced
+SMC cells (`$62EE`/`$64DB`/`$66CA`) are one column of the family's per-copy table,
+the chain edge into the next voice is `v += 1`, and a row a voice never ran is the
+same statement with a zero in its coverage vector, marked where it prints.
 
-- **The closure's arms are unverified.** 189 of the closed program's sites are a
-  sibling's, lifted under this copy's operands: reachable only through edges that
-  were a `trap`, count 0, and part of a program the same front end builds from the
-  closed trace -- but no execution took them. 44 of the 283 printed statements are
-  theirs, and the `closure` line says so. The certified S4 program is the
-  trace-closed one, and `--closure none` prints it (1,421 lines, three copies).
+- **A merged row a voice never ran is unverified.** It is the statement another
+  voice ran, at the address the correspondence says this voice names. Its coverage
+  entry is 0, the certificate counts it, and the printed program says so per
+  statement -- no lifted site, no second program, no count-0 block reachable only
+  through a former trap.
 - **What is left of the zero page is what is not per-voice.** `$21–$97` is still
-  one region -- init clears it with one loop -- but the fold names 51 of its cells
-  by their per-copy address table, so what still prints as `b0021[...]` is the
-  filter's own accumulator and bounds and `$74`, the voice number. A stride view
-  cannot split the rest: those cells are reached by constant addresses, not by an
-  index, so there is nothing for `views.field_split` to key on.
-- **Three of the 21 arms are still `trap 'unverified'`,** and the folded switch
-  is copy 0's. The dispatch's arms pair in table order by how far their targets
-  align, which closes every arm some voice sent (18 of 21); the three no voice
-  sent have no donor. The two entries per copy past the 21-entry table (the
-  extent rule over-reaching, §4 row 1) pair with nothing and are left out of the
-  shape, so the printed switch has copy 0's 21 arms rather than copy 1's 23.
-- **The music subtunes fold; most of the effects do not.** Songs 1–11, 16 and 20
-  fold their three voices (1–61 unverified statements of 99–283). A sound effect
-  uses one or two voices, so the copy that runs nothing never reaches its
-  dispatch, its arms have nothing to pair with, and the handler bodies the other
-  copies ran stay outside the copies -- a cross-copy edge, which the fold
-  refuses.
-- **The `--songs all` union does not fold.** One voice's stream read is access
-  class `chk` where the others' are `ram`: over 32 subtunes that voice reaches
-  bytes outside the written set, and a load of a different class is a different
-  program. The union's closure still lifts 9 sites.
+  one region -- init clears it with one loop -- and the fold now reads its
+  per-voice cells through the family's columns, so what still prints as
+  `b0021[...]` is the filter's own accumulator and bounds and `$74`, the voice
+  number. Naming a column `voice[v].field` is stage C's view pass; until then the
+  columns print as `copies_6234[...]` and the loop as a `while` over the index.
+- **The dispatch stays three dispatches over one set of arm bodies.** Each voice's
+  patched `JMP` holds *its own* target, and the three copies' handlers are
+  interleaved at unequal offsets, so no key pairs the arms by value: the merged
+  node is `switch (v)` into each voice's own switch, whose arms jump to the one
+  merged body per command. Every arm some voice sent is that body; an arm no voice
+  sent is `trap 'unverified'` as before. Keying on the table index the writers
+  read cannot help, because the cell is written a tick earlier and read as memory.
+- **Every subtune folds or refuses with a reason, and all 32 certify.** At the
+  certificate's own horizon the three voices fold in songs 1–11, 16, 26, 28,
+  30–32; two voices fold in 12, 13, 15, 21, 22, 24; song 20 folds a 4-copy family;
+  and 14, 17, 18, 19, 23, 25, 27, 29 refuse with *an edge from copy 0 enters copy
+  1* -- an effect that uses one voice branches out of the copy the chain proof
+  established, and only the chain edge may increment `v`. A silent voice is no
+  longer the obstacle it was in #234: what it never ran is a zero in the coverage
+  vector, not a missing donor.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317

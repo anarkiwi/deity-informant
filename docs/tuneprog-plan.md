@@ -191,6 +191,19 @@ they are about the *core* matching the design rather than about breadth:
    body under `for v in 0..k-1` *in the certified S4 program*, every per-copy
    operand an address through a per-copy table `T[v]`, coverage recorded per
    `(template site, v)`, and the certificate reproduces on the folded program.
+   *Status after stage B (#242):* **met.** The correspondence is spent before the
+   IR exists: `copyrows.py` decides what folds, `copymerge.py` plans it, and
+   `build.py` lays the rows once -- an operand the copies disagree on is a load
+   from a per-copy column `T_x[v]`, the chain edge is `v += 1; if v < k: header`,
+   an edge from outside enters through a prologue that sets `v` to the copy that
+   holds its target, and a site's count is a vector over `v`. What the index
+   cannot name refuses with its reason: a row whose copies do not lift to one
+   shape stays k rows and a differing successor becomes a `switch (v)` over the
+   copies' own successors (which is how the k parallel dispatch tables come to
+   share one arm body), and a cross-copy edge anywhere but the chain refuses the
+   family. `closure.py` and `--closure` are gone; `--no-merge` builds what S2b
+   built. All 42 certificates reproduce with `copies` added and the statement,
+   block and region counts of the folded program.
    *Review of #234 (2026-08-18):* the fold was placed at the end of a lossy
    pipeline and asked to prove a syntactic identity the pipeline had destroyed
    (trace closure drops arms, S4 merges block starts, SSA renames); the exact
@@ -364,6 +377,29 @@ non-overlapping families is still widest-then-longest, not a proof.
   SFX subtunes and `--songs all` fold (the silent voice is a `v` with zero
   counts); `tools/tuneprog_recert.py` 42/42 (bytes change; ticks/period/
   complete/divergence do not); every module ≤ 500 lines.
+
+*Outcome (#242).* The plan is computed once, before `build_ir`: `copyrows.family`
+folds a row when every copy holds the same instruction, no copy dispatches on its
+own opcode byte, every copy's lift has one shape and what the trace lifted for a
+copy that ran it is what the image says it is; `copymerge.plan` places the columns
+and records the coverage vectors, and `build.py` lays the rows once. A column is a
+per-copy table in a band no access, no code and no region can see (outside the
+load image, the stack page and I/O, where every byte is a pinned input to the
+program whatever it holds), so the address arithmetic is ordinary 16-bit and no
+access class, executor or image size changed. Two families whose columns hold the
+same bytes share one table, which is what keeps a procedure and its clone one
+outlined helper. `v` takes a phi like a register (`ir.copyval`), and `from_ssa`
+now names its swap temporary for the edge, without which the stack analysis loses
+`SP` at a loop header and the program keeps a stack it does not have. **What the
+index cannot name refuses**: a row whose copies do not lift to one shape stays k
+rows and a successor that differs across copies becomes a `switch (v)` over the
+copies' own successors -- which is how the k parallel dispatch tables come to
+share one arm body, since each copy's patched `JMP` holds its own target and no
+key pairs them; a cross-copy edge anywhere but the chain edge refuses the family
+whole (the generalisation -- any edge from copy *j* into copy *j+1* is an
+increment -- was tried and is wrong: *Automatas* then wrote copy 1's addresses at
+copy 0, so only the edge the chain proof established increments `v`).
+Measurements are in §6 item 1 and §10 row 3.
 
 **Stage C — consolidation.** One view pass over the table representation
 replaces `copyfold.py` + `unroll.py`; `views.py` names `T_x` fields; docs
