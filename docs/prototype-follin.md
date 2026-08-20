@@ -360,7 +360,7 @@ same statement with a zero in its coverage vector, marked where it prints.
   in `init`, not the tick: songs 8-11 carry *the entry row does not fold* at
   `$7316`, the rip loader's own block copy. Subtune 14, whose two
   voices both play, goes from 199 blocks and 255 statements over 52 regions to 106
-  and 212 over 39 (458 printed lines to 283); where the second voice is silent
+  and 212 over 39 (458 printed lines to 309); where the second voice is silent
   (17, 18, 19, 25, 27, 29) the fold instead *adds* about 6 % of statements and
   20 % of blocks -- the columns and the `switch (v)` are new, and there was no
   second body to remove -- and buys the per-voice cells their names
