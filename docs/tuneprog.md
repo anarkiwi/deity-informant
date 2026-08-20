@@ -58,11 +58,11 @@ front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
 program       ir 429  interp 247  irwalk 309  graph 70  lower 204  build 448
               ssa 431  frames 371  stack 204  idioms 357  emit 367  verify 326
 presentation  structure 349  loops 217  inline 199  texture 475  frame 44
-              word 369  fold 472  tails 165  copyview 273  unroll 395  live 96
+              word 369  fold 472  tails 165  copyview 279  unroll 395  live 96
               facts 223  recover 321  views 213
 text          pseudocode 391  printer 371
 driver        pipeline 425  __init__ 119
-baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,449 lines
+baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,455 lines
 ```
 
 Stage entry points, which are also the module boundaries:

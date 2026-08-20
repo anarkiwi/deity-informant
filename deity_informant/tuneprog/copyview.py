@@ -127,6 +127,23 @@ def _field(r, vals):
     return len({(v - r.zero) % max(r.stride, 1) for v in vals}) == 1
 
 
+def _plans(view, tabs):
+    """``(columns, hoisted names, plan and cells per column, the regions indexed)``."""
+    cols, byvar = _collect(view, tabs)
+    subs, slots, byrgn, rgn = {}, {}, {}, view.by_id()
+    for k, col in cols.items():
+        plan, cells = _plan(col, rgn)
+        if plan is None:
+            continue
+        subs[k] = plan
+        if cells is not None:
+            slots[k] = cells
+        elif plan[0] == "index" and col.target is not None and col.target >= 0:
+            byrgn[k] = {col.target}
+    _split(subs, slots)
+    return cols, byvar, subs, slots, byrgn
+
+
 def _rewrite(view, tabs, byvar, subs, reads):
     """Substitute every planned column read, then drop the reads nothing needs.
 
@@ -224,18 +241,7 @@ def expand(view):
     tabs = {r.id: r for r in view.storage if r.kind == "copymap"}
     if not tabs:
         return []
-    cols, byvar = _collect(view, tabs)
-    subs, slots, byrgn, rgn = {}, {}, {}, view.by_id()
-    for k, col in cols.items():
-        plan, cells = _plan(col, rgn)
-        if plan is None:
-            continue
-        subs[k] = plan
-        if cells is not None:
-            slots[k] = cells
-        elif plan[0] == "index" and col.target is not None and col.target >= 0:
-            byrgn[k] = {col.target}
-    _split(subs, slots)
+    cols, byvar, subs, slots, byrgn = _plans(view, tabs)
     if not subs:
         return []
     _rewrite(view, tabs, byvar, subs, _hoisted(view, tabs))
@@ -255,13 +261,11 @@ def naming_facts(view):
     if not tabs:
         return Facts(view)
     twin = copy.deepcopy(view)
-    cols, byvar = _collect(twin, tabs)
-    rgn, subs = twin.by_id(), {}
-    for k, col in cols.items():
-        plan, _cells = _plan(col, rgn)
-        if plan is not None:
-            subs[k] = ("const", col.vals[0], col.w) if plan[0] == "read" else plan
-    _rewrite(twin, tabs, byvar, subs, {})
+    cols, byvar, subs, _slots, _byrgn = _plans(twin, tabs)
+    flat = {
+        k: ("const", cols[k].vals[0], cols[k].w) if p[0] == "read" else p for k, p in subs.items()
+    }
+    _rewrite(twin, tabs, byvar, flat, {})
     return Facts(twin)
 
 
