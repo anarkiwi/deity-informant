@@ -53,7 +53,7 @@ traversals every stage shares.
 
 ```
 front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
-              cfg 309  regions 228  jumptab 364  siblings 395
+              cfg 309  regions 228  jumptab 368  siblings 395
               copyrows 453  copymerge 165
 program       ir 429  interp 247  irwalk 309  graph 70  lower 204  build 448
               ssa 431  frames 371  stack 204  idioms 357  emit 367  verify 326
@@ -62,7 +62,7 @@ presentation  structure 345  loops 217  inline 199  texture 475  frame 44
               facts 223  recover 323  views 213
 text          pseudocode 409  printer 371
 driver        pipeline 425  __init__ 121
-baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,627 lines
+baseline      ghidra_facts 219  ghidra_compare 182   43 modules, 12,631 lines
 ```
 
 Stage entry points, which are also the module boundaries:
