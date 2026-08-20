@@ -295,3 +295,124 @@ def test_a_store_that_could_reach_a_column_table_traps_in_both_executors():
             run(machine)
         assert bad.value.why == "copymap", bad.value
         assert machine.m[r.base] == r.init[0]  # and the column still holds its byte
+
+
+PRE = """
+{v}: LDA {st}
+BEQ {a}
+{v}b: DEC {st}
+BEQ {b}
+LDA #$02
+STA {reg}
+JMP {a}
+"""
+
+
+def _pre(v, st, reg, a, b):
+    src = PRE.format(v=v, st=st, reg=reg, a=a, b=b)
+    lines = [l.strip() for l in src.split("\n") if l.strip()]
+    return [("%s: " % v if i == 0 else "") + l for i, l in enumerate(lines)]
+
+
+def stepped(into="pre1"):
+    """Two chained copies, the second entered at a preamble the first does not hold.
+
+    Copy 0 leaves at ``pre1``, where the alignment starts stepping over; ``into``
+    sends one of its exits at a row of copy 1 instead.
+    """
+    return asm(
+        PLAY,
+        "init: LDA #$02",
+        "STA st",
+        "STA st+1",
+        "LDA #$00",
+        "STA cnt",
+        "STA tmp",
+        "RTS",
+        "play:",
+        *_pre("c0", "st", "$D404", "pre1", into),
+        "pre1: LDA cnt",
+        "STA tmp",
+        *_pre("c1", "st+1", "$D40B", "after", "after"),
+        "after: INC cnt",
+        "RTS",
+        "st: BRK",
+        "BRK",
+        "tmp: BRK",
+        "cnt: BRK",
+    )
+
+
+def test_a_copy_holds_nothing_before_its_first_row():
+    """The stream the alignment stepped over is the image of no row, so ``v`` skips it."""
+    rows = ((0x1000, 0x1030), (0x1002, 0x1032))
+    got = copyrows.own((0x1000, 0x1020), rows, bytes(0x10000))
+    assert got[0x1000] == 0 and got[0x1030] == 1 and got[0x1032] == 1
+    assert all(got.get(a) is None for a in range(0x1020, 0x1030))
+
+
+def test_a_copy_entered_at_a_preamble_of_its_own_still_folds():
+    code = stepped()
+    trace, prog = _prog(code, calls=6)
+    doc = prog.meta["copies"]
+    assert not doc["refused"] and doc["families"][0]["copies"] == 2
+    assert doc["families"][0]["rows"] == 7
+    pre = [b for b in prog.procs["tick"].blocks.values() if b.src == code.labels["pre1"]]
+    assert len(pre) == 1 and not pre[0].cover  # the preamble is nobody's row
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None
+
+
+def skips():
+    """Copies of a flag-bit unpack whose skip lands inside the next copy.
+
+    A copy is ``INY; LDA #v; STA reg`` plus the test guarding the copy after it,
+    so the skip enters its successor at that test and not at its entry.
+    """
+    return asm(
+        PLAY,
+        "init: LDA #$FF",
+        "STA flag",
+        "LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: BIT flag",
+        "BVC s1",
+        "c0: INY",
+        "LDA #$01",
+        "STA $D404",
+        "s1: LDA flag",
+        "AND #$02",
+        "BEQ s2",
+        "c1: INY",
+        "LDA #$02",
+        "STA $D40B",
+        "s2: LDA flag",
+        "AND #$01",
+        "BEQ s3",
+        "c2: INY",
+        "CLC",
+        "ADC #$01",
+        "STA $D412",
+        "s3: INC cnt",
+        "LDA flag",
+        "EOR #$FF",
+        "STA flag",
+        "RTS",
+        "flag: BRK",
+        "cnt: BRK",
+    )
+
+
+def test_an_edge_into_another_copy_s_row_refuses_the_family():
+    """Only the next copy's entry advances the run: a row inside it ``v`` cannot name."""
+    code = skips()
+    trace, prog = _prog(code, calls=6)
+    assert not prog.meta["copies"]["families"]
+    assert prog.meta["copies"]["refused"] == [
+        {
+            "proc": "tick",
+            "base": "$%04X" % code.labels["c0"],
+            "why": "an edge from copy 0 enters copy 1",
+        }
+    ]
+    assert verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"]).div is None

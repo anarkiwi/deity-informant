@@ -186,8 +186,10 @@ class Printer:
         if t is not Bin:
             return None
         if idx.op == "*" and type(idx.b) is Const and type(idx.a) is Var:
+            if idx.b.v != step:
+                return None
             hit = self.alias.get(idx.a.n)
-            return hit[0] if hit is not None and hit[1] == 1 and idx.b.v == step else None
+            return self.var(idx.a.n) if hit is None else (hit[0] if hit[1] == 1 else None)
         if idx.op == "+" and type(idx.a) is Const and not idx.a.v % step:
             inner = self.ivar(idx.b, stride)
             return None if inner is None else "%s + %s" % (inner, hexlit(idx.a.v // step))

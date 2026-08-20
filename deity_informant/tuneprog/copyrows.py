@@ -142,20 +142,19 @@ def _agree(nodes, key):
     return len({str(n[key]) for n in nodes.values()}) == 1
 
 
-def _own(bases, rows, image):
+def own(bases, rows, image):
     """``{address: copy}``: what each copy holds, from its rows and the chain.
 
-    Two rows of one copy own everything between them; the chained run owns the
-    gaps its copies' bases delimit. An arm body sits where its siblings' do, so
-    address order alone does not say whose it is.
+    Two rows of one copy own everything between them, from the first row on: what
+    the alignment stepped over before it is the image of no row, so ``v`` cannot
+    name it. An arm body sits where its siblings' do, so address order alone does
+    not say whose it is.
     """
     out, k = {}, len(bases)
-    for j in range(k - 1):
-        out.update(dict.fromkeys(range(bases[j], bases[j + 1]), j))
     at = sorted((p, j) for r in rows for j, p in enumerate(r))
-    # the last copy is bounded by its rows, not by a base after it, but what lies
-    # between its base and its first row is the stream the alignment stepped over
-    out.update(dict.fromkeys(range(bases[-1], min(p for p, j in at if j == k - 1)), k - 1))
+    first = {j: min(p for p, c in at if c == j) for j in range(k)}
+    for j in range(k - 1):
+        out.update(dict.fromkeys(range(first[j], bases[j + 1]), j))
     for (p, j), (q, c) in zip(at, at[1:]):
         out.update(dict.fromkeys(range(p, q if c == j else p + ilen(image, p)), j))
     p, j = at[-1]
@@ -171,7 +170,7 @@ class _Rows:
         self.at = {}
         for (pc, op), n in cp.nodes.items():
             self.at.setdefault(pc, {})[op] = n
-        self.own = _own(sib.bases, sib.rows, image)
+        self.own = own(sib.bases, sib.rows, image)
         self.byrow = {r[0]: r for r in sib.rows}
 
     def ops(self, row):
@@ -214,8 +213,9 @@ def _mapped(fam, tmpl, j, to):
     """Where copy ``j``'s successor ``to`` lands after the fold, or ``None``.
 
     ``("t", pc)`` is the template row it folds onto, ``("p", pc)`` a block that
-    stays, ``("chain",)`` the edge into the next copy; anything else crosses
-    copies, which ``v`` cannot name.
+    stays, ``("chain", pc)`` an edge into the next copy's entry -- the run
+    advancing, early or at its end; anything else crosses copies, which ``v``
+    cannot name.
     """
     c = fam.column(to)
     if c is None:
@@ -383,11 +383,11 @@ def _unions(keys, trace, lifted):
 
 
 def _sound(cp, fam, tmpl):
-    """``v`` names the copy: no edge crosses from one copy into another.
+    """``v`` names the copy: every edge a copy holds is one :func:`_mapped` names.
 
     An edge from outside the family enters the copy that holds its target, which
-    the front end reaches through a prologue that sets ``v``; only the chain edge
-    may leave one copy for the next.
+    the front end reaches through a prologue that sets ``v``; from inside, an edge
+    stays in its copy or advances to the next copy's entry.
     """
     for (pc, _op), n in cp.nodes.items():
         src = fam.column(pc)
@@ -395,11 +395,8 @@ def _sound(cp, fam, tmpl):
             continue
         refs = list(n["succ"]) + ([r for _v, r in n["switch"]["cases"]] if n["switch"] else [])
         for r in refs:
-            to = r["to"]
-            if r["tail"] or fam.column(to) is None or fam.column(to) == src:
-                continue
-            if not (src + 1 < fam.k and to == fam.bases[src + 1] and to in tmpl):
-                return "an edge from copy %d enters copy %s" % (src, fam.column(to))
+            if not r["tail"] and _mapped(fam, tmpl, src, r["to"]) is None:
+                return "an edge from copy %d enters copy %s" % (src, fam.column(r["to"]))
     return None
 
 
