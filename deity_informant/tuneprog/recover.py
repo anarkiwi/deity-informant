@@ -51,7 +51,7 @@ class Names:
     u16group: dict = field(default_factory=dict)
     slots: dict = field(default_factory=dict)
     split: dict = field(default_factory=dict)
-    closure: dict = None
+    copies: dict = None
 
     def of(self, rid):
         return self.region.get(rid, "r%d" % rid)
@@ -70,7 +70,7 @@ class Names:
             ],
             "image": [{"region": k, "delta": v} for k, v in sorted(self.image.items())],
             "groups": {g: dict(v, members=sorted(v["members"])) for g, v in self.groups.items()},
-            "closure": self.closure,
+            "copies": self.copies,
             "u16": [{"lo": lo, "hi": hi, "name": n} for (lo, hi), n in sorted(self.u16.items())],
             "procs": self.procs,
             "phase": None if self.phase is None else {"region": self.phase[0]},
@@ -308,6 +308,10 @@ def recover(prog, structured=None):
         names.role[rid] = "phase"
         del names.region[rid]
         _uniq(names, rid, "call_counter" if _update_role(facts, rid) == "counter" else "phase")
+    for r in prog.storage:
+        if r.kind == "copymap":  # the per-copy columns the fold made: one name each
+            names.region[r.id] = r.name
+            names.role[r.id] = "per_copy"
     _tables(prog, facts, names)
     for rid, (g, _f) in list(names.view.items()):
         names.view[rid] = (g, names.region.get(rid, "b%04X" % facts.rgn[rid].base))

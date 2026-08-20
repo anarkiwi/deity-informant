@@ -15,8 +15,7 @@ import time
 from pathlib import Path
 
 from . import (
-    closure as C,
-    copyfold,
+    copymerge,
     emit,
     fold,
     frame,
@@ -65,10 +64,7 @@ def add_args(ap):
     ap.add_argument("--no-verify", action="store_true", help="skip S8 (no certificate)")
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
     ap.add_argument(
-        "--closure",
-        choices=("siblings", "none"),
-        default="siblings",
-        help="S6: give sibling copies the arms their siblings ran, and fold them",
+        "--no-merge", action="store_true", help="do not fold sibling copies onto one body"
     )
     ap.add_argument(
         "--ghidra-facts", action="store_true", help="also write OUT/ghidra for headless Ghidra"
@@ -178,29 +174,53 @@ def trace_all(args, out, st, t0, log=print):
     return True
 
 
-def build(trace, name=None, sid_model=None, union=False):
-    """Front end -> IR -> S4: the certified program, plus its front-end products.
-
-    ``union`` is the ``--songs all`` build: what init writes is per-subtune state,
-    so its regions are typed ``state`` and no cell folds to a constant.
-    """
-    lifted = lift_trace(trace)
-    regions = build_regions(trace, lifted, init_kind="state" if union else "init_constant")
-    procs = build_procs(trace, lifted, regions)
-    prog = build_ir(trace, lifted, regions, procs, meta={"name": name, "sid_model": sid_model})
+def _s4(trace, lifted, regions, procs, meta, union, plan=None):
+    """One S4 program from the front-end products: SSA, stack, static jump closure."""
+    prog = build_ir(trace, lifted, regions, procs, meta=meta, plan=plan)
     folds = None if union else ssa.Folds(trace.image_post_init, trace.cells, trace.written_play)
     ssa.simplify(prog, rewrite, folds=folds)
     prog.meta["stack"] = stack.eliminate(prog)
     code = {a for k, l in lifted.items() for a in range(k[0], k[0] + l.length)}
     jumptab.enumerate_targets(prog, code, {r.id: r.addrs for r in regions})
-    return prog, regions, procs
+    return prog
+
+
+def build(trace, name=None, sid_model=None, union=False, copies=True, log=None):
+    """Front end -> IR -> S4: the certified program, plus its front-end products.
+
+    ``union`` is the ``--songs all`` build: what init writes is per-subtune state,
+    so its regions are typed ``state`` and no cell folds to a constant. The first
+    program says where the sibling copies are; the certified one folds them.
+    """
+    lifted = lift_trace(trace)
+    kind = "state" if union else "init_constant"
+    meta = {"name": name, "sid_model": sid_model}
+    regions = build_regions(trace, lifted, init_kind=kind)
+    procs = build_procs(trace, lifted, regions)
+    prog = _s4(trace, lifted, regions, procs, meta, union)
+    if not copies:
+        return prog, regions, procs
+    band = tuple(trace.meta["load"])
+    fams = siblings.correspond(prog, trace.image_post_init, band)
+    plan = copymerge.plan(procs, trace, lifted, fams, regions, log)
+    if not plan:
+        if plan.refused:
+            prog.meta["copies"] = plan.to_dict()
+        return prog, regions, procs
+    regions = build_regions(trace, lifted, init_kind=kind, unite=plan.unions)
+    procs = build_procs(trace, lifted, regions)
+    return _s4(trace, lifted, regions, procs, meta, union, plan), regions, procs
 
 
 def stage_front(args, out, st):
     """Lift, type storage, build procedures, build the IR, run S4, emit Python."""
     trace = Trace.load(out)
     prog, regions, procs = build(
-        trace, Path(args.sid).name, args.sid_model, union=args.songs == "all"
+        trace,
+        Path(args.sid).name,
+        args.sid_model,
+        union=args.songs == "all",
+        copies=not args.no_merge,
     )
     (out / "regions.json").write_text(json.dumps([r.to_dict() for r in regions]))
     (out / "procs.json").write_text(json.dumps(procs_json(procs)))
@@ -317,34 +337,11 @@ def _node(n):
     return d
 
 
-def closed(trace, prog, name=None, sid_model=None, union=False):
-    """``(program, families, stats)``: ``prog`` with every sibling copy's arms.
-
-    The certified program is untouched; what comes back is a second program the
-    same front end builds from the closed trace, for S5/S6 to present.
-    """
-    img, band = trace.image_post_init, tuple(trace.meta["load"])
-    fams = siblings.correspond(prog, img, {k[0] for k in trace.sites}, band)
-    if not fams:
-        return prog, None, {"families": 0, "sites_added": 0, "edges_added": 0}
-    ctrace, stats = C.close(trace, fams)
-    cprog = build(ctrace, name, sid_model, union)[0]
-    pcs = {k[0] for k in ctrace.sites}
-    return cprog, lambda p: siblings.correspond(p, img, pcs, band), stats
-
-
-def _fold(view, sibs):
-    """Fold the sibling copies of ``view`` in place, with the printed arguments."""
-    if sibs is None:
-        return {}
-    return copyfold.apply(view, sibs(view), fold.livearg(view, L.needed(view)[1]))
-
-
-def present(prog, sibs=None):
+def present(prog):
     """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
 
-    Structuring, texture removal, 16-bit views, outlining and copy folding; the
-    argument is never touched.
+    Structuring, texture removal, 16-bit views and outlining; the argument is
+    never touched. Sibling copies are already one body (:mod:`.copymerge`).
     """
     live = L.needed(prog)[0]
     keep = L.wants(prog, live)
@@ -352,40 +349,17 @@ def present(prog, sibs=None):
     texture.clean(view, frame.deltas(prog))
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
-    _fold(view, sibs)
     names = recover.recover(view, structure.structure(view))
     views.decorate(view, names)
     word.fold16(view, names)
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
-    # copies outlining moved into a shared helper fold there instead
-    _fold(view, sibs)
     views.decorate(view, names)
     live, params = L.needed(view)
     st = structure.structure(view, L.wants(view, live))
     _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
     views.decorate(view, names, groups)
     return view, st, names
-
-
-def _closure_stats(view, pcs):
-    """What the sibling closure added: the loops it folded, and what is unverified.
-
-    A statement of a site no execution reached is unverified: it is the sibling
-    copy's, lifted here, and the trap it replaced is what the certificate saw.
-    """
-    pcs, stmts, unverified = set(pcs), 0, 0
-    for p in view.procs.values():
-        for b in p.blocks.values():
-            stmts += len(b.stmts)
-            unverified += len(b.stmts) if b.src in pcs else 0
-    folds = list((view.meta.get("folds") or {}).values())
-    return {
-        "statements": stmts,
-        "unverified": unverified,
-        "loops": len(folds),
-        "folded": sorted(f["n"] for f in folds),
-    }
 
 
 def stage_print(args, out, prog=None):
@@ -397,13 +371,8 @@ def stage_print(args, out, prog=None):
         doc["stage"] = "S6"
         doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
         emit.write_certificate(cert, doc)
-    src, sibs, stats = prog, None, None
-    if getattr(args, "closure", "none") == "siblings":
-        src, sibs, stats = closed(
-            Trace.load(out), prog, Path(args.sid).name, args.sid_model, args.songs == "all"
-        )
-    view, st, names = present(src, sibs)
-    names.closure = stats and dict(stats, **_closure_stats(view, stats.pop("pcs", ())))
+    view, st, names = present(prog)
+    names.copies = copymerge.report(prog)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))

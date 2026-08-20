@@ -32,6 +32,7 @@ import networkx as nx
 
 from .ir import (
     Block,
+    copyval,
     Call,
     Const,
     Goto,
@@ -114,6 +115,8 @@ def merge_chains(proc):
             nxt = proc.blocks.get(t)
             if nxt is None or t == proc.entry or preds[t] != [lbl] or t == lbl:
                 break
+            if nxt.cover != b.cover:  # a copy's coverage vector is part of a block's identity
+                break
             b.stmts.extend(nxt.stmts)
             b.term = nxt.term
             del proc.blocks[t]
@@ -165,7 +168,7 @@ def to_ssa(proc):
     for lbl, b in proc.blocks.items():
         for s in b.stmts:
             for d in defs_of(s):
-                if d in REGIDX:
+                if d in REGIDX or copyval(d):
                     sites[d].add(lbl)
     for v, blocks in sites.items():
         work, placed = list(blocks), set()
@@ -233,7 +236,8 @@ def from_ssa(proc):
     """Replace phis with copies at the end of each predecessor.
 
     The copies are sequential, so they go through temporaries only when this
-    predecessor's phi sources include a phi destination (the swap case).
+    predecessor's phi sources include a phi destination (the swap case); the
+    temporary is named for the edge, so no name is defined twice.
     """
     for lbl, b in proc.blocks.items():
         phis = [s for s in b.stmts if type(s) is Phi]
@@ -243,7 +247,7 @@ def from_ssa(proc):
         for p in dict.fromkeys(q for s in phis for q in s.args):
             pb = proc.blocks[p]
             if {s.n for s in phis} & {s.args[p] for s in phis}:
-                tmp = [("%s$t%d" % (lbl, i), s) for i, s in enumerate(phis)]
+                tmp = [("%s$%s$t%d" % (lbl, p, i), s) for i, s in enumerate(phis)]
                 pb.stmts.extend(Let(t, Var(s.args[p])) for t, s in tmp)
                 pb.stmts.extend(Let(s.n, Var(t)) for t, s in tmp)
             else:

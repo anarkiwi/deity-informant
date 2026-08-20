@@ -63,7 +63,17 @@ class Body(Printer):
         self.defs = {s.n: s.e for s in stmts if type(s) is Let}
         head = ["%s# $%04X" % (pad, n.src)] if self.pcs and n.src != self.lastsrc else []
         self.lastsrc = n.src
-        return head + [pad + self.stmt(s) for s in stmts]
+        mark = self.unverified(proc, n.label)
+        return head + [pad + self.stmt(s) + mark for s in stmts]
+
+    def unverified(self, proc, label):
+        """The mark a statement no copy of its row ran carries: which ``v`` did run it."""
+        b = self.prog.procs[proc].blocks.get(label)
+        cover = tuple(getattr(b, "cover", ()) or ())
+        if not cover or 0 not in cover:
+            return ""
+        ran = [str(i) for i, c in enumerate(cover) if c]
+        return "  # unverified (ran for v = %s)" % ", ".join(ran) if ran else "  # unverified"
 
     def cond(self, n, proc, depth):
         pad = IND * depth
@@ -198,20 +208,20 @@ def _meta(prog, names, cert):
     ]
     if names.phase is not None:
         out.append("phase     %s selects the rate" % names.region.get(names.phase[0], "?"))
-    if names.closure and names.closure.get("families"):
-        c = names.closure
+    if names.copies and names.copies.get("families"):
+        c = names.copies
         out.append(
-            "closure   siblings: %s, %s sites lifted, %s over %s copies; "
-            "%s of %s statements unverified"
+            "copies    %s over %s copies, %s rows; %s of %s statements unverified (marked)"
             % (
-                _plural(c["families"], "family", "families"),
-                num(c["sites_added"]),
-                _plural(c["loops"], "loop", "loops"),
-                ", ".join(str(n) for n in c["folded"]) or "-",
+                _plural(len(c["families"]), "family", "families"),
+                ", ".join(str(f["copies"]) for f in c["families"]),
+                num(sum(f["rows"] for f in c["families"])),
                 num(c["unverified"]),
                 num(c["statements"]),
             )
         )
+    for r in (names.copies or {}).get("refused", ()):
+        out.append("copies    %s at %s refused: %s" % (r["proc"], r["base"], r["why"]))
     if cert:
         s = cert["subtunes"][0]
         out.append(

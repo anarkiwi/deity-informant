@@ -1,0 +1,167 @@
+"""S2c the copy index as a value: k chained copies as one body over ``v`` (snippets).
+
+Three chained voice interpreters over per-voice cells, each running an arm the
+others never reach, must become one body with a per-copy column table, verify
+against the same trace, and mark what no copy of a row ran.
+"""
+
+import re
+
+from deity_informant.tuneprog import copymerge, copyrows, pipeline, siblings
+from deity_informant.tuneprog.ir import Const, Let, Load, Var
+from deity_informant.tuneprog.irwalk import walk
+from deity_informant.tuneprog.verify import verify
+
+from _asm import asm
+from _prog import PLAY, front, merged, proc_body as _body
+
+VOICE = """
+    LDA {st}
+    {cmp}
+    {extra}
+    BNE {v}b
+    LDA #$01
+    STA {reg}
+    JMP {next}
+{v}b: LDA #$02
+    STA {reg}
+    LDA cnt
+    STA {v}b+1
+    JMP {next}
+"""
+
+
+def _voice(v, st, cmp_, reg, nxt, extra=""):
+    src = VOICE.format(st=st, cmp=cmp_, v=v, reg=reg, next=nxt, extra=extra)
+    lines = [ln.strip() for ln in src.split("\n") if ln.strip()]
+    return [("%s: " % v if i == 0 else "") + ln for i, ln in enumerate(lines)]
+
+
+def voices(extra2="NOP"):
+    """A tune whose play routine is three chained copies of one voice interpreter.
+
+    Follin's shape in miniature: copy 0 tests its state byte with the load's own
+    Z flag where the others compare, copy 2 carries one byte more still, and each
+    copy runs the arm the others never reach.
+    """
+    return asm(
+        PLAY,
+        "init: LDX #$0B",
+        "lp: LDA #$00",
+        "STA st,X",
+        "DEX",
+        "BPL lp",
+        "STA cnt",
+        "RTS",
+        "play:",
+        *_voice("v0", "st", "", "$D404", "v1"),
+        *_voice("v1", "st+1", "CMP #$01", "$D40B", "v2"),
+        *_voice("v2", "st+2", "CMP #$02", "$D412", "after", extra2),
+        "after: INC cnt",
+        "RTS",
+        "st: BRK",
+        *["BRK"] * 11,
+        "cnt: BRK",
+    )
+
+
+def _prog(code, calls=8):
+    """The certified program of a snippet, with its copies folded."""
+    trace = front(code, calls=calls)[0]
+    return trace, pipeline.build(trace, "snippet")[0]
+
+
+def test_three_chained_copies_become_one_body_over_the_copy_index():
+    trace, prog = _prog(voices())
+    doc = prog.meta["copies"]
+    assert len(doc["families"]) == 1 and doc["families"][0]["copies"] == 3
+    assert doc["families"][0]["columns"] > 0 and not doc["refused"]
+    text = merged(voices())[0]
+    body = "\n".join(_body(text, "tick"))
+    assert "while True" in body and body.count("io[") >= 1, body
+    assert re.search(r"copies_\w+\[", body), body  # the per-copy columns, read once
+    assert "unverified (ran for v = " in body, body
+    _ = trace
+
+
+def test_the_folded_program_verifies_against_the_same_trace():
+    trace, prog = _prog(voices())
+    v = verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"])
+    assert v.div is None and v.call == trace.meta["calls"]
+
+
+def test_a_copy_that_never_ran_a_row_leaves_a_zero_in_its_coverage():
+    _trace, prog = _prog(voices())
+    rep = copymerge.report(prog)
+    assert 0 < rep["unverified"] < rep["statements"], rep
+    assert any(k.count("0") for k in rep["coverage"]), rep["coverage"]
+    covers = [tuple(b.cover) for p in prog.procs.values() for b in p.blocks.values() if b.cover]
+    assert covers and any(0 in c for c in covers) and any(0 not in c for c in covers)
+
+
+def test_every_copy_reads_its_own_operands_through_one_column():
+    _trace, prog = _prog(voices())
+    fam = prog.meta["copies"]["families"][0]
+    rgn = [r for r in prog.storage if r.kind == "copymap"]
+    assert len(rgn) == 1 and rgn[0].size == len(rgn[0].init)
+    base = int(fam["table"][1:], 16)
+    assert rgn[0].base == base
+    loads = [
+        s.e
+        for p in prog.procs.values()
+        for b in p.blocks.values()
+        for s in b.stmts
+        if type(s) is Let and type(s.e) is Load and s.e.r == rgn[0].id
+    ]
+    assert loads and all(base <= x.lo <= x.hi < base + rgn[0].size for x in loads)
+    idx = prog.meta["copies"]["families"][0]
+    assert all(any(type(y) is Var and y.n.startswith("cv") for y in walk(x.a)) for x in loads)
+    _ = idx
+
+
+def test_the_columns_hold_each_copy_s_own_addresses():
+    _trace, prog = _prog(voices())
+    r = next(x for x in prog.storage if x.kind == "copymap")
+    words = [int.from_bytes(r.init[i : i + 2], "little") for i in range(0, len(r.init), 2)]
+    assert len(set(words)) > 1  # the copies really name different bytes
+
+
+def test_an_instruction_one_copy_alone_carries_keeps_the_fold():
+    """A copy with a statement of its own folds the rows it shares and no others."""
+    trace, prog = _prog(voices(extra2="INC cnt"))
+    fam = prog.meta["copies"]["families"][0]
+    assert fam["copies"] == 3 and fam["rows"] == 8
+    v = verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"])
+    assert v.div is None
+    body = "\n".join(_body(merged(voices(extra2="INC cnt"))[0], "tick"))
+    assert body.count("counter += 1") == 2, body  # the copy's own increment, and the tick's
+
+
+def test_a_family_the_index_cannot_name_is_refused_with_its_reason():
+    fam = copyrows.Fam("tick", (0x1000, 0x1010), 0, own={0x1000: 0, 0x1010: 1})
+    plan = copymerge.Plan()
+    plan.refused.append(("tick", 0x1000, "an edge from copy 0 enters copy 1"))
+    assert plan.to_dict()["refused"] == [
+        {"proc": "tick", "base": "$1000", "why": "an edge from copy 0 enters copy 1"}
+    ]
+    assert not plan and fam.column(0x1010) == 1 and fam.column(0x2000) is None
+
+
+def test_the_unfolded_program_is_what_the_front_end_built_before():
+    trace = front(voices(), calls=8)[0]
+    plain = pipeline.build(trace, "snippet", copies=False)[0]
+    assert "copies" not in plain.meta
+    fams = siblings.correspond(plain, trace.image_post_init, tuple(trace.meta["load"]))
+    assert len(fams) == 1 and fams[0].k == 3
+
+
+def test_the_index_is_an_ordinary_value_the_loop_counts():
+    _trace, prog = _prog(voices())
+    tick = prog.procs["tick"]
+    zero = [
+        s
+        for b in tick.blocks.values()
+        for s in b.stmts
+        if type(s) is Let and s.n.startswith("cv") and type(s.e) is Const
+    ]
+    assert zero and all(s.e.v == 0 for s in zero)

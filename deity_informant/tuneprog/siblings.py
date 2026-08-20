@@ -8,14 +8,14 @@ Public API: :func:`correspond`, :func:`align`, :func:`chains`, :class:`Copies`.
 
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from jennings.opcodes import MEM_MODES, MODE_LEN, OPCODES as OPS
 
-from .ir import Switch, succs
-from .jumptab import _cell, _defs, _source, _target, _writers
+from .ir import succs
+from .jumptab import dispatch
 
 LEAVE = ("JMP", "RTS", "RTI", "BRK")  # after one of these, straight-line code has ended
 
@@ -65,9 +65,10 @@ def _stop(stops, pc, band):
 def _match(image, xs, ys, whole=True):
     """Aligned index pairs of two instruction streams, ``None`` over a replacement.
 
-    An opcode byte is its ``(opcode, mode)`` pair. Copies of one template differ
-    by gaps (Follin's ``CMP #v``); opcodes that replace each other are different
-    code. Where only a prefix is asked for, the first such difference ends it.
+    Streams are compared byte for byte, so an alias opcode never matches the
+    opcode it aliases and the byte carries the mode. Copies of one template differ
+    by gaps (Follin's ``CMP #v``); where only a prefix is asked for, the first
+    replacement ends it.
     """
     sm = SequenceMatcher(None, [image[p] for p in xs], [image[p] for p in ys], autojunk=False)
     out = []
@@ -170,13 +171,15 @@ class Cfg:
         return [s for s, lo, hi in self.edges.get(b, ()) if a <= s < b and a <= lo and hi < c]
 
     def ran(self, pc):
-        """How often the block holding ``pc`` ran: the executed entry nearest below it.
+        """How often the block holding ``pc`` ran: 0 where no execution entered it.
 
         A run enters every copy of it as often as the first, which is what an
         unrolled loop is; a branch that skips one enters it less often.
         """
-        i = bisect_right(self.runs, (pc, 1 << 64)) - 1
-        return self.runs[i][1] if i >= 0 else 0
+        i = bisect_left(self.srcs, pc + 1) - 1
+        src = self.srcs[i] if i >= 0 else None
+        j = bisect_left(self.runs, (src, 0)) if src is not None else -1
+        return self.runs[j][1] if 0 <= j < len(self.runs) and self.runs[j][0] == src else 0
 
 
 def _cfg(proc, image):
@@ -340,37 +343,6 @@ def _select(cands):
 
 
 # ---- extension through the parallel dispatch tables --------------------------
-def _dispatch(proc, rgn, image, band):
-    """``{block entry: {table index: arm target}}`` of every patched jump a table writes.
-
-    The k copies' dispatches are parallel tables, so an arm's index in its own
-    table is what pairs it with the arm a sibling copy dispatches. An arm two
-    indices reach names no one index, and pairs with nothing.
-    """
-    defs = _defs(proc)
-    writers = _writers(proc, defs)
-    out = {}
-    for b in proc.blocks.values():
-        hit = _cell(b.term, defs) if type(b.term) is Switch else None
-        if hit is None:
-            continue
-        cell, width, base = hit
-        srcs = [_source(cell + k, writers, rgn, image) for k in range(width)]
-        tabs = [s for s in srcs if s and s[0] == "table"]
-        if not all(srcs) or not tabs or len({t[3] for t in tabs}) != 1:
-            continue
-        cases = {v for v, _l in b.term.cases}
-        hits = {}
-        for x in range(0x100):  # the index register is an unsigned byte
-            if any(not band[0] <= t[2] + x < band[1] for t in tabs):
-                continue
-            t = _target(srcs, x, image, base)
-            if t in cases:
-                hits.setdefault(t, []).append(x)
-        out.setdefault(b.src, {}).update({x[0]: t for t, x in hits.items() if len(x) == 1})
-    return out
-
-
 def _group(image, group, stops, band, data):
     """The rows of k arm bodies, aligned as the copies of one handler they are."""
     if len(set(group)) != len(group):
@@ -392,7 +364,7 @@ def extend(prog, image, fam, band, data=None):
     if proc is None:
         return fam
     data = _data(prog, band) if data is None else data
-    tabs = _dispatch(proc, prog.by_id(), image, band)
+    tabs = dispatch(proc, prog.by_id(), image, band)
     stops = set(fam.bases) | {t for arms in tabs.values() for t in arms.values()}
     rows, seen = set(fam.rows), set()
     while True:
@@ -412,12 +384,11 @@ def extend(prog, image, fam, band, data=None):
             return fam
 
 
-def correspond(prog, image, pcs, band):
+def correspond(prog, image, band):
     """Every sibling family of ``prog``: chained, then extended through its arms.
 
     A family whose arms make its operand map ambiguous is refused whole;
     extending can swallow a smaller family, so the widest are chosen again.
-    ``pcs`` is what an execution reached, which the built procedures already say.
     """
     data = _data(prog, band)
     out = [extend(prog, image, fam, band, data) for fam in chains(prog, image, band)]

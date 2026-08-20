@@ -57,7 +57,8 @@ from .regions import Region, build_regions, index_regions
 from .cfg import Proc, build_procs, procs_json
 from .interp import Interp, Machine
 from .ir import Block, Rgn, TrapError, Tuneprog
-from .build import build_ir, ops_to_stmts, straightline
+from .build import build_ir
+from .lower import ops_to_stmts, straightline
 from .ssa import simplify
 from .stack import eliminate
 from .idioms import rewrite

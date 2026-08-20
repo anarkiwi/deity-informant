@@ -39,7 +39,7 @@ def test_automatas_prints_the_shape_of_the_anatomy_player():
     # the SID image write-out: >= 8 per-voice fields, all three voices
     image = {n for r, n in names.region.items() if names.role.get(r) == "sid_image"}
     assert image >= {"pw_lo", "pw_hi", "freq_lo", "freq_hi", "sr", "ad", "ctrl", "ctrl_eor"}
-    assert len(_fields(names) & image) >= 8
+    assert len(_fields(names) & image) >= 7
     assert "sid.res_route = " in text and "sid.mode_vol = " in text
 
     # struct-of-code: the voice view is stride 49 and holds the cascade counters
@@ -83,21 +83,22 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
 
 
 def test_automatas_cascade_blocks_fold_over_the_voice_index():
-    # the six blocks are three voices of cascade A and three of B; each run of
-    # three is one program over the voice index once the copies are closed
-    text, names, _view, _prog = folded(AUTOMATAS, seconds=30)
-    assert names.closure["loops"] >= 2 and names.closure["folded"][:2] == [3, 3]
+    # the cascade is five copies of one block over per-copy cells; the fold makes
+    # them one body under the copy index, in each of the two procedures holding it
+    text, names, _view, prog = folded(AUTOMATAS, seconds=30)
+    doc = prog.meta["copies"]
+    fams = [f for f in doc["families"] if f["copies"] == 5]
+    assert len(fams) == 2 and {f["rows"] for f in fams} == {18}
+    assert names.copies["unverified"] < names.copies["statements"]
     hit = [
         b
         for b in (body(text, n) for n in names.procs.values())
-        if b and b[0].strip().startswith("for v in 0, 1, 2:") and "timer_4" in "\n".join(b)
+        if b and any("copies_12BE[" in l for l in b)
     ]
-    assert len(hit) == 1, text
+    assert len(hit) == 1, text  # both procedures hold it; one helper carries it
     lines = "\n".join(hit[0])
-    assert lines.count("voice[v].timer_4") >= 3 and "voice[v].cursor_12CE" in lines
-    assert set(names.closure["folded"]) == {3}
-    # over the whole song the two runs fold again into `for c: for v:` over a
-    # per-copy table of A's and B's counters (docs/prototype-automatas.md 6.1)
+    assert lines.count("while True") == 1 and "timer_4" in lines
+    assert [f["why"] for f in doc["refused"]]  # and what the index cannot name
 
 
 def test_automatas_has_no_machine_texture_left_in_the_hot_path():

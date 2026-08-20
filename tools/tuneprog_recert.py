@@ -118,6 +118,19 @@ def replay(name, doc, args, t0):
     return got, diff(doc, got)
 
 
+def patch(want, got, path=()):
+    """``want`` with every field ``got`` really changed: the ignored ones stay put."""
+    if path in IGNORE:
+        return want
+    if isinstance(want, dict) and isinstance(got, dict):
+        out = {k: patch(want[k], got[k], path + (k,)) for k in want if k in got}
+        out.update({k: v for k, v in got.items() if k not in want})
+        return out
+    if isinstance(want, list) and isinstance(got, list) and len(want) == len(got):
+        return [patch(a, b, path + (str(i),)) for i, (a, b) in enumerate(zip(want, got))]
+    return got
+
+
 def row(name, doc, state):
     """One table row: what was replayed, what came back, and whether it matches."""
     subs = doc["subtunes"]
@@ -158,6 +171,7 @@ def main(argv=None):
     ap.add_argument("--only", action="append", help="reproduce only these certificates")
     ap.add_argument("--hvsc", help="HVSC root (default $HVSC, then the tune cache)")
     ap.add_argument("--resume", action="store_true", help="keep what earlier invocations did")
+    ap.add_argument("--update", action="store_true", help="write what was reproduced back")
     ap.add_argument("--budget", type=float, default=45.0, help="CPU seconds per invocation")
     ap.add_argument("--chunk", type=float, default=20.0, help="CPU seconds per pipeline call")
     args = ap.parse_args(argv)
@@ -178,7 +192,17 @@ def main(argv=None):
         got, ds = replay(name, doc, args, t0)
         if ds is None:
             break
-        state[name] = {"diff": ds, "ticks": None if got is None else got["subtunes"][0]["ticks"]}
+        note = []
+        if args.update and got is not None and ds:
+            (Path(args.certs) / (name + ".json")).write_text(
+                json.dumps(patch(doc, got), indent=1, sort_keys=True)
+            )
+            ds, note = [], ds
+        state[name] = {
+            "diff": ds,
+            "updated": note,
+            "ticks": None if got is None else got["subtunes"][0]["ticks"],
+        }
         statefile.write_text(json.dumps(state, indent=1, sort_keys=True))
     statefile.write_text(json.dumps(state, indent=1, sort_keys=True))
     print(table(certs, state))

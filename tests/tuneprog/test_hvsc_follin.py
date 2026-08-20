@@ -41,11 +41,14 @@ def test_ghouls_song_one_over_thirty_seconds():
     assert sub["divergences"] == 0 and sub["envelope_traps"] == 0 and sub["seconds"] > 29
     assert trace.meta["songs"] == 32 and cert["entry"]["cycles_per_tick"] == 19656
 
-    # 1: the patched JMP of each voice is a switch over the handler table
+    # 1: the patched JMP of each voice is a switch over its own handler table,
+    # under the copy index, and the arms the voices share are one body
+    arms = 0
     for cell in DISPATCH:
         sw = _switches(prog, cell)
         assert len(sw) == 1, "%04X" % cell
-        assert len(sw[0].cases) >= 10, "%04X: %d arms" % (cell, len(sw[0].cases))
+        arms += len(sw[0].cases)
+    assert arms >= 21, arms
 
     # 2: `$85` writes SID registers the song names -- the address is data
     sidw = [s for _n, _b, s in _stmts(prog) if type(s) is Store and s.cls == "io"]
@@ -75,9 +78,9 @@ def test_ghouls_song_one_over_thirty_seconds():
     assert {v for _a, v in clear} == {0x08, 0x00}
     assert clear[0][0] == 0xD41C and clear[-1][0] == 0xD400
 
-    # 6: each copy ran a different subset of the shared template, so the
-    # trace-closed copies differ in size before any operand does -- which is what
-    # the sibling closure repairs (below)
+    # 6: each copy ran a different subset of the shared template, so the copies
+    # differ in size before any operand does -- which is what the fold's coverage
+    # vector records (below)
     bounds = VOICE + (0x67FF,)
     reached = [len([k for k in trace.sites if bounds[i] <= k[0] < bounds[i + 1]]) for i in range(3)]
     assert min(reached) > 100 and len(set(reached)) > 1, reached
@@ -85,51 +88,40 @@ def test_ghouls_song_one_over_thirty_seconds():
     doc = decompiled(GNG, seconds=30, song=0, prefix=500).text
     assert "sid.reg[" in doc  # 2: the data-dependent register prints as one
     assert "return (" in doc  # 5
-    assert "for v in" in doc  # copy folding is on: the init clear and the $88 arm
+    assert "for v in" in doc  # the init clear's own loop, over its index
 
 
-def test_ghouls_voice_copies_fold_once_the_siblings_are_closed():
-    text, names, view, _closed = folded(GNG, seconds=30, song=0, prefix=500)
-    c = names.closure
-    assert c["families"] == 1 and c["copies"] == [3] and c["loops"] == 1
-    assert c["sites_added"] > 100 and 0 < c["unverified"] < c["statements"]
+def test_ghouls_voice_copies_are_one_body_over_the_copy_index():
+    text, names, view, prog = folded(GNG, seconds=30, song=0, prefix=500)
+    doc = prog.meta["copies"]
+    c = names.copies
+    assert len(doc["families"]) == 1 and doc["families"][0]["copies"] == 3
+    assert doc["families"][0]["rows"] > 300 and doc["families"][0]["columns"] > 40
+    assert not doc["refused"] and 0 < c["unverified"] < c["statements"]
+    assert {k.count("1") for k in c["coverage"]} == {1, 2, 3}  # every copy ran rows alone
 
     tick = proc_body(text, "tick")
-    assert tick[0].strip().startswith("for v in 0, 1, 2:"), tick[:2]
     lines = "\n".join(tick)
-    # the 21-way command switch is inside the loop, over the voice's own cell
-    sw = [i for i, l in enumerate(tick) if l.strip().startswith("switch voice[v].")]
-    assert len(sw) == 1 and tick[sw[0]].startswith(" " * 8), tick[sw[0] : sw[0] + 2]
-    assert lines.count("case $") >= 14
-
-    # every per-voice cell prints as a field of the group, the SMC cells included
-    assert lines.count("voice[v].") > 100 and "sid[v].freq_lo" in lines
-    cells = names.groups["voice"]["cells"]
-    assert len(cells) > 40 and all(len(c) == 3 for c in cells.values())
-    smc = {c[0][1] for c in cells.values()}
-    assert {0x62EE, 0x6269, 0x640F} <= smc  # the unequally spaced operand cells
-    gaps = {tuple(b[1] - a[1] for a, b in zip(c, c[1:])) for c in cells.values()}
-    assert any(len(set(g)) > 1 for g in gaps), gaps
-
-    # the zero page block is a field table on the voice path: what is left of
-    # `b0021[...]` is the filter's own cells and the voice number, which are not
-    # per-voice at all
-    voiced = [l for l in tick if "b0021[" in l]
-    assert not any("b0021[9" in l for l in voiced), voiced
-    assert len(voiced) * 4 < lines.count("voice[v]."), voiced
-    assert len(view.procs["tick"].blocks) < 200
+    assert sum(1 for l in tick if l.strip().startswith("while True")) >= 1, tick[:4]
+    # the per-copy columns are read once, at the top of the loop over the index
+    assert lines.count("copies_%04X[" % VOICE[0]) > 40
+    # the command switch is inside the loop, one arm body for the three voices
+    arms = [i for i, l in enumerate(tick) if l.strip().startswith("switch b%04X[" % DISPATCH[0])]
+    assert len(arms) == 3 and lines.count("case $") >= 21
+    assert lines.count("goto L") >= 14  # the arms two of the three voices share
+    assert "unverified (ran for v = " in lines
+    assert len(view.procs["tick"].blocks) < 250
 
 
-def test_the_closed_ghouls_program_still_reproduces_every_sid_write():
-    # the arms the closure lifted are reachable only through edges that were a
-    # trap, so the closed program is the certified one on every path the trace took
-    _text, names, _view, closed = folded(GNG, seconds=30, song=0, prefix=500)
+def test_the_folded_ghouls_program_is_the_certified_one():
+    _text, names, _view, prog = folded(GNG, seconds=30, song=0, prefix=500)
     run = decompiled(GNG, seconds=30, song=0, prefix=500, text=False)
-    v = verify(closed, run.trace, calls=run.calls, prefix=0)
-    assert v.div is None and v.call == run.calls
-    assert names.closure["sites_added"] > 100
-    tick = closed.procs["tick"].blocks
-    assert sum(1 for b in tick.values() if b.count == 0) > 20  # and none of them ran
+    v = verify(prog, run.trace, calls=run.calls, prefix=0)
+    assert v.div is None and v.call == run.calls and prog is run.prog
+    tick = prog.procs["tick"].blocks
+    zero = [b for b in tick.values() if b.cover and 0 in tuple(b.cover)]
+    assert len(zero) > 20 and all(b.count == 0 for b in zero if not any(b.cover))
+    assert names.copies["unverified"] == sum(len(b.stmts) for b in zero)
 
 
 def test_ghouls_sound_effect_subtune_is_complete():

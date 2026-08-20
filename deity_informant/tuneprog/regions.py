@@ -148,12 +148,12 @@ def _kind(addrs, trace, init_kind="init_constant"):
     return "const" if all(lo <= a < hi for a in addrs) else "image"
 
 
-def build_regions(trace, lifted=None, init_kind="init_constant"):
+def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
     """Regions of ``trace``; ``lifted`` adds the residualised cell reads.
 
     ``init_kind`` types what only ``init`` writes: ``init_constant`` for one
-    subtune (the printer folds it), ``state`` for a union over subtunes, where the
-    bytes are whatever that subtune's init put there.
+    subtune (the printer folds it), ``state`` for a union over subtunes. ``unite``
+    names accesses a copy fold made one, whose region is then their union.
     """
     accesses = _accesses(trace, lifted)
     dsu = _DSU()
@@ -161,6 +161,8 @@ def build_regions(trace, lifted=None, init_kind="init_constant"):
         dsu.union(addrs)
     for addrs in _pointer_unions(trace, lifted):
         dsu.union(addrs)
+    for group in unite:
+        dsu.union([a for a in group if a in dsu])
     groups = {}
     for a in list(dsu):
         groups.setdefault(dsu.find(a), set()).add(a)

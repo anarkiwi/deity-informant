@@ -15,7 +15,7 @@ pytest.importorskip("pysidtracker")
 
 from pysidtracker.testing import resolve_tune  # noqa: E402
 
-from deity_informant.tuneprog import pipeline, printer  # noqa: E402
+from deity_informant.tuneprog import copymerge, pipeline, printer  # noqa: E402
 from deity_informant.tuneprog.cfg import build_procs  # noqa: E402
 from deity_informant.tuneprog.ir import Const, Let, Load, Switch, Var  # noqa: E402
 from deity_informant.tuneprog.irwalk import loads, node_exprs, walk  # noqa: E402
@@ -112,14 +112,13 @@ def decompiled(relpath, seconds, song=None, prefix=200, until_period=False, text
 
 
 def folded(relpath, seconds, song=None, until_period=False, prefix=200):
-    """``(text, names, view, closed program)`` of one tune through the sibling closure."""
+    """``(text, names, view, program)`` of one tune whose sibling copies folded."""
     run = decompiled(relpath, seconds, song=song, until_period=until_period, prefix=prefix)
     if run.fold is None:
-        src, sibs, stats = pipeline.closed(run.trace, run.prog, Path(relpath).name)
-        view, st, names = pipeline.present(src, sibs)
-        names.closure = dict(stats, **pipeline._closure_stats(view, stats.pop("pcs", ())))
-        assert run.prog.to_json() == run.before  # the certified program is not the folded one
-        run.fold = (printer.render(view, st, names), names, view, src)
+        view, st, names = pipeline.present(run.prog)
+        names.copies = copymerge.report(run.prog)
+        assert run.prog.to_json() == run.before  # S5/S6 annotate; they never edit
+        run.fold = (printer.render(view, st, names), names, view, run.prog)
     return run.fold
 
 

@@ -20,6 +20,7 @@ from .ir import (
     Phi,
     R16,
     REGIDX,
+    copyval,
     Return,
     Store,
     Switch,
@@ -184,7 +185,7 @@ def defs_of(s):
 def uses_of(e, out, regs_only=False):
     t = type(e)
     if t is Var:
-        if not regs_only or e.n in REGIDX:
+        if not regs_only or e.n in REGIDX or copyval(e.n):
             out.add(e.n)
     elif t is Bin:
         uses_of(e.a, out, regs_only)
