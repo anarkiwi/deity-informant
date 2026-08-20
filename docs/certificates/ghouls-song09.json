@@ -38,7 +38,7 @@
  },
  "cost": {
   "calls_per_second": 25636,
-  "ir_blocks": 245,
+  "ir_blocks": 264,
   "ir_procs": 4,
   "ir_statements": 649,
   "regions": 43,

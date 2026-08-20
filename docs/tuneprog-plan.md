@@ -205,7 +205,8 @@ one Opus agent per package with a read-only review before each merge, as §10.
 
 Order: **P1 → P2 → campaign (§8 item 1) → P3 → data-ranked remainder.** P1/P2
 first because they change certificate claims the campaign would otherwise
-measure stale; P3 follows the campaign's class sizes.
+measure stale; P3 follows the campaign's class sizes. P1 is done (#248); P2 is
+next.
 
 ## 6. Gate: fold and stack before any new family
 
@@ -258,9 +259,16 @@ they are about the *core* matching the design rather than about breadth:
    listed boundary (SFX subtunes, the union's `chk`/`ram` class, row-advance
    blocks, horizon-dependent discovery) is one cause. That review is what §7b
    re-specified; #234's mechanism was the prototype that found the requirements.
-   **What remains a boundary, not a gap:** 8 of Follin's 32 subtunes still refuse
-   their family on a cross-copy edge (§5), and a merged family's patched dispatch
-   loses `jumptab`'s static table closure (§5).
+   *P1 closes both boundaries this listed.* The 8 one-voice subtunes refused on
+   ownership, not on the rule: a copy holds only what its rows hold, and the
+   stream an alignment stepped over before a copy's first row is the image of no
+   row, so `v` cannot name it and the run leaves the family there and re-enters at
+   the row. And a merged dispatch enumerates again, per copy: a column is
+   read-only, so copy *j*'s writer is that expression with each column read
+   replaced by its *j*th entry. **What remains a boundary:** an edge into another
+   copy anywhere but at that copy's own entry (*Automatas*' `$16AB` at 30 s), and
+   a merged body whose copies have preambles of their own has k entries, which the
+   structurer prints with a `goto` and no `for`.
 2. **The certified executable is stack-free** — the S4 program has no `SP`
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
@@ -557,6 +565,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 | 2 | ~~gate 1 stage A (§7b)~~ *done (#241)* | `siblings.py`, `tests/tuneprog/test_siblings.py` | met: `GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT` gone; property tests over seeded random templates; Follin s1 one family of three voices (419 rows vs 420, printed text identical), Automatas' two cascade runs still fold (763 → 759 lines), GT2 ×2 and SW ×2 none; 42/42 recert |
 | 3 | ~~gate 1 stage B (§7b)~~ *done (#242)* | `copyrows.py`, `copymerge.py` (new), `build.py`+`lower.py`, `regions.py`, `jumptab.py`, `ssa.py`, `ir.py`, `printer.py`, `pipeline.py`, `emit.py`; `closure.py` deleted | met: Follin song 1 is one body of 400 folded rows over 60 per-copy columns and certifies unchanged (1,229 statements in 441 blocks → 671 in 254, 68 regions → 44, 133 of 471 merged statements unverified and marked per statement); the `--songs all` union folds too (1,553 → 770, 520 → 294, 75 → 45, 5 unverified); *Automatas* folds its 6-copy cascade in both procedures that hold it (995 → 805, 305 → 241) and refuses two families with their reason; 24 of Follin's 32 subtunes fold at least one family and 8 refuse; GoatTracker ×2 and SID Wizard ×2 have no family and are byte-identical; `tools/tuneprog_recert.py` 42/42, with ticks, period, `complete` and divergences unchanged everywhere |
 | 4 | ~~gate 1 stage C (§7b)~~ *done (#244)* | `copyview.py` (new), `loops.py` (new), `views.py`, `structure.py`, `printer.py`, `pseudocode.py`, `pipeline.py`, `unroll.py`; `copyfold.py` deleted; docs | met: one tokeniser (`unroll`), no cross-module private imports in the presentation layer, every module ≤ 500 lines; Follin's certified song 1 794 → 757 printed lines (`tick()` 578 → 495) as one `for v in 0, 1, 2` with the 21-arm switch inside and 51 `voice[v].` fields, *Automatas* 800 → 782 at 30 s (744 → 716 over the whole song) with both cascades `for v in 0..k-1`, GT2 ×2 / SW ×2 / Commando song 1 byte-identical; `tools/tuneprog_recert.py` 42/42 with every certificate byte-identical |
+| 5 | ~~P1 — fold reach (§5b)~~ *done (#248)* | `copyrows.py`, `jumptab.py`, `unroll.py`, `recover.py`, `pseudocode.py`, tests, docs | met: the 8 one-voice Follin subtunes, their `$6941` triple in 28/30 and *Automatas*' `$112A` fold and verify (`$16AB` refuses with the narrower reason); Follin's three dispatches enumerate 21 arms each with none displaced (3 → 39 unverified arms at 30 s; the certified song 1 gains 16 arm blocks and no statement); *Automatas* 805 → 733 statements, 241 → 227 blocks, 98 → 80 regions; subtune 14 199 → 106 blocks, 255 → 212 statements, 52 → 39 regions; `tools/tuneprog_recert.py` 42/42 with ticks, period, `first_repeat`, `complete`, divergences and envelope traps unmoved everywhere |
 | — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |
 
 Every brief carries the global directives (no tuning constants — a threshold is

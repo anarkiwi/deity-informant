@@ -5,23 +5,31 @@
   "tick schedule effects"
  ],
  "copies": {
-  "coverage": {},
-  "families": [],
-  "refused": [
+  "coverage": {
+   "1,0": 54
+  },
+  "families": [
    {
-    "base": "$642A",
+    "bases": [
+     "$642A",
+     "$65E6"
+    ],
+    "columns": 28,
+    "copies": 2,
     "proc": "tick",
-    "why": "an edge from copy 0 enters copy 1"
+    "rows": 70,
+    "table": "$0200"
    }
   ],
-  "statements": 0,
-  "unverified": 0
+  "refused": [],
+  "statements": 54,
+  "unverified": 54
  },
  "cost": {
   "calls_per_second": 28290,
-  "ir_blocks": 75,
+  "ir_blocks": 90,
   "ir_procs": 2,
-  "ir_statements": 180,
+  "ir_statements": 190,
   "regions": 40,
   "sites": 219,
   "trace_calls": 11,

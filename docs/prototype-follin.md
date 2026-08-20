@@ -334,6 +334,14 @@ same statement with a zero in its coverage vector, marked where it prints.
   merged body per command. Every arm some voice sent is that body; an arm no voice
   sent is `trap 'unverified'` as before. Keying on the table index the writers
   read cannot help, because the cell is written a tick earlier and read as memory.
+  Since P1 those unsent arms are enumerated again: the merged writer names its
+  cell *and* its table base through per-copy columns, and a column is read-only,
+  so copy *j*'s writer is that expression with each column read replaced by its
+  *j*th entry. The `BPL` over the stream byte bounds the index at 128 and up, and
+  a copy's table holds the entries between the sibling bases, so each voice's
+  switch is exactly 21 arms with none displaced (at 30 s: 3 `trap 'unverified'`
+  arms → 39; the certified song 1 gains 16 arm blocks, 254 → 270, and not one
+  statement).
 - **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
   read is access class `chk` where the others' are `ram`, because over 32 subtunes
   that voice reaches bytes outside the written set -- is not a question the fold
@@ -341,14 +349,23 @@ same statement with a zero in its coverage vector, marked where it prints.
   envelope, so the class is the union's. The union program goes from 1,553
   statements in 520 blocks over 75 regions to 770 in 294 over 45, with 5 of its
   481 merged statements unverified.
-- **Every subtune folds or refuses with a reason, and all 32 certify.** At the
-  certificate's own horizon the three voices fold in songs 1–11, 16, 26, 28,
-  30–32; two voices fold in 12, 13, 15, 21, 22, 24; song 20 folds a 4-copy family;
-  and 14, 17, 18, 19, 23, 25, 27, 29 refuse with *an edge from copy 0 enters copy
-  1* -- an effect that uses one voice branches out of the copy the chain proof
-  established, and only the chain edge may increment `v`. A silent voice is no
-  longer the obstacle it was in #234: what it never ran is a zero in the coverage
-  vector, not a missing donor.
+- **Every subtune folds, and all 32 certify.** At the certificate's own horizon
+  the three voices fold in songs 1–11, 16, 26, 28, 30–32; two voices fold in 12,
+  13, 15, 21, 22, 24 and, since P1, in 14, 17, 18, 19, 23, 25, 27 and 29; song 20
+  folds a 4-copy family, and 28 and 30 fold their `$6941` triple as well. What
+  refused the eight was not the chain rule but ownership: an effect that uses one
+  voice ends its copy in a tail the next copy's base sits inside, and `_own` gave
+  that tail to the next copy, so an ordinary branch inside it read as an edge
+  crossing copies. A copy now holds only what its rows hold. Subtune 14, whose two
+  voices both play, goes from 199 blocks and 255 statements over 52 regions to 106
+  and 212 over 39 (458 printed lines to 283); where the second voice is silent
+  (17, 18, 19, 25, 27, 29) the fold instead *adds* about 6 % of statements and
+  20 % of blocks -- the columns and the `switch (v)` are new, and there was no
+  second body to remove -- and buys the per-voice cells their names
+  (`copy0[0].timer` for `b0021[28]`) and a coverage vector that says the silent
+  voice's code is this code. A merged access unites its regions, so a role one
+  voice's access carried can move with them: in 17–19 the frequency tables print
+  as `T6D56`/`T6DB7`, not as `sid_image`.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317
