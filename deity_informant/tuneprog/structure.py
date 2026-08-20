@@ -28,8 +28,6 @@ from .loops import copies, induction, leaves, stepping
 from .inline import values as inline_values
 from .ssa import merge_chains, prune
 
-CAP = 256
-
 
 @dataclass
 class Blk:
@@ -247,7 +245,7 @@ def hidden(s, hide):
     return type(s) is Let and s.n in hide
 
 
-def strip(body, label, hide, top=True):
+def strip(body, label, hide, top=True, tail=True):
     """Drop the induction test and the back edge a ``for`` header already states.
 
     A family's chain edge sits wherever the copy ended its own work, so the test
@@ -255,7 +253,7 @@ def strip(body, label, hide, top=True):
     test mid-body guards the statements after it. Only the outermost back edge is
     implied.
     """
-    out, tail = [], True
+    out = []
     for n in reversed(body):
         t = type(n)
         if t is Jump and n.label == label:
@@ -264,17 +262,15 @@ def strip(body, label, hide, top=True):
             continue
         if t is Cond and tail and jumps_only(n.then + n.els, hide, label):
             continue
-        tail = False
         if t is Cond:
-            out.append(
-                Cond(n.c, strip(n.then, label, hide, False), strip(n.els, label, hide, False))
-            )
+            arms = (strip(x, label, hide, False, tail) for x in (n.then, n.els))
+            out.append(Cond(n.c, *arms))
         elif t is Case:
-            out.append(
-                Case(n.e, tuple((v, strip(b, label, hide, False)) for v, b in n.cases), n.src)
-            )
+            arms = tuple((v, strip(b, label, hide, False, tail)) for v, b in n.cases)
+            out.append(Case(n.e, arms, n.src))
         else:
             out.append(n)
+        tail = False
     return out[::-1]
 
 

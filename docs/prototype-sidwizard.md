@@ -49,7 +49,7 @@ exists anywhere in the pipeline.
 | the two branch dispatchers were bare switches over their observed targets (3 and 6 arms of 8 and 14) | a patched *branch* is a switch like a patched `JMP`: its arms are `site + 2 + sext(table[i])` | `jumptab._cell` |
 | the jump dispatcher had 2 arms of 31: the table's other bytes were outside the region any accessor reached | a table runs from its own bytes out to the nearest instruction or foreign access (from the exact address sets, so an interleaved word table grows past the column it alternates with), stepped by the layout its two halves imply, clamped to what an unsigned index register can reach; an entry addressing a byte some access reads is data, not a target | `jumptab.spans`, `jumptab._domain` |
 | `FREQTBH` printed as a SID shadow flushed to `$D401` (1.6 reads it with the *voice offset*, which looks like an image copy) | a table is read, never a shadow: only a `state` region takes the image role | `recover.image_copy` |
-| `sid.reg[5 + x]` where GoatTracker prints `sid[v].ad` — the voice index also reaches a 14-byte constant pair | an index that walks records of several sizes steps by their **gcd** | `recover._scales` |
+| `sid.reg[5 + x]` where GoatTracker prints `sid[v].ad` — the voice index also reaches a 14-byte constant pair | an index that walks records of several sizes steps by their **gcd** | `facts.scales` |
 | `(($1953 + T1934[a]) - (T1934[a] << 1))` — the printer dropped the `& $80` of a sign extension | `x & $80` prints | `printer.expr` |
 | `T19F2[(((a >> 1) >> 1) >> 1) >> 1]`, `row_apply(x=($E + (v * -7)))` | a shift chain is one shift; a run whose constants step down prints as a subtraction | `idioms.fold`, `unroll._Ctx.hole` |
 

@@ -6,9 +6,10 @@ The substitution must be exact -- an affine plan evaluated at ``v = j`` is copy
 """
 
 import random
+import re
 
 from deity_informant.tuneprog import copyview, live as L, pipeline, printer, structure, views
-from deity_informant.tuneprog.ir import Const, Load, Let, Rgn, Var
+from deity_informant.tuneprog.ir import Bin, Const, Load, Let, Rgn, Store, Var
 from deity_informant.tuneprog.recover import Names
 from deity_informant.tuneprog.irwalk import node_exprs, walk
 
@@ -247,3 +248,29 @@ def test_a_constant_of_the_merged_body_never_borrows_the_loop_index():
     p.fvars = {hits[0][0]: "v"}
     rid, addr = next(k for k, hs in names.slots.items() if hs[0][2] == 1)
     assert p.slot(names.slots[(rid, addr)], rid, addr, None).endswith("[1].%s" % hits[0][1])
+
+
+def test_a_store_from_another_column_is_not_a_compound_assignment():
+    """``a = b + k`` over two columns of one region must not print as ``a += k``.
+
+    Both addresses are column reads, so neither carries a literal the printer can
+    compare, and only the same expression names the same cell.
+    """
+    _prog, view = _view(voices())
+    rid = next(r.id for r in view.storage if r.kind == "state")
+    names = Names(column={(-4, 0x200): ("voice", "a", rid), (-4, 0x206): ("voice", "b", rid)})
+    p = printer.Body(view, names, pcs=False)
+    ca = Load("ram", Const(0x200), 2, 0x200, 0x205, -4)
+    cb = Load("ram", Const(0x206), 2, 0x206, 0x20B, -4)
+    other = Bin("+", Load("ram", cb, 1, 0, 0xFFFF, rid), Const(2), 1)
+    own = Bin("+", Load("ram", ca, 1, 0, 0xFFFF, rid), Const(2), 1)
+    assert p.store(Store("ram", ca, other, 1, 0, 0xFFFF, rid)) == "voice[0].a = (voice[0].b + 2)"
+    assert p.store(Store("ram", ca, own, 1, 0, 0xFFFF, rid)) == "voice[0].a += 2"
+
+
+def test_same_cell_refuses_two_computed_addresses_that_differ():
+    _prog, view = _view(voices())
+    p = printer.Body(view, Names(), pcs=False)
+    lo = Load("ram", Const(0x200), 2, 0x200, 0x205, -4)
+    hi = Load("ram", Const(0x206), 2, 0x206, 0x20B, -4)
+    assert p.same_cell(lo, lo, 0, None) and not p.same_cell(lo, hi, 0, None)

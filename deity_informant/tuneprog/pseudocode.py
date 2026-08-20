@@ -291,9 +291,10 @@ class Printer:
         base, rest = (a.a, a.b) if type(a) is Bin and a.op == "+" else (a, None)
         for x, y in ((base, rest), (rest, base)) if rest is not None else ((base, None),):
             hit = self.names.column.get((x.r, x.lo)) if type(x) is Load else None
-            if hit is None or hit[2] != rid:
+            j = _copyidx(x) if hit is not None else None
+            if hit is None or hit[2] != rid or j is None:
                 continue
-            out = "%s[%s].%s" % (hit[0], self.expr(_copyidx(x.a), False), hit[1])
+            out = "%s[%s].%s" % (hit[0], self.expr(j, False), hit[1])
             return out if y is None else "%s[%s]" % (out, _bare(self.expr(y, False)))
         return None
 
@@ -356,19 +357,34 @@ class Printer:
         v = fold(s.v)
         if type(v) is Bin and v.op in ("+", "-", "&", "|", "^", "<<", ">>"):
             a = self.defs.get(v.a.n, v.a) if type(v.a) is Var else v.a
-            if type(a) is Load and a.r == s.r and self.addr_of(a.a, self.rgn.get(s.r))[0] == addr:
+            if type(a) is Load and a.r == s.r and self.same_cell(a.a, s.a, s.r, addr):
                 if type(v.b) is Const and v.op in ("+", "-") and v.b.v > 0xF0:
                     return "%s %s= %s" % (lhs, "-" if v.op == "+" else "+", hexlit(0x100 - v.b.v))
                 return "%s %s= %s" % (lhs, v.op, self.expr(v.b, False))
         return "%s = %s" % (lhs, self.expr(s.v))
 
+    def same_cell(self, load, store, rid, addr):
+        """True when a load names the very cell a store writes.
+
+        A literal address is compared through the region's origin; one the program
+        computes -- a per-copy column, an indexed pointer -- names the same cell
+        only when it is the same expression.
+        """
+        if addr is None:
+            return load == store
+        return self.addr_of(load, self.rgn.get(rid))[0] == addr
+
     def forget(self, rid):
         self.mem = {k: v for k, v in self.mem.items() if not _reads(k, rid)}
 
 
-def _copyidx(a):
-    """The copy index a column read's address names."""
-    return next((x for x in walk(a) if type(x) is Var and x.n.startswith(COPYVAR)), Const(0))
+def _copyidx(e):
+    """The copy a column read names: its index, or the one a pinned address selects."""
+    hit = next((x for x in walk(e.a) if type(x) is Var and x.n.startswith(COPYVAR)), None)
+    if hit is not None:
+        return hit
+    a = fold(e.a)
+    return Const((a.v - e.lo) // max(e.w, 1)) if type(a) is Const else None
 
 
 def _bare(s):
