@@ -178,12 +178,12 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
       "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000
   }],
   "closure": {                         // only under --closure static
-    "arms": 22, "closed": 19,          // untaken branch directions found / closed
-    "instructions": 67,                // instructions the image stated
-    "stops": {"stack": 3},             // where the walk refused, by reason
-    "blocks": 11, "statements": 61,    // what only a closed path reaches
+    "arms": 22, "closed": 17,          // untaken branch directions found / closed
+    "instructions": 39,                // instructions the image stated
+    "stops": {"smc_cell": 4, "stack": 1},      // where the walk refused, by reason
+    "blocks": 9, "statements": 57,     // what only a closed path reaches
     "verified_statements": 745,        // the rest of the program
-    "untaken": 4, "frontier": 0        // traps left: directions, and stated-out paths
+    "untaken": 8, "frontier": 0        // traps left: directions, and stated-out paths
   },
   "copies": {                          // only where a family folded or refused
     "families": [{"proc": "tick", "bases": ["$12BE", "$12EF", "$1320", "$1351", "$1382"],
@@ -229,10 +229,10 @@ Measured at 30 s of music, `--closure trace` → `--closure static`:
 
 | exemplar | printed lines | `goto` | `trap 'untaken'` | closed statements |
 | --- | ---: | ---: | ---: | ---: |
-| Automatas | 775 → 849 | 6 → 8 | 18 → 3 | 26 |
-| `gt2-je-suis-linus` | 1,170 → 1,022 | 0 → 21 | 15 → 0 | 10 |
-| `ghouls-song01` | 747 → 836 | 27 → 41 | 28 → 1 | 43 |
-| `sw-emomyst` | 1,316 → 1,820 | 0 → 3 | 49 → 1 | 65 |
+| Automatas | 775 → 849 | 6 → 8 | 18 → 5 | 25 |
+| `gt2-je-suis-linus` | 1,170 → 1,058 | 0 → 23 | 15 → 0 | 13 |
+| `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 39 |
+| `sw-emomyst` | 1,316 → 1,844 | 0 → 2 | 49 → 1 | 63 |
 
 The traps go, and the *covered* program is structured worse: once the closed
 edges exist the front end gives covered blocks more predecessors and the

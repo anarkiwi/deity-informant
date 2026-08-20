@@ -118,6 +118,9 @@ class _Closure:
         self.img = trace.image_post_init
         self.lo, self.hi = trace.meta["load"]
         self.have = {k[0] for k in trace.sites}
+        # a byte any decompiled procedure writes is not a byte the image states,
+        # whether or not the trace ever executed it (then it is already a cell)
+        self.written = trace.written_play | trace.written_init
         self.recs = {}
         self.bad = set()
         self.stops = Counter()
@@ -138,7 +141,7 @@ class _Closure:
             if arms is None:
                 continue
             seen.add((pc, op))
-            stated = ((pc + 1) & 0xFFFF) not in self.trace.cells  # else a writer picks the arm
+            stated = ((pc + 1) & 0xFFFF) not in self.written  # else a writer picks the arm
             for arm, kind in ((arms[0], "br_taken"), (arms[1], "br_not")):
                 if (pc, op, arm) not in self.trace.edges and (stated or kind == "br_not"):
                     yield pc, op, arm, kind
@@ -172,7 +175,7 @@ class _Closure:
         end = pc + rec["len"]
         if end > self.hi:
             return self._stop("outside_image")
-        if any(a in self.trace.cells for a in range(pc, end)):
+        if any(a in self.written for a in range(pc, end)):
             return self._stop("smc_cell")
         if _stacky(rec["ops"], envelopes(rec["ops"])):
             return self._stop("stack")
