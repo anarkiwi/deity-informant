@@ -13,6 +13,8 @@ from .ir import (
     Bin,
     Call,
     Const,
+    copymap_bands,
+    hits_band,
     Goto,
     If,
     Let,
@@ -180,6 +182,7 @@ class Interp:
         self.prog = prog
         self.M = machine
         self.steps = 0
+        self.ro = copymap_bands(prog.storage)
 
     def ev(self, e, F):
         t = type(e)
@@ -211,6 +214,8 @@ class Interp:
                     a = self.ev(s.a, F)
                     if not s.lo <= a <= s.hi or a + s.w - 1 > s.hi:
                         M.env(a, s.lo, s.hi, s.src)
+                    if self.ro and hits_band(self.ro, a, s.w):
+                        M.trap("copymap", "$%04X at $%04X" % (a, s.src))
                     if s.cls == "io":
                         M.iostore(a, self.ev(s.v, F) & 0xFF, s.src)
                     elif s.cls == "raw":

@@ -251,9 +251,14 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   and the certificate's horizon is what the exemplar documents report.
 - **What the copy index cannot name refuses.** An edge that leaves one copy for
   another anywhere but the chain edge, a row whose copies do not lift to one
-  shape, an opcode cell inside a copy: the first refuses the family whole, the
-  others keep that row as k rows under a `switch (v)`. The reason is in the
-  certificate and in the printed header, never a silent approximation.
+  shape, an opcode cell inside a copy, a successor a copy that never ran the row
+  names differently in the image: the first refuses the family whole, the others
+  keep that row as k rows under a `switch (v)`, where every copy that did not run
+  it traps. The reason is in the certificate and in the printed header, never a
+  silent approximation. A refused family leaves its *code* as S2b built it, but
+  not the program's region typing: the regions a folded access unites are united
+  once for the whole program, so a tune where one family folds and another refuses
+  carries the accepted family's region typing everywhere.
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.

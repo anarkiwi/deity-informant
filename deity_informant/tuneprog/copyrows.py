@@ -231,8 +231,28 @@ def _ref(to, tail=False, trap=False):
     return {"to": to, "tail": bool(tail), "trap": bool(trap)}
 
 
-def _succs(fam, tmpl, live, idx):
+def _goes(ls, idx, term):
+    """Where the instruction the image holds says its successor ``idx`` goes.
+
+    ``None`` where the instruction does not say it: a target read from a cell is
+    the cell's value, and an indirect or stack return is the trace's business.
+    """
+    if ls.ctrl_cell is not None:
+        return None
+    kind = ls.ctrl[0]
+    nxt = (ls.pc + ls.length) & 0xFFFF
+    if kind == "br":
+        return ls.ctrl[3 + idx] if idx < 2 else None
+    if idx:
+        return None
+    if term == "call" or kind == "next":
+        return nxt
+    return ls.ctrl[1] if kind == "jmp" else None
+
+
+def _succs(fam, tmpl, live, idx, ctx):
     """The merged form of successor ``idx``: one ref, a chain, or one ref per copy."""
+    lifts, term = ctx
     per, hit = {}, {}
     for j, n in live.items():
         if idx >= len(n["succ"]):
@@ -242,20 +262,28 @@ def _succs(fam, tmpl, live, idx):
         if m is None:
             return None
         per[j], hit[j] = (m, r["trap"], r["tail"]), m
-    return _one(fam, per, hit) if hit else None
+    if not hit:
+        return None
+    dead = {}
+    for j in range(fam.k):
+        if j not in live:
+            to = _goes(lifts[j], idx, term)
+            dead[j] = None if to is None else _mapped(fam, tmpl, j, to)
+    return _one(fam, per, hit, dead)
 
 
-def _one(fam, per, hit):
+def _one(fam, per, hit, dead):
     """One ref where every copy agrees, a chain where the last copy leaves, else a split.
 
-    A target inside the family that no row folds is that copy's own block, so a
-    copy that never ran the edge takes nobody else's word for it.
+    A copy that never ran the edge takes nobody else's word for where it goes: its
+    own image must say the same thing, or the successor splits on ``v`` and that
+    copy traps.
     """
     shapes = set(hit.values())
     m = next(iter(shapes)) if len(shapes) == 1 else None
-    if m is not None and m[0] != "chain":
+    if m is not None and m[0] != "chain" and all(d == m for d in dead.values()):
         local = m[0] == "p" and fam.column(m[1]) is not None
-        if len(hit) == fam.k or not local:
+        if len(hit) + len(dead) == fam.k or not local:
             return _ref(
                 m[1],
                 tail=any(t for _m, _x, t in per.values()),
@@ -264,10 +292,19 @@ def _one(fam, per, hit):
     chain = {j for j, m in hit.items() if m[0] == "chain"}
     rest = set(hit) - chain
     one = {hit[j][1] for j in chain}
-    if len(one) == 1 and chain == {j for j in hit if j < fam.k - 1} and rest <= {fam.k - 1}:
+    tgt = one.pop() if len(one) == 1 else None
+    # the last copy has no next copy to chain into, so its exit traps and its own
+    # image says nothing this could contradict
+    ahead = all(d == ("chain", tgt) for j, d in dead.items() if j < fam.k - 1)
+    if (
+        tgt is not None
+        and ahead
+        and chain == {j for j in hit if j < fam.k - 1}
+        and rest <= {fam.k - 1}
+    ):
         out = per.get(fam.k - 1)
         exit_ref = _ref(0, trap=True) if out is None else _ref(out[0][1], out[2], out[1])
-        return {"chain": exit_ref, "to": one.pop()}
+        return {"chain": exit_ref, "to": tgt}
     out = [_perref(per.get(j)) for j in range(fam.k)]
     if all(r.get("trap") for r in out):
         return _ref(0, trap=True)
@@ -300,12 +337,13 @@ def _cases(fam, tmpl, live):
     return {"per": [per.get(j) for j in range(fam.k)]}
 
 
-def _merge(fam, tmpl, live, ls):
+def _merge(fam, tmpl, live, ls, lifts):
     """The template's cfg node with merged successors, or ``None`` when a copy crosses."""
     first = live[min(live)]
     n = dict(first, pc=ls.pc, count=sum(x["count"] for x in live.values()))
     arity = 0 if first["term"] == "switch" else max(len(x["succ"]) for x in live.values())
-    succ = [_succs(fam, tmpl, live, i) for i in range(arity)]
+    ctx = (lifts, first["term"])
+    succ = [_succs(fam, tmpl, live, i, ctx) for i in range(arity)]
     if any(s is None for s in succ):
         return None
     n["succ"] = succ
@@ -397,7 +435,7 @@ def family(cp, sib, idx, ctx):
         tmpl = {p: t0 for t0, v in keep.items() for p in v[0]}
         bad, nodes, unions = set(), {}, []
         for t0, (_row, op, live, keys, counts, ls, per) in sorted(keep.items()):
-            got = _merge(fam, tmpl, live, ls)
+            got = _merge(fam, tmpl, live, ls, per)
             if got is None:
                 bad.add(t0)
                 continue

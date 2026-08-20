@@ -26,6 +26,7 @@ from .ir import (
     Bin,
     Call,
     Const,
+    copymap_bands,
     Goto,
     If,
     Let,
@@ -121,11 +122,28 @@ def _cond(e, pre, fn):
     return "%s" % _ex(e, pre, fn)
 
 
-def _store(s, out, fn):
+def _guard(s, a, out, bands):
+    """Trap a store that could land in a per-copy column table: they are read-only."""
+    for lo, hi in bands:
+        if s.lo > hi or s.hi + s.w - 1 < lo:  # its envelope cannot reach the band
+            continue
+        if type(s.a) is Const:
+            if lo <= s.a.v + s.w - 1 and s.a.v <= hi:
+                out.append("S.trap('copymap', %r)" % ("$%04X at $%04X" % (s.a.v, s.src)))
+            continue
+        out.append(
+            "if %d <= %s <= %d: S.trap('copymap', '$%%04X at $%04X' %% %s)"
+            % (lo - s.w + 1, a, hi, s.src, a)
+        )
+
+
+def _store(s, out, fn, bands=()):
     pre = []
     a = _addr(s.a, s.lo, s.hi, s.w, pre, fn, s.src)
     v = _ex(s.v, pre, fn)
     out.extend(pre)
+    if bands:
+        _guard(s, a, out, bands)
     if s.cls == "io":
         out.append("S.iostore(%s, %s, %d)" % (a, v, s.src))
         return
@@ -144,7 +162,7 @@ def _store(s, out, fn):
         out.append("S.setbank()")
 
 
-def _stmts(blk, out, fn):
+def _stmts(blk, out, fn, bands=()):
     for s in blk.stmts:
         t = type(s)
         if t is Let:
@@ -153,7 +171,7 @@ def _stmts(blk, out, fn):
             out.extend(pre)
             out.append("%s = %s" % (_san(s.n), e))
         elif t is Store:
-            _store(s, out, fn)
+            _store(s, out, fn, bands)
         elif t is Call:
             pre = []
             args = [_ex(a, pre, fn) for a in s.args]
@@ -237,7 +255,7 @@ def layout(proc):
     return out
 
 
-def emit_proc(proc):
+def emit_proc(proc, bands=()):
     """One IR procedure as a Python function's source lines."""
     order = layout(proc)
     idx = {lbl: i for i, lbl in enumerate(order)}
@@ -255,7 +273,7 @@ def emit_proc(proc):
         if i % GROUP == 0:
             src.append("        if lbl < %d:" % min(i + GROUP, len(order)))
         body = []
-        _stmts(proc.blocks[lbl], body, fn)
+        _stmts(proc.blocks[lbl], body, fn, bands)
         _term(proc.blocks[lbl], idx, i + 1, body, fn)
         src.append("%sif lbl <= %d:" % (pad, i))
         src.extend(pad + "    " + line for line in body or ["pass"])
@@ -282,8 +300,9 @@ def emit_python(prog):
         "",
     ]
     body = []
+    bands = copymap_bands(prog.storage)
     for p in prog.procs.values():
-        body.extend(emit_proc(p))
+        body.extend(emit_proc(p, bands))
         body.append("")
     body.append("PROCS = {%s}" % ", ".join("%r: %s" % (n, _pname(n)) for n in prog.procs))
     body.append(
