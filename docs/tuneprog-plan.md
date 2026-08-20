@@ -205,12 +205,16 @@ one Opus agent per package with a read-only review before each merge, as §10.
 | **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
 | **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
 | **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
+| **P-JCH V20 family** (2026-08-20) | certify plain NewPlayer V20 — `Puterman/I_Could_Eat_a_Knob_at_Night.sid` (the anatomy's V20 reference, play `$10C1`, ordinary `sub` entry) + one JCH-authored V20 tune; generic fixes only, `docs/prototype-jch.md`; exercises width-3 stride views, 4-column table programs, prefetch/commit phases, funk tempo, voice *loop* (no families) | small-medium | the largest HVSC family (~1,737 tunes) certified before the sweep; both §6 gates are met so admission is legitimate. The **sample build** (Easy Does It, NMI second interrupt) stays deferred with the §8 item 3 prototype — its scoping (interleaved schedule, cross-context reads as pinned inputs, NMI at instruction boundaries, RTI frame as contract) is recorded in the session notes and is data-gated on the sweep |
 | **P6 fold presentation** | the `for` a merged body with k entries does not get · a fold that costs more than it saves · a role that moves with a united region | small-medium | P1's four new rows; presentation only, so it can wait for the campaign's data |
 | **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) · an edge into another copy's non-entry row (measured: costs more than it buys) | — | |
 
-Order: **P1 → P2 → campaign (§8 item 1) → P3 → data-ranked remainder.** P1/P2
-first because they change certificate claims the campaign would otherwise
-measure stale; P3 follows the campaign's class sizes. P1 is done (#248); P2 is
+Order: **P1 → P2 → P-JCH V20 → P3 → campaign (§8 item 1) → data-ranked
+remainder.** P1/P2 first because they change certificate claims the campaign
+would otherwise measure stale; the V20 family stage precedes the sweep so the
+largest family's issues close by generalization on two tunes rather than at
+scale; P3 (RTI contract, residual horizon) follows it; NMI/sample deferred,
+data-gated on the sweep. P1 is done (#248); P2 is
 next.
 
 ## 6. Gate: fold and stack before any new family
