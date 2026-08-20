@@ -95,6 +95,7 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, 7 `goto` in 562 printed lines | 0 `sp`, 0 unverified, 16 untaken, 7 `goto` in 528 lines |
 | J13 | cost | trace 12,000 ticks in ~100 s CPU over three chunks, verify 8,577 ticks in 2.3 s (3,717 ticks/s) | trace 4,000 in 9 s, verify 2,401 in 0.2 s (10,855 ticks/s) |
 | J14 | genericity | the other 42 certificates reproduce field for field (`tools/tuneprog_recert.py`, 44/44) and the hermetic suite is unchanged | — |
+| J15 | the port fix is guarded | `tests/test_oracle.py` renders 500 frames of the Puterman build from the tracer's SID log and compares it to `sidplayfp` frame for frame; with the direction byte back at 0 it fails on frame 1 | — |
 
 ## 5. The printed tuneprog (verbatim, `...` elides)
 
