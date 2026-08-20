@@ -201,7 +201,8 @@ they are about the *core* matching the design rather than about breadth:
    listed boundary (SFX subtunes, the union's `chk`/`ram` class, row-advance
    blocks, horizon-dependent discovery) is one cause. The gate is therefore
    **not met** and is re-specified in §7b; #234's mechanism is the prototype
-   that found the requirements.
+   that found the requirements. *Stage A is done (#241): the correspondence is
+   exact and its thresholds are gone; stages B and C remain.*
 2. **The certified executable is stack-free** — the S4 program has no `SP`
    value, no return-address pushes and no stack-page stores for balanced
    `PHA/PLA/PHP/PLP`; only a genuinely unbalanced push (RTS trick, stack scratch
@@ -312,6 +313,32 @@ exactly once, and copy *j* executing site *s* is the template site executed with
   a random unrelated stream sharing a prefix → none. Follin s1, Automatas (30 s
   and full song) find the same families as #234; GT2/SW find none.
 
+*Outcome (#241).* `siblings.py` (330 → 424 lines) keeps `Copies`, `align` and
+`correspond` and replaces everything under them. A candidate pair of bases is two
+block entries with the same opcode, executed as often as each other, the first
+exiting into the second without reaching past it; the copy at the second is the
+window the first embeds in whole (`difflib.SequenceMatcher` over opcode bytes,
+where only a gap may separate the streams), and its end is the next base, so the
+run extends itself. A copy before the first may sit inside the block before it
+(defMON's clone) and is recovered by the same proof; only the copy nothing
+follows may hold the template in part, and it must still hold its own exit. The
+family holds while every copy's operand map is a function over *every* row --
+keyed by addressing mode, since an indexed base whose index is data (Follin's
+`STA $D400,X`) does not name what the same literal names under `abs` -- and an
+ambiguity refuses the family whole. Arms pair by their index in the parallel
+tables `jumptab`'s writer analysis reads, and an arm stream stops where control
+has left and a region owns the next byte (a handler's own cells sit past its
+jump). Measured at 30 s: Follin song 1 one family of three voices, 419 rows
+(#234: 420) and a printed text identical field for field (627 lines, 261
+statements, 89 unverified); Automatas five families `[5,5,3,2,2]` (#234: four
+`[5,4,4,2]`), both cascade runs still folding, 763 → 759 printed lines; GT2 ×2
+and SW ×2 none, as before; `tools/tuneprog_recert.py` 42/42. **What it does not
+do**: a *two*-copy run whose second entry S2b merged into the block before it is
+refused (the template then straddles the copy boundary and only the last copy may
+hold part of it, which two copies cannot establish); a copy that differs from its
+successor by a *replacement* rather than a gap is refused; and the selection of
+non-overlapping families is still widest-then-longest, not a proof.
+
 **Stage B — copy index in the front end.**
 - `cfg.py`: a *merge* pass after procedures are built and before `build_ir`:
   the k copies' sites collapse onto the template's under `Copies.pcmap`; the
@@ -400,7 +427,7 @@ certificate as acceptance, a read-only reviewer between stage and merge. Order:
 | # | stage | owns | acceptance |
 |---|---|---|---|
 | 1 | ~~gate 2 — stack (§7)~~ *done (#237)* | `frames.py`, `stack.py`, `frame.py`, `interp.py`, `trace.py`, `emit.py`, `pipeline.py`, tests | met: `SP` absent from all 42 exemplar `tuneprog.py`, 42/42 recert, §6 item 2 for the measurements |
-| 2 | gate 1 stage A (§7b) | `siblings.py`, `tests/tuneprog/test_siblings.py` | thresholds gone; property tests; same families on Follin/Automatas, none on GT2/SW |
+| 2 | ~~gate 1 stage A (§7b)~~ *done (#241)* | `siblings.py`, `tests/tuneprog/test_siblings.py` | met: `GRAM/MINROWS/MINARM/MAXCOPIES/LOOK/CONFIRM/LIMIT` gone; property tests over seeded random templates; Follin s1 one family of three voices (419 rows vs 420, printed text identical), Automatas' two cascade runs still fold (763 → 759 lines), GT2 ×2 and SW ×2 none; 42/42 recert |
 | 3 | gate 1 stage B (§7b) | `cfg.py`, `build.py`, `regions.py`, `tracedata.py`, `jumptab.py`, `pipeline.py`, `verify.py`; delete `closure.py` | Follin s1 folds in S4, 0 divergences; per-statement coverage in the certificate; SFX and union fold; 42/42 recert |
 | 4 | gate 1 stage C (§7b) | `copyfold.py`+`unroll.py`→one pass, `views.py`, docs | recert green; one tokeniser; plan v3 gates closed |
 | — | reviewer, before each merge | read-only | refutes: new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, module > 500 lines |

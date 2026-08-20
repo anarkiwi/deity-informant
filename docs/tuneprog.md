@@ -32,7 +32,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py` |
-| S2c | sibling closure (presentation): the static correspondence between k copies of one template, and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
+| S2c | sibling closure (presentation): the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- and each copy's missing arms lifted from the copy that ran them, into a second program the same front end builds | `siblings.py`, `closure.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
@@ -51,7 +51,7 @@ traversals every stage shares.
 
 ```
 front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
-              cfg 309  regions 226  jumptab 179  siblings 330  closure 173
+              cfg 309  regions 226  jumptab 179  siblings 424  closure 173
 program       ir 402  interp 242  irwalk 308  graph 70  build 481
               ssa 423  frames 371  stack 204  idioms 357  emit 342  verify 326
 presentation  structure 500  inline 199  texture 475  frame 44  word 369
@@ -59,7 +59,7 @@ presentation  structure 500  inline 199  texture 475  frame 44  word 369
               facts 223  recover 316  views 156
 text          pseudocode 361  printer 359
 driver        pipeline 452  __init__ 118
-baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,735 lines
+baseline      ghidra_facts 219  ghidra_compare 182   40 modules, 11,829 lines
 ```
 
 Stage entry points, which are also the module boundaries:

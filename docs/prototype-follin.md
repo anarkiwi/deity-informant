@@ -81,11 +81,16 @@ literal operand moves into the index, so `LDA $6C37,X` on a region based at
 **Sibling closure and the fold** (`siblings.py`, `closure.py`, `copyfold.py`,
 `views.py`; S2c/S6, presentation only). The three voices are three copies of one
 static template, and the alignment of their instruction streams recovers that
-from the post-init image: equal opcodes advance all three, and a resync steps
-over the `CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag.
+from the post-init image: equal opcodes advance all three, and a gap holds the
+`CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag.
 The dispatch is where the copies stop being one stream, so its arms are paired in
 table order by how far their targets align, which carries the correspondence into
-the handlers. Each copy then gets the arms its siblings ran -- the same site,
+the handlers. *Amended by #241:* discovery is exact -- the bases are the chain the
+built procedures already carry, each pair of copies is one `difflib` alignment in
+which only a gap may separate them, and the family holds only while every copy's
+operand map is a function (an indexed base whose index is data, `STA $D400,X`,
+names something else than the same literal under `abs`); the ten thresholds are
+gone and song 1's family is the same three voices over 419 rows. Each copy then gets the arms its siblings ran -- the same site,
 under that copy's own operands, with count 0 and reachable only through edges that
 were a `trap` before -- and the front end builds a second program from the closed
 trace. That program's copies are one program modulo a renaming, so it prints once
