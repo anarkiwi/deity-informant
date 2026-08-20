@@ -166,3 +166,17 @@ def test_one_subtune_alone_still_folds_its_init_cell(tmp_path):
         for s in b.stmts
         if type(s) is Let and type(s.e) is Load and type(s.e.a) is Const and s.e.a.v == cell
     ]
+
+
+def test_changing_a_build_option_rebuilds_instead_of_resuming(tmp_path):
+    """The S4 program on disk is not the one another `--closure` asks for."""
+    out = tmp_path / "o"
+    sid = _mixed(tmp_path)
+    argv = [str(sid), "--out", str(out), "--song", "1", "--calls", "8"]
+    assert pipeline.main(argv) == 0
+    first = json.loads((out / "certificate.json").read_text())
+    assert "closure" not in first
+    assert pipeline.main(argv + ["--resume", "--closure", "static"]) == 0
+    doc = json.loads((out / "certificate.json").read_text())
+    assert doc["closure"]["arms"] >= 0 and doc["subtunes"][0]["ticks"] == 8
+    assert json.loads((out / "state.json").read_text())["build"][0] == "static"

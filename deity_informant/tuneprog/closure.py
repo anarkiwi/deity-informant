@@ -72,7 +72,9 @@ def envelopes(ops, src_map=None, holes=()):
         if mn in ("LOAD", "STORE"):
             lo, hi = _iv(ins[0], seen, holes)
             w = ins[1][2] if mn == "STORE" else res[2]
-            out[src_map[i] if src_map is not None else i] = (lo, min(0xFFFF, hi + w - 1))
+            j = src_map[i] if src_map is not None else i
+            if j >= 0:  # a residualised op is nobody's access: -1 is not a key
+                out[j] = (lo, min(0xFFFF, hi + w - 1))
         if mn != "STORE" and res is not None and res[0] == "u":
             seen[res[1]] = _apply(mn, ins, seen, res[2], holes)
     return out
@@ -98,7 +100,9 @@ def _stacky(ops, env):
     """True when the instruction can see the machine stack (bar ``JSR``/``RTS``/``RTI``).
 
     :func:`~.stack.eliminate` must keep proving the program stack-free: a residual
-    stack changes the write footprint the certificate claims periodicity on.
+    stack changes the write footprint the certificate claims periodicity on. The
+    exemption is the lifter's: ``JSR``/``RTS``/``RTI`` push and pop in ``ctrl``,
+    not in ops, so they name no ``SP`` and :mod:`.build` writes their frames.
     """
     if any(
         vn is not None and vn[0] == "r" and vn[1] == SPREG
@@ -297,6 +301,8 @@ def closed_blocks(proc):
     prologues later passes make out of a closed edge belong to the closure too.
     """
     seeds = {l for l, b in proc.blocks.items() if b.closed and not b.count and not any(b.cover)}
+    if not seeds:
+        return set()  # a program the walk never ran on has no closed path to be off
     live, work = set(), [proc.entry]
     while work:
         lbl = work.pop()

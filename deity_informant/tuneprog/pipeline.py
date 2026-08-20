@@ -108,12 +108,24 @@ def _stops(st, args):
     if len(keep) != len(old or ()):
         st["stage"] = "trace"
         st["subtunes"] = [x for x in st.get("subtunes", ()) if str(x["song"]) in keep]
+        st.pop("divergence", None)  # the run that found it is the one being redone
     return st
+
+
+def _build(args):
+    """What decides the program the front end builds; a change invalidates it."""
+    return [args.closure, bool(args.no_merge), args.songs, args.sid_model]
 
 
 def _state(out, args):
     p = out / "state.json"
     st = json.loads(p.read_text()) if args.resume and p.exists() else {"stage": "trace", "calls": 0}
+    if st.get("build") not in (None, _build(args)) and st["stage"] != "trace":
+        # the S4 program on disk is not the one these options ask for, and a
+        # verifier's machine state belongs to the program that produced it
+        st.update(stage="front", subtunes=[])
+        st.pop("divergence", None)
+        (out / "verify.pkl").unlink(missing_ok=True)
     return _stops(st, args) if args.songs == "all" else st
 
 
@@ -279,6 +291,7 @@ def stage_front(args, out, st):
     prog.save(out / "tuneprog.S4.json")
     (out / "tuneprog.py").write_text(emit.emit_python(prog))
     st.update(
+        build=_build(args),
         sites=len(trace.sites),
         regions=len(regions),
         procs=len(procs),

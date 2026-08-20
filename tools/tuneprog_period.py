@@ -34,7 +34,7 @@ def sample(path, calls, song, state, budget):
         img, schedule = find_entries(Path(path).read_bytes())
         tr = Tracer(img, schedule[0], song=song - 1)
         tr.run_init()
-        s = Samples()
+        s = Samples(tr.vm)
     t0 = time.process_time()
     while s.n < calls and time.process_time() - t0 < budget:
         tr.run_calls(1)

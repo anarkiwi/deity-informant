@@ -35,16 +35,18 @@ class Samples:
     """One byte per tick per footprint cell, and each tick's SID write list.
 
     The stack page is left out: a program :func:`~.stack.eliminate` proved
-    stack-free claims periodicity on the footprint without it.
+    stack-free claims periodicity on the footprint without it. ``vm`` seeds the
+    write log's cursor, so ``init``'s own SID writes are nobody's tick.
     """
 
-    __slots__ = ("cols", "n", "writes", "_at")
+    __slots__ = ("cols", "n", "writes", "first", "_at")
 
-    def __init__(self):
+    def __init__(self, vm=None):
         self.cols = {}
         self.n = 0
         self.writes = []
-        self._at = 0
+        self.first = {}
+        self._at = 0 if vm is None else len(vm.sidlog[1])
 
     def add(self, vm):
         """Record one tick: the footprint's bytes and the writes it made."""
@@ -55,6 +57,7 @@ class Samples:
             col = self.cols.get(a)
             if col is None:
                 col = self.cols[a] = bytearray([v]) * self.n
+                self.first[a] = self.n
             col.append(v)
         self.n += 1
         end = len(vm.sidlog[1])
@@ -68,9 +71,9 @@ class Samples:
         return bytes(col[-(self.n // 2) :])
 
 
-def _drift(col, loop, n):
-    """The per-loop deltas of one cell, at the loop's sample points."""
-    return sorted({(col[i + loop] - col[i]) & 0xFF for i in range(0, n - loop, loop)})
+def _drift(col, loop, n, start=0):
+    """The per-loop deltas of one cell, from the tick it was first written."""
+    return sorted({(col[i + loop] - col[i]) & 0xFF for i in range(start, n - loop, loop)})
 
 
 def classify(s):
@@ -94,7 +97,7 @@ def classify(s):
             {
                 "addr": "$%04X" % a,
                 "period": p,
-                "drift": _drift(s.cols[a], loop, s.n) if loop else [],
+                "drift": _drift(s.cols[a], loop, s.n, s.first[a]) if loop else [],
             }
             for a, p in sorted(per.items())
             if p is None or loop is None or loop % p
