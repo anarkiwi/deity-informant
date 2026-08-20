@@ -141,7 +141,7 @@ def _rewrite(view, tabs, byvar, subs, reads):
         if plan is None:
             return e
         if plan[0] == "read":
-            return reads[hit[0]] if type(e) is Var else e
+            return reads[e.n] if type(e) is Var else e
         if plan[0] == "const":
             return Const(plan[1], plan[2])
         return step(hit[1], plan[1], plan[2], plan[3]) if hit[1] else e
@@ -175,10 +175,12 @@ def _split(subs, slots):
 
 
 def _hoisted(view, tabs):
-    """``{column: the load a hoisted name binds it to}``, so a use inlines the read."""
-    return {
-        _key(s.e, tabs): s.e for s in _nodes(view) if type(s) is Let and _key(s.e, tabs) is not None
-    }
+    """``{name: the load it binds}``, so a use inlines the read its own copy index.
+
+    A procedure and its clone share one column table but not one index, so the
+    read a name stands for is the one that name was bound to.
+    """
+    return {s.n: s.e for s in _nodes(view) if type(s) is Let and _key(s.e, tabs) is not None}
 
 
 def _folds(cols, slots, indexed_rgn):
