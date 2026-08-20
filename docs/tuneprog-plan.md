@@ -171,6 +171,7 @@ Deduplicated from every stage's report; owner = the module that would change.
 | an edge that leaves one copy for another anywhere but the chain edge refuses the family (Follin's 8 one-voice effects, *Automatas*' `$112A` ×3 and `$16AB` ×2): a proof that such an edge *is* the run leaving copy *j* for copy *j+1*, and not a jump into code the copies share. **This is the remaining boundary of the SFX-subtune fold** and the only one left on §6 item 1 | copy index (#242), stage C (#244) | fold reach | copyrows |
 | a merged family's patched dispatch loses `jumptab`'s static table closure: the writers' store address is a per-copy column, not a constant, so the table's unobserved arms are no longer enumerated (Follin song 1 at 30 s: 49 `trap 'unverified'` arms become 3) | copy index (#242) | closure | jumptab, copymerge |
 | ~~a merged loop prints as `while` over an explicit index and its columns as `copies_XXXX[...]`~~ *done (#244): `copyview.py` prints every column as the operand it stands for and `loops.copies` makes the loop a `for v in 0..k-1`; a column whose copies name different offsets of a record, or whose readers name more than one region, keeps its table read* | copy index (#242) | presentation | views, structure |
+| `unroll`'s view-level fold substitutes copy 0's constants into the loop it makes, so a constant of that body equal to one of its slots would print with the loop index -- the family columns stopped doing this in #244 by keeping their read; `unroll` has no column to keep | stage C (#244) | presentation, honesty | unroll, views |
 | periodicity proof for free-running counters (lcm argument) | Commando | certificate | verify |
 | per-call input capture in the Ghidra facts; resolve the two emulator disagreements | Ghidra export | oracle | ghidra_facts, headless |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export (overlay or paired constructor) | Ghidra export | baseline | ghidra/6510 |
@@ -467,7 +468,11 @@ finds only consecutive isomorphic runs inside one body with no static
 correspondence -- it folds Follin's init copies and *Automatas*' write-out, and
 still does not fold the three row-advance blocks (§5); a group slot with an index
 prints from the cell, so a clear loop over a block whose first cell a family names
-reads `voice[0].b0021[v]`.
+reads `voice[0].b0021[v]`; and `unroll`'s own groups still substitute copy 0's
+constants into the loop they made, which carries the same ambiguity the family
+columns no longer do -- bounded to that loop by the `local` flag, but a run whose
+body holds a constant equal to one of its slots would print it with the loop
+index (§5).
 
 ## 8. Next prototypes, ranked
 
