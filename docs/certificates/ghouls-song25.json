@@ -4,6 +4,19 @@
   "tick sid writes",
   "tick schedule effects"
  ],
+ "copies": {
+  "coverage": {},
+  "families": [],
+  "refused": [
+   {
+    "base": "$642A",
+    "proc": "tick",
+    "why": "an edge from copy 0 enters copy 1"
+   }
+  ],
+  "statements": 0,
+  "unverified": 0
+ },
  "cost": {
   "calls_per_second": 36283,
   "ir_blocks": 106,

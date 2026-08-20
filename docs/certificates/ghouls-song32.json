@@ -4,12 +4,63 @@
   "tick sid writes",
   "tick schedule effects"
  ],
+ "copies": {
+  "coverage": {
+   "0,1,0": 31,
+   "0,1,1": 1,
+   "1,0": 8,
+   "1,0,0": 2,
+   "1,1": 4,
+   "1,1,0": 76,
+   "1,1,1": 75
+  },
+  "families": [
+   {
+    "bases": [
+     "$6234",
+     "$6421",
+     "$6610"
+    ],
+    "columns": 35,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 124,
+    "table": "$0200"
+   },
+   {
+    "bases": [
+     "$6905",
+     "$6917",
+     "$6929"
+    ],
+    "columns": 2,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 10,
+    "table": "$02D2"
+   },
+   {
+    "bases": [
+     "$694B",
+     "$6964"
+    ],
+    "columns": 6,
+    "copies": 2,
+    "proc": "tick",
+    "rows": 12,
+    "table": "$02DE"
+   }
+  ],
+  "refused": [],
+  "statements": 197,
+  "unverified": 118
+ },
  "cost": {
   "calls_per_second": 43342,
-  "ir_blocks": 221,
+  "ir_blocks": 139,
   "ir_procs": 2,
-  "ir_statements": 352,
-  "regions": 62,
+  "ir_statements": 737,
+  "regions": 46,
   "sites": 391,
   "trace_calls": 112,
   "verify_cpu_seconds": 0.0
