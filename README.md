@@ -34,7 +34,7 @@ deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]   # illegal
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                    # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]      # execute in PcodeVM, dump $D400.. grid
 deity-informant tuneprog TUNE.sid --out DIR [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-                       [--sid-model 6581|8580] [--closure siblings|none] [--resume] [--budget S] [--no-verify] [--no-text]
+                       [--sid-model 6581|8580] [--no-merge] [--closure trace|static] [--resume] [--budget S] [--no-verify] [--no-text]
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/install the 6510 SLEIGH module
 ```
 
@@ -49,8 +49,7 @@ image, schedule = find_entries(open("tune.sid", "rb").read())
 trace = run_trace(image, schedule[0], calls=1000)         # S0/S1: one instrumented run
 prog, regions, procs = pipeline.build(trace, "tune.sid")  # S2/S3/S4: the certified program
 cert = verify.certify(prog, verify.verify(prog, trace))   # S8: per-call equivalence + periodicity
-closed, sibs, stats = pipeline.closed(trace, prog, "tune.sid")  # S2c: the sibling closure
-view, structured, names = pipeline.present(closed, sibs)  # S5/S6 over a copy
+view, structured, names = pipeline.present(prog)          # S5/S6 over a copy
 text = printer.render(view, structured, names, cert)      # S7: tuneprog.md
 ```
 
