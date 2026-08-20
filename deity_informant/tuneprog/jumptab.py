@@ -72,15 +72,16 @@ def _writers(proc, defs, rgn=None):
         for s in b.stmts:
             if type(s) is not Store or s.w != 1:
                 continue
+            plain = _resolve(s.v, defs)
             if type(s.a) is Const:
-                out.setdefault(s.a.v, []).append(_resolve(s.v, defs))
+                out.setdefault(s.a.v, []).append((plain, (), plain))
                 continue
             cells = _column(s.a, defs, rgn) or ()
             vals = [_copy(s.v, j, defs, rgn) for j in range(len(cells))]
+            alts = tuple(v for v in vals if v is not None)
             for j, a in enumerate(cells):
                 if vals[j] is not None:
-                    plain = _resolve(s.v, defs)
-                    out.setdefault(a, []).append((vals[j], [v for v in vals if v], plain))
+                    out.setdefault(a, []).append((vals[j], alts, plain))
     return {a: v[0] for a, v in out.items() if len(v) == 1}
 
 
@@ -117,17 +118,22 @@ def _source(addr, writers, rgn, image, defs=None):
     ``stop`` is how many entries a copy's table holds: a merged writer names one
     table per copy, they are k images of one table, and one index reads them all.
     """
-    w = writers.get(addr)
-    if w is None:
+    got = writers.get(addr)
+    if got is None:
         return ("const", image[addr])
-    plain = type(w) is tuple
-    hit = _table(w[0] if plain else w, rgn)
+    val, alts, plain = got
+    hit = _table(val, rgn)
     if hit is None:
         return None
-    idx = (_index(w[2], defs, rgn) if plain else None) or hit[2]
-    bases = sorted({_table(x, rgn)[1] for x in w[1] if _table(x, rgn)} if plain else ())
+    bases = sorted({t[1] for t in (_table(x, rgn) for x in alts) if t})
     gaps = [b - a for a, b in zip(bases, bases[1:])]
-    return ("table", hit[0], hit[1], idx, min(gaps) if gaps else None)
+    return (
+        "table",
+        hit[0],
+        hit[1],
+        _index(plain, defs, rgn) or hit[2],
+        min(gaps, default=0) or None,
+    )
 
 
 def _domain(sources, spans, cap, idx=None):

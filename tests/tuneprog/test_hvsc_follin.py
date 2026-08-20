@@ -43,12 +43,13 @@ def test_ghouls_song_one_over_thirty_seconds():
 
     # 1: the patched JMP of each voice is a switch over its own handler table,
     # under the copy index, and the arms the voices share are one body
-    arms = 0
+    # a per-copy column names each writer's table, the sign test bounds the index
+    arms = []
     for cell in DISPATCH:
         sw = _switches(prog, cell)
         assert len(sw) == 1, "%04X" % cell
-        arms += len(sw[0].cases)
-    assert arms >= 21, arms
+        arms.append(len(sw[0].cases))
+    assert arms == [21, 21, 21], arms
 
     # 2: `$85` writes SID registers the song names -- the address is data
     sidw = [s for _n, _b, s in _stmts(prog) if type(s) is Store and s.cls == "io"]

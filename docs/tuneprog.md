@@ -33,7 +33,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S0 | load image, entry and cadence discovery, init runner, 6510 port + CIA models | `machine.py` |
 | S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
-| S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py` |
+| S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py`, over a per-copy column base and the range a branch proves for the index |
 | S2c | sibling copies as one body: the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- then the fold that makes the copy index a value, so the certified program has one body under `v` with a per-copy column table | `siblings.py`, `copyrows.py`, `copymerge.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
@@ -236,7 +236,16 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   not a decompiled path. `jumptab` closes a patched jump statically over the
   table's observed extent, which recovers most but not all arms (14 of 16 in
   GoatTracker's tick-0 table); entries no accessor ever reached are outside the
-  region and stay unlisted. Where a player unrolls its voices, a row one copy ran
+  region and stay unlisted. Two proofs bound that extent where they exist, and
+  only ever tighten it: the range the branches on the one path into the dispatch
+  prove for the index (a sign test, an equality, a compare -- Follin's `BPL` over
+  the stream byte puts its command table at 128 and up), and, for a merged family,
+  the entries one copy's table holds, which is the gap between the sibling bases
+  the same index reads. A folded writer names its cell *and* its table base
+  through per-copy columns; since a column is read-only, copy *j*'s writer is that
+  expression with each column read replaced by its *j*th entry, and the same
+  enumeration runs on each -- Follin song 1's three voices show 21 arms apiece.
+  Where a player unrolls its voices, a row one copy ran
   is every copy's row, which the fold makes one statement -- and marks unverified
   for the copies that never reached it.
 - **A merged row a copy never ran is unverified code.** The statement is the one
@@ -250,15 +259,22 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   two smaller families refuse. What folds is therefore a function of the horizon,
   and the certificate's horizon is what the exemplar documents report.
 - **What the copy index cannot name refuses.** An edge that leaves one copy for
-  another anywhere but the chain edge, a row whose copies do not lift to one
-  shape, an opcode cell inside a copy, a successor a copy that never ran the row
-  names differently in the image: the first refuses the family whole, the others
+  anywhere in another but that copy's own entry, a row whose copies do not lift to
+  one shape, an opcode cell inside a copy, a successor a copy that never ran the
+  row names differently in the image: the first refuses the family whole, the others
   keep that row as k rows under a `switch (v)`, where every copy that did not run
   it traps. The reason is in the certificate and in the printed header, never a
   silent approximation. A refused family leaves its *code* as S2b built it, but
   not the program's region typing: the regions a folded access unites are united
   once for the whole program, so a tune where one family folds and another refuses
-  carries the accepted family's region typing everywhere.
+  carries the accepted family's region typing everywhere. A copy holds only what
+  its rows hold, from its first row on: the stream an alignment stepped over
+  before it is the image of no row -- part copy *j*'s own tail, part a preamble
+  copy *j+1* alone has -- so no index names it, and the front end enters the copy
+  at the row itself with `v` the copy that row belongs to. That is what folds
+  Follin's one-voice effects and *Automatas*' row-advance blocks, at the cost of
+  a merged body with several entries, which the structurer prints with a `goto`
+  (two in *Automatas*) and no `for`.
 - **A column prints as the operand it stands for.** S6 reads the per-copy table
   once (`copyview.py`): a column whose values step affinely becomes that step in
   `v`, so the existing stride vocabulary prints it (`sid[v].freq_lo` by the
@@ -268,7 +284,8 @@ Hubbard's counters running free, so it is certified to its HVSC length.
   because substituting copy 0's operand cannot be told from an operand every copy
   agrees on that happens to hold the same address, so the printed index is the
   copy the *access* names; a plain constant is copy *j*'s own cell wherever it
-  stands. What no rule names keeps its table read with the address visible -- two
+  stands. `unroll`, which has no column to keep, refuses a run outright where a
+  cell every copy names equals one the run relocates. What no rule names keeps its table read with the address visible -- two
   of Follin's 60 columns, two of *Automatas*' five -- and the field names come
   from a substituted twin of the view, since a role is a property of the address.
   The loop itself is a `for v in 0..k-1` over the coverage vector the
