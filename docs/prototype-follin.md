@@ -349,14 +349,16 @@ same statement with a zero in its coverage vector, marked where it prints.
   envelope, so the class is the union's. The union program goes from 1,553
   statements in 520 blocks over 75 regions to 770 in 294 over 45, with 5 of its
   481 merged statements unverified.
-- **Every subtune folds, and all 32 certify.** At the certificate's own horizon
+- **Every subtune folds its voices, and all 32 certify.** At the certificate's own horizon
   the three voices fold in songs 1–11, 16, 26, 28, 30–32; two voices fold in 12,
   13, 15, 21, 22, 24 and, since P1, in 14, 17, 18, 19, 23, 25, 27 and 29; song 20
   folds a 4-copy family, and 28 and 30 fold their `$6941` triple as well. What
   refused the eight was not the chain rule but ownership: an effect that uses one
-  voice ends its copy in a tail the next copy's base sits inside, and `_own` gave
-  that tail to the next copy, so an ordinary branch inside it read as an edge
-  crossing copies. A copy now holds only what its rows hold. Subtune 14, whose two
+  voice ends its copy in a tail the next copy's base sits inside, and ownership
+  gave that tail to the next copy, so an ordinary branch inside it read as an edge
+  crossing copies. A copy now holds only what its rows hold. What still refuses is
+  in `init`, not the tick: songs 8-11 carry *the entry row does not fold* at
+  `$7316`, the rip loader's own block copy. Subtune 14, whose two
   voices both play, goes from 199 blocks and 255 statements over 52 regions to 106
   and 212 over 39 (458 printed lines to 283); where the second voice is silent
   (17, 18, 19, 25, 27, 29) the fold instead *adds* about 6 % of statements and
