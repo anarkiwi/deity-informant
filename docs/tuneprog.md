@@ -300,12 +300,12 @@ page-exclusive stream; a residual program keeps its pushes and must claim on the
 page-inclusive one — a stack byte it reads back is state like any other, and
 hashing without it would report a period the tune does not have. `--until-period`
 stops at the earliest repeat of either stream, so a residual tune may need
-`--calls` to reach the page-inclusive repeat it certifies on. A subtune that
-stops on a repeat certifies `first_repeat + 1` ticks -- under `--songs all` too,
-where each subtune stops at its own witness whatever `--chunk` found it in. Eliminating a stack
+`--calls` to reach the page-inclusive repeat it certifies on. Eliminating a stack
 therefore moves no certificate's period or divergence, and can only shorten a
 horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
-(8,640), still `complete`.
+(8,640), still `complete`. A subtune that stops on a repeat certifies
+`first_repeat + 1` ticks -- under `--songs all` too, where each subtune stops at
+its own witness whatever `--chunk` found it in.
 
 ## The register grid
 
