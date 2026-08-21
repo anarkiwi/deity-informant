@@ -223,15 +223,19 @@ one Opus agent per package with a read-only review before each merge, as §10.
 |---|---|---|---|
 | ~~**P1 fold reach**~~ *done*: cross-copy edge (the rule held; ownership was the refusal) · dispatch closure over a per-copy column base · index range for extents (intraprocedural) · `unroll` copy-0 constant guard | medium | S4 changes for newly folded families; recert 42/42 with ticks/period/complete/divergences fixed |
 | ~~**P2 certificate accounting**~~ *done*: lcm periodicity proof (refuted by measurement -- `period.py` classifies the obstruction and puts Commando where `ghouls-song21` is) · bounded static closure (`closure.py`, behind `--closure static`; the fold's discovery moved onto the trace-closed program so the closure cannot take a family away) · memo invalidation and the `node_exprs` guard · `--songs all` per-subtune stop reasons | medium | recert 42/42 unchanged: the certified product is still the trace-closed one |
-| **P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | after the campaign sizes the classes; frame localisation stays deferred |
-| **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; pairs with §8 item 6 |
-| **P5 polish** | 16-bit unrelated halves · `sext`/flag algebra | small | deferred |
+| **P4 Ghidra oracle** | per-call inputs + the two disagreements · `ghidra_partial` bodies | medium | independent; interleave anytime |
 | ~~**P-JCH V20 family**~~ *done (#251)*: `Puterman/I_Could_Eat_a_Knob_at_Night.sid` 8,577 ticks and `JCH/Guldkornekspressen_Intro.sid` 2,401 ticks, both **complete**, 0 divergences, 0 envelope traps, stack eliminated, no sibling family (JCH loops), 0 SMC cells in the player; five generic fixes, all in the machine model or the printer: the 6510 port's reset state, the port bytes in the program's image, the chip-vs-RAM class per access at $D000-$DFFF, the RAM under the register file as a shadow at delta 0, and a recurrence is not a busy-wait. both traces reproduce the `sidplayfp` grid write for write ([prototype-jch.md](prototype-jch.md)) | small-medium | done; recert 44/44 |
-| **P6 fold presentation** | the `for` a merged body with k entries does not get · a fold that costs more than it saves · a role that moves with a united region | small-medium | P1's four new rows; presentation only, so it can wait for the campaign's data |
-| **not now** | NMI+IRQ (§8 item 3's own prototype) · naming, numba (§8 items 4, 7, data-gated) · an edge into another copy's non-entry row (measured: costs more than it buys) | — | |
+| **Q1a structuring** (2026-08-21) | the `for` a k-entry merged body does not get · JCH's voice-loop join `goto`s (a join whose only exit is the region's own latch promotes) · closed-region structuring apart from covered code (criterion: GT2 0 `goto` with `--closure static` on; flipping the default is a separate decision — certificates gain the `closure` block) | medium | presentation-only, certificates frozen; absorbs P6's first row |
+| **Q1b views & naming** | role kept per member across a region union · transpose stride view (`base + n*k + v`) · a per-track offset table whose values are the SID voice strides names `sid[v].reg` · 16-bit views for unrelated halves · `sext`/flag-algebra printing | medium-small | presentation-only; absorbs P5 and P6's role row |
+| **Q2 sibling discovery deep fix** | candidate bases from the image and the chain relation, not block boundaries; delete P2's discover-before-close workaround; property tests over randomized block shapes | medium | before the sweep — discovery fragility is what breaks at scale |
+| **Q3 sweep prerequisites** | cycle-attributed grid comparison helper · `--songs all` `--chunk` quantisation · recert map hygiene | small | |
+| **Q4 = P3 stack residual policy** | RTI entry frame as the tick's contract · `--until-period` residual horizon | small-medium | pre-sweep (every installed-handler tune is an RTI entry); frame localisation stays deferred |
+| **accepted boundaries** | an edge into another copy's non-entry row (`$16AB`: costs a `goto` and two field names, buys nothing) · folding a silent copy costs ~6 % statements (buys names and the coverage vector; `--no-merge` is the escape) | — | measured, recorded, not work |
+| **not now / data-gated** | NMI+IRQ (§8 item 3's own prototype, scoping recorded) · two-planes chip/RAM (waits for a discriminating tune) · periodicity reduction (waits for a sound shape) · naming, numba (§8 items 4, 7) · residual-stack localisation (waits for the sweep's residual rate) | — | |
 
-Order: **P1 → P2 → P-JCH V20 → P3 → campaign (§8 item 1) → data-ranked
-remainder.** P1/P2 first because they change certificate claims the campaign
+Order (2026-08-21, post print review): **Q1a → Q1b → Q2 → Q3 → Q4 → campaign
+(§8 item 1) → data-ranked remainder**; P4 interleaves anytime. Historically:
+**P1 → P2 → P-JCH V20 → campaign.** P1/P2 first because they change certificate claims the campaign
 would otherwise measure stale; the V20 family stage precedes the sweep so the
 largest family's issues close by generalization on two tunes rather than at
 scale; P3 (RTI contract, residual horizon) follows it; NMI/sample deferred,
