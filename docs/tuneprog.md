@@ -27,6 +27,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | **voice map** | a read-only table holding `0, 7, 14` -- the SID's own voice -> register-block offsets, so an index read from it is a voice |
 | **phase** | the state scalar a tick tests to pick its rate (defMON's `& 7` call counter) |
 | **tick** | one call of the play entry, at the cadence S0 discovered; the horizon flag spells it `--calls`, the certificate field `ticks` |
+| **header** | P/SID metadata is known unreliable (design: "metadata, not ground truth"); it seeds discovery, the traced machine decides, the `sidplayfp` oracle arbitrates |
 | **certificate** | `certificate.json`: what was compared, over how many ticks, with what divergence and periodicity |
 
 ## Pipeline
