@@ -59,12 +59,11 @@ def _promote_proc(prog, name, names, rounds):
     if retval(proc) is not None:
         return 0  # the text shows what this procedure returns: keep its exits
     cur = best = _gotos(proc)
-    live = needed(prog)[0].get(name) if cur else None
     steps, mark = [], 0
     for _ in range(rounds):
         if not cur:
             break
-        hit = _one(prog, name, names, cur, live)
+        hit = _one(prog, name, names, cur, needed(prog)[0].get(name))
         if hit is None:
             break
         cur, hname, undo = hit
@@ -172,13 +171,12 @@ def _defs(proc, labels):
     return {n for l in labels for s in proc.blocks[l].stmts for n in defs_of(s)}
 
 
-def _leaving(proc, region, entry, out, live, params):
+def _leaving(proc, region, entry, out, params):
     """The names the region hands its exit, or ``None`` when it cannot hand them over.
 
-    A value something after the exit reads is a return value, so the region must
-    have it wherever it takes the edge to ``out``: given to it, set by its entry
-    (which dominates it), or set by the block that leaves. A copy index is the
-    loop's own machinery (:func:`~.loops.copies`), never a helper's work.
+    Every name the region defines that anything outside still reads is a return
+    value (liveness decides what prints, never what an edit may drop), so the
+    region must have it wherever it takes the edge to ``out``.
     """
     inside, used = _defs(proc, region), set()
     for lbl, b in proc.blocks.items():
@@ -187,9 +185,9 @@ def _leaving(proc, region, entry, out, live, params):
         for s in b.stmts:
             stmt_uses(s, used)
         term_uses(b.term, used)
-    gives = sorted(inside & used & (used if live is None else set(live)))
+    gives = sorted(inside & used)
     if any(n.startswith(COPYVAR) for n in gives):
-        return None
+        return None  # a copy index is the loop's own machinery, not a helper's work
     have = params | _defs(proc, [entry])
     for lbl in region:
         if out in succs(proc.blocks[lbl].term) and set(gives) - have - _defs(proc, [lbl]):
@@ -212,7 +210,7 @@ def _promote(prog, name, lbl, region, out=None, live=None):
             return None
         if not any(printable(s, live or ()) for l in region for s in proc.blocks[l].stmts):
             return None
-        gives = _leaving(proc, region, lbl, out, live, params)
+        gives = _leaving(proc, region, lbl, out, params)
         if gives is None:
             return None
     slots = _slots(params | set(gives))

@@ -240,9 +240,10 @@ def _chain(proc, header, latches, body, preds, k):
     if preds is None or proc.blocks[header].count != sum(proc.blocks[header].cover):
         return None
     cover = tuple(proc.blocks[header].cover)
-    ins = sorted(set(latches) | {p for p in preds[header] if p not in body})
-    if any(p not in body for l in latches for p in preds[l]):
-        return None
+    outs = [p for p in preds[header] if p not in body]
+    if not outs or not all(cover) or any(p not in body for l in latches for p in preds[l]):
+        return None  # every copy has an entry and ran: an untaken edge is no iteration
+    ins = sorted(set(latches) | set(outs))
     sets = {l: _named(proc.blocks[l]) for l in ins}
     shared = set.intersection(*(set(s) for s in sets.values())) if sets else set()
     for name in sorted(shared):
