@@ -93,19 +93,19 @@ class Facts:
         structuring left its definition in must not decide it; whether a *store* is
         a simple self-update is a property of the statement, which stays local.
         """
-        defs = {}
+        defs, seen = {}, dict(whole)
         for s in b.stmts:
             if type(s) is Let:
                 if not s.n.startswith("$"):
-                    defs[s.n] = s.e
-                self.value(name, expand(s.e, whole, DEPTH))
+                    defs[s.n] = seen[s.n] = s.e
+                self.value(name, expand(s.e, seen, DEPTH))
             elif type(s) is Store:
-                self.value(name, expand(s.v, whole, DEPTH))
-                self.value(name, expand(s.a, whole, DEPTH))
+                self.value(name, expand(s.v, seen, DEPTH))
+                self.value(name, expand(s.a, seen, DEPTH))
                 self.store(name, s, expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH))
             elif type(s) is Call:
                 for a in s.args:
-                    self.value(name, expand(a, whole, DEPTH))
+                    self.value(name, expand(a, seen, DEPTH))
 
     def value(self, name, e):
         """Record what an expression reads: regions, index uses, pointer uses."""

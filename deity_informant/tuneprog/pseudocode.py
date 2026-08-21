@@ -111,19 +111,22 @@ class Printer:
             return None  # the index counts from the region, not from this cell
         return "%s[%s]" % (out, self.index(r, r.zero, inner))
 
-    def field(self, rid, r, addr, idx):
+    def field(self, rid, r, addr, idx, span=None):
         """``rec[i].field`` for a block the play-phase stride splits into records.
 
         An access whose index does not step by that stride is not one of its
         elements (a cursor reading the block as a table), and keeps its address.
+        Under the transpose the index steps by one, so what says the same is the
+        access's own envelope: it must stay inside the one field it names.
         """
         g, stride, fields, flip = self.names.split[rid]
         pos = addr - r.zero
         idx = _unoffset(idx, pos)
         if flip:
-            off, i = pos - pos % stride, str(pos % stride)
-            if idx is not None:
-                i = self.ivar(idx, 1) or _bare(self.expr(idx, False))
+            if not self.one_field(r, stride, pos, span):
+                return None
+            off = pos - pos % stride
+            i = str(pos % stride) if idx is None else self.ivar(idx, 1) or _bare(self.expr(idx))
             return "%s[%s].%s" % (g, i, fields.get(off, "f%02X" % off))
         off, elem = pos % stride, pos // stride
         i = str(elem)
@@ -141,7 +144,19 @@ class Printer:
             "%s/%d" % (self.expr(idx, False), stride) if self.names.scale.get(n) == stride else None
         )
 
-    def cell(self, rid, addr, idx=None, name=None):
+    def one_field(self, r, stride, pos, span):
+        """True when this access's whole observed extent lies in the field ``pos`` names.
+
+        An access with no envelope (a 16-bit view, whose halves name regions) proves
+        nothing, so it keeps the address; the init loop that made the block one
+        region reaches all of it, and so is not one of the fields play walks.
+        """
+        if span is None or pos < 0:
+            return False
+        lo, hi = span[0] - r.zero, span[1] - r.zero
+        return lo // stride == hi // stride == pos // stride
+
+    def cell(self, rid, addr, idx=None, name=None, span=None):
         """A storage reference: ``voice[v].field``, ``NAME[i]`` or a scalar's name."""
         hit = self.names.slots.get((rid, addr))
         hit = self.slot(hit, rid, addr, idx) if hit else None
@@ -149,7 +164,7 @@ class Printer:
             return hit
         r = self.rgn.get(rid)
         if rid in self.names.split and r is not None and addr is not None:
-            hit = self.field(rid, r, addr, idx)
+            hit = self.field(rid, r, addr, idx, span)
             if hit is not None:
                 return hit
         if r is None:
@@ -311,7 +326,7 @@ class Printer:
         addr, idx = self.addr_of(e.a, r)
         if r is None and addr is not None:
             return "mem[%s]" % hexlit(addr)
-        return self.cell(e.r, addr, idx)
+        return self.cell(e.r, addr, idx, span=(e.lo, e.hi))
 
     def colref(self, rid, a):
         """``voice[v].field`` for an access through a per-copy column, or ``None``.
@@ -381,7 +396,7 @@ class Printer:
             else:
                 lhs = "io[%s]" % (hexlit(base) if base is not None else self.expr(s.a, False))
         else:
-            lhs = self.colref(s.r, s.a) or self.cell(s.r, addr, idx)
+            lhs = self.colref(s.r, s.a) or self.cell(s.r, addr, idx, span=(s.lo, s.hi))
         out = self.compound(lhs, s, (addr, idx))
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:

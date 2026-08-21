@@ -403,7 +403,10 @@ def test_a_block_walked_field_outside_element_inside_prints_as_a_record():
     assert re.search(r"^voice_2\[3\]  \$\w+ 9 bytes, stride 1, 3 fields$", doc, re.M), doc
     for f in ("f00", "f03", "f06"):
         assert "voice_2[v].%s" % f in doc, doc
-    assert not re.search(r"b\w{4}\[v( \+ \d)?\]", doc), doc  # no flat address left
+    tick = "\n".join(proc_body(doc, "tick"))
+    assert not re.search(r"b\w{4}\[", tick), tick  # no flat address left in the tick
+    init = "\n".join(proc_body(doc, "init"))
+    assert re.search(r"b\w{4}\[v\] = 0", init), init  # the clear loop reaches every field
 
 
 def test_a_block_something_reads_as_a_table_is_not_that_record():

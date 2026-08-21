@@ -100,7 +100,10 @@ def test_the_two_init_cleared_blocks_print_as_records_over_the_track_index():
         g, k, fields, flip = run.names.split[rid]
         assert (k, flip, len(fields)) == (3, True, 4)
         assert run.names.groups[g]["n"] == 3 and "%s[v]." % g in run.text
-        assert "b%04X[" % base not in run.text
+        # the tick walks the fields; the init loop that made the block one region
+        # reaches all of it, so it is no field of the view and keeps the address
+        assert not re.search(r"b%04X\[v \+ " % base, run.text), run.text
+        assert "b%04X[v] = 0" % base in run.text
 
 
 def test_the_register_offset_table_names_the_register_by_its_voice():

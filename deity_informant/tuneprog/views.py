@@ -136,7 +136,12 @@ def decorate(prog, names, folds=None, facts=None):
 
 
 def _accesses(prog, procs=None):
-    """``[(region, address expression, envelope low, envelope high)]`` over ``procs``."""
+    """``[(region, address expression, envelope low, envelope high)]`` over ``procs``.
+
+    Byte accesses only, which is what the split decides on: the S6 word view runs
+    after :func:`decorate` and names regions, not addresses, so it has no envelope
+    to offer and the printer keeps the flat address for one.
+    """
     for name, p in prog.procs.items():
         if procs is not None and name not in procs:
             continue
