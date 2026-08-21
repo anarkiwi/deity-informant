@@ -99,18 +99,19 @@ def _mixed(tmp_path):
     return p
 
 
-def _argv(sid, out, period, calls=12):
+def _argv(sid, out, period, calls=12, chunk=4):
     a = [str(sid), "--out", str(out), "--songs", "all", "--calls", str(calls)]
-    a += ["--chunk", "4", "--budget", "0.0", "--no-text", "--prefix", "0", "--resume"]
+    a += ["--chunk", str(chunk), "--budget", "0.0", "--no-text", "--prefix", "0", "--resume"]
     return a + ["--until-period"] if period else a
 
 
-def _drive(sid, out, period=lambda st: True):
+def _drive(sid, out, period=lambda st: True, chunk=4):
     """Run the pipeline to the end in ``--budget 0`` steps; ``period`` picks each argv."""
     rc, n = pipeline.MORE, 0
     while rc == pipeline.MORE and n < 40:
         f = out / "state.json"
-        rc = pipeline.main(_argv(sid, out, period(json.loads(f.read_text()) if f.exists() else {})))
+        st = json.loads(f.read_text()) if f.exists() else {}
+        rc = pipeline.main(_argv(sid, out, period(st), chunk=chunk))
         n += 1
     assert rc == 0
     return json.loads((out / "certificate.json").read_text())
@@ -125,14 +126,21 @@ def _traced(out):
 
 
 def test_songs_all_records_each_subtunes_own_stop_reason(tmp_path):
+    """A period-stopping subtune certifies its witness, whatever chunk found it."""
     out = tmp_path / "out"
     cert = _drive(_mixed(tmp_path), out)
-    assert _ticks(cert) == [(1, 4, True), (2, 12, False)]
+    assert _ticks(cert) == [(1, 2, True), (2, 12, False)]  # song 1 repeats at tick 1
     assert {k: (v["calls"], v["stop"]) for k, v in _traced(out).items()} == {
-        "1": (4, "period"),
+        "1": (2, "period"),
         "2": (12, "horizon"),
     }
     assert not (out / "verify.pkl").exists()
+
+
+def test_a_subtunes_tick_count_does_not_depend_on_the_chunk_that_found_it(tmp_path):
+    sid = _mixed(tmp_path)
+    ticks = [_ticks(_drive(sid, tmp_path / ("c%d" % c), chunk=c)) for c in (3, 4, 8)]
+    assert ticks[0] == ticks[1] == ticks[2] == [(1, 2, True), (2, 12, False)]
 
 
 def test_a_subtune_traced_under_another_horizon_is_retraced_on_resume(tmp_path):
@@ -141,7 +149,7 @@ def test_a_subtune_traced_under_another_horizon_is_retraced_on_resume(tmp_path):
     out = tmp_path / "mixed"
     got = _drive(sid, out, period=lambda st: bool(st.get("traced")))
     assert _ticks(got) == _ticks(fresh)
-    assert (_traced(out)["1"]["stop"], _traced(out)["1"]["calls"]) == ("period", 4)
+    assert (_traced(out)["1"]["stop"], _traced(out)["1"]["calls"]) == ("period", 2)
 
 
 def test_a_legacy_songs_all_state_restarts_instead_of_resuming(tmp_path):
@@ -151,7 +159,7 @@ def test_a_legacy_songs_all_state_restarts_instead_of_resuming(tmp_path):
     st = json.loads((out / "state.json").read_text())
     st["traced"] = [1, 2]
     (out / "state.json").write_text(json.dumps(st))
-    assert _ticks(_drive(sid, out)) == [(1, 4, True), (2, 12, False)]
+    assert _ticks(_drive(sid, out)) == [(1, 2, True), (2, 12, False)]
     assert _traced(out)["2"]["stop"] == "horizon"
 
 

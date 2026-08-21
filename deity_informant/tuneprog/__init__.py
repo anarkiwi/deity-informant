@@ -42,6 +42,13 @@ Presentation over the certified program (it is never edited):
 * :mod:`.pseudocode` / :mod:`.printer` (S7 text form) -- the rendered statements
   and the ``tuneprog.md`` document around them.
 
+Comparison against an external oracle:
+
+* :mod:`.grid` -- a per-frame SID register grid from any write stream that
+  carries cycles (the trace's own log, a ``sidtrace`` CSV), each write in the
+  interrupt period its cycle falls in; :mod:`.tunes` -- the one HVSC map every
+  certificate, tool and test resolves a tune through.
+
 :mod:`.pipeline` drives all of it; ``tools/tuneprog_certify.py`` and
 ``deity-informant tuneprog`` are wrappers around it. The stage boundaries are the
 module-level entry points ``build.build_ir``, ``ssa.simplify``,

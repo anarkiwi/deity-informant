@@ -5,7 +5,6 @@ once per worker however many tests read it. Skips cleanly where the tune is not
 reachable (no HVSC tree, no cache, offline).
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,9 +12,7 @@ import pytest
 
 pytest.importorskip("pysidtracker")
 
-from pysidtracker.testing import resolve_tune  # noqa: E402
-
-from deity_informant.tuneprog import copymerge, pipeline, printer  # noqa: E402
+from deity_informant.tuneprog import copymerge, pipeline, printer, tunes  # noqa: E402
 from deity_informant.tuneprog.cfg import build_procs  # noqa: E402
 from deity_informant.tuneprog.ir import Const, Let, Load, Switch, Var  # noqa: E402
 from deity_informant.tuneprog.irwalk import loads, node_exprs, walk  # noqa: E402
@@ -27,25 +24,24 @@ from deity_informant.tuneprog.verify import certify, verify  # noqa: E402
 
 from _prog import proc_body as body  # noqa: E402
 
-CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache")) / "hvsc"
 PAL_CLOCK = 985248
-AUTOMATAS = "MUSICIANS/G/Goto80/Automatas.sid"
-COMMANDO = "MUSICIANS/H/Hubbard_Rob/Commando.sid"
-GNG = "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid"
-EMOMYST = "MUSICIANS/H/Hermit/Emomyst.sid"
-EOTW = "MUSICIANS/H/Hermit/End_of_the_World.sid"
-LINUS = "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid"
-DIA = "MUSICIANS/L/Linus/Do_It_Again.sid"
-KNOB = "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid"
-GULDKORN = "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid"
+AUTOMATAS = "Automatas.sid"
+COMMANDO = "Commando.sid"
+GNG = "Ghouls_n_Ghosts.sid"
+EMOMYST = "Emomyst.sid"
+EOTW = "End_of_the_World.sid"
+LINUS = "Je_suis_Linus_le_salaud.sid"
+DIA = "Do_It_Again.sid"
+KNOB = "I_Could_Eat_a_Knob_at_Night.sid"
+GULDKORN = "Guldkornekspressen_Intro.sid"
 
 
-def tune_file(relpath):
+def tune_file(name):
     """The tune's path, skipping the test when it cannot be resolved."""
-    path = resolve_tune(relpath, cache_dir=CACHE)
+    path = tunes.resolve(name)
     if path is None:
-        pytest.skip("%s unavailable (no HVSC tree, no cache, offline)" % relpath)
-    return Path(path)
+        pytest.skip("%s unavailable (no HVSC tree, no cache, offline)" % name)
+    return path
 
 
 def tune(relpath):

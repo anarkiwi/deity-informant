@@ -58,6 +58,12 @@ class Trace:
     footprint_free: object = None
     chip_ops: set = None  # (pc, op index) pairs that reached a chip; None = every one did
 
+    def witness(self):
+        """The earliest tick either footprint repeated at, or ``None``."""
+        hits = [self.meta.get(k) for k in ("first_repeat", "first_repeat_free")]
+        hits = [h for h in hits if h is not None]
+        return min(hits) if hits else None
+
     def site_at(self, pc):
         """All site keys recorded at ``pc`` (>1 when the pc is an opcode cell)."""
         return [k for k in self.sites if k[0] == pc]

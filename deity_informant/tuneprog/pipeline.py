@@ -100,6 +100,15 @@ def _stop(args, tr, target):
     return "horizon" if tr.calls_done >= target else None
 
 
+def _certified(args, witness, traced):
+    """The ticks a run certifies: one past the repeat it stopped on, else what it traced.
+
+    A chunk overshoots the witness by up to ``--chunk`` ticks, so the horizon a
+    subtune certifies is the witness, not where the chunk happened to land.
+    """
+    return witness + 1 if args.until_period and witness is not None else traced
+
+
 def _target(args, entry):
     if args.calls:
         return args.calls
@@ -136,8 +145,7 @@ def stage_trace(args, out, st, t0, log=print):
     if not done:
         return False
     trace = tr.trace()
-    hit = tr.witness()
-    st["calls"] = hit + 1 if args.until_period and hit is not None else tr.calls_done
+    st["calls"] = _certified(args, tr.witness(), tr.calls_done)
     trace.save(out)
     st.update(period=tr.period, first_repeat=tr.first_repeat, stage="front")
     return True
@@ -170,17 +178,18 @@ def trace_all(args, out, st, t0, log=print):
             if time.process_time() - t0 > args.budget:
                 break
         stop = _stop(args, tr, target)
-        done[str(song)] = {"calls": tr.calls_done, "stop": stop, "horizon": horizon(args)}
-        st["calls"] = tr.calls_done
+        calls = _certified(args, tr.witness(), tr.calls_done)
+        done[str(song)] = {"calls": calls, "stop": stop, "horizon": horizon(args)}
+        st["calls"] = calls
         if stop is None:
             tr.save(resume)
-            log("  song %d: %d calls (%.0fs cpu)" % (song, tr.calls_done, time.process_time() - t0))
+            log("  song %d: %d calls (%.0fs cpu)" % (song, calls, time.process_time() - t0))
             return False
         tr.trace().save(_subdir(out, song))
         resume.unlink(missing_ok=True)
         log(
             "  song %d traced: %d calls, %s (%.0fs cpu)"
-            % (song, tr.calls_done, stop, time.process_time() - t0)
+            % (song, calls, stop, time.process_time() - t0)
         )
         if time.process_time() - t0 > args.budget:
             return False
@@ -268,7 +277,8 @@ def verify_all(args, out, st, t0, prog, log=print):
     for song in st["songs"]:
         if any(x["song"] == song for x in subs):
             continue
-        ref = V.Reference(Trace.load(_subdir(out, song)))
+        sub = Trace.load(_subdir(out, song))
+        ref = V.Reference(sub, _certified(args, sub.witness(), sub.meta["calls"]))
         v = V.Verifier(prog, ref, src=src)
         if saved.get("song") == song and saved.get("calls") == ref.calls:
             v.restore(saved["state"])

@@ -56,18 +56,19 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 244  tracevm 328  trace 302  tracedata 336  lift 227
-              cfg 310  regions 243  jumptab 368  siblings 395  closure 347
+front end     machine 244  tracevm 328  trace 305  tracedata 342  lift 227
+              cfg 310  regions 243  jumptab 373  siblings 476  closure 347
               copyrows 453  copymerge 165
-program       ir 440  interp 248  irwalk 315  graph 82  lower 214  build 470
+program       ir 440  interp 248  irwalk 319  graph 82  lower 214  build 470
               ssa 431  frames 371  stack 204  idioms 401  emit 372  verify 328
               period 113
 presentation  structure 356  loops 307  inline 199  texture 475  frame 44
               word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
-              facts 274  recover 327  views 287
-text          pseudocode 451  printer 407
-driver        pipeline 450  resume 67  __init__ 124
-baseline      ghidra_facts 219  ghidra_compare 182   46 modules, 13,781 lines
+              facts 284  recover 328  views 295
+text          pseudocode 468  printer 405
+driver        pipeline 458  resume 67  __init__ 124
+oracle        grid 117  tunes 50
+baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,089 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -117,6 +118,12 @@ do :; done
 ```bash
 until python3 tools/tuneprog_recert.py --out out/recert --resume; do :; done
 ```
+
+Every tune the certificates and the tests name lives once, in
+`deity_informant/tuneprog/tunes.py`: a certificate's `tune` field is a basename,
+which is that map's key, and `tunes.resolve` finds the file under `$HVSC` or in
+the `$DEITY_ORACLE_CACHE/hvsc` fetch cache. Adding a tune is one line there, and
+a hermetic test refuses an HVSC path written anywhere else.
 
 `tools/tuneprog_period.py` says why a subtune the certificate could not close
 has no state repeat (`period.py`): it samples every footprint cell and every SID
@@ -284,10 +291,28 @@ page-exclusive stream; a residual program keeps its pushes and must claim on the
 page-inclusive one — a stack byte it reads back is state like any other, and
 hashing without it would report a period the tune does not have. `--until-period`
 stops at the earliest repeat of either stream, so a residual tune may need
-`--calls` to reach the page-inclusive repeat it certifies on. Eliminating a stack
+`--calls` to reach the page-inclusive repeat it certifies on. A subtune that
+stops on a repeat certifies `first_repeat + 1` ticks -- under `--songs all` too,
+where each subtune stops at its own witness whatever `--chunk` found it in. Eliminating a stack
 therefore moves no certificate's period or divergence, and can only shorten a
 horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
 (8,640), still `complete`.
+
+## The register grid
+
+`grid.py` frames any write stream that carries cycles -- the tracer's own `wlog`,
+or a `sidtrace` CSV -- into a per-frame `$D400..$D418` grid by attributing each
+write to the interrupt period its cycle falls in. A tick is not instantaneous:
+Puterman's V20 wrapper spends 168 -> 10,248 cycles between a tick's first SID
+write and its last, so a grid keyed by call index is not the grid a sampler read,
+and a tick that outlives its frame leaves its late writes in the next one. No
+sample point is chosen: the boundary is the interrupt, which the tracer sets
+(tick 0's cycle, then `cycles_per_tick`) and the CSV states (`cycle -
+since_video_irq`). Framed that way the tracer and `sidplayfp` agree on **3,000 of
+3,000** frames of the Knob (`tests/test_oracle.py`); the 297 frames the old
+comparison differed on were the oracle framer's half-frame anchor
+(`grid_from_writes` rounds to the nearest frame from the first play write), not
+the writes.
 
 ## Certified exemplars
 

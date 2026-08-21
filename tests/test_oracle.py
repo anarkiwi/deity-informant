@@ -1,13 +1,14 @@
 """Per-frame SID register-grid oracle test: deity's VM vs the sidtrace oracle.
 
-Renders a tune with deity's own P-Code VM and compares ``$D400..$D418`` per
-frame to the Dockerized ``sidplayfp``/``sidtrace`` oracle. Marked ``oracle``
-(excluded from the default suite); HVSC tunes fetch to a gitignored cache.
+Renders a tune with deity's own P-Code VM and compares ``$D400..$D418`` per frame
+to the Dockerized ``sidplayfp``/``sidtrace`` oracle, both grids framed by
+:mod:`deity_informant.tuneprog.grid`. Marked ``oracle``; tunes fetch to a cache.
 """
 
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("pysidtracker")
@@ -16,20 +17,34 @@ from pysidtracker import registers as reg  # noqa: E402
 from pysidtracker.image import SidImage  # noqa: E402
 from pysidtracker.trace import trace_init  # noqa: E402
 from pysidtracker.oracle import aligned_match  # noqa: E402
-from pysidtracker.testing import TuneFetchError, oracle_grid, resolve_tune  # noqa: E402
+from pysidtracker.testing import TuneFetchError, oracle_grid  # noqa: E402
 
 from deity_informant import PcodeVM, lift, run_irq, run_sub  # noqa: E402
+from deity_informant.tuneprog import grid, tunes  # noqa: E402
 
 _CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache"))
 _PW = set(reg.PW_HI_REGS)
 
 FRAMES = 3000
 
-CASES = [
-    ("monty", "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid"),
-    ("commando", "MUSICIANS/H/Hubbard_Rob/Commando.sid"),
-    ("A_Mind_Is_Born", "MUSICIANS/L/Lft/A_Mind_Is_Born.sid"),
-]
+CASES = ["Monty_on_the_Run.sid", "Commando.sid", "A_Mind_Is_Born.sid"]
+
+
+def _tune(name):
+    path = tunes.resolve(name)
+    if path is None:
+        raise TuneFetchError("%s unavailable (offline, not cached)" % name)
+    return path
+
+
+def _oracle(path, frames):
+    """The oracle's grid, framed by the CSV's own interrupt clock."""
+    rows = grid.sidtrace_grid(grid.oracle_rows(path, _CACHE / "csv", seconds=frames // 50 + 2))
+    assert len(rows) >= frames, "oracle only %d frames (< %d) -- short/stale render" % (
+        len(rows),
+        frames,
+    )
+    return [r.tolist() for r in rows[:frames]]
 
 
 def _snapshot(vm):
@@ -64,75 +79,62 @@ def render(data, nframes):
 
 
 @pytest.mark.oracle
-@pytest.mark.parametrize("tune_id,relpath", CASES, ids=[c[0] for c in CASES])
-def test_render_matches_oracle(tune_id, relpath):
+@pytest.mark.parametrize("name", CASES)
+def test_render_matches_oracle(name):
     """deity's grid matches the oracle byte-exact over ``FRAMES`` frames.
 
     Header-play (``monty``/``commando``) and handler-driven (``A_Mind_Is_Born``)
-    RSID all reproduce full-length. The length assert fails loud on a short/stale
-    oracle render rather than silently under-validating.
+    RSID all reproduce full-length: one play call is one interrupt period, the
+    frame the oracle's own writes are attributed to.
     """
-    path = resolve_tune(relpath, cache_dir=_CACHE / "hvsc")
-    if path is None:
-        raise TuneFetchError(f"tune {tune_id} unavailable (offline, not cached)")
-    expected = oracle_grid(
-        path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES
-    )
-    assert (
-        len(expected) >= FRAMES
-    ), f"{tune_id}: oracle only {len(expected)} frames (< {FRAMES}) -- short/stale render"
-    rendered = render(Path(path).read_bytes(), len(expected))
+    path = _tune(name)
+    expected = _oracle(path, FRAMES)
+    rendered = render(path.read_bytes(), len(expected))
     assert aligned_match(
         expected, rendered, max_lead=4
-    ), f"{tune_id}: deity render != sidtrace oracle over {len(expected)} frames"
+    ), "%s: deity render != sidtrace oracle over %d frames" % (name, len(expected))
 
 
-KNOB = "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid"
-BANKED_FRAMES = 500
+KNOB = "I_Could_Eat_a_Knob_at_Night.sid"
 
 
-def _tick_grid(path, nframes):
-    """Per-tick ``$D400..$D418`` from the tuneprog tracer's own SID write log.
+def _trace(path, nframes):
+    """``nframes`` ticks of the tuneprog tracer on ``path``."""
+    from deity_informant.tuneprog.machine import find_entries  # pylint: disable=C0415
+    from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
 
-    The log holds what reached the chip, so a player that writes the RAM under
-    the SID (I/O banked out) contributes nothing to it -- which is the point.
-    """
-    from deity_informant.tuneprog.machine import find_entries
-    from deity_informant.tuneprog.trace import Tracer
-
-    img, schedule = find_entries(Path(path).read_bytes())
+    img, schedule = find_entries(path.read_bytes())
     tr = Tracer(img, schedule[0])
     tr.run_init()
     tr.run_calls(nframes)
-    log = tr.trace().wlog
-    rows, cur, i = [], [0] * reg.SID_REG_COUNT, 0
-    calls = [int(c) for c in log["call"]]
-    while i < len(calls) and calls[i] > nframes:
-        i += 1  # the init phase logs call = 0xFFFFFFFF
-    for frame in range(nframes):
-        while i < len(calls) and calls[i] == frame:
-            a = int(log["addr"][i]) - 0xD400
-            if 0 <= a < reg.SID_REG_COUNT:
-                cur[a] = int(log["val"][i])
-            i += 1
-        rows.append([(cur[k] & 0xF) if k in _PW else cur[k] for k in range(reg.SID_REG_COUNT)])
-    return rows
+    return tr.trace()
+
+
+def _bycall(trace, nframes):
+    """A grid built the old way: every write in the frame of the tick that issued it."""
+    log = trace.wlog
+    addr = np.asarray(log["addr"], dtype=np.int64) - grid.SID_BASE
+    keep = (addr >= 0) & (addr < grid.SID_REGS)
+    call = np.asarray(log["call"], dtype=np.int64)[keep]
+    return grid.grid(
+        np.where(call < 0xFFFFFFF, call, -1), addr[keep], np.asarray(log["val"])[keep], nframes
+    )
 
 
 @pytest.mark.oracle
 def test_a_player_run_with_io_banked_out_writes_no_register():
     """Puterman's V20 wrapper: only its flush reaches the chip, and the oracle agrees.
 
-    With the 6510 port's direction byte wrong, ``STA $01`` banks nothing, the
-    player's own 25 writes a frame reach the SID as well, and every frame differs.
+    With the 6510 port's direction byte wrong the player's own 25 writes a frame
+    reach the SID as well and every frame differs. The wrapper spends 168 ->
+    10,248 cycles inside one tick, so the frame a write lands in is its cycle's.
     """
-    path = resolve_tune(KNOB, cache_dir=_CACHE / "hvsc")
-    if path is None:
-        raise TuneFetchError("Puterman/I_Could_Eat_a_Knob_at_Night unavailable")
-    expected = oracle_grid(
-        path, oracle_cache=_CACHE / "csv", seconds=BANKED_FRAMES // 50 + 2, frames=BANKED_FRAMES
+    path = _tune(KNOB)
+    expected = _oracle(path, FRAMES)
+    trace = _trace(path, FRAMES)
+    bad = grid.differing(expected, grid.trace_grid(trace, FRAMES))
+    assert not bad.size, "frames %s differ" % bad[:3]
+    rounded = oracle_grid(
+        path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES
     )
-    assert len(expected) >= BANKED_FRAMES, f"oracle only {len(expected)} frames -- short render"
-    rendered = _tick_grid(path, len(expected))
-    bad = [i for i, (a, b) in enumerate(zip(expected, rendered)) if a != b]
-    assert not bad, f"frames {bad[:3]} differ: {expected[bad[0]]} != {rendered[bad[0]]}"
+    assert len(grid.differing(rounded, _bycall(trace, FRAMES))) > 200  # measured: 297

@@ -29,7 +29,7 @@ from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
-VERSION = 3  # resume-state layout; an older pickle restarts rather than resumes
+VERSION = 4  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 
@@ -89,6 +89,7 @@ class Tracer:
         self.vm = TraceVM(image.mem, image, policy=policy, inputs=inputs, override=override)
         self.cache = {}
         self.image_post_init = None
+        self.cycles_init = 0
         self.post_init_regs = None
         self.calls_done = 0
         self.period = None
@@ -109,6 +110,7 @@ class Tracer:
         ):
             c64.install_kernal_irq_stubs(vm)
         self.image_post_init = bytes(vm.mem)
+        self.cycles_init = vm.cycles  # where tick 0's frame starts
         self.post_init_regs = {n: int(vm.reg[i]) for i, n in CPU_REGS.items()}
         return self
 
@@ -230,6 +232,7 @@ class Tracer:
             "calls": self.calls_done,
             "insns": vm.insns,
             "cycles": vm.cycles,
+            "cycles_init": self.cycles_init,
             "period": self.full.period,
             "first_repeat": self.full.first_repeat,
             "period_free": self.free.period,
