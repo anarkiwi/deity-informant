@@ -257,6 +257,7 @@ def test_until_period_retraces_only_the_subtunes_that_stopped_page_free(tmp_path
 
 def test_songs_all_refuses_subtunes_that_disagree_on_cadence(tmp_path):
     """One merged trace is one schedule, so a mixed ``speed`` word is a refusal."""
+    pytest.importorskip("pysidtracker")
     p = tmp_path / "mixed.sid"
     p.write_bytes(
         psid(

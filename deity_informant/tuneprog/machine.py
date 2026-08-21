@@ -266,7 +266,7 @@ def _traced(data):
     return playroutine_cadence(data), trace_init(SidImage.from_bytes(data), play_calls=0)
 
 
-def _cadence(data, song, topo):
+def _cadence(data, song):
     """``(cycles_per_tick, source)`` for subtune ``song`` (0-based).
 
     The tune's own armed timer wins (design principle: the traced machine
@@ -276,18 +276,13 @@ def _cadence(data, song, topo):
     an RSID runs the real KERNAL, whose default IRQ *is* that CIA -- unless the
     tune armed a raster compare of its own, which then keeps the frame.
     """
-    cad = _traced(data)[0]
+    cad, topo = _traced(data)
     if cad is None:  # pragma: no cover - pysidtracker is an optional extra
         return PAL_FRAME, "assumed_pal"
     if cad.source.value not in VIDEO:
         return cad.cycles_per_call, cad.source.value
-    std = VIDEO[cad.source.value]
-    if c64.is_rsid(data):
-        if topo is None or topo.vic_raster is None:
-            return host_cia(std)
-    elif c64.speed_cia(data, song):
-        return host_cia(std)
-    return cad.cycles_per_call, cad.source.value
+    host = topo.vic_raster is None if c64.is_rsid(data) else c64.speed_cia(data, song)
+    return host_cia(VIDEO[cad.source.value]) if host else (cad.cycles_per_call, cad.source.value)
 
 
 def _init_topology(data):
@@ -307,8 +302,8 @@ def find_entries(data, mem=None, written=None, song=None):
     second interrupt source.
     """
     img = MachineImage.from_sid(data)
+    cycles, source = _cadence(data, img.startsong - 1 if song is None else song)
     topo = _init_topology(data)
-    cycles, source = _cadence(data, img.startsong - 1 if song is None else song, topo)
     if topo is not None:
         if topo.cia2_timer_latch is not None or topo.nmi_vector is not None:
             raise Refusal(
