@@ -174,9 +174,9 @@ def test_a_family_the_index_cannot_name_is_refused_with_its_reason():
 
 def test_the_unfolded_program_is_what_the_front_end_built_before():
     trace = front(voices(), calls=8)[0]
-    plain = pipeline.build(trace, "snippet", copies=False)[0]
+    plain, _rgn, procs = pipeline.build(trace, "snippet", copies=False)
     assert "copies" not in plain.meta
-    fams = siblings.correspond(plain, trace.image_post_init, tuple(trace.meta["load"]))
+    fams = siblings.correspond(plain, trace.image_post_init, tuple(trace.meta["load"]), procs)
     assert len(fams) == 1 and fams[0].k == 3
 
 

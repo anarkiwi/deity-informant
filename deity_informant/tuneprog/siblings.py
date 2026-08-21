@@ -140,9 +140,10 @@ class Copies:
     def slack(self, image):
         """Instructions the copies hold that no row explains.
 
-        A family explains its copies; two that cover the same code equally wide
-        are one ambiguity, and the one leaving less of it unexplained is the
-        correspondence -- the other reads a copy as beginning mid-template.
+        A tie-break only: admission is :func:`chained` and :meth:`consistent`, and
+        where two equally wide readings of one run cover the same code this
+        prefers the one leaving less of it unexplained, ties going to the lower
+        bases. It orders candidates; it does not admit one.
         """
         ends = list(self.bases[1:]) + [max(r[-1] for r in self.rows) + 1]
         held = sum(len(stream(image, b, e)) for b, e in zip(self.bases, ends))
@@ -159,11 +160,11 @@ class Code:
     instruction stream and its executions from the sites, not from the blocks.
     """
 
-    runs: dict  # pc -> executions, over every instruction a block's run reaches
+    runs: dict  # pc -> site count, for each instruction an execution reached
     to: dict  # pc -> the addresses control reaches from the instruction
     into: dict  # pc -> the instructions that transfer to it
-    pcs: list  # sorted, the instructions an execution reached
-    bounds: list  # sorted, every instruction address between them
+    pcs: list  # sorted, exactly the instructions an execution reached
+    bounds: list  # sorted, pcs plus the image's own decode of the gaps between them
 
     def after(self, pc):
         """The first executed instruction at or after ``pc``, or ``None``.
@@ -188,7 +189,13 @@ class Code:
         ]
 
     def ran(self, pc):
-        """How often the instruction at ``pc`` ran: 0 where no execution reached it."""
+        """The site count of the instruction at ``pc``; 0 where no execution reached it.
+
+        Only ``pcs`` carries a count. ``bounds`` is wider on purpose -- it is the
+        image's linear decode of the gaps, which is where a first copy the block
+        graph merged away is looked for -- and every address of it that no
+        execution reached answers 0 here.
+        """
         return self.runs.get(pc, 0)
 
 
@@ -208,28 +215,17 @@ def _to(image, pc):
     return (nxt,)
 
 
-def _code(proc, image, band=(0, 0x10000)):
-    """The :class:`Code` of one procedure: its runs, its transfers, its executions.
+def _code(node, image, band=(0, 0x10000)):
+    """The :class:`Code` of one procedure: its executions, and its transfers.
 
-    An entry's count is the count of every instruction its run reaches: control
-    that only ever goes one way went there as often, whether it fell or jumped.
-    The run ends at the next entry, which carries its own count, and a block no
-    execution entered is no entry at all.
+    ``node`` is S2b's ``{(pc, opcode): node}``, which holds every instruction an
+    execution of the procedure reached and the site count of each -- the trace's
+    own answer, not one inferred from the blocks a later pass made of them.
     """
-    at = {}
-    for b in proc.blocks.values():
-        if b.count:
-            at[b.src] = at.get(b.src, 0) + b.count
     runs = {}
-    for s in sorted(at):
-        pc, seen = s, set()
-        while pc is not None and band[0] <= pc < band[1] and pc not in seen:
-            if pc in at and pc != s:
-                break
-            runs[pc] = at[s]
-            seen.add(pc)
-            nxt = _to(image, pc)
-            pc = nxt[0] if len(nxt) == 1 else None
+    for (pc, _op), n in node.items():
+        if band[0] <= pc < band[1] and n["count"]:
+            runs[pc] = runs.get(pc, 0) + n["count"]
     pcs = sorted(runs)
     to = {p: _to(image, p) for p in pcs}
     into = {}
@@ -242,13 +238,13 @@ def _code(proc, image, band=(0, 0x10000)):
     return Code(runs, to, into, pcs, sorted(bounds))
 
 
-def chained(proc, image, fam):
+def chained(node, image, fam):
     """True when every copy transfers into the next copy's entry, having run as often.
 
     That is what an unrolled run is: voice *j* ends by reaching voice *j+1*.
     Nothing is asked of the last copy, whose exit leaves the run.
     """
-    code = _code(proc, image)
+    code = _code(node, image)
     ends = list(fam.bases[1:]) + [max(r[-1] for r in fam.rows) + 1]
     return len({code.ran(b) for b in fam.bases}) == 1 and all(
         code.enters(fam.bases[j], fam.bases[j + 1], ends[j + 1]) for j in range(fam.k - 1)
@@ -375,15 +371,15 @@ def _pairs(image, code):
     return sorted((a, b) for g in same.values() for i, a in enumerate(g) for b in g[i + 1 :])
 
 
-def chains(prog, image, band):
+def chains(prog, image, band, procs):
     """Every chained sibling family of ``prog``, widest first, non-overlapping.
 
     A copy runs to where the next one starts, so its stream needs no bound of its
     own; only the arms :func:`extend` pairs are bounded by something coarser.
     """
     cands, bad = [], []
-    for name, proc in prog.procs.items():
-        code, seen = _code(proc, image, band), set()
+    for name in prog.procs:
+        code, seen = _code(procs[name].nodes, image, band), set()
         for a, b in _pairs(image, code):
             if (a, b) in seen or not code.enters(a, b, band[1]):
                 continue
@@ -409,7 +405,7 @@ def _spans(fams):
 
 
 def _rank(fam, image):
-    """How well a family explains code: widest, then longest, then least left over."""
+    """Ordering only -- widest, then longest, then least left over; not admission."""
     return (-fam.k, -len(fam.rows), fam.slack(image))
 
 
@@ -467,12 +463,14 @@ def extend(prog, image, fam, band, data=None):
             return fam
 
 
-def correspond(prog, image, band):
+def correspond(prog, image, band, procs):
     """Every sibling family of ``prog``: chained, then extended through its arms.
 
-    A family whose arms make its operand map ambiguous is refused whole;
-    extending can swallow a smaller family, so the widest are chosen again.
+    ``procs`` is S2b's procedures, which carry the site count of every instruction
+    an execution reached. A family whose arms make its operand map ambiguous is
+    refused whole; extending can swallow a smaller family, so the widest are
+    chosen again.
     """
     data = _data(prog, band)
-    out = [extend(prog, image, fam, band, data) for fam in chains(prog, image, band)]
+    out = [extend(prog, image, fam, band, data) for fam in chains(prog, image, band, procs)]
     return _select([fam for fam in out if fam.consistent(image)], image)

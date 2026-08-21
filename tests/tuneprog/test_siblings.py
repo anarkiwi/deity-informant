@@ -93,9 +93,9 @@ class Family:
     def found(self, calls=6, static=False):
         """The families ``correspond`` finds in the program a build of the tune makes."""
         trace = front(self.code, calls=calls)[0]
-        self.prog = pipeline.build(trace, "snippet", copies=False, static=static)[0]
+        self.prog, _rgn, self.procs = pipeline.build(trace, "snippet", copies=False, static=static)
         band = tuple(trace.meta["load"])
-        return siblings.correspond(self.prog, trace.image_post_init, band)
+        return siblings.correspond(self.prog, trace.image_post_init, band, self.procs)
 
     def bases(self):
         """Where the copies really begin."""
@@ -108,7 +108,7 @@ def test_k_copies_of_one_template_come_back_as_one_family_with_that_map(seed):
     fam = Family(rng, k=rng.choice((3, 4)))
     got = fam.found()
     assert len(got) == 1 and got[0].k == fam.k, got
-    assert siblings.chained(fam.prog.procs[got[0].proc], fam.image, got[0])
+    assert siblings.chained(fam.procs[got[0].proc].nodes, fam.image, got[0])
     for j in range(1, fam.k):
         m = got[0].addrmap(fam.image, j)
         assert m is not None
@@ -142,7 +142,56 @@ def test_copies_whose_operands_are_not_one_map_are_refused_whole(seed):
     assert not fam.found(), [(f.k, [hex(b) for b in f.bases]) for f in fam.found()]
 
 
-def cascade(k=3):
+def smc():
+    """A tune whose init overwrites an instruction *after* running it.
+
+    The post-init image decodes ``$AD`` (three bytes) where an ``$A8`` (one) ran,
+    so any walk of the image past that byte invents instructions no execution
+    reached: what S2b's nodes say, and the image does not.
+    """
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "JSR t0",
+        "LDA #$AD",
+        "STA t0",
+        "RTS",
+        "play: INC cnt",
+        "RTS",
+        "t0: TAY",
+        "RTS",
+        "cnt: BRK",
+        "BRK",
+        "BRK",
+    )
+
+
+def test_the_instructions_a_code_holds_are_the_ones_an_execution_reached():
+    """``Code.pcs`` is the trace's own answer, not a walk of the image's decode."""
+    for code in (smc(), cascade(), voices_snippet()):
+        trace = front(code, calls=6)[0]
+        prog, _rgn, procs = pipeline.build(trace, "snippet", copies=False)
+        ran = {x["pc"] for x in trace.sites.values() if x["count"]}
+        band = tuple(trace.meta["load"])
+        for name in prog.procs:
+            got = siblings._code(procs[name].nodes, trace.image_post_init, band)
+            assert set(got.pcs) <= ran, (name, ["%04X" % p for p in set(got.pcs) - ran])
+            assert all(got.ran(p) > 0 for p in got.pcs)
+    # and the image really does decode past the patched byte, so the guard bites
+    code = smc()
+    t0 = code.labels["t0"]
+    img = _image(code)
+    img[t0] = 0xAD
+    assert siblings.stream(img, t0, t0 + 6)[:2] == [t0, t0 + 3]
+
+
+def voices_snippet():
+    """Three chained copies, as the boundary-invariance generator makes them."""
+    return Family(random.Random(0), k=3, n=8).code
+
+
+def cascade(k=3, silent=False):
     """Automatas' shape: a copy opens on a branch the run only ever takes one way.
 
     Nothing jumps to a copy: each falls into the next, on the ``N`` the copy before
@@ -161,10 +210,29 @@ def cascade(k=3):
             "STA d%d" % j,
             "LDA d%d" % ((j + 1) % k),
         ]
+    src = _silence(src, k) if silent else src
     src += ["after: INC cnt", "RTS"]
     for j in range(k):
         src += ["a%d: LDA #$FF" % j, "STA d%d" % j, "JMP after"]
     return asm(PLAY, *src, *["d%d: BRK" % j for j in range(k)], "cnt: BRK")
+
+
+def _silence(src, k):
+    """Put the last copy behind a jump, so no execution ever enters it."""
+    at = src.index("c%d: BMI a%d" % (k - 1, k - 1))
+    return src[:at] + ["JMP after"] + src[at:]
+
+
+def test_a_copy_no_execution_entered_is_no_copy():
+    """The documented boundary: a chain runs every copy of it as often."""
+    code = cascade(silent=True)
+    want = tuple(code.labels["c%d" % j] for j in range(3))
+    for static in (False, True):
+        trace = front(code, calls=6)[0]
+        prog, _rgn, procs = pipeline.build(trace, "snippet", copies=False, static=static)
+        got = siblings.correspond(prog, trace.image_post_init, tuple(trace.meta["load"]), procs)
+        assert len(got) == 1 and got[0].bases == want[:2], (static, got)
+        assert want[2] not in got[0].bases  # nothing entered it, so it is not a copy
 
 
 def test_a_copy_entered_by_falling_in_is_found_whatever_the_untaken_arm_left():
@@ -174,8 +242,8 @@ def test_a_copy_entered_by_falling_in_is_found_whatever_the_untaken_arm_left():
     seen = []
     for static in (False, True):
         trace = front(code, calls=6)[0]
-        prog = pipeline.build(trace, "snippet", copies=False, static=static)[0]
-        got = siblings.correspond(prog, trace.image_post_init, tuple(trace.meta["load"]))
+        prog, _rgn, procs = pipeline.build(trace, "snippet", copies=False, static=static)
+        got = siblings.correspond(prog, trace.image_post_init, tuple(trace.meta["load"]), procs)
         assert len(got) == 1 and got[0].bases == want, (static, got)
         assert len(got[0].rows) == 6
         seen.append(set(want) <= {b.src for p in prog.procs.values() for b in p.blocks.values()})
@@ -284,9 +352,10 @@ def dispatch(k=3):
 def test_parallel_dispatch_arms_pair_by_their_index_in_the_table():
     code, data = dispatch()
     trace, prog = tuneprog(code, calls=8, s4=True, data=data)
+    procs = front(code, calls=8, data=data)[4]  # S2b's own count per instruction
     img, band = trace.image_post_init, tuple(trace.meta["load"])
     assert jumptab.enumerate_targets(prog) == 3  # the entry no copy dispatched, per copy
-    fams = siblings.correspond(prog, img, band)
+    fams = siblings.correspond(prog, img, band, procs)
     assert len(fams) == 1 and fams[0].k == 3, fams
     rows = {r[0]: (r[1], r[2]) for r in fams[0].rows}
     for x in range(3):  # every handler pairs, the entry no copy ever dispatched too
