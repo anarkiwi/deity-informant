@@ -40,7 +40,8 @@ def resolve(name, hvsc=None, cache_dir=None):
 
     ``None`` when it is neither present nor fetchable.
     """
-    from pysidtracker.testing import resolve_tune  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel,import-error
+    from pysidtracker.testing import resolve_tune
 
     rel = path(name)
     root = hvsc or os.environ.get("HVSC")

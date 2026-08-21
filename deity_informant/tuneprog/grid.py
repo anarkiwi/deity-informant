@@ -7,6 +7,8 @@ cycle, and both frame by one rule: the interrupt period the cycle falls in.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 SID_REGS = 0x19  # $D400..$D418
@@ -81,7 +83,8 @@ def sidtrace_grid(rows, nframes=None, chip=0, reg_count=SID_REGS):
     ``cycle - offset`` is that raise and the earliest is frame 0 -- the first play
     call, with the init writes before it as the baseline.
     """
-    from pysidtracker.oracle import sidtrace_cadence  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel,import-error
+    from pysidtracker.oracle import sidtrace_cadence
 
     rows = [r for r in rows if r.chip == chip and 0 <= r.reg < reg_count]
     raised = [
@@ -96,13 +99,8 @@ def sidtrace_grid(rows, nframes=None, chip=0, reg_count=SID_REGS):
 
 def oracle_rows(tune_path, oracle_cache, seconds=60, image=None):
     """The sidtrace oracle's rows for ``tune_path``, rendering into the cache once."""
-    from pathlib import Path  # pylint: disable=import-outside-toplevel
-
-    from pysidtracker.oracle import (  # pylint: disable=import-outside-toplevel
-        SIDTRACE_IMAGE,
-        read_sidtrace,
-        run_sidtrace,
-    )
+    # pylint: disable=import-outside-toplevel,import-error
+    from pysidtracker.oracle import SIDTRACE_IMAGE, read_sidtrace, run_sidtrace
 
     tune_path, oracle_cache = Path(tune_path), Path(oracle_cache)
     csv = oracle_cache / (tune_path.stem + ".csv.zst")
