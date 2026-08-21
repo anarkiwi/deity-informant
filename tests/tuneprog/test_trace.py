@@ -8,7 +8,7 @@ from deity_informant.tuneprog.tracevm import TraceVM, input_kind
 from deity_informant import lift
 from deity_informant.tuneprog.lift import lift_trace
 
-from _asm import asm, sid_image, trace_prog
+from _asm import asm, banked_out, sid_image, trace_prog
 
 PLAY = 0x1000
 
@@ -317,7 +317,7 @@ def test_play_runaway_refuses():
 
 def test_irq_entry_is_driven_like_a_hardware_interrupt():
     handler = asm(0x1200, "LDA $D019", "STA $D400", "RTI")
-    img = sid_image({0x1100: asm(0x1100, "RTS"), 0x1200: handler}, 0x1100, 0)
+    img = banked_out(sid_image({0x1100: asm(0x1100, "RTS"), 0x1200: handler}, 0x1100, 0))
     t = Tracer(img, Entry("irq", 0x1200, 19656, "pal_video"))
     t.run_init()
     t.run_calls(2)

@@ -1,8 +1,8 @@
 """The procedure interface: params, rets and call arguments, by liveness over the call graph.
 
 Registers and flags are procedure-local values, so a procedure takes its live-in
-registers as ``params`` and returns the ones it or a callee defines. Both sets
-only grow, and a call site reads its callee's, so the answer is a fixpoint.
+registers as ``params`` and returns the ones it or a callee defines. A call site
+reads its callee's, and a callee may be its own caller, so the answer is a fixpoint.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ def wire(procs):
     """Fill in params/rets/args by liveness over the call graph, to a fixpoint.
 
     A *recursive* procedure's params are an input to its own call sites, which no
-    post-order pass settles: a site wired against the empty initial params carries
-    no arguments where the callee takes eight. Both sets only grow, so it ends.
+    post-order pass settles. ``params`` can shrink (a callee's new ``rets`` kill
+    liveness at the call), so termination rests on ``rets``: monotone, bounded by 16.
     """
     order, seen = [], set()
 

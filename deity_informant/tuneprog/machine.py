@@ -10,8 +10,10 @@ Public API:
   the return address entering it, and the slot each byte sits at.
 * ``init_runner(vm, pc, cache, lifter, budget)`` -- run ``init`` to its balancing
   RTS or to a ``JMP *`` idle loop; returns the idle pc or ``None``.
-* ``port_bank(mem)`` -- ``$D000-$DFFF`` mapping (``io``/``charrom``/``ram``) from
-  the 6510 port ($00 direction, $01 data).
+* ``port_bank(mem)`` / ``kernal_mapped(mem)`` -- what the 6510 port ($00
+  direction, $01 data) maps at ``$D000-$DFFF`` and at ``$E000-$FFFF``.
+* ``vector_gate(mem, written, img)`` -- which installed interrupt vector that
+  port really dispatches through; raises :class:`Refusal` when none does.
 * ``CIA(base)`` -- minimal Timer-A/ICR model (count-down at cycle rate, ICR bit on
   underflow) so an init busy-wait on ``$DC04``/``$DC0D`` terminates.
 """
@@ -117,19 +119,63 @@ class MachineImage:
         }
 
 
-def port_bank(mem):
-    """``$D000-$DFFF`` mapping from the 6510 port: ``io``, ``charrom`` or ``ram``.
+def port_bits(mem):
+    """The 6510 port's three bank lines (LORAM, HIRAM, CHAREN).
 
-    A port bit configured as input ($00 bit clear) reads as 1 (the port's
-    pull-ups), which is why players that clear $00 to use $00/$01 as a zero-page
-    pointer keep I/O mapped.
+    A line configured as input ($00 bit clear) reads as 1 (the port's pull-ups),
+    which is why players that clear $00 to use $00/$01 as a zero-page pointer
+    keep the ROMs and I/O mapped.
     """
-    p = (mem[1] | ~mem[0]) & 7
+    return (mem[1] | ~mem[0]) & 7
+
+
+def port_bank(mem):
+    """``$D000-$DFFF`` mapping from the 6510 port: ``io``, ``charrom`` or ``ram``."""
+    p = port_bits(mem)
     if not p & 3:
         return "ram"
     if not p & 4:
         return "charrom"
     return "io"
+
+
+def kernal_mapped(mem):
+    """True when the KERNAL ROM answers at ``$E000-$FFFF``: the port's HIRAM line.
+
+    It is what decides the dispatch. With HIRAM set the 6510 takes its IRQ vector
+    from the ROM's ``$FFFE``, so the entry is the ``$FF48`` prologue and CINV;
+    with it clear that vector is the RAM under the ROM and no prologue runs.
+    """
+    return bool(port_bits(mem) & 2)
+
+
+def _installed(mem, written, img, pair):
+    """True when a vector carries a handler: written, or lifted from the load image."""
+    if pair[0] in written or pair[1] in written:
+        return True
+    lo, hi = img
+    return lo <= pair[0] and pair[1] < hi and bool(c64.read_vector(mem, pair[0]))
+
+
+def vector_gate(mem, written, img=(0, 0)):
+    """``(vector address, kernal)`` of the vector this machine really dispatches through.
+
+    The port decides which of the two is live, so a tune that wrote both is not
+    ambiguous: with the KERNAL mapped its ``$FFFE`` write went to the RAM under
+    the ROM and is dead, and without it CINV is what nothing reads. Refuses
+    (``vector banked out``) when the live vector carries no handler and the dead
+    one does, rather than model a dispatch the port forbids.
+    """
+    kernal = kernal_mapped(mem)
+    live, dead = (c64.IRQ_VEC, c64.HW_IRQ_VEC) if kernal else (c64.HW_IRQ_VEC, c64.IRQ_VEC)
+    if _installed(mem, written, img, live):
+        return live[0], kernal
+    if _installed(mem, written, img, dead):
+        raise Refusal(
+            "vector banked out",
+            "$%04X is installed, but the port dispatches through $%04X" % (dead[0], live[0]),
+        )
+    raise Refusal("no entry", "play=0 and no interrupt vector installed")
 
 
 class CIA:
@@ -218,11 +264,11 @@ def _init_topology(data):
 def find_entries(data, mem=None, written=None):
     """``(MachineImage, [Entry])`` -- the pre-init image and the tick schedule of ``data``.
 
-    ``play != 0`` gives a ``sub`` entry at the header play address; otherwise the
-    installed handler is taken from the init trace, falling back to
-    :func:`c64.installed_handler` over the caller's own post-init ``mem`` and
-    write set ``written``. A CINV vector carries ``kernal`` (see
-    :func:`entry_frame`). Refuses on a second interrupt source or no entry.
+    ``play != 0`` gives a ``sub`` entry at the header play address; otherwise
+    :func:`vector_gate` decides which installed vector the port dispatches
+    through, over ``mem``/``written`` where the caller has them and the pre-init
+    image otherwise -- a provisional answer :meth:`~.trace.Tracer.run_init`
+    settles once init has had the port. Refuses on a second interrupt source.
     """
     img = MachineImage.from_sid(data)
     cycles, source = _cadence(data)
@@ -235,16 +281,17 @@ def find_entries(data, mem=None, written=None):
             )
     if img.play:
         return img, [Entry("sub", img.play, cycles, source)]
-    handler, kernal = None, False
+    installed = {}
     if topo is not None:
-        handler, kernal = (
-            (topo.irq_vector, True) if topo.irq_vector else (topo.hw_irq_vector, False)
-        )
-    if handler is None and mem is not None:
-        found = c64.installed_handler(mem, written or set(), (img.lo, img.hi))
-        handler, kernal = found if found else (None, False)
+        for vec, val in ((c64.IRQ_VEC, topo.irq_vector), (c64.HW_IRQ_VEC, topo.hw_irq_vector)):
+            if val:
+                installed[vec[0]] = val
+    view = img.mem if mem is None else mem
+    seen = set(written or ()) | set(installed)
+    vec, kernal = vector_gate(view, seen, (img.lo, img.hi))
+    handler = installed.get(vec) or c64.read_vector(view, vec)
     if not handler:
-        raise Refusal("no entry", "play=0 and no interrupt vector installed")
+        raise Refusal("no entry", "vector $%04X is installed but null" % vec)
     return img, [Entry("irq", handler, cycles, source, kernal)]
 
 

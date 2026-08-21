@@ -35,8 +35,25 @@ machine left on the stack, in push order:
 | entry | frame (push order) | slots above the entry pointer |
 |---|---|---|
 | `sub` (header `play`) | — | — |
-| `irq`, raw vector (`$FFFE`, `NMINV`) | `P` | `SP+1` status |
+| `irq`, raw vector (`$FFFE`) | `P` | `SP+1` status |
 | `irq`, CINV (`kernal: true`) | `P`, A, X, Y | `SP+1..4` = Y, X, A, status |
+
+Which of the two it is is the **6510 port's** word, not the tune's. With HIRAM set
+the CPU takes its vector from the KERNAL's own `$FFFE`, so the dispatch is `$FF48`
+and CINV and a write to `$FFFE` went to the RAM under the ROM; with HIRAM clear
+that RAM *is* the vector and no prologue runs. `machine.vector_gate` decides it,
+so a tune that armed both is not ambiguous, and where the port forbids the only
+dispatch the tune armed it refuses rather than pick:
+
+| installed | KERNAL mapped | KERNAL banked out |
+|---|---|---|
+| CINV only | CINV, `kernal: true` | refuse `vector banked out` |
+| `$FFFE` only | refuse `vector banked out` | raw, `kernal: false` |
+| both | CINV, `kernal: true` | raw, `kernal: false` |
+
+`find_entries` runs the gate on the pre-init image, `Tracer.run_init` re-runs it
+once init has had the port — that verdict is what the ticks and the certificate
+carry — and every tick re-checks HIRAM, since the frame is the tick's contract.
 
 The tracer pushes it, `verify._enter` pushes it, and `frames.contract` names each
 slot as a parameter of the tick: the status is the entry flags packed
@@ -109,7 +126,25 @@ only grow, so `wire.wire` iterates them to a fixpoint — a worklist in post-ord
 rank, a caller re-queued when its callee moves, one pass where the graph is
 acyclic.
 
-## 5. What the model still does not carry
+## 5. The oracle guard
+
+The frame is a machine-model claim, so the check is `sidplayfp`, as it was for the
+6510 port in [prototype-jch.md](prototype-jch.md). `tests/test_oracle.py` runs
+lft's `A_Mind_Is_Born.sid` — a CINV entry at `$0031` that chains to `$EA31` —
+through the tuneprog tracer and compares its interrupt-framed grid with the
+oracle's: **0 of 3,000 frames differ**. It reaches its `RTI` only because the
+tracer pushes the three bytes `$FF48` saved.
+
+Neither evidence tune could serve, and both refusals are measurements of their
+own. `Jodler` carries PSID `speed = 1` and programs no timer of its own, so
+`sidplayfp` ticks it at 16,422 cycles (985,248/60) where our cadence says 19,656
+(PAL video) — the header's speed word is not in `machine._cadence`, and 28 of the
+37 carry a set speed bit. `Playful Professor` and Cox's `Caverns of Eriban` are
+refused by `grid.sidtrace_clock`, which takes the period from the median gap
+between raises that carried a write: that is the *burst* period of a tune writing
+every 6th or 7th frame, not the frame. Both are plan rows.
+
+## 6. What the model still does not carry
 
 The real `$FF48` does more than save A/X/Y: `TSX; LDA $0104,X; AND #$10` (the BRK
 test) leaves A = 0, X = SP and Z set at the handler's first instruction, where

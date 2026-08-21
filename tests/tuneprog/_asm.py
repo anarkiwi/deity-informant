@@ -130,6 +130,19 @@ def sid_image(blocks, init, play, data=None, load=0x1000):
     return MachineImage.from_sid(psid(blocks, init, play, data, load))
 
 
+def banked_out(img):
+    """The same image with the KERNAL banked out ($01 HIRAM clear): a raw-vector machine.
+
+    A raw ``$FFFE`` entry is only reachable on such a machine -- with the ROM
+    mapped the 6510 takes the KERNAL's own vector and the CINV path instead.
+    """
+    from dataclasses import replace
+
+    mem = bytearray(img.mem)
+    mem[1] = 0x35
+    return replace(img, mem=bytes(mem))
+
+
 def trace_prog(
     blocks,
     init,
@@ -147,6 +160,8 @@ def trace_prog(
     from deity_informant.tuneprog.trace import Tracer
 
     img = sid_image(blocks, init, play, data, load)
+    if kind == "irq" and not kernal:
+        img = banked_out(img)
     t = Tracer(img, Entry(kind, play, cycles, "test", kernal), **kw)
     t.run_init()
     t.run_calls(calls)

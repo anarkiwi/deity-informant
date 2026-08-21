@@ -61,7 +61,8 @@ against each other. ``docs/tuneprog.md`` is the guide.
 
 from __future__ import annotations
 
-from .machine import CIA, Entry, MachineImage, Refusal, find_entries, init_runner, port_bank
+from .machine import CIA, Entry, MachineImage, Refusal, find_entries, init_runner
+from .machine import kernal_mapped, port_bank, vector_gate
 from .trace import Trace, Tracer, run_trace, site_key
 from .tracevm import TraceVM, input_kind
 from .lift import LiftedSite, lift_site, lift_trace
@@ -88,7 +89,9 @@ __all__ = [
     "Refusal",
     "find_entries",
     "init_runner",
+    "kernal_mapped",
     "port_bank",
+    "vector_gate",
     "Trace",
     "TraceVM",
     "Tracer",

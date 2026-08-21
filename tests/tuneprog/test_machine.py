@@ -3,6 +3,7 @@
 import pytest
 
 from deity_informant import PcodeVM, lift
+from deity_informant.tuneprog import machine
 from deity_informant.tuneprog.machine import (
     CIA,
     CIA1_BASE,
@@ -10,8 +11,10 @@ from deity_informant.tuneprog.machine import (
     MachineImage,
     Refusal,
     find_entries,
+    frame_slots,
     init_runner,
     is_idle,
+    kernal_mapped,
     port_bank,
 )
 
@@ -105,15 +108,42 @@ def test_find_entries_installed_handler_fallback():
     assert sched[0].to_dict()["kernal"] is True  # CINV: the KERNAL dispatches it
 
 
-def test_find_entries_hardware_vector_is_not_a_kernal_entry():
+def _gate(written, port=0x37, vectors=()):
+    """``find_entries`` over a post-init machine with ``written`` vectors and ``$01`` port."""
     mem = bytearray(0x10000)
-    mem[0xFFFE], mem[0xFFFF] = 0x00, 0x20
-    _img, sched = find_entries(
-        psid({0x1000: asm(0x1000, "RTS")}, 0x1000, 0x0000),
-        mem=mem,
-        written={0xFFFE, 0xFFFF},
+    mem[0], mem[1] = 0x2F, port
+    for addr, val in vectors:
+        mem[addr], mem[addr + 1] = val & 0xFF, val >> 8
+    return find_entries(
+        psid({0x1000: asm(0x1000, "RTS")}, 0x1000, 0x0000), mem=mem, written=set(written)
     )
-    assert sched[0].kernal is False
+
+
+def test_a_raw_vector_needs_the_kernal_banked_out():
+    """With the ROM mapped the 6510 reads the KERNAL's own ``$FFFE``, not the tune's."""
+    _img, sched = _gate({0xFFFE, 0xFFFF}, port=0x35, vectors=[(0xFFFE, 0x2000)])
+    assert sched[0].addr == 0x2000 and sched[0].kernal is False
+    assert frame_slots(sched[0].to_dict()) == {1: machine.STATUS}
+    with pytest.raises(Refusal) as e:
+        _gate({0xFFFE, 0xFFFF}, vectors=[(0xFFFE, 0x2000)])
+    assert e.value.reason == "vector banked out"
+
+
+def test_both_vectors_written_are_decided_by_the_port():
+    """Only one of them is live: the dead one's write went under the ROM, or over it."""
+    both = {0x0314, 0x0315, 0xFFFE, 0xFFFF}
+    vectors = [(0x0314, 0x2000), (0xFFFE, 0x3000)]
+    _img, mapped = _gate(both, vectors=vectors)
+    assert (mapped[0].addr, mapped[0].kernal) == (0x2000, True)
+    _img, out = _gate(both, port=0x35, vectors=vectors)
+    assert (out[0].addr, out[0].kernal) == (0x3000, False)
+
+
+def test_cinv_with_the_kernal_banked_out_refuses():
+    """Fail closed: the port forbids the only dispatch the tune armed."""
+    with pytest.raises(Refusal) as e:
+        _gate({0x0314, 0x0315}, port=0x35, vectors=[(0x0314, 0x2000)])
+    assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
 
 
 def test_init_runner_returns_on_rts_and_detects_idle():
@@ -155,3 +185,14 @@ def test_cia_latch_rewrite_keeps_underflows_monotone():
     c.write(CIA1_BASE + 5, 0x10, 0x100)  # a much longer period, mid-flight
     assert c.read(CIA1_BASE + 0x0D, 0x120) == 0  # not due yet, and not wedged
     assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # still fires later
+
+
+def test_kernal_mapped_is_the_ports_hiram_line():
+    """HIRAM alone decides ``$E000-$FFFF``; a line held as input reads as 1."""
+    mem = bytearray(2)
+    mem[0], mem[1] = 0x2F, 0x37
+    assert kernal_mapped(mem) and port_bank(mem) == "io"
+    mem[1] = 0x35  # HIRAM clear, LORAM and CHAREN set: I/O mapped, no KERNAL
+    assert not kernal_mapped(mem) and port_bank(mem) == "io"
+    mem[0] = 0x00  # every line an input: the port's pull-ups
+    assert kernal_mapped(mem)
