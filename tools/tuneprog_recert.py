@@ -19,36 +19,19 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # pylint: disable=wrong-import-position
-from deity_informant.tuneprog import pipeline  # noqa: E402
+from deity_informant.tuneprog import pipeline, tunes  # noqa: E402
 
 CERTS = ROOT / "docs" / "certificates"
 IGNORE = (("generated",), ("cost", "verify_cpu_seconds"), ("cost", "calls_per_second"))
-TUNES = {
-    "Automatas.sid": "MUSICIANS/G/Goto80/Automatas.sid",
-    "Commando.sid": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
-    "Do_It_Again.sid": "MUSICIANS/L/Linus/Do_It_Again.sid",
-    "Emomyst.sid": "MUSICIANS/H/Hermit/Emomyst.sid",
-    "End_of_the_World.sid": "MUSICIANS/H/Hermit/End_of_the_World.sid",
-    "Ghouls_n_Ghosts.sid": "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
-    "Guldkornekspressen_Intro.sid": "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid",
-    "I_Could_Eat_a_Knob_at_Night.sid": "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid",
-    "Je_suis_Linus_le_salaud.sid": "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid",
-}
 COLS = "%-22s %-26s %-9s %9s %9s %-8s %s"
 
 
 def tune_path(name, hvsc=None):
-    """The tune's file: under ``hvsc``/``$HVSC``, else through the pysidtracker cache."""
-    rel = TUNES.get(name, name)
-    root = hvsc or os.environ.get("HVSC")
-    if root and (Path(root) / rel).is_file():
-        return Path(root) / rel
+    """The tune's file, resolved through the one canonical map (:mod:`.tunes`)."""
     try:
-        from pysidtracker.testing import resolve_tune  # pylint: disable=import-outside-toplevel
-    except ImportError:
+        return tunes.resolve(name, hvsc=hvsc)
+    except ImportError:  # pragma: no cover - pysidtracker is an optional extra
         return None
-    hit = resolve_tune(rel, cache_dir=Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache")))
-    return None if hit is None else Path(hit)
 
 
 def horizon(subs):

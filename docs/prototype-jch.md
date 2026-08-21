@@ -91,7 +91,7 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J8 | the voice loop is a loop | `for v in 2, 1, 0:` (DEX/BMI), **no** sibling family (`copies` absent from both certificates) | same |
 | J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost[x].ad`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush holds every chip write of the tick | not applicable (no wrapper): 3 `io` regions, the writes are `sid[x].ad` |
 | J10 | pinned inputs | **2** (the uninitialised `$FB`/`$FC` the player saves and restores), down from 18,777 | 2, plus the subtune number in `A` at init |
-| J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp` once each write is attributed to the frame the oracle samples it in (§6); by call index alone, 494 frames differ, in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon, by call index |
+| J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp`, both grids framed by the interrupt period each write's cycle falls in (§6, `grid.py`); against the oracle framer's half-frame anchor instead, 297 frames differ (494 as first measured), in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon |
 | J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, **0** `goto` in 626 printed lines (613 before Q1b's two record headers, 7 `goto` in 562 before Q1a) | 0 `sp`, 0 unverified, 16 untaken, **0** `goto` in 582 lines (569, and 7 in 528) |
 | J13 | cost | trace 12,000 ticks in ~100 s CPU over three chunks, verify 8,577 ticks in 2.3 s (3,717 ticks/s) | trace 4,000 in 9 s, verify 2,401 in 0.2 s (10,855 ticks/s) |
 | J14 | genericity | the other 42 certificates reproduce field for field (`tools/tuneprog_recert.py`, 44/44) and the hermetic suite is unchanged | — |
@@ -216,20 +216,26 @@ writeout():                              # $10E9, 8,577 calls
 
 ## 6. What remains
 
-- **A tick is instantaneous, and one tune's music is *when* inside it.** The
-  Puterman wrapper takes a delay count from its own data stream and spends it
-  between each of the 25 register writes: the span from a tick's first SID write
-  to its last grows from 168 cycles at tick 100 to 10,248 at tick 2,550. A
-  per-frame grid built by call index then differs from the `sidplayfp` oracle on
-  494 of 3,000 frames, in exactly the five registers written last — and the
-  values are not wrong: attributing each write to the frame the oracle *samples*
-  it in (the trace carries every write's cycle) makes the difference **0 of
-  3,000**, with the sample point measured at ≈9,000 cycles into the frame (0
-  frames differ at 9,000, 6 at 9,200, 16 at 8,800). So the SID stream is right
-  write for write; what the per-tick model does not carry into the *comparison*
-  is the offset inside the tick, which only matters against a sampler that reads
-  the registers mid-frame. The JCH build never writes that late, and matches by
-  call index alone.
+- **A tick is instantaneous, and one tune's music is *when* inside it** (*fixed in
+  Q3, with this row's own diagnosis refuted*). The Puterman wrapper takes a delay
+  count from its own data stream and spends it between each of the 25 register
+  writes: the span from a tick's first SID write to its last grows from 168 cycles
+  at tick 100 to 10,248 at tick 2,550. What the per-frame comparison lacked was
+  not the writes' cycles but a frame *boundary* both sides agree on:
+  `pysidtracker.oracle.grid_from_writes` rounds each write to the nearest frame
+  measured from the first play write, i.e. a boundary 9,828 cycles into the tick,
+  which the ramp crosses from tick ~2,450 on. `grid.py` frames both sides by the
+  interrupt the frame *is* -- the tracer's log against tick 0's cycle plus
+  `cycles_per_tick`, the CSV against `cycle - since_video_irq` -- and the
+  difference is **0 of 3,000** with no sample point to pick. Fitting one instead
+  reaches 1 of 3,000 at best (best near 9,400), because the two clocks disagree
+  inside a frame: the play entry sits a constant 57-60 cycles later in sidplayfp's
+  frame than in the tracer's, and by the last write of a ramped tick (9,312 cycles
+  in on tick 2,502) it has drifted a further **+533** -- the VIC's badline DMA,
+  one badline in eight raster lines, which the tracer does not model. The writes themselves match value for
+  value and in order, frame by frame; what the trace's cycles buy in the helper is
+  the general rule, that a tick outliving its frame lands its late writes in the
+  next one.
 - **The two init-cleared blocks are the transpose of the stride view** (*fixed in
   Q1b*). `init` clears `$1014` (12 bytes) and `$1748` (21) with one loop each, so
   the access relation joins each into one region; the tick then walks them as
