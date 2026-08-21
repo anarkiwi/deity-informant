@@ -298,29 +298,27 @@ def test_a_table_that_is_not_the_voice_strides_is_not_the_voice_map():
 
 def test_a_value_is_an_index_wherever_the_structuring_left_its_definition():
     """The load and the table read sit in different blocks; the role is the value's."""
-    view, names = _names(
-        asm(
-            PLAY,
-            "init: LDA #$00",
-            "STA cur",
-            "STA cnt",
-            "RTS",
-            "play: LDX cur",
-            "LDA cnt",
-            "AND #$01",
-            "BEQ out",
-            "LDA tab,X",
-            "STA $D400",
-            "out: INC cnt",
-            "INC cur",
-            "RTS",
-            "cur: BRK",
-            "cnt: BRK",
-            "tab: BRK",
-        ),
-        calls=6,
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cur",
+        "STA cnt",
+        "RTS",
+        "play: LDX cur",
+        "LDA cnt",
+        "AND #$01",
+        "BEQ out",  # the branch keeps the load and the table read in two blocks
+        "LDA tab,X",
+        "STA $D400",
+        "out: INC cnt",
+        "INC cur",
+        "RTS",
+        "cur: BRK",
+        "cnt: BRK",
+        "tab: BRK",
     )
-    cur = next(r for r in view.storage if r.base == PLAY + 0x20)
+    view, names = _names(code, calls=6)
+    cur = next(r for r in view.storage if r.base == code.labels["cur"])
     assert names.role[cur.id] == "cursor"
 
 

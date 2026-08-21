@@ -403,13 +403,14 @@ def test_a_block_walked_field_outside_element_inside_prints_as_a_record():
     assert re.search(r"^voice_2\[3\]  \$\w+ 9 bytes, stride 1, 3 fields$", doc, re.M), doc
     for f in ("f00", "f03", "f06"):
         assert "voice_2[v].%s" % f in doc, doc
-    assert "blk[" not in doc
+    assert not re.search(r"b\w{4}\[v( \+ \d)?\]", doc), doc  # no flat address left
 
 
 def test_a_block_something_reads_as_a_table_is_not_that_record():
     """One index crossing the field boundary refuses the layout the others suggest."""
     doc = _transposed(("LDY cnt", "LDA blk,Y", "STA $D401"))
     assert "voice_2[" not in doc and "stride 1, 3 fields" not in doc
+    assert re.search(r"\w+\[v \+ 3\] = ", doc), doc  # the block keeps its flat address
 
 
 def _offset_table(vals):
