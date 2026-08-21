@@ -6,6 +6,8 @@ Public API:
   with the load band) plus the header facts a driver needs.
 * ``find_entries(data, mem=None, written=None, song=None)`` -- ``(MachineImage,
   [Entry(kind, addr, cycles_per_tick, source, kernal)])``; raises :class:`Refusal`.
+* ``shared_entry(data, songs)`` -- the one entry every subtune shares, else a
+  :class:`Refusal`.
 * ``entry_frame(entry)`` / ``frame_slots(entry)`` -- what the machine pushed below
   the return address entering it, and the slot each byte sits at.
 * ``init_runner(vm, pc, cache, lifter, budget)`` -- run ``init`` to its balancing
@@ -324,6 +326,17 @@ def find_entries(data, mem=None, written=None, song=None):
     if not handler:
         raise Refusal("no entry", "vector $%04X is installed but null" % vec)
     return img, [Entry("irq", handler, cycles, source, kernal)]
+
+
+def shared_entry(data, songs):
+    """The one entry every subtune of ``songs`` (1-based) shares.
+
+    Raises :class:`Refusal` where they differ: one merged trace is one schedule.
+    """
+    seen = {find_entries(data, song=n - 1)[1][0] for n in songs}
+    if len(seen) > 1:
+        raise Refusal("subtunes disagree on cadence", " | ".join(sorted(map(str, seen))))
+    return seen.pop()
 
 
 def is_idle(mem, pc):

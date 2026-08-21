@@ -42,7 +42,7 @@ from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
 from .lift import lift_trace
-from .machine import Refusal, find_entries
+from .machine import find_entries, shared_entry
 from .regions import build_regions
 from .resume import build_opts, horizon, state
 from .trace import Tracer
@@ -173,13 +173,9 @@ def trace_all(args, out, st, t0, log=print):
     resume independently. The merged trace is what the front end decompiles.
     """
     data = Path(args.sid).read_bytes()
-    img, schedule = find_entries(data)
-    entry = schedule[0]
+    img, _schedule = find_entries(data)
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
-    for song in songs:  # one merged trace is one schedule: refuse a mixed one
-        sub = find_entries(data, song=song - 1)[1][0]
-        if sub != entry:
-            raise Refusal("subtunes disagree on cadence", "song %d: %s vs %s" % (song, sub, entry))
+    entry = shared_entry(data, songs)
     done = st.setdefault("traced", {})
     target, free = _target(args, entry), _free(st)
     for song in songs:
