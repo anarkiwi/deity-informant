@@ -282,7 +282,9 @@ class Printer:
             v = overflow_of(a.a)
             if v is not None:
                 s = "overflow(%s - %s)" % (self.expr(v[0], False), self.expr(v[1], False))
-                return s if e.op == "!=" else "not " + s
+                if e.op == "!=":
+                    return s
+                return "not %s" % s if top else "(not %s)" % s
             s = "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
             return s if top else "(%s)" % s
         hit = sext_of(e)
