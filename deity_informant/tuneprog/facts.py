@@ -74,6 +74,7 @@ class Facts:
         self.cellplain = set()
         self.plain = set()
         self.index = {}
+        self.sididx = set()
         self.cellindex = set()
         self.addr = set()
         self.reads = {}
@@ -100,8 +101,11 @@ class Facts:
                     defs[s.n] = seen[s.n] = s.e
                 self.value(name, expand(s.e, seen, DEPTH))
             elif type(s) is Store:
+                addr = expand(s.a, seen, DEPTH)
                 self.value(name, expand(s.v, seen, DEPTH))
-                self.value(name, expand(s.a, seen, DEPTH))
+                self.value(name, addr)
+                if s.cls == "io":
+                    self.sidaddr(addr)
                 self.store(name, s, expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH))
             elif type(s) is Call:
                 for a in s.args:
@@ -118,6 +122,12 @@ class Facts:
                     self.cellindex.add((y.r, y.a.v))
                 if y.w == 2:
                     self.addr.add(y.r)
+
+    def sidaddr(self, a):
+        """Record the regions a SID-register access takes its index from."""
+        base, idx = addr_split(a)
+        if base is not None and SID_REG_LO <= base <= SID_REG_HI and idx is not None:
+            self.sididx.update(x.r for x in loads(idx))
 
     def walks(self, rid, a):
         """Record that a bare index variable walks the elements of region ``rid``."""

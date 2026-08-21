@@ -296,6 +296,12 @@ def test_a_table_that_is_not_the_voice_strides_is_not_the_voice_map():
     assert not names.voicemap and not _role(names, "voice_map")
 
 
+def test_the_voice_strides_only_name_a_region_a_sid_access_is_indexed_by():
+    """The bytes are one source; the role wants the SID access the printing wants."""
+    _view, names = _vmap((0, 7, 14), play=("LDA #$0A", "STA $0400,Y"))
+    assert names.voicemap and not _role(names, "voice_map")
+
+
 def test_a_value_is_an_index_wherever_the_structuring_left_its_definition():
     """The load and the table read sit in different blocks; the role is the value's."""
     code = asm(

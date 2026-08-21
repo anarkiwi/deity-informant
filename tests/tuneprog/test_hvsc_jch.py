@@ -107,11 +107,16 @@ def test_the_two_init_cleared_blocks_print_as_records_over_the_track_index():
 
 
 def test_the_register_offset_table_names_the_register_by_its_voice():
-    """``$1740`` holds 0, 7, 14, so an index read from it is the voice itself."""
+    """``$1740`` holds 0, 7, 14, so an index read from it is the voice itself.
+
+    The role takes two sources: Guldkorn indexes the register file through the
+    table; the Knob reaches it by a stride-7 index variable, so the bytes alone
+    do not name the region even though the same reading holds.
+    """
     for rel, secs, name in ((KNOB, KNOB_S, "ghost"), (GULDKORN, GULD_S, "sid")):
         run = decompiled(rel, seconds=secs)
         assert len(run.names.voicemap) == 1
-        assert "voice_map" in run.names.role.values()
+        assert ("voice_map" in run.names.role.values()) is (rel is GULDKORN)
         for reg in ("ad", "sr", "freq_lo", "pw_lo"):
             assert "%s[v].%s" % (name, reg) in run.text or "%s[x].%s" % (name, reg) in run.text
         assert "%s.reg[5 + " % name not in run.text
