@@ -58,10 +58,14 @@ class Trace:
     footprint_free: object = None
     chip_ops: set = None  # (pc, op index) pairs that reached a chip; None = every one did
 
-    def witness(self):
-        """The earliest tick either footprint repeated at, or ``None``."""
-        hits = [self.meta.get(k) for k in ("first_repeat", "first_repeat_free")]
-        hits = [h for h in hits if h is not None]
+    def witness(self, free=True):
+        """The earliest tick a footprint repeated at, or ``None``.
+
+        A program S4 proved stack-free may claim the page-free witness, so either
+        footprint will do; a residual one must claim the page-inclusive repeat.
+        """
+        keys = ("first_repeat", "first_repeat_free") if free else ("first_repeat",)
+        hits = [h for h in (self.meta.get(k) for k in keys) if h is not None]
         return min(hits) if hits else None
 
     def site_at(self, pc):

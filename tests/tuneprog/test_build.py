@@ -6,7 +6,7 @@ from deity_informant.tuneprog.ir import Call, Switch, Trap
 from deity_informant.tuneprog.verify import Reference, Verifier, verify
 
 from _asm import asm
-from _prog import PLAY, front, tuneprog
+from _prog import PLAY, front, stack_access, tuneprog
 from deity_informant.tuneprog.build import build_ir
 
 
@@ -145,7 +145,7 @@ def test_untaken_branch_direction_is_a_trap():
     assert verify(s4, T, calls=3).div is None
 
 
-def test_an_irq_entry_pops_its_frame_and_restores_the_flags():
+def test_an_irq_entry_pops_the_frame_the_machine_pushed_and_keeps_no_stack():
     handler = asm(
         PLAY,
         "init: LDA #$00",
@@ -164,12 +164,13 @@ def test_an_irq_entry_pops_its_frame_and_restores_the_flags():
         "cnt: BRK",
     )
     T, prog = tuneprog(handler, calls=5, kind="irq", s4=True)
-    v = verify(prog, T, calls=5)
+    v = verify(prog, T, calls=5, prefix=5)
     assert v.div is None and v.call == 5
-    assert v.M.regs[3] == 0xFF  # the RTI frame is balanced across every call
-    # the status byte the machine pushed is a frame the tick did not write, so the
-    # stack stays (a residual class of its own -- see tests/tuneprog/test_frames.py)
-    assert prog.meta["stack"]["procs"] == ["tick"]
+    # the entry frame is the tick's contract: the RTI consumes it, no page access left
+    assert prog.meta["stack"] == "eliminated"
+    assert not stack_access(prog)
+    _t, kept = tuneprog(handler, calls=5, kind="irq", s4=True, stack=False)
+    assert verify(kept, T, calls=5, prefix=5).div is None
 
 
 def test_brk_is_refused_as_an_unmodelled_frame():

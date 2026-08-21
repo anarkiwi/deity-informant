@@ -95,16 +95,22 @@ def _status(regs):
     return sum(regs[i] << s for i, s in STATUS_BITS) | 0x20
 
 
+def page_free(prog):
+    """True when S4 proved ``prog`` stack-free: its footprint leaves the page out.
+
+    A residual program keeps its pushes and must claim periodicity on the whole
+    write set, so the witness it may stop and certify on is the page-inclusive one.
+    """
+    return prog.meta.get("stack") == "eliminated"
+
+
 class Verifier:
     """Runs a tuneprog against a :class:`Reference`, chunked and resumable."""
 
     def __init__(self, prog, ref, backend="py", src=None):
         self.prog = prog
         self.ref = ref
-        # a program S4 proved stack-free writes no stack page, so its footprint --
-        # and the periodicity it may claim -- is the one without that page; a
-        # residual program keeps the whole write set, and must claim on that.
-        self.free = prog.meta.get("stack") == "eliminated"
+        self.free = page_free(prog)
         self.backend = backend
         self.M = Machine(prog.image(), ref.load, inputs=ref.inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)
@@ -144,7 +150,11 @@ class Verifier:
 
     # ---- the machine's side of a tick --------------------------------------
     def _enter(self, kind="sub"):
-        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame."""
+        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame.
+
+        The interrupt disable the machine sets with it is the tick's own first
+        statement (:func:`~.build._irq_entry`), so the entry flags are the frame.
+        """
         M = self.M
         M.push(0x00)
         if kind == "sub":
@@ -152,7 +162,6 @@ class Verifier:
         else:
             M.push(0x00)
             M.push(_status(M.regs))
-            M.regs[10] = 1
 
     def _call_proc(self, proc):
         M = self.M

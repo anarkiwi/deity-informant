@@ -169,6 +169,19 @@ def push16(out, blk, val, src):
         add_sp(out, -1)
 
 
+def status_expr(base=0x20):
+    """The status byte packed from the flag registers, the inverse of :func:`pop_status`.
+
+    ``base`` is the byte the machine pushes around them: $20 at an interrupt, $30
+    for ``PHP`` (the break bit).
+    """
+    out = Const(base, 1)
+    for idx, sh in STATUS_BITS:
+        f = Var(REGVAR[idx], 1)
+        out = Bin("|", out, f if not sh else Bin("<<", f, Const(sh, 1), 1), 1)
+    return out
+
+
 def pop_status(out, blk):
     """The RTI frame: status byte back into the six flag registers, then the pc."""
     add_sp(out, 1)

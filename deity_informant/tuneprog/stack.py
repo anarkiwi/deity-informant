@@ -11,7 +11,17 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 
-from .frames import SLOT, SP, SPREG, analyse, apply_reads, drop_regions, fresh, touches
+from .frames import (
+    SLOT,
+    SP,
+    SPREG,
+    analyse,
+    apply_reads,
+    drop_regions,
+    entry_value,
+    fresh,
+    touches,
+)
 from .ir import Call, Const, Let, Phi, REGIDX, Return, Store, Var
 from .irwalk import apply_stmt, apply_term, call_order, defs_of, pure, renamer, stmt_uses, term_uses
 from .ssa import canonical, dce, merge_chains
@@ -76,6 +86,10 @@ def _forward(proc, frame, make):
     """The plan's pushes as values; every other stack store is the machine's own."""
     defs, sub, edits, gone = _defcounts(proc), {}, {}, set()
     for pushes, keys in frame.plan:
+        val = entry_value(frame, pushes)
+        if val is not None:  # the machine's own entry frame: a value, never a store
+            sub.update({k: deepcopy(val) for k in keys})
+            continue
         val = _value(proc, pushes, defs)
         if val is None:
             name, pop = _popname(proc, keys, defs)

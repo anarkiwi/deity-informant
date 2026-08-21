@@ -471,17 +471,21 @@ of the real front end removes.
   its pops read (two pushes one pop can read are one value with two
   definitions), a `PHP`/`PLP` round trip leaves the flag algebra the bit
   idioms already fold, a return-address push is the continuation the `Call`
-  carries, and `SP` leaves every signature. A read the analysis cannot place —
-  a scratch area addressed by a non-constant offset, a `TSX`-relative read of
-  another frame, an interrupt entry frame — can see any byte of the page, so
-  the program keeps its machine stack and the certificate names the procedures
-  that made it residual. Which footprint the periodicity witness may use follows
-  from that same proof, so the tracer hashes both (S1): the whole play-written
-  set, and it without the stack page. An eliminated program writes no stack page
-  and claims on the page-exclusive stream; a residual program claims on the
-  page-inclusive one, because a stack byte it reads back is state like any other.
-  Elimination therefore moves no certificate's period, and can only shorten a
-  horizon.
+  carries, and `SP` leaves every signature. The frame the *machine* pushed
+  before an `irq` entry is the tick's contract, not storage: the status byte is
+  the entry flags packed, its `RTI` consumes exactly it, and the elimination
+  proceeds as for a `sub` entry. A read the analysis cannot place — a scratch
+  area addressed by a non-constant offset, a `TSX`-relative read of another
+  frame, the pushed return address of that entry frame — can see any byte of the
+  page, so the program keeps its machine stack and the certificate names the
+  procedures that made it residual. Which footprint the periodicity witness may
+  use follows from that same proof, so the tracer hashes both (S1): the whole
+  play-written set, and it without the stack page. An eliminated program writes
+  no stack page and claims on the page-exclusive stream; a residual program
+  claims on the page-inclusive one, because a stack byte it reads back is state
+  like any other — and `--until-period` traces on to that repeat once S4 has
+  said so. Elimination therefore moves no certificate's period, and can only
+  shorten a horizon.
 - Result: an executable, register-free, flag-free, stack-free, SMC-free program
   in basic-block form. **This is the first certified product** (S8 runs here).
 

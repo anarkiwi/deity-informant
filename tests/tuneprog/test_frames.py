@@ -1,16 +1,22 @@
-"""S4 stack elimination: pushes and pops as values, and what stays residual.
+"""S4 stack elimination: pushes and pops as values, what stays residual, its horizon.
 
 Every case runs both programs -- the one that keeps the machine stack and the one
 that eliminated it -- against the trace on both executors, so a slot forwarded
 wrongly is a divergence and not a printed-text difference.
 """
 
+import json
 import re
 
-from deity_informant.tuneprog import frames, idioms, live, stack, structure
+import pytest
+
+from deity_informant.tuneprog import frames, idioms, live, pipeline, stack, structure
 from deity_informant.tuneprog.frame import frames as name_frames
 from deity_informant.tuneprog.ir import (
+    Bin,
     Block,
+    Call,
+    Const,
     Let,
     Load,
     Proc,
@@ -18,16 +24,18 @@ from deity_informant.tuneprog.ir import (
     STACK_HI,
     STACK_LO,
     Store,
+    Tuneprog,
     Var,
     enc,
 )
 from deity_informant.tuneprog.irwalk import defs_of, node_loads, stmt_uses, term_uses
 from deity_informant.tuneprog.verify import verify
 
-from _asm import asm
-from _prog import PLAY, printed as _text, tuneprog
+from _asm import asm, psid
+from _prog import PLAY, printed as _text, stack_access as _accesses, tuneprog
 
-SPREG = 3
+SP = frames.SP
+SPREG = frames.SPREG
 PEEK = (
     "play: LDA cnt",
     "PHA",
@@ -42,18 +50,6 @@ PEEK = (
     "RTS",
     "cnt: BRK",
 )
-
-
-def _accesses(prog):
-    """Every load and store the program still makes on the stack page."""
-    out = []
-    for p in prog.procs.values():
-        for b in p.blocks.values():
-            for s in list(b.stmts) + [b.term]:
-                out += [x for x in node_loads(s) if x.lo <= STACK_HI and x.hi >= STACK_LO]
-                if type(s) is Store and s.lo <= STACK_HI and s.hi >= STACK_LO:
-                    out.append(s)
-    return out
 
 
 def _sp(prog):
@@ -494,3 +490,95 @@ def test_an_eliminated_program_keeps_no_stack_pointer_anywhere():
                 names.update(defs_of(st))
             term_uses(b.term, names)
     assert not [n for n in names if n.split("#")[0] == frames.SP]
+
+
+# ---- the interrupt frame the machine pushes: the tick's contract -------------
+def _handler(*lines):
+    """A tick entered as an installed IRQ handler: the machine's frame, then ``RTI``."""
+    return asm(PLAY, "init: LDA #$00", "STA cnt", "RTS", "play:", *lines, "RTI", "cnt: BRK")
+
+
+def test_an_rti_ticks_entry_frame_is_the_value_its_rti_consumes():
+    code = _handler("PHA", "TXA", "PHA", "INC cnt", "LDA cnt", "STA $D400", "PLA", "TAX", "PLA")
+    eliminated(code, calls=6, kind="irq")
+    doc = _text(code, calls=6, kind="irq")
+    assert not re.search(r"\bsp\d*\b", doc), doc
+    assert not re.search(r"\b[icdvnz]\d*\b = ", doc), doc
+
+
+def test_a_tick_that_reads_its_entry_frame_through_tsx_keeps_the_stack():
+    # `TSX; LDA $0101,X` is the pushed status by another route: no slot, no value
+    code = _handler("TSX", "LDA $0101,X", "AND #$01", "STA $D400", "INC cnt")
+    prog = residual(code, calls=6, kind="irq")
+    assert prog.meta["stack"] == {"depth": "unknown", "procs": ["tick"]}
+
+
+def test_a_tick_that_pops_past_its_entry_status_keeps_the_stack():
+    """The pushed return address is named by nothing, so reading it is no value.
+
+    This tick puts the frame it took apart back together, and is residual anyway.
+    """
+    code = _handler("PLA", "TAY", "PLA", "PHA", "TYA", "PHA", "INC cnt", "LDA cnt", "STA $D400")
+    prog = residual(code, calls=6, kind="irq")
+    assert prog.meta["stack"]["procs"] == ["tick"]
+
+
+def _rti_proc(slot, kind="irq", caller=False):
+    """A one-block tick whose ``RTI`` reads the entry frame at ``slot``."""
+    a = Bin("|", Const(STACK_LO, 2), Bin("+", Var(SP), Const(slot), 1), 2)
+    blk = Block("b0", [Let("p", Load("ram", a, 1, STACK_LO, STACK_HI, -1))], Return())
+    procs = {"tick": Proc("tick", (SPREG,), (), {"b0": blk}, "b0", "tick")}
+    if caller:
+        init = Block("i0", [Call("tick")], Return())
+        procs["init"] = Proc("init", (), (), {"i0": init}, "i0", "init")
+    meta = {"tick_proc": "tick", "entry": {"kind": kind}}
+    return Tuneprog(meta=meta, storage=[], inputs=[], procs=procs)
+
+
+def test_the_entry_contract_covers_the_status_slot_and_nothing_else():
+    """Only the byte the machine pushed as ``P`` is a value: the pc bytes are not."""
+    assert sorted(frames.contract(_rti_proc(1))["tick"]) == [frames.STATUS_SLOT]
+    assert frames.contract(_rti_proc(1, kind="sub")) == {}
+    ok = frames.analyse(_rti_proc(1))["tick"]
+    assert not ok.opaque and len(ok.plan) == 1 and not ok.foreign
+    for slot in (0, 2, 3):  # a pop at another depth, and the pushed return address
+        assert frames.analyse(_rti_proc(slot))["tick"].opaque, slot
+
+
+def test_a_tick_its_own_init_calls_gets_no_entry_contract():
+    """Entered by ``JSR`` too, ``SP+1`` is a return-address byte, not the status."""
+    assert frames.contract(_rti_proc(1, caller=True)) == {}
+    assert frames.analyse(_rti_proc(1, caller=True))["tick"].opaque
+
+
+SCRATCH = (
+    "init: RTS",
+    "play: TSX",
+    "LDA $0100,X",
+    "CLC",
+    "ADC #$01",
+    "STA $0100,X",
+    "STA $D400",
+    "RTS",
+)
+
+
+@pytest.mark.parametrize("chunk", [8, 512])
+def test_until_period_traces_a_residual_program_to_the_page_inclusive_repeat(tmp_path, chunk):
+    """S4 decides the footprint, so the horizon it stopped on may be the wrong one.
+
+    Page-free this tune repeats every tick; its scratch byte repeats every 256. A
+    chunk that spans both repeats needs no second trace, and still certifies on 256.
+    """
+    out = tmp_path / "o"
+    sid = tmp_path / "scratch.sid"
+    code = asm(PLAY, *SCRATCH)
+    sid.write_bytes(psid({PLAY: code}, init=code.labels["init"], play=code.labels["play"]))
+    argv = [str(sid), "--out", str(out), "--until-period", "--max-calls", "1000"]
+    assert pipeline.main(argv + ["--chunk", str(chunk), "--no-text", "--prefix", "0"]) == 0
+    doc = json.loads((out / "certificate.json").read_text())
+    sub = doc["subtunes"][0]
+    assert doc["stack"]["procs"] == ["tick"]
+    assert (sub["period"], sub["trace_period"], sub["first_repeat"]) == (256, 256, 256)
+    assert sub["ticks"] == 257 and sub["complete"] and sub["divergences"] == 0
+    assert json.loads((out / "state.json").read_text())["stack"] == "residual"

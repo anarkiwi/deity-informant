@@ -5,6 +5,8 @@ from deity_informant.tuneprog.build import build_ir
 from deity_informant.tuneprog.cfg import build_procs
 from deity_informant.tuneprog.idioms import rewrite
 from deity_informant.tuneprog.lift import lift_trace
+from deity_informant.tuneprog.ir import STACK_HI, STACK_LO, Store
+from deity_informant.tuneprog.irwalk import node_loads
 from deity_informant.tuneprog.regions import build_regions
 from deity_informant.tuneprog.ssa import Folds, simplify
 from deity_informant.tuneprog.stack import eliminate
@@ -87,4 +89,16 @@ def proc_body(doc, name):
             break
         if on:
             out.append(line)
+    return out
+
+
+def stack_access(prog):
+    """Every load and store a program still makes on the stack page."""
+    out = []
+    for p in prog.procs.values():
+        for b in p.blocks.values():
+            for s in list(b.stmts) + [b.term]:
+                out += [x for x in node_loads(s) if x.lo <= STACK_HI and x.hi >= STACK_LO]
+                if type(s) is Store and s.lo <= STACK_HI and s.hi >= STACK_LO:
+                    out.append(s)
     return out

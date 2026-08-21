@@ -11,12 +11,40 @@ from dataclasses import dataclass
 
 from .graph import preds_of
 from .ir import Bin, Call, Const, Let, Phi, Return, STACK_HI, STACK_LO, Store, Var, succs
-from .irwalk import apply_stmt, apply_term, call_order, node_loads, single_defs
+from .irwalk import apply_stmt, apply_term, call_order, callees, node_loads, single_defs
+from .lower import status_expr
 
 SP = "SP"
 SPREG = 3
 SLOT = "$saved"
 UNSET = ()  # no information yet: a value the fixpoint has not reached
+ENTRY = "$entry"  # the pseudo-push key of a slot the machine filled before entry
+STATUS_SLOT = 1  # 6510 interrupt frame: status at SP+1, return address at SP+2/+3
+
+
+def contract(prog):
+    """``{procedure: {slot: value}}`` of the frame the machine pushed before entry.
+
+    An ``irq`` tick is entered with the interrupt frame its terminating ``RTI``
+    pops, and the status byte in it is the entry flags packed: a parameter of the
+    tick. Nothing names the pushed return address, so a read of it stays unplaced.
+    """
+    meta = prog.meta or {}
+    tick = meta.get("tick_proc")
+    if tick not in prog.procs or (meta.get("entry") or {}).get("kind") != "irq":
+        return {}
+    if any(tick in callees(p) for p in prog.procs.values()):
+        return {}  # entered as a subroutine too: SP+1 is then a return-address byte
+    return {tick: {STATUS_SLOT: status_expr()}}
+
+
+def entry_value(frame, pushes):
+    """The contract value a group's pseudo-push names, or ``None`` for real pushes.
+
+    The caller substitutes it at every read, so each read takes its own copy.
+    """
+    key = next((k for k in pushes if k[0] == ENTRY), None)
+    return None if key is None else frame.contract[key[1]]
 
 
 def _delta(e, off, defs, seen=()):
@@ -164,16 +192,16 @@ def events(proc, off, defs):
     return out
 
 
-def _reaching(proc, evs):
+def _reaching(proc, evs, con=()):
     """``{(block, index, node id): (slot, the stores that reach it)}``.
 
-    The entry carries one pseudo-definition per slot, so a read some path reaches
-    without a push of its own holds ``None`` and is no value of this frame. An
+    The entry carries one pseudo-definition per slot -- the machine's own frame
+    where ``con`` names one, else ``None``, which is no value of this frame. An
     inlined load is one shared node, so a use is keyed by where it is read.
     """
     slots = {s for e in evs.values() for _i, _k, s, _n in e}
     last = {lbl: {s: {(lbl, i)} for i, k, s, _n in e if k == "store"} for lbl, e in evs.items()}
-    seed = {s: {None} for s in slots}
+    seed = {s: {(ENTRY, s) if s in con else None} for s in slots}
     preds, ins = preds_of(proc), {lbl: {} for lbl in proc.blocks}
     ins[proc.entry] = {s: set(v) for s, v in seed.items()}
     changed = True
@@ -203,8 +231,10 @@ def _resolved(keys):
 
 
 def _pushes(proc, key):
-    """True when the store at ``key`` is a push of a value, not a machine frame."""
+    """True when ``key`` puts a value in its slot: a non-frame store, or the entry."""
     lbl, i = key
+    if lbl == ENTRY:
+        return True
     s = proc.blocks[lbl].stmts[i]
     return type(s) is Store and s.cls != "raw"
 
@@ -250,6 +280,7 @@ def _plan(proc, evs, reach):
                 groups[root] = (g[0], g[1], False)
         for root, (_p, keys, ok) in groups.items():
             pushes = sorted(k for k in par if _find(par, k) == root)
+            ok = ok and not (len(pushes) > 1 and any(k[0] == ENTRY for k in pushes))
             if ok and root is not None and all(_pushes(proc, k) for k in pushes):
                 out.append((pushes, keys))
             else:
@@ -283,6 +314,7 @@ class Frame:
     plan: list
     unresolved: list
     foreign: bool
+    contract: dict
 
     @property
     def opaque(self):
@@ -305,18 +337,19 @@ class Frame:
 def analyse(prog, info=None):
     """``{procedure: Frame}`` over the whole program, callees first."""
     exits, offs = info or deltas(prog)
-    out = {}
+    cons, out = contract(prog), {}
     for name in call_order(prog):
         proc = prog.procs[name]
         defs = single_defs(proc)
         off = offs.get(name) or offsets(prog, proc, exits)
         evs = events(proc, off, defs)
+        con = cons.get(name, {})
         if evs is None:
-            out[name] = Frame(off, None, {}, [], [None], True)
+            out[name] = Frame(off, None, {}, [], [None], True, con)
             continue
-        reach = _reaching(proc, evs)
+        reach = _reaching(proc, evs, con)
         plan, bad = _plan(proc, evs, reach)
-        out[name] = Frame(off, evs, reach, plan, bad, _foreign(evs, reach))
+        out[name] = Frame(off, evs, reach, plan, bad, _foreign(evs, reach), con)
     return out
 
 

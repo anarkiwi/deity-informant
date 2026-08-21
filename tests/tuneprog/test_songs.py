@@ -213,3 +213,40 @@ def test_a_single_song_resumed_under_another_horizon_is_retraced(tmp_path):
     doc = json.loads((out / "certificate.json").read_text())
     assert doc["subtunes"][0]["ticks"] == 6 and doc["subtunes"][0]["divergences"] == 0
     assert json.loads((out / "state.json").read_text())["horizon"][0] == 6
+
+
+# song 1 (init A=0) leaves its stack scratch alone; song 2 steps it, so page-free
+SCRATCH = asm(
+    PLAY,
+    "init: STA sel",
+    "RTS",
+    "play: TSX",
+    "LDA $0100,X",
+    "CLC",
+    "ADC sel",
+    "STA $0100,X",
+    "STA $D400",
+    "RTS",
+    "sel: BRK",
+)
+
+
+def test_until_period_retraces_only_the_subtunes_that_stopped_page_free(tmp_path):
+    """S4 calls the program residual, so a page-free stop is no witness for it.
+
+    Song 1 repeats at once on either footprint; song 2 repeats at 1 page-free and
+    at 256 with the page, and is the one traced on.
+    """
+    out = tmp_path / "o"
+    sid = tmp_path / "scratch.sid"
+    sid.write_bytes(
+        psid({PLAY: SCRATCH}, init=SCRATCH.labels["init"], play=SCRATCH.labels["play"], songs=2)
+    )
+    argv = [str(sid), "--out", str(out), "--songs", "all", "--until-period"]
+    assert pipeline.main(argv + ["--max-calls", "1000", "--chunk", "8", "--no-text"]) == 0
+    cert = json.loads((out / "certificate.json").read_text())
+    assert cert["stack"]["procs"] == ["tick"]
+    assert _ticks(cert) == [(1, 2, True), (2, 257, True)]
+    st = json.loads((out / "state.json").read_text())
+    assert st["stack"] == "residual"
+    assert [st["traced"][k]["full"] for k in ("1", "2")] == [True, True]
