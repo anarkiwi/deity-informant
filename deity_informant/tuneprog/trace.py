@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pickle
 from array import array
+from dataclasses import replace
 from hashlib import blake2b
 from pathlib import Path
 
@@ -24,11 +25,12 @@ import numpy as np
 from ..lifter import lift
 from .. import c64
 from .ir import STACK_HI, STACK_LO
-from .machine import STATUS, Refusal, entry_frame, init_runner
+from .machine import STATUS, Refusal, entry_frame, init_runner, kernal_mapped, vector_gate
 from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
+VECTOR_BYTES = set(c64.IRQ_VEC) | set(c64.HW_IRQ_VEC)
 VERSION = 5  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
@@ -105,14 +107,32 @@ class Tracer:
         init_runner(vm, self.image.init, self.cache, lift, **kw)
         vm.shadow.clear()
         vm.phase = PH_PLAY
-        if self.entry.kind == "irq" and not any(
-            self.image.lo <= a < self.image.hi for a in (0xEA31, 0xEA81, 0xFEBC)
-        ):
-            c64.install_kernal_irq_stubs(vm)
+        if self.entry.kind == "irq":
+            self.entry = self._settle()
+            if not any(self.image.lo <= a < self.image.hi for a in (0xEA31, 0xEA81, 0xFEBC)):
+                c64.install_kernal_irq_stubs(vm)
         self.image_post_init = bytes(vm.mem)
         self.cycles_init = vm.cycles  # where tick 0's frame starts
         self.post_init_regs = {n: int(vm.reg[i]) for i, n in CPU_REGS.items()}
         return self
+
+    def _settle(self):
+        """The entry the machine really has, now that init has had the 6510 port.
+
+        :func:`~.machine.find_entries` decides on the pre-init image, so a tune
+        whose init banks the KERNAL out was handed a frame the machine never
+        pushes. Where init installed a vector the gate is re-run against what it
+        wrote; otherwise only the port's verdict on the frame settles.
+        """
+        img, vm = self.image, self.vm
+        wrote = vm.written_init & VECTOR_BYTES
+        if not wrote:
+            return replace(self.entry, kernal=kernal_mapped(vm.mem))
+        vec, kernal = vector_gate(vm.mem, wrote, (img.lo, img.hi))
+        handler = c64.read_vector(vm.mem, vec)
+        if not handler:
+            raise Refusal("no entry", "vector $%04X is installed but null" % vec)
+        return replace(self.entry, addr=handler, kernal=kernal)
 
     def run_calls(self, n, budget=CALL_BUDGET):
         for _ in range(n):
@@ -131,6 +151,9 @@ class Tracer:
             vm._push(0x01)
             vm.push_frame(None, 0x0002, self.entry.addr)
         else:
+            if kernal_mapped(vm.mem) != self.entry.kernal:
+                # the frame is the tick's contract: it has to hold at every tick
+                raise Refusal("port moved", "call %d changed the dispatch" % self.calls_done)
             vm._push(0x00)
             for what in entry_frame(self.entry):
                 if what is STATUS:

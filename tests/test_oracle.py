@@ -130,3 +130,28 @@ def test_a_player_run_with_io_banked_out_writes_no_register():
     # anchor changes 297 frames either way, so the anchor is the whole of it
     assert not grid.differing(interrupt, tick).size
     assert len(grid.differing(rounded, cycle)) > 200 and len(grid.differing(rounded, tick)) > 200
+
+
+MIND = "A_Mind_Is_Born.sid"
+
+
+@pytest.mark.oracle
+def test_a_cinv_handler_matches_the_oracle_frame_for_frame():
+    """The KERNAL entry frame is a machine-model claim, so the grid is what checks it.
+
+    lft's handler is installed at CINV and chains to ``$EA31``, whose epilogue pops
+    the three bytes the ``$FF48`` prologue saved: it reaches its ``RTI`` only
+    because the tracer pushes them (:func:`~.machine.entry_frame`).
+    """
+    path = _tune(MIND)
+    interrupt = _oracle(path, FRAMES)
+    trace = _trace(path, FRAMES)
+    assert trace.meta["entry"] == {
+        "kind": "irq",
+        "addr": 0x0031,
+        "cycles_per_tick": 19656,
+        "source": "pal_video",
+        "kernal": True,
+    }
+    bad = grid.differing(interrupt, grid.trace_grid(trace, FRAMES))
+    assert not bad.size, "frames %s differ" % bad[:3]
