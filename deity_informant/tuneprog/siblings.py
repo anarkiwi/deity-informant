@@ -14,7 +14,6 @@ from difflib import SequenceMatcher
 
 from jennings.opcodes import MEM_MODES, MODE_LEN, OPCODES as OPS
 
-from .ir import succs
 from .jumptab import dispatch
 
 LEAVE = ("JMP", "RTS", "RTI", "BRK")  # after one of these, straight-line code has ended
@@ -138,78 +137,121 @@ class Copies:
         """The pcs each copy covers, one set per copy."""
         return [{r[j] for r in self.rows} for j in range(self.k)]
 
+    def slack(self, image):
+        """Instructions the copies hold that no row explains.
+
+        A family explains its copies; two that cover the same code equally wide
+        are one ambiguity, and the one leaving less of it unexplained is the
+        correspondence -- the other reads a copy as beginning mid-template.
+        """
+        ends = list(self.bases[1:]) + [max(r[-1] for r in self.rows) + 1]
+        held = sum(len(stream(image, b, e)) for b, e in zip(self.bases, ends))
+        return held - self.k * len(self.rows)
+
 
 # ---- chained families --------------------------------------------------------
 @dataclass
-class Cfg:
-    """What one procedure says about copies: its entries, edges, runs and boundaries.
+class Code:
+    """One procedure's instructions as the image states them: counts and transfers.
 
-    Every clone of an entry is that entry: the trace-closed product holds a block
-    once per path through it, and they are one instruction all the same.
+    Block boundaries are an artefact -- of which arms an execution reached and of
+    which ones :mod:`.closure` joined -- so a copy's entry is read from the
+    instruction stream and its executions from the sites, not from the blocks.
     """
 
-    srcs: list  # sorted block entries
-    edges: dict  # entry -> [(entry with an edge into it, its lowest, its highest successor)]
-    runs: list  # sorted (entry, times it ran), the entries an execution reached
-    bounds: list  # every instruction address of the procedure
+    runs: dict  # pc -> executions, over every instruction a block's run reaches
+    to: dict  # pc -> the addresses control reaches from the instruction
+    into: dict  # pc -> the instructions that transfer to it
+    pcs: list  # sorted, the instructions an execution reached
+    bounds: list  # sorted, every instruction address between them
 
     def after(self, pc):
-        """The first block entry at or after ``pc``, or ``None``.
+        """The first executed instruction at or after ``pc``, or ``None``.
 
         A copy ends at the image of the template's last instruction; what a copy
-        holds past that is its own, and the next copy opens the next block.
+        holds past that is its own, and the next copy opens where it ends.
         """
-        i = bisect_left(self.srcs, pc)
-        return self.srcs[i] if i < len(self.srcs) else None
+        i = bisect_left(self.pcs, pc)
+        return self.pcs[i] if i < len(self.pcs) else None
 
     def enters(self, a, b, c):
-        """The blocks of ``[a, b)`` that exit into the block at ``b``, the copy ``[b, c)``.
+        """The instructions of ``[a, b)`` that transfer into ``b``, the copy ``[b, c)``.
 
-        An exit leaves one copy for the next; a branch that reaches past the copy
-        it enters steps over that code instead of ending a copy of it.
+        A transfer leaves one copy for the next -- a jump, a branch or falling in;
+        one that reaches past the copy it enters steps over that code instead. A
+        direction no execution took leaves nothing.
         """
-        return [s for s, lo, hi in self.edges.get(b, ()) if a <= s < b and a <= lo and hi < c]
+        return [
+            p
+            for p in self.into.get(b, ())
+            if a <= p < b and all(a <= t < c for t in self.to[p] if self.ran(t))
+        ]
 
     def ran(self, pc):
-        """How often the block holding ``pc`` ran: 0 where no execution entered it.
-
-        A run enters every copy of it as often as the first, which is what an
-        unrolled loop is; a branch that skips one enters it less often.
-        """
-        i = bisect_left(self.srcs, pc + 1) - 1
-        src = self.srcs[i] if i >= 0 else None
-        j = bisect_left(self.runs, (src, 0)) if src is not None else -1
-        return self.runs[j][1] if 0 <= j < len(self.runs) and self.runs[j][0] == src else 0
+        """How often the instruction at ``pc`` ran: 0 where no execution reached it."""
+        return self.runs.get(pc, 0)
 
 
-def _cfg(proc, image):
-    """The :class:`Cfg` of one procedure."""
-    to, edges, ran = {}, {}, {}
+def _to(image, pc):
+    """The addresses control reaches from the instruction at ``pc``, per the image.
+
+    A computed jump states nothing, so it ends the walk rather than guessing.
+    """
+    mn, mode = OPS[image[pc]]
+    if mn in ("RTS", "RTI", "BRK", "JAM"):
+        return ()
+    if mn == "JMP":
+        return (operand(image, pc),) if mode == "abs" else ()
+    nxt = (pc + MODE_LEN[mode]) & 0xFFFF
+    if mode == "rel":
+        return (nxt, (nxt + ((image[pc + 1] ^ 0x80) - 0x80)) & 0xFFFF)
+    return (nxt,)
+
+
+def _code(proc, image, band=(0, 0x10000)):
+    """The :class:`Code` of one procedure: its runs, its transfers, its executions.
+
+    An entry's count is the count of every instruction its run reaches: control
+    that only ever goes one way went there as often, whether it fell or jumped.
+    The run ends at the next entry, which carries its own count, and a block no
+    execution entered is no entry at all.
+    """
+    at = {}
     for b in proc.blocks.values():
-        to.setdefault(b.src, set()).update(
-            proc.blocks[s].src for s in succs(b.term) if s in proc.blocks
-        )
-        ran[b.src] = ran.get(b.src, 0) + b.count
-    for s, out in to.items():
-        for t in out:
-            edges.setdefault(t, []).append((s, min(out), max(out)))
-    srcs = sorted(to)
-    bounds = set(srcs)
-    for s, nxt in zip(srcs, srcs[1:]):
-        bounds.update(stream(image, s, nxt))
-    return Cfg(srcs, edges, sorted((s, n) for s, n in ran.items() if n), sorted(bounds))
+        if b.count:
+            at[b.src] = at.get(b.src, 0) + b.count
+    runs = {}
+    for s in sorted(at):
+        pc, seen = s, set()
+        while pc is not None and band[0] <= pc < band[1] and pc not in seen:
+            if pc in at and pc != s:
+                break
+            runs[pc] = at[s]
+            seen.add(pc)
+            nxt = _to(image, pc)
+            pc = nxt[0] if len(nxt) == 1 else None
+    pcs = sorted(runs)
+    to = {p: _to(image, p) for p in pcs}
+    into = {}
+    for p in pcs:
+        for t in to[p]:
+            into.setdefault(t, []).append(p)
+    bounds = set(pcs)
+    for a, b in zip(pcs, pcs[1:]):
+        bounds.update(stream(image, a, b))
+    return Code(runs, to, into, pcs, sorted(bounds))
 
 
 def chained(proc, image, fam):
-    """True when every copy exits into the next copy's entry block, having run as often.
+    """True when every copy transfers into the next copy's entry, having run as often.
 
-    That is what an unrolled run is: voice *j* ends by jumping to voice *j+1*.
+    That is what an unrolled run is: voice *j* ends by reaching voice *j+1*.
     Nothing is asked of the last copy, whose exit leaves the run.
     """
-    cfg = _cfg(proc, image)
+    code = _code(proc, image)
     ends = list(fam.bases[1:]) + [max(r[-1] for r in fam.rows) + 1]
-    return len({cfg.ran(b) for b in fam.bases}) == 1 and all(
-        cfg.enters(fam.bases[j], fam.bases[j + 1], ends[j + 1]) for j in range(fam.k - 1)
+    return len({code.ran(b) for b in fam.bases}) == 1 and all(
+        code.enters(fam.bases[j], fam.bases[j + 1], ends[j + 1]) for j in range(fam.k - 1)
     )
 
 
@@ -236,12 +278,12 @@ def _copy(image, xs, b, hi, whole=True):
     return [(xs[i], ys[j]) for i, j in rows], ys[-1] + ilen(image, ys[-1])
 
 
-def _chain(image, cfg, band, first):
+def _chain(image, code, band, first):
     """``(bases, [pc map per step])`` of the run the pair ``first`` opens, or ``None``.
 
     Copy *j+1*'s extent comes out of the alignment, so the base after it is not
-    guessed: the run goes on exactly while that address is a block entry the copy
-    before it has an edge into.
+    guessed: the run goes on exactly while that address ran as often and the copy
+    before it transfers into it.
     """
     bases, steps = list(first), []
     while True:
@@ -250,37 +292,36 @@ def _chain(image, cfg, band, first):
         last = got is None
         if last and steps:  # only the copy nothing follows may hold the template in part
             got = _copy(image, xs, bases[-1], band[1], whole=False)
-        out = [] if got is None else cfg.enters(bases[-2], bases[-1], got[1])
+        out = [] if got is None else code.enters(bases[-2], bases[-1], got[1])
         rows = dict(got[0]) if got is not None else {}
         if not out or (last and not any(u in rows for u in out)):
             bases.pop()
-            return None if len(bases) < 2 else _before(image, cfg, band, (bases, steps))
+            return None if len(bases) < 2 else _before(image, code, band, (bases, steps))
         steps.append(rows)
-        end = None if last else cfg.after(got[1])
-        if end is None or image[end] != image[bases[-1]] or cfg.ran(end) != cfg.ran(bases[-1]):
-            return _before(image, cfg, band, (bases, steps))
+        end = None if last else code.after(got[1])
+        if end is None or image[end] != image[bases[-1]] or code.ran(end) != code.ran(bases[-1]):
+            return _before(image, code, band, (bases, steps))
         bases.append(end)
 
 
-def _before(image, cfg, band, run):
-    """The run with the copies before it, which need not open a block of their own.
+def _before(image, code, band, run):
+    """The run with the copies before it, which the run's own transfers do not name.
 
-    The first copy is fallen into, so S2b may have merged its opening instruction
-    into the block before it; the copies after it are jumped to and cannot be.
+    A copy the one before it falls into is entered by no jump; the search back is
+    bounded by the template, which no copy is longer than.
     """
     bases, steps = run
     while True:
-        # a copy holds the whole template, so it is no longer than the one after it
         n = len(stream(image, bases[0], bases[1]))
         hit = None
-        for a in [p for p in cfg.bounds if p < bases[0]][-n:]:
+        for a in [p for p in code.bounds if p < bases[0]][-n:]:
             if image[a] != image[bases[0]]:
                 continue
             got = _copy(image, stream(image, a, bases[0]), bases[0], band[1])
             if (
                 got is not None
-                and cfg.after(got[1]) == bases[1]
-                and cfg.enters(a, bases[0], got[1])
+                and code.after(got[1]) == bases[1]
+                and code.enters(a, bases[0], got[1])
             ):
                 hit = (a, dict(got[0]))
                 break
@@ -304,37 +345,79 @@ def _rows(bases, steps):
     return tuple(out)
 
 
+def _bases(image, code):
+    """Where a copy may open: a leader of the image's code, or a branch.
+
+    Which addresses the built blocks begin at is an artefact of which arms ran and
+    which the static closure joined. Both products draw their boundaries at the
+    same places in the image: a leader -- a transfer's target, either way out of a
+    branch, an address nothing falls into -- and the branch that decides.
+    """
+    out, fell = set(), set()
+    for p in code.pcs:
+        to = code.to[p]
+        if len(to) == 2:
+            out.add(p)
+        for t in to:
+            (fell if OPS[image[p]][0] not in LEAVE and len(to) == 1 else out).add(t)
+    return (out | (set(code.pcs) - fell)) & set(code.pcs)
+
+
+def _pairs(image, code):
+    """The candidate pairs of one procedure: same opcode, same executions, in order.
+
+    Two copies of one template open on the same byte, and a chain runs every copy
+    of it as often.
+    """
+    same = {}
+    for p in sorted(_bases(image, code)):
+        same.setdefault((image[p], code.ran(p)), []).append(p)
+    return sorted((a, b) for g in same.values() for i, a in enumerate(g) for b in g[i + 1 :])
+
+
 def chains(prog, image, band):
     """Every chained sibling family of ``prog``, widest first, non-overlapping.
 
     A copy runs to where the next one starts, so its stream needs no bound of its
     own; only the arms :func:`extend` pairs are bounded by something coarser.
     """
-    cands = []
+    cands, bad = [], []
     for name, proc in prog.procs.items():
-        cfg, seen = _cfg(proc, image), set()
-        srcs = cfg.srcs
-        for i, a in enumerate(srcs):
-            for b in srcs[i + 1 :]:
-                if (a, b) in seen or image[a] != image[b] or cfg.ran(a) != cfg.ran(b):
-                    continue
-                if not cfg.enters(a, b, band[1]):
-                    continue
-                got = _chain(image, cfg, band, (a, b))
-                if got is None:
-                    continue
-                seen.update(zip(got[0], got[0][1:]))
-                fam = Copies(got[0], _rows(*got), name)
-                if fam.rows and fam.consistent(image):
-                    cands.append(fam)
-    return _select(cands)
+        code, seen = _code(proc, image, band), set()
+        for a, b in _pairs(image, code):
+            if (a, b) in seen or not code.enters(a, b, band[1]):
+                continue
+            got = _chain(image, code, band, (a, b))
+            if got is None:
+                continue
+            seen.update(zip(got[0], got[0][1:]))
+            fam = Copies(got[0], _rows(*got), name)
+            if not fam.rows:
+                continue
+            (cands if fam.consistent(image) else bad).append(fam)
+    return _select([f for f in cands if not _span(f) & _spans(bad)], image)
 
 
-def _select(cands):
-    """The widest, longest families whose copies do not overlap an accepted one's."""
+def _span(fam):
+    """Every ``(procedure, pc)`` a family's copies cover."""
+    return {(fam.proc, p) for r in fam.rows for p in r}
+
+
+def _spans(fams):
+    """The union of what a list of families covers."""
+    return set().union(*[_span(f) for f in fams]) if fams else set()
+
+
+def _rank(fam, image):
+    """How well a family explains code: widest, then longest, then least left over."""
+    return (-fam.k, -len(fam.rows), fam.slack(image))
+
+
+def _select(cands, image):
+    """The best-explaining families whose copies do not overlap an accepted one's."""
     out, taken = [], set()
-    for fam in sorted(cands, key=lambda f: (-f.k, -len(f.rows), f.bases, f.proc)):
-        span = {(fam.proc, p) for r in fam.rows for p in r}
+    for fam in sorted(cands, key=lambda f: _rank(f, image) + (f.bases, f.proc)):
+        span = _span(fam)
         if span & taken:
             continue
         out.append(fam)
@@ -392,4 +475,4 @@ def correspond(prog, image, band):
     """
     data = _data(prog, band)
     out = [extend(prog, image, fam, band, data) for fam in chains(prog, image, band)]
-    return _select([fam for fam in out if fam.consistent(image)])
+    return _select([fam for fam in out if fam.consistent(image)], image)

@@ -38,12 +38,19 @@ def test_the_state_block_is_one_width_three_record_per_track():
         assert "voice[v]." in run.text
 
 
-def test_the_voice_loop_is_a_loop_and_no_sibling_family():
-    """JCH walks X = 2, 1, 0 with DEX/BMI, so there is nothing to fold."""
+def test_the_voice_loop_is_a_loop_and_no_voice_family():
+    """JCH walks X = 2, 1, 0 with DEX/BMI, so the voices are a loop, not copies.
+
+    Guldkorn holds no static copy at all; the Knob's one family is a pair of
+    two-instruction table setters outside the voice code.
+    """
     for rel, secs in BOTH:
         run = decompiled(rel, seconds=secs)
         assert "for v in 2, 1, 0:" in run.text
-        assert copymerge.report(run.prog) is None
+        doc = copymerge.report(run.prog)
+        fams = [] if doc is None else doc["families"]
+        assert [f["copies"] for f in fams] == ([] if rel is GULDKORN else [2])
+        assert all(f["proc"] != "tick" for f in fams)
 
 
 def test_the_table_programs_type_as_their_own_records():

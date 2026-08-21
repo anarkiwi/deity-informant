@@ -147,14 +147,14 @@ def test_the_columns_hold_each_copy_s_own_addresses():
 def test_an_instruction_one_copy_alone_carries_keeps_the_fold():
     """A copy with a statement of its own folds the rows it shares and no others.
 
-    The fold is what the trace-closed program says it is: closing the arms adds
-    code, and the same 8 rows fold either way.
+    The fold is a property of the image, so closing the arms neither adds a row
+    nor takes one: the same 9 fold either way.
     """
     trace, prog = _prog(voices(extra2="INC cnt"))
     fam = prog.meta["copies"]["families"][0]
-    assert fam["copies"] == 3 and fam["rows"] == 8
+    assert fam["copies"] == 3 and fam["rows"] == 9
     assert (
-        _prog(voices(extra2="INC cnt"), static=False)[1].meta["copies"]["families"][0]["rows"] == 8
+        _prog(voices(extra2="INC cnt"), static=False)[1].meta["copies"]["families"][0]["rows"] == 9
     )
     v = verify(prog, trace, calls=trace.meta["calls"], prefix=trace.meta["calls"])
     assert v.div is None
