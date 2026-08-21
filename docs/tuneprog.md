@@ -46,7 +46,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
 
-`pipeline.py` drives every stage into one output directory. The IR itself
+`pipeline.py` drives every stage into one output directory, and `resume.py` decides what a run resumed under other options may keep of it. The IR itself
 (`ir.py`) and its reference interpreter (`interp.py`) are the semantics every
 other executor is checked against; `irwalk.py` and `graph.py` are the IR and CFG
 traversals every stage shares.
@@ -57,15 +57,15 @@ traversals every stage shares.
 front end     machine 244  tracevm 328  trace 302  tracedata 336  lift 227
               cfg 310  regions 243  jumptab 368  siblings 395  closure 347
               copyrows 453  copymerge 165
-program       ir 434  interp 248  irwalk 315  graph 82  lower 214  build 470
+program       ir 440  interp 248  irwalk 315  graph 82  lower 214  build 470
               ssa 431  frames 371  stack 204  idioms 357  emit 372  verify 328
               period 113
 presentation  structure 356  loops 307  inline 199  texture 475  frame 44
-              word 369  fold 472  tails 265  copyview 279  unroll 399  live 96
+              word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
               facts 228  recover 326  views 213
 text          pseudocode 424  printer 405
-driver        pipeline 506  __init__ 124
-baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,545 lines
+driver        pipeline 450  resume 67  __init__ 124
+baseline      ghidra_facts 219  ghidra_compare 182   46 modules, 13,587 lines
 ```
 
 Stage entry points, which are also the module boundaries:

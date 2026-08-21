@@ -1,16 +1,22 @@
 """S6 presentation: copy folding, outlining, machine texture (hermetic snippets)."""
 
+import copy
+import random
 import re
 
 from deity_informant.tuneprog import tails, texture, unroll
 from deity_informant.tuneprog.graph import preds_of
+from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
+    Bin,
     Block,
     Const,
     Goto,
     If,
+    Let,
     Proc,
     Return,
+    REGIDX,
     Rgn,
     Store,
     Switch,
@@ -696,3 +702,74 @@ def test_a_join_whose_one_way_out_is_the_loop_latch_becomes_a_procedure():
 def test_a_join_that_can_leave_the_loop_as_well_stays_a_goto():
     doc = _text(_joined(("LDA cnt", "AND #$04", "BNE done")), calls=16)
     assert doc.count("goto") == 3, doc  # the write-out also returns: two ways out
+
+
+# ---- promotion is semantics-preserving ---------------------------------------
+REGS = ("A", "X", "Y", "r4", "r5")
+
+
+def _seeded(seed, n=7):
+    """A seeded DAG of blocks over reused registers, with SID writes as the log."""
+    rnd = random.Random(seed)
+    labels = ["b%d" % i for i in range(n)] + ["end"]
+    blocks = []
+    for i in range(n):
+        stmts = []
+        for _ in range(rnd.randrange(1, 4)):
+            d, a = rnd.choice(REGS), rnd.choice(REGS)
+            op = rnd.choice(("+", "-", "^", "&", "|"))
+            stmts.append(Let(d, Bin(op, Var(a), Const(rnd.randrange(1, 8)), 1)))
+            if rnd.random() < 0.4:
+                where = Const(0xD400 + rnd.randrange(0, 24))
+                v = Var(rnd.choice(REGS))
+                stmts.append(Store("io", where, v, 1, 0xD400, 0xD418, i))
+        nxt = labels[i + 1 :]
+        if len(nxt) > 1 and rnd.random() < 0.7:
+            c = Bin("<", Var(rnd.choice(REGS)), Const(rnd.randrange(1, 8)), 1)
+            term = If(c, rnd.choice(nxt), rnd.choice(nxt))
+        else:
+            term = Goto(rnd.choice(nxt))
+        blocks.append(Block(labels[i], stmts, term, i, 1 + rnd.randrange(9)))
+    blocks.append(Block("end", [], Return(tuple(Var(r) for r in REGS)), n, 5))
+    regs = tuple(REGIDX[r] for r in REGS)
+    return Proc("f", regs, regs, {b.label: b for b in blocks}, "b0", "sub")
+
+
+def _observe(prog, args=(3, 5, 7, 11, 13)):
+    """What one run of ``f`` shows: the values it returns and the SID writes it made."""
+    m = Machine(bytes(0x10000))
+    return Interp(prog, m).run("f", args), list(m.sid)
+
+
+def test_promoting_every_tail_of_a_seeded_dag_changes_nothing_it_shows():
+    moved = 0
+    for seed in range(400):
+        prog = Tuneprog(procs={"f": _seeded(seed)})
+        want = _observe(prog)
+        got = copy.deepcopy(prog)
+        moved += tails.promote_tails(got)
+        assert _observe(got) == want, seed
+    assert moved > 200  # the sweep really does promote
+
+
+def test_a_name_the_region_reads_before_it_sets_is_a_parameter():
+    inner = [
+        Let("r5", Bin("+", Var("A"), Const(3), 1)),
+        Let("X", Bin("+", Var("X"), Const(2), 1)),
+        Store("io", Const(0xD405), Var("X"), 1, 0xD400, 0xD418, 0x30),
+    ]
+    blocks = [
+        Block("b0", [Let("X", Const(1))], If(Var("A"), "p1", "p2"), 0, 9),
+        Block("p1", [Let("X", Const(2))], If(Var("A"), "t", "end"), 0x10, 5),
+        Block("p2", [Let("X", Const(4))], If(Var("A"), "t", "end"), 0x20, 4),
+        Block("t", inner, Goto("end"), 0x30, 6),
+        Block("end", [], Return((Var("A"), Var("X"))), 0x40, 9),
+    ]
+    rets = (REGIDX["A"], REGIDX["X"])
+    proc = Proc("f", (REGIDX["A"],), rets, {b.label: b for b in blocks}, "b0", "sub")
+    prog = Tuneprog(procs={"f": proc})
+    want = _observe(prog, args=(0,))
+    assert tails.promote_tails(prog)
+    helper = prog.procs["p_0030"]
+    assert REGIDX["X"] in helper.params, helper.params  # read before set: handed in
+    assert _observe(prog, args=(0,)) == want
