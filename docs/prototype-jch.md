@@ -115,6 +115,7 @@ state     voice[3] stride 1, 33 fields          # the struct-of-arrays block
           rec4[96] stride 2 .FREQ freq_table 12-TET u16le, 95 entries
           step $172D u16 (lo|hi $100B) ; acc_3 $1779 u16 ; phase $1746
           cutoff_hi $1792 sid_image ; mode_vol $1793 sid_image
+          b1014 12 bytes ; b1748 21 bytes       # what init clears in one loop
 
 tick():                                  # $1003, 4,000 calls
     saved = ptr                                    # the player saves $FB/$FC
@@ -240,8 +241,10 @@ writeout():                              # $10E9, 8,577 calls
   three wide, and each access confirms the layout by its own envelope staying
   inside one field. Only play-phase accesses count — the init clear loop reaches
   the whole block. The two now print `voice_2[v].f09` (the instrument) and
-  `voice_3[v].timer_3` (the duration countdown); a block anything reads as a
-  table keeps its flat address.
+  `voice_3[v].timer_3` (the duration countdown), while the init clear loop -- which
+  reaches all twelve bytes and so is no field of the view -- keeps `b1014[v] = 0`;
+  the printed form takes the same envelope test the layout was proven with, so a
+  block anything reads as a table keeps its flat address everywhere.
 - **`sid.reg[5 + voice[v].b1740]` where GoatTracker prints `sid[v].ad`** (*fixed
   in Q1b*). V20 takes the voice's register offset from a per-track table
   (`$1740,X` = 0, 7, 14; `$1743,X` next to it is the V20 fine-tune constant)
