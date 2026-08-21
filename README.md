@@ -17,9 +17,10 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `docs/tuneprog-plan.md` — plan v3 after the first prototyping round: lessons, backlog, the fold/stack gate (both items met) with its work specs, next prototypes, Ghidra/SMC leverage assessment.
 - `docs/prototype-automatas.md`, `-follin.md`, `-goattracker.md`, `-sidwizard.md`, `-jch.md` — the certified exemplars (defMON, Follin's *Ghouls'n'Ghosts*, GoatTracker 2, SID Wizard 1.6/1.9, JCH NewPlayer V20): ground truth, what broke, the generic fix, the evidence.
 - `docs/prototype-kernal-entry.md` — the installed-handler family (PSID `play == 0`, CINV entries): the entry convention, the screened population, two evidence certificates.
+- `docs/survey-tuneprog.md` — the pipeline over the stratified 7,023-tune HVSC sample: certification rate by family, failure classes, refusal reasons, stack/entry/fold distributions, cost and the fast-tracer verdict.
 - `docs/ghidra-highpcode-export.md` — the independent baseline: the trace's SMC cells as SLEIGH context values, the facts export, the headless high-P-Code/C export, and the oracles that compare Ghidra with the tuneprog.
 - `tools/tuneprog_certify.py` — end-to-end certification driver (`TUNE.sid --out DIR`), chunked against a CPU budget; `docs/certificates/` holds the certificates for the exemplars. `tools/tuneprog_recert.py` reproduces every one of them and diffs it field for field. `tools/tuneprog_period.py` classifies why a subtune has no state repeat (counter, drifting accumulator, or aperiodic).
-- `tools/survey/` — HVSC survey instruments behind that design: `tracer.py` (dynamic per-site tracer on `PcodeVM`), `run.py` (stratified parallel driver), `headers.py` (static census), `report.py` (markdown tables).
+- `tools/survey/` — HVSC survey instruments behind that design: `tracer.py` (dynamic per-site tracer on `PcodeVM`), `run.py` (stratified parallel driver), `headers.py` (static census), `report.py` (markdown tables), `tuneprog_sweep.py` (the whole pipeline over the same sample, resumable), `tuneprog_report.py` (its tables).
 
 ## Install
 
