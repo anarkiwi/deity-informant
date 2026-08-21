@@ -363,7 +363,8 @@ of every expression the e-graph sees.
 those are exactly what T1-T4 remove; the rest of 252 → 115 lines is the printer's
 temporaries becoming inline once the storage has a shape. Two typings do almost
 all of it: T1 (split the fused region) touches **56 of the 252 printed lines**,
-and T2 (the u16 pair) removes **17 statements**.
+and the 16-bit view — T2 plus the `voice[v].freq` pair the pipeline already
+attempts — removes all **17** half/carry statements.
 
 **The one generic mechanism.** Not an arc — a rule about region extents, of the
 size of one Q1b item:
