@@ -327,7 +327,7 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
 | `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 101 | 278 | 61 | horizon |
 | `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 101–275 | 190–671 | 37–70 | complete (31 of 32) |
-| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 220,049 | — | per subtune | 4 | 299 | 770 | 45 | complete (31 of 32) |
+| `ghouls-songs-all` | Ghouls_n_Ghosts.sid | Follin, all 32 subtunes | 111,763 | — | per subtune | 4 | 299 | 770 | 45 | complete (31 of 32) |
 | `gt2-je-suis-linus` | Je_suis_Linus_le_salaud.sid | GoatTracker 2 | 8,236 | 2m44s | 6,720 | 14 | 245 | 526 | 73 | complete |
 | `gt2-do-it-again` | Do_It_Again.sid | GoatTracker 2 | 8,659 | 2m53s | 8,640 | 14 | 234 | 516 | 73 | complete |
 | `jch-knob-at-night` | I_Could_Eat_a_Knob_at_Night.sid | JCH NewPlayer V20 + a banking wrapper | 8,577 | 2m51s | 1 | 9 | 155 | 472 | 99 | complete |

@@ -1,6 +1,7 @@
 """``--songs all``: one tuneprog from the union of every subtune's trace."""
 
 import json
+from pathlib import Path
 
 from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog.ir import Const, Let, Load, Tuneprog
@@ -141,6 +142,18 @@ def test_a_subtunes_tick_count_does_not_depend_on_the_chunk_that_found_it(tmp_pa
     sid = _mixed(tmp_path)
     ticks = [_ticks(_drive(sid, tmp_path / ("c%d" % c), chunk=c)) for c in (3, 4, 8)]
     assert ticks[0] == ticks[1] == ticks[2] == [(1, 2, True), (2, 12, False)]
+
+
+def test_the_union_certificate_certifies_each_subtunes_own_horizon():
+    """`ghouls-songs-all` stops each subtune where that subtune's own certificate does."""
+    certs = Path(__file__).resolve().parents[2] / "docs" / "certificates"
+    alone = {}
+    for p in sorted(certs.glob("ghouls-song[0-9]*.json")):
+        s = json.loads(p.read_text())["subtunes"][0]
+        alone[s["song"]] = s["ticks"]
+    union = json.loads((certs / "ghouls-songs-all.json").read_text())["subtunes"]
+    assert len(alone) == len(union) == 32
+    assert {s["song"]: s["ticks"] for s in union} == alone
 
 
 def test_a_subtune_traced_under_another_horizon_is_retraced_on_resume(tmp_path):

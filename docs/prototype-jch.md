@@ -229,9 +229,10 @@ writeout():                              # $10E9, 8,577 calls
   `cycles_per_tick`, the CSV against `cycle - since_video_irq` -- and the
   difference is **0 of 3,000** with no sample point to pick. Fitting one instead
   reaches 1 of 3,000 at best (best near 9,400), because the two clocks disagree
-  inside a frame: sidplayfp's per-write delay grows 372 -> 505 cycles across one
-  frame of the ramp where the tracer's stays 372, which is the VIC's badline DMA
-  (~5 %) that the tracer does not model. The writes themselves match value for
+  inside a frame: the play entry sits a constant 57-60 cycles later in sidplayfp's
+  frame than in the tracer's, and by the last write of a ramped tick (9,312 cycles
+  in on tick 2,502) it has drifted a further **+533** -- the VIC's badline DMA,
+  one badline in eight raster lines, which the tracer does not model. The writes themselves match value for
   value and in order, frame by frame; what the trace's cycles buy in the helper is
   the general rule, that a tick outliving its frame lands its late writes in the
   next one.
