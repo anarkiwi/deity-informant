@@ -221,7 +221,7 @@ def build(trace, name=None, sid_model=None, union=False, copies=True, static=Fal
     lifted, regions, procs = _front(trace, kind)
     prog = _s4(trace, lifted, regions, procs, meta, union)
     band = tuple(trace.meta["load"])
-    fams = siblings.correspond(prog, trace.image_post_init, band) if copies else []
+    fams = siblings.correspond(prog, trace.image_post_init, band, procs) if copies else []
     if not copies:
         return prog, regions, procs
     plan = copymerge.plan(procs, trace, lifted, fams, regions, log)

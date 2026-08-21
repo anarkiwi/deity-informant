@@ -88,11 +88,11 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
 
 
 def test_automatas_cascade_blocks_fold_over_the_voice_index():
-    # the cascade is five copies of one block over per-copy cells; the fold makes
+    # the cascade is six copies of one block over per-copy cells; the fold makes
     # them one body under the copy index, in each of the two procedures holding it
     text, names, _view, prog = folded(AUTOMATAS, seconds=30)
     doc = prog.meta["copies"]
-    fams = [f for f in doc["families"] if f["copies"] == 5]
+    fams = [f for f in doc["families"] if f["copies"] == 6]
     assert len(fams) == 2 and {f["rows"] for f in fams} == {18}
     assert names.copies["unverified"] < names.copies["statements"]
     hit = [
@@ -102,7 +102,7 @@ def test_automatas_cascade_blocks_fold_over_the_voice_index():
     ]
     assert len(hit) == 1, text  # both procedures hold it; one helper carries it
     lines = "\n".join(hit[0])
-    assert lines.count("for v in 0..4:") == 1
+    assert lines.count("for v in 0..5:") == 1
     assert re.search(r"rec2\[v\]\.timer\w* [-=]", lines), lines  # the record's own timer
     assert [f["why"] for f in doc["refused"]]  # and what the index cannot name
 
