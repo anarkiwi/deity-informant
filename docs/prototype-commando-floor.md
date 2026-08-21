@@ -117,9 +117,9 @@ statement reads the low half of — exactly what a 16-bit view deletes;
 
 What this says:
 
-- **`SoundWork` is 93 of 254** — the five per-frame modulations (vibrato, two
-  pulse forms, portamento, drum, arpeggio) are more than a third of the program,
-  and the anatomy agrees: "all sound design is those bits".
+- **`SoundWork` is 93 of 254** — the per-frame modulations (vibrato, pulse in two
+  forms, portamento, drum, skydive, arpeggio) are more than a third of the
+  program, and the anatomy agrees: "all 'sound design' is those bits".
 - **49 statements — one in five — are machine encoding**: 17 halves and carries,
   and 32 that touch no storage at all — the voice loop's counter and its phi
   copies, the borrowed `X` saved and restored around the instrument index, the
