@@ -630,3 +630,51 @@ def test_a_constant_every_copy_shares_does_not_step_with_the_index():
 def test_a_shared_constant_equal_to_a_slot_refuses_the_fold():
     """Copy 0's constant is all the folded body holds: slot and cell look alike."""
     assert unroll.steps(_run(shared=0x551A), CELL) == (None, None)
+
+
+def _joined(escape=()):
+    """Three arms converge on one write-out; its only way on is the loop's own latch."""
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDX #$02",
+        "lp: LDA cnt",
+        "AND #$03",
+        "BEQ zero",
+        "CMP #$01",
+        "BEQ one",
+        "CMP #$02",
+        "BEQ two",
+        "JMP next",
+        "one: LDA #$21",
+        "JMP wr",
+        "two: LDA #$41",
+        "JMP wr",
+        "zero: LDA #$99",
+        "wr: STA $D404,X",
+        *escape,
+        "LDA #$00",
+        "STA $D405,X",
+        "next: DEX",
+        "BPL lp",
+        "INC cnt",
+        "RTS",
+        "done: INC cnt",
+        "RTS",
+        "cnt: BRK",
+    )
+
+
+def test_a_join_whose_one_way_out_is_the_loop_latch_becomes_a_procedure():
+    code = _joined()
+    doc = _text(code, calls=8)
+    assert "goto" not in doc, doc
+    assert doc.count("p_%04X(a, x)" % code.labels["wr"]) == 1
+    assert doc.count("p_%04X(a=" % code.labels["wr"]) == 3  # one call per arm
+
+
+def test_a_join_that_can_leave_the_loop_as_well_stays_a_goto():
+    doc = _text(_joined(("LDA cnt", "AND #$04", "BNE done")), calls=16)
+    assert doc.count("goto") == 3, doc  # the write-out also returns: two ways out

@@ -1,8 +1,7 @@
 """S5 -- the loop domain: what a counted loop's index runs over.
 
-Constant folding over a procedure's SSA names and byte cells (:class:`_Values`),
-the exit tests of a loop, and the two ways an index gets a domain: the recurrence
-iterated to its exit, or the coverage vector a merged family proved.
+Constant folding over SSA names and byte cells (:class:`_Values`), a loop's exit
+tests, and the two ways an index gets a domain: a recurrence, or a cover vector.
 """
 
 from __future__ import annotations
@@ -18,9 +17,8 @@ CAP = 256  # how far a recurrence is iterated before its domain is refused
 class _Values:
     """Constant folding over a procedure: SSA names, and cells through their stores.
 
-    A name folds when every definition of it agrees; a byte cell folds when every
-    store that reaches the load agrees, which is what carries an index register
-    through the save/restore pair the 6510 uses when it runs out of registers.
+    A name folds when every definition agrees; a cell when every store reaching
+    the load agrees, which carries an index through a save/restore pair.
     """
 
     def __init__(self, proc, labels=None, budget=20000):
@@ -98,23 +96,31 @@ class _Values:
         return None
 
 
-def leaves(proc, body, lbl):
-    """The successors of ``lbl`` that leave the loop for a path the trace took."""
-    return [s for s in succs(proc.blocks[lbl].term) if s not in body and not _dead(proc, s)]
+def leaves(proc, body, lbl, skip=()):
+    """The successors of ``lbl`` that leave the loop for a path the trace took.
+
+    ``skip`` are labels no covered path reaches (:func:`~.closure.closed_blocks`):
+    a closed arm is a leaf of the covered program, never one of its exits.
+    """
+    return [
+        s
+        for s in succs(proc.blocks[lbl].term)
+        if s not in body and s not in skip and not _dead(proc, s)
+    ]
 
 
 def _dead(proc, lbl):
     return type(proc.blocks[lbl].term) is Trap
 
 
-def _exit_tests(proc, body):
+def _exit_tests(proc, body, skip=()):
     """``[(condition, the truth of it that exits)]`` for every edge leaving the loop."""
     out = []
     for lbl in sorted(body):
         t = proc.blocks[lbl].term
         if type(t) is not If:
             continue
-        outs = leaves(proc, body, lbl)
+        outs = leaves(proc, body, lbl, skip)
         at = (lbl, len(proc.blocks[lbl].stmts))
         if t.t in outs:
             out.append((t.c, True, at))
@@ -150,12 +156,15 @@ def _plausible(proc, header, body, latches, preds, n):
     return any(e > 0 and hits == e * n for e in (outside, back))
 
 
-def copies(proc, header, latches):
+def copies(proc, header, latches, body=(), preds=None):
     """``(index, k)`` when the loop runs a merged family's copies, else ``None``.
 
-    The copy index is a value the merge made and its domain is the coverage
-    vector the correspondence proved, so no exit test has to re-derive it.
+    The index is a value the merge made and its domain the coverage vector the
+    correspondence proved; a latch steps it, or the prologues name it.
     """
+    k = len(proc.blocks[header].cover or ())
+    if k < 2:
+        return None
     var = next(
         (
             s.n
@@ -165,8 +174,36 @@ def copies(proc, header, latches):
         ),
         None,
     )
-    k = len(proc.blocks[header].cover or ())
-    return (var, k) if var is not None and k > 1 else None
+    return (var, k) if var is not None else _chain(proc, header, latches, body, preds, k)
+
+
+def _named(blk):
+    """``{copy index name: value}`` for every index the block last sets to a constant."""
+    return {s.n: s.e.v for s in blk.stmts if type(s) is Let and copyval(s.n) and type(s.e) is Const}
+
+
+def _chain(proc, header, latches, body, preds, k):
+    """``(index, k)`` when k prologues name the copies of one family, else ``None``.
+
+    Copies with preambles of their own are entered through a prologue apiece, so
+    the chain steps the index by naming it: outside the loop copy 0, on the back
+    edges 1..k-1 once each, and each edge ran its own copy's share of the cover.
+    """
+    if preds is None or proc.blocks[header].count != sum(proc.blocks[header].cover):
+        return None
+    cover = tuple(proc.blocks[header].cover)
+    ins = sorted(set(latches) | {p for p in preds[header] if p not in body})
+    sets = {l: _named(proc.blocks[l]) for l in ins}
+    shared = set.intersection(*(set(s) for s in sets.values())) if sets else set()
+    for name in sorted(shared):
+        back = {sets[l][name]: proc.blocks[l].count for l in latches}
+        if any(sets[l][name] for l in ins if l not in latches):
+            continue
+        if len(back) != len(latches) or sorted(back) != list(range(1, k)):
+            continue
+        if all(back[j] == cover[j] for j in back):
+            return name, k
+    return None
 
 
 def stepping(proc, latches, var):
@@ -193,10 +230,10 @@ def stepping(proc, latches, var):
     return out
 
 
-def induction(proc, header, body, latches, preds=None):
+def induction(proc, header, body, latches, preds=None, skip=()):
     """``(var, values, scale, hide)`` when the loop is counted, else ``None``."""
     preds = preds_of(proc) if preds is None else preds
-    tests = _exit_tests(proc, body)
+    tests = _exit_tests(proc, body, skip)
     if not tests:
         return None
     inner = _Values(proc)

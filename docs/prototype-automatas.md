@@ -621,11 +621,16 @@ tick():                                  # $5012, 11,780 calls
   Over the whole song that pair is not a family at all, so the certificate
   refuses nothing.
   Over the whole song the S4 program falls from 895 statements to 733 (241 blocks
-  to 227, 98 regions to 80); at 30 s from 815 to 754. The *printed* document does
-  not follow it down: the merged row-advance body has k entries, since each copy's
-  preamble is its own, so it prints as a `while` with a `switch` on the index and
-  six `goto`s rather than a `for`, and the copies' cells are listed field by field
-  in the state header -- 782 → 774 lines at 30 s, 716 → 759 over the whole song.
+  to 227, 98 regions to 80); at 30 s from 815 to 754. The merged row-advance body
+  has k entries, since each copy's preamble is its own -- and since Q1a those k
+  prologues *are* the loop's step, so `loops.copies` proves the chain from the
+  assignments (copy 0 from outside, 1 and 2 on the back edges, each edge's count
+  its own copy's share of the cover) and the body prints `for v in 0, 1, 2:` with
+  three `switch v` chain edges and the index hidden. The six `goto` into the
+  prologues stay: a prologue holds the preamble that copy alone has, and no
+  helper may hand the copy index back. The copies' cells are still listed field
+  by field in the state header -- 782 → 772 lines at 30 s, 716 → 756 over the
+  whole song.
 - **The cascade prints as its own loop** (`copyview.py`, `loops.py`; S6, #244).
   Each merged cascade is `for v in 0..5:` over the whole song (`0..4` at 30 s, where
   cascade B1 never runs) with the row cursor and timer as

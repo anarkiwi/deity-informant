@@ -246,3 +246,57 @@ def test_a_store_ends_a_load_s_life_so_inlining_never_crosses_it():
     m.k[0x2000] = m.k[0x2001] = 1
     Interp(view, m).run("f")
     assert m.m[0x2001] == 5
+
+
+# ---- a merged family whose copies have preambles of their own -----------------
+def _chain(vals=(0, 1, 2), counts=(4, 4, 4), cover=(4, 4, 4)):
+    """The k prologues of a family: the entry names copy 0, each back edge a later one."""
+    return _proc(
+        [
+            Block("b0", [Let("cv0#2", Const(vals[0]))], Goto("h"), 0, counts[0]),
+            Block(
+                "h", [Let("t", Load("ram", Const(0x1000)))], If(Var("t"), "s", "x"), 0, 12, cover
+            ),
+            Block("s", [], Switch(Var("cv0#2"), ((0, "j1"), (1, "j2"), (2, "x")), ""), 0, 12),
+            Block("j1", [Let("cv0#2", Const(vals[1]))], Goto("h"), 0, counts[1]),
+            Block("j2", [Let("cv0#2", Const(vals[2]))], Goto("h"), 0, counts[2]),
+            Block("x", [], Return(), 0, 1),
+        ]
+    )
+
+
+def test_the_prologues_of_a_k_entry_merged_body_are_the_for_over_its_copies():
+    hit = _fors(S.structure_proc(_chain()))
+    assert len(hit) == 1 and hit[0].var == "cv0#2" and hit[0].values == (0, 1, 2)
+    assert "cv0#2" in hit[0].hide  # the naming is the loop header's, not a statement's
+
+
+def test_prologues_that_do_not_name_every_copy_once_keep_the_while():
+    assert not _fors(S.structure_proc(_chain(vals=(0, 1, 1))))
+    assert not _fors(S.structure_proc(_chain(vals=(1, 0, 2))))
+
+
+def test_prologues_the_trace_contradicts_keep_the_while():
+    assert not _fors(S.structure_proc(_chain(counts=(4, 5, 4))))
+
+
+# ---- a statically closed arm is not part of the covered program's shape -------
+def _closed(mark="static"):
+    return _proc(
+        [
+            Block("b0", [], Goto("h"), 0, 5),
+            Block("h", [Let("x", Const(1))], If(Var("A"), "arm", "j"), 0, 5),
+            Block("arm", [Let("y", Const(2))], Goto("h"), 0, 0, (), mark),
+            Block("j", [], Return(), 0, 5),
+        ]
+    )
+
+
+def test_a_closed_back_edge_is_no_loop_of_the_covered_program():
+    body = S.structure_proc(_closed())
+    assert not [n for n in S.walk(body) if type(n) is S.Loop]
+    assert [n.label for n in S.walk(body) if type(n) is S.Blk] == ["b0", "h", "arm", "j"]
+
+
+def test_an_executed_back_edge_is_still_a_loop():
+    assert [n for n in S.walk(S.structure_proc(_closed(""))) if type(n) is S.Loop]

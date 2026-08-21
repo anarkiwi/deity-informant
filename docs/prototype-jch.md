@@ -92,7 +92,7 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost.reg[…]`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush holds every chip write of the tick | not applicable (no wrapper): 3 `io` regions, the writes are `sid.reg[…]` |
 | J10 | pinned inputs | **2** (the uninitialised `$FB`/`$FC` the player saves and restores), down from 18,777 | 2, plus the subtune number in `A` at init |
 | J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp` once each write is attributed to the frame the oracle samples it in (§6); by call index alone, 494 frames differ, in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon, by call index |
-| J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, 7 `goto` in 562 printed lines | 0 `sp`, 0 unverified, 16 untaken, 7 `goto` in 528 lines |
+| J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, **0** `goto` in 613 printed lines (7 in 562 before Q1a) | 0 `sp`, 0 unverified, 16 untaken, **0** `goto` in 569 lines (7 in 528) |
 | J13 | cost | trace 12,000 ticks in ~100 s CPU over three chunks, verify 8,577 ticks in 2.3 s (3,717 ticks/s) | trace 4,000 in 9 s, verify 2,401 in 0.2 s (10,855 ticks/s) |
 | J14 | genericity | the other 42 certificates reproduce field for field (`tools/tuneprog_recert.py`, 44/44) and the hermetic suite is unchanged | — |
 | J15 | the port fix is guarded | `tests/test_oracle.py` renders 500 frames of the Puterman build from the tracer's SID log and compares it to `sidplayfp` frame for frame; with the direction byte back at 0 it fails on frame 1 | — |
@@ -145,20 +145,8 @@ p_10E9(r4, r5):                          # $10E9, 4,000 calls
                     sid.reg[5 + voice[v].b1740] = rec8[...].b18C3       # AD
                     sid.reg[6 + voice[v].b1740] = rec8[...].b18C4       # SR
                     sid.reg[4 + voice[v].b1740] = 9                     # TEST|GATE
-                else:                              # EFFECTS: the three programs
-                    ...
-                    if v == 0:                     # the filter runs on one track
-                        timer_5 -= 1
-                        cutoff_hi = rec7[...].b185F
-                        cutoff_hi += rec7[cursor_1790/4].b1860
-                    ...
-                    sid.reg[2 + voice[v].b1740] = voice[v].acc_5        # PW lo
-                    sid.reg[3 + voice[v].b1740] = voice[v].acc_6        # PW hi
-                    sid.cutoff_hi = cutoff_hi
-                    sid.reg[voice[v].b1740] = voice[v].acc              # FREQ lo
-                    sid.reg[1 + voice[v].b1740] = voice[v].b100F        # FREQ hi
-                    sid.reg[4 + voice[v].b1740] = (voice[v].b175D & b1014[v + 6])
-                    sid.mode_vol = (mode_vol | mode_vol_or)
+                else:
+                    p_1409(x=v)                    # EFFECTS: the three programs
         else:                                      # PREFETCH, two frames early
             ...
             while True:                            # the pattern command loop
@@ -169,9 +157,28 @@ p_10E9(r4, r5):                          # $10E9, 4,000 calls
             b1014[v + 6] = $FE                     # gate off
             sid.reg[5 + voice[v].b1740] = $F       # hard restart AD = $0F
             sid.reg[6 + voice[v].b1740] = 0        #               SR = $00
-        goto L1616_A9                              # the write-out join
+            p_1616(x=v)                            # the write-out join
     ptr[1] = r5                                    # $FB/$FC restored
     ptr = r4
+    return
+
+p_1409(x):                               # $1409, 10,448 calls
+    ...
+    if x == 0:                                     # the filter runs on one track
+        timer_5 -= 1
+        cutoff_hi = rec7[...].b185F
+        cutoff_hi += rec7[cursor_1790/4].b1860
+    ...
+    p_1616(x=x)
+
+p_1616(x):                               # $1616, 11,128 calls
+    sid.reg[2 + voice[x].b1740] = voice[x].acc_5        # PW lo
+    sid.reg[3 + voice[x].b1740] = voice[x].acc_6        # PW hi
+    sid.cutoff_hi = cutoff_hi
+    sid.reg[voice[x].b1740] = voice[x].acc              # FREQ lo
+    sid.reg[1 + voice[x].b1740] = voice[x].b100F        # FREQ hi
+    sid.reg[4 + voice[x].b1740] = (voice[x].b175D & b1014[6 + x])
+    sid.mode_vol = (mode_vol | mode_vol_or)
     return
 ```
 
@@ -234,12 +241,15 @@ writeout():                              # $10E9, 8,577 calls
   The offset is a constant per copy, so the copy-index vocabulary could fold it,
   but that means substituting a table read into the loop it indexes — the rule
   #248 refused for exactly this reason.
-- **7 `goto` in both, all inside the voice loop.** The player is a DAG of
-  tail-jumps converging on the write-out (`$1616`) and the effects block
+- **The voice loop's joins are procedures (was 7 `goto` in both).** The player is
+  a DAG of tail-jumps converging on the write-out (`$1616`) and the effects block
   (`$1409`); those joins are inside the loop body and fall into the `DEX; BMI`
-  latch, so `tails.promote_tails` (a region several jumps reach and *nothing
-  leaves*) cannot promote them into procedures the way it promoted GoatTracker's
-  `execchn` tails. Structuring a loop body's joins is the open item.
+  latch, so the old rule — a region several jumps reach and *nothing* leaves —
+  could not promote them the way it promoted GoatTracker's `execchn` tails. Since
+  Q1a a region that leaves **one** way promotes too: the helper returns where the
+  edge went and each entry becomes `call; goto that edge`, handing back the values
+  the exit reads. Both tunes print **0 `goto`**, for +41/+51 lines and +4/+6
+  procedures.
 - **A chip write also writes the RAM under it, in our model.** `tracevm._wr` and
   `interp.iostore` both keep `mem[a] = b` for a store the port sent to the chip,
   where the hardware leaves the RAM beneath untouched. Nothing observes it here —

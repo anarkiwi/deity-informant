@@ -23,6 +23,7 @@ from .ir import (
     retexpr,
     retval,
 )
+from .closure import closed_blocks
 from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
 from .loops import copies, induction, leaves, stepping
 from .inline import values as inline_values
@@ -134,13 +135,21 @@ def _returns(proc, term, want):
 
 # ---- the structurer ----------------------------------------------------------
 class _Structurer:
+    """The covered program's shape, with each closed arm structured under its branch.
+
+    Dominance and the loops are the covered subgraph's (:func:`~.graph.edges_of`),
+    so a statically closed arm owns nothing; post-dominance is the whole graph's,
+    which is where the arm rejoins, so it nests in the branch that offered it.
+    """
+
     def __init__(self, proc, want=()):
         self.want = want
         self.proc = proc
-        self.g = cfg(proc)
-        self.preds = preds_of(proc)
+        self.shut = closed_blocks(proc)
+        self.g = cfg(proc, shut=self.shut)
+        self.preds = preds_of(proc, shut=self.shut)
         self.idom = idoms(proc, self.g)
-        self.ipdom = postdoms(self.g, proc)
+        self.ipdom = postdoms(cfg(proc) if self.shut else self.g, proc)
         self.loops = natural_loops(self.g, self.idom, self.preds)
         self.done = set()
         self.labels = set()
@@ -154,7 +163,7 @@ class _Structurer:
             self.labels.add(left[0])
             body.extend(self.seq(left[0], None, ()))
 
-    def seq(self, n, follow, ctx):
+    def seq(self, n, follow, ctx, shut=False):
         out = []
         while n is not None and n != follow:
             if any(c[0] == n for c in ctx):
@@ -164,31 +173,33 @@ class _Structurer:
             if hit is not None:
                 out.append(Jump("break", hit[0]))
                 break
-            if n in self.done:
+            if n in self.done or (shut and n not in self.shut):
                 end = _trivial(self.proc, n, self.want)
                 out.append(end if end is not None else Jump("goto", n))
                 if end is None:
                     self.labels.add(n)
                 break
             if n in self.loops and not any(c[0] == n for c in ctx):
-                node, n = self.loop(n, ctx)
+                node, n = self.loop(n, ctx, shut)
                 out.append(node)
                 continue
             self.done.add(n)
             blk = self.proc.blocks[n]
             out.append(Blk(n, blk.stmts, blk.src, blk.count))
-            n = self.term(blk, out, ctx)
+            shut = shut or n in self.shut
+            n = self.term(blk, out, ctx, shut)
         return out
 
-    def head(self, h, ctx):
+    def head(self, h, ctx, shut=False):
         """The loop body: the header itself, then the sequence it flows into."""
         self.done.add(h)
         blk = self.proc.blocks[h]
         out = [Blk(h, blk.stmts, blk.src, blk.count)]
-        out.extend(self.seq(self.term(blk, out, ctx), None, ctx))
+        shut = shut or h in self.shut
+        out.extend(self.seq(self.term(blk, out, ctx, shut), None, ctx, shut))
         return out
 
-    def term(self, blk, out, ctx):
+    def term(self, blk, out, ctx, shut=False):
         """Emit ``blk``'s terminator; returns the label the sequence continues at."""
         t = blk.term
         k = type(t)
@@ -204,18 +215,19 @@ class _Structurer:
         if f in (blk.label, EXIT):
             f = None
         if k is If:
-            out.append(Cond(t.c, self.seq(t.t, f, ctx), self.seq(t.f, f, ctx)))
+            out.append(Cond(t.c, self.seq(t.t, f, ctx, shut), self.seq(t.f, f, ctx, shut)))
         else:
-            out.append(Case(t.e, tuple((v, self.seq(l, f, ctx)) for v, l in t.cases), blk.src))
+            arms = tuple((v, self.seq(l, f, ctx, shut)) for v, l in t.cases)
+            out.append(Case(t.e, arms, blk.src))
         return f
 
-    def loop(self, h, ctx):
+    def loop(self, h, ctx, shut=False):
         body, latches = self.loops[h]
-        outs = sorted({s for l in body for s in leaves(self.proc, body, l)})
+        outs = sorted({s for l in body for s in leaves(self.proc, body, l, self.shut)})
         exit_lbl = max(outs, key=lambda l: (self.proc.blocks[l].count, l)) if outs else None
-        hit = copies(self.proc, h, latches)
-        ind = induction(self.proc, h, body, latches, self.preds) if hit is None else None
-        inner = self.head(h, ctx + ((h, exit_lbl),))
+        hit = copies(self.proc, h, latches, body, self.preds)
+        ind = induction(self.proc, h, body, latches, self.preds, self.shut) if hit is None else None
+        inner = self.head(h, ctx + ((h, exit_lbl),), shut)
         count = self.proc.blocks[h].count
         if hit is not None:
             hide = frozenset(stepping(self.proc, latches, hit[0]))
