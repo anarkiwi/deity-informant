@@ -105,14 +105,18 @@ def image(blocks, data=None):
     return m
 
 
-def psid(blocks, init, play, data=None, load=0x1000, songs=1):
-    """A minimal PSID file wrapping ``blocks`` so ``MachineImage.from_sid`` loads it."""
+def psid(blocks, init, play, data=None, load=0x1000, songs=1, speed=0, magic=b"PSID", clock=1):
+    """A minimal PSID/RSID file wrapping ``blocks`` so ``MachineImage.from_sid`` loads it.
+
+    ``speed`` is the header's subtune bitfield and ``clock`` its flags video
+    standard (1 = PAL, 2 = NTSC).
+    """
     m = image(blocks, data)
     hi = max(org + len(code) for org, code in blocks.items())
     hi = max([hi] + [a + 1 for a in (data or {}) if a >= load])
     body = bytes(m[load:hi])
     head = bytearray(0x7C)
-    head[0:4] = b"PSID"
+    head[0:4] = magic
     head[4:6] = (2).to_bytes(2, "big")
     head[6:8] = (0x7C).to_bytes(2, "big")
     head[8:10] = load.to_bytes(2, "big")
@@ -120,6 +124,8 @@ def psid(blocks, init, play, data=None, load=0x1000, songs=1):
     head[12:14] = play.to_bytes(2, "big")
     head[14:16] = songs.to_bytes(2, "big")
     head[16:18] = (1).to_bytes(2, "big")
+    head[18:22] = speed.to_bytes(4, "big")
+    head[0x76:0x78] = (clock << 2).to_bytes(2, "big")
     return bytes(head) + body
 
 

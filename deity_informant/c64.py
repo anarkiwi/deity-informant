@@ -144,3 +144,22 @@ def psid_songs(data):
     """``(songs, startsong)`` from the PSID header (both 1-based)."""
     songs, startsong = struct.unpack(">HH", data[0x0E:0x12])
     return songs, startsong
+
+
+def is_rsid(data):
+    """True for an RSID container: the host runs the real machine, not a driver."""
+    return data[:4] == b"RSID"
+
+
+def psid_speed(data):
+    """The header's 32-bit ``speed`` word (a bitfield over subtunes)."""
+    return struct.unpack(">I", data[0x12:0x16])[0]
+
+
+def speed_cia(data, song=0):
+    """True when the header says the host CIA-times subtune ``song`` (0-based).
+
+    Bit *n* is subtune *n*; subtunes past the 32nd share bit 31 (the de-facto
+    convention, the word being one word wide). RSID carries ``speed = 0``.
+    """
+    return bool(psid_speed(data) >> min(song, 31) & 1)

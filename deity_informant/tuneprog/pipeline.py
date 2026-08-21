@@ -42,7 +42,7 @@ from .build import build_ir
 from .cfg import build_procs, procs_json
 from .idioms import rewrite
 from .lift import lift_trace
-from .machine import find_entries
+from .machine import Refusal, find_entries
 from .regions import build_regions
 from .resume import build_opts, horizon, state
 from .trace import Tracer
@@ -133,14 +133,15 @@ def stage_trace(args, out, st, t0, log=print):
     """Trace in chunks; True when the horizon (or a state repeat) is reached."""
     if args.songs == "all":
         return trace_all(args, out, st, t0, log)
-    img, schedule = find_entries(Path(args.sid).read_bytes())
+    song = args.song - 1 if args.song else None
+    img, schedule = find_entries(Path(args.sid).read_bytes(), song=song)
     entry = schedule[0]
     resume = out / "tracer.pkl"
     keep = (args.resume or "stack" in st) and resume.exists()
     tr = Tracer.load(resume) if keep else None
     if tr is None:
         override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
-        tr = Tracer(img, entry, song=args.song - 1 if args.song else None, override=override)
+        tr = Tracer(img, entry, song=song, override=override)
         tr.run_init()
     target, free = _target(args, entry), _free(st)
     while tr.calls_done < target and not (args.until_period and tr.witness(free) is not None):
@@ -171,9 +172,14 @@ def trace_all(args, out, st, t0, log=print):
     -- ticks, stop reason, horizon -- so subtunes that stop for different reasons
     resume independently. The merged trace is what the front end decompiles.
     """
-    img, schedule = find_entries(Path(args.sid).read_bytes())
+    data = Path(args.sid).read_bytes()
+    img, schedule = find_entries(data)
     entry = schedule[0]
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
+    for song in songs:  # one merged trace is one schedule: refuse a mixed one
+        sub = find_entries(data, song=song - 1)[1][0]
+        if sub != entry:
+            raise Refusal("subtunes disagree on cadence", "song %d: %s vs %s" % (song, sub, entry))
     done = st.setdefault("traced", {})
     target, free = _target(args, entry), _free(st)
     for song in songs:

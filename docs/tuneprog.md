@@ -281,6 +281,20 @@ scratch area whose pointer is not a constant offset, a `TSX`-relative read of
 another frame, the pointer used as data -- and then the whole program keeps the
 stack, since such a read can see any byte of the page.
 
+The **cadence** -- `cycles_per_tick` and its `source` -- is what triggers the play
+interrupt. A tune that programs an armed CIA Timer-A latch of its own keeps it
+(`cia_timer`, the period being `latch + 1`); where it programs none the trigger is
+the host's, and which host it is the container says. `sidplayfp`'s PSID driver
+rasters at a video frame (`pal_video` 19,656, `ntsc_video` 17,095) unless the
+header `speed` bit for *that subtune* selects its CIA, and an RSID runs the real
+KERNAL, whose default IRQ *is* that CIA -- unless the tune armed a raster compare
+of its own, which keeps the frame. Either host CIA is Timer-A at the latch the
+KERNAL and `psiddrv` leave, `$4025` PAL and `$4295` NTSC, so `pal_host_cia` is
+16,422 cycles and `ntsc_host_cia` 17,046. `speed` is a bitfield (bit *n* is
+subtune *n*, subtunes past the 32nd sharing bit 31), so the cadence is per
+subtune: `find_entries` takes one and `--songs all` refuses a tune whose subtunes
+disagree, one merged trace being one schedule.
+
 An `irq` tick is entered with the frame the machine itself pushed, and that frame
 is the tick's **contract**, not storage: every byte of it is a parameter, the
 terminating `RTI` consumes exactly those bytes, and the interrupt disable the

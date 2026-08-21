@@ -196,3 +196,50 @@ def test_kernal_mapped_is_the_ports_hiram_line():
     assert not kernal_mapped(mem) and port_bank(mem) == "io"
     mem[0] = 0x00  # every line an input: the port's pull-ups
     assert kernal_mapped(mem)
+
+
+PAL_HOST, NTSC_HOST = 0x4025 + 1, 0x4295 + 1
+
+
+def _cadence(speed=0, songs=1, song=None, init=("RTS",), magic=b"PSID", clock=1):
+    """``(cycles_per_tick, source)`` of a synthetic tune's play entry."""
+    pytest.importorskip("pysidtracker")
+    data = psid(
+        {0x1000: asm(0x1000, *init), 0x1100: asm(0x1100, "RTS")},
+        0x1000,
+        0x1100,
+        speed=speed,
+        songs=songs,
+        magic=magic,
+        clock=clock,
+    )
+    e = find_entries(data, song=song)[1][0]
+    return e.cycles_per_tick, e.source
+
+
+def test_the_speed_bit_selects_the_hosts_own_cia():
+    """A tune with no timer of its own is driven by the host, and the bit says which."""
+    assert _cadence() == (machine.PAL_FRAME, "pal_video")
+    assert _cadence(speed=1) == (PAL_HOST, "pal_host_cia")
+    assert _cadence(speed=1, clock=2) == (NTSC_HOST, "ntsc_host_cia")
+
+
+def test_a_timer_of_its_own_outranks_the_speed_bit():
+    """The traced machine decides: an armed latch is the cadence whatever the header says."""
+    latch = ("LDA #$00", "STA $DC04", "LDA #$20", "STA $DC05", "RTS")
+    assert _cadence(speed=1, init=latch) == (0x2000 + 1, "cia_timer")
+
+
+def test_the_speed_word_is_a_bitfield_over_subtunes():
+    """Bit *n* is subtune *n*; subtunes past the 32nd share bit 31."""
+    assert _cadence(speed=0b10, songs=2, song=0) == (machine.PAL_FRAME, "pal_video")
+    assert _cadence(speed=0b10, songs=2, song=1) == (PAL_HOST, "pal_host_cia")
+    assert _cadence(speed=1 << 31, songs=40, song=39) == (PAL_HOST, "pal_host_cia")
+    assert _cadence(speed=1 << 31, songs=40, song=30) == (machine.PAL_FRAME, "pal_video")
+
+
+def test_an_rsid_runs_the_kernals_cia_unless_it_armed_a_raster():
+    """RSID carries no speed word: its host is the KERNAL, whose default IRQ is that CIA."""
+    assert _cadence(magic=b"RSID") == (PAL_HOST, "pal_host_cia")
+    raster = ("LDA #$32", "STA $D012", "RTS")
+    assert _cadence(magic=b"RSID", init=raster) == (machine.PAL_FRAME, "pal_video")

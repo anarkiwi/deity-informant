@@ -4,8 +4,8 @@ Public API:
 
 * ``MachineImage.from_sid(data)`` -- 64 KiB pre-init image (power-on RAM overlaid
   with the load band) plus the header facts a driver needs.
-* ``find_entries(data, mem=None, written=None)`` -- ``(MachineImage, [Entry(kind,
-  addr, cycles_per_tick, source, kernal)])``; raises :class:`Refusal`.
+* ``find_entries(data, mem=None, written=None, song=None)`` -- ``(MachineImage,
+  [Entry(kind, addr, cycles_per_tick, source, kernal)])``; raises :class:`Refusal`.
 * ``entry_frame(entry)`` / ``frame_slots(entry)`` -- what the machine pushed below
   the return address entering it, and the slot each byte sits at.
 * ``init_runner(vm, pc, cache, lifter, budget)`` -- run ``init`` to its balancing
@@ -25,6 +25,7 @@ Public API:
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 
 from .. import c64
 
@@ -32,6 +33,8 @@ INIT_BUDGET = 2_000_000
 PAL_FRAME = 19656
 CIA1_BASE = 0xDC00
 CIA2_BASE = 0xDD00
+VIDEO = {"pal_video": "pal", "ntsc_video": "ntsc"}  # the cadence sources that are a frame
+HOST_LATCH = {"pal": 0x4025, "ntsc": 0x4295}  # CIA1 Timer-A as the KERNAL/psiddrv leave it
 
 
 class Refusal(Exception):
@@ -54,7 +57,7 @@ class Entry:
     kind: str  # "sub" (header play, JSR per tick) | "irq" (installed handler)
     addr: int
     cycles_per_tick: int
-    source: str  # cadence source: pal_video / ntsc_video / cia_timer / ...
+    source: str  # cadence source: pal_video / ntsc_video / cia_timer / pal_host_cia / ...
     kernal: bool = False  # "irq" only: the vector is CINV, so the KERNAL dispatches
 
     def to_dict(self):
@@ -241,38 +244,71 @@ class CIA:
             self.running = bool(val & 1)
 
 
-def _cadence(data):
-    """``(cycles_per_tick, source)`` from ``pysidtracker``, else a PAL frame."""
+def host_cia(std):
+    """``(cycles_per_tick, source)`` of the host's own play interrupt on ``std``.
+
+    Where a tune programs no timer of its own, the trigger is whatever the host
+    runs: CIA #1 Timer-A at :data:`HOST_LATCH`, reloaded from the latch, so two
+    underflows are ``latch + 1`` cycles apart.
+    """
+    return HOST_LATCH[std] + 1, std + "_host_cia"
+
+
+@lru_cache(maxsize=4)
+def _traced(data):
+    """``(Cadence, InitTrace)`` of one image: the timer and vectors init programs."""
     try:
         from pysidtracker.cadence import playroutine_cadence
+        from pysidtracker.image import SidImage
+        from pysidtracker.trace import trace_init
     except ImportError:  # pragma: no cover - pysidtracker is an optional extra
+        return None, None
+    return playroutine_cadence(data), trace_init(SidImage.from_bytes(data), play_calls=0)
+
+
+def _cadence(data, song, topo):
+    """``(cycles_per_tick, source)`` for subtune ``song`` (0-based).
+
+    The tune's own armed timer wins (design principle: the traced machine
+    decides). Where it programs none the trigger is the host's, and which host
+    it is the container says: ``sidplayfp``'s PSID driver rasters at a video
+    frame unless the header ``speed`` bit selects its CIA for this subtune, and
+    an RSID runs the real KERNAL, whose default IRQ *is* that CIA -- unless the
+    tune armed a raster compare of its own, which then keeps the frame.
+    """
+    cad = _traced(data)[0]
+    if cad is None:  # pragma: no cover - pysidtracker is an optional extra
         return PAL_FRAME, "assumed_pal"
-    cad = playroutine_cadence(data)
+    if cad.source.value not in VIDEO:
+        return cad.cycles_per_call, cad.source.value
+    std = VIDEO[cad.source.value]
+    if c64.is_rsid(data):
+        if topo is None or topo.vic_raster is None:
+            return host_cia(std)
+    elif c64.speed_cia(data, song):
+        return host_cia(std)
     return cad.cycles_per_call, cad.source.value
 
 
 def _init_topology(data):
     """Installed vectors/latches observed by ``pysidtracker.trace_init``."""
-    try:
-        from pysidtracker.image import SidImage
-        from pysidtracker.trace import trace_init
-    except ImportError:  # pragma: no cover - pysidtracker is an optional extra
-        return None
-    return trace_init(SidImage.from_bytes(data), play_calls=0)
+    return _traced(data)[1]
 
 
-def find_entries(data, mem=None, written=None):
+def find_entries(data, mem=None, written=None, song=None):
     """``(MachineImage, [Entry])`` -- the pre-init image and the tick schedule of ``data``.
 
     ``play != 0`` gives a ``sub`` entry at the header play address; otherwise
     :func:`vector_gate` decides which installed vector the port dispatches
     through, over ``mem``/``written`` where the caller has them and the pre-init
     image otherwise -- a provisional answer :meth:`~.trace.Tracer.run_init`
-    settles once init has had the port. Refuses on a second interrupt source.
+    settles once init has had the port. ``song`` (0-based, default the header's
+    ``startsong``) picks whose ``speed`` bit :func:`_cadence` reads. Refuses on a
+    second interrupt source.
     """
     img = MachineImage.from_sid(data)
-    cycles, source = _cadence(data)
     topo = _init_topology(data)
+    cycles, source = _cadence(data, img.startsong - 1 if song is None else song, topo)
     if topo is not None:
         if topo.cia2_timer_latch is not None or topo.nmi_vector is not None:
             raise Refusal(

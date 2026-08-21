@@ -8,6 +8,7 @@ to the Dockerized ``sidplayfp``/``sidtrace`` oracle, both grids framed by
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("pysidtracker")
@@ -20,13 +21,15 @@ from pysidtracker.testing import TuneFetchError, oracle_grid  # noqa: E402
 
 from deity_informant import PcodeVM, lift, run_irq, run_sub  # noqa: E402
 from deity_informant.tuneprog import grid, tunes  # noqa: E402
+from deity_informant.tuneprog.machine import Entry, find_entries  # noqa: E402
 
 _CACHE = Path(os.environ.get("DEITY_ORACLE_CACHE", ".oracle-cache"))
 _PW = set(reg.PW_HI_REGS)
 
 FRAMES = 3000
 
-CASES = ["Monty_on_the_Run.sid", "Commando.sid", "A_Mind_Is_Born.sid"]
+COMMANDO = "Commando.sid"
+CASES = ["Monty_on_the_Run.sid", COMMANDO, "A_Mind_Is_Born.sid"]
 
 
 def _tune(name):
@@ -99,7 +102,6 @@ KNOB = "I_Could_Eat_a_Knob_at_Night.sid"
 
 def _trace(path, nframes):
     """``nframes`` ticks of the tuneprog tracer on ``path``."""
-    from deity_informant.tuneprog.machine import find_entries  # pylint: disable=C0415
     from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
 
     img, schedule = find_entries(path.read_bytes())
@@ -149,9 +151,59 @@ def test_a_cinv_handler_matches_the_oracle_frame_for_frame():
     assert trace.meta["entry"] == {
         "kind": "irq",
         "addr": 0x0031,
-        "cycles_per_tick": 19656,
-        "source": "pal_video",
+        "cycles_per_tick": 16422,
+        "source": "pal_host_cia",
         "kernal": True,
     }
     bad = grid.differing(interrupt, grid.trace_grid(trace, FRAMES))
     assert not bad.size, "frames %s differ" % bad[:3]
+
+
+JODLER = "Jodler.sid"
+AUTOMATAS = "Automatas.sid"
+CADENCES = [  # the driver's raster; an armed latch of its own; the driver's CIA; the KERNAL's
+    (COMMANDO, Entry("sub", 0x5012, 19656, "pal_video")),
+    (AUTOMATAS, Entry("sub", 0x0FE3, 2457, "cia_timer")),
+    (JODLER, Entry("irq", 0xC738, 16422, "pal_host_cia", True)),
+    (MIND, Entry("irq", 0x0031, 16422, "pal_host_cia", True)),
+]
+CAD_FRAMES = 900
+
+
+def _raises(rows):
+    """The instant of every interrupt the CSV attributes a write to."""
+    src = "since_video_irq" if any(r.since_video_irq is not None for r in rows) else "since_cia_irq"
+    return sorted({r.cycle - getattr(r, src) for r in rows if getattr(r, src) is not None})
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("name,want", CADENCES, ids=[c[0][:6] for c in CADENCES])
+def test_the_cadence_is_the_oracles_own_interrupt_period(name, want):
+    """Each cadence class, decided against ``sidplayfp``'s raises and its grid.
+
+    The raises pin the period (a wrong cadence does not divide their gaps, which
+    are whole ticks of the real one) and framing both grids on the cadence under
+    test pins the phase. The CSV carries only the raises a write fell in, so both
+    grids are anchored at their own first written frame.
+    """
+    path = _tune(name)
+    _img, schedule = find_entries(path.read_bytes())
+    entry = schedule[0]
+    assert entry == want
+    rows = grid.oracle_rows(path, _CACHE / "csv", seconds=CAD_FRAMES // 50 + 2)
+    at = _raises(rows)
+    gaps = np.diff(at)
+    assert gaps.size and not (gaps % entry.cycles_per_tick).any(), "%d does not tile %s" % (
+        entry.cycles_per_tick,
+        sorted(set(gaps.tolist()))[:3],
+    )
+    trace = _trace(path, CAD_FRAMES)
+    cyc, _reg, _val, call = grid.sid_writes(trace)
+    played = cyc[call != grid.INIT_CALL]
+    lead = int(grid.frames(played[:1], trace.meta["cycles_init"], entry.cycles_per_tick)[0])
+    want_grid = grid.sidtrace_grid(rows, first=at[0], cycles_per_frame=entry.cycles_per_tick)
+    got = grid.trace_grid(trace, CAD_FRAMES)[lead:]
+    n = min(len(want_grid), len(got))
+    assert n > CAD_FRAMES // 2, "%s: only %d frames to compare" % (name, n)
+    bad = grid.differing(want_grid[:n], got[:n])
+    assert not bad.size, "%s: frames %s of %d differ" % (name, bad[:3], n)

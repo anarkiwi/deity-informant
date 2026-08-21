@@ -3,8 +3,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog.ir import Const, Let, Load, Tuneprog
+from deity_informant.tuneprog.machine import Refusal
 from deity_informant.tuneprog.tracedata import Trace, merge
 
 from _asm import asm, psid
@@ -250,3 +253,20 @@ def test_until_period_retraces_only_the_subtunes_that_stopped_page_free(tmp_path
     st = json.loads((out / "state.json").read_text())
     assert st["stack"] == "residual"
     assert [st["traced"][k]["full"] for k in ("1", "2")] == [True, True]
+
+
+def test_songs_all_refuses_subtunes_that_disagree_on_cadence(tmp_path):
+    """One merged trace is one schedule, so a mixed ``speed`` word is a refusal."""
+    p = tmp_path / "mixed.sid"
+    p.write_bytes(
+        psid(
+            {PLAY: TUNE},
+            init=TUNE.labels["init"],
+            play=TUNE.labels["play"],
+            songs=2,
+            speed=0b10,
+        )
+    )
+    with pytest.raises(Refusal) as e:
+        pipeline.main([str(p), "--out", str(tmp_path / "out"), "--calls", "6", "--songs", "all"])
+    assert e.value.reason == "subtunes disagree on cadence"

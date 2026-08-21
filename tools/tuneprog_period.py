@@ -31,7 +31,7 @@ def sample(path, calls, song, state, budget):
     if state.exists():
         tr, s = pickle.loads(state.read_bytes())
     else:
-        img, schedule = find_entries(Path(path).read_bytes())
+        img, schedule = find_entries(Path(path).read_bytes(), song=song - 1)
         tr = Tracer(img, schedule[0], song=song - 1)
         tr.run_init()
         s = Samples(tr.vm)

@@ -17,10 +17,10 @@
  "divergence": null,
  "entry": {
   "addr": 51000,
-  "cycles_per_tick": 19656,
+  "cycles_per_tick": 16422,
   "kernal": true,
   "kind": "irq",
-  "source": "pal_video"
+  "source": "pal_host_cia"
  },
  "generated": "2026-08-21T19:47:20Z",
  "oracle": "deity_informant.PcodeVM@0.5.0",
@@ -33,14 +33,14 @@
   {
    "closure": "trace",
    "complete": true,
-   "cycles_per_tick": 19656,
+   "cycles_per_tick": 16422,
    "divergences": 0,
    "envelope_traps": 0,
    "first_repeat": 706,
    "inputs_pinned": 0,
    "interp_prefix": 2000,
    "period": 700,
-   "seconds": 14.1,
+   "seconds": 11.78,
    "song": 1,
    "ticks": 707,
    "trace_first_repeat": 706,
