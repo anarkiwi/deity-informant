@@ -40,8 +40,8 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
-| S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain or a family's copies), the phase | `structure.py`, `loops.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -54,18 +54,18 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 243  tracevm 325  trace 301  tracedata 310  lift 227
-              cfg 310  regions 228  jumptab 368  siblings 395  closure 338
+front end     machine 244  tracevm 328  trace 302  tracedata 336  lift 227
+              cfg 310  regions 243  jumptab 368  siblings 395  closure 347
               copyrows 453  copymerge 165
-program       ir 434  interp 247  irwalk 315  graph 70  lower 204  build 463
+program       ir 434  interp 248  irwalk 315  graph 82  lower 214  build 470
               ssa 431  frames 371  stack 204  idioms 357  emit 372  verify 328
-              period 110
-presentation  structure 345  loops 217  inline 199  texture 475  frame 44
-              word 369  fold 472  tails 165  copyview 279  unroll 399  live 96
-              facts 223  recover 323  views 213
-text          pseudocode 424  printer 384
-driver        pipeline 477  __init__ 123
-baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,198 lines
+              period 113
+presentation  structure 356  loops 307  inline 199  texture 475  frame 44
+              word 369  fold 472  tails 265  copyview 279  unroll 399  live 96
+              facts 228  recover 326  views 213
+text          pseudocode 424  printer 405
+driver        pipeline 506  __init__ 124
+baseline      ghidra_facts 219  ghidra_compare 182   45 modules, 13,545 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -230,17 +230,19 @@ Measured at 30 s of music, `--closure trace` → `--closure static`:
 
 | exemplar | printed lines | `goto` | `trap 'untaken'` | closed statements |
 | --- | ---: | ---: | ---: | ---: |
-| Automatas | 775 → 849 | 6 → 8 | 18 → 5 | 25 |
-| `gt2-je-suis-linus` | 1,170 → 1,058 | 0 → 23 | 15 → 0 | 13 |
-| `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 39 |
-| `sw-emomyst` | 1,316 → 1,844 | 0 → 2 | 49 → 1 | 63 |
+| Automatas | 772 → 864 | 6 → 6 | 18 → 5 | 59 |
+| `gt2-je-suis-linus` | 1,170 → 1,104 | 0 → 16 | 15 → 0 | 23 |
+| `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 76 |
+| `sw-emomyst` | 1,316 → 1,854 | 0 → 2 | 49 → 1 | 114 |
 
-The traps go, and the *covered* program is structured worse: once the closed
-edges exist the front end gives covered blocks more predecessors and the
-structurer nests less. That is not the closed text getting in the way — cutting
-the closed blocks out of the S5 view entirely still prints 21 of GoatTracker's
-23 `goto` — so the default stays `trace` until the structurer handles a closed
-region apart from the covered one.
+The traps go, and the *covered* program is still structured worse. A closed arm
+itself no longer costs anything: S5 and S6 compute dominance, the loops and a
+tail's region on the covered subgraph alone (`graph.edges_of` cuts a closed
+block's edges back into covered code), keeping post-dominance whole so the arm
+nests in the branch that offered it. What is left is the covered *graph*: a
+closed path that rejoins at an address inside a covered block splits it, and the
+extra predecessor stops `merge_chains` gluing the pieces, so the tail-promotion
+cascade takes a different order. The default therefore stays `trace`.
 
 `complete` means the run closed: the tuneprog reached a state repeat at the same
 tick and with the same period as the trace, with no divergence. Otherwise the
@@ -368,8 +370,12 @@ subtune's loop. Verdict `aperiodic`, the same class as `ghouls-song21`.
   copy *j+1* alone has -- so no index names it, and the front end enters the copy
   at the row itself with `v` the copy that row belongs to. That is what folds
   Follin's one-voice effects and *Automatas*' row-advance blocks, at the cost of
-  a merged body with several entries, which the structurer prints with a `goto`
-  (two in *Automatas*) and no `for`.
+  a merged body with k entries -- and those k prologues *are* the loop's step:
+  where no latch steps the index by a recurrence, `loops.copies` takes the chain
+  from the assignments (copy 0 from outside, 1..k-1 on the back edges, each
+  edge's count its own copy's share of the cover) and prints `for v in 0..k-1`
+  all the same. The jumps into a prologue stay `goto`: a prologue carries the
+  preamble that copy alone has, and a helper never hands the index back.
 - **A column prints as the operand it stands for.** S6 reads the per-copy table
   once (`copyview.py`): a column whose values step affinely becomes that step in
   `v`, so the existing stride vocabulary prints it (`sid[v].freq_lo` by the

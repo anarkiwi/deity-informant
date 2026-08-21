@@ -451,7 +451,7 @@ def _extract(prog, cand, name, exists):
             cand.entry, entry.stmts[cand.skip :], entry.term, entry.src, entry.count
         )
         prog.procs[name] = Proc(name, (), (), blocks, cand.entry, "helper")
-        _returns(prog.procs[name], cand.exit)
+        exit_returns(prog.procs[name], cand.exit)
     for lbl in cand.blocks:
         if lbl != cand.entry:
             del proc.blocks[lbl]
@@ -462,11 +462,11 @@ def _extract(prog, cand, name, exists):
     prune(proc)
 
 
-def _returns(proc, exit_lbl):
-    """Every edge that left the run returns from the helper instead."""
+def exit_returns(proc, exit_lbl, vals=()):
+    """Every edge that left the run returns ``vals`` from the helper instead."""
     for b in list(proc.blocks.values()):
         if type(b.term) is Goto and b.term.to == exit_lbl:
-            b.term = Return()
+            b.term = Return(vals)
         elif exit_lbl in succs(b.term):
-            proc.blocks.setdefault(EXIT, Block(EXIT, [], Return()))
+            proc.blocks.setdefault(EXIT, Block(EXIT, [], Return(vals)))
             b.term = retarget(b.term, exit_lbl, EXIT)

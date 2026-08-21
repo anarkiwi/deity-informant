@@ -123,7 +123,12 @@ def test_automatas_has_no_machine_texture_left_in_the_hot_path():
     assert "carry(" not in filt and "carry(" not in "\n".join(body(text, "main"))
     assert "u16" in text.split("## program")[0]
 
-    # the goto residue is gone but where a copy's preamble is the image of no row
+    # the row-advance family runs its copies: k prologues name them, so it is a for
+    chain = (body(text, n) for n in set(names.procs.values()))
+    rows = next("\n".join(b) for b in chain if any(l.strip().startswith("goto") for l in b))
+    assert "for v in 0, 1, 2:" in rows and rows.count("switch v:") == 5, rows
+
+    # the residue is the preamble each copy has of its own, and nothing else
     gotos = {l.strip() for l in text.splitlines() if l.strip().startswith("goto")}
     assert len(gotos) == 2 and all(g.startswith("goto L1") for g in gotos), gotos
     assert len(_temps(text)) <= 76, sorted(_temps(text))
