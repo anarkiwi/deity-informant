@@ -287,12 +287,13 @@ def _horizon_stage(args, st, trace, prog):
     """``"trace"`` where S4's verdict moves the horizon this run stopped on.
 
     ``--until-period`` stops at the earliest repeat of either footprint, and a
-    residual program may claim only the page-inclusive one: it traces on. S4
-    decides once, so a run that has already traced on does not do it again.
+    residual program may claim only the page-inclusive one: it traces on. Only a
+    verdict that *becomes* residual moves the horizon, so this cannot loop.
     """
-    first = st.get("stack") is None
+    was = st.get("stack")
     st["stack"] = "eliminated" if prog.meta.get("stack") == "eliminated" else "residual"
-    if not (first and st["stack"] == "residual" and args.until_period):
+    became = st["stack"] == "residual" and was != "residual"
+    if not (became and args.until_period):
         return "verify"
     if args.songs != "all":
         if trace.witness(False) is not None:
