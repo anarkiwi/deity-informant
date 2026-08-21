@@ -95,16 +95,22 @@ def _status(regs):
     return sum(regs[i] << s for i, s in STATUS_BITS) | 0x20
 
 
+def page_free(prog):
+    """True when S4 proved ``prog`` stack-free: its footprint leaves the page out.
+
+    A residual program keeps its pushes and must claim periodicity on the whole
+    write set, so the witness it may stop and certify on is the page-inclusive one.
+    """
+    return prog.meta.get("stack") == "eliminated"
+
+
 class Verifier:
     """Runs a tuneprog against a :class:`Reference`, chunked and resumable."""
 
     def __init__(self, prog, ref, backend="py", src=None):
         self.prog = prog
         self.ref = ref
-        # a program S4 proved stack-free writes no stack page, so its footprint --
-        # and the periodicity it may claim -- is the one without that page; a
-        # residual program keeps the whole write set, and must claim on that.
-        self.free = prog.meta.get("stack") == "eliminated"
+        self.free = page_free(prog)
         self.backend = backend
         self.M = Machine(prog.image(), ref.load, inputs=ref.inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)

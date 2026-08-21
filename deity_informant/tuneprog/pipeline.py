@@ -101,7 +101,11 @@ def _stop(args, tr, target, free=True):
 
 
 def _free(st):
-    """True while a page-free repeat may end the trace: S4 has not said otherwise."""
+    """True while a page-free repeat may end the trace: S4 has not said otherwise.
+
+    Only :func:`stage_trace` needs this: past S4 the program itself carries the
+    verdict, and :func:`~.verify.page_free` is what reads it.
+    """
     return st.get("stack") != "residual"
 
 
@@ -319,7 +323,7 @@ def verify_all(args, out, st, t0, prog, log=print):
         if any(x["song"] == song for x in subs):
             continue
         sub = Trace.load(_subdir(out, song))
-        ref = V.Reference(sub, _certified(args, sub.witness(_free(st)), sub.meta["calls"]))
+        ref = V.Reference(sub, _certified(args, sub.witness(V.page_free(prog)), sub.meta["calls"]))
         v = V.Verifier(prog, ref, src=src)
         if saved.get("song") == song and saved.get("calls") == ref.calls:
             v.restore(saved["state"])
@@ -361,7 +365,7 @@ def stage_verify(args, out, st, t0, prog=None, log=print):
     trace = Trace.load(out)
     src = (out / "tuneprog.py").read_text()
     # the horizon follows the witness S4's verdict allows, exactly as verify_all's
-    st["calls"] = _certified(args, trace.witness(_free(st)), trace.meta["calls"])
+    st["calls"] = _certified(args, trace.witness(V.page_free(prog)), trace.meta["calls"])
     ref = V.Reference(trace, st["calls"])
     v = V.Verifier(prog, ref, src=src)
     resume = out / "verify.pkl"

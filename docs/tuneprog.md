@@ -312,8 +312,9 @@ stops at the earliest repeat of either stream, which S4 may then reject. Its
 verdict is recorded as `"stack"` in `state.json`; a program it calls residual goes
 back to S1 and traces on where only the page-free witness exists
 (`pipeline._horizon_stage`), and the horizon *every* run certifies is then the
-witness that verdict allows -- one rule (`_certified` over `Trace.witness(free)`)
-for the single-song path and for `--songs all` alike. So the certificate claims
+witness that verdict allows -- one rule (`_certified` over `Trace.witness(free)`,
+the verdict read from the program itself by `verify.page_free`) for the
+single-song path and for `--songs all` alike. So the certificate claims
 completeness where completeness is provable rather than reporting
 `complete: false`. Eliminating a stack
 therefore moves no certificate's period or divergence, and can only shorten a
