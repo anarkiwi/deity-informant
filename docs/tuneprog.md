@@ -22,7 +22,9 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | **copy index** | the value `v` a merged family runs over: copy *j* executing a template row is that row executed with `v = j` |
 | **column** | a per-copy table `T_x[v]` the merge reads an operand from where the copies name different addresses |
 | **coverage** | a merged block's execution count per copy; a zero says no execution of that copy reached it, and the statement is unverified |
-| **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table` |
+| **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table`, `voice_map` |
+| **split view** | a block one init loop made one region, cut into the fields the play phase walks: by a *record* stride (element index outside, field inside) or by its **transpose** (field outside, element index inside, which is a struct-of-arrays) |
+| **voice map** | a read-only table holding `0, 7, 14` -- the SID's own voice -> register-block offsets, so an index read from it is a voice |
 | **phase** | the state scalar a tick tests to pick its rate (defMON's `& 7` call counter) |
 | **tick** | one call of the play entry, at the cadence S0 discovered; the horizon flag spells it `--calls`, the certificate field `ticks` |
 | **certificate** | `certificate.json`: what was compared, over how many ticks, with what divergence and periodicity |
@@ -41,7 +43,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -58,14 +60,14 @@ front end     machine 244  tracevm 328  trace 302  tracedata 336  lift 227
               cfg 310  regions 243  jumptab 368  siblings 395  closure 347
               copyrows 453  copymerge 165
 program       ir 440  interp 248  irwalk 315  graph 82  lower 214  build 470
-              ssa 431  frames 371  stack 204  idioms 357  emit 372  verify 328
+              ssa 431  frames 371  stack 204  idioms 401  emit 372  verify 328
               period 113
 presentation  structure 356  loops 307  inline 199  texture 475  frame 44
               word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
-              facts 228  recover 326  views 213
-text          pseudocode 424  printer 405
+              facts 274  recover 327  views 287
+text          pseudocode 451  printer 407
 driver        pipeline 450  resume 67  __init__ 124
-baseline      ghidra_facts 219  ghidra_compare 182   46 modules, 13,587 lines
+baseline      ghidra_facts 219  ghidra_compare 182   46 modules, 13,781 lines
 ```
 
 Stage entry points, which are also the module boundaries:

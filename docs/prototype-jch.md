@@ -84,15 +84,15 @@ in each output directory's `tuneprog.md`. The HVSC tests
 | J1 | per-tick equivalence from init to the first state repeat | **0** divergences over 8,577 ticks, 0 envelope traps | **0** over 2,401 ticks |
 | J2 | periodicity witness, `complete: true` | first repeat at tick 8,576, period **1** — the song ends and the state is a fixed point | period **1,512** ticks (30.24 s), first repeat at 2,400 |
 | J3 | front end | 567 sites, 99 regions (49 state, 41 const, 6 init-only, 3 image), 9 procedures, 155 blocks, 472 statements | 572 sites, 103 regions, 2 procedures, 160 blocks, 443 statements |
-| J4 | the state block | `voice[3]` **stride 1**, 34 fields (33 on the intro), each row three bytes at `base,X`; `timer`, `cursor`, `acc`, `counter` roles on 8 of them | same shape, 33 fields |
+| J4 | the state block | `voice[3]` **stride 1**, 34 fields (33 on the intro), each row three bytes at `base,X`; `timer`, `cursor`, `acc`, `counter`, `sid_image` and `voice_map` roles name 12 of them, and the two blocks `init` clears are two more records over the same index (`voice_2`, `voice_3`; Q1b) | same shape, 33 fields |
 | J5 | the table programs | instruments as a stride-8 record; the pulse/filter columns as stride-4 reads | pulse `rec6[i/4]` and filter `rec7[i/4]` (4 and 3 columns), instruments `rec8[i/8]` (8), wave `T17DB`/`T181C` as parallel columns |
 | J6 | the frequency table | `FREQ` 12-TET u16le, 79 entries reached | **95** entries, `freq_table` role, `12-TET u16le` |
 | J7 | the two-phase tick | `phase -= 1` on the tick counter, `if phase == 0:` the commit arm, the prefetch arm two frames earlier, hard restart `AD = $F`/`SR = 0` with the gate mask `$FE` before it | same |
 | J8 | the voice loop is a loop | `for v in 2, 1, 0:` (DEX/BMI), **no** sibling family (`copies` absent from both certificates) | same |
-| J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost.reg[…]`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush holds every chip write of the tick | not applicable (no wrapper): 3 `io` regions, the writes are `sid.reg[…]` |
+| J9 | the RAM under the SID | one `ghost` region `$D400`, 25 bytes, `sid_image` at delta 0; the player writes `ghost[x].ad`, `ghost.res_route`, `ghost.mode_vol`, and the wrapper's flush holds every chip write of the tick | not applicable (no wrapper): 3 `io` regions, the writes are `sid[x].ad` |
 | J10 | pinned inputs | **2** (the uninitialised `$FB`/`$FC` the player saves and restores), down from 18,777 | 2, plus the subtune number in `A` at init |
 | J11 | the oracle | **3,000 of 3,000** frames byte-exact against `sidplayfp` once each write is attributed to the frame the oracle samples it in (§6); by call index alone, 494 frames differ, in exactly the five registers the wrapper writes last | **2,401 of 2,401** byte-exact — the whole certified horizon, by call index |
-| J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, **0** `goto` in 613 printed lines (7 in 562 before Q1a) | 0 `sp`, 0 unverified, 16 untaken, **0** `goto` in 569 lines (7 in 528) |
+| J12 | structuring | **0** `sp`, 0 `trap 'unverified'`, 25 `trap 'untaken'`, **0** `goto` in 626 printed lines (613 before Q1b's two record headers, 7 `goto` in 562 before Q1a) | 0 `sp`, 0 unverified, 16 untaken, **0** `goto` in 582 lines (569, and 7 in 528) |
 | J13 | cost | trace 12,000 ticks in ~100 s CPU over three chunks, verify 8,577 ticks in 2.3 s (3,717 ticks/s) | trace 4,000 in 9 s, verify 2,401 in 0.2 s (10,855 ticks/s) |
 | J14 | genericity | the other 42 certificates reproduce field for field (`tools/tuneprog_recert.py`, 44/44) and the hermetic suite is unchanged | — |
 | J15 | the port fix is guarded | `tests/test_oracle.py` renders 500 frames of the Puterman build from the tracer's SID log and compares it to `sidplayfp` frame for frame; with the direction byte back at 0 it fails on frame 1 | — |
@@ -104,14 +104,18 @@ meta      entry sub $1003 every 19656 cycles (1.0 calls/frame, pal_video)
           certified 2,401 calls, 0 divergences, period 1,512, first repeat at
           call 2,400 (complete), stack eliminated, stage S6
 state     voice[3] stride 1, 33 fields          # the struct-of-arrays block
-            .timer .acc_2 .cursor_1781 .timer_4 .acc_5 .acc_6 .cursor_1795 ...
+            .freq_lo .freq_hi .timer .voice_map .pw_lo .pw_hi .ad .sr
+            .cursor_1781 .timer_4 .cursor_1795 ...
+          voice_2[3] $1014 12 bytes, stride 1, 4 fields    # the transpose split:
+          voice_3[3] $1748 21 bytes, stride 1, 7 fields    # field +k, element v
+            .timer +0 .f03 +3 .f06 +6 .timer_2 +9 .f0C +12 .f0F +15 .timer_3 +18
           rec6[11] stride 4, 4 fields           # the pulse program
           rec7[12] stride 4, 3 fields           # the filter program
-          rec8[19] stride 8, 8 fields           # the instruments
+          rec8[19] stride 8, 8 fields           # the instruments (.ad_2 .sr_2)
           rec4[96] stride 2 .FREQ freq_table 12-TET u16le, 95 entries
-          step $172D u16 (lo|hi $100B) ; acc_4 $1779 u16 ; phase $1746
+          step $172D u16 (lo|hi $100B) ; acc_3 $1779 u16 ; phase $1746
           cutoff_hi $1792 sid_image ; mode_vol $1793 sid_image
-          b1014 12 bytes ; b1748 21 bytes       # the two init-cleared blocks
+          b1014 12 bytes ; b1748 21 bytes       # what init clears in one loop
 
 tick():                                  # $1003, 4,000 calls
     saved = ptr                                    # the player saves $FB/$FC
@@ -132,31 +136,31 @@ p_10E9(r4, r5):                          # $10E9, 4,000 calls
     for v in 2, 1, 0:                              # DEX; BMI -- the voice loop
         if voice[v].b1006 == 0: trap 'untaken'     # track enabled?
         if phase == 0:                             # COMMIT
-            t2 = b1748[v + $12]
-            b1748[v + $12] -= 1                    # the duration countdown
-            if b1748[v + $12] < 0:
-                b1014[v + 6] = voice[v].b17BC      # staged -> live
+            t2 = voice_3[v].timer_3
+            voice_3[v].timer_3 -= 1                # the duration countdown
+            if voice_3[v].timer_3 < 0:
+                voice_2[v].f06 = voice[v].b17BC    # staged -> live
                 ...
-                if b1748[v] == 0:                  # not a tie: re-trigger
-                    voice[v].cursor_1795 = rec8[b1014[v + 9]/8].b18C9   # instrument
-                    voice[v].timer_6 = (rec8[b1014[v + 9]/8].b18C5 & $F)
-                    voice[v].acc_5 = (rec6[rec8[...]/4].b1893 & $F0)    # pulse init
+                if voice_3[v].timer == 0:          # not a tie: re-trigger
+                    voice[v].cursor_1795 = rec8[voice_2[v].f09/8].b18C9 # instrument
+                    voice[v].timer_6 = (rec8[voice_2[v].f09/8].b18C5 & $F)
+                    voice[v].pw_lo = (rec6[rec8[...]/4].b1893 & $F0)    # pulse init
                     sid.res_route = a129                                # $D417
-                    sid.reg[5 + voice[v].b1740] = rec8[...].b18C3       # AD
-                    sid.reg[6 + voice[v].b1740] = rec8[...].b18C4       # SR
-                    sid.reg[4 + voice[v].b1740] = 9                     # TEST|GATE
+                    sid[v].ad = rec8[...].ad_2                          # AD
+                    sid[v].sr = rec8[...].sr_2                          # SR
+                    sid[v].ctrl = 9                                     # TEST|GATE
                 else:
                     p_1409(x=v)                    # EFFECTS: the three programs
         else:                                      # PREFETCH, two frames early
             ...
             while True:                            # the pattern command loop
-                saved9 = T19FE[((ptr[1] << 8) | ptr) + b1748[v + 9]]
+                saved9 = T19FE[((ptr[1] << 8) | ptr) + voice_3[v].timer_2]
                 if saved9 < 0: ...                 # $8x duration, $Ax instrument
                 continue
             ...
-            b1014[v + 6] = $FE                     # gate off
-            sid.reg[5 + voice[v].b1740] = $F       # hard restart AD = $0F
-            sid.reg[6 + voice[v].b1740] = 0        #               SR = $00
+            voice_2[v].f06 = $FE                   # gate off
+            sid[v].ad = $F                         # hard restart AD = $0F
+            sid[v].sr = 0                          #               SR = $00
             p_1616(x=v)                            # the write-out join
     ptr[1] = r5                                    # $FB/$FC restored
     ptr = r4
@@ -172,12 +176,14 @@ p_1409(x):                               # $1409, 10,448 calls
     p_1616(x=x)
 
 p_1616(x):                               # $1616, 11,128 calls
-    sid.reg[2 + voice[x].b1740] = voice[x].acc_5        # PW lo
-    sid.reg[3 + voice[x].b1740] = voice[x].acc_6        # PW hi
+    sid[x].pw_lo = voice[x].pw_lo
+    sid[x].pw_hi = voice[x].pw_hi
     sid.cutoff_hi = cutoff_hi
-    sid.reg[voice[x].b1740] = voice[x].acc              # FREQ lo
-    sid.reg[1 + voice[x].b1740] = voice[x].b100F        # FREQ hi
-    sid.reg[4 + voice[x].b1740] = (voice[x].b175D & b1014[6 + x])
+    sid[x].freq_lo = voice[x].freq_lo
+    sid[x].freq_hi = voice[x].freq_hi
+    sid[x].ad = voice[x].ad                             # $1740,X = 0, 7, 14 is
+    sid[x].sr = voice[x].sr                             # the voice map
+    sid[x].ctrl = (voice[x].b175D & voice_2[x].f06)
     sid.mode_vol = (mode_vol | mode_vol_or)
     return
 ```
@@ -224,23 +230,32 @@ writeout():                              # $10E9, 8,577 calls
   is the offset inside the tick, which only matters against a sampler that reads
   the registers mid-frame. The JCH build never writes that late, and matches by
   call index alone.
-- **The two init-cleared blocks are the transpose of the stride view.** `init`
-  clears `$1014` (12 bytes) and `$1748` (21) with one loop each, so the access
-  relation joins each into one region; the tick then walks them as
+- **The two init-cleared blocks are the transpose of the stride view** (*fixed in
+  Q1b*). `init` clears `$1014` (12 bytes) and `$1748` (21) with one loop each, so
+  the access relation joins each into one region; the tick then walks them as
   `base + 3k + v` — element inside, field outside — where GoatTracker's blocks
   A+B are `base + 7v + k`. `views.field_split` splits on an index whose *scale*
-  is a record width, and here the scale is 1, so the two blocks keep their flat
-  address (`b1748[v + $12]` is the duration countdown, `b1014[v + 9]` the
-  instrument). The state block proper needs nothing: its rows are separate
-  regions and print `voice[v].field` already.
-- **`sid.reg[5 + voice[v].b1740]` where GoatTracker prints `sid[v].ad`.** V20
-  takes the voice's register offset from a per-track table (`$1740,X` = 0, 7, 14;
-  `$1743,X` next to it is the V20 fine-tune constant)
-  rather than from the index, so the printer sees a load, not a stride: nothing
-  in the tune walks a 7-byte record, which is the evidence `facts.scales` wants.
-  The offset is a constant per copy, so the copy-index vocabulary could fold it,
-  but that means substituting a table read into the loop it indexes — the rule
-  #248 refused for exactly this reason.
+  is a record width, and here the scale is 1; `views.transpose_split` is the same
+  rule with the two indices swapped, so what the index carries is instead the
+  **element count** of the stride-1 view it walks (three tracks), every field is
+  three wide, and each access confirms the layout by its own envelope staying
+  inside one field. Only play-phase accesses count — the init clear loop reaches
+  the whole block. The two now print `voice_2[v].f09` (the instrument) and
+  `voice_3[v].timer_3` (the duration countdown), while the init clear loop -- which
+  reaches all twelve bytes and so is no field of the view -- keeps `b1014[v] = 0`;
+  the printed form takes the same envelope test the layout was proven with, so a
+  block anything reads as a table keeps its flat address everywhere.
+- **`sid.reg[5 + voice[v].b1740]` where GoatTracker prints `sid[v].ad`** (*fixed
+  in Q1b*). V20 takes the voice's register offset from a per-track table
+  (`$1740,X` = 0, 7, 14; `$1743,X` next to it is the V20 fine-tune constant)
+  rather than from the index, so the printer saw a load, not a stride. But
+  `0, 7, 14` is the SID's own voice → register-block map, the other half of the
+  hardware fact `facts.VOICE_REG` already states: a read-only region whose three
+  elements are exactly `7*i` is that map (`facts.voice_maps`), and an index read
+  from it **is** the voice. The table is named `voice_map`, `Printer.voiced`
+  accepts it beside the stride-7 forms, and the write-out reads
+  `sid[x].pw_lo … sid[x].ad`; a clear loop over the register file still prints
+  `sid.reg[v]`, and a table of `0, 7, 13` keeps its read.
 - **The voice loop's joins are procedures (was 7 `goto` in both).** The player is
   a DAG of tail-jumps converging on the write-out (`$1616`) and the effects block
   (`$1409`); those joins are inside the loop body and fall into the `DEX; BMI`

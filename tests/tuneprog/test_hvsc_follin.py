@@ -177,3 +177,12 @@ def test_sid_wizard_still_certifies_after_the_init_cell_rule():
         if type(e) is Load and type(e.a) is Const
     }
     assert not loads & init_only
+
+
+def test_a_merged_per_voice_store_still_names_the_frequency_tables():
+    """The fold indexes the register file; the store's own base names the register."""
+    for song, secs in ((0, 30), (16, 25)):
+        run = decompiled(GNG, seconds=secs, song=song, prefix=500)
+        named = {run.names.region[r] for r, k in run.names.role.items() if k == "sid_image"}
+        assert {n for n in named if n.startswith("freq_lo")}, named
+        assert {n for n in named if n.startswith("freq_hi")}, named

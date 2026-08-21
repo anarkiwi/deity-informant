@@ -353,3 +353,146 @@ def test_an_unknown_region_prints_as_raw_memory():
     _T, prog = tuneprog(counter("LDA #$07", "STA $D400"), calls=2, s4=True)
     p = pseudocode.Printer(prog, recover.recover(prog))
     assert p.cell(-99, 0x1234) == "mem[$1234]"
+
+
+def _transposed(extra=(), pre=()):
+    """A block one init loop made, walked ``base + n*3 + v`` by the voice index."""
+    code = asm(
+        PLAY,
+        "init: LDX #$0B",
+        "clr: LDA #$00",
+        "STA blk,X",
+        "DEX",
+        "BPL clr",
+        *pre,
+        "LDX #$02",
+        "c2: STA v1,X",
+        "STA v2,X",
+        "DEX",
+        "BPL c2",
+        "STA cnt",
+        "RTS",
+        "play: LDX #$02",
+        "loop: INC v1,X",
+        "INC v2,X",
+        "LDA v1,X",
+        "STA blk,X",
+        "LDA v2,X",
+        "STA blk+3,X",
+        "LDA blk+6,X",
+        "STA $D400",
+        "DEX",
+        "BPL loop",
+        *extra,
+        "INC cnt",
+        "RTS",
+        "cnt: BRK",
+        "v1: BRK",
+        "BRK",
+        "BRK",
+        "v2: BRK",
+        "BRK",
+        "BRK",
+        "blk: BRK",
+    )
+    data = {code.labels["blk"] + i: 0 for i in range(12)}
+    return printed(code, calls=6 + 3 * bool(extra), data=data)
+
+
+def test_a_block_walked_field_outside_element_inside_prints_as_a_record():
+    doc = _transposed()
+    assert re.search(r"^voice_2\[3\]  \$\w+ 12 bytes, stride 1, 3 fields$", doc, re.M), doc
+    for f in ("f00", "f03", "f06"):
+        assert "voice_2[v].%s" % f in doc, doc
+    tick = "\n".join(proc_body(doc, "tick"))
+    assert not re.search(r"b\w{4}\[", tick), tick  # no flat address left in the tick
+    init = "\n".join(proc_body(doc, "init"))
+    assert re.search(r"b\w{4}\[v\] = 0", init), init  # the clear loop reaches every field
+
+
+def test_a_field_only_one_constant_access_names_is_listed_with_the_others():
+    """The play phase decides the layout; any access inside a field still prints as one."""
+    doc = _transposed(pre=("LDA #$05", "STA blk+9"))
+    assert re.search(r"^voice_2\[3\]  \$\w+ 12 bytes, stride 1, 4 fields$", doc, re.M), doc
+    assert "  .f09 " in doc and "voice_2[0].f09 = 5" in doc, doc
+
+
+def test_a_block_something_reads_as_a_table_is_not_that_record():
+    """One index crossing the field boundary refuses the layout the others suggest."""
+    doc = _transposed(("LDY cnt", "LDA blk,Y", "STA $D401"))
+    assert "voice_2[" not in doc and "stride 1, 3 fields" not in doc
+    assert re.search(r"\w+\[v \+ 3\] = ", doc), doc  # the block keeps its flat address
+
+
+def _offset_table(vals):
+    """A tune whose SID register offset comes from a per-track table."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDX cnt",
+        "LDY vmap,X",
+        "LDA #$0A",
+        "STA $D405,Y",
+        "INC cnt",
+        "LDA cnt",
+        "CMP #$03",
+        "BNE out",
+        "LDA #$00",
+        "STA cnt",
+        "out: RTS",
+        "cnt: BRK",
+        "vmap: BRK",
+    )
+    return printed(code, calls=6, data={code.labels["vmap"] + i: v for i, v in enumerate(vals)})
+
+
+def test_an_offset_table_of_the_voice_strides_prints_the_register_by_voice():
+    assert re.search(r"sid\[\w+\]\.ad = \$A", _offset_table((0, 7, 14)))
+
+
+def test_an_offset_table_that_is_not_the_voice_strides_keeps_its_read():
+    doc = _offset_table((0, 7, 13))
+    assert "sid.reg[5 + " in doc and ".ad = " not in doc
+
+
+def test_the_v_flag_of_a_subtract_prints_as_one_overflow_test():
+    doc = printed(
+        asm(
+            PLAY,
+            "init: LDA #$00",
+            "STA cnt",
+            "STA lim",
+            "RTS",
+            "play: LDA cnt",
+            "SEC",
+            "SBC lim",
+            "BVC out",
+            "LDA #$07",
+            "STA $D404",
+            "out: INC cnt",
+            "LDA cnt",
+            "EOR #$FF",
+            "STA lim",
+            "RTS",
+            "cnt: BRK",
+            "lim: BRK",
+        ),
+        calls=6,
+    )
+    assert re.search(r"if overflow\(\w+ - \w+\)", doc), doc
+    assert " & (" not in doc  # none of the flag plumbing is left
+
+
+def test_a_sign_extended_byte_prints_as_sext():
+    _T, prog = tuneprog(counter("LDA #$07", "STA $D400"), calls=2, s4=True)
+    p = pseudocode.Printer(prog, recover.recover(prog))
+    t = pseudocode.Load("ram", pseudocode.Const(0x1934, 2), 1, r=-99)
+    e = pseudocode.Bin(
+        "-",
+        pseudocode.Bin("+", pseudocode.Const(0x1953, 2), t, 2),
+        pseudocode.Bin("<<", pseudocode.Bin("&", t, pseudocode.Const(0x80)), pseudocode.Const(1)),
+        2,
+    )
+    assert p.expr(e) == "($1953 + sext(mem[$1934]))"  # the shape a patched branch adds

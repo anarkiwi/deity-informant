@@ -157,6 +157,50 @@ def rewrite(proc):
     return inline(proc) + foldall(proc)
 
 
+SIGN = 0x80
+
+
+def sext_of(e):
+    """``(A + T) - ((T & $80) << 1)`` as ``(A, T)``: ``A`` plus the *signed* byte ``T``.
+
+    An identity, not an inference: subtracting ``$100`` exactly when bit 7 is set
+    is what sign extension is, and it is how a patched branch adds its displacement.
+    """
+    if type(e) is not Bin or e.op != "-":
+        return None
+    t = _sign_double(e.b)
+    if t is None:
+        return None
+    if type(e.a) is Bin and e.a.op == "+":
+        for x, y in ((e.a.a, e.a.b), (e.a.b, e.a.a)):
+            if x == t:
+                return y, t
+    return (None, t) if e.a == t else None
+
+
+def _sign_double(e):
+    """``T`` of ``(T & $80) << 1``, the ``$100`` a sign extension takes off."""
+    if type(e) is not Bin or e.op != "<<" or type(e.b) is not Const or e.b.v != 1:
+        return None
+    a = e.a
+    ok = type(a) is Bin and a.op == "&" and type(a.b) is Const and a.b.v == SIGN
+    return a.a if ok else None
+
+
+def overflow_of(e):
+    """``(A ^ B) & (A ^ (A - B))`` as ``(A, B)``: the V flag of one signed subtract."""
+    if type(e) is not Bin or e.op != "&":
+        return None
+    for x, y in ((e.a, e.b), (e.b, e.a)):
+        if type(x) is not Bin or x.op != "^" or type(y) is not Bin or y.op != "^":
+            continue
+        for a, b in ((x.a, x.b), (x.b, x.a)):
+            d = y.b if y.a == a else y.a if y.b == a else None
+            if type(d) is Bin and d.op == "-" and d.a == a and d.b == b:
+                return a, b
+    return None
+
+
 def compound_hints(proc):
     """``[(block, index, region)]`` load-modify-store on one scalar (printer hint)."""
     out = []

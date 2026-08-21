@@ -181,9 +181,12 @@ p_1337(a, x):                            # $1337 HARDRST, 4,776 calls
 - **Names are role-derived.** `timer` is CWEPCNT, `freq_idx` CKBDTRK, `b1464`
   TABLRST: the trace shows the shapes, not the words. A family dictionary keyed
   on the SID Wizard signature would name them from `player.asm`.
-- **The two branch dispatchers keep their sign extension.** `switch (($1A15 +
-  saved17) - ((saved17 & $80) << 1))` is `INDEXJ2 + 2 + sext(SMALLFXTBL[type])`
-  written out; an explicit signed-byte view of a table would print it as one.
+- **The two branch dispatchers print their sign extension** (*fixed in Q1b*).
+  `switch (($1A15 + saved17) - ((saved17 & $80) << 1))` is now
+  `switch ($1A15 + sext(saved17))`: subtracting `$100` exactly when bit 7 is set
+  is what sign extension *is*, so the rewrite is an identity over eight bits, not
+  an inference. It lives in the printer (`idioms.sext_of`, `pseudocode.expr`);
+  `idioms.fold`, which S4 runs, is untouched, so the certified IR does not move.
 - **A procedure's return value does not print.** `a8 = p_19DB()` reads a value
   whose procedure ends in a bare `return`: `ir.retval` only recovers the tick's
   own return, so a callee that computes a byte for its caller shows an empty
@@ -192,6 +195,11 @@ p_1337(a, x):                            # $1337 HARDRST, 4,776 calls
   (gate-off pointers, `$FE` table jumps, HR type `$18`, the SFX suppression) and
   **32 (46) `trap 'unverified'`** are table entries no row selected. Both are the
   trace-closed product, not a gap.
-- **The tempo test prints as its subtraction.** `BVC` after `SBC` is the V flag
-  as a value, so the "tempo entry had bit 7 set" test prints as the overflow
-  expression rather than as `if (tempo & $80)`.
+- **The tempo test prints as one overflow** (*Q1b; the `if (tempo & $80)` form is
+  refuted*). `BVC` after `SBC` is the V flag as a value, and
+  `((A ^ M) & (A ^ (A - M))) < 0` is now `overflow(A - M)` — an exact naming of
+  the flag, in the same printed vocabulary as `carry(x + y)`. It does **not**
+  reduce to `tempo & $80`: V is `sign(A^M) & sign(A^R)`, which collapses to one
+  operand's sign bit only given a range proof on both operands that no evidence
+  in the trace supplies. Reading the player's intent off the SID Wizard source is
+  a family dictionary's job, not a decompiler's.

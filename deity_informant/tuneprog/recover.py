@@ -10,12 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from .facts import (
     Facts,
+    elem_count,
     MAXPAIRS,
     MAXROLE,
     image_copy,
     sid_image,
     update_role,
     scales,
+    voice_maps,
 )
 from .irwalk import forwarder, unique_name
 from .structure import phase as _phase
@@ -52,6 +54,7 @@ class Names:
     slots: dict = field(default_factory=dict)
     column: dict = field(default_factory=dict)
     split: dict = field(default_factory=dict)
+    voicemap: set = field(default_factory=set)
     copies: dict = None
 
     def of(self, rid):
@@ -149,11 +152,6 @@ def _uniq(names, rid, want):
     """Give region ``rid`` the name ``want``, made unique against the ones taken."""
     names.region[rid] = n = unique_name(want, set(names.region.values()))
     return n
-
-
-def _elems(r):
-    """How many elements a region's stride divides it into."""
-    return -(-r.size // max(r.stride, 1))
 
 
 def _update_role(facts, rid):
@@ -292,9 +290,8 @@ def recover(prog, structured=None, facts=None):
     for rid, (fname, elems) in sorted(sid_image(facts).items()):
         r = facts.rgn[rid]
         # a region is the SID image when its elements are, not when a few of a
-        # hundred zero-page bytes reach a register (an indexed read names no
-        # element, so it is the whole region by construction)
-        if rid in names.image or (elems and 2 * len(elems) < _elems(r)):
+        # hundred zero-page bytes reach a register; a name it already earned wins
+        if rid in names.region or 2 * len(elems) < elem_count(r):
             continue
         names.role[rid] = "sid_image"
         _uniq(names, rid, fname)
@@ -305,7 +302,7 @@ def recover(prog, structured=None, facts=None):
         role = names.role.get(r.id) or ("ptr" if ptr else "")
         # a role one accessor proves names a scalar or a small struct field, not a
         # block one init loop happened to make one region (Follin's zero page)
-        if _elems(r) <= MAXROLE:
+        if elem_count(r) <= MAXROLE:
             role = role or ("cursor" if r.id in facts.index else "") or _update_role(facts, r.id)
         names.role[r.id] = role
         _uniq(names, r.id, _basename(r, role, facts, names))
@@ -318,6 +315,10 @@ def recover(prog, structured=None, facts=None):
         if r.kind == "copymap":  # the per-copy columns the fold made: one name each
             names.region[r.id] = r.name
             names.role[r.id] = "per_copy"
+    names.voicemap = voice_maps(prog)
+    for rid in sorted(names.voicemap):
+        names.role[rid] = "voice_map"
+        _uniq(names, rid, "voice_map")
     _tables(prog, facts, names)
     for rid, (g, _f) in list(names.view.items()):
         names.view[rid] = (g, names.region.get(rid, "b%04X" % facts.rgn[rid].base))

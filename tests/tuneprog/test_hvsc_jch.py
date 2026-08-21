@@ -61,8 +61,7 @@ def test_the_tick_counter_is_the_phase_and_the_note_lands_two_frames_late():
     run = decompiled(GULDKORN, seconds=GULD_S)
     assert run.names.phase is not None
     assert "phase -= 1" in run.text and "if phase == 0:" in run.text
-    assert re.search(r"sid\.reg\[5 \+ voice\[v\]\.\w+\] = \$F\n", run.text), run.text
-    assert re.search(r"sid\.reg\[6 \+ voice\[v\]\.\w+\] = 0\n", run.text), run.text
+    assert "sid[v].ad = $F\n" in run.text and "sid[v].sr = 0\n" in run.text
     assert "= $FE" in run.text and "= $FF" in run.text
 
 
@@ -91,3 +90,28 @@ def test_the_puterman_build_writes_the_ram_under_the_register_file():
     assert "ghost.reg[" in run.text and "sid[v].freq_lo = copy[v].freq_lo" in run.text
     assert "input(" not in run.text
     assert run.cert["subtunes"][0]["inputs_pinned"] == 2
+
+
+def test_the_two_init_cleared_blocks_print_as_records_over_the_track_index():
+    """``$1014``/``$1748`` are walked ``base + n*3 + v``: the transpose of a stride view."""
+    for rel, secs, base in ((KNOB, KNOB_S, 0x1014), (GULDKORN, GULD_S, 0x1014)):
+        run = decompiled(rel, seconds=secs)
+        rid = next(r.id for r in run.prog.storage if r.base == base)
+        g, k, fields, flip = run.names.split[rid]
+        assert (k, flip, len(fields)) == (3, True, 4)
+        assert run.names.groups[g]["n"] == 3 and "%s[v]." % g in run.text
+        # the tick walks the fields; the init loop that made the block one region
+        # reaches all of it, so it is no field of the view and keeps the address
+        assert not re.search(r"b%04X\[v \+ " % base, run.text), run.text
+        assert "b%04X[v] = 0" % base in run.text
+
+
+def test_the_register_offset_table_names_the_register_by_its_voice():
+    """``$1740`` holds 0, 7, 14, so an index read from it is the voice itself."""
+    for rel, secs, name in ((KNOB, KNOB_S, "ghost"), (GULDKORN, GULD_S, "sid")):
+        run = decompiled(rel, seconds=secs)
+        assert len(run.names.voicemap) == 1
+        assert "voice_map" in run.names.role.values()
+        for reg in ("ad", "sr", "freq_lo", "pw_lo"):
+            assert "%s[v].%s" % (name, reg) in run.text or "%s[x].%s" % (name, reg) in run.text
+        assert "%s.reg[5 + " % name not in run.text

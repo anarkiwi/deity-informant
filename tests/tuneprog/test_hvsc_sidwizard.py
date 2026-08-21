@@ -102,7 +102,7 @@ def test_emomyst_dispatches_through_two_branch_tables_and_one_jump_table():
     assert {INDEXJ1, INDEXJ2} <= trace.cells and INDEXJP in trace.cells
 
     # a patched offset on an always-taken branch is a switch over site + 2 + offset
-    assert re.search(r"switch \(\(\$1\w{3} \+ [^)]+\) - \(\(", text), text
+    assert re.search(r"switch \(\$1\w{3} \+ sext\([^)]+\)\)", text), text
     assert "switch b19D0:" in text and text.count("trap 'unverified'") >= 25
 
 
@@ -119,7 +119,7 @@ def test_emomyst_prints_one_dotrack_over_the_three_voices():
     # SPDCNT is one field of VARIABLES, which init clears as one block and the
     # tick walks at stride 7: bunch 1 ($1024 + $15), voice x/7 (views.field_split)
     spdcnt = r"rec\[x/7 \+ 3\]\.\w+"
-    assert re.search(r"if \(\(%s \^ \w+\) & \(" % spdcnt, lines), lines
+    assert re.search(r"if overflow\(%s - \w+\)" % spdcnt, lines), lines
     assert re.search(r"%s \+= 1" % spdcnt, lines), lines  # SPDCNT is post-incremented
     assert lines.count("if t4 == 0:") == 1 and "if t4 == 2:" in lines
 
@@ -163,3 +163,18 @@ def test_end_of_the_world_carries_the_subtune_and_the_1_9_write_order():
     # MULPLY is assembled in but never called, so no procedure starts there
     assert not any(p.blocks[p.entry].src == 0x2AA2 for p in prog.procs.values())
     assert len(names.u16) >= 4  # the pointer, the blob base, two word tables
+
+
+def test_the_branch_dispatchers_print_their_displacement_as_a_signed_byte():
+    """``(base + T[i]) - ((T[i] & $80) << 1)`` is ``base + sext(T[i])``, an identity."""
+    for rel, secs in ((EMOMYST, 30), (EOTW, 20)):
+        text = decompiled(rel, seconds=secs).text
+        assert len(re.findall(r"switch \(\$\w+ \+ sext\(", text)) == 2, text
+        assert "& $80) << 1" not in text
+
+
+def test_the_tempo_test_prints_as_one_overflow_instead_of_its_three_xors():
+    """``BVC`` after ``SBC`` is the V flag; the flag algebra is not the program."""
+    for rel, secs in ((EMOMYST, 30), (EOTW, 20)):
+        text = decompiled(rel, seconds=secs).text
+        assert re.search(r"if overflow\(rec\[x/7 \+ 3\]\.timer_2 - \w+\)", text), text

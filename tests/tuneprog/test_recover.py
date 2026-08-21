@@ -14,8 +14,8 @@ def _snip(play, cells=(), calls=6):
     return _names(asm(PLAY, *init, "play:", *play, "RTS", *data), calls=calls)
 
 
-def _names(code, calls=6):
-    _T, prog = tuneprog(code, calls=calls, s4=True)
+def _names(code, calls=6, **kw):
+    _T, prog = tuneprog(code, calls=calls, s4=True, **kw)
     view = S.view(prog)
     return view, R.recover(view, S.structure(view))
 
@@ -256,3 +256,73 @@ def test_a_block_the_sid_never_reads_wholesale_is_not_an_image():
         calls=3,
     )
     assert not names.image and view.storage
+
+
+def _vmap(vals, play=("LDA #$0A", "STA $D405,Y")):
+    """A tune that reads its SID register offset from a three-entry table."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDX cnt",
+        "LDY vmap,X",
+        *play,
+        "INC cnt",
+        "LDA cnt",
+        "CMP #$03",
+        "BNE out",
+        "LDA #$00",
+        "STA cnt",
+        "out: RTS",
+        "cnt: BRK",
+        "vmap: BRK",
+        "BRK",
+        "BRK",
+        "tune: BRK",
+    )
+    data = {code.labels["vmap"] + i: v for i, v in enumerate(vals)}
+    data.update({code.labels["tune"] + i: i for i in range(3)})
+    return _names(code, calls=6, data=data)
+
+
+def test_a_table_of_the_sid_voice_strides_is_the_voice_map():
+    _view, names = _vmap((0, 7, 14))
+    assert _role(names, "voice_map") == {"voice_map"} and names.voicemap
+
+
+def test_a_table_that_is_not_the_voice_strides_is_not_the_voice_map():
+    _view, names = _vmap((0, 7, 13))
+    assert not names.voicemap and not _role(names, "voice_map")
+
+
+def test_a_value_is_an_index_wherever_the_structuring_left_its_definition():
+    """The load and the table read sit in different blocks; the role is the value's."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cur",
+        "STA cnt",
+        "RTS",
+        "play: LDX cur",
+        "LDA cnt",
+        "AND #$01",
+        "BEQ out",  # the branch keeps the load and the table read in two blocks
+        "LDA tab,X",
+        "STA $D400",
+        "out: INC cnt",
+        "INC cur",
+        "RTS",
+        "cur: BRK",
+        "cnt: BRK",
+        "tab: BRK",
+    )
+    view, names = _names(code, calls=6)
+    cur = next(r for r in view.storage if r.base == code.labels["cur"])
+    assert names.role[cur.id] == "cursor"
+
+
+def test_a_table_a_per_voice_store_reads_is_that_register_s_image():
+    """A merged access indexes the register file; the store's own base still names it."""
+    _view, names = _vmap((0, 7, 14), play=("LDA tune,X", "STA $D400,Y"))
+    assert _role(names, "sid_image") == {"freq_lo"}

@@ -9,7 +9,9 @@ import re
 
 import pytest
 
-from _hvsc import DIA, LINUS, body, decompiled, load_addrs, switches
+from deity_informant.tuneprog import pipeline, printer
+
+from _hvsc import DIA, LINUS, body, decompiled, load_addrs, switches, traced
 
 pytestmark = pytest.mark.hvsc
 
@@ -92,7 +94,8 @@ def test_blocks_a_and_b_print_as_the_records_their_play_time_stride_names():
     text, names = run.text, run.names
     split = [(r, v) for r, v in names.split.items() if v[1] == 7]
     assert len(split) == 1, names.split
-    g, _stride, fields = split[0][1]
+    g, _stride, fields, flip = split[0][1]
+    assert not flip  # the element index is outside: a record, not its transpose
     assert names.groups[g]["n"] == 6 and len(fields) >= 5
     assert re.search(r"%s\[x/7( \+ 3)?\]\.\w+" % g, text), text
     # init still clears the whole block with one loop, at stride 1
@@ -141,3 +144,11 @@ def test_do_it_again_is_the_same_player_at_another_address():
     assert names.groups["voice"]["stride"] == 7
     assert len(_dispatch(prog)) >= 3 and len(trace.cells) >= 10
     assert "goto" not in text
+
+
+def test_the_filter_cursor_keeps_its_role_under_the_static_closure():
+    """The closure splits the block the load sat in; a role is the value's, not a block's."""
+    _entry, trace = traced(LINUS, 30)
+    prog = pipeline.build(trace, "Je_suis_Linus_le_salaud.sid", static=True)[0]
+    view, st, names = pipeline.present(prog)
+    assert "cursor_1141" in printer.render(view, st, names)
