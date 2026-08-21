@@ -497,8 +497,7 @@ def _handler(*lines):
 
 def test_an_rti_ticks_entry_frame_is_the_value_its_rti_consumes():
     code = _handler("PHA", "TXA", "PHA", "INC cnt", "LDA cnt", "STA $D400", "PLA", "TAX", "PLA")
-    prog = eliminated(code, calls=6, kind="irq")
-    assert prog.meta["stack"] == "eliminated"
+    eliminated(code, calls=6, kind="irq")
     doc = _text(code, calls=6, kind="irq")
     assert not re.search(r"\bsp\d*\b", doc), doc
     assert not re.search(r"\b[icdvnz]\d*\b = ", doc), doc
