@@ -82,7 +82,7 @@ Two are committed as evidence:
 |---|---|---|
 | tune | `MUSICIANS/B/Becher_Patrick/Jodler.sid` | `MUSICIANS/B/Baumrucker_Steven/Playful_Professor-Math_Tutor.sid` |
 | container | PSID, load $C000–$CBA5, init $CB20, `play = 0`, 1 subtune | PSID, load $77DF–$8400, init $7F28, `play = 0`, 7 subtunes |
-| entry | CINV → `$C738`, 50 Hz video, 19,656 cycles | CINV → `$7F75`, CIA timer, 9,829 cycles (2 calls a frame) |
+| entry | CINV → `$C738`, host CIA, 16,422 cycles | CINV → `$7F75`, its own CIA timer, 9,829 cycles (2 calls a frame) |
 | epilogue | `JMP $EA31` | `JMP $EA31` |
 | horizon | 707 ticks, period 700, **complete** | 1,503 ticks (15 s), horizon |
 | divergences / traps / pinned inputs | 0 / 0 / 0 | 0 / 0 / 0 |
@@ -135,14 +135,20 @@ through the tuneprog tracer and compares its interrupt-framed grid with the
 oracle's: **0 of 3,000 frames differ**. It reaches its `RTI` only because the
 tracer pushes the three bytes `$FF48` saved.
 
-Neither evidence tune could serve, and both refusals are measurements of their
-own. `Jodler` carries PSID `speed = 1` and programs no timer of its own, so
-`sidplayfp` ticks it at 16,422 cycles (985,248/60) where our cadence says 19,656
-(PAL video) — the header's speed word is not in `machine._cadence`, and 28 of the
-37 carry a set speed bit. `Playful Professor` and Cox's `Caverns of Eriban` are
-refused by `grid.sidtrace_clock`, which takes the period from the median gap
-between raises that carried a write: that is the *burst* period of a tune writing
-every 6th or 7th frame, not the frame. Both are plan rows.
+That comparison frames each side by *its own* clock, so it is a claim about the
+frame, not about the cadence — what carries the cadence is the CSV's own
+interrupt instants, and they found the defect this prototype left open (now
+fixed). `Jodler` carries PSID `speed = 1` and programs no timer of its own, so the
+driver ticks it on the host's CIA at 16,422 cycles where we said 19,656 (PAL
+video); lft's RSID is driven by the KERNAL's own CIA at the same rate and was
+mis-clocked the same way.
+`test_the_cadence_is_the_oracles_own_interrupt_period` decides all four classes
+against those raises; 28 of the 37 carry a set speed bit.
+
+`Playful Professor` and Cox's `Caverns of Eriban` are still refused by
+`grid.sidtrace_clock`, which takes the period from the median gap between raises
+that carried a write: that is the *burst* period of a tune writing every 6th or
+7th frame, not the frame. That one stays a plan row.
 
 ## 6. What the model still does not carry
 

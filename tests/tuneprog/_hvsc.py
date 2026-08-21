@@ -52,7 +52,7 @@ def tune(name):
 
 def traced(relpath, seconds, song=None, override=None, until_period=False, chunk=256):
     """Trace ``seconds`` of music (or up to a state repeat): ``(entry, trace)``."""
-    img, schedule = find_entries(tune(relpath))
+    img, schedule = find_entries(tune(relpath), song=song)
     entry = schedule[0]
     calls = int(seconds * PAL_CLOCK / entry.cycles_per_tick)
     tr = Tracer(img, entry, song=song, override=override)
