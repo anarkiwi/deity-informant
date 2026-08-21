@@ -283,6 +283,10 @@ def test_prologues_the_trace_contradicts_keep_the_while():
     assert not _fors(S.structure_proc(_chain(counts=(4, 5, 4))))
 
 
+def test_a_chain_edge_the_trace_never_took_keeps_the_while():
+    assert not _fors(S.structure_proc(_chain(counts=(4, 4, 0), cover=(4, 4, 0))))
+
+
 def test_prologues_the_index_does_not_order_keep_the_while():
     swapped = ((0, "j1"), (2, "j2"), (1, "x"))  # copy 0 names 2 and copy 2 names 1
     assert not _fors(S.structure_proc(_chain(vals=(0, 2, 1), cases=swapped)))
