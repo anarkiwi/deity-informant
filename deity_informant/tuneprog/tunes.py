@@ -23,7 +23,9 @@ HVSC = {
     "Je_suis_Linus_le_salaud.sid": "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid",
     "Jodler.sid": "MUSICIANS/B/Becher_Patrick/Jodler.sid",
     "Monty_on_the_Run.sid": "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid",
-    "Playful_Professor-Math_Tutor.sid": "MUSICIANS/B/Baumrucker_Steven/Playful_Professor-Math_Tutor.sid",
+    "Playful_Professor-Math_Tutor.sid": (
+        "MUSICIANS/B/Baumrucker_Steven/Playful_Professor-Math_Tutor.sid"
+    ),
 }
 
 
