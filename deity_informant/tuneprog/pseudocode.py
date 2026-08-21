@@ -126,7 +126,7 @@ class Printer:
             if not self.one_field(r, stride, pos, span):
                 return None
             off = pos - pos % stride
-            i = str(pos % stride) if idx is None else self.ivar(idx, 1) or _bare(self.expr(idx))
+            i = self.ivar(idx, 1) or _bare(self.expr(idx)) if idx is not None else str(pos % stride)
             return "%s[%s].%s" % (g, i, fields.get(off, "f%02X" % off))
         off, elem = pos % stride, pos // stride
         i = str(elem)

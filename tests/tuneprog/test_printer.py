@@ -355,15 +355,16 @@ def test_an_unknown_region_prints_as_raw_memory():
     assert p.cell(-99, 0x1234) == "mem[$1234]"
 
 
-def _transposed(extra=()):
+def _transposed(extra=(), pre=()):
     """A block one init loop made, walked ``base + n*3 + v`` by the voice index."""
     code = asm(
         PLAY,
-        "init: LDX #$08",
+        "init: LDX #$0B",
         "clr: LDA #$00",
         "STA blk,X",
         "DEX",
         "BPL clr",
+        *pre,
         "LDX #$02",
         "c2: STA v1,X",
         "STA v2,X",
@@ -394,19 +395,26 @@ def _transposed(extra=()):
         "BRK",
         "blk: BRK",
     )
-    data = {code.labels["blk"] + i: 0 for i in range(9)}
+    data = {code.labels["blk"] + i: 0 for i in range(12)}
     return printed(code, calls=6 + 3 * bool(extra), data=data)
 
 
 def test_a_block_walked_field_outside_element_inside_prints_as_a_record():
     doc = _transposed()
-    assert re.search(r"^voice_2\[3\]  \$\w+ 9 bytes, stride 1, 3 fields$", doc, re.M), doc
+    assert re.search(r"^voice_2\[3\]  \$\w+ 12 bytes, stride 1, 3 fields$", doc, re.M), doc
     for f in ("f00", "f03", "f06"):
         assert "voice_2[v].%s" % f in doc, doc
     tick = "\n".join(proc_body(doc, "tick"))
     assert not re.search(r"b\w{4}\[", tick), tick  # no flat address left in the tick
     init = "\n".join(proc_body(doc, "init"))
     assert re.search(r"b\w{4}\[v\] = 0", init), init  # the clear loop reaches every field
+
+
+def test_a_field_only_one_constant_access_names_is_listed_with_the_others():
+    """The play phase decides the layout; any access inside a field still prints as one."""
+    doc = _transposed(pre=("LDA #$05", "STA blk+9"))
+    assert re.search(r"^voice_2\[3\]  \$\w+ 12 bytes, stride 1, 4 fields$", doc, re.M), doc
+    assert "  .f09 " in doc and "voice_2[0].f09 = 5" in doc, doc
 
 
 def test_a_block_something_reads_as_a_table_is_not_that_record():

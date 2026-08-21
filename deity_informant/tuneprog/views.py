@@ -138,9 +138,10 @@ def decorate(prog, names, folds=None, facts=None):
 def _accesses(prog, procs=None):
     """``[(region, address expression, envelope low, envelope high)]`` over ``procs``.
 
-    Byte accesses only, which is what the split decides on: the S6 word view runs
-    after :func:`decorate` and names regions, not addresses, so it has no envelope
-    to offer and the printer keeps the flat address for one.
+    Byte accesses only. A split is decided once (:func:`_splittable` refuses a
+    region already split) and the S6 word view carries region ids, not addresses,
+    so a 16-bit access offers no envelope -- and one that offers none never prints
+    as a field (:meth:`~.pseudocode.Printer.one_field`), so it cannot be misnamed.
     """
     for name, p in prog.procs.items():
         if procs is not None and name not in procs:
@@ -242,7 +243,7 @@ def transpose_split(prog, names, facts):
     for n, rids in facts.idxvar.items():
         for rid in rids if n in counts else ():
             want.setdefault(rid, set()).add(counts[n])
-    spans = _spans(prog, rgn, facts.tick)
+    spans, every = _spans(prog, rgn, facts.tick), _spans(prog, rgn)
     for r in prog.storage:
         k = want.get(r.id, set())
         if len(k) != 1 or not _splittable(r, names):
@@ -252,7 +253,9 @@ def transpose_split(prog, names, facts):
         if r.size % k or r.size // k < 2 or not _transposed(seen, k):
             continue
         fields = {}
-        for o in sorted({o - o % k for o, _w in seen}):
+        # a field is listed wherever an access stays inside it, in any phase: the
+        # play phase alone decides the layout, but any of them can print as one
+        for o in sorted({o - o % k for o, w in every[r.id] if o // k == (o + w - 1) // k}):
             role = _field_role(facts, r, (o,)) or sidf.get(r.zero + o, "")
             fields[o] = unique_name(role or "f%02X" % o, set(fields.values()))
         g = unique_name("voice" if k == 3 else "rec", set(names.groups))
