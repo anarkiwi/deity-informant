@@ -38,7 +38,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py`, over a per-copy column base and the range a branch proves for the index |
 | S2b' | the bounded static closure of untaken branch directions, as zero-coverage sites the same front end builds (`--closure static`) | `closure.py` |
-| S2c | sibling copies as one body: the *exact* static correspondence between k copies of one template -- bases from the chain the procedures carry, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- then the fold that makes the copy index a value, so the certified program has one body under `v` with a per-copy column table | `siblings.py`, `copyrows.py`, `copymerge.py` |
+| S2c | sibling copies as one body: the *exact* static correspondence between k copies of one template -- bases and the chain relation read from the post-init **image**, one gapped opcode alignment per pair, and a family only while every copy's operand map is a function -- then the fold that makes the copy index a value, so the certified program has one body under `v` with a per-copy column table | `siblings.py`, `copyrows.py`, `copymerge.py` |
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
@@ -204,7 +204,11 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
 `copies` is the fold S2c proved. A family is k chained copies of one template
 that became one body under the copy index; `rows` is how many instructions
 folded, `columns` how many operands the copies disagree on (each one a per-copy
-table entry at `table`). `coverage` counts merged statements by which copies ran
+table entry at `table`). Discovery reads the image, not the blocks a build
+happened to make: a copy may open where a branch decides or where the image's
+own control flow lands, its executions are the count of the run that reaches it,
+and falling into the next copy is a chain edge like a jump. So the families are
+the same under `--closure trace` and `--closure static`. `coverage` counts merged statements by which copies ran
 them: a `0` is a statement the trace saw in another copy and the correspondence
 says is this one's too, which the printed program marks per statement. A family
 the index cannot name -- a cross-copy edge, an operand no table can express --

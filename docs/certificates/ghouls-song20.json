@@ -6,34 +6,34 @@
  ],
  "copies": {
   "coverage": {
-   "1,1,1,0": 4,
-   "1,1,1,1": 0
+   "0,1,1": 6,
+   "1,0,0": 17,
+   "1,1,1": 165
   },
   "families": [
    {
     "bases": [
-     "$6996",
-     "$69BA",
-     "$69DE",
-     "$6A02"
+     "$6234",
+     "$6421",
+     "$6610"
     ],
-    "columns": 2,
-    "copies": 4,
+    "columns": 37,
+    "copies": 3,
     "proc": "tick",
-    "rows": 3,
+    "rows": 160,
     "table": "$0200"
    }
   ],
   "refused": [],
-  "statements": 4,
-  "unverified": 4
+  "statements": 188,
+  "unverified": 23
  },
  "cost": {
   "calls_per_second": 28735,
-  "ir_blocks": 275,
+  "ir_blocks": 164,
   "ir_procs": 2,
-  "ir_statements": 527,
-  "regions": 70,
+  "ir_statements": 305,
+  "regions": 43,
   "sites": 553,
   "trace_calls": 96,
   "verify_cpu_seconds": 0.0

@@ -6,17 +6,18 @@
  ],
  "copies": {
   "coverage": {
-   "1,0": 76,
-   "1,1": 5
+   "1,0,0": 76,
+   "1,1,1": 5
   },
   "families": [
    {
     "bases": [
      "$6234",
-     "$6421"
+     "$6421",
+     "$6610"
     ],
     "columns": 34,
-    "copies": 2,
+    "copies": 3,
     "proc": "tick",
     "rows": 103,
     "table": "$0200"
@@ -28,9 +29,9 @@
  },
  "cost": {
   "calls_per_second": 34927,
-  "ir_blocks": 115,
+  "ir_blocks": 116,
   "ir_procs": 2,
-  "ir_statements": 235,
+  "ir_statements": 234,
   "regions": 46,
   "sites": 252,
   "trace_calls": 22,
