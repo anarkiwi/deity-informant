@@ -90,9 +90,9 @@ in **65 lines / 621 tokens**. It covers all three songs and every fx bit.
 | the current print's program | 252 | 2,282 |
 
 **The measured gap is 252 → 65, i.e. 3.9x, of which the factoring in §4 closes
-2.2x by hand.** The state header is a second gap: 56 lines that name 30 scalars
-and 3 tables, against 14 lines of table shapes in the factored form, and against
-zero lines of the 1,942 data bytes actually printed as data by either.
+2.2x by hand.** The state header is a second gap: 56 lines (5 meta, 39 state, 9
+const, 2 inputs) against 14 lines of table shape in the factored form — and
+neither prints a byte of the 1,942 as data.
 
 ## 3. Q2 — where the statements live
 
