@@ -285,7 +285,9 @@ flags packed (`frames.contract`), the terminating `RTI` consumes exactly it, and
 the interrupt disable the machine sets is the tick's first statement
 (`build._irq_entry`). Nothing names the pushed return address at `SP+2`/`SP+3`, so
 a tick that reads *those* -- or reads the status by a route no slot places, such
-as `TSX` -- is residual as any other unplaceable read is. `depth` is the deepest slot below an entry pointer the analysis
+as `TSX` -- is residual as any other unplaceable read is; and a tick some other
+procedure also calls gets no contract at all, since a `JSR` puts a return-address
+byte where the interrupt put the status. `depth` is the deepest slot below an entry pointer the analysis
 placed (reads and writes, callees included), `"unknown"` where an access is not a
 slot at all.
 
@@ -306,11 +308,14 @@ no stack page, so its `period`, `first_repeat` and `complete` come from the
 page-exclusive stream; a residual program keeps its pushes and must claim on the
 page-inclusive one — a stack byte it reads back is state like any other, and
 hashing without it would report a period the tune does not have. `--until-period`
-stops at the earliest repeat of either stream, which S4 may then reject: a
-program it calls residual whose trace stopped on the page-free witness alone goes
-back to S1 and traces on to the page-inclusive one (`pipeline._horizon_stage`,
-recorded as `"stack"` in `state.json`), so the certificate claims completeness
-where completeness is provable rather than reporting `complete: false`. Eliminating a stack
+stops at the earliest repeat of either stream, which S4 may then reject. Its
+verdict is recorded as `"stack"` in `state.json`; a program it calls residual goes
+back to S1 and traces on where only the page-free witness exists
+(`pipeline._horizon_stage`), and the horizon *every* run certifies is then the
+witness that verdict allows -- one rule (`_certified` over `Trace.witness(free)`)
+for the single-song path and for `--songs all` alike. So the certificate claims
+completeness where completeness is provable rather than reporting
+`complete: false`. Eliminating a stack
 therefore moves no certificate's period or divergence, and can only shorten a
 horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
 (8,640), still `complete`. A subtune that stops on a repeat certifies

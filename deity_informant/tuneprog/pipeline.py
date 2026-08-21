@@ -360,6 +360,8 @@ def stage_verify(args, out, st, t0, prog=None, log=print):
         return verify_all(args, out, st, t0, prog, log)
     trace = Trace.load(out)
     src = (out / "tuneprog.py").read_text()
+    # the horizon follows the witness S4's verdict allows, exactly as verify_all's
+    st["calls"] = _certified(args, trace.witness(_free(st)), trace.meta["calls"])
     ref = V.Reference(trace, st["calls"])
     v = V.Verifier(prog, ref, src=src)
     resume = out / "verify.pkl"

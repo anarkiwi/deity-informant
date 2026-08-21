@@ -8,11 +8,14 @@ wrongly is a divergence and not a printed-text difference.
 import json
 import re
 
+import pytest
+
 from deity_informant.tuneprog import frames, idioms, live, pipeline, stack, structure
 from deity_informant.tuneprog.frame import frames as name_frames
 from deity_informant.tuneprog.ir import (
     Bin,
     Block,
+    Call,
     Const,
     Let,
     Load,
@@ -520,24 +523,32 @@ def test_a_tick_that_pops_past_its_entry_status_keeps_the_stack():
     assert prog.meta["stack"]["procs"] == ["tick"]
 
 
-def _rti_proc(slot, kind="irq"):
+def _rti_proc(slot, kind="irq", caller=False):
     """A one-block tick whose ``RTI`` reads the entry frame at ``slot``."""
     a = Bin("|", Const(STACK_LO, 2), Bin("+", Var(SP), Const(slot), 1), 2)
     blk = Block("b0", [Let("p", Load("ram", a, 1, STACK_LO, STACK_HI, -1))], Return())
-    proc = Proc("tick", (SPREG,), (), {"b0": blk}, "b0", "tick")
+    procs = {"tick": Proc("tick", (SPREG,), (), {"b0": blk}, "b0", "tick")}
+    if caller:
+        init = Block("i0", [Call("tick")], Return())
+        procs["init"] = Proc("init", (), (), {"i0": init}, "i0", "init")
     meta = {"tick_proc": "tick", "entry": {"kind": kind}}
-    return Tuneprog(meta=meta, storage=[], inputs=[], procs={"tick": proc})
+    return Tuneprog(meta=meta, storage=[], inputs=[], procs=procs)
 
 
 def test_the_entry_contract_covers_the_status_slot_and_nothing_else():
     """Only the byte the machine pushed as ``P`` is a value: the pc bytes are not."""
-    assert sorted(frames.contract(_rti_proc(1), "tick")) == [frames.STATUS_SLOT]
-    assert frames.contract(_rti_proc(1, kind="sub"), "tick") == {}
-    assert frames.contract(_rti_proc(1), "init") == {}
+    assert sorted(frames.contract(_rti_proc(1))["tick"]) == [frames.STATUS_SLOT]
+    assert frames.contract(_rti_proc(1, kind="sub")) == {}
     ok = frames.analyse(_rti_proc(1))["tick"]
     assert not ok.opaque and len(ok.plan) == 1 and not ok.foreign
     for slot in (0, 2, 3):  # a pop at another depth, and the pushed return address
         assert frames.analyse(_rti_proc(slot))["tick"].opaque, slot
+
+
+def test_a_tick_its_own_init_calls_gets_no_entry_contract():
+    """Entered by ``JSR`` too, ``SP+1`` is a return-address byte, not the status."""
+    assert frames.contract(_rti_proc(1, caller=True)) == {}
+    assert frames.analyse(_rti_proc(1, caller=True))["tick"].opaque
 
 
 SCRATCH = (
@@ -552,17 +563,19 @@ SCRATCH = (
 )
 
 
-def test_until_period_traces_a_residual_program_to_the_page_inclusive_repeat(tmp_path):
+@pytest.mark.parametrize("chunk", [8, 512])
+def test_until_period_traces_a_residual_program_to_the_page_inclusive_repeat(tmp_path, chunk):
     """S4 decides the footprint, so the horizon it stopped on may be the wrong one.
 
-    Page-free this tune repeats every tick; its scratch byte repeats every 256.
+    Page-free this tune repeats every tick; its scratch byte repeats every 256. A
+    chunk that spans both repeats needs no second trace, and still certifies on 256.
     """
     out = tmp_path / "o"
     sid = tmp_path / "scratch.sid"
     code = asm(PLAY, *SCRATCH)
     sid.write_bytes(psid({PLAY: code}, init=code.labels["init"], play=code.labels["play"]))
     argv = [str(sid), "--out", str(out), "--until-period", "--max-calls", "1000"]
-    assert pipeline.main(argv + ["--chunk", "8", "--no-text", "--prefix", "0"]) == 0
+    assert pipeline.main(argv + ["--chunk", str(chunk), "--no-text", "--prefix", "0"]) == 0
     doc = json.loads((out / "certificate.json").read_text())
     sub = doc["subtunes"][0]
     assert doc["stack"]["procs"] == ["tick"]

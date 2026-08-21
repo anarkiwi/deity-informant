@@ -182,10 +182,7 @@ class _Builder:
         entry = self.enter(cp, cp.entry, None)
         blocks.update(self.extra)
         self.extra = {}
-        proc = Proc(cp.name, (), (), blocks, entry, cp.kind)
-        if cp.kind == "tick" and self.trace.meta["entry"]["kind"] == "irq":
-            _irq_entry(proc)
-        return proc
+        return Proc(cp.name, (), (), blocks, entry, cp.kind)
 
     def node_blocks(self, cp, pc, op, node, phase, mn=None):
         lbl = "L%04X_%02X" % (pc, op)
@@ -350,18 +347,25 @@ class _Builder:
 IRQ_ENTRY = "entry_irq"
 
 
-def _irq_entry(proc):
-    """The machine's own entry action, ahead of the handler: the interrupt disable.
+def _irq_entry(procs, trace):
+    """The machine's own entry action, ahead of an ``irq`` tick: the interrupt disable.
 
     The frame it pushed with it is the tick's contract, not a store of the program
-    (:func:`~.frames.contract`), so only the flag the machine sets is a statement.
+    (:func:`~.frames.contract`), so only the flag the machine sets is a statement --
+    and only where the tick has no caller of its own to enter it another way.
     """
+    tick = next((n for n, p in procs.items() if p.kind == "tick"), None)
+    if tick is None or trace.meta["entry"]["kind"] != "irq":
+        return procs
+    if any(tick in callees(p) for p in procs.values()):
+        return procs
+    proc = procs[tick]
     head = proc.blocks[proc.entry]
     proc.blocks[IRQ_ENTRY] = Block(
         IRQ_ENTRY, [Let(REGVAR[10], Const(1, 1))], Goto(proc.entry), head.src, head.count
     )
     proc.entry = IRQ_ENTRY
-    return proc
+    return procs
 
 
 def _seal(proc):
@@ -453,7 +457,7 @@ def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
     """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (design section 4)."""
     store = Storage(trace, regions)
     b = _Builder(trace, lifted, store, procs, plan)
-    out = {name: b.build_proc(cp) for name, cp in procs.items()}
+    out = _irq_entry({name: b.build_proc(cp) for name, cp in procs.items()}, trace)
     for p in out.values():
         _seal(p)
     _wire(out)
