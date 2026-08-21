@@ -5,7 +5,9 @@ Public API:
 * ``MachineImage.from_sid(data)`` -- 64 KiB pre-init image (power-on RAM overlaid
   with the load band) plus the header facts a driver needs.
 * ``find_entries(data, mem=None, written=None)`` -- ``(MachineImage, [Entry(kind,
-  addr, cycles_per_tick, source)])``; raises :class:`Refusal`.
+  addr, cycles_per_tick, source, kernal)])``; raises :class:`Refusal`.
+* ``entry_frame(entry)`` / ``frame_slots(entry)`` -- what the machine pushed below
+  the return address entering it, and the slot each byte sits at.
 * ``init_runner(vm, pc, cache, lifter, budget)`` -- run ``init`` to its balancing
   RTS or to a ``JMP *`` idle loop; returns the idle pc or ``None``.
 * ``port_bank(mem)`` -- ``$D000-$DFFF`` mapping (``io``/``charrom``/``ram``) from
@@ -39,6 +41,10 @@ class Refusal(Exception):
         self.detail = detail
 
 
+STATUS = "P"  # the status byte the 6510 pushes at an interrupt
+KERNAL_SAVE = (0, 1, 2)  # what the $FF48 prologue pushes on top of it: A, X, Y
+
+
 @dataclass(frozen=True)
 class Entry:
     """One play entry of the schedule."""
@@ -47,9 +53,32 @@ class Entry:
     addr: int
     cycles_per_tick: int
     source: str  # cadence source: pal_video / ntsc_video / cia_timer / ...
+    kernal: bool = False  # "irq" only: the vector is CINV, so the KERNAL dispatches
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        if self.kind != "irq":
+            del d["kernal"]  # a subroutine entry has no vector to dispatch through
+        return d
+
+
+def entry_frame(entry):
+    """What the machine pushes below the return address entering ``entry``, in push order.
+
+    :data:`STATUS` is the byte the 6510 pushes at an interrupt; a CINV entry is
+    reached through the KERNAL prologue at ``$FF48``, which saves A, X and Y on
+    top of it -- exactly the three ``$EA81`` pops before its ``RTI``.
+    """
+    get = entry.get if isinstance(entry, dict) else lambda k, d=None: getattr(entry, k, d)
+    if get("kind") != "irq":
+        return ()
+    return (STATUS,) + (KERNAL_SAVE if get("kernal") else ())
+
+
+def frame_slots(entry):
+    """``{slot above the entry pointer: what the machine left there}``."""
+    frame = entry_frame(entry)
+    return {len(frame) - i: w for i, w in enumerate(frame)}
 
 
 @dataclass
@@ -192,8 +221,8 @@ def find_entries(data, mem=None, written=None):
     ``play != 0`` gives a ``sub`` entry at the header play address; otherwise the
     installed handler is taken from the init trace, falling back to
     :func:`c64.installed_handler` over the caller's own post-init ``mem`` and
-    write set ``written``. Refuses (``Refusal``) when a second interrupt source
-    is armed (CIA-2 timer or an NMI vector) or when no entry can be found.
+    write set ``written``. A CINV vector carries ``kernal`` (see
+    :func:`entry_frame`). Refuses on a second interrupt source or no entry.
     """
     img = MachineImage.from_sid(data)
     cycles, source = _cadence(data)
@@ -206,15 +235,17 @@ def find_entries(data, mem=None, written=None):
             )
     if img.play:
         return img, [Entry("sub", img.play, cycles, source)]
-    handler = None
+    handler, kernal = None, False
     if topo is not None:
-        handler = topo.irq_vector or topo.hw_irq_vector
+        handler, kernal = (
+            (topo.irq_vector, True) if topo.irq_vector else (topo.hw_irq_vector, False)
+        )
     if handler is None and mem is not None:
         found = c64.installed_handler(mem, written or set(), (img.lo, img.hi))
-        handler = found[0] if found else None
+        handler, kernal = found if found else (None, False)
     if not handler:
         raise Refusal("no entry", "play=0 and no interrupt vector installed")
-    return img, [Entry("irq", handler, cycles, source)]
+    return img, [Entry("irq", handler, cycles, source, kernal)]
 
 
 def is_idle(mem, pc):

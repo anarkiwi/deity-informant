@@ -24,12 +24,12 @@ import numpy as np
 from ..lifter import lift
 from .. import c64
 from .ir import STACK_HI, STACK_LO
-from .machine import Refusal, init_runner
+from .machine import STATUS, Refusal, entry_frame, init_runner
 from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
-VERSION = 4  # resume-state layout; an older pickle restarts rather than resumes
+VERSION = 5  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 
@@ -132,7 +132,11 @@ class Tracer:
             vm.push_frame(None, 0x0002, self.entry.addr)
         else:
             vm._push(0x00)
-            vm._push_status()
+            for what in entry_frame(self.entry):
+                if what is STATUS:
+                    vm._push_status()
+                else:
+                    vm._push(reg[what])
             vm.push_frame(None, 0x0000, self.entry.addr)
             reg[10] = 1
             if "video" in self.entry.source:

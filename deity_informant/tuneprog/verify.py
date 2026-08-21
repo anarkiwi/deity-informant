@@ -29,6 +29,7 @@ from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
 from .interp import Interp, Machine
 from .ir import TrapError
+from .machine import STATUS, entry_frame
 from .tracevm import REG_IN
 
 PAL, NTSC = 985248, 1022730
@@ -149,19 +150,19 @@ class Verifier:
         return self
 
     # ---- the machine's side of a tick --------------------------------------
-    def _enter(self, kind="sub"):
-        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame.
+    def _enter(self, entry=None):
+        """Push the frame the machine pushes: a JSR return, or the interrupt frame.
 
-        The interrupt disable the machine sets with it is the tick's own first
-        statement (:func:`~.build._irq_entry`), so the entry flags are the frame.
+        :func:`~.machine.entry_frame` is that frame -- the status byte, and A/X/Y
+        too where the KERNAL dispatched. The interrupt disable is the tick's own
+        first statement (:func:`~.build._irq_entry`), so the entry flags are it.
         """
         M = self.M
+        frame = entry_frame(entry or {"kind": "sub"})
         M.push(0x00)
-        if kind == "sub":
-            M.push(0x01)
-        else:
-            M.push(0x00)
-            M.push(_status(M.regs))
+        M.push(0x00 if frame else 0x01)
+        for what in frame:
+            M.push(_status(M.regs) if what is STATUS else M.regs[what])
 
     def _call_proc(self, proc):
         M = self.M
@@ -245,7 +246,7 @@ class Verifier:
         M.sid.clear()
         M.io.clear()
         M.src.clear()
-        self._enter(self.ref.entry["kind"])
+        self._enter(self.ref.entry)
         try:
             self._call_proc(self.tick)
         except TrapError as e:

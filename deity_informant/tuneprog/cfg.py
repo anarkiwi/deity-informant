@@ -127,6 +127,7 @@ def build_procs(trace, lifted=None, regions=None):
         proc = Proc(name=names[entry], entry=entry, kind=roles[entry][0], roles=tuple(roles[entry]))
         _walk(trace, proc, entry, out, keys, variants, tails, lifted)
         proc.summary = _summary(trace, proc, regions)
+        # a tail call grows no frame: no recursion here, but a cycle the IR call graph has
         callgraph[entry] = {t for n in proc.nodes.values() for t in n["call"] if not n["tail_call"]}
         procs[proc.name] = proc
     _no_recursion(callgraph, names)

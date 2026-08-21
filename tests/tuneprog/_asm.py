@@ -130,13 +130,24 @@ def sid_image(blocks, init, play, data=None, load=0x1000):
     return MachineImage.from_sid(psid(blocks, init, play, data, load))
 
 
-def trace_prog(blocks, init, play, calls=2, data=None, load=0x1000, cycles=19656, kind="sub", **kw):
+def trace_prog(
+    blocks,
+    init,
+    play,
+    calls=2,
+    data=None,
+    load=0x1000,
+    cycles=19656,
+    kind="sub",
+    kernal=False,
+    **kw,
+):
     """Trace a synthetic tune; returns ``(Trace, Tracer)``."""
     from deity_informant.tuneprog.machine import Entry
     from deity_informant.tuneprog.trace import Tracer
 
     img = sid_image(blocks, init, play, data, load)
-    t = Tracer(img, Entry(kind, play, cycles, "test"), **kw)
+    t = Tracer(img, Entry(kind, play, cycles, "test", kernal), **kw)
     t.run_init()
     t.run_calls(calls)
     return t.trace(), t

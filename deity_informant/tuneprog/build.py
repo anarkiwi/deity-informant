@@ -27,7 +27,6 @@ from .ir import (
     If,
     Let,
     Proc,
-    REGIDX,
     REGVAR,
     Return,
     Rgn,
@@ -51,8 +50,7 @@ from .lower import (
     tgt,
 )
 from .irwalk import callees
-from .machine import Refusal
-from .ssa import liveness
+from .wire import wire
 
 
 class _Builder:
@@ -377,46 +375,6 @@ def _seal(proc):
     return proc
 
 
-def _wire(procs):
-    """Fill in params/rets/args by liveness over the (acyclic) call graph."""
-    order, seen = [], set()
-
-    def visit(n):
-        if n in seen:
-            return
-        seen.add(n)
-        for c in callees(procs[n]):
-            visit(c)
-        order.append(n)
-
-    for n in procs:
-        visit(n)
-    for n in order:
-        p = procs[n]
-        rets = {REGIDX[s.n] for b in p.blocks.values() for s in b.stmts if _isreg(s)}
-        for c in callees(p):
-            rets |= set(procs[c].rets)
-        p.rets = tuple(sorted(rets))
-        vals = tuple(Var(REGVAR[i]) for i in p.rets)
-        for b in p.blocks.values():
-            if type(b.term) is Return:
-                b.term = Return(vals)
-            for s in b.stmts:
-                if type(s) is Call:
-                    q = procs[s.proc]
-                    s.args = tuple(Var(REGVAR[i]) for i in q.params)
-                    s.rets = tuple(REGVAR[i] for i in q.rets)
-        live = liveness(p)[p.entry]
-        if not live <= set(REGIDX):
-            raise Refusal("copy index", "%s live at %s: %s" % (p.name, p.entry, sorted(live)))
-        p.params = tuple(sorted({REGIDX[n] for n in live} | set(p.rets)))
-    return procs
-
-
-def _isreg(s):
-    return type(s) is Let and s.n in REGIDX
-
-
 def _machine_image(trace):
     """Pre-init contents of the bands a tuneprog may read without an access relation.
 
@@ -460,7 +418,7 @@ def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
     out = _irq_entry({name: b.build_proc(cp) for name, cp in procs.items()}, trace)
     for p in out.values():
         _seal(p)
-    _wire(out)
+    wire(out)
     tick = [p.name for p in procs.values() if p.kind == "tick"]
     m = dict(trace.meta)
     m.update(meta or {})

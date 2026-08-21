@@ -34,6 +34,8 @@ LINUS = "Je_suis_Linus_le_salaud.sid"
 DIA = "Do_It_Again.sid"
 KNOB = "I_Could_Eat_a_Knob_at_Night.sid"
 GULDKORN = "Guldkornekspressen_Intro.sid"
+JODLER = "Jodler.sid"
+PROFESSOR = "Playful_Professor-Math_Tutor.sid"
 
 
 def tune_file(name):
