@@ -102,6 +102,12 @@ def sidtrace_clock(rows):
     """
     src = "since_video_irq" if any(r.since_video_irq is not None for r in rows) else "since_cia_irq"
     have = [r for r in rows if getattr(r, src) is not None]
+    timed = [r for r in rows if r.since_video_irq is not None or r.since_cia_irq is not None]
+    if len(have) < len(timed):  # the rest would drop out and leave a self-consistent multiple
+        raise ValueError(
+            "sidtrace rows split across two interrupt sources (%d of %d on %s)"
+            % (len(have), len(timed), src)
+        )
     off = [getattr(r, src) for r in have]
     at = sorted({r.cycle - o for r, o in zip(have, off)})
     if len(at) < 2:
