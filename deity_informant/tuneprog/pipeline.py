@@ -66,6 +66,7 @@ def add_args(ap):
     ap.add_argument("--sid-model", choices=sorted(MODEL_D41B), help="pin $D41B bit 0")
     ap.add_argument("--no-verify", action="store_true", help="skip S8 (no certificate)")
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
+    ap.add_argument("--eqsat", action="store_true", help="S6 expressions through an e-graph")
     ap.add_argument(
         "--no-merge", action="store_true", help="do not fold sibling copies onto one body"
     )
@@ -420,17 +421,18 @@ def _node(n):
     return d
 
 
-def present(prog):
+def present(prog, eqsat=False):
     """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
 
     Structuring, texture removal, 16-bit views and outlining; the argument is
-    never touched. Sibling copies are already one body (:mod:`.copymerge`).
+    never touched. Sibling copies are already one body (:mod:`.copymerge`); under
+    ``eqsat`` the expression passes go through :mod:`.eqsat` instead.
     """
     live = L.needed(prog)[0]
     keep = L.wants(prog, live)
     view = structure.view(prog, live, keep)
     copies = copyview.expand(view)
-    texture.clean(view, frame.deltas(prog))
+    texture.clean(view, frame.deltas(prog), eqsat=eqsat)
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
     facts = copyview.naming_facts(view)
@@ -457,7 +459,7 @@ def stage_print(args, out, prog=None):
         doc["stage"] = "S6"
         doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
         emit.write_certificate(cert, doc)
-    view, st, names = present(prog)
+    view, st, names = present(prog, eqsat=getattr(args, "eqsat", False))
     names.copies = copymerge.report(prog)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))

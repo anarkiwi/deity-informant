@@ -57,19 +57,19 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end    machine 322  tracevm 328  trace 337  tracedata 346  lift 227
+front end    machine 366  tracevm 328  trace 337  tracedata 346  lift 227
              cfg 311  regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
 program      ir 440  interp 248  irwalk 319  graph 82  lower 227  build 452
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 372
              verify 338  period 113
-presentation structure 356  loops 307  inline 199  texture 475  frame 51
+presentation structure 356  loops 307  inline 199  texture 491  frame 51
              word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
-             facts 284  recover 328  views 295
+             facts 284  recover 328  views 295  eqsat 283  eqrules 244  ranges 73
 text         pseudocode 468  printer 405
-driver       pipeline 506  resume 67  __init__ 134
+driver       pipeline 510  resume 67  __init__ 134
 oracle       grid 159  tunes 55
-baseline     ghidra_facts 219  ghidra_compare 182   49 modules, 14,451 lines
+baseline     ghidra_facts 219  ghidra_compare 182   52 modules, 15,125 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -85,7 +85,7 @@ Stage entry points, which are also the module boundaries:
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
     [--sid-model 6581|8580] [--no-merge] [--closure trace|static] \
-    [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
+    [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts] [--eqsat]
 ```
 
 S2c is on by default: where the front end proves k chained copies of one
@@ -102,6 +102,16 @@ states, as code no execution covers (the `closure` block of the certificate, the
 per-statement mark, and `closure: "static"` per subtune). It is off by default:
 it removes nearly every `trap 'untaken'` and costs the *covered* program its
 structuring (below).
+
+`--eqsat` is **experimental** and presentation-only. It routes the three S6
+expression passes -- `idioms.fold`, `texture.zerocarry` and `texture.propagate`
+-- through an `egglog` e-graph (`eqsat.py`): `eqrules.py` holds the rules, an
+interval analysis over the image and every store's envelope (`ranges.py`) gates
+the rewrites no peephole may take, and extraction picks the cheapest printed form
+under a total order, so the output is byte-stable. The certified program is never
+touched, and with the flag off every print is byte-identical. It needs the
+`eqsat` extra (`pip install -e ".[eqsat]"`); see the plan's P-EQSAT row for what
+it measured.
 
 `tools/tuneprog_certify.py` is the same pipeline as a standalone driver. Both
 are chunked: a long run exits 2 while work remains, so each invocation stays
