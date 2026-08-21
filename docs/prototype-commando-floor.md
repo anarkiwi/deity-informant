@@ -22,7 +22,7 @@ certificate are untouched: this is a measurement and a hand-derivation.
 | S4 blocks / procedures / regions | 115 / 3 / 58 |
 | S6 view statements (after texture removal) | 178 |
 | printed nodes (177 statements + 77 control) | 254 |
-| `tuneprog.md` lines | 414 = 56 header + 338 program |
+| `tuneprog.md` lines | 414 = 56 header + 252 program + 66 pc comments + 40 fences/blanks/headings |
 | printed program lines, blank/fence/pc-comment removed | 252 (2,282 tokens) |
 
 So "341" is the certified program; the reader sees 252 lines of pseudocode over a
