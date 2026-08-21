@@ -7,7 +7,8 @@ traced playroutine tick for tick, plus a readable pseudocode form of it.
 Design: [`tuneprog-decompiler-design.md`](tuneprog-decompiler-design.md).
 Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-follin.md),
 [goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md),
-[jch](prototype-jch.md), [kernal-entry](prototype-kernal-entry.md).
+[jch](prototype-jch.md), [kernal-entry](prototype-kernal-entry.md),
+[commando-floor](prototype-commando-floor.md).
 Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 ## Vocabulary
@@ -149,6 +150,17 @@ The window must cover at least two loops; sample well past the horizon.
 until python3 tools/tuneprog_period.py TUNE.sid --song 1 --calls 60000 \
     --out out/period --resume; do :; done
 ```
+
+`tools/tuneprog_floor.py OUTDIR` measures a finished output directory against the
+tune it came from: the load band split into executed code, data the trace
+reached and neither; `xz -9e` of each of those, of the print, of the executable
+and of the SID write log; every printed statement cross-tabulated by code range
+(`--code LO-HI:NAME`) and kind (SID write, 16-bit half or carry, index plumbing,
+data, control); and every `(b, b+1)` pair the print reads at one index, with the
+addresses the pair reached and whether any of them is ever written — the check
+that decides whether a paired read is a const-table row.
+[prototype-commando-floor.md](prototype-commando-floor.md) is what it was
+written for.
 
 Artefacts in `--out DIR`:
 
