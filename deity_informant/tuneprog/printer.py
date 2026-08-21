@@ -349,6 +349,8 @@ def _state(prog, names):
     for r in sorted(prog.storage, key=lambda x: x.base):
         if r.id < 0 or r.id in names.view or r.kind not in ("state", "init_constant"):
             continue
+        if r.id in names.split:
+            continue  # the split view heads the block with its fields
         if r.id in cells and r.size <= 2:
             continue  # a scalar the group view already lists, address by address
         if r.id not in half:

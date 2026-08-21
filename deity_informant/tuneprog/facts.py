@@ -11,9 +11,10 @@ from functools import reduce
 from math import gcd
 
 from .ir import Bin, Call, Const, Let, Load, SID_REG_LO, SID_REG_HI, Store, Var
-from .irwalk import addr_split, expand, loads, reachable, walk
+from .irwalk import addr_split, expand, loads, reachable, single_defs, walk
 
 VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
+SID_VOICE, SID_VOICES = len(VOICE_REG), 3  # the per-voice register block, and the voices
 GLOBAL_REG = {0xD415: "cutoff_lo", 0xD416: "cutoff_hi", 0xD417: "res_route", 0xD418: "mode_vol"}
 OPNAME = {"^": "eor", "|": "or", "&": "and", "+": "add", "-": "sub", "<<": "shl", ">>": "shr"}
 DEPTH, MAXOPS, MAXPAIRS = 4, 2, 24
@@ -81,24 +82,30 @@ class Facts:
         self.tick = reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
         for name, p in prog.procs.items():
             self.reads[name], self.writes[name] = set(), set()
+            whole = {n: e for n, e in single_defs(p).items() if not n.startswith("$")}
             for b in p.blocks.values():
-                self.block(name, b)
+                self.block(name, b, whole)
 
-    def block(self, name, b):
+    def block(self, name, b, whole):
+        """One block's facts, over the procedure's definitions and the block's own.
+
+        What a value *reads* is a property of the value, so which block the
+        structuring left its definition in must not decide it; whether a *store* is
+        a simple self-update is a property of the statement, which stays local.
+        """
         defs = {}
         for s in b.stmts:
             if type(s) is Let:
                 if not s.n.startswith("$"):
                     defs[s.n] = s.e
-                self.value(name, expand(s.e, defs, DEPTH))
+                self.value(name, expand(s.e, whole, DEPTH))
             elif type(s) is Store:
-                v, a = expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH)
-                self.value(name, v)
-                self.value(name, a)
-                self.store(name, s, v, a)
+                self.value(name, expand(s.v, whole, DEPTH))
+                self.value(name, expand(s.a, whole, DEPTH))
+                self.store(name, s, expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH))
             elif type(s) is Call:
                 for a in s.args:
-                    self.value(name, expand(a, defs, DEPTH))
+                    self.value(name, expand(a, whole, DEPTH))
 
     def value(self, name, e):
         """Record what an expression reads: regions, index uses, pointer uses."""
@@ -147,14 +154,46 @@ def sid_name(addr):
     """``(field name, voice)`` for a SID register address."""
     if addr in GLOBAL_REG:
         return GLOBAL_REG[addr], None
-    v, k = divmod(addr - SID_REG_LO, 7)
+    v, k = divmod(addr - SID_REG_LO, SID_VOICE)
     return VOICE_REG[k], v
+
+
+def voice_maps(prog):
+    """Regions holding the SID's voice -> register-offset map, ``0, 7, 14``.
+
+    The same hardware fact as :data:`VOICE_REG`: a register file of three
+    identical blocks. An index read from such a table selects the *voice*, so
+    ``$D405 + map[v]`` is voice ``v``'s ``ad`` however the tune reaches it.
+    """
+    want = [SID_VOICE * i for i in range(SID_VOICES)]
+    out = set()
+    for r in prog.storage:
+        if r.id < 0 or r.kind not in ("const", "image") or elem_count(r) != SID_VOICES:
+            continue
+        top = (SID_VOICES - 1) * r.stride
+        if top < len(r.init) and [r.init[i * r.stride] for i in range(SID_VOICES)] == want:
+            out.add(r.id)
+    return out
+
+
+def elem_count(r):
+    """How many elements a region's stride divides it into."""
+    return -(-r.size // max(r.stride, 1))
+
+
+def sid_stores(facts):
+    """Every SID store as ``(base register, value)``, the per-voice ones included.
+
+    A merged access unites the copies' registers behind one index, which does not
+    take the store's own base away: it still names the register the evidence is about.
+    """
+    return list(facts.sid) + [(base, v) for base, _idx, v in facts.copies]
 
 
 def sid_image(facts):
     """``{region: (field name, {element: voice})}`` for the regions the SID image reads."""
     out = {}
-    for addr, v in facts.sid:
+    for addr, v in sid_stores(facts):
         if reach(v) > MAXOPS:
             continue
         leaves = [x for x in leaf_loads(v) if x.r in facts.rgn]
@@ -165,9 +204,16 @@ def sid_image(facts):
                 name = "%s_%s" % (name, OPNAME.get(op, i))
             r = facts.rgn[x.r]
             hit = out.setdefault(x.r, [name, {}])
-            if type(x.a) is Const:
-                hit[1][(x.a.v - r.base) // max(r.stride, 1)] = voice
+            for e in touched(r, x.lo, x.hi):
+                hit[1][e] = voice
     return {k: (n, m) for k, (n, m) in out.items()}
+
+
+def touched(r, lo, hi):
+    """The elements of ``r`` an access observably reached, from its envelope."""
+    s = max(r.stride, 1)
+    lo, hi = max(lo, r.base), min(hi, r.base + r.size - 1)
+    return range((lo - r.base) // s, (hi - r.base) // s + 1)
 
 
 def scales(facts):

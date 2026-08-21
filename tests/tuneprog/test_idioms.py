@@ -3,7 +3,8 @@
 import pytest
 
 from deity_informant.tuneprog import ssa
-from deity_informant.tuneprog.idioms import compound_hints, fold, inline, rewrite, width
+from deity_informant.tuneprog.idioms import compound_hints, fold, inline, overflow_of, rewrite
+from deity_informant.tuneprog.idioms import sext_of, width
 from deity_informant.tuneprog.ir import Bin, Block, Const, If, Let, Load, Proc, Return, Store, Var
 from deity_informant.tuneprog.verify import verify
 
@@ -142,3 +143,31 @@ def test_compound_hints_spot_load_modify_store():
 @pytest.mark.parametrize("prog_src", [("LDA #$07", "STA $D400"), ("LDX cnt", "STX $D404")])
 def test_rewrites_keep_the_program_verifiable(prog_src):
     _play(*prog_src)
+
+
+def _cell(addr):
+    return Load("ram", Const(addr, 2), 1)
+
+
+def test_a_byte_minus_twice_its_sign_bit_is_that_byte_signed():
+    """``(A + T) - ((T & $80) << 1)`` is ``A + sext(T)``: an identity over eight bits."""
+    t = _cell(0x1934)
+    e = Bin("-", Bin("+", Const(0x1953, 2), t, 2), Bin("<<", Bin("&", t, Const(0x80)), Const(1)), 2)
+    assert sext_of(e) == (Const(0x1953, 2), t)
+    assert sext_of(Bin("-", t, Bin("<<", Bin("&", t, Const(0x80)), Const(1)), 2)) == (None, t)
+
+
+def test_a_sign_bit_taken_off_some_other_byte_is_not_a_sign_extension():
+    t, u = _cell(0x1934), _cell(0x1935)
+    e = Bin("-", Bin("+", Const(1, 2), t, 2), Bin("<<", Bin("&", u, Const(0x80)), Const(1)), 2)
+    assert sext_of(e) is None
+    half = Bin("-", Bin("+", Const(1, 2), t, 2), Bin("&", t, Const(0x80)), 2)
+    assert sext_of(half) is None  # $80, not $100: not the sign extension
+
+
+def test_the_v_flag_of_a_subtract_is_recovered_from_its_three_xors():
+    a, b = _cell(0x20), _cell(0x21)
+    e = Bin("&", Bin("^", a, b), Bin("^", a, Bin("-", a, b, 1)), 1)
+    assert overflow_of(e) == (a, b)
+    assert overflow_of(Bin("&", Bin("^", a, b), Bin("^", b, Bin("-", a, b, 1)), 1)) is None
+    assert overflow_of(Bin("&", Bin("^", a, b), Bin("^", a, Bin("+", a, b, 1)), 1)) is None

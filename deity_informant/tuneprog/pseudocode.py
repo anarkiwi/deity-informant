@@ -7,7 +7,7 @@ the S5 node tree into indented lines. :mod:`.printer` assembles the document.
 
 from __future__ import annotations
 
-from .idioms import CMP, fold
+from .idioms import CMP, fold, overflow_of, sext_of
 from .ir import (
     Assert,
     Bin,
@@ -25,7 +25,7 @@ from .ir import (
 )
 from .irwalk import addr_split, walk
 from .live import needed
-from .facts import GLOBAL_REG, VOICE_REG
+from .facts import GLOBAL_REG, SID_VOICE, SID_VOICES, VOICE_REG
 
 INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
@@ -117,9 +117,15 @@ class Printer:
         An access whose index does not step by that stride is not one of its
         elements (a cursor reading the block as a table), and keeps its address.
         """
-        g, stride, fields = self.names.split[rid]
-        off, elem = (addr - r.zero) % stride, (addr - r.zero) // stride
-        idx = _unoffset(idx, addr - r.zero)
+        g, stride, fields, flip = self.names.split[rid]
+        pos = addr - r.zero
+        idx = _unoffset(idx, pos)
+        if flip:
+            off, i = pos - pos % stride, str(pos % stride)
+            if idx is not None:
+                i = self.ivar(idx, 1) or _bare(self.expr(idx, False))
+            return "%s[%s].%s" % (g, i, fields.get(off, "f%02X" % off))
+        off, elem = pos % stride, pos // stride
         i = str(elem)
         if idx is not None:
             hit = self.ivar(idx, stride) or self.scaled(idx, stride)
@@ -225,19 +231,31 @@ class Printer:
         if idx is None:
             if addr in GLOBAL_REG:
                 return "%s.%s" % (name, GLOBAL_REG[addr])
-            v, k = divmod(addr - SID_REG_LO, 7)
+            v, k = divmod(addr - SID_REG_LO, SID_VOICE)
             return "%s[%d].%s" % (name, v, VOICE_REG[k])
-        i = self.voiced(idx) if addr - SID_REG_LO < 21 else None
+        i = self.voiced(idx) if addr - SID_REG_LO < SID_VOICE * SID_VOICES else None
         if i is None:
             off = addr - SID_REG_LO
             e = _bare(self.expr(idx, False))
             return "%s.reg[%s]" % (name, "%s + %s" % (hexlit(off), e) if off else e)
-        v, k = divmod(addr - SID_REG_LO, 7)
+        v, k = divmod(addr - SID_REG_LO, SID_VOICE)
         return "%s[%s].%s" % (name, "%s + %s" % (i, hexlit(v)) if v else i, VOICE_REG[k])
 
     def voiced(self, idx):
-        """The index as a voice number, when something proves it steps by seven."""
-        return self.ivar(idx, 7) or self.scaled(idx, 7)
+        """The index as a voice number: seven per voice, or an entry of the voice map."""
+        return self.ivar(idx, SID_VOICE) or self.scaled(idx, SID_VOICE) or self.voicemap(idx)
+
+    def voicemap(self, idx):
+        """The element a read of the voice -> register-offset map selects, or ``None``.
+
+        Entry ``i`` of such a table is ``7 * i`` (:func:`~.facts.voice_maps`), so the
+        register the index reaches is voice ``i``'s, whatever the tune calls the table.
+        """
+        if type(idx) is not Load or idx.r not in self.names.voicemap:
+            return None
+        r = self.rgn.get(idx.r)
+        addr, i = self.addr_of(idx.a, r)
+        return None if r is None or addr is None else self.index(r, addr, i)
 
     # ---- expressions -------------------------------------------------------
     def expr(self, e, top=True):
@@ -261,8 +279,17 @@ class Printer:
                 s = "%s %s 0" % (hit, e.op)
                 return s if top else "(%s)" % s
         if e.op in ("==", "!=") and type(b) is Const and b.v == 0 and _signbit(a):
+            v = overflow_of(a.a)
+            if v is not None:
+                s = "overflow(%s - %s)" % (self.expr(v[0], False), self.expr(v[1], False))
+                return s if e.op == "!=" else "not " + s
             s = "%s %s 0" % (self.expr(a.a, False), ">=" if e.op == "==" else "<")
             return s if top else "(%s)" % s
+        hit = sext_of(e)
+        if hit is not None:
+            s = "sext(%s)" % self.expr(hit[1], False)
+            s = s if hit[0] is None else "%s + %s" % (self.expr(hit[0], False), s)
+            return "(%s)" % s
         if e.op in CMP and type(a) is Const and type(b) is not Const:
             s = "%s %s %s" % (self.expr(b, False), MIRROR[e.op], self.expr(a, False))
             return s if top else "(%s)" % s

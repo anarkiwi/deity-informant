@@ -368,13 +368,27 @@ same statement with a zero in its coverage vector, marked where it prints.
   second body to remove -- and buys the per-voice cells their names
   (`copy0[0].timer` for `b0021[28]`) and a coverage vector that says the silent
   voice's code is this code. A merged access unites its regions, so a role one
-  voice's access carried can move with them: in 17–19 the frequency tables print
-  as `T6D56`/`T6DB7`, not as `sid_image`.
+  voice's access carried can move with them: in 17–19 the frequency tables printed
+  as `T6D56`/`T6DB7`, not as `sid_image`. *Fixed in Q1b, and the union was not the
+  cause*: `facts.sid_image` read only the SID stores whose address is a constant,
+  and a merged access indexes the register file, so every per-voice store fell
+  out of the role plane. The store's own base still names the register, and the
+  guard that keeps a hundred-byte block from being called one register's image now
+  counts the elements each access observably reached. 17–19 name `freq_lo`/
+  `freq_hi` as song 1 does.
 - **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
   keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
   shadow, `$648B` trill phase) and the write list has no period either (317
   distinct lists over 20,049 calls). Certified to the horizon.
 - **16-bit views** do not reach the frequency shadow (`$75/$78`) or the pulse
-  width (`$3F/$40`) — `word.fold16` proves a pair from one carry chain, and these
-  halves are stored by different instructions — and the filter's `hi:lo` to
-  `$D416` shift chain prints as its shifts.
+  width (`$3F/$40`), and the filter's `hi:lo` to `$D416` shift chain prints as its
+  shifts. *Measured in Q1b, which refuted the stated cause and refused the row.*
+  The pulse width **is** one carry chain in one block (`pw_lo += t`,
+  `pw_hi += carry`); what refuses it is that `word._pairs` reads the two addresses
+  with `addr_split`, while the merged body addresses both halves through per-copy
+  **columns**. The frequency shadow is not a chain at all: its borrow is carried
+  by a *branch* (`x16 = freq_hi` in one arm, `freq_hi - 1` in the other), which
+  wants if-conversion, not a pair rule. And `names.u16` is keyed by
+  `(lo region, hi region)` while Follin's zero page is **one** region, so the
+  naming plane cannot express a pair of its cells at all — keying the u16 view by
+  cell is the prerequisite, and it moves every certificate's u16 names.
