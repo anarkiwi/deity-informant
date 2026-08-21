@@ -93,3 +93,20 @@ def test_a_sidtrace_row_frames_by_its_own_interrupt():
     got = grid.sidtrace_grid(rows)
     assert [int(r[4]) for r in got] == [0x21, 0x31, 0x41, 0x51]
     assert int(grid.sidtrace_grid(rows, 1)[0][4]) == 0x21
+    assert grid.sidtrace_clock(rows) == (r0, CPF)
+
+
+def test_raises_that_do_not_agree_on_one_period_are_refused():
+    """A gap is whole periods and a write is inside its frame; anything else is loud."""
+    pytest.importorskip("pysidtracker")
+    from pysidtracker.oracle import SidtraceRow  # pylint: disable=import-outside-toplevel
+
+    def rows(*at):
+        return [SidtraceRow(c + o, None, o, None, 0, 4, 1) for c, o in at]
+
+    with pytest.raises(ValueError, match="no interrupt clock"):
+        grid.sidtrace_clock(rows((0, 10)))
+    with pytest.raises(ValueError, match="one period"):  # 1.5 periods between two raises
+        grid.sidtrace_clock(rows((0, 10), (CPF, 10), (CPF * 5 // 2, 10)))
+    with pytest.raises(ValueError, match="one period"):  # a write a whole frame late
+        grid.sidtrace_clock(rows((0, CPF + 1), (CPF, 10), (2 * CPF, 10)))

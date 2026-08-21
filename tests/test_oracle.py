@@ -114,8 +114,8 @@ def test_a_player_run_with_io_banked_out_writes_no_register():
     """Puterman's V20 wrapper: only its flush reaches the chip, and the oracle agrees.
 
     With the 6510 port's direction byte wrong the player's own 25 writes a frame
-    reach the SID as well and every frame differs. The wrapper spends 168 ->
-    10,248 cycles inside one tick, so the frame a write lands in is its cycle's.
+    reach the SID as well and every frame differs. Its ramp (168 -> 10,248 cycles
+    a tick) stays inside the frame, so the 297 measure the anchor, not the rules.
     """
     path = _tune(KNOB)
     interrupt = _oracle(path, FRAMES)

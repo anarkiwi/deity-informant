@@ -101,10 +101,21 @@ def sidtrace_clock(rows):
     is attributed to: the first play call, since a driver runs init with I off.
     """
     src = "since_video_irq" if any(r.since_video_irq is not None for r in rows) else "since_cia_irq"
-    at = sorted({r.cycle - getattr(r, src) for r in rows if getattr(r, src) is not None})
+    have = [r for r in rows if getattr(r, src) is not None]
+    off = [getattr(r, src) for r in have]
+    at = sorted({r.cycle - o for r, o in zip(have, off)})
     if len(at) < 2:
         raise ValueError("sidtrace rows carry no interrupt clock (%d raises)" % len(at))
-    return at[0], int(np.median(np.diff(at)))
+    step = np.diff(at)
+    cpf = int(round(np.median(step)))
+    # a gap is whole periods (a raise no write fell in), and no write is a period late
+    slip = int(np.abs(step - np.round(step / cpf) * cpf).max()) if cpf > 0 else 0
+    if cpf <= 0 or slip > cpf // 100 or max(off) >= cpf:
+        raise ValueError(
+            "sidtrace raises do not agree on one period (%d, slip %d, offset %d)"
+            % (cpf, slip, max(off))
+        )
+    return at[0], cpf
 
 
 def sidtrace_grid(
