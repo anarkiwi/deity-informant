@@ -211,19 +211,17 @@ def build(trace, name=None, sid_model=None, union=False, copies=True, static=Fal
     """Front end -> IR -> S4: the certified program, plus its front-end products.
 
     ``union`` is the ``--songs all`` build, whose regions are ``state``. Copies are
-    discovered on the *trace-closed* program -- :mod:`.closure` deletes the blocks
-    that seed discovery -- and planned against the closed procedures.
+    discovered on whichever program the build makes: :mod:`.siblings` reads the
+    image, so the static closure neither takes a family away nor adds one.
     """
     kind = "state" if union else "init_constant"
     meta = {"name": name, "sid_model": sid_model}
+    if static:
+        closure.close_static(trace)
     lifted, regions, procs = _front(trace, kind)
     prog = _s4(trace, lifted, regions, procs, meta, union)
     band = tuple(trace.meta["load"])
     fams = siblings.correspond(prog, trace.image_post_init, band) if copies else []
-    if static:
-        closure.close_static(trace)
-        lifted, regions, procs = _front(trace, kind)
-        prog = _s4(trace, lifted, regions, procs, meta, union)
     if not copies:
         return prog, regions, procs
     plan = copymerge.plan(procs, trace, lifted, fams, regions, log)

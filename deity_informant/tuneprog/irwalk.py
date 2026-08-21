@@ -253,13 +253,17 @@ def renamer(sub):
 
 
 def single_defs(proc):
-    """``{name: expression}`` for every name exactly one ``Let`` of ``proc`` defines."""
+    """``{name: expression}`` for every name one ``Let`` and nothing else defines.
+
+    Counted over :func:`defs_of`, which is the tree's definition relation: a name a
+    ``Call`` also returns, or a ``Phi`` also joins, is defined twice.
+    """
     out = {}
     for b in proc.blocks.values():
         for s in b.stmts:
-            if type(s) is Let:
-                out.setdefault(s.n, []).append(s.e)
-    return {n: v[0] for n, v in out.items() if len(v) == 1}
+            for n in defs_of(s):
+                out.setdefault(n, []).append(s)
+    return {n: v[0].e for n, v in out.items() if len(v) == 1 and type(v[0]) is Let}
 
 
 def unique_name(want, taken, sep="_"):

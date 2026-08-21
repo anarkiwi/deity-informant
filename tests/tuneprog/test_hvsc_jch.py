@@ -38,12 +38,19 @@ def test_the_state_block_is_one_width_three_record_per_track():
         assert "voice[v]." in run.text
 
 
-def test_the_voice_loop_is_a_loop_and_no_sibling_family():
-    """JCH walks X = 2, 1, 0 with DEX/BMI, so there is nothing to fold."""
+def test_the_voice_loop_is_a_loop_and_no_voice_family():
+    """JCH walks X = 2, 1, 0 with DEX/BMI, so the voices are a loop, not copies.
+
+    Guldkorn holds no static copy at all; the Knob's one family is a pair of
+    two-instruction table setters outside the voice code.
+    """
     for rel, secs in BOTH:
         run = decompiled(rel, seconds=secs)
         assert "for v in 2, 1, 0:" in run.text
-        assert copymerge.report(run.prog) is None
+        doc = copymerge.report(run.prog)
+        fams = [] if doc is None else doc["families"]
+        assert [f["copies"] for f in fams] == ([] if rel is GULDKORN else [2])
+        assert all(f["proc"] != "tick" for f in fams)
 
 
 def test_the_table_programs_type_as_their_own_records():
@@ -107,11 +114,16 @@ def test_the_two_init_cleared_blocks_print_as_records_over_the_track_index():
 
 
 def test_the_register_offset_table_names_the_register_by_its_voice():
-    """``$1740`` holds 0, 7, 14, so an index read from it is the voice itself."""
+    """``$1740`` holds 0, 7, 14, so an index read from it is the voice itself.
+
+    The role takes two sources: Guldkorn indexes the register file through the
+    table; the Knob reaches it by a stride-7 index variable, so the bytes alone
+    do not name the region even though the same reading holds.
+    """
     for rel, secs, name in ((KNOB, KNOB_S, "ghost"), (GULDKORN, GULD_S, "sid")):
         run = decompiled(rel, seconds=secs)
         assert len(run.names.voicemap) == 1
-        assert "voice_map" in run.names.role.values()
+        assert ("voice_map" in run.names.role.values()) is (rel is GULDKORN)
         for reg in ("ad", "sr", "freq_lo", "pw_lo"):
             assert "%s[v].%s" % (name, reg) in run.text or "%s[x].%s" % (name, reg) in run.text
         assert "%s.reg[5 + " % name not in run.text

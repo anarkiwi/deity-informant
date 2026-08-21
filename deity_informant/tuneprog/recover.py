@@ -316,7 +316,8 @@ def recover(prog, structured=None, facts=None):
             names.region[r.id] = r.name
             names.role[r.id] = "per_copy"
     names.voicemap = voice_maps(prog)
-    for rid in sorted(names.voicemap):
+    # the role wants the second source the printing spends per use: a SID index
+    for rid in sorted(names.voicemap & facts.sididx):
         names.role[rid] = "voice_map"
         _uniq(names, rid, "voice_map")
     _tables(prog, facts, names)

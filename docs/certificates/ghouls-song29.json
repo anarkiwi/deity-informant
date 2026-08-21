@@ -6,30 +6,32 @@
  ],
  "copies": {
   "coverage": {
-   "1,0": 54
+   "0,1,0": 65,
+   "1,1,1": 5
   },
   "families": [
    {
     "bases": [
-     "$642A",
-     "$65E6"
+     "$6234",
+     "$6421",
+     "$6610"
     ],
-    "columns": 28,
-    "copies": 2,
+    "columns": 29,
+    "copies": 3,
     "proc": "tick",
-    "rows": 71,
+    "rows": 86,
     "table": "$0200"
    }
   ],
   "refused": [],
-  "statements": 54,
-  "unverified": 54
+  "statements": 70,
+  "unverified": 65
  },
  "cost": {
   "calls_per_second": 30745,
-  "ir_blocks": 103,
+  "ir_blocks": 112,
   "ir_procs": 2,
-  "ir_statements": 200,
+  "ir_statements": 211,
   "regions": 41,
   "sites": 222,
   "trace_calls": 14,

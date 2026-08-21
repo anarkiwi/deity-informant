@@ -39,23 +39,28 @@ def _column(e, defs, rgn):
     return [int.from_bytes(r.init[off + j * e.w : off + (j + 1) * e.w], "little") for j in range(n)]
 
 
-def _copy(e, j, defs, rgn):
+def _copy(e, j, defs, rgn, seen=()):
     """``e`` as copy ``j`` names it: every column read is that copy's constant.
 
     A subexpression that holds no column is itself, name and all, which is what a
-    range proof over the index needs.
+    range proof over the index needs. A name already followed is not followed
+    again: the definitions a merged body carries need not be acyclic.
     """
-    x = _resolve(e, defs)
+    x = _resolve(e, defs, seen)
+    if type(x) is Var and x.n in seen:
+        return e
+    if type(e) is Var:
+        seen = seen + (e.n,)
     vals = _column(x, defs, rgn)
     if vals is not None:
         return Const(vals[j], x.w) if j < len(vals) else None
     if type(x) is Bin:
-        a, b = _copy(x.a, j, defs, rgn), _copy(x.b, j, defs, rgn)
+        a, b = _copy(x.a, j, defs, rgn, seen), _copy(x.b, j, defs, rgn, seen)
         if a is None or b is None:
             return None
         return e if a is x.a and b is x.b else Bin(x.op, a, b, x.w)
     if type(x) is Load:
-        a = _copy(x.a, j, defs, rgn)
+        a = _copy(x.a, j, defs, rgn, seen)
         if a is None:
             return None
         return e if a is x.a else Load(x.cls, a, x.w, x.lo, x.hi, x.r)

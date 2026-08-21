@@ -8,10 +8,8 @@
   "coverage": {
    "0,1,0": 31,
    "0,1,1": 1,
-   "1,0": 8,
    "1,0,0": 2,
-   "1,1": 2,
-   "1,1,0": 78,
+   "1,1,0": 83,
    "1,1,1": 5
   },
   "families": [
@@ -41,26 +39,27 @@
    },
    {
     "bases": [
-     "$694B",
-     "$6964"
+     "$6941",
+     "$694F",
+     "$6968"
     ],
-    "columns": 6,
-    "copies": 2,
+    "columns": 2,
+    "copies": 3,
     "proc": "tick",
-    "rows": 12,
+    "rows": 8,
     "table": "$02DE"
    }
   ],
   "refused": [],
-  "statements": 127,
-  "unverified": 120
+  "statements": 122,
+  "unverified": 117
  },
  "cost": {
   "calls_per_second": 43342,
-  "ir_blocks": 171,
+  "ir_blocks": 173,
   "ir_procs": 2,
-  "ir_statements": 329,
-  "regions": 46,
+  "ir_statements": 324,
+  "regions": 48,
   "sites": 391,
   "trace_calls": 112,
   "verify_cpu_seconds": 0.0

@@ -6,7 +6,7 @@
  ],
  "copies": {
   "coverage": {
-   "1,1": 10,
+   "1,1": 22,
    "1,1,1": 50,
    "1,1,1,1,1,1": 44
   },
@@ -63,18 +63,29 @@
     "proc": "p_168C",
     "rows": 6,
     "table": "$02A2"
+   },
+   {
+    "bases": [
+     "$172C",
+     "$1737"
+    ],
+    "columns": 2,
+    "copies": 2,
+    "proc": "p_168C",
+    "rows": 6,
+    "table": "$02A8"
    }
   ],
   "refused": [],
-  "statements": 104,
+  "statements": 116,
   "unverified": 0
  },
  "cost": {
   "calls_per_second": 16136,
   "ir_blocks": 227,
   "ir_procs": 8,
-  "ir_statements": 733,
-  "regions": 80,
+  "ir_statements": 737,
+  "regions": 78,
   "sites": 651,
   "trace_calls": 149025,
   "verify_cpu_seconds": 9.2

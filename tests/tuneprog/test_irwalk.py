@@ -141,6 +141,15 @@ def test_use_counts_and_single_defs():
     assert set(W.single_defs(proc)) == {"u"}  # t has two definitions
 
 
+def test_a_name_a_call_also_returns_is_not_single_defined():
+    """``defs_of`` is the definition relation; the counter must agree with it."""
+    proc = _proc(
+        "f",
+        [Block("b0", [Let("t", LD), Call("g", (), ("t",)), Let("u", Const(1))], Return())],
+    )
+    assert set(W.single_defs(proc)) == {"u"}
+
+
 def test_unique_name_suffixes_until_it_is_free():
     assert W.unique_name("a", {"b"}) == "a"
     assert W.unique_name("a", {"a", "a_2"}) == "a_3"

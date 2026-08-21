@@ -26,13 +26,7 @@
     "table": "$0200"
    }
   ],
-  "refused": [
-   {
-    "base": "$7316",
-    "proc": "init",
-    "why": "the entry row does not fold"
-   }
-  ],
+  "refused": [],
   "statements": 445,
   "unverified": 50
  },

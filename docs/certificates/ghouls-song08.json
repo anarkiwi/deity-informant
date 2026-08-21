@@ -9,7 +9,6 @@
    "0,0,1": 2,
    "0,1,1": 69,
    "1,0,0": 51,
-   "1,1": 5,
    "1,1,0": 34,
    "1,1,1": 286
   },
@@ -25,35 +24,18 @@
     "proc": "tick",
     "rows": 372,
     "table": "$0200"
-   },
-   {
-    "bases": [
-     "$682A",
-     "$6830"
-    ],
-    "columns": 2,
-    "copies": 2,
-    "proc": "tick",
-    "rows": 3,
-    "table": "$0359"
    }
   ],
-  "refused": [
-   {
-    "base": "$7316",
-    "proc": "init",
-    "why": "the entry row does not fold"
-   }
-  ],
-  "statements": 447,
+  "refused": [],
+  "statements": 442,
   "unverified": 156
  },
  "cost": {
   "calls_per_second": 20795,
-  "ir_blocks": 264,
+  "ir_blocks": 263,
   "ir_procs": 4,
-  "ir_statements": 653,
-  "regions": 40,
+  "ir_statements": 649,
+  "regions": 41,
   "sites": 1115,
   "trace_calls": 12671,
   "verify_cpu_seconds": 0.6

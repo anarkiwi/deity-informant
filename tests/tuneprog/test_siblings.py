@@ -10,10 +10,10 @@ import re
 
 import pytest
 
-from deity_informant.tuneprog import jumptab, siblings
+from deity_informant.tuneprog import jumptab, pipeline, siblings
 
 from _asm import asm
-from _prog import PLAY, printed as _text, proc_body as _body, tuneprog
+from _prog import PLAY, front, printed as _text, proc_body as _body, tuneprog
 
 SEEDS = range(6)
 FORMS = ("LDA", "ADC", "AND", "CMP", "EOR", "ORA", "STA", "INC", "DEC")
@@ -42,9 +42,12 @@ class Family:
         self.used = {1} | {i for _mn, i in body}  # the state cell sits on the boundary
         self.arm = [rng.randrange(2) for _ in range(k)]
         self.arm[0] ^= len(set(self.arm)) == 1  # some copy runs the arm another never does
-        # a copy that diverges keeps only the template's first instruction
-        other = [(rng.choice(FORMS), rng.randrange(1, fields)) for _ in range(n)]
-        bodies = [body] + [body[:1] + other[1:] if diverge else body for _ in range(1, k)]
+        # a copy that diverges keeps only the template's first instruction, and no
+        # two of them agree either: chained code that is not copied code
+        other = [
+            [(rng.choice(FORMS), rng.randrange(1, fields)) for _ in range(n)] for _ in range(k)
+        ]
+        bodies = [body] + [body[:1] + other[j][1:] if diverge else body for j in range(1, k)]
         src = ["init: LDA #$00"] + ["STA %s" % nm for nm in sorted(names) + ["sh", "cnt"]]
         for j in range(k):
             src += ["LDA #$%02X" % self.arm[j], "STA %s" % self.cell[(j, 0)]]
@@ -87,11 +90,16 @@ class Family:
             out |= {(self.addr(c, i), self.addr(c + j, i)) for i in range(self.fields)}
         return out
 
-    def found(self, calls=6):
-        """The families ``correspond`` finds in the certified program."""
-        trace, self.prog = tuneprog(self.code, calls=calls, s4=True)
+    def found(self, calls=6, static=False):
+        """The families ``correspond`` finds in the program a build of the tune makes."""
+        trace = front(self.code, calls=calls)[0]
+        self.prog = pipeline.build(trace, "snippet", copies=False, static=static)[0]
         band = tuple(trace.meta["load"])
         return siblings.correspond(self.prog, trace.image_post_init, band)
+
+    def bases(self):
+        """Where the copies really begin."""
+        return tuple(self.code.labels["c%d" % j] for j in range(self.k))
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -132,6 +140,82 @@ def test_a_stream_that_only_shares_a_prefix_is_not_a_family(seed):
 def test_copies_whose_operands_are_not_one_map_are_refused_whole(seed):
     fam = Family(random.Random(seed + 300), k=3, share=False, break_map=True)
     assert not fam.found(), [(f.k, [hex(b) for b in f.bases]) for f in fam.found()]
+
+
+def cascade(k=3):
+    """Automatas' shape: a copy opens on a branch the run only ever takes one way.
+
+    Nothing jumps to a copy: each falls into the next, on the ``N`` the copy before
+    it left. The trace-closed build gives the untaken arm a block whose ``src`` is
+    the copy's entry, and the static closure deletes it -- which is what P2's
+    discovery was seeded by.
+    """
+    src = ["init: LDA #$00", "STA cnt"] + ["STA d%d" % j for j in range(k)]
+    src += ["RTS", "play: LDA d0"]
+    for j in range(k):
+        src += [
+            "c%d: BMI a%d" % (j, j),
+            "LDA d%d" % j,
+            "CLC",
+            "ADC #$01",
+            "STA d%d" % j,
+            "LDA d%d" % ((j + 1) % k),
+        ]
+    src += ["after: INC cnt", "RTS"]
+    for j in range(k):
+        src += ["a%d: LDA #$FF" % j, "STA d%d" % j, "JMP after"]
+    return asm(PLAY, *src, *["d%d: BRK" % j for j in range(k)], "cnt: BRK")
+
+
+def test_a_copy_entered_by_falling_in_is_found_whatever_the_untaken_arm_left():
+    """The P2 diagnosis as a test: the block the trap made is not what seeds a base."""
+    code = cascade()
+    want = tuple(code.labels["c%d" % j] for j in range(3))
+    seen = []
+    for static in (False, True):
+        trace = front(code, calls=6)[0]
+        prog = pipeline.build(trace, "snippet", copies=False, static=static)[0]
+        got = siblings.correspond(prog, trace.image_post_init, tuple(trace.meta["load"]))
+        assert len(got) == 1 and got[0].bases == want, (static, got)
+        assert len(got[0].rows) == 6
+        seen.append(set(want) <= {b.src for p in prog.procs.values() for b in p.blocks.values()})
+    assert seen == [True, False]  # the trap carried the entries; closing them took them away
+
+
+SHAPES = [(calls, static) for calls in (6, 9) for static in (False, True)]
+
+
+def _srcs(prog):
+    """Every address the built blocks begin at."""
+    return {b.src for p in prog.procs.values() for b in p.blocks.values()}
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_the_family_is_the_same_under_every_block_shape(seed):
+    """A copy's entry is a property of the image, not of the blocks a build makes.
+
+    Each copy runs an arm another never reaches, the horizon decides which, and the
+    static closure joins the arms none ran or leaves them ``trap 'untaken'``: four
+    block shapes over one image, and one family under all of them.
+    """
+    got, merged = set(), False
+    for calls, static in SHAPES:
+        fam = Family(random.Random(seed + 500), k=3, n=8)
+        out = fam.found(calls=calls, static=static)
+        assert len(out) == 1 and out[0].k == 3, (calls, static, out)
+        assert out[0].rows[0] == fam.bases(), (calls, static, out[0].rows[0])
+        got.add((out[0].bases, out[0].rows))
+        merged = merged or not set(fam.bases()) <= _srcs(fam.prog)
+    assert len(got) == 1, sorted(got)
+    assert merged  # S2b glued a copy entry into the block before it, and it held
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_unrelated_chained_code_that_ran_as_often_is_no_family(seed):
+    """Chained is not copied: segments that do not align hold no correspondence."""
+    fam = Family(random.Random(seed + 600), k=3, n=8, diverge=True)
+    got = [f for f in fam.found() if len(f.rows) > 1]
+    assert not got, [(f.k, [hex(b) for b in f.bases]) for f in got]
 
 
 @pytest.mark.parametrize("seed", SEEDS)
