@@ -48,7 +48,19 @@ installs during `init` (raster or CIA), possibly a second one (NMI).
 per video frame (PAL 19656 cycles / NTSC 17095), or `latch+1` cycles for a
 CIA-driven player (multispeed = several ticks per frame; a tune that rewrites
 its latch during play has a *dynamic* cadence, which is why schedule effects
-are part of the observable). "Per frame" in the task statement is "per tick";
+are part of the observable).
+
+**The P/SID header is metadata, not ground truth.** HVSC headers are known to be
+unreliable: `speed` bits, `play`, clock and model fields disagree with what the
+tune actually does often enough that no header field may settle a question the
+machine can answer. The header seeds discovery (load band, `init`, a candidate
+`play`); what a tune *is* — its entries, cadence, clock, chip model behaviour —
+is established only by running it, and the `sidplayfp`/`sidtrace` oracle is the
+arbiter where our own model and the header disagree (the oracle honours the
+same header quirks real players do, e.g. the `speed` bit's 60 Hz default). A
+certificate's claims are therefore stated against the traced machine, and any
+header-derived setting the trace could not confirm is a *pinned assumption*,
+not a fact. "Per frame" in the task statement is "per tick";
 equivalence per tick implies equivalence per frame and is the only useful
 notion for multispeed players.
 
