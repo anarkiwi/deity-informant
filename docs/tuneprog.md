@@ -206,9 +206,10 @@ that became one body under the copy index; `rows` is how many instructions
 folded, `columns` how many operands the copies disagree on (each one a per-copy
 table entry at `table`). Discovery reads the image, not the blocks a build
 happened to make: a copy may open where a branch decides or where the image's
-own control flow lands, its executions are the count of the run that reaches it,
-and falling into the next copy is a chain edge like a jump. So the families are
-the same under `--closure trace` and `--closure static`. `coverage` counts merged statements by which copies ran
+own control flow lands, and falling into the next copy is a chain edge like a
+jump. How often an instruction ran is S2b's own per-instruction site count, not
+anything read off the blocks. So the families are the same under
+`--closure trace` and `--closure static`. `coverage` counts merged statements by which copies ran
 them: a `0` is a statement the trace saw in another copy and the correspondence
 says is this one's too, which the printed program marks per statement. A family
 the index cannot name -- a cross-copy edge, an operand no table can express --
