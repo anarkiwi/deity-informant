@@ -182,7 +182,10 @@ class _Builder:
         entry = self.enter(cp, cp.entry, None)
         blocks.update(self.extra)
         self.extra = {}
-        return Proc(cp.name, (), (), blocks, entry, cp.kind)
+        proc = Proc(cp.name, (), (), blocks, entry, cp.kind)
+        if cp.kind == "tick" and self.trace.meta["entry"]["kind"] == "irq":
+            _irq_entry(proc)
+        return proc
 
     def node_blocks(self, cp, pc, op, node, phase, mn=None):
         lbl = "L%04X_%02X" % (pc, op)
@@ -342,6 +345,23 @@ class _Builder:
         cond = Bin("<", Var(fam.var), Const(fam.k), 1)
         b.term = If(cond, self.header(cp, fam, to), self._succ(cp, b, out, extra, 0, None))
         return b.label
+
+
+IRQ_ENTRY = "entry_irq"
+
+
+def _irq_entry(proc):
+    """The machine's own entry action, ahead of the handler: the interrupt disable.
+
+    The frame it pushed with it is the tick's contract, not a store of the program
+    (:func:`~.frames.contract`), so only the flag the machine sets is a statement.
+    """
+    head = proc.blocks[proc.entry]
+    proc.blocks[IRQ_ENTRY] = Block(
+        IRQ_ENTRY, [Let(REGVAR[10], Const(1, 1))], Goto(proc.entry), head.src, head.count
+    )
+    proc.entry = IRQ_ENTRY
+    return proc
 
 
 def _seal(proc):

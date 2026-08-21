@@ -7,7 +7,9 @@ and a push keeps its write while some reachable procedure may read a foreign fra
 
 from __future__ import annotations
 
-from .frames import analyse, apply_reads, deltas, drop_regions, fresh
+from copy import deepcopy
+
+from .frames import analyse, apply_reads, deltas, drop_regions, entry_value, fresh
 from .ir import Let, Store, Var
 from .irwalk import reachable
 
@@ -31,6 +33,11 @@ def frames(prog, info=None, make=None):
         keep = any(plans[c].foreign for c in reachable(prog, name) - {name} if c in plans)
         edits, sub = {}, {}
         for pushes, keys in frame.plan:
+            val = entry_value(frame, pushes)
+            if val is not None:
+                sub.update({k: deepcopy(val) for k in keys})
+                out += 1
+                continue
             var = make()
             for lbl, i in pushes:
                 edits[(lbl, i)] = _as_value(proc.blocks[lbl].stmts[i], var, keep)

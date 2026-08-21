@@ -93,11 +93,16 @@ def _subdir(out, song):
     return out / ("s%02d" % song)
 
 
-def _stop(args, tr, target):
+def _stop(args, tr, target, free=True):
     """Why this subtune stopped: a state repeat, the tick horizon, or not yet (budget)."""
-    if args.until_period and tr.witness() is not None:
+    if args.until_period and tr.witness(free) is not None:
         return "period"
     return "horizon" if tr.calls_done >= target else None
+
+
+def _free(st):
+    """True while a page-free repeat may end the trace: S4 has not said otherwise."""
+    return st.get("stack") != "residual"
 
 
 def _certified(args, witness, traced):
@@ -127,27 +132,29 @@ def stage_trace(args, out, st, t0, log=print):
     img, schedule = find_entries(Path(args.sid).read_bytes())
     entry = schedule[0]
     resume = out / "tracer.pkl"
-    tr = Tracer.load(resume) if args.resume and resume.exists() else None
+    keep = (args.resume or "stack" in st) and resume.exists()
+    tr = Tracer.load(resume) if keep else None
     if tr is None:
         override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
         tr = Tracer(img, entry, song=args.song - 1 if args.song else None, override=override)
         tr.run_init()
-    target = _target(args, entry)
-    while tr.calls_done < target and not (args.until_period and tr.witness() is not None):
+    target, free = _target(args, entry), _free(st)
+    while tr.calls_done < target and not (args.until_period and tr.witness(free) is not None):
         tr.run_calls(min(args.chunk, target - tr.calls_done))
         st["calls"] = tr.calls_done
+        hit = tr.witness(free) is not None
         log(
             "  traced %d calls (%.0fs cpu)%s"
-            % (tr.calls_done, time.process_time() - t0, "" if tr.witness() is None else " period!")
+            % (tr.calls_done, time.process_time() - t0, " period!" if hit else "")
         )
         if time.process_time() - t0 > args.budget:
             break
-    done = tr.calls_done >= target or (args.until_period and tr.witness() is not None)
+    done = tr.calls_done >= target or (args.until_period and tr.witness(free) is not None)
     tr.save(resume)
     if not done:
         return False
     trace = tr.trace()
-    st["calls"] = _certified(args, tr.witness(), tr.calls_done)
+    st["calls"] = _certified(args, tr.witness(free), tr.calls_done)
     trace.save(out)
     st.update(period=tr.period, first_repeat=tr.first_repeat, stage="front")
     return True
@@ -164,31 +171,36 @@ def trace_all(args, out, st, t0, log=print):
     entry = schedule[0]
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
     done = st.setdefault("traced", {})
-    target = _target(args, entry)
+    target, free = _target(args, entry), _free(st)
     for song in songs:
         rec = done.get(str(song))
         if rec and rec["stop"]:
             continue
         resume = out / ("tracer%02d.pkl" % song)
-        tr = Tracer.load(resume) if rec and args.resume and resume.exists() else None
+        keep = rec and resume.exists() and (args.resume or "stack" in st)
+        tr = Tracer.load(resume) if keep else None
         if tr is None:
             override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
             tr = Tracer(img, entry, song=song - 1, override=override)
             tr.run_init()
-        while tr.calls_done < target and not (args.until_period and tr.witness() is not None):
+        while tr.calls_done < target and not (args.until_period and tr.witness(free) is not None):
             tr.run_calls(min(args.chunk, target - tr.calls_done))
             if time.process_time() - t0 > args.budget:
                 break
-        stop = _stop(args, tr, target)
-        calls = _certified(args, tr.witness(), tr.calls_done)
-        done[str(song)] = {"calls": calls, "stop": stop, "horizon": horizon(args)}
+        stop = _stop(args, tr, target, free)
+        calls = _certified(args, tr.witness(free), tr.calls_done)
+        full = tr.witness(False) is not None
+        done[str(song)] = {"calls": calls, "stop": stop, "horizon": horizon(args), "full": full}
         st["calls"] = calls
         if stop is None:
             tr.save(resume)
             log("  song %d: %d calls (%.0fs cpu)" % (song, calls, time.process_time() - t0))
             return False
         tr.trace().save(_subdir(out, song))
-        resume.unlink(missing_ok=True)
+        if full or stop != "period":
+            resume.unlink(missing_ok=True)
+        else:
+            tr.save(resume)
         log(
             "  song %d traced: %d calls, %s (%.0fs cpu)"
             % (song, calls, stop, time.process_time() - t0)
@@ -259,15 +271,41 @@ def stage_front(args, out, st):
     (out / "procs.json").write_text(json.dumps(procs_json(procs)))
     prog.save(out / "tuneprog.S4.json")
     (out / "tuneprog.py").write_text(emit.emit_python(prog))
+    stage = _horizon_stage(args, st, trace, prog)
     st.update(
         build=build_opts(args),
         sites=len(trace.sites),
         regions=len(regions),
         procs=len(procs),
         stmts=sum(len(b.stmts) for p in prog.procs.values() for b in p.blocks.values()),
-        stage="verify",
+        stage=stage,
     )
     return prog
+
+
+def _horizon_stage(args, st, trace, prog):
+    """``"trace"`` where S4's verdict moves the horizon this run stopped on.
+
+    ``--until-period`` stops at the earliest repeat of either footprint, and a
+    residual program may claim only the page-inclusive one: it traces on. S4
+    decides once, so a run that has already traced on does not do it again.
+    """
+    first = st.get("stack") is None
+    st["stack"] = "eliminated" if prog.meta.get("stack") == "eliminated" else "residual"
+    if not (first and st["stack"] == "residual" and args.until_period):
+        return "verify"
+    if args.songs != "all":
+        if trace.witness(False) is not None:
+            return "verify"
+    else:
+        rec = st.get("traced", {})
+        stale = {k for k, r in rec.items() if r["stop"] == "period" and not r.get("full")}
+        if not stale:
+            return "verify"
+        st["traced"] = {k: (dict(r, stop=None) if k in stale else r) for k, r in rec.items()}
+        st["subtunes"] = [x for x in st.get("subtunes", ()) if str(x["song"]) not in stale]
+    st.pop("divergence", None)
+    return "trace"
 
 
 def verify_all(args, out, st, t0, prog, log=print):
@@ -280,7 +318,7 @@ def verify_all(args, out, st, t0, prog, log=print):
         if any(x["song"] == song for x in subs):
             continue
         sub = Trace.load(_subdir(out, song))
-        ref = V.Reference(sub, _certified(args, sub.witness(), sub.meta["calls"]))
+        ref = V.Reference(sub, _certified(args, sub.witness(_free(st)), sub.meta["calls"]))
         v = V.Verifier(prog, ref, src=src)
         if saved.get("song") == song and saved.get("calls") == ref.calls:
             v.restore(saved["state"])
@@ -426,10 +464,11 @@ def run(args, log=print):
     t0 = time.process_time()
     prog = None
     try:
-        if st["stage"] == "trace" and not stage_trace(args, out, st, t0, log):
-            return _more(st, t0, log)
-        if st["stage"] == "front":
-            prog = stage_front(args, out, st)
+        while st["stage"] in ("trace", "front"):
+            if st["stage"] == "trace" and not stage_trace(args, out, st, t0, log):
+                return _more(st, t0, log)
+            if st["stage"] == "front":
+                prog = stage_front(args, out, st)
         if args.no_verify and st["stage"] == "verify":
             st["stage"] = "print"
         if st["stage"] == "verify" and not stage_verify(args, out, st, t0, prog, log):

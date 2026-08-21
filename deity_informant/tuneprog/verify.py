@@ -144,7 +144,11 @@ class Verifier:
 
     # ---- the machine's side of a tick --------------------------------------
     def _enter(self, kind="sub"):
-        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame."""
+        """Push the frame the machine pushes: a JSR return, or the 6510 IRQ frame.
+
+        The interrupt disable the machine sets with it is the tick's own first
+        statement (:func:`~.build._irq_entry`), so the entry flags are the frame.
+        """
         M = self.M
         M.push(0x00)
         if kind == "sub":
@@ -152,7 +156,6 @@ class Verifier:
         else:
             M.push(0x00)
             M.push(_status(M.regs))
-            M.regs[10] = 1
 
     def _call_proc(self, proc):
         M = self.M

@@ -56,19 +56,19 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 244  tracevm 328  trace 305  tracedata 342  lift 227
+front end     machine 244  tracevm 328  trace 310  tracedata 346  lift 227
               cfg 310  regions 243  jumptab 373  siblings 476  closure 347
               copyrows 453  copymerge 165
-program       ir 440  interp 248  irwalk 319  graph 82  lower 214  build 470
-              ssa 431  frames 371  stack 204  idioms 401  emit 372  verify 328
+program       ir 440  interp 248  irwalk 319  graph 82  lower 227  build 490
+              ssa 431  frames 399  stack 218  idioms 401  emit 372  verify 331
               period 113
-presentation  structure 356  loops 307  inline 199  texture 475  frame 44
+presentation  structure 356  loops 307  inline 199  texture 475  frame 51
               word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
               facts 284  recover 328  views 295
 text          pseudocode 468  printer 405
-driver        pipeline 458  resume 67  __init__ 124
+driver        pipeline 497  resume 67  __init__ 124
 oracle        grid 141  tunes 50
-baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,123 lines
+baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,272 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -276,9 +276,16 @@ its pops read, a return address is the continuation the `Call` already carries,
 and no procedure takes or returns `SP`. It is `{"depth": n | "unknown", "procs":
 [...]}` when a procedure reads stack bytes its own frame did not write -- a
 scratch area whose pointer is not a constant offset, a `TSX`-relative read of
-another frame, an interrupt entry frame's status byte, the pointer used as data
--- and then the whole program keeps the stack, since such a read can see any byte
-of the page. `depth` is the deepest slot below an entry pointer the analysis
+another frame, the pointer used as data -- and then the whole program keeps the
+stack, since such a read can see any byte of the page.
+
+An `irq` tick is entered with the frame the machine itself pushed, and that frame
+is the tick's **contract**, not storage: the status byte at `SP+1` is the entry
+flags packed (`frames.contract`), the terminating `RTI` consumes exactly it, and
+the interrupt disable the machine sets is the tick's first statement
+(`build._irq_entry`). Nothing names the pushed return address at `SP+2`/`SP+3`, so
+a tick that reads *those* -- or reads the status by a route no slot places, such
+as `TSX` -- is residual as any other unplaceable read is. `depth` is the deepest slot below an entry pointer the analysis
 placed (reads and writes, callees included), `"unknown"` where an access is not a
 slot at all.
 
@@ -299,8 +306,11 @@ no stack page, so its `period`, `first_repeat` and `complete` come from the
 page-exclusive stream; a residual program keeps its pushes and must claim on the
 page-inclusive one — a stack byte it reads back is state like any other, and
 hashing without it would report a period the tune does not have. `--until-period`
-stops at the earliest repeat of either stream, so a residual tune may need
-`--calls` to reach the page-inclusive repeat it certifies on. Eliminating a stack
+stops at the earliest repeat of either stream, which S4 may then reject: a
+program it calls residual whose trace stopped on the page-free witness alone goes
+back to S1 and traces on to the page-inclusive one (`pipeline._horizon_stage`,
+recorded as `"stack"` in `state.json`), so the certificate claims completeness
+where completeness is provable rather than reporting `complete: false`. Eliminating a stack
 therefore moves no certificate's period or divergence, and can only shorten a
 horizon: `gt2-do-it-again` closes at 8,659 ticks instead of 9,956, same period
 (8,640), still `complete`. A subtune that stops on a repeat certifies

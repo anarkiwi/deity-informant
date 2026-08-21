@@ -161,9 +161,14 @@ class Tracer:
         self.free.hash(vm, self.calls_done)
         self.period, self.first_repeat = self.full.period, self.full.first_repeat
 
-    def witness(self):
-        """The earliest tick either footprint repeated at, or ``None``."""
-        hits = [s.first_repeat for s in (self.full, self.free) if s.first_repeat is not None]
+    def witness(self, free=True):
+        """The earliest tick a footprint repeated at, or ``None``.
+
+        A program S4 proved stack-free may claim the page-free witness, so either
+        footprint will do; a residual one must claim the page-inclusive repeat.
+        """
+        streams = (self.full, self.free) if free else (self.full,)
+        hits = [s.first_repeat for s in streams if s.first_repeat is not None]
         return min(hits) if hits else None
 
     # ---- resume ------------------------------------------------------------
