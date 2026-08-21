@@ -12,17 +12,6 @@ CPF = 19656
 BURN = ("LDX #$22", "l1: LDY #$00", "l2: DEY", "BNE l2", "DEX", "BNE l1")  # ~43,500 cycles
 
 
-def _bycall(trace, nframes):
-    """The old comparison: every write in the frame of the tick that issued it."""
-    log = trace.wlog
-    addr = np.asarray(log["addr"], dtype=np.int64) - grid.SID_BASE
-    keep = (addr >= 0) & (addr < grid.SID_REGS)
-    call = np.asarray(log["call"], dtype=np.int64)[keep]
-    return grid.grid(
-        np.where(call < 0xFFFFFFF, call, -1), addr[keep], np.asarray(log["val"])[keep], nframes
-    )
-
-
 def test_a_tick_that_outlives_its_frame_writes_into_the_next_one():
     """A tick spanning 2.2 frames leaves its second write two frames on."""
     T, _ = trace_prog(
@@ -46,7 +35,7 @@ def test_a_tick_that_outlives_its_frame_writes_into_the_next_one():
         calls=3,
     )
     assert list(grid.trace_grid(T, 8)[:, 4]) == [1, 1, 3, 3, 5, 5, 6, 6]
-    assert list(_bycall(T, 8)[:, 4]) == [2, 4, 6, 6, 6, 6, 6, 6]
+    assert list(grid.tick_grid(T, 8)[:, 4]) == [2, 4, 6, 6, 6, 6, 6, 6]
 
 
 def test_a_tick_inside_its_frame_frames_exactly_like_its_call_index():
@@ -61,7 +50,7 @@ def test_a_tick_inside_its_frame_frames_exactly_like_its_call_index():
         play=PLAY,
     )
     rows = grid.trace_grid(T)
-    assert not grid.differing(_bycall(T, len(rows)), rows).size
+    assert not grid.differing(grid.tick_grid(T, len(rows)), rows).size
     assert list(rows[0][:4]) == [1, 0, 0, 7]  # $D403 keeps its low nibble only
     assert rows[1][0] == 2
 

@@ -67,8 +67,8 @@ presentation  structure 356  loops 307  inline 199  texture 475  frame 44
               facts 284  recover 328  views 295
 text          pseudocode 468  printer 405
 driver        pipeline 458  resume 67  __init__ 124
-oracle        grid 117  tunes 50
-baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,089 lines
+oracle        grid 141  tunes 50
+baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,123 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -208,6 +208,15 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
 }
 ```
 
+`ticks` is what was **verified**, not what was traced: a tick horizon is reached
+on a chunk boundary, so the trace the program was built from can hold up to
+`--chunk` ticks more (`cost.trace_calls` sums the verified counts). Where the
+subtune stopped on a state repeat those extra ticks add nothing to the program --
+a witness is a repeated state with no input consumed, so they replay sites, edges
+and accesses the certified prefix already carries -- and where it stopped on the
+tick horizon the two counts are equal. A machine-readable "built from" count is
+backlog: adding the field would move all 44 documents.
+
 `copies` is the fold S2c proved. A family is k chained copies of one template
 that became one body under the copy index; `rows` is how many instructions
 folded, `columns` how many operands the copies disagree on (each one a per-copy
@@ -312,7 +321,10 @@ since_video_irq`). Framed that way the tracer and `sidplayfp` agree on **3,000 o
 3,000** frames of the Knob (`tests/test_oracle.py`); the 297 frames the old
 comparison differed on were the oracle framer's half-frame anchor
 (`grid_from_writes` rounds to the nearest frame from the first play write), not
-the writes.
+the writes. The test attributes that to a side: with the oracle interrupt-framed,
+the trace's two rules -- by cycle and by call index -- agree with it and with each
+other on all 3,000 frames, while against the rounded anchor **both** differ on
+297. `tick_grid` is the by-call view, kept for exactly that comparison.
 
 ## Certified exemplars
 

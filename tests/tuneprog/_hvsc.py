@@ -44,8 +44,8 @@ def tune_file(name):
     return path
 
 
-def tune(relpath):
-    return tune_file(relpath).read_bytes()
+def tune(name):
+    return tune_file(name).read_bytes()
 
 
 def traced(relpath, seconds, song=None, override=None, until_period=False, chunk=256):

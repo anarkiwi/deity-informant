@@ -89,7 +89,7 @@ class Tracer:
         self.vm = TraceVM(image.mem, image, policy=policy, inputs=inputs, override=override)
         self.cache = {}
         self.image_post_init = None
-        self.cycles_init = 0
+        self.cycles_init = None
         self.post_init_regs = None
         self.calls_done = 0
         self.period = None

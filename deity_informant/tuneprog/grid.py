@@ -15,6 +15,7 @@ SID_REGS = 0x19  # $D400..$D418
 SID_BASE = 0xD400
 PW_HI = (0x03, 0x0A, 0x11)  # the SID ignores the top nibble of pulse-width high
 WRAP = 1 << 32  # the write log's cycle column is uint32
+INIT_CALL = WRAP - 1  # and its call column holds this for the init phase
 
 
 def unwrap(cyc):
@@ -30,16 +31,18 @@ def frames(cyc, first, cycles_per_frame):
     return (np.asarray(cyc, dtype=np.int64) - int(first)) // int(cycles_per_frame)
 
 
-def grid(frame, reg, val, nframes, reg_count=SID_REGS, nibble=PW_HI):
+def grid(frame, reg, val, nframes=None, reg_count=SID_REGS, nibble=PW_HI):
     """Forward-filled ``nframes x reg_count`` grid of writes already framed.
 
     ``frame`` is each write's frame index (ascending; negative before frame 0, so
-    those writes are the baseline). A row is the register file after every write
-    its frame holds, which is what a sampler reading once a frame sees.
+    those writes are the baseline), and ``nframes`` defaults to one past the last
+    frame written. A row is the register file after every write its frame holds.
     """
-    rows = np.zeros((nframes, reg_count), dtype=np.uint8)
-    ks = np.arange(nframes)
     frame, reg, val = (np.asarray(x) for x in (frame, reg, val))
+    if nframes is None:
+        nframes = int(frame[-1]) + 1 if frame.size else 0
+    rows = np.zeros((max(nframes, 0), reg_count), dtype=np.uint8)
+    ks = np.arange(nframes)
     for r in range(reg_count):
         m = reg == r
         if not m.any():
@@ -52,49 +55,73 @@ def grid(frame, reg, val, nframes, reg_count=SID_REGS, nibble=PW_HI):
     return rows
 
 
+def sid_writes(trace, reg_count=SID_REGS):
+    """``(cycle, register, value, call)`` columns of the log's register-file writes."""
+    log = trace.wlog
+    addr = np.asarray(log["addr"], dtype=np.int64) - SID_BASE
+    keep = (addr >= 0) & (addr < reg_count)
+    return (
+        unwrap(log["cyc"])[keep],
+        addr[keep],
+        np.asarray(log["val"])[keep],
+        np.asarray(log["call"], dtype=np.int64)[keep],
+    )
+
+
 def trace_grid(trace, nframes=None, reg_count=SID_REGS):
-    """The tracer's SID write log as a per-frame grid.
+    """The tracer's SID write log as a per-frame grid, by cycle.
 
     The frame grid is the tracer's own: tick 0 starts where init ended and every
     tick is ``cycles_per_tick`` long, so a tick that overruns lands its late
     writes in the next frame exactly as the hardware would.
     """
-    log = trace.wlog
-    cyc = unwrap(log["cyc"])
-    addr = np.asarray(log["addr"], dtype=np.int64) - SID_BASE
-    keep = (addr >= 0) & (addr < reg_count)
+    cyc, reg, val, call = sid_writes(trace, reg_count)
     first = trace.meta.get("cycles_init")
     if first is None:  # a trace older than the column: tick 0's own first write
-        first = int(cyc[keep & (np.asarray(log["call"], dtype=np.int64) == 0)][0])
-    n = trace.meta["calls"] if nframes is None else nframes
-    return grid(
-        frames(cyc[keep], first, trace.meta["entry"]["cycles_per_tick"]),
-        addr[keep],
-        np.asarray(log["val"])[keep],
-        n,
-        reg_count,
-    )
+        first = int(cyc[call == 0][0])
+    f = frames(cyc, first, trace.meta["entry"]["cycles_per_tick"])
+    return grid(f, reg, val, nframes, reg_count)
 
 
-def sidtrace_grid(rows, nframes=None, chip=0, reg_count=SID_REGS):
+def tick_grid(trace, nframes=None, reg_count=SID_REGS):
+    """The same writes in the frame of the *tick that issued them*, not their cycle.
+
+    What the per-tick model says the register file holds at each tick boundary.
+    It differs from :func:`trace_grid` exactly where a tick outlives its frame.
+    """
+    _cyc, reg, val, call = sid_writes(trace, reg_count)
+    return grid(np.where(call == INIT_CALL, -1, call), reg, val, nframes, reg_count)
+
+
+def sidtrace_clock(rows):
+    """``(first raise, cycles per frame)`` from a sidtrace CSV's own interrupt column.
+
+    One source only -- video where any row carries it, else CIA -- so origin and
+    period cannot come from two clocks. Frame 0 is the earliest interrupt a write
+    is attributed to: the first play call, since a driver runs init with I off.
+    """
+    src = "since_video_irq" if any(r.since_video_irq is not None for r in rows) else "since_cia_irq"
+    at = sorted({r.cycle - getattr(r, src) for r in rows if getattr(r, src) is not None})
+    if len(at) < 2:
+        raise ValueError("sidtrace rows carry no interrupt clock (%d raises)" % len(at))
+    return at[0], int(np.median(np.diff(at)))
+
+
+def sidtrace_grid(
+    rows, nframes=None, chip=0, reg_count=SID_REGS, first=None, cycles_per_frame=None
+):
     """A sidtrace CSV's rows as a per-frame grid on the CSV's own interrupt clock.
 
-    Each row carries the cycles since its frame's interrupt was raised, so
-    ``cycle - offset`` is that raise and the earliest is frame 0 -- the first play
-    call, with the init writes before it as the baseline.
+    ``first`` and ``cycles_per_frame`` default to :func:`sidtrace_clock`; the
+    writes before frame 0 are the baseline the first row fills from.
     """
-    # pylint: disable=import-outside-toplevel,import-error
-    from pysidtracker.oracle import sidtrace_cadence
-
     rows = [r for r in rows if r.chip == chip and 0 <= r.reg < reg_count]
-    raised = [
-        r.cycle - (r.since_video_irq if r.since_video_irq is not None else r.since_cia_irq)
-        for r in rows
-        if r.since_video_irq is not None or r.since_cia_irq is not None
-    ]
-    f = frames([r.cycle for r in rows], min(raised), sidtrace_cadence(rows, chip=chip))
-    n = int(f[-1]) + 1 if nframes is None else nframes
-    return grid(f, [r.reg for r in rows], [r.value for r in rows], n, reg_count)
+    if first is None or cycles_per_frame is None:
+        at, cpf = sidtrace_clock(rows)
+        first = at if first is None else first
+        cycles_per_frame = cpf if cycles_per_frame is None else cycles_per_frame
+    f = frames([r.cycle for r in rows], first, cycles_per_frame)
+    return grid(f, [r.reg for r in rows], [r.value for r in rows], nframes, reg_count)
 
 
 def oracle_rows(tune_path, oracle_cache, seconds=60, image=None):

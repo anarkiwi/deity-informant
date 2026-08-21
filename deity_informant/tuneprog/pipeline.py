@@ -103,8 +103,10 @@ def _stop(args, tr, target):
 def _certified(args, witness, traced):
     """The ticks a run certifies: one past the repeat it stopped on, else what it traced.
 
-    A chunk overshoots the witness by up to ``--chunk`` ticks, so the horizon a
-    subtune certifies is the witness, not where the chunk happened to land.
+    A chunk overshoots the witness by up to ``--chunk`` ticks. Those ticks stay in
+    the trace the program is built from -- and add nothing to it, since a witness
+    is a repeated state with no input consumed, so they replay sites, edges and
+    accesses the certified prefix already carries.
     """
     return witness + 1 if args.until_period and witness is not None else traced
 

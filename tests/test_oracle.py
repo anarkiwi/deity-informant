@@ -8,7 +8,6 @@ to the Dockerized ``sidplayfp``/``sidtrace`` oracle, both grids framed by
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 pytest.importorskip("pysidtracker")
@@ -110,17 +109,6 @@ def _trace(path, nframes):
     return tr.trace()
 
 
-def _bycall(trace, nframes):
-    """A grid built the old way: every write in the frame of the tick that issued it."""
-    log = trace.wlog
-    addr = np.asarray(log["addr"], dtype=np.int64) - grid.SID_BASE
-    keep = (addr >= 0) & (addr < grid.SID_REGS)
-    call = np.asarray(log["call"], dtype=np.int64)[keep]
-    return grid.grid(
-        np.where(call < 0xFFFFFFF, call, -1), addr[keep], np.asarray(log["val"])[keep], nframes
-    )
-
-
 @pytest.mark.oracle
 def test_a_player_run_with_io_banked_out_writes_no_register():
     """Puterman's V20 wrapper: only its flush reaches the chip, and the oracle agrees.
@@ -130,11 +118,15 @@ def test_a_player_run_with_io_banked_out_writes_no_register():
     10,248 cycles inside one tick, so the frame a write lands in is its cycle's.
     """
     path = _tune(KNOB)
-    expected = _oracle(path, FRAMES)
+    interrupt = _oracle(path, FRAMES)
     trace = _trace(path, FRAMES)
-    bad = grid.differing(expected, grid.trace_grid(trace, FRAMES))
+    cycle, tick = grid.trace_grid(trace, FRAMES), grid.tick_grid(trace, FRAMES)
+    bad = grid.differing(interrupt, cycle)
     assert not bad.size, "frames %s differ" % bad[:3]
     rounded = oracle_grid(
         path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES
     )
-    assert len(grid.differing(rounded, _bycall(trace, FRAMES))) > 200  # measured: 297
+    # which side the delta is on: the trace's rule changes nothing, the oracle's
+    # anchor changes 297 frames either way, so the anchor is the whole of it
+    assert not grid.differing(interrupt, tick).size
+    assert len(grid.differing(rounded, cycle)) > 200 and len(grid.differing(rounded, tick)) > 200
