@@ -229,8 +229,8 @@ def _promote(prog, name, lbl, region, out=None, live=None):
     prog.procs[hname] = helper
     undo = (dict(proc.blocks), {})
     args = tuple(Var(n) for n in takes)
-    for p in [q for q in preds_of(proc)[lbl] if q not in region]:
-        stub = "%s$t%s" % (lbl, p)
+    for p in dict.fromkeys(q for q in preds_of(proc)[lbl] if q not in region):
+        stub = "%s$t%s" % (lbl, p)  # a block reaching the tail twice retargets once
         undo[1][p] = proc.blocks[p].term
         names = (
             tuple(gives) if out is not None else tuple("%s$%s" % (REGVAR[i], stub) for i in rets)

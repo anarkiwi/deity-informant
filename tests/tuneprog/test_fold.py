@@ -2,7 +2,8 @@
 
 import re
 
-from deity_informant.tuneprog import texture, unroll
+from deity_informant.tuneprog import tails, texture, unroll
+from deity_informant.tuneprog.graph import preds_of
 from deity_informant.tuneprog.ir import (
     Block,
     Const,
@@ -12,6 +13,8 @@ from deity_informant.tuneprog.ir import (
     Return,
     Rgn,
     Store,
+    Switch,
+    Tuneprog,
     Var,
 )
 
@@ -665,6 +668,21 @@ def _joined(escape=()):
         "RTS",
         "cnt: BRK",
     )
+
+
+def test_a_block_that_reaches_one_tail_twice_promotes_and_reverts_once():
+    blocks = [
+        Block("b0", [], Switch(Var("a"), ((0, "t"), (1, "t"), (2, "p")), ""), 0, 9),
+        Block("p", [], Goto("t"), 0, 3),
+        Block("t", [Store("io", Const(0xD400), Var("a"))], Return(), 0, 9),
+    ]
+    proc = Proc("tick", (), (), {b.label: b for b in blocks}, "b0", "tick")
+    prog = Tuneprog(procs={"tick": proc})
+    was = proc.blocks["b0"].term
+    made, undo = tails._promote(prog, "tick", "t", ["t"])
+    assert proc.blocks["b0"].term.cases == ((0, "t$tb0"), (1, "t$tb0"), (2, "p"))
+    tails._revert(prog, proc, made, undo)
+    assert proc.blocks["b0"].term == was and set(preds_of(proc)) == set(proc.blocks)
 
 
 def test_a_join_whose_one_way_out_is_the_loop_latch_becomes_a_procedure():

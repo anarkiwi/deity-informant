@@ -180,6 +180,7 @@ class _Structurer:
                     self.labels.add(n)
                 break
             if n in self.loops and not any(c[0] == n for c in ctx):
+                shut = shut or n in self.shut
                 node, n = self.loop(n, ctx, shut)
                 out.append(node)
                 continue

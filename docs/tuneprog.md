@@ -232,8 +232,8 @@ Measured at 30 s of music, `--closure trace` → `--closure static`:
 | --- | ---: | ---: | ---: | ---: |
 | Automatas | 772 → 864 | 6 → 6 | 18 → 5 | 59 |
 | `gt2-je-suis-linus` | 1,170 → 1,104 | 0 → 16 | 15 → 0 | 23 |
-| `ghouls-song01` | 747 → 832 | 27 → 33 | 28 → 3 | 76 |
-| `sw-emomyst` | 1,316 → 1,854 | 0 → 1 | 49 → 1 | 114 |
+| `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 76 |
+| `sw-emomyst` | 1,316 → 1,854 | 0 → 2 | 49 → 1 | 114 |
 
 The traps go, and the *covered* program is still structured worse. A closed arm
 itself no longer costs anything: S5 and S6 compute dominance, the loops and a

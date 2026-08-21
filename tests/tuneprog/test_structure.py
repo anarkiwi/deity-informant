@@ -249,7 +249,10 @@ def test_a_store_ends_a_load_s_life_so_inlining_never_crosses_it():
 
 
 # ---- a merged family whose copies have preambles of their own -----------------
-def _chain(vals=(0, 1, 2), counts=(4, 4, 4), cover=(4, 4, 4)):
+CHAIN = ((0, "j1"), (1, "j2"), (2, "x"))
+
+
+def _chain(vals=(0, 1, 2), counts=(4, 4, 4), cover=(4, 4, 4), cases=CHAIN):
     """The k prologues of a family: the entry names copy 0, each back edge a later one."""
     return _proc(
         [
@@ -257,7 +260,7 @@ def _chain(vals=(0, 1, 2), counts=(4, 4, 4), cover=(4, 4, 4)):
             Block(
                 "h", [Let("t", Load("ram", Const(0x1000)))], If(Var("t"), "s", "x"), 0, 12, cover
             ),
-            Block("s", [], Switch(Var("cv0#2"), ((0, "j1"), (1, "j2"), (2, "x")), ""), 0, 12),
+            Block("s", [], Switch(Var("cv0#2"), cases, ""), 0, 12),
             Block("j1", [Let("cv0#2", Const(vals[1]))], Goto("h"), 0, counts[1]),
             Block("j2", [Let("cv0#2", Const(vals[2]))], Goto("h"), 0, counts[2]),
             Block("x", [], Return(), 0, 1),
@@ -280,6 +283,11 @@ def test_prologues_the_trace_contradicts_keep_the_while():
     assert not _fors(S.structure_proc(_chain(counts=(4, 5, 4))))
 
 
+def test_prologues_the_index_does_not_order_keep_the_while():
+    swapped = ((0, "j1"), (2, "j2"), (1, "x"))  # copy 0 names 2 and copy 2 names 1
+    assert not _fors(S.structure_proc(_chain(vals=(0, 2, 1), cases=swapped)))
+
+
 # ---- a statically closed arm is not part of the covered program's shape -------
 def _closed(mark="static"):
     return _proc(
@@ -296,6 +304,25 @@ def test_a_closed_back_edge_is_no_loop_of_the_covered_program():
     body = S.structure_proc(_closed())
     assert not [n for n in S.walk(body) if type(n) is S.Loop]
     assert [n.label for n in S.walk(body) if type(n) is S.Blk] == ["b0", "h", "arm", "j"]
+
+
+def test_a_loop_inside_a_closed_arm_takes_no_covered_block_from_the_covered_path():
+    proc = _proc(
+        [
+            Block("b0", [Let("x", Const(1))], If(Var("A"), "arm", "j"), 0, 5),
+            Block("arm", [Let("y", Const(2))], Goto("a2"), 0, 0, (), "static"),
+            Block("a2", [Let("z1", Const(3))], If(Var("y"), "arm", "k"), 0, 0, (), "static"),
+            Block("j", [Let("w", Const(4))], If(Var("x"), "k", "m"), 0, 5),
+            Block("k", [Let("q", Const(5))], Goto("z"), 0, 5),
+            Block("m", [Let("r", Const(6))], Goto("z"), 0, 3),
+            Block("z", [], Return(), 0, 5),
+        ]
+    )
+    body = S.structure_proc(proc)
+    arm = next(n for n in S.walk(body) if type(n) is S.Loop)  # the closed arm has its own
+    assert [n.label for n in S.walk(arm.body) if type(n) is S.Blk] == ["arm", "a2"]
+    gotos = [n for n in S.walk(body) if type(n) is S.Jump and n.kind == "goto"]
+    assert [n.label for n in gotos] == ["k"]  # the covered path keeps k, the arm jumps
 
 
 def test_an_executed_back_edge_is_still_a_loop():

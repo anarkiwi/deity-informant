@@ -8,7 +8,22 @@ from __future__ import annotations
 
 from math import gcd
 
-from .ir import Bin, COPYVAR, Call, Const, If, Let, Load, Store, Trap, Var, copyval, evalbin, succs
+from .ir import (
+    Bin,
+    COPYVAR,
+    Call,
+    Const,
+    If,
+    Let,
+    Load,
+    Store,
+    Switch,
+    Trap,
+    Var,
+    copyval,
+    evalbin,
+    succs,
+)
 from .graph import preds_of
 
 CAP = 256  # how far a recurrence is iterated before its domain is refused
@@ -182,26 +197,63 @@ def _named(blk):
     return {s.n: s.e.v for s in blk.stmts if type(s) is Let and copyval(s.n) and type(s.e) is Const}
 
 
+def _after(proc, body, name, val):
+    """The edges a ``switch`` on the copy index takes when it holds ``val``."""
+    out = set()
+    for lbl in body:
+        t = proc.blocks[lbl].term
+        if type(t) is Switch and type(t.e) is Var and t.e.n == name:
+            out |= {(lbl, w) for v, w in t.cases if v == val}
+    return out
+
+
+def _ordered(proc, header, body, name, latch, val):
+    """True when the loop reaches ``latch`` only by a ``switch`` arm for copy ``val``.
+
+    That is what makes the copies an order and not a set: the edge naming the
+    next copy is taken where the index holds this one, and nowhere else.
+    """
+    cut = _after(proc, body, name, val)
+    if not cut:
+        return False
+    seen, work = {header}, [header]
+    while work:
+        lbl = work.pop()
+        for s in succs(proc.blocks[lbl].term):
+            if (lbl, s) in cut or s not in body:
+                continue
+            if s == latch:
+                return False
+            if s not in seen:
+                seen.add(s)
+                work.append(s)
+    return True
+
+
 def _chain(proc, header, latches, body, preds, k):
     """``(index, k)`` when k prologues name the copies of one family, else ``None``.
 
-    Copies with preambles of their own are entered through a prologue apiece, so
-    the chain steps the index by naming it: outside the loop copy 0, on the back
-    edges 1..k-1 once each, and each edge ran its own copy's share of the cover.
+    A prologue apiece steps the index by naming it: copy 0 from outside the
+    loop, copies 1..k-1 on the back edges once each and only where the index
+    holds the one before, each edge running that copy's share of the cover.
     """
     if preds is None or proc.blocks[header].count != sum(proc.blocks[header].cover):
         return None
     cover = tuple(proc.blocks[header].cover)
     ins = sorted(set(latches) | {p for p in preds[header] if p not in body})
+    if any(p not in body for l in latches for p in preds[l]):
+        return None
     sets = {l: _named(proc.blocks[l]) for l in ins}
     shared = set.intersection(*(set(s) for s in sets.values())) if sets else set()
     for name in sorted(shared):
-        back = {sets[l][name]: proc.blocks[l].count for l in latches}
+        back = {sets[l][name]: l for l in latches}
         if any(sets[l][name] for l in ins if l not in latches):
             continue
         if len(back) != len(latches) or sorted(back) != list(range(1, k)):
             continue
-        if all(back[j] == cover[j] for j in back):
+        if any(proc.blocks[back[j]].count != cover[j] for j in back):
+            continue
+        if all(_ordered(proc, header, body, name, back[j], j - 1) for j in back):
             return name, k
     return None
 
