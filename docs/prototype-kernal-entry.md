@@ -135,12 +135,17 @@ through the tuneprog tracer and compares its interrupt-framed grid with the
 oracle's: **0 of 3,000 frames differ**. It reaches its `RTI` only because the
 tracer pushes the three bytes `$FF48` saved.
 
-That guard also found the cadence defect this prototype left open, now fixed:
-`Jodler` carries PSID `speed = 1` and programs no timer of its own, so the driver
-ticks it on the host's CIA at 16,422 cycles where we said 19,656 (PAL video), and
-lft's RSID was mis-clocked the same way. `test_the_cadence_is_the_oracles_own_interrupt_period`
-now decides all four classes against the CSV's raises; 28 of the 37 carry a set
-speed bit. `Playful Professor` and Cox's `Caverns of Eriban` are still refused by
+That comparison frames each side by *its own* clock, so it is a claim about the
+frame, not about the cadence — what carries the cadence is the CSV's own
+interrupt instants, and they found the defect this prototype left open (now
+fixed). `Jodler` carries PSID `speed = 1` and programs no timer of its own, so the
+driver ticks it on the host's CIA at 16,422 cycles where we said 19,656 (PAL
+video); lft's RSID is driven by the KERNAL's own CIA at the same rate and was
+mis-clocked the same way.
+`test_the_cadence_is_the_oracles_own_interrupt_period` decides all four classes
+against those raises; 28 of the 37 carry a set speed bit.
+
+`Playful Professor` and Cox's `Caverns of Eriban` are still refused by
 `grid.sidtrace_clock`, which takes the period from the median gap between raises
 that carried a write: that is the *burst* period of a tune writing every 6th or
 7th frame, not the frame. That one stays a plan row.
