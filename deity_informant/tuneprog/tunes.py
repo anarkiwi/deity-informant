@@ -21,7 +21,11 @@ HVSC = {
     "Guldkornekspressen_Intro.sid": "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid",
     "I_Could_Eat_a_Knob_at_Night.sid": "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid",
     "Je_suis_Linus_le_salaud.sid": "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid",
+    "Jodler.sid": "MUSICIANS/B/Becher_Patrick/Jodler.sid",
     "Monty_on_the_Run.sid": "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid",
+    "Playful_Professor-Math_Tutor.sid": (
+        "MUSICIANS/B/Baumrucker_Steven/Playful_Professor-Math_Tutor.sid"
+    ),
 }
 
 

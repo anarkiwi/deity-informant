@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from deity_informant.tuneprog import frames, idioms, live, pipeline, stack, structure
+from deity_informant.tuneprog import frames, idioms, live, machine, pipeline, stack, structure
 from deity_informant.tuneprog.frame import frames as name_frames
 from deity_informant.tuneprog.ir import (
     Bin,
@@ -523,7 +523,7 @@ def test_a_tick_that_pops_past_its_entry_status_keeps_the_stack():
     assert prog.meta["stack"]["procs"] == ["tick"]
 
 
-def _rti_proc(slot, kind="irq", caller=False):
+def _rti_proc(slot, kind="irq", caller=False, kernal=False):
     """A one-block tick whose ``RTI`` reads the entry frame at ``slot``."""
     a = Bin("|", Const(STACK_LO, 2), Bin("+", Var(SP), Const(slot), 1), 2)
     blk = Block("b0", [Let("p", Load("ram", a, 1, STACK_LO, STACK_HI, -1))], Return())
@@ -531,13 +531,13 @@ def _rti_proc(slot, kind="irq", caller=False):
     if caller:
         init = Block("i0", [Call("tick")], Return())
         procs["init"] = Proc("init", (), (), {"i0": init}, "i0", "init")
-    meta = {"tick_proc": "tick", "entry": {"kind": kind}}
+    meta = {"tick_proc": "tick", "entry": {"kind": kind, "kernal": kernal}}
     return Tuneprog(meta=meta, storage=[], inputs=[], procs=procs)
 
 
 def test_the_entry_contract_covers_the_status_slot_and_nothing_else():
     """Only the byte the machine pushed as ``P`` is a value: the pc bytes are not."""
-    assert sorted(frames.contract(_rti_proc(1))["tick"]) == [frames.STATUS_SLOT]
+    assert sorted(frames.contract(_rti_proc(1))["tick"]) == [1]  # the status, alone
     assert frames.contract(_rti_proc(1, kind="sub")) == {}
     ok = frames.analyse(_rti_proc(1))["tick"]
     assert not ok.opaque and len(ok.plan) == 1 and not ok.foreign
@@ -549,6 +549,54 @@ def test_a_tick_its_own_init_calls_gets_no_entry_contract():
     """Entered by ``JSR`` too, ``SP+1`` is a return-address byte, not the status."""
     assert frames.contract(_rti_proc(1, caller=True)) == {}
     assert frames.analyse(_rti_proc(1, caller=True))["tick"].opaque
+
+
+# ---- the KERNAL dispatch: the entry A/X/Y are on the frame as well -----------
+def test_a_cinv_entry_carries_the_registers_the_kernal_prologue_saved():
+    """``$FF48`` pushes A, X then Y, so the handler finds Y/X/A/P at ``SP+1..4``."""
+    assert machine.frame_slots({"kind": "irq", "kernal": True}) == {4: "P", 3: 0, 2: 1, 1: 2}
+    assert machine.frame_slots({"kind": "irq", "kernal": False}) == {1: "P"}
+    assert machine.frame_slots({"kind": "sub"}) == {}
+    con = frames.contract(_rti_proc(4, kernal=True))["tick"]
+    assert sorted(con) == [1, 2, 3, 4]
+    assert [con[s] for s in (1, 2, 3)] == [Var("Y", 1), Var("X", 1), Var("A", 1)]
+    for slot in (1, 2, 3, 4):
+        f = frames.analyse(_rti_proc(slot, kernal=True))["tick"]
+        assert not f.opaque and len(f.plan) == 1 and not f.foreign, slot
+    for slot in (0, 5, 6):  # a deeper pop, and the pushed return address
+        assert frames.analyse(_rti_proc(slot, kernal=True))["tick"].opaque, slot
+
+
+def _cinv(*lines):
+    """A tick the KERNAL dispatched: init clears ``cnt``, the handler is ``lines``."""
+    return asm(PLAY, "init: LDA #$00", "STA cnt", "RTS", "play:", *lines, "cnt: BRK")
+
+
+BODY = ("INC cnt", "LDA cnt", "STA $D400")
+
+
+def test_a_cinv_handler_chaining_to_the_kernal_epilogue_reaches_its_rti():
+    """``$EA81`` pops the three bytes the prologue pushed, and then the ``RTI`` runs."""
+    eliminated(_cinv(*BODY, "JMP $EA81"), calls=6, kind="irq", kernal=True)
+
+
+def test_the_same_handler_on_a_raw_vector_never_reaches_its_rti():
+    """No KERNAL save, so the epilogue's three pops take the machine's own frame."""
+    code = _cinv(*BODY, "JMP $EA81")
+    trace, prog = tuneprog(code, calls=2, kind="irq", s4=True)
+    assert verify(prog, trace, calls=2, prefix=2).div["trap"] == "unreached"
+
+
+def test_a_cinv_handler_that_restores_only_a_still_eliminates():
+    """Each saved byte is one slot with one contract value, kept or discarded."""
+    eliminated(_cinv(*BODY, "PLA", "PLA", "PLA", "RTI"), calls=6, kind="irq", kernal=True)
+
+
+def test_a_cinv_handler_reaching_its_frame_through_tsx_keeps_the_stack():
+    """``$0104,X`` after ``TSX`` is the pushed status by another route: no slot."""
+    code = _cinv("TSX", "LDA $0104,X", "AND #$01", "STA $D400", "INC cnt", "JMP $EA81")
+    prog = residual(code, calls=6, kind="irq", kernal=True)
+    assert prog.meta["stack"] == {"depth": "unknown", "procs": ["tick"]}
 
 
 SCRATCH = (

@@ -7,7 +7,7 @@ traced playroutine tick for tick, plus a readable pseudocode form of it.
 Design: [`tuneprog-decompiler-design.md`](tuneprog-decompiler-design.md).
 Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-follin.md),
 [goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md),
-[jch](prototype-jch.md).
+[jch](prototype-jch.md), [kernal-entry](prototype-kernal-entry.md).
 Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 ## Vocabulary
@@ -56,19 +56,19 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end     machine 244  tracevm 328  trace 310  tracedata 346  lift 227
-              cfg 310  regions 243  jumptab 373  siblings 476  closure 347
-              copyrows 453  copymerge 165
-program       ir 440  interp 248  irwalk 319  graph 82  lower 227  build 490
-              ssa 431  frames 399  stack 218  idioms 401  emit 372  verify 331
-              period 113
-presentation  structure 356  loops 307  inline 199  texture 475  frame 51
-              word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
-              facts 284  recover 328  views 295
-text          pseudocode 468  printer 405
-driver        pipeline 497  resume 67  __init__ 124
-oracle        grid 141  tunes 50
-baseline      ghidra_facts 219  ghidra_compare 182   48 modules, 14,272 lines
+front end    machine 275  tracevm 328  trace 314  tracedata 346  lift 227
+             cfg 311  regions 243  jumptab 373  siblings 476  closure 347
+             copyrows 453  copymerge 165
+program      ir 440  interp 248  irwalk 319  graph 82  lower 227  build 452
+             wire 78  ssa 431  frames 410  stack 218  idioms 401  emit 372
+             verify 338  period 113
+presentation structure 356  loops 307  inline 199  texture 475  frame 51
+             word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
+             facts 284  recover 328  views 295
+text         pseudocode 468  printer 405
+driver       pipeline 506  resume 67  __init__ 131
+oracle       grid 159  tunes 53
+baseline     ghidra_facts 219  ghidra_compare 182   49 modules, 14,377 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -173,6 +173,7 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
+                                       // "irq" also carries "kernal": the vector is CINV
   "stack": "eliminated",               // else {"depth": n|"unknown", "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
@@ -280,16 +281,32 @@ another frame, the pointer used as data -- and then the whole program keeps the
 stack, since such a read can see any byte of the page.
 
 An `irq` tick is entered with the frame the machine itself pushed, and that frame
-is the tick's **contract**, not storage: the status byte at `SP+1` is the entry
-flags packed (`frames.contract`), the terminating `RTI` consumes exactly it, and
-the interrupt disable the machine sets is the tick's first statement
-(`build._irq_entry`). Nothing names the pushed return address at `SP+2`/`SP+3`, so
-a tick that reads *those* -- or reads the status by a route no slot places, such
-as `TSX` -- is residual as any other unplaceable read is; and a tick some other
-procedure also calls gets no contract at all, since a `JSR` puts a return-address
-byte where the interrupt put the status. `depth` is the deepest slot below an entry pointer the analysis
-placed (reads and writes, callees included), `"unknown"` where an access is not a
-slot at all.
+is the tick's **contract**, not storage: every byte of it is a parameter, the
+terminating `RTI` consumes exactly those bytes, and the interrupt disable the
+machine sets is the tick's first statement (`build._irq_entry`). Which bytes they
+are is the entry's `kernal` field. A **raw** vector (`$FFFE`, `NMINV`) is entered
+by the 6510 alone: the status byte at `SP+1` is the entry flags packed
+(`lower.status_expr`). A **CINV** entry (`$0314`, `kernal: true`) is dispatched
+through the KERNAL prologue at `$FF48`, which saves A, X and Y on top of that
+byte, so the slots are `SP+1..4` = entry Y, X, A, status -- exactly what
+`$EA31`/`$EA81` pop before their `RTI`. `machine.entry_frame` is the one statement
+of this, and the tracer, `verify._enter` and `frames.contract` all read it.
+Nothing names the pushed return address, so a tick that reads *it* -- or reaches
+the status by a route no slot places, such as `TSX` -- is residual as any other
+unplaceable read is; and a tick some other procedure also calls gets no contract
+at all, since a `JSR` puts a return-address byte where the interrupt put the
+status. `depth` is the deepest slot below an entry pointer the analysis placed
+(reads and writes, callees included), `"unknown"` where an access is not a slot at
+all.
+
+What the model does *not* carry is the rest of `$FF48`: the real prologue also
+leaves A = 0, X = SP and Z set (`TSX; LDA $0104,X; AND #$10`), where the tracer
+hands the handler the registers the previous tick left. Measured over the 37
+`play == 0` PSIDs of HVSC `MUSICIANS/A`-`C`: 31 read no entry register at all, 2
+read A and see the 0 the KERNAL would leave, and 4 (Boray) read A/X/Y live-in and
+would see other bytes on hardware. Modelling `X = SP` would make every such tick
+residual, so it waits for a tune that discriminates against the oracle
+([prototype-kernal-entry.md](prototype-kernal-entry.md)).
 
 The **6510 port** decides what `$D000-$DFFF` is at every access: the pre-init
 image carries the port a KERNAL-initialised host leaves (`$00 = $2F`,

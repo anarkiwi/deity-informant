@@ -3,6 +3,7 @@
 import pytest
 
 from deity_informant.tuneprog.ir import Call, Switch, Trap
+from deity_informant.tuneprog.irwalk import callees
 from deity_informant.tuneprog.verify import Reference, Verifier, verify
 
 from _asm import asm
@@ -181,6 +182,37 @@ def test_brk_is_refused_as_an_unmodelled_frame():
     v = Verifier(prog, Reference(T, 1))
     v.run(1)
     assert v.div["trap"] == "brk"
+
+
+def test_a_self_tail_calling_procedure_gets_its_own_arguments():
+    """A tail call to one's own entry makes the IR call graph cyclic (:func:`_no_recursion`
+    passes it: a tail call grows no frame), so the site is wired against params the
+    same pass computes. One post-order pass leaves it with no arguments at all and
+    the emitted Python raises ``TypeError`` on the first tick.
+    """
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDA #$03",
+        "JSR rec",
+        "STA $D400",
+        "INC cnt",
+        "RTS",
+        "rec: CMP #$00",
+        "BEQ done",
+        "SEC",
+        "SBC #$01",
+        "JMP rec",
+        "done: RTS",
+        "cnt: BRK",
+    )
+    T, prog = tuneprog(code, calls=3)
+    rec = next(p for p in prog.procs.values() if p.name in callees(p))
+    site = next(s for b in rec.blocks.values() for s in b.stmts if type(s) is Call)
+    assert len(site.args) == len(rec.params) and rec.params
+    assert verify(prog, T, calls=3, prefix=3).div is None
 
 
 def test_procedure_parameters_cover_every_register_a_callee_returns():

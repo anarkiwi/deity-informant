@@ -101,7 +101,19 @@ def test_find_entries_installed_handler_fallback():
         written={0x0314, 0x0315},
     )
     assert img.play == 0
-    assert sched[0] == Entry("irq", 0x2000, sched[0].cycles_per_tick, sched[0].source)
+    assert sched[0] == Entry("irq", 0x2000, sched[0].cycles_per_tick, sched[0].source, True)
+    assert sched[0].to_dict()["kernal"] is True  # CINV: the KERNAL dispatches it
+
+
+def test_find_entries_hardware_vector_is_not_a_kernal_entry():
+    mem = bytearray(0x10000)
+    mem[0xFFFE], mem[0xFFFF] = 0x00, 0x20
+    _img, sched = find_entries(
+        psid({0x1000: asm(0x1000, "RTS")}, 0x1000, 0x0000),
+        mem=mem,
+        written={0xFFFE, 0xFFFF},
+    )
+    assert sched[0].kernal is False
 
 
 def test_init_runner_returns_on_rts_and_detects_idle():

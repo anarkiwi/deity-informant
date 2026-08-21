@@ -10,32 +10,37 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .graph import preds_of
-from .ir import Bin, Call, Const, Let, Phi, Return, STACK_HI, STACK_LO, Store, Var, succs
+from .ir import Bin, Call, Const, Let, Phi, REGVAR, Return, STACK_HI, STACK_LO, Store, Var, succs
 from .irwalk import apply_stmt, apply_term, call_order, callees, node_loads, single_defs
 from .lower import status_expr
+from .machine import STATUS, frame_slots
 
 SP = "SP"
 SPREG = 3
 SLOT = "$saved"
 UNSET = ()  # no information yet: a value the fixpoint has not reached
 ENTRY = "$entry"  # the pseudo-push key of a slot the machine filled before entry
-STATUS_SLOT = 1  # 6510 interrupt frame: status at SP+1, return address at SP+2/+3
 
 
 def contract(prog):
     """``{procedure: {slot: value}}`` of the frame the machine pushed before entry.
 
-    An ``irq`` tick is entered with the interrupt frame its terminating ``RTI``
-    pops, and the status byte in it is the entry flags packed: a parameter of the
-    tick. Nothing names the pushed return address, so a read of it stays unplaced.
+    Every byte of :func:`~.machine.entry_frame` is a parameter of the tick: the
+    status is the entry flags packed, and a KERNAL-dispatched handler also finds
+    the entry A/X/Y below it. Nothing names the return address a read of it hits.
     """
     meta = prog.meta or {}
     tick = meta.get("tick_proc")
-    if tick not in prog.procs or (meta.get("entry") or {}).get("kind") != "irq":
+    entry = meta.get("entry") or {}
+    if tick not in prog.procs or entry.get("kind") != "irq":
         return {}
     if any(tick in callees(p) for p in prog.procs.values()):
         return {}  # entered as a subroutine too: SP+1 is then a return-address byte
-    return {tick: {STATUS_SLOT: status_expr()}}
+    slots = {
+        s: status_expr() if w is STATUS else Var(REGVAR[w], 1)
+        for s, w in frame_slots(entry).items()
+    }
+    return {tick: slots}
 
 
 def entry_value(frame, pushes):
