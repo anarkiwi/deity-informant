@@ -164,6 +164,12 @@ class If:
 
 @dataclass(slots=True)
 class Switch:
+    """A dispatch on ``e``; ``default`` is a successor no execution ever takes.
+
+    :class:`~.interp.Interp` traps on a value no case names, so an edge to
+    ``default`` is in the CFG (:func:`succs`) and in no run. Nothing builds one.
+    """
+
     e: object
     cases: tuple = ()
     default: str = ""

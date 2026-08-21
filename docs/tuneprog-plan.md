@@ -31,7 +31,7 @@ Contents
 | certified | Automatas (defMON, both SID models), Commando songs 1–2 (Hubbard), Ghouls'n'Ghosts (Follin, 32 subtunes + `--songs all`), GoatTracker 2 ×2, SID Wizard ×2, JCH NewPlayer V20 ×2 — 44 certificates, 852,869 ticks, 0 divergences, 0 envelope traps; 40 complete via periodicity, the `--songs all` program complete on 31 of its 32 subtunes |
 | certify at 15 s, not yet run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | JCH Easy Does It (NMI sample mixer = second interrupt); the plain V20 engine inside it is certified twice ([prototype-jch.md](prototype-jch.md)) |
-| code | `deity_informant/tuneprog/`, 45 modules, 13,545 lines, none over 510; 502 hermetic + 43 HVSC + 4 oracle tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (44/44 reproduce), `tools/tuneprog_period.py`, `tools/tuneprog_ghidra.py` |
+| code | `deity_informant/tuneprog/`, 46 modules, 13,587 lines, none over 500; 505 hermetic + 43 HVSC + 4 oracle tests, 95 % coverage; `tools/tuneprog_certify.py`, `tools/tuneprog_recert.py` (44/44 reproduce), `tools/tuneprog_period.py`, `tools/tuneprog_ghidra.py` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)) and three oracles |
 | merged PRs | #225 design · #226 plan · #227 prototype · #228 fold/texture · #229 Follin · #230 GoatTracker · #231 SID Wizard · #232 Ghidra export · #233 consolidation · #234 copy folding · #235 plan v2 · #237 stack · #239 stack footprint · #241 sibling correspondence · #242/#243 the copy index · #244 the copy view · #248 fold reach · #249 plan (the P-JCH row) · #250 certificate accounting · #251 JCH NewPlayer V20 · #252 the Q-packages · Q1a structuring |
 

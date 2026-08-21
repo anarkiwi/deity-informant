@@ -44,6 +44,7 @@ from .idioms import rewrite
 from .lift import lift_trace
 from .machine import find_entries
 from .regions import build_regions
+from .resume import build_opts, horizon, state
 from .trace import Tracer
 from .tracedata import Trace, merge
 
@@ -86,63 +87,6 @@ def add_args(ap):
 def parser(prog="tuneprog"):
     """The command line both entry points share."""
     return add_args(argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0]))
-
-
-def _horizon(args):
-    """What decides where a subtune stops; a record made under another one is stale."""
-    return [args.calls, args.seconds, args.max_calls, bool(args.until_period), args.chunk]
-
-
-def _stops(st, args):
-    """Drop the ``--songs all`` trace records another horizon wrote, and what they fed.
-
-    A stale record means the subtune must be traced again, so the run rewinds to
-    S1 and forgets that subtune's verification; a layout without records (an
-    older run's ``traced`` list) keeps nothing.
-    """
-    old = st.get("traced")
-    keep = {}
-    if isinstance(old, dict):
-        keep = {k: v for k, v in old.items() if v.get("horizon") == _horizon(args)}
-    st["traced"] = keep
-    if len(keep) != len(old or ()):
-        st["stage"] = "trace"
-        st["subtunes"] = [x for x in st.get("subtunes", ()) if str(x["song"]) in keep]
-        st.pop("divergence", None)  # the run that found it is the one being redone
-    return st
-
-
-def _stops_one(st, args, out):
-    """The single-song analogue of :func:`_stops`: rewind a run taken at another horizon.
-
-    A tracer resumed under a horizon nobody asked for certifies that many ticks
-    (a shorter target never re-traces), so a mismatch goes back to S1 and forgets
-    the verification the old target produced.
-    """
-    if st.get("horizon") not in (None, _horizon(args)):
-        st.update(stage="trace", subtunes=[])
-        st.pop("divergence", None)
-        for name in ("verify.pkl", "tracer.pkl"):
-            (out / name).unlink(missing_ok=True)
-    st["horizon"] = _horizon(args)
-    return st
-
-
-def _build(args):
-    """What decides the program the front end builds; a change invalidates it."""
-    return [args.closure, bool(args.no_merge), args.songs, args.sid_model]
-
-
-def _state(out, args):
-    p = out / "state.json"
-    st = json.loads(p.read_text()) if args.resume and p.exists() else {"stage": "trace", "calls": 0}
-    if st.get("build") not in (None, _build(args)) and st["stage"] != "trace":
-        # the S4 program on disk is not the one these options ask for, and a
-        # verifier's machine state belongs to the program that produced it
-        st.update(stage="front", subtunes=[])
-        st.pop("divergence", None)
-        (out / "verify.pkl").unlink(missing_ok=True)
-    return _stops(st, args) if args.songs == "all" else _stops_one(st, args, out)
 
 
 def _subdir(out, song):
@@ -226,7 +170,7 @@ def trace_all(args, out, st, t0, log=print):
             if time.process_time() - t0 > args.budget:
                 break
         stop = _stop(args, tr, target)
-        done[str(song)] = {"calls": tr.calls_done, "stop": stop, "horizon": _horizon(args)}
+        done[str(song)] = {"calls": tr.calls_done, "stop": stop, "horizon": horizon(args)}
         st["calls"] = tr.calls_done
         if stop is None:
             tr.save(resume)
@@ -307,7 +251,7 @@ def stage_front(args, out, st):
     prog.save(out / "tuneprog.S4.json")
     (out / "tuneprog.py").write_text(emit.emit_python(prog))
     st.update(
-        build=_build(args),
+        build=build_opts(args),
         sites=len(trace.sites),
         regions=len(regions),
         procs=len(procs),
@@ -468,7 +412,7 @@ def run(args, log=print):
     """Drive the stages under ``args``; returns the process exit code."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    st = _state(out, args)
+    st = state(out, args)
     t0 = time.process_time()
     prog = None
     try:

@@ -142,16 +142,41 @@ def _tails(proc):
     return sorted(out)
 
 
-def _crossers(proc, region):
-    """The names the region reads but does not define: its parameters."""
-    inside, used = set(), set()
+def _exposed(proc, lbl):
+    """``(read before set, set)`` in one block: its upward-exposed uses and its defs."""
+    up, dead = set(), set()
+    b = proc.blocks[lbl]
+    for s in b.stmts:
+        up |= stmt_uses(s, set()) - dead
+        dead |= set(defs_of(s))
+    return up | (term_uses(b.term, set()) - dead), dead
+
+
+def _crossers(proc, region, entry):
+    """The names the region reads before it sets them: its parameters.
+
+    A name the region also assigns is still one where a path reads it first, so
+    this is upward exposure over the region's own edges; ``used - inside`` would
+    call such a name internal and leave the helper reading it unbound.
+    """
+    gen, kill, preds = {}, {}, {l: [] for l in region}
     for lbl in region:
-        b = proc.blocks[lbl]
-        for s in b.stmts:
-            inside.update(defs_of(s))
-            stmt_uses(s, used)
-        term_uses(b.term, used)
-    return used - inside
+        gen[lbl], kill[lbl] = _exposed(proc, lbl)
+        for s in succs(proc.blocks[lbl].term):
+            if s in preds:
+                preds[s].append(lbl)
+    live, work = {l: set(gen[l]) for l in region}, list(region)
+    while work:
+        lbl = work.pop()
+        out = set()
+        for s in succs(proc.blocks[lbl].term):
+            if s in live:
+                out |= live[s]
+        now = gen[lbl] | (out - kill[lbl])
+        if now != live[lbl]:
+            live[lbl] = now
+            work.extend(preds[lbl])
+    return live[entry]
 
 
 def _slots(crossers):
@@ -203,7 +228,7 @@ def _promote(prog, name, lbl, region, out=None, live=None):
     a call only where the reader would see something in it.
     """
     proc = prog.procs[name]
-    params = _crossers(proc, region)
+    params = _crossers(proc, region, lbl)
     gives = []
     if out is not None:
         if any(type(proc.blocks[l].term) is Return for l in region):
