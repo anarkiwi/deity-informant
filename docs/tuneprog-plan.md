@@ -13,7 +13,7 @@ and [survey-tuneprog.md](survey-tuneprog.md). Sections: 1 where we are ·
 | certify at 15 s, not run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey ([survey-tuneprog.md](survey-tuneprog.md)) | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight. 58 CPU-h on the old tracer |
-| code | `deity_informant/tuneprog/`, 57 modules, 16,743 lines, none over 500 except `pipeline.py` (513); 685 hermetic + 62 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction; `tools/tuneprog_certify.py`, `tuneprog_recert.py` (51/51), `tuneprog_period.py`, `tuneprog_ghidra.py`, `tuneprog_floor.py`, `tuneprog_nmi.py`, `tools/survey/` |
+| code | `deity_informant/tuneprog/`, 57 modules, 16,755 lines, none over 500 except `pipeline.py` (513); 685 hermetic + 62 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction; `tools/tuneprog_certify.py`, `tuneprog_recert.py` (51/51), `tuneprog_period.py`, `tuneprog_ghidra.py`, `tuneprog_floor.py`, `tuneprog_nmi.py`, `tools/survey/` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 5.8–10.6× our S4 — baseline, not core; three Ghidra oracles; `sidplayfp` grid oracle |
 | merged PRs | #225–#272, one stage each, every one on green CI with recert reproduced |
 
