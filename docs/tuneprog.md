@@ -297,7 +297,7 @@ statement (`build._irq_entry`). Which bytes they are is the entry's `kernal` fie
 a **raw** vector (`$FFFE`) is entered by the 6510 alone, so `SP+1` is the entry
 flags packed (`lower.status_expr`); a **CINV** entry (`$0314`, `kernal: true`) comes
 through the KERNAL prologue at `$FF48`, which saves A, X and Y on top of that byte,
-so `SP+1..4` = entry Y, X, A, status.
+so `SP+1..4` = entry Y, X, A, status — what `$EA31`/`$EA81` pop before their `RTI`.
 
 Which applies is the 6510 port's word, not the tune's (`machine.vector_gate`): with
 HIRAM set the CPU takes its vector from the KERNAL's own `$FFFE`, so a write to
