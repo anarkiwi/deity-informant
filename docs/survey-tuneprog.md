@@ -71,6 +71,10 @@ family".
     python tools/survey/tuneprog_report.py --horizon horizon.jsonl \
         --period period.jsonl --results results.csv --hvsc C64Music
 
+`--only FILE` restricts a run to the HVSC-relative paths that file lists, which
+is how the corrections below re-measure one failure class without re-running the
+sample.
+
 Per-tune artefacts are pruned as each row is written; only the JSONL rows
 survive, and neither they nor any certificate they describe are committed.
 
