@@ -686,10 +686,10 @@ tracer itself went **333.1 → 108.7 s, ×3.06**, exactly the instrument's figur
 The *refused* tunes' trace CPU does not move at all — **775.1 → 765.4 s,
 ×1.01** — because they never reach the tracer: 46 of the 60 refuse `no entry`
 and spend 14.6 CPU-seconds each in that same `_traced` call, and the eight
-`vector banked out` refusals 5.5 s each. In this prefix that is 68 % of pass 1's
-trace CPU. The prefix is refusal-heavy (30 % against
-the sample's 17.4 %) and its refusals come mostly from one large-image family,
-so the whole-sample share is smaller — but §12's "tracing is 78 % of pass 1's
+`vector banked out` refusals 5.5 s each. That is 68 % of the *before* run's pass
+1 trace CPU (775.1 s of 1,138.7) and 86 % of the after run's (765.4 of 891.3).
+The prefix is refusal-heavy (30 % against the sample's 17.4 %) and its refusals
+come mostly from one large-image family, so the whole-sample share is smaller — but §12's "tracing is 78 % of pass 1's
 CPU" is 78 % of **S0 + S1**, and only the S1 part was this gate's subject.
 **Splitting S0 discovery from S1 tracing in the sweep's stage columns is a new
 backlog row**, and so is the discovery cost itself: 14.6 s to decide `no entry`.

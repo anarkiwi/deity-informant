@@ -1,8 +1,9 @@
 """S1 differential: the ``Trace`` the front end consumes is byte-for-byte pinned.
 
 One fixture per recorded mechanism -- per-op access sets, SMC opcode and operand
-cells, index domains, every control-kind edge, JSR/RTS pairing, register
-summaries, inputs, IO logs, both footprint hashes -- hashed after serialisation.
+cells, index domains, every control-kind edge, JSR/RTS pairing, inputs, IO logs,
+both footprint hashes -- hashed after serialisation. :func:`capture` regenerates
+the table; every digest below came from ``main`` at f713814.
 """
 
 import hashlib
@@ -86,6 +87,18 @@ def f_smc():
     return {PLAY: play, 0x1300: asm(0x1300, "RTS")}, 0x1300, {0x1200 + i: i for i in range(8)}, 5
 
 
+def f_branch_zero():
+    """A zero-displacement branch: taken and fall-through are the same target."""
+    play = asm(PLAY, "LDX #$01", "BEQ over", "over: STX $D40D", "RTS")
+    return {PLAY: play, 0x1300: asm(0x1300, "RTS")}, 0x1300, {}, 3
+
+
+def f_branch_zero_taken():
+    """The same branch, taken: one edge cell counts both directions."""
+    play = asm(PLAY, "LDX #$00", "BEQ over", "over: STX $D40D", "RTS")
+    return {PLAY: play, 0x1300: asm(0x1300, "RTS")}, 0x1300, {}, 3
+
+
 def f_smc_revert():
     """An operand cell that alternates between two values: a site's bytes come back."""
     play = asm(
@@ -138,6 +151,14 @@ def f_period():
 
 
 FIXTURES = {
+    "branch_zero": (
+        f_branch_zero,
+        "a63cb7dab4c7dbd7a24537e1a34fa42b9fbf17779fa787d79ffc9d715f16f2af",
+    ),
+    "branch_zero_taken": (
+        f_branch_zero_taken,
+        "052269cd259f03fabbec44337ac7c6f1f6c09bdb5213eca5969ddc49d2f30cf6",
+    ),
     "calls": (f_calls, "617337b91f65ddd7e4e4801910c75971bb5a3addcdbefbe1b1857352e3d261a0"),
     "indexed": (f_indexed, "33f2ed505af0eabdc15cf2c561214d8597862e9f548a0cd583d3a2b8ce926279"),
     "io": (f_io, "4177514f959dd56714bc053fdf7d3094caa910362fa7e72dc4dd7b7ace2c91dc"),
@@ -212,7 +233,21 @@ def test_entry_shapes_are_pinned(name, tmp_path):
 
 
 def capture(tmp_path):
-    """Every digest as JSON: how the tables above are filled after a deliberate change."""
+    """Every digest as JSON: how the table above is regenerated.
+
+    Run it against a reference tree to re-baseline after a deliberate change::
+
+        git archive f713814 | tar -x -C REF
+        PYTHONPATH=REF:tests/tuneprog python -c "import test_trace_identity as M, \
+            tempfile, pathlib; print(M.capture(pathlib.Path(tempfile.mkdtemp())))"
+    """
     got = {n: digest(build(n), tmp_path) for n in sorted(FIXTURES)}
     got.update({n: digest(f(), tmp_path) for n, (f, _h) in sorted(EXTRA.items())})
     return json.dumps(got, indent=1)
+
+
+def test_every_fixture_hashes_to_its_own_trace(tmp_path):
+    """The table is regenerable and no two fixtures collide onto one digest."""
+    got = json.loads(capture(tmp_path))
+    assert set(got) == set(FIXTURES) | set(EXTRA)
+    assert len(set(got.values())) == len(got)

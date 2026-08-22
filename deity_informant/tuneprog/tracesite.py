@@ -13,7 +13,7 @@ from ..vm import _emit_line, _rd_expr, _lhs
 IDX_REG = {"absx": 1, "zpx": 1, "indx": 1, "absy": 2, "zpy": 2, "indy": 2}
 ILEN = [MODE_LEN[OPS[b][1]] for b in range(256)]
 IDX_SLOT = [IDX_REG.get(OPS[b][1], 0) for b in range(256)]
-PEN_REG = {"ax": 1, "ay": 2, "iy": 3}
+PEN_REG = {"ax": (1, False), "ay": (2, False), "iy": (2, True)}  # index slot, indirect
 _CODE = {}  # generated source -> code object; two sites of one shape compile once
 WROTE = 2  # TraceVM.known: 1 = loaded or power-on, 2 = written by a traced store
 _FLAGS = sum(1 << i for i, _b in STATUS_BITS)
@@ -138,7 +138,7 @@ def build(vm, pc, key, rec):
     f = compile_site(vm, pc, rec, IDX_SLOT[op], idx, rs, ws)
     rdm, wrm = reg_masks(rec)
     pen = rec["pen"]
-    pen = None if pen is None or pen[0] not in PEN_REG else (PEN_REG[pen[0]], pen[1])
+    pen = None if pen is None or pen[0] not in PEN_REG else PEN_REG[pen[0]] + (pen[1],)
     nxt = (pc + rec["len"]) & 0xFFFF
     e0, aux = None, None
     if kind == K_NEXT:

@@ -330,15 +330,12 @@ class TraceVM(FlowRecorder, PcodeVM):
         if k == K_NEXT:
             cyc = t[S_CYC]
             p = t[S_PEN]
-            if p is not None:
-                mem = self.mem
-                b = p[1]
-                if p[0] == 3:
+            if p is not None:  # index slot, indirect, base
+                b = p[2]
+                if p[1]:
+                    mem = self.mem
                     b = mem[b] | (mem[(b + 1) & 0xFF] << 8)
-                    i = reg[2]
-                else:
-                    i = reg[p[0]]
-                if (b & 0xFF00) != ((b + i) & 0xFF00):
+                if (b & 0xFF00) != ((b + reg[p[0]]) & 0xFF00):
                     cyc += 1
             self.cycles += cyc
             t[S_E0][1] += 1
@@ -356,7 +353,10 @@ class TraceVM(FlowRecorder, PcodeVM):
                 self.cycles += t[S_CYC]
                 e = t[S_E1]
                 if e is None:
-                    e = t[S_E1] = self.edge_slot(t[S_EK], nxt, "br_not")
+                    # a zero displacement makes both directions the same target,
+                    # and the taken label is the one that names it
+                    kind = "br_taken" if nxt == ctrl[3] else "br_not"
+                    e = t[S_E1] = self.edge_slot(t[S_EK], nxt, kind)
             e[1] += 1
             return nxt
         return self._control(t, pc, k)
