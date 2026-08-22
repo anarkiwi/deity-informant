@@ -442,7 +442,7 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
 | `rodger-alien3` | Alien_3.sid | Andrew Rodger, hardware-vector entry | 1,503 | 0m30s | — | 7 | 148 | 505 | 25 | horizon |
 | `goto80-jazzpjazz` | Jazzpjazz.sid | defMON | 1,799 | 0m30s | — | 4 | 190 | 629 | 95 | horizon |
-| `necropolo-experiment-zeta` | Experiment_Zeta.sid | Virtuoso | 5,956 | 1m58s | 5,184 | 2 | 184 | 356 | 65 | complete |
+| `necropolo-experiment-zeta` | Experiment_Zeta.sid | Virtuoso | 5,956 | 1m58s | 5,184 | 2 | 185 | 356 | 65 | complete |
 | `daglish-deflektor` | Deflektor.sid | Ben Daglish/Gremlin | 1,503 | 0m30s | — | 4 | 180 | 630 | 78 | horizon |
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `jch-knob-at-night`'s

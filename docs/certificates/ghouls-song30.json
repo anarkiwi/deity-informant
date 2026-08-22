@@ -8,8 +8,8 @@
   "coverage": {
    "0,1,1": 0,
    "1,0,0": 2,
-   "1,1,0": 143,
-   "1,1,1": 8
+   "1,1,0": 135,
+   "1,1,1": 5
   },
   "families": [
    {
@@ -50,8 +50,8 @@
    }
   ],
   "refused": [],
-  "statements": 153,
-  "unverified": 145
+  "statements": 142,
+  "unverified": 137
  },
  "cost": {
   "calls_per_second": 29546,

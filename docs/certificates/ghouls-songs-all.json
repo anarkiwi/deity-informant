@@ -8,7 +8,7 @@
   "coverage": {
    "0,0,1": 5,
    "1,0,1": 0,
-   "1,1,1": 493
+   "1,1,1": 476
   },
   "families": [
    {
@@ -25,7 +25,7 @@
    }
   ],
   "refused": [],
-  "statements": 498,
+  "statements": 481,
   "unverified": 5
  },
  "cost": {

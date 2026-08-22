@@ -9,8 +9,8 @@
    "0,1,0": 31,
    "0,1,1": 1,
    "1,0,0": 2,
-   "1,1,0": 89,
-   "1,1,1": 8
+   "1,1,0": 83,
+   "1,1,1": 5
   },
   "families": [
    {
@@ -51,12 +51,12 @@
    }
   ],
   "refused": [],
-  "statements": 131,
-  "unverified": 123
+  "statements": 122,
+  "unverified": 117
  },
  "cost": {
   "calls_per_second": 43342,
-  "ir_blocks": 175,
+  "ir_blocks": 174,
   "ir_procs": 2,
   "ir_statements": 324,
   "regions": 48,

@@ -335,9 +335,9 @@ class _Builder:
     def _next_copy(self, cp, blk, out, extra, i, fam, to):
         """The chain edge: ``v + 1``, into the next copy while one is left.
 
-        Only the arm that advances the run takes the step. The other arm leaves the
-        family from the last copy, and what it leaves is code that copy holds, so
-        ``v`` still names it: an index one past the last copy names none.
+        Only the arm that advances takes the step, so an edge that leaves the family
+        leaves ``v`` naming the copy it left; the step is the index's own statement
+        and no copy's row, so it carries no coverage.
         """
         b = Block("I%s_%d" % (blk.label, i), [], None, blk.src, 0, blk.cover)
         extra.append(b)
@@ -348,8 +348,6 @@ class _Builder:
             [Let(fam.var, Var(nxt, 1))],
             Goto(self.header(cp, fam, to)),
             blk.src,
-            0,
-            blk.cover,
         )
         extra.append(step)
         cond = Bin("<", Var(nxt, 1), Const(fam.k), 1)

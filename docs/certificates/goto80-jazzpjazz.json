@@ -7,8 +7,8 @@
  "copies": {
   "coverage": {
    "1,0": 10,
-   "1,1": 111,
-   "1,1,1": 5
+   "1,1": 95,
+   "1,1,1": 4
   },
   "families": [
    {
@@ -75,7 +75,7 @@
     "why": "an edge from copy 0 enters copy 1"
    }
   ],
-  "statements": 126,
+  "statements": 109,
   "unverified": 10
  },
  "cost": {

@@ -6,8 +6,8 @@
  ],
  "copies": {
   "coverage": {
-   "0,1,0": 92,
-   "1,0,1": 6,
+   "0,1,0": 84,
+   "1,0,1": 1,
    "1,1,1": 1
   },
   "families": [
@@ -25,8 +25,8 @@
    }
   ],
   "refused": [],
-  "statements": 99,
-  "unverified": 98
+  "statements": 86,
+  "unverified": 85
  },
  "cost": {
   "calls_per_second": 65947,

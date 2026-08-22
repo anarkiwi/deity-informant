@@ -6,7 +6,7 @@
  ],
  "copies": {
   "coverage": {
-   "1,1": 7
+   "1,1": 6
   },
   "families": [
    {
@@ -22,7 +22,7 @@
    }
   ],
   "refused": [],
-  "statements": 7,
+  "statements": 6,
   "unverified": 0
  },
  "cost": {

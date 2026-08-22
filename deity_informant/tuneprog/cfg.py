@@ -262,13 +262,17 @@ def branch_arms(ls, site, pc, op):
         return (ls.ctrl[3], ls.ctrl[4]) if ls.ctrl[0] == "br" else None
     if OPS[op][1] != "rel":
         return None
-    rel = site["variants"][0][1]
-    return ((pc + 2 + (rel - 256 if rel & 0x80 else rel)) & 0xFFFF, (pc + 2) & 0xFFFF)
+    return ((pc + 2 + sext(site["variants"][0][1])) & 0xFFFF, (pc + 2) & 0xFFFF)
+
+
+def sext(b):
+    """A branch offset byte as the signed displacement the 6502 adds."""
+    return b - 256 if b & 0x80 else b
 
 
 def _rel_targets(site, fall):
     """The addresses the offset bytes the trace executed at this site name."""
-    return {(fall + (b[1] - 256 if b[1] & 0x80 else b[1])) & 0xFFFF for b in site["variants"]}
+    return {(fall + sext(b[1])) & 0xFFFF for b in site["variants"]}
 
 
 def _ptrs(site):

@@ -236,6 +236,13 @@ def _todo(args):
     if args.only:
         want = {x.strip() for x in Path(args.only).read_text().split("\n") if x.strip()}
         elig = [x for x in elig if x[0] in want]
+        missing = sorted(want - {p for p, _f in elig})
+        if missing:
+            print(
+                "--only: %d of %d not in the sample:" % (len(missing), len(want)), file=sys.stderr
+            )
+            for p in missing:
+                print("  " + p, file=sys.stderr)
     if args.per_family:
         seen = Counter()
         elig = [(p, f) for p, f in elig if (seen.update([f]) or seen[f]) <= args.per_family]

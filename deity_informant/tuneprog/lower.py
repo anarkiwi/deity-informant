@@ -205,8 +205,13 @@ def tgt(store, addr, size, init_phase, blk, out):
     return Var(n, size)
 
 
+def hi_addr(p):
+    """Where a 6502 reads a pointer's high byte: the page does not carry."""
+    return (p & 0xFF00) | ((p + 1) & 0xFF)
+
+
 def _wrap(p):
-    """``(p & $FF00) | ((p + 1) & $FF)``: where a 6502 reads a pointer's high byte."""
+    """:func:`hi_addr` as an expression, for a pointer no constant names."""
     return Bin(
         "|",
         Bin("&", p, Const(0xFF00, 2), 2),
@@ -222,7 +227,7 @@ def _indirect(store, ex, init_phase, blk, out):
     pointer the trace ran reaches, which is the extent rule every access already uses.
     """
     ptr = tgt(store, ex["cell"][0], ex["cell"][1], init_phase, blk, out)
-    seen = {a for p in ex["ptrs"] for a in (p, (p & 0xFF00) | ((p + 1) & 0xFF))}
+    seen = {a for p in ex["ptrs"] for a in (p, hi_addr(p))}
     lo, hi = min(seen), max(seen)
     cls = store.cls(lo, hi, "state", init_phase)
     for half, a in (("lo", ptr), ("hi", _wrap(ptr))):
@@ -250,7 +255,7 @@ def ctrl_expr(node, ls, store, pc, init_phase, blk, out):
             return _indirect(store, ex, init_phase, blk, out)
         ptr = ex["ptr"]
         lo8 = tgt(store, ptr, 1, init_phase, blk + "l", out)
-        hi8 = tgt(store, (ptr & 0xFF00) | ((ptr + 1) & 0xFF), 1, init_phase, blk + "h", out)
+        hi8 = tgt(store, hi_addr(ptr), 1, init_phase, blk + "h", out)
         return Bin("|", lo8, Bin("<<", hi8, Const(8), 2), 2)
     cell = tgt(store, ex["addr"], ex["size"], init_phase, blk, out)
     if ex["size"] == 2 or ls is None or ls.ctrl[0] != "br":
