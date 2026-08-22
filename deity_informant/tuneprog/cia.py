@@ -34,8 +34,8 @@ class CIA:
 
     Timer A counts cycles, Timer B cycles or Timer A's underflows (CRB bits 5-6),
     both halting after one underflow in one-shot mode; ICR writes accumulate the
-    mask the way the chip does. :meth:`fired` is the conservative gate over this
-    chip's line, :meth:`edge_at` the cycle it next asserts.
+    mask the way the chip does. :meth:`edge_at` is the cycle this chip's line next
+    asserts and :meth:`sources` the sources that can still raise it.
     """
 
     __slots__ = (
@@ -47,8 +47,6 @@ class CIA:
         "cycles0",
         "icr",
         "run_b",
-        "u0",
-        "f",
         "latch_b",
         "counter_b",
         "t0b",
@@ -70,8 +68,6 @@ class CIA:
         self.cycles0 = 0
         self.icr = 0  # the KERNAL's reset write of $7F disables every source
         self.run_b = False
-        self.u0 = 0
-        self.f = 0
         self.latch_b = 0xFFFF
         self.counter_b = 0xFFFF
         self.t0b = 0
@@ -167,7 +163,6 @@ class CIA:
         off = self._off(addr)
         if off < 0:
             return
-        self._settle(cycles)
         self._latch_flags(cycles)
         if off == 0x04 or off == 0x05:
             due = self._edge(ICR_TA, cycles)
@@ -209,7 +204,6 @@ class CIA:
                 self.t0b = cycles
                 self.cycles0b = 0
             self.run_b = bool(val & 1)
-        self.u0 = self.underflows(cycles)
         self.fa0 = self._count(ICR_TA, cycles)
         self.fb0 = self._count(ICR_TB, cycles)
 
@@ -224,13 +218,6 @@ class CIA:
         keep = ICR_TA | (ICR_TB if self.grid(ICR_TB) is not None else 0)
         return m & ~keep
 
-    def _settle(self, cycles):
-        """Close the armed window at ``cycles``: an enabled source that had its event fires."""
-        m = self.sources()
-        self.f |= m & ~ICR_TA  # timer B, TOD alarm, serial, FLAG: unmodelled, so fail closed
-        if m & ICR_TA and self.underflows(cycles) > self.u0:
-            self.f |= ICR_TA
-
     def _latch_flags(self, cycles):
         """Latch each timer's flag bit for the underflows it has had since the last look."""
         if self._count(ICR_TA, cycles) > self.fa0:
@@ -239,12 +226,6 @@ class CIA:
             self.fl |= ICR_TB
         self.fa0 = self._count(ICR_TA, cycles)
         self.fb0 = self._count(ICR_TB, cycles)
-
-    def fired(self, cycles):
-        """Enabled sources that have raised this chip's interrupt line, or still can."""
-        self._settle(cycles)
-        self.u0 = self.underflows(cycles)
-        return self.f | self.sources()
 
     def edge_at(self, cycles):
         """The cycle this chip's interrupt line next asserts, or ``None``.

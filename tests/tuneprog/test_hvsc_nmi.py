@@ -33,7 +33,7 @@ def test_neither_tune_can_dispatch_an_nmi():
     _entry, tr2 = _post_init(JAZZPJAZZ)
     assert tr2.vm.cia[1].latch != 0xFFFF  # a Timer-A latch is loaded
     for t in (tr, tr2):
-        assert t.vm.cia[1].sources() == 0 and t.vm.cia[1].fired(t.vm.cycles) == 0
+        assert t.vm.cia[1].sources() == 0 and t.vm.cia[1].edge_at(t.vm.cycles) is None
 
 
 def test_both_certify_over_their_horizon():

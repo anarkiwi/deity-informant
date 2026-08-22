@@ -173,17 +173,20 @@ def test_cia_icr_mask_accumulates_and_a_source_needs_its_timer():
     c.write(CIA1_BASE + 0x0D, 0x02, 0)  # disables Timer B, which was never enabled
     assert c.sources() == ICR_TA
     c.write(CIA1_BASE + 0x0D, 0x01, 0)
-    assert c.sources() == 0 and c.fired(0) == 0
+    assert c.sources() == 0 and c.edge_at(0) is None
 
 
-def test_cia_a_window_that_underflowed_fires_after_it_closes():
+def test_cia_a_flag_outlives_the_mask_that_named_it():
+    """The event latches its flag whatever the mask says; only a read clears it."""
     c = CIA(CIA1_BASE)
     c.write(CIA1_BASE + 4, 0xFF, 0)
     c.write(CIA1_BASE + 5, 0x00, 0)
     c.write(CIA1_BASE + 0x0E, 0x11, 0)
     c.write(CIA1_BASE + 0x0D, 0x81, 0)
     c.write(CIA1_BASE + 0x0D, 0x01, 0x400)  # disabled again, but it underflowed meanwhile
-    assert c.sources() == 0 and c.fired(0x400) == ICR_TA
+    assert c.sources() == 0 and c.edge_at(0x400) is None and c.fl == ICR_TA
+    c.write(CIA1_BASE + 0x0D, 0x81, 0x400)  # named again: the latched flag raises at once
+    assert c.edge_at(0x400) == 0x400
 
 
 def test_find_entries_refuses_when_no_entry():
