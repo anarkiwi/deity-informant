@@ -86,16 +86,16 @@ so a chunk wrote 9 rows where it now writes 1,087.
 > | `RuntimeError` | 14 | 11 |
 > | `no nmi` | 6076 | 6075 (1 `wall timeout`) |
 >
-> 13 tunes move into the two new refusal classes (8 from
-> `sample player, silent play`, 3 from `RuntimeError`/`sample mixer`, 1 from
-> `no SID write`, 1 from a crash), and **41 of the 49 `no SID write` tunes move
-> into the two sample classes**: the same tunes, with the handler's body traced
-> where it was not before (*Dune_Cover*, the three *Comer* mixers and their
-> shape: `handler_pcs` 4 → 62, `handler_ram_reads` 1 → 4,347, `handler_sid`
-> `[]` → `$D418`), at an unchanged NMI count and cadence. The cause is not
-> diagnosed here; the only chip-model change between the two scans is the
-> conservative `cia.fired`/`_settle` gate being dropped for the chip's own
-> `edge_at`. The property table below and §6's class column are from the first
+> 13 tunes move into the two new refusal classes — 7 from
+> `sample player, silent play`, 3 from `RuntimeError`, 2 from `sample mixer`, 1
+> from `no SID write` — and **40 of the 49 `no SID write` tunes move into the two
+> sample classes** (30 and 10; a 41st into `nmi clobbers registers`): the same
+> tunes, with the handler's body traced where it was not before (*Dune_Cover*:
+> `handler_pcs` 4 → 62, `handler_ram_reads` 1 → 4,347, `handler_sid` `[]` →
+> `$D418`, at an unchanged 39,554 NMIs and the same cadence; the three *Comer*
+> mixers are the same shape). The cause is not diagnosed here; the only
+> chip-model change between the two scans is the conservative
+> `cia.fired`/`_settle` gate being dropped for the chip's own `edge_at`. The property table below and §6's class column are from the first
 > scan; §6's outcome table is from the re-run.
 
 | property of the 181 traced schedules | tunes | raw | HVSC-weighted |
@@ -320,9 +320,10 @@ refuses **`schedule not store-separable`**, and `compared` carries
 `"nmi store separability"` on a certificate that passed it. Hermetically: the
 reviewer's fixture — the play routine reading `$2000` between two of its own
 stores while the handler does `INC $2000` — is refused; a handler writing a cell
-the play routine never reads certifies. 5 tunes of 7,023 refuse here, and three
-that had certified before the check (*Sulfo_64*, *Hittibiisi*, *Iisibiisi*) were
-resting on the assumption it now proves.
+the play routine never reads certifies. 5 tunes of 7,023 refuse here in the
+200-tick scan and 6 of the 195 over §6's 30 s run, and three that had certified
+before the check (*Sulfo_64*, *Hittibiisi*, *Iisibiisi*) were resting on the
+assumption it now proves.
 
 **Register preservation is checked too.** At the `RTI` unwinding an NMI taken
 *inside* a tick, A/X/Y must be what they were at the handler's entry, else
@@ -331,7 +332,8 @@ from the schedule row, so a handler that really left them changed would be
 replayed wrong. An NMI in the host's idle time is exempt — the next tick's entry
 registers are verified anyway. JCH's shape, which saves A and Y into its own
 `LDA #`/`LDY #` operands, certifies, and so does a `PHA`/`PLA` handler; a handler
-that returns different registers is refused. 8 tunes of 7,023.
+that returns different registers is refused. 8 tunes of 7,023 in the 200-tick
+scan, 12 of the 195 over 30 s.
 
 **What is replayed rather than computed.** The interrupted state — the stack
 pointer, the pushed status, the return address and A/X/Y — is handed to the replay
@@ -522,8 +524,10 @@ with one entry.
 * the horizon `--seconds` computes is taken from the pre-settle cadence, so a
   tune whose tick period settles later certifies a little past the horizon asked
   for (*Easy Does It*: 1,799 ticks = 35.9 s for `--seconds 30`);
-* the 30 divergences, 27 refusals and 8 `JAM`s left in the class at 30 s, and the
-  12 + 6 tunes the two new checks refuse there (5 + 8 over the whole sample);
-* `tools/tuneprog_recert.py --resume` replays the previous tree's `state.json`
-  when an `--out` is reused across a code change; a fresh `--out` per tree avoids
-  it, stamping tree identity in `recert.json` would fix it.
+* the 30 divergences, 27 refusals and 8 `JAM`s left in the class at 30 s, of
+  which `schedule not store-separable` 6 and `nmi clobbers registers` 12 are the
+  two new checks (5 and 8 over the whole sample);
+* `tools/tuneprog_recert.py --resume` reads the state `recert.json` holds without
+  asking which tree wrote it, so an `--out` reused across a code change replays
+  the previous tree's verdicts; a fresh `--out` per tree avoids it, stamping tree
+  identity in `recert.json` fixes it.
