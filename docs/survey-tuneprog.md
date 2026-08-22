@@ -14,7 +14,7 @@ no certificate was committed.
 Contents: 1 method · 2 outcomes · 3 by family · 4 failure classes · 5 refusals ·
 6 completeness and the period pass · 7 the machine stack · 8 entry and cadence ·
 9 copy folding · 10 data-gated class sizes · 11 what the programs look like ·
-12 cost and the fast-tracer gate · 13 crashes · 14 what it changes
+12 cost and the fast-tracer gate (12b the tracer, built) · 13 crashes · 14 what it changes
 
 ---
 
@@ -632,6 +632,101 @@ is 11 % and 2.4 %. A 3× tracer would put the production tracer where the design
 already assumed it was, take the song-length campaign from ≈ 529 to ≈ 180
 CPU-hours, remove most of the 333 wall-timeouts across both passes, and change
 nothing else in the pipeline.
+
+### 12b. Correction (2026-08-22): the fast tracer is built, and "trace" was two costs
+
+The gate fired and the work is done ([tuneprog-plan.md](tuneprog-plan.md) §8
+item 7, §5b Q7, PR #271). Two things the table above could not say.
+
+**1. The tracer is 3.1–3.6× faster, and the design's model is now beaten.** The
+profile refuted the row's own premise: the old tracer spent **5–6 %** of its self
+time in the compiled P-Code and the rest on bookkeeping around it — the base VM
+call chain 27–29 %, the tracing `step` prologue another 29–30 %, edges, frames
+and register masks 11–12 %, per-op attribution 7–9 %, the per-tick hash **1 %**.
+Seven Python calls and six dict lookups an instruction, all re-deriving what a
+site already fixes. Making the site key the VM's cache key — so a site's closure,
+per-op access sets, index domain, register masks and edge cells resolve once and
+the loop only indexes them — gives, in one process under `process_time`:
+
+| tune | ticks | before | after | ratio |
+|---|---|---|---|---|
+| *Automatas* (defMON, CIA) | 12,029 | 798 ticks/s | **2,556** | **3.20×** |
+| Commando song 1 | 1,503 | 626 | **2,228** | **3.56×** |
+| Ghouls song 1 (Follin) | 1,503 | 1,222 | **3,751** | **3.07×** |
+| GoatTracker 2 *Do It Again* | 1,503 | 480 | **1,587** | **3.31×** |
+| JCH V20 *Guldkornekspressen* | 1,503 | 439 | **1,463** | **3.34×** |
+| *Experiment Zeta* `--until-period` | 6,000 | 586 | **2,000** | **3.41×** |
+| *Automatas*, 40,000 ticks | 40,000 | 757 | **2,403** | **3.18×** |
+
+**≈ 480–590 k instructions/s** against design §2's 277 k — the production tracer
+is now 1.7–2.1× faster than the prototype VM that model was measured on. The
+`Trace` is byte-identical: `trace.json` and every bulk array over all 82 traces
+the 50 certificates hold; recert 50/50 before and after, no field moved.
+
+**2. Pass 1's `trace` column is S0 *and* S1, and only the S1 part moves.**
+Re-running the **first 200 tunes of the same seed-1 sample** (identical files and
+order, 24 workers, `--seconds 30`, 120 s cap) on both tracers:
+
+| pass 1, 200 tunes | before | after |
+|---|---|---|
+| trace | 0.3163 CPU-h (85.1 %) | 0.2476 (81.7 %) |
+| front | 0.0130 (3.5 %) | 0.0131 (4.3 %) |
+| verify | 0.0245 (6.6 %) | 0.0246 (8.1 %) |
+| print | 0.0176 (4.7 %) | 0.0178 (5.9 %) |
+| **total** | **0.3715 CPU-h**, 6.69 s/tune | **0.3030**, 5.45 s/tune |
+| wall: median / max | 5.3 s / 27.2 s | 3.0 s / 20.1 s |
+| outcome | 134 certified, 6 diverged, 60 refused | identical |
+
+Paired over the 134 tunes both runs certified, at identical tick counts
+(267,735 ticks): **trace CPU 343.4 → 119.0 s, ×2.89; 780 → 2,250 ticks/s**. Of
+that 119.0 s, **10.3 s is `machine._traced`** — `pysidtracker`'s
+`playroutine_cadence` plus `trace_init`, which is entry discovery, S0 — so the
+tracer itself went **333.1 → 108.7 s, ×3.06**, exactly the instrument's figure.
+
+The *refused* tunes' trace CPU does not move at all — **775.1 → 765.4 s,
+×1.01** — because they never reach the tracer: 46 of the 60 refuse `no entry`
+and spend 14.6 CPU-seconds each in that same `_traced` call, and the eight
+`vector banked out` refusals 5.5 s each. In this prefix that is 68 % of pass 1's
+trace CPU. The prefix is refusal-heavy (30 % against
+the sample's 17.4 %) and its refusals come mostly from one large-image family,
+so the whole-sample share is smaller — but §12's "tracing is 78 % of pass 1's
+CPU" is 78 % of **S0 + S1**, and only the S1 part was this gate's subject.
+**Splitting S0 discovery from S1 tracing in the sweep's stage columns is a new
+backlog row**, and so is the discovery cost itself: 14.6 s to decide `no entry`.
+
+**Pass 2 is where the gate paid.** The first 50 certified tunes of the same
+sample, `--until-period --max-calls 400000`, 300 s cap, 24 workers:
+
+| pass 2, 50 tunes | before | after |
+|---|---|---|
+| trace | 1.6111 CPU-h (98.4 %) | 1.1028 (88.5 %) |
+| verify | 0.0204 (1.2 %) | 0.1277 (10.2 %) |
+| **total** | **1.6378 CPU-h**, 117.9 s/tune | **1.2464**, 89.7 s/tune |
+| certified | 34 | **44** |
+| wall timeouts | **16** | **6** |
+| wall: median / p90 | 27.9 s / 300.1 s | 11.0 s / 300.1 s |
+
+Paired over the 34 both runs certified (1,552,645 ticks): **trace CPU 1000.0 →
+329.3 s, ×3.04; 1,553 → 4,714 ticks/s**, the whole pipeline ×2.56. **Ten of the
+sixteen wall timeouts go away** and become complete programs — which is why the
+*after* run's verify share rises to 10 %: there are ten more programs to verify,
+each longer than the ones that were already finishing.
+
+**Projections**, on §12's own linear-in-ticks assumption, with ×3.06 applied to
+the S1 part and S0 left where it is:
+
+| campaign | §12 | corrected |
+|---|---|---|
+| catalogue at a 30 s horizon | ≈ 131 CPU-h | **≈ 80–105** |
+| catalogue at HVSC song length | ≈ 529 | **≈ 190–210** |
+| `--until-period`, 300 s cap, same work | ≈ 1,520 | **≈ 500** |
+| `--until-period`, 300 s cap, same budget | ≈ 1,520, 24 % timeouts | **≈ 1,160, ⅗ of the timeouts gone** |
+
+The 30 s range is wide because S0 is a large fixed share at a short horizon and
+this prefix cannot size it for the whole sample; at song length tracing dominates
+and the range closes. The last two rows are the same measurement read two ways:
+the pass costs a third of what it did for the work the old one finished, or
+two-thirds of it while finishing far more.
 
 ## 13. Crashes
 
