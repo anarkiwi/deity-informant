@@ -1,36 +1,30 @@
 # Prototype: the installed-handler family (CINV entries) — results
 
-The exemplar prototypes ([automatas](prototype-automatas.md),
-[follin](prototype-follin.md), [goattracker](prototype-goattracker.md),
-[sidwizard](prototype-sidwizard.md), [jch](prototype-jch.md)) are each one
-*player*. This one is a *convention*: the entry a PSID with `play == 0` really
-has. Its purpose is narrow — the evidence that admits the family to the HVSC
-campaign — so it is measured over a screened population and witnessed by two
+A convention, not a player: the entry a PSID with `play == 0` really has. Unlike the exemplar
+prototypes ([automatas](prototype-automatas.md), [follin](prototype-follin.md),
+[goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md),
+[jch](prototype-jch.md)), it is measured over a screened population and witnessed by two
 certificates, not by a player anatomy.
 
-## 1. What the family is, and what stopped it
+## 1. The family
 
-A PSID whose header carries `play == 0` installs its own interrupt handler and
-lets the machine call it. Almost all of them install it at **CINV** (`$0314`),
-which is the KERNAL's vector: the hardware IRQ enters `$FF48`, which pushes A, X
-and Y on top of the frame the 6510 pushed, and only then jumps through `$0314`.
-The handler ends by chaining to `$EA31` (the KERNAL's own service, then the
-epilogue) or straight to `$EA81`, whose `PLA; TAY; PLA; TAX; PLA` pops exactly
-those three bytes before its `RTI`.
-
-Before this stage the tracer entered the handler with the bare 6510 frame. The
-three pops then took the machine's own status and return address, `while SP <
-start` ended one instruction before the `RTI`, and the block that would have
-carried it was `trap 'unreached'`. Screened over the 486 `play == 0` tunes of
-HVSC `MUSICIANS/A`–`C` (37 of them PSID): 23 built and **all 23** diverged at
-tick 0 on `unreached`; the other 14 crashed the generated code on a `Call`
-emitted with no arguments (a separate bug, [below](#4-the-no-argument-call)).
+- `play == 0` means the tune installs its own IRQ handler; almost all install it at **CINV**
+  (`$0314`), the KERNAL's vector.
+- The hardware IRQ enters `$FF48`, which pushes A, X and Y on top of the 6510's frame, then
+  jumps through `$0314`.
+- The handler chains to `$EA31` (KERNAL service, then epilogue) or straight to `$EA81`, whose
+  `PLA; TAY; PLA; TAX; PLA` pops exactly those three bytes before its `RTI`.
+- Entering with the bare 6510 frame (corrected from that) made the three pops take the
+  machine's own status and return address, so `while SP < start` ended one instruction before
+  the `RTI` and the block carrying it was `trap 'unreached'`.
+- Screened over the 486 `play == 0` tunes of HVSC `MUSICIANS/A`–`C` (37 PSID): 23 built,
+  **all 23** diverged at tick 0 on `unreached`; the other 14 crashed on a `Call` emitted with
+  no arguments (§4).
 
 ## 2. The convention
 
-`Entry` carries `kernal` — the installed vector is CINV, so the KERNAL
-dispatches it — and `machine.entry_frame` is the single statement of what the
-machine left on the stack, in push order:
+`Entry` carries `kernal` (installed vector is CINV, so the KERNAL dispatches it);
+`machine.entry_frame` states what the machine left on the stack, in push order:
 
 | entry | frame (push order) | slots above the entry pointer |
 |---|---|---|
@@ -38,12 +32,11 @@ machine left on the stack, in push order:
 | `irq`, raw vector (`$FFFE`) | `P` | `SP+1` status |
 | `irq`, CINV (`kernal: true`) | `P`, A, X, Y | `SP+1..4` = Y, X, A, status |
 
-Which of the two it is is the **6510 port's** word, not the tune's. With HIRAM set
-the CPU takes its vector from the KERNAL's own `$FFFE`, so the dispatch is `$FF48`
-and CINV and a write to `$FFFE` went to the RAM under the ROM; with HIRAM clear
-that RAM *is* the vector and no prologue runs. `machine.vector_gate` decides it,
-so a tune that armed both is not ambiguous, and where the port forbids the only
-dispatch the tune armed it refuses rather than pick:
+Which applies is the **6510 port's** word, not the tune's: with HIRAM set the CPU takes its
+vector from the KERNAL's own `$FFFE`, so the dispatch is `$FF48` and CINV, and a write to
+`$FFFE` went to the RAM under the ROM; with HIRAM clear that RAM *is* the vector and no
+prologue runs. `machine.vector_gate` decides, refusing rather than picking where the port
+forbids the only dispatch the tune armed:
 
 | installed | KERNAL mapped | KERNAL banked out |
 |---|---|---|
@@ -51,22 +44,20 @@ dispatch the tune armed it refuses rather than pick:
 | `$FFFE` only | refuse `vector banked out` | raw, `kernal: false` |
 | both | CINV, `kernal: true` | raw, `kernal: false` |
 
-`find_entries` runs the gate on the pre-init image, `Tracer.run_init` re-runs it
-once init has had the port — that verdict is what the ticks and the certificate
-carry — and every tick re-checks HIRAM, since the frame is the tick's contract.
-
-The tracer pushes it, `verify._enter` pushes it, and `frames.contract` names each
-slot as a parameter of the tick: the status is the entry flags packed
-(`lower.status_expr`), each register slot is that register's entry value. Nothing
-else changes. Exactness is the must-def discipline of the frame analysis, not a
-pattern: the pushed return address (now `SP+5`/`SP+6`) names no value, so a tick
-that reads it is residual; a tick that reaches the status through `TSX` is
-residual because that address is no slot at all; and a raw-vector entry keeps the
-one-slot shape it had.
+- `find_entries` runs the gate on the pre-init image; `Tracer.run_init` re-runs it once init
+  has had the port (that verdict is what ticks and certificate carry); every tick re-checks
+  HIRAM.
+- The tracer, `verify._enter` and `frames.contract` push the frame and name each slot a
+  parameter of the tick: status = the entry flags packed (`lower.status_expr`), each register
+  slot = that register's entry value.
+- Exactness is the frame analysis's must-def discipline, not a pattern: the pushed return
+  address (`SP+5`/`SP+6`) names no value, so a tick reading it is residual; a tick reaching
+  the status via `TSX` is residual (that address is no slot at all); a raw-vector entry keeps
+  its one-slot shape.
 
 ## 3. Measured over the family
 
-The same 37 PSIDs — every one of them a CINV entry — at a 15 s horizon:
+The same 37 PSIDs — every one a CINV entry — at a 15 s horizon:
 
 | | before | after |
 |---|---|---|
@@ -89,8 +80,8 @@ Two are committed as evidence:
 | stack | eliminated | eliminated |
 | program | 2 procedures, 12 blocks, 41 statements, 33 regions | 8 procedures, 71 blocks, 104 statements, 36 regions |
 
-*Jodler*'s whole tick, printed — no `sp`, no flags, no `RTI`, and the three
-voices folded to one body:
+*Jodler*'s whole tick, printed — no `sp`, no flags, no `RTI`, three voices folded to one
+body:
 
 ```
 tick():                                  # $C738
@@ -114,50 +105,43 @@ tick():                                  # $C738
 
 ## 4. The no-argument `Call`
 
-The 14 crashes were not the entry convention: the IR call graph can have
-**cycles**. `cfg._no_recursion` refuses a `JSR` cycle but deliberately lets a
-*tail* call through — it grows no frame — and a tail edge is still a `Call` in
-the IR, so a player whose routine jumps back to a `JSR`ed label is self-recursive
-there (the four Crowther examples' `$CD45`, and ten Android tunes). Wiring the
-interfaces in one post-order pass then gave that site the callee's params before
-they were computed: `args = ()` where the callee ends up taking eight, and
-`p_p_CD45() missing 8 required positional arguments` at tick 0. Params and rets
-only grow, so `wire.wire` iterates them to a fixpoint — a worklist in post-order
-rank, a caller re-queued when its callee moves, one pass where the graph is
-acyclic.
+- The 14 crashes were IR call-graph **cycles**, not the entry convention.
+- `cfg._no_recursion` refuses a `JSR` cycle but deliberately passes a *tail* call (it grows no
+  frame), and a tail edge is still a `Call` in the IR, so a routine jumping back to a `JSR`ed
+  label is self-recursive there (the four Crowther examples' `$CD45`, ten Android tunes).
+- One post-order wiring pass gave that site the callee's params before they were computed:
+  `args = ()` where the callee takes eight, and
+  `p_p_CD45() missing 8 required positional arguments` at tick 0.
+- Params and rets only grow, so `wire.wire` iterates them to a fixpoint: a worklist in
+  post-order rank, a caller re-queued when its callee moves, one pass where the graph is
+  acyclic.
 
 ## 5. The oracle guard
 
-The frame is a machine-model claim, so the check is `sidplayfp`, as it was for the
-6510 port in [prototype-jch.md](prototype-jch.md). `tests/test_oracle.py` runs
-lft's `A_Mind_Is_Born.sid` — a CINV entry at `$0031` that chains to `$EA31` —
-through the tuneprog tracer and compares its interrupt-framed grid with the
-oracle's: **0 of 3,000 frames differ**. It reaches its `RTI` only because the
-tracer pushes the three bytes `$FF48` saved.
+The frame is a machine-model claim, so the check is `sidplayfp`, as it was for the 6510 port
+in [prototype-jch.md](prototype-jch.md). `tests/test_oracle.py` runs lft's
+`A_Mind_Is_Born.sid` (a CINV entry at `$0031` that chains to `$EA31`) through the tuneprog
+tracer and compares its interrupt-framed grid with the oracle's: **0 of 3,000 frames
+differ**. It reaches its `RTI` only because the tracer pushes the three bytes `$FF48` saved.
 
-That comparison frames each side by *its own* clock, so it is a claim about the
-frame, not about the cadence — what carries the cadence is the CSV's own
-interrupt instants, and they found the defect this prototype left open (now
-fixed). `Jodler` carries PSID `speed = 1` and programs no timer of its own, so the
-driver ticks it on the host's CIA at 16,422 cycles where we said 19,656 (PAL
-video); lft's RSID is driven by the KERNAL's own CIA at the same rate and was
-mis-clocked the same way.
-`test_the_cadence_is_the_oracles_own_interrupt_period` decides all four classes
-against those raises; 28 of the 37 carry a set speed bit.
+Each side is framed by its own clock, so the comparison claims the frame, not the cadence.
+The cadence comes from the CSV's own interrupt instants, which found a defect (now fixed):
+`Jodler` carries PSID `speed = 1` and programs no timer of its own, so the driver ticks it on
+the host's CIA at 16,422 cycles where we said 19,656 (PAL video); lft's RSID, on the KERNAL's
+own CIA at the same rate, was mis-clocked the same way.
+`test_the_cadence_is_the_oracles_own_interrupt_period` decides all four classes against those
+raises; 28 of the 37 carry a set speed bit.
 
-`Playful Professor` and Cox's `Caverns of Eriban` are still refused by
-`grid.sidtrace_clock`, which takes the period from the median gap between raises
-that carried a write: that is the *burst* period of a tune writing every 6th or
-7th frame, not the frame. That one stays a plan row.
+`Playful Professor` and Cox's `Caverns of Eriban` are still refused by `grid.sidtrace_clock`,
+which takes the period from the median gap between raises that carried a write — the *burst*
+period of a tune writing every 6th or 7th frame, not the frame. A plan row.
 
 ## 6. What the model still does not carry
 
-The real `$FF48` does more than save A/X/Y: `TSX; LDA $0104,X; AND #$10` (the BRK
-test) leaves A = 0, X = SP and Z set at the handler's first instruction, where
-the tracer hands it the registers the previous tick left. Measured over the 37:
-31 read no entry register at all, 2 read A and see the same 0, and 4 (Boray) read
-A/X/Y live-in and would see other bytes on hardware. It is not a certificate
-question — the tracer and the verifier agree, and such a read is a pinned
-`entry_reg` input either way — but `X = SP` cannot simply be modelled: an `SP`
-value that survives makes the whole program residual. The plan keeps it as a
+`$FF48` also runs the BRK test `TSX; LDA $0104,X; AND #$10`, leaving A = 0, X = SP and Z set
+at the handler's first instruction, where the tracer hands it the registers the previous tick
+left. Over the 37: 31 read no entry register at all, 2 read A and see the same 0, 4 (Boray)
+read A/X/Y live-in and would see other bytes on hardware. Not a certificate question (tracer
+and verifier agree, and such a read is a pinned `entry_reg` input either way), but `X = SP`
+cannot simply be modelled: an `SP` value that survives makes the whole program residual. A
 model row, to be decided against the `sidplayfp` grid on one Boray tune.
