@@ -161,6 +161,7 @@ def test_a_cinv_handler_matches_the_oracle_frame_for_frame():
 
 JODLER = "Jodler.sid"
 AUTOMATAS = "Automatas.sid"
+JAZZPJAZZ = "Jazzpjazz.sid"
 CADENCES = [  # the driver's raster; an armed latch of its own; the driver's CIA; the KERNAL's
     (COMMANDO, Entry("sub", 0x5012, 19656, "pal_video")),
     (AUTOMATAS, Entry("sub", 0x0FE3, 2457, "cia_timer")),
@@ -168,6 +169,27 @@ CADENCES = [  # the driver's raster; an armed latch of its own; the driver's CIA
     (MIND, Entry("irq", 0x0031, 16422, "pal_host_cia", True)),
 ]
 CAD_FRAMES = 900
+
+
+@pytest.mark.oracle
+def test_a_cia2_latch_that_arms_nothing_is_not_the_cadence():
+    """*Jazzpjazz* loads a `$DD04`/`$DD05` latch and enables no source to dispatch it.
+
+    CIA #2's line is the NMI, so the tick is the driver's CIA, and the oracle's own
+    raises say so: a wrong period does not divide the gaps between the interrupts
+    it attributes its writes to. The grid is not compared -- this player polls the
+    raster, which the VM does not model, and the certificate pins those reads.
+    """
+    path = _tune(JAZZPJAZZ)
+    data = path.read_bytes()
+    entry = find_entries(data)[1][0]
+    latch = trace_init(SidImage.from_bytes(data)).cia2_timer_latch
+    assert entry == Entry("sub", 0x1003, 16422, "pal_host_cia")
+    assert latch is not None and entry.cycles_per_tick != latch + 1
+    rows = grid.oracle_rows(path, _CACHE / "csv", seconds=CAD_FRAMES // 50 + 2)
+    gaps = np.diff(_raises(rows))
+    assert gaps.size and not (gaps % entry.cycles_per_tick).any()
+    assert (gaps % (latch + 1)).any()
 
 
 def _raises(rows):

@@ -440,6 +440,8 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `jch-guldkorn-intro` | Guldkornekspressen_Intro.sid | JCH NewPlayer V20 | 2,401 | 0m48s | 1,512 | 2 | 160 | 443 | 103 | complete |
 | `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 2m41s | 6,120 | 15 | 365 | 951 | 96 | complete |
 | `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
+| `rodger-alien3` | Alien_3.sid | Andrew Rodger, hardware-vector entry | 1,503 | 0m30s | — | 7 | 148 | 505 | 25 | horizon |
+| `goto80-jazzpjazz` | Jazzpjazz.sid | defMON | 1,799 | 0m30s | — | 4 | 190 | 629 | 95 | horizon |
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `jch-knob-at-night`'s
 period of 1 is a song that *stops*: its tracks end, the player writes nothing
@@ -456,6 +458,20 @@ its two siblings. Hubbard's free-running frame counter `$5525` is real (period
 repeat: reducing it to its masked residue still leaves the accumulators, whose
 full byte *is* the SID write, and in song 2 its period already divides that
 subtune's loop. Verdict `aperiodic`, the same class as `ghouls-song21`.
+
+`rodger-alien3` and `goto80-jazzpjazz` are the dead-NMI pair: a written NMI
+vector and a written CIA #2 Timer-A latch that no armed source can dispatch, so
+neither is the second schedule they were once refused as. Neither finds a state
+repeat — *Jazzpjazz*, and *Alien_3*'s cheapest subtune, were each traced to the
+400,000-tick cap without one — so both are certified to a 30 s horizon, and
+`sidplayfp` confirms *Jazzpjazz*'s tick: the gaps between the interrupts the
+oracle attributes its writes to are whole multiples of the host CIA's period and
+not of the CIA #2 latch the tune loads. Both pin inputs no other
+certificate does: *Alien_3* enters through the hardware vector, where no KERNAL
+prologue saves them, so the handler's A/X/Y are live-in and pinned per tick
+(6,013 in all), and *Jazzpjazz* polls the raster (2,226). It is also the only
+certificate whose entry frame is the bare `RTI` status byte; every other one is
+CINV.
 
 ## Known gaps
 
@@ -552,7 +568,16 @@ subtune's loop. Verdict `aperiodic`, the same class as `ghouls-song21`.
   is itself a SID write and no reduction is sound. The rule the classifier
   applies, and any reduction that follows it, is fail-closed: a read shape it
   cannot classify keeps the whole cell.
-- **Refusals.** A second armed interrupt source (CIA-2 timer, NMI vector), a
-  recursive JSR call graph, an `init` that never returns inside its budget, and a
-  play routine that runs past its instruction budget are diagnosed and refused,
-  not approximated.
+- **Refusals.** A second armed interrupt source, a recursive JSR call graph, an
+  `init` that never returns inside its budget, and a play routine that runs past
+  its instruction budget are diagnosed and refused, not approximated. *Armed*
+  is the chip's rule, not the evidence: CIA #2's interrupt line is the 6510's
+  NMI, so a second source exists iff CIA #2's ICR (`$DD0D`) enables one of bits
+  0-4 — accumulated over the writes, since bit 7 says whether a write enables or
+  disables what it names — and, for a timer source, iff that timer is started
+  (`$DD0E`/`$DD0F` bit 0). A `$DD04`/`$DD05` latch or a `$0318`/`$FFFA` vector
+  over no such source is dead, exactly as `vector_gate` treats a dead `$FFFE`
+  write, and the same rule says a CIA #2 period is never a play cadence. The
+  gate is re-checked every tick beside `port moved`, so a tune that arms a
+  source only once the music is running refuses there (`nmi armed in play`).
+  The one assumption is the oracle's: `sidplayfp` never presses RESTORE.

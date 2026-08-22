@@ -146,6 +146,13 @@ def psid_songs(data):
     return songs, startsong
 
 
+def is_ntsc(data):
+    """True when a v2+ header's clock bits (``flags`` bits 2-3) say NTSC."""
+    if struct.unpack(">H", data[4:6])[0] < 2:
+        return False
+    return (struct.unpack(">H", data[0x76:0x78])[0] >> 2) & 0b11 == 0b10
+
+
 def is_rsid(data):
     """True for an RSID container: the host runs the real machine, not a driver."""
     return data[:4] == b"RSID"

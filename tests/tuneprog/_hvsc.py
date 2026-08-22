@@ -25,6 +25,7 @@ from deity_informant.tuneprog.verify import certify, verify  # noqa: E402
 from _prog import proc_body as body  # noqa: E402
 
 PAL_CLOCK = 985248
+ALIEN3 = "Alien_3.sid"
 AUTOMATAS = "Automatas.sid"
 COMMANDO = "Commando.sid"
 GNG = "Ghouls_n_Ghosts.sid"
@@ -34,6 +35,7 @@ LINUS = "Je_suis_Linus_le_salaud.sid"
 DIA = "Do_It_Again.sid"
 KNOB = "I_Could_Eat_a_Knob_at_Night.sid"
 GULDKORN = "Guldkornekspressen_Intro.sid"
+JAZZPJAZZ = "Jazzpjazz.sid"
 JODLER = "Jodler.sid"
 PROFESSOR = "Playful_Professor-Math_Tutor.sid"
 

@@ -1,0 +1,124 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "copies": {
+  "coverage": {
+   "1,0": 10,
+   "1,1": 95,
+   "1,1,1": 4
+  },
+  "families": [
+   {
+    "bases": [
+     "$1372",
+     "$13A3",
+     "$13D4"
+    ],
+    "columns": 1,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 3,
+    "table": "$0200"
+   },
+   {
+    "bases": [
+     "$114B",
+     "$11D3"
+    ],
+    "columns": 21,
+    "copies": 2,
+    "proc": "tick",
+    "rows": 51,
+    "table": "$0206"
+   },
+   {
+    "bases": [
+     "$1293",
+     "$12A1"
+    ],
+    "columns": 3,
+    "copies": 2,
+    "proc": "tick",
+    "rows": 5,
+    "table": "$025A"
+   },
+   {
+    "bases": [
+     "$16F5",
+     "$1701"
+    ],
+    "columns": 2,
+    "copies": 2,
+    "proc": "p_16B0",
+    "rows": 6,
+    "table": "$0266"
+   },
+   {
+    "bases": [
+     "$1754",
+     "$175F"
+    ],
+    "columns": 2,
+    "copies": 2,
+    "proc": "p_16B0",
+    "rows": 6,
+    "table": "$026C"
+   }
+  ],
+  "refused": [
+   {
+    "base": "$16CF",
+    "proc": "p_16B0",
+    "why": "an edge from copy 0 enters copy 1"
+   }
+  ],
+  "statements": 109,
+  "unverified": 10
+ },
+ "cost": {
+  "calls_per_second": 10865,
+  "ir_blocks": 190,
+  "ir_procs": 4,
+  "ir_statements": 629,
+  "regions": 95,
+  "sites": 554,
+  "trace_calls": 1799,
+  "verify_cpu_seconds": 0.2
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4099,
+  "cycles_per_tick": 16422,
+  "kind": "sub",
+  "source": "pal_host_cia"
+ },
+ "generated": "2026-08-22T02:58:38Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": false,
+   "cycles_per_tick": 16422,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": null,
+   "inputs_pinned": 2226,
+   "interp_prefix": 2000,
+   "period": null,
+   "seconds": 29.99,
+   "song": 1,
+   "ticks": 1799,
+   "trace_first_repeat": null,
+   "trace_period": null
+  }
+ ],
+ "tune": "Jazzpjazz.sid"
+}

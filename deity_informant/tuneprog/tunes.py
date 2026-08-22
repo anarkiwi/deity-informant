@@ -12,6 +12,7 @@ from pathlib import Path
 
 HVSC = {
     "A_Mind_Is_Born.sid": "MUSICIANS/L/Lft/A_Mind_Is_Born.sid",
+    "Alien_3.sid": "MUSICIANS/R/Rodger_Andrew/Alien_3.sid",
     "Automatas.sid": "MUSICIANS/G/Goto80/Automatas.sid",
     "Commando.sid": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
     "Do_It_Again.sid": "MUSICIANS/L/Linus/Do_It_Again.sid",
@@ -20,6 +21,7 @@ HVSC = {
     "Ghouls_n_Ghosts.sid": "MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid",
     "Guldkornekspressen_Intro.sid": "MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid",
     "I_Could_Eat_a_Knob_at_Night.sid": "MUSICIANS/P/Puterman/I_Could_Eat_a_Knob_at_Night.sid",
+    "Jazzpjazz.sid": "MUSICIANS/G/Goto80/Jazzpjazz.sid",
     "Je_suis_Linus_le_salaud.sid": "MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid",
     "Jodler.sid": "MUSICIANS/B/Becher_Patrick/Jodler.sid",
     "Monty_on_the_Run.sid": "MUSICIANS/H/Hubbard_Rob/Monty_on_the_Run.sid",
