@@ -164,7 +164,9 @@ def test_a_table_reaches_the_entries_no_accessor_touched():
     addrs = {x.id: tuple(range(x.base, x.base + x.size)) for x in prog.storage}
     owned = jumptab.owners(prog, code, addrs)
     assert jumptab.span(r, {r.id}, owned, prog.meta["load"]) == (tbl, tbl + 3)
-    assert jumptab.enumerate_targets(prog, code) == 2  # the last entry, and the zero one
+    # the zero offset is already a case: the trace ran that byte here (test_dispatch)
+    assert sorted(v for v, _l in _switch(prog)[0].cases) == sorted(hs[:2])
+    assert jumptab.enumerate_targets(prog, code) == 1  # the last entry, which nothing ran
     assert sorted(v for v, _l in _switch(prog)[0].cases) == sorted(hs)
 
 

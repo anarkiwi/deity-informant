@@ -333,12 +333,27 @@ class _Builder:
         return b.label
 
     def _next_copy(self, cp, blk, out, extra, i, fam, to):
-        """The chain edge: ``v += 1``, into the next copy while one is left."""
+        """The chain edge: ``v + 1``, into the next copy while one is left.
+
+        Only the arm that advances the run takes the step. The other arm leaves the
+        family from the last copy, and what it leaves is code that copy holds, so
+        ``v`` still names it: an index one past the last copy names none.
+        """
         b = Block("I%s_%d" % (blk.label, i), [], None, blk.src, 0, blk.cover)
-        b.stmts.append(Let(fam.var, Bin("+", Var(fam.var), Const(1), 1)))
         extra.append(b)
-        cond = Bin("<", Var(fam.var), Const(fam.k), 1)
-        b.term = If(cond, self.header(cp, fam, to), self._succ(cp, b, out, extra, 0, None))
+        nxt = "%s_%s_%d" % (fam.var, blk.label, i)
+        b.stmts.append(Let(nxt, Bin("+", Var(fam.var), Const(1), 1)))
+        step = Block(
+            "N%s_%d" % (blk.label, i),
+            [Let(fam.var, Var(nxt, 1))],
+            Goto(self.header(cp, fam, to)),
+            blk.src,
+            0,
+            blk.cover,
+        )
+        extra.append(step)
+        cond = Bin("<", Var(nxt, 1), Const(fam.k), 1)
+        b.term = If(cond, step.label, self._succ(cp, b, out, extra, 0, None))
         return b.label
 
 

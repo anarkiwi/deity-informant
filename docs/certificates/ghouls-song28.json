@@ -7,9 +7,9 @@
  "copies": {
   "coverage": {
    "0,1,1": 0,
-   "1,0,0": 3,
-   "1,1,0": 106,
-   "1,1,1": 5
+   "1,0,0": 6,
+   "1,1,0": 111,
+   "1,1,1": 8
   },
   "families": [
    {
@@ -50,12 +50,12 @@
    }
   ],
   "refused": [],
-  "statements": 114,
-  "unverified": 109
+  "statements": 125,
+  "unverified": 117
  },
  "cost": {
   "calls_per_second": 25776,
-  "ir_blocks": 174,
+  "ir_blocks": 175,
   "ir_procs": 2,
   "ir_statements": 383,
   "regions": 51,

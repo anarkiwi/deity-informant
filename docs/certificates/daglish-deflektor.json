@@ -6,56 +6,80 @@
  ],
  "copies": {
   "coverage": {
-   "1,1": 6,
-   "1,1,1": 6
+   "1,1": 3,
+   "1,1,1": 56
   },
   "families": [
    {
     "bases": [
-     "$52FF",
-     "$5304",
-     "$5309"
+     "$C1E5",
+     "$C214",
+     "$C243"
     ],
-    "columns": 1,
+    "columns": 15,
     "copies": 3,
     "proc": "tick",
-    "rows": 2,
+    "rows": 16,
     "table": "$0200"
    },
    {
     "bases": [
-     "$5184",
-     "$5189"
+     "$C10C",
+     "$C11B",
+     "$C12A"
+    ],
+    "columns": 2,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 6,
+    "table": "$025A"
+   },
+   {
+    "bases": [
+     "$C84A",
+     "$C852",
+     "$C85A"
+    ],
+    "columns": 2,
+    "copies": 3,
+    "proc": "init",
+    "rows": 4,
+    "table": "$0266"
+   },
+   {
+    "bases": [
+     "$C366",
+     "$C379"
     ],
     "columns": 1,
     "copies": 2,
-    "proc": "tick",
+    "proc": "p_C292",
     "rows": 2,
-    "table": "$0206"
+    "table": "$026F"
    }
   ],
   "refused": [],
-  "statements": 12,
+  "statements": 59,
   "unverified": 0
  },
  "cost": {
-  "calls_per_second": 17661,
-  "ir_blocks": 100,
-  "ir_procs": 3,
-  "ir_statements": 288,
-  "regions": 59,
-  "sites": 312,
-  "trace_calls": 11780,
-  "verify_cpu_seconds": 0.7
+  "calls_per_second": 14282,
+  "ir_blocks": 180,
+  "ir_procs": 4,
+  "ir_statements": 630,
+  "regions": 78,
+  "sites": 661,
+  "trace_calls": 1503,
+  "verify_cpu_seconds": 0.1
  },
  "divergence": null,
  "entry": {
-  "addr": 20498,
+  "addr": 49414,
   "cycles_per_tick": 19656,
   "kind": "sub",
   "source": "pal_video"
  },
- "generated": "2026-08-16T20:12:31Z",
+ "generated": "2026-08-22T04:14:20Z",
  "oracle": "deity_informant.PcodeVM@0.5.0",
  "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
@@ -70,15 +94,15 @@
    "divergences": 0,
    "envelope_traps": 0,
    "first_repeat": null,
-   "inputs_pinned": 11780,
+   "inputs_pinned": 0,
    "interp_prefix": 2000,
    "period": null,
-   "seconds": 235.01,
-   "song": 2,
-   "ticks": 11780,
+   "seconds": 29.99,
+   "song": 1,
+   "ticks": 1503,
    "trace_first_repeat": null,
    "trace_period": null
   }
  ],
- "tune": "Commando.sid"
+ "tune": "Deflektor.sid"
 }

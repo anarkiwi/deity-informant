@@ -8,8 +8,8 @@
   "coverage": {
    "0,1,1": 0,
    "1,0,0": 2,
-   "1,1,0": 135,
-   "1,1,1": 5
+   "1,1,0": 143,
+   "1,1,1": 8
   },
   "families": [
    {
@@ -50,12 +50,12 @@
    }
   ],
   "refused": [],
-  "statements": 142,
-  "unverified": 137
+  "statements": 153,
+  "unverified": 145
  },
  "cost": {
   "calls_per_second": 29546,
-  "ir_blocks": 191,
+  "ir_blocks": 192,
   "ir_procs": 2,
   "ir_statements": 383,
   "regions": 50,

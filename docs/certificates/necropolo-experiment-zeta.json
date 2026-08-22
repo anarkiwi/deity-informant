@@ -6,43 +6,57 @@
  ],
  "copies": {
   "coverage": {
-   "1,1": 7
+   "1,0": 4,
+   "1,1": 0,
+   "1,1,1": 14
   },
   "families": [
    {
     "bases": [
-     "$2CE1",
-     "$2CE6"
+     "$12CF",
+     "$12E1",
+     "$12F3"
     ],
-    "columns": 2,
-    "copies": 2,
-    "proc": "p_2AE6",
-    "rows": 2,
+    "columns": 3,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 7,
     "table": "$0200"
+   },
+   {
+    "bases": [
+     "$1376",
+     "$137B"
+    ],
+    "columns": 1,
+    "copies": 2,
+    "proc": "tick",
+    "rows": 2,
+    "table": "$0212"
    }
   ],
   "refused": [],
-  "statements": 7,
-  "unverified": 0
+  "statements": 18,
+  "unverified": 4
  },
  "cost": {
-  "calls_per_second": 10916,
-  "ir_blocks": 364,
-  "ir_procs": 16,
-  "ir_statements": 939,
-  "regions": 94,
-  "sites": 821,
-  "trace_calls": 14465,
-  "verify_cpu_seconds": 1.3
+  "calls_per_second": 11832,
+  "ir_blocks": 184,
+  "ir_procs": 2,
+  "ir_statements": 356,
+  "regions": 65,
+  "sites": 403,
+  "trace_calls": 5956,
+  "verify_cpu_seconds": 0.5
  },
  "divergence": null,
  "entry": {
-  "addr": 10499,
+  "addr": 4099,
   "cycles_per_tick": 19656,
   "kind": "sub",
   "source": "pal_video"
  },
- "generated": "2026-08-17T01:51:55Z",
+ "generated": "2026-08-22T04:13:05Z",
  "oracle": "deity_informant.PcodeVM@0.5.0",
  "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
  "reference_validated_against": "none",
@@ -56,16 +70,16 @@
    "cycles_per_tick": 19656,
    "divergences": 0,
    "envelope_traps": 0,
-   "first_repeat": 14464,
-   "inputs_pinned": 2,
+   "first_repeat": 5955,
+   "inputs_pinned": 0,
    "interp_prefix": 2000,
-   "period": 7688,
-   "seconds": 288.58,
+   "period": 5184,
+   "seconds": 118.82,
    "song": 1,
-   "ticks": 14465,
-   "trace_first_repeat": 14464,
-   "trace_period": 7688
+   "ticks": 5956,
+   "trace_first_repeat": 5955,
+   "trace_period": 5184
   }
  ],
- "tune": "End_of_the_World.sid"
+ "tune": "Experiment_Zeta.sid"
 }

@@ -233,6 +233,9 @@ def _todo(args):
         for p, fam in items
         if (keep is None or p in keep) and (Path(args.hvsc) / p).is_file()
     ]
+    if args.only:
+        want = {x.strip() for x in Path(args.only).read_text().split("\n") if x.strip()}
+        elig = [x for x in elig if x[0] in want]
     if args.per_family:
         seen = Counter()
         elig = [(p, f) for p, f in elig if (seen.update([f]) or seen[f]) <= args.per_family]
@@ -256,6 +259,7 @@ def parser():
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 8) - 8))
     ap.add_argument("--budget", type=float, default=1800.0, help="wall seconds per invocation")
     ap.add_argument("--per-family", type=int, default=0, help="keep the first k per family")
+    ap.add_argument("--only", help="file of HVSC-relative paths: run only these")
     ap.add_argument("--limit", type=int, default=0)
     return ap
 
