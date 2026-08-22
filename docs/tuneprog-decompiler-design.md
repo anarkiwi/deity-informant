@@ -344,9 +344,14 @@ instruction bytes):
 | per tick: instructions, cycles, `blake2b(state footprint)` | cost, periodicity certificate |
 | instruction bytes seen per pc (variants) | SMC opcode/operand cells |
 
-Cost: ~200 k instructions/s in Python (survey figure); a full song at
-300 instructions/tick is 10–60 s. Optional later: a numba 6502 core producing
-the same arrays (§11).
+Cost: **480-580 k instructions/s in Python**, measured on seven runs across six
+families ([tuneprog-plan.md](tuneprog-plan.md) §8 item 7); a full song at
+300 instructions/tick is 3-20 s. The survey's ~200 k was the prototype VM and the
+production tracer was slower still (96 k) until the site key became the VM's
+cache key, so a site's closure, access sets, index domain, register masks and
+edge cells are resolved once and the loop only indexes them. The numba core of
+§11 is refuted at this rate: no mechanism left is over 40 % of the loop, and a
+core that produced these arrays would have to be the whole tracer.
 
 State footprint = the set of RAM addresses written by any tick so far;
 `hash(footprint contents)` per tick with the footprint size as part of the key.
@@ -615,9 +620,11 @@ Horizon policy: N ≥ HVSC length + 5 s of ticks; stop early when a period is
 found; hard cap by wall time. Multispeed: N counts ticks. Multi-entry schedules
 (v1: single entry) would carry per-entry logs.
 
-Cost budget per tune (Python): trace 10–60 s, verify 5–30 s; campaign over HVSC
-≈ 300–400 CPU-hours → 4–6 h wall on 72 cores (§9 sizing). Acceptable for a batch;
-the numba tracer/executor is the lever if it is not.
+Cost budget per tune (Python): trace 3–20 s at the measured 480–580 k
+instructions/s (S1), verify 5–30 s; campaign over HVSC ≈ 300–400 CPU-hours →
+4–6 h wall on 72 cores (§9 sizing). Acceptable for a batch; the lever was the
+tracer's bookkeeping, not a numba core (S1,
+[tuneprog-plan.md](tuneprog-plan.md) §8 item 7).
 
 ---
 
@@ -925,7 +932,8 @@ workers, per-tune timeouts).
   periods are certified only to the horizon; the closure option gives faithful
   but unverified code beyond it. Report, don't hide.
 - **Trace cost in Python** for the whole HVSC (≈ 300–400 CPU-hours). Mitigation:
-  stop at periodicity, cap by song length, numba core later.
+  stop at periodicity, cap by song length; the 2026-08-22 tracer is 3.0–3.5×
+  and closes the gap the campaign measured (S1) without a numba core.
 - **Envelope traps** are the price of promoted scalars; a tune that starts
   indexing a table differently after the horizon traps rather than misbehaves.
 - **Second interrupts** (digi): ≈ 2 % of HVSC (§9); refused in v1 rather than

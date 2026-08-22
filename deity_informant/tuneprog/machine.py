@@ -425,12 +425,11 @@ def init_runner(vm, pc, cache, lifter, budget=INIT_BUDGET):
     vm._push(0x00)
     vm._push(0x01)
     mem = vm.mem
-    n = 0
-    while reg[3] < start:
+    step = vm.step
+    for _ in range(budget + 1):
+        if reg[3] >= start:
+            return None
         if is_idle(mem, pc):
             return pc
-        pc = vm.step(pc, cache, lifter)
-        n += 1
-        if n > budget:
-            raise Refusal("init runaway", "%d instructions without returning" % budget)
-    return None
+        pc = step(pc, cache, lifter)
+    raise Refusal("init runaway", "%d instructions without returning" % budget)
