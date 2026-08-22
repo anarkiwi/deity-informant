@@ -25,6 +25,7 @@ from . import (
     ir,
     jumptab,
     live as L,
+    partition,
     printer,
     recover,
     siblings,
@@ -436,6 +437,8 @@ def present(prog, eqsat=False):
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
     facts = copyview.naming_facts(view)
+    if partition.repartition(view, facts):
+        facts = copyview.naming_facts(view)
     names = recover.recover(view, structure.structure(view), facts)
     views.decorate(view, names, facts=facts)
     word.fold16(view, names)

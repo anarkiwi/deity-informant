@@ -45,7 +45,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `partition.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -66,12 +66,13 @@ program      ir 440  interp 287  irwalk 319  graph 82  lower 227  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 386
              verify 418  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
-             word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
+             partition 259  word 379  fold 472  tails 290  copyview 279
+             unroll 399  live 96
              facts 284  recover 328  views 295  eqsat 283  eqrules 244  ranges 73
-text         pseudocode 468  printer 405
-driver       pipeline 510  resume 67  __init__ 134
+text         pseudocode 480  printer 405
+driver       pipeline 513  resume 67  __init__ 134
 oracle       grid 157  tunes 56
-baseline     ghidra_facts 219  ghidra_compare 182   56 modules, 16,328 lines
+baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,612 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -79,7 +80,8 @@ Stage entry points, which are also the module boundaries:
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
 `emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `copymerge.plan`, `structure.structure`,
-`recover.recover`, `copyview.expand`, `views.decorate`, `printer.render`.
+`recover.recover`, `copyview.expand`, `partition.repartition`, `views.decorate`,
+`printer.render`.
 
 ## Use
 
@@ -592,12 +594,31 @@ a 30 s horizon.
   The loop itself is a `for v in 0..k-1` over the coverage vector the
   correspondence proved, so the `v += 1; if v < k` chain edge is the header and
   never a statement.
+- **Region typing is an S6 view, not the certified typing.** S3 unions the
+  addresses one op touched, so one over-reaching accessor fuses unrelated storage
+  into one region typed by the coarsest kind. `partition.repartition` re-types
+  the *copy* the presentation runs on: an access whose envelope starts at its own
+  operand and spans more than a byte names an array, a constant address names a
+  scalar, a reach starting inside the region names nothing; the narrow claim wins,
+  the region splits at the boundary and the overrunning access keeps the fused
+  region, which is the bound its envelope already asserts. A part no store's
+  envelope reaches is `const` beside a `state` neighbour; stride-1 regions of one
+  kind that share an origin and overlap are extents of one array and merge. A
+  record view (`field_split`, `transpose_split`, a copy fold's field, the register
+  image) already partitions what it names, so those are refused, and claims of one
+  width at one spacing are a record rather than a fusion. The certified S4 program,
+  its region ids and `regions.json` are untouched; what the print gains is the
+  storage *named*, at the cost of a header row per part.
+
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature
   would name them from the original source.
 - **16-bit views need one carry chain.** `word.fold16` proves a pair from the
   carry the low byte hands the high byte; halves stored by unrelated
-  instructions (Follin's frequency shadow, the pulse width) stay two bytes.
+  instructions (Follin's frequency shadow, the pulse width) stay two bytes. A
+  word whose halves are two fields of one record view prints explicitly as
+  `(lo | hi << 8)`, because `names.u16` is keyed by region: a name taken from the
+  low half would silently claim the high one.
 - **A callee's return value does not print.** `ir.retval` recovers the tick's own
   return; a procedure that computes a byte for its caller prints an empty body
   and the caller shows the assignment.

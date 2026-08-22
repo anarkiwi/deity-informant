@@ -13,7 +13,7 @@ and [survey-tuneprog.md](survey-tuneprog.md). Sections: 1 where we are ·
 | certify at 15 s, not run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey ([survey-tuneprog.md](survey-tuneprog.md)) | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight. 58 CPU-h on the old tracer |
-| code | `deity_informant/tuneprog/`, 56 modules, 16,459 lines, none over 500 except `pipeline.py` (510); 649 hermetic + 62 HVSC + 10 oracle tests, 95 % coverage; SSA 1.0–1.6 statements per instruction; `tools/tuneprog_certify.py`, `tuneprog_recert.py` (51/51), `tuneprog_period.py`, `tuneprog_ghidra.py`, `tuneprog_floor.py`, `tuneprog_nmi.py`, `tools/survey/` |
+| code | `deity_informant/tuneprog/`, 57 modules, 16,743 lines, none over 500 except `pipeline.py` (513); 685 hermetic + 62 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction; `tools/tuneprog_certify.py`, `tuneprog_recert.py` (51/51), `tuneprog_period.py`, `tuneprog_ghidra.py`, `tuneprog_floor.py`, `tuneprog_nmi.py`, `tools/survey/` |
 | baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 5.8–10.6× our S4 — baseline, not core; three Ghidra oracles; `sidplayfp` grid oracle |
 | merged PRs | #225–#272, one stage each, every one on green CI with recert reproduced |
 
@@ -29,15 +29,14 @@ are over 12 certificate tunes, one per family, at a 5 s `--no-verify` horizon
 
 | item | mechanism | evidence | owner | size | acceptance |
 |---|---|---|---|---|---|
-| **region typing by accessor-shape partition** (P-FLOOR's one mechanism, promoted to a work row): partition a region's accessors by shape — a k-byte span at index `0..k-1` is an array, a `(b, b+1)` pair at one index is a u16 row, a constant address a scalar — split the region where the partitions disagree about a byte and leave the overrunning accessor a bound assertion instead of collapsing to the coarsest kind; a byte no store writes is `const` beside a `state` neighbour. On Commando this alone is typings T1+T2+T3 of the hand-factored form (252 → 115 printed lines measured); it also splits the three-extent pattern block. Presentation-only. Companion one-liner: `voice.freq` (`$551D`/`$551A`) refuses to fold inside `word._match` though `_pairs` accepts and `_crosses` is False at all three sites — instrumented, undiagnosed, worth 7 lines | as stated | P-FLOOR ([prototype-commando-floor.md](prototype-commando-floor.md)). *12-run*: of 2,276 S4 statements touching a non-io region, 409 sit on overlap fusion (no accessor spans the region: Automatas 134, Deflektor 132, Jazzpjazz 46, Commando 29), 835 on init-clear fusion `field_split` does not split (Ghouls 219, Alien 3 192), 338 on regions it does; the remaining 694 are 341 on regions already one shape and 353 on 2-byte cells (§2.2's u16 row) | regions/views, word | medium, in flight | recert 51/51 field-for-field; no print metric worse on any certificate; Commando `$5448` → `FREQ` + six voice arrays + scalar |
-| **const tables printed as data** with their reach | a `const` region the tick only reads prints as a data block (bytes, reach, the index expressions that read it) instead of `T58FA[…]` reads | P-FLOOR: Commando reaches 1,942 B of data (1,116 B `xz`), the print names none of it as data; the program is a 14× compression of its own SID output | printer, views | small; after the partition row | the data block carries every reached byte (1,942 B on Commando); printed program lines fall; header lines added ≤ one per table named |
+| **const tables printed as data** with their reach | a `const` region the tick only reads prints as a data block (bytes, reach, the index expressions that read it) instead of `T58FA[…]` reads | P-FLOOR: Commando reaches 1,942 B of data (1,116 B `xz`), the print names none of it as data; the program is a 14× compression of its own SID output | printer, views | small; §2.1's partition (#274) typed the `const` parts it reads | the data block carries every reached byte (1,942 B on Commando); printed program lines fall; header lines added ≤ one per table named |
 | family name dictionaries by structural alignment | align a tune's procedures/regions to a symbol-bearing reference build (GT2 `player.s`, SW `player.asm`, undefmon) by opcode-sequence/structure or Ghidra Version Tracking; names only | L5: within a family ~5 % of tunes share an executed opcode sequence and 6-gram similarity is 0.2–0.7, so alignment not reuse | recover, ghidra | medium | named-field count on the GT2 and SW exemplars stated before and after; after > before on both |
 
 ### 2.2 16-bit
 
 | item | mechanism | evidence | owner | size | acceptance |
 |---|---|---|---|---|---|
-| **u16 cell view** | key the u16 view by *cell pair*, not `(lo region, hi region)`; detect structurally, no analysis: pointer pairs `((ptr[1] << 8) \| ptr) + i` → `ptr[i]`; hi-half add `hi + carry(lo + x)` and borrow `hi - (h2 + (1 - (lo >= l2)))` where the sibling half is stored in the same block → `u16 += x`; `lo += 1; if lo == 0: hi += 1` → `u16 += 1`; pair shifts `(lo >> 1) \| ((hi & 1) << 7)` → `u16 >> 1`; nested-borrow compares → `u16 < u16`; SID lo/hi register pairs (`freq`, `pw`, `cutoff`) as one statement under a stated write-order convention, exceptions marked — the certificate compares the *executable's* ordered byte writes (`verify._compare`), which a print convention preserves | *12-run*: pointer assembly 141 sites / 11 tunes (the state header already types the cells `ptr … 2 bytes`); carry 45, borrow 74 (Emomyst 30) — the same 74 sites as §2.3's `1 - (a cmp b)` fold, and the execution order lands this row first; inc16 16 (Professor 9); pair shifts 6; compare chains 5; ≈ 4 % of printed tokens vs `--eqsat`'s 1.5 %. Q1b's refusal of the old "halves stored by unrelated instructions" row is the evidence for the keying: Follin's pulse width is one carry chain addressed through per-copy columns, which `word._pairs`'s `addr_split` cannot see; the freq shadow's borrow is carried by a branch (if-conversion, §2.3); SW's pulse halves are two values, not one — and `names.u16` keyed by region cannot name two cells of Follin's one-region zero page at all. P-FLOOR §6's two-writes-per-change claim holds for the executable, not the print (~9 of Commando's 21 SID-write lines) | word, views, pseudocode | medium | certificates untouched; u16 names move where the keying changes, listed in the PR; no print metric worse |
+| **u16 cell view** | key the u16 view by *cell pair*, not `(lo region, hi region)`; detect structurally, no analysis: pointer pairs `((ptr[1] << 8) \| ptr) + i` → `ptr[i]`; hi-half add `hi + carry(lo + x)` and borrow `hi - (h2 + (1 - (lo >= l2)))` where the sibling half is stored in the same block → `u16 += x`; `lo += 1; if lo == 0: hi += 1` → `u16 += 1`; pair shifts `(lo >> 1) \| ((hi & 1) << 7)` → `u16 >> 1`; nested-borrow compares → `u16 < u16`; SID lo/hi register pairs (`freq`, `pw`, `cutoff`) as one statement under a stated write-order convention, exceptions marked — the certificate compares the *executable's* ordered byte writes (`verify._compare`), which a print convention preserves | *12-run*: pointer assembly 141 sites / 11 tunes (the state header already types the cells `ptr … 2 bytes`); carry 45, borrow 74 (Emomyst 30) — the same 74 sites as §2.3's `1 - (a cmp b)` fold, and the execution order lands this row first; inc16 16 (Professor 9); pair shifts 6; compare chains 5; ≈ 4 % of printed tokens vs `--eqsat`'s 1.5 %. Q1b's refusal of the old "halves stored by unrelated instructions" row is the evidence for the keying: Follin's pulse width is one carry chain addressed through per-copy columns, which `word._pairs`'s `addr_split` cannot see; the freq shadow's borrow is carried by a branch (if-conversion, §2.3); SW's pulse halves are two values, not one — and `names.u16` keyed by region cannot name two cells of Follin's one-region zero page at all -- #274 made that visible rather than fixed it: the hi-half add and borrow now fold (an 8-bit operand's high half is an implicit zero), and a pair whose halves are two fields of one record view prints explicitly as `(lo | hi << 8)` because a name taken from the low half would silently claim the high one. P-FLOOR §6's two-writes-per-change claim holds for the executable, not the print (~9 of Commando's 21 SID-write lines) | word, views, pseudocode | medium | certificates untouched; u16 names move where the keying changes, listed in the PR; no print metric worse |
 
 ### 2.3 Expression layer
 
@@ -99,7 +98,7 @@ are over 12 certificate tunes, one per family, at a 5 s `--no-verify` horizon
 
 | item | mechanism | evidence | owner | size | acceptance |
 |---|---|---|---|---|---|
-| one split mechanism | consolidate `views.field_split`, `views.transpose_split` and the accessor-shape partition into one partition over accessor shapes once the partition PR lands | three presentation splits of one region model | views | small; after §2.1 | one function, the three tests pass |
+| one split mechanism | consolidate `views.field_split`, `views.transpose_split` and `partition.py` into one partition over accessor shapes -- #274 left three refusals that exist only because the three splits do not know about each other | three presentation splits of one region model | views | small; #274 landed the third | one function, the three tests pass |
 | `pipeline.py` back under 500 lines | — | 510 | pipeline | small | ≤ 500 |
 | private helpers sharing a name across modules | bounded census: `_accesses` ×3 (copyview, regions, views), `_split` ×3, `_match` ×3, `_kind` ×3, `_node` ×4 — each set either one mechanism (merge) or renamed to say how they differ | 2026-08-22 census of `deity_informant/tuneprog/` | copyview, regions, views | small | no two private helpers share a name unless they are one |
 
@@ -172,6 +171,7 @@ One line per struck row: title · PR/date · headline · record.
 - Q4 = P3 stack residual policy · #259, 2026-08-21
 - P-EQSAT prototype · #265, 2026-08-21 · the prints qualify (no metric worse, −1.5 % tokens), the cost does not (600 lines, ×3.6 CPU); keep `ranges.py` · §2.3 rows
 - P-FLOOR Commando · #266, 2026-08-21 · the gap is storage typing, not algebra: 252 → 115 lines under four typings, `--eqsat` moves 8 tokens · [prototype-commando-floor.md](prototype-commando-floor.md)
+- region typing by accessor-shape partition · #274, 2026-08-22 · `partition.py` re-types the S6 copy: the narrow claim wins, the overrunner keeps the fused region and its asserted bound, a part no store reaches is `const`, and stride-1 regions of one origin merge. Tokens 178,354 → 175,876, program lines 18,970 → 18,924, statements 10,612 → 10,582 over the 51 certificates, no tune worse on any of them, header rows 4,134 → 4,324 (the storage is now named). Commando `FREQ[` 55 printed lines → 13, `FREQ[195]` gone; *Deflektor*'s 173-byte overlap fusion is `voice[3]` with 25 fields. Four refusals, each added after a print it made worse. The `word._match` companion diagnosed and fixed: an 8-bit operand added to a word has an implicit zero high half, which neither `_parses` nor `_operand` read. Recert 51/51, no field moved
 - Q5 NMI refusal · #269, 2026-08-22
 - Q6 `trap switch` · #270, 2026-08-22
 - Q7 fast tracer · #271, 2026-08-22 · the site is the VM's cache key; 3.0–3.5× (480–580 k instr/s), `Trace` byte-identical over 82 traces, recert 50/50
@@ -180,7 +180,7 @@ One line per struck row: title · PR/date · headline · record.
 
 Design deltas the design doc does not state (v3 §3):
 
-- regions need per-phase views: one-loop init clears merge every field into one region; the view is built from play-phase accessors (`views.py`, #234), superseded in part by §2.1's partition row.
+- regions need per-phase views: one-loop init clears merge every field into one region; the view is built from play-phase accessors (`views.py`, #234), and the accessor-shape partition (#274) re-types the S6 copy over the same rule.
 - a value that is an observable cannot be reduced away: Commando's per-voice pulse-width accumulators make both subtunes aperiodic at any practical horizon; `period.py` classifies rather than proves.
 
 ## 4. Process
@@ -194,12 +194,11 @@ Design deltas the design doc does not state (v3 §3):
 
 Execution order of the open packages, each a dependency of the next:
 
-1. **accessor-shape partition** (§2.1, in flight) — everything below reads typed storage.
-2. **u16 cell view** (§2.2) — needs the partition's u16 rows and cell-keyed names.
-3. **expression layer** (§2.3): three folds, range-gated folds, then retire `--eqsat` — the folds must land first so nothing `--eqsat` measured is lost.
-4. **dead values and loop/join idioms** (§2.4) — after the views, so liveness sees the final expressions.
-5. **data as data** (§2.1) — needs `const` typing from the partition.
-6. **complexity consolidation** (§2.7) — after the three view stages exist.
-7. **P4 Ghidra oracle** (§2.6) — independent; interleave anytime.
+1. **u16 cell view** (§2.2) — the partition (#274) landed; two of its shapes already fold (`hi + carry(lo + x)`, `hi - (h2 + (1 - (lo >= l2)))` where the operand's high half is a literal zero), and the keying is what the rest needs.
+2. **expression layer** (§2.3): three folds, range-gated folds, then retire `--eqsat` — the folds must land first so nothing `--eqsat` measured is lost.
+3. **dead values and loop/join idioms** (§2.4) — after the views, so liveness sees the final expressions.
+4. **data as data** (§2.1) — needs `const` typing from the partition.
+5. **complexity consolidation** (§2.7) — after the three view stages exist.
+6. **P4 Ghidra oracle** (§2.6) — independent; interleave anytime.
 
 Deliberately not now: 2SID/3SID (0.6 %), ROM-dependent tunes, audio rendering, BASIC programs.
