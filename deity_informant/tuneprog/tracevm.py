@@ -14,6 +14,7 @@ from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
 from .cia import CIA, CIA1_BASE, CIA2_BASE
 from .machine import Refusal, port_bank
 from .nmi import NEVER, STALE
+from .tracedata import REG_IN, input_kind
 from .traceflow import FlowRecorder
 from .tracesite import (
     IDX_REG,
@@ -52,28 +53,9 @@ from .tracesite import (
 )
 
 PH_INIT, PH_PLAY = 1, 2
-ACKS = (0xD019, 0xDC0D, 0xDD0D)
-REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
 MAX_CELL_VALUES = 16
 
 __all__ = ["TraceVM", "input_kind", "IDX_REG", "PH_INIT", "PH_PLAY", "REG_IN", "MAX_CELL_VALUES"]
-
-
-def input_kind(addr):
-    """Input class of ``addr`` (design section 4 ``Input.kind``)."""
-    if addr >= REG_IN:
-        return "entry_reg"
-    if addr in ACKS:
-        return "ack"
-    if addr == 0xD011 or addr == 0xD012:
-        return "raster"
-    if SID_LO <= addr <= SID_HI:
-        return "sid_readback"
-    if 0xDC00 <= addr <= 0xDDFF:
-        return "cia"
-    if IO_LO <= addr <= IO_HI:
-        return "io"
-    return "uninit_ram"
 
 
 class TraceVM(FlowRecorder, PcodeVM):
@@ -117,9 +99,12 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.pinned = False
         self.stores = 0
         self.st0 = 0
+        self.sep = None  # nmi.Separable where a second entry exists; None is one test
 
     # ---- per-op attributed memory ------------------------------------------
     def read(self, addr, sz, pci, s):
+        if self.sep is not None and self.sep.hot:
+            self.sep.load(addr, sz, pci[0])
         if sz == 1:
             s.add(addr)
             if IO_LO <= addr <= IO_HI:
@@ -186,6 +171,8 @@ class TraceVM(FlowRecorder, PcodeVM):
         write, and keeping the two apart is worth 3-6 % of the whole trace.
         """
         mem = self.mem
+        if self.sep is not None:
+            self.sep.stored(addr, sz)
         if sz == 1:
             a = addr & 0xFFFF
             s.add(a)
@@ -455,6 +442,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             lo = mem[0x100 + reg[3]]
             reg[3] = (reg[3] + 1) & 0xFF
             nxt = (mem[0x100 + reg[3]] << 8) | lo
+            if self.sep is not None:
+                self.sep.leave(reg[3])
             self._return(t[S_AUX], nxt)
             return nxt
         if k == K_JMP:

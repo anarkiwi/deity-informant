@@ -1,10 +1,11 @@
 """S2b: procedures, clone-per-entry, tail calls, computed switches, summaries."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from deity_informant.tuneprog.cfg import build_procs, procs_json
+from deity_informant.tuneprog.cfg import _node, build_procs, procs_json
 from deity_informant.tuneprog.lift import lift_trace
 from deity_informant.tuneprog.machine import Refusal
 from deity_informant.tuneprog.regions import build_regions
@@ -369,3 +370,13 @@ def test_unmatched_return_switch_lists_only_the_loose_targets():
     n = next(iter(site.nodes.values()))
     assert n["term"] == "switch" and n["switch"]["expr"]["kind"] == "stack"
     assert [c[0] for c in n["switch"]["cases"]] == [code.labels["alt"]]
+
+
+def test_the_idle_jmp_star_return_belongs_to_the_init_procedure_alone():
+    """``init`` sitting in its own ``JMP *`` has returned; anything else falling onto
+    that address is a path the trace never covered, so it stays a trap."""
+    pc, op, idle = 0x1000, 0xEA, 0x1001  # a NOP whose fall-through is the idle loop
+    trace = SimpleNamespace(sites={(pc, op): {"count": 1}}, rets={}, calls={})
+    keys = {(pc, op): [(pc, op)]}
+    assert _node(trace, pc, op, {}, keys, set(), None)["term"] == "trap"
+    assert _node(trace, pc, op, {}, keys, set(), None, idle)["term"] == "return"

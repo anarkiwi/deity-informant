@@ -10,6 +10,11 @@ only when they differ in cell bytes; a variant with a different *fixed* operand 
 a separate site with its own access sets. A cell is an instruction byte *any*
 traced procedure writes, init included, so an operand init patches between two
 executions is one site that loads it, not two sites with two constants.
+
+An NMI taken between two ticks interrupts the host, so its pushed return address
+is the host's idle pc: ``init``'s own ``JMP *`` where the tune has one, and
+:data:`IDLE_PC` -- a convention, because no host model here says where else the
+machine waits -- where it does not.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ from .tracevm import PH_PLAY, TraceVM
 CALL_BUDGET = 400_000
 VECTOR_BYTES = set(c64.IRQ_VEC) | set(c64.HW_IRQ_VEC)
 VERSION = 7  # resume-state layout; an older pickle restarts rather than resumes
-IDLE_PC = 0x0000  # the host idle loop an NMI between two ticks returns to
+IDLE_PC = 0x0000  # the idle pc convention for a host with no ``JMP *`` of its own
 IDLE_INDEX = 0xFFFFFFFF  # instruction index of an NMI no tick was running at
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
@@ -155,6 +160,8 @@ class Tracer:
         reg = vm.reg
         sub, addr, cpt, kernal, frame, video = self.tick
         vm.begin_tick(self.calls_done)
+        if vm.sep is not None:
+            vm.sep.begin()  # the idle NMIs of the last tick close its final window
         start = reg[3]
         # the interrupt keeps its own grid: a tick an NMI made overrun delays the
         # next one, it does not move the frame the writes after it are attributed to
@@ -216,8 +223,11 @@ class Tracer:
         handler = self._handler()
         vm.cia[1].raise_line()
         vm.nmi_at = N.NEVER  # the line stays asserted until an ICR read releases it
-        vm.cycles += N.DISPATCH
+        vm.cycles += N.dispatch_cycles(vm.mem)
         sp, status = vm.reg[3], vm._status()
+        if vm.sep is None:
+            vm.sep = N.Separable()
+        vm.sep.enter(sp, handler)
         pc &= 0xFFFF
         vm._push(pc >> 8)
         vm._push(pc & 0xFF)
@@ -251,8 +261,9 @@ class Tracer:
         """Run the NMIs the host's idle time before the next tick holds.
 
         The play routine has returned, so the interrupted program is the host's own
-        idle loop; each handler runs to the ``RTI`` that balances its frame, and one
-        that acknowledges early can be preempted inside it exactly as in a tick.
+        idle loop, which is ``init``'s ``JMP *`` where it has one; each handler runs
+        to the ``RTI`` that balances its frame, and one that acknowledges early can
+        be preempted inside it exactly as in a tick.
         """
         vm, cia = self.vm, self.vm.cia[1]
         step, cache = vm.step, self.cache
@@ -269,7 +280,7 @@ class Tracer:
                 if vm.cycles < at:
                     vm.cycles = at
                 sp = vm.reg[3]
-                pc = self._enter_nmi(IDLE_PC, IDLE_INDEX)
+                pc = self._enter_nmi(self.idle or IDLE_PC, IDLE_INDEX)
                 continue
             if vm.cycles >= vm.nmi_at:
                 pc = self._nmi(pc, IDLE_INDEX)

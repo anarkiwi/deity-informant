@@ -58,11 +58,11 @@ class Entry:
     addr: int
     cycles_per_tick: int
     source: str  # cadence source: pal_video / ntsc_video / cia_timer / pal_host_cia / ...
-    kernal: bool = False  # "irq" only: the vector is CINV, so the KERNAL dispatches
+    kernal: bool = False  # the vector is dispatched by the KERNAL: CINV, or $FE43
 
     def to_dict(self):
         d = asdict(self)
-        if self.kind != "irq":
+        if self.kind == "sub":
             del d["kernal"]  # a subroutine entry has no vector to dispatch through
         return d
 

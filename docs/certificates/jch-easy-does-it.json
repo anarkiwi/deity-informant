@@ -3,7 +3,8 @@
   "init writes",
   "tick sid writes",
   "tick schedule effects",
-  "nmi preemption schedule"
+  "nmi preemption schedule",
+  "nmi store separability"
  ],
  "cost": {
   "calls_per_second": 746,
@@ -38,6 +39,7 @@
   {
    "addr": 16617,
    "cycles_per_tick": 193,
+   "kernal": false,
    "kind": "nmi",
    "source": "cia2_timer_a"
   }

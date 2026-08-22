@@ -152,8 +152,9 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
         ops = variants[pc]
         if len(ops) > 1 or _writer_variants(trace, pc, ops):
             proc.variant_switch[pc] = _variant_arms(trace, pc, ops)
+        idle = trace.meta.get("init_idle") if proc.kind == "init" else None
         for op in ops:
-            node = _node(trace, pc, op, out, keys, tails, lifted)
+            node = _node(trace, pc, op, out, keys, tails, lifted, idle)
             proc.nodes[(pc, op)] = node
             sw = node["switch"]
             refs = list(node["succ"]) + ([c[1] for c in sw["cases"]] if sw else [])
@@ -176,7 +177,7 @@ def _variant_arms(trace, pc, ops):
     return {"cell": pc, "arms": arms}
 
 
-def _node(trace, pc, op, out, keys, tails, lifted):
+def _node(trace, pc, op, out, keys, tails, lifted, idle=None):
     # One (pc, opcode) can carry several site keys when an operand byte is patched
     # by init only (constant, but a different constant per phase); the first is
     # representative because the control behaviour is the opcode's.
@@ -239,8 +240,9 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         return node
     if not flow:
         # an init that ends in a ``JMP *`` has returned as far as the schedule is
-        # concerned: the machine sits there until the next interrupt
-        if trace.meta.get("init_idle") == (pc + (ls.length if ls else 1)) & 0xFFFF:
+        # concerned: the machine sits there until the next interrupt. It is init's
+        # own address: any other procedure falling onto it is a path never traced.
+        if idle is not None and idle == (pc + (ls.length if ls else 1)) & 0xFFFF:
             node["term"] = "return"
         return node
     if len(flow) == 1:

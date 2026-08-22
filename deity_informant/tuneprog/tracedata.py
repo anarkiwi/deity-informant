@@ -3,6 +3,8 @@
 Split from :mod:`.trace` (which produces it) so the record type can be loaded and
 queried without the tracer. :func:`merge` is the ``--songs all`` front end's input:
 one program from every subtune's trace, keyed by the union of their SMC cells.
+:func:`input_kind` classifies a pinned input's address, which is a property of the
+record rather than of the machine that made it.
 """
 
 from __future__ import annotations
@@ -16,7 +18,27 @@ from pathlib import Path
 
 import numpy as np
 
-from .ir import STACK_HI, STACK_LO
+from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
+
+ACKS = (0xD019, 0xDC0D, 0xDD0D)
+REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
+
+
+def input_kind(addr):
+    """Input class of ``addr`` (design section 4 ``Input.kind``)."""
+    if addr >= REG_IN:
+        return "entry_reg"
+    if addr in ACKS:
+        return "ack"
+    if addr == 0xD011 or addr == 0xD012:
+        return "raster"
+    if SID_LO <= addr <= SID_HI:
+        return "sid_readback"
+    if 0xDC00 <= addr <= 0xDDFF:
+        return "cia"
+    if IO_LO <= addr <= IO_HI:
+        return "io"
+    return "uninit_ram"
 
 
 class Footprint:

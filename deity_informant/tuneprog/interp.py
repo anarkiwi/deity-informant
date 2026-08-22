@@ -250,18 +250,19 @@ class Interp:
                     F[s.n] = self.ev(s.e, F)
                 elif t is Store:
                     a = self.ev(s.a, F)
-                    if self.at is not None:
-                        self.at(a, s.w)
                     if not s.lo <= a <= s.hi or a + s.w - 1 > s.hi:
                         M.env(a, s.lo, s.hi, s.src)
+                    v = self.ev(s.v, F)  # the value's own loads precede the store's point
+                    if self.at is not None:
+                        self.at(a, s.w)
                     if self.ro and hits_band(self.ro, a, s.w):
                         M.trap("copymap", "$%04X at $%04X" % (a, s.src))
                     if s.cls == "io":
-                        M.iostore(a, self.ev(s.v, F) & 0xFF, s.src)
+                        M.iostore(a, v & 0xFF, s.src)
                     elif s.cls == "raw":
-                        M.m[a] = self.ev(s.v, F) & 0xFF
+                        M.m[a] = v & 0xFF
                     else:
-                        M.wr(a, self.ev(s.v, F), s.w)
+                        M.wr(a, v, s.w)
                 elif t is Call:
                     vals = self.run(s.proc, [self.ev(a, F) for a in s.args])
                     F.update(zip(s.rets, vals))

@@ -139,11 +139,21 @@ def _guard(s, a, out, bands):
 
 
 def _store(s, out, fn, bands=(), pre_hook=False):
+    """One store; ``pre_hook`` marks it as a point a second entry can preempt at.
+
+    The point is the store's own, after the address and the value: the loads both
+    are made of belong to the instructions ahead of it, which is where
+    :class:`~.interp.Interp` puts them too.
+    """
     pre = []
     a = _addr(s.a, s.lo, s.hi, s.w, pre, fn, s.src)
     v = _ex(s.v, pre, fn)
     out.extend(pre)
     if pre_hook:
+        if not (v.isidentifier() or v.isdigit()):
+            t = fn.tmp()
+            out.append("%s = %s" % (t, v))
+            v = t
         out.append("S.at(%s, %d)" % (a, s.w))  # a preemption point of the schedule
     if bands:
         _guard(s, a, out, bands)
@@ -362,7 +372,7 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
         "reference_validated_against": prog.meta.get("reference_validated_against", "none"),
         "compared": compared
         or ["init writes", "tick sid writes", "tick schedule effects"]
-        + (["nmi preemption schedule"] if nmi else []),
+        + (["nmi preemption schedule", "nmi store separability"] if nmi else []),
         "entry": prog.meta.get("entry"),
         "subtunes": subtunes,
         "stack": prog.meta.get("stack"),

@@ -9,13 +9,15 @@ import pytest
 
 from deity_informant.tuneprog import nmi as N
 from deity_informant.tuneprog.cia import CIA, CIA1_BASE, CIA2_BASE, ICR_TA, ICR_TB
+from deity_informant.tuneprog.emit import _Fn, _store
+from deity_informant.tuneprog.ir import Bin, Const, Load, Store, Var
 from deity_informant.tuneprog.machine import (
     Refusal,
     STATUS,
     entry_frame,
     frame_slots,
 )
-from deity_informant.tuneprog.trace import IDLE_INDEX
+from deity_informant.tuneprog.trace import IDLE_INDEX, IDLE_PC
 
 from _asm import asm, trace_prog
 
@@ -31,8 +33,8 @@ ARM_A = ("LDA #$81", "STA $DD0D", "LDA #$11", "STA $DD0E")  # ICR TA, force load
 ACK = ("BIT $DD0D",)
 
 
-def _init(*lines, latch=99, vec=VEC_RAW, bank=RAW):
-    """An init that loads Timer A's latch, installs ``vec`` and then runs ``lines``."""
+def _init(*lines, latch=99, vec=VEC_RAW, bank=RAW, tail=("RTS",)):
+    """An init that loads Timer A's latch, installs ``vec``, runs ``lines`` and ends."""
     return asm(
         INIT,
         *bank,
@@ -42,7 +44,7 @@ def _init(*lines, latch=99, vec=VEC_RAW, bank=RAW):
         "STA $DD05",
         *vec,
         *lines,
-        "RTS",
+        *tail,
     )
 
 
@@ -51,9 +53,10 @@ def _run(init_lines=ARM_A, handler=("LDA #$0F", "STA $D418", *ACK, "RTI"), calls
     latch = kw.pop("latch", 99)
     vec = kw.pop("vec", VEC_RAW)
     bank = kw.pop("bank", RAW)
+    tail = kw.pop("tail", ("RTS",))
     play = kw.pop("play", ("LDA #$01", "STA $D400", "RTS"))
     blocks = {
-        INIT: _init(*init_lines, latch=latch, vec=vec, bank=bank),
+        INIT: _init(*init_lines, latch=latch, vec=vec, bank=bank, tail=tail),
         PLAY: asm(PLAY, *play),
         HANDLER: asm(HANDLER, *handler),
     }
@@ -288,6 +291,98 @@ def test_tracer_interpreter_and_generated_code_agree_on_the_schedule():
     assert sub["divergences"] == 0 and sub["nmis"] == 120 and sub["nmi_entries"] == ["nmi"]
     assert "nmi preemption schedule" in cert["compared"]
     assert [e["kind"] for e in cert["schedule"]] == ["sub", "nmi"]
+
+
+# ---- the store-granularity replay's one inexact direction ---------------------
+SPIN = (
+    "LDA #$01",
+    "STA $2001",
+    "LDX #$20",
+    "spin: LDA $2000",
+    "DEX",
+    "BNE spin",
+    "STA $D400",
+    "RTS",
+)
+SEP_INIT = ("LDA #$00", "STA $2000", "STA $2002", *ARM_A)
+
+
+def _shared(cell):
+    """A handler that increments ``cell`` and mixes it into ``$D418``."""
+    return ("INC $%04X" % cell, "LDA $%04X" % cell, "STA $D418", *ACK, "RTI")
+
+
+def test_a_load_the_replay_would_move_ahead_of_the_handler_is_refused():
+    """The replay defers an NMI to the next store, so the loads before it move.
+
+    Play reads ``$2000`` between two of its own stores and the handler writes it,
+    so the traced order and the replayed order disagree on what that load sees --
+    a schedule the store index cannot place, refused rather than certified.
+    """
+    with pytest.raises(Refusal) as e:
+        _run(init_lines=SEP_INIT, play=SPIN, handler=_shared(0x2000))
+    assert e.value.reason == "schedule not store-separable"
+    assert "$2000" in e.value.detail and "$1200" in e.value.detail
+
+
+def test_a_handler_writing_a_cell_the_play_routine_never_reads_certifies():
+    """The same schedule over disjoint cells: the property holds and is named."""
+    trace, _prg, v, cert = _decompiled(init_lines=SEP_INIT, play=SPIN, handler=_shared(0x2002))
+    inside = [i for i in trace.nmilog["insn"].tolist() if i != IDLE_INDEX]
+    assert inside and v.div is None  # preemptions inside a tick, so not vacuous
+    assert "nmi store separability" in cert["compared"]
+
+
+PTR = ("LDA #$00", "STA $FB", "LDA #$21", "STA $FC", "LDA #$07", "STA $2103")
+INDEXED = ("LDY #$03", "LDX #$20", "spin: DEX", "BNE spin", "LDA ($FB),Y", "STA $D400", "RTS")
+KEEPS_A = ("PHA", "LDA #$0F", "STA $D418", *ACK, "PLA", "RTI")
+
+
+def test_the_preemption_point_is_the_store_s_own_after_its_value():
+    """Nothing a store loads may be evaluated on the far side of its own point.
+
+    :class:`~.interp.Interp` reads the value before calling the hook, so the
+    generated text has to hoist an inline load ahead of it -- otherwise the two
+    executors would preempt at two different machine states.
+    """
+    ptr = Bin("+", Load("ram", Const(0xFB), 2), Var("y"), 2)
+    out = []
+    _store(Store("io", Const(0xD400), Load("ram", ptr), src=0x1000), out, _Fn(), pre_hook=True)
+    i = next(k for k, line in enumerate(out) if line.startswith("S.at("))
+    assert i and not any("m[" in line for line in out[i:])
+
+
+def test_a_store_through_an_indexed_pointer_agrees_on_both_executors():
+    """The same schedule, replayed by the interpreter and by the generated code."""
+    _trace, _prg, v, cert = _decompiled(
+        init_lines=(*PTR, *ARM_A), play=INDEXED, handler=KEEPS_A, calls=6
+    )
+    assert v.div is None and cert["subtunes"][0]["divergences"] == 0
+
+
+def test_the_kernal_dispatch_costs_its_own_stub_before_the_handler():
+    """``$FE43`` runs its own ``SEI`` and ``JMP ($0318)`` before the handler's first byte."""
+    mem = bytearray(0x10000)
+    mem[0], mem[1] = 0x2F, 0x37  # the KERNAL mapped: $FFFA is ROM and reaches $FE43
+    assert N.dispatch_cycles(mem) == N.DISPATCH + N.KERNAL_STUB
+    mem[1] = 0x35  # banked out: the 6510 takes the RAM vector and enters directly
+    assert N.dispatch_cycles(mem) == N.DISPATCH
+    assert _run(vec=VEC_KERNAL, bank=())[0].meta["schedule"][1]["kernal"] is True
+    assert _run()[0].meta["schedule"][1]["kernal"] is False
+
+
+def test_an_idle_nmi_returns_to_the_host_idle_pc_the_machine_really_has():
+    """An init that never returns says where the machine waits; the rest keep the convention."""
+    sits, _tr = _run(tail=("wait: JMP wait",), calls=2)
+    returns, _tr = _run(calls=2)
+    for trace, want in ((sits, sits.meta["init_idle"]), (returns, IDLE_PC)):
+        idle_pcs = {
+            pc
+            for pc, insn in zip(trace.nmilog["pc"].tolist(), trace.nmilog["insn"].tolist())
+            if insn == IDLE_INDEX
+        }
+        assert idle_pcs == {want}
+    assert "init_idle" not in returns.meta
 
 
 def test_a_handler_that_reads_what_the_play_routine_writes_verifies():
