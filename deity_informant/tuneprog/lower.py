@@ -218,11 +218,12 @@ def _wrap(p):
 def _indirect(store, ex, init_phase, blk, out):
     """The word a ``JMP (ind)`` whose own operand is patched jumps through.
 
-    The operand is the pointer; the envelope is the span of the pointers the trace
-    executed, which is the extent rule every other computed access already uses.
+    The operand is the pointer; the envelope is the span of the two addresses each
+    pointer the trace ran reaches, which is the extent rule every access already uses.
     """
     ptr = tgt(store, ex["cell"][0], ex["cell"][1], init_phase, blk, out)
-    lo, hi = min(ex["ptrs"]), max(ex["ptrs"]) + 1
+    seen = {a for p in ex["ptrs"] for a in (p, (p & 0xFF00) | ((p + 1) & 0xFF))}
+    lo, hi = min(seen), max(seen)
     cls = store.cls(lo, hi, "state", init_phase)
     for half, a in (("lo", ptr), ("hi", _wrap(ptr))):
         out.append(Let("i_%s_%s" % (half, blk), Load(cls, a, 1, lo, hi, -1)))
