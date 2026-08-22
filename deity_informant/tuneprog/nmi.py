@@ -19,6 +19,9 @@ STALE = -1  # the due cycle a CIA #2 access invalidates
 DISPATCH = 7  # cycles the 6510 spends taking an NMI
 KERNAL_STUB = 7  # $FE43's own SEI (2) + JMP ($0318) (5), ahead of the handler
 SOURCE = {ICR_TA: "cia2_timer_a", ICR_TB: "cia2_timer_b"}
+# the interrupted state a replayed NMI takes from its schedule row rather than
+# computing: the stack pointer, the pushed status, the return pc and A/X/Y
+REPLAYED = ("sp", "status", "pc", "a", "x", "y")
 
 
 def vector(mem):

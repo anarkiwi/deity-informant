@@ -41,6 +41,7 @@
    "cycles_per_tick": 193,
    "kernal": false,
    "kind": "nmi",
+   "replayed_registers": 1197084,
    "source": "cia2_timer_a"
   }
  ],

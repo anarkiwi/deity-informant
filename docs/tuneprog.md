@@ -202,13 +202,22 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
   "oracle": "deity_informant.PcodeVM@0.5.0",
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
-                                       // + "nmi preemption schedule" with a second entry
+                                       // + "nmi preemption schedule" and "nmi store
+                                       // separability" with a second entry; what the two
+                                       // do and do not prove is under Known gaps below
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
                                        // "irq" also carries "kernal": the vector is CINV
   "schedule": [                        // only where a CIA #2 NMI is an entry too
     {"kind": "irq", "addr": 16352, "cycles_per_tick": 19656, "source": "pal_video",
      "kernal": false},
-    {"kind": "nmi", "addr": 16617, "cycles_per_tick": 193, "source": "cia2_timer_a"}],
+    {"kind": "nmi", "addr": 16617, "cycles_per_tick": 193, "source": "cia2_timer_a",
+     "kernal": false, "replayed_registers": 1197084}],
+                                       // kernal: which vector dispatched it ($0318 costs
+                                       // 7 cycles more than the raw $FFFA)
+                                       // replayed_registers: what the replay takes from
+                                       // the schedule instead of computing -- SP, pushed
+                                       // status, return pc, A/X/Y, 6 per NMI over the
+                                       // schedule -- beside the subtune's inputs_pinned
   "stack": "eliminated",               // else {"depth": n|"unknown", "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
@@ -499,14 +508,18 @@ a 30 s horizon.
 ## Known gaps
 
 - **A second entry's instant, not its effect.** A CIA #2 NMI is modelled and
-  certified, but the tracer has no VIC-DMA model, so it takes the NMI up to ~80
-  cycles before the hardware does. Everything the play routine writes is
+  certified, but the instant it lands on is early by tens of cycles, from two
+  causes: the `$FE43` dispatch stub the KERNAL path runs (`nmi.KERNAL_STUB`,
+  now modelled -- it was half the offset on the `$0318` path, 85 % of the class
+  by weight) and VIC DMA, which nothing models, so a badline-stalled CPU takes
+  the NMI later than the tracer does. Everything the play routine writes is
   unaffected -- 0 frames differing against `sidplayfp` over 1,500 frames on three
   tunes, in write order -- while `$D418`, which a sample mixer writes thousands of
   times a frame, lands on the neighbouring sample nibble in 10-54 % of frames.
   The certificate says what it proved: the write list *under the traced
-  interleaving*, with the schedule recorded and the second entry's live-in
-  registers pinned ([prototype-nmi.md](prototype-nmi.md)).
+  interleaving*, with the schedule recorded, store separability and register
+  preservation checked, and the second entry's live-in registers pinned
+  ([prototype-nmi.md](prototype-nmi.md)).
 
 - **Trace closure.** The certified product is trace-closed: a branch direction or
   a table entry the run never took becomes `trap 'untaken'` / `trap 'unverified'`,
@@ -614,3 +627,11 @@ a 30 s horizon.
   gate is re-checked every tick beside `port moved`, so a tune that arms a
   source only once the music is running refuses there (`nmi armed in play`).
   The one assumption is the oracle's: `sidplayfp` never presses RESTORE.
+  Two further refusals are the second entry's own checked properties rather than
+  evidence, both fail-closed: `schedule not store-separable`, where a play load
+  inside an open preemption window reads a cell a handler stamped in that same
+  window, so the recorded schedule no longer places the handler's view exactly
+  (5 of 7,023); and `nmi clobbers registers`, where the handler's `RTI` does not
+  return the A/X/Y it interrupted, which the in-tick replay cannot reproduce from
+  the schedule row (8 of 7,023). Both are checked on every NMI of every tick
+  ([prototype-nmi.md](prototype-nmi.md) §4).

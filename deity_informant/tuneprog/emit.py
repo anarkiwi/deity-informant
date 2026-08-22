@@ -21,6 +21,7 @@ import re
 from datetime import datetime, timezone
 
 from .. import __version__
+from . import nmi as N
 from .ir import (
     Assert,
     Bin,
@@ -359,7 +360,10 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     the depth and the procedures that kept one (:func:`~.stack.eliminate`).
     ``copies`` is the merged families and their per-statement coverage, if any,
     ``closure`` what the bounded static walk added and what stayed trapped, and
-    ``schedule`` the entries a second interrupt adds beside the tick.
+    ``schedule`` the entries a second interrupt adds beside the tick. Each NMI
+    entry carries ``replayed_registers``: the schedule's own contribution to what
+    the run pins, ``len(nmi.REPLAYED)`` values per NMI over the whole schedule,
+    beside the subtune's ``inputs_pinned``.
     """
     copies = copies_report(prog)
     closed = closure_report(prog)
@@ -386,7 +390,10 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     if closed:
         doc["closure"] = closed
     if nmi:
-        doc["schedule"] = sched
+        pinned = len(N.REPLAYED) * sum(s.get("nmis", 0) for s in subtunes)
+        doc["schedule"] = [
+            dict(e, replayed_registers=pinned) if e.get("kind") == "nmi" else e for e in sched
+        ]
     return doc
 
 

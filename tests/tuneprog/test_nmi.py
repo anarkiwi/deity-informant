@@ -295,6 +295,9 @@ def test_tracer_interpreter_and_generated_code_agree_on_the_schedule():
     assert sub["divergences"] == 0 and sub["nmis"] == 120 and sub["nmi_entries"] == ["nmi"]
     assert "nmi preemption schedule" in cert["compared"]
     assert [e["kind"] for e in cert["schedule"]] == ["sub", "nmi"]
+    # the schedule's own pinned values, counted beside the run's inputs_pinned
+    assert cert["schedule"][1]["replayed_registers"] == len(N.REPLAYED) * sub["nmis"]
+    assert "replayed_registers" not in cert["schedule"][0]
 
 
 # ---- the store-granularity replay's one inexact direction ---------------------

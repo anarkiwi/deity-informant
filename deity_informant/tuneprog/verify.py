@@ -41,7 +41,11 @@ STATE_VERSION = 2  # resume-state layout; an older pickle restarts rather than r
 
 def _nmis(log, calls):
     """``(rows, per-call bounds)`` of the traced preemption schedule; a row is
-    ``(stores made, handler, SP, status, interrupted pc, A, X, Y)``."""
+    ``(stores made, handler, SP, status, interrupted pc, A, X, Y)``.
+
+    All but the first two are :data:`~.nmi.REPLAYED`: interrupted state the replay
+    takes from the row rather than computing, counted as the schedule entry's
+    ``replayed_registers`` in the certificate."""
     if not log or log["call"].size == 0:
         return [], np.zeros(calls + 1, np.int64)
     call = np.asarray(log["call"], dtype=np.int64)

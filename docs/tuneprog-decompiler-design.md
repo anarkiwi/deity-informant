@@ -343,6 +343,7 @@ instruction bytes):
 | input reads: (site, tick, value) for every IO/uninitialised/entry-register read | pinned input stream |
 | per tick: instructions, cycles, `blake2b(state footprint)` | cost, periodicity certificate |
 | instruction bytes seen per pc (variants) | SMC opcode/operand cells |
+| *added 2026-08-22 (Q8)*: per NMI of a second entry — tick, instruction index, cycle, handler, stores the tick had made, SP, pushed status, interrupted pc, A/X/Y (`nmilog`) | the preemption schedule S8 replays at store granularity ([prototype-nmi.md](prototype-nmi.md) §4) |
 
 Cost: **480-580 k instructions/s in Python**, measured on seven runs across six
 families ([tuneprog-plan.md](tuneprog-plan.md) §8 item 7); a full song at
@@ -613,12 +614,23 @@ gate/TEST edge multiset) is offered as a diagnostic, not as the certificate.
   "stage": "S4|S5|S6", "divergence": null | {tick, index, expected, got, site} }
 ```
 
+> **Added 2026-08-22 (Q8, [prototype-nmi.md](prototype-nmi.md)).** A second entry
+> adds `schedule` — the entries beside the tick (`kind`, `addr`,
+> `cycles_per_tick`, `source`, `kernal`, and on an NMI entry `replayed_registers`:
+> the SP, pushed status, return pc and A/X/Y the replay takes from the schedule
+> rather than computing, 6 per NMI) — and `nmis` / `nmi_entries` in the subtune;
+> `compared` gains `"nmi preemption schedule"` and `"nmi store separability"`.
+> The written schema is [tuneprog.md](tuneprog.md).
+
 The periodicity check is run on the *tuneprog's* state (its regions) as well as
 on the emulator's footprint; both must repeat at the same `(k, k+p)`.
 
 Horizon policy: N ≥ HVSC length + 5 s of ticks; stop early when a period is
-found; hard cap by wall time. Multispeed: N counts ticks. Multi-entry schedules
-(v1: single entry) would carry per-entry logs.
+found; hard cap by wall time. Multispeed: N counts ticks. ~~Multi-entry schedules
+(v1: single entry) would carry per-entry logs.~~ *2026-08-22 (Q8): a CIA #2 NMI is
+a second entry and it is one log, not per-entry logs — the entries share the tick
+clock, and the preemption schedule beside the write log is what places them
+([prototype-nmi.md](prototype-nmi.md) §4).*
 
 Cost budget per tune (Python): trace 3–20 s at the measured 480–580 k
 instructions/s (S1), verify 5–30 s; campaign over HVSC ≈ 300–400 CPU-hours →
