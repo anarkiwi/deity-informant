@@ -168,6 +168,11 @@ class TraceVM(FlowRecorder, PcodeVM):
         return value
 
     def write(self, addr, val, sz, pci, s):
+        """One store, attributed to ``pci`` and ``s``.
+
+        Every 6510 store is one byte; the wide case is a residualised 16-bit cell
+        write, and keeping the two apart is worth 3-6 % of the whole trace.
+        """
         mem = self.mem
         if sz == 1:
             a = addr & 0xFFFF
@@ -263,6 +268,7 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.pinned = False
 
     def _push(self, val):
+        """Push one byte; a driver frame over executed code makes those pcs re-read."""
         a = 0x100 + self.reg[3]
         if self.stack_code:
             self._drop(a)
@@ -271,6 +277,11 @@ class TraceVM(FlowRecorder, PcodeVM):
 
     # ---- one instruction ---------------------------------------------------
     def step(self, pc, cache, lifter):
+        """One instruction: fetch, execute, resolve, dispatch and account, in one pass.
+
+        The per-pc inline cache answers directly for a site no store has touched;
+        a volatile pc re-reads its bytes and re-keys.
+        """
         t = self.at[pc]
         if t is None:
             t = self._fetch(pc, self.mem[pc], cache, lifter)
