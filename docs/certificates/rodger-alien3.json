@@ -1,0 +1,56 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 13573,
+  "ir_blocks": 148,
+  "ir_procs": 7,
+  "ir_statements": 505,
+  "regions": 25,
+  "sites": 504,
+  "trace_calls": 1503,
+  "verify_cpu_seconds": 0.1
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 33211,
+  "cycles_per_tick": 19656,
+  "kernal": false,
+  "kind": "irq",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-22T02:58:18Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": {
+  "depth": 11,
+  "procs": [
+   "tick"
+  ]
+ },
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": false,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": null,
+   "inputs_pinned": 6013,
+   "interp_prefix": 2000,
+   "period": null,
+   "seconds": 29.99,
+   "song": 1,
+   "ticks": 1503,
+   "trace_first_repeat": null,
+   "trace_period": null
+  }
+ ],
+ "tune": "Alien_3.sid"
+}

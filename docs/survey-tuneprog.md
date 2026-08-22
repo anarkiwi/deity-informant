@@ -227,7 +227,85 @@ already scopes (JCH's NMI sample mixer). `no entry` and `vector banked out`
 together (475) are the `play == 0` population whose installed vector the 6510
 port does not dispatch through, or which installed none: BASIC containers,
 digi players and RSID main loops. `recursion` (118) is a `JSR` cycle in the
-call graph, which `cfg._no_recursion` refuses by design.
+call graph, which `cfg._no_recursion` refuses by design. **The
+`second interrupt source armed` row is corrected in 5b below**, which is added
+beside it rather than replacing it.
+
+### 5b. Correction (2026-08-22): that row counted evidence, not a schedule
+
+`find_entries` refused any write to the CIA #2 Timer-A latch (`$DD04`/`$DD05`)
+or to the NMI vector (`$0318`/`$0319`). Neither makes an NMI possible. A tune
+has a second schedule iff a CIA #2 source can fire: its ICR (`$DD0D`) has been
+written with bit 7 and one of bits 0-4 — a mask the chip *accumulates*, so the
+last write does not give it — and, for a timer source, that timer is started
+(`$DD0E`/`$DD0F` bit 0). CIA #2's interrupt line is the 6510's NMI, so an
+enabled source that can have its event is the refusal whatever vector carries
+it, and a vector installed over no such source is dead, exactly as
+`vector_gate` already treats a dead `$FFFE` write. RESTORE is the other NMI
+source and `sidplayfp` never presses it.
+
+Re-measured over the same 547 tunes — `machine.nmi_gate` over the CIA #2 that
+each tune's own init leaves, with every tune driven to the gate, so this is the
+rule's verdict on the machine rather than the pipeline's refusal order; weights
+are over the whole 7,023 sample, so they compose with section 2:
+
+| what the rule says of the tune | tunes | raw | HVSC-weighted |
+|---|---|---|---|
+| **armed** — a CIA #2 source can fire | 311 / 7023 | 4.4 % | 1.8 % |
+| … which the init trace's own last ICR/CRA writes already show | 264 / 7023 | 3.8 % | 1.6 % |
+| … which only the traced CIA state shows: all 47 are Timer **B**, whose `$DD0F` start bit `InitTrace` does not carry | 47 / 7023 | 0.7 % | 0.2 % |
+| **dead** — no source can fire, so the latch or the vector was the whole evidence | 81 / 7023 | 1.2 % | 0.8 % |
+| **undecided** — init never returns, so the gate is never reached; still refused, now as `init runaway` | 154 / 7023 | 2.2 % | 0.4 % |
+| **undecided** — the tracer faulted | 1 / 7023 | 0.0 % | 0.0 % |
+
+**The misdiagnosed class is 81 tunes, 0.8 % of HVSC by weight**, against design
+section 9.2's ≈ 1 % estimate for the vector-only/unarmed share. Nine of the 81
+are tunes whose *last* ICR write enables Timer B while the accumulated mask does
+not: the chip never saw that write — it lands with I/O banked out, or on an init
+path the second emulation takes and the tracer does not — which is why the
+tracer's own CIA is the authority and the init trace only ever the cheap
+refusal.
+
+The pipeline counts fewer than 311 armed, because `find_entries` settles the
+entry before the tracer runs: 29 armed tunes refuse first with the `no entry` or
+`vector banked out` they would have got anyway.
+
+Putting all 547 back through the 30 s pipeline gives **3 certified, 1 diverged
+(*Rally_Cross*, an `io` write list that differs at init), 1 crashed
+(*Original_Tetris-Game*, `JAM at $0002`) and 542 refused**, and these
+whole-sample rows:
+
+| reason | was | now | raw | HVSC-weighted |
+|---|---|---|---|---|
+| `second interrupt source armed` | 547 | 273 | 3.9 % | 1.6 % |
+| `nmi armed in play` (new: the gate is re-checked per tick) | — | 9 | 0.1 % | 0.6 % |
+| `no entry` | 291 | 467 | 6.6 % | 2.3 % |
+| `vector banked out` | 184 | 244 | 3.5 % | 0.7 % |
+| `recursion` | 118 | 124 | 1.8 % | 0.7 % |
+| `init runaway` | 75 | 91 | 1.3 % | 0.4 % |
+| `play runaway` | 5 | 6 | 0.1 % | 0.1 % |
+| `port moved` | 1 | 2 | 0.0 % | 0.0 % |
+| certified (outcome) | 5384 | 5387 | 76.7 % | 91.2 % |
+| refused (outcome) | 1222 | 1217 | 17.3 % | 6.2 % |
+
+**The second interrupt is 2.2 % of HVSC by weight, not 3.0 %** — 1.6 % armed by
+the end of init plus 0.6 % armed during play — and the 0.8 % it over-counted is
+released almost entirely into refusals that were already there and were being
+shadowed: `no entry` and `vector banked out` take 236 of the 274 tunes, being
+`play == 0` containers whose installed vector the port does not dispatch
+through. **Three tunes certify.** The nine `nmi armed in play` tunes are the
+fail-closed half of the rule earning its keep: each enables the CIA #2 ICR in
+init and starts the timer only once the music is running (Hubbard's *Mr_Meaner*
+and *Kings_of_the_Beach_intro*, two Soundmonitor tunes, GoatTracker V1, Hans
+Siemons, Odie/Cosine, Georg Brandt, Vibrants/JO).
+
+One thing the change exposed, because nothing in this class used to be traced:
+`playroutine_cadence` falls through from CIA #1 to CIA #2 for the play latch and
+treats an unwritten ICR as the armed KERNAL default — right for CIA #1, wrong
+for CIA #2 — so a dead CIA #2 latch was being handed back as the tick period.
+`_cadence` now takes a CIA period only when it is CIA #1's; *Jazzpjazz* is the
+tune that showed it (1,799 ticks of `pal_host_cia`, not 2,868 of a `$DD04`
+latch nothing dispatches).
 
 ---
 
@@ -582,7 +660,13 @@ Measured, in order of population:
    whole families with it (Virtuoso, Daglish, Element114Studio, Fred Gray).
 3. **The second interrupt is 45 % of refusals and 3.0 % of HVSC by weight** —
    the largest addressable population anywhere in this document, and already
-   scoped as plan section 8 item 3.
+   scoped as plan section 8 item 3. **Corrected (section 5b): 2.2 % by weight is
+   a real second schedule and 0.8 % was misdiagnosed evidence — a CIA #2 latch
+   or an NMI vector that no armed source can dispatch. Admitting that 0.8 %
+   soundly moves 3 tunes into `certified` and the rest into the `no entry` /
+   `vector banked out` refusals it had been shadowing, so the addressable
+   population is the 1.8 % that really is armed** — still the largest, and still
+   item 3's prototype.
 4. **The fast tracer is warranted**: 78 % of pass 1's CPU and 96.8 % of pass
    2's; verification already matches the design's model (13.5 k calls/s) and
    tracing is 2.9× off it.
