@@ -10,6 +10,8 @@ from deity_informant.tuneprog.ir import Const, Let, Load, Switch
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
+from deity_informant.tuneprog.build import build_ir
+
 from _prog import PLAY, front, tuneprog
 
 COPY = """
@@ -192,7 +194,15 @@ def _loads(blk):
     return [s.e for s in blk.stmts if type(s) is Let and type(s.e) is Load]
 
 
-def test_tuneprog_snippets_still_build():
-    for code, data, calls in ((CHAIN, ARMS, 12), (BRANCH, OFFSETS, 8), (IND, PTRS, 8)):
-        _T, prog = tuneprog(code, calls=calls, s4=True, data=data)
-        assert prog.procs
+def test_s4_leaves_every_dispatch_the_arms_the_front_end_gave_it():
+    """SSA, the stack and the static closure rewrite expressions, never the domain."""
+    for code, data, calls in ((BRANCH, OFFSETS, 8), (IND, PTRS, 8)):
+        trace, _tr, lifted, regions, procs = front(code, calls=calls, data=data)
+        raw = build_ir(trace, lifted, regions, procs, meta={"name": "snippet"})
+        _T, done = tuneprog(code, calls=calls, s4=True, data=data)
+        assert _cases(raw) and _cases(raw) == _cases(done)
+
+
+def _cases(prog):
+    """The value set of every dispatch in the program (block identity is not one)."""
+    return sorted(tuple(sorted(v for v, _l in b.term.cases)) for b in _switches(prog))
