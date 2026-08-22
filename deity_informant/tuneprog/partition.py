@@ -7,7 +7,7 @@ overrunner keeps the fused region and its asserted bound.
 
 from __future__ import annotations
 
-from .facts import image_copy
+from .facts import image_copy, scales
 from .ir import Load, Rgn, Store
 from .irwalk import addr_split, apply_stmt, apply_term, node_loads, reachable
 
@@ -20,12 +20,24 @@ def repartition(prog, facts):
     Presentation-only: it runs over :func:`~.pipeline.present`'s copy, so no
     certified S4 region id moves and a part is a fresh id above every existing one.
     """
-    named = set(image_copy(facts))  # the register image is partitioned by register
+    named = _named(facts)
     merged = _merge(prog, named)
     _recell(prog, [(k, 0, 0xFFFF, v) for k, v in merged.items()])
     parts, moved = _split(prog, named, _fields(prog))
     _recell(prog, moved)
     return bool(merged or parts)
+
+
+def _named(facts):
+    """Regions a record already partitions: the register image, and a record stride.
+
+    An index carrying a scale reaches a record wider than a byte, which is what
+    :func:`~.views.field_split` names; an extent claimed inside it is one of its
+    fields, not a fusion.
+    """
+    sc = scales(facts)
+    out = set(image_copy(facts))
+    return out | {r for n, rids in facts.idxvar.items() if sc.get(n) for r in rids}
 
 
 def _recell(prog, moves):

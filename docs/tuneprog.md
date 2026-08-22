@@ -66,13 +66,13 @@ program      ir 440  interp 287  irwalk 319  graph 82  lower 227  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 386
              verify 418  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
-             partition 259  word 379  fold 472  tails 290  copyview 279
+             partition 271  word 379  fold 472  tails 290  copyview 279
              unroll 399  live 96
              facts 284  recover 328  views 295  eqsat 283  eqrules 244  ranges 73
 text         pseudocode 480  printer 405
 driver       pipeline 513  resume 67  __init__ 134
 oracle       grid 157  tunes 56
-baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,612 lines
+baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,624 lines
 ```
 
 Stage entry points, which are also the module boundaries:
