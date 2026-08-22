@@ -14,7 +14,7 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `docs/tuneprog.md` — the tuneprog decompiler: module map, pipeline S0-S8, CLI and tools, certificate schema, the certified exemplars, known gaps.
 - `docs/playroutine-anatomy.md` — field guide: nine C64 playroutines reverse engineered to the byte (Hubbard, Galway, Follin, Walker, JCH, GoatTracker, SID Wizard, defMON, lft's Blackbird), the 6502 technique catalogue behind them, and what a decompiler must model.
 - `docs/tuneprog-decompiler-design.md` — design of the tuneprog decompiler (SID tune -> certified per-tick-equivalent high-level program): definitions, pipeline, IR, verification, HVSC survey, plan.
-- `docs/tuneprog-plan.md` — plan v3 after the first prototyping round: lessons, backlog, the fold/stack gate (both items met) with its work specs, next prototypes, Ghidra/SMC leverage assessment.
+- `docs/tuneprog-plan.md` — plan v4: where we are, the backlog by lever, the done ledger, process and execution order.
 - `docs/prototype-automatas.md`, `-follin.md`, `-goattracker.md`, `-sidwizard.md`, `-jch.md` — the certified exemplars (defMON, Follin's *Ghouls'n'Ghosts*, GoatTracker 2, SID Wizard 1.6/1.9, JCH NewPlayer V20): ground truth, what broke, the generic fix, the evidence.
 - `docs/prototype-kernal-entry.md` — the installed-handler family (PSID `play == 0`, CINV entries): the entry convention, the screened population, two evidence certificates.
 - `docs/prototype-nmi.md` — the second interrupt: a CIA #2 NMI as the schedule's second entry. The population classified by what the handler does, the chip model it needed, the interleaving against `sidplayfp`, and the first two-entry certificate (JCH's *Easy Does It*).
