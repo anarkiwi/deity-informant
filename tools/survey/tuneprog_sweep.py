@@ -240,7 +240,9 @@ def _todo(args):
         if (keep is None or p in keep) and (Path(args.hvsc) / p).is_file()
     ]
     if args.only:
-        want = {x.strip() for x in Path(args.only).read_text(encoding="utf-8").split("\n") if x.strip()}
+        want = {
+            x.strip() for x in Path(args.only).read_text(encoding="utf-8").split("\n") if x.strip()
+        }
         elig = [x for x in elig if x[0] in want]
         missing = sorted(want - {p for p, _f in elig})
         if missing:
