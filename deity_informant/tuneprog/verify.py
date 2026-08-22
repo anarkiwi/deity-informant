@@ -29,6 +29,7 @@ from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
 from .interp import Interp, Machine, NmiMachine
 from .ir import TrapError
+from . import nmi as N
 from .machine import STATUS, entry_frame
 from .tracevm import REG_IN
 
@@ -73,7 +74,10 @@ class Reference:
         self.footprint_free = np.asarray(trace.footprint_free)
         self.period_free = trace.meta.get("period_free")
         self.first_repeat_free = trace.meta.get("first_repeat_free")
-        self.inputs = [i for i in trace.inputs if i[3] < REG_IN]
+        nsites = N.sites(trace) if N.entries(trace) else frozenset()
+        pinned = [i for i in trace.inputs if i[3] < REG_IN]
+        self.inputs = [i for i in pinned if i[1] not in nsites]
+        self.nmi_inputs = [i for i in pinned if i[1] in nsites]
         self.regs = {}
         for c, _site, _op, addr, val in trace.inputs:
             if addr >= REG_IN and c >= 0:
@@ -138,6 +142,8 @@ class Verifier:
         self.queue = []
         cls = NmiMachine if self.nmi else Machine
         self.M = cls(prog.image(), ref.load, inputs=ref.inputs)
+        if self.nmi:
+            self.M.alt = list(ref.nmi_inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)
         self.tick = prog.procs[prog.meta["tick_proc"]]
         self.init = prog.procs[prog.meta["init_proc"]]
@@ -208,8 +214,10 @@ class Verifier:
         M.hook = None  # a handler's own stores are not preemption points
         held = list(M.regs)
         M.regs[0], M.regs[1], M.regs[2], M.regs[3] = a, x, y, sp
+        M.swap()
         self._enter(NMI_ENTRY, ret=pc, status=status)
         self._call_proc(self.prog.procs[name])
+        M.swap()
         M.regs[:] = held  # an NMI leaves the interrupted program's registers alone
         M.hook = self._preempt
 
@@ -349,7 +357,7 @@ class Verifier:
             "ticks": done,
             "seconds": round(done * e["cycles_per_tick"] / clock, 2),
             "cycles_per_tick": e["cycles_per_tick"],
-            "inputs_pinned": self.M.icur + self.nreg,
+            "inputs_pinned": self.M.icur + self.nreg + getattr(self.M, "acur", 0),
             "period": self.period,
             "first_repeat": self.first_repeat,
             "trace_period": tperiod,

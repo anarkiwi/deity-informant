@@ -8,12 +8,8 @@ interleaving is readable straight off the write log.
 import pytest
 
 from deity_informant.tuneprog import nmi as N
+from deity_informant.tuneprog.cia import CIA, CIA1_BASE, CIA2_BASE, ICR_TA, ICR_TB
 from deity_informant.tuneprog.machine import (
-    CIA,
-    CIA1_BASE,
-    CIA2_BASE,
-    ICR_TA,
-    ICR_TB,
     Refusal,
     STATUS,
     entry_frame,

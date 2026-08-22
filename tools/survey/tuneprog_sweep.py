@@ -51,6 +51,7 @@ KEEP_SUB = (
     "inputs_pinned",
     "divergences",
     "envelope_traps",
+    "nmis",
 )
 KEEP_COST = ("sites", "regions", "ir_statements", "ir_blocks", "ir_procs", "verify_cpu_seconds")
 KEEP_HDR = ("magic", "songs", "speed_bits", "speed_any_cia", "play0", "clock", "model", "basic")

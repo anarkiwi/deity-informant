@@ -890,7 +890,15 @@ extension of `sidw`).
 
 Deferred (with the survey's weighted share of HVSC): a second concurrent
 interrupt — NMI sample mixers, sync channels, raster-split chains (≈ 2 %) —
-refuse in v1, model as an interleaved schedule later; tunes whose `init` is the
+refuse in v1, model as an interleaved schedule later
+(**done, 2026-08-22**: [prototype-nmi.md](prototype-nmi.md). A CIA #2 NMI is the
+schedule's second entry and a second procedure; the tracer takes it at the
+instruction boundary the chip's line asserts at and records the preemption
+schedule, which S8 replays at store granularity. The population is **181 tunes
+of 7,023 with both entries (1.3 % weighted)**, not the ≈ 2 % this row assumed:
+43 more have the NMI as their *only* schedule, which is still a single-entry
+program and is not built. `second interrupt source armed` now means only a
+source with no schedule — 6 tunes); tunes whose `init` is the
 main program or needs KERNAL/BASIC ROM execution beyond a small budget
 (BASIC-program tunes, speech systems, game engines; ≈ 1.5 %) — refuse;
 `play = 0` tunes that install no vector we recognise (1.4 %). Expected v1

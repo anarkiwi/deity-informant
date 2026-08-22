@@ -20,7 +20,7 @@ import signal
 import sys
 import time
 import traceback
-from collections import Counter, defaultdict
+from collections import Counter
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -34,8 +34,8 @@ sys.path.insert(0, str(ROOT / "tools" / "survey"))
 # pylint: disable=broad-exception-caught,global-statement,import-error
 from deity_informant.tuneprog import nmi as N  # noqa: E402
 from deity_informant.tuneprog.ir import SID_HI, SID_LO  # noqa: E402
+from deity_informant.tuneprog.cia import CIA2_BASE  # noqa: E402
 from deity_informant.tuneprog.machine import (  # noqa: E402
-    CIA2_BASE,
     Entry,
     MachineImage,
     Refusal,
@@ -49,36 +49,6 @@ CIA2_HI = CIA2_BASE + 0xFF
 PAL_FRAME = 19656  # the provisional tick of a tune with no dispatchable entry
 D418 = 0xD418  # the master-volume register a sample mixer owns
 _A = None
-
-
-def successors(trace):
-    """``{pc: {pc}}`` over every observed transfer inside one entry.
-
-    A ``JSR`` reaches its callee and continues at its return pc; an ``RTS``/``RTI``
-    leaves the entry, so its observed targets are not followed -- they are every
-    pc the interrupted program happened to be at.
-    """
-    succ = defaultdict(set)
-    for f, _o, t in trace.edges:
-        succ[f].add(t)
-    for (p, _o), c in trace.calls.items():
-        succ[p].update(c["targets"])
-        succ[p].add(c["ret_pc"])
-    for p, _o in trace.rets:
-        succ.setdefault(p, set())
-    return succ
-
-
-def reachable(succ, executed, start):
-    """Executed pcs reachable from ``start`` over the observed transfer relation."""
-    seen, work = set(), [start]
-    while work:
-        pc = work.pop()
-        if pc in seen or pc not in executed:
-            continue
-        seen.add(pc)
-        work.extend(succ.get(pc, ()))
-    return seen
 
 
 def accesses(trace, pcs):
@@ -103,10 +73,8 @@ def _ram(addrs):
 
 def facts(trace, entry, nmi):
     """What the two entries do and what they share, from the trace alone."""
-    executed = {pc for pc, _op, _f in trace.sites}
-    succ = successors(trace)
-    hp = reachable(succ, executed, nmi["addr"])
-    tp = reachable(succ, executed, entry["addr"])
+    hp = N.sites(trace)
+    tp = N.reach(trace, entry["addr"])
     hrd, hwr = accesses(trace, hp)
     trd, twr = accesses(trace, tp)
     log = trace.nmilog
@@ -235,11 +203,15 @@ def scan(args):
     out = Path(args.out)
     done = set()
     if out.exists():
-        done = {json.loads(x)["path"] for x in out.read_text().splitlines() if x.strip()}
+        done = {
+            json.loads(x)["path"] for x in out.read_text(encoding="utf-8").splitlines() if x.strip()
+        }
     items = _sample(args.results, args.cap, args.seed, False)
     todo = [(p, f) for p, f in items if (Path(args.hvsc) / p).is_file() and p not in done]
     if args.only:
-        want = {x.strip() for x in Path(args.only).read_text().split("\n") if x.strip()}
+        want = {
+            x.strip() for x in Path(args.only).read_text(encoding="utf-8").split("\n") if x.strip()
+        }
         todo = [x for x in todo if x[0] in want]
     print("todo %d, jobs %d" % (len(todo), args.jobs), file=sys.stderr)
     t0 = time.time()
@@ -265,7 +237,9 @@ def population(results, hvsc):
 
 def report(args):
     """The markdown tables the prototype record carries."""
-    rows = [json.loads(x) for x in Path(args.rows).read_text().splitlines() if x.strip()]
+    rows = [
+        json.loads(x) for x in Path(args.rows).read_text(encoding="utf-8").splitlines() if x.strip()
+    ]
     rates = Rates(rows, population(args.results, args.hvsc))
     out = ["| class | tunes | raw | HVSC-weighted |", "|---|---|---|---|"]
     for name, _n in Counter(r["class"] for r in rows).most_common():

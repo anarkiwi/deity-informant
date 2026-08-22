@@ -11,7 +11,8 @@ from array import array
 
 from ..vm import PcodeVM
 from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
-from .machine import CIA, CIA1_BASE, CIA2_BASE, Refusal, port_bank
+from .cia import CIA, CIA1_BASE, CIA2_BASE
+from .machine import Refusal, port_bank
 from .nmi import NEVER, STALE
 from .traceflow import FlowRecorder
 from .tracesite import (

@@ -8,11 +8,87 @@ one program from every subtune's trace, keyed by the union of their SMC cells.
 from __future__ import annotations
 
 import json
+from array import array
 from collections import Counter, defaultdict
+from hashlib import blake2b
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from .ir import STACK_HI, STACK_LO
+
+
+class Footprint:
+    """The play-phase write footprint, gathered as one numpy take per tick.
+
+    Growth is monotone, so the sorted address vector and the stack-page mask that
+    separates the two witnesses are rebuilt only when the footprint gains an
+    address, and each tick is one gather over that vector.
+    """
+
+    __slots__ = ("n", "idx", "keep", "nfree", "view")
+
+    def __init__(self):
+        self.n = -1
+        self.idx = np.empty(0, np.intp)
+        self.keep = np.empty(0, bool)
+        self.nfree = 0
+        self.view = None
+
+    def gather(self, vm):
+        """``(full bytes, full size, page-free bytes, page-free size)`` of this tick."""
+        w = vm.written_play
+        if self.n != len(w):
+            self.n = len(w)
+            self.idx = a = np.fromiter(sorted(w), np.intp, self.n)
+            self.keep = (a < STACK_LO) | (a > STACK_HI)
+            self.nfree = int(self.keep.sum())
+        if self.view is None:
+            self.view = np.frombuffer(memoryview(vm.mem), dtype=np.uint8)
+        b = self.view[self.idx]
+        return b.tobytes(), self.n, b[self.keep].tobytes(), self.nfree
+
+    def __getstate__(self):
+        return self.n, self.idx, self.keep, self.nfree
+
+    def __setstate__(self, st):
+        self.n, self.idx, self.keep, self.nfree = st
+        self.view = None
+
+
+class Stream:
+    """One per-tick state hash over a footprint, and its periodicity witness.
+
+    The page-free stream leaves the stack page out: it is the machine's own
+    scratch, which a program :func:`~.stack.eliminate` proved stack-free can
+    neither read nor write.
+    """
+
+    __slots__ = ("hashes", "period", "first_repeat", "rows", "nrows")
+
+    def __init__(self):
+        self.hashes = {}
+        self.period = None
+        self.first_repeat = None
+        self.rows = array("Q")
+        self.nrows = array("I")
+
+    def hash(self, buf, n, ninp, call):
+        """Hash one gathered footprint; a repeat with no input consumed is a witness."""
+        h = blake2b(buf, digest_size=8, key=n.to_bytes(4, "little")).digest()
+        v = int.from_bytes(h, "little")
+        self.rows.append(v)
+        self.nrows.append(n)
+        if self.period is None:
+            prev = self.hashes.get((n, v))
+            if prev is None:
+                self.hashes[(n, v)] = (call, ninp)
+            elif prev[1] == ninp:
+                # design S1: a repeat is a witness only with no inputs consumed
+                # between the two calls (otherwise the next tick may differ).
+                self.period = call - prev[0]
+                self.first_repeat = call
 
 
 def site_key(pc, opcode, insn_bytes, cells):

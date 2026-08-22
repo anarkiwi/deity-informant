@@ -4,10 +4,8 @@ import pytest
 
 from deity_informant import PcodeVM, lift
 from deity_informant.tuneprog import machine
+from deity_informant.tuneprog.cia import CIA, CIA1_BASE, ICR_TA
 from deity_informant.tuneprog.machine import (
-    CIA,
-    CIA1_BASE,
-    ICR_TA,
     Entry,
     MachineImage,
     Refusal,

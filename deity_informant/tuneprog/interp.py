@@ -185,12 +185,23 @@ class NmiMachine(Machine):
     :class:`Machine` and pays nothing for the hook.
     """
 
-    __slots__ = ("hook", "stores")
+    __slots__ = ("hook", "stores", "alt", "acur")
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.hook = None
         self.stores = 0
+        self.alt = []
+        self.acur = 0
+
+    def swap(self):
+        """Exchange the pinned input stream for the other entry's.
+
+        The two entries share no code, so each reads its own inputs in its own
+        order and the interleaving between them cannot break either stream.
+        """
+        self.inp, self.alt = self.alt, self.inp
+        self.icur, self.acur = self.acur, self.icur
 
     def at(self, a, w=1):
         """One store is about to happen: run whatever the schedule places before it."""

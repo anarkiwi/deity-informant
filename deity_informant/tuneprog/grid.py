@@ -114,13 +114,11 @@ def sidtrace_clock(rows):
         raise ValueError("sidtrace rows carry no interrupt clock (%d raises)" % len(at))
     step = np.diff(at)
     cpf = int(round(np.median(step)))
-    # a gap is whole periods (a raise no write fell in), and no write is a period late
+    # every gap is whole periods (a raise no write fell in); a write further than
+    # one period from its raise is a second entry writing while this one is idle
     slip = int(np.abs(step - np.round(step / cpf) * cpf).max()) if cpf > 0 else 0
-    if cpf <= 0 or slip > cpf // 100 or max(off) >= cpf:
-        raise ValueError(
-            "sidtrace raises do not agree on one period (%d, slip %d, offset %d)"
-            % (cpf, slip, max(off))
-        )
+    if cpf <= 0 or slip > cpf // 100:
+        raise ValueError("sidtrace raises do not agree on one period (%d, slip %d)" % (cpf, slip))
     return at[0], cpf
 
 

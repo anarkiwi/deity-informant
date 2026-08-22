@@ -17,14 +17,12 @@ from __future__ import annotations
 import pickle
 from array import array
 from dataclasses import replace
-from hashlib import blake2b
 from pathlib import Path
 
 import numpy as np
 
 from ..lifter import lift
 from .. import c64
-from .ir import STACK_HI, STACK_LO
 from . import nmi as N
 from .machine import (
     Entry,
@@ -36,7 +34,7 @@ from .machine import (
     kernal_mapped,
     vector_gate,
 )
-from .tracedata import Trace, site_key
+from .tracedata import Footprint, Stream, Trace, site_key
 from .tracesite import S_IDX, S_N, S_PH, S_PH0, S_RS, S_WS
 from .tracevm import PH_PLAY, TraceVM
 
@@ -50,78 +48,6 @@ CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13
 NMI_COLS = ("call", "insn", "cyc", "addr", "st", "sp", "p", "pc", "a", "x", "y")
 NMI_TYPES = (np.uint32,) * 3 + (np.uint16, np.uint32) + (np.uint8,) * 2 + (np.uint16,)
 NMI_TYPES += (np.uint8,) * 3
-
-
-class _Footprint:
-    """The play-phase write footprint, gathered as one numpy take per tick.
-
-    Growth is monotone, so the sorted address vector and the stack-page mask that
-    separates the two witnesses are rebuilt only when the footprint gains an
-    address, and each tick is one gather over that vector.
-    """
-
-    __slots__ = ("n", "idx", "keep", "nfree", "view")
-
-    def __init__(self):
-        self.n = -1
-        self.idx = np.empty(0, np.intp)
-        self.keep = np.empty(0, bool)
-        self.nfree = 0
-        self.view = None
-
-    def gather(self, vm):
-        """``(full bytes, full size, page-free bytes, page-free size)`` of this tick."""
-        w = vm.written_play
-        if self.n != len(w):
-            self.n = len(w)
-            self.idx = a = np.fromiter(sorted(w), np.intp, self.n)
-            self.keep = (a < STACK_LO) | (a > STACK_HI)
-            self.nfree = int(self.keep.sum())
-        if self.view is None:
-            self.view = np.frombuffer(memoryview(vm.mem), dtype=np.uint8)
-        b = self.view[self.idx]
-        return b.tobytes(), self.n, b[self.keep].tobytes(), self.nfree
-
-    def __getstate__(self):
-        return self.n, self.idx, self.keep, self.nfree
-
-    def __setstate__(self, st):
-        self.n, self.idx, self.keep, self.nfree = st
-        self.view = None
-
-
-class _Stream:
-    """One per-tick state hash over a footprint, and its periodicity witness.
-
-    The page-free stream leaves the stack page out: it is the machine's own
-    scratch, which a program :func:`~.stack.eliminate` proved stack-free can
-    neither read nor write.
-    """
-
-    __slots__ = ("hashes", "period", "first_repeat", "rows", "nrows")
-
-    def __init__(self):
-        self.hashes = {}
-        self.period = None
-        self.first_repeat = None
-        self.rows = array("Q")
-        self.nrows = array("I")
-
-    def hash(self, buf, n, ninp, call):
-        """Hash one gathered footprint; a repeat with no input consumed is a witness."""
-        h = blake2b(buf, digest_size=8, key=n.to_bytes(4, "little")).digest()
-        v = int.from_bytes(h, "little")
-        self.rows.append(v)
-        self.nrows.append(n)
-        if self.period is None:
-            prev = self.hashes.get((n, v))
-            if prev is None:
-                self.hashes[(n, v)] = (call, ninp)
-            elif prev[1] == ninp:
-                # design S1: a repeat is a witness only with no inputs consumed
-                # between the two calls (otherwise the next tick may differ).
-                self.period = call - prev[0]
-                self.first_repeat = call
 
 
 class Tracer:
@@ -140,9 +66,9 @@ class Tracer:
         self.idle = None  # where an init that never returns sits: its ``JMP *``
         self.period = None
         self.first_repeat = None
-        self.free = _Stream()
-        self.full = _Stream()
-        self.fp = _Footprint()
+        self.free = Stream()
+        self.full = Stream()
+        self.fp = Footprint()
         self.nmi = None
         self.nmi_addrs = []  # every handler the line dispatched to, in first-seen order
         self.nmilog = tuple(array(t) for t in "IIIHIBBHBBB")  # the preemption schedule
@@ -300,8 +226,7 @@ class Tracer:
         vm.push_frame(None, pc, handler)
         r = vm.reg
         row = (self.calls_done, index, vm.cycles, handler, vm.tick_stores(), sp, status, pc)
-        row += (r[0], r[1], r[2])
-        for col, v in zip(self.nmilog, row):
+        for col, v in zip(self.nmilog, row + (r[0], r[1], r[2])):
             col.append(v & 0xFFFFFFFF)
         return handler
 
