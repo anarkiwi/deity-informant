@@ -35,7 +35,6 @@ KIND = {
     S_F,
     S_N,
     S_KIND,
-    S_LEN,
     S_CYC,
     S_PEN,
     S_CTRL,
@@ -56,7 +55,7 @@ KIND = {
     S_B1,
     S_B2,
     S_STABLE,
-) = range(24)
+) = range(23)
 
 
 def reg_masks(rec):
@@ -156,7 +155,6 @@ def build(vm, pc, key, rec):
         f,
         0,
         kind,
-        rec["len"],
         rec["cyc"],
         pen,
         rec["ctrl"],
