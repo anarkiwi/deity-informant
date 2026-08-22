@@ -75,6 +75,7 @@ def test_easy_does_it_is_one_program_over_two_entries():
         "addr": 0x40E9,
         "cycles_per_tick": 193,
         "source": "cia2_timer_a",
+        "kernal": False,  # $FFFA under a banked-out KERNAL: no $FE43 stub to pay
     }
     assert run.prog.meta["nmi_procs"] == ["nmi"]
 
