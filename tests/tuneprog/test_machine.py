@@ -79,11 +79,18 @@ def test_find_entries_header_play():
 
 
 def test_find_entries_admits_a_cia2_latch_no_source_enabled():
-    """A latch nothing dispatches is a counter, not a schedule."""
+    """A latch nothing dispatches is a counter, not a schedule -- and not a cadence.
+
+    CIA #2's line is the NMI, so its period is not a tick; the trigger is the
+    host's, at the video standard the container declares.
+    """
     pytest.importorskip("pysidtracker")
-    init = asm(0x1000, "LDA #$34", "STA $DD04", "LDA #$12", "STA $DD05", "RTS")
-    data = psid({0x1000: init, 0x1020: asm(0x1020, "RTS")}, 0x1000, 0x1020)
-    assert find_entries(data)[1][0].kind == "sub"
+    blocks = {0x1000: asm(0x1000, "LDA #$34", "STA $DD04", "LDA #$12", "STA $DD05", "RTS")}
+    blocks[0x1020] = asm(0x1020, "RTS")
+    pal = find_entries(psid(blocks, 0x1000, 0x1020))[1][0]
+    ntsc = find_entries(psid(blocks, 0x1000, 0x1020, clock=2))[1][0]
+    assert pal.kind == "sub" and pal.cycles_per_tick != 0x1234 + 1
+    assert ntsc.cycles_per_tick != pal.cycles_per_tick
 
 
 ARM = ("LDA #$81", "STA $DD0D")  # ICR: enable Timer A as a source
