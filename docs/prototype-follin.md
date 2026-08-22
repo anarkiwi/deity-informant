@@ -1,29 +1,25 @@
 # Prototype: the tuneprog decompiler on Tim Follin's *Ghouls'n'Ghosts*
 
-The second exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md),
-after defMON's *Automatas* ([prototype-automatas.md](prototype-automatas.md)):
-`MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid` (anatomy [§3.6](playroutine-anatomy.md)),
-32 subtunes, three unrolled voice interpreters, a 21-way patched-`JMP` dispatch,
-and a rip loader whose `init` patches its own compare. Every subtune is certified
-(`docs/certificates/ghouls-song01.json` … `-song32.json`, plus
-`ghouls-songs-all.json` for the union program). No Follin-specific code path
-exists; Automatas, Commando and SID Wizard's Emomyst certify with the same
-pipeline.
+Second exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+defMON's *Automatas* ([prototype-automatas.md](prototype-automatas.md)):
+`MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid`, anatomy [§3.6](playroutine-anatomy.md).
+All 32 subtunes certified (`docs/certificates/ghouls-song01.json` … `-song32.json`, plus
+`ghouls-songs-all.json` for the union); no Follin-specific code path exists.
 
-## 1. Why Follin
+## 1. Idioms under test
 
-| design mechanism | how Ghouls'n'Ghosts stresses it |
-|---|---|
-| SMC operand cells (S2) | 24 varying sites: 21 immediates used as variables, 3 dispatch `JMP` operands — **and `init` patches the same cells**, plus one of its own (`$29D8`) between two copy loops |
-| computed control (S2) | `LDA T1,X; STA $6375; LDA T2,X; STA $6376; JMP $xxxx`, X = command byte ≥ $80, tables at `base−$80`, three voice copies |
-| computed store (S2/S3) | `LDA $622E,X; STA $6219` then a store *through* the patched operand into one of three unequally-spaced cells |
-| data-dependent SID address (§7 traps) | `$85` writes `STA $D400,X` with X from the song: the register is a variable |
-| per-subtune init images (S0/S3) | 32 subtunes; `init` tail-jumps into a rip stub that copies two song blocks over itself, then either starts a song or a sound effect |
-| return value (§6.2) | `play` returns `A = $7B \| $7C \| $7D` — `$FF` while any voice runs, 0 when all three stop |
-| copy folding, table typing (S6) | three 493-byte voice templates plus three handler copies, chained by `JMP` inside one procedure, each with its own 21-way switch; a 97-entry note table the transpose can index past, into the SFX tables |
-| structuring (S5) | the whole frame is **one linear procedure**: no `JSR` on the hot path, voice *n* ends by `JMP` to voice *n*+1, handlers `JMP` back into their voice's sequencer |
-
----
+- 24 varying SMC sites: 21 immediates used as variables, 3 dispatch `JMP` operands —
+  `init` patches the same cells, plus one of its own (`$29D8`) between two copy loops
+- computed control: `LDA T1,X; STA $6375; LDA T2,X; STA $6376; JMP $xxxx`, X = command
+  byte ≥ $80, tables at `base−$80`, three voice copies
+- computed store: `LDA $622E,X; STA $6219`, then a store *through* the patched operand
+  into one of three unequally spaced cells
+- structuring: the whole frame is one linear procedure — no `JSR` on the hot path, voice
+  *n* ends by `JMP` to voice *n*+1, handlers `JMP` back into their voice's sequencer
+- `init` tail-jumps into a rip stub that copies two song blocks over itself, then starts
+  either a song or a sound effect
+- `play` returns `$FF` while any voice runs, 0 when all three stop
+- the 97-entry note table the transpose can index past, into the SFX tables
 
 ## 2. Ground truth (anatomy §3.6, measured against the trace)
 
@@ -38,119 +34,58 @@ pipeline.
 | SID schedule | voice 0 → 1 → 2 → filter; `$D415`/`$D416` every frame; `init` writes $08 then $00 to `$D400–$D41C` (four writes past the last register) |
 | traps present | table overrun (note + transpose past 97 entries), tables at `base−$80`, a store whose address is data, a `BPL` whose own operand byte the block copy overwrites, `LDA #v; BNE` made conditional by SMC, `INC/DEC` floor idiom, frame-count durations with no tempo |
 
----
-
 ## 3. What broke, and the generic fix
 
-**The envelope trap in `init`.** The rip loader at `$2980` copies two song blocks
-per subtune and patches the operand of its own `CPY #$00` at `$29D7` with `STY
-$29D8` — once per block, consumed *inside* `init*, with a different value each
-time. The front end keyed sites by `(pc, opcode, fixed operand bytes)` with only
-*play*-written cells blanked, so the site took the post-init byte (the second
-block's remainder) and the first copy loop overran by one byte: `$4622 outside
-[$3D44,$4621]` at `$29DB`.
+| broke | generic fix |
+|---|---|
+| envelope trap `$4622 outside [$3D44,$4621]` at `$29DB`: the rip loader at `$2980` patches its own `CPY #$00` at `$29D7` through `STY $29D8`, once per song block, consumed inside `init` | an instruction byte any traced procedure writes, **in any phase**, is a variable (`trace.py`: `cells = code & (written_init \| written_play)`) — it leaves the site key and one site serves both copy loops |
+| residualising every init-patched operand would cost SID Wizard its readable tick (Emomyst's `init` patches ~30 operands) | `ssa.Folds` folds a known-address load to the post-init byte when ≥ 1 of its bytes is an SMC cell and none is play-written; `ssa.simplify` applies it only in procedures `init` never reaches. An init-written *variable* is not a cell and keeps its load and name; `--songs all` folds nothing |
+| the rip stub's `BPL` at `$7318` sits in the band its own block copy overwrites, so its offset byte is a cell: the branch became a bare computed `switch` and hit `trap 'switch'` on a call that fell through | `cfg.py` emits `if cond: switch(target) else: fall-through`, the taken side's observed targets in the switch (`build._branch_switch`) |
+| presentation only (`pseudocode.py`, no IR change) | a SID store whose index does not step by the 7-byte voice block prints `sid.reg[i]`; a table's literal operand moves into the index (`LDA $6C37,X` over a region based at `$6CB7` → `T6CB7[cmd - $80]`); a play entry's `A` prints as `return` when every exit agrees on one computed expression (`ir.retval`) |
+| a patched `JMP` whose operand halves come from constant tables under one index left a bare default | the tables' remaining entries are targets too, and become arms that `trap 'unverified'` (`jumptab.py`) |
+| `--songs all` | `tracedata.merge` builds one trace from every subtune: sites re-keyed by the union of their cells (a wider cell set can only merge keys, never split them), edges/calls/returns/written sets unioned, each subtune's write log kept. What `init` writes types as `state`, nothing folds, every subtune verifies against its own trace |
 
-The rule is now the design's without the phase qualifier: **an instruction byte
-any traced procedure writes, in any phase, is a variable** (`trace.py`: `cells =
-code & (written_init | written_play)`) — it drops out of the site key and the lift
-loads it, so one site serves both loops.
+**Sibling copies** (`siblings.py`, `copyrows.py`, `copymerge.py`; S2c). The three voices
+are copies of one static template, recovered from the post-init image by aligning
+instruction streams: equal opcodes advance all three, a gap holds the `CMP #v` voices 1
+and 2 carry where voice 0 uses the load's Z flag; dispatch arms pair by their index in the
+parallel tables `jumptab.dispatch` reads. Discovery is exact (corrected from ten
+thresholds): bases are the chain the built procedures carry, each pair of copies is one
+`difflib` alignment in which only a gap may separate them, and the family holds only while
+every copy's operand map is a function. Song 1: three voices, 419 rows.
 
-**Putting the constants back.** Residualising every init-patched operand would
-cost SID Wizard its readable tick (Emomyst's `init` relocates the player and
-patches ~30 operands). `ssa.Folds` folds a load at a known address to the
-post-init byte when at least one of its bytes is an SMC cell and none is
-play-written, and `ssa.simplify` applies it only in the procedures `init` never
-reaches — inside `init` the value is the store's, not the image's. An ordinary
-init-written *variable* is not a cell, so it keeps its load and its name; a
-`--songs all` build folds nothing at all.
+**The copy index is spent before the IR exists** — copy *j* running a template row *is*
+that row with `v = j`:
 
-**A patched conditional branch keeps its condition.** The rip stub's `BPL` at
-`$7318` sits in the band its own block copy overwrites, so its offset byte is a
-cell and the branch became a bare computed `switch` — which evaluated the *taken*
-target on a call that fell through (`trap 'switch'`). `cfg.py` now emits
-`if cond: switch(target) else: fall-through`, with the taken side's observed
-targets in the switch (`build._branch_switch`).
+- a disagreeing operand becomes a read-only per-copy column `T_x[v]` (59 columns for song
+  1) in a band outside the load image, the stack page and I/O, every byte a pinned input;
+- the chain edge from voice *j* to *j*+1 becomes `v += 1; if v < 3: header`;
+- a site's count becomes a vector over `v`, a zero marking that statement unverified;
+- a row whose copies do not lift to one shape stays three rows under `switch (v)`, as does
+  the dispatch, each voice's patched `JMP` holding its own target.
 
-**Presentation** (`pseudocode.py`, no IR change): a SID store whose index does not
-step by the 7-byte voice block prints as `sid.reg[i]`, because the *register* is
-what the index selects (`$85`, and every `LDY #$1C` clear loop); a table's
-literal operand moves into the index, so `LDA $6C37,X` on a region based at
-`$6CB7` prints `T6CB7[cmd - $80]`; and a play entry's `A` prints as the tick's
-`return` when every exit agrees on one computed expression (`ir.retval`).
+`--no-merge` builds what S2b built.
 
-**Sibling copies and the copy index** (`siblings.py`, `copyrows.py`,
-`copymerge.py`; S2c, in the certified program). The three voices are three copies
-of one static template, and the alignment of their instruction streams recovers
-that from the post-init image: equal opcodes advance all three, and a gap holds
-the `CMP #v` voices 1 and 2 carry where voice 0 uses the load's own Z flag. The
-dispatch is where the copies stop being one stream, so its arms are paired by
-their index in the parallel tables `jumptab.dispatch` reads, which carries the
-correspondence into the handlers. *Amended by #241:* discovery is exact -- the
-bases are the chain the built procedures already carry, each pair of copies is one
-`difflib` alignment in which only a gap may separate them, and the family holds
-only while every copy's operand map is a function (an indexed base whose index is
-data, `STA $D400,X`, names something else than the same literal under `abs`); the
-ten thresholds are gone and song 1's family is the same three voices over 419
-rows.
-
-*Amended by this stage:* the correspondence is now spent before the IR exists.
-Copy *j* executing a template row **is** that row executed with `v = j`, so the
-front end builds the rows once: an operand the copies disagree on becomes a load
-from a per-copy column `T_x[v]` (one read-only table, 59 columns for song 1, in a
-band no access, no code and no other region can see -- outside the load image,
-outside the stack page and outside I/O, where every byte is a pinned input to the
-program whatever it holds); the chain edge from voice *j* to voice *j+1* becomes
-`v += 1; if v < 3: header`; the count of a site becomes a vector over `v`, and a
-zero says no execution of that voice reached that row -- the statement is the one
-another voice ran, at the address the correspondence says this one names, and it
-is marked unverified per statement. What the index cannot name is refused, not
-approximated: a row whose copies do not lift to one shape (three `LDA #imm` whose
-operand is a cell in one voice and not in another) stays three rows under a
-`switch (v)`, and so does the dispatch, since each voice's patched `JMP` holds its
-own target -- the arms then pair by the body they share, not by a case value.
-Nothing is lifted into a second program, and `--no-merge` builds what S2b built
-before.
-
-**Static jump-table arms** (`jumptab.py`): when both halves of a patched `JMP`
-operand are copied from constant tables indexed by one value, the table's
-remaining entries are targets too, and become arms that `trap 'unverified'`
-instead of a bare default.
-
-**`--songs all`** (should-have): `tracedata.merge` builds one trace from every
-subtune — sites re-keyed by the union of their cells (a wider cell set can only
-merge keys, never split them), edges/calls/returns/written sets unioned, each
-subtune's write log left where verification needs it. What `init` writes is typed
-`state` and nothing folds; every subtune is then verified against its own trace.
-
----
-
-## 4. Evidence (measured, song 1 unless stated)
+## 4. Evidence (song 1 unless stated)
 
 | # | claim | measured |
 |---|---|---|
-| 1 | patched-`JMP` dispatch becomes a switch | three switches on `load16($6375/$6562/$6751)`, **21/23/23 arms** (14/18/15 observed, the rest statically enumerated as `trap 'unverified'`) — the commands the tables carry, `$93`/`$94` included since the SID Wizard pass made a table run out to the nearest instruction or foreign access rather than stopping at the bytes an accessor touched (two of the 23 are that rule over-reaching past the 21-entry table) |
+| 1 | patched-`JMP` dispatch becomes a switch | three switches on `load16($6375/$6562/$6751)`, **21/23/23 arms** (14/18/15 observed, the rest statically enumerated as `trap 'unverified'`) — the commands the tables carry, `$93`/`$94` included; two of the 23 are the SID Wizard extent rule (a table runs out to the nearest instruction or foreign access, not to the bytes an accessor touched) over-reaching past the 21-entry table |
 | 2 | data-dependent SID address | `sid.reg[a327] = b730E[...]` inside the `$85` list loop; the write's envelope is `$D400–$D418`, and `(addr, val)` equality is part of the certificate |
 | 3 | computed store operand | in the SFX subtunes' `init`: a store **through** `load16($6219)` whose region is `[$640F, $67ED]` — exactly the three voices' fixed-length cells (song 16) |
 | 4 | 32 subtunes from the pre-init image | all 32 certified, 0 divergences, 0 envelope traps; 31 complete via a period (§6) |
 | 5 | play returns a value | `return ((b0021[90] \| b0021[91]) \| b0021[92])` = `$7B \| $7C \| $7D`; not part of the certificate |
-| 6 | three unrolled voices fold | **yes, in the certified program** (#242): one family of three copies, 400 of the 419 aligned rows folded (the 19 left are rows whose copies do not lift to one shape, or whose successors cross copies -- they stay three rows under a `switch (v)`), 60 per-copy columns. Coverage says what each voice ran: 338 statements all three, 77 only voice 2, 29 voices 2 and 3, 19 voices 1 and 3, 8 voices 1 and 2 -- 133 of 471 merged statements are unverified for some voice and marked there. S4 falls from 1,229 statements in 450 blocks to 671 in 254; the printed document from 1,421 lines to 794 |
+| 6 | three unrolled voices fold | yes, in the certified program: one family of three copies, 400 of 419 aligned rows folded, 60 per-copy columns; the 19 left are rows whose copies do not lift to one shape or whose successors cross copies. Coverage: 338 statements all three voices, 77 only voice 2, 29 voices 2 and 3, 19 voices 1 and 3, 8 voices 1 and 2 — 133 of 471 merged statements unverified for some voice. S4 falls from 1,229 statements in 450 blocks to 671 in 254, the printed document from 1,421 lines to 794 |
 | 7 | SMC immediates as variables | 35 cells (24 play-written, 11 init-patched); every play-written cell is a load at its instruction, every init-only cell is a constant in the tick and a store in `init`; 76 cells in the `--songs all` build |
 | 8 | `init` writes $08 then $00 to `$D400–$D41C` | 58 init writes, `$D41C` down to `$D400`, values `{8, 0}` — compared byte for byte by the certificate |
 | - | genericity, budget | Automatas (149,025 calls, period 129,024, both SID models), Commando songs 1–2, Emomyst at 10 s: 0 divergences with the same code. Song 1 is traced and verified in one 14 s invocation: 1,177 sites → 68 regions → 4 procedures → 1,242 statements |
 
----
+## 5. Printed `tick()` (verbatim; `...` elides)
 
-## 5. The printed `tick()` (`tuneprog.md`, verbatim; `...` elides)
-
-One body over the copy index, the three voices' dispatches inside it over one set
-of arm bodies, and every statement no voice of its own ran marked where it is.
-Every column the copies disagree on prints as the operand it stands for — an
-affine one through the stride vocabulary (`sid[v].freq_lo`, `b640F[v]`), the rest
-as a field of the group view whose per-copy addresses the state header lists once
-(`$62EE`/`$64DB`/`$66CA`). Two of the 60 columns keep their table read: no rule
-names them, so their addresses stay visible. Measured on the certified song 1
-(12,997 calls): the document is 757 lines and `tick()` 495 of them, against 794
-and 578 before the view pass.
+Columns the copies disagree on print as the operand they stand for: affine ones through
+the stride vocabulary (`sid[v].freq_lo`, `b640F[v]`), the rest as fields of the group
+view. Certified song 1 (12,997 calls): 757 document lines, `tick()` 495 of them, against
+794 and 578 before the view pass.
 
 ```
 program   4 procedures, 176 blocks, 295 statements, 42 regions
@@ -266,20 +201,11 @@ tick():                                  # $6234, 48,000 calls
     return ((voice[0].counter_2 | voice[1].counter_2) | voice[2].counter_2)
 ```
 
-The chain edge into the next copy is the loop's back edge, so where a voice ends
-its own note the arm reads `continue`, not `goto L6421_A5`, and the `v += 1; if v
-< 3` the merge laid down is the `for` header itself. What is left of `b0021[...]`
-under a constant index is what is not per-voice at all — the filter's own cells
-and `$74`, the voice number.
-
----
-
 ## 6. Certificates
 
 `docs/certificates/ghouls-songNN.json`, from `tools/tuneprog_certify.py … --song N
---until-period --seconds S --budget 45 --resume` (music: 2.4 × the HVSC length +
-20 s, covering the transient plus one loop; effects: 400 s). All 32: **0
-divergences, 0 envelope traps**.
+--until-period --seconds S --budget 45 --resume` (music: 2.4 × the HVSC length + 20 s;
+effects: 400 s). All 32: **0 divergences, 0 envelope traps**.
 
 | subtune | ticks | s | period | complete |
 |---|---|---|---|---|
@@ -288,107 +214,60 @@ divergences, 0 envelope traps**.
 | 12–20, 22–32 (effects) | 6–1,265 | 0.1–25 | 1 (617 for 22, 505 for 31) | yes |
 | 21 (effect) | 20,049 | 400 | none | no — horizon only |
 
-`ghouls-songs-all.json`: one tuneprog (1,442 sites, 75 regions, 1,567 statements)
-from the union of all 32 traces, verified subtune by subtune — 220,049 calls,
-0 divergences, 31 of 32 complete.
+`ghouls-songs-all.json`: one tuneprog (1,442 sites, 75 regions, 1,567 statements) over the
+union of all 32 traces, verified subtune by subtune — 220,049 calls, 0 divergences, 31 of
+32 complete.
 
-All 33 were re-run after the SID Wizard pass changed how far a jump table
-reaches ([prototype-sidwizard.md](prototype-sidwizard.md) §3): every certified
-result — ticks, periods, completeness, 0 divergences — is unchanged, and only the
-`ir_blocks` count moves, by the arms the new extent adds (and the ones below a
-table's base it no longer invents).
+Re-run of all 33 after the SID Wizard jump-table extent change
+([prototype-sidwizard.md](prototype-sidwizard.md) §3): ticks, periods, completeness and 0
+divergences unchanged; only `ir_blocks` moves, by the arms the new extent adds and the
+sub-base ones it no longer invents. Automatas (`automatas.json`, `-6581`, `-8580`) and
+Commando (`commando-song1/2`) stay byte-identical apart from the timestamp: 651 sites,
+102 regions, 1,070 statements, period 129,024 at call 149,024.
 
-Automatas (`automatas.json`, `-6581`, `-8580`) and Commando (`commando-song1/2`)
-were re-run on the new front end and come out *byte-identical* apart from the
-timestamp — same 651 sites, 102 regions, 1,070 statements, same period 129,024 at
-call 149,024 — so the committed files stand.
+## 7. Fold results and open items
 
----
+| scope | result |
+|---|---|
+| songs 1–11, 16, 26, 28, 30–32 | three voices fold |
+| songs 12–15, 17–19, 21–25, 27, 29 | two voices fold |
+| song 20 | a 4-copy family folds |
+| songs 28, 30 | the `$6941` triple folds as well |
+| song 14 (both voices play) | 199 blocks / 255 statements / 52 regions → 106 / 212 / 39; 458 printed lines → 309 |
+| songs 17–19, 25, 27, 29 (second voice silent) | fold *adds* ~6 % of statements and 20 % of blocks (new columns and `switch (v)`, no second body to remove); buys per-voice names (`copy0[0].timer` for `b0021[28]`) and a coverage vector |
+| songs 8–11 | refuses: *the entry row does not fold* at `$7316`, in the rip loader's block copy — in `init`, not the tick |
+| `--songs all` union | 1,553 statements / 520 blocks / 75 regions → 770 / 294 / 45; 5 of 481 merged statements unverified. One voice's stream read is class `chk` where the others' are `ram`, but the union over `v` of a folded access is one region with one envelope, so the class is the union's |
 
-## 7. What remains
+Ownership, not the chain rule, refused the last eight: an effect using one voice ends its
+copy in a tail the next copy's base sits inside, so an ordinary branch read as a
+cross-copy edge. A copy now holds only what its rows hold. Songs 17–19 printed their
+frequency tables as `T6D56`/`T6DB7`, not `sid_image`, because `facts.sid_image` read only
+constant-address SID stores while a merged access indexes the register file; the store's
+base names the register and the hundred-byte guard now counts elements observably reached,
+so 17–19 name `freq_lo`/`freq_hi` as song 1 does.
 
-Four of the six obstacles this section listed after #234 are gone. **The three
-voice copies are one body in the certified program** (§3, §4 row 6, §5): copy *j*
-executing a template row is that row executed with `v = j`, the unequally spaced
-SMC cells (`$62EE`/`$64DB`/`$66CA`) are one column of the family's per-copy table,
-the chain edge into the next voice is `v += 1`, and a row a voice never ran is the
-same statement with a zero in its coverage vector, marked where it prints.
+Open:
 
-- **A merged row a voice never ran is unverified.** It is the statement another
-  voice ran, at the address the correspondence says this voice names. Its coverage
-  entry is 0, the certificate counts it, and the printed program says so per
-  statement -- no lifted site, no second program, no count-0 block reachable only
-  through a former trap.
-- **What is left of the zero page is what is not per-voice.** `$21–$97` is still
-  one region -- init clears it with one loop -- and the fold reads its per-voice
-  cells through the family's columns, so what still prints as `b0021[...]` is the
-  filter's own accumulator and bounds and `$74`, the voice number. Since #244 the
-  columns print as the operands they stand for: 51 fields of one `voice[3]` view
-  whose per-copy addresses the state header lists once, `sid[v].freq_lo` where the
-  copies step by the SID's voice block, and `copies_6234[...]` for the two of 60
-  columns no rule names, whose addresses stay visible.
-- **The dispatch stays three dispatches over one set of arm bodies.** Each voice's
-  patched `JMP` holds *its own* target, and the three copies' handlers are
-  interleaved at unequal offsets, so no key pairs the arms by value: the merged
-  node is `switch (v)` into each voice's own switch, whose arms jump to the one
-  merged body per command. Every arm some voice sent is that body; an arm no voice
-  sent is `trap 'unverified'` as before. Keying on the table index the writers
-  read cannot help, because the cell is written a tick earlier and read as memory.
-  Since P1 those unsent arms are enumerated again: the merged writer names its
-  cell *and* its table base through per-copy columns, and a column is read-only,
-  so copy *j*'s writer is that expression with each column read replaced by its
-  *j*th entry. The three tables are parallel, so each starts at index 129 and
-  holds the 21 the bases are apart, and the `BPL` over the stream byte proves the
-  index is 128 or more: each voice's switch is exactly 21 arms with none
-  displaced, at 30 s and in the certified song 1 alike. At 30 s the merged program
-  goes from 7/12/8 arms to 21/21/21 (3 `trap 'unverified'` arms → 39) and the
-  unmerged one, whose extent over-reached, from 25/25/23 to 22/21/21; the
-  certificate gains 16 arm blocks, 254 → 270, and no statement.
-- **The `--songs all` union folds.** What blocked it in #234 -- one voice's stream
-  read is access class `chk` where the others' are `ram`, because over 32 subtunes
-  that voice reaches bytes outside the written set -- is not a question the fold
-  asks any more: the union over `v` of a folded access is *one* region with one
-  envelope, so the class is the union's. The union program goes from 1,553
-  statements in 520 blocks over 75 regions to 770 in 294 over 45, with 5 of its
-  481 merged statements unverified.
-- **Every subtune folds its voices, and all 32 certify.** At the certificate's own horizon
-  the three voices fold in songs 1–11, 16, 26, 28, 30–32; two voices fold in 12,
-  13, 15, 21, 22, 24 and, since P1, in 14, 17, 18, 19, 23, 25, 27 and 29; song 20
-  folds a 4-copy family, and 28 and 30 fold their `$6941` triple as well. What
-  refused the eight was not the chain rule but ownership: an effect that uses one
-  voice ends its copy in a tail the next copy's base sits inside, and ownership
-  gave that tail to the next copy, so an ordinary branch inside it read as an edge
-  crossing copies. A copy now holds only what its rows hold. What still refuses is
-  in `init`, not the tick: songs 8-11 carry *the entry row does not fold* at
-  `$7316`, the rip loader's own block copy. Subtune 14, whose two
-  voices both play, goes from 199 blocks and 255 statements over 52 regions to 106
-  and 212 over 39 (458 printed lines to 309); where the second voice is silent
-  (17, 18, 19, 25, 27, 29) the fold instead *adds* about 6 % of statements and
-  20 % of blocks -- the columns and the `switch (v)` are new, and there was no
-  second body to remove -- and buys the per-voice cells their names
-  (`copy0[0].timer` for `b0021[28]`) and a coverage vector that says the silent
-  voice's code is this code. A merged access unites its regions, so a role one
-  voice's access carried can move with them: in 17–19 the frequency tables printed
-  as `T6D56`/`T6DB7`, not as `sid_image`. *Fixed in Q1b, and the union was not the
-  cause*: `facts.sid_image` read only the SID stores whose address is a constant,
-  and a merged access indexes the register file, so every per-voice store fell
-  out of the role plane. The store's own base still names the register, and the
-  guard that keeps a hundred-byte block from being called one register's image now
-  counts the elements each access observably reached. 17–19 name `freq_lo`/
-  `freq_hi` as song 1 does.
-- **Subtune 21** is the one subtune with no state repeat inside 400 s: two voices
-  keep a portamento and a trill moving (`$66/$67` note index, `$75/$78` frequency
-  shadow, `$648B` trill phase) and the write list has no period either (317
-  distinct lists over 20,049 calls). Certified to the horizon.
-- **16-bit views** do not reach the frequency shadow (`$75/$78`) or the pulse
-  width (`$3F/$40`), and the filter's `hi:lo` to `$D416` shift chain prints as its
-  shifts. *Measured in Q1b, which refuted the stated cause and refused the row.*
-  The pulse width **is** one carry chain in one block (`pw_lo += t`,
-  `pw_hi += carry`); what refuses it is that `word._pairs` reads the two addresses
-  with `addr_split`, while the merged body addresses both halves through per-copy
-  **columns**. The frequency shadow is not a chain at all: its borrow is carried
-  by a *branch* (`x16 = freq_hi` in one arm, `freq_hi - 1` in the other), which
-  wants if-conversion, not a pair rule. And `names.u16` is keyed by
-  `(lo region, hi region)` while Follin's zero page is **one** region, so the
-  naming plane cannot express a pair of its cells at all — keying the u16 view by
-  cell is the prerequisite, and it moves every certificate's u16 names.
+- **The dispatch stays three dispatches over one set of arm bodies**: each voice's patched
+  `JMP` holds its own target and the handlers interleave at unequal offsets, so no key
+  pairs arms by value. Unsent arms are still enumerated — the merged writer names its cell
+  and its table base through read-only columns, so copy *j*'s writer is that expression
+  with each column read replaced by its *j*th entry; the three tables are parallel, each
+  starting at index 129 and holding the 21 the bases are apart, and the `BPL` over the
+  stream byte proves the index ≥ 128. Exactly 21 arms per voice, none displaced, at 30 s
+  and in certified song 1 alike; at 30 s merged goes 7/12/8 → 21/21/21 arms (3
+  `trap 'unverified'` → 39), unmerged 25/25/23 → 22/21/21, certificate +16 arm blocks
+  (254 → 270) and no statement.
+- **Subtune 21** has no state repeat inside 400 s: two voices keep a portamento and a
+  trill moving (`$66/$67` note index, `$75/$78` frequency shadow, `$648B` trill phase) and
+  the write list has no period either (317 distinct lists over 20,049 calls). Certified to
+  the horizon.
+- **16-bit views** miss the frequency shadow (`$75/$78`) and the pulse width (`$3F/$40`);
+  the filter's `hi:lo` → `$D416` chain prints as its shifts. The pulse width *is* one carry
+  chain in one block (`pw_lo += t`, `pw_hi += carry`), refused because `word._pairs` reads
+  the two addresses with `addr_split` while the merged body addresses both halves through
+  per-copy columns. The frequency shadow is no chain: its borrow is carried by a branch
+  (`x16 = freq_hi` in one arm, `freq_hi - 1` in the other), which wants if-conversion. And
+  `names.u16` is keyed by `(lo region, hi region)` while Follin's zero page is one region,
+  so keying the u16 view by cell is the prerequisite — and it moves every certificate's
+  u16 names.

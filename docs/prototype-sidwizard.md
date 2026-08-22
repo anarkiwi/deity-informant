@@ -1,26 +1,25 @@
 # Prototype: the tuneprog decompiler on SID Wizard — results
 
-The fourth exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md),
-after defMON's *Automatas* ([prototype-automatas.md](prototype-automatas.md)),
-Follin's *Ghouls'n'Ghosts* ([prototype-follin.md](prototype-follin.md)) and
-GoatTracker 2 ([prototype-goattracker.md](prototype-goattracker.md)):
-`MUSICIANS/H/Hermit/Emomyst.sid` (SW 1.6) and
-`MUSICIANS/H/Hermit/End_of_the_World.sid` (SW 1.9), two exports of Hermit's SID
-Wizard player (anatomy [§3.4](playroutine-anatomy.md)). Both carry a **complete**
-certificate: every SID write of every call from init to the first state repeat,
-plus the periodicity witness.
+Fourth exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+*Automatas* ([prototype-automatas.md](prototype-automatas.md)), *Ghouls'n'Ghosts*
+([prototype-follin.md](prototype-follin.md)) and GoatTracker 2
+([prototype-goattracker.md](prototype-goattracker.md)): `MUSICIANS/H/Hermit/Emomyst.sid`
+(SW 1.6) and `MUSICIANS/H/Hermit/End_of_the_World.sid` (SW 1.9), two exports of Hermit's
+player (anatomy [§3.4](playroutine-anatomy.md)). Both carry a **complete** certificate:
+every SID write of every call from init to the first state repeat, plus the periodicity
+witness.
 
-## 1. Why SID Wizard, and what it adds
+## 1. What SID Wizard stresses
 
 | design mechanism | how SID Wizard stresses it |
 |---|---|
-| SMC as relocation (S2/S4) | the exporter emits a *position-independent* music blob, so `init` rewrites 30–36 **address operands** through a data-driven loop (`DataPtr` × `PtrValu`, `operand := blob[slot] + base + addend`) written through `(zp),Y`. Every table read in the tick is an instruction the init patched |
-| SMC as a variable (S2/S3) | 20–25 play-written immediates: volume, filter band/resonance/route/cutoff, keyboard tracking, the filter's owner voice, its table index and its sweep counter (`INC $15DD` — a read-modify-write of an operand byte) |
-| computed control (S2) | **three** dispatchers in three encodings: two always-taken branches whose *offset byte* comes from a table (`CLC; LDA T,X; STA INDEXJ+1; BCC *+2`), and a `JMP` whose operand comes from a 31-entry word table |
-| voice loop (S5) | `LDX #14; JSR DOTRACK; LDX #7; JSR; LDX #0; JSR` — a run of three calls whose only difference is a constant that steps *down* |
-| the stack as data (S4) | `PHA`/`PLA` for the hard-restart tick number and the ADSR nibble, `PHP`/`PLP` to carry the 11-bit cutoff's fraction overflow, and (1.9) a zero-page save around the whole play call |
+| SMC as relocation (S2/S4) | position-independent blob: `init` rewrites 30–36 **address operands** through a data-driven loop (`DataPtr` × `PtrValu`, `operand := blob[slot] + base + addend`) via `(zp),Y`; every table read in the tick is an init-patched instruction |
+| SMC as a variable (S2/S3) | 20–25 play-written immediates: volume, filter band/resonance/route/cutoff, keyboard tracking, the filter's owner voice, its table index and sweep counter (`INC $15DD`, read-modify-write of an operand byte) |
+| computed control (S2) | **three** dispatchers, three encodings: two always-taken branches whose offset byte comes from a table (`CLC; LDA T,X; STA INDEXJ+1; BCC *+2`), and a `JMP` whose operand comes from a 31-entry word table |
+| voice loop (S5) | `LDX #14; JSR DOTRACK; LDX #7; JSR; LDX #0; JSR` — three calls differing by a constant that steps *down* |
+| the stack as data (S4) | `PHA`/`PLA` for the hard-restart tick number and the ADSR nibble, `PHP`/`PLP` to carry the 11-bit cutoff's fraction overflow, (1.9) a zero-page save around the play call |
 | flag argument (§6.2) | `HARDRST` takes the tick number in `A` and ANDs it with the instrument's control byte: the tick *is* the bit mask |
-| phase (S5) | `SPDCNT` counted 0,1,2,…tempo−1 with a `SEC; SBC TEMPOTBL−1,Y; BEQ; BVC` tempo test — the V flag as a value |
+| phase (S5) | `SPDCNT` counts 0..tempo−1 with a `SEC; SBC TEMPOTBL−1,Y; BEQ; BVC` test — the V flag as a value |
 | dead-but-present code (§7) | Emomyst carries SFX and a slowdown dither whose first frame returns without playing; 1.9 carries a multispeed entry nothing calls |
 
 ## 2. Ground truth (anatomy §3.4 + measurement)
@@ -31,55 +30,53 @@ plus the periodicity witness.
 | build | SW 1.6 SWP export, SLOWDOWN + SFX, ZEROPAGESAVE off ($02/$03) | SW 1.9, SUBTUNES + MULTISPEED + FILTSHIFT, ZEROPAGESAVE ($FE/$FF) |
 | cadence | 50 Hz video, 19,656 cycles/tick, one entry | same |
 | executed | 859 sites | 821 |
-| SMC | 79 cells: 25 play-written, 54 written by init only | 77: 20 and 57 |
-| song loop | orderlists end `FF 02`, so the tune repeats | `FF 00` |
+| SMC | 79 cells: 25 play-written, 54 init-written | 77: 20 and 57 |
+| song loop | orderlists end `FF 02` | `FF 00` |
 
-## 3. What broke, and the generic fix
+## 3. Symptoms and generic fixes
 
-Everything below is a *mechanism*, verified by hermetic snippet tests
-(`tests/tuneprog/test_frame.py`, `test_jumptab.py`); no SID Wizard special case
-exists anywhere in the pipeline.
+Verified by hermetic snippet tests (`tests/tuneprog/test_frame.py`, `test_jumptab.py`); no
+SID Wizard special case in the pipeline.
 
 | symptom | generic fix | where |
 |---|---|---|
-| `tick(sp, i, d)`, `row_apply(x, sp, i, d)`: the stack pointer and two flags threaded through every signature, so the three `DOTRACK` calls were three different shapes and never folded | a procedure's stack pointer is its entry value plus its own pushes and pops, so every stack access names a **frame slot** and aliasing is exact; a push and the pops that read it are one value (two pushes one pop can read are one value, the phi a branch left), and the slot's write goes unless something the procedure calls can read a frame that is not its own. Nothing then reads the stack pointer | `frame.py` (new) |
-| the flag byte survived even so: `PLP` restores `C` out of the byte `PHP` packed, which reads `I`, `D`, `V`, `N`, `Z` | a value read one bit at a time gains that bit **where it is defined**, so each flag comes back as the value that push held and the packed byte is read by nothing | `idioms.bitfields` |
-| the value a `PLA` produced was read *after* the `JSR` frame that overwrote its slot | a JSR frame is memory: a raw store clobbers the slots it covers | `inline._clobbers` |
-| `ptr = T2478[i] + b10A2; ptr[1] = T248D[i] + b10A3 + carry(…)` | a 16-bit pair may live in **one** region (a zero-page pointer, a per-voice accumulator inside one 105-byte block); a word operand read from a const table or an init-only cell is named by it, not called a step | `word._plan`, `word._basename` |
-| the two branch dispatchers were bare switches over their observed targets (3 and 6 arms of 8 and 14) | a patched *branch* is a switch like a patched `JMP`: its arms are `site + 2 + sext(table[i])` | `jumptab._cell` |
-| the jump dispatcher had 2 arms of 31: the table's other bytes were outside the region any accessor reached | a table runs from its own bytes out to the nearest instruction or foreign access (from the exact address sets, so an interleaved word table grows past the column it alternates with), stepped by the layout its two halves imply, clamped to what an unsigned index register can reach; an entry addressing a byte some access reads is data, not a target | `jumptab.spans`, `jumptab._domain` |
-| `FREQTBH` printed as a SID shadow flushed to `$D401` (1.6 reads it with the *voice offset*, which looks like an image copy) | a table is read, never a shadow: only a `state` region takes the image role | `recover.image_copy` |
-| `sid.reg[5 + x]` where GoatTracker prints `sid[v].ad` — the voice index also reaches a 14-byte constant pair | an index that walks records of several sizes steps by their **gcd** | `facts.scales` |
-| `(($1953 + T1934[a]) - (T1934[a] << 1))` — the printer dropped the `& $80` of a sign extension | `x & $80` prints | `printer.expr` |
+| `tick(sp, i, d)`, `row_apply(x, sp, i, d)`: `sp` and two flags in every signature, so the three `DOTRACK` calls were three shapes | a stack pointer is its entry value plus the procedure's own pushes and pops, so each access names an exactly-aliased **frame slot**; a push and the pops reading it are one value, and the slot's write goes unless a callee can read a foreign frame | `frame.py` (new) |
+| the flag byte survived: `PLP` restores `C` from the byte `PHP` packed, which reads `I`, `D`, `V`, `N`, `Z` | a value read one bit at a time gains that bit **where it is defined**, so nothing reads the packed byte | `idioms.bitfields` |
+| the `PLA` value was read after the `JSR` frame overwrote its slot | a JSR frame is memory: a raw store clobbers the slots it covers | `inline._clobbers` |
+| `ptr = T2478[i] + b10A2; ptr[1] = T248D[i] + b10A3 + carry(…)` | a 16-bit pair may live in **one** region, and a word operand read from a const table or init-only cell is named by it, not called a step | `word._plan`, `word._basename` |
+| the two branch dispatchers were bare switches over observed targets (3 and 6 arms of 8 and 14) | a patched *branch* is a switch like a patched `JMP`: arms are `site + 2 + sext(table[i])` | `jumptab._cell` |
+| the jump dispatcher had 2 arms of 31 | a table runs from its own bytes to the nearest instruction or foreign access, stepped by the layout its halves imply, clamped to an unsigned index's reach; an entry addressing a byte some access reads is data, not a target | `jumptab.spans`, `jumptab._domain` |
+| `FREQTBH` printed as a SID shadow flushed to `$D401` (1.6 reads it with the voice offset) | a table is read, never a shadow: only a `state` region takes the image role | `recover.image_copy` |
+| `sid.reg[5 + x]` where GoatTracker prints `sid[v].ad`; the voice index also reaches a 14-byte constant pair | an index walking records of several sizes steps by their **gcd** | `facts.scales` |
+| `(($1953 + T1934[a]) - (T1934[a] << 1))` — the `& $80` of a sign extension dropped | `x & $80` prints | `printer.expr` |
 | `T19F2[(((a >> 1) >> 1) >> 1) >> 1]`, `row_apply(x=($E + (v * -7)))` | a shift chain is one shift; a run whose constants step down prints as a subtraction | `idioms.fold`, `unroll._Ctx.hole` |
 
-The relocation itself needed nothing new: the operand-cell rule and the
-init-only fold arrived with Follin (design S2), and here they carry 31 table
-reads per tick.
+The relocation needed nothing new: the operand-cell rule and the init-only fold arrived with
+Follin (design S2) and here carry 31 table reads per tick.
 
-## 4. Results (measured)
+## 4. Results
 
-Certificates: `docs/certificates/sw-emomyst.json`, `sw-end-of-the-world.json`,
-from `tools/tuneprog_certify.py TUNE --out DIR --until-period --resume`; printed
-forms in each output directory's `tuneprog.md`. The HVSC tests
-(`tests/tuneprog/test_hvsc_sidwizard.py`) assert the rows below at 30 s / 20 s.
+Certificates `docs/certificates/sw-emomyst.json`, `sw-end-of-the-world.json` from
+`tools/tuneprog_certify.py TUNE --out DIR --until-period --resume`; printed forms in each
+output directory's `tuneprog.md`; `tests/tuneprog/test_hvsc_sidwizard.py` asserts the rows
+below at 30 s / 20 s.
 
 | id | claim | Emomyst | End of the World |
 |---|---|---|---|
-| W1 | per-call equivalence from init to the first state repeat | **0** divergences over 8,084 calls, 0 envelope traps | **0** over 14,465 |
-| W2 | periodicity witness, `complete: true` | period **6,120** calls (122.4 s), first repeat at call 8,083 | **7,688** (153.8 s = the HVSC 2:33), at 14,464 |
+| W1 | per-call equivalence, init to first state repeat | **0** divergences over 8,084 calls, 0 envelope traps | **0** over 14,465 |
+| W2 | periodicity witness, `complete: true` | period **6,120** calls (122.4 s), first repeat at 8,083 | **7,688** (153.8 s = the HVSC 2:33), at 14,464 |
 | W3 | front end | 859 sites, 96 regions, 15 procedures, 365 blocks, 1,054 statements | 821, 94, 16, 361, 1,050 |
-| W4 | init-time relocation | 54 init-only cells over **39** instructions, **31** of them in the tick: every one a constant there, and none folded inside `init` (17 cells still load there) | 57 cells, 41 sites, 25 in the tick; 25 loads in `init` |
-| W5 | the fixup loop stays a loop | one `while True:` over `DataPtr`/`PtrValu` with 5 stores through `(zp),Y`, not 30 unrolled stores | same |
+| W4 | init-time relocation | 54 init-only cells over **39** instructions, **31** in the tick: constant there, none folded inside `init` (17 cells still load there) | 57 cells, 41 sites, 25 in the tick; 25 loads in `init` |
+| W5 | the fixup loop stays a loop | one `while True:` over `DataPtr`/`PtrValu`, 5 stores through `(zp),Y`, not 30 unrolled | same |
 | W6 | runtime blob base | **6** pointer sets print `ptr = T2478[i] + base`, one 16-bit view each over the word table and over `SWP_OFFSET` | 6 |
-| W7 | patched immediates | **25** play-written cells, each a load at its own instruction; `res_route`, `res_route_or`, `mode_vol`, `cutoff_hi`, `cutoff_lo` named by the register they reach, `timer += 1` for `INC $15DD` | 20 |
-| W8 | branch dispatch | `switch (($1953 + T1934[a]) - ((T1934[a] & $80) << 1))`: NOTEFXTBL's 8 entries, **7** distinct targets (4 unverified); SMALLFXTBL's 14, **14** arms (7 unverified) | 15 and 16 arms |
-| W9 | jump dispatch | `switch b19D0`: BIGFXTABLE's 31 words, **25** distinct in-band targets (21 unverified; six dead handlers share one `RTS`) | 25 |
+| W7 | patched immediates | **25** play-written cells, each a load at its own instruction; `res_route`, `res_route_or`, `mode_vol`, `cutoff_hi`, `cutoff_lo` named by the register reached, `timer += 1` for `INC $15DD` | 20 |
+| W8 | branch dispatch | `switch (($1953 + T1934[a]) - ((T1934[a] & $80) << 1))`: NOTEFXTBL 8 entries, **7** distinct targets (4 unverified); SMALLFXTBL 14, **14** arms (7 unverified) | 15 and 16 arms |
+| W9 | jump dispatch | `switch b19D0`: BIGFXTABLE 31 words, **25** distinct in-band targets (21 unverified; six dead handlers share one `RTS`) | 25 |
 | W10 | the voice loop | `for v in 0, 1, 2: row_apply(x=($E - (v * 7)))` — the three `LDX #n; JSR DOTRACK` print once | same |
-| W11 | the slowdown gate | the first play call writes **nothing**; the dither reload folds to `phase = $FF` | absent (no SLOWDOWN in 1.9) |
-| W12 | the stack | **0** `sp`, **10** forwarded frame slots; `PHP`/`PLP` leaves only the carry | **0** `sp`, **12** slots; the zero-page save prints `saved = ptr … ptr = saved` around the tick |
-| W13 | structuring | **0** `goto`, 46 `trap 'untaken'`, 32 `trap 'unverified'` in 1,419 printed lines | 0 `goto`, 51, 46 in 1,394 |
-| W14 | cost | trace 12,000 calls in 32 s CPU, verify 8,084 in 0.9 s (8,617 calls/s): **one** invocation inside the 45 s budget | trace 16,000 in 33 s, verify 14,465 in 1.3 s |
+| W11 | the slowdown gate | first play call writes **nothing**; the dither reload folds to `phase = $FF` | absent (no SLOWDOWN in 1.9) |
+| W12 | the stack | **0** `sp`, **10** forwarded frame slots; `PHP`/`PLP` leaves only the carry | **0** `sp`, **12** slots; zero-page save prints `saved = ptr … ptr = saved` around the tick |
+| W13 | structuring | **0** `goto`, 46 `trap 'untaken'`, 32 `trap 'unverified'` in 1,419 printed lines | 0, 51, 46 in 1,394 |
+| W14 | cost | trace 12,000 calls 32 s CPU, verify 8,084 in 0.9 s (8,617 calls/s): **one** invocation inside the 45 s budget | trace 16,000 in 33 s, verify 14,465 in 1.3 s |
 | W15 | genericity | Automatas, Commando, all 32 Ghouls'n'Ghosts subtunes and both GoatTracker tunes certify with the same code (31 `hvsc` tests) | — |
 
 ## 5. The printed tuneprog (verbatim, `...` elides)
@@ -171,35 +168,24 @@ p_1337(a, x):                            # $1337 HARDRST, 4,776 calls
 
 ## 6. What remains
 
-- **`b1024` prints as fifteen records now.** `init` zeroes VARIABLES with one
-  loop, so the access relation still joins all five bunches into one region; the
-  tick's `abs,X` with X ∈ {0,7,14} is the stride `views.field_split` splits it by,
-  so `b1024[$16 + x]` is `rec[x/7 + 3].timer_2` -- bunch 1, voice x/7 -- and the
-  roles the cells carry (`timer`, `acc`, `cursor`) name five of the seven fields.
-  What is still missing is the *word*: SPDCNT is `timer_2` because a timer is what
-  the trace shows it to be.
-- **Names are role-derived.** `timer` is CWEPCNT, `freq_idx` CKBDTRK, `b1464`
-  TABLRST: the trace shows the shapes, not the words. A family dictionary keyed
-  on the SID Wizard signature would name them from `player.asm`.
-- **The two branch dispatchers print their sign extension** (*fixed in Q1b*).
-  `switch (($1A15 + saved17) - ((saved17 & $80) << 1))` is now
-  `switch ($1A15 + sext(saved17))`: subtracting `$100` exactly when bit 7 is set
-  is what sign extension *is*, so the rewrite is an identity over eight bits, not
-  an inference. It lives in the printer (`idioms.sext_of`, `pseudocode.expr`);
-  `idioms.fold`, which S4 runs, is untouched, so the certified IR does not move.
-- **A procedure's return value does not print.** `a8 = p_19DB()` reads a value
-  whose procedure ends in a bare `return`: `ir.retval` only recovers the tick's
-  own return, so a callee that computes a byte for its caller shows an empty
-  body.
-- **46 (51) `trap 'untaken'` arms** are branch directions these songs never take
-  (gate-off pointers, `$FE` table jumps, HR type `$18`, the SFX suppression) and
-  **32 (46) `trap 'unverified'`** are table entries no row selected. Both are the
-  trace-closed product, not a gap.
-- **The tempo test prints as one overflow** (*Q1b; the `if (tempo & $80)` form is
-  refuted*). `BVC` after `SBC` is the V flag as a value, and
-  `((A ^ M) & (A ^ (A - M))) < 0` is now `overflow(A - M)` — an exact naming of
-  the flag, in the same printed vocabulary as `carry(x + y)`. It does **not**
-  reduce to `tempo & $80`: V is `sign(A^M) & sign(A^R)`, which collapses to one
-  operand's sign bit only given a range proof on both operands that no evidence
-  in the trace supplies. Reading the player's intent off the SID Wizard source is
-  a family dictionary's job, not a decompiler's.
+- **`b1024` prints as fifteen records.** `init` zeroes VARIABLES in one loop, so the access
+  relation joins all five bunches into one region; the tick's `abs,X` with X ∈ {0,7,14} is
+  the stride `views.field_split` splits by, so `b1024[$16 + x]` is `rec[x/7 + 3].timer_2`
+  (bunch 1, voice x/7). Roles (`timer`, `acc`, `cursor`) name five of the seven fields.
+- **Names are role-derived.** `timer` is CWEPCNT, `freq_idx` CKBDTRK, `b1464` TABLRST. A
+  family dictionary keyed on the SID Wizard signature would name them from `player.asm`.
+- **The branch dispatchers print `switch ($1A15 + sext(saved17))`** (corrected from
+  `switch (($1A15 + saved17) - ((saved17 & $80) << 1))`): subtracting `$100` exactly when
+  bit 7 is set is sign extension, an identity over eight bits. It lives in the printer
+  (`idioms.sext_of`, `pseudocode.expr`); `idioms.fold`, which S4 runs, is untouched, so the
+  certified IR does not move.
+- **A procedure's return value does not print.** `a8 = p_19DB()` reads a value whose
+  procedure ends in a bare `return`: `ir.retval` recovers only the tick's own return.
+- **46 (51) `trap 'untaken'` arms** are branch directions these songs never take (gate-off
+  pointers, `$FE` table jumps, HR type `$18`, the SFX suppression); **32 (46)
+  `trap 'unverified'`** are table entries no row selected. Both are trace-closed.
+- **The tempo test prints `overflow(A - M)`** (corrected from
+  `((A ^ M) & (A ^ (A - M))) < 0`; the `if (tempo & $80)` form is refuted). `BVC` after `SBC`
+  is the V flag as a value, in the same vocabulary as `carry(x + y)`. V is
+  `sign(A^M) & sign(A^R)`, which collapses to one operand's sign bit only given a range proof
+  on both operands that the trace does not supply.
