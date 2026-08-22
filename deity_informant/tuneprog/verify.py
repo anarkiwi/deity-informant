@@ -40,7 +40,8 @@ STATE_VERSION = 2  # resume-state layout; an older pickle restarts rather than r
 
 
 def _nmis(log, calls):
-    """``([(writes made, handler)], per-call bounds)`` of the traced preemption schedule."""
+    """``(rows, per-call bounds)`` of the traced preemption schedule; a row is
+    ``(stores made, handler, SP, status, interrupted pc, A, X, Y)``."""
     if not log or log["call"].size == 0:
         return [], np.zeros(calls + 1, np.int64)
     call = np.asarray(log["call"], dtype=np.int64)
