@@ -6,12 +6,11 @@ patched offset is zero, and a ``JMP (ind)`` whose own operand is the patched one
 """
 
 from deity_informant.tuneprog import pipeline
+from deity_informant.tuneprog.build import build_ir
 from deity_informant.tuneprog.ir import Const, Let, Load, Switch
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
-from deity_informant.tuneprog.build import build_ir
-
 from _prog import PLAY, front, tuneprog
 
 COPY = """
