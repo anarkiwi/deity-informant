@@ -129,31 +129,47 @@ class Separable:
     wrote. Cells carry the inter-store epoch a handler stamped them in, so a load
     compares one stamp; a load that matches the live epoch is the property failing
     and the tune is refused rather than certified on a replay that reorders it.
+
+    It also checks the register half of the same contract: the replay restores the
+    interrupted A/X/Y after a handler and the emitted play routine holds them as
+    SSA values no handler can reach, so a handler that returns them moved is
+    refused here rather than mis-replayed. An NMI the host's idle time took
+    interrupts no routine of the tune, and the next tick re-reads its own entry
+    registers, so only an in-tick NMI carries the property.
     """
 
-    __slots__ = ("mark", "epoch", "hot", "dirty", "sp", "inside", "handler")
+    __slots__ = ("mark", "epoch", "hot", "dirty", "sp", "inside", "handler", "regs", "in_tick")
 
     def __init__(self):
         self.mark = np.zeros(0x10000, np.int64)
         self.epoch, self.hot, self.dirty = 1, 0, 0
         self.inside, self.sp, self.handler = False, 0, 0
+        self.regs, self.in_tick = (), False
 
     def begin(self):
         """A new tick: the window the previous one left open ended when it returned."""
         self.epoch += 1
         self.hot = self.dirty = 0
 
-    def enter(self, sp, handler):
-        """Take an NMI at stack pointer ``sp``; a handler's own loads are in no window."""
+    def enter(self, reg, handler, in_tick=True):
+        """Take an NMI on registers ``reg``; a handler's own loads are in no window."""
         if not self.inside:
-            self.inside, self.sp = True, sp
+            self.inside, self.sp = True, reg[3]
+            self.regs, self.in_tick = tuple(reg[:3]), in_tick
         self.hot, self.handler = 0, handler
 
-    def leave(self, sp):
-        """The outermost ``RTI``: the window the deferred replay reorders opens here."""
-        if self.inside and sp >= self.sp:
-            self.inside = False
-            self.hot = self.epoch if self.dirty else 0
+    def leave(self, reg, pc=0):
+        """The outermost ``RTI``: the reordered window opens, and A/X/Y must be back."""
+        if not (self.inside and reg[3] >= self.sp):
+            return
+        self.inside = False
+        self.hot = self.epoch if self.dirty else 0
+        if self.in_tick and tuple(reg[:3]) != self.regs:
+            raise Refusal(
+                "nmi clobbers registers",
+                "nmi $%04X returns at $%04X with A/X/Y %s, not the %s it interrupted"
+                % (self.handler, pc, tuple(reg[:3]), self.regs),
+            )
 
     def stored(self, addr, sz):
         """A handler's store stamps the cell; the interrupted routine's closes the window.

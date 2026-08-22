@@ -249,6 +249,58 @@ def test_cinv_with_the_kernal_banked_out_refuses():
     assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
 
 
+RAW_VEC = ("LDA #$35", "STA $01", "LDA #$00", "STA $FFFE", "LDA #$20", "STA $FFFF")
+CINV = ("LDA #$00", "STA $0314", "LDA #$20", "STA $0315")
+RASTER = ("LDA #$01", "STA $D01A")
+
+
+def test_an_unsettled_port_takes_the_installed_vector_over_the_live_one():
+    """Before init has had the port, the dispatch is a guess, not grounds to refuse."""
+    mem = bytearray(0x10000)
+    mem[0], mem[1] = 0x2F, 0x37  # the KERNAL mapped, and only $FFFE installed
+    mem[0xFFFE], mem[0xFFFF] = 0x00, 0x20
+    assert machine.vector_gate(mem, {0xFFFE, 0xFFFF}, settled=False) == (0xFFFE, False)
+    with pytest.raises(Refusal) as e:
+        machine.vector_gate(mem, {0xFFFE, 0xFFFF})
+    assert e.value.reason == "vector banked out"
+    mem[1] = 0x35  # the KERNAL banked out, and only CINV installed
+    mem[0x0314], mem[0x0315] = 0x00, 0x20
+    assert machine.vector_gate(mem, {0x0314, 0x0315}, settled=False) == (0x0314, True)
+
+
+def _settled(*init_lines):
+    """``(the guessed entry, the entry the traced machine settles on)``."""
+    pytest.importorskip("pysidtracker")
+    from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
+
+    blocks = {0x1000: asm(0x1000, *init_lines, "RTS"), 0x2000: asm(0x2000, "RTI")}
+    img, sched = find_entries(psid(blocks, 0x1000, 0x0000, speed=1))
+    return sched[0], Tracer(img, sched[0]).run_init().entry
+
+
+def test_the_settle_refuses_a_vector_the_port_init_left_forbids():
+    """Guessing over the pre-init port defers the verdict; it does not drop it."""
+    guess, _ = _settled(*CINV)
+    assert guess.kernal is True and guess.addr == 0x2000
+    with pytest.raises(Refusal) as e:
+        _settled(*CINV, "LDA #$35", "STA $01")
+    assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
+
+
+def test_a_raster_irq_only_the_traced_machine_sees_settles_the_cadence():
+    """``$D01A`` with no ``$D012`` write is invisible to the init trace the guess reads."""
+    before, after = _settled(*RAW_VEC, *RASTER)
+    assert before.source.endswith("_host_cia")
+    assert after.source == "pal_video" and after.cycles_per_tick == machine.FRAME["pal"][0]
+    assert after.cycles_per_tick != before.cycles_per_tick
+
+
+def test_a_tune_that_arms_no_interrupt_of_its_own_keeps_the_host_s():
+    before, after = _settled(*RAW_VEC)
+    assert before.source.endswith("_host_cia")
+    assert after.source == before.source and after.cycles_per_tick == before.cycles_per_tick
+
+
 def test_init_runner_returns_on_rts_and_detects_idle():
     img = sid_image({0x1000: asm(0x1000, "LDA #$05", "STA $D400", "RTS")}, 0x1000, 0x1000)
     vm = PcodeVM(img.mem)

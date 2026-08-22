@@ -227,7 +227,7 @@ class Tracer:
         sp, status = vm.reg[3], vm._status()
         if vm.sep is None:
             vm.sep = N.Separable()
-        vm.sep.enter(sp, handler)
+        vm.sep.enter(vm.reg, handler, index != IDLE_INDEX)
         pc &= 0xFFFF
         vm._push(pc >> 8)
         vm._push(pc & 0xFF)

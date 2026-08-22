@@ -31,6 +31,7 @@ VEC_RAW = ("LDA #$00", "STA $FFFA", "LDA #$12", "STA $FFFB")  # $FFFA -> HANDLER
 VEC_KERNAL = ("LDA #$00", "STA $0318", "LDA #$12", "STA $0319")
 ARM_A = ("LDA #$81", "STA $DD0D", "LDA #$11", "STA $DD0E")  # ICR TA, force load + start
 ACK = ("BIT $DD0D",)
+SAVE, LOAD = ("PHA",), ("PLA",)  # a handler gives A back: it is a procedure, not a jump
 
 
 def _init(*lines, latch=99, vec=VEC_RAW, bank=RAW, tail=("RTS",)):
@@ -48,7 +49,10 @@ def _init(*lines, latch=99, vec=VEC_RAW, bank=RAW, tail=("RTS",)):
     )
 
 
-def _run(init_lines=ARM_A, handler=("LDA #$0F", "STA $D418", *ACK, "RTI"), calls=4, **kw):
+HANDLER_BODY = (*SAVE, "LDA #$0F", "STA $D418", *ACK, *LOAD, "RTI")
+
+
+def _run(init_lines=ARM_A, handler=HANDLER_BODY, calls=4, **kw):
     """Trace a machine whose NMI writes ``$D418`` and whose play writes ``$D400``."""
     latch = kw.pop("latch", 99)
     vec = kw.pop("vec", VEC_RAW)
@@ -107,7 +111,7 @@ def test_the_write_log_interleaves_both_entries():
 
 def test_a_handler_that_never_acknowledges_takes_exactly_one_nmi():
     """The 6510's NMI is the line's edge and the chip holds it until an ICR read."""
-    trace, _tr = _run(handler=("LDA #$0F", "STA $D418", "RTI"), calls=8)
+    trace, _tr = _run(handler=(*SAVE, "LDA #$0F", "STA $D418", *LOAD, "RTI"), calls=8)
     assert trace.meta["nmis"] == 1
 
 
@@ -193,8 +197,8 @@ def test_arming_the_nmi_during_play_starts_the_schedule_at_that_tick():
 
 def test_a_vector_the_handlers_repoint_is_one_schedule_with_several_entries():
     """A two-phase handler chain: each address the vector takes is an entry of its own."""
-    move = ("LDA #$13", "STA $FFFB", "LDA #$0F", "STA $D418", *ACK, "RTI")
-    back = ("LDA #$12", "STA $FFFB", "LDA #$0E", "STA $D418", *ACK, "RTI")
+    move = (*SAVE, "LDA #$13", "STA $FFFB", "LDA #$0F", "STA $D418", *ACK, *LOAD, "RTI")
+    back = (*SAVE, "LDA #$12", "STA $FFFB", "LDA #$0E", "STA $D418", *ACK, *LOAD, "RTI")
     trace, _tr = _run(handler=move, second={0x1300: back})
     assert [e["addr"] for e in trace.meta["schedule"][1:]] == [HANDLER, 0x1300]
     assert set(trace.nmilog["addr"].tolist()) == {HANDLER, 0x1300}
@@ -309,7 +313,7 @@ SEP_INIT = ("LDA #$00", "STA $2000", "STA $2002", *ARM_A)
 
 def _shared(cell):
     """A handler that increments ``cell`` and mixes it into ``$D418``."""
-    return ("INC $%04X" % cell, "LDA $%04X" % cell, "STA $D418", *ACK, "RTI")
+    return (*SAVE, "INC $%04X" % cell, "LDA $%04X" % cell, "STA $D418", *ACK, *LOAD, "RTI")
 
 
 def test_a_load_the_replay_would_move_ahead_of_the_handler_is_refused():
@@ -333,9 +337,43 @@ def test_a_handler_writing_a_cell_the_play_routine_never_reads_certifies():
     assert "nmi store separability" in cert["compared"]
 
 
+# ---- the register half of the same contract ----------------------------------
+CLOBBERS = ("LDA #$0F", "STA $D418", *ACK, "RTI")
+# the JCH shape: the entry register is saved into the operand of the load that gives it back
+OPERANDS = ("STA give+1", "LDA #$0F", "STA $D418", *ACK, "give: LDA #$00", "RTI")
+
+
+def test_a_handler_that_does_not_give_the_registers_back_is_refused():
+    """The replay restores A/X/Y after a handler, so a handler that moves them is refused.
+
+    Nothing else could catch it: the emitted play routine holds its registers as
+    SSA values a handler cannot reach, so the divergence it would otherwise make
+    is a SID write with no cause on its face.
+    """
+    with pytest.raises(Refusal) as e:
+        _run(init_lines=SEP_INIT, play=SPIN, handler=CLOBBERS)
+    assert e.value.reason == "nmi clobbers registers"
+    assert "$1200" in e.value.detail
+
+
+@pytest.mark.parametrize("handler", (OPERANDS, HANDLER_BODY), ids=("operands", "stack"))
+def test_a_handler_that_gives_the_registers_back_certifies(handler):
+    """Either save shape -- into its own operands, or onto the stack -- certifies."""
+    trace, _prg, v, cert = _decompiled(init_lines=SEP_INIT, play=SPIN, handler=handler)
+    inside = [i for i in trace.nmilog["insn"].tolist() if i != IDLE_INDEX]
+    assert inside and v.div is None and cert["subtunes"][0]["divergences"] == 0
+
+
+def test_an_idle_nmi_may_leave_the_registers_where_it_likes():
+    """Off-tick the interrupted program is the host's idle loop, which reads no register."""
+    trace, _tr = _run(handler=CLOBBERS, calls=4)
+    insns = trace.nmilog["insn"].tolist()
+    assert insns and set(insns) == {IDLE_INDEX}
+
+
 PTR = ("LDA #$00", "STA $FB", "LDA #$21", "STA $FC", "LDA #$07", "STA $2103")
 INDEXED = ("LDY #$03", "LDX #$20", "spin: DEX", "BNE spin", "LDA ($FB),Y", "STA $D400", "RTS")
-KEEPS_A = ("PHA", "LDA #$0F", "STA $D418", *ACK, "PLA", "RTI")
+KEEPS_A = HANDLER_BODY
 
 
 def test_the_preemption_point_is_the_store_s_own_after_its_value():
@@ -388,7 +426,7 @@ def test_an_idle_nmi_returns_to_the_host_idle_pc_the_machine_really_has():
 def test_a_handler_that_reads_what_the_play_routine_writes_verifies():
     """The handshake: the schedule is counted in stores, so the handler's view is exact."""
     play = ("LDA #$05", "STA $D400", "LDA #$0C", "STA $2000", "LDA #$03", "STA $2000", "RTS")
-    handler = ("LDA $2000", "STA $D418", *ACK, "RTI")
+    handler = (*SAVE, "LDA $2000", "STA $D418", *ACK, *LOAD, "RTI")
     _trace, _prg, v, cert = _decompiled(play=play, handler=handler)
     assert v.div is None and cert["subtunes"][0]["divergences"] == 0
 

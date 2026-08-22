@@ -443,7 +443,7 @@ class TraceVM(FlowRecorder, PcodeVM):
             reg[3] = (reg[3] + 1) & 0xFF
             nxt = (mem[0x100 + reg[3]] << 8) | lo
             if self.sep is not None:
-                self.sep.leave(reg[3])
+                self.sep.leave(reg, pc)
             self._return(t[S_AUX], nxt)
             return nxt
         if k == K_JMP:

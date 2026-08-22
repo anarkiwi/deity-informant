@@ -7,31 +7,33 @@
 One row per tune: whether a CIA #2 source can fire once its own init has run, what
 the handler does, and what it shares with the play routine. Rates are raw over the
 sample and re-weighted to HVSC by SIDId family size, as ``tools/survey/report.py``.
+
+``scan`` is ``tuneprog_sweep.py``'s contract and reuses its parts: it skips what
+``--out`` already holds, stops at ``--budget`` wall seconds and exits 2 while work
+is left, so a scan is a loop of chunks.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
-import resource
 import signal
 import sys
 import time
-import traceback
 from collections import Counter
 from multiprocessing import Pool
 from pathlib import Path
 
-for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_v, "1")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools" / "survey"))
 
 # pylint: disable=wrong-import-position,wrong-import-order
 # pylint: disable=broad-exception-caught,global-statement,import-error
+# first: importing the sweep pins the BLAS thread counts, ahead of numpy
+from tuneprog_sweep import MORE, _fault, _timeout, _todo, worker_limits  # noqa: E402
+from tuneprog_report import population  # noqa: E402
 from deity_informant.tuneprog import nmi as N  # noqa: E402
 from deity_informant.tuneprog.ir import SID_HI, SID_LO  # noqa: E402
 from deity_informant.tuneprog.cia import CIA2_BASE  # noqa: E402
@@ -43,7 +45,6 @@ from deity_informant.tuneprog.machine import (  # noqa: E402
 )
 from deity_informant.tuneprog.trace import IDLE_INDEX, Tracer  # noqa: E402
 from report import Rates  # noqa: E402
-from run import _sample  # noqa: E402
 
 CIA2_HI = CIA2_BASE + 0xFF
 PAL_FRAME = 19656  # the provisional tick of a tune with no dispatchable entry
@@ -71,7 +72,7 @@ def _ram(addrs):
     return {a for a in addrs if a < 0xD000 or a > 0xDFFF}
 
 
-def facts(trace, entry, nmi):
+def facts(trace, entry):
     """What the two entries do and what they share, from the trace alone."""
     hp = N.sites(trace)
     tp = N.reach(trace, entry["addr"])
@@ -108,11 +109,9 @@ def facts(trace, entry, nmi):
 
 
 def klass(r):
-    """The class the measured facts put this tune in."""
-    if not r.get("nmi_addr"):
-        return "no nmi"
+    """The class the measured facts put this tune in; only a traced row has one."""
     if not r["handler_sid"]:
-        return "no SID write" if r["handler_ram_writes"] else "acknowledge only"
+        return "no SID write"
     if not r["play_writes_sid"]:
         return "sample player, silent play"
     if r["handler_d418_only"]:
@@ -137,7 +136,7 @@ def one(item):
     """One tune: trace ``--calls`` ticks and classify what its NMI did."""
     rel, family = item
     row = {"path": rel, "family": family}
-    signal.signal(signal.SIGALRM, lambda *_a: (_ for _ in ()).throw(TimeoutError("wall")))
+    signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(_A.timeout)
     t0 = time.process_time()
     try:
@@ -175,17 +174,9 @@ def one(item):
                 row.update(outcome="refused", fault=exc.reason, detail=exc.detail[:120])
             if tr.calls_done:
                 trace = tr.trace()
-                row.update(facts(trace, trace.meta["entry"], trace.meta["schedule"][1]))
-    except Refusal as exc:
-        row.update(outcome="refused", fault=exc.reason, detail=exc.detail[:120])
-    except BaseException as exc:
-        tb = traceback.extract_tb(exc.__traceback__)
-        row.update(
-            outcome="crashed",
-            fault=type(exc).__name__,
-            detail=str(exc)[:120],
-            site="%s:%s" % (Path(tb[-1].filename).name, tb[-1].name) if tb else "?",
-        )
+                row.update(facts(trace, trace.meta["entry"]))
+    except BaseException as exc:  # a scan records faults, never raises
+        row["outcome"], row["fault"], row["detail"], row["site"] = _fault(exc)
     finally:
         signal.alarm(0)
     row["class"] = klass(row) if row["outcome"] == "traced" else row.get("fault", row["outcome"])
@@ -194,45 +185,31 @@ def one(item):
 
 
 def _init_worker():
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    resource.setrlimit(resource.RLIMIT_AS, (_A.rss << 30, resource.RLIM_INFINITY))
+    worker_limits(_A.rss)
 
 
 def scan(args):
-    """Run the classifier over the sample (or ``--only``), appending rows to ``--out``."""
-    out = Path(args.out)
-    done = set()
-    if out.exists():
-        done = {
-            json.loads(x)["path"] for x in out.read_text(encoding="utf-8").splitlines() if x.strip()
-        }
-    items = _sample(args.results, args.cap, args.seed, False)
-    todo = [(p, f) for p, f in items if (Path(args.hvsc) / p).is_file() and p not in done]
-    if args.only:
-        want = {
-            x.strip() for x in Path(args.only).read_text(encoding="utf-8").split("\n") if x.strip()
-        }
-        todo = [x for x in todo if x[0] in want]
-    print("todo %d, jobs %d" % (len(todo), args.jobs), file=sys.stderr)
-    t0 = time.time()
-    with open(out, "a", encoding="utf-8") as f, Pool(args.jobs, initializer=_init_worker) as pool:
-        for i, row in enumerate(pool.imap_unordered(one, todo, chunksize=4)):
+    """Run the classifier over the sample (or ``--only``); 2 while work is left."""
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    items, todo = _todo(args)
+    print("sample %d, todo %d, jobs %d" % (len(items), len(todo), args.jobs), file=sys.stderr)
+    t0, n = time.time(), 0
+    with (
+        open(args.out, "a", encoding="utf-8") as f,
+        Pool(args.jobs, initializer=_init_worker) as pool,
+    ):
+        for row in pool.imap_unordered(one, todo, chunksize=4):
             f.write(json.dumps(row) + "\n")
-            if i % 500 == 0:
+            n += 1
+            if n % 500 == 0:
                 f.flush()
-                print("%d/%d %.0fs" % (i, len(todo), time.time() - t0), file=sys.stderr)
-    print("wrote %d rows in %.0fs" % (len(todo), time.time() - t0), file=sys.stderr)
-    return 0
-
-
-def population(results, hvsc):
-    """``{family: tunes present on disk}`` over the whole catalogue."""
-    pop, root = Counter(), Path(hvsc)
-    with open(results, encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            if (root / r["path"]).is_file():
-                pop[r["player"]] += 1
-    return pop
+                print("%d/%d %.0fs" % (n, len(todo), time.time() - t0), file=sys.stderr)
+            if time.time() - t0 > args.budget:
+                pool.terminate()
+                break
+    left = len(todo) - n
+    print("wrote %d rows in %.0fs, %d left" % (n, time.time() - t0, left), file=sys.stderr)
+    return MORE if left > 0 else 0
 
 
 def report(args):
@@ -281,12 +258,15 @@ def parser():
     s.add_argument("--results", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--only", help="file of HVSC-relative paths: run only these")
+    s.add_argument("--from", dest="from_", help="only tunes certified in this JSONL")
+    s.add_argument("--per-family", type=int, default=0, help="keep the first k per family")
     s.add_argument("--calls", type=int, default=200, help="ticks to trace")
     s.add_argument("--cap", type=int, default=30)
     s.add_argument("--seed", type=int, default=1)
-    s.add_argument("--timeout", type=int, default=180)
+    s.add_argument("--timeout", type=int, default=60, help="per-tune wall seconds")
     s.add_argument("--rss", type=int, default=8)
     s.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 8) - 8))
+    s.add_argument("--budget", type=float, default=1800.0, help="wall seconds per invocation")
     r = sub.add_parser("report")
     r.add_argument("--rows", required=True)
     r.add_argument("--results", required=True)

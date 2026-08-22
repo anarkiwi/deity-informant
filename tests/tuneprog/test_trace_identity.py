@@ -2,8 +2,13 @@
 
 One fixture per recorded mechanism -- per-op access sets, SMC opcode and operand
 cells, index domains, every control-kind edge, JSR/RTS pairing, inputs, IO logs,
-both footprint hashes -- hashed after serialisation. :func:`capture` regenerates
-the table; every digest below came from ``main`` at f713814.
+the preemption schedule, both footprint hashes -- hashed after serialisation.
+:func:`capture` regenerates the table; every digest below came from ``main`` at
+f713814 and was regenerated on ``nmi-prototype`` (PR #272), which added
+:attr:`~.tracedata.Trace.nmilog` to the digest and moved nothing: no fixture here
+has a second entry, so the log it hashes is empty. That is the claim -- a
+schedule appearing in a one-entry tune's trace would move a digest, and
+:func:`test_the_digest_follows_the_preemption_schedule` shows it does.
 """
 
 import hashlib
@@ -35,7 +40,7 @@ def digest(trace, tmp_path):
     for name in ARRAYS:
         v = getattr(trace, name)
         h.update(np.asarray(bytearray(v) if isinstance(v, bytes) else v).tobytes())
-    for log in (trace.wlog, trace.iolog):
+    for log in (trace.wlog, trace.iolog, trace.nmilog):
         for k in sorted(log):
             h.update(log[k].tobytes())
     return h.hexdigest()
@@ -230,6 +235,14 @@ def test_trace_bytes_are_pinned(name, tmp_path):
 @pytest.mark.parametrize("name", sorted(EXTRA))
 def test_entry_shapes_are_pinned(name, tmp_path):
     assert digest(EXTRA[name][0](), tmp_path) == EXTRA[name][1]
+
+
+def test_the_digest_follows_the_preemption_schedule(tmp_path):
+    """A schedule in a one-entry tune's trace is a change of input, so it is a change of digest."""
+    trace = build("io")
+    before = digest(trace, tmp_path)
+    trace.nmilog = {k: np.arange(2, dtype=np.uint32) for k in ("call", "insn", "cycle", "addr")}
+    assert digest(trace, tmp_path) != before
 
 
 def capture(tmp_path):
