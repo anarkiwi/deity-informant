@@ -52,6 +52,7 @@ class Trace:
     jsr_targets: set = field(default_factory=set)
     wlog: dict = field(default_factory=dict)
     iolog: dict = field(default_factory=dict)
+    nmilog: dict = field(default_factory=dict)
     state_hash: object = None
     footprint_size: object = None
     state_hash_free: object = None
@@ -164,6 +165,7 @@ class Trace:
             footprint_free=self.footprint_free,
             **{"wlog_" + k: v for k, v in self.wlog.items()},
             **{"iolog_" + k: v for k, v in self.iolog.items()},
+            **{"nmilog_" + k: v for k, v in self.nmilog.items()},
         )
         return path
 
@@ -225,6 +227,7 @@ class Trace:
         t.jsr_targets = set(doc["jsr_targets"])
         t.wlog = {k[5:]: z[k] for k in z.files if k.startswith("wlog_")}
         t.iolog = {k[6:]: z[k] for k in z.files if k.startswith("iolog_")}
+        t.nmilog = {k[7:]: z[k] for k in z.files if k.startswith("nmilog_")}
         return t
 
 
@@ -296,6 +299,7 @@ def merge(traces):
         jsr_targets=jsr,
         wlog=first.wlog,
         iolog=first.iolog,
+        nmilog=first.nmilog,
         state_hash=first.state_hash,
         footprint_size=first.footprint_size,
         state_hash_free=first.state_hash_free,

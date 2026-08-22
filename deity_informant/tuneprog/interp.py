@@ -176,6 +176,31 @@ class Machine:
         return n, int.from_bytes(h, "little")
 
 
+class NmiMachine(Machine):
+    """A machine whose stores are the points a second entry can preempt at.
+
+    Between two stores nothing either entry reads of the other can move, so a
+    schedule counted in stores places a preemption exactly. The stack page is
+    left out: a frame is not that state. A single-entry program runs on the plain
+    :class:`Machine` and pays nothing for the hook.
+    """
+
+    __slots__ = ("hook", "stores")
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.hook = None
+        self.stores = 0
+
+    def at(self, a, w=1):
+        """One store is about to happen: run whatever the schedule places before it."""
+        if self.hook is not None:
+            self.hook()
+        for i in range(w):
+            if not STACK_LO <= (a + i) & 0xFFFF <= STACK_HI:
+                self.stores += 1
+
+
 class Interp:
     """Executes a :class:`Tuneprog` over a :class:`Machine`. The semantics."""
 
@@ -184,6 +209,7 @@ class Interp:
         self.M = machine
         self.steps = 0
         self.ro = copymap_bands(prog.storage)
+        self.at = machine.at if isinstance(machine, NmiMachine) else None
 
     def ev(self, e, F):
         t = type(e)
@@ -213,6 +239,8 @@ class Interp:
                     F[s.n] = self.ev(s.e, F)
                 elif t is Store:
                     a = self.ev(s.a, F)
+                    if self.at is not None:
+                        self.at(a, s.w)
                     if not s.lo <= a <= s.hi or a + s.w - 1 > s.hi:
                         M.env(a, s.lo, s.hi, s.src)
                     if self.ro and hits_band(self.ro, a, s.w):

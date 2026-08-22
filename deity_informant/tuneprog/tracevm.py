@@ -10,8 +10,9 @@ from __future__ import annotations
 from array import array
 
 from ..vm import PcodeVM
-from .ir import IO_HI, IO_LO, SID_HI, SID_LO
+from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
 from .machine import CIA, CIA1_BASE, CIA2_BASE, Refusal, port_bank
+from .nmi import NEVER, STALE
 from .traceflow import FlowRecorder
 from .tracesite import (
     IDX_REG,
@@ -88,6 +89,7 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.bank = port_bank(mem)
         self.io = self.bank == "io"
         self.cia = (CIA(CIA1_BASE), CIA(CIA2_BASE))
+        self.nmi_at = NEVER  # cycle CIA #2's line next asserts; STALE after an access
         self.known = bytearray(0x10000)
         self.known[image.lo : image.hi] = b"\1" * (image.hi - image.lo)
         self.known[0x100:0x200] = b"\1" * 0x100
@@ -112,6 +114,8 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.iolog = tuple(array(t) for t in "IHBI")
         self.tick_rd = self.tick_wr = 0
         self.pinned = False
+        self.stores = 0
+        self.st0 = 0
 
     # ---- per-op attributed memory ------------------------------------------
     def read(self, addr, sz, pci, s):
@@ -152,6 +156,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             v = self.cia[0].read(a, self.cycles)
         if v is None:
             v = self.cia[1].read(a, self.cycles)
+            if v is not None:
+                self.nmi_at = STALE  # an ICR read releases the line
         if v is None:
             v = PcodeVM._rd(self, a, 1)
         self.chip_ops.add(pci)
@@ -183,6 +189,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             a = addr & 0xFFFF
             s.add(a)
             b = val & 0xFF
+            if a < STACK_LO or a > STACK_HI:
+                self.stores += 1
             if IO_LO <= a <= IO_HI and self.io:
                 self.chip_ops.add(pci)
                 if self.code[a]:
@@ -200,6 +208,8 @@ class TraceVM(FlowRecorder, PcodeVM):
                 a = (addr + k) & 0xFFFF
                 b = (val >> (8 * k)) & 0xFF
                 s.add(a)
+                if a < STACK_LO or a > STACK_HI:
+                    self.stores += 1
                 if IO_LO <= a <= IO_HI and self.io:
                     self.chip_ops.add(pci)
                     if self.code[a]:
@@ -253,6 +263,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             self.vicirq &= ~b & 0x7F
         elif 0xDC00 <= a <= 0xDDFF:
             self.cia[(a >> 8) & 1].write(a, b, self.cycles)
+            if a & 0x0100:
+                self.nmi_at = STALE  # CIA #2 moved: re-date the NMI it dispatches
 
     # ---- recorded structures -----------------------------------------------
     def insn_count(self):
@@ -267,10 +279,19 @@ class TraceVM(FlowRecorder, PcodeVM):
             t[S_PH0] = t[S_N]
 
     def begin_tick(self, call):
-        """Start one tick: the entry registers are live-in again."""
+        """Start one tick: the entry registers are live-in again, its stores start at 0."""
         self.call = call
         self.tick_rd = self.tick_wr = 0
         self.pinned = False
+        self.st0 = self.stores
+
+    def tick_stores(self):
+        """Stores this tick has made outside the stack page, from either entry.
+
+        The stack page is left out because a frame is not state either entry reads
+        of the other, and the two executors place their own frames differently.
+        """
+        return self.stores - self.st0
 
     def _push(self, val):
         """Push one byte; a driver frame over executed code makes those pcs re-read."""

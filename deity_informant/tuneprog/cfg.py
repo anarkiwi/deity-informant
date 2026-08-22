@@ -26,6 +26,7 @@ Public API: :func:`build_procs`, :func:`procs_json`, :class:`Proc`.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ..lifter import OPS
@@ -71,13 +72,20 @@ def _entry_names(trace):
 
     An address can hold several roles (an ``init`` that is also the play entry, a
     tick entry that is also a JSR target); the first is the procedure's ``kind``.
+    The schedule names its entries by what they are, so a second interrupt is
+    ``nmi`` (``nmi0``, ``nmi1``, ... where its vector took several addresses).
     """
     init = trace.meta["init"]
-    ticks = [e["addr"] for e in trace.meta["schedule"]]
+    sched = [("nmi" if e["kind"] == "nmi" else "tick", e["addr"]) for e in trace.meta["schedule"]]
+    n, seen = Counter(r for r, _a in sched), Counter()
+    entries = []
+    for role, a in sched:
+        seen[role] += 1
+        entries.append((a, role, role if n[role] == 1 else "%s%d" % (role, seen[role] - 1)))
     names, roles = {}, {}
     for a, role, name in (
         [(init, "init", "init")]
-        + [(a, "tick", "tick" if len(ticks) == 1 else "tick%d" % i) for i, a in enumerate(ticks)]
+        + entries
         + [(a, "sub", "p_%04X" % a) for a in sorted(trace.jsr_targets)]
     ):
         if a in roles:
@@ -230,6 +238,10 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["switch"] = _switch(_expr(ls, "cell", site), taken, tails)
         return node
     if not flow:
+        # an init that ends in a ``JMP *`` has returned as far as the schedule is
+        # concerned: the machine sits there until the next interrupt
+        if trace.meta.get("init_idle") == (pc + (ls.length if ls else 1)) & 0xFFFF:
+            node["term"] = "return"
         return node
     if len(flow) == 1:
         t, k = flow[0]

@@ -95,22 +95,32 @@ def test_find_entries_admits_a_cia2_latch_no_source_enabled():
 
 ARM = ("LDA #$81", "STA $DD0D")  # ICR: enable Timer A as a source
 START = ("LDA #$11", "STA $DD0E")  # CRA: force load + start Timer A
+LATCH = ("LDA #$63", "STA $DD04", "LDA #$00", "STA $DD05")  # Timer A: 100 cycles
 NMINV = ("LDA #$00", "STA $0318", "LDA #$20", "STA $0319")
 
 
-def test_find_entries_refuses_a_source_the_init_trace_already_shows_armed():
+def test_find_entries_leaves_the_second_schedule_to_the_tracer():
+    """The chip this tune's own init leaves decides it, not a second emulation."""
     pytest.importorskip("pysidtracker")
     init = asm(0x1000, *ARM, *START, "RTS")
     data = psid({0x1000: init, 0x1020: asm(0x1020, "RTS")}, 0x1000, 0x1020)
-    with pytest.raises(Refusal) as e:
-        find_entries(data)
-    assert e.value.reason == "second interrupt source armed"
+    assert find_entries(data)[1][0].kind == "sub"
+    with pytest.raises(Refusal) as e:  # armed, and no vector answers the line
+        _nmi_trace(*ARM, *START)
+    assert e.value.reason == "nmi vector banked out"
+
+
+HANDLER = ("LDA $DD0D", "RTI")  # acknowledges, so the line can assert again
 
 
 def _nmi_trace(*init_lines, play=("RTS",), calls=2):
-    """Trace two ticks of a tune whose init runs ``init_lines``."""
+    """Trace two ticks of a tune whose init runs ``init_lines``; ``$2000`` is its NMI."""
     return trace_prog(
-        {0x1000: asm(0x1000, *init_lines, "RTS"), 0x1100: asm(0x1100, *play)},
+        {
+            0x1000: asm(0x1000, *init_lines, "RTS"),
+            0x1100: asm(0x1100, *play),
+            0x2000: asm(0x2000, *HANDLER),
+        },
         0x1000,
         0x1100,
         calls=calls,
@@ -121,11 +131,10 @@ def test_an_nmi_vector_with_no_source_enabled_is_dead():
     assert _nmi_trace(*NMINV).meta["calls"] == 2
 
 
-def test_an_armed_started_timer_refuses_with_the_icr_in_the_detail():
-    with pytest.raises(Refusal) as e:
-        _nmi_trace(*NMINV, *ARM, *START)
-    assert e.value.reason == "second interrupt source armed"
-    assert "icr=$%02X" % ICR_TA in e.value.detail and "ta=1" in e.value.detail
+def test_an_armed_started_timer_is_the_schedules_second_entry():
+    t = _nmi_trace(*NMINV, *LATCH, *ARM, *START)
+    assert [e["kind"] for e in t.meta["schedule"]] == ["sub", "nmi"]
+    assert t.meta["schedule"][1]["addr"] == 0x2000 and t.meta["nmis"] > 1
 
 
 def test_an_enabled_source_whose_timer_never_starts_cannot_fire():
@@ -134,16 +143,11 @@ def test_an_enabled_source_whose_timer_never_starts_cannot_fire():
 
 def test_icr_writes_accumulate_the_mask_as_the_chip_does():
     """Bit 7 enables what the write names, without it disables: the last write is not the mask."""
-    assert _nmi_trace(*ARM, "LDA #$01", "STA $DD0D", *START).meta["calls"] == 2
+    assert (
+        len(_nmi_trace(*NMINV, *LATCH, *ARM, "LDA #$01", "STA $DD0D", *START).meta["schedule"]) == 1
+    )
     for enabling in (("LDA #$01", "STA $DD0D", *ARM), (*ARM, "LDA #$02", "STA $DD0D")):
-        with pytest.raises(Refusal):
-            _nmi_trace(*enabling, *START)
-
-
-def test_arming_the_nmi_in_play_refuses_at_that_tick():
-    with pytest.raises(Refusal) as e:
-        _nmi_trace(*START, play=("LDA #$81", "STA $DD0D", "RTS"))
-    assert e.value.reason == "nmi armed in play"
+        assert _nmi_trace(*NMINV, *LATCH, *enabling, *START).meta["nmis"] > 1
 
 
 def test_acknowledging_the_icr_in_play_is_not_an_arming():
@@ -156,9 +160,10 @@ def test_the_installed_vector_is_not_what_gates_the_schedule():
     for port in ("$37", "$35"):  # KERNAL mapped, KERNAL banked out
         bank = ("LDA #%s" % port, "STA $01")
         raw = ("LDA #$00", "STA $FFFA", "LDA #$20", "STA $FFFB")
-        assert _nmi_trace(*bank, *raw).meta["calls"] == 2
-        with pytest.raises(Refusal):
+        assert len(_nmi_trace(*bank, *raw).meta["schedule"]) == 1
+        with pytest.raises(Refusal) as e:
             _nmi_trace(*bank, *ARM, *START)
+        assert e.value.reason == "nmi vector banked out"
 
 
 def test_cia_icr_mask_accumulates_and_a_source_needs_its_timer():
@@ -280,8 +285,9 @@ def test_cia_latch_rewrite_keeps_underflows_monotone():
     c.write(CIA1_BASE + 0x0E, 0x11, 0)
     assert c.read(CIA1_BASE + 0x0D, 0x100) & 1  # underflowed
     c.write(CIA1_BASE + 5, 0x10, 0x100)  # a much longer period, mid-flight
-    assert c.read(CIA1_BASE + 0x0D, 0x120) == 0  # not due yet, and not wedged
-    assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # still fires later
+    assert c.read(CIA1_BASE + 0x0D, 0x105) == 0  # the pending underflow has not landed
+    assert c.read(CIA1_BASE + 0x0D, 0x120) & 1  # it lands on its own cycle, not 0x1000 later
+    assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # then the new period runs
 
 
 def test_kernal_mapped_is_the_ports_hiram_line():

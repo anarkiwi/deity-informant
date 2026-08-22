@@ -27,14 +27,25 @@ import numpy as np
 
 from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
-from .interp import Interp, Machine
+from .interp import Interp, Machine, NmiMachine
 from .ir import TrapError
 from .machine import STATUS, entry_frame
 from .tracevm import REG_IN
 
 PAL, NTSC = 985248, 1022730
 INIT_CALL = 0xFFFFFFFF
+NMI_ENTRY = {"kind": "nmi"}  # the frame the 6510 pushes taking an NMI
 STATE_VERSION = 2  # resume-state layout; an older pickle restarts rather than resumes
+
+
+def _nmis(log, calls):
+    """``([(writes made, handler)], per-call bounds)`` of the traced preemption schedule."""
+    if not log or log["call"].size == 0:
+        return [], np.zeros(calls + 1, np.int64)
+    call = np.asarray(log["call"], dtype=np.int64)
+    cols = ("st", "addr", "sp", "p", "pc", "a", "x", "y")
+    rows = list(zip(*(log[c].tolist() for c in cols)))
+    return rows, np.searchsorted(call, np.arange(calls + 1))
 
 
 def _packed(log, calls):
@@ -67,6 +78,7 @@ class Reference:
         for c, _site, _op, addr, val in trace.inputs:
             if addr >= REG_IN and c >= 0:
                 self.regs.setdefault(int(c), []).append((addr - REG_IN, val))
+        self.nmipk, self.nmiix = _nmis(trace.nmilog, self.calls)
         self.period = trace.meta.get("period")
         self.first_repeat = trace.meta.get("first_repeat")
         self.entry = trace.meta["entry"]
@@ -85,6 +97,10 @@ class Reference:
             return self.period_free, self.first_repeat_free
         return self.period, self.first_repeat
 
+    def nmis(self, call):
+        """``[(stores made, handler, SP, status, pc, A, X, Y)]`` of this tick's preemptions."""
+        return self.nmipk[self.nmiix[call] : self.nmiix[call + 1]]
+
     def sid(self, call):
         return self.sidpk[self.sidix[call] : self.sidix[call + 1]].tolist()
 
@@ -94,6 +110,11 @@ class Reference:
 
 def _status(regs):
     return sum(regs[i] << s for i, s in STATUS_BITS) | 0x20
+
+
+def nmi_procs(prog):
+    """``{handler address: procedure}`` for every NMI entry of the schedule."""
+    return {p.blocks[p.entry].src: name for name, p in prog.procs.items() if p.kind == "nmi"}
 
 
 def page_free(prog):
@@ -113,7 +134,10 @@ class Verifier:
         self.ref = ref
         self.free = page_free(prog)
         self.backend = backend
-        self.M = Machine(prog.image(), ref.load, inputs=ref.inputs)
+        self.nmi = nmi_procs(prog)
+        self.queue = []
+        cls = NmiMachine if self.nmi else Machine
+        self.M = cls(prog.image(), ref.load, inputs=ref.inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)
         self.tick = prog.procs[prog.meta["tick_proc"]]
         self.init = prog.procs[prog.meta["init_proc"]]
@@ -150,19 +174,56 @@ class Verifier:
         return self
 
     # ---- the machine's side of a tick --------------------------------------
-    def _enter(self, entry=None):
+    def _enter(self, entry=None, ret=None, status=None):
         """Push the frame the machine pushes: a JSR return, or the interrupt frame.
 
         :func:`~.machine.entry_frame` is that frame -- the status byte, and A/X/Y
         too where the KERNAL dispatched. The interrupt disable is the tick's own
-        first statement (:func:`~.build._irq_entry`), so the entry flags are it.
+        first statement (:func:`~.build._irq_entry`), so the entry flags are it;
+        a preemption replays the return address and status the schedule recorded.
         """
         M = self.M
         frame = entry_frame(entry or {"kind": "sub"})
-        M.push(0x00)
-        M.push(0x00 if frame else 0x01)
+        if ret is None:
+            ret = 0x0000 if frame else 0x0001
+        M.push(ret >> 8)
+        M.push(ret & 0xFF)
         for what in frame:
-            M.push(_status(M.regs) if what is STATUS else M.regs[what])
+            if what is not STATUS:
+                M.push(M.regs[what])
+            else:
+                M.push(_status(M.regs) if status is None else status)
+
+    def _run_nmi(self, row):
+        """Enter one NMI handler on the frame the 6510 pushes taking it.
+
+        The schedule carries the stack pointer the machine was at, because the
+        tick's own frame is an IR value the register file does not follow.
+        """
+        _st, addr, sp, status, pc, a, x, y = row
+        name = self.nmi.get(addr)
+        if name is None:
+            raise TrapError("nmi handler", "$%04X is no entry of the schedule" % addr)
+        M = self.M
+        M.hook = None  # a handler's own stores are not preemption points
+        held = list(M.regs)
+        M.regs[0], M.regs[1], M.regs[2], M.regs[3] = a, x, y, sp
+        self._enter(NMI_ENTRY, ret=pc, status=status)
+        self._call_proc(self.prog.procs[name])
+        M.regs[:] = held  # an NMI leaves the interrupted program's registers alone
+        M.hook = self._preempt
+
+    def _preempt(self):
+        """Run every NMI the traced schedule places before the store about to happen."""
+        M, q = self.M, self.queue
+        while q and q[0][0] <= M.stores:
+            self._run_nmi(q.pop(0))
+
+    def _drain(self):
+        """The NMIs of this tick the host took after the play routine returned."""
+        while self.queue:
+            self._run_nmi(self.queue.pop(0))
+        self.M.hook = None
 
     def _call_proc(self, proc):
         M = self.M
@@ -248,8 +309,15 @@ class Verifier:
         M.src.clear()
         self._enter(self.ref.entry)
         try:
+            if self.nmi:
+                self.queue = list(self.ref.nmis(c))
+                M.stores, M.hook = 0, self._preempt
             self._call_proc(self.tick)
+            if self.nmi:
+                self._drain()
         except TrapError as e:
+            if self.nmi:
+                M.hook = None
             self.div = {"tick": c, "index": -1, "trap": e.why, "detail": e.detail}
             return False
         if not self._compare(c, self.ref.sid(c), self.ref.io(c)):
@@ -276,7 +344,7 @@ class Verifier:
         tperiod, tfirst = self.ref.periodicity(self.free)
         clock = NTSC if "ntsc" in e["source"] else PAL
         done = self.call
-        return {
+        out = {
             "song": self.ref.song + 1,
             "ticks": done,
             "seconds": round(done * e["cycles_per_tick"] / clock, 2),
@@ -300,6 +368,10 @@ class Verifier:
             "envelope_traps": int(self.div is not None and self.div.get("trap") == "envelope"),
             "divergences": int(self.div is not None),
         }
+        if self.nmi:
+            out["nmis"] = len(self.ref.nmipk)
+            out["nmi_entries"] = sorted(self.nmi.values())
+        return out
 
 
 def prefix_check(prog, ref, calls, backend="interp"):

@@ -1,8 +1,9 @@
-"""The dead-NMI family (marked ``hvsc``; short horizons).
+"""The NMI families (marked ``hvsc``; short horizons).
 
-Two tunes refused as a second schedule until the gate asked whether a CIA #2
-source can fire: *Alien_3* installs an NMI vector, *Jazzpjazz* loads a CIA #2
-Timer-A latch, and neither ICR ever enables anything to dispatch either.
+*Alien_3* installs an NMI vector and *Jazzpjazz* loads a CIA #2 Timer-A latch,
+and neither ICR ever enables anything to dispatch either -- dead evidence. JCH's
+*Easy Does It* is the live one: a sample mixer on CIA #2 Timer A at ~5 kHz,
+preempting a raster-driven play routine ([playroutine-anatomy.md] 3.5).
 """
 
 import pytest
@@ -11,7 +12,7 @@ from deity_informant import c64
 from deity_informant.tuneprog.machine import find_entries, frame_slots
 from deity_informant.tuneprog.trace import Tracer
 
-from _hvsc import ALIEN3, JAZZPJAZZ, decompiled, tune
+from _hvsc import ALIEN3, EASY, JAZZPJAZZ, decompiled, tune
 
 pytestmark = pytest.mark.hvsc
 
@@ -55,3 +56,42 @@ def test_jazzpjazz_ticks_on_the_host_not_the_cia2_latch_it_loaded():
     entry, tr = _post_init(JAZZPJAZZ)
     assert entry.source.endswith("_host_cia")
     assert entry.cycles_per_tick != tr.vm.cia[1].latch + 1
+
+
+EASY_TICKS = 40
+
+
+def _easy():
+    return decompiled(EASY, seconds=EASY_TICKS * 19656 / 985248, text=False)
+
+
+def test_easy_does_it_is_one_program_over_two_entries():
+    """The NMI mixer is the schedule's second entry, on the vector the port dispatches."""
+    run = _easy()
+    sched = run.prog.meta["schedule"]
+    assert [e["kind"] for e in sched] == ["irq", "nmi"]
+    assert sched[1] == {
+        "kind": "nmi",
+        "addr": 0x40E9,
+        "cycles_per_tick": 193,
+        "source": "cia2_timer_a",
+    }
+    assert run.prog.meta["nmi_procs"] == ["nmi"]
+
+
+def test_easy_does_it_verifies_under_the_traced_interleaving():
+    run = _easy()
+    sub = run.cert["subtunes"][0]
+    assert run.v.div is None and sub["divergences"] == 0 and sub["envelope_traps"] == 0
+    assert sub["nmis"] > 100 * sub["ticks"] * 0.9  # ~19656/193 preemptions a tick
+    assert "nmi preemption schedule" in run.cert["compared"]
+
+
+def test_the_mixer_owns_d418_and_the_play_routine_owns_the_rest():
+    """Anatomy 3.5.5: ``$D418`` is written only by the NMI, and thousands of times a frame."""
+    import numpy as np
+
+    log = _easy().trace.wlog
+    addr = np.asarray(log["addr"])
+    assert int((addr == 0xD418).sum()) > 100 * EASY_TICKS * 0.9
+    assert int(((addr >= 0xD400) & (addr <= 0xD417)).sum()) > 0

@@ -17,6 +17,7 @@ HVSC = {
     "Commando.sid": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
     "Deflektor.sid": "MUSICIANS/D/Daglish_Ben/Deflektor.sid",
     "Do_It_Again.sid": "MUSICIANS/L/Linus/Do_It_Again.sid",
+    "Easy_Does_It.sid": "MUSICIANS/J/JCH/Easy_Does_It.sid",
     "Emomyst.sid": "MUSICIANS/H/Hermit/Emomyst.sid",
     "End_of_the_World.sid": "MUSICIANS/H/Hermit/End_of_the_World.sid",
     "Experiment_Zeta.sid": "MUSICIANS/N/NecroPolo/Experiment_Zeta.sid",

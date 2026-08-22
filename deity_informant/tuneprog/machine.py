@@ -16,9 +16,8 @@ Public API:
   direction, $01 data) maps at ``$D000-$DFFF`` and at ``$E000-$FFFF``.
 * ``vector_gate(mem, written, img)`` -- which installed interrupt vector that
   port really dispatches through; raises :class:`Refusal` when none does.
-* ``nmi_gate(cia2, cycles, reason)`` -- refuses when CIA #2 has raised an NMI.
-* ``CIA(base)`` -- minimal Timer-A/ICR model (count-down at cycle rate, ICR bit on
-  underflow) so an init busy-wait on ``$DC04``/``$DC0D`` terminates.
+* ``CIA(base)`` -- minimal Timer-A/B + ICR model (cycle or Timer-A counting,
+  one-shot, mask, interrupt line) an init busy-wait and :mod:`.nmi` both read.
 """
 
 # pysidtracker is an optional extra: its imports are deferred into the functions
@@ -83,7 +82,10 @@ def entry_frame(entry):
     top of it -- exactly the three ``$EA81`` pops before its ``RTI``.
     """
     get = entry.get if isinstance(entry, dict) else lambda k, d=None: getattr(entry, k, d)
-    if get("kind") != "irq":
+    kind = get("kind")
+    if kind == "nmi":
+        return (STATUS,)  # $FE43 and a raw $FFFA both enter on the status byte alone
+    if kind != "irq":
         return ()
     return (STATUS,) + (KERNAL_SAVE if get("kernal") else ())
 
@@ -168,20 +170,21 @@ def _installed(mem, written, img, pair):
     return lo <= pair[0] and pair[1] < hi and bool(c64.read_vector(mem, pair[0]))
 
 
-def vector_gate(mem, written, img=(0, 0)):
+def vector_gate(mem, written, img=(0, 0), settled=True):
     """``(vector address, kernal)`` of the vector this machine really dispatches through.
 
-    The port decides which of the two is live, so a tune that wrote both is not
-    ambiguous: with the KERNAL mapped its ``$FFFE`` write went to the RAM under
-    the ROM and is dead, and without it CINV is what nothing reads. Refuses
-    (``vector banked out``) when the live vector carries no handler and the dead
-    one does, rather than model a dispatch the port forbids.
+    The port decides which of the two is live. Refuses (``vector banked out``)
+    when the live vector carries no handler and the dead one does; over an
+    unsettled port -- the pre-init image, which init still has -- it takes the
+    installed one instead and :meth:`~.trace.Tracer._settle` decides.
     """
     kernal = kernal_mapped(mem)
     live, dead = (c64.IRQ_VEC, c64.HW_IRQ_VEC) if kernal else (c64.HW_IRQ_VEC, c64.IRQ_VEC)
     if _installed(mem, written, img, live):
         return live[0], kernal
     if _installed(mem, written, img, dead):
+        if not settled:
+            return dead[0], not kernal
         raise Refusal(
             "vector banked out",
             "$%04X is installed, but the port dispatches through $%04X" % (dead[0], live[0]),
@@ -189,15 +192,51 @@ def vector_gate(mem, written, img=(0, 0)):
     raise Refusal("no entry", "play=0 and no interrupt vector installed")
 
 
-class CIA:
-    """Minimal CIA Timer-A + ICR model (one chip at ``base``).
+def grid_count(origin, step, cycles):
+    """Underflows of a timer reloaded at ``origin`` every ``step`` cycles, by ``cycles``.
 
-    Timer A counts down from its latch at the cycle rate while started; ICR
-    writes accumulate the interrupt mask the way the chip does, so the last write
-    alone does not give it, and :meth:`fired` is this chip's interrupt line.
+    Never negative: a latch write phases the grid on the underflow still pending,
+    whose origin can sit past the write.
+    """
+    return max((cycles - origin) // step, 0)
+
+
+def grid_next(origin, step, cycles):
+    """The first underflow of that timer strictly after ``cycles``."""
+    return origin + (grid_count(origin, step, cycles) + 1) * step
+
+
+class CIA:
+    """Minimal CIA timer + ICR model (one chip at ``base``).
+
+    Timer A counts cycles, Timer B cycles or Timer A's underflows (CRB bits 5-6),
+    both halting after one underflow in one-shot mode; ICR writes accumulate the
+    mask the way the chip does. :meth:`fired` is the conservative gate over this
+    chip's line, :meth:`edge_at` the cycle it next asserts.
     """
 
-    __slots__ = ("base", "latch", "counter", "running", "t0", "cycles0", "icr", "run_b", "u0", "f")
+    __slots__ = (
+        "base",
+        "latch",
+        "counter",
+        "running",
+        "t0",
+        "cycles0",
+        "icr",
+        "run_b",
+        "u0",
+        "f",
+        "latch_b",
+        "counter_b",
+        "t0b",
+        "cycles0b",
+        "fa0",
+        "fb0",
+        "cra",
+        "crb",
+        "fl",
+        "ir",
+    )
 
     def __init__(self, base):
         self.base = base
@@ -210,12 +249,73 @@ class CIA:
         self.run_b = False
         self.u0 = 0
         self.f = 0
-
-    def _elapsed(self, cycles):
-        return (cycles - self.t0) % (self.latch + 1)
+        self.latch_b = 0xFFFF
+        self.counter_b = 0xFFFF
+        self.t0b = 0
+        self.cycles0b = 0
+        self.fa0 = 0
+        self.fb0 = 0
+        self.cra = 0
+        self.crb = 0
+        self.fl = 0  # latched flag bits: set by the event, cleared by an ICR read
+        self.ir = False  # the line, latched: an NMI is its rising edge
 
     def underflows(self, cycles):
-        return (cycles - self.t0) // (self.latch + 1) if self.running else 0
+        return grid_count(self.t0, self.latch + 1, cycles) if self.running else 0
+
+    def _remaining(self, bit, cycles):
+        """The count this timer's register pair reads back: the cycles left, less one."""
+        at = self._edge(bit, cycles)
+        return self.counter if at is None else at - cycles - 1
+
+    def grid(self, bit):
+        """``(origin, step)`` of this timer's underflow grid, ``None`` when it has none.
+
+        Timer B linked to Timer A counts its underflows, so its grid is Timer A's
+        coarsened by its own latch and phased on the first Timer-A underflow
+        after its own reload.
+        """
+        if bit == ICR_TA:
+            return (self.t0, self.latch + 1) if self.running else None
+        if not self.run_b:
+            return None
+        mode = (self.crb >> 5) & 3
+        if mode == 0:
+            return self.t0b, self.latch_b + 1
+        if mode != 2 or not self.running:
+            return None  # CNT-driven: no pin model, so no schedule
+        step = self.latch + 1
+        j0 = grid_count(self.t0, step, self.t0b) + 1
+        return self.t0 + (j0 - 1) * step, step * (self.latch_b + 1)
+
+    def _phase(self, bit, origin, due, cycles):
+        """The reload time a latch write leaves: the pending underflow keeps its cycle.
+
+        Writing a started timer's latch does not touch its counter, so the new
+        period begins at the underflow already due; a stopped one reloads now.
+        """
+        g = self.grid(bit)
+        if due is None or g is None:
+            return cycles
+        return origin + due - g[0] - g[1]
+
+    def _oneshot(self, bit):
+        return bool((self.cra if bit == ICR_TA else self.crb) & 0x08)
+
+    def _count(self, bit, cycles):
+        """Underflows this timer has had by ``cycles``; one-shot mode stops after one."""
+        g = self.grid(bit)
+        if g is None:
+            return 0
+        n = grid_count(g[0], g[1], cycles)
+        return min(n, 1) if self._oneshot(bit) else n
+
+    def _edge(self, bit, cycles):
+        """The cycle this timer's next underflow lands on, or ``None``."""
+        g = self.grid(bit)
+        if g is None or (self._oneshot(bit) and self._count(bit, cycles)):
+            return None
+        return grid_next(g[0], g[1], cycles)
 
     def _off(self, addr):
         """Register index within this chip's page (the CIA mirrors every 16 bytes)."""
@@ -226,13 +326,18 @@ class CIA:
         """Value for ``addr``, or ``None`` when this chip does not model it."""
         off = self._off(addr)
         if off == 0x04 or off == 0x05:
-            v = self.latch - self._elapsed(cycles) if self.running else self.counter
+            v = self._remaining(ICR_TA, cycles) if self.running else self.counter
             return (v >> 8) & 0xFF if off == 0x05 else v & 0xFF
         if off == 0x0D:
             n = self.underflows(cycles)
             flag = 1 if n > self.cycles0 else 0
             self.cycles0 = n
-            return flag | (flag << 7)
+            nb = self._count(ICR_TB, cycles)
+            fb = 1 if nb > self.cycles0b else 0
+            self.cycles0b = nb
+            self._latch_flags(cycles)
+            self.fl, self.ir = 0, False  # a read clears the flags and releases the line
+            return flag | (fb << 1) | ((flag | fb) << 7)
         return None
 
     def write(self, addr, val, cycles):
@@ -240,17 +345,29 @@ class CIA:
         if off < 0:
             return
         self._settle(cycles)
+        self._latch_flags(cycles)
         if off == 0x04 or off == 0x05:
+            due = self._edge(ICR_TA, cycles)
             if off == 0x04:
                 self.latch = (self.latch & 0xFF00) | (val & 0xFF)
             else:
                 self.latch = (self.latch & 0x00FF) | ((val & 0xFF) << 8)
             self.counter = self.latch
-            self.t0 = cycles  # restart the count so underflows stay monotone
+            self.t0 = self._phase(ICR_TA, self.t0, due, cycles)
             self.cycles0 = 0
+        elif off == 0x06 or off == 0x07:
+            due = self._edge(ICR_TB, cycles)
+            if off == 0x06:
+                self.latch_b = (self.latch_b & 0xFF00) | (val & 0xFF)
+            else:
+                self.latch_b = (self.latch_b & 0x00FF) | ((val & 0xFF) << 8)
+            self.counter_b = self.latch_b
+            self.t0b = self._phase(ICR_TB, self.t0b, due, cycles)
+            self.cycles0b = 0
         elif off == 0x0D:
             self.icr = (self.icr | val) & ICR_SOURCES if val & ICR_SET else self.icr & ~val
         elif off == 0x0E:
+            self.cra = val & 0xFF
             if val & 0x10:  # force load
                 self.counter = self.latch
                 self.t0 = cycles
@@ -260,13 +377,29 @@ class CIA:
                 self.cycles0 = 0
             self.running = bool(val & 1)
         elif off == 0x0F:
+            self.crb = val & 0xFF
+            if val & 0x10:
+                self.counter_b = self.latch_b
+                self.t0b = cycles
+                self.cycles0b = 0
+            if val & 1 and not self.run_b:
+                self.t0b = cycles
+                self.cycles0b = 0
             self.run_b = bool(val & 1)
         self.u0 = self.underflows(cycles)
+        self.fa0 = self._count(ICR_TA, cycles)
+        self.fb0 = self._count(ICR_TB, cycles)
 
     def sources(self):
         """Enabled sources whose event can still occur: a timer source must be started."""
         m = self.icr & ICR_SOURCES
         return m & ~(0 if self.running else ICR_TA) & ~(0 if self.run_b else ICR_TB)
+
+    def unmodelled(self):
+        """Enabled sources this model has no schedule for: TOD, serial, FLAG, a CNT timer."""
+        m = self.sources()
+        keep = ICR_TA | (ICR_TB if self.grid(ICR_TB) is not None else 0)
+        return m & ~keep
 
     def _settle(self, cycles):
         """Close the armed window at ``cycles``: an enabled source that had its event fires."""
@@ -275,27 +408,40 @@ class CIA:
         if m & ICR_TA and self.underflows(cycles) > self.u0:
             self.f |= ICR_TA
 
+    def _latch_flags(self, cycles):
+        """Latch each timer's flag bit for the underflows it has had since the last look."""
+        if self._count(ICR_TA, cycles) > self.fa0:
+            self.fl |= ICR_TA
+        if self._count(ICR_TB, cycles) > self.fb0:
+            self.fl |= ICR_TB
+        self.fa0 = self._count(ICR_TA, cycles)
+        self.fb0 = self._count(ICR_TB, cycles)
+
     def fired(self, cycles):
         """Enabled sources that have raised this chip's interrupt line, or still can."""
         self._settle(cycles)
         self.u0 = self.underflows(cycles)
         return self.f | self.sources()
 
+    def edge_at(self, cycles):
+        """The cycle this chip's interrupt line next asserts, or ``None``.
 
-def nmi_gate(cia2, cycles, reason):
-    """Refuse ``reason`` when CIA #2 has raised the 6510's NMI: a second schedule.
+        The line is edge-triggered at the 6510: an IR no ICR read has released
+        raises nothing more, and a flag latched before the mask named it raises
+        as soon as it is named.
+        """
+        self._latch_flags(cycles)
+        m = self.icr & ICR_SOURCES
+        if self.ir or not m:
+            return None
+        if self.fl & m:
+            return cycles
+        at = [t for b in (ICR_TA, ICR_TB) if m & b for t in (self._edge(b, cycles),) if t]
+        return min(at) if at else None
 
-    CIA #2's interrupt line is NMI, so an enabled source that has had its event
-    dispatches one whatever vector carries it, and one that cannot fire leaves an
-    installed ``$0318``/``$FFFA`` dead. RESTORE, the only other NMI source, is
-    one the oracle (``sidplayfp``) never presses.
-    """
-    fired = cia2.fired(cycles)
-    if fired:
-        raise Refusal(
-            reason,
-            "cia2 icr=$%02X fired=$%02X ta=%d tb=%d" % (cia2.icr, fired, cia2.running, cia2.run_b),
-        )
+    def raise_line(self):
+        """Latch IR: the line stays asserted until an ICR read releases it."""
+        self.ir = True
 
 
 def host_cia(std):
@@ -350,21 +496,6 @@ def _init_topology(data):
     return _traced(data)[1]
 
 
-def _init_cia2(topo):
-    """CIA #2 as the init trace's *last* writes leave it: a lower bound on its sources.
-
-    An ICR write with bit 7 set enables what it names and nothing follows the last
-    write, so this mask can only understate what that emulation enabled: enough to
-    refuse on, never to admit on, which is why :meth:`~.trace.Tracer.run_init`
-    decides over the chip this tracer's own machine has.
-    """
-    cia = CIA(CIA2_BASE)
-    if topo.cia2_icr and topo.cia2_icr & ICR_SET:
-        cia.icr = topo.cia2_icr & ICR_SOURCES
-    cia.running = bool((topo.cia2_control or 0) & 1)
-    return cia
-
-
 def find_entries(data, mem=None, written=None, song=None):
     """``(MachineImage, [Entry])`` -- the pre-init image and the tick schedule of ``data``.
 
@@ -373,15 +504,13 @@ def find_entries(data, mem=None, written=None, song=None):
     through, over ``mem``/``written`` where the caller has them and the pre-init
     image otherwise -- a provisional answer :meth:`~.trace.Tracer.run_init`
     settles once init has had the port. ``song`` (0-based, default the header's
-    ``startsong``) picks whose ``speed`` bit :func:`_cadence` reads. It refuses a
-    second schedule the init trace already shows armed; the rest is
-    :func:`nmi_gate`'s, at the tick it could fire.
+    ``startsong``) picks whose ``speed`` bit :func:`_cadence` reads. A second
+    schedule is :mod:`.nmi`'s, decided over the chip this tracer's own init
+    leaves rather than over a second emulation's last writes.
     """
     img = MachineImage.from_sid(data)
     cycles, source = _cadence(data, img.startsong - 1 if song is None else song)
     topo = _init_topology(data)
-    if topo is not None:
-        nmi_gate(_init_cia2(topo), 0, "second interrupt source armed")
     if img.play:
         return img, [Entry("sub", img.play, cycles, source)]
     installed = {}
@@ -391,7 +520,7 @@ def find_entries(data, mem=None, written=None, song=None):
                 installed[vec[0]] = val
     view = img.mem if mem is None else mem
     seen = set(written or ()) | set(installed)
-    vec, kernal = vector_gate(view, seen, (img.lo, img.hi))
+    vec, kernal = vector_gate(view, seen, (img.lo, img.hi), settled=mem is not None)
     handler = installed.get(vec) or c64.read_vector(view, vec)
     if not handler:
         raise Refusal("no entry", "vector $%04X is installed but null" % vec)

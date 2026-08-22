@@ -359,32 +359,44 @@ IRQ_ENTRY = "entry_irq"
 
 
 def _irq_entry(procs, trace):
-    """The machine's own entry action, ahead of an ``irq`` tick: the interrupt disable.
+    """The machine's own entry action, ahead of an interrupt entry: the disable flag.
 
     The frame it pushed with it is the tick's contract, not a store of the program
     (:func:`~.frames.contract`), so only the flag the machine sets is a statement --
-    and only where the tick has no caller of its own to enter it another way.
+    and only where the entry has no caller of its own to enter it another way.
     """
-    tick = next((n for n, p in procs.items() if p.kind == "tick"), None)
-    if tick is None or trace.meta["entry"]["kind"] != "irq":
-        return procs
-    if any(tick in callees(p) for p in procs.values()):
-        return procs
-    proc = procs[tick]
-    head = proc.blocks[proc.entry]
-    proc.blocks[IRQ_ENTRY] = Block(
-        IRQ_ENTRY, [Let(REGVAR[10], Const(1, 1))], Goto(proc.entry), head.src, head.count
-    )
-    proc.entry = IRQ_ENTRY
+    kinds = {e["addr"]: e["kind"] for e in trace.meta["schedule"]}
+    for name, proc in list(procs.items()):
+        if proc.kind not in ("tick", "nmi"):
+            continue
+        if kinds.get(_entry_addr(proc)) not in ("irq", "nmi"):
+            continue
+        if any(name in callees(p) for p in procs.values()):
+            continue
+        head = proc.blocks[proc.entry]
+        proc.blocks[IRQ_ENTRY] = Block(
+            IRQ_ENTRY, [Let(REGVAR[10], Const(1, 1))], Goto(proc.entry), head.src, head.count
+        )
+        proc.entry = IRQ_ENTRY
     return procs
 
 
-def _seal(proc):
-    """Every successor a block names must exist: an unbuilt one is an unreached trap."""
+def _entry_addr(proc):
+    """The address a built procedure's entry block came from."""
+    return proc.blocks[proc.entry].src
+
+
+def _seal(proc, idle=None):
+    """Every successor a block names must exist: an unbuilt one is an unreached trap.
+
+    The one exception is the ``JMP *`` an init that never returns sits in: control
+    reaching it is the end of that procedure, not a path the trace failed to cover.
+    """
     for lbl in list(proc.blocks):
         for t in succs(proc.blocks[lbl].term):
             if t not in proc.blocks:
-                proc.blocks[t] = Block(t, [], Trap("unreached"), proc.blocks[lbl].src)
+                term = Return(()) if t == idle else Trap("unreached")
+                proc.blocks[t] = Block(t, [], term, proc.blocks[lbl].src)
     return proc
 
 
@@ -429,14 +441,19 @@ def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
     store = Storage(trace, regions)
     b = _Builder(trace, lifted, store, procs, plan)
     out = _irq_entry({name: b.build_proc(cp) for name, cp in procs.items()}, trace)
+    idle = trace.meta.get("init_idle")
+    idle = None if idle is None else "X%04X" % idle
     for p in out.values():
-        _seal(p)
+        _seal(p, idle)
     wire(out)
     tick = [p.name for p in procs.values() if p.kind == "tick"]
     m = dict(trace.meta)
     m.update(meta or {})
     m["tick_proc"] = tick[0] if tick else None
     m["init_proc"] = next((p.name for p in procs.values() if p.kind == "init"), None)
+    nmis = [p.name for p in procs.values() if p.kind == "nmi"]
+    if nmis:
+        m["nmi_procs"] = nmis
     m["stage"] = "S2"
     if b.plan.fams or b.plan.refused:
         m["copies"] = b.plan.to_dict()

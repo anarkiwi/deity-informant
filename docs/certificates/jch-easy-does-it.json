@@ -1,0 +1,76 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects",
+  "nmi preemption schedule"
+ ],
+ "cost": {
+  "calls_per_second": 746,
+  "ir_blocks": 211,
+  "ir_procs": 5,
+  "ir_statements": 669,
+  "regions": 107,
+  "sites": 790,
+  "trace_calls": 1799,
+  "verify_cpu_seconds": 2.4
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 16352,
+  "cycles_per_tick": 19656,
+  "kernal": false,
+  "kind": "irq",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-22T09:28:49Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "schedule": [
+  {
+   "addr": 16352,
+   "cycles_per_tick": 19656,
+   "kernal": false,
+   "kind": "irq",
+   "source": "pal_video"
+  },
+  {
+   "addr": 16617,
+   "cycles_per_tick": 193,
+   "kind": "nmi",
+   "source": "cia2_timer_a"
+  }
+ ],
+ "sid_model": null,
+ "stack": {
+  "depth": 8,
+  "procs": [
+   "nmi"
+  ]
+ },
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": false,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": null,
+   "inputs_pinned": 206710,
+   "interp_prefix": 2000,
+   "nmi_entries": [
+    "nmi"
+   ],
+   "nmis": 199514,
+   "period": null,
+   "seconds": 35.89,
+   "song": 1,
+   "ticks": 1799,
+   "trace_first_repeat": null,
+   "trace_period": null
+  }
+ ],
+ "tune": "Easy_Does_It.sid"
+}
