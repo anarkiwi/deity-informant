@@ -353,9 +353,10 @@ def _init_topology(data):
 def _init_cia2(topo):
     """CIA #2 as the init trace's *last* writes leave it: a lower bound on its sources.
 
-    An ICR write with bit 7 set enables what it names, and nothing follows the last
-    write, so this mask can only understate what is enabled -- sound to refuse on,
-    unsound to admit on, which is why :meth:`~.trace.Tracer.run_init` decides.
+    An ICR write with bit 7 set enables what it names and nothing follows the last
+    write, so this mask can only understate what that emulation enabled: enough to
+    refuse on, never to admit on, which is why :meth:`~.trace.Tracer.run_init`
+    decides over the chip this tracer's own machine has.
     """
     cia = CIA(CIA2_BASE)
     if topo.cia2_icr and topo.cia2_icr & ICR_SET:
