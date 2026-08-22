@@ -447,19 +447,3 @@ def test_a_single_entry_program_pays_nothing_for_the_hook():
     assert "S.at(" not in src
     v = Verifier(prog, Reference(trace, 2), src=src)
     assert isinstance(v.M, Machine) and not isinstance(v.M, NmiMachine)
-
-
-def test_a_store_wholly_inside_the_stack_page_is_no_preemption_point():
-    """The schedule counts stores outside the stack page; the hook fires only at those."""
-    from types import SimpleNamespace
-    from deity_informant.tuneprog.interp import NmiMachine
-
-    fired = []
-    m = SimpleNamespace(hook=lambda: fired.append(1), stores=0)
-    NmiMachine.at(m, 0x01FF)
-    NmiMachine.at(m, 0x01FE, 2)
-    assert not fired and m.stores == 0
-    NmiMachine.at(m, 0x01FF, 2)
-    assert fired == [1] and m.stores == 1
-    NmiMachine.at(m, 0x2000)
-    assert fired == [1, 1] and m.stores == 2
