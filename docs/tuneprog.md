@@ -212,7 +212,7 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
     "stops": {"smc_cell": 4, "stack": 1},      // where the walk refused, by reason
     "blocks": 9, "statements": 57,     // what only a closed path reaches
     "verified_statements": 745,        // the rest of the program
-    "untaken": 8, "frontier": 0        // traps left: directions, and stated-out paths
+    "untaken": 8, "frontier": 0        // traps left: directions, `trap 'unstated'` paths
   },
   "copies": {                          // only where a family folded or refused
     "families": [{"proc": "tick", "bases": ["$12BE", "$12EF", "$1320", "$1351", "$1382"],
@@ -250,8 +250,11 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
 - **`closure`** (under `--closure static`) counts the bounded static walk of the
   untaken directions: `arms`/`closed` the directions, `stops` why the rest refused,
   `blocks`/`statements` what *only* a closed path reaches — each printed
-  `# unverified (static closure)` — and `untaken` the traps left, a direction the
-  walk refused or the arms of a folded row no copy ran. Closed code is reachable
+  `# unverified (static closure)` — `untaken` the traps left, a direction the
+  walk refused or the arms of a folded row no copy ran, and `frontier` the paths the
+  walk ended in `trap 'unstated'`, its frontier trap where the image is silent. The
+  subtune's own `closure` field then reads `static`; the default `trace` is the
+  trace-closed program, every statement covered by execution. Closed code is reachable
   only through edges that were traps, so the state hashes, `period`, `complete` and
   `divergences` are the same certificate's.
 
@@ -444,8 +447,13 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   `jumptab` closes a patched jump over the table's observed extent — 14 of 16 arms
   in GoatTracker's tick-0 table, entries no accessor reached lying outside the
   region. Two bounds narrow that extent without adding candidates: a merged
-  family's k tables are parallel, and the branches on the one path into the dispatch
-  prove a range for the index (Follin's `BPL` puts its command table at 128 and up).
+  family's k tables are parallel, so they start at the same index — the region's own
+  base, the lowest of the k bases, names it — and the branches on the one path into
+  the dispatch prove a range for the index (Follin's `BPL` puts its command table at
+  128 and up). The layout is an inference, the range a proof, applied last. A folded
+  writer names cell and table base through per-copy columns, so copy *j*'s writer is
+  that expression with each column read replaced by its *j*th entry, and the same
+  enumeration runs per copy (Follin song 1: 21 arms per voice).
 - **A merged row a copy never ran is unverified code**: the statement the trace saw
   in another copy, at the address the correspondence gives this one. Coverage 0,
   counted in the certificate, marked per statement (`ghouls-song01`: 133 of 471).
@@ -466,8 +474,9 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   (`sid[v].freq_lo`, `b640F[v]`), any other keeps its read and prints through the
   group view `views.py` names, `voice[v].field`. The read stays because copy 0's
   operand cannot be told from an operand every copy agrees on holding that address.
-  What no rule names keeps its table read with the address visible (two of Follin's
-  60 columns, two of *Automatas*' five).
+  `unroll`, which has no column to keep, refuses a run outright where a cell every
+  copy names equals one the run relocates. What no rule names keeps its table read
+  with the address visible (two of Follin's 60 columns, two of *Automatas*' five).
 - **Names are role-derived**: `timer_2`, `cursor_1490`, `b148D`. A per-family
   dictionary keyed on the player signature would name them from the original source.
 - **16-bit views need one carry chain.** `word.fold16` proves a pair from the carry
