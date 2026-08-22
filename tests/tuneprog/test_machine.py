@@ -287,6 +287,23 @@ def test_the_settle_refuses_a_vector_the_port_init_left_forbids():
     assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
 
 
+def test_a_play_routine_that_moves_the_port_refuses_at_the_next_tick():
+    """The frame is the tick's contract, so the dispatch it implies holds at every tick."""
+    pytest.importorskip("pysidtracker")
+    from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
+
+    blocks = {
+        0x1000: asm(0x1000, *RAW_VEC, "RTS"),
+        0x2000: asm(0x2000, "LDA #$37", "STA $01", "RTI"),  # the KERNAL back in
+    }
+    img, sched = find_entries(psid(blocks, 0x1000, 0x0000, speed=1))
+    tr = Tracer(img, sched[0]).run_init()
+    assert tr.entry.kernal is False
+    with pytest.raises(Refusal) as e:
+        tr.run_calls(2)
+    assert e.value.reason == "port moved" and "call 1" in e.value.detail
+
+
 def test_a_raster_irq_only_the_traced_machine_sees_settles_the_cadence():
     """``$D01A`` with no ``$D012`` write is invisible to the init trace the guess reads."""
     before, after = _settled(*RAW_VEC, *RASTER)
