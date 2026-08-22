@@ -906,8 +906,10 @@ refuse in v1, model as an interleaved schedule later
 (**done, 2026-08-22**: [prototype-nmi.md](prototype-nmi.md). A CIA #2 NMI is the
 schedule's second entry and a second procedure; the tracer takes it at the
 instruction boundary the chip's line asserts at and records the preemption
-schedule, which S8 replays at store granularity. The population is **181 tunes
-of 7,023 with both entries (1.3 % weighted)**, not the ≈ 2 % this row assumed:
+schedule, which S8 replays at store granularity, checking store separability and
+register preservation per NMI. The population is **195 tunes of 7,023 with a
+dispatching NMI beside a play entry, 181 of them with a classified schedule
+(1.3 % weighted)**, not the ≈ 2 % this row assumed:
 43 more have the NMI as their *only* schedule, which is still a single-entry
 program and is not built. `second interrupt source armed` now means only a
 source with no schedule — 6 tunes); tunes whose `init` is the
