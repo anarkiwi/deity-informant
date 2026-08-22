@@ -1,23 +1,19 @@
 # tuneprog decompiler — design
 
 Decompile a SID tune's 6502 playroutine into a **tuneprog**: a small, typed,
-executable program that runs once per play call and is *proven per-call
-equivalent* to the original on the only thing that is observable, the ordered
-sequence of SID register writes. Nothing here is implemented yet; this document
-is the design that the implementation must follow, with the HVSC surveys that
-justify each decision (§9) and the plan to build it (§11).
+executable program that runs once per play call and is *proven per-call equivalent*
+to the original on the only observable, the ordered sequence of SID register
+writes. §9 is the HVSC survey behind each decision;
+[tuneprog-plan.md](tuneprog-plan.md) is the plan.
 
-Companion: [playroutine-anatomy.md](playroutine-anatomy.md) (what players are,
-byte for byte). This document says how to recover that structure automatically.
-Status: the prototype in [prototype-automatas.md](prototype-automatas.md) realises
-S0–S8 in `deity_informant/tuneprog/`; five families are certified (Automatas,
-Commando, Ghouls'n'Ghosts, GoatTracker 2, SID Wizard — 42 certificates) and
-[tuneprog-plan.md](tuneprog-plan.md) records the lessons, the backlog, the
-fold/stack gate and the next prototypes. [prototype-follin.md](prototype-follin.md) is the
-second exemplar: all 32 subtunes of Follin's Ghouls'n'Ghosts, and the corrections
-the operand-cell rule and the patched-branch model needed to get there.
-[tuneprog.md](tuneprog.md) is the guide to what was built: module map, stages,
-tools, certificate schema and the exemplars it is certified on.
+Companion: [playroutine-anatomy.md](playroutine-anatomy.md) (what players are, byte
+for byte); this document says how to recover that structure automatically.
+[prototype-automatas.md](prototype-automatas.md) realises S0–S8 in
+`deity_informant/tuneprog/`; [prototype-follin.md](prototype-follin.md) adds all 32
+subtunes of Follin's Ghouls'n'Ghosts with the operand-cell and patched-branch
+corrections they needed. [tuneprog-plan.md](tuneprog-plan.md) carries the current
+state, backlog, done ledger and process. [tuneprog.md](tuneprog.md) is what was
+built: module map, stages, tools, certificate schema, exemplars.
 
 Contents
 
@@ -25,7 +21,7 @@ Contents
 2. Design principles
 3. Architecture — the pipeline
 4. The tuneprog IR
-5. Stage designs (S0–S8)
+5. Stage designs (S0–S6; S7/S8 under §7)
 6. Anatomy catalogue → mechanism (traceability)
 7. Verification and certificates
 8. Alternatives considered
@@ -38,130 +34,88 @@ Contents
 
 ## 1. Problem statement and definitions
 
-**Tune.** A PSID/RSID container: a 64 KiB image (load band + everything the
-machine supplies: power-on RAM pattern outside the load band, optionally the
-KERNAL/BASIC ROMs), an `init(song)` entry, and a *play entry* — either the
-header's `play` address called by the host, or an interrupt handler the tune
-installs during `init` (raster or CIA), possibly a second one (NMI).
-
-**Tick.** One invocation of a play entry. Ticks occur at the tune's *cadence*: one
-per video frame (PAL 19656 cycles / NTSC 17095), or `latch+1` cycles for a
-CIA-driven player (multispeed = several ticks per frame; a tune that rewrites
-its latch during play has a *dynamic* cadence, which is why schedule effects
-are part of the observable).
-
-**The P/SID header is metadata, not ground truth.** HVSC headers are known to be
-unreliable: `speed` bits, `play`, clock and model fields disagree with what the
-tune actually does often enough that no header field may settle a question the
-machine can answer. The header seeds discovery (load band, `init`, a candidate
-`play`); what a tune *is* — its entries, cadence, clock, chip model behaviour —
-is established only by running it, and the `sidplayfp`/`sidtrace` oracle is the
-arbiter where our own model and the header disagree (the oracle honours the
-same header quirks real players do, e.g. the `speed` bit's 60 Hz default). A
-certificate's claims are therefore stated against the traced machine, and any
-header-derived setting the trace could not confirm is a *pinned assumption*,
-not a fact. "Per frame" in the task statement is "per tick";
-equivalence per tick implies equivalence per frame and is the only useful
-notion for multispeed players.
-
-**Observable.** The ordered list of `(address, value)` SID writes made during a
-tick ($D400–$D7FF, i.e. registers and their mirrors, per chip), plus the
-*schedule effects* — writes that change when the next tick happens (CIA latch
-and control registers, raster compare) — and the same list for `init(song)`.
-Two ticks are observationally equal iff their lists are equal. Within a tick,
-order matters only through gate/TEST edges and last-write-wins, and the exact
-cycle offset of each write matters only to the envelope generator's reaction to
-very short gate/TEST pulses; the strict definition (equal ordered lists) is what
-is certified because it is cheap and needs no SID model, and an optional
-*cycle-annotated* mode adds a cycle offset per write (the lifter's cycle tables
-make this an ordinary accumulator in the IR) for renderers that want it.
-
-**Inputs.** Reads whose value the program does not determine: raster position
-($D011/$D012), CIA registers, SID read-back ($D41B/$D41C, and reads of write-only
-SID registers), interrupt-acknowledge reads ($D019/$DC0D), host-supplied
-registers at entry (A/X/Y at `init`/`play`), and RAM the tune never wrote and
-the image does not cover (power-on pattern). A tuneprog takes these as an
-explicit input stream; equivalence is stated relative to the recorded stream.
-
-**Tuneprog.** A triple `(storage, procedures, meta)`:
-
-- *storage*: named regions with types and initial contents — the tune's state
-  (mutable) and its data (constant tables, the score);
-- *procedures*: `init(song)` and one `tick_k()` per play entry, in a small
-  imperative IR (§4) whose only side effects are stores to storage, SID writes,
-  and input reads;
-- *meta*: cadence/schedule, subtunes, SID model dependence, and the
-  **certificate** (§7): the horizon over which equivalence was checked, and
-  whether the state was proven periodic (then equivalence holds forever).
-
-**Equivalence.** For each subtune, starting from the post-`init` state,
-`tuneprog.tick` and the 6502 program produce identical write lists for every
-tick `0..N−1` (the horizon, ≥ the HVSC song length), given the same input
-stream. *Complete* equivalence: additionally the tuneprog's state at some tick
-`k` equals its state at `k+p` with no inputs consumed → the write sequence is
-periodic from `k` on and the check over one period covers all future ticks.
-
-**Goal.** For as much of HVSC as possible, produce a tuneprog that (a) is
-certified equivalent, (b) is *high level*: registers, flags, self-modifying
-code, addressing modes and unrolled copies are gone; state is named per-voice
-and global variables; tables are typed; the tick is structured
-(`switch(phase)`, `for voice`, `while(fetch)`), approaching the "player in 30
-lines" of the anatomy document — and (c) is produced automatically at HVSC
-scale (60k tunes, ~650 player families) in hours, not weeks.
-
-The output serves three consumers: humans reading a player, tools extracting
-the score/instruments (a tuneprog is a player *plus* typed data — the format
-parsers in `pysidtracker`'s family are hand-written special cases of it), and
-re-implementation on other targets (the tuneprog is executable and portable).
+- **Tune.** A PSID/RSID container: a 64 KiB image (load band plus power-on RAM
+  outside it, optionally the KERNAL/BASIC ROMs), an `init(song)` entry, and a *play
+  entry* — the header's `play` address, or an interrupt handler the tune installs
+  during `init` (raster or CIA), possibly a second one (NMI).
+- **Tick.** One invocation of a play entry, at the tune's *cadence*: one per video
+  frame (PAL 19656 cycles / NTSC 17095), or `latch+1` cycles for a CIA-driven
+  player. Multispeed is several ticks per frame; a tune rewriting its latch during
+  play has a dynamic cadence, which is why schedule effects are observable.
+  Equivalence per tick implies equivalence per frame, and is the only useful notion
+  for multispeed.
+- **The P/SID header is metadata, not ground truth**, disagreeing with what tunes do
+  often enough that no header field may settle a question the machine can answer. It
+  seeds discovery (load band, `init`, a candidate `play`); entries, cadence, clock
+  and chip-model behaviour come from running the tune, and the `sidplayfp`/`sidtrace`
+  oracle arbitrates. A header-derived setting the trace could not confirm is a
+  *pinned assumption*.
+- **Observable.** The ordered `(address, value)` SID writes during a tick
+  ($D400–$D7FF, registers and mirrors, per chip), plus the *schedule effects* —
+  writes that change when the next tick happens (CIA latch and control registers,
+  raster compare) — and the same list for `init(song)`; two ticks are equal iff
+  their lists are equal. Order matters within a tick only through gate/TEST edges
+  and last-write-wins, and the cycle offset only to the envelope generator's
+  reaction to very short pulses, so equal ordered lists is what is certified: cheap,
+  and no SID model needed. An optional cycle-annotated mode adds a cycle offset per
+  write, an ordinary IR accumulator over the lifter's cycle tables.
+- **Inputs.** Reads the program does not determine: raster ($D011/$D012), CIA
+  registers, SID read-back ($D41B/$D41C and reads of write-only SID registers),
+  interrupt-acknowledge reads ($D019/$DC0D), host-supplied registers at entry, and
+  RAM the tune never wrote and the image does not cover (power-on pattern). They are
+  an explicit input stream, and equivalence is stated relative to the recorded one.
+- **Tuneprog.** `(storage, procedures, meta)`: *storage* is named regions with types
+  and initial contents (state, and data — constant tables and the score);
+  *procedures* are `init(song)` and one `tick_k()` per play entry in the IR of §4,
+  whose only side effects are stores to storage, SID writes and input reads; *meta*
+  is cadence/schedule, subtunes, SID model dependence and the **certificate** (§7).
+- **Equivalence.** Per subtune, from the post-`init` state, `tuneprog.tick` and the
+  6502 program produce identical write lists for every tick `0..N−1` (the horizon,
+  ≥ the HVSC song length) on the same input stream. *Complete* equivalence adds a
+  state at tick `k` equal to the state at `k+p` with no inputs consumed, so the
+  writes are periodic from `k` and one period covers all future ticks.
+- **Goal.** For as much of HVSC as possible, a tuneprog that is certified
+  equivalent; *high level* (registers, flags, SMC, addressing modes and unrolled
+  copies gone; state named per-voice and global; tables typed; the tick structured
+  as `switch(phase)`, `for voice`, `while(fetch)`, approaching the anatomy's "player
+  in 30 lines"); and produced automatically at HVSC scale (60k tunes, ~650 families)
+  in hours. Consumers: humans reading a player, tools extracting the
+  score/instruments, re-implementation on other targets.
 
 ---
 
 ## 2. Design principles
 
-1. **The executable IR is the truth; text is a view.** Every stage produces an
-   IR that runs. Structuring, naming, folding are *presentations* of the same
-   semantics, each re-verified. Readability never trades against exactness.
-2. **Dynamic first.** Playroutines are deterministic functions of (state,
-   inputs) that we can execute for their entire life. Executed sites, exact
-   read/write sets, index-register domains, SMC variants, computed-jump targets,
-   JSR/RTS pairing, flag liveness — all are *observed*, not inferred. Static
-   analysis is used only to close small gaps (bounded walks from executed
-   branch sites) and is labelled unverified.
+1. **The executable IR is the truth; text is a view.** Structuring, naming and
+   folding are presentations of the same semantics, each re-verified.
+2. **Dynamic first.** Playroutines are deterministic functions of (state, inputs)
+   executable for their entire life, so executed sites, read/write sets, index
+   domains, SMC variants, computed-jump targets, JSR/RTS pairing and flag liveness
+   are *observed*. Static analysis only closes small gaps (bounded walks from
+   executed branch sites) and is labelled unverified.
 3. **Verify everything, always.** Per-tick differential execution against the
-   emulator is part of the pipeline, not a test suite. A tuneprog without a
-   certificate is not emitted. This turns "is the decompiler correct?" into
-   "does this tuneprog reproduce this tune?", answerable per tune.
-4. **Exact memory model from the access relation.** Which bytes form a
-   variable, an array, a pointer, a table, is computed from what the executed
-   code touched (§5.3), never from heuristics. Heuristics only choose *names*
-   and *layouts of presentation* (voice structs, columns), and even those are
-   re-verified when they change the IR.
-5. **Per tune, per subtune.** No dependency on player identification. Family
-   knowledge (SIDId signature → source names, GT2's `player.s` labels) is an
-   accelerator and a namer, never a prerequisite. Blackbird and GT2 emit a
-   different player per tune; the design must not care.
-6. **Refuse loudly.** Unsupported constructs (a second concurrent interrupt, ROM
-   dependence beyond a budget, non-terminating init, envelope violations)
-   produce a diagnosed refusal, never a silently approximate tuneprog.
+   emulator is part of the pipeline, not a test suite, and a tuneprog without a
+   certificate is not emitted — which makes correctness answerable per tune.
+4. **Exact memory model from the access relation** (§5.3), not heuristics;
+   heuristics choose only names and presentation layouts, re-verified when they
+   change the IR.
+5. **Per tune, per subtune.** Family knowledge is an accelerator and a namer, never
+   a prerequisite: Blackbird and GT2 emit a different player per tune.
+6. **Refuse loudly.** ROM dependence beyond a budget, non-terminating init and
+   envelope violations are diagnosed refusals, never approximations.
 7. **Reuse.** `deity_informant` supplies the illegal-aware lifter with byte
-   provenance (`prov`) and the validated `PcodeVM` (volatile model, IRQ drivers,
-   power-on RAM, PSID loader); `pysidtracker` supplies init tracing, cadence
-   derivation, HVSC/oracle plumbing and note-table detection; `sidtrace`
-   (sidplayfp) is the ground-truth oracle; `networkx` for dominators/loops;
-   `numpy` for trace arrays. New code is the tuneprog-specific middle: regions,
-   SSA over P-code, structuring, idioms, emit, verify.
+   provenance (`prov`) and the validated `PcodeVM`; `pysidtracker` init tracing,
+   cadence derivation, HVSC/oracle plumbing and note-table detection; `sidtrace`
+   (sidplayfp) is the oracle; `networkx` for dominators/loops, `numpy` for trace
+   arrays. New code is the middle: regions, SSA over P-code, structuring, idioms,
+   emit, verify.
 8. **Lift every executed instruction; present none of them.** Instruction-level
-   lifting is where soundness is cheapest (the lifter exists and is validated
-   against py65 and sidplayfp), so the pipeline never guesses at an idiom's
-   meaning — but the *output* is at the level of the anatomy's pseudocode
-   because SSA + DCE discard almost everything an instruction says (flags,
-   register shuffles, addressing modes, self-modification). What is
-   deliberately *not* modelled: unexecuted code (dead for the tune, `trap`),
-   cycle-level timing (only as an optional annotation), CPU registers/flags
-   and the stack (registers and flags are procedure-local values; the stack is
-   eliminated in S4 or explicitly residual),
-   the SID/VIC/CIA as devices (inputs are pinned, outputs are lists), and any
-   musical semantics beyond what the exact storage typing yields.
+   lifting is where soundness is cheapest (the lifter is validated against py65 and
+   sidplayfp), and SSA + DCE discard almost everything an instruction says.
+   Deliberately not modelled: unexecuted code (`trap`), cycle-level timing (an
+   optional annotation), registers/flags and the stack (procedure-local values;
+   eliminated in S4 or explicitly residual), the SID/VIC/CIA as devices (inputs
+   pinned, outputs lists), and musical semantics beyond exact storage typing.
 
 ---
 
@@ -184,30 +138,26 @@ flowchart LR
   S7 --> S8
 ```
 
-Stage outputs are files, so each stage is independently testable and a failure
-is diagnosed at its stage. S8 runs after every IR-changing stage; the emitted
-certificate names the last stage that verified.
+Stage outputs are files, so each stage is independently testable and a failure is
+diagnosed at its stage. S8 runs after every IR-changing stage; the certificate names
+the last stage that verified.
 
-Two products come out of S4, as planned. The **trace-closed** tuneprog — only
-executed code; unexecuted branch directions and unobserved SMC opcode variants
-become `trap` — is the certified core and the default. `--closure static` builds
-the **closed** tuneprog as well: from every untaken branch direction a bounded
-walk follows what the post-init image *states* (no byte a decompiled procedure
-writes, no access the stack could see, targets the image names, a `JSR` a traced
-procedure answers) and those instructions join the trace as zero-coverage sites,
-so the same front end builds them; where the image is silent the walk stops and
-the trap survives. Closed code is faithful if the lifter is (validated against
-py65/sidplayfp) but covered by no execution: it is marked per statement, counted
-in the certificate, and reachable only through edges that were traps, so the
-verified behaviour is the same program's. It is not the default because the
-closed edges reshape the *covered* program for the structurer (§5 S5).
+Two products come out of S4. The **trace-closed** tuneprog — only executed code,
+unexecuted branch directions and unobserved SMC opcode variants becoming `trap` — is
+the certified core and the default. `--closure static` also builds the **closed**
+tuneprog, following from each untaken direction what the post-init image *states*
+(no byte a decompiled procedure writes, no access the stack could see, targets the
+image names, a `JSR` a traced procedure answers); those instructions join the trace
+as zero-coverage sites for the same front end, marked per statement and counted in
+the certificate. It is not the default because closed edges reshape the *covered*
+program for the structurer (§5 S5).
 
 ---
 
 ## 4. The tuneprog IR
 
-Small on purpose: everything a playroutine does is byte/word arithmetic on a
-few hundred bytes of state, table lookups, and stores to 25 registers.
+Small on purpose: everything a playroutine does is byte/word arithmetic on a few
+hundred bytes of state, table lookups, and stores to 25 registers.
 
 ```
 Tuneprog  = { meta, storage: [Region], inputs: [Input], procs: {name: Proc} }
@@ -231,56 +181,24 @@ types     = u8 | u16 | bool   (widths are explicit; wraparound is explicit via &
 Structured= if/else, while, for v in (a..b step s), switch, break/continue, goto (fallback)
 ```
 
-Semantics are the obvious ones; `sidw` appends to the tick's write list, `iow`
-(VIC/CIA stores) to its schedule-effect list; `load` of a `state`/`image`
-region reads the current byte(s); `const` regions fold.
-Indices are checked against the region's observed extent (`assert` → `trap
-"envelope"` beyond it, §5.3). Registers and flags do not exist in the IR — they
-are ordinary `let` values (SSA) that the printer usually inlines.
+`sidw` appends to the tick's write list, `iow` (VIC/CIA stores) to its
+schedule-effect list; `load` of a `state`/`image` region reads the current byte(s);
+`const` regions fold. Indices are checked against the region's observed extent
+(`assert` → `trap "envelope"`, §5.3). Registers and flags do not exist in the IR:
+they are ordinary `let` values (SSA) the printer usually inlines.
 
-**Executable forms.** (1) A reference interpreter over the JSON IR (slow, exact,
-used for the certificate); (2) generated Python (one function per proc; the
-default S8 executor); (3) later, numba-compiled generated code for campaigns
-(the IR uses only fixed-width integers and flat byte arrays, so it is
-numba-friendly by construction). All three must agree — the interpreter is the
-semantics.
+**Executable forms**, all three of which must agree, the interpreter being the
+semantics: a reference interpreter over the JSON IR (slow, exact, for the
+certificate); generated Python, one function per proc (the default S8 executor); and
+later numba-compiled code for campaigns, the IR using only fixed-width integers and
+flat byte arrays.
 
-**Text form.** A pseudocode printer (the anatomy document's style): named
-regions, structured control flow, `sid[v].ctrl = ...` for writes into voice
-blocks, `T16[i]` for typed tables, token-class comments on stream reads.
-
-**Illustration** (target of S5/S6 for `Commando.sid`, hand-written from the
-anatomy §3.1 to show the shape; the real output will differ in names):
-
-```
-state:  voice[3] { pos, pat, lengthleft, savelnthcc, voicectrl, note, instr, portaval,
-                   savefreq: u16, pulsedelay, pulsedir }
-        counter, mstatus, speedctr, speed, music_allowed, sfx { ... }
-const:  FREQ: u16le[96] @ $5428 ; INSTR: u8[13][8] @ $5591 ; SFX: u8[16][16] @ $55F9
-        SONGS @ $56FF ; PATLO/PATHI: u8[45] ; TRACKS ; PATTERNS (stream, grammar §3.1.4)
-
-tick():
-  counter += 1
-  if mstatus & $80: ...; goto sfx
-  if mstatus & $40: lazy_init()
-  speedctr -= 1; if speedctr < 0: speedctr = speed
-  tick0 = (speedctr == speed)
-  for v in 2..0:
-    if tick0:
-      voice[v].lengthleft -= 1
-      if voice[v].lengthleft < 0: fetch_note(v); goto tail
-      if music_allowed and !(voice[v].savelnthcc & $20) and voice[v].lengthleft == 0:
-        sid[v].ctrl = voice[v].voicectrl & $FE; sid[v].ad = 0; sid[v].sr = 0
-    if music_allowed: soundwork(v)
-  tail:
-    music_allowed = !(sfx_enabled and sfx_active)
-  music_allowed = $FF
-  sfx_step()
-```
-
-The same tune's speed divider (`$5052 DEC $5513 / BPL / LDA $5517 / STA $5513`)
-at the three levels the pipeline passes through — raw P-code (`INT_SUB`, N/Z
-flag ops, `STORE`, `CBRANCH` on the N varnode), the S4 certified core, and S5:
+**Text form.** A pseudocode printer in the anatomy's style: named regions,
+structured control flow, `sid[v].ctrl = ...` for writes into voice blocks, `T16[i]`
+for typed tables, token-class comments on stream reads; anatomy §3.1 is the shape
+S5/S6 target for `Commando.sid`. That tune's speed divider
+(`$5052 DEC $5513 / BPL / LDA $5517 / STA $5513`) at two pipeline levels (raw P-code
+is `INT_SUB`, N/Z flag ops, `STORE` and a `CBRANCH` on the N varnode):
 
 ```
 S4:  B0: let t0 = (load(speedctr) - 1) & $FF ; store(speedctr, t0)
@@ -296,42 +214,35 @@ S5:  speedctr -= 1 ; if speedctr < 0: speedctr = speed
 ### S0 — Load, entries, cadence
 
 - Parse the container (`c64.load_psid`, `psid_image`, `psid_songs`); build the
-  64 KiB machine image = power-on pattern (`c64.poweron_ram`) ⊕ load band; ROMs
-  optional (`pysidtracker.roms`), off by default.
-- Run `init(song)` for every subtune under the tracer with a write observer
+  64 KiB image = power-on pattern (`c64.poweron_ram`) ⊕ load band; ROMs optional
+  (`pysidtracker.roms`), off by default.
+- Run `init(song)` per subtune under the tracer with a write observer
   (`pysidtracker.trace_init` semantics: $0314/5, $0318/9, $FFFA–$FFFF, CIA
-  latches/control/ICR, $D011/$D012/$D01A). Derive the **schedule**: the list of
-  play entries per frame with their trigger (video frame or CIA latch), using
-  `pysidtracker.playroutine_cadence` for the primary source and the observed
-  vectors for the entries. `play ≠ 0` → entry `sub(play)`; `play = 0` → the
-  installed handler(s), entered with the IRQ frame (`vm.run_irq`); a `JMP *`
-  or an equivalent idle loop ends a non-returning `init` (§9 measures how often).
-- Emit `meta.schedule = [{entry, kind: sub|irq|nmi, cycles_per_tick, source}]`
-  and `meta.subtunes`.
-- Run `init` under sidplayfp's interrupt model: if `init` enables interrupts
-  and spins (a repeating pc set with no state change) while a source it armed
-  is due, deliver that interrupt (`vm.run_irq_driven` nesting) and continue;
-  a PSID init that waits for its own raster IRQ (Sound-Tracker 64, §9.8)
-  terminates this way, and the handler it waited for is the play entry.
+  latches/control/ICR, $D011/$D012/$D01A). Derive the **schedule** — play entries
+  per frame with their trigger — from `pysidtracker.playroutine_cadence` and the
+  observed vectors. `play ≠ 0` → entry `sub(play)`; `play = 0` → the installed
+  handler(s), entered with the IRQ frame (`vm.run_irq`); a `JMP *` or equivalent
+  idle loop ends a non-returning `init`. Emit
+  `meta.schedule = [{entry, kind: sub|irq|nmi, cycles_per_tick, source}]` and
+  `meta.subtunes`.
+- Run `init` under sidplayfp's interrupt model: if it enables interrupts and spins
+  while a source it armed is due, deliver that interrupt (`vm.run_irq_driven`
+  nesting) and continue. A PSID init waiting for its own raster IRQ (Sound-Tracker
+  64, §9.8) terminates this way, and the handler it waited for is the play entry.
 - Machine model in the tracer: the 6510 port (`$00` direction, `$01` data →
-  effective bank: I/O mapped, RAM under I/O, or character ROM) so that a
-  `$D4xx` store is a SID write only when I/O is mapped (`sidw`) and otherwise
-  a RAM store; a minimal CIA (timers count at cycle rate, ICR flags on
-  underflow, latch reload) so busy-waits on `$DC04`/`$DC0D` behave; VIC raster
-  from the cycle counter as today. All are inputs to be *pinned*, not
-  simulated by the tuneprog.
-- Refuse (with reason) when: `init` neither returns nor idles within budget; no
-  play entry can be found; a second concurrent interrupt source is armed (NMI
-  sample mixer, raster split chains) — v1 scope, §10; the trace executes ROM
-  addresses without ROMs supplied.
+  effective bank) so a `$D4xx` store is a SID write only when I/O is mapped; a
+  minimal CIA (timers count at cycle rate, ICR flags on underflow, latch reload) so
+  busy-waits on `$DC04`/`$DC0D` behave; VIC raster from the cycle counter. All are
+  inputs to be *pinned*, not simulated by the tuneprog.
+- Refuse with a reason when `init` neither returns nor idles within budget, no play
+  entry is found, or the trace executes ROM addresses without ROMs supplied.
 
 ### S1 — Trace
 
-One instrumented run per subtune for `N` ticks, `N` = HVSC song length + margin
-(or until state periodicity is proven, whichever is first; cap configurable).
-The instrument is a `PcodeVM` subclass (the survey prototype
-`tools/survey/tracer.py` is its skeleton). Recorded, keyed by **site** = (pc,
-instruction bytes):
+One instrumented run per subtune for `N` ticks, `N` = HVSC song length + margin, or
+until periodicity is proven, whichever is first (cap configurable). The instrument
+is a `PcodeVM` subclass (`tools/survey/tracer.py` is its skeleton). Recorded, keyed
+by **site** = (pc, instruction bytes):
 
 | record | use |
 |---|---|
@@ -343,240 +254,176 @@ instruction bytes):
 | input reads: (site, tick, value) for every IO/uninitialised/entry-register read | pinned input stream |
 | per tick: instructions, cycles, `blake2b(state footprint)` | cost, periodicity certificate |
 | instruction bytes seen per pc (variants) | SMC opcode/operand cells |
-| *added 2026-08-22 (Q8)*: per NMI of a second entry — tick, instruction index, cycle, handler, stores the tick had made, SP, pushed status, interrupted pc, A/X/Y (`nmilog`) | the preemption schedule S8 replays at store granularity ([prototype-nmi.md](prototype-nmi.md) §4) |
+| per NMI of a second entry: tick, instruction index, cycle, handler, stores the tick had made, SP, pushed status, interrupted pc, A/X/Y (`nmilog`) | the preemption schedule S8 replays at store granularity ([prototype-nmi.md](prototype-nmi.md) §4) |
 
-Cost: **480-580 k instructions/s in Python**, measured on seven runs across six
-families ([tuneprog-plan.md](tuneprog-plan.md) §8 item 7); a full song at
-300 instructions/tick is 3-20 s. The survey's ~200 k was the prototype VM and the
-production tracer was slower still (96 k) until the site key became the VM's
-cache key, so a site's closure, access sets, index domain, register masks and
-edge cells are resolved once and the loop only indexes them. The numba core of
-§11 is refuted at this rate: no mechanism left is over 40 % of the loop, and a
-core that produced these arrays would have to be the whole tracer.
-
-State footprint = the set of RAM addresses written by any tick so far;
-`hash(footprint contents)` per tick with the footprint size as part of the key.
-A repeat `(k, k+p)` with no input reads is the periodicity witness. Two footprints
-are hashed, that one and it without the stack page, because only S4 can say which
-one a certificate may claim on (S4, stack elimination).
+State footprint = the RAM addresses written by any tick so far, hashed per tick with
+the footprint size in the key; a repeat `(k, k+p)` with no input reads is the
+periodicity witness. Two footprints are hashed, that one and it without the stack
+page, because only S4 can say which a certificate may claim on.
 
 ### S2 — Lift and residualise; CFG and procedures
 
-**Lift.** Each site → its raw P-code record (`lift`), taken from the *post-init
-image bytes of that variant*. Then residualise:
+**Lift.** Each site → its raw P-code record (`lift`), from the *post-init image
+bytes of that variant*. Then residualise:
 
-- *operand cells*: an operand byte that any traced op writes **in any phase,
-  `init` included**, is a variable: the lifter's `prov` map says which const
-  varnodes derive from which byte offsets; replace them with `LOAD` from the cell
-  address (immediates → `load(cell)`; absolute address bytes → the address becomes
-  `load16(cell)` + index; branch offsets and JMP operands → computed control,
-  below — a patched *conditional* branch keeps its condition and puts the taken
-  side's targets in the switch). Excluding `init` from the rule is wrong even for
-  the tick's sake: Follin's rip loader patches the operand of its own `CPY #` once
-  per song block and consumes it inside `init`, so a site keyed on the post-init
-  byte runs the first block's copy loop with the second block's count. Cells
-  patched only by `init` (SID Wizard's relocations, Galway's API vectors) are
-  constants as far as the tick code is concerned: S4 folds a known-address load to
-  its post-init byte in the procedures `init` never reaches, so the residualisation
-  costs the tick nothing, while `init` itself keeps the load its own store defines
-  and a multi-subtune build folds nothing.
-- *opcode cells*: a pc with several opcode variants → one node per variant,
-  entered through `switch(load(pc)) {variant: node ...; default: trap}`.
+- *operand cells*: an operand byte any traced op writes **in any phase, `init`
+  included**, is a variable. The lifter's `prov` map says which const varnodes
+  derive from which byte offsets, so immediates become `load(cell)`, absolute
+  address bytes make the address `load16(cell)` + index, and branch offsets and JMP
+  operands become computed control (a patched *conditional* branch keeps its
+  condition and puts the taken side's targets in the switch). Excluding `init` is
+  wrong even for the tick: Follin's rip loader patches its own `CPY #` once per song
+  block and consumes it inside `init`, so a site keyed on the post-init byte runs
+  the first block's copy loop with the second block's count. Cells patched only by
+  `init` (SID Wizard's relocations, Galway's API vectors) cost the tick nothing,
+  since S4 folds a known-address load to its post-init byte in the procedures `init`
+  never reaches.
+- *opcode cells*: a pc with several opcode variants → one node per variant, entered
+  through `switch(load(pc)) {variant: node ...; default: trap}`.
 
-**Edges.** From observed successors. `JMP (ind)`, RTS-trick returns, and
-patched jumps/branches become `switch(target expression) {observed targets;
-default: trap}` where the expression is the pointer or cell read at that site,
-or -- once S4 has eliminated the stack -- the halves an RTS trick pushed
-(e.g. `switch(load16($6375))` for Follin's patched JMP; the domain is
-also known statically when the writers copy from a constant table — S6 names
-it as a jump table). Two readings the expression must get right, both measured
-as failure classes in the campaign ([survey-tuneprog.md](survey-tuneprog.md) §4):
-a `JMP (ind)` dispatches on the word its pointer holds even when the *pointer*
-is the patched operand, so the target is a load through a load; and a patched
-branch's targets are what the **offset bytes the trace ran there** name, since
-an offset of zero lands where the untaken direction lands and no successor
-address can tell the two apart.
+**Edges.** From observed successors. `JMP (ind)`, RTS-trick returns and patched
+jumps/branches become `switch(target expression) {observed targets; default: trap}`,
+the expression being the pointer or cell read at that site, or — once S4 has
+eliminated the stack — the halves an RTS trick pushed (`switch(load16($6375))` for
+Follin's patched JMP; the domain is also known statically when the writers copy from
+a constant table, which S6 names as a jump table). Two readings the expression must
+get right, both measured as failure classes
+([survey-tuneprog.md](survey-tuneprog.md) §4): a `JMP (ind)` dispatches on the word
+its pointer holds even when the *pointer* is the patched operand, so the target is a
+load through a load; and a patched branch's targets are what the offset bytes the
+trace ran there name, since an offset of zero lands where the untaken direction
+lands.
 
-**Procedures.** Entry points = the play entries, `init`, and every JSR target.
-The trace pairs each RTS with the JSR it returns from; a procedure's body is
-the node set reachable from its entry through non-return edges up to its
-matched RTS nodes. Nodes reachable from two entries (shared tails, `JMP` into
-another routine, fall-through into the next routine) are **cloned per entry** —
-context-sensitive, cheap at these sizes (≤ ~1000 sites), and it removes every
-"tail jump/shared exit/fall-through" idiom of anatomy §5.4 by construction: an
-edge into a procedure entry that is not a JSR is a *tail call* (`call f;
-return`), an unmatched RTS is a computed goto to its observed targets, a JSR'd
-routine that never returns to its caller (JCH's `JMP $4742` structure, SW's
-handlers) simply owns the tail it jumps to. Recursion is refused (none
-expected; §9).
+**Procedures.** Entry points = the play entries, `init`, and every JSR target; the
+trace pairs each RTS with its JSR, and a procedure's body is the node set reachable
+from its entry through non-return edges up to its matched RTS nodes. Nodes reachable
+from two entries are **cloned per entry** — context-sensitive, cheap at these sizes
+(≤ ~1000 sites), and it removes every "tail jump/shared exit/fall-through" idiom of
+anatomy §5.4 by construction: a non-JSR edge into a procedure entry is a tail call,
+an unmatched RTS is a computed goto to its observed targets, and a JSR'd routine
+that never returns to its caller (JCH's `JMP $4742` structure, SW's handlers) owns
+the tail it jumps to. Recursion is refused (none expected; §9).
 
-**Call summaries.** From the trace: registers/flags a callee reads before
-writing (live-in) and writes (defs), and the regions it touches. Callers treat
-a call as use of live-ins/def of defs. Flag arguments across `JSR` (anatomy
-§6.2) need nothing special.
+**Call summaries.** From the trace: registers/flags a callee reads before writing
+(live-in) and writes (defs), and the regions it touches. Callers treat a call as use
+of live-ins/def of defs; flag arguments across `JSR` (anatomy §6.2) need nothing
+special.
 
 ### S3 — Storage typing: regions
 
-Access units are P-code ops (a `(zp),Y` load is two ops: pointer fetch and
-target load, so pointer bytes and stream bytes never merge). Build the graph on
-addresses: connect the addresses touched by one op (its footprint), then take
-connected components → **regions**. Properties:
+Access units are P-code ops — a `(zp),Y` load is two ops, pointer fetch and target
+load, so pointer bytes and stream bytes never merge. Connect the addresses touched
+by one op, then take connected components → **regions**:
 
-- every op touches exactly one region; regions are disjoint by construction —
-  aliasing is *exact*, not approximated;
-- size-1 regions are scalars; larger regions are arrays with `base = min`, and
-  an op's index expression is `addr_expr − base` (0 for constant addresses);
-- kind: `state` if any decompiled procedure writes it (init included; a
-  region written only by `init` — Follin's copied song blocks, zero-filled
-  workspaces — is tagged `init-constant` so the printer can present it as a
-  table), `const` if only read and inside the load band (fold into
-  `load(const)` → table),
-  `image` if only read and outside the band (power-on pattern → constant,
-  recorded as an input class for honesty), `io` for $D000–$DFFF (SID writes →
-  `sidw`; VIC/CIA writes kept as stores to an `io` region for faithfulness;
-  reads → inputs);
-- initial contents = the *pre-init* image (load band over the power-on
-  pattern); `init(song)` is a decompiled procedure like any other, so
-  subtune-dependent patching (GoatTracker packs' per-subtune `JMP $xx00`, SID
-  Wizard's SUBTUNES relocation) is ordinary stores into `state` cells that the
-  tick code then loads. The printer may show a post-init snapshot for
-  readability; the executable form runs `init`;
-- SMC operand cells are `state` scalars like any other; opcode cells are
-  `state` scalars read by the variant switch.
+- every op touches exactly one region and regions are disjoint by construction, so
+  aliasing is *exact*;
+- size-1 regions are scalars; larger ones are arrays with `base = min`, an op's
+  index expression being `addr_expr − base`;
+- kind: `state` if any decompiled procedure writes it (init included; a region
+  written only by `init` — Follin's copied song blocks, zero-filled workspaces — is
+  tagged `init-constant` so the printer can present it as a table), `const` if only
+  read and inside the load band, `image` if only read and outside it (power-on
+  pattern → constant, recorded as an input class for honesty), `io` for $D000–$DFFF
+  (SID writes → `sidw`; VIC/CIA writes kept as stores to an `io` region; reads →
+  inputs);
+- initial contents = the *pre-init* image. `init(song)` is a decompiled procedure
+  like any other, so subtune-dependent patching (GoatTracker packs' per-subtune
+  `JMP $xx00`, SID Wizard's SUBTUNES relocation) is ordinary stores into `state`
+  cells the tick code then loads;
+- SMC operand cells are `state` scalars; opcode cells are `state` scalars read by
+  the variant switch.
 
-**Envelope.** An indexed access at run time whose address falls outside its
-region's observed extent traps (`envelope`). This is what makes promoted
-scalars sound: no unobserved access can alias them. Inside the certified
-horizon it never fires (by construction); a periodicity certificate extends
-that to all ticks; beyond an unproven horizon it is the honest failure mode.
+**Envelope.** An indexed access whose address falls outside its region's observed
+extent traps (`envelope`), which is what makes promoted scalars sound: no unobserved
+access can alias them. Inside the certified horizon it never fires by construction,
+a periodicity certificate extends that to all ticks, and beyond an unproven horizon
+it is the honest failure mode.
 
-Layout hints for S6 come free: for a region indexed by X with observed domain
-D, `stride = gcd(D − min D)`, fields = distinct constant offsets mod stride
-(GT2 blocks: D = {0,7,14}, stride 7; Hubbard: D = {0,1,2}, stride 1, 12
-one-field regions of size 3).
+Layout hints for S6 come free: for a region indexed by X with observed domain D,
+`stride = gcd(D − min D)`, fields = distinct constant offsets mod stride (GT2
+blocks: D = {0,7,14}, stride 7; Hubbard: D = {0,1,2}, stride 1, 12 one-field regions
+of size 3).
 
-*Prototype evidence* (instruction-level access relation from the survey tracer,
-30 s of music, nine exemplars): 40–128 regions per tune; the per-voice fields
-appear as size-3 arrays with the anatomy's index domains — Hubbard `$54EC..`
-{0,1,2}; GT2 `$148C..$14BB` and SID Wizard `$1024..` and Blackbird `$12EE..`
-{0,7,14}; defMON `$101B..$135E` {0,49,98}; JCH's mixed 3/4-wide rows; Walker's
-page-2 triples — GT2's 25-byte ghost image and 42-byte A+B block (one region
-because init zeroes it with one loop; the play-time stride view still splits it)
-and the zero-page pointer pairs are isolated. The one artefact of the
-instruction-level prototype (a `(zp),Y` site merges its pointer bytes with the
-stream it reads, giving 20 KiB "arrays") is exactly what the op-level relation
-of the real front end removes.
+*Prototype evidence* (instruction-level access relation, 30 s of music, nine
+exemplars): 40–128 regions per tune, per-voice fields appearing as size-3 arrays
+with the anatomy's index domains — Hubbard `$54EC..` {0,1,2}; GT2 `$148C..$14BB`,
+SID Wizard `$1024..` and Blackbird `$12EE..` {0,7,14}; defMON `$101B..$135E`
+{0,49,98}; JCH's mixed 3/4-wide rows; Walker's page-2 triples — with GT2's 25-byte
+ghost image and 42-byte A+B block one region (init zeroes it with one loop; the
+play-time stride view still splits it). The one artefact of the instruction-level
+prototype, a `(zp),Y` site merging its pointer bytes with the stream it reads into
+20 KiB "arrays", is what the op-level relation removes.
 
 ### S4 — SSA and simplification
 
-- Variables: A, X, Y, SP, C/Z/N/V (D/I/B tracked but almost always dead), each
-  `state` scalar region; arrays stay as ordered memory (stores are statements),
-  `const` regions are pure. Standard SSA construction (dominance frontiers via
-  `networkx`) per procedure; calls use the S2 summaries.
-- Simplification: copy/constant propagation (post-init image constants),
-  dead code elimination (flag computations nobody branches on — the bulk of
-  P-code — vanish; junk stores like Hubbard's `STX $5528` vanish because no
-  read exists), algebraic peepholes.
-- Flags-as-values (anatomy §5.3, §7) need no special pass: `C` defined by a
-  `CMP` forty instructions earlier and consumed by an `ADC` is an SSA value
-  whose defining expression is `(A_k >= imm)`; the `ADC` becomes
-  `t = a + b + (A_k >= imm)`. Known constants fold (`CLC; ADC` → `a + b`);
-  data-dependent carries stay symbolic — exactly right.
-- Idioms (rewrite rules on the SSA graph, each unit-tested with assembled
-  snippets): compare+branch → relational; `DEC/INC` + branch → `if --x < 0`;
-  8-bit add/sub carry chains on adjacent scalars or lo/hi arrays → 16-bit ops;
-  `ASL;TAY;LDA t,Y;LDA t+1,Y` → `T16[i]`; `INC lo;BNE;INC hi` → `ptr += 1`;
-  shift loops → variable shifts; `BIT` N/V tests → `(m & $80)`, `(m & $40)`.
-- Stack elimination (`frames.py` proves it, `stack.py` does it, once the
-  passes have converged): a
-  procedure's stack pointer is its entry value plus its own pushes and pops, so
-  every access names a slot. Where every load on the page is *must*-defined by
-  pushes of its own frame, the page is dead storage: a push becomes the value
-  its pops read (two pushes one pop can read are one value with two
-  definitions), a `PHP`/`PLP` round trip leaves the flag algebra the bit
-  idioms already fold, a return-address push is the continuation the `Call`
-  carries, and `SP` leaves every signature. The frame the *machine* pushed
-  before an `irq` entry is the tick's contract, not storage: the status byte is
-  the entry flags packed, its `RTI` consumes exactly it, and the elimination
-  proceeds as for a `sub` entry. A read the analysis cannot place — a scratch
-  area addressed by a non-constant offset, a `TSX`-relative read of another
-  frame, the pushed return address of that entry frame — can see any byte of the
-  page, so the program keeps its machine stack and the certificate names the
-  procedures that made it residual. Which footprint the periodicity witness may
-  use follows from that same proof, so the tracer hashes both (S1): the whole
-  play-written set, and it without the stack page. An eliminated program writes
-  no stack page and claims on the page-exclusive stream; a residual program
-  claims on the page-inclusive one, because a stack byte it reads back is state
-  like any other — and `--until-period` traces on to that repeat once S4 has
-  said so. Elimination therefore moves no certificate's period, and can only
-  shorten a horizon.
-- Result: an executable, register-free, flag-free, stack-free, SMC-free program
-  in basic-block form. **This is the first certified product** (S8 runs here).
+- Variables: A, X, Y, SP, C/Z/N/V (D/I/B tracked but almost always dead) and each
+  `state` scalar region; arrays stay ordered memory, `const` regions are pure.
+  Standard SSA construction (dominance frontiers via `networkx`) per procedure;
+  calls use the S2 summaries.
+- Simplification: copy/constant propagation over post-init image constants, dead
+  code elimination (flag computations nobody branches on — the bulk of P-code — and
+  junk stores like Hubbard's `STX $5528`, which no read exists for), algebraic
+  peepholes.
+- Flags-as-values (anatomy §5.3, §7) need no special pass: `C` defined by a `CMP`
+  forty instructions earlier and consumed by an `ADC` is an SSA value with defining
+  expression `(A_k >= imm)`, so the `ADC` becomes `t = a + b + (A_k >= imm)`. Known
+  constants fold (`CLC; ADC` → `a + b`); data-dependent carries stay symbolic.
+- Idioms (rewrite rules on the SSA graph, each unit-tested with assembled snippets):
+  compare+branch → relational; `DEC/INC` + branch → `if --x < 0`; 8-bit carry chains
+  on adjacent scalars or lo/hi arrays → 16-bit ops; `ASL;TAY;LDA t,Y;LDA t+1,Y` →
+  `T16[i]`; `INC lo;BNE;INC hi` → `ptr += 1`; shift loops → variable shifts; `BIT`
+  N/V tests → `(m & $80)`, `(m & $40)`.
+- Stack elimination (`frames.py` proves it, `stack.py` does it, once the passes
+  converge): a procedure's stack pointer is its entry value plus its own pushes and
+  pops, so every access names a slot. Where every load on the page is *must*-defined
+  by pushes of its own frame the page is dead storage — a push becomes the value its
+  pops read, a `PHP`/`PLP` round trip leaves flag algebra the bit idioms fold, a
+  return-address push is the continuation the `Call` carries, and `SP` leaves every
+  signature. The frame the machine pushed before an `irq` entry is the tick's
+  contract, not storage, so elimination proceeds as for a `sub` entry. A read the
+  analysis cannot place (a scratch area at a non-constant offset, a `TSX`-relative
+  read of another frame, the pushed return address) can see any byte of the page, so
+  the program keeps its machine stack and the certificate names the procedures that
+  made it residual. Which footprint the periodicity witness may use follows from
+  that proof, so the tracer hashes both (S1). Elimination moves no certificate's
+  period and can only shorten a horizon.
+- Result: an executable, register-free, flag-free, stack-free, SMC-free program in
+  basic-block form. **This is the first certified product** (S8 runs here).
 
 ### S5 — Structuring
 
-Standard structural analysis over the reducible-after-cloning CFG: natural
-loops from the dominator tree (voice loops `DEX;BPL`, `SBX #7;BPL`, copy
-loops, `while(fetch)` sequencer loops), if/else from post-dominance,
-`switch` from the S2 multi-way terms and from compare chains on one value,
-`goto` for the residue. Then two 6502-specific recognitions, both
-presentational: the **phase variable** (the state scalar whose comparisons
-with constants dominate the tick — `speedctr`, `counter`, `SPDCNT`, `$E6` —
-lifted to `switch(phase)`), and the **voice loop** (induction variable with the
-observed domain {0,1,2} or {0,7,14}, or three consecutive calls of one
-procedure with X = constants → `for v in ...: proc(v)`). Structuring never
-changes semantics; the state-machine form remains available as fallback.
+Structural analysis over the reducible-after-cloning CFG: natural loops from the
+dominator tree, if/else from post-dominance, `switch` from the S2 multi-way terms
+and from compare chains on one value, `goto` for the residue. Two 6502-specific
+recognitions, both presentational: the **phase variable**, the state scalar whose
+comparisons with constants dominate the tick, lifted to `switch(phase)`; and the
+**voice loop**, an induction variable with observed domain {0,1,2} or {0,7,14}, or
+three consecutive calls of one procedure with X = constants → `for v in ...`.
+Structuring never changes semantics; the state-machine form is the fallback.
 
 ### S6 — Semantic recovery (presentation, each step re-verified if it edits IR)
 
-- **Per-voice structs**: regions sharing an index domain and stride are grouped
-  into `voice[v].field` views; scalar triples at `base+v` (Follin/Hubbard
-  stride 1) likewise. Ghost/shadow detection: a region whose bytes flow
-  unchanged into `sidw` (GT2's 25-byte image, JCH's shadows) → `sid_image`
-  role, and the flush loop prints as `sid[0..24] = image`.
-- **Unrolled copies** (Galway/Follin voices, Walker's four modulators): *moved
-  to S2c* — the correspondence between k static copies of one template is a
-  property of the post-init image, so it is computed once before the IR exists
-  and the certified program already holds one body under the copy index `v`
-  (`siblings.py`, `copyrows.py`, `copymerge.py`; §5 S2c). What S6 still does is
-  print it: a per-copy column `T_x[v]` becomes the operand it stands for — an
-  affine one through the stride vocabulary (`sid[v].freq_lo`), any other through
-  a group view (`voice[v].field`) whose addresses the state header lists once —
-  and the family's loop prints as `for v in 0..k-1` (`copyview.py`). A column
-  neither rule names keeps its table read. `unroll.py` keeps the *view-level*
-  fold for consecutive isomorphic runs inside one body, which no static
-  correspondence covers.
-- **Tables**: element width from index scaling, parallel columns (same index
-  into regions at constant offset), 1-based (`base−1,Y` with observed Y ≥ 1),
-  pointer tables (lo/hi columns whose values are addresses read by streams),
-  the frequency table (`pysidtracker.notefreq.locate_note_freq`: 96 ascending
-  16-bit values with ratio 2^(1/12)), jump tables (S2 switch domains).
-- **Stream grammars**: for a stream read (a `const`/`state` region indexed by a
-  cursor or a pointer) whose value feeds compare/bit-test trees, extract the
-  decision tree over the byte → token classes with thresholds (anatomy §8.3),
-  emitted as a comment table on the region. Presentation only.
-- **Names**: roles first (sid shadows by register, freq table, counters/timers
-  by `DEC…reload` shape, cursors by "indexes region R", pointers by `(zp),Y`
-  use, phase, voice); then an optional family dictionary keyed by SIDId
-  signature (GT2 `player.s`, SW `player.asm`, undefmon, Blackbird guide labels)
-  matched by structural position, never trusted for semantics.
-
-### S7 — Emit
-
-`tune.tuneprog.json` (IR), `tune_tuneprog.py` (executable), `tune.tuneprog.md`
-(pseudocode + tables + grammar comments), `tune.certificate.json`.
-
-### S8 — Verify
-
-For each subtune: execute the emitted program from the pre-init image
-(`init(song)` then `tick()` × N, feeding the pinned inputs) and compare the
-per-tick write lists with the S1 reference log; on mismatch report the first
-divergent tick, write index, and the IR statement/site. Then the periodicity
-check (state equality at `k` and `k+p`, no inputs) → `complete: true`. The
-reference itself is validated against sidplayfp per frame (`tests/test_oracle.py`
-via `pysidtracker`'s `sidtrace` bridge), closing the chain
-sidplayfp ⇐ PcodeVM ⇐ tuneprog. Relaxed comparison (final value per register +
-gate/TEST edge multiset) is offered as a diagnostic, not as the certificate.
+- **Per-voice structs**: regions sharing an index domain and stride group into
+  `voice[v].field` views, as do scalar triples at `base+v` (Follin/Hubbard stride 1).
+  A region whose bytes flow unchanged into `sidw` (GT2's 25-byte image, JCH's
+  shadows) takes the `sid_image` role, its flush loop printing `sid[0..24] = image`.
+- **Unrolled copies**: *moved to S2c*, the correspondence between k static copies of
+  one template being a property of the post-init image, computed before the IR
+  exists; S6 only prints it (`copyview.py`, [tuneprog.md](tuneprog.md)). `unroll.py`
+  keeps the view-level fold for consecutive isomorphic runs inside one body, which
+  no static correspondence covers.
+- **Tables**: element width from index scaling, parallel columns (same index into
+  regions at constant offset), 1-based (`base−1,Y` with observed Y ≥ 1), pointer
+  tables (lo/hi columns whose values are addresses read by streams), the frequency
+  table (`pysidtracker.notefreq.locate_note_freq`: 96 ascending 16-bit values with
+  ratio 2^(1/12)), jump tables (S2 switch domains).
+- **Stream grammars**: a stream read whose value feeds compare/bit-test trees gives a
+  decision tree over the byte → token classes with thresholds (anatomy §8.3), emitted
+  as a comment table on the region. Presentation only.
+- **Names**: roles first (sid shadows by register, freq table, counters/timers by
+  `DEC…reload` shape, cursors by "indexes region R", pointers by `(zp),Y` use, phase,
+  voice), then an optional family dictionary keyed by SIDId signature, matched by
+  structural position, never trusted for semantics.
 
 ---
 
@@ -591,7 +438,7 @@ gate/TEST edge multiset) is offered as a diagnostic, not as the certificate.
 | tail JMPs, shared tails, fall-through tail calls, loops entered from the middle, `BIT` skip chains, RTS trick, patched JMP/JSR/branch dispatch, compare-chain dispatch, entry into the middle of a routine (§5.4) | S2, S5 | observed edges; clone-per-entry; unmatched RTS / patched operand → switch over observed targets; structuring |
 | SMC: immediates as variables, operand addresses as pointers (broadcast), opcode as boolean/gate/sign/config, computed `STA` operand, register save into immediates, patched data tables, init-time relocation, `JMP`↔`RTS` (§5.5, §6.5) | S2, S3 | residualisation via `prov` (operand cells → loads), variant switch (opcode cells), post-init image folds init-only patches; data-table patches are ordinary stores to `state` regions |
 | sentinels, variable-length records, byte-range token classes, packed rests, eager terminator peek, 1-based tables, parallel columns, bytecode tables, next-byte loop markers, overloaded entries, pre-shifted constants, quarter-tone sums, overlapped freq arrays, PW linearising LUT, LZ decompression inside play, positional token classes (§5.6) | S3, S6 | regions type the storage exactly whatever the trick (overlapping arrays are one region; the LZ ring buffers are `state` arrays filled by the lifted unpacker); grammars/columns/typing are S6 presentation |
-| free-running counter as LFO phase, inverted countdown rate, one-shot pre-load loops, `$D41B` random, keyboard-character scores, countdowns, ghost image flush, everything-from-shadows, look-ahead hard restart, pipeline hard restart, TEST pulses, voice arbitration by loop order, two-flag handshake with an NMI, dither frame skipper, three-phase tick, row timer as phase and index, swing by EOR, host sync register (§5.7) | S1, S4, S5 | all are ordinary computations once registers/flags/SMC are gone; `$D41B`/host cells are inputs; the NMI case is out of v1 scope (§10) |
+| free-running counter as LFO phase, inverted countdown rate, one-shot pre-load loops, `$D41B` random, keyboard-character scores, countdowns, ghost image flush, everything-from-shadows, look-ahead hard restart, pipeline hard restart, TEST pulses, voice arbitration by loop order, two-flag handshake with an NMI, dither frame skipper, three-phase tick, row timer as phase and index, swing by EOR, host sync register (§5.7) | S1, S4, S5 | all are ordinary computations once registers/flags/SMC are gone; `$D41B`/host cells are inputs; the NMI case is §10 |
 | roots/reachability, post-init image, data inside code, wrappers, non-re-entrant init (§6.1, §7 control flow) | S0, S1, S2 | executed sites are the code; regions are the data; per-subtune init runs |
 | calling conventions, IRQ frames, return values (§6.2) | S0, S2 | entry kinds carry the frame; live-in/def summaries |
 | table typing rules (§6.3) | S3, S6 | as above |
@@ -604,84 +451,72 @@ gate/TEST edge multiset) is offered as a diagnostic, not as the certificate.
 
 ## 7. Verification and certificates
 
-`certificate.json`:
+`certificate.json` states the oracle and what it was validated against, what was
+compared (init writes, tick SID writes, tick schedule effects, optionally cycle
+offsets, and with a second entry the NMI preemption schedule and store
+separability), the last stage that verified, the first divergence or `null`, and per
+subtune the ticks, seconds, pinned inputs, period, `complete` and closure mode. The
+written schema, field for field, is [tuneprog.md](tuneprog.md).
 
-```
-{ "oracle": "deity_informant.PcodeVM@<version>", "reference_validated_against": "sidtrace@<tag>|none",
-  "compared": ["init writes", "tick sid writes", "tick schedule effects", "cycle offsets"?],
-  "subtunes": [ { "song": n, "ticks": N, "seconds": s, "inputs_pinned": k,
-                  "period": p|null, "complete": bool, "closure": "trace|static" } ],
-  "stage": "S4|S5|S6", "divergence": null | {tick, index, expected, got, site} }
-```
+S8 executes the emitted program from the pre-init image (`init(song)`, then
+`tick()` × N fed the pinned inputs) and compares each tick's write list with the S1
+reference log, reporting the first divergent tick, write index and IR
+statement/site. The reference log is itself validated against sidplayfp per frame
+(`tests/test_oracle.py` through `pysidtracker`'s `sidtrace` bridge), closing the
+chain sidplayfp ⇐ PcodeVM ⇐ tuneprog. Relaxed comparison (final value per register
++ gate/TEST edge multiset) is a diagnostic, not the certificate.
 
-> **Added 2026-08-22 (Q8, [prototype-nmi.md](prototype-nmi.md)).** A second entry
-> adds `schedule` — the entries beside the tick (`kind`, `addr`,
-> `cycles_per_tick`, `source`, `kernal`, and on an NMI entry `replayed_registers`:
-> the SP, pushed status, return pc and A/X/Y the replay takes from the schedule
-> rather than computing, 6 per NMI) — and `nmis` / `nmi_entries` in the subtune;
-> `compared` gains `"nmi preemption schedule"` and `"nmi store separability"`.
-> The written schema is [tuneprog.md](tuneprog.md).
+The periodicity check runs on the tuneprog's own state (its regions) as well as on
+the emulator's footprint; both must repeat at the same `(k, k+p)`.
 
-The periodicity check is run on the *tuneprog's* state (its regions) as well as
-on the emulator's footprint; both must repeat at the same `(k, k+p)`.
-
-Horizon policy: N ≥ HVSC length + 5 s of ticks; stop early when a period is
-found; hard cap by wall time. Multispeed: N counts ticks. ~~Multi-entry schedules
-(v1: single entry) would carry per-entry logs.~~ *2026-08-22 (Q8): a CIA #2 NMI is
-a second entry and it is one log, not per-entry logs — the entries share the tick
-clock, and the preemption schedule beside the write log is what places them
-([prototype-nmi.md](prototype-nmi.md) §4).*
+Horizon policy: N ≥ HVSC length + 5 s of ticks, stopping early on a period,
+hard-capped by wall time; multispeed counts ticks. A CIA #2 NMI second entry is one
+log, not per-entry logs — the entries share the tick clock, and the preemption
+schedule beside the write log places them
+([prototype-nmi.md](prototype-nmi.md) §4).
 
 Cost budget per tune (Python): trace 3–20 s at the measured 480–580 k
-instructions/s (S1), verify 5–30 s; campaign over HVSC ≈ 300–400 CPU-hours →
-4–6 h wall on 72 cores (§9 sizing). Acceptable for a batch; the lever was the
-tracer's bookkeeping, not a numba core (S1,
-[tuneprog-plan.md](tuneprog-plan.md) §8 item 7).
+instructions/s, verify 5–30 s; a campaign over HVSC ≈ 300–400 CPU-hours → 4–6 h wall
+on 72 cores (§9 sizing). The lever was the tracer's bookkeeping, not a numba core
+([tuneprog-plan.md](tuneprog-plan.md) §3, fast tracer, #271).
 
 ---
 
 ## 8. Alternatives considered
 
-- **Static decompilation (Ghidra with the repo's 6510 SLEIGH module).** Correct
-  for straight code; defeated in practice by SMC operand cells (constants to a
-  static tool), patched dispatch, data inside code, unrolled copies, and no
-  notion of per-tick equivalence. Kept as an inspection tool; its output is not
-  executable against a write log. The 6510 module remains valuable for
-  humans and for cross-checking lifts.
-- **Register-log tools (desidulate, VICE dumps).** Data, not a program: nothing
-  generalises beyond the recorded frames and no structure is recovered.
-- **Per-family hand parsers (`pygoattracker`, `pysidwizard`, …).** Exact and
-  readable for their family, but ~650 families and per-tune player variants
-  (GT2 packer, Blackbird) make hand-writing them the slow path; the tuneprog
-  decompiler produces the equivalent artefact automatically and can *use* the
-  hand-written players as extra oracles.
-- **Symbolic/concolic execution to reach unexecuted paths.** Unnecessary: the
-  tune is finite and deterministic; periodicity proves completeness for
-  looping songs; the remaining unexecuted code is dead for that tune.
-- **Full inlining instead of procedures.** Simpler SSA, but triples the
-  voice engine for the JSR-per-voice players (GT2, SW) and destroys the
-  natural `for v: DOTRACK(v)` — procedures with clone-per-entry keep both.
-- **Learning grammars/semantics (ML).** Not needed for equivalence and cannot
-  certify; the exact access relation gives typing for free.
+- **Static decompilation (Ghidra with the repo's 6510 SLEIGH module)**: defeated by
+  SMC operand cells (constants to a static tool), patched dispatch, data inside
+  code, unrolled copies, and no notion of per-tick equivalence. Kept as an
+  inspection tool and for cross-checking lifts.
+- **Register-log tools (desidulate, VICE dumps)**: data, not a program — nothing
+  generalises beyond the recorded frames.
+- **Per-family hand parsers (`pygoattracker`, `pysidwizard`, …)**: exact for their
+  family, but ~650 families and per-tune player variants (GT2 packer, Blackbird)
+  make them the slow path. They serve as extra oracles instead.
+- **Symbolic/concolic execution to reach unexecuted paths**: unnecessary, the tune
+  being finite and deterministic, with periodicity proving completeness for looping
+  songs and the rest dead for that tune.
+- **Full inlining instead of procedures**: simpler SSA, but it triples the voice
+  engine for the JSR-per-voice players (GT2, SW) and destroys `for v: DOTRACK(v)`.
+- **Learning grammars/semantics (ML)**: cannot certify, and the exact access
+  relation gives typing for free.
 
 ---
 
 ## 9. HVSC survey — the population the design must serve
 
-Two instruments, both in `tools/survey/`: `headers.py` (static census, joined
-with the SIDId family from `hvsc-tracker-catalog`) and `tracer.py`/`run.py`
-(the S1 tracer in prototype form; `report.py` renders the tables). Numbers are
-from runs on 2026-08-16 against HVSC #85 as installed.
+Two instruments in `tools/survey/`: `headers.py` (static census, joined with the
+SIDId family from `hvsc-tracker-catalog`) and `tracer.py`/`run.py` (the S1 tracer in
+prototype form; `report.py` renders the tables). Runs of 2026-08-16 against HVSC #85
+as installed.
 
-**Method.** Population: 61,157 files, 646 SIDId families. Static census over
-all files; dynamic trace of a stratified sample (up to 30 tunes per family,
-seed 1; 7,023 tunes; 60 s of music per tune at its own cadence; the default
-subtune). Rates are given raw over the sample and re-weighted to the HVSC
-population by family size, so a family with 10,000 tunes counts 10,000/30 per
-sampled tune and a 3-tune family counts 1. Caveats: the prototype VM has no CIA
-timer/6510-port emulation and attributes memory accesses per instruction (the
-production front end does both better, §5); "period found" is bounded by the
-60 s horizon.
+**Method.** Population 61,157 files, 646 SIDId families; static census over all
+files; dynamic trace of a stratified sample (up to 30 tunes per family, seed 1;
+7,023 tunes; 60 s of music per tune at its own cadence; the default subtune). Rates
+are given raw over the sample and re-weighted to HVSC by family size. Caveats: the
+prototype VM has no CIA timer/6510-port emulation and attributes memory accesses per
+instruction (the production front end does both better, §5); "period found" is
+bounded by the 60 s horizon.
 
 ### 9.1 Outcomes of the dynamic trace (sample of 7023 tunes, 646 families)
 
@@ -776,7 +611,8 @@ Failure families (top, by HVSC weight): 4753_Softcopy (30), Basic/Jim_Butterfiel
 
 ### 9.6 Engine identity within families (is decompilation reusable across a family?)
 
-Executed-opcode-sequence signature (operands masked, relocation-invariant): distinct signatures per family in the sample.
+Executed-opcode-sequence signature (operands masked, relocation-invariant):
+distinct signatures per family in the sample.
 
 | family (HVSC size) | sampled | distinct engines | largest identical group |
 |---|---|---|---|
@@ -801,8 +637,10 @@ Executed-opcode-sequence signature (operands masked, relocation-invariant): dist
 | Laxity_NewPlayer_V21 (314) | 29 | 29 | 1 |
 | Loadstar_SongSmith (313) | 30 | 4 | 26 |
 
-Weighted over families with ≥ 5 traced samples: **5 %** of tunes share their exact executed opcode sequence with the modal tune of their family (upper bound on 'decompile the engine once' reuse; lower bound because different songs exercise different code).
-
+Weighted over families with ≥ 5 traced samples: **5 %** of tunes share their exact
+executed opcode sequence with the modal tune of their family — an upper bound on
+'decompile the engine once' reuse, and a lower bound because different songs
+exercise different code.
 
 ### 9.7 Population facts (static census, all 61,157 files) and song lengths
 
@@ -818,159 +656,101 @@ Weighted over families with ≥ 5 traced samples: **5 %** of tunes share their e
 | load band size median / p90 / p99 / max | 3.6 / 11.2 / 42.6 / 63.5 KiB | |
 | load address < $1000 / ≥ $A000 | 6,898 / 6,245 | 11.3 % / 10.2 % |
 
-Song lengths (`Songlengths.md5`, 87,868 subtunes): median 93 s, mean 110 s,
-p90 233 s, p99 429 s, max 2026 s; 37 % ≤ 60 s, 79 % ≤ 180 s, 96 % ≤ 300 s.
-Tracing every subtune for its full length is 485 M ticks at PAL frame rate
-(more for multispeed) — at the prototype's median 6 s per 60 s of music that
-is ≈ 300 CPU-hours, ≈ 4–5 h wall on this 72-core box, per full pass.
+Song lengths (`Songlengths.md5`, 87,868 subtunes): median 93 s, mean 110 s, p90
+233 s, p99 429 s, max 2026 s; 37 % ≤ 60 s, 79 % ≤ 180 s, 96 % ≤ 300 s. Tracing every
+subtune for its full length is 485 M ticks at PAL frame rate (more for multispeed) —
+at the prototype's median 6 s per 60 s of music, ≈ 300 CPU-hours, ≈ 4–5 h wall on
+this 72-core box, per full pass.
 
 ### 9.8 What the survey decides
 
 1. **The unit is the tick, the observable is the write list.** 11 % of tunes are
-   CIA-timed and a third of those at rates that are not frame multiples
-   (Master Composer, SoundMonitor, Electrosound run the sequencer at a
-   tempo-derived rate); "per frame" would be undefined for them.
+   CIA-timed, a third of those at rates that are not frame multiples (Master
+   Composer, SoundMonitor, Electrosound), so "per frame" would be undefined.
 2. **Dynamic first is not optional.** 57 % of tunes (weighted) modify executed
-   instruction bytes during play — mostly operand cells (53 %), 4.4 % opcode
-   cells — and 96 % patch the load image at init. Static disassembly of the
-   file bytes is wrong for most of HVSC; the post-init image plus operand
-   residualisation is the baseline, not a refinement.
-3. **The inputs are small in number and mechanically classifiable.** 6.9 % of
-   tunes read something volatile in play; on inspection the bulk are `BIT
-   $D020` skip idioms and `INC/DEC $D020` raster-time bars (dead after DCE, or
-   pure schedule-irrelevant `iow`), then CIA (1.8 %), SID read-back (0.4 %),
-   raster (0.1 %). Pinned input streams cover all of them; nothing needs a
-   hardware model inside the tuneprog. 7.8 % read RAM the file does not cover:
-   the power-on pattern must be part of the machine image (it is:
-   `c64.poweron_ram`).
-4. **The programs are tiny and flat.** Median 400 executed sites, p99 ≈ 1,100,
-   max 2,092; median 100 bytes of state, p99 700; JSR depth p90 = 2, no
-   recursion observed; `JMP (ind)` in 1 %, unmatched RTS in 0.4 %, `(zp,X)` in
-   1.2 %, illegal opcodes in 1.5 %. Every graph algorithm in S2–S6 may be
-   quadratic; cloning per entry costs nothing; SSA over a few thousand values
-   is instant. The tracer and the verifier, not the analyses, are the cost.
-5. **Voice state announces itself.** In 92 % of tunes at least half of the
-   indexed sites use an index domain of {0,1,2}, {0,7,14} or {0..3}; the SID
-   stride {0,7,14} appears in 90 % of tunes, {0,1,2} in 83 %. Region stride
-   analysis (S3) will recover per-voice structs for the great majority without
-   any family knowledge; the unrolled minority (Galway/Follin style) is what
-   S6's copy folding is for.
-6. **Decompile per tune.** Exact executed-code identity within a family is
-   ~5 % (packers strip features, songs exercise different code, generated
-   players differ per tune); 6-gram opcode similarity within a family is
-   0.2–0.7 against ~0 across families. So: family signatures identify, they do
-   not license reuse. Family knowledge enters only as name dictionaries aligned
-   by structure (S6).
-7. **Scope for v1 is 95 %+ of HVSC.** The prototype already traces 97 %
-   (weighted). Refusals: NMI-driven sample players and speech systems whose
-   `init` is the main program (Reflextracker, Music Processor, D.A.I.S.Y.,
-   4753 Softcopy, Comer NMI samplers — ≈ 1.5 %), BASIC programs, and `play = 0`
-   tunes that install nothing we recognise (1.4 %). Two prototype gaps are
-   design items, not refusals: (a) PSID inits that spin waiting for their own
-   raster IRQ (Sound-Tracker 64: 18 of 24 sampled) need the S0 init runner to
-   deliver armed interrupts during init, as sidplayfp does; (b) the tracer
-   needs a minimal CIA timer/ICR model so init busy-waits on `$DC0D`/`$DC04`
-   terminate.
-8. **Model the 6510 port.** 7.3 % of tunes write `$01` during play; the values
-   are `$35/$36/$37` (I/O stays mapped) or `$00–$03` (players that use
-   `$00/$01` as a zero-page pointer after clearing the data-direction register,
-   so the writes do not bank). Both are harmless to the SID only *because* of
-   the port semantics; the tracer must compute the effective bank from
-   `$00`/`$01` and classify a `$D4xx` store as a SID write only when I/O is
-   mapped, so the exception (a store while I/O is banked out) is caught rather
-   than assumed away.
-9. **Second interrupts exist but are rare.** A CIA-2 timer armed at init in
-   2.0 %, an NMI vector in 2.1 % (digi mixers, sync channels). v1 refuses
-   them; the extension is a schedule with two entries and shared regions.
-10. **Periodicity is common enough to matter, but needs full-length traces.**
-    Within 60 s the state repeats for 12.6 % (mostly songs shorter than 60 s);
-    since the median song is 93 s and 79 % are under 3 min, tracing to song
-    length + a margin is what makes complete certificates the norm for looping
-    tunes.
+   instruction bytes during play — operand cells 53 %, opcode cells 4.4 % — and 96 %
+   patch the load image at init, so static disassembly of the file bytes is wrong
+   for most of HVSC.
+3. **The inputs are few and mechanically classifiable.** 6.9 % read something
+   volatile in play, mostly `BIT $D020` skip idioms and `INC/DEC $D020` raster bars
+   (dead after DCE, or schedule-irrelevant `iow`), then CIA 1.8 %, SID read-back
+   0.4 %, raster 0.1 %; pinned streams cover all of them. 7.8 % read RAM the file
+   does not cover, so the power-on pattern is part of the image (`c64.poweron_ram`).
+4. **The programs are tiny and flat.** Median 400 executed sites, p99 ≈ 1,100, max
+   2,092; median 100 bytes of state, p99 700; JSR depth p90 = 2, no recursion;
+   `JMP (ind)` 1 %, unmatched RTS 0.4 %, `(zp,X)` 1.2 %, illegals 1.5 %. Every graph
+   algorithm in S2–S6 may be quadratic; the tracer and verifier are the cost.
+5. **Voice state announces itself.** In 92 % of tunes at least half the indexed
+   sites use a domain of {0,1,2}, {0,7,14} or {0..3}; the SID stride appears in
+   90 %, {0,1,2} in 83 %. Region stride analysis (S3) recovers per-voice structs
+   without family knowledge; the unrolled minority is what copy folding is for.
+6. **Decompile per tune.** Exact executed-code identity within a family is ~5 %, and
+   6-gram opcode similarity within a family 0.2–0.7 against ~0 across families:
+   signatures identify, they do not license reuse, so family knowledge enters only
+   as name dictionaries aligned by structure (S6).
+7. **Scope for v1 is 95 %+ of HVSC**; the prototype already traces 97 % (weighted).
+   Refusals: NMI-driven sample players and speech systems whose `init` is the main
+   program (Reflextracker, Music Processor, D.A.I.S.Y., 4753 Softcopy, Comer NMI
+   samplers — ≈ 1.5 %), BASIC programs, and `play = 0` tunes installing nothing
+   recognised (1.4 %). Two prototype gaps were design items, not refusals: PSID
+   inits spinning on their own raster IRQ (Sound-Tracker 64: 18 of 24 sampled) need
+   S0 to deliver armed interrupts during init, and the tracer needs a minimal CIA
+   timer/ICR model so init busy-waits on `$DC0D`/`$DC04` terminate.
+8. **Model the 6510 port.** 7.3 % write `$01` during play, either `$35/$36/$37`
+   (I/O stays mapped) or `$00–$03` (players using `$00/$01` as a zero-page pointer
+   after clearing the data-direction register, so the writes do not bank). Both are
+   harmless to the SID only *because* of the port semantics, so the tracer computes
+   the effective bank and calls a `$D4xx` store a SID write only when I/O is mapped.
+9. **Second interrupts exist but are rare**: a CIA-2 timer armed at init in 2.0 %,
+   an NMI vector in 2.1 % (digi mixers, sync channels). The extension is a schedule
+   with two entries and shared regions (§10).
+10. **Periodicity is common enough to matter, but needs full-length traces.** Within
+    60 s the state repeats for 12.6 %, mostly songs shorter than 60 s; the median
+    song is 93 s and 79 % are under 3 min, so tracing to song length + margin is
+    what makes complete certificates the norm for looping tunes.
 
 ---
 
 ## 10. Scope
 
-Supported in v1 (must be certified or refused): PSID and RSID with a single
-play entry (header `play`, or one installed IRQ handler on the VIC frame or a
-CIA timer, including KERNAL-vectored handlers via the ROM-free stubs);
-multispeed; multiple subtunes; PAL and NTSC; all documented illegal opcodes;
-every SMC class; volatile inputs (pinned); power-on RAM; SID-model-dependent
-init (both models pinned); 2SID/3SID (register space per chip — a small
-extension of `sidw`).
+Deferred, with the survey's weighted share: tunes whose `init` is the main program
+or needs KERNAL/BASIC ROM execution beyond a small budget (BASIC-program tunes,
+speech systems, game engines; ≈ 1.5 %) — refuse; `play = 0` tunes installing no
+recognised vector (1.4 %). Expected v1 coverage ≥ 95 % of HVSC (§9.8 item 7). A
+second concurrent interrupt is a schedule with two entries and shared regions
+([prototype-nmi.md](prototype-nmi.md)); an NMI that is a tune's *only* schedule
+(43 of 7,023) is a single-entry program that is not built, and `second interrupt
+source armed` means a source with no schedule.
 
-Deferred (with the survey's weighted share of HVSC): a second concurrent
-interrupt — NMI sample mixers, sync channels, raster-split chains (≈ 2 %) —
-refuse in v1, model as an interleaved schedule later
-(**done, 2026-08-22**: [prototype-nmi.md](prototype-nmi.md). A CIA #2 NMI is the
-schedule's second entry and a second procedure; the tracer takes it at the
-instruction boundary the chip's line asserts at and records the preemption
-schedule, which S8 replays at store granularity, checking store separability and
-register preservation per NMI. The population is **195 tunes of 7,023 with a
-dispatching NMI beside a play entry, 181 of them with a classified schedule
-(1.3 % weighted)**, not the ≈ 2 % this row assumed:
-43 more have the NMI as their *only* schedule, which is still a single-entry
-program and is not built. `second interrupt source armed` now means only a
-source with no schedule — 6 tunes); tunes whose `init` is the
-main program or needs KERNAL/BASIC ROM execution beyond a small budget
-(BASIC-program tunes, speech systems, game engines; ≈ 1.5 %) — refuse;
-`play = 0` tunes that install no vector we recognise (1.4 %). Expected v1
-coverage: ≥ 95 % of HVSC (§9.8 item 7).
-
-Out of scope: audio rendering (a tuneprog feeds an existing SID emulator through
-its write list), musical semantics beyond what typing/grammar recovery yields.
+Out of scope: audio rendering (a tuneprog feeds an existing SID emulator through its
+write list), musical semantics beyond what typing/grammar recovery yields.
 
 ---
 
 ## 11. Implementation plan
 
-Package: `deity_informant/tuneprog/` — `trace.py` (S0/S1), `lift.py` (S2),
-`regions.py` (S3), `ssa.py`/`simplify.py`/`idioms.py` (S4), `structure.py`
-(S5), `recover.py` (S6), `ir.py`/`emit.py`/`interp.py` (IR, printers,
-interpreter, Python codegen), `verify.py` (S8), `cli.py` hooks
-(`deity-informant tuneprog TUNE.sid --out DIR`). Tests: assembled snippets
-(`jennings` assembler) per idiom → trace → decompile → verify (hermetic, xdist);
-the nine anatomy exemplars as end-to-end certified cases (cached HVSC fetch as
-in `tests/test_oracle.py`); the campaign driver as `tools/`.
-
-| milestone | deliverable | acceptance |
-|---|---|---|
-| M0 front end | S0/S1 as library + CLI; trace files; periodicity; refusal reasons | reproduces the survey on the sample; nine exemplars traced with the anatomy's numbers |
-| M1 certified core | S2–S4 + IR + interpreter/codegen + S8 | 9/9 exemplars certified at S4 (trace-closed); ≥ 90 % of the supported survey sample certified; every failure diagnosed by stage |
-| M2 readable | S5 + idioms + names + tables | pseudocode for the nine exemplars reads like anatomy §3.x.3; still 9/9 certified |
-| M3 semantic | S6 voice/copy folding, grammars, family names; static closure option | Galway/Follin/Walker fold to one voice/modulator procedure; grammar tables match anatomy §8.3 |
-| M4 campaign | HVSC-wide run, coverage report by family, numba tracer/executor if needed | certificate table for all supported tunes; refusals categorised |
-
-Every stage under the 60 s per-script rule is met by parallel drivers
-(`tools/survey/run.py` pattern: `OPENBLAS_NUM_THREADS=1`, SIGINT-ignoring
-workers, per-tune timeouts).
+Superseded by [tuneprog-plan.md](tuneprog-plan.md): §1 what is built, §2 the
+backlog, §3 the record. Tests are assembled snippets (`jennings` assembler) per
+idiom → trace → decompile → verify (hermetic, xdist), the nine anatomy exemplars end
+to end (cached HVSC fetch as in `tests/test_oracle.py`), and the campaign drivers in
+`tools/`. The 60 s per-script rule is met by parallel drivers (`tools/survey/run.py`:
+`OPENBLAS_NUM_THREADS=1`, SIGINT-ignoring workers, per-tune timeouts).
 
 ---
 
 ## 12. Risks and open questions
 
-- **Horizon without periodicity.** Non-looping tunes and tunes with very long
-  periods are certified only to the horizon; the closure option gives faithful
-  but unverified code beyond it. Report, don't hide.
-- **Trace cost in Python** for the whole HVSC (≈ 300–400 CPU-hours). Mitigation:
-  stop at periodicity, cap by song length; the 2026-08-22 tracer is 3.0–3.5×
-  and closes the gap the campaign measured (S1) without a numba core.
-- **Envelope traps** are the price of promoted scalars; a tune that starts
-  indexing a table differently after the horizon traps rather than misbehaves.
-- **Second interrupts** (digi): ≈ 2 % of HVSC (§9); refused in v1 rather than
-  approximated. **`$01` banking** (7 % write it in play) is modelled in the
-  tracer through the 6510 port so that a store to a banked-out `$D4xx` is
-  seen for what it is.
+- **Horizon without periodicity.** Non-looping and very-long-period tunes are
+  certified only to the horizon; the closure option gives faithful but unverified
+  code beyond it. Report, don't hide.
+- **Envelope traps** are the price of promoted scalars: a tune that starts indexing
+  a table differently after the horizon traps rather than misbehaves.
 - **Structuring quality** on gnarly CFGs (Follin's 21-way handler loops, SW's
   branch-offset dispatch): the state-machine fallback keeps certification
   independent of prettiness.
-- **Emulator fidelity** is inherited: PcodeVM's volatile model ($D012 from
-  cycles, `$D41B` from cycles) is what inputs are pinned to; the oracle test
-  bounds the gap to sidplayfp. The survey found two machine-model gaps the
-  tracer must close before M0 (init-time interrupt delivery, CIA timers) and
-  one it must add for correctness (the 6510 port); each is small and
-  testable against `sidtrace`.
-- Open: how far to push copy folding automatically (affine operand vectors
-  cover the nine exemplars; unusual layouts may need a hint file); whether to
-  carry per-op cycle counts in the IR (cheap; enables cycle-annotated inputs).
+- **Emulator fidelity** is inherited: PcodeVM's volatile model (`$D012` and `$D41B`
+  from cycles) is what inputs are pinned to, and the oracle test bounds the gap to
+  sidplayfp.
+- Open: how far to push copy folding automatically (affine operand vectors cover the
+  nine exemplars; unusual layouts may need a hint file); whether to carry per-op
+  cycle counts in the IR (cheap; enables cycle-annotated inputs).

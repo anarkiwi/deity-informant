@@ -7,7 +7,7 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl"}` raw P-Code; `CYCLETIME`/`EXTRACYCLES` tables.
 - `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers.
 - `deity_informant/c64.py` — power-on RAM, PSID/RSID loader, IRQ vector discovery, ROM-free IRQ dispatch stubs.
-- `deity_informant/tuneprog/` — the tuneprog decompiler: a `.sid` becomes a certified per-tick program plus pseudocode. Module map, pipeline stages, certificate schema and the certified exemplars: `docs/tuneprog.md`.
+- `deity_informant/tuneprog/` — the tuneprog decompiler: a `.sid` becomes a certified per-tick program plus pseudocode (`docs/tuneprog.md`).
 - `deity_informant/cli.py` — `deity-informant` console script, including `tuneprog` (the pipeline).
 - `ghidra/6510/` — SLEIGH module (`6510.slaspec` = stock 6502 + generated `6510_illegal.sinc`), `build.py`, and a headless Ghidra integration test (`headless/`, run via `Dockerfile.ghidra`).
 - `examples/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
@@ -16,12 +16,12 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 - `docs/tuneprog-decompiler-design.md` — design of the tuneprog decompiler (SID tune -> certified per-tick-equivalent high-level program): definitions, pipeline, IR, verification, HVSC survey, plan.
 - `docs/tuneprog-plan.md` — plan v4: where we are, the backlog by lever, the done ledger, process and execution order.
 - `docs/prototype-automatas.md`, `-follin.md`, `-goattracker.md`, `-sidwizard.md`, `-jch.md` — the certified exemplars (defMON, Follin's *Ghouls'n'Ghosts*, GoatTracker 2, SID Wizard 1.6/1.9, JCH NewPlayer V20): ground truth, what broke, the generic fix, the evidence.
-- `docs/prototype-kernal-entry.md` — the installed-handler family (PSID `play == 0`, CINV entries): the entry convention, the screened population, two evidence certificates.
-- `docs/prototype-nmi.md` — the second interrupt: a CIA #2 NMI as the schedule's second entry. The population classified by what the handler does, the chip model it needed, the interleaving against `sidplayfp`, and the first two-entry certificate (JCH's *Easy Does It*).
-- `docs/prototype-commando-floor.md` — the complexity floor of one simple tune: what the print costs against the tune's own bytes, where its statements live, a hand-factored form, and the one region-typing rule that would produce it.
+- `docs/prototype-kernal-entry.md` — the installed-handler family (PSID `play == 0`, CINV entries): entry convention, screened population, two evidence certificates.
+- `docs/prototype-nmi.md` — the second interrupt (a CIA #2 NMI as the schedule's second entry): the population by handler kind, the chip model it needed, the interleaving against `sidplayfp`, the first two-entry certificate.
+- `docs/prototype-commando-floor.md` — the complexity floor of one simple tune: print cost against the tune's own bytes, where its statements live, a hand-factored form, and the region-typing rule that would produce it.
 - `docs/survey-tuneprog.md` — the pipeline over the stratified 7,023-tune HVSC sample: certification rate by family, failure classes, refusal reasons, stack/entry/fold distributions, cost and the fast-tracer verdict.
-- `docs/ghidra-highpcode-export.md` — the independent baseline: the trace's SMC cells as SLEIGH context values, the facts export, the headless high-P-Code/C export, and the oracles that compare Ghidra with the tuneprog.
-- `tools/tuneprog_certify.py` — end-to-end certification driver (`TUNE.sid --out DIR`), chunked against a CPU budget; `docs/certificates/` holds the certificates for the exemplars. `tools/tuneprog_recert.py` reproduces every one of them and diffs it field for field. `tools/tuneprog_period.py` classifies why a subtune has no state repeat (counter, drifting accumulator, or aperiodic). `tools/tuneprog_floor.py` measures a finished output directory against its own tune: load-band split, `xz` description lengths, printed statements by code range and kind, and the 16-bit pair check.
+- `docs/ghidra-highpcode-export.md` — the independent baseline: SMC cells as SLEIGH context values, the facts export, the headless high-P-Code/C export, and the oracles comparing Ghidra with the tuneprog.
+- `tools/` — `tuneprog_certify.py` (end-to-end certification driver, chunked against a CPU budget; `docs/certificates/` holds the exemplars' certificates), `tuneprog_recert.py` (reproduces every certificate and diffs it field for field), `tuneprog_period.py` (why a subtune has no state repeat: counter, drifting accumulator, or aperiodic), `tuneprog_floor.py` (load-band split, `xz` description lengths, printed statements by code range and kind, 16-bit pair check).
 - `tools/survey/` — HVSC survey instruments behind that design: `tracer.py` (dynamic per-site tracer on `PcodeVM`), `run.py` (stratified parallel driver), `headers.py` (static census), `report.py` (markdown tables), `tuneprog_sweep.py` (the whole pipeline over the same sample, resumable), `tuneprog_report.py` (its tables).
 
 ## Install
