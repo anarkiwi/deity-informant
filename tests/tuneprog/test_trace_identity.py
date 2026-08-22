@@ -11,10 +11,10 @@ import json
 import numpy as np
 import pytest
 
-from deity_informant.tuneprog.machine import Entry, find_entries
+from deity_informant.tuneprog.machine import Entry
 from deity_informant.tuneprog.trace import Tracer
 
-from _asm import asm, banked_out, psid, sid_image
+from _asm import asm, banked_out, sid_image
 
 PLAY = 0x1000
 ARRAYS = (
@@ -178,12 +178,11 @@ def build_irq():
 
 
 def build_song(song):
-    """One subtune of a two-subtune image: init's A reaches play's state."""
+    """One subtune of a two-subtune image: the song number in A reaches play's state."""
     play = asm(PLAY, "LDA $1FF0", "STA $D400", "RTS")
     init = asm(0x1100, "STA $1FF0", "RTS")
-    data = psid({PLAY: play, 0x1100: init}, 0x1100, PLAY, {0x1FF0: 0}, songs=2)
-    img, schedule = find_entries(data, song=song)
-    t = Tracer(img, schedule[0], song=song)
+    img = sid_image({PLAY: play, 0x1100: init}, 0x1100, PLAY, {0x1FF0: 0})
+    t = Tracer(img, Entry("sub", PLAY, 19656, "cia_timer"), song=song)
     t.run_init()
     t.run_calls(2)
     return t.trace()
@@ -193,11 +192,11 @@ EXTRA = {
     "irq": (build_irq, "4058e2e77484fb6fa373c5afa23594074fe4c38584beb8c5b91a2599c7f1d293"),
     "song0": (
         lambda: build_song(0),
-        "f47631ffdcca4ed954a6c1559725b3b11f7f2b0947905a1f26fd0b5f967438e8",
+        "76e0e40123f3f3d2228211b3725e1a95e80dce20ef56bf1ee4b797946a752e9c",
     ),
     "song1": (
         lambda: build_song(1),
-        "dd8e5a0c6d83596b71f256a5b5d387ecff7a4cad2d5ddcc5770fe542c535e3c5",
+        "bf3787cb9b71bae8e969354e04892443f11e999697b7e1324af12d3408b63639",
     ),
 }
 
