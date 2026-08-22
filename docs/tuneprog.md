@@ -137,6 +137,12 @@ which is that map's key, and `tunes.resolve` finds the file under `$HVSC` or in
 the `$DEITY_ORACLE_CACHE/hvsc` fetch cache. Adding a tune is one line there, and
 a hermetic test refuses an HVSC path written anywhere else.
 
+`tools/survey/tuneprog_sweep.py` runs this pipeline over design §9's stratified
+7,023-tune HVSC sample (resumable, parallel) and `tools/survey/tuneprog_report.py`
+renders [survey-tuneprog.md](survey-tuneprog.md); `tools/tuneprog_floor.py`
+measures a tune's complexity floor (code/data split, xz baselines, statement
+census — [prototype-commando-floor.md](prototype-commando-floor.md)).
+
 `tools/tuneprog_period.py` says why a subtune the certificate could not close
 has no state repeat (`period.py`): it samples every footprint cell and every SID
 write per tick and reports each cell's own smallest period, the loop the SID
