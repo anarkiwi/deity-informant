@@ -115,7 +115,6 @@ class _Stream:
                 # between the two calls (otherwise the next tick may differ).
                 self.period = call - prev[0]
                 self.first_repeat = call
-        return v, n
 
 
 class Tracer:

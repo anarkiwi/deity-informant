@@ -139,7 +139,12 @@ class TraceVM(FlowRecorder, PcodeVM):
         return self._input(a, v, pci, "uninit_ram")
 
     def _chip_rd(self, a, pci):
-        """A ``$D000-$DFFF`` read: the chip when the port maps it, else the RAM under it."""
+        """A ``$D000-$DFFF`` read: the chip when the port maps it, else the RAM under it.
+
+        The CIA model of :mod:`.machine` answers every ``$DCxx``/``$DDxx`` timer
+        and ICR read, superseding the base VM's ``ciaicr`` flag: a ``TraceVM``
+        driven by ``run_irq_driven`` would not see that driver's raised source.
+        """
         if not self.io:
             return self.mem[a]
         v = self.override.get(a)

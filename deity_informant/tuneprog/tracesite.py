@@ -86,8 +86,9 @@ def compile_site(vm, pc, rec, slot, idx, rs, ws):
     """The site's P-Code as one nullary closure over the VM and its own access sets.
 
     Register file, uniques, ``rd``/``wr``, the ``(pc, op index)`` pair of each
-    access and the address set it fills are all baked in, so attribution costs no
-    lookup; the index domain is sampled first, before any op can move a register.
+    access and the address set it fills are baked in, so a ``(zp),Y`` pointer
+    fetch and the stream load it feeds are attributed separately at no lookup
+    cost; the index domain is sampled before any op can move a register.
     """
     lines = []
     ns = {"r": vm.reg, "u": vm.uniq, "rd": vm.read, "wr": vm.write}
