@@ -32,7 +32,7 @@ Automatas exercises nearly all design mechanisms at once:
 
 Runner-up Blackbird (§3.9) has the nastiest CFG but is single-speed, tiny, with
 no play-time opcode cells, no volatile reads and no struct-of-code; second
-target, checklist in §8.
+target ([tuneprog-plan.md](tuneprog-plan.md) §1).
 
 ---
 
@@ -278,7 +278,7 @@ the committed traces after S5/S6 landed. E3–E9 are checked mechanically in
 | E8 | illegal opcodes | the six kinds lift and the certificate holds (E1) | **6** (`ANC`, `ALR`, `SAX`, `LAX zp`, `LAX (zp),Y`, `SBX`) |
 | E9 | inputs | exactly two input sites (`$D012` wait, `$D41B`), both in init; play consumes none | `$D012` at `$14CE` (2,227 reads), `$D41B` at `$14E3` (1 read), both `init`; play consumes none |
 | E10 | genericity | `Commando.sid` certified at S4 over its HVSC length by the same code, no flags, 0 divergences | songs 1 and 2, 0 divergences, no flags but `--song` |
-| E11 | readability | `tuneprog.md` has the structure of §9: two rates, three tables, per-call `writeout → filter → cascades → oscillator`, main-only row advance, per-voice fields named by role | §6.1 excerpts; asserted mechanically in `tests/tuneprog/test_hvsc_print.py` |
+| E11 | readability | `tuneprog.md` prints two rates; three tables (`state`, `const`, `inputs`); the per-call chain `writeout → filter → cascades → oscillator`; row advance on main ticks only; per-voice fields named by role | §6.1 excerpts; asserted mechanically in `tests/tuneprog/test_hvsc_print.py` |
 | E12 | codegen = interpreter | `interp.Interp` and `tuneprog.py` agree on a 5,000-call prefix, 0 divergences | 2,000-call prefix on every certificate (500 for the 10 s model-override run) |
 | E13 | budgets | any single script invocation <= 60 s CPU via chunking; full E1 wall <= 15 min on one core-equivalent; reported in the certificate's `cost` | trace 149,025 calls in ~2 chunks; front end + S4 0.2 s, verification 9.2 s (16,136 calls/s), S5/S6 + printing 0.4 s |
 
@@ -450,9 +450,9 @@ Reconciliations with the plan:
   `tuneprog.S5.json`/`.S6.json` are annotations; the certificate's `stage` is
   `S6` with a `presentation` note; tests assert the S4 JSON is byte-identical
   before and after (`pipeline.present`).
-- Names come from S6's roles, so §9's semantic names do not all appear: `af`,
-  `ps`, `detune` and the pre-shifted flag copies reach no role and print as
-  `voice[v].b101B`; `voice[v]` itself comes from stride and element count.
+- Names come from S6's roles, so the semantic names of anatomy §3.7.7 do not all
+  appear: `af`, `ps`, `detune` and the pre-shifted flag copies reach no role and
+  print as `voice[v].b101B`; `voice[v]` itself comes from stride and element count.
 - Note table: `FREQ_LO`/`FREQ_HI` at 30 s, merged into one `FREQ` by the TR
   overrun over the full run.
 - Copies fold only when shapes are equal (`unroll.py`): write-out folds to
@@ -525,127 +525,23 @@ Reconciliations with the plan:
 
 ---
 
-## 7. Work plan, tests, CI, budgets
+## 7. Budgets and CI
 
-Each step is a PR-sized unit with its own tests; A/B mark units that can proceed
-in parallel once their inputs exist.
-
-| step | unit | depends on | tests | ~size |
-|---|---|---|---|---|
-| 1 | `trace.py` per-op attribution, sites/edges/calls, logs, inputs, hashes, resume, `trace.json/npz` | `PcodeVM` | assembled snippets (jennings): per-op sets, JSR/RTS pairing incl. tail entry, variant keys, input record/replay/override, resume equivalence | 400 |
-| 2 | `machine.py` entries/cadence/init runner/port+CIA hooks | 1 | Automatas: schedule; a synthetic `$01` banking snippet; a CIA busy-wait snippet | 200 |
-| 3A | `lift.py` residualisation + variants | 1 | immediate cell → load; abs-address cells → load16; opcode variants; prov coverage of all modes | 200 |
-| 3B | `regions.py` | 1 | stride/field detection on synthetic stride-1/7/49 layouts; pointer vs stream separation; kinds | 250 |
-| 4 | `cfg.py` procedures/clones/switches/summaries | 3A | tail call, shared tail cloning, unmatched RTS switch, `JMP (ind)`, dual-entry routine (a synthetic model of `$1022`) | 400 |
-| 5 | `ir.py` IR + JSON + `Interp` | 3A, 3B | differential fuzz: random straight-line 6502 (as `tests/test_vm.py` does) lifted → IR → `Interp` equals `PcodeVM` | 400 |
-| 6 | `ssa.py` + `idioms.py` | 4, 5 | each pass preserves `Interp` results on fuzz programs; DCE removes all flag ops in a flag-free program | 500 |
-| 7 | `emit.py` (Python codegen + certificate) + `verify.py` | 5, 6 | E12 on Commando; **milestone A: E1/E2/E4–E10 on Automatas** | 400 |
-| 8 | `structure.py` | 6 | reducible synthetic CFGs; `for` recognition; phase; goto fallback keeps E1 | 400 |
-| 9 | `recover.py` + printer | 8 | roles on Automatas/Commando; **milestone B: E11** | 400 |
-| 10 | `cli.py`, docs, CI wiring | 7, 9 | CLI smoke on Commando (short horizon) | 100 |
-
-Parallelisable: 3A ∥ 3B; 5 ∥ 4; 8 ∥ 9's role logic.
-
-- Unit tests hermetic (assembled snippets), default job, `-n auto`, coverage
-  ≥ 85 % of `deity_informant/`.
-- End-to-end tests fetch `Commando.sid` and `Automatas.sid` via
-  `pysidtracker.testing.resolve_tune` into `.oracle-cache` (gitignored), marked
-  `hvsc`.
-- CI `oracle` job runs them short-horizon (Commando 20 s, Automatas 30 s of music
-  ≈ 12k calls, ≈ 40 s tracing + verify, under the per-script budget); 30 s of
-  Automatas never reaches cascade B1's `JSR $13B0`, so those tests assert
-  equivalence, not the full-song structure of E3–E9.
-- Full certificate (E1/E2 to the first state repeat, 149,024 calls):
-  `tools/tuneprog_certify.py` in resumable chunks (`--resume`), each invocation
-  < 60 s CPU, committed as `docs/certificates/automatas.json`.
-- Budgets (survey tracer, Python): 277 k instructions/s; 12,029 calls (30 s of
-  music) in 9 s wall; the full certificate needs 149,024 calls ≈ 110 s of tracing
-  plus a similar verify → 2–3 resumable chunks each. Memory: sites × per-op sets
-  ≈ MBs; `wlog` 3.6 M rows as `npz` ≈ 25 MB.
-- Coding rules (global CLAUDE.md): black, pylint clean, xdist, numpy for bulk
-  arrays, no narrative comments, every module ≤ ~500 lines; the survey tracer is
-  replaced by `trace.py`, which the survey tools then import.
+- Full certificate (E1/E2, 149,024 calls): `tools/tuneprog_certify.py` in
+  resumable chunks (`--resume`), each invocation < 60 s CPU.
+- `wlog` 3.6 M rows as `npz` ≈ 25 MB; coverage ≥ 85 % of `deity_informant/`.
 
 ---
 
-## 8. Risks and fallbacks
+## 8. Open risks
 
-- Site identity vs varying operands: `$10D8` alone shows six byte patterns (`RTS`
-  plus `LDA #` with five flag values), so keying by `(pc, opcode, fixed operand
-  bytes)` after the written-cell set is known is essential — the naive full-bytes
-  key explodes the CFG. Fallback: two-pass tracing, a short first run to learn
-  cells.
-- The `$1022` dual entry: mishandling the tail edge `$1003 → $1022` makes `main`'s
-  `$14CA RTS` look unmatched, so step 4's unit test models that shape first.
-- Regions over code bytes: union-find runs over all addresses including executed
-  instruction bytes. A region spanning opcode `$10D8` and operand `$10D9` does not
-  form, since different ops touch them (the variant switch reads `$10D8`, the
-  `LDA #` reads `$10D9`); asserted in step 3B.
-- Periodicity closes only after a transient: state at the first arranger jump
-  differs from state at init (slide accumulators, PW bounce phase, cascade
-  counters), so the tracer keeps every call's hash and runs to the first repeat
-  (149,024 against 20,000) rather than stopping at the first arranger jump
-  (129,024).
-- Cost: 100 s traced per full pass exceeds the per-script rule, so chunking is
-  mandatory from step 1 (resume state).
-- The two SID models: `PcodeVM`'s `$D41B` model returns `(cycles>>3)&0xFF`, so the
-  default trace's model depends on init timing; the `override` policy makes both
-  explicit and both must certify (E1).
-- `LAX (zp),Y` at `$1745` reads the row through `$FB/$FC`; pointer and row regions
-  must not merge (op-level attribution) or the row bytes appear as `state`.
-  Covered by 3B's pointer/stream test.
-- Next target Blackbird, a CFG stress test with no new mechanism expected:
-  `(zp,X)` addressing (`LDA ($E0,X)` — a pointer *table* indexed by X, so regions
-  must key the pointer fetch by X), `NOP #imm` two overlapping sites, `JMP`↔`RTS`
-  opcode patched around init's `JSR $1009`/`JSR $1003` (a JSR target inside play —
-  clone-per-entry again), the four-phase patched `JMP` low byte (switch with three
-  targets), carry live across eight instructions (SSA), the LZ unpacker's ring
-  buffers as `state` arrays.
+- Site identity: `$10D8` alone takes six byte patterns (`RTS` plus `LDA #` with
+  five flag values), so the site key drops play-written operand bytes (§4);
+  the naive full-bytes key explodes the CFG.
 
 ---
 
-## 9. Appendix A — target shape of the printed tuneprog
-
-Target for `tuneprog.md` after S5/S6, from anatomy §3.7.7; names are role-derived
-unless the stretch dictionary is used.
-
-```
-meta:    entry sub $0FE3 every 2457 cycles (8.0/frame, CIA-1); 1 subtune; sid_model = pinned($D41B) → 8580
-state:   call_counter (@$0FE4)
-         voice[3] stride 49 { slide_lo, slide_hi, af, ps, detune, vbit, vmask,        -- record @$1019+49v
-                              pw_lo, pw_hi, freq_lo, freq_hi, sr, ad, wg, wgx,        -- SID image @$1023.. (immediates)
-                              row_timer, pat_ptr(4 copies), flag_raw, flag1, flag2, flag3,
-                              cascA.cnt, cascA.idx, cascB.cnt, cascB.idx, note_base, note }
-         filter { res_route(@$10AA), mode(@$10AF), acc_lo, acc_hi, step_lo, step_hi, dir(opcode @$10B8/$10BF),
-                  cp(@$10CA), thr(@$10CE), scale(opcode @$10D4) }, flag(@$10D9), arr_row(@$10EB)
-const:   FREQ_LO/HI u8[156] @$1554/$15F0 ; SIDTAB_LO/HI @$1800/$1900 ; DL @$1E00 ; PAT_LO/HI @$1A00/$1A80
-         ARR0/1/2 @$1B00/$1C00/$1D00 ; PATTERNS @$1F00.. (stream) ; SIDROWS @$2C8F.. (records)
-inputs:  init: $D012 wait ×2227, $D41B ×1
-
-tick():                                  -- $0FE3
-  cnt = call_counter; call_counter += 1
-  if cnt & 7 == 0: main() else: sub()
-
-main():  writeout(); filter(); rowadvance(); cascades(); oscillator()
-sub():   writeout(); filter();               cascades(); oscillator()      -- via the $10D8 return
-
-writeout():  for v: sid[v].pw = voice[v].pw_lo/hi ; sid[v].freq = …; sid[v].sr; sid[v].ad; sid[v].ctrl = wg ^ wgx
-             sid.res_route = filter.res_route ; sid.mode_vol = filter.mode | $0F
-filter():    acc ±= step (switch dir) ; if acc_hi < 0: acc_hi = thr ; c = acc_hi + cp ; clamp ; sid.cutoff_hi = c (<<1 if scale)
-rowadvance(): if flag < 0: gap = flag & $0F ; timers = gap ; row = ARR[arr_row] (jump on $FF) ; pat_ptr[v] = PAT[row[v]] ; arr_row++
-             for v (unrolled ×3): if timer < 0: consume(v) elif --timer < 0: prepare(v)
-cascades():  for each of 6 (unrolled): if cnt == 0: apply(row) elif cnt > 0: cnt--
-oscillator(): for v in ($62,$31,0): freq = FREQ[36+note] (+ slide acc | + detune) ; pulse bounce by ps
-row_apply(row):  flags1/flags2 column decoder → stores into the cells above     -- $168C
-```
-
-The S4 form is the same program with `load(cell)`/`store(cell)` and explicit byte
-arithmetic; S6 names come from roles (SID image by data flow to `sidw`, timers by
-`DEC…reload`, cursors by "indexes region R").
-
----
-
-## 10. Appendix B — measured SMC inventory
+## 10. Appendix — measured SMC inventory
 
 Measured over 30 s of music. The 700 s run adds cascade B1's `1382 LDA #` /
 `1391 LDY #`, raises some writer counts (e.g. `1022 LDX #` to 5), and totals 88

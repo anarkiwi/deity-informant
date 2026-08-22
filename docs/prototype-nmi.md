@@ -175,7 +175,7 @@ column (nearest match, 1,500 frames), two causes.
 
 * **`$0318` dispatch stub — modelled** (`nmi.KERNAL_STUB`, §2): with the KERNAL
   mapped the line reaches `$FE43`, whose `SEI; JMP ($0318)` costs 7 cycles the
-  tracer used to skip. On *Iisibiisi*, modelling it moves the median offset −1 → +8
+  tracer charges. On *Iisibiisi*, modelling it moves the median offset −1 → +8
   cycles and instants matching an oracle instant 1,781 → 4,119 within 2 cycles,
   5,503 → 12,356 within 8, of 64,664 (8.5 % → 19.1 %). *Easy Does It* takes the raw
   `$FFFA`, unmoved: 256 within 2, 936 within 8, of 21,149. On the `$0318` path — 84
@@ -340,10 +340,10 @@ first run, before the pinned input stream was partitioned by entry (§4), certif
 
 ### The 317 the port fix released
 
-`find_entries` used to refuse over the pre-init port, a guess about a port init
-moves; `Tracer._settle` now decides once init has had it (`vector banked out`
-323 → 6 on the sample). 318 tunes refuse `vector banked out` under the pre-PR rule;
-317 released, one still refuses. All through the same pipeline at 30 s: 691,335
+`Tracer._settle` decides the entry vector once init has had the port, not
+`find_entries` over the pre-init port (`vector banked out` 323 → 6 on the
+sample). 318 tunes refuse `vector banked out` under the pre-PR rule; 317
+released, one still refuses. All through the same pipeline at 30 s: 691,335
 ticks.
 
 | outcome | tunes / 318 | raw | HVSC-weighted |

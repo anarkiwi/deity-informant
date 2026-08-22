@@ -693,7 +693,7 @@ adds one more of the JAM class (*Edge_of_Disgrace.sid*, `JAM at $00FE`), 16 more
 
 | finding | § | consequence |
 |---|---|---|
-| 344 of 399 divergences before tick 3 | 4 | the next correctness work is diagnostic, not more compute |
+| 344 of 399 divergences before tick 3 (93 in init, 123/67/61 at ticks 0/1/2; 55 later) | 4 | systematic modelling gaps the first tick exposes, not short horizons or drift |
 | `trap switch` (189) and `unverified`/`untaken` (78) were one cause: three front-end readings of computed control | 4 | 189 → 177 and 78 → 78 certified; 4 tunes left, on an unmatched `RTS` |
 | `SidFactory_II/Laxity`, the largest divergence-only family (29/30, 380 HVSC tunes), certifies whole | 3, 4 | the class was those mechanisms, not the sibling closure |
 | a real second schedule is 2.2 % of HVSC by weight (1.8 % armed by end of init); 0.8 % was misdiagnosed evidence | 5 | the largest addressable population, modelled in PR #272; admitting the 0.8 % moves 3 tunes to `certified`, the rest to `no entry` / `vector banked out` |
