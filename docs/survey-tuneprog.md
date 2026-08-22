@@ -2,65 +2,49 @@
 
 Companion to [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md)
 (section 9 is the *static* survey this one joins),
-[tuneprog-plan.md](tuneprog-plan.md) (section 8 item 1 is this campaign) and
-[tuneprog.md](tuneprog.md). This is the measurement that turns nine certified
-exemplars into a distribution: what the whole pipeline does to 7,023 tunes, what
-it refuses, where it diverges, what it costs.
-
-Nothing here was fixed while it was measured. Every failing tune is a data
-point with its reason; none was retried into passing, no family was admitted,
-no certificate was committed.
+[tuneprog-plan.md](tuneprog-plan.md) (this campaign is PR #267) and
+[tuneprog.md](tuneprog.md): what the whole pipeline does to 7,023 tunes, what it
+refuses, where it diverges, what it costs. Nothing was fixed while it was
+measured — no tune was retried into passing, no family admitted, no certificate
+committed.
 
 Contents: 1 method · 2 outcomes · 3 by family · 4 failure classes · 5 refusals ·
 6 completeness and the period pass · 7 the machine stack · 8 entry and cadence ·
 9 copy folding · 10 data-gated class sizes · 11 what the programs look like ·
-12 cost and the fast-tracer gate (12b the tracer, built) · 13 crashes · 14 what it changes
+12 cost and tracer throughput · 13 crashes · 14 what it changes
 
 ---
 
 ## 1. Method
 
-**Sample.** The same stratified sample design section 9 traced: up to 30 tunes
-per SIDId family, seed 1, drawn from `hvsc-tracker-catalog`'s `results.csv` over
-HVSC #85 as installed — **7,023 tunes present on disk, 645 families**. HVSC #85 holds 61,157 `.sid`
-files and the SIDId catalogue covers 60,388 of them, which is the population the
-weighting maps onto (the static survey reported 646 families for the same 7,023
-tunes; the catalogue has moved by one family since 2026-08-16). The
-instrument is `tools/survey/tuneprog_sweep.py`, which imports `run.py`'s
-`_sample`, so the two surveys sample the same files.
-
-**One subtune per tune** — the header's `startsong`, the pipeline's default.
-This keeps the cost bounded and matches design section 9; it means a
-multi-subtune tune is measured on one of its songs, and the 20 % of HVSC with
-more than one subtune is under-sampled in everything below.
-
-**Two passes.** Pass 1 runs `pipeline.run` to a **30 s horizon**
-(`--seconds 30`) over all 7,023. Pass 2 re-runs tunes pass 1 certified with
-`--until-period --max-calls 400000`, so a tune whose state repeats is upgraded
-from a horizon to a complete program. Defaults otherwise: trace closure, sibling
-copies merged, S5/S6 text on, `--prefix 2000` interpreter cross-check.
-
-**Pass 2 is a scaled sample**, and the scaling is stated rather than hidden: the
-period run costs far more per tune than the horizon run (a tune with no repeat
-traces to `--max-calls` or to the wall cap), so pass 2 takes the **first three
-per family** of the certified tunes in path order — **1,338 of the 5,384** — a
-nesting of the same seed-1 stratification. Families with three or fewer
-certified tunes are covered entirely; the largest families contribute three
-each, so pass 2's raw rates are more evenly spread across families than pass 1's
-and its weighted rates carry more variance per family.
-
-**Timeout.** 120 wall seconds per tune in pass 1, 300 in pass 2, fixed before
-the run from a 50-tune pilot (median 3.9 s, p90 13.5 s, max 18.4 s) and not
-tuned afterwards. A tune that hits it is recorded as `timeout`, never retried.
-Each worker is capped at 8 GiB of address space; an over-run is recorded as
-`oom`.
-
-**Weighting.** Rates are given raw over the sample and re-weighted to the
-catalogued HVSC population by family size, exactly as design section 9 does it:
-a sampled tune of family *f* counts *N_f / n_f*, so a 10,720-tune family counts
-357 per sampled tune and a 3-tune family counts 1. Weighted rates answer "what
-happens to a tune drawn from HVSC", raw rates answer "what happens to a player
-family".
+- **Sample.** Design section 9's stratified sample: up to 30 tunes per SIDId
+  family, seed 1, from `hvsc-tracker-catalog`'s `results.csv` over HVSC #85 as
+  installed — 7,023 tunes on disk, 645 families (646 in the static survey for the
+  same 7,023; the catalogue moved by one family since 2026-08-16). HVSC #85 holds
+  61,157 `.sid` files, of which the SIDId catalogue covers 60,388: the population
+  the weighting maps onto. `tools/survey/tuneprog_sweep.py` imports `run.py`'s
+  `_sample`, so both surveys sample the same files.
+- **One subtune per tune** — the header's `startsong`, the pipeline default,
+  matching design section 9. The 20 % of HVSC with more than one subtune is
+  under-sampled throughout.
+- **Two passes.** Pass 1 runs `pipeline.run` to a 30 s horizon (`--seconds 30`)
+  over all 7,023. Pass 2 re-runs pass-1 certified tunes with `--until-period
+  --max-calls 400000`. Defaults otherwise: trace closure, sibling copies merged,
+  S5/S6 text on, `--prefix 2000` interpreter cross-check.
+- **Pass 2 is a scaled sample.** The period run costs far more per tune (no
+  repeat means tracing to `--max-calls` or the wall cap), so it takes the first
+  three per family of the certified tunes in path order — 1,338 of 5,384, a
+  nesting of the same seed-1 stratification. Families with three or fewer
+  certified tunes are covered entirely, so pass 2's raw rates spread more evenly
+  across families and its weighted rates carry more variance per family.
+- **Timeout.** 120 wall seconds per tune in pass 1, 300 in pass 2, fixed before
+  the run from a 50-tune pilot (median 3.9 s, p90 13.5 s, max 18.4 s) and not
+  tuned afterwards. A tune that hits it is recorded as `timeout`, never retried.
+  Each worker is capped at 8 GiB of address space; an over-run is `oom`.
+- **Weighting.** Rates are given raw over the sample and re-weighted to the
+  catalogued HVSC population by family size, as design section 9 does: a sampled
+  tune of family *f* counts *N_f / n_f*, so a 10,720-tune family counts 357 per
+  sampled tune and a 3-tune family counts 1.
 
 **Reproduction.**
 
@@ -73,14 +57,12 @@ family".
 
 `--only FILE` restricts a run to the HVSC-relative paths that file lists, which
 is how the corrections below re-measure one failure class without re-running the
-sample.
+sample. Per-tune artefacts are pruned as each row is written; only the JSONL rows
+survive, and neither they nor any certificate are committed.
 
-Per-tune artefacts are pruned as each row is written; only the JSONL rows
-survive, and neither they nor any certificate they describe are committed.
-
-**Provenance.** Both passes ran on `main` at `6b8ef25`. #265 (equality
-saturation in S6) merged while they ran; it is an opt-in `--eqsat` presentation
-flag that never touches the certified S4 program, so nothing here is stale.
+**Provenance.** Both passes ran on `main` at `6b8ef25`. #265 (equality saturation
+in S6) merged while they ran; it is an opt-in `--eqsat` presentation flag that
+never touches the certified S4 program.
 
 ---
 
@@ -94,14 +76,16 @@ flag that never touches the certified S4 program, so nothing here is stale.
 | crashed | 11 / 7023 | 0.2 % | 0.0 % |
 | timeout | 7 / 7023 | 0.1 % | 0.0 % |
 
-**A tune drawn from HVSC certifies with probability 0.91 at a 30 s horizon** —
-section 6 measures what a longer one costs that figure. Certified means the
-emitted Python reproduced the tune's per-tick SID and schedule write lists
-against the tracer for the whole horizon, with zero divergences — the same
-acceptance test the 46 committed certificates pass. `diverged` means a
-certificate exists and records a divergence; `refused` means the pipeline
-diagnosed an unsupported construct (design principle 6) and produced nothing;
-`crashed` means an undiagnosed exception, which is a bug in us.
+A tune drawn from HVSC certifies with probability 0.91 at a 30 s horizon;
+section 6 measures what a longer one costs that figure. Definitions:
+
+- **certified** — the emitted Python reproduced the tune's per-tick SID and
+  schedule write lists against the tracer for the whole horizon, zero
+  divergences: the acceptance test the 46 committed certificates pass.
+- **diverged** — a certificate exists and records a divergence.
+- **refused** — the pipeline diagnosed an unsupported construct (design
+  principle 6) and produced nothing.
+- **crashed** — an undiagnosed exception, i.e. a bug.
 
 The raw/weighted gap is the shape of HVSC: the families that fail are numerous
 and small (digi players, BASIC containers, one-off routines), the families that
@@ -142,21 +126,18 @@ The twenty largest families, plus the nine exemplar families in bold.
 | **Electrosound** (Walker, Chameleon) | 301 | 30 | 30 (100 %) | 0 | – |
 | **Blackbird/LFT** (Blackbird, Quintessence) | 40 | 30 | 26 (87 %) | 0 | diverged ×3 |
 
-The nine exemplars are not special: eight of their families certify 87–100 % of
-a 30-tune draw without a line of family-specific code, which is the design's
-principle 5 measured. **Galway is the exception at 47 %** — his 55 HVSC tunes
-are hand-written engines that differ per game: fourteen of the thirty certify,
-ten diverge (seven `trap switch`, three `trap unreached`) and six refuse. The
-seed-1 draw did not include *Comic Bakery* itself, which the exemplar work
-certifies separately.
+Eight of the nine exemplar families certify 87–100 % of a 30-tune draw without a
+line of family-specific code (design principle 5, measured). Galway is the
+exception at 47 %: his 55 HVSC tunes are hand-written engines that differ per
+game — fourteen certify, ten diverge (seven `trap switch`, three `trap
+unreached`), six refuse. The seed-1 draw did not include *Comic Bakery*, which
+the exemplar work certifies separately.
 
-Ranked by tunes-not-certified × family size, the families that cost HVSC the
-most coverage are Soundmonitor (910 tunes' worth, all refusals),
-Basic_Program (522, all refusals), *Unidentified* (521), Music_Assembler (425),
-**SidFactory_II/Laxity (367, all divergences)**, Reflextracker (137, all
-refusals) and CyberTracker_exe (130, all refusals). SidFactory II is the single
-largest divergence-only family and 23 of its 29 failures are one class
-(`trap unverified`).
+Ranked by tunes-not-certified × family size, the families costing HVSC the most
+coverage: Soundmonitor (910 tunes' worth, all refusals), Basic_Program (522, all
+refusals), *Unidentified* (521), Music_Assembler (425), SidFactory_II/Laxity
+(367, all divergences), Reflextracker (137, all refusals), CyberTracker_exe (130,
+all refusals).
 
 ---
 
@@ -178,68 +159,60 @@ list); the site is the block label or address the certificate records.
 | trap `brk` | 2 / 7023 | 0.0 % | 0.0 % | `LFFFF_FF` | Ocean_Ranger.sid (tick 0) |
 | trap `envelope` | 1 / 7023 | 0.0 % | 0.0 % | `$AA2D outside [$A930,$AA2C] at $0000` | A_Mind_Is_Born.sid (tick -1) |
 
-**Divergences are immediate, not drift.** Of the 399, 93 fail in init (tick −1),
-123 at tick 0, 67 at tick 1 and 61 at tick 2 — **344 of 399, 86 %, before tick
-3** — and only 55 fail later. These are not horizons that were too short or
-tunes that slowly desynchronise: they are systematic modelling gaps the very
-first tick exposes, which is good news for fixing them and bad news for reading
-the current 91 % as a ceiling that only more compute would raise.
+**Divergences are immediate, not drift.** Of the 399: 93 fail in init (tick −1),
+123 at tick 0, 67 at tick 1, 61 at tick 2 — 344 of 399 (86 %) before tick 3 —
+and only 55 later. They are systematic modelling gaps the first tick exposes, not
+short horizons or slow desynchronisation.
 
-**`trap switch` (189 tunes, 2.7 % raw, 0.5 % weighted) is the largest class.**
-`emit._term` gives a `Switch` a case per value the trace saw and traps
-everything else, so this is the emitted program computing a dispatch value the
-trace never produced at that block. It is concentrated in whole families —
-Virtuoso 29/30, Ben Daglish/Gremlin 25, Element114Studio 25, Fred Gray 15,
-Tiny/Sound Images 12, Galway 7 — and correlates with self-modification: 159 of
-the 189 (84 %) have a play site writing an instruction byte against 54 % of
-certified programs, and 116 of the 189 also folded sibling copies. Association
-only; the cause is not diagnosed here, and it is a backlog row.
+**`trap switch` (189 tunes, 2.7 % raw, 0.5 % weighted) is the largest class**,
+concentrated in whole families: Virtuoso 29/30, Ben Daglish/Gremlin 25,
+Element114Studio 25, Fred Gray 15, Tiny/Sound Images 12, Galway 7. Diagnosed
+([tuneprog-plan.md](tuneprog-plan.md) §3, PR #270) as three front-end readings of
+computed control, none of them `emit._term` (corrected from an initial reading of
+`emit._term` giving a `Switch` a case per traced value):
 
-> **Correction (2026-08-22, Q6 — [tuneprog-plan.md](tuneprog-plan.md) §5).**
-> Diagnosed, and it was three mechanisms in the front end's reading of computed
-> control, none of them `emit._term`: a `JMP (ind)` whose own operand the
-> program patches dispatched on the **pointer** while its cases were the
-> observed **targets** (Virtuoso, Element114Studio, Fred Gray, Galway,
-> Tiny/Sound Images); a patched **branch offset of zero** names the address
-> after the instruction, which the "every successor but the fall-through" rule
-> discarded (Ben Daglish/Gremlin, Prosonix); and the **copy index** was stepped
-> before the arm that advances the run was chosen, so a family's exit carried
-> `v = k` (`Bitfrost.sid`, the first-divergence example above). Re-run over the
-> same 189 at 30 s: **188 `trap switch` + 1 `untaken` → 177 certified**, with 4
-> `trap switch` left (all one new shape, an unmatched `RTS` return), 4 `io`, 2
-> `input exhausted` and 2 wall timeouts. **The association stated here is
-> refuted as a cause**: what the class is made of is self-modification of
-> *control*, not of code in general. Classified on `main` at 30 s by the
-> instruction that dispatches at the first divergence: `JMP (ind)` 110, a
-> patched branch 62, an unmatched `RTS`/`RTI` 4, 13 the reconstruction does not
-> resolve; reading the emitted scrutinee instead gives 98 / 77 / 4 with 9 on the
-> copy index and 1 `untaken`. Copy folding is a bystander, under ten of the 189.
+* a `JMP (ind)` whose own operand the program patches dispatched on the
+  **pointer** while its cases were the observed **targets** (Virtuoso,
+  Element114Studio, Fred Gray, Galway, Tiny/Sound Images);
+* a patched **branch offset of zero** names the address after the instruction,
+  which the "every successor but the fall-through" rule discarded (Ben
+  Daglish/Gremlin, Prosonix);
+* the **copy index** was stepped before the arm that advances the run was chosen,
+  so a family's exit carried `v = k` (`Bitfrost.sid`, the example row above).
 
-**The `io` list (73) fails at init** in 41 of 73 cases: the program's init
-writes to VIC/CIA differ from the trace's. No tune in the sample diverged on
-the *SID* write list; every divergence is a trap or the I/O list. Concentrated in
-Geir_Tjelta/SIDSys18.6 (17), Heathcliff/DigitalArts (11) and Novaload (11).
+Re-run over the same 189 at 30 s (188 `trap switch` + 1 `untaken`): **177
+certified**, leaving 4 `trap switch` (all one new shape, an unmatched `RTS`
+return), 4 `io`, 2 `input exhausted`, 2 wall timeouts. Classified on `main` at
+30 s by the instruction that dispatches at the first divergence: `JMP (ind)` 110,
+patched branch 62, unmatched `RTS`/`RTI` 4, 13 unresolved; by the emitted
+scrutinee instead, 98 / 77 / 4 with 9 on the copy index and 1 `untaken`. The
+class is self-modification of *control*, not of code at large: the initially
+reported correlation with self-modification generally (159 of 189, 84 %, with a
+play site writing an instruction byte, against 54 % of certified programs) is
+refuted as a cause, and copy folding is a bystander, under ten of the 189.
 
-**`trap unverified` (47) and `trap untaken` (31)** are the closure boundary
-showing up as failure: an arm lifted from a sibling copy, or a branch direction
-nothing executed, that the program then reaches while replaying its own trace.
-SidFactory II/Laxity is 23 of the 47.
+**The `io` list (73) fails at init** in 41 of 73 cases: the program's init writes
+to VIC/CIA differ from the trace's. No tune diverged on the *SID* write list;
+every divergence is a trap or the I/O list. Concentrated in
+Geir_Tjelta/SIDSys18.6 (17), Heathcliff/DigitalArts (11), Novaload (11).
 
-> **Correction (2026-08-22, Q6).** Not the closure boundary. Re-run over the
-> same 78 at 30 s, **78 certified, 0 diverged**, with no work on `siblings` or
-> `closure` at all: both classes are the two control mechanisms above seen from
-> the other side — a patched `JMP (ind)` whose pointer value matched a table
-> entry `jumptab.enumerate_targets` had closed as an `unverified` arm, and a
-> zero branch offset whose arm the same closure supplied because the case set
-> had dropped it. SidFactory II/Laxity certifies whole.
+**`trap unverified` (47) and `trap untaken` (31)** are the two control mechanisms
+above seen from the other side (corrected from a reading of them as the sibling
+closure boundary): a patched `JMP (ind)` whose pointer value matched a table entry
+`jumptab.enumerate_targets` had closed as an `unverified` arm, and a zero branch
+offset whose arm the same closure supplied because the case set had dropped it.
+Re-run over the same 78 at 30 s: **78 certified, 0 diverged**, with no change to
+`siblings` or `closure`. SidFactory II/Laxity, 23 of the 47, certifies whole.
 
-**`trap input exhausted` / `input mismatch` (38)** are volatile-input replay:
-the program consumed pinned inputs in a different order or number than the trace
-recorded them. Novaload and Heathcliff/DigitalArts lead.
+**`trap input exhausted` / `input mismatch` (38)** are volatile-input replay: the
+program consumed pinned inputs in a different order or number than the trace
+recorded. Novaload and Heathcliff/DigitalArts lead.
 
 ---
 
 ## 5. Refusals
+
+As first measured (1,222 refusals):
 
 | reason | tunes | raw | weighted | raised at | example |
 |---|---|---|---|---|---|
@@ -252,70 +225,39 @@ recorded them. Novaload and Heathcliff/DigitalArts lead.
 | `port moved` | 1 / 7023 | 0.0 % | 0.0 % | `trace.py:_one_call` | Pigman.sid |
 | `copy index` | 1 / 7023 | 0.0 % | 0.0 % | `wire.py:wire_one` | Densetsu_no_Stafy-Coral_Reef.sid |
 
-Every refusal is diagnosed; none is a silent approximation. **The second
-interrupt is 45 % of all refusals and 3.0 % of HVSC by weight** — the single
-biggest addressable population, and exactly the prototype plan section 8 item 3
-already scopes (JCH's NMI sample mixer). `no entry` and `vector banked out`
-together (475) are the `play == 0` population whose installed vector the 6510
-port does not dispatch through, or which installed none: BASIC containers,
-digi players and RSID main loops. `recursion` (118) is a `JSR` cycle in the
-call graph, which `cfg._no_recursion` refuses by design. **The
-`second interrupt source armed` row is corrected in 5b below**, which is added
-beside it rather than replacing it.
+Every refusal is diagnosed; none is a silent approximation. The second interrupt
+is 45 % of all refusals as first measured. `no entry` and
+`vector banked out` together (475) are the `play == 0` population whose installed
+vector the 6510 port does not dispatch through, or which installed none: BASIC
+containers, digi players, RSID main loops. `recursion` (118) is a `JSR` cycle in
+the call graph, which `cfg._no_recursion` refuses by design.
 
-### 5b. Correction (2026-08-22): that row counted evidence, not a schedule
+**The `second interrupt source armed` row counted evidence, not a schedule**
+(corrected 2026-08-22). `find_entries` refused any write to the CIA #2 Timer-A
+latch (`$DD04`/`$DD05`) or to the NMI vector (`$0318`/`$0319`); neither makes an
+NMI possible. A tune has a second schedule iff a CIA #2 source can fire: its ICR
+(`$DD0D`) written with bit 7 and one of bits 0-4 — a mask the chip *accumulates*,
+so the last write does not give it — and, for a timer source, that timer started
+(`$DD0E`/`$DD0F` bit 0). CIA #2's interrupt line is the 6510's NMI, so an enabled
+source that can have its event is the refusal whatever vector carries it, and a
+vector installed over no such source is dead, as `vector_gate` already treats a
+dead `$FFFE` write. RESTORE is the other NMI source and `sidplayfp` never presses
+it.
 
-> **Superseded in part by [prototype-nmi.md](prototype-nmi.md) (2026-08-22).** The 311
-> below are `nmi_gate`'s verdict over *these 547 already-refused tunes*, driven past the
-> pipeline's refusal order, so they include tunes that refuse for reasons an NMI model
-> cannot fix — the paragraph below names 29 of them. Re-measured over the whole sample
-> with the model built, **195 tunes of 7,023 have a dispatching NMI *beside* a play
-> entry**, 181 of them with a classified schedule (2.6 % raw, 1.3 % weighted), and 43
-> more have the NMI as their only schedule. `second interrupt source armed` now means a
-> CIA #2 source with no schedule -- 6 tunes. The 311 itself is no longer reproducible:
-> `nmi_gate` was deleted when the exact model replaced it.
+With the exact model built ([prototype-nmi.md](prototype-nmi.md)), over the whole
+sample: **195 tunes of 7,023 have a dispatching NMI beside a play entry**, 181 of
+them with a classified schedule (2.6 % raw, 1.3 % weighted); 43 more have the NMI
+as their only schedule. `second interrupt source armed` now means a CIA #2 source
+with no schedule — 6 tunes. The misdiagnosed class is 81 tunes, 0.8 % of HVSC by
+weight, against design section 9.2's ≈ 1 % estimate for the vector-only/unarmed
+share. Nine of the 81 have a *last* ICR write enabling Timer B that the
+accumulated mask does not, because the chip never saw it (it lands with I/O
+banked out, or on an init path only the second emulation takes): the tracer's own
+CIA is the authority, the init trace only ever the cheap refusal.
 
-`find_entries` refused any write to the CIA #2 Timer-A latch (`$DD04`/`$DD05`)
-or to the NMI vector (`$0318`/`$0319`). Neither makes an NMI possible. A tune
-has a second schedule iff a CIA #2 source can fire: its ICR (`$DD0D`) has been
-written with bit 7 and one of bits 0-4 — a mask the chip *accumulates*, so the
-last write does not give it — and, for a timer source, that timer is started
-(`$DD0E`/`$DD0F` bit 0). CIA #2's interrupt line is the 6510's NMI, so an
-enabled source that can have its event is the refusal whatever vector carries
-it, and a vector installed over no such source is dead, exactly as
-`vector_gate` already treats a dead `$FFFE` write. RESTORE is the other NMI
-source and `sidplayfp` never presses it.
-
-Re-measured over the same 547 tunes — `machine.nmi_gate` over the CIA #2 that
-each tune's own init leaves, with every tune driven to the gate, so this is the
-rule's verdict on the machine rather than the pipeline's refusal order; weights
-are over the whole 7,023 sample, so they compose with section 2:
-
-| what the rule says of the tune | tunes | raw | HVSC-weighted |
-|---|---|---|---|
-| **armed** — a CIA #2 source can fire | 311 / 7023 | 4.4 % | 1.8 % |
-| … which the init trace's own last ICR/CRA writes already show | 264 / 7023 | 3.8 % | 1.6 % |
-| … which only the traced CIA state shows: all 47 are Timer **B**, whose `$DD0F` start bit `InitTrace` does not carry | 47 / 7023 | 0.7 % | 0.2 % |
-| **dead** — no source can fire, so the latch or the vector was the whole evidence | 81 / 7023 | 1.2 % | 0.8 % |
-| **undecided** — init never returns, so the gate is never reached; still refused, now as `init runaway` | 154 / 7023 | 2.2 % | 0.4 % |
-| **undecided** — the tracer faulted | 1 / 7023 | 0.0 % | 0.0 % |
-
-**The misdiagnosed class is 81 tunes, 0.8 % of HVSC by weight**, against design
-section 9.2's ≈ 1 % estimate for the vector-only/unarmed share. Nine of the 81
-are tunes whose *last* ICR write enables Timer B while the accumulated mask does
-not: the chip never saw that write — it lands with I/O banked out, or on an init
-path the second emulation takes and the tracer does not — which is why the
-tracer's own CIA is the authority and the init trace only ever the cheap
-refusal.
-
-The pipeline counts fewer than 311 armed, because `find_entries` settles the
-entry before the tracer runs: 29 armed tunes refuse first with the `no entry` or
-`vector banked out` they would have got anyway.
-
-Putting all 547 back through the 30 s pipeline gives **3 certified, 1 diverged
-(*Rally_Cross*, an `io` write list that differs at init), 1 crashed
-(*Original_Tetris-Game*, `JAM at $0002`) and 542 refused**, and these
-whole-sample rows:
+Putting all 547 back through the 30 s pipeline gives 3 certified, 1 diverged
+(*Rally_Cross*, an `io` write list differing at init), 1 crashed
+(*Original_Tetris-Game*, `JAM at $0002`) and 542 refused:
 
 | reason | was | now | raw | HVSC-weighted |
 |---|---|---|---|---|
@@ -330,26 +272,23 @@ whole-sample rows:
 | certified (outcome) | 5384 | 5387 | 76.7 % | 91.2 % |
 | refused (outcome) | 1222 | 1217 | 17.3 % | 6.2 % |
 
-**The second interrupt is 2.2 % of HVSC by weight, not 3.0 %** — 1.6 % armed by
-the end of init plus 0.6 % armed during play — and the 0.8 % it over-counted is
-released almost entirely into refusals that were already there and were being
-shadowed: `no entry` and `vector banked out` take 236 of the 274 tunes, being
-`play == 0` containers whose installed vector the port does not dispatch
-through. **Three tunes certify.** The nine `nmi armed in play` tunes are the
-fail-closed half of the rule earning its keep: each enables the CIA #2 ICR in
-init and starts the timer only once the music is running (Hubbard's *Mr_Meaner*
-and *Kings_of_the_Beach_intro*, two Soundmonitor tunes, GoatTracker V1, Hans
-Siemons, Odie/Cosine, Georg Brandt, Vibrants/JO).
+The second interrupt is 2.2 % of HVSC by weight, not 3.0 % — 1.6 % armed by the
+end of init plus 0.6 % armed during play. The 0.8 % over-count is released almost
+entirely into refusals it had been shadowing: `no entry` and `vector banked out`
+take 236 of the 274 tunes, `play == 0` containers whose installed vector the port
+does not dispatch through. The nine `nmi armed in play` tunes each enable
+CIA #2's ICR in init and start the timer only once the music is running
+(Hubbard's *Mr_Meaner* and *Kings_of_the_Beach_intro*, two Soundmonitor tunes,
+GoatTracker V1, Hans Siemons, Odie/Cosine, Georg Brandt, Vibrants/JO).
 
-One thing the change exposed, because nothing in this class used to be traced:
-`playroutine_cadence` falls through from CIA #1 to CIA #2 for the play latch and
-treats an unwritten ICR as the armed KERNAL default — right for CIA #1, wrong
-for CIA #2 — so a dead CIA #2 latch was being handed back as the tick period.
-`_cadence` now takes a CIA period only when it is CIA #1's; *Jazzpjazz* is the
-tune that showed it (1,799 ticks of `pal_host_cia`, not 2,868 of a `$DD04`
-latch nothing dispatches), and `sidplayfp` is the judge: the gaps between the
-interrupts the oracle attributes its writes to are whole multiples of the host
-CIA's period and not of that latch.
+Exposed by tracing this class for the first time: `playroutine_cadence` fell
+through from CIA #1 to CIA #2 for the play latch and treated an unwritten ICR as
+the armed KERNAL default — right for CIA #1, wrong for CIA #2 — handing back a
+dead CIA #2 latch as the tick period. `_cadence` now takes a CIA period only when
+it is CIA #1's. *Jazzpjazz* showed it (1,799 ticks of `pal_host_cia`, not 2,868
+of a `$DD04` latch nothing dispatches), judged by `sidplayfp`: the gaps between
+the interrupts the oracle attributes its writes to are whole multiples of the
+host CIA's period, not of that latch.
 
 ---
 
@@ -363,9 +302,8 @@ At the 30 s horizon:
 | a repeat was seen but the program is not complete | 0 / 5384 | 0.0 % | 0.0 % |
 | no repeat: horizon-capped | 5051 / 5384 | 93.8 % | 95.7 % |
 
-**93.8 % of certified programs are horizon-capped at 30 s** — a state repeat
-inside 30 s is the exception, not the rule, so the period pass is where
-completeness comes from.
+A state repeat inside 30 s is the exception, so completeness comes from the
+period pass.
 
 ### The `--until-period` pass
 
@@ -385,13 +323,13 @@ completeness comes from.
 | complete (a state repeat proved inside the horizon) | 894 / 981 | 91.1 % | 99.4 % |
 | no repeat: capped at 400,000 ticks | 87 / 981 | 8.9 % | 0.6 % |
 
-**Given the tracing budget, a certified program is complete 91 % of the time**
-(99.4 % weighted), and over the whole pass-2 population — timeouts included —
-894 of 1,338 tunes (66.8 % raw, **81.2 % weighted**) end as complete programs.
-The 118 that were already complete at 30 s become 894: the period pass is worth
-a 7.6× increase in completeness and is the only thing that buys it. Music
-traced to the repeat: median 118 s, p90 432 s, max 5,725 s (7,495 ticks median,
-400,000 max).
+Given the tracing budget a certified program is complete 91 % of the time
+(99.4 % weighted); over the whole pass-2 population, timeouts included, 894 of
+1,338 tunes (66.8 % raw, 81.2 % weighted) end as complete programs. The 118
+already complete at 30 s become 894, a 7.6× increase. Music traced to the repeat:
+median 118 s, p90 432 s, max 5,725 s (7,495 ticks median, 400,000 max). The 326
+timeouts are the cost boundary at 300 wall seconds, spread thinly (no family
+contributes more than its three).
 
 **The horizon is not free of correctness information.** 31 of the 1,338 tunes
 certified at 30 s and did *not* certify at period scale:
@@ -402,13 +340,9 @@ certified at 30 s and did *not* certify at period scale:
 | refused | 14 | 13 `recursion` — a `JSR` cycle the 30 s trace never closed — and 1 `play runaway` |
 | crashed | 1 | `RuntimeError: JAM at $00FE` (*Edge_of_Disgrace.sid*) |
 
-So **section 2's 91.2 % weighted certification rate is a 30 s figure**, and
+Section 2's 91.2 % weighted certification rate is therefore a 30 s figure, and
 about 2.3 % of the tunes it counts would not survive a song-length horizon on
-this evidence. It is measured at the horizon it states, not extrapolated.
-
-The 326 timeouts are the honest cost boundary: at 300 wall seconds a tune with a
-long period simply does not get there, and they are spread thinly (no family
-contributes more than its three).
+this evidence.
 
 ---
 
@@ -434,25 +368,23 @@ rows overlap:
 | entry kind `sub` | 785 | 95.0 % |
 | entry kind `irq` | 41 | 5.0 % |
 
-**A tune drawn from HVSC whose program is built keeps its stack with
-probability 0.044.** The residual
-is whole-program by construction (one unplaceable read keeps `SP` everywhere),
-and the measurement says the unplaceable read is in `tick` itself 62 % of the
-time and in `init` 27 % — so an interprocedural frame layout, the plan's
-"residual-stack localisation" row, would have to localise inside the tick to
-win most of this class, not merely keep helpers out of it. 819 of the 826 have
-no computable depth at all (`Frame.events is None`: the procedure's stack is not
-covered by its own pushes), so "how deep" is not the question for this class —
-"whose frame" is.
+A tune drawn from HVSC whose program is built keeps its stack with probability
+0.044. The residual is whole-program by construction (one unplaceable read keeps
+`SP` everywhere), and the unplaceable read is in `tick` itself 62 % of the time
+and in `init` 27 %, so the "residual-stack localisation" row (plan §2) would have to
+localise inside the tick to win most of the class, not merely keep helpers out of
+it. 819 of the 826 have no computable depth at all (`Frame.events is None`: the
+procedure's stack is not covered by its own pushes), so the question for this
+class is whose frame, not how deep.
 
 ---
 
 ## 8. Entry and cadence
 
-Over the 5,783 built programs. Note the population: a tune whose entry is an
-installed handler refuses far more often than one with a header `play`, so this
-table is the *post-refusal* topology and under-counts interrupt entries relative
-to design section 9.2 (which measured 8.7 % `irq` before any refusal).
+Over the 5,783 built programs. This is the *post-refusal* topology: a tune whose
+entry is an installed handler refuses far more often than one with a header
+`play`, so interrupt entries are under-counted relative to design section 9.2
+(8.7 % `irq` before any refusal).
 
 | entry | tunes | raw | HVSC-weighted |
 |---|---|---|---|
@@ -461,13 +393,12 @@ to design section 9.2 (which measured 8.7 % `irq` before any refusal).
 | … through the KERNAL vector (CINV) | 108 / 5783 | 1.9 % | 0.9 % |
 | … through the hardware vector | 0 / 5783 | 0.0 % | 0.0 % |
 
-**Every interrupt entry the pipeline built is a CINV entry** — 108 of 108, and
-none through `$FFFE`. The `vector banked out` refusal (184 tunes) is where the
-raw-vector population went: those tunes wrote `$FFFE` with the KERNAL mapped, so
-the port dispatches through `$0314` and the write is dead. The KERNAL-frame
-convention (`machine.entry_frame`, the `$FF48` prologue's A/X/Y) therefore
-carries the entire installed-handler class as measured, and the raw `RTI` frame
-has no population here at all.
+Every interrupt entry the pipeline built is a CINV entry, none through `$FFFE`.
+The `vector banked out` refusal (184 tunes) is where the raw-vector population
+went: those tunes wrote `$FFFE` with the KERNAL mapped, so the port dispatches
+through `$0314` and the write is dead. The KERNAL-frame convention
+(`machine.entry_frame`, the `$FF48` prologue's A/X/Y) carries the entire
+installed-handler class as measured; the raw `RTI` frame has no population here.
 
 | cadence source | tunes | raw | HVSC-weighted |
 |---|---|---|---|
@@ -483,10 +414,10 @@ has no population here at all.
 | speed word non-zero | 1049 / 5783 | 18.1 % | 16.0 % |
 | … and the tune arms no timer of its own (host CIA cadence) | 435 / 5783 | 7.5 % | 4.6 % |
 
-The speed-flag work of 2026-08-21 is load-bearing for **435 tunes, 4.6 % of HVSC
-by weight**: they program no timer, so their cadence is the host's CIA #1
-Timer-A latch and nothing else decides it. The other 614 tunes with a non-zero
-speed word arm their own timer, where the flag is redundant.
+The speed-flag work of 2026-08-21 is load-bearing for 435 tunes, 4.6 % of HVSC by
+weight: they program no timer, so their cadence is the host's CIA #1 Timer-A
+latch and nothing else decides it. The other 614 tunes with a non-zero speed word
+arm their own timer, where the flag is redundant.
 
 ---
 
@@ -511,14 +442,14 @@ max 660.
 | `an edge from copy 0 enters copy 2` | 2 |
 | `an edge from copy 1 enters copy 0` | 1 |
 
-Half of all built programs fold at least one family of sibling copies, so the
-unrolled-per-voice shape the anatomy documents is the population's normal form,
-not an exemplar quirk. The cross-copy edge is 165 of the 293 refusals — the same
-boundary Follin's sound-effect subtunes hit, at scale.
+Half of all built programs fold at least one family of sibling copies: the
+unrolled-per-voice shape the anatomy documents is the population's normal form.
+The cross-copy edge is 165 of the 293 refusals — the boundary Follin's
+sound-effect subtunes hit, at scale.
 
 ---
 
-## 10. Data-gated class sizes (plan section 5)
+## 10. Data-gated class sizes (plan §2)
 
 Each row of the plan's backlog that was waiting on a population count. Rates are
 over the whole 7,023-tune sample so they compose with section 2.
@@ -538,28 +469,23 @@ over the whole 7,023-tune sample so they compose with section 2.
 | reads the RAM under I/O at all | 34 / 7023 | 0.5 % | 0.2 % |
 | an `RTS` that matched no `JSR` (the RTS trick) | 144 / 7023 | 2.1 % | 0.7 % |
 
-Reading them:
-
-- **Residual-stack localisation** is worth 826 tunes / 4.1 % of HVSC, and
-  section 7 says the work is inside `tick`, not between procedures.
-- **The raw `RTI` frame has no population** — every built interrupt entry is
-  CINV. The hardware-vector path is exercised only by the refusal.
-- **`fold.outline`'s deleted-block edge is 32 tunes (0.5 %)**, all of them
-  already certified: it is presentation-only and the fix is the one condition
-  the plan's row already diagnoses.
-- **Non-`RTS` opcode cells are 198 tunes (3.4 % weighted)** — three quarters of
-  all 263 tunes with an SMC opcode cell. The SLEIGH export's `RTS`-only overlay
-  therefore covers the minority of the class, not the bulk of it.
-- **Two planes (chip vs the RAM under it) is 3 tunes.** The discriminating tune
-  the plan was waiting for exists but the class is negligible; 34 tunes touch
-  the RAM under I/O at all.
-- **The `RTS` trick is 144 tunes (0.7 % weighted)**, close to design section
-  9.4's 1.7 % raw / 0.4 % weighted from the prototype tracer.
-- **The periodicity obstruction is 5,051 tunes at 30 s (87.3 % weighted), and
-  the period pass answers most of it**: 91 % of the tunes it re-ran to a repeat
-  came back complete (section 6). What is left is 87 tunes capped at 400,000
-  ticks plus the 326 that ran out of wall time — that residue, not the 5,051, is
-  what a periodicity *proof* would have to address.
+- Residual-stack localisation: section 7 puts the work inside `tick`, not between
+  procedures.
+- The hardware-vector path is exercised only by the refusal — no built entry uses
+  it.
+- The `fold.outline` deleted-block edge is presentation-only: all 32 tunes are
+  already certified.
+- Non-`RTS` opcode cells are three quarters of all 263 tunes with an SMC opcode
+  cell, so the SLEIGH export's `RTS`-only overlay covers the minority of the
+  class.
+- Two planes (chip vs the RAM under it) is 3 tunes: the discriminating tune
+  exists but the class is negligible.
+- The `RTS` trick's 0.7 % weighted is close to design section 9.4's 1.7 % raw /
+  0.4 % weighted from the prototype tracer.
+- The periodicity obstruction (5,051 tunes at 30 s) is mostly answered by the
+  period pass: 91 % of re-run tunes come back complete (section 6). What is left
+  is 87 tunes capped at 400,000 ticks plus the 326 out of wall time — that
+  residue, not the 5,051, is what a periodicity *proof* would address.
 
 ---
 
@@ -578,16 +504,15 @@ Over the 5,783 built programs, at the 30 s horizon.
 | SMC cells | 3 | 61 | 27 | 1556 | 3047 |
 | SMC cells a play site writes | 2 | 5 | 11 | 82 | 150 |
 
-Per tune, S4 statements per executed instruction site: median **0.98**, p90
-1.31, p99 1.91, max 4.04, and 46 % of programs are at or above 1.0 — the
-exemplars' measured 1.0–1.6 is the upper half of the population, not an outlier.
-**58.6 % of built programs pin no volatile input at all**: they are closed
-functions of their own state, and the mean of 657 is a long tail of sample
-players that read the chip every tick.
+S4 statements per executed instruction site, per tune: median 0.98, p90 1.31,
+p99 1.91, max 4.04, with 46 % of programs at or above 1.0 — the exemplars'
+measured 1.0–1.6 is the upper half of the population. 58.6 % of built programs
+pin no volatile input at all; the mean of 657 is a long tail of sample players
+that read the chip every tick.
 
 ---
 
-## 12. Cost, and the fast-tracer gate
+## 12. Cost and tracer throughput
 
 Pass 1 (30 s horizon, 7,023 tunes, 60 workers, 1,093 s wall):
 
@@ -611,70 +536,50 @@ Pass 2 (`--until-period`, 1,338 tunes, 300 s cap):
 | print | 0.13 | 0.3 % | 0.36 |
 | **total** | **40.44** | 100 % | 108.81 |
 
-Per-tune wall seconds: median 42.7, p90 300.1, max 303.0. **58.2 CPU-hours for
-the whole campaign**, 1 h 51 m of wall time at 60 workers.
+Per-tune wall seconds: median 42.7, p90 300.1, max 303.0. 58.2 CPU-hours for the
+whole campaign, 1 h 51 m of wall time at 60 workers.
 
-**Measured throughput.** Two figures, because the fixed per-tune overhead
-matters at a 30 s horizon and not at song scale:
+Throughput at the two horizons (fixed per-tune overhead matters at 30 s and not
+at song scale):
 
 | | pass 1 (1,503 ticks median) | pass 2 (7,495 ticks median) | design §2's model |
 |---|---|---|---|
-| tracing | 199 ticks/s | **329 ticks/s** | 277 k instructions/s |
-| verifying | 1,367 calls/s | **13,518 calls/s** | 10–16 k calls/s |
+| tracing | 199 ticks/s | 329 ticks/s | 277 k instructions/s |
+| verifying | 1,367 calls/s | 13,518 calls/s | 10–16 k calls/s |
 
-**Verification matches the design's model exactly once amortised** (13.5 k
-calls/s); pass 1's 1,367 is the fixed `--prefix 2000` interpreter cross-check
-dominating a short run, not a slow verifier. **Tracing does not match.** At
-design §9.3's mean of 292 instructions per tick, 329 ticks/s is ≈ **96 k
-instructions/s**, about **2.9× slower** than the model's 277 k — which was
-measured on `tools/survey/tracer.py`, the prototype VM, and does not describe
-the production `Tracer`.
+Verification matches the design's model once amortised (13.5 k calls/s); pass 1's
+1,367 is the fixed `--prefix 2000` interpreter cross-check dominating a short run.
+The tracer measured here does not: at design §9.3's mean of 292 instructions per
+tick, 329 ticks/s is ≈ 96 k instructions/s, ≈ 2.9× slower than the model's 277 k,
+which was measured on `tools/survey/tracer.py`, the prototype VM.
 
-Projections (linear in ticks, an assumption rather than a measurement):
-the whole catalogued HVSC costs **≈ 131 CPU-hours at this 30 s horizon**,
-**≈ 529 CPU-hours at each tune's HVSC song length** (median default-subtune
-length 103 s) against the design's ≈ 300, and **≈ 1,520 CPU-hours** for a
-`--until-period` pass with the same 300 s cap and its 24 % timeouts.
-
-**The fast-tracer gate (plan section 8 item 7) fires.** Tracing is 78 % of pass
-1's CPU and **96.8 % of pass 2's**; the verifier — the part that must be exact —
-is 11 % and 2.4 %. A 3× tracer would put the production tracer where the design
-already assumed it was, take the song-length campaign from ≈ 529 to ≈ 180
-CPU-hours, remove most of the 333 wall-timeouts across both passes, and change
-nothing else in the pipeline.
-
-### 12b. Correction (2026-08-22): the fast tracer is built, and "trace" was two costs
-
-The gate fired and the work is done ([tuneprog-plan.md](tuneprog-plan.md) §8
-item 7, §5b Q7, PR #271). Two things the table above could not say.
-
-**1. The tracer is 3.0–3.5× faster, and the design's model is now beaten.** The
-profile refuted the row's own premise: the old tracer spent **5–6 %** of its self
-time in the compiled P-Code and the rest on bookkeeping around it — the base VM
-call chain 27–29 %, the tracing `step` prologue another 29–30 %, edges, frames
-and register masks 11–12 %, per-op attribution 7–9 %, the per-tick hash **1 %**.
-Seven Python calls and six dict lookups an instruction, all re-deriving what a
-site already fixes. Making the site key the VM's cache key — so a site's closure,
-per-op access sets, index domain, register masks and edge cells resolve once and
-the loop only indexes them — gives, in one process under `process_time`:
+**The fast tracer (PR #271) is built.** The profile
+refuted the gate's premise that the P-Code was the cost: the old tracer spent
+5–6 % of its self time there and the rest on bookkeeping — base VM call chain
+27–29 %, tracing `step` prologue 29–30 %, edges/frames/register masks 11–12 %,
+per-op attribution 7–9 %, per-tick hash 1 % — seven Python calls and six dict
+lookups an instruction, all re-deriving what a site already fixes. Making the
+site the VM's cache key (a site's closure, per-op access sets, index domain,
+register masks and edge cells resolve once; the loop only indexes them) gives, in
+one process under `process_time`:
 
 | tune | ticks | before | after | ratio |
 |---|---|---|---|---|
-| *Automatas* (defMON, CIA) | 12,029 | 788 ticks/s | **2,503** | **3.18×** |
-| Commando song 1 | 1,503 | 628 | **2,181** | **3.47×** |
-| Ghouls song 1 (Follin) | 1,503 | 1,227 | **3,696** | **3.01×** |
-| GoatTracker 2 *Do It Again* | 1,503 | 492 | **1,565** | **3.18×** |
-| JCH V20 *Guldkornekspressen* | 1,503 | 444 | **1,438** | **3.24×** |
-| *Experiment Zeta* `--until-period` | 6,000 | 590 | **1,972** | **3.34×** |
-| *Automatas*, 40,000 ticks | 40,000 | 757 | **2,350** | **3.10×** |
+| *Automatas* (defMON, CIA) | 12,029 | 788 ticks/s | 2,503 | 3.18× |
+| Commando song 1 | 1,503 | 628 | 2,181 | 3.47× |
+| Ghouls song 1 (Follin) | 1,503 | 1,227 | 3,696 | 3.01× |
+| GoatTracker 2 *Do It Again* | 1,503 | 492 | 1,565 | 3.18× |
+| JCH V20 *Guldkornekspressen* | 1,503 | 444 | 1,438 | 3.24× |
+| *Experiment Zeta* `--until-period` | 6,000 | 590 | 1,972 | 3.34× |
+| *Automatas*, 40,000 ticks | 40,000 | 757 | 2,350 | 3.10× |
 
-**≈ 480–580 k instructions/s** against design §2's 277 k — the production tracer
-is now 1.7–2.1× faster than the prototype VM that model was measured on. The
-`Trace` is byte-identical: `trace.json` and every bulk array over all 82 traces
-the 50 certificates hold; recert 50/50 before and after, no field moved.
+≈ 480–580 k instructions/s against design §2's 277 k: the production tracer is
+now 1.7–2.1× faster than the prototype VM the model was measured on. The `Trace`
+is byte-identical (`trace.json` and every bulk array over all 82 traces the 50
+certificates hold); recert 50/50, no field moved.
 
-**2. Pass 1's `trace` column is S0 *and* S1, and only the S1 part moves.**
-Re-running the **first 200 tunes of the same seed-1 sample** (identical files and
+**Pass 1's `trace` column is S0 *and* S1, and only the S1 part moves.**
+Re-running the first 200 tunes of the same seed-1 sample (identical files and
 order, 24 workers, `--seconds 30`, 120 s cap) on both tracers:
 
 | pass 1, 200 tunes | before | after |
@@ -687,56 +592,56 @@ order, 24 workers, `--seconds 30`, 120 s cap) on both tracers:
 | wall: median / max | 5.3 s / 27.2 s | 3.0 s / 20.1 s |
 | outcome | 134 certified, 6 diverged, 60 refused | identical |
 
-Paired over the 134 tunes both runs certified, at identical tick counts
-(267,735 ticks): **trace CPU 343.4 → 119.0 s, ×2.89; 780 → 2,250 ticks/s**. Of
-that 119.0 s, **10.3 s is `machine._traced`** — `pysidtracker`'s
-`playroutine_cadence` plus `trace_init`, which is entry discovery, S0 — so the
-tracer itself went **333.1 → 108.7 s, ×3.06**, exactly the instrument's figure.
+Paired over the 134 tunes both runs certified, at identical tick counts (267,735
+ticks): trace CPU 343.4 → 119.0 s, ×2.89; 780 → 2,250 ticks/s. Of that 119.0 s,
+10.3 s is `machine._traced` — `pysidtracker`'s `playroutine_cadence` plus
+`trace_init`, i.e. S0 entry discovery — so the tracer itself went 333.1 → 108.7 s,
+×3.06, matching the instrument's figure.
 
-The *refused* tunes' trace CPU does not move at all — **775.1 → 765.4 s,
-×1.01** — because they never reach the tracer: 46 of the 60 refuse `no entry`
-and spend 14.6 CPU-seconds each in that same `_traced` call, and the eight
-`vector banked out` refusals 5.5 s each. That is 68 % of the *before* run's pass
-1 trace CPU (775.1 s of 1,138.7) and 86 % of the after run's (765.4 of 891.3).
-The prefix is refusal-heavy (30 % against the sample's 17.4 %) and its refusals
-come mostly from one large-image family, so the whole-sample share is smaller — but §12's "tracing is 78 % of pass 1's
-CPU" is 78 % of **S0 + S1**, and only the S1 part was this gate's subject.
-**Splitting S0 discovery from S1 tracing in the sweep's stage columns is a new
-backlog row**, and so is the discovery cost itself: 14.6 s to decide `no entry`.
+Refused tunes' trace CPU does not move (775.1 → 765.4 s, ×1.01) because they
+never reach the tracer: 46 of the 60 refuse `no entry` and spend 14.6 CPU-seconds
+each in that same `_traced` call, and the eight `vector banked out` refusals 5.5 s
+each — 68 % of the before run's pass-1 trace CPU (775.1 of 1,138.7) and 86 % of
+the after run's (765.4 of 891.3). This prefix is refusal-heavy (30 % against the
+sample's 17.4 %), mostly from one large-image family, so the whole-sample share
+is smaller. Two new backlog rows: split S0 discovery from S1 tracing in the
+sweep's stage columns, and reduce the discovery cost itself (14.6 s to decide
+`no entry`).
 
-**Pass 2 is where the gate paid.** The first 50 certified tunes of the same
-sample, `--until-period --max-calls 400000`, 300 s cap, 24 workers:
+Pass 2, first 50 certified tunes of the same sample, `--until-period --max-calls
+400000`, 300 s cap, 24 workers:
 
 | pass 2, 50 tunes | before | after |
 |---|---|---|
 | trace | 1.6111 CPU-h (98.4 %) | 1.1028 (88.5 %) |
 | verify | 0.0204 (1.2 %) | 0.1277 (10.2 %) |
 | **total** | **1.6378 CPU-h**, 117.9 s/tune | **1.2464**, 89.7 s/tune |
-| certified | 34 | **44** |
-| wall timeouts | **16** | **6** |
+| certified | 34 | 44 |
+| wall timeouts | 16 | 6 |
 | wall: median / p90 | 27.9 s / 300.1 s | 11.0 s / 300.1 s |
 
-Paired over the 34 both runs certified (1,552,645 ticks): **trace CPU 1000.0 →
-329.3 s, ×3.04; 1,553 → 4,714 ticks/s**, the whole pipeline ×2.56. **Ten of the
-sixteen wall timeouts go away** and become complete programs — which is why the
-*after* run's verify share rises to 10 %: there are ten more programs to verify,
-each longer than the ones that were already finishing.
+Paired over the 34 both runs certified (1,552,645 ticks): trace CPU 1000.0 →
+329.3 s, ×3.04; 1,553 → 4,714 ticks/s, whole pipeline ×2.56. Ten of the sixteen
+wall timeouts become complete programs, which is why the after run's verify share
+rises to 10 %.
 
-**Projections**, on §12's own linear-in-ticks assumption, with ×3.06 applied to
-the S1 part and S0 left where it is:
+Projections, linear in ticks (an assumption, not a measurement), with ×3.06
+applied to the S1 part and S0 left where it is:
 
-| campaign | §12 | corrected |
+| campaign | pre-tracer | corrected |
 |---|---|---|
-| catalogue at a 30 s horizon | ≈ 131 CPU-h | **≈ 80–105** |
-| catalogue at HVSC song length | ≈ 529 | **≈ 190–210** |
-| `--until-period`, 300 s cap, same work | ≈ 1,520 | **≈ 500** |
-| `--until-period`, 300 s cap, same budget | ≈ 1,520, 24 % timeouts | **≈ 1,160, ⅗ of the timeouts gone** |
+| catalogue at a 30 s horizon | ≈ 131 CPU-h | ≈ 80–105 |
+| catalogue at HVSC song length | ≈ 529 | ≈ 190–210 |
+| `--until-period`, 300 s cap, same work | ≈ 1,520 | ≈ 500 |
+| `--until-period`, 300 s cap, same budget | ≈ 1,520, 24 % timeouts | ≈ 1,160, ⅗ of the timeouts gone |
 
-The 30 s range is wide because S0 is a large fixed share at a short horizon and
-this prefix cannot size it for the whole sample; at song length tracing dominates
-and the range closes. The last two rows are the same measurement read two ways:
-the pass costs a third of what it did for the work the old one finished, or
-two-thirds of it while finishing far more.
+Median default-subtune length is 103 s; the design's own song-length estimate was
+≈ 300 CPU-h. The 30 s range is wide because S0 is a large fixed share at a short
+horizon and this prefix cannot size it for the whole sample; at song length
+tracing dominates and the range closes. The last two rows are one measurement
+read two ways.
+
+---
 
 ## 13. Crashes
 
@@ -752,8 +657,8 @@ Eighteen tunes (0.26 %) did not produce an answer.
 | crashed | `KeyError` | `ssa.py:_frontiers` | 1 | `'L102D_20'` | Green_Tea.sid |
 | crashed | `KeyError` | `lower.py:ctrl_expr` | 1 | `'expr'` | Examples.sid |
 
-And after the certificate — the program is certified, S5/S6 then failed, so the
-fault is presentation only:
+After the certificate — the program is certified, S5/S6 then failed, so the fault
+is presentation only:
 
 | exception | raised at | tunes | example |
 |---|---|---|---|
@@ -762,68 +667,38 @@ fault is presentation only:
 
 Five classes, each a backlog row:
 
-1. **`RecursionError` in the emitted program (7 tunes).** A tail call the IR
-   wires as a `Call` recurses at run time; `cfg._no_recursion` lets tail edges
-   through because they grow no machine frame, but the emitted Python grows a
-   Python frame per edge. Two of the seven surface inside `interp.ioload`
-   instead, on the interpreter path.
-2. **`RuntimeError: JAM at $XXXX` out of `vm.py:step` (2 tunes).** A JAM opcode
-   reached during tracing escapes as a bare `RuntimeError` where every other
-   unsupported construct is a `Refusal`. Classification bug, not a decompiler
-   bug.
+1. **`RecursionError` in the emitted program (7).** A tail call the IR wires as a
+   `Call` recurses at run time: `cfg._no_recursion` lets tail edges through
+   because they grow no machine frame, but the emitted Python grows a Python
+   frame per edge. Two of the seven surface inside `interp.ioload`.
+2. **`RuntimeError: JAM at $XXXX` out of `vm.py:step` (2).** A JAM opcode reached
+   during tracing escapes as a bare `RuntimeError` where every other unsupported
+   construct is a `Refusal`. Classification bug.
 3. **`KeyError` in `ssa._frontiers` (1).** A block label with no dominance
    frontier entry.
 4. **`KeyError: 'expr'` in `lower.ctrl_expr` (1).** A control expression the
    lowering does not have.
-5. **`TrapError` out of `ir.evalbin` during S5/S6 (2).** Presentation
-   evaluating an expression that traps.
+5. **`TrapError` out of `ir.evalbin` during S5/S6 (2).** Presentation evaluating
+   an expression that traps.
 
-The seven timeouts are not bugs — they are tunes whose 30 s of music exceeds
-120 wall seconds at their cadence — but they are also not answers, and a faster
-tracer removes most of them.
-
-The period pass adds one more of the same JAM class (*Edge_of_Disgrace.sid*,
-`JAM at $00FE`), 16 more `fold.outline` `KeyError`s after the certificate, and
-326 wall timeouts at its 300 s cap. No new crash class appeared at the longer
-horizon.
+The seven timeouts are tunes whose 30 s of music exceeds 120 wall seconds at
+their cadence, not bugs; a faster tracer removes most of them. The period pass
+adds one more of the JAM class (*Edge_of_Disgrace.sid*, `JAM at $00FE`), 16 more
+`fold.outline` `KeyError`s after the certificate, and 326 wall timeouts at its
+300 s cap. No new crash class appeared at the longer horizon.
 
 ---
 
-## 14. What this campaign changes
+## 14. Consequences
 
-Measured, in order of population:
-
-1. **Divergences are first-tick modelling gaps, not horizon effects** — 344 of
-   399 before tick 3. The next correctness work is diagnostic, not more compute.
-2. **`trap switch` (189 tunes) is the largest single failure class** and takes
-   whole families with it (Virtuoso, Daglish, Element114Studio, Fred Gray).
-   *Corrected 2026-08-22 (Q6, §4): three front-end readings of computed control
-   — the pointer of a patched `JMP (ind)`, a zero patched branch offset, and the
-   copy index stepped on the wrong arm. 189 → 177 certified, and the 78
-   `unverified`/`untaken` tunes of item 7 go with them, 78 → 78. What is left of
-   the class is 4 tunes on an unmatched `RTS`.*
-3. **The second interrupt is 45 % of refusals and 3.0 % of HVSC by weight** —
-   the largest addressable population anywhere in this document, and already
-   scoped as plan section 8 item 3. **Corrected (section 5b): 2.2 % by weight is
-   a real second schedule and 0.8 % was misdiagnosed evidence — a CIA #2 latch
-   or an NMI vector that no armed source can dispatch. Admitting that 0.8 %
-   soundly moves 3 tunes into `certified` and the rest into the `no entry` /
-   `vector banked out` refusals it had been shadowing, so the addressable
-   population is the 1.8 % that really is armed** — still the largest, and still
-   item 3's prototype.
-4. **The fast tracer is warranted**: 78 % of pass 1's CPU and 96.8 % of pass
-   2's; verification already matches the design's model (13.5 k calls/s) and
-   tracing is 2.9× off it.
-5. **The period pass is what buys completeness**: 118 complete at 30 s becomes
-   894 of 1,338, and 99.4 % of certified programs by weight. Nothing else in the
-   pipeline moves that number.
-6. **The 30 s certification rate is a horizon figure**: 31 of 1,338 tunes that
-   certified at 30 s did not at period scale.
-7. **`SidFactory_II/Laxity`** is the largest divergence-only family (29/30, 380
-   HVSC tunes), 23 of them one class (`trap unverified`). *Corrected 2026-08-22
-   (Q6, §4): the family certifies whole; the class was item 2's mechanisms, not
-   the sibling closure.*
-8. **The raw `RTI` entry frame has no population**; every built interrupt entry
-   is CINV.
-9. **Copy folding is the normal form** (52 % of built programs), and the
-   cross-copy edge is its dominant boundary at scale.
+| finding | § | consequence |
+|---|---|---|
+| 344 of 399 divergences before tick 3 (93 in init, 123/67/61 at ticks 0/1/2; 55 later) | 4 | systematic modelling gaps the first tick exposes, not short horizons or drift |
+| `trap switch` (189) and `unverified`/`untaken` (78) were one cause: three front-end readings of computed control | 4 | 189 → 177 and 78 → 78 certified; 4 tunes left, on an unmatched `RTS` |
+| `SidFactory_II/Laxity`, the largest divergence-only family (29/30, 380 HVSC tunes), certifies whole | 3, 4 | the class was those mechanisms, not the sibling closure |
+| a real second schedule is 2.2 % of HVSC by weight (1.8 % armed by end of init); 0.8 % was misdiagnosed evidence | 5 | the largest addressable population, modelled in PR #272; admitting the 0.8 % moves 3 tunes to `certified`, the rest to `no entry` / `vector banked out` |
+| tracing was 78 % of pass 1 CPU, 96.8 % of pass 2, and 2.9× off the design's model | 12 | fast tracer built: ×3.06 on S1, 1.7–2.1× faster than the prototype VM. Verification already matched the model |
+| 118 complete at 30 s becomes 894 of 1,338 | 6 | the period pass is what buys completeness (99.4 % of certified programs by weight) |
+| 31 of 1,338 tunes certified at 30 s did not at period scale | 6 | the 91.2 % rate is a horizon figure |
+| every built interrupt entry is CINV | 8 | the raw `RTI` entry frame has no population |
+| 52 % of built programs fold sibling copies | 9 | copy folding is the normal form; the cross-copy edge is its dominant boundary |

@@ -5,13 +5,12 @@ anatomy ([§3.1](playroutine-anatomy.md): 3 voices, 12 bytes of state each, no
 wave/pulse/filter programs, no dispatch tables, one SMC cell) and the smallest
 full-song certificate the corpus carries (**341** S4 statements against
 GoatTracker's 516 and SID Wizard's 955) — prints as a **414-line**
-`tuneprog.md`. The owner's question: why isn't a simple tune simple, what is the
-actual floor, and can the gap be closed.
+`tuneprog.md`. This is a measurement of the complexity floor and a
+hand-derivation of how close the print gets to it.
 
-Everything below is measured on that one tune, at its certified horizon
-(`docs/certificates/commando-song1.json`, 11,780 ticks, 0 divergences,
-reproduced byte-identical for this prototype). The pipeline and every
-certificate are untouched: this is a measurement and a hand-derivation.
+Measured at the certified horizon (`docs/certificates/commando-song1.json`,
+11,780 ticks, 0 divergences, reproduced byte-identical). No pipeline module,
+certificate or printed artefact was modified.
 
 ## 1. What the 341 statements become
 
@@ -25,10 +24,7 @@ certificate are untouched: this is a measurement and a hand-derivation.
 | `tuneprog.md` lines | 414 = 56 header + 252 program + 66 pc comments + 40 fences/blanks/headings |
 | printed program lines, blank/fence/pc-comment removed | 252 (2,282 tokens) |
 
-So "341" is the certified program; the reader sees 252 lines of pseudocode over a
-56-line state/const header. That is what the floor has to be compared against.
-
-## 2. Q1 — the floor, measured
+## 2. The floor, measured
 
 ### 2.1 The tune's own bytes
 
@@ -42,9 +38,9 @@ the region table:
 | data the trace reached | 1942 | 48.1 |
 | neither (other songs, sfx, dead code) | 1162 | 28.8 |
 
-Statically the split is 1,347 bytes of code in three blocks and 2,693 of data
-(anatomy §3.1.1). **Song 1 is 936 bytes of code and 1,942 bytes of data**: two
-bytes of the tune are data for every byte that is program.
+Static split: 1,347 bytes of code in three blocks, 2,693 of data (anatomy
+§3.1.1). Song 1 is 936 bytes of code and 1,942 of data — two bytes of data per
+byte of program.
 
 ### 2.2 Description lengths
 
@@ -60,28 +56,25 @@ bytes of the tune are data for every byte that is program.
 | SID write log, 133,109 `(reg,val)` pairs | 266218 | 36484 |
 | SID register image per tick, by register | 294500 | 6664 |
 
-Three readings.
-
-1. **The behaviour is 36 KB; the tune is 2.5 KB.** The program is a 14x
-   compression of its own output. Even the best generic compression of the
-   observable (the transposed register image, 6,664 B) is 2.6x the whole band.
-   A decompilation is judged against 2,548, not against 36,484.
-2. **The print is already at the tune's own compressed size** (2,956 vs 2,548).
-   It is not verbose in the information-theoretic sense; it is verbose in the
-   sense that a human reads it linearly and 48 % of the tune never appears in it
-   as data at all.
-3. **The data floor is hard.** 1,116 compressed bytes of pattern, track,
-   instrument and frequency data are the tune. No rewriting removes them. The
-   frequency table in particular is irreducible: 25 of its 84 octave pairs are
-   off by one from exact doubling, so no formula reproduces the 192 bytes.
+- Behaviour compresses to 36 KB, the tune to 2.5 KB: the program is a 14x
+  compression of its own output, and the best generic compression of the
+  observable (transposed register image, 6,664 B) is 2.6x the whole band. A
+  decompilation is judged against 2,548, not 36,484.
+- The print is already at the tune's own compressed size (2,956 vs 2,548). It is
+  verbose only in that a human reads it linearly and 48 % of the tune never
+  appears in it as data.
+- The data floor is hard: 1,116 compressed bytes of pattern, track, instrument
+  and frequency data are the tune. The frequency table is irreducible — 25 of
+  its 84 octave pairs are off by one from exact doubling, so no formula
+  reproduces the 192 bytes.
 
 ### 2.3 The floor estimate
 
     floor  =  |data, printed as data|  +  |a generic Hubbard player|
 
-The right-hand term already exists and is not ours: anatomy §3.1.3 is the whole
-player (`play`, `fetch_note`, `soundwork`) written by hand from the disassembly
-in **65 lines / 621 tokens**. It covers all three songs and every fx bit.
+The right-hand term already exists: anatomy §3.1.3 is the whole player (`play`,
+`fetch_note`, `soundwork`), hand-written from the disassembly in 65 lines / 621
+tokens, covering all three songs and every fx bit.
 
 | | lines | tokens |
 |---|---|---|
@@ -89,19 +82,19 @@ in **65 lines / 621 tokens**. It covers all three songs and every fx bit.
 | this prototype's factored form (§4) | 115 (126 with the untaken arms) | 1,156 |
 | the current print's program | 252 | 2,282 |
 
-**The measured gap is 252 → 65, i.e. 3.9x, of which the factoring in §4 closes
-2.2x by hand.** The state header is a second gap: 56 lines (5 meta, 39 state, 9
-const, 2 inputs) against 14 lines of table shape in the factored form — and
-neither prints a byte of the 1,942 as data.
+The measured gap is 252 → 65, i.e. 3.9x, of which the factoring in §4 closes
+2.2x by hand. The state header is a second gap: 56 lines (5 meta, 39 state, 9
+const, 2 inputs) against 14 lines of table shape in the factored form — neither
+prints a byte of the 1,942 as data.
 
-## 3. Q2 — where the statements live
+## 3. Where the statements live
 
 `tuneprog_floor.py --code LO-HI:NAME ...`, one row per anatomy §3.1.1 routine,
 one column per statement kind. `control` is a structured node (`if`, `for`,
 `while`, `return`, `trap`) or a call; `16-bit half/carry` is a statement carrying
 a `carry`/borrow term or reading the high half of a `(b, b+1)` pair a sibling
-statement reads the low half of — exactly what a 16-bit view deletes;
-`index plumbing` is a statement that touches no storage at all.
+statement reads the low half of — what a 16-bit view deletes; `index plumbing`
+is a statement that touches no storage at all.
 
 | code range | sid write | 16-bit half/carry | index plumbing | data | control | all |
 |---|---|---|---|---|---|---|
@@ -115,27 +108,25 @@ statement reads the low half of — exactly what a 16-bit view deletes;
 | (control nodes) | 0 | 0 | 0 | 0 | 77 | 77 |
 | **total** | 27 | 17 | 32 | 95 | 83 | 254 |
 
-What this says:
-
-- **`SoundWork` is 93 of 254** — the per-frame modulations (vibrato, pulse in two
+- `SoundWork` is 93 of 254: the per-frame modulations (vibrato, pulse in two
   forms, portamento, drum, skydive, arpeggio) are more than a third of the
-  program, and the anatomy agrees: "all 'sound design' is those bits".
-- **49 statements — one in five — are machine encoding**: 17 halves and carries,
-  and 32 that touch no storage at all — the voice loop's counter and its phi
-  copies, the borrowed `X` saved and restored around the instrument index, the
-  carry flag threaded as a value through five copies, two `saved2` spills. None
-  of them is musical.
-- **27 SID writes** against 133,109 executed writes: the write-out itself is
-  small and already compact.
-- Only **95 statements are data statements**, and most of what they name is not
-  named as data — 56 of the 252 printed lines mention `FREQ[`, and **23 of those
-  56 are `FREQ[195]`, which is not a frequency at all**: it is the SID register
-  offset `$54EB`, swallowed by the same region.
+  program. Anatomy §3.1.4: "all 'sound design' is those bits".
+- 49 statements — one in five — are machine encoding, none musical: 17 halves
+  and carries, and 32 touching no storage at all (the voice loop's counter and
+  its phi copies, the borrowed `X` saved and restored around the instrument
+  index, the carry flag threaded as a value through five copies, two `saved2`
+  spills).
+- 27 SID writes against 133,109 executed writes: the write-out is already
+  compact.
+- 95 statements are data statements, and most of what they name is not named as
+  data: 56 of the 252 printed lines mention `FREQ[`, and 23 of those 56 are
+  `FREQ[195]` — not a frequency but the SID register offset `$54EB`, swallowed
+  by the same region.
 
-## 4. Q3 — the factored form
+## 4. The factored form
 
 Full text: `out/commando-factored.md` (not committed — its data half is the
-tune). Four typings, each licensed by a fact the pipeline already computed.
+tune). Six typings, each licensed by a fact the pipeline already computed.
 
 | # | rewrite | the fact that licenses it |
 |---|---|---|
@@ -284,10 +275,10 @@ with an extra byte of which 15 are portamento — a note stream, not a program.
 | factored + the 11 elided `trap 'untaken'` arms | 126 | — |
 | floor (anatomy §3.1.3) | 65 | 621 |
 
-## 5. Q4 — verified, refuted, derived
+## 5. Verified, refuted, derived
 
-**Verified mechanically** (`tuneprog_floor.py`, `pairs`; the rule is: two accesses
-of one region in one block, at the same index expression, with adjacent constant
+Verified mechanically (`tuneprog_floor.py`, `pairs`; rule: two accesses of one
+region in one block, at the same index expression, with adjacent constant
 bases):
 
 | block | region | the two bases | reaches | written cells in reach | const row |
@@ -299,75 +290,64 @@ bases):
 | $506E, $5086 | `state_005D` | `$005D+i, $005E+i` | $005D-$005E | 2 | no |
 | $50AA, $50DC, $50ED | `state_005F` | `$005F+i, $0060+i` | $005F-$0060 | 2 | no |
 
-- **The pairing claim holds.** Every frequency read in the program is a
-  `(T[i], T[i+1])` pair at one index inside one block: five pairs in four
-  blocks, `$51CC` (the vibrato semitone difference) carrying two of them, for
-  the adjacent rows `n` and `n+1`. So `freq = FREQ[note]` is a *sound 16-bit
-  view*.
-- **The const claim is refuted, by the tune.** Every one of the four blocks reaches past
-  `$54E8` into cells the play routine writes. Song 1 plays **pitch 104 twenty-five
-  times** (patterns 8, 10 and 31, on the drum instruments 4 `fx=$03` and 7
-  `fx=$05`), and `$5428 + 2*104 = $54F8` is `voice[0].ctrl`, `$54F9` is
-  `voice[1].ctrl`; the arpeggio's `+12` reaches `$5510`/`$5511`, the two
-  `pwdir` bytes. **The drum's starting frequency is literally the two control
-  bytes currently in the voice array.** Hubbard's "benign overrun" (anatomy
-  §3.1.4) is not benign — it is load-bearing, 25 notes' worth, and it is exactly
-  what fuses the 192-byte const table with the 36-byte per-voice record into one
-  202-byte `state` region. That fusion is why `posoffset[v]` prints as
-  `FREQ[v + $C4]` and the SID offset as `FREQ[195]`.
-- **A second fusion, in the other direction**: the *one* pattern block prints as
-  three regions (`T5889` 1290 B, `T588A` 1285 B, `T588B` 1287 B) because three
-  accessors reached three extents of it. One array, three names.
-- **`voice[v].freq` (`$551D` lo, `$551A` hi) refuses to fold**, and not for either
-  reason one would guess. Instrumented: `word._pairs` **accepts** the two
-  addresses (it requires neither adjacency nor lo-below-hi, and Hubbard put hi
-  first); `word._crosses` returns **False** at all three portamento sites, so the
-  SID write of the low byte sitting between the two stores does not block it; and
-  `word._operand` does build the `R16($551D, $551A)`. The refusal is inside
-  `_match`'s reading of `hi = X + carry(lo)`. Which clause of `_parses`/`_same`
-  declines it was not pinned down in this run: recorded as a one-line question,
-  not fixed. The cost is 7 printed lines: the two portamento arms are 13 lines
-  where the folded pair would be 6.
+- **Pairing holds.** Every frequency read is a `(T[i], T[i+1])` pair at one index
+  inside one block: five pairs in four blocks, `$51CC` (the vibrato semitone
+  difference) carrying two of them, for adjacent rows `n` and `n+1`. So
+  `freq = FREQ[note]` is a sound 16-bit view.
+- **Const is refuted by the tune.** All four blocks reach past `$54E8` into cells
+  the play routine writes. Song 1 plays pitch 104 twenty-five times (patterns 8,
+  10 and 31, drum instruments 4 `fx=$03` and 7 `fx=$05`); `$5428 + 2*104 =
+  $54F8` is `voice[0].ctrl`, `$54F9` is `voice[1].ctrl`, and the arpeggio's `+12`
+  reaches `$5510`/`$5511`, the two `pwdir` bytes. The drum's starting frequency
+  is the two control bytes currently in the voice array. The overrun anatomy
+  §3.1.4 calls benign is load-bearing, 25 notes' worth, and is what fuses the
+  192-byte const table with the 36-byte per-voice record into one 202-byte
+  `state` region — why `posoffset[v]` prints as `FREQ[v + $C4]` and the SID
+  offset as `FREQ[195]`.
+- **A second fusion, in the other direction**: one pattern block prints as three
+  regions (`T5889` 1290 B, `T588A` 1285 B, `T588B` 1287 B) because three
+  accessors reached three extents of it.
+- **`voice[v].freq` (`$551D` lo, `$551A` hi) refuses to fold.** Instrumented:
+  `word._pairs` accepts the two addresses (it requires neither adjacency nor
+  lo-below-hi, and Hubbard put hi first); `word._crosses` returns False at all
+  three portamento sites, so the SID write of the low byte between the two
+  stores does not block it; `word._operand` does build the `R16($551D, $551A)`.
+  The refusal is inside `_match`'s reading of `hi = X + carry(lo)`; which clause
+  of `_parses`/`_same` declines it is open. Cost: 7 printed lines (the two
+  portamento arms are 13 lines where the folded pair would be 6).
 
-**Derived, not verified**: every name (`pos`, `pat`, `len`, `row`, `ctrl`,
-`note`, `ins`, `pwdelay`, `pwdir`, `porta`, `mstatus`, `allowed`, `counter`) is
-anatomy §3.1.1's word for a shape the IR gives only a role for; `ins.pw` as a
-12-bit accumulator is the anatomy's reading of `(pw_hi + carry) & $F`; the fx-bit
-meanings are the anatomy's. The factored text also elides 11 of the print's 13
+Derived, not verified: every name (`pos`, `pat`, `len`, `row`, `ctrl`, `note`,
+`ins`, `pwdelay`, `pwdir`, `porta`, `mstatus`, `allowed`, `counter`) is anatomy
+§3.1.1's word for a shape the IR gives only a role for; `ins.pw` as a 12-bit
+accumulator is the anatomy's reading of `(pw_hi + carry) & $F`; the fx-bit
+meanings are the anatomy's. The factored text elides 11 of the print's 13
 `trap 'untaken'` arms (7 of them the `allowed` guard, which song 1 never fails
 because no sound effect ever starts) — counted back in above.
 
-No pipeline module, no certificate and no printed artefact under
-`docs/certificates/` was modified for any of this.
-
 ## 6. Conclusions
 
-**Why eqsat could not reach this — measured, not argued.** `present()` with and
-without `--eqsat` on this exact certified program:
+`present()` with and without `--eqsat` on this exact certified program:
 
 | | lines | code lines | tokens | S6 statements | CPU |
 |---|---|---|---|---|---|
 | default | 377 | 252 | 2,282 | 178 | 0.6 s |
 | `--eqsat` | 377 | 252 | 2,274 | 178 | 2.8 s |
 
-Eight tokens, at 4.7x the CPU, and the whole difference is deleting two `0 +`
-in a borrow. That is the correct result, not a failure of the e-graph: an
-expression rewriter rewrites expressions. It cannot dump `PAT` as 1,290 bytes of
-note records, it cannot split a region, it cannot decide that `FREQ[195]` is a
-register offset and `FREQ[t << 1]` is a pitch, and it cannot rename a derivation.
-The bottleneck was never the algebra. It is *storage typing*, which is upstream
-of every expression the e-graph sees.
+Eight tokens at 4.7x the CPU, the whole difference being two deleted `0 +` in a
+borrow. An expression rewriter rewrites expressions: it cannot dump `PAT` as
+1,290 bytes of note records, split a region, decide that `FREQ[195]` is a
+register offset and `FREQ[t << 1]` a pitch, or rename a derivation. The
+bottleneck is storage typing, upstream of every expression the e-graph sees.
 
-**Is the gap typing? Yes, and here is the number.** Of the 254 printed nodes,
-**49 are machine encoding** (17 halves and carries, 32 that touch no storage) and
-those are exactly what T1-T4 remove; the rest of 252 → 115 lines is the printer's
-temporaries becoming inline once the storage has a shape. Two typings do almost
-all of it: T1 (split the fused region) touches **56 of the 252 printed lines**,
-and the 16-bit view — T2 plus the `voice[v].freq` pair the pipeline already
-attempts — removes all **17** half/carry statements.
+Of the 254 printed nodes, 49 are machine encoding (17 halves and carries, 32
+touching no storage) and those are exactly what T1-T4 remove; the rest of
+252 → 115 lines is the printer's temporaries becoming inline once the storage
+has a shape. Two typings do almost all of it: T1 (split the fused region)
+touches 56 of the 252 printed lines, and the 16-bit view — T2 plus the
+`voice[v].freq` pair the pipeline already attempts — removes all 17 half/carry
+statements.
 
-**The one generic mechanism.** Not an arc — a rule about region extents, of the
-size of one Q1b item:
+The one generic mechanism, a rule about region extents:
 
 > A region's extent is the union of its accessors' observed spans, but the
 > accessors are not all the same shape. Partition them: an accessor whose span is
@@ -380,27 +360,31 @@ size of one Q1b item:
 > `u16` table; a byte no store ever writes is `const` even when a neighbour is
 > `state`.
 
-On Commando that single rule turns one 202-byte `state` region into `FREQ`
-(u16 const table, with the pitch-104 read carrying an explicit out-of-range
-assertion), six 3-byte per-voice arrays, one scalar register offset, and one
-`pwdir` cell — which is T1, T2 and T3 together, i.e. most of the 252 → 115. Its
-mirror image handles the pattern block: three extents of one array whose
-accessors agree on shape are one region, not three.
+On Commando that rule turns one 202-byte `state` region into `FREQ` (u16 const
+table, with the pitch-104 read carrying an explicit out-of-range assertion), six
+3-byte per-voice arrays, one scalar register offset, and one `pwdir` cell —
+T1, T2 and T3 together, i.e. most of the 252 → 115. Its mirror handles the
+pattern block: three extents of one array whose accessors agree on shape are one
+region, not three.
 
-**The honest floor.** For Commando song 1 it is **65 lines of player pseudocode
-plus 1,942 bytes (1,116 compressed) of data printed as data**, and the data half
-is genuinely irreducible — it is the tune, and even the frequency table resists a
-formula. The print is at 252 lines and prints none of the data as data. The
-factored form reaches 115–126 lines and names all of it, closing 2.2x of the 3.9x
-by storage typing alone. The residual 115 → 65 is not a decompiler defect: it is
-the SID's 8-bit registers (every frequency and pulse-width change is two writes
-the certificate compares individually — 21 of the factored form's 115 lines are
-SID writes against the anatomy's 12), the branch arms the trace took that a human
-summary elides, and the position bookkeeping a human writes as `pat++`.
+The floor for Commando song 1 is 65 lines of player pseudocode plus 1,942 bytes
+(1,116 compressed) of data printed as data; the data half is irreducible. The
+print is at 252 lines and prints none of the data as data. The factored form
+reaches 115–126 lines and names all of it, closing 2.2x of the 3.9x by storage
+typing alone. Two thirds of the tune's live bytes are tables (1,942 of 2,878
+reached) and the current print does not say so.
 
-A simple tune is not a short program. It is a *short program plus two thirds of
-its live bytes in tables* (1,942 of 2,878 reached), and the current print
-declines to say so.
+The residual 115 → 65 is part floor, part presentation. The two-writes-per
+16-bit register change is a hard fact about the *emitted executable*: the
+certificate compares the executable's ordered byte writes per tick
+(`verify._compare`), so both halves must be written separately and in order. It
+is not a fact about the *print*: a u16 view can print one statement per 16-bit
+register change under a stated write-order convention — this tune writes
+hi-then-lo in `fetch` and the arpeggio, lo-then-hi in vibrato — so about 9 of
+the factored form's 21 SID-write lines (against the anatomy's 12) are
+presentation, not floor. The rest of the residual is the branch arms the trace
+took that a human summary elides, and the position bookkeeping a human writes as
+`pat++`.
 
 ## 7. Reproducing
 
@@ -413,6 +397,6 @@ python3 tools/tuneprog_floor.py out/c1 \
     --code '5000-5011:API $5000'       --code '5F0C-5FC6:init $5F0C'
 ```
 
-`--calls 11780` is the horizon the certificate records (Commando has no state
-repeat inside its HVSC length; `period.py` classifies the obstruction). The
+`--calls 11780` is the horizon the certificate records; Commando has no state
+repeat inside its HVSC length (`period.py` classifies the obstruction). The
 factored document is hand-derived from `out/c1/tuneprog.md` and the tables above.
