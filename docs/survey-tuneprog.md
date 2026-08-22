@@ -266,11 +266,14 @@ beside it rather than replacing it.
 ### 5b. Correction (2026-08-22): that row counted evidence, not a schedule
 
 > **Superseded in part by [prototype-nmi.md](prototype-nmi.md) (2026-08-22).** The 311
-> below were counted with every gate bypassed, so they include tunes that refuse for
-> reasons an NMI model cannot fix. Re-measured with the model built, **181 tunes of
-> 7,023 (2.6 % raw, 1.3 % weighted) have a dispatching NMI *beside* a play entry** and
-> 43 more have it as their only schedule. `second interrupt source armed` now means a
-> CIA #2 source with no schedule -- 6 tunes.
+> below are `nmi_gate`'s verdict over *these 547 already-refused tunes*, driven past the
+> pipeline's refusal order, so they include tunes that refuse for reasons an NMI model
+> cannot fix — the paragraph below names 29 of them. Re-measured over the whole sample
+> with the model built, **195 tunes of 7,023 have a dispatching NMI *beside* a play
+> entry**, 181 of them with a classified schedule (2.6 % raw, 1.3 % weighted), and 43
+> more have the NMI as their only schedule. `second interrupt source armed` now means a
+> CIA #2 source with no schedule -- 6 tunes. The 311 itself is no longer reproducible:
+> `nmi_gate` was deleted when the exact model replaced it.
 
 `find_entries` refused any write to the CIA #2 Timer-A latch (`$DD04`/`$DD05`)
 or to the NMI vector (`$0318`/`$0319`). Neither makes an NMI possible. A tune
