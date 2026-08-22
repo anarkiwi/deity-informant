@@ -198,7 +198,8 @@ def scan(args):
         open(args.out, "a", encoding="utf-8") as f,
         Pool(args.jobs, initializer=_init_worker) as pool,
     ):
-        for row in pool.imap_unordered(one, todo, chunksize=4):
+        # one tune per dispatch: the budget's terminate() discards what is in flight
+        for row in pool.imap_unordered(one, todo, chunksize=1):
             f.write(json.dumps(row) + "\n")
             n += 1
             if n % 500 == 0:
