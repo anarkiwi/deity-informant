@@ -204,12 +204,18 @@ class NmiMachine(Machine):
         self.icur, self.acur = self.acur, self.icur
 
     def at(self, a, w=1):
-        """One store is about to happen: run whatever the schedule places before it."""
+        """One store is about to happen: run whatever the schedule places before it.
+
+        A store wholly inside the stack page is no preemption point: the schedule
+        counts stores outside it, and the trace's separability check closes the
+        window only at those.
+        """
+        n = sum(not STACK_LO <= (a + i) & 0xFFFF <= STACK_HI for i in range(w))
+        if not n:
+            return
         if self.hook is not None:
             self.hook()
-        for i in range(w):
-            if not STACK_LO <= (a + i) & 0xFFFF <= STACK_HI:
-                self.stores += 1
+        self.stores += n
 
 
 class Interp:
