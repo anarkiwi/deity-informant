@@ -330,6 +330,8 @@ zero cost on every program with one entry.
   period, which is three tunes of this class and the reprogrammed-clock row;
 * a moving NMI vector becomes k entries, which is right for a two-phase handler
   chain and would be wrong for a genuinely computed vector — nothing bounds k;
+* an NMI procedure's pushed status byte has no name in `frames.contract`, so the
+  program stays `stack: residual` where it might eliminate;
 * the horizon `--seconds` computes is taken from the pre-settle cadence, so a
   tune whose tick period settles later certifies a little past the horizon asked
   for (*Easy Does It*: 1,799 ticks = 35.9 s for `--seconds 30`).
