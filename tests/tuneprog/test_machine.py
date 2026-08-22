@@ -7,6 +7,7 @@ from deity_informant.tuneprog import machine
 from deity_informant.tuneprog.machine import (
     CIA,
     CIA1_BASE,
+    ICR_TA,
     Entry,
     MachineImage,
     Refusal,
@@ -18,7 +19,7 @@ from deity_informant.tuneprog.machine import (
     port_bank,
 )
 
-from _asm import asm, psid, sid_image
+from _asm import asm, psid, sid_image, trace_prog
 
 
 def _mem(ddr, data):
@@ -77,13 +78,102 @@ def test_find_entries_header_play():
     assert sched[0].addr == 0x1010 and sched[0].cycles_per_tick > 0
 
 
-def test_find_entries_refuses_second_interrupt_source():
+def test_find_entries_admits_a_cia2_latch_no_source_enabled():
+    """A latch nothing dispatches is a counter, not a schedule."""
     pytest.importorskip("pysidtracker")
     init = asm(0x1000, "LDA #$34", "STA $DD04", "LDA #$12", "STA $DD05", "RTS")
+    data = psid({0x1000: init, 0x1020: asm(0x1020, "RTS")}, 0x1000, 0x1020)
+    assert find_entries(data)[1][0].kind == "sub"
+
+
+ARM = ("LDA #$81", "STA $DD0D")  # ICR: enable Timer A as a source
+START = ("LDA #$11", "STA $DD0E")  # CRA: force load + start Timer A
+NMINV = ("LDA #$00", "STA $0318", "LDA #$20", "STA $0319")
+
+
+def test_find_entries_refuses_a_source_the_init_trace_already_shows_armed():
+    pytest.importorskip("pysidtracker")
+    init = asm(0x1000, *ARM, *START, "RTS")
     data = psid({0x1000: init, 0x1020: asm(0x1020, "RTS")}, 0x1000, 0x1020)
     with pytest.raises(Refusal) as e:
         find_entries(data)
     assert e.value.reason == "second interrupt source armed"
+
+
+def _nmi_trace(*init_lines, play=("RTS",), calls=2):
+    """Trace two ticks of a tune whose init runs ``init_lines``."""
+    return trace_prog(
+        {0x1000: asm(0x1000, *init_lines, "RTS"), 0x1100: asm(0x1100, *play)},
+        0x1000,
+        0x1100,
+        calls=calls,
+    )[0]
+
+
+def test_an_nmi_vector_with_no_source_enabled_is_dead():
+    assert _nmi_trace(*NMINV).meta["calls"] == 2
+
+
+def test_an_armed_started_timer_refuses_with_the_icr_in_the_detail():
+    with pytest.raises(Refusal) as e:
+        _nmi_trace(*NMINV, *ARM, *START)
+    assert e.value.reason == "second interrupt source armed"
+    assert "icr=$%02X" % ICR_TA in e.value.detail and "ta=1" in e.value.detail
+
+
+def test_an_enabled_source_whose_timer_never_starts_cannot_fire():
+    assert _nmi_trace(*NMINV, *ARM).meta["calls"] == 2
+
+
+def test_icr_writes_accumulate_the_mask_as_the_chip_does():
+    """Bit 7 enables what the write names, without it disables: the last write is not the mask."""
+    assert _nmi_trace(*ARM, "LDA #$01", "STA $DD0D", *START).meta["calls"] == 2
+    for enabling in (("LDA #$01", "STA $DD0D", *ARM), (*ARM, "LDA #$02", "STA $DD0D")):
+        with pytest.raises(Refusal):
+            _nmi_trace(*enabling, *START)
+
+
+def test_arming_the_nmi_in_play_refuses_at_that_tick():
+    with pytest.raises(Refusal) as e:
+        _nmi_trace(*START, play=("LDA #$81", "STA $DD0D", "RTS"))
+    assert e.value.reason == "nmi armed in play"
+
+
+def test_acknowledging_the_icr_in_play_is_not_an_arming():
+    play = ("LDA #$7F", "STA $DD0D", "LDA $DD0D", "RTS")
+    assert _nmi_trace(*START, play=play).meta["calls"] == 2
+
+
+def test_the_installed_vector_is_not_what_gates_the_schedule():
+    """Either port: a vector is dead with no source, and a source refuses with no vector."""
+    for port in ("$37", "$35"):  # KERNAL mapped, KERNAL banked out
+        bank = ("LDA #%s" % port, "STA $01")
+        raw = ("LDA #$00", "STA $FFFA", "LDA #$20", "STA $FFFB")
+        assert _nmi_trace(*bank, *raw).meta["calls"] == 2
+        with pytest.raises(Refusal):
+            _nmi_trace(*bank, *ARM, *START)
+
+
+def test_cia_icr_mask_accumulates_and_a_source_needs_its_timer():
+    c = CIA(CIA1_BASE)
+    c.write(CIA1_BASE + 0x0D, 0x81, 0)
+    assert c.icr == ICR_TA and c.sources() == 0  # enabled, but Timer A is stopped
+    c.write(CIA1_BASE + 0x0E, 0x01, 0)
+    assert c.sources() == ICR_TA
+    c.write(CIA1_BASE + 0x0D, 0x02, 0)  # disables Timer B, which was never enabled
+    assert c.sources() == ICR_TA
+    c.write(CIA1_BASE + 0x0D, 0x01, 0)
+    assert c.sources() == 0 and c.fired(0) == 0
+
+
+def test_cia_a_window_that_underflowed_fires_after_it_closes():
+    c = CIA(CIA1_BASE)
+    c.write(CIA1_BASE + 4, 0xFF, 0)
+    c.write(CIA1_BASE + 5, 0x00, 0)
+    c.write(CIA1_BASE + 0x0E, 0x11, 0)
+    c.write(CIA1_BASE + 0x0D, 0x81, 0)
+    c.write(CIA1_BASE + 0x0D, 0x01, 0x400)  # disabled again, but it underflowed meanwhile
+    assert c.sources() == 0 and c.fired(0x400) == ICR_TA
 
 
 def test_find_entries_refuses_when_no_entry():

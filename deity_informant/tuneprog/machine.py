@@ -16,6 +16,7 @@ Public API:
   direction, $01 data) maps at ``$D000-$DFFF`` and at ``$E000-$FFFF``.
 * ``vector_gate(mem, written, img)`` -- which installed interrupt vector that
   port really dispatches through; raises :class:`Refusal` when none does.
+* ``nmi_gate(cia2, cycles, reason)`` -- refuses when CIA #2 has raised an NMI.
 * ``CIA(base)`` -- minimal Timer-A/ICR model (count-down at cycle rate, ICR bit on
   underflow) so an init busy-wait on ``$DC04``/``$DC0D`` terminates.
 """
@@ -36,6 +37,9 @@ PAL_FRAME = 19656
 CIA1_BASE = 0xDC00
 CIA2_BASE = 0xDD00
 VIDEO = {"pal_video": "pal", "ntsc_video": "ntsc"}  # the cadence sources that are a frame
+ICR_TA, ICR_TB = 0x01, 0x02  # CIA ICR mask bits: Timer-A, Timer-B
+ICR_SOURCES = 0x1F  # ICR bits 0-4: Timer A, Timer B, TOD alarm, serial, FLAG
+ICR_SET = 0x80  # an ICR write with bit 7 enables the sources it names, else disables them
 HOST_LATCH = {"pal": 0x4025, "ntsc": 0x4295}  # CIA1 Timer-A as the KERNAL/psiddrv leave it
 
 
@@ -184,14 +188,14 @@ def vector_gate(mem, written, img=(0, 0)):
 
 
 class CIA:
-    """Minimal CIA Timer-A + ICR read model (one chip at ``base``).
+    """Minimal CIA Timer-A + ICR model (one chip at ``base``).
 
-    Timer A counts down from its latch at the cycle rate while started; reads of
-    ``$xx04``/``$xx05`` return the current counter and a read of the ICR
-    (``$xx0D``) returns, and clears, the underflow flag.
+    Timer A counts down from its latch at the cycle rate while started; ICR
+    writes accumulate the interrupt mask the way the chip does, so the last write
+    alone does not give it, and :meth:`fired` is this chip's interrupt line.
     """
 
-    __slots__ = ("base", "latch", "counter", "running", "t0", "cycles0")
+    __slots__ = ("base", "latch", "counter", "running", "t0", "cycles0", "icr", "run_b", "u0", "f")
 
     def __init__(self, base):
         self.base = base
@@ -200,6 +204,10 @@ class CIA:
         self.running = False
         self.t0 = 0
         self.cycles0 = 0
+        self.icr = 0  # the KERNAL's reset write of $7F disables every source
+        self.run_b = False
+        self.u0 = 0
+        self.f = 0
 
     def _elapsed(self, cycles):
         return (cycles - self.t0) % (self.latch + 1)
@@ -227,6 +235,9 @@ class CIA:
 
     def write(self, addr, val, cycles):
         off = self._off(addr)
+        if off < 0:
+            return
+        self._settle(cycles)
         if off == 0x04 or off == 0x05:
             if off == 0x04:
                 self.latch = (self.latch & 0xFF00) | (val & 0xFF)
@@ -235,6 +246,8 @@ class CIA:
             self.counter = self.latch
             self.t0 = cycles  # restart the count so underflows stay monotone
             self.cycles0 = 0
+        elif off == 0x0D:
+            self.icr = (self.icr | val) & ICR_SOURCES if val & ICR_SET else self.icr & ~val
         elif off == 0x0E:
             if val & 0x10:  # force load
                 self.counter = self.latch
@@ -244,6 +257,43 @@ class CIA:
                 self.t0 = cycles
                 self.cycles0 = 0
             self.running = bool(val & 1)
+        elif off == 0x0F:
+            self.run_b = bool(val & 1)
+        self.u0 = self.underflows(cycles)
+
+    def sources(self):
+        """Enabled sources whose event can still occur: a timer source must be started."""
+        m = self.icr & ICR_SOURCES
+        return m & ~(0 if self.running else ICR_TA) & ~(0 if self.run_b else ICR_TB)
+
+    def _settle(self, cycles):
+        """Close the armed window at ``cycles``: an enabled source that had its event fires."""
+        m = self.sources()
+        self.f |= m & ~ICR_TA  # timer B, TOD alarm, serial, FLAG: unmodelled, so fail closed
+        if m & ICR_TA and self.underflows(cycles) > self.u0:
+            self.f |= ICR_TA
+
+    def fired(self, cycles):
+        """Enabled sources that have raised this chip's interrupt line, or still can."""
+        self._settle(cycles)
+        self.u0 = self.underflows(cycles)
+        return self.f | self.sources()
+
+
+def nmi_gate(cia2, cycles, reason):
+    """Refuse ``reason`` when CIA #2 has raised the 6510's NMI: a second schedule.
+
+    CIA #2's interrupt line is NMI, so an enabled source that has had its event
+    dispatches one whatever vector carries it, and one that cannot fire leaves an
+    installed ``$0318``/``$FFFA`` dead. RESTORE, the only other NMI source, is
+    one the oracle (``sidplayfp``) never presses.
+    """
+    fired = cia2.fired(cycles)
+    if fired:
+        raise Refusal(
+            reason,
+            "cia2 icr=$%02X fired=$%02X ta=%d tb=%d" % (cia2.icr, fired, cia2.running, cia2.run_b),
+        )
 
 
 def host_cia(std):
@@ -292,6 +342,20 @@ def _init_topology(data):
     return _traced(data)[1]
 
 
+def _init_cia2(topo):
+    """CIA #2 as the init trace's *last* writes leave it: a lower bound on its sources.
+
+    An ICR write with bit 7 set enables what it names, and nothing follows the last
+    write, so this mask can only understate what is enabled -- sound to refuse on,
+    unsound to admit on, which is why :meth:`~.trace.Tracer.run_init` decides.
+    """
+    cia = CIA(CIA2_BASE)
+    if topo.cia2_icr and topo.cia2_icr & ICR_SET:
+        cia.icr = topo.cia2_icr & ICR_SOURCES
+    cia.running = bool((topo.cia2_control or 0) & 1)
+    return cia
+
+
 def find_entries(data, mem=None, written=None, song=None):
     """``(MachineImage, [Entry])`` -- the pre-init image and the tick schedule of ``data``.
 
@@ -300,18 +364,15 @@ def find_entries(data, mem=None, written=None, song=None):
     through, over ``mem``/``written`` where the caller has them and the pre-init
     image otherwise -- a provisional answer :meth:`~.trace.Tracer.run_init`
     settles once init has had the port. ``song`` (0-based, default the header's
-    ``startsong``) picks whose ``speed`` bit :func:`_cadence` reads. Refuses on a
-    second interrupt source.
+    ``startsong``) picks whose ``speed`` bit :func:`_cadence` reads. It refuses a
+    second schedule the init trace already shows armed; the rest is
+    :func:`nmi_gate`'s, at the tick it could fire.
     """
     img = MachineImage.from_sid(data)
     cycles, source = _cadence(data, img.startsong - 1 if song is None else song)
     topo = _init_topology(data)
     if topo is not None:
-        if topo.cia2_timer_latch is not None or topo.nmi_vector is not None:
-            raise Refusal(
-                "second interrupt source armed",
-                "cia2_latch=%s nmi=%s" % (topo.cia2_timer_latch, topo.nmi_vector),
-            )
+        nmi_gate(_init_cia2(topo), 0, "second interrupt source armed")
     if img.play:
         return img, [Entry("sub", img.play, cycles, source)]
     installed = {}

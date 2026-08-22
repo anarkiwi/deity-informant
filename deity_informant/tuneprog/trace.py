@@ -25,7 +25,15 @@ import numpy as np
 from ..lifter import lift
 from .. import c64
 from .ir import STACK_HI, STACK_LO
-from .machine import STATUS, Refusal, entry_frame, init_runner, kernal_mapped, vector_gate
+from .machine import (
+    STATUS,
+    Refusal,
+    entry_frame,
+    init_runner,
+    kernal_mapped,
+    nmi_gate,
+    vector_gate,
+)
 from .tracedata import Trace, site_key
 from .tracevm import PH_PLAY, TraceVM
 
@@ -105,6 +113,7 @@ class Tracer:
         vm.push_frame(None, 0x0002, self.image.init)
         kw = {} if budget is None else {"budget": budget}
         init_runner(vm, self.image.init, self.cache, lift, **kw)
+        nmi_gate(vm.cia[1], vm.cycles, "second interrupt source armed")
         vm.shadow.clear()
         vm.phase = PH_PLAY
         if self.entry.kind == "irq":
@@ -174,6 +183,8 @@ class Tracer:
         vm.shadow.clear()
         if vm.cycles - c0 < self.entry.cycles_per_tick:
             vm.cycles = c0 + self.entry.cycles_per_tick
+        # the gate is the tick's contract too: an arming in play is a schedule
+        nmi_gate(vm.cia[1], vm.cycles, "nmi armed in play")
         self._hash()
         self.calls_done += 1
 
