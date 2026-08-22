@@ -233,7 +233,7 @@ program's generated `tuneprog.py` is byte-identical (sha1 of the emitted text
 unchanged on Commando, *Automatas* and *Do It Again*), it runs on the plain
 `Machine`, and the verifier's throughput is unmoved (17,955 / 14,703 / 9,975
 calls/s before, 19,266 / 14,444 / 9,883 after — noise). `tools/tuneprog_recert.py`
-reproduces **50/50 with 0 fields moved**.
+reproduces **51/51 with 0 fields moved** -- the 50 that were there, and this one.
 
 The certificate says what it proved: `compared` gains `"nmi preemption
 schedule"`, a `schedule` block names both entries, and the subtune carries
@@ -317,7 +317,7 @@ schedule in the certificate. The chip model is exercised by 25 hermetic tests
 (the edge, the acknowledge, one-shot, Timer B in both count modes, the latch
 rule, both vectors, the frame contract, the idle-time NMIs, a repointing vector)
 and the three executors — tracer, interpreter, generated Python — agree over the
-interleaving on the hermetic image. Recert 50/50, trace byte-identity intact,
+interleaving on the hermetic image. Recert 51/51, trace byte-identity intact,
 zero cost on every program with one entry.
 
 **Remains** (plan §5 rows):

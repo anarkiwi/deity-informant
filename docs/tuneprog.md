@@ -58,20 +58,20 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end    machine 564  nmi 100  tracevm 502  tracesite 185  traceflow 101
-             trace 553  tracedata 349  lift 227
-             cfg 311  regions 243  jumptab 373  siblings 476  closure 347
+front end    machine 305  cia 267  nmi 101  tracevm 499  tracesite 185
+             traceflow 101  trace 453  tracedata 426  lift 227
+             cfg 347  regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
-program      ir 440  interp 248  irwalk 319  graph 82  lower 227  build 452
-             wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 372
-             verify 338  period 113
+program      ir 440  interp 287  irwalk 319  graph 82  lower 227  build 482
+             wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 386
+             verify 418  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
              word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
              facts 284  recover 328  views 295  eqsat 283  eqrules 244  ranges 73
 text         pseudocode 468  printer 405
 driver       pipeline 510  resume 67  __init__ 134
-oracle       grid 159  tunes 55
-baseline     ghidra_facts 219  ghidra_compare 182   54 modules, 15,771 lines
+oracle       grid 157  tunes 56
+baseline     ghidra_facts 219  ghidra_compare 182   56 modules, 16,328 lines
 ```
 
 Stage entry points, which are also the module boundaries:
