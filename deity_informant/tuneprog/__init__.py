@@ -2,7 +2,8 @@
 
 Front end (trace-driven recovery):
 
-* :mod:`.machine` (S0) -- machine image, entry/cadence discovery, init runner.
+* :mod:`.machine` (S0) -- machine image, entry/cadence discovery, init runner;
+  :mod:`.cia` the two timer chips, :mod:`.nmi` the second entry CIA #2 dispatches.
 * :mod:`.tracevm` / :mod:`.trace` (S1) -- op-level tracing VM and the tracer
   that drives it: sites, edges, logs, inputs, per-tick state hashes;
   :mod:`.tracesite` -- one site resolved once (closure, access sets, masks,
@@ -63,7 +64,8 @@ against each other. ``docs/tuneprog.md`` is the guide.
 
 from __future__ import annotations
 
-from .machine import CIA, Entry, MachineImage, Refusal, find_entries, init_runner
+from .cia import CIA
+from .machine import Entry, MachineImage, Refusal, find_entries, init_runner
 from .machine import kernal_mapped, port_bank, vector_gate
 from .trace import Trace, Tracer, run_trace, site_key
 from .tracevm import TraceVM, input_kind

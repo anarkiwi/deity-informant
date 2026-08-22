@@ -4,10 +4,8 @@ import pytest
 
 from deity_informant import PcodeVM, lift
 from deity_informant.tuneprog import machine
+from deity_informant.tuneprog.cia import CIA, CIA1_BASE, ICR_TA
 from deity_informant.tuneprog.machine import (
-    CIA,
-    CIA1_BASE,
-    ICR_TA,
     Entry,
     MachineImage,
     Refusal,
@@ -95,22 +93,32 @@ def test_find_entries_admits_a_cia2_latch_no_source_enabled():
 
 ARM = ("LDA #$81", "STA $DD0D")  # ICR: enable Timer A as a source
 START = ("LDA #$11", "STA $DD0E")  # CRA: force load + start Timer A
+LATCH = ("LDA #$63", "STA $DD04", "LDA #$00", "STA $DD05")  # Timer A: 100 cycles
 NMINV = ("LDA #$00", "STA $0318", "LDA #$20", "STA $0319")
 
 
-def test_find_entries_refuses_a_source_the_init_trace_already_shows_armed():
+def test_find_entries_leaves_the_second_schedule_to_the_tracer():
+    """The chip this tune's own init leaves decides it, not a second emulation."""
     pytest.importorskip("pysidtracker")
     init = asm(0x1000, *ARM, *START, "RTS")
     data = psid({0x1000: init, 0x1020: asm(0x1020, "RTS")}, 0x1000, 0x1020)
-    with pytest.raises(Refusal) as e:
-        find_entries(data)
-    assert e.value.reason == "second interrupt source armed"
+    assert find_entries(data)[1][0].kind == "sub"
+    with pytest.raises(Refusal) as e:  # armed, and no vector answers the line
+        _nmi_trace(*ARM, *START)
+    assert e.value.reason == "nmi vector banked out"
+
+
+HANDLER = ("LDA $DD0D", "RTI")  # acknowledges, so the line can assert again
 
 
 def _nmi_trace(*init_lines, play=("RTS",), calls=2):
-    """Trace two ticks of a tune whose init runs ``init_lines``."""
+    """Trace two ticks of a tune whose init runs ``init_lines``; ``$2000`` is its NMI."""
     return trace_prog(
-        {0x1000: asm(0x1000, *init_lines, "RTS"), 0x1100: asm(0x1100, *play)},
+        {
+            0x1000: asm(0x1000, *init_lines, "RTS"),
+            0x1100: asm(0x1100, *play),
+            0x2000: asm(0x2000, *HANDLER),
+        },
         0x1000,
         0x1100,
         calls=calls,
@@ -121,11 +129,10 @@ def test_an_nmi_vector_with_no_source_enabled_is_dead():
     assert _nmi_trace(*NMINV).meta["calls"] == 2
 
 
-def test_an_armed_started_timer_refuses_with_the_icr_in_the_detail():
-    with pytest.raises(Refusal) as e:
-        _nmi_trace(*NMINV, *ARM, *START)
-    assert e.value.reason == "second interrupt source armed"
-    assert "icr=$%02X" % ICR_TA in e.value.detail and "ta=1" in e.value.detail
+def test_an_armed_started_timer_is_the_schedules_second_entry():
+    t = _nmi_trace(*NMINV, *LATCH, *ARM, *START)
+    assert [e["kind"] for e in t.meta["schedule"]] == ["sub", "nmi"]
+    assert t.meta["schedule"][1]["addr"] == 0x2000 and t.meta["nmis"] > 1
 
 
 def test_an_enabled_source_whose_timer_never_starts_cannot_fire():
@@ -134,16 +141,11 @@ def test_an_enabled_source_whose_timer_never_starts_cannot_fire():
 
 def test_icr_writes_accumulate_the_mask_as_the_chip_does():
     """Bit 7 enables what the write names, without it disables: the last write is not the mask."""
-    assert _nmi_trace(*ARM, "LDA #$01", "STA $DD0D", *START).meta["calls"] == 2
+    assert (
+        len(_nmi_trace(*NMINV, *LATCH, *ARM, "LDA #$01", "STA $DD0D", *START).meta["schedule"]) == 1
+    )
     for enabling in (("LDA #$01", "STA $DD0D", *ARM), (*ARM, "LDA #$02", "STA $DD0D")):
-        with pytest.raises(Refusal):
-            _nmi_trace(*enabling, *START)
-
-
-def test_arming_the_nmi_in_play_refuses_at_that_tick():
-    with pytest.raises(Refusal) as e:
-        _nmi_trace(*START, play=("LDA #$81", "STA $DD0D", "RTS"))
-    assert e.value.reason == "nmi armed in play"
+        assert _nmi_trace(*NMINV, *LATCH, *enabling, *START).meta["nmis"] > 1
 
 
 def test_acknowledging_the_icr_in_play_is_not_an_arming():
@@ -156,9 +158,10 @@ def test_the_installed_vector_is_not_what_gates_the_schedule():
     for port in ("$37", "$35"):  # KERNAL mapped, KERNAL banked out
         bank = ("LDA #%s" % port, "STA $01")
         raw = ("LDA #$00", "STA $FFFA", "LDA #$20", "STA $FFFB")
-        assert _nmi_trace(*bank, *raw).meta["calls"] == 2
-        with pytest.raises(Refusal):
+        assert len(_nmi_trace(*bank, *raw).meta["schedule"]) == 1
+        with pytest.raises(Refusal) as e:
             _nmi_trace(*bank, *ARM, *START)
+        assert e.value.reason == "nmi vector banked out"
 
 
 def test_cia_icr_mask_accumulates_and_a_source_needs_its_timer():
@@ -170,17 +173,20 @@ def test_cia_icr_mask_accumulates_and_a_source_needs_its_timer():
     c.write(CIA1_BASE + 0x0D, 0x02, 0)  # disables Timer B, which was never enabled
     assert c.sources() == ICR_TA
     c.write(CIA1_BASE + 0x0D, 0x01, 0)
-    assert c.sources() == 0 and c.fired(0) == 0
+    assert c.sources() == 0 and c.edge_at(0) is None
 
 
-def test_cia_a_window_that_underflowed_fires_after_it_closes():
+def test_cia_a_flag_outlives_the_mask_that_named_it():
+    """The event latches its flag whatever the mask says; only a read clears it."""
     c = CIA(CIA1_BASE)
     c.write(CIA1_BASE + 4, 0xFF, 0)
     c.write(CIA1_BASE + 5, 0x00, 0)
     c.write(CIA1_BASE + 0x0E, 0x11, 0)
     c.write(CIA1_BASE + 0x0D, 0x81, 0)
     c.write(CIA1_BASE + 0x0D, 0x01, 0x400)  # disabled again, but it underflowed meanwhile
-    assert c.sources() == 0 and c.fired(0x400) == ICR_TA
+    assert c.sources() == 0 and c.edge_at(0x400) is None and c.fl == ICR_TA
+    c.write(CIA1_BASE + 0x0D, 0x81, 0x400)  # named again: the latched flag raises at once
+    assert c.edge_at(0x400) == 0x400
 
 
 def test_find_entries_refuses_when_no_entry():
@@ -243,6 +249,75 @@ def test_cinv_with_the_kernal_banked_out_refuses():
     assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
 
 
+RAW_VEC = ("LDA #$35", "STA $01", "LDA #$00", "STA $FFFE", "LDA #$20", "STA $FFFF")
+CINV = ("LDA #$00", "STA $0314", "LDA #$20", "STA $0315")
+RASTER = ("LDA #$01", "STA $D01A")
+
+
+def test_an_unsettled_port_takes_the_installed_vector_over_the_live_one():
+    """Before init has had the port, the dispatch is a guess, not grounds to refuse."""
+    mem = bytearray(0x10000)
+    mem[0], mem[1] = 0x2F, 0x37  # the KERNAL mapped, and only $FFFE installed
+    mem[0xFFFE], mem[0xFFFF] = 0x00, 0x20
+    assert machine.vector_gate(mem, {0xFFFE, 0xFFFF}, settled=False) == (0xFFFE, False)
+    with pytest.raises(Refusal) as e:
+        machine.vector_gate(mem, {0xFFFE, 0xFFFF})
+    assert e.value.reason == "vector banked out"
+    mem[1] = 0x35  # the KERNAL banked out, and only CINV installed
+    mem[0x0314], mem[0x0315] = 0x00, 0x20
+    assert machine.vector_gate(mem, {0x0314, 0x0315}, settled=False) == (0x0314, True)
+
+
+def _settled(*init_lines):
+    """``(the guessed entry, the entry the traced machine settles on)``."""
+    pytest.importorskip("pysidtracker")
+    from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
+
+    blocks = {0x1000: asm(0x1000, *init_lines, "RTS"), 0x2000: asm(0x2000, "RTI")}
+    img, sched = find_entries(psid(blocks, 0x1000, 0x0000, speed=1))
+    return sched[0], Tracer(img, sched[0]).run_init().entry
+
+
+def test_the_settle_refuses_a_vector_the_port_init_left_forbids():
+    """Guessing over the pre-init port defers the verdict; it does not drop it."""
+    guess, _ = _settled(*CINV)
+    assert guess.kernal is True and guess.addr == 0x2000
+    with pytest.raises(Refusal) as e:
+        _settled(*CINV, "LDA #$35", "STA $01")
+    assert e.value.reason == "vector banked out" and "$FFFE" in e.value.detail
+
+
+def test_a_play_routine_that_moves_the_port_refuses_at_the_next_tick():
+    """The frame is the tick's contract, so the dispatch it implies holds at every tick."""
+    pytest.importorskip("pysidtracker")
+    from deity_informant.tuneprog.trace import Tracer  # pylint: disable=C0415
+
+    blocks = {
+        0x1000: asm(0x1000, *RAW_VEC, "RTS"),
+        0x2000: asm(0x2000, "LDA #$37", "STA $01", "RTI"),  # the KERNAL back in
+    }
+    img, sched = find_entries(psid(blocks, 0x1000, 0x0000, speed=1))
+    tr = Tracer(img, sched[0]).run_init()
+    assert tr.entry.kernal is False
+    with pytest.raises(Refusal) as e:
+        tr.run_calls(2)
+    assert e.value.reason == "port moved" and "call 1" in e.value.detail
+
+
+def test_a_raster_irq_only_the_traced_machine_sees_settles_the_cadence():
+    """``$D01A`` with no ``$D012`` write is invisible to the init trace the guess reads."""
+    before, after = _settled(*RAW_VEC, *RASTER)
+    assert before.source.endswith("_host_cia")
+    assert after.source == "pal_video" and after.cycles_per_tick == machine.FRAME["pal"][0]
+    assert after.cycles_per_tick != before.cycles_per_tick
+
+
+def test_a_tune_that_arms_no_interrupt_of_its_own_keeps_the_host_s():
+    before, after = _settled(*RAW_VEC)
+    assert before.source.endswith("_host_cia")
+    assert after.source == before.source and after.cycles_per_tick == before.cycles_per_tick
+
+
 def test_init_runner_returns_on_rts_and_detects_idle():
     img = sid_image({0x1000: asm(0x1000, "LDA #$05", "STA $D400", "RTS")}, 0x1000, 0x1000)
     vm = PcodeVM(img.mem)
@@ -280,8 +355,9 @@ def test_cia_latch_rewrite_keeps_underflows_monotone():
     c.write(CIA1_BASE + 0x0E, 0x11, 0)
     assert c.read(CIA1_BASE + 0x0D, 0x100) & 1  # underflowed
     c.write(CIA1_BASE + 5, 0x10, 0x100)  # a much longer period, mid-flight
-    assert c.read(CIA1_BASE + 0x0D, 0x120) == 0  # not due yet, and not wedged
-    assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # still fires later
+    assert c.read(CIA1_BASE + 0x0D, 0x105) == 0  # the pending underflow has not landed
+    assert c.read(CIA1_BASE + 0x0D, 0x120) & 1  # it lands on its own cycle, not 0x1000 later
+    assert c.read(CIA1_BASE + 0x0D, 0x1200) & 1  # then the new period runs
 
 
 def test_kernal_mapped_is_the_ports_hiram_line():

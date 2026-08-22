@@ -37,7 +37,7 @@ and both traces reproduce the `sidplayfp` oracle's register grid write for write
 | cadence | 50 Hz video, 19,656 cycles/tick, one `sub` entry | same |
 | executed | 567 sites | 572 |
 | SMC | 3 cells, all in the wrapper ($0E23/$0E2E/$0E33) | **0** cells |
-| voices | 3 (no track 4, no NMI: `machine.find_entries` refuses those builds) | 3 |
+| voices | 3 (no track 4, no NMI: ~~`machine.find_entries` refuses those builds~~ *2026-08-22: no longer -- the NMI is the schedule's second entry and the sample builds are that family* ([prototype-nmi.md](prototype-nmi.md))) | 3 |
 | song loop | the song stops: from tick 8,576 the state is a fixed point (period 1) | the orderlist restarts: period 1,512 ticks = 30.24 s |
 
 **How the second tune was chosen.** V20 is a code template — builds differ only
@@ -51,7 +51,9 @@ exactly **2** align 1.000 against the reference's opcode stream over the first
 and table offsets do not count): *Crowdnoise* and *Guldkornekspressen_Intro*
 (the other three are 0.961–0.962 — near variants). The intro was taken because it
 executes more of the engine (568 sites at 15 s against Crowdnoise's 502). The
-sample builds (*Easy Does It*, *Shift*, *Little_Test*) stay refused by design.
+~~sample builds (*Easy Does It*, *Shift*, *Little_Test*) stay refused by design.~~
+*2026-08-22: not any more -- the NMI is the schedule's second entry, and* Easy Does It
+*certifies with its mixer decompiled* ([prototype-nmi.md](prototype-nmi.md)).
 
 ## 3. What broke, and the generic fix
 

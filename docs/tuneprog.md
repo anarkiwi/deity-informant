@@ -8,7 +8,7 @@ Design: [`tuneprog-decompiler-design.md`](tuneprog-decompiler-design.md).
 Exemplar write-ups: [automatas](prototype-automatas.md), [follin](prototype-follin.md),
 [goattracker](prototype-goattracker.md), [sidwizard](prototype-sidwizard.md),
 [jch](prototype-jch.md), [kernal-entry](prototype-kernal-entry.md),
-[commando-floor](prototype-commando-floor.md).
+[commando-floor](prototype-commando-floor.md), [nmi](prototype-nmi.md).
 Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 ## Vocabulary
@@ -35,8 +35,8 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 
 | stage | does | modules |
 | --- | --- | --- |
-| S0 | load image, entry and cadence discovery, init runner, 6510 port + CIA models | `machine.py` |
-| S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes. A site is the VM's cache key, so everything constant about it -- its P-Code closure, its access sets, its index domain, its register masks, its edge cells -- is resolved once and the step loop only indexes it; a pc whose instruction bytes no store has touched skips the re-read entirely | `tracevm.py` (memory attribution, the step loop), `tracesite.py` (one site, resolved once), `traceflow.py` (edges, calls, the shadow stack), `trace.py`, `tracedata.py` |
+| S0 | load image, entry and cadence discovery, init runner, 6510 port + CIA models; the second entry a CIA #2 NMI adds -- when its line asserts, which vector carries it | `machine.py`, `nmi.py` |
+| S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes. A site is the VM's cache key, so everything constant about it -- its P-Code closure, its access sets, its index domain, its register masks, its edge cells -- is resolved once and the step loop only indexes it; a pc whose instruction bytes no store has touched skips the re-read entirely. A second entry preempts at the instruction boundary its line asserts at -- inside a tick and in the host's idle time between two -- and the preemption schedule is recorded per tick | `tracevm.py` (memory attribution, the step loop), `tracesite.py` (one site, resolved once), `traceflow.py` (edges, calls, the shadow stack), `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py`, over a per-copy column base and the range a branch proves for the index |
 | S2b' | the bounded static closure of untaken branch directions, as zero-coverage sites the same front end builds (`--closure static`) | `closure.py` |
@@ -47,7 +47,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
 | S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails (exit-free, or with one way out) | `inline.py`, `texture.py`, `frame.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
-| S8 | per-call differential verification against the trace, periodicity, chunked and resumable | `verify.py` |
+| S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
 
 `pipeline.py` drives every stage into one output directory, and `resume.py` decides what a run resumed under other options may keep of it. The IR itself
@@ -58,24 +58,24 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end    machine 435  tracevm 477  tracesite 185  traceflow 101
-             trace 399  tracedata 346  lift 227
-             cfg 311  regions 243  jumptab 373  siblings 476  closure 347
+front end    machine 305  cia 267  nmi 101  tracevm 499  tracesite 185
+             traceflow 101  trace 453  tracedata 426  lift 227
+             cfg 347  regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
-program      ir 440  interp 248  irwalk 319  graph 82  lower 227  build 452
-             wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 372
-             verify 338  period 113
+program      ir 440  interp 287  irwalk 319  graph 82  lower 227  build 482
+             wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 386
+             verify 418  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
              word 369  fold 472  tails 290  copyview 279  unroll 399  live 96
              facts 284  recover 328  views 295  eqsat 283  eqrules 244  ranges 73
 text         pseudocode 468  printer 405
 driver       pipeline 510  resume 67  __init__ 134
-oracle       grid 159  tunes 55
-baseline     ghidra_facts 219  ghidra_compare 182   54 modules, 15,771 lines
+oracle       grid 157  tunes 56
+baseline     ghidra_facts 219  ghidra_compare 182   56 modules, 16,328 lines
 ```
 
 Stage entry points, which are also the module boundaries:
-`machine.find_entries`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
+`machine.find_entries`, `nmi.entry`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
 `emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `copymerge.plan`, `structure.structure`,
@@ -202,8 +202,22 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
   "oracle": "deity_informant.PcodeVM@0.5.0",
   "reference_validated_against": "none",
   "compared": ["init writes", "tick sid writes", "tick schedule effects"],
+                                       // + "nmi preemption schedule" and "nmi store
+                                       // separability" with a second entry; what the two
+                                       // do and do not prove is under Known gaps below
   "entry": {"kind": "sub", "addr": 4067, "cycles_per_tick": 2457, "source": "cia_timer"},
                                        // "irq" also carries "kernal": the vector is CINV
+  "schedule": [                        // only where a CIA #2 NMI is an entry too
+    {"kind": "irq", "addr": 16352, "cycles_per_tick": 19656, "source": "pal_video",
+     "kernal": false},
+    {"kind": "nmi", "addr": 16617, "cycles_per_tick": 193, "source": "cia2_timer_a",
+     "kernal": false, "replayed_registers": 1197084}],
+                                       // kernal: which vector dispatched it ($0318 costs
+                                       // 7 cycles more than the raw $FFFA)
+                                       // replayed_registers: what the replay takes from
+                                       // the schedule instead of computing -- SP, pushed
+                                       // status, return pc, A/X/Y, 6 per NMI over the
+                                       // schedule -- beside the subtune's inputs_pinned
   "stack": "eliminated",               // else {"depth": n|"unknown", "procs": [...]}
   "stage": "S4",                       // "S6" once S5/S6 annotated it (they never edit it)
   "divergence": null,                  // else {tick, index, compared, expected, got, site}
@@ -216,7 +230,8 @@ view, structured, names = pipeline.present(prog)                    # S5/S6
       "period": 129024, "first_repeat": 149024,      // the tuneprog's own
       "trace_period": 129024, "trace_first_repeat": 149024,   // the trace's
       "complete": true,                // period found, agrees with the trace, no divergence
-      "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000
+      "closure": "trace", "inputs_pinned": 2228, "interp_prefix": 2000,
+      "nmis": 199514, "nmi_entries": ["nmi"]   // only with a second entry
   }],
   "closure": {                         // only under --closure static
     "arms": 22, "closed": 17,          // untaken branch directions found / closed
@@ -445,8 +460,9 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `goto80-jazzpjazz` | Jazzpjazz.sid | defMON | 1,799 | 0m30s | — | 4 | 190 | 629 | 95 | horizon |
 | `necropolo-experiment-zeta` | Experiment_Zeta.sid | Virtuoso | 5,956 | 1m58s | 5,184 | 2 | 185 | 356 | 65 | complete |
 | `daglish-deflektor` | Deflektor.sid | Ben Daglish/Gremlin | 1,503 | 0m30s | — | 4 | 180 | 630 | 78 | horizon |
+| `jch-easy-does-it` | Easy_Does_It.sid | JCH NewPlayer V20 + a CIA #2 NMI sample mixer | 1,799 | 0m36s | — | 5 | 211 | 669 | 107 | horizon |
 
-Every one has `divergences: 0` and `envelope_traps: 0`. `jch-knob-at-night`'s
+Every one has `divergences: 0` and `envelope_traps: 0`. `jch-easy-does-it` is the one with two entries: 199,514 NMI preemptions over its 1,799 ticks, each placed where the trace put it ([prototype-nmi.md](prototype-nmi.md)). `jch-knob-at-night`'s
 period of 1 is a song that *stops*: its tracks end, the player writes nothing
 more and the state is a fixed point from tick 8,576 on. `ghouls-song21` is the
 one subtune with no state repeat inside 400 s (two voices keep a portamento and a
@@ -490,6 +506,20 @@ family closes on one — all twelve sampled at `--until-period` stop on a
 a 30 s horizon.
 
 ## Known gaps
+
+- **A second entry's instant, not its effect.** A CIA #2 NMI is modelled and
+  certified, but the instant it lands on is early by tens of cycles, from two
+  causes: the `$FE43` dispatch stub the KERNAL path runs (`nmi.KERNAL_STUB`,
+  now modelled -- it was half the offset on the `$0318` path, 85 % of the class
+  by weight) and VIC DMA, which nothing models, so a badline-stalled CPU takes
+  the NMI later than the tracer does. Everything the play routine writes is
+  unaffected -- 0 frames differing against `sidplayfp` over 1,500 frames on three
+  tunes, in write order -- while `$D418`, which a sample mixer writes thousands of
+  times a frame, lands on the neighbouring sample nibble in 10-54 % of frames.
+  The certificate says what it proved: the write list *under the traced
+  interleaving*, with the schedule recorded, store separability and register
+  preservation checked, and the second entry's live-in registers pinned
+  ([prototype-nmi.md](prototype-nmi.md)).
 
 - **Trace closure.** The certified product is trace-closed: a branch direction or
   a table entry the run never took becomes `trap 'untaken'` / `trap 'unverified'`,
@@ -597,3 +627,11 @@ a 30 s horizon.
   gate is re-checked every tick beside `port moved`, so a tune that arms a
   source only once the music is running refuses there (`nmi armed in play`).
   The one assumption is the oracle's: `sidplayfp` never presses RESTORE.
+  Two further refusals are the second entry's own checked properties rather than
+  evidence, both fail-closed: `schedule not store-separable`, where a play load
+  inside an open preemption window reads a cell a handler stamped in that same
+  window, so the recorded schedule no longer places the handler's view exactly
+  (5 of 7,023); and `nmi clobbers registers`, where the handler's `RTI` does not
+  return the A/X/Y it interrupted, which the in-tick replay cannot reproduce from
+  the schedule row (8 of 7,023). Both are checked on every NMI of every tick
+  ([prototype-nmi.md](prototype-nmi.md) §4).

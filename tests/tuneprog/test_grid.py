@@ -97,7 +97,7 @@ def test_a_sidtrace_row_frames_by_its_own_interrupt():
 
 
 def test_raises_that_do_not_agree_on_one_period_are_refused():
-    """A gap is whole periods and a write is inside its frame; anything else is loud."""
+    """A gap is whole periods; anything else is loud. A late write is not: see below."""
     pytest.importorskip("pysidtracker")
     from pysidtracker.oracle import SidtraceRow  # pylint: disable=import-outside-toplevel
 
@@ -108,11 +108,18 @@ def test_raises_that_do_not_agree_on_one_period_are_refused():
         grid.sidtrace_clock(rows((0, 10)))
     with pytest.raises(ValueError, match="one period"):  # 1.5 periods between two raises
         grid.sidtrace_clock(rows((0, 10), (CPF, 10), (CPF * 5 // 2, 10)))
-    with pytest.raises(ValueError, match="one period"):  # a write a whole frame late
-        grid.sidtrace_clock(rows((0, CPF + 1), (CPF, 10), (2 * CPF, 10)))
     mixed = [
         SidtraceRow(c + 10, None, 10 if k % 2 else None, None if k % 2 else 10, 0, 4, 1)
         for k, c in enumerate(range(0, 6 * CPF, CPF))
     ]
     with pytest.raises(ValueError, match="two interrupt sources"):  # else a doubled period
         grid.sidtrace_clock(mixed)
+
+
+def test_a_write_a_whole_frame_after_its_raise_is_a_second_entry_writing():
+    """An NMI writes while the tick's own interrupt is idle: the period still holds."""
+    pytest.importorskip("pysidtracker")
+    from pysidtracker.oracle import SidtraceRow  # pylint: disable=import-outside-toplevel
+
+    rows = [SidtraceRow(c + o, None, o, None, 0, 4, 1) for c, o in ((0, CPF + 1), (CPF, 10))]
+    assert grid.sidtrace_clock(rows) == (0, CPF)

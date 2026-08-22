@@ -13,6 +13,7 @@ import struct
 IRQ_VEC = (0x0314, 0x0315)  # CINV (KERNAL A/X/Y-save ABI)
 NMI_VEC = (0x0318, 0x0319)  # NMINV
 HW_IRQ_VEC = (0xFFFE, 0xFFFF)  # hardware IRQ/BRK vector
+HW_NMI_VEC = (0xFFFA, 0xFFFB)  # hardware NMI vector
 
 # KERNAL IRQ epilogue for no-ROM handlers: PLA;TAY;PLA;TAX;PLA;RTI ($EA81, NMI $FEBC).
 _EPILOGUE = bytes((0x68, 0xA8, 0x68, 0xAA, 0x68, 0x40))

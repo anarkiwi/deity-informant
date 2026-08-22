@@ -21,6 +21,7 @@ import re
 from datetime import datetime, timezone
 
 from .. import __version__
+from . import nmi as N
 from .ir import (
     Assert,
     Bin,
@@ -138,11 +139,23 @@ def _guard(s, a, out, bands):
         )
 
 
-def _store(s, out, fn, bands=()):
+def _store(s, out, fn, bands=(), pre_hook=False):
+    """One store; ``pre_hook`` marks it as a point a second entry can preempt at.
+
+    The point is the store's own, after the address and the value: the loads both
+    are made of belong to the instructions ahead of it, which is where
+    :class:`~.interp.Interp` puts them too.
+    """
     pre = []
     a = _addr(s.a, s.lo, s.hi, s.w, pre, fn, s.src)
     v = _ex(s.v, pre, fn)
     out.extend(pre)
+    if pre_hook:
+        if not (v.isidentifier() or v.isdigit()):
+            t = fn.tmp()
+            out.append("%s = %s" % (t, v))
+            v = t
+        out.append("S.at(%s, %d)" % (a, s.w))  # a preemption point of the schedule
     if bands:
         _guard(s, a, out, bands)
     if s.cls == "io":
@@ -163,7 +176,7 @@ def _store(s, out, fn, bands=()):
         out.append("S.setbank()")
 
 
-def _stmts(blk, out, fn, bands=()):
+def _stmts(blk, out, fn, bands=(), pre_hook=False):
     for s in blk.stmts:
         t = type(s)
         if t is Let:
@@ -172,7 +185,7 @@ def _stmts(blk, out, fn, bands=()):
             out.extend(pre)
             out.append("%s = %s" % (_san(s.n), e))
         elif t is Store:
-            _store(s, out, fn, bands)
+            _store(s, out, fn, bands, pre_hook)
         elif t is Call:
             pre = []
             args = [_ex(a, pre, fn) for a in s.args]
@@ -256,8 +269,12 @@ def layout(proc):
     return out
 
 
-def emit_proc(proc, bands=()):
-    """One IR procedure as a Python function's source lines."""
+def emit_proc(proc, bands=(), pre_hook=False):
+    """One IR procedure as a Python function's source lines.
+
+    ``pre_hook`` marks every store as a point a second entry may preempt at; a
+    single-entry program emits none, so its text is what it always was.
+    """
     order = layout(proc)
     idx = {lbl: i for i, lbl in enumerate(order)}
     fn = _Fn()
@@ -274,7 +291,7 @@ def emit_proc(proc, bands=()):
         if i % GROUP == 0:
             src.append("        if lbl < %d:" % min(i + GROUP, len(order)))
         body = []
-        _stmts(proc.blocks[lbl], body, fn, bands)
+        _stmts(proc.blocks[lbl], body, fn, bands, pre_hook)
         _term(proc.blocks[lbl], idx, i + 1, body, fn)
         src.append("%sif lbl <= %d:" % (pad, i))
         src.extend(pad + "    " + line for line in body or ["pass"])
@@ -302,8 +319,9 @@ def emit_python(prog):
     ]
     body = []
     bands = copymap_bands(prog.storage)
+    hook = bool(prog.meta.get("nmi_procs"))
     for p in prog.procs.values():
-        body.extend(emit_proc(p, bands))
+        body.extend(emit_proc(p, bands, hook))
         body.append("")
     body.append("PROCS = {%s}" % ", ".join("%r: %s" % (n, _pname(n)) for n in prog.procs))
     body.append(
@@ -341,16 +359,24 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
     ``stack`` is ``"eliminated"`` where the program has no machine stack left, else
     the depth and the procedures that kept one (:func:`~.stack.eliminate`).
     ``copies`` is the merged families and their per-statement coverage, if any,
-    ``closure`` what the bounded static walk added and what stayed trapped.
+    ``closure`` what the bounded static walk added and what stayed trapped, and
+    ``schedule`` the entries a second interrupt adds beside the tick. Each NMI
+    entry carries ``replayed_registers``: the schedule's own contribution to what
+    the run pins, ``len(nmi.REPLAYED)`` values per NMI over the whole schedule,
+    beside the subtune's ``inputs_pinned``.
     """
     copies = copies_report(prog)
     closed = closure_report(prog)
+    sched = prog.meta.get("schedule") or []
+    nmi = [e for e in sched if e.get("kind") == "nmi"]
     doc = {
         "tune": prog.meta.get("name"),
         "sid_model": prog.meta.get("sid_model"),
         "oracle": oracle or "deity_informant.PcodeVM@%s" % __version__,
         "reference_validated_against": prog.meta.get("reference_validated_against", "none"),
-        "compared": compared or ["init writes", "tick sid writes", "tick schedule effects"],
+        "compared": compared
+        or ["init writes", "tick sid writes", "tick schedule effects"]
+        + (["nmi preemption schedule", "nmi store separability"] if nmi else []),
         "entry": prog.meta.get("entry"),
         "subtunes": subtunes,
         "stack": prog.meta.get("stack"),
@@ -363,6 +389,11 @@ def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, 
         doc["copies"] = copies
     if closed:
         doc["closure"] = closed
+    if nmi:
+        pinned = len(N.REPLAYED) * sum(s.get("nmis", 0) for s in subtunes)
+        doc["schedule"] = [
+            dict(e, replayed_registers=pinned) if e.get("kind") == "nmi" else e for e in sched
+        ]
     return doc
 
 

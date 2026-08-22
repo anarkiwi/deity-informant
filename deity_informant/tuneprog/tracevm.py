@@ -10,8 +10,11 @@ from __future__ import annotations
 from array import array
 
 from ..vm import PcodeVM
-from .ir import IO_HI, IO_LO, SID_HI, SID_LO
-from .machine import CIA, CIA1_BASE, CIA2_BASE, Refusal, port_bank
+from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
+from .cia import CIA, CIA1_BASE, CIA2_BASE
+from .machine import Refusal, port_bank
+from .nmi import NEVER, STALE
+from .tracedata import REG_IN, input_kind
 from .traceflow import FlowRecorder
 from .tracesite import (
     IDX_REG,
@@ -50,28 +53,9 @@ from .tracesite import (
 )
 
 PH_INIT, PH_PLAY = 1, 2
-ACKS = (0xD019, 0xDC0D, 0xDD0D)
-REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
 MAX_CELL_VALUES = 16
 
 __all__ = ["TraceVM", "input_kind", "IDX_REG", "PH_INIT", "PH_PLAY", "REG_IN", "MAX_CELL_VALUES"]
-
-
-def input_kind(addr):
-    """Input class of ``addr`` (design section 4 ``Input.kind``)."""
-    if addr >= REG_IN:
-        return "entry_reg"
-    if addr in ACKS:
-        return "ack"
-    if addr == 0xD011 or addr == 0xD012:
-        return "raster"
-    if SID_LO <= addr <= SID_HI:
-        return "sid_readback"
-    if 0xDC00 <= addr <= 0xDDFF:
-        return "cia"
-    if IO_LO <= addr <= IO_HI:
-        return "io"
-    return "uninit_ram"
 
 
 class TraceVM(FlowRecorder, PcodeVM):
@@ -88,6 +72,7 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.bank = port_bank(mem)
         self.io = self.bank == "io"
         self.cia = (CIA(CIA1_BASE), CIA(CIA2_BASE))
+        self.nmi_at = NEVER  # cycle CIA #2's line next asserts; STALE after an access
         self.known = bytearray(0x10000)
         self.known[image.lo : image.hi] = b"\1" * (image.hi - image.lo)
         self.known[0x100:0x200] = b"\1" * 0x100
@@ -112,9 +97,14 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.iolog = tuple(array(t) for t in "IHBI")
         self.tick_rd = self.tick_wr = 0
         self.pinned = False
+        self.stores = 0
+        self.st0 = 0
+        self.sep = None  # nmi.Separable where a second entry exists; None is one test
 
     # ---- per-op attributed memory ------------------------------------------
     def read(self, addr, sz, pci, s):
+        if self.sep is not None and self.sep.hot:
+            self.sep.load(addr, sz, pci[0])
         if sz == 1:
             s.add(addr)
             if IO_LO <= addr <= IO_HI:
@@ -152,6 +142,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             v = self.cia[0].read(a, self.cycles)
         if v is None:
             v = self.cia[1].read(a, self.cycles)
+            if v is not None:
+                self.nmi_at = STALE  # an ICR read releases the line
         if v is None:
             v = PcodeVM._rd(self, a, 1)
         self.chip_ops.add(pci)
@@ -179,10 +171,14 @@ class TraceVM(FlowRecorder, PcodeVM):
         write, and keeping the two apart is worth 3-6 % of the whole trace.
         """
         mem = self.mem
+        if self.sep is not None:
+            self.sep.stored(addr, sz)
         if sz == 1:
             a = addr & 0xFFFF
             s.add(a)
             b = val & 0xFF
+            if a < STACK_LO or a > STACK_HI:
+                self.stores += 1
             if IO_LO <= a <= IO_HI and self.io:
                 self.chip_ops.add(pci)
                 if self.code[a]:
@@ -200,6 +196,8 @@ class TraceVM(FlowRecorder, PcodeVM):
                 a = (addr + k) & 0xFFFF
                 b = (val >> (8 * k)) & 0xFF
                 s.add(a)
+                if a < STACK_LO or a > STACK_HI:
+                    self.stores += 1
                 if IO_LO <= a <= IO_HI and self.io:
                     self.chip_ops.add(pci)
                     if self.code[a]:
@@ -253,6 +251,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             self.vicirq &= ~b & 0x7F
         elif 0xDC00 <= a <= 0xDDFF:
             self.cia[(a >> 8) & 1].write(a, b, self.cycles)
+            if a & 0x0100:
+                self.nmi_at = STALE  # CIA #2 moved: re-date the NMI it dispatches
 
     # ---- recorded structures -----------------------------------------------
     def insn_count(self):
@@ -267,10 +267,19 @@ class TraceVM(FlowRecorder, PcodeVM):
             t[S_PH0] = t[S_N]
 
     def begin_tick(self, call):
-        """Start one tick: the entry registers are live-in again."""
+        """Start one tick: the entry registers are live-in again, its stores start at 0."""
         self.call = call
         self.tick_rd = self.tick_wr = 0
         self.pinned = False
+        self.st0 = self.stores
+
+    def tick_stores(self):
+        """Stores this tick has made outside the stack page, from either entry.
+
+        The stack page is left out because a frame is not state either entry reads
+        of the other, and the two executors place their own frames differently.
+        """
+        return self.stores - self.st0
 
     def _push(self, val):
         """Push one byte; a driver frame over executed code makes those pcs re-read."""
@@ -433,6 +442,8 @@ class TraceVM(FlowRecorder, PcodeVM):
             lo = mem[0x100 + reg[3]]
             reg[3] = (reg[3] + 1) & 0xFF
             nxt = (mem[0x100 + reg[3]] << 8) | lo
+            if self.sep is not None:
+                self.sep.leave(reg, pc)
             self._return(t[S_AUX], nxt)
             return nxt
         if k == K_JMP:

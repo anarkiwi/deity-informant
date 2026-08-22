@@ -51,6 +51,7 @@ KEEP_SUB = (
     "inputs_pinned",
     "divergences",
     "envelope_traps",
+    "nmis",
 )
 KEEP_COST = ("sites", "regions", "ir_statements", "ir_blocks", "ir_procs", "verify_cpu_seconds")
 KEEP_HDR = ("magic", "songs", "speed_bits", "speed_any_cia", "play0", "clock", "model", "basic")
@@ -80,9 +81,14 @@ def _timed(name):
     return wrap
 
 
-def _init_worker():
+def worker_limits(rss):
+    """Every sweep worker: the pool owns SIGINT, and one tune cannot take the box."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    resource.setrlimit(resource.RLIMIT_AS, (_A.rss << 30, resource.RLIM_INFINITY))
+    resource.setrlimit(resource.RLIMIT_AS, (rss << 30, resource.RLIM_INFINITY))
+
+
+def _init_worker():
+    worker_limits(_A.rss)
     for name in STAGES:
         setattr(pipeline, "stage_" + name, _timed(name))
 
@@ -234,7 +240,9 @@ def _todo(args):
         if (keep is None or p in keep) and (Path(args.hvsc) / p).is_file()
     ]
     if args.only:
-        want = {x.strip() for x in Path(args.only).read_text().split("\n") if x.strip()}
+        want = {
+            x.strip() for x in Path(args.only).read_text(encoding="utf-8").split("\n") if x.strip()
+        }
         elig = [x for x in elig if x[0] in want]
         missing = sorted(want - {p for p, _f in elig})
         if missing:

@@ -3,16 +3,114 @@
 Split from :mod:`.trace` (which produces it) so the record type can be loaded and
 queried without the tracer. :func:`merge` is the ``--songs all`` front end's input:
 one program from every subtune's trace, keyed by the union of their SMC cells.
+:func:`input_kind` classifies a pinned input's address, which is a property of the
+record rather than of the machine that made it.
 """
 
 from __future__ import annotations
 
 import json
+from array import array
 from collections import Counter, defaultdict
+from hashlib import blake2b
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from .ir import IO_HI, IO_LO, SID_HI, SID_LO, STACK_HI, STACK_LO
+
+ACKS = (0xD019, 0xDC0D, 0xDD0D)
+REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
+
+
+def input_kind(addr):
+    """Input class of ``addr`` (design section 4 ``Input.kind``)."""
+    if addr >= REG_IN:
+        return "entry_reg"
+    if addr in ACKS:
+        return "ack"
+    if addr == 0xD011 or addr == 0xD012:
+        return "raster"
+    if SID_LO <= addr <= SID_HI:
+        return "sid_readback"
+    if 0xDC00 <= addr <= 0xDDFF:
+        return "cia"
+    if IO_LO <= addr <= IO_HI:
+        return "io"
+    return "uninit_ram"
+
+
+class Footprint:
+    """The play-phase write footprint, gathered as one numpy take per tick.
+
+    Growth is monotone, so the sorted address vector and the stack-page mask that
+    separates the two witnesses are rebuilt only when the footprint gains an
+    address, and each tick is one gather over that vector.
+    """
+
+    __slots__ = ("n", "idx", "keep", "nfree", "view")
+
+    def __init__(self):
+        self.n = -1
+        self.idx = np.empty(0, np.intp)
+        self.keep = np.empty(0, bool)
+        self.nfree = 0
+        self.view = None
+
+    def gather(self, vm):
+        """``(full bytes, full size, page-free bytes, page-free size)`` of this tick."""
+        w = vm.written_play
+        if self.n != len(w):
+            self.n = len(w)
+            self.idx = a = np.fromiter(sorted(w), np.intp, self.n)
+            self.keep = (a < STACK_LO) | (a > STACK_HI)
+            self.nfree = int(self.keep.sum())
+        if self.view is None:
+            self.view = np.frombuffer(memoryview(vm.mem), dtype=np.uint8)
+        b = self.view[self.idx]
+        return b.tobytes(), self.n, b[self.keep].tobytes(), self.nfree
+
+    def __getstate__(self):
+        return self.n, self.idx, self.keep, self.nfree
+
+    def __setstate__(self, st):
+        self.n, self.idx, self.keep, self.nfree = st
+        self.view = None
+
+
+class Stream:
+    """One per-tick state hash over a footprint, and its periodicity witness.
+
+    The page-free stream leaves the stack page out: it is the machine's own
+    scratch, which a program :func:`~.stack.eliminate` proved stack-free can
+    neither read nor write.
+    """
+
+    __slots__ = ("hashes", "period", "first_repeat", "rows", "nrows")
+
+    def __init__(self):
+        self.hashes = {}
+        self.period = None
+        self.first_repeat = None
+        self.rows = array("Q")
+        self.nrows = array("I")
+
+    def hash(self, buf, n, ninp, call):
+        """Hash one gathered footprint; a repeat with no input consumed is a witness."""
+        h = blake2b(buf, digest_size=8, key=n.to_bytes(4, "little")).digest()
+        v = int.from_bytes(h, "little")
+        self.rows.append(v)
+        self.nrows.append(n)
+        if self.period is None:
+            prev = self.hashes.get((n, v))
+            if prev is None:
+                self.hashes[(n, v)] = (call, ninp)
+            elif prev[1] == ninp:
+                # design S1: a repeat is a witness only with no inputs consumed
+                # between the two calls (otherwise the next tick may differ).
+                self.period = call - prev[0]
+                self.first_repeat = call
 
 
 def site_key(pc, opcode, insn_bytes, cells):
@@ -52,6 +150,7 @@ class Trace:
     jsr_targets: set = field(default_factory=set)
     wlog: dict = field(default_factory=dict)
     iolog: dict = field(default_factory=dict)
+    nmilog: dict = field(default_factory=dict)
     state_hash: object = None
     footprint_size: object = None
     state_hash_free: object = None
@@ -164,6 +263,7 @@ class Trace:
             footprint_free=self.footprint_free,
             **{"wlog_" + k: v for k, v in self.wlog.items()},
             **{"iolog_" + k: v for k, v in self.iolog.items()},
+            **{"nmilog_" + k: v for k, v in self.nmilog.items()},
         )
         return path
 
@@ -225,6 +325,7 @@ class Trace:
         t.jsr_targets = set(doc["jsr_targets"])
         t.wlog = {k[5:]: z[k] for k in z.files if k.startswith("wlog_")}
         t.iolog = {k[6:]: z[k] for k in z.files if k.startswith("iolog_")}
+        t.nmilog = {k[7:]: z[k] for k in z.files if k.startswith("nmilog_")}
         return t
 
 
@@ -296,6 +397,7 @@ def merge(traces):
         jsr_targets=jsr,
         wlog=first.wlog,
         iolog=first.iolog,
+        nmilog=first.nmilog,
         state_hash=first.state_hash,
         footprint_size=first.footprint_size,
         state_hash_free=first.state_hash_free,

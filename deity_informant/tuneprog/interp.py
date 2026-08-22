@@ -176,6 +176,42 @@ class Machine:
         return n, int.from_bytes(h, "little")
 
 
+class NmiMachine(Machine):
+    """A machine whose stores are the points a second entry can preempt at.
+
+    Between two stores nothing either entry reads of the other can move, so a
+    schedule counted in stores places a preemption exactly. The stack page is
+    left out: a frame is not that state. A single-entry program runs on the plain
+    :class:`Machine` and pays nothing for the hook.
+    """
+
+    __slots__ = ("hook", "stores", "alt", "acur")
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.hook = None
+        self.stores = 0
+        self.alt = []
+        self.acur = 0
+
+    def swap(self):
+        """Exchange the pinned input stream for the other entry's.
+
+        The two entries share no code, so each reads its own inputs in its own
+        order and the interleaving between them cannot break either stream.
+        """
+        self.inp, self.alt = self.alt, self.inp
+        self.icur, self.acur = self.acur, self.icur
+
+    def at(self, a, w=1):
+        """One store is about to happen: run whatever the schedule places before it."""
+        if self.hook is not None:
+            self.hook()
+        for i in range(w):
+            if not STACK_LO <= (a + i) & 0xFFFF <= STACK_HI:
+                self.stores += 1
+
+
 class Interp:
     """Executes a :class:`Tuneprog` over a :class:`Machine`. The semantics."""
 
@@ -184,6 +220,7 @@ class Interp:
         self.M = machine
         self.steps = 0
         self.ro = copymap_bands(prog.storage)
+        self.at = machine.at if isinstance(machine, NmiMachine) else None
 
     def ev(self, e, F):
         t = type(e)
@@ -215,14 +252,17 @@ class Interp:
                     a = self.ev(s.a, F)
                     if not s.lo <= a <= s.hi or a + s.w - 1 > s.hi:
                         M.env(a, s.lo, s.hi, s.src)
+                    v = self.ev(s.v, F)  # the value's own loads precede the store's point
+                    if self.at is not None:
+                        self.at(a, s.w)
                     if self.ro and hits_band(self.ro, a, s.w):
                         M.trap("copymap", "$%04X at $%04X" % (a, s.src))
                     if s.cls == "io":
-                        M.iostore(a, self.ev(s.v, F) & 0xFF, s.src)
+                        M.iostore(a, v & 0xFF, s.src)
                     elif s.cls == "raw":
-                        M.m[a] = self.ev(s.v, F) & 0xFF
+                        M.m[a] = v & 0xFF
                     else:
-                        M.wr(a, self.ev(s.v, F), s.w)
+                        M.wr(a, v, s.w)
                 elif t is Call:
                     vals = self.run(s.proc, [self.ev(a, F) for a in s.args])
                     F.update(zip(s.rets, vals))

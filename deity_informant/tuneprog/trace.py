@@ -10,6 +10,11 @@ only when they differ in cell bytes; a variant with a different *fixed* operand 
 a separate site with its own access sets. A cell is an instruction byte *any*
 traced procedure writes, init included, so an operand init patches between two
 executions is one site that loads it, not two sites with two constants.
+
+An NMI taken between two ticks interrupts the host, so its pushed return address
+is the host's idle pc: ``init``'s own ``JMP *`` where the tune has one, and
+:data:`IDLE_PC` -- a convention, because no host model here says where else the
+machine waits -- where it does not.
 """
 
 from __future__ import annotations
@@ -17,104 +22,37 @@ from __future__ import annotations
 import pickle
 from array import array
 from dataclasses import replace
-from hashlib import blake2b
 from pathlib import Path
 
 import numpy as np
 
 from ..lifter import lift
 from .. import c64
-from .ir import STACK_HI, STACK_LO
+from . import nmi as N
 from .machine import (
+    Entry,
+    FRAME,
     STATUS,
     Refusal,
     entry_frame,
     init_runner,
     kernal_mapped,
-    nmi_gate,
     vector_gate,
 )
-from .tracedata import Trace, site_key
+from .tracedata import Footprint, Stream, Trace, site_key
 from .tracesite import S_IDX, S_N, S_PH, S_PH0, S_RS, S_WS
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
 VECTOR_BYTES = set(c64.IRQ_VEC) | set(c64.HW_IRQ_VEC)
-VERSION = 6  # resume-state layout; an older pickle restarts rather than resumes
+VERSION = 7  # resume-state layout; an older pickle restarts rather than resumes
+IDLE_PC = 0x0000  # the idle pc convention for a host with no ``JMP *`` of its own
+IDLE_INDEX = 0xFFFFFFFF  # instruction index of an NMI no tick was running at
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
-
-
-class _Footprint:
-    """The play-phase write footprint, gathered as one numpy take per tick.
-
-    Growth is monotone, so the sorted address vector and the stack-page mask that
-    separates the two witnesses are rebuilt only when the footprint gains an
-    address, and each tick is one gather over that vector.
-    """
-
-    __slots__ = ("n", "idx", "keep", "nfree", "view")
-
-    def __init__(self):
-        self.n = -1
-        self.idx = np.empty(0, np.intp)
-        self.keep = np.empty(0, bool)
-        self.nfree = 0
-        self.view = None
-
-    def gather(self, vm):
-        """``(full bytes, full size, page-free bytes, page-free size)`` of this tick."""
-        w = vm.written_play
-        if self.n != len(w):
-            self.n = len(w)
-            self.idx = a = np.fromiter(sorted(w), np.intp, self.n)
-            self.keep = (a < STACK_LO) | (a > STACK_HI)
-            self.nfree = int(self.keep.sum())
-        if self.view is None:
-            self.view = np.frombuffer(memoryview(vm.mem), dtype=np.uint8)
-        b = self.view[self.idx]
-        return b.tobytes(), self.n, b[self.keep].tobytes(), self.nfree
-
-    def __getstate__(self):
-        return self.n, self.idx, self.keep, self.nfree
-
-    def __setstate__(self, st):
-        self.n, self.idx, self.keep, self.nfree = st
-        self.view = None
-
-
-class _Stream:
-    """One per-tick state hash over a footprint, and its periodicity witness.
-
-    The page-free stream leaves the stack page out: it is the machine's own
-    scratch, which a program :func:`~.stack.eliminate` proved stack-free can
-    neither read nor write.
-    """
-
-    __slots__ = ("hashes", "period", "first_repeat", "rows", "nrows")
-
-    def __init__(self):
-        self.hashes = {}
-        self.period = None
-        self.first_repeat = None
-        self.rows = array("Q")
-        self.nrows = array("I")
-
-    def hash(self, buf, n, ninp, call):
-        """Hash one gathered footprint; a repeat with no input consumed is a witness."""
-        h = blake2b(buf, digest_size=8, key=n.to_bytes(4, "little")).digest()
-        v = int.from_bytes(h, "little")
-        self.rows.append(v)
-        self.nrows.append(n)
-        if self.period is None:
-            prev = self.hashes.get((n, v))
-            if prev is None:
-                self.hashes[(n, v)] = (call, ninp)
-            elif prev[1] == ninp:
-                # design S1: a repeat is a witness only with no inputs consumed
-                # between the two calls (otherwise the next tick may differ).
-                self.period = call - prev[0]
-                self.first_repeat = call
+NMI_COLS = ("call", "insn", "cyc", "addr", "st", "sp", "p", "pc", "a", "x", "y")
+NMI_TYPES = (np.uint32,) * 3 + (np.uint16, np.uint32) + (np.uint8,) * 2 + (np.uint16,)
+NMI_TYPES += (np.uint8,) * 3
 
 
 class Tracer:
@@ -130,11 +68,15 @@ class Tracer:
         self.cycles_init = None
         self.post_init_regs = None
         self.calls_done = 0
+        self.idle = None  # where an init that never returns sits: its ``JMP *``
         self.period = None
         self.first_repeat = None
-        self.free = _Stream()
-        self.full = _Stream()
-        self.fp = _Footprint()
+        self.free = Stream()
+        self.full = Stream()
+        self.fp = Footprint()
+        self.nmi = None
+        self.nmi_addrs = []  # every handler the line dispatched to, in first-seen order
+        self.nmilog = tuple(array(t) for t in "IIIHIBBHBBB")  # the preemption schedule
         self._bind()
 
     def _bind(self):
@@ -154,8 +96,10 @@ class Tracer:
         vm.reg[0], vm.reg[1], vm.reg[2] = self.song, 0, 0
         vm.push_frame(None, 0x0002, self.image.init)
         kw = {} if budget is None else {"budget": budget}
-        init_runner(vm, self.image.init, self.cache, lift, **kw)
-        nmi_gate(vm.cia[1], vm.cycles, "second interrupt source armed")
+        self.idle = init_runner(vm, self.image.init, self.cache, lift, **kw)
+        self.nmi = N.entry(vm.cia[1], vm.mem)
+        if self.nmi is not None:
+            vm.nmi_at = N.STALE
         vm.clear_frames()
         vm.enter_play()
         if self.entry.kind == "irq":
@@ -179,13 +123,32 @@ class Tracer:
         """
         img, vm = self.image, self.vm
         wrote = vm.written_init & VECTOR_BYTES
+        e = self._cadence()
         if not wrote:
-            return replace(self.entry, kernal=kernal_mapped(vm.mem))
+            return replace(e, kernal=kernal_mapped(vm.mem))
         vec, kernal = vector_gate(vm.mem, wrote, (img.lo, img.hi))
         handler = c64.read_vector(vm.mem, vec)
         if not handler:
             raise Refusal("no entry", "vector $%04X is installed but null" % vec)
-        return replace(self.entry, addr=handler, kernal=kernal)
+        return replace(e, addr=handler, kernal=kernal)
+
+    def _cadence(self):
+        """The tick period the traced machine leaves, where the container only guessed.
+
+        A ``*_host_cia`` source is what :func:`~.machine._cadence` returns when the
+        tune programs no interrupt of its own; a raster IRQ it armed is one, and
+        only the traced machine sees it -- ``$D01A`` with no ``$D012`` write is
+        invisible to the init trace the guess reads.
+        """
+        e = self.entry
+        std = e.source[: -len("_host_cia")]
+        if not e.source.endswith("_host_cia") or std not in FRAME:
+            return e
+        d01a = next((v for a, v, _c in reversed(self.vm.init_writes) if a == 0xD01A), 0)
+        if not d01a & 1:
+            return e
+        cycles, source = FRAME[std]
+        return replace(e, cycles_per_tick=cycles, source=source)
 
     def run_calls(self, n, budget=CALL_BUDGET):
         for _ in range(n):
@@ -197,8 +160,14 @@ class Tracer:
         reg = vm.reg
         sub, addr, cpt, kernal, frame, video = self.tick
         vm.begin_tick(self.calls_done)
+        if vm.sep is not None:
+            vm.sep.begin()  # the idle NMIs of the last tick close its final window
         start = reg[3]
-        c0 = vm.cycles
+        # the interrupt keeps its own grid: a tick an NMI made overrun delays the
+        # next one, it does not move the frame the writes after it are attributed to
+        c0 = self.cycles_init + self.calls_done * cpt
+        if vm.cycles < c0:
+            vm.cycles = c0
         vm._push(0x00)
         if sub:
             vm._push(0x01)
@@ -220,19 +189,110 @@ class Tracer:
         pc = addr
         step = vm.step
         cache = self.cache
-        for _ in range(budget + 1):
+        for i in range(budget + 1):
             if reg[3] >= start:
                 break
+            if vm.cycles >= vm.nmi_at:
+                pc = self._nmi(pc, i)
             pc = step(pc, cache, lift)
         else:
             raise Refusal("play runaway", "call %d at $%04X" % (self.calls_done, pc))
         vm.clear_frames()
-        if vm.cycles - c0 < cpt:
-            vm.cycles = c0 + cpt
-        # the gate is the tick's contract too: an arming in play is a schedule
-        nmi_gate(vm.cia[1], vm.cycles, "nmi armed in play")
+        end = c0 + cpt
+        if vm.nmi_at != N.NEVER:
+            self._idle(end, budget)
+        if vm.cycles < end:
+            vm.cycles = end
         self._hash()
         self.calls_done += 1
+
+    def _nmi(self, pc, index):
+        """Take the CIA #2 NMI due at this instruction boundary, or re-date it."""
+        vm = self.vm
+        cia = vm.cia[1]
+        at = cia.edge_at(vm.cycles)
+        if at is None or at > vm.cycles:
+            vm.nmi_at = N.NEVER if at is None else at
+            return pc
+        N.check(cia)
+        return self._enter_nmi(pc, index)
+
+    def _enter_nmi(self, pc, index):
+        """Push the 6510's NMI frame and enter the handler the live vector names."""
+        vm = self.vm
+        handler = self._handler()
+        vm.cia[1].raise_line()
+        vm.nmi_at = N.NEVER  # the line stays asserted until an ICR read releases it
+        vm.cycles += N.dispatch_cycles(vm.mem)
+        sp, status = vm.reg[3], vm._status()
+        if vm.sep is None:
+            vm.sep = N.Separable()
+        vm.sep.enter(vm.reg, handler, index != IDLE_INDEX)
+        pc &= 0xFFFF
+        vm._push(pc >> 8)
+        vm._push(pc & 0xFF)
+        vm._push(status)
+        vm.reg[10] = 1
+        vm.push_frame(None, pc, handler)
+        r = vm.reg
+        row = (self.calls_done, index, vm.cycles, handler, vm.tick_stores(), sp, status, pc)
+        for col, v in zip(self.nmilog, row + (r[0], r[1], r[2])):
+            col.append(v & 0xFFFFFFFF)
+        return handler
+
+    def _handler(self):
+        """The address this NMI enters, read from the live vector as the 6510 reads it.
+
+        A vector the handlers repoint is one schedule with several entries, so each
+        address it takes is an entry of its own and the log says which one ran.
+        """
+        vm = self.vm
+        vec, handler = N.vector(vm.mem)
+        if not handler:
+            raise Refusal("nmi vector banked out", "$%04X carries no handler" % vec)
+        if self.nmi is None:
+            found = N.entry(vm.cia[1], vm.mem)
+            self.nmi = Entry("nmi", handler, 0, "") if found is None else found
+        if handler not in self.nmi_addrs:
+            self.nmi_addrs.append(handler)
+        return handler
+
+    def _idle(self, end, budget):
+        """Run the NMIs the host's idle time before the next tick holds.
+
+        The play routine has returned, so the interrupted program is the host's own
+        idle loop, which is ``init``'s ``JMP *`` where it has one; each handler runs
+        to the ``RTI`` that balances its frame, and one that acknowledges early can
+        be preempted inside it exactly as in a tick.
+        """
+        vm, cia = self.vm, self.vm.cia[1]
+        step, cache = vm.step, self.cache
+        pc, sp = None, 0
+        for _ in range(budget + 1):
+            if pc is None or vm.reg[3] >= sp:
+                if pc is not None:
+                    vm.clear_frames()
+                at = cia.edge_at(vm.cycles)
+                if at is None or at >= end:
+                    vm.nmi_at = N.NEVER if at is None else at
+                    return
+                N.check(cia)
+                if vm.cycles < at:
+                    vm.cycles = at
+                sp = vm.reg[3]
+                pc = self._enter_nmi(self.idle or IDLE_PC, IDLE_INDEX)
+                continue
+            if vm.cycles >= vm.nmi_at:
+                pc = self._nmi(pc, IDLE_INDEX)
+            pc = step(pc, cache, lift)
+        raise Refusal("play runaway", "call %d in the idle NMI" % self.calls_done)
+
+    def _nmi_entries(self):
+        """One entry per address the NMI vector took; the first is the entry itself."""
+        if self.nmi is None:
+            return []
+        addrs = self.nmi_addrs or [self.nmi.addr]
+        return [replace(self.nmi, addr=a).to_dict() for a in addrs]
 
     def _hash(self):
         """Hash this tick under both footprints, with and without the stack page.
@@ -321,7 +381,7 @@ class Tracer:
                 e[0] = "tail"
         meta = {
             "entry": self.entry.to_dict(),
-            "schedule": [self.entry.to_dict()],
+            "schedule": [self.entry.to_dict()] + self._nmi_entries(),
             "song": self.song,
             "calls": self.calls_done,
             "insns": vm.insn_count(),
@@ -336,6 +396,10 @@ class Tracer:
             "post_init_regs": self.post_init_regs,
             **self.image.meta(),
         }
+        if self.nmi is not None:
+            meta["nmis"] = len(self.nmilog[0])
+        if self.idle is not None:
+            meta["init_idle"] = self.idle
         return Trace(
             meta=meta,
             image_pre=self.image.mem,
@@ -357,6 +421,7 @@ class Tracer:
             jsr_targets=jsr_targets,
             wlog=_arrays(vm.sidlog),
             iolog=_arrays(vm.iolog),
+            nmilog=_arrays(self.nmilog, NMI_COLS, NMI_TYPES),
             state_hash=np.frombuffer(self.full.rows, dtype=np.uint64).copy(),
             footprint_size=np.frombuffer(self.full.nrows, dtype=np.uint32).copy(),
             state_hash_free=np.frombuffer(self.free.rows, dtype=np.uint64).copy(),
@@ -364,9 +429,9 @@ class Tracer:
         )
 
 
-def _arrays(cols):
-    names = ("call", "addr", "val", "cyc")
-    types = (np.uint32, np.uint16, np.uint8, np.uint32)
+def _arrays(cols, names=("call", "addr", "val", "cyc"), types=None):
+    """Column arrays of one log, named and typed."""
+    types = types or (np.uint32, np.uint16, np.uint8, np.uint32)
     return {n: np.frombuffer(c, dtype=t).copy() for n, c, t in zip(names, cols, types)}
 
 
