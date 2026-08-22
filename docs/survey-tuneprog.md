@@ -305,7 +305,9 @@ treats an unwritten ICR as the armed KERNAL default — right for CIA #1, wrong
 for CIA #2 — so a dead CIA #2 latch was being handed back as the tick period.
 `_cadence` now takes a CIA period only when it is CIA #1's; *Jazzpjazz* is the
 tune that showed it (1,799 ticks of `pal_host_cia`, not 2,868 of a `$DD04`
-latch nothing dispatches).
+latch nothing dispatches), and `sidplayfp` is the judge: the gaps between the
+interrupts the oracle attributes its writes to are whole multiples of the host
+CIA's period and not of that latch.
 
 ---
 

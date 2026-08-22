@@ -462,8 +462,11 @@ subtune's loop. Verdict `aperiodic`, the same class as `ghouls-song21`.
 `rodger-alien3` and `goto80-jazzpjazz` are the dead-NMI pair: a written NMI
 vector and a written CIA #2 Timer-A latch that no armed source can dispatch, so
 neither is the second schedule they were once refused as. Neither finds a state
-repeat — *Alien_3*'s cheapest subtune was traced to the 400,000-tick cap without
-one — so both are certified to a 30 s horizon, and both pin inputs no other
+repeat — *Jazzpjazz*, and *Alien_3*'s cheapest subtune, were each traced to the
+400,000-tick cap without one — so both are certified to a 30 s horizon, and
+`sidplayfp` confirms *Jazzpjazz*'s tick: the gaps between the interrupts the
+oracle attributes its writes to are whole multiples of the host CIA's period and
+not of the CIA #2 latch the tune loads. Both pin inputs no other
 certificate does: *Alien_3* enters through the hardware vector, where no KERNAL
 prologue saves them, so the handler's A/X/Y are live-in and pinned per tick
 (6,013 in all), and *Jazzpjazz* polls the raster (2,226). It is also the only
