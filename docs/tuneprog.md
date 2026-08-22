@@ -58,7 +58,7 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end    machine 435  tracevm 461  tracesite 186  traceflow 101
+front end    machine 435  tracevm 472  tracesite 184  traceflow 101
              trace 400  tracedata 346  lift 227
              cfg 311  regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
@@ -71,7 +71,7 @@ presentation structure 356  loops 307  inline 199  texture 491  frame 51
 text         pseudocode 468  printer 405
 driver       pipeline 510  resume 67  __init__ 134
 oracle       grid 159  tunes 55
-baseline     ghidra_facts 219  ghidra_compare 182   54 modules, 15,757 lines
+baseline     ghidra_facts 219  ghidra_compare 182   54 modules, 15,766 lines
 ```
 
 Stage entry points, which are also the module boundaries:

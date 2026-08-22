@@ -344,7 +344,7 @@ instruction bytes):
 | per tick: instructions, cycles, `blake2b(state footprint)` | cost, periodicity certificate |
 | instruction bytes seen per pc (variants) | SMC opcode/operand cells |
 
-Cost: **480-590 k instructions/s in Python**, measured on seven runs across six
+Cost: **480-580 k instructions/s in Python**, measured on seven runs across six
 families ([tuneprog-plan.md](tuneprog-plan.md) §8 item 7); a full song at
 300 instructions/tick is 3-20 s. The survey's ~200 k was the prototype VM and the
 production tracer was slower still (96 k) until the site key became the VM's
@@ -620,7 +620,7 @@ Horizon policy: N ≥ HVSC length + 5 s of ticks; stop early when a period is
 found; hard cap by wall time. Multispeed: N counts ticks. Multi-entry schedules
 (v1: single entry) would carry per-entry logs.
 
-Cost budget per tune (Python): trace 3–20 s at the measured 480–590 k
+Cost budget per tune (Python): trace 3–20 s at the measured 480–580 k
 instructions/s (S1), verify 5–30 s; campaign over HVSC ≈ 300–400 CPU-hours →
 4–6 h wall on 72 cores (§9 sizing). Acceptable for a batch; the lever was the
 tracer's bookkeeping, not a numba core (S1,
@@ -932,7 +932,7 @@ workers, per-tune timeouts).
   periods are certified only to the horizon; the closure option gives faithful
   but unverified code beyond it. Report, don't hide.
 - **Trace cost in Python** for the whole HVSC (≈ 300–400 CPU-hours). Mitigation:
-  stop at periodicity, cap by song length; the 2026-08-22 tracer is 3.1–3.6×
+  stop at periodicity, cap by song length; the 2026-08-22 tracer is 3.0–3.5×
   and closes the gap the campaign measured (S1) without a numba core.
 - **Envelope traps** are the price of promoted scalars; a tune that starts
   indexing a table differently after the horizon traps rather than misbehaves.

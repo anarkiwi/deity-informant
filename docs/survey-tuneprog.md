@@ -638,7 +638,7 @@ nothing else in the pipeline.
 The gate fired and the work is done ([tuneprog-plan.md](tuneprog-plan.md) §8
 item 7, §5b Q7, PR #271). Two things the table above could not say.
 
-**1. The tracer is 3.1–3.6× faster, and the design's model is now beaten.** The
+**1. The tracer is 3.0–3.5× faster, and the design's model is now beaten.** The
 profile refuted the row's own premise: the old tracer spent **5–6 %** of its self
 time in the compiled P-Code and the rest on bookkeeping around it — the base VM
 call chain 27–29 %, the tracing `step` prologue another 29–30 %, edges, frames
@@ -650,15 +650,15 @@ the loop only indexes them — gives, in one process under `process_time`:
 
 | tune | ticks | before | after | ratio |
 |---|---|---|---|---|
-| *Automatas* (defMON, CIA) | 12,029 | 798 ticks/s | **2,556** | **3.20×** |
-| Commando song 1 | 1,503 | 626 | **2,228** | **3.56×** |
-| Ghouls song 1 (Follin) | 1,503 | 1,222 | **3,751** | **3.07×** |
-| GoatTracker 2 *Do It Again* | 1,503 | 480 | **1,587** | **3.31×** |
-| JCH V20 *Guldkornekspressen* | 1,503 | 439 | **1,463** | **3.34×** |
-| *Experiment Zeta* `--until-period` | 6,000 | 586 | **2,000** | **3.41×** |
-| *Automatas*, 40,000 ticks | 40,000 | 757 | **2,403** | **3.18×** |
+| *Automatas* (defMON, CIA) | 12,029 | 788 ticks/s | **2,503** | **3.18×** |
+| Commando song 1 | 1,503 | 628 | **2,181** | **3.47×** |
+| Ghouls song 1 (Follin) | 1,503 | 1,227 | **3,696** | **3.01×** |
+| GoatTracker 2 *Do It Again* | 1,503 | 492 | **1,565** | **3.18×** |
+| JCH V20 *Guldkornekspressen* | 1,503 | 444 | **1,438** | **3.24×** |
+| *Experiment Zeta* `--until-period` | 6,000 | 590 | **1,972** | **3.34×** |
+| *Automatas*, 40,000 ticks | 40,000 | 757 | **2,350** | **3.10×** |
 
-**≈ 480–590 k instructions/s** against design §2's 277 k — the production tracer
+**≈ 480–580 k instructions/s** against design §2's 277 k — the production tracer
 is now 1.7–2.1× faster than the prototype VM that model was measured on. The
 `Trace` is byte-identical: `trace.json` and every bulk array over all 82 traces
 the 50 certificates hold; recert 50/50 before and after, no field moved.
