@@ -204,8 +204,12 @@ only; the cause is not diagnosed here, and it is a backlog row.
 > same 189 at 30 s: **188 `trap switch` + 1 `untaken` → 177 certified**, with 4
 > `trap switch` left (all one new shape, an unmatched `RTS` return), 4 `io`, 2
 > `input exhausted` and 2 wall timeouts. **The association stated here is
-> refuted as a cause**: SMC of *control* is 159 of the 189 and copy folding
-> explains exactly 1.
+> refuted as a cause**: what the class is made of is self-modification of
+> *control*, not of code in general. Classified on `main` at 30 s by the
+> instruction that dispatches at the first divergence: `JMP (ind)` 110, a
+> patched branch 62, an unmatched `RTS`/`RTI` 4, 13 the reconstruction does not
+> resolve; reading the emitted scrutinee instead gives 98 / 77 / 4 with 9 on the
+> copy index and 1 `untaken`. Copy folding is a bystander, under ten of the 189.
 
 **The `io` list (73) fails at init** in 41 of 73 cases: the program's init
 writes to VIC/CIA differ from the trace's. No tune in the sample diverged on
