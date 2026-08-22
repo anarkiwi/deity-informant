@@ -34,6 +34,8 @@ from .. import c64
 
 INIT_BUDGET = 2_000_000
 PAL_FRAME = 19656
+NTSC_FRAME = 17095
+FRAME = {"pal": (PAL_FRAME, "pal_video"), "ntsc": (NTSC_FRAME, "ntsc_video")}
 CIA1_BASE = 0xDC00
 CIA2_BASE = 0xDD00
 VIDEO = {"pal_video": "pal", "ntsc_video": "ntsc"}  # the cadence sources that are a frame
@@ -322,19 +324,25 @@ def _cadence(data, song):
     """``(cycles_per_tick, source)`` for subtune ``song`` (0-based).
 
     The tune's own armed timer wins (design principle: the traced machine
-    decides). Where it programs none the trigger is the host's, and which host
-    it is the container says: ``sidplayfp``'s PSID driver rasters at a video
-    frame unless the header ``speed`` bit selects its CIA for this subtune, and
-    an RSID runs the real KERNAL, whose default IRQ *is* that CIA -- unless the
-    tune armed a raster compare of its own, which then keeps the frame.
+    decides), and that timer is CIA #1's: CIA #2's line is the NMI, so its latch
+    is not a tick whatever period it holds. Where the tune programs none the
+    trigger is the host's, and which host it is the container says:
+    ``sidplayfp``'s PSID driver rasters at a video frame unless the header
+    ``speed`` bit selects its CIA for this subtune, and an RSID runs the real
+    KERNAL, whose default IRQ *is* that CIA -- unless the tune armed a raster
+    compare of its own, which then keeps the frame.
     """
     cad, topo = _traced(data)
     if cad is None:  # pragma: no cover - pysidtracker is an optional extra
         return PAL_FRAME, "assumed_pal"
-    if cad.source.value not in VIDEO:
+    if cad.source.value in VIDEO:
+        cycles, source = cad.cycles_per_call, cad.source.value
+    elif cad.latch == topo.cia1_timer_latch:
         return cad.cycles_per_call, cad.source.value
+    else:
+        cycles, source = FRAME["ntsc" if c64.is_ntsc(data) else "pal"]
     host = topo.vic_raster is None if c64.is_rsid(data) else c64.speed_cia(data, song)
-    return host_cia(VIDEO[cad.source.value]) if host else (cad.cycles_per_call, cad.source.value)
+    return host_cia(VIDEO[source]) if host else (cycles, source)
 
 
 def _init_topology(data):
