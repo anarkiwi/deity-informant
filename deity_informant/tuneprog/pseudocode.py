@@ -77,11 +77,24 @@ class Printer:
         return out
 
     def pair(self, lo, hi, a):
-        """A 16-bit view reference: the pair's name, indexed like its low half."""
+        """A 16-bit view reference: the pair's name, indexed like its low half.
+
+        Halves in two regions that a record view names are two of its *bytes*, and
+        a word written under either one would silently claim the other, so that
+        pair stays explicit until ``names.u16`` is keyed by cell (S6 open item).
+        """
         name = self.names.u16.get((lo, hi))
-        if name is None:
-            return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
-        return self.colref(lo, a) or self.cell(lo, *self.addr_of(a, self.rgn.get(lo)), name=name)
+        named = lo != hi and (self._recname(lo, a) or self._recname(hi, a))
+        if name is not None and not named:
+            return self.colref(lo, a) or self.cell(
+                lo, *self.addr_of(a, self.rgn.get(lo)), name=name
+            )
+        return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
+
+    def _recname(self, rid, a):
+        """True when a record view already names this half by its own field."""
+        addr = self.addr_of(a, self.rgn.get(rid))[0]
+        return (rid, addr) in self.names.slots or rid in self.names.split
 
     def load16(self, rid, a):
         return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))

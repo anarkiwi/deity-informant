@@ -68,6 +68,7 @@ def _parses(e):
     if e.op == "+":
         if type(e.a) is Bin and e.a.op == "+":
             out.append(("+", e.a.a, e.a.b, e.b))
+        out.append(("+", e.a, Const(0), e.b))
         out.append(("+", e.a, e.b, Const(0)))
     if e.op == "-":
         if type(e.b) is Bin and e.b.op == "+":
@@ -88,9 +89,16 @@ def _carryof(op, x, y, cin):
 
 
 def _operand(lo, hi):
-    """The 16-bit value a pair of byte operands reads, or ``None``."""
+    """The 16-bit value a pair of byte operands reads, or ``None``.
+
+    A high half of literal zero is an 8-bit operand widened -- adding or
+    subtracting a byte to a word is what the 6510 writes as ``ADC lo`` and
+    ``ADC #0``, and the pair is then the low half alone.
+    """
     if type(lo) is Const and type(hi) is Const:
         return Const(lo.v | (hi.v << 8), 2)
+    if type(hi) is Const and not hi.v:
+        return lo
     if type(lo) is Load and type(hi) is Load and lo.r >= 0 and hi.r >= 0 and _pairs(lo.a, hi.a):
         return R16(lo.r, hi.r, lo.a)
     return None
@@ -150,7 +158,9 @@ def _plan(proc, defs, lbl, i, s, taken):
             lo = proc.blocks[dlbl].stmts[j]
             if type(lo) is not Store or lo.w != 1 or lo.r < 0 or (dlbl, j) in taken:
                 continue
-            if lo.a == s.a or not _pairs(lo.a, s.a) or _crosses(proc, dlbl, j, didx, lo.r, s.r):
+            if lo.cls != s.cls or lo.a == s.a or not _pairs(lo.a, s.a):
+                continue  # one word is stored through one access class
+            if _crosses(proc, dlbl, j, didx, lo.r, s.r):
                 continue
             got = _match(lo.v, expr, local)
             if got is not None:
