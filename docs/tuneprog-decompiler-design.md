@@ -383,7 +383,13 @@ default: trap}` where the expression is the pointer or cell read at that site,
 or -- once S4 has eliminated the stack -- the halves an RTS trick pushed
 (e.g. `switch(load16($6375))` for Follin's patched JMP; the domain is
 also known statically when the writers copy from a constant table — S6 names
-it as a jump table).
+it as a jump table). Two readings the expression must get right, both measured
+as failure classes in the campaign ([survey-tuneprog.md](survey-tuneprog.md) §4):
+a `JMP (ind)` dispatches on the word its pointer holds even when the *pointer*
+is the patched operand, so the target is a load through a load; and a patched
+branch's targets are what the **offset bytes the trace ran there** name, since
+an offset of zero lands where the untaken direction lands and no successor
+address can tell the two apart.
 
 **Procedures.** Entry points = the play entries, `init`, and every JSR target.
 The trace pairs each RTS with the JSR it returns from; a procedure's body is

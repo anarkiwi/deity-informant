@@ -427,9 +427,9 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 
 | certificate | tune | player | ticks | music | period | procs | blocks | stmts | regions | certified |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
-| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 227 | 733 | 80 | complete |
-| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 226 | 722 | 80 | complete |
+| `automatas` | Automatas.sid | defMON | 149,025 | 6m12s | 129,024 | 8 | 228 | 733 | 80 | complete |
+| `automatas-6581` | Automatas.sid | defMON, `$D41B`=0 | 149,025 | 6m12s | 129,024 | 8 | 228 | 733 | 80 | complete |
+| `automatas-8580` | Automatas.sid | defMON, `$D41B`=1 | 149,025 | 6m12s | 129,024 | 8 | 227 | 722 | 80 | complete |
 | `commando-song1` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 115 | 341 | 58 | horizon |
 | `commando-song2` | Commando.sid | Hubbard | 11,780 | 3m55s | — | 3 | 101 | 278 | 61 | horizon |
 | `ghouls-song01`…`32` | Ghouls_n_Ghosts.sid | Follin | 6…20,049 | — | 1…8,064 | 2–4 | 101–275 | 190–671 | 37–70 | complete (31 of 32) |
@@ -442,6 +442,8 @@ Numbers from `docs/certificates/`. `complete` = certified to a state repeat;
 | `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 4m49s | 7,688 | 16 | 361 | 935 | 94 | complete |
 | `rodger-alien3` | Alien_3.sid | Andrew Rodger, hardware-vector entry | 1,503 | 0m30s | — | 7 | 148 | 505 | 25 | horizon |
 | `goto80-jazzpjazz` | Jazzpjazz.sid | defMON | 1,799 | 0m30s | — | 4 | 190 | 629 | 95 | horizon |
+| `necropolo-experiment-zeta` | Experiment_Zeta.sid | Virtuoso | 5,956 | 1m58s | 5,184 | 2 | 185 | 356 | 65 | complete |
+| `daglish-deflektor` | Deflektor.sid | Ben Daglish/Gremlin | 1,503 | 0m30s | — | 4 | 180 | 630 | 78 | horizon |
 
 Every one has `divergences: 0` and `envelope_traps: 0`. `jch-knob-at-night`'s
 period of 1 is a song that *stops*: its tracks end, the player writes nothing
@@ -472,6 +474,19 @@ prologue saves them, so the handler's A/X/Y are live-in and pinned per tick
 (6,013 in all), and *Jazzpjazz* polls the raster (2,226). It is also the only
 certificate whose entry frame is the bare `RTI` status byte; every other one is
 CINV.
+
+`necropolo-experiment-zeta` and `daglish-deflektor` are the patched-dispatch
+pair, the two commonest ways a player computes its own control flow. Virtuoso
+patches the *operand* of a `JMP (ind)` and jumps through the word that operand
+addresses, so the dispatch is a load through a load; Ben Daglish's engine writes
+`(cmd & $60) >> 3` into the offset byte of an always-taken `BEQ` and lands on one
+of four `JMP`s two bytes apart, so one of its four arms has offset zero and lands
+exactly where the untaken direction would. Both were the campaign's largest
+divergence class until the front end read them ([survey-tuneprog.md](survey-tuneprog.md)
+§4). *Experiment Zeta* closes on a 5,184-tick period; no tune of the Daglish
+family closes on one — all twelve sampled at `--until-period` stop on a
+`trap 'unreached'` in a `stack: residual` program, so *Deflektor* is certified to
+a 30 s horizon.
 
 ## Known gaps
 

@@ -198,7 +198,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         node["term"] = "call"
         node["succ"] = [_ref(calls["ret_pc"], tails)]
         if len(targets) > 1 or node["computed"]:
-            node["switch"] = _switch(_expr(ls, "cell"), targets, tails)
+            node["switch"] = _switch(_expr(ls, "cell", site), targets, tails)
         return node
     if rets is not None:
         if rets["unmatched"]:
@@ -213,21 +213,21 @@ def _node(trace, pc, op, out, keys, tails, lifted):
     if arms is not None:
         # Both directions of an executed branch are nodes; a direction the trace
         # never took is a trap (the trace-closed product of design section 3). A
-        # branch whose offset byte is an SMC cell keeps its condition and puts the
-        # observed targets of the taken direction in a switch.
+        # branch whose offset byte is an SMC cell keeps its condition and dispatches
+        # on the targets its observed offsets name and the trace reached.
         seen = {t for t, _k in flow}
         node["term"] = "branch"
         node["taken"] = arms[0]
         if not node["computed"]:
             node["succ"] = [_ref(a, tails, trap=a not in seen) for a in arms]
             return node
-        taken = sorted(t for t in seen if t != arms[1])
+        taken = sorted(seen & _rel_targets(site, arms[1]))
         node["succ"] = [
             _ref(taken[0] if taken else arms[0], tails, trap=not taken),
             _ref(arms[1], tails, trap=arms[1] not in seen),
         ]
         if taken:
-            node["switch"] = _switch(_expr(ls, "cell"), taken, tails)
+            node["switch"] = _switch(_expr(ls, "cell", site), taken, tails)
         return node
     if not flow:
         return node
@@ -239,7 +239,7 @@ def _node(trace, pc, op, out, keys, tails, lifted):
             node["call"] = [t]
         elif k == "jmpind" or node["computed"]:
             node["term"] = "switch"
-            sw = _switch(_expr(ls, "jmpind" if k == "jmpind" else "cell"), [t], tails)
+            sw = _switch(_expr(ls, "jmpind" if k == "jmpind" else "cell", site), [t], tails)
             node["switch"] = sw
             node["succ"] = [c[1] for c in sw["cases"]]
         else:
@@ -248,7 +248,9 @@ def _node(trace, pc, op, out, keys, tails, lifted):
         return node
     kinds = {k for _t, k in flow}
     node["term"] = "switch"
-    sw = _switch(_expr(ls, "jmpind" if "jmpind" in kinds else "cell"), [t for t, _k in flow], tails)
+    sw = _switch(
+        _expr(ls, "jmpind" if "jmpind" in kinds else "cell", site), [t for t, _k in flow], tails
+    )
     node["switch"] = sw
     node["succ"] = [c[1] for c in sw["cases"]]
     return node
@@ -260,15 +262,37 @@ def branch_arms(ls, site, pc, op):
         return (ls.ctrl[3], ls.ctrl[4]) if ls.ctrl[0] == "br" else None
     if OPS[op][1] != "rel":
         return None
-    rel = site["variants"][0][1]
-    return ((pc + 2 + (rel - 256 if rel & 0x80 else rel)) & 0xFFFF, (pc + 2) & 0xFFFF)
+    return ((pc + 2 + sext(site["variants"][0][1])) & 0xFFFF, (pc + 2) & 0xFFFF)
 
 
-def _expr(ls, default):
+def sext(b):
+    """A branch offset byte as the signed displacement the 6502 adds."""
+    return b - 256 if b & 0x80 else b
+
+
+def _rel_targets(site, fall):
+    """The addresses the offset bytes the trace executed at this site name."""
+    return {(fall + sext(b[1])) & 0xFFFF for b in site["variants"]}
+
+
+def _ptrs(site):
+    """The pointers the operand words the trace executed at this site name."""
+    return sorted({b[1] | (b[2] << 8) for b in site["variants"]})
+
+
+def _expr(ls, default, site=None):
+    """What a computed terminator dispatches on.
+
+    ``JMP (ind)`` dispatches on the word its pointer holds, so a patched operand is
+    the pointer and not the target: it is one load short of the address jumped to.
+    """
+    if ls is not None and ls.ctrl[0] == "jmpind":
+        e = {"kind": "jmpind", "ptr": ls.ctrl[1]}
+        if ls.ctrl_cell is not None and site is not None:
+            e["cell"], e["ptrs"] = [ls.ctrl_cell[0], ls.ctrl_cell[1]], _ptrs(site)
+        return e
     if ls is not None and ls.ctrl_cell:
         return {"kind": "cell", "addr": ls.ctrl_cell[0], "size": ls.ctrl_cell[1]}
-    if default == "jmpind" and ls is not None and ls.ctrl[0] == "jmpind":
-        return {"kind": "jmpind", "ptr": ls.ctrl[1]}
     return {"kind": default}
 
 

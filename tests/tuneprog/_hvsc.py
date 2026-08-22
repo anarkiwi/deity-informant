@@ -28,6 +28,7 @@ PAL_CLOCK = 985248
 ALIEN3 = "Alien_3.sid"
 AUTOMATAS = "Automatas.sid"
 COMMANDO = "Commando.sid"
+DEFLEKTOR = "Deflektor.sid"
 GNG = "Ghouls_n_Ghosts.sid"
 EMOMYST = "Emomyst.sid"
 EOTW = "End_of_the_World.sid"
@@ -38,6 +39,7 @@ GULDKORN = "Guldkornekspressen_Intro.sid"
 JAZZPJAZZ = "Jazzpjazz.sid"
 JODLER = "Jodler.sid"
 PROFESSOR = "Playful_Professor-Math_Tutor.sid"
+ZETA = "Experiment_Zeta.sid"
 
 
 def tune_file(name):

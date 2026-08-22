@@ -1,0 +1,85 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "copies": {
+  "coverage": {
+   "1,0": 2,
+   "1,1": 0,
+   "1,1,1": 11
+  },
+  "families": [
+   {
+    "bases": [
+     "$12CF",
+     "$12E1",
+     "$12F3"
+    ],
+    "columns": 3,
+    "copies": 3,
+    "proc": "tick",
+    "rows": 7,
+    "table": "$0200"
+   },
+   {
+    "bases": [
+     "$1376",
+     "$137B"
+    ],
+    "columns": 1,
+    "copies": 2,
+    "proc": "tick",
+    "rows": 2,
+    "table": "$0212"
+   }
+  ],
+  "refused": [],
+  "statements": 13,
+  "unverified": 2
+ },
+ "cost": {
+  "calls_per_second": 11832,
+  "ir_blocks": 185,
+  "ir_procs": 2,
+  "ir_statements": 356,
+  "regions": 65,
+  "sites": 403,
+  "trace_calls": 5956,
+  "verify_cpu_seconds": 0.5
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4099,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-22T04:13:05Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 5955,
+   "inputs_pinned": 0,
+   "interp_prefix": 2000,
+   "period": 5184,
+   "seconds": 118.82,
+   "song": 1,
+   "ticks": 5956,
+   "trace_first_repeat": 5955,
+   "trace_period": 5184
+  }
+ ],
+ "tune": "Experiment_Zeta.sid"
+}

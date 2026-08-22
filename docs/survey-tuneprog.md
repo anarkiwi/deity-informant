@@ -71,6 +71,10 @@ family".
     python tools/survey/tuneprog_report.py --horizon horizon.jsonl \
         --period period.jsonl --results results.csv --hvsc C64Music
 
+`--only FILE` restricts a run to the HVSC-relative paths that file lists, which
+is how the corrections below re-measure one failure class without re-running the
+sample.
+
 Per-tune artefacts are pruned as each row is written; only the JSONL rows
 survive, and neither they nor any certificate they describe are committed.
 
@@ -191,6 +195,26 @@ the 189 (84 %) have a play site writing an instruction byte against 54 % of
 certified programs, and 116 of the 189 also folded sibling copies. Association
 only; the cause is not diagnosed here, and it is a backlog row.
 
+> **Correction (2026-08-22, Q6 — [tuneprog-plan.md](tuneprog-plan.md) §5).**
+> Diagnosed, and it was three mechanisms in the front end's reading of computed
+> control, none of them `emit._term`: a `JMP (ind)` whose own operand the
+> program patches dispatched on the **pointer** while its cases were the
+> observed **targets** (Virtuoso, Element114Studio, Fred Gray, Galway,
+> Tiny/Sound Images); a patched **branch offset of zero** names the address
+> after the instruction, which the "every successor but the fall-through" rule
+> discarded (Ben Daglish/Gremlin, Prosonix); and the **copy index** was stepped
+> before the arm that advances the run was chosen, so a family's exit carried
+> `v = k` (`Bitfrost.sid`, the first-divergence example above). Re-run over the
+> same 189 at 30 s: **188 `trap switch` + 1 `untaken` → 177 certified**, with 4
+> `trap switch` left (all one new shape, an unmatched `RTS` return), 4 `io`, 2
+> `input exhausted` and 2 wall timeouts. **The association stated here is
+> refuted as a cause**: what the class is made of is self-modification of
+> *control*, not of code in general. Classified on `main` at 30 s by the
+> instruction that dispatches at the first divergence: `JMP (ind)` 110, a
+> patched branch 62, an unmatched `RTS`/`RTI` 4, 13 the reconstruction does not
+> resolve; reading the emitted scrutinee instead gives 98 / 77 / 4 with 9 on the
+> copy index and 1 `untaken`. Copy folding is a bystander, under ten of the 189.
+
 **The `io` list (73) fails at init** in 41 of 73 cases: the program's init
 writes to VIC/CIA differ from the trace's. No tune in the sample diverged on
 the *SID* write list; every divergence is a trap or the I/O list. Concentrated in
@@ -200,6 +224,14 @@ Geir_Tjelta/SIDSys18.6 (17), Heathcliff/DigitalArts (11) and Novaload (11).
 showing up as failure: an arm lifted from a sibling copy, or a branch direction
 nothing executed, that the program then reaches while replaying its own trace.
 SidFactory II/Laxity is 23 of the 47.
+
+> **Correction (2026-08-22, Q6).** Not the closure boundary. Re-run over the
+> same 78 at 30 s, **78 certified, 0 diverged**, with no work on `siblings` or
+> `closure` at all: both classes are the two control mechanisms above seen from
+> the other side — a patched `JMP (ind)` whose pointer value matched a table
+> entry `jumptab.enumerate_targets` had closed as an `unverified` arm, and a
+> zero branch offset whose arm the same closure supplied because the case set
+> had dropped it. SidFactory II/Laxity certifies whole.
 
 **`trap input exhausted` / `input mismatch` (38)** are volatile-input replay:
 the program consumed pinned inputs in a different order or number than the trace
@@ -660,6 +692,11 @@ Measured, in order of population:
    399 before tick 3. The next correctness work is diagnostic, not more compute.
 2. **`trap switch` (189 tunes) is the largest single failure class** and takes
    whole families with it (Virtuoso, Daglish, Element114Studio, Fred Gray).
+   *Corrected 2026-08-22 (Q6, §4): three front-end readings of computed control
+   — the pointer of a patched `JMP (ind)`, a zero patched branch offset, and the
+   copy index stepped on the wrong arm. 189 → 177 certified, and the 78
+   `unverified`/`untaken` tunes of item 7 go with them, 78 → 78. What is left of
+   the class is 4 tunes on an unmatched `RTS`.*
 3. **The second interrupt is 45 % of refusals and 3.0 % of HVSC by weight** —
    the largest addressable population anywhere in this document, and already
    scoped as plan section 8 item 3. **Corrected (section 5b): 2.2 % by weight is
@@ -678,7 +715,9 @@ Measured, in order of population:
 6. **The 30 s certification rate is a horizon figure**: 31 of 1,338 tunes that
    certified at 30 s did not at period scale.
 7. **`SidFactory_II/Laxity`** is the largest divergence-only family (29/30, 380
-   HVSC tunes), 23 of them one class (`trap unverified`).
+   HVSC tunes), 23 of them one class (`trap unverified`). *Corrected 2026-08-22
+   (Q6, §4): the family certifies whole; the class was item 2's mechanisms, not
+   the sibling closure.*
 8. **The raw `RTI` entry frame has no population**; every built interrupt entry
    is CINV.
 9. **Copy folding is the normal form** (52 % of built programs), and the

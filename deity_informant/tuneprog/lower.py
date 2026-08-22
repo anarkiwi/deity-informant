@@ -205,6 +205,41 @@ def tgt(store, addr, size, init_phase, blk, out):
     return Var(n, size)
 
 
+def hi_addr(p):
+    """Where a 6502 reads a pointer's high byte: the page does not carry."""
+    return (p & 0xFF00) | ((p + 1) & 0xFF)
+
+
+def _wrap(p):
+    """:func:`hi_addr` as an expression, for a pointer no constant names."""
+    return Bin(
+        "|",
+        Bin("&", p, Const(0xFF00, 2), 2),
+        Bin("&", Bin("+", p, Const(1, 2), 2), Const(0xFF, 2), 2),
+        2,
+    )
+
+
+def _indirect(store, ex, init_phase, blk, out):
+    """The word a ``JMP (ind)`` whose own operand is patched jumps through.
+
+    The operand is the pointer; the envelope is the span of the two addresses each
+    pointer the trace ran reaches, which is the extent rule every access already uses.
+    """
+    ptr = tgt(store, ex["cell"][0], ex["cell"][1], init_phase, blk, out)
+    seen = {a for p in ex["ptrs"] for a in (p, hi_addr(p))}
+    lo, hi = min(seen), max(seen)
+    cls = store.cls(lo, hi, "state", init_phase)
+    for half, a in (("lo", ptr), ("hi", _wrap(ptr))):
+        out.append(Let("i_%s_%s" % (half, blk), Load(cls, a, 1, lo, hi, -1)))
+    return Bin(
+        "|",
+        Var("i_lo_%s" % blk, 1),
+        Bin("<<", Var("i_hi_%s" % blk, 1), Const(8), 2),
+        2,
+    )
+
+
 def ctrl_expr(node, ls, store, pc, init_phase, blk, out):
     """The switch expression of a computed jump/branch/return, with its loads."""
     ex = node["switch"]["expr"]
@@ -216,9 +251,11 @@ def ctrl_expr(node, ls, store, pc, init_phase, blk, out):
         w = Bin("|", Var("p_lo_%s" % blk, 1), Bin("<<", Var("p_hi_%s" % blk, 1), Const(8), 2), 2)
         return Bin("+", w, Const(1, 2), 2)
     if ex["kind"] == "jmpind":
+        if "cell" in ex:
+            return _indirect(store, ex, init_phase, blk, out)
         ptr = ex["ptr"]
         lo8 = tgt(store, ptr, 1, init_phase, blk + "l", out)
-        hi8 = tgt(store, (ptr & 0xFF00) | ((ptr + 1) & 0xFF), 1, init_phase, blk + "h", out)
+        hi8 = tgt(store, hi_addr(ptr), 1, init_phase, blk + "h", out)
         return Bin("|", lo8, Bin("<<", hi8, Const(8), 2), 2)
     cell = tgt(store, ex["addr"], ex["size"], init_phase, blk, out)
     if ex["size"] == 2 or ls is None or ls.ctrl[0] != "br":
