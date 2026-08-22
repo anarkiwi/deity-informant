@@ -12,6 +12,7 @@ from .ir import Load, Rgn, Store
 from .irwalk import addr_split, apply_stmt, apply_term, node_loads, reachable
 
 SPLITTABLE = ("state", "init_constant", "const", "image")
+RANK = {"array": 0, "scalar": 1}  # an array claim is tried before a scalar one
 
 
 def repartition(prog, facts):
@@ -49,7 +50,10 @@ def _recell(prog, moves):
 
     for f in prog.meta.get("copyviews") or () if moves else ():
         cells = [[at(c) for c in v] for v in (f.get("slots") or {}).values()]
-        f["slots"] = {tuple(v[0]): v for v in cells}
+        keys = [tuple(v[0]) for v in cells]
+        if len(set(keys)) != len(keys):
+            raise ValueError("repartition collapsed two slots onto one cell: %r" % (keys,))
+        f["slots"] = dict(zip(keys, cells))
         f["columns"] = {k: at(c) for k, c in (f.get("columns") or {}).items()}
 
 
@@ -139,6 +143,7 @@ def _merge(prog, named):
     """
     runs, remap = {}, {}
     for r in sorted(prog.storage, key=lambda r: (r.base, r.id)):
+        # a byte merged into its neighbour prints as an index, not a name: +210 tokens
         if _refused(r, named) or r.size < 2:
             continue
         run = runs.setdefault((r.kind, r.zero), [[]])
@@ -147,9 +152,13 @@ def _merge(prog, named):
         run[-1].append(r)
     for rs in [rs for run in runs.values() for rs in run if len(rs) > 1]:
         keep, lo = min(rs, key=lambda r: r.id), rs[0].base
-        image = bytearray(max(r.base + r.size for r in rs) - lo)
+        n = max(r.base + r.size for r in rs) - lo
+        image, seen = bytearray(n), bytearray(n)
         for r in rs:
-            image[r.base - lo : r.base - lo + len(r.init)] = r.init
+            o, k = r.base - lo, len(r.init)
+            was = zip(seen[o : o + k], image[o : o + k], r.init)
+            assert all(not s or a == b for s, a, b in was), "one image, two initial values"
+            image[o : o + k], seen[o : o + k] = r.init, b"\1" * k
         keep.name = "%s_%04X" % (keep.kind, lo)
         keep.base, keep.size, keep.init = lo, len(image), bytes(image)
         remap.update({r.id: keep.id for r in rs if r is not keep})
@@ -185,7 +194,7 @@ def _claims(covers):
     is the overrunning accessor. Two claims are the least a partition can be.
     """
     out = []
-    for _s, lo, hi in sorted(covers, key=lambda c: (c[0], c[2] - c[1], c[1])):
+    for _s, lo, hi in sorted(covers, key=lambda c: (RANK.get(c[0], len(RANK)), c[2] - c[1], c[1])):
         if (lo, hi) not in out and not any(lo <= b and a <= hi for a, b in out):
             out.append((lo, hi))
     return sorted(out) if len(out) > 1 else []
@@ -204,10 +213,13 @@ def _uniform(claims):
 
 
 def _disagree(covers, claims):
-    """True when some access reaches past a claim: the partition is a real boundary.
+    """True when some access is contained in no claim: the partition is a real boundary.
 
-    Every access inside one claim is that shape observed, however narrowly; a
-    region only splits where a reach crosses a boundary the claims drew.
+    Every access inside one claim is that shape observed, however narrowly. An
+    access contained in none of them either crosses a boundary the claims drew or
+    lies wholly in the residue the parent keeps; both say the claims are not the
+    whole region. It is also the access :func:`_split` cannot move, so a partition
+    never orphans the parent and the parent's range overlaps its parts'.
     """
     return any(not any(a <= c[1] and c[2] <= b for a, b in claims) for c, _w, _t in covers if c)
 
@@ -247,7 +259,7 @@ def _split(prog, named, fields):
     nid = max((r.id for r in prog.storage), default=0) + 1
     new, moved, span = [], {}, []
     for r in prog.storage:
-        if _refused(r, named) or r.size < 3:
+        if _refused(r, named):
             continue
         covers = [(_cover(r, lo, hi, a), w, t) for lo, hi, a, w, t in byr.get(r.id, ())]
         claims = _claims([c for c, _w, t in covers if c and c[0] and t])
@@ -257,13 +269,15 @@ def _split(prog, named, fields):
         if len(claims) < 2 or _uniform(claims) or not _disagree(covers, claims):
             continue
         stores = [(c[1], c[2]) for c, w, _t in covers if c and w]
-        for lo, hi in claims:
-            new.append(_part(r, lo, hi, _kind(r, lo, hi, stores, band), nid))
-            for lo2, hi2, _a, _w, _t in byr[r.id]:
-                if r.base + lo <= lo2 and hi2 <= r.base + hi:
-                    moved[(r.id, lo2, hi2)] = nid
-            span.append((r.id, r.base + lo, r.base + hi, nid))
-            nid += 1
+        ids = range(nid, nid + len(claims))
+        for (lo, hi), pid in zip(claims, ids):
+            new.append(_part(r, lo, hi, _kind(r, lo, hi, stores, band), pid))
+            span.append((r.id, r.base + lo, r.base + hi, pid))
+        for lo2, hi2, _a, _w, _t in byr[r.id]:
+            k = _which(claims, lo2 - r.base)
+            if k >= 0 and hi2 - r.base <= claims[k][1]:
+                moved[(r.id, lo2, hi2)] = ids[k]
+        nid += len(claims)
     if not new:
         return [], []
     _repoint(prog, lambda rid, lo, hi: moved.get((rid, lo, hi)))

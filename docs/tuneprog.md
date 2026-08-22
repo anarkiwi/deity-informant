@@ -66,13 +66,13 @@ program      ir 440  interp 288  irwalk 319  graph 82  lower 264  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 403
              verify 423  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
-             partition 271  word 379  fold 472  tails 290  copyview 279
+             partition 285  word 379  fold 472  tails 290  copyview 279
              unroll 399  live 96  facts 284  recover 328  views 295
              eqsat 284  eqrules 250  ranges 76
-text         pseudocode 480  printer 405
+text         pseudocode 481  printer 405
 driver       pipeline 513  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,755 lines
+baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,770 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -608,7 +608,11 @@ a 30 s horizon.
   image) already partitions what it names, so those are refused, and claims of one
   width at one spacing are a record rather than a fusion. The certified S4 program,
   its region ids and `regions.json` are untouched; what the print gains is the
-  storage *named*, at the cost of a header row per part.
+  storage *named*, at the cost of a header row per part (2,894 → 3,084 regions
+  over the 51 certificates). A cut parent is never retired: `_disagree`, which is
+  the condition for cutting at all, is an access contained in no claim, and such
+  an access cannot move into a part, so the parent keeps the fused range it
+  asserts and the parts' ranges lie inside it -- those bytes are listed twice.
 
 - **Names are role-derived.** The trace shows shapes, not words: `timer_2`,
   `cursor_1490`, `b148D`. A per-family dictionary keyed on the player signature

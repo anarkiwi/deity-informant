@@ -80,11 +80,12 @@ class Printer:
         """A 16-bit view reference: the pair's name, indexed like its low half.
 
         Halves in two regions that a record view names are two of its *bytes*, and
-        a word written under the low one would silently claim the high one, so that
+        a word written under either one would silently claim the other, so that
         pair stays explicit until ``names.u16`` is keyed by cell (S6 open item).
         """
         name = self.names.u16.get((lo, hi))
-        if name is not None and not (lo != hi and self._recname(lo, a)):
+        named = lo != hi and (self._recname(lo, a) or self._recname(hi, a))
+        if name is not None and not named:
             return self.colref(lo, a) or self.cell(
                 lo, *self.addr_of(a, self.rgn.get(lo)), name=name
             )
