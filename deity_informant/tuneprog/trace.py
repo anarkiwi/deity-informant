@@ -35,49 +35,78 @@ from .machine import (
     vector_gate,
 )
 from .tracedata import Trace, site_key
+from .tracesite import S_IDX, S_N, S_PH, S_PH0, S_RS, S_WS
 from .tracevm import PH_PLAY, TraceVM
 
 CALL_BUDGET = 400_000
 VECTOR_BYTES = set(c64.IRQ_VEC) | set(c64.HW_IRQ_VEC)
-VERSION = 5  # resume-state layout; an older pickle restarts rather than resumes
+VERSION = 6  # resume-state layout; an older pickle restarts rather than resumes
 # VM register slot -> SLEIGH register name, for the post-init CPU state
 CPU_REGS = {0: "A", 1: "X", 2: "Y", 3: "S", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
+
+
+class _Footprint:
+    """The play-phase write footprint, gathered as one numpy take per tick.
+
+    Growth is monotone, so the sorted address vector and the stack-page mask that
+    separates the two witnesses are rebuilt only when the footprint gains an
+    address, and each tick is one gather over that vector.
+    """
+
+    __slots__ = ("n", "idx", "keep", "nfree", "view")
+
+    def __init__(self):
+        self.n = -1
+        self.idx = np.empty(0, np.intp)
+        self.keep = np.empty(0, bool)
+        self.nfree = 0
+        self.view = None
+
+    def gather(self, vm):
+        """``(full bytes, full size, page-free bytes, page-free size)`` of this tick."""
+        w = vm.written_play
+        if self.n != len(w):
+            self.n = len(w)
+            self.idx = a = np.fromiter(sorted(w), np.intp, self.n)
+            self.keep = (a < STACK_LO) | (a > STACK_HI)
+            self.nfree = int(self.keep.sum())
+        if self.view is None:
+            self.view = np.frombuffer(memoryview(vm.mem), dtype=np.uint8)
+        b = self.view[self.idx]
+        return b.tobytes(), self.n, b[self.keep].tobytes(), self.nfree
+
+    def __getstate__(self):
+        return self.n, self.idx, self.keep, self.nfree
+
+    def __setstate__(self, st):
+        self.n, self.idx, self.keep, self.nfree = st
+        self.view = None
 
 
 class _Stream:
     """One per-tick state hash over a footprint, and its periodicity witness.
 
-    ``free`` leaves the stack page out: it is the machine's own scratch, which a
-    program :func:`~.stack.eliminate` proved stack-free can neither read nor write.
+    The page-free stream leaves the stack page out: it is the machine's own
+    scratch, which a program :func:`~.stack.eliminate` proved stack-free can
+    neither read nor write.
     """
 
-    __slots__ = ("free", "hashes", "period", "first_repeat", "rows", "nrows", "_fp", "_n")
+    __slots__ = ("hashes", "period", "first_repeat", "rows", "nrows")
 
-    def __init__(self, free):
-        self.free = free
+    def __init__(self):
         self.hashes = {}
         self.period = None
         self.first_repeat = None
         self.rows = array("Q")
         self.nrows = array("I")
-        self._fp = ()
-        self._n = -1
 
-    def hash(self, vm, call):
-        """Hash this tick's footprint; a repeat with no input consumed is a witness."""
-        w = vm.written_play
-        if self._n != len(w):
-            self._n = len(w)
-            self._fp = tuple(sorted(a for a in w if not (self.free and STACK_LO <= a <= STACK_HI)))
-        n = len(self._fp)
-        h = blake2b(
-            bytes(map(vm.mem.__getitem__, self._fp)), digest_size=8, key=n.to_bytes(4, "little")
-        ).digest()
+    def hash(self, buf, n, ninp, call):
+        """Hash one gathered footprint; a repeat with no input consumed is a witness."""
+        h = blake2b(buf, digest_size=8, key=n.to_bytes(4, "little")).digest()
         v = int.from_bytes(h, "little")
         self.rows.append(v)
         self.nrows.append(n)
         if self.period is None:
-            ninp = len(vm.inputs)
             prev = self.hashes.get((n, v))
             if prev is None:
                 self.hashes[(n, v)] = (call, ninp)
@@ -104,8 +133,22 @@ class Tracer:
         self.calls_done = 0
         self.period = None
         self.first_repeat = None
-        self.free = _Stream(True)
-        self.full = _Stream(False)
+        self.free = _Stream()
+        self.full = _Stream()
+        self.fp = _Footprint()
+        self._bind()
+
+    def _bind(self):
+        """Freeze what every tick needs from the entry: the frame is fixed once it settles."""
+        e = self.entry
+        self.tick = (
+            e.kind == "sub",
+            e.addr,
+            e.cycles_per_tick,
+            e.kernal,
+            entry_frame(e),
+            "video" in e.source,
+        )
 
     def run_init(self, budget=None):
         vm = self.vm
@@ -114,12 +157,14 @@ class Tracer:
         kw = {} if budget is None else {"budget": budget}
         init_runner(vm, self.image.init, self.cache, lift, **kw)
         nmi_gate(vm.cia[1], vm.cycles, "second interrupt source armed")
-        vm.shadow.clear()
-        vm.phase = PH_PLAY
+        vm.clear_frames()
+        vm.enter_play()
         if self.entry.kind == "irq":
             self.entry = self._settle()
             if not any(self.image.lo <= a < self.image.hi for a in (0xEA31, 0xEA81, 0xFEBC)):
                 c64.install_kernal_irq_stubs(vm)
+            self._bind()
+        vm.invalidate()  # init's own writes and the stubs went in behind the step loop
         self.image_post_init = bytes(vm.mem)
         self.cycles_init = vm.cycles  # where tick 0's frame starts
         self.post_init_regs = {n: int(vm.reg[i]) for i, n in CPU_REGS.items()}
@@ -151,38 +196,40 @@ class Tracer:
     def _one_call(self, budget):
         vm = self.vm
         reg = vm.reg
-        vm.call = self.calls_done
-        vm.tick_rd = vm.tick_wr = 0
+        sub, addr, cpt, kernal, frame, video = self.tick
+        vm.begin_tick(self.calls_done)
         start = reg[3]
         c0 = vm.cycles
         vm._push(0x00)
-        if self.entry.kind == "sub":
+        if sub:
             vm._push(0x01)
-            vm.push_frame(None, 0x0002, self.entry.addr)
+            vm.push_frame(None, 0x0002, addr)
         else:
-            if kernal_mapped(vm.mem) != self.entry.kernal:
+            if kernal_mapped(vm.mem) != kernal:
                 # the frame is the tick's contract: it has to hold at every tick
                 raise Refusal("port moved", "call %d changed the dispatch" % self.calls_done)
             vm._push(0x00)
-            for what in entry_frame(self.entry):
+            for what in frame:
                 if what is STATUS:
                     vm._push_status()
                 else:
                     vm._push(reg[what])
-            vm.push_frame(None, 0x0000, self.entry.addr)
+            vm.push_frame(None, 0x0000, addr)
             reg[10] = 1
-            if "video" in self.entry.source:
+            if video:
                 vm.vicirq = 0x81  # a raster IRQ has fired: handlers poll $D019
-        pc = self.entry.addr
-        n = 0
-        while reg[3] < start:
-            pc = vm.step(pc, self.cache, lift)
-            n += 1
-            if n > budget:
-                raise Refusal("play runaway", "call %d at $%04X" % (self.calls_done, pc))
-        vm.shadow.clear()
-        if vm.cycles - c0 < self.entry.cycles_per_tick:
-            vm.cycles = c0 + self.entry.cycles_per_tick
+        pc = addr
+        step = vm.step
+        cache = self.cache
+        for _ in range(budget + 1):
+            if reg[3] >= start:
+                break
+            pc = step(pc, cache, lift)
+        else:
+            raise Refusal("play runaway", "call %d at $%04X" % (self.calls_done, pc))
+        vm.clear_frames()
+        if vm.cycles - c0 < cpt:
+            vm.cycles = c0 + cpt
         # the gate is the tick's contract too: an arming in play is a schedule
         nmi_gate(vm.cia[1], vm.cycles, "nmi armed in play")
         self._hash()
@@ -195,8 +242,10 @@ class Tracer:
         does not exist yet (:func:`~.stack.eliminate`), so both witnesses are kept.
         """
         vm = self.vm
-        self.full.hash(vm, self.calls_done)
-        self.free.hash(vm, self.calls_done)
+        buf, n, fbuf, fn = self.fp.gather(vm)
+        ninp = len(vm.inputs)
+        self.full.hash(buf, n, ninp, self.calls_done)
+        self.free.hash(fbuf, fn, ninp, self.calls_done)
         self.period, self.first_repeat = self.full.period, self.full.first_repeat
 
     def witness(self, free=True):
@@ -228,6 +277,7 @@ class Tracer:
     def __setstate__(self, d):
         self.__dict__.update(d)
         self.cache = {}
+        self._bind()
 
     # ---- result ------------------------------------------------------------
     def trace(self):
@@ -238,8 +288,9 @@ class Tracer:
         code = {a for a, c in enumerate(vm.code) if c}
         cells = code & (vm.written_play | vm.written_init)
         sites = {}
-        for sk, count in vm.count.items():
-            pc, bb = sk
+        for k, t in vm.blocks.items():
+            pc = k[0]
+            bb = k[1:]
             key = site_key(pc, bb[0], bb, cells)
             s = sites.get(key)
             if s is None:
@@ -253,12 +304,13 @@ class Tracer:
                     "reads": {},
                     "writes": {},
                 }
-            s["count"] += count
-            s["phases"] |= vm.sitephase[sk]
+            s["count"] += t[S_N]
+            s["phases"] |= t[S_PH] | (PH_PLAY if t[S_N] > t[S_PH0] else 0)
             s["variants"].append(bytes(bb))
-            s["idx"] |= vm.idx.get(sk, set())
-            for name, src in (("reads", vm.reads), ("writes", vm.writes)):
-                for i, a in src.get(sk, {}).items():
+            if t[S_IDX]:
+                s["idx"] |= t[S_IDX]
+            for name, src in (("reads", t[S_RS]), ("writes", t[S_WS])):
+                for i, a in src.items():
                     s[name].setdefault(i, set()).update(a)
         for s in sites.values():
             s["idx"] = sorted(s["idx"])
@@ -273,7 +325,7 @@ class Tracer:
             "schedule": [self.entry.to_dict()],
             "song": self.song,
             "calls": self.calls_done,
-            "insns": vm.insns,
+            "insns": vm.insn_count(),
             "cycles": vm.cycles,
             "cycles_init": self.cycles_init,
             "period": self.full.period,

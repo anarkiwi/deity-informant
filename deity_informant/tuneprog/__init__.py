@@ -4,7 +4,9 @@ Front end (trace-driven recovery):
 
 * :mod:`.machine` (S0) -- machine image, entry/cadence discovery, init runner.
 * :mod:`.tracevm` / :mod:`.trace` (S1) -- op-level tracing VM and the tracer
-  that drives it: sites, edges, logs, inputs, per-tick state hashes.
+  that drives it: sites, edges, logs, inputs, per-tick state hashes;
+  :mod:`.tracesite` -- one site resolved once (closure, access sets, masks,
+  edge slots); :mod:`.traceflow` -- edges, call/return records, shadow stack.
 * :mod:`.lift` (S2a) -- residualised lift (SMC cells become loads).
 * :mod:`.cfg` (S2b) -- procedures, clones, tail calls, computed switches.
 * :mod:`.regions` (S3) -- storage typing from the exact access relation.

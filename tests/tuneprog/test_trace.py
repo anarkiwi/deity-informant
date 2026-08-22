@@ -233,7 +233,7 @@ def test_cia_busy_wait_in_init_terminates():
     img = sid_image({PLAY: asm(PLAY, "RTS"), 0x1100: init}, 0x1100, PLAY)
     t = Tracer(img, Entry("sub", PLAY, 19656, "test"))
     t.run_init(budget=10000)
-    assert t.vm.insns > 8  # the wait loop ran and then fell through
+    assert t.vm.insn_count() > 8  # the wait loop ran and then fell through
 
 
 def test_state_hash_finds_the_period():
@@ -334,11 +334,11 @@ def test_multi_byte_access_is_attributed_byte_by_byte():
     # residualised 16-bit cell loads use the LOAD/STORE size contract of the base VM.
     img = sid_image({PLAY: asm(PLAY, "RTS")}, PLAY, PLAY, {0x1001: 0x34, 0x1002: 0x12})
     vm = TraceVM(img.mem, img)
-    vm._rs, vm._ws = {}, {}
-    assert vm._rd(0x1001, 2, 3) == 0x1234
-    assert vm._rs[3] == {0x1001, 0x1002}
-    vm._wr(0x2000, 0xBEEF, 2, 4)
-    assert vm._ws[4] == {0x2000, 0x2001}
+    rs, ws = set(), set()
+    assert vm.read(0x1001, 2, (PLAY, 3), rs) == 0x1234
+    assert rs == {0x1001, 0x1002}
+    vm.write(0x2000, 0xBEEF, 2, (PLAY, 4), ws)
+    assert ws == {0x2000, 0x2001}
     assert vm.mem[0x2000] == 0xEF and vm.mem[0x2001] == 0xBE
 
 

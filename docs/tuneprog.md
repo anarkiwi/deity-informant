@@ -36,7 +36,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | stage | does | modules |
 | --- | --- | --- |
 | S0 | load image, entry and cadence discovery, init runner, 6510 port + CIA models | `machine.py` |
-| S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes | `tracevm.py`, `trace.py`, `tracedata.py` |
+| S1 | op-level tracing: sites, edges, calls/returns, exact per-op access sets, pinned inputs, reference write log, per-tick state hashes. A site is the VM's cache key, so everything constant about it -- its P-Code closure, its access sets, its index domain, its register masks, its edge cells -- is resolved once and the step loop only indexes it; a pc whose instruction bytes no store has touched skips the re-read entirely | `tracevm.py` (memory attribution, the step loop), `tracesite.py` (one site, resolved once), `traceflow.py` (edges, calls, the shadow stack), `trace.py`, `tracedata.py` |
 | S2a | residualised lift: an SMC operand becomes a load of its cell | `lift.py` |
 | S2b | procedures from observed edges: clone per entry, tail calls, variant and computed switches | `cfg.py`; static table closure in `jumptab.py`, over a per-copy column base and the range a branch proves for the index |
 | S2b' | the bounded static closure of untaken branch directions, as zero-coverage sites the same front end builds (`--closure static`) | `closure.py` |
@@ -58,7 +58,8 @@ traversals every stage shares.
 ## Module map
 
 ```
-front end    machine 366  tracevm 328  trace 337  tracedata 346  lift 227
+front end    machine 435  tracevm 461  tracesite 186  traceflow 101
+             trace 400  tracedata 346  lift 227
              cfg 311  regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
 program      ir 440  interp 248  irwalk 319  graph 82  lower 227  build 452
@@ -70,7 +71,7 @@ presentation structure 356  loops 307  inline 199  texture 491  frame 51
 text         pseudocode 468  printer 405
 driver       pipeline 510  resume 67  __init__ 134
 oracle       grid 159  tunes 55
-baseline     ghidra_facts 219  ghidra_compare 182   52 modules, 15,125 lines
+baseline     ghidra_facts 219  ghidra_compare 182   54 modules, 15,757 lines
 ```
 
 Stage entry points, which are also the module boundaries:
