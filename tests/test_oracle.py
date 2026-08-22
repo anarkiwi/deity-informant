@@ -189,6 +189,7 @@ def test_a_cia2_latch_that_arms_nothing_is_not_the_cadence():
     rows = grid.oracle_rows(path, _CACHE / "csv", seconds=CAD_FRAMES // 50 + 2)
     gaps = np.diff(_raises(rows))
     assert gaps.size and not (gaps % entry.cycles_per_tick).any()
+    assert (gaps % (latch + 1)).any()
 
 
 def _raises(rows):
