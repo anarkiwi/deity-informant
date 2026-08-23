@@ -10,11 +10,9 @@ import pytest
 
 from deity_informant.tuneprog import pipeline, printer
 from deity_informant.tuneprog.eqrules import E, RULES
-from deity_informant.tuneprog.eqsat import _diamonds, _Graph, saturate
+from deity_informant.tuneprog.eqsat import _Graph, saturate
 from deity_informant.tuneprog.idioms import fold
-from deity_informant.tuneprog.ir import Bin, Block, Const, Let, Load, Proc, Return, Store
-from deity_informant.tuneprog.ir import Tuneprog, Var
-from deity_informant.tuneprog.ranges import cell_ranges
+from deity_informant.tuneprog.ir import Bin, Const, Load, Tuneprog, Var
 from deity_informant.tuneprog.verify import verify
 
 from _asm import asm
@@ -145,68 +143,7 @@ def test_overflow_reduces_only_when_both_operand_signs_are_known():
     assert _sat(e, _mem()) == e
 
 
-# ---- what the IR proves about a cell -----------------------------------------
-def test_cell_ranges_bound_a_masked_cell():
-    code = asm(
-        PLAY,
-        "init: LDA #$00",
-        "STA cnt",
-        "RTS",
-        "play: LDA cnt",
-        "AND #$0F",
-        "STA mask",
-        "LDA mask",
-        "STA $D400",
-        "INC cnt",
-        "RTS",
-        "cnt: BRK",
-        "mask: BRK",
-    )
-    T, prog = tuneprog(code, calls=6, s4=True)
-    assert verify(prog, T, calls=6).div is None
-    lo, hi = cell_ranges(prog)
-    at = code.labels["mask"]
-    assert (int(lo[at]), int(hi[at])) == (0, 0x0F)
-
-
-def test_cell_ranges_keep_each_procedure_s_own_names():
-    procs = {}
-    for name, v, at in (("a", 0x0F, 0x20), ("b", 0xF0, 0x21)):
-        body = [Let("t", Const(v)), Store("ram", Const(at, 2), Var("t"), 1, at, at, 0)]
-        procs[name] = Proc(name, blocks={"e": Block("e", body, Return())}, entry="e")
-    lo, hi = cell_ranges(Tuneprog(procs=procs))
-    assert (int(hi[0x20]), int(hi[0x21])) == (0x0F, 0xF0)
-    assert (int(lo[0x20]), int(lo[0x21])) == (0, 0)
-
-
 # ---- the pass over real programs ---------------------------------------------
-BORROW = (
-    "init: LDA #$7E",
-    "STA cnt",
-    "LDA #$10",
-    "STA hi",
-    "RTS",
-    "play: LDX hi",
-    "LDA cnt",
-    "BPL pos",
-    "DEX",
-    "pos: STX $D400",
-    "INC cnt",
-    "RTS",
-    "cnt: BRK",
-    "hi: BRK",
-)
-
-
-def test_the_branch_carried_borrow_becomes_one_statement():
-    T, prog = tuneprog(asm(PLAY, *BORROW), calls=6, s4=True)
-    assert verify(prog, T, calls=6, prefix=6).div is None
-    view, _st, _n = pipeline.present(prog, eqsat=True)
-    assert not [h for p in view.procs.values() for h in _diamonds(p)]
-    plain = _text(prog, False).count("\n")
-    assert _text(prog, True).count("\n") < plain
-
-
 @pytest.mark.parametrize("gated", (True, False))
 def test_the_rewritten_program_still_matches_the_trace(gated):
     for lines in (

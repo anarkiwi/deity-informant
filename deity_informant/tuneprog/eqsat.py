@@ -11,7 +11,7 @@ import json
 from egglog import EGraph, i64, set_, union
 
 from .eqrules import E, ETYPE, MARK, RULES, WEIGHT, hi, lo, pick
-from .graph import preds_of
+from .gated import diamonds
 from .ir import Assert, Bin, Call, Const, Goto, If, Let, Load, MASK, Return, Store, Switch, Var
 from .irwalk import defs_of, single_defs
 from .ranges import cell_ranges, expr_range
@@ -195,27 +195,6 @@ def _forwarded(proc):
     }
 
 
-def _diamonds(proc):
-    """``[(label, arm, arm, join, name)]`` for each two-armed one-value branch."""
-    preds, out = preds_of(proc), []
-    for lbl, b in proc.blocks.items():
-        if type(b.term) is not If:
-            continue
-        arms = (b.term.t, b.term.f)
-        if any(a not in proc.blocks or a == lbl for a in arms) or arms[0] == arms[1]:
-            continue
-        blks = [proc.blocks[a] for a in arms]
-        if any(type(x.term) is not Goto or len(preds[a]) != 1 for x, a in zip(blks, arms)):
-            continue
-        if blks[0].term.to != blks[1].term.to or blks[0].term.to in arms:
-            continue
-        if any(len(x.stmts) != 1 or type(x.stmts[0]) is not Let for x in blks):
-            continue
-        if blks[0].stmts[0].n == blks[1].stmts[0].n:
-            out.append((lbl, arms[0], arms[1], blks[0].term.to, blks[0].stmts[0].n))
-    return out
-
-
 def saturate(prog, gated=True):
     """Fold, propagate and if-convert every procedure of ``prog`` to saturation.
 
@@ -241,7 +220,7 @@ def _proc(proc, mem):
         _edit(node, lambda e: (roots.setdefault(e, g.root(e)), e)[1])
     for name, e in sorted(sub.items()):
         g.copy_of(name, e.w, e)
-    picks = _diamonds(proc) if mem is not None else []
+    picks = diamonds(proc) if mem is not None else []
     sels = [
         g.root_of(
             E.sel(

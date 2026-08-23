@@ -8,6 +8,7 @@ values, mirror cells, switch merging, 16-bit carry chains.
 from __future__ import annotations
 
 from .frame import fresh, frames
+from .gated import ranged
 from .graph import idoms, preds_of
 from .halves import zerofold
 from .idioms import CMP, negated, bitfields
@@ -38,6 +39,7 @@ from .irwalk import (
     sub_expr,
     use_counts,
 )
+from .ranges import cell_ranges
 from .ssa import merge_chains, prune
 
 
@@ -477,10 +479,11 @@ def clean(prog, frameinfo=None, eqsat=False):
     pin(prog)
     mirrors(prog)
     stack_temps(prog, make)
-    mem = eqs.cell_ranges(prog) if eqs is not None else None
+    mem = cell_ranges(prog)
     for p in prog.procs.values():
         if eqs is None:
             propagate(p)
+            ranged(p, mem)
         else:
             eqs.saturate_proc(p, mem)
         thread_empty(p)
