@@ -77,6 +77,7 @@ def hello_facts(dst):
             "sid_len": len(EXPECTED),
             "writes": [[[i, v] for i, v in enumerate(EXPECTED)]],
             "pins": [],
+            "reads": [[]],
             "unpinned_inputs": [],
         },
     }

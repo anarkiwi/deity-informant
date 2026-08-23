@@ -4,11 +4,12 @@
 // Usage (see run.sh): analyzeHeadless ... -noanalysis -postScript
 //   EmulateTrace.java <factsDir> <outDir>
 // Emulates the play entry as a subroutine call for the number of calls the facts
-// carry, recording every executed pc and the SID register state after each call,
-// and reports the first disagreement with the trace.
+// carry, replaying the input sequence each call consumed, and compares the SID
+// register changes it makes, in order, with the ones the trace recorded.
 //@category deity-informant
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -20,7 +21,9 @@ import ghidra.pcode.emulate.BreakCallBack;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +38,10 @@ public class EmulateTrace extends GhidraScript {
     private static final long SENTINEL = 0x0002L;
     private static final int MAX_STEPS = 400000;
     private int callother;
+    private int replayed;
     private final List<String> firstCall = new ArrayList<>();
+    private int sidBase;
+    private byte[] sid;
 
     @Override
     public void run() throws Exception {
@@ -74,7 +80,7 @@ public class EmulateTrace extends GhidraScript {
         }
         long play = facts.getAsJsonObject("meta").get("play").getAsLong();
         int calls = Math.min(e.get("calls").getAsInt(), envInt("EMU_CALLS", 8));
-        int base = e.get("sid_base").getAsInt();
+        sidBase = e.get("sid_base").getAsInt();
 
         EmulatorHelper h = new EmulatorHelper(currentProgram);
         h.registerDefaultCallOtherCallback(new BreakCallBack() {
@@ -86,6 +92,7 @@ public class EmulateTrace extends GhidraScript {
         });
         List<Map<String, Object>> bad = new ArrayList<>();
         List<String> unknown = new ArrayList<>();
+        int diverged = 0;
         long steps = 0;
         h.writeRegister("SH", 1);
         h.writeRegister("S", 0xFF);
@@ -97,20 +104,20 @@ public class EmulateTrace extends GhidraScript {
                 h.writeRegister(r.getKey(), r.getValue().getAsLong());
             }
         }
+        sid = h.readMemory(toAddr(sidBase), e.get("sid_len").getAsInt());
+        int leftover = 0;
         try {
             for (int c = 0; c < calls; c++) {
                 pin(h, e.getAsJsonArray("pins"), c);
-                steps += oneCall(h, play, known, inputs, unknown, c);
-                for (JsonElement wr : e.getAsJsonArray("writes").get(c).getAsJsonArray()) {
-                    int off = wr.getAsJsonArray().get(0).getAsInt();
-                    int want = wr.getAsJsonArray().get(1).getAsInt();
-                    int got = h.readMemoryByte(toAddr(base + off)) & 0xFF;
-                    if (got != want && bad.size() < 8) {
-                        Map<String, Object> row = new LinkedHashMap<>();
-                        row.put("call", c);
-                        row.put("addr", String.format("%04X", base + off));
-                        row.put("got", got);
-                        row.put("want", want);
+                Map<Long, Map<Long, Deque<Integer>>> reads = perPc(e.get("reads"), c);
+                List<long[]> got = new ArrayList<>();
+                steps += oneCall(h, play, known, inputs, unknown, c, reads, got);
+                leftover += pending(reads);
+                Map<String, Object> row = firstDiff(c, e.getAsJsonArray("writes").get(c)
+                        .getAsJsonArray(), got);
+                if (row != null) {
+                    diverged++;
+                    if (bad.size() < 8) {
                         bad.add(row);
                     }
                 }
@@ -123,20 +130,71 @@ public class EmulateTrace extends GhidraScript {
         doc.put("steps", steps);
         doc.put("unknown_pcs", unknown.size());
         doc.put("first_unknown_pcs", unknown.subList(0, Math.min(8, unknown.size())));
-        doc.put("mismatch", bad.size());
+        doc.put("mismatch", diverged);
         doc.put("sid_mismatches", bad);
         doc.put("callother", callother);
+        doc.put("inputs_replayed", replayed);
+        doc.put("inputs_unconsumed", leftover);
         doc.put("first_call_pcs", firstCall);
         doc.put("unpinned_inputs", e.get("unpinned_inputs"));
-        doc.put("agree", unknown.isEmpty() && bad.isEmpty() && !doc.containsKey("error"));
+        doc.put("agree", unknown.isEmpty() && diverged == 0 && !doc.containsKey("error"));
         return doc;
     }
 
+    /** The first position where our change sequence and the trace's differ. */
+    private Map<String, Object> firstDiff(int call, JsonArray want, List<long[]> got) {
+        int n = Math.max(want.size(), got.size());
+        for (int i = 0; i < n; i++) {
+            long[] g = i < got.size() ? got.get(i) : null;
+            JsonArray w = i < want.size() ? want.get(i).getAsJsonArray() : null;
+            if (g != null && w != null && g[0] == w.get(0).getAsInt()
+                    && g[1] == w.get(1).getAsInt()) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("call", call);
+            row.put("index", i);
+            row.put("want", w == null ? "end"
+                    : String.format("%04X=%02X", sidBase + w.get(0).getAsInt(),
+                            w.get(1).getAsInt()));
+            row.put("got", g == null ? "end" : String.format("%04X=%02X", sidBase + g[0], g[1]));
+            row.put("pc", g == null ? "-" : String.format("%04X", g[2]));
+            row.put("writes", got.size() + "/" + want.size());
+            return row;
+        }
+        return null;
+    }
+
+    /** ``{pc: {address: values}}`` for one call's recorded volatile reads. */
+    private static Map<Long, Map<Long, Deque<Integer>>> perPc(JsonElement reads, int call) {
+        Map<Long, Map<Long, Deque<Integer>>> out = new LinkedHashMap<>();
+        if (reads == null || reads.isJsonNull() || call >= reads.getAsJsonArray().size()) {
+            return out;
+        }
+        for (JsonElement r : reads.getAsJsonArray().get(call).getAsJsonArray()) {
+            JsonArray a = r.getAsJsonArray();
+            out.computeIfAbsent(a.get(0).getAsLong(), k -> new LinkedHashMap<>())
+                    .computeIfAbsent(a.get(1).getAsLong(), k -> new ArrayDeque<>())
+                    .add(a.get(2).getAsInt());
+        }
+        return out;
+    }
+
+    private static int pending(Map<Long, Map<Long, Deque<Integer>>> reads) {
+        int n = 0;
+        for (Map<Long, Deque<Integer>> at : reads.values()) {
+            for (Deque<Integer> q : at.values()) {
+                n += q.size();
+            }
+        }
+        return n;
+    }
+
     /** Pin the entry registers the trace saw this call read before writing. */
-    private static void pin(EmulatorHelper h, com.google.gson.JsonArray pins, int call) {
+    private static void pin(EmulatorHelper h, JsonArray pins, int call) {
         String[] regs = {"A", "X", "Y"};
         for (JsonElement p : pins) {
-            com.google.gson.JsonArray a = p.getAsJsonArray();
+            JsonArray a = p.getAsJsonArray();
             if (a.get(0).getAsInt() == call && a.get(1).getAsInt() < regs.length) {
                 h.writeRegister(regs[a.get(1).getAsInt()], a.get(2).getAsLong());
             }
@@ -145,7 +203,8 @@ public class EmulateTrace extends GhidraScript {
 
     /** One play call: fake a JSR, single-step to the sentinel, record the pcs. */
     private long oneCall(EmulatorHelper h, long play, Set<Long> known, Map<Long, String> inputs,
-            List<String> unknown, int call) throws Exception {
+            List<String> unknown, int call, Map<Long, Map<Long, Deque<Integer>>> reads,
+            List<long[]> got) throws Exception {
         long sp = h.readRegister("SP").longValue();
         h.writeMemoryValue(toAddr(sp - 1), 2, SENTINEL - 1);
         h.writeRegister("SP", sp - 2);
@@ -164,15 +223,42 @@ public class EmulateTrace extends GhidraScript {
                 unknown.add(String.format("call=%d pc=%04X%s", call, pc,
                         inputs.containsKey(pc) ? " (pinned input " + inputs.get(pc) + ")" : ""));
             }
+            inject(h, reads.get(pc));
             if (!h.step(monitor)) {
                 throw new Exception("emulator stopped at " + h.getExecutionAddress() + ": "
                         + h.getLastError());
             }
             steps++;
+            sidWrites(h, pc, got);
         }
         h.clearBreakpoint(toAddr(SENTINEL));
         h.writeRegister("SP", sp);
         return steps;
+    }
+
+    /** Hand this pc the value the trace's executable read there, this call. */
+    private void inject(EmulatorHelper h, Map<Long, Deque<Integer>> at) throws Exception {
+        if (at == null) {
+            return;
+        }
+        for (Map.Entry<Long, Deque<Integer>> en : at.entrySet()) {
+            Integer v = en.getValue().poll();
+            if (v != null) {
+                h.writeMemoryValue(toAddr(en.getKey()), 1, v);
+                replayed++;
+            }
+        }
+    }
+
+    /** Every SID register the last step changed, in address order, with its pc. */
+    private void sidWrites(EmulatorHelper h, long pc, List<long[]> got) throws Exception {
+        byte[] now = h.readMemory(toAddr(sidBase), sid.length);
+        for (int i = 0; i < sid.length; i++) {
+            if (now[i] != sid[i]) {
+                got.add(new long[] {i, now[i] & 0xFF, pc});
+            }
+        }
+        sid = now;
     }
 
     private static int envInt(String name, int dflt) {
@@ -182,13 +268,5 @@ public class EmulateTrace extends GhidraScript {
         } catch (NumberFormatException ex) {
             return dflt;
         }
-    }
-
-    private static byte[] hex(String s) {
-        byte[] b = new byte[s.length() / 2];
-        for (int i = 0; i < b.length; i++) {
-            b[i] = (byte) Integer.parseInt(s.substring(2 * i, 2 * i + 2), 16);
-        }
-        return b;
     }
 }
