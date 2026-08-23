@@ -143,13 +143,18 @@ class Phi:
 
 @dataclass(slots=True)
 class W16:
-    """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` cells at ``a``."""
+    """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` cells at ``a``.
+
+    ``hifirst`` is the order the executable wrote the two bytes in, which one
+    statement no longer shows (:func:`~.halves.register`).
+    """
 
     lo: tuple
     hi: tuple
     a: object
     e: object
     src: int = 0
+    hifirst: bool = False
 
 
 # ---- terminators -------------------------------------------------------------

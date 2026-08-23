@@ -44,8 +44,8 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S3 | storage typing: regions, kinds, strides, fields, envelopes, origins | `regions.py` |
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
-| S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, the three readings of one storage cell (mirrors, a slot stored once, the value a read-modify-write leaves), the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails, then dead values and the copies a join leaves | `inline.py`, `texture.py`, `cells.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, over a family's copies where a latch steps the index or k prologues name it, or over a *repeat count* whose bound is an expression), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, the three readings of one storage cell (mirrors, a slot stored once, the value a read-modify-write leaves), the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails, dead values and the copies a join leaves, then the SID's own 16-bit registers as one write apiece | `inline.py`, `texture.py`, `cells.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py`, `cellref.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form -- `meta`, `state`, `data` (every table's bytes, reach and accessors), `inputs`, then one procedure each | `emit.py`, `pseudocode.py`, `printer.py`, `datablock.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -65,14 +65,14 @@ front end    machine 305  cia 248  nmi 204  tracevm 488  tracesite 185
 program      ir 464  interp 288  irwalk 349  graph 88  lower 266  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 402  emit 403
              verify 423  period 113
-presentation structure 383  loops 307  inline 192  texture 308  cells 275
-             frame 51  partition 231  halves 224  word 197  fold 472
-             tails 290  copyview 312  unroll 397  live 249  facts 302
-             recover 417  views 258  gated 130  ranges 76
-text         pseudocode 495  printer 450  datablock 246
-driver       pipeline 489  resume 67  __init__ 138
+presentation structure 413  loops 393  inline 192  texture 308  cells 275
+             frame 51  partition 231  halves 240  word 259  fold 472
+             tails 290  copyview 312  unroll 414  live 249  facts 302
+             recover 419  views 272  gated 130  ranges 76
+text         cellref 311  pseudocode 233  printer 468  datablock 246
+driver       pipeline 491  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   59 modules, 17,065 lines
+baseline     ghidra_facts 219  ghidra_compare 182   60 modules, 17,366 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -535,12 +535,21 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   computed and not stored (its value handed to a callee that stores it) pairs through
   the load it makes of the other cell, and a stored half wins over a computed one. A
   pair with one half inside the I/O band and one outside is refused: a chip register is
-  not memory. The carry the chain hands a third byte keeps the flag's name. Two byte
-  writes of one 16-bit SID register do *not* print as one statement — refused, measured:
-  folding them shortens the per-voice run the register-file loop is built from and
-  `unroll` realigns it (*Automatas*' `writeout` 3 rows → 2 + 1, +2 printed lines and a
-  block; *Jodler* +2 blocks). Halves stored by unrelated instructions still stay two
-  bytes.
+  not memory. The carry the chain hands a third byte keeps the flag's name. Halves
+  stored by unrelated instructions stay two bytes.
+- **The SID's own 16-bit registers print as one write, under a stated order**
+  (`word.fold_sid`, `halves.register`). `freq`, `pw` and `cutoff` are one register the
+  chip's 8-bit bus takes two writes to set, so `sid[v].freq = f` is a *print*
+  convention over what the executable does; `verify._compare` is over the executable's
+  ordered byte writes and is untouched. The `meta` block states the order once —
+  `sid  16-bit registers written lo then hi` — and a write in the other order carries
+  `# hi then lo` on its own line. Three conditions: the value must be a word the
+  program already holds (bytes the print would join with `|` and `<< 8` are two bytes
+  that happen to reach one register), both cells must be in an `io` region (the RAM
+  under the register file is memory — JCH's Puterman build writes `ghost[v].freq_lo`),
+  and the fold runs *after* `unroll`, over the aligned rows: folding it earlier
+  shortens the per-voice run the register-file loop is built from and the loop
+  realigns (#277's refusal, *Automatas*' `writeout` 3 rows → 2 + 1).
 - **A callee's return value does not print.** `ir.retval` recovers the tick's own
   return; a procedure computing a byte for its caller prints an empty body.
 - **Sign extension and flag algebra print as written**: a patched branch dispatcher

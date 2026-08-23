@@ -225,3 +225,76 @@ def test_the_fold_leaves_one_word_statement_where_two_half_stores_were():
 def test_the_word_view_is_a_pair_of_cells():
     assert isinstance(W16(PAIR[0], PAIR[1], Const(LO, 2), WORD).lo, tuple)
     assert _at(LO, 0, Const(0)).r == 0
+
+
+# ---- the SID's own 16-bit registers ------------------------------------------
+def test_the_two_halves_of_a_sid_register_name_it():
+    assert halves.register(((9, 0xD400), (9, 0xD401))) == "freq"
+    assert halves.register(((9, 0xD409), (9, 0xD40A))) == "pw"
+    assert halves.register(((9, 0xD415), (9, 0xD416))) == "cutoff"
+
+
+def test_the_halves_of_a_sid_register_in_the_wrong_order_name_nothing():
+    assert halves.register(((9, 0xD401), (9, 0xD400))) is None
+
+
+def test_two_registers_of_one_voice_are_not_a_16_bit_register():
+    assert halves.register(((9, 0xD405), (9, 0xD406))) is None  # ad, sr
+
+
+def test_two_voices_low_halves_are_not_a_16_bit_register():
+    assert halves.register(((9, 0xD400), (9, 0xD407))) is None
+
+
+def _sidwrite(order="lohi", src="tab"):
+    """A 16-bit table entry written to voice 0's frequency, in the given order."""
+    hi = ["LDA %s+1,Y" % src, "STA $D401"]
+    lo = ["LDA %s,Y" % src, "STA $D400"]
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDY cnt",
+        *(lo + hi if order == "lohi" else hi + lo),
+        "INC cnt",
+        "RTS",
+        "cnt: BRK",
+        "tab: BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+    )
+
+
+def test_one_word_written_to_a_sid_register_is_one_statement():
+    doc = printed(_sidwrite(), calls=3)
+    body = "\n".join(proc_body(doc, "tick"))
+    assert body.count("sid[0].") == 1 and "sid[0].freq = " in body, body
+    assert "sid       16-bit registers written lo then hi" in doc, doc
+
+
+def test_the_write_order_is_stated_once_and_the_odd_one_marked():
+    doc = printed(_sidwrite(order="hilo"), calls=3)
+    body = "\n".join(proc_body(doc, "tick"))
+    assert body.count("sid[0].") == 1 and "# hi then lo" not in body, body
+    assert "sid       16-bit registers written hi then lo" in doc, doc
+
+
+def test_two_bytes_that_are_no_word_stay_two_writes():
+    """The high half is computed, so no word the program holds reaches the pair."""
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: LDA cnt",
+        "STA $D400",
+        "AND #$0F",
+        "STA $D401",
+        "INC cnt",
+        "RTS",
+        "cnt: BRK",
+    )
+    body = "\n".join(proc_body(printed(code, calls=3), "tick"))
+    assert "sid[0].freq_lo = " in body and "sid[0].freq_hi = " in body, body

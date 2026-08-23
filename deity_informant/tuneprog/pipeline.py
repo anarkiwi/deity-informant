@@ -425,6 +425,8 @@ def present(prog):
     st = structure.structure(view, L.wants(view, live))
     _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
     views.decorate(view, names, groups)
+    sid16 = word.fold_sid(st, view.by_id())  # a print convention over the aligned rows
+    names.sidwrite = word.sidorder(sid16)
     copyview.mark(st, copies)
     return view, st, names
 

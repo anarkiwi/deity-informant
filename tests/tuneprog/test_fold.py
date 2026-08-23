@@ -105,7 +105,48 @@ def test_a_copy_that_differs_in_one_operand_does_not_fold():
     assert "sid[0].ctrl = " in body and "sid[1].ctrl = " in body
 
 
+def _two_voices(regs=("$D40B", "$D40C", "$D412", "$D413")):
+    """Two copies of a two-register write, over voices 1 and 2."""
+    return asm(
+        PLAY,
+        "init: LDY #$17",
+        "lp0: LDA #$00",
+        "STA $D400,Y",
+        "DEY",
+        "BPL lp0",
+        "LDX #$01",
+        "lp: STA img,X",
+        "DEX",
+        "BPL lp",
+        "STA cnt",
+        "RTS",
+        "play: LDA img",
+        "STA " + regs[0],
+        "STA " + regs[1],
+        "LDA img+1",
+        "STA " + regs[2],
+        "STA " + regs[3],
+        "INC cnt",
+        "RTS",
+        "img: BRK",
+        "BRK",
+        "cnt: BRK",
+    )
+
+
 def test_the_index_of_a_folded_copy_may_start_above_zero():
+    body = "\n".join(_body(_text(_two_voices()), "tick"))
+    assert "for v in 0, 1:" in body and "sid[v + 1].ctrl = " in body
+
+
+def test_a_two_copy_run_whose_step_is_not_the_storage_stride_does_not_fold():
+    """$D40B -> $D411 is six registers on, which the SID's voice stride denies."""
+    body = "\n".join(_body(_text(_two_voices(("$D40B", "$D40C", "$D411", "$D412"))), "tick"))
+    assert "for v in" not in body, body
+
+
+def test_a_two_copy_run_of_one_statement_is_no_factoring():
+    """A header plus one body is no shorter than the two lines it replaces."""
     code = asm(
         PLAY,
         "init: LDY #$17",
@@ -113,32 +154,17 @@ def test_the_index_of_a_folded_copy_may_start_above_zero():
         "STA $D400,Y",
         "DEY",
         "BPL lp0",
-        "LDX #$02",
-        "lp: STA img,X",
-        "DEX",
-        "BPL lp",
         "STA cnt",
         "RTS",
-        "play: LDA img",
+        "play: LDA cnt",
         "STA $D404",
-        "STA $D405",
-        "LDA img+1",
         "STA $D40B",
-        "STA $D40C",
-        "STA $D40D",
-        "LDA img+2",
-        "STA $D412",
-        "STA $D413",
-        "STA $D414",
         "INC cnt",
         "RTS",
-        "img: BRK",
-        "BRK",
-        "BRK",
         "cnt: BRK",
     )
     body = "\n".join(_body(_text(code), "tick"))
-    assert "for v in 0, 1:" in body and "sid[v + 1].ctrl = " in body
+    assert "for v in" not in body, body
 
 
 # ---- outlining ---------------------------------------------------------------
@@ -613,13 +639,12 @@ def test_a_patched_opcode_pair_becomes_one_switch_over_a_16_bit_step():
     assert "carry(" not in body
 
 
-def _run(shared=None):
-    """Two copies of a run that relocates two cells, plus a constant both share."""
-    a = [("r", 1), ("k@0", 0x551A), ("k@0", 0x5520)]
-    b = [("r", 1), ("k@0", 0x561A), ("k@0", 0x5620)]
-    if shared is not None:
-        a, b = a + [("k@0", shared)], b + [("k@0", shared)]
-    return [a, b]
+def _run(shared=None, copies=3):
+    """Copies of a run that relocates two cells, plus a constant they all share."""
+    out = [
+        [("r", 1), ("k@0", 0x551A + i * 0x100), ("k@0", 0x5520 + i * 0x100)] for i in range(copies)
+    ]
+    return out if shared is None else [r + [("k@0", shared)] for r in out]
 
 
 CELL = {1: Rgn(1, "cells", 0x551A, 1, "state", 1, b"\0", ())}
@@ -639,6 +664,11 @@ def test_a_constant_every_copy_shares_does_not_step_with_the_index():
 def test_a_shared_constant_equal_to_a_slot_refuses_the_fold():
     """Copy 0's constant is all the folded body holds: slot and cell look alike."""
     assert unroll.steps(_run(shared=0x551A), CELL) == (None, None)
+
+
+def test_two_cells_over_two_copies_do_not_prove_a_mapping():
+    """(s-1)(k-1) = 1: one spare agreement is what any two adjacent cells make."""
+    assert unroll.steps(_run(copies=2), CELL) == (None, None)
 
 
 def _joined(escape=()):

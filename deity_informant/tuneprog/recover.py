@@ -19,6 +19,7 @@ from .facts import (
     scales,
     voice_maps,
 )
+from .halves import register
 from .ir import Bin, Const, Let, Load, R16, Store, Var
 from .irwalk import forwarder, unique_name, walk
 from .structure import phase as _phase
@@ -57,6 +58,7 @@ class Names:
     split: dict = field(default_factory=dict)
     voicemap: set = field(default_factory=set)
     freq: dict = field(default_factory=dict)
+    sidwrite: tuple = None
     copies: dict = None
 
     def of(self, rid):
@@ -380,8 +382,8 @@ def name_u16(prog, names, words):
         if p == dest and {c[0] for c in p} & filt and not {c[0] for c in p} & set(names.view):
             names.u16group[p] = "filter"
     for p, dest in sorted(seen.items()):
-        if p in names.u16 or any(c[0] not in rgn for c in p):
-            continue
+        if p in names.u16 or any(c[0] not in rgn for c in p) or register(p) is not None:
+            continue  # the chip's own 16-bit register is named by the register file
         base = _u16name(names, rgn, p, kind.get(p, ""))
         group = names.u16group.get(dest, "")
         names.u16[p] = _uniqword(names, "%s.%s" % (group, base) if group else base, p)

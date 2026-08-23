@@ -2,7 +2,17 @@
 
 A run of k segments differing only in constants that step per copy (a struct
 stride, a voice's SID registers, a scaled argument) prints as ``for v in 0, 1, 2``
-over copy 0; equal alpha-renamed skeletons and affine steps are the proof.
+over copy 0.
+
+The proof is structural, not a size: k >= 2 consecutive units with equal
+alpha-renamed skeletons, every differing constant affine in the copy index, and
+at least one step relocating a cell -- a region stride, or a mapping several
+cells agree on. Every fit must be over-determined. A step is one parameter over
+k-1 observations, so two copies fit any pair of constants: a two-copy run steps
+by the storage's own element stride (:func:`~.views.own_stride`) or not at all.
+A mapping of s cells fits k-1 offsets to s(k-1) observations, so its excess is
+(s-1)(k-1) and two copies of two cells prove nothing. And the fold is a
+factoring: the header plus one body is shorter than the k bodies it replaces.
 """
 
 from __future__ import annotations
@@ -10,10 +20,7 @@ from __future__ import annotations
 from .ir import Assert, Bin, Call, Const, Let, Load, R16, Store, Var, W16
 from .irwalk import defs_of, stmt_uses, uses_of
 from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, strip, walk
-from .views import indexed, step
-
-MINSTMT = 6
-MINSLOTS = 2  # cells a mapped run must relocate before the mapping is evidence
+from .views import indexed, own_stride, step
 
 
 class _Ctx:
@@ -96,7 +103,7 @@ def _stmt(s, c):
         c.region(s.hi[0])
         ta, a = _tagged(s.a, c, tag)
         te, e = _expr_token(s.e, c)
-        return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)
+        return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src, s.hifirst)
     if t is Call:
         # Arguments the printer drops are machine plumbing: neither shape nor hole.
         keep = c.keep.get(s.proc)
@@ -134,8 +141,9 @@ def _node_token(n, c):
     if t is For:
         # the induction test and the back edge print as the header, so they are
         # not part of the shape either
-        tb, body = _many(strip(n.body, n.label, n.hide), c, _node_token)
-        node = For(n.var, n.values, body, n.scale, n.hide, n.label, n.count, n.group)
+        tb, body = _many(strip(n.body, n.label, n.hide, head=n.head), c, _node_token)
+        args = (n.scale, n.hide, n.label, n.count, n.group, n.bound, n.head)
+        node = For(n.var, n.values, body, *args)
         return ("for", c.name(n.var), n.values, n.scale, tb), node
     if t is Loop:
         tb, body = _many(n.body, c, _node_token)
@@ -239,6 +247,7 @@ def steps(runs, rgn=None):
     view prints. A cell every copy shares may not equal a mapped one.
     """
     out, by, slots, rmap, plain = [], {}, {}, {}, set()
+    lic, moved = set(), set()
     for j, (kind, v0) in enumerate(runs[0]):
         vals = [r[j] for r in runs]
         if any(k != kind for k, _v in vals):
@@ -264,6 +273,9 @@ def steps(runs, rgn=None):
         d = vs[1] - v0
         if any(v != v0 + i * d for i, v in enumerate(vs)):
             return None, None
+        if d:
+            moved.add(abs(d))
+            lic |= {abs(d)} if abs(d) == own_stride(rgn or {}, rids, vs) else set()
         if kind != "k" and d:
             by.setdefault(rids[0] if rids is not None else kind, set()).add(d)
         out.append(d)
@@ -271,10 +283,17 @@ def steps(runs, rgn=None):
         return None, None
     if slots.keys() & plain:
         return None, None  # copy 0's constant is all the body holds, slot or not
-    if slots and (len(slots) < MINSLOTS or len({_cell_delta(c) for c in slots.values()}) > 1):
-        # without a static correspondence to appeal to, the only mapping a run
-        # proves is one relocation: several cells, every one of copy i the same
-        # distance on from copy 0's
+    if slots and len({_cell_delta(c) for c in slots.values()}) > 1:
+        return None, None  # one mapping, or none: the cells disagree on the relocation
+    if slots and (len(slots) - 1) * (len(runs) - 1) < 2:
+        # the mapping fits k-1 offsets to s(k-1) observations, so its excess is
+        # (s-1)(k-1): one cell fits any offset, and one spare agreement is the
+        # coincidence two adjacent cells always make
+        return None, None
+    if len(runs) < 3 and not slots and moved != lic:
+        # two copies fit any affine step, so a two-copy run's copies must come from
+        # something it does not fit: a relocation the storage states, or the
+        # agreeing mapping above. Its other constants are then consistency, not proof
         return None, None
     return out, slots
 
@@ -284,7 +303,7 @@ def _cell_delta(cells):
     return tuple(a - cells[0][1] for _r, a in cells)
 
 
-def _run(units, i, minunits, keep=None, rgn=None):
+def _run(units, i, keep=None, rgn=None):
     """``(length, copies, steps, cells)`` of the best isomorphic run starting at ``i``."""
     best, hit = None, None
     for length in range(1, (len(units) - i) // 2 + 1):
@@ -299,23 +318,21 @@ def _run(units, i, minunits, keep=None, rgn=None):
                 break
             runs.append(h2)
             k += 1
-        size = _run_size(units[i : i + length])
+        size = _run_lines(units[i : i + length])
         for copies in range(k, 1, -1):
             deltas, slots = steps(runs[:copies], rgn)
-            if deltas is None or copies * size < minunits:
+            if deltas is None or size * (copies - 1) <= 1:
                 continue
-            score = (copies * length, length)
+            score = (copies * length, copies)  # the same units, read as more copies
             if best is None or score > best:
                 best, hit = score, (length, copies, deltas, slots)
             break
     return hit
 
 
-def _run_size(units):
-    """The statements a run of units prints; a call weighs the procedure it stands for."""
-    return sum(
-        _node_stmts(o) if k == "n" else MINSTMT if type(o) is Call else 1 for k, o, _b in units
-    )
+def _run_lines(units):
+    """The lines a run of units prints, which is what the fold replaces."""
+    return sum(_node_stmts(o) if k == "n" else 1 for k, o, _b in units)
 
 
 def _node_stmts(n):
@@ -329,7 +346,7 @@ def _abstract(units, deltas, var, keep=None):
     return [(k, (_stmt if k == "s" else _node_token)(o, c)[1], b) for k, o, b in units]
 
 
-def unroll(structured, live=None, keep=None, minunits=MINSTMT, rgn=None):
+def unroll(structured, live=None, keep=None, rgn=None):
     """Fold every isomorphic sibling run into a ``for`` over the copy index.
 
     Returns the loops made and, for each, the per-copy cells one mapping
@@ -337,15 +354,15 @@ def unroll(structured, live=None, keep=None, minunits=MINSTMT, rgn=None):
     """
     n, out = [0], []
     for name, body in structured.items():
-        structured[name] = _body(body, minunits, n, (live or {}).get(name, set()), keep, rgn, out)
+        structured[name] = _body(body, n, (live or {}).get(name, set()), keep, rgn, out)
     return n[0], out
 
 
-def _body(body, minunits, n, live, keep, rgn=None, groups=None):
-    body = [_recurse(x, minunits, n, live, keep, rgn, groups) for x in body]
+def _body(body, n, live, keep, rgn=None, groups=None):
+    body = [_recurse(x, n, live, keep, rgn, groups) for x in body]
     units, out, i = units_of(body), [], 0
     while i < len(units):
-        hit = _run(units, i, minunits, keep, rgn)
+        hit = _run(units, i, keep, rgn)
         if hit is None or _escapes(units, i, hit[0] * hit[1], live):
             out.append(units[i])
             i += 1
@@ -384,9 +401,9 @@ def _node_uses(n, out):
             uses_of(x.e, out)
 
 
-def _recurse(n, minunits, count, live, keep, rgn=None, groups=None):
+def _recurse(n, count, live, keep, rgn=None, groups=None):
     t = type(n)
-    args = (minunits, count, live, keep, rgn, groups)
+    args = (count, live, keep, rgn, groups)
     if t is Cond:
         n.then = _body(n.then, *args)
         n.els = _body(n.els, *args)
