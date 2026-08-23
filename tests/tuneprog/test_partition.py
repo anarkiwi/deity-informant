@@ -301,7 +301,9 @@ def test_a_byte_added_to_a_word_is_one_16_bit_statement():
 def test_a_byte_subtracted_from_a_word_is_one_16_bit_statement():
     code = _chain("SBC", "SEC")
     body = "\n".join(proc_body(printed(code, calls=6, data={code.labels["step"]: 0x40}), "tick"))
-    assert "acc -= $40" in body and "wD400 = " not in body  # one class, not io beside ram
+    # one class, not io beside ram; the folded borrow is short enough for the high
+    # half to read as the shadow of $D401, so the pair takes the register's name
+    assert "freq -= $40" in body and "wD400 = " not in body
 
 
 def _pairprint(rs, pair, recorded=()):

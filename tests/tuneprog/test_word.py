@@ -91,6 +91,20 @@ def test_a_borrow_in_prints_as_the_negated_compare():
     assert got.b.b == Bin("<", _ld(4, 6), _ld(3, 5), 1)
 
 
+def test_one_minus_a_compare_is_the_negated_compare_and_nothing_else_is():
+    c = Bin("<=", L, H, 1)
+    assert halves.zerofold(Bin("-", Const(1), c, 1)) == Bin("<", H, L, 1)
+    assert halves.zerofold(Bin("-", Const(1), L, 1)) == Bin("-", Const(1), L, 1)
+    assert halves._notc(c) == Bin("<", H, L, 1)
+    assert halves._notc(L) == Bin("-", Const(1), L, 1)
+
+
+def test_a_borrow_chain_reads_the_folded_spelling_of_its_borrow_in():
+    vlo = Bin("-", L, Const(0x34), 1)
+    vhi = Bin("-", H, Bin("+", Const(0x12), Bin("<", L, Const(0x34), 1), 1), 1)
+    assert halves.value(PAIR, vlo, vhi)[0] == Bin("-", WORD, Const(0x1234, 2), 2)
+
+
 def test_a_rotate_through_both_halves_is_one_16_bit_shift():
     vhi = Bin(">>", H, Const(1), 1)
     vlo = Bin("|", Bin(">>", L, Const(1), 1), Bin("<<", Bin("&", H, Const(1), 1), Const(7), 1), 1)

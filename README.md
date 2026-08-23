@@ -38,7 +38,7 @@ deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]   # illegal
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                    # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]      # execute in PcodeVM, dump $D400.. grid
 deity-informant tuneprog TUNE.sid --out DIR [--song N | --songs all] [--seconds S | --calls N | --until-period] \
-                       [--sid-model 6581|8580] [--no-merge] [--closure trace|static] [--resume] [--budget S] [--no-verify] [--no-text] [--eqsat]
+                       [--sid-model 6581|8580] [--no-merge] [--closure trace|static] [--resume] [--budget S] [--no-verify] [--no-text]
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/install the 6510 SLEIGH module
 ```
 

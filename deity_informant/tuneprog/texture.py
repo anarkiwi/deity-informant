@@ -8,6 +8,7 @@ values, mirror cells, switch merging, 16-bit carry chains.
 from __future__ import annotations
 
 from .frame import fresh, frames
+from .gated import ranged
 from .graph import idoms, preds_of
 from .halves import zerofold
 from .idioms import CMP, negated, bitfields
@@ -38,6 +39,7 @@ from .irwalk import (
     sub_expr,
     use_counts,
 )
+from .ranges import cell_ranges
 from .ssa import merge_chains, prune
 
 
@@ -451,25 +453,13 @@ def tidy(prog):
     return prog
 
 
-def _eqsat():
-    """The experimental e-graph pass, imported only when asked for."""
-    from . import eqsat  # pylint: disable=import-outside-toplevel
-
-    return eqsat
-
-
-def clean(prog, frameinfo=None, eqsat=False):
+def clean(prog, frameinfo=None):
     """Every texture pass over a presentation copy of ``prog``.
 
     ``frameinfo`` is :func:`~.frame.deltas` of the certified program, whose stack
-    arithmetic the view has already dropped; ``eqsat`` routes the expression
-    passes through :mod:`.eqsat` instead (experimental, default off).
+    arithmetic the view has already dropped.
     """
-    eqs = _eqsat() if eqsat else None
-    if eqs is None:
-        zerocarry(prog)
-    else:
-        eqs.saturate(prog, gated=False)
+    zerocarry(prog)
     make = fresh(prog)
     frames(prog, frameinfo, make)
     for p in prog.procs.values():
@@ -477,12 +467,10 @@ def clean(prog, frameinfo=None, eqsat=False):
     pin(prog)
     mirrors(prog)
     stack_temps(prog, make)
-    mem = eqs.cell_ranges(prog) if eqs is not None else None
+    mem = cell_ranges(prog)
     for p in prog.procs.values():
-        if eqs is None:
-            propagate(p)
-        else:
-            eqs.saturate_proc(p, mem)
+        propagate(p)
+        ranged(p, mem)
         thread_empty(p)
         merge_switches(p)
         shortcircuit(p)

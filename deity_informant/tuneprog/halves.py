@@ -15,15 +15,18 @@ DEPTH = 8
 
 
 def zerofold(e):
-    """``carry(x, 0)`` is zero and ``0 | x`` is ``x``, then the ordinary algebra.
+    """The identities with a literal on the left, then the ordinary algebra.
 
-    A byte plus nothing never carries, and the ``|`` of the two carries a chain
-    leaves is then one of them -- which :func:`~.idioms.fold` reads only on the right.
+    A byte plus nothing never carries, the ``|`` of the two carries a chain leaves is
+    then one of them, and ``1 - (a cmp b)`` is the negated compare -- three shapes
+    :func:`~.idioms.fold` reads only on the right.
     """
     if type(e) is Bin and e.op == "carry" and _k(e.b, 0):
         return Const(0, 1)
     if type(e) is Bin and e.op in ("|", "+", "^") and _k(e.a, 0):
         return e.b
+    if type(e) is Bin and e.op == "-" and _k(e.a, 1) and type(e.b) is Bin and e.b.op in CMP:
+        return negated(e.b)
     return fold(e)
 
 
@@ -97,12 +100,19 @@ def _diff(v):
         return None
     b = v.b
     if type(b) is Bin and b.op == "+":
-        if type(b.b) is Bin and b.b.op == "-" and _k(b.b.a, 1):
-            return v.a, b.a, b.b.b
+        z = _oneminus(b.b)
+        if z is not None:
+            return v.a, b.a, z
         return (v.a, b.a, Const(0)) if _k(b.b, 1) else None
-    if type(b) is Bin and b.op == "-" and _k(b.a, 1) and type(b.b) is not Const:
-        return v.a, Const(0), b.b
-    return v.a, b, Const(1)
+    z = _oneminus(b)
+    return (v.a, Const(0), z) if z is not None else (v.a, b, Const(1))
+
+
+def _oneminus(z):
+    """``b`` where ``z`` is ``1 - b``, in either of :func:`zerofold`'s spellings."""
+    if type(z) is Bin and z.op == "-" and _k(z.a, 1) and type(z.b) is not Const:
+        return z.b
+    return negated(z) if type(z) is Bin and z.op in CMP else None
 
 
 def _carryof(x, ts):
@@ -114,8 +124,8 @@ def _carryof(x, ts):
 
 
 def _notc(c):
-    """``1 - c``, as the negated compare where ``c`` is one."""
-    return negated(c) if type(c) is Bin and c.op in CMP else Bin("-", Const(1), c, 1)
+    """``1 - c``, in the spelling :func:`zerofold` gives it."""
+    return zerofold(Bin("-", Const(1), c, 1))
 
 
 def operand(lo, hi):
@@ -166,7 +176,8 @@ def _sub(_pair, vlo, vhi):
     if x is None or y is None:
         return None
     out = Bin("-", x, y, 2) if _k(lo[2], 1) else Bin("-", x, Bin("+", y, _notc(lo[2]), 2), 2)
-    return out, (want, Bin("<=", Bin("+", hi[1], Bin("-", Const(1), hi[2], 1), 1), hi[0], 1))
+    up = Bin("<=", Bin("+", hi[1], Bin("-", Const(1), hi[2], 1), 1), hi[0], 1)
+    return out, (norm(want), norm(up))
 
 
 def _shift(pair, vlo, vhi):

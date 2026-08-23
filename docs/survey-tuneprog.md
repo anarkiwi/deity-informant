@@ -61,8 +61,8 @@ sample. Per-tune artefacts are pruned as each row is written; only the JSONL row
 survive, and neither they nor any certificate are committed.
 
 **Provenance.** Both passes ran on `main` at `6b8ef25`. #265 (equality saturation
-in S6) merged while they ran; it is an opt-in `--eqsat` presentation flag that
-never touches the certified S4 program.
+in S6) merged while they ran; it was an opt-in `--eqsat` presentation flag, retired
+in #278, that never touched the certified S4 program.
 
 ---
 

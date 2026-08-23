@@ -45,7 +45,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails | `inline.py`, `texture.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -62,17 +62,17 @@ front end    machine 305  cia 248  nmi 204  tracevm 488  tracesite 185
              traceflow 101  trace 464  tracedata 448  lift 227  cfg 349
              regions 243  jumptab 373  siblings 476  closure 347
              copyrows 453  copymerge 165
-program      ir 440  interp 288  irwalk 319  graph 82  lower 264  build 482
+program      ir 443  interp 288  irwalk 319  graph 82  lower 264  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 403
              verify 423  period 113
-presentation structure 356  loops 307  inline 199  texture 491  frame 51
-             partition 285  halves 213  word 197  fold 472  tails 290
+presentation structure 383  loops 307  inline 199  texture 479  frame 51
+             partition 285  halves 224  word 197  fold 472  tails 290
              copyview 279  unroll 399  live 96  facts 284  recover 415
-             views 295  eqsat 284  eqrules 250  ranges 76
-text         pseudocode 478  printer 408
-driver       pipeline 513  resume 67  __init__ 138
+             views 295  gated 134  ranges 76
+text         pseudocode 481  printer 408
+driver       pipeline 484  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   58 modules, 16,891 lines
+baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,491 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -89,7 +89,7 @@ Stage entry points, which are also the module boundaries:
 deity-informant tuneprog TUNE.sid --out DIR \
     [--song N | --songs all] [--seconds S | --calls N | --until-period] \
     [--sid-model 6581|8580] [--no-merge] [--closure trace|static] \
-    [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts] [--eqsat]
+    [--resume] [--budget S] [--no-verify] [--no-text] [--ghidra-facts]
 ```
 
 - **S2c fold**, on by default: the certified program (`tuneprog.S4.json`,
@@ -101,13 +101,6 @@ deity-informant tuneprog TUNE.sid --out DIR \
 - **`--closure static`** decompiles the untaken branch directions the post-init
   image states, as code no execution covers. Off by default: it removes nearly
   every `trap 'untaken'` and costs the *covered* program its structuring (below).
-- **`--eqsat`** is experimental and presentation-only: `idioms.fold`,
-  `texture.zerocarry` and `texture.propagate` route through an `egglog` e-graph
-  (`eqsat.py`, rules in `eqrules.py`), with an interval analysis over the image and
-  every store's envelope (`ranges.py`) gating the rewrites no peephole may take and
-  a total-order extraction keeping the print byte-stable. The certified program is
-  never touched; with the flag off every print is byte-identical. Needs the `eqsat`
-  extra (`pip install -e ".[eqsat]"`); measurements in the plan's P-EQSAT row.
 
 `tools/tuneprog_certify.py` is the same pipeline standalone. Both are chunked: a
 long run exits 2 while work remains, so each invocation stays inside `--budget` CPU
