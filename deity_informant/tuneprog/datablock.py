@@ -46,7 +46,8 @@ def spans(prog):
         if rid not in own:
             wrote[lo : hi + 1] = b"\1" * (hi - lo + 1)
         for a in own.get(rid, ()):
-            wrote[a] = 1 if lo <= a <= hi else wrote[a]
+            if lo <= a <= hi:
+                wrote[a] = 1
     reached = {}
     for rid, c in own.items():
         got = set()
@@ -217,9 +218,8 @@ def _recordrows(names, img, blk, k):
     return ([head] + out if out else []) + _hexrows(img, sorted(blk.data - hit))
 
 
-def rows(prog, names, img, blk):
+def rows(prog, names, img, blk, kind, arg):
     """A block's own bytes, in the layout its view knows."""
-    kind, arg = _layout(names, blk)
     if kind == "u16":
         return _u16rows(prog.by_id(), img, blk, *arg)
     if kind == "record":
@@ -234,7 +234,7 @@ def section(prog, names, sites):
     for blk in blocks(prog, names, reached, wrote):
         kind, arg = _layout(names, blk)
         out.append(_head(names, blk, kind, arg))
-        out += _accessors(sites, blk) + rows(prog, names, img, blk)
+        out += _accessors(sites, blk) + rows(prog, names, img, blk, kind, arg)
         if blk.written:
             out.append("  %d bytes of it the program writes, not data" % blk.written)
     return out
