@@ -517,13 +517,21 @@ sorted and indented. Fields, all verified against `docs/certificates/*.json`:
 | oracle | what it checks | where |
 | --- | --- | --- |
 | `sidplayfp` register grid | the tracer's own write log against a `sidtrace` CSV, framed by the interrupt period each write's cycle falls in | `grid.py`, `tests/test_oracle.py` (marker `oracle`) — 3,000 of 3,000 frames agree on *I Could Eat a Knob at Night* |
-| Ghidra complexity | our statements/site and gotos/site against Ghidra's high P-Code, per procedure, tolerance 1.5× | `ghidra_compare.compare`, `ghidra/6510/headless/ExportHighPcode.java` |
+| Ghidra complexity | our statements/site and gotos/site against Ghidra's high P-Code, per procedure, tolerance 1.5×. `_flag` subtracts the two bodies' pc *sets*, so a Ghidra body holding more sites than ours is not scored as if it covered them; `ghidra_compare.alignment` states both shapes, `merged` (one Ghidra body over several of our procedures) and `clones` (our procedures sharing a site) | `ghidra_compare.compare`, `ghidra/6510/headless/ExportHighPcode.java` |
 | Ghidra coverage | Ghidra's static reachability from our entries minus the trace's executed sites — i.e. the `trap` arms, classified | `coverage.json` |
-| Ghidra semantics | Ghidra's P-Code emulator over the post-init image for eight play calls, every pc and every `$D400–$D418` write | `EmulateTrace.java`, `ghidra_facts.emulate_facts` |
+| Ghidra semantics | Ghidra's P-Code emulator over the post-init image, replaying the per-call `reads` the facts export carries: the ordered sequence of SID register *changes*, both sides reduced by the same rule from the same post-init bytes, with the first difference reported as call, index, register, wanted/got and pc. All four exemplars agree byte for byte and step for step; 5 of the 51 certificates do not, 4 being installed handlers that chain to the KERNAL epilogue and never reach the pushed sentinel | `EmulateTrace.java`, `ghidra_facts.emulate_facts` |
 | interpreter vs generated Python | the two executors on a prefix of every certified run | `verify.prefix_check`, `--prefix` |
 | `tools/tuneprog_recert.py` | every committed certificate reproduced from the run it records and diffed field for field, timestamp and the two timing fields excepted | 51 of 51 |
 
 The chain is `sidplayfp ⇐ PcodeVM ⇐ tuneprog`.
+
+The two emulator disagreements the semantics oracle used to report were one bug,
+and not ours: the stock 6502 spec's `subtraction_flags1` sets `C` to the borrow,
+the 6510's complement ([ghidra#3189](https://github.com/NationalSecurityAgency/ghidra/issues/3189)),
+which `SBC` and our `ISC`/`SBX` share. `smc.PATCHES` flips it where `build.py`
+already patches `JSR`/`RTS` for the hardware stack convention. Our own lifter is
+an independent table and was always right, which `tests/test_smc_sleigh.py` now
+pins with a raw-P-Code evaluator against `lift.py`.
 
 ---
 
@@ -669,10 +677,10 @@ until python3 tools/tuneprog_recert.py --out out/recert --resume; do :; done
 | tool | lines | purpose |
 | --- | ---: | --- |
 | `tools/tuneprog_certify.py` | 36 | the whole pipeline standalone; a thin wrapper around `pipeline.main` |
-| `tools/tuneprog_recert.py` | 200 | reproduce every certificate under `docs/certificates/` from the run it records and diff it field for field (`--only`, `--update`, `--certs`, `--hvsc`) |
+| `tools/tuneprog_recert.py` | 275 | reproduce every certificate under `docs/certificates/` from the run it records and diff it field for field (`--only`, `--update`, `--certs`, `--hvsc`). `--shard I/N` takes every Nth certificate; `--ghidra-dir DIR` exports the headless facts as it replays and then runs the three Ghidra oracles against the export in `DIR/<certificate>`, exiting 1 on any `ours_bigger` no `--known CERT:ENTRY` names |
 | `tools/tuneprog_period.py` | 71 | why a subtune has no state repeat: each cell's smallest period, the SID stream's loop, the cells whose period does not divide it (`period.classify`) |
 | `tools/tuneprog_floor.py` | 288 | the complexity floor of one output directory against its tune: the load band split into executed code / reached data / neither, `xz -9e` of each, printed statements by code range and kind, and every `(b, b+1)` pair the print reads at one index |
-| `tools/tuneprog_ghidra.py` | 126 | write `ghidra_facts.json` + `image_post_init.bin` from an output directory (or the hello-world demo), and join a headless export back with `--compare` |
+| `tools/tuneprog_ghidra.py` | 127 | write `ghidra_facts.json` + `image_post_init.bin` from an output directory (or the hello-world demo), and join a finished headless run back with `--compare GOUT` (`comparison.json`, `comparison.md`) |
 | `tools/tuneprog_nmi.py` | 285 | classify the CIA #2 NMI schedules of a tune population (`scan` / `report`) |
 | `tools/survey/headers.py` | 65 | static header census over every HVSC `.sid`, joined with the SIDId family |
 | `tools/survey/tracer.py` | 420 | the prototype dynamic per-site tracer on `PcodeVM`, the survey instrument |
@@ -807,8 +815,8 @@ belongs to:
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
 | code | `deity_informant/tuneprog/`, 60 modules, 17,400 lines, none over 500; 756 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
-| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 5.8–10.6× our S4 — a baseline, not core; three Ghidra oracles beside the `sidplayfp` grid oracle |
-| merged PRs | #225–#283, one stage each, every one on green CI with recert reproduced |
+| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: the emulator agrees step for step on all four exemplars, 5 of 51 disagree for reasons [tuneprog-backlog.md](tuneprog-backlog.md) §2.6 records, and the 2 standing `ours_bigger` flags are carried as `--known`, so the gate is clean. Beside it the `sidplayfp` grid oracle |
+| merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
 Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog.md).
 
@@ -1024,8 +1032,8 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `__init__` | 138 | the package guide and its public API |
 | `grid` | 157 | per-frame SID register grids, every write framed by the interrupt |
 | `tunes` | 60 | every HVSC tune this repository names, once |
-| `ghidra_facts` | 219 | export a finished output directory as facts for headless Ghidra |
-| `ghidra_compare` | 182 | the differential complexity oracle, procedure by procedure |
+| `ghidra_facts` | 227 | export a finished output directory as facts for headless Ghidra |
+| `ghidra_compare` | 213 | the differential complexity oracle, procedure by procedure |
 
 Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 `c64.py` (173), `cli.py` (149).
@@ -1042,12 +1050,20 @@ Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 | `tests/tuneprog/test_hvsc_*.py` | marker `hvsc`: the exemplar families end to end, and `test_hvsc_certify.py` against `docs/certificates/` |
 | `tests/test_oracle.py` | marker `oracle`: byte-exact SID grids against the Dockerized `sidtrace` oracle |
 
-Markers are declared in `pyproject.toml`; CI runs `-m "not oracle and not hvsc"` in
-the hermetic job and both markers in a separate `oracle` job so a flaky oracle or an
-HVSC fetch never blocks the unit build. A third job builds `Dockerfile.ghidra` and
-runs the four headless Ghidra integration tests
-(`ghidra/6510/headless/run.sh`): the illegal `LAX`/`ISC` decode, the hello-world SMC
-export, the complexity/coverage oracle and the P-Code emulator oracle.
+Markers are declared in `pyproject.toml`. `.github/workflows/ci.yml` runs three
+jobs: `test` (`-m "not oracle and not hvsc"`, `-n auto`, `--cov-fail-under=85`),
+`oracle` (both markers, so a flaky oracle or an HVSC fetch never blocks the unit
+build) and `ghidra-integration`, which builds `Dockerfile.ghidra` and runs the four
+headless tests of `ghidra/6510/headless/run.sh` — the illegal `LAX`/`ISC` decode,
+the hello-world SMC export, the complexity/coverage oracle and the P-Code emulator
+oracle.
+
+`.github/workflows/nightly.yml` (cron plus `workflow_dispatch`) is the fourth job:
+it reproduces every committed certificate and runs the three Ghidra oracles over
+the result, in four shards of every fourth certificate, because one headless export
+is 13 s and its emulate 9 s. It fails on a certificate that does not reproduce and
+on `ours_bigger > 0`; the emulate verdict is reported, not enforced, the oracle
+emulating one entry.
 
 ---
 
