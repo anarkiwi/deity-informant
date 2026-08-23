@@ -369,41 +369,30 @@ def test_parallel_dispatch_arms_pair_by_their_index_in_the_table():
 
 
 # ---- group views over a mapping, and over a play-time stride ------------------
-def relocated(skew=0):
+def _bump(cell, reg):
+    return ["LDA " + cell, "CLC", "ADC #$01", "STA " + cell, "STA " + reg]
+
+
+def relocated(skew=0, cells=3):
     """Two copies of one block; ``skew`` moves one cell out of the relocation."""
+    regs = ("$D404", "$D405", "$D406")[:cells]
     return asm(
         PLAY,
         "init: LDA #$00",
         "STA cnt",
         "RTS",
-        "play: LDA a0",
-        "CLC",
-        "ADC #$01",
-        "STA a0",
-        "STA $D404",
-        "LDA b0",
-        "CLC",
-        "ADC #$01",
-        "STA b0",
-        "STA $D405",
-        "LDA a1",
-        "CLC",
-        "ADC #$01",
-        "STA a1",
-        "STA $D404",
-        "LDA b1",
-        "CLC",
-        "ADC #$01",
-        "STA b1",
-        "STA $D405",
+        "play:",
+        *[s for i, r in enumerate(regs) for s in _bump("%s0" % "abc"[i], r)],
+        *[s for i, r in enumerate(regs) for s in _bump("%s1" % "abc"[i], r)],
         "INC cnt",
         "RTS",
-        "a0: BRK",
-        "b0: BRK",
+        *["%s0: BRK" % "abc"[i] for i in range(cells)],
         *["BRK"] * 8,
-        "a1: BRK",
-        *["BRK"] * skew,
-        "b1: BRK",
+        *[
+            x
+            for i in range(cells)
+            for x in (["BRK"] * (skew if i else 0) + ["%s1: BRK" % "abc"[i]])
+        ],
         "cnt: BRK",
     )
 
@@ -413,12 +402,17 @@ def test_two_runs_one_relocation_apart_fold_over_a_per_copy_table():
     body = "\n".join(_body(text, "tick"))
     assert "for v in 0, 1:" in body, body
     assert re.search(r"copy\[v\]\.\w+", body), body
-    assert "per-copy cells, 2 fields" in text, text
+    assert "per-copy cells, 3 fields" in text, text
 
 
 def test_two_runs_whose_cells_are_not_one_relocation_do_not_fold():
     # b's copy sits one byte further on than a's: two mappings, not one
     assert "for v in 0, 1:" not in "\n".join(_body(_text(relocated(skew=1)), "tick"))
+
+
+def test_two_cells_over_two_copies_are_one_agreement_and_do_not_fold():
+    # the mapping fits one offset to two observations: (s-1)(k-1) = 1, a coincidence
+    assert "for v in 0, 1:" not in "\n".join(_body(_text(relocated(cells=2)), "tick"))
 
 
 def blocks():

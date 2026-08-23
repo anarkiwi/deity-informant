@@ -37,6 +37,20 @@ def indexed(rgn, rids, vals, k):
     return "index" if not d % max(r.stride, 1) and k <= elems(r) <= MAXROLE else "table"
 
 
+def own_stride(rgn, rids, vals):
+    """The element stride the storage model gives these addresses, or ``None``.
+
+    A fact about the region, not about the run -- which is what licenses a step
+    the run's own constants are too few to fit.
+    """
+    if rids is None:
+        return None
+    if all(SID_REG_LO <= v <= SID_REG_HI for v in vals):
+        return SID_VOICE
+    r = rgn.get(rids[0])
+    return None if r is None or r.kind == "io" else max(r.stride, 1)
+
+
 def step(var, d, v, w):
     """``v`` plus ``d`` times the copy index, as an expression."""
     out = Var(var) if abs(d) == 1 else Bin("*", Var(var), Const(abs(d), w), w)
