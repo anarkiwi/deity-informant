@@ -92,9 +92,9 @@ class TraceVM(FlowRecorder, PcodeVM):
         self.init_writes = []
         self.inputs = []
         self.input_sites = {}
-        # column arrays (call, addr, val, cycle); _wr fully overrides the base wlog hook
-        self.sidlog = tuple(array(t) for t in "IHBI")
-        self.iolog = tuple(array(t) for t in "IHBI")
+        # column arrays (call, addr, val, cycle, nmi); _wr fully overrides the base hook
+        self.sidlog = tuple(array(t) for t in "IHBIB")
+        self.iolog = tuple(array(t) for t in "IHBIB")
         self.tick_rd = self.tick_wr = 0
         self.pinned = False
         self.stores = 0
@@ -245,6 +245,8 @@ class TraceVM(FlowRecorder, PcodeVM):
         log[1].append(a)
         log[2].append(b)
         log[3].append(self.cycles & 0xFFFFFFFF)
+        # which entry of the schedule made it: the tick, or a handler inside it
+        log[4].append(1 if self.sep is not None and self.sep.inside else 0)
         if self.phase == PH_INIT:
             self.init_writes.append((a, b, self.cycles))
         if a == 0xD019:

@@ -7,7 +7,7 @@ interleaving is readable straight off the write log.
 
 import pytest
 
-from deity_informant.tuneprog import nmi as N
+from deity_informant.tuneprog import ghidra_facts, nmi as N
 from deity_informant.tuneprog.cia import CIA, CIA1_BASE, CIA2_BASE, ICR_TA, ICR_TB
 from deity_informant.tuneprog.emit import _Fn, _store
 from deity_informant.tuneprog.ir import Bin, Const, Load, Store, Var
@@ -107,6 +107,21 @@ def test_the_write_log_interleaves_both_entries():
     order = [a for a in trace.wlog["addr"].tolist() if a in (0xD400, 0xD418)]
     assert order.count(0xD400) == 4 and order.count(0xD418) == 80
     assert 0xD418 in order[:2]  # the first NMI of tick 0 beats the play's own write
+    # and says which entry made each: a handler's store is not the tick's
+    made = dict(zip(order, trace.wlog["nmi"].tolist()))
+    assert made == {0xD400: 0, 0xD418: 1}
+
+
+def test_the_ghidra_emulate_facts_are_the_tick_entry_s_alone():
+    """The oracle runs the tick; the handler's writes and reads are its own entry's."""
+    handler = (*SAVE, "LDA #$0A", "STA $D418", "LDA $D012", *ACK, *LOAD, "RTI")
+    trace, _tr = _run(handler=handler, calls=2)
+    e = ghidra_facts.emulate_facts(trace, calls=2)
+    assert e["entry"] == "tick"
+    assert e["writes"] == [[[0x00, 0x01]], []]  # $D400 once; the fold repeats no value
+    assert 0x18 not in [off for seq in e["writes"] for off, _v in seq]
+    assert 0xD418 in trace.wlog["addr"].tolist()  # the handler did write it
+    assert not [r for seq in e["reads"] for r in seq]  # its $D012 read is replayed by it
 
 
 def test_a_handler_that_never_acknowledges_takes_exactly_one_nmi():

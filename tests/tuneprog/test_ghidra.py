@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from deity_informant.tuneprog import ghidra_compare as GC, ghidra_facts as GF, pipeline
 from deity_informant.tuneprog.cfg import procs_json
 from deity_informant.tuneprog.lift import lift_trace
@@ -93,9 +95,36 @@ def test_emulate_facts_carry_the_reads_of_each_call():
     assert e["reads"] == [[], [[0x1002, 0xD012, 7], [0x1002, 0xD41B, 3]], []]
 
 
-def _front_end(out):
+# I/O out, a store to $D400 that is RAM, I/O back in, the store the chip sees
+BANKED = (
+    "LDA #$34",
+    "STA $01",
+    "LDA #$3F",
+    "STA $D400",
+    "LDA #$37",
+    "STA $01",
+    "LDA #$21",
+    "STA $D400",
+    "RTS",
+)
+
+
+def test_emulate_facts_leave_out_the_store_the_port_banked_out():
+    trace, _ = trace_prog(
+        {PLAY: asm(PLAY, *BANKED), 0x1020: asm(0x1020, "RTS")}, init=0x1020, play=PLAY, calls=1
+    )
+    assert GF.emulate_facts(trace, calls=1)["writes"] == [[[0, 0x21]]]
+
+
+def test_emulate_facts_clamp_to_the_calls_the_trace_ran():
+    trace, _ = _smc_trace(calls=2)
+    e = GF.emulate_facts(trace, calls=8)
+    assert (e["calls"], len(e["writes"]), len(e["reads"])) == (2, 2, 2)
+
+
+def _front_end(out, trace=None):
     """A finished-looking output directory for the synthetic SMC tune."""
-    trace, _ = _smc_trace()
+    trace = trace or _smc_trace()[0]
     trace.save(out)
     prog, regions, procs = pipeline.build(trace)
     (out / "regions.json").write_text(json.dumps([r.to_dict() for r in regions]))
@@ -112,6 +141,29 @@ def test_export_writes_a_complete_facts_directory(tmp_path):
     assert len((dst / "image_post_init.bin").read_bytes()) == 0x10000
     assert doc["entries"] and doc["smc_cells"] and doc["insn_addrs"]
     assert doc["meta"]["play"] == PLAY
+
+
+def test_the_facts_carry_the_frame_the_machine_pushes(tmp_path):
+    """The emulating side pushes the schedule's own frame, so the export states it."""
+    _front_end(tmp_path)
+    doc = json.loads((GF.export(tmp_path) / "ghidra_facts.json").read_text())
+    assert doc["meta"]["schedule"][0]["kind"] == "sub"
+    irq, _ = trace_prog(
+        {PLAY: asm(PLAY, "LDA #$21", "STA $D400", "RTI"), 0x1020: asm(0x1020, "RTS")},
+        init=0x1020,
+        play=PLAY,
+        calls=1,
+        kind="irq",
+    )
+    _front_end(tmp_path / "irq", irq)
+    doc = json.loads((GF.export(tmp_path / "irq") / "ghidra_facts.json").read_text())
+    assert doc["meta"]["schedule"][0] == {
+        "kind": "irq",
+        "addr": PLAY,
+        "cycles_per_tick": 19656,
+        "source": "test",
+        "kernal": False,
+    }
 
 
 MD = """# t
@@ -215,6 +267,19 @@ def test_compare_joins_both_sides(tmp_path):
     assert any(r["entry"] == "%04X" % entry for r in doc["procs"])
     assert set(doc["alignment"]) == {"merged", "clones"}
     assert "| proc |" in GC.markdown(doc)
+
+
+def test_a_body_without_its_address_set_is_no_export():
+    """A ``stats.json`` predating ``pcs`` fails loudly, not as a partial body."""
+    with pytest.raises(KeyError):
+        GC._body({"name": "g", "sites": 4})
+
+
+def test_the_join_does_not_depend_on_the_order_its_rows_are_built():
+    mine = {0x10: {"name": "tick", "pcs": [0x10, 0x12], "sites": 2}}
+    theirs = {0x10: {"name": "FUN_0010", "pcs": ["0010", "0012"]}}
+    assert GC.alignment(mine, theirs)["clones"] == []
+    assert mine[0x10]["pcs"] == [0x10, 0x12]  # alignment reads them, nothing pops them
 
 
 def test_alignment_names_the_merge_and_the_clones():

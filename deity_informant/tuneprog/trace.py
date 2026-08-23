@@ -429,9 +429,9 @@ class Tracer:
         )
 
 
-def _arrays(cols, names=("call", "addr", "val", "cyc"), types=None):
+def _arrays(cols, names=("call", "addr", "val", "cyc", "nmi"), types=None):
     """Column arrays of one log, named and typed."""
-    types = types or (np.uint32, np.uint16, np.uint8, np.uint32)
+    types = types or (np.uint32, np.uint16, np.uint8, np.uint32, np.uint8)
     return {n: np.frombuffer(c, dtype=t).copy() for n, c, t in zip(names, cols, types)}
 
 

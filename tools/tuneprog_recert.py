@@ -3,7 +3,9 @@
 
 A certificate records its own run (tune, subtune, horizon, SID model, stage), so
 the set replays through the pipeline in ``--budget`` chunks; each invocation
-prints the table and exits 2 while work is left. Timestamp and timings excepted.
+prints the table and exits :data:`MORE` while work is left -- 3, not the
+pipeline's 2, so a caller's loop cannot mistake argparse's usage exit for another
+chunk. Timestamp and timings excepted.
 """
 
 import argparse
@@ -19,8 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # pylint: disable=wrong-import-position
-from deity_informant.tuneprog import ghidra_compare, pipeline, tunes  # noqa: E402
+from deity_informant.tuneprog import ghidra_compare, ghidra_facts, pipeline, tunes  # noqa: E402
 
+MORE = 3  # "invoke me again": distinct from argparse's and the pipeline's exit 2
 CERTS = ROOT / "docs" / "certificates"
 IGNORE = (("generated",), ("cost", "verify_cpu_seconds"), ("cost", "calls_per_second"))
 COLS = "%-22s %-26s %-9s %9s %9s %-8s %s"
@@ -50,7 +53,7 @@ def horizon(subs):
     return ["--calls", str(s["ticks"])]
 
 
-def plan(doc, out, path, budget, ghidra=False):
+def plan(doc, out, path, budget):
     """The pipeline command line one certificate records."""
     subs = doc["subtunes"]
     argv = [str(path), "--out", str(out), "--resume", "--budget", "%.1f" % budget]
@@ -60,9 +63,19 @@ def plan(doc, out, path, budget, ghidra=False):
         argv += ["--sid-model", doc["sid_model"]]
     if doc.get("stage") != "S6":
         argv.append("--no-text")
-    if ghidra:
-        argv.append("--ghidra-facts")
     return argv
+
+
+def facts(out):
+    """Export ``OUT/ghidra`` when it is missing or older than the trace it comes from.
+
+    The oracle runs over whatever this leaves, so it cannot depend on the pipeline
+    having reached its print stage in *this* invocation: a resumed certificate is
+    already finished and prints nothing.
+    """
+    src, dst = out / "trace.npz", out / "ghidra" / "ghidra_facts.json"
+    if src.is_file() and (not dst.is_file() or dst.stat().st_mtime < src.stat().st_mtime):
+        ghidra_facts.export(out)
 
 
 def diff(want, got, path=()):
@@ -97,7 +110,7 @@ def replay(name, doc, args, t0):
         left = args.budget - (time.process_time() - t0)
         if left <= 1.0:
             return None, None
-        argv = plan(doc, out, path, min(left, args.chunk), bool(args.ghidra_dir))
+        argv = plan(doc, out, path, min(left, args.chunk))
         rc = pipeline.run(pipeline.parser("tuneprog_recert.py").parse_args(argv), log=_quiet)
     made = out / "certificate.json"
     if not made.is_file():
@@ -152,38 +165,61 @@ def table(certs, state):
     return "\n".join(out)
 
 
+def _flag(name, entry, detail, known):
+    """One oracle failure, unless ``CERT:ENTRY`` is a recorded row (``--known``)."""
+    return [] if "%s:%s" % (name, entry) in known else ["%s %s" % (entry, detail)]
+
+
 def oracle_row(name, out, gdir, tol, known=()):
-    """The three Ghidra oracles for one certificate, joined and localised."""
+    """The three Ghidra oracles for one certificate, joined and localised.
+
+    A certificate with no export is a failure of the oracle run, not a blank row:
+    the whole set having run is what the summary counts.
+    """
     if not (gdir / "stats.json").is_file():
-        return {"name": name, "flags": [], "note": "no export"}
+        return {
+            "name": name,
+            "export": False,
+            "note": "no export",
+            "flags": _flag(name, "export", "missing", known),
+        }
     doc = ghidra_compare.compare(out, gdir, tol)
     (gdir / "comparison.json").write_text(json.dumps(doc, indent=1))
     cov, emu = doc.get("coverage") or {}, doc.get("emulate") or {}
+    # an emulator that errored made no comparison: that is its own verdict, and
+    # its string is the note -- sid_mismatches is empty in exactly that case
+    err = emu.get("error")
+    bigger = [f for r in doc["flags"] for f in _flag(name, r["entry"], r["detail"], known)]
     return {
         "name": name,
-        "flags": [
-            f["entry"] + " " + f["detail"]
-            for f in doc["flags"]
-            if "%s:%s" % (name, f["entry"]) not in known
-        ],
+        "export": True,
+        "bigger": len(bigger),
+        "flags": bigger + (_flag(name, "emulate", err, known) if err else []),
         "uncovered": cov.get("uncovered_sites", "-"),
         "merged": len(doc["alignment"]["merged"]),
         "partial": sum(1 for r in doc["procs"] if r["verdict"] == "ghidra_partial"),
-        "agree": emu.get("agree"),
-        "note": "" if emu.get("agree") is not False else str(emu.get("sid_mismatches", [])[:1]),
+        "agree": None if err else emu.get("agree"),
+        "error": err,
+        "note": err
+        or (str(emu.get("sid_mismatches", [])[:1]) if emu.get("agree") is False else ""),
     }
 
 
 def oracles(certs, args):
-    """Every certificate's oracle row, then the ``ours_bigger`` verdict."""
+    """Every certificate's oracle row, then the count of what has to be zero."""
     known = set(args.known or ())
     rows = [
         oracle_row(n, Path(args.out) / n, Path(args.ghidra_dir) / n, args.tol, known)
         for n, _d in certs
     ]
-    head = OCOLS % ("certificate", "uncovered", "partial", "merged", "emulate", "ours_bigger")
+    head = OCOLS % ("certificate", "uncovered", "partial", "merged", "emulate", "flags")
     out = [head, "-" * len(head)]
     for r in rows:
+        emulate = (
+            "ERROR"
+            if r.get("error")
+            else {True: "agree", False: "DIFFER", None: "-"}[r.get("agree")]
+        )
         out.append(
             OCOLS
             % (
@@ -191,23 +227,26 @@ def oracles(certs, args):
                 r.get("uncovered", "-"),
                 r.get("partial", "-"),
                 r.get("merged", "-"),
-                {True: "agree", False: "DIFFER", None: "-"}[r.get("agree")],
-                ", ".join(r["flags"]) or r["note"] or "0",
+                "-" if not r["export"] else emulate,
+                ", ".join(r["flags"]) or r.get("note") or "0",
             )
         )
-    bigger = sum(len(r["flags"]) for r in rows)
+    flags = sum(len(r["flags"]) for r in rows)
     out += [
         "",
-        "%d/%d with a Ghidra export, ours_bigger %d, emulate disagreements %d"
+        "%d/%d with a Ghidra export, ours_bigger %d, emulate disagreements %d, errors %d,"
+        " flagged %d"
         % (
-            sum(1 for r in rows if r["note"] != "no export"),
+            sum(1 for r in rows if r["export"]),
             len(rows),
-            bigger,
+            sum(r.get("bigger", 0) for r in rows),
             sum(1 for r in rows if r.get("agree") is False),
+            sum(1 for r in rows if r.get("error")),
+            flags,
         ),
     ]
     print("\n".join(out))
-    return bigger
+    return flags
 
 
 def main(argv=None):
@@ -226,7 +265,10 @@ def main(argv=None):
     )
     ap.add_argument("--tol", type=float, default=ghidra_compare.TOL, help="complexity tolerance")
     ap.add_argument(
-        "--known", action="append", help="CERT:ENTRY whose ours_bigger flag is a recorded row"
+        "--known",
+        action="append",
+        help="CERT:ENTRY whose oracle flag is a recorded row (ENTRY is a procedure,"
+        " 'export' for a certificate with no export, or 'emulate' for an emulator error)",
     )
     args = ap.parse_args(argv)
 
@@ -245,10 +287,14 @@ def main(argv=None):
     t0 = time.process_time()
     for name, doc in certs:
         if name in state:
+            if args.ghidra_dir:
+                facts(out / name)
             continue
         got, ds = replay(name, doc, args, t0)
         if ds is None:
             break
+        if args.ghidra_dir and got is not None:
+            facts(out / name)
         note = []
         if args.update and got is not None and ds:
             (Path(args.certs) / (name + ".json")).write_text(
@@ -264,7 +310,7 @@ def main(argv=None):
     statefile.write_text(json.dumps(state, indent=1, sort_keys=True))
     print(table(certs, state))
     if any(n not in state for n, _d in certs):
-        return pipeline.MORE
+        return MORE
     bad = any(state[n]["diff"] for n, _d in certs)
     if args.ghidra_dir:
         bad = oracles(certs, args) > 0 or bad

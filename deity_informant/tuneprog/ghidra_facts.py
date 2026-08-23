@@ -9,14 +9,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from . import ir
+from . import nmi as N
 from .lift import lift_trace
 from .tracedata import Trace
 
 LANGUAGE = "6510:LE:16:default"
 CONTEXT = {"imm": "smc_imm", "addr": "smc_addr", "ctrl": "smc_ctrl", "opcode": "smc_var"}
 RTS = 0x60
-META = ("init", "play", "load", "song", "songs", "calls", "period", "first_repeat")
+META = ("init", "play", "load", "song", "songs", "calls", "period", "first_repeat", "schedule")
 
 
 def _smc_kind(ls):
@@ -144,33 +147,54 @@ def inputs(trace):
 
 
 REG_IN = 0x10000
+EMU_CALLS = 8
 
 
-def emulate_facts(trace, calls=8, base=0xD400, size=0x19):
-    """Each of the first ``calls`` play calls as the SID writes it made, in order.
+def _tick_writes(trace, calls, base, size):
+    """Per-call SID register *changes* the tick entry made, in consumption order.
 
-    ``pins`` are the entry registers a call read live-in and ``reads`` every
-    other volatile input it consumed, both in consumption order.
+    Two rules the emulating side has to share, or it scores a difference where
+    there is none. A store to ``$D400-$D418`` reaches the chip only while the
+    6510 port maps I/O, which is why :class:`~.tracevm.TraceVM` gates the log on
+    it -- a store made with I/O banked out is RAM and no register change. And a
+    row the schedule's second entry made (``nmi``) belongs to that entry: this
+    comparison runs the tick alone.
     """
     w = trace.wlog
-    if not w or "call" not in w:
-        return None
-    call, addr, val = w["call"], w["addr"], w["val"]
-    # register changes, the form the emulator side's memory diff also produces
-    sid, writes = bytearray(trace.image_post_init[base : base + size]), []
+    keep = (w["nmi"] == 0) & (w["addr"] >= base) & (w["addr"] < base + size)
+    call = np.asarray(w["call"], np.int64)[keep]  # init rows are 0xFFFFFFFF: they sort last
+    addr = (np.asarray(w["addr"], np.int64)[keep] - base).tolist()
+    val = np.asarray(w["val"], np.int64)[keep].tolist()
+    at = np.searchsorted(call, np.arange(calls + 1))
+    sid = bytearray(trace.image_post_init[base : base + size])
+    out = []
     for c in range(calls):
-        band = (call == c) & (addr >= base) & (addr < base + size)
         seq = []
-        for a, v in zip(addr[band], val[band]):
-            off, v = int(a) - base, int(v)
-            if sid[off] != v:
-                sid[off] = v
-                seq.append([off, v])
-        writes.append(seq)
+        for i in range(at[c], at[c + 1]):
+            a, v = addr[i], val[i]
+            if sid[a] != v:
+                sid[a] = v
+                seq.append([a, v])
+        out.append(seq)
+    return out
+
+
+def emulate_facts(trace, calls=EMU_CALLS, base=0xD400, size=0x19):
+    """Each play call the trace ran, up to ``calls``, as the tick entry's SID writes.
+
+    ``pins`` are the entry registers a call read live-in and ``reads`` every
+    other volatile input it consumed, both in consumption order and both, like
+    ``writes``, the tick entry's own: an input a handler of the second entry
+    consumed is replayed by that entry, which this comparison does not run.
+    """
+    if not trace.wlog or "call" not in trace.wlog:
+        return None
+    calls = min(calls, int(trace.meta.get("calls") or 0))
+    nsites = N.sites(trace) if N.entries(trace) else frozenset()
     pins, reads = [], [[] for _ in range(calls)]
     # init-phase inputs (call -1) are already baked into the post-init image
     for c, site, _i, a, v in trace.inputs:
-        if not 0 <= c < calls:
+        if not 0 <= c < calls or site in nsites:
             continue
         if a >= REG_IN:
             pins.append([int(c), int(a) - REG_IN, int(v)])
@@ -178,9 +202,10 @@ def emulate_facts(trace, calls=8, base=0xD400, size=0x19):
             reads[c].append([int(site), int(a), int(v)])
     return {
         "calls": calls,
+        "entry": "tick",  # writes/reads/pins are the first schedule entry's alone
         "sid_base": base,
         "sid_len": size,
-        "writes": writes,
+        "writes": _tick_writes(trace, calls, base, size),
         "pins": pins,
         "reads": reads,
         "regs": trace.meta.get("post_init_regs") or {},
