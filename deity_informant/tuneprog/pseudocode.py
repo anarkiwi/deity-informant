@@ -61,6 +61,7 @@ class Printer:
         self.inline = {}
         self.lastsrc = None
         self.flags = {}
+        self.sites = {}
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -342,12 +343,20 @@ class Printer:
             return "input($%04X)" % a if a is not None else "input(%s)" % self.expr(e.a, False)
         hit = self.colref(e.r, e.a)
         if hit is not None:
-            return hit
+            return self.site(e.r, hit, "read")
         r = self.rgn.get(e.r)
         addr, idx = self.addr_of(e.a, r)
         if r is None and addr is not None:
             return "mem[%s]" % hexlit(addr)
-        return self.cell(e.r, addr, idx, span=(e.lo, e.hi))
+        return self.site(e.r, self.cell(e.r, addr, idx, span=(e.lo, e.hi)), "read")
+
+    def site(self, rid, text, kind):
+        """Record the printed form of one accessor, which :mod:`.datablock` states."""
+        if rid >= 0:
+            k, p = self.sites.setdefault((rid, text), (set(), set()))
+            k.add(kind)
+            p.add(self.names.procs.get(self.proc, self.proc))
+        return text
 
     def colref(self, rid, a):
         """``voice[v].field`` for an access through a per-copy column, or ``None``.
@@ -422,6 +431,7 @@ class Printer:
                 lhs = "io[%s]" % (hexlit(base) if base is not None else self.expr(s.a, False))
         else:
             lhs = self.colref(s.r, s.a) or self.cell(s.r, addr, idx, span=(s.lo, s.hi))
+            self.site(s.r, lhs, "written")
         out = self.compound(lhs, s, (addr, idx))
         self.forget(s.r)
         if s.cls != "io" and type(s.v) is not Const:

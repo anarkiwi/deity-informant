@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
-from deity_informant.tuneprog import ir, pipeline  # noqa: E402
+from deity_informant.tuneprog import datablock, ir, pipeline  # noqa: E402
 from deity_informant.tuneprog.irwalk import addr_split, node_exprs, walk as ewalk  # noqa: E402
 from deity_informant.tuneprog.lift import lift_trace  # noqa: E402
 from deity_informant.tuneprog.live import needed, printable  # noqa: E402
@@ -39,21 +39,23 @@ def table(head, rows):
     return out + ["| %s |" % " | ".join(str(c) for c in r) for r in rows]
 
 
-def band_split(trace, regions):
-    """``(band, code, data, neither)`` address sets of the load band."""
+def band_split(trace, view):
+    """``(band, code, data, neither)`` address sets of the load band.
+
+    ``data`` is :func:`~.datablock.reach_bytes`, the reach the print's data section
+    carries: the cells the S4's own accessor envelopes name, region by region.
+    """
     lo, hi = trace.meta["load"]
     band = set(range(lo, hi + 1))
     lifted = lift_trace(trace)
     code = {a for k, l in lifted.items() for a in range(k[0], k[0] + l.length)} & band
-    data = {
-        a for r in regions if r["kind"] != "io" for a in range(r["base"], r["base"] + r["size"])
-    } & band
+    data = datablock.reach_bytes(view) & band
     return band, code, data, band - code - data
 
 
-def bytes_table(trace, regions):
+def bytes_table(trace, view):
     """The ``bytes`` table: what the load band is made of."""
-    band, code, data, rest = band_split(trace, regions)
+    band, code, data, rest = band_split(trace, view)
     lo, hi = trace.meta["load"]
 
     def pct(s):
@@ -86,9 +88,9 @@ def writelog(trace):
     return np.stack([addr, val], 1).tobytes(), img
 
 
-def mdl_table(out, trace, regions):
+def mdl_table(out, trace, view):
     """The ``mdl`` table: description lengths a decompilation sits between."""
-    band, code, data, _rest = band_split(trace, regions)
+    band, code, data, _rest = band_split(trace, view)
     img = trace.image_pre
     pairs, grid = writelog(trace)
     items = [
@@ -271,8 +273,8 @@ def main(argv=None):
         for x in args.code
     ] or [(0, 0xFFFF, "player")]
     for title, lines in (
-        ("bytes", bytes_table(trace, regions)),
-        ("mdl", mdl_table(out, trace, regions)),
+        ("bytes", bytes_table(trace, view)),
+        ("mdl", mdl_table(out, trace, view)),
         ("statements", stmt_table(view, structured, regions, ranges)),
         ("pairs", pair_check(view, structured, regions, trace)),
     ):

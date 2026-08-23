@@ -158,9 +158,10 @@ def test_the_overrunning_accessor_keeps_the_fused_extent_it_asserts():
 
 
 def test_a_byte_no_store_writes_prints_const_beside_its_state_neighbours():
-    doc = _fused()
-    const = doc.split("## const")[1].split("```")[1]
-    assert "ctrl             $%04X 1 bytes" % FUSED.labels["ofs"] in const
+    data = _fused().split("## data")[1].split("```")[1]
+    assert "also ctrl $%04X" % FUSED.labels["ofs"] in data
+    row = next(l for l in data.splitlines() if l.startswith("  $%04X  " % FUSED.labels["tab"]))
+    assert row.split()[1:] == ["%02X" % (i + 1) for i in range(8)] + ["05"]
 
 
 def test_the_split_leaves_the_certified_region_ids_where_they_were():
