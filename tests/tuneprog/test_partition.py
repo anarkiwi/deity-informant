@@ -304,30 +304,35 @@ def test_a_byte_subtracted_from_a_word_is_one_16_bit_statement():
     assert "acc -= $40" in body and "wD400 = " not in body  # one class, not io beside ram
 
 
-def _pairprint(recorded):
-    """``pair(lo, hi, a)`` over a word whose halves are two one-byte regions.
+def _pairprint(rs, pair, recorded=()):
+    """``pair(lo, hi, a)`` over a word named by its two cells.
 
-    ``recorded`` lists the halves a copy fold already names by their own field.
+    ``recorded`` lists the cells a copy fold already names by their own field.
     """
-    rs = [
+    names = Names(region={r.id: r.name for r in rs}, u16={pair: "freq"})
+    names.slots.update({c: [("voice", "f%d" % c[0], 0, False)] for c in recorded})
+    return Printer(Tuneprog(storage=rs), names).pair(pair[0], pair[1], Const(pair[0][1], 2))
+
+
+def _bytes():
+    return [
         Rgn(id=i, name=n, base=BASE + i - 1, size=1, kind="state", init=bytes(1), origin=BASE)
         for i, n in ((1, "lo"), (2, "hi"))
     ]
-    names = Names(region={1: "lo", 2: "hi"}, u16={(1, 2): "freq"})
-    names.slots.update({(r, BASE): [("voice", "f%d" % r, 0, False)] for r in recorded})
-    return Printer(Tuneprog(storage=rs), names).pair(1, 2, Const(BASE, 2))
 
 
-def test_a_word_neither_half_of_which_a_record_names_prints_as_the_pair():
-    assert _pairprint(()) == "freq"
+def test_a_word_over_two_one_byte_regions_prints_by_its_name():
+    assert _pairprint(_bytes(), ((1, BASE), (2, BASE + 1))) == "freq"
 
 
-def test_a_word_whose_low_half_a_record_names_prints_explicitly():
-    assert _pairprint((1,)) == "(voice[0].f1 | hi << 8)"
+def test_a_word_whose_half_a_record_names_still_prints_by_its_own_name():
+    got = _pairprint(_bytes(), ((1, BASE), (2, BASE + 1)), recorded=((1, BASE),))
+    assert got == "freq"
 
 
-def test_a_word_whose_high_half_a_record_names_prints_explicitly():
-    assert _pairprint((2,)) == "(lo | voice[0].f2 << 8)"
+def test_two_cells_of_one_region_are_one_word():
+    rs = [Rgn(id=1, name="zp", base=BASE, size=16, kind="state", init=bytes(16), origin=BASE)]
+    assert _pairprint(rs, ((1, BASE + 4), (1, BASE + 9))) == "freq"
 
 
 def test_the_present_pass_is_stable_over_two_runs():
