@@ -70,7 +70,7 @@ resumed run may keep.
 | **S5** | a *copy* of the S4 IR | the structured node tree: loops, if/else, switch, `for`, phase | `structure`, `loops`, `graph` | `tuneprog.S5.json` |
 | **S6** | the same copy | inlining, texture removal, region typing, 16-bit views, roles and names | `inline`, `texture`, `cells`, `gated`, `ranges`, `frame`, `partition`, `halves`, `word`, `copyview`, `recover`, `facts`, `views`, `fold`, `tails`, `unroll`, `live`, `cellref` | `tuneprog.S6.json` |
 | **S7** | view + structure + names | Python code, the certificate document, the text form | `emit`, `pseudocode`, `printer`, `datablock` | `tuneprog.py`, `certificate.json`, `tuneprog.md` |
-| driver | — | stage state, resume records, Ghidra facts | `pipeline`, `resume`, `ghidra_facts`, `ghidra_compare` | `state.json`, `tracer.pkl`, `verify.pkl`, `ghidra/` |
+| driver | — | stage state, resume records, Ghidra facts | `pipeline`, `resume`, `ghidra_facts`, `ghidra_compare` | `state.json`, `tracer.pkl` (`tracerNN.pkl` per subtune), `verify.pkl`, `ghidra/` |
 
 Stage entry points, which are also the module boundaries: `machine.find_entries`,
 `nmi.entry`, `trace.run_trace`, `lift.lift_trace`, `cfg.build_procs`,
@@ -839,7 +839,8 @@ Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog
 | `daglish-deflektor` | Deflektor.sid | Daglish, patched branch offset | 1,503 | — | 4 | 180 | 630 | 78 | horizon |
 
 Two certificates are `stack: residual`: `jch-easy-does-it` (depth 8, held by `nmi`)
-and `rodger-alien3`. Every other one is `stack: eliminated`.
+and `rodger-alien3` (depth 11, held by `tick`, whose hardware-vector entry makes
+the pushed A/X/Y live-in). Every other one is `stack: eliminated`.
 
 | family | record |
 | --- | --- |
