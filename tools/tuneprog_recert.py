@@ -19,11 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # pylint: disable=wrong-import-position
-from deity_informant.tuneprog import pipeline, tunes  # noqa: E402
+from deity_informant.tuneprog import ghidra_compare, pipeline, tunes  # noqa: E402
 
 CERTS = ROOT / "docs" / "certificates"
 IGNORE = (("generated",), ("cost", "verify_cpu_seconds"), ("cost", "calls_per_second"))
 COLS = "%-22s %-26s %-9s %9s %9s %-8s %s"
+OCOLS = "%-22s %9s %9s %9s %9s  %s"
 
 
 def tune_path(name, hvsc=None):
@@ -49,7 +50,7 @@ def horizon(subs):
     return ["--calls", str(s["ticks"])]
 
 
-def plan(doc, out, path, budget):
+def plan(doc, out, path, budget, ghidra=False):
     """The pipeline command line one certificate records."""
     subs = doc["subtunes"]
     argv = [str(path), "--out", str(out), "--resume", "--budget", "%.1f" % budget]
@@ -59,6 +60,8 @@ def plan(doc, out, path, budget):
         argv += ["--sid-model", doc["sid_model"]]
     if doc.get("stage") != "S6":
         argv.append("--no-text")
+    if ghidra:
+        argv.append("--ghidra-facts")
     return argv
 
 
@@ -94,7 +97,7 @@ def replay(name, doc, args, t0):
         left = args.budget - (time.process_time() - t0)
         if left <= 1.0:
             return None, None
-        argv = plan(doc, out, path, min(left, args.chunk))
+        argv = plan(doc, out, path, min(left, args.chunk), bool(args.ghidra_dir))
         rc = pipeline.run(pipeline.parser("tuneprog_recert.py").parse_args(argv), log=_quiet)
     made = out / "certificate.json"
     if not made.is_file():
@@ -149,6 +152,58 @@ def table(certs, state):
     return "\n".join(out)
 
 
+def oracle_row(name, out, gdir, tol):
+    """The three Ghidra oracles for one certificate, joined and localised."""
+    if not (gdir / "stats.json").is_file():
+        return {"name": name, "flags": [], "note": "no export"}
+    doc = ghidra_compare.compare(out, gdir, tol)
+    (gdir / "comparison.json").write_text(json.dumps(doc, indent=1))
+    cov, emu = doc.get("coverage") or {}, doc.get("emulate") or {}
+    return {
+        "name": name,
+        "flags": [f["entry"] + " " + f["detail"] for f in doc["flags"]],
+        "uncovered": cov.get("uncovered_sites", "-"),
+        "merged": len(doc["alignment"]["merged"]),
+        "partial": sum(1 for r in doc["procs"] if r["verdict"] == "ghidra_partial"),
+        "agree": emu.get("agree"),
+        "note": "" if emu.get("agree") is not False else str(emu.get("sid_mismatches", [])[:1]),
+    }
+
+
+def oracles(certs, args):
+    """Every certificate's oracle row, then the ``ours_bigger`` verdict."""
+    rows = [
+        oracle_row(n, Path(args.out) / n, Path(args.ghidra_dir) / n, args.tol) for n, _d in certs
+    ]
+    head = OCOLS % ("certificate", "uncovered", "partial", "merged", "emulate", "ours_bigger")
+    out = [head, "-" * len(head)]
+    for r in rows:
+        out.append(
+            OCOLS
+            % (
+                r["name"],
+                r.get("uncovered", "-"),
+                r.get("partial", "-"),
+                r.get("merged", "-"),
+                {True: "agree", False: "DIFFER", None: "-"}[r.get("agree")],
+                ", ".join(r["flags"]) or r["note"] or "0",
+            )
+        )
+    bigger = sum(len(r["flags"]) for r in rows)
+    out += [
+        "",
+        "%d/%d with a Ghidra export, ours_bigger %d, emulate disagreements %d"
+        % (
+            sum(1 for r in rows if r["note"] != "no export"),
+            len(rows),
+            bigger,
+            sum(1 for r in rows if r.get("agree") is False),
+        ),
+    ]
+    print("\n".join(out))
+    return bigger
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tuneprog_recert.py", description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="out/recert", help="working directory (default out/recert)")
@@ -159,6 +214,11 @@ def main(argv=None):
     ap.add_argument("--update", action="store_true", help="write what was reproduced back")
     ap.add_argument("--budget", type=float, default=45.0, help="CPU seconds per invocation")
     ap.add_argument("--chunk", type=float, default=20.0, help="CPU seconds per pipeline call")
+    ap.add_argument("--shard", help="I/N: reproduce every Nth certificate, offset I")
+    ap.add_argument(
+        "--ghidra-dir", help="headless Ghidra exports per certificate; runs the oracles"
+    )
+    ap.add_argument("--tol", type=float, default=ghidra_compare.TOL, help="complexity tolerance")
     args = ap.parse_args(argv)
 
     out = Path(args.out)
@@ -168,6 +228,9 @@ def main(argv=None):
         for p in sorted(Path(args.certs).glob("*.json"))
         if not args.only or p.stem in args.only
     ]
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split("/"))
+        certs = certs[i::n]
     statefile = out / "recert.json"
     state = json.loads(statefile.read_text()) if args.resume and statefile.is_file() else {}
     t0 = time.process_time()
@@ -193,7 +256,10 @@ def main(argv=None):
     print(table(certs, state))
     if any(n not in state for n, _d in certs):
         return pipeline.MORE
-    return 1 if any(state[n]["diff"] for n, _d in certs) else 0
+    bad = any(state[n]["diff"] for n, _d in certs)
+    if args.ghidra_dir:
+        bad = oracles(certs, args) > 0 or bad
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
