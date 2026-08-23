@@ -144,7 +144,7 @@ def _exit_tests(proc, body, skip=()):
     return out
 
 
-def _domain(k, var, step, vals, tests):
+def _loop_domain(k, var, step, vals, tests):
     """The values the loop header runs with, by iterating the recurrence to its exit."""
     out = []
     while len(out) < CAP:
@@ -189,15 +189,15 @@ def copies(proc, header, latches, body=(), preds=None):
         ),
         None,
     )
-    return (var, k) if var is not None else _chain(proc, header, latches, body, preds, k)
+    return (var, k) if var is not None else _prologue_chain(proc, header, latches, body, preds, k)
 
 
-def _named(blk):
+def _index_consts(blk):
     """``{copy index name: value}`` for every index the block last sets to a constant."""
     return {s.n: s.e.v for s in blk.stmts if type(s) is Let and copyval(s.n) and type(s.e) is Const}
 
 
-def _after(proc, body, name, val):
+def _switch_arms(proc, body, name, val):
     """The edges a ``switch`` on the copy index takes when it holds ``val``."""
     out = set()
     for lbl in body:
@@ -213,7 +213,7 @@ def _ordered(proc, header, body, name, latch, val):
     That is what makes the copies an order and not a set: the edge naming the
     next copy is taken where the index holds this one, and nowhere else.
     """
-    cut = _after(proc, body, name, val)
+    cut = _switch_arms(proc, body, name, val)
     if not cut:
         return False
     seen, work = {header}, [header]
@@ -230,7 +230,7 @@ def _ordered(proc, header, body, name, latch, val):
     return True
 
 
-def _chain(proc, header, latches, body, preds, k):
+def _prologue_chain(proc, header, latches, body, preds, k):
     """``(index, k)`` when k prologues name the copies of one family, else ``None``.
 
     A prologue apiece steps the index by naming it: copy 0 from outside the
@@ -244,7 +244,7 @@ def _chain(proc, header, latches, body, preds, k):
     if not outs or not all(cover) or any(p not in body for l in latches for p in preds[l]):
         return None  # every copy has an entry and ran: an untaken edge is no iteration
     ins = sorted(set(latches) | set(outs))
-    sets = {l: _named(proc.blocks[l]) for l in ins}
+    sets = {l: _index_consts(proc.blocks[l]) for l in ins}
     shared = set.intersection(*(set(s) for s in sets.values())) if sets else set()
     for name in sorted(shared):
         back = {sets[l][name]: l for l in latches}
@@ -296,7 +296,7 @@ def induction(proc, header, body, latches, preds=None, skip=()):
             if type(s) is not Let or type(s.e) is not Var:
                 continue
             k = outer.val(Var(s.n), {})
-            vals = None if k is None else _domain(k, s.n, (latch, i, s.e), inner, tests)
+            vals = None if k is None else _loop_domain(k, s.n, (latch, i, s.e), inner, tests)
             if not vals or len(vals) < 2:
                 continue
             if _plausible(proc, header, body, latches, preds, len(vals)):

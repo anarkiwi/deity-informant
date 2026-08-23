@@ -50,7 +50,7 @@ def _vn(v, blk, fam=None):
     return Var("u%d_%s" % (v[1], blk), v[2])
 
 
-def _name(v, blk):
+def _value_name(v, blk):
     return REGVAR[v[1]] if v[0] == "r" else "u%d_%s" % (v[1], blk)
 
 
@@ -70,13 +70,15 @@ def ops_to_stmts(ops, resolve=None, blk="0", src=0, src_map=None, fam=None):
             out.append(Store(cls, a, v, ins[1][2], lo, hi, rid, src))
         elif mn == "LOAD":
             cls, lo, hi, rid = resolve(j, res[2], False) if resolve else ("ram", 0, 0xFFFF, -1)
-            out.append(Let(_name(res, blk), Load(cls, _vn(ins[0], blk, fam), res[2], lo, hi, rid)))
+            out.append(
+                Let(_value_name(res, blk), Load(cls, _vn(ins[0], blk, fam), res[2], lo, hi, rid))
+            )
         elif mn in ("COPY", "INT_ZEXT"):
-            out.append(Let(_name(res, blk), _vn(ins[0], blk, fam)))
+            out.append(Let(_value_name(res, blk), _vn(ins[0], blk, fam)))
         else:
             w = ins[0][2] if mn == "INT_CARRY" else res[2]
             a, b = _vn(ins[0], blk, fam), _vn(ins[1], blk, fam)
-            out.append(Let(_name(res, blk), Bin(BINOP[mn], a, b, w)))
+            out.append(Let(_value_name(res, blk), Bin(BINOP[mn], a, b, w)))
     return out
 
 

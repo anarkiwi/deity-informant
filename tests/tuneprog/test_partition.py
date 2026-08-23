@@ -105,9 +105,9 @@ def test_a_claim_that_cuts_a_fold_field_loses_and_the_rest_stands():
 
 def test_a_part_no_store_reaches_is_const_beside_a_state_neighbour():
     band = (BASE, BASE + 0x100)
-    assert partition._kind(R, 4, 6, [(9, 9)], band) == "const"
-    assert partition._kind(R, 4, 6, [(5, 5)], band) == "state"
-    assert partition._kind(R, 4, 6, [], (0, 0)) == "image"
+    assert partition._part_kind(R, 4, 6, [(9, 9)], band) == "const"
+    assert partition._part_kind(R, 4, 6, [(5, 5)], band) == "state"
+    assert partition._part_kind(R, 4, 6, [], (0, 0)) == "image"
 
 
 # ---- the print ---------------------------------------------------------------
@@ -224,7 +224,7 @@ def test_a_gap_starts_a_new_run_and_only_the_overlapping_extents_merge():
     prog = SimpleNamespace(
         storage=[rgn(1, BASE, 2), rgn(2, BASE + 1, 2), rgn(3, BASE + 0x10, 2)], procs={}, meta={}
     )
-    assert partition._merge(prog, set()) == {2: 1}
+    assert partition._merge_extents(prog, set()) == {2: 1}
     assert [(r.id, r.base, r.size) for r in prog.storage] == [(1, BASE, 3), (3, BASE + 0x10, 2)]
 
 

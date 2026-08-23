@@ -96,7 +96,7 @@ def _entry_names(trace):
     return names, roles
 
 
-def _index(trace):
+def _site_index(trace):
     out, keys, variants = {}, {}, {}
     for key in trace.sites:
         pc, op = key[0], key[1]
@@ -107,7 +107,7 @@ def _index(trace):
     return out, keys, {pc: sorted(v) for pc, v in variants.items()}
 
 
-def _ref(to, entries, tail=False, trap=False):
+def succ_ref(to, entries=(), tail=False, trap=False):
     """A successor reference: ``tail`` calls the entry and returns, ``trap`` was never taken."""
     return {"to": to, "tail": bool(tail or to in entries), "trap": bool(trap)}
 
@@ -115,7 +115,7 @@ def _ref(to, entries, tail=False, trap=False):
 def _switch(expr, targets, entries):
     return {
         "expr": expr,
-        "cases": [[t, _ref(t, entries)] for t in sorted(targets)],
+        "cases": [[t, succ_ref(t, entries)] for t in sorted(targets)],
         "default": "trap",
     }
 
@@ -126,7 +126,7 @@ def build_procs(trace, lifted=None, regions=None):
     Raises :class:`Refusal` (``recursion``) when the JSR call graph has a cycle.
     """
     names, roles = _entry_names(trace)
-    out, keys, variants = _index(trace)
+    out, keys, variants = _site_index(trace)
     entries = set(names)
     tails = set(trace.jsr_targets)
     procs = {}
@@ -154,7 +154,7 @@ def _walk(trace, proc, entry, out, keys, variants, tails, lifted):
             proc.variant_switch[pc] = _variant_arms(trace, pc, ops)
         idle = trace.meta.get("init_idle") if proc.kind == "init" else None
         for op in ops:
-            node = _node(trace, pc, op, out, keys, tails, lifted, idle)
+            node = _cfg_node(trace, pc, op, out, keys, tails, lifted, idle)
             proc.nodes[(pc, op)] = node
             sw = node["switch"]
             refs = list(node["succ"]) + ([c[1] for c in sw["cases"]] if sw else [])
@@ -177,7 +177,7 @@ def _variant_arms(trace, pc, ops):
     return {"cell": pc, "arms": arms}
 
 
-def _node(trace, pc, op, out, keys, tails, lifted, idle=None):
+def _cfg_node(trace, pc, op, out, keys, tails, lifted, idle=None):
     # One (pc, opcode) can carry several site keys when an operand byte is patched
     # by init only (constant, but a different constant per phase); the first is
     # representative because the control behaviour is the opcode's.
@@ -205,9 +205,9 @@ def _node(trace, pc, op, out, keys, tails, lifted, idle=None):
         targets = sorted(calls["targets"])
         node["call"] = targets
         node["term"] = "call"
-        node["succ"] = [_ref(calls["ret_pc"], tails)]
+        node["succ"] = [succ_ref(calls["ret_pc"], tails)]
         if len(targets) > 1 or node["computed"]:
-            node["switch"] = _switch(_expr(ls, "cell", site), targets, tails)
+            node["switch"] = _switch(_dispatch_on(ls, "cell", site), targets, tails)
         return node
     if rets is not None:
         if rets["unmatched"]:
@@ -228,15 +228,15 @@ def _node(trace, pc, op, out, keys, tails, lifted, idle=None):
         node["term"] = "branch"
         node["taken"] = arms[0]
         if not node["computed"]:
-            node["succ"] = [_ref(a, tails, trap=a not in seen) for a in arms]
+            node["succ"] = [succ_ref(a, tails, trap=a not in seen) for a in arms]
             return node
         taken = sorted(seen & _rel_targets(site, arms[1]))
         node["succ"] = [
-            _ref(taken[0] if taken else arms[0], tails, trap=not taken),
-            _ref(arms[1], tails, trap=arms[1] not in seen),
+            succ_ref(taken[0] if taken else arms[0], tails, trap=not taken),
+            succ_ref(arms[1], tails, trap=arms[1] not in seen),
         ]
         if taken:
-            node["switch"] = _switch(_expr(ls, "cell", site), taken, tails)
+            node["switch"] = _switch(_dispatch_on(ls, "cell", site), taken, tails)
         return node
     if not flow:
         # an init that ends in a ``JMP *`` has returned as far as the schedule is
@@ -253,17 +253,19 @@ def _node(trace, pc, op, out, keys, tails, lifted, idle=None):
             node["call"] = [t]
         elif k == "jmpind" or node["computed"]:
             node["term"] = "switch"
-            sw = _switch(_expr(ls, "jmpind" if k == "jmpind" else "cell", site), [t], tails)
+            sw = _switch(_dispatch_on(ls, "jmpind" if k == "jmpind" else "cell", site), [t], tails)
             node["switch"] = sw
             node["succ"] = [c[1] for c in sw["cases"]]
         else:
             node["term"] = "goto"
-            node["succ"] = [_ref(t, tails)]
+            node["succ"] = [succ_ref(t, tails)]
         return node
     kinds = {k for _t, k in flow}
     node["term"] = "switch"
     sw = _switch(
-        _expr(ls, "jmpind" if "jmpind" in kinds else "cell", site), [t for t, _k in flow], tails
+        _dispatch_on(ls, "jmpind" if "jmpind" in kinds else "cell", site),
+        [t for t, _k in flow],
+        tails,
     )
     node["switch"] = sw
     node["succ"] = [c[1] for c in sw["cases"]]
@@ -294,7 +296,7 @@ def _ptrs(site):
     return sorted({b[1] | (b[2] << 8) for b in site["variants"]})
 
 
-def _expr(ls, default, site=None):
+def _dispatch_on(ls, default, site=None):
     """What a computed terminator dispatches on.
 
     ``JMP (ind)`` dispatches on the word its pointer holds, so a patched operand is

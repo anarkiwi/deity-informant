@@ -11,7 +11,7 @@ from __future__ import annotations
 from .ir import Bin, Block, Const, If, Let, Load, Store, Switch, Trap, Var, succs
 
 
-def _defs(proc):
+def _let_defs(proc):
     return {s.n: s.e for b in proc.blocks.values() for s in b.stmts if type(s) is Let}
 
 
@@ -39,7 +39,7 @@ def _column(e, defs, rgn):
     return [int.from_bytes(r.init[off + j * e.w : off + (j + 1) * e.w], "little") for j in range(n)]
 
 
-def _copy(e, j, defs, rgn, seen=()):
+def _as_copy(e, j, defs, rgn, seen=()):
     """``e`` as copy ``j`` names it: every column read is that copy's constant.
 
     A subexpression that holds no column is itself, name and all, which is what a
@@ -55,12 +55,12 @@ def _copy(e, j, defs, rgn, seen=()):
     if vals is not None:
         return Const(vals[j], x.w) if j < len(vals) else None
     if type(x) is Bin:
-        a, b = _copy(x.a, j, defs, rgn, seen), _copy(x.b, j, defs, rgn, seen)
+        a, b = _as_copy(x.a, j, defs, rgn, seen), _as_copy(x.b, j, defs, rgn, seen)
         if a is None or b is None:
             return None
         return e if a is x.a and b is x.b else Bin(x.op, a, b, x.w)
     if type(x) is Load:
-        a = _copy(x.a, j, defs, rgn, seen)
+        a = _as_copy(x.a, j, defs, rgn, seen)
         if a is None:
             return None
         return e if a is x.a else Load(x.cls, a, x.w, x.lo, x.hi, x.r)
@@ -83,7 +83,7 @@ def _writers(proc, defs, rgn):
                 out.setdefault(s.a.v, []).append((plain, (), plain))
                 continue
             cells = _column(s.a, defs, rgn) or ()
-            vals = [_copy(s.v, j, defs, rgn) for j in range(len(cells))]
+            vals = [_as_copy(s.v, j, defs, rgn) for j in range(len(cells))]
             alts = tuple(v for v in vals if v is not None)
             for j, a in enumerate(cells):
                 if vals[j] is not None:
@@ -104,7 +104,7 @@ def _table(e, rgn):
     return None
 
 
-def _index(e, defs, rgn):
+def _table_index(e, defs, rgn):
     """The index of a ``LDA table,X``, as the program itself names it.
 
     A merged writer reads the base through a column, so the index is what is left
@@ -135,10 +135,10 @@ def _source(addr, writers, rgn, image, defs):
     bases = sorted({t[1] for t in (_table(x, rgn) for x in alts) if t})
     gaps = [b - a for a, b in zip(bases, bases[1:])]
     layout = (hit[0].base - bases[0], min(gaps)) if gaps else None
-    return ("table", hit[0], hit[1], _index(plain, defs, rgn) or hit[2], layout)
+    return ("table", hit[0], hit[1], _table_index(plain, defs, rgn) or hit[2], layout)
 
 
-def _domain(sources, spans, cap, idx=None):
+def _table_domain(sources, spans, cap, idx=None):
     """Index values every table source covers, on the step its layout implies.
 
     Halves one byte apart are a table of words, so its entries are two apart;
@@ -172,7 +172,7 @@ def _preds(proc):
     return out
 
 
-def _split(c, w):
+def _cond_bound(c, w):
     """``(name, lo, hi)`` the condition ``c`` proves when it holds, or ``None``.
 
     The three tests a 6502 leaves after SSA: the sign bit, an equality, and the
@@ -197,7 +197,7 @@ def _edge(term, to, w):
     """``(name, lo, hi)`` an edge into ``to`` proves; a negated split keeps its half."""
     if type(term) is not If:
         return None
-    got = _split(term.c, w)
+    got = _cond_bound(term.c, w)
     if got is None or to not in (term.t, term.f) or term.t == term.f:
         return None
     n, lo, hi = got
@@ -206,18 +206,18 @@ def _edge(term, to, w):
     return (n, hi, 1 << (8 * w)) if lo == 0 else None
 
 
-def _defined(b, n):
+def _assigns(b, n):
     """True when block ``b`` assigns ``n``: a name a phi destructed has more than one."""
     return b is not None and any(type(s) is Let and s.n == n for s in b.stmts)
 
 
-def _range(blocks, label, e, preds):
+def _proved_range(blocks, label, e, preds):
     """The range the branches on the one path into ``label`` prove for ``e``.
 
     A branch above the block that last assigned the name tested another value, so
     the walk stops there; where nothing is proven the caller's extent rule stands.
     """
-    if type(e) is not Var or _defined(blocks.get(label), e.n):
+    if type(e) is not Var or _assigns(blocks.get(label), e.n):
         return None
     lo, hi, seen = 0, 1 << (8 * e.w), set()
     while label not in seen:
@@ -228,7 +228,7 @@ def _range(blocks, label, e, preds):
         got = _edge(ps[0].term, label, e.w)
         if got is not None and got[0] == e.n:
             lo, hi = max(lo, got[1]), min(hi, got[2])
-        if _defined(ps[0], e.n):
+        if _assigns(ps[0], e.n):
             break
         label = ps[0].label
     return (lo, hi) if (lo, hi) != (0, 1 << (8 * e.w)) else None
@@ -261,7 +261,7 @@ def _byte(src, x, image):
     return image[src[2] + x] if src[0] == "table" else src[1]
 
 
-def _target(srcs, x, image, base):
+def _arm_target(srcs, x, image, base):
     """The address arm ``x`` of the table jumps to."""
     if base is None:
         return _byte(srcs[0], x, image) | (_byte(srcs[1], x, image) << 8)
@@ -275,7 +275,7 @@ def dispatch(proc, rgn, image, band):
     An arm's index in its own table is what pairs it with the arm a parallel copy
     dispatches; an arm two indices reach names no one index, and pairs with nothing.
     """
-    defs = _defs(proc)
+    defs = _let_defs(proc)
     writers = _writers(proc, defs, rgn)
     out = {}
     for b in proc.blocks.values():
@@ -292,7 +292,7 @@ def dispatch(proc, rgn, image, band):
         for x in range(0x100):  # the index register is an unsigned byte
             if any(not band[0] <= t[2] + x < band[1] for t in tabs):
                 continue
-            t = _target(srcs, x, image, base)
+            t = _arm_target(srcs, x, image, base)
             if t in cases:
                 hits.setdefault(t, []).append(x)
         out.setdefault(b.src, {}).update({x[0]: t for t, x in hits.items() if len(x) == 1})
@@ -332,7 +332,7 @@ def enumerate_targets(prog, code=(), addrs=None, limit=64):
     addr_owner = owners(prog, code, addrs)
     added = 0
     for proc in prog.procs.values():
-        defs = _defs(proc)
+        defs = _let_defs(proc)
         writers = _writers(proc, defs, rgn)
         preds = _preds(proc)
         for b in list(proc.blocks.values()):
@@ -347,8 +347,8 @@ def enumerate_targets(prog, code=(), addrs=None, limit=64):
             cols = {s[1].id for s in srcs if s[0] == "table"}
             ext = {i: span(rgn[i], cols, addr_owner, band) for i in cols}
             one = next(iter(idx)) if len(idx) == 1 else None
-            got = None if one is None else _range(proc.blocks, b.label, one, preds)
-            dom = _domain(srcs, ext, limit, got) if one is not None else range(0)
+            got = None if one is None else _proved_range(proc.blocks, b.label, one, preds)
+            dom = _table_domain(srcs, ext, limit, got) if one is not None else range(0)
             added += _arms(proc, b, srcs, dom, image, base, band, addr_owner)
     return added
 
@@ -361,7 +361,7 @@ def _arms(proc, b, srcs, dom, image, base, band, owner=()):
     seen = {v for v, _l in b.term.cases}
     extra = []
     for x in dom:
-        t = _target(srcs, x, image, base)
+        t = _arm_target(srcs, x, image, base)
         if t in seen or not band[0] <= t < band[1] or owner.get(t, -1) >= 0:
             continue
         seen.add(t)

@@ -29,7 +29,7 @@ def test_both_certify_over_their_horizon_with_no_trap():
 def _dispatches(prog):
     """``(defs, block)`` of every computed dispatch with more than one arm."""
     for p in prog.procs.values():
-        defs = jumptab._defs(p)
+        defs = jumptab._let_defs(p)
         for b in p.blocks.values():
             if type(b.term) is Switch and len(b.term.cases) > 1:
                 yield defs, b

@@ -181,11 +181,11 @@ def to_ssa(proc):
                 proc.blocks[y].stmts.insert(0, Phi(v, {}))
                 if y not in blocks:
                     work.append(y)
-    _rename(proc, children, preds)
+    _rename_blocks(proc, children, preds)
     return proc
 
 
-def _rename(proc, children, preds):
+def _rename_blocks(proc, children, preds):
     stack = defaultdict(list)
     count = defaultdict(int)
 
@@ -287,7 +287,7 @@ def dce(proc):
             return n
 
 
-def _forward(proc, want):
+def _forward_lets(proc, want):
     """Replace uses of ``let v = e`` (for the ``e`` ``want`` accepts) by ``e``."""
     sub = {}
     for b in proc.blocks.values():
@@ -321,7 +321,7 @@ def _forward(proc, want):
 
 def copyprop(proc):
     """Forward ``let v = w``."""
-    return _forward(proc, lambda e: type(e) is Var)
+    return _forward_lets(proc, lambda e: type(e) is Var)
 
 
 def const_tables(storage):
@@ -389,7 +389,7 @@ def constprop(proc, tables=None, folds=None):
             for s in b.stmts:
                 apply_stmt(s, fold)
             apply_term(b.term, fold)
-    return hits[0] + _forward(proc, lambda e: type(e) is Const)
+    return hits[0] + _forward_lets(proc, lambda e: type(e) is Const)
 
 
 def canonical(proc):

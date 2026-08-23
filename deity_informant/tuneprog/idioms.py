@@ -111,9 +111,9 @@ def foldall(proc):
     return n[0]
 
 
-def _size(e):
+def _op_count(e):
     """Operator count of an expression (leaves are free)."""
-    return 1 + _size(e.a) + _size(e.b) if type(e) is Bin else 0
+    return 1 + _op_count(e.a) + _op_count(e.b) if type(e) is Bin else 0
 
 
 def _consumer(avail, hits):
@@ -146,7 +146,7 @@ def inline(proc, limit=3):
             if type(s) is not Phi:
                 apply_stmt(s, fn)
             if type(s) is Let and pure(s.e) and loadfree(s.e):
-                if uses[s.n] == 1 or _size(s.e) <= limit:
+                if uses[s.n] == 1 or _op_count(s.e) <= limit:
                     avail[s.n] = s.e
         apply_term(b.term, fn)
     return hits[0]
@@ -241,7 +241,8 @@ def _alldefs(proc):
     return out, calls
 
 
-def _one(e):
+def is_one(e):
+    """True when a value is the literal 1."""
     return type(e) is Const and e.v == 1
 
 
@@ -251,7 +252,7 @@ def _onebit(e, defs, depth):
     if t is Const:
         return e.v in (0, 1)
     if t is Bin:
-        return e.op in CMP or e.op == "carry" or (e.op == "&" and _one(e.b))
+        return e.op in CMP or e.op == "carry" or (e.op == "&" and is_one(e.b))
     if t is not Var:
         return False
     if e.n.split("#")[0] in FLAGS:
@@ -302,9 +303,9 @@ def _bitvar(e, k, defs, depth, need):
     return Var(_bitname(e.n, k))
 
 
-def _extract(e):
+def _bit_of(e):
     """``(name, bit)`` of a ``(x >> k) & 1`` read of one value, or ``None``."""
-    if type(e) is not Bin or e.op != "&" or not _one(e.b):
+    if type(e) is not Bin or e.op != "&" or not is_one(e.b):
         return None
     x, k = e.a, 0
     while type(x) is Bin and x.op == ">>" and type(x.b) is Const:
@@ -314,7 +315,7 @@ def _extract(e):
 
 def _scan(e, bits):
     """Record every bit a value is read by."""
-    hit = _extract(e)
+    hit = _bit_of(e)
     if hit is not None:
         bits.setdefault(hit[0], set()).add(hit[1])
         return
@@ -390,7 +391,7 @@ def _emit_bits(proc, defs, plan):
 
 def _bitreader(sub):
     def fn(e):
-        hit = _extract(e)
+        hit = _bit_of(e)
         return sub.get(hit, e) if hit is not None else e
 
     return fn

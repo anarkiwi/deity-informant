@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 
 from jennings.opcodes import MODE_LEN, OPCODES as OPS
 
+from .cfg import succ_ref
 from .lift import lift_site
 from .siblings import ilen
 
@@ -227,10 +228,6 @@ def _mapped(fam, tmpl, j, to):
     return None
 
 
-def _ref(to, tail=False, trap=False):
-    return {"to": to, "tail": bool(tail), "trap": bool(trap)}
-
-
 def _goes(ls, idx, term):
     """Where the instruction the image holds says its successor ``idx`` goes.
 
@@ -269,10 +266,10 @@ def _succs(fam, tmpl, live, idx, ctx):
         if j not in live:
             to = _goes(lifts[j], idx, term)
             dead[j] = None if to is None else _mapped(fam, tmpl, j, to)
-    return _one(fam, per, hit, dead)
+    return _one_succ(fam, per, hit, dead)
 
 
-def _one(fam, per, hit, dead):
+def _one_succ(fam, per, hit, dead):
     """One ref where every copy agrees, a chain where the last copy leaves, else a split.
 
     A copy that never ran the edge takes nobody else's word for where it goes: its
@@ -284,7 +281,7 @@ def _one(fam, per, hit, dead):
     if m is not None and m[0] != "chain" and all(d == m for d in dead.values()):
         local = m[0] == "p" and fam.column(m[1]) is not None
         if len(hit) + len(dead) == fam.k or not local:
-            return _ref(
+            return succ_ref(
                 m[1],
                 tail=any(t for _m, _x, t in per.values()),
                 trap=all(x for _m, x, _t in per.values()),
@@ -303,21 +300,23 @@ def _one(fam, per, hit, dead):
         and rest <= {fam.k - 1}
     ):
         out = per.get(fam.k - 1)
-        exit_ref = _ref(0, trap=True) if out is None else _ref(out[0][1], out[2], out[1])
+        exit_ref = (
+            succ_ref(0, trap=True) if out is None else succ_ref(out[0][1], tail=out[2], trap=out[1])
+        )
         return {"chain": exit_ref, "to": tgt}
     out = [_perref(per.get(j)) for j in range(fam.k)]
     if all(r.get("trap") for r in out):
-        return _ref(0, trap=True)
+        return succ_ref(0, trap=True)
     return {"per": out}
 
 
 def _perref(got):
     if got is None:
-        return _ref(0, trap=True)
+        return succ_ref(0, trap=True)
     m, trap, tail = got
     if m[0] == "chain":
-        return {"chain": _ref(0, trap=True), "to": m[1]}
-    return _ref(m[1], tail, trap)
+        return {"chain": succ_ref(0, trap=True), "to": m[1]}
+    return succ_ref(m[1], tail=tail, trap=trap)
 
 
 def _cases(fam, tmpl, live):
@@ -329,7 +328,7 @@ def _cases(fam, tmpl, live):
             m = ("p", r["to"]) if r["tail"] else _mapped(fam, tmpl, j, r["to"])
             if m is None:
                 return None
-            got[v] = _ref(m[1], r["tail"], r["trap"])
+            got[v] = succ_ref(m[1], tail=r["tail"], trap=r["trap"])
         per[j] = {"expr": n["switch"]["expr"], "cases": sorted(got.items())}
     one = per[min(per)]
     if len(per) == fam.k and all(str(p) == str(one) for p in per.values()):
@@ -337,7 +336,7 @@ def _cases(fam, tmpl, live):
     return {"per": [per.get(j) for j in range(fam.k)]}
 
 
-def _merge(fam, tmpl, live, ls, lifts):
+def _merge_succs(fam, tmpl, live, ls, lifts):
     """The template's cfg node with merged successors, or ``None`` when a copy crosses."""
     first = live[min(live)]
     n = dict(first, pc=ls.pc, count=sum(x["count"] for x in live.values()))
@@ -400,7 +399,7 @@ def _sound(cp, fam, tmpl):
     return None
 
 
-def _entries(cp, fam):
+def _entry_addrs(cp, fam):
     """The addresses an edge from outside the family enters it at.
 
     The columns are read once at the loop header only where that header dominates
@@ -432,7 +431,7 @@ def family(cp, sib, idx, ctx):
         tmpl = {p: t0 for t0, v in keep.items() for p in v[0]}
         bad, nodes, unions = set(), {}, []
         for t0, (_row, op, live, keys, counts, ls, per) in sorted(keep.items()):
-            got = _merge(fam, tmpl, live, ls, per)
+            got = _merge_succs(fam, tmpl, live, ls, per)
             if got is None:
                 bad.add(t0)
                 continue
@@ -447,7 +446,7 @@ def family(cp, sib, idx, ctx):
     why = _sound(cp, fam, tmpl)
     if why:
         return why
-    fam.hoist = _entries(cp, fam) <= {fam.entry}
+    fam.hoist = _entry_addrs(cp, fam) <= {fam.entry}
     fam.rows = tuple(keep[t0][0] for t0 in sorted(keep))
     fam.cols = tuple(w_vals for w_vals, _c in sorted(cols.items(), key=lambda kv: kv[1]))
     return fam, nodes, unions, tmpl

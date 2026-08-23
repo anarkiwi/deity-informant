@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .copyview import fold_fields, remap_cells
 from .facts import image_copy, per_region, scales, unclaimed
-from .ir import Load, Rgn, Store, rgn_name
+from .ir import Load, Rgn, Store, overlaps, rgn_name
 from .irwalk import accessors, apply_stmt, apply_term, reachable
 
 SPLITTABLE = ("state", "init_constant", "const", "image")
@@ -22,20 +22,19 @@ def repartition(prog, facts):
     Presentation-only: it runs over :func:`~.pipeline.present`'s copy, so no
     certified S4 region id moves and a part is a fresh id above every existing one.
     """
-    named = _named(facts)
-    merged = _merge(prog, named)
+    named = _record_regions(facts)
+    merged = _merge_extents(prog, named)
     remap_cells(prog, [(k, 0, 0xFFFF, v) for k, v in merged.items()])
-    parts, moved = _split(prog, named, fold_fields(prog))
+    parts, moved = _split_regions(prog, named, fold_fields(prog))
     remap_cells(prog, moved)
     return bool(merged or parts)
 
 
-def _named(facts):
+def _record_regions(facts):
     """Regions a record already partitions: the register image, and a record stride.
 
-    An index carrying a scale reaches a record wider than a byte, which is what
-    :func:`~.views.field_split` names off the same map; an extent claimed inside it
-    is one of its fields, not a fusion.
+    An index carrying a scale reaches a record :func:`~.views.record_split` names
+    off the same map, so an extent claimed inside it is a field, not a fusion.
     """
     return set(image_copy(facts)) | set(per_region(facts, scales(facts)))
 
@@ -88,23 +87,19 @@ def _cuttable(r, named):
 
 
 # ---- the mirror: three extents of one array ----------------------------------
-def _merge(prog, named):
+def _merge_extents(prog, named):
     """Stride-1 regions of one kind, one origin, whose extents overlap are one array.
 
     Overlapping bytes cannot be two arrays, and one origin is what says the
     accessors agree on shape: they index the same table from the same literal.
     Overlap alone was measured and refused -- it fuses per-copy columns.
     """
-    runs, remap = {}, {}
-    for r in sorted(prog.storage, key=lambda r: (r.base, r.id)):
+    by, remap = {}, {}
+    for r in prog.storage:
         # a byte merged into its neighbour prints as an index, not a name: +210 tokens
-        if not _cuttable(r, named) or r.size < 2:
-            continue
-        run = runs.setdefault((r.kind, r.zero), [[]])
-        if run[-1] and r.base >= max(q.base + q.size for q in run[-1]):
-            run.append([])
-        run[-1].append(r)
-    for rs in [rs for run in runs.values() for rs in run if len(rs) > 1]:
+        if _cuttable(r, named) and r.size > 1:
+            by.setdefault((r.kind, r.zero), []).append(r)
+    for rs in [g for one in by.values() for g in overlaps(one) if len(g) > 1]:
         keep, lo = min(rs, key=lambda r: r.id), rs[0].base
         n = max(r.base + r.size for r in rs) - lo
         image, seen = bytearray(n), bytearray(n)
@@ -157,8 +152,7 @@ def _uniform(claims):
     """True when every claim is the same width at one spacing: a record, not a fusion.
 
     The mechanism's premise is that the accessors are *not* all one shape; where
-    they are, the layout is a record and the stride views (:func:`~.views.field_split`,
-    :func:`~.views.transpose_split`) are what name it.
+    they are, the layout is a record and :func:`~.views.record_split` is what names it.
     """
     w = {hi - lo for lo, hi in claims}
     d = {b[0] - a[0] for a, b in zip(claims, claims[1:])}
@@ -168,16 +162,14 @@ def _uniform(claims):
 def _disagree(covers, claims):
     """True when some access is contained in no claim: the partition is a real boundary.
 
-    Every access inside one claim is that shape observed, however narrowly. An
-    access contained in none of them either crosses a boundary the claims drew or
-    lies wholly in the residue the parent keeps; both say the claims are not the
-    whole region. It is also the access :func:`_split` cannot move, so a partition
-    never orphans the parent and the parent's range overlaps its parts'.
+    An access contained in no claim crosses a boundary the claims drew or lies in
+    the residue the parent keeps; either way they are not the whole region. It is
+    the access :func:`_split_regions` cannot move, so the parent is never orphaned.
     """
     return any(not any(a <= c[1] and c[2] <= b for a, b in claims) for c, _w, _t in covers if c)
 
 
-def _kind(r, lo, hi, stores, band):
+def _part_kind(r, lo, hi, stores, band):
     """A part no store's envelope reaches is read-only, whatever its neighbours are."""
     if r.kind not in ("state", "init_constant") or any(a <= hi and lo <= b for a, b in stores):
         return r.kind
@@ -199,7 +191,7 @@ def _part(r, lo, hi, kind, rid):
     )
 
 
-def _split(prog, named, fields):
+def _split_regions(prog, named, fields):
     """Carve every region its accessors' shapes disagree about.
 
     Returns ``([part ids], [(region, low, high, part)])`` -- the parts, and the
@@ -225,7 +217,7 @@ def _split(prog, named, fields):
         stores = [(c[1], c[2]) for c, w, _t in covers if c and w]
         ids = range(nid, nid + len(claims))
         for (lo, hi), pid in zip(claims, ids):
-            new.append(_part(r, lo, hi, _kind(r, lo, hi, stores, band), pid))
+            new.append(_part(r, lo, hi, _part_kind(r, lo, hi, stores, band), pid))
             span.append((r.id, r.zero + lo, r.zero + hi, pid))
         for acc in byr[r.id]:
             k = _which(claims, acc.lo - r.zero)

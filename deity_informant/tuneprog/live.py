@@ -138,7 +138,7 @@ def live_out(proc):
     return out
 
 
-def _after(proc, outs):
+def _live_after(proc, outs):
     """``{(block, index): the names live just after that statement}``."""
     out = {}
     for lbl, b in proc.blocks.items():
@@ -183,22 +183,22 @@ def _stepped(proc, latched):
 
 def _coalesce(proc, seen):
     """One pass: coalesce every copy whose pair clashes with nothing, names once each."""
-    after, defs = _after(proc, live_out(proc)), {}
+    after, defs = _live_after(proc, live_out(proc)), {}
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
             for name in defs_of(s):
                 defs.setdefault(name, []).append((lbl, i))
     done, n = set(), 0
-    for lbl, i, tgt, src in _pairs(proc, *seen):
+    for lbl, i, tgt, src in _copy_pairs(proc, *seen):
         if tgt in done or src in done or _clash(defs, after, tgt, src, (lbl, i)):
             continue
-        _rename(proc, tgt, src)
+        _rename_value(proc, tgt, src)
         done |= {tgt, src}
         n += 1
     return n
 
 
-def _pairs(proc, latched, stepped):
+def _copy_pairs(proc, latched, stepped):
     """``[(block, index, target, source)]`` for every plain copy outside a latch.
 
     A latch's copy is the induction variable's step, which :mod:`.loops` reads; a
@@ -227,7 +227,7 @@ def _clash(defs, after, tgt, src, at):
     return False
 
 
-def _rename(proc, tgt, src):
+def _rename_value(proc, tgt, src):
     """Give every definition and use of ``tgt`` the name ``src``; drop the self-copies."""
     fn = renamer({tgt: Var(src)})
     for b in proc.blocks.values():

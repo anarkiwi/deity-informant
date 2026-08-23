@@ -249,13 +249,20 @@ class Rgn:
         return self.origin or self.base
 
     def extent(self, lo, hi):
-        """``(low, high)`` of an envelope inside the region, from its zero, or ``None``.
-
-        The one containment test every accessor-shape question asks.
-        """
+        """``(low, high)`` inside the region, from its zero: the one containment test."""
         if lo < self.base or hi > self.base + self.size - 1 or lo > hi:
             return None
         return lo - self.zero, hi - self.zero
+
+
+def overlaps(regions):
+    """``regions`` in base order, cut into runs of regions whose extents overlap."""
+    out = []
+    for r in sorted(regions, key=lambda r: (r.base, r.id)):
+        if not out or r.base > max(q.base + q.size - 1 for q in out[-1]):
+            out.append([])
+        out[-1].append(r)
+    return out
 
 
 def rgn_name(kind, base):

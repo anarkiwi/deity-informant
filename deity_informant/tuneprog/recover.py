@@ -182,7 +182,7 @@ def _tail_target(prog, name):
     return _tail_target(prog, tgt) if tgt is not None else name
 
 
-def _procs(prog, facts, names, structured):
+def _proc_names(prog, facts, names, structured):
     """Procedure names: the phase arms are the two rates, a record decoder is row_apply."""
     for name in prog.procs:
         names.procs[name] = name
@@ -327,7 +327,7 @@ def recover(prog, structured=None, facts=None):
     for rid, (g, _f) in list(names.view.items()):
         names.view[rid] = (g, names.region.get(rid, "b%04X" % facts.rgn[rid].base))
     _unrolled(prog, facts, names)
-    _procs(prog, facts, names, structured)
+    _proc_names(prog, facts, names, structured)
     return names
 
 

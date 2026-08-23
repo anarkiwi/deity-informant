@@ -83,7 +83,7 @@ def _ex(e, pre, fn):
         if e.op in MASKED or width(e.a) > e.w or width(e.b) > e.w:
             return "((%s %s %s) & %d)" % (a, e.op, b, MASK[e.w])
         return "(%s %s %s)" % (a, e.op, b)
-    a = _addr(e.a, e.lo, e.hi, e.w, pre, fn, 0)
+    a = _addr_temp(e.a, e.lo, e.hi, e.w, pre, fn, 0)
     if e.cls == "io":
         rd = "S.ioload(%s)"
     elif e.cls == "chk":
@@ -99,7 +99,7 @@ def _next(a):
     return "%s + 1" % a if a.isdigit() else "((%s + 1) & 65535)" % a
 
 
-def _addr(e, lo, hi, w, pre, fn, src):
+def _addr_temp(e, lo, hi, w, pre, fn, src):
     """Address expression, hoisted to a temp and envelope-checked when it can move."""
     a = _ex(e, pre, fn)
     if type(e) is Const:
@@ -147,7 +147,7 @@ def _store(s, out, fn, bands=(), pre_hook=False):
     :class:`~.interp.Interp` puts them too.
     """
     pre = []
-    a = _addr(s.a, s.lo, s.hi, s.w, pre, fn, s.src)
+    a = _addr_temp(s.a, s.lo, s.hi, s.w, pre, fn, s.src)
     v = _ex(s.v, pre, fn)
     out.extend(pre)
     if pre_hook:
@@ -176,7 +176,7 @@ def _store(s, out, fn, bands=(), pre_hook=False):
         out.append("S.setbank()")
 
 
-def _stmts(blk, out, fn, bands=(), pre_hook=False):
+def _emit_stmts(blk, out, fn, bands=(), pre_hook=False):
     for s in blk.stmts:
         t = type(s)
         if t is Let:
@@ -291,7 +291,7 @@ def emit_proc(proc, bands=(), pre_hook=False):
         if i % GROUP == 0:
             src.append("        if lbl < %d:" % min(i + GROUP, len(order)))
         body = []
-        _stmts(proc.blocks[lbl], body, fn, bands, pre_hook)
+        _emit_stmts(proc.blocks[lbl], body, fn, bands, pre_hook)
         _term(proc.blocks[lbl], idx, i + 1, body, fn)
         src.append("%sif lbl <= %d:" % (pad, i))
         src.extend(pad + "    " + line for line in body or ["pass"])

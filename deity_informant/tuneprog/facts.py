@@ -244,8 +244,8 @@ def scales(facts):
 def per_region(facts, per_index):
     """``{region: {value}}`` for every region an index of ``per_index`` walks.
 
-    One reading of :attr:`Facts.idxvar`: which record stride reaches a region
-    (:func:`scales`), and how many elements of a view an index selects.
+    One reading of :attr:`Facts.idxvar`: the record stride that reaches a region
+    (:func:`scales`), or how many elements of a view an index selects.
     """
     out = {}
     for n, rids in facts.idxvar.items():

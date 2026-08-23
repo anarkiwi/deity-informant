@@ -45,12 +45,12 @@ def _key(e, tabs):
     return None
 
 
-def _index(a):
+def _copy_index(a):
     """The copy index an address reads, or ``''``."""
     return next((x.n for x in walk(a) if type(x) is Var and x.n.startswith(COPYVAR)), "")
 
 
-def _accesses(s):
+def _stmt_accesses(s):
     """``(address, region)`` of every memory access one statement makes."""
     if type(s) is Store:
         yield s.a, s.r
@@ -86,17 +86,17 @@ def _collect(view, tabs):
             if k is None:
                 continue
             col = cols.setdefault(k, Col(x, tabs[k[0]].init, tabs[k[0]].base))
-            col.vars.add(_index(x.a))
+            col.vars.add(_copy_index(x.a))
         if type(s) is Let and _key(s.e, tabs) is not None:
-            byvar[s.n] = (_key(s.e, tabs), _index(s.e.a))
+            byvar[s.n] = (_key(s.e, tabs), _copy_index(s.e.a))
     for s in _nodes(view):
-        for a, rid in _accesses(s):
+        for a, rid in _stmt_accesses(s):
             for k in () if rid in tabs else _reads(a, tabs, byvar):
                 cols[k].targets.add(rid)
     return cols, byvar
 
 
-def _plan(col, rgn):
+def _col_plan(col, rgn):
     """``(substitution, per-copy cells)`` a column prints as; ``(None, None)`` keeps it.
 
     An affine column becomes an expression, which is exact; a column a group view
@@ -132,7 +132,7 @@ def _plans(view, tabs):
     cols, byvar = _collect(view, tabs)
     subs, slots, byrgn, rgn = {}, {}, {}, view.by_id()
     for k, col in cols.items():
-        plan, cells = _plan(col, rgn)
+        plan, cells = _col_plan(col, rgn)
         if plan is None:
             continue
         subs[k] = plan
@@ -140,11 +140,11 @@ def _plans(view, tabs):
             slots[k] = cells
         elif plan[0] == "index" and col.target is not None and col.target >= 0:
             byrgn[k] = {col.target}
-    _split(subs, slots)
+    _split_shared(subs, slots)
     return cols, byvar, subs, slots, byrgn
 
 
-def _rewrite(view, tabs, byvar, subs, reads):
+def _rewrite_columns(view, tabs, byvar, subs, reads):
     """Substitute every planned column read, then drop the reads nothing needs.
 
     The index is the one that occurrence reads, so a procedure and its clone --
@@ -153,7 +153,7 @@ def _rewrite(view, tabs, byvar, subs, reads):
 
     def fn(e):
         k = _key(e, tabs)
-        hit = byvar.get(e.n) if type(e) is Var else (k, _index(e.a)) if k else None
+        hit = byvar.get(e.n) if type(e) is Var else (k, _copy_index(e.a)) if k else None
         plan = subs.get(hit[0]) if hit else None
         if plan is None:
             return e
@@ -177,7 +177,7 @@ def _rewrite(view, tabs, byvar, subs, reads):
             ]
 
 
-def _split(subs, slots):
+def _split_shared(subs, slots):
     """Drop the columns two different fields would share a cell name.
 
     Copy 0 agreeing does not make two columns one field; where their later copies
@@ -244,7 +244,7 @@ def expand(view):
     cols, byvar, subs, slots, byrgn = _plans(view, tabs)
     if not subs:
         return []
-    _rewrite(view, tabs, byvar, subs, _hoisted(view, tabs))
+    _rewrite_columns(view, tabs, byvar, subs, _hoisted(view, tabs))
     out = _folds(cols, slots, byrgn)
     view.meta["copyviews"] = out
     return out
@@ -253,8 +253,8 @@ def expand(view):
 def remap_cells(prog, moves):
     """Point the folds' per-copy cells at the region each ``moves`` entry now owns.
 
-    ``[(region, low, high, new region)]``. A slot is keyed by its first cell, which
-    only :func:`_folds` and this rekeying know (:func:`~.partition.repartition`).
+    ``[(region, low, high, new region)]``; a slot is keyed by its first cell, which
+    only :func:`_folds` and this rekeying know.
     """
 
     def at(cell):
@@ -271,10 +271,7 @@ def remap_cells(prog, moves):
 
 
 def fold_fields(prog):
-    """``{region: [{the addresses one fold names as one field}]}`` -- a view not to cut.
-
-    The fold proved those cells one field of one record.
-    """
+    """``{region: [{the addresses one fold names as one field}]}`` -- a view not to cut."""
     out = {}
     for f in prog.meta.get("copyviews") or ():
         for cells in (f.get("slots") or {}).values():
@@ -301,7 +298,7 @@ def naming_facts(view):
     flat = {
         k: ("const", cols[k].vals[0], cols[k].w) if p[0] == "read" else p for k, p in subs.items()
     }
-    _rewrite(twin, tabs, byvar, flat, {})
+    _rewrite_columns(twin, tabs, byvar, flat, {})
     return Facts(twin)
 
 

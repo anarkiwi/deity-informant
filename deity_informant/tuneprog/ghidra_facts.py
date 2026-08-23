@@ -20,7 +20,7 @@ RTS = 0x60
 META = ("init", "play", "load", "song", "songs", "calls", "period", "first_repeat")
 
 
-def _kind(ls):
+def _smc_kind(ls):
     """The SMC kind of an operand cell: a patched ``JMP (ind)`` pointer is data."""
     if ls.mode == "ind":
         return "addr"
@@ -42,7 +42,7 @@ def smc_cells(trace, lifted):
         rec["len"] = max(rec["len"], ls.length)
         rec["cells"] = sorted(set(rec["cells"]) | set(cells))
         rec["mnemonic"], rec["mode"] = ls.mnemonic, ls.mode
-        kind = _kind(ls)
+        kind = _smc_kind(ls)
         if any(c != ls.pc for c in cells) and kind not in rec["kinds"]:
             rec["kinds"].append(kind)
     for pc, rec in out.items():

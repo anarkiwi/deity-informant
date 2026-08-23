@@ -226,7 +226,7 @@ def merge_switches(proc):
             continue
         pairs = dict(proc.blocks[mid].term.cases)
         for v, arm in b.term.cases:
-            proc.blocks[arm].stmts.extend(_copy(s) for s in proc.blocks[mid].stmts)
+            proc.blocks[arm].stmts.extend(_copy_stmt(s) for s in proc.blocks[mid].stmts)
             proc.blocks[arm].term = Goto(pairs[v])
         del proc.blocks[mid]
         prune(proc)
@@ -266,7 +266,7 @@ def _stable(proc, term, mid):
     return True
 
 
-def _copy(s):
+def _copy_stmt(s):
     t = type(s)
     if t is Let:
         return Let(s.n, s.e)

@@ -42,7 +42,7 @@ def _defcounts(proc):
     return Counter(n for b in proc.blocks.values() for s in b.stmts for n in defs_of(s))
 
 
-def _rename(proc, old, new):
+def _rename_slot(proc, old, new):
     """Give the value ``old`` the slot's name, definition and uses alike."""
     for b in proc.blocks.values():
         for s in b.stmts:
@@ -71,7 +71,7 @@ def _slotname(proc, name, make):
     if name.split("#")[0] in REGIDX or name.startswith(SLOT):
         return name
     new = make()
-    _rename(proc, name, new)
+    _rename_slot(proc, name, new)
     return new
 
 
@@ -82,7 +82,7 @@ def _slotted(proc, val, defs, make):
     return Var(_slotname(proc, val.n, make), val.w)
 
 
-def _forward(proc, frame, make):
+def _forward_pushes(proc, frame, make):
     """The plan's pushes as values; every other stack store is the machine's own."""
     defs, sub, edits, gone = _defcounts(proc), {}, {}, set()
     for pushes, keys in frame.plan:
@@ -202,7 +202,7 @@ def eliminate(prog):
     if not bad:
         make = fresh(out)
         for name, f in info.items():
-            _forward(out.procs[name], f, make)
+            _forward_pushes(out.procs[name], f, make)
         _drop_sp(out)
         for p in out.procs.values():
             dce(p)

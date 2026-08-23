@@ -168,9 +168,9 @@ Acc = namedtuple("Acc", "proc rid store base idx lo hi")  # one accessor's shape
 def accessors(prog, procs=None):
     """Every load and store of ``procs`` (all of them by default) as an :data:`Acc`.
 
-    ``base``/``idx`` are the address split, ``lo``/``hi`` the envelope it stays
-    inside: the one enumeration every region-shape question is asked of (the
-    partition's claims, the record views' fields, the data section's reach).
+    ``base``/``idx`` are the address split and ``lo``/``hi`` the envelope it stays
+    inside: the one enumeration the partition's claims, the record views' fields
+    and the data section's reach are all read from.
     """
     for name, p in prog.procs.items():
         if procs is not None and name not in procs:

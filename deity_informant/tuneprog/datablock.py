@@ -7,6 +7,7 @@ that one frequency layout names, are one block, printed in the layout S6 knows.
 
 from __future__ import annotations
 
+from .ir import overlaps
 from .irwalk import accessors
 from .partition import SPLITTABLE
 
@@ -84,13 +85,7 @@ def blocks(prog, names, reached, wrote):
     lists: it names no block and joins none.
     """
     reached = {i: c for i, c in reached.items() if any(not wrote[a] for a in c)}
-    rs = sorted((r for r in prog.storage if r.id in reached), key=lambda r: (r.base, r.id))
-    groups, end = [], -1
-    for r in rs:
-        if not groups or r.base > end:
-            groups.append([])
-        groups[-1].append(r)
-        end = max(end, r.base + r.size - 1)
+    groups = overlaps(r for r in prog.storage if r.id in reached)
     at = {r.id: i for i, g in enumerate(groups) for r in g}
     join = {}
 
@@ -135,7 +130,7 @@ def _fields(names, blk, k):
     return out
 
 
-def _name(names, blk, kind, arg):
+def _block_name(names, blk, kind, arg):
     """A block's name: the record view's group, or the region the block starts at."""
     r = blk.members[0]
     view = names.view.get(r.id) or names.split.get(r.id)
@@ -153,7 +148,7 @@ def _head(names, blk, kind, arg):
     return (
         "%-16s $%04X %-18s %-10s %s"
         % (
-            _name(names, blk, kind, arg),
+            _block_name(names, blk, kind, arg),
             blk.base,
             "%d bytes%s" % (len(blk.reach), " stride %d" % arg if kind == "record" else ""),
             names.role.get(blk.members[0].id, ""),
@@ -186,7 +181,7 @@ def _hexrows(img, addrs):
     return out
 
 
-def _entries(key, rgn, lay):
+def _note_entries(key, rgn, lay):
     """``[(low address, high address)]`` of a note table's entries, in entry order."""
     kind, n, _cut = lay
     addrs = [a for i in key for a in range(rgn[i].base, rgn[i].base + rgn[i].size)]
@@ -199,7 +194,7 @@ def _entries(key, rgn, lay):
 def _u16rows(rgn, img, blk, key, lay):
     """A note table as 16-bit entries, :data:`ROW` bytes to the row; the rest as hex."""
     out, left, row, at = [], set(blk.data), [], None
-    for lo, hi in _entries(key, rgn, lay):
+    for lo, hi in _note_entries(key, rgn, lay):
         at = min(lo, hi) if at is None else at  # a hi|lo table's low column is the upper one
         both = lo in blk.data and hi in blk.data
         left -= {lo, hi} if both else set()  # a half whose partner is state still prints, as hex

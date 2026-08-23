@@ -95,7 +95,7 @@ class _DSU(dict):
                 self[s] = r
 
 
-def _accesses(trace, lifted):
+def _site_accesses(trace, lifted):
     """``[(site key, op index, 'r'|'w'|'c', frozenset addrs)]`` -- one per access."""
     out = []
     for key, s in trace.sites.items():
@@ -151,7 +151,7 @@ def _domain_gcd(values):
     return g
 
 
-def _kind(addrs, trace, init_kind="init_constant", ram=frozenset()):
+def _region_kind(addrs, trace, init_kind="init_constant", ram=frozenset()):
     if any(IO_LO <= a <= IO_HI for a in addrs) and not addrs & ram:
         return "io"
     if addrs & trace.written_play:
@@ -169,7 +169,7 @@ def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
     subtune (the printer folds it), ``state`` for a union over subtunes. ``unite``
     names accesses a copy fold made one, whose region is then their union.
     """
-    accesses = _accesses(trace, lifted)
+    accesses = _site_accesses(trace, lifted)
     ram_io = _ram_io(trace, accesses)
     dsu = _DSU()
     for _key, _i, _m, addrs in accesses:
@@ -185,7 +185,7 @@ def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
     regions = []
     for n, (root, addrs) in enumerate(sorted(groups.items(), key=lambda kv: min(kv[1]))):
         base = min(addrs)
-        kind = _kind(addrs, trace, init_kind, ram_io)
+        kind = _region_kind(addrs, trace, init_kind, ram_io)
         r = Region(
             id=n,
             name=rgn_name(kind, base),

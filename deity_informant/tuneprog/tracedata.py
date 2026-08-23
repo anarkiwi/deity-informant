@@ -408,7 +408,7 @@ def merge(traces):
         for e, (kind, n) in t.edges.items():
             hit = out.edges.get(e)
             out.edges[e] = [
-                kind if hit is None else _kind(hit[0], kind),
+                kind if hit is None else _edge_kind(hit[0], kind),
                 n + (hit[1] if hit else 0),
             ]
         for k, v in t.calls.items():
@@ -443,6 +443,6 @@ def merge(traces):
     return out
 
 
-def _kind(a, b):
+def _edge_kind(a, b):
     """The edge kind two subtunes agree on: a tail entry wins over a plain jump."""
     return a if a == b else ("tail" if "tail" in (a, b) else a)

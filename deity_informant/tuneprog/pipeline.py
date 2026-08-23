@@ -95,7 +95,7 @@ def _subdir(out, song):
     return out / ("s%02d" % song)
 
 
-def _stop(args, tr, target, free=True):
+def _why_stopped(args, tr, target, free=True):
     """Why this subtune stopped: a state repeat, the tick horizon, or not yet (budget)."""
     if args.until_period and tr.witness(free) is not None:
         return "period"
@@ -122,7 +122,7 @@ def _certified(args, witness, traced):
     return witness + 1 if args.until_period and witness is not None else traced
 
 
-def _target(args, entry):
+def _tick_target(args, entry):
     if args.calls:
         return args.calls
     if args.seconds:
@@ -145,7 +145,7 @@ def stage_trace(args, out, st, t0, log=print):
         override = {0xD41B: MODEL_D41B[args.sid_model]} if args.sid_model else None
         tr = Tracer(img, entry, song=song, override=override)
         tr.run_init()
-    target, free = _target(args, entry), _free(st)
+    target, free = _tick_target(args, entry), _free(st)
     while tr.calls_done < target and not (args.until_period and tr.witness(free) is not None):
         tr.run_calls(min(args.chunk, target - tr.calls_done))
         st["calls"] = tr.calls_done
@@ -179,7 +179,7 @@ def trace_all(args, out, st, t0, log=print):
     songs = st.setdefault("songs", list(range(1, img.songs + 1)))
     entry = shared_entry(data, songs)
     done = st.setdefault("traced", {})
-    target, free = _target(args, entry), _free(st)
+    target, free = _tick_target(args, entry), _free(st)
     for song in songs:
         rec = done.get(str(song))
         if rec and rec["stop"]:
@@ -195,7 +195,7 @@ def trace_all(args, out, st, t0, log=print):
             tr.run_calls(min(args.chunk, target - tr.calls_done))
             if time.process_time() - t0 > args.budget:
                 break
-        stop = _stop(args, tr, target, free)
+        stop = _why_stopped(args, tr, target, free)
         calls = _certified(args, tr.witness(free), tr.calls_done)
         full = tr.witness(False) is not None
         done[str(song)] = {"calls": calls, "stop": stop, "horizon": horizon(args), "full": full}
