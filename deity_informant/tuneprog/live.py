@@ -7,8 +7,11 @@ the call graph and drops the rest. The certified program is never edited.
 
 from __future__ import annotations
 
-from .ir import Assert, Call, Let, REGVAR, Return, Store, W16, retval
-from .irwalk import call_order, pure, stmt_uses, term_uses, uses_of
+from .graph import latches as _latches
+from .ir import Assert, Call, Let, REGIDX, REGVAR, Return, Store, Var, W16, copyval, retval
+from .ir import succs
+from .irwalk import apply_stmt, apply_term, call_order, defs_of, pure, renamer
+from .irwalk import stmt_uses, term_uses, use_counts, uses_of
 
 
 def wants(prog, live):
@@ -86,6 +89,156 @@ def needed(prog, rounds=3):
             break
         rets = want
     return used, params
+
+
+def dead(prog):
+    """Delete every ``Let`` nothing reads whose value has no effect; returns the count.
+
+    :func:`needed` answers the same question over the call graph and from the roots
+    down; this is the same use relation (:func:`~.irwalk.use_counts`, which is
+    :func:`~.irwalk.stmt_uses` over every node) counted per name, which is what a
+    view already shaped for reading needs. A ``Call`` return is not a ``Let``, and a
+    load of a pinned input is not pure, so neither is ever dropped.
+    """
+    n = 0
+    for proc in prog.procs.values():
+        while True:
+            uses, gone = use_counts(proc), 0
+            for b in proc.blocks.values():
+                keep = [s for s in b.stmts if type(s) is not Let or uses[s.n] or not pure(s.e)]
+                gone += len(b.stmts) - len(keep)
+                b.stmts[:] = keep
+            n += gone
+            if not gone:
+                break
+    return n
+
+
+# ---- live ranges over one procedure ------------------------------------------
+def live_out(proc):
+    """``{block: the names live on leaving it}``, by the backward fixpoint over the uses."""
+    up, kill = {}, {}
+    for lbl, b in proc.blocks.items():
+        u, k = set(), set()
+        for s in b.stmts:
+            u |= stmt_uses(s, set()) - k
+            k |= set(defs_of(s))
+        up[lbl], kill[lbl] = u | (term_uses(b.term, set()) - k), k
+    out = {lbl: set() for lbl in proc.blocks}
+    work = True
+    while work:
+        work = False
+        for lbl, b in proc.blocks.items():
+            got = set()
+            for nxt in succs(b.term):
+                if nxt in proc.blocks:
+                    got |= up[nxt] | (out[nxt] - kill[nxt])
+            if got != out[lbl]:
+                out[lbl], work = got, True
+    return out
+
+
+def _after(proc, outs):
+    """``{(block, index): the names live just after that statement}``."""
+    out = {}
+    for lbl, b in proc.blocks.items():
+        live = set(outs[lbl]) | term_uses(b.term, set())
+        for i in range(len(b.stmts) - 1, -1, -1):
+            out[(lbl, i)] = set(live)
+            live -= set(defs_of(b.stmts[i]))
+            stmt_uses(b.stmts[i], live)
+    return out
+
+
+# ---- the copies a join leaves ------------------------------------------------
+def coalesce(prog, rounds=8):
+    """A register copy goes when its two names never hold different values at once.
+
+    Phi elimination leaves one copy per arm at every join, and neither name has a
+    single definition, so :func:`~.texture.propagate` cannot forward it. Renaming
+    the target to the source is sound exactly where their live ranges do not meet.
+    """
+    n = 0
+    for proc in prog.procs.values():
+        latched = _latches(proc)
+        seen = (latched, _stepped(proc, latched))
+        for _ in range(rounds):
+            got = _coalesce(proc, seen)
+            n += got
+            if not got:
+                break
+    return n
+
+
+def _stepped(proc, latched):
+    """The names a latch copy joins: the induction chain :func:`~.loops.stepping` states."""
+    return {
+        x
+        for l in latched
+        for s in proc.blocks[l].stmts
+        if type(s) is Let and type(s.e) is Var
+        for x in (s.n, s.e.n)
+    }
+
+
+def _coalesce(proc, seen):
+    """One pass: coalesce every copy whose pair clashes with nothing, names once each."""
+    after, defs = _after(proc, live_out(proc)), {}
+    for lbl, b in proc.blocks.items():
+        for i, s in enumerate(b.stmts):
+            for name in defs_of(s):
+                defs.setdefault(name, []).append((lbl, i))
+    done, n = set(), 0
+    for lbl, i, tgt, src in _pairs(proc, *seen):
+        if tgt in done or src in done or _clash(defs, after, tgt, src, (lbl, i)):
+            continue
+        _rename(proc, tgt, src)
+        done |= {tgt, src}
+        n += 1
+    return n
+
+
+def _pairs(proc, latched, stepped):
+    """``[(block, index, target, source)]`` for every plain copy outside a latch.
+
+    A latch's copy is the induction variable's step, which :mod:`.loops` reads; a
+    copy-fold name and a flag name are not this procedure's to rename.
+    """
+    return [
+        (lbl, i, s.n, s.e.n)
+        for lbl in sorted(proc.blocks)  # a greedy choice may not depend on the dict's order
+        if lbl not in latched
+        for i, s in enumerate(proc.blocks[lbl].stmts)
+        if type(s) is Let and type(s.e) is Var and s.n != s.e.n
+        if _plain(s.n) and _plain(s.e.n) and not {s.n, s.e.n} & stepped
+    ]
+
+
+def _plain(name):
+    """True for a name this procedure defines and no other pass keys on."""
+    return not name.startswith("$") and not copyval(name) and name not in REGIDX
+
+
+def _clash(defs, after, tgt, src, at):
+    """True when the two names are both live at a definition of either, bar the copy."""
+    for a, b in ((tgt, src), (src, tgt)):
+        if any(pos != at and b in after[pos] for pos in defs.get(a, ())):
+            return True
+    return False
+
+
+def _rename(proc, tgt, src):
+    """Give every definition and use of ``tgt`` the name ``src``; drop the self-copies."""
+    fn = renamer({tgt: Var(src)})
+    for b in proc.blocks.values():
+        for s in b.stmts:
+            if type(s) is Call:
+                s.rets = tuple(src if r == tgt else r for r in s.rets)
+            elif getattr(s, "n", None) == tgt:
+                s.n = src
+            apply_stmt(s, fn)
+        apply_term(b.term, fn)
+        b.stmts[:] = [s for s in b.stmts if not (type(s) is Let and s.e == Var(src) and s.n == src)]
 
 
 def printable(s, live):

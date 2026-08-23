@@ -109,6 +109,15 @@ def loadfree(e):
     return loadfree(e.a) and loadfree(e.b) if t is Bin else True
 
 
+def reads_region(e, rids):
+    """True when the value of ``e`` reads one of ``rids``, through a byte or a pair."""
+    return any(
+        (x.lo[0] in rids or x.hi[0] in rids) if type(x) is R16 else x.r in rids
+        for x in walk(e)
+        if type(x) in (Load, R16)
+    )
+
+
 def addr_split(e):
     """``(constant base, index)`` of an address expression; ``(None, e)`` if neither."""
     if type(e) is Const:

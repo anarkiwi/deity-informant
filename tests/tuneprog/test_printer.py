@@ -481,7 +481,7 @@ def test_the_v_flag_of_a_subtract_prints_as_one_overflow_test():
         ),
         calls=6,
     )
-    assert re.search(r"if overflow\(\w+ - \w+\)", doc), doc
+    assert re.search(r"overflow\(\w+ - \w+\)", doc), doc  # the branch, taken or marked
     assert " & (" not in doc  # none of the flag plumbing is left
 
 
@@ -506,3 +506,100 @@ def test_a_sign_extended_byte_prints_as_sext():
         2,
     )
     assert p.expr(e) == "($1953 + sext(mem[$1934]))"  # the shape a patched branch adds
+
+
+# ---- the coverage marks and the counted loop's own header --------------------
+UNTAKEN = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA cnt",
+    "RTS",
+    "play: INC cnt",
+    "LDA cnt",
+    "CMP #$F0",
+    "BCC over",
+    "LDA #$07",
+    "STA $D404",
+    "over: LDA #$0F",
+    "STA $D418",
+    "RTS",
+    "cnt: BRK",
+)
+
+
+def test_a_branch_direction_the_trace_never_took_is_a_mark_not_an_arm():
+    doc = printed(UNTAKEN)
+    assert "trap 'untaken'" not in doc, doc
+    assert re.search(r"# untaken: \(?\w+ >= \$F0", doc), doc
+    assert re.search(r"^untaken   1 branch direction", doc, re.M), doc
+
+
+def test_a_branch_the_trace_took_both_ways_keeps_its_arm():
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: INC cnt",
+        "LDA cnt",
+        "AND #$01",
+        "BEQ over",
+        "LDA #$07",
+        "STA $D404",
+        "over: LDA #$0F",
+        "STA $D418",
+        "RTS",
+        "cnt: BRK",
+    )
+    doc = printed(code)
+    assert "# untaken" not in doc, doc
+    assert re.search(r"^\s+if .*:", doc, re.M), doc
+
+
+def test_a_counted_loop_does_not_also_print_where_its_index_starts():
+    doc = printed(counter("LDX #$03", "lp: STX $D400", "DEX", "BNE lp"))
+    assert "for v in 3, 2, 1:" in doc, doc
+    assert not re.search(r"^\s+x\d* = 3$", doc, re.M), doc
+
+
+def test_the_carry_flag_prints_under_its_own_name_not_a_version_number():
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA lo",
+        "STA hi",
+        "RTS",
+        "play: LDA lo",
+        "CLC",
+        "ADC #$40",
+        "STA lo",
+        "PHP",
+        "LDA #$07",
+        "STA $D404",
+        "LDA hi",
+        "PLP",
+        "ADC #$00",
+        "STA hi",
+        "RTS",
+        "lo: BRK",
+        "hi: BRK",
+    )
+    doc = printed(code)
+    assert not re.search(r"\bc\d+\b", doc), doc  # the flag is never a letter and a version
+
+
+def _namer(folded=()):
+    p = pseudocode.Printer.__new__(pseudocode.Printer)
+    p.alias, p.tmp, p.flags, p.proc, p.prog = {}, {}, {"": set(folded)}, "", Tuneprog()
+    return p
+
+
+def test_two_carries_alive_at_once_keep_two_names():
+    p = _namer()
+    assert (p.var("C#1"), p.var("C#2"), p.var("C#1")) == ("carry", "carry_2", "carry")
+    assert p.var("A#3") == "a3"  # every other register keeps its letter and version
+    assert p.var("C") == "c"  # the parameter is the register, not one of its versions
+
+
+def test_a_folded_carry_already_holds_the_name():
+    assert _namer(["$carry"]).var("C#1") == "carry_2"

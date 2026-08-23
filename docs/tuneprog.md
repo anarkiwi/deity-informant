@@ -45,7 +45,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails | `inline.py`, `texture.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, the three readings of one storage cell (mirrors, a slot stored once, the value a read-modify-write leaves), the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails, then dead values and the copies a join leaves | `inline.py`, `texture.py`, `cells.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -65,14 +65,14 @@ front end    machine 305  cia 248  nmi 204  tracevm 488  tracesite 185
 program      ir 443  interp 288  irwalk 319  graph 82  lower 264  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 403
              verify 423  period 113
-presentation structure 383  loops 307  inline 199  texture 479  frame 51
-             partition 285  halves 224  word 197  fold 472  tails 290
-             copyview 279  unroll 399  live 96  facts 284  recover 415
-             views 295  gated 134  ranges 76
-text         pseudocode 481  printer 408
-driver       pipeline 484  resume 67  __init__ 138
+presentation structure 383  loops 307  inline 192  texture 308  cells 275
+             frame 51  partition 285  halves 224  word 197  fold 472
+             tails 290  copyview 279  unroll 399  live 249  facts 284
+             recover 415  views 295  gated 134  ranges 76
+text         pseudocode 485  printer 452
+driver       pipeline 489  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,491 lines
+baseline     ghidra_facts 219  ghidra_compare 182   58 modules, 16,809 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -263,8 +263,10 @@ The committed certificates are all trace-closed. Measured at 30 s of music,
 | `ghouls-song01` | 747 → 832 | 27 → 39 | 28 → 3 | 76 |
 | `sw-emomyst` | 1,316 → 1,854 | 0 → 2 | 49 → 1 | 114 |
 
-The traps go and the *covered* program is structured worse, so the default stays
-`trace`. A closed arm costs nothing itself (S5/S6 work on the covered subgraph
+Measured before the untaken direction became a mark: the trap column is now
+`meta`'s `untaken` row, which the mark leaves unchanged, and the printed-line
+column falls with the arms. The traps go and the *covered* program is structured
+worse, so the default stays `trace`. A closed arm costs nothing itself (S5/S6 work on the covered subgraph
 alone, `graph.edges_of`); the cost is the covered *graph*, where a closed path
 rejoining inside a covered block splits it and the extra predecessor stops
 `merge_chains` gluing the pieces.
@@ -438,7 +440,10 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   the traced interleaving* only ([prototype-nmi.md](prototype-nmi.md)).
 - **Trace closure.** A branch direction or table entry the run never took becomes
   `trap 'untaken'` / `trap 'unverified'`, not a decompiled path; `--closure static`
-  decompiles what the post-init image states, at the cost measured above.
+  decompiles what the post-init image states, at the cost measured above. A branch
+  whose one direction is a bare untaken trap prints as a `# untaken: <condition>`
+  mark on the first line the covered direction reaches, and `meta` carries the
+  count; a switch arm still prints its trap.
   `jumptab` closes a patched jump over the table's observed extent — 14 of 16 arms
   in GoatTracker's tick-0 table, entries no accessor reached lying outside the
   region. Two bounds narrow that extent without adding candidates: a merged

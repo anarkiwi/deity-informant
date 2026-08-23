@@ -129,7 +129,7 @@ def test_automatas_has_no_machine_texture_left_in_the_hot_path():
     assert "for v in 0, 1, 2:" in rows and rows.count("switch v:") == 5, rows
 
     # the residue is the preamble each copy has of its own, and nothing else
-    gotos = {l.strip() for l in text.splitlines() if l.strip().startswith("goto")}
+    gotos = {l.strip().split("  #")[0] for l in text.splitlines() if l.strip().startswith("goto")}
     assert len(gotos) == 2 and all(g.startswith("goto L1") for g in gotos), gotos
     assert len(_temps(text)) <= 76, sorted(_temps(text))
 

@@ -7,7 +7,7 @@ read stops it, and a use in another block needs that block to be the definer's.
 
 from __future__ import annotations
 
-from .graph import cfg, idoms, natural_loops, preds_of
+from .graph import latches as _latches, preds_of
 from .ir import Bin, Call, Const, Let, Load, Return, Store, Var, retval, succs
 from .irwalk import (
     Uses,
@@ -122,12 +122,11 @@ def _positions(proc):
     return where
 
 
-def values(proc, live=None, keep=()):
+def values(proc, live=None, keep=(), dup=True):
     """Fold a value into its uses, past statements that cannot alias it.
 
-    A use may sit in another block when that block is reachable only through the
-    definition's. ``keep`` names the return registers a reader wants: the host's,
-    and the ones a caller reads.
+    ``keep`` names the return registers a reader wants; ``dup=False`` folds only a
+    value with one use, so no expression is written twice.
     """
     if live is not None:
         want = {0} if retval(proc) is not None else set()
@@ -142,7 +141,7 @@ def values(proc, live=None, keep=()):
                     else tuple(v if i in slots else Const(0) for i, v in enumerate(b.term.vals))
                 )
     uses, where, preds = use_counts(proc), _positions(proc), preds_of(proc)
-    latches = _latches(proc, preds)
+    latches = _latches(proc)
     defs = {}
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
@@ -155,18 +154,12 @@ def values(proc, live=None, keep=()):
         if not pos or len(pos) != uses[n] or type(e) is Var or _feeds_copy(proc, pos, latches):
             continue
         ls = _loads(e, single, cache)
-        if len(pos) > 1 and (_cost(e) > 1 or any(_input(x) for x in ls)):
+        if len(pos) > 1 and (not dup or _cost(e) > 1 or any(_input(x) for x in ls)):
             continue
         own = owns.setdefault(lbl, _own(proc, preds, lbl))
         if not _blocked(proc, own, lbl, at, pos, ls):
             sub[n] = e
     return _apply_sub(proc, sub)
-
-
-def _latches(proc, preds):
-    """The blocks that close a loop: their copies are the induction variables."""
-    g = cfg(proc)
-    return {l for _b, ls in natural_loops(g, idoms(proc, g), preds).values() for l in ls}
 
 
 def _feeds_copy(proc, pos, latches):
