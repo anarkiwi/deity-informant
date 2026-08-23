@@ -1,6 +1,6 @@
 """S4 -- SSA over registers, flags and uniques, then DCE and copy/constant propagation.
 
-Memory stays in program order (no memory SSA, design section 5 S4): only the
+Memory stays in program order (no memory SSA, architecture section 4): only the
 register/flag values and the lifter's uniques are renamed. Uniques are already
 single-assignment (:mod:`.build` names them per block), so phi nodes appear only
 for the 6510 register file, and pruned insertion (a phi only where the variable

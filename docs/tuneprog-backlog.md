@@ -1,29 +1,23 @@
-# tuneprog — plan v4
+# tuneprog — backlog
 
-Companion to [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md) (the
-design), [tuneprog.md](tuneprog.md) (what is built), the `prototype-*.md` records
-and [survey-tuneprog.md](survey-tuneprog.md). Sections: 1 where we are ·
-2 backlog (open rows by lever) · 3 done ledger · 4 process and execution order.
+Open work on the tuneprog decompiler, grouped by lever, then the done ledger and
+the execution order. What the decompiler *is*, what it certifies, the measured
+boundaries that are not work, and the stage process are
+[tuneprog-architecture.md](tuneprog-architecture.md); the campaign that sized this
+list is [survey-tuneprog.md](survey-tuneprog.md).
 
 ## 1. Where we are
 
-| | |
-|---|---|
-| certified | 51 certificates, 759,353 ticks, 0 divergences, 0 envelope traps; 42 complete via periodicity, `--songs all` complete on 31/32 subtunes; no tune-specific code in the front end for any anatomy mechanism. Families: defMON (*Automatas*, both SID models), Hubbard (Commando 1–2), Follin (Ghouls 32 subtunes + union), GoatTracker 2 ×2, SID Wizard ×2, JCH V20 ×3 (incl. the two-entry *Easy Does It*), installed-handler ×2 (*Jodler*, *Playful Professor*), dead-NMI ×2 (*Alien_3*, *Jazzpjazz*), patched-dispatch ×2 (*Experiment Zeta* complete at period 5,184, *Deflektor* 30 s) |
-| certify at 15 s, not run to length | Blackbird (Quintessence), Galway (Comic Bakery), Walker (Chameleon) |
-| refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
-| survey ([survey-tuneprog.md](survey-tuneprog.md)) | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight. 58 CPU-h on the old tracer |
-| code | `deity_informant/tuneprog/`, 60 modules, 17,582 lines, none over 500; 790 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction; `tools/tuneprog_certify.py`, `tuneprog_recert.py` (51/51), `tuneprog_period.py`, `tuneprog_ghidra.py`, `tuneprog_floor.py`, `tuneprog_nmi.py`, `tools/survey/` |
-| baseline | Ghidra high P-code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — baseline, not core; three Ghidra oracles, nightly over 51/51, `ours_bigger` 0 and the emulator agreeing with every certificate; `sidplayfp` grid oracle |
-| merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
+The certified set, the survey headline, the code and test counts and the baseline
+are [tuneprog-architecture.md](tuneprog-architecture.md) §9; the measured
+boundaries that are not work are §8.3 there.
 
 ## 2. Backlog
 
-Open work only, grouped by lever; §2.8 holds measured boundaries that are not
-work. `owner` = the modules that change. Size: small ≤ 1 day of one agent,
-medium ≤ 1 stage, large = a stage with a prototype. Measurements marked *12-run*
-are over 12 certificate tunes, one per family, at a 5 s `--no-verify` horizon
-(2026-08-22); *P-EQSAT*/*P-FLOOR* are §3's rows.
+Open work only, grouped by lever. `owner` = the modules that change. Size:
+small ≤ 1 day of one agent, medium ≤ 1 stage, large = a stage with a prototype.
+Measurements marked *12-run* are over 12 certificate tunes, one per family, at a
+5 s `--no-verify` horizon (2026-08-22); *P-EQSAT*/*P-FLOOR* are §3's rows.
 
 ### 2.1 Storage typing
 
@@ -37,7 +31,7 @@ are over 12 certificate tunes, one per family, at a 5 s `--no-verify` horizon
 
 Struck by #282: the SID register pair landed as a print convention over the rows
 `unroll` aligned, and the two shapes the pair alone does not reach are measured
-boundaries (§2.8) -- the control-join halves are one site on one tune, and the
+boundaries (architecture §8.3) -- the control-join halves are one site on one tune, and the
 nested-borrow compare has none of the shape the row names.
 
 ### 2.3 Expression layer
@@ -94,7 +88,7 @@ domain is an expression: `loops.repeats`). What is left is the closure work.
 |---|---|---|---|---|---|
 | `tuneprog_recert.py --resume` replays a previous tree's verdicts from a reused `--out` | stamp tree identity (HEAD or module digests) in `recert.json` | Q8 | tuneprog_recert | small | a stale state file is refused |
 | the sweep's `cpu_trace` bills S0 entry discovery to S1; a `no entry` refusal costs 14.6 CPU-s each (46 of 60 refused tunes) | a `cpu_entry` column; find out why `no entry` runs a whole init trace on `pysidtracker` | a certified tune's trace CPU is 8.6 % `_traced`; a refused tune's ~100 % and did not move with the 3× tracer (775 → 765 s over 60) | survey/tuneprog_sweep, machine | small | `cpu_entry` reported beside `cpu_trace`; a `no entry` refusal ≤ 1.5 CPU-s, the 60-tune sweep ≤ 200 CPU-s from 765 |
-| the semantic oracle's two standing `ours_bigger` flags | decide them | `ours_bigger` 2 of 51, both standing and both declared to the nightly with `--known`: *Deflektor*'s `init` 2 `goto` vs 0 (the copy fold's cross-copy edges, §2.8) and *Alien 3*'s `tick` 0.80 vs 0.47 stmts/site (the residual stack's three register saves, §2.5) | ghidra_compare, emit | medium | the two flags cleared or recorded as boundaries, and `--known` empty |
+| the semantic oracle's two standing `ours_bigger` flags | decide them | `ours_bigger` 2 of 51, both standing and both declared to the nightly with `--known`: *Deflektor*'s `init` 2 `goto` vs 0 (the copy fold's cross-copy edges, architecture §8.3) and *Alien 3*'s `tick` 0.80 vs 0.47 stmts/site (the residual stack's three register saves, §2.5's residual-stack row) | ghidra_compare, emit | medium | the two flags cleared or recorded as boundaries, and `--known` empty |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export | overlay or paired constructor | 263 of 7,023 have an SMC opcode cell; 198 of them (3.4 % weighted) have one whose alternatives exclude `RTS`, so the `RTS`-only overlay covers the minority | ghidra/6510 | medium | the 198 decode to their non-`RTS` alternative in the export; certificates unmoved (recert 51/51) |
 
 ### 2.7 Complexity and duplication
@@ -108,24 +102,6 @@ region, `facts.unclaimed` the 'already named' predicate, `ir.rgn_name` and
 `copyview.remap_cells`/`fold_fields` the fold's cell keying. The census of private
 helpers sharing a name is empty.
 
-### 2.8 Boundaries (measured, not work)
-
-| boundary | measurement |
-|---|---|
-| two halves separated by a control join (the low half in each arm, the high half's store in the join) | the shape exists once over the 51 -- `jch-easy-does-it`, one `Cond` whose arms end in one cell's store and whose join opens with the paired cell's. One site on one family is under the bar a view rule has to clear (`word`, `structure`) |
-| a nested-borrow compare as `u16 < u16` | `halves.compare` reads the two nested borrow-outs of `CMP lo; LDA hi; SBC hi; BCS` in either spelling, and *no* site over the 51 meets the row's own condition, that a branch alone reads the chain: at every one of them the byte differences and the intermediate carry are read on. Folding the condition anyway prints the compare the branch really makes (`ghost[x/7].freq >= FREQ[i] + (b10AC < 2)` for `(FREQ_HI[i] + t4) <= ghost[x/7].freq_hi`) and is worse, the byte chain staying live: +36 tokens and +4 header rows over 4 tunes of 2 families (both GT2, both SID Wizard), 0 lines. Refused, the code with it (`halves`, `word`) |
-| folding a copy nothing ran costs more than it saves: a silent copy adds the columns and the `switch (v)` with no second body to remove | Follin 17-19, 25, 27, 29 grow ~6 % statements, ~20 % blocks, 24–49 printed lines each; buys per-voice names and the coverage vector; `--no-merge` is the escape (`copymerge`) |
-| an edge into another copy at a row that is not that copy's entry (*Automatas* `$16AB`) | lowering as `v += 1; goto` the template row is sound and folds it, but the merged body gets two entries, costing a `goto` and the `ad`/`ctrl` names — refused as the narrower rule says (`copyrows`) |
-| a copy's stream runs past a jump into unreached code (the Knob's `$1167`), carried as an unverified row | rejected on the image: it shatters Ghouls' 3×237 families to 3×2 and breaks closure invariance on song 31; ending the stream there needs `jumptab`'s transfer facts, not the image alone (`siblings`, `jumptab`) |
-| the phase of a repeating cascade is a convention where two readings tie exactly (*Automatas* `p_168C` `$172C` vs `$1734`) | pinned by `slack` then lowest base; refusing ties also refuses the two real 5-copy cascades (`siblings`) |
-| a fold takes cells the naming plane had (the Knob's `$17B9`/`$17BC` → `b17B9[v + 3]`, Commando 2's `$54F8`) | measured in P1: the merged access's region does not keep the field names of the cells it unites (`copymerge`, `views`) |
-| a hex row costs about 1.4x, compressed, the bytes it prints | Commando's data section carries 1,867 B (1,100 B `xz`) and grows the print's `xz -9e` by 1,564; `gt2-je-suis-linus` 5,174 B / 1,896 → +3,136, `sw-emomyst` 1,858 / 1,080 → +1,428. Three ASCII characters a byte recover to ~1.4× the binary's compressed size; the accessor lines and the block headers are the rest. A denser encoding would not be a listing (`datablock`) |
-| a record block prints one row per record, whatever the stride | `jch-knob-at-night`'s stride-4 block is 8,576 records, 8,675 of the section's 19,343 rows over the 51. Packing records to a fixed row width was rejected: the column header then labels one group of several on the row (`datablock`) |
-| an `R16`/`W16` keeps its two cell *bases*, not the envelope the pair of stores had | the node is the 16-bit view, and `word.fold16` builds it from two cells one index reaches; `datablock.paired` therefore fails closed over the store's own region and claims only the named cell for a read. Restoring the envelope means putting it on the node, which every S6 pass would then have to maintain (`ir`, `word`, `datablock`) |
-| the stack page is a second inexact direction of the store-granularity replay: an IR store wholly inside `$0100`–`$01FF` between the last counted store and the NMI instant replays the handler before it | needs the instruction index the trace records (the emitted program cannot count) or a shared stack store count (stack elimination removes); the no-hook converse was measured and rejected (JCH diverges at tick 6); narrow, undiagnosed in population (`nmi`, `interp`, `verify`) |
-| a write to `$D000`–`$DFFF` with I/O mapped also writes the RAM under it (`tracevm.write`, `interp.iostore`) where the hardware writes only the chip | the honest model is two planes, chip and RAM beneath; unobservable in every exemplar, 3 tunes of 7,023 discriminate |
-| the tracer counts CPU cycles where the sampler's clock also spends VIC DMA | 57–60 cycles per frame, +533 inside one Knob tick; free today, both sides framed by the interrupt, so a raster model is needed only if a comparison ever needs sub-frame time (`tracevm`, `machine`) |
-
 ## 3. Done
 
 One line per struck row: title · PR/date · headline · record.
@@ -133,7 +109,7 @@ One line per struck row: title · PR/date · headline · record.
 - copy folding by siblings · #234, 2026-08-17 · closure by siblings, group and per-phase views; Follin's voices fold
 - the copy index as an IR value · #241/#242/#244, 2026-08-20 · Follin song 1 1,229 statements / 441 blocks → 671 / 254 as one `for v in 0, 1, 2`
 - a copy that never ran a row keeps the target its own image names · #243, 2026-08-20
-- bounded static closure of untaken directions · P2, #250, 2026-08-20 · `trap 'untaken'` 18/15/28/49 → 5/0/3/1 on four exemplars, off by default (`--closure static`) · design §3
+- bounded static closure of untaken directions · P2, #250, 2026-08-20 · `trap 'untaken'` 18/15/28/49 → 5/0/3/1 on four exemplars, off by default (`--closure static`) · [tuneprog-architecture.md](tuneprog-architecture.md) §2
 - fold the sound-effect subtunes · #242 · 24 of Follin's 32 fold, 8 refuse on a cross-copy edge
 - unverified statements marked per statement · #242
 - fold the `--songs all` union · #242 · the union of a folded access is one region
@@ -199,21 +175,9 @@ One line per struck row: title · PR/date · headline · record.
 - Q8 NMI prototype · #272, 2026-08-22 · 181 of 7,023 have a dispatching NMI beside a play entry (1.3 % weighted); `jch-easy-does-it` 1,799 ticks, 199,514 preemptions, 0 divergences
 - campaign at survey scale · #267, 2026-08-21 · [survey-tuneprog.md](survey-tuneprog.md)
 
-Design deltas the design doc does not state (v3 §3):
+## 4. Execution order
 
-- regions need per-phase views: one-loop init clears merge every field into one region; the view is built from play-phase accessors (`views.py`, #234), and the accessor-shape partition (#274) re-types the S6 copy over the same rule.
-- a value that is an observable cannot be reduced away: Commando's per-voice pulse-width accumulators make both subtunes aperiodic at any practical horizon; `period.py` classifies rather than proves.
-
-## 4. Process
-
-- One Opus agent per stage in its own worktree (`PYTHONPATH` pinned), the certificate as acceptance, a read-only reviewer between stage and merge; the reviewer refutes new tunable constants, duplicated mechanisms, tests that encode an exemplar rather than an invariant, modules over 500 lines.
-- Every module ≤ 500 lines; a new mechanism names the view/pass vocabulary it belongs to (views over regions, the naming plane, structural passes proven by alpha-equivalence) or is not added.
-- No new role/view heuristic without a hermetic snippet test and two families that need it, or one family plus a survey count.
-- The certificate is the only acceptance test; a presentation change leaves `tuneprog.py` byte-identical or explains the change; `tools/tuneprog_recert.py` green before and after; a consolidation pass after every three stages.
-- Prototype docs are records; the living documents are the design, this plan and `tuneprog.md`.
-- Every brief carries the global directives (no tuning constants; black/pylint/xdist; coverage > 85 %; 60 s CPU per script, `--budget`/`--resume`); each stage ends with a "what remains" list that becomes §2.
-
-Execution order of the open packages:
+The open packages, in order:
 
 1. **the region's own address set** (§2.1) — what is left of the init-written table, and a front-end change like the post-init image #286 landed.
 

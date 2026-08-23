@@ -432,7 +432,7 @@ def present(prog):
 
 
 def stage_print(args, out, prog=None):
-    """S5 + S6 over the certified IR, then ``tuneprog.md`` (design section 4 text form)."""
+    """S5 + S6 over the certified IR, then ``tuneprog.md`` (architecture section 6 text form)."""
     prog = prog or ir.Tuneprog.load(out / "tuneprog.S4.json")
     cert = out / "certificate.json"
     doc = json.loads(cert.read_text()) if cert.exists() else None

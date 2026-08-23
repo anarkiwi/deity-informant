@@ -25,7 +25,7 @@ REG_IN = 0x10000  # synthetic input addresses for live-in A/X/Y
 
 
 def input_kind(addr):
-    """Input class of ``addr`` (design section 4 ``Input.kind``)."""
+    """Input class of ``addr`` (architecture section 1, ``input``)."""
     if addr >= REG_IN:
         return "entry_reg"
     if addr in ACKS:

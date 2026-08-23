@@ -1,9 +1,8 @@
 # tuneprog at survey scale — the pipeline over the stratified HVSC sample
 
-Companion to [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md)
-(section 9 is the *static* survey this one joins),
-[tuneprog-plan.md](tuneprog-plan.md) (this campaign is PR #267) and
-[tuneprog.md](tuneprog.md): what the whole pipeline does to 7,023 tunes, what it
+Companion to [tuneprog-architecture.md](tuneprog-architecture.md)
+(section 9.3 is the *static* survey this one joins) and
+[tuneprog-backlog.md](tuneprog-backlog.md) (this campaign is PR #267): what the whole pipeline does to 7,023 tunes, what it
 refuses, where it diverges, what it costs. Nothing was fixed while it was
 measured — no tune was retried into passing, no family admitted, no certificate
 committed.
@@ -17,7 +16,7 @@ Contents: 1 method · 2 outcomes · 3 by family · 4 failure classes · 5 refusa
 
 ## 1. Method
 
-- **Sample.** Design section 9's stratified sample: up to 30 tunes per SIDId
+- **Sample.** The stratified sample of [tuneprog-architecture.md](tuneprog-architecture.md) §9.3: up to 30 tunes per SIDId
   family, seed 1, from `hvsc-tracker-catalog`'s `results.csv` over HVSC #85 as
   installed — 7,023 tunes on disk, 645 families (646 in the static survey for the
   same 7,023; the catalogue moved by one family since 2026-08-16). HVSC #85 holds
@@ -25,7 +24,7 @@ Contents: 1 method · 2 outcomes · 3 by family · 4 failure classes · 5 refusa
   the weighting maps onto. `tools/survey/tuneprog_sweep.py` imports `run.py`'s
   `_sample`, so both surveys sample the same files.
 - **One subtune per tune** — the header's `startsong`, the pipeline default,
-  matching design section 9. The 20 % of HVSC with more than one subtune is
+  matching [tuneprog-architecture.md](tuneprog-architecture.md) §9.3. The 20 % of HVSC with more than one subtune is
   under-sampled throughout.
 - **Two passes.** Pass 1 runs `pipeline.run` to a 30 s horizon (`--seconds 30`)
   over all 7,023. Pass 2 re-runs pass-1 certified tunes with `--until-period
@@ -42,7 +41,7 @@ Contents: 1 method · 2 outcomes · 3 by family · 4 failure classes · 5 refusa
   tuned afterwards. A tune that hits it is recorded as `timeout`, never retried.
   Each worker is capped at 8 GiB of address space; an over-run is `oom`.
 - **Weighting.** Rates are given raw over the sample and re-weighted to the
-  catalogued HVSC population by family size, as design section 9 does: a sampled
+  catalogued HVSC population by family size, as [tuneprog-architecture.md](tuneprog-architecture.md) §9.3 does: a sampled
   tune of family *f* counts *N_f / n_f*, so a 10,720-tune family counts 357 per
   sampled tune and a 3-tune family counts 1.
 
@@ -167,7 +166,7 @@ short horizons or slow desynchronisation.
 **`trap switch` (189 tunes, 2.7 % raw, 0.5 % weighted) is the largest class**,
 concentrated in whole families: Virtuoso 29/30, Ben Daglish/Gremlin 25,
 Element114Studio 25, Fred Gray 15, Tiny/Sound Images 12, Galway 7. Diagnosed
-([tuneprog-plan.md](tuneprog-plan.md) §3, PR #270) as three front-end readings of
+([tuneprog-backlog.md](tuneprog-backlog.md) §3, PR #270) as three front-end readings of
 computed control, none of them `emit._term` (corrected from an initial reading of
 `emit._term` giving a `Switch` a case per traced value):
 
@@ -249,7 +248,7 @@ sample: **195 tunes of 7,023 have a dispatching NMI beside a play entry**, 181 o
 them with a classified schedule (2.6 % raw, 1.3 % weighted); 43 more have the NMI
 as their only schedule. `second interrupt source armed` now means a CIA #2 source
 with no schedule — 6 tunes. The misdiagnosed class is 81 tunes, 0.8 % of HVSC by
-weight, against design section 9.2's ≈ 1 % estimate for the vector-only/unarmed
+weight, against the front-end survey's ≈ 1 % estimate for the vector-only/unarmed
 share. Nine of the 81 have a *last* ICR write enabling Timer B that the
 accumulated mask does not, because the chip never saw it (it lands with I/O
 banked out, or on an init path only the second emulation takes): the tracer's own
@@ -383,7 +382,7 @@ class is whose frame, not how deep.
 
 Over the 5,783 built programs. This is the *post-refusal* topology: a tune whose
 entry is an installed handler refuses far more often than one with a header
-`play`, so interrupt entries are under-counted relative to design section 9.2
+`play`, so interrupt entries are under-counted relative to [tuneprog-architecture.md](tuneprog-architecture.md) §9.3
 (8.7 % `irq` before any refusal).
 
 | entry | tunes | raw | HVSC-weighted |
@@ -480,7 +479,7 @@ over the whole 7,023-tune sample so they compose with section 2.
   class.
 - Two planes (chip vs the RAM under it) is 3 tunes: the discriminating tune
   exists but the class is negligible.
-- The `RTS` trick's 0.7 % weighted is close to design section 9.4's 1.7 % raw /
+- The `RTS` trick's 0.7 % weighted is close to [tuneprog-architecture.md](tuneprog-architecture.md) §9.3's 1.7 % raw /
   0.4 % weighted from the prototype tracer.
 - The periodicity obstruction (5,051 tunes at 30 s) is mostly answered by the
   period pass: 91 % of re-run tunes come back complete (section 6). What is left
@@ -542,14 +541,14 @@ whole campaign, 1 h 51 m of wall time at 60 workers.
 Throughput at the two horizons (fixed per-tune overhead matters at 30 s and not
 at song scale):
 
-| | pass 1 (1,503 ticks median) | pass 2 (7,495 ticks median) | design §2's model |
+| | pass 1 (1,503 ticks median) | pass 2 (7,495 ticks median) | the cost model |
 |---|---|---|---|
 | tracing | 199 ticks/s | 329 ticks/s | 277 k instructions/s |
 | verifying | 1,367 calls/s | 13,518 calls/s | 10–16 k calls/s |
 
 Verification matches the design's model once amortised (13.5 k calls/s); pass 1's
 1,367 is the fixed `--prefix 2000` interpreter cross-check dominating a short run.
-The tracer measured here does not: at design §9.3's mean of 292 instructions per
+The tracer measured here does not: at the front-end survey's mean of 292 instructions per
 tick, 329 ticks/s is ≈ 96 k instructions/s, ≈ 2.9× slower than the model's 277 k,
 which was measured on `tools/survey/tracer.py`, the prototype VM.
 
@@ -573,7 +572,7 @@ one process under `process_time`:
 | *Experiment Zeta* `--until-period` | 6,000 | 590 | 1,972 | 3.34× |
 | *Automatas*, 40,000 ticks | 40,000 | 757 | 2,350 | 3.10× |
 
-≈ 480–580 k instructions/s against design §2's 277 k: the production tracer is
+≈ 480–580 k instructions/s against the design's 277 k: the production tracer is
 now 1.7–2.1× faster than the prototype VM the model was measured on. The `Trace`
 is byte-identical (`trace.json` and every bulk array over all 82 traces the 50
 certificates hold); recert 50/50, no field moved.

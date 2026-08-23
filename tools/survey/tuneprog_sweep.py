@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the tuneprog pipeline over the stratified HVSC sample, resumably, in parallel.
 
-Sample and seed are ``run.py``'s (design section 9); one row per tune's default
+Sample and seed are ``run.py``'s (architecture section 9.3); one row per tune's default
 subtune, appended as it finishes and its artefacts pruned. A rerun skips what
 ``--out`` holds and exits 2 while work is left, so a sweep is a loop of chunks.
 """
@@ -264,7 +264,7 @@ def parser():
     ap.add_argument("--out", required=True, help="JSONL of result rows, appended and resumed")
     ap.add_argument("--work", default="out/sweep/work", help="scratch for per-tune artefacts")
     ap.add_argument("--from", dest="from_", help="only tunes certified in this JSONL")
-    ap.add_argument("--cap", type=int, default=30, help="tunes per family (design section 9)")
+    ap.add_argument("--cap", type=int, default=30, help="tunes per family (architecture 9.3)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--seconds", type=float, default=30.0, help="horizon in seconds of music")
     ap.add_argument("--until-period", action="store_true")

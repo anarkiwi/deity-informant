@@ -1,7 +1,7 @@
 # Prototype record — CIA #2 NMI as a second entry
 
-Closes the last design gap ([tuneprog-decompiler-design.md](tuneprog-decompiler-design.md)
-§10; PR #272, [plan](tuneprog-plan.md) §3); `nmi_gate` previously only refused an
+Closes the last design gap ([tuneprog-architecture.md](tuneprog-architecture.md)
+§10; PR #272, [backlog](tuneprog-backlog.md) §3); `nmi_gate` previously only refused an
 NMI.
 
 Certificate: JCH's *Easy Does It*, 1,799 ticks, 199,514 NMIs, 0 divergences, 0
@@ -183,7 +183,7 @@ column (nearest match, 1,500 frames), two causes.
 * **VIC DMA — not modelled.** A badline-stalled CPU takes the NMI later than we do;
   at a ~193-cycle sample period a few tens of cycles decide which sample nibble is
   the frame's last `$D418` write. It is the whole of the `$FFFA` path's offset. A
-  raster model would fix it and buy the `$D418` figures above; design §12 keeps it
+  raster model would fix it and buy the `$D418` figures above; [tuneprog-architecture.md](tuneprog-architecture.md) §8.3 keeps it
   out of scope.
 
 *Iisibiisi* was measured with §4's separability check stubbed out; it now refuses
@@ -285,7 +285,7 @@ averaging 110.9 NMIs a tick (§2).
 
 `complete: false`: a sample player consumes its sample stream, so no state repeat
 exists at any practical horizon — aperiodic per
-[tuneprog-plan.md](tuneprog-plan.md) §2, not a gap in this stage.
+[tuneprog-backlog.md](tuneprog-backlog.md) §2, not a gap in this stage.
 
 ---
 

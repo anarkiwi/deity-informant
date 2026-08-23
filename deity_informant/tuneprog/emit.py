@@ -352,7 +352,7 @@ class PyProgram:
         return self.procs[name](self.M, self.M.m, *args)
 
 
-# ---- certificate (design section 7) -----------------------------------------
+# ---- certificate (architecture section 5) -----------------------------------------
 def certificate(prog, subtunes, cost, divergence=None, stage="S4", oracle=None, compared=None):
     """The design's ``certificate.json`` document.
 

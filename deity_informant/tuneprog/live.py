@@ -15,7 +15,7 @@ from .irwalk import stmt_uses, term_uses, use_counts, uses_of
 
 
 def wants(prog, live):
-    """``{procedure: the return registers a caller reads}`` (design section 6.2)."""
+    """``{procedure: the return registers a caller reads}`` (playroutine-anatomy section 6.2)."""
     out = {n: set() for n in prog.procs}
     for name, p in prog.procs.items():
         for b in p.blocks.values():

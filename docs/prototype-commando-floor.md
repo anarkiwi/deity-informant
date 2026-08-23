@@ -5,7 +5,7 @@ anatomy ([§3.1](playroutine-anatomy.md): 3 voices, 12 bytes of state each, no
 wave/pulse/filter programs, no dispatch tables, one SMC cell) and the smallest
 full-song certificate the corpus carries (**341** S4 statements against
 GoatTracker's 516 and SID Wizard's 955) — prints as a **414-line**
-`tuneprog.md`. This is a measurement of the complexity floor and a
+[tuneprog-architecture.md](tuneprog-architecture.md). This is a measurement of the complexity floor and a
 hand-derivation of how close the print gets to it.
 
 Measured at the certified horizon (`docs/certificates/commando-song1.json`,

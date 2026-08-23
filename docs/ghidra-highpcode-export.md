@@ -142,10 +142,11 @@ No flag on the four exemplars. Over the 51 certificates two survive, both standi
 
 * *Deflektor*'s `init`, 2 `goto` against Ghidra's 0 over the same 55 sites (51 printed lines to 35 C lines).
   They are the copy fold's cross-copy edges inside `for v in 0, 1, 2`; Ghidra does not fold and writes the
-  three copies out flat. The measured refusal is [tuneprog-plan.md](tuneprog-plan.md) §2.8.
+  three copies out flat. The measured refusal is
+  [tuneprog-architecture.md](tuneprog-architecture.md) §8.3.
 * *Alien 3*'s `tick`, 0.80 statements/site against 0.47 ops/site over 15 sites. Our twelve statements keep
   the three register saves to `$01FA`-`$01FC` that Ghidra's frame analysis folds into one `uStack0000 =
-  param_1`; the tune is `stack: residual` (§2.5's row). On the like-for-like measure we are the smaller
+  param_1`; the tune is `stack: residual` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.5). On the like-for-like measure we are the smaller
   side, 8 printed lines to 15 C lines.
 
 `tuneprog_recert.py --known CERT:ENTRY` names a flag that is a recorded row, so the nightly gates on a flag

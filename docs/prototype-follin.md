@@ -1,6 +1,6 @@
 # Prototype: the tuneprog decompiler on Tim Follin's *Ghouls'n'Ghosts*
 
-Second exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+Second exemplar of [tuneprog-architecture.md](tuneprog-architecture.md), after
 defMON's *Automatas* ([prototype-automatas.md](prototype-automatas.md)):
 `MUSICIANS/F/Follin_Tim/Ghouls_n_Ghosts.sid`, anatomy [§3.6](playroutine-anatomy.md).
 All 32 subtunes certified (`docs/certificates/ghouls-song01.json` … `-song32.json`, plus

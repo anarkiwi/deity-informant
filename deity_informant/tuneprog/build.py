@@ -438,7 +438,7 @@ def _copy_tables(plan):
 
 
 def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
-    """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (design section 4)."""
+    """The S2/S3 front-end result as a :class:`~.ir.Tuneprog` (architecture section 4)."""
     store = Storage(trace, regions)
     b = _Builder(trace, lifted, store, procs, plan)
     out = _irq_entry({name: b.build_proc(cp) for name, cp in procs.items()}, trace)

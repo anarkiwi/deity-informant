@@ -17,7 +17,7 @@ Front end (trace-driven recovery):
 
 Middle and back end (the executable program and its certificate):
 
-* :mod:`.ir` -- the IR of design section 4, its JSON form and its algebra;
+* :mod:`.ir` -- the IR of architecture section 4, its JSON form and its algebra;
   :mod:`.interp` -- the machine state and the reference interpreter (the semantics).
 * :mod:`.build` -- front end -> IR: one procedure per CFG procedure, one block
   per node, memory ops typed by region and envelope.
@@ -59,7 +59,7 @@ module-level entry points ``build.build_ir``, ``ssa.simplify``,
 ``recover.recover`` and ``printer.render``. :mod:`.irwalk` and :mod:`.graph` are
 the traversals every stage shares, and :mod:`.ghidra_facts` / :mod:`.ghidra_compare`
 export the trace's facts to a headless Ghidra and score the two decompilations
-against each other. ``docs/tuneprog.md`` is the guide.
+against each other. ``docs/tuneprog-architecture.md`` is the guide.
 """
 
 from __future__ import annotations

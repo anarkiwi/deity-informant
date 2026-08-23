@@ -1,6 +1,6 @@
 # Prototype: the tuneprog decompiler on JCH NewPlayer V20 — results
 
-Fifth exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+Fifth exemplar of [tuneprog-architecture.md](tuneprog-architecture.md), after
 defMON's *Automatas* ([prototype-automatas.md](prototype-automatas.md)), Follin's
 *Ghouls'n'Ghosts* ([prototype-follin.md](prototype-follin.md)), GoatTracker 2
 ([prototype-goattracker.md](prototype-goattracker.md)) and SID Wizard
