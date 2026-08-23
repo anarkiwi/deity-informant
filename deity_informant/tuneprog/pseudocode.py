@@ -24,11 +24,12 @@ from .ir import (
     Var,
     W16,
 )
-from .irwalk import addr_split, reads_region, walk
+from .irwalk import addr_split, reads_region, unique_name, use_counts, walk
 from .live import needed
 from .facts import GLOBAL_REG, SID_VOICE, SID_VOICES, VOICE_REG
 
 INDEX_MAX = 0x200  # how far a table's literal operand may sit from the region's base
+CARRY = REGVAR[8]  # every version of it is the carry, which is the name it prints under
 NEG = {"==": "!=", "!=": "==", "<": ">=", "<=": ">"}
 MIRROR = {"==": "==", "!=": "!=", "<": ">", "<=": ">="}
 COMM = ("+", "|", "&", "^")
@@ -59,6 +60,7 @@ class Printer:
         self.defs = {}
         self.inline = {}
         self.lastsrc = None
+        self.flags = {}
 
     # ---- names -------------------------------------------------------------
     def var(self, n):
@@ -71,11 +73,21 @@ class Printer:
         if n in self.tmp:
             return self.tmp[n]
         base = n.split("#")[0]
+        if base == CARRY and "#" in n:
+            self.tmp[n] = out = unique_name("carry", self.taken() | set(self.tmp.values()))
+            return out
         out = base.lower() if base in REGVAR.values() else "t%d" % (len(self.tmp) + 1)
         while out in self.tmp.values() and not base in REGVAR.values():
             out = "t%d" % (len(self.tmp) + 1)
         self.tmp[n] = out = out + (n.split("#")[1] if base in REGVAR.values() and "#" in n else "")
         return out
+
+    def taken(self):
+        """``{"carry"}`` where the procedure already names a folded carry that."""
+        if self.proc not in self.flags:
+            p = self.prog.procs.get(self.proc)
+            self.flags[self.proc] = set() if p is None else {"$carry"} & set(use_counts(p))
+        return {n[1:] for n in self.flags[self.proc]}
 
     def pair(self, lo, hi, a):
         """A 16-bit view reference: the pair's own name, indexed like its low half.
