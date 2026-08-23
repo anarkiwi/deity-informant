@@ -7,7 +7,7 @@ read stops it, and a use in another block needs that block to be the definer's.
 
 from __future__ import annotations
 
-from .graph import cfg, idoms, natural_loops, preds_of
+from .graph import latches as _latches, preds_of
 from .ir import Bin, Call, Const, Let, Load, Return, Store, Var, retval, succs
 from .irwalk import (
     Uses,
@@ -141,7 +141,7 @@ def values(proc, live=None, keep=(), dup=True):
                     else tuple(v if i in slots else Const(0) for i, v in enumerate(b.term.vals))
                 )
     uses, where, preds = use_counts(proc), _positions(proc), preds_of(proc)
-    latches = _latches(proc, preds)
+    latches = _latches(proc)
     defs = {}
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
@@ -160,12 +160,6 @@ def values(proc, live=None, keep=(), dup=True):
         if not _blocked(proc, own, lbl, at, pos, ls):
             sub[n] = e
     return _apply_sub(proc, sub)
-
-
-def _latches(proc, preds):
-    """The blocks that close a loop: their copies are the induction variables."""
-    g = cfg(proc)
-    return {l for _b, ls in natural_loops(g, idoms(proc, g), preds).values() for l in ls}
 
 
 def _feeds_copy(proc, pos, latches):

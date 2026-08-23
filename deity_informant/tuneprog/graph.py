@@ -70,8 +70,8 @@ def natural_loops(g, idom, preds):
             d = idom.get(d)
         if d != v:
             continue
-        body, latches = loops.setdefault(v, (set([v]), set()))
-        latches.add(u)
+        body, back = loops.setdefault(v, (set([v]), set()))
+        back.add(u)
         stack = [u]
         while stack:
             x = stack.pop()
@@ -80,3 +80,9 @@ def natural_loops(g, idom, preds):
             body.add(x)
             stack.extend(preds.get(x, ()))
     return loops
+
+
+def latches(proc):
+    """The blocks that close a loop: their copies carry the induction variable."""
+    c = cfg(proc)
+    return {l for _b, ls in natural_loops(c, idoms(proc, c), preds_of(proc)).values() for l in ls}

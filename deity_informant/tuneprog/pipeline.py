@@ -416,10 +416,11 @@ def present(prog):
     recover.name_u16(view, names, word.fold16(view))
     cells.forward(view)  # after word: a carry term is one of the values a store holds
     structure.inline(view, L.needed(view)[0], keep, dup=False)
-    L.dead(view)
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
     views.decorate(view, names)
+    L.dead(view)  # after outlining, whose candidates are cut by the values that cross them
+    L.coalesce(view)
     live, params = L.needed(view)
     st = structure.structure(view, L.wants(view, live))
     _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())

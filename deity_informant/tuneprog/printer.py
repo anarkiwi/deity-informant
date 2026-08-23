@@ -8,12 +8,12 @@ plumbing (stack frames, register copies nothing reads) is dropped for print only
 from __future__ import annotations
 
 from .closure import closed_blocks
-from .ir import Bin, Let, REGVAR, Var, copyval
+from .ir import Bin, Let, REGVAR, Var
 from .irwalk import call_order, forwarder, walk as ewalk
 from .live import printable
 from .machine import PAL_FRAME
 from .pseudocode import IND, NEG, Printer, hexlit
-from .structure import Blk, Case, Cond, For, Jump, Loop, hidden, strip, walk
+from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, hidden, strip, walk
 
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
 
@@ -34,9 +34,8 @@ class Body(Printer):
     def render(self, name, body):
         self.tmp, self.mem, self.alias, self.proc = {}, {}, {}, name
         self.lastsrc = None
-        self.hide = frozenset(
-            n for x in walk(body) if type(x) is For and copyval(x.var) for n in x.hide
-        )
+        # a `for` header states its index and where it starts, inside the loop and before it
+        self.hide = frozenset(n for x in walk(body) if type(x) is For for n in x.hide)
         p = self.prog.procs[name]
         args = ", ".join(REGVAR[i].lower() for i in self.params[name])
         head = "%s(%s):" % (self.names.procs.get(name, name), args)
@@ -44,9 +43,18 @@ class Body(Printer):
         return out + self.nodes(body, name, 1)
 
     def nodes(self, body, proc, depth):
-        out = []
+        out, marks = [], []
         for n in body:
-            out.extend(self.node(n, proc, depth))
+            hit = _untaken_arm(n)
+            if hit is not None:
+                marks.append(self.negate(hit[0]) if hit[1] else self.expr(hit[0]))
+                continue
+            lines = self.node(n, proc, depth)
+            if marks and _mark(lines, "untaken: %s" % ", ".join(marks)):
+                marks = []
+            out.extend(lines)
+        if marks:
+            out.append("%s# untaken: %s" % (IND * depth, ", ".join(marks)))
         return out or [IND * depth + "pass"]
 
     def node(self, n, proc, depth):
@@ -179,6 +187,40 @@ class Body(Printer):
         return out
 
 
+def _untaken_arm(n):
+    """The condition of a branch whose one direction is a bare untaken trap, or ``None``.
+
+    The direction is the coverage fact, not a statement of the program: it prints as
+    a mark on what the covered direction reaches, and ``meta`` carries the count.
+    """
+    if type(n) is not Cond:
+        return None
+    for arm, other, neg in ((n.then, n.els, False), (n.els, n.then, True)):
+        if other or len(arm) != 1 or type(arm[0]) is not Exit:
+            continue
+        if arm[0].kind == "trap" and arm[0].why == "untaken":
+            return n.c, neg
+    return None
+
+
+def _mark(lines, text):
+    """Append a mark to the first line that is not a pc comment; False if there is none."""
+    i = next((k for k, l in enumerate(lines) if not l.lstrip().startswith("#")), None)
+    if i is None:
+        return False
+    lines[i] += ("; " if "  # " in lines[i] else "  # ") + text
+    return True
+
+
+def untaken(structured):
+    """How many branch directions the trace never took, over the whole program."""
+    return sum(
+        type(n) is Exit and n.kind == "trap" and n.why == "untaken"
+        for body in structured.values()
+        for n in walk(body)
+    )
+
+
 def _acyclic(defs):
     """True where no definition in ``defs`` reads itself, through any chain of them."""
     state = {}
@@ -224,8 +266,8 @@ def _calls(p):
     return p.blocks[p.entry].count
 
 
-def _meta(prog, names, cert):
-    """The ``meta`` block: entry, cadence, subtunes, model, certificate."""
+def _meta(prog, names, cert, shut=0):
+    """The ``meta`` block: entry, cadence, subtunes, model, coverage, certificate."""
     m = prog.meta
     e = m.get("entry", {})
     rate = PAL_FRAME / e.get("cycles_per_tick", PAL_FRAME)
@@ -242,6 +284,8 @@ def _meta(prog, names, cert):
             len([r for r in prog.storage if r.id >= 0]),
         ),
     ]
+    if shut:
+        out.append("untaken   %d branch directions the trace never took (marked)" % shut)
     if names.phase is not None:
         out.append("phase     %s selects the rate" % names.region.get(names.phase[0], "?"))
     if names.copies and names.copies.get("families"):
@@ -387,7 +431,7 @@ def render(prog, structured, names, cert=None, pcs=True):
     body = Body(prog, names, pcs)
     out = ["# tuneprog: %s" % prog.meta.get("name", "?"), ""]
     for title, lines in (
-        ("meta", _meta(prog, names, cert)),
+        ("meta", _meta(prog, names, cert, untaken(structured))),
         ("state", _state(prog, names)),
         ("const", _const(prog, names)),
         ("inputs", _inputs(prog)),

@@ -481,7 +481,7 @@ def test_the_v_flag_of_a_subtract_prints_as_one_overflow_test():
         ),
         calls=6,
     )
-    assert re.search(r"if overflow\(\w+ - \w+\)", doc), doc
+    assert re.search(r"overflow\(\w+ - \w+\)", doc), doc  # the branch, taken or marked
     assert " & (" not in doc  # none of the flag plumbing is left
 
 
@@ -506,3 +506,57 @@ def test_a_sign_extended_byte_prints_as_sext():
         2,
     )
     assert p.expr(e) == "($1953 + sext(mem[$1934]))"  # the shape a patched branch adds
+
+
+# ---- the coverage marks and the counted loop's own header --------------------
+UNTAKEN = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA cnt",
+    "RTS",
+    "play: INC cnt",
+    "LDA cnt",
+    "CMP #$F0",
+    "BCC over",
+    "LDA #$07",
+    "STA $D404",
+    "over: LDA #$0F",
+    "STA $D418",
+    "RTS",
+    "cnt: BRK",
+)
+
+
+def test_a_branch_direction_the_trace_never_took_is_a_mark_not_an_arm():
+    doc = printed(UNTAKEN)
+    assert "trap 'untaken'" not in doc, doc
+    assert re.search(r"# untaken: \(?\w+ >= \$F0", doc), doc
+    assert re.search(r"^untaken   1 branch direction", doc, re.M), doc
+
+
+def test_a_branch_the_trace_took_both_ways_keeps_its_arm():
+    code = asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA cnt",
+        "RTS",
+        "play: INC cnt",
+        "LDA cnt",
+        "AND #$01",
+        "BEQ over",
+        "LDA #$07",
+        "STA $D404",
+        "over: LDA #$0F",
+        "STA $D418",
+        "RTS",
+        "cnt: BRK",
+    )
+    doc = printed(code)
+    assert "# untaken" not in doc, doc
+    assert re.search(r"^\s+if .*:", doc, re.M), doc
+
+
+def test_a_counted_loop_does_not_also_print_where_its_index_starts():
+    doc = printed(counter("LDX #$03", "lp: STX $D400", "DEX", "BNE lp"))
+    assert "for v in 3, 2, 1:" in doc, doc
+    assert not re.search(r"^\s+x\d* = 3$", doc, re.M), doc

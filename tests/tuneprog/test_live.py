@@ -4,7 +4,7 @@ import re
 
 from deity_informant.tuneprog.ir import Bin, Block, Const, Goto, If, Let, Load, Proc
 from deity_informant.tuneprog.ir import Return, Store, Tuneprog, Var
-from deity_informant.tuneprog.live import dead
+from deity_informant.tuneprog.live import coalesce, dead
 from deity_informant.tuneprog.cells import forward
 
 from _asm import asm
@@ -132,3 +132,41 @@ def test_a_pre_value_a_later_branch_reads_survives():
     doc = printed(code)
     assert re.search(r"^\s+\w+ -= 1$", doc, re.M), doc
     assert re.search(r"^\s+t\d+ = \w+$", doc, re.M), doc
+
+
+# ---- the copies a join leaves ------------------------------------------------
+def _join(tail):
+    """``m = mem[CELL]``; two arms assign ``n``; the join runs ``tail(n, m)``."""
+    blocks = {
+        "h": Block("h", [Let("m", _load())], If(Var("m"), "t", "f")),
+        "t": Block("t", [Let("n", Var("m"))], Goto("j")),
+        "f": Block("f", [Let("n", Bin("+", Var("m"), Const(1), 1))], Goto("j")),
+        "j": Block("j", [], Return(tail)),
+    }
+    return Tuneprog(procs={"p": Proc("p", blocks=blocks, entry="h", rets=[0])})
+
+
+def test_a_join_copy_goes_when_the_two_ranges_do_not_meet():
+    prog = _join((Var("n"),))
+    assert coalesce(prog) == 1
+    p = prog.procs["p"]
+    assert not p.blocks["t"].stmts
+    assert p.blocks["f"].stmts[0].n == "m"
+    assert p.blocks["j"].term.vals == (Var("m"),)
+
+
+def test_a_join_copy_stays_when_the_source_outlives_it():
+    prog = _join((Var("n"), Var("m")))
+    assert coalesce(prog) == 0
+    assert prog.procs["p"].blocks["t"].stmts[0].n == "n"
+
+
+def test_a_latch_copy_stays():
+    blocks = {
+        "h": Block("h", [Let("m", _load())], Goto("b")),
+        "b": Block("b", [Let("k", Bin("-", Var("m"), Const(1), 1))], If(Var("k"), "l", "x")),
+        "l": Block("l", [Let("m", Var("k"))], Goto("b")),
+        "x": Block("x", [], Return(())),
+    }
+    prog = Tuneprog(procs={"p": Proc("p", blocks=blocks, entry="h")})
+    assert coalesce(prog) == 0
