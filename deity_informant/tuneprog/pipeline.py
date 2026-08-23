@@ -67,7 +67,6 @@ def add_args(ap):
     ap.add_argument("--sid-model", choices=sorted(MODEL_D41B), help="pin $D41B bit 0")
     ap.add_argument("--no-verify", action="store_true", help="skip S8 (no certificate)")
     ap.add_argument("--no-text", action="store_true", help="skip S5/S6 and tuneprog.md")
-    ap.add_argument("--eqsat", action="store_true", help="S6 expressions through an e-graph")
     ap.add_argument(
         "--no-merge", action="store_true", help="do not fold sibling copies onto one body"
     )
@@ -395,45 +394,17 @@ def stage_verify(args, out, st, t0, prog=None, log=print):
     return True
 
 
-def structure_json(prog, structured, names):
-    """The S5 annotation: the structured shape of every procedure."""
-    return {
-        "procs": {n: [_node(x) for x in body] for n, body in structured.items()},
-        "phase": None if names.phase is None else {"region": names.phase[0]},
-    }
-
-
-def _node(n):
-    """One structured node as data (children included, expressions elided)."""
-    k = type(n).__name__.lower()
-    d = {"kind": k}
-    for f in ("label", "src", "count", "var", "kind", "values", "scale"):
-        if hasattr(n, f) and f != "kind":
-            d[f] = list(n.values) if f == "values" else getattr(n, f)
-    if k == "jump" or k == "exit":
-        d["kind"] = "%s:%s" % (k, n.kind)
-    for f in ("then", "els", "body"):
-        if hasattr(n, f):
-            d[f] = [_node(x) for x in getattr(n, f)]
-    if k == "case":
-        d["cases"] = [[v, [_node(x) for x in b]] for v, b in n.cases]
-    if k == "blk":
-        d["stmts"] = len(n.stmts)
-    return d
-
-
-def present(prog, eqsat=False):
+def present(prog):
     """S5 + S6 over a copy of the certified IR: ``(view, structured, names)``.
 
     Structuring, texture removal, 16-bit views and outlining; the argument is
-    never touched. Sibling copies are already one body (:mod:`.copymerge`); under
-    ``eqsat`` the expression passes go through :mod:`.eqsat` instead.
+    never touched. Sibling copies are already one body (:mod:`.copymerge`).
     """
     live = L.needed(prog)[0]
     keep = L.wants(prog, live)
     view = structure.view(prog, live, keep)
     copies = copyview.expand(view)
-    texture.clean(view, frame.deltas(prog), eqsat=eqsat)
+    texture.clean(view, frame.deltas(prog))
     structure.inline(view, L.needed(view)[0], keep)
     texture.tidy(view)
     facts = copyview.naming_facts(view)
@@ -462,9 +433,9 @@ def stage_print(args, out, prog=None):
         doc["stage"] = "S6"
         doc["presentation"] = "S5/S6 annotate the certified S4 IR; the program is unchanged"
         emit.write_certificate(cert, doc)
-    view, st, names = present(prog, eqsat=getattr(args, "eqsat", False))
+    view, st, names = present(prog)
     names.copies = copymerge.report(prog)
-    (out / "tuneprog.S5.json").write_text(json.dumps(structure_json(view, st, names)))
+    (out / "tuneprog.S5.json").write_text(json.dumps(structure.structure_json(st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))
     return view, st, names

@@ -354,3 +354,30 @@ def phase(body, storage):
             return None
         return (r.id, n.c, _procs(n.then), _procs(n.els))
     return None
+
+
+def structure_json(structured, names):
+    """The S5 annotation: the structured shape of every procedure."""
+    return {
+        "procs": {n: [_json(x) for x in body] for n, body in structured.items()},
+        "phase": None if names.phase is None else {"region": names.phase[0]},
+    }
+
+
+def _json(n):
+    """One structured node as data (children included, expressions elided)."""
+    k = type(n).__name__.lower()
+    d = {"kind": k}
+    for f in ("label", "src", "count", "var", "kind", "values", "scale"):
+        if hasattr(n, f) and f != "kind":
+            d[f] = list(n.values) if f == "values" else getattr(n, f)
+    if k == "jump" or k == "exit":
+        d["kind"] = "%s:%s" % (k, n.kind)
+    for f in ("then", "els", "body"):
+        if hasattr(n, f):
+            d[f] = [_json(x) for x in getattr(n, f)]
+    if k == "case":
+        d["cases"] = [[v, [_json(x) for x in b]] for v, b in n.cases]
+    if k == "blk":
+        d["stmts"] = len(n.stmts)
+    return d

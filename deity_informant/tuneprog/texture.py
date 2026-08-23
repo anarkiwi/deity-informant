@@ -453,25 +453,13 @@ def tidy(prog):
     return prog
 
 
-def _eqsat():
-    """The experimental e-graph pass, imported only when asked for."""
-    from . import eqsat  # pylint: disable=import-outside-toplevel
-
-    return eqsat
-
-
-def clean(prog, frameinfo=None, eqsat=False):
+def clean(prog, frameinfo=None):
     """Every texture pass over a presentation copy of ``prog``.
 
     ``frameinfo`` is :func:`~.frame.deltas` of the certified program, whose stack
-    arithmetic the view has already dropped; ``eqsat`` routes the expression
-    passes through :mod:`.eqsat` instead (experimental, default off).
+    arithmetic the view has already dropped.
     """
-    eqs = _eqsat() if eqsat else None
-    if eqs is None:
-        zerocarry(prog)
-    else:
-        eqs.saturate(prog, gated=False)
+    zerocarry(prog)
     make = fresh(prog)
     frames(prog, frameinfo, make)
     for p in prog.procs.values():
@@ -481,11 +469,8 @@ def clean(prog, frameinfo=None, eqsat=False):
     stack_temps(prog, make)
     mem = cell_ranges(prog)
     for p in prog.procs.values():
-        if eqs is None:
-            propagate(p)
-            ranged(p, mem)
-        else:
-            eqs.saturate_proc(p, mem)
+        propagate(p)
+        ranged(p, mem)
         thread_empty(p)
         merge_switches(p)
         shortcircuit(p)
