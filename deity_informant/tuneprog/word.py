@@ -198,12 +198,17 @@ def fold16(prog):
     return pairs
 
 
-def _sidword(s1, s2, defs, rgn):
-    """The one assignment two consecutive writes of a 16-bit SID register make.
+def _held(e, names):
+    """True when the value is a word the program already holds.
 
-    The value must be a word the program already holds: bytes the print would have
-    to join with ``|`` and ``<< 8`` are two bytes that happen to reach one register.
+    Only a named pair has one reference to print; an unnamed one is two cells the
+    print joins with ``|`` and ``<< 8``, which costs more than the two byte writes.
     """
+    return all(names.u16.get((x.lo, x.hi)) is not None for x in walk(e) if type(x) is R16)
+
+
+def _sidword(s1, s2, defs, rgn, names):
+    """The one assignment two consecutive writes of a 16-bit SID register make."""
     if any(type(x) is not Store or x.w != 1 or x.r < 0 for x in (s1, s2)):
         return None
     for lo, hi in ((s1, s2), (s2, s1)):
@@ -213,12 +218,12 @@ def _sidword(s1, s2, defs, rgn):
         if any((rgn.get(c[0]) or lo).kind != "io" for c in pair):
             continue  # the RAM under the register file is memory, not the chip
         got = operand(norm(lo.v, defs), norm(hi.v, defs))
-        if got is not None:
+        if got is not None and _held(got, names):
             return W16(pair[0], pair[1], lo.a, got, lo.src, lo is s2)
     return None
 
 
-def fold_sid(structured, rgn):
+def fold_sid(structured, rgn, names):
     """Print each 16-bit SID register's two byte writes as one assignment.
 
     Run after the rows are aligned (:mod:`.unroll`): the chip takes two writes and
@@ -229,7 +234,7 @@ def fold_sid(structured, rgn):
     for body in structured.values():
         for n in nodewalk(body):
             if type(n) is Blk:
-                out += _sidblock(n, rgn)
+                out += _sidblock(n, rgn, names)
     return out
 
 
@@ -245,12 +250,12 @@ def sidorder(words):
     return ("hi", len(words) - hi) if hi * 2 > len(words) else ("lo", hi)
 
 
-def _sidblock(b, rgn):
+def _sidblock(b, rgn, names):
     """Fold the register pairs of one printed block; returns the ``W16`` s it made."""
     defs = {s.n: s.e for s in b.stmts if type(s) is Let}
     stmts, out, i = [], [], 0
     while i < len(b.stmts):
-        pair = (b.stmts[i], b.stmts[i + 1], defs, rgn) if i + 1 < len(b.stmts) else None
+        pair = (b.stmts[i], b.stmts[i + 1], defs, rgn, names) if i + 1 < len(b.stmts) else None
         got = None if pair is None else _sidword(*pair)
         stmts.append(got if got is not None else b.stmts[i])
         out += [got] if got is not None else []

@@ -59,7 +59,9 @@ class Cells:
         """A 16-bit view reference: the pair's own name, indexed like its low half.
 
         The pair is named by its two cells, so the name is the word's -- not the low
-        half's, whose region a record view may already name by one of its fields.
+        half's, whose region a record view may already name by one of its fields. A
+        pair with neither name nor a region of its own is printed over both halves,
+        which is what it takes to state it: no half is ever dropped.
         """
         name = self.names.u16.get((lo, hi))
         rid = lo[0]
@@ -69,10 +71,24 @@ class Cells:
         if reg is not None:  # the chip's own register, addressed like any io store
             return self.regcell("sid", *addr_split(a), reg)
         if name is None:
-            return self.colref(rid, a) or self.cell(rid, addr, idx)
+            one, two = self.half(lo, a), self.half(hi, _rebase(a, hi[1]))
+            # equal references are at word granularity already; so is a region of two
+            return one if one == two or _scalar(r, lo, hi, idx) else "(%s | %s << 8)" % (one, two)
         if rid in self.names.view or rid in self.names.image:
-            return self.cell(rid, addr, idx, name=name)
+            return self.cell(rid, addr, idx, name=name, fld=self.wordfield(lo, hi) or name)
         return name if idx is None or r is None else "%s[%s]" % (name, self.index(r, addr, idx))
+
+    def wordfield(self, lo, hi):
+        """The register a pair of image cells is, whose halves the register file bytes."""
+        dl, dh = self.names.image.get(lo[0]), self.names.image.get(hi[0])
+        if dl is None or dh is None:
+            return None
+        return register(((lo[0], lo[1] + dl), (hi[0], hi[1] + dh)))
+
+    def half(self, c, a):
+        """One cell of a pair, referenced as any other byte at that address is."""
+        rid = c[0]
+        return self.colref(rid, a) or self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
 
     def slot(self, hits, rid, addr, idx):
         """``voice[v].field`` for a cell a per-copy address table names, or ``None``.
@@ -298,6 +314,19 @@ def _copyidx(e):
         return hit
     a = fold(e.a)
     return Const((a.v - e.lo) // max(e.w, 1)) if type(a) is Const else None
+
+
+def _scalar(r, lo, hi, idx):
+    """True when a two-byte region is the pair itself, so its bare name is the word's."""
+    if r is None or idx is not None or lo[0] != hi[0] or r.size != 2:
+        return False
+    return (r.base, r.base + 1) == (lo[1], hi[1])
+
+
+def _rebase(a, addr):
+    """The address of the other half of a pair: the same index, at its own base."""
+    idx = addr_split(a)[1]
+    return Const(addr, 2) if idx is None else Bin("+", Const(addr, 2), idx, 2)
 
 
 def _bare(s):
