@@ -35,12 +35,15 @@ the region table:
 |---|---|---|
 | load band $5000-$5FC7 | 4040 | 100.0 |
 | executed player code | 936 | 23.2 |
-| data the trace reached | 1942 | 48.1 |
-| neither (other songs, sfx, dead code) | 1162 | 28.8 |
+| data the trace reached | 1941 | 48.0 |
+| neither (other songs, sfx, dead code) | 1163 | 28.8 |
 
 Static split: 1,347 bytes of code in three blocks, 2,693 of data (anatomy
-§3.1.1). Song 1 is 936 bytes of code and 1,942 of data — two bytes of data per
-byte of program.
+§3.1.1). Song 1 is 936 bytes of code and 1,941 of data — two bytes of data per
+byte of program. The reach was measured here as the region *extents*; it is now
+`datablock.reach_bytes`, the union of the S4 accessors' envelopes over each
+region's cells, which the print's data section carries. The two differ by
+`$5526`: a region the S3 relation made and no S4 accessor reads.
 
 ### 2.2 Description lengths
 
@@ -50,7 +53,7 @@ byte of program.
 |---|---|---|
 | the whole load band | 4040 | 2548 |
 | executed player code only | 936 | 828 |
-| data the trace reached | 1942 | 1116 |
+| data the trace reached | 1941 | 1112 |
 | `tuneprog.md` (the print) | 13461 | 2956 |
 | `tuneprog.py` (the executable) | 48610 | 6236 |
 | SID write log, 133,109 `(reg,val)` pairs | 266218 | 36484 |
@@ -62,8 +65,9 @@ byte of program.
   decompilation is judged against 2,548, not 36,484.
 - The print is already at the tune's own compressed size (2,956 vs 2,548). It is
   verbose only in that a human reads it linearly and 48 % of the tune never
-  appears in it as data.
-- The data floor is hard: 1,116 compressed bytes of pattern, track, instrument
+  appears in it as data. *Closed by the `## data` section*: the print now carries
+  1,867 of the 1,941 reached bytes and its `xz -9e` is 4,512.
+- The data floor is hard: 1,112 compressed bytes of pattern, track, instrument
   and frequency data are the tune. The frequency table is irreducible — 25 of
   its 84 octave pairs are off by one from exact doubling, so no formula
   reproduces the 192 bytes.
@@ -85,7 +89,7 @@ tokens, covering all three songs and every fx bit.
 The measured gap is 252 → 65, i.e. 3.9x, of which the factoring in §4 closes
 2.2x by hand. The state header is a second gap: 56 lines (5 meta, 39 state, 9
 const, 2 inputs) against 14 lines of table shape in the factored form — neither
-prints a byte of the 1,942 as data.
+printed a byte of the 1,941 as data, which the `## data` section now does.
 
 ## 3. Where the statements live
 
@@ -367,12 +371,15 @@ T1, T2 and T3 together, i.e. most of the 252 → 115. Its mirror handles the
 pattern block: three extents of one array whose accessors agree on shape are one
 region, not three.
 
-The floor for Commando song 1 is 65 lines of player pseudocode plus 1,942 bytes
-(1,116 compressed) of data printed as data; the data half is irreducible. The
-print is at 252 lines and prints none of the data as data. The factored form
+The floor for Commando song 1 is 65 lines of player pseudocode plus 1,941 bytes
+(1,112 compressed) of data printed as data; the data half is irreducible. The
+print was at 252 lines and printed none of the data as data; the `## data`
+section now carries 1,867 of the 1,941 in 51 rows, the 74 left being cells a
+store's envelope reaches -- the voice array this section's pitch-104 overrun
+fuses with the table. The factored form
 reaches 115–126 lines and names all of it, closing 2.2x of the 3.9x by storage
-typing alone. Two thirds of the tune's live bytes are tables (1,942 of 2,878
-reached) and the current print does not say so.
+typing alone. Two thirds of the tune's live bytes are tables (1,941 of 2,877
+reached).
 
 The residual 115 → 65 is part floor, part presentation. The two-writes-per
 16-bit register change is a hard fact about the *emitted executable*: the
