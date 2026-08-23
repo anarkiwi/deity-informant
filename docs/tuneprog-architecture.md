@@ -396,9 +396,9 @@ in declaration order.
 
 Tags, in `ir._NODES` order: `$const $var $load $bin $let $store $call $assert
 $phi $goto $if $switch $return $trap $block $proc $rgn $tuneprog`; plus
-`["$hex", …]` for `bytes` and `{"$dict": [[k, v], …]}` for dicts with non-string
-keys. `R16` and `W16` carry no tag: they exist only in the S6 view, which is never
-serialised as IR.
+`["$hex", …]` for `bytes` and `{"$dict": [[k, v], …]}` for every dict, so a
+non-string key survives the round trip. `R16` and `W16` carry no tag: they exist
+only in the S6 view, which is never serialised as IR.
 
 ### 4.4 The three executors
 
@@ -602,7 +602,7 @@ comments — and the six numbers are stated before and after:
 
 | metric | definition |
 | --- | --- |
-| tokens | `\$?\w+|\S` over the `## program` section |
+| tokens | the regex `\$?\w+` alternated with `\S`, over the `## program` section |
 | lines | non-blank lines of the `## program` section |
 | statements | `sum(len(b.stmts))` over the view |
 | blocks | `sum(len(p.blocks))` over the view |
@@ -654,9 +654,12 @@ for one instruction), `run` (execute in `PcodeVM`, dump the `$D400..` grid),
 
 ### 7.2 Tools
 
-All long-running tools obey the same convention: `--budget` CPU seconds per
-invocation, `--resume` to continue, **exit 2 while work remains**, so no single
-process exceeds the 60 s CPU rule.
+All long-running tools obey the same convention: `--budget` per invocation,
+`--resume` to continue, and **exit 2 while work remains**, so no single process
+exceeds the 60 s CPU rule. The budget is CPU seconds for the single-tune drivers
+(`tuneprog_certify`, `tuneprog_recert`, `tuneprog_period`, default 45) and wall
+seconds for the parallel population drivers (`tuneprog_nmi`,
+`survey/tuneprog_sweep`, default 1,800), where the CPU is the workers'.
 
 ```bash
 until python3 tools/tuneprog_certify.py TUNE.sid --out out/tune --until-period --resume; do :; done
@@ -729,20 +732,32 @@ takes the `sid_image` role at delta 0.
 
 ### 8.2 Refused by design
 
-Refusals are diagnosed (`machine.Refusal`), never approximated:
+Refusals are diagnosed, never approximated: `machine.Refusal` carries a reason and
+a detail, and the pipeline produces nothing. Every reason the tree raises:
 
-- a second armed interrupt source with no schedule — CIA #2's ICR (`$DD0D`)
-  enabling one of bits 0–4 with the timer started, but no entry the schedule can
-  carry (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023;
-- a recursive JSR call graph;
-- an `init` that never returns or idles inside its budget (`INIT_BUDGET` =
-  2,000,000 instructions);
-- a play routine past its instruction budget;
-- `vector banked out` — no installed vector the port actually dispatches through;
-- `port moved` — the entry contract does not hold at every tick;
-- `nmi armed in play` — the arming gate is re-checked every tick;
-- `schedule not store-separable` (5 of 7,023) and `nmi clobbers registers`
-  (8 of 7,023), the second entry's two checked properties, both fail-closed.
+| reason | raised by | when |
+| --- | --- | --- |
+| `no entry` | `machine.find_entries`, `trace` | `play = 0` and no interrupt vector installed, or the installed vector is null |
+| `vector banked out` | `machine.vector_gate` | a vector is installed, but the 6510 port dispatches through the other one |
+| `nmi vector banked out` | `nmi.entry`, `trace` | the NMI vector the port selects carries no handler |
+| `second interrupt source armed` | `nmi.check` | CIA #2's accumulated ICR enables a source this model carries no schedule for (TOD alarm, serial, FLAG, CNT timer) — 6 of 7,023; re-checked every tick |
+| `port moved` | `trace` | the entry contract does not hold at every tick: a tick entered with the port on the other side of HIRAM |
+| `init runaway` | `machine.init_runner` | `init` neither returns nor idles within `INIT_BUDGET` = 2,000,000 instructions |
+| `play runaway` | `trace` | a tick past its instruction budget |
+| `recursion` | `cfg._no_recursion` | a cycle in the JSR call graph |
+| `subtunes disagree on cadence` | `machine.shared_entry` | `--songs all` where one merged trace cannot be one schedule |
+| `copy index` | `wire.wire` | a value live at a procedure entry that is not a 6510 register |
+| `nmi clobbers registers` | `nmi` | the handler's `RTI` does not return the A/X/Y it interrupted — 8 of 7,023 |
+| `schedule not store-separable` | `nmi.Separable` | a play load in an open preemption window reads a cell the handler stamped in that window — 5 of 7,023 |
+| `input replay mismatch` | `tracevm` | a replay run consumed a pinned input the recording did not |
+
+The last two are the second entry's own checked properties, both fail-closed and
+checked on every NMI of every tick. *Armed* is the chip's rule and not the
+evidence: a CIA #2 source exists iff `$DD0D` enables one of bits 0–4 (accumulated
+over the writes, bit 7 saying whether a write enables or disables what it names)
+and, for a timer, iff that timer is started; a `$DD04`/`$DD05` latch or a
+`$0318`/`$FFFA` vector over no such source is dead, and by the same rule a CIA #2
+period is never a play cadence.
 
 Deliberately not modelled: unexecuted code (a `trap`), cycle-level timing (an
 optional annotation), the SID/VIC/CIA as devices, and musical semantics beyond
@@ -777,6 +792,7 @@ belongs to:
 | the stack page is a second inexact direction of the store-granularity replay: an IR store wholly inside `$0100`–`$01FF` between the last counted store and the NMI instant replays the handler before it | needs the instruction index the trace records (the emitted program cannot count) or a shared stack store count (stack elimination removes); the no-hook converse was measured and rejected (JCH diverges at tick 6); narrow, undiagnosed in population (`nmi`, `interp`, `verify`) |
 | a write to `$D000`–`$DFFF` with I/O mapped also writes the RAM under it (`tracevm.write`, `interp.iostore`) where the hardware writes only the chip | the honest model is two planes, chip and RAM beneath; unobservable in every exemplar, 3 tunes of 7,023 discriminate |
 | the tracer counts CPU cycles where the sampler's clock also spends VIC DMA | 57–60 cycles per frame, +533 inside one Knob tick; free today, both sides framed by the interrupt, so a raster model is needed only if a comparison ever needs sub-frame time (`tracevm`, `machine`) |
+
 ---
 
 ## 9. Exemplars and evidence
