@@ -7,11 +7,13 @@ over a propagated expression, with no analysis behind it (:mod:`.word` applies t
 
 from __future__ import annotations
 
+from .facts import sid_name
 from .idioms import CMP, fold, negated
-from .ir import Bin, Const, IO_HI, IO_LO, Load, R16
+from .ir import Bin, Const, IO_HI, IO_LO, Load, R16, SID_REG_HI, SID_REG_LO
 from .irwalk import addr_split, expand, sub_expr
 
 DEPTH = 8
+SIDPAIR = {"freq_lo": "freq_hi", "pw_lo": "pw_hi", "cutoff_lo": "cutoff_hi"}
 
 
 def zerofold(e):
@@ -140,6 +142,20 @@ def operand(lo, hi):
         return lo
     pair = cells(lo, hi) if type(lo) is Load and type(hi) is Load else None
     return None if pair is None else R16(pair[0], pair[1], lo.a)
+
+
+def register(pair):
+    """The 16-bit SID register two cells are the low and high halves of, or ``None``.
+
+    A hardware fact: ``freq``, ``pw`` and ``cutoff`` are one register the 8-bit bus
+    takes two writes to set. The order of those writes is the executable's, which
+    the print states once as a convention instead (:func:`~.word.fold_sid`).
+    """
+    (_rl, al), (_rh, ah) = pair
+    if not all(SID_REG_LO <= a <= SID_REG_HI for a in (al, ah)):
+        return None
+    lo, hi = sid_name(al), sid_name(ah)
+    return lo[0][:-3] if SIDPAIR.get(lo[0]) == hi[0] and lo[1] == hi[1] else None
 
 
 def _add(_pair, vlo, vhi):

@@ -287,6 +287,22 @@ def _meta(prog, names, cert, shut=0):
     ]
     if shut:
         out.append("untaken   %d branch directions the trace never took (marked)" % shut)
+    if names.sidwrite is not None:
+        order, against = names.sidwrite
+        other = "lo" if order == "hi" else "hi"
+        out.append(
+            "sid       16-bit registers written %s then %s%s"
+            % (
+                order,
+                other,
+                (
+                    ""
+                    if not against
+                    else "; %s %s then %s (marked)"
+                    % (_plural(against, "write", "writes"), other, order)
+                ),
+            )
+        )
     if names.phase is not None:
         out.append("phase     %s selects the rate" % names.region.get(names.phase[0], "?"))
     if names.copies and names.copies.get("families"):

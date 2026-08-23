@@ -118,12 +118,17 @@ def test_the_register_offset_table_names_the_register_by_its_voice():
 
     The role takes two sources: Guldkorn indexes the register file through the
     table; the Knob reaches it by a stride-7 index variable, so the bytes alone
-    do not name the region even though the same reading holds.
+    do not name the region even though the same reading holds. The chip's own
+    16-bit registers print as one write, the RAM under them as two bytes.
     """
-    for rel, secs, name in ((KNOB, KNOB_S, "ghost"), (GULDKORN, GULD_S, "sid")):
+    both = (
+        (KNOB, KNOB_S, "ghost", ("freq_lo", "pw_lo")),
+        (GULDKORN, GULD_S, "sid", ("freq", "pw")),
+    )
+    for rel, secs, name, pairs in both:
         run = decompiled(rel, seconds=secs)
         assert len(run.names.voicemap) == 1
         assert ("voice_map" in run.names.role.values()) is (rel is GULDKORN)
-        for reg in ("ad", "sr", "freq_lo", "pw_lo"):
+        for reg in ("ad", "sr") + pairs:
             assert "%s[v].%s" % (name, reg) in run.text or "%s[x].%s" % (name, reg) in run.text
         assert "%s.reg[5 + " % name not in run.text

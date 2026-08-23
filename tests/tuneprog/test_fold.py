@@ -642,8 +642,7 @@ def test_a_patched_opcode_pair_becomes_one_switch_over_a_16_bit_step():
 def _run(shared=None, copies=3):
     """Copies of a run that relocates two cells, plus a constant they all share."""
     out = [
-        [("r", 1), ("k@0", 0x551A + i * 0x100), ("k@0", 0x5520 + i * 0x100)]
-        for i in range(copies)
+        [("r", 1), ("k@0", 0x551A + i * 0x100), ("k@0", 0x5520 + i * 0x100)] for i in range(copies)
     ]
     return out if shared is None else [r + [("k@0", shared)] for r in out]
 

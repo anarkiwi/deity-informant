@@ -8,10 +8,11 @@ diamond, become one assignment over the pair; a pointer read becomes one 16-bit 
 from __future__ import annotations
 
 from .graph import preds_of
-from .halves import bumped, cell, cells, norm, read, same, value
+from .halves import bumped, cell, cells, norm, operand, read, register, same, value
 from .ir import Bin, Call, Const, Goto, If, Let, Load, R16, Store, Var, W16
 from .irwalk import apply_stmt, apply_term, node_loads, renamer, single_defs
 from .irwalk import use_counts, walk
+from .structure import Blk, walk as nodewalk
 
 
 def _hits(x, pair):
@@ -54,7 +55,7 @@ def _word(s1, s2, defs):
         pair = cells(lo, hi)
         got = None if pair is None else value(pair, norm(lo.v, defs), norm(hi.v, defs))
         if got is not None:
-            return W16(pair[0], pair[1], lo.a, got[0], lo.src), got[1]
+            return W16(pair[0], pair[1], lo.a, got[0], lo.src, lo is s2), got[1]
     return None
 
 
@@ -195,3 +196,64 @@ def fold16(prog):
             _flags(proc, base, flags)
         _prune(proc, dead)
     return pairs
+
+
+def _sidword(s1, s2, defs, rgn):
+    """The one assignment two consecutive writes of a 16-bit SID register make.
+
+    The value must be a word the program already holds: bytes the print would have
+    to join with ``|`` and ``<< 8`` are two bytes that happen to reach one register.
+    """
+    if any(type(x) is not Store or x.w != 1 or x.r < 0 for x in (s1, s2)):
+        return None
+    for lo, hi in ((s1, s2), (s2, s1)):
+        pair = cells(lo, hi)
+        if pair is None or register(pair) is None:
+            continue
+        if any((rgn.get(c[0]) or lo).kind != "io" for c in pair):
+            continue  # the RAM under the register file is memory, not the chip
+        got = operand(norm(lo.v, defs), norm(hi.v, defs))
+        if got is not None:
+            return W16(pair[0], pair[1], lo.a, got, lo.src, lo is s2)
+    return None
+
+
+def fold_sid(structured, rgn):
+    """Print each 16-bit SID register's two byte writes as one assignment.
+
+    Run after the rows are aligned (:mod:`.unroll`): the chip takes two writes and
+    the print takes one, so this is a convention over the rows, never a row of its
+    own. Returns the ``W16`` s it made.
+    """
+    out = []
+    for body in structured.values():
+        for n in nodewalk(body):
+            if type(n) is Blk:
+                out += _sidblock(n, rgn)
+    return out
+
+
+def sidorder(words):
+    """``(the order the register writes are in, how many pairs are not)``, or ``None``.
+
+    The convention is the order more of them use; the header states it once and the
+    odd statement carries its own (:meth:`~.pseudocode.Printer.against`).
+    """
+    if not words:
+        return None
+    hi = sum(w.hifirst for w in words)
+    return ("hi", len(words) - hi) if hi * 2 > len(words) else ("lo", hi)
+
+
+def _sidblock(b, rgn):
+    """Fold the register pairs of one printed block; returns the ``W16`` s it made."""
+    defs = {s.n: s.e for s in b.stmts if type(s) is Let}
+    stmts, out, i = [], [], 0
+    while i < len(b.stmts):
+        pair = (b.stmts[i], b.stmts[i + 1], defs, rgn) if i + 1 < len(b.stmts) else None
+        got = None if pair is None else _sidword(*pair)
+        stmts.append(got if got is not None else b.stmts[i])
+        out += [got] if got is not None else []
+        i += 2 if got is not None else 1
+    b.stmts[:] = stmts
+    return out

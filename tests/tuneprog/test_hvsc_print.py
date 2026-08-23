@@ -71,7 +71,9 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
     # the write-out is one copy of the seven per-voice registers over the index
     out = body(text, "writeout")
     assert "    for v in 0, 1, 2:" in out
-    assert len([l for l in out if "sid[v]." in l]) == 7
+    # five rows, the two 16-bit registers one write each under the header's convention
+    assert len([l for l in out if "sid[v]." in l]) == 5
+    assert "sid[v].freq = " in "\n".join(out) and "sid[v].pw = " in "\n".join(out)
     assert not any("sid[0]." in l or "sid[1]." in l for l in out)
 
     # main and sub call the helpers instead of holding a copy each
