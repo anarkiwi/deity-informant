@@ -93,7 +93,7 @@ def _which(claims, off):
 
 
 # ---- accesses ----------------------------------------------------------------
-def _refs(prog):
+def refs(prog):
     """``(procedure, region, envelope low, envelope high, address, is a store)``."""
     for n, p in prog.procs.items():
         for b in p.blocks.values():
@@ -254,7 +254,7 @@ def _split(prog, named, fields):
     band = tuple(prog.meta.get("load") or (0, 0))
     tick = reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
     byr = {}
-    for n, rid, lo, hi, a, w in _refs(prog):
+    for n, rid, lo, hi, a, w in refs(prog):
         byr.setdefault(rid, []).append((lo, hi, a, w, n in tick))
     nid = max((r.id for r in prog.storage), default=0) + 1
     new, moved, span = [], {}, []
