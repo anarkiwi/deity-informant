@@ -254,6 +254,11 @@ public class EmulateTrace extends GhidraScript {
         }
         h.clearBreakpoint(toAddr(SENTINEL));
         h.writeRegister("SP", sp);
+        if (steps >= MAX_STEPS) {
+            // an RTI-framed tick never reaches the sentinel this pushes; stop on the
+            // first such call rather than spending MAX_STEPS on each of the rest
+            throw new Exception("call " + call + " did not return within " + MAX_STEPS + " steps");
+        }
         return steps;
     }
 

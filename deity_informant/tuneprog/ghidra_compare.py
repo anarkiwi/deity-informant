@@ -93,11 +93,14 @@ def alignment(mine, theirs):
 
 def _flag(mine, theirs, tol):
     """``(verdict, detail)`` for one procedure Ghidra decompiled cleanly."""
-    clean = theirs["unresolved"] == 0 and theirs["unreachable"] == 0
-    if not clean:
-        return "ghidra_incomplete", "unresolved=%d unreachable=%d" % (
+    # no high P-Code over a non-empty body is nothing to compare, not a lead
+    empty = theirs["sites"] and not theirs["pcode_ops"]
+    if theirs["unresolved"] or theirs["unreachable"] or theirs.get("error") or empty:
+        return "ghidra_incomplete", "unresolved=%d unreachable=%d %s" % (
             theirs["unresolved"],
             theirs["unreachable"],
+            theirs.get("error")
+            or ("no high P-Code over %d sites" % theirs["sites"] if empty else ""),
         )
     missed = sorted(set(mine["pcs"]) - _body(theirs))
     if missed:

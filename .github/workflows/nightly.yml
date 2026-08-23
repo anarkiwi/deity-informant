@@ -66,9 +66,14 @@ jobs:
           docker run --rm -v "$PWD:/src" --entrypoint chown di-ghidra:ci \
             -R "$(id -u):$(id -g)" /src/out/gout
       - name: The three oracles
+        # The two ours_bigger flags the oracle stands by are rows in the backlog
+        # (deflektor's copy fold costs two cross-copy gotos, alien3's residual
+        # stack keeps three register saves Ghidra's frame analysis removes); the
+        # gate is on a flag beside them.
         run: |
           python3 tools/tuneprog_recert.py --out out/recert --resume \
-            --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout
+            --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout \
+            --known daglish-deflektor:C810 --known rodger-alien3:81BB
       - uses: actions/upload-artifact@v7
         if: always()
         with:

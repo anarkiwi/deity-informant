@@ -152,7 +152,7 @@ def table(certs, state):
     return "\n".join(out)
 
 
-def oracle_row(name, out, gdir, tol):
+def oracle_row(name, out, gdir, tol, known=()):
     """The three Ghidra oracles for one certificate, joined and localised."""
     if not (gdir / "stats.json").is_file():
         return {"name": name, "flags": [], "note": "no export"}
@@ -161,7 +161,11 @@ def oracle_row(name, out, gdir, tol):
     cov, emu = doc.get("coverage") or {}, doc.get("emulate") or {}
     return {
         "name": name,
-        "flags": [f["entry"] + " " + f["detail"] for f in doc["flags"]],
+        "flags": [
+            f["entry"] + " " + f["detail"]
+            for f in doc["flags"]
+            if "%s:%s" % (name, f["entry"]) not in known
+        ],
         "uncovered": cov.get("uncovered_sites", "-"),
         "merged": len(doc["alignment"]["merged"]),
         "partial": sum(1 for r in doc["procs"] if r["verdict"] == "ghidra_partial"),
@@ -172,8 +176,10 @@ def oracle_row(name, out, gdir, tol):
 
 def oracles(certs, args):
     """Every certificate's oracle row, then the ``ours_bigger`` verdict."""
+    known = set(args.known or ())
     rows = [
-        oracle_row(n, Path(args.out) / n, Path(args.ghidra_dir) / n, args.tol) for n, _d in certs
+        oracle_row(n, Path(args.out) / n, Path(args.ghidra_dir) / n, args.tol, known)
+        for n, _d in certs
     ]
     head = OCOLS % ("certificate", "uncovered", "partial", "merged", "emulate", "ours_bigger")
     out = [head, "-" * len(head)]
@@ -219,6 +225,9 @@ def main(argv=None):
         "--ghidra-dir", help="headless Ghidra exports per certificate; runs the oracles"
     )
     ap.add_argument("--tol", type=float, default=ghidra_compare.TOL, help="complexity tolerance")
+    ap.add_argument(
+        "--known", action="append", help="CERT:ENTRY whose ours_bigger flag is a recorded row"
+    )
     args = ap.parse_args(argv)
 
     out = Path(args.out)

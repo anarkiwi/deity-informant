@@ -166,6 +166,11 @@ def test_flag_verdicts():
     assert GC._flag(mine, theirs, GC.TOL)[0] == "ghidra_partial"
     assert "misses 8 of 10" in GC._flag(mine, theirs, GC.TOL)[1]
     assert GC._flag(*_pair(5, 4), GC.TOL)[0] == "ghidra_lead"
+    # a body Ghidra emitted no high P-Code for is nothing to compare, not a lead
+    assert GC._flag(*_pair(200, 0), GC.TOL)[0] == "ghidra_incomplete"
+    mine, theirs = _pair(200, 100)
+    theirs["error"] = "Decompiler process died"
+    assert GC._flag(mine, theirs, GC.TOL)[0] == "ghidra_incomplete"
     assert GC._flag(*_pair(1, 100, gotos=5), GC.TOL)[0] == "ours_bigger"
 
 

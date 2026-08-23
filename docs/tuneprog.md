@@ -119,8 +119,9 @@ until python3 tools/tuneprog_period.py TUNE.sid --song 1 --calls 60000 \
   two timing fields. `--shard I/N` takes every Nth certificate; `--ghidra-dir DIR`
   exports the headless-Ghidra facts as it replays and then runs the three oracles of
   [ghidra-highpcode-export.md](ghidra-highpcode-export.md) against the export in
-  `DIR/<certificate>`, exiting 1 on any `ours_bigger`. That is what
-  `.github/workflows/nightly.yml` runs, four shards, over all 51.
+  `DIR/<certificate>`, exiting 1 on any `ours_bigger` a `--known CERT:ENTRY` does
+  not name as a recorded row. That is what `.github/workflows/nightly.yml` runs,
+  four shards, over all 51.
 - `tuneprog_ghidra.py OUTDIR` writes one output directory's facts, and `--compare
   GOUT` joins it with a finished headless run (`comparison.json`/`comparison.md`).
 - `tuneprog_period.py` says why a subtune has no state repeat (`period.py`): each

@@ -131,8 +131,25 @@ All three run through the same Docker entry and write JSON next to the export.
 high P-Code ops vs S4 statements, C lines vs `tuneprog.md` lines, gotos, unique temporaries, plus Ghidra's
 diagnostics (`DecompileResults` errors, `halt_baddata`/`switchD`, "Removing unreachable block"). Where Ghidra
 reports clean flow *and* our certificate holds, our statements-per-site and gotos-per-site must not exceed
-Ghidra's by more than `--tol` (default 1.5x); a violation is `ours_bigger` and localised. No flag on the four
-exemplars. Every other procedure is `ok`, `ghidra_lead`, `ghidra_incomplete`, or `ghidra_partial`.
+Ghidra's by more than `--tol` (default 1.5x); a violation is `ours_bigger` and localised. Every other
+procedure is `ok`, `ghidra_lead`, `ghidra_incomplete` or `ghidra_partial`. Clean flow means no unresolved
+control flow, no dropped block, no `DecompileResults` error *and* some high P-Code: a body over executed
+sites that produced none is nothing to compare, which is what "Decompiler process died" and "Low-level
+Error: Overlapping input varnodes" leave behind (GoatTracker's `row_apply`, *Playful Professor*'s `p_6200`,
+both SID Wizard tunes).
+
+No flag on the four exemplars. Over the 51 certificates two survive, both standing:
+
+* *Deflektor*'s `init`, 2 `goto` against Ghidra's 0 over the same 55 sites (51 printed lines to 35 C lines).
+  They are the copy fold's cross-copy edges inside `for v in 0, 1, 2`; Ghidra does not fold and writes the
+  three copies out flat. The measured refusal is [tuneprog-plan.md](tuneprog-plan.md) §2.8.
+* *Alien 3*'s `tick`, 0.80 statements/site against 0.47 ops/site over 15 sites. Our twelve statements keep
+  the three register saves to `$01FA`-`$01FC` that Ghidra's frame analysis folds into one `uStack0000 =
+  param_1`; the tune is `stack: residual` (§2.5's row). On the like-for-like measure we are the smaller
+  side, 8 printed lines to 15 C lines.
+
+`tuneprog_recert.py --known CERT:ENTRY` names a flag that is a recorded row, so the nightly gates on a flag
+beside those two rather than on their standing.
 
 Ghidra's bodies are disjoint and our procedures are cloned per entry, so the two sides align only as address
 sets: each `per_function` row carries the executed addresses its body owns (`pcs`), and `ghidra_partial` is a
@@ -185,6 +202,14 @@ with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189
 with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
 VM runs).
 
+Over all 51 certificates: 46 agree, 5 do not, and none of the 5 is a Ghidra defect. Four are the entry-frame
+limit below — the tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an installed handler
+whose frame is an interrupt frame, so it never returns to the sentinel a fake `JSR` pushed and walks into
+`$FFFF`, `$FF00` (the KERNAL stub) or `$0100` (the stack page it just popped). The fifth,
+*I Could Eat a Knob at Night*, is the oracle's model of a call: our own `PcodeVM`, run back to back from the
+post-init image under the same conditions, disagrees with the trace in the same way from call 0, so the cold
+call is not the machine's tick 0. Both are reported, not enforced.
+
 Scope limits of this oracle:
 
 * For the 105 illegal opcodes it is not independent: the SLEIGH `.sinc` and the Python lifter encode the same
@@ -209,7 +234,14 @@ Scope limits of this oracle:
   inside executed code, and defining data there breaks disassembly.
 * The decompiler inlines thunks and tail calls, so a Ghidra function's high P-Code can include a callee's;
   totals are the safer comparison.
-* `EmulateTrace` single-steps and caps at 400k steps per call.
+* `EmulateTrace` single-steps, enters the tick as a subroutine and stops at a pushed sentinel, and caps at
+  400k steps per call (a call that hits the cap ends the run rather than spending the cap on each of the
+  rest). A tick whose frame is an interrupt frame -- an installed CINV handler, which chains to the KERNAL
+  epilogue and returns by `RTI` -- never reaches that sentinel: 4 of the 51. A second entry (the CIA #2 NMI)
+  is not emulated at all, so a two-entry program's calls are the tick's alone.
+* Eight back-to-back calls from the post-init image is not the machine's first ticks on every tune: one of
+  the 51 diverges from call 0 under our own VM as well as Ghidra's, so the model of a call, not the
+  emulator, is the limit there.
 
 ## References
 
